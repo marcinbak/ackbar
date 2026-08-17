@@ -58,6 +58,11 @@ func (s *Server) servePTYWS(ws *websocket.Conn) {
 		return
 	}
 
+	if s.db.IsSessionDeleted(sessionID) {
+		_, _ = ws.Write([]byte("\r\n\x1b[90m[Session was deleted]\x1b[0m\r\n"))
+		return
+	}
+
 	// Resilient lookup of session
 	sess, _ := s.db.GetSession(sessionID)
 	if sess == nil {

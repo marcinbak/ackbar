@@ -1875,6 +1875,16 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 					}
 				}
 
+				if targetNativeID != "" {
+					if s.db.IsSessionDeleted(targetNativeID) || s.db.IsSessionDeleted(fmt.Sprintf("%s:%s:%s", agent, hostName, targetNativeID)) {
+						_ = tmux.Kill(ctx, tmuxName)
+						if pid > 0 {
+							_ = exec.Command("kill", "-9", strconv.Itoa(pid)).Run()
+						}
+						continue
+					}
+				}
+
 				var existing *Session
 				if targetNativeID != "" {
 					existing, _ = s.db.GetSession(fmt.Sprintf("%s:%s:%s", agent, hostName, targetNativeID))

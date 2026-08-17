@@ -1124,9 +1124,17 @@ ${session.last_prompt}
       if (confirm(msg)) {
         const targetId = session.id;
         const targetName = session.name;
-        state.sessions = state.sessions.filter(s => s.id !== targetId && s.name !== targetName);
+        const nativeId = session.native_id;
+        state.sessions = state.sessions.filter(s => s.id !== targetId && s.name !== targetName && (!nativeId || s.native_id !== nativeId));
         closeTab(tabId);
         closeTab(targetId);
+        if (nativeId) closeTab(nativeId);
+        closeTab(`details_${targetId}`);
+        for (const [tId, tabObj] of state.openTabs.entries()) {
+          if (tabObj.session && (tabObj.session.id === targetId || (nativeId && tabObj.session.native_id === nativeId))) {
+            closeTab(tId);
+          }
+        }
         renderTree();
         const baseUrl = session.hostUrl ? session.hostUrl.replace(/\/$/, '') : '';
         await fetch(`${baseUrl}/v1/sessions/control?id=${encodeURIComponent(targetId)}&action=delete`, { method: 'POST' });
@@ -1882,9 +1890,17 @@ ${session.last_prompt}
           if (confirm(msg)) {
             const targetId = sess.id;
             const targetName = sess.name;
-            state.sessions = state.sessions.filter(s => s.id !== targetId && s.name !== targetName);
+            const nativeId = sess.native_id;
+            state.sessions = state.sessions.filter(s => s.id !== targetId && s.name !== targetName && (!nativeId || s.native_id !== nativeId));
             closeTab(targetId);
+            if (nativeId) closeTab(nativeId);
             closeTab(`details_${targetId}`);
+            if (nativeId) closeTab(`details_${nativeId}`);
+            for (const [tId, tabObj] of state.openTabs.entries()) {
+              if (tabObj.session && (tabObj.session.id === targetId || (nativeId && tabObj.session.native_id === nativeId))) {
+                closeTab(tId);
+              }
+            }
             renderTree();
             const baseUrl = sess.hostUrl ? sess.hostUrl.replace(/\/$/, '') : '';
             await fetch(`${baseUrl}/v1/sessions/control?id=${encodeURIComponent(targetId)}&action=delete`, { method: 'POST' });
