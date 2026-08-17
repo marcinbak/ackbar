@@ -755,6 +755,15 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Expand ~ to user home directory and ensure directory exists
+	home, _ := os.UserHomeDir()
+	if strings.HasPrefix(req.Cwd, "~/") && home != "" {
+		req.Cwd = filepath.Join(home, req.Cwd[2:])
+	} else if req.Cwd == "~" && home != "" {
+		req.Cwd = home
+	}
+	_ = os.MkdirAll(req.Cwd, 0755)
+
 	tempUUID := generateUUID()
 	tmuxName := fmt.Sprintf("ackbar-%s-%s", req.Agent, tempUUID)
 	launchCmd := getSpawnCmd(req.Agent, tempUUID)
