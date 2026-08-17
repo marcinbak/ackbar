@@ -324,6 +324,23 @@ body, html {
   margin-top: 2px;
 }
 
+.tree-group-empty-hint {
+  font-size: 11px;
+  color: var(--text-dim);
+  font-style: italic;
+  padding: 4px 8px;
+  opacity: 0.6;
+}
+
+.tree-group-header.highlight-new {
+  animation: groupPulse 2s ease-out;
+}
+
+@keyframes groupPulse {
+  0% { background: rgba(59, 130, 246, 0.4); box-shadow: 0 0 10px rgba(59, 130, 246, 0.5); }
+  100% { background: transparent; box-shadow: none; }
+}
+
 .session-item {
   display: flex;
   align-items: center;

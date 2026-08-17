@@ -492,15 +492,25 @@
       });
 
       // 3b. Direct Child Subgroups (nested recursive call)
+      let childSubgroupsCount = 0;
       sortedGroupPaths.forEach(childPath => {
         if (childPath.startsWith(path + '/')) {
           const subparts = childPath.substring(path.length + 1).split('/');
           if (subparts.length === 1) { // direct descendant
+            childSubgroupsCount++;
             const childEl = renderGroupBranch(childPath, indentLevel + 1);
             childrenEl.appendChild(childEl);
           }
         }
       });
+
+      // 3c. Empty group placeholder hint
+      if (directSessions.length === 0 && childSubgroupsCount === 0) {
+        const emptyHint = document.createElement('div');
+        emptyHint.className = 'tree-group-empty-hint';
+        emptyHint.textContent = 'Empty group (drag sessions here or right-click to spawn)';
+        childrenEl.appendChild(emptyHint);
+      }
 
       groupEl.appendChild(childrenEl);
       return groupEl;
@@ -2346,17 +2356,49 @@ ${session.last_prompt}
       const git = document.getElementById('mGitUrl').value.trim();
       if (!path) return;
 
+      const submitBtn = document.getElementById('mBtnSubmit');
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Creating...';
+
       try {
-        await fetch('/v1/projects/create', {
+        const res = await fetch('/v1/projects/create', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ path, project_dir: dir, git_url: git })
         });
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          alert('Failed to create group: ' + (errData.message || errData.error || `HTTP ${res.status}`));
+          submitBtn.disabled = false;
+          submitBtn.textContent = isSubgroup ? 'Create Subgroup' : 'Create Top-Level Group';
+          return;
+        }
+
+        // Uncollapse the newly created path and all parent segments
+        const parts = path.split('/');
+        for (let i = 1; i <= parts.length; i++) {
+          const prefix = parts.slice(0, i).join('/');
+          state.collapsedGroups.delete(prefix);
+        }
+        saveCollapsedGroups();
+
         await fetchTreeNodes();
         await fetchSessions();
         hideModal();
+
+        // Scroll to and highlight the newly created group header
+        setTimeout(() => {
+          const headerEl = document.querySelector(`[data-group-path="${path}"]`);
+          if (headerEl) {
+            headerEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            headerEl.classList.add('highlight-new');
+            setTimeout(() => headerEl.classList.remove('highlight-new'), 2500);
+          }
+        }, 100);
       } catch (err) {
         alert('Failed to create group: ' + err.message);
+        submitBtn.disabled = false;
+        submitBtn.textContent = isSubgroup ? 'Create Subgroup' : 'Create Top-Level Group';
       }
     });
   }

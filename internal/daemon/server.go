@@ -1353,10 +1353,11 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Path    string `json:"path"`     // Tree path, e.g. "Work/ProjectY/ProjectY-web"
-		Name    string `json:"name"`     // Folder name or absolute/relative directory path
-		GitURL  string `json:"git_url"`  // Optional git origin
-		BaseDir string `json:"base_dir"` // Optional base directory, defaults to ~/Projects
+		Path       string `json:"path"`        // Tree path, e.g. "Work/ProjectY/ProjectY-web"
+		Name       string `json:"name"`        // Folder name or absolute/relative directory path
+		ProjectDir string `json:"project_dir"` // Alternative directory field sent by Web GUI
+		GitURL     string `json:"git_url"`     // Optional git origin
+		BaseDir    string `json:"base_dir"`    // Optional base directory, defaults to ~/Projects
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -1375,8 +1376,12 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 	var gitURL string
 	alreadyExisted := false
 
-	if req.Name != "" {
-		folderInput := req.Name
+	folderInput := req.Name
+	if folderInput == "" && req.ProjectDir != "" {
+		folderInput = req.ProjectDir
+	}
+
+	if folderInput != "" {
 		if strings.HasPrefix(folderInput, "~/") && home != "" {
 			folderInput = filepath.Join(home, folderInput[2:])
 		}
@@ -1397,9 +1402,12 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 
 		alreadyExisted = dirExists(targetDir)
 
-		if err := os.MkdirAll(targetDir, 0755); err != nil {
-			http.Error(w, fmt.Sprintf("Failed to create directory: %v", err), http.StatusInternalServerError)
-			return
+		if !alreadyExisted {
+			if err := os.MkdirAll(targetDir, 0755); err != nil {
+				log.Printf("[Daemon] Notice: could not create local directory %q: %v", targetDir, err)
+			} else {
+				alreadyExisted = true
+			}
 		}
 
 		gitURL = req.GitURL
