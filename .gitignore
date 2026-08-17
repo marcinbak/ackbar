@@ -1,0 +1,17 @@
+# Root Compiled Binaries
+/bin/
+/dist/
+/ackbar
+/ackbard
+/ackbar-hook
+
+# Logs & Temporary Data
+*.log
+/tmp/
+scratch/
+.DS_Store
+
+# SQLite runtime DBs
+*.db
+*.db-wal
+*.db-shm

@@ -1,0 +1,2634 @@
+// Ackbar GUI Application Client
+(function() {
+  'use strict';
+
+  function loadCollapsedGroups() {
+    try {
+      const saved = localStorage.getItem('ackbar_collapsed_groups');
+      if (saved) {
+        return new Set(JSON.parse(saved));
+      }
+    } catch (e) {
+      console.error('Failed to load collapsed groups from localStorage:', e);
+    }
+    return new Set();
+  }
+
+  function saveCollapsedGroups() {
+    try {
+      localStorage.setItem('ackbar_collapsed_groups', JSON.stringify(Array.from(state.collapsedGroups)));
+    } catch (e) {
+      console.error('Failed to save collapsed groups to localStorage:', e);
+    }
+  }
+
+  // Application State
+  const state = {
+    version: '...',
+    sessions: [],
+    treeNodes: [],
+    hosts: [],
+    openTabs: new Map(), // tabId -> { type: 'terminal'|'details'|'doc', session, terminal, fitAddon, socket, containerEl, tabEl }
+    activeTabId: null,
+    collapsedGroups: loadCollapsedGroups(),
+    searchQuery: '',
+    showArchived: false,
+    draggedSession: null,
+    contextMenuSession: null,
+    contextMenuGroupPath: null,
+    cmdPaletteSelectedIndex: 0,
+    cmdPaletteItems: []
+  };
+
+  window.state = state;
+  window.__ackbarState = state;
+
+  // Format host name to server name only (e.g. "dev4u@legion" -> "legion")
+  function formatHostLabel(hostName) {
+    if (!hostName || hostName === 'local') return 'local';
+    const parts = hostName.split('@');
+    return parts[parts.length - 1] || hostName;
+  }
+
+  // State Emoji Mapping
+  function getStateEmoji(session) {
+    if (!session) return '⚪';
+    switch (session.state) {
+      case 1: // StateWorking
+        return '🟢';
+      case 2: // StateBlocked
+        return '🔴';
+      case 3: // StateIdle
+        return '🟡';
+      case 4: // StateEnded
+        return '⚪';
+      default:
+        return session.managed ? '🟢' : '⚪';
+    }
+  }
+
+  // Agent Provider Badge Helper
+  function getAgentBadgeHtml(agent, iconOnly = false) {
+    const a = (agent || 'claude-code').toLowerCase();
+    if (a.includes('claude')) {
+      return `<span class="agent-icon-badge claude-code" title="Claude Code (Anthropic)">✳️${iconOnly ? '' : ' claude'}</span>`;
+    } else if (a.includes('antigravity') || a.includes('agy')) {
+      return `<span class="agent-icon-badge antigravity" title="Google Antigravity">🪐${iconOnly ? '' : ' antigravity'}</span>`;
+    } else if (a.includes('codex')) {
+      return `<span class="agent-icon-badge codex" title="OpenAI Codex">⚡${iconOnly ? '' : ' codex'}</span>`;
+    }
+    return `<span class="agent-icon-badge" title="Agent: ${agent}">⚙${iconOnly ? '' : ' ' + agent}</span>`;
+  }
+
+  // DOM Elements
+  const el = {
+    appVersion: document.getElementById('appVersion'),
+    hostList: document.getElementById('hostList'),
+    searchInput: document.getElementById('searchInput'),
+    treeContainer: document.getElementById('treeContainer'),
+    tabStrip: document.getElementById('tabStrip'),
+    terminalViewport: document.getElementById('terminalViewport'),
+    emptyState: document.getElementById('emptyState'),
+    tabOverflowDropdown: document.getElementById('tabOverflowDropdown'),
+    tabOverflowCount: document.getElementById('tabOverflowCount'),
+    overflowMenuContent: document.getElementById('overflowMenuContent'),
+    btnTabOverflow: document.getElementById('btnTabOverflow'),
+    btnNewTab: document.getElementById('btnNewTab'),
+    btnAddHost: document.getElementById('btnAddHost'),
+    btnNewProject: document.getElementById('btnNewProject'),
+    btnPurge: document.getElementById('btnPurge'),
+    btnDiscovery: document.getElementById('btnDiscovery'),
+    btnToggleArchived: document.getElementById('btnToggleArchived'),
+    btnCollapseAll: document.getElementById('btnCollapseAll'),
+    btnExpandAll: document.getElementById('btnExpandAll'),
+    sidebarPanel: document.getElementById('sidebarPanel'),
+    sidebarResizer: document.getElementById('sidebarResizer'),
+    // Statusbar elements
+    sbSessionName: document.getElementById('sbSessionName'),
+    sbHostBadge: document.getElementById('sbHostBadge'),
+    sbCwd: document.getElementById('sbCwd'),
+    sbGitBranch: document.getElementById('sbGitBranch'),
+    sbContextGauge: document.getElementById('sbContextGauge'),
+    sbModelBadge: document.getElementById('sbModelBadge'),
+    sbPID: document.getElementById('sbPID'),
+    // Modal elements
+    modalOverlay: document.getElementById('modalOverlay'),
+    modalTitle: document.getElementById('modalTitle'),
+    modalBody: document.getElementById('modalBody'),
+    modalFooter: document.getElementById('modalFooter'),
+    modalCloseBtn: document.getElementById('modalCloseBtn'),
+    // Command Palette
+    cmdPaletteOverlay: document.getElementById('cmdPaletteOverlay'),
+    cmdPaletteInput: document.getElementById('cmdPaletteInput'),
+    cmdPaletteResults: document.getElementById('cmdPaletteResults'),
+    // Session Context Menu
+    contextMenu: document.getElementById('contextMenu'),
+    cmItemInfo: document.getElementById('cmItemInfo'),
+    cmItemCopyName: document.getElementById('cmItemCopyName'),
+    cmItemCopyPath: document.getElementById('cmItemCopyPath'),
+    cmItemResume: document.getElementById('cmItemResume'),
+    cmItemNewTab: document.getElementById('cmItemNewTab'),
+    cmItemVSCode: document.getElementById('cmItemVSCode'),
+    cmItemDocs: document.getElementById('cmItemDocs'),
+    cmItemRestart: document.getElementById('cmItemRestart'),
+    cmItemKill: document.getElementById('cmItemKill'),
+    cmItemArchive: document.getElementById('cmItemArchive'),
+    cmItemDelete: document.getElementById('cmItemDelete'),
+    // Group Context Menu
+    groupContextMenu: document.getElementById('groupContextMenu'),
+    gcmItemNewSession: document.getElementById('gcmItemNewSession'),
+    gcmItemNewSubgroup: document.getElementById('gcmItemNewSubgroup'),
+    gcmItemVSCode: document.getElementById('gcmItemVSCode'),
+    gcmItemDocs: document.getElementById('gcmItemDocs'),
+    gcmItemDelete: document.getElementById('gcmItemDelete')
+  };
+
+  // Initialize Application
+  async function init() {
+    setupEventListeners();
+    await fetchVersion();
+    await fetchHosts();
+    await fetchTreeNodes();
+    await fetchSessions();
+    restorePersistedTabs();
+    connectSSE();
+    setupResizer();
+    window.addEventListener('resize', () => {
+      handleTabOverflow();
+      const activeTab = state.openTabs.get(state.activeTabId);
+      if (activeTab && activeTab.type === 'terminal' && activeTab.fitAddon) {
+        try {
+          activeTab.fitAddon.fit();
+          if (activeTab.terminal && activeTab.socket && activeTab.socket.readyState === WebSocket.OPEN) {
+            sendTerminalResize(activeTab.socket, activeTab.terminal.cols, activeTab.terminal.rows);
+          }
+        } catch (e) {}
+      }
+    });
+  }
+
+  // Fetch Version
+  async function fetchVersion() {
+    try {
+      const res = await fetch('/v1/version');
+      if (res.ok) {
+        const data = await res.json();
+        state.version = data.version || 'unknown';
+        if (el.appVersion) el.appVersion.textContent = `v${state.version}`;
+      }
+    } catch (err) {
+      console.warn('Failed to fetch version:', err);
+    }
+  }
+
+  // Fetch Hosts
+  async function fetchHosts() {
+    try {
+      const res = await fetch('/v1/hosts');
+      if (res.ok) {
+        state.hosts = await res.json() || [];
+        renderHosts();
+      }
+    } catch (err) {
+      console.warn('Failed to fetch hosts:', err);
+    }
+  }
+
+  function renderHosts() {
+    if (!el.hostList) return;
+    el.hostList.innerHTML = '';
+    const hostsToRender = [{ name: 'local', url: '' }, ...state.hosts.filter(h => h.name !== 'local')];
+    hostsToRender.forEach(h => {
+      const span = document.createElement('span');
+      span.className = 'host-badge';
+      span.textContent = `${formatHostLabel(h.name)} 🟢`;
+      span.title = `Click to inspect ${formatHostLabel(h.name)} (${h.name} daemon status, hooks, controls)`;
+      span.addEventListener('click', () => showHostSummaryModal(h));
+      el.hostList.appendChild(span);
+    });
+  }
+
+  // Fetch Tree Nodes
+  async function fetchTreeNodes() {
+    try {
+      const res = await fetch('/v1/nodes');
+      if (res.ok) {
+        state.treeNodes = await res.json() || [];
+      }
+    } catch (err) {
+      console.warn('Failed to fetch tree nodes:', err);
+    }
+  }
+
+  // Client-Side Multi-Host Session Aggregation & Deduplication
+  async function fetchSessions() {
+    try {
+      const targetHosts = [
+        { name: 'local', url: '' },
+        ...state.hosts.filter(h => h.url && h.name !== 'local')
+      ];
+
+      const sessionArrays = await Promise.all(targetHosts.map(async (h) => {
+        try {
+          const fetchUrl = h.url ? `${h.url.replace(/\/$/, '')}/v1/sessions` : '/v1/sessions';
+          const res = await fetch(fetchUrl);
+          if (res.ok) {
+            const list = await res.json() || [];
+            return list.map(s => ({
+              ...s,
+              host: h.name !== 'local' ? h.name : (s.host || 'local'),
+              hostUrl: h.url || ''
+            }));
+          }
+        } catch (e) {
+          console.warn(`Host ${h.name} unreachable:`, e);
+        }
+        return [];
+      }));
+
+      const rawSessions = sessionArrays.flat();
+      state.sessions = deduplicateSessions(rawSessions);
+      renderTree();
+      updateOpenTabsState();
+    } catch (err) {
+      console.error('Failed to fetch sessions:', err);
+    }
+  }
+
+  // Deduplication Algorithm (matches TUI mergeSessions)
+  function deduplicateSessions(list) {
+    const merged = new Map();
+
+    list.forEach(sess => {
+      let dedupKey = '';
+      const host = sess.host || 'local';
+      const nativeId = sess.native_id || '';
+
+      if (nativeId && !nativeId.startsWith('proc-')) {
+        dedupKey = `${host}::native::${nativeId}`;
+      } else if (sess.pid && sess.pid > 0) {
+        dedupKey = `${host}::pid::${sess.pid}`;
+      } else if (sess.tmux_name && sess.tmux_name.startsWith('ackbar-')) {
+        const parts = sess.tmux_name.split('-');
+        if (parts.length >= 3) {
+          const suffix = parts.slice(2).join('-');
+          dedupKey = `${host}::native::${suffix}`;
+        } else {
+          dedupKey = `${host}::tmux::${sess.tmux_name}`;
+        }
+      } else {
+        dedupKey = `${host}::id::${sess.id || (sess.host + ':' + sess.native_id)}`;
+      }
+
+      if (!merged.has(dedupKey)) {
+        merged.set(dedupKey, { ...sess });
+      } else {
+        const existing = merged.get(dedupKey);
+        if (sess.managed || (sess.state && sess.state !== 4)) {
+          existing.id = sess.id;
+          existing.managed = true;
+          existing.state = sess.state || existing.state;
+          existing.pid = sess.pid || existing.pid;
+          existing.tmux_name = sess.tmux_name || existing.tmux_name;
+          existing.context_pct = sess.context_pct || existing.context_pct;
+          existing.started_at = sess.started_at || existing.started_at;
+          existing.last_event_at = sess.last_event_at || existing.last_event_at;
+          existing.first_prompt = sess.first_prompt || existing.first_prompt;
+          existing.last_prompt = sess.last_prompt || existing.last_prompt;
+          existing.archived = false;
+        } else {
+          existing.first_prompt = existing.first_prompt || sess.first_prompt;
+          existing.last_prompt = existing.last_prompt || sess.last_prompt;
+          if (sess.context_pct > (existing.context_pct || 0)) {
+            existing.context_pct = sess.context_pct;
+          }
+          if (new Date(sess.last_event_at || 0) > new Date(existing.last_event_at || 0)) {
+            existing.last_event_at = sess.last_event_at;
+          }
+        }
+      }
+    });
+
+    return Array.from(merged.values());
+  }
+
+  // Server-Sent Events (SSE) Stream for Live Updates
+  function connectSSE() {
+    const sse = new EventSource('/v1/events');
+    sse.onmessage = (event) => {
+      try {
+        const updatedSess = JSON.parse(event.data);
+        if (!updatedSess || !updatedSess.id) return;
+
+        if (updatedSess.deleted || updatedSess.activity === 'Deleted') {
+          state.sessions = state.sessions.filter(s => s.id !== updatedSess.id && s.name !== updatedSess.name);
+          closeTab(updatedSess.id);
+          closeTab(`details_${updatedSess.id}`);
+          renderTree();
+          return;
+        }
+
+        const idx = state.sessions.findIndex(s => s.id === updatedSess.id);
+        if (idx !== -1) {
+          state.sessions[idx] = { ...state.sessions[idx], ...updatedSess };
+        } else {
+          state.sessions.push(updatedSess);
+        }
+
+        state.sessions = deduplicateSessions(state.sessions);
+        renderTree();
+        updateOpenTabsState();
+      } catch (e) {
+        console.error('SSE parse error:', e);
+      }
+    };
+
+    sse.onerror = () => {
+      setTimeout(connectSSE, 3000);
+    };
+  }
+
+  // Render Sidebar Tree Hierarchy with Recursive Group Nesting & Drag-and-Drop
+  function renderTree() {
+    if (!el.treeContainer) return;
+    el.treeContainer.innerHTML = '';
+
+    const query = state.searchQuery.toLowerCase().trim();
+
+    // 1. Group sessions by exact logical node path
+    const sessionsByPath = new Map();
+    const unassigned = [];
+
+    state.sessions.forEach(sess => {
+      if (sess.archived && !state.showArchived) {
+        return;
+      }
+
+      if (query) {
+        const match = (sess.name && sess.name.toLowerCase().includes(query)) ||
+                      (sess.cwd && sess.cwd.toLowerCase().includes(query)) ||
+                      (sess.host && sess.host.toLowerCase().includes(query)) ||
+                      (sess.agent && sess.agent.toLowerCase().includes(query));
+        if (!match) return;
+      }
+
+      let assignedPath = sess.node_path;
+      if (!assignedPath && sess.cwd) {
+        for (const n of state.treeNodes) {
+          if (n.project_dir && (sess.cwd === n.project_dir || sess.cwd.startsWith(n.project_dir + '/'))) {
+            assignedPath = n.path;
+            break;
+          }
+        }
+      }
+
+      if (assignedPath) {
+        if (!sessionsByPath.has(assignedPath)) {
+          sessionsByPath.set(assignedPath, []);
+        }
+        sessionsByPath.get(assignedPath).push(sess);
+      } else {
+        unassigned.push(sess);
+      }
+    });
+
+    // 2. Discover all unique group paths and their parent prefixes
+    const allGroupPaths = new Set();
+
+    state.treeNodes.forEach(node => {
+      if (node.path) {
+        const parts = node.path.split('/');
+        for (let i = 1; i <= parts.length; i++) {
+          allGroupPaths.add(parts.slice(0, i).join('/'));
+        }
+      }
+    });
+
+    sessionsByPath.forEach((sessList, path) => {
+      if (path && sessList.length > 0) {
+        const parts = path.split('/');
+        for (let i = 1; i <= parts.length; i++) {
+          allGroupPaths.add(parts.slice(0, i).join('/'));
+        }
+      }
+    });
+
+    const sortedGroupPaths = Array.from(allGroupPaths).sort();
+
+    // 3. Helper to recursively render a group node and its nested subgroups
+    function renderGroupBranch(path, indentLevel) {
+      const parts = path.split('/');
+      const leafName = parts[parts.length - 1];
+      const isCollapsed = query ? false : state.collapsedGroups.has(path);
+
+      const groupEl = document.createElement('div');
+      groupEl.className = `tree-group-node ${isCollapsed ? 'collapsed' : ''}`;
+
+      const headerEl = document.createElement('div');
+      headerEl.className = 'tree-group-header';
+      headerEl.dataset.groupPath = path;
+      headerEl.title = `Group: ${path} (Click to toggle, right-click for options)`;
+
+      // Drop Target Handlers
+      headerEl.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        headerEl.classList.add('drag-over');
+      });
+
+      headerEl.addEventListener('dragleave', () => {
+        headerEl.classList.remove('drag-over');
+      });
+
+      headerEl.addEventListener('drop', async (e) => {
+        e.preventDefault();
+        headerEl.classList.remove('drag-over');
+        try {
+          const data = JSON.parse(e.dataTransfer.getData('application/json'));
+          if (data && data.sessionId) {
+            await moveSessionToGroup(data.sessionId, data.sessionHost, path);
+          }
+        } catch (err) {
+          console.error('Drop error:', err);
+        }
+      });
+
+      headerEl.addEventListener('click', () => {
+        if (state.collapsedGroups.has(path)) {
+          state.collapsedGroups.delete(path);
+        } else {
+          state.collapsedGroups.add(path);
+        }
+        saveCollapsedGroups();
+        renderTree();
+      });
+
+      headerEl.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        showGroupContextMenu(e.clientX, e.clientY, path);
+      });
+
+      const chevron = document.createElement('span');
+      chevron.className = 'tree-group-chevron';
+      chevron.textContent = '▼';
+
+      const title = document.createElement('span');
+      title.className = 'tree-group-title';
+      title.textContent = indentLevel === 0 ? path : leafName;
+
+      headerEl.appendChild(chevron);
+      headerEl.appendChild(title);
+      groupEl.appendChild(headerEl);
+
+      // Children Container
+      const childrenEl = document.createElement('div');
+      childrenEl.className = 'tree-group-children';
+
+      // 3a. Direct Sessions matching this exact path
+      const directSessions = sessionsByPath.get(path) || [];
+      directSessions.forEach(sess => {
+        childrenEl.appendChild(createSessionRowElement(sess));
+      });
+
+      // 3b. Direct Child Subgroups (nested recursive call)
+      sortedGroupPaths.forEach(childPath => {
+        if (childPath.startsWith(path + '/')) {
+          const subparts = childPath.substring(path.length + 1).split('/');
+          if (subparts.length === 1) { // direct descendant
+            const childEl = renderGroupBranch(childPath, indentLevel + 1);
+            childrenEl.appendChild(childEl);
+          }
+        }
+      });
+
+      groupEl.appendChild(childrenEl);
+      return groupEl;
+    }
+
+    // 4. Render Root Groups (paths without "/")
+    sortedGroupPaths.forEach(path => {
+      if (!path.includes('/')) {
+        el.treeContainer.appendChild(renderGroupBranch(path, 0));
+      }
+    });
+
+    // 5. Render Unassigned Group if non-empty
+    if (unassigned.length > 0) {
+      const unassignedPath = 'Unassigned';
+      const isCollapsed = query ? false : state.collapsedGroups.has(unassignedPath);
+
+      const groupEl = document.createElement('div');
+      groupEl.className = `tree-group-node ${isCollapsed ? 'collapsed' : ''}`;
+
+      const headerEl = document.createElement('div');
+      headerEl.className = 'tree-group-header';
+      headerEl.textContent = '▼ Unassigned';
+      headerEl.addEventListener('click', () => {
+        if (state.collapsedGroups.has(unassignedPath)) {
+          state.collapsedGroups.delete(unassignedPath);
+        } else {
+          state.collapsedGroups.add(unassignedPath);
+        }
+        saveCollapsedGroups();
+        renderTree();
+      });
+
+      groupEl.appendChild(headerEl);
+
+      const childrenEl = document.createElement('div');
+      childrenEl.className = 'tree-group-children';
+      unassigned.forEach(sess => {
+        childrenEl.appendChild(createSessionRowElement(sess));
+      });
+
+      groupEl.appendChild(childrenEl);
+      el.treeContainer.appendChild(groupEl);
+    }
+  }
+
+  // Create Interactive Draggable Session Card with Agent Badge & Context Menu
+  function createSessionRowElement(session) {
+    const row = document.createElement('div');
+    row.className = 'session-item';
+    row.draggable = true;
+    if (state.activeTabId === session.id) {
+      row.classList.add('active-tab');
+    }
+
+    // Drag start event
+    row.addEventListener('dragstart', (e) => {
+      state.draggedSession = session;
+      row.classList.add('dragging');
+      e.dataTransfer.setData('application/json', JSON.stringify({
+        sessionId: session.id,
+        sessionHost: session.host || 'local'
+      }));
+      e.dataTransfer.effectAllowed = 'move';
+    });
+
+    row.addEventListener('dragend', () => {
+      row.classList.remove('dragging');
+      state.draggedSession = null;
+    });
+
+    // Click: Open interactive terminal tab (connects/resumes session automatically)
+    row.addEventListener('click', () => {
+      openSessionInTab(session);
+    });
+
+    // Right-Click Context Menu
+    row.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      showContextMenu(e.clientX, e.clientY, session);
+    });
+
+    const isManaged = session.managed || (session.tmux_name && session.state !== 4);
+    const sessionFullName = session.name || session.agent || 'Unnamed Session';
+    
+    // Tooltip on hover displays the complete un-truncated session name
+    row.title = sessionFullName;
+
+    const left = document.createElement('div');
+    left.className = 'session-item-left';
+
+    const dot = document.createElement('span');
+    dot.className = 'session-state-dot';
+    dot.textContent = getStateEmoji(session);
+    const stateStr = session.state === 1 ? 'Working' : (session.state === 2 ? 'Blocked' : (session.state === 3 ? 'Idle' : 'Ended'));
+    dot.title = `Status: ${stateStr} (${isManaged ? 'Live tmux session' : 'Observed process/transcript'})`;
+
+    const name = document.createElement('span');
+    name.className = 'session-name';
+    name.textContent = sessionFullName;
+    name.title = sessionFullName;
+
+    left.appendChild(dot);
+    left.appendChild(name);
+
+    const right = document.createElement('div');
+    right.className = 'session-item-right';
+
+    // Agent badge with provider icon (compact icon-only with tooltip)
+    const agentBadge = document.createElement('span');
+    agentBadge.innerHTML = getAgentBadgeHtml(session.agent, true);
+    right.appendChild(agentBadge);
+
+    if (session.git_branch) {
+      const branchBadge = document.createElement('span');
+      branchBadge.className = 'badge-branch';
+      branchBadge.textContent = '⎇';
+      branchBadge.title = `Git Branch: ${session.git_branch}`;
+      right.appendChild(branchBadge);
+    }
+
+    if (session.context_pct > 0) {
+      const ctxBadge = document.createElement('span');
+      ctxBadge.className = 'badge-ctx';
+      ctxBadge.textContent = `${session.context_pct}%`;
+      ctxBadge.title = `Context Window Used: ${session.context_pct}%`;
+      right.appendChild(ctxBadge);
+    }
+
+    if (session.host && session.host !== 'local') {
+      const hostBadge = document.createElement('span');
+      hostBadge.className = 'badge-host';
+      hostBadge.textContent = `@${formatHostLabel(session.host)}`;
+      hostBadge.title = `Host: @${formatHostLabel(session.host)}`;
+      right.appendChild(hostBadge);
+    }
+
+    row.appendChild(left);
+    row.appendChild(right);
+    return row;
+  }
+
+  // Move Session to Group via API
+  async function moveSessionToGroup(sessionId, sessionHost, targetPath) {
+    try {
+      const sess = state.sessions.find(s => s.id === sessionId);
+      const baseUrl = (sess && sess.hostUrl) ? sess.hostUrl.replace(/\/$/, '') : '';
+      const url = `${baseUrl}/v1/sessions/control?id=${encodeURIComponent(sessionId)}&action=move&node_path=${encodeURIComponent(targetPath)}`;
+      const res = await fetch(url, { method: 'POST' });
+      if (res.ok) {
+        await fetchSessions();
+      }
+    } catch (err) {
+      console.error('Failed to move session:', err);
+    }
+  }
+
+  // Establish or Re-establish WebSocket Connection for a Terminal Tab
+  function connectTerminalWebSocket(tab, tabId, term, fitAddon, session) {
+    if (tab.pingTimer) {
+      clearInterval(tab.pingTimer);
+      tab.pingTimer = null;
+    }
+    if (tab.reconnectTimer) {
+      clearTimeout(tab.reconnectTimer);
+      tab.reconnectTimer = null;
+    }
+    if (tab.socket) {
+      try {
+        tab.socket.onopen = null;
+        tab.socket.onclose = null;
+        tab.socket.onerror = null;
+        tab.socket.onmessage = null;
+        tab.socket.close();
+      } catch (e) {}
+      tab.socket = null;
+    }
+
+    const hostParam = session.host || 'local';
+    const wsBase = session.hostUrl ? session.hostUrl.replace(/^http/, 'ws').replace(/\/$/, '') : `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}`;
+    const wsUrl = `${wsBase}/v1/sessions/pty?id=${encodeURIComponent(session.id)}&host=${encodeURIComponent(hostParam)}&cols=${term.cols}&rows=${term.rows}`;
+
+    try {
+      const socket = new WebSocket(wsUrl);
+      socket.binaryType = 'arraybuffer';
+      tab.socket = socket;
+
+      socket.onopen = () => {
+        if (tab.reconnectTimer) {
+          clearTimeout(tab.reconnectTimer);
+          tab.reconnectTimer = null;
+        }
+        tab.reconnectAttempts = 0;
+        fitAddon.fit();
+        sendTerminalResize(socket, term.cols, term.rows);
+
+        // Keepalive Ping from client every 15s to prevent NAT/proxy/sleep timeout
+        tab.pingTimer = setInterval(() => {
+          if (socket.readyState === WebSocket.OPEN) {
+            socket.send(JSON.stringify({ type: 'ping' }));
+          }
+        }, 15000);
+      };
+
+      socket.onmessage = (event) => {
+        if (event.data instanceof ArrayBuffer) {
+          const u8 = new Uint8Array(event.data);
+          if (u8.length === 0) return;
+          if (u8[0] === 123) {
+            try {
+              const text = new TextDecoder().decode(u8);
+              if (text.startsWith('{"type":')) return;
+            } catch (e) {}
+          }
+          term.write(u8);
+        } else if (typeof event.data === 'string') {
+          if (!event.data || event.data.startsWith('{"type":')) return;
+          term.write(event.data);
+        } else {
+          term.write(event.data);
+        }
+      };
+
+      socket.onclose = () => {
+        if (tab.pingTimer) {
+          clearInterval(tab.pingTimer);
+          tab.pingTimer = null;
+        }
+
+        // Only auto-reconnect if tab is still open
+        if (state.openTabs.has(tabId)) {
+          if (document.visibilityState === 'visible') {
+            if (!tab.reconnectAttempts || tab.reconnectAttempts === 0) {
+              term.write('\r\n\x1b[90m[Connection interrupted — Reconnecting...]\x1b[0m\r\n');
+            }
+            tab.reconnectAttempts = (tab.reconnectAttempts || 0) + 1;
+            const delay = Math.min(10000, 1000 * Math.min(tab.reconnectAttempts, 5));
+            tab.reconnectTimer = setTimeout(() => {
+              if (state.openTabs.has(tabId)) {
+                connectTerminalWebSocket(tab, tabId, term, fitAddon, session);
+              }
+            }, delay);
+          } else {
+            term.write('\r\n\x1b[90m[Session paused — Will resume when focused]\x1b[0m\r\n');
+          }
+        }
+      };
+
+      socket.onerror = (err) => {
+        console.error(`[PTY] Tab ${tabId} socket error:`, err);
+      };
+    } catch (err) {
+      console.error(`[PTY] Failed to create socket for ${tabId}:`, err);
+    }
+  }
+
+  // Reconnect Terminal Tab Socket
+  function reconnectTerminalTab(tabId) {
+    const tab = state.openTabs.get(tabId);
+    if (!tab || tab.type !== 'terminal') return;
+    connectTerminalWebSocket(tab, tabId, tab.terminal, tab.fitAddon, tab.session);
+  }
+
+  // Open Session in Terminal Tab
+  function openSessionInTab(session) {
+    if (!session) return;
+    const tabId = session.id;
+
+    if (state.openTabs.has(tabId)) {
+      const existingTab = state.openTabs.get(tabId);
+      if (existingTab && existingTab.type === 'terminal') {
+        if (!existingTab.socket || existingTab.socket.readyState === WebSocket.CLOSED || existingTab.socket.readyState === WebSocket.CLOSING) {
+          reconnectTerminalTab(tabId);
+        }
+        activateTab(tabId);
+        return;
+      }
+    }
+
+    session.managed = true;
+    if (session.state === 4 || !session.state) {
+      session.state = 3;
+    }
+
+    if (el.emptyState) el.emptyState.style.display = 'none';
+
+    // 1. Create Tab DOM Element
+    const tabEl = document.createElement('div');
+    tabEl.className = 'terminal-tab';
+    tabEl.dataset.tabId = tabId;
+
+    const titleWrap = document.createElement('div');
+    titleWrap.className = 'tab-title-wrap';
+
+    const emojiSpan = document.createElement('span');
+    emojiSpan.className = 'tab-emoji';
+    emojiSpan.textContent = getStateEmoji(session);
+
+    const titleSpan = document.createElement('span');
+    titleSpan.className = 'tab-title';
+    titleSpan.textContent = session.name || session.agent;
+    titleSpan.title = session.name || session.agent;
+
+    titleWrap.appendChild(emojiSpan);
+    titleWrap.appendChild(titleSpan);
+
+    const closeBtn = document.createElement('button');
+    closeBtn.className = 'tab-close-btn';
+    closeBtn.textContent = '✕';
+    closeBtn.title = 'Close Tab';
+    closeBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      closeTab(tabId);
+    });
+
+    tabEl.appendChild(titleWrap);
+    tabEl.appendChild(closeBtn);
+
+    // Left click to activate tab
+    tabEl.addEventListener('click', (e) => {
+      if (e.button === 0) activateTab(tabId);
+    });
+
+    // Middle mouse click to close tab
+    tabEl.addEventListener('auxclick', (e) => {
+      if (e.button === 1) {
+        e.preventDefault();
+        e.stopPropagation();
+        closeTab(tabId);
+      }
+    });
+
+    tabEl.addEventListener('mousedown', (e) => {
+      if (e.button === 1) e.preventDefault();
+    });
+
+    if (el.tabStrip) el.tabStrip.appendChild(tabEl);
+
+    // 2. Create Terminal View Container
+    const containerEl = document.createElement('div');
+    containerEl.className = 'terminal-tab-view';
+    containerEl.id = `termView_${tabId.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+    containerEl.addEventListener('click', () => {
+      const currentTab = state.openTabs.get(tabId);
+      if (currentTab && (!currentTab.socket || currentTab.socket.readyState === WebSocket.CLOSED || currentTab.socket.readyState === WebSocket.CLOSING)) {
+        reconnectTerminalTab(tabId);
+      }
+    });
+    if (el.terminalViewport) el.terminalViewport.appendChild(containerEl);
+
+    // 3. Initialize xterm.js & FitAddon
+    const term = new Terminal({
+      cursorBlink: true,
+      cursorStyle: 'block',
+      fontSize: 13,
+      lineHeight: 1.2,
+      fontFamily: 'ui-monospace, "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+      theme: {
+        background: '#090a0f',
+        foreground: '#e2e8f0',
+        cursor: '#3b82f6',
+        selectionBackground: 'rgba(59, 130, 246, 0.3)'
+      },
+      allowTransparency: true
+    });
+
+    const fitAddon = new FitAddon.FitAddon();
+    term.loadAddon(fitAddon);
+    if (window.WebLinksAddon) {
+      term.loadAddon(new WebLinksAddon.WebLinksAddon());
+    }
+
+    term.open(containerEl);
+
+    // Save in State
+    const tabObj = {
+      type: 'terminal',
+      session,
+      terminal: term,
+      fitAddon,
+      socket: null,
+      containerEl,
+      tabEl,
+      pingTimer: null,
+      reconnectTimer: null,
+      reconnectAttempts: 0
+    };
+    state.openTabs.set(tabId, tabObj);
+
+    // 4. Connect WebSocket PTY
+    connectTerminalWebSocket(tabObj, tabId, term, fitAddon, session);
+
+    // 5. Automatic Viewport Re-flow & ResizeObserver
+    let resizeTimeout = null;
+    const resizeObserver = new ResizeObserver(() => {
+      if (containerEl.classList.contains('active')) {
+        if (resizeTimeout) clearTimeout(resizeTimeout);
+        resizeTimeout = setTimeout(() => {
+          if (tabObj.fitAddon && tabObj.fitAddon.fit) {
+            try {
+              tabObj.fitAddon.fit();
+              if (tabObj.terminal && tabObj.socket && tabObj.socket.readyState === WebSocket.OPEN) {
+                sendTerminalResize(tabObj.socket, tabObj.terminal.cols, tabObj.terminal.rows);
+              }
+            } catch (e) {}
+          }
+        }, 15);
+      }
+    });
+    resizeObserver.observe(containerEl);
+    tabObj.resizeObserver = resizeObserver;
+
+    term.onData((data) => {
+      const currentTab = state.openTabs.get(tabId);
+      if (currentTab && currentTab.socket && currentTab.socket.readyState === WebSocket.OPEN) {
+        currentTab.socket.send(data);
+      } else if (!currentTab || !currentTab.socket || currentTab.socket.readyState === WebSocket.CLOSED || currentTab.socket.readyState === WebSocket.CLOSING) {
+        reconnectTerminalTab(tabId);
+      }
+    });
+
+    term.onResize((size) => {
+      const currentTab = state.openTabs.get(tabId);
+      if (currentTab && currentTab.socket) {
+        sendTerminalResize(currentTab.socket, size.cols, size.rows);
+      }
+    });
+
+    activateTab(tabId);
+    handleTabOverflow();
+    savePersistedTabs();
+  }
+
+  // Open Rich Session Details Tab (For Observed & Ended Sessions)
+  function openSessionDetailsTab(session) {
+    if (!session) return;
+    const tabId = `details_${session.id}`;
+
+    if (state.openTabs.has(tabId)) {
+      activateTab(tabId);
+      return;
+    }
+
+    if (el.emptyState) el.emptyState.style.display = 'none';
+
+    // 1. Create Tab Element
+    const tabEl = document.createElement('div');
+    tabEl.className = 'terminal-tab';
+    tabEl.dataset.tabId = tabId;
+
+    const titleWrap = document.createElement('div');
+    titleWrap.className = 'tab-title-wrap';
+
+    const emojiSpan = document.createElement('span');
+    emojiSpan.className = 'tab-emoji';
+    emojiSpan.textContent = 'ℹ';
+
+    const titleSpan = document.createElement('span');
+    titleSpan.className = 'tab-title';
+    titleSpan.textContent = `${session.name || session.agent}`;
+    titleSpan.title = session.name || session.agent;
+
+    titleWrap.appendChild(emojiSpan);
+    titleWrap.appendChild(titleSpan);
+
+    const closeBtn = document.createElement('button');
+    closeBtn.className = 'tab-close-btn';
+    closeBtn.textContent = '✕';
+    closeBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      closeTab(tabId);
+    });
+
+    tabEl.appendChild(titleWrap);
+    tabEl.appendChild(closeBtn);
+
+    tabEl.addEventListener('click', (e) => {
+      if (e.button === 0) activateTab(tabId);
+    });
+
+    tabEl.addEventListener('auxclick', (e) => {
+      if (e.button === 1) {
+        e.preventDefault();
+        e.stopPropagation();
+        closeTab(tabId);
+      }
+    });
+
+    if (el.tabStrip) el.tabStrip.appendChild(tabEl);
+
+    // 2. Create Details View DOM
+    const containerEl = document.createElement('div');
+    containerEl.className = 'terminal-tab-view';
+    containerEl.id = `detailsView_${session.id.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+
+    const detailsView = document.createElement('div');
+    detailsView.className = 'session-details-view';
+    detailsView.innerHTML = `
+      <div class="details-header">
+        <div class="details-title-area">
+          <div class="details-title-row">
+            <span class="details-title">${session.name || session.agent}</span>
+            ${getAgentBadgeHtml(session.agent)}
+            <span class="host-badge">@${formatHostLabel(session.host || 'local')}</span>
+            ${session.git_branch ? `<span class="badge-branch">⎇ ${session.git_branch}</span>` : ''}
+            <span class="host-badge">${getStateEmoji(session)} ${session.managed ? 'Managed' : 'Observed'}</span>
+          </div>
+          <span class="details-subtitle">${session.id}</span>
+        </div>
+        <div class="details-actions">
+          <button class="btn btn-primary" id="detBtnResume">▶ Resume in Tmux</button>
+          <button class="btn btn-secondary" id="detBtnShell">🐚 Shell</button>
+          <button class="btn btn-secondary" id="detBtnDocs">📄 Docs</button>
+          <button class="btn btn-secondary" id="detBtnVSCode">📂 VS Code</button>
+          <button class="btn btn-secondary danger" id="detBtnKill">⛔ Terminate</button>
+          <button class="btn btn-secondary danger" id="detBtnDelete">🗑 Delete</button>
+        </div>
+      </div>
+
+      <div class="details-grid">
+        <div class="details-card">
+          <span class="details-card-label">Directory (CWD)</span>
+          <span class="details-card-value">${session.cwd || '—'}</span>
+        </div>
+        <div class="details-card">
+          <span class="details-card-label">Context Usage</span>
+          <span class="details-card-value">${session.context_pct ? session.context_pct + '%' : '—'}</span>
+        </div>
+        <div class="details-card">
+          <span class="details-card-label">Process ID (PID)</span>
+          <span class="details-card-value">${session.pid ? session.pid : 'Exited'}</span>
+        </div>
+        <div class="details-card">
+          <span class="details-card-label">Started At</span>
+          <span class="details-card-value">${session.started_at ? new Date(session.started_at).toLocaleString() : '—'}</span>
+        </div>
+        ${session.custom_title ? `
+        <div class="details-card">
+          <span class="details-card-label">Custom Title</span>
+          <span class="details-card-value" style="color: var(--accent-cyan);">${session.custom_title}</span>
+        </div>` : ''}
+        ${session.ai_title ? `
+        <div class="details-card">
+          <span class="details-card-label">AI Generated Title</span>
+          <span class="details-card-value" style="color: var(--accent-orange);">${session.ai_title}</span>
+        </div>` : ''}
+      </div>
+
+      ${session.ai_description ? `
+      <div class="details-section-title">AI Task Description & Summary</div>
+      <div class="details-code-box" style="color: var(--text-main); font-size: 13px;">
+        ${session.ai_description}
+      </div>` : ''}
+
+      ${session.first_prompt ? `
+      <div class="details-section-title">First User Prompt (Initiating Task)</div>
+      <div class="details-code-box" style="white-space: pre-wrap; font-family: var(--font-mono); color: #93c5fd;">
+${session.first_prompt}
+      </div>` : ''}
+
+      ${session.last_prompt && session.last_prompt !== session.first_prompt ? `
+      <div class="details-section-title">Latest User Prompt</div>
+      <div class="details-code-box" style="white-space: pre-wrap; font-family: var(--font-mono); color: #86efac;">
+${session.last_prompt}
+      </div>` : ''}
+
+      <div class="details-section-title">Recorded Activity</div>
+      <div class="details-code-box">
+        ${session.activity || 'No recorded live activity. Session is stored from historical transcripts.'}
+      </div>
+    `;
+
+    containerEl.appendChild(detailsView);
+    if (el.terminalViewport) el.terminalViewport.appendChild(containerEl);
+
+    // Event listeners for action buttons
+    detailsView.querySelector('#detBtnResume').addEventListener('click', () => {
+      closeTab(tabId);
+      openSessionInTab(session);
+    });
+
+    detailsView.querySelector('#detBtnShell').addEventListener('click', () => {
+      openSessionInTab({
+        ...session,
+        id: `shell_${session.id}`,
+        name: `Shell (${session.name || 'Terminal'})`,
+        managed: true
+      });
+    });
+
+    detailsView.querySelector('#detBtnDocs').addEventListener('click', () => {
+      showProjectDocsModal(session.cwd, session.name);
+    });
+
+    detailsView.querySelector('#detBtnVSCode').addEventListener('click', async () => {
+      const baseUrl = session.hostUrl ? session.hostUrl.replace(/\/$/, '') : '';
+      await fetch(`${baseUrl}/v1/sessions/control?id=${encodeURIComponent(session.id)}&action=open_editor`, { method: 'POST' });
+    });
+
+    detailsView.querySelector('#detBtnKill').addEventListener('click', async () => {
+      if (confirm(`Terminate process for "${session.name}"?`)) {
+        const baseUrl = session.hostUrl ? session.hostUrl.replace(/\/$/, '') : '';
+        await fetch(`${baseUrl}/v1/sessions/control?id=${encodeURIComponent(session.id)}&action=kill`, { method: 'POST' });
+        await fetchSessions();
+      }
+    });
+
+    detailsView.querySelector('#detBtnDelete').addEventListener('click', async () => {
+      const msg = `⚠️ Permanently Delete Session "${session.name}"?\n\nThis will permanently delete the session and its transcript logs from the agent on disk (~/.claude/projects/) without the possibility for recovery.\n\nUse Archive (📦) if you only want to hide it from your active list.`;
+      if (confirm(msg)) {
+        const targetId = session.id;
+        const targetName = session.name;
+        state.sessions = state.sessions.filter(s => s.id !== targetId && s.name !== targetName);
+        closeTab(tabId);
+        closeTab(targetId);
+        renderTree();
+        const baseUrl = session.hostUrl ? session.hostUrl.replace(/\/$/, '') : '';
+        await fetch(`${baseUrl}/v1/sessions/control?id=${encodeURIComponent(targetId)}&action=delete`, { method: 'POST' });
+        await fetchSessions();
+      }
+    });
+
+    state.openTabs.set(tabId, {
+      type: 'details',
+      session,
+      containerEl,
+      tabEl,
+      fitAddon: { fit: () => {} }
+    });
+
+    activateTab(tabId);
+    handleTabOverflow();
+  }
+
+  // Open In-UI Markdown Document Viewer Tab
+  async function openDocViewerTab(docPath, docTitle) {
+    if (!docPath) return;
+    const tabId = `doc_${docPath.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+
+    if (state.openTabs.has(tabId)) {
+      activateTab(tabId);
+      return;
+    }
+
+    let markdownContent = '# Loading document...';
+    try {
+      const res = await fetch(`/v1/documents/content?path=${encodeURIComponent(docPath)}`);
+      if (res.ok) {
+        const data = await res.json();
+        markdownContent = data.content || '*(Document is empty)*';
+      } else {
+        markdownContent = `⚠️ Failed to load document: ${res.statusText}`;
+      }
+    } catch (e) {
+      markdownContent = `⚠️ Error loading document: ${e.message}`;
+    }
+
+    if (el.emptyState) el.emptyState.style.display = 'none';
+
+    // 1. Tab DOM Element
+    const tabEl = document.createElement('div');
+    tabEl.className = 'terminal-tab';
+    tabEl.dataset.tabId = tabId;
+
+    const titleWrap = document.createElement('div');
+    titleWrap.className = 'tab-title-wrap';
+
+    const emojiSpan = document.createElement('span');
+    emojiSpan.className = 'tab-emoji';
+    emojiSpan.textContent = '📄';
+
+    const titleSpan = document.createElement('span');
+    titleSpan.className = 'tab-title';
+    titleSpan.textContent = docTitle || docPath.split('/').pop();
+
+    titleWrap.appendChild(emojiSpan);
+    titleWrap.appendChild(titleSpan);
+
+    const closeBtn = document.createElement('button');
+    closeBtn.className = 'tab-close-btn';
+    closeBtn.textContent = '✕';
+    closeBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      closeTab(tabId);
+    });
+
+    tabEl.appendChild(titleWrap);
+    tabEl.appendChild(closeBtn);
+
+    tabEl.addEventListener('click', (e) => {
+      if (e.button === 0) activateTab(tabId);
+    });
+
+    tabEl.addEventListener('auxclick', (e) => {
+      if (e.button === 1) {
+        e.preventDefault();
+        e.stopPropagation();
+        closeTab(tabId);
+      }
+    });
+
+    if (el.tabStrip) el.tabStrip.appendChild(tabEl);
+
+    // 2. Document Viewer View DOM
+    const containerEl = document.createElement('div');
+    containerEl.className = 'terminal-tab-view';
+    containerEl.id = `docView_${tabId}`;
+
+    const docContainer = document.createElement('div');
+    docContainer.className = 'doc-viewer-container';
+
+    const renderedHtml = window.marked ? window.marked.parse(markdownContent) : `<pre>${markdownContent}</pre>`;
+
+    docContainer.innerHTML = `
+      <div class="doc-viewer-header">
+        <div>
+          <div class="doc-viewer-title">📄 ${docTitle || docPath.split('/').pop()}</div>
+          <div class="doc-viewer-path">${docPath}</div>
+        </div>
+        <div>
+          <button class="btn btn-secondary" id="docBtnVSCode">📂 Open in VS Code</button>
+        </div>
+      </div>
+      <div class="markdown-body">
+        ${renderedHtml}
+      </div>
+    `;
+
+    containerEl.appendChild(docContainer);
+    if (el.terminalViewport) el.terminalViewport.appendChild(containerEl);
+
+    docContainer.querySelector('#docBtnVSCode').addEventListener('click', async () => {
+      await fetch(`/v1/sessions/control?action=open_editor&path=${encodeURIComponent(docPath)}`, { method: 'POST' });
+    });
+
+    state.openTabs.set(tabId, {
+      type: 'doc',
+      session: { name: docTitle, cwd: docPath },
+      containerEl,
+      tabEl,
+      fitAddon: { fit: () => {} }
+    });
+
+    activateTab(tabId);
+    handleTabOverflow();
+  }
+
+  // Show Project Documents Auto-Discovery Modal
+  async function showProjectDocsModal(cwd, title) {
+    try {
+      const res = await fetch(`/v1/documents?cwd=${encodeURIComponent(cwd || '')}`);
+      const docs = await res.json() || [];
+
+      if (docs.length === 0) {
+        alert('No markdown documents (task.md, plan, etc.) found in project directory.');
+        return;
+      }
+
+      let bodyHtml = `<p style="color: var(--text-muted); margin-bottom: 12px;">Documents discovered for <strong>${title || cwd}</strong>:</p>`;
+      bodyHtml += '<div style="display: flex; flex-direction: column; gap: 8px;">';
+
+      docs.forEach(d => {
+        bodyHtml += `
+          <div class="session-item" style="padding: 10px; border: 1px solid var(--border-color); cursor: pointer;" onclick="window.openDoc('${encodeURIComponent(d.path)}', '${encodeURIComponent(d.title)}')">
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span style="font-size: 16px;">📄</span>
+              <div>
+                <div style="font-weight: 600; color: var(--text-main);">${d.title}</div>
+                <div style="font-size: 11px; color: var(--text-dim); font-family: var(--font-mono);">${d.path}</div>
+              </div>
+            </div>
+          </div>
+        `;
+      });
+      bodyHtml += '</div>';
+
+      window.openDoc = (p, t) => {
+        hideModal();
+        openDocViewerTab(decodeURIComponent(p), decodeURIComponent(t));
+      };
+
+      const footerHtml = `<button class="btn btn-secondary" onclick="document.getElementById('modalOverlay').style.display='none'">Close</button>`;
+      showModal('Project Markdown Documents', bodyHtml, footerHtml);
+    } catch (err) {
+      alert('Error fetching documents: ' + err.message);
+    }
+  }
+
+  function sendTerminalResize(socket, cols, rows) {
+    if (socket && socket.readyState === WebSocket.OPEN && cols >= 10 && rows >= 4) {
+      socket.send(JSON.stringify({ type: 'resize', cols, rows }));
+    }
+  }
+
+  // Activate Tab
+  function activateTab(tabId) {
+    state.activeTabId = tabId;
+
+    state.openTabs.forEach((tab, id) => {
+      const isActive = id === tabId;
+      tab.tabEl.classList.toggle('active', isActive);
+      tab.containerEl.classList.toggle('active', isActive);
+
+      if (isActive) {
+        if (tab.type === 'terminal') {
+          if (!tab.socket || tab.socket.readyState === WebSocket.CLOSED || tab.socket.readyState === WebSocket.CLOSING) {
+            reconnectTerminalTab(tabId);
+          }
+        }
+        setTimeout(() => {
+          if (tab.fitAddon && tab.fitAddon.fit) tab.fitAddon.fit();
+          if (tab.terminal) {
+            tab.terminal.focus();
+            sendTerminalResize(tab.socket, tab.terminal.cols, tab.terminal.rows);
+          }
+        }, 30);
+        updateStatusbar(tab.session);
+      }
+    });
+
+    savePersistedTabs();
+    renderTree();
+  }
+
+  // Close Tab
+  function closeTab(tabId) {
+    const tab = state.openTabs.get(tabId);
+    if (!tab) return;
+
+    if (tab.pingTimer) {
+      clearInterval(tab.pingTimer);
+      tab.pingTimer = null;
+    }
+    if (tab.reconnectTimer) {
+      clearTimeout(tab.reconnectTimer);
+      tab.reconnectTimer = null;
+    }
+
+    if (tab.resizeObserver) {
+      try { tab.resizeObserver.disconnect(); } catch (e) {}
+    }
+    if (tab.socket) {
+      try {
+        tab.socket.onopen = null;
+        tab.socket.onclose = null;
+        tab.socket.onerror = null;
+        tab.socket.onmessage = null;
+        tab.socket.close();
+      } catch (e) {}
+    }
+    if (tab.terminal) {
+      try { tab.terminal.dispose(); } catch (e) {}
+    }
+    if (tab.tabEl && tab.tabEl.parentNode) {
+      tab.tabEl.parentNode.removeChild(tab.tabEl);
+    }
+    if (tab.containerEl && tab.containerEl.parentNode) {
+      tab.containerEl.parentNode.removeChild(tab.containerEl);
+    }
+
+    state.openTabs.delete(tabId);
+
+    if (state.activeTabId === tabId) {
+      const remainingTabIds = Array.from(state.openTabs.keys());
+      if (remainingTabIds.length > 0) {
+        activateTab(remainingTabIds[remainingTabIds.length - 1]);
+      } else {
+        state.activeTabId = null;
+        if (el.emptyState) el.emptyState.style.display = 'flex';
+        resetStatusbar();
+      }
+    }
+
+    savePersistedTabs();
+    handleTabOverflow();
+    renderTree();
+  }
+
+  // Auto-reconnect active tabs on Window Focus, Visibility Change, and Network Online
+  function checkAndReconnectActiveTabs() {
+    state.openTabs.forEach((tab, tabId) => {
+      if (tab.type === 'terminal') {
+        if (!tab.socket || tab.socket.readyState === WebSocket.CLOSED || tab.socket.readyState === WebSocket.CLOSING) {
+          reconnectTerminalTab(tabId);
+        }
+      }
+    });
+  }
+
+  window.addEventListener('focus', checkAndReconnectActiveTabs);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      checkAndReconnectActiveTabs();
+      fetchSessions();
+    }
+  });
+  window.addEventListener('online', () => {
+    checkAndReconnectActiveTabs();
+    fetchSessions();
+  });
+
+  // Persist Open Tabs to localStorage
+  function savePersistedTabs() {
+    try {
+      const list = [];
+      state.openTabs.forEach((tab, tabId) => {
+        list.push({
+          tabId,
+          type: tab.type,
+          sessionId: tab.session ? tab.session.id : null,
+          host: tab.session ? tab.session.host : 'local'
+        });
+      });
+      localStorage.setItem('ackbar_persisted_tabs', JSON.stringify(list));
+      if (state.activeTabId) {
+        localStorage.setItem('ackbar_active_tab_id', state.activeTabId);
+      }
+    } catch (e) {}
+  }
+
+  // Restore Open Tabs from localStorage on Load / Refresh
+  function restorePersistedTabs() {
+    try {
+      const savedStr = localStorage.getItem('ackbar_persisted_tabs');
+      if (!savedStr) return;
+      const list = JSON.parse(savedStr);
+      if (!Array.isArray(list) || list.length === 0) return;
+
+      list.forEach(item => {
+        if (item.sessionId) {
+          const sess = state.sessions.find(s => s.id === item.sessionId);
+          if (sess) {
+            if (item.type === 'terminal') {
+              openSessionInTab(sess);
+            } else if (item.type === 'details') {
+              openSessionDetailsTab(sess);
+            }
+          }
+        }
+      });
+
+      const activeId = localStorage.getItem('ackbar_active_tab_id');
+      if (activeId && state.openTabs.has(activeId)) {
+        activateTab(activeId);
+      }
+    } catch (e) {}
+  }
+
+  // Update Tab States (Emojis & Titles) when Session Events arrive
+  function updateOpenTabsState() {
+    state.openTabs.forEach((tab, id) => {
+      const updatedSess = state.sessions.find(s => s.id === id || `details_${s.id}` === id);
+      if (updatedSess) {
+        tab.session = updatedSess;
+        const emojiEl = tab.tabEl.querySelector('.tab-emoji');
+        const titleEl = tab.tabEl.querySelector('.tab-title');
+        if (emojiEl && tab.type === 'terminal') emojiEl.textContent = getStateEmoji(updatedSess);
+        if (titleEl && tab.type !== 'doc') titleEl.textContent = updatedSess.name || updatedSess.agent;
+
+        if (state.activeTabId === id) {
+          updateStatusbar(updatedSess);
+        }
+      }
+    });
+  }
+
+  // Handle Tab Overflow Dropdown on Window Resize
+  function handleTabOverflow() {
+    if (!el.tabStrip || !el.tabOverflowDropdown) return;
+
+    const availableWidth = el.tabStrip.clientWidth;
+    const scrollWidth = el.tabStrip.scrollWidth;
+
+    if (scrollWidth > availableWidth + 5 && state.openTabs.size > 2) {
+      el.tabOverflowDropdown.style.display = 'block';
+      const hiddenCount = Math.max(1, Math.floor((scrollWidth - availableWidth) / 140));
+      if (el.tabOverflowCount) el.tabOverflowCount.textContent = `▾ ${hiddenCount} tabs`;
+      renderOverflowMenu();
+    } else {
+      el.tabOverflowDropdown.style.display = 'none';
+      if (el.overflowMenuContent) el.overflowMenuContent.classList.remove('show');
+    }
+  }
+
+  function renderOverflowMenu() {
+    if (!el.overflowMenuContent) return;
+    el.overflowMenuContent.innerHTML = '';
+
+    state.openTabs.forEach((tab, tabId) => {
+      const item = document.createElement('div');
+      item.className = 'overflow-item';
+      const icon = tab.type === 'doc' ? '📄' : (tab.type === 'details' ? 'ℹ' : getStateEmoji(tab.session));
+      item.innerHTML = `<span>${icon} ${tab.session.name || tab.session.agent}</span>`;
+      item.addEventListener('click', (e) => {
+        if (e.button === 0) {
+          activateTab(tabId);
+          if (el.overflowMenuContent) el.overflowMenuContent.classList.remove('show');
+        }
+      });
+      item.addEventListener('auxclick', (e) => {
+        if (e.button === 1) {
+          e.preventDefault();
+          e.stopPropagation();
+          closeTab(tabId);
+        }
+      });
+      el.overflowMenuContent.appendChild(item);
+    });
+  }
+
+  // Right-Click Session Context Menu
+  function showContextMenu(x, y, session) {
+    if (!el.contextMenu) return;
+    hideGroupContextMenu();
+    state.contextMenuSession = session;
+
+    if (el.cmItemArchive) {
+      el.cmItemArchive.innerHTML = session.archived ? '<span>📦</span> Unarchive Session' : '<span>📦</span> Archive Session';
+    }
+
+    el.contextMenu.style.visibility = 'hidden';
+    el.contextMenu.style.display = 'block';
+
+    const menuWidth = el.contextMenu.offsetWidth || 220;
+    const menuHeight = el.contextMenu.offsetHeight || 440;
+
+    let posX = x;
+    let posY = y;
+
+    // Reposition upward if too close to bottom of screen
+    if (posY + menuHeight > window.innerHeight - 10) {
+      posY = Math.max(10, window.innerHeight - menuHeight - 10);
+    }
+
+    // Reposition leftward if too close to right edge of screen
+    if (posX + menuWidth > window.innerWidth - 10) {
+      posX = Math.max(10, window.innerWidth - menuWidth - 10);
+    }
+
+    el.contextMenu.style.left = `${posX}px`;
+    el.contextMenu.style.top = `${posY}px`;
+    el.contextMenu.style.visibility = 'visible';
+  }
+
+  function hideContextMenu() {
+    if (el.contextMenu) el.contextMenu.style.display = 'none';
+    state.contextMenuSession = null;
+  }
+
+  // Right-Click Group Folder Context Menu
+  function showGroupContextMenu(x, y, groupPath) {
+    if (!el.groupContextMenu) return;
+    hideContextMenu();
+    state.contextMenuGroupPath = groupPath;
+
+    el.groupContextMenu.style.visibility = 'hidden';
+    el.groupContextMenu.style.display = 'block';
+
+    const menuWidth = el.groupContextMenu.offsetWidth || 220;
+    const menuHeight = el.groupContextMenu.offsetHeight || 220;
+
+    let posX = x;
+    let posY = y;
+
+    if (posY + menuHeight > window.innerHeight - 10) {
+      posY = Math.max(10, window.innerHeight - menuHeight - 10);
+    }
+
+    if (posX + menuWidth > window.innerWidth - 10) {
+      posX = Math.max(10, window.innerWidth - menuWidth - 10);
+    }
+
+    el.groupContextMenu.style.left = `${posX}px`;
+    el.groupContextMenu.style.top = `${posY}px`;
+    el.groupContextMenu.style.visibility = 'visible';
+  }
+
+  function hideGroupContextMenu() {
+    if (el.groupContextMenu) el.groupContextMenu.style.display = 'none';
+    state.contextMenuGroupPath = null;
+  }
+
+  // Command Palette (`Cmd+K` / `Ctrl+K`)
+  function toggleCommandPalette() {
+    if (!el.cmdPaletteOverlay) return;
+    const isVisible = el.cmdPaletteOverlay.style.display === 'flex';
+    if (isVisible) {
+      el.cmdPaletteOverlay.style.display = 'none';
+    } else {
+      el.cmdPaletteOverlay.style.display = 'flex';
+      if (el.cmdPaletteInput) {
+        el.cmdPaletteInput.value = '';
+        el.cmdPaletteInput.focus();
+      }
+      renderCommandPaletteResults('');
+    }
+  }
+
+  function renderCommandPaletteResults(query) {
+    if (!el.cmdPaletteResults) return;
+    el.cmdPaletteResults.innerHTML = '';
+    state.cmdPaletteItems = [];
+
+    const q = query.toLowerCase().trim();
+
+    // 1. Actions
+    const actions = [
+      { title: '＋ Create New Project / Subgroup', subtitle: 'Action', action: showNewGroupModal },
+      { title: '＋ Register Remote SSH Host', subtitle: 'Action', action: showAddHostModal },
+      { title: '⚡ Agent Hooks & Discovery', subtitle: 'Action', action: showHooksDashboardModal },
+      { title: '↻ Database Maintenance & Rescan', subtitle: 'Action', action: () => el.btnPurge.click() },
+      { title: '📦 Toggle Show/Hide Archived Sessions', subtitle: 'Action', action: () => el.btnToggleArchived.click() }
+    ];
+
+    actions.forEach(a => {
+      if (!q || a.title.toLowerCase().includes(q)) {
+        state.cmdPaletteItems.push(a);
+      }
+    });
+
+    // 2. Open Sessions
+    state.sessions.forEach(sess => {
+      const match = !q || (sess.name && sess.name.toLowerCase().includes(q)) ||
+                          (sess.git_branch && sess.git_branch.toLowerCase().includes(q)) ||
+                          (sess.cwd && sess.cwd.toLowerCase().includes(q)) ||
+                          (sess.agent && sess.agent.toLowerCase().includes(q));
+      if (match) {
+        state.cmdPaletteItems.push({
+          title: `${getStateEmoji(sess)} ${sess.name || sess.agent}`,
+          subtitle: `${sess.host ? '@' + formatHostLabel(sess.host) : '@local'}${sess.git_branch ? ' • ⎇ ' + sess.git_branch : ''} • ${sess.cwd || ''}`,
+          action: () => openSessionInTab(sess)
+        });
+      }
+    });
+
+    // 3. Tree Groups
+    state.treeNodes.forEach(n => {
+      if (!q || n.path.toLowerCase().includes(q)) {
+        state.cmdPaletteItems.push({
+          title: `📁 ${n.path}`,
+          subtitle: `Group folder • ${n.project_dir || ''}`,
+          action: () => {
+            state.searchQuery = n.path;
+            if (el.searchInput) el.searchInput.value = n.path;
+            renderTree();
+          }
+        });
+      }
+    });
+
+    state.cmdPaletteSelectedIndex = 0;
+    state.cmdPaletteItems.slice(0, 15).forEach((item, idx) => {
+      const itemEl = document.createElement('div');
+      itemEl.className = `cmd-item ${idx === 0 ? 'selected' : ''}`;
+      itemEl.innerHTML = `
+        <div class="cmd-item-left">${item.title}</div>
+        <div class="cmd-item-right">${item.subtitle}</div>
+      `;
+      itemEl.addEventListener('click', () => {
+        el.cmdPaletteOverlay.style.display = 'none';
+        item.action();
+      });
+      el.cmdPaletteResults.appendChild(itemEl);
+    });
+  }
+
+  // Update Statusbar
+  function updateStatusbar(session) {
+    if (!session) return;
+    if (el.sbSessionName) el.sbSessionName.textContent = session.name || session.agent;
+    if (el.sbHostBadge) el.sbHostBadge.textContent = `@${formatHostLabel(session.host || 'local')}`;
+    if (el.sbCwd) el.sbCwd.textContent = session.cwd || '~/';
+    if (el.sbGitBranch) el.sbGitBranch.textContent = session.git_branch ? `⎇ ${session.git_branch}` : '⎇ —';
+    if (el.sbContextGauge) el.sbContextGauge.textContent = session.context_pct ? `ctx: ${session.context_pct}%` : 'ctx: —';
+    if (el.sbModelBadge) el.sbModelBadge.textContent = session.agent || 'claude';
+    if (el.sbPID) el.sbPID.textContent = session.pid ? `PID ${session.pid}` : 'PID —';
+  }
+
+  function resetStatusbar() {
+    if (el.sbSessionName) el.sbSessionName.textContent = '—';
+    if (el.sbHostBadge) el.sbHostBadge.textContent = '@local';
+    if (el.sbCwd) el.sbCwd.textContent = '~/';
+    if (el.sbGitBranch) el.sbGitBranch.textContent = '⎇ —';
+    if (el.sbContextGauge) el.sbContextGauge.textContent = 'ctx: —';
+    if (el.sbModelBadge) el.sbModelBadge.textContent = 'claude';
+    if (el.sbPID) el.sbPID.textContent = 'PID —';
+  }
+
+  // Setup Event Listeners & Global Shortcuts
+  function setupEventListeners() {
+    // Dismiss context menus on outside click or escape
+    document.addEventListener('click', () => {
+      hideContextMenu();
+      hideGroupContextMenu();
+    });
+
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        hideContextMenu();
+        hideGroupContextMenu();
+        if (el.cmdPaletteOverlay) el.cmdPaletteOverlay.style.display = 'none';
+        hideModal();
+      }
+
+      // Cmd+K or Ctrl+K for Command Palette
+      if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) {
+        e.preventDefault();
+        toggleCommandPalette();
+      }
+
+      // Cmd+W or Ctrl+W to Close Active Tab
+      if ((e.metaKey || e.ctrlKey) && (e.key === 'w' || e.key === 'W')) {
+        if (state.activeTabId && document.activeElement !== el.searchInput && document.activeElement !== el.cmdPaletteInput) {
+          e.preventDefault();
+          closeTab(state.activeTabId);
+        }
+      }
+
+      // Cmd+1..9 to switch tabs
+      if ((e.metaKey || e.ctrlKey) && e.key >= '1' && e.key <= '9') {
+        const tabIndex = parseInt(e.key, 10) - 1;
+        const tabIds = Array.from(state.openTabs.keys());
+        if (tabIds[tabIndex]) {
+          e.preventDefault();
+          activateTab(tabIds[tabIndex]);
+        }
+      }
+    });
+
+    // Command Palette Input Events
+    if (el.cmdPaletteInput) {
+      el.cmdPaletteInput.addEventListener('input', (e) => {
+        renderCommandPaletteResults(e.target.value);
+      });
+
+      el.cmdPaletteInput.addEventListener('keydown', (e) => {
+        const items = el.cmdPaletteResults.querySelectorAll('.cmd-item');
+        if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          state.cmdPaletteSelectedIndex = Math.min(items.length - 1, state.cmdPaletteSelectedIndex + 1);
+          items.forEach((it, idx) => it.classList.toggle('selected', idx === state.cmdPaletteSelectedIndex));
+        } else if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          state.cmdPaletteSelectedIndex = Math.max(0, state.cmdPaletteSelectedIndex - 1);
+          items.forEach((it, idx) => it.classList.toggle('selected', idx === state.cmdPaletteSelectedIndex));
+        } else if (e.key === 'Enter') {
+          e.preventDefault();
+          if (state.cmdPaletteItems[state.cmdPaletteSelectedIndex]) {
+            el.cmdPaletteOverlay.style.display = 'none';
+            state.cmdPaletteItems[state.cmdPaletteSelectedIndex].action();
+          }
+        }
+      });
+    }
+
+    // Session Context Menu actions
+    if (el.cmItemInfo) {
+      el.cmItemInfo.addEventListener('click', () => {
+        if (state.contextMenuSession) openSessionDetailsTab(state.contextMenuSession);
+      });
+    }
+
+    if (el.cmItemCopyName) {
+      el.cmItemCopyName.addEventListener('click', async () => {
+        if (state.contextMenuSession) {
+          const sess = state.contextMenuSession;
+          const text = sess.name || sess.agent || '';
+          try {
+            await navigator.clipboard.writeText(text);
+          } catch (e) {
+            const ta = document.createElement('textarea');
+            ta.value = text;
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand('copy');
+            document.body.removeChild(ta);
+          }
+        }
+      });
+    }
+
+    if (el.cmItemCopyPath) {
+      el.cmItemCopyPath.addEventListener('click', async () => {
+        if (state.contextMenuSession) {
+          const sess = state.contextMenuSession;
+          const sessName = sess.name || sess.agent || '';
+          const fullPath = sess.node_path ? `${sess.node_path}/${sessName}` : sessName;
+          try {
+            await navigator.clipboard.writeText(fullPath);
+          } catch (e) {
+            const ta = document.createElement('textarea');
+            ta.value = fullPath;
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand('copy');
+            document.body.removeChild(ta);
+          }
+        }
+      });
+    }
+
+    if (el.cmItemResume) {
+      el.cmItemResume.addEventListener('click', () => {
+        if (state.contextMenuSession) openSessionInTab(state.contextMenuSession);
+      });
+    }
+
+    if (el.cmItemNewTab) {
+      el.cmItemNewTab.addEventListener('click', () => {
+        if (state.contextMenuSession) openSessionInTab(state.contextMenuSession);
+      });
+    }
+
+    if (el.cmItemVSCode) {
+      el.cmItemVSCode.addEventListener('click', async () => {
+        if (state.contextMenuSession) {
+          const sess = state.contextMenuSession;
+          const baseUrl = sess.hostUrl ? sess.hostUrl.replace(/\/$/, '') : '';
+          await fetch(`${baseUrl}/v1/sessions/control?id=${encodeURIComponent(sess.id)}&action=open_editor`, { method: 'POST' });
+        }
+      });
+    }
+
+    if (el.cmItemDocs) {
+      el.cmItemDocs.addEventListener('click', () => {
+        if (state.contextMenuSession) {
+          showProjectDocsModal(state.contextMenuSession.cwd, state.contextMenuSession.name);
+        }
+      });
+    }
+
+    if (el.cmItemRestart) {
+      el.cmItemRestart.addEventListener('click', async () => {
+        if (state.contextMenuSession) {
+          const sess = state.contextMenuSession;
+          const baseUrl = sess.hostUrl ? sess.hostUrl.replace(/\/$/, '') : '';
+          await fetch(`${baseUrl}/v1/sessions/control?id=${encodeURIComponent(sess.id)}&action=restart`, { method: 'POST' });
+          openSessionInTab(sess);
+        }
+      });
+    }
+
+    if (el.cmItemKill) {
+      el.cmItemKill.addEventListener('click', async () => {
+        if (state.contextMenuSession && confirm(`Terminate process for "${state.contextMenuSession.name}"?`)) {
+          const sess = state.contextMenuSession;
+          const baseUrl = sess.hostUrl ? sess.hostUrl.replace(/\/$/, '') : '';
+          await fetch(`${baseUrl}/v1/sessions/control?id=${encodeURIComponent(sess.id)}&action=kill`, { method: 'POST' });
+          await fetchSessions();
+        }
+      });
+    }
+
+    if (el.cmItemArchive) {
+      el.cmItemArchive.addEventListener('click', () => {
+        if (state.contextMenuSession) {
+          state.contextMenuSession.archived = !state.contextMenuSession.archived;
+          renderTree();
+        }
+      });
+    }
+
+    if (el.cmItemDelete) {
+      el.cmItemDelete.addEventListener('click', async () => {
+        if (state.contextMenuSession) {
+          const sess = state.contextMenuSession;
+          const msg = `⚠️ Permanently Delete Session "${sess.name}"?\n\nThis will permanently delete the session and its transcript logs from the agent on disk (~/.claude/projects/) without the possibility for recovery.\n\nUse Archive (📦) if you only want to hide it from your active list.`;
+          if (confirm(msg)) {
+            const targetId = sess.id;
+            const targetName = sess.name;
+            state.sessions = state.sessions.filter(s => s.id !== targetId && s.name !== targetName);
+            closeTab(targetId);
+            closeTab(`details_${targetId}`);
+            renderTree();
+            const baseUrl = sess.hostUrl ? sess.hostUrl.replace(/\/$/, '') : '';
+            await fetch(`${baseUrl}/v1/sessions/control?id=${encodeURIComponent(targetId)}&action=delete`, { method: 'POST' });
+            await fetchSessions();
+          }
+        }
+      });
+    }
+
+    // Group Folder Context Menu Actions
+    if (el.gcmItemNewSession) {
+      el.gcmItemNewSession.addEventListener('click', () => {
+        const groupPath = state.contextMenuGroupPath;
+        hideContextMenu();
+        if (groupPath) {
+          showNewSessionModal(groupPath);
+        }
+      });
+    }
+
+    if (el.gcmItemNewSubgroup) {
+      el.gcmItemNewSubgroup.addEventListener('click', () => {
+        if (state.contextMenuGroupPath) {
+          showNewGroupModal(state.contextMenuGroupPath + '/');
+        }
+      });
+    }
+
+    if (el.gcmItemVSCode) {
+      el.gcmItemVSCode.addEventListener('click', async () => {
+        if (state.contextMenuGroupPath) {
+          const node = state.treeNodes.find(n => n.path === state.contextMenuGroupPath);
+          const dir = (node && node.project_dir) ? node.project_dir : '';
+          if (dir) {
+            await fetch(`/v1/sessions/control?action=open_editor&path=${encodeURIComponent(dir)}`, { method: 'POST' });
+          } else {
+            alert('This category subgroup does not have a linked filesystem directory.');
+          }
+        }
+      });
+    }
+
+    if (el.gcmItemDocs) {
+      el.gcmItemDocs.addEventListener('click', () => {
+        if (state.contextMenuGroupPath) {
+          const node = state.treeNodes.find(n => n.path === state.contextMenuGroupPath);
+          const dir = (node && node.project_dir) ? node.project_dir : '';
+          showProjectDocsModal(dir, state.contextMenuGroupPath);
+        }
+      });
+    }
+
+    if (el.gcmItemDelete) {
+      el.gcmItemDelete.addEventListener('click', async () => {
+        const groupPath = state.contextMenuGroupPath;
+        if (groupPath && confirm(`Delete group folder "${groupPath}"? Sessions will be moved to Unassigned.`)) {
+          state.treeNodes = state.treeNodes.filter(n => n.path !== groupPath && !n.path.startsWith(groupPath + '/'));
+          state.sessions.forEach(s => {
+            if (s.node_path === groupPath || (s.node_path && s.node_path.startsWith(groupPath + '/'))) {
+              s.node_path = '';
+            }
+          });
+          state.collapsedGroups.delete(groupPath);
+          renderTree();
+
+          await fetch(`/v1/nodes?path=${encodeURIComponent(groupPath)}`, { method: 'DELETE' });
+          await fetchTreeNodes();
+          await fetchSessions();
+        }
+      });
+    }
+
+    if (el.searchInput) {
+      el.searchInput.addEventListener('input', (e) => {
+        state.searchQuery = e.target.value;
+        renderTree();
+      });
+
+      window.addEventListener('keydown', (e) => {
+        const activeTag = document.activeElement ? document.activeElement.tagName : '';
+        const isInputFocused = activeTag === 'INPUT' || activeTag === 'TEXTAREA' || (document.activeElement && document.activeElement.isContentEditable);
+        if (e.key === '/' && !isInputFocused) {
+          e.preventDefault();
+          el.searchInput.focus();
+        }
+      });
+    }
+
+    if (el.btnAddHost) {
+      el.btnAddHost.addEventListener('click', showAddHostModal);
+    }
+
+    if (el.btnDiscovery) {
+      el.btnDiscovery.addEventListener('click', showHooksDashboardModal);
+    }
+
+    if (el.btnToggleArchived) {
+      el.btnToggleArchived.addEventListener('click', () => {
+        state.showArchived = !state.showArchived;
+        el.btnToggleArchived.classList.toggle('active', state.showArchived);
+        renderTree();
+      });
+    }
+
+    if (el.btnCollapseAll) {
+      el.btnCollapseAll.addEventListener('click', () => {
+        state.treeNodes.forEach(n => state.collapsedGroups.add(n.path));
+        state.collapsedGroups.add('Unassigned');
+        saveCollapsedGroups();
+        renderTree();
+      });
+    }
+
+    if (el.btnExpandAll) {
+      el.btnExpandAll.addEventListener('click', () => {
+        state.collapsedGroups.clear();
+        saveCollapsedGroups();
+        renderTree();
+      });
+    }
+
+    if (el.btnPurge) {
+      el.btnPurge.addEventListener('click', async () => {
+        if (confirm('Safe Purge & Rescan: Refresh live sessions from disk while strictly preserving groups?')) {
+          await fetch('/v1/maintenance/purge', { method: 'POST' });
+          await fetchSessions();
+        }
+      });
+    }
+
+    if (el.btnNewProject) {
+      el.btnNewProject.addEventListener('click', () => showNewGroupModal());
+    }
+
+    if (el.btnTabOverflow) {
+      el.btnTabOverflow.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (el.overflowMenuContent) {
+          el.overflowMenuContent.classList.toggle('show');
+        }
+      });
+    }
+
+    if (el.modalCloseBtn) {
+      el.modalCloseBtn.addEventListener('click', hideModal);
+    }
+
+    const btnNewSession = document.getElementById('btnNewSession');
+    const btnSidebarNewSession = document.getElementById('btnSidebarNewSession');
+    const btnCloseNewSession = document.getElementById('btnCloseNewSession');
+    const btnCancelNewSession = document.getElementById('btnCancelNewSession');
+    const btnSubmitNewSession = document.getElementById('btnSubmitNewSession');
+    const modalNewSession = document.getElementById('modalNewSession');
+
+    if (btnNewSession) btnNewSession.addEventListener('click', () => showNewSessionModal());
+    if (btnSidebarNewSession) btnSidebarNewSession.addEventListener('click', () => showNewSessionModal());
+    if (btnCloseNewSession) btnCloseNewSession.addEventListener('click', hideNewSessionModal);
+    if (btnCancelNewSession) btnCancelNewSession.addEventListener('click', hideNewSessionModal);
+    if (btnSubmitNewSession) btnSubmitNewSession.addEventListener('click', handleSpawnNewSession);
+    if (modalNewSession) {
+      modalNewSession.addEventListener('click', (e) => {
+        if (e.target === modalNewSession) hideNewSessionModal();
+      });
+    }
+  }
+
+  // New Session Modal Launcher
+  async function showNewSessionModal(prefillGroup = '') {
+    const modal = document.getElementById('modalNewSession');
+    if (!modal) return;
+
+    const hostSelect = document.getElementById('newSessionHost');
+    const agentSelect = document.getElementById('newSessionAgent');
+    const folderInput = document.getElementById('newSessionFolder');
+    const folderList = document.getElementById('folderSuggestions');
+    const groupSelect = document.getElementById('newSessionGroup');
+
+    // Helper: Dynamically fetch & populate available agents for the chosen host
+    async function updateAgentOptions(targetHost) {
+      if (!agentSelect) return;
+      agentSelect.innerHTML = '<option value="">⏳ Detecting agents on host...</option>';
+
+      try {
+        const hostRec = (state.hosts || []).find(h => h.name === targetHost);
+        const baseUrl = hostRec && hostRec.url && targetHost !== 'local' ? hostRec.url.replace(/\/$/, '') : '';
+        const res = await fetch(`${baseUrl}/v1/agents/discovery`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const discovery = await res.json() || [];
+
+        const agentDisplayNames = {
+          'claude-code': 'Claude Code (Anthropic)',
+          'antigravity': 'Google Antigravity (agy)',
+          'codex': 'OpenAI Codex'
+        };
+
+        const installed = discovery.filter(d => d.installed);
+        agentSelect.innerHTML = '';
+
+        if (installed.length > 0) {
+          installed.forEach(d => {
+            const opt = document.createElement('option');
+            opt.value = d.agent;
+            opt.textContent = `${agentDisplayNames[d.agent] || d.agent} (Installed)`;
+            agentSelect.appendChild(opt);
+          });
+        } else {
+          discovery.forEach(d => {
+            const opt = document.createElement('option');
+            opt.value = d.agent;
+            opt.textContent = `${agentDisplayNames[d.agent] || d.agent} (Not detected)`;
+            agentSelect.appendChild(opt);
+          });
+        }
+      } catch (err) {
+        console.warn('Agent discovery fallback for host:', targetHost, err);
+        agentSelect.innerHTML = `
+          <option value="claude-code">Claude Code (Anthropic)</option>
+          <option value="antigravity">Google Antigravity (agy)</option>
+          <option value="codex">OpenAI Codex</option>
+        `;
+      }
+    }
+
+    // 1. Populate Hosts
+    if (hostSelect) {
+      hostSelect.innerHTML = '<option value="local">local (This Machine)</option>';
+      (state.hosts || []).forEach(h => {
+        if (h.name !== 'local') {
+          const opt = document.createElement('option');
+          opt.value = h.name;
+          opt.textContent = `${formatHostLabel(h.name)} (${h.url || 'remote'})`;
+          hostSelect.appendChild(opt);
+        }
+      });
+
+      // Update agents when host selection changes
+      hostSelect.onchange = () => {
+        updateAgentOptions(hostSelect.value);
+      };
+    }
+
+    // 2. Populate Groups & prefill linked project folder if group has one
+    if (groupSelect) {
+      groupSelect.innerHTML = '<option value="">(Default / Unassigned)</option>';
+      const allPaths = new Set();
+      (state.treeNodes || []).forEach(n => {
+        if (n.path) {
+          const parts = n.path.split('/');
+          let acc = '';
+          parts.forEach(p => {
+            acc = acc ? acc + '/' + p : p;
+            allPaths.add(acc);
+          });
+        }
+      });
+
+      const sortedPaths = Array.from(allPaths).sort();
+      sortedPaths.forEach(p => {
+        const depth = (p.match(/\//g) || []).length;
+        const prefix = '  ↳ '.repeat(depth);
+        const name = p.split('/').pop();
+        const opt = document.createElement('option');
+        opt.value = p;
+        opt.textContent = prefix + name + (depth > 0 ? ` (${p})` : '');
+        if (p === prefillGroup) opt.selected = true;
+        groupSelect.appendChild(opt);
+      });
+    }
+
+    // 3. Populate Folder Suggestions from history
+    if (folderList) {
+      const uniqueCwds = Array.from(new Set((state.sessions || []).map(s => s.cwd).filter(Boolean))).sort();
+      folderList.innerHTML = '';
+      uniqueCwds.forEach(c => {
+        const opt = document.createElement('option');
+        opt.value = c;
+        folderList.appendChild(opt);
+      });
+
+      // Prefill: 1st check if prefillGroup has a linked project directory or child with project directory
+      if (prefillGroup && folderInput) {
+        const matchedNode = (state.treeNodes || []).find(n => n.path === prefillGroup);
+        if (matchedNode && matchedNode.project_dir) {
+          folderInput.value = matchedNode.project_dir;
+        } else {
+          const childNode = (state.treeNodes || []).find(n => n.path.startsWith(prefillGroup + '/') && n.project_dir);
+          if (childNode && childNode.project_dir) {
+            folderInput.value = childNode.project_dir;
+          }
+        }
+      }
+
+      // If still empty, prefill active session's cwd or first available history path
+      if (folderInput && !folderInput.value) {
+        const activeTab = state.openTabs.get(state.activeTabId);
+        if (activeTab && activeTab.session && activeTab.session.cwd) {
+          folderInput.value = activeTab.session.cwd;
+        } else if (uniqueCwds.length > 0) {
+          folderInput.value = uniqueCwds[0];
+        }
+      }
+    }
+
+    modal.style.display = 'flex';
+    setTimeout(() => {
+      if (folderInput) folderInput.focus();
+    }, 50);
+
+    // Initial agent discovery for selected host
+    await updateAgentOptions(hostSelect ? hostSelect.value : 'local');
+  }
+
+  function hideNewSessionModal() {
+    const modal = document.getElementById('modalNewSession');
+    if (modal) modal.style.display = 'none';
+  }
+
+  async function handleSpawnNewSession() {
+    const hostSelect = document.getElementById('newSessionHost');
+    const agentSelect = document.getElementById('newSessionAgent');
+    const folderInput = document.getElementById('newSessionFolder');
+    const groupSelect = document.getElementById('newSessionGroup');
+    const submitBtn = document.getElementById('btnSubmitNewSession');
+
+    const host = hostSelect ? hostSelect.value : 'local';
+    const agent = agentSelect ? agentSelect.value : 'claude-code';
+    const cwd = folderInput ? folderInput.value.trim() : '';
+    const targetGroup = groupSelect ? groupSelect.value : '';
+
+    if (!cwd) {
+      alert('Please provide a working directory or project path.');
+      if (folderInput) folderInput.focus();
+      return;
+    }
+
+    if (submitBtn) {
+      submitBtn.disabled = true;
+      submitBtn.textContent = '🚀 Launching...';
+    }
+
+    try {
+      const res = await fetch('/v1/sessions/spawn', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ host, agent, cwd })
+      });
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.message || errData.error || `HTTP ${res.status}`);
+      }
+
+      const spawnResult = await res.json();
+      const spawnedNativeId = spawnResult.session_id || spawnResult.native_id || '';
+      const spawnedSessId = spawnResult.id || `${agent}:${host}:${spawnedNativeId}`;
+
+      hideNewSessionModal();
+
+      // If user selected a group, assign it immediately
+      if (targetGroup && spawnedSessId) {
+        await moveSessionToGroup(spawnedSessId, host, targetGroup);
+      }
+
+      // Refresh sessions from daemon
+      await fetchSessions();
+
+      // Find the session and open in terminal tab
+      const newSess = state.sessions.find(s => s.id === spawnedSessId || s.native_id === spawnedNativeId || (spawnedNativeId && s.id.includes(spawnedNativeId)));
+      if (newSess) {
+        openSessionInTab(newSess);
+      } else {
+        openSessionInTab({
+          id: spawnedSessId,
+          native_id: spawnedNativeId,
+          name: sessionTitle || agent,
+          agent: agent,
+          host: host,
+          cwd: cwd,
+          managed: true,
+          state: 3
+        });
+      }
+
+      // Scroll to new session row and apply pulse glow highlight
+      setTimeout(() => {
+        const targetId = newSess ? newSess.id : spawnedSessId;
+        const rowEl = document.querySelector(`[data-session-id="${targetId}"]`) ||
+                      document.querySelector(`[data-session-id="${spawnedSessId}"]`);
+        if (rowEl) {
+          // Expand parent groups if collapsed
+          let parent = rowEl.parentElement;
+          while (parent && parent !== el.treeContainer) {
+            if (parent.classList.contains('group-children')) {
+              parent.classList.remove('hidden');
+              const groupHeader = parent.previousElementSibling;
+              if (groupHeader && groupHeader.querySelector('.group-arrow')) {
+                groupHeader.querySelector('.group-arrow').textContent = '▼';
+              }
+            }
+            parent = parent.parentElement;
+          }
+
+          rowEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          rowEl.classList.remove('highlight-new');
+          void rowEl.offsetWidth; // trigger reflow
+          rowEl.classList.add('highlight-new');
+        }
+      }, 350);
+
+    } catch (err) {
+      alert('Failed to launch session: ' + err.message);
+    } finally {
+      if (submitBtn) {
+        submitBtn.disabled = false;
+        submitBtn.textContent = '🚀 Launch Session';
+      }
+    }
+  }
+
+  // Modals
+  function showModal(title, bodyHtml, footerHtml) {
+    if (!el.modalOverlay) return;
+    el.modalTitle.textContent = title;
+    el.modalBody.innerHTML = bodyHtml;
+    el.modalFooter.innerHTML = footerHtml;
+    el.modalOverlay.style.display = 'flex';
+  }
+
+  function hideModal() {
+    if (el.modalOverlay) el.modalOverlay.style.display = 'none';
+  }
+
+  // New Group Modal
+  function showNewGroupModal(prefillPath = '') {
+    const isSubgroup = prefillPath.length > 0;
+    const body = `
+      <div class="form-group">
+        <label>Logical Group Path</label>
+        <input type="text" id="mGroupPath" placeholder="e.g. Modemobile or Modemobile/NGL" value="${prefillPath}" />
+        <div style="font-size: 11px; color: var(--text-muted); margin-top: 5px;">
+          💡 <strong>Top-Level Group:</strong> Enter a single name without slashes (e.g. <code>Modemobile</code>, <code>Work</code>, <code>Personal</code>).<br>
+          📁 <strong>Nested Subgroup:</strong> Use forward slashes (e.g. <code>Modemobile/NGL</code>, <code>Modemobile/ngl-android</code>).
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Linked Workspace Directory (Optional)</label>
+        <input type="text" id="mProjDir" placeholder="/Users/dev4u/Work/..." />
+        <div style="font-size: 11px; color: var(--text-dim); margin-top: 3px;">
+          Leave empty for a logical category group folder.
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Git Remote URL (Optional)</label>
+        <input type="text" id="mGitUrl" placeholder="https://github.com/..." />
+      </div>
+    `;
+
+    const footer = `
+      <button class="btn btn-secondary" id="mBtnCancel">Cancel</button>
+      <button class="btn btn-primary" id="mBtnSubmit">${isSubgroup ? 'Create Subgroup' : 'Create Top-Level Group'}</button>
+    `;
+
+    showModal(isSubgroup ? '＋ New Nested Subgroup' : '＋ New Top-Level Group / Project', body, footer);
+
+    document.getElementById('mBtnCancel').addEventListener('click', hideModal);
+    document.getElementById('mBtnSubmit').addEventListener('click', async () => {
+      const path = document.getElementById('mGroupPath').value.trim();
+      const dir = document.getElementById('mProjDir').value.trim();
+      const git = document.getElementById('mGitUrl').value.trim();
+      if (!path) return;
+
+      try {
+        await fetch('/v1/projects/create', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path, project_dir: dir, git_url: git })
+        });
+        await fetchTreeNodes();
+        await fetchSessions();
+        hideModal();
+      } catch (err) {
+        alert('Failed to create group: ' + err.message);
+      }
+    });
+  }
+
+  // Register Remote SSH Host Modal
+  function showAddHostModal() {
+    const body = `
+      <div class="form-group">
+        <label>Host Alias (e.g. legion, gpu-server)</label>
+        <input type="text" id="hHostName" placeholder="legion" />
+      </div>
+      <div class="form-group">
+        <label>SSH Target (user@hostname or SSH config host)</label>
+        <input type="text" id="hSshTarget" placeholder="dev4u@legion" />
+      </div>
+      <div class="form-group">
+        <label>Local Forwarded URL (default http://127.0.0.1:7778)</label>
+        <input type="text" id="hHostUrl" placeholder="http://127.0.0.1:7778" value="http://127.0.0.1:7778" />
+      </div>
+      <div style="background: #090a0f; border: 1px solid var(--border-color); border-radius: 6px; padding: 10px; font-size: 11px; font-family: var(--font-mono); color: var(--text-muted); margin-top: 6px;">
+        💡 Tunnel Command:<br>
+        <span style="color: var(--accent-cyan);">ssh -f -N -o ExitOnForwardFailure=yes -L 7778:127.0.0.1:7777 dev4u@legion</span>
+      </div>
+    `;
+
+    const footer = `
+      <button class="btn btn-secondary" id="hBtnCancel">Cancel</button>
+      <button class="btn btn-primary" id="hBtnSubmit">Register Host</button>
+    `;
+
+    showModal('Register Remote SSH Host', body, footer);
+
+    document.getElementById('hBtnCancel').addEventListener('click', hideModal);
+    document.getElementById('hBtnSubmit').addEventListener('click', async () => {
+      const name = document.getElementById('hHostName').value.trim();
+      const ssh = document.getElementById('hSshTarget').value.trim();
+      const url = document.getElementById('hHostUrl').value.trim();
+      if (!name || !url) return;
+
+      try {
+        await fetch('/v1/hosts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, ssh_target: ssh, url })
+        });
+        await fetchHosts();
+        await fetchSessions();
+        hideModal();
+      } catch (err) {
+        alert('Failed to register host: ' + err.message);
+      }
+    });
+  }
+
+  // Agent Hook Diagnostics / Host Inspector Modal
+  async function showHooksDashboardModal() {
+    showHostSummaryModal({ name: 'local', url: '' });
+  }
+
+  // Host Summary & Diagnostics Modal
+  async function showHostSummaryModal(h) {
+    const baseUrl = h.url ? h.url.replace(/\/$/, '') : '';
+    const isLocal = !h.url || h.name === 'local';
+
+    showModal(`Server Inspector: ${h.name}`, `
+      <div style="padding: 20px; text-align: center; color: var(--text-muted);">
+        <div style="margin-bottom: 8px;">⏳ Connecting to daemon at <code>${h.url || '127.0.0.1:7777'}</code>...</div>
+      </div>
+    `, `<button class="btn btn-secondary" onclick="document.getElementById('modalOverlay').style.display='none'">Close</button>`);
+
+    try {
+      let daemonVersion = 'unknown';
+      let isOnline = false;
+      try {
+        const vRes = await fetch(`${baseUrl}/v1/version`);
+        if (vRes.ok) {
+          const vData = await vRes.json();
+          daemonVersion = vData.version || 'online';
+          isOnline = true;
+        }
+      } catch (e) {
+        console.warn('Version check failed:', e);
+      }
+
+      let discovery = [];
+      try {
+        const dRes = await fetch(`${baseUrl}/v1/agents/discovery`);
+        if (dRes.ok) {
+          discovery = await dRes.json() || [];
+        }
+      } catch (e) {
+        console.warn('Discovery check failed:', e);
+      }
+
+      let rowsHtml = '';
+      discovery.forEach(d => {
+        const instBadge = d.installed ? '<span style="color: var(--accent-green);">● Installed</span>' : '<span style="color: var(--text-dim);">○ Not Detected</span>';
+        const hookBadge = d.hook_configured ? '<span style="color: var(--accent-green);">🟢 Active</span>' : '<span style="color: var(--accent-yellow);">⚠️ Missing</span>';
+        rowsHtml += `
+          <tr>
+            <td><strong>${d.agent}</strong></td>
+            <td>${instBadge}</td>
+            <td>${hookBadge}</td>
+            <td><code>${d.setup_cmd || '—'}</code></td>
+          </tr>
+        `;
+      });
+
+      const setupCmd = isLocal ? 'ackbar setup-hooks' : `ssh ${h.ssh_target || h.name} "ackbar setup-hooks"`;
+
+      const isOutdated = !isLocal && isOnline && daemonVersion !== '...' && daemonVersion !== state.version;
+      const updateBanner = isOutdated ? `
+        <div style="margin-top: 10px; padding: 10px 12px; background: rgba(245, 158, 11, 0.15); border: 1px solid rgba(245, 158, 11, 0.4); border-radius: 6px; font-size: 11px; display: flex; align-items: center; justify-content: space-between; color: #fbbf24;">
+          <div>⚠️ <strong>Update Available:</strong> Remote host is running <code>v${daemonVersion}</code>, control plane is <code>v${state.version}</code>.</div>
+        </div>
+      ` : '';
+
+      const body = `
+        <div style="display: flex; gap: 12px; margin-bottom: 12px; align-items: center; background: var(--bg-card); padding: 12px; border-radius: 8px; border: 1px solid var(--border-color);">
+          <div style="font-size: 24px;">🖥️</div>
+          <div style="flex: 1;">
+            <div style="font-weight: 600; font-size: 14px; color: #fff;">${h.name} ${isOnline ? '<span style="color: var(--accent-green); font-size: 12px;">🟢 Online</span>' : '<span style="color: var(--accent-red); font-size: 12px;">🔴 Offline</span>'}</div>
+            <div style="font-size: 11px; color: var(--text-muted); font-family: var(--font-mono); margin-top: 2px;">
+              Endpoint: ${h.url || 'http://127.0.0.1:7777'} &nbsp;|&nbsp; ackbard v${daemonVersion} ${h.ssh_target ? `&nbsp;|&nbsp; SSH: ${h.ssh_target}` : ''}
+            </div>
+          </div>
+        </div>
+        ${updateBanner}
+
+        <h4 style="font-size: 12px; color: var(--text-muted); text-transform: uppercase; margin: 14px 0 8px 0; letter-spacing: 0.5px;">Agent Hook Configuration on ${h.name}</h4>
+        <table class="hook-table">
+          <thead>
+            <tr>
+              <th>Agent</th>
+              <th>CLI Status</th>
+              <th>Hook Status</th>
+              <th>Configuration</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rowsHtml || '<tr><td colspan="4" style="text-align: center; color: var(--text-dim);">No agent diagnostics returned</td></tr>'}
+          </tbody>
+        </table>
+
+        <div style="background: #090a0f; border: 1px solid var(--border-color); border-radius: 6px; padding: 10px; margin-top: 14px; font-size: 11px; font-family: var(--font-mono);">
+          <span style="color: var(--accent-cyan); font-weight: 600;">⚡ 1-Click CLI Setup Command:</span><br>
+          <span style="color: #fff;">${setupCmd}</span>
+        </div>
+      `;
+
+      const footer = `
+        ${!isLocal ? `<button class="btn btn-danger" id="hBtnDeleteHost" style="margin-right: auto;">🗑 Remove Host</button>` : ''}
+        ${!isLocal ? `<button class="btn btn-primary" id="hBtnUpdateHost" style="background: #06b6d4; border-color: #0891b2; color: #090a0f; font-weight: 600;">⬆ Update ackbard on ${h.name}</button>` : ''}
+        <button class="btn btn-secondary" id="hBtnPurgeHost">🔄 Safe Purge</button>
+        <button class="btn btn-secondary" onclick="document.getElementById('modalOverlay').style.display='none'">Done</button>
+      `;
+
+      showModal(`Server Inspector: ${h.name}`, body, footer);
+
+      const updateBtn = document.getElementById('hBtnUpdateHost');
+      if (updateBtn) {
+        updateBtn.addEventListener('click', async () => {
+          if (!confirm(`Upgrade and restart ackbard daemon & hook binaries on "${h.name}" to v${state.version}?`)) return;
+          updateBtn.disabled = true;
+          updateBtn.innerHTML = `<span>⏳</span> Upgrading ackbard on ${h.name}...`;
+          try {
+            const res = await fetch('/v1/hosts/update', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ name: h.name })
+            });
+            const data = await res.json();
+            if (res.ok && data.status === 'success') {
+              alert(`✅ ${data.message || 'Upgrade completed!'}`);
+              await fetchHosts();
+              await fetchSessions();
+              showHostSummaryModal(h);
+            } else {
+              alert(`❌ Upgrade failed: ${data.message || 'Unknown error'}`);
+              updateBtn.disabled = false;
+              updateBtn.innerHTML = `⬆ Update ackbard on ${h.name}`;
+            }
+          } catch (err) {
+            alert(`❌ Upgrade request failed: ${err.message}`);
+            updateBtn.disabled = false;
+            updateBtn.innerHTML = `⬆ Update ackbard on ${h.name}`;
+          }
+        });
+      }
+
+      const purgeBtn = document.getElementById('hBtnPurgeHost');
+      if (purgeBtn) {
+        purgeBtn.addEventListener('click', async () => {
+          if (confirm(`Safe Purge & Rescan on ${h.name}? Refresh live sessions from disk while strictly preserving groups.`)) {
+            await fetch(`${baseUrl}/v1/maintenance/purge`, { method: 'POST' });
+            await fetchSessions();
+            showHostSummaryModal(h);
+          }
+        });
+      }
+
+      const delBtn = document.getElementById('hBtnDeleteHost');
+      if (delBtn) {
+        delBtn.addEventListener('click', async () => {
+          if (confirm(`Remove remote host registration "${h.name}"?`)) {
+            await fetch(`/v1/hosts?name=${encodeURIComponent(h.name)}`, { method: 'DELETE' });
+            await fetchHosts();
+            await fetchSessions();
+            hideModal();
+          }
+        });
+      }
+    } catch (err) {
+      showModal(`Server Inspector: ${h.name}`, `<div style="color: var(--accent-red); padding: 12px;">Error connecting to host: ${err.message}</div>`, `<button class="btn btn-secondary" onclick="document.getElementById('modalOverlay').style.display='none'">Close</button>`);
+    }
+  }
+
+  // Sidebar Drag Resizer
+  function setupResizer() {
+    if (!el.sidebarResizer || !el.sidebarPanel) return;
+    let isResizing = false;
+
+    el.sidebarResizer.addEventListener('mousedown', () => {
+      isResizing = true;
+      el.sidebarResizer.classList.add('resizing');
+      document.body.style.cursor = 'col-resize';
+    });
+
+    document.addEventListener('mousemove', (e) => {
+      if (!isResizing) return;
+      const newWidth = Math.max(200, Math.min(600, e.clientX));
+      el.sidebarPanel.style.width = `${newWidth}px`;
+      const activeTab = state.openTabs.get(state.activeTabId);
+      if (activeTab && activeTab.type === 'terminal' && activeTab.fitAddon) {
+        try {
+          activeTab.fitAddon.fit();
+          if (activeTab.terminal && activeTab.socket && activeTab.socket.readyState === WebSocket.OPEN) {
+            sendTerminalResize(activeTab.socket, activeTab.terminal.cols, activeTab.terminal.rows);
+          }
+        } catch (e) {}
+      }
+    });
+
+    document.addEventListener('mouseup', () => {
+      if (isResizing) {
+        isResizing = false;
+        el.sidebarResizer.classList.remove('resizing');
+        document.body.style.cursor = '';
+        state.openTabs.forEach(t => {
+          if (t.fitAddon && t.fitAddon.fit) {
+            try {
+              t.fitAddon.fit();
+              if (t.terminal && t.socket && t.socket.readyState === WebSocket.OPEN) {
+                sendTerminalResize(t.socket, t.terminal.cols, t.terminal.rows);
+              }
+            } catch (e) {}
+          }
+        });
+      }
+    });
+  }
+
+  // Expose global hooks for developer console and debugging
+  window.state = state;
+  window.openSessionInTab = openSessionInTab;
+  window.openSessionDetailsTab = openSessionDetailsTab;
+  window.reconnectTerminalTab = reconnectTerminalTab;
+
+  // Launch on DOM Content Loaded
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
+})();
