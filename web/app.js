@@ -321,9 +321,19 @@
         if (!updatedSess || !updatedSess.id) return;
 
         if (updatedSess.deleted || updatedSess.activity === 'Deleted') {
-          state.sessions = state.sessions.filter(s => s.id !== updatedSess.id && s.name !== updatedSess.name);
-          closeTab(updatedSess.id);
-          closeTab(`details_${updatedSess.id}`);
+          const targetId = updatedSess.id;
+          const targetName = updatedSess.name;
+          const nativeId = updatedSess.native_id;
+          state.sessions = state.sessions.filter(s => s.id !== targetId && s.name !== targetName && (!nativeId || s.native_id !== nativeId));
+          closeTab(targetId);
+          if (nativeId) closeTab(nativeId);
+          closeTab(`details_${targetId}`);
+          if (nativeId) closeTab(`details_${nativeId}`);
+          for (const [tId, tabObj] of state.openTabs.entries()) {
+            if (tabObj.session && (tabObj.session.id === targetId || (nativeId && tabObj.session.native_id === nativeId))) {
+              closeTab(tId);
+            }
+          }
           renderTree();
           return;
         }
@@ -726,9 +736,18 @@
               if (text.startsWith('{"type":')) return;
             } catch (e) {}
           }
+          const textPreview = new TextDecoder().decode(u8.slice(0, 100));
+          if (textPreview.includes('[Session was deleted]')) {
+            closeTab(tabId);
+            return;
+          }
           term.write(u8);
         } else if (typeof event.data === 'string') {
           if (!event.data || event.data.startsWith('{"type":')) return;
+          if (event.data.includes('[Session was deleted]')) {
+            closeTab(tabId);
+            return;
+          }
           term.write(event.data);
         } else {
           term.write(event.data);
@@ -739,6 +758,13 @@
         if (tab.pingTimer) {
           clearInterval(tab.pingTimer);
           tab.pingTimer = null;
+        }
+
+        // If session was deleted from state, close tab immediately without reconnecting
+        const sessMatch = state.sessions.find(s => s.id === tabId || (tab.session && s.id === tab.session.id));
+        if (!sessMatch || sessMatch.deleted) {
+          closeTab(tabId);
+          return;
         }
 
         // Only auto-reconnect if tab is still open
