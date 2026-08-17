@@ -1367,6 +1367,8 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		ProjectDir string `json:"project_dir"` // Alternative directory field sent by Web GUI
 		GitURL     string `json:"git_url"`     // Optional git origin
 		BaseDir    string `json:"base_dir"`    // Optional base directory, defaults to ~/Projects
+		CloneRepo  bool   `json:"clone_repo"`  // If true, clone repository into workspace directory
+		Host       string `json:"host"`        // Optional target host ("local" or remote host alias)
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -1379,11 +1381,34 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 1. Forward to remote host if specified
+	if req.Host != "" && req.Host != "local" {
+		hostRec, err := s.db.GetHost(req.Host)
+		if err == nil && hostRec != nil && hostRec.URL != "" {
+			targetURL := strings.TrimSuffix(hostRec.URL, "/") + "/v1/projects/create"
+			remotePayload, _ := json.Marshal(map[string]interface{}{
+				"path":        req.Path,
+				"project_dir": req.ProjectDir,
+				"name":        req.Name,
+				"git_url":     req.GitURL,
+				"base_dir":    req.BaseDir,
+				"clone_repo":  req.CloneRepo,
+			})
+			resp, rErr := http.Post(targetURL, "application/json", bytes.NewBuffer(remotePayload))
+			if rErr != nil {
+				log.Printf("[Daemon] Warning: failed to forward project create to remote host %s: %v", req.Host, rErr)
+			} else {
+				_ = resp.Body.Close()
+			}
+		}
+	}
+
 	home, _ := os.UserHomeDir()
 
 	var targetDir string
 	var gitURL string
 	alreadyExisted := false
+	cloned := false
 
 	folderInput := req.Name
 	if folderInput == "" && req.ProjectDir != "" {
@@ -1410,6 +1435,20 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		}
 
 		alreadyExisted = dirExists(targetDir)
+		hasGit := dirExists(filepath.Join(targetDir, ".git"))
+
+		// If clone requested and directory is not yet a git repository
+		if req.GitURL != "" && req.CloneRepo && !hasGit {
+			log.Printf("[Daemon] Cloning repo %s into %s...", req.GitURL, targetDir)
+			_ = os.MkdirAll(filepath.Dir(targetDir), 0755)
+			out, cloneErr := exec.Command("git", "clone", req.GitURL, targetDir).CombinedOutput()
+			if cloneErr != nil {
+				log.Printf("[Daemon] Warning: git clone failed: %s (%v)", strings.TrimSpace(string(out)), cloneErr)
+			} else {
+				cloned = true
+				alreadyExisted = true
+			}
+		}
 
 		if !alreadyExisted {
 			if err := os.MkdirAll(targetDir, 0755); err != nil {
@@ -1420,16 +1459,10 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		}
 
 		gitURL = req.GitURL
-		if alreadyExisted {
-			if gitURL == "" {
-				out, err := exec.Command("git", "-C", targetDir, "remote", "get-url", "origin").Output()
-				if err == nil {
-					gitURL = strings.TrimSpace(string(out))
-				}
-			}
-		} else {
-			if gitURL != "" {
-				_ = exec.Command("git", "clone", gitURL, targetDir).Run()
+		if gitURL == "" && dirExists(filepath.Join(targetDir, ".git")) {
+			out, err := exec.Command("git", "-C", targetDir, "remote", "get-url", "origin").Output()
+			if err == nil {
+				gitURL = strings.TrimSpace(string(out))
 			}
 		}
 
@@ -1470,6 +1503,7 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		"path":            req.Path,
 		"project_dir":     targetDir,
 		"already_existed": alreadyExisted,
+		"cloned":          cloned,
 	})
 }
 

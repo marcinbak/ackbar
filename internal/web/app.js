@@ -2330,15 +2330,28 @@ ${session.last_prompt}
         </div>
       </div>
       <div class="form-group">
+        <label>Target Host / Machine</label>
+        <select id="mHost">
+          <option value="local">local (This Machine)</option>
+          ${(state.hosts || []).filter(h => h.name !== 'local').map(h => `<option value="${h.name}">${formatHostLabel(h.name)} (${h.url || 'remote'})</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group">
         <label>Linked Workspace Directory (Optional)</label>
-        <input type="text" id="mProjDir" placeholder="/Users/dev4u/Work/..." />
+        <input type="text" id="mProjDir" placeholder="/Users/dev4u/Work/... or ~/Work/..." />
         <div style="font-size: 11px; color: var(--text-dim); margin-top: 3px;">
           Leave empty for a logical category group folder.
         </div>
       </div>
       <div class="form-group">
         <label>Git Remote URL (Optional)</label>
-        <input type="text" id="mGitUrl" placeholder="https://github.com/..." />
+        <input type="text" id="mGitUrl" placeholder="git@github.com:... or https://github.com/..." />
+      </div>
+      <div class="form-group" style="margin-top: 8px;">
+        <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; font-weight: normal; color: var(--text-normal); user-select: none;">
+          <input type="checkbox" id="mCloneRepo" checked style="cursor: pointer; width: 15px; height: 15px;" />
+          <span>Clone repository into workspace directory if not already present</span>
+        </label>
       </div>
     `;
 
@@ -2352,19 +2365,27 @@ ${session.last_prompt}
     document.getElementById('mBtnCancel').addEventListener('click', hideModal);
     document.getElementById('mBtnSubmit').addEventListener('click', async () => {
       const path = document.getElementById('mGroupPath').value.trim();
+      const host = document.getElementById('mHost').value;
       const dir = document.getElementById('mProjDir').value.trim();
       const git = document.getElementById('mGitUrl').value.trim();
+      const cloneRepo = document.getElementById('mCloneRepo').checked;
       if (!path) return;
 
       const submitBtn = document.getElementById('mBtnSubmit');
       submitBtn.disabled = true;
-      submitBtn.textContent = 'Creating...';
+      submitBtn.textContent = (cloneRepo && git) ? 'Cloning repository...' : 'Creating...';
 
       try {
         const res = await fetch('/v1/projects/create', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ path, project_dir: dir, git_url: git })
+          body: JSON.stringify({
+            path,
+            host,
+            project_dir: dir,
+            git_url: git,
+            clone_repo: cloneRepo
+          })
         });
         if (!res.ok) {
           const errData = await res.json().catch(() => ({}));
