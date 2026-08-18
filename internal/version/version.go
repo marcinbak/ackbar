@@ -1,4 +1,4 @@
 package version
 
 // Version follows date-based versioning YYYYMMDD.rev
-const Version = "20260818.11"
+const Version = "20260818.12"

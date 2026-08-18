@@ -250,10 +250,11 @@ func (s *Server) servePTYWS(ws *websocket.Conn) {
 								Cols: uint16(ctrl.Cols),
 							})
 							if sessHost == "local" {
+								_ = exec.Command("tmux", "set-option", "-t", tmuxName, "window-size", "latest").Run()
 								_ = exec.Command("tmux", "resize-window", "-t", tmuxName, "-x", strconv.Itoa(ctrl.Cols), "-y", strconv.Itoa(ctrl.Rows)).Run()
 								_ = exec.Command("tmux", "refresh-client", "-S").Run()
 							} else {
-								_ = exec.Command("ssh", sessHost, fmt.Sprintf("tmux resize-window -t %q -x %d -y %d 2>/dev/null; tmux refresh-client -S 2>/dev/null", tmuxName, ctrl.Cols, ctrl.Rows)).Run()
+								_ = exec.Command("ssh", sessHost, fmt.Sprintf("tmux set-option -t %q window-size latest 2>/dev/null; tmux resize-window -t %q -x %d -y %d 2>/dev/null; tmux refresh-client -S 2>/dev/null", tmuxName, tmuxName, ctrl.Cols, ctrl.Rows)).Run()
 							}
 							continue
 						}

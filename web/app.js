@@ -112,6 +112,7 @@
     sbContextGauge: document.getElementById('sbContextGauge'),
     sbModelBadge: document.getElementById('sbModelBadge'),
     sbPID: document.getElementById('sbPID'),
+    sbModeToggle: document.getElementById('sbModeToggle'),
     // Modal elements
     modalOverlay: document.getElementById('modalOverlay'),
     modalTitle: document.getElementById('modalTitle'),
@@ -1068,13 +1069,14 @@
         }
         return false;
       }
-      // 5. Shift+Tab to cycle Claude Code modes (send ANSI backtab \x1b[Z and prevent browser focus shift)
+      // 5. Shift+Tab to cycle Claude Code modes (send raw ANSI backtab [0x1b, 0x5b, 0x5a] and prevent browser focus shift)
       if (event.key === 'Tab' && event.shiftKey) {
         if (event.type === 'keydown') {
           event.preventDefault();
+          event.stopPropagation();
           const currentTab = state.openTabs.get(tabId);
           if (currentTab && currentTab.socket && currentTab.socket.readyState === WebSocket.OPEN) {
-            currentTab.socket.send('\x1b[Z');
+            currentTab.socket.send(new Uint8Array([0x1b, 0x5b, 0x5a]));
           }
         }
         return false;
@@ -2230,6 +2232,17 @@ ${session.last_prompt}
     if (el.btnRefreshPage) {
       el.btnRefreshPage.addEventListener('click', () => {
         window.location.reload();
+      });
+    }
+
+    if (el.sbModeToggle) {
+      el.sbModeToggle.addEventListener('click', () => {
+        if (!state.activeTabId) return;
+        const curTab = state.openTabs.get(state.activeTabId);
+        if (curTab && curTab.socket && curTab.socket.readyState === WebSocket.OPEN) {
+          curTab.socket.send(new Uint8Array([0x1b, 0x5b, 0x5a]));
+          if (curTab.terminal) curTab.terminal.focus();
+        }
       });
     }
 
