@@ -208,13 +208,35 @@
     });
   }
 
-  // Fetch Tree Nodes
+  // Fetch Tree Nodes across all available hosts
   async function fetchTreeNodes() {
     try {
-      const res = await fetch('/v1/nodes');
-      if (res.ok) {
-        state.treeNodes = await res.json() || [];
-      }
+      const targetHosts = [
+        { name: 'local', url: '' },
+        ...(state.hosts || []).filter(h => h.url && h.name !== 'local')
+      ];
+
+      const nodeArrays = await Promise.all(targetHosts.map(async (h) => {
+        try {
+          const fetchUrl = h.url ? `${h.url.replace(/\/$/, '')}/v1/nodes` : '/v1/nodes';
+          const res = await fetch(fetchUrl);
+          if (res.ok) {
+            return await res.json() || [];
+          }
+        } catch (e) {}
+        return [];
+      }));
+
+      const rawNodes = nodeArrays.flat();
+      const nodeMap = new Map();
+      rawNodes.forEach(n => {
+        if (n && n.path) {
+          if (!nodeMap.has(n.path) || (!nodeMap.get(n.path).project_dir && n.project_dir)) {
+            nodeMap.set(n.path, n);
+          }
+        }
+      });
+      state.treeNodes = Array.from(nodeMap.values());
     } catch (err) {
       console.warn('Failed to fetch tree nodes:', err);
     }
@@ -383,11 +405,26 @@
       }
 
       let assignedPath = sess.node_path;
-      if (!assignedPath && sess.cwd) {
+      if (!assignedPath && (sess.cwd || sess.git_remote)) {
         for (const n of state.treeNodes) {
+          // 1. Match by Git URL across any host
+          if (n.git_url && sess.git_remote && (sess.git_remote === n.git_url || normalizeGitURL(sess.git_remote) === normalizeGitURL(n.git_url))) {
+            assignedPath = n.path;
+            break;
+          }
+          // 2. Match by exact workspace prefix
           if (n.project_dir && (sess.cwd === n.project_dir || sess.cwd.startsWith(n.project_dir + '/'))) {
             assignedPath = n.path;
             break;
+          }
+          // 3. Cross-machine basename match (e.g. /home/dev4u/Work/ngl-android -> Modemobile/NGL/ngl-android)
+          if (n.path && sess.cwd) {
+            const groupLeaf = n.path.split('/').pop().toLowerCase();
+            const cwdParts = sess.cwd.toLowerCase().split('/');
+            if (cwdParts.includes(groupLeaf) && groupLeaf.length > 3) {
+              assignedPath = n.path;
+              break;
+            }
           }
         }
       }
