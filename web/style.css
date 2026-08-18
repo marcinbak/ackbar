@@ -664,7 +664,8 @@ body, html {
   opacity: 0;
   pointer-events: none;
   z-index: 0;
-  padding: 6px;
+  padding: 8px 12px 14px 12px;
+  box-sizing: border-box;
 }
 
 .terminal-tab-view.active {

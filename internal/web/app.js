@@ -1068,6 +1068,17 @@
         }
         return false;
       }
+      // 5. Shift+Tab to cycle Claude Code modes (send ANSI backtab \x1b[Z and prevent browser focus shift)
+      if (event.key === 'Tab' && event.shiftKey) {
+        if (event.type === 'keydown') {
+          event.preventDefault();
+          const currentTab = state.openTabs.get(tabId);
+          if (currentTab && currentTab.socket && currentTab.socket.readyState === WebSocket.OPEN) {
+            currentTab.socket.send('\x1b[Z');
+          }
+        }
+        return false;
+      }
       return true;
     });
 
