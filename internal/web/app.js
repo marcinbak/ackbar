@@ -97,6 +97,7 @@
     btnAddHost: document.getElementById('btnAddHost'),
     btnNewProject: document.getElementById('btnNewProject'),
     btnPurge: document.getElementById('btnPurge'),
+    btnRefreshPage: document.getElementById('btnRefreshPage'),
     btnDiscovery: document.getElementById('btnDiscovery'),
     btnToggleArchived: document.getElementById('btnToggleArchived'),
     btnCollapseAll: document.getElementById('btnCollapseAll'),
@@ -1027,6 +1028,48 @@
     }
 
     term.open(containerEl);
+
+    term.attachCustomKeyEventHandler((event) => {
+      // 1. Allow Cmd+R / Ctrl+R / F5 to reload webpage
+      if ((event.metaKey || event.ctrlKey) && (event.key === 'r' || event.key === 'R')) {
+        if (event.type === 'keydown') {
+          window.location.reload();
+        }
+        return false;
+      }
+      if (event.key === 'F5') {
+        if (event.type === 'keydown') {
+          window.location.reload();
+        }
+        return false;
+      }
+      // 2. Allow Cmd+W / Ctrl+W to close active tab
+      if ((event.metaKey || event.ctrlKey) && (event.key === 'w' || event.key === 'W')) {
+        if (event.type === 'keydown') {
+          closeTab(tabId);
+        }
+        return false;
+      }
+      // 3. Allow Cmd+K / Ctrl+K for command palette
+      if ((event.metaKey || event.ctrlKey) && (event.key === 'k' || event.key === 'K')) {
+        if (event.type === 'keydown') {
+          toggleCommandPalette();
+        }
+        return false;
+      }
+      // 4. Allow Cmd+1..9 to switch tabs
+      if ((event.metaKey || event.ctrlKey) && event.key >= '1' && event.key <= '9') {
+        if (event.type === 'keydown') {
+          const tabIndex = parseInt(event.key, 10) - 1;
+          const tabIds = Array.from(state.openTabs.keys());
+          if (tabIds[tabIndex]) {
+            activateTab(tabIds[tabIndex]);
+          }
+        }
+        return false;
+      }
+      return true;
+    });
 
     // Save in State
     const tabObj = {
@@ -2170,6 +2213,12 @@ ${session.last_prompt}
           await fetch('/v1/maintenance/purge', { method: 'POST' });
           await fetchSessions();
         }
+      });
+    }
+
+    if (el.btnRefreshPage) {
+      el.btnRefreshPage.addEventListener('click', () => {
+        window.location.reload();
       });
     }
 
