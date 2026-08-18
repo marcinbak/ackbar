@@ -172,6 +172,19 @@ func (s *Server) handlePurge(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Forward maintenance purge to remote hosts asynchronously
+	if hosts, err := s.db.ListHosts(); err == nil {
+		for _, h := range hosts {
+			if h.URL != "" && h.Name != "local" {
+				go func(targetURL string) {
+					req, _ := http.NewRequest(http.MethodPost, strings.TrimSuffix(targetURL, "/")+"/v1/maintenance/purge", nil)
+					client := &http.Client{Timeout: 5 * time.Second}
+					_, _ = client.Do(req)
+				}(h.URL)
+			}
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "purged_and_rehydrated"})
 }
@@ -1935,11 +1948,11 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 			tmuxLower := strings.ToLower(tmuxName)
 
 			agent := ""
-			if strings.Contains(cmdLower, "antigravity") || strings.Contains(cmdLower, "gemini") || strings.Contains(tmuxLower, "antigravity") || strings.Contains(tmuxLower, "gemini") {
+			if strings.Contains(cmdLower, "antigravity") || strings.Contains(cmdLower, "agy") || strings.Contains(tmuxLower, "antigravity") {
 				agent = "antigravity"
 			} else if strings.Contains(cmdLower, "codex") || strings.Contains(tmuxLower, "codex") {
 				agent = "codex"
-			} else if strings.Contains(cmdLower, "claude") || strings.Contains(tmuxLower, "claude") || tmuxName != "" {
+			} else if strings.Contains(cmdLower, "claude") || strings.Contains(tmuxLower, "claude") {
 				agent = "claude-code"
 			}
 
@@ -2064,12 +2077,23 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 			cmdLower := strings.ToLower(fullCmd)
 
 			agent := ""
-			if (strings.Contains(cmdLower, "claude") || strings.Contains(cmdLower, ".claude")) && !strings.Contains(cmdLower, "ackbar") {
-				agent = "claude-code"
-			} else if (strings.Contains(cmdLower, "antigravity") || strings.Contains(cmdLower, "gemini")) && !strings.Contains(cmdLower, "ackbar") {
-				agent = "antigravity"
-			} else if strings.Contains(cmdLower, "codex") && !strings.Contains(cmdLower, "ackbar") {
-				agent = "codex"
+			cmdFields := strings.Fields(fullCmd)
+			if len(cmdFields) > 0 {
+				binName := filepath.Base(cmdFields[0])
+				binLower := strings.ToLower(binName)
+				if binLower == "claude" || ((binLower == "node" || binLower == "bun") && (strings.Contains(cmdLower, "@anthropic-ai/claude-code") || strings.Contains(cmdLower, "claude-code") || strings.Contains(cmdLower, "/claude.js") || strings.Contains(cmdLower, "bin/claude"))) {
+					if !strings.Contains(cmdLower, "ackbar") && !strings.Contains(cmdLower, "jest-worker") && !strings.Contains(cmdLower, "react-native") && !strings.Contains(cmdLower, "yarn") {
+						agent = "claude-code"
+					}
+				} else if binLower == "antigravity" || binLower == "agy" || strings.Contains(cmdLower, "bin/agy") {
+					if !strings.Contains(cmdLower, "ackbar") {
+						agent = "antigravity"
+					}
+				} else if binLower == "codex" {
+					if !strings.Contains(cmdLower, "ackbar") {
+						agent = "codex"
+					}
+				}
 			}
 
 			if agent != "" && pidStr != "" {
