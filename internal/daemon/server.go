@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -89,6 +90,7 @@ func (s *Server) Mux() http.Handler {
 	mux.HandleFunc("/v1/nodes/move", s.handleNodeMove)
 	mux.HandleFunc("/v1/hosts", s.handleHosts)
 	mux.HandleFunc("/v1/hosts/update", s.handleHostUpdate)
+	mux.HandleFunc("/v1/hosts/reconnect", s.handleHostReconnect)
 	mux.HandleFunc("/v1/projects/create", s.handleCreateProject)
 	mux.HandleFunc("/v1/maintenance/purge", s.handlePurge)
 	mux.HandleFunc("/v1/version", s.handleVersion)
@@ -1352,6 +1354,84 @@ func (s *Server) handleHostUpdate(w http.ResponseWriter, r *http.Request) {
 		"version":     remoteVersion,
 		"target_os":   goos,
 		"target_arch": goarch,
+	})
+}
+
+func (s *Server) handleHostReconnect(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	hostName := r.URL.Query().Get("name")
+	if hostName == "" {
+		var req struct {
+			Name string `json:"name"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		hostName = req.Name
+	}
+	if hostName == "" {
+		http.Error(w, "Missing host name", http.StatusBadRequest)
+		return
+	}
+
+	host, err := s.db.GetHost(hostName)
+	if err != nil || host == nil {
+		if allHosts, lerr := s.db.ListHosts(); lerr == nil {
+			for _, h := range allHosts {
+				if h.Name == hostName || strings.HasSuffix(h.Name, "@"+hostName) || strings.Contains(h.Name, hostName) {
+					host = h
+					break
+				}
+			}
+		}
+	}
+	if host == nil {
+		http.Error(w, "Host not found", http.StatusNotFound)
+		return
+	}
+
+	sshTarget := host.SSHTarget
+	if sshTarget == "" {
+		sshTarget = host.Name
+	}
+
+	// Determine target local port from host.URL (e.g. http://127.0.0.1:7778 -> 7778)
+	port := "7778"
+	if u, err := url.Parse(host.URL); err == nil && u.Port() != "" {
+		port = u.Port()
+	}
+
+	// Kill existing dead tunnel processes on this port
+	_ = exec.Command("sh", "-c", fmt.Sprintf("lsof -ti:%s | xargs kill -9 2>/dev/null || true", port)).Run()
+
+	// Launch new resilient SSH tunnel
+	sshCmd := fmt.Sprintf("ssh -f -o ConnectTimeout=5 -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -N -L %s:127.0.0.1:7777 %s", port, sshTarget)
+	out, err := exec.Command("sh", "-c", sshCmd).CombinedOutput()
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to launch SSH tunnel: %v (%s)", err, strings.TrimSpace(string(out))), http.StatusInternalServerError)
+		return
+	}
+
+	time.Sleep(500 * time.Millisecond)
+	testURL := fmt.Sprintf("http://127.0.0.1:%s/v1/version", port)
+	client := http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Get(testURL)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		http.Error(w, "SSH tunnel spawned but remote daemon is unreachable", http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+
+	var vData map[string]interface{}
+	_ = json.NewDecoder(resp.Body).Decode(&vData)
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":  "success",
+		"message": fmt.Sprintf("Successfully reconnected SSH tunnel to '%s' (port %s)", host.Name, port),
+		"version": vData["version"],
 	})
 }
 

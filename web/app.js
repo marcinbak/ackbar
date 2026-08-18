@@ -165,6 +165,12 @@
         } catch (e) {}
       }
     });
+
+    // Periodic Multi-Host Live Health Probe & Auto-Discovery every 6 seconds
+    setInterval(() => {
+      fetchHosts();
+      connectSSE();
+    }, 6000);
   }
 
   // Fetch Version
@@ -181,13 +187,55 @@
     }
   }
 
-  // Fetch Hosts
+  // Fetch and Live-Probe Hosts
   async function fetchHosts() {
     try {
       const res = await fetch('/v1/hosts');
       if (res.ok) {
-        state.hosts = await res.json() || [];
+        const rawHosts = await res.json() || [];
+        const prevHosts = state.hosts || [];
+
+        // Probe each host's live health & latency
+        const probedHosts = await Promise.all(rawHosts.map(async (h) => {
+          const fetchUrl = h.url ? `${h.url.replace(/\/$/, '')}/v1/version` : '/v1/version';
+          const start = Date.now();
+          try {
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), 2500);
+            const vRes = await fetch(fetchUrl, { signal: controller.signal });
+            clearTimeout(timer);
+            if (vRes.ok) {
+              const vData = await vRes.json();
+              return {
+                ...h,
+                online: true,
+                version: vData.version || 'online',
+                latencyMs: Date.now() - start
+              };
+            }
+          } catch (e) {}
+          return {
+            ...h,
+            online: false,
+            latencyMs: null
+          };
+        }));
+
+        let hadHostStateChange = false;
+        probedHosts.forEach(ph => {
+          const prev = prevHosts.find(p => p.name === ph.name);
+          if (prev && prev.online !== ph.online) {
+            hadHostStateChange = true;
+          }
+        });
+
+        state.hosts = probedHosts;
         renderHosts();
+
+        if (hadHostStateChange) {
+          fetchSessions();
+          fetchTreeNodes();
+        }
       }
     } catch (err) {
       console.warn('Failed to fetch hosts:', err);
@@ -197,12 +245,19 @@
   function renderHosts() {
     if (!el.hostList) return;
     el.hostList.innerHTML = '';
-    const hostsToRender = [{ name: 'local', url: '' }, ...state.hosts.filter(h => h.name !== 'local')];
+    const localHost = state.hosts.find(h => h.name === 'local') || { name: 'local', url: '', online: true };
+    const remoteHosts = state.hosts.filter(h => h.name !== 'local');
+    const hostsToRender = [localHost, ...remoteHosts];
+
     hostsToRender.forEach(h => {
       const span = document.createElement('span');
-      span.className = 'host-badge';
-      span.textContent = `${formatHostLabel(h.name)} 🟢`;
-      span.title = `Click to inspect ${formatHostLabel(h.name)} (${h.name} daemon status, hooks, controls)`;
+      span.className = `host-badge ${h.online ? 'host-online' : 'host-offline'}`;
+      const statusDot = h.online ? '🟢' : '🔴';
+      span.textContent = `${formatHostLabel(h.name)} ${statusDot}`;
+      span.title = h.online
+        ? `${formatHostLabel(h.name)} is ONLINE (${h.latencyMs != null ? h.latencyMs + 'ms' : 'connected'}, v${h.version || '?'})`
+        : `${formatHostLabel(h.name)} is OFFLINE (Click to reconnect SSH tunnel / inspect)`;
+      span.style.cursor = 'pointer';
       span.addEventListener('click', () => showHostSummaryModal(h));
       el.hostList.appendChild(span);
     });
@@ -334,50 +389,74 @@
     return Array.from(merged.values());
   }
 
-  // Server-Sent Events (SSE) Stream for Live Updates
+  // Server-Sent Events (SSE) Multi-Host Stream for Live Updates
+  const activeEventSources = new Map();
+
   function connectSSE() {
-    const sse = new EventSource('/v1/events');
-    sse.onmessage = (event) => {
+    const hostsToConnect = [
+      { name: 'local', url: '' },
+      ...(state.hosts || []).filter(h => h.url && h.name !== 'local')
+    ];
+
+    hostsToConnect.forEach(h => {
+      const sseUrl = h.url ? `${h.url.replace(/\/$/, '')}/v1/events` : '/v1/events';
+      if (activeEventSources.has(h.name)) return;
+
       try {
-        const updatedSess = JSON.parse(event.data);
-        if (!updatedSess || !updatedSess.id) return;
+        const sse = new EventSource(sseUrl);
+        activeEventSources.set(h.name, sse);
 
-        if (updatedSess.deleted || updatedSess.activity === 'Deleted') {
-          const targetId = updatedSess.id;
-          const targetName = updatedSess.name;
-          const nativeId = updatedSess.native_id;
-          state.sessions = state.sessions.filter(s => s.id !== targetId && s.name !== targetName && (!nativeId || s.native_id !== nativeId));
-          closeTab(targetId);
-          if (nativeId) closeTab(nativeId);
-          closeTab(`details_${targetId}`);
-          if (nativeId) closeTab(`details_${nativeId}`);
-          for (const [tId, tabObj] of state.openTabs.entries()) {
-            if (tabObj.session && (tabObj.session.id === targetId || (nativeId && tabObj.session.native_id === nativeId))) {
-              closeTab(tId);
+        sse.onmessage = (event) => {
+          try {
+            const updatedSess = JSON.parse(event.data);
+            if (!updatedSess || !updatedSess.id) return;
+
+            if (h.name !== 'local') {
+              updatedSess.host = h.name;
+              updatedSess.hostUrl = h.url || '';
             }
+
+            if (updatedSess.deleted || updatedSess.activity === 'Deleted') {
+              const targetId = updatedSess.id;
+              const targetName = updatedSess.name;
+              const nativeId = updatedSess.native_id;
+              state.sessions = state.sessions.filter(s => s.id !== targetId && s.name !== targetName && (!nativeId || s.native_id !== nativeId));
+              closeTab(targetId);
+              if (nativeId) closeTab(nativeId);
+              closeTab(`details_${targetId}`);
+              if (nativeId) closeTab(`details_${nativeId}`);
+              for (const [tId, tabObj] of state.openTabs.entries()) {
+                if (tabObj.session && (tabObj.session.id === targetId || (nativeId && tabObj.session.native_id === nativeId))) {
+                  closeTab(tId);
+                }
+              }
+              renderTree();
+              return;
+            }
+
+            const idx = state.sessions.findIndex(s => s.id === updatedSess.id);
+            if (idx !== -1) {
+              state.sessions[idx] = { ...state.sessions[idx], ...updatedSess };
+            } else {
+              state.sessions.push(updatedSess);
+            }
+
+            state.sessions = deduplicateSessions(state.sessions);
+            renderTree();
+            updateOpenTabsState();
+          } catch (e) {
+            console.error(`[SSE ${h.name}] parse error:`, e);
           }
-          renderTree();
-          return;
-        }
+        };
 
-        const idx = state.sessions.findIndex(s => s.id === updatedSess.id);
-        if (idx !== -1) {
-          state.sessions[idx] = { ...state.sessions[idx], ...updatedSess };
-        } else {
-          state.sessions.push(updatedSess);
-        }
-
-        state.sessions = deduplicateSessions(state.sessions);
-        renderTree();
-        updateOpenTabsState();
+        sse.onerror = () => {
+          try { sse.close(); } catch (e) {}
+          activeEventSources.delete(h.name);
+        };
       } catch (e) {
-        console.error('SSE parse error:', e);
+        console.warn(`[SSE ${h.name}] failed to connect:`, e);
       }
-    };
-
-    sse.onerror = () => {
-      setTimeout(connectSSE, 3000);
-    };
+    });
   }
 
   // Render Sidebar Tree Hierarchy with Recursive Group Nesting & Drag-and-Drop
@@ -2651,12 +2730,44 @@ ${session.last_prompt}
 
       const footer = `
         ${!isLocal ? `<button class="btn btn-danger" id="hBtnDeleteHost" style="margin-right: auto;">🗑 Remove Host</button>` : ''}
-        ${!isLocal ? `<button class="btn btn-primary" id="hBtnUpdateHost" style="background: #06b6d4; border-color: #0891b2; color: #090a0f; font-weight: 600;">⬆ Update ackbard on ${h.name}</button>` : ''}
+        ${!isLocal && !isOnline ? `<button class="btn btn-primary" id="hBtnReconnectHost" style="background: #10b981; border-color: #059669; color: #fff; font-weight: 600;">🔄 Reconnect SSH Tunnel</button>` : ''}
+        ${!isLocal && isOnline ? `<button class="btn btn-primary" id="hBtnUpdateHost" style="background: #06b6d4; border-color: #0891b2; color: #090a0f; font-weight: 600;">⬆ Update ackbard on ${h.name}</button>` : ''}
         <button class="btn btn-secondary" id="hBtnPurgeHost">🔄 Safe Purge</button>
         <button class="btn btn-secondary" onclick="document.getElementById('modalOverlay').style.display='none'">Done</button>
       `;
 
       showModal(`Server Inspector: ${h.name}`, body, footer);
+
+      const reconnectBtn = document.getElementById('hBtnReconnectHost');
+      if (reconnectBtn) {
+        reconnectBtn.addEventListener('click', async () => {
+          reconnectBtn.disabled = true;
+          reconnectBtn.innerHTML = `<span>⏳</span> Reconnecting SSH tunnel...`;
+          try {
+            const res = await fetch('/v1/hosts/reconnect', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ name: h.name })
+            });
+            const data = await res.json();
+            if (res.ok && data.status === 'success') {
+              alert(`✅ ${data.message || 'SSH tunnel reconnected!'}`);
+              await fetchHosts();
+              await fetchSessions();
+              await fetchTreeNodes();
+              showHostSummaryModal(h);
+            } else {
+              alert(`❌ Reconnect failed: ${data.message || 'Unknown error'}`);
+              reconnectBtn.disabled = false;
+              reconnectBtn.innerHTML = `🔄 Reconnect SSH Tunnel`;
+            }
+          } catch (err) {
+            alert(`❌ Reconnect request failed: ${err.message}`);
+            reconnectBtn.disabled = false;
+            reconnectBtn.innerHTML = `🔄 Reconnect SSH Tunnel`;
+          }
+        });
+      }
 
       const updateBtn = document.getElementById('hBtnUpdateHost');
       if (updateBtn) {
