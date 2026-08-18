@@ -1996,10 +1996,11 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 				if existing != nil {
 					// Adopt and elevate existing session in place (no duplicate!)
 					existing.Managed = true
-					existing.State = StateWorking
+					if existing.State == StateEnded || existing.State == StateUnknown {
+						existing.State = StateWorking
+					}
 					existing.PID = pid
 					existing.TmuxName = tmuxName
-					existing.LastEventAt = time.Now()
 					_ = s.db.SaveSession(existing)
 					s.broadcast(existing)
 					_ = s.db.DeleteSession(fmt.Sprintf("%s:observed:proc-%d", hostName, pid))

@@ -105,15 +105,20 @@ func (c *ClaudeProvider) ParseHook(eventName string, payload []byte) (*daemon.Ev
 		event.Activity = "Session started"
 		event.StartedAt = time.Now()
 
-	case "stop", "sessionend":
+	case "sessionend", "exit":
 		event.State = daemon.StateEnded
 		event.Activity = "Session ended"
 
-	case "userpromptsubmit":
+	case "stop":
+		// Stop in Claude Code represents completion of the current assistant turn (awaiting next user prompt)
+		event.State = daemon.StateIdle
+		event.Activity = "Awaiting user prompt"
+
+	case "userpromptsubmit", "usersubmit":
 		event.State = daemon.StateWorking
 		event.Activity = "Processing user prompt"
 
-	case "permissionrequest":
+	case "permissionrequest", "permission_request", "permission":
 		event.State = daemon.StateBlocked
 		reason := p.RequestedPermission
 		if reason == "" {
@@ -126,9 +131,11 @@ func (c *ClaudeProvider) ParseHook(eventName string, payload []byte) (*daemon.Ev
 		}
 		event.Activity = "Waiting for permission: " + reason
 
-	case "pretooluse":
+	case "pretooluse", "pre_tool_use":
 		tool := p.ToolName
-		if tool == "AskUserQuestion" || tool == "ask_question" {
+		toolLower := strings.ToLower(tool)
+		if tool == "AskUserQuestion" || tool == "ask_question" || tool == "AskFollowupQuestion" ||
+			strings.Contains(toolLower, "question") || strings.Contains(toolLower, "askuser") {
 			event.State = daemon.StateBlocked
 			event.Blocked = &daemon.Blocked{
 				Kind:   daemon.BlockQuestion,
@@ -141,12 +148,13 @@ func (c *ClaudeProvider) ParseHook(eventName string, payload []byte) (*daemon.Ev
 			event.Activity = "Running tool: " + tool
 		}
 
-	case "posttooluse":
+	case "posttooluse", "post_tool_use":
 		event.State = daemon.StateWorking
 		event.Activity = "Tool execution completed"
 
 	case "notification":
-		if p.NotificationType == "agent_needs_input" {
+		notifLower := strings.ToLower(p.NotificationType)
+		if strings.Contains(notifLower, "input") || strings.Contains(notifLower, "question") {
 			event.State = daemon.StateBlocked
 			event.Blocked = &daemon.Blocked{
 				Kind:   daemon.BlockQuestion,
@@ -154,7 +162,7 @@ func (c *ClaudeProvider) ParseHook(eventName string, payload []byte) (*daemon.Ev
 				Since:  time.Now(),
 			}
 			event.Activity = "Waiting for user input"
-		} else if p.NotificationType == "permission_prompt" {
+		} else if strings.Contains(notifLower, "permission") || strings.Contains(notifLower, "prompt") || strings.Contains(notifLower, "approval") {
 			event.State = daemon.StateBlocked
 			event.Blocked = &daemon.Blocked{
 				Kind:   daemon.BlockPermission,
@@ -162,6 +170,9 @@ func (c *ClaudeProvider) ParseHook(eventName string, payload []byte) (*daemon.Ev
 				Since:  time.Now(),
 			}
 			event.Activity = "Waiting for tool authorization"
+		} else {
+			event.State = daemon.StateWorking
+			event.Activity = "Notification: " + p.NotificationType
 		}
 
 	default:
