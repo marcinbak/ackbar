@@ -738,7 +738,17 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 	// 1. Forward to remote host if specified
 	if req.Host != "" && req.Host != "local" {
 		hostRec, err := s.db.GetHost(req.Host)
-		if err == nil && hostRec != nil && hostRec.URL != "" {
+		if err != nil || hostRec == nil {
+			if allHosts, lerr := s.db.ListHosts(); lerr == nil {
+				for _, h := range allHosts {
+					if h.Name == req.Host || strings.HasSuffix(h.Name, "@"+req.Host) || strings.Contains(h.Name, req.Host) {
+						hostRec = h
+						break
+					}
+				}
+			}
+		}
+		if hostRec != nil && hostRec.URL != "" {
 			targetURL := strings.TrimSuffix(hostRec.URL, "/") + "/v1/sessions/spawn"
 			payload, _ := json.Marshal(map[string]string{
 				"agent": req.Agent,
@@ -753,6 +763,9 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(resp.StatusCode)
 			_, _ = io.Copy(w, resp.Body)
+			return
+		} else {
+			http.Error(w, fmt.Sprintf("Remote host '%s' not found or unreachable", req.Host), http.StatusNotFound)
 			return
 		}
 	}

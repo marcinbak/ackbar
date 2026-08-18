@@ -21,7 +21,11 @@ func Spawn(ctx context.Context, sessionName, cwd, command string) error {
 		args = append(args, "-c", cwd)
 	}
 	if command != "" {
-		args = append(args, "bash", "-l", "-c", fmt.Sprintf("export PATH=\"$HOME/.local/bin:$HOME/.npm-global/bin:$PATH\"; %s; exec bash -l", command))
+		cdPrefix := ""
+		if cwd != "" {
+			cdPrefix = fmt.Sprintf("cd %q 2>/dev/null || true; ", cwd)
+		}
+		args = append(args, "bash", "-l", "-c", fmt.Sprintf("%sexport PATH=\"$HOME/.local/bin:$HOME/.npm-global/bin:$PATH\"; %s; exec bash -l", cdPrefix, command))
 	}
 
 	cmd := exec.CommandContext(ctx, "tmux", args...)
