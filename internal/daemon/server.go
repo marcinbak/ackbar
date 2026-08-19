@@ -1921,10 +1921,19 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 						changed = true
 					}
 				}
-			} else if sess.Agent == "antigravity" && sess.Cwd != "" {
+			} else if sess.Agent == "antigravity" {
 				if title := ReadAntigravitySessionTitle(sess.Cwd, sess.NativeID); title != "" && title != sess.Name && !strings.HasPrefix(title, "<") {
 					sess.Name = title
 					changed = true
+				}
+				home, _ := os.UserHomeDir()
+				if home != "" && sess.NativeID != "" {
+					logPath := filepath.Join(home, ".gemini", "antigravity", "brain", sess.NativeID, ".system_generated", "logs", "transcript.jsonl")
+					if realCwd := extractAntigravityWorkspace(logPath, home); realCwd != "" && realCwd != sess.Cwd {
+						sess.Cwd = realCwd
+						sess.ProjectKey = GetProjectKey(realCwd)
+						changed = true
+					}
 				}
 			}
 			if changed {
@@ -2324,7 +2333,7 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 					existing, _ := s.db.GetSession(sessID)
 					if existing == nil {
 						title := ReadAntigravitySessionTitle("", convID)
-						cwd := ""
+						cwd := extractAntigravityWorkspace(logPath, home)
 						firstPrompt := ""
 						lastPrompt := ""
 						modTime := time.Now()
@@ -2352,29 +2361,6 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 												firstPrompt = clean
 											}
 											lastPrompt = clean
-										}
-									}
-									if cwd == "" && strings.Contains(step.Content, "/Users/") {
-										for _, cl := range strings.Split(step.Content, "\n") {
-											if strings.Contains(cl, " -> ") && strings.Contains(cl, "/Users/") {
-												parts := strings.Split(cl, " -> ")
-												cand := strings.TrimSpace(parts[0])
-												if dirExists(cand) && cand != home && !strings.Contains(cand, "/.gemini") {
-													cwd = cand
-													break
-												}
-											}
-										}
-										if cwd == "" {
-											idx := strings.Index(step.Content, "/Users/")
-											sub := step.Content[idx:]
-											endIdx := strings.IndexAny(sub, " \",\n\r")
-											if endIdx != -1 {
-												cand := sub[:endIdx]
-												if dirExists(cand) && cand != home && !strings.Contains(cand, "/.gemini") {
-													cwd = cand
-												}
-											}
 										}
 									}
 								}
@@ -2811,6 +2797,79 @@ func ReadAntigravitySessionTitle(cwd, sessionID string) string {
 				for _, w := range words {
 					if !strings.HasPrefix(w, "file:") && !strings.HasPrefix(w, "git@") && !strings.Contains(w, "Users/") && len(w) >= 5 {
 						return truncateTitle(w)
+					}
+				}
+			}
+		}
+	}
+
+	return ""
+}
+
+func extractAntigravityWorkspace(logPath, home string) string {
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		return ""
+	}
+	lines := strings.Split(string(data), "\n")
+
+	// 1. Scan for user_information mapping: "/path -> corpus"
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if strings.Contains(line, " -> ") {
+			idx := strings.Index(line, " -> ")
+			startIdx := strings.LastIndexAny(line[:idx], " \t\n\r\"'[]")
+			if startIdx == -1 {
+				startIdx = 0
+			} else {
+				startIdx++
+			}
+			cand := strings.TrimSpace(line[startIdx:idx])
+			cand = strings.TrimPrefix(cand, "file://")
+			if dirExists(cand) && cand != home && !strings.Contains(cand, "/.gemini") {
+				return cand
+			}
+		}
+	}
+
+	// 2. Scan tool calls in first 50 steps for authoritative workspace paths
+	maxLines := len(lines)
+	if maxLines > 50 {
+		maxLines = 50
+	}
+	for i := 0; i < maxLines; i++ {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		var step struct {
+			ToolCalls []struct {
+				Name string                 `json:"name"`
+				Args map[string]interface{} `json:"args"`
+			} `json:"tool_calls"`
+		}
+		if err := json.Unmarshal([]byte(line), &step); err == nil {
+			for _, tc := range step.ToolCalls {
+				for _, k := range []string{"Cwd", "DirectoryPath", "SearchPath"} {
+					if v, ok := tc.Args[k]; ok {
+						if s, ok := v.(string); ok && s != "" {
+							s = strings.Trim(s, "\"")
+							if dirExists(s) && s != home && !strings.Contains(s, "/.gemini") {
+								return s
+							}
+						}
+					}
+				}
+				if v, ok := tc.Args["AbsolutePath"]; ok {
+					if s, ok := v.(string); ok && s != "" {
+						s = strings.Trim(s, "\"")
+						dir := filepath.Dir(s)
+						if dirExists(dir) && dir != home && !strings.Contains(dir, "/.gemini") {
+							return dir
+						}
 					}
 				}
 			}
