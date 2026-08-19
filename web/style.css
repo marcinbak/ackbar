@@ -448,6 +448,28 @@ body, html {
   font-family: var(--font-mono);
 }
 
+.badge-time {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--text-dim);
+  background: rgba(255, 255, 255, 0.04);
+  padding: 1px 4px;
+  border-radius: 4px;
+  white-space: nowrap;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.badge-time.time-recent {
+  color: var(--accent-green);
+  border-color: rgba(34, 197, 94, 0.25);
+  background: rgba(34, 197, 94, 0.08);
+}
+
+.badge-time.time-today {
+  color: var(--accent-cyan);
+  border-color: rgba(6, 182, 212, 0.2);
+}
+
 .sb-branch {
   color: #a5b4fc !important;
   font-weight: 500;

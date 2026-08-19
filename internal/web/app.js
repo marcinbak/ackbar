@@ -50,6 +50,40 @@
     return parts[parts.length - 1] || hostName;
   }
 
+  // Format relative timestamp (e.g. "2m", "1h", "yesterday", "Aug 18")
+  function formatRelativeTime(dateStr) {
+    if (!dateStr) return '';
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime()) || d.getTime() === 0) return '';
+    const now = new Date();
+    const diffSec = Math.floor((now - d) / 1000);
+    if (diffSec < 0) return 'just now';
+    if (diffSec < 60) return `${diffSec}s`;
+    const diffMin = Math.floor(diffSec / 60);
+    if (diffMin < 60) return `${diffMin}m`;
+    const diffHour = Math.floor(diffMin / 60);
+    if (diffHour < 24) return `${diffHour}h`;
+    const diffDays = Math.floor(diffHour / 24);
+    if (diffDays === 1) return 'yesterday';
+    if (diffDays < 7) return `${diffDays}d`;
+    return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  }
+
+  // Format full absolute timestamp
+  function formatFullDateTime(dateStr) {
+    if (!dateStr) return '';
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime()) || d.getTime() === 0) return '';
+    return d.toLocaleString(undefined, {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit'
+    });
+  }
+
   // State Emoji Mapping
   function getStateEmoji(session) {
     if (!session) return '⚪';
@@ -113,6 +147,7 @@
     sbModelBadge: document.getElementById('sbModelBadge'),
     sbPID: document.getElementById('sbPID'),
     sbModeToggle: document.getElementById('sbModeToggle'),
+    sbLastActive: document.getElementById('sbLastActive'),
     // Modal elements
     modalOverlay: document.getElementById('modalOverlay'),
     modalTitle: document.getElementById('modalTitle'),
@@ -777,6 +812,19 @@
       right.appendChild(hostBadge);
     }
 
+    const timeRel = formatRelativeTime(session.last_event_at || session.started_at);
+    if (timeRel) {
+      const timeBadge = document.createElement('span');
+      timeBadge.className = 'badge-time';
+      const d = new Date(session.last_event_at || session.started_at);
+      const diffHour = (new Date() - d) / (1000 * 60 * 60);
+      if (diffHour < 1) timeBadge.classList.add('time-recent');
+      else if (diffHour < 24) timeBadge.classList.add('time-today');
+      timeBadge.textContent = timeRel;
+      timeBadge.title = `Last Activity: ${formatFullDateTime(session.last_event_at || session.started_at)}`;
+      right.appendChild(timeBadge);
+    }
+
     row.appendChild(left);
     row.appendChild(right);
     return row;
@@ -958,6 +1006,10 @@
     titleSpan.className = 'tab-title';
     titleSpan.textContent = session.name || session.agent;
     titleSpan.title = session.name || session.agent;
+
+    const timeFull = formatFullDateTime(session.last_event_at || session.started_at);
+    const timeRel = formatRelativeTime(session.last_event_at || session.started_at);
+    tabEl.title = `${session.name || session.agent}\nHost: @${formatHostLabel(session.host || 'local')}${timeRel ? `\nLast Active: ${timeRel} (${timeFull})` : ''}`;
 
     titleWrap.appendChild(emojiSpan);
     titleWrap.appendChild(titleSpan);
@@ -1677,6 +1729,10 @@ ${session.last_prompt}
         if (emojiEl && tab.type === 'terminal') emojiEl.textContent = getStateEmoji(updatedSess);
         if (titleEl && tab.type !== 'doc') titleEl.textContent = updatedSess.name || updatedSess.agent;
 
+        const timeFull = formatFullDateTime(updatedSess.last_event_at || updatedSess.started_at);
+        const timeRel = formatRelativeTime(updatedSess.last_event_at || updatedSess.started_at);
+        tab.tabEl.title = `${updatedSess.name || updatedSess.agent}\nHost: @${formatHostLabel(updatedSess.host || 'local')}${timeRel ? `\nLast Active: ${timeRel} (${timeFull})` : ''}`;
+
         if (state.activeTabId === id) {
           updateStatusbar(updatedSess);
         }
@@ -1894,6 +1950,12 @@ ${session.last_prompt}
     if (el.sbContextGauge) el.sbContextGauge.textContent = session.context_pct ? `ctx: ${session.context_pct}%` : 'ctx: —';
     if (el.sbModelBadge) el.sbModelBadge.textContent = session.agent || 'claude';
     if (el.sbPID) el.sbPID.textContent = session.pid ? `PID ${session.pid}` : 'PID —';
+    if (el.sbLastActive) {
+      const timeRel = formatRelativeTime(session.last_event_at || session.started_at);
+      const timeFull = formatFullDateTime(session.last_event_at || session.started_at);
+      el.sbLastActive.textContent = timeRel ? `🕒 ${timeRel}` : '🕒 —';
+      el.sbLastActive.title = timeFull ? `Last activity: ${timeFull}` : 'Last activity unknown';
+    }
   }
 
   function resetStatusbar() {
@@ -1904,6 +1966,10 @@ ${session.last_prompt}
     if (el.sbContextGauge) el.sbContextGauge.textContent = 'ctx: —';
     if (el.sbModelBadge) el.sbModelBadge.textContent = 'claude';
     if (el.sbPID) el.sbPID.textContent = 'PID —';
+    if (el.sbLastActive) {
+      el.sbLastActive.textContent = '🕒 —';
+      el.sbLastActive.title = 'No active session';
+    }
   }
 
   // Setup Event Listeners & Global Shortcuts

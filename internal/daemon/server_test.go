@@ -88,7 +88,7 @@ func TestServer_Integration(t *testing.T) {
 	}
 
 	// Wait briefly for asynchronous background ingestion
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(300 * time.Millisecond)
 
 	// 2. Test GET Sessions
 	reqGet := httptest.NewRequest("GET", "/v1/sessions", nil)

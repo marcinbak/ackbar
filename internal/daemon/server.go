@@ -1916,6 +1916,10 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 						sess.ContextPct = meta.ContextPct
 						changed = true
 					}
+					if !meta.LastMessageAt.IsZero() && (sess.LastEventAt.IsZero() || meta.LastMessageAt.After(sess.LastEventAt)) {
+						sess.LastEventAt = meta.LastMessageAt
+						changed = true
+					}
 				}
 			} else if sess.Agent == "antigravity" && sess.Cwd != "" {
 				if title := ReadAntigravitySessionTitle(sess.Cwd, sess.NativeID); title != "" && title != sess.Name && !strings.HasPrefix(title, "<") {
@@ -2473,6 +2477,7 @@ type SessionMeta struct {
 	Version       string
 	GitBranch     string
 	ContextPct    int
+	LastMessageAt time.Time
 }
 
 func getModelContextLimit(modelName string) int {
@@ -2658,6 +2663,11 @@ func ReadClaudeSessionMeta(cwd, sessionID string) *SessionMeta {
 	}
 
 	for _, filePath := range targetFiles {
+		if info, serr := os.Stat(filePath); serr == nil {
+			if metaInfo.LastMessageAt.IsZero() || info.ModTime().After(metaInfo.LastMessageAt) {
+				metaInfo.LastMessageAt = info.ModTime()
+			}
+		}
 		if data, rerr := os.ReadFile(filePath); rerr == nil {
 			lines := strings.Split(string(data), "\n")
 			for _, line := range lines {

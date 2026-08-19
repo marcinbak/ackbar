@@ -228,11 +228,12 @@ func (c *ClaudeProvider) CheckHookConfig() (bool, string, error) {
 }
 
 type SessionMeta struct {
-	Title      string
-	Entrypoint string
-	Kind       string
-	Version    string
-	ContextPct int
+	Title         string
+	Entrypoint    string
+	Kind          string
+	Version       string
+	ContextPct    int
+	LastMessageAt time.Time
 }
 
 func getModelContextLimit(modelName string) int {
@@ -396,6 +397,24 @@ func ReadClaudeSessionMeta(cwd, sessionID string) *SessionMeta {
 								metaInfo.Version = meta.Version
 							}
 							break
+						}
+					}
+				}
+			}
+		}
+	}
+
+	if cwd != "" {
+		encodedCwd := strings.ReplaceAll(cwd, "/", "-")
+		projDir := filepath.Join(home, ".claude", "projects", encodedCwd)
+		if files, err := os.ReadDir(projDir); err == nil {
+			for _, f := range files {
+				if strings.HasSuffix(f.Name(), ".jsonl") {
+					if targetID == "" || strings.Contains(f.Name(), targetID) {
+						if info, err := f.Info(); err == nil {
+							if metaInfo.LastMessageAt.IsZero() || info.ModTime().After(metaInfo.LastMessageAt) {
+								metaInfo.LastMessageAt = info.ModTime()
+							}
 						}
 					}
 				}
