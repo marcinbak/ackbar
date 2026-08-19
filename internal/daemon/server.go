@@ -3318,9 +3318,6 @@ func LaunchVSCode(path, host string) (string, error) {
 
 	if isRemote {
 		hostLabel := host
-		if idx := strings.LastIndex(hostLabel, "@"); idx != -1 {
-			hostLabel = hostLabel[idx+1:]
-		}
 		formattedPath := path
 		if !strings.HasPrefix(formattedPath, "/") {
 			formattedPath = "/" + formattedPath
@@ -3354,11 +3351,7 @@ func LaunchVSCode(path, host string) (string, error) {
 	codeBin := findCodeBinary()
 	var cliCmd *exec.Cmd
 	if isRemote {
-		hostLabel := host
-		if idx := strings.LastIndex(hostLabel, "@"); idx != -1 {
-			hostLabel = hostLabel[idx+1:]
-		}
-		cliCmd = exec.Command(codeBin, "--remote", fmt.Sprintf("ssh-remote+%s", hostLabel), path)
+		cliCmd = exec.Command(codeBin, "--remote", fmt.Sprintf("ssh-remote+%s", host), path)
 	} else {
 		cliCmd = exec.Command(codeBin, path)
 	}

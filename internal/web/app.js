@@ -91,7 +91,7 @@
       return;
     }
     const isRemote = host && host !== 'local';
-    const hostLabel = (isRemote && host.includes('@')) ? host.split('@').pop() : (host || 'local');
+    const hostLabel = host || 'local';
     const formattedPath = cwd.startsWith('/') ? cwd : '/' + cwd;
     const directUri = isRemote 
       ? `vscode://vscode-remote/ssh-remote+${hostLabel}${formattedPath}` 
