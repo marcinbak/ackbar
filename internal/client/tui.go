@@ -1725,14 +1725,16 @@ func (m *Model) View() string {
 
 				var statusEmoji string
 				switch s.State {
-				case daemon.StateWorking, daemon.StateIdle:
-					statusEmoji = "🟢"
+				case daemon.StateWorking:
+					statusEmoji = "⚡"
 				case daemon.StateBlocked:
-					statusEmoji = "🔴"
-				case daemon.StateEnded, daemon.StateFailed:
-					statusEmoji = "💀"
-				default:
 					statusEmoji = "❓"
+				case daemon.StateIdle:
+					statusEmoji = "✅"
+				case daemon.StateEnded, daemon.StateFailed:
+					statusEmoji = "⚪"
+				default:
+					statusEmoji = "⚪"
 				}
 
 				managedStr := "(observed)"

@@ -284,7 +284,16 @@ func (s *Server) processHookEvent(p Provider, urlEventName string, headerHost st
 		sess.Roots = event.Roots
 	}
 	if event.Name != "" {
-		sess.Name = event.Name
+		if sess.Name == "" || sess.Name == sess.Agent || strings.HasPrefix(sess.Name, sess.Agent+" (") {
+			sess.Name = event.Name
+		} else if !strings.HasPrefix(event.Name, "<") {
+			// Only update if it came from an official title lookup
+			if sess.Agent == "claude-code" {
+				if meta := ReadClaudeSessionMeta(sess.Cwd, sess.NativeID); meta != nil && meta.Title != "" {
+					sess.Name = meta.Title
+				}
+			}
+		}
 	}
 	sess.State = event.State
 	sess.Blocked = event.Blocked

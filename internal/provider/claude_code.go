@@ -69,16 +69,18 @@ func (c *ClaudeProvider) ParseHook(eventName string, payload []byte) (*daemon.Ev
 		promptText = p.Name
 	}
 	if promptText == "" {
-		promptText = p.UserPrompt
-	}
-	if promptText == "" {
-		promptText = p.Prompt
+		promptText = ReadClaudeSessionTitle(p.Cwd, p.SessionID)
 	}
 	if promptText == "" {
 		promptText = p.Summary
 	}
-	if promptText == "" {
-		promptText = ReadClaudeSessionTitle(p.Cwd, p.SessionID)
+	// Only for initial session start or if no title exists anywhere, use user prompt
+	if promptText == "" && (strings.EqualFold(p.HookEventName, "sessionstart") || eventName == "SessionStart") {
+		if p.UserPrompt != "" {
+			promptText = p.UserPrompt
+		} else if p.Prompt != "" {
+			promptText = p.Prompt
+		}
 	}
 
 	if promptText != "" && !strings.HasPrefix(promptText, "<") {

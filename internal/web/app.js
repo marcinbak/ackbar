@@ -88,16 +88,16 @@
   function getStateEmoji(session) {
     if (!session) return '⚪';
     switch (session.state) {
-      case 1: // StateWorking
-        return '🟢';
-      case 2: // StateBlocked
-        return '🔴';
-      case 3: // StateIdle
-        return '🟡';
-      case 4: // StateEnded
+      case 1: // StateWorking (work in progress - agent is working)
+        return '⚡';
+      case 2: // StateBlocked (waiting for feedback - agent is asking a question and waiting for response)
+        return '❓';
+      case 3: // StateIdle (idle - completed work and not waiting for anything)
+        return '✅';
+      case 4: // StateEnded (not connected or status unknown)
         return '⚪';
       default:
-        return session.managed ? '🟢' : '⚪';
+        return session.managed ? '✅' : '⚪';
     }
   }
 
@@ -769,8 +769,8 @@
     const dot = document.createElement('span');
     dot.className = 'session-state-dot';
     dot.textContent = getStateEmoji(session);
-    const stateStr = session.state === 1 ? 'Working' : (session.state === 2 ? 'Blocked' : (session.state === 3 ? 'Idle' : 'Ended'));
-    dot.title = `Status: ${stateStr} (${isManaged ? 'Live tmux session' : 'Observed process/transcript'})`;
+    const stateStr = session.state === 1 ? 'Work in progress (agent is working)' : (session.state === 2 ? 'Waiting for feedback (agent is asking a question)' : (session.state === 3 ? 'Idle (completed work, not waiting)' : 'Not connected / Status unknown'));
+    dot.title = `Status: ${stateStr}\nMode: ${isManaged ? 'Live tmux session' : 'Observed process/transcript'}`;
 
     const name = document.createElement('span');
     name.className = 'session-name';

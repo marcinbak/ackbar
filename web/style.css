@@ -386,8 +386,8 @@ body, html {
 }
 
 .session-state-dot {
-  font-size: 11px;
-  width: 14px;
+  font-size: 13px;
+  width: 16px;
   text-align: center;
   flex-shrink: 0;
   display: inline-flex;
