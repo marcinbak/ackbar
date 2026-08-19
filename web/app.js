@@ -1390,7 +1390,7 @@ ${session.last_prompt}
     });
 
     detailsView.querySelector('#detBtnDocs').addEventListener('click', () => {
-      showProjectDocsModal(session.cwd, session.name, session.host);
+      showProjectDocsModal(session.cwd, session.name, session.host, session);
     });
 
     detailsView.querySelector('#detBtnVSCode').addEventListener('click', async () => {
@@ -1564,46 +1564,150 @@ ${session.last_prompt}
     handleTabOverflow();
   }
 
-  // Show Project Documents Auto-Discovery Modal
-  async function showProjectDocsModal(cwd, title, host = 'local') {
+  function escapeHtml(str) {
+    if (!str) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  }
+
+  function formatBytes(bytes) {
+    if (!bytes || bytes === 0) return '';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+  }
+
+  // Show Project Documents Auto-Discovery Modal with Real-Time Search and Categorization
+  async function showProjectDocsModal(cwd, title, host = 'local', session = null) {
     const isRemote = host && host !== 'local';
     const targetHost = state.hosts.find(h => h.name === host);
     const baseUrl = (isRemote && targetHost && targetHost.url) ? targetHost.url.replace(/\/$/, '') : '';
 
+    const agent = session?.agent || '';
+    const nativeId = session?.native_id || '';
+    const sessionId = session?.id || '';
+
     try {
-      const res = await fetch(`${baseUrl}/v1/documents?cwd=${encodeURIComponent(cwd || '')}`);
+      const qParams = new URLSearchParams({
+        cwd: cwd || '',
+        agent: agent,
+        native_id: nativeId,
+        session_id: sessionId
+      });
+      const res = await fetch(`${baseUrl}/v1/documents?${qParams.toString()}`);
       const docs = await res.json() || [];
 
       if (docs.length === 0) {
-        alert(`No markdown documents (task.md, AGENTS.md, README.md, etc.) found in project directory.`);
+        alert(`No markdown documents (task.md, AGENTS.md, README.md, docs/, etc.) found for ${title || cwd}.`);
         return;
       }
 
-      let bodyHtml = `<p style="color: var(--text-muted); margin-bottom: 12px;">Documents discovered for <strong>${title || cwd}</strong> ${isRemote ? `<span class="badge-host">@${formatHostLabel(host)}</span>` : ''}:</p>`;
-      bodyHtml += '<div style="display: flex; flex-direction: column; gap: 8px;">';
-
-      docs.forEach(d => {
-        bodyHtml += `
-          <div class="session-item" style="padding: 10px; border: 1px solid var(--border-color); cursor: pointer;" onclick="window.openDoc('${encodeURIComponent(d.path)}', '${encodeURIComponent(d.title)}', '${encodeURIComponent(host)}')">
-            <div style="display: flex; align-items: center; gap: 8px;">
-              <span style="font-size: 16px;">📄</span>
-              <div>
-                <div style="font-weight: 600; color: var(--text-main);">${d.title}</div>
-                <div style="font-size: 11px; color: var(--text-dim); font-family: var(--font-mono);">${d.path}</div>
+      const renderDocCards = (items) => {
+        if (items.length === 0) {
+          return `<div style="text-align: center; padding: 24px 0; color: var(--text-dim); font-size: 13px;">No documents match your search.</div>`;
+        }
+        return items.map((d, index) => {
+          const categoryClass = d.category || 'other';
+          const categoryBadge = d.category_label ? `<span class="doc-badge-tag ${categoryClass}">${d.category_label}</span>` : '';
+          const hostBadge = isRemote ? `<span class="badge-host">@${formatHostLabel(host)}</span>` : '';
+          
+          return `
+            <div class="doc-card-item ${index === 0 ? 'selected' : ''}" data-path="${encodeURIComponent(d.path)}" data-title="${encodeURIComponent(d.title)}" data-host="${encodeURIComponent(host)}">
+              <div class="doc-card-info">
+                <span style="font-size: 18px; flex-shrink: 0;">📄</span>
+                <div class="doc-card-details">
+                  <div class="doc-card-title-row">
+                    <span class="doc-card-title">${escapeHtml(d.title)}</span>
+                    ${categoryBadge}
+                    ${hostBadge}
+                  </div>
+                  <div class="doc-card-path" title="${escapeHtml(d.path)}">${escapeHtml(d.rel_path || d.path)}</div>
+                </div>
+              </div>
+              <div class="doc-card-meta">
+                ${d.size ? `<span style="font-size: 10px; color: var(--text-dim); font-family: var(--font-mono);">${formatBytes(d.size)}</span>` : ''}
               </div>
             </div>
-          </div>
-        `;
-      });
-      bodyHtml += '</div>';
-
-      window.openDoc = (p, t, h) => {
-        hideModal();
-        openDocViewerTab(decodeURIComponent(p), decodeURIComponent(t), decodeURIComponent(h || 'local'));
+          `;
+        }).join('');
       };
 
-      const footerHtml = `<button class="btn btn-secondary" onclick="document.getElementById('modalOverlay').style.display='none'">Close</button>`;
-      showModal('Project Markdown Documents', bodyHtml, footerHtml);
+      const bodyHtml = `
+        <div class="doc-search-box">
+          <input type="text" id="docSearchInput" class="doc-search-input" placeholder="🔍 Search documents by name, category, or path..." autocomplete="off">
+        </div>
+        <div class="doc-list-scrollable" id="docListContainer">
+          ${renderDocCards(docs)}
+        </div>
+      `;
+
+      const footerHtml = `
+        <span style="font-size: 11px; color: var(--text-dim); margin-right: auto;" id="docCountLabel">${docs.length} document${docs.length === 1 ? '' : 's'} found</span>
+        <button class="btn btn-secondary" onclick="document.getElementById('modalOverlay').style.display='none'">Close</button>
+      `;
+
+      showModal(`Project Documents — ${title || cwd}`, bodyHtml, footerHtml);
+
+      const searchInput = document.getElementById('docSearchInput');
+      const listContainer = document.getElementById('docListContainer');
+      const countLabel = document.getElementById('docCountLabel');
+
+      let currentFiltered = [...docs];
+
+      function attachItemClicks() {
+        if (!listContainer) return;
+        listContainer.querySelectorAll('.doc-card-item').forEach(card => {
+          card.addEventListener('click', () => {
+            const p = decodeURIComponent(card.dataset.path);
+            const t = decodeURIComponent(card.dataset.title);
+            const h = decodeURIComponent(card.dataset.host || 'local');
+            hideModal();
+            openDocViewerTab(p, t, h);
+          });
+        });
+      }
+
+      attachItemClicks();
+
+      if (searchInput) {
+        setTimeout(() => searchInput.focus(), 60);
+        searchInput.addEventListener('input', (e) => {
+          const query = e.target.value.toLowerCase().trim();
+          if (!query) {
+            currentFiltered = [...docs];
+          } else {
+            currentFiltered = docs.filter(d => {
+              const t = (d.title || '').toLowerCase();
+              const p = (d.path || '').toLowerCase();
+              const r = (d.rel_path || '').toLowerCase();
+              const c = (d.category_label || '').toLowerCase();
+              return t.includes(query) || p.includes(query) || r.includes(query) || c.includes(query);
+            });
+          }
+          if (listContainer) {
+            listContainer.innerHTML = renderDocCards(currentFiltered);
+            attachItemClicks();
+          }
+          if (countLabel) {
+            countLabel.textContent = `${currentFiltered.length} of ${docs.length} documents`;
+          }
+        });
+
+        searchInput.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            if (currentFiltered.length > 0) {
+              hideModal();
+              openDocViewerTab(currentFiltered[0].path, currentFiltered[0].title, host);
+            }
+          }
+        });
+      }
     } catch (err) {
       alert('Error fetching documents: ' + err.message);
     }
@@ -2159,7 +2263,7 @@ ${session.last_prompt}
     if (el.cmItemDocs) {
       el.cmItemDocs.addEventListener('click', () => {
         if (state.contextMenuSession) {
-          showProjectDocsModal(state.contextMenuSession.cwd, state.contextMenuSession.name, state.contextMenuSession.host);
+          showProjectDocsModal(state.contextMenuSession.cwd, state.contextMenuSession.name, state.contextMenuSession.host, state.contextMenuSession);
         }
       });
     }
@@ -2266,7 +2370,7 @@ ${session.last_prompt}
           if (dir) {
             const groupSess = state.sessions.find(s => s.node_path === state.contextMenuGroupPath || (s.cwd && s.cwd.startsWith(dir)));
             const host = groupSess ? groupSess.host : 'local';
-            showProjectDocsModal(dir, state.contextMenuGroupPath, host);
+            showProjectDocsModal(dir, state.contextMenuGroupPath, host, groupSess);
           } else {
             alert('This category subgroup does not have a linked filesystem directory.');
           }

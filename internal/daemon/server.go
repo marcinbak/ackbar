@@ -977,24 +977,29 @@ func getSpawnCmd(agent, tempUUID string) string {
 	}
 }
 
+func classifyDoc(name string) (category, label string, priority int) {
+	nl := strings.ToLower(name)
+	switch {
+	case nl == "task.md" || nl == "implementation_plan.md" || nl == "walkthrough.md":
+		return "plan", "Active Plan", 10
+	case strings.Contains(nl, "plan") || strings.Contains(nl, "todo") || strings.Contains(nl, "backlog"):
+		return "plan", "Plan / Task", 8
+	case nl == "agents.md" || nl == "claude.md" || nl == "architecture.md":
+		return "guidelines", "Guidelines", 7
+	case nl == "readme.md" || strings.HasPrefix(nl, "readme"):
+		return "project", "Readme", 5
+	case strings.Contains(nl, "prd") || strings.Contains(nl, "rfc") || strings.Contains(nl, "spec"):
+		return "project", "Specification", 6
+	case strings.Contains(nl, "guide") || strings.Contains(nl, "handover"):
+		return "guidelines", "Guide", 6
+	default:
+		return "other", "Document", 2
+	}
+}
+
 func getDocPriority(name string) int {
-	nameLower := strings.ToLower(name)
-	if nameLower == "task.md" {
-		return 10
-	}
-	if nameLower == "implementation_plan.md" {
-		return 9
-	}
-	if nameLower == "walkthrough.md" {
-		return 8
-	}
-	if strings.Contains(nameLower, "plan") {
-		return 7
-	}
-	if strings.Contains(nameLower, "handover") {
-		return 6
-	}
-	return 0
+	_, _, prio := classifyDoc(name)
+	return prio
 }
 
 type AgentDiscoveryResult struct {
@@ -1028,10 +1033,14 @@ func (s *Server) handleAgentDiscovery(w http.ResponseWriter, r *http.Request) {
 }
 
 type DocumentItem struct {
-	Title    string `json:"title"`
-	Path     string `json:"path"`
-	RelPath  string `json:"rel_path"`
-	Priority int    `json:"priority"`
+	Title         string `json:"title"`
+	Path          string `json:"path"`
+	RelPath       string `json:"rel_path"`
+	Category      string `json:"category"`
+	CategoryLabel string `json:"category_label"`
+	Priority      int    `json:"priority"`
+	Size          int64  `json:"size"`
+	ModTime       string `json:"mod_time,omitempty"`
 }
 
 func (s *Server) handleDocuments(w http.ResponseWriter, r *http.Request) {
@@ -1041,6 +1050,25 @@ func (s *Server) handleDocuments(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cwd := r.URL.Query().Get("cwd")
+	agent := r.URL.Query().Get("agent")
+	nativeID := r.URL.Query().Get("native_id")
+	sessionID := r.URL.Query().Get("session_id")
+
+	// If sessionID is provided, attempt to resolve session metadata
+	if sessionID != "" {
+		if sess, err := s.db.GetSession(sessionID); err == nil && sess != nil {
+			if cwd == "" {
+				cwd = sess.Cwd
+			}
+			if agent == "" {
+				agent = sess.Agent
+			}
+			if nativeID == "" {
+				nativeID = sess.NativeID
+			}
+		}
+	}
+
 	if cwd == "" {
 		cwd = os.Getenv("HOME")
 	}
@@ -1048,47 +1076,106 @@ func (s *Server) handleDocuments(w http.ResponseWriter, r *http.Request) {
 	var docs []DocumentItem
 	seen := make(map[string]bool)
 
-	// Scan current directory for key markdown documents
-	checkFiles := []string{
-		"task.md", "implementation_plan.md", "walkthrough.md",
-		"AGENTS.md", "README.md", "backlog.md",
+	addDoc := func(fullPath, title, relPath, category, categoryLabel string, priority int) {
+		if seen[fullPath] {
+			return
+		}
+		fi, err := os.Stat(fullPath)
+		if err != nil || fi.IsDir() {
+			return
+		}
+		seen[fullPath] = true
+		docs = append(docs, DocumentItem{
+			Title:         title,
+			Path:          fullPath,
+			RelPath:       relPath,
+			Category:      category,
+			CategoryLabel: categoryLabel,
+			Priority:      priority,
+			Size:          fi.Size(),
+			ModTime:       fi.ModTime().Format(time.RFC3339),
+		})
 	}
 
-	for _, name := range checkFiles {
-		fullPath := filepath.Join(cwd, name)
-		if _, err := os.Stat(fullPath); err == nil && !seen[fullPath] {
-			seen[fullPath] = true
-			docs = append(docs, DocumentItem{
-				Title:    name,
-				Path:     fullPath,
-				RelPath:  name,
-				Priority: getDocPriority(name),
+	// 1. Scan root project directory for markdown files
+	if entries, err := os.ReadDir(cwd); err == nil {
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			name := e.Name()
+			nameLower := strings.ToLower(name)
+			if strings.HasSuffix(nameLower, ".md") || strings.HasSuffix(nameLower, ".markdown") {
+				full := filepath.Join(cwd, name)
+				cat, label, prio := classifyDoc(name)
+				addDoc(full, name, name, cat, label, prio)
+			}
+		}
+	}
+
+	// 2. Scan docs/ and doc/ subdirectories (up to 3 levels deep)
+	for _, docDirName := range []string{"docs", "doc", "documentation"} {
+		docDir := filepath.Join(cwd, docDirName)
+		if dirExists(docDir) {
+			_ = filepath.WalkDir(docDir, func(p string, d fs.DirEntry, err error) error {
+				if err != nil || d == nil {
+					return nil
+				}
+				if d.IsDir() {
+					rel, _ := filepath.Rel(docDir, p)
+					if strings.Count(rel, string(filepath.Separator)) > 3 {
+						return filepath.SkipDir
+					}
+					return nil
+				}
+				nameLower := strings.ToLower(d.Name())
+				if strings.HasSuffix(nameLower, ".md") || strings.HasSuffix(nameLower, ".markdown") {
+					rel, _ := filepath.Rel(cwd, p)
+					addDoc(p, d.Name(), rel, "docs", "Project Docs", 4)
+				}
+				return nil
 			})
 		}
 	}
 
-	// Scan Antigravity brain artifact markdown files
-	home, _ := os.UserHomeDir()
-	if home != "" {
-		brainDir := filepath.Join(home, ".gemini", "antigravity", "brain")
-		if entries, err := os.ReadDir(brainDir); err == nil {
-			for _, conv := range entries {
-				if conv.IsDir() {
-					convPath := filepath.Join(brainDir, conv.Name())
-					if files, ferr := os.ReadDir(convPath); ferr == nil {
-						for _, f := range files {
-							if strings.HasSuffix(f.Name(), ".md") {
-								full := filepath.Join(convPath, f.Name())
-								if !seen[full] {
-									seen[full] = true
-									docs = append(docs, DocumentItem{
-										Title:    fmt.Sprintf("Antigravity: %s", f.Name()),
-										Path:     full,
-										RelPath:  f.Name(),
-										Priority: getDocPriority(f.Name()),
-									})
-								}
+	// 3. Scan .claude/ directory if present
+	claudeDir := filepath.Join(cwd, ".claude")
+	if dirExists(claudeDir) {
+		_ = filepath.WalkDir(claudeDir, func(p string, d fs.DirEntry, err error) error {
+			if err != nil || d == nil {
+				return nil
+			}
+			if !d.IsDir() {
+				nameLower := strings.ToLower(d.Name())
+				if strings.HasSuffix(nameLower, ".md") {
+					rel, _ := filepath.Rel(cwd, p)
+					cat, label, prio := classifyDoc(d.Name())
+					if cat == "other" {
+						cat, label = "plan", "Claude Plan"
+					}
+					addDoc(p, d.Name(), rel, cat, label, prio)
+				}
+			}
+			return nil
+		})
+	}
+
+	// 4. Antigravity Brain Artifacts — ONLY for the specific active session!
+	// NEVER dump all past Antigravity conversation brain folders into unrelated sessions!
+	if (agent == "antigravity" || strings.Contains(strings.ToLower(agent), "antigravity") || strings.Contains(strings.ToLower(agent), "agy")) && nativeID != "" {
+		home, _ := os.UserHomeDir()
+		if home != "" {
+			convBrainDir := filepath.Join(home, ".gemini", "antigravity", "brain", nativeID)
+			if dirExists(convBrainDir) {
+				if files, ferr := os.ReadDir(convBrainDir); ferr == nil {
+					for _, f := range files {
+						if !f.IsDir() && strings.HasSuffix(f.Name(), ".md") {
+							full := filepath.Join(convBrainDir, f.Name())
+							cat, label, prio := classifyDoc(f.Name())
+							if cat == "other" {
+								cat, label = "plan", "Antigravity Plan"
 							}
+							addDoc(full, fmt.Sprintf("⚡ %s", f.Name()), f.Name(), cat, label, prio+5)
 						}
 					}
 				}
@@ -1096,9 +1183,15 @@ func (s *Server) handleDocuments(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Sort by priority descending
+	// Sort by Priority descending, then ModTime descending, then Title
 	sort.Slice(docs, func(i, j int) bool {
-		return docs[i].Priority > docs[j].Priority
+		if docs[i].Priority != docs[j].Priority {
+			return docs[i].Priority > docs[j].Priority
+		}
+		if docs[i].ModTime != docs[j].ModTime {
+			return docs[i].ModTime > docs[j].ModTime
+		}
+		return docs[i].Title < docs[j].Title
 	})
 
 	w.Header().Set("Content-Type", "application/json")
