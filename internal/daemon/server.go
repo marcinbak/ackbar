@@ -93,6 +93,7 @@ func (s *Server) Mux() http.Handler {
 	mux.HandleFunc("/v1/hosts/reconnect", s.handleHostReconnect)
 	mux.HandleFunc("/v1/projects/create", s.handleCreateProject)
 	mux.HandleFunc("/v1/maintenance/purge", s.handlePurge)
+	mux.HandleFunc("/v1/editor/open", s.handleEditorOpen)
 	mux.HandleFunc("/v1/version", s.handleVersion)
 	mux.HandleFunc("/v1/shutdown", s.handleShutdown)
 	mux.HandleFunc("/v1/events", s.handleEvents)
@@ -659,9 +660,76 @@ func (s *Server) handleSessionControl(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"renamed"}`))
 
+	case "open_editor":
+		if sess.Cwd == "" {
+			http.Error(w, "Session Cwd is empty", http.StatusBadRequest)
+			return
+		}
+		codeBin := findCodeBinary()
+		var cmd *exec.Cmd
+		if sess.Host == "" || sess.Host == "local" {
+			cmd = exec.Command(codeBin, sess.Cwd)
+		} else {
+			hostLabel := sess.Host
+			if idx := strings.LastIndex(hostLabel, "@"); idx != -1 {
+				hostLabel = hostLabel[idx+1:]
+			}
+			cmd = exec.Command(codeBin, "--remote", fmt.Sprintf("ssh-remote+%s", hostLabel), sess.Cwd)
+		}
+		if err := cmd.Start(); err != nil {
+			http.Error(w, fmt.Sprintf("Failed to launch VS Code (%s): %v", codeBin, err), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "opened", "path": sess.Cwd, "host": sess.Host})
+
 	default:
 		http.Error(w, "Unknown action", http.StatusBadRequest)
 	}
+}
+
+func (s *Server) handleEditorOpen(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	path := r.URL.Query().Get("path")
+	host := r.URL.Query().Get("host")
+	if path == "" {
+		var bodyData struct {
+			Path string `json:"path"`
+			Host string `json:"host"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&bodyData)
+		path = bodyData.Path
+		if host == "" {
+			host = bodyData.Host
+		}
+	}
+	if path == "" {
+		http.Error(w, "Missing path parameter", http.StatusBadRequest)
+		return
+	}
+
+	codeBin := findCodeBinary()
+	var cmd *exec.Cmd
+	if host == "" || host == "local" {
+		cmd = exec.Command(codeBin, path)
+	} else {
+		hostLabel := host
+		if idx := strings.LastIndex(hostLabel, "@"); idx != -1 {
+			hostLabel = hostLabel[idx+1:]
+		}
+		cmd = exec.Command(codeBin, "--remote", fmt.Sprintf("ssh-remote+%s", hostLabel), path)
+	}
+
+	if err := cmd.Start(); err != nil {
+		http.Error(w, fmt.Sprintf("Failed to launch VS Code (%s): %v", codeBin, err), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "opened", "path": path, "host": host})
 }
 
 func deleteSessionFilesOnDisk(sess *Session) {
@@ -3245,4 +3313,24 @@ func isUUID(s string) bool {
 		}
 	}
 	return true
+}
+
+func findCodeBinary() string {
+	if p, err := exec.LookPath("code"); err == nil {
+		return p
+	}
+	candidates := []string{
+		"/usr/local/bin/code",
+		"/opt/homebrew/bin/code",
+		"/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code",
+		"/Applications/Visual Studio Code - Insiders.app/Contents/Resources/app/bin/code",
+		"/Applications/Cursor.app/Contents/Resources/app/bin/cursor",
+		"/Applications/Windsurf.app/Contents/Resources/app/bin/windsurf",
+	}
+	for _, c := range candidates {
+		if _, err := os.Stat(c); err == nil {
+			return c
+		}
+	}
+	return "code"
 }

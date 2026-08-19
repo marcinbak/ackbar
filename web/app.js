@@ -84,6 +84,27 @@
     });
   }
 
+  // Open Path in VS Code (Local or Remote)
+  async function openInVSCode(cwd, host = 'local') {
+    if (!cwd) {
+      alert('Workspace directory is empty.');
+      return;
+    }
+    try {
+      const res = await fetch('/v1/editor/open', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: cwd, host: host || 'local' })
+      });
+      if (!res.ok) {
+        const txt = await res.text();
+        alert(`Failed to open in VS Code: ${txt}`);
+      }
+    } catch (err) {
+      alert(`Error launching VS Code: ${err.message}`);
+    }
+  }
+
   // State Emoji Mapping
   function getStateEmoji(session) {
     if (!session) return '⚪';
@@ -1357,8 +1378,7 @@ ${session.last_prompt}
     });
 
     detailsView.querySelector('#detBtnVSCode').addEventListener('click', async () => {
-      const baseUrl = session.hostUrl ? session.hostUrl.replace(/\/$/, '') : '';
-      await fetch(`${baseUrl}/v1/sessions/control?id=${encodeURIComponent(session.id)}&action=open_editor`, { method: 'POST' });
+      openInVSCode(session.cwd, session.host);
     });
 
     detailsView.querySelector('#detBtnKill').addEventListener('click', async () => {
@@ -1502,7 +1522,7 @@ ${session.last_prompt}
     if (el.terminalViewport) el.terminalViewport.appendChild(containerEl);
 
     docContainer.querySelector('#docBtnVSCode').addEventListener('click', async () => {
-      await fetch(`/v1/sessions/control?action=open_editor&path=${encodeURIComponent(docPath)}`, { method: 'POST' });
+      openInVSCode(docPath, 'local');
     });
 
     state.openTabs.set(tabId, {
@@ -2100,9 +2120,7 @@ ${session.last_prompt}
     if (el.cmItemVSCode) {
       el.cmItemVSCode.addEventListener('click', async () => {
         if (state.contextMenuSession) {
-          const sess = state.contextMenuSession;
-          const baseUrl = sess.hostUrl ? sess.hostUrl.replace(/\/$/, '') : '';
-          await fetch(`${baseUrl}/v1/sessions/control?id=${encodeURIComponent(sess.id)}&action=open_editor`, { method: 'POST' });
+          openInVSCode(state.contextMenuSession.cwd, state.contextMenuSession.host);
         }
       });
     }
@@ -2199,7 +2217,7 @@ ${session.last_prompt}
           const node = state.treeNodes.find(n => n.path === state.contextMenuGroupPath);
           const dir = (node && node.project_dir) ? node.project_dir : '';
           if (dir) {
-            await fetch(`/v1/sessions/control?action=open_editor&path=${encodeURIComponent(dir)}`, { method: 'POST' });
+            openInVSCode(dir, 'local');
           } else {
             alert('This category subgroup does not have a linked filesystem directory.');
           }

@@ -1151,15 +1151,20 @@ func (m *Model) fetchDocsCmd(sess *daemon.Session) tea.Cmd {
 
 func (m *Model) openDocCmd(sess *daemon.Session, docName string) tea.Cmd {
 	return func() tea.Msg {
+		codeBin := findCodeBinary()
 		var cmd *exec.Cmd
 		fullPath := sess.Cwd + "/" + docName
-		if sess.Host == "local" {
-			cmd = exec.Command("code", fullPath)
+		if sess.Host == "local" || sess.Host == "" {
+			cmd = exec.Command(codeBin, fullPath)
 		} else {
-			cmd = exec.Command("code", "--remote", "ssh-remote+"+sess.Host, fullPath)
+			hostLabel := sess.Host
+			if idx := strings.LastIndex(hostLabel, "@"); idx != -1 {
+				hostLabel = hostLabel[idx+1:]
+			}
+			cmd = exec.Command(codeBin, "--remote", "ssh-remote+"+hostLabel, fullPath)
 		}
-		if err := cmd.Run(); err != nil {
-			return errorMsg("VS Code launcher 'code' not found or error: " + err.Error())
+		if err := cmd.Start(); err != nil {
+			return errorMsg("VS Code launcher error: " + err.Error())
 		}
 		return nil
 	}
@@ -1167,14 +1172,19 @@ func (m *Model) openDocCmd(sess *daemon.Session, docName string) tea.Cmd {
 
 func (m *Model) openCodeCmd(sess *daemon.Session) tea.Cmd {
 	return func() tea.Msg {
+		codeBin := findCodeBinary()
 		var cmd *exec.Cmd
-		if sess.Host == "local" {
-			cmd = exec.Command("code", sess.Cwd)
+		if sess.Host == "local" || sess.Host == "" {
+			cmd = exec.Command(codeBin, sess.Cwd)
 		} else {
-			cmd = exec.Command("code", "--remote", "ssh-remote+"+sess.Host, sess.Cwd)
+			hostLabel := sess.Host
+			if idx := strings.LastIndex(hostLabel, "@"); idx != -1 {
+				hostLabel = hostLabel[idx+1:]
+			}
+			cmd = exec.Command(codeBin, "--remote", "ssh-remote+"+hostLabel, sess.Cwd)
 		}
-		if err := cmd.Run(); err != nil {
-			return errorMsg("VS Code launcher 'code' not found or error: " + err.Error())
+		if err := cmd.Start(); err != nil {
+			return errorMsg("VS Code launcher error: " + err.Error())
 		}
 		return nil
 	}
@@ -2140,4 +2150,24 @@ func isPrintableInput(msg tea.KeyMsg) (string, bool) {
 		return "", false
 	}
 	return str, true
+}
+
+func findCodeBinary() string {
+	if p, err := exec.LookPath("code"); err == nil {
+		return p
+	}
+	candidates := []string{
+		"/usr/local/bin/code",
+		"/opt/homebrew/bin/code",
+		"/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code",
+		"/Applications/Visual Studio Code - Insiders.app/Contents/Resources/app/bin/code",
+		"/Applications/Cursor.app/Contents/Resources/app/bin/cursor",
+		"/Applications/Windsurf.app/Contents/Resources/app/bin/windsurf",
+	}
+	for _, c := range candidates {
+		if _, err := os.Stat(c); err == nil {
+			return c
+		}
+	}
+	return "code"
 }
