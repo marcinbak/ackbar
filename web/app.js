@@ -1390,7 +1390,7 @@ ${session.last_prompt}
     });
 
     detailsView.querySelector('#detBtnDocs').addEventListener('click', () => {
-      showProjectDocsModal(session.cwd, session.name);
+      showProjectDocsModal(session.cwd, session.name, session.host);
     });
 
     detailsView.querySelector('#detBtnVSCode').addEventListener('click', async () => {
@@ -1441,18 +1441,22 @@ ${session.last_prompt}
   }
 
   // Open In-UI Markdown Document Viewer Tab
-  async function openDocViewerTab(docPath, docTitle) {
+  async function openDocViewerTab(docPath, docTitle, host = 'local') {
     if (!docPath) return;
-    const tabId = `doc_${docPath.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
 
+    const tabId = `doc_${(host || 'local').replace(/[^a-zA-Z0-9_-]/g, '_')}_${docPath.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
     if (state.openTabs.has(tabId)) {
       activateTab(tabId);
       return;
     }
 
+    const isRemote = host && host !== 'local';
+    const targetHost = state.hosts.find(h => h.name === host);
+    const baseUrl = (isRemote && targetHost && targetHost.url) ? targetHost.url.replace(/\/$/, '') : '';
+
     let markdownContent = '# Loading document...';
     try {
-      const res = await fetch(`/v1/documents/content?path=${encodeURIComponent(docPath)}`);
+      const res = await fetch(`${baseUrl}/v1/documents/content?path=${encodeURIComponent(docPath)}`);
       if (res.ok) {
         const data = await res.json();
         markdownContent = data.content || '*(Document is empty)*';
@@ -1483,6 +1487,13 @@ ${session.last_prompt}
 
     titleWrap.appendChild(emojiSpan);
     titleWrap.appendChild(titleSpan);
+
+    if (isRemote) {
+      const hostSpan = document.createElement('span');
+      hostSpan.className = 'badge-host';
+      hostSpan.textContent = `@${formatHostLabel(host)}`;
+      titleWrap.appendChild(hostSpan);
+    }
 
     const closeBtn = document.createElement('button');
     closeBtn.className = 'tab-close-btn';
@@ -1522,7 +1533,7 @@ ${session.last_prompt}
     docContainer.innerHTML = `
       <div class="doc-viewer-header">
         <div>
-          <div class="doc-viewer-title">📄 ${docTitle || docPath.split('/').pop()}</div>
+          <div class="doc-viewer-title">📄 ${docTitle || docPath.split('/').pop()} ${isRemote ? `<span class="badge-host">@${formatHostLabel(host)}</span>` : ''}</div>
           <div class="doc-viewer-path">${docPath}</div>
         </div>
         <div>
@@ -1538,12 +1549,12 @@ ${session.last_prompt}
     if (el.terminalViewport) el.terminalViewport.appendChild(containerEl);
 
     docContainer.querySelector('#docBtnVSCode').addEventListener('click', async () => {
-      openInVSCode(docPath, 'local');
+      openInVSCode(docPath, host);
     });
 
     state.openTabs.set(tabId, {
       type: 'doc',
-      session: { name: docTitle, cwd: docPath },
+      session: { name: docTitle, cwd: docPath, host: host },
       containerEl,
       tabEl,
       fitAddon: { fit: () => {} }
@@ -1554,22 +1565,26 @@ ${session.last_prompt}
   }
 
   // Show Project Documents Auto-Discovery Modal
-  async function showProjectDocsModal(cwd, title) {
+  async function showProjectDocsModal(cwd, title, host = 'local') {
+    const isRemote = host && host !== 'local';
+    const targetHost = state.hosts.find(h => h.name === host);
+    const baseUrl = (isRemote && targetHost && targetHost.url) ? targetHost.url.replace(/\/$/, '') : '';
+
     try {
-      const res = await fetch(`/v1/documents?cwd=${encodeURIComponent(cwd || '')}`);
+      const res = await fetch(`${baseUrl}/v1/documents?cwd=${encodeURIComponent(cwd || '')}`);
       const docs = await res.json() || [];
 
       if (docs.length === 0) {
-        alert('No markdown documents (task.md, plan, etc.) found in project directory.');
+        alert(`No markdown documents (task.md, AGENTS.md, README.md, etc.) found in project directory.`);
         return;
       }
 
-      let bodyHtml = `<p style="color: var(--text-muted); margin-bottom: 12px;">Documents discovered for <strong>${title || cwd}</strong>:</p>`;
+      let bodyHtml = `<p style="color: var(--text-muted); margin-bottom: 12px;">Documents discovered for <strong>${title || cwd}</strong> ${isRemote ? `<span class="badge-host">@${formatHostLabel(host)}</span>` : ''}:</p>`;
       bodyHtml += '<div style="display: flex; flex-direction: column; gap: 8px;">';
 
       docs.forEach(d => {
         bodyHtml += `
-          <div class="session-item" style="padding: 10px; border: 1px solid var(--border-color); cursor: pointer;" onclick="window.openDoc('${encodeURIComponent(d.path)}', '${encodeURIComponent(d.title)}')">
+          <div class="session-item" style="padding: 10px; border: 1px solid var(--border-color); cursor: pointer;" onclick="window.openDoc('${encodeURIComponent(d.path)}', '${encodeURIComponent(d.title)}', '${encodeURIComponent(host)}')">
             <div style="display: flex; align-items: center; gap: 8px;">
               <span style="font-size: 16px;">📄</span>
               <div>
@@ -1582,9 +1597,9 @@ ${session.last_prompt}
       });
       bodyHtml += '</div>';
 
-      window.openDoc = (p, t) => {
+      window.openDoc = (p, t, h) => {
         hideModal();
-        openDocViewerTab(decodeURIComponent(p), decodeURIComponent(t));
+        openDocViewerTab(decodeURIComponent(p), decodeURIComponent(t), decodeURIComponent(h || 'local'));
       };
 
       const footerHtml = `<button class="btn btn-secondary" onclick="document.getElementById('modalOverlay').style.display='none'">Close</button>`;
@@ -2144,7 +2159,7 @@ ${session.last_prompt}
     if (el.cmItemDocs) {
       el.cmItemDocs.addEventListener('click', () => {
         if (state.contextMenuSession) {
-          showProjectDocsModal(state.contextMenuSession.cwd, state.contextMenuSession.name);
+          showProjectDocsModal(state.contextMenuSession.cwd, state.contextMenuSession.name, state.contextMenuSession.host);
         }
       });
     }
@@ -2248,7 +2263,13 @@ ${session.last_prompt}
         if (state.contextMenuGroupPath) {
           const node = state.treeNodes.find(n => n.path === state.contextMenuGroupPath);
           const dir = (node && node.project_dir) ? node.project_dir : '';
-          showProjectDocsModal(dir, state.contextMenuGroupPath);
+          if (dir) {
+            const groupSess = state.sessions.find(s => s.node_path === state.contextMenuGroupPath || (s.cwd && s.cwd.startsWith(dir)));
+            const host = groupSess ? groupSess.host : 'local';
+            showProjectDocsModal(dir, state.contextMenuGroupPath, host);
+          } else {
+            alert('This category subgroup does not have a linked filesystem directory.');
+          }
         }
       });
     }
