@@ -1172,18 +1172,10 @@ func (m *Model) openDocCmd(sess *daemon.Session, docName string) tea.Cmd {
 
 func (m *Model) openCodeCmd(sess *daemon.Session) tea.Cmd {
 	return func() tea.Msg {
-		codeBin := findCodeBinary()
-		var cmd *exec.Cmd
-		if sess.Host == "local" || sess.Host == "" {
-			cmd = exec.Command(codeBin, sess.Cwd)
-		} else {
-			hostLabel := sess.Host
-			if idx := strings.LastIndex(hostLabel, "@"); idx != -1 {
-				hostLabel = hostLabel[idx+1:]
-			}
-			cmd = exec.Command(codeBin, "--remote", "ssh-remote+"+hostLabel, sess.Cwd)
+		if sess == nil || sess.Cwd == "" {
+			return errorMsg("Session Cwd is empty")
 		}
-		if err := cmd.Start(); err != nil {
+		if _, err := daemon.LaunchVSCode(sess.Cwd, sess.Host); err != nil {
 			return errorMsg("VS Code launcher error: " + err.Error())
 		}
 		return nil

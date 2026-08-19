@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -665,23 +666,13 @@ func (s *Server) handleSessionControl(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Session Cwd is empty", http.StatusBadRequest)
 			return
 		}
-		codeBin := findCodeBinary()
-		var cmd *exec.Cmd
-		if sess.Host == "" || sess.Host == "local" {
-			cmd = exec.Command(codeBin, sess.Cwd)
-		} else {
-			hostLabel := sess.Host
-			if idx := strings.LastIndex(hostLabel, "@"); idx != -1 {
-				hostLabel = hostLabel[idx+1:]
-			}
-			cmd = exec.Command(codeBin, "--remote", fmt.Sprintf("ssh-remote+%s", hostLabel), sess.Cwd)
-		}
-		if err := cmd.Start(); err != nil {
-			http.Error(w, fmt.Sprintf("Failed to launch VS Code (%s): %v", codeBin, err), http.StatusInternalServerError)
+		uri, err := LaunchVSCode(sess.Cwd, sess.Host)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{"status": "opened", "path": sess.Cwd, "host": sess.Host})
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "opened", "path": sess.Cwd, "host": sess.Host, "uri": uri})
 
 	default:
 		http.Error(w, "Unknown action", http.StatusBadRequest)
@@ -711,25 +702,14 @@ func (s *Server) handleEditorOpen(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	codeBin := findCodeBinary()
-	var cmd *exec.Cmd
-	if host == "" || host == "local" {
-		cmd = exec.Command(codeBin, path)
-	} else {
-		hostLabel := host
-		if idx := strings.LastIndex(hostLabel, "@"); idx != -1 {
-			hostLabel = hostLabel[idx+1:]
-		}
-		cmd = exec.Command(codeBin, "--remote", fmt.Sprintf("ssh-remote+%s", hostLabel), path)
-	}
-
-	if err := cmd.Start(); err != nil {
-		http.Error(w, fmt.Sprintf("Failed to launch VS Code (%s): %v", codeBin, err), http.StatusInternalServerError)
+	uri, err := LaunchVSCode(path, host)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]string{"status": "opened", "path": path, "host": host})
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "opened", "path": path, "host": host, "uri": uri})
 }
 
 func deleteSessionFilesOnDisk(sess *Session) {
@@ -3313,6 +3293,85 @@ func isUUID(s string) bool {
 		}
 	}
 	return true
+}
+
+func cleanEnvForVSCode(env []string) []string {
+	var cleaned []string
+	for _, e := range env {
+		if strings.HasPrefix(e, "VSCODE_IPC_HOOK_CLI=") ||
+			strings.HasPrefix(e, "ELECTRON_RUN_AS_NODE=") ||
+			strings.HasPrefix(e, "NODE_OPTIONS=") {
+			continue
+		}
+		cleaned = append(cleaned, e)
+	}
+	return cleaned
+}
+
+func LaunchVSCode(path, host string) (string, error) {
+	if path == "" {
+		return "", fmt.Errorf("path is empty")
+	}
+
+	var vscodeURI string
+	isRemote := host != "" && host != "local"
+
+	if isRemote {
+		hostLabel := host
+		if idx := strings.LastIndex(hostLabel, "@"); idx != -1 {
+			hostLabel = hostLabel[idx+1:]
+		}
+		formattedPath := path
+		if !strings.HasPrefix(formattedPath, "/") {
+			formattedPath = "/" + formattedPath
+		}
+		vscodeURI = fmt.Sprintf("vscode://vscode-remote/ssh-remote+%s%s", hostLabel, formattedPath)
+	} else {
+		formattedPath := path
+		if !strings.HasPrefix(formattedPath, "/") {
+			formattedPath = "/" + formattedPath
+		}
+		vscodeURI = fmt.Sprintf("vscode://file%s", formattedPath)
+	}
+
+	var launchErr error
+	if runtime.GOOS == "darwin" {
+		cmd := exec.Command("open", vscodeURI)
+		if err := cmd.Start(); err == nil {
+			return vscodeURI, nil
+		} else {
+			launchErr = err
+		}
+	} else if runtime.GOOS == "linux" {
+		cmd := exec.Command("xdg-open", vscodeURI)
+		if err := cmd.Start(); err == nil {
+			return vscodeURI, nil
+		} else {
+			launchErr = err
+		}
+	}
+
+	codeBin := findCodeBinary()
+	var cliCmd *exec.Cmd
+	if isRemote {
+		hostLabel := host
+		if idx := strings.LastIndex(hostLabel, "@"); idx != -1 {
+			hostLabel = hostLabel[idx+1:]
+		}
+		cliCmd = exec.Command(codeBin, "--remote", fmt.Sprintf("ssh-remote+%s", hostLabel), path)
+	} else {
+		cliCmd = exec.Command(codeBin, path)
+	}
+	cliCmd.Env = cleanEnvForVSCode(os.Environ())
+
+	if err := cliCmd.Start(); err == nil {
+		return vscodeURI, nil
+	} else {
+		if launchErr != nil {
+			return vscodeURI, fmt.Errorf("failed to open via URL (%v) and CLI (%s: %v)", launchErr, codeBin, err)
+		}
+		return vscodeURI, fmt.Errorf("failed to launch VS Code (%s): %v", codeBin, err)
+	}
 }
 
 func findCodeBinary() string {

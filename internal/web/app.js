@@ -90,18 +90,34 @@
       alert('Workspace directory is empty.');
       return;
     }
+    const isRemote = host && host !== 'local';
+    const hostLabel = (isRemote && host.includes('@')) ? host.split('@').pop() : (host || 'local');
+    const formattedPath = cwd.startsWith('/') ? cwd : '/' + cwd;
+    const directUri = isRemote 
+      ? `vscode://vscode-remote/ssh-remote+${hostLabel}${formattedPath}` 
+      : `vscode://file${formattedPath}`;
+
     try {
       const res = await fetch('/v1/editor/open', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: cwd, host: host || 'local' })
       });
-      if (!res.ok) {
-        const txt = await res.text();
-        alert(`Failed to open in VS Code: ${txt}`);
+      if (res.ok) {
+        const data = await res.json().catch(() => ({}));
+        const targetUri = data.uri || directUri;
+        // Direct anchor click to ensure browser triggers URL handler
+        const a = document.createElement('a');
+        a.href = targetUri;
+        a.style.display = 'none';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      } else {
+        window.location.href = directUri;
       }
     } catch (err) {
-      alert(`Error launching VS Code: ${err.message}`);
+      window.location.href = directUri;
     }
   }
 
@@ -2217,7 +2233,9 @@ ${session.last_prompt}
           const node = state.treeNodes.find(n => n.path === state.contextMenuGroupPath);
           const dir = (node && node.project_dir) ? node.project_dir : '';
           if (dir) {
-            openInVSCode(dir, 'local');
+            const groupSess = state.sessions.find(s => s.node_path === state.contextMenuGroupPath || (s.cwd && s.cwd.startsWith(dir)));
+            const host = groupSess ? groupSess.host : 'local';
+            openInVSCode(dir, host);
           } else {
             alert('This category subgroup does not have a linked filesystem directory.');
           }
