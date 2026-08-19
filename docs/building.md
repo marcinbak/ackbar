@@ -11,7 +11,7 @@ This document covers system requirements, build instructions, testing procedures
     *   **macOS:** `brew install tmux`
     *   **Linux (Ubuntu/Debian):** `sudo apt-get install tmux`
 *   **Version Control (`git`):** Used by `ackbard` for remote URL normalization and project key resolution.
-*   **Optional:** `code` (VS Code CLI) in system PATH for the `o` (open in editor) keybind feature.
+*   **Optional:** `code` (VS Code CLI) in system PATH for the `o` (open in editor) keybind feature. For remote sessions, the VS Code **Remote - SSH** extension (`ms-vscode-remote.remote-ssh`) is required.
 
 ---
 
