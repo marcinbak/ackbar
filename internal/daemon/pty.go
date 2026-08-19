@@ -134,6 +134,7 @@ func (s *Server) servePTYWS(ws *websocket.Conn) {
 				_ = exec.Command("tmux", "new-session", "-d", "-s", tmuxName, "-c", cwd).Run()
 			}
 		}
+		_ = exec.Command("tmux", "set-option", "-t", tmuxName, "mouse", "on").Run()
 		cmd = exec.Command("tmux", "attach-session", "-t", tmuxName)
 	} else {
 		// Ensure remote tmux session exists before attaching
@@ -141,7 +142,7 @@ func (s *Server) servePTYWS(ws *websocket.Conn) {
 		if resumeCmd != "" {
 			remoteShellCmd = fmt.Sprintf(" bash -l -c %q", fmt.Sprintf("cd %q 2>/dev/null || true; export PATH=\"$HOME/.local/bin:$HOME/.npm-global/bin:$PATH\"; %s; exec bash -l", cwd, resumeCmd))
 		}
-		ensureRemoteCmd := fmt.Sprintf("tmux has-session -t %q 2>/dev/null || tmux new-session -d -s %q -c %q%s", tmuxName, tmuxName, cwd, remoteShellCmd)
+		ensureRemoteCmd := fmt.Sprintf("tmux has-session -t %q 2>/dev/null || tmux new-session -d -s %q -c %q%s; tmux set-option -t %q mouse on 2>/dev/null || true", tmuxName, tmuxName, cwd, remoteShellCmd, tmuxName)
 		_ = exec.Command("ssh", sessHost, ensureRemoteCmd).Run()
 		cmd = exec.Command("ssh", "-t", sessHost, fmt.Sprintf("tmux attach-session -t %q", tmuxName))
 	}
