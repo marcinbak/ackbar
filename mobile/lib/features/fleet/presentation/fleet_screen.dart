@@ -26,6 +26,14 @@ class _FleetScreenState extends ConsumerState<FleetScreen> {
   final Set<String> _collapsedFolders = {};
 
   @override
+  void initState() {
+    super.initState();
+    Future.microtask(() {
+      ref.read(fleetSessionsProvider.notifier).refreshSessions();
+    });
+  }
+
+  @override
   void dispose() {
     _searchController.dispose();
     super.dispose();
@@ -72,93 +80,116 @@ class _FleetScreenState extends ConsumerState<FleetScreen> {
         title: 'FLEET CONTROL',
         hosts: hostIndicators,
       ),
-      body: CustomScrollView(
-        physics: const BouncingScrollPhysics(parent: AlwaysScrollableScrollPhysics()),
-        slivers: [
-          // Search Filter Bar
-          SliverToBoxAdapter(
-            child: Padding(
-              padding: const EdgeInsets.only(
-                left: AppSpacing.lg,
-                right: AppSpacing.lg,
-                top: AppSpacing.md,
-                bottom: AppSpacing.xs,
-              ),
-              child: Container(
-                height: 40,
-                decoration: BoxDecoration(
-                  color: AppColors.surface,
-                  borderRadius: AppSpacing.roundedMd,
-                  border: Border.all(color: AppColors.outlineSubtle, width: 1),
+      body: RefreshIndicator(
+        color: AppColors.infoCyan,
+        backgroundColor: AppColors.surfaceHighlight,
+        onRefresh: () async {
+          await ref.read(hostsListProvider.notifier).refreshHosts();
+          await ref.read(fleetSessionsProvider.notifier).refreshSessions();
+        },
+        child: CustomScrollView(
+          physics: const BouncingScrollPhysics(parent: AlwaysScrollableScrollPhysics()),
+          slivers: [
+            // Search Filter Bar
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.only(
+                  left: AppSpacing.lg,
+                  right: AppSpacing.lg,
+                  top: AppSpacing.md,
+                  bottom: AppSpacing.xs,
                 ),
-                child: TextField(
-                  controller: _searchController,
-                  onChanged: (val) {
-                    ref.read(fleetSearchQueryProvider.notifier).state = val;
-                  },
-                  style: AppTypography.bodyMedium.copyWith(color: AppColors.textPrimary),
-                  decoration: InputDecoration(
-                    hintText: 'Filter sessions, groups, branches...',
-                    hintStyle: AppTypography.bodySmall.copyWith(color: AppColors.textMuted),
-                    prefixIcon: const Icon(Icons.search_rounded, size: 18, color: AppColors.textMuted),
-                    suffixIcon: _searchController.text.isNotEmpty
-                        ? IconButton(
-                            icon: const Icon(Icons.clear_rounded, size: 16, color: AppColors.textMuted),
-                            onPressed: () {
-                              _searchController.clear();
-                              ref.read(fleetSearchQueryProvider.notifier).state = '';
-                            },
-                          )
-                        : null,
-                    border: InputBorder.none,
-                    enabledBorder: InputBorder.none,
-                    focusedBorder: InputBorder.none,
-                    filled: false,
-                    contentPadding: const EdgeInsets.symmetric(vertical: 8),
+                child: Container(
+                  height: 40,
+                  decoration: BoxDecoration(
+                    color: AppColors.surface,
+                    borderRadius: AppSpacing.roundedMd,
+                    border: Border.all(color: AppColors.outlineSubtle, width: 1),
+                  ),
+                  child: TextField(
+                    controller: _searchController,
+                    onChanged: (val) {
+                      ref.read(fleetSearchQueryProvider.notifier).state = val;
+                    },
+                    style: AppTypography.bodyMedium.copyWith(color: AppColors.textPrimary),
+                    decoration: InputDecoration(
+                      hintText: 'Filter sessions, groups, branches...',
+                      hintStyle: AppTypography.bodySmall.copyWith(color: AppColors.textMuted),
+                      prefixIcon: const Icon(Icons.search_rounded, size: 18, color: AppColors.textMuted),
+                      suffixIcon: _searchController.text.isNotEmpty
+                          ? IconButton(
+                              icon: const Icon(Icons.clear_rounded, size: 16, color: AppColors.textMuted),
+                              onPressed: () {
+                                _searchController.clear();
+                                ref.read(fleetSearchQueryProvider.notifier).state = '';
+                              },
+                            )
+                          : null,
+                      border: InputBorder.none,
+                      enabledBorder: InputBorder.none,
+                      focusedBorder: InputBorder.none,
+                      filled: false,
+                      contentPadding: const EdgeInsets.symmetric(vertical: 8),
+                    ),
                   ),
                 ),
               ),
             ),
-          ),
 
-          // Horizontal Segmented Filter Tabs
-          SliverToBoxAdapter(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(vertical: AppSpacing.sm),
-              child: SegmentedFilterTabs(
-                tabs: filterTabs,
-                selectedIndex: filterIndex,
-                onTabSelected: (index) {
-                  ref.read(fleetFilterIndexProvider.notifier).state = index;
-                },
-              ),
-            ),
-          ),
-
-          // Grouped Project Folders & Sessions List
-          if (groupedSessions.isEmpty)
-            SliverFillRemaining(
-              hasScrollBody: false,
-              child: Center(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(Icons.search_off_rounded, size: 36, color: AppColors.textMuted),
-                    AppSpacing.gapH12,
-                    Text(
-                      'No matching sessions found',
-                      style: AppTypography.titleMedium.copyWith(color: AppColors.textSecondary),
-                    ),
-                    AppSpacing.gapH4,
-                    Text(
-                      'Try adjusting your search or tab filter',
-                      style: AppTypography.bodySmall.copyWith(color: AppColors.textMuted),
-                    ),
-                  ],
+            // Horizontal Segmented Filter Tabs
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: AppSpacing.sm),
+                child: SegmentedFilterTabs(
+                  tabs: filterTabs,
+                  selectedIndex: filterIndex,
+                  onTabSelected: (index) {
+                    ref.read(fleetFilterIndexProvider.notifier).state = index;
+                  },
                 ),
               ),
-            )
-          else
+            ),
+
+            // Grouped Project Folders & Sessions List
+            if (groupedSessions.isEmpty)
+              SliverFillRemaining(
+                hasScrollBody: false,
+                child: Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(AppSpacing.xl),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          hosts.isEmpty
+                              ? Icons.dns_rounded
+                              : (allSessions.isEmpty ? Icons.smart_toy_outlined : Icons.search_off_rounded),
+                          size: 36,
+                          color: AppColors.textMuted,
+                        ),
+                        AppSpacing.gapH12,
+                        Text(
+                          hosts.isEmpty
+                              ? 'No Hosts Connected'
+                              : (allSessions.isEmpty ? 'No Sessions on Connected Hosts' : 'No matching sessions found'),
+                          style: AppTypography.titleMedium.copyWith(color: AppColors.textSecondary),
+                        ),
+                        AppSpacing.gapH4,
+                        Text(
+                          hosts.isEmpty
+                              ? 'Add a host in the Hosts tab to see active agent sessions.'
+                              : (allSessions.isEmpty
+                                  ? 'Pull down to refresh or start a session on your Mac.'
+                                  : 'Try adjusting your search or tab filter.'),
+                          textAlign: TextAlign.center,
+                          style: AppTypography.bodySmall.copyWith(color: AppColors.textMuted),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              )
+            else
             SliverPadding(
               padding: const EdgeInsets.symmetric(horizontal: AppSpacing.lg, vertical: AppSpacing.xs),
               sliver: SliverList(

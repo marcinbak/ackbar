@@ -167,14 +167,19 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
   final ApiClient _apiClient;
   final Ref _ref;
   StreamSubscription<Session>? _sseSub;
+  ProviderSubscription<List<HostRecord>>? _hostsSub;
 
   FleetSessionsNotifier(this._apiClient, this._ref) : super(const []) {
     _initLiveSync();
+    _hostsSub = _ref.listen<List<HostRecord>>(hostsListProvider, (previous, next) {
+      _syncWithHosts(next);
+    });
   }
 
   @override
   void dispose() {
     _sseSub?.cancel();
+    _hostsSub?.close();
     super.dispose();
   }
 
@@ -182,26 +187,41 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
     state = sessions;
   }
 
-  void _initLiveSync() async {
+  void _initLiveSync() {
     final hosts = _ref.read(hostsListProvider);
-    final sse = _ref.read(sseClientProvider);
+    _syncWithHosts(hosts);
+  }
 
-    _sseSub = sse.subscribeMultipleHosts(hosts).listen((liveSess) {
-      if (mounted) {
-        _upsertSession(liveSess);
-      }
-    });
+  void _syncWithHosts(List<HostRecord> hosts) async {
+    _sseSub?.cancel();
+    if (hosts.isNotEmpty) {
+      final sse = _ref.read(sseClientProvider);
+      _sseSub = sse.subscribeMultipleHosts(hosts).listen((liveSess) {
+        if (mounted) {
+          _upsertSession(liveSess);
+        }
+      });
+    }
 
-    // Initial fetch from online hosts
+    await refreshSessions();
+  }
+
+  Future<void> refreshSessions() async {
+    final hosts = _ref.read(hostsListProvider);
+    if (hosts.isEmpty) {
+      if (mounted) state = const [];
+      return;
+    }
+
+    final allFetched = <Session>[];
     for (final host in hosts) {
-      if (!host.online) continue;
       final remoteSessions = await _apiClient.getSessions(host.url);
       if (!mounted) return;
-      if (remoteSessions.isNotEmpty) {
-        for (final s in remoteSessions) {
-          _upsertSession(s);
-        }
-      }
+      allFetched.addAll(remoteSessions);
+    }
+
+    if (mounted) {
+      state = allFetched;
     }
   }
 

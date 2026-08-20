@@ -77,6 +77,7 @@ class _AddHostDialogState extends ConsumerState<AddHostDialog> {
     );
 
     ref.read(hostsListProvider.notifier).addHost(newHost);
+    ref.read(fleetSessionsProvider.notifier).refreshSessions();
 
     if (mounted) {
       setState(() => _isTesting = false);
