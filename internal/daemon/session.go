@@ -93,3 +93,59 @@ type HostRecord struct {
 	RemoteCwd string    `json:"remote_cwd"` // default workspace root on remote
 	CreatedAt time.Time `json:"created_at"`
 }
+
+// ExtractAntigravityQuestionAndOptions extracts question and option strings from Antigravity tool args
+func ExtractAntigravityQuestionAndOptions(args map[string]interface{}) (string, []string) {
+	if args == nil {
+		return "", nil
+	}
+
+	var questionText string
+	var optionsList []string
+
+	// 1. Array of questions (standard ask_question schema)
+	if questionsRaw, ok := args["questions"].([]interface{}); ok && len(questionsRaw) > 0 {
+		for _, qItem := range questionsRaw {
+			if qMap, ok := qItem.(map[string]interface{}); ok {
+				if qStr, ok := qMap["question"].(string); ok && questionText == "" {
+					questionText = qStr
+				}
+				if optsRaw, ok := qMap["options"].([]interface{}); ok {
+					for _, opt := range optsRaw {
+						if s, ok := opt.(string); ok {
+							optionsList = append(optionsList, s)
+						} else if optMap, ok := opt.(map[string]interface{}); ok {
+							if label, ok := optMap["label"].(string); ok {
+								optionsList = append(optionsList, label)
+							} else if text, ok := optMap["text"].(string); ok {
+								optionsList = append(optionsList, text)
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// 2. Direct question / prompt field
+	if questionText == "" {
+		if qStr, ok := args["question"].(string); ok {
+			questionText = qStr
+		} else if promptStr, ok := args["prompt"].(string); ok {
+			questionText = promptStr
+		}
+	}
+
+	// 3. Direct options field
+	if len(optionsList) == 0 {
+		if optsRaw, ok := args["options"].([]interface{}); ok {
+			for _, opt := range optsRaw {
+				if s, ok := opt.(string); ok {
+					optionsList = append(optionsList, s)
+				}
+			}
+		}
+	}
+
+	return questionText, optionsList
+}

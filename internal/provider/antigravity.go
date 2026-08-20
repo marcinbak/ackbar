@@ -68,7 +68,7 @@ func (a *AntigravityProvider) ParseHook(eventName string, payload []byte) (*daem
 			tool := p.ToolCall.Name
 			if tool == "ask_question" {
 				event.State = daemon.StateBlocked
-				question, options := extractAntigravityQuestionAndOptions(p.ToolCall.Args)
+				question, options := daemon.ExtractAntigravityQuestionAndOptions(p.ToolCall.Args)
 				reason := "Waiting for user response to prompt"
 				if question != "" {
 					reason = question
