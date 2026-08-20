@@ -1,4 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../../core/models/session.dart';
+import '../../../core/providers/fleet_providers.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_typography.dart';
@@ -7,183 +10,236 @@ import '../../../core/widgets/glass_card.dart';
 import '../../../core/widgets/segmented_filter_tabs.dart';
 import '../../../core/widgets/status_badge.dart';
 import '../../../core/widgets/token_gauge_bar.dart';
+import 'session_detail_sheet.dart';
 
-/// Mock session data for fleet preview
-class MockAgentSession {
-  final String id;
-  final String title;
-  final String agent;
-  final String host;
-  final String directory;
-  final AckbarSessionStatus status;
-  final int usedTokens;
-  final int maxTokens;
-  final String timeElapsed;
-
-  const MockAgentSession({
-    required this.id,
-    required this.title,
-    required this.agent,
-    required this.host,
-    required this.directory,
-    required this.status,
-    required this.usedTokens,
-    required this.maxTokens,
-    required this.timeElapsed,
-  });
-}
-
-/// Screen displaying the active fleet of agent sessions across all supervised machines.
-class FleetScreen extends StatefulWidget {
+/// Screen displaying the active fleet of agent sessions across all supervised machines,
+/// organized into collapsible project folders matching Stitch design 08dc7df6aacf41529b1914ff96ce7c83.
+class FleetScreen extends ConsumerStatefulWidget {
   const FleetScreen({super.key});
 
   @override
-  State<FleetScreen> createState() => _FleetScreenState();
+  ConsumerState<FleetScreen> createState() => _FleetScreenState();
 }
 
-class _FleetScreenState extends State<FleetScreen> {
-  int _selectedFilterIndex = 0;
+class _FleetScreenState extends ConsumerState<FleetScreen> {
+  final TextEditingController _searchController = TextEditingController();
+  final Set<String> _collapsedFolders = {};
 
-  final List<FilterTabItem> _filterTabs = const [
-    FilterTabItem(label: 'All Sessions', count: 4),
-    FilterTabItem(label: 'Working', count: 2),
-    FilterTabItem(
-      label: 'Attention',
-      count: 1,
-      countBadgeColor: Color(0xFFEF4444),
-      countTextColor: Colors.white,
-    ),
-    FilterTabItem(label: 'Idle', count: 1),
-  ];
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
 
-  final List<MockAgentSession> _sessions = const [
-    MockAgentSession(
-      id: 'sess-8492',
-      title: 'Scaffold mobile Flutter UI shell & theme tokens',
-      agent: 'Claude Code',
-      host: 'local',
-      directory: '~/Work/Ackbar',
-      status: AckbarSessionStatus.working,
-      usedTokens: 142500,
-      maxTokens: 200000,
-      timeElapsed: '12m 45s',
-    ),
-    MockAgentSession(
-      id: 'sess-8491',
-      title: 'Implement daemon SSE event hub & SQLite migrations',
-      agent: 'Antigravity',
-      host: 'gpu-box',
-      directory: '~/Work/Ackbar/cmd/ackbard',
-      status: AckbarSessionStatus.blocked,
-      usedTokens: 188000,
-      maxTokens: 200000,
-      timeElapsed: '44m 10s',
-    ),
-    MockAgentSession(
-      id: 'sess-8488',
-      title: 'Refactor tmux process supervisor pty wrapper',
-      agent: 'OpenAI Codex',
-      host: 'local',
-      directory: '~/Work/Ackbar/internal/tmux',
-      status: AckbarSessionStatus.idle,
-      usedTokens: 45000,
-      maxTokens: 128000,
-      timeElapsed: '1h 05m',
-    ),
-    MockAgentSession(
-      id: 'sess-8472',
-      title: 'Voice companion audio briefing & Piper TTS engine',
-      agent: 'Claude Code',
-      host: 'gpu-box',
-      directory: '~/Work/Ackbar/docs',
-      status: AckbarSessionStatus.working,
-      usedTokens: 92000,
-      maxTokens: 200000,
-      timeElapsed: '6m 12s',
-    ),
-  ];
-
-  List<MockAgentSession> get _filteredSessions {
-    switch (_selectedFilterIndex) {
-      case 1:
-        return _sessions.where((s) => s.status == AckbarSessionStatus.working).toList();
-      case 2:
-        return _sessions.where((s) => s.status == AckbarSessionStatus.blocked).toList();
-      case 3:
-        return _sessions.where((s) => s.status == AckbarSessionStatus.idle).toList();
-      default:
-        return _sessions;
-    }
+  void _toggleFolder(String folderName) {
+    setState(() {
+      if (_collapsedFolders.contains(folderName)) {
+        _collapsedFolders.remove(folderName);
+      } else {
+        _collapsedFolders.add(folderName);
+      }
+    });
   }
 
   @override
   Widget build(BuildContext context) {
-    final filtered = _filteredSessions;
+    final allSessions = ref.watch(fleetSessionsProvider);
+    final groupedSessions = ref.watch(groupedSessionsProvider);
+    final filterIndex = ref.watch(fleetFilterIndexProvider);
+    final hosts = ref.watch(hostsListProvider);
+
+    final workingCount = allSessions.where((s) => s.state == SessionState.working).length;
+    final attentionCount = allSessions.where((s) => s.isBlocked).length;
+    final idleCount = allSessions.where((s) => s.state == SessionState.idle).length;
+
+    final filterTabs = [
+      FilterTabItem(label: 'All Sessions', count: allSessions.length),
+      FilterTabItem(label: 'Working', count: workingCount),
+      FilterTabItem(
+        label: 'Attention',
+        count: attentionCount,
+        countBadgeColor: attentionCount > 0 ? AppColors.statusCoral : null,
+        countTextColor: attentionCount > 0 ? Colors.white : null,
+      ),
+      FilterTabItem(label: 'Idle', count: idleCount),
+    ];
+
+    final hostIndicators = hosts.map((h) => h.toIndicator()).toList();
 
     return Scaffold(
       backgroundColor: AppColors.background,
-      appBar: const AckbarAppBar(),
+      appBar: AckbarAppBar(
+        title: 'FLEET CONTROL',
+        hosts: hostIndicators,
+      ),
       body: CustomScrollView(
+        physics: const BouncingScrollPhysics(parent: AlwaysScrollableScrollPhysics()),
         slivers: [
-          // Filter Tabs Header
+          // Search Filter Bar
           SliverToBoxAdapter(
             child: Padding(
-              padding: const EdgeInsets.only(top: AppSpacing.md, bottom: AppSpacing.sm),
+              padding: const EdgeInsets.only(
+                left: AppSpacing.lg,
+                right: AppSpacing.lg,
+                top: AppSpacing.md,
+                bottom: AppSpacing.xs,
+              ),
+              child: Container(
+                height: 40,
+                decoration: BoxDecoration(
+                  color: AppColors.surface,
+                  borderRadius: AppSpacing.roundedMd,
+                  border: Border.all(color: AppColors.outlineSubtle, width: 1),
+                ),
+                child: TextField(
+                  controller: _searchController,
+                  onChanged: (val) {
+                    ref.read(fleetSearchQueryProvider.notifier).state = val;
+                  },
+                  style: AppTypography.bodyMedium.copyWith(color: AppColors.textPrimary),
+                  decoration: InputDecoration(
+                    hintText: 'Filter sessions, groups, branches...',
+                    hintStyle: AppTypography.bodySmall.copyWith(color: AppColors.textMuted),
+                    prefixIcon: const Icon(Icons.search_rounded, size: 18, color: AppColors.textMuted),
+                    suffixIcon: _searchController.text.isNotEmpty
+                        ? IconButton(
+                            icon: const Icon(Icons.clear_rounded, size: 16, color: AppColors.textMuted),
+                            onPressed: () {
+                              _searchController.clear();
+                              ref.read(fleetSearchQueryProvider.notifier).state = '';
+                            },
+                          )
+                        : null,
+                    border: InputBorder.none,
+                    enabledBorder: InputBorder.none,
+                    focusedBorder: InputBorder.none,
+                    filled: false,
+                    contentPadding: const EdgeInsets.symmetric(vertical: 8),
+                  ),
+                ),
+              ),
+            ),
+          ),
+
+          // Horizontal Segmented Filter Tabs
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: AppSpacing.sm),
               child: SegmentedFilterTabs(
-                tabs: _filterTabs,
-                selectedIndex: _selectedFilterIndex,
+                tabs: filterTabs,
+                selectedIndex: filterIndex,
                 onTabSelected: (index) {
-                  setState(() => _selectedFilterIndex = index);
+                  ref.read(fleetFilterIndexProvider.notifier).state = index;
                 },
               ),
             ),
           ),
 
-          // Session Counter & Overview Row
-          SliverToBoxAdapter(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(
-                horizontal: AppSpacing.lg,
-                vertical: AppSpacing.sm,
-              ),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text(
-                    'ACTIVE SESSIONS (${filtered.length})',
-                    style: AppTypography.codeXs.copyWith(
-                      letterSpacing: 0.8,
-                      fontWeight: FontWeight.w700,
+          // Grouped Project Folders & Sessions List
+          if (groupedSessions.isEmpty)
+            SliverFillRemaining(
+              hasScrollBody: false,
+              child: Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.search_off_rounded, size: 36, color: AppColors.textMuted),
+                    AppSpacing.gapH12,
+                    Text(
+                      'No matching sessions found',
+                      style: AppTypography.titleMedium.copyWith(color: AppColors.textSecondary),
                     ),
-                  ),
-                  Row(
-                    children: [
-                      Icon(Icons.tune_rounded, size: 14, color: AppColors.textMuted),
-                      const SizedBox(width: 4),
-                      Text('SORT: RECENT', style: AppTypography.codeXs),
-                    ],
-                  ),
-                ],
+                    AppSpacing.gapH4,
+                    Text(
+                      'Try adjusting your search or tab filter',
+                      style: AppTypography.bodySmall.copyWith(color: AppColors.textMuted),
+                    ),
+                  ],
+                ),
               ),
-            ),
-          ),
+            )
+          else
+            SliverPadding(
+              padding: const EdgeInsets.symmetric(horizontal: AppSpacing.lg, vertical: AppSpacing.xs),
+              sliver: SliverList(
+                delegate: SliverChildBuilderDelegate(
+                  (context, index) {
+                    final folderName = groupedSessions.keys.elementAt(index);
+                    final sessionsInFolder = groupedSessions[folderName]!;
+                    final isCollapsed = _collapsedFolders.contains(folderName);
 
-          // Sessions List
-          SliverPadding(
-            padding: const EdgeInsets.symmetric(horizontal: AppSpacing.lg, vertical: AppSpacing.xs),
-            sliver: SliverList(
-              delegate: SliverChildBuilderDelegate(
-                (context, index) {
-                  final session = filtered[index];
-                  return Padding(
-                    padding: const EdgeInsets.only(bottom: AppSpacing.md),
-                    child: _buildSessionCard(session),
-                  );
-                },
-                childCount: filtered.length,
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: AppSpacing.lg),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          // Collapsible Folder Header
+                          InkWell(
+                            onTap: () => _toggleFolder(folderName),
+                            borderRadius: AppSpacing.roundedSm,
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 6.0, horizontal: 2.0),
+                              child: Row(
+                                children: [
+                                  Icon(
+                                    isCollapsed ? Icons.folder_rounded : Icons.folder_open_rounded,
+                                    size: 16,
+                                    color: AppColors.infoCyan,
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Text(
+                                    folderName.toUpperCase(),
+                                    style: AppTypography.codeXs.copyWith(
+                                      letterSpacing: 0.8,
+                                      fontWeight: FontWeight.w700,
+                                      color: AppColors.textPrimary,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                                    decoration: BoxDecoration(
+                                      color: AppColors.surfaceHighlight,
+                                      borderRadius: BorderRadius.circular(10),
+                                      border: Border.all(color: AppColors.outlineSubtle, width: 0.5),
+                                    ),
+                                    child: Text(
+                                      '${sessionsInFolder.length}',
+                                      style: AppTypography.codeXs.copyWith(
+                                        fontSize: 9.5,
+                                        color: AppColors.infoCyan,
+                                        fontWeight: FontWeight.w700,
+                                      ),
+                                    ),
+                                  ),
+                                  const Spacer(),
+                                  Icon(
+                                    isCollapsed ? Icons.expand_more_rounded : Icons.expand_less_rounded,
+                                    size: 18,
+                                    color: AppColors.textMuted,
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                          AppSpacing.gapH6,
+
+                          // Session cards inside folder
+                          if (!isCollapsed)
+                            ...sessionsInFolder.map((session) {
+                              return Padding(
+                                padding: const EdgeInsets.only(bottom: AppSpacing.md),
+                                child: _buildSessionCard(session),
+                              );
+                            }),
+                        ],
+                      ),
+                    );
+                  },
+                  childCount: groupedSessions.length,
+                ),
               ),
             ),
-          ),
 
           const SliverToBoxAdapter(
             child: SizedBox(height: AppSpacing.xxl),
@@ -193,37 +249,19 @@ class _FleetScreenState extends State<FleetScreen> {
     );
   }
 
-  Widget _buildSessionCard(MockAgentSession session) {
-    Color accent;
-    switch (session.status) {
-      case AckbarSessionStatus.working:
-        accent = AppColors.statusAmber;
-        break;
-      case AckbarSessionStatus.blocked:
-        accent = AppColors.statusCoral;
-        break;
-      case AckbarSessionStatus.idle:
-      case AckbarSessionStatus.active:
-        accent = AppColors.statusEmerald;
-        break;
-      case AckbarSessionStatus.offline:
-        accent = AppColors.statusOffline;
-        break;
-    }
+  Widget _buildSessionCard(Session session) {
+    final statusColor = session.state.toBadgeStatus().color;
 
     return GlassCard(
-      accentColor: accent,
-      onTap: () {
-        // Open session detail
-      },
+      accentColor: statusColor,
+      onTap: () => SessionDetailSheet.show(context, session),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Top metadata row
+          // Top Tags & Status Row
           Row(
-            crossAxisAlignment: CrossAxisAlignment.center,
             children: [
-              // Host badge
+              // Host Tag
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                 decoration: BoxDecoration(
@@ -232,27 +270,67 @@ class _FleetScreenState extends State<FleetScreen> {
                   border: Border.all(color: AppColors.outlineSubtle, width: 0.5),
                 ),
                 child: Text(
-                  session.host,
+                  session.hostTag,
                   style: AppTypography.codeXs.copyWith(
                     color: AppColors.infoCyan,
-                    fontWeight: FontWeight.w600,
+                    fontWeight: FontWeight.w700,
                   ),
                 ),
               ),
               const SizedBox(width: 6),
-              Text(
-                '•  ${session.agent}',
-                style: AppTypography.codeXs.copyWith(color: AppColors.textSecondary),
+
+              // Agent Badge
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: session.agentColor.withOpacity(0.12),
+                  borderRadius: AppSpacing.roundedSm,
+                  border: Border.all(color: session.agentColor.withOpacity(0.3), width: 0.8),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(session.agentSymbol, style: const TextStyle(fontSize: 10)),
+                    const SizedBox(width: 4),
+                    Text(
+                      session.agentDisplayName,
+                      style: AppTypography.codeXs.copyWith(
+                        color: session.agentColor,
+                        fontWeight: FontWeight.w600,
+                        fontSize: 10,
+                      ),
+                    ),
+                  ],
+                ),
               ),
+
+              if (session.gitBranch.isNotEmpty) ...[
+                const SizedBox(width: 6),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: AppColors.surfaceHighlight,
+                    borderRadius: AppSpacing.roundedSm,
+                  ),
+                  child: Text(
+                    session.gitBranch,
+                    style: AppTypography.codeXs.copyWith(
+                      color: AppColors.textSecondary,
+                      fontSize: 10,
+                    ),
+                  ),
+                ),
+              ],
+
               const Spacer(),
-              StatusBadge(status: session.status, isCompact: true),
+              StatusBadge(status: session.state.toBadgeStatus(), isCompact: true),
             ],
           ),
           AppSpacing.gapH8,
 
           // Session title
           Text(
-            session.title,
+            session.displayTitle,
             style: AppTypography.titleMedium.copyWith(
               color: AppColors.textPrimary,
               fontWeight: FontWeight.w600,
@@ -260,32 +338,62 @@ class _FleetScreenState extends State<FleetScreen> {
             maxLines: 2,
             overflow: TextOverflow.ellipsis,
           ),
-          AppSpacing.gapH4,
+          AppSpacing.gapH6,
 
-          // Directory path & runtime
+          // Activity Line
+          if (session.activity.isNotEmpty)
+            Row(
+              children: [
+                Icon(
+                  session.isBlocked ? Icons.help_outline_rounded : Icons.bolt_rounded,
+                  size: 13,
+                  color: statusColor,
+                ),
+                const SizedBox(width: 4),
+                Expanded(
+                  child: Text(
+                    session.activity,
+                    style: AppTypography.codeXs.copyWith(
+                      color: session.isBlocked ? AppColors.statusCoral : AppColors.textSecondary,
+                      fontSize: 11,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+            ),
+          AppSpacing.gapH6,
+
+          // Directory path & runtime clock
           Row(
             children: [
-              Icon(Icons.folder_outlined, size: 12, color: AppColors.textMuted),
+              const Icon(Icons.folder_outlined, size: 12, color: AppColors.textMuted),
               const SizedBox(width: 4),
               Expanded(
                 child: Text(
-                  session.directory,
-                  style: AppTypography.codeXs.copyWith(color: AppColors.textMuted),
+                  session.cwd,
+                  style: AppTypography.codeXs.copyWith(
+                    color: AppColors.textMuted,
+                    fontSize: 10.5,
+                  ),
                   overflow: TextOverflow.ellipsis,
                 ),
               ),
               Text(
-                '⏱ ${session.timeElapsed}',
-                style: AppTypography.codeXs.copyWith(color: AppColors.textSecondary),
+                '⏱ ${session.timeElapsedFormatted}',
+                style: AppTypography.codeXs.copyWith(
+                  color: AppColors.textSecondary,
+                  fontSize: 10.5,
+                ),
               ),
             ],
           ),
           AppSpacing.gapH12,
 
-          // Token gauge bar
+          // Gradient Token / Context Usage Bar
           TokenGaugeBar(
-            usedTokens: session.usedTokens,
-            maxTokens: session.maxTokens,
+            percentage: session.contextPct / 100.0,
             isCompact: true,
           ),
         ],

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../core/providers/fleet_providers.dart';
 import '../core/widgets/ackbar_bottom_nav.dart';
 import 'attention/presentation/attention_screen.dart';
 import 'fleet/presentation/fleet_screen.dart';
@@ -7,41 +8,34 @@ import 'hosts/presentation/hosts_screen.dart';
 import 'plans/presentation/plans_screen.dart';
 
 /// Root navigation shell managing bottom navigation state and preserved screens via IndexedStack.
-class MainNavigationShell extends ConsumerStatefulWidget {
+class MainNavigationShell extends ConsumerWidget {
   const MainNavigationShell({super.key});
 
-  @override
-  ConsumerState<MainNavigationShell> createState() => _MainNavigationShellState();
-}
-
-class _MainNavigationShellState extends ConsumerState<MainNavigationShell> {
-  int _currentIndex = 0;
-
-  final List<Widget> _screens = const [
+  static const List<Widget> _screens = [
     FleetScreen(),
     AttentionScreen(),
     PlansScreen(),
     HostsScreen(),
   ];
 
-  void _onTabSelected(int index) {
-    setState(() {
-      _currentIndex = index;
-    });
-  }
-
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final currentIndex = ref.watch(mainTabNavIndexProvider);
+    final attentionCount = ref.watch(attentionBadgeCountProvider);
+    final plansCount = ref.watch(pendingPlansCountProvider);
+
     return Scaffold(
       body: IndexedStack(
-        index: _currentIndex,
+        index: currentIndex,
         children: _screens,
       ),
       bottomNavigationBar: AckbarBottomNav(
-        currentIndex: _currentIndex,
-        onTap: _onTabSelected,
-        attentionCount: 1,
-        plansCount: 1,
+        currentIndex: currentIndex,
+        onTap: (index) {
+          ref.read(mainTabNavIndexProvider.notifier).state = index;
+        },
+        attentionCount: attentionCount,
+        plansCount: plansCount,
       ),
     );
   }
