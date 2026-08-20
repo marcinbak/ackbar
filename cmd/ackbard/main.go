@@ -22,7 +22,7 @@ func main() {
 	}
 
 	// Setup flags
-	hostFlag := flag.String("host", "127.0.0.1", "Host address to bind daemon (default 127.0.0.1)")
+	hostFlag := flag.String("host", "0.0.0.0", "Host address to bind daemon (default 0.0.0.0)")
 	portFlag := flag.Int("port", 7777, "Port to bind daemon")
 	dbPathFlag := flag.String("db", "", "Path to SQLite database file (default ~/.config/ackbar/ackbard.db)")
 	logDirFlag := flag.String("log-dir", "", "Path to logs directory (default ~/.config/ackbar/logs)")

@@ -161,7 +161,7 @@ class ApiClient {
     final uri = Uri.parse('$clean/v1/version');
     final stopwatch = Stopwatch()..start();
     try {
-      final response = await _client.get(uri).timeout(const Duration(seconds: 3));
+      final response = await _client.get(uri).timeout(const Duration(seconds: 5));
       stopwatch.stop();
       if (response.statusCode == 200) {
         final Map<String, dynamic> decoded = jsonDecode(response.body);
