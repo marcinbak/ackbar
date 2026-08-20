@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 	"time"
 
@@ -126,7 +125,7 @@ func (c *CodexProvider) ParseHook(eventName string, payload []byte) (*daemon.Eve
 }
 
 func (c *CodexProvider) IsInstalled() bool {
-	if _, err := exec.LookPath("codex"); err == nil {
+	if lookPathInStandardDirs("codex") {
 		return true
 	}
 	home, err := os.UserHomeDir()
