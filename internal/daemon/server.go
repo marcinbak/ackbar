@@ -3261,7 +3261,47 @@ func ReadAntigravitySessionTitle(cwd, sessionID string) string {
 		}
 	}
 
-	// 4. Check central Antigravity proto registry: ~/.gemini/antigravity/agyhub_summaries_proto.pb
+	// 4. Scan transcript for CHECKPOINT objective or first user prompt
+	for _, bDir := range brainDirs {
+		logPath := filepath.Join(bDir, targetID, ".system_generated", "logs", "transcript.jsonl")
+		if data, err := os.ReadFile(logPath); err == nil {
+			lines := strings.Split(string(data), "\n")
+			firstPromptTitle := ""
+			for _, line := range lines {
+				line = strings.TrimSpace(line)
+				if line == "" {
+					continue
+				}
+				var step struct {
+					Type    string `json:"type"`
+					Content string `json:"content"`
+				}
+				if json.Unmarshal([]byte(line), &step) == nil {
+					if step.Type == "CHECKPOINT" && strings.Contains(step.Content, "# USER Objective:") {
+						idx := strings.Index(step.Content, "# USER Objective:")
+						sub := strings.TrimSpace(step.Content[idx+len("# USER Objective:"):])
+						if end := strings.Index(sub, "\n"); end != -1 {
+							sub = strings.TrimSpace(sub[:end])
+						}
+						if sub != "" && !strings.HasPrefix(sub, "<") && len(sub) >= 4 && !IsRawSessionName(sub) {
+							return truncateTitle(sub)
+						}
+					}
+					if step.Type == "USER_INPUT" && step.Content != "" && firstPromptTitle == "" {
+						clean := cleanAntigravityPrompt(step.Content)
+						if clean != "" && !strings.HasPrefix(clean, "/") && !strings.HasPrefix(clean, "<") && !IsRawSessionName(clean) {
+							firstPromptTitle = truncateTitle(clean)
+						}
+					}
+				}
+			}
+			if firstPromptTitle != "" {
+				return firstPromptTitle
+			}
+		}
+	}
+
+	// 5. Check central Antigravity proto registry fallback: ~/.gemini/antigravity/agyhub_summaries_proto.pb
 	protoPaths := []string{
 		filepath.Join(home, ".gemini", "antigravity", "agyhub_summaries_proto.pb"),
 		filepath.Join(home, ".gemini", "antigravity-cli", "agyhub_summaries_proto.pb"),
@@ -3291,50 +3331,10 @@ func ReadAntigravitySessionTitle(cwd, sessionID string) string {
 					words = append(words, strings.TrimSpace(cur.String()))
 				}
 				for _, w := range words {
-					if !strings.HasPrefix(w, "file:") && !strings.HasPrefix(w, "git@") && !strings.Contains(w, "Users/") && !strings.Contains(w, "home/") && len(w) >= 5 {
+					if !strings.HasPrefix(w, "file:") && !strings.HasPrefix(w, "git@") && !strings.Contains(w, "Users/") && !strings.Contains(w, "home/") && len(w) >= 5 && !IsRawSessionName(w) {
 						return truncateTitle(w)
 					}
 				}
-			}
-		}
-	}
-
-	// 5. Scan transcript for CHECKPOINT objective or first user prompt
-	for _, bDir := range brainDirs {
-		logPath := filepath.Join(bDir, targetID, ".system_generated", "logs", "transcript.jsonl")
-		if data, err := os.ReadFile(logPath); err == nil {
-			lines := strings.Split(string(data), "\n")
-			firstPromptTitle := ""
-			for _, line := range lines {
-				line = strings.TrimSpace(line)
-				if line == "" {
-					continue
-				}
-				var step struct {
-					Type    string `json:"type"`
-					Content string `json:"content"`
-				}
-				if json.Unmarshal([]byte(line), &step) == nil {
-					if step.Type == "CHECKPOINT" && strings.Contains(step.Content, "# USER Objective:") {
-						idx := strings.Index(step.Content, "# USER Objective:")
-						sub := strings.TrimSpace(step.Content[idx+len("# USER Objective:"):])
-						if end := strings.Index(sub, "\n"); end != -1 {
-							sub = strings.TrimSpace(sub[:end])
-						}
-						if sub != "" && !strings.HasPrefix(sub, "<") && len(sub) >= 4 {
-							return truncateTitle(sub)
-						}
-					}
-					if step.Type == "USER_INPUT" && step.Content != "" && firstPromptTitle == "" {
-						clean := cleanAntigravityPrompt(step.Content)
-						if clean != "" && !strings.HasPrefix(clean, "/") && !strings.HasPrefix(clean, "<") {
-							firstPromptTitle = truncateTitle(clean)
-						}
-					}
-				}
-			}
-			if firstPromptTitle != "" {
-				return firstPromptTitle
 			}
 		}
 	}
