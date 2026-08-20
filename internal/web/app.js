@@ -462,11 +462,13 @@
 
   function isRawSessionName(n) {
     if (!n) return true;
-    const lower = n.toLowerCase();
+    let s = String(n).trim();
+    if (s.endsWith(':')) s = s.slice(0, -1).trim();
+    const lower = s.toLowerCase();
     if (lower === 'antigravity' || lower === 'claude-code' || lower === 'codex' || lower === 'cli' || lower === 'mock-agent') return true;
     if (lower.startsWith('ackbar-') || lower.startsWith('proc-')) return true;
     if (lower.startsWith('antigravity (') || lower.startsWith('claude-code (') || lower.startsWith('codex (') || lower.startsWith('claude code (')) return true;
-    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(n)) return true;
+    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s)) return true;
     return false;
   }
 

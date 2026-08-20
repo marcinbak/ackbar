@@ -2777,43 +2777,14 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 							continue
 						}
 
-						firstPrompt := ""
-						lastPrompt := ""
-						isSubagent := false
-
-						if data, rerr := os.ReadFile(logPath); rerr == nil {
-							lines := strings.Split(string(data), "\n")
-							for _, line := range lines {
-								line = strings.TrimSpace(line)
-								if line == "" {
-									continue
-								}
-								var step struct {
-									Type    string `json:"type"`
-									Content string `json:"content"`
-								}
-								if jerr := json.Unmarshal([]byte(line), &step); jerr == nil {
-									if step.Type == "USER_INPUT" && step.Content != "" {
-										clean := cleanAntigravityPrompt(step.Content)
-										if clean != "" {
-											if firstPrompt == "" {
-												firstPrompt = clean
-												// Subagents start with a directive or identity indicator from the model
-												if strings.HasPrefix(strings.ToLower(clean), "you are a subagent") ||
-													strings.Contains(clean, "<subagent_invocation>") ||
-													strings.Contains(clean, "Subagent Defined") {
-													isSubagent = true
-													break
-												}
-											}
-											lastPrompt = clean
-										}
-									}
-								}
+						// Check if this is an internal subagent conversation
+						if isAntigravitySubagent(logPath) {
+							if existing, _ := s.db.GetSession(sessID); existing != nil {
+								_ = s.db.DeleteSession(sessID)
+								existing.Deleted = true
+								existing.Activity = "Deleted"
+								s.broadcast(existing)
 							}
-						}
-
-						if isSubagent {
 							continue
 						}
 
@@ -2828,11 +2799,7 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 							}
 
 							if title == "" {
-								if firstPrompt != "" && !strings.HasPrefix(firstPrompt, "/") && !strings.HasPrefix(firstPrompt, "<") {
-									title = truncateTitle(firstPrompt)
-								} else {
-									title = fmt.Sprintf("Antigravity (%s)", convID[:8])
-								}
+								title = fmt.Sprintf("Antigravity (%s)", convID[:8])
 							}
 
 							isOld := time.Since(modTime) > 7*24*time.Hour
@@ -2852,8 +2819,6 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 								LastEventAt: modTime,
 								ContextPct:  0,
 								Archived:    isOld,
-								FirstPrompt: firstPrompt,
-								LastPrompt:  lastPrompt,
 							}
 							_ = s.db.SaveSession(newSess)
 							s.broadcast(newSess)
@@ -2863,6 +2828,24 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 								_ = s.db.SaveSession(existing)
 								s.broadcast(existing)
 							}
+						}
+					}
+				}
+			}
+		}
+
+		// 5. Database Sanitation: Clean up any obsolete/orphaned subagents in DB
+		if allSess, err := s.db.ListSessions(); err == nil {
+			for _, sObj := range allSess {
+				if sObj.Agent == "antigravity" && sObj.NativeID != "" && isUUID(sObj.NativeID) {
+					for _, bDir := range brainDirs {
+						logPath := filepath.Join(bDir, sObj.NativeID, ".system_generated", "logs", "transcript.jsonl")
+						if fileExists(logPath) && isAntigravitySubagent(logPath) {
+							_ = s.db.DeleteSession(sObj.ID)
+							sObj.Deleted = true
+							sObj.Activity = "Deleted"
+							s.broadcast(sObj)
+							break
 						}
 					}
 				}
@@ -3320,11 +3303,12 @@ func ReadAntigravitySessionTitle(cwd, sessionID string) string {
 		}
 	}
 
-	// 5. Scan first user input prompt in transcript
+	// 5. Scan transcript for CHECKPOINT objective or first user prompt
 	for _, bDir := range brainDirs {
 		logPath := filepath.Join(bDir, targetID, ".system_generated", "logs", "transcript.jsonl")
 		if data, err := os.ReadFile(logPath); err == nil {
 			lines := strings.Split(string(data), "\n")
+			firstPromptTitle := ""
 			for _, line := range lines {
 				line = strings.TrimSpace(line)
 				if line == "" {
@@ -3334,12 +3318,27 @@ func ReadAntigravitySessionTitle(cwd, sessionID string) string {
 					Type    string `json:"type"`
 					Content string `json:"content"`
 				}
-				if json.Unmarshal([]byte(line), &step) == nil && step.Type == "USER_INPUT" && step.Content != "" {
-					clean := cleanAntigravityPrompt(step.Content)
-					if clean != "" && !strings.HasPrefix(clean, "/") && !strings.HasPrefix(clean, "<") {
-						return truncateTitle(clean)
+				if json.Unmarshal([]byte(line), &step) == nil {
+					if step.Type == "CHECKPOINT" && strings.Contains(step.Content, "# USER Objective:") {
+						idx := strings.Index(step.Content, "# USER Objective:")
+						sub := strings.TrimSpace(step.Content[idx+len("# USER Objective:"):])
+						if end := strings.Index(sub, "\n"); end != -1 {
+							sub = strings.TrimSpace(sub[:end])
+						}
+						if sub != "" && !strings.HasPrefix(sub, "<") && len(sub) >= 4 {
+							return truncateTitle(sub)
+						}
+					}
+					if step.Type == "USER_INPUT" && step.Content != "" && firstPromptTitle == "" {
+						clean := cleanAntigravityPrompt(step.Content)
+						if clean != "" && !strings.HasPrefix(clean, "/") && !strings.HasPrefix(clean, "<") {
+							firstPromptTitle = truncateTitle(clean)
+						}
 					}
 				}
+			}
+			if firstPromptTitle != "" {
+				return firstPromptTitle
 			}
 		}
 	}
@@ -3790,6 +3789,9 @@ func isRawSessionName(n string) bool {
 
 // IsRawSessionName returns true if n is empty, agent identifier, raw UUID, or generic placeholder
 func IsRawSessionName(n string) bool {
+	n = strings.TrimSpace(n)
+	n = strings.TrimSuffix(n, ":")
+	n = strings.TrimSpace(n)
 	if n == "" || n == "antigravity" || n == "claude-code" || n == "codex" || n == "cli" || n == "mock-agent" {
 		return true
 	}
@@ -3798,6 +3800,33 @@ func IsRawSessionName(n string) bool {
 	}
 	if strings.HasPrefix(n, "antigravity (") || strings.HasPrefix(n, "claude-code (") || strings.HasPrefix(n, "codex (") || strings.HasPrefix(n, "Claude Code (") || strings.HasPrefix(n, "Antigravity (") {
 		return true
+	}
+	return false
+}
+
+func isAntigravitySubagent(logPath string) bool {
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		return false
+	}
+	lines := strings.Split(string(data), "\n")
+	for i, line := range lines {
+		if i > 8 {
+			break
+		}
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if strings.Contains(line, "The earlier parts of this conversation have been truncated") ||
+			strings.Contains(line, "This is a side question from the user") ||
+			strings.Contains(line, "<subagent_invocation>") ||
+			strings.Contains(line, "You are a subagent") ||
+			strings.Contains(line, "Subagent Defined") ||
+			strings.Contains(line, "subagent_analyst") ||
+			strings.Contains(line, "invoke_subagent") {
+			return true
+		}
 	}
 	return false
 }
