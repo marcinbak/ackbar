@@ -24,8 +24,8 @@ class HostRecord {
     this.remoteCwd = '~/Work',
     this.online = true,
     this.latencyMs = 1,
-    this.version = 'v0.2.1',
-    this.uptime = '4d 18h',
+    this.version = '',
+    this.uptime = 'Active',
     this.sessionsCount = 0,
     this.tailscaleIp = '',
     required this.createdAt,
@@ -38,7 +38,7 @@ class HostRecord {
   String get endpointDisplay {
     if (tailscaleIp.isNotEmpty) return tailscaleIp;
     if (sshTarget.isNotEmpty) return 'ssh://$sshTarget';
-    return url.replaceAll('http://', '');
+    return url.replaceFirst(RegExp(r'^https?://'), '');
   }
 
   String get latencyDisplay => '${latencyMs}ms';
@@ -70,8 +70,8 @@ class HostRecord {
       latencyMs: json['latency_ms'] is int
           ? json['latency_ms'] as int
           : int.tryParse(json['latency_ms']?.toString() ?? '') ?? 1,
-      version: json['version']?.toString() ?? 'v0.2.1',
-      uptime: json['uptime']?.toString() ?? '2d 12h',
+      version: json['version']?.toString() ?? '',
+      uptime: json['uptime']?.toString() ?? 'Active',
       sessionsCount: json['sessions_count'] is int
           ? json['sessions_count'] as int
           : int.tryParse(json['sessions_count']?.toString() ?? '') ?? 0,

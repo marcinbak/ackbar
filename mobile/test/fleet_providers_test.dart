@@ -189,7 +189,7 @@ void main() {
       mockApiClient.dispose();
     });
 
-    test('Initial state contains default configured hosts', () {
+    test('Initial state starts empty (pure live state)', () {
       final container = ProviderContainer(
         overrides: [
           apiClientProvider.overrideWithValue(mockApiClient),
@@ -198,9 +198,7 @@ void main() {
       addTearDown(container.dispose);
 
       final hosts = container.read(hostsListProvider);
-      expect(hosts.length, equals(2));
-      expect(hosts.any((h) => h.name == 'local'), isTrue);
-      expect(hosts.any((h) => h.name == 'local-wifi'), isTrue);
+      expect(hosts, isEmpty);
     });
 
     test('addHost adds host to state', () {
@@ -221,11 +219,11 @@ void main() {
 
       notifier.addHost(newHost);
       final hosts = container.read(hostsListProvider);
-      expect(hosts.length, equals(3));
-      expect(hosts.any((h) => h.name == 'staging-node'), isTrue);
+      expect(hosts.length, equals(1));
+      expect(hosts.first.name, equals('staging-node'));
     });
 
-    test('removeHost removes host by name', () {
+    test('removeHost removes host by name or url', () {
       final container = ProviderContainer(
         overrides: [
           apiClientProvider.overrideWithValue(mockApiClient),
@@ -234,11 +232,15 @@ void main() {
       addTearDown(container.dispose);
 
       final notifier = container.read(hostsListProvider.notifier);
-      notifier.removeHost('local-wifi');
+      notifier.addHost(HostRecord(
+        name: 'test-host',
+        url: 'http://100.117.71.84:7777',
+        createdAt: DateTime.now(),
+      ));
+      expect(container.read(hostsListProvider).length, equals(1));
 
-      final hosts = container.read(hostsListProvider);
-      expect(hosts.length, equals(1));
-      expect(hosts.any((h) => h.name == 'local-wifi'), isFalse);
+      notifier.removeHost('test-host');
+      expect(container.read(hostsListProvider), isEmpty);
     });
   });
 

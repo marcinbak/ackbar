@@ -23,41 +23,55 @@ class AddHostDialog extends ConsumerStatefulWidget {
 
 class _AddHostDialogState extends ConsumerState<AddHostDialog> {
   final _formKey = GlobalKey<FormState>();
-  final _nameController = TextEditingController();
-  final _urlController = TextEditingController(text: 'http://127.0.0.1:7778');
-  final _sshTargetController = TextEditingController();
-  final _remoteCwdController = TextEditingController(text: '~/Work');
-  final _tailscaleIpController = TextEditingController();
+  final _hostController = TextEditingController();
+  final _aliasController = TextEditingController();
   bool _isTesting = false;
 
   @override
   void dispose() {
-    _nameController.dispose();
-    _urlController.dispose();
-    _sshTargetController.dispose();
-    _remoteCwdController.dispose();
-    _tailscaleIpController.dispose();
+    _hostController.dispose();
+    _aliasController.dispose();
     super.dispose();
+  }
+
+  String _normalizeUrl(String input) {
+    var raw = input.trim();
+    if (raw.startsWith('http://')) {
+      raw = raw.substring(7);
+    } else if (raw.startsWith('https://')) {
+      raw = raw.substring(8);
+    }
+    raw = raw.replaceAll('/', '');
+    if (!raw.contains(':')) {
+      raw = '$raw:7777';
+    }
+    return 'http://$raw';
   }
 
   void _onSave() async {
     if (!_formKey.currentState!.validate()) return;
 
+    final rawHost = _hostController.text.trim();
+    final normalizedUrl = _normalizeUrl(rawHost);
+    final aliasInput = _aliasController.text.trim();
+    final displayName = aliasInput.isNotEmpty ? aliasInput : rawHost;
+
     setState(() => _isTesting = true);
 
     final api = ref.read(apiClientProvider);
-    final health = await api.checkHostHealth(_urlController.text.trim());
+    final health = await api.checkHostHealth(normalizedUrl);
+
+    final isTailscale = rawHost.startsWith('100.') || rawHost.contains('.ts.net');
+    final tailscaleIp = isTailscale ? rawHost.split(':').first : '';
 
     final newHost = HostRecord(
-      name: _nameController.text.trim(),
-      url: _urlController.text.trim(),
-      sshTarget: _sshTargetController.text.trim(),
-      remoteCwd: _remoteCwdController.text.trim(),
-      tailscaleIp: _tailscaleIpController.text.trim(),
+      name: displayName,
+      url: normalizedUrl,
+      tailscaleIp: tailscaleIp,
       online: health != null,
-      latencyMs: health != null ? (health['latency_ms'] as int? ?? 12) : 999,
-      version: health != null ? (health['version'] as String? ?? 'v0.2.1') : 'unknown',
-      uptime: '1m',
+      latencyMs: health != null ? (health['latency_ms'] as int? ?? 1) : 999,
+      version: health != null ? (health['version'] as String? ?? '') : '',
+      uptime: 'Active',
       sessionsCount: 0,
       createdAt: DateTime.now(),
     );
@@ -69,7 +83,7 @@ class _AddHostDialogState extends ConsumerState<AddHostDialog> {
       Navigator.of(context).pop();
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Host ${newHost.name} added (${newHost.online ? "Online 🟢" : "Unreachable 🔴"})'),
+          content: Text('Host "$displayName" connected (${newHost.online ? "Online 🟢" : "Unreachable 🔴"})'),
           backgroundColor: newHost.online ? AppColors.statusEmerald : AppColors.statusCoral,
         ),
       );
@@ -89,7 +103,7 @@ class _AddHostDialogState extends ConsumerState<AddHostDialog> {
           const Icon(Icons.dns_rounded, size: 20, color: AppColors.infoCyan),
           const SizedBox(width: 8),
           Text(
-            'REGISTER NEW HOST',
+            'ADD SUPERVISED HOST',
             style: AppTypography.codeSm.copyWith(
               color: AppColors.textPrimary,
               fontWeight: FontWeight.w700,
@@ -104,63 +118,35 @@ class _AddHostDialogState extends ConsumerState<AddHostDialog> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('Host Name / Alias (e.g. devbox-2):', style: AppTypography.codeXs),
+              Text('Host or IP Address (Required):', style: AppTypography.codeXs),
               const SizedBox(height: 4),
               TextFormField(
-                controller: _nameController,
+                controller: _hostController,
                 style: AppTypography.bodySmall,
-                validator: (val) => val == null || val.trim().isEmpty ? 'Name required' : null,
+                autofocus: true,
+                validator: (val) {
+                  if (val == null || val.trim().isEmpty) return 'Host or IP is required';
+                  return null;
+                },
                 decoration: const InputDecoration(
-                  hintText: 'devbox-2',
+                  hintText: '100.117.71.84 or mac-m3.local',
                   isDense: true,
                 ),
               ),
-              AppSpacing.gapH12,
-
-              Text('Daemon Endpoint URL:', style: AppTypography.codeXs),
               const SizedBox(height: 4),
-              TextFormField(
-                controller: _urlController,
-                style: AppTypography.bodySmall,
-                validator: (val) => val == null || val.trim().isEmpty ? 'URL required' : null,
-                decoration: const InputDecoration(
-                  hintText: 'http://127.0.0.1:7778',
-                  isDense: true,
-                ),
+              Text(
+                'Default port :7777 and http:// protocol are added automatically.',
+                style: AppTypography.codeXs.copyWith(color: AppColors.textMuted, fontSize: 10),
               ),
-              AppSpacing.gapH12,
+              AppSpacing.gapH16,
 
-              Text('Tailscale Mesh IP (Optional):', style: AppTypography.codeXs),
+              Text('Alias / Name (Optional):', style: AppTypography.codeXs),
               const SizedBox(height: 4),
               TextFormField(
-                controller: _tailscaleIpController,
+                controller: _aliasController,
                 style: AppTypography.bodySmall,
                 decoration: const InputDecoration(
-                  hintText: '100.95.42.205',
-                  isDense: true,
-                ),
-              ),
-              AppSpacing.gapH12,
-
-              Text('SSH Target (Optional):', style: AppTypography.codeXs),
-              const SizedBox(height: 4),
-              TextFormField(
-                controller: _sshTargetController,
-                style: AppTypography.bodySmall,
-                decoration: const InputDecoration(
-                  hintText: 'dev@devbox.internal',
-                  isDense: true,
-                ),
-              ),
-              AppSpacing.gapH12,
-
-              Text('Remote Working Directory Root:', style: AppTypography.codeXs),
-              const SizedBox(height: 4),
-              TextFormField(
-                controller: _remoteCwdController,
-                style: AppTypography.bodySmall,
-                decoration: const InputDecoration(
-                  hintText: '~/Work',
+                  hintText: 'e.g. Work Mac, Devbox (Optional)',
                   isDense: true,
                 ),
               ),

@@ -114,7 +114,7 @@ class HostsScreen extends ConsumerWidget {
                       ),
                       const SizedBox(height: 2),
                       Text(
-                        'Encrypted WireGuard mesh active across ${hosts.length} nodes • Direct P2P tunnel',
+                        'Encrypted WireGuard mesh active • Direct P2P tunnel to ackbard nodes',
                         style: AppTypography.bodySmall.copyWith(
                           color: AppColors.textSecondary,
                           fontSize: 11,
@@ -128,14 +128,56 @@ class HostsScreen extends ConsumerWidget {
           ),
           AppSpacing.gapH16,
 
-          // Host Cards List
-          ...hosts.map((host) {
-            final activeSessionsCount = sessions.where((s) => s.host == host.name).length;
-            return Padding(
-              padding: const EdgeInsets.only(bottom: AppSpacing.md),
-              child: _buildHostCard(context, ref, host, activeSessionsCount),
-            );
-          }),
+          // Empty State or Host Cards List
+          if (hosts.isEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: AppSpacing.xxl),
+              child: GlassCard(
+                child: Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(AppSpacing.lg),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.dns_rounded, size: 44, color: AppColors.infoCyan),
+                        AppSpacing.gapH12,
+                        Text(
+                          'NO SUPERVISED HOSTS',
+                          style: AppTypography.titleMedium.copyWith(
+                            fontWeight: FontWeight.w700,
+                            color: AppColors.textPrimary,
+                          ),
+                        ),
+                        AppSpacing.gapH8,
+                        Text(
+                          'Connect to an ackbard daemon running on your Mac or Tailscale node to supervise sessions in real-time.',
+                          textAlign: TextAlign.center,
+                          style: AppTypography.bodySmall.copyWith(color: AppColors.textSecondary),
+                        ),
+                        AppSpacing.gapH16,
+                        ElevatedButton.icon(
+                          onPressed: () => AddHostDialog.show(context),
+                          icon: const Icon(Icons.add_rounded, size: 16),
+                          label: const Text('Add Supervised Host'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: AppColors.infoCyan,
+                            foregroundColor: AppColors.terminalBlack,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            )
+          else
+            ...hosts.map((host) {
+              final activeSessionsCount = sessions.where((s) => s.host == host.name).length;
+              return Padding(
+                padding: const EdgeInsets.only(bottom: AppSpacing.md),
+                child: _buildHostCard(context, ref, host, activeSessionsCount),
+              );
+            }),
         ],
       ),
     );
@@ -156,31 +198,38 @@ class HostsScreen extends ConsumerWidget {
                 color: host.online ? AppColors.infoCyan : AppColors.textMuted,
               ),
               const SizedBox(width: 8),
-              Text(
-                host.name,
-                style: AppTypography.titleMedium.copyWith(
-                  fontWeight: FontWeight.w700,
-                  color: AppColors.textPrimary,
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      host.name,
+                      style: AppTypography.titleMedium.copyWith(
+                        fontWeight: FontWeight.w700,
+                        color: AppColors.textPrimary,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    Text(
+                      host.endpointDisplay,
+                      style: AppTypography.codeXs.copyWith(color: AppColors.textSecondary, fontSize: 11),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
                 ),
               ),
               const SizedBox(width: 8),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                decoration: BoxDecoration(
-                  color: AppColors.surfaceHighlight,
-                  borderRadius: AppSpacing.roundedSm,
-                  border: Border.all(color: AppColors.outlineSubtle, width: 0.5),
-                ),
-                child: Text(
-                  host.endpointDisplay,
-                  style: AppTypography.codeXs.copyWith(color: AppColors.textSecondary),
-                ),
-              ),
-              const Spacer(),
               StatusBadge(
                 status: host.badgeStatus,
                 customLabel: host.online ? 'ONLINE' : 'UNREACHABLE',
                 isCompact: true,
+              ),
+              const SizedBox(width: 4),
+              IconButton(
+                icon: const Icon(Icons.delete_outline_rounded, size: 18, color: AppColors.textMuted),
+                tooltip: 'Delete host',
+                visualDensity: VisualDensity.compact,
+                onPressed: () => _confirmDeleteHost(context, ref, host),
               ),
             ],
           ),
@@ -213,7 +262,7 @@ class HostsScreen extends ConsumerWidget {
               children: [
                 _buildMetric('Active Sessions', '$activeSessionsCount'),
                 _buildMetric('Latency', host.online ? host.latencyDisplay : '—'),
-                _buildMetric('Daemon Ver', host.version),
+                _buildMetric('Daemon Ver', host.version.isNotEmpty ? host.version : (host.online ? 'Active' : '—')),
                 _buildMetric('Uptime', host.uptime),
               ],
             ),
@@ -229,6 +278,7 @@ class HostsScreen extends ConsumerWidget {
                 label: 'Rescan',
                 onTap: () async {
                   await ref.read(apiClientProvider).purgeSessions(host.url);
+                  ref.read(hostsListProvider.notifier).refreshHosts();
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
                       content: Text('Rescanning ${host.name}...'),
@@ -247,30 +297,9 @@ class HostsScreen extends ConsumerWidget {
               const SizedBox(width: 6),
               _buildHostActionButton(
                 context: context,
-                icon: Icons.system_update_alt_rounded,
-                label: 'Update Daemon',
-                onTap: () {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text('Daemon on ${host.name} is up to date (v0.2.1)'),
-                      backgroundColor: AppColors.statusEmerald,
-                    ),
-                  );
-                },
-              ),
-              const SizedBox(width: 6),
-              _buildHostActionButton(
-                context: context,
                 icon: Icons.settings_outlined,
                 label: 'Settings',
-                onTap: () {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text('Host ${host.name}: ${host.remoteCwd}'),
-                      backgroundColor: AppColors.surfaceHighlight,
-                    ),
-                  );
-                },
+                onTap: () => _showHostSettingsModal(context, ref, host),
               ),
             ],
           ),
@@ -294,8 +323,9 @@ class HostsScreen extends ConsumerWidget {
             style: AppTypography.codeSm.copyWith(
               color: AppColors.textPrimary,
               fontWeight: FontWeight.w700,
-              fontSize: 12,
+              fontSize: 11,
             ),
+            overflow: TextOverflow.ellipsis,
           ),
         ],
       ),
@@ -343,6 +373,160 @@ class HostsScreen extends ConsumerWidget {
     );
   }
 
+  void _confirmDeleteHost(BuildContext context, WidgetRef ref, HostRecord host) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.surface,
+        shape: RoundedRectangleBorder(
+          borderRadius: AppSpacing.roundedLg,
+          side: const BorderSide(color: AppColors.outline, width: 1),
+        ),
+        title: Row(
+          children: [
+            const Icon(Icons.delete_outline_rounded, size: 20, color: AppColors.statusCoral),
+            const SizedBox(width: 8),
+            Text(
+              'DELETE HOST',
+              style: AppTypography.codeSm.copyWith(
+                color: AppColors.statusCoral,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ],
+        ),
+        content: Text(
+          'Are you sure you want to disconnect and delete host "${host.name}" (${host.endpointDisplay})?',
+          style: AppTypography.bodyMedium.copyWith(color: AppColors.textPrimary),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: Text('Cancel', style: AppTypography.titleSmall.copyWith(color: AppColors.textMuted)),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              ref.read(hostsListProvider.notifier).removeHost(host.name);
+              Navigator.of(ctx).pop();
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text('Host "${host.name}" removed'),
+                  backgroundColor: AppColors.surfaceHighlight,
+                ),
+              );
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.statusCoral,
+              foregroundColor: Colors.white,
+            ),
+            child: const Text('Delete Host'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showHostSettingsModal(BuildContext context, WidgetRef ref, HostRecord host) {
+    final nameCtrl = TextEditingController(text: host.name);
+    final urlCtrl = TextEditingController(text: host.url);
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.surface,
+        shape: RoundedRectangleBorder(
+          borderRadius: AppSpacing.roundedLg,
+          side: const BorderSide(color: AppColors.outline, width: 1),
+        ),
+        title: Row(
+          children: [
+            const Icon(Icons.settings_outlined, size: 20, color: AppColors.infoCyan),
+            const SizedBox(width: 8),
+            Text(
+              'HOST SETTINGS',
+              style: AppTypography.codeSm.copyWith(
+                color: AppColors.textPrimary,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ],
+        ),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Host Name / Alias:', style: AppTypography.codeXs),
+              const SizedBox(height: 4),
+              TextField(
+                controller: nameCtrl,
+                style: AppTypography.bodySmall,
+                decoration: const InputDecoration(isDense: true),
+              ),
+              AppSpacing.gapH12,
+              Text('Daemon Endpoint URL:', style: AppTypography.codeXs),
+              const SizedBox(height: 4),
+              TextField(
+                controller: urlCtrl,
+                style: AppTypography.bodySmall,
+                decoration: const InputDecoration(isDense: true),
+              ),
+              AppSpacing.gapH16,
+              Container(
+                padding: AppSpacing.paddingCardDense,
+                decoration: BoxDecoration(
+                  color: AppColors.terminalBlack,
+                  borderRadius: AppSpacing.roundedSm,
+                  border: Border.all(color: AppColors.outlineSubtle, width: 0.5),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Status: ${host.online ? "Online 🟢" : "Unreachable 🔴"}', style: AppTypography.codeXs),
+                    const SizedBox(height: 4),
+                    Text('Latency: ${host.online ? host.latencyDisplay : "—"}', style: AppTypography.codeXs),
+                    const SizedBox(height: 4),
+                    Text('Daemon Version: ${host.version.isNotEmpty ? host.version : (host.online ? "Active" : "—")}', style: AppTypography.codeXs),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.of(ctx).pop();
+              _confirmDeleteHost(context, ref, host);
+            },
+            child: Text('Delete Host', style: AppTypography.titleSmall.copyWith(color: AppColors.statusCoral)),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              final updated = host.copyWith(
+                name: nameCtrl.text.trim().isNotEmpty ? nameCtrl.text.trim() : host.name,
+                url: urlCtrl.text.trim().isNotEmpty ? urlCtrl.text.trim() : host.url,
+              );
+              ref.read(hostsListProvider.notifier).updateHost(updated);
+              Navigator.of(ctx).pop();
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text('Host "${updated.name}" updated'),
+                  backgroundColor: AppColors.statusEmerald,
+                ),
+              );
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.infoCyan,
+              foregroundColor: AppColors.terminalBlack,
+            ),
+            child: const Text('Save Changes'),
+          ),
+        ],
+      ),
+    );
+  }
+
   void _showLogsModal(BuildContext context, HostRecord host) {
     showDialog(
       context: context,
@@ -375,7 +559,7 @@ class HostsScreen extends ConsumerWidget {
           ),
           child: SingleChildScrollView(
             child: Text(
-              '''[ackbard] 2026/08/20 21:14:02 Starting ackbard on 127.0.0.1:7777 (v0.2.1)
+              '''[ackbard] 2026/08/20 21:14:02 Starting ackbard on 127.0.0.1:7777 (${host.version.isNotEmpty ? host.version : "active"})
 [ackbard] 2026/08/20 21:14:02 SQLite pure Go database initialized (~/.ackbard.db)
 [ackbard] 2026/08/20 21:14:02 SSE Event hub listening on /v1/events
 [ackbard] 2026/08/20 21:14:02 Hook ingest endpoints active: claude-code, codex, antigravity

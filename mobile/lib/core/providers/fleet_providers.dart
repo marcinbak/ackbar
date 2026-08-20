@@ -87,35 +87,7 @@ final decisionAuditProvider =
 class HostsNotifier extends StateNotifier<List<HostRecord>> {
   final ApiClient _apiClient;
 
-  HostsNotifier(this._apiClient)
-      : super([
-          HostRecord(
-            name: 'local',
-            url: 'http://100.117.71.84:7777',
-            sshTarget: 'localhost',
-            remoteCwd: '~/Work/Ackbar',
-            online: true,
-            latencyMs: 1,
-            version: 'v0.2.1',
-            uptime: 'Active',
-            sessionsCount: 0,
-            tailscaleIp: '100.117.71.84',
-            createdAt: DateTime.now(),
-          ),
-          HostRecord(
-            name: 'local-wifi',
-            url: 'http://192.168.0.169:7777',
-            sshTarget: 'localhost',
-            remoteCwd: '~/Work/Ackbar',
-            online: true,
-            latencyMs: 1,
-            version: 'v0.2.1',
-            uptime: 'Active',
-            sessionsCount: 0,
-            tailscaleIp: '100.117.71.84',
-            createdAt: DateTime.now(),
-          ),
-        ]);
+  HostsNotifier(this._apiClient) : super(const []);
 
   Future<void> refreshHosts() async {
     final updated = <HostRecord>[];
@@ -128,7 +100,7 @@ class HostsNotifier extends StateNotifier<List<HostRecord>> {
         updated.add(h.copyWith(
           online: true,
           latencyMs: health['latency_ms'] as int? ?? 1,
-          version: health['version'] as String? ?? 'v0.2.1',
+          version: health['version'] as String? ?? '',
           uptime: health['uptime'] as String? ?? 'Active',
           sessionsCount: sessions.length,
         ));
@@ -146,8 +118,13 @@ class HostsNotifier extends StateNotifier<List<HostRecord>> {
     refreshHosts();
   }
 
+  void updateHost(HostRecord updatedHost) {
+    state = state.map((h) => h.name == updatedHost.name || h.url == updatedHost.url ? updatedHost : h).toList();
+    refreshHosts();
+  }
+
   void removeHost(String name) {
-    state = state.where((h) => h.name != name).toList();
+    state = state.where((h) => h.name != name && h.url != name).toList();
   }
 }
 
@@ -272,16 +249,11 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
           summary: answerSummary ?? '$action: $value',
         );
 
-    // Find target host URL
-    final hosts = _ref.read(hostsListProvider);
-    final targetHost = hosts.firstWhere(
-      (h) => h.name == session.host,
-      orElse: () => hosts.first,
-    );
+    final hostUrl = _getHostUrl(session.host);
 
     // Dispatch HTTP POST /v1/sessions/respond
     final ok = await _apiClient.respondToSession(
-      targetHost.url,
+      hostUrl,
       id: session.id,
       action: action,
       value: value,
@@ -289,10 +261,17 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
     return ok;
   }
 
+  String _getHostUrl(String hostName) {
+    final hosts = _ref.read(hostsListProvider);
+    final match = hosts.where((h) => h.name == hostName || h.url.contains(hostName));
+    if (match.isNotEmpty) return match.first.url;
+    if (hosts.isNotEmpty) return hosts.first.url;
+    return 'http://127.0.0.1:7777';
+  }
+
   Future<void> restartSession(String sessionId) async {
     final session = state.firstWhere((s) => s.id == sessionId);
-    final hosts = _ref.read(hostsListProvider);
-    final targetHost = hosts.firstWhere((h) => h.name == session.host, orElse: () => hosts.first);
+    final hostUrl = _getHostUrl(session.host);
 
     _upsertSession(session.copyWith(
       state: SessionState.working,
@@ -300,13 +279,12 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
       lastEventAt: DateTime.now(),
     ));
 
-    await _apiClient.controlSession(targetHost.url, session.id, 'restart');
+    await _apiClient.controlSession(hostUrl, session.id, 'restart');
   }
 
   Future<void> terminateSession(String sessionId) async {
     final session = state.firstWhere((s) => s.id == sessionId);
-    final hosts = _ref.read(hostsListProvider);
-    final targetHost = hosts.firstWhere((h) => h.name == session.host, orElse: () => hosts.first);
+    final hostUrl = _getHostUrl(session.host);
 
     _upsertSession(session.copyWith(
       state: SessionState.ended,
@@ -314,16 +292,15 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
       lastEventAt: DateTime.now(),
     ));
 
-    await _apiClient.controlSession(targetHost.url, session.id, 'kill');
+    await _apiClient.controlSession(hostUrl, session.id, 'kill');
   }
 
   Future<void> deleteSession(String sessionId) async {
     final session = state.firstWhere((s) => s.id == sessionId);
-    final hosts = _ref.read(hostsListProvider);
-    final targetHost = hosts.firstWhere((h) => h.name == session.host, orElse: () => hosts.first);
+    final hostUrl = _getHostUrl(session.host);
 
     state = state.where((s) => s.id != sessionId).toList();
-    await _apiClient.controlSession(targetHost.url, session.id, 'delete');
+    await _apiClient.controlSession(hostUrl, session.id, 'delete');
   }
 }
 
