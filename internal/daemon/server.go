@@ -2778,7 +2778,7 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 						}
 
 						// Check if this is an internal subagent conversation
-						if isAntigravitySubagent(logPath) {
+						if isAntigravitySubagent(home, convID) {
 							if existing, _ := s.db.GetSession(sessID); existing != nil {
 								_ = s.db.DeleteSession(sessID)
 								existing.Deleted = true
@@ -2838,15 +2838,11 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 		if allSess, err := s.db.ListSessions(); err == nil {
 			for _, sObj := range allSess {
 				if sObj.Agent == "antigravity" && sObj.NativeID != "" && isUUID(sObj.NativeID) {
-					for _, bDir := range brainDirs {
-						logPath := filepath.Join(bDir, sObj.NativeID, ".system_generated", "logs", "transcript.jsonl")
-						if fileExists(logPath) && isAntigravitySubagent(logPath) {
-							_ = s.db.DeleteSession(sObj.ID)
-							sObj.Deleted = true
-							sObj.Activity = "Deleted"
-							s.broadcast(sObj)
-							break
-						}
+					if isAntigravitySubagent(home, sObj.NativeID) {
+						_ = s.db.DeleteSession(sObj.ID)
+						sObj.Deleted = true
+						sObj.Activity = "Deleted"
+						s.broadcast(sObj)
 					}
 				}
 			}
@@ -3804,31 +3800,45 @@ func IsRawSessionName(n string) bool {
 	return false
 }
 
-func isAntigravitySubagent(logPath string) bool {
-	data, err := os.ReadFile(logPath)
-	if err != nil {
+func isAntigravitySubagent(home, convID string) bool {
+	if convID == "" || !IsUUID(convID) {
 		return false
 	}
-	lines := strings.Split(string(data), "\n")
-	for i, line := range lines {
-		if i > 8 {
-			break
-		}
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		if strings.Contains(line, "The earlier parts of this conversation have been truncated") ||
-			strings.Contains(line, "This is a side question from the user") ||
-			strings.Contains(line, "<subagent_invocation>") ||
-			strings.Contains(line, "You are a subagent") ||
-			strings.Contains(line, "Subagent Defined") ||
-			strings.Contains(line, "subagent_analyst") ||
-			strings.Contains(line, "invoke_subagent") {
-			return true
+	// 1. Check if user annotation exists (annotations are ONLY created by the IDE/CLI for real user root sessions)
+	annoPaths := []string{
+		filepath.Join(home, ".gemini", "antigravity", "annotations", convID+".pbtxt"),
+		filepath.Join(home, ".gemini", "antigravity-cli", "annotations", convID+".pbtxt"),
+		filepath.Join(home, ".antigravity", "annotations", convID+".pbtxt"),
+	}
+	for _, p := range annoPaths {
+		if fileExists(p) {
+			return false // It has a real user annotation file -> NOT a subagent!
 		}
 	}
-	return false
+
+	// 2. Check conversation_metadata.json if present
+	metaPaths := []string{
+		filepath.Join(home, ".gemini", "antigravity-cli", "cache", "conversation_metadata.json"),
+		filepath.Join(home, ".gemini", "antigravity", "cache", "conversation_metadata.json"),
+		filepath.Join(home, ".antigravity", "cache", "conversation_metadata.json"),
+	}
+	for _, mp := range metaPaths {
+		if data, err := os.ReadFile(mp); err == nil {
+			var meta struct {
+				Conversations map[string]struct {
+					IsInternal bool `json:"is_internal"`
+				} `json:"conversations"`
+			}
+			if err := json.Unmarshal(data, &meta); err == nil {
+				if c, exists := meta.Conversations[convID]; exists {
+					return c.IsInternal
+				}
+			}
+		}
+	}
+
+	// 3. If no user annotation file exists and not marked as a root conversation in metadata, it is a subagent
+	return true
 }
 
 func cleanEnvForVSCode(env []string) []string {
