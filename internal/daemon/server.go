@@ -2563,6 +2563,33 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 					if home != "" {
 						sID, _ = findClaudeSessionForPID(home, pid)
 					}
+				} else if agent == "antigravity" {
+					if cmdData, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid)); err == nil {
+						args := strings.Split(string(cmdData), "\x00")
+						for i, arg := range args {
+							if (arg == "--conversation" || arg == "-c" || arg == "--conversation-id") && i+1 < len(args) {
+								cID := strings.TrimSpace(args[i+1])
+								if IsUUID(cID) {
+									sID = cID
+									break
+								}
+							}
+						}
+					}
+					if sID == "" {
+						if out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "args=").Output(); err == nil {
+							fields := strings.Fields(string(out))
+							for i, f := range fields {
+								if (f == "--conversation" || f == "-c" || f == "--conversation-id") && i+1 < len(fields) {
+									cID := strings.TrimSpace(fields[i+1])
+									if IsUUID(cID) {
+										sID = cID
+										break
+									}
+								}
+							}
+						}
+					}
 				}
 
 				// Check if any existing session in the database already has this PID or native UUID
