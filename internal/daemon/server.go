@@ -2564,20 +2564,61 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 			}
 			pidStr, cwd, tmuxName, cmdName := parts[0], parts[1], parts[2], parts[3]
 			cmdLower := strings.ToLower(cmdName)
-			tmuxLower := strings.ToLower(tmuxName)
 
 			agent := ""
-			if strings.Contains(cmdLower, "antigravity") || strings.Contains(cmdLower, "agy") || strings.Contains(tmuxLower, "antigravity") {
-				agent = "antigravity"
-			} else if strings.Contains(cmdLower, "codex") || strings.Contains(tmuxLower, "codex") {
-				agent = "codex"
-			} else if strings.Contains(cmdLower, "claude") || strings.Contains(tmuxLower, "claude") {
-				agent = "claude-code"
+			actualPID := 0
+			var panePID int
+			fmt.Sscanf(pidStr, "%d", &panePID)
+
+			if cmdLower == "bash" || cmdLower == "zsh" || cmdLower == "sh" {
+				if panePID > 0 {
+					if out, err := exec.CommandContext(ctx, "pgrep", "-P", strconv.Itoa(panePID), "-a").Output(); err == nil {
+						for _, pline := range strings.Split(string(out), "\n") {
+							pline = strings.TrimSpace(pline)
+							if pline == "" {
+								continue
+							}
+							parts := strings.SplitN(pline, " ", 2)
+							if len(parts) >= 2 {
+								cPid, _ := strconv.Atoi(parts[0])
+								cCmd := strings.ToLower(parts[1])
+								if strings.Contains(cCmd, "claude") {
+									agent = "claude-code"
+									actualPID = cPid
+									break
+								} else if strings.Contains(cCmd, "antigravity") || strings.Contains(cCmd, "bin/agy") || strings.HasPrefix(cCmd, "agy") {
+									agent = "antigravity"
+									actualPID = cPid
+									break
+								} else if strings.Contains(cCmd, "codex") {
+									agent = "codex"
+									actualPID = cPid
+									break
+								}
+							}
+						}
+					}
+				}
+
+				if agent == "" {
+					if strings.HasPrefix(tmuxName, "ackbar-") {
+						_ = tmux.Kill(ctx, tmuxName)
+					}
+					continue
+				}
+			} else {
+				if strings.Contains(cmdLower, "antigravity") || strings.Contains(cmdLower, "agy") {
+					agent = "antigravity"
+				} else if strings.Contains(cmdLower, "codex") {
+					agent = "codex"
+				} else if strings.Contains(cmdLower, "claude") {
+					agent = "claude-code"
+				}
+				actualPID = panePID
 			}
 
-			if agent != "" && pidStr != "" && cwd != "" {
-				var pid int
-				fmt.Sscanf(pidStr, "%d", &pid)
+			if agent != "" && actualPID > 0 && cwd != "" {
+				pid := actualPID
 
 				// Try resolving the session UUID from tmuxName or ~/.claude/sessions/
 				targetNativeID := ""
