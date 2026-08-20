@@ -369,6 +369,9 @@ final filteredSessionsProvider = Provider<List<Session>>((ref) {
   final query = ref.watch(fleetSearchQueryProvider).toLowerCase().trim();
 
   return allSessions.where((s) {
+    // Hide archived/deleted sessions from active fleet views
+    if (s.archived) return false;
+
     // Tab filter: 0: All, 1: Working, 2: Attention/Blocked, 3: Idle
     if (filterIndex == 1 && s.state != SessionState.working) return false;
     if (filterIndex == 2 && !s.isBlocked) return false;
@@ -406,12 +409,12 @@ final groupedSessionsProvider = Provider<Map<String, List<Session>>>((ref) {
 
 final attentionPendingSessionsProvider = Provider<List<Session>>((ref) {
   final sessions = ref.watch(fleetSessionsProvider);
-  return sessions.where((s) => s.isBlocked).toList();
+  return sessions.where((s) => !s.archived && s.isBlocked).toList();
 });
 
 final inProgressSessionsProvider = Provider<List<Session>>((ref) {
   final sessions = ref.watch(fleetSessionsProvider);
-  return sessions.where((s) => s.state == SessionState.working).toList();
+  return sessions.where((s) => !s.archived && s.state == SessionState.working).toList();
 });
 
 final attentionBadgeCountProvider = Provider<int>((ref) {

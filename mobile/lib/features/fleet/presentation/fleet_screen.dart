@@ -52,16 +52,17 @@ class _FleetScreenState extends ConsumerState<FleetScreen> {
   @override
   Widget build(BuildContext context) {
     final allSessions = ref.watch(fleetSessionsProvider);
+    final activeSessions = allSessions.where((s) => !s.archived).toList();
     final groupedSessions = ref.watch(groupedSessionsProvider);
     final filterIndex = ref.watch(fleetFilterIndexProvider);
     final hosts = ref.watch(hostsListProvider);
 
-    final workingCount = allSessions.where((s) => s.state == SessionState.working).length;
-    final attentionCount = allSessions.where((s) => s.isBlocked).length;
-    final idleCount = allSessions.where((s) => s.state == SessionState.idle).length;
+    final workingCount = activeSessions.where((s) => s.state == SessionState.working).length;
+    final attentionCount = activeSessions.where((s) => s.isBlocked).length;
+    final idleCount = activeSessions.where((s) => s.state == SessionState.idle).length;
 
     final filterTabs = [
-      FilterTabItem(label: 'All Sessions', count: allSessions.length),
+      FilterTabItem(label: 'All Sessions', count: activeSessions.length),
       FilterTabItem(label: 'Working', count: workingCount),
       FilterTabItem(
         label: 'Attention',

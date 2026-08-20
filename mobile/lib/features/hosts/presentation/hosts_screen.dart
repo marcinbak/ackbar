@@ -172,7 +172,7 @@ class HostsScreen extends ConsumerWidget {
             )
           else
             ...hosts.map((host) {
-              final activeSessionsCount = sessions.where((s) => s.host == host.name).length;
+              final activeSessionsCount = sessions.where((s) => s.host == host.name && !s.archived).length;
               return Padding(
                 padding: const EdgeInsets.only(bottom: AppSpacing.md),
                 child: _buildHostCard(context, ref, host, activeSessionsCount),
