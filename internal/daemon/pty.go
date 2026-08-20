@@ -128,8 +128,28 @@ func (s *Server) servePTYWS(ws *websocket.Conn) {
 		// Ensure local tmux session exists before attaching
 		if err := exec.Command("tmux", "has-session", "-t", tmuxName).Run(); err != nil {
 			if resumeCmd != "" {
-				shellCmd := fmt.Sprintf("cd %q 2>/dev/null || true; export PATH=\"$HOME/.local/bin:$HOME/.npm-global/bin:$PATH\"; %s; exec bash -l", cwd, resumeCmd)
-				_ = exec.Command("tmux", "new-session", "-d", "-s", tmuxName, "-c", cwd, "bash", "-l", "-c", shellCmd).Run()
+				transcriptText := ""
+				if sess != nil && sess.NativeID != "" {
+					if t, terr := ExtractTranscript(sess.Agent, sess.NativeID, cwd); terr == nil && t != nil && len(t.Messages) > 0 {
+						transcriptText = FormatTranscriptANSI(t)
+					}
+				}
+
+				if transcriptText != "" {
+					tmpFile, ferr := os.CreateTemp("", "ackbar-transcript-*.txt")
+					if ferr == nil {
+						_, _ = tmpFile.WriteString(transcriptText)
+						_ = tmpFile.Close()
+						shellCmd := fmt.Sprintf("cat %q 2>/dev/null; rm -f %q; cd %q 2>/dev/null || true; export PATH=\"$HOME/.local/bin:$HOME/.npm-global/bin:$PATH\"; %s; exec bash -l", tmpFile.Name(), tmpFile.Name(), cwd, resumeCmd)
+						_ = exec.Command("tmux", "new-session", "-d", "-s", tmuxName, "-c", cwd, "bash", "-l", "-c", shellCmd).Run()
+					} else {
+						shellCmd := fmt.Sprintf("cd %q 2>/dev/null || true; export PATH=\"$HOME/.local/bin:$HOME/.npm-global/bin:$PATH\"; %s; exec bash -l", cwd, resumeCmd)
+						_ = exec.Command("tmux", "new-session", "-d", "-s", tmuxName, "-c", cwd, "bash", "-l", "-c", shellCmd).Run()
+					}
+				} else {
+					shellCmd := fmt.Sprintf("cd %q 2>/dev/null || true; export PATH=\"$HOME/.local/bin:$HOME/.npm-global/bin:$PATH\"; %s; exec bash -l", cwd, resumeCmd)
+					_ = exec.Command("tmux", "new-session", "-d", "-s", tmuxName, "-c", cwd, "bash", "-l", "-c", shellCmd).Run()
+				}
 			} else {
 				_ = exec.Command("tmux", "new-session", "-d", "-s", tmuxName, "-c", cwd).Run()
 			}

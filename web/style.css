@@ -1467,3 +1467,161 @@ body, html {
   animation: pulseGlow 2.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
   border-radius: 6px;
 }
+
+/* Transcript Viewer Styles */
+.transcript-viewer-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  width: 100%;
+  background: var(--bg-main);
+  overflow: hidden;
+}
+
+.transcript-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 20px;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border-color);
+  flex-shrink: 0;
+}
+
+.transcript-header-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.transcript-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-main);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.transcript-subtitle {
+  font-size: 12px;
+  color: var(--text-dim);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.transcript-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.transcript-body {
+  flex: 1;
+  padding: 20px 24px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.transcript-msg {
+  display: flex;
+  flex-direction: column;
+  border-radius: 8px;
+  padding: 14px 16px;
+  max-width: 900px;
+  width: 100%;
+}
+
+.transcript-msg.user-msg {
+  align-self: flex-start;
+  background: rgba(59, 130, 246, 0.08);
+  border: 1px solid rgba(59, 130, 246, 0.25);
+}
+
+.transcript-msg.assistant-msg {
+  align-self: flex-start;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+}
+
+.transcript-msg.system-msg {
+  align-self: center;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px dashed rgba(255, 255, 255, 0.12);
+  color: var(--text-dim);
+  font-size: 12px;
+  padding: 8px 14px;
+  border-radius: 6px;
+}
+
+.msg-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.user-msg .msg-role {
+  color: #60a5fa;
+}
+
+.assistant-msg .msg-role {
+  color: #34d399;
+}
+
+.msg-time {
+  font-size: 11px;
+  color: var(--text-dim);
+  font-weight: normal;
+}
+
+.msg-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.tool-tag {
+  font-size: 11px;
+  padding: 2px 7px;
+  background: rgba(245, 158, 11, 0.15);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  border-radius: 4px;
+  font-family: var(--font-mono);
+}
+
+.msg-thinking {
+  margin-bottom: 10px;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.msg-thinking summary {
+  cursor: pointer;
+  user-select: none;
+  font-weight: 500;
+}
+
+.thinking-content {
+  margin-top: 6px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+}
+
+.transcript-empty {
+  text-align: center;
+  padding: 40px 20px;
+  color: var(--text-dim);
+  font-size: 14px;
+}
+
