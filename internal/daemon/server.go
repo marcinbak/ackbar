@@ -701,14 +701,22 @@ func (s *Server) handleSessionControl(w http.ResponseWriter, r *http.Request) {
 			respAction = "answer"
 		}
 		actionLower := strings.ToLower(respAction)
-		if sess.Managed && sess.TmuxName != "" {
+		if (sess.Managed || sess.TmuxName != "") && sess.TmuxName != "" {
 			switch actionLower {
 			case "answer", "input":
 				_ = tmux.SendInput(r.Context(), sess.TmuxName, value, true)
-			case "allow":
-				_ = tmux.SendKeys(r.Context(), sess.TmuxName, "y", "Enter")
-			case "deny":
-				_ = tmux.SendKeys(r.Context(), sess.TmuxName, "n", "Enter")
+			case "allow", "yes", "proceed", "1":
+				if sess.Agent == "antigravity" {
+					_ = tmux.SendKeys(r.Context(), sess.TmuxName, "1", "Enter")
+				} else {
+					_ = tmux.SendKeys(r.Context(), sess.TmuxName, "y", "Enter")
+				}
+			case "deny", "no", "4":
+				if sess.Agent == "antigravity" {
+					_ = tmux.SendKeys(r.Context(), sess.TmuxName, "4", "Enter")
+				} else {
+					_ = tmux.SendKeys(r.Context(), sess.TmuxName, "n", "Enter")
+				}
 			}
 		}
 		sess.State = StateWorking
@@ -2253,8 +2261,177 @@ func decodeClaudeProjectDir(raw string) string {
 	return current
 }
 
+func (s *Server) inspectAntigravityStatus(ctx context.Context, sess *Session) bool {
+	if sess == nil || sess.Agent != "antigravity" {
+		return false
+	}
+	changed := false
+	home, _ := os.UserHomeDir()
+
+	// 1. Check live tmux screen for permission prompts or confirmations
+	if sess.TmuxName != "" {
+		if out, err := exec.CommandContext(ctx, "tmux", "capture-pane", "-pt", sess.TmuxName, "-p").Output(); err == nil {
+			paneText := string(out)
+			lines := strings.Split(paneText, "\n")
+			startIdx := len(lines) - 25
+			if startIdx < 0 {
+				startIdx = 0
+			}
+			tailText := strings.Join(lines[startIdx:], "\n")
+
+			if strings.Contains(tailText, "Requesting permission for:") || strings.Contains(tailText, "Do you want to proceed?") {
+				cmdReason := ""
+				if idx := strings.Index(tailText, "Requesting permission for:"); idx != -1 {
+					sub := tailText[idx+len("Requesting permission for:"):]
+					if endIdx := strings.Index(sub, "Do you want to proceed?"); endIdx != -1 {
+						cmdReason = strings.TrimSpace(sub[:endIdx])
+					}
+				}
+				if cmdReason == "" {
+					cmdReason = "Tool permission requested"
+				}
+
+				if sess.State != StateBlocked || sess.Blocked == nil {
+					sess.State = StateBlocked
+					sess.Blocked = &Blocked{
+						Kind:     BlockPermission,
+						Reason:   cmdReason,
+						Question: "Do you want to proceed with: " + truncateTitle(cmdReason),
+						Options:  []string{"1. Yes", "2. Yes, and always allow in this conversation", "4. No"},
+						Since:    time.Now(),
+					}
+					sess.Activity = "Waiting for permission: " + truncateTitle(cmdReason)
+					sess.LastEventAt = time.Now()
+					changed = true
+				}
+				return changed
+			} else if strings.Contains(tailText, "Are you sure?") || strings.Contains(tailText, "[y/N]") || strings.Contains(tailText, "[Y/n]") {
+				if sess.State != StateBlocked || sess.Blocked == nil {
+					sess.State = StateBlocked
+					sess.Blocked = &Blocked{
+						Kind:     BlockPermission,
+						Reason:   "Confirmation required",
+						Question: "Confirmation required",
+						Options:  []string{"Yes", "No"},
+						Since:    time.Now(),
+					}
+					sess.Activity = "Waiting for confirmation"
+					sess.LastEventAt = time.Now()
+					changed = true
+				}
+				return changed
+			}
+		}
+	}
+
+	// 2. Check transcript.jsonl for ask_question or plan approval
+	if home != "" && sess.NativeID != "" {
+		brainDirs := []string{
+			filepath.Join(home, ".gemini", "antigravity", "brain", sess.NativeID, ".system_generated", "logs", "transcript.jsonl"),
+			filepath.Join(home, ".gemini", "antigravity-cli", "brain", sess.NativeID, ".system_generated", "logs", "transcript.jsonl"),
+			filepath.Join(home, ".antigravity", "brain", sess.NativeID, ".system_generated", "logs", "transcript.jsonl"),
+		}
+		for _, logPath := range brainDirs {
+			if data, err := os.ReadFile(logPath); err == nil {
+				lines := strings.Split(string(data), "\n")
+				for i := len(lines) - 1; i >= 0; i-- {
+					line := strings.TrimSpace(lines[i])
+					if line == "" {
+						continue
+					}
+					var step struct {
+						Type      string `json:"type"`
+						Content   string `json:"content"`
+						ToolCalls []struct {
+							Name string                 `json:"name"`
+							Args map[string]interface{} `json:"args"`
+						} `json:"tool_calls"`
+						CreatedAt string `json:"created_at"`
+					}
+					if jerr := json.Unmarshal([]byte(line), &step); jerr == nil {
+						stepTime, _ := time.Parse(time.RFC3339, step.CreatedAt)
+						if stepTime.IsZero() {
+							stepTime = time.Now()
+						}
+
+						for _, tc := range step.ToolCalls {
+							if tc.Name == "ask_question" {
+								q, opts := ExtractAntigravityQuestionAndOptions(tc.Args)
+								if sess.State != StateBlocked || sess.Blocked == nil || sess.Blocked.Question != q {
+									sess.State = StateBlocked
+									sess.Blocked = &Blocked{
+										Kind:     BlockQuestion,
+										Reason:   q,
+										Question: q,
+										Options:  opts,
+										Since:    stepTime,
+									}
+									if q != "" {
+										sess.Activity = "Question: " + truncateTitle(q)
+									} else {
+										sess.Activity = "Waiting for user response"
+									}
+									sess.LastEventAt = stepTime
+									changed = true
+								}
+								return changed
+							}
+						}
+
+						if strings.Contains(step.Content, "Note: You have just created an artifact and requested user feedback") ||
+							strings.Contains(step.Content, "Stop calling tools to end your turn, and allow the user to review the artifact") {
+							if sess.State != StateBlocked || sess.Blocked == nil {
+								sess.State = StateBlocked
+								sess.Blocked = &Blocked{
+									Kind:     BlockQuestion,
+									Reason:   "Plan approval required",
+									Question: "Please review and approve the implementation plan",
+									Options:  []string{"Proceed", "Provide Feedback"},
+									Since:    stepTime,
+								}
+								sess.Activity = "Waiting for plan feedback"
+								sess.LastEventAt = stepTime
+								changed = true
+							}
+							return changed
+						}
+
+						break
+					}
+				}
+				break
+			}
+		}
+	}
+
+	// 3. If it was blocked, but live tmux pane and transcript show it is now unblocked
+	if sess.State == StateBlocked {
+		if sess.TmuxName != "" || isProcessAlive(sess.PID) {
+			sess.State = StateWorking
+			sess.Blocked = nil
+			sess.Activity = "Working..."
+			sess.LastEventAt = time.Now()
+			changed = true
+		} else {
+			sess.State = StateEnded
+			sess.Blocked = nil
+			sess.Activity = "Session ended"
+			changed = true
+		}
+	}
+
+	return changed
+}
+
 func (s *Server) verifySessionLiveness(ctx context.Context, sessions []*Session) {
 	for _, sess := range sessions {
+		if sess.Agent == "antigravity" {
+			if s.inspectAntigravityStatus(ctx, sess) {
+				_ = s.db.SaveSession(sess)
+				s.broadcast(sess)
+			}
+		}
+
 		if sess.State == StateEnded {
 			continue
 		}
@@ -2360,6 +2537,9 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 						sess.ProjectKey = GetProjectKey(realCwd)
 						changed = true
 					}
+				}
+				if s.inspectAntigravityStatus(ctx, sess) {
+					changed = true
 				}
 			}
 			if changed {
