@@ -287,27 +287,12 @@ func (s *Server) processHookEvent(p Provider, urlEventName string, headerHost st
 	if len(event.Roots) > 0 {
 		sess.Roots = event.Roots
 	}
-	if event.Name != "" {
-		if sess.Name == "" || sess.Name == sess.Agent || strings.HasPrefix(sess.Name, sess.Agent+" (") || isUUID(sess.Name) || strings.HasPrefix(sess.Name, "ackbar-") || strings.HasPrefix(sess.Name, "proc-") {
-			if !isUUID(event.Name) && !strings.HasPrefix(event.Name, "ackbar-") && !strings.HasPrefix(event.Name, "proc-") {
-				sess.Name = event.Name
-			}
-		} else if !strings.HasPrefix(event.Name, "<") && !isUUID(event.Name) && !strings.HasPrefix(event.Name, "ackbar-") {
-			// Only update if it came from an official title lookup
-			if sess.Agent == "claude-code" {
-				if meta := ReadClaudeSessionMeta(sess.Cwd, sess.NativeID); meta != nil && meta.Title != "" {
-					sess.Name = meta.Title
-				}
-			} else if sess.Agent == "antigravity" {
-				if title := ReadAntigravitySessionTitle(sess.Cwd, sess.NativeID); title != "" {
-					sess.Name = title
-				}
-			}
-		}
-	} else if sess.Name == "" || sess.Name == sess.Agent || isUUID(sess.Name) || strings.HasPrefix(sess.Name, "ackbar-") || strings.HasPrefix(sess.Name, "proc-") {
-		// Attempt resolution
+	if event.Name != "" && !isRawSessionName(event.Name) {
+		sess.Name = event.Name
+	} else if isRawSessionName(sess.Name) {
+		// Attempt title resolution from disk
 		if sess.Agent == "antigravity" {
-			if title := ReadAntigravitySessionTitle(sess.Cwd, sess.NativeID); title != "" {
+			if title := ReadAntigravitySessionTitle(sess.Cwd, sess.NativeID); title != "" && !isRawSessionName(title) {
 				sess.Name = title
 			}
 		} else if sess.Agent == "claude-code" {
@@ -1450,17 +1435,23 @@ func (s *Server) handleDocuments(w http.ResponseWriter, r *http.Request) {
 	if (agent == "antigravity" || strings.Contains(strings.ToLower(agent), "antigravity") || strings.Contains(strings.ToLower(agent), "agy")) && nativeID != "" {
 		home, _ := os.UserHomeDir()
 		if home != "" {
-			convBrainDir := filepath.Join(home, ".gemini", "antigravity", "brain", nativeID)
-			if dirExists(convBrainDir) {
-				if files, ferr := os.ReadDir(convBrainDir); ferr == nil {
-					for _, f := range files {
-						if !f.IsDir() && strings.HasSuffix(f.Name(), ".md") {
-							full := filepath.Join(convBrainDir, f.Name())
-							cat, label, prio := classifyDoc(f.Name())
-							if cat == "other" {
-								cat, label = "plan", "Antigravity Plan"
+			candidateDirs := []string{
+				filepath.Join(home, ".gemini", "antigravity", "brain", nativeID),
+				filepath.Join(home, ".gemini", "antigravity-cli", "brain", nativeID),
+				filepath.Join(home, ".antigravity", "brain", nativeID),
+			}
+			for _, convBrainDir := range candidateDirs {
+				if dirExists(convBrainDir) {
+					if files, ferr := os.ReadDir(convBrainDir); ferr == nil {
+						for _, f := range files {
+							if !f.IsDir() && strings.HasSuffix(f.Name(), ".md") {
+								full := filepath.Join(convBrainDir, f.Name())
+								cat, label, prio := classifyDoc(f.Name())
+								if cat == "other" {
+									cat, label = "plan", "Antigravity Plan"
+								}
+								addDoc(full, fmt.Sprintf("⚡ %s", f.Name()), f.Name(), cat, label, prio+5)
 							}
-							addDoc(full, fmt.Sprintf("⚡ %s", f.Name()), f.Name(), cat, label, prio+5)
 						}
 					}
 				}
@@ -2767,30 +2758,28 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 			}
 		}
 
-		// 4. Scan disk-backed Antigravity brain sessions
-		brainDir := filepath.Join(home, ".gemini", "antigravity", "brain")
-		if bDirs, err := os.ReadDir(brainDir); err == nil {
-			for _, bDir := range bDirs {
-				convPath := filepath.Join(brainDir, bDir.Name())
-				logPath := filepath.Join(convPath, ".system_generated", "logs", "transcript.jsonl")
-				// Only process real conversation directories with valid transcript logs
-				if bDir.IsDir() && fileExists(logPath) && isUUID(bDir.Name()) {
-					convID := bDir.Name()
-					sessID := fmt.Sprintf("antigravity:%s:%s", hostName, convID)
-					if s.db.IsSessionDeleted(sessID) || s.db.IsSessionDeleted(convID) {
-						continue
-					}
-					existing, _ := s.db.GetSession(sessID)
-					if existing == nil {
-						title := ReadAntigravitySessionTitle("", convID)
-						cwd := extractAntigravityWorkspace(logPath, home)
+		// 4. Scan disk-backed Antigravity brain sessions across all possible locations
+		brainDirs := []string{
+			filepath.Join(home, ".gemini", "antigravity", "brain"),
+			filepath.Join(home, ".gemini", "antigravity-cli", "brain"),
+			filepath.Join(home, ".antigravity", "brain"),
+		}
+		for _, brainDir := range brainDirs {
+			if bDirs, err := os.ReadDir(brainDir); err == nil {
+				for _, bDir := range bDirs {
+					convPath := filepath.Join(brainDir, bDir.Name())
+					logPath := filepath.Join(convPath, ".system_generated", "logs", "transcript.jsonl")
+					// Only process real conversation directories with valid transcript logs
+					if bDir.IsDir() && fileExists(logPath) && isUUID(bDir.Name()) {
+						convID := bDir.Name()
+						sessID := fmt.Sprintf("antigravity:%s:%s", hostName, convID)
+						if s.db.IsSessionDeleted(sessID) || s.db.IsSessionDeleted(convID) {
+							continue
+						}
+
 						firstPrompt := ""
 						lastPrompt := ""
-						modTime := time.Now()
-
-						if stat, serr := os.Stat(convPath); serr == nil {
-							modTime = stat.ModTime()
-						}
+						isSubagent := false
 
 						if data, rerr := os.ReadFile(logPath); rerr == nil {
 							lines := strings.Split(string(data), "\n")
@@ -2805,10 +2794,17 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 								}
 								if jerr := json.Unmarshal([]byte(line), &step); jerr == nil {
 									if step.Type == "USER_INPUT" && step.Content != "" {
-										clean := cleanPromptText(step.Content)
+										clean := cleanAntigravityPrompt(step.Content)
 										if clean != "" {
 											if firstPrompt == "" {
 												firstPrompt = clean
+												// Subagents start with a directive or identity indicator from the model
+												if strings.HasPrefix(strings.ToLower(clean), "you are a subagent") ||
+													strings.Contains(clean, "<subagent_invocation>") ||
+													strings.Contains(clean, "Subagent Defined") {
+													isSubagent = true
+													break
+												}
 											}
 											lastPrompt = clean
 										}
@@ -2817,36 +2813,57 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 							}
 						}
 
-						if title == "" {
-							if firstPrompt != "" {
-								title = truncateTitle(firstPrompt)
-							} else {
-								title = fmt.Sprintf("Antigravity (%s)", convID[:8])
+						if isSubagent {
+							continue
+						}
+
+						existing, _ := s.db.GetSession(sessID)
+						if existing == nil {
+							title := ReadAntigravitySessionTitle("", convID)
+							cwd := extractAntigravityWorkspace(logPath, home)
+							modTime := time.Now()
+
+							if stat, serr := os.Stat(convPath); serr == nil {
+								modTime = stat.ModTime()
+							}
+
+							if title == "" {
+								if firstPrompt != "" && !strings.HasPrefix(firstPrompt, "/") && !strings.HasPrefix(firstPrompt, "<") {
+									title = truncateTitle(firstPrompt)
+								} else {
+									title = fmt.Sprintf("Antigravity (%s)", convID[:8])
+								}
+							}
+
+							isOld := time.Since(modTime) > 7*24*time.Hour
+
+							newSess := &Session{
+								ID:          sessID,
+								Name:        title,
+								Agent:       "antigravity",
+								Host:        hostName,
+								NativeID:    convID,
+								Cwd:         cwd,
+								ProjectKey:  GetProjectKey(cwd),
+								State:       StateEnded,
+								Managed:     false,
+								Activity:    "Session ended",
+								StartedAt:   modTime,
+								LastEventAt: modTime,
+								ContextPct:  0,
+								Archived:    isOld,
+								FirstPrompt: firstPrompt,
+								LastPrompt:  lastPrompt,
+							}
+							_ = s.db.SaveSession(newSess)
+							s.broadcast(newSess)
+						} else if isRawSessionName(existing.Name) {
+							if title := ReadAntigravitySessionTitle(existing.Cwd, convID); title != "" && !isRawSessionName(title) {
+								existing.Name = title
+								_ = s.db.SaveSession(existing)
+								s.broadcast(existing)
 							}
 						}
-
-						isOld := time.Since(modTime) > 7*24*time.Hour
-
-						newSess := &Session{
-							ID:          sessID,
-							Name:        title,
-							Agent:       "antigravity",
-							Host:        hostName,
-							NativeID:    convID,
-							Cwd:         cwd,
-							ProjectKey:  GetProjectKey(cwd),
-							State:       StateEnded,
-							Managed:     false,
-							Activity:    "Session ended",
-							StartedAt:   modTime,
-							LastEventAt: modTime,
-							ContextPct:  0,
-							Archived:    isOld,
-							FirstPrompt: firstPrompt,
-							LastPrompt:  lastPrompt,
-						}
-						_ = s.db.SaveSession(newSess)
-						s.broadcast(newSess)
 					}
 				}
 			}
@@ -3192,23 +3209,69 @@ func ReadAntigravitySessionTitle(cwd, sessionID string) string {
 		targetID = ""
 	}
 
-	// 1. Direct Lookup: Check ~/.gemini/antigravity/annotations/<sessionID>.pbtxt
-	if targetID != "" {
-		annoPath := filepath.Join(home, ".gemini", "antigravity", "annotations", targetID+".pbtxt")
+	if targetID == "" {
+		return ""
+	}
+
+	// 1. Direct Lookup: Check annotations in all Antigravity dirs (.gemini/antigravity, .gemini/antigravity-cli, .antigravity)
+	annotationDirs := []string{
+		filepath.Join(home, ".gemini", "antigravity", "annotations"),
+		filepath.Join(home, ".gemini", "antigravity-cli", "annotations"),
+		filepath.Join(home, ".antigravity", "annotations"),
+	}
+	for _, aDir := range annotationDirs {
+		annoPath := filepath.Join(aDir, targetID+".pbtxt")
 		if data, err := os.ReadFile(annoPath); err == nil {
 			content := string(data)
 			if idx := strings.Index(content, `title:"`); idx != -1 {
 				sub := content[idx+len(`title:"`):]
 				if endIdx := strings.Index(sub, `"`); endIdx != -1 {
-					return sub[:endIdx]
+					t := strings.TrimSpace(sub[:endIdx])
+					if t != "" {
+						return t
+					}
 				}
 			}
 		}
 	}
 
-	// 2. Check brain task summary fallback
-	if targetID != "" {
-		metaPath := filepath.Join(home, ".gemini", "antigravity", "brain", targetID, "task.md.metadata.json")
+	// 2. Check conversation_metadata.json cache
+	metadataPaths := []string{
+		filepath.Join(home, ".gemini", "antigravity-cli", "cache", "conversation_metadata.json"),
+		filepath.Join(home, ".gemini", "antigravity", "cache", "conversation_metadata.json"),
+		filepath.Join(home, ".antigravity", "cache", "conversation_metadata.json"),
+	}
+	for _, mPath := range metadataPaths {
+		if data, err := os.ReadFile(mPath); err == nil {
+			var meta struct {
+				Conversations map[string]struct {
+					Summary struct {
+						Title   string `json:"Title"`
+						Preview string `json:"Preview"`
+					} `json:"summary"`
+				} `json:"conversations"`
+			}
+			if err := json.Unmarshal(data, &meta); err == nil {
+				if c, exists := meta.Conversations[targetID]; exists {
+					if c.Summary.Title != "" {
+						return c.Summary.Title
+					}
+					if c.Summary.Preview != "" && c.Summary.Preview != "Session Exit Command" {
+						return truncateTitle(c.Summary.Preview)
+					}
+				}
+			}
+		}
+	}
+
+	// 3. Check brain task summary fallback
+	brainDirs := []string{
+		filepath.Join(home, ".gemini", "antigravity", "brain"),
+		filepath.Join(home, ".gemini", "antigravity-cli", "brain"),
+		filepath.Join(home, ".antigravity", "brain"),
+	}
+	for _, bDir := range brainDirs {
+		metaPath := filepath.Join(bDir, targetID, "task.md.metadata.json")
 		if data, err := os.ReadFile(metaPath); err == nil {
 			var meta struct {
 				Summary string `json:"summary"`
@@ -3219,9 +3282,13 @@ func ReadAntigravitySessionTitle(cwd, sessionID string) string {
 		}
 	}
 
-	// 3. Check central Antigravity proto registry: ~/.gemini/antigravity/agyhub_summaries_proto.pb
-	if targetID != "" {
-		protoPath := filepath.Join(home, ".gemini", "antigravity", "agyhub_summaries_proto.pb")
+	// 4. Check central Antigravity proto registry: ~/.gemini/antigravity/agyhub_summaries_proto.pb
+	protoPaths := []string{
+		filepath.Join(home, ".gemini", "antigravity", "agyhub_summaries_proto.pb"),
+		filepath.Join(home, ".gemini", "antigravity-cli", "agyhub_summaries_proto.pb"),
+		filepath.Join(home, ".antigravity", "agyhub_summaries_proto.pb"),
+	}
+	for _, protoPath := range protoPaths {
 		if data, err := os.ReadFile(protoPath); err == nil {
 			str := string(data)
 			if idx := strings.Index(str, targetID); idx != -1 {
@@ -3245,8 +3312,32 @@ func ReadAntigravitySessionTitle(cwd, sessionID string) string {
 					words = append(words, strings.TrimSpace(cur.String()))
 				}
 				for _, w := range words {
-					if !strings.HasPrefix(w, "file:") && !strings.HasPrefix(w, "git@") && !strings.Contains(w, "Users/") && len(w) >= 5 {
+					if !strings.HasPrefix(w, "file:") && !strings.HasPrefix(w, "git@") && !strings.Contains(w, "Users/") && !strings.Contains(w, "home/") && len(w) >= 5 {
 						return truncateTitle(w)
+					}
+				}
+			}
+		}
+	}
+
+	// 5. Scan first user input prompt in transcript
+	for _, bDir := range brainDirs {
+		logPath := filepath.Join(bDir, targetID, ".system_generated", "logs", "transcript.jsonl")
+		if data, err := os.ReadFile(logPath); err == nil {
+			lines := strings.Split(string(data), "\n")
+			for _, line := range lines {
+				line = strings.TrimSpace(line)
+				if line == "" {
+					continue
+				}
+				var step struct {
+					Type    string `json:"type"`
+					Content string `json:"content"`
+				}
+				if json.Unmarshal([]byte(line), &step) == nil && step.Type == "USER_INPUT" && step.Content != "" {
+					clean := cleanAntigravityPrompt(step.Content)
+					if clean != "" && !strings.HasPrefix(clean, "/") && !strings.HasPrefix(clean, "<") {
+						return truncateTitle(clean)
 					}
 				}
 			}
@@ -3691,6 +3782,24 @@ func IsUUID(s string) bool {
 		}
 	}
 	return true
+}
+
+func isRawSessionName(n string) bool {
+	return IsRawSessionName(n)
+}
+
+// IsRawSessionName returns true if n is empty, agent identifier, raw UUID, or generic placeholder
+func IsRawSessionName(n string) bool {
+	if n == "" || n == "antigravity" || n == "claude-code" || n == "codex" || n == "cli" || n == "mock-agent" {
+		return true
+	}
+	if strings.HasPrefix(n, "ackbar-") || strings.HasPrefix(n, "proc-") || IsUUID(n) {
+		return true
+	}
+	if strings.HasPrefix(n, "antigravity (") || strings.HasPrefix(n, "claude-code (") || strings.HasPrefix(n, "codex (") || strings.HasPrefix(n, "Claude Code (") || strings.HasPrefix(n, "Antigravity (") {
+		return true
+	}
+	return false
 }
 
 func cleanEnvForVSCode(env []string) []string {

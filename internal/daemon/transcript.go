@@ -63,10 +63,23 @@ func ExtractTranscript(agent, nativeID, cwd string) (*Transcript, error) {
 }
 
 func loadAntigravityTranscript(t *Transcript, home, convID string) error {
-	logPath := filepath.Join(home, ".gemini", "antigravity", "brain", convID, ".system_generated", "logs", "transcript.jsonl")
-	file, err := os.Open(logPath)
-	if err != nil {
-		return fmt.Errorf("antigravity log not found at %s: %w", logPath, err)
+	candidatePaths := []string{
+		filepath.Join(home, ".gemini", "antigravity", "brain", convID, ".system_generated", "logs", "transcript.jsonl"),
+		filepath.Join(home, ".gemini", "antigravity-cli", "brain", convID, ".system_generated", "logs", "transcript.jsonl"),
+		filepath.Join(home, ".antigravity", "brain", convID, ".system_generated", "logs", "transcript.jsonl"),
+	}
+
+	var file *os.File
+	var err error
+	for _, path := range candidatePaths {
+		file, err = os.Open(path)
+		if err == nil {
+			break
+		}
+	}
+
+	if file == nil {
+		return fmt.Errorf("antigravity log not found for conversation %s: %w", convID, err)
 	}
 	defer file.Close()
 

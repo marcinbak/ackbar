@@ -436,10 +436,9 @@
         merged.set(dedupKey, { ...sess });
       } else {
         const existing = merged.get(dedupKey);
-        const isRawName = (n) => !n || n.startsWith('ackbar-') || n.startsWith('proc-') || /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(n);
-        if (sess.name && !isRawName(sess.name)) {
+        if (sess.name && !isRawSessionName(sess.name)) {
           existing.name = sess.name;
-        } else if (!existing.name || isRawName(existing.name)) {
+        } else if (!existing.name || isRawSessionName(existing.name)) {
           if (sess.name) existing.name = sess.name;
         }
 
@@ -454,21 +453,21 @@
           existing.last_event_at = sess.last_event_at || existing.last_event_at;
           existing.first_prompt = sess.first_prompt || existing.first_prompt;
           existing.last_prompt = sess.last_prompt || existing.last_prompt;
-          existing.archived = false;
-        } else {
-          existing.first_prompt = existing.first_prompt || sess.first_prompt;
-          existing.last_prompt = existing.last_prompt || sess.last_prompt;
-          if (sess.context_pct > (existing.context_pct || 0)) {
-            existing.context_pct = sess.context_pct;
-          }
-          if (new Date(sess.last_event_at || 0) > new Date(existing.last_event_at || 0)) {
-            existing.last_event_at = sess.last_event_at;
-          }
         }
       }
     });
 
     return Array.from(merged.values());
+  }
+
+  function isRawSessionName(n) {
+    if (!n) return true;
+    const lower = n.toLowerCase();
+    if (lower === 'antigravity' || lower === 'claude-code' || lower === 'codex' || lower === 'cli' || lower === 'mock-agent') return true;
+    if (lower.startsWith('ackbar-') || lower.startsWith('proc-')) return true;
+    if (lower.startsWith('antigravity (') || lower.startsWith('claude-code (') || lower.startsWith('codex (') || lower.startsWith('claude code (')) return true;
+    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(n)) return true;
+    return false;
   }
 
   // Server-Sent Events (SSE) Multi-Host Stream for Live Updates
@@ -480,7 +479,7 @@
       ...(state.hosts || []).filter(h => h.url && h.name !== 'local')
     ];
 
-    hostsToConnect.forEach(h => {
+    hostsToConnect.forEach((h) => {
       const sseUrl = h.url ? `${h.url.replace(/\/$/, '')}/v1/events` : '/v1/events';
       if (activeEventSources.has(h.name)) return;
 
@@ -518,7 +517,9 @@
 
             const idx = state.sessions.findIndex(s => s.id === updatedSess.id);
             if (idx !== -1) {
-              state.sessions[idx] = { ...state.sessions[idx], ...updatedSess };
+              const existing = state.sessions[idx];
+              const mergedName = (!isRawSessionName(updatedSess.name) || isRawSessionName(existing.name)) ? (updatedSess.name || existing.name) : existing.name;
+              state.sessions[idx] = { ...existing, ...updatedSess, name: mergedName };
             } else {
               state.sessions.push(updatedSess);
             }
