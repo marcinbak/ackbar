@@ -40,9 +40,11 @@ const (
 )
 
 type Blocked struct {
-	Kind   BlockKind `json:"kind"`
-	Reason string    `json:"reason"`
-	Since  time.Time `json:"since"`
+	Kind     BlockKind `json:"kind"`
+	Reason   string    `json:"reason"`
+	Since    time.Time `json:"since"`
+	Question string    `json:"question,omitempty"`
+	Options  []string  `json:"options,omitempty"`
 }
 
 type Session struct {

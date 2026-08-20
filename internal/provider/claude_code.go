@@ -25,22 +25,92 @@ func (c *ClaudeProvider) Agent() string {
 
 // Minimal JSON payload representations for Claude Code hook events
 type claudePayload struct {
-	SessionID            string `json:"session_id"`
-	Cwd                  string `json:"cwd"`
-	HookEventName        string `json:"hook_event_name"`
-	LastAssistantMessage string `json:"last_assistant_message"`
-	PermissionMode       string `json:"permission_mode"`
-	ToolName            string `json:"tool_name"`
-	RequestedPermission string `json:"requested_permission"`
+	SessionID            string      `json:"session_id"`
+	Cwd                  string      `json:"cwd"`
+	HookEventName        string      `json:"hook_event_name"`
+	LastAssistantMessage string      `json:"last_assistant_message"`
+	PermissionMode       string      `json:"permission_mode"`
+	ToolName             string      `json:"tool_name"`
+	ToolInput            interface{} `json:"tool_input"`
+	RequestedPermission  string      `json:"requested_permission"`
 	// For Notifications
-	NotificationType    string `json:"notification_type"`
-	Prompt           string `json:"prompt"`
-	UserPrompt       string `json:"user_prompt"`
-	Title            string `json:"title"`
-	Name             string `json:"name"`
-	Summary          string `json:"summary"`
-	IsSidechain      bool   `json:"is_sidechain"`
-	AgentID          string `json:"agent_id"`
+	NotificationType     string      `json:"notification_type"`
+	Prompt               string      `json:"prompt"`
+	UserPrompt           string      `json:"user_prompt"`
+	Title                string      `json:"title"`
+	Name                 string      `json:"name"`
+	Summary              string      `json:"summary"`
+	IsSidechain          bool        `json:"is_sidechain"`
+	AgentID              string      `json:"agent_id"`
+	Question             string      `json:"question"`
+	Questions            []struct {
+		Question string   `json:"question"`
+		Options  []string `json:"options"`
+	} `json:"questions"`
+	Options              []string    `json:"options"`
+}
+
+func extractClaudeQuestionAndOptions(p *claudePayload) (string, []string) {
+	var questionText string
+	var optionsList []string
+
+	// 1. Direct Question / Options fields
+	if p.Question != "" {
+		questionText = p.Question
+	}
+	if len(p.Options) > 0 {
+		optionsList = append(optionsList, p.Options...)
+	}
+
+	// 2. Direct Questions array
+	if len(p.Questions) > 0 {
+		if questionText == "" && p.Questions[0].Question != "" {
+			questionText = p.Questions[0].Question
+		}
+		if len(optionsList) == 0 && len(p.Questions[0].Options) > 0 {
+			optionsList = append(optionsList, p.Questions[0].Options...)
+		}
+	}
+
+	// 3. Inspect ToolInput
+	if p.ToolInput != nil {
+		switch v := p.ToolInput.(type) {
+		case string:
+			if strings.TrimSpace(v) != "" {
+				var toolMap map[string]interface{}
+				if err := json.Unmarshal([]byte(v), &toolMap); err == nil {
+					q, opts := extractAntigravityQuestionAndOptions(toolMap)
+					if questionText == "" {
+						questionText = q
+					}
+					if len(optionsList) == 0 {
+						optionsList = opts
+					}
+				} else if questionText == "" {
+					questionText = v
+				}
+			}
+		case map[string]interface{}:
+			q, opts := extractAntigravityQuestionAndOptions(v)
+			if questionText == "" {
+				questionText = q
+			}
+			if len(optionsList) == 0 {
+				optionsList = opts
+			}
+		}
+	}
+
+	// 4. Fallback to Prompt or UserPrompt
+	if questionText == "" {
+		if p.Prompt != "" {
+			questionText = p.Prompt
+		} else if p.UserPrompt != "" {
+			questionText = p.UserPrompt
+		}
+	}
+
+	return questionText, optionsList
 }
 
 func (c *ClaudeProvider) ParseHook(eventName string, payload []byte) (*daemon.Event, error) {
@@ -127,9 +197,11 @@ func (c *ClaudeProvider) ParseHook(eventName string, payload []byte) (*daemon.Ev
 			reason = "Authorize tool execution"
 		}
 		event.Blocked = &daemon.Blocked{
-			Kind:   daemon.BlockPermission,
-			Reason: reason,
-			Since:  time.Now(),
+			Kind:     daemon.BlockPermission,
+			Reason:   reason,
+			Question: reason,
+			Options:  []string{"Allow", "Deny"},
+			Since:    time.Now(),
 		}
 		event.Activity = "Waiting for permission: " + reason
 
@@ -139,12 +211,23 @@ func (c *ClaudeProvider) ParseHook(eventName string, payload []byte) (*daemon.Ev
 		if tool == "AskUserQuestion" || tool == "ask_question" || tool == "AskFollowupQuestion" ||
 			strings.Contains(toolLower, "question") || strings.Contains(toolLower, "askuser") {
 			event.State = daemon.StateBlocked
-			event.Blocked = &daemon.Blocked{
-				Kind:   daemon.BlockQuestion,
-				Reason: "Waiting for user response",
-				Since:  time.Now(),
+			q, opts := extractClaudeQuestionAndOptions(&p)
+			reason := "Waiting for user response"
+			if q != "" {
+				reason = q
 			}
-			event.Activity = "Waiting for user response"
+			event.Blocked = &daemon.Blocked{
+				Kind:     daemon.BlockQuestion,
+				Reason:   reason,
+				Question: q,
+				Options:  opts,
+				Since:    time.Now(),
+			}
+			if q != "" {
+				event.Activity = "Question: " + truncateTitle(q)
+			} else {
+				event.Activity = "Waiting for user response"
+			}
 		} else {
 			event.State = daemon.StateWorking
 			event.Activity = "Running tool: " + tool
@@ -158,18 +241,37 @@ func (c *ClaudeProvider) ParseHook(eventName string, payload []byte) (*daemon.Ev
 		notifLower := strings.ToLower(p.NotificationType)
 		if strings.Contains(notifLower, "input") || strings.Contains(notifLower, "question") {
 			event.State = daemon.StateBlocked
-			event.Blocked = &daemon.Blocked{
-				Kind:   daemon.BlockQuestion,
-				Reason: "Agent needs input",
-				Since:  time.Now(),
+			q, opts := extractClaudeQuestionAndOptions(&p)
+			reason := "Agent needs input"
+			if q != "" {
+				reason = q
 			}
-			event.Activity = "Waiting for user input"
+			event.Blocked = &daemon.Blocked{
+				Kind:     daemon.BlockQuestion,
+				Reason:   reason,
+				Question: q,
+				Options:  opts,
+				Since:    time.Now(),
+			}
+			if q != "" {
+				event.Activity = "Input: " + truncateTitle(q)
+			} else {
+				event.Activity = "Waiting for user input"
+			}
 		} else if strings.Contains(notifLower, "permission") || strings.Contains(notifLower, "prompt") || strings.Contains(notifLower, "approval") {
 			event.State = daemon.StateBlocked
+			reason := "Permission confirmation required"
+			if p.Prompt != "" {
+				reason = p.Prompt
+			} else if p.RequestedPermission != "" {
+				reason = p.RequestedPermission
+			}
 			event.Blocked = &daemon.Blocked{
-				Kind:   daemon.BlockPermission,
-				Reason: "Permission confirmation required",
-				Since:  time.Now(),
+				Kind:     daemon.BlockPermission,
+				Reason:   reason,
+				Question: reason,
+				Options:  []string{"Allow", "Deny"},
+				Since:    time.Now(),
 			}
 			event.Activity = "Waiting for tool authorization"
 		} else {

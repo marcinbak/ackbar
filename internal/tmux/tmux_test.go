@@ -44,13 +44,21 @@ func TestTmuxSupervision(t *testing.T) {
 		t.Errorf("Expected valid PID, got %d", pid)
 	}
 
-	// 4. Kill session
+	// 4. Test SendKeys and SendInput
+	if err := SendInput(ctx, sessionName, "echo test", true); err != nil {
+		t.Errorf("SendInput failed: %v", err)
+	}
+	if err := SendKeys(ctx, sessionName, "Enter"); err != nil {
+		t.Errorf("SendKeys failed: %v", err)
+	}
+
+	// 5. Kill session
 	err = Kill(ctx, sessionName)
 	if err != nil {
 		t.Fatalf("Kill failed: %v", err)
 	}
 
-	// 5. Verify it is gone
+	// 6. Verify it is gone
 	if HasSession(ctx, sessionName) {
 		t.Errorf("Expected session %s to be terminated", sessionName)
 	}

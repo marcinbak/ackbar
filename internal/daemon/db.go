@@ -29,6 +29,8 @@ CREATE TABLE IF NOT EXISTS sessions (
 	blocked_kind TEXT,
 	blocked_reason TEXT,
 	blocked_since TIMESTAMP,
+	blocked_question TEXT,
+	blocked_options TEXT,
 	activity TEXT,
 	started_at TIMESTAMP,
 	last_event_at TIMESTAMP,
@@ -88,6 +90,8 @@ func InitDB(dbPath string) (*DB, error) {
 		return nil, fmt.Errorf("failed to execute schema: %w", err)
 	}
 
+	_, _ = db.Exec("ALTER TABLE sessions ADD COLUMN blocked_question TEXT;")
+	_, _ = db.Exec("ALTER TABLE sessions ADD COLUMN blocked_options TEXT;")
 	_, _ = db.Exec("ALTER TABLE sessions ADD COLUMN node_path TEXT;")
 	_, _ = db.Exec("ALTER TABLE sessions ADD COLUMN name TEXT;")
 	_, _ = db.Exec("ALTER TABLE sessions ADD COLUMN entrypoint TEXT;")
@@ -134,22 +138,30 @@ func (d *DB) SaveSession(s *Session) error {
 		}
 	}
 
-	var blockedKind, blockedReason sql.NullString
+	var blockedKind, blockedReason, blockedQuestion, blockedOptions sql.NullString
 	var blockedSince sql.NullTime
 
 	if s.Blocked != nil {
 		blockedKind = sql.NullString{String: string(s.Blocked.Kind), Valid: true}
 		blockedReason = sql.NullString{String: s.Blocked.Reason, Valid: true}
 		blockedSince = sql.NullTime{Time: s.Blocked.Since, Valid: true}
+		if s.Blocked.Question != "" {
+			blockedQuestion = sql.NullString{String: s.Blocked.Question, Valid: true}
+		}
+		if len(s.Blocked.Options) > 0 {
+			if optBytes, err := json.Marshal(s.Blocked.Options); err == nil {
+				blockedOptions = sql.NullString{String: string(optBytes), Valid: true}
+			}
+		}
 	}
 
 	query := `
 	INSERT INTO sessions (
 		id, agent, host, native_id, cwd, roots, project_key, state, 
-		blocked_kind, blocked_reason, blocked_since, activity, 
+		blocked_kind, blocked_reason, blocked_since, blocked_question, blocked_options, activity, 
 		started_at, last_event_at, managed, tmux_name, pid, archived, node_path, name, entrypoint, kind, version, context_pct, git_branch,
 		custom_title, ai_title, ai_description, first_prompt, last_prompt
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(id) DO UPDATE SET
 		cwd=excluded.cwd,
 		roots=excluded.roots,
@@ -158,6 +170,8 @@ func (d *DB) SaveSession(s *Session) error {
 		blocked_kind=excluded.blocked_kind,
 		blocked_reason=excluded.blocked_reason,
 		blocked_since=excluded.blocked_since,
+		blocked_question=excluded.blocked_question,
+		blocked_options=excluded.blocked_options,
 		activity=excluded.activity,
 		last_event_at=excluded.last_event_at,
 		managed=excluded.managed,
@@ -202,7 +216,7 @@ func (d *DB) SaveSession(s *Session) error {
 
 	_, err = d.db.Exec(query,
 		s.ID, s.Agent, s.Host, s.NativeID, s.Cwd, string(rootsJSON), s.ProjectKey, int(s.State),
-		blockedKind, blockedReason, blockedSince, s.Activity,
+		blockedKind, blockedReason, blockedSince, blockedQuestion, blockedOptions, s.Activity,
 		s.StartedAt, s.LastEventAt, managedInt, s.TmuxName, s.PID, archivedInt, nodePath, sessName, entrypointVal, kindVal, versionVal, s.ContextPct, gitBranchVal,
 		customTitleVal, aiTitleVal, aiDescVal, firstPromptVal, lastPromptVal,
 	)
@@ -216,14 +230,14 @@ func (d *DB) SaveSession(s *Session) error {
 func (d *DB) GetSession(id string) (*Session, error) {
 	query := `
 	SELECT id, agent, host, native_id, cwd, roots, project_key, state,
-	       blocked_kind, blocked_reason, blocked_since, activity,
+	       blocked_kind, blocked_reason, blocked_since, blocked_question, blocked_options, activity,
 	       started_at, last_event_at, managed, tmux_name, pid, archived, node_path, name, entrypoint, kind, version, context_pct, git_branch,
 	       custom_title, ai_title, ai_description, first_prompt, last_prompt
 	FROM sessions WHERE id = ? OR native_id = ?;
 	`
 
 	var s Session
-	var rootsStr, blockedKind, blockedReason, nodePath, sessName, entrypointVal, kindVal, versionVal, gitBranchVal sql.NullString
+	var rootsStr, blockedKind, blockedReason, blockedQuestion, blockedOptions, nodePath, sessName, entrypointVal, kindVal, versionVal, gitBranchVal sql.NullString
 	var customTitleVal, aiTitleVal, aiDescVal, firstPromptVal, lastPromptVal sql.NullString
 	var ctxPct sql.NullInt64
 	var blockedSince sql.NullTime
@@ -232,7 +246,7 @@ func (d *DB) GetSession(id string) (*Session, error) {
 	row := d.db.QueryRow(query, id, id)
 	err := row.Scan(
 		&s.ID, &s.Agent, &s.Host, &s.NativeID, &s.Cwd, &rootsStr, &s.ProjectKey, (*int)(&s.State),
-		&blockedKind, &blockedReason, &blockedSince, &s.Activity,
+		&blockedKind, &blockedReason, &blockedSince, &blockedQuestion, &blockedOptions, &s.Activity,
 		&s.StartedAt, &s.LastEventAt, &managedInt, &s.TmuxName, &s.PID, &archivedInt, &nodePath, &sessName, &entrypointVal, &kindVal, &versionVal, &ctxPct, &gitBranchVal,
 		&customTitleVal, &aiTitleVal, &aiDescVal, &firstPromptVal, &lastPromptVal,
 	)
@@ -293,9 +307,13 @@ func (d *DB) GetSession(id string) (*Session, error) {
 
 	if blockedKind.Valid && blockedKind.String != "" {
 		s.Blocked = &Blocked{
-			Kind:   BlockKind(blockedKind.String),
-			Reason: blockedReason.String,
-			Since:  blockedSince.Time,
+			Kind:     BlockKind(blockedKind.String),
+			Reason:   blockedReason.String,
+			Since:    blockedSince.Time,
+			Question: blockedQuestion.String,
+		}
+		if blockedOptions.Valid && blockedOptions.String != "" {
+			_ = json.Unmarshal([]byte(blockedOptions.String), &s.Blocked.Options)
 		}
 	}
 
@@ -305,7 +323,7 @@ func (d *DB) GetSession(id string) (*Session, error) {
 func (d *DB) ListSessions() ([]*Session, error) {
 	query := `
 	SELECT id, agent, host, native_id, cwd, roots, project_key, state,
-	       blocked_kind, blocked_reason, blocked_since, activity,
+	       blocked_kind, blocked_reason, blocked_since, blocked_question, blocked_options, activity,
 	       started_at, last_event_at, managed, tmux_name, pid, archived, node_path, name, entrypoint, kind, version, context_pct, git_branch,
 	       custom_title, ai_title, ai_description, first_prompt, last_prompt
 	FROM sessions
@@ -321,7 +339,7 @@ func (d *DB) ListSessions() ([]*Session, error) {
 	var sessions []*Session
 	for rows.Next() {
 		var s Session
-		var rootsStr, blockedKind, blockedReason, nodePath, sessName, entrypointVal, kindVal, versionVal, gitBranchVal sql.NullString
+		var rootsStr, blockedKind, blockedReason, blockedQuestion, blockedOptions, nodePath, sessName, entrypointVal, kindVal, versionVal, gitBranchVal sql.NullString
 		var customTitleVal, aiTitleVal, aiDescVal, firstPromptVal, lastPromptVal sql.NullString
 		var ctxPct sql.NullInt64
 		var blockedSince sql.NullTime
@@ -329,7 +347,7 @@ func (d *DB) ListSessions() ([]*Session, error) {
 
 		err := rows.Scan(
 			&s.ID, &s.Agent, &s.Host, &s.NativeID, &s.Cwd, &rootsStr, &s.ProjectKey, (*int)(&s.State),
-			&blockedKind, &blockedReason, &blockedSince, &s.Activity,
+			&blockedKind, &blockedReason, &blockedSince, &blockedQuestion, &blockedOptions, &s.Activity,
 			&s.StartedAt, &s.LastEventAt, &managedInt, &s.TmuxName, &s.PID, &archivedInt, &nodePath, &sessName, &entrypointVal, &kindVal, &versionVal, &ctxPct, &gitBranchVal,
 			&customTitleVal, &aiTitleVal, &aiDescVal, &firstPromptVal, &lastPromptVal,
 		)
@@ -386,9 +404,13 @@ func (d *DB) ListSessions() ([]*Session, error) {
 
 		if blockedKind.Valid && blockedKind.String != "" {
 			s.Blocked = &Blocked{
-				Kind:   BlockKind(blockedKind.String),
-				Reason: blockedReason.String,
-				Since:  blockedSince.Time,
+				Kind:     BlockKind(blockedKind.String),
+				Reason:   blockedReason.String,
+				Since:    blockedSince.Time,
+				Question: blockedQuestion.String,
+			}
+			if blockedOptions.Valid && blockedOptions.String != "" {
+				_ = json.Unmarshal([]byte(blockedOptions.String), &s.Blocked.Options)
 			}
 		}
 

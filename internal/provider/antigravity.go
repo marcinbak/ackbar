@@ -67,18 +67,41 @@ func (a *AntigravityProvider) ParseHook(eventName string, payload []byte) (*daem
 			tool := p.ToolCall.Name
 			if tool == "ask_question" {
 				event.State = daemon.StateBlocked
-				event.Blocked = &daemon.Blocked{
-					Kind:   daemon.BlockQuestion,
-					Reason: "Waiting for user response to prompt",
-					Since:  time.Now(),
+				question, options := extractAntigravityQuestionAndOptions(p.ToolCall.Args)
+				reason := "Waiting for user response to prompt"
+				if question != "" {
+					reason = question
 				}
-				event.Activity = "Waiting for user response"
+				event.Blocked = &daemon.Blocked{
+					Kind:     daemon.BlockQuestion,
+					Reason:   reason,
+					Question: question,
+					Options:  options,
+					Since:    time.Now(),
+				}
+				if question != "" {
+					event.Activity = "Question: " + truncateTitle(question)
+				} else {
+					event.Activity = "Waiting for user response"
+				}
 			} else if tool == "ask_permission" {
 				event.State = daemon.StateBlocked
+				reason := "Waiting for tool permission approval"
+				if p.ToolCall.Args != nil {
+					if cmd, ok := p.ToolCall.Args["command"].(string); ok && cmd != "" {
+						reason = fmt.Sprintf("Allow command: %s", cmd)
+					} else if toolName, ok := p.ToolCall.Args["tool"].(string); ok && toolName != "" {
+						reason = fmt.Sprintf("Allow tool: %s", toolName)
+					} else if r, ok := p.ToolCall.Args["reason"].(string); ok && r != "" {
+						reason = r
+					}
+				}
 				event.Blocked = &daemon.Blocked{
-					Kind:   daemon.BlockPermission,
-					Reason: "Waiting for tool permission approval",
-					Since:  time.Now(),
+					Kind:     daemon.BlockPermission,
+					Reason:   reason,
+					Question: reason,
+					Options:  []string{"Allow", "Deny"},
+					Since:    time.Now(),
 				}
 				event.Activity = "Waiting for permission"
 			} else {
@@ -136,4 +159,65 @@ func (a *AntigravityProvider) CheckHookConfig() (bool, string, error) {
 	}
 
 	return false, setupCmd, nil
+}
+
+func extractAntigravityQuestionAndOptions(args map[string]interface{}) (string, []string) {
+	if args == nil {
+		return "", nil
+	}
+
+	var questionText string
+	var optionsList []string
+
+	// 1. Array of questions (standard ask_question schema)
+	if questionsRaw, ok := args["questions"].([]interface{}); ok && len(questionsRaw) > 0 {
+		for _, qItem := range questionsRaw {
+			if qMap, ok := qItem.(map[string]interface{}); ok {
+				if qStr, ok := qMap["question"].(string); ok && questionText == "" {
+					questionText = qStr
+				}
+				if optsRaw, ok := qMap["options"].([]interface{}); ok {
+					for _, opt := range optsRaw {
+						if s, ok := opt.(string); ok {
+							optionsList = append(optionsList, s)
+						} else if optMap, ok := opt.(map[string]interface{}); ok {
+							if label, ok := optMap["label"].(string); ok {
+								optionsList = append(optionsList, label)
+							} else if text, ok := optMap["text"].(string); ok {
+								optionsList = append(optionsList, text)
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// 2. Direct question / prompt field
+	if questionText == "" {
+		if qStr, ok := args["question"].(string); ok {
+			questionText = qStr
+		} else if promptStr, ok := args["prompt"].(string); ok {
+			questionText = promptStr
+		}
+	}
+
+	// 3. Direct options field
+	if len(optionsList) == 0 {
+		if optsRaw, ok := args["options"].([]interface{}); ok {
+			for _, opt := range optsRaw {
+				if s, ok := opt.(string); ok {
+					optionsList = append(optionsList, s)
+				} else if optMap, ok := opt.(map[string]interface{}); ok {
+					if label, ok := optMap["label"].(string); ok {
+						optionsList = append(optionsList, label)
+					} else if text, ok := optMap["text"].(string); ok {
+						optionsList = append(optionsList, text)
+					}
+				}
+			}
+		}
+	}
+
+	return questionText, optionsList
 }

@@ -85,3 +85,33 @@ func IsTmuxInstalled() bool {
 	_, err := exec.LookPath("tmux")
 	return err == nil
 }
+
+// SendKeys sends one or more key names (e.g. "y", "n", "Enter", "C-c") to the tmux session.
+func SendKeys(ctx context.Context, sessionName string, keys ...string) error {
+	args := append([]string{"send-keys", "-t", sessionName}, keys...)
+	cmd := exec.CommandContext(ctx, "tmux", args...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to send keys to tmux session %s: %w (stderr: %s)", sessionName, err, stderr.String())
+	}
+	return nil
+}
+
+// SendInput sends text literally to the tmux session, followed by an optional Enter key.
+func SendInput(ctx context.Context, sessionName string, text string, pressEnter bool) error {
+	if text != "" {
+		cmd := exec.CommandContext(ctx, "tmux", "send-keys", "-t", sessionName, "-l", text)
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("failed to send literal input to tmux session %s: %w (stderr: %s)", sessionName, err, stderr.String())
+		}
+	}
+	if pressEnter {
+		return SendKeys(ctx, sessionName, "Enter")
+	}
+	return nil
+}

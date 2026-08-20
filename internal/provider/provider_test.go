@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"strings"
 	"testing"
 	"ackbar/internal/daemon"
 )
@@ -27,33 +28,83 @@ func TestClaudeProvider_ParseHook(t *testing.T) {
 	if ev.State != daemon.StateBlocked || ev.Blocked == nil || ev.Blocked.Kind != daemon.BlockPermission {
 		t.Errorf("Expected blocked permission state, got: %+v", ev)
 	}
+	if ev.Blocked.Question != "run command" {
+		t.Errorf("Expected Question 'run command', got '%s'", ev.Blocked.Question)
+	}
+	if len(ev.Blocked.Options) != 2 || ev.Blocked.Options[0] != "Allow" || ev.Blocked.Options[1] != "Deny" {
+		t.Errorf("Expected options ['Allow', 'Deny'], got %+v", ev.Blocked.Options)
+	}
+
+	// Test PreToolUse with AskUserQuestion and options
+	payload = `{"session_id": "session-claude", "cwd": "/workspace", "hook_event_name": "PreToolUse", "tool_name": "AskUserQuestion", "tool_input": "{\"questions\":[{\"question\":\"Pick environment:\",\"options\":[\"Staging\",\"Production\"]}]}"}`
+	ev, err = p.ParseHook("PreToolUse", []byte(payload))
+	if err != nil {
+		t.Fatalf("ParseHook failed: %v", err)
+	}
+	if ev.State != daemon.StateBlocked || ev.Blocked == nil || ev.Blocked.Kind != daemon.BlockQuestion {
+		t.Errorf("Expected blocked question state, got: %+v", ev)
+	}
+	if ev.Blocked.Question != "Pick environment:" {
+		t.Errorf("Expected Question 'Pick environment:', got '%s'", ev.Blocked.Question)
+	}
+	if len(ev.Blocked.Options) != 2 || ev.Blocked.Options[0] != "Staging" || ev.Blocked.Options[1] != "Production" {
+		t.Errorf("Expected options ['Staging', 'Production'], got %+v", ev.Blocked.Options)
+	}
 }
 
 func TestCodexProvider_ParseHook(t *testing.T) {
 	p := NewCodexProvider()
 
-	// Test PreToolUse with request_user_input
-	payload := `{"session_id": "session-codex", "cwd": "/workspace", "hook_event_name": "PreToolUse", "tool_name": "request_user_input"}`
+	// Test PreToolUse with request_user_input and options
+	payload := `{"session_id": "session-codex", "cwd": "/workspace", "hook_event_name": "PreToolUse", "tool_name": "request_user_input", "tool_input": "{\"question\":\"Confirm deployment?\",\"options\":[\"Yes\",\"No\"]}"}`
 	ev, err := p.ParseHook("PreToolUse", []byte(payload))
 	if err != nil {
 		t.Fatalf("ParseHook failed: %v", err)
 	}
 	if ev.State != daemon.StateBlocked || ev.Blocked == nil || ev.Blocked.Kind != daemon.BlockQuestion {
 		t.Errorf("Expected blocked question state, got: %+v", ev)
+	}
+	if ev.Blocked.Question != "Confirm deployment?" {
+		t.Errorf("Expected Question 'Confirm deployment?', got '%s'", ev.Blocked.Question)
+	}
+	if len(ev.Blocked.Options) != 2 || ev.Blocked.Options[0] != "Yes" || ev.Blocked.Options[1] != "No" {
+		t.Errorf("Expected options ['Yes', 'No'], got %+v", ev.Blocked.Options)
 	}
 }
 
 func TestAntigravityProvider_ParseHook(t *testing.T) {
 	p := NewAntigravityProvider()
 
-	// Test PreToolUse with ask_question
-	payload := `{"conversationId": "session-agy", "workspacePaths": ["/workspace"], "toolCall": {"name": "ask_question"}}`
+	// Test PreToolUse with ask_question and structured questions/options
+	payload := `{"conversationId": "session-agy", "workspacePaths": ["/workspace"], "toolCall": {"name": "ask_question", "args": {"questions": [{"question": "Choose framework", "options": ["React", "Vue", "Svelte"]}]}}}`
 	ev, err := p.ParseHook("PreToolUse", []byte(payload))
 	if err != nil {
 		t.Fatalf("ParseHook failed: %v", err)
 	}
 	if ev.State != daemon.StateBlocked || ev.Blocked == nil || ev.Blocked.Kind != daemon.BlockQuestion {
 		t.Errorf("Expected blocked question state, got: %+v", ev)
+	}
+	if ev.Blocked.Question != "Choose framework" {
+		t.Errorf("Expected Question 'Choose framework', got '%s'", ev.Blocked.Question)
+	}
+	if len(ev.Blocked.Options) != 3 || ev.Blocked.Options[0] != "React" || ev.Blocked.Options[1] != "Vue" || ev.Blocked.Options[2] != "Svelte" {
+		t.Errorf("Expected options ['React', 'Vue', 'Svelte'], got %+v", ev.Blocked.Options)
+	}
+
+	// Test PreToolUse with ask_permission
+	payloadPerm := `{"conversationId": "session-agy", "workspacePaths": ["/workspace"], "toolCall": {"name": "ask_permission", "args": {"command": "rm -rf /tmp/cache"}}}`
+	evPerm, err := p.ParseHook("PreToolUse", []byte(payloadPerm))
+	if err != nil {
+		t.Fatalf("ParseHook ask_permission failed: %v", err)
+	}
+	if evPerm.State != daemon.StateBlocked || evPerm.Blocked == nil || evPerm.Blocked.Kind != daemon.BlockPermission {
+		t.Errorf("Expected blocked permission state, got: %+v", evPerm)
+	}
+	if !strings.Contains(evPerm.Blocked.Question, "rm -rf /tmp/cache") {
+		t.Errorf("Expected question to contain command, got '%s'", evPerm.Blocked.Question)
+	}
+	if len(evPerm.Blocked.Options) != 2 || evPerm.Blocked.Options[0] != "Allow" || evPerm.Blocked.Options[1] != "Deny" {
+		t.Errorf("Expected options ['Allow', 'Deny'], got %+v", evPerm.Blocked.Options)
 	}
 }
 

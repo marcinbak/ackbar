@@ -22,7 +22,8 @@ func main() {
 	}
 
 	// Setup flags
-	portFlag := flag.Int("port", 7777, "Port to bind loopback daemon")
+	hostFlag := flag.String("host", "127.0.0.1", "Host address to bind daemon (default 127.0.0.1)")
+	portFlag := flag.Int("port", 7777, "Port to bind daemon")
 	dbPathFlag := flag.String("db", "", "Path to SQLite database file (default ~/.config/ackbar/ackbard.db)")
 	logDirFlag := flag.String("log-dir", "", "Path to logs directory (default ~/.config/ackbar/logs)")
 	versionFlag := flag.Bool("version", false, "Print version and exit")
@@ -72,9 +73,9 @@ func main() {
 	// Start asynchronous background scanner & liveness loop
 	server.StartBackgroundLoop(context.Background())
 
-	// Listen on 127.0.0.1 only (Security requirement X3 / §9)
-	addr := fmt.Sprintf("127.0.0.1:%d", *portFlag)
-	log.Printf("Listening on http://%s (binds to loopback only)", addr)
+	// Listen on configured host address (default 127.0.0.1 loopback)
+	addr := fmt.Sprintf("%s:%d", *hostFlag, *portFlag)
+	log.Printf("Listening on http://%s", addr)
 
 	if err := http.ListenAndServe(addr, server.Mux()); err != nil {
 		log.Fatalf("Server exited with error: %v", err)

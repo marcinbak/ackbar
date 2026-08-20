@@ -76,19 +76,37 @@ func (c *CodexProvider) ParseHook(eventName string, payload []byte) (*daemon.Eve
 			reason = "Allow running tool: " + p.ToolName
 		}
 		event.Blocked = &daemon.Blocked{
-			Kind:   daemon.BlockPermission,
-			Reason: reason,
-			Since:  time.Now(),
+			Kind:     daemon.BlockPermission,
+			Reason:   reason,
+			Question: reason,
+			Options:  []string{"Allow", "Deny"},
+			Since:    time.Now(),
 		}
 		event.Activity = "Waiting for permission"
 
 	case "pretooluse":
 		if p.ToolName == "request_user_input" || p.ToolName == "ask_question" {
 			event.State = daemon.StateBlocked
+			var q string
+			var opts []string
+			if p.ToolInput != "" {
+				var data map[string]interface{}
+				if err := json.Unmarshal([]byte(p.ToolInput), &data); err == nil {
+					q, opts = extractAntigravityQuestionAndOptions(data)
+				} else {
+					q = p.ToolInput
+				}
+			}
+			reason := "Waiting for user response"
+			if q != "" {
+				reason = q
+			}
 			event.Blocked = &daemon.Blocked{
-				Kind:   daemon.BlockQuestion,
-				Reason: "Waiting for user response",
-				Since:  time.Now(),
+				Kind:     daemon.BlockQuestion,
+				Reason:   reason,
+				Question: q,
+				Options:  opts,
+				Since:    time.Now(),
 			}
 			event.Activity = "Waiting for user input"
 		} else {
