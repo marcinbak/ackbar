@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
 import 'app_colors.dart';
 
 /// Typography configuration for Ackbar Mobile.
@@ -7,11 +6,45 @@ import 'app_colors.dart';
 /// - Monospace Font: JetBrains Mono (Terminal, Session IDs, Badges, Tokens, Timestamps)
 abstract final class AppTypography {
   // Base font family getters
-  static String get uiFontFamily => GoogleFonts.inter().fontFamily ?? 'Inter';
-  static String get monoFontFamily => GoogleFonts.jetBrainsMono().fontFamily ?? 'JetBrains Mono';
+  static const String uiFontFamily = 'Inter';
+  static const String monoFontFamily = 'JetBrains Mono';
+
+  static TextStyle _sans({
+    required double fontSize,
+    FontWeight fontWeight = FontWeight.w400,
+    double? letterSpacing,
+    Color color = AppColors.textPrimary,
+    double? height,
+  }) {
+    return TextStyle(
+      fontFamily: uiFontFamily,
+      fontSize: fontSize,
+      fontWeight: fontWeight,
+      letterSpacing: letterSpacing,
+      color: color,
+      height: height,
+    );
+  }
+
+  static TextStyle _mono({
+    required double fontSize,
+    FontWeight fontWeight = FontWeight.w500,
+    double? letterSpacing,
+    Color color = AppColors.textPrimary,
+    double? height,
+  }) {
+    return TextStyle(
+      fontFamily: monoFontFamily,
+      fontSize: fontSize,
+      fontWeight: fontWeight,
+      letterSpacing: letterSpacing,
+      color: color,
+      height: height,
+    );
+  }
 
   // Headings & Display (UI Font)
-  static TextStyle get displayLarge => GoogleFonts.inter(
+  static TextStyle get displayLarge => _sans(
         fontSize: 32,
         fontWeight: FontWeight.w700,
         letterSpacing: -0.8,
@@ -19,7 +52,7 @@ abstract final class AppTypography {
         height: 1.2,
       );
 
-  static TextStyle get displayMedium => GoogleFonts.inter(
+  static TextStyle get displayMedium => _sans(
         fontSize: 26,
         fontWeight: FontWeight.w700,
         letterSpacing: -0.6,
@@ -27,7 +60,7 @@ abstract final class AppTypography {
         height: 1.25,
       );
 
-  static TextStyle get headlineLarge => GoogleFonts.inter(
+  static TextStyle get headlineLarge => _sans(
         fontSize: 22,
         fontWeight: FontWeight.w600,
         letterSpacing: -0.4,
@@ -35,7 +68,7 @@ abstract final class AppTypography {
         height: 1.3,
       );
 
-  static TextStyle get headlineMedium => GoogleFonts.inter(
+  static TextStyle get headlineMedium => _sans(
         fontSize: 18,
         fontWeight: FontWeight.w600,
         letterSpacing: -0.2,
@@ -43,7 +76,7 @@ abstract final class AppTypography {
         height: 1.35,
       );
 
-  static TextStyle get titleLarge => GoogleFonts.inter(
+  static TextStyle get titleLarge => _sans(
         fontSize: 16,
         fontWeight: FontWeight.w600,
         letterSpacing: -0.1,
@@ -51,7 +84,7 @@ abstract final class AppTypography {
         height: 1.4,
       );
 
-  static TextStyle get titleMedium => GoogleFonts.inter(
+  static TextStyle get titleMedium => _sans(
         fontSize: 14,
         fontWeight: FontWeight.w600,
         letterSpacing: 0.0,
@@ -59,7 +92,7 @@ abstract final class AppTypography {
         height: 1.4,
       );
 
-  static TextStyle get titleSmall => GoogleFonts.inter(
+  static TextStyle get titleSmall => _sans(
         fontSize: 13,
         fontWeight: FontWeight.w600,
         letterSpacing: 0.1,
@@ -68,7 +101,7 @@ abstract final class AppTypography {
       );
 
   // Body text (UI Font)
-  static TextStyle get bodyLarge => GoogleFonts.inter(
+  static TextStyle get bodyLarge => _sans(
         fontSize: 15,
         fontWeight: FontWeight.w400,
         letterSpacing: 0.0,
@@ -76,7 +109,7 @@ abstract final class AppTypography {
         height: 1.5,
       );
 
-  static TextStyle get bodyMedium => GoogleFonts.inter(
+  static TextStyle get bodyMedium => _sans(
         fontSize: 13,
         fontWeight: FontWeight.w400,
         letterSpacing: 0.0,
@@ -84,7 +117,7 @@ abstract final class AppTypography {
         height: 1.45,
       );
 
-  static TextStyle get bodySmall => GoogleFonts.inter(
+  static TextStyle get bodySmall => _sans(
         fontSize: 12,
         fontWeight: FontWeight.w400,
         letterSpacing: 0.0,
@@ -93,7 +126,7 @@ abstract final class AppTypography {
       );
 
   // Monospace / Code / Telemetry / Badges (JetBrains Mono)
-  static TextStyle get codeLg => GoogleFonts.jetBrainsMono(
+  static TextStyle get codeLg => _mono(
         fontSize: 15,
         fontWeight: FontWeight.w500,
         letterSpacing: -0.2,
@@ -101,7 +134,7 @@ abstract final class AppTypography {
         height: 1.4,
       );
 
-  static TextStyle get codeMd => GoogleFonts.jetBrainsMono(
+  static TextStyle get codeMd => _mono(
         fontSize: 13,
         fontWeight: FontWeight.w500,
         letterSpacing: -0.1,
@@ -109,7 +142,7 @@ abstract final class AppTypography {
         height: 1.4,
       );
 
-  static TextStyle get codeSm => GoogleFonts.jetBrainsMono(
+  static TextStyle get codeSm => _mono(
         fontSize: 11.5,
         fontWeight: FontWeight.w500,
         letterSpacing: 0.0,
@@ -117,7 +150,7 @@ abstract final class AppTypography {
         height: 1.35,
       );
 
-  static TextStyle get codeXs => GoogleFonts.jetBrainsMono(
+  static TextStyle get codeXs => _mono(
         fontSize: 10,
         fontWeight: FontWeight.w600,
         letterSpacing: 0.2,
@@ -126,7 +159,7 @@ abstract final class AppTypography {
       );
 
   // Status Badge Text
-  static TextStyle get badgeText => GoogleFonts.jetBrainsMono(
+  static TextStyle get badgeText => _mono(
         fontSize: 11,
         fontWeight: FontWeight.w600,
         letterSpacing: 0.3,
@@ -134,7 +167,7 @@ abstract final class AppTypography {
       );
 
   // Touch Key Accessory Text
-  static TextStyle get touchKeyText => GoogleFonts.jetBrainsMono(
+  static TextStyle get touchKeyText => _mono(
         fontSize: 12.5,
         fontWeight: FontWeight.w600,
         letterSpacing: -0.2,
@@ -142,7 +175,7 @@ abstract final class AppTypography {
       );
 
   // App Bar Title
-  static TextStyle get appBarTitle => GoogleFonts.jetBrainsMono(
+  static TextStyle get appBarTitle => _mono(
         fontSize: 15,
         fontWeight: FontWeight.w700,
         letterSpacing: 0.8,
@@ -162,17 +195,17 @@ abstract final class AppTypography {
       bodyLarge: bodyLarge,
       bodyMedium: bodyMedium,
       bodySmall: bodySmall,
-      labelLarge: GoogleFonts.inter(
+      labelLarge: _sans(
         fontSize: 13,
         fontWeight: FontWeight.w600,
         color: AppColors.textPrimary,
       ),
-      labelMedium: GoogleFonts.inter(
+      labelMedium: _sans(
         fontSize: 12,
         fontWeight: FontWeight.w500,
         color: AppColors.textSecondary,
       ),
-      labelSmall: GoogleFonts.inter(
+      labelSmall: _sans(
         fontSize: 10,
         fontWeight: FontWeight.w500,
         color: AppColors.textMuted,

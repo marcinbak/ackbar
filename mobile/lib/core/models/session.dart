@@ -332,11 +332,11 @@ class Session {
   String get projectDisplayName {
     if (projectKey.isNotEmpty) {
       final parts = projectKey.split('/');
-      if (parts.isNotEmpty) return parts.last.replaceAll('.git', '');
+      if (parts.isNotEmpty) return parts.last.replaceAll('.git', '').trim();
     }
     if (nodePath.isNotEmpty) {
       final parts = nodePath.split('/');
-      if (parts.isNotEmpty) return parts.first;
+      if (parts.isNotEmpty) return parts.first.trim();
     }
     if (cwd.isNotEmpty) {
       final parts = cwd.split('/');
@@ -445,6 +445,7 @@ class Session {
     String? projectKey,
     SessionState? state,
     Blocked? blocked,
+    bool clearBlocked = false,
     String? activity,
     DateTime? startedAt,
     DateTime? lastEventAt,
@@ -475,7 +476,7 @@ class Session {
       roots: roots ?? this.roots,
       projectKey: projectKey ?? this.projectKey,
       state: state ?? this.state,
-      blocked: blocked ?? this.blocked,
+      blocked: clearBlocked ? null : (blocked ?? this.blocked),
       activity: activity ?? this.activity,
       startedAt: startedAt ?? this.startedAt,
       lastEventAt: lastEventAt ?? this.lastEventAt,

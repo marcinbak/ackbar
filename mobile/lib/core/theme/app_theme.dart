@@ -49,7 +49,7 @@ abstract final class AppTheme {
         titleTextStyle: AppTypography.appBarTitle,
         iconTheme: const IconThemeData(color: AppColors.textPrimary, size: 20),
       ),
-      cardTheme: CardTheme(
+      cardTheme: CardThemeData(
         color: AppColors.surface,
         elevation: 0,
         margin: EdgeInsets.zero,

@@ -491,7 +491,7 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
     // Optimistically update local session state to Working
     final updatedSession = session.copyWith(
       state: SessionState.working,
-      blocked: null,
+      clearBlocked: true,
       activity: action == 'allow'
           ? 'Permission allowed: $value'
           : (action == 'deny' ? 'Permission denied' : 'Answer submitted: $value'),

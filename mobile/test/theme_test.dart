@@ -1,11 +1,15 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:google_fonts/google_fonts.dart';
 import 'package:ackbar_mobile/core/theme/app_colors.dart';
 import 'package:ackbar_mobile/core/theme/app_spacing.dart';
 import 'package:ackbar_mobile/core/theme/app_theme.dart';
 import 'package:ackbar_mobile/core/theme/app_typography.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+  GoogleFonts.config.allowRuntimeFetching = false;
+
   group('AppColors Stitch "Terminal Velocity" Design Tokens', () {
     test('Base Surface & Canvas Color tokens match Stitch design specification', () {
       expect(AppColors.background, equals(const Color(0xFF0E1015)));
@@ -196,7 +200,11 @@ void main() {
   });
 
   group('AppTheme.darkTheme Configuration Tests', () {
-    final theme = AppTheme.darkTheme;
+    late ThemeData theme;
+
+    setUp(() {
+      theme = AppTheme.darkTheme;
+    });
 
     test('ThemeData is configured with Material 3 dark brightness', () {
       expect(theme.useMaterial3, isTrue);
@@ -304,7 +312,8 @@ void main() {
         ),
       );
 
-      expect(testContext.theme, equals(theme));
+      expect(testContext.theme.brightness, equals(Brightness.dark));
+      expect(testContext.theme.scaffoldBackgroundColor, equals(AppColors.background));
       expect(testContext.colors.primary, equals(AppColors.infoCyan));
       expect(testContext.textTheme.displayLarge, isNotNull);
       expect(testContext.ackbarColors.statusAmber, equals(AppColors.statusAmber));

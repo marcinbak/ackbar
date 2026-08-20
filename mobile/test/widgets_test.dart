@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:google_fonts/google_fonts.dart';
 import 'package:ackbar_mobile/core/theme/app_colors.dart';
 import 'package:ackbar_mobile/core/theme/app_theme.dart';
 import 'package:ackbar_mobile/core/widgets/glass_card.dart';
@@ -16,6 +17,9 @@ Widget _wrapWithTheme(Widget child) {
 }
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+  GoogleFonts.config.allowRuntimeFetching = false;
+
   group('TokenGaugeBar Widget Tests', () {
     testWidgets('renders correctly with direct percentage value', (tester) async {
       await tester.pumpWidget(
@@ -242,7 +246,7 @@ void main() {
       );
 
       expect(find.text('Card with Accent Bar'), findsOneWidget);
-      expect(find.byType(Stack), findsOneWidget);
+      expect(find.descendant(of: find.byType(GlassCard), matching: find.byType(Stack)), findsOneWidget);
     });
 
     testWidgets('invokes onTap callback when tapped', (tester) async {
