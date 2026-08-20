@@ -2,7 +2,7 @@
 
 > **Lightweight, cross-machine control plane and session manager for AI coding agents.**
 
-[![Version](https://img.shields.io/badge/version-v20260821.01-6366f1.svg)](https://github.com/marcinbak/ackbar/releases)
+[![Version](https://img.shields.io/badge/version-v20260821.02-6366f1.svg)](https://github.com/marcinbak/ackbar/releases)
 [![Go Version](https://img.shields.io/badge/go-1.25+-00ADD8.svg)](https://golang.org)
 [![Pure Go SQLite](https://img.shields.io/badge/sqlite-CGO--free-blue.svg)](https://modernc.org/sqlite)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
