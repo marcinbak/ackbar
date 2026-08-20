@@ -81,6 +81,7 @@ func (s *Server) Mux() http.Handler {
 	mux.HandleFunc("/v1/hooks/", s.handleHook)
 	mux.HandleFunc("/v1/sessions", s.handleSessions)
 	mux.HandleFunc("/v1/sessions/respond", s.handleRespond)
+	mux.HandleFunc("/v1/sessions/transcript", s.handleSessionTranscript)
 	mux.HandleFunc("/v1/sessions/", s.handleSessionControl)
 	mux.HandleFunc("/v1/sessions/control", s.handleSessionControl)
 	mux.HandleFunc("/v1/sessions/pty", s.handlePTY)
@@ -287,14 +288,31 @@ func (s *Server) processHookEvent(p Provider, urlEventName string, headerHost st
 		sess.Roots = event.Roots
 	}
 	if event.Name != "" {
-		if sess.Name == "" || sess.Name == sess.Agent || strings.HasPrefix(sess.Name, sess.Agent+" (") {
-			sess.Name = event.Name
-		} else if !strings.HasPrefix(event.Name, "<") {
+		if sess.Name == "" || sess.Name == sess.Agent || strings.HasPrefix(sess.Name, sess.Agent+" (") || isUUID(sess.Name) || strings.HasPrefix(sess.Name, "ackbar-") || strings.HasPrefix(sess.Name, "proc-") {
+			if !isUUID(event.Name) && !strings.HasPrefix(event.Name, "ackbar-") && !strings.HasPrefix(event.Name, "proc-") {
+				sess.Name = event.Name
+			}
+		} else if !strings.HasPrefix(event.Name, "<") && !isUUID(event.Name) && !strings.HasPrefix(event.Name, "ackbar-") {
 			// Only update if it came from an official title lookup
 			if sess.Agent == "claude-code" {
 				if meta := ReadClaudeSessionMeta(sess.Cwd, sess.NativeID); meta != nil && meta.Title != "" {
 					sess.Name = meta.Title
 				}
+			} else if sess.Agent == "antigravity" {
+				if title := ReadAntigravitySessionTitle(sess.Cwd, sess.NativeID); title != "" {
+					sess.Name = title
+				}
+			}
+		}
+	} else if sess.Name == "" || sess.Name == sess.Agent || isUUID(sess.Name) || strings.HasPrefix(sess.Name, "ackbar-") || strings.HasPrefix(sess.Name, "proc-") {
+		// Attempt resolution
+		if sess.Agent == "antigravity" {
+			if title := ReadAntigravitySessionTitle(sess.Cwd, sess.NativeID); title != "" {
+				sess.Name = title
+			}
+		} else if sess.Agent == "claude-code" {
+			if meta := ReadClaudeSessionMeta(sess.Cwd, sess.NativeID); meta != nil && meta.Title != "" {
+				sess.Name = meta.Title
 			}
 		}
 	}
@@ -875,6 +893,75 @@ func (s *Server) handleRespond(w http.ResponseWriter, r *http.Request) {
 		"state":   sess.State.String(),
 		"session": sess,
 	})
+}
+
+func (s *Server) handleSessionTranscript(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	sessionID := r.URL.Query().Get("id")
+	if sessionID == "" {
+		http.Error(w, "Missing id parameter", http.StatusBadRequest)
+		return
+	}
+
+	format := strings.ToLower(r.URL.Query().Get("format")) // "json", "ansi", "markdown"
+	if format == "" {
+		format = "json"
+	}
+
+	sess, _ := s.db.GetSession(sessionID)
+	agent := "claude-code"
+	nativeID := sessionID
+	cwd := ""
+	title := ""
+
+	if sess != nil {
+		agent = sess.Agent
+		nativeID = sess.NativeID
+		cwd = sess.Cwd
+		title = sess.Name
+	} else {
+		parts := strings.Split(sessionID, ":")
+		if len(parts) >= 3 {
+			agent = parts[0]
+			nativeID = parts[2]
+		}
+	}
+
+	transcript, err := ExtractTranscript(agent, nativeID, cwd)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to extract transcript: %v", err), http.StatusNotFound)
+		return
+	}
+	if title != "" {
+		transcript.Title = title
+	} else if sess != nil {
+		transcript.Title = sess.Name
+	}
+
+	switch format {
+	case "ansi":
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = w.Write([]byte(FormatTranscriptANSI(transcript)))
+	case "markdown", "md":
+		w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+		_, _ = w.Write([]byte(FormatTranscriptMarkdown(transcript)))
+	default:
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"session_id": sessionID,
+			"native_id":  nativeID,
+			"agent":      agent,
+			"title":      transcript.Title,
+			"cwd":        transcript.Cwd,
+			"messages":   transcript.Messages,
+			"ansi":       FormatTranscriptANSI(transcript),
+			"markdown":   FormatTranscriptMarkdown(transcript),
+		})
+	}
 }
 
 func (s *Server) handleEditorOpen(w http.ResponseWriter, r *http.Request) {
@@ -2383,12 +2470,27 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 
 				nativeID := fmt.Sprintf("proc-%d", pid)
 				sessID := fmt.Sprintf("%s:observed:%s", hostName, nativeID)
+				if targetNativeID != "" && isUUID(targetNativeID) {
+					nativeID = targetNativeID
+					sessID = fmt.Sprintf("%s:%s:%s", agent, hostName, targetNativeID)
+				}
 
 				existingObs, _ := s.db.GetSession(sessID)
 				if existingObs == nil {
-					sessionName := tmuxName
+					sessionName := ""
+					if agent == "antigravity" && targetNativeID != "" {
+						sessionName = ReadAntigravitySessionTitle(cwd, targetNativeID)
+					} else if agent == "claude-code" && targetNativeID != "" {
+						if meta := ReadClaudeSessionMeta(cwd, targetNativeID); meta != nil {
+							sessionName = meta.Title
+						}
+					}
 					if sessionName == "" {
-						sessionName = fmt.Sprintf("%s (%s)", agent, nativeID)
+						if targetNativeID != "" && len(targetNativeID) >= 8 {
+							sessionName = fmt.Sprintf("%s (%s)", agent, targetNativeID[:8])
+						} else {
+							sessionName = fmt.Sprintf("%s (%s)", agent, nativeID)
+						}
 					}
 					newSess := &Session{
 						ID:          sessID,
@@ -3569,6 +3671,11 @@ func fileExists(p string) bool {
 }
 
 func isUUID(s string) bool {
+	return IsUUID(s)
+}
+
+// IsUUID returns true if s matches standard 36-character hyphenated UUID format
+func IsUUID(s string) bool {
 	if len(s) != 36 {
 		return false
 	}

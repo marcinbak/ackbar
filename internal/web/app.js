@@ -198,6 +198,7 @@
     // Session Context Menu
     contextMenu: document.getElementById('contextMenu'),
     cmItemInfo: document.getElementById('cmItemInfo'),
+    cmItemTranscript: document.getElementById('cmItemTranscript'),
     cmItemCopyName: document.getElementById('cmItemCopyName'),
     cmItemCopyPath: document.getElementById('cmItemCopyPath'),
     cmItemResume: document.getElementById('cmItemResume'),
@@ -435,6 +436,13 @@
         merged.set(dedupKey, { ...sess });
       } else {
         const existing = merged.get(dedupKey);
+        const isRawName = (n) => !n || n.startsWith('ackbar-') || n.startsWith('proc-') || /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(n);
+        if (sess.name && !isRawName(sess.name)) {
+          existing.name = sess.name;
+        } else if (!existing.name || isRawName(existing.name)) {
+          if (sess.name) existing.name = sess.name;
+        }
+
         if (sess.managed || (sess.state && sess.state !== 4)) {
           existing.id = sess.id;
           existing.managed = true;
@@ -1310,6 +1318,7 @@
         </div>
         <div class="details-actions">
           <button class="btn btn-primary" id="detBtnResume">▶ Resume in Tmux</button>
+          <button class="btn btn-secondary" id="detBtnTranscript">📜 Transcript</button>
           <button class="btn btn-secondary" id="detBtnShell">🐚 Shell</button>
           <button class="btn btn-secondary" id="detBtnDocs">📄 Docs</button>
           <button class="btn btn-secondary" id="detBtnVSCode">📂 VS Code</button>
@@ -1378,6 +1387,10 @@ ${session.last_prompt}
     detailsView.querySelector('#detBtnResume').addEventListener('click', () => {
       closeTab(tabId);
       openSessionInTab(session);
+    });
+
+    detailsView.querySelector('#detBtnTranscript').addEventListener('click', () => {
+      openTranscriptViewerTab(session);
     });
 
     detailsView.querySelector('#detBtnShell').addEventListener('click', () => {
@@ -1555,6 +1568,194 @@ ${session.last_prompt}
     state.openTabs.set(tabId, {
       type: 'doc',
       session: { name: docTitle, cwd: docPath, host: host },
+      containerEl,
+      tabEl,
+      fitAddon: { fit: () => {} }
+    });
+
+    activateTab(tabId);
+    handleTabOverflow();
+  }
+
+  // Open In-UI Rich Transcript Viewer Tab
+  async function openTranscriptViewerTab(session) {
+    if (!session) return;
+
+    const tabId = `transcript_${session.id.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+    if (state.openTabs.has(tabId)) {
+      activateTab(tabId);
+      return;
+    }
+
+    const host = session.host || 'local';
+    const isRemote = host && host !== 'local';
+    const targetHost = state.hosts.find(h => h.name === host);
+    const baseUrl = (isRemote && targetHost && targetHost.url) ? targetHost.url.replace(/\/$/, '') : (session.hostUrl ? session.hostUrl.replace(/\/$/, '') : '');
+
+    let transcriptData = null;
+    let errorMsg = '';
+    try {
+      const res = await fetch(`${baseUrl}/v1/sessions/transcript?id=${encodeURIComponent(session.id)}&format=json`);
+      if (res.ok) {
+        transcriptData = await res.json();
+      } else {
+        errorMsg = `Failed to fetch transcript: ${res.statusText}`;
+      }
+    } catch (e) {
+      errorMsg = `Error loading transcript: ${e.message}`;
+    }
+
+    if (el.emptyState) el.emptyState.style.display = 'none';
+
+    // 1. Tab DOM Element
+    const tabEl = document.createElement('div');
+    tabEl.className = 'terminal-tab';
+    tabEl.dataset.tabId = tabId;
+
+    const titleWrap = document.createElement('div');
+    titleWrap.className = 'tab-title-wrap';
+
+    const emojiSpan = document.createElement('span');
+    emojiSpan.className = 'tab-emoji';
+    emojiSpan.textContent = '📜';
+
+    const titleSpan = document.createElement('span');
+    titleSpan.className = 'tab-title';
+    titleSpan.textContent = `Transcript: ${session.name || session.agent}`;
+
+    titleWrap.appendChild(emojiSpan);
+    titleWrap.appendChild(titleSpan);
+
+    if (isRemote) {
+      const hostSpan = document.createElement('span');
+      hostSpan.className = 'badge-host';
+      hostSpan.textContent = `@${formatHostLabel(host)}`;
+      titleWrap.appendChild(hostSpan);
+    }
+
+    const closeBtn = document.createElement('button');
+    closeBtn.className = 'tab-close-btn';
+    closeBtn.textContent = '✕';
+    closeBtn.title = 'Close Tab';
+    closeBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      closeTab(tabId);
+    });
+
+    tabEl.appendChild(titleWrap);
+    tabEl.appendChild(closeBtn);
+
+    tabEl.addEventListener('click', (e) => {
+      if (e.button === 0) activateTab(tabId);
+    });
+
+    tabEl.addEventListener('auxclick', (e) => {
+      if (e.button === 1) {
+        e.preventDefault();
+        e.stopPropagation();
+        closeTab(tabId);
+      }
+    });
+
+    if (el.tabStrip) el.tabStrip.appendChild(tabEl);
+
+    // 2. Transcript Container
+    const containerEl = document.createElement('div');
+    containerEl.className = 'terminal-tab-view';
+    containerEl.id = `transcriptView_${tabId}`;
+
+    const transContainer = document.createElement('div');
+    transContainer.className = 'transcript-viewer-container';
+
+    let messagesHtml = '';
+    if (transcriptData && transcriptData.messages && transcriptData.messages.length > 0) {
+      messagesHtml = transcriptData.messages.map((m, idx) => {
+        const timeStr = m.timestamp ? new Date(m.timestamp).toLocaleTimeString() : '';
+        if (m.role === 'user') {
+          return `
+            <div class="transcript-msg user-msg">
+              <div class="msg-header">
+                <span class="msg-role">👤 User</span>
+                <span class="msg-time">${timeStr}</span>
+              </div>
+              <div class="msg-body">${escapeHtml(m.content).replace(/\n/g, '<br/>')}</div>
+            </div>
+          `;
+        } else if (m.role === 'assistant') {
+          const bodyHtml = window.marked ? window.marked.parse(m.content || '') : `<pre>${escapeHtml(m.content)}</pre>`;
+          const toolsHtml = m.tool_calls && m.tool_calls.length > 0 ? `
+            <div class="msg-tools">
+              ${m.tool_calls.map(tc => `<span class="tool-tag">⚡ ${escapeHtml(tc)}</span>`).join(' ')}
+            </div>
+          ` : '';
+          const thinkingHtml = m.thinking ? `
+            <details class="msg-thinking">
+              <summary>💭 Thought Process</summary>
+              <div class="thinking-content">${escapeHtml(m.thinking).replace(/\n/g, '<br/>')}</div>
+            </details>
+          ` : '';
+          return `
+            <div class="transcript-msg assistant-msg">
+              <div class="msg-header">
+                <span class="msg-role">🤖 Assistant</span>
+                <span class="msg-time">${timeStr}</span>
+              </div>
+              ${toolsHtml}
+              ${thinkingHtml}
+              <div class="markdown-body">${bodyHtml}</div>
+            </div>
+          `;
+        } else {
+          return `
+            <div class="transcript-msg system-msg">
+              <span class="system-tag">ℹ️ System [${timeStr}]:</span> ${escapeHtml(m.content)}
+            </div>
+          `;
+        }
+      }).join('');
+    } else {
+      messagesHtml = `
+        <div class="transcript-empty">
+          <p>${errorMsg || 'No transcript messages found for this session on disk.'}</p>
+        </div>
+      `;
+    }
+
+    transContainer.innerHTML = `
+      <div class="transcript-header">
+        <div class="transcript-header-info">
+          <div class="transcript-title">📜 ${escapeHtml(session.name || session.agent)}</div>
+          <div class="transcript-subtitle">${escapeHtml(session.cwd || '')} • ${getAgentBadgeHtml(session.agent)} • ${transcriptData && transcriptData.messages ? transcriptData.messages.length : 0} steps</div>
+        </div>
+        <div class="transcript-header-actions">
+          <button class="btn btn-primary" id="transBtnResume">▶ Attach in Terminal</button>
+          <button class="btn btn-secondary" id="transBtnDocs">📄 Docs</button>
+          <button class="btn btn-secondary" id="transBtnVSCode">📂 VS Code</button>
+        </div>
+      </div>
+      <div class="transcript-body">
+        ${messagesHtml}
+      </div>
+    `;
+
+    containerEl.appendChild(transContainer);
+    if (el.terminalViewport) el.terminalViewport.appendChild(containerEl);
+
+    transContainer.querySelector('#transBtnResume').addEventListener('click', () => {
+      openSessionInTab(session);
+    });
+
+    transContainer.querySelector('#transBtnDocs').addEventListener('click', () => {
+      showProjectDocsModal(session.cwd, session.name, session.host, session);
+    });
+
+    transContainer.querySelector('#transBtnVSCode').addEventListener('click', async () => {
+      openInVSCode(session.cwd, session.host);
+    });
+
+    state.openTabs.set(tabId, {
+      type: 'transcript',
+      session,
       containerEl,
       tabEl,
       fitAddon: { fit: () => {} }
@@ -2198,6 +2399,12 @@ ${session.last_prompt}
     if (el.cmItemInfo) {
       el.cmItemInfo.addEventListener('click', () => {
         if (state.contextMenuSession) openSessionDetailsTab(state.contextMenuSession);
+      });
+    }
+
+    if (el.cmItemTranscript) {
+      el.cmItemTranscript.addEventListener('click', () => {
+        if (state.contextMenuSession) openTranscriptViewerTab(state.contextMenuSession);
       });
     }
 
