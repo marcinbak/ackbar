@@ -213,6 +213,21 @@ void main() {
       expect(content, contains('# Implementation Plan'));
     });
 
+    test('getTranscript queries /v1/sessions/transcript with id and format', () async {
+      final mockClient = MockClient((request) async {
+        expect(request.url.path, equals('/v1/sessions/transcript'));
+        expect(request.url.queryParameters['id'], equals('claude-code:local:8492'));
+        expect(request.url.queryParameters['format'], equals('markdown'));
+        return http.Response('# Transcript\nUser: Hello\nAgent: Hi', 200);
+      });
+
+      final api = ApiClient(client: mockClient);
+      final transcript = await api.getTranscript('http://127.0.0.1:7777', 'claude-code:local:8492');
+
+      expect(transcript, contains('# Transcript'));
+      expect(transcript, contains('Agent: Hi'));
+    });
+
     test('checkHostHealth measures latency and returns decoded version map', () async {
       final mockClient = MockClient((request) async {
         expect(request.url.path, equals('/v1/version'));

@@ -155,6 +155,26 @@ class ApiClient {
     }
   }
 
+  /// GET /v1/sessions/transcript: Retrieve live/historic agent conversation transcript
+  Future<String> getTranscript(String hostUrl, String sessionId, {String format = 'markdown'}) async {
+    final clean = _cleanUrl(hostUrl);
+    final uri = Uri.parse('$clean/v1/sessions/transcript').replace(
+      queryParameters: {
+        'id': sessionId,
+        'format': format,
+      },
+    );
+    try {
+      final response = await _client.get(uri).timeout(const Duration(seconds: 6));
+      if (response.statusCode == 200) {
+        return response.body;
+      }
+      return '';
+    } catch (_) {
+      return '';
+    }
+  }
+
   /// GET /v1/version: Healthcheck and version check for a host
   Future<Map<String, dynamic>?> checkHostHealth(String hostUrl) async {
     final clean = _cleanUrl(hostUrl);
