@@ -15,3 +15,7 @@ scratch/
 *.db
 *.db-wal
 *.db-shm
+
+# Worktrees
+.worktrees/
+
