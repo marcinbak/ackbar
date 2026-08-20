@@ -10,6 +10,7 @@ import '../../../core/theme/app_typography.dart';
 import '../../../core/widgets/glass_card.dart';
 import '../../../core/widgets/status_badge.dart';
 import '../../../core/widgets/token_gauge_bar.dart';
+import '../../terminal/presentation/terminal_screen.dart';
 
 /// Modal bottom sheet providing deep inspection and lifecycle control for an agent session.
 class SessionDetailSheet extends ConsumerWidget {
@@ -205,35 +206,30 @@ class SessionDetailSheet extends ConsumerWidget {
                 child: ElevatedButton.icon(
                   onPressed: () {
                     Navigator.of(context).pop();
-                    _showTranscriptModal(context, ref, session);
+                    TerminalScreen.open(context, session);
                   },
-                  icon: const Icon(Icons.article_outlined, size: 16),
-                  label: const Text('Show Transcript'),
+                  icon: const Icon(Icons.terminal_rounded, size: 16),
+                  label: const Text('Terminal'),
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: AppColors.surfaceHighlight,
-                    foregroundColor: AppColors.infoCyan,
-                    side: const BorderSide(color: AppColors.infoCyan, width: 1),
+                    backgroundColor: AppColors.statusEmerald.withOpacity(0.15),
+                    foregroundColor: AppColors.statusEmerald,
+                    side: const BorderSide(color: AppColors.statusEmerald, width: 1),
                   ),
                 ),
               ),
               const SizedBox(width: 8),
               Expanded(
                 child: ElevatedButton.icon(
-                  onPressed: () async {
+                  onPressed: () {
                     Navigator.of(context).pop();
-                    await ref.read(fleetSessionsProvider.notifier).restartSession(session.id);
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: Text('Restarting ${session.displayTitle}...'),
-                        backgroundColor: AppColors.surfaceHighlight,
-                      ),
-                    );
+                    _showTranscriptModal(context, ref, session);
                   },
-                  icon: const Icon(Icons.refresh_rounded, size: 16),
-                  label: const Text('Restart'),
+                  icon: const Icon(Icons.article_outlined, size: 16),
+                  label: const Text('Transcript'),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: AppColors.surfaceHighlight,
-                    foregroundColor: AppColors.textPrimary,
+                    foregroundColor: AppColors.infoCyan,
+                    side: const BorderSide(color: AppColors.infoCyan, width: 1),
                   ),
                 ),
               ),

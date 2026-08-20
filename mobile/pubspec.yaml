@@ -16,6 +16,7 @@ dependencies:
   google_fonts: ^6.2.1
   cupertino_icons: ^1.0.6
   shared_preferences: ^2.2.3
+  xterm: ^4.0.0
 
 dev_dependencies:
   flutter_test:
