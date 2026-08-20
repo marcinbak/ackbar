@@ -56,3 +56,5 @@ Detailed architectural and technical domain documentation is organized in the `d
 1.  **Security Constraint (§9):** The `ackbard` HTTP server MUST bind strictly to `127.0.0.1`. Remote client connectivity MUST use SSH tunnels (`ssh -L`).
 2.  **CGO-Free SQLite:** Always maintain pure Go database drivers (`modernc.org/sqlite`).
 3.  **In-Place Attachment:** Attachment MUST suspend the Bubble Tea app using `tea.ExecProcess`, run `tmux attach` or `ssh -t host tmux attach`, and resume/redraw upon detach.
+4.  **Git Worktree Workflow:** All future development, bug fixes, refactoring, and feature additions MUST be executed inside an isolated git worktree (e.g. under `.worktrees/<branch-name>`) on a dedicated branch, verified with test suite runs, and then merged cleanly into `main`.
+
