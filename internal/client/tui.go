@@ -1409,12 +1409,9 @@ func (m *Model) buildVisibleRows() []TreeRow {
 		if target.PID == 0 {
 			target.PID = src.PID
 		}
-		isRawName := func(n string) bool {
-			return n == "" || strings.HasPrefix(n, "ackbar-") || strings.HasPrefix(n, "proc-") || daemon.IsUUID(n)
-		}
-		if src.Name != "" && !isRawName(src.Name) {
+		if src.Name != "" && !daemon.IsRawSessionName(src.Name) {
 			target.Name = src.Name
-		} else if isRawName(target.Name) && src.Name != "" {
+		} else if daemon.IsRawSessionName(target.Name) && src.Name != "" {
 			target.Name = src.Name
 		}
 		if target.NodePath == "" && src.NodePath != "" {
