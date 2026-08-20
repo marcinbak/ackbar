@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../models/host.dart';
 import '../models/plan.dart';
 import '../models/session.dart';
@@ -86,8 +88,34 @@ final decisionAuditProvider =
 
 class HostsNotifier extends StateNotifier<List<HostRecord>> {
   final ApiClient _apiClient;
+  static const String _kHostsKey = 'ackbar_persisted_hosts';
 
-  HostsNotifier(this._apiClient) : super(const []);
+  HostsNotifier(this._apiClient) : super(const []) {
+    _loadPersistedHosts();
+  }
+
+  Future<void> _loadPersistedHosts() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final jsonStr = prefs.getString(_kHostsKey);
+      if (jsonStr != null && jsonStr.isNotEmpty) {
+        final List<dynamic> list = jsonDecode(jsonStr);
+        final loaded = list.map((item) => HostRecord.fromJson(item as Map<String, dynamic>)).toList();
+        if (mounted && loaded.isNotEmpty) {
+          state = loaded;
+          refreshHosts();
+        }
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _savePersistedHosts() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final list = state.map((h) => h.toJson()).toList();
+      await prefs.setString(_kHostsKey, jsonEncode(list));
+    } catch (_) {}
+  }
 
   Future<void> refreshHosts() async {
     final updated = <HostRecord>[];
@@ -115,16 +143,19 @@ class HostsNotifier extends StateNotifier<List<HostRecord>> {
 
   void addHost(HostRecord host) {
     state = [...state, host];
+    _savePersistedHosts();
     refreshHosts();
   }
 
   void updateHost(HostRecord updatedHost) {
     state = state.map((h) => h.name == updatedHost.name || h.url == updatedHost.url ? updatedHost : h).toList();
+    _savePersistedHosts();
     refreshHosts();
   }
 
   void removeHost(String name) {
     state = state.where((h) => h.name != name && h.url != name).toList();
+    _savePersistedHosts();
   }
 }
 

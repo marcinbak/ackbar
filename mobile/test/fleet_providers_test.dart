@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:ackbar_mobile/core/models/host.dart';
@@ -176,6 +177,7 @@ void main() {
     late ApiClient mockApiClient;
 
     setUp(() {
+      SharedPreferences.setMockInitialValues({});
       final mockClient = MockClient((request) async {
         if (request.url.path == '/v1/version') {
           return http.Response(jsonEncode({'version': 'v0.2.2'}), 200);
