@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -295,7 +294,7 @@ func (c *ClaudeProvider) ParseHook(eventName string, payload []byte) (*daemon.Ev
 }
 
 func (c *ClaudeProvider) IsInstalled() bool {
-	if _, err := exec.LookPath("claude"); err == nil {
+	if lookPathInStandardDirs("claude") {
 		return true
 	}
 	home, err := os.UserHomeDir()

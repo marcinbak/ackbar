@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -132,14 +133,46 @@ func (a *AntigravityProvider) ParseHook(eventName string, payload []byte) (*daem
 	return event, nil
 }
 
-func (a *AntigravityProvider) IsInstalled() bool {
-	if _, err := exec.LookPath("agy"); err == nil {
+func lookPathInStandardDirs(binName string) bool {
+	if _, err := exec.LookPath(binName); err == nil {
 		return true
 	}
 	home, err := os.UserHomeDir()
 	if err == nil {
-		if _, err := os.Stat(home + "/.gemini/antigravity"); err == nil {
-			return true
+		candidates := []string{
+			filepath.Join(home, ".local", "bin", binName),
+			filepath.Join(home, ".npm-global", "bin", binName),
+			filepath.Join(home, "bin", binName),
+			filepath.Join(home, ".cargo", "bin", binName),
+			"/opt/homebrew/bin/" + binName,
+			"/usr/local/bin/" + binName,
+			"/usr/bin/" + binName,
+			"/bin/" + binName,
+		}
+		for _, c := range candidates {
+			if stat, err := os.Stat(c); err == nil && !stat.IsDir() {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (a *AntigravityProvider) IsInstalled() bool {
+	if lookPathInStandardDirs("agy") || lookPathInStandardDirs("antigravity") {
+		return true
+	}
+	home, err := os.UserHomeDir()
+	if err == nil {
+		dirs := []string{
+			filepath.Join(home, ".gemini", "antigravity"),
+			filepath.Join(home, ".antigravity"),
+			filepath.Join(home, ".gemini"),
+		}
+		for _, d := range dirs {
+			if _, err := os.Stat(d); err == nil {
+				return true
+			}
 		}
 	}
 	return false
@@ -152,10 +185,17 @@ func (a *AntigravityProvider) CheckHookConfig() (bool, string, error) {
 		return false, setupCmd, nil
 	}
 
-	hooksPath := home + "/.gemini/config/hooks.json"
-	data, err := os.ReadFile(hooksPath)
-	if err == nil && (strings.Contains(string(data), "ackbar-hook") || strings.Contains(string(data), "127.0.0.1:7777")) {
-		return true, setupCmd, nil
+	paths := []string{
+		filepath.Join(home, ".gemini", "config", "hooks.json"),
+		filepath.Join(home, ".antigravity", "config", "hooks.json"),
+		filepath.Join(home, ".gemini", "hooks.json"),
+		filepath.Join(home, ".antigravity", "hooks.json"),
+	}
+	for _, hooksPath := range paths {
+		data, err := os.ReadFile(hooksPath)
+		if err == nil && (strings.Contains(string(data), "ackbar-hook") || strings.Contains(string(data), "127.0.0.1:7777") || strings.Contains(string(data), "PreInvocation")) {
+			return true, setupCmd, nil
+		}
 	}
 
 	return false, setupCmd, nil

@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"ackbar/internal/daemon"
@@ -124,5 +125,47 @@ func TestProviderDiscovery(t *testing.T) {
 		if setupCmd == "" {
 			t.Errorf("Expected setupCmd for %s", p.Agent())
 		}
+	}
+}
+
+func TestAntigravityDiscoveryInLocalBin(t *testing.T) {
+	tmpHome, err := os.MkdirTemp("", "test-agy-localbin-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpHome)
+
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpHome)
+	defer os.Setenv("HOME", origHome)
+
+	p := NewAntigravityProvider()
+
+	// 1. When binary does not exist
+	if p.IsInstalled() {
+		// If agy is globally on host PATH it could be true, but if not it should be false
+	}
+
+	// 2. Create ~/.local/bin/agy mock executable
+	localBin := tmpHome + "/.local/bin"
+	_ = os.MkdirAll(localBin, 0755)
+	agyMock := localBin + "/agy"
+	_ = os.WriteFile(agyMock, []byte("#!/bin/sh\necho agy\n"), 0755)
+
+	if !p.IsInstalled() {
+		t.Errorf("Expected Antigravity to be detected when ~/.local/bin/agy exists")
+	}
+
+	// 3. Test hook detection in ~/.antigravity/config/hooks.json
+	hooksDir := tmpHome + "/.antigravity/config"
+	_ = os.MkdirAll(hooksDir, 0755)
+	_ = os.WriteFile(hooksDir+"/hooks.json", []byte(`{"hooks":{"PreInvocation":[{"command":"ackbar-hook antigravity"}]}}`), 0644)
+
+	installed, _, err := p.CheckHookConfig()
+	if err != nil {
+		t.Fatalf("CheckHookConfig failed: %v", err)
+	}
+	if !installed {
+		t.Errorf("Expected hook config in ~/.antigravity/config/hooks.json to be detected")
 	}
 }
