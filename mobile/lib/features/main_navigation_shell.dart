@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/providers/fleet_providers.dart';
+import '../core/theme/app_colors.dart';
 import '../core/widgets/ackbar_bottom_nav.dart';
 import 'attention/presentation/attention_screen.dart';
 import 'fleet/presentation/fleet_screen.dart';
@@ -25,6 +26,7 @@ class MainNavigationShell extends ConsumerWidget {
     final plansCount = ref.watch(pendingPlansCountProvider);
 
     return Scaffold(
+      backgroundColor: AppColors.background,
       body: IndexedStack(
         index: currentIndex,
         children: _screens,
