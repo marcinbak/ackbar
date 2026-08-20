@@ -277,8 +277,9 @@ class _FleetScreenState extends ConsumerState<FleetScreen> {
           ),
         ],
       ),
-    );
-  }
+    ),
+  );
+}
 
   Widget _buildSessionCard(Session session) {
     final statusColor = session.state.toBadgeStatus().color;
