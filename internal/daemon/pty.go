@@ -23,6 +23,33 @@ type PTYResizeMsg struct {
 	Rows int    `json:"rows"`
 }
 
+// ptyCodec handles both text and binary WebSocket frames seamlessly across Web, Mobile, and CLI clients
+var ptyCodec = websocket.Codec{
+	Marshal: func(v interface{}) ([]byte, byte, error) {
+		switch data := v.(type) {
+		case []byte:
+			return data, websocket.BinaryFrame, nil
+		case string:
+			return []byte(data), websocket.TextFrame, nil
+		default:
+			return nil, 0, fmt.Errorf("unsupported payload type: %T", v)
+		}
+	},
+	Unmarshal: func(msg []byte, payloadType byte, v interface{}) error {
+		switch target := v.(type) {
+		case *[]byte:
+			*target = make([]byte, len(msg))
+			copy(*target, msg)
+			return nil
+		case *string:
+			*target = string(msg)
+			return nil
+		default:
+			return fmt.Errorf("unsupported target type: %T", v)
+		}
+	},
+}
+
 func (s *Server) handlePTY(w http.ResponseWriter, r *http.Request) {
 	server := websocket.Server{
 		Handler: s.servePTYWS,
@@ -36,7 +63,6 @@ func (s *Server) handlePTY(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) servePTYWS(ws *websocket.Conn) {
 	defer ws.Close()
-	ws.PayloadType = websocket.BinaryFrame
 
 	req := ws.Request()
 	sessionID := req.URL.Query().Get("id")
@@ -220,8 +246,7 @@ func (s *Server) servePTYWS(ws *websocket.Conn) {
 	safeWrite := func(data []byte) error {
 		wsMu.Lock()
 		defer wsMu.Unlock()
-		_, err := ws.Write(data)
-		return err
+		return ptyCodec.Send(ws, data)
 	}
 
 	// Goroutine 1: Stream PTY Output -> WebSocket
@@ -243,11 +268,11 @@ func (s *Server) servePTYWS(ws *websocket.Conn) {
 		}
 	}()
 
-	// Goroutine 2: Stream WebSocket Input -> PTY using raw ws.Read
+	// Goroutine 2: Stream WebSocket Input -> PTY using flexible ptyCodec
 	go func() {
-		buf := make([]byte, 4096)
 		for {
-			n, err := ws.Read(buf)
+			var msg []byte
+			err := ptyCodec.Receive(ws, &msg)
 			if err != nil {
 				if err != io.EOF {
 					log.Printf("[PTY] Goroutine 2 (WS->PTY) receive error: %v", err)
@@ -255,8 +280,7 @@ func (s *Server) servePTYWS(ws *websocket.Conn) {
 				_ = ptyFile.Close()
 				return
 			}
-			if n > 0 {
-				msg := buf[:n]
+			if len(msg) > 0 {
 				// Check if it's a JSON resize or ping control payload
 				if msg[0] == '{' {
 					var ctrl struct {

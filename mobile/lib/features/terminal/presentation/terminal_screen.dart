@@ -36,6 +36,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
   bool _connecting = true;
   String? _errorMessage;
 
+  Timer? _pingTimer;
+
   @override
   void initState() {
     super.initState();
@@ -55,6 +57,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
     final uri = Uri.parse('$wsScheme://$hostAddress/v1/sessions/pty').replace(
       queryParameters: {
         'id': widget.session.id,
+        'host': widget.session.host.isNotEmpty ? widget.session.host : 'local',
         'cols': '80',
         'rows': '28',
       },
@@ -67,6 +70,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
       _terminal.onOutput = (data) {
         _channel?.sink.add(data);
       };
+
+      _pingTimer?.cancel();
+      _pingTimer = Timer.periodic(const Duration(seconds: 15), (_) {
+        try {
+          _channel?.sink.add(jsonEncode({'type': 'ping'}));
+        } catch (_) {}
+      });
 
       _sub = channel.stream.listen(
         (message) {
@@ -145,6 +155,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
 
   @override
   void dispose() {
+    _pingTimer?.cancel();
     _sub?.cancel();
     _channel?.sink.close();
     super.dispose();
