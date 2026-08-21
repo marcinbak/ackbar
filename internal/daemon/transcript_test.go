@@ -61,3 +61,51 @@ func TestExtractTranscript_Antigravity(t *testing.T) {
 		t.Errorf("Markdown formatting missing expected content:\n%s", md)
 	}
 }
+
+func TestExtractTranscript_ClaudeCode(t *testing.T) {
+	tmpHome, err := os.MkdirTemp("", "test-claude-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpHome)
+
+	sessionID := "test-claude-session-5678"
+	cwd := "/Users/dev4u/Work/Modemobile/NGL/ngl-ios"
+	encodedCwd := encodeClaudeProjectDir(cwd)
+	logDir := filepath.Join(tmpHome, ".claude", "projects", encodedCwd)
+	_ = os.MkdirAll(logDir, 0755)
+
+	jsonlContent := `{"type":"user","message":{"role":"user","content":"Review this PR https://github.com/CurrentMobile/ngl-ios/pull/500"},"timestamp":"2026-08-20T18:28:27.241Z"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"I will review the pull request."},{"type":"tool_use","name":"Bash"}]},"timestamp":"2026-08-20T18:28:30.000Z"}
+`
+	logFile := filepath.Join(logDir, sessionID+".jsonl")
+	if err := os.WriteFile(logFile, []byte(jsonlContent), 0644); err != nil {
+		t.Fatalf("Failed to write mock claude transcript: %v", err)
+	}
+
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpHome)
+	defer os.Setenv("HOME", origHome)
+
+	transcript, err := ExtractTranscript("claude-code", sessionID, cwd)
+	if err != nil {
+		t.Fatalf("ExtractTranscript failed: %v", err)
+	}
+
+	if len(transcript.Messages) != 2 {
+		t.Fatalf("Expected 2 messages, got %d", len(transcript.Messages))
+	}
+
+	if transcript.Messages[0].Role != "user" || transcript.Messages[0].Content != "Review this PR https://github.com/CurrentMobile/ngl-ios/pull/500" {
+		t.Errorf("Unexpected user message: %+v", transcript.Messages[0])
+	}
+
+	if transcript.Messages[1].Role != "assistant" || !strings.Contains(transcript.Messages[1].Content, "review the pull request") {
+		t.Errorf("Unexpected assistant message: %+v", transcript.Messages[1])
+	}
+
+	md := FormatTranscriptMarkdown(transcript)
+	if !strings.Contains(md, "Review this PR") || !strings.Contains(md, "### 👤 User") {
+		t.Errorf("Markdown formatting missing user prompt:\n%s", md)
+	}
+}
