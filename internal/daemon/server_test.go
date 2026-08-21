@@ -211,12 +211,12 @@ func TestServer_Respond(t *testing.T) {
 
 	// Create a blocked session
 	sess := &Session{
-		ID:        "claude-code:local:uuid-1234",
-		Agent:     "claude-code",
-		Host:      "local",
-		NativeID:  "uuid-1234",
-		Cwd:       "/path/to/project",
-		State:     StateBlocked,
+		ID:       "claude-code:local:uuid-1234",
+		Agent:    "claude-code",
+		Host:     "local",
+		NativeID: "uuid-1234",
+		Cwd:      "/path/to/project",
+		State:    StateBlocked,
 		Blocked: &Blocked{
 			Kind:     BlockQuestion,
 			Reason:   "Which database?",
@@ -399,14 +399,14 @@ func TestServer_Respond_ManagedTmux(t *testing.T) {
 	defer tmux.Kill(ctx, sessionName)
 
 	sess := &Session{
-		ID:        "claude-code:local:managed-tmux-1",
-		Agent:     "claude-code",
-		Host:      "local",
-		NativeID:  "managed-tmux-1",
-		Cwd:       os.TempDir(),
-		Managed:   true,
-		TmuxName:  sessionName,
-		State:     StateBlocked,
+		ID:       "claude-code:local:managed-tmux-1",
+		Agent:    "claude-code",
+		Host:     "local",
+		NativeID: "managed-tmux-1",
+		Cwd:      os.TempDir(),
+		Managed:  true,
+		TmuxName: sessionName,
+		State:    StateBlocked,
 		Blocked: &Blocked{
 			Kind:     BlockQuestion,
 			Reason:   "Select mode",

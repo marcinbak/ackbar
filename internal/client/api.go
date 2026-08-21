@@ -1,6 +1,8 @@
 package client
 
 import (
+	"ackbar/internal/daemon"
+	"ackbar/internal/version"
 	"bufio"
 	"bytes"
 	"context"
@@ -15,13 +17,11 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"ackbar/internal/daemon"
-	"ackbar/internal/version"
 )
 
 type HostConfig struct {
 	Name        string `json:"name"`
-	URL         string `json:"url"`                   // e.g. "http://127.0.0.1:7777"
+	URL         string `json:"url"`                    // e.g. "http://127.0.0.1:7777"
 	ProjectsDir string `json:"projects_dir,omitempty"` // e.g. "~/Projects"
 }
 

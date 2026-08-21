@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"ackbar/internal/daemon"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,7 +10,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"ackbar/internal/daemon"
 )
 
 type ClaudeProvider struct{}
@@ -33,20 +33,20 @@ type claudePayload struct {
 	ToolInput            interface{} `json:"tool_input"`
 	RequestedPermission  string      `json:"requested_permission"`
 	// For Notifications
-	NotificationType     string      `json:"notification_type"`
-	Prompt               string      `json:"prompt"`
-	UserPrompt           string      `json:"user_prompt"`
-	Title                string      `json:"title"`
-	Name                 string      `json:"name"`
-	Summary              string      `json:"summary"`
-	IsSidechain          bool        `json:"is_sidechain"`
-	AgentID              string      `json:"agent_id"`
-	Question             string      `json:"question"`
-	Questions            []struct {
+	NotificationType string `json:"notification_type"`
+	Prompt           string `json:"prompt"`
+	UserPrompt       string `json:"user_prompt"`
+	Title            string `json:"title"`
+	Name             string `json:"name"`
+	Summary          string `json:"summary"`
+	IsSidechain      bool   `json:"is_sidechain"`
+	AgentID          string `json:"agent_id"`
+	Question         string `json:"question"`
+	Questions        []struct {
 		Question string   `json:"question"`
 		Options  []string `json:"options"`
 	} `json:"questions"`
-	Options              []string    `json:"options"`
+	Options []string `json:"options"`
 }
 
 func extractClaudeQuestionAndOptions(p *claudePayload) (string, []string) {
