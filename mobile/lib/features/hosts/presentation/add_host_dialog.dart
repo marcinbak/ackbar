@@ -25,12 +25,14 @@ class _AddHostDialogState extends ConsumerState<AddHostDialog> {
   final _formKey = GlobalKey<FormState>();
   final _hostController = TextEditingController();
   final _aliasController = TextEditingController();
+  final _tokenController = TextEditingController();
   bool _isTesting = false;
 
   @override
   void dispose() {
     _hostController.dispose();
     _aliasController.dispose();
+    _tokenController.dispose();
     super.dispose();
   }
 
@@ -54,12 +56,13 @@ class _AddHostDialogState extends ConsumerState<AddHostDialog> {
     final rawHost = _hostController.text.trim();
     final normalizedUrl = _normalizeUrl(rawHost);
     final aliasInput = _aliasController.text.trim();
+    final tokenInput = _tokenController.text.trim();
     final displayName = aliasInput.isNotEmpty ? aliasInput : rawHost;
 
     setState(() => _isTesting = true);
 
     final api = ref.read(apiClientProvider);
-    final health = await api.checkHostHealth(normalizedUrl);
+    final health = await api.checkHostHealth(normalizedUrl, authToken: tokenInput);
 
     final isTailscale = rawHost.startsWith('100.') || rawHost.contains('.ts.net');
     final tailscaleIp = isTailscale ? rawHost.split(':').first : '';
@@ -68,6 +71,7 @@ class _AddHostDialogState extends ConsumerState<AddHostDialog> {
       name: displayName,
       url: normalizedUrl,
       tailscaleIp: tailscaleIp,
+      authToken: tokenInput,
       online: health != null,
       latencyMs: health != null ? (health['latency_ms'] as int? ?? 1) : 999,
       version: health != null ? (health['version'] as String? ?? '') : '',
@@ -130,7 +134,7 @@ class _AddHostDialogState extends ConsumerState<AddHostDialog> {
                   return null;
                 },
                 decoration: const InputDecoration(
-                  hintText: '100.117.71.84 or mac-m3.local',
+                  hintText: '100.117.71.84 or legion.domain.com',
                   isDense: true,
                 ),
               ),
@@ -147,7 +151,20 @@ class _AddHostDialogState extends ConsumerState<AddHostDialog> {
                 controller: _aliasController,
                 style: AppTypography.bodySmall,
                 decoration: const InputDecoration(
-                  hintText: 'e.g. Work Mac, Devbox (Optional)',
+                  hintText: 'e.g. Legion, Work Mac (Optional)',
+                  isDense: true,
+                ),
+              ),
+              AppSpacing.gapH16,
+
+              Text('Auth Token / API Key (Optional):', style: AppTypography.codeXs),
+              const SizedBox(height: 4),
+              TextFormField(
+                controller: _tokenController,
+                style: AppTypography.bodySmall,
+                obscureText: true,
+                decoration: const InputDecoration(
+                  hintText: 'ACKBAR_TOKEN secret (Optional)',
                   isDense: true,
                 ),
               ),

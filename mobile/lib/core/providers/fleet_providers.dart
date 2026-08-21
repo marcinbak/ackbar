@@ -120,10 +120,10 @@ class HostsNotifier extends StateNotifier<List<HostRecord>> {
   Future<void> refreshHosts() async {
     final updated = <HostRecord>[];
     for (final h in state) {
-      final health = await _apiClient.checkHostHealth(h.url);
+      final health = await _apiClient.checkHostHealth(h.url, authToken: h.authToken);
       if (!mounted) return;
       if (health != null) {
-        final sessions = await _apiClient.getSessions(h.url);
+        final sessions = await _apiClient.getSessions(h.url, authToken: h.authToken);
         if (!mounted) return;
         updated.add(h.copyWith(
           online: true,
@@ -246,7 +246,7 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
 
     final allFetched = <Session>[];
     for (final host in hosts) {
-      final remoteSessions = await _apiClient.getSessions(host.url);
+      final remoteSessions = await _apiClient.getSessions(host.url, authToken: host.authToken);
       if (!mounted) return;
       allFetched.addAll(remoteSessions);
     }
@@ -300,7 +300,8 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
           summary: answerSummary ?? '$action: $value',
         );
 
-    final hostUrl = _getHostUrl(session.host);
+    final host = _getHostRecord(session.host);
+    final hostUrl = host?.url ?? 'http://127.0.0.1:7777';
 
     // Dispatch HTTP POST /v1/sessions/respond
     final ok = await _apiClient.respondToSession(
@@ -308,21 +309,28 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
       id: session.id,
       action: action,
       value: value,
+      authToken: host?.authToken,
     );
     return ok;
   }
 
-  String _getHostUrl(String hostName) {
+  HostRecord? _getHostRecord(String hostName) {
     final hosts = _ref.read(hostsListProvider);
     final match = hosts.where((h) => h.name == hostName || h.url.contains(hostName));
-    if (match.isNotEmpty) return match.first.url;
-    if (hosts.isNotEmpty) return hosts.first.url;
-    return 'http://127.0.0.1:7777';
+    if (match.isNotEmpty) return match.first;
+    if (hosts.isNotEmpty) return hosts.first;
+    return null;
+  }
+
+  String _getHostUrl(String hostName) {
+    final h = _getHostRecord(hostName);
+    return h?.url ?? 'http://127.0.0.1:7777';
   }
 
   Future<void> restartSession(String sessionId) async {
     final session = state.firstWhere((s) => s.id == sessionId);
-    final hostUrl = _getHostUrl(session.host);
+    final host = _getHostRecord(session.host);
+    final hostUrl = host?.url ?? 'http://127.0.0.1:7777';
 
     _upsertSession(session.copyWith(
       state: SessionState.working,
@@ -330,12 +338,13 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
       lastEventAt: DateTime.now(),
     ));
 
-    await _apiClient.controlSession(hostUrl, session.id, 'restart');
+    await _apiClient.controlSession(hostUrl, session.id, 'restart', authToken: host?.authToken);
   }
 
   Future<void> terminateSession(String sessionId) async {
     final session = state.firstWhere((s) => s.id == sessionId);
-    final hostUrl = _getHostUrl(session.host);
+    final host = _getHostRecord(session.host);
+    final hostUrl = host?.url ?? 'http://127.0.0.1:7777';
 
     _upsertSession(session.copyWith(
       state: SessionState.ended,
@@ -343,15 +352,16 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
       lastEventAt: DateTime.now(),
     ));
 
-    await _apiClient.controlSession(hostUrl, session.id, 'kill');
+    await _apiClient.controlSession(hostUrl, session.id, 'kill', authToken: host?.authToken);
   }
 
   Future<void> deleteSession(String sessionId) async {
     final session = state.firstWhere((s) => s.id == sessionId);
-    final hostUrl = _getHostUrl(session.host);
+    final host = _getHostRecord(session.host);
+    final hostUrl = host?.url ?? 'http://127.0.0.1:7777';
 
     state = state.where((s) => s.id != sessionId).toList();
-    await _apiClient.controlSession(hostUrl, session.id, 'delete');
+    await _apiClient.controlSession(hostUrl, session.id, 'delete', authToken: host?.authToken);
   }
 }
 

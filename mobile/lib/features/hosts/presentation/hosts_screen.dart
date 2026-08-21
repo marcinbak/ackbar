@@ -235,16 +235,27 @@ class HostsScreen extends ConsumerWidget {
           ),
           AppSpacing.gapH8,
 
-          // Tailscale Mesh Tag
-          if (host.tailscaleIp.isNotEmpty) ...[
+          // Tailscale Mesh Tag & Auth Token Status
+          if (host.tailscaleIp.isNotEmpty || host.hasAuth) ...[
             Row(
               children: [
-                const Icon(Icons.shield_outlined, size: 12, color: AppColors.textMuted),
-                const SizedBox(width: 4),
-                Text(
-                  'Tailscale IP: ${host.tailscaleIp}',
-                  style: AppTypography.codeXs.copyWith(color: AppColors.textMuted),
-                ),
+                if (host.tailscaleIp.isNotEmpty) ...[
+                  const Icon(Icons.shield_outlined, size: 12, color: AppColors.textMuted),
+                  const SizedBox(width: 4),
+                  Text(
+                    'Tailscale: ${host.tailscaleIp}',
+                    style: AppTypography.codeXs.copyWith(color: AppColors.textMuted),
+                  ),
+                  const SizedBox(width: 12),
+                ],
+                if (host.hasAuth) ...[
+                  const Icon(Icons.key_rounded, size: 12, color: AppColors.infoCyan),
+                  const SizedBox(width: 4),
+                  Text(
+                    'Token Auth Active',
+                    style: AppTypography.codeXs.copyWith(color: AppColors.infoCyan, fontWeight: FontWeight.w600),
+                  ),
+                ],
               ],
             ),
             AppSpacing.gapH8,
@@ -277,7 +288,7 @@ class HostsScreen extends ConsumerWidget {
                 icon: Icons.refresh_rounded,
                 label: 'Rescan',
                 onTap: () async {
-                  await ref.read(apiClientProvider).purgeSessions(host.url);
+                  await ref.read(apiClientProvider).purgeSessions(host.url, authToken: host.authToken);
                   ref.read(hostsListProvider.notifier).refreshHosts();
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
@@ -429,6 +440,7 @@ class HostsScreen extends ConsumerWidget {
   void _showHostSettingsModal(BuildContext context, WidgetRef ref, HostRecord host) {
     final nameCtrl = TextEditingController(text: host.name);
     final urlCtrl = TextEditingController(text: host.url);
+    final tokenCtrl = TextEditingController(text: host.authToken);
 
     showDialog(
       context: context,
@@ -471,6 +483,18 @@ class HostsScreen extends ConsumerWidget {
                 style: AppTypography.bodySmall,
                 decoration: const InputDecoration(isDense: true),
               ),
+              AppSpacing.gapH12,
+              Text('Auth Token / API Key (Optional):', style: AppTypography.codeXs),
+              const SizedBox(height: 4),
+              TextField(
+                controller: tokenCtrl,
+                style: AppTypography.bodySmall,
+                obscureText: true,
+                decoration: const InputDecoration(
+                  hintText: 'ACKBAR_TOKEN secret (Optional)',
+                  isDense: true,
+                ),
+              ),
               AppSpacing.gapH16,
               Container(
                 padding: AppSpacing.paddingCardDense,
@@ -506,6 +530,7 @@ class HostsScreen extends ConsumerWidget {
               final updated = host.copyWith(
                 name: nameCtrl.text.trim().isNotEmpty ? nameCtrl.text.trim() : host.name,
                 url: urlCtrl.text.trim().isNotEmpty ? urlCtrl.text.trim() : host.url,
+                authToken: tokenCtrl.text.trim(),
               );
               ref.read(hostsListProvider.notifier).updateHost(updated);
               Navigator.of(ctx).pop();

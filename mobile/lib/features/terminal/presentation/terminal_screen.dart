@@ -60,17 +60,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
     final match = hosts.where((h) => h.name == widget.session.host || h.url.contains(widget.session.host));
     final hostUrl = match.isNotEmpty ? match.first.url : (hosts.isNotEmpty ? hosts.first.url : 'http://127.0.0.1:7777');
 
-    final cleanUrl = hostUrl.replaceAll(RegExp(r'/+$'), '');
-    final wsScheme = cleanUrl.startsWith('https') ? 'wss' : 'ws';
-    final hostAddress = cleanUrl.replaceFirst(RegExp(r'^https?://'), '');
+    final host = match.isNotEmpty ? match.first : (hosts.isNotEmpty ? hosts.first : null);
+
+    final queryParams = {
+      'id': widget.session.id,
+      'host': widget.session.host.isNotEmpty ? widget.session.host : 'local',
+      'cols': _currentCols.toString(),
+      'rows': _currentRows.toString(),
+      if (host != null && host.authToken.isNotEmpty) 'token': host.authToken,
+    };
 
     final uri = Uri.parse('$wsScheme://$hostAddress/v1/sessions/pty').replace(
-      queryParameters: {
-        'id': widget.session.id,
-        'host': widget.session.host.isNotEmpty ? widget.session.host : 'local',
-        'cols': _currentCols.toString(),
-        'rows': _currentRows.toString(),
-      },
+      queryParameters: queryParams,
     );
 
     try {

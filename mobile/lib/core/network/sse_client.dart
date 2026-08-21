@@ -21,7 +21,10 @@ class SSEClient {
     if (cleanUrl.endsWith('/')) {
       cleanUrl = cleanUrl.substring(0, cleanUrl.length - 1);
     }
-    final uri = Uri.parse('$cleanUrl/v1/events');
+    var uri = Uri.parse('$cleanUrl/v1/events');
+    if (host.authToken.isNotEmpty) {
+      uri = uri.replace(queryParameters: {'token': host.authToken});
+    }
 
     void listenToSSE() async {
       while (!streamController.isClosed) {
@@ -29,6 +32,10 @@ class SSEClient {
           final request = http.Request('GET', uri)
             ..headers['Accept'] = 'text/event-stream'
             ..headers['Cache-Control'] = 'no-cache';
+          if (host.authToken.isNotEmpty) {
+            request.headers['Authorization'] = 'Bearer ${host.authToken}';
+            request.headers['X-Ackbar-Token'] = host.authToken;
+          }
 
           final streamedResponse = await _client.send(request);
           if (streamedResponse.statusCode == 200) {
