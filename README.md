@@ -2,7 +2,7 @@
 
 > **Lightweight, cross-machine control plane and session manager for autonomous AI coding agents.**
 
-[![Version](https://img.shields.io/badge/version-v20260821.03-6366f1.svg)](https://github.com/marcinbak/ackbar/releases)
+[![Version](https://img.shields.io/badge/version-v20260821.04-6366f1.svg)](https://github.com/marcinbak/ackbar/releases)
 [![Go Version](https://img.shields.io/badge/go-1.25+-00ADD8.svg)](https://golang.org)
 [![Pure Go SQLite](https://img.shields.io/badge/sqlite-CGO--free-blue.svg)](https://modernc.org/sqlite)
 [![Flutter](https://img.shields.io/badge/flutter-3.19+-02569B.svg)](https://flutter.dev)
@@ -163,7 +163,8 @@ Comprehensive guides for every component and subsystem are available in the `doc
 * 🖥️ **[Terminal UI (TUI)](docs/tui.md):** Charm Bubble Tea dashboard layout, shortcuts, and tmux attachment.
 
 ### ⚙️ Architecture & Infrastructure
-* 🌐 **[Architecture & Networking](docs/architecture.md):** Multi-host topology, SSH tunneling, and security model.
+* 🌍 **[Networking & Remote Access Guide](docs/networking-and-remote-access.md):** Connect across the internet via Cloudflare Tunnels, Ackbar Outbound Relay (`ackbar-relay`), Dynamic DNS/Caddy reverse proxies, or Tailscale mesh VPNs.
+* 🌐 **[Architecture & Networking Topology](docs/architecture.md):** Multi-host topology, SSH tunneling, and security model.
 * ⚙️ **[Daemon Engine & API Reference](docs/daemon.md):** REST endpoints, SQLite persistence, SSE streaming, and PTY multiplexer.
 * 🤖 **[Agent Providers & Token Limits](docs/providers.md):** Claude Code, Antigravity, and Codex integrations and token window calculation.
 * 🏷️ **[Session Naming & Caching](docs/session-naming.md):** Title resolution hierarchy and tiered metadata caching rules.

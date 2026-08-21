@@ -24,6 +24,7 @@ Detailed architectural and technical domain documentation is organized in the `d
     *   **Mobile App (iOS & Android):** See [docs/mobile.md](file:///Users/dev4u/Work/Ackbar/docs/mobile.md) for Flutter architecture, Attention queue, fullscreen mode, chat transcripts, and live terminal.
     *   **Web Dashboard & PWA:** See [docs/web.md](file:///Users/dev4u/Work/Ackbar/docs/web.md) for browser multiplexing, xterm.js tabs, and command palette.
     *   **TUI Dashboard & Controls:** See [docs/tui.md](file:///Users/dev4u/Work/Ackbar/docs/tui.md) for keybindings, tree organization, category subgroups, and tmux attachment.
+*   **Networking & Remote Access:** See [docs/networking-and-remote-access.md](file:///Users/dev4u/Work/Ackbar/docs/networking-and-remote-access.md) for Cloudflare Tunnels, Ackbar Relay, Caddy reverse proxy, and token authentication.
 *   **Architecture & Networking:** See [docs/architecture.md](file:///Users/dev4u/Work/Ackbar/docs/architecture.md) for cross-machine design, control plane topology, and SSH tunneling.
 *   **Daemon Engine:** See [docs/daemon.md](file:///Users/dev4u/Work/Ackbar/docs/daemon.md) for API routes, SQLite migrations, SSE broadcasts, and process supervision.
 *   **Agent Providers & Token Limits:** See [docs/providers.md](file:///Users/dev4u/Work/Ackbar/docs/providers.md) for Claude Code, Antigravity, and Codex integrations, dynamic context window limits, and subagent filtering.
@@ -41,11 +42,13 @@ Detailed architectural and technical domain documentation is organized in the `d
 ├── cmd/
 │   ├── ackbar/         # Client TUI application main entrypoint
 │   ├── ackbard/        # Daemon server application main entrypoint
-│   └── ackbar-hook/    # Shared stdin hook shim CLI main entrypoint
+│   ├── ackbar-hook/    # Shared stdin hook shim CLI main entrypoint
+│   └── ackbar-relay/   # Outbound reverse WebSocket tunnel relay server entrypoint
 ├── internal/
 │   ├── client/         # TUI model, views, keybinds, and API client helpers
 │   ├── daemon/         # SQLite DB, HTTP server routes, SSE streaming, project normalizer
 │   ├── provider/       # Agent adapters (Claude Code, Codex, Antigravity)
+│   ├── relay/          # Outbound reverse tunnel server and daemon client
 │   ├── tmux/           # Tmux process supervision wrapper (Spawn, Kill, GetPID)
 │   └── web/            # Embedded Web GUI static assets and xterm multiplexer
 ├── mobile/             # Native Flutter companion application (iOS & Android)

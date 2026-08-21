@@ -24,6 +24,9 @@ func main() {
 	// Setup flags
 	hostFlag := flag.String("host", "0.0.0.0", "Host address to bind daemon (default 0.0.0.0)")
 	portFlag := flag.Int("port", 7777, "Port to bind daemon")
+	tokenFlag := flag.String("token", "", "Secret token for API/WebSocket authentication (or ACKBAR_TOKEN env var)")
+	relayFlag := flag.String("relay", "", "Public Ackbar Relay URL e.g. wss://relay.ackbar.dev/v1/relay/tunnel (or ACKBAR_RELAY_URL env var)")
+	relaySecretFlag := flag.String("relay-secret", "", "Secret required by relay server (or ACKBAR_RELAY_SECRET env var)")
 	dbPathFlag := flag.String("db", "", "Path to SQLite database file (default ~/.config/ackbar/ackbard.db)")
 	logDirFlag := flag.String("log-dir", "", "Path to logs directory (default ~/.config/ackbar/logs)")
 	versionFlag := flag.Bool("version", false, "Print version and exit")
@@ -32,6 +35,21 @@ func main() {
 	if *versionFlag {
 		fmt.Printf("ackbard version %s\n", version.Version)
 		os.Exit(0)
+	}
+
+	token := *tokenFlag
+	if token == "" {
+		token = os.Getenv("ACKBAR_TOKEN")
+	}
+
+	relayURL := *relayFlag
+	if relayURL == "" {
+		relayURL = os.Getenv("ACKBAR_RELAY_URL")
+	}
+
+	relaySecret := *relaySecretFlag
+	if relaySecret == "" {
+		relaySecret = os.Getenv("ACKBAR_RELAY_SECRET")
 	}
 
 	// Initialize Self-Rotating Logger
@@ -53,6 +71,11 @@ func main() {
 
 	log.Printf("Starting Ackbar Daemon (ackbard) v%s...", version.Version)
 	log.Printf("Database path: %s", dbPath)
+	if token != "" {
+		log.Printf("API Token authentication ENABLED")
+	} else {
+		log.Printf("API Token authentication disabled (open local/mesh mode)")
+	}
 
 	// Initialize SQLite Database
 	db, err := daemon.InitDB(dbPath)
@@ -63,6 +86,9 @@ func main() {
 
 	// Initialize HTTP Server
 	server := daemon.NewServer(db)
+	if token != "" {
+		server.SetToken(token)
+	}
 	server.SetWebFS(web.GetFS())
 
 	// Register Provider Adapters
@@ -72,6 +98,11 @@ func main() {
 
 	// Start asynchronous background scanner & liveness loop
 	server.StartBackgroundLoop(context.Background())
+
+	// Start outbound relay tunnel client if configured
+	if relayURL != "" {
+		server.StartRelayClient(context.Background(), relayURL, relaySecret)
+	}
 
 	// Listen on configured host address (default 127.0.0.1 loopback)
 	addr := fmt.Sprintf("%s:%d", *hostFlag, *portFlag)

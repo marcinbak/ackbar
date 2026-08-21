@@ -22,6 +22,7 @@ import (
 	"syscall"
 	"time"
 
+	"ackbar/internal/relay"
 	"ackbar/internal/tmux"
 	"ackbar/internal/version"
 )
@@ -53,11 +54,13 @@ type Provider interface {
 }
 
 type Server struct {
-	db          *DB
-	providers   map[string]Provider
-	subscribers map[chan *Session]bool
-	subMutex    sync.Mutex
-	webFS       fs.FS
+	db              *DB
+	providers       map[string]Provider
+	subscribers     map[chan *Session]bool
+	subMutex        sync.Mutex
+	webFS           fs.FS
+	configuredToken string
+	relayClient     *relay.Client
 }
 
 func NewServer(db *DB) *Server {
@@ -68,6 +71,10 @@ func NewServer(db *DB) *Server {
 	}
 }
 
+func (s *Server) SetToken(token string) {
+	s.configuredToken = token
+}
+
 func (s *Server) SetWebFS(webFS fs.FS) {
 	s.webFS = webFS
 }
@@ -76,8 +83,80 @@ func (s *Server) RegisterProvider(p Provider) {
 	s.providers[p.Agent()] = p
 }
 
+func (s *Server) StartRelayClient(ctx context.Context, relayURL, relaySecret string) {
+	if relayURL == "" {
+		return
+	}
+	hostName := "local"
+	if h := os.Getenv("ACKBAR_HOST"); h != "" {
+		hostName = h
+	}
+	log.Printf("[Daemon] Initializing outbound Ackbar Relay client to %s as host %q...", relayURL, hostName)
+	s.relayClient = relay.NewClient(relayURL, hostName, relaySecret, s.Mux())
+	s.relayClient.Start(ctx)
+}
+
+func (s *Server) authMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		token := os.Getenv("ACKBAR_TOKEN")
+		if token == "" {
+			token = s.configuredToken
+		}
+
+		// If no token is configured, open access (local loopback / Tailscale mesh mode)
+		if token == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Allow healthz, version, static assets, and CORS preflight OPTIONS without token
+		path := r.URL.Path
+		if r.Method == http.MethodOptions || path == "/healthz" || path == "/v1/version" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		// Allow static web assets so the UI and favicon load before entering token
+		if path == "/" || path == "/index.html" || path == "/style.css" || path == "/app.js" || path == "/manifest.json" || path == "/favicon.ico" || strings.HasPrefix(path, "/static/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// 1. Check Authorization header: Bearer <token>
+		authHeader := r.Header.Get("Authorization")
+		if strings.HasPrefix(authHeader, "Bearer ") {
+			if strings.TrimPrefix(authHeader, "Bearer ") == token {
+				next.ServeHTTP(w, r)
+				return
+			}
+		}
+
+		// 2. Check X-Ackbar-Token header
+		if r.Header.Get("X-Ackbar-Token") == token {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// 3. Check query parameter ?token=<token> (for SSE and WebSockets)
+		if r.URL.Query().Get("token") == token {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("WWW-Authenticate", `Bearer realm="ackbar"`)
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"error": "Unauthorized: missing or invalid authentication token",
+		})
+	})
+}
+
 func (s *Server) Mux() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok","service":"ackbard"}`))
+	})
 	mux.HandleFunc("/v1/hooks/", s.handleHook)
 	mux.HandleFunc("/v1/sessions", s.handleSessions)
 	mux.HandleFunc("/v1/sessions/respond", s.handleRespond)
@@ -107,14 +186,14 @@ func (s *Server) Mux() http.Handler {
 		mux.Handle("/", fileServer)
 	}
 
-	return withCORS(mux)
+	return withCORS(s.authMiddleware(mux))
 }
 
 func withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Ackbar-Host")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Ackbar-Host, X-Ackbar-Token")
 		if strings.HasSuffix(r.URL.Path, ".js") || strings.HasSuffix(r.URL.Path, ".css") || r.URL.Path == "/" || r.URL.Path == "/index.html" {
 			w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 			w.Header().Set("Pragma", "no-cache")

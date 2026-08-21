@@ -15,6 +15,7 @@ class HostRecord {
   final String uptime;
   final int sessionsCount;
   final String tailscaleIp;
+  final String authToken;
   final DateTime createdAt;
 
   const HostRecord({
@@ -28,8 +29,11 @@ class HostRecord {
     this.uptime = 'Active',
     this.sessionsCount = 0,
     this.tailscaleIp = '',
+    this.authToken = '',
     required this.createdAt,
   });
+
+  bool get hasAuth => authToken.isNotEmpty;
 
   bool get isLocal => name.toLowerCase() == 'local' || url.contains('127.0.0.1:7777');
 
@@ -76,6 +80,7 @@ class HostRecord {
           ? json['sessions_count'] as int
           : int.tryParse(json['sessions_count']?.toString() ?? '') ?? 0,
       tailscaleIp: json['tailscale_ip']?.toString() ?? '',
+      authToken: json['auth_token']?.toString() ?? json['token']?.toString() ?? '',
       createdAt: parseDate(json['created_at']),
     );
   }
@@ -92,6 +97,7 @@ class HostRecord {
       'uptime': uptime,
       'sessions_count': sessionsCount,
       'tailscale_ip': tailscaleIp,
+      'auth_token': authToken,
       'created_at': createdAt.toIso8601String(),
     };
   }
@@ -107,6 +113,7 @@ class HostRecord {
     String? uptime,
     int? sessionsCount,
     String? tailscaleIp,
+    String? authToken,
     DateTime? createdAt,
   }) {
     return HostRecord(
@@ -120,6 +127,7 @@ class HostRecord {
       uptime: uptime ?? this.uptime,
       sessionsCount: sessionsCount ?? this.sessionsCount,
       tailscaleIp: tailscaleIp ?? this.tailscaleIp,
+      authToken: authToken ?? this.authToken,
       createdAt: createdAt ?? this.createdAt,
     );
   }
