@@ -1,0 +1,109 @@
+version: 2
+
+project_name: ackbar
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: ackbard
+    main: ./cmd/ackbard
+    binary: ackbard
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+
+  - id: ackbar
+    main: ./cmd/ackbar
+    binary: ackbar
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+
+  - id: ackbar-hook
+    main: ./cmd/ackbar-hook
+    binary: ackbar-hook
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+
+  - id: ackbar-relay
+    main: ./cmd/ackbar-relay
+    binary: ackbar-relay
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+
+archives:
+  - id: default
+    format: tar.gz
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - LICENSE
+      - README.md
+      - docs/*
+
+checksum:
+  name_template: "checksums.txt"
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-snapshot"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - Merge pull request
+      - Merge branch
+
+brews:
+  - repository:
+      owner: marcinbak
+      name: homebrew-ackbar
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    name: ackbar
+    homepage: "https://github.com/marcinbak/ackbar"
+    description: "Lightweight, cross-machine control plane and session manager for autonomous AI coding agents"
+    license: "MIT"
+    dependencies:
+      - name: tmux
+    service: |
+      run [opt_bin/"ackbard"]
+      keep_alive true
+      log_path var/"log/ackbard.log"
+      error_log_path var/"log/ackbard.err.log"
+    test: |
+      system "#{bin}/ackbard", "-v"

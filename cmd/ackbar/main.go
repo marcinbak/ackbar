@@ -122,8 +122,6 @@ func main() {
 		}
 	}
 
-
-
 	// Create Bubble Tea Model and Program
 	model := client.NewModel(hosts, projectsDir, groups, firstRun, configFile)
 	p := tea.NewProgram(model, tea.WithAltScreen())

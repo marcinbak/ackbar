@@ -100,12 +100,19 @@ A fast, keyboard-driven dashboard built with Charm.sh Bubble Tea and Lip Gloss:
 
 ## 🚀 Quickstart Guide
 
-### 1. Prerequisites
-* **Go Compiler:** Go 1.25 or newer (`go version`).
-* **Tmux (`tmux`):** Required for session supervision (`brew install tmux` on macOS, `sudo apt install tmux` on Linux).
-* **Git (`git`):** Used for workspace detection and branch resolution.
+### 1. Installation
 
-### 2. Build & Install CLI & Daemon
+#### Option A: Homebrew (macOS & Linux — Recommended)
+```bash
+# Add official Homebrew tap and install binaries
+brew tap marcinbak/ackbar
+brew install ackbar
+
+# Start background daemon service
+brew services start ackbar
+```
+
+#### Option B: Build from Source (Go 1.25+)
 ```bash
 # Clone repository
 git clone https://github.com/marcinbak/ackbar.git
@@ -115,14 +122,13 @@ cd ackbar
 go build -o ~/.local/bin/ackbard ./cmd/ackbard
 go build -o ~/.local/bin/ackbar ./cmd/ackbar
 go build -o ~/.local/bin/ackbar-hook ./cmd/ackbar-hook
-```
+go build -o ~/.local/bin/ackbar-relay ./cmd/ackbar-relay
 
-> 📖 **Compilation & Testing Details:** See [docs/building.md](docs/building.md).
-
-### 3. Start the Daemon (`ackbard`)
-```bash
+# Start daemon
 ackbard
 ```
+
+> 📖 **Full Distribution & Service Management Guide:** See [docs/distribution.md](docs/distribution.md).
 *Listens strictly on `127.0.0.1:7777` by default with SQLite state stored in `~/.config/ackbar/ackbard.db`.*
 
 ### 4. Launch Your Interface of Choice

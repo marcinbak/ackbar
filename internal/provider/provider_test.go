@@ -1,15 +1,15 @@
 package provider
 
 import (
+	"ackbar/internal/daemon"
 	"os"
 	"strings"
 	"testing"
-	"ackbar/internal/daemon"
 )
 
 func TestClaudeProvider_ParseHook(t *testing.T) {
 	p := NewClaudeProvider()
-	
+
 	// Test UserPromptSubmit
 	payload := `{"session_id": "session-claude", "cwd": "/workspace", "hook_event_name": "UserPromptSubmit"}`
 	ev, err := p.ParseHook("UserPromptSubmit", []byte(payload))

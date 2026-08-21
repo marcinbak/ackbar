@@ -56,7 +56,7 @@ var (
 			Foreground(lipgloss.Color("#00FF00"))
 
 	endedStatusStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#666666"))
+				Foreground(lipgloss.Color("#666666"))
 
 	activityStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#CCCCCC")).
@@ -99,46 +99,46 @@ type TreeRow struct {
 }
 
 type Model struct {
-	hosts        []HostConfig
-	groups       map[string][]string // logical path -> list of projectKeys
-	sessions     []*daemon.Session
-	selectedIdx  int
-	loading      bool
-	errMsg       string
-	eventChan    chan *daemon.Session
-	ctx          context.Context
-	cancelCtx    context.CancelFunc
-	termWidth    int
-	termHeight             int
-	archivedView           bool
-	collapsed              map[string]bool // groupPath -> collapsed state
-	confirmRestartSession  *daemon.Session
-	viewingDocuments       *daemon.Session
-	docPaths               []string
-	docSelectedIdx         int
-	showDiscovery          bool
-	discoveryResults       map[string][]daemon.AgentDiscoveryResult
-	creatingProject        bool
-	inputStep              int
-	newPathInput           string
-	newNameInput           string
-	newGitInput            string
-	registeringHost        bool
-	hostInput              string
-	movingNode             bool
-	moveOldPath            string
-	moveNewPathInput       string
-	movingSessionID        string
-	movingSessionHost      string
-	showingResumeCmd       *daemon.Session
-	projectsDir            string
-	firstRun               bool
-	firstRunInput          string
-	configPath             string
-	hostStatuses           map[string]HostStatus
-	treeNodes              []*daemon.TreeNode
-	discoveryHostIdx       int
-	visibleRows            []TreeRow
+	hosts                 []HostConfig
+	groups                map[string][]string // logical path -> list of projectKeys
+	sessions              []*daemon.Session
+	selectedIdx           int
+	loading               bool
+	errMsg                string
+	eventChan             chan *daemon.Session
+	ctx                   context.Context
+	cancelCtx             context.CancelFunc
+	termWidth             int
+	termHeight            int
+	archivedView          bool
+	collapsed             map[string]bool // groupPath -> collapsed state
+	confirmRestartSession *daemon.Session
+	viewingDocuments      *daemon.Session
+	docPaths              []string
+	docSelectedIdx        int
+	showDiscovery         bool
+	discoveryResults      map[string][]daemon.AgentDiscoveryResult
+	creatingProject       bool
+	inputStep             int
+	newPathInput          string
+	newNameInput          string
+	newGitInput           string
+	registeringHost       bool
+	hostInput             string
+	movingNode            bool
+	moveOldPath           string
+	moveNewPathInput      string
+	movingSessionID       string
+	movingSessionHost     string
+	showingResumeCmd      *daemon.Session
+	projectsDir           string
+	firstRun              bool
+	firstRunInput         string
+	configPath            string
+	hostStatuses          map[string]HostStatus
+	treeNodes             []*daemon.TreeNode
+	discoveryHostIdx      int
+	visibleRows           []TreeRow
 }
 
 func NewModel(hosts []HostConfig, projectsDir string, groups map[string][]string, firstRun bool, configPath string) *Model {

@@ -3463,8 +3463,8 @@ func ReadClaudeSessionMeta(cwd, sessionID string) *SessionMeta {
 					continue
 				}
 				var obj struct {
-					Type        string `json:"type"`
-					Message     struct {
+					Type    string `json:"type"`
+					Message struct {
 						Role    string `json:"role"`
 						Content any    `json:"content"`
 					} `json:"message"`

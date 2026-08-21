@@ -27,12 +27,12 @@ type activeStream struct {
 }
 
 type daemonSession struct {
-	hostName   string
-	ws         *websocket.Conn
-	mu         sync.Mutex
-	streams    map[string]*activeStream
-	streamsMu  sync.RWMutex
-	lastSeen   time.Time
+	hostName    string
+	ws          *websocket.Conn
+	mu          sync.Mutex
+	streams     map[string]*activeStream
+	streamsMu   sync.RWMutex
+	lastSeen    time.Time
 	connectedAt time.Time
 }
 
