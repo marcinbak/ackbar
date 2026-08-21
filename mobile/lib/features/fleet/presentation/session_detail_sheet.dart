@@ -7,6 +7,7 @@ import '../../../core/providers/fleet_providers.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_typography.dart';
+import '../../../core/widgets/agent_logo.dart';
 import '../../../core/widgets/glass_card.dart';
 import '../../../core/widgets/status_badge.dart';
 import '../../../core/widgets/token_gauge_bar.dart';
@@ -76,7 +77,7 @@ class SessionDetailSheet extends ConsumerWidget {
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Text(session.agentSymbol, style: const TextStyle(fontSize: 13)),
+                    AgentLogo(agent: session.agent, size: 12, color: session.agentColor),
                     const SizedBox(width: 5),
                     Text(
                       session.agentDisplayName,

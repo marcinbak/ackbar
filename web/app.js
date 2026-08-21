@@ -191,13 +191,17 @@
   function getAgentBadgeHtml(agent, iconOnly = false) {
     const a = (agent || 'claude-code').toLowerCase();
     if (a.includes('claude')) {
-      return `<span class="agent-icon-badge claude-code" title="Claude Code (Anthropic)">✳️${iconOnly ? '' : ' claude'}</span>`;
-    } else if (a.includes('antigravity') || a.includes('agy')) {
-      return `<span class="agent-icon-badge antigravity" title="Google Antigravity">🪐${iconOnly ? '' : ' antigravity'}</span>`;
-    } else if (a.includes('codex')) {
-      return `<span class="agent-icon-badge codex" title="OpenAI Codex">⚡${iconOnly ? '' : ' codex'}</span>`;
+      const svg = `<svg class="agent-logo-svg claude-logo" viewBox="0 0 24 24" width="12" height="12" fill="currentColor"><path clip-rule="evenodd" fill-rule="evenodd" d="M20.998 10.949H24v3.102h-3v3.028h-1.487V20H18v-2.921h-1.487V20H15v-2.921H9V20H7.488v-2.921H6V20H4.487v-2.921H3V14.05H0V10.95h3V5h17.998v5.949zM6 10.949h1.488V8.102H6v2.847zm10.51 0H18V8.102h-1.49v2.847z"/></svg>`;
+      return `<span class="agent-icon-badge claude-code" title="Claude Code (Anthropic)">${svg}${iconOnly ? '' : ' claude'}</span>`;
+    } else if (a.includes('antigravity') || a.includes('agy') || a.includes('gemini')) {
+      const svg = `<svg class="agent-logo-svg antigravity-logo" viewBox="0 0 24 24" width="12" height="12"><defs><linearGradient id="agGrad" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#EA4335"/><stop offset="35%" stop-color="#FBBC04"/><stop offset="70%" stop-color="#34A853"/><stop offset="100%" stop-color="#4285F4"/></linearGradient></defs><path fill="url(#agGrad)" d="M12 0.8 C8.2 0.8 5.6 3.2 4.1 7.8 C2.6 12.5 1.2 18.2 0.3 22.4 C-0.1 23.6 0.8 24.2 1.6 23.6 C4.8 21.2 7.8 14.2 12 12.4 C16.2 14.2 19.2 21.2 22.4 23.6 C23.2 24.2 24.1 23.6 23.7 22.4 C22.8 18.2 21.4 12.5 19.9 7.8 C18.4 3.2 15.8 0.8 12 0.8 Z"/></svg>`;
+      return `<span class="agent-icon-badge antigravity" title="Google Antigravity">${svg}${iconOnly ? '' : ' antigravity'}</span>`;
+    } else if (a.includes('codex') || a.includes('openai')) {
+      const svg = `<svg class="agent-logo-svg codex-logo" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a4.5 4.5 0 0 1 4.2 2.9l.4.9a4.5 4.5 0 0 1 1.8 4.7l-.2 1a4.5 4.5 0 0 1-2.4 4.1l-.8.5a4.5 4.5 0 0 1-4.7 1.8l-1-.2a4.5 4.5 0 0 1-4.1-2.4l-.5-.8a4.5 4.5 0 0 1-1.8-4.7l.2-1a4.5 4.5 0 0 1 2.4-4.1l.8-.5A4.5 4.5 0 0 1 12 2z"/><path d="M12 6.5l3.5 2v4l-3.5 2l-3.5-2v-4z"/><path d="M8.5 8.5L5 10.5M15.5 8.5L19 10.5M12 14.5V18.5"/></svg>`;
+      return `<span class="agent-icon-badge codex" title="OpenAI Codex">${svg}${iconOnly ? '' : ' codex'}</span>`;
     }
-    return `<span class="agent-icon-badge" title="Agent: ${agent}">⚙${iconOnly ? '' : ' ' + agent}</span>`;
+    const svg = `<svg class="agent-logo-svg generic-logo" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><line x1="7" y1="8" x2="10" y2="8"/><line x1="7" y1="12" x2="17" y2="12"/></svg>`;
+    return `<span class="agent-icon-badge" title="Agent: ${agent}">${svg}${iconOnly ? '' : ' ' + agent}</span>`;
   }
 
   // DOM Elements

@@ -59,6 +59,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
     final hosts = ref.read(hostsListProvider);
     final match = hosts.where((h) => h.name == widget.session.host || h.url.contains(widget.session.host));
     final hostUrl = match.isNotEmpty ? match.first.url : (hosts.isNotEmpty ? hosts.first.url : 'http://127.0.0.1:7777');
+    final parsed = Uri.parse(hostUrl);
+    final wsScheme = parsed.scheme == 'https' ? 'wss' : 'ws';
+    final hostAddress = parsed.authority.isNotEmpty ? parsed.authority : '127.0.0.1:7777';
 
     final host = match.isNotEmpty ? match.first : (hosts.isNotEmpty ? hosts.first : null);
 

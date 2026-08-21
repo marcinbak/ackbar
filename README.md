@@ -182,6 +182,12 @@ All contributions must follow our PR-based Git Worktree workflow and pass the te
 
 ---
 
+## ⚖️ Trademarks
+
+All product and company names (Claude, OpenAI, Google) are trademarks™ or registered® trademarks of their respective holders. Use of them in Ackbar does not imply any affiliation with or endorsement by them.
+
+---
+
 ## 📄 License
 
 Ackbar is open-source software licensed under the **[MIT License](LICENSE)**.

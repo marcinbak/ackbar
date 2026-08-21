@@ -1080,6 +1080,12 @@ body, html {
   transition: all 0.15s ease;
 }
 
+.agent-icon-badge .agent-logo-svg {
+  display: inline-block;
+  vertical-align: middle;
+  flex-shrink: 0;
+}
+
 .agent-icon-badge:hover {
   filter: brightness(1.2);
 }

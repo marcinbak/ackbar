@@ -8,7 +8,7 @@ import '../../../core/providers/fleet_providers.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_typography.dart';
-import '../../../core/widgets/glass_card.dart';
+import '../../../core/widgets/agent_logo.dart';
 import '../../terminal/presentation/terminal_screen.dart';
 
 /// Fullscreen interactive Chat-Style Transcript Screen displaying user and agent turns
@@ -466,7 +466,7 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Text(widget.session.agentSymbol, style: const TextStyle(fontSize: 11)),
+                      AgentLogo(agent: widget.session.agent, size: 11, color: widget.session.agentColor),
                       const SizedBox(width: 4),
                       Text(
                         widget.session.agentDisplayName,
