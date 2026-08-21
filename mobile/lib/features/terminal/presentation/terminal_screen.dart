@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:xterm/xterm.dart';
@@ -11,7 +13,8 @@ import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_typography.dart';
 import '../../../core/widgets/terminal_accessory_bar.dart';
 
-/// Fullscreen interactive PTY Terminal screen streaming live tmux session I/O.
+/// Fullscreen interactive PTY Terminal screen streaming live tmux session I/O
+/// with horizontal scrolling, dynamic auto-fit, pinch-to-zoom, and font controls.
 class TerminalScreen extends ConsumerStatefulWidget {
   final Session session;
 
@@ -38,6 +41,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
 
   Timer? _pingTimer;
 
+  // Terminal Display & Sizing State
+  double _fontSize = 11.0;
+  bool _autoFit = true; // Auto-fit columns to mobile width vs fixed 80/120 cols
+  int _currentCols = 80;
+  int _currentRows = 28;
+  final ScrollController _horizontalScrollController = ScrollController();
+
   @override
   void initState() {
     super.initState();
@@ -58,8 +68,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
       queryParameters: {
         'id': widget.session.id,
         'host': widget.session.host.isNotEmpty ? widget.session.host : 'local',
-        'cols': '80',
-        'rows': '28',
+        'cols': _currentCols.toString(),
+        'rows': _currentRows.toString(),
       },
     );
 
@@ -114,6 +124,36 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
     }
   }
 
+  void _sendResize(int cols, int rows) {
+    if (cols == _currentCols && rows == _currentRows) return;
+    _currentCols = cols;
+    _currentRows = rows;
+    _terminal.resize(cols, rows);
+
+    try {
+      _channel?.sink.add(jsonEncode({
+        'type': 'resize',
+        'cols': cols,
+        'rows': rows,
+      }));
+    } catch (_) {}
+  }
+
+  void _updateDimensions(BoxConstraints constraints) {
+    final charWidth = _fontSize * 0.60;
+    final charHeight = _fontSize * 1.30;
+
+    if (_autoFit) {
+      final fitCols = max(20, (constraints.maxWidth / charWidth).floor());
+      final fitRows = max(10, (constraints.maxHeight / charHeight).floor());
+      _sendResize(fitCols, fitRows);
+    } else {
+      final fixedCols = 80;
+      final fitRows = max(10, (constraints.maxHeight / charHeight).floor());
+      _sendResize(fixedCols, fitRows);
+    }
+  }
+
   void _handleAccessoryKey(String key) {
     if (_channel == null) return;
 
@@ -153,8 +193,30 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
     }
   }
 
+  void _zoomIn() {
+    HapticFeedback.selectionClick();
+    setState(() {
+      _fontSize = min(18.0, _fontSize + 1.0);
+    });
+  }
+
+  void _zoomOut() {
+    HapticFeedback.selectionClick();
+    setState(() {
+      _fontSize = max(8.0, _fontSize - 1.0);
+    });
+  }
+
+  void _toggleAutoFit() {
+    HapticFeedback.selectionClick();
+    setState(() {
+      _autoFit = !_autoFit;
+    });
+  }
+
   @override
   void dispose() {
+    _horizontalScrollController.dispose();
     _pingTimer?.cancel();
     _sub?.cancel();
     _channel?.sink.close();
@@ -189,12 +251,55 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
               ],
             ),
             Text(
-              '${widget.session.agentDisplayName} @ ${widget.session.hostTag}',
+              '${widget.session.agentDisplayName} @ ${widget.session.hostTag} • ${_currentCols}x$_currentRows',
               style: AppTypography.codeXs.copyWith(color: AppColors.textSecondary),
             ),
           ],
         ),
         actions: [
+          // Fit mode toggle
+          TextButton(
+            onPressed: _toggleAutoFit,
+            style: TextButton.styleFrom(
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              minimumSize: const Size(40, 32),
+            ),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              decoration: BoxDecoration(
+                color: _autoFit ? AppColors.infoCyan.withValues(alpha: 0.15) : AppColors.surfaceHighlight,
+                borderRadius: BorderRadius.circular(4),
+                border: Border.all(
+                  color: _autoFit ? AppColors.infoCyan : AppColors.outlineSubtle,
+                  width: 0.8,
+                ),
+              ),
+              child: Text(
+                _autoFit ? 'FIT' : '80 COL',
+                style: AppTypography.codeXs.copyWith(
+                  color: _autoFit ? AppColors.infoCyan : AppColors.textSecondary,
+                  fontWeight: FontWeight.w700,
+                  fontSize: 10,
+                ),
+              ),
+            ),
+          ),
+
+          // Zoom Out
+          IconButton(
+            icon: const Icon(Icons.remove_rounded, size: 18, color: AppColors.textSecondary),
+            tooltip: 'Decrease font size',
+            onPressed: _zoomOut,
+          ),
+
+          // Zoom In
+          IconButton(
+            icon: const Icon(Icons.add_rounded, size: 18, color: AppColors.textSecondary),
+            tooltip: 'Increase font size',
+            onPressed: _zoomIn,
+          ),
+
+          // Reconnect
           IconButton(
             icon: const Icon(Icons.refresh_rounded, size: 20, color: AppColors.textMuted),
             tooltip: 'Reconnect PTY',
@@ -239,7 +344,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
               Container(
                 width: double.infinity,
                 padding: const EdgeInsets.all(AppSpacing.md),
-                color: AppColors.statusCoral.withOpacity(0.15),
+                color: AppColors.statusCoral.withValues(alpha: 0.15),
                 child: Text(
                   _errorMessage!,
                   style: AppTypography.codeXs.copyWith(color: AppColors.statusCoral),
@@ -248,15 +353,44 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
             Expanded(
               child: Container(
                 color: AppColors.terminalBlack,
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                child: TerminalView(
-                  _terminal,
-                  autofocus: true,
-                  backgroundOpacity: 0.0,
-                  textStyle: const TerminalStyle(
-                    fontSize: 12,
-                    fontFamily: 'JetBrains Mono',
-                  ),
+                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    WidgetsBinding.instance.addPostFrameCallback((_) {
+                      if (mounted) {
+                        _updateDimensions(constraints);
+                      }
+                    });
+
+                    final charWidth = _fontSize * 0.60;
+                    final terminalRenderWidth = _autoFit
+                        ? constraints.maxWidth
+                        : max(constraints.maxWidth, _currentCols * charWidth + 16.0);
+
+                    return Scrollbar(
+                      controller: _horizontalScrollController,
+                      thumbVisibility: !_autoFit,
+                      trackVisibility: !_autoFit,
+                      child: SingleChildScrollView(
+                        controller: _horizontalScrollController,
+                        scrollDirection: Axis.horizontal,
+                        physics: const BouncingScrollPhysics(),
+                        child: SizedBox(
+                          width: terminalRenderWidth,
+                          height: constraints.maxHeight,
+                          child: TerminalView(
+                            _terminal,
+                            autofocus: true,
+                            backgroundOpacity: 0.0,
+                            textStyle: TerminalStyle(
+                              fontSize: _fontSize,
+                              fontFamily: 'JetBrains Mono',
+                            ),
+                          ),
+                        ),
+                      ),
+                    );
+                  },
                 ),
               ),
             ),
