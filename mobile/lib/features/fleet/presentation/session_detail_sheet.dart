@@ -11,6 +11,7 @@ import '../../../core/widgets/glass_card.dart';
 import '../../../core/widgets/status_badge.dart';
 import '../../../core/widgets/token_gauge_bar.dart';
 import '../../terminal/presentation/terminal_screen.dart';
+import '../../transcript/presentation/transcript_screen.dart';
 
 /// Modal bottom sheet providing deep inspection and lifecycle control for an agent session.
 class SessionDetailSheet extends ConsumerWidget {
@@ -222,9 +223,9 @@ class SessionDetailSheet extends ConsumerWidget {
                 child: ElevatedButton.icon(
                   onPressed: () {
                     Navigator.of(context).pop();
-                    _showTranscriptModal(context, ref, session);
+                    TranscriptScreen.open(context, session);
                   },
-                  icon: const Icon(Icons.article_outlined, size: 16),
+                  icon: const Icon(Icons.forum_outlined, size: 16),
                   label: const Text('Transcript'),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: AppColors.surfaceHighlight,

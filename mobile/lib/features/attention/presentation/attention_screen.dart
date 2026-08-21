@@ -14,6 +14,7 @@ import '../../../core/widgets/status_badge.dart';
 import '../../../core/widgets/terminal_accessory_bar.dart';
 import '../../../core/widgets/token_gauge_bar.dart';
 import '../../terminal/presentation/terminal_screen.dart';
+import '../../transcript/presentation/transcript_screen.dart';
 
 /// Screen managing developer attention queue, active working sessions, and decision audit history.
 /// Matches Stitch design ecf558261ecc479c8ca30ec6d251af98.
@@ -626,8 +627,8 @@ class _AttentionScreenState extends ConsumerState<AttentionScreen> {
               const SizedBox(width: 8),
               Expanded(
                 child: OutlinedButton.icon(
-                  onPressed: () => _showTranscriptModal(context, session),
-                  icon: const Icon(Icons.article_outlined, size: 15),
+                  onPressed: () => TranscriptScreen.open(context, session),
+                  icon: const Icon(Icons.forum_outlined, size: 15),
                   label: const Text('Transcript'),
                   style: OutlinedButton.styleFrom(
                     foregroundColor: AppColors.infoCyan,

@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import '../models/host.dart';
 import '../models/session.dart';
+import '../models/transcript.dart';
 
 /// HTTP Client communicating with ackbard daemon control plane endpoints.
 class ApiClient {
@@ -155,7 +156,7 @@ class ApiClient {
     }
   }
 
-  /// GET /v1/sessions/transcript: Retrieve live/historic agent conversation transcript
+  /// GET /v1/sessions/transcript: Retrieve live/historic agent conversation transcript (markdown/ansi)
   Future<String> getTranscript(String hostUrl, String sessionId, {String format = 'markdown'}) async {
     final clean = _cleanUrl(hostUrl);
     final uri = Uri.parse('$clean/v1/sessions/transcript').replace(
@@ -172,6 +173,27 @@ class ApiClient {
       return '';
     } catch (_) {
       return '';
+    }
+  }
+
+  /// GET /v1/sessions/transcript: Retrieve structured transcript data for rich chat stream UI
+  Future<TranscriptData?> getStructuredTranscript(String hostUrl, String sessionId) async {
+    final clean = _cleanUrl(hostUrl);
+    final uri = Uri.parse('$clean/v1/sessions/transcript').replace(
+      queryParameters: {
+        'id': sessionId,
+        'format': 'json',
+      },
+    );
+    try {
+      final response = await _client.get(uri).timeout(const Duration(seconds: 6));
+      if (response.statusCode == 200) {
+        final Map<String, dynamic> decoded = jsonDecode(response.body);
+        return TranscriptData.fromJson(decoded);
+      }
+      return null;
+    } catch (_) {
+      return null;
     }
   }
 
