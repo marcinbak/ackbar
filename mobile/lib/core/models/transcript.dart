@@ -23,23 +23,29 @@ class TranscriptMessage {
   factory TranscriptMessage.fromJson(Map<String, dynamic> json) {
     final tools = <String>[];
     if (json['tool_calls'] is List) {
-      for (final t in json['tool_calls']) {
-        if (t != null) tools.add(t.toString());
+      for (final t in (json['tool_calls'] as List)) {
+        if (t != null && t.toString().trim().isNotEmpty) {
+          tools.add(t.toString().trim());
+        }
       }
     }
 
     DateTime ts;
     try {
-      final tsStr = json['timestamp'] as String?;
+      final tsStr = json['timestamp']?.toString();
       ts = tsStr != null && tsStr.isNotEmpty ? DateTime.parse(tsStr) : DateTime.now();
     } catch (_) {
       ts = DateTime.now();
     }
 
+    final role = (json['role']?.toString() ?? 'assistant').toLowerCase();
+    final content = json['content']?.toString() ?? '';
+    final thinking = json['thinking']?.toString();
+
     return TranscriptMessage(
-      role: (json['role'] as String? ?? 'assistant').toLowerCase(),
-      content: json['content'] as String? ?? '',
-      thinking: json['thinking'] as String?,
+      role: role,
+      content: content,
+      thinking: (thinking != null && thinking.trim().isNotEmpty) ? thinking : null,
       toolCalls: tools,
       timestamp: ts,
     );
@@ -77,21 +83,27 @@ class TranscriptData {
   factory TranscriptData.fromJson(Map<String, dynamic> json) {
     final msgs = <TranscriptMessage>[];
     if (json['messages'] is List) {
-      for (final m in json['messages']) {
-        if (m is Map<String, dynamic>) {
-          msgs.add(TranscriptMessage.fromJson(m));
+      for (final m in (json['messages'] as List)) {
+        if (m is Map) {
+          final msg = TranscriptMessage.fromJson(Map<String, dynamic>.from(m));
+          // Keep turns that have content, thinking, or tool calls
+          if (msg.content.trim().isNotEmpty ||
+              (msg.thinking != null && msg.thinking!.trim().isNotEmpty) ||
+              msg.toolCalls.isNotEmpty) {
+            msgs.add(msg);
+          }
         }
       }
     }
 
     return TranscriptData(
-      sessionId: json['session_id'] as String? ?? '',
-      nativeId: json['native_id'] as String? ?? '',
-      agent: json['agent'] as String? ?? '',
-      title: json['title'] as String? ?? '',
-      cwd: json['cwd'] as String? ?? '',
+      sessionId: json['session_id']?.toString() ?? '',
+      nativeId: json['native_id']?.toString() ?? '',
+      agent: json['agent']?.toString() ?? '',
+      title: json['title']?.toString() ?? '',
+      cwd: json['cwd']?.toString() ?? '',
       messages: msgs,
-      rawMarkdown: json['markdown'] as String? ?? '',
+      rawMarkdown: json['markdown']?.toString() ?? '',
     );
   }
 
@@ -101,31 +113,30 @@ class TranscriptData {
     required String title,
     required String markdown,
   }) {
-    // Fallback parser if raw markdown was returned
     final messages = <TranscriptMessage>[];
-    final sections = markdown.split(RegExp(r'\n---\n+'));
-    for (final sec in sections) {
-      final trimmed = sec.trim();
-      if (trimmed.isEmpty) continue;
+    final pattern = RegExp(r'(### 👤 User [^\n]*|### 🤖 Assistant [^\n]*|> ℹ️ System [^\n]*)');
+    final matches = pattern.allMatches(markdown).toList();
 
-      if (trimmed.contains('### 👤 User')) {
-        final content = trimmed.replaceFirst(RegExp(r'### 👤 User \([^\)]+\)\n*'), '').trim();
+    for (var i = 0; i < matches.length; i++) {
+      final header = matches[i].group(0) ?? '';
+      final start = matches[i].end;
+      final end = (i + 1 < matches.length) ? matches[i + 1].start : markdown.length;
+      var body = markdown.substring(start, end).trim();
+      body = body.replaceAll(RegExp(r'\n*---\n*$'), '').trim();
+
+      String role = 'assistant';
+      if (header.contains('👤 User')) {
+        role = 'user';
+      } else if (header.contains('🤖 Assistant')) {
+        role = 'assistant';
+      } else if (header.contains('ℹ️ System')) {
+        role = 'system';
+      }
+
+      if (body.isNotEmpty) {
         messages.add(TranscriptMessage(
-          role: 'user',
-          content: content,
-          timestamp: DateTime.now(),
-        ));
-      } else if (trimmed.contains('### 🤖 Assistant')) {
-        final content = trimmed.replaceFirst(RegExp(r'### 🤖 Assistant \([^\)]+\)\n*'), '').trim();
-        messages.add(TranscriptMessage(
-          role: 'assistant',
-          content: content,
-          timestamp: DateTime.now(),
-        ));
-      } else if (trimmed.startsWith('> ℹ️ System')) {
-        messages.add(TranscriptMessage(
-          role: 'system',
-          content: trimmed,
+          role: role,
+          content: body,
           timestamp: DateTime.now(),
         ));
       }

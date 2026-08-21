@@ -80,46 +80,92 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
     }
   }
 
+  Future<String> _resolveHostUrl() async {
+    var hosts = ref.read(hostsListProvider);
+    if (hosts.isEmpty) {
+      for (var i = 0; i < 6 && hosts.isEmpty; i++) {
+        await Future.delayed(const Duration(milliseconds: 80));
+        if (!mounted) return 'http://127.0.0.1:7777';
+        hosts = ref.read(hostsListProvider);
+      }
+    }
+
+    // 1. Direct name or URL match
+    final match = hosts.where((h) => h.name == widget.session.host || h.url.contains(widget.session.host));
+    if (match.isNotEmpty) return match.first.url;
+
+    // 2. Any online host
+    final online = hosts.where((h) => h.online);
+    if (online.isNotEmpty) return online.first.url;
+
+    // 3. Any configured host
+    if (hosts.isNotEmpty) return hosts.first.url;
+
+    return 'http://127.0.0.1:7777';
+  }
+
   Future<void> _loadTranscript() async {
+    if (!mounted) return;
     setState(() {
       _isLoading = true;
       _errorMessage = null;
     });
 
-    final hosts = ref.read(hostsListProvider);
-    final match = hosts.where((h) => h.name == widget.session.host || h.url.contains(widget.session.host));
-    final hostUrl = match.isNotEmpty ? match.first.url : (hosts.isNotEmpty ? hosts.first.url : 'http://127.0.0.1:7777');
-
     try {
+      final hostUrl = await _resolveHostUrl();
       final structured = await ref.read(apiClientProvider).getStructuredTranscript(hostUrl, widget.session.id);
+      
       if (structured != null && structured.messages.isNotEmpty) {
-        setState(() {
-          _transcriptData = structured;
-          _isLoading = false;
-        });
+        if (mounted) {
+          setState(() {
+            _transcriptData = structured;
+            _isLoading = false;
+          });
+        }
       } else {
         // Fallback to markdown parser
         final rawMd = await ref.read(apiClientProvider).getTranscript(hostUrl, widget.session.id);
-        final parsed = TranscriptData.fromRawMarkdown(
-          sessionId: widget.session.id,
-          agent: widget.session.agent,
-          title: widget.session.displayTitle,
-          markdown: rawMd,
-        );
-        setState(() {
-          _transcriptData = parsed;
-          _isLoading = false;
-        });
+        if (rawMd.trim().isNotEmpty) {
+          final parsed = TranscriptData.fromRawMarkdown(
+            sessionId: widget.session.id,
+            agent: widget.session.agent,
+            title: widget.session.displayTitle,
+            markdown: rawMd,
+          );
+          if (mounted) {
+            setState(() {
+              _transcriptData = parsed;
+              _isLoading = false;
+            });
+          }
+        } else {
+          if (mounted) {
+            setState(() {
+              _transcriptData = structured ?? TranscriptData(
+                sessionId: widget.session.id,
+                nativeId: widget.session.nativeId,
+                agent: widget.session.agent,
+                title: widget.session.displayTitle,
+                cwd: widget.session.cwd,
+                messages: const [],
+                rawMarkdown: '',
+              );
+              _isLoading = false;
+            });
+          }
+        }
       }
 
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _scrollToBottom(animate: false);
       });
     } catch (e) {
-      setState(() {
-        _errorMessage = 'Failed to load transcript: $e';
-        _isLoading = false;
-      });
+      if (mounted) {
+        setState(() {
+          _errorMessage = 'Failed to load transcript: $e';
+          _isLoading = false;
+        });
+      }
     }
   }
 
@@ -512,42 +558,59 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
     );
   }
 
-  // --- 3. Collapsible Tool Invocations Pills ---
+  // --- 3. Tool Invocations Pills ---
 
   Widget _buildToolCallsPills(List<String> tools) {
-    return Theme(
-      data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
-      child: ExpansionTile(
-        tilePadding: EdgeInsets.zero,
-        childrenPadding: const EdgeInsets.only(top: 4),
-        dense: true,
-        leading: const Icon(Icons.bolt_rounded, size: 16, color: AppColors.statusAmberLight),
-        title: Text(
-          '⚡ ${tools.length} ${tools.length == 1 ? 'Tool' : 'Tools'} Executed',
-          style: AppTypography.codeXs.copyWith(
-            color: AppColors.statusAmberLight,
-            fontWeight: FontWeight.w700,
-            fontSize: 11,
-          ),
-        ),
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+      decoration: BoxDecoration(
+        color: AppColors.terminalBlack.withOpacity(0.6),
+        borderRadius: AppSpacing.roundedSm,
+        border: Border.all(color: AppColors.outlineSubtle.withOpacity(0.7), width: 0.6),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          Row(
+            children: [
+              const Icon(Icons.bolt_rounded, size: 14, color: AppColors.statusAmberLight),
+              const SizedBox(width: 4),
+              Text(
+                'Tools Executed',
+                style: AppTypography.codeXs.copyWith(
+                  color: AppColors.statusAmberLight,
+                  fontWeight: FontWeight.w700,
+                  fontSize: 10.5,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
           Wrap(
             spacing: 6,
             runSpacing: 4,
             children: tools.map((t) {
               return Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2.5),
                 decoration: BoxDecoration(
-                  color: AppColors.terminalBlack,
-                  borderRadius: AppSpacing.roundedSm,
-                  border: Border.all(color: AppColors.outlineSubtle, width: 0.6),
+                  color: AppColors.surfaceHighlight,
+                  borderRadius: BorderRadius.circular(4),
+                  border: Border.all(color: AppColors.outlineSubtle, width: 0.5),
                 ),
-                child: Text(
-                  '🛠️ $t',
-                  style: AppTypography.codeXs.copyWith(
-                    color: AppColors.textSecondary,
-                    fontSize: 10.5,
-                  ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text('🛠️', style: TextStyle(fontSize: 10)),
+                    const SizedBox(width: 4),
+                    Text(
+                      t,
+                      style: AppTypography.codeXs.copyWith(
+                        color: AppColors.textPrimary,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
                 ),
               );
             }).toList(),

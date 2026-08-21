@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:ackbar_mobile/core/models/session.dart';
 import 'package:ackbar_mobile/core/models/host.dart';
 import 'package:ackbar_mobile/core/models/plan.dart';
+import 'package:ackbar_mobile/core/models/transcript.dart';
 import 'package:ackbar_mobile/core/theme/app_colors.dart';
 import 'package:ackbar_mobile/core/widgets/status_badge.dart';
 
@@ -695,6 +696,102 @@ void main() {
       expect(updated.progressPct, equals(0.5));
       expect(updated.currentStep, equals('Step 1 complete'));
       expect(updated.id, equals('PLAN-001'));
+    });
+  });
+
+  group('TranscriptData & TranscriptMessage Tests', () {
+    test('TranscriptMessage.fromJson handles user and assistant turns', () {
+      final userJson = {
+        'role': 'user',
+        'content': 'Write a new service',
+        'timestamp': '2026-08-20T12:00:00Z',
+      };
+      final userMsg = TranscriptMessage.fromJson(userJson);
+      expect(userMsg.isUser, isTrue);
+      expect(userMsg.isAssistant, isFalse);
+      expect(userMsg.content, equals('Write a new service'));
+      expect(userMsg.toolCalls, isEmpty);
+      expect(userMsg.thinking, isNull);
+
+      final assistantJson = {
+        'role': 'assistant',
+        'content': 'Here is the service.',
+        'thinking': 'Planning implementation',
+        'tool_calls': ['Bash', 'Read'],
+        'timestamp': '2026-08-20T12:00:05Z',
+      };
+      final asstMsg = TranscriptMessage.fromJson(assistantJson);
+      expect(asstMsg.isAssistant, isTrue);
+      expect(asstMsg.content, equals('Here is the service.'));
+      expect(asstMsg.thinking, equals('Planning implementation'));
+      expect(asstMsg.toolCalls, equals(['Bash', 'Read']));
+    });
+
+    test('TranscriptData.fromJson parses full server payload', () {
+      final payload = {
+        'session_id': 'claude-code:local:123',
+        'native_id': '123',
+        'agent': 'claude-code',
+        'title': 'Feature Work',
+        'cwd': '/work/app',
+        'markdown': '# Transcript',
+        'messages': [
+          {
+            'role': 'user',
+            'content': 'Hello',
+            'timestamp': '2026-08-20T12:00:00Z',
+          },
+          {
+            'role': 'assistant',
+            'content': '',
+            'tool_calls': ['Bash'],
+            'timestamp': '2026-08-20T12:00:02Z',
+          },
+          {
+            'role': 'assistant',
+            'content': 'Done!',
+            'timestamp': '2026-08-20T12:00:04Z',
+          },
+        ],
+      };
+
+      final data = TranscriptData.fromJson(payload);
+      expect(data.sessionId, equals('claude-code:local:123'));
+      expect(data.title, equals('Feature Work'));
+      expect(data.messages.length, equals(3));
+      expect(data.messages[0].isUser, isTrue);
+      expect(data.messages[1].toolCalls, equals(['Bash']));
+      expect(data.messages[2].content, equals('Done!'));
+    });
+
+    test('TranscriptData.fromRawMarkdown fallback parser', () {
+      const rawMd = '''
+# Session Transcript — Test
+
+### 👤 User (2026-08-20 18:00:00)
+
+Please refactor this method
+
+---
+
+### 🤖 Assistant (2026-08-20 18:00:05)
+
+Refactoring complete.
+
+---
+''';
+      final parsed = TranscriptData.fromRawMarkdown(
+        sessionId: 'test',
+        agent: 'claude',
+        title: 'Test',
+        markdown: rawMd,
+      );
+
+      expect(parsed.messages.length, equals(2));
+      expect(parsed.messages[0].isUser, isTrue);
+      expect(parsed.messages[0].content, equals('Please refactor this method'));
+      expect(parsed.messages[1].isAssistant, isTrue);
+      expect(parsed.messages[1].content, equals('Refactoring complete.'));
     });
   });
 }
