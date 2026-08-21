@@ -1,4 +1,12 @@
 package version
 
-// Version follows date-based versioning YYYYMMDD.rev
-const Version = "20260821.06"
+import (
+	_ "embed"
+	"strings"
+)
+
+//go:embed VERSION
+var rawVersion string
+
+// Version follows date-based versioning YYYYMMDD.rev loaded from the VERSION file
+var Version = strings.TrimSpace(rawVersion)
