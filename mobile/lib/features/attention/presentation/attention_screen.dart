@@ -18,17 +18,43 @@ import '../../terminal/presentation/terminal_screen.dart';
 /// Screen managing developer attention queue, active working sessions, and decision audit history.
 /// Matches Stitch design ecf558261ecc479c8ca30ec6d251af98.
 class AttentionScreen extends ConsumerStatefulWidget {
-  const AttentionScreen({super.key});
+  final bool isFullscreen;
+  final int initialPageIndex;
+
+  const AttentionScreen({
+    super.key,
+    this.isFullscreen = false,
+    this.initialPageIndex = 0,
+  });
+
+  static Future<void> openFullscreen(BuildContext context, {int initialPageIndex = 0}) {
+    return Navigator.of(context, rootNavigator: true).push(
+      MaterialPageRoute(
+        fullscreenDialog: true,
+        builder: (context) => AttentionScreen(
+          isFullscreen: true,
+          initialPageIndex: initialPageIndex,
+        ),
+      ),
+    );
+  }
 
   @override
   ConsumerState<AttentionScreen> createState() => _AttentionScreenState();
 }
 
 class _AttentionScreenState extends ConsumerState<AttentionScreen> {
-  final PageController _pageController = PageController();
-  int _currentPageIndex = 0;
+  late final PageController _pageController;
+  late int _currentPageIndex;
   final Map<String, int> _selectedOptionIndices = {};
   final TextEditingController _customInputController = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    _currentPageIndex = widget.initialPageIndex;
+    _pageController = PageController(initialPage: widget.initialPageIndex);
+  }
 
   @override
   void dispose() {
@@ -49,8 +75,18 @@ class _AttentionScreenState extends ConsumerState<AttentionScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final attentionFilter = ref.watch(attentionFilterIndexProvider);
     final pendingSessions = ref.watch(attentionPendingSessionsProvider);
+
+    if (widget.isFullscreen) {
+      return Scaffold(
+        backgroundColor: AppColors.background,
+        body: SafeArea(
+          child: _buildPendingSubView(pendingSessions, isFullscreen: true),
+        ),
+      );
+    }
+
+    final attentionFilter = ref.watch(attentionFilterIndexProvider);
     final inProgressSessions = ref.watch(inProgressSessionsProvider);
     final auditHistory = ref.watch(decisionAuditProvider);
     final hosts = ref.watch(hostsListProvider);
@@ -117,7 +153,7 @@ class _AttentionScreenState extends ConsumerState<AttentionScreen> {
 
   // --- Sub-View 1: Pending Blocked Sessions ViewPager ---
 
-  Widget _buildPendingSubView(List<Session> pendingSessions) {
+  Widget _buildPendingSubView(List<Session> pendingSessions, {bool isFullscreen = false}) {
     if (pendingSessions.isEmpty) {
       return Center(
         child: Padding(
@@ -148,6 +184,18 @@ class _AttentionScreenState extends ConsumerState<AttentionScreen> {
                 textAlign: TextAlign.center,
                 style: AppTypography.bodyMedium.copyWith(color: AppColors.textSecondary),
               ),
+              if (isFullscreen) ...[
+                AppSpacing.gapH16,
+                OutlinedButton.icon(
+                  onPressed: () => Navigator.of(context).pop(),
+                  icon: const Icon(Icons.arrow_back_rounded, size: 16),
+                  label: const Text('Return to Dashboard'),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: AppColors.infoCyan,
+                    side: const BorderSide(color: AppColors.infoCyan),
+                  ),
+                ),
+              ],
             ],
           ),
         ),
@@ -164,18 +212,25 @@ class _AttentionScreenState extends ConsumerState<AttentionScreen> {
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              IconButton(
-                icon: const Icon(Icons.arrow_back_ios_rounded, size: 16),
-                color: safePageIndex > 0 ? AppColors.infoCyan : AppColors.textMuted,
-                onPressed: safePageIndex > 0
-                    ? () {
-                        _pageController.previousPage(
-                          duration: const Duration(milliseconds: 250),
-                          curve: Curves.easeInOut,
-                        );
-                      }
-                    : null,
-              ),
+              if (isFullscreen)
+                IconButton(
+                  icon: const Icon(Icons.fullscreen_exit_rounded, size: 22, color: AppColors.infoCyan),
+                  tooltip: 'Exit Fullscreen',
+                  onPressed: () => Navigator.of(context).pop(),
+                )
+              else
+                IconButton(
+                  icon: const Icon(Icons.arrow_back_ios_rounded, size: 16),
+                  color: safePageIndex > 0 ? AppColors.infoCyan : AppColors.textMuted,
+                  onPressed: safePageIndex > 0
+                      ? () {
+                          _pageController.previousPage(
+                            duration: const Duration(milliseconds: 250),
+                            curve: Curves.easeInOut,
+                          );
+                        }
+                      : null,
+                ),
               Row(
                 children: [
                   Text(
@@ -202,19 +257,37 @@ class _AttentionScreenState extends ConsumerState<AttentionScreen> {
                   ),
                 ],
               ),
-              IconButton(
-                icon: const Icon(Icons.arrow_forward_ios_rounded, size: 16),
-                color: safePageIndex < pendingSessions.length - 1
-                    ? AppColors.infoCyan
-                    : AppColors.textMuted,
-                onPressed: safePageIndex < pendingSessions.length - 1
-                    ? () {
-                        _pageController.nextPage(
-                          duration: const Duration(milliseconds: 250),
-                          curve: Curves.easeInOut,
-                        );
-                      }
-                    : null,
+              Row(
+                children: [
+                  if (isFullscreen) ...[
+                    IconButton(
+                      icon: const Icon(Icons.arrow_back_ios_rounded, size: 16),
+                      color: safePageIndex > 0 ? AppColors.infoCyan : AppColors.textMuted,
+                      onPressed: safePageIndex > 0
+                          ? () {
+                              _pageController.previousPage(
+                                duration: const Duration(milliseconds: 250),
+                                curve: Curves.easeInOut,
+                              );
+                            }
+                          : null,
+                    ),
+                  ],
+                  IconButton(
+                    icon: const Icon(Icons.arrow_forward_ios_rounded, size: 16),
+                    color: safePageIndex < pendingSessions.length - 1
+                        ? AppColors.infoCyan
+                        : AppColors.textMuted,
+                    onPressed: safePageIndex < pendingSessions.length - 1
+                        ? () {
+                            _pageController.nextPage(
+                              duration: const Duration(milliseconds: 250),
+                              curve: Curves.easeInOut,
+                            );
+                          }
+                        : null,
+                  ),
+                ],
               ),
             ],
           ),
@@ -233,7 +306,7 @@ class _AttentionScreenState extends ConsumerState<AttentionScreen> {
               final session = pendingSessions[index];
               return Padding(
                 padding: const EdgeInsets.fromLTRB(AppSpacing.lg, 0, AppSpacing.lg, AppSpacing.xs),
-                child: _buildPendingCard(session),
+                child: _buildPendingCard(session, isFullscreen: isFullscreen),
               );
             },
           ),
@@ -242,7 +315,7 @@ class _AttentionScreenState extends ConsumerState<AttentionScreen> {
     );
   }
 
-  Widget _buildPendingCard(Session session) {
+  Widget _buildPendingCard(Session session, {bool isFullscreen = false}) {
     final blocked = session.blocked;
     final options = blocked?.options ?? [];
     final selectedOptionIndex = _selectedOptionIndices[session.id] ?? 0;
@@ -297,6 +370,25 @@ class _AttentionScreenState extends ConsumerState<AttentionScreen> {
                 status: AckbarSessionStatus.blocked,
                 customLabel: blocked?.kind.label ?? 'BLOCKED',
                 isCompact: true,
+              ),
+              const SizedBox(width: 4),
+              IconButton(
+                icon: Icon(
+                  isFullscreen ? Icons.fullscreen_exit_rounded : Icons.open_in_full_rounded,
+                  size: 17,
+                  color: AppColors.infoCyan,
+                ),
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
+                tooltip: isFullscreen ? 'Exit Fullscreen' : 'Expand Fullscreen',
+                onPressed: () {
+                  HapticFeedback.lightImpact();
+                  if (isFullscreen) {
+                    Navigator.of(context).pop();
+                  } else {
+                    AttentionScreen.openFullscreen(context, initialPageIndex: _currentPageIndex);
+                  }
+                },
               ),
             ],
           ),
