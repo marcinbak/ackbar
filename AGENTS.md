@@ -61,8 +61,66 @@ Detailed architectural and technical domain documentation is organized in the `d
 
 ## 4. Key Design Rules & Constraints
 
-1.  **Security Constraint (§9):** The `ackbard` HTTP server MUST bind strictly to `127.0.0.1`. Remote client connectivity MUST use SSH tunnels (`ssh -L`).
+1.  **Security Constraint (§9):** The `ackbard` HTTP server binds strictly to `127.0.0.1` by default or operates behind token authentication / outbound reverse tunnel relay.
 2.  **CGO-Free SQLite:** Always maintain pure Go database drivers (`modernc.org/sqlite`).
 3.  **In-Place Attachment:** Attachment MUST suspend the Bubble Tea app using `tea.ExecProcess`, run `tmux attach` or `ssh -t host tmux attach`, and resume/redraw upon detach.
-4.  **Git Worktree Workflow:** All future development, bug fixes, refactoring, and feature additions MUST be executed inside an isolated git worktree (e.g. under `.worktrees/<branch-name>`) on a dedicated branch, verified with test suite runs, and then merged cleanly into `main`.
+4.  **No Direct Pushes to `main`:** Direct pushes to `main` are strictly blocked by GitHub branch protection. All code changes must be submitted via Pull Requests.
+5.  **Strict PR-Based Git Worktree Workflow:** All development, bug fixes, refactoring, and feature additions MUST follow the PR workflow outlined below. Only the repository owner (`marcinbak`) is authorized to merge PRs into `main`.
+
+---
+
+## 5. PR-Based Development Workflow
+
+Every developer and AI coding agent working on Project Ackbar must follow this standardized development lifecycle:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                     DEVELOPMENT & PULL REQUEST LIFECYCLE                    │
+│                                                                             │
+│  1. Create Worktree ──► 2. Implement & Test ──► 3. Push & Create PR ──► 4. User Merges │
+│     .worktrees/<branch>    go test / flutter test   gh pr create            marcinbak    │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Step 1: Create an Isolated Git Worktree
+Never work directly in the root workspace or on the `main` branch. Always create an isolated git worktree with an appropriate branch prefix (`feat/`, `fix/`, `refactor/`, `docs/`):
+```bash
+git worktree add -b feat/<feature-name> .worktrees/<feature-name> main
+```
+
+### Step 2: Implement Changes & Run Test Suite
+Navigate to the worktree directory and make your changes. Verify that all automated tests pass before committing:
+```bash
+# In the worktree directory:
+# Run Go unit & integration test suites
+go test -v ./...
+
+# If mobile/Flutter files were modified:
+cd mobile && flutter test
+```
+
+### Step 3: Commit & Push Branch
+Commit changes with semantic commit messages and push the dedicated branch to `origin`:
+```bash
+git add -A
+git commit -m "feat(subsystem): brief summary of changes"
+git push -u origin feat/<feature-name>
+```
+
+### Step 4: Create a GitHub Pull Request (PR)
+Create a Pull Request against `main` using the GitHub CLI:
+```bash
+gh pr create \
+  --title "feat(subsystem): brief description" \
+  --body "### Summary of Changes\n- Detail 1\n- Detail 2\n\n### Verification\n- go test ./... passed\n- flutter test passed"
+```
+
+### Step 5: Clean Up Worktree After Merge
+Once the PR has been reviewed and merged by `@marcinbak`:
+```bash
+git checkout main
+git pull origin main
+git worktree remove .worktrees/<feature-name>
+git branch -d feat/<feature-name>
+```
 
