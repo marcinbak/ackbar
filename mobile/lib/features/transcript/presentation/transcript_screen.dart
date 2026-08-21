@@ -9,7 +9,6 @@ import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_typography.dart';
 import '../../../core/widgets/agent_logo.dart';
-import '../../../core/widgets/glass_card.dart';
 import '../../terminal/presentation/terminal_screen.dart';
 
 /// Fullscreen interactive Chat-Style Transcript Screen displaying user and agent turns

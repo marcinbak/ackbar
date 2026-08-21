@@ -1,6 +1,6 @@
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
-import 'package:mobile/core/theme/app_colors.dart';
+import '../theme/app_colors.dart';
 
 /// Renders a crisp vector icon for Claude Code, OpenAI Codex, or Google Antigravity.
 class AgentLogo extends StatelessWidget {
