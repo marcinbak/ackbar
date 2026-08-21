@@ -241,11 +241,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
               children: [
                 const Icon(Icons.terminal_rounded, size: 16, color: AppColors.infoCyan),
                 const SizedBox(width: 6),
-                Text(
-                  widget.session.tmuxName.isNotEmpty ? widget.session.tmuxName : widget.session.id,
-                  style: AppTypography.codeSm.copyWith(
-                    color: AppColors.textPrimary,
-                    fontWeight: FontWeight.w700,
+                Expanded(
+                  child: Text(
+                    widget.session.displayTitle,
+                    style: AppTypography.codeSm.copyWith(
+                      color: AppColors.textPrimary,
+                      fontWeight: FontWeight.w700,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                   ),
                 ),
               ],
@@ -253,6 +257,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
             Text(
               '${widget.session.agentDisplayName} @ ${widget.session.hostTag} • ${_currentCols}x$_currentRows',
               style: AppTypography.codeXs.copyWith(color: AppColors.textSecondary),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
             ),
           ],
         ),
