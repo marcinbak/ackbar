@@ -12,7 +12,7 @@ import (
 	"ackbar/internal/daemon"
 	"ackbar/internal/provider"
 	"ackbar/internal/version"
-	"ackbar/internal/web"
+	"ackbar/web"
 )
 
 func main() {

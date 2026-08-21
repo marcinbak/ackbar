@@ -50,7 +50,8 @@ Detailed architectural and technical domain documentation is organized in the `d
 │   ├── provider/       # Agent adapters (Claude Code, Codex, Antigravity)
 │   ├── relay/          # Outbound reverse tunnel server and daemon client
 │   ├── tmux/           # Tmux process supervision wrapper (Spawn, Kill, GetPID)
-│   └── web/            # Embedded Web GUI static assets and xterm multiplexer
+│   └── version/        # Version source of truth (VERSION file & go:embed)
+├── web/                # Embedded Web GUI static assets, xterm multiplexer, and fs.FS
 ├── mobile/             # Native Flutter companion application (iOS & Android)
 │   ├── lib/            # Riverpod state, decoupled theme, and feature presentation screens
 │   └── test/           # Mobile unit and widget test suite
