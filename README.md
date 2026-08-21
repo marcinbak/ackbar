@@ -174,6 +174,14 @@ Comprehensive guides for every component and subsystem are available in the `doc
 
 ---
 
+## 🤝 Contributing
+
+Contributions are welcome! Whether you are reporting a bug, proposing an improvement, or writing code, please review our **[Contributing Guidelines](CONTRIBUTING.md)** and **[Architecture & Design Rules (AGENTS.md)](AGENTS.md)** before submitting a Pull Request.
+
+All contributions must follow our PR-based Git Worktree workflow and pass the test suite.
+
+---
+
 ## 📄 License
 
 Ackbar is open-source software licensed under the **[MIT License](LICENSE)**.
