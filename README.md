@@ -177,6 +177,7 @@ Comprehensive guides for every component and subsystem are available in the `doc
 * 🔨 **[Building & Testing](docs/building.md):** Prerequisites, build commands, and test suites.
 * 📦 **[Distribution & Upgrades](docs/distribution.md):** Packaging, Homebrew formulas, and GoReleaser automation.
 * 🎙️ **[Voice Companion & Audio Briefings](docs/voice-companion.md):** Conversational speech architecture and audio briefing pipeline.
+* 📋 **[Backlog: Blocker Push Notifications](docs/backlog-push-notifications.md):** Architecture trade-offs, `ntfy.sh` deep-linking, lock-screen actions, and implementation roadmap for mobile alerts.
 
 ---
 
