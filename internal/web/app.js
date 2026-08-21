@@ -3239,9 +3239,9 @@ ${session.last_prompt}
       `;
 
       const footer = `
-        ${!isLocal ? `<button class="btn btn-danger" id="hBtnDeleteHost" style="margin-right: auto;">🗑 Remove Host</button>` : ''}
+        ${!isLocal ? `<button class="btn btn-danger" id="hBtnDeleteHost" style="margin-right: auto;">🗑 Remove</button>` : ''}
         ${!isLocal && !isOnline ? `<button class="btn btn-primary" id="hBtnReconnectHost" style="background: #10b981; border-color: #059669; color: #fff; font-weight: 600;">🔄 Reconnect SSH Tunnel</button>` : ''}
-        ${!isLocal && isOnline ? `<button class="btn btn-primary" id="hBtnUpdateHost" style="background: #06b6d4; border-color: #0891b2; color: #090a0f; font-weight: 600;">⬆ Update ackbard on ${h.name}</button>` : ''}
+        ${!isLocal && isOnline ? `<button class="btn btn-primary" id="hBtnUpdateHost" style="background: #06b6d4; border-color: #0891b2; color: #090a0f; font-weight: 600;">⬆ Update ackbard</button>` : ''}
         <button class="btn btn-secondary" id="hBtnPurgeHost">🔄 Safe Purge</button>
         <button class="btn btn-secondary" onclick="document.getElementById('modalOverlay').style.display='none'">Done</button>
       `;
@@ -3300,12 +3300,12 @@ ${session.last_prompt}
             } else {
               alert(`❌ Upgrade failed: ${data.message || 'Unknown error'}`);
               updateBtn.disabled = false;
-              updateBtn.innerHTML = `⬆ Update ackbard on ${h.name}`;
+              updateBtn.innerHTML = `⬆ Update ackbard`;
             }
           } catch (err) {
             alert(`❌ Upgrade request failed: ${err.message}`);
             updateBtn.disabled = false;
-            updateBtn.innerHTML = `⬆ Update ackbard on ${h.name}`;
+            updateBtn.innerHTML = `⬆ Update ackbard`;
           }
         });
       }
