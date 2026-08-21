@@ -1187,6 +1187,34 @@
 
     term.open(containerEl);
 
+    // Register OSC 52 Clipboard handler (receives base64-encoded clipboard from remote tmux)
+    if (term.parser && term.parser.registerOscHandler) {
+      term.parser.registerOscHandler(52, (data) => {
+        // Format: "c;<base64-payload>" or ";<base64-payload>"
+        const parts = data.split(';');
+        const b64 = parts.length > 1 ? parts[1] : parts[0];
+        if (b64) {
+          try {
+            const decoded = atob(b64);
+            if (decoded && navigator.clipboard && navigator.clipboard.writeText) {
+              navigator.clipboard.writeText(decoded).catch(() => {});
+            }
+          } catch (e) {}
+        }
+        return true;
+      });
+    }
+
+    // Auto-copy highlighted text to clipboard immediately on mouse selection
+    term.onSelectionChange(() => {
+      if (term.hasSelection()) {
+        const text = term.getSelection();
+        if (text && text.length > 0 && navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).catch(() => {});
+        }
+      }
+    });
+
     term.attachCustomKeyEventHandler((event) => {
       // 1. Allow Cmd+R / Ctrl+R / F5 to reload webpage
       if ((event.metaKey || event.ctrlKey) && (event.key === 'r' || event.key === 'R')) {
@@ -1215,7 +1243,33 @@
         }
         return false;
       }
-      // 4. Allow Cmd+1..9 to switch tabs
+      // 4. Cmd+C / Ctrl+C with active selection copies to clipboard without sending SIGINT
+      if ((event.metaKey || event.ctrlKey) && (event.key === 'c' || event.key === 'C')) {
+        if (term.hasSelection()) {
+          const text = term.getSelection();
+          if (text && navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).catch(() => {});
+          }
+          return false;
+        }
+      }
+      // 5. Cmd+V / Ctrl+V pastes clipboard text directly into terminal session
+      if ((event.metaKey || event.ctrlKey) && (event.key === 'v' || event.key === 'V')) {
+        if (event.type === 'keydown') {
+          if (navigator.clipboard && navigator.clipboard.readText) {
+            navigator.clipboard.readText().then(clipText => {
+              if (clipText) {
+                const currentTab = state.openTabs.get(tabId);
+                if (currentTab && currentTab.socket && currentTab.socket.readyState === WebSocket.OPEN) {
+                  currentTab.socket.send(clipText);
+                }
+              }
+            }).catch(() => {});
+          }
+        }
+        return false;
+      }
+      // 6. Allow Cmd+1..9 to switch tabs
       if ((event.metaKey || event.ctrlKey) && event.key >= '1' && event.key <= '9') {
         if (event.type === 'keydown') {
           const tabIndex = parseInt(event.key, 10) - 1;
@@ -1226,7 +1280,7 @@
         }
         return false;
       }
-      // 5. Shift+Tab to cycle Claude Code modes (send raw ANSI backtab [0x1b, 0x5b, 0x5a] and prevent browser focus shift)
+      // 7. Shift+Tab to cycle Claude Code modes (send raw ANSI backtab [0x1b, 0x5b, 0x5a] and prevent browser focus shift)
       if (event.key === 'Tab' && event.shiftKey) {
         if (event.type === 'keydown') {
           event.preventDefault();
