@@ -472,7 +472,7 @@ class _AttentionScreenState extends ConsumerState<AttentionScreen> {
               ),
             ),
           ),
-          AppSpacing.gapH10,
+          AppSpacing.gapH8,
 
           // Primary Submit Button (Full Width)
           SizedBox(
@@ -842,7 +842,8 @@ class _AttentionScreenState extends ConsumerState<AttentionScreen> {
                                       ),
                                     ],
                                   ),
-                                            : Container(
+                                )
+                              : Container(
                                   padding: AppSpacing.paddingCardDense,
                                   decoration: BoxDecoration(
                                     color: AppColors.terminalBlack,
@@ -871,7 +872,7 @@ class _AttentionScreenState extends ConsumerState<AttentionScreen> {
                                       );
                                     },
                                   ),
-                                ),                   )),
+                                )),
                     ),
                   ],
                 ),
