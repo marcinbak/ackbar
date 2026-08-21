@@ -1,12 +1,13 @@
 # ⚓ Ackbar
 
-> **Lightweight, cross-machine control plane and session manager for AI coding agents.**
+> **Lightweight, cross-machine control plane and session manager for autonomous AI coding agents.**
 
 [![Version](https://img.shields.io/badge/version-v20260821.03-6366f1.svg)](https://github.com/marcinbak/ackbar/releases)
 [![Go Version](https://img.shields.io/badge/go-1.25+-00ADD8.svg)](https://golang.org)
 [![Pure Go SQLite](https://img.shields.io/badge/sqlite-CGO--free-blue.svg)](https://modernc.org/sqlite)
+[![Flutter](https://img.shields.io/badge/flutter-3.19+-02569B.svg)](https://flutter.dev)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey.svg)]()
+[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20iOS%20%7C%20Android-lightgrey.svg)]()
 
 ---
 
@@ -16,230 +17,162 @@
 
 ## 🧭 What is Ackbar?
 
-**Ackbar** is a developer control plane designed to monitor, organize, and interact with autonomous AI coding agents (**Claude Code**, **Google Antigravity**, **OpenAI Codex**) across all your local workstations, remote GPU compute boxes, and cloud virtual machines.
+**Ackbar** is a unified developer control plane designed to monitor, organize, and interact with autonomous AI coding agents (**Claude Code**, **Google Antigravity**, **OpenAI Codex**) running across all your local workstations, remote GPU compute boxes, and cloud virtual machines.
 
-Ackbar provides both a **rich real-time Web GUI** (`http://127.0.0.1:7777`) and a **pure keyboard-driven Terminal UI (TUI)** built with Charm Bubble Tea. It tracks agent lifecycle telemetry, visualizes context token limits, allows instant in-browser and in-terminal multiplexed attachment, and seamlessly bridges local and remote agent workspaces into VS Code.
+Ackbar brings your entire multi-agent fleet into a single pane of glass with real-time process supervision, context window token meters, conversational chat transcripts, in-place tmux terminal attachment, and single-tap unblocking.
 
 ---
 
 ## 🎯 What Problem Does Ackbar Solve?
 
-As AI software engineering scales from single-prompt experiments to multiple parallel agent sessions running on local and remote machines, developers face critical coordination hurdles:
+As AI software engineering scales from single-prompt experiments to multiple parallel agent sessions across multiple machines, developers face critical coordination hurdles:
 
-* 🧩 **Context Fragmentation:** When running agents across 5 different repositories and 3 different machines (MacBook, Linux workstation, GPU box), knowing which agent is running where becomes chaotic.
-* ⏳ **Invisible Blockers:** Agents often finish tasks or halt waiting for user input/tool approval (e.g. running a database migration or bash command) without notifying the developer, leaving sessions idling for hours unnoticed.
-* 🔌 **Detached Terminal Nightmare:** Managing raw `tmux` sessions across multiple SSH targets requires juggling countless SSH windows, manual window splits, and awkward session reconnections.
-* 📊 **Token & Context Blindness:** Developers often hit sudden agent context window degradation or truncation without clear visibility into token consumption against model limits (200k vs 1M tokens).
-* 🔀 **Editor Disconnection:** Jumping from an agent terminal back to the exact project directory and git branch inside your local code editor is cumbersome and manual.
-
-**Ackbar resolves all of these by acting as a single, lightweight pane of glass for all your agentic sessions.**
+* 🧩 **Context Fragmentation:** Keeping track of 5 agents across 3 machines and repositories without losing context.
+* ⏳ **Invisible Blockers:** Agents idling unnoticed for hours waiting on permissions or questions.
+* 🔌 **Detached Terminal Nightmare:** Juggling SSH connections and manual `tmux` window splits.
+* 📊 **Token & Context Blindness:** Running into sudden model context degradation without visibility into 200k vs 1M token limits.
+* 🔀 **Editor Disconnection:** Tedious manual navigation between terminal sessions and editor workspaces.
 
 ---
 
-## ✨ Key Features
+## 🖥️ Supported User Interfaces
 
-* 🤖 **Multi-Agent Provider Support:** First-class ingestion and supervision for **Anthropic Claude Code**, **Google Antigravity**, and **OpenAI Codex**.
-* 🌐 **Full-Featured Web GUI & Mobile PWA:**
-  * Interactive multi-tab terminal multiplexer powered by `xterm.js`.
-  * Real-time Server-Sent Events (`SSE`) streaming with instant zero-lag updates.
-  * Drag-and-drop hierarchical tree organization.
-  * Command palette (`Cmd+K` / `Ctrl+K`) for rapid fuzzy navigation.
-* 🖥️ **Pure Terminal UI (TUI):**
-  * Built with Charm.sh Bubble Tea and Lip Gloss.
-  * Zero-overhead in-place `tmux` attachment (`Enter` / `a`) and seamless resume on detach.
-  * Works smoothly over minimal SSH sessions.
-* 🚦 **Expressive Live Status Indicators:**
-  * `⚡` **Work in Progress:** Agent is actively analyzing, planning, or executing commands.
-  * `❓` **Waiting for Feedback:** Agent is blocked awaiting user input, permission, or clarification.
-  * `✅` **Idle:** Agent has finished its turn and is ready for the next instruction.
-  * `⚪` **Disconnected / Unknown:** Session inactive or remote daemon unreachable.
-* 🔗 **Cross-Machine Remote Aggregation:**
-  * Native multi-host support. Connect remote compute instances transparently using secure SSH tunnels (`ssh -L`).
-  * No exposed external ports or public internet attack surface.
-* 💻 **One-Click VS Code Integration:**
-  * Open any local or remote project directory in VS Code with a single click or keypress (`o`).
-  * Automatic `code --remote ssh-remote+<host> <path>` resolution for remote servers.
-* 📈 **Dynamic Context Window Gauge:**
-  * Live token percentage gauge adapting automatically to model ceilings (200k standard, 1M for Claude 3.7 / Gemini, 128k for Codex/GPT-4).
-* 📖 **In-App Project & Plan Viewer:**
-  * Built-in Markdown document viewer for inspecting `implementation_plan.md`, `task.md`, `walkthrough.md`, `README.md`, and `AGENTS.md` directly from the dashboard.
-* 🗂️ **Categorized Tree Organization:**
-  * Automatic filesystem repository matching combined with custom, user-defined category subgroups.
-  * Session archiving and stale session cleanup without losing project structure.
+Ackbar provides three purpose-built client interfaces:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           ACKBAR CLIENT INTERFACES                          │
+│                                                                             │
+│   ┌─────────────────────┐   ┌─────────────────────┐   ┌─────────────────┐   │
+│   │   📱 Mobile App     │   │   🌐 Web Dashboard  │   │ 🖥️ Terminal UI   │   │
+│   │   (iOS & Android)   │   │   & Desktop PWA     │   │   (Bubble Tea)  │   │
+│   │   docs/mobile.md    │   │   docs/web.md       │   │   docs/tui.md   │   │
+│   └──────────┬──────────┘   └──────────┬──────────┘   └────────┬────────┘   │
+└──────────────┼─────────────────────────┼───────────────────────┼────────────┘
+               │                         │                       │
+               └─────────────────────────┼───────────────────────┘
+                                         ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        LOCAL DAEMON ENGINE (ackbard)                        │
+│                 (HTTP Server, SQLite DB, Tmux Supervisor)                   │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 📱 1. Mobile Companion App (iOS & Android)
+A native cross-platform companion built with Flutter and Riverpod:
+* **Attention Queue & Fullscreen Mode:** Swipe through blocked sessions, select choices or dictate answers, and tap **Submit Choice** to unblock sessions from anywhere.
+* **Chat-Style Conversation Transcripts:** Right-aligned user bubbles, left-aligned agent responses, collapsible tool pills (`🛠️ Bash`, `🛠️ Read`), and thought process accordions.
+* **Live Interactive Terminal:** WebSocket-powered PTY terminal with auto-fit resizing, horizontal scrollbar, and touch accessory keyboard keys (`[Esc]`, `[Tab]`, `[Ctrl+C]`, `[Enter]`).
+* **Tailscale Mesh Integration:** Native multi-host remote monitoring over private Tailscale VPNs.
+* 📖 **[Read the Mobile App Documentation](docs/mobile.md)**
 
 ---
 
-## 🚀 Quickstart Guides
+### 🌐 2. Web Dashboard & Desktop PWA
+A zero-dependency browser control plane served directly by `ackbard` (`http://127.0.0.1:7777`):
+* **Multi-Tab Terminal Multiplexer:** High-speed `xterm.js` multiplexing across local and remote sessions.
+* **Command Palette (`Cmd+K`):** Instant fuzzy navigation and session hopping.
+* **One-Click VS Code Integration:** Launch local and remote SSH workspaces directly into VS Code.
+* **Drag-and-Drop Organization:** Customizable project and category folder trees.
+* 📖 **[Read the Web Dashboard Documentation](docs/web.md)**
 
-### 1. How to Build
+---
 
-#### Prerequisites
-* **Go Compiler:** Go 1.25 or newer.
-* **Tmux (`tmux`):** Required for process supervision (`brew install tmux` on macOS, `sudo apt install tmux` on Linux).
-* **Git (`git`):** Used for workspace project root and branch detection.
+### 🖥️ 3. Pure Terminal UI (TUI)
+A fast, keyboard-driven dashboard built with Charm.sh Bubble Tea and Lip Gloss:
+* **Zero Overhead:** Ideal for remote SSH sessions and low-bandwidth environments.
+* **In-Place Attachment:** Attach directly to tmux sessions with `Enter` / `a` and resume the TUI cleanly on detach.
+* **Keyboard Navigation:** Full vim-style navigation, session creation wizards, and archiving controls.
+* 📖 **[Read the TUI Documentation](docs/tui.md)**
 
+---
+
+## 🚦 Live Status Indicators
+
+| Status | Meaning |
+| :--- | :--- |
+| `⚡` **Working** | Agent is actively analyzing, planning, writing code, or executing tools. |
+| `❓` **Blocked** | Agent is paused awaiting developer permission, confirmation, or answer. |
+| `✅` **Idle** | Agent completed its turn and is waiting for the next user prompt. |
+| `⚪` **Offline** | Session ended or target host daemon is unreachable. |
+
+---
+
+## 🚀 Quickstart Guide
+
+### 1. Prerequisites
+* **Go Compiler:** Go 1.25 or newer (`go version`).
+* **Tmux (`tmux`):** Required for session supervision (`brew install tmux` on macOS, `sudo apt install tmux` on Linux).
+* **Git (`git`):** Used for workspace detection and branch resolution.
+
+### 2. Build & Install CLI & Daemon
 ```bash
 # Clone repository
 git clone https://github.com/marcinbak/ackbar.git
 cd ackbar
 
-# Build all 3 binaries to ~/.local/bin (or bin/)
+# Build binaries into ~/.local/bin
 go build -o ~/.local/bin/ackbard ./cmd/ackbard
 go build -o ~/.local/bin/ackbar ./cmd/ackbar
 go build -o ~/.local/bin/ackbar-hook ./cmd/ackbar-hook
 ```
 
-> 📖 **Detailed Build Guide:** See [docs/building.md](docs/building.md) for compilation flags, test suites, and dev mode.
+> 📖 **Compilation & Testing Details:** See [docs/building.md](docs/building.md).
 
----
-
-### 2. How to Run
-
-#### Step 1: Start the Daemon Engine (`ackbard`)
-The daemon runs as a local background service, manages SQLite persistence, tracks tmux processes, and serves the Web UI:
-
+### 3. Start the Daemon (`ackbard`)
 ```bash
 ackbard
 ```
-*By default, listens strictly on `127.0.0.1:7777` with database stored at `~/.config/ackbar/ackbard.db`.*
+*Listens strictly on `127.0.0.1:7777` by default with SQLite state stored in `~/.config/ackbar/ackbard.db`.*
 
-#### Step 2: Access the Dashboard
+### 4. Launch Your Interface of Choice
 * **Web GUI:** Open [http://127.0.0.1:7777](http://127.0.0.1:7777) in your browser.
-* **Terminal UI (TUI):** Launch the client in any terminal window:
-  ```bash
-  ackbar
-  ```
+* **Terminal UI (TUI):** Run `ackbar` in your terminal.
+* **Mobile App:** Run `cd mobile && flutter run` (or install via TestFlight / APK).
 
 ---
 
-### 3. How to Add a Remote Host
+## 🔗 Adding Remote Hosts
 
-Ackbar uses SSH local port forwarding to connect remote compute machines to your local dashboard without exposing ports to the internet.
+Ackbar aggregates multiple compute nodes using secure SSH tunnels (`ssh -L`) or Tailscale mesh networking without exposing ports to the public internet:
 
-1. **Install and run `ackbard` on your remote machine:**
+1. Run `ackbard` on your remote machine:
    ```bash
-   # On remote server (e.g. gpu-box)
    ackbard -port 7777
    ```
-2. **Establish an SSH Tunnel from your local machine:**
+2. Establish an SSH tunnel from your local workstation:
    ```bash
-   # Forward remote port 7777 to local port 7778
    ssh -N -L 7778:127.0.0.1:7777 user@gpu-box
    ```
-3. **Register the host in Ackbar:**
-   * **In Web GUI:** Click the **`+ Host`** button in the top navbar, enter the name `gpu-box` and endpoint `http://127.0.0.1:7778`.
-   * **In TUI:** Press **`R`** to open the Host Registration wizard.
+3. Register the host in Ackbar:
+   * **Web:** Click **`+ Host`** in the navbar and enter `http://127.0.0.1:7778`.
+   * **TUI:** Press **`R`** to open the registration wizard.
+   * **Mobile:** Add host endpoint in the **Hosts** tab.
 
-> 📖 **Architecture & Networking Guide:** See [docs/architecture.md](docs/architecture.md) for automated tunnel setups and cross-machine topologies.
-
----
-
-### 4. How to Create a New Session
-
-You can launch a supervised agent session directly from the UI without touching tmux manually:
-
-* **In Web GUI:**
-  1. Click **`+ New Session`** in the top navbar (or click the **`＋`** icon on any project folder).
-  2. Select the target **Host** (e.g. `local` or `gpu-box`).
-  3. Choose the **Agent** (`Claude Code`, `Antigravity`, or `Codex`).
-  4. Enter or browse the **Project Directory** path.
-  5. *(Optional)* Provide an initial prompt instruction.
-  6. Click **Spawn Session** — an interactive tab will open immediately with full keyboard control.
-* **In TUI:**
-  * Highlight any project group and press **`s`** to launch a new session wizard.
-
----
-
-### 5. How to Delete, Archive, and Manage Sessions
-
-* **In Web GUI:**
-  * **Switch / Open Tab:** Click on any session row in the sidebar tree.
-  * **Close Tab:** Click the **`✕`** icon on the tab header or middle-click the tab.
-  * **Session Action Menu:** Right-click any session row to access:
-    * 💻 **Open in VS Code:** Launches your editor in the session's workspace.
-    * 📖 **View Project Docs:** Reads `task.md`, `README.md`, or `AGENTS.md`.
-    * 🔄 **Restart Session:** Restarts the underlying tmux process.
-    * 🛑 **Kill Process:** Sends a termination signal to the agent process.
-    * 📦 **Archive Session:** Moves the session to the archived view.
-    * 🗑️ **Delete Session:** Permanently removes session records.
-* **In TUI:**
-  * `Space` / `Enter` / `a`: Attach in-place to tmux session.
-  * `o`: Open workspace in VS Code.
-  * `V`: View documentation.
-  * `r`: Restart session.
-  * `k`: Terminate (kill) process.
-  * `x`: Archive session (`v` to toggle archived view).
-  * `d`: Delete session.
-
----
-
-## 🏗️ Architecture & Component Overview
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                             USER INTERFACES                                 │
-│                                                                             │
-│   ┌───────────────────────────────┐     ┌───────────────────────────────┐   │
-│   │     TUI Client (Bubble Tea)   │     │      Web Dashboard & PWA      │   │
-│   │    `cmd/ackbar/main.go`       │     │   `web/index.html` + xterm.js │   │
-│   └───────────────┬───────────────┘     └───────────────┬───────────────┘   │
-└───────────────────┼─────────────────────────────────────┼───────────────────┘
-                    │                                     │
-                    │ REST / SSE (/v1/events)             │ WebSocket PTY
-                    ▼                                     ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                          LOCAL DAEMON ENGINE (ackbard)                      │
-│                                                                             │
-│  ┌───────────────────────┐  ┌──────────────────────┐  ┌──────────────────┐  │
-│  │   HTTP Control Plane  │  │  PTY WS Multiplexer  │  │ SSE Broadcaster  │  │
-│  └───────────┬───────────┘  └──────────┬───────────┘  └────────┬─────────┘  │
-│              │                         │                       │            │
-│  ┌───────────▼─────────────────────────▼───────────────────────▼──────────┐  │
-│  │                     Pure Go SQLite (ackbard.db)                        │  │
-│  └─────────────────────────────────────┬──────────────────────────────────┘  │
-│                                        │                                     │
-│  ┌─────────────────────────────────────▼──────────────────────────────────┐  │
-│  │                       Tmux Process Supervisor                          │  │
-│  │               (Local Sessions & PTY Terminal Streams)                  │  │
-│  └────────────────────────────────────────────────────────────────────────┘  │
-└────────────────────────────────────────┬────────────────────────────────────┘
-                                         │
-                                         │ SSH Tunnel (ssh -L 7778:127.0.0.1:7777)
-                                         ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                        REMOTE DAEMON ENGINE (ackbard)                       │
-│                      (Cloud GPU Box / Remote Linux Server)                  │
-│                                                                             │
-│  ┌────────────────────────────────────────────────────────────────────────┐  │
-│  │   HTTP Server (127.0.0.1:7777) + Pure Go SQLite + Tmux Supervisor      │  │
-│  └────────────────────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-### Core Components:
-1. **`ackbard` ([cmd/ackbard/main.go](cmd/ackbard/main.go)):** The background daemon. Listens on `127.0.0.1:7777`, manages SQLite state, supervises tmux processes, streams SSE notifications, and multiplexes terminal PTY connections.
-2. **`ackbar` ([cmd/ackbar/main.go](cmd/ackbar/main.go)):** The terminal dashboard built with Charm.sh Bubble Tea. Handles keyboard-centric navigation and in-place tmux attachment.
-3. **`ackbar-hook` ([cmd/ackbar-hook/main.go](cmd/ackbar-hook/main.go)):** A unified stdin hook shim binary for forwarding agent lifecycle events to `ackbard`.
+> 📖 **Architecture & Networking Details:** See [docs/architecture.md](docs/architecture.md).
 
 ---
 
 ## 📚 Documentation Index
 
-Comprehensive guides for every subsystem are located in the `docs/` directory:
+Comprehensive guides for every component and subsystem are available in the `docs/` directory:
 
-| Guide | Description |
-| :--- | :--- |
-| 🌐 **[Architecture & Networking](docs/architecture.md)** | Multi-host topology, SSH tunneling, security model, and control plane design. |
-| ⚙️ **[Daemon Engine & API Reference](docs/daemon.md)** | REST endpoints, SQLite auto-migrations, SSE broadcaster, and PTY WebSocket multiplexer. |
-| 🖥️ **[TUI Controls & Keybindings](docs/tui.md)** | Charm Bubble Tea dashboard layout, keyboard shortcuts, and tmux in-place attachment. |
-| 🤖 **[Agent Providers & Token Limits](docs/providers.md)** | Claude Code, Antigravity, and Codex adapters, subagent filtering, and dynamic token calculation. |
-| 🏷️ **[Session Naming & Caching](docs/session-naming.md)** | Title resolution hierarchy, transcript parsing, and tiered metadata caching rules. |
-| 🔨 **[Building & Testing](docs/building.md)** | Toolchain prerequisites, manual build steps, automated test suite, and local dev mode. |
-| 📦 **[Distribution & Upgrades](docs/distribution.md)** | Homebrew Tap setup, GoReleaser automation, GitHub releases, and remote host auto-upgrade. |
-| 🎙️ **[Voice Companion & Audio Briefings](docs/voice-companion.md)** | Speech architecture, hands-free conversational audio briefings, and mobile companion plans. |
+### 🖥️ User Interfaces
+* 📱 **[Mobile App (iOS & Android)](docs/mobile.md):** Attention queue, chat transcripts, mobile terminal, and Tailscale setup.
+* 🌐 **[Web Dashboard & PWA](docs/web.md):** Browser control plane, xterm.js multiplexing, and command palette.
+* 🖥️ **[Terminal UI (TUI)](docs/tui.md):** Charm Bubble Tea dashboard layout, shortcuts, and tmux attachment.
+
+### ⚙️ Architecture & Infrastructure
+* 🌐 **[Architecture & Networking](docs/architecture.md):** Multi-host topology, SSH tunneling, and security model.
+* ⚙️ **[Daemon Engine & API Reference](docs/daemon.md):** REST endpoints, SQLite persistence, SSE streaming, and PTY multiplexer.
+* 🤖 **[Agent Providers & Token Limits](docs/providers.md):** Claude Code, Antigravity, and Codex integrations and token window calculation.
+* 🏷️ **[Session Naming & Caching](docs/session-naming.md):** Title resolution hierarchy and tiered metadata caching rules.
+* 🔨 **[Building & Testing](docs/building.md):** Prerequisites, build commands, and test suites.
+* 📦 **[Distribution & Upgrades](docs/distribution.md):** Packaging, Homebrew formulas, and GoReleaser automation.
+* 🎙️ **[Voice Companion & Audio Briefings](docs/voice-companion.md):** Conversational speech architecture and audio briefing pipeline.
 
 ---
 
 ## 📄 License
 
-This project is licensed under the **MIT License** — see the [LICENSE](LICENSE) file for details.
+Ackbar is open-source software licensed under the **[MIT License](LICENSE)**.

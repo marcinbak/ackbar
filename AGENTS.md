@@ -20,9 +20,12 @@ Ackbar is a lightweight, cross-machine control plane and session manager designe
 
 Detailed architectural and technical domain documentation is organized in the `docs/` directory:
 
+*   **User Interface Clients:**
+    *   **Mobile App (iOS & Android):** See [docs/mobile.md](file:///Users/dev4u/Work/Ackbar/docs/mobile.md) for Flutter architecture, Attention queue, fullscreen mode, chat transcripts, and live terminal.
+    *   **Web Dashboard & PWA:** See [docs/web.md](file:///Users/dev4u/Work/Ackbar/docs/web.md) for browser multiplexing, xterm.js tabs, and command palette.
+    *   **TUI Dashboard & Controls:** See [docs/tui.md](file:///Users/dev4u/Work/Ackbar/docs/tui.md) for keybindings, tree organization, category subgroups, and tmux attachment.
 *   **Architecture & Networking:** See [docs/architecture.md](file:///Users/dev4u/Work/Ackbar/docs/architecture.md) for cross-machine design, control plane topology, and SSH tunneling.
 *   **Daemon Engine:** See [docs/daemon.md](file:///Users/dev4u/Work/Ackbar/docs/daemon.md) for API routes, SQLite migrations, SSE broadcasts, and process supervision.
-*   **TUI Dashboard & Controls:** See [docs/tui.md](file:///Users/dev4u/Work/Ackbar/docs/tui.md) for keybindings, tree organization, category subgroups, and tmux attachment.
 *   **Agent Providers & Token Limits:** See [docs/providers.md](file:///Users/dev4u/Work/Ackbar/docs/providers.md) for Claude Code, Antigravity, and Codex integrations, dynamic context window limits, and subagent filtering.
 *   **Session Naming & Caching:** See [docs/session-naming.md](file:///Users/dev4u/Work/Ackbar/docs/session-naming.md) for title resolution hierarchy and tiered caching rules.
 *   **Building & Testing:** See [docs/building.md](file:///Users/dev4u/Work/Ackbar/docs/building.md) for prerequisite packages, compilation steps, test suite execution, and local dev mode setup.
@@ -43,10 +46,12 @@ Detailed architectural and technical domain documentation is organized in the `d
 │   ├── client/         # TUI model, views, keybinds, and API client helpers
 │   ├── daemon/         # SQLite DB, HTTP server routes, SSE streaming, project normalizer
 │   ├── provider/       # Agent adapters (Claude Code, Codex, Antigravity)
-│   └── tmux/           # Tmux process supervision wrapper (Spawn, Kill, GetPID)
-└── docs/
-    ├── building.md     # Build & test documentation
-    └── distribution.md # Packaging & upgrade documentation
+│   ├── tmux/           # Tmux process supervision wrapper (Spawn, Kill, GetPID)
+│   └── web/            # Embedded Web GUI static assets and xterm multiplexer
+├── mobile/             # Native Flutter companion application (iOS & Android)
+│   ├── lib/            # Riverpod state, decoupled theme, and feature presentation screens
+│   └── test/           # Mobile unit and widget test suite
+└── docs/               # Technical subsystem architecture and user guides
 ```
 
 ---
