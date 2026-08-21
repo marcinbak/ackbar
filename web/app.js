@@ -191,13 +191,17 @@
   function getAgentBadgeHtml(agent, iconOnly = false) {
     const a = (agent || 'claude-code').toLowerCase();
     if (a.includes('claude')) {
-      return `<span class="agent-icon-badge claude-code" title="Claude Code (Anthropic)">✳️${iconOnly ? '' : ' claude'}</span>`;
-    } else if (a.includes('antigravity') || a.includes('agy')) {
-      return `<span class="agent-icon-badge antigravity" title="Google Antigravity">🪐${iconOnly ? '' : ' antigravity'}</span>`;
-    } else if (a.includes('codex')) {
-      return `<span class="agent-icon-badge codex" title="OpenAI Codex">⚡${iconOnly ? '' : ' codex'}</span>`;
+      const svg = `<svg class="agent-logo-svg claude-logo" viewBox="0 0 24 24" width="12" height="12" fill="currentColor"><path d="M12 2a1.5 1.5 0 0 1 1.5 1.5v3.1l2.19-2.19a1.5 1.5 0 1 1 2.12 2.12L15.62 8.72h3.1a1.5 1.5 0 0 1 0 3h-3.1l2.19 2.19a1.5 1.5 0 1 1-2.12 2.12L13.5 13.84v3.1a1.5 1.5 0 0 1-3 0v-3.1l-2.19 2.19a1.5 1.5 0 0 1-2.12-2.12L8.38 11.72H5.28a1.5 1.5 0 0 1 0-3h3.1L6.19 6.53a1.5 1.5 0 0 1 2.12-2.12L10.5 6.6V3.5A1.5 1.5 0 0 1 12 2z"/></svg>`;
+      return `<span class="agent-icon-badge claude-code" title="Claude Code (Anthropic)">${svg}${iconOnly ? '' : ' claude'}</span>`;
+    } else if (a.includes('antigravity') || a.includes('agy') || a.includes('gemini')) {
+      const svg = `<svg class="agent-logo-svg antigravity-logo" viewBox="0 0 24 24" width="12" height="12" fill="currentColor"><path d="M12 2C12 7.52 7.52 12 2 12C7.52 12 12 16.48 12 22C12 16.48 16.48 12 22 12C16.48 12 12 7.52 12 2Z"/></svg>`;
+      return `<span class="agent-icon-badge antigravity" title="Google Antigravity">${svg}${iconOnly ? '' : ' antigravity'}</span>`;
+    } else if (a.includes('codex') || a.includes('openai')) {
+      const svg = `<svg class="agent-logo-svg codex-logo" viewBox="0 0 24 24" width="12" height="12" fill="currentColor"><path d="M22.28 9.57a5.64 5.64 0 0 0-.48-4.6 5.8 5.8 0 0 0-4.04-2.82 5.76 5.76 0 0 0-5.18 1.45l-.76.76V1.75a1.75 1.75 0 0 0-3.5 0v5.82L7.25 6.5a5.75 5.75 0 0 0-4.87.65 5.78 5.78 0 0 0-2.5 4.24 5.68 5.68 0 0 0 .8 4.56 5.77 5.77 0 0 0 4.02 2.82 5.76 5.76 0 0 0 5.2-1.46l.76-.75v2.62a1.75 1.75 0 0 0 3.5 0v-5.83l1.07 1.07a5.76 5.76 0 0 0 4.88-.65 5.78 5.78 0 0 0 2.5-4.24 5.68 5.68 0 0 0-.33-1.46z"/></svg>`;
+      return `<span class="agent-icon-badge codex" title="OpenAI Codex">${svg}${iconOnly ? '' : ' codex'}</span>`;
     }
-    return `<span class="agent-icon-badge" title="Agent: ${agent}">⚙${iconOnly ? '' : ' ' + agent}</span>`;
+    const svg = `<svg class="agent-logo-svg generic-logo" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><line x1="7" y1="8" x2="10" y2="8"/><line x1="7" y1="12" x2="17" y2="12"/></svg>`;
+    return `<span class="agent-icon-badge" title="Agent: ${agent}">${svg}${iconOnly ? '' : ' ' + agent}</span>`;
   }
 
   // DOM Elements

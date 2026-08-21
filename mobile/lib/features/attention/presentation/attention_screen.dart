@@ -8,6 +8,7 @@ import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_typography.dart';
 import '../../../core/widgets/ackbar_app_bar.dart';
+import '../../../core/widgets/agent_logo.dart';
 import '../../../core/widgets/glass_card.dart';
 import '../../../core/widgets/segmented_filter_tabs.dart';
 import '../../../core/widgets/status_badge.dart';
@@ -339,7 +340,7 @@ class _AttentionScreenState extends ConsumerState<AttentionScreen> {
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Text(session.agentSymbol, style: const TextStyle(fontSize: 11)),
+                    AgentLogo(agent: session.agent, size: 11, color: session.agentColor),
                     const SizedBox(width: 4),
                     Text(
                       session.agentDisplayName,
