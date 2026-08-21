@@ -417,18 +417,27 @@ class SessionDetailSheet extends ConsumerWidget {
                                     borderRadius: AppSpacing.roundedSm,
                                     border: Border.all(color: AppColors.outlineSubtle, width: 0.5),
                                   ),
-                                  child: SingleChildScrollView(
-                                    controller: scrollController,
-                                    child: MarkdownBody(
-                                      data: snapshot.data!,
-                                      styleSheet: MarkdownStyleSheet(
-                                        p: AppTypography.codeXs.copyWith(color: AppColors.textSecondary, fontSize: 11),
-                                        code: AppTypography.codeXs.copyWith(color: AppColors.infoCyan, backgroundColor: Colors.transparent),
-                                        h1: AppTypography.titleMedium.copyWith(color: AppColors.textPrimary),
-                                        h2: AppTypography.titleSmall.copyWith(color: AppColors.textPrimary),
-                                        h3: AppTypography.bodyMedium.copyWith(color: AppColors.textPrimary, fontWeight: FontWeight.bold),
-                                      ),
-                                    ),
+                                  child: Builder(
+                                    builder: (context) {
+                                      WidgetsBinding.instance.addPostFrameCallback((_) {
+                                        if (scrollController.hasClients) {
+                                          scrollController.jumpTo(scrollController.position.maxScrollExtent);
+                                        }
+                                      });
+                                      return SingleChildScrollView(
+                                        controller: scrollController,
+                                        child: MarkdownBody(
+                                          data: snapshot.data!,
+                                          styleSheet: MarkdownStyleSheet(
+                                            p: AppTypography.codeXs.copyWith(color: AppColors.textSecondary, fontSize: 11),
+                                            code: AppTypography.codeXs.copyWith(color: AppColors.infoCyan, backgroundColor: Colors.transparent),
+                                            h1: AppTypography.titleMedium.copyWith(color: AppColors.textPrimary),
+                                            h2: AppTypography.titleSmall.copyWith(color: AppColors.textPrimary),
+                                            h3: AppTypography.bodyMedium.copyWith(color: AppColors.textPrimary, fontWeight: FontWeight.bold),
+                                          ),
+                                        ),
+                                      );
+                                    },
                                   ),
                                 )),
                     ),

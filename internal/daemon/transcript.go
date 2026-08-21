@@ -232,8 +232,11 @@ func loadClaudeTranscript(t *Transcript, home, sessionID, cwd string) error {
 		}
 
 		if msgType == "user" {
+			var fullText string
 			if msgObj, ok := raw["message"].(map[string]interface{}); ok {
-				if contentArr, ok := msgObj["content"].([]interface{}); ok {
+				if contentStr, ok := msgObj["content"].(string); ok {
+					fullText = contentStr
+				} else if contentArr, ok := msgObj["content"].([]interface{}); ok {
 					var textParts []string
 					for _, cItem := range contentArr {
 						if cMap, ok := cItem.(map[string]interface{}); ok {
@@ -242,21 +245,35 @@ func loadClaudeTranscript(t *Transcript, home, sessionID, cwd string) error {
 									textParts = append(textParts, txt)
 								}
 							}
+						} else if cStr, ok := cItem.(string); ok && cStr != "" {
+							textParts = append(textParts, cStr)
 						}
 					}
-					fullText := strings.Join(textParts, "\n")
-					if fullText != "" && !strings.Contains(fullText, "<EXTREMELY_IMPORTANT>") {
-						t.Messages = append(t.Messages, TranscriptMessage{
-							Role:      "user",
-							Content:   fullText,
-							Timestamp: ts,
-						})
-					}
+					fullText = strings.Join(textParts, "\n")
 				}
+			} else if contentStr, ok := raw["content"].(string); ok {
+				fullText = contentStr
+			} else if textStr, ok := raw["text"].(string); ok {
+				fullText = textStr
+			}
+
+			fullText = strings.TrimSpace(fullText)
+			if fullText != "" && !strings.Contains(fullText, "<EXTREMELY_IMPORTANT>") {
+				t.Messages = append(t.Messages, TranscriptMessage{
+					Role:      "user",
+					Content:   fullText,
+					Timestamp: ts,
+				})
 			}
 		} else if msgType == "assistant" {
 			if msgObj, ok := raw["message"].(map[string]interface{}); ok {
-				if contentArr, ok := msgObj["content"].([]interface{}); ok {
+				if contentStr, ok := msgObj["content"].(string); ok && contentStr != "" {
+					t.Messages = append(t.Messages, TranscriptMessage{
+						Role:      "assistant",
+						Content:   contentStr,
+						Timestamp: ts,
+					})
+				} else if contentArr, ok := msgObj["content"].([]interface{}); ok {
 					var textParts []string
 					var tools []string
 					for _, cItem := range contentArr {
@@ -299,19 +316,36 @@ func encodeClaudeProjectDir(p string) string {
 
 func cleanAntigravityPrompt(raw string) string {
 	s := raw
-	if strings.Contains(s, "<USER_REQUEST>") && strings.Contains(s, "</USER_REQUEST>") {
+
+	// If contains <USER_REQUEST>...</USER_REQUEST>, extract the user prompt
+	if strings.Contains(s, "<USER_REQUEST>") {
 		start := strings.Index(s, "<USER_REQUEST>") + len("<USER_REQUEST>")
-		end := strings.Index(s, "</USER_REQUEST>")
-		if end > start {
+		if end := strings.Index(s, "</USER_REQUEST>"); end > start {
 			s = s[start:end]
+		} else {
+			s = s[start:]
 		}
 	}
-	// Strip metadata / setting tags
+
+	// Remove <CONTEXT_SUMMARY>...</CONTEXT_SUMMARY>
+	if start := strings.Index(s, "<CONTEXT_SUMMARY>"); start != -1 {
+		if end := strings.Index(s, "</CONTEXT_SUMMARY>"); end != -1 {
+			s = s[:start] + s[end+len("</CONTEXT_SUMMARY>"):]
+		}
+	}
+
+	// Remove system/metadata tags
 	for _, tag := range []string{"<ADDITIONAL_METADATA>", "<USER_SETTINGS_CHANGE>", "<SYSTEM_MESSAGE>"} {
 		if idx := strings.Index(s, tag); idx != -1 {
-			s = s[:idx]
+			if endTag := "</" + strings.Trim(tag, "<>"); strings.Contains(s, endTag) {
+				endIdx := strings.Index(s, endTag) + len(endTag)
+				s = s[:idx] + s[endIdx:]
+			} else {
+				s = s[:idx]
+			}
 		}
 	}
+
 	return strings.TrimSpace(s)
 }
 
