@@ -1257,23 +1257,7 @@
           return false;
         }
       }
-      // 5. Cmd+V / Ctrl+V pastes clipboard text directly into terminal session
-      if ((event.metaKey || event.ctrlKey) && (event.key === 'v' || event.key === 'V')) {
-        if (event.type === 'keydown') {
-          if (navigator.clipboard && navigator.clipboard.readText) {
-            navigator.clipboard.readText().then(clipText => {
-              if (clipText) {
-                const currentTab = state.openTabs.get(tabId);
-                if (currentTab && currentTab.socket && currentTab.socket.readyState === WebSocket.OPEN) {
-                  currentTab.socket.send(clipText);
-                }
-              }
-            }).catch(() => {});
-          }
-        }
-        return false;
-      }
-      // 6. Allow Cmd+1..9 to switch tabs
+      // 5. Allow Cmd+1..9 to switch tabs
       if ((event.metaKey || event.ctrlKey) && event.key >= '1' && event.key <= '9') {
         if (event.type === 'keydown') {
           const tabIndex = parseInt(event.key, 10) - 1;
