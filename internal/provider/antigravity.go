@@ -81,7 +81,7 @@ func (a *AntigravityProvider) ParseHook(eventName string, payload []byte) (*daem
 					Since:    time.Now(),
 				}
 				if question != "" {
-					event.Activity = "Question: " + truncateTitle(question)
+					event.Activity = "Question: " + daemon.TruncateTitle(question)
 				} else {
 					event.Activity = "Waiting for user response"
 				}
