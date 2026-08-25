@@ -2951,6 +2951,76 @@ ${session.last_prompt}
     }
   }
 
+  // Helper: Intelligent Cross-Host Path Translation
+  function translatePathForHost(currentPath, fromHost, toHost) {
+    if (!currentPath || fromHost === toHost) return currentPath;
+
+    // 1. Direct Project Key Matching on target host
+    const srcSess = (state.sessions || []).find(s => (s.host || 'local') === fromHost && s.cwd === currentPath);
+    if (srcSess && srcSess.project_key) {
+      const tgtSess = (state.sessions || []).find(s => (s.host || 'local') === toHost && s.project_key === srcSess.project_key && s.cwd);
+      if (tgtSess && tgtSess.cwd) return tgtSess.cwd;
+    }
+
+    // 2. Project Directory Basename Matching on target host
+    const cleanPath = currentPath.replace(/\/+$/, '');
+    const currentBase = cleanPath.split('/').pop();
+    if (currentBase) {
+      const tgtMatch = (state.sessions || []).find(s => (s.host || 'local') === toHost && s.cwd && (s.cwd.endsWith('/' + currentBase) || s.cwd.split('/').pop() === currentBase));
+      if (tgtMatch && tgtMatch.cwd) return tgtMatch.cwd;
+
+      // Check target host configured remote_cwd
+      const targetHostRec = (state.hosts || []).find(h => h.name === toHost);
+      if (targetHostRec && targetHostRec.remote_cwd && toHost !== 'local') {
+        const root = targetHostRec.remote_cwd.replace(/\/+$/, '');
+        return `${root}/${currentBase}`;
+      }
+    }
+
+    // 3. Standard Home Prefix Translation (macOS /Users/<user> <-> Linux /home/<user>)
+    if ((fromHost === 'local' || currentPath.startsWith('/Users/')) && toHost !== 'local') {
+      // macOS -> Linux
+      if (currentPath.startsWith('/Users/')) {
+        return currentPath.replace(/^\/Users\/([^/]+)/, '/home/$1');
+      }
+    } else if (fromHost !== 'local' && toHost === 'local') {
+      // Linux -> macOS
+      if (currentPath.startsWith('/home/')) {
+        return currentPath.replace(/^\/home\/([^/]+)/, '/Users/$1');
+      }
+    }
+
+    return currentPath;
+  }
+
+  // Helper: Get relevant folders for a specific host
+  function getFoldersForHost(targetHost) {
+    const hostSessions = (state.sessions || []).filter(s => (s.host || 'local') === targetHost && s.cwd);
+    const hostCwds = new Set(hostSessions.map(s => s.cwd));
+
+    // Also include tree node linked project dirs for this host or generic
+    (state.treeNodes || []).forEach(n => {
+      if (n.project_dir && (!n.host || n.host === targetHost)) {
+        hostCwds.add(n.project_dir);
+      }
+    });
+
+    // Check host configured remote_cwd
+    const targetHostRec = (state.hosts || []).find(h => h.name === targetHost);
+    if (targetHostRec && targetHostRec.remote_cwd) {
+      hostCwds.add(targetHostRec.remote_cwd);
+    }
+
+    // If target host has few or no session history yet, translate known paths from other hosts
+    const allUnique = Array.from(new Set((state.sessions || []).map(s => s.cwd).filter(Boolean)));
+    allUnique.forEach(p => {
+      const translated = translatePathForHost(p, 'local', targetHost);
+      if (translated) hostCwds.add(translated);
+    });
+
+    return Array.from(hostCwds).sort();
+  }
+
   // New Session Modal Launcher
   async function showNewSessionModal(prefillGroup = '') {
     const modal = document.getElementById('modalNewSession');
@@ -2961,6 +3031,13 @@ ${session.last_prompt}
     const folderInput = document.getElementById('newSessionFolder');
     const folderList = document.getElementById('folderSuggestions');
     const groupSelect = document.getElementById('newSessionGroup');
+
+    // Determine initial active host
+    let currentSelectedHost = 'local';
+    const activeTab = state.openTabs.get(state.activeTabId);
+    if (activeTab && activeTab.session && activeTab.session.host) {
+      currentSelectedHost = activeTab.session.host;
+    }
 
     // Helper: Dynamically fetch & populate available agents for the chosen host
     async function updateAgentOptions(targetHost) {
@@ -3008,7 +3085,49 @@ ${session.last_prompt}
       }
     }
 
-    // 1. Populate Hosts
+    // Helper: Update folder suggestions datalist and adapt folderInput.value on host change
+    function updateFolderSuggestions(targetHost, prevHost = null) {
+      if (!folderList) return;
+      const hostFolders = getFoldersForHost(targetHost);
+      folderList.innerHTML = '';
+      hostFolders.forEach(c => {
+        const opt = document.createElement('option');
+        opt.value = c;
+        folderList.appendChild(opt);
+      });
+
+      // If user switched hosts, translate the current folder path intelligently
+      if (prevHost && prevHost !== targetHost && folderInput) {
+        const oldVal = folderInput.value.trim();
+        if (oldVal) {
+          const translated = translatePathForHost(oldVal, prevHost, targetHost);
+          if (translated && translated !== oldVal) {
+            folderInput.value = translated;
+          } else if (hostFolders.length > 0 && !hostFolders.includes(oldVal)) {
+            // Check if any host folder matches the basename
+            const base = oldVal.replace(/\/+$/, '').split('/').pop();
+            const matched = hostFolders.find(f => f.endsWith('/' + base) || f.split('/').pop() === base);
+            if (matched) {
+              folderInput.value = matched;
+            } else {
+              folderInput.value = hostFolders[0];
+            }
+          }
+        } else if (hostFolders.length > 0) {
+          folderInput.value = hostFolders[0];
+        }
+      }
+    }
+
+    // 1. Check if prefillGroup dictates a specific host or project directory
+    if (prefillGroup) {
+      const matchedNode = (state.treeNodes || []).find(n => n.path === prefillGroup);
+      if (matchedNode && matchedNode.host) {
+        currentSelectedHost = matchedNode.host;
+      }
+    }
+
+    // 2. Populate Hosts
     if (hostSelect) {
       hostSelect.innerHTML = '<option value="local">local (This Machine)</option>';
       (state.hosts || []).forEach(h => {
@@ -3016,17 +3135,22 @@ ${session.last_prompt}
           const opt = document.createElement('option');
           opt.value = h.name;
           opt.textContent = `${formatHostLabel(h.name)} (${h.url || 'remote'})`;
+          if (h.name === currentSelectedHost) opt.selected = true;
           hostSelect.appendChild(opt);
         }
       });
+      if (currentSelectedHost === 'local') hostSelect.value = 'local';
 
-      // Update agents when host selection changes
+      // Update agents & folders when host selection changes
       hostSelect.onchange = () => {
-        updateAgentOptions(hostSelect.value);
+        const newHost = hostSelect.value;
+        updateFolderSuggestions(newHost, currentSelectedHost);
+        currentSelectedHost = newHost;
+        updateAgentOptions(newHost);
       };
     }
 
-    // 2. Populate Groups & prefill linked project folder if group has one
+    // 3. Populate Groups & prefill linked project folder if group has one
     if (groupSelect) {
       groupSelect.innerHTML = '<option value="">(Default / Unassigned)</option>';
       const allPaths = new Set();
@@ -3054,18 +3178,13 @@ ${session.last_prompt}
       });
     }
 
-    // 3. Populate Folder Suggestions from history
-    if (folderList) {
-      const uniqueCwds = Array.from(new Set((state.sessions || []).map(s => s.cwd).filter(Boolean))).sort();
-      folderList.innerHTML = '';
-      uniqueCwds.forEach(c => {
-        const opt = document.createElement('option');
-        opt.value = c;
-        folderList.appendChild(opt);
-      });
+    // 4. Initial folder suggestions population for selected host
+    updateFolderSuggestions(currentSelectedHost);
 
-      // Prefill: 1st check if prefillGroup has a linked project directory or child with project directory
-      if (prefillGroup && folderInput) {
+    // 5. Initial folder prefill
+    if (folderInput) {
+      folderInput.value = '';
+      if (prefillGroup) {
         const matchedNode = (state.treeNodes || []).find(n => n.path === prefillGroup);
         if (matchedNode && matchedNode.project_dir) {
           folderInput.value = matchedNode.project_dir;
@@ -3077,13 +3196,14 @@ ${session.last_prompt}
         }
       }
 
-      // If still empty, prefill active session's cwd or first available history path
-      if (folderInput && !folderInput.value) {
-        const activeTab = state.openTabs.get(state.activeTabId);
+      if (!folderInput.value) {
         if (activeTab && activeTab.session && activeTab.session.cwd) {
-          folderInput.value = activeTab.session.cwd;
-        } else if (uniqueCwds.length > 0) {
-          folderInput.value = uniqueCwds[0];
+          folderInput.value = translatePathForHost(activeTab.session.cwd, activeTab.session.host || 'local', currentSelectedHost);
+        } else {
+          const hostFolders = getFoldersForHost(currentSelectedHost);
+          if (hostFolders.length > 0) {
+            folderInput.value = hostFolders[0];
+          }
         }
       }
     }
@@ -3094,7 +3214,7 @@ ${session.last_prompt}
     }, 50);
 
     // Initial agent discovery for selected host
-    await updateAgentOptions(hostSelect ? hostSelect.value : 'local');
+    await updateAgentOptions(currentSelectedHost);
   }
 
   function hideNewSessionModal() {
