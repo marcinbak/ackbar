@@ -576,4 +576,3 @@ func TestSessionRename_SetsCustomTitleAndUpdatesCache(t *testing.T) {
 		t.Errorf("Expected titleCache entry with Source=custom, got %+v (ok=%v)", cached, ok)
 	}
 }
-

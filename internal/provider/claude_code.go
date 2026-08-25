@@ -332,4 +332,3 @@ func (c *ClaudeProvider) CheckHookConfig() (bool, string, error) {
 
 	return false, setupCmd, nil
 }
-
