@@ -1632,10 +1632,6 @@ body, html {
 }
 
 /* Terminal Drag & Drop Overlay */
-.terminal-tab-view {
-  position: relative;
-}
-
 .terminal-drop-overlay {
   position: absolute;
   inset: 0;
