@@ -368,8 +368,15 @@ func (s *Server) processHookEvent(p Provider, urlEventName string, headerHost st
 	if len(event.Roots) > 0 {
 		sess.Roots = event.Roots
 	}
-	if event.Name != "" && !isRawSessionName(event.Name) {
-		sess.Name = event.Name
+	// Respect Custom Title priority (never overwrite user-given custom title)
+	if sess.CustomTitle != "" {
+		sess.Name = sess.CustomTitle
+	} else if event.Name != "" && !isRawSessionName(event.Name) {
+		// Only adopt event.Name if session doesn't already have an established non-raw name,
+		// or if current name is raw/empty
+		if sess.Name == "" || isRawSessionName(sess.Name) {
+			sess.Name = event.Name
+		}
 	} else if isRawSessionName(sess.Name) {
 		// Attempt title resolution from disk
 		if sess.Agent == "antigravity" {
@@ -379,6 +386,12 @@ func (s *Server) processHookEvent(p Provider, urlEventName string, headerHost st
 		} else if sess.Agent == "claude-code" {
 			if meta := ReadClaudeSessionMeta(sess.Cwd, sess.NativeID); meta != nil && meta.Title != "" {
 				sess.Name = meta.Title
+				if meta.CustomTitle != "" {
+					sess.CustomTitle = meta.CustomTitle
+				}
+				if meta.AITitle != "" {
+					sess.AITitle = meta.AITitle
+				}
 			}
 		}
 	}
@@ -729,6 +742,7 @@ func (s *Server) handleSessionControl(w http.ResponseWriter, r *http.Request) {
 			name = bodyData.Name
 		}
 		sess.Name = name
+		sess.CustomTitle = name
 		if err := s.db.SaveSession(sess); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -4058,6 +4072,10 @@ func ReadClaudeSessionTitle(cwd, sessionID string) string {
 	return title
 }
 
+func TruncateTitle(text string) string {
+	return truncateTitle(text)
+}
+
 func truncateTitle(text string) string {
 	text = strings.TrimSpace(text)
 	if text == "" {
@@ -4152,6 +4170,28 @@ func IsRawSessionName(n string) bool {
 		return true
 	}
 	if strings.HasPrefix(n, "antigravity (") || strings.HasPrefix(n, "claude-code (") || strings.HasPrefix(n, "codex (") || strings.HasPrefix(n, "Claude Code (") || strings.HasPrefix(n, "Antigravity (") {
+		return true
+	}
+	if isGenericDirSlug(n) {
+		return true
+	}
+	return false
+}
+
+func isGenericDirSlug(n string) bool {
+	lastHyphen := strings.LastIndex(n, "-")
+	if lastHyphen <= 0 || lastHyphen == len(n)-1 {
+		return false
+	}
+	numPart := n[lastHyphen+1:]
+	for _, c := range numPart {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	prefix := n[:lastHyphen]
+	// Match lowercase directory slugs with no spaces (e.g. ngl-android-23, modemobile-1, skip2q-4)
+	if prefix == strings.ToLower(prefix) && !strings.Contains(prefix, " ") && !strings.Contains(prefix, "_") {
 		return true
 	}
 	return false

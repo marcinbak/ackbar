@@ -38,12 +38,14 @@ func (m *MockProvider) ParseHook(eventName string, payload []byte) (*Event, erro
 
 	sessionID, _ := data["session_id"].(string)
 	cwd, _ := data["cwd"].(string)
+	name, _ := data["name"].(string)
 	activity, _ := data["activity"].(string)
 
 	return &Event{
 		Agent:       "mock-agent",
 		NativeID:    sessionID,
 		Cwd:         cwd,
+		Name:        name,
 		EventName:   eventName,
 		State:       StateWorking,
 		Activity:    activity,
@@ -434,3 +436,144 @@ func TestServer_Respond_ManagedTmux(t *testing.T) {
 		t.Errorf("Expected StateWorking and nil Blocked, got state %v, blocked %+v", updated.State, updated.Blocked)
 	}
 }
+
+func TestIsRawSessionName(t *testing.T) {
+	rawTests := []struct {
+		input string
+		isRaw bool
+	}{
+		{"", true},
+		{"   ", true},
+		{"claude-code", true},
+		{"antigravity", true},
+		{"codex", true},
+		{"proc-12345", true},
+		{"ackbar-claude-code-abc", true},
+		{"e9e03db7-9a31-46a1-88d7-bd6e1b885092", true},
+		{"claude-code (e9e03db7)", true},
+		{"Antigravity (proc-555)", true},
+		{"ngl-android-23", true},
+		{"modemobile-1", true},
+		{"skip2q-4", true},
+		{"app-42", true},
+		{"Pick up NGL-234 React Native upgrade", false},
+		{"NGL-400 incremental Firebase messaging refactor", false},
+		{"Fix login crash on Android", false},
+		{"NGL-433", false},
+	}
+
+	for _, tt := range rawTests {
+		got := IsRawSessionName(tt.input)
+		if got != tt.isRaw {
+			t.Errorf("IsRawSessionName(%q) = %v; want %v", tt.input, got, tt.isRaw)
+		}
+	}
+}
+
+func TestSessionTitleStability_CustomTitleNotOverwrittenByHooks(t *testing.T) {
+	dbFile := "./test_title_stability.db"
+	defer os.Remove(dbFile)
+
+	db, err := InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := NewServer(db)
+	server.RegisterProvider(&MockProvider{})
+
+	// 1. Seed session with custom title
+	sess := &Session{
+		ID:          "mock-agent:local:session-stable-1",
+		Agent:       "mock-agent",
+		Host:        "local",
+		NativeID:    "session-stable-1",
+		Cwd:         "/Users/dev4u/Work/Modemobile/NGL/ngl-android",
+		Name:        "Given Custom Name",
+		CustomTitle: "Given Custom Name",
+		State:       StateWorking,
+		StartedAt:   time.Now(),
+		LastEventAt: time.Now(),
+	}
+	if err := db.SaveSession(sess); err != nil {
+		t.Fatalf("SaveSession failed: %v", err)
+	}
+
+	// 2. Ingest hook with a raw slug name via HTTP
+	payload := `{"session_id": "session-stable-1", "cwd": "/Users/dev4u/Work/Modemobile/NGL/ngl-android", "name": "ngl-android-23", "activity": "Running tool"}`
+	req := httptest.NewRequest("POST", "/v1/hooks/mock-agent", bytes.NewBufferString(payload))
+	w := httptest.NewRecorder()
+	server.Mux().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d", w.Code)
+	}
+
+	// Wait briefly for asynchronous background ingestion
+	time.Sleep(300 * time.Millisecond)
+
+	saved, err := db.GetSession("mock-agent:local:session-stable-1")
+	if err != nil || saved == nil {
+		t.Fatalf("Failed to retrieve session: %v", err)
+	}
+
+	if saved.Name != "Given Custom Name" {
+		t.Errorf("Expected Name to remain 'Given Custom Name', got %q", saved.Name)
+	}
+	if saved.CustomTitle != "Given Custom Name" {
+		t.Errorf("Expected CustomTitle to remain 'Given Custom Name', got %q", saved.CustomTitle)
+	}
+}
+
+func TestSessionRename_SetsCustomTitleAndUpdatesCache(t *testing.T) {
+	dbFile := "./test_rename_custom.db"
+	defer os.Remove(dbFile)
+
+	db, err := InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := NewServer(db)
+
+	sess := &Session{
+		ID:          "mock-agent:local:session-rename-1",
+		Agent:       "mock-agent",
+		Host:        "local",
+		NativeID:    "session-rename-1",
+		Cwd:         "/workspace/project",
+		Name:        "Old Name",
+		State:       StateIdle,
+		StartedAt:   time.Now(),
+		LastEventAt: time.Now(),
+	}
+	_ = db.SaveSession(sess)
+
+	req := httptest.NewRequest("POST", "/v1/sessions/control?action=rename&id=mock-agent:local:session-rename-1&name=Brand+New+Title", nil)
+	w := httptest.NewRecorder()
+	server.Mux().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK on rename, got %d (%s)", w.Code, w.Body.String())
+	}
+
+	saved, _ := db.GetSession("mock-agent:local:session-rename-1")
+	if saved.Name != "Brand New Title" {
+		t.Errorf("Expected Name 'Brand New Title', got %q", saved.Name)
+	}
+	if saved.CustomTitle != "Brand New Title" {
+		t.Errorf("Expected CustomTitle 'Brand New Title', got %q", saved.CustomTitle)
+	}
+
+	cacheKey := "/workspace/project:session-rename-1"
+	titleCacheMutex.RLock()
+	cached, ok := titleCache[cacheKey]
+	titleCacheMutex.RUnlock()
+
+	if !ok || cached.Title != "Brand New Title" || cached.Source != "custom" {
+		t.Errorf("Expected titleCache entry with Source=custom, got %+v (ok=%v)", cached, ok)
+	}
+}
+
