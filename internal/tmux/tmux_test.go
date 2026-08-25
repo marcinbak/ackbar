@@ -35,6 +35,15 @@ func TestTmuxSupervision(t *testing.T) {
 		t.Errorf("Expected session %s to exist", sessionName)
 	}
 
+	// 2b. Verify ListSessions finds it in batch
+	activeMap, err := ListSessions(ctx)
+	if err != nil {
+		t.Fatalf("ListSessions failed: %v", err)
+	}
+	if !activeMap[sessionName] {
+		t.Errorf("Expected ListSessions to contain %s, got: %v", sessionName, activeMap)
+	}
+
 	// 3. Get PID
 	pid, err := GetPID(ctx, sessionName)
 	if err != nil {

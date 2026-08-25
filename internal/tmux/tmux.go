@@ -80,6 +80,24 @@ func HasSession(ctx context.Context, sessionName string) bool {
 	return err == nil
 }
 
+// ListSessions returns a map of all currently active tmux session names.
+func ListSessions(ctx context.Context) (map[string]bool, error) {
+	cmd := exec.CommandContext(ctx, "tmux", "list-sessions", "-F", "#{session_name}")
+	out, err := cmd.Output()
+	if err != nil {
+		// If tmux is not running or has no sessions, return an empty map without error
+		return make(map[string]bool), nil
+	}
+	sessions := make(map[string]bool)
+	for _, line := range strings.Split(string(out), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed != "" {
+			sessions[trimmed] = true
+		}
+	}
+	return sessions, nil
+}
+
 // IsTmuxInstalled checks if the tmux binary is present in the system's PATH.
 func IsTmuxInstalled() bool {
 	_, err := exec.LookPath("tmux")

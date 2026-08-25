@@ -427,7 +427,16 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.verifySessionLiveness(r.Context(), sessions)
+	// Only verify liveness on active sessions to avoid endpoint latency & exec overhead
+	var active []*Session
+	for _, sess := range sessions {
+		if sess.State != StateEnded {
+			active = append(active, sess)
+		}
+	}
+	if len(active) > 0 {
+		s.verifySessionLiveness(r.Context(), active)
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(sessions)
@@ -459,7 +468,15 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	// Send initial list of sessions on connect
 	sessions, err := s.db.ListSessions()
 	if err == nil {
-		s.verifySessionLiveness(r.Context(), sessions)
+		var active []*Session
+		for _, sess := range sessions {
+			if sess.State != StateEnded {
+				active = append(active, sess)
+			}
+		}
+		if len(active) > 0 {
+			s.verifySessionLiveness(r.Context(), active)
+		}
 		for _, s := range sessions {
 			data, err := json.Marshal(s)
 			if err == nil {
@@ -2235,7 +2252,7 @@ func (s *Server) StartBackgroundLoop(ctx context.Context) {
 		// Run initial scan asynchronously on startup
 		go s.scanObservedSessions(ctx)
 
-		ticker := time.NewTicker(15 * time.Second)
+		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
 
 		for {
@@ -2244,13 +2261,55 @@ func (s *Server) StartBackgroundLoop(ctx context.Context) {
 				return
 			case <-ticker.C:
 				s.scanObservedSessions(ctx)
-				sessions, err := s.db.ListSessions()
-				if err == nil {
+				sessions, err := s.db.ListActiveSessions()
+				if err == nil && len(sessions) > 0 {
 					s.verifySessionLiveness(ctx, sessions)
 				}
 			}
 		}
 	}()
+}
+
+// readTail reads up to maxBytes from the end of a file to prevent high memory allocations
+func readTail(path string, maxBytes int64) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	stat, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+
+	size := stat.Size()
+	offset := int64(0)
+	if size > maxBytes {
+		offset = size - maxBytes
+	}
+
+	if _, err := file.Seek(offset, io.SeekStart); err != nil {
+		return nil, err
+	}
+
+	return io.ReadAll(file)
+}
+
+// readHead reads up to maxBytes from the beginning of a file to prevent reading multi-megabyte files
+func readHead(path string, maxBytes int64) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	buf := make([]byte, maxBytes)
+	n, err := file.Read(buf)
+	if err != nil && err != io.EOF {
+		return nil, err
+	}
+	return buf[:n], nil
 }
 
 func decodeClaudeProjectDirInfo(raw string) (baseRepoDir string, worktreeDir string) {
@@ -2357,7 +2416,7 @@ func decodeClaudeProjectDir(raw string) string {
 }
 
 func (s *Server) inspectAntigravityStatus(ctx context.Context, sess *Session) bool {
-	if sess == nil || sess.Agent != "antigravity" {
+	if sess == nil || sess.Agent != "antigravity" || sess.State == StateEnded {
 		return false
 	}
 	changed := false
@@ -2419,7 +2478,7 @@ func (s *Server) inspectAntigravityStatus(ctx context.Context, sess *Session) bo
 		}
 	}
 
-	// 2. Check transcript.jsonl for ask_question or plan approval
+	// 2. Check transcript.jsonl for ask_question or plan approval (using tail 64KB read to avoid reading entire file)
 	if home != "" && sess.NativeID != "" {
 		brainDirs := []string{
 			filepath.Join(home, ".gemini", "antigravity", "brain", sess.NativeID, ".system_generated", "logs", "transcript.jsonl"),
@@ -2427,7 +2486,7 @@ func (s *Server) inspectAntigravityStatus(ctx context.Context, sess *Session) bo
 			filepath.Join(home, ".antigravity", "brain", sess.NativeID, ".system_generated", "logs", "transcript.jsonl"),
 		}
 		for _, logPath := range brainDirs {
-			if data, err := os.ReadFile(logPath); err == nil {
+			if data, err := readTail(logPath, 64*1024); err == nil && len(data) > 0 {
 				lines := strings.Split(string(data), "\n")
 				for i := len(lines) - 1; i >= 0; i-- {
 					line := strings.TrimSpace(lines[i])
@@ -2519,7 +2578,14 @@ func (s *Server) inspectAntigravityStatus(ctx context.Context, sess *Session) bo
 }
 
 func (s *Server) verifySessionLiveness(ctx context.Context, sessions []*Session) {
+	// Query all active local tmux sessions once to avoid O(N) subprocess executions
+	activeTmux, _ := tmux.ListSessions(ctx)
+
 	for _, sess := range sessions {
+		if sess.State == StateEnded {
+			continue
+		}
+
 		if sess.Agent == "antigravity" {
 			if s.inspectAntigravityStatus(ctx, sess) {
 				_ = s.db.SaveSession(sess)
@@ -2538,7 +2604,11 @@ func (s *Server) verifySessionLiveness(ctx context.Context, sessions []*Session)
 
 		alive := true
 		if sess.Managed && sess.TmuxName != "" {
-			alive = tmux.HasSession(ctx, sess.TmuxName)
+			if sess.Host == "local" || sess.Host == "" {
+				alive = activeTmux[sess.TmuxName]
+			} else {
+				alive = tmux.HasSession(ctx, sess.TmuxName)
+			}
 		} else if !sess.Managed && sess.PID > 0 {
 			proc, err := os.FindProcess(sess.PID)
 			if err != nil {
@@ -2577,70 +2647,96 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 		hostName = h
 	}
 
-	// 0. Refresh names/titles/metadata and prune dead proc-<pid> sessions
-	if existingSessions, err := s.db.ListSessions(); err == nil {
-		for _, sess := range existingSessions {
-			if strings.HasPrefix(sess.NativeID, "proc-") {
-				pidStr := strings.TrimPrefix(sess.NativeID, "proc-")
-				if pidVal, pErr := strconv.Atoi(pidStr); pErr == nil && pidVal > 0 {
-					if !isProcessAlive(pidVal) {
-						_ = s.db.DeleteSession(sess.ID)
-						_ = s.db.DeleteSession(sess.NativeID)
-						continue
-					}
-				}
-			}
+	existingSessions, err := s.db.ListSessions()
+	if err != nil {
+		return
+	}
 
-			changed := false
-			if sess.Agent == "claude-code" && sess.Cwd != "" {
-				if meta := ReadClaudeSessionMeta(sess.Cwd, sess.NativeID); meta != nil {
-					if meta.Title != "" && meta.Title != sess.Name && !strings.HasPrefix(meta.Title, "<") {
-						sess.Name = meta.Title
-						changed = true
-					}
-					if meta.Entrypoint != "" && meta.Entrypoint != sess.Entrypoint {
-						sess.Entrypoint = meta.Entrypoint
-						changed = true
-					}
-					if meta.Kind != "" && meta.Kind != sess.Kind {
-						sess.Kind = meta.Kind
-						changed = true
-					}
-					if meta.Version != "" && meta.Version != sess.Version {
-						sess.Version = meta.Version
-						changed = true
-					}
-					if meta.ContextPct > 0 && meta.ContextPct != sess.ContextPct {
-						sess.ContextPct = meta.ContextPct
-						changed = true
-					}
-					if !meta.LastMessageAt.IsZero() && (sess.LastEventAt.IsZero() || meta.LastMessageAt.After(sess.LastEventAt)) {
-						sess.LastEventAt = meta.LastMessageAt
-						changed = true
-					}
+	// Build in-memory lookup indices to avoid repeated DB queries & inner loops
+	knownIDs := make(map[string]*Session, len(existingSessions))
+	knownByPID := make(map[int]*Session, len(existingSessions))
+	knownByNativeID := make(map[string]*Session, len(existingSessions))
+
+	for _, sess := range existingSessions {
+		knownIDs[sess.ID] = sess
+		if sess.PID > 0 {
+			knownByPID[sess.PID] = sess
+		}
+		if sess.NativeID != "" {
+			knownByNativeID[sess.NativeID] = sess
+		}
+	}
+
+	// 0. Refresh names/titles/metadata and prune dead proc-<pid> sessions
+	for _, sess := range existingSessions {
+		if strings.HasPrefix(sess.NativeID, "proc-") {
+			pidStr := strings.TrimPrefix(sess.NativeID, "proc-")
+			if pidVal, pErr := strconv.Atoi(pidStr); pErr == nil && pidVal > 0 {
+				if !isProcessAlive(pidVal) {
+					_ = s.db.DeleteSession(sess.ID)
+					_ = s.db.DeleteSession(sess.NativeID)
+					delete(knownIDs, sess.ID)
+					delete(knownByPID, pidVal)
+					delete(knownByNativeID, sess.NativeID)
+					continue
 				}
-			} else if sess.Agent == "antigravity" {
-				if title := ReadAntigravitySessionTitle(sess.Cwd, sess.NativeID); title != "" && title != sess.Name && !strings.HasPrefix(title, "<") {
-					sess.Name = title
+			}
+		}
+
+		// IMMUTABILITY GUARD: Ended sessions with established names are static and do not need disk rescans
+		if sess.State == StateEnded && sess.Name != "" && !isRawSessionName(sess.Name) {
+			continue
+		}
+
+		changed := false
+		if sess.Agent == "claude-code" && sess.Cwd != "" {
+			if meta := ReadClaudeSessionMeta(sess.Cwd, sess.NativeID); meta != nil {
+				if meta.Title != "" && meta.Title != sess.Name && !strings.HasPrefix(meta.Title, "<") {
+					sess.Name = meta.Title
 					changed = true
 				}
-				home, _ := os.UserHomeDir()
-				if home != "" && sess.NativeID != "" {
-					logPath := filepath.Join(home, ".gemini", "antigravity", "brain", sess.NativeID, ".system_generated", "logs", "transcript.jsonl")
-					if realCwd := extractAntigravityWorkspace(logPath, home); realCwd != "" && realCwd != sess.Cwd {
-						sess.Cwd = realCwd
-						sess.ProjectKey = GetProjectKey(realCwd)
-						changed = true
-					}
+				if meta.Entrypoint != "" && meta.Entrypoint != sess.Entrypoint {
+					sess.Entrypoint = meta.Entrypoint
+					changed = true
 				}
-				if s.inspectAntigravityStatus(ctx, sess) {
+				if meta.Kind != "" && meta.Kind != sess.Kind {
+					sess.Kind = meta.Kind
+					changed = true
+				}
+				if meta.Version != "" && meta.Version != sess.Version {
+					sess.Version = meta.Version
+					changed = true
+				}
+				if meta.ContextPct > 0 && meta.ContextPct != sess.ContextPct {
+					sess.ContextPct = meta.ContextPct
+					changed = true
+				}
+				if !meta.LastMessageAt.IsZero() && (sess.LastEventAt.IsZero() || meta.LastMessageAt.After(sess.LastEventAt)) {
+					sess.LastEventAt = meta.LastMessageAt
 					changed = true
 				}
 			}
-			if changed {
-				_ = s.db.SaveSession(sess)
-				s.broadcast(sess)
+		} else if sess.Agent == "antigravity" {
+			if title := ReadAntigravitySessionTitle(sess.Cwd, sess.NativeID); title != "" && title != sess.Name && !strings.HasPrefix(title, "<") {
+				sess.Name = title
+				changed = true
 			}
+			home, _ := os.UserHomeDir()
+			if home != "" && sess.NativeID != "" {
+				logPath := filepath.Join(home, ".gemini", "antigravity", "brain", sess.NativeID, ".system_generated", "logs", "transcript.jsonl")
+				if realCwd := extractAntigravityWorkspace(logPath, home); realCwd != "" && realCwd != sess.Cwd {
+					sess.Cwd = realCwd
+					sess.ProjectKey = GetProjectKey(realCwd)
+					changed = true
+				}
+			}
+			if s.inspectAntigravityStatus(ctx, sess) {
+				changed = true
+			}
+		}
+		if changed {
+			_ = s.db.SaveSession(sess)
+			s.broadcast(sess)
 		}
 	}
 
@@ -2748,16 +2844,10 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 
 				var existing *Session
 				if targetNativeID != "" {
-					existing, _ = s.db.GetSession(fmt.Sprintf("%s:%s:%s", agent, hostName, targetNativeID))
-					if existing == nil {
-						if allSessions, err := s.db.ListSessions(); err == nil {
-							for _, sObj := range allSessions {
-								if sObj.NativeID == targetNativeID {
-									existing = sObj
-									break
-								}
-							}
-						}
+					if ex, ok := knownIDs[fmt.Sprintf("%s:%s:%s", agent, hostName, targetNativeID)]; ok {
+						existing = ex
+					} else if ex, ok := knownByNativeID[targetNativeID]; ok {
+						existing = ex
 					}
 				}
 
@@ -2782,7 +2872,7 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 					sessID = fmt.Sprintf("%s:%s:%s", agent, hostName, targetNativeID)
 				}
 
-				existingObs, _ := s.db.GetSession(sessID)
+				existingObs := knownIDs[sessID]
 				if existingObs == nil {
 					sessionName := ""
 					if agent == "antigravity" && targetNativeID != "" {
@@ -2816,6 +2906,8 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 						LastEventAt: time.Now(),
 					}
 					_ = s.db.SaveSession(newSess)
+					knownIDs[sessID] = newSess
+					knownByPID[pid] = newSess
 					s.broadcast(newSess)
 				} else {
 					if existingObs.TmuxName != tmuxName || !existingObs.Managed {
@@ -2873,6 +2965,11 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 					continue
 				}
 
+				// Fast check: is this PID already mapped to an active session in our index?
+				if exSess, ok := knownByPID[pid]; ok && exSess.ID != fmt.Sprintf("%s:observed:proc-%d", hostName, pid) {
+					continue
+				}
+
 				var sID string
 				if agent == "claude-code" {
 					home, _ := os.UserHomeDir()
@@ -2880,39 +2977,9 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 						sID, _ = findClaudeSessionForPID(home, pid)
 					}
 					if sID == "" {
-						if cmdData, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid)); err == nil {
-							args := strings.Split(string(cmdData), "\x00")
-							for i, arg := range args {
-								if (arg == "--session-id" || arg == "-s" || arg == "--resume" || arg == "-r") && i+1 < len(args) {
-									cID := strings.TrimSpace(args[i+1])
-									if IsUUID(cID) {
-										sID = cID
-										break
-									}
-								}
-							}
-						}
-					}
-					if sID == "" {
-						if out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "args=").Output(); err == nil {
-							fields := strings.Fields(string(out))
-							for i, f := range fields {
-								if (f == "--session-id" || f == "-s" || f == "--resume" || f == "-r") && i+1 < len(fields) {
-									cID := strings.TrimSpace(fields[i+1])
-									if IsUUID(cID) {
-										sID = cID
-										break
-									}
-								}
-							}
-						}
-					}
-				} else if agent == "antigravity" {
-					if cmdData, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid)); err == nil {
-						args := strings.Split(string(cmdData), "\x00")
-						for i, arg := range args {
-							if (arg == "--conversation" || arg == "-c" || arg == "--conversation-id") && i+1 < len(args) {
-								cID := strings.TrimSpace(args[i+1])
+						for i, arg := range cmdFields {
+							if (arg == "--session-id" || arg == "-s" || arg == "--resume" || arg == "-r") && i+1 < len(cmdFields) {
+								cID := strings.TrimSpace(cmdFields[i+1])
 								if IsUUID(cID) {
 									sID = cID
 									break
@@ -2920,33 +2987,29 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 							}
 						}
 					}
-					if sID == "" {
-						if out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "args=").Output(); err == nil {
-							fields := strings.Fields(string(out))
-							for i, f := range fields {
-								if (f == "--conversation" || f == "-c" || f == "--conversation-id") && i+1 < len(fields) {
-									cID := strings.TrimSpace(fields[i+1])
-									if IsUUID(cID) {
-										sID = cID
-										break
-									}
-								}
+				} else if agent == "antigravity" {
+					for i, arg := range cmdFields {
+						if (arg == "--conversation" || arg == "-c" || arg == "--conversation-id") && i+1 < len(cmdFields) {
+							cID := strings.TrimSpace(cmdFields[i+1])
+							if IsUUID(cID) {
+								sID = cID
+								break
 							}
 						}
 					}
 				}
 
-				// Check if any existing session in the database already has this PID or native UUID
+				// Check if any existing session in the database already has this PID or native UUID using in-memory index
 				hasExistingMatch := false
-				if allSess, err := s.db.ListSessions(); err == nil {
-					for _, sObj := range allSess {
-						if (sObj.PID == pid && sObj.ID != fmt.Sprintf("%s:observed:proc-%d", hostName, pid)) || (sID != "" && sObj.NativeID == sID) {
+				if sID != "" {
+					if sObj, ok := knownByNativeID[sID]; ok {
+						if sObj.PID != pid {
 							sObj.PID = pid
 							_ = s.db.SaveSession(sObj)
 							_ = s.db.DeleteSession(fmt.Sprintf("%s:observed:proc-%d", hostName, pid))
-							hasExistingMatch = true
-							break
+							knownByPID[pid] = sObj
 						}
+						hasExistingMatch = true
 					}
 				}
 				if hasExistingMatch {
@@ -2956,7 +3019,7 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 				nativeID := fmt.Sprintf("proc-%d", pid)
 				sessID := fmt.Sprintf("%s:observed:%s", hostName, nativeID)
 
-				existing, _ := s.db.GetSession(sessID)
+				existing := knownIDs[sessID]
 				if existing == nil {
 					cwd := ""
 					if link, err := os.Readlink(fmt.Sprintf("/proc/%d/cwd", pid)); err == nil && link != "" {
@@ -3014,6 +3077,8 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 							}
 						}
 						_ = s.db.SaveSession(newSess)
+						knownIDs[sessID] = newSess
+						knownByPID[pid] = newSess
 						s.broadcast(newSess)
 					}
 				}
@@ -3037,91 +3102,94 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 								if s.db.IsSessionDeleted(sessID) || s.db.IsSessionDeleted(sessionUUID) {
 									continue
 								}
-								existing, _ := s.db.GetSession(sessID)
-								if existing == nil {
-									baseDir, wtDir := decodeClaudeProjectDirInfo(pDir.Name())
-									cwd := baseDir
-									if cwd == "" && wtDir != "" {
-										cwd = wtDir
-									}
-
-									meta := ReadClaudeSessionMeta(cwd, sessionUUID)
-									title := ""
-									if meta != nil {
-										if meta.CustomTitle != "" {
-											title = meta.CustomTitle
-										} else if meta.AITitle != "" {
-											title = meta.AITitle
-										} else if meta.FirstPrompt != "" && !strings.HasPrefix(meta.FirstPrompt, "/") && meta.FirstPrompt != "config" && meta.FirstPrompt != "claude" {
-											title = truncateTitle(meta.FirstPrompt)
-										} else if meta.Title != "" && !strings.HasPrefix(meta.Title, "/") && meta.Title != "config" && meta.Title != "claude" {
-											title = meta.Title
-										}
-									}
-									if title == "" {
-										rawTitle := ReadClaudeSessionTitle(cwd, sessionUUID)
-										if rawTitle != "" && !strings.HasPrefix(rawTitle, "/") && rawTitle != "config" && rawTitle != "claude" {
-											title = rawTitle
-										}
-									}
-									if title == "" {
-										if meta != nil && meta.LastPrompt != "" && !strings.HasPrefix(meta.LastPrompt, "/") {
-											title = truncateTitle(meta.LastPrompt)
-										}
-									}
-									if title == "" {
-										title = fmt.Sprintf("Claude Code (%s)", sessionUUID[:8])
-									}
-
-									stat, _ := f.Info()
-									modTime := time.Now()
-									isOld := false
-									if stat != nil {
-										modTime = stat.ModTime()
-										if time.Since(modTime) > 7*24*time.Hour {
-											isOld = true
-										}
-									}
-
-									branch := ""
-									if meta != nil && meta.GitBranch != "" {
-										branch = meta.GitBranch
-									} else if wtDir != "" {
-										branch = ResolveGitBranch(wtDir)
-									} else if cwd != "" {
-										branch = ResolveGitBranch(cwd)
-									}
-
-									newSess := &Session{
-										ID:          sessID,
-										Name:        title,
-										Agent:       "claude-code",
-										Host:        hostName,
-										NativeID:    sessionUUID,
-										Cwd:         cwd,
-										ProjectKey:  GetProjectKey(cwd),
-										State:       StateEnded,
-										Managed:     false,
-										Activity:    "Session ended",
-										StartedAt:   modTime,
-										LastEventAt: modTime,
-										ContextPct:  ReadClaudeContextUsage(cwd, sessionUUID),
-										GitBranch:   branch,
-										Archived:    isOld,
-									}
-									if meta != nil {
-										newSess.Entrypoint = meta.Entrypoint
-										newSess.Kind = meta.Kind
-										newSess.Version = meta.Version
-										newSess.CustomTitle = meta.CustomTitle
-										newSess.AITitle = meta.AITitle
-										newSess.AIDescription = meta.AIDescription
-										newSess.FirstPrompt = meta.FirstPrompt
-										newSess.LastPrompt = meta.LastPrompt
-									}
-									_ = s.db.SaveSession(newSess)
-									s.broadcast(newSess)
+								// Skip expensive disk reads if session is already known in DB
+								if knownIDs[sessID] != nil {
+									continue
 								}
+
+								baseDir, wtDir := decodeClaudeProjectDirInfo(pDir.Name())
+								cwd := baseDir
+								if cwd == "" && wtDir != "" {
+									cwd = wtDir
+								}
+
+								meta := ReadClaudeSessionMeta(cwd, sessionUUID)
+								title := ""
+								if meta != nil {
+									if meta.CustomTitle != "" {
+										title = meta.CustomTitle
+									} else if meta.AITitle != "" {
+										title = meta.AITitle
+									} else if meta.FirstPrompt != "" && !strings.HasPrefix(meta.FirstPrompt, "/") && meta.FirstPrompt != "config" && meta.FirstPrompt != "claude" {
+										title = truncateTitle(meta.FirstPrompt)
+									} else if meta.Title != "" && !strings.HasPrefix(meta.Title, "/") && meta.Title != "config" && meta.Title != "claude" {
+										title = meta.Title
+									}
+								}
+								if title == "" {
+									rawTitle := ReadClaudeSessionTitle(cwd, sessionUUID)
+									if rawTitle != "" && !strings.HasPrefix(rawTitle, "/") && rawTitle != "config" && rawTitle != "claude" {
+										title = rawTitle
+									}
+								}
+								if title == "" {
+									if meta != nil && meta.LastPrompt != "" && !strings.HasPrefix(meta.LastPrompt, "/") {
+										title = truncateTitle(meta.LastPrompt)
+									}
+								}
+								if title == "" {
+									title = fmt.Sprintf("Claude Code (%s)", sessionUUID[:8])
+								}
+
+								stat, _ := f.Info()
+								modTime := time.Now()
+								isOld := false
+								if stat != nil {
+									modTime = stat.ModTime()
+									if time.Since(modTime) > 7*24*time.Hour {
+										isOld = true
+									}
+								}
+
+								branch := ""
+								if meta != nil && meta.GitBranch != "" {
+									branch = meta.GitBranch
+								} else if wtDir != "" {
+									branch = ResolveGitBranch(wtDir)
+								} else if cwd != "" {
+									branch = ResolveGitBranch(cwd)
+								}
+
+								newSess := &Session{
+									ID:          sessID,
+									Name:        title,
+									Agent:       "claude-code",
+									Host:        hostName,
+									NativeID:    sessionUUID,
+									Cwd:         cwd,
+									ProjectKey:  GetProjectKey(cwd),
+									State:       StateEnded,
+									Managed:     false,
+									Activity:    "Session ended",
+									StartedAt:   modTime,
+									LastEventAt: modTime,
+									ContextPct:  ReadClaudeContextUsage(cwd, sessionUUID),
+									GitBranch:   branch,
+									Archived:    isOld,
+								}
+								if meta != nil {
+									newSess.Entrypoint = meta.Entrypoint
+									newSess.Kind = meta.Kind
+									newSess.Version = meta.Version
+									newSess.CustomTitle = meta.CustomTitle
+									newSess.AITitle = meta.AITitle
+									newSess.AIDescription = meta.AIDescription
+									newSess.FirstPrompt = meta.FirstPrompt
+									newSess.LastPrompt = meta.LastPrompt
+								}
+								_ = s.db.SaveSession(newSess)
+								knownIDs[sessID] = newSess
+								s.broadcast(newSess)
 							}
 						}
 					}
@@ -3150,16 +3218,17 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 
 						// Check if this is an internal subagent conversation
 						if isAntigravitySubagent(home, convID) {
-							if existing, _ := s.db.GetSession(sessID); existing != nil {
+							if existing := knownIDs[sessID]; existing != nil {
 								_ = s.db.DeleteSession(sessID)
 								existing.Deleted = true
 								existing.Activity = "Deleted"
 								s.broadcast(existing)
+								delete(knownIDs, sessID)
 							}
 							continue
 						}
 
-						existing, _ := s.db.GetSession(sessID)
+						existing := knownIDs[sessID]
 						if existing == nil {
 							title := ReadAntigravitySessionTitle("", convID)
 							cwd := extractAntigravityWorkspace(logPath, home)
@@ -3192,6 +3261,7 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 								Archived:    isOld,
 							}
 							_ = s.db.SaveSession(newSess)
+							knownIDs[sessID] = newSess
 							s.broadcast(newSess)
 						} else if isRawSessionName(existing.Name) {
 							if title := ReadAntigravitySessionTitle(existing.Cwd, convID); title != "" && !isRawSessionName(title) {
@@ -3206,15 +3276,13 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 		}
 
 		// 5. Database Sanitation: Clean up any obsolete/orphaned subagents in DB
-		if allSess, err := s.db.ListSessions(); err == nil {
-			for _, sObj := range allSess {
-				if sObj.Agent == "antigravity" && sObj.NativeID != "" && isUUID(sObj.NativeID) {
-					if isAntigravitySubagent(home, sObj.NativeID) {
-						_ = s.db.DeleteSession(sObj.ID)
-						sObj.Deleted = true
-						sObj.Activity = "Deleted"
-						s.broadcast(sObj)
-					}
+		for _, sObj := range existingSessions {
+			if sObj.Agent == "antigravity" && sObj.NativeID != "" && isUUID(sObj.NativeID) {
+				if isAntigravitySubagent(home, sObj.NativeID) {
+					_ = s.db.DeleteSession(sObj.ID)
+					sObj.Deleted = true
+					sObj.Activity = "Deleted"
+					s.broadcast(sObj)
 				}
 			}
 		}
@@ -3471,7 +3539,7 @@ func ReadClaudeSessionMeta(cwd, sessionID string) *SessionMeta {
 				metaInfo.LastMessageAt = info.ModTime()
 			}
 		}
-		if data, rerr := os.ReadFile(filePath); rerr == nil {
+		if data, rerr := readTail(filePath, 64*1024); rerr == nil && len(data) > 0 {
 			lines := strings.Split(string(data), "\n")
 			for _, line := range lines {
 				line = strings.TrimSpace(line)
@@ -3632,10 +3700,10 @@ func ReadAntigravitySessionTitle(cwd, sessionID string) string {
 		}
 	}
 
-	// 4. Scan transcript for CHECKPOINT objective or first user prompt
+	// 4. Scan transcript for CHECKPOINT objective or first user prompt (using bounded head read)
 	for _, bDir := range brainDirs {
 		logPath := filepath.Join(bDir, targetID, ".system_generated", "logs", "transcript.jsonl")
-		if data, err := os.ReadFile(logPath); err == nil {
+		if data, err := readHead(logPath, 64*1024); err == nil && len(data) > 0 {
 			lines := strings.Split(string(data), "\n")
 			firstPromptTitle := ""
 			for _, line := range lines {
@@ -3679,7 +3747,7 @@ func ReadAntigravitySessionTitle(cwd, sessionID string) string {
 		filepath.Join(home, ".antigravity", "agyhub_summaries_proto.pb"),
 	}
 	for _, protoPath := range protoPaths {
-		if data, err := os.ReadFile(protoPath); err == nil {
+		if data, err := readHead(protoPath, 256*1024); err == nil && len(data) > 0 {
 			str := string(data)
 			if idx := strings.Index(str, targetID); idx != -1 {
 				sub := str[idx+len(targetID):]
@@ -3714,7 +3782,7 @@ func ReadAntigravitySessionTitle(cwd, sessionID string) string {
 }
 
 func extractAntigravityWorkspace(logPath, home string) string {
-	data, err := os.ReadFile(logPath)
+	data, err := readHead(logPath, 64*1024)
 	if err != nil {
 		return ""
 	}

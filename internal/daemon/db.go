@@ -106,6 +106,12 @@ func InitDB(dbPath string) (*DB, error) {
 	_, _ = db.Exec("ALTER TABLE sessions ADD COLUMN last_prompt TEXT;")
 	_, _ = db.Exec("DELETE FROM tree_nodes WHERE path LIKE 'Project Y%' OR path LIKE 'ProjectY%' OR path LIKE '%Project Y%';")
 
+	// High-performance indices for fast session lookups, filtering, and liveness checks
+	_, _ = db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_state ON sessions(state);")
+	_, _ = db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_native_id ON sessions(native_id);")
+	_, _ = db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_host ON sessions(host);")
+	_, _ = db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_project_key ON sessions(project_key);")
+
 	return &DB{db: db}, nil
 }
 
@@ -353,6 +359,108 @@ func (d *DB) ListSessions() ([]*Session, error) {
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan session in list: %w", err)
+		}
+
+		s.Managed = managedInt == 1
+		s.Archived = archivedInt == 1
+		if nodePath.Valid {
+			s.NodePath = nodePath.String
+		}
+		if sessName.Valid {
+			s.Name = sessName.String
+		}
+		if entrypointVal.Valid {
+			s.Entrypoint = entrypointVal.String
+		}
+		if kindVal.Valid {
+			s.Kind = kindVal.String
+		}
+		if versionVal.Valid {
+			s.Version = versionVal.String
+		}
+		if ctxPct.Valid {
+			s.ContextPct = int(ctxPct.Int64)
+		}
+		if gitBranchVal.Valid {
+			s.GitBranch = gitBranchVal.String
+		} else if s.Cwd != "" {
+			s.GitBranch = ResolveGitBranch(s.Cwd)
+		}
+		if customTitleVal.Valid {
+			s.CustomTitle = customTitleVal.String
+		}
+		if aiTitleVal.Valid {
+			s.AITitle = aiTitleVal.String
+		}
+		if aiDescVal.Valid {
+			s.AIDescription = aiDescVal.String
+		}
+		if firstPromptVal.Valid {
+			s.FirstPrompt = firstPromptVal.String
+		}
+		if lastPromptVal.Valid {
+			s.LastPrompt = lastPromptVal.String
+		}
+
+		if rootsStr.Valid && rootsStr.String != "" {
+			_ = json.Unmarshal([]byte(rootsStr.String), &s.Roots)
+		} else {
+			s.Roots = []string{}
+		}
+
+		if blockedKind.Valid && blockedKind.String != "" {
+			s.Blocked = &Blocked{
+				Kind:     BlockKind(blockedKind.String),
+				Reason:   blockedReason.String,
+				Since:    blockedSince.Time,
+				Question: blockedQuestion.String,
+			}
+			if blockedOptions.Valid && blockedOptions.String != "" {
+				_ = json.Unmarshal([]byte(blockedOptions.String), &s.Blocked.Options)
+			}
+		}
+
+		sessions = append(sessions, &s)
+	}
+
+	return sessions, nil
+}
+
+// ListActiveSessions queries only active, non-ended sessions (state != StateEnded)
+func (d *DB) ListActiveSessions() ([]*Session, error) {
+	query := `
+	SELECT id, agent, host, native_id, cwd, roots, project_key, state,
+	       blocked_kind, blocked_reason, blocked_since, blocked_question, blocked_options, activity,
+	       started_at, last_event_at, managed, tmux_name, pid, archived, node_path, name, entrypoint, kind, version, context_pct, git_branch,
+	       custom_title, ai_title, ai_description, first_prompt, last_prompt
+	FROM sessions
+	WHERE state != ?
+	ORDER BY last_event_at DESC;
+	`
+
+	rows, err := d.db.Query(query, int(StateEnded))
+	if err != nil {
+		return nil, fmt.Errorf("failed to query active sessions: %w", err)
+	}
+	defer rows.Close()
+
+	var sessions []*Session
+	for rows.Next() {
+		var s Session
+		var rootsStr, blockedKind, blockedReason, blockedQuestion, blockedOptions, nodePath, sessName, entrypointVal, kindVal, versionVal, gitBranchVal sql.NullString
+		var customTitleVal, aiTitleVal, aiDescVal, firstPromptVal, lastPromptVal sql.NullString
+		var ctxPct sql.NullInt64
+		var blockedSince sql.NullTime
+		var managedInt, archivedInt int
+
+		err := rows.Scan(
+			&s.ID, &s.Agent, &s.Host, &s.NativeID, &s.Cwd, &rootsStr, &s.ProjectKey, (*int)(&s.State),
+			&blockedKind, &blockedReason, &blockedSince, &blockedQuestion, &blockedOptions, &s.Activity,
+			&s.StartedAt, &s.LastEventAt, &managedInt, &s.TmuxName, &s.PID, &archivedInt, &nodePath, &sessName, &entrypointVal, &kindVal, &versionVal, &ctxPct, &gitBranchVal,
+			&customTitleVal, &aiTitleVal, &aiDescVal, &firstPromptVal, &lastPromptVal,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan active session in list: %w", err)
 		}
 
 		s.Managed = managedInt == 1
