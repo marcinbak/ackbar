@@ -62,6 +62,14 @@ It is embedded directly into the `ackbard` Go binary and served on `http://127.0
 * **Automatic Upload & Path Injection:** Uploads files to `/tmp/ackbar-uploads/` on the local machine or remote compute hosts (e.g. Legion) and injects the quoted file path into the terminal prompt.
 * **Automatic Garbage Collection:** Background cleaner prunes temporary uploads older than 7 days.
 
+### 🌐 7. Smart Cross-Host Folder Mapping & Autocomplete
+* **Host-Scoped Path Suggestions:** Folder suggestions (`<datalist>`) dynamically filter to show paths previously active on the selected host.
+* **Intelligent Cross-Host Translation:** When switching between `local` (macOS) and remote machines (e.g. `legion` on Linux), the folder path automatically translates based on:
+  1. *Project Matching:* Existing sessions sharing the same Git project key or directory basename.
+  2. *Configured Remote Roots:* Target host configured `remote_cwd` (e.g. `/home/dev4u/Work`).
+  3. *Home Prefix Mapping:* Automatic `/Users/<user>/...` $\longleftrightarrow$ `/home/<user>/...` translation.
+* **Auto-Discovery of Installed Agents:** Dynamically detects and updates installed agent options (`Claude Code`, `Google Antigravity`, `OpenAI Codex`) whenever the host dropdown changes.
+
 ---
 
 ## 3. Keyboard Shortcuts
