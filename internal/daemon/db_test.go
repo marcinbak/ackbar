@@ -71,4 +71,50 @@ func TestDB_TreeNodesAndHosts(t *testing.T) {
 	if len(nodes) != 0 {
 		t.Errorf("Expected 0 nodes after delete, got %d", len(nodes))
 	}
+
+	// 4. Test Session Active vs Ended Filtering
+	sActive := &Session{
+		ID:          "claude:local:active-1",
+		Agent:       "claude-code",
+		Host:        "local",
+		NativeID:    "active-1",
+		State:       StateWorking,
+		StartedAt:   time.Now(),
+		LastEventAt: time.Now(),
+	}
+	sEnded := &Session{
+		ID:          "claude:local:ended-1",
+		Agent:       "claude-code",
+		Host:        "local",
+		NativeID:    "ended-1",
+		State:       StateEnded,
+		StartedAt:   time.Now().Add(-1 * time.Hour),
+		LastEventAt: time.Now().Add(-30 * time.Minute),
+	}
+
+	if err := db.SaveSession(sActive); err != nil {
+		t.Fatalf("SaveSession sActive failed: %v", err)
+	}
+	if err := db.SaveSession(sEnded); err != nil {
+		t.Fatalf("SaveSession sEnded failed: %v", err)
+	}
+
+	allSessions, err := db.ListSessions()
+	if err != nil {
+		t.Fatalf("ListSessions failed: %v", err)
+	}
+	if len(allSessions) != 2 {
+		t.Fatalf("Expected 2 total sessions, got %d", len(allSessions))
+	}
+
+	activeSessions, err := db.ListActiveSessions()
+	if err != nil {
+		t.Fatalf("ListActiveSessions failed: %v", err)
+	}
+	if len(activeSessions) != 1 {
+		t.Fatalf("Expected 1 active session, got %d", len(activeSessions))
+	}
+	if activeSessions[0].ID != sActive.ID {
+		t.Errorf("Expected active session %s, got %s", sActive.ID, activeSessions[0].ID)
+	}
 }
