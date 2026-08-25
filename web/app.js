@@ -1069,6 +1069,83 @@
     }
   }
 
+  // Helper to show a floating upload toast notification
+  function showUploadToast(message, type = 'info', duration = 3000) {
+    const toast = document.createElement('div');
+    toast.className = `upload-toast ${type}`;
+    let icon = '📎';
+    if (type === 'success') icon = '✅';
+    else if (type === 'error') icon = '⚠️';
+    toast.innerHTML = `<span>${icon}</span><span>${escapeHtml(message)}</span>`;
+    document.body.appendChild(toast);
+    setTimeout(() => {
+      toast.style.opacity = '0';
+      toast.style.transform = 'translateY(12px)';
+      setTimeout(() => toast.remove(), 200);
+    }, duration);
+    return toast;
+  }
+
+  // Upload file (Image or PDF) to daemon and inject path into active terminal
+  async function uploadAndAttachFile(file, tabObj) {
+    if (!file || !tabObj) return;
+
+    const filename = file.name || 'clipboard_image.png';
+    const ext = filename.split('.').pop().toLowerCase();
+    const allowed = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'svg', 'pdf'];
+    const type = (file.type || '').toLowerCase();
+    const isAllowedMime = type.startsWith('image/') || type === 'application/pdf' || type.includes('bmp');
+    const isAllowedExt = allowed.includes(ext);
+
+    if (!isAllowedMime && !isAllowedExt) {
+      showUploadToast(`Unsupported file type: ${filename} (allowed: PNG, JPG, WEBP, GIF, BMP, SVG, PDF)`, 'error', 4000);
+      return;
+    }
+
+    showUploadToast(`Uploading ${filename}...`, 'info', 2000);
+
+    const formData = new FormData();
+    formData.append('file', file, filename);
+
+    const hostParam = (tabObj.session && tabObj.session.host) ? tabObj.session.host : 'local';
+    const baseUrl = (tabObj.session && tabObj.session.hostUrl && hostParam !== 'local') ? tabObj.session.hostUrl.replace(/\/$/, '') : '';
+    const uploadUrl = `${baseUrl}/v1/uploads?host=${encodeURIComponent(hostParam)}&session_id=${encodeURIComponent((tabObj.session && tabObj.session.id) || '')}`;
+
+    const headers = {};
+    const token = getAuthToken();
+    if (token) {
+      headers['X-Ackbar-Token'] = token;
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+
+    try {
+      const res = await fetch(uploadUrl, {
+        method: 'POST',
+        headers,
+        body: formData
+      });
+
+      if (!res.ok) {
+        const errText = await res.text();
+        showUploadToast(`Upload failed: ${errText || res.statusText}`, 'error', 4000);
+        return;
+      }
+
+      const data = await res.json();
+      if (data.status === 'ok' && data.path) {
+        showUploadToast(`Attached: ${data.filename || filename}`, 'success', 3000);
+
+        // Inject quoted path with trailing space into active terminal
+        const quotedPath = `"${data.path}" `;
+        if (tabObj.socket && tabObj.socket.readyState === WebSocket.OPEN) {
+          tabObj.socket.send(quotedPath);
+        }
+      }
+    } catch (err) {
+      showUploadToast(`Upload error: ${err.message}`, 'error', 4000);
+    }
+  }
+
   // Reconnect Terminal Tab Socket
   function reconnectTerminalTab(tabId) {
     const tab = state.openTabs.get(tabId);
@@ -1167,7 +1244,63 @@
     });
     if (el.terminalViewport) el.terminalViewport.appendChild(containerEl);
 
-    // 3. Initialize xterm.js & FitAddon
+    // 3. Drop Overlay for Drag-and-Drop file uploads (Images & PDFs)
+    const dropOverlay = document.createElement('div');
+    dropOverlay.className = 'terminal-drop-overlay';
+    dropOverlay.innerHTML = `<div class="drop-badge">📎 Drop image or PDF to upload & attach</div>`;
+    containerEl.appendChild(dropOverlay);
+
+    containerEl.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      if (e.dataTransfer && e.dataTransfer.types && Array.from(e.dataTransfer.types).includes('Files')) {
+        dropOverlay.classList.add('active');
+      }
+    });
+
+    containerEl.addEventListener('dragleave', (e) => {
+      if (!containerEl.contains(e.relatedTarget)) {
+        dropOverlay.classList.remove('active');
+      }
+    });
+
+    containerEl.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dropOverlay.classList.remove('active');
+      const currentTab = state.openTabs.get(tabId);
+      if (currentTab && e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+        for (const file of e.dataTransfer.files) {
+          uploadAndAttachFile(file, currentTab);
+        }
+      }
+    });
+
+    // 4. Clipboard paste listener for images / PDFs
+    containerEl.addEventListener('paste', (e) => {
+      if (!e.clipboardData) return;
+      const items = e.clipboardData.items || [];
+      let handled = false;
+      const currentTab = state.openTabs.get(tabId);
+      if (!currentTab) return;
+
+      for (const item of items) {
+        if (item.kind === 'file') {
+          const itemType = (item.type || '').toLowerCase();
+          if (itemType.startsWith('image/') || itemType === 'application/pdf' || itemType.includes('bmp')) {
+            const file = item.getAsFile();
+            if (file) {
+              handled = true;
+              uploadAndAttachFile(file, currentTab);
+            }
+          }
+        }
+      }
+      if (handled) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    });
+
+    // 5. Initialize xterm.js & FitAddon
     const term = new Terminal({
       cursorBlink: true,
       cursorStyle: 'block',

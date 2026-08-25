@@ -64,6 +64,7 @@ type Server struct {
 }
 
 func NewServer(db *DB) *Server {
+	StartUploadCleaner(defaultUploadDir, 6*time.Hour)
 	return &Server{
 		db:          db,
 		providers:   make(map[string]Provider),
@@ -177,6 +178,7 @@ func (s *Server) Mux() http.Handler {
 	mux.HandleFunc("/v1/maintenance/purge", s.handlePurge)
 	mux.HandleFunc("/v1/editor/open", s.handleEditorOpen)
 	mux.HandleFunc("/v1/version", s.handleVersion)
+	mux.HandleFunc("/v1/uploads", s.handleUpload)
 	mux.HandleFunc("/v1/shutdown", s.handleShutdown)
 	mux.HandleFunc("/v1/events", s.handleEvents)
 

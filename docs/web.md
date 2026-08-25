@@ -56,6 +56,12 @@ It is embedded directly into the `ackbard` Go binary and served on `http://127.0
 ### 📖 5. In-App Plan & Markdown Viewer
 * Native markdown renderer for viewing `implementation_plan.md`, `task.md`, and `walkthrough.md` side-by-side with running terminals.
 
+### 📎 6. Clipboard Image Paste & File Drag-and-Drop
+* **Instant Clipboard Paste:** Paste screenshots (`Cmd+V`) directly into any active terminal tab.
+* **Drag-and-Drop Attachments:** Drop image files (`PNG`, `JPG`, `JPEG`, `WEBP`, `GIF`, `BMP`, `SVG`) or `PDF` documents directly onto the terminal.
+* **Automatic Upload & Path Injection:** Uploads files to `/tmp/ackbar-uploads/` on the local machine or remote compute hosts (e.g. Legion) and injects the quoted file path into the terminal prompt.
+* **Automatic Garbage Collection:** Background cleaner prunes temporary uploads older than 7 days.
+
 ---
 
 ## 3. Keyboard Shortcuts
