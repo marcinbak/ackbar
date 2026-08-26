@@ -395,8 +395,16 @@ func (s *Server) processHookEvent(p Provider, urlEventName string, headerHost st
 			}
 		}
 	}
+	if sess.State != event.State {
+		sess.IsUnread = true
+		sess.LastStateChangeAt = time.Now()
+	}
 	sess.State = event.State
-	sess.Blocked = event.Blocked
+	if event.State != StateBlocked {
+		sess.Blocked = nil
+	} else {
+		sess.Blocked = event.Blocked
+	}
 	sess.Activity = event.Activity
 	sess.LastEventAt = event.LastEventAt
 
@@ -858,6 +866,17 @@ func (s *Server) handleSessionControl(w http.ResponseWriter, r *http.Request) {
 			"action":  actionLower,
 			"value":   value,
 			"state":   sess.State.String(),
+			"session": sess,
+		})
+
+	case "read", "mark_read", "view":
+		sess.IsUnread = false
+		_ = s.db.MarkSessionRead(sess.ID)
+		s.broadcast(sess)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"status":  "read",
+			"id":      sess.ID,
 			"session": sess,
 		})
 

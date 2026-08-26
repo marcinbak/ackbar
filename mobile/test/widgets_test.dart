@@ -125,7 +125,7 @@ void main() {
         _wrapWithTheme(const StatusBadge.working()),
       );
 
-      expect(find.text('⚡'), findsOneWidget);
+      expect(find.text('⚙️'), findsOneWidget);
       expect(find.text('WORKING'), findsOneWidget);
     });
 
@@ -203,7 +203,7 @@ void main() {
         ),
       );
 
-      expect(find.text('⚡'), findsOneWidget);
+      expect(find.text('⚙️'), findsOneWidget);
       expect(find.text('WORKING'), findsOneWidget);
     });
 

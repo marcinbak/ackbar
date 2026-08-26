@@ -8,6 +8,9 @@ enum AckbarSessionStatus {
   working,
   blocked,
   idle,
+  ended,
+  failed,
+  unknown,
   offline,
   active;
 
@@ -19,6 +22,12 @@ enum AckbarSessionStatus {
         return 'BLOCKED';
       case AckbarSessionStatus.idle:
         return 'IDLE';
+      case AckbarSessionStatus.ended:
+        return 'ENDED';
+      case AckbarSessionStatus.failed:
+        return 'FAILED';
+      case AckbarSessionStatus.unknown:
+        return 'STANDBY';
       case AckbarSessionStatus.offline:
         return 'OFFLINE';
       case AckbarSessionStatus.active:
@@ -29,11 +38,17 @@ enum AckbarSessionStatus {
   String get symbol {
     switch (this) {
       case AckbarSessionStatus.working:
-        return '⚡';
+        return '⚙️';
       case AckbarSessionStatus.blocked:
         return '❓';
       case AckbarSessionStatus.idle:
         return '✅';
+      case AckbarSessionStatus.ended:
+        return '⏹';
+      case AckbarSessionStatus.failed:
+        return '🛑';
+      case AckbarSessionStatus.unknown:
+        return '◌';
       case AckbarSessionStatus.offline:
         return '⚪';
       case AckbarSessionStatus.active:
@@ -50,9 +65,54 @@ enum AckbarSessionStatus {
       case AckbarSessionStatus.idle:
       case AckbarSessionStatus.active:
         return AppColors.statusEmerald;
+      case AckbarSessionStatus.ended:
       case AckbarSessionStatus.offline:
+      case AckbarSessionStatus.unknown:
         return AppColors.statusOffline;
+      case AckbarSessionStatus.failed:
+        return AppColors.statusCoral;
     }
+  }
+}
+
+class _WorkingSpinner extends StatefulWidget {
+  final double size;
+  const _WorkingSpinner({this.size = 11});
+
+  @override
+  State<_WorkingSpinner> createState() => _WorkingSpinnerState();
+}
+
+class _WorkingSpinnerState extends State<_WorkingSpinner> with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 3),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return RotationTransition(
+      turns: _controller,
+      child: Text(
+        '⚙️',
+        style: TextStyle(
+          fontSize: widget.size,
+          height: 1.1,
+        ),
+      ),
+    );
   }
 }
 
@@ -90,6 +150,24 @@ class StatusBadge extends StatelessWidget {
 
   const StatusBadge.idle({super.key, this.customLabel, this.isCompact = false})
       : status = AckbarSessionStatus.idle,
+        customSymbol = null,
+        showDotOnly = false,
+        overrideColor = null;
+
+  const StatusBadge.ended({super.key, this.customLabel, this.isCompact = false})
+      : status = AckbarSessionStatus.ended,
+        customSymbol = null,
+        showDotOnly = false,
+        overrideColor = null;
+
+  const StatusBadge.failed({super.key, this.customLabel, this.isCompact = false})
+      : status = AckbarSessionStatus.failed,
+        customSymbol = null,
+        showDotOnly = false,
+        overrideColor = null;
+
+  const StatusBadge.unknown({super.key, this.customLabel, this.isCompact = false})
+      : status = AckbarSessionStatus.unknown,
         customSymbol = null,
         showDotOnly = false,
         overrideColor = null;
@@ -146,13 +224,16 @@ class StatusBadge extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
-          Text(
-            symbol,
-            style: TextStyle(
-              fontSize: isCompact ? 10 : 11,
-              height: 1.1,
+          if (status == AckbarSessionStatus.working && customSymbol == null)
+            _WorkingSpinner(size: isCompact ? 10 : 11)
+          else
+            Text(
+              symbol,
+              style: TextStyle(
+                fontSize: isCompact ? 10 : 11,
+                height: 1.1,
+              ),
             ),
-          ),
           const SizedBox(width: 4),
           Text(
             text,

@@ -576,3 +576,87 @@ func TestSessionRename_SetsCustomTitleAndUpdatesCache(t *testing.T) {
 		t.Errorf("Expected titleCache entry with Source=custom, got %+v (ok=%v)", cached, ok)
 	}
 }
+
+func TestUnreadState_LifecycleAndMarkRead(t *testing.T) {
+	dbFile := "./test_unread_lifecycle.db"
+	defer os.Remove(dbFile)
+
+	db, err := InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := NewServer(db)
+
+	sess := &Session{
+		ID:          "mock-agent:local:session-unread-1",
+		Agent:       "mock-agent",
+		Host:        "local",
+		NativeID:    "session-unread-1",
+		Cwd:         "/workspace/project",
+		Name:        "Test Session",
+		State:       StateWorking,
+		IsUnread:    false,
+		StartedAt:   time.Now(),
+		LastEventAt: time.Now(),
+	}
+	if err := db.SaveSession(sess); err != nil {
+		t.Fatalf("Failed to save session: %v", err)
+	}
+
+	// 1. Ingest state change (Working -> Idle)
+	event := &Event{
+		Agent:       "mock-agent",
+		NativeID:    "session-unread-1",
+		Cwd:         "/workspace/project",
+		State:       StateIdle,
+		Activity:    "Turn complete",
+		LastEventAt: time.Now(),
+	}
+	body, _ := json.Marshal(map[string]interface{}{
+		"session_id": "session-unread-1",
+		"cwd":        "/workspace/project",
+	})
+	server.processHookEvent(&mockDynamicProvider{event: event}, "Stop", "local", body)
+
+	// Verify session is now unread with updated state
+	updated, err := db.GetSession("mock-agent:local:session-unread-1")
+	if err != nil || updated == nil {
+		t.Fatalf("Failed to retrieve updated session: %v", err)
+	}
+	if updated.State != StateIdle {
+		t.Errorf("Expected state Idle, got %v", updated.State)
+	}
+	if !updated.IsUnread {
+		t.Errorf("Expected IsUnread to be true on state change")
+	}
+	if updated.LastStateChangeAt.IsZero() {
+		t.Errorf("Expected LastStateChangeAt to be populated")
+	}
+
+	// 2. Mark as read via HTTP control endpoint
+	req := httptest.NewRequest("POST", "/v1/sessions/control?action=read&id=mock-agent:local:session-unread-1", nil)
+	w := httptest.NewRecorder()
+	server.Mux().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK on mark read, got %d (%s)", w.Code, w.Body.String())
+	}
+
+	readSess, _ := db.GetSession("mock-agent:local:session-unread-1")
+	if readSess.IsUnread {
+		t.Errorf("Expected IsUnread to be false after mark read, got true")
+	}
+}
+
+type mockDynamicProvider struct {
+	event *Event
+}
+
+func (m *mockDynamicProvider) Agent() string { return "mock-agent" }
+func (m *mockDynamicProvider) IsInstalled() bool { return true }
+func (m *mockDynamicProvider) CheckHookConfig() (bool, string, error) { return true, "", nil }
+func (m *mockDynamicProvider) ParseHook(eventName string, payload []byte) (*Event, error) {
+	return m.event, nil
+}

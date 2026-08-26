@@ -170,20 +170,22 @@
     }
   }
 
-  // State Emoji Mapping
+  // State Emoji / Icon Mapping
   function getStateEmoji(session) {
-    if (!session) return '⚪';
+    if (!session) return '<span title="Standby / Unknown">◌</span>';
     switch (session.state) {
       case 1: // StateWorking (work in progress - agent is working)
-        return '⚡';
+        return '<span class="state-working-spinner" title="Working (generating / executing tools)">⚙️</span>';
       case 2: // StateBlocked (waiting for feedback - agent is asking a question and waiting for response)
-        return '❓';
+        return '<span title="Blocked (waiting for feedback / authorization)">❓</span>';
       case 3: // StateIdle (idle - completed work and not waiting for anything)
-        return '✅';
-      case 4: // StateEnded (not connected or status unknown)
-        return '⚪';
+        return '<span title="Idle (turn completed, awaiting next prompt)">✅</span>';
+      case 4: // StateEnded (session terminated / exited)
+        return '<span title="Ended (process terminated)">⏹️</span>';
+      case 5: // StateFailed (process crashed or error)
+        return '<span title="Failed (process error / crashed)">🛑</span>';
       default:
-        return session.managed ? '✅' : '⚪';
+        return session.managed ? '<span title="Idle">✅</span>' : '<span title="Standby / Unknown">◌</span>';
     }
   }
 
@@ -901,9 +903,17 @@
 
     const dot = document.createElement('span');
     dot.className = 'session-state-dot';
-    dot.textContent = getStateEmoji(session);
-    const stateStr = session.state === 1 ? 'Work in progress (agent is working)' : (session.state === 2 ? 'Waiting for feedback (agent is asking a question)' : (session.state === 3 ? 'Idle (completed work, not waiting)' : 'Not connected / Status unknown'));
+    dot.innerHTML = getStateEmoji(session);
+    const stateStr = session.state === 1 ? 'Work in progress (agent is working)' : (session.state === 2 ? 'Waiting for feedback (agent is asking a question)' : (session.state === 3 ? 'Idle (completed work, not waiting)' : (session.state === 4 ? 'Ended (process terminated)' : (session.state === 5 ? 'Failed (process error)' : 'Not connected / Status unknown'))));
     dot.title = `Status: ${stateStr}\nMode: ${isManaged ? 'Live tmux session' : 'Observed process/transcript'}`;
+
+    if (session.is_unread) {
+      row.classList.add('session-unread');
+      const unreadDot = document.createElement('span');
+      unreadDot.className = 'unread-dot';
+      unreadDot.title = 'Unread state update (click to view)';
+      left.appendChild(unreadDot);
+    }
 
     const name = document.createElement('span');
     name.className = 'session-name';
@@ -1181,6 +1191,23 @@
     connectTerminalWebSocket(tab, tabId, tab.terminal, tab.fitAddon, tab.session);
   }
 
+  // Mark session state as read
+  async function markSessionAsRead(session) {
+    if (!session || !session.is_unread) return;
+    session.is_unread = false;
+    const targetInState = (state.sessions || []).find(s => s.id === session.id);
+    if (targetInState) targetInState.is_unread = false;
+    renderTree();
+
+    try {
+      const hostRec = (state.hosts || []).find(h => h.name === session.host);
+      const baseUrl = hostRec && hostRec.url && session.host !== 'local' ? hostRec.url.replace(/\/$/, '') : '';
+      await fetch(`${baseUrl}/v1/sessions/${encodeURIComponent(session.id)}?action=read`, { method: 'POST' });
+    } catch (e) {
+      console.warn('Failed to mark session as read on daemon:', e);
+    }
+  }
+
   // Open Session in Terminal Tab
   function openSessionInTab(session) {
     if (!session) return;
@@ -1193,9 +1220,12 @@
           reconnectTerminalTab(tabId);
         }
         activateTab(tabId);
+        markSessionAsRead(session);
         return;
       }
     }
+
+    markSessionAsRead(session);
 
     session.managed = true;
     if (session.state === 4 || !session.state) {
@@ -1214,7 +1244,7 @@
 
     const emojiSpan = document.createElement('span');
     emojiSpan.className = 'tab-emoji';
-    emojiSpan.textContent = getStateEmoji(session);
+    emojiSpan.innerHTML = getStateEmoji(session);
 
     const titleSpan = document.createElement('span');
     titleSpan.className = 'tab-title';
@@ -2202,6 +2232,9 @@ ${session.last_prompt}
       tab.containerEl.classList.toggle('active', isActive);
 
       if (isActive) {
+        if (tab.session) {
+          markSessionAsRead(tab.session);
+        }
         if (tab.type === 'terminal') {
           if (!tab.socket || tab.socket.readyState === WebSocket.CLOSED || tab.socket.readyState === WebSocket.CLOSING) {
             reconnectTerminalTab(tabId);

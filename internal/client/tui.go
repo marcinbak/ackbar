@@ -1734,15 +1734,22 @@ func (m *Model) View() string {
 				var statusEmoji string
 				switch s.State {
 				case daemon.StateWorking:
-					statusEmoji = "⚡"
+					statusEmoji = "⚙️"
 				case daemon.StateBlocked:
 					statusEmoji = "❓"
 				case daemon.StateIdle:
 					statusEmoji = "✅"
-				case daemon.StateEnded, daemon.StateFailed:
-					statusEmoji = "⚪"
+				case daemon.StateEnded:
+					statusEmoji = "⏹"
+				case daemon.StateFailed:
+					statusEmoji = "🛑"
 				default:
-					statusEmoji = "⚪"
+					statusEmoji = "◌"
+				}
+
+				unreadTag := ""
+				if s.IsUnread {
+					unreadTag = lipgloss.NewStyle().Foreground(lipgloss.Color("#00FFFF")).Bold(true).Render(" ●")
 				}
 
 				managedStr := "(observed)"
@@ -1778,7 +1785,7 @@ func (m *Model) View() string {
 					ctxTag = fmt.Sprintf(" [ctx: %s]", lipgloss.NewStyle().Foreground(lipgloss.Color(ctxColor)).Render(fmt.Sprintf("%d%%", s.ContextPct)))
 				}
 
-				rowHeader := fmt.Sprintf("%s%s%s%s @%s %s %s", sessionTitleStyle.Render(displayName), tmuxTag, originTag, ctxTag, hostStyle.Render(s.Host), statusEmoji, managedTag)
+				rowHeader := fmt.Sprintf("%s%s%s%s%s @%s %s %s", sessionTitleStyle.Render(displayName), unreadTag, tmuxTag, originTag, ctxTag, hostStyle.Render(s.Host), statusEmoji, managedTag)
 
 				if isSelected {
 					var statusBadge string
