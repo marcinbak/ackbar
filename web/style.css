@@ -446,6 +446,10 @@ body, html {
   animation: unreadPulse 2s infinite ease-in-out;
 }
 
+.tab-unread-dot {
+  margin: 0 1px;
+}
+
 .session-name {
   font-weight: 500;
   color: var(--text-main);
