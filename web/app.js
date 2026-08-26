@@ -171,6 +171,18 @@
   }
 
   // State Emoji / Icon Mapping
+  function getStateEmojiText(session) {
+    if (!session) return '◌';
+    switch (session.state) {
+      case 1: return '⚙️';
+      case 2: return '❓';
+      case 3: return '✅';
+      case 4: return '⏹️';
+      case 5: return '🛑';
+      default: return session.managed ? '✅' : '◌';
+    }
+  }
+
   function getStateEmoji(session) {
     if (!session) return '<span title="Standby / Unknown">◌</span>';
     switch (session.state) {
@@ -2398,7 +2410,7 @@ ${session.last_prompt}
         tab.session = updatedSess;
         const emojiEl = tab.tabEl.querySelector('.tab-emoji');
         const titleEl = tab.tabEl.querySelector('.tab-title');
-        if (emojiEl && tab.type === 'terminal') emojiEl.textContent = getStateEmoji(updatedSess);
+        if (emojiEl && tab.type === 'terminal') emojiEl.innerHTML = getStateEmoji(updatedSess);
         if (titleEl && tab.type !== 'doc') titleEl.textContent = updatedSess.name || updatedSess.agent;
 
         const timeFull = formatFullDateTime(updatedSess.last_event_at || updatedSess.started_at);
@@ -2574,7 +2586,7 @@ ${session.last_prompt}
                           (sess.agent && sess.agent.toLowerCase().includes(q));
       if (match) {
         state.cmdPaletteItems.push({
-          title: `${getStateEmoji(sess)} ${sess.name || sess.agent}`,
+          title: `${getStateEmojiText(sess)} ${sess.name || sess.agent}`,
           subtitle: `${sess.host ? '@' + formatHostLabel(sess.host) : '@local'}${sess.git_branch ? ' • ⎇ ' + sess.git_branch : ''} • ${sess.cwd || ''}`,
           action: () => openSessionInTab(sess)
         });
