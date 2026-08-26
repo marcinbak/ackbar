@@ -22,18 +22,26 @@ class TerminalAccessoryBar extends StatelessWidget {
   static const List<String> defaultKeys = [
     'Esc',
     'Tab',
-    'Shift+Tab',
+    '⌫',
     'Ctrl+C',
-    'Ctrl+D',
+    'Enter',
     '↑',
     '↓',
     '←',
     '→',
-    'Enter',
+    'PgUp',
+    'PgDn',
+    'Home',
+    'End',
+    'Shift+Tab',
+    'Ctrl+D',
+    'Ctrl+B',
+    '[',
     '/',
     '-',
     ':',
     '|',
+    '~',
   ];
 
   void _handleKeyTap(String key) {
@@ -62,7 +70,7 @@ class TerminalAccessoryBar extends StatelessWidget {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: keys.map((key) {
-            final isHighlight = key == 'Ctrl+C' || key == 'Esc' || key == 'Enter';
+            final isHighlight = key == 'Ctrl+C' || key == 'Esc' || key == 'Enter' || key == '⌫';
 
             return Padding(
               padding: const EdgeInsets.symmetric(horizontal: 3.0),
@@ -72,7 +80,9 @@ class TerminalAccessoryBar extends StatelessWidget {
                         ? AppColors.statusCoral.withOpacity(0.15)
                         : (key == 'Enter'
                             ? AppColors.infoCyan.withOpacity(0.15)
-                            : AppColors.surfaceHighlight))
+                            : (key == '⌫'
+                                ? AppColors.statusAmber.withOpacity(0.15)
+                                : AppColors.surfaceHighlight)))
                     : AppColors.surface,
                 shape: RoundedRectangleBorder(
                   borderRadius: AppSpacing.roundedSm,
@@ -82,7 +92,9 @@ class TerminalAccessoryBar extends StatelessWidget {
                             ? AppColors.statusCoral.withOpacity(0.4)
                             : (key == 'Enter'
                                 ? AppColors.infoCyan.withOpacity(0.4)
-                                : AppColors.outline))
+                                : (key == '⌫'
+                                    ? AppColors.statusAmber.withOpacity(0.4)
+                                    : AppColors.outline)))
                         : AppColors.outlineSubtle,
                     width: 1,
                   ),
@@ -98,8 +110,13 @@ class TerminalAccessoryBar extends StatelessWidget {
                       style: AppTypography.touchKeyText.copyWith(
                         color: key == 'Ctrl+C'
                             ? AppColors.statusCoral
-                            : (key == 'Enter' ? AppColors.infoCyan : AppColors.textPrimary),
+                            : (key == 'Enter'
+                                ? AppColors.infoCyan
+                                : (key == '⌫'
+                                    ? AppColors.statusAmber
+                                    : AppColors.textPrimary)),
                         fontSize: 12,
+                        fontWeight: isHighlight ? FontWeight.w600 : FontWeight.normal,
                       ),
                     ),
                   ),

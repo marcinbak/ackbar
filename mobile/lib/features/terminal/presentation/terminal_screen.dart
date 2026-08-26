@@ -14,7 +14,7 @@ import '../../../core/theme/app_typography.dart';
 import '../../../core/widgets/terminal_accessory_bar.dart';
 
 /// Fullscreen interactive PTY Terminal screen streaming live tmux session I/O
-/// with horizontal scrolling, dynamic auto-fit, pinch-to-zoom, and font controls.
+/// with horizontal scrolling, vertical scrolling, dynamic auto-fit, zoom, and touch keyboard.
 class TerminalScreen extends ConsumerStatefulWidget {
   final Session session;
 
@@ -34,6 +34,7 @@ class TerminalScreen extends ConsumerStatefulWidget {
 
 class _TerminalScreenState extends ConsumerState<TerminalScreen> {
   late final Terminal _terminal;
+  late final TerminalController _terminalController;
   WebSocketChannel? _channel;
   StreamSubscription? _sub;
   bool _connecting = true;
@@ -47,12 +48,38 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
   int _currentCols = 80;
   int _currentRows = 28;
   final ScrollController _horizontalScrollController = ScrollController();
+  final ScrollController _verticalScrollController = ScrollController();
+  bool _showScrollToBottom = false;
 
   @override
   void initState() {
     super.initState();
-    _terminal = Terminal(maxLines: 5000);
+    _terminal = Terminal(maxLines: 10000);
+    _terminalController = TerminalController();
+    _verticalScrollController.addListener(_onVerticalScroll);
     _connectWebSocket();
+  }
+
+  void _onVerticalScroll() {
+    if (!_verticalScrollController.hasClients) return;
+    final maxScroll = _verticalScrollController.position.maxScrollExtent;
+    final currentScroll = _verticalScrollController.offset;
+    final show = (maxScroll - currentScroll) > 40.0;
+    if (show != _showScrollToBottom) {
+      setState(() {
+        _showScrollToBottom = show;
+      });
+    }
+  }
+
+  void _scrollToBottom() {
+    if (_verticalScrollController.hasClients) {
+      _verticalScrollController.animateTo(
+        _verticalScrollController.position.maxScrollExtent,
+        duration: const Duration(milliseconds: 200),
+        curve: Curves.easeOut,
+      );
+    }
   }
 
   void _connectWebSocket() {
@@ -171,23 +198,52 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
       case 'Shift+Tab':
         _channel!.sink.add('\x1b[Z');
         break;
+      case '⌫':
+      case 'Del':
+      case 'Backspace':
+        _channel!.sink.add('\x7f');
+        _terminal.keyInput(TerminalKey.backspace);
+        break;
       case 'Ctrl+C':
         _channel!.sink.add('\x03');
         break;
       case 'Ctrl+D':
         _channel!.sink.add('\x04');
         break;
+      case 'Ctrl+B':
+        _channel!.sink.add('\x02');
+        break;
       case '↑':
         _channel!.sink.add('\x1b[A');
+        _terminal.keyInput(TerminalKey.arrowUp);
         break;
       case '↓':
         _channel!.sink.add('\x1b[B');
+        _terminal.keyInput(TerminalKey.arrowDown);
         break;
       case '←':
         _channel!.sink.add('\x1b[D');
+        _terminal.keyInput(TerminalKey.arrowLeft);
         break;
       case '→':
         _channel!.sink.add('\x1b[C');
+        _terminal.keyInput(TerminalKey.arrowRight);
+        break;
+      case 'PgUp':
+        _channel!.sink.add('\x1b[5~');
+        _terminal.keyInput(TerminalKey.pageUp);
+        break;
+      case 'PgDn':
+        _channel!.sink.add('\x1b[6~');
+        _terminal.keyInput(TerminalKey.pageDown);
+        break;
+      case 'Home':
+        _channel!.sink.add('\x1b[H');
+        _terminal.keyInput(TerminalKey.home);
+        break;
+      case 'End':
+        _channel!.sink.add('\x1b[F');
+        _terminal.keyInput(TerminalKey.end);
         break;
       case 'Enter':
         _channel!.sink.add('\r');
@@ -220,7 +276,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
 
   @override
   void dispose() {
+    _verticalScrollController.removeListener(_onVerticalScroll);
+    _verticalScrollController.dispose();
     _horizontalScrollController.dispose();
+    _terminalController.dispose();
     _pingTimer?.cancel();
     _sub?.cancel();
     _channel?.sink.close();
@@ -277,7 +336,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
               decoration: BoxDecoration(
-                color: _autoFit ? AppColors.infoCyan.withValues(alpha: 0.15) : AppColors.surfaceHighlight,
+                color: _autoFit ? AppColors.infoCyan.withOpacity(0.15) : AppColors.surfaceHighlight,
                 borderRadius: BorderRadius.circular(4),
                 border: Border.all(
                   color: _autoFit ? AppColors.infoCyan : AppColors.outlineSubtle,
@@ -293,6 +352,21 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
                 ),
               ),
             ),
+          ),
+
+          // Tmux scroll mode helper
+          IconButton(
+            icon: const Icon(Icons.history_rounded, size: 18, color: AppColors.textSecondary),
+            tooltip: 'Tmux Scrollback Mode (Ctrl+B [)',
+            onPressed: () {
+              _channel?.sink.add('\x02[');
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text('Tmux Scroll Mode active. Use ↑/↓/PgUp to navigate history, Esc to exit.'),
+                  duration: Duration(seconds: 2),
+                ),
+              );
+            },
           ),
 
           // Zoom Out
@@ -354,7 +428,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
               Container(
                 width: double.infinity,
                 padding: const EdgeInsets.all(AppSpacing.md),
-                color: AppColors.statusCoral.withValues(alpha: 0.15),
+                color: AppColors.statusCoral.withOpacity(0.15),
                 child: Text(
                   _errorMessage!,
                   style: AppTypography.codeXs.copyWith(color: AppColors.statusCoral),
@@ -377,28 +451,76 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
                         ? constraints.maxWidth
                         : max(constraints.maxWidth, _currentCols * charWidth + 16.0);
 
-                    return Scrollbar(
-                      controller: _horizontalScrollController,
-                      thumbVisibility: !_autoFit,
-                      trackVisibility: !_autoFit,
-                      child: SingleChildScrollView(
-                        controller: _horizontalScrollController,
-                        scrollDirection: Axis.horizontal,
-                        physics: const BouncingScrollPhysics(),
-                        child: SizedBox(
-                          width: terminalRenderWidth,
-                          height: constraints.maxHeight,
-                          child: TerminalView(
-                            _terminal,
-                            autofocus: true,
-                            backgroundOpacity: 0.0,
-                            textStyle: TerminalStyle(
-                              fontSize: _fontSize,
-                              fontFamily: 'JetBrains Mono',
+                    return Stack(
+                      children: [
+                        Scrollbar(
+                          controller: _verticalScrollController,
+                          thumbVisibility: true,
+                          trackVisibility: false,
+                          child: Scrollbar(
+                            controller: _horizontalScrollController,
+                            thumbVisibility: !_autoFit,
+                            trackVisibility: !_autoFit,
+                            notificationPredicate: (notif) => notif.metrics.axis == Axis.horizontal,
+                            child: SingleChildScrollView(
+                              controller: _horizontalScrollController,
+                              scrollDirection: Axis.horizontal,
+                              physics: const BouncingScrollPhysics(),
+                              child: SizedBox(
+                                width: terminalRenderWidth,
+                                height: constraints.maxHeight,
+                                child: TerminalView(
+                                  _terminal,
+                                  controller: _terminalController,
+                                  scrollController: _verticalScrollController,
+                                  autofocus: true,
+                                  autoResize: false,
+                                  deleteDetection: true, // Fix for iOS backspace/delete
+                                  keyboardType: TextInputType.text,
+                                  keyboardAppearance: Brightness.dark,
+                                  backgroundOpacity: 0.0,
+                                  textStyle: TerminalStyle(
+                                    fontSize: _fontSize,
+                                    fontFamily: 'JetBrains Mono',
+                                  ),
+                                ),
+                              ),
                             ),
                           ),
                         ),
-                      ),
+                        if (_showScrollToBottom)
+                          Positioned(
+                            bottom: 8,
+                            right: 16,
+                            child: Material(
+                              color: AppColors.surfaceHighlight.withOpacity(0.9),
+                              borderRadius: BorderRadius.circular(20),
+                              elevation: 4,
+                              child: InkWell(
+                                borderRadius: BorderRadius.circular(20),
+                                onTap: _scrollToBottom,
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      const Icon(Icons.arrow_downward_rounded, size: 14, color: AppColors.infoCyan),
+                                      const SizedBox(width: 4),
+                                      Text(
+                                        'Bottom',
+                                        style: AppTypography.codeXs.copyWith(
+                                          color: AppColors.infoCyan,
+                                          fontWeight: FontWeight.w600,
+                                          fontSize: 11,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                      ],
                     );
                   },
                 ),
@@ -413,3 +535,4 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
     );
   }
 }
+

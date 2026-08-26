@@ -370,6 +370,7 @@ void main() {
 
       expect(find.text('Esc'), findsOneWidget);
       expect(find.text('Tab'), findsOneWidget);
+      expect(find.text('⌫'), findsOneWidget);
       expect(find.text('Ctrl+C'), findsOneWidget);
       expect(find.text('Enter'), findsOneWidget);
       expect(find.text('↑'), findsOneWidget);
@@ -409,6 +410,11 @@ void main() {
       await tester.pump();
 
       expect(pressedKey, equals('Ctrl+C'));
+
+      await tester.tap(find.text('⌫'));
+      await tester.pump();
+
+      expect(pressedKey, equals('⌫'));
     });
   });
 }
