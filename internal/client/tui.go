@@ -535,6 +535,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			row := visibleRows[m.selectedIdx]
 			if !row.IsGroup && row.Session != nil {
+				if row.Session.State == daemon.StateEnded {
+					return m, m.resumeCmd(row.Session)
+				}
 				if row.Session.Managed {
 					return m, m.restartCmd(row.Session)
 				}
@@ -1197,6 +1200,22 @@ func (m *Model) restartCmd(sess *daemon.Session) tea.Cmd {
 			}
 		}
 		if err := RunAction(hostURL, "restart", sess.ID); err != nil {
+			return errorMsg(err.Error())
+		}
+		return nil
+	}
+}
+
+func (m *Model) resumeCmd(sess *daemon.Session) tea.Cmd {
+	return func() tea.Msg {
+		var hostURL string
+		for _, h := range m.hosts {
+			if h.Name == sess.Host {
+				hostURL = h.URL
+				break
+			}
+		}
+		if err := RunAction(hostURL, "resume", sess.ID); err != nil {
 			return errorMsg(err.Error())
 		}
 		return nil

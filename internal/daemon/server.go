@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strconv"
@@ -349,6 +350,48 @@ func (s *Server) processHookEvent(p Provider, urlEventName string, headerHost st
 				Managed:   true,
 				TmuxName:  spawningSess.TmuxName,
 				StartedAt: spawningSess.StartedAt,
+			}
+		} else if activeManaged, err := s.findActiveManagedSessionInCwd(event.Agent, host, event.Cwd); err == nil && activeManaged != nil && activeManaged.NativeID != event.NativeID {
+			// An active managed tmux session rotated its internal conversation ID (e.g. via /clear or /reset)
+			reConv := regexp.MustCompile(`\s*\(Conv\s*(\d+)\)$`)
+			var newTurnName string
+			baseTitle := activeManaged.CustomTitle
+			if baseTitle == "" {
+				baseTitle = activeManaged.Name
+			}
+			if baseTitle == "" || isRawSessionName(baseTitle) {
+				baseTitle = activeManaged.Agent
+			}
+
+			if m := reConv.FindStringSubmatch(baseTitle); len(m) == 2 {
+				num, _ := strconv.Atoi(m[1])
+				cleanBase := strings.TrimSpace(reConv.ReplaceAllString(baseTitle, ""))
+				newTurnName = fmt.Sprintf("%s (Conv %d)", cleanBase, num+1)
+			} else {
+				activeManaged.Name = fmt.Sprintf("%s (Conv 1)", baseTitle)
+				newTurnName = fmt.Sprintf("%s (Conv 2)", baseTitle)
+			}
+
+			// Archive previous conversation turn
+			activeManaged.Managed = false
+			activeManaged.State = StateEnded
+			activeManaged.Activity = "Cleared (context reset)"
+			activeManaged.LastEventAt = time.Now()
+			_ = s.db.SaveSession(activeManaged)
+			s.broadcast(activeManaged)
+
+			// Adopt the live tmux supervisor for the new conversation turn
+			sess = &Session{
+				ID:         sessionID,
+				Agent:      event.Agent,
+				Host:       host,
+				NativeID:   event.NativeID,
+				Managed:    true,
+				TmuxName:   activeManaged.TmuxName,
+				NodePath:   activeManaged.NodePath,
+				ProjectKey: activeManaged.ProjectKey,
+				Name:       newTurnName,
+				StartedAt:  time.Now(),
 			}
 		} else {
 			sess = &Session{
@@ -738,6 +781,49 @@ func (s *Server) handleSessionControl(w http.ResponseWriter, r *http.Request) {
 		s.broadcast(sess)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"restarted"}`))
+
+	case "resume":
+		if sess.Cwd == "" {
+			http.Error(w, "Session working directory is empty", http.StatusBadRequest)
+			return
+		}
+
+		tmuxName := sess.TmuxName
+		if tmuxName == "" {
+			tmuxName = fmt.Sprintf("ackbar-%s-%s", sess.Agent, sess.NativeID)
+		}
+		_ = tmux.Kill(r.Context(), tmuxName)
+
+		resumeCmd := getResumeCmd(sess.Agent, sess.NativeID)
+		err := tmux.Spawn(r.Context(), tmuxName, sess.Cwd, resumeCmd)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Failed to spawn tmux session: %v", err), http.StatusInternalServerError)
+			return
+		}
+
+		sess.Managed = true
+		sess.TmuxName = tmuxName
+		sess.State = StateWorking
+		sess.Activity = "Resumed session"
+		sess.LastEventAt = time.Now()
+
+		if pid, err := tmux.GetPID(r.Context(), tmuxName); err == nil {
+			sess.PID = pid
+		}
+
+		if err := s.db.SaveSession(sess); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		s.broadcast(sess)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"status":    "resumed",
+			"id":        sess.ID,
+			"tmux_name": tmuxName,
+			"session":   sess,
+		})
 
 	case "move":
 		nodePath := r.URL.Query().Get("node_path")
@@ -1308,6 +1394,22 @@ func (s *Server) findSpawningSession(agent, cwd string) (*Session, error) {
 	}
 	for _, sess := range sessions {
 		if sess.Agent == agent && sess.Cwd == cwd && sess.Managed && sess.State == StateUnknown {
+			return sess, nil
+		}
+	}
+	return nil, nil
+}
+
+func (s *Server) findActiveManagedSessionInCwd(agent, host, cwd string) (*Session, error) {
+	if cwd == "" {
+		return nil, nil
+	}
+	sessions, err := s.db.ListSessions()
+	if err != nil {
+		return nil, err
+	}
+	for _, sess := range sessions {
+		if sess.Agent == agent && sess.Host == host && sess.Cwd == cwd && sess.Managed && sess.State != StateEnded && sess.TmuxName != "" {
 			return sess, nil
 		}
 	}
