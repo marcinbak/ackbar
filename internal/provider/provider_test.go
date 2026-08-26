@@ -52,14 +52,24 @@ func TestClaudeProvider_ParseHook(t *testing.T) {
 		t.Errorf("Expected options ['Staging', 'Production'], got %+v", ev.Blocked.Options)
 	}
 
-	// Test Notification with generic prompt (should NOT block)
+	// Test Notification with generic prompt (should NOT block, should be Idle)
 	payload = `{"session_id": "session-claude", "cwd": "/workspace", "hook_event_name": "Notification", "notification_type": "user_prompt"}`
 	ev, err = p.ParseHook("Notification", []byte(payload))
 	if err != nil {
 		t.Fatalf("ParseHook failed: %v", err)
 	}
-	if ev.State == daemon.StateBlocked {
-		t.Errorf("Generic prompt notification should not be blocked, got: %+v", ev)
+	if ev.State != daemon.StateIdle {
+		t.Errorf("Generic prompt notification should be Idle, got: %+v", ev)
+	}
+
+	// Test Notification with idle_prompt (should be Idle)
+	payload = `{"session_id": "session-claude", "cwd": "/workspace", "hook_event_name": "Notification", "notification_type": "idle_prompt"}`
+	ev, err = p.ParseHook("Notification", []byte(payload))
+	if err != nil {
+		t.Fatalf("ParseHook failed: %v", err)
+	}
+	if ev.State != daemon.StateIdle || ev.Activity != "Awaiting user prompt" {
+		t.Errorf("idle_prompt notification should be StateIdle, got state %v, activity %s", ev.State, ev.Activity)
 	}
 
 	// Test Notification with explicit permission_prompt (should block)
@@ -136,6 +146,16 @@ func TestAntigravityProvider_ParseHook(t *testing.T) {
 	}
 	if len(evPerm.Blocked.Options) != 2 || evPerm.Blocked.Options[0] != "Allow" || evPerm.Blocked.Options[1] != "Deny" {
 		t.Errorf("Expected options ['Allow', 'Deny'], got %+v", evPerm.Blocked.Options)
+	}
+
+	// Test postinvocation (should set StateIdle)
+	payloadPost := `{"conversationId": "session-agy", "workspacePaths": ["/workspace"]}`
+	evPost, err := p.ParseHook("postinvocation", []byte(payloadPost))
+	if err != nil {
+		t.Fatalf("ParseHook postinvocation failed: %v", err)
+	}
+	if evPost.State != daemon.StateIdle || evPost.Activity != "Awaiting user prompt" {
+		t.Errorf("Expected StateIdle on postinvocation, got state %v, activity %s", evPost.State, evPost.Activity)
 	}
 }
 

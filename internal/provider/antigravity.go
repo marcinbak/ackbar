@@ -123,8 +123,8 @@ func (a *AntigravityProvider) ParseHook(eventName string, payload []byte) (*daem
 		event.Activity = "Thinking..."
 
 	case "postinvocation":
-		event.State = daemon.StateWorking
-		event.Activity = "Completed turn"
+		event.State = daemon.StateIdle
+		event.Activity = "Awaiting user prompt"
 
 	default:
 		event.Activity = "Event: " + eventName

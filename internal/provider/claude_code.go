@@ -276,8 +276,11 @@ func (c *ClaudeProvider) ParseHook(eventName string, payload []byte) (*daemon.Ev
 				Since:    time.Now(),
 			}
 			event.Activity = "Waiting for tool authorization"
+		} else if strings.Contains(notifLower, "idle") || strings.Contains(notifLower, "prompt") || strings.Contains(notifLower, "ready") || strings.Contains(notifLower, "done") || strings.Contains(notifLower, "complete") {
+			event.State = daemon.StateIdle
+			event.Activity = "Awaiting user prompt"
 		} else {
-			event.State = daemon.StateWorking
+			event.State = daemon.StateIdle
 			event.Activity = "Notification: " + p.NotificationType
 		}
 
