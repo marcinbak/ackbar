@@ -950,14 +950,6 @@
     agentBadge.innerHTML = getAgentBadgeHtml(session.agent, true);
     right.appendChild(agentBadge);
 
-    if (session.git_branch) {
-      const branchBadge = document.createElement('span');
-      branchBadge.className = 'badge-branch';
-      branchBadge.textContent = '⎇';
-      branchBadge.title = `Git Branch: ${session.git_branch}`;
-      right.appendChild(branchBadge);
-    }
-
     if (session.context_pct > 0) {
       const ctxBadge = document.createElement('span');
       ctxBadge.className = 'badge-ctx';
@@ -1265,6 +1257,10 @@
     emojiSpan.className = 'tab-emoji';
     emojiSpan.innerHTML = getStateEmoji(session);
 
+    const unreadDot = document.createElement('span');
+    unreadDot.className = 'tab-unread-dot unread-dot';
+    unreadDot.style.display = (session.is_unread && state.activeTabId !== tabId) ? 'inline-block' : 'none';
+
     const titleSpan = document.createElement('span');
     titleSpan.className = 'tab-title';
     titleSpan.textContent = session.name || session.agent;
@@ -1275,6 +1271,7 @@
     tabEl.title = `${session.name || session.agent}\nHost: @${formatHostLabel(session.host || 'local')}${timeRel ? `\nLast Active: ${timeRel} (${timeFull})` : ''}`;
 
     titleWrap.appendChild(emojiSpan);
+    titleWrap.appendChild(unreadDot);
     titleWrap.appendChild(titleSpan);
 
     const closeBtn = document.createElement('button');
@@ -1592,12 +1589,17 @@
     emojiSpan.className = 'tab-emoji';
     emojiSpan.textContent = 'ℹ';
 
+    const unreadDot = document.createElement('span');
+    unreadDot.className = 'tab-unread-dot unread-dot';
+    unreadDot.style.display = (session.is_unread && state.activeTabId !== tabId) ? 'inline-block' : 'none';
+
     const titleSpan = document.createElement('span');
     titleSpan.className = 'tab-title';
     titleSpan.textContent = `${session.name || session.agent}`;
     titleSpan.title = session.name || session.agent;
 
     titleWrap.appendChild(emojiSpan);
+    titleWrap.appendChild(unreadDot);
     titleWrap.appendChild(titleSpan);
 
     const closeBtn = document.createElement('button');
@@ -2290,6 +2292,8 @@ ${session.last_prompt}
       tab.containerEl.classList.toggle('active', isActive);
 
       if (isActive) {
+        const unreadDot = tab.tabEl.querySelector('.tab-unread-dot');
+        if (unreadDot) unreadDot.style.display = 'none';
         if (tab.session) {
           markSessionAsRead(tab.session);
         }
@@ -2475,6 +2479,18 @@ ${session.last_prompt}
         tab.session = updatedSess;
         const emojiEl = tab.tabEl.querySelector('.tab-emoji');
         const titleEl = tab.tabEl.querySelector('.tab-title');
+        let unreadDot = tab.tabEl.querySelector('.tab-unread-dot');
+        if (!unreadDot) {
+          unreadDot = document.createElement('span');
+          unreadDot.className = 'tab-unread-dot unread-dot';
+          const titleWrap = tab.tabEl.querySelector('.tab-title-wrap');
+          if (titleWrap && titleEl) {
+            titleWrap.insertBefore(unreadDot, titleEl);
+          }
+        }
+        if (unreadDot) {
+          unreadDot.style.display = (updatedSess.is_unread && state.activeTabId !== id) ? 'inline-block' : 'none';
+        }
         if (emojiEl && tab.type === 'terminal') emojiEl.innerHTML = getStateEmoji(updatedSess);
         if (titleEl && tab.type !== 'doc') titleEl.textContent = updatedSess.name || updatedSess.agent;
 
