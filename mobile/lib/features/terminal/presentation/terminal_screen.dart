@@ -14,7 +14,7 @@ import '../../../core/theme/app_typography.dart';
 import '../../../core/widgets/terminal_accessory_bar.dart';
 
 /// Fullscreen interactive PTY Terminal screen streaming live tmux session I/O
-/// with horizontal scrolling, vertical scrolling, dynamic auto-fit, zoom, and touch keyboard.
+/// with horizontal scrolling, vertical swipe-to-scroll, dynamic auto-fit, zoom, and touch keyboard controls.
 class TerminalScreen extends ConsumerStatefulWidget {
   final Session session;
 
@@ -35,6 +35,7 @@ class TerminalScreen extends ConsumerStatefulWidget {
 class _TerminalScreenState extends ConsumerState<TerminalScreen> {
   late final Terminal _terminal;
   late final TerminalController _terminalController;
+  final FocusNode _terminalFocusNode = FocusNode();
   WebSocketChannel? _channel;
   StreamSubscription? _sub;
   bool _connecting = true;
@@ -50,6 +51,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
   final ScrollController _horizontalScrollController = ScrollController();
   final ScrollController _verticalScrollController = ScrollController();
   bool _showScrollToBottom = false;
+
+  // Touch drag gesture scroll accumulator
+  double _dragScrollAccumulator = 0.0;
 
   @override
   void initState() {
@@ -80,6 +84,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
         curve: Curves.easeOut,
       );
     }
+    // Also send Page Down to tmux to ensure server viewport is at bottom
+    _channel?.sink.add('\x1b[6~');
+    _terminal.keyInput(TerminalKey.pageDown);
   }
 
   void _connectWebSocket() {
@@ -186,6 +193,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
   }
 
   void _handleAccessoryKey(String key) {
+    if (key == '⌨️' || key == 'Hide ⌨️' || key == 'Dismiss') {
+      if (_terminalFocusNode.hasFocus) {
+        _terminalFocusNode.unfocus();
+        FocusScope.of(context).unfocus();
+      } else {
+        _terminalFocusNode.requestFocus();
+      }
+      return;
+    }
+
     if (_channel == null) return;
 
     switch (key) {
@@ -253,6 +270,49 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
     }
   }
 
+  void _handleVerticalDragUpdate(DragUpdateDetails details) {
+    final dy = details.primaryDelta ?? 0.0;
+    _dragScrollAccumulator += dy;
+
+    // Approximately ~14px per terminal row scroll
+    const lineDelta = 14.0;
+    if (_dragScrollAccumulator.abs() >= lineDelta) {
+      final rows = (_dragScrollAccumulator / lineDelta).truncate();
+      _dragScrollAccumulator -= rows * lineDelta;
+
+      if (rows > 0) {
+        // Swiping finger DOWN -> Scroll UP in tmux history
+        for (var i = 0; i < rows; i++) {
+          _channel?.sink.add('\x1b[A');
+          _terminal.keyInput(TerminalKey.arrowUp);
+        }
+      } else if (rows < 0) {
+        // Swiping finger UP -> Scroll DOWN towards live prompt
+        for (var i = 0; i < (-rows); i++) {
+          _channel?.sink.add('\x1b[B');
+          _terminal.keyInput(TerminalKey.arrowDown);
+        }
+      }
+    }
+  }
+
+  void _handleVerticalDragEnd(DragEndDetails details) {
+    final velocity = details.primaryVelocity ?? 0.0;
+    // Fling gesture: fast flick scrolls a full page in tmux
+    if (velocity.abs() > 350.0) {
+      if (velocity > 0) {
+        // Fast swipe down -> Page Up in tmux
+        _channel?.sink.add('\x1b[5~');
+        _terminal.keyInput(TerminalKey.pageUp);
+      } else {
+        // Fast swipe up -> Page Down in tmux
+        _channel?.sink.add('\x1b[6~');
+        _terminal.keyInput(TerminalKey.pageDown);
+      }
+    }
+    _dragScrollAccumulator = 0.0;
+  }
+
   void _zoomIn() {
     HapticFeedback.selectionClick();
     setState(() {
@@ -280,6 +340,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
     _verticalScrollController.dispose();
     _horizontalScrollController.dispose();
     _terminalController.dispose();
+    _terminalFocusNode.dispose();
     _pingTimer?.cancel();
     _sub?.cancel();
     _channel?.sink.close();
@@ -288,6 +349,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final keyboardOpen = MediaQuery.of(context).viewInsets.bottom > 0 || _terminalFocusNode.hasFocus;
+
     return Scaffold(
       backgroundColor: AppColors.terminalBlack,
       appBar: AppBar(
@@ -326,6 +389,24 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
           ],
         ),
         actions: [
+          // Keyboard toggle button (shows/hides on-screen keyboard)
+          IconButton(
+            icon: Icon(
+              keyboardOpen ? Icons.keyboard_hide_rounded : Icons.keyboard_rounded,
+              size: 20,
+              color: keyboardOpen ? AppColors.infoCyan : AppColors.textSecondary,
+            ),
+            tooltip: keyboardOpen ? 'Hide Keyboard' : 'Show Keyboard',
+            onPressed: () {
+              if (keyboardOpen) {
+                _terminalFocusNode.unfocus();
+                FocusScope.of(context).unfocus();
+              } else {
+                _terminalFocusNode.requestFocus();
+              }
+            },
+          ),
+
           // Fit mode toggle
           TextButton(
             onPressed: _toggleAutoFit,
@@ -362,7 +443,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
               _channel?.sink.add('\x02[');
               ScaffoldMessenger.of(context).showSnackBar(
                 const SnackBar(
-                  content: Text('Tmux Scroll Mode active. Use ↑/↓/PgUp to navigate history, Esc to exit.'),
+                  content: Text('Tmux Scroll Mode active. Swipe or use ↑/↓/PgUp to scroll, Esc to exit.'),
                   duration: Duration(seconds: 2),
                 ),
               );
@@ -451,76 +532,87 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
                         ? constraints.maxWidth
                         : max(constraints.maxWidth, _currentCols * charWidth + 16.0);
 
-                    return Stack(
-                      children: [
-                        Scrollbar(
-                          controller: _verticalScrollController,
-                          thumbVisibility: true,
-                          trackVisibility: false,
-                          child: Scrollbar(
-                            controller: _horizontalScrollController,
-                            thumbVisibility: !_autoFit,
-                            trackVisibility: !_autoFit,
-                            notificationPredicate: (notif) => notif.metrics.axis == Axis.horizontal,
-                            child: SingleChildScrollView(
+                    return GestureDetector(
+                      onVerticalDragUpdate: _handleVerticalDragUpdate,
+                      onVerticalDragEnd: _handleVerticalDragEnd,
+                      onTap: () {
+                        if (!_terminalFocusNode.hasFocus) {
+                          _terminalFocusNode.requestFocus();
+                        }
+                      },
+                      behavior: HitTestBehavior.translucent,
+                      child: Stack(
+                        children: [
+                          Scrollbar(
+                            controller: _verticalScrollController,
+                            thumbVisibility: true,
+                            trackVisibility: false,
+                            child: Scrollbar(
                               controller: _horizontalScrollController,
-                              scrollDirection: Axis.horizontal,
-                              physics: const BouncingScrollPhysics(),
-                              child: SizedBox(
-                                width: terminalRenderWidth,
-                                height: constraints.maxHeight,
-                                child: TerminalView(
-                                  _terminal,
-                                  controller: _terminalController,
-                                  scrollController: _verticalScrollController,
-                                  autofocus: true,
-                                  autoResize: false,
-                                  deleteDetection: true, // Fix for iOS backspace/delete
-                                  keyboardType: TextInputType.text,
-                                  keyboardAppearance: Brightness.dark,
-                                  backgroundOpacity: 0.0,
-                                  textStyle: TerminalStyle(
-                                    fontSize: _fontSize,
-                                    fontFamily: 'JetBrains Mono',
+                              thumbVisibility: !_autoFit,
+                              trackVisibility: !_autoFit,
+                              notificationPredicate: (notif) => notif.metrics.axis == Axis.horizontal,
+                              child: SingleChildScrollView(
+                                controller: _horizontalScrollController,
+                                scrollDirection: Axis.horizontal,
+                                physics: const BouncingScrollPhysics(),
+                                child: SizedBox(
+                                  width: terminalRenderWidth,
+                                  height: constraints.maxHeight,
+                                  child: TerminalView(
+                                    _terminal,
+                                    controller: _terminalController,
+                                    scrollController: _verticalScrollController,
+                                    focusNode: _terminalFocusNode,
+                                    autofocus: false, // Clean startup: keyboard hidden by default
+                                    autoResize: false,
+                                    deleteDetection: true, // Fix for iOS backspace/delete
+                                    keyboardType: TextInputType.text,
+                                    keyboardAppearance: Brightness.dark,
+                                    backgroundOpacity: 0.0,
+                                    textStyle: TerminalStyle(
+                                      fontSize: _fontSize,
+                                      fontFamily: 'JetBrains Mono',
+                                    ),
                                   ),
                                 ),
                               ),
                             ),
                           ),
-                        ),
-                        if (_showScrollToBottom)
-                          Positioned(
-                            bottom: 8,
-                            right: 16,
-                            child: Material(
-                              color: AppColors.surfaceHighlight.withOpacity(0.9),
-                              borderRadius: BorderRadius.circular(20),
-                              elevation: 4,
-                              child: InkWell(
+                          if (_showScrollToBottom)
+                            Positioned(
+                              bottom: 8,
+                              right: 16,
+                              child: Material(
+                                color: AppColors.surfaceHighlight.withOpacity(0.9),
                                 borderRadius: BorderRadius.circular(20),
-                                onTap: _scrollToBottom,
-                                child: Padding(
-                                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                                  child: Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      const Icon(Icons.arrow_downward_rounded, size: 14, color: AppColors.infoCyan),
-                                      const SizedBox(width: 4),
-                                      Text(
-                                        'Bottom',
-                                        style: AppTypography.codeXs.copyWith(
-                                          color: AppColors.infoCyan,
-                                          fontWeight: FontWeight.w600,
-                                          fontSize: 11,
+                                elevation: 4,
+                                child: InkWell(
+                                  borderRadius: BorderRadius.circular(20),
+                                  onTap: _scrollToBottom,
+                                  child: Padding(
+                                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        const Icon(Icons.arrow_downward_rounded, size: 14, color: AppColors.infoCyan),
+                                        const SizedBox(width: 4),
+                                        Text(
+                                          'Bottom',
+                                          style: AppTypography.codeXs.copyWith(
+                                            color: AppColors.infoCyan,
+                                            fontWeight: FontWeight.w600,
+                                            fontSize: 11,
+                                          ),
                                         ),
-                                      ),
-                                    ],
+                                      ],
+                                    ),
                                   ),
                                 ),
                               ),
                             ),
-                          ),
-                      ],
+                        ],
+                      ),
                     );
                   },
                 ),
@@ -535,4 +627,5 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
     );
   }
 }
+
 
