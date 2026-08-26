@@ -950,14 +950,6 @@
     agentBadge.innerHTML = getAgentBadgeHtml(session.agent, true);
     right.appendChild(agentBadge);
 
-    if (session.git_branch) {
-      const branchBadge = document.createElement('span');
-      branchBadge.className = 'badge-branch';
-      branchBadge.textContent = '⎇';
-      branchBadge.title = `Git Branch: ${session.git_branch}`;
-      right.appendChild(branchBadge);
-    }
-
     if (session.context_pct > 0) {
       const ctxBadge = document.createElement('span');
       ctxBadge.className = 'badge-ctx';
