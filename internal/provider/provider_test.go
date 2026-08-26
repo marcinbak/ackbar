@@ -147,6 +147,16 @@ func TestAntigravityProvider_ParseHook(t *testing.T) {
 	if len(evPerm.Blocked.Options) != 2 || evPerm.Blocked.Options[0] != "Allow" || evPerm.Blocked.Options[1] != "Deny" {
 		t.Errorf("Expected options ['Allow', 'Deny'], got %+v", evPerm.Blocked.Options)
 	}
+
+	// Test postinvocation (should set StateIdle)
+	payloadPost := `{"conversationId": "session-agy", "workspacePaths": ["/workspace"]}`
+	evPost, err := p.ParseHook("postinvocation", []byte(payloadPost))
+	if err != nil {
+		t.Fatalf("ParseHook postinvocation failed: %v", err)
+	}
+	if evPost.State != daemon.StateIdle || evPost.Activity != "Awaiting user prompt" {
+		t.Errorf("Expected StateIdle on postinvocation, got state %v, activity %s", evPost.State, evPost.Activity)
+	}
 }
 
 func TestProviderDiscovery(t *testing.T) {
