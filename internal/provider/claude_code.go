@@ -260,7 +260,7 @@ func (c *ClaudeProvider) ParseHook(eventName string, payload []byte) (*daemon.Ev
 			} else {
 				event.Activity = "Waiting for user input"
 			}
-		} else if strings.Contains(notifLower, "permission") || strings.Contains(notifLower, "prompt") || strings.Contains(notifLower, "approval") {
+		} else if strings.Contains(notifLower, "permission") || strings.Contains(notifLower, "approval") || notifLower == "permission_prompt" || notifLower == "permission_request" {
 			event.State = daemon.StateBlocked
 			reason := "Permission confirmation required"
 			if p.Prompt != "" {

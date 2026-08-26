@@ -33,6 +33,12 @@ class SessionDetailSheet extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final statusColor = session.state.toBadgeStatus().color;
 
+    if (session.isUnread) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        ref.read(fleetSessionsProvider.notifier).markSessionRead(session.id, session.host);
+      });
+    }
+
     return Container(
       decoration: const BoxDecoration(
         color: AppColors.background,

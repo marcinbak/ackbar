@@ -45,9 +45,9 @@ void main() {
       expect(SessionState.working.toBadgeStatus(), equals(AckbarSessionStatus.working));
       expect(SessionState.blocked.toBadgeStatus(), equals(AckbarSessionStatus.blocked));
       expect(SessionState.idle.toBadgeStatus(), equals(AckbarSessionStatus.idle));
-      expect(SessionState.ended.toBadgeStatus(), equals(AckbarSessionStatus.offline));
-      expect(SessionState.failed.toBadgeStatus(), equals(AckbarSessionStatus.offline));
-      expect(SessionState.unknown.toBadgeStatus(), equals(AckbarSessionStatus.offline));
+      expect(SessionState.ended.toBadgeStatus(), equals(AckbarSessionStatus.ended));
+      expect(SessionState.failed.toBadgeStatus(), equals(AckbarSessionStatus.failed));
+      expect(SessionState.unknown.toBadgeStatus(), equals(AckbarSessionStatus.unknown));
     });
   });
 

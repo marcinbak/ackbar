@@ -357,6 +357,24 @@ class _FleetScreenState extends ConsumerState<FleetScreen> {
               ],
 
               const Spacer(),
+              if (session.isUnread) ...[
+                Container(
+                  width: 8,
+                  height: 8,
+                  margin: const EdgeInsets.only(right: 6),
+                  decoration: const BoxDecoration(
+                    color: AppColors.infoCyan,
+                    shape: BoxShape.circle,
+                    boxShadow: [
+                      BoxShadow(
+                        color: Color(0x9906B6D4),
+                        blurRadius: 6,
+                        spreadRadius: 1,
+                      ),
+                    ],
+                  ),
+                ),
+              ],
               StatusBadge(status: session.state.toBadgeStatus(), isCompact: true),
             ],
           ),

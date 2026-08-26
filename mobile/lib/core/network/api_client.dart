@@ -97,6 +97,11 @@ class ApiClient {
     }
   }
 
+  /// POST /v1/sessions/control?id=...&action=read: Mark session state as read
+  Future<bool> markSessionRead(String hostUrl, String sessionID, {String? authToken}) async {
+    return controlSession(hostUrl, sessionID, 'read', authToken: authToken);
+  }
+
   /// GET /v1/hosts: Retrieve configured remote hosts from the daemon
   Future<List<HostRecord>> getHosts(String hostUrl, {String? authToken}) async {
     final clean = _cleanUrl(hostUrl);

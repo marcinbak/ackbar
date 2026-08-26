@@ -64,9 +64,11 @@ enum SessionState {
       case SessionState.idle:
         return AckbarSessionStatus.idle;
       case SessionState.ended:
+        return AckbarSessionStatus.ended;
       case SessionState.failed:
+        return AckbarSessionStatus.failed;
       case SessionState.unknown:
-        return AckbarSessionStatus.offline;
+        return AckbarSessionStatus.unknown;
     }
   }
 }
@@ -206,6 +208,8 @@ class Session {
   final String aiDescription;
   final String firstPrompt;
   final String lastPrompt;
+  final bool isUnread;
+  final DateTime? lastStateChangeAt;
 
   const Session({
     required this.id,
@@ -237,6 +241,8 @@ class Session {
     this.aiDescription = '',
     this.firstPrompt = '',
     this.lastPrompt = '',
+    this.isUnread = false,
+    this.lastStateChangeAt,
   });
 
   bool get isBlocked => state == SessionState.blocked || blocked != null;
@@ -398,6 +404,8 @@ class Session {
       aiDescription: json['ai_description']?.toString() ?? '',
       firstPrompt: json['first_prompt']?.toString() ?? '',
       lastPrompt: json['last_prompt']?.toString() ?? '',
+      isUnread: json['is_unread'] == true || json['is_unread'] == 1,
+      lastStateChangeAt: json['last_state_change_at'] != null ? DateTime.tryParse(json['last_state_change_at'].toString()) : null,
     );
   }
 
@@ -432,6 +440,8 @@ class Session {
       'ai_description': aiDescription,
       'first_prompt': firstPrompt,
       'last_prompt': lastPrompt,
+      'is_unread': isUnread,
+      if (lastStateChangeAt != null) 'last_state_change_at': lastStateChangeAt!.toIso8601String(),
     };
   }
 
@@ -466,6 +476,8 @@ class Session {
     String? aiDescription,
     String? firstPrompt,
     String? lastPrompt,
+    bool? isUnread,
+    DateTime? lastStateChangeAt,
   }) {
     return Session(
       id: id ?? this.id,
@@ -497,6 +509,8 @@ class Session {
       aiDescription: aiDescription ?? this.aiDescription,
       firstPrompt: firstPrompt ?? this.firstPrompt,
       lastPrompt: lastPrompt ?? this.lastPrompt,
+      isUnread: isUnread ?? this.isUnread,
+      lastStateChangeAt: lastStateChangeAt ?? this.lastStateChangeAt,
     );
   }
 }

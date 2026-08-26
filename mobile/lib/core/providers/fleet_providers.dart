@@ -314,6 +314,20 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
     return ok;
   }
 
+  /// Mark unread session state as read
+  Future<void> markSessionRead(String sessionId, String hostName) async {
+    final index = state.indexWhere((s) => s.id == sessionId || s.nativeId == sessionId);
+    if (index != -1 && state[index].isUnread) {
+      final updated = List<Session>.from(state);
+      updated[index] = updated[index].copyWith(isUnread: false);
+      state = updated;
+    }
+
+    final host = _getHostRecord(hostName);
+    final hostUrl = host?.url ?? 'http://127.0.0.1:7777';
+    await _apiClient.markSessionRead(hostUrl, sessionId, authToken: host?.authToken);
+  }
+
   HostRecord? _getHostRecord(String hostName) {
     final hosts = _ref.read(hostsListProvider);
     final match = hosts.where((h) => h.name == hostName || h.url.contains(hostName));

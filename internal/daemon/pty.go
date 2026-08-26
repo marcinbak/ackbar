@@ -118,6 +118,11 @@ func (s *Server) servePTYWS(ws *websocket.Conn) {
 	}
 
 	if sess != nil {
+		if sess.IsUnread {
+			sess.IsUnread = false
+			_ = s.db.MarkSessionRead(sess.ID)
+			s.broadcast(sess)
+		}
 		if sess.TmuxName != "" {
 			tmuxName = sess.TmuxName
 		}

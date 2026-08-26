@@ -51,6 +51,36 @@ func TestClaudeProvider_ParseHook(t *testing.T) {
 	if len(ev.Blocked.Options) != 2 || ev.Blocked.Options[0] != "Staging" || ev.Blocked.Options[1] != "Production" {
 		t.Errorf("Expected options ['Staging', 'Production'], got %+v", ev.Blocked.Options)
 	}
+
+	// Test Notification with generic prompt (should NOT block)
+	payload = `{"session_id": "session-claude", "cwd": "/workspace", "hook_event_name": "Notification", "notification_type": "user_prompt"}`
+	ev, err = p.ParseHook("Notification", []byte(payload))
+	if err != nil {
+		t.Fatalf("ParseHook failed: %v", err)
+	}
+	if ev.State == daemon.StateBlocked {
+		t.Errorf("Generic prompt notification should not be blocked, got: %+v", ev)
+	}
+
+	// Test Notification with explicit permission_prompt (should block)
+	payload = `{"session_id": "session-claude", "cwd": "/workspace", "hook_event_name": "Notification", "notification_type": "permission_prompt", "requested_permission": "run bash"}`
+	ev, err = p.ParseHook("Notification", []byte(payload))
+	if err != nil {
+		t.Fatalf("ParseHook failed: %v", err)
+	}
+	if ev.State != daemon.StateBlocked || ev.Blocked == nil || ev.Blocked.Kind != daemon.BlockPermission {
+		t.Errorf("Expected blocked permission state, got: %+v", ev)
+	}
+
+	// Test Stop event (sets StateIdle)
+	payload = `{"session_id": "session-claude", "cwd": "/workspace", "hook_event_name": "Stop"}`
+	ev, err = p.ParseHook("Stop", []byte(payload))
+	if err != nil {
+		t.Fatalf("ParseHook failed: %v", err)
+	}
+	if ev.State != daemon.StateIdle || ev.Activity != "Awaiting user prompt" {
+		t.Errorf("Expected idle state on Stop, got state %v, activity %s", ev.State, ev.Activity)
+	}
 }
 
 func TestCodexProvider_ParseHook(t *testing.T) {

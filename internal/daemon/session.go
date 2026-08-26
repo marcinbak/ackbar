@@ -75,8 +75,10 @@ type Session struct {
 	CustomTitle   string    `json:"custom_title,omitempty"`
 	AITitle       string    `json:"ai_title,omitempty"`
 	AIDescription string    `json:"ai_description,omitempty"`
-	FirstPrompt   string    `json:"first_prompt,omitempty"`
-	LastPrompt    string    `json:"last_prompt,omitempty"`
+	FirstPrompt       string    `json:"first_prompt,omitempty"`
+	LastPrompt        string    `json:"last_prompt,omitempty"`
+	IsUnread          bool      `json:"is_unread,omitempty"`
+	LastStateChangeAt time.Time `json:"last_state_change_at,omitempty"`
 }
 
 type TreeNode struct {
