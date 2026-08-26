@@ -378,7 +378,7 @@ final filteredSessionsProvider = Provider<List<Session>>((ref) {
   final filterIndex = ref.watch(fleetFilterIndexProvider);
   final query = ref.watch(fleetSearchQueryProvider).toLowerCase().trim();
 
-  return allSessions.where((s) {
+  final list = allSessions.where((s) {
     // Hide archived/deleted sessions from active fleet views
     if (s.archived) return false;
 
@@ -401,6 +401,17 @@ final filteredSessionsProvider = Provider<List<Session>>((ref) {
     }
     return true;
   }).toList();
+
+  // Sort sessions descending by latest interaction (newest / active first)
+  list.sort((a, b) {
+    final timeA = a.lastEventAt.isAfter(a.startedAt) ? a.lastEventAt : a.startedAt;
+    final timeB = b.lastEventAt.isAfter(b.startedAt) ? b.lastEventAt : b.startedAt;
+    final cmp = timeB.compareTo(timeA);
+    if (cmp != 0) return cmp;
+    return a.id.compareTo(b.id);
+  });
+
+  return list;
 });
 
 /// Grouped sessions by project / category folder
