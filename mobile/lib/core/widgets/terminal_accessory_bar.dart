@@ -20,6 +20,7 @@ class TerminalAccessoryBar extends StatelessWidget {
   });
 
   static const List<String> defaultKeys = [
+    '⌨️',
     'Esc',
     'Tab',
     '⌫',
@@ -70,7 +71,7 @@ class TerminalAccessoryBar extends StatelessWidget {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: keys.map((key) {
-            final isHighlight = key == 'Ctrl+C' || key == 'Esc' || key == 'Enter' || key == '⌫';
+            final isHighlight = key == 'Ctrl+C' || key == 'Esc' || key == 'Enter' || key == '⌫' || key == '⌨️';
 
             return Padding(
               padding: const EdgeInsets.symmetric(horizontal: 3.0),
@@ -82,7 +83,9 @@ class TerminalAccessoryBar extends StatelessWidget {
                             ? AppColors.infoCyan.withOpacity(0.15)
                             : (key == '⌫'
                                 ? AppColors.statusAmber.withOpacity(0.15)
-                                : AppColors.surfaceHighlight)))
+                                : (key == '⌨️'
+                                    ? AppColors.infoCyan.withOpacity(0.12)
+                                    : AppColors.surfaceHighlight))))
                     : AppColors.surface,
                 shape: RoundedRectangleBorder(
                   borderRadius: AppSpacing.roundedSm,
@@ -94,7 +97,9 @@ class TerminalAccessoryBar extends StatelessWidget {
                                 ? AppColors.infoCyan.withOpacity(0.4)
                                 : (key == '⌫'
                                     ? AppColors.statusAmber.withOpacity(0.4)
-                                    : AppColors.outline)))
+                                    : (key == '⌨️'
+                                        ? AppColors.infoCyan.withOpacity(0.3)
+                                        : AppColors.outline))))
                         : AppColors.outlineSubtle,
                     width: 1,
                   ),
