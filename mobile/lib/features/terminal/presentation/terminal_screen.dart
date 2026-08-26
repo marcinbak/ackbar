@@ -78,8 +78,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> with WidgetsBin
         if (_verticalScrollController.hasClients) {
           _verticalScrollController.jumpTo(0.0);
         }
-        // Send Ctrl+L to tmux to force a clean full-screen repaint
-        _channel?.sink.add('\x0c');
       });
     }
   }
@@ -104,10 +102,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> with WidgetsBin
         curve: Curves.easeOut,
       );
     }
-    // Also send Page Down + redraw to tmux to ensure server viewport is at bottom
+    // Send Page Down to tmux to ensure server viewport is at bottom
     _channel?.sink.add('\x1b[6~');
     _terminal.keyInput(TerminalKey.pageDown);
-    _channel?.sink.add('\x0c');
   }
 
   void _connectWebSocket() {
@@ -199,7 +196,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> with WidgetsBin
         'cols': cols,
         'rows': rows,
       }));
-      _channel?.sink.add('\x0c'); // Force tmux repaint immediately
     } catch (_) {}
   }
 
@@ -216,6 +212,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> with WidgetsBin
       final fitRows = max(10, (constraints.maxHeight / charHeight).floor());
       _sendResize(fixedCols, fitRows);
     }
+
+    if (_verticalScrollController.hasClients && _verticalScrollController.offset != 0.0) {
+      _verticalScrollController.jumpTo(0.0);
+    }
   }
 
   void _handleAccessoryKey(String key) {
@@ -227,7 +227,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> with WidgetsBin
           if (_verticalScrollController.hasClients) {
             _verticalScrollController.jumpTo(0.0);
           }
-          _channel?.sink.add('\x0c');
         });
       } else {
         _terminalFocusNode.requestFocus();
@@ -438,7 +437,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> with WidgetsBin
                   if (_verticalScrollController.hasClients) {
                     _verticalScrollController.jumpTo(0.0);
                   }
-                  _channel?.sink.add('\x0c');
                 });
               } else {
                 _terminalFocusNode.requestFocus();
@@ -666,5 +664,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> with WidgetsBin
     );
   }
 }
+
 
 
