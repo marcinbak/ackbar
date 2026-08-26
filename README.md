@@ -89,12 +89,16 @@ A fast, keyboard-driven dashboard built with Charm.sh Bubble Tea and Lip Gloss:
 
 ## 🚦 Live Status Indicators
 
-| Status | Meaning |
-| :--- | :--- |
-| `⚡` **Working** | Agent is actively analyzing, planning, writing code, or executing tools. |
-| `❓` **Blocked** | Agent is paused awaiting developer permission, confirmation, or answer. |
-| `✅` **Idle** | Agent completed its turn and is waiting for the next user prompt. |
-| `⚪` **Offline** | Session ended or target host daemon is unreachable. |
+| Indicator | Status | Meaning |
+| :--- | :--- | :--- |
+| `⚙️` *(animated)* | **Working** | Agent is actively generating responses or executing tools. |
+| `❓` | **Blocked** | Agent is paused awaiting developer permission, choice, or confirmation. |
+| `✅` | **Idle** | Agent completed its turn and is waiting for the next user prompt. |
+| `⏹️` | **Ended** | Session was terminated, exited, or cleared into a new turn. |
+| `🛑` | **Failed** | Agent process crashed or exited with an error. |
+| `◌` | **Standby** | Unmanaged process or host daemon is disconnected. |
+
+> 💡 **Unread State Dimension:** When a session shifts to **Blocked** (`❓`) or **Idle** (`✅`), an unread glowing indicator appears. Viewing the session from the Web Dashboard, TUI, or Mobile Companion automatically marks it as read.
 
 ---
 

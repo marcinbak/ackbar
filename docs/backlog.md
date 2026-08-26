@@ -49,6 +49,15 @@
   * GoReleaser v2 configuration (`.goreleaser.yaml`) cross-compiling for macOS (`arm64`, `amd64`) and Linux (`amd64`, `arm64`).
   * Automated Homebrew tap formula generation (`marcinbak/homebrew-ackbar`) with `brew services` daemon management.
   * GitHub Actions CI/CD workflows (`.github/workflows/release.yml`, `.github/workflows/ci.yml`).
+* [x] **Unread vs. Read Lifecycle Dimension & Animated State Indicators:**
+  * `is_unread` and `last_state_change_at` schema tracking with glowing pulse cues on newly blocked or idle sessions.
+  * Automatic read acknowledgment (`POST /v1/sessions/mark-read`) when focusing sessions in Web, TUI, or Mobile.
+  * Real-time animated working state spinners (`⚙️` rotating in Web & Mobile, cycling quadrant `◐ ◓ ◑ ◒` in Bubble Tea TUI).
+* [x] **In-Place Cleared Conversation Turn Rotation & 1-Click Resume:**
+  * Context resets (`/clear`, `/reset`) seamlessly archive prior turns as `(Conv 1)` / `⏹️ ENDED` and assign the live tmux window to `(Conv 2)`.
+  * Universal 1-click conversation resumption (`POST /v1/sessions/control?action=resume&id=...`) launching native provider resume CLIs across Web (`▶ Resume in Tmux`), TUI (`r`), and Mobile (`▶ Resume Conversation`).
+* [x] **Web Multi-Tab Lifecycle Context Menu:**
+  * Right-click tab context menu supporting Close Tab, Close Other Tabs, Close Tabs to the Right, and Close All Tabs.
 * [x] **Official Provider Vector Logos:**
   * High-performance vector `CustomPainter` paths and inline SVGs for Claude Code (pixelated CLI creature), Google Antigravity (Gaussian arch curve with Google gradient), and OpenAI Codex (interlocking Blossom vortex).
 * [x] **Single Source of Truth Versioning:**

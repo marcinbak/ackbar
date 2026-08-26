@@ -99,3 +99,41 @@ go install github.com/marcinbak/ackbar/cmd/ackbar@latest
 go install github.com/marcinbak/ackbar/cmd/ackbar-hook@latest
 go install github.com/marcinbak/ackbar/cmd/ackbar-relay@latest
 ```
+
+---
+
+## 5. Linux Systemd User Service Setup
+
+For Linux workstations and remote GPU servers running `ackbard` in the background:
+
+### Create Service Unit (`~/.config/systemd/user/ackbard.service`)
+```ini
+[Unit]
+Description=Ackbar Agent Control Plane Daemon
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/ackbard
+Restart=always
+RestartSec=3s
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
+```
+
+### Enable & Start
+```bash
+# Enable systemd linger so daemon runs even when not logged in via SSH
+loginctl enable-linger $USER
+
+# Reload and enable user service
+systemctl --user daemon-reload
+systemctl --user enable --now ackbard
+
+# Inspect live logs
+journalctl --user -u ackbard -f
+```

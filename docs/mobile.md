@@ -46,9 +46,16 @@ It communicates with local and remote `ackbard` daemons over standard HTTP/REST,
 
 ### 🚀 1. Fleet Dashboard
 * **Collapsible Project Folders:** Logical organization of sessions by repository and category.
-* **Rich Session Cards:** Displays agent avatar badges, git branch tags, host badges (`@local`, `@gpu-box`), dynamic context token gauge bars, active elapsed time, and status pills (`⚡ WORKING`, `❓ BLOCKED`, `✅ IDLE`, `⚪ OFFLINE`).
+* **Rich Session Cards:** Displays agent avatar badges, git branch tags, host badges (`@local`, `@gpu-box`), dynamic context token gauge bars, active elapsed time, and status pills:
+  * `⚙️` *(animated spinner)* **WORKING:** Active command execution or code generation.
+  * `❓` **BLOCKED:** Waiting for developer response or permission.
+  * `✅` **IDLE:** Turn completed, awaiting next prompt.
+  * `⏹️` **ENDED:** Process completed or cleared into a new turn.
+  * `🛑` **FAILED:** Process crashed or error.
+  * `◌` **STANDBY:** Unmanaged or disconnected.
+* **Unread State Indicator:** A glowing pulse indicator highlights sessions that transitioned into `BLOCKED` or `IDLE`. Tapping the card automatically clears the unread state via `POST /v1/sessions/mark-read`.
 * **Live Search & Filter:** Real-time fuzzy filtering by session title, agent, or group.
-* **Session Details & Controls Sheet:** Tap any session to inspect metadata, restart, kill, archive, or delete.
+* **Session Details & Controls Sheet:** Tap any session to inspect metadata, **▶ Resume Conversation**, restart, kill, archive, or delete.
 
 ---
 
