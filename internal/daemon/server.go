@@ -2881,19 +2881,31 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 			actualPID := 0
 			var panePID int
 			fmt.Sscanf(pidStr, "%d", &panePID)
+			if panePID > 0 {
+				actualPID = panePID
+			}
 
-			if cmdLower == "bash" || cmdLower == "zsh" || cmdLower == "sh" {
-				if panePID > 0 {
-					if out, err := exec.CommandContext(ctx, "pgrep", "-P", strconv.Itoa(panePID), "-a").Output(); err == nil {
-						for _, pline := range strings.Split(string(out), "\n") {
-							pline = strings.TrimSpace(pline)
-							if pline == "" {
-								continue
-							}
-							parts := strings.SplitN(pline, " ", 2)
-							if len(parts) >= 2 {
-								cPid, _ := strconv.Atoi(parts[0])
-								cCmd := strings.ToLower(parts[1])
+			if strings.HasPrefix(tmuxName, "ackbar-claude-code-") {
+				agent = "claude-code"
+			} else if strings.HasPrefix(tmuxName, "ackbar-antigravity-") {
+				agent = "antigravity"
+			} else if strings.HasPrefix(tmuxName, "ackbar-codex-") {
+				agent = "codex"
+			}
+
+			if panePID > 0 {
+				if out, err := exec.CommandContext(ctx, "ps", "-eo", "ppid,pid,command").Output(); err == nil {
+					for _, pline := range strings.Split(string(out), "\n") {
+						pline = strings.TrimSpace(pline)
+						if pline == "" {
+							continue
+						}
+						fields := strings.Fields(pline)
+						if len(fields) >= 3 {
+							ppidVal, _ := strconv.Atoi(fields[0])
+							if ppidVal == panePID {
+								cPid, _ := strconv.Atoi(fields[1])
+								cCmd := strings.ToLower(strings.Join(fields[2:], " "))
 								if strings.Contains(cCmd, "claude") {
 									agent = "claude-code"
 									actualPID = cPid
@@ -2911,14 +2923,9 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 						}
 					}
 				}
+			}
 
-				if agent == "" {
-					if strings.HasPrefix(tmuxName, "ackbar-") {
-						_ = tmux.Kill(ctx, tmuxName)
-					}
-					continue
-				}
-			} else {
+			if agent == "" {
 				if strings.Contains(cmdLower, "antigravity") || strings.Contains(cmdLower, "agy") {
 					agent = "antigravity"
 				} else if strings.Contains(cmdLower, "codex") {
@@ -2926,7 +2933,10 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 				} else if strings.Contains(cmdLower, "claude") {
 					agent = "claude-code"
 				}
-				actualPID = panePID
+			}
+
+			if agent == "" {
+				continue
 			}
 
 			if agent != "" && actualPID > 0 && cwd != "" {
