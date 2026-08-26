@@ -91,3 +91,15 @@ type TitleCacheEntry struct {
 * **No Downgrades:** A cache entry with `Source == "custom"` will never be overwritten by lower-priority AI titles or prompt snippets.
 * **Dynamic Upgrades:** If a session was previously cached as `Source == "ai"` or `"prompt"`, and a subsequent scan discovers a user custom name (e.g. user renamed the session or metadata was written), the cache is upgraded immediately to `"custom"`.
 * **Instant Rename Invalidation:** Triggering the `rename` control action updates both the SQLite persistence layer and the in-memory `titleCache` instantly without requiring a daemon restart.
+
+---
+
+## 4. In-Place Context Reset & Multi-Turn Suffixing
+
+When an agent command like `/clear` or `/reset` is executed inside a live tmux session:
+
+1. **Base Title Extraction:** The daemon parses the base title (stripping existing `(Conv N)` suffixes).
+2. **Turn Suffix Assignment:**
+   * The archived turn is finalized as `"<Base Title> (Conv 1)"` with status `StateEnded`.
+   * The active live turn is named `"<Base Title> (Conv 2)"` (incrementing on subsequent resets to `(Conv 3)`, `(Conv 4)`).
+3. **Cache Synchronization:** The `titleCache` is updated for both the prior UUID and the new UUID to guarantee stable, collision-free titles across all views.

@@ -38,11 +38,24 @@ It is embedded directly into the `ackbard` Go binary and served on `http://127.0
 * Powered by `xterm.js` with `FitAddon` and `WebglAddon` (where hardware acceleration is available).
 * Attach simultaneously to multiple local and remote agent sessions.
 * Full keyboard fidelity, ANSI color rendering, mouse wheel scrolling, and window resize propagation.
+* **Tab Right-Click Context Menu:** Right-click any tab for quick lifecycle actions:
+  * **✕ Close Tab:** Closes the target tab.
+  * **🗂️ Close Other Tabs:** Closes all open tabs except the selected one.
+  * **➡️ Close Tabs to the Right:** Closes all tabs to the right of the active tab.
+  * **🗑️ Close All Tabs:** Closes all open tabs and returns to the dashboard empty state.
 
-### 🌳 2. Hierarchical Sidebar Tree
+### 🌳 2. Hierarchical Sidebar Tree & State Indicators
 * Automatic mapping of sessions to Git repositories and custom category folders.
 * Drag-and-drop ordering of session nodes and project groups.
-* Live status badges (`⚡ WORKING`, `❓ BLOCKED`, `✅ IDLE`, `⚪ OFFLINE`) with real-time updates via Server-Sent Events (`SSE`).
+* **Animated Status Badges:**
+  * `⚙️` *(animated spinner)* **WORKING:** Agent is actively generating or executing tools.
+  * `❓` **BLOCKED:** Agent is waiting for user confirmation or choice.
+  * `✅` **IDLE:** Turn completed, awaiting next prompt.
+  * `⏹️` **ENDED:** Process finished or cleared into a new turn.
+  * `🛑` **FAILED:** Process crashed or error.
+  * `◌` **STANDBY:** Unmanaged session or host disconnected.
+* **Unread vs. Read State Cue:** A pulsing dot indicates unread transitions to `BLOCKED` or `IDLE`. Focusing or clicking the session automatically marks it as read.
+* **1-Click Conversation Resumption:** Ended turns can be resumed directly into a new tmux tab via right-click **`▶ Resume in Tmux`** or the details view button.
 * Context token usage meter (adapting dynamically to 200k, 1M, and 128k token limits).
 
 ### ⚡ 3. Command Palette (`Cmd+K` / `Ctrl+K`)

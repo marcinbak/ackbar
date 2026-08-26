@@ -20,13 +20,16 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 
 | Method | Endpoint | Description |
 | :--- | :--- | :--- |
-| `GET` | `/v1/version` | Returns current daemon version (e.g. `{"version":"20260817.22"}`). |
-| `GET` | `/v1/sessions` | Returns all active, managed, and historic sessions. |
-| `GET` | `/v1/events` | SSE stream broadcasting real-time session mutations. |
+| `GET` | `/v1/version` | Returns current daemon version (e.g. `{"version":"20260826.01"}`). |
+| `GET` | `/v1/sessions` | Returns all active, managed, and historic sessions with unread state. |
+| `GET` | `/v1/events` | SSE stream broadcasting real-time session mutations and state changes. |
 | `GET` | `/v1/sessions/pty` | WebSocket endpoint streaming interactive PTY data to `xterm.js`. |
 | `POST` | `/v1/sessions/spawn` | Spawns a new agent process in a supervised tmux session using RFC 4122 UUIDv4. |
-| `POST` | `/v1/hooks/{agent}` | Ingests agent lifecycle and tool hook events. |
-| `POST` | `/v1/sessions/control` | Executes control commands (`kill`, `restart`, `move`, `rename`, `delete`). |
+| `POST` | `/v1/hooks/{agent}` | Ingests agent lifecycle and tool hook events with in-place `/clear` rotation detection. |
+| `POST` | `/v1/sessions/control` | Executes control actions: `resume`, `restart`, `kill`, `move`, `rename`, `delete`. |
+| `POST` | `/v1/sessions/mark-read` | Marks a session as read (`is_unread = false`), clearing visual unread cues. |
+| `GET` | `/v1/sessions/transcript`| Retrieves extracted conversation transcript (JSON or formatted Markdown). |
+| `POST` | `/v1/sessions/upload` | Uploads clipboard images or drag-and-dropped PDFs to `/tmp/ackbar-uploads/`. |
 | `GET` | `/v1/nodes` | Returns configured logical tree nodes and custom groups. |
 | `POST` | `/v1/projects/create` | Creates a new logical project node or pure category subgroup. |
 | `POST` | `/v1/nodes/move` | Moves a logical group node to a new tree path. |
@@ -36,13 +39,64 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 
 ---
 
-## 3. Database Schema & Auto-Migrations
+## 3. In-Place `/clear` Conversation Turn Rotation
+
+When an agent resets its conversation context in-place (e.g. `/clear` in Claude Code, `/reset` in Google Antigravity, or context reset in Codex):
+
+1. **Rotation Detection (`findActiveManagedSessionInCwd`):** When a telemetry hook arrives with a new native UUID from a working directory with an active managed tmux session:
+2. **Archiving Previous Turn:** The previous turn is decoupled from tmux supervision (`managed = false`), marked as `⏹️ StateEnded` (`state: 4`) with `activity = "Cleared (context reset)"`, and renamed with the suffix `(Conv 1)` (or prior turn number) with its full token history and transcripts preserved.
+3. **Adopting Live Supervisor:** The new session turn inherits the live managed tmux window (`managed = true`), tree group node path, and project key, and is titled `"<Base Title> (Conv 2)"` (or `Conv 3` on subsequent clears).
+4. **Resuming Cleared Sessions:** Any historic turn can be resumed anytime into a dedicated new tmux tab via `POST /v1/sessions/control?action=resume&id=...`.
+
+---
+
+## 4. Database Schema & Auto-Migrations
 
 The SQLite database (`~/.config/ackbar/ackbard.db`) uses CGO-free pure Go SQLite (`modernc.org/sqlite`). On daemon startup, `InitDB()` automatically applies non-destructive schema migrations:
 
+* `is_unread`: Tracks whether the session has unviewed state transitions (`1` = unread, `0` = read).
+* `last_state_change_at`: Timestamp of the most recent lifecycle state mutation.
 * `entrypoint`: Identifies session launch context (`claude-vscode`, `cli`, `antigravity`).
 * `kind`: Interactive vs headless mode.
 * `version`: Agent software version.
 * `context_pct`: Current context window token consumption percentage.
 * `git_branch`: Current Git branch associated with the session workspace.
 * `worktree_name`: Associated Git worktree directory if applicable.
+
+---
+
+## 5. Linux Service Management (`systemd`)
+
+On Linux hosts (such as remote GPU compute boxes), `ackbard` can run as a background `systemd` user service:
+
+### Service Unit (`~/.config/systemd/user/ackbard.service`)
+```ini
+[Unit]
+Description=Ackbar Agent Control Plane Daemon
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/ackbard
+Restart=always
+RestartSec=3s
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
+```
+
+### Commands:
+```bash
+# Enable lingering so service persists across logouts and starts on boot
+loginctl enable-linger $USER
+
+# Start and enable user service
+systemctl --user daemon-reload
+systemctl --user enable --now ackbard
+
+# Instant non-blocking restarts
+systemctl --user restart ackbard
+```
