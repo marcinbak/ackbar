@@ -420,5 +420,24 @@ void main() {
       expect(grouped.containsKey('Payment & Billing'), isTrue);
       expect(grouped.containsKey('Acme Web Platform'), isTrue);
     });
+
+    test('filteredSessionsProvider sorts sessions by latest interaction descending', () {
+      final container = ProviderContainer(
+        overrides: [
+          apiClientProvider.overrideWithValue(mockApiClient),
+          sseClientProvider.overrideWithValue(mockSseClient),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      container.read(fleetSessionsProvider.notifier).setSessions(_testSessions);
+
+      final sessions = container.read(filteredSessionsProvider);
+      expect(sessions.length, equals(5));
+      // First session should be the one with lastEventAt 15s ago: 'claude-code:devbox:8472'
+      expect(sessions.first.id, equals('claude-code:devbox:8472'));
+      // Second session should be the one with lastEventAt 40s ago: 'claude-code:local:8492'
+      expect(sessions[1].id, equals('claude-code:local:8492'));
+    });
   });
 }

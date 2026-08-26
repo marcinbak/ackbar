@@ -1591,13 +1591,27 @@ func (m *Model) buildVisibleRows() []TreeRow {
 			return
 		}
 
-		// Add matching sessions directly in this group
+		// Add matching sessions directly in this group (sorted newest / active first)
 		var directSessions []*daemon.Session
 		if path == "Unassigned" {
 			directSessions = unassignedSessions
 		} else {
 			directSessions = sessionsByPath[path]
 		}
+		sort.SliceStable(directSessions, func(i, j int) bool {
+			timeI := directSessions[i].LastEventAt
+			if timeI.IsZero() {
+				timeI = directSessions[i].StartedAt
+			}
+			timeJ := directSessions[j].LastEventAt
+			if timeJ.IsZero() {
+				timeJ = directSessions[j].StartedAt
+			}
+			if !timeI.Equal(timeJ) {
+				return timeI.After(timeJ)
+			}
+			return directSessions[i].ID < directSessions[j].ID
+		})
 		for _, s := range directSessions {
 			rows = append(rows, TreeRow{
 				IsGroup: false,

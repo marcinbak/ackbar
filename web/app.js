@@ -460,6 +460,27 @@
     }
   }
 
+  // Helper: Get timestamp (ms) for latest interaction
+  function getSessionTimestamp(s) {
+    if (!s) return 0;
+    const t = s.last_event_at || s.last_message_at || s.started_at;
+    if (!t) return 0;
+    const d = new Date(t);
+    return isNaN(d.getTime()) ? 0 : d.getTime();
+  }
+
+  // Helper: Sort sessions descending by latest interaction (newest / active first)
+  function sortSessionsByInteraction(list) {
+    return [...(list || [])].sort((a, b) => {
+      const timeA = getSessionTimestamp(a);
+      const timeB = getSessionTimestamp(b);
+      if (timeB !== timeA) {
+        return timeB - timeA;
+      }
+      return (a.id || '').localeCompare(b.id || '');
+    });
+  }
+
   // Deduplication Algorithm (matches TUI mergeSessions)
   function deduplicateSessions(list) {
     const merged = new Map();
@@ -503,14 +524,20 @@
           existing.tmux_name = sess.tmux_name || existing.tmux_name;
           existing.context_pct = sess.context_pct || existing.context_pct;
           existing.started_at = sess.started_at || existing.started_at;
-          existing.last_event_at = sess.last_event_at || existing.last_event_at;
+
+          const sessTime = getSessionTimestamp(sess);
+          const existingTime = getSessionTimestamp(existing);
+          if (sessTime > existingTime) {
+            existing.last_event_at = sess.last_event_at || existing.last_event_at;
+          }
+
           existing.first_prompt = sess.first_prompt || existing.first_prompt;
           existing.last_prompt = sess.last_prompt || existing.last_prompt;
         }
       }
     });
 
-    return Array.from(merged.values());
+    return sortSessionsByInteraction(Array.from(merged.values()));
   }
 
   function isRawSessionName(n) {
@@ -753,8 +780,8 @@
       const childrenEl = document.createElement('div');
       childrenEl.className = 'tree-group-children';
 
-      // 3a. Direct Sessions matching this exact path
-      const directSessions = sessionsByPath.get(path) || [];
+      // 3a. Direct Sessions matching this exact path (sorted by newest/active interaction first)
+      const directSessions = sortSessionsByInteraction(sessionsByPath.get(path) || []);
       directSessions.forEach(sess => {
         childrenEl.appendChild(createSessionRowElement(sess));
       });
@@ -791,7 +818,7 @@
       }
     });
 
-    // 5. Render Unassigned Group if non-empty
+    // 5. Render Unassigned Group if non-empty (sorted by newest/active interaction first)
     if (unassigned.length > 0) {
       const unassignedPath = 'Unassigned';
       const isCollapsed = query ? false : state.collapsedGroups.has(unassignedPath);
@@ -816,7 +843,8 @@
 
       const childrenEl = document.createElement('div');
       childrenEl.className = 'tree-group-children';
-      unassigned.forEach(sess => {
+      const sortedUnassigned = sortSessionsByInteraction(unassigned);
+      sortedUnassigned.forEach(sess => {
         childrenEl.appendChild(createSessionRowElement(sess));
       });
 
@@ -1458,6 +1486,15 @@
       const currentTab = state.openTabs.get(tabId);
       if (currentTab && currentTab.socket && currentTab.socket.readyState === WebSocket.OPEN) {
         currentTab.socket.send(data);
+        // If user submitted input (e.g. Enter key), bump last_event_at and re-sort
+        if (currentTab.session && (data.includes('\r') || data.includes('\n'))) {
+          currentTab.session.last_event_at = new Date().toISOString();
+          const targetInState = state.sessions.find(s => s.id === currentTab.session.id);
+          if (targetInState) {
+            targetInState.last_event_at = currentTab.session.last_event_at;
+          }
+          renderTree();
+        }
       } else if (!currentTab || !currentTab.socket || currentTab.socket.readyState === WebSocket.CLOSED || currentTab.socket.readyState === WebSocket.CLOSING) {
         reconnectTerminalTab(tabId);
       }
