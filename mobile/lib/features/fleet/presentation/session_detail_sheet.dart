@@ -208,6 +208,25 @@ class SessionDetailSheet extends ConsumerWidget {
           AppSpacing.gapH20,
 
           // Action Buttons
+          if (session.state == SessionState.ended) ...[
+            ElevatedButton.icon(
+              onPressed: () async {
+                Navigator.of(context).pop();
+                await ref.read(fleetSessionsProvider.notifier).resumeSession(session.id);
+                TerminalScreen.open(context, session);
+              },
+              icon: const Icon(Icons.play_arrow_rounded, size: 18),
+              label: const Text('Resume Conversation'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.statusEmerald.withOpacity(0.2),
+                foregroundColor: AppColors.statusEmerald,
+                side: const BorderSide(color: AppColors.statusEmerald, width: 1.5),
+                padding: const EdgeInsets.symmetric(vertical: 12),
+              ),
+            ),
+            AppSpacing.gapH12,
+          ],
+
           Row(
             children: [
               Expanded(

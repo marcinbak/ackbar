@@ -341,6 +341,20 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
     return h?.url ?? 'http://127.0.0.1:7777';
   }
 
+  Future<void> resumeSession(String sessionId) async {
+    final session = state.firstWhere((s) => s.id == sessionId || s.nativeId == sessionId);
+    final host = _getHostRecord(session.host);
+    final hostUrl = host?.url ?? 'http://127.0.0.1:7777';
+
+    _upsertSession(session.copyWith(
+      state: SessionState.working,
+      activity: 'Resuming session in tmux...',
+      lastEventAt: DateTime.now(),
+    ));
+
+    await _apiClient.controlSession(hostUrl, session.id, 'resume', authToken: host?.authToken);
+  }
+
   Future<void> restartSession(String sessionId) async {
     final session = state.firstWhere((s) => s.id == sessionId);
     final host = _getHostRecord(session.host);

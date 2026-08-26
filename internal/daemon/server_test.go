@@ -660,3 +660,168 @@ func (m *mockDynamicProvider) CheckHookConfig() (bool, string, error) { return t
 func (m *mockDynamicProvider) ParseHook(eventName string, payload []byte) (*Event, error) {
 	return m.event, nil
 }
+
+func TestInPlaceClearSessionRotation_AdoptsTmuxAndIncrementsTurn(t *testing.T) {
+	dbFile := "./test_clear_rotation.db"
+	defer os.Remove(dbFile)
+
+	db, err := InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := NewServer(db)
+
+	// 1. Initial managed session
+	sess1 := &Session{
+		ID:          "mock-agent:local:native-turn-1",
+		Agent:       "mock-agent",
+		Host:        "local",
+		NativeID:    "native-turn-1",
+		Cwd:         "/workspace/project-rot",
+		Name:        "Project Alpha",
+		Managed:     true,
+		TmuxName:    "ackbar-mock-native-turn-1",
+		NodePath:    "Work/project-rot",
+		ProjectKey:  "project-rot",
+		State:       StateWorking,
+		StartedAt:   time.Now(),
+		LastEventAt: time.Now(),
+	}
+	if err := db.SaveSession(sess1); err != nil {
+		t.Fatalf("SaveSession failed: %v", err)
+	}
+
+	// 2. Ingest hook with new native ID (Turn 2 after /clear)
+	event2 := &Event{
+		Agent:       "mock-agent",
+		NativeID:    "native-turn-2",
+		Cwd:         "/workspace/project-rot",
+		State:       StateWorking,
+		Activity:    "Processing prompt",
+		LastEventAt: time.Now(),
+	}
+	body2, _ := json.Marshal(map[string]interface{}{
+		"session_id": "native-turn-2",
+		"cwd":        "/workspace/project-rot",
+	})
+	server.processHookEvent(&mockDynamicProvider{event: event2}, "UserPromptSubmit", "local", body2)
+
+	// Verify Turn 1 is archived
+	archived1, err := db.GetSession("mock-agent:local:native-turn-1")
+	if err != nil || archived1 == nil {
+		t.Fatalf("Failed to retrieve archived turn 1: %v", err)
+	}
+	if archived1.Managed {
+		t.Errorf("Expected turn 1 to no longer be managed")
+	}
+	if archived1.State != StateEnded {
+		t.Errorf("Expected turn 1 state to be StateEnded, got %v", archived1.State)
+	}
+	if archived1.Name != "Project Alpha (Conv 1)" {
+		t.Errorf("Expected turn 1 name 'Project Alpha (Conv 1)', got %q", archived1.Name)
+	}
+	if archived1.Activity != "Cleared (context reset)" {
+		t.Errorf("Expected turn 1 activity 'Cleared (context reset)', got %q", archived1.Activity)
+	}
+
+	// Verify Turn 2 adopted the live tmux session
+	turn2, err := db.GetSession("mock-agent:local:native-turn-2")
+	if err != nil || turn2 == nil {
+		t.Fatalf("Failed to retrieve turn 2 session: %v", err)
+	}
+	if !turn2.Managed {
+		t.Errorf("Expected turn 2 to be managed")
+	}
+	if turn2.TmuxName != "ackbar-mock-native-turn-1" {
+		t.Errorf("Expected turn 2 TmuxName 'ackbar-mock-native-turn-1', got %q", turn2.TmuxName)
+	}
+	if turn2.Name != "Project Alpha (Conv 2)" {
+		t.Errorf("Expected turn 2 name 'Project Alpha (Conv 2)', got %q", turn2.Name)
+	}
+	if turn2.NodePath != "Work/project-rot" {
+		t.Errorf("Expected turn 2 NodePath 'Work/project-rot', got %q", turn2.NodePath)
+	}
+
+	// 3. Ingest hook with third native ID (Turn 3 after another /clear)
+	event3 := &Event{
+		Agent:       "mock-agent",
+		NativeID:    "native-turn-3",
+		Cwd:         "/workspace/project-rot",
+		State:       StateWorking,
+		Activity:    "Processing prompt 3",
+		LastEventAt: time.Now(),
+	}
+	body3, _ := json.Marshal(map[string]interface{}{
+		"session_id": "native-turn-3",
+		"cwd":        "/workspace/project-rot",
+	})
+	server.processHookEvent(&mockDynamicProvider{event: event3}, "UserPromptSubmit", "local", body3)
+
+	// Verify Turn 2 is archived as Conv 2
+	archived2, _ := db.GetSession("mock-agent:local:native-turn-2")
+	if archived2.Managed || archived2.State != StateEnded || archived2.Name != "Project Alpha (Conv 2)" {
+		t.Errorf("Unexpected archived turn 2 state: %+v", archived2)
+	}
+
+	// Verify Turn 3 is named Conv 3 and is managed
+	turn3, _ := db.GetSession("mock-agent:local:native-turn-3")
+	if !turn3.Managed || turn3.Name != "Project Alpha (Conv 3)" {
+		t.Errorf("Unexpected turn 3 state: %+v", turn3)
+	}
+}
+
+func TestSessionControl_ResumeAction(t *testing.T) {
+	dbFile := "./test_resume_action.db"
+	defer os.Remove(dbFile)
+
+	db, err := InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := NewServer(db)
+
+	sess := &Session{
+		ID:          "mock-agent:local:session-ended-1",
+		Agent:       "mock-agent",
+		Host:        "local",
+		NativeID:    "session-ended-1",
+		Cwd:         "/tmp",
+		Name:        "Ended Session",
+		State:       StateEnded,
+		Managed:     false,
+		StartedAt:   time.Now(),
+		LastEventAt: time.Now(),
+	}
+	_ = db.SaveSession(sess)
+
+	req := httptest.NewRequest("POST", "/v1/sessions/control?action=resume&id=mock-agent:local:session-ended-1", nil)
+	w := httptest.NewRecorder()
+	server.Mux().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK on resume, got %d (%s)", w.Code, w.Body.String())
+	}
+
+	resumed, _ := db.GetSession("mock-agent:local:session-ended-1")
+	if !resumed.Managed {
+		t.Errorf("Expected resumed session to be managed")
+	}
+	if resumed.State != StateWorking {
+		t.Errorf("Expected resumed session state StateWorking, got %v", resumed.State)
+	}
+	if resumed.Activity != "Resumed session" {
+		t.Errorf("Expected activity 'Resumed session', got %q", resumed.Activity)
+	}
+	if resumed.TmuxName == "" {
+		t.Errorf("Expected TmuxName to be set on resumed session")
+	}
+
+	// Clean up spawned tmux session if active
+	if resumed.TmuxName != "" {
+		_ = tmux.Kill(context.Background(), resumed.TmuxName)
+	}
+}

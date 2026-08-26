@@ -1686,9 +1686,20 @@ ${session.last_prompt}
     if (el.terminalViewport) el.terminalViewport.appendChild(containerEl);
 
     // Event listeners for action buttons
-    detailsView.querySelector('#detBtnResume').addEventListener('click', () => {
+    detailsView.querySelector('#detBtnResume').addEventListener('click', async () => {
       closeTab(tabId);
+      const baseUrl = session.hostUrl ? session.hostUrl.replace(/\/$/, '') : '';
+      try {
+        const res = await fetch(`${baseUrl}/v1/sessions/control?id=${encodeURIComponent(session.id)}&action=resume`, { method: 'POST' });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.session) Object.assign(session, data.session);
+        }
+      } catch (e) {
+        console.error('Failed to resume session:', e);
+      }
       openSessionInTab(session);
+      await fetchSessions();
     });
 
     detailsView.querySelector('#detBtnTranscript').addEventListener('click', () => {
@@ -2753,8 +2764,22 @@ ${session.last_prompt}
     }
 
     if (el.cmItemResume) {
-      el.cmItemResume.addEventListener('click', () => {
-        if (state.contextMenuSession) openSessionInTab(state.contextMenuSession);
+      el.cmItemResume.addEventListener('click', async () => {
+        if (state.contextMenuSession) {
+          const sess = state.contextMenuSession;
+          const baseUrl = sess.hostUrl ? sess.hostUrl.replace(/\/$/, '') : '';
+          try {
+            const res = await fetch(`${baseUrl}/v1/sessions/control?id=${encodeURIComponent(sess.id)}&action=resume`, { method: 'POST' });
+            if (res.ok) {
+              const data = await res.json();
+              if (data.session) Object.assign(sess, data.session);
+            }
+          } catch (e) {
+            console.error('Failed to resume session:', e);
+          }
+          openSessionInTab(sess);
+          await fetchSessions();
+        }
       });
     }
 
