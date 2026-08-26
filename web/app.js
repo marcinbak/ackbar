@@ -85,6 +85,7 @@
     draggedSession: null,
     contextMenuSession: null,
     contextMenuGroupPath: null,
+    contextMenuTabId: null,
     cmdPaletteSelectedIndex: 0,
     cmdPaletteItems: []
   };
@@ -282,7 +283,13 @@
     gcmItemNewSubgroup: document.getElementById('gcmItemNewSubgroup'),
     gcmItemVSCode: document.getElementById('gcmItemVSCode'),
     gcmItemDocs: document.getElementById('gcmItemDocs'),
-    gcmItemDelete: document.getElementById('gcmItemDelete')
+    gcmItemDelete: document.getElementById('gcmItemDelete'),
+    // Tab Context Menu
+    tabContextMenu: document.getElementById('tabContextMenu'),
+    tcmItemClose: document.getElementById('tcmItemClose'),
+    tcmItemCloseOthers: document.getElementById('tcmItemCloseOthers'),
+    tcmItemCloseRight: document.getElementById('tcmItemCloseRight'),
+    tcmItemCloseAll: document.getElementById('tcmItemCloseAll')
   };
 
   // Initialize Application
@@ -1296,6 +1303,13 @@
       }
     });
 
+    // Right-click for Tab Context Menu
+    tabEl.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      showTabContextMenu(e.clientX, e.clientY, tabId);
+    });
+
     tabEl.addEventListener('mousedown', (e) => {
       if (e.button === 1) e.preventDefault();
     });
@@ -1609,6 +1623,13 @@
       }
     });
 
+    // Right-click for Tab Context Menu
+    tabEl.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      showTabContextMenu(e.clientX, e.clientY, tabId);
+    });
+
     if (el.tabStrip) el.tabStrip.appendChild(tabEl);
 
     // 2. Create Details View DOM
@@ -1856,6 +1877,13 @@ ${session.last_prompt}
       }
     });
 
+    // Right-click for Tab Context Menu
+    tabEl.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      showTabContextMenu(e.clientX, e.clientY, tabId);
+    });
+
     if (el.tabStrip) el.tabStrip.appendChild(tabEl);
 
     // 2. Document Viewer View DOM
@@ -1980,6 +2008,13 @@ ${session.last_prompt}
         e.stopPropagation();
         closeTab(tabId);
       }
+    });
+
+    // Right-click for Tab Context Menu
+    tabEl.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      showTabContextMenu(e.clientX, e.clientY, tabId);
     });
 
     if (el.tabStrip) el.tabStrip.appendChild(tabEl);
@@ -2332,6 +2367,36 @@ ${session.last_prompt}
     renderTree();
   }
 
+  // Close All Other Tabs Except KeepTabId
+  function closeOtherTabs(keepTabId) {
+    const tabIds = Array.from(state.openTabs.keys());
+    tabIds.forEach(id => {
+      if (id !== keepTabId) {
+        closeTab(id);
+      }
+    });
+    if (state.openTabs.has(keepTabId)) {
+      activateTab(keepTabId);
+    }
+  }
+
+  // Close All Tabs to the Right of TargetTabId
+  function closeTabsToTheRight(targetTabId) {
+    const tabIds = Array.from(state.openTabs.keys());
+    const idx = tabIds.indexOf(targetTabId);
+    if (idx !== -1) {
+      for (let i = idx + 1; i < tabIds.length; i++) {
+        closeTab(tabIds[i]);
+      }
+    }
+  }
+
+  // Close All Open Tabs
+  function closeAllTabs() {
+    const tabIds = Array.from(state.openTabs.keys());
+    tabIds.forEach(id => closeTab(id));
+  }
+
   // Auto-reconnect active tabs on Window Focus, Visibility Change, and Network Online
   function checkAndReconnectActiveTabs() {
     state.openTabs.forEach((tab, tabId) => {
@@ -2540,6 +2605,50 @@ ${session.last_prompt}
     state.contextMenuGroupPath = null;
   }
 
+  // Right-Click Tab Context Menu
+  function showTabContextMenu(x, y, tabId) {
+    if (!el.tabContextMenu) return;
+    hideContextMenu();
+    hideGroupContextMenu();
+    state.contextMenuTabId = tabId;
+
+    const tabIds = Array.from(state.openTabs.keys());
+    const tabIdx = tabIds.indexOf(tabId);
+
+    if (el.tcmItemCloseOthers) {
+      el.tcmItemCloseOthers.style.display = tabIds.length > 1 ? 'flex' : 'none';
+    }
+    if (el.tcmItemCloseRight) {
+      el.tcmItemCloseRight.style.display = (tabIdx !== -1 && tabIdx < tabIds.length - 1) ? 'flex' : 'none';
+    }
+
+    el.tabContextMenu.style.visibility = 'hidden';
+    el.tabContextMenu.style.display = 'block';
+
+    const menuWidth = el.tabContextMenu.offsetWidth || 200;
+    const menuHeight = el.tabContextMenu.offsetHeight || 160;
+
+    let posX = x;
+    let posY = y;
+
+    if (posY + menuHeight > window.innerHeight - 10) {
+      posY = Math.max(10, window.innerHeight - menuHeight - 10);
+    }
+
+    if (posX + menuWidth > window.innerWidth - 10) {
+      posX = Math.max(10, window.innerWidth - menuWidth - 10);
+    }
+
+    el.tabContextMenu.style.left = `${posX}px`;
+    el.tabContextMenu.style.top = `${posY}px`;
+    el.tabContextMenu.style.visibility = 'visible';
+  }
+
+  function hideTabContextMenu() {
+    if (el.tabContextMenu) el.tabContextMenu.style.display = 'none';
+    state.contextMenuTabId = null;
+  }
+
   // Command Palette (`Cmd+K` / `Ctrl+K`)
   function toggleCommandPalette() {
     if (!el.cmdPaletteOverlay) return;
@@ -2662,12 +2771,14 @@ ${session.last_prompt}
     document.addEventListener('click', () => {
       hideContextMenu();
       hideGroupContextMenu();
+      hideTabContextMenu();
     });
 
     window.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') {
         hideContextMenu();
         hideGroupContextMenu();
+        hideTabContextMenu();
         if (el.cmdPaletteOverlay) el.cmdPaletteOverlay.style.display = 'none';
         hideModal();
       }
@@ -2944,6 +3055,41 @@ ${session.last_prompt}
           await fetchTreeNodes();
           await fetchSessions();
         }
+      });
+    }
+
+    // Tab Context Menu actions
+    if (el.tcmItemClose) {
+      el.tcmItemClose.addEventListener('click', () => {
+        if (state.contextMenuTabId) {
+          closeTab(state.contextMenuTabId);
+          hideTabContextMenu();
+        }
+      });
+    }
+
+    if (el.tcmItemCloseOthers) {
+      el.tcmItemCloseOthers.addEventListener('click', () => {
+        if (state.contextMenuTabId) {
+          closeOtherTabs(state.contextMenuTabId);
+          hideTabContextMenu();
+        }
+      });
+    }
+
+    if (el.tcmItemCloseRight) {
+      el.tcmItemCloseRight.addEventListener('click', () => {
+        if (state.contextMenuTabId) {
+          closeTabsToTheRight(state.contextMenuTabId);
+          hideTabContextMenu();
+        }
+      });
+    }
+
+    if (el.tcmItemCloseAll) {
+      el.tcmItemCloseAll.addEventListener('click', () => {
+        closeAllTabs();
+        hideTabContextMenu();
       });
     }
 
