@@ -139,6 +139,15 @@ type Model struct {
 	treeNodes             []*daemon.TreeNode
 	discoveryHostIdx      int
 	visibleRows           []TreeRow
+	spinnerFrame          int
+}
+
+type spinnerTickMsg time.Time
+
+func (m *Model) spinnerTickCmd() tea.Cmd {
+	return tea.Tick(150*time.Millisecond, func(t time.Time) tea.Msg {
+		return spinnerTickMsg(t)
+	})
 }
 
 func NewModel(hosts []HostConfig, projectsDir string, groups map[string][]string, firstRun bool, configPath string) *Model {
@@ -173,7 +182,7 @@ func (m *Model) Init() tea.Cmd {
 		return sessionUpdateMsg(<-m.eventChan)
 	}
 
-	return tea.Batch(m.clearErrorCmd(), fetchCmd, m.fetchDiscoveryCmd(), m.fetchNodesCmd(), waitForEvents)
+	return tea.Batch(m.clearErrorCmd(), fetchCmd, m.fetchDiscoveryCmd(), m.fetchNodesCmd(), waitForEvents, m.spinnerTickCmd())
 }
 
 func (m *Model) clearErrorCmd() tea.Cmd {
@@ -186,6 +195,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	visibleRows := m.buildVisibleRows()
 
 	switch msg := msg.(type) {
+	case spinnerTickMsg:
+		m.spinnerFrame = (m.spinnerFrame + 1) % 4
+		return m, m.spinnerTickCmd()
+
 	case tea.WindowSizeMsg:
 		m.termWidth = msg.Width
 		m.termHeight = msg.Height
@@ -1734,7 +1747,8 @@ func (m *Model) View() string {
 				var statusEmoji string
 				switch s.State {
 				case daemon.StateWorking:
-					statusEmoji = "⚙️"
+					quadrants := []string{"◐", "◓", "◑", "◒"}
+					statusEmoji = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFA500")).Bold(true).Render(quadrants[m.spinnerFrame%len(quadrants)])
 				case daemon.StateBlocked:
 					statusEmoji = "❓"
 				case daemon.StateIdle:
@@ -1791,7 +1805,8 @@ func (m *Model) View() string {
 					var statusBadge string
 					switch s.State {
 					case daemon.StateWorking:
-						statusBadge = workingStatusStyle.Render("[WORKING]")
+						quadrants := []string{"◐", "◓", "◑", "◒"}
+						statusBadge = workingStatusStyle.Render(fmt.Sprintf("[%s WORKING]", quadrants[m.spinnerFrame%len(quadrants)]))
 					case daemon.StateBlocked:
 						statusBadge = blockedStatusStyle.Render("[BLOCKED]")
 						if s.Blocked != nil {
