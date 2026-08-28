@@ -2958,8 +2958,8 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 		}
 
 		changed := false
-		if sess.Agent == "claude-code" && sess.Cwd != "" {
-			if meta := ReadClaudeSessionMeta(sess.Cwd, sess.NativeID); meta != nil {
+		if p, ok := s.providers[sess.Agent]; ok && sess.NativeID != "" {
+			if meta := p.ReadSessionMetadata(sess.Cwd, sess.NativeID); meta != nil {
 				if meta.Title != "" && meta.Title != sess.Name && !strings.HasPrefix(meta.Title, "<") {
 					sess.Name = meta.Title
 					changed = true
@@ -2985,21 +2985,7 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 					changed = true
 				}
 			}
-		} else if sess.Agent == "antigravity" {
-			if title := ReadAntigravitySessionTitle(sess.Cwd, sess.NativeID); title != "" && title != sess.Name && !strings.HasPrefix(title, "<") {
-				sess.Name = title
-				changed = true
-			}
-			home, _ := os.UserHomeDir()
-			if home != "" && sess.NativeID != "" {
-				logPath := filepath.Join(home, ".gemini", "antigravity", "brain", sess.NativeID, ".system_generated", "logs", "transcript.jsonl")
-				if realCwd := extractAntigravityWorkspace(logPath, home); realCwd != "" && realCwd != sess.Cwd {
-					sess.Cwd = realCwd
-					sess.ProjectKey = GetProjectKey(realCwd)
-					changed = true
-				}
-			}
-			if s.inspectAntigravityStatus(ctx, sess) {
+			if p.InspectStatus(ctx, sess) {
 				changed = true
 			}
 		}
