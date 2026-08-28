@@ -1489,12 +1489,22 @@ func (m *Model) buildVisibleRows() []TreeRow {
 		if target.NodePath == "" && src.NodePath != "" {
 			target.NodePath = src.NodePath
 		}
+		// If either representation was archived, preserve archived state
+		if src.Archived {
+			target.Archived = true
+		}
 	}
 
 	for _, s := range m.sessions {
 		var matched *daemon.Session
 
-		if s.TmuxName != "" {
+		if s.ID != "" {
+			if ex, ok := seenSessions[s.ID]; ok {
+				matched = ex
+			}
+		}
+
+		if matched == nil && s.TmuxName != "" {
 			k1 := fmt.Sprintf("%s:tmux:%s", s.Host, s.TmuxName)
 			if ex, ok := seenSessions[k1]; ok {
 				matched = ex
@@ -1508,36 +1518,19 @@ func (m *Model) buildVisibleRows() []TreeRow {
 			}
 		}
 
-		if matched == nil && s.Cwd != "" {
-			k3 := fmt.Sprintf("%s:cwd:%s", s.Host, expandPath(s.Cwd))
-			if ex, ok := seenSessions[k3]; ok {
-				matched = ex
-			}
-		}
-
-		if matched == nil && s.Name != "" && s.Name != s.Agent {
-			k4 := fmt.Sprintf("%s:name:%s", s.Host, strings.ToLower(s.Name))
-			if ex, ok := seenSessions[k4]; ok {
-				matched = ex
-			}
-		}
-
 		if matched != nil {
 			mergeSessions(matched, s)
 			continue
 		}
 
+		if s.ID != "" {
+			seenSessions[s.ID] = s
+		}
 		if s.TmuxName != "" {
 			seenSessions[fmt.Sprintf("%s:tmux:%s", s.Host, s.TmuxName)] = s
 		}
 		if s.NativeID != "" {
 			seenSessions[fmt.Sprintf("%s:native:%s", s.Host, s.NativeID)] = s
-		}
-		if s.Cwd != "" {
-			seenSessions[fmt.Sprintf("%s:cwd:%s", s.Host, expandPath(s.Cwd))] = s
-		}
-		if s.Name != "" && s.Name != s.Agent {
-			seenSessions[fmt.Sprintf("%s:name:%s", s.Host, strings.ToLower(s.Name))] = s
 		}
 		filteredSessions = append(filteredSessions, s)
 	}
