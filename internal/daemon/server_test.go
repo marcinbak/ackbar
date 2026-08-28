@@ -23,6 +23,46 @@ func (m *MockProvider) Agent() string {
 	return "mock-agent"
 }
 
+func (m *MockProvider) DisplayName() string {
+	return "Mock Agent"
+}
+
+func (m *MockProvider) BrandColor() string {
+	return "#999999"
+}
+
+func (m *MockProvider) IconSVG() string {
+	return "<svg></svg>"
+}
+
+func (m *MockProvider) ProcessNames() []string {
+	return []string{"mock-agent"}
+}
+
+func (m *MockProvider) GetSpawnCommand(tempUUID string) string {
+	return "sleep 5"
+}
+
+func (m *MockProvider) GetResumeCommand(nativeID string) string {
+	return "sleep 5"
+}
+
+func (m *MockProvider) ReadSessionMetadata(cwd, nativeID string) *SessionMeta {
+	return nil
+}
+
+func (m *MockProvider) ResolveSessionTitle(cwd, nativeID string) string {
+	return ""
+}
+
+func (m *MockProvider) ExtractTranscript(home, cwd, nativeID string) ([]TranscriptMessage, error) {
+	return nil, nil
+}
+
+func (m *MockProvider) CleanSessionFiles(home, cwd, nativeID string) error {
+	return nil
+}
+
 func (m *MockProvider) IsInstalled() bool {
 	return true
 }
@@ -715,6 +755,16 @@ type mockDynamicProvider struct {
 }
 
 func (m *mockDynamicProvider) Agent() string { return "mock-agent" }
+func (m *mockDynamicProvider) DisplayName() string { return "Mock Agent" }
+func (m *mockDynamicProvider) BrandColor() string { return "#999999" }
+func (m *mockDynamicProvider) IconSVG() string { return "<svg></svg>" }
+func (m *mockDynamicProvider) ProcessNames() []string { return []string{"mock-agent"} }
+func (m *mockDynamicProvider) GetSpawnCommand(tempUUID string) string { return "sleep 5" }
+func (m *mockDynamicProvider) GetResumeCommand(nativeID string) string { return "sleep 5" }
+func (m *mockDynamicProvider) ReadSessionMetadata(cwd, nativeID string) *SessionMeta { return nil }
+func (m *mockDynamicProvider) ResolveSessionTitle(cwd, nativeID string) string { return "" }
+func (m *mockDynamicProvider) ExtractTranscript(home, cwd, nativeID string) ([]TranscriptMessage, error) { return nil, nil }
+func (m *mockDynamicProvider) CleanSessionFiles(home, cwd, nativeID string) error { return nil }
 func (m *mockDynamicProvider) IsInstalled() bool { return true }
 func (m *mockDynamicProvider) CheckHookConfig() (bool, string, error) { return true, "", nil }
 func (m *mockDynamicProvider) ParseHook(eventName string, payload []byte) (*Event, error) {

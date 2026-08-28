@@ -47,13 +47,6 @@ type Event struct {
 	LastEventAt time.Time
 }
 
-type Provider interface {
-	Agent() string
-	ParseHook(eventName string, payload []byte) (*Event, error)
-	IsInstalled() bool
-	CheckHookConfig() (configured bool, setupCmd string, err error)
-}
-
 type Server struct {
 	db              *DB
 	providers       map[string]Provider
@@ -168,6 +161,7 @@ func (s *Server) Mux() http.Handler {
 	mux.HandleFunc("/v1/sessions/pty", s.handlePTY)
 	mux.HandleFunc("/v1/sessions/spawn", s.handleSpawn)
 	mux.HandleFunc("/v1/agents/discovery", s.handleAgentDiscovery)
+	mux.HandleFunc("/v1/providers", s.handleProviders)
 	mux.HandleFunc("/v1/documents", s.handleDocuments)
 	mux.HandleFunc("/v1/documents/content", s.handleDocumentContent)
 	mux.HandleFunc("/v1/nodes", s.handleNodes)
@@ -722,7 +716,7 @@ func (s *Server) handleSessionControl(w http.ResponseWriter, r *http.Request) {
 			_ = exec.Command("kill", "-9", strconv.Itoa(sess.PID)).Run()
 		}
 
-		deleteSessionFilesOnDisk(sess)
+		s.deleteSessionFilesOnDisk(sess)
 
 		_ = s.db.MarkSessionDeleted(sess.ID)
 		if sess.NativeID != "" {
@@ -738,12 +732,16 @@ func (s *Server) handleSessionControl(w http.ResponseWriter, r *http.Request) {
 		sess.Activity = "Deleted"
 		sess.LastEventAt = time.Now()
 		s.broadcast(sess)
-
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"status":"deleted"}`))
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "deleted", "id": sess.ID})
 
 	case "restart":
-		// Warn logic is client-side, the daemon just executes.
+		if sess.Cwd == "" {
+			http.Error(w, "Session working directory is empty", http.StatusBadRequest)
+			return
+		}
+
+		// Kill existing process/tmux if running
 		if sess.Managed && sess.TmuxName != "" {
 			_ = tmux.Kill(r.Context(), sess.TmuxName)
 		}
@@ -758,7 +756,7 @@ func (s *Server) handleSessionControl(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Spawn new tmux session
-		resumeCmd := getResumeCmd(sess.Agent, sess.NativeID)
+		resumeCmd := s.getResumeCmd(sess.Agent, sess.NativeID)
 		err := tmux.Spawn(r.Context(), tmuxName, sess.Cwd, resumeCmd)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("Failed to spawn tmux: %v", err), http.StatusInternalServerError)
@@ -798,7 +796,7 @@ func (s *Server) handleSessionControl(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = tmux.Kill(r.Context(), tmuxName)
 
-		resumeCmd := getResumeCmd(sess.Agent, sess.NativeID)
+		resumeCmd := s.getResumeCmd(sess.Agent, sess.NativeID)
 		err := tmux.Spawn(r.Context(), tmuxName, sess.Cwd, resumeCmd)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("Failed to spawn tmux session: %v", err), http.StatusInternalServerError)
@@ -1145,7 +1143,7 @@ func (s *Server) handleSessionTranscript(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	transcript, err := ExtractTranscript(agent, nativeID, cwd)
+	transcript, err := s.ExtractTranscript(agent, nativeID, cwd)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to extract transcript: %v", err), http.StatusNotFound)
 		return
@@ -1211,7 +1209,41 @@ func (s *Server) handleEditorOpen(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "opened", "path": path, "host": host, "uri": uri})
 }
 
-func deleteSessionFilesOnDisk(sess *Session) {
+func (s *Server) ExtractTranscript(agent, nativeID, cwd string) (*Transcript, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get home dir: %w", err)
+	}
+
+	t := &Transcript{
+		NativeID: nativeID,
+		Agent:    agent,
+		Cwd:      cwd,
+		Messages: make([]TranscriptMessage, 0),
+	}
+
+	if p, ok := s.providers[agent]; ok {
+		msgs, err := p.ExtractTranscript(home, cwd, nativeID)
+		if err == nil && len(msgs) > 0 {
+			t.Messages = msgs
+			return t, nil
+		}
+	}
+
+	for _, p := range s.providers {
+		msgs, err := p.ExtractTranscript(home, cwd, nativeID)
+		if err == nil && len(msgs) > 0 {
+			t.Messages = msgs
+			t.Agent = p.Agent()
+			return t, nil
+		}
+	}
+
+	// Legacy fallback
+	return ExtractTranscript(agent, nativeID, cwd)
+}
+
+func (s *Server) deleteSessionFilesOnDisk(sess *Session) {
 	if sess == nil {
 		return
 	}
@@ -1231,54 +1263,14 @@ func deleteSessionFilesOnDisk(sess *Session) {
 		return
 	}
 
-	// 1. Claude Code transcript files and metadata
-	if sess.Agent == "claude-code" || sess.Agent == "" {
-		claudeDir := filepath.Join(home, ".claude")
-		claudeProjectsDir := filepath.Join(claudeDir, "projects")
-		if projDirs, err := os.ReadDir(claudeProjectsDir); err == nil {
-			for _, pDir := range projDirs {
-				if pDir.IsDir() {
-					projPath := filepath.Join(claudeProjectsDir, pDir.Name())
-					_ = os.Remove(filepath.Join(projPath, fmt.Sprintf("%s.jsonl", nativeID)))
-					_ = os.Remove(filepath.Join(projPath, fmt.Sprintf("agent-%s.jsonl", nativeID)))
-					_ = os.RemoveAll(filepath.Join(projPath, nativeID))
-				}
-			}
-		}
-
-		// Clean up session metadata in ~/.claude/sessions/
-		sessionsDir := filepath.Join(claudeDir, "sessions")
-		if sFiles, err := os.ReadDir(sessionsDir); err == nil {
-			for _, sf := range sFiles {
-				if strings.HasSuffix(sf.Name(), ".json") {
-					metaPath := filepath.Join(sessionsDir, sf.Name())
-					if data, err := os.ReadFile(metaPath); err == nil {
-						if strings.Contains(string(data), nativeID) {
-							_ = os.Remove(metaPath)
-						}
-					}
-				}
-			}
-		}
-
-		// Clean up tasks, session-env, file-history, shell-snapshots
-		_ = os.RemoveAll(filepath.Join(claudeDir, "tasks", nativeID))
-		_ = os.RemoveAll(filepath.Join(claudeDir, "session-env", nativeID))
-		_ = os.RemoveAll(filepath.Join(claudeDir, "file-history", nativeID))
-		_ = os.RemoveAll(filepath.Join(claudeDir, "shell-snapshots", nativeID))
+	if p, ok := s.providers[sess.Agent]; ok {
+		_ = p.CleanSessionFiles(home, sess.Cwd, nativeID)
+		return
 	}
 
-	// 2. Google Antigravity
-	if sess.Agent == "antigravity" {
-		_ = os.RemoveAll(filepath.Join(home, ".gemini", "antigravity", "brain", nativeID))
-		_ = os.Remove(filepath.Join(home, ".gemini", "antigravity", "annotations", nativeID+".pbtxt"))
-		_ = os.Remove(filepath.Join(home, ".gemini", "antigravity", "conversations", nativeID+".json"))
-	}
-
-	// 3. OpenAI Codex
-	if sess.Agent == "codex" {
-		codexFile := filepath.Join(home, ".codex", "sessions", fmt.Sprintf("%s.json", nativeID))
-		_ = os.Remove(codexFile)
+	// Fallback to all providers
+	for _, p := range s.providers {
+		_ = p.CleanSessionFiles(home, sess.Cwd, nativeID)
 	}
 }
 
@@ -1350,7 +1342,7 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 
 	tempUUID := generateUUID()
 	tmuxName := fmt.Sprintf("ackbar-%s-%s", req.Agent, tempUUID)
-	launchCmd := getSpawnCmd(req.Agent, tempUUID)
+	launchCmd := s.getSpawnCmd(req.Agent, tempUUID)
 
 	err := tmux.Spawn(r.Context(), tmuxName, req.Cwd, launchCmd)
 	if err != nil {
@@ -1446,50 +1438,30 @@ func generateUUID() string {
 	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
-func getResumeCmd(agent, nativeID string) string {
+func (s *Server) getResumeCmd(agent, nativeID string) string {
 	if strings.HasPrefix(nativeID, "proc-") {
 		nativeID = ""
 	}
-	switch agent {
-	case "claude-code":
-		if nativeID != "" && isValidUUID(nativeID) {
-			return "claude --resume " + nativeID
-		}
-		return "claude"
-	case "codex":
-		if nativeID != "" {
-			return "codex exec resume " + nativeID
-		}
-		return "codex exec"
-	case "antigravity":
-		if nativeID != "" {
-			return "agy --conversation " + nativeID
-		}
-		return "agy"
-	default:
-		if nativeID != "" && isValidUUID(nativeID) {
-			return "claude --resume " + nativeID
-		}
-		return "claude"
+	if p, ok := s.providers[agent]; ok {
+		return p.GetResumeCommand(nativeID)
 	}
+	if nativeID != "" && isValidUUID(nativeID) {
+		return "claude --resume " + nativeID
+	}
+	return "claude"
 }
 
-func getSpawnCmd(agent, tempUUID string) string {
-	switch agent {
-	case "claude-code":
-		if tempUUID != "" && isValidUUID(tempUUID) {
-			return "claude --session-id " + tempUUID
-		}
-		return "claude"
-	case "codex":
-		return "codex exec"
-	case "antigravity":
-		return "agy"
-	case "mock-agent":
-		return "sleep 5"
-	default:
-		return "claude"
+func (s *Server) getSpawnCmd(agent, tempUUID string) string {
+	if p, ok := s.providers[agent]; ok {
+		return p.GetSpawnCommand(tempUUID)
 	}
+	if agent == "mock-agent" {
+		return "sleep 5"
+	}
+	if tempUUID != "" && isValidUUID(tempUUID) {
+		return "claude --session-id " + tempUUID
+	}
+	return "claude"
 }
 
 func classifyDoc(name string) (category, label string, priority int) {
@@ -1519,6 +1491,7 @@ func getDocPriority(name string) int {
 
 type AgentDiscoveryResult struct {
 	Agent          string `json:"agent"`
+	DisplayName    string `json:"display_name,omitempty"`
 	Installed      bool   `json:"installed"`
 	HookConfigured bool   `json:"hook_configured"`
 	SetupCmd       string `json:"setup_cmd"`
@@ -1537,9 +1510,35 @@ func (s *Server) handleAgentDiscovery(w http.ResponseWriter, r *http.Request) {
 
 		results = append(results, AgentDiscoveryResult{
 			Agent:          name,
+			DisplayName:    p.DisplayName(),
 			Installed:      installed,
 			HookConfigured: configured,
 			SetupCmd:       setupCmd,
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(results)
+}
+
+func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var results []ProviderDTO
+	for _, p := range s.providers {
+		configured, setupCmd, _ := p.CheckHookConfig()
+		results = append(results, ProviderDTO{
+			Agent:          p.Agent(),
+			DisplayName:    p.DisplayName(),
+			BrandColor:     p.BrandColor(),
+			IconSVG:        p.IconSVG(),
+			IsInstalled:    p.IsInstalled(),
+			HookConfigured: configured,
+			SetupCmd:       setupCmd,
+			ProcessNames:   p.ProcessNames(),
 		})
 	}
 
@@ -3031,12 +3030,12 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 				actualPID = panePID
 			}
 
-			if strings.HasPrefix(tmuxName, "ackbar-claude-code-") {
-				agent = "claude-code"
-			} else if strings.HasPrefix(tmuxName, "ackbar-antigravity-") {
-				agent = "antigravity"
-			} else if strings.HasPrefix(tmuxName, "ackbar-codex-") {
-				agent = "codex"
+			for _, p := range s.providers {
+				prefix := fmt.Sprintf("ackbar-%s-", p.Agent())
+				if strings.HasPrefix(tmuxName, prefix) {
+					agent = p.Agent()
+					break
+				}
 			}
 
 			if panePID > 0 {
@@ -3052,17 +3051,19 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 							if ppidVal == panePID {
 								cPid, _ := strconv.Atoi(fields[1])
 								cCmd := strings.ToLower(strings.Join(fields[2:], " "))
-								if strings.Contains(cCmd, "claude") {
-									agent = "claude-code"
-									actualPID = cPid
-									break
-								} else if strings.Contains(cCmd, "antigravity") || strings.Contains(cCmd, "bin/agy") || strings.HasPrefix(cCmd, "agy") {
-									agent = "antigravity"
-									actualPID = cPid
-									break
-								} else if strings.Contains(cCmd, "codex") {
-									agent = "codex"
-									actualPID = cPid
+								for _, p := range s.providers {
+									for _, pName := range p.ProcessNames() {
+										if strings.Contains(cCmd, pName) {
+											agent = p.Agent()
+											actualPID = cPid
+											break
+										}
+									}
+									if agent != "" {
+										break
+									}
+								}
+								if agent != "" {
 									break
 								}
 							}
@@ -3072,12 +3073,16 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 			}
 
 			if agent == "" {
-				if strings.Contains(cmdLower, "antigravity") || strings.Contains(cmdLower, "agy") {
-					agent = "antigravity"
-				} else if strings.Contains(cmdLower, "codex") {
-					agent = "codex"
-				} else if strings.Contains(cmdLower, "claude") {
-					agent = "claude-code"
+				for _, p := range s.providers {
+					for _, pName := range p.ProcessNames() {
+						if strings.Contains(cmdLower, pName) {
+							agent = p.Agent()
+							break
+						}
+					}
+					if agent != "" {
+						break
+					}
 				}
 			}
 
@@ -3189,21 +3194,10 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 				if existingObs == nil {
 					sessionName := ""
 					lastTime := time.Now()
-					if agent == "antigravity" && targetNativeID != "" {
-						sessionName = ReadAntigravitySessionTitle(cwd, targetNativeID)
-						home, _ := os.UserHomeDir()
-						if home != "" {
-							logPath := filepath.Join(home, ".gemini", "antigravity", "brain", targetNativeID, ".system_generated", "logs", "transcript.jsonl")
-							if stat, serr := os.Stat(logPath); serr == nil {
-								lastTime = stat.ModTime()
-							}
-						}
-					} else if agent == "claude-code" && targetNativeID != "" {
-						if meta := ReadClaudeSessionMeta(cwd, targetNativeID); meta != nil {
-							sessionName = meta.Title
-							if !meta.LastMessageAt.IsZero() {
-								lastTime = meta.LastMessageAt
-							}
+					if p, ok := s.providers[agent]; ok && targetNativeID != "" {
+						sessionName = p.ResolveSessionTitle(cwd, targetNativeID)
+						if meta := p.ReadSessionMetadata(cwd, targetNativeID); meta != nil && !meta.LastMessageAt.IsZero() {
+							lastTime = meta.LastMessageAt
 						}
 					}
 					if sessionName == "" {
@@ -3391,8 +3385,8 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 							StartedAt:   lastTime,
 							LastEventAt: lastTime,
 						}
-						if agent == "claude-code" {
-							meta := ReadClaudeSessionMeta(cwd, nativeID)
+						if p, ok := s.providers[agent]; ok {
+							meta := p.ReadSessionMetadata(cwd, nativeID)
 							if meta != nil {
 								if meta.CustomTitle != "" {
 									newSess.Name = meta.CustomTitle
@@ -3409,6 +3403,8 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 								newSess.AIDescription = meta.AIDescription
 								newSess.FirstPrompt = meta.FirstPrompt
 								newSess.LastPrompt = meta.LastPrompt
+								newSess.GitBranch = meta.GitBranch
+								newSess.ContextPct = meta.ContextPct
 							}
 						}
 						_ = s.db.SaveSession(newSess)
@@ -3670,21 +3666,6 @@ var (
 	titleCacheMutex sync.RWMutex
 	titleCache      = make(map[string]TitleCacheEntry)
 )
-
-type SessionMeta struct {
-	Title         string
-	CustomTitle   string
-	AITitle       string
-	AIDescription string
-	FirstPrompt   string
-	LastPrompt    string
-	Entrypoint    string
-	Kind          string
-	Version       string
-	GitBranch     string
-	ContextPct    int
-	LastMessageAt time.Time
-}
 
 func getModelContextLimit(modelName string) int {
 	modelLower := strings.ToLower(modelName)

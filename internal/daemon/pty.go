@@ -148,7 +148,7 @@ func (s *Server) servePTYWS(ws *websocket.Conn) {
 	if sess != nil {
 		cwd = sess.Cwd
 		if sess.NativeID != "" && sess.Agent != "" {
-			resumeCmd = getResumeCmd(sess.Agent, sess.NativeID)
+			resumeCmd = s.getResumeCmd(sess.Agent, sess.NativeID)
 		}
 	}
 	if cwd == "" {
@@ -161,7 +161,7 @@ func (s *Server) servePTYWS(ws *websocket.Conn) {
 			if resumeCmd != "" {
 				transcriptText := ""
 				if sess != nil && sess.NativeID != "" {
-					if t, terr := ExtractTranscript(sess.Agent, sess.NativeID, cwd); terr == nil && t != nil && len(t.Messages) > 0 {
+					if t, terr := s.ExtractTranscript(sess.Agent, sess.NativeID, cwd); terr == nil && t != nil && len(t.Messages) > 0 {
 						transcriptText = FormatTranscriptANSI(t)
 					}
 				}
