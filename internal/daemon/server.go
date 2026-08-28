@@ -3433,7 +3433,7 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 									continue
 								}
 								// Skip expensive disk reads if session is already known in DB
-								if knownIDs[sessID] != nil {
+								if knownIDs[sessID] != nil || knownByNativeID[sessionUUID] != nil {
 									continue
 								}
 
@@ -3559,6 +3559,9 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 						}
 
 						existing := knownIDs[sessID]
+						if existing == nil && convID != "" {
+							existing = knownByNativeID[convID]
+						}
 						if existing == nil {
 							title := ReadAntigravitySessionTitle("", convID)
 							cwd := extractAntigravityWorkspace(logPath, home)

@@ -114,3 +114,59 @@ func TestNavigation_ClearsUnreadStateOnMove(t *testing.T) {
 		t.Errorf("expected tea.Cmd returned to sync read status to daemon, got nil")
 	}
 }
+
+func TestBuildVisibleRows_PreservesMultipleSessionsInSameCwdWithDifferentArchiveState(t *testing.T) {
+	sessActive := &daemon.Session{
+		ID:       "claude-code:local:uuid-active-1",
+		NativeID: "uuid-active-1",
+		Name:     "Active Turn",
+		Host:     "local",
+		Cwd:      "/workspace/mobile/app",
+		NodePath: "Mobile",
+		Archived: false,
+		State:    daemon.StateIdle,
+	}
+	sessArchived := &daemon.Session{
+		ID:       "claude-code:local:uuid-archived-1",
+		NativeID: "uuid-archived-1",
+		Name:     "Archived Turn",
+		Host:     "local",
+		Cwd:      "/workspace/mobile/app", // Same CWD as active session!
+		NodePath: "Mobile",
+		Archived: true,
+		State:    daemon.StateEnded,
+	}
+
+	// 1. In standard active view (archivedView = false): only sessActive should be visible
+	m := &Model{
+		sessions:     []*daemon.Session{sessActive, sessArchived},
+		collapsed:    make(map[string]bool),
+		archivedView: false,
+	}
+
+	rowsActive := m.buildVisibleRows()
+	var visibleActiveSessions []string
+	for _, r := range rowsActive {
+		if !r.IsGroup && r.Session != nil {
+			visibleActiveSessions = append(visibleActiveSessions, r.Session.ID)
+		}
+	}
+
+	if len(visibleActiveSessions) != 1 || visibleActiveSessions[0] != "claude-code:local:uuid-active-1" {
+		t.Errorf("expected only active session visible, got %v", visibleActiveSessions)
+	}
+
+	// 2. In archived view (archivedView = true): only sessArchived should be visible
+	m.archivedView = true
+	rowsArchived := m.buildVisibleRows()
+	var visibleArchivedSessions []string
+	for _, r := range rowsArchived {
+		if !r.IsGroup && r.Session != nil {
+			visibleArchivedSessions = append(visibleArchivedSessions, r.Session.ID)
+		}
+	}
+
+	if len(visibleArchivedSessions) != 1 || visibleArchivedSessions[0] != "claude-code:local:uuid-archived-1" {
+		t.Errorf("expected only archived session visible in archive view, got %v", visibleArchivedSessions)
+	}
+}
