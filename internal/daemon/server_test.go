@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -648,6 +649,65 @@ func TestUnreadState_LifecycleAndMarkRead(t *testing.T) {
 	if readSess.IsUnread {
 		t.Errorf("Expected IsUnread to be false after mark read, got true")
 	}
+
+	// 3. User submits prompt -> Transition Idle -> Working (IsUnread must remain FALSE)
+	workingEvent := &Event{
+		Agent:       "mock-agent",
+		NativeID:    "session-unread-1",
+		Cwd:         "/workspace/project",
+		State:       StateWorking,
+		Activity:    "Processing user prompt",
+		LastEventAt: time.Now(),
+	}
+	server.processHookEvent(&mockDynamicProvider{event: workingEvent}, "UserPromptSubmit", "local", body)
+
+	workingSess, _ := db.GetSession("mock-agent:local:session-unread-1")
+	if workingSess.State != StateWorking {
+		t.Errorf("Expected state Working, got %v", workingSess.State)
+	}
+	if workingSess.IsUnread {
+		t.Errorf("Expected IsUnread to be false when transitioning to StateWorking")
+	}
+
+	// 4. Intermediate tool event while Working (IsUnread must remain FALSE)
+	toolEvent := &Event{
+		Agent:       "mock-agent",
+		NativeID:    "session-unread-1",
+		Cwd:         "/workspace/project",
+		State:       StateWorking,
+		Activity:    "Running tool: bash",
+		LastEventAt: time.Now(),
+	}
+	server.processHookEvent(&mockDynamicProvider{event: toolEvent}, "PreToolUse", "local", body)
+
+	toolSess, _ := db.GetSession("mock-agent:local:session-unread-1")
+	if toolSess.IsUnread {
+		t.Errorf("Expected IsUnread to remain false during intermediate tool execution")
+	}
+
+	// 5. Agent requests permission -> Transition Working -> Blocked (IsUnread must become TRUE)
+	blockedEvent := &Event{
+		Agent:       "mock-agent",
+		NativeID:    "session-unread-1",
+		Cwd:         "/workspace/project",
+		State:       StateBlocked,
+		Blocked: &Blocked{
+			Kind:   BlockPermission,
+			Reason: "Allow bash",
+			Since:  time.Now(),
+		},
+		Activity:    "Waiting for tool authorization",
+		LastEventAt: time.Now(),
+	}
+	server.processHookEvent(&mockDynamicProvider{event: blockedEvent}, "PermissionRequest", "local", body)
+
+	blockedSess, _ := db.GetSession("mock-agent:local:session-unread-1")
+	if blockedSess.State != StateBlocked {
+		t.Errorf("Expected state Blocked, got %v", blockedSess.State)
+	}
+	if !blockedSess.IsUnread {
+		t.Errorf("Expected IsUnread to be true when transitioning to StateBlocked")
+	}
 }
 
 type mockDynamicProvider struct {
@@ -823,5 +883,58 @@ func TestSessionControl_ResumeAction(t *testing.T) {
 	// Clean up spawned tmux session if active
 	if resumed.TmuxName != "" {
 		_ = tmux.Kill(context.Background(), resumed.TmuxName)
+	}
+}
+
+func TestInspectClaudeStatus_TmuxIntegration(t *testing.T) {
+	if !tmux.IsTmuxInstalled() {
+		t.Skip("tmux not installed, skipping TestInspectClaudeStatus_TmuxIntegration")
+	}
+
+	dbFile := "./test_inspect_claude.db"
+	defer os.Remove(dbFile)
+
+	db, err := InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := NewServer(db)
+	ctx := context.Background()
+
+	tmuxName := fmt.Sprintf("test-claude-%d", time.Now().UnixNano())
+	defer tmux.Kill(ctx, tmuxName)
+
+	// Spawn tmux session that outputs Claude Code interactive prompt
+	if err := tmux.Spawn(ctx, tmuxName, os.TempDir(), "echo '─────────────────────────────────────────'; echo '❯ '; sleep 30"); err != nil {
+		t.Fatalf("Failed to spawn test tmux session: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	pid, _ := tmux.GetPID(ctx, tmuxName)
+
+	sess := &Session{
+		ID:          "claude-code:local:test-sess-1",
+		Agent:       "claude-code",
+		Host:        "local",
+		NativeID:    "test-sess-1",
+		State:       StateWorking, // currently thought to be working
+		TmuxName:    tmuxName,
+		PID:         pid,
+		StartedAt:   time.Now(),
+		LastEventAt: time.Now(),
+	}
+
+	changed := server.inspectClaudeStatus(ctx, sess)
+	if !changed {
+		t.Errorf("Expected inspectClaudeStatus to report changed=true")
+	}
+	if sess.State != StateIdle {
+		t.Errorf("Expected session state StateIdle when pane shows prompt, got %v", sess.State)
+	}
+	if sess.Activity != "Awaiting user prompt" {
+		t.Errorf("Expected activity 'Awaiting user prompt', got %q", sess.Activity)
 	}
 }
