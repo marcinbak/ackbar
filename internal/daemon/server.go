@@ -2540,6 +2540,10 @@ func decodeClaudeProjectDir(raw string) string {
 }
 
 func (s *Server) inspectAntigravityStatus(ctx context.Context, sess *Session) bool {
+	return InspectAntigravityStatus(ctx, sess)
+}
+
+func InspectAntigravityStatus(ctx context.Context, sess *Session) bool {
 	if sess == nil || sess.Agent != "antigravity" || sess.State == StateEnded {
 		return false
 	}
@@ -2702,6 +2706,10 @@ func (s *Server) inspectAntigravityStatus(ctx context.Context, sess *Session) bo
 }
 
 func (s *Server) inspectClaudeStatus(ctx context.Context, sess *Session) bool {
+	return InspectClaudeStatus(ctx, sess)
+}
+
+func InspectClaudeStatus(ctx context.Context, sess *Session) bool {
 	if sess == nil || sess.Agent != "claude-code" || sess.State == StateEnded {
 		return false
 	}
@@ -2840,13 +2848,8 @@ func (s *Server) verifySessionLiveness(ctx context.Context, sessions []*Session)
 			continue
 		}
 
-		if sess.Agent == "antigravity" {
-			if s.inspectAntigravityStatus(ctx, sess) {
-				_ = s.db.SaveSession(sess)
-				s.broadcast(sess)
-			}
-		} else if sess.Agent == "claude-code" {
-			if s.inspectClaudeStatus(ctx, sess) {
+		if p, ok := s.providers[sess.Agent]; ok {
+			if p.InspectStatus(ctx, sess) {
 				_ = s.db.SaveSession(sess)
 				s.broadcast(sess)
 			}
@@ -3168,10 +3171,8 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 					existing.Managed = true
 					existing.PID = pid
 					existing.TmuxName = tmuxName
-					if agent == "claude-code" {
-						s.inspectClaudeStatus(ctx, existing)
-					} else if agent == "antigravity" {
-						s.inspectAntigravityStatus(ctx, existing)
+					if p, ok := s.providers[agent]; ok {
+						p.InspectStatus(ctx, existing)
 					}
 					if existing.State == StateEnded || existing.State == StateUnknown {
 						existing.State = StateIdle
@@ -3223,10 +3224,8 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 						StartedAt:   lastTime,
 						LastEventAt: lastTime,
 					}
-					if agent == "claude-code" {
-						s.inspectClaudeStatus(ctx, newSess)
-					} else if agent == "antigravity" {
-						s.inspectAntigravityStatus(ctx, newSess)
+					if p, ok := s.providers[agent]; ok {
+						p.InspectStatus(ctx, newSess)
 					}
 					_ = s.db.SaveSession(newSess)
 					knownIDs[sessID] = newSess

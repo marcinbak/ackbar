@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"time"
 )
 
@@ -45,6 +46,9 @@ type Provider interface {
 	ResolveSessionTitle(cwd, nativeID string) string
 	ExtractTranscript(home, cwd, nativeID string) ([]TranscriptMessage, error)
 	CleanSessionFiles(home, cwd, nativeID string) error
+
+	// 6. Live Status Inspection
+	InspectStatus(ctx context.Context, sess *Session) bool
 }
 
 // ProviderDTO represents provider discovery metadata exposed over the REST API

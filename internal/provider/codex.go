@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -203,4 +204,8 @@ func (c *CodexProvider) CleanSessionFiles(home, cwd, nativeID string) error {
 	}
 	_ = os.RemoveAll(filepath.Join(home, ".codex", "sessions", nativeID))
 	return nil
+}
+
+func (c *CodexProvider) InspectStatus(ctx context.Context, sess *daemon.Session) bool {
+	return false
 }

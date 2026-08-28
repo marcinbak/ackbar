@@ -2,6 +2,7 @@ package provider
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -310,4 +311,8 @@ func (a *AntigravityProvider) CleanSessionFiles(home, cwd, nativeID string) erro
 	_ = os.RemoveAll(filepath.Join(home, ".gemini", "antigravity-cli", "brain", nativeID))
 	_ = os.RemoveAll(filepath.Join(home, ".antigravity", "brain", nativeID))
 	return nil
+}
+
+func (a *AntigravityProvider) InspectStatus(ctx context.Context, sess *daemon.Session) bool {
+	return daemon.InspectAntigravityStatus(ctx, sess)
 }

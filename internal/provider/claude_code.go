@@ -2,6 +2,7 @@ package provider
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -528,4 +529,8 @@ func (c *ClaudeProvider) CleanSessionFiles(home, cwd, nativeID string) error {
 	_ = os.RemoveAll(filepath.Join(claudeDir, "shell-snapshots", nativeID))
 
 	return nil
+}
+
+func (c *ClaudeProvider) InspectStatus(ctx context.Context, sess *daemon.Session) bool {
+	return daemon.InspectClaudeStatus(ctx, sess)
 }
