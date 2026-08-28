@@ -219,3 +219,47 @@ func TestAntigravityDiscoveryInLocalBin(t *testing.T) {
 		t.Errorf("Expected hook config in ~/.antigravity/config/hooks.json to be detected")
 	}
 }
+
+func TestProviderInterfaceConformance(t *testing.T) {
+	providers := []daemon.Provider{
+		NewClaudeProvider(),
+		NewAntigravityProvider(),
+		NewCodexProvider(),
+	}
+
+	testUUID := "12345678-1234-1234-1234-123456789abc"
+
+	for _, p := range providers {
+		agent := p.Agent()
+		if agent == "" {
+			t.Errorf("Provider %T returned empty Agent()", p)
+		}
+		if p.DisplayName() == "" {
+			t.Errorf("Provider %s returned empty DisplayName()", agent)
+		}
+		if p.BrandColor() == "" || !strings.HasPrefix(p.BrandColor(), "#") {
+			t.Errorf("Provider %s returned invalid BrandColor(): %s", agent, p.BrandColor())
+		}
+		if p.IconSVG() == "" || !strings.Contains(p.IconSVG(), "<svg") {
+			t.Errorf("Provider %s returned invalid IconSVG()", agent)
+		}
+		if len(p.ProcessNames()) == 0 {
+			t.Errorf("Provider %s returned empty ProcessNames()", agent)
+		}
+
+		spawnCmd := p.GetSpawnCommand(testUUID)
+		if spawnCmd == "" {
+			t.Errorf("Provider %s returned empty GetSpawnCommand", agent)
+		}
+
+		resumeCmd := p.GetResumeCommand(testUUID)
+		if resumeCmd == "" {
+			t.Errorf("Provider %s returned empty GetResumeCommand", agent)
+		}
+
+		// Test CleanSessionFiles with empty string does not panic
+		if err := p.CleanSessionFiles("/tmp", "/workspace", ""); err != nil {
+			t.Errorf("Provider %s CleanSessionFiles returned error on empty id: %v", agent, err)
+		}
+	}
+}

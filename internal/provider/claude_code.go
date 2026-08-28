@@ -1,12 +1,16 @@
 package provider
 
 import (
-	"ackbar/internal/daemon"
+	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
+
+	"ackbar/internal/daemon"
 )
 
 type ClaudeProvider struct{}
@@ -17,6 +21,36 @@ func NewClaudeProvider() *ClaudeProvider {
 
 func (c *ClaudeProvider) Agent() string {
 	return "claude-code"
+}
+
+func (c *ClaudeProvider) DisplayName() string {
+	return "Claude Code"
+}
+
+func (c *ClaudeProvider) BrandColor() string {
+	return "#D97706"
+}
+
+func (c *ClaudeProvider) IconSVG() string {
+	return `<svg class="agent-logo-svg claude-logo" viewBox="0 0 24 24" width="12" height="12" fill="currentColor"><path clip-rule="evenodd" fill-rule="evenodd" d="M20.998 10.949H24v3.102h-3v3.028h-1.487V20H18v-2.921h-1.487V20H15v-2.921H9V20H7.488v-2.921H6V20H4.487v-2.921H3V14.05H0V10.95h3V5h17.998v5.949zM6 10.949h1.488V8.102H6v2.847zm10.51 0H18V8.102h-1.49v2.847z"/></svg>`
+}
+
+func (c *ClaudeProvider) ProcessNames() []string {
+	return []string{"claude", "@anthropic-ai/claude-code"}
+}
+
+func (c *ClaudeProvider) GetSpawnCommand(tempUUID string) string {
+	if tempUUID != "" && isValidUUID(tempUUID) {
+		return "claude --session-id " + tempUUID
+	}
+	return "claude"
+}
+
+func (c *ClaudeProvider) GetResumeCommand(nativeID string) string {
+	if nativeID != "" && isValidUUID(nativeID) {
+		return "claude --resume " + nativeID
+	}
+	return "claude"
 }
 
 // Minimal JSON payload representations for Claude Code hook events
@@ -77,7 +111,7 @@ func extractClaudeQuestionAndOptions(p *claudePayload) (string, []string) {
 			if strings.TrimSpace(v) != "" {
 				var toolMap map[string]interface{}
 				if err := json.Unmarshal([]byte(v), &toolMap); err == nil {
-					q, opts := extractAntigravityQuestionAndOptions(toolMap)
+					q, opts := daemon.ExtractAntigravityQuestionAndOptions(toolMap)
 					if questionText == "" {
 						questionText = q
 					}
@@ -89,7 +123,7 @@ func extractClaudeQuestionAndOptions(p *claudePayload) (string, []string) {
 				}
 			}
 		case map[string]interface{}:
-			q, opts := extractAntigravityQuestionAndOptions(v)
+			q, opts := daemon.ExtractAntigravityQuestionAndOptions(v)
 			if questionText == "" {
 				questionText = q
 			}
@@ -99,78 +133,44 @@ func extractClaudeQuestionAndOptions(p *claudePayload) (string, []string) {
 		}
 	}
 
-	// 4. Fallback to Prompt or UserPrompt
-	if questionText == "" {
-		if p.Prompt != "" {
-			questionText = p.Prompt
-		} else if p.UserPrompt != "" {
-			questionText = p.UserPrompt
-		}
-	}
-
 	return questionText, optionsList
 }
 
 func (c *ClaudeProvider) ParseHook(eventName string, payload []byte) (*daemon.Event, error) {
 	var p claudePayload
 	if err := json.Unmarshal(payload, &p); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal Claude hook payload: %w", err)
+		return nil, fmt.Errorf("failed to unmarshal Claude Code hook payload: %w", err)
 	}
 
-	// Filter out subagents (sidechain agents)
-	if p.IsSidechain || p.AgentID != "" {
-		return nil, nil
-	}
-
-	// Default values
 	event := &daemon.Event{
 		Agent:       "claude-code",
 		NativeID:    p.SessionID,
 		Cwd:         p.Cwd,
 		EventName:   p.HookEventName,
 		LastEventAt: time.Now(),
-		State:       daemon.StateWorking, // default assumption while active
-	}
-
-	promptText := ""
-	if p.Title != "" && !daemon.IsRawSessionName(p.Title) {
-		promptText = p.Title
-	} else if p.CustomTitle != "" {
-		promptText = p.CustomTitle
-	} else if p.Name != "" && !daemon.IsRawSessionName(p.Name) {
-		promptText = p.Name
-	}
-	if promptText == "" {
-		promptText = daemon.ReadClaudeSessionTitle(p.Cwd, p.SessionID)
-	}
-	if promptText == "" {
-		promptText = p.Summary
-	}
-	// Only for initial session start or if no title exists anywhere, use user prompt
-	if promptText == "" && (strings.EqualFold(p.HookEventName, "sessionstart") || eventName == "SessionStart") {
-		if p.UserPrompt != "" {
-			promptText = p.UserPrompt
-		} else if p.Prompt != "" {
-			promptText = p.Prompt
-		}
-	}
-
-	if promptText != "" && !strings.HasPrefix(promptText, "<") && !daemon.IsRawSessionName(promptText) {
-		firstLine := strings.Split(strings.TrimSpace(promptText), "\n")[0]
-		if len(firstLine) > 50 {
-			firstLine = firstLine[:47] + "..."
-		}
-		event.Name = firstLine
+		State:       daemon.StateWorking, // default assumption
 	}
 
 	if event.NativeID == "" {
-		event.NativeID = "default" // fallback if not supplied
+		event.NativeID = "default"
 	}
 
-	// Normalize hook event name
 	evt := strings.ToLower(p.HookEventName)
 	if evt == "" {
 		evt = strings.ToLower(eventName)
+	}
+
+	// Parse custom / AI session names
+	if p.CustomTitle != "" {
+		event.Name = p.CustomTitle
+	} else if p.AITitle != "" {
+		event.Name = p.AITitle
+	} else if p.Title != "" {
+		event.Name = p.Title
+	} else if p.Summary != "" {
+		event.Name = p.Summary
+	} else if p.Name != "" {
+		event.Name = p.Name
 	}
 
 	switch evt {
@@ -179,12 +179,7 @@ func (c *ClaudeProvider) ParseHook(eventName string, payload []byte) (*daemon.Ev
 		event.Activity = "Session started"
 		event.StartedAt = time.Now()
 
-	case "sessionend", "exit":
-		event.State = daemon.StateEnded
-		event.Activity = "Session ended"
-
-	case "stop":
-		// Stop in Claude Code represents completion of the current assistant turn (awaiting next user prompt)
+	case "sessionend", "stop":
 		event.State = daemon.StateIdle
 		event.Activity = "Awaiting user prompt"
 
@@ -305,7 +300,7 @@ func (c *ClaudeProvider) IsInstalled() bool {
 	}
 	home, err := os.UserHomeDir()
 	if err == nil {
-		if _, err := os.Stat(home + "/.claude"); err == nil {
+		if _, err := os.Stat(filepath.Join(home, ".claude")); err == nil {
 			return true
 		}
 	}
@@ -320,8 +315,8 @@ func (c *ClaudeProvider) CheckHookConfig() (bool, string, error) {
 	}
 
 	paths := []string{
-		home + "/.claude/settings.json",
-		home + "/.claude.json",
+		filepath.Join(home, ".claude", "settings.json"),
+		filepath.Join(home, ".claude.json"),
 	}
 
 	for _, p := range paths {
@@ -334,4 +329,208 @@ func (c *ClaudeProvider) CheckHookConfig() (bool, string, error) {
 	}
 
 	return false, setupCmd, nil
+}
+
+func (c *ClaudeProvider) ReadSessionMetadata(cwd, nativeID string) *daemon.SessionMeta {
+	return daemon.ReadClaudeSessionMeta(cwd, nativeID)
+}
+
+func (c *ClaudeProvider) ResolveSessionTitle(cwd, nativeID string) string {
+	meta := c.ReadSessionMetadata(cwd, nativeID)
+	if meta != nil {
+		if meta.CustomTitle != "" {
+			return meta.CustomTitle
+		}
+		if meta.AITitle != "" {
+			return meta.AITitle
+		}
+		if meta.Title != "" {
+			return meta.Title
+		}
+		if meta.FirstPrompt != "" {
+			return daemon.TruncateTitle(meta.FirstPrompt)
+		}
+	}
+	return ""
+}
+
+func (c *ClaudeProvider) ExtractTranscript(home, cwd, nativeID string) ([]daemon.TranscriptMessage, error) {
+	var targetFile string
+	projectsDir := filepath.Join(home, ".claude", "projects")
+
+	if cwd != "" {
+		encodedCwd := strings.ReplaceAll(cwd, "/", "-")
+		cand := filepath.Join(projectsDir, encodedCwd, nativeID+".jsonl")
+		if fileExists(cand) {
+			targetFile = cand
+		}
+	}
+
+	if targetFile == "" && dirExists(projectsDir) {
+		entries, err := os.ReadDir(projectsDir)
+		if err == nil {
+			for _, e := range entries {
+				if e.IsDir() {
+					cand := filepath.Join(projectsDir, e.Name(), nativeID+".jsonl")
+					if fileExists(cand) {
+						targetFile = cand
+						break
+					}
+				}
+			}
+		}
+	}
+
+	if targetFile == "" {
+		return nil, fmt.Errorf("claude log not found for session %s", nativeID)
+	}
+
+	file, err := os.Open(targetFile)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	var messages []daemon.TranscriptMessage
+	scanner := bufio.NewScanner(file)
+	buf := make([]byte, 1024*1024)
+	scanner.Buffer(buf, 10*1024*1024)
+
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+
+		var raw map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &raw); err != nil {
+			continue
+		}
+
+		msgType, _ := raw["type"].(string)
+		tsStr, _ := raw["timestamp"].(string)
+		ts, _ := time.Parse(time.RFC3339, tsStr)
+		if ts.IsZero() {
+			ts = time.Now()
+		}
+
+		if msgType == "user" {
+			var fullText string
+			if msgObj, ok := raw["message"].(map[string]interface{}); ok {
+				if contentStr, ok := msgObj["content"].(string); ok {
+					fullText = contentStr
+				} else if contentArr, ok := msgObj["content"].([]interface{}); ok {
+					var textParts []string
+					for _, cItem := range contentArr {
+						if cMap, ok := cItem.(map[string]interface{}); ok {
+							if cType, ok := cMap["type"].(string); ok && cType == "text" {
+								if txt, ok := cMap["text"].(string); ok && txt != "" {
+									textParts = append(textParts, txt)
+								}
+							}
+						} else if cStr, ok := cItem.(string); ok && cStr != "" {
+							textParts = append(textParts, cStr)
+						}
+					}
+					fullText = strings.Join(textParts, "\n")
+				}
+			} else if contentStr, ok := raw["content"].(string); ok {
+				fullText = contentStr
+			} else if textStr, ok := raw["text"].(string); ok {
+				fullText = textStr
+			}
+
+			fullText = strings.TrimSpace(fullText)
+			if fullText != "" && !strings.Contains(fullText, "<EXTREMELY_IMPORTANT>") {
+				messages = append(messages, daemon.TranscriptMessage{
+					Role:      "user",
+					Content:   fullText,
+					Timestamp: ts,
+				})
+			}
+		} else if msgType == "assistant" {
+			if msgObj, ok := raw["message"].(map[string]interface{}); ok {
+				if contentStr, ok := msgObj["content"].(string); ok && contentStr != "" {
+					messages = append(messages, daemon.TranscriptMessage{
+						Role:      "assistant",
+						Content:   contentStr,
+						Timestamp: ts,
+					})
+				} else if contentArr, ok := msgObj["content"].([]interface{}); ok {
+					var textParts []string
+					var tools []string
+					for _, cItem := range contentArr {
+						if cMap, ok := cItem.(map[string]interface{}); ok {
+							if cType, ok := cMap["type"].(string); ok {
+								if cType == "text" {
+									if txt, ok := cMap["text"].(string); ok && txt != "" {
+										textParts = append(textParts, txt)
+									}
+								} else if cType == "tool_use" {
+									tName, _ := cMap["name"].(string)
+									if tName != "" {
+										tools = append(tools, tName)
+									}
+								}
+							}
+						}
+					}
+					fullText := strings.Join(textParts, "\n")
+					if fullText != "" || len(tools) > 0 {
+						messages = append(messages, daemon.TranscriptMessage{
+							Role:      "assistant",
+							Content:   fullText,
+							ToolCalls: tools,
+							Timestamp: ts,
+						})
+					}
+				}
+			}
+		}
+	}
+
+	return messages, nil
+}
+
+func (c *ClaudeProvider) CleanSessionFiles(home, cwd, nativeID string) error {
+	if nativeID == "" {
+		return nil
+	}
+	claudeDir := filepath.Join(home, ".claude")
+	claudeProjectsDir := filepath.Join(claudeDir, "projects")
+	if projDirs, err := os.ReadDir(claudeProjectsDir); err == nil {
+		for _, pDir := range projDirs {
+			if pDir.IsDir() {
+				projPath := filepath.Join(claudeProjectsDir, pDir.Name())
+				_ = os.Remove(filepath.Join(projPath, fmt.Sprintf("%s.jsonl", nativeID)))
+				_ = os.Remove(filepath.Join(projPath, fmt.Sprintf("agent-%s.jsonl", nativeID)))
+				_ = os.RemoveAll(filepath.Join(projPath, nativeID))
+			}
+		}
+	}
+
+	sessionsDir := filepath.Join(claudeDir, "sessions")
+	if sFiles, err := os.ReadDir(sessionsDir); err == nil {
+		for _, sf := range sFiles {
+			if strings.HasSuffix(sf.Name(), ".json") {
+				metaPath := filepath.Join(sessionsDir, sf.Name())
+				if data, err := os.ReadFile(metaPath); err == nil {
+					if strings.Contains(string(data), nativeID) {
+						_ = os.Remove(metaPath)
+					}
+				}
+			}
+		}
+	}
+
+	_ = os.RemoveAll(filepath.Join(claudeDir, "tasks", nativeID))
+	_ = os.RemoveAll(filepath.Join(claudeDir, "session-env", nativeID))
+	_ = os.RemoveAll(filepath.Join(claudeDir, "file-history", nativeID))
+	_ = os.RemoveAll(filepath.Join(claudeDir, "shell-snapshots", nativeID))
+
+	return nil
+}
+
+func (c *ClaudeProvider) InspectStatus(ctx context.Context, sess *daemon.Session) bool {
+	return daemon.InspectClaudeStatus(ctx, sess)
 }

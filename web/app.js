@@ -79,6 +79,7 @@
     hosts: [],
     openTabs: new Map(), // tabId -> { type: 'terminal'|'details'|'doc', session, terminal, fitAddon, socket, containerEl, tabEl }
     activeTabId: null,
+    providers: [],
     collapsedGroups: loadCollapsedGroups(),
     searchQuery: '',
     showArchived: false,
@@ -119,7 +120,7 @@
     return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
   }
 
-  // Format full absolute timestamp
+  // Format absolute date and time (e.g. "Aug 18, 2026, 10:45 AM")
   function formatFullDateTime(dateStr) {
     if (!dateStr) return '';
     const d = new Date(dateStr);
@@ -171,8 +172,32 @@
     }
   }
 
-  // State Emoji / Icon Mapping
-  function getStateEmojiText(session) {
+  // Fetch Providers
+  async function fetchProviders() {
+    try {
+      const res = await fetch('/v1/providers');
+      if (res.ok) {
+        state.providers = await res.json() || [];
+      }
+    } catch (e) {
+      console.warn('Failed to fetch providers:', e);
+    }
+  }
+
+  // Session State Helpers
+  function getStateText(session) {
+    if (!session) return 'Unknown';
+    switch (session.state) {
+      case 1: return 'Working';
+      case 2: return 'Blocked';
+      case 3: return 'Idle';
+      case 4: return 'Ended';
+      case 5: return 'Failed';
+      default: return session.managed ? 'Idle' : 'Standby';
+    }
+  }
+
+  function getStateRawEmoji(session) {
     if (!session) return '◌';
     switch (session.state) {
       case 1: return '⚙️';
@@ -205,6 +230,17 @@
   // Agent Provider Badge Helper
   function getAgentBadgeHtml(agent, iconOnly = false) {
     const a = (agent || 'claude-code').toLowerCase();
+
+    // 1. Dynamic lookup from registered providers
+    if (state.providers && state.providers.length > 0) {
+      const p = state.providers.find(prov => prov.agent.toLowerCase() === a || a.includes(prov.agent.toLowerCase()));
+      if (p) {
+        const svg = p.icon_svg || `<svg class="agent-logo-svg" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"/></svg>`;
+        return `<span class="agent-icon-badge ${p.agent}" title="${p.display_name || p.agent}">${svg}${iconOnly ? '' : ' ' + (p.display_name || p.agent)}</span>`;
+      }
+    }
+
+    // 2. Built-in Fallbacks
     if (a.includes('claude')) {
       const svg = `<svg class="agent-logo-svg claude-logo" viewBox="0 0 24 24" width="12" height="12" fill="currentColor"><path clip-rule="evenodd" fill-rule="evenodd" d="M20.998 10.949H24v3.102h-3v3.028h-1.487V20H18v-2.921h-1.487V20H15v-2.921H9V20H7.488v-2.921H6V20H4.487v-2.921H3V14.05H0V10.95h3V5h17.998v5.949zM6 10.949h1.488V8.102H6v2.847zm10.51 0H18V8.102h-1.49v2.847z"/></svg>`;
       return `<span class="agent-icon-badge claude-code" title="Claude Code (Anthropic)">${svg}${iconOnly ? '' : ' claude'}</span>`;
@@ -296,6 +332,7 @@
   async function init() {
     setupEventListeners();
     await fetchVersion();
+    await fetchProviders();
     await fetchHosts();
     await fetchTreeNodes();
     await fetchSessions();
@@ -3339,14 +3376,14 @@ ${session.last_prompt}
           installed.forEach(d => {
             const opt = document.createElement('option');
             opt.value = d.agent;
-            opt.textContent = `${agentDisplayNames[d.agent] || d.agent} (Installed)`;
+            opt.textContent = `${d.display_name || agentDisplayNames[d.agent] || d.agent} (Installed)`;
             agentSelect.appendChild(opt);
           });
         } else {
           discovery.forEach(d => {
             const opt = document.createElement('option');
             opt.value = d.agent;
-            opt.textContent = `${agentDisplayNames[d.agent] || d.agent} (Not detected)`;
+            opt.textContent = `${d.display_name || agentDisplayNames[d.agent] || d.agent} (Not detected)`;
             agentSelect.appendChild(opt);
           });
         }
