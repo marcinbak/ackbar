@@ -439,8 +439,12 @@ func (s *Server) processHookEvent(p Provider, urlEventName string, headerHost st
 		}
 	}
 	if sess.State != event.State {
-		sess.IsUnread = true
-		sess.LastStateChangeAt = time.Now()
+		if event.State != StateWorking {
+			sess.IsUnread = true
+			sess.LastStateChangeAt = time.Now()
+		} else {
+			sess.IsUnread = false
+		}
 	}
 	sess.State = event.State
 	if event.State != StateBlocked {
@@ -2698,6 +2702,136 @@ func (s *Server) inspectAntigravityStatus(ctx context.Context, sess *Session) bo
 	return changed
 }
 
+func (s *Server) inspectClaudeStatus(ctx context.Context, sess *Session) bool {
+	if sess == nil || sess.Agent != "claude-code" || sess.State == StateEnded {
+		return false
+	}
+	changed := false
+
+	if sess.TmuxName != "" {
+		out, err := exec.CommandContext(ctx, "tmux", "capture-pane", "-pt", sess.TmuxName, "-p").Output()
+		if err != nil {
+			sess.State = StateEnded
+			sess.Activity = "Session ended (process exited)"
+			sess.PID = 0
+			sess.Blocked = nil
+			return true
+		}
+
+		// Check if Claude process is actually alive under pane PID
+		if sess.PID > 0 && !isProcessAlive(sess.PID) {
+			if outPs, errPs := exec.CommandContext(ctx, "pgrep", "-P", strconv.Itoa(sess.PID)).Output(); errPs == nil && len(strings.TrimSpace(string(outPs))) > 0 {
+				// Child process alive
+			} else {
+				sess.State = StateEnded
+				sess.Activity = "Session ended (process exited)"
+				sess.PID = 0
+				sess.Blocked = nil
+				return true
+			}
+		}
+
+		paneText := string(out)
+		lines := strings.Split(paneText, "\n")
+		startIdx := len(lines) - 25
+		if startIdx < 0 {
+			startIdx = 0
+		}
+		tailText := strings.Join(lines[startIdx:], "\n")
+
+		// 1. Permission prompt / confirmation
+		if strings.Contains(tailText, "Do you want to run") ||
+			strings.Contains(tailText, "Do you want to proceed") ||
+			strings.Contains(tailText, "Allow once") ||
+			strings.Contains(tailText, "Allow always") ||
+			strings.Contains(tailText, "[y/N]") ||
+			strings.Contains(tailText, "[Y/n]") ||
+			strings.Contains(tailText, "Permission requested") ||
+			strings.Contains(tailText, "Authorize tool execution") ||
+			strings.Contains(tailText, "Are you sure?") {
+			if sess.State != StateBlocked || sess.Blocked == nil {
+				sess.State = StateBlocked
+				sess.Blocked = &Blocked{
+					Kind:     BlockPermission,
+					Reason:   "Tool permission requested",
+					Question: "Permission required",
+					Options:  []string{"Allow", "Deny"},
+					Since:    time.Now(),
+				}
+				sess.Activity = "Waiting for tool authorization"
+				sess.LastEventAt = time.Now()
+				changed = true
+			}
+			return changed
+		}
+
+		// 2. Question / user input
+		if strings.Contains(tailText, "Waiting for user response") ||
+			strings.Contains(tailText, "AskUserQuestion") {
+			if sess.State != StateBlocked || sess.Blocked == nil {
+				sess.State = StateBlocked
+				sess.Blocked = &Blocked{
+					Kind:     BlockQuestion,
+					Reason:   "Waiting for user response",
+					Question: "Waiting for user response",
+					Since:    time.Now(),
+				}
+				sess.Activity = "Waiting for user response"
+				sess.LastEventAt = time.Now()
+				changed = true
+			}
+			return changed
+		}
+
+		// 3. Active generation / tool spinner
+		hasSpinner := strings.Contains(tailText, "⠋") || strings.Contains(tailText, "⠙") ||
+			strings.Contains(tailText, "⠹") || strings.Contains(tailText, "⠸") ||
+			strings.Contains(tailText, "⠼") || strings.Contains(tailText, "⠴") ||
+			strings.Contains(tailText, "⠦") || strings.Contains(tailText, "⠧") ||
+			strings.Contains(tailText, "⠇") || strings.Contains(tailText, "⠏") ||
+			strings.Contains(tailText, "Thinking...") ||
+			strings.Contains(tailText, "Running tool:") ||
+			strings.Contains(tailText, "Esc to cancel")
+
+		if hasSpinner {
+			if sess.State != StateWorking {
+				sess.State = StateWorking
+				sess.Blocked = nil
+				sess.Activity = "Working..."
+				changed = true
+			}
+			return changed
+		}
+
+		// 4. Interactive prompt idle (sitting at ❯ or awaiting prompt)
+		hasPrompt := strings.Contains(tailText, "❯") ||
+			strings.Contains(tailText, "auto mode on") ||
+			strings.Contains(tailText, "bypass mode") ||
+			strings.Contains(tailText, "shift+tab to cycle") ||
+			strings.Contains(tailText, "? for shortcuts")
+
+		if hasPrompt {
+			if sess.State != StateIdle {
+				sess.State = StateIdle
+				sess.Blocked = nil
+				sess.Activity = "Awaiting user prompt"
+				changed = true
+			}
+			return changed
+		}
+
+		// 5. If it was blocked, but tmux pane is unblocked and alive
+		if sess.State == StateBlocked {
+			sess.State = StateIdle
+			sess.Blocked = nil
+			sess.Activity = "Awaiting user prompt"
+			changed = true
+		}
+	}
+
+	return changed
+}
+
 func (s *Server) verifySessionLiveness(ctx context.Context, sessions []*Session) {
 	// Query all active local tmux sessions once to avoid O(N) subprocess executions
 	activeTmux, _ := tmux.ListSessions(ctx)
@@ -2709,6 +2843,11 @@ func (s *Server) verifySessionLiveness(ctx context.Context, sessions []*Session)
 
 		if sess.Agent == "antigravity" {
 			if s.inspectAntigravityStatus(ctx, sess) {
+				_ = s.db.SaveSession(sess)
+				s.broadcast(sess)
+			}
+		} else if sess.Agent == "claude-code" {
+			if s.inspectClaudeStatus(ctx, sess) {
 				_ = s.db.SaveSession(sess)
 				s.broadcast(sess)
 			}
@@ -2727,6 +2866,11 @@ func (s *Server) verifySessionLiveness(ctx context.Context, sessions []*Session)
 		if sess.Managed && sess.TmuxName != "" {
 			if sess.Host == "local" || sess.Host == "" {
 				alive = activeTmux[sess.TmuxName]
+				if alive && sess.PID > 0 && !isProcessAlive(sess.PID) {
+					if outPs, errPs := exec.CommandContext(ctx, "pgrep", "-P", strconv.Itoa(sess.PID)).Output(); errPs != nil || len(strings.TrimSpace(string(outPs))) == 0 {
+						alive = false
+					}
+				}
 			} else {
 				alive = tmux.HasSession(ctx, sess.TmuxName)
 			}
@@ -2746,7 +2890,9 @@ func (s *Server) verifySessionLiveness(ctx context.Context, sessions []*Session)
 			sess.State = StateEnded
 			sess.Activity = "Session ended (process exited)"
 			sess.PID = 0
+			sess.Blocked = nil
 			_ = s.db.SaveSession(sess)
+			s.broadcast(sess)
 		}
 	}
 }
@@ -2942,6 +3088,36 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 			if agent != "" && actualPID > 0 && cwd != "" {
 				pid := actualPID
 
+				// If no child process found and pane is just a dead shell, mark session as ended
+				if actualPID == panePID && (cmdLower == "bash" || cmdLower == "zsh" || cmdLower == "sh" || cmdLower == "fish") {
+					targetNativeID := ""
+					if strings.HasPrefix(tmuxName, fmt.Sprintf("ackbar-%s-", agent)) {
+						targetNativeID = strings.TrimPrefix(tmuxName, fmt.Sprintf("ackbar-%s-", agent))
+					} else if strings.HasPrefix(tmuxName, "ackbar-") {
+						parts := strings.Split(tmuxName, "-")
+						if len(parts) >= 3 {
+							targetNativeID = parts[len(parts)-1]
+						}
+					}
+					if targetNativeID != "" {
+						var existing *Session
+						if ex, ok := knownIDs[fmt.Sprintf("%s:%s:%s", agent, hostName, targetNativeID)]; ok {
+							existing = ex
+						} else if ex, ok := knownByNativeID[targetNativeID]; ok {
+							existing = ex
+						}
+						if existing != nil && existing.State != StateEnded {
+							existing.State = StateEnded
+							existing.Activity = "Session ended (process exited)"
+							existing.PID = 0
+							existing.Blocked = nil
+							_ = s.db.SaveSession(existing)
+							s.broadcast(existing)
+						}
+					}
+					continue
+				}
+
 				// Try resolving the session UUID from tmuxName or ~/.claude/sessions/
 				targetNativeID := ""
 				if strings.HasPrefix(tmuxName, fmt.Sprintf("ackbar-%s-", agent)) {
@@ -2985,11 +3161,17 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 				if existing != nil {
 					// Adopt and elevate existing session in place (no duplicate!)
 					existing.Managed = true
-					if existing.State == StateEnded || existing.State == StateUnknown {
-						existing.State = StateWorking
-					}
 					existing.PID = pid
 					existing.TmuxName = tmuxName
+					if agent == "claude-code" {
+						s.inspectClaudeStatus(ctx, existing)
+					} else if agent == "antigravity" {
+						s.inspectAntigravityStatus(ctx, existing)
+					}
+					if existing.State == StateEnded || existing.State == StateUnknown {
+						existing.State = StateIdle
+						existing.Activity = "Awaiting user prompt"
+					}
 					_ = s.db.SaveSession(existing)
 					s.broadcast(existing)
 					_ = s.db.DeleteSession(fmt.Sprintf("%s:observed:proc-%d", hostName, pid))
@@ -3006,11 +3188,22 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 				existingObs := knownIDs[sessID]
 				if existingObs == nil {
 					sessionName := ""
+					lastTime := time.Now()
 					if agent == "antigravity" && targetNativeID != "" {
 						sessionName = ReadAntigravitySessionTitle(cwd, targetNativeID)
+						home, _ := os.UserHomeDir()
+						if home != "" {
+							logPath := filepath.Join(home, ".gemini", "antigravity", "brain", targetNativeID, ".system_generated", "logs", "transcript.jsonl")
+							if stat, serr := os.Stat(logPath); serr == nil {
+								lastTime = stat.ModTime()
+							}
+						}
 					} else if agent == "claude-code" && targetNativeID != "" {
 						if meta := ReadClaudeSessionMeta(cwd, targetNativeID); meta != nil {
 							sessionName = meta.Title
+							if !meta.LastMessageAt.IsZero() {
+								lastTime = meta.LastMessageAt
+							}
 						}
 					}
 					if sessionName == "" {
@@ -3033,8 +3226,13 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 						TmuxName:    tmuxName,
 						PID:         pid,
 						Activity:    fmt.Sprintf("Observed running agent in tmux '%s' (PID %d)", tmuxName, pid),
-						StartedAt:   time.Now(),
-						LastEventAt: time.Now(),
+						StartedAt:   lastTime,
+						LastEventAt: lastTime,
+					}
+					if agent == "claude-code" {
+						s.inspectClaudeStatus(ctx, newSess)
+					} else if agent == "antigravity" {
+						s.inspectAntigravityStatus(ctx, newSess)
 					}
 					_ = s.db.SaveSession(newSess)
 					knownIDs[sessID] = newSess
@@ -3172,6 +3370,12 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 
 					if cwd != "" {
 						title := fmt.Sprintf("%s (%s)", agent, nativeID)
+						lastTime := time.Now()
+						if agent == "claude-code" {
+							if meta := ReadClaudeSessionMeta(cwd, nativeID); meta != nil && !meta.LastMessageAt.IsZero() {
+								lastTime = meta.LastMessageAt
+							}
+						}
 						newSess := &Session{
 							ID:          sessID,
 							Name:        title,
@@ -3184,8 +3388,8 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 							Managed:     false,
 							PID:         pid,
 							Activity:    fmt.Sprintf("Observed running agent process (PID %d)", pid),
-							StartedAt:   time.Now(),
-							LastEventAt: time.Now(),
+							StartedAt:   lastTime,
+							LastEventAt: lastTime,
 						}
 						if agent == "claude-code" {
 							meta := ReadClaudeSessionMeta(cwd, nativeID)

@@ -432,8 +432,8 @@ final filteredSessionsProvider = Provider<List<Session>>((ref) {
 
   // Sort sessions descending by latest interaction (newest / active first)
   list.sort((a, b) {
-    final timeA = a.lastEventAt.isAfter(a.startedAt) ? a.lastEventAt : a.startedAt;
-    final timeB = b.lastEventAt.isAfter(b.startedAt) ? b.lastEventAt : b.startedAt;
+    final timeA = a.lastEventAt.millisecondsSinceEpoch > 0 ? a.lastEventAt : a.startedAt;
+    final timeB = b.lastEventAt.millisecondsSinceEpoch > 0 ? b.lastEventAt : b.startedAt;
     final cmp = timeB.compareTo(timeA);
     if (cmp != 0) return cmp;
     return a.id.compareTo(b.id);

@@ -1213,7 +1213,7 @@
     try {
       const hostRec = (state.hosts || []).find(h => h.name === session.host);
       const baseUrl = hostRec && hostRec.url && session.host !== 'local' ? hostRec.url.replace(/\/$/, '') : '';
-      await fetch(`${baseUrl}/v1/sessions/${encodeURIComponent(session.id)}?action=read`, { method: 'POST' });
+      await fetch(`${baseUrl}/v1/sessions/control?id=${encodeURIComponent(session.id)}&action=read`, { method: 'POST' });
     } catch (e) {
       console.warn('Failed to mark session as read on daemon:', e);
     }
@@ -2284,6 +2284,12 @@ ${session.last_prompt}
 
   // Activate Tab
   function activateTab(tabId) {
+    if (state.activeTabId && state.activeTabId !== tabId) {
+      const prevTab = state.openTabs.get(state.activeTabId);
+      if (prevTab && prevTab.session && prevTab.session.is_unread) {
+        markSessionAsRead(prevTab.session);
+      }
+    }
     state.activeTabId = tabId;
 
     state.openTabs.forEach((tab, id) => {

@@ -487,6 +487,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+		var prevSess *daemon.Session
+		if m.selectedIdx >= 0 && m.selectedIdx < len(visibleRows) && !visibleRows[m.selectedIdx].IsGroup {
+			prevSess = visibleRows[m.selectedIdx].Session
+		}
+
 		switch msg.String() {
 		case "q", "ctrl+c":
 			m.cancelCtx()
@@ -495,16 +500,25 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "up", "k":
 			if m.selectedIdx > 0 {
 				m.selectedIdx--
+				if prevSess != nil && prevSess.IsUnread {
+					return m, m.markReadCmd(prevSess)
+				}
 			}
 
 		case "down", "j":
 			if m.selectedIdx < len(visibleRows)-1 {
 				m.selectedIdx++
+				if prevSess != nil && prevSess.IsUnread {
+					return m, m.markReadCmd(prevSess)
+				}
 			}
 
 		case "v":
 			m.archivedView = !m.archivedView
 			m.selectedIdx = 0
+			if prevSess != nil && prevSess.IsUnread {
+				return m, m.markReadCmd(prevSess)
+			}
 
 		case "space", "enter", "a":
 			if len(visibleRows) == 0 {
@@ -516,7 +530,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else if row.Session != nil {
 				if row.Session.Managed || row.Session.TmuxName != "" {
 					m.cancelCtx()
-					return m, m.attachCmd(row.Session)
+					readCmd := m.markReadCmd(row.Session)
+					attachCmd := m.attachCmd(row.Session)
+					if readCmd != nil {
+						return m, tea.Sequence(readCmd, attachCmd)
+					}
+					return m, attachCmd
 				}
 				// Observed session without tmux pane: prompt warning before restarting into managed session
 				m.confirmRestartSession = row.Session
@@ -1258,6 +1277,24 @@ func (m *Model) deleteCmd(sess *daemon.Session) tea.Cmd {
 	}
 }
 
+func (m *Model) markReadCmd(sess *daemon.Session) tea.Cmd {
+	if sess == nil || !sess.IsUnread {
+		return nil
+	}
+	sess.IsUnread = false
+	return func() tea.Msg {
+		var hostURL string
+		for _, h := range m.hosts {
+			if h.Name == sess.Host {
+				hostURL = h.URL
+				break
+			}
+		}
+		_ = RunAction(hostURL, "read", sess.ID)
+		return nil
+	}
+}
+
 func (m *Model) toggleArchiveCmd(sess *daemon.Session) tea.Cmd {
 	return func() tea.Msg {
 		action := "archive"
@@ -1281,6 +1318,9 @@ func (m *Model) toggleArchiveCmd(sess *daemon.Session) tea.Cmd {
 }
 
 func (m *Model) attachCmd(sess *daemon.Session) tea.Cmd {
+	if sess != nil {
+		sess.LastEventAt = time.Now()
+	}
 	return tea.ExecProcess(m.getAttachCmd(sess), func(err error) tea.Msg {
 		m.ctx, m.cancelCtx = context.WithCancel(context.Background())
 		SubscribeEvents(m.ctx, m.hosts, m.eventChan)
