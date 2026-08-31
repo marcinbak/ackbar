@@ -3811,6 +3811,156 @@ ${session.last_prompt}
     showHostSummaryModal({ name: 'local', url: '' });
   }
 
+  // Smooth Reconnection Flow with Progress, Auto-Dismiss on Success, and Retry on Failure
+  async function handleReconnectHost(h) {
+    showModal(`Reconnecting ${h.name}`, `
+      <div style="padding: 32px 20px; text-align: center;">
+        <div class="modal-loading-spinner"></div>
+        <div style="font-size: 15px; font-weight: 600; color: #fff; margin-bottom: 6px;">Reconnecting SSH tunnel to ${h.name}...</div>
+        <div style="font-size: 12px; color: var(--text-muted); font-family: var(--font-mono);">${h.url || 'remote host'}</div>
+      </div>
+    `, '');
+
+    try {
+      const res = await fetch('/v1/hosts/reconnect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: h.name })
+      });
+      const data = await res.json().catch(() => ({}));
+
+      if (res.ok && data.status === 'success') {
+        showModal(`Reconnecting ${h.name}`, `
+          <div style="padding: 32px 20px; text-align: center;">
+            <div style="font-size: 38px; margin-bottom: 12px; color: var(--accent-green);">✓</div>
+            <div style="font-size: 16px; font-weight: 600; color: var(--accent-green); margin-bottom: 6px;">Connection Succeeded</div>
+            <div style="font-size: 12px; color: var(--text-muted);">${data.message || 'SSH tunnel reconnected successfully.'}</div>
+          </div>
+        `, '');
+
+        await fetchHosts();
+        await fetchSessions();
+        await fetchTreeNodes();
+
+        setTimeout(() => {
+          hideModal();
+        }, 2000);
+      } else {
+        const errMsg = data.message || (data.error ? (data.error.message || data.error) : 'Unknown connection error');
+        showModal(`Reconnection Failed: ${h.name}`, `
+          <div style="padding: 24px 20px; text-align: center;">
+            <div style="font-size: 38px; margin-bottom: 12px; color: var(--accent-red);">✗</div>
+            <div style="font-size: 16px; font-weight: 600; color: var(--accent-red); margin-bottom: 8px;">Connection Failed</div>
+            <div style="font-size: 12px; color: var(--text-muted); margin-bottom: 16px; line-height: 1.5; max-width: 440px; margin-left: auto; margin-right: auto; word-break: break-word;">
+              ${escapeHtml(errMsg)}
+            </div>
+          </div>
+        `, `
+          <button class="btn btn-secondary" id="mBtnBackToDetails">← Go Back to Details</button>
+          <button class="btn btn-primary" id="mBtnRetryReconnect" style="background: #10b981; border-color: #059669; color: #fff; font-weight: 600;">🔄 Retry</button>
+        `);
+
+        document.getElementById('mBtnBackToDetails')?.addEventListener('click', () => {
+          showHostSummaryModal(h);
+        });
+        document.getElementById('mBtnRetryReconnect')?.addEventListener('click', () => {
+          handleReconnectHost(h);
+        });
+      }
+    } catch (err) {
+      showModal(`Reconnection Failed: ${h.name}`, `
+        <div style="padding: 24px 20px; text-align: center;">
+          <div style="font-size: 38px; margin-bottom: 12px; color: var(--accent-red);">✗</div>
+          <div style="font-size: 16px; font-weight: 600; color: var(--accent-red); margin-bottom: 8px;">Connection Failed</div>
+          <div style="font-size: 12px; color: var(--text-muted); margin-bottom: 16px; line-height: 1.5; max-width: 440px; margin-left: auto; margin-right: auto; word-break: break-word;">
+            ${escapeHtml(err.message)}
+          </div>
+        </div>
+      `, `
+        <button class="btn btn-secondary" id="mBtnBackToDetails">← Go Back to Details</button>
+        <button class="btn btn-primary" id="mBtnRetryReconnect" style="background: #10b981; border-color: #059669; color: #fff; font-weight: 600;">🔄 Retry</button>
+      `);
+
+      document.getElementById('mBtnBackToDetails')?.addEventListener('click', () => {
+        showHostSummaryModal(h);
+      });
+      document.getElementById('mBtnRetryReconnect')?.addEventListener('click', () => {
+        handleReconnectHost(h);
+      });
+    }
+  }
+
+  // Smooth Host Binary Upgrade Flow
+  async function handleUpdateHost(h) {
+    if (!confirm(`Upgrade and restart ackbard daemon & hook binaries on "${h.name}" to v${state.version}?`)) return;
+
+    showModal(`Updating ${h.name}`, `
+      <div style="padding: 32px 20px; text-align: center;">
+        <div class="modal-loading-spinner"></div>
+        <div style="font-size: 15px; font-weight: 600; color: #fff; margin-bottom: 6px;">Upgrading ackbard on ${h.name}...</div>
+        <div style="font-size: 12px; color: var(--text-muted);">Compiling and deploying v${state.version}</div>
+      </div>
+    `, '');
+
+    try {
+      const res = await fetch('/v1/hosts/update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: h.name })
+      });
+      const data = await res.json().catch(() => ({}));
+
+      if (res.ok && data.status === 'success') {
+        showModal(`Update Complete: ${h.name}`, `
+          <div style="padding: 32px 20px; text-align: center;">
+            <div style="font-size: 38px; margin-bottom: 12px; color: var(--accent-green);">✓</div>
+            <div style="font-size: 16px; font-weight: 600; color: var(--accent-green); margin-bottom: 6px;">Update Succeeded</div>
+            <div style="font-size: 12px; color: var(--text-muted);">${data.message || 'Upgrade completed successfully!'}</div>
+          </div>
+        `, '');
+
+        await fetchHosts();
+        await fetchSessions();
+        setTimeout(() => {
+          showHostSummaryModal(h);
+        }, 2000);
+      } else {
+        const errMsg = data.message || (data.error ? (data.error.message || data.error) : 'Unknown update error');
+        showModal(`Update Failed: ${h.name}`, `
+          <div style="padding: 24px 20px; text-align: center;">
+            <div style="font-size: 38px; margin-bottom: 12px; color: var(--accent-red);">✗</div>
+            <div style="font-size: 16px; font-weight: 600; color: var(--accent-red); margin-bottom: 8px;">Update Failed</div>
+            <div style="font-size: 12px; color: var(--text-muted); margin-bottom: 16px; line-height: 1.5; max-width: 440px; margin-left: auto; margin-right: auto; word-break: break-word;">
+              ${escapeHtml(errMsg)}
+            </div>
+          </div>
+        `, `
+          <button class="btn btn-secondary" id="mBtnBackToDetailsUpdate">← Go Back to Details</button>
+        `);
+
+        document.getElementById('mBtnBackToDetailsUpdate')?.addEventListener('click', () => {
+          showHostSummaryModal(h);
+        });
+      }
+    } catch (err) {
+      showModal(`Update Failed: ${h.name}`, `
+        <div style="padding: 24px 20px; text-align: center;">
+          <div style="font-size: 38px; margin-bottom: 12px; color: var(--accent-red);">✗</div>
+          <div style="font-size: 16px; font-weight: 600; color: var(--accent-red); margin-bottom: 8px;">Update Failed</div>
+          <div style="font-size: 12px; color: var(--text-muted); margin-bottom: 16px; line-height: 1.5; max-width: 440px; margin-left: auto; margin-right: auto; word-break: break-word;">
+            ${escapeHtml(err.message)}
+          </div>
+        </div>
+      `, `
+        <button class="btn btn-secondary" id="mBtnBackToDetailsUpdate">← Go Back to Details</button>
+      `);
+
+      document.getElementById('mBtnBackToDetailsUpdate')?.addEventListener('click', () => {
+        showHostSummaryModal(h);
+      });
+    }
+  }
+
   // Host Summary & Diagnostics Modal
   async function showHostSummaryModal(h) {
     const baseUrl = h.url ? h.url.replace(/\/$/, '') : '';
@@ -3914,63 +4064,15 @@ ${session.last_prompt}
 
       const reconnectBtn = document.getElementById('hBtnReconnectHost');
       if (reconnectBtn) {
-        reconnectBtn.addEventListener('click', async () => {
-          reconnectBtn.disabled = true;
-          reconnectBtn.innerHTML = `<span>⏳</span> Reconnecting SSH tunnel...`;
-          try {
-            const res = await fetch('/v1/hosts/reconnect', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ name: h.name })
-            });
-            const data = await res.json();
-            if (res.ok && data.status === 'success') {
-              alert(`✅ ${data.message || 'SSH tunnel reconnected!'}`);
-              await fetchHosts();
-              await fetchSessions();
-              await fetchTreeNodes();
-              showHostSummaryModal(h);
-            } else {
-              alert(`❌ Reconnect failed: ${data.message || 'Unknown error'}`);
-              reconnectBtn.disabled = false;
-              reconnectBtn.innerHTML = `🔄 Reconnect SSH Tunnel`;
-            }
-          } catch (err) {
-            alert(`❌ Reconnect request failed: ${err.message}`);
-            reconnectBtn.disabled = false;
-            reconnectBtn.innerHTML = `🔄 Reconnect SSH Tunnel`;
-          }
+        reconnectBtn.addEventListener('click', () => {
+          handleReconnectHost(h);
         });
       }
 
       const updateBtn = document.getElementById('hBtnUpdateHost');
       if (updateBtn) {
-        updateBtn.addEventListener('click', async () => {
-          if (!confirm(`Upgrade and restart ackbard daemon & hook binaries on "${h.name}" to v${state.version}?`)) return;
-          updateBtn.disabled = true;
-          updateBtn.innerHTML = `<span>⏳</span> Upgrading ackbard on ${h.name}...`;
-          try {
-            const res = await fetch('/v1/hosts/update', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ name: h.name })
-            });
-            const data = await res.json();
-            if (res.ok && data.status === 'success') {
-              alert(`✅ ${data.message || 'Upgrade completed!'}`);
-              await fetchHosts();
-              await fetchSessions();
-              showHostSummaryModal(h);
-            } else {
-              alert(`❌ Upgrade failed: ${data.message || 'Unknown error'}`);
-              updateBtn.disabled = false;
-              updateBtn.innerHTML = `⬆ Update ackbard`;
-            }
-          } catch (err) {
-            alert(`❌ Upgrade request failed: ${err.message}`);
-            updateBtn.disabled = false;
-            updateBtn.innerHTML = `⬆ Update ackbard`;
-          }
+        updateBtn.addEventListener('click', () => {
+          handleUpdateHost(h);
         });
       }
 

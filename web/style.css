@@ -428,6 +428,22 @@ body, html {
   filter: drop-shadow(0 0 4px rgba(245, 158, 11, 0.4));
 }
 
+/* Modal Fast Loading Spinner */
+@keyframes spinFast {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+.modal-loading-spinner {
+  width: 36px;
+  height: 36px;
+  border: 3px solid rgba(6, 182, 212, 0.15);
+  border-top-color: var(--accent-cyan);
+  border-radius: 50%;
+  animation: spinFast 0.8s linear infinite;
+  margin: 0 auto 16px auto;
+}
+
 /* Unread Indicator Pulse */
 @keyframes unreadPulse {
   0% { transform: scale(0.9); opacity: 0.8; box-shadow: 0 0 0 0 rgba(6, 182, 212, 0.7); }
