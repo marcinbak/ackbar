@@ -2756,7 +2756,7 @@ func InspectClaudeStatus(ctx context.Context, sess *Session) bool {
 			strings.Contains(tailText, "Permission requested") ||
 			strings.Contains(tailText, "Authorize tool execution") ||
 			strings.Contains(tailText, "Are you sure?") {
-			if sess.State != StateBlocked || sess.Blocked == nil {
+			if sess.State != StateBlocked || sess.Blocked == nil || sess.Blocked.Kind != BlockPermission {
 				sess.State = StateBlocked
 				sess.Blocked = &Blocked{
 					Kind:     BlockPermission,
@@ -2772,18 +2772,29 @@ func InspectClaudeStatus(ctx context.Context, sess *Session) bool {
 			return changed
 		}
 
-		// 2. Question / user input
-		if strings.Contains(tailText, "Waiting for user response") ||
-			strings.Contains(tailText, "AskUserQuestion") {
-			if sess.State != StateBlocked || sess.Blocked == nil {
+		// 2. Question / user choice / prompt selection
+		if strings.Contains(tailText, "Enter to select") ||
+			strings.Contains(tailText, "Tab/Arrow keys to navigate") ||
+			strings.Contains(tailText, "✔ Submit") ||
+			strings.Contains(tailText, "Waiting for user response") ||
+			strings.Contains(tailText, "AskUserQuestion") ||
+			strings.Contains(tailText, "Type something.") ||
+			strings.Contains(tailText, "Chat about this") {
+			q, opts := extractClaudeQuestionAndOptions(tailText)
+			if sess.State != StateBlocked || sess.Blocked == nil || sess.Blocked.Question != q {
 				sess.State = StateBlocked
 				sess.Blocked = &Blocked{
 					Kind:     BlockQuestion,
-					Reason:   "Waiting for user response",
-					Question: "Waiting for user response",
+					Reason:   q,
+					Question: q,
+					Options:  opts,
 					Since:    time.Now(),
 				}
-				sess.Activity = "Waiting for user response"
+				if q != "" && q != "Waiting for user response" && q != "Waiting for user input" {
+					sess.Activity = "Question: " + truncateTitle(q)
+				} else {
+					sess.Activity = "Waiting for user input"
+				}
 				sess.LastEventAt = time.Now()
 				changed = true
 			}
@@ -2797,8 +2808,7 @@ func InspectClaudeStatus(ctx context.Context, sess *Session) bool {
 			strings.Contains(tailText, "⠦") || strings.Contains(tailText, "⠧") ||
 			strings.Contains(tailText, "⠇") || strings.Contains(tailText, "⠏") ||
 			strings.Contains(tailText, "Thinking...") ||
-			strings.Contains(tailText, "Running tool:") ||
-			strings.Contains(tailText, "Esc to cancel")
+			strings.Contains(tailText, "Running tool:")
 
 		if hasSpinner {
 			if sess.State != StateWorking {
@@ -2837,6 +2847,57 @@ func InspectClaudeStatus(ctx context.Context, sess *Session) bool {
 	}
 
 	return changed
+}
+
+func extractClaudeQuestionAndOptions(tailText string) (string, []string) {
+	lines := strings.Split(tailText, "\n")
+	var options []string
+	firstOptIdx := -1
+
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		clean := strings.TrimPrefix(trimmed, "❯ ")
+		clean = strings.TrimPrefix(clean, "❯")
+		clean = strings.TrimSpace(clean)
+
+		if len(clean) > 2 && clean[0] >= '1' && clean[0] <= '9' && clean[1] == '.' {
+			optText := strings.TrimSpace(clean[2:])
+			if optText != "" && !strings.HasPrefix(optText, "Type something") && !strings.HasPrefix(optText, "Chat about this") {
+				options = append(options, optText)
+				if firstOptIdx == -1 {
+					firstOptIdx = i
+				}
+			}
+		}
+	}
+
+	question := ""
+	if firstOptIdx != -1 {
+		for j := firstOptIdx - 1; j >= 0; j-- {
+			prev := strings.TrimSpace(lines[j])
+			if prev == "" || strings.HasPrefix(prev, "─") || strings.HasPrefix(prev, "←") || strings.HasPrefix(prev, "❯") || strings.HasPrefix(prev, "┌") || strings.HasPrefix(prev, "│") || strings.HasPrefix(prev, "└") {
+				continue
+			}
+			question = prev
+			break
+		}
+	}
+
+	if question == "" {
+		for _, line := range lines {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasSuffix(trimmed, "?") && !strings.Contains(trimmed, "shortcuts") && !strings.Contains(trimmed, "want to proceed") {
+				question = trimmed
+				break
+			}
+		}
+	}
+
+	if question == "" {
+		question = "Waiting for user input"
+	}
+
+	return question, options
 }
 
 func (s *Server) verifySessionLiveness(ctx context.Context, sessions []*Session) {

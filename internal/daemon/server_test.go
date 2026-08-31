@@ -993,3 +993,108 @@ func TestInspectClaudeStatus_TmuxIntegration(t *testing.T) {
 		t.Errorf("Expected activity 'Awaiting user prompt', got %q", sess.Activity)
 	}
 }
+
+func TestExtractClaudeQuestionAndOptions(t *testing.T) {
+	samplePane := `
+  Three forks I'd like settled before writing:
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☐ Portability  ☐ Config file  ☐ Run state  ✔ Submit  →
+
+Where should the portable skill live, and how tracker-agnostic should it be?
+
+❯ 1. Global skill, Jira-only
+     Move to ~/.claude/skills/dev-workflow/, repo keeps only the config file. Tracker stays Jira but key/URL/statuses/JQL come from config. Simplest
+     real portability — works for any Jira project, any stack.
+  2. Global skill, tracker-agnostic
+     Same relocation, but the tracker becomes an adapter (Jira/Linear/GitHub Issues) described in the config. More upfront work, and untestable
+     until you have a non-Jira project.
+  3. Stay in-repo, but cleanly split
+     Skill stays at .claude/skills/dev-workflow/ with all project specifics moved into the config file. Portable by copy-paste rather than by
+     install.
+  4. Type something.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  5. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel
+`
+	q, opts := extractClaudeQuestionAndOptions(samplePane)
+	if q != "Where should the portable skill live, and how tracker-agnostic should it be?" {
+		t.Errorf("Unexpected question: %q", q)
+	}
+	if len(opts) != 3 {
+		t.Fatalf("Expected 3 options, got %d: %v", len(opts), opts)
+	}
+	if opts[0] != "Global skill, Jira-only" {
+		t.Errorf("Option 0 mismatch: %q", opts[0])
+	}
+	if opts[1] != "Global skill, tracker-agnostic" {
+		t.Errorf("Option 1 mismatch: %q", opts[1])
+	}
+	if opts[2] != "Stay in-repo, but cleanly split" {
+		t.Errorf("Option 2 mismatch: %q", opts[2])
+	}
+}
+
+func TestInspectClaudeStatus_QuestionPromptBlocked(t *testing.T) {
+	if !tmux.IsTmuxInstalled() {
+		t.Skip("tmux not installed, skipping TestInspectClaudeStatus_QuestionPromptBlocked")
+	}
+
+	dbFile := "./test_inspect_claude_question.db"
+	defer os.Remove(dbFile)
+
+	db, err := InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := NewServer(db)
+	ctx := context.Background()
+
+	tmuxName := fmt.Sprintf("test-claude-q-%d", time.Now().UnixNano())
+	defer tmux.Kill(ctx, tmuxName)
+
+	script := `
+echo "Where should the portable skill live?"
+echo "❯ 1. Global skill"
+echo "  2. In-repo skill"
+echo "Enter to select · Tab/Arrow keys to navigate · Esc to cancel"
+sleep 30
+`
+	if err := tmux.Spawn(ctx, tmuxName, os.TempDir(), script); err != nil {
+		t.Fatalf("Failed to spawn test tmux session: %v", err)
+	}
+
+	time.Sleep(150 * time.Millisecond)
+	pid, _ := tmux.GetPID(ctx, tmuxName)
+
+	sess := &Session{
+		ID:          "claude-code:local:test-sess-q",
+		Agent:       "claude-code",
+		Host:        "local",
+		NativeID:    "test-sess-q",
+		State:       StateWorking,
+		TmuxName:    tmuxName,
+		PID:         pid,
+		StartedAt:   time.Now(),
+		LastEventAt: time.Now(),
+	}
+
+	changed := server.inspectClaudeStatus(ctx, sess)
+	if !changed {
+		t.Errorf("Expected inspectClaudeStatus to report changed=true")
+	}
+	if sess.State != StateBlocked {
+		t.Errorf("Expected session state StateBlocked, got %v", sess.State)
+	}
+	if sess.Blocked == nil || sess.Blocked.Kind != BlockQuestion {
+		t.Fatalf("Expected Blocked with BlockQuestion, got %+v", sess.Blocked)
+	}
+	if sess.Blocked.Question != "Where should the portable skill live?" {
+		t.Errorf("Expected question text, got %q", sess.Blocked.Question)
+	}
+	if len(sess.Blocked.Options) != 2 {
+		t.Errorf("Expected 2 options, got %d: %v", len(sess.Blocked.Options), sess.Blocked.Options)
+	}
+}
