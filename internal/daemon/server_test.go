@@ -755,10 +755,16 @@ func TestUnreadState_LifecycleAndMarkRead(t *testing.T) {
 }
 
 type mockDynamicProvider struct {
-	event *Event
+	agentName string
+	event     *Event
 }
 
-func (m *mockDynamicProvider) Agent() string { return "mock-agent" }
+func (m *mockDynamicProvider) Agent() string {
+	if m.agentName != "" {
+		return m.agentName
+	}
+	return "mock-agent"
+}
 func (m *mockDynamicProvider) DisplayName() string { return "Mock Agent" }
 func (m *mockDynamicProvider) BrandColor() string { return "#999999" }
 func (m *mockDynamicProvider) IconSVG() string { return "<svg></svg>" }
@@ -1098,3 +1104,107 @@ sleep 30
 		t.Errorf("Expected 2 options, got %d: %v", len(sess.Blocked.Options), sess.Blocked.Options)
 	}
 }
+
+func TestResolveSessionNodePath(t *testing.T) {
+	dbFile := "./test_resolve_node_path.db"
+	defer os.Remove(dbFile)
+
+	db, err := InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := NewServer(db)
+
+	_ = db.SaveNode(&TreeNode{
+		Path:       "Modemobile/NGL/ngl-android",
+		ProjectDir: "/Users/dev4u/Work/Modemobile/NGL/ngl-android",
+	})
+	_ = db.SaveNode(&TreeNode{
+		Path:       "Modemobile/Due-Dilligence",
+		ProjectDir: "",
+	})
+
+	// 1. Exact project directory match
+	p1 := server.resolveSessionNodePath("/Users/dev4u/Work/Modemobile/NGL/ngl-android")
+	if p1 != "Modemobile/NGL/ngl-android" {
+		t.Errorf("Expected Modemobile/NGL/ngl-android, got %q", p1)
+	}
+
+	// 2. Sub-directory match
+	p2 := server.resolveSessionNodePath("/Users/dev4u/Work/Modemobile/NGL/ngl-android/app/src")
+	if p2 != "Modemobile/NGL/ngl-android" {
+		t.Errorf("Expected sub-directory to match Modemobile/NGL/ngl-android, got %q", p2)
+	}
+
+	// 3. Ancestor group segment match when cwd has no exact node
+	p3 := server.resolveSessionNodePath("/home/dev4u/Work/modemobile/skills/plugins/cs-mcp")
+	if p3 != "Modemobile" {
+		t.Errorf("Expected ancestor segment match Modemobile, got %q", p3)
+	}
+}
+
+func TestSessionAdoption_PreservesNodePath(t *testing.T) {
+	dbFile := "./test_session_adoption_nodepath.db"
+	defer os.Remove(dbFile)
+
+	db, err := InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := NewServer(db)
+	mockP := &mockDynamicProvider{agentName: "claude-code"}
+	server.RegisterProvider(mockP)
+
+	// Spawning temporary session with assigned NodePath
+	spawningID := "claude-code:local:temp-spawn-123"
+	spawningSess := &Session{
+		ID:          spawningID,
+		Agent:       "claude-code",
+		Host:        "local",
+		NativeID:    "temp-spawn-123",
+		Cwd:         "/home/dev4u/Work/modemobile",
+		NodePath:    "Modemobile",
+		CustomTitle: "Custom Task Title",
+		Managed:     true,
+		TmuxName:    "ackbar-claude-code-temp-spawn-123",
+		State:       StateUnknown,
+		StartedAt:   time.Now(),
+		LastEventAt: time.Now(),
+	}
+	if err := db.SaveSession(spawningSess); err != nil {
+		t.Fatalf("SaveSession failed: %v", err)
+	}
+
+	// Claude Code starts and sends first hook event with real UUID
+	realEvent := &Event{
+		Agent:       "claude-code",
+		NativeID:    "real-claude-uuid-456",
+		Cwd:         "/home/dev4u/Work/modemobile",
+		State:       StateWorking,
+		Activity:    "Thinking...",
+		LastEventAt: time.Now(),
+	}
+	mockP.event = realEvent
+
+	payload, _ := json.Marshal(map[string]interface{}{"type": "test"})
+	server.processHookEvent(mockP, "test", "local", payload)
+
+	adopted, err := db.GetSession("claude-code:local:real-claude-uuid-456")
+	if err != nil || adopted == nil {
+		t.Fatalf("Adopted session not found in DB: %v", err)
+	}
+	if adopted.NodePath != "Modemobile" {
+		t.Errorf("Expected adopted session NodePath to be Modemobile, got %q", adopted.NodePath)
+	}
+	if adopted.CustomTitle != "Custom Task Title" {
+		t.Errorf("Expected CustomTitle to be preserved, got %q", adopted.CustomTitle)
+	}
+	if !adopted.Managed {
+		t.Errorf("Expected adopted session to be Managed")
+	}
+}
+

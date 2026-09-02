@@ -1576,6 +1576,28 @@ func (m *Model) buildVisibleRows() []TreeRow {
 			}
 		}
 
+		if assignedPath == "" && s.Cwd != "" {
+			cleanCwd := strings.ToLower(filepath.Clean(s.Cwd))
+			cwdParts := strings.Split(cleanCwd, string(filepath.Separator))
+			for _, node := range nodesCopy {
+				parts := strings.Split(node.Path, "/")
+				if len(parts) > 0 {
+					topGroup := parts[0]
+					if len(topGroup) > 3 {
+						for _, part := range cwdParts {
+							if part == strings.ToLower(topGroup) {
+								assignedPath = topGroup
+								break
+							}
+						}
+					}
+				}
+				if assignedPath != "" {
+					break
+				}
+			}
+		}
+
 		if assignedPath != "" {
 			sessionsByPath[assignedPath] = append(sessionsByPath[assignedPath], s)
 		} else {
