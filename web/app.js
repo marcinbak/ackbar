@@ -3844,7 +3844,7 @@ ${session.last_prompt}
 
         setTimeout(() => {
           hideModal();
-        }, 2000);
+        }, 1000);
       } else {
         const errMsg = data.message || (data.error ? (data.error.message || data.error) : 'Unknown connection error');
         showModal(`Reconnection Failed: ${h.name}`, `
@@ -3923,7 +3923,7 @@ ${session.last_prompt}
         await fetchSessions();
         setTimeout(() => {
           showHostSummaryModal(h);
-        }, 2000);
+        }, 1000);
       } else {
         const errMsg = data.message || (data.error ? (data.error.message || data.error) : 'Unknown update error');
         showModal(`Update Failed: ${h.name}`, `
