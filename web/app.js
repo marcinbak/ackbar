@@ -693,6 +693,17 @@
 
     const query = state.searchQuery.toLowerCase().trim();
 
+    // Pre-discover known group paths from registered tree nodes
+    const knownGroupPaths = new Set();
+    state.treeNodes.forEach(node => {
+      if (node.path) {
+        const parts = node.path.split('/');
+        for (let i = 1; i <= parts.length; i++) {
+          knownGroupPaths.add(parts.slice(0, i).join('/'));
+        }
+      }
+    });
+
     // 1. Group sessions by exact logical node path
     const sessionsByPath = new Map();
     const unassigned = [];
@@ -729,6 +740,18 @@
             const cwdParts = sess.cwd.toLowerCase().split('/');
             if (cwdParts.includes(groupLeaf) && groupLeaf.length > 3) {
               assignedPath = n.path;
+              break;
+            }
+          }
+        }
+
+        // 4. Fallback: match by ancestor group path component (e.g. /home/dev4u/Work/modemobile/... -> Modemobile)
+        if (!assignedPath && sess.cwd) {
+          const cwdParts = sess.cwd.toLowerCase().split('/').filter(Boolean);
+          for (const groupPath of knownGroupPaths) {
+            const topGroup = groupPath.split('/')[0];
+            if (topGroup.length > 3 && cwdParts.includes(topGroup.toLowerCase())) {
+              assignedPath = topGroup;
               break;
             }
           }
@@ -1025,7 +1048,8 @@
   async function moveSessionToGroup(sessionId, sessionHost, targetPath) {
     try {
       const sess = state.sessions.find(s => s.id === sessionId);
-      const baseUrl = (sess && sess.hostUrl) ? sess.hostUrl.replace(/\/$/, '') : '';
+      const hostRec = (state.hosts || []).find(h => h.name === sessionHost);
+      const baseUrl = (sess && sess.hostUrl) ? sess.hostUrl.replace(/\/$/, '') : (hostRec && hostRec.url && sessionHost !== 'local' ? hostRec.url.replace(/\/$/, '') : '');
       const url = `${baseUrl}/v1/sessions/control?id=${encodeURIComponent(sessionId)}&action=move&node_path=${encodeURIComponent(targetPath)}`;
       const res = await fetch(url, { method: 'POST' });
       if (res.ok) {
@@ -3561,7 +3585,7 @@ ${session.last_prompt}
       const res = await fetch('/v1/sessions/spawn', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ host, agent, cwd })
+        body: JSON.stringify({ host, agent, cwd, node_path: targetGroup })
       });
 
       if (!res.ok) {

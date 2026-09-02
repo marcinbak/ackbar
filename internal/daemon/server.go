@@ -337,13 +337,20 @@ func (s *Server) processHookEvent(p Provider, urlEventName string, headerHost st
 			_ = s.db.DeleteSession(spawningSess.ID)
 
 			sess = &Session{
-				ID:        sessionID,
-				Agent:     event.Agent,
-				Host:      host,
-				NativeID:  event.NativeID,
-				Managed:   true,
-				TmuxName:  spawningSess.TmuxName,
-				StartedAt: spawningSess.StartedAt,
+				ID:          sessionID,
+				Agent:       event.Agent,
+				Host:        host,
+				NativeID:    event.NativeID,
+				Managed:     true,
+				TmuxName:    spawningSess.TmuxName,
+				NodePath:    spawningSess.NodePath,
+				CustomTitle: spawningSess.CustomTitle,
+				StartedAt:   spawningSess.StartedAt,
+			}
+			if spawningSess.CustomTitle != "" {
+				sess.Name = spawningSess.CustomTitle
+			} else if spawningSess.Name != "" && !isRawSessionName(spawningSess.Name) {
+				sess.Name = spawningSess.Name
 			}
 		} else if activeManaged, err := s.findActiveManagedSessionInCwd(event.Agent, host, event.Cwd); err == nil && activeManaged != nil && activeManaged.NativeID != event.NativeID {
 			// An active managed tmux session rotated its internal conversation ID (e.g. via /clear or /reset)
@@ -401,6 +408,9 @@ func (s *Server) processHookEvent(p Provider, urlEventName string, headerHost st
 	// Update fields
 	if event.Cwd != "" {
 		sess.Cwd = event.Cwd
+	}
+	if sess.NodePath == "" && sess.Cwd != "" {
+		sess.NodePath = s.resolveSessionNodePath(sess.Cwd)
 	}
 	if len(event.Roots) > 0 {
 		sess.Roots = event.Roots
@@ -1281,9 +1291,11 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Agent string `json:"agent"`
-		Cwd   string `json:"cwd"`
-		Host  string `json:"host"`
+		Agent    string `json:"agent"`
+		Cwd      string `json:"cwd"`
+		Host     string `json:"host"`
+		NodePath string `json:"node_path"`
+		Name     string `json:"name"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -1294,6 +1306,10 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 	if req.Agent == "" || req.Cwd == "" {
 		http.Error(w, "Missing agent or cwd", http.StatusBadRequest)
 		return
+	}
+
+	if req.NodePath == "" {
+		req.NodePath = s.resolveSessionNodePath(req.Cwd)
 	}
 
 	// 1. Forward to remote host if specified
@@ -1312,8 +1328,10 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		if hostRec != nil && hostRec.URL != "" {
 			targetURL := strings.TrimSuffix(hostRec.URL, "/") + "/v1/sessions/spawn"
 			payload, _ := json.Marshal(map[string]string{
-				"agent": req.Agent,
-				"cwd":   req.Cwd,
+				"agent":     req.Agent,
+				"cwd":       req.Cwd,
+				"node_path": req.NodePath,
+				"name":      req.Name,
 			})
 			resp, err := http.Post(targetURL, "application/json", bytes.NewBuffer(payload))
 			if err != nil {
@@ -1357,12 +1375,17 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		Host:        "local",
 		NativeID:    tempUUID,
 		Cwd:         req.Cwd,
+		NodePath:    req.NodePath,
+		Name:        req.Name,
 		Managed:     true,
 		TmuxName:    tmuxName,
 		State:       StateUnknown,
 		Activity:    "Spawning session...",
 		StartedAt:   time.Now(),
 		LastEventAt: time.Now(),
+	}
+	if req.Name != "" {
+		sess.CustomTitle = req.Name
 	}
 
 	if pid, err := tmux.GetPID(r.Context(), tmuxName); err == nil {
@@ -2324,6 +2347,64 @@ func sameOrSubDir(cwd, projDir string) bool {
 	return false
 }
 
+func (s *Server) resolveSessionNodePath(cwd string) string {
+	if cwd == "" {
+		return ""
+	}
+	nodes, err := s.db.ListNodes()
+	if err != nil || len(nodes) == 0 {
+		return ""
+	}
+
+	// 1. Longest exact or sub-directory match against registered node.ProjectDir
+	var bestMatch string
+	var bestLen int
+	for _, n := range nodes {
+		if n.ProjectDir != "" && sameOrSubDir(cwd, n.ProjectDir) {
+			if len(n.ProjectDir) > bestLen {
+				bestMatch = n.Path
+				bestLen = len(n.ProjectDir)
+			}
+		}
+	}
+	if bestMatch != "" {
+		return bestMatch
+	}
+
+	// 2. Segment match: check from leaf to group prefixes
+	cleanCwd := strings.ToLower(filepath.Clean(cwd))
+	cwdParts := strings.Split(cleanCwd, string(filepath.Separator))
+
+	// Check if any registered node leaf matches cwd (e.g. "ngl-android" in "Modemobile/NGL/ngl-android")
+	for _, n := range nodes {
+		leaf := strings.ToLower(filepath.Base(n.Path))
+		if len(leaf) > 3 {
+			for _, part := range cwdParts {
+				if part == leaf {
+					return n.Path
+				}
+			}
+		}
+	}
+
+	// Check if any group prefix matches cwd (e.g. "Modemobile" in "/home/dev4u/Work/modemobile")
+	for _, n := range nodes {
+		parts := strings.Split(n.Path, "/")
+		for _, seg := range parts {
+			segLower := strings.ToLower(seg)
+			if len(segLower) > 3 {
+				for _, part := range cwdParts {
+					if part == segLower {
+						return seg
+					}
+				}
+			}
+		}
+	}
+
+	return ""
+}
+
 func (s *Server) handleNodeMove(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -3050,6 +3131,12 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 				changed = true
 			}
 		}
+		if sess.NodePath == "" && sess.Cwd != "" {
+			if np := s.resolveSessionNodePath(sess.Cwd); np != "" {
+				sess.NodePath = np
+				changed = true
+			}
+		}
 		if changed {
 			_ = s.db.SaveSession(sess)
 			s.broadcast(sess)
@@ -3218,6 +3305,9 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 					existing.Managed = true
 					existing.PID = pid
 					existing.TmuxName = tmuxName
+					if existing.NodePath == "" && existing.Cwd != "" {
+						existing.NodePath = s.resolveSessionNodePath(existing.Cwd)
+					}
 					if p, ok := s.providers[agent]; ok {
 						p.InspectStatus(ctx, existing)
 					}
@@ -3262,6 +3352,7 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 						Host:        hostName,
 						NativeID:    nativeID,
 						Cwd:         cwd,
+						NodePath:    s.resolveSessionNodePath(cwd),
 						ProjectKey:  GetProjectKey(cwd),
 						State:       StateIdle,
 						Managed:     true,
@@ -3279,9 +3370,19 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 					knownByPID[pid] = newSess
 					s.broadcast(newSess)
 				} else {
+					obsChanged := false
 					if existingObs.TmuxName != tmuxName || !existingObs.Managed {
 						existingObs.TmuxName = tmuxName
 						existingObs.Managed = true
+						obsChanged = true
+					}
+					if existingObs.NodePath == "" && existingObs.Cwd != "" {
+						if np := s.resolveSessionNodePath(existingObs.Cwd); np != "" {
+							existingObs.NodePath = np
+							obsChanged = true
+						}
+					}
+					if obsChanged {
 						_ = s.db.SaveSession(existingObs)
 						s.broadcast(existingObs)
 					}
