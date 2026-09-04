@@ -115,6 +115,7 @@ func InitDB(dbPath string) (*DB, error) {
 	_, _ = db.Exec("ALTER TABLE sessions ADD COLUMN last_state_change_at TIMESTAMP;")
 	_, _ = db.Exec("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);")
 	_, _ = db.Exec("DELETE FROM tree_nodes WHERE path LIKE 'Project Y%' OR path LIKE 'ProjectY%' OR path LIKE '%Project Y%';")
+	_, _ = db.Exec("UPDATE sessions SET tmux_name = 'ackbar-' || agent || '-' || native_id WHERE tmux_name = '(deleted)' OR tmux_name = '';")
 
 	// High-performance indices for fast session lookups, filtering, and liveness checks
 	_, _ = db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_state ON sessions(state);")

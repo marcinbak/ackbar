@@ -2212,7 +2212,7 @@ func spawnSSHTunnel(port, sshTarget string) error {
 		cmd := exec.Command("ssh",
 			"-f",
 			"-o", "ExitOnForwardFailure=yes",
-			"-o", "ConnectTimeout=8",
+			"-o", "ConnectTimeout=15",
 			"-o", "ServerAliveInterval=15",
 			"-o", "ServerAliveCountMax=3",
 			"-N",
@@ -3418,7 +3418,7 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 	}
 
 	// 1. Scan tmux panes for running agent CLIs
-	out, err := exec.CommandContext(ctx, "tmux", "list-panes", "-a", "-F", "#{pane_pid} #{pane_current_path} #{session_name} #{pane_current_command}").Output()
+	out, err := exec.CommandContext(ctx, "tmux", "list-panes", "-a", "-F", "#{pane_pid}\t#{pane_current_path}\t#{session_name}\t#{pane_current_command}").Output()
 	if err == nil {
 		lines := strings.Split(string(out), "\n")
 		for _, line := range lines {
@@ -3426,12 +3426,17 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 			if line == "" {
 				continue
 			}
-			parts := strings.SplitN(line, " ", 4)
+			parts := strings.SplitN(line, "\t", 4)
 			if len(parts) < 4 {
 				continue
 			}
-			pidStr, cwd, tmuxName, cmdName := parts[0], parts[1], parts[2], parts[3]
+			pidStr, cwd, tmuxName, cmdName := strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]), strings.TrimSpace(parts[2]), strings.TrimSpace(parts[3])
+			cwd = strings.TrimSuffix(cwd, " (deleted)")
 			cmdLower := strings.ToLower(cmdName)
+
+			if tmuxName == "(deleted)" || tmuxName == "" {
+				continue
+			}
 
 			agent := ""
 			actualPID := 0
@@ -3578,7 +3583,9 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 					// Adopt and elevate existing session in place (no duplicate!)
 					existing.Managed = true
 					existing.PID = pid
-					existing.TmuxName = tmuxName
+					if tmuxName != "" && tmuxName != "(deleted)" {
+						existing.TmuxName = tmuxName
+					}
 					if existing.NodePath == "" && existing.Cwd != "" {
 						existing.NodePath = s.resolveSessionNodePath(existing.Cwd)
 					}
@@ -3645,7 +3652,7 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 					s.broadcast(newSess)
 				} else {
 					obsChanged := false
-					if existingObs.TmuxName != tmuxName || !existingObs.Managed {
+					if (existingObs.TmuxName != tmuxName || !existingObs.Managed) && tmuxName != "(deleted)" && tmuxName != "" {
 						existingObs.TmuxName = tmuxName
 						existingObs.Managed = true
 						obsChanged = true

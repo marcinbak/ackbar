@@ -1640,3 +1640,52 @@ func TestReadClaudeSessionMeta_NoTimestampsDoesNotUseMTime(t *testing.T) {
 		t.Errorf("Expected LastMessageAt to be zero time when no timestamps present, got %v", meta.LastMessageAt)
 	}
 }
+
+func TestInitDB_CleansUpDeletedTmuxName(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test_deleted_tmux.db")
+
+	db, err := InitDB(dbPath)
+	if err != nil {
+		t.Fatalf("Failed to init db: %v", err)
+	}
+
+	// Insert corrupted session with (deleted) tmux_name
+	corrupted := &Session{
+		ID:       "claude-code:local:uuid-test-1234",
+		Agent:    "claude-code",
+		Host:     "local",
+		NativeID: "uuid-test-1234",
+		Name:     "Test Session",
+		TmuxName: "(deleted)",
+		State:    StateEnded,
+	}
+	if err := db.SaveSession(corrupted); err != nil {
+		t.Fatalf("Failed to save corrupted session: %v", err)
+	}
+
+	// Manually ensure DB has '(deleted)' since SaveSession might have run
+	_, err = db.db.Exec("UPDATE sessions SET tmux_name = '(deleted)' WHERE id = ?", corrupted.ID)
+	if err != nil {
+		t.Fatalf("Failed to set (deleted): %v", err)
+	}
+
+	db.Close()
+
+	// Re-initialize DB (triggers InitDB self-healing migration)
+	reopenedDB, err := InitDB(dbPath)
+	if err != nil {
+		t.Fatalf("Failed to reopen db: %v", err)
+	}
+	defer reopenedDB.Close()
+
+	fixedSess, err := reopenedDB.GetSession(corrupted.ID)
+	if err != nil || fixedSess == nil {
+		t.Fatalf("Failed to retrieve session: %v", err)
+	}
+
+	expectedTmux := "ackbar-claude-code-uuid-test-1234"
+	if fixedSess.TmuxName != expectedTmux {
+		t.Errorf("Expected TmuxName to be healed to %q, got %q", expectedTmux, fixedSess.TmuxName)
+	}
+}
