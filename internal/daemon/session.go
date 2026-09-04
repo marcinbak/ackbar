@@ -48,33 +48,33 @@ type Blocked struct {
 }
 
 type Session struct {
-	ID            string    `json:"id"`          // "{agent}:{host}:{nativeID}"
-	Agent         string    `json:"agent"`       // "claude-code" | "codex" | "antigravity"
-	Host          string    `json:"host"`        // machine alias, e.g. "devbox"
-	NativeID      string    `json:"native_id"`   // agent's own session/conversation id
-	Cwd           string    `json:"cwd"`         // primary working directory
-	Roots         []string  `json:"roots"`       // array of workspace paths
-	ProjectKey    string    `json:"project_key"` // normalized git remote or fallback
-	State         State     `json:"state"`       // enum representing agent state
-	Blocked       *Blocked  `json:"blocked,omitempty"`
-	Activity      string    `json:"activity"` // current task description
-	StartedAt     time.Time `json:"started_at"`
-	LastEventAt   time.Time `json:"last_event_at"`
-	Managed       bool      `json:"managed"`   // daemon-spawned
-	TmuxName      string    `json:"tmux_name"` // name of tmux session if managed
-	PID           int       `json:"pid"`
-	Archived      bool      `json:"archived"`
-	NodePath      string    `json:"node_path"`             // optional custom tree node path
-	Name          string    `json:"name,omitempty"`        // optional human readable session title/name
-	Entrypoint    string    `json:"entrypoint,omitempty"`  // "claude-vscode", "terminal", "claude-cli"
-	Kind          string    `json:"kind,omitempty"`        // "interactive", "batch"
-	Version       string    `json:"version,omitempty"`     // agent version
-	ContextPct    int       `json:"context_pct,omitempty"` // percentage of used context window (0-100)
-	GitBranch     string    `json:"git_branch,omitempty"`  // active git branch or worktree name
-	Deleted       bool      `json:"deleted,omitempty"`
-	CustomTitle   string    `json:"custom_title,omitempty"`
-	AITitle       string    `json:"ai_title,omitempty"`
-	AIDescription string    `json:"ai_description,omitempty"`
+	ID                string    `json:"id"`          // "{agent}:{host}:{nativeID}"
+	Agent             string    `json:"agent"`       // "claude-code" | "codex" | "antigravity"
+	Host              string    `json:"host"`        // machine alias, e.g. "devbox"
+	NativeID          string    `json:"native_id"`   // agent's own session/conversation id
+	Cwd               string    `json:"cwd"`         // primary working directory
+	Roots             []string  `json:"roots"`       // array of workspace paths
+	ProjectKey        string    `json:"project_key"` // normalized git remote or fallback
+	State             State     `json:"state"`       // enum representing agent state
+	Blocked           *Blocked  `json:"blocked,omitempty"`
+	Activity          string    `json:"activity"` // current task description
+	StartedAt         time.Time `json:"started_at"`
+	LastEventAt       time.Time `json:"last_event_at"`
+	Managed           bool      `json:"managed"`   // daemon-spawned
+	TmuxName          string    `json:"tmux_name"` // name of tmux session if managed
+	PID               int       `json:"pid"`
+	Archived          bool      `json:"archived"`
+	NodePath          string    `json:"node_path"`             // optional custom tree node path
+	Name              string    `json:"name,omitempty"`        // optional human readable session title/name
+	Entrypoint        string    `json:"entrypoint,omitempty"`  // "claude-vscode", "terminal", "claude-cli"
+	Kind              string    `json:"kind,omitempty"`        // "interactive", "batch"
+	Version           string    `json:"version,omitempty"`     // agent version
+	ContextPct        int       `json:"context_pct,omitempty"` // percentage of used context window (0-100)
+	GitBranch         string    `json:"git_branch,omitempty"`  // active git branch or worktree name
+	Deleted           bool      `json:"deleted,omitempty"`
+	CustomTitle       string    `json:"custom_title,omitempty"`
+	AITitle           string    `json:"ai_title,omitempty"`
+	AIDescription     string    `json:"ai_description,omitempty"`
 	FirstPrompt       string    `json:"first_prompt,omitempty"`
 	LastPrompt        string    `json:"last_prompt,omitempty"`
 	IsUnread          bool      `json:"is_unread,omitempty"`
