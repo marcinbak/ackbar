@@ -731,10 +731,10 @@ func TestUnreadState_LifecycleAndMarkRead(t *testing.T) {
 
 	// 5. Agent requests permission -> Transition Working -> Blocked (IsUnread must become TRUE)
 	blockedEvent := &Event{
-		Agent:       "mock-agent",
-		NativeID:    "session-unread-1",
-		Cwd:         "/workspace/project",
-		State:       StateBlocked,
+		Agent:    "mock-agent",
+		NativeID: "session-unread-1",
+		Cwd:      "/workspace/project",
+		State:    StateBlocked,
 		Blocked: &Blocked{
 			Kind:   BlockPermission,
 			Reason: "Allow bash",
@@ -765,19 +765,21 @@ func (m *mockDynamicProvider) Agent() string {
 	}
 	return "mock-agent"
 }
-func (m *mockDynamicProvider) DisplayName() string { return "Mock Agent" }
-func (m *mockDynamicProvider) BrandColor() string { return "#999999" }
-func (m *mockDynamicProvider) IconSVG() string { return "<svg></svg>" }
-func (m *mockDynamicProvider) ProcessNames() []string { return []string{"mock-agent"} }
-func (m *mockDynamicProvider) GetSpawnCommand(tempUUID string) string { return "sleep 5" }
-func (m *mockDynamicProvider) GetResumeCommand(nativeID string) string { return "sleep 5" }
+func (m *mockDynamicProvider) DisplayName() string                                   { return "Mock Agent" }
+func (m *mockDynamicProvider) BrandColor() string                                    { return "#999999" }
+func (m *mockDynamicProvider) IconSVG() string                                       { return "<svg></svg>" }
+func (m *mockDynamicProvider) ProcessNames() []string                                { return []string{"mock-agent"} }
+func (m *mockDynamicProvider) GetSpawnCommand(tempUUID string) string                { return "sleep 5" }
+func (m *mockDynamicProvider) GetResumeCommand(nativeID string) string               { return "sleep 5" }
 func (m *mockDynamicProvider) ReadSessionMetadata(cwd, nativeID string) *SessionMeta { return nil }
-func (m *mockDynamicProvider) ResolveSessionTitle(cwd, nativeID string) string { return "" }
-func (m *mockDynamicProvider) ExtractTranscript(home, cwd, nativeID string) ([]TranscriptMessage, error) { return nil, nil }
-func (m *mockDynamicProvider) CleanSessionFiles(home, cwd, nativeID string) error { return nil }
+func (m *mockDynamicProvider) ResolveSessionTitle(cwd, nativeID string) string       { return "" }
+func (m *mockDynamicProvider) ExtractTranscript(home, cwd, nativeID string) ([]TranscriptMessage, error) {
+	return nil, nil
+}
+func (m *mockDynamicProvider) CleanSessionFiles(home, cwd, nativeID string) error    { return nil }
 func (m *mockDynamicProvider) InspectStatus(ctx context.Context, sess *Session) bool { return false }
-func (m *mockDynamicProvider) IsInstalled() bool { return true }
-func (m *mockDynamicProvider) CheckHookConfig() (bool, string, error) { return true, "", nil }
+func (m *mockDynamicProvider) IsInstalled() bool                                     { return true }
+func (m *mockDynamicProvider) CheckHookConfig() (bool, string, error)                { return true, "", nil }
 func (m *mockDynamicProvider) ParseHook(eventName string, payload []byte) (*Event, error) {
 	return m.event, nil
 }
@@ -1499,5 +1501,3 @@ func TestSettings_GetAndSetEndpoints(t *testing.T) {
 		t.Errorf("Expected updated settings, got: %+v", updated)
 	}
 }
-
-
