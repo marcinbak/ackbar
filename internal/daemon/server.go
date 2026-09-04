@@ -3391,9 +3391,14 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 					sess.ContextPct = meta.ContextPct
 					changed = true
 				}
-				if !meta.LastMessageAt.IsZero() && (sess.LastEventAt.IsZero() || meta.LastMessageAt.After(sess.LastEventAt)) {
-					sess.LastEventAt = meta.LastMessageAt
-					changed = true
+				if !meta.LastMessageAt.IsZero() {
+					if sess.LastEventAt.IsZero() || meta.LastMessageAt.After(sess.LastEventAt) {
+						sess.LastEventAt = meta.LastMessageAt
+						changed = true
+					} else if (sess.State == StateIdle || sess.State == StateEnded) && sess.Blocked == nil && sess.LastEventAt.After(meta.LastMessageAt) {
+						sess.LastEventAt = meta.LastMessageAt
+						changed = true
+					}
 				}
 			}
 			if p.InspectStatus(ctx, sess) {
@@ -3893,9 +3898,14 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 								isOld := false
 								if stat != nil {
 									modTime = stat.ModTime()
-									if time.Since(modTime) > 7*24*time.Hour {
-										isOld = true
-									}
+								}
+
+								lastEvent := modTime
+								if meta != nil && !meta.LastMessageAt.IsZero() {
+									lastEvent = meta.LastMessageAt
+								}
+								if time.Since(lastEvent) > 7*24*time.Hour {
+									isOld = true
 								}
 
 								branch := ""
@@ -3919,7 +3929,7 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 									Managed:     false,
 									Activity:    "Session ended",
 									StartedAt:   modTime,
-									LastEventAt: modTime,
+									LastEventAt: lastEvent,
 									ContextPct:  ReadClaudeContextUsage(cwd, sessionUUID),
 									GitBranch:   branch,
 									Archived:    isOld,
@@ -4269,11 +4279,6 @@ func ReadClaudeSessionMeta(cwd, sessionID string) *SessionMeta {
 	}
 
 	for _, filePath := range targetFiles {
-		if info, serr := os.Stat(filePath); serr == nil {
-			if metaInfo.LastMessageAt.IsZero() || info.ModTime().After(metaInfo.LastMessageAt) {
-				metaInfo.LastMessageAt = info.ModTime()
-			}
-		}
 		if data, rerr := readTail(filePath, 64*1024); rerr == nil && len(data) > 0 {
 			lines := strings.Split(string(data), "\n")
 			for _, line := range lines {
@@ -4295,8 +4300,20 @@ func ReadClaudeSessionMeta(cwd, sessionID string) *SessionMeta {
 					GitBranch   string `json:"gitBranch"`
 					LastPrompt  string `json:"lastPrompt"`
 					Prompt      string `json:"prompt"`
+					Timestamp   string `json:"timestamp"`
 				}
 				if jerr := json.Unmarshal([]byte(line), &obj); jerr == nil {
+					if obj.Timestamp != "" {
+						if t, terr := time.Parse(time.RFC3339Nano, obj.Timestamp); terr == nil {
+							if metaInfo.LastMessageAt.IsZero() || t.After(metaInfo.LastMessageAt) {
+								metaInfo.LastMessageAt = t
+							}
+						} else if t, terr := time.Parse(time.RFC3339, obj.Timestamp); terr == nil {
+							if metaInfo.LastMessageAt.IsZero() || t.After(metaInfo.LastMessageAt) {
+								metaInfo.LastMessageAt = t
+							}
+						}
+					}
 					if obj.GitBranch != "" && metaInfo.GitBranch == "" {
 						metaInfo.GitBranch = obj.GitBranch
 					}
