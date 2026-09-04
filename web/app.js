@@ -4019,6 +4019,66 @@ ${session.last_prompt}
     }
   }
 
+  // Edit Remote Host Modal
+  function showEditHostModal(h) {
+    const body = `
+      <div class="form-group">
+        <label>Host Alias (identifier)</label>
+        <input type="text" id="editHostName" value="${escapeHtml(h.name)}" readonly style="opacity: 0.7; cursor: not-allowed;" />
+      </div>
+      <div class="form-group">
+        <label>SSH Target (user@hostname or SSH config host)</label>
+        <input type="text" id="editSshTarget" placeholder="e.g. dev4u@legion" value="${escapeHtml(h.ssh_target || '')}" />
+      </div>
+      <div class="form-group">
+        <label>Daemon Endpoint URL</label>
+        <input type="text" id="editHostUrl" placeholder="http://127.0.0.1:7778 or http://legion:7777" value="${escapeHtml(h.url || '')}" />
+        <div style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">
+          Use <code>http://127.0.0.1:7778</code> for SSH tunnel, or direct Tailscale URL like <code>http://legion:7777</code>.
+        </div>
+      </div>
+    `;
+
+    const footer = `
+      <button class="btn btn-secondary" id="editBtnBack">← Back</button>
+      <button class="btn btn-primary" id="editBtnSave">Save Changes</button>
+    `;
+
+    showModal(`Edit Host: ${h.name}`, body, footer);
+
+    document.getElementById('editBtnBack')?.addEventListener('click', () => {
+      showHostSummaryModal(h);
+    });
+
+    document.getElementById('editBtnSave')?.addEventListener('click', async () => {
+      const name = document.getElementById('editHostName').value.trim();
+      const ssh = document.getElementById('editSshTarget').value.trim();
+      const url = document.getElementById('editHostUrl').value.trim();
+      if (!name || !url) {
+        alert('Host name and URL are required');
+        return;
+      }
+
+      try {
+        const res = await fetch('/v1/hosts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, ssh_target: ssh, url, remote_cwd: h.remote_cwd || '' })
+        });
+        if (!res.ok) {
+          const errText = await res.text();
+          throw new Error(errText || 'Failed to save host');
+        }
+        await fetchHosts();
+        await fetchSessions();
+        const updated = (state.hosts || []).find(x => x.name === name) || { ...h, name, ssh_target: ssh, url };
+        showHostSummaryModal(updated);
+      } catch (err) {
+        alert('Failed to update host: ' + err.message);
+      }
+    });
+  }
+
   // Host Summary & Diagnostics Modal
   async function showHostSummaryModal(h) {
     const baseUrl = h.url ? h.url.replace(/\/$/, '') : '';
@@ -4112,6 +4172,7 @@ ${session.last_prompt}
 
       const footer = `
         ${!isLocal ? `<button class="btn btn-danger" id="hBtnDeleteHost" style="margin-right: auto;">🗑 Remove</button>` : ''}
+        ${!isLocal ? `<button class="btn btn-secondary" id="hBtnEditHost">✏️ Edit Host</button>` : ''}
         ${!isLocal && !isOnline ? `<button class="btn btn-primary" id="hBtnReconnectHost" style="background: #10b981; border-color: #059669; color: #fff; font-weight: 600;">🔄 Reconnect SSH Tunnel</button>` : ''}
         ${!isLocal && isOnline ? `<button class="btn btn-primary" id="hBtnUpdateHost" style="background: #06b6d4; border-color: #0891b2; color: #090a0f; font-weight: 600;">⬆ Update ackbard</button>` : ''}
         <button class="btn btn-secondary" id="hBtnPurgeHost">🔄 Safe Purge</button>
@@ -4119,6 +4180,13 @@ ${session.last_prompt}
       `;
 
       showModal(`Server Inspector: ${h.name}`, body, footer);
+
+      const editBtn = document.getElementById('hBtnEditHost');
+      if (editBtn) {
+        editBtn.addEventListener('click', () => {
+          showEditHostModal(h);
+        });
+      }
 
       const reconnectBtn = document.getElementById('hBtnReconnectHost');
       if (reconnectBtn) {

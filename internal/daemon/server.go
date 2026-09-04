@@ -9,6 +9,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -2135,6 +2136,78 @@ func (s *Server) handleHostUpdate(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// killTunnelOnPort terminates any dead/stale SSH tunnel listening on the given local port
+// and waits until the port is confirmed released by the operating system.
+func killTunnelOnPort(ctx context.Context, port string) error {
+	if port == "" {
+		return nil
+	}
+
+	myPID := fmt.Sprintf("%d", os.Getpid())
+
+	// 1. Identify specifically listening PIDs on this port (avoiding client sockets like Chrome or ackbard)
+	lsofOut, _ := exec.CommandContext(ctx, "sh", "-c", fmt.Sprintf("lsof -n -iTCP:%s -sTCP:LISTEN -t 2>/dev/null", port)).Output()
+	pids := strings.Fields(strings.TrimSpace(string(lsofOut)))
+	for _, pid := range pids {
+		if pid != "" && pid != myPID {
+			_ = exec.CommandContext(ctx, "kill", "-15", pid).Run()
+		}
+	}
+
+	// 2. Also kill any ssh command specifically forwarding this port to 127.0.0.1
+	_ = exec.CommandContext(ctx, "sh", "-c", fmt.Sprintf("pkill -9 -f \"ssh.*-L.*%s:127\\.0\\.0\\.1\" 2>/dev/null || true", port)).Run()
+
+	// 3. Force kill listening PIDs if still lingering
+	if len(pids) > 0 {
+		time.Sleep(100 * time.Millisecond)
+		for _, pid := range pids {
+			if pid != "" && pid != myPID {
+				_ = exec.CommandContext(ctx, "kill", "-9", pid).Run()
+			}
+		}
+	}
+
+	// 4. Poll net.DialTimeout until the port is freed or timeout after 1.5s
+	deadline := time.Now().Add(1500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		conn, err := net.DialTimeout("tcp", "127.0.0.1:"+port, 50*time.Millisecond)
+		if err != nil {
+			// Port is successfully freed!
+			return nil
+		}
+		conn.Close()
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	return nil
+}
+
+// spawnSSHTunnel safely clears any stale tunnel on port and spawns a new resilient SSH tunnel with forward failure detection.
+func spawnSSHTunnel(ctx context.Context, port, sshTarget string) error {
+	var lastErr error
+	var lastOut string
+
+	for attempt := 1; attempt <= 3; attempt++ {
+		_ = killTunnelOnPort(ctx, port)
+		time.Sleep(150 * time.Millisecond)
+
+		sshCmd := fmt.Sprintf("ssh -f -o ExitOnForwardFailure=yes -o ConnectTimeout=8 -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -N -L %s:127.0.0.1:7777 %s", port, sshTarget)
+		cmd := exec.CommandContext(ctx, "sh", "-c", sshCmd)
+		out, err := cmd.CombinedOutput()
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		lastOut = strings.TrimSpace(string(out))
+		time.Sleep(400 * time.Millisecond)
+	}
+
+	if lastOut != "" {
+		return fmt.Errorf("%v (%s)", lastErr, lastOut)
+	}
+	return lastErr
+}
+
 func (s *Server) handleHostReconnect(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -2181,29 +2254,37 @@ func (s *Server) handleHostReconnect(w http.ResponseWriter, r *http.Request) {
 		port = u.Port()
 	}
 
-	// Kill existing dead tunnel processes on this port
-	_ = exec.Command("sh", "-c", fmt.Sprintf("lsof -ti:%s | xargs kill -9 2>/dev/null || true", port)).Run()
-
-	// Launch new resilient SSH tunnel
-	sshCmd := fmt.Sprintf("ssh -f -o ConnectTimeout=5 -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -N -L %s:127.0.0.1:7777 %s", port, sshTarget)
-	out, err := exec.Command("sh", "-c", sshCmd).CombinedOutput()
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to launch SSH tunnel: %v (%s)", err, strings.TrimSpace(string(out))), http.StatusInternalServerError)
+	// Launch resilient SSH tunnel
+	if err := spawnSSHTunnel(r.Context(), port, sshTarget); err != nil {
+		http.Error(w, fmt.Sprintf("Failed to launch SSH tunnel: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	time.Sleep(500 * time.Millisecond)
+	// Poll remote daemon health over the newly spawned tunnel (allowing up to ~4-5s for wake-from-sleep network re-association)
 	testURL := fmt.Sprintf("http://127.0.0.1:%s/v1/version", port)
-	client := http.Client{Timeout: 3 * time.Second}
-	resp, err := client.Get(testURL)
-	if err != nil || resp.StatusCode != http.StatusOK {
-		http.Error(w, "SSH tunnel spawned but remote daemon is unreachable", http.StatusBadGateway)
+	client := http.Client{Timeout: 1000 * time.Millisecond}
+	var vData map[string]interface{}
+	var lastCheckErr error
+
+	for attempt := 0; attempt < 8; attempt++ {
+		time.Sleep(500 * time.Millisecond)
+		resp, err := client.Get(testURL)
+		if err == nil && resp.StatusCode == http.StatusOK {
+			_ = json.NewDecoder(resp.Body).Decode(&vData)
+			resp.Body.Close()
+			lastCheckErr = nil
+			break
+		}
+		if resp != nil {
+			resp.Body.Close()
+		}
+		lastCheckErr = err
+	}
+
+	if lastCheckErr != nil || vData == nil {
+		http.Error(w, fmt.Sprintf("SSH tunnel spawned but remote daemon is unreachable: %v", lastCheckErr), http.StatusBadGateway)
 		return
 	}
-	defer resp.Body.Close()
-
-	var vData map[string]interface{}
-	_ = json.NewDecoder(resp.Body).Decode(&vData)
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -2572,9 +2653,9 @@ func (s *Server) ensureHostTunnels(ctx context.Context) {
 
 		// Tunnel is down or not established; attempt background reconnection
 		log.Printf("[Host Tunnel Manager] SSH tunnel for host %q (port %s) is down. Reconnecting...", h.Name, port)
-		_ = exec.CommandContext(ctx, "sh", "-c", fmt.Sprintf("lsof -ti:%s | xargs kill -9 2>/dev/null || true", port)).Run()
-		sshCmd := fmt.Sprintf("ssh -f -o ConnectTimeout=5 -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -N -L %s:127.0.0.1:7777 %s", port, sshTarget)
-		_ = exec.CommandContext(ctx, "sh", "-c", sshCmd).Run()
+		if err := spawnSSHTunnel(ctx, port, sshTarget); err != nil {
+			log.Printf("[Host Tunnel Manager] Failed to revive tunnel for %q (port %s): %v", h.Name, port, err)
+		}
 	}
 }
 
