@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -1513,5 +1514,129 @@ func TestSettings_GetAndSetEndpoints(t *testing.T) {
 	}
 	if updated["auto_done_enabled"] != "false" || updated["auto_done_hours"] != "48" {
 		t.Errorf("Expected updated settings, got: %+v", updated)
+	}
+}
+
+func TestReadClaudeSessionMeta_UsesMessageTimestampNotFileMTime(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	testCwd := "/Users/test/projects/my-app"
+	encodedCwd := strings.ReplaceAll(testCwd, "/", "-")
+	projDir := filepath.Join(tmpHome, ".claude", "projects", encodedCwd)
+	if err := os.MkdirAll(projDir, 0755); err != nil {
+		t.Fatalf("Failed to create projDir: %v", err)
+	}
+
+	sessionUUID := "11111111-2222-3333-4444-555555555555"
+	jsonlPath := filepath.Join(projDir, sessionUUID+".jsonl")
+
+	msgTime1 := "2026-09-01T10:00:00.000Z"
+	msgTime2 := "2026-09-01T10:05:30.123Z"
+	expectedTime, err := time.Parse(time.RFC3339Nano, msgTime2)
+	if err != nil {
+		t.Fatalf("Failed to parse expectedTime: %v", err)
+	}
+
+	lines := []string{
+		fmt.Sprintf(`{"type":"user","message":{"role":"user","content":"Can you implement this?"},"timestamp":%q}`, msgTime1),
+		fmt.Sprintf(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Done!"}]},"timestamp":%q}`, msgTime2),
+	}
+	if err := os.WriteFile(jsonlPath, []byte(strings.Join(lines, "\n")+"\n"), 0644); err != nil {
+		t.Fatalf("Failed to write jsonl: %v", err)
+	}
+
+	// Deliberately set the file's filesystem mtime to current time or future time
+	// (simulating Claude resuming/opening the file without sending prompts)
+	fakeTouchTime := time.Now().Add(1 * time.Hour).Truncate(time.Second)
+	if err := os.Chtimes(jsonlPath, fakeTouchTime, fakeTouchTime); err != nil {
+		t.Fatalf("Failed to chtimes: %v", err)
+	}
+
+	// 1. ReadClaudeSessionMeta should return the genuine message timestamp, NOT the mtime
+	meta := ReadClaudeSessionMeta(testCwd, sessionUUID)
+	if meta == nil {
+		t.Fatalf("Expected meta to be non-nil")
+	}
+	if !meta.LastMessageAt.Equal(expectedTime) {
+		t.Errorf("Expected LastMessageAt to be %v, got %v (fakeTouchTime=%v)", expectedTime, meta.LastMessageAt, fakeTouchTime)
+	}
+
+	// 2. scanObservedSessions should resynchronize corrupted LastEventAt back to transcript timestamp
+	dbPath := filepath.Join(tmpHome, "test_resync.db")
+	db, err := InitDB(dbPath)
+	if err != nil {
+		t.Fatalf("Failed to create db: %v", err)
+	}
+	defer db.Close()
+
+	sessID := "claude-code:local:" + sessionUUID
+	corruptedSession := &Session{
+		ID:          sessID,
+		Name:        "Test Session",
+		Agent:       "claude-code",
+		Host:        "local",
+		NativeID:    sessionUUID,
+		Cwd:         testCwd,
+		ProjectKey:  GetProjectKey(testCwd),
+		State:       StateIdle,
+		LastEventAt: fakeTouchTime, // Corrupted by past reconnect
+	}
+	if err := db.SaveSession(corruptedSession); err != nil {
+		t.Fatalf("Failed to save session: %v", err)
+	}
+
+	server := NewServer(db)
+	mockP := &mockClaudeProvider{}
+	server.RegisterProvider(mockP)
+	server.scanObservedSessions(context.Background())
+
+	restored, err := db.GetSession(sessID)
+	if err != nil || restored == nil {
+		t.Fatalf("Failed to retrieve session after scan: %v", err)
+	}
+	if !restored.LastEventAt.Equal(expectedTime) {
+		t.Errorf("Expected scanObservedSessions to restore LastEventAt to %v, got %v", expectedTime, restored.LastEventAt)
+	}
+}
+
+type mockClaudeProvider struct {
+	MockProvider
+}
+
+func (m *mockClaudeProvider) Agent() string { return "claude-code" }
+func (m *mockClaudeProvider) ReadSessionMetadata(cwd, nativeID string) *SessionMeta {
+	return ReadClaudeSessionMeta(cwd, nativeID)
+}
+
+func TestReadClaudeSessionMeta_NoTimestampsDoesNotUseMTime(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	testCwd := "/Users/test/projects/legacy-app"
+	encodedCwd := strings.ReplaceAll(testCwd, "/", "-")
+	projDir := filepath.Join(tmpHome, ".claude", "projects", encodedCwd)
+	if err := os.MkdirAll(projDir, 0755); err != nil {
+		t.Fatalf("Failed to create projDir: %v", err)
+	}
+
+	sessionUUID := "22222222-3333-4444-5555-666666666666"
+	jsonlPath := filepath.Join(projDir, sessionUUID+".jsonl")
+
+	// Transcript lines without timestamp
+	lines := []string{
+		`{"type":"user","message":{"role":"user","content":"legacy prompt"}}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"legacy reply"}]}}`,
+	}
+	if err := os.WriteFile(jsonlPath, []byte(strings.Join(lines, "\n")+"\n"), 0644); err != nil {
+		t.Fatalf("Failed to write jsonl: %v", err)
+	}
+
+	meta := ReadClaudeSessionMeta(testCwd, sessionUUID)
+	if meta == nil {
+		t.Fatalf("Expected meta to be non-nil")
+	}
+	if !meta.LastMessageAt.IsZero() {
+		t.Errorf("Expected LastMessageAt to be zero time when no timestamps present, got %v", meta.LastMessageAt)
 	}
 }
