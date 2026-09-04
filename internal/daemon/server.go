@@ -2136,9 +2136,11 @@ func (s *Server) handleHostUpdate(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+var tunnelMu sync.Mutex
+
 // killTunnelOnPort terminates any dead/stale SSH tunnel listening on the given local port
 // and waits until the port is confirmed released by the operating system.
-func killTunnelOnPort(ctx context.Context, port string) error {
+func killTunnelOnPort(port string) error {
 	if port == "" {
 		return nil
 	}
@@ -2146,28 +2148,18 @@ func killTunnelOnPort(ctx context.Context, port string) error {
 	myPID := fmt.Sprintf("%d", os.Getpid())
 
 	// 1. Identify specifically listening PIDs on this port (avoiding client sockets like Chrome or ackbard)
-	lsofOut, _ := exec.CommandContext(ctx, "sh", "-c", fmt.Sprintf("lsof -n -iTCP:%s -sTCP:LISTEN -t 2>/dev/null", port)).Output()
+	lsofOut, _ := exec.Command("lsof", "-nP", fmt.Sprintf("-iTCP:%s", port), "-sTCP:LISTEN", "-t").Output()
 	pids := strings.Fields(strings.TrimSpace(string(lsofOut)))
 	for _, pid := range pids {
 		if pid != "" && pid != myPID {
-			_ = exec.CommandContext(ctx, "kill", "-15", pid).Run()
+			_ = exec.Command("kill", "-9", pid).Run()
 		}
 	}
 
-	// 2. Also kill any ssh command specifically forwarding this port to 127.0.0.1
-	_ = exec.CommandContext(ctx, "sh", "-c", fmt.Sprintf("pkill -9 -f \"ssh.*-L.*%s:127\\.0\\.0\\.1\" 2>/dev/null || true", port)).Run()
+	// 2. Also terminate any ssh forwarder process targeting this local port
+	_ = exec.Command("pkill", "-9", "-f", fmt.Sprintf("ssh.*-L %s:", port)).Run()
 
-	// 3. Force kill listening PIDs if still lingering
-	if len(pids) > 0 {
-		time.Sleep(100 * time.Millisecond)
-		for _, pid := range pids {
-			if pid != "" && pid != myPID {
-				_ = exec.CommandContext(ctx, "kill", "-9", pid).Run()
-			}
-		}
-	}
-
-	// 4. Poll net.DialTimeout until the port is freed or timeout after 1.5s
+	// 3. Poll net.DialTimeout until the port is freed or timeout after 1.5s
 	deadline := time.Now().Add(1500 * time.Millisecond)
 	for time.Now().Before(deadline) {
 		conn, err := net.DialTimeout("tcp", "127.0.0.1:"+port, 50*time.Millisecond)
@@ -2183,23 +2175,34 @@ func killTunnelOnPort(ctx context.Context, port string) error {
 }
 
 // spawnSSHTunnel safely clears any stale tunnel on port and spawns a new resilient SSH tunnel with forward failure detection.
-func spawnSSHTunnel(ctx context.Context, port, sshTarget string) error {
+func spawnSSHTunnel(port, sshTarget string) error {
+	tunnelMu.Lock()
+	defer tunnelMu.Unlock()
+
 	var lastErr error
 	var lastOut string
 
 	for attempt := 1; attempt <= 3; attempt++ {
-		_ = killTunnelOnPort(ctx, port)
-		time.Sleep(150 * time.Millisecond)
+		_ = killTunnelOnPort(port)
+		time.Sleep(200 * time.Millisecond)
 
-		sshCmd := fmt.Sprintf("ssh -f -o ExitOnForwardFailure=yes -o ConnectTimeout=8 -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -N -L %s:127.0.0.1:7777 %s", port, sshTarget)
-		cmd := exec.CommandContext(ctx, "sh", "-c", sshCmd)
+		cmd := exec.Command("ssh",
+			"-f",
+			"-o", "ExitOnForwardFailure=yes",
+			"-o", "ConnectTimeout=8",
+			"-o", "ServerAliveInterval=15",
+			"-o", "ServerAliveCountMax=3",
+			"-N",
+			"-L", fmt.Sprintf("%s:127.0.0.1:7777", port),
+			sshTarget,
+		)
 		out, err := cmd.CombinedOutput()
 		if err == nil {
 			return nil
 		}
 		lastErr = err
 		lastOut = strings.TrimSpace(string(out))
-		time.Sleep(400 * time.Millisecond)
+		time.Sleep(500 * time.Millisecond)
 	}
 
 	if lastOut != "" {
@@ -2255,7 +2258,7 @@ func (s *Server) handleHostReconnect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Launch resilient SSH tunnel
-	if err := spawnSSHTunnel(r.Context(), port, sshTarget); err != nil {
+	if err := spawnSSHTunnel(port, sshTarget); err != nil {
 		http.Error(w, fmt.Sprintf("Failed to launch SSH tunnel: %v", err), http.StatusInternalServerError)
 		return
 	}
@@ -2653,7 +2656,7 @@ func (s *Server) ensureHostTunnels(ctx context.Context) {
 
 		// Tunnel is down or not established; attempt background reconnection
 		log.Printf("[Host Tunnel Manager] SSH tunnel for host %q (port %s) is down. Reconnecting...", h.Name, port)
-		if err := spawnSSHTunnel(ctx, port, sshTarget); err != nil {
+		if err := spawnSSHTunnel(port, sshTarget); err != nil {
 			log.Printf("[Host Tunnel Manager] Failed to revive tunnel for %q (port %s): %v", h.Name, port, err)
 		}
 	}
