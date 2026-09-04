@@ -2513,8 +2513,9 @@ func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) StartBackgroundLoop(ctx context.Context) {
 	go func() {
-		// Run initial scan asynchronously on startup
+		// Run initial scan & host tunnel check asynchronously on startup
 		go s.scanObservedSessions(ctx)
+		go s.ensureHostTunnels(ctx)
 
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
@@ -2525,6 +2526,7 @@ func (s *Server) StartBackgroundLoop(ctx context.Context) {
 				return
 			case <-ticker.C:
 				s.scanObservedSessions(ctx)
+				s.ensureHostTunnels(ctx)
 				sessions, err := s.db.ListActiveSessions()
 				if err == nil && len(sessions) > 0 {
 					s.verifySessionLiveness(ctx, sessions)
@@ -2532,6 +2534,48 @@ func (s *Server) StartBackgroundLoop(ctx context.Context) {
 			}
 		}
 	}()
+}
+
+// ensureHostTunnels verifies that local SSH tunnels for registered remote hosts are active, and revives them if down.
+func (s *Server) ensureHostTunnels(ctx context.Context) {
+	hosts, err := s.db.ListHosts()
+	if err != nil || len(hosts) == 0 {
+		return
+	}
+	for _, h := range hosts {
+		if h.SSHTarget == "" && h.Name == "" {
+			continue
+		}
+		sshTarget := h.SSHTarget
+		if sshTarget == "" {
+			sshTarget = h.Name
+		}
+		if h.URL == "" {
+			continue
+		}
+		u, err := url.Parse(h.URL)
+		if err != nil || (u.Hostname() != "127.0.0.1" && u.Hostname() != "localhost") {
+			continue
+		}
+		port := u.Port()
+		if port == "" {
+			continue
+		}
+
+		// Check if port is already answering
+		client := http.Client{Timeout: 1500 * time.Millisecond}
+		resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%s/v1/version", port))
+		if err == nil {
+			resp.Body.Close()
+			continue // tunnel is healthy!
+		}
+
+		// Tunnel is down or not established; attempt background reconnection
+		log.Printf("[Host Tunnel Manager] SSH tunnel for host %q (port %s) is down. Reconnecting...", h.Name, port)
+		_ = exec.CommandContext(ctx, "sh", "-c", fmt.Sprintf("lsof -ti:%s | xargs kill -9 2>/dev/null || true", port)).Run()
+		sshCmd := fmt.Sprintf("ssh -f -o ConnectTimeout=5 -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -N -L %s:127.0.0.1:7777 %s", port, sshTarget)
+		_ = exec.CommandContext(ctx, "sh", "-c", sshCmd).Run()
+	}
 }
 
 // readTail reads up to maxBytes from the end of a file to prevent high memory allocations
