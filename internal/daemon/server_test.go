@@ -990,7 +990,14 @@ func TestInspectClaudeStatus_TmuxIntegration(t *testing.T) {
 		LastEventAt: time.Now(),
 	}
 
-	changed := server.inspectClaudeStatus(ctx, sess)
+	var changed bool
+	for i := 0; i < 20; i++ {
+		time.Sleep(50 * time.Millisecond)
+		if server.inspectClaudeStatus(ctx, sess) {
+			changed = true
+			break
+		}
+	}
 	if !changed {
 		t.Errorf("Expected inspectClaudeStatus to report changed=true")
 	}
@@ -1089,7 +1096,14 @@ sleep 30
 		LastEventAt: time.Now(),
 	}
 
-	changed := server.inspectClaudeStatus(ctx, sess)
+	var changed bool
+	for i := 0; i < 20; i++ {
+		time.Sleep(50 * time.Millisecond)
+		if server.inspectClaudeStatus(ctx, sess) {
+			changed = true
+			break
+		}
+	}
 	if !changed {
 		t.Errorf("Expected inspectClaudeStatus to report changed=true")
 	}
