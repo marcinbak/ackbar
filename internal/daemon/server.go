@@ -174,6 +174,7 @@ func (s *Server) Mux() http.Handler {
 	mux.HandleFunc("/v1/maintenance/purge", s.handlePurge)
 	mux.HandleFunc("/v1/editor/open", s.handleEditorOpen)
 	mux.HandleFunc("/v1/version", s.handleVersion)
+	mux.HandleFunc("/v1/settings", s.handleSettings)
 	mux.HandleFunc("/v1/uploads", s.handleUpload)
 	mux.HandleFunc("/v1/shutdown", s.handleShutdown)
 	mux.HandleFunc("/v1/events", s.handleEvents)
@@ -487,6 +488,7 @@ func (s *Server) processHookEvent(p Provider, urlEventName string, headerHost st
 
 	if shouldUpdateLastEvent {
 		sess.LastEventAt = event.LastEventAt
+		sess.IsDone = false
 	}
 
 	// Resolve project key if not populated or if Cwd changed
@@ -725,6 +727,26 @@ func (s *Server) handleSessionControl(w http.ResponseWriter, r *http.Request) {
 		s.broadcast(sess)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"unarchived"}`))
+
+	case "done", "mark_done":
+		sess.IsDone = true
+		if err := s.db.SaveSession(sess); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		s.broadcast(sess)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"done"}`))
+
+	case "undone", "active", "mark_active":
+		sess.IsDone = false
+		if err := s.db.SaveSession(sess); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		s.broadcast(sess)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"active"}`))
 
 	case "documents":
 		files, err := os.ReadDir(sess.Cwd)
@@ -1141,10 +1163,11 @@ func (s *Server) handleRespond(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Update session state to StateWorking, clear Blocked, update LastEventAt
+	// Update session state to StateWorking, clear Blocked, update LastEventAt, clear IsDone
 	sess.State = StateWorking
 	sess.Blocked = nil
 	sess.LastEventAt = time.Now()
+	sess.IsDone = false
 	switch actionLower {
 	case "allow":
 		sess.Activity = "Permission allowed"
@@ -2583,6 +2606,65 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{"version": version.Version})
+}
+
+func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		settings, err := s.db.GetAllSettings()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if settings == nil {
+			settings = make(map[string]string)
+		}
+		// Populate defaults for any unconfigured keys
+		defaults := map[string]string{
+			"auto_done_enabled":         "true",
+			"auto_done_hours":           "24",
+			"auto_archive_enabled":      "true",
+			"auto_archive_days":         "7",
+			"done_collapsed_by_default": "true",
+		}
+		for k, v := range defaults {
+			if _, exists := settings[k]; !exists {
+				settings[k] = v
+			}
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(settings)
+
+	case http.MethodPost:
+		var req map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid payload", http.StatusBadRequest)
+			return
+		}
+		if err := s.db.SetSettings(req); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		settings, _ := s.db.GetAllSettings()
+		defaults := map[string]string{
+			"auto_done_enabled":         "true",
+			"auto_done_hours":           "24",
+			"auto_archive_enabled":      "true",
+			"auto_archive_days":         "7",
+			"done_collapsed_by_default": "true",
+		}
+		for k, v := range defaults {
+			if _, exists := settings[k]; !exists {
+				settings[k] = v
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(settings)
+
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
 }
 
 func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {

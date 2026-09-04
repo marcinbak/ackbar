@@ -71,9 +71,43 @@
     }
   }
 
+  function loadCollapsedDoneGroups() {
+    try {
+      const saved = localStorage.getItem('ackbar_collapsed_done_groups');
+      if (saved) {
+        return new Set(JSON.parse(saved));
+      }
+    } catch (e) {
+      console.error('Failed to load collapsed done groups from localStorage:', e);
+    }
+    return new Set();
+  }
+
+  function loadExpandedDoneGroups() {
+    try {
+      const saved = localStorage.getItem('ackbar_expanded_done_groups');
+      if (saved) {
+        return new Set(JSON.parse(saved));
+      }
+    } catch (e) {
+      console.error('Failed to load expanded done groups from localStorage:', e);
+    }
+    return new Set();
+  }
+
+  function saveCollapsedDoneGroups() {
+    try {
+      localStorage.setItem('ackbar_collapsed_done_groups', JSON.stringify(Array.from(state.collapsedDoneGroups)));
+      localStorage.setItem('ackbar_expanded_done_groups', JSON.stringify(Array.from(state.expandedDoneGroups)));
+    } catch (e) {
+      console.error('Failed to save collapsed done groups to localStorage:', e);
+    }
+  }
+
   // Application State
   const state = {
     version: '...',
+    settings: null,
     sessions: [],
     treeNodes: [],
     hosts: [],
@@ -81,6 +115,8 @@
     activeTabId: null,
     providers: [],
     collapsedGroups: loadCollapsedGroups(),
+    collapsedDoneGroups: loadCollapsedDoneGroups(),
+    expandedDoneGroups: loadExpandedDoneGroups(),
     searchQuery: '',
     showArchived: false,
     draggedSession: null,
@@ -272,6 +308,7 @@
     btnAddHost: document.getElementById('btnAddHost'),
     btnNewProject: document.getElementById('btnNewProject'),
     btnPurge: document.getElementById('btnPurge'),
+    btnSettings: document.getElementById('btnSettings'),
     btnRefreshPage: document.getElementById('btnRefreshPage'),
     btnDiscovery: document.getElementById('btnDiscovery'),
     btnToggleArchived: document.getElementById('btnToggleArchived'),
@@ -311,6 +348,7 @@
     cmItemDocs: document.getElementById('cmItemDocs'),
     cmItemRestart: document.getElementById('cmItemRestart'),
     cmItemKill: document.getElementById('cmItemKill'),
+    cmItemDone: document.getElementById('cmItemDone'),
     cmItemArchive: document.getElementById('cmItemArchive'),
     cmItemDelete: document.getElementById('cmItemDelete'),
     // Group Context Menu
@@ -332,6 +370,7 @@
   async function init() {
     setupEventListeners();
     await fetchVersion();
+    await fetchSettings();
     await fetchProviders();
     await fetchHosts();
     await fetchTreeNodes();
@@ -546,6 +585,291 @@
     });
   }
 
+  // Settings API
+  async function fetchSettings() {
+    try {
+      const res = await fetch('/v1/settings');
+      if (res.ok) {
+        state.settings = await res.json();
+      }
+    } catch (err) {
+      console.warn('Failed to fetch settings:', err);
+      state.settings = {
+        auto_done_enabled: 'true',
+        auto_done_hours: '24',
+        auto_archive_enabled: 'true',
+        auto_archive_days: '7',
+        done_collapsed_by_default: 'true'
+      };
+    }
+  }
+
+  async function updateSettings(newSettings) {
+    try {
+      const res = await fetch('/v1/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newSettings)
+      });
+      if (res.ok) {
+        state.settings = await res.json();
+        renderTree();
+        return true;
+      }
+    } catch (err) {
+      console.error('Failed to save settings:', err);
+    }
+    return false;
+  }
+
+  // Session Done Evaluation (Dynamic Virtual Attribute)
+  function isSessionDone(sess) {
+    if (!sess) return false;
+    if (sess.is_done) return true;
+
+    const settings = state.settings || {};
+    if (settings.auto_done_enabled === 'false') return false;
+
+    // Active agent states (1 = Working, 2 = Question) are never auto-done
+    if (sess.state === 1 || sess.state === 2) return false;
+
+    const hours = parseFloat(settings.auto_done_hours || '24');
+    if (isNaN(hours) || hours <= 0) return false;
+
+    const ts = getSessionTimestamp(sess);
+    if (!ts) return false;
+
+    const inactivityMs = Date.now() - ts;
+    return inactivityMs > hours * 3600 * 1000;
+  }
+
+  // Session Auto-Archive Evaluation
+  function isSessionAutoArchived(sess) {
+    if (!sess) return false;
+    if (sess.archived) return true;
+
+    const settings = state.settings || {};
+    if (settings.auto_archive_enabled === 'false') return false;
+
+    // Auto-archive only applies if session is Done
+    if (!isSessionDone(sess)) return false;
+
+    const days = parseFloat(settings.auto_archive_days || '7');
+    if (isNaN(days) || days <= 0) return false;
+
+    const ts = getSessionTimestamp(sess);
+    if (!ts) return false;
+
+    const inactivityMs = Date.now() - ts;
+    return inactivityMs > days * 24 * 3600 * 1000;
+  }
+
+  // Control Session Done / Active State via Daemon API
+  async function setSessionDoneState(sessionId, sessionHost, isDone) {
+    try {
+      const sess = state.sessions.find(s => s.id === sessionId);
+      if (sess) {
+        sess.is_done = isDone;
+        renderTree();
+      }
+      const hostRec = (state.hosts || []).find(h => h.name === sessionHost);
+      const baseUrl = (sess && sess.hostUrl) ? sess.hostUrl.replace(/\/$/, '') : (hostRec && hostRec.url && sessionHost !== 'local' ? hostRec.url.replace(/\/$/, '') : '');
+      const action = isDone ? 'done' : 'active';
+      const url = `${baseUrl}/v1/sessions/control?id=${encodeURIComponent(sessionId)}&action=${action}`;
+      const res = await fetch(url, { method: 'POST' });
+      if (res.ok) {
+        await fetchSessions();
+      }
+    } catch (err) {
+      console.error(`Failed to set session ${sessionId} done state:`, err);
+    }
+  }
+
+  function isDoneSectionCollapsed(groupKey) {
+    const settings = state.settings || {};
+    const defaultCollapsed = settings.done_collapsed_by_default !== 'false';
+    if (defaultCollapsed) {
+      return !state.expandedDoneGroups.has(groupKey);
+    } else {
+      return state.collapsedDoneGroups.has(groupKey);
+    }
+  }
+
+  function toggleDoneSection(groupKey, sectionEl) {
+    const wasCollapsed = sectionEl.classList.contains('collapsed');
+    if (wasCollapsed) {
+      sectionEl.classList.remove('collapsed');
+      state.collapsedDoneGroups.delete(groupKey);
+      state.expandedDoneGroups.add(groupKey);
+    } else {
+      sectionEl.classList.add('collapsed');
+      state.collapsedDoneGroups.add(groupKey);
+      state.expandedDoneGroups.delete(groupKey);
+    }
+    saveCollapsedDoneGroups();
+  }
+
+  function renderDoneSection(groupKey, doneSessions) {
+    const sectionEl = document.createElement('div');
+    sectionEl.className = 'tree-done-section';
+
+    const isCollapsed = isDoneSectionCollapsed(groupKey);
+    if (isCollapsed) {
+      sectionEl.classList.add('collapsed');
+    }
+
+    const headerEl = document.createElement('div');
+    headerEl.className = 'tree-done-header';
+    headerEl.title = `Done sessions in this group (${doneSessions.length}). Click to toggle. Drag sessions here to mark as Done.`;
+
+    const chevron = document.createElement('span');
+    chevron.className = 'tree-done-chevron';
+    chevron.textContent = '▼';
+
+    const title = document.createElement('span');
+    title.className = 'tree-done-title';
+    title.innerHTML = `✓ Done <span class="tree-done-count">(${doneSessions.length})</span>`;
+
+    headerEl.appendChild(chevron);
+    headerEl.appendChild(title);
+
+    headerEl.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleDoneSection(groupKey, sectionEl);
+    });
+
+    headerEl.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      e.dataTransfer.dropEffect = 'move';
+      headerEl.classList.add('drag-over');
+    });
+
+    headerEl.addEventListener('dragleave', (e) => {
+      e.stopPropagation();
+      headerEl.classList.remove('drag-over');
+    });
+
+    headerEl.addEventListener('drop', async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      headerEl.classList.remove('drag-over');
+      try {
+        const data = JSON.parse(e.dataTransfer.getData('application/json'));
+        if (data && data.sessionId) {
+          if (groupKey !== 'Unassigned' && data.sessionPath !== groupKey) {
+            await moveSessionToGroup(data.sessionId, data.sessionHost, groupKey);
+          }
+          await setSessionDoneState(data.sessionId, data.sessionHost, true);
+        }
+      } catch (err) {
+        console.error('Done drop error:', err);
+      }
+    });
+
+    const childrenListEl = document.createElement('div');
+    childrenListEl.className = 'tree-done-children';
+    doneSessions.forEach(sess => {
+      childrenListEl.appendChild(createSessionRowElement(sess));
+    });
+
+    sectionEl.appendChild(headerEl);
+    sectionEl.appendChild(childrenListEl);
+    return sectionEl;
+  }
+
+  // Settings Modal Dialog
+  function showSettingsModal() {
+    const s = state.settings || {
+      auto_done_enabled: 'true',
+      auto_done_hours: '24',
+      auto_archive_enabled: 'true',
+      auto_archive_days: '7',
+      done_collapsed_by_default: 'true'
+    };
+
+    const autoDoneEnabled = s.auto_done_enabled !== 'false';
+    const autoDoneHours = s.auto_done_hours || '24';
+    const autoArchiveEnabled = s.auto_archive_enabled !== 'false';
+    const autoArchiveDays = s.auto_archive_days || '7';
+    const doneCollapsed = s.done_collapsed_by_default !== 'false';
+
+    const bodyHtml = `
+      <div class="settings-modal-content">
+        <div class="settings-section">
+          <div class="settings-section-title"><span>✓</span> Auto-Move to Done</div>
+          <div class="settings-section-desc">Automatically move inactive sessions from the Active list into the per-group Done section. Submitting a prompt or active agent behavior automatically revives them back to Active.</div>
+          <div class="settings-row">
+            <label class="settings-row-label" for="settingAutoDoneEnabled">Enable Auto-Move to Done</label>
+            <input type="checkbox" id="settingAutoDoneEnabled" ${autoDoneEnabled ? 'checked' : ''} />
+          </div>
+          <div class="settings-row">
+            <label class="settings-row-label" for="settingAutoDoneHours">Inactivity Threshold</label>
+            <div class="settings-input-group">
+              <input type="number" id="settingAutoDoneHours" class="settings-number-input" min="1" max="720" value="${autoDoneHours}" />
+              <span style="font-size: 12px; color: var(--text-muted);">hours</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="settings-section">
+          <div class="settings-section-title"><span>📦</span> Auto-Archive from Done</div>
+          <div class="settings-section-desc">Automatically hide sessions that have remained in Done for an extended period. Archived sessions can still be viewed by toggling "Show Archived".</div>
+          <div class="settings-row">
+            <label class="settings-row-label" for="settingAutoArchiveEnabled">Enable Auto-Archive</label>
+            <input type="checkbox" id="settingAutoArchiveEnabled" ${autoArchiveEnabled ? 'checked' : ''} />
+          </div>
+          <div class="settings-row">
+            <label class="settings-row-label" for="settingAutoArchiveDays">Archive Inactivity Threshold</label>
+            <div class="settings-input-group">
+              <input type="number" id="settingAutoArchiveDays" class="settings-number-input" min="1" max="365" value="${autoArchiveDays}" />
+              <span style="font-size: 12px; color: var(--text-muted);">days</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="settings-section">
+          <div class="settings-section-title"><span>📂</span> Done Section Presentation</div>
+          <div class="settings-section-desc">Configure the initial display state of the Done section in the session sidebar tree.</div>
+          <div class="settings-row">
+            <label class="settings-row-label" for="settingDoneCollapsed">Start Done Sections Collapsed</label>
+            <input type="checkbox" id="settingDoneCollapsed" ${doneCollapsed ? 'checked' : ''} />
+          </div>
+        </div>
+      </div>
+    `;
+
+    const footerHtml = `
+      <button class="btn btn-secondary" onclick="document.getElementById('modalOverlay').style.display='none'">Cancel</button>
+      <button class="btn btn-primary" id="btnSaveSettings">Save Settings</button>
+    `;
+
+    showModal('⚙️ Workspace & Lifecycle Settings', bodyHtml, footerHtml);
+
+    const btnSave = document.getElementById('btnSaveSettings');
+    if (btnSave) {
+      btnSave.addEventListener('click', async () => {
+        btnSave.disabled = true;
+        btnSave.textContent = 'Saving...';
+        const newSettings = {
+          auto_done_enabled: document.getElementById('settingAutoDoneEnabled')?.checked ? 'true' : 'false',
+          auto_done_hours: document.getElementById('settingAutoDoneHours')?.value?.trim() || '24',
+          auto_archive_enabled: document.getElementById('settingAutoArchiveEnabled')?.checked ? 'true' : 'false',
+          auto_archive_days: document.getElementById('settingAutoArchiveDays')?.value?.trim() || '7',
+          done_collapsed_by_default: document.getElementById('settingDoneCollapsed')?.checked ? 'true' : 'false'
+        };
+
+        const ok = await updateSettings(newSettings);
+        if (ok) {
+          hideModal();
+        } else {
+          btnSave.disabled = false;
+          btnSave.textContent = 'Save Failed - Retry';
+        }
+      });
+    }
+  }
+
   // Deduplication Algorithm (matches TUI mergeSessions)
   function deduplicateSessions(list) {
     const merged = new Map();
@@ -716,7 +1040,7 @@
     const unassigned = [];
 
     state.sessions.forEach(sess => {
-      if (sess.archived && !state.showArchived) {
+      if ((sess.archived || isSessionAutoArchived(sess)) && !state.showArchived) {
         return;
       }
 
@@ -830,6 +1154,10 @@
           const data = JSON.parse(e.dataTransfer.getData('application/json'));
           if (data && data.sessionId) {
             await moveSessionToGroup(data.sessionId, data.sessionHost, path);
+            const sess = state.sessions.find(s => s.id === data.sessionId);
+            if (sess && isSessionDone(sess)) {
+              await setSessionDoneState(data.sessionId, data.sessionHost, false);
+            }
           }
         } catch (err) {
           console.error('Drop error:', err);
@@ -868,13 +1196,29 @@
       const childrenEl = document.createElement('div');
       childrenEl.className = 'tree-group-children';
 
-      // 3a. Direct Sessions matching this exact path (sorted by newest/active interaction first)
+      // 3a. Direct Sessions matching this exact path (partitioned into active and done)
       const directSessions = sortSessionsByInteraction(sessionsByPath.get(path) || []);
+      const activeSessions = [];
+      const doneSessions = [];
+
       directSessions.forEach(sess => {
+        if (isSessionDone(sess)) {
+          doneSessions.push(sess);
+        } else {
+          activeSessions.push(sess);
+        }
+      });
+
+      activeSessions.forEach(sess => {
         childrenEl.appendChild(createSessionRowElement(sess));
       });
 
-      // 3b. Direct Child Subgroups (nested recursive call)
+      // 3b. Done Subsection (if any sessions in Done state)
+      if (doneSessions.length > 0) {
+        childrenEl.appendChild(renderDoneSection(path, doneSessions));
+      }
+
+      // 3c. Direct Child Subgroups (nested recursive call)
       let childSubgroupsCount = 0;
       sortedGroupPaths.forEach(childPath => {
         if (childPath.startsWith(path + '/')) {
@@ -887,8 +1231,8 @@
         }
       });
 
-      // 3c. Empty group placeholder hint
-      if (directSessions.length === 0 && childSubgroupsCount === 0) {
+      // 3d. Empty group placeholder hint
+      if (activeSessions.length === 0 && doneSessions.length === 0 && childSubgroupsCount === 0) {
         const emptyHint = document.createElement('div');
         emptyHint.className = 'tree-group-empty-hint';
         emptyHint.textContent = 'Empty group (drag sessions here or right-click to spawn)';
@@ -932,9 +1276,24 @@
       const childrenEl = document.createElement('div');
       childrenEl.className = 'tree-group-children';
       const sortedUnassigned = sortSessionsByInteraction(unassigned);
+      const activeUnassigned = [];
+      const doneUnassigned = [];
+
       sortedUnassigned.forEach(sess => {
+        if (isSessionDone(sess)) {
+          doneUnassigned.push(sess);
+        } else {
+          activeUnassigned.push(sess);
+        }
+      });
+
+      activeUnassigned.forEach(sess => {
         childrenEl.appendChild(createSessionRowElement(sess));
       });
+
+      if (doneUnassigned.length > 0) {
+        childrenEl.appendChild(renderDoneSection('Unassigned', doneUnassigned));
+      }
 
       groupEl.appendChild(childrenEl);
       el.treeContainer.appendChild(groupEl);
@@ -956,7 +1315,8 @@
       row.classList.add('dragging');
       e.dataTransfer.setData('application/json', JSON.stringify({
         sessionId: session.id,
-        sessionHost: session.host || 'local'
+        sessionHost: session.host || 'local',
+        sessionPath: session.node_path || ''
       }));
       e.dataTransfer.effectAllowed = 'move';
     });
@@ -1003,6 +1363,10 @@
 
     if (session.archived) {
       row.classList.add('session-archived');
+    }
+
+    if (isSessionDone(session)) {
+      row.classList.add('is-done');
     }
 
     const name = document.createElement('span');
@@ -2641,6 +3005,11 @@ ${session.last_prompt}
     hideGroupContextMenu();
     state.contextMenuSession = session;
 
+    if (el.cmItemDone) {
+      const isDone = isSessionDone(session);
+      el.cmItemDone.innerHTML = isDone ? '<span>↺</span> Move to Active' : '<span>✓</span> Mark as Done';
+    }
+
     if (el.cmItemArchive) {
       el.cmItemArchive.innerHTML = session.archived ? '<span>📦</span> Unarchive Session' : '<span>📦</span> Archive Session';
     }
@@ -2779,6 +3148,7 @@ ${session.last_prompt}
       { title: '＋ Create New Project / Subgroup', subtitle: 'Action', action: showNewGroupModal },
       { title: '＋ Register Remote SSH Host', subtitle: 'Action', action: showAddHostModal },
       { title: '⚡ Agent Hooks & Discovery', subtitle: 'Action', action: showHooksDashboardModal },
+      { title: '⚙️ Workspace & Lifecycle Settings', subtitle: 'Action', action: showSettingsModal },
       { title: '↻ Database Maintenance & Rescan', subtitle: 'Action', action: () => el.btnPurge.click() },
       { title: '📦 Toggle Show/Hide Archived Sessions', subtitle: 'Action', action: () => el.btnToggleArchived.click() }
     ];
@@ -3052,6 +3422,17 @@ ${session.last_prompt}
       });
     }
 
+    if (el.cmItemDone) {
+      el.cmItemDone.addEventListener('click', async () => {
+        if (state.contextMenuSession) {
+          const sess = state.contextMenuSession;
+          const isDone = isSessionDone(sess);
+          hideContextMenu();
+          await setSessionDoneState(sess.id, sess.host, !isDone);
+        }
+      });
+    }
+
     if (el.cmItemArchive) {
       el.cmItemArchive.addEventListener('click', async () => {
         if (state.contextMenuSession) {
@@ -3265,6 +3646,12 @@ ${session.last_prompt}
           await fetch('/v1/maintenance/purge', { method: 'POST' });
           await fetchSessions();
         }
+      });
+    }
+
+    if (el.btnSettings) {
+      el.btnSettings.addEventListener('click', () => {
+        showSettingsModal();
       });
     }
 

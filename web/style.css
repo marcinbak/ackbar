@@ -1780,3 +1780,145 @@ body, html {
   opacity: 0.8;
 }
 
+/* Done Subsections inside Groups */
+.tree-done-section {
+  margin-top: 4px;
+  margin-bottom: 4px;
+}
+
+.tree-done-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-muted);
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px dashed rgba(255, 255, 255, 0.08);
+  transition: all 0.15s ease;
+  user-select: none;
+}
+
+.tree-done-header:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-main);
+}
+
+.tree-done-header.drag-over {
+  background: rgba(16, 185, 129, 0.15);
+  border: 1px dashed #10b981;
+  color: #10b981;
+}
+
+.tree-done-chevron {
+  font-size: 8px;
+  color: var(--text-dim);
+  transition: transform 0.15s ease;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.tree-done-section.collapsed .tree-done-chevron {
+  transform: rotate(-90deg);
+}
+
+.tree-done-section.collapsed .tree-done-children {
+  display: none;
+}
+
+.tree-done-title {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.tree-done-count {
+  font-size: 10px;
+  background: rgba(255, 255, 255, 0.08);
+  padding: 1px 5px;
+  border-radius: 10px;
+  color: var(--text-dim);
+}
+
+.tree-done-children {
+  padding-left: 8px;
+  border-left: 1px dashed rgba(255, 255, 255, 0.08);
+  margin-left: 6px;
+  margin-top: 3px;
+}
+
+.session-item.is-done {
+  opacity: 0.7;
+}
+
+.session-item.is-done:hover {
+  opacity: 1;
+}
+
+.session-item.is-done .session-name {
+  color: var(--text-muted);
+}
+
+/* Settings Modal Styles */
+.settings-section {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 14px 16px;
+  margin-bottom: 14px;
+}
+
+.settings-section-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #fff;
+  margin-bottom: 4px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.settings-section-desc {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-bottom: 12px;
+  line-height: 1.4;
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 0;
+}
+
+.settings-row-label {
+  font-size: 12px;
+  color: var(--text-main);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.settings-input-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.settings-number-input {
+  width: 60px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--border-color);
+  background: #090a0f;
+  color: #fff;
+  font-size: 12px;
+  text-align: center;
+}
+
