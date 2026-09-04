@@ -70,15 +70,21 @@ Every release automatically cross-compiles 4 standalone CGO-free binaries for 4 
 
 ## 3. Triggering a New Release
 
-To publish a new official release across GitHub Releases and Homebrew:
+Releases are completely automated:
 
+### Method A: Automated on PR Merge (Recommended)
+Simply bump the `VERSION` file in your PR (e.g. `20260904.04`). When the PR is merged to `main`, GitHub Actions automatically:
+1. Detects the version change.
+2. Creates and pushes the Git tag `v<VERSION>`.
+3. Runs GoReleaser to compile and publish the GitHub Release with prebuilt binaries.
+4. Updates the version badge in `README.md` and the Homebrew formula in `marcinbak/homebrew-ackbar`.
+
+### Method B: Manual Git Tag
+Alternatively, you can tag and push directly:
 ```bash
-# 1. Update VERSION file on main (e.g. 20260822.01)
-echo "20260822.01" > VERSION
-
-# 2. Tag and push to origin
-git tag v20260822.01
-git push origin v20260822.01
+# Tag and push to origin
+git tag -a v20260904.04 -m "Release v20260904.04"
+git push origin v20260904.04
 ```
 
 GitHub Actions will automatically:

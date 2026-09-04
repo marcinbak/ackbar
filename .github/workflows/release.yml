@@ -4,6 +4,8 @@ on:
   push:
     tags:
       - 'v*'
+    branches:
+      - main
 
 permissions:
   contents: write
@@ -18,13 +20,43 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Check and create tag if on main
+        id: check_tag
+        run: |
+          VERSION=$(cat VERSION | tr -d '[:space:]')
+          TAG="v$VERSION"
+          echo "Target tag: $TAG"
+
+          # Fetch remote tags to ensure local cache is current
+          git fetch --tags origin
+
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            echo "Triggered by tag push (${{ github.ref_name }}), proceeding with release."
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+          else
+            # Triggered on main branch push
+            if git rev-parse "$TAG" >/dev/null 2>&1; then
+              echo "Tag $TAG already exists on remote. No new version bump detected on main."
+              echo "should_release=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "New version $TAG detected on main! Creating and pushing tag..."
+              git config user.name "github-actions[bot]"
+              git config user.email "github-actions[bot]@users.noreply.github.com"
+              git tag -a "$TAG" -m "Release $TAG"
+              git push origin "$TAG"
+              echo "should_release=true" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
       - name: Set up Go
+        if: steps.check_tag.outputs.should_release == 'true'
         uses: actions/setup-go@v5
         with:
           go-version: '1.25'
           cache: true
 
       - name: Run GoReleaser
+        if: steps.check_tag.outputs.should_release == 'true'
         uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
