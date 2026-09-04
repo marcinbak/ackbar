@@ -1318,9 +1318,6 @@ func (m *Model) toggleArchiveCmd(sess *daemon.Session) tea.Cmd {
 }
 
 func (m *Model) attachCmd(sess *daemon.Session) tea.Cmd {
-	if sess != nil {
-		sess.LastEventAt = time.Now()
-	}
 	return tea.ExecProcess(m.getAttachCmd(sess), func(err error) tea.Msg {
 		m.ctx, m.cancelCtx = context.WithCancel(context.Background())
 		SubscribeEvents(m.ctx, m.hosts, m.eventChan)

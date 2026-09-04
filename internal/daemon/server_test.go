@@ -1208,3 +1208,184 @@ func TestSessionAdoption_PreservesNodePath(t *testing.T) {
 	}
 }
 
+func TestSessionArchiveControl_PersistsAndTogglesInDB(t *testing.T) {
+	dbFile := "./test_archive_control.db"
+	defer os.Remove(dbFile)
+
+	db, err := InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := NewServer(db)
+
+	sess := &Session{
+		ID:          "claude-code:local:arch-test-1",
+		Agent:       "claude-code",
+		Host:        "local",
+		NativeID:    "arch-test-1",
+		Cwd:         "/workspace/project",
+		Name:        "Archive Test Session",
+		Archived:    false,
+		State:       StateIdle,
+		StartedAt:   time.Now(),
+		LastEventAt: time.Now(),
+	}
+	if err := db.SaveSession(sess); err != nil {
+		t.Fatalf("SaveSession failed: %v", err)
+	}
+
+	// 1. Archive
+	reqArchive := httptest.NewRequest(http.MethodPost, "/v1/sessions/control?id=claude-code:local:arch-test-1&action=archive", nil)
+	wArchive := httptest.NewRecorder()
+	server.handleSessionControl(wArchive, reqArchive)
+	if wArchive.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK on archive, got %d: %s", wArchive.Code, wArchive.Body.String())
+	}
+
+	sessDB, err := db.GetSession("claude-code:local:arch-test-1")
+	if err != nil || sessDB == nil {
+		t.Fatalf("Failed to fetch session from DB: %v", err)
+	}
+	if !sessDB.Archived {
+		t.Errorf("Expected session to be archived in DB")
+	}
+
+	// 2. Unarchive
+	reqUnarchive := httptest.NewRequest(http.MethodPost, "/v1/sessions/control?id=claude-code:local:arch-test-1&action=unarchive", nil)
+	wUnarchive := httptest.NewRecorder()
+	server.handleSessionControl(wUnarchive, reqUnarchive)
+	if wUnarchive.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK on unarchive, got %d: %s", wUnarchive.Code, wUnarchive.Body.String())
+	}
+
+	sessDB2, err := db.GetSession("claude-code:local:arch-test-1")
+	if err != nil || sessDB2 == nil {
+		t.Fatalf("Failed to fetch session from DB: %v", err)
+	}
+	if sessDB2.Archived {
+		t.Errorf("Expected session to be unarchived in DB")
+	}
+}
+
+func TestSessionReconnect_DoesNotPromoteLastEventAt(t *testing.T) {
+	dbFile := "./test_reconnect_last_event.db"
+	defer os.Remove(dbFile)
+
+	db, err := InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := NewServer(db)
+	mockP := &mockDynamicProvider{agentName: "claude-code"}
+	server.RegisterProvider(mockP)
+
+	oldTime := time.Now().Add(-48 * time.Hour)
+	existingSess := &Session{
+		ID:          "claude-code:local:reconnect-uuid-1",
+		Agent:       "claude-code",
+		Host:        "local",
+		NativeID:    "reconnect-uuid-1",
+		Cwd:         "/workspace/project",
+		Name:        "Old Session",
+		State:       StateEnded,
+		StartedAt:   oldTime,
+		LastEventAt: oldTime,
+	}
+	if err := db.SaveSession(existingSess); err != nil {
+		t.Fatalf("SaveSession failed: %v", err)
+	}
+
+	// Process SessionStart hook event (CLI reconnecting)
+	reconnectEvent := &Event{
+		Agent:       "claude-code",
+		NativeID:    "reconnect-uuid-1",
+		Cwd:         "/workspace/project",
+		EventName:   "SessionStart",
+		State:       StateIdle,
+		Activity:    "Session started",
+		LastEventAt: time.Now(),
+	}
+	mockP.event = reconnectEvent
+
+	payload, _ := json.Marshal(map[string]interface{}{"type": "SessionStart"})
+	server.processHookEvent(mockP, "SessionStart", "local", payload)
+
+	sessAfter, err := db.GetSession("claude-code:local:reconnect-uuid-1")
+	if err != nil || sessAfter == nil {
+		t.Fatalf("Failed to fetch session: %v", err)
+	}
+
+	// LastEventAt MUST NOT be updated to now; it must stay at its previous timestamp!
+	if sessAfter.LastEventAt.Unix() != oldTime.Unix() {
+		t.Errorf("Expected LastEventAt to remain %v, got %v", oldTime, sessAfter.LastEventAt)
+	}
+	if sessAfter.State != StateIdle {
+		t.Errorf("Expected state to be StateIdle, got %v", sessAfter.State)
+	}
+}
+
+func TestUserPromptSubmit_PromotesLastEventAt(t *testing.T) {
+	dbFile := "./test_prompt_last_event.db"
+	defer os.Remove(dbFile)
+
+	db, err := InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := NewServer(db)
+	mockP := &mockDynamicProvider{agentName: "claude-code"}
+	server.RegisterProvider(mockP)
+
+	oldTime := time.Now().Add(-48 * time.Hour)
+	existingSess := &Session{
+		ID:          "claude-code:local:prompt-uuid-1",
+		Agent:       "claude-code",
+		Host:        "local",
+		NativeID:    "prompt-uuid-1",
+		Cwd:         "/workspace/project",
+		Name:        "Old Session",
+		State:       StateIdle,
+		StartedAt:   oldTime,
+		LastEventAt: oldTime,
+	}
+	if err := db.SaveSession(existingSess); err != nil {
+		t.Fatalf("SaveSession failed: %v", err)
+	}
+
+	// User submits prompt
+	promptTime := time.Now()
+	promptEvent := &Event{
+		Agent:       "claude-code",
+		NativeID:    "prompt-uuid-1",
+		Cwd:         "/workspace/project",
+		EventName:   "UserPromptSubmit",
+		State:       StateWorking,
+		Activity:    "Processing user prompt",
+		LastEventAt: promptTime,
+	}
+	mockP.event = promptEvent
+
+	payload, _ := json.Marshal(map[string]interface{}{"type": "UserPromptSubmit"})
+	server.processHookEvent(mockP, "UserPromptSubmit", "local", payload)
+
+	sessAfter, err := db.GetSession("claude-code:local:prompt-uuid-1")
+	if err != nil || sessAfter == nil {
+		t.Fatalf("Failed to fetch session: %v", err)
+	}
+
+	// LastEventAt MUST be updated to prompt time
+	if sessAfter.LastEventAt.Unix() != promptTime.Unix() {
+		t.Errorf("Expected LastEventAt to be %v, got %v", promptTime, sessAfter.LastEventAt)
+	}
+	if sessAfter.State != StateWorking {
+		t.Errorf("Expected state to be StateWorking, got %v", sessAfter.State)
+	}
+}
+
+

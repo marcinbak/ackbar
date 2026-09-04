@@ -1764,3 +1764,19 @@ body, html {
   }
 }
 
+.session-item.session-archived {
+  opacity: 0.65;
+}
+
+.session-item.session-archived:hover {
+  opacity: 0.9;
+}
+
+.badge-archived {
+  font-size: 11px;
+  display: inline-flex;
+  align-items: center;
+  margin-left: 2px;
+  opacity: 0.8;
+}
+
