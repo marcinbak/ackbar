@@ -426,7 +426,7 @@
           const start = Date.now();
           try {
             const controller = new AbortController();
-            const timer = setTimeout(() => controller.abort(), 2500);
+            const timer = setTimeout(() => controller.abort(), 6000);
             const vRes = await fetch(fetchUrl, { signal: controller.signal });
             clearTimeout(timer);
             if (vRes.ok) {

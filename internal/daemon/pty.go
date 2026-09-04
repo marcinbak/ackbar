@@ -123,7 +123,7 @@ func (s *Server) servePTYWS(ws *websocket.Conn) {
 			_ = s.db.MarkSessionRead(sess.ID)
 			s.broadcast(sess)
 		}
-		if sess.TmuxName != "" {
+		if sess.TmuxName != "" && sess.TmuxName != "(deleted)" {
 			tmuxName = sess.TmuxName
 		}
 		if sess.Host != "" {
@@ -131,7 +131,7 @@ func (s *Server) servePTYWS(ws *websocket.Conn) {
 		}
 	}
 
-	if tmuxName == "" {
+	if tmuxName == "" || tmuxName == "(deleted)" {
 		parts := strings.Split(sessionID, ":")
 		nativeID := sessionID
 		agent := "claude-code"
