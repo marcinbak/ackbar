@@ -319,9 +319,6 @@ func (s *Server) servePTYWS(ws *websocket.Conn) {
 					log.Printf("[PTY] Goroutine 2 (WS->PTY) write error: %v", werr)
 					return
 				}
-				if sess != nil {
-					sess.LastEventAt = time.Now()
-				}
 			}
 		}
 	}()

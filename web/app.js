@@ -994,6 +994,10 @@
       left.appendChild(unreadDot);
     }
 
+    if (session.archived) {
+      row.classList.add('session-archived');
+    }
+
     const name = document.createElement('span');
     name.className = 'session-name';
     name.textContent = sessionFullName;
@@ -1004,6 +1008,14 @@
 
     const right = document.createElement('div');
     right.className = 'session-item-right';
+
+    if (session.archived) {
+      const archBadge = document.createElement('span');
+      archBadge.className = 'badge-archived';
+      archBadge.textContent = '📦';
+      archBadge.title = 'Archived Session';
+      right.appendChild(archBadge);
+    }
 
     // Agent badge with provider icon (compact icon-only with tooltip)
     const agentBadge = document.createElement('span');
@@ -3034,10 +3046,25 @@ ${session.last_prompt}
     }
 
     if (el.cmItemArchive) {
-      el.cmItemArchive.addEventListener('click', () => {
+      el.cmItemArchive.addEventListener('click', async () => {
         if (state.contextMenuSession) {
-          state.contextMenuSession.archived = !state.contextMenuSession.archived;
+          const sess = state.contextMenuSession;
+          const targetAction = sess.archived ? 'unarchive' : 'archive';
+          // Optimistically update locally
+          sess.archived = !sess.archived;
           renderTree();
+
+          try {
+            const hostRec = (state.hosts || []).find(h => h.name === sess.host);
+            const baseUrl = (sess && sess.hostUrl) ? sess.hostUrl.replace(/\/$/, '') : (hostRec && hostRec.url && sess.host !== 'local' ? hostRec.url.replace(/\/$/, '') : '');
+            const url = `${baseUrl}/v1/sessions/control?id=${encodeURIComponent(sess.id)}&action=${targetAction}`;
+            const res = await fetch(url, { method: 'POST' });
+            if (res.ok) {
+              await fetchSessions();
+            }
+          } catch (err) {
+            console.error(`Failed to ${targetAction} session:`, err);
+          }
         }
       });
     }

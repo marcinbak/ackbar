@@ -346,6 +346,7 @@ func (s *Server) processHookEvent(p Provider, urlEventName string, headerHost st
 				NodePath:    spawningSess.NodePath,
 				CustomTitle: spawningSess.CustomTitle,
 				StartedAt:   spawningSess.StartedAt,
+				LastEventAt: spawningSess.LastEventAt,
 			}
 			if spawningSess.CustomTitle != "" {
 				sess.Name = spawningSess.CustomTitle
@@ -442,7 +443,9 @@ func (s *Server) processHookEvent(p Provider, urlEventName string, headerHost st
 			}
 		}
 	}
-	if sess.State != event.State {
+	isStateChange := sess.State != event.State
+	prevState := sess.State
+	if isStateChange {
 		if event.State != StateWorking {
 			sess.IsUnread = true
 			sess.LastStateChangeAt = time.Now()
@@ -457,7 +460,33 @@ func (s *Server) processHookEvent(p Provider, urlEventName string, headerHost st
 		sess.Blocked = event.Blocked
 	}
 	sess.Activity = event.Activity
-	sess.LastEventAt = event.LastEventAt
+
+	// Only update LastEventAt on genuine user interaction or agent activity:
+	// - Brand new session initialization (sess.LastEventAt is zero)
+	// - User prompt submission ("userpromptsubmit", "usersubmit", "user_prompt")
+	// - Agent tool execution, progress, turn completion ("pretooluse", "posttooluse", "stop", "sessionend", "permissionrequest", "notification")
+	// - Active working or blocked state transitions (into StateWorking, into StateBlocked, or StateWorking -> StateIdle)
+	// Do NOT update LastEventAt on passive process boot / reconnect on an existing session ("sessionstart", "start", or StateEnded/Unknown -> StateIdle)
+	evtLower := strings.ToLower(event.EventName)
+	shouldUpdateLastEvent := false
+
+	if sess.LastEventAt.IsZero() {
+		shouldUpdateLastEvent = true
+	} else if evtLower == "sessionstart" || evtLower == "start" {
+		shouldUpdateLastEvent = false
+	} else if evtLower == "userpromptsubmit" || evtLower == "usersubmit" || evtLower == "user_prompt" {
+		shouldUpdateLastEvent = true
+	} else if evtLower == "pretooluse" || evtLower == "posttooluse" || evtLower == "stop" || evtLower == "sessionend" || evtLower == "permissionrequest" || evtLower == "permission_request" || evtLower == "notification" {
+		shouldUpdateLastEvent = true
+	} else if isStateChange {
+		if event.State == StateWorking || event.State == StateBlocked || (prevState == StateWorking && event.State == StateIdle) {
+			shouldUpdateLastEvent = true
+		}
+	}
+
+	if shouldUpdateLastEvent {
+		sess.LastEventAt = event.LastEventAt
+	}
 
 	// Resolve project key if not populated or if Cwd changed
 	if sess.ProjectKey == "" || (event.Cwd != "" && event.Cwd != sess.Cwd) {
@@ -641,6 +670,36 @@ func (s *Server) handleSessionControl(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if sess == nil {
+		// Fallback 3: If sessionID specifies a remote host, forward control action to remote host
+		parts := strings.Split(sessionID, ":")
+		if len(parts) >= 2 && parts[1] != "" && parts[1] != "local" {
+			targetHost := parts[1]
+			hostRec, err := s.db.GetHost(targetHost)
+			if err != nil || hostRec == nil {
+				if allHosts, lerr := s.db.ListHosts(); lerr == nil {
+					for _, h := range allHosts {
+						if h.Name == targetHost || strings.HasSuffix(h.Name, "@"+targetHost) || strings.Contains(h.Name, targetHost) {
+							hostRec = h
+							break
+						}
+					}
+				}
+			}
+			if hostRec != nil && hostRec.URL != "" {
+				targetURL := fmt.Sprintf("%s/v1/sessions/control?id=%s&action=%s", strings.TrimSuffix(hostRec.URL, "/"), url.QueryEscape(sessionID), url.QueryEscape(action))
+				fwdReq, err := http.NewRequest(r.Method, targetURL, r.Body)
+				if err == nil {
+					fwdReq.Header.Set("Content-Type", r.Header.Get("Content-Type"))
+					if resp, err := http.DefaultClient.Do(fwdReq); err == nil {
+						defer resp.Body.Close()
+						w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
+						w.WriteHeader(resp.StatusCode)
+						_, _ = io.Copy(w, resp.Body)
+						return
+					}
+				}
+			}
+		}
 		http.Error(w, "Session not found", http.StatusNotFound)
 		return
 	}
