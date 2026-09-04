@@ -505,6 +505,13 @@
           }
         } catch (e) {
           console.warn(`Host ${h.name} unreachable:`, e);
+          if (h.url && (h.url.includes('127.0.0.1') || h.url.includes('localhost'))) {
+            fetch('/v1/hosts/reconnect', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ name: h.name })
+            }).catch(() => {});
+          }
         }
         return [];
       }));
