@@ -1388,4 +1388,116 @@ func TestUserPromptSubmit_PromotesLastEventAt(t *testing.T) {
 	}
 }
 
+func TestSessionDoneControl_PersistsAndTogglesInDB(t *testing.T) {
+	dbFile := "./test_session_done.db"
+	defer os.Remove(dbFile)
+
+	db, err := InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := NewServer(db)
+
+	sess := &Session{
+		ID:        "claude-code:local:done-test-1",
+		Agent:     "claude-code",
+		Host:      "local",
+		NativeID:  "done-test-1",
+		Cwd:       "/workspace/project",
+		State:     StateIdle,
+		StartedAt: time.Now(),
+		IsDone:    false,
+	}
+	if err := db.SaveSession(sess); err != nil {
+		t.Fatalf("SaveSession failed: %v", err)
+	}
+
+	// 1. Mark as done via /v1/sessions/control?id=...&action=done
+	reqDone := httptest.NewRequest(http.MethodPost, "/v1/sessions/control?id=claude-code:local:done-test-1&action=done", nil)
+	wDone := httptest.NewRecorder()
+	server.handleSessionControl(wDone, reqDone)
+
+	if wDone.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK, got %d: %s", wDone.Code, wDone.Body.String())
+	}
+
+	sessDone, err := db.GetSession("claude-code:local:done-test-1")
+	if err != nil || sessDone == nil {
+		t.Fatalf("GetSession failed: %v", err)
+	}
+	if !sessDone.IsDone {
+		t.Errorf("Expected IsDone to be true, got false")
+	}
+
+	// 2. Mark as active via action=active
+	reqActive := httptest.NewRequest(http.MethodPost, "/v1/sessions/control?id=claude-code:local:done-test-1&action=active", nil)
+	wActive := httptest.NewRecorder()
+	server.handleSessionControl(wActive, reqActive)
+
+	if wActive.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK, got %d: %s", wActive.Code, wActive.Body.String())
+	}
+
+	sessActive, err := db.GetSession("claude-code:local:done-test-1")
+	if err != nil || sessActive == nil {
+		t.Fatalf("GetSession failed: %v", err)
+	}
+	if sessActive.IsDone {
+		t.Errorf("Expected IsDone to be false, got true")
+	}
+}
+
+func TestSettings_GetAndSetEndpoints(t *testing.T) {
+	dbFile := "./test_settings_endpoint.db"
+	defer os.Remove(dbFile)
+
+	db, err := InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := NewServer(db)
+
+	// 1. GET settings (should return defaults)
+	reqGet := httptest.NewRequest(http.MethodGet, "/v1/settings", nil)
+	wGet := httptest.NewRecorder()
+	server.handleSettings(wGet, reqGet)
+
+	if wGet.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK, got %d", wGet.Code)
+	}
+
+	var defaults map[string]string
+	if err := json.Unmarshal(wGet.Body.Bytes(), &defaults); err != nil {
+		t.Fatalf("Failed to parse defaults: %v", err)
+	}
+	if defaults["auto_done_enabled"] != "true" || defaults["auto_done_hours"] != "24" {
+		t.Errorf("Unexpected default settings: %+v", defaults)
+	}
+
+	// 2. POST settings update
+	payload, _ := json.Marshal(map[string]string{
+		"auto_done_enabled": "false",
+		"auto_done_hours":   "48",
+	})
+	reqPost := httptest.NewRequest(http.MethodPost, "/v1/settings", bytes.NewReader(payload))
+	wPost := httptest.NewRecorder()
+	server.handleSettings(wPost, reqPost)
+
+	if wPost.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK, got %d", wPost.Code)
+	}
+
+	var updated map[string]string
+	if err := json.Unmarshal(wPost.Body.Bytes(), &updated); err != nil {
+		t.Fatalf("Failed to parse updated settings: %v", err)
+	}
+	if updated["auto_done_enabled"] != "false" || updated["auto_done_hours"] != "48" {
+		t.Errorf("Expected updated settings, got: %+v", updated)
+	}
+}
+
 

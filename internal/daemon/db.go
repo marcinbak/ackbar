@@ -41,7 +41,13 @@ CREATE TABLE IF NOT EXISTS sessions (
 	node_path TEXT,
 	entrypoint TEXT,
 	kind TEXT,
-	version TEXT
+	version TEXT,
+	is_done INTEGER DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS settings (
+	key TEXT PRIMARY KEY,
+	value TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS tree_nodes (
@@ -105,7 +111,9 @@ func InitDB(dbPath string) (*DB, error) {
 	_, _ = db.Exec("ALTER TABLE sessions ADD COLUMN first_prompt TEXT;")
 	_, _ = db.Exec("ALTER TABLE sessions ADD COLUMN last_prompt TEXT;")
 	_, _ = db.Exec("ALTER TABLE sessions ADD COLUMN is_unread INTEGER DEFAULT 0;")
+	_, _ = db.Exec("ALTER TABLE sessions ADD COLUMN is_done INTEGER DEFAULT 0;")
 	_, _ = db.Exec("ALTER TABLE sessions ADD COLUMN last_state_change_at TIMESTAMP;")
+	_, _ = db.Exec("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);")
 	_, _ = db.Exec("DELETE FROM tree_nodes WHERE path LIKE 'Project Y%' OR path LIKE 'ProjectY%' OR path LIKE '%Project Y%';")
 
 	// High-performance indices for fast session lookups, filtering, and liveness checks
@@ -168,6 +176,11 @@ func (d *DB) SaveSession(s *Session) error {
 		isUnreadInt = 1
 	}
 
+	isDoneInt := 0
+	if s.IsDone {
+		isDoneInt = 1
+	}
+
 	var lastStateChangeAt sql.NullTime
 	if !s.LastStateChangeAt.IsZero() {
 		lastStateChangeAt = sql.NullTime{Time: s.LastStateChangeAt, Valid: true}
@@ -178,8 +191,8 @@ func (d *DB) SaveSession(s *Session) error {
 		id, agent, host, native_id, cwd, roots, project_key, state, 
 		blocked_kind, blocked_reason, blocked_since, blocked_question, blocked_options, activity, 
 		started_at, last_event_at, managed, tmux_name, pid, archived, node_path, name, entrypoint, kind, version, context_pct, git_branch,
-		custom_title, ai_title, ai_description, first_prompt, last_prompt, is_unread, last_state_change_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		custom_title, ai_title, ai_description, first_prompt, last_prompt, is_unread, last_state_change_at, is_done
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(id) DO UPDATE SET
 		cwd=excluded.cwd,
 		roots=excluded.roots,
@@ -209,7 +222,8 @@ func (d *DB) SaveSession(s *Session) error {
 		first_prompt=excluded.first_prompt,
 		last_prompt=excluded.last_prompt,
 		is_unread=excluded.is_unread,
-		last_state_change_at=excluded.last_state_change_at;
+		last_state_change_at=excluded.last_state_change_at,
+		is_done=excluded.is_done;
 	`
 
 	managedInt := 0
@@ -238,7 +252,7 @@ func (d *DB) SaveSession(s *Session) error {
 		s.ID, s.Agent, s.Host, s.NativeID, s.Cwd, string(rootsJSON), s.ProjectKey, int(s.State),
 		blockedKind, blockedReason, blockedSince, blockedQuestion, blockedOptions, s.Activity,
 		s.StartedAt, s.LastEventAt, managedInt, s.TmuxName, s.PID, archivedInt, nodePath, sessName, entrypointVal, kindVal, versionVal, s.ContextPct, gitBranchVal,
-		customTitleVal, aiTitleVal, aiDescVal, firstPromptVal, lastPromptVal, isUnreadInt, lastStateChangeAt,
+		customTitleVal, aiTitleVal, aiDescVal, firstPromptVal, lastPromptVal, isUnreadInt, lastStateChangeAt, isDoneInt,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to save session: %w", err)
@@ -252,7 +266,7 @@ func (d *DB) GetSession(id string) (*Session, error) {
 	SELECT id, agent, host, native_id, cwd, roots, project_key, state,
 	       blocked_kind, blocked_reason, blocked_since, blocked_question, blocked_options, activity,
 	       started_at, last_event_at, managed, tmux_name, pid, archived, node_path, name, entrypoint, kind, version, context_pct, git_branch,
-	       custom_title, ai_title, ai_description, first_prompt, last_prompt, is_unread, last_state_change_at
+	       custom_title, ai_title, ai_description, first_prompt, last_prompt, is_unread, last_state_change_at, is_done
 	FROM sessions WHERE id = ? OR native_id = ?;
 	`
 
@@ -261,14 +275,14 @@ func (d *DB) GetSession(id string) (*Session, error) {
 	var customTitleVal, aiTitleVal, aiDescVal, firstPromptVal, lastPromptVal sql.NullString
 	var ctxPct sql.NullInt64
 	var blockedSince, lastStateChangeAt sql.NullTime
-	var managedInt, archivedInt, isUnreadInt int
+	var managedInt, archivedInt, isUnreadInt, isDoneInt int
 
 	row := d.db.QueryRow(query, id, id)
 	err := row.Scan(
 		&s.ID, &s.Agent, &s.Host, &s.NativeID, &s.Cwd, &rootsStr, &s.ProjectKey, (*int)(&s.State),
 		&blockedKind, &blockedReason, &blockedSince, &blockedQuestion, &blockedOptions, &s.Activity,
 		&s.StartedAt, &s.LastEventAt, &managedInt, &s.TmuxName, &s.PID, &archivedInt, &nodePath, &sessName, &entrypointVal, &kindVal, &versionVal, &ctxPct, &gitBranchVal,
-		&customTitleVal, &aiTitleVal, &aiDescVal, &firstPromptVal, &lastPromptVal, &isUnreadInt, &lastStateChangeAt,
+		&customTitleVal, &aiTitleVal, &aiDescVal, &firstPromptVal, &lastPromptVal, &isUnreadInt, &lastStateChangeAt, &isDoneInt,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -279,6 +293,7 @@ func (d *DB) GetSession(id string) (*Session, error) {
 	s.Managed = managedInt == 1
 	s.Archived = archivedInt == 1
 	s.IsUnread = isUnreadInt == 1
+	s.IsDone = isDoneInt == 1
 	if lastStateChangeAt.Valid {
 		s.LastStateChangeAt = lastStateChangeAt.Time
 	}
@@ -349,7 +364,7 @@ func (d *DB) ListSessions() ([]*Session, error) {
 	SELECT id, agent, host, native_id, cwd, roots, project_key, state,
 	       blocked_kind, blocked_reason, blocked_since, blocked_question, blocked_options, activity,
 	       started_at, last_event_at, managed, tmux_name, pid, archived, node_path, name, entrypoint, kind, version, context_pct, git_branch,
-	       custom_title, ai_title, ai_description, first_prompt, last_prompt, is_unread, last_state_change_at
+	       custom_title, ai_title, ai_description, first_prompt, last_prompt, is_unread, last_state_change_at, is_done
 	FROM sessions
 	ORDER BY last_event_at DESC;
 	`
@@ -367,13 +382,13 @@ func (d *DB) ListSessions() ([]*Session, error) {
 		var customTitleVal, aiTitleVal, aiDescVal, firstPromptVal, lastPromptVal sql.NullString
 		var ctxPct sql.NullInt64
 		var blockedSince, lastStateChangeAt sql.NullTime
-		var managedInt, archivedInt, isUnreadInt int
+		var managedInt, archivedInt, isUnreadInt, isDoneInt int
 
 		err := rows.Scan(
 			&s.ID, &s.Agent, &s.Host, &s.NativeID, &s.Cwd, &rootsStr, &s.ProjectKey, (*int)(&s.State),
 			&blockedKind, &blockedReason, &blockedSince, &blockedQuestion, &blockedOptions, &s.Activity,
 			&s.StartedAt, &s.LastEventAt, &managedInt, &s.TmuxName, &s.PID, &archivedInt, &nodePath, &sessName, &entrypointVal, &kindVal, &versionVal, &ctxPct, &gitBranchVal,
-			&customTitleVal, &aiTitleVal, &aiDescVal, &firstPromptVal, &lastPromptVal, &isUnreadInt, &lastStateChangeAt,
+			&customTitleVal, &aiTitleVal, &aiDescVal, &firstPromptVal, &lastPromptVal, &isUnreadInt, &lastStateChangeAt, &isDoneInt,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan session in list: %w", err)
@@ -382,6 +397,7 @@ func (d *DB) ListSessions() ([]*Session, error) {
 		s.Managed = managedInt == 1
 		s.Archived = archivedInt == 1
 		s.IsUnread = isUnreadInt == 1
+		s.IsDone = isDoneInt == 1
 		if lastStateChangeAt.Valid {
 			s.LastStateChangeAt = lastStateChangeAt.Time
 		}
@@ -454,13 +470,70 @@ func (d *DB) MarkSessionRead(id string) error {
 	return err
 }
 
+func (d *DB) MarkSessionDone(id string, isDone bool) error {
+	val := 0
+	if isDone {
+		val = 1
+	}
+	query := `UPDATE sessions SET is_done = ? WHERE id = ? OR native_id = ?;`
+	_, err := d.db.Exec(query, val, id, id)
+	return err
+}
+
+func (d *DB) GetSetting(key string) (string, error) {
+	var val string
+	err := d.db.QueryRow("SELECT value FROM settings WHERE key = ?;", key).Scan(&val)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return val, err
+}
+
+func (d *DB) GetAllSettings() (map[string]string, error) {
+	rows, err := d.db.Query("SELECT key, value FROM settings;")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	res := make(map[string]string)
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err == nil {
+			res[k] = v
+		}
+	}
+	return res, nil
+}
+
+func (d *DB) SetSettings(settings map[string]string) error {
+	tx, err := d.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value;")
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for k, v := range settings {
+		if _, err := stmt.Exec(k, v); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 // ListActiveSessions queries only active, non-ended sessions (state != StateEnded)
 func (d *DB) ListActiveSessions() ([]*Session, error) {
 	query := `
 	SELECT id, agent, host, native_id, cwd, roots, project_key, state,
 	       blocked_kind, blocked_reason, blocked_since, blocked_question, blocked_options, activity,
 	       started_at, last_event_at, managed, tmux_name, pid, archived, node_path, name, entrypoint, kind, version, context_pct, git_branch,
-	       custom_title, ai_title, ai_description, first_prompt, last_prompt, is_unread, last_state_change_at
+	       custom_title, ai_title, ai_description, first_prompt, last_prompt, is_unread, last_state_change_at, is_done
 	FROM sessions
 	WHERE state != ?
 	ORDER BY last_event_at DESC;
@@ -479,13 +552,13 @@ func (d *DB) ListActiveSessions() ([]*Session, error) {
 		var customTitleVal, aiTitleVal, aiDescVal, firstPromptVal, lastPromptVal sql.NullString
 		var ctxPct sql.NullInt64
 		var blockedSince, lastStateChangeAt sql.NullTime
-		var managedInt, archivedInt, isUnreadInt int
+		var managedInt, archivedInt, isUnreadInt, isDoneInt int
 
 		err := rows.Scan(
 			&s.ID, &s.Agent, &s.Host, &s.NativeID, &s.Cwd, &rootsStr, &s.ProjectKey, (*int)(&s.State),
 			&blockedKind, &blockedReason, &blockedSince, &blockedQuestion, &blockedOptions, &s.Activity,
 			&s.StartedAt, &s.LastEventAt, &managedInt, &s.TmuxName, &s.PID, &archivedInt, &nodePath, &sessName, &entrypointVal, &kindVal, &versionVal, &ctxPct, &gitBranchVal,
-			&customTitleVal, &aiTitleVal, &aiDescVal, &firstPromptVal, &lastPromptVal, &isUnreadInt, &lastStateChangeAt,
+			&customTitleVal, &aiTitleVal, &aiDescVal, &firstPromptVal, &lastPromptVal, &isUnreadInt, &lastStateChangeAt, &isDoneInt,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan active session in list: %w", err)
@@ -494,6 +567,7 @@ func (d *DB) ListActiveSessions() ([]*Session, error) {
 		s.Managed = managedInt == 1
 		s.Archived = archivedInt == 1
 		s.IsUnread = isUnreadInt == 1
+		s.IsDone = isDoneInt == 1
 		if lastStateChangeAt.Valid {
 			s.LastStateChangeAt = lastStateChangeAt.Time
 		}

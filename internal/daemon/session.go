@@ -78,6 +78,7 @@ type Session struct {
 	FirstPrompt       string    `json:"first_prompt,omitempty"`
 	LastPrompt        string    `json:"last_prompt,omitempty"`
 	IsUnread          bool      `json:"is_unread,omitempty"`
+	IsDone            bool      `json:"is_done,omitempty"`
 	LastStateChangeAt time.Time `json:"last_state_change_at,omitempty"`
 }
 
