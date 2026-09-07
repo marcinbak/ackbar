@@ -3321,6 +3321,91 @@ func isProcessAlive(pid int) bool {
 	return proc.Signal(syscall.Signal(0)) == nil
 }
 
+// isIgnoredAgentCommand returns true if the command line represents a utility subcommand,
+// non-interactive run, or help/version invocation that should not be tracked as an agentic session.
+func isIgnoredAgentCommand(agent string, fullCmd string) bool {
+	fields := strings.Fields(fullCmd)
+	if len(fields) == 0 {
+		return false
+	}
+
+	// Identify the start of arguments for the agent CLI
+	argIdx := -1
+	for i, f := range fields {
+		base := strings.ToLower(filepath.Base(f))
+		if agent == "claude-code" {
+			if base == "claude" || strings.HasPrefix(base, "claude") || strings.HasSuffix(f, "/claude.js") || strings.Contains(f, "claude-code") {
+				argIdx = i + 1
+				break
+			}
+		} else if agent == "antigravity" {
+			if base == "antigravity" || base == "agy" || strings.HasPrefix(base, "agy") {
+				argIdx = i + 1
+				break
+			}
+		} else if agent == "codex" {
+			if base == "codex" {
+				argIdx = i + 1
+				break
+			}
+		}
+	}
+
+	if argIdx == -1 || argIdx >= len(fields) {
+		return false
+	}
+
+	// Inspect all arguments after the agent binary/script
+	args := fields[argIdx:]
+	for _, arg := range args {
+		a := strings.ToLower(strings.TrimSpace(arg))
+		// Check common utility flags that indicate non-interactive or help/version invocation
+		if a == "-v" || a == "--version" || a == "-h" || a == "--help" || a == "-p" || a == "--print" {
+			return true
+		}
+	}
+
+	// First non-flag argument is typically the subcommand
+	var firstSubcommand string
+	for _, arg := range args {
+		if !strings.HasPrefix(arg, "-") {
+			firstSubcommand = strings.ToLower(strings.TrimSpace(arg))
+			break
+		}
+	}
+
+	if firstSubcommand != "" {
+		switch agent {
+		case "claude-code":
+			switch firstSubcommand {
+			case "mcp", "doctor", "update", "upgrade", "auth", "login", "logout",
+				"install", "plugin", "plugins", "project", "auto-mode", "gateway",
+				"import", "logs", "respawn", "rm", "setup-token", "stop", "kill",
+				"ultrareview", "agents", "attach":
+				return true
+			}
+		case "antigravity":
+			switch firstSubcommand {
+			case "agent", "agents", "changelog", "help", "install", "mcp", "models",
+				"plugin", "plugins", "update":
+				return true
+			}
+			for _, arg := range args {
+				if strings.ToLower(arg) == "--prompt" {
+					return true
+				}
+			}
+		case "codex":
+			switch firstSubcommand {
+			case "login", "logout", "auth", "mcp", "update", "upgrade":
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
 func (s *Server) scanObservedSessions(ctx context.Context) {
 	hostName := "local"
 	if h := os.Getenv("ACKBAR_HOST"); h != "" {
@@ -3358,6 +3443,10 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 					delete(knownIDs, sess.ID)
 					delete(knownByPID, pidVal)
 					delete(knownByNativeID, sess.NativeID)
+					sess.Deleted = true
+					sess.State = StateEnded
+					sess.Activity = "Deleted"
+					s.broadcast(sess)
 					continue
 				}
 			}
@@ -3673,20 +3762,61 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 	}
 
 	// 2. Scan OS process table for running claude / antigravity / codex processes
-	psOut, err := exec.CommandContext(ctx, "ps", "-eo", "pid,command").Output()
+	psOut, err := exec.CommandContext(ctx, "ps", "-eo", "pid,ppid,command").Output()
 	if err == nil {
 		lines := strings.Split(string(psOut), "\n")
+		parentOf := make(map[int]int, len(lines))
+		type procEntry struct {
+			pid     int
+			ppid    int
+			fullCmd string
+		}
+		var procEntries []procEntry
+
 		for _, line := range lines {
 			line = strings.TrimSpace(line)
 			if line == "" {
 				continue
 			}
 			parts := strings.Fields(line)
-			if len(parts) < 2 {
+			if len(parts) < 3 {
 				continue
 			}
-			pidStr := parts[0]
-			fullCmd := strings.Join(parts[1:], " ")
+			pVal, pErr := strconv.Atoi(parts[0])
+			ppVal, ppErr := strconv.Atoi(parts[1])
+			if pErr != nil || ppErr != nil || pVal <= 0 {
+				continue
+			}
+			parentOf[pVal] = ppVal
+			procEntries = append(procEntries, procEntry{
+				pid:     pVal,
+				ppid:    ppVal,
+				fullCmd: strings.Join(parts[2:], " "),
+			})
+		}
+
+		isDescendantOfKnownSession := func(startPid int) bool {
+			curr := startPid
+			for depth := 0; depth < 35; depth++ {
+				p, ok := parentOf[curr]
+				if !ok || p <= 1 {
+					break
+				}
+				if p == os.Getpid() {
+					return true
+				}
+				if s, ok := knownByPID[p]; ok && s != nil {
+					return true
+				}
+				curr = p
+			}
+			return false
+		}
+
+		for _, pe := range procEntries {
+			pid := pe.pid
+			pidStr := strconv.Itoa(pid)
+			fullCmd := pe.fullCmd
 			cmdLower := strings.ToLower(fullCmd)
 
 			agent := ""
@@ -3710,9 +3840,17 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 			}
 
 			if agent != "" && pidStr != "" {
-				var pid int
-				fmt.Sscanf(pidStr, "%d", &pid)
 				if pid <= 0 || pid == os.Getpid() {
+					continue
+				}
+
+				// Filter out utility commands and non-interactive invocations (e.g. `claude mcp list`, `claude --version`, `claude doctor`, etc.)
+				if isIgnoredAgentCommand(agent, fullCmd) {
+					continue
+				}
+
+				// Filter out child processes / subagents / tool commands of existing sessions or the daemon
+				if isDescendantOfKnownSession(pid) {
 					continue
 				}
 
@@ -3750,6 +3888,12 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 					}
 				}
 
+				// For Claude Code, interactive sessions always initialize ~/.claude/sessions/<pid>.json with a UUID.
+				// If no session ID was resolved, it is either an unmanaged child process or transient command.
+				if agent == "claude-code" && sID == "" {
+					continue
+				}
+
 				// Check if any existing session in the database already has this PID or native UUID using in-memory index
 				hasExistingMatch := false
 				if sID != "" {
@@ -3767,14 +3911,24 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 					continue
 				}
 
+				if sID != "" {
+					if s.db.IsSessionDeleted(sID) || s.db.IsSessionDeleted(fmt.Sprintf("%s:%s:%s", agent, hostName, sID)) {
+						continue
+					}
+				}
+
 				nativeID := fmt.Sprintf("proc-%d", pid)
 				sessID := fmt.Sprintf("%s:observed:%s", hostName, nativeID)
+				if sID != "" && isUUID(sID) {
+					nativeID = sID
+					sessID = fmt.Sprintf("%s:%s:%s", agent, hostName, sID)
+				}
 
 				existing := knownIDs[sessID]
 				if existing == nil {
 					cwd := ""
 					if link, err := os.Readlink(fmt.Sprintf("/proc/%d/cwd", pid)); err == nil && link != "" {
-						cwd = link
+						cwd = strings.TrimSuffix(link, " (deleted)")
 					} else {
 						lsofOut, lerr := exec.CommandContext(ctx, "lsof", "-a", "-p", pidStr, "-d", "cwd", "-fn").Output()
 						if lerr == nil {
@@ -3782,7 +3936,7 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 								if idx := strings.LastIndex(lline, " "); idx != -1 {
 									candidate := strings.TrimSpace(lline[idx:])
 									if strings.HasPrefix(candidate, "/") {
-										cwd = candidate
+										cwd = strings.TrimSuffix(candidate, " (deleted)")
 										break
 									}
 								}

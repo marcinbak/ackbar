@@ -1689,3 +1689,118 @@ func TestInitDB_CleansUpDeletedTmuxName(t *testing.T) {
 		t.Errorf("Expected TmuxName to be healed to %q, got %q", expectedTmux, fixedSess.TmuxName)
 	}
 }
+
+func TestIsIgnoredAgentCommand(t *testing.T) {
+	tests := []struct {
+		agent    string
+		fullCmd  string
+		expected bool
+	}{
+		// Claude Code utility subcommands and flags
+		{"claude-code", "claude mcp list 2>&1 | head -30", true},
+		{"claude-code", "claude mcp add --help 2>&1", true},
+		{"claude-code", "claude --version", true},
+		{"claude-code", "claude -v", true},
+		{"claude-code", "claude -h", true},
+		{"claude-code", "claude --help", true},
+		{"claude-code", "claude doctor", true},
+		{"claude-code", "claude update", true},
+		{"claude-code", "claude upgrade", true},
+		{"claude-code", "claude auth login", true},
+		{"claude-code", "claude -p 'summarize this'", true},
+		{"claude-code", "claude --print 'summarize this'", true},
+		{"claude-code", "node /home/dev4u/.npm-global/bin/claude.js mcp list", true},
+		{"claude-code", "/usr/local/bin/claude doctor", true},
+
+		// Claude Code legitimate interactive sessions
+		{"claude-code", "claude", false},
+		{"claude-code", "claude --session-id 5bfb8b42-4f9e-44e9-b1ae-4bff549b5f4f", false},
+		{"claude-code", "claude --resume c9278ce0-cddc-4968-9abf-7212a17fc723", false},
+		{"claude-code", "claude -r c9278ce0-cddc-4968-9abf-7212a17fc723", false},
+
+		// Antigravity utility subcommands and flags
+		{"antigravity", "agy mcp list", true},
+		{"antigravity", "agy --version", true},
+		{"antigravity", "agy -v", true},
+		{"antigravity", "agy -p 'prompt'", true},
+		{"antigravity", "agy --print 'prompt'", true},
+		{"antigravity", "agy --prompt 'prompt'", true},
+		{"antigravity", "agy models", true},
+		{"antigravity", "agy update", true},
+		{"antigravity", "agy", false},
+		{"antigravity", "agy --conversation 12345678-1234-1234-1234-123456789abc", false},
+
+		// Codex utility subcommands and flags
+		{"codex", "codex mcp list", true},
+		{"codex", "codex --version", true},
+		{"codex", "codex -v", true},
+		{"codex", "codex login", true},
+		{"codex", "codex -p 'prompt'", true},
+		{"codex", "codex", false},
+	}
+
+	for _, tt := range tests {
+		got := isIgnoredAgentCommand(tt.agent, tt.fullCmd)
+		if got != tt.expected {
+			t.Errorf("isIgnoredAgentCommand(%q, %q) = %v; expected %v", tt.agent, tt.fullCmd, got, tt.expected)
+		}
+	}
+}
+
+func TestScanObservedSessions_DeadProcSessionBroadcastsDeleted(t *testing.T) {
+	tmpDir := t.TempDir()
+	db, err := InitDB(filepath.Join(tmpDir, "test_dead_proc.db"))
+	if err != nil {
+		t.Fatalf("Failed to init db: %v", err)
+	}
+	defer db.Close()
+
+	s := NewServer(db)
+	eventCh := make(chan *Session, 20)
+	s.subMutex.Lock()
+	s.subscribers[eventCh] = true
+	s.subMutex.Unlock()
+
+	// Create a dead proc session (using an extremely high non-existent PID)
+	deadPID := 99999998
+	sessID := fmt.Sprintf("local:observed:proc-%d", deadPID)
+	deadSess := &Session{
+		ID:       sessID,
+		Agent:    "claude-code",
+		Host:     "local",
+		NativeID: fmt.Sprintf("proc-%d", deadPID),
+		Name:     "claude-code (proc-99999998)",
+		State:    StateWorking,
+		PID:      deadPID,
+	}
+	if err := db.SaveSession(deadSess); err != nil {
+		t.Fatalf("Failed to save session: %v", err)
+	}
+
+	// Run scanObservedSessions
+	s.scanObservedSessions(context.Background())
+
+	// Verify session is deleted from DB
+	retrieved, _ := db.GetSession(sessID)
+	if retrieved != nil {
+		t.Errorf("Expected session %s to be deleted from DB, but still found: %+v", sessID, retrieved)
+	}
+
+	// Verify broadcast occurred with Deleted = true
+	foundDeletedBroadcast := false
+drainLoop:
+	for {
+		select {
+		case sess := <-eventCh:
+			if sess.ID == sessID && sess.Deleted && sess.Activity == "Deleted" {
+				foundDeletedBroadcast = true
+				break drainLoop
+			}
+		default:
+			break drainLoop
+		}
+	}
+	if !foundDeletedBroadcast {
+		t.Errorf("Expected a deletion broadcast for %s with Deleted=true", sessID)
+	}
+}
