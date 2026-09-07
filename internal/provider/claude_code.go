@@ -73,7 +73,9 @@ type claudePayload struct {
 	Name             string `json:"name"`
 	Summary          string `json:"summary"`
 	IsSidechain      bool   `json:"is_sidechain"`
+	IsSidechainCamel bool   `json:"isSidechain"`
 	AgentID          string `json:"agent_id"`
+	AgentIDCamel     string `json:"agentId"`
 	Question         string `json:"question"`
 	Questions        []struct {
 		Question string   `json:"question"`
@@ -140,6 +142,11 @@ func (c *ClaudeProvider) ParseHook(eventName string, payload []byte) (*daemon.Ev
 	var p claudePayload
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal Claude Code hook payload: %w", err)
+	}
+
+	// Filter out child subagents and sidechain hook events per docs/providers.md §4
+	if p.IsSidechain || p.IsSidechainCamel || (p.AgentID != "" && p.AgentID != "default") || (p.AgentIDCamel != "" && p.AgentIDCamel != "default") {
+		return nil, nil
 	}
 
 	event := &daemon.Event{

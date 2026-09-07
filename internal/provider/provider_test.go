@@ -91,6 +91,36 @@ func TestClaudeProvider_ParseHook(t *testing.T) {
 	if ev.State != daemon.StateIdle || ev.Activity != "Awaiting user prompt" {
 		t.Errorf("Expected idle state on Stop, got state %v, activity %s", ev.State, ev.Activity)
 	}
+
+	// Test IsSidechain (snake_case) should be ignored
+	payload = `{"session_id": "session-claude", "is_sidechain": true, "hook_event_name": "PreToolUse", "tool_name": "Bash"}`
+	ev, err = p.ParseHook("PreToolUse", []byte(payload))
+	if err != nil {
+		t.Fatalf("ParseHook failed: %v", err)
+	}
+	if ev != nil {
+		t.Errorf("Expected nil event for is_sidechain: true, got %+v", ev)
+	}
+
+	// Test IsSidechain (camelCase) should be ignored
+	payload = `{"session_id": "session-claude", "isSidechain": true, "hook_event_name": "PreToolUse", "tool_name": "Bash"}`
+	ev, err = p.ParseHook("PreToolUse", []byte(payload))
+	if err != nil {
+		t.Fatalf("ParseHook failed: %v", err)
+	}
+	if ev != nil {
+		t.Errorf("Expected nil event for isSidechain: true, got %+v", ev)
+	}
+
+	// Test AgentID (subagent) should be ignored
+	payload = `{"session_id": "session-claude", "agent_id": "subagent-123", "hook_event_name": "PreToolUse", "tool_name": "Bash"}`
+	ev, err = p.ParseHook("PreToolUse", []byte(payload))
+	if err != nil {
+		t.Fatalf("ParseHook failed: %v", err)
+	}
+	if ev != nil {
+		t.Errorf("Expected nil event for agent_id: 'subagent-123', got %+v", ev)
+	}
 }
 
 func TestCodexProvider_ParseHook(t *testing.T) {
