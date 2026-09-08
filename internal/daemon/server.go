@@ -316,6 +316,11 @@ func (s *Server) processHookEvent(p Provider, urlEventName string, headerHost st
 		return
 	}
 
+	if event.Agent == "claude-code" && !IsUUID(event.NativeID) {
+		log.Printf("Dropping claude-code hook event with invalid non-UUID native ID %q", event.NativeID)
+		return
+	}
+
 	host := headerHost
 	if host == "" {
 		host = "local"
@@ -355,7 +360,7 @@ func (s *Server) processHookEvent(p Provider, urlEventName string, headerHost st
 			} else if spawningSess.Name != "" && !isRawSessionName(spawningSess.Name) {
 				sess.Name = spawningSess.Name
 			}
-		} else if activeManaged, err := s.findActiveManagedSessionInCwd(event.Agent, host, event.Cwd); err == nil && activeManaged != nil && activeManaged.NativeID != event.NativeID {
+		} else if activeManaged, err := s.findActiveManagedSessionInCwd(event.Agent, host, event.Cwd); err == nil && activeManaged != nil && activeManaged.NativeID != event.NativeID && s.isSameSupervisor(activeManaged, event) {
 			// An active managed tmux session rotated its internal conversation ID (e.g. via /clear or /reset)
 			reConv := regexp.MustCompile(`\s*\(Conv\s*(\d+)\)$`)
 			var newTurnName string
@@ -849,6 +854,10 @@ func (s *Server) handleSessionControl(w http.ResponseWriter, r *http.Request) {
 
 		// Spawn new tmux session
 		resumeCmd := s.getResumeCmd(sess.Agent, sess.NativeID)
+		if resumeCmd == "" {
+			http.Error(w, "Cannot restart session: missing or invalid session ID", http.StatusBadRequest)
+			return
+		}
 		err := tmux.Spawn(r.Context(), tmuxName, sess.Cwd, resumeCmd)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("Failed to spawn tmux: %v", err), http.StatusInternalServerError)
@@ -882,13 +891,18 @@ func (s *Server) handleSessionControl(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		resumeCmd := s.getResumeCmd(sess.Agent, sess.NativeID)
+		if resumeCmd == "" {
+			http.Error(w, "Cannot resume session: missing or invalid session ID", http.StatusBadRequest)
+			return
+		}
+
 		tmuxName := sess.TmuxName
 		if tmuxName == "" {
 			tmuxName = fmt.Sprintf("ackbar-%s-%s", sess.Agent, sess.NativeID)
 		}
 		_ = tmux.Kill(r.Context(), tmuxName)
 
-		resumeCmd := s.getResumeCmd(sess.Agent, sess.NativeID)
 		err := tmux.Spawn(r.Context(), tmuxName, sess.Cwd, resumeCmd)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("Failed to spawn tmux session: %v", err), http.StatusInternalServerError)
@@ -1518,6 +1532,87 @@ func (s *Server) findActiveManagedSessionInCwd(agent, host, cwd string) (*Sessio
 	return nil, nil
 }
 
+func findClaudeSessionOwner(home, sessionID string) (pid int, tmuxName string) {
+	if home == "" || sessionID == "" {
+		return 0, ""
+	}
+	sessionsDir := filepath.Join(home, ".claude", "sessions")
+	entries, err := os.ReadDir(sessionsDir)
+	if err != nil {
+		return 0, ""
+	}
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".json") {
+			data, err := os.ReadFile(filepath.Join(sessionsDir, e.Name()))
+			if err != nil {
+				continue
+			}
+			var meta struct {
+				PID       int    `json:"pid"`
+				SessionID string `json:"sessionId"`
+				Tmux      string `json:"tmux"`
+			}
+			if err := json.Unmarshal(data, &meta); err == nil && meta.SessionID == sessionID {
+				tName := meta.Tmux
+				if idx := strings.Index(tName, ":"); idx != -1 {
+					tName = tName[:idx]
+				}
+				p := meta.PID
+				if p == 0 {
+					pStr := strings.TrimSuffix(e.Name(), ".json")
+					p, _ = strconv.Atoi(pStr)
+				}
+				return p, tName
+			}
+		}
+	}
+	return 0, ""
+}
+
+func (s *Server) isSameSupervisor(activeManaged *Session, event *Event) bool {
+	if activeManaged == nil || event == nil {
+		return false
+	}
+	if host := activeManaged.Host; host == "" || host == "local" {
+		if event.Agent == "claude-code" {
+			home, _ := os.UserHomeDir()
+			eventPID, eventTmux := findClaudeSessionOwner(home, event.NativeID)
+			if eventTmux != "" && activeManaged.TmuxName != "" {
+				return eventTmux == activeManaged.TmuxName
+			}
+			if eventPID > 0 && activeManaged.PID > 0 {
+				if eventPID == activeManaged.PID {
+					return true
+				}
+				if isProcessAlive(activeManaged.PID) {
+					return false
+				}
+			}
+		}
+
+		// If activeManaged has a live process that is running, do not adopt unless proven to be the same
+		if activeManaged.PID > 0 && isProcessAlive(activeManaged.PID) {
+			return false
+		}
+
+		// If activeManaged has an active tmux session, check if the pane process is still running
+		if activeManaged.TmuxName != "" && tmux.HasSession(context.Background(), activeManaged.TmuxName) {
+			if panePID, err := tmux.GetPID(context.Background(), activeManaged.TmuxName); err == nil && panePID > 0 {
+				if isProcessAlive(panePID) {
+					if event.Agent == "claude-code" {
+						home, _ := os.UserHomeDir()
+						eventPID, _ := findClaudeSessionOwner(home, event.NativeID)
+						if eventPID > 0 && eventPID != panePID {
+							return false
+						}
+					}
+				}
+			}
+		}
+	}
+	return true
+}
+
 func isValidUUID(u string) bool {
 	if len(u) != 36 {
 		return false
@@ -1551,10 +1646,13 @@ func (s *Server) getResumeCmd(agent, nativeID string) string {
 	if p, ok := s.providers[agent]; ok {
 		return p.GetResumeCommand(nativeID)
 	}
+	if agent == "mock-agent" {
+		return "sleep 5"
+	}
 	if nativeID != "" && isValidUUID(nativeID) {
 		return "claude --resume " + nativeID
 	}
-	return "claude"
+	return ""
 }
 
 func (s *Server) getSpawnCmd(agent, tempUUID string) string {
@@ -3609,7 +3707,7 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 							targetNativeID = parts[len(parts)-1]
 						}
 					}
-					if targetNativeID != "" {
+					if targetNativeID != "" && (agent != "claude-code" || IsUUID(targetNativeID)) {
 						var existing *Session
 						if ex, ok := knownIDs[fmt.Sprintf("%s:%s:%s", agent, hostName, targetNativeID)]; ok {
 							existing = ex
@@ -3639,17 +3737,18 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 					}
 				}
 
-				if agent == "claude-code" && targetNativeID == "" {
+				if agent == "claude-code" && (targetNativeID == "" || !IsUUID(targetNativeID)) {
+					targetNativeID = ""
 					home, _ := os.UserHomeDir()
 					if home != "" {
 						sID, _ := findClaudeSessionForPID(home, pid)
-						if sID != "" {
+						if sID != "" && IsUUID(sID) {
 							targetNativeID = sID
 						}
 					}
 				}
 
-				if targetNativeID != "" {
+				if targetNativeID != "" && (agent != "claude-code" || IsUUID(targetNativeID)) {
 					if s.db.IsSessionDeleted(targetNativeID) || s.db.IsSessionDeleted(fmt.Sprintf("%s:%s:%s", agent, hostName, targetNativeID)) {
 						_ = tmux.Kill(ctx, tmuxName)
 						if pid > 0 {
@@ -3660,7 +3759,7 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 				}
 
 				var existing *Session
-				if targetNativeID != "" {
+				if targetNativeID != "" && (agent != "claude-code" || IsUUID(targetNativeID)) {
 					if ex, ok := knownIDs[fmt.Sprintf("%s:%s:%s", agent, hostName, targetNativeID)]; ok {
 						existing = ex
 					} else if ex, ok := knownByNativeID[targetNativeID]; ok {
