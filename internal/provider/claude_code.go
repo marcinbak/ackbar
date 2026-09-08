@@ -50,7 +50,7 @@ func (c *ClaudeProvider) GetResumeCommand(nativeID string) string {
 	if nativeID != "" && isValidUUID(nativeID) {
 		return "claude --resume " + nativeID
 	}
-	return "claude"
+	return ""
 }
 
 // Minimal JSON payload representations for Claude Code hook events
@@ -149,6 +149,11 @@ func (c *ClaudeProvider) ParseHook(eventName string, payload []byte) (*daemon.Ev
 		return nil, nil
 	}
 
+	// Filter out events with invalid or non-UUID session IDs (e.g. mock/test hooks like "test", "default")
+	if !isValidUUID(p.SessionID) {
+		return nil, nil
+	}
+
 	event := &daemon.Event{
 		Agent:       "claude-code",
 		NativeID:    p.SessionID,
@@ -156,10 +161,6 @@ func (c *ClaudeProvider) ParseHook(eventName string, payload []byte) (*daemon.Ev
 		EventName:   p.HookEventName,
 		LastEventAt: time.Now(),
 		State:       daemon.StateWorking, // default assumption
-	}
-
-	if event.NativeID == "" {
-		event.NativeID = "default"
 	}
 
 	evt := strings.ToLower(p.HookEventName)

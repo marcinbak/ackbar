@@ -1199,7 +1199,7 @@ func TestSessionAdoption_PreservesNodePath(t *testing.T) {
 	// Claude Code starts and sends first hook event with real UUID
 	realEvent := &Event{
 		Agent:       "claude-code",
-		NativeID:    "real-claude-uuid-456",
+		NativeID:    "11111111-2222-3333-4444-555555555456",
 		Cwd:         "/home/dev4u/Work/modemobile",
 		State:       StateWorking,
 		Activity:    "Thinking...",
@@ -1210,7 +1210,7 @@ func TestSessionAdoption_PreservesNodePath(t *testing.T) {
 	payload, _ := json.Marshal(map[string]interface{}{"type": "test"})
 	server.processHookEvent(mockP, "test", "local", payload)
 
-	adopted, err := db.GetSession("claude-code:local:real-claude-uuid-456")
+	adopted, err := db.GetSession("claude-code:local:11111111-2222-3333-4444-555555555456")
 	if err != nil || adopted == nil {
 		t.Fatalf("Adopted session not found in DB: %v", err)
 	}
@@ -1302,10 +1302,10 @@ func TestSessionReconnect_DoesNotPromoteLastEventAt(t *testing.T) {
 
 	oldTime := time.Now().Add(-48 * time.Hour)
 	existingSess := &Session{
-		ID:          "claude-code:local:reconnect-uuid-1",
+		ID:          "claude-code:local:11111111-2222-3333-4444-555555555001",
 		Agent:       "claude-code",
 		Host:        "local",
-		NativeID:    "reconnect-uuid-1",
+		NativeID:    "11111111-2222-3333-4444-555555555001",
 		Cwd:         "/workspace/project",
 		Name:        "Old Session",
 		State:       StateEnded,
@@ -1319,7 +1319,7 @@ func TestSessionReconnect_DoesNotPromoteLastEventAt(t *testing.T) {
 	// Process SessionStart hook event (CLI reconnecting)
 	reconnectEvent := &Event{
 		Agent:       "claude-code",
-		NativeID:    "reconnect-uuid-1",
+		NativeID:    "11111111-2222-3333-4444-555555555001",
 		Cwd:         "/workspace/project",
 		EventName:   "SessionStart",
 		State:       StateIdle,
@@ -1331,7 +1331,7 @@ func TestSessionReconnect_DoesNotPromoteLastEventAt(t *testing.T) {
 	payload, _ := json.Marshal(map[string]interface{}{"type": "SessionStart"})
 	server.processHookEvent(mockP, "SessionStart", "local", payload)
 
-	sessAfter, err := db.GetSession("claude-code:local:reconnect-uuid-1")
+	sessAfter, err := db.GetSession("claude-code:local:11111111-2222-3333-4444-555555555001")
 	if err != nil || sessAfter == nil {
 		t.Fatalf("Failed to fetch session: %v", err)
 	}
@@ -1361,10 +1361,10 @@ func TestUserPromptSubmit_PromotesLastEventAt(t *testing.T) {
 
 	oldTime := time.Now().Add(-48 * time.Hour)
 	existingSess := &Session{
-		ID:          "claude-code:local:prompt-uuid-1",
+		ID:          "claude-code:local:11111111-2222-3333-4444-555555555002",
 		Agent:       "claude-code",
 		Host:        "local",
-		NativeID:    "prompt-uuid-1",
+		NativeID:    "11111111-2222-3333-4444-555555555002",
 		Cwd:         "/workspace/project",
 		Name:        "Old Session",
 		State:       StateIdle,
@@ -1379,7 +1379,7 @@ func TestUserPromptSubmit_PromotesLastEventAt(t *testing.T) {
 	promptTime := time.Now()
 	promptEvent := &Event{
 		Agent:       "claude-code",
-		NativeID:    "prompt-uuid-1",
+		NativeID:    "11111111-2222-3333-4444-555555555002",
 		Cwd:         "/workspace/project",
 		EventName:   "UserPromptSubmit",
 		State:       StateWorking,
@@ -1391,7 +1391,7 @@ func TestUserPromptSubmit_PromotesLastEventAt(t *testing.T) {
 	payload, _ := json.Marshal(map[string]interface{}{"type": "UserPromptSubmit"})
 	server.processHookEvent(mockP, "UserPromptSubmit", "local", payload)
 
-	sessAfter, err := db.GetSession("claude-code:local:prompt-uuid-1")
+	sessAfter, err := db.GetSession("claude-code:local:11111111-2222-3333-4444-555555555002")
 	if err != nil || sessAfter == nil {
 		t.Fatalf("Failed to fetch session: %v", err)
 	}
@@ -1802,5 +1802,127 @@ drainLoop:
 	}
 	if !foundDeletedBroadcast {
 		t.Errorf("Expected a deletion broadcast for %s with Deleted=true", sessID)
+	}
+}
+
+func TestHook_DropNonUUIDClaudeCodeSessionID(t *testing.T) {
+	dbFile := "./test_drop_non_uuid.db"
+	defer os.Remove(dbFile)
+
+	db, err := InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := NewServer(db)
+	mockP := &mockDynamicProvider{agentName: "claude-code"}
+	server.RegisterProvider(mockP)
+
+	for _, invalidID := range []string{"test", "default", "proc-123", "", "invalid-uuid"} {
+		mockP.event = &Event{
+			Agent:       "claude-code",
+			NativeID:    invalidID,
+			Cwd:         "/home/dev4u/Work/repo",
+			EventName:   "PreToolUse",
+			State:       StateWorking,
+			LastEventAt: time.Now(),
+		}
+		body, _ := json.Marshal(map[string]interface{}{
+			"session_id": invalidID,
+			"cwd":        "/home/dev4u/Work/repo",
+		})
+		server.processHookEvent(mockP, "PreToolUse", "local", body)
+
+		sess, _ := db.GetSession(fmt.Sprintf("claude-code:local:%s", invalidID))
+		if sess != nil {
+			t.Errorf("Expected non-UUID session ID %q to be dropped, but found in DB: %+v", invalidID, sess)
+		}
+	}
+}
+
+func TestTurnRotation_ConcurrentSessionDoesNotHijackLivingActiveManaged(t *testing.T) {
+	dbFile := "./test_concurrent_no_hijack.db"
+	defer os.Remove(dbFile)
+
+	db, err := InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := NewServer(db)
+	mockP := &mockDynamicProvider{agentName: "claude-code"}
+	server.RegisterProvider(mockP)
+
+	// 1. Existing active managed session running with live PID (current test process PID)
+	livePID := os.Getpid()
+	sess1ID := "claude-code:local:11111111-1111-1111-1111-111111111111"
+	sess1 := &Session{
+		ID:          sess1ID,
+		Agent:       "claude-code",
+		Host:        "local",
+		NativeID:    "11111111-1111-1111-1111-111111111111",
+		Cwd:         "/home/dev4u/Work/ngl-android",
+		Name:        "Original Active Session",
+		Managed:     true,
+		TmuxName:    "ackbar-claude-code-11111111-1111-1111-1111-111111111111",
+		NodePath:    "Work/ngl-android",
+		ProjectKey:  "ngl-android",
+		State:       StateWorking,
+		PID:         livePID,
+		StartedAt:   time.Now().Add(-1 * time.Hour),
+		LastEventAt: time.Now(),
+	}
+	if err := db.SaveSession(sess1); err != nil {
+		t.Fatalf("Failed to save sess1: %v", err)
+	}
+
+	// 2. Incoming hook for a concurrent session in the SAME cwd, but different UUID
+	sess2UUID := "22222222-2222-2222-2222-222222222222"
+	mockP.event = &Event{
+		Agent:       "claude-code",
+		NativeID:    sess2UUID,
+		Cwd:         "/home/dev4u/Work/ngl-android",
+		EventName:   "SessionStart",
+		State:       StateIdle,
+		Activity:    "Session started",
+		LastEventAt: time.Now(),
+	}
+	body, _ := json.Marshal(map[string]interface{}{
+		"session_id": sess2UUID,
+		"cwd":        "/home/dev4u/Work/ngl-android",
+	})
+	server.processHookEvent(mockP, "SessionStart", "local", body)
+
+	// 3. Verify sess1 was NOT hijacked or archived as StateEnded
+	dbSess1, err := db.GetSession(sess1ID)
+	if err != nil || dbSess1 == nil {
+		t.Fatalf("Failed to retrieve sess1 from DB: %v", err)
+	}
+	if !dbSess1.Managed {
+		t.Errorf("Expected sess1 to remain Managed, got %v", dbSess1.Managed)
+	}
+	if dbSess1.State == StateEnded {
+		t.Errorf("Expected sess1 state to remain active, but was erroneously marked StateEnded")
+	}
+	if dbSess1.Name != "Original Active Session" {
+		t.Errorf("Expected sess1 name to remain unchanged, got %q", dbSess1.Name)
+	}
+	if dbSess1.TmuxName != "ackbar-claude-code-11111111-1111-1111-1111-111111111111" {
+		t.Errorf("Expected sess1 TmuxName to remain intact, got %q", dbSess1.TmuxName)
+	}
+
+	// 4. Verify sess2 was created as an independent unmanaged session, without stealing sess1's supervisor
+	sess2ID := fmt.Sprintf("claude-code:local:%s", sess2UUID)
+	dbSess2, err := db.GetSession(sess2ID)
+	if err != nil || dbSess2 == nil {
+		t.Fatalf("Failed to retrieve sess2 from DB: %v", err)
+	}
+	if dbSess2.Managed {
+		t.Errorf("Expected sess2 to NOT be managed (did not hijack sess1 supervisor)")
+	}
+	if dbSess2.TmuxName != "" {
+		t.Errorf("Expected sess2 TmuxName to be empty, got %q", dbSess2.TmuxName)
 	}
 }

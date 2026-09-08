@@ -9,9 +9,10 @@ import (
 
 func TestClaudeProvider_ParseHook(t *testing.T) {
 	p := NewClaudeProvider()
+	validUUID := "11111111-2222-3333-4444-555555555555"
 
 	// Test UserPromptSubmit
-	payload := `{"session_id": "session-claude", "cwd": "/workspace", "hook_event_name": "UserPromptSubmit"}`
+	payload := `{"session_id": "` + validUUID + `", "cwd": "/workspace", "hook_event_name": "UserPromptSubmit"}`
 	ev, err := p.ParseHook("UserPromptSubmit", []byte(payload))
 	if err != nil {
 		t.Fatalf("ParseHook failed: %v", err)
@@ -21,7 +22,7 @@ func TestClaudeProvider_ParseHook(t *testing.T) {
 	}
 
 	// Test PermissionRequest
-	payload = `{"session_id": "session-claude", "cwd": "/workspace", "hook_event_name": "PermissionRequest", "requested_permission": "run command"}`
+	payload = `{"session_id": "` + validUUID + `", "cwd": "/workspace", "hook_event_name": "PermissionRequest", "requested_permission": "run command"}`
 	ev, err = p.ParseHook("PermissionRequest", []byte(payload))
 	if err != nil {
 		t.Fatalf("ParseHook failed: %v", err)
@@ -37,7 +38,7 @@ func TestClaudeProvider_ParseHook(t *testing.T) {
 	}
 
 	// Test PreToolUse with AskUserQuestion and options
-	payload = `{"session_id": "session-claude", "cwd": "/workspace", "hook_event_name": "PreToolUse", "tool_name": "AskUserQuestion", "tool_input": "{\"questions\":[{\"question\":\"Pick environment:\",\"options\":[\"Staging\",\"Production\"]}]}"}`
+	payload = `{"session_id": "` + validUUID + `", "cwd": "/workspace", "hook_event_name": "PreToolUse", "tool_name": "AskUserQuestion", "tool_input": "{\"questions\":[{\"question\":\"Pick environment:\",\"options\":[\"Staging\",\"Production\"]}]}"}`
 	ev, err = p.ParseHook("PreToolUse", []byte(payload))
 	if err != nil {
 		t.Fatalf("ParseHook failed: %v", err)
@@ -53,7 +54,7 @@ func TestClaudeProvider_ParseHook(t *testing.T) {
 	}
 
 	// Test Notification with generic prompt (should NOT block, should be Idle)
-	payload = `{"session_id": "session-claude", "cwd": "/workspace", "hook_event_name": "Notification", "notification_type": "user_prompt"}`
+	payload = `{"session_id": "` + validUUID + `", "cwd": "/workspace", "hook_event_name": "Notification", "notification_type": "user_prompt"}`
 	ev, err = p.ParseHook("Notification", []byte(payload))
 	if err != nil {
 		t.Fatalf("ParseHook failed: %v", err)
@@ -63,7 +64,7 @@ func TestClaudeProvider_ParseHook(t *testing.T) {
 	}
 
 	// Test Notification with idle_prompt (should be Idle)
-	payload = `{"session_id": "session-claude", "cwd": "/workspace", "hook_event_name": "Notification", "notification_type": "idle_prompt"}`
+	payload = `{"session_id": "` + validUUID + `", "cwd": "/workspace", "hook_event_name": "Notification", "notification_type": "idle_prompt"}`
 	ev, err = p.ParseHook("Notification", []byte(payload))
 	if err != nil {
 		t.Fatalf("ParseHook failed: %v", err)
@@ -73,7 +74,7 @@ func TestClaudeProvider_ParseHook(t *testing.T) {
 	}
 
 	// Test Notification with explicit permission_prompt (should block)
-	payload = `{"session_id": "session-claude", "cwd": "/workspace", "hook_event_name": "Notification", "notification_type": "permission_prompt", "requested_permission": "run bash"}`
+	payload = `{"session_id": "` + validUUID + `", "cwd": "/workspace", "hook_event_name": "Notification", "notification_type": "permission_prompt", "requested_permission": "run bash"}`
 	ev, err = p.ParseHook("Notification", []byte(payload))
 	if err != nil {
 		t.Fatalf("ParseHook failed: %v", err)
@@ -83,7 +84,7 @@ func TestClaudeProvider_ParseHook(t *testing.T) {
 	}
 
 	// Test Stop event (sets StateIdle)
-	payload = `{"session_id": "session-claude", "cwd": "/workspace", "hook_event_name": "Stop"}`
+	payload = `{"session_id": "` + validUUID + `", "cwd": "/workspace", "hook_event_name": "Stop"}`
 	ev, err = p.ParseHook("Stop", []byte(payload))
 	if err != nil {
 		t.Fatalf("ParseHook failed: %v", err)
@@ -93,7 +94,7 @@ func TestClaudeProvider_ParseHook(t *testing.T) {
 	}
 
 	// Test IsSidechain (snake_case) should be ignored
-	payload = `{"session_id": "session-claude", "is_sidechain": true, "hook_event_name": "PreToolUse", "tool_name": "Bash"}`
+	payload = `{"session_id": "` + validUUID + `", "is_sidechain": true, "hook_event_name": "PreToolUse", "tool_name": "Bash"}`
 	ev, err = p.ParseHook("PreToolUse", []byte(payload))
 	if err != nil {
 		t.Fatalf("ParseHook failed: %v", err)
@@ -103,7 +104,7 @@ func TestClaudeProvider_ParseHook(t *testing.T) {
 	}
 
 	// Test IsSidechain (camelCase) should be ignored
-	payload = `{"session_id": "session-claude", "isSidechain": true, "hook_event_name": "PreToolUse", "tool_name": "Bash"}`
+	payload = `{"session_id": "` + validUUID + `", "isSidechain": true, "hook_event_name": "PreToolUse", "tool_name": "Bash"}`
 	ev, err = p.ParseHook("PreToolUse", []byte(payload))
 	if err != nil {
 		t.Fatalf("ParseHook failed: %v", err)
@@ -113,13 +114,42 @@ func TestClaudeProvider_ParseHook(t *testing.T) {
 	}
 
 	// Test AgentID (subagent) should be ignored
-	payload = `{"session_id": "session-claude", "agent_id": "subagent-123", "hook_event_name": "PreToolUse", "tool_name": "Bash"}`
+	payload = `{"session_id": "` + validUUID + `", "agent_id": "subagent-123", "hook_event_name": "PreToolUse", "tool_name": "Bash"}`
 	ev, err = p.ParseHook("PreToolUse", []byte(payload))
 	if err != nil {
 		t.Fatalf("ParseHook failed: %v", err)
 	}
 	if ev != nil {
 		t.Errorf("Expected nil event for agent_id: 'subagent-123', got %+v", ev)
+	}
+
+	// Test non-UUID session IDs (e.g. "test", "default", empty) should be ignored
+	for _, nonUUID := range []string{"test", "default", "mock-session", "", "12345"} {
+		payload = `{"session_id": "` + nonUUID + `", "cwd": "/workspace", "hook_event_name": "PreToolUse", "tool_name": "Bash"}`
+		ev, err = p.ParseHook("PreToolUse", []byte(payload))
+		if err != nil {
+			t.Fatalf("ParseHook failed for non-UUID %q: %v", nonUUID, err)
+		}
+		if ev != nil {
+			t.Errorf("Expected nil event for non-UUID session_id %q, got %+v", nonUUID, ev)
+		}
+	}
+}
+
+func TestClaudeProvider_GetResumeCommand(t *testing.T) {
+	p := NewClaudeProvider()
+
+	// Valid UUID should return claude --resume <uuid>
+	validUUID := "61bfc5e5-1e22-4b01-87d1-219a626336ee"
+	if cmd := p.GetResumeCommand(validUUID); cmd != "claude --resume "+validUUID {
+		t.Errorf("Expected 'claude --resume %s', got %q", validUUID, cmd)
+	}
+
+	// Invalid / empty / non-UUID should return empty string (never bare "claude")
+	for _, invalid := range []string{"test", "default", "", "proc-123", "not-a-uuid"} {
+		if cmd := p.GetResumeCommand(invalid); cmd != "" {
+			t.Errorf("Expected empty resume command for invalid ID %q, got %q", invalid, cmd)
+		}
 	}
 }
 
