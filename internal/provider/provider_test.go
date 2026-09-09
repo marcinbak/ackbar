@@ -3,6 +3,7 @@ package provider
 import (
 	"ackbar/internal/daemon"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -277,6 +278,47 @@ func TestAntigravityDiscoveryInLocalBin(t *testing.T) {
 	}
 	if !installed {
 		t.Errorf("Expected hook config in ~/.antigravity/config/hooks.json to be detected")
+	}
+}
+
+func TestClaudeCheckHookConfig_OnlySettingsJson(t *testing.T) {
+	tmpHome, err := os.MkdirTemp("", "test-claude-hookconfig-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpHome)
+
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpHome)
+	defer os.Setenv("HOME", origHome)
+
+	p := NewClaudeProvider()
+
+	// 1. When no config files exist
+	installed, _, _ := p.CheckHookConfig()
+	if installed {
+		t.Errorf("Expected false when no config exists")
+	}
+
+	// 2. When hooks exist ONLY in legacy ~/.claude.json (should be ignored)
+	legacyFile := filepath.Join(tmpHome, ".claude.json")
+	_ = os.WriteFile(legacyFile, []byte(`{"hooks":{"UserPromptSubmit":[{"command":"ackbar-hook claude-code UserPromptSubmit"}]}}`), 0644)
+	installed, _, _ = p.CheckHookConfig()
+	if installed {
+		t.Errorf("Expected false when hooks exist only in legacy ~/.claude.json")
+	}
+
+	// 3. When hooks exist in canonical ~/.claude/settings.json
+	claudeDir := filepath.Join(tmpHome, ".claude")
+	_ = os.MkdirAll(claudeDir, 0755)
+	settingsFile := filepath.Join(claudeDir, "settings.json")
+	_ = os.WriteFile(settingsFile, []byte(`{"hooks":{"UserPromptSubmit":[{"command":"ackbar-hook claude-code UserPromptSubmit"}]}}`), 0644)
+	installed, _, err = p.CheckHookConfig()
+	if err != nil {
+		t.Fatalf("CheckHookConfig error: %v", err)
+	}
+	if !installed {
+		t.Errorf("Expected true when hooks exist in ~/.claude/settings.json")
 	}
 }
 
