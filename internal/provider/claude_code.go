@@ -322,17 +322,11 @@ func (c *ClaudeProvider) CheckHookConfig() (bool, string, error) {
 		return false, setupCmd, nil
 	}
 
-	paths := []string{
-		filepath.Join(home, ".claude", "settings.json"),
-		filepath.Join(home, ".claude.json"),
-	}
-
-	for _, p := range paths {
-		data, err := os.ReadFile(p)
-		if err == nil {
-			if strings.Contains(string(data), "127.0.0.1:7777") || strings.Contains(string(data), "localhost:7777") || strings.Contains(string(data), "ackbar-hook") {
-				return true, setupCmd, nil
-			}
+	settingsPath := filepath.Join(home, ".claude", "settings.json")
+	data, err := os.ReadFile(settingsPath)
+	if err == nil {
+		if strings.Contains(string(data), "127.0.0.1:7777") || strings.Contains(string(data), "localhost:7777") || strings.Contains(string(data), "ackbar-hook") {
+			return true, setupCmd, nil
 		}
 	}
 

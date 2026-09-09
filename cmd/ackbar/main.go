@@ -350,6 +350,21 @@ func runSetupHooks() error {
 		}
 	}
 
+	// Clean up legacy hooks in ~/.claude.json if present
+	legacyClaudePath := filepath.Join(home, ".claude.json")
+	if data, err := os.ReadFile(legacyClaudePath); err == nil {
+		var legMap map[string]interface{}
+		if err := json.Unmarshal(data, &legMap); err == nil {
+			if _, exists := legMap["hooks"]; exists {
+				delete(legMap, "hooks")
+				if updated, err := json.MarshalIndent(legMap, "", "  "); err == nil {
+					_ = os.WriteFile(legacyClaudePath, updated, 0644)
+					fmt.Printf("🧹 Cleaned legacy hooks from %s\n", legacyClaudePath)
+				}
+			}
+		}
+	}
+
 	// 3. Configure Antigravity hooks (~/.gemini/config/hooks.json)
 	geminiHooksDir := filepath.Join(home, ".gemini", "config")
 	_ = os.MkdirAll(geminiHooksDir, 0755)
