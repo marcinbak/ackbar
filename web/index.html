@@ -140,6 +140,13 @@
         <div class="modal-body">
           <form id="formNewSession" onsubmit="return false;">
             <div class="form-group" style="margin-bottom: 14px;">
+              <label class="form-label" style="display: block; font-size: 12px; font-weight: 600; margin-bottom: 5px; color: var(--text-dim);">Group / Subgroup</label>
+              <select id="newSessionGroup" class="form-input" style="width: 100%; cursor: pointer;">
+                <option value="">(Default / Unassigned)</option>
+              </select>
+            </div>
+
+            <div class="form-group" style="margin-bottom: 14px;">
               <label class="form-label" style="display: block; font-size: 12px; font-weight: 600; margin-bottom: 5px; color: var(--text-dim);">Target Host / Server</label>
               <select id="newSessionHost" class="form-input" style="width: 100%; cursor: pointer;">
                 <option value="local">local (This Machine)</option>
@@ -155,18 +162,11 @@
               </select>
             </div>
 
-            <div class="form-group" style="margin-bottom: 14px;">
+            <div class="form-group" style="margin-bottom: 10px;">
               <label class="form-label" style="display: block; font-size: 12px; font-weight: 600; margin-bottom: 5px; color: var(--text-dim);">Working Directory / Project Path</label>
               <input type="text" id="newSessionFolder" class="form-input" list="folderSuggestions" placeholder="/Users/dev4u/Work/..." style="width: 100%;" required />
               <datalist id="folderSuggestions"></datalist>
               <span style="display: block; font-size: 11px; color: var(--text-muted); margin-top: 4px;">Choose from existing project folders or type a custom directory path</span>
-            </div>
-
-            <div class="form-group" style="margin-bottom: 10px;">
-              <label class="form-label" style="display: block; font-size: 12px; font-weight: 600; margin-bottom: 5px; color: var(--text-dim);">Group / Subgroup Assignment (Optional)</label>
-              <select id="newSessionGroup" class="form-input" style="width: 100%; cursor: pointer;">
-                <option value="">(Default / Unassigned)</option>
-              </select>
             </div>
           </form>
         </div>

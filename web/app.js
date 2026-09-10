@@ -123,6 +123,7 @@
     contextMenuSession: null,
     contextMenuGroupPath: null,
     contextMenuTabId: null,
+    lastActiveGroup: null,
     cmdPaletteSelectedIndex: 0,
     cmdPaletteItems: []
   };
@@ -1165,6 +1166,7 @@
       });
 
       headerEl.addEventListener('click', () => {
+        state.lastActiveGroup = path;
         if (state.collapsedGroups.has(path)) {
           state.collapsedGroups.delete(path);
         } else {
@@ -2749,6 +2751,9 @@ ${session.last_prompt}
         if (unreadDot) unreadDot.style.display = 'none';
         if (tab.session) {
           markSessionAsRead(tab.session);
+          if (tab.session.node_path) {
+            state.lastActiveGroup = tab.session.node_path;
+          }
         }
         if (tab.type === 'terminal') {
           if (!tab.socket || tab.socket.readyState === WebSocket.CLOSED || tab.socket.readyState === WebSocket.CLOSING) {
@@ -3930,10 +3935,12 @@ ${session.last_prompt}
     const folderList = document.getElementById('folderSuggestions');
     const groupSelect = document.getElementById('newSessionGroup');
 
-    // If no group explicitly passed, check active tab's session group
+    // If no group explicitly passed, check active tab's session group or last active group
     const activeTab = state.openTabs.get(state.activeTabId);
     if (!prefillGroup && activeTab && activeTab.session && activeTab.session.node_path) {
       prefillGroup = activeTab.session.node_path;
+    } else if (!prefillGroup && state.lastActiveGroup) {
+      prefillGroup = state.lastActiveGroup;
     }
 
     // Helper: Dynamically fetch & populate available agents for the chosen host
