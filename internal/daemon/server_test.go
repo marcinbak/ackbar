@@ -1981,3 +1981,127 @@ func TestAgentDiscoveryDeterministicOrdering(t *testing.T) {
 	}
 }
 
+func TestIsAntigravitySubagent(t *testing.T) {
+	tmpDir := t.TempDir()
+	convID := "57ae3db6-0595-4f7e-aff7-ec6494aef363"
+
+	// 1. When no annotations, no metadata, no brain logs exist -> false (do not assume subagent!)
+	if isAntigravitySubagent(tmpDir, convID) {
+		t.Fatalf("Expected false when no files exist, got true")
+	}
+
+	// 2. When annotation file exists -> false
+	annoDir := filepath.Join(tmpDir, ".gemini", "antigravity", "annotations")
+	_ = os.MkdirAll(annoDir, 0755)
+	_ = os.WriteFile(filepath.Join(annoDir, convID+".pbtxt"), []byte("title: test"), 0644)
+	if isAntigravitySubagent(tmpDir, convID) {
+		t.Fatalf("Expected false when annotation file exists, got true")
+	}
+	_ = os.Remove(filepath.Join(annoDir, convID+".pbtxt"))
+
+	// 3. When conversation_metadata.json marks it internal -> true
+	cacheDir := filepath.Join(tmpDir, ".gemini", "antigravity", "cache")
+	_ = os.MkdirAll(cacheDir, 0755)
+	metaContent := fmt.Sprintf(`{"conversations": {"%s": {"is_internal": true}}}`, convID)
+	_ = os.WriteFile(filepath.Join(cacheDir, "conversation_metadata.json"), []byte(metaContent), 0644)
+	if !isAntigravitySubagent(tmpDir, convID) {
+		t.Fatalf("Expected true when conversation_metadata marks is_internal: true, got false")
+	}
+
+	// 4. When conversation_metadata.json marks it NOT internal -> false
+	metaContentFalse := fmt.Sprintf(`{"conversations": {"%s": {"is_internal": false}}}`, convID)
+	_ = os.WriteFile(filepath.Join(cacheDir, "conversation_metadata.json"), []byte(metaContentFalse), 0644)
+	if isAntigravitySubagent(tmpDir, convID) {
+		t.Fatalf("Expected false when conversation_metadata marks is_internal: false, got true")
+	}
+	_ = os.Remove(filepath.Join(cacheDir, "conversation_metadata.json"))
+
+	// 5. When transcript contains subagent invocation markers -> true
+	brainLogDir := filepath.Join(tmpDir, ".gemini", "antigravity", "brain", convID, ".system_generated", "logs")
+	_ = os.MkdirAll(brainLogDir, 0755)
+	logContent := `{"type": "USER_INPUT", "content": "You are a subagent helping with tasks"}` + "\n"
+	_ = os.WriteFile(filepath.Join(brainLogDir, "transcript.jsonl"), []byte(logContent), 0644)
+	if !isAntigravitySubagent(tmpDir, convID) {
+		t.Fatalf("Expected true when transcript contains subagent marker, got false")
+	}
+}
+
+func TestDatabaseSanitation_AntigravityManagedProtected(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	db, err := InitDB(dbPath)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := NewServer(db)
+
+	sess := &Session{
+		ID:       "antigravity:local:57ae3db6-0595-4f7e-aff7-ec6494aef363",
+		Agent:    "antigravity",
+		Host:     "local",
+		NativeID: "57ae3db6-0595-4f7e-aff7-ec6494aef363",
+		Cwd:      "/tmp/project",
+		State:    StateIdle,
+		Managed:  true,
+		Activity: "Active session",
+	}
+	if err := db.SaveSession(sess); err != nil {
+		t.Fatalf("SaveSession failed: %v", err)
+	}
+
+	// Trigger scanObservedSessions
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	server.scanObservedSessions(ctx)
+
+	// Session must still exist in DB!
+	stored, err := db.GetSession(sess.ID)
+	if err != nil {
+		t.Fatalf("GetSession failed: %v", err)
+	}
+	if stored == nil {
+		t.Fatalf("Managed Antigravity session was erroneously deleted by sanitation!")
+	}
+}
+
+func TestHandleSpawn_PersistsTreeNode(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	db, err := InitDB(dbPath)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := NewServer(db)
+	server.RegisterProvider(&namedMockProvider{agentName: "mock-agent"})
+
+	cwd := filepath.Join(t.TempDir(), "my-project")
+	spawnPayload := map[string]string{
+		"agent":     "mock-agent",
+		"cwd":       cwd,
+		"node_path": "Personal/Ackbar",
+	}
+	body, _ := json.Marshal(spawnPayload)
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/spawn", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+
+	server.handleSpawn(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	node, err := db.GetNode("Personal/Ackbar")
+	if err != nil {
+		t.Fatalf("GetNode failed: %v", err)
+	}
+	if node == nil {
+		t.Fatalf("TreeNode 'Personal/Ackbar' was not persisted in DB")
+	}
+	if node.ProjectDir != cwd {
+		t.Fatalf("Expected ProjectDir %q, got %q", cwd, node.ProjectDir)
+	}
+}
+
+
