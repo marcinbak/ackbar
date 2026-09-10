@@ -1926,3 +1926,58 @@ func TestTurnRotation_ConcurrentSessionDoesNotHijackLivingActiveManaged(t *testi
 		t.Errorf("Expected sess2 TmuxName to be empty, got %q", dbSess2.TmuxName)
 	}
 }
+
+type namedMockProvider struct {
+	MockProvider
+	agentName string
+}
+
+func (p *namedMockProvider) Agent() string {
+	return p.agentName
+}
+
+func (p *namedMockProvider) DisplayName() string {
+	return p.agentName
+}
+
+func TestAgentDiscoveryDeterministicOrdering(t *testing.T) {
+	dbFile := filepath.Join(t.TempDir(), "test_discovery.db")
+	db, err := InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := NewServer(db)
+	server.RegisterProvider(&namedMockProvider{agentName: "codex"})
+	server.RegisterProvider(&namedMockProvider{agentName: "antigravity"})
+	server.RegisterProvider(&namedMockProvider{agentName: "claude-code"})
+	server.RegisterProvider(&namedMockProvider{agentName: "custom-agent"})
+
+	for iter := 0; iter < 10; iter++ {
+		req := httptest.NewRequest(http.MethodGet, "/v1/agents/discovery", nil)
+		w := httptest.NewRecorder()
+		server.handleAgentDiscovery(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("Expected 200, got %d", w.Code)
+		}
+
+		var discovery []AgentDiscoveryResult
+		if err := json.Unmarshal(w.Body.Bytes(), &discovery); err != nil {
+			t.Fatalf("Unmarshal failed: %v", err)
+		}
+
+		if len(discovery) != 4 {
+			t.Fatalf("Expected 4 discovery results, got %d", len(discovery))
+		}
+
+		expectedOrder := []string{"claude-code", "antigravity", "codex", "custom-agent"}
+		for i, exp := range expectedOrder {
+			if discovery[i].Agent != exp {
+				t.Fatalf("Iter %d: expected agent[%d] to be %q, got %q", iter, i, exp, discovery[i].Agent)
+			}
+		}
+	}
+}
+

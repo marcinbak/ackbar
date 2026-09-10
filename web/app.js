@@ -1436,6 +1436,9 @@
       const url = `${baseUrl}/v1/sessions/control?id=${encodeURIComponent(sessionId)}&action=move&node_path=${encodeURIComponent(targetPath)}`;
       const res = await fetch(url, { method: 'POST' });
       if (res.ok) {
+        if (sess && targetPath) {
+          recordGroupSpawn({ group: targetPath, host: sess.host || sessionHost, agent: sess.agent, cwd: sess.cwd });
+        }
         await fetchSessions();
       }
     } catch (err) {
@@ -3750,6 +3753,144 @@ ${session.last_prompt}
     return currentPath;
   }
 
+  // Group Memory Storage Key
+  const GROUP_PREFERENCES_KEY = 'ackbar_group_preferences_v1';
+
+  function getStoredGroupPreferences() {
+    try {
+      const raw = localStorage.getItem(GROUP_PREFERENCES_KEY);
+      return raw ? JSON.parse(raw) : {};
+    } catch (e) {
+      console.warn('Failed to parse group preferences:', e);
+      return {};
+    }
+  }
+
+  function saveStoredGroupPreferences(prefs) {
+    try {
+      localStorage.setItem(GROUP_PREFERENCES_KEY, JSON.stringify(prefs));
+    } catch (e) {
+      console.warn('Failed to save group preferences:', e);
+    }
+  }
+
+  // Record a spawn in group memory
+  function recordGroupSpawn({ group, host, agent, cwd }) {
+    if (!host) host = 'local';
+    if (!agent) agent = 'claude-code';
+    if (!cwd) return;
+
+    const groupKey = group || '__default__';
+    const allPrefs = getStoredGroupPreferences();
+    if (!allPrefs[groupKey]) {
+      allPrefs[groupKey] = {
+        preferred_host: host,
+        by_host: {}
+      };
+    }
+
+    const g = allPrefs[groupKey];
+    g.preferred_host = host;
+    if (!g.by_host) g.by_host = {};
+    if (!g.by_host[host]) {
+      g.by_host[host] = {
+        agent: agent,
+        recent_paths: [],
+        counts: {}
+      };
+    }
+
+    const hostEntry = g.by_host[host];
+    hostEntry.agent = agent;
+    hostEntry.last_used_at = Date.now();
+
+    const filteredPaths = (hostEntry.recent_paths || []).filter(p => p !== cwd);
+    hostEntry.recent_paths = [cwd, ...filteredPaths].slice(0, 3);
+
+    if (!hostEntry.counts) hostEntry.counts = {};
+    hostEntry.counts[cwd] = (hostEntry.counts[cwd] || 0) + 1;
+
+    saveStoredGroupPreferences(allPrefs);
+  }
+
+  // Get preferences for a given group and target host
+  function getGroupPreferences(groupPath, targetHost = null) {
+    const groupKey = groupPath || '__default__';
+    const allPrefs = getStoredGroupPreferences();
+    const storedGroup = allPrefs[groupKey];
+
+    // Filter matching sessions from state.sessions
+    let groupSessions = (state.sessions || []).filter(s => s.node_path === groupPath);
+    if (groupSessions.length === 0 && groupPath) {
+      groupSessions = (state.sessions || []).filter(s => s.node_path && s.node_path.startsWith(groupPath));
+    }
+    const sortedGroupSessions = sortSessionsByInteraction(groupSessions);
+
+    // 1. Determine Preferred Host
+    let preferredHost = '';
+    if (storedGroup && storedGroup.preferred_host) {
+      preferredHost = storedGroup.preferred_host;
+    } else if (sortedGroupSessions.length > 0 && sortedGroupSessions[0].host) {
+      preferredHost = sortedGroupSessions[0].host;
+    } else {
+      const node = (state.treeNodes || []).find(n => n.path === groupPath);
+      if (node && node.host) {
+        preferredHost = node.host;
+      } else {
+        preferredHost = targetHost || 'local';
+      }
+    }
+
+    const effectiveHost = targetHost || preferredHost || 'local';
+    const hostSessions = sortedGroupSessions.filter(s => (s.host || 'local') === effectiveHost);
+
+    // 2. Determine Preferred Agent
+    let preferredAgent = '';
+    if (storedGroup && storedGroup.by_host && storedGroup.by_host[effectiveHost] && storedGroup.by_host[effectiveHost].agent) {
+      preferredAgent = storedGroup.by_host[effectiveHost].agent;
+    } else if (hostSessions.length > 0 && hostSessions[0].agent) {
+      preferredAgent = hostSessions[0].agent;
+    } else if (sortedGroupSessions.length > 0 && sortedGroupSessions[0].agent) {
+      preferredAgent = sortedGroupSessions[0].agent;
+    } else {
+      preferredAgent = 'claude-code';
+    }
+
+    // 3. Determine Recent Paths and Preferred Path
+    let recentPaths = [];
+    if (storedGroup && storedGroup.by_host && storedGroup.by_host[effectiveHost] && Array.isArray(storedGroup.by_host[effectiveHost].recent_paths)) {
+      recentPaths = [...storedGroup.by_host[effectiveHost].recent_paths];
+    }
+    hostSessions.forEach(s => {
+      if (s.cwd && !recentPaths.includes(s.cwd)) {
+        recentPaths.push(s.cwd);
+      }
+    });
+    recentPaths = recentPaths.slice(0, 3);
+
+    let preferredPath = recentPaths.length > 0 ? recentPaths[0] : '';
+    if (!preferredPath && groupPath) {
+      const node = (state.treeNodes || []).find(n => n.path === groupPath && n.project_dir);
+      if (node && node.project_dir) {
+        preferredPath = translatePathForHost(node.project_dir, node.host || 'local', effectiveHost);
+      } else {
+        const childNode = (state.treeNodes || []).find(n => n.path.startsWith(groupPath + '/') && n.project_dir);
+        if (childNode && childNode.project_dir) {
+          preferredPath = translatePathForHost(childNode.project_dir, childNode.host || 'local', effectiveHost);
+        } else if (sortedGroupSessions.length > 0 && sortedGroupSessions[0].cwd) {
+          preferredPath = translatePathForHost(sortedGroupSessions[0].cwd, sortedGroupSessions[0].host || 'local', effectiveHost);
+        }
+      }
+    }
+
+    return {
+      preferredHost,
+      preferredAgent,
+      preferredPath,
+      recentPaths
+    };
+  }
+
   // Helper: Get relevant folders for a specific host
   function getFoldersForHost(targetHost) {
     const hostSessions = (state.sessions || []).filter(s => (s.host || 'local') === targetHost && s.cwd);
@@ -3789,15 +3930,14 @@ ${session.last_prompt}
     const folderList = document.getElementById('folderSuggestions');
     const groupSelect = document.getElementById('newSessionGroup');
 
-    // Determine initial active host
-    let currentSelectedHost = 'local';
+    // If no group explicitly passed, check active tab's session group
     const activeTab = state.openTabs.get(state.activeTabId);
-    if (activeTab && activeTab.session && activeTab.session.host) {
-      currentSelectedHost = activeTab.session.host;
+    if (!prefillGroup && activeTab && activeTab.session && activeTab.session.node_path) {
+      prefillGroup = activeTab.session.node_path;
     }
 
     // Helper: Dynamically fetch & populate available agents for the chosen host
-    async function updateAgentOptions(targetHost) {
+    async function updateAgentOptions(targetHost, preferredAgent = null) {
       if (!agentSelect) return;
       agentSelect.innerHTML = '<option value="">⏳ Detecting agents on host...</option>';
 
@@ -3817,20 +3957,32 @@ ${session.last_prompt}
         const installed = discovery.filter(d => d.installed);
         agentSelect.innerHTML = '';
 
-        if (installed.length > 0) {
-          installed.forEach(d => {
-            const opt = document.createElement('option');
-            opt.value = d.agent;
-            opt.textContent = `${d.display_name || agentDisplayNames[d.agent] || d.agent} (Installed)`;
-            agentSelect.appendChild(opt);
-          });
-        } else {
-          discovery.forEach(d => {
-            const opt = document.createElement('option');
-            opt.value = d.agent;
-            opt.textContent = `${d.display_name || agentDisplayNames[d.agent] || d.agent} (Not detected)`;
-            agentSelect.appendChild(opt);
-          });
+        const listToRender = installed.length > 0 ? installed : discovery;
+        const availableAgents = listToRender.map(d => d.agent);
+
+        // Determine which agent should be selected
+        // Priority: preferredAgent (if available) -> 'claude-code' (if available) -> first available
+        let selectedAgent = preferredAgent && availableAgents.includes(preferredAgent) ? preferredAgent : null;
+        if (!selectedAgent && availableAgents.includes('claude-code')) {
+          selectedAgent = 'claude-code';
+        }
+        if (!selectedAgent && availableAgents.length > 0) {
+          selectedAgent = availableAgents[0];
+        }
+
+        listToRender.forEach(d => {
+          const opt = document.createElement('option');
+          opt.value = d.agent;
+          const statusLabel = d.installed ? '(Installed)' : '(Not detected)';
+          opt.textContent = `${d.display_name || agentDisplayNames[d.agent] || d.agent} ${statusLabel}`;
+          if (d.agent === selectedAgent) {
+            opt.selected = true;
+          }
+          agentSelect.appendChild(opt);
+        });
+
+        if (selectedAgent) {
+          agentSelect.value = selectedAgent;
         }
       } catch (err) {
         console.warn('Agent discovery fallback for host:', targetHost, err);
@@ -3839,49 +3991,71 @@ ${session.last_prompt}
           <option value="antigravity">Google Antigravity (agy)</option>
           <option value="codex">OpenAI Codex</option>
         `;
+        agentSelect.value = preferredAgent || 'claude-code';
       }
     }
 
     // Helper: Update folder suggestions datalist and adapt folderInput.value on host change
-    function updateFolderSuggestions(targetHost, prevHost = null) {
+    function updateFolderSuggestions(targetHost, prevHost = null, targetGroup = '') {
       if (!folderList) return;
       const hostFolders = getFoldersForHost(targetHost);
+      const groupPrefs = getGroupPreferences(targetGroup, targetHost);
+      const recentGroupPaths = (groupPrefs && groupPrefs.recentPaths) ? groupPrefs.recentPaths : [];
+
+      // Combine suggestions: group's recent paths first, then hostFolders (deduplicated)
+      const combined = Array.from(new Set([...recentGroupPaths, ...hostFolders]));
+
       folderList.innerHTML = '';
-      hostFolders.forEach(c => {
+      combined.forEach(c => {
         const opt = document.createElement('option');
         opt.value = c;
+        if (recentGroupPaths.includes(c)) {
+          opt.label = 'Recent in group';
+        }
         folderList.appendChild(opt);
       });
 
-      // If user switched hosts, translate the current folder path intelligently
+      // If user switched hosts, translate the current folder path or apply group preference
       if (prevHost && prevHost !== targetHost && folderInput) {
-        const oldVal = folderInput.value.trim();
-        if (oldVal) {
-          const translated = translatePathForHost(oldVal, prevHost, targetHost);
-          if (translated && translated !== oldVal) {
-            folderInput.value = translated;
-          } else if (hostFolders.length > 0 && !hostFolders.includes(oldVal)) {
-            // Check if any host folder matches the basename
-            const base = oldVal.replace(/\/+$/, '').split('/').pop();
-            const matched = hostFolders.find(f => f.endsWith('/' + base) || f.split('/').pop() === base);
-            if (matched) {
-              folderInput.value = matched;
-            } else {
-              folderInput.value = hostFolders[0];
+        if (targetGroup && groupPrefs && groupPrefs.preferredPath) {
+          folderInput.value = groupPrefs.preferredPath;
+        } else {
+          const oldVal = folderInput.value.trim();
+          if (oldVal) {
+            const translated = translatePathForHost(oldVal, prevHost, targetHost);
+            if (translated && translated !== oldVal) {
+              folderInput.value = translated;
+            } else if (hostFolders.length > 0 && !hostFolders.includes(oldVal)) {
+              // Check if any host folder matches the basename
+              const base = oldVal.replace(/\/+$/, '').split('/').pop();
+              const matched = hostFolders.find(f => f.endsWith('/' + base) || f.split('/').pop() === base);
+              if (matched) {
+                folderInput.value = matched;
+              } else {
+                folderInput.value = hostFolders[0];
+              }
             }
+          } else if (hostFolders.length > 0) {
+            folderInput.value = hostFolders[0];
           }
-        } else if (hostFolders.length > 0) {
-          folderInput.value = hostFolders[0];
         }
       }
     }
 
-    // 1. Check if prefillGroup dictates a specific host or project directory
+    // 1. Determine initial active host based on group preference or active tab
+    let currentSelectedHost = 'local';
     if (prefillGroup) {
-      const matchedNode = (state.treeNodes || []).find(n => n.path === prefillGroup);
-      if (matchedNode && matchedNode.host) {
-        currentSelectedHost = matchedNode.host;
+      const groupPrefs = getGroupPreferences(prefillGroup, 'local');
+      if (groupPrefs.preferredHost) {
+        currentSelectedHost = groupPrefs.preferredHost;
+      } else {
+        const matchedNode = (state.treeNodes || []).find(n => n.path === prefillGroup);
+        if (matchedNode && matchedNode.host) {
+          currentSelectedHost = matchedNode.host;
+        }
       }
+    } else if (activeTab && activeTab.session && activeTab.session.host) {
+      currentSelectedHost = activeTab.session.host;
     }
 
     // 2. Populate Hosts
@@ -3896,24 +4070,40 @@ ${session.last_prompt}
           hostSelect.appendChild(opt);
         }
       });
-      if (currentSelectedHost === 'local') hostSelect.value = 'local';
+      hostSelect.value = currentSelectedHost;
 
       // Update agents & folders when host selection changes
       hostSelect.onchange = () => {
         const newHost = hostSelect.value;
-        updateFolderSuggestions(newHost, currentSelectedHost);
+        const selectedGroup = groupSelect ? groupSelect.value : '';
+        const prevHost = currentSelectedHost;
         currentSelectedHost = newHost;
-        updateAgentOptions(newHost);
+        updateFolderSuggestions(newHost, prevHost, selectedGroup);
+        const groupPrefs = getGroupPreferences(selectedGroup, newHost);
+        if (selectedGroup && groupPrefs.preferredPath) {
+          folderInput.value = groupPrefs.preferredPath;
+        }
+        updateAgentOptions(newHost, groupPrefs.preferredAgent);
       };
     }
 
-    // 3. Populate Groups & prefill linked project folder if group has one
+    // 3. Populate Groups & wire onchange
     if (groupSelect) {
       groupSelect.innerHTML = '<option value="">(Default / Unassigned)</option>';
       const allPaths = new Set();
       (state.treeNodes || []).forEach(n => {
         if (n.path) {
           const parts = n.path.split('/');
+          let acc = '';
+          parts.forEach(p => {
+            acc = acc ? acc + '/' + p : p;
+            allPaths.add(acc);
+          });
+        }
+      });
+      (state.sessions || []).forEach(s => {
+        if (s.node_path) {
+          const parts = s.node_path.split('/');
           let acc = '';
           parts.forEach(p => {
             acc = acc ? acc + '/' + p : p;
@@ -3933,22 +4123,51 @@ ${session.last_prompt}
         if (p === prefillGroup) opt.selected = true;
         groupSelect.appendChild(opt);
       });
+      if (prefillGroup) groupSelect.value = prefillGroup;
+
+      groupSelect.onchange = () => {
+        const selectedGroup = groupSelect.value;
+        const groupPrefs = getGroupPreferences(selectedGroup, currentSelectedHost);
+
+        // If group has a preferred host, switch host
+        if (groupPrefs.preferredHost && groupPrefs.preferredHost !== currentSelectedHost) {
+          currentSelectedHost = groupPrefs.preferredHost;
+          if (hostSelect) hostSelect.value = currentSelectedHost;
+        }
+
+        // Update folder suggestions and folder input
+        updateFolderSuggestions(currentSelectedHost, null, selectedGroup);
+        if (folderInput) {
+          if (groupPrefs.preferredPath) {
+            folderInput.value = groupPrefs.preferredPath;
+          } else {
+            const hostFolders = getFoldersForHost(currentSelectedHost);
+            folderInput.value = hostFolders.length > 0 ? hostFolders[0] : '';
+          }
+        }
+
+        // Update agent options with group's preferred agent
+        updateAgentOptions(currentSelectedHost, groupPrefs.preferredAgent);
+      };
     }
 
-    // 4. Initial folder suggestions population for selected host
-    updateFolderSuggestions(currentSelectedHost);
+    // 4. Initial folder suggestions population for selected host and group
+    const initialGroupPrefs = getGroupPreferences(prefillGroup, currentSelectedHost);
+    updateFolderSuggestions(currentSelectedHost, null, prefillGroup);
 
     // 5. Initial folder prefill
     if (folderInput) {
       folderInput.value = '';
-      if (prefillGroup) {
+      if (initialGroupPrefs && initialGroupPrefs.preferredPath) {
+        folderInput.value = initialGroupPrefs.preferredPath;
+      } else if (prefillGroup) {
         const matchedNode = (state.treeNodes || []).find(n => n.path === prefillGroup);
         if (matchedNode && matchedNode.project_dir) {
-          folderInput.value = matchedNode.project_dir;
+          folderInput.value = translatePathForHost(matchedNode.project_dir, matchedNode.host || 'local', currentSelectedHost);
         } else {
           const childNode = (state.treeNodes || []).find(n => n.path.startsWith(prefillGroup + '/') && n.project_dir);
           if (childNode && childNode.project_dir) {
-            folderInput.value = childNode.project_dir;
+            folderInput.value = translatePathForHost(childNode.project_dir, childNode.host || 'local', currentSelectedHost);
           }
         }
       }
@@ -3971,7 +4190,7 @@ ${session.last_prompt}
     }, 50);
 
     // Initial agent discovery for selected host
-    await updateAgentOptions(currentSelectedHost);
+    await updateAgentOptions(currentSelectedHost, initialGroupPrefs.preferredAgent);
   }
 
   function hideNewSessionModal() {
@@ -4019,6 +4238,9 @@ ${session.last_prompt}
       const spawnedSessId = spawnResult.id || `${agent}:${host}:${spawnedNativeId}`;
 
       hideNewSessionModal();
+
+      // Record spawn in group preferences
+      recordGroupSpawn({ group: targetGroup, host, agent, cwd });
 
       // If user selected a group, assign it immediately
       if (targetGroup && spawnedSessId) {

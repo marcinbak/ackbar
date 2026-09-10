@@ -1721,6 +1721,16 @@ func (s *Server) handleAgentDiscovery(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	sort.Slice(results, func(i, j int) bool {
+		if results[i].Agent == "claude-code" {
+			return true
+		}
+		if results[j].Agent == "claude-code" {
+			return false
+		}
+		return results[i].Agent < results[j].Agent
+	})
+
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(results)
 }
@@ -1745,6 +1755,16 @@ func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request) {
 			ProcessNames:   p.ProcessNames(),
 		})
 	}
+
+	sort.Slice(results, func(i, j int) bool {
+		if results[i].Agent == "claude-code" {
+			return true
+		}
+		if results[j].Agent == "claude-code" {
+			return false
+		}
+		return results[i].Agent < results[j].Agent
+	})
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(results)
