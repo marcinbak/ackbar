@@ -658,6 +658,25 @@ func (d *DB) SaveNode(node *TreeNode) error {
 	return nil
 }
 
+func (d *DB) GetNode(path string) (*TreeNode, error) {
+	var n TreeNode
+	var projectDir, gitURL sql.NullString
+	err := d.db.QueryRow("SELECT path, project_dir, git_url, created_at FROM tree_nodes WHERE path = ?;", path).Scan(&n.Path, &projectDir, &gitURL, &n.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get node: %w", err)
+	}
+	if projectDir.Valid {
+		n.ProjectDir = projectDir.String
+	}
+	if gitURL.Valid {
+		n.GitURL = gitURL.String
+	}
+	return &n, nil
+}
+
 func (d *DB) ListNodes() ([]*TreeNode, error) {
 	query := `SELECT path, project_dir, git_url, created_at FROM tree_nodes ORDER BY path ASC;`
 	rows, err := d.db.Query(query)

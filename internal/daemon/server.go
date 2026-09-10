@@ -1455,6 +1455,19 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = os.MkdirAll(req.Cwd, 0755)
 
+	if req.NodePath != "" {
+		if existingNode, _ := s.db.GetNode(req.NodePath); existingNode == nil {
+			_ = s.db.SaveNode(&TreeNode{
+				Path:       req.NodePath,
+				ProjectDir: req.Cwd,
+				CreatedAt:  time.Now(),
+			})
+		} else if existingNode.ProjectDir == "" && req.Cwd != "" {
+			existingNode.ProjectDir = req.Cwd
+			_ = s.db.SaveNode(existingNode)
+		}
+	}
+
 	tempUUID := generateUUID()
 	tmuxName := fmt.Sprintf("ackbar-%s-%s", req.Agent, tempUUID)
 	launchCmd := s.getSpawnCmd(req.Agent, tempUUID)
@@ -3805,8 +3818,36 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 						existing.Activity = "Awaiting user prompt"
 					}
 					_ = s.db.SaveSession(existing)
+					knownIDs[existing.ID] = existing
+					knownByPID[pid] = existing
+					if panePID > 0 {
+						knownByPID[panePID] = existing
+					}
 					s.broadcast(existing)
-					_ = s.db.DeleteSession(fmt.Sprintf("%s:observed:proc-%d", hostName, pid))
+
+					// Clean up ghost unmanaged proc-<pid> / proc-<panePID> sessions if any
+					ghostID := fmt.Sprintf("%s:observed:proc-%d", hostName, pid)
+					if ghost, ok := knownIDs[ghostID]; ok {
+						_ = s.db.DeleteSession(ghostID)
+						ghost.Deleted = true
+						ghost.Activity = "Deleted"
+						s.broadcast(ghost)
+						delete(knownIDs, ghostID)
+					} else {
+						_ = s.db.DeleteSession(ghostID)
+					}
+					if panePID > 0 {
+						ghostPaneID := fmt.Sprintf("%s:observed:proc-%d", hostName, panePID)
+						if ghost, ok := knownIDs[ghostPaneID]; ok {
+							_ = s.db.DeleteSession(ghostPaneID)
+							ghost.Deleted = true
+							ghost.Activity = "Deleted"
+							s.broadcast(ghost)
+							delete(knownIDs, ghostPaneID)
+						} else {
+							_ = s.db.DeleteSession(ghostPaneID)
+						}
+					}
 					continue
 				}
 
@@ -3857,12 +3898,43 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 					_ = s.db.SaveSession(newSess)
 					knownIDs[sessID] = newSess
 					knownByPID[pid] = newSess
+					if panePID > 0 {
+						knownByPID[panePID] = newSess
+					}
 					s.broadcast(newSess)
+
+					// Clean up ghost unmanaged proc-<pid> session if any
+					ghostID := fmt.Sprintf("%s:observed:proc-%d", hostName, pid)
+					if ghost, ok := knownIDs[ghostID]; ok && ghostID != sessID {
+						_ = s.db.DeleteSession(ghostID)
+						ghost.Deleted = true
+						ghost.Activity = "Deleted"
+						s.broadcast(ghost)
+						delete(knownIDs, ghostID)
+					} else if ghostID != sessID {
+						_ = s.db.DeleteSession(ghostID)
+					}
+					if panePID > 0 {
+						ghostPaneID := fmt.Sprintf("%s:observed:proc-%d", hostName, panePID)
+						if ghost, ok := knownIDs[ghostPaneID]; ok && ghostPaneID != sessID {
+							_ = s.db.DeleteSession(ghostPaneID)
+							ghost.Deleted = true
+							ghost.Activity = "Deleted"
+							s.broadcast(ghost)
+							delete(knownIDs, ghostPaneID)
+						} else if ghostPaneID != sessID {
+							_ = s.db.DeleteSession(ghostPaneID)
+						}
+					}
 				} else {
 					obsChanged := false
 					if (existingObs.TmuxName != tmuxName || !existingObs.Managed) && tmuxName != "(deleted)" && tmuxName != "" {
 						existingObs.TmuxName = tmuxName
 						existingObs.Managed = true
+						obsChanged = true
+					}
+					if existingObs.PID != pid {
+						existingObs.PID = pid
 						obsChanged = true
 					}
 					if existingObs.NodePath == "" && existingObs.Cwd != "" {
@@ -3871,9 +3943,38 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 							obsChanged = true
 						}
 					}
+					knownIDs[sessID] = existingObs
+					knownByPID[pid] = existingObs
+					if panePID > 0 {
+						knownByPID[panePID] = existingObs
+					}
 					if obsChanged {
 						_ = s.db.SaveSession(existingObs)
 						s.broadcast(existingObs)
+					}
+
+					// Clean up ghost unmanaged proc-<pid> session if any
+					ghostID := fmt.Sprintf("%s:observed:proc-%d", hostName, pid)
+					if ghost, ok := knownIDs[ghostID]; ok && ghostID != sessID {
+						_ = s.db.DeleteSession(ghostID)
+						ghost.Deleted = true
+						ghost.Activity = "Deleted"
+						s.broadcast(ghost)
+						delete(knownIDs, ghostID)
+					} else if ghostID != sessID {
+						_ = s.db.DeleteSession(ghostID)
+					}
+					if panePID > 0 {
+						ghostPaneID := fmt.Sprintf("%s:observed:proc-%d", hostName, panePID)
+						if ghost, ok := knownIDs[ghostPaneID]; ok && ghostPaneID != sessID {
+							_ = s.db.DeleteSession(ghostPaneID)
+							ghost.Deleted = true
+							ghost.Activity = "Deleted"
+							s.broadcast(ghost)
+							delete(knownIDs, ghostPaneID)
+						} else if ghostPaneID != sessID {
+							_ = s.db.DeleteSession(ghostPaneID)
+						}
 					}
 				}
 			}
@@ -4256,11 +4357,16 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 						// Check if this is an internal subagent conversation
 						if isAntigravitySubagent(home, convID) {
 							if existing := knownIDs[sessID]; existing != nil {
-								_ = s.db.DeleteSession(sessID)
-								existing.Deleted = true
-								existing.Activity = "Deleted"
-								s.broadcast(existing)
-								delete(knownIDs, sessID)
+								// Safety guard: NEVER delete a managed session or an active session!
+								if existing.Managed || (existing.TmuxName != "" && tmux.HasSession(ctx, existing.TmuxName)) || (existing.PID > 0 && isProcessAlive(existing.PID)) || existing.State != StateEnded {
+									// Skip deletion of live / managed session
+								} else {
+									_ = s.db.DeleteSession(sessID)
+									existing.Deleted = true
+									existing.Activity = "Deleted"
+									s.broadcast(existing)
+									delete(knownIDs, sessID)
+								}
 							}
 							continue
 						}
@@ -4318,6 +4424,10 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 		// 5. Database Sanitation: Clean up any obsolete/orphaned subagents in DB
 		for _, sObj := range existingSessions {
 			if sObj.Agent == "antigravity" && sObj.NativeID != "" && isUUID(sObj.NativeID) {
+				// Safety guard: NEVER purge a session that is managed, or currently alive/running in tmux/process!
+				if sObj.Managed || (sObj.TmuxName != "" && tmux.HasSession(ctx, sObj.TmuxName)) || (sObj.PID > 0 && isProcessAlive(sObj.PID)) || sObj.State != StateEnded {
+					continue
+				}
 				if isAntigravitySubagent(home, sObj.NativeID) {
 					_ = s.db.DeleteSession(sObj.ID)
 					sObj.Deleted = true
@@ -5334,8 +5444,38 @@ func isAntigravitySubagent(home, convID string) bool {
 		}
 	}
 
-	// 3. If no user annotation file exists and not marked as a root conversation in metadata, it is a subagent
-	return true
+	// 3. Check transcript file for explicit subagent invocation markers
+	brainDirs := []string{
+		filepath.Join(home, ".gemini", "antigravity", "brain"),
+		filepath.Join(home, ".gemini", "antigravity-cli", "brain"),
+		filepath.Join(home, ".antigravity", "brain"),
+	}
+	for _, bDir := range brainDirs {
+		logPath := filepath.Join(bDir, convID, ".system_generated", "logs", "transcript.jsonl")
+		if data, err := os.ReadFile(logPath); err == nil {
+			lines := strings.Split(string(data), "\n")
+			for i, line := range lines {
+				if i > 15 {
+					break
+				}
+				line = strings.TrimSpace(line)
+				if line == "" {
+					continue
+				}
+				if strings.Contains(line, "<subagent_invocation>") ||
+					strings.Contains(line, "You are a subagent") ||
+					strings.Contains(line, "Subagent Defined") ||
+					strings.Contains(line, "subagent_analyst") ||
+					strings.Contains(line, "invoke_subagent") ||
+					strings.Contains(line, "This is a side question from the user") {
+					return true
+				}
+			}
+		}
+	}
+
+	// 4. Default to false: A conversation is a primary/user conversation unless proven to be a subagent!
+	return false
 }
 
 func cleanEnvForVSCode(env []string) []string {
