@@ -1596,21 +1596,41 @@ func (m *Model) buildVisibleRows() []TreeRow {
 		if assignedPath == "" && s.Cwd != "" {
 			cleanCwd := strings.ToLower(filepath.Clean(s.Cwd))
 			cwdParts := strings.Split(cleanCwd, string(filepath.Separator))
+
+			// 1. Cross-machine leaf / basename match (e.g. "Ackbar" in "Personal/Ackbar")
 			for _, node := range nodesCopy {
-				parts := strings.Split(node.Path, "/")
-				if len(parts) > 0 {
-					topGroup := parts[0]
-					if len(topGroup) > 3 {
-						for _, part := range cwdParts {
-							if part == strings.ToLower(topGroup) {
-								assignedPath = topGroup
-								break
-							}
+				leaf := strings.ToLower(filepath.Base(node.Path))
+				if len(leaf) > 3 {
+					for _, part := range cwdParts {
+						if part == leaf {
+							assignedPath = node.Path
+							break
 						}
 					}
 				}
 				if assignedPath != "" {
 					break
+				}
+			}
+
+			// 2. Top-level group ancestor match (e.g. "Personal" in "/home/.../Personal/...")
+			if assignedPath == "" {
+				for _, node := range nodesCopy {
+					parts := strings.Split(node.Path, "/")
+					if len(parts) > 0 {
+						topGroup := parts[0]
+						if len(topGroup) > 3 {
+							for _, part := range cwdParts {
+								if part == strings.ToLower(topGroup) {
+									assignedPath = topGroup
+									break
+								}
+							}
+						}
+					}
+					if assignedPath != "" {
+						break
+					}
 				}
 			}
 		}

@@ -2104,4 +2104,164 @@ func TestHandleSpawn_PersistsTreeNode(t *testing.T) {
 	}
 }
 
+func TestIsAntigravitySubagent_ReviewerPromptsAndMessages(t *testing.T) {
+	tempHome := t.TempDir()
+	convIDReviewer := "11111111-2222-3333-4444-555555555555"
+	convIDSecurity := "22222222-3333-4444-5555-666666666666"
+	convIDMessage := "33333333-4444-5555-6666-777777777777"
+	convIDUser := "44444444-5555-6666-7777-888888888888"
+
+	// 1. Reviewer A transcript
+	revLogDir := filepath.Join(tempHome, ".gemini", "antigravity", "brain", convIDReviewer, ".system_generated", "logs")
+	_ = os.MkdirAll(revLogDir, 0755)
+	_ = os.WriteFile(filepath.Join(revLogDir, "transcript.jsonl"), []byte(`{"type":"USER_INPUT","content":"You are Reviewer A (Context-Aware Code Reviewer). Inspect changes..."}`), 0644)
+
+	// 2. Dedicated Security Reviewer transcript
+	secLogDir := filepath.Join(tempHome, ".gemini", "antigravity", "brain", convIDSecurity, ".system_generated", "logs")
+	_ = os.MkdirAll(secLogDir, 0755)
+	_ = os.WriteFile(filepath.Join(secLogDir, "transcript.jsonl"), []byte(`{"type":"USER_INPUT","content":"You are the Dedicated Security Reviewer. Perform a focused audit..."}`), 0644)
+
+	// 3. Message dispatch subagent
+	msgDir := filepath.Join(tempHome, ".gemini", "antigravity", "brain", convIDMessage, ".system_generated", "messages")
+	_ = os.MkdirAll(msgDir, 0755)
+	_ = os.WriteFile(filepath.Join(msgDir, "msg-1.json"), []byte(`{"sourceMetadata":{"tool":{"conversationId":"root-conv-123","name":"send_message"}}}`), 0644)
+
+	// 4. Real user session with annotation
+	annoDir := filepath.Join(tempHome, ".gemini", "antigravity", "annotations")
+	_ = os.MkdirAll(annoDir, 0755)
+	_ = os.WriteFile(filepath.Join(annoDir, convIDUser+".pbtxt"), []byte(`title:"My Real Task"`), 0644)
+	userLogDir := filepath.Join(tempHome, ".gemini", "antigravity", "brain", convIDUser, ".system_generated", "logs")
+	_ = os.MkdirAll(userLogDir, 0755)
+	_ = os.WriteFile(filepath.Join(userLogDir, "transcript.jsonl"), []byte(`{"type":"USER_INPUT","content":"Please build the mobile UI."}`), 0644)
+
+	if !isAntigravitySubagent(tempHome, convIDReviewer) {
+		t.Errorf("expected convIDReviewer to be detected as subagent")
+	}
+	if !isAntigravitySubagent(tempHome, convIDSecurity) {
+		t.Errorf("expected convIDSecurity to be detected as subagent")
+	}
+	if !isAntigravitySubagent(tempHome, convIDMessage) {
+		t.Errorf("expected convIDMessage to be detected as subagent")
+	}
+	if isAntigravitySubagent(tempHome, convIDUser) {
+		t.Errorf("expected convIDUser NOT to be detected as subagent")
+	}
+}
+
+func TestScanObservedSessions_AssignsAndBackfillsNodePath(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+
+	dbPath := filepath.Join(tempHome, "test.db")
+	db, err := InitDB(dbPath)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	// Register tree node Personal/Ackbar
+	_ = db.SaveNode(&TreeNode{
+		Path:       "Personal/Ackbar",
+		ProjectDir: "", // Leaf fallback match
+	})
+
+	server := NewServer(db)
+
+	// 1. Create a disk Antigravity session with Ackbar workspace
+	convID := "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+	convDir := filepath.Join(tempHome, ".gemini", "antigravity", "brain", convID)
+	logDir := filepath.Join(convDir, ".system_generated", "logs")
+	_ = os.MkdirAll(logDir, 0755)
+
+	targetCwd := filepath.Join(tempHome, "Work", "Ackbar")
+	_ = os.MkdirAll(targetCwd, 0755)
+	_ = os.WriteFile(filepath.Join(logDir, "transcript.jsonl"), []byte(fmt.Sprintf(`%s -> marcinbak/ackbar
+{"type":"USER_INPUT","content":"Refactor the codebase"}`, targetCwd)), 0644)
+
+	// Create user annotation
+	annoDir := filepath.Join(tempHome, ".gemini", "antigravity", "annotations")
+	_ = os.MkdirAll(annoDir, 0755)
+	_ = os.WriteFile(filepath.Join(annoDir, convID+".pbtxt"), []byte(`title:"Refactoring Task"`), 0644)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	server.scanObservedSessions(ctx)
+
+	sessID := fmt.Sprintf("antigravity:local:%s", convID)
+	sess, err := db.GetSession(sessID)
+	if err != nil {
+		t.Fatalf("GetSession failed: %v", err)
+	}
+	if sess == nil {
+		t.Fatalf("Expected session to be scanned into DB, but was nil")
+	}
+	if sess.NodePath != "Personal/Ackbar" {
+		t.Errorf("Expected newly scanned session NodePath to be 'Personal/Ackbar', got %q", sess.NodePath)
+	}
+
+	// 2. Clear NodePath on an existing ended session and verify scanObservedSessions backfills it
+	sess.NodePath = ""
+	_ = db.SaveSession(sess)
+
+	server.scanObservedSessions(ctx)
+
+	updated, err := db.GetSession(sessID)
+	if err != nil {
+		t.Fatalf("GetSession failed: %v", err)
+	}
+	if updated.NodePath != "Personal/Ackbar" {
+		t.Errorf("Expected backfilled NodePath to be 'Personal/Ackbar', got %q", updated.NodePath)
+	}
+}
+
+func TestScanObservedSessions_PurgesReviewerSubagents(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+
+	dbPath := filepath.Join(tempHome, "test.db")
+	db, err := InitDB(dbPath)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := NewServer(db)
+
+	// Create a reviewer subagent on disk
+	subID := "55555555-6666-7777-8888-999999999999"
+	subLogDir := filepath.Join(tempHome, ".gemini", "antigravity", "brain", subID, ".system_generated", "logs")
+	_ = os.MkdirAll(subLogDir, 0755)
+	_ = os.WriteFile(filepath.Join(subLogDir, "transcript.jsonl"), []byte(`{"type":"USER_INPUT","content":"You are Reviewer B (Clean-Context Code Quality Reviewer)."}`), 0644)
+
+	// Seed this subagent into the database as an ended session
+	sessID := fmt.Sprintf("antigravity:local:%s", subID)
+	subSess := &Session{
+		ID:       sessID,
+		Name:     "You are Reviewer B (Clean-Context Code Quality Reviewer).",
+		Agent:    "antigravity",
+		Host:     "local",
+		NativeID: subID,
+		Cwd:      "/some/path",
+		State:    StateEnded,
+		Managed:  false,
+	}
+	_ = db.SaveSession(subSess)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	// Run scan & sanitation
+	server.scanObservedSessions(ctx)
+
+	// Subagent must be purged from database
+	purged, err := db.GetSession(sessID)
+	if err != nil {
+		t.Fatalf("GetSession failed: %v", err)
+	}
+	if purged != nil {
+		t.Fatalf("Expected reviewer subagent to be purged from DB, but still exists: %+v", purged)
+	}
+}
+
 

@@ -170,3 +170,49 @@ func TestBuildVisibleRows_PreservesMultipleSessionsInSameCwdWithDifferentArchive
 		t.Errorf("expected only archived session visible in archive view, got %v", visibleArchivedSessions)
 	}
 }
+
+func TestBuildVisibleRows_AssignsSessionByNodePathLeafFallback(t *testing.T) {
+	sess := &daemon.Session{
+		ID:       "antigravity:local:test-uuid-1",
+		NativeID: "test-uuid-1",
+		Name:     "Ackbar Session",
+		Host:     "local",
+		Cwd:      "/Users/dev4u/Work/Ackbar",
+		NodePath: "", // Missing NodePath!
+		State:    daemon.StateEnded,
+	}
+
+	m := &Model{
+		sessions:  []*daemon.Session{sess},
+		treeNodes: []*daemon.TreeNode{
+			{Path: "Personal/Ackbar", ProjectDir: ""}, // No project_dir!
+		},
+		collapsed: make(map[string]bool),
+	}
+
+	rows := m.buildVisibleRows()
+
+	foundUnderPersonalAckbar := false
+	inUnassigned := false
+
+	currentGroup := ""
+	for _, r := range rows {
+		if r.IsGroup {
+			currentGroup = r.GroupPath
+			if currentGroup == "Unassigned" {
+				inUnassigned = true
+			}
+		} else if r.Session != nil && r.Session.ID == "antigravity:local:test-uuid-1" {
+			if currentGroup == "Personal/Ackbar" {
+				foundUnderPersonalAckbar = true
+			}
+		}
+	}
+
+	if inUnassigned {
+		t.Errorf("expected session not to be in Unassigned")
+	}
+	if !foundUnderPersonalAckbar {
+		t.Errorf("expected session to be assigned to Personal/Ackbar by leaf fallback, but was not")
+	}
+}
