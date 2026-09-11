@@ -2343,6 +2343,7 @@ func spawnSSHTunnel(port, sshTarget string) error {
 		cmd := exec.Command("ssh",
 			"-f",
 			"-o", "ExitOnForwardFailure=yes",
+			"-o", "BatchMode=yes",
 			"-o", "ConnectTimeout=15",
 			"-o", "ServerAliveInterval=15",
 			"-o", "ServerAliveCountMax=3",
@@ -2823,7 +2824,7 @@ func (s *Server) StartBackgroundLoop(ctx context.Context) {
 				return
 			case <-ticker.C:
 				s.scanObservedSessions(ctx)
-				s.ensureHostTunnels(ctx)
+				go s.ensureHostTunnels(ctx)
 				sessions, err := s.db.ListActiveSessions()
 				if err == nil && len(sessions) > 0 {
 					s.verifySessionLiveness(ctx, sessions)
@@ -3585,6 +3586,13 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 
 		// IMMUTABILITY GUARD: Ended sessions with established names are static and do not need disk rescans
 		if sess.State == StateEnded && sess.Name != "" && !isRawSessionName(sess.Name) {
+			if sess.NodePath == "" && sess.Cwd != "" {
+				if np := s.resolveSessionNodePath(sess.Cwd); np != "" {
+					sess.NodePath = np
+					_ = s.db.SaveSession(sess)
+					s.broadcast(sess)
+				}
+			}
 			continue
 		}
 
@@ -4306,6 +4314,7 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 									NativeID:    sessionUUID,
 									Cwd:         cwd,
 									ProjectKey:  GetProjectKey(cwd),
+									NodePath:    s.resolveSessionNodePath(cwd),
 									State:       StateEnded,
 									Managed:     false,
 									Activity:    "Session ended",
@@ -4398,6 +4407,7 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 								NativeID:    convID,
 								Cwd:         cwd,
 								ProjectKey:  GetProjectKey(cwd),
+								NodePath:    s.resolveSessionNodePath(cwd),
 								State:       StateEnded,
 								Managed:     false,
 								Activity:    "Session ended",
@@ -4409,9 +4419,21 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 							_ = s.db.SaveSession(newSess)
 							knownIDs[sessID] = newSess
 							s.broadcast(newSess)
-						} else if isRawSessionName(existing.Name) {
-							if title := ReadAntigravitySessionTitle(existing.Cwd, convID); title != "" && !isRawSessionName(title) {
-								existing.Name = title
+						} else {
+							changed := false
+							if isRawSessionName(existing.Name) {
+								if title := ReadAntigravitySessionTitle(existing.Cwd, convID); title != "" && !isRawSessionName(title) {
+									existing.Name = title
+									changed = true
+								}
+							}
+							if existing.NodePath == "" && existing.Cwd != "" {
+								if np := s.resolveSessionNodePath(existing.Cwd); np != "" {
+									existing.NodePath = np
+									changed = true
+								}
+							}
+							if changed {
 								_ = s.db.SaveSession(existing)
 								s.broadcast(existing)
 							}
@@ -5452,7 +5474,7 @@ func isAntigravitySubagent(home, convID string) bool {
 	}
 	for _, bDir := range brainDirs {
 		logPath := filepath.Join(bDir, convID, ".system_generated", "logs", "transcript.jsonl")
-		if data, err := os.ReadFile(logPath); err == nil {
+		if data, err := readHead(logPath, 64*1024); err == nil {
 			lines := strings.Split(string(data), "\n")
 			for i, line := range lines {
 				if i > 15 {
@@ -5467,14 +5489,36 @@ func isAntigravitySubagent(home, convID string) bool {
 					strings.Contains(line, "Subagent Defined") ||
 					strings.Contains(line, "subagent_analyst") ||
 					strings.Contains(line, "invoke_subagent") ||
-					strings.Contains(line, "This is a side question from the user") {
+					strings.Contains(line, "This is a side question from the user") ||
+					strings.Contains(line, "You are Reviewer") ||
+					strings.Contains(line, "You are Code Reviewer") ||
+					strings.Contains(line, "You are the Dedicated Security Reviewer") ||
+					strings.Contains(line, "You are the Security Reviewer") ||
+					strings.Contains(line, "You are the Security Auditor") {
 					return true
+				}
+			}
+		}
+
+		// 4. Check .system_generated/messages for dispatched inter-agent messages
+		msgDir := filepath.Join(bDir, convID, ".system_generated", "messages")
+		if entries, err := os.ReadDir(msgDir); err == nil {
+			for _, e := range entries {
+				if !e.IsDir() && strings.HasSuffix(e.Name(), ".json") && e.Name() != "read.json" {
+					if mData, mErr := readHead(filepath.Join(msgDir, e.Name()), 8*1024); mErr == nil {
+						mStr := string(mData)
+						if strings.Contains(mStr, "send_message") ||
+							strings.Contains(mStr, "Message from Root Agent") ||
+							(strings.Contains(mStr, `"conversationId":`) && !strings.Contains(mStr, fmt.Sprintf(`"conversationId":"%s"`, convID))) {
+							return true
+						}
+					}
 				}
 			}
 		}
 	}
 
-	// 4. Default to false: A conversation is a primary/user conversation unless proven to be a subagent!
+	// 5. Default to false: A conversation is a primary/user conversation unless proven to be a subagent!
 	return false
 }
 
