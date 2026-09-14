@@ -183,7 +183,7 @@ func TestBuildVisibleRows_AssignsSessionByNodePathLeafFallback(t *testing.T) {
 	}
 
 	m := &Model{
-		sessions:  []*daemon.Session{sess},
+		sessions: []*daemon.Session{sess},
 		treeNodes: []*daemon.TreeNode{
 			{Path: "Personal/Ackbar", ProjectDir: ""}, // No project_dir!
 		},

@@ -548,4 +548,3 @@ func runLoginCmd(hostURL, accountID string) {
 	_ = cmd.Run()
 	fmt.Println("✅ Detached from login session.")
 }
-

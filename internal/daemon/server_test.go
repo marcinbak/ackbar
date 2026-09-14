@@ -2348,6 +2348,3 @@ func TestAccountsAPI(t *testing.T) {
 		t.Errorf("Expected 200 when deleting work account, got %d", wDelWork.Code)
 	}
 }
-
-
-
