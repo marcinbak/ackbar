@@ -250,4 +250,3 @@ func TestDB_Accounts(t *testing.T) {
 		t.Errorf("Expected acc3 to be deleted, found: %+v", acc3Fetched)
 	}
 }
-

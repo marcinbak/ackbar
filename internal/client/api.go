@@ -670,4 +670,3 @@ func LoginAccount(hostURL, accountID string) (string, error) {
 	_ = json.NewDecoder(resp.Body).Decode(&res)
 	return res.TmuxSession, nil
 }
-

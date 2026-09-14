@@ -1009,4 +1009,3 @@ func (d *DB) SetDefaultAccount(agent, id string) error {
 	}
 	return tx.Commit()
 }
-
