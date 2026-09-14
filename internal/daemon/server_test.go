@@ -2264,4 +2264,90 @@ func TestScanObservedSessions_PurgesReviewerSubagents(t *testing.T) {
 	}
 }
 
+func TestAccountsAPI(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "accounts_api_test.db")
+	db, err := InitDB(dbPath)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := NewServer(db)
+
+	// 1. GET /v1/accounts initially returns seeded default accounts
+	req := httptest.NewRequest(http.MethodGet, "/v1/accounts", nil)
+	w := httptest.NewRecorder()
+	server.handleAccounts(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var accounts []*AgentAccount
+	if err := json.Unmarshal(w.Body.Bytes(), &accounts); err != nil {
+		t.Fatalf("Failed to decode accounts: %v", err)
+	}
+	if len(accounts) < 2 {
+		t.Fatalf("Expected at least default accounts, got %d", len(accounts))
+	}
+
+	// 2. POST /v1/accounts to create a new profile
+	createPayload := map[string]interface{}{
+		"agent":        "claude-code",
+		"name":         "work",
+		"display_name": "Work Team",
+		"config_dir":   filepath.Join(t.TempDir(), "claude-work"),
+		"env": map[string]string{
+			"ANTHROPIC_API_KEY": "sk-work-test",
+		},
+		"is_default": true,
+	}
+	body, _ := json.Marshal(createPayload)
+	reqPost := httptest.NewRequest(http.MethodPost, "/v1/accounts", bytes.NewBuffer(body))
+	wPost := httptest.NewRecorder()
+	server.handleAccounts(wPost, reqPost)
+	if wPost.Code != http.StatusOK {
+		t.Fatalf("POST /v1/accounts failed (%d): %s", wPost.Code, wPost.Body.String())
+	}
+
+	var created AgentAccount
+	_ = json.Unmarshal(wPost.Body.Bytes(), &created)
+	if created.Name != "work" || created.ID != "claude-code:work" {
+		t.Errorf("Expected ID claude-code:work, got %s", created.ID)
+	}
+	if !created.IsLoggedIn {
+		t.Errorf("Expected IsLoggedIn true due to ANTHROPIC_API_KEY, got false")
+	}
+
+	// Verify profile directory was initialized with settings.json hook
+	settingsFile := filepath.Join(created.ConfigDir, "settings.json")
+	if _, err := os.Stat(settingsFile); err != nil {
+		t.Errorf("Expected settings.json created at %s, got error: %v", settingsFile, err)
+	}
+
+	// 3. GET /v1/accounts?agent=claude-code
+	reqList := httptest.NewRequest(http.MethodGet, "/v1/accounts?agent=claude-code", nil)
+	wList := httptest.NewRecorder()
+	server.handleAccounts(wList, reqList)
+	var claudeAccounts []*AgentAccount
+	_ = json.Unmarshal(wList.Body.Bytes(), &claudeAccounts)
+	if len(claudeAccounts) != 2 {
+		t.Fatalf("Expected 2 claude accounts (default and work), got %d", len(claudeAccounts))
+	}
+
+	// 4. Test delete default vs custom account
+	reqDelDefault := httptest.NewRequest(http.MethodDelete, "/v1/accounts/claude-code:default", nil)
+	wDelDefault := httptest.NewRecorder()
+	server.handleAccountOps(wDelDefault, reqDelDefault)
+	if wDelDefault.Code != http.StatusBadRequest {
+		t.Errorf("Expected 400 when deleting default account, got %d", wDelDefault.Code)
+	}
+
+	reqDelWork := httptest.NewRequest(http.MethodDelete, "/v1/accounts/claude-code:work", nil)
+	wDelWork := httptest.NewRecorder()
+	server.handleAccountOps(wDelWork, reqDelWork)
+	if wDelWork.Code != http.StatusOK {
+		t.Errorf("Expected 200 when deleting work account, got %d", wDelWork.Code)
+	}
+}
+
+
 

@@ -1910,7 +1910,12 @@ func (m *Model) View() string {
 					ctxTag = fmt.Sprintf(" [ctx: %s]", lipgloss.NewStyle().Foreground(lipgloss.Color(ctxColor)).Render(fmt.Sprintf("%d%%", s.ContextPct)))
 				}
 
-				rowHeader := fmt.Sprintf("%s%s%s%s%s @%s %s %s", sessionTitleStyle.Render(displayName), unreadTag, tmuxTag, originTag, ctxTag, hostStyle.Render(s.Host), statusEmoji, managedTag)
+				accountTag := ""
+				if s.AccountID != "" && s.AccountID != "default" {
+					accountTag = fmt.Sprintf(" [%s]", lipgloss.NewStyle().Foreground(lipgloss.Color("#20B2AA")).Render(s.AccountID))
+				}
+
+				rowHeader := fmt.Sprintf("%s%s%s%s%s%s @%s %s %s", sessionTitleStyle.Render(displayName), unreadTag, accountTag, tmuxTag, originTag, ctxTag, hostStyle.Render(s.Host), statusEmoji, managedTag)
 
 				if isSelected {
 					var statusBadge string
@@ -1935,7 +1940,11 @@ func (m *Model) View() string {
 
 					rowID := lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Render(fmt.Sprintf("ID: %s", s.NativeID))
 					rowCwd := fmt.Sprintf("CWD: %s", cwdStyle.Render(s.Cwd))
-					rowInfo := fmt.Sprintf("%s | %s", statusBadge, rowCwd)
+					accountInfo := ""
+					if s.AccountID != "" && s.AccountID != "default" {
+						accountInfo = fmt.Sprintf(" | Account: %s", lipgloss.NewStyle().Foreground(lipgloss.Color("#20B2AA")).Render(s.AccountID))
+					}
+					rowInfo := fmt.Sprintf("%s | %s%s", statusBadge, rowCwd, accountInfo)
 					rowContent = fmt.Sprintf("%s  [%s]\n%s  %s\n%s  %s", rowHeader, rowID, indentStr, rowInfo, indentStr, activityStyle.Render(s.Activity))
 				} else {
 					rowContent = rowHeader

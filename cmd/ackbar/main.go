@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"text/tabwriter"
 	"time"
 
 	"ackbar/internal/client"
@@ -25,6 +26,11 @@ type Config struct {
 }
 
 func main() {
+	if len(os.Args) > 1 && (os.Args[1] == "account" || os.Args[1] == "accounts") {
+		runAccountCmd(os.Args[2:])
+		os.Exit(0)
+	}
+
 	var argsForFlag []string
 	shouldSetup := false
 	isVersionCmd := false
@@ -381,3 +387,165 @@ func runSetupHooks() error {
 
 	return nil
 }
+
+func runAccountCmd(args []string) {
+	ensureDaemonRunning()
+	hostURL := "http://127.0.0.1:7777"
+
+	if len(args) == 0 || args[0] == "list" || args[0] == "ls" {
+		accounts, err := client.FetchAccounts(hostURL)
+		if err != nil {
+			fmt.Printf("❌ Failed to fetch accounts: %v\n", err)
+			os.Exit(1)
+		}
+		if len(accounts) == 0 {
+			fmt.Println("No accounts configured.")
+			return
+		}
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
+		fmt.Fprintln(w, "ID\tAGENT\tNAME\tDISPLAY NAME\tDEFAULT\tLOGGED IN\tCONFIG DIR")
+		for _, a := range accounts {
+			defStr := "no"
+			if a.IsDefault {
+				defStr = "yes"
+			}
+			logStr := "no"
+			if a.IsLoggedIn {
+				logStr = "yes"
+			}
+			cfgDir := a.ConfigDir
+			if cfgDir == "" {
+				cfgDir = "(native default)"
+			}
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", a.ID, a.Agent, a.Name, a.DisplayName, defStr, logStr, cfgDir)
+		}
+		_ = w.Flush()
+		return
+	}
+
+	subcmd := args[0]
+	switch subcmd {
+	case "add":
+		fs := flag.NewFlagSet("account add", flag.ExitOnError)
+		displayName := fs.String("display-name", "", "Display name for UI/TUI")
+		apiKey := fs.String("api-key", "", "API key to set in profile environment")
+		configDir := fs.String("config-dir", "", "Custom configuration directory")
+		isDefault := fs.Bool("default", false, "Set this account as default for the agent")
+		allHosts := fs.Bool("all-hosts", false, "Propagate account creation across all connected fleet hosts")
+		shouldLogin := fs.Bool("login", false, "Launch interactive login session in tmux immediately")
+		_ = fs.Parse(args[1:])
+
+		tail := fs.Args()
+		if len(tail) < 2 {
+			fmt.Println("Usage: ackbar account add <agent> <name> [flags]")
+			fmt.Println("  Agents: claude-code, antigravity")
+			fmt.Println("  Flags:")
+			fmt.Println("    --display-name <name>  Human-readable name (e.g. \"Work Anthropic\")")
+			fmt.Println("    --api-key <key>        API key (e.g. ANTHROPIC_API_KEY)")
+			fmt.Println("    --config-dir <path>    Custom config directory")
+			fmt.Println("    --default              Set as default profile")
+			fmt.Println("    --all-hosts            Propagate to connected fleet hosts")
+			fmt.Println("    --login                Immediately launch tmux login session")
+			os.Exit(1)
+		}
+		agent := strings.TrimSpace(tail[0])
+		name := strings.TrimSpace(tail[1])
+
+		envMap := make(map[string]string)
+		if *apiKey != "" {
+			if agent == "claude-code" {
+				envMap["ANTHROPIC_API_KEY"] = *apiKey
+			} else if agent == "antigravity" {
+				envMap["GEMINI_API_KEY"] = *apiKey
+			}
+		}
+
+		payload := map[string]interface{}{
+			"agent":         agent,
+			"name":          name,
+			"display_name":  *displayName,
+			"config_dir":    *configDir,
+			"is_default":    *isDefault,
+			"propagate_all": *allHosts,
+			"env":           envMap,
+		}
+
+		acc, err := client.SaveAccount(hostURL, payload)
+		if err != nil {
+			fmt.Printf("❌ Failed to create account: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("✅ Account '%s' created successfully!\n", acc.ID)
+		if *allHosts {
+			fmt.Println("🌐 Fleet propagation initiated in background.")
+		}
+
+		if *shouldLogin {
+			runLoginCmd(hostURL, acc.ID)
+		}
+
+	case "remove", "rm", "del", "delete":
+		if len(args) < 2 {
+			fmt.Println("Usage: ackbar account remove <id>")
+			os.Exit(1)
+		}
+		id := args[1]
+		if err := client.DeleteAccount(hostURL, id); err != nil {
+			fmt.Printf("❌ Failed to delete account: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("✅ Account '%s' removed successfully.\n", id)
+
+	case "default":
+		if len(args) < 2 {
+			fmt.Println("Usage: ackbar account default <id>")
+			os.Exit(1)
+		}
+		id := args[1]
+		if err := client.SetDefaultAccount(hostURL, id); err != nil {
+			fmt.Printf("❌ Failed to set default account: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("✅ Account '%s' is now default.\n", id)
+
+	case "login":
+		if len(args) < 2 {
+			fmt.Println("Usage: ackbar account login <id>")
+			os.Exit(1)
+		}
+		id := args[1]
+		runLoginCmd(hostURL, id)
+
+	case "help", "--help", "-h":
+		fmt.Println("Usage: ackbar account <subcommand> [flags]")
+		fmt.Println("\nSubcommands:")
+		fmt.Println("  list, ls                 List all configured accounts")
+		fmt.Println("  add <agent> <name>       Add a new account profile")
+		fmt.Println("  remove, rm <id>          Remove an account (e.g. claude-code:work)")
+		fmt.Println("  default <id>             Set account as default for its agent")
+		fmt.Println("  login <id>               Launch interactive login session in tmux")
+		return
+
+	default:
+		fmt.Printf("Unknown subcommand: %s\nRun 'ackbar account help' for usage.\n", subcmd)
+		os.Exit(1)
+	}
+}
+
+func runLoginCmd(hostURL, accountID string) {
+	fmt.Printf("🚀 Spawning login session for account '%s'...\n", accountID)
+	tmuxSession, err := client.LoginAccount(hostURL, accountID)
+	if err != nil {
+		fmt.Printf("❌ Failed to spawn login session: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Attaching to tmux session '%s' (press Ctrl+B then D to detach)...\n", tmuxSession)
+	cmd := exec.Command("tmux", "attach", "-t", tmuxSession)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	_ = cmd.Run()
+	fmt.Println("✅ Detached from login session.")
+}
+

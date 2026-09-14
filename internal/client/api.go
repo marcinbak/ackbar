@@ -569,3 +569,105 @@ func SaveGroupConfig(path string, groups map[string][]string) error {
 	}
 	return os.WriteFile(path, newData, 0644)
 }
+
+// FetchAccounts queries an Ackbar daemon for configured accounts
+func FetchAccounts(hostURL string) ([]*daemon.AgentAccount, error) {
+	reqURL := fmt.Sprintf("%s/v1/accounts", strings.TrimSuffix(hostURL, "/"))
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Get(reqURL)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("fetch accounts failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var accounts []*daemon.AgentAccount
+	if err := json.NewDecoder(resp.Body).Decode(&accounts); err != nil {
+		return nil, err
+	}
+	return accounts, nil
+}
+
+// SaveAccount registers or updates an agent account on an Ackbar daemon
+func SaveAccount(hostURL string, payload interface{}) (*daemon.AgentAccount, error) {
+	reqURL := fmt.Sprintf("%s/v1/accounts", strings.TrimSuffix(hostURL, "/"))
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Post(reqURL, "application/json", bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("save account failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var acc daemon.AgentAccount
+	if err := json.NewDecoder(resp.Body).Decode(&acc); err != nil {
+		return nil, err
+	}
+	return &acc, nil
+}
+
+// DeleteAccount removes a non-default account
+func DeleteAccount(hostURL, accountID string) error {
+	reqURL := fmt.Sprintf("%s/v1/accounts/%s", strings.TrimSuffix(hostURL, "/"), url.PathEscape(accountID))
+	req, err := http.NewRequest(http.MethodDelete, reqURL, nil)
+	if err != nil {
+		return err
+	}
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("delete account failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	return nil
+}
+
+// SetDefaultAccount sets an account as default for its agent
+func SetDefaultAccount(hostURL, accountID string) error {
+	reqURL := fmt.Sprintf("%s/v1/accounts/%s/default", strings.TrimSuffix(hostURL, "/"), url.PathEscape(accountID))
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Post(reqURL, "application/json", nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("set default account failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	return nil
+}
+
+// LoginAccount requests the daemon to spawn an interactive login session in tmux
+func LoginAccount(hostURL, accountID string) (string, error) {
+	reqURL := fmt.Sprintf("%s/v1/accounts/%s/login", strings.TrimSuffix(hostURL, "/"), url.PathEscape(accountID))
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Post(reqURL, "application/json", nil)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("login account failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var res struct {
+		Status      string `json:"status"`
+		TmuxSession string `json:"tmux_session"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&res)
+	return res.TmuxSession, nil
+}
+

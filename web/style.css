@@ -519,6 +519,18 @@ body, html {
   font-family: var(--font-mono);
 }
 
+.badge-account {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: #20b2aa;
+  background: rgba(32, 178, 170, 0.12);
+  border: 1px solid rgba(32, 178, 170, 0.35);
+  padding: 1px 5px;
+  border-radius: 4px;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
 .badge-time {
   font-size: 10px;
   font-family: var(--font-mono);

@@ -837,6 +837,41 @@
             <input type="checkbox" id="settingDoneCollapsed" ${doneCollapsed ? 'checked' : ''} />
           </div>
         </div>
+
+        <div class="settings-section">
+          <div class="settings-section-title"><span>👤</span> Agent Accounts & Profiles</div>
+          <div class="settings-section-desc">Manage multi-account profiles for Claude Code and Antigravity across local and fleet machines.</div>
+          <div id="settingsAccountsList" style="margin-top: 10px; font-size: 13px;">
+            <em style="color: var(--text-muted);">Loading accounts...</em>
+          </div>
+          
+          <div style="margin-top: 14px; padding-top: 10px; border-top: 1px dashed rgba(255,255,255,0.1);">
+            <div style="font-size: 12px; font-weight: 600; margin-bottom: 8px; color: var(--text-dim);">Add New Account Profile</div>
+            <div style="display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap;">
+              <select id="newAccAgent" class="form-input" style="flex: 1; min-width: 120px;">
+                <option value="claude-code">Claude Code</option>
+                <option value="antigravity">Antigravity</option>
+              </select>
+              <input type="text" id="newAccName" class="form-input" placeholder="profile-name (e.g. work)" style="flex: 1; min-width: 140px;" />
+              <input type="text" id="newAccDisplayName" class="form-input" placeholder="Display Name (optional)" style="flex: 1; min-width: 160px;" />
+            </div>
+            <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+              <input type="password" id="newAccApiKey" class="form-input" placeholder="Optional API Key (e.g. ANTHROPIC_API_KEY)" style="flex: 1;" />
+            </div>
+            <div style="display: flex; gap: 16px; align-items: center; margin-bottom: 10px; font-size: 12px; color: var(--text-dim);">
+              <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+                <input type="checkbox" id="newAccDefault" /> Set as Default
+              </label>
+              <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+                <input type="checkbox" id="newAccAllHosts" /> Propagate to all connected fleet hosts
+              </label>
+            </div>
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <button class="btn btn-secondary btn-sm" id="btnAddNewAccount">＋ Create Profile</button>
+              <span id="accountAddStatus" style="font-size: 11px; color: var(--text-muted);"></span>
+            </div>
+          </div>
+        </div>
       </div>
     `;
 
@@ -846,6 +881,125 @@
     `;
 
     showModal('⚙️ Workspace & Lifecycle Settings', bodyHtml, footerHtml);
+
+    // Render Accounts List
+    async function renderSettingsAccountsList() {
+      const container = document.getElementById('settingsAccountsList');
+      if (!container) return;
+      try {
+        const res = await fetch('/v1/accounts');
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const accounts = await res.json() || [];
+        if (accounts.length === 0) {
+          container.innerHTML = '<div style="color: var(--text-muted);">No accounts configured.</div>';
+          return;
+        }
+        let html = '<div style="display: flex; flex-direction: column; gap: 6px;">';
+        accounts.forEach(a => {
+          const isDef = a.is_default;
+          const logStatus = a.is_logged_in ? '<span style="color: var(--accent-green); font-size: 11px;">🟢 Logged In</span>' : '<span style="color: var(--text-muted); font-size: 11px;">⚪ Not Logged In</span>';
+          const defBadge = isDef ? '<span style="background: rgba(34,197,94,0.15); color: var(--accent-green); font-size: 10px; padding: 1px 5px; border-radius: 3px; margin-left: 4px;">DEFAULT</span>' : '';
+          html += `
+            <div style="display: flex; align-items: center; justify-content: space-between; padding: 6px 10px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06); border-radius: 4px;">
+              <div>
+                <span style="font-weight: 600; color: var(--text-bright);">${a.display_name || a.name}</span>
+                <span style="color: var(--text-muted); font-size: 11px; margin-left: 6px;">(${a.agent}:${a.name})</span>
+                ${defBadge}
+                <div style="margin-top: 2px;">${logStatus}</div>
+              </div>
+              <div style="display: flex; gap: 6px;">
+                ${!isDef ? `<button class="btn btn-secondary btn-sm btn-set-default" data-id="${a.id}" style="padding: 2px 7px; font-size: 11px;">Make Default</button>` : ''}
+                ${a.name !== 'default' ? `<button class="btn btn-secondary btn-sm btn-del-acc" data-id="${a.id}" style="padding: 2px 7px; font-size: 11px; color: #ff5555;">Delete</button>` : ''}
+              </div>
+            </div>
+          `;
+        });
+        html += '</div>';
+        container.innerHTML = html;
+
+        container.querySelectorAll('.btn-set-default').forEach(btn => {
+          btn.addEventListener('click', async () => {
+            const id = btn.getAttribute('data-id');
+            await fetch(`/v1/accounts/${encodeURIComponent(id)}/default`, { method: 'POST' });
+            renderSettingsAccountsList();
+          });
+        });
+
+        container.querySelectorAll('.btn-del-acc').forEach(btn => {
+          btn.addEventListener('click', async () => {
+            const id = btn.getAttribute('data-id');
+            if (confirm(`Delete account profile '${id}'?`)) {
+              await fetch(`/v1/accounts/${encodeURIComponent(id)}`, { method: 'DELETE' });
+              renderSettingsAccountsList();
+            }
+          });
+        });
+      } catch (err) {
+        container.innerHTML = `<div style="color: #ff5555;">Error loading accounts: ${err.message}</div>`;
+      }
+    }
+    renderSettingsAccountsList();
+
+    const btnAddAcc = document.getElementById('btnAddNewAccount');
+    if (btnAddAcc) {
+      btnAddAcc.addEventListener('click', async () => {
+        const agent = document.getElementById('newAccAgent')?.value;
+        const name = document.getElementById('newAccName')?.value?.trim();
+        const displayName = document.getElementById('newAccDisplayName')?.value?.trim();
+        const apiKey = document.getElementById('newAccApiKey')?.value?.trim();
+        const isDefault = document.getElementById('newAccDefault')?.checked || false;
+        const propagateAll = document.getElementById('newAccAllHosts')?.checked || false;
+        const statusEl = document.getElementById('accountAddStatus');
+
+        if (!name) {
+          alert('Please enter a profile name (e.g. work).');
+          return;
+        }
+
+        const env = {};
+        if (apiKey) {
+          if (agent === 'claude-code') env['ANTHROPIC_API_KEY'] = apiKey;
+          else if (agent === 'antigravity') env['GEMINI_API_KEY'] = apiKey;
+        }
+
+        btnAddAcc.disabled = true;
+        if (statusEl) statusEl.textContent = 'Creating...';
+
+        try {
+          const res = await fetch('/v1/accounts', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              agent,
+              name,
+              display_name: displayName,
+              env,
+              is_default: isDefault,
+              propagate_all: propagateAll
+            })
+          });
+          if (!res.ok) {
+            const errBody = await res.text();
+            throw new Error(errBody || `HTTP ${res.status}`);
+          }
+          if (statusEl) {
+            statusEl.style.color = 'var(--accent-green)';
+            statusEl.textContent = '✅ Created!';
+          }
+          document.getElementById('newAccName').value = '';
+          document.getElementById('newAccDisplayName').value = '';
+          document.getElementById('newAccApiKey').value = '';
+          renderSettingsAccountsList();
+        } catch (e) {
+          if (statusEl) {
+            statusEl.style.color = '#ff5555';
+            statusEl.textContent = `❌ ${e.message}`;
+          }
+        } finally {
+          btnAddAcc.disabled = false;
+        }
+      });
+    }
 
     const btnSave = document.getElementById('btnSaveSettings');
     if (btnSave) {
@@ -1394,6 +1548,16 @@
     const agentBadge = document.createElement('span');
     agentBadge.innerHTML = getAgentBadgeHtml(session.agent, true);
     right.appendChild(agentBadge);
+
+    // Account badge (omitted for default profile)
+    const rawAccount = session.account_id ? session.account_id.split(':').pop() : '';
+    if (rawAccount && rawAccount !== 'default') {
+      const accBadge = document.createElement('span');
+      accBadge.className = 'badge-account';
+      accBadge.textContent = rawAccount;
+      accBadge.title = `Profile: ${rawAccount}`;
+      right.appendChild(accBadge);
+    }
 
     if (session.context_pct > 0) {
       const ctxBadge = document.createElement('span');
@@ -3780,7 +3944,7 @@ ${session.last_prompt}
   }
 
   // Record a spawn in group memory
-  function recordGroupSpawn({ group, host, agent, cwd }) {
+  function recordGroupSpawn({ group, host, agent, cwd, account }) {
     if (!host) host = 'local';
     if (!agent) agent = 'claude-code';
     if (!cwd) return;
@@ -3807,6 +3971,9 @@ ${session.last_prompt}
 
     const hostEntry = g.by_host[host];
     hostEntry.agent = agent;
+    if (account !== undefined) {
+      hostEntry.account = account;
+    }
     hostEntry.last_used_at = Date.now();
 
     const filteredPaths = (hostEntry.recent_paths || []).filter(p => p !== cwd);
@@ -3861,7 +4028,17 @@ ${session.last_prompt}
       preferredAgent = 'claude-code';
     }
 
-    // 3. Determine Recent Paths and Preferred Path
+    // 3. Determine Preferred Account
+    let preferredAccount = '';
+    if (storedGroup && storedGroup.by_host && storedGroup.by_host[effectiveHost] && storedGroup.by_host[effectiveHost].account) {
+      preferredAccount = storedGroup.by_host[effectiveHost].account;
+    } else if (hostSessions.length > 0 && hostSessions[0].account_id) {
+      preferredAccount = hostSessions[0].account_id;
+    } else if (sortedGroupSessions.length > 0 && sortedGroupSessions[0].account_id) {
+      preferredAccount = sortedGroupSessions[0].account_id;
+    }
+
+    // 4. Determine Recent Paths and Preferred Path
     let recentPaths = [];
     if (storedGroup && storedGroup.by_host && storedGroup.by_host[effectiveHost] && Array.isArray(storedGroup.by_host[effectiveHost].recent_paths)) {
       recentPaths = [...storedGroup.by_host[effectiveHost].recent_paths];
@@ -3891,6 +4068,7 @@ ${session.last_prompt}
     return {
       preferredHost,
       preferredAgent,
+      preferredAccount,
       preferredPath,
       recentPaths
     };
@@ -4090,7 +4268,77 @@ ${session.last_prompt}
         if (selectedGroup && groupPrefs.preferredPath) {
           folderInput.value = groupPrefs.preferredPath;
         }
-        updateAgentOptions(newHost, groupPrefs.preferredAgent);
+        updateAgentOptions(newHost, groupPrefs.preferredAgent).then(() => {
+          updateAccountOptions(newHost, agentSelect ? agentSelect.value : 'claude-code', groupPrefs.preferredAccount);
+        });
+      };
+    }
+
+    // Helper: Update account profile options for chosen host and agent
+    async function updateAccountOptions(targetHost, targetAgent, preferredAccount = '') {
+      const accountGroup = document.getElementById('newSessionAccountGroup');
+      const accountSelect = document.getElementById('newSessionAccount');
+      if (!accountGroup || !accountSelect) return;
+
+      if (!targetAgent) {
+        accountGroup.style.display = 'none';
+        return;
+      }
+
+      try {
+        const hostRec = (state.hosts || []).find(h => h.name === targetHost);
+        const baseUrl = hostRec && hostRec.url && targetHost !== 'local' ? hostRec.url.replace(/\/$/, '') : '';
+        const res = await fetch(`${baseUrl}/v1/accounts`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const allAccounts = await res.json() || [];
+
+        const agentAccounts = allAccounts.filter(a => a.agent === targetAgent);
+
+        // If 0 or 1 accounts (e.g. only default), hide selector to keep UI clean
+        if (agentAccounts.length <= 1) {
+          accountGroup.style.display = 'none';
+          accountSelect.innerHTML = '<option value="default">Default</option>';
+          accountSelect.value = 'default';
+          return;
+        }
+
+        accountGroup.style.display = 'block';
+        accountSelect.innerHTML = '';
+
+        let matched = false;
+        agentAccounts.forEach(a => {
+          const opt = document.createElement('option');
+          opt.value = a.name;
+          const statusIcon = a.is_logged_in ? '🟢' : '⚪';
+          const defaultLabel = a.is_default ? ' (Default)' : '';
+          opt.textContent = `${statusIcon} ${a.display_name || a.name}${defaultLabel}`;
+          if (preferredAccount && (a.name === preferredAccount || a.id === preferredAccount)) {
+            opt.selected = true;
+            matched = true;
+          }
+          accountSelect.appendChild(opt);
+        });
+
+        if (!matched) {
+          const defAcc = agentAccounts.find(a => a.is_default);
+          if (defAcc) {
+            accountSelect.value = defAcc.name;
+          } else if (agentAccounts.length > 0) {
+            accountSelect.value = agentAccounts[0].name;
+          }
+        }
+      } catch (err) {
+        console.warn('Account options detection fallback for host:', targetHost, err);
+        accountGroup.style.display = 'none';
+      }
+    }
+
+    if (agentSelect) {
+      agentSelect.onchange = () => {
+        const selAgent = agentSelect.value;
+        const curGroup = groupSelect ? groupSelect.value : '';
+        const prefs = getGroupPreferences(curGroup, currentSelectedHost);
+        updateAccountOptions(currentSelectedHost, selAgent, prefs.preferredAccount);
       };
     }
 
@@ -4153,8 +4401,10 @@ ${session.last_prompt}
           }
         }
 
-        // Update agent options with group's preferred agent
-        updateAgentOptions(currentSelectedHost, groupPrefs.preferredAgent);
+        // Update agent and account options with group's preferences
+        updateAgentOptions(currentSelectedHost, groupPrefs.preferredAgent).then(() => {
+          updateAccountOptions(currentSelectedHost, agentSelect ? agentSelect.value : 'claude-code', groupPrefs.preferredAccount);
+        });
       };
     }
 
@@ -4196,8 +4446,9 @@ ${session.last_prompt}
       if (folderInput) folderInput.focus();
     }, 50);
 
-    // Initial agent discovery for selected host
+    // Initial agent discovery & account options for selected host
     await updateAgentOptions(currentSelectedHost, initialGroupPrefs.preferredAgent);
+    await updateAccountOptions(currentSelectedHost, agentSelect ? agentSelect.value : 'claude-code', initialGroupPrefs.preferredAccount);
   }
 
   function hideNewSessionModal() {
@@ -4208,12 +4459,15 @@ ${session.last_prompt}
   async function handleSpawnNewSession() {
     const hostSelect = document.getElementById('newSessionHost');
     const agentSelect = document.getElementById('newSessionAgent');
+    const accountGroup = document.getElementById('newSessionAccountGroup');
+    const accountSelect = document.getElementById('newSessionAccount');
     const folderInput = document.getElementById('newSessionFolder');
     const groupSelect = document.getElementById('newSessionGroup');
     const submitBtn = document.getElementById('btnSubmitNewSession');
 
     const host = hostSelect ? hostSelect.value : 'local';
     const agent = agentSelect ? agentSelect.value : 'claude-code';
+    const account_id = (accountGroup && accountGroup.style.display !== 'none' && accountSelect) ? accountSelect.value : '';
     const cwd = folderInput ? folderInput.value.trim() : '';
     const targetGroup = groupSelect ? groupSelect.value : '';
 
@@ -4232,7 +4486,7 @@ ${session.last_prompt}
       const res = await fetch('/v1/sessions/spawn', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ host, agent, cwd, node_path: targetGroup })
+        body: JSON.stringify({ host, agent, cwd, node_path: targetGroup, account_id })
       });
 
       if (!res.ok) {
@@ -4247,7 +4501,7 @@ ${session.last_prompt}
       hideNewSessionModal();
 
       // Record spawn in group preferences
-      recordGroupSpawn({ group: targetGroup, host, agent, cwd });
+      recordGroupSpawn({ group: targetGroup, host, agent, cwd, account: account_id });
 
       // If user selected a group, assign it immediately
       if (targetGroup && spawnedSessId) {

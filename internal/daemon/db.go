@@ -113,6 +113,18 @@ func InitDB(dbPath string) (*DB, error) {
 	_, _ = db.Exec("ALTER TABLE sessions ADD COLUMN is_unread INTEGER DEFAULT 0;")
 	_, _ = db.Exec("ALTER TABLE sessions ADD COLUMN is_done INTEGER DEFAULT 0;")
 	_, _ = db.Exec("ALTER TABLE sessions ADD COLUMN last_state_change_at TIMESTAMP;")
+	_, _ = db.Exec("ALTER TABLE sessions ADD COLUMN account_id TEXT;")
+	_, _ = db.Exec(`CREATE TABLE IF NOT EXISTS accounts (
+		id TEXT PRIMARY KEY,
+		agent TEXT NOT NULL,
+		name TEXT NOT NULL,
+		display_name TEXT,
+		config_dir TEXT,
+		env_json TEXT,
+		is_default INTEGER DEFAULT 0,
+		created_at TIMESTAMP,
+		updated_at TIMESTAMP
+	);`)
 	_, _ = db.Exec("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);")
 	_, _ = db.Exec("DELETE FROM tree_nodes WHERE path LIKE 'Project Y%' OR path LIKE 'ProjectY%' OR path LIKE '%Project Y%';")
 	_, _ = db.Exec("UPDATE sessions SET tmux_name = 'ackbar-' || agent || '-' || native_id WHERE tmux_name = '(deleted)' OR tmux_name = '';")
@@ -122,6 +134,8 @@ func InitDB(dbPath string) (*DB, error) {
 	_, _ = db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_native_id ON sessions(native_id);")
 	_, _ = db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_host ON sessions(host);")
 	_, _ = db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_project_key ON sessions(project_key);")
+	_, _ = db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_account_id ON sessions(account_id);")
+	_, _ = db.Exec("CREATE INDEX IF NOT EXISTS idx_accounts_agent ON accounts(agent);")
 
 	return &DB{db: db}, nil
 }
@@ -192,8 +206,8 @@ func (d *DB) SaveSession(s *Session) error {
 		id, agent, host, native_id, cwd, roots, project_key, state, 
 		blocked_kind, blocked_reason, blocked_since, blocked_question, blocked_options, activity, 
 		started_at, last_event_at, managed, tmux_name, pid, archived, node_path, name, entrypoint, kind, version, context_pct, git_branch,
-		custom_title, ai_title, ai_description, first_prompt, last_prompt, is_unread, last_state_change_at, is_done
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		custom_title, ai_title, ai_description, first_prompt, last_prompt, is_unread, last_state_change_at, is_done, account_id
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(id) DO UPDATE SET
 		cwd=excluded.cwd,
 		roots=excluded.roots,
@@ -224,7 +238,8 @@ func (d *DB) SaveSession(s *Session) error {
 		last_prompt=excluded.last_prompt,
 		is_unread=excluded.is_unread,
 		last_state_change_at=excluded.last_state_change_at,
-		is_done=excluded.is_done;
+		is_done=excluded.is_done,
+		account_id=COALESCE(NULLIF(excluded.account_id, ''), sessions.account_id);
 	`
 
 	managedInt := 0
@@ -248,12 +263,13 @@ func (d *DB) SaveSession(s *Session) error {
 	aiDescVal := sql.NullString{String: s.AIDescription, Valid: s.AIDescription != ""}
 	firstPromptVal := sql.NullString{String: s.FirstPrompt, Valid: s.FirstPrompt != ""}
 	lastPromptVal := sql.NullString{String: s.LastPrompt, Valid: s.LastPrompt != ""}
+	accountIDVal := sql.NullString{String: s.AccountID, Valid: s.AccountID != ""}
 
 	_, err = d.db.Exec(query,
 		s.ID, s.Agent, s.Host, s.NativeID, s.Cwd, string(rootsJSON), s.ProjectKey, int(s.State),
 		blockedKind, blockedReason, blockedSince, blockedQuestion, blockedOptions, s.Activity,
 		s.StartedAt, s.LastEventAt, managedInt, s.TmuxName, s.PID, archivedInt, nodePath, sessName, entrypointVal, kindVal, versionVal, s.ContextPct, gitBranchVal,
-		customTitleVal, aiTitleVal, aiDescVal, firstPromptVal, lastPromptVal, isUnreadInt, lastStateChangeAt, isDoneInt,
+		customTitleVal, aiTitleVal, aiDescVal, firstPromptVal, lastPromptVal, isUnreadInt, lastStateChangeAt, isDoneInt, accountIDVal,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to save session: %w", err)
@@ -267,13 +283,13 @@ func (d *DB) GetSession(id string) (*Session, error) {
 	SELECT id, agent, host, native_id, cwd, roots, project_key, state,
 	       blocked_kind, blocked_reason, blocked_since, blocked_question, blocked_options, activity,
 	       started_at, last_event_at, managed, tmux_name, pid, archived, node_path, name, entrypoint, kind, version, context_pct, git_branch,
-	       custom_title, ai_title, ai_description, first_prompt, last_prompt, is_unread, last_state_change_at, is_done
+	       custom_title, ai_title, ai_description, first_prompt, last_prompt, is_unread, last_state_change_at, is_done, account_id
 	FROM sessions WHERE id = ? OR native_id = ?;
 	`
 
 	var s Session
 	var rootsStr, blockedKind, blockedReason, blockedQuestion, blockedOptions, nodePath, sessName, entrypointVal, kindVal, versionVal, gitBranchVal sql.NullString
-	var customTitleVal, aiTitleVal, aiDescVal, firstPromptVal, lastPromptVal sql.NullString
+	var customTitleVal, aiTitleVal, aiDescVal, firstPromptVal, lastPromptVal, accountIDVal sql.NullString
 	var ctxPct sql.NullInt64
 	var blockedSince, lastStateChangeAt sql.NullTime
 	var managedInt, archivedInt, isUnreadInt, isDoneInt int
@@ -283,12 +299,16 @@ func (d *DB) GetSession(id string) (*Session, error) {
 		&s.ID, &s.Agent, &s.Host, &s.NativeID, &s.Cwd, &rootsStr, &s.ProjectKey, (*int)(&s.State),
 		&blockedKind, &blockedReason, &blockedSince, &blockedQuestion, &blockedOptions, &s.Activity,
 		&s.StartedAt, &s.LastEventAt, &managedInt, &s.TmuxName, &s.PID, &archivedInt, &nodePath, &sessName, &entrypointVal, &kindVal, &versionVal, &ctxPct, &gitBranchVal,
-		&customTitleVal, &aiTitleVal, &aiDescVal, &firstPromptVal, &lastPromptVal, &isUnreadInt, &lastStateChangeAt, &isDoneInt,
+		&customTitleVal, &aiTitleVal, &aiDescVal, &firstPromptVal, &lastPromptVal, &isUnreadInt, &lastStateChangeAt, &isDoneInt, &accountIDVal,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	} else if err != nil {
 		return nil, fmt.Errorf("failed to scan session: %w", err)
+	}
+
+	if accountIDVal.Valid {
+		s.AccountID = accountIDVal.String
 	}
 
 	s.Managed = managedInt == 1
@@ -365,7 +385,7 @@ func (d *DB) ListSessions() ([]*Session, error) {
 	SELECT id, agent, host, native_id, cwd, roots, project_key, state,
 	       blocked_kind, blocked_reason, blocked_since, blocked_question, blocked_options, activity,
 	       started_at, last_event_at, managed, tmux_name, pid, archived, node_path, name, entrypoint, kind, version, context_pct, git_branch,
-	       custom_title, ai_title, ai_description, first_prompt, last_prompt, is_unread, last_state_change_at, is_done
+	       custom_title, ai_title, ai_description, first_prompt, last_prompt, is_unread, last_state_change_at, is_done, account_id
 	FROM sessions
 	ORDER BY last_event_at DESC;
 	`
@@ -380,7 +400,7 @@ func (d *DB) ListSessions() ([]*Session, error) {
 	for rows.Next() {
 		var s Session
 		var rootsStr, blockedKind, blockedReason, blockedQuestion, blockedOptions, nodePath, sessName, entrypointVal, kindVal, versionVal, gitBranchVal sql.NullString
-		var customTitleVal, aiTitleVal, aiDescVal, firstPromptVal, lastPromptVal sql.NullString
+		var customTitleVal, aiTitleVal, aiDescVal, firstPromptVal, lastPromptVal, accountIDVal sql.NullString
 		var ctxPct sql.NullInt64
 		var blockedSince, lastStateChangeAt sql.NullTime
 		var managedInt, archivedInt, isUnreadInt, isDoneInt int
@@ -389,10 +409,14 @@ func (d *DB) ListSessions() ([]*Session, error) {
 			&s.ID, &s.Agent, &s.Host, &s.NativeID, &s.Cwd, &rootsStr, &s.ProjectKey, (*int)(&s.State),
 			&blockedKind, &blockedReason, &blockedSince, &blockedQuestion, &blockedOptions, &s.Activity,
 			&s.StartedAt, &s.LastEventAt, &managedInt, &s.TmuxName, &s.PID, &archivedInt, &nodePath, &sessName, &entrypointVal, &kindVal, &versionVal, &ctxPct, &gitBranchVal,
-			&customTitleVal, &aiTitleVal, &aiDescVal, &firstPromptVal, &lastPromptVal, &isUnreadInt, &lastStateChangeAt, &isDoneInt,
+			&customTitleVal, &aiTitleVal, &aiDescVal, &firstPromptVal, &lastPromptVal, &isUnreadInt, &lastStateChangeAt, &isDoneInt, &accountIDVal,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan session in list: %w", err)
+		}
+
+		if accountIDVal.Valid {
+			s.AccountID = accountIDVal.String
 		}
 
 		s.Managed = managedInt == 1
@@ -534,7 +558,7 @@ func (d *DB) ListActiveSessions() ([]*Session, error) {
 	SELECT id, agent, host, native_id, cwd, roots, project_key, state,
 	       blocked_kind, blocked_reason, blocked_since, blocked_question, blocked_options, activity,
 	       started_at, last_event_at, managed, tmux_name, pid, archived, node_path, name, entrypoint, kind, version, context_pct, git_branch,
-	       custom_title, ai_title, ai_description, first_prompt, last_prompt, is_unread, last_state_change_at, is_done
+	       custom_title, ai_title, ai_description, first_prompt, last_prompt, is_unread, last_state_change_at, is_done, account_id
 	FROM sessions
 	WHERE state != ?
 	ORDER BY last_event_at DESC;
@@ -550,7 +574,7 @@ func (d *DB) ListActiveSessions() ([]*Session, error) {
 	for rows.Next() {
 		var s Session
 		var rootsStr, blockedKind, blockedReason, blockedQuestion, blockedOptions, nodePath, sessName, entrypointVal, kindVal, versionVal, gitBranchVal sql.NullString
-		var customTitleVal, aiTitleVal, aiDescVal, firstPromptVal, lastPromptVal sql.NullString
+		var customTitleVal, aiTitleVal, aiDescVal, firstPromptVal, lastPromptVal, accountIDVal sql.NullString
 		var ctxPct sql.NullInt64
 		var blockedSince, lastStateChangeAt sql.NullTime
 		var managedInt, archivedInt, isUnreadInt, isDoneInt int
@@ -559,10 +583,14 @@ func (d *DB) ListActiveSessions() ([]*Session, error) {
 			&s.ID, &s.Agent, &s.Host, &s.NativeID, &s.Cwd, &rootsStr, &s.ProjectKey, (*int)(&s.State),
 			&blockedKind, &blockedReason, &blockedSince, &blockedQuestion, &blockedOptions, &s.Activity,
 			&s.StartedAt, &s.LastEventAt, &managedInt, &s.TmuxName, &s.PID, &archivedInt, &nodePath, &sessName, &entrypointVal, &kindVal, &versionVal, &ctxPct, &gitBranchVal,
-			&customTitleVal, &aiTitleVal, &aiDescVal, &firstPromptVal, &lastPromptVal, &isUnreadInt, &lastStateChangeAt, &isDoneInt,
+			&customTitleVal, &aiTitleVal, &aiDescVal, &firstPromptVal, &lastPromptVal, &isUnreadInt, &lastStateChangeAt, &isDoneInt, &accountIDVal,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan active session in list: %w", err)
+		}
+
+		if accountIDVal.Valid {
+			s.AccountID = accountIDVal.String
 		}
 
 		s.Managed = managedInt == 1
@@ -838,3 +866,147 @@ func (d *DB) IsSessionDeleted(id string) bool {
 	_ = d.db.QueryRow("SELECT COUNT(*) FROM deleted_sessions WHERE id = ?;", id).Scan(&count)
 	return count > 0
 }
+
+// SaveAccount creates or updates an agent account/profile
+func (d *DB) SaveAccount(a *AgentAccount) error {
+	if a.ID == "" {
+		a.ID = fmt.Sprintf("%s:%s", a.Agent, a.Name)
+	}
+	if a.CreatedAt.IsZero() {
+		a.CreatedAt = time.Now()
+	}
+	a.UpdatedAt = time.Now()
+
+	var envJSON []byte
+	if len(a.Env) > 0 {
+		var err error
+		envJSON, err = json.Marshal(a.Env)
+		if err != nil {
+			return fmt.Errorf("failed to marshal env: %w", err)
+		}
+	}
+
+	isDefaultInt := 0
+	if a.IsDefault {
+		isDefaultInt = 1
+		_, _ = d.db.Exec("UPDATE accounts SET is_default = 0 WHERE agent = ? AND id != ?;", a.Agent, a.ID)
+	}
+
+	query := `
+	INSERT INTO accounts (id, agent, name, display_name, config_dir, env_json, is_default, created_at, updated_at)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	ON CONFLICT(id) DO UPDATE SET
+		name=excluded.name,
+		display_name=excluded.display_name,
+		config_dir=excluded.config_dir,
+		env_json=excluded.env_json,
+		is_default=excluded.is_default,
+		updated_at=excluded.updated_at;
+	`
+	displayNameVal := sql.NullString{String: a.DisplayName, Valid: a.DisplayName != ""}
+	configDirVal := sql.NullString{String: a.ConfigDir, Valid: a.ConfigDir != ""}
+	envJSONVal := sql.NullString{String: string(envJSON), Valid: len(envJSON) > 0}
+
+	_, err := d.db.Exec(query, a.ID, a.Agent, a.Name, displayNameVal, configDirVal, envJSONVal, isDefaultInt, a.CreatedAt, a.UpdatedAt)
+	if err != nil {
+		return fmt.Errorf("failed to save account: %w", err)
+	}
+	return nil
+}
+
+// GetAccount retrieves an account by its unique ID
+func (d *DB) GetAccount(id string) (*AgentAccount, error) {
+	query := `SELECT id, agent, name, display_name, config_dir, env_json, is_default, created_at, updated_at FROM accounts WHERE id = ?;`
+	row := d.db.QueryRow(query, id)
+
+	var a AgentAccount
+	var displayNameVal, configDirVal, envJSONVal sql.NullString
+	var isDefaultInt int
+
+	err := row.Scan(&a.ID, &a.Agent, &a.Name, &displayNameVal, &configDirVal, &envJSONVal, &isDefaultInt, &a.CreatedAt, &a.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	} else if err != nil {
+		return nil, fmt.Errorf("failed to query account: %w", err)
+	}
+
+	if displayNameVal.Valid {
+		a.DisplayName = displayNameVal.String
+	}
+	if configDirVal.Valid {
+		a.ConfigDir = configDirVal.String
+	}
+	if envJSONVal.Valid && envJSONVal.String != "" {
+		_ = json.Unmarshal([]byte(envJSONVal.String), &a.Env)
+	}
+	a.IsDefault = isDefaultInt == 1
+	return &a, nil
+}
+
+// ListAccounts retrieves accounts optionally filtered by agent
+func (d *DB) ListAccounts(agentFilter string) ([]*AgentAccount, error) {
+	var query string
+	var args []interface{}
+	if agentFilter != "" {
+		query = `SELECT id, agent, name, display_name, config_dir, env_json, is_default, created_at, updated_at FROM accounts WHERE agent = ? ORDER BY is_default DESC, name ASC;`
+		args = append(args, agentFilter)
+	} else {
+		query = `SELECT id, agent, name, display_name, config_dir, env_json, is_default, created_at, updated_at FROM accounts ORDER BY agent ASC, is_default DESC, name ASC;`
+	}
+
+	rows, err := d.db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list accounts: %w", err)
+	}
+	defer rows.Close()
+
+	var accounts []*AgentAccount
+	for rows.Next() {
+		var a AgentAccount
+		var displayNameVal, configDirVal, envJSONVal sql.NullString
+		var isDefaultInt int
+
+		if err := rows.Scan(&a.ID, &a.Agent, &a.Name, &displayNameVal, &configDirVal, &envJSONVal, &isDefaultInt, &a.CreatedAt, &a.UpdatedAt); err != nil {
+			return nil, err
+		}
+		if displayNameVal.Valid {
+			a.DisplayName = displayNameVal.String
+		}
+		if configDirVal.Valid {
+			a.ConfigDir = configDirVal.String
+		}
+		if envJSONVal.Valid && envJSONVal.String != "" {
+			_ = json.Unmarshal([]byte(envJSONVal.String), &a.Env)
+		}
+		a.IsDefault = isDefaultInt == 1
+		accounts = append(accounts, &a)
+	}
+	return accounts, nil
+}
+
+// DeleteAccount removes an account by its unique ID
+func (d *DB) DeleteAccount(id string) error {
+	_, err := d.db.Exec("DELETE FROM accounts WHERE id = ?;", id)
+	if err != nil {
+		return fmt.Errorf("failed to delete account: %w", err)
+	}
+	return nil
+}
+
+// SetDefaultAccount marks an account as default for its agent
+func (d *DB) SetDefaultAccount(agent, id string) error {
+	tx, err := d.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec("UPDATE accounts SET is_default = 0 WHERE agent = ?;", agent); err != nil {
+		return err
+	}
+	if _, err := tx.Exec("UPDATE accounts SET is_default = 1 WHERE id = ? AND agent = ?;", id, agent); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+

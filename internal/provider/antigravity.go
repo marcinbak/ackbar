@@ -229,6 +229,13 @@ func (a *AntigravityProvider) ExtractTranscript(home, cwd, nativeID string) ([]d
 		filepath.Join(home, ".antigravity", "brain", nativeID, ".system_generated", "logs", "transcript.jsonl"),
 	}
 
+	if profilePaths, _ := filepath.Glob(filepath.Join(home, ".gemini-profiles", "*", "brain", nativeID, ".system_generated", "logs", "transcript.jsonl")); len(profilePaths) > 0 {
+		candidatePaths = append(candidatePaths, profilePaths...)
+	}
+	if profilePaths2, _ := filepath.Glob(filepath.Join(home, ".gemini-profiles", "*", "antigravity", "brain", nativeID, ".system_generated", "logs", "transcript.jsonl")); len(profilePaths2) > 0 {
+		candidatePaths = append(candidatePaths, profilePaths2...)
+	}
+
 	var file *os.File
 	var err error
 	for _, path := range candidatePaths {

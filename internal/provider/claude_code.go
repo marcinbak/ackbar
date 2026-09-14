@@ -384,6 +384,37 @@ func (c *ClaudeProvider) ExtractTranscript(home, cwd, nativeID string) ([]daemon
 	}
 
 	if targetFile == "" {
+		profileDirs, _ := filepath.Glob(filepath.Join(home, ".claude-profiles", "*", "projects"))
+		for _, pDir := range profileDirs {
+			if cwd != "" {
+				encodedCwd := strings.ReplaceAll(cwd, "/", "-")
+				cand := filepath.Join(pDir, encodedCwd, nativeID+".jsonl")
+				if fileExists(cand) {
+					targetFile = cand
+					break
+				}
+			}
+			if dirExists(pDir) {
+				entries, err := os.ReadDir(pDir)
+				if err == nil {
+					for _, e := range entries {
+						if e.IsDir() {
+							cand := filepath.Join(pDir, e.Name(), nativeID+".jsonl")
+							if fileExists(cand) {
+								targetFile = cand
+								break
+							}
+						}
+					}
+				}
+			}
+			if targetFile != "" {
+				break
+			}
+		}
+	}
+
+	if targetFile == "" {
 		return nil, fmt.Errorf("claude log not found for session %s", nativeID)
 	}
 
