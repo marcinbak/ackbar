@@ -161,6 +161,8 @@ func (s *Server) Mux() http.Handler {
 	mux.HandleFunc("/v1/sessions/control", s.handleSessionControl)
 	mux.HandleFunc("/v1/sessions/pty", s.handlePTY)
 	mux.HandleFunc("/v1/sessions/spawn", s.handleSpawn)
+	mux.HandleFunc("/v1/accounts", s.handleAccounts)
+	mux.HandleFunc("/v1/accounts/", s.handleAccountOps)
 	mux.HandleFunc("/v1/agents/discovery", s.handleAgentDiscovery)
 	mux.HandleFunc("/v1/providers", s.handleProviders)
 	mux.HandleFunc("/v1/documents", s.handleDocuments)
@@ -303,10 +305,14 @@ func (s *Server) handleHook(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(`{"status":"enqueued"}`))
 
 	// Process in a goroutine so ingest is single-digit milliseconds
-	go s.processHookEvent(p, r.URL.Query().Get("event"), r.Header.Get("X-Ackbar-Host"), body)
+	go s.processHookEventWithAccount(p, r.URL.Query().Get("event"), r.Header.Get("X-Ackbar-Host"), body, r.URL.Query().Get("account"))
 }
 
 func (s *Server) processHookEvent(p Provider, urlEventName string, headerHost string, body []byte) {
+	s.processHookEventWithAccount(p, urlEventName, headerHost, body, "")
+}
+
+func (s *Server) processHookEventWithAccount(p Provider, urlEventName string, headerHost string, body []byte, accountParam string) {
 	event, err := p.ParseHook(urlEventName, body)
 	if err != nil {
 		log.Printf("Error parsing hook payload: %v", err)
@@ -354,6 +360,7 @@ func (s *Server) processHookEvent(p Provider, urlEventName string, headerHost st
 				CustomTitle: spawningSess.CustomTitle,
 				StartedAt:   spawningSess.StartedAt,
 				LastEventAt: spawningSess.LastEventAt,
+				AccountID:   spawningSess.AccountID,
 			}
 			if spawningSess.CustomTitle != "" {
 				sess.Name = spawningSess.CustomTitle
@@ -401,16 +408,26 @@ func (s *Server) processHookEvent(p Provider, urlEventName string, headerHost st
 				ProjectKey: activeManaged.ProjectKey,
 				Name:       newTurnName,
 				StartedAt:  time.Now(),
+				AccountID:  activeManaged.AccountID,
 			}
 		} else {
+			accountID := ""
+			if accountParam != "" {
+				accountID = fmt.Sprintf("%s:%s", event.Agent, accountParam)
+			}
 			sess = &Session{
 				ID:        sessionID,
 				Agent:     event.Agent,
 				Host:      host,
 				NativeID:  event.NativeID,
 				StartedAt: time.Now(),
+				AccountID: accountID,
 			}
 		}
+	}
+
+	if sess.AccountID == "" && accountParam != "" {
+		sess.AccountID = fmt.Sprintf("%s:%s", event.Agent, accountParam)
 	}
 
 	// Update fields
@@ -1388,11 +1405,12 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Agent    string `json:"agent"`
-		Cwd      string `json:"cwd"`
-		Host     string `json:"host"`
-		NodePath string `json:"node_path"`
-		Name     string `json:"name"`
+		Agent     string `json:"agent"`
+		Cwd       string `json:"cwd"`
+		Host      string `json:"host"`
+		NodePath  string `json:"node_path"`
+		Name      string `json:"name"`
+		AccountID string `json:"account_id"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -1425,10 +1443,11 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		if hostRec != nil && hostRec.URL != "" {
 			targetURL := strings.TrimSuffix(hostRec.URL, "/") + "/v1/sessions/spawn"
 			payload, _ := json.Marshal(map[string]string{
-				"agent":     req.Agent,
-				"cwd":       req.Cwd,
-				"node_path": req.NodePath,
-				"name":      req.Name,
+				"agent":      req.Agent,
+				"cwd":        req.Cwd,
+				"node_path":  req.NodePath,
+				"name":       req.Name,
+				"account_id": req.AccountID,
 			})
 			resp, err := http.Post(targetURL, "application/json", bytes.NewBuffer(payload))
 			if err != nil {
@@ -1468,11 +1487,65 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Resolve account and environment
+	accountID := req.AccountID
+	var envVars map[string]string
+	if accountID != "" && accountID != "default" {
+		acc, err := s.db.GetAccount(accountID)
+		if (err != nil || acc == nil) && !strings.Contains(accountID, ":") {
+			acc, _ = s.db.GetAccount(fmt.Sprintf("%s:%s", req.Agent, accountID))
+		}
+		if acc != nil {
+			envVars = make(map[string]string)
+			if acc.ConfigDir != "" {
+				cfgDir := acc.ConfigDir
+				if strings.HasPrefix(cfgDir, "~/") && home != "" {
+					cfgDir = filepath.Join(home, cfgDir[2:])
+				}
+				if req.Agent == "claude-code" {
+					envVars["CLAUDE_CONFIG_DIR"] = cfgDir
+				} else if req.Agent == "antigravity" {
+					envVars["GEMINI_CLI_HOME"] = cfgDir
+				}
+			}
+			for k, v := range acc.Env {
+				envVars[k] = v
+			}
+			envVars["ACKBAR_ACCOUNT"] = acc.Name
+		}
+	} else if accountID == "" {
+		// Look for default non-"default" account for this agent if configured
+		if accList, err := s.db.ListAccounts(req.Agent); err == nil {
+			for _, acc := range accList {
+				if acc.IsDefault && acc.Name != "default" {
+					accountID = acc.ID
+					envVars = make(map[string]string)
+					if acc.ConfigDir != "" {
+						cfgDir := acc.ConfigDir
+						if strings.HasPrefix(cfgDir, "~/") && home != "" {
+							cfgDir = filepath.Join(home, cfgDir[2:])
+						}
+						if req.Agent == "claude-code" {
+							envVars["CLAUDE_CONFIG_DIR"] = cfgDir
+						} else if req.Agent == "antigravity" {
+							envVars["GEMINI_CLI_HOME"] = cfgDir
+						}
+					}
+					for k, v := range acc.Env {
+						envVars[k] = v
+					}
+					envVars["ACKBAR_ACCOUNT"] = acc.Name
+					break
+				}
+			}
+		}
+	}
+
 	tempUUID := generateUUID()
 	tmuxName := fmt.Sprintf("ackbar-%s-%s", req.Agent, tempUUID)
 	launchCmd := s.getSpawnCmd(req.Agent, tempUUID)
 
-	err := tmux.Spawn(r.Context(), tmuxName, req.Cwd, launchCmd)
+	err := tmux.SpawnWithEnv(r.Context(), tmuxName, req.Cwd, launchCmd, envVars)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to spawn session: %v", err), http.StatusInternalServerError)
 		return
@@ -1493,6 +1566,7 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		Activity:    "Spawning session...",
 		StartedAt:   time.Now(),
 		LastEventAt: time.Now(),
+		AccountID:   accountID,
 	}
 	if req.Name != "" {
 		sess.CustomTitle = req.Name
@@ -1781,6 +1855,412 @@ func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(results)
+}
+
+func (s *Server) checkAccountLoggedIn(a *AgentAccount) bool {
+	home, _ := os.UserHomeDir()
+	if a.Agent == "claude-code" {
+		if a.Env != nil && a.Env["ANTHROPIC_API_KEY"] != "" {
+			return true
+		}
+		if a.ConfigDir != "" {
+			cfgDir := a.ConfigDir
+			if strings.HasPrefix(cfgDir, "~/") && home != "" {
+				cfgDir = filepath.Join(home, cfgDir[2:])
+			}
+			if data, err := os.ReadFile(filepath.Join(cfgDir, ".claude.json")); err == nil {
+				if strings.Contains(string(data), "oauthAccount") {
+					return true
+				}
+			}
+			if _, err := os.Stat(filepath.Join(cfgDir, "settings.json")); err == nil {
+				return true
+			}
+		}
+		if a.Name == "default" || a.ConfigDir == "" {
+			if os.Getenv("ANTHROPIC_API_KEY") != "" {
+				return true
+			}
+			if home != "" {
+				if data, err := os.ReadFile(filepath.Join(home, ".claude.json")); err == nil {
+					if strings.Contains(string(data), "oauthAccount") {
+						return true
+					}
+				}
+				if _, err := os.Stat(filepath.Join(home, ".claude")); err == nil {
+					return true
+				}
+			}
+		}
+	} else if a.Agent == "antigravity" {
+		if a.Env != nil && a.Env["GEMINI_API_KEY"] != "" {
+			return true
+		}
+		if a.ConfigDir != "" {
+			cfgDir := a.ConfigDir
+			if strings.HasPrefix(cfgDir, "~/") && home != "" {
+				cfgDir = filepath.Join(home, cfgDir[2:])
+			}
+			if _, err := os.Stat(cfgDir); err == nil {
+				return true
+			}
+		}
+		if home != "" {
+			if _, err := os.Stat(filepath.Join(home, ".gemini")); err == nil {
+				return true
+			}
+		}
+	} else {
+		return true
+	}
+	return false
+}
+
+func setupProfileDirectory(agent, name, configDir string) (string, error) {
+	home, _ := os.UserHomeDir()
+	if configDir == "" {
+		if agent == "claude-code" {
+			configDir = filepath.Join(home, ".claude-profiles", name)
+		} else if agent == "antigravity" {
+			configDir = filepath.Join(home, ".gemini-profiles", name)
+		} else {
+			configDir = filepath.Join(home, "."+agent+"-profiles", name)
+		}
+	} else if strings.HasPrefix(configDir, "~/") && home != "" {
+		configDir = filepath.Join(home, configDir[2:])
+	}
+
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		return configDir, fmt.Errorf("failed to create profile directory: %w", err)
+	}
+
+	// Setup webhook in profile's settings.json
+	if agent == "claude-code" {
+		settingsPath := filepath.Join(configDir, "settings.json")
+		var settings map[string]interface{}
+		if data, err := os.ReadFile(settingsPath); err == nil {
+			_ = json.Unmarshal(data, &settings)
+		}
+		if settings == nil {
+			settings = make(map[string]interface{})
+		}
+		hooks, _ := settings["hooks"].(map[string]interface{})
+		if hooks == nil {
+			hooks = make(map[string]interface{})
+		}
+		hookURL := fmt.Sprintf("http://127.0.0.1:7777/v1/hooks/claude-code?account=%s", name)
+		correctHookEntry := map[string]interface{}{
+			"matcher": "",
+			"hooks": []map[string]string{
+				{
+					"type": "http",
+					"url":  hookURL,
+				},
+			},
+		}
+		eventKeys := []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PermissionRequest", "Notification", "Stop"}
+		for _, evtKey := range eventKeys {
+			existingList, _ := hooks[evtKey].([]interface{})
+			var validList []interface{}
+			hasHook := false
+			for _, item := range existingList {
+				if m, ok := item.(map[string]interface{}); ok {
+					if innerHooks, ok := m["hooks"].([]interface{}); ok {
+						for _, h := range innerHooks {
+							if hm, ok := h.(map[string]interface{}); ok {
+								if hm["url"] == hookURL {
+									hasHook = true
+								}
+							}
+						}
+						validList = append(validList, item)
+					}
+				}
+			}
+			if !hasHook {
+				validList = append(validList, correctHookEntry)
+			}
+			hooks[evtKey] = validList
+		}
+		settings["hooks"] = hooks
+		if out, err := json.MarshalIndent(settings, "", "  "); err == nil {
+			_ = os.WriteFile(settingsPath, out, 0644)
+		}
+	} else if agent == "antigravity" {
+		cfgDir := filepath.Join(configDir, "config")
+		_ = os.MkdirAll(cfgDir, 0755)
+		hookFile := filepath.Join(cfgDir, "hooks.json")
+		hookData := `{
+  "hooks": [
+    {
+      "command": "ackbar-hook --agent=antigravity"
+    }
+  ]
+}`
+		_ = os.WriteFile(hookFile, []byte(hookData), 0644)
+	}
+
+	return configDir, nil
+}
+
+func (s *Server) propagateAccountToFleet(acc *AgentAccount) {
+	allHosts, err := s.db.ListHosts()
+	if err != nil || len(allHosts) == 0 {
+		return
+	}
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	for _, h := range allHosts {
+		if h.Name == "local" || h.URL == "" {
+			continue
+		}
+
+		discURL := fmt.Sprintf("%s/v1/agents/discovery", strings.TrimSuffix(h.URL, "/"))
+		resp, err := client.Get(discURL)
+		if err != nil {
+			continue
+		}
+		var discResults []AgentDiscoveryResult
+		_ = json.NewDecoder(resp.Body).Decode(&discResults)
+		resp.Body.Close()
+
+		agentInstalled := false
+		for _, d := range discResults {
+			if d.Agent == acc.Agent && d.Installed {
+				agentInstalled = true
+				break
+			}
+		}
+
+		if !agentInstalled {
+			continue
+		}
+
+		postURL := fmt.Sprintf("%s/v1/accounts", strings.TrimSuffix(h.URL, "/"))
+		payload, _ := json.Marshal(map[string]interface{}{
+			"agent":         acc.Agent,
+			"name":          acc.Name,
+			"display_name":  acc.DisplayName,
+			"config_dir":    acc.ConfigDir,
+			"env":           acc.Env,
+			"is_default":    acc.IsDefault,
+			"propagate_all": false,
+		})
+		pResp, err := client.Post(postURL, "application/json", bytes.NewBuffer(payload))
+		if err == nil {
+			pResp.Body.Close()
+		}
+	}
+}
+
+func (s *Server) handleAccounts(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		agentFilter := r.URL.Query().Get("agent")
+		accounts, err := s.db.ListAccounts(agentFilter)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Failed to list accounts: %v", err), http.StatusInternalServerError)
+			return
+		}
+
+		// Ensure default account exists for agents
+		agentsToCheck := []string{"claude-code", "antigravity", "codex"}
+		if agentFilter != "" {
+			agentsToCheck = []string{agentFilter}
+		}
+		for _, ag := range agentsToCheck {
+			hasDefault := false
+			for _, a := range accounts {
+				if a.Agent == ag && a.Name == "default" {
+					hasDefault = true
+					break
+				}
+			}
+			if !hasDefault {
+				hasAnyDefault := false
+				for _, a := range accounts {
+					if a.Agent == ag && a.IsDefault {
+						hasAnyDefault = true
+						break
+					}
+				}
+				accounts = append(accounts, &AgentAccount{
+					ID:          ag + ":default",
+					Agent:       ag,
+					Name:        "default",
+					DisplayName: "Default",
+					IsDefault:   !hasAnyDefault,
+					CreatedAt:   time.Now(),
+					UpdatedAt:   time.Now(),
+				})
+			}
+		}
+
+		for _, a := range accounts {
+			a.IsLoggedIn = s.checkAccountLoggedIn(a)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(accounts)
+
+	case http.MethodPost:
+		var req struct {
+			Agent        string            `json:"agent"`
+			Name         string            `json:"name"`
+			DisplayName  string            `json:"display_name"`
+			ConfigDir    string            `json:"config_dir"`
+			Env          map[string]string `json:"env"`
+			IsDefault    bool              `json:"is_default"`
+			PropagateAll bool              `json:"propagate_all"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid payload", http.StatusBadRequest)
+			return
+		}
+		if req.Agent == "" || req.Name == "" {
+			http.Error(w, "Missing agent or name", http.StatusBadRequest)
+			return
+		}
+		req.Name = strings.TrimSpace(strings.ToLower(req.Name))
+		validName := regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
+		if !validName.MatchString(req.Name) {
+			http.Error(w, "Invalid account name (must start with alphanumeric and contain only [a-z0-9_-])", http.StatusBadRequest)
+			return
+		}
+
+		configDir := req.ConfigDir
+		if req.Name != "default" {
+			var err error
+			configDir, err = setupProfileDirectory(req.Agent, req.Name, req.ConfigDir)
+			if err != nil {
+				http.Error(w, fmt.Sprintf("Failed to setup profile directory: %v", err), http.StatusInternalServerError)
+				return
+			}
+		}
+
+		displayName := req.DisplayName
+		if displayName == "" {
+			displayName = strings.Title(req.Name)
+		}
+
+		acc := &AgentAccount{
+			ID:          fmt.Sprintf("%s:%s", req.Agent, req.Name),
+			Agent:       req.Agent,
+			Name:        req.Name,
+			DisplayName: displayName,
+			ConfigDir:   configDir,
+			Env:         req.Env,
+			IsDefault:   req.IsDefault,
+		}
+
+		if err := s.db.SaveAccount(acc); err != nil {
+			http.Error(w, fmt.Sprintf("Failed to save account: %v", err), http.StatusInternalServerError)
+			return
+		}
+
+		acc.IsLoggedIn = s.checkAccountLoggedIn(acc)
+
+		if req.PropagateAll {
+			go s.propagateAccountToFleet(acc)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(acc)
+
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Server) handleAccountOps(w http.ResponseWriter, r *http.Request) {
+	subPath := strings.TrimPrefix(r.URL.Path, "/v1/accounts/")
+	parts := strings.Split(subPath, "/")
+	if len(parts) == 0 || parts[0] == "" {
+		http.Error(w, "Missing account id", http.StatusBadRequest)
+		return
+	}
+	id := parts[0]
+
+	if len(parts) == 1 {
+		if r.Method == http.MethodDelete {
+			if strings.HasSuffix(id, ":default") {
+				http.Error(w, "Cannot delete default account", http.StatusBadRequest)
+				return
+			}
+			if err := s.db.DeleteAccount(id); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": "deleted"})
+			return
+		} else if r.Method == http.MethodGet {
+			acc, err := s.db.GetAccount(id)
+			if err != nil || acc == nil {
+				http.Error(w, "Account not found", http.StatusNotFound)
+				return
+			}
+			acc.IsLoggedIn = s.checkAccountLoggedIn(acc)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(acc)
+			return
+		}
+	} else if len(parts) == 2 {
+		action := parts[1]
+		if action == "default" && r.Method == http.MethodPost {
+			acc, err := s.db.GetAccount(id)
+			if err != nil || acc == nil {
+				http.Error(w, "Account not found", http.StatusNotFound)
+				return
+			}
+			if err := s.db.SetDefaultAccount(acc.Agent, id); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": "default_updated"})
+			return
+		} else if action == "login" && r.Method == http.MethodPost {
+			acc, err := s.db.GetAccount(id)
+			if err != nil || acc == nil {
+				http.Error(w, "Account not found", http.StatusNotFound)
+				return
+			}
+			home, _ := os.UserHomeDir()
+			envVars := make(map[string]string)
+			if acc.ConfigDir != "" {
+				cfgDir := acc.ConfigDir
+				if strings.HasPrefix(cfgDir, "~/") && home != "" {
+					cfgDir = filepath.Join(home, cfgDir[2:])
+				}
+				if acc.Agent == "claude-code" {
+					envVars["CLAUDE_CONFIG_DIR"] = cfgDir
+				} else if acc.Agent == "antigravity" {
+					envVars["GEMINI_CLI_HOME"] = cfgDir
+				}
+			}
+			for k, v := range acc.Env {
+				envVars[k] = v
+			}
+			tmuxName := fmt.Sprintf("ackbar-login-%s-%s", acc.Agent, acc.Name)
+			launchCmd := "claude login"
+			if acc.Agent == "antigravity" {
+				launchCmd = "agy login"
+			}
+			if err := tmux.SpawnWithEnv(r.Context(), tmuxName, "", launchCmd, envVars); err != nil {
+				http.Error(w, fmt.Sprintf("Failed to spawn login session: %v", err), http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"status":    "login_spawned",
+				"tmux_name": tmuxName,
+			})
+			return
+		}
+	}
+
+	http.Error(w, "Not found or method not allowed", http.StatusNotFound)
 }
 
 type DocumentItem struct {

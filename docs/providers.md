@@ -39,3 +39,17 @@ Token usage percentage calculation dynamically adapts to model families:
 Child subagents (e.g. Claude Code Explore/Task sidechains or Antigravity subtrajectories) are filtered out:
 * Hook payloads with `is_sidechain: true` or non-empty `agent_id` are discarded.
 * Transcript directories ignore `<parent-id>/subagents/` subfolders.
+
+---
+
+## 5. Multi-Account Profile Management
+
+Ackbar supports running separate account profiles (e.g. Work, Personal, Client) for Claude Code and Google Antigravity across local and remote fleet hosts.
+
+### Isolation Architecture
+* **Claude Code (`claude-code`):** Each non-default profile maps to `~/.claude-profiles/<name>/` and is launched with `CLAUDE_CONFIG_DIR=~/.claude-profiles/<name>`. Pre-configured HTTP hooks automatically route to `http://127.0.0.1:7777/v1/hooks/claude-code?account=<name>`.
+* **Google Antigravity (`antigravity`):** Profiles isolate configurations under `~/.gemini-profiles/<name>/` via `GEMINI_CLI_HOME=~/.gemini-profiles/<name>`.
+* **Single-Profile Presentation:** If an agent only has the default profile configured, the account selector is hidden in the UI and account badges are omitted, keeping single-profile workspaces clean.
+* **Fleet Propagation:** When adding an account (`--all-hosts` or via the Settings modal), Ackbar automatically checks agent discovery (`/v1/agents/discovery`) on each host and registers the profile only on hosts where the agent is installed.
+* **Group Memory:** Ackbar remembers the preferred account for each group/subgroup on each host (`by_host[host].account`), pre-selecting it when spawning subsequent sessions.
+

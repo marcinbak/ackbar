@@ -5,12 +5,18 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 )
 
 // Spawn creates a new detached tmux session with the given name, running the command in the specified directory.
 func Spawn(ctx context.Context, sessionName, cwd, command string) error {
+	return SpawnWithEnv(ctx, sessionName, cwd, command, nil)
+}
+
+// SpawnWithEnv creates a new detached tmux session with custom environment variables injected before command execution.
+func SpawnWithEnv(ctx context.Context, sessionName, cwd, command string, env map[string]string) error {
 	// check if session already exists to avoid duplicate spawning
 	if HasSession(ctx, sessionName) {
 		return fmt.Errorf("tmux session %s already exists", sessionName)
@@ -25,7 +31,19 @@ func Spawn(ctx context.Context, sessionName, cwd, command string) error {
 		if cwd != "" {
 			cdPrefix = fmt.Sprintf("cd %q 2>/dev/null || true; ", cwd)
 		}
-		args = append(args, "bash", "-l", "-c", fmt.Sprintf("%sexport PATH=\"$HOME/.local/bin:$HOME/.npm-global/bin:$PATH\"; %s; exec bash -l", cdPrefix, command))
+		envExports := ""
+		if len(env) > 0 {
+			keys := make([]string, 0, len(env))
+			for k := range env {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			for _, k := range keys {
+				v := env[k]
+				envExports += fmt.Sprintf("export %s=%q; ", k, v)
+			}
+		}
+		args = append(args, "bash", "-l", "-c", fmt.Sprintf("%sexport PATH=\"$HOME/.local/bin:$HOME/.npm-global/bin:$PATH\"; %s%s; exec bash -l", cdPrefix, envExports, command))
 	}
 
 	cmd := exec.CommandContext(ctx, "tmux", args...)

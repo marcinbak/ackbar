@@ -80,6 +80,20 @@ type Session struct {
 	IsUnread          bool      `json:"is_unread,omitempty"`
 	IsDone            bool      `json:"is_done,omitempty"`
 	LastStateChangeAt time.Time `json:"last_state_change_at,omitempty"`
+	AccountID         string    `json:"account_id,omitempty"` // profile/account identifier (e.g. "work", "personal", "default")
+}
+
+type AgentAccount struct {
+	ID          string            `json:"id"`                     // Unique key, e.g. "claude-code:work"
+	Agent       string            `json:"agent"`                  // "claude-code" | "antigravity" | "codex"
+	Name        string            `json:"name"`                   // "work", "personal", "default"
+	DisplayName string            `json:"display_name"`           // "Anthropic Team (Work)"
+	ConfigDir   string            `json:"config_dir,omitempty"`   // custom config dir e.g. "~/.claude-profiles/work"
+	Env         map[string]string `json:"env,omitempty"`          // custom env vars (ANTHROPIC_API_KEY, etc.)
+	IsDefault   bool              `json:"is_default"`             // default account for this agent
+	IsLoggedIn  bool              `json:"is_logged_in,omitempty"` // computed credential check
+	CreatedAt   time.Time         `json:"created_at"`
+	UpdatedAt   time.Time         `json:"updated_at"`
 }
 
 type TreeNode struct {
