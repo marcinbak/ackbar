@@ -247,6 +247,57 @@ class ApiClient {
     }
   }
 
+  /// POST /v1/sessions/prompt: Dispatch a user prompt to a headless or tmux session
+  Future<bool> sendPrompt(String hostUrl, String sessionId, String prompt, {String? authToken}) async {
+    final clean = _cleanUrl(hostUrl);
+    final uri = Uri.parse('$clean/v1/sessions/prompt');
+    try {
+      final response = await _client.post(
+        uri,
+        headers: _headers(authToken, {'Content-Type': 'application/json'}),
+        body: jsonEncode({'session_id': sessionId, 'prompt': prompt}),
+      ).timeout(const Duration(seconds: 10));
+      return response.statusCode == 200;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// POST /v1/sessions/cancel: Cancel active turn for a session
+  Future<bool> cancelTurn(String hostUrl, String sessionId, {String? authToken}) async {
+    final clean = _cleanUrl(hostUrl);
+    final uri = Uri.parse('$clean/v1/sessions/cancel');
+    try {
+      final response = await _client.post(
+        uri,
+        headers: _headers(authToken, {'Content-Type': 'application/json'}),
+        body: jsonEncode({'session_id': sessionId}),
+      ).timeout(const Duration(seconds: 5));
+      return response.statusCode == 200;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// POST /v1/sessions/take-wheel: Seamless handoff from headless session into live tmux session
+  Future<Map<String, dynamic>?> takeWheel(String hostUrl, String sessionId, {String? authToken}) async {
+    final clean = _cleanUrl(hostUrl);
+    final uri = Uri.parse('$clean/v1/sessions/take-wheel');
+    try {
+      final response = await _client.post(
+        uri,
+        headers: _headers(authToken, {'Content-Type': 'application/json'}),
+        body: jsonEncode({'session_id': sessionId}),
+      ).timeout(const Duration(seconds: 8));
+      if (response.statusCode == 200) {
+        return jsonDecode(response.body) as Map<String, dynamic>;
+      }
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
   void dispose() {
     _client.close();
   }

@@ -152,4 +152,24 @@ class TranscriptData {
       rawMarkdown: markdown,
     );
   }
+
+  TranscriptData copyWith({
+    String? sessionId,
+    String? nativeId,
+    String? agent,
+    String? title,
+    String? cwd,
+    List<TranscriptMessage>? messages,
+    String? rawMarkdown,
+  }) {
+    return TranscriptData(
+      sessionId: sessionId ?? this.sessionId,
+      nativeId: nativeId ?? this.nativeId,
+      agent: agent ?? this.agent,
+      title: title ?? this.title,
+      cwd: cwd ?? this.cwd,
+      messages: messages ?? this.messages,
+      rawMarkdown: rawMarkdown ?? this.rawMarkdown,
+    );
+  }
 }

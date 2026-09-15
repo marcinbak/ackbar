@@ -56,15 +56,18 @@ type Server struct {
 	webFS           fs.FS
 	configuredToken string
 	relayClient     *relay.Client
+	headless        *HeadlessRunner
 }
 
 func NewServer(db *DB) *Server {
 	StartUploadCleaner(defaultUploadDir, 6*time.Hour)
-	return &Server{
+	s := &Server{
 		db:          db,
 		providers:   make(map[string]Provider),
 		subscribers: make(map[chan *Session]bool),
 	}
+	s.headless = NewHeadlessRunner(db, s.broadcast)
+	return s
 }
 
 func (s *Server) SetToken(token string) {
@@ -161,6 +164,10 @@ func (s *Server) Mux() http.Handler {
 	mux.HandleFunc("/v1/sessions/control", s.handleSessionControl)
 	mux.HandleFunc("/v1/sessions/pty", s.handlePTY)
 	mux.HandleFunc("/v1/sessions/spawn", s.handleSpawn)
+	mux.HandleFunc("/v1/sessions/prompt", s.handlePrompt)
+	mux.HandleFunc("/v1/sessions/chat/stream", s.handleChatStream)
+	mux.HandleFunc("/v1/sessions/cancel", s.handleCancelTurn)
+	mux.HandleFunc("/v1/sessions/take-wheel", s.handleTakeWheel)
 	mux.HandleFunc("/v1/accounts", s.handleAccounts)
 	mux.HandleFunc("/v1/accounts/", s.handleAccountOps)
 	mux.HandleFunc("/v1/agents/discovery", s.handleAgentDiscovery)
@@ -1231,6 +1238,235 @@ func (s *Server) handleRespond(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) handlePrompt(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		SessionID string `json:"session_id"`
+		Prompt    string `json:"prompt"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid payload", http.StatusBadRequest)
+		return
+	}
+
+	if req.SessionID == "" || req.Prompt == "" {
+		http.Error(w, "Missing session_id or prompt", http.StatusBadRequest)
+		return
+	}
+
+	sess, err := s.db.GetSession(req.SessionID)
+	if err != nil || sess == nil {
+		http.Error(w, "Session not found", http.StatusNotFound)
+		return
+	}
+
+	if sess.EngineType == EngineHeadless {
+		if s.headless != nil && s.headless.IsRunning(sess.ID) {
+			http.Error(w, "A turn is already in progress for this session", http.StatusConflict)
+			return
+		}
+		if s.headless != nil {
+			go func() {
+				_ = s.headless.RunTurn(context.Background(), sess, req.Prompt)
+			}()
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"status": "running",
+		})
+		return
+	}
+
+	// Tmux session prompt injection
+	if sess.TmuxName == "" {
+		http.Error(w, "Session has no active tmux process", http.StatusBadRequest)
+		return
+	}
+
+	if err := tmux.SendInput(r.Context(), sess.TmuxName, req.Prompt, true); err != nil {
+		http.Error(w, fmt.Sprintf("Failed to send prompt to tmux: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"status": "sent",
+	})
+}
+
+func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.URL.Query().Get("session_id")
+	if sessionID == "" {
+		sessionID = r.URL.Query().Get("id")
+	}
+	if sessionID == "" {
+		http.Error(w, "Missing session_id query parameter", http.StatusBadRequest)
+		return
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "Streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	flusher.Flush()
+
+	if s.headless == nil {
+		return
+	}
+
+	ch, cleanup := s.headless.Subscribe(sessionID)
+	defer cleanup()
+
+	// Initial connected heartbeat
+	initEvt, _ := json.Marshal(ChatStreamEvent{
+		SessionID: sessionID,
+		Type:      "status",
+		Text:      "connected",
+		Timestamp: time.Now(),
+	})
+	_, _ = fmt.Fprintf(w, "data: %s\n\n", initEvt)
+	flusher.Flush()
+
+	notify := r.Context().Done()
+	for {
+		select {
+		case <-notify:
+			return
+		case evt, ok := <-ch:
+			if !ok {
+				return
+			}
+			data, err := json.Marshal(evt)
+			if err != nil {
+				continue
+			}
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
+			flusher.Flush()
+		}
+	}
+}
+
+func (s *Server) handleCancelTurn(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		SessionID string `json:"session_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		req.SessionID = r.URL.Query().Get("session_id")
+		if req.SessionID == "" {
+			req.SessionID = r.URL.Query().Get("id")
+		}
+	}
+	if req.SessionID == "" {
+		http.Error(w, "Missing session_id", http.StatusBadRequest)
+		return
+	}
+
+	sess, err := s.db.GetSession(req.SessionID)
+	if err != nil || sess == nil {
+		http.Error(w, "Session not found", http.StatusNotFound)
+		return
+	}
+
+	if sess.EngineType == EngineHeadless {
+		if s.headless != nil {
+			_ = s.headless.CancelTurn(sess.ID)
+		}
+		sess.State = StateIdle
+		sess.Activity = "Turn cancelled"
+		_ = s.db.SaveSession(sess)
+		s.broadcast(sess)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "cancelled"})
+		return
+	}
+
+	if sess.TmuxName != "" {
+		_ = tmux.SendKeys(r.Context(), sess.TmuxName, "C-c")
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "cancelled"})
+}
+
+func (s *Server) handleTakeWheel(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		SessionID string `json:"session_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid payload", http.StatusBadRequest)
+		return
+	}
+
+	if req.SessionID == "" {
+		http.Error(w, "Missing session_id", http.StatusBadRequest)
+		return
+	}
+
+	sess, err := s.db.GetSession(req.SessionID)
+	if err != nil || sess == nil {
+		http.Error(w, "Session not found", http.StatusNotFound)
+		return
+	}
+
+	if sess.EngineType == EngineHeadless && s.headless != nil && s.headless.IsRunning(sess.ID) {
+		http.Error(w, "Cannot take wheel while a headless turn is active. Please wait or cancel the turn.", http.StatusConflict)
+		return
+	}
+
+	tmuxName := fmt.Sprintf("ackbar-%s-%s", sess.Agent, sess.NativeID)
+	var resumeCmd string
+	if p, ok := s.providers[sess.Agent]; ok {
+		resumeCmd = p.GetResumeCommand(sess.NativeID)
+	}
+	if resumeCmd == "" {
+		resumeCmd = fmt.Sprintf("claude --resume %s", sess.NativeID)
+	}
+
+	if err := tmux.Spawn(r.Context(), tmuxName, sess.Cwd, resumeCmd); err != nil {
+		http.Error(w, fmt.Sprintf("Failed to spawn tmux session: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	sess.TmuxName = tmuxName
+	sess.EngineType = EngineTmux
+	sess.Managed = true
+	sess.State = StateWorking
+	sess.Activity = "Interactive terminal attached"
+	sess.LastEventAt = time.Now()
+	if pid, perr := tmux.GetPID(r.Context(), tmuxName); perr == nil {
+		sess.PID = pid
+	}
+
+	_ = s.db.SaveSession(sess)
+	s.broadcast(sess)
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"status":    "ok",
+		"tmux_name": tmuxName,
+	})
+}
+
 func (s *Server) handleSessionTranscript(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -1405,12 +1641,13 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Agent     string `json:"agent"`
-		Cwd       string `json:"cwd"`
-		Host      string `json:"host"`
-		NodePath  string `json:"node_path"`
-		Name      string `json:"name"`
-		AccountID string `json:"account_id"`
+		Agent      string `json:"agent"`
+		Cwd        string `json:"cwd"`
+		Host       string `json:"host"`
+		NodePath   string `json:"node_path"`
+		Name       string `json:"name"`
+		AccountID  string `json:"account_id"`
+		EngineType string `json:"engine_type"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -1421,6 +1658,10 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 	if req.Agent == "" || req.Cwd == "" {
 		http.Error(w, "Missing agent or cwd", http.StatusBadRequest)
 		return
+	}
+
+	if req.EngineType == "" {
+		req.EngineType = EngineTmux
 	}
 
 	if req.NodePath == "" {
@@ -1443,11 +1684,12 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		if hostRec != nil && hostRec.URL != "" {
 			targetURL := strings.TrimSuffix(hostRec.URL, "/") + "/v1/sessions/spawn"
 			payload, _ := json.Marshal(map[string]string{
-				"agent":      req.Agent,
-				"cwd":        req.Cwd,
-				"node_path":  req.NodePath,
-				"name":       req.Name,
-				"account_id": req.AccountID,
+				"agent":       req.Agent,
+				"cwd":         req.Cwd,
+				"node_path":   req.NodePath,
+				"name":        req.Name,
+				"account_id":  req.AccountID,
+				"engine_type": req.EngineType,
 			})
 			resp, err := http.Post(targetURL, "application/json", bytes.NewBuffer(payload))
 			if err != nil {
@@ -1542,6 +1784,42 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tempUUID := generateUUID()
+
+	if req.EngineType == EngineHeadless {
+		sess := &Session{
+			ID:          fmt.Sprintf("%s:local:%s", req.Agent, tempUUID),
+			Agent:       req.Agent,
+			Host:        "local",
+			NativeID:    tempUUID,
+			Cwd:         req.Cwd,
+			NodePath:    req.NodePath,
+			Name:        req.Name,
+			Managed:     true,
+			TmuxName:    "",
+			EngineType:  EngineHeadless,
+			State:       StateIdle,
+			Activity:    "Headless chat session ready",
+			StartedAt:   time.Now(),
+			LastEventAt: time.Now(),
+			AccountID:   accountID,
+		}
+		if req.Name != "" {
+			sess.CustomTitle = req.Name
+		}
+		if err := s.db.SaveSession(sess); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		s.broadcast(sess)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"status":      "spawned",
+			"session_id":  tempUUID,
+			"engine_type": EngineHeadless,
+		})
+		return
+	}
+
 	tmuxName := fmt.Sprintf("ackbar-%s-%s", req.Agent, tempUUID)
 	launchCmd := s.getSpawnCmd(req.Agent, tempUUID)
 
@@ -1562,6 +1840,7 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		Name:        req.Name,
 		Managed:     true,
 		TmuxName:    tmuxName,
+		EngineType:  EngineTmux,
 		State:       StateUnknown,
 		Activity:    "Spawning session...",
 		StartedAt:   time.Now(),
@@ -1585,8 +1864,9 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{
-		"status":     "spawning",
-		"session_id": tempUUID,
+		"status":      "spawning",
+		"session_id":  tempUUID,
+		"engine_type": EngineTmux,
 	})
 }
 

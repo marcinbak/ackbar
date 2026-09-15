@@ -48,8 +48,11 @@ class TranscriptScreen extends ConsumerStatefulWidget {
 
 class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
   final ScrollController _scrollController = ScrollController();
+  final TextEditingController _promptController = TextEditingController();
+  final FocusNode _promptFocusNode = FocusNode();
   bool _showJumpToBottom = false;
   bool _isLoading = true;
+  bool _isSending = false;
   String? _errorMessage;
   TranscriptData? _transcriptData;
 
@@ -64,6 +67,8 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
   void dispose() {
     _scrollController.removeListener(_onScroll);
     _scrollController.dispose();
+    _promptController.dispose();
+    _promptFocusNode.dispose();
     super.dispose();
   }
 
@@ -183,6 +188,121 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
     }
   }
 
+  Future<void> _sendPrompt() async {
+    final text = _promptController.text.trim();
+    if (text.isEmpty || _isSending) return;
+
+    _promptController.clear();
+    HapticFeedback.lightImpact();
+
+    final userMsg = TranscriptMessage(
+      role: 'user',
+      content: text,
+      timestamp: DateTime.now(),
+    );
+
+    setState(() {
+      _isSending = true;
+      if (_transcriptData != null) {
+        _transcriptData = _transcriptData!.copyWith(
+          messages: [..._transcriptData!.messages, userMsg],
+        );
+      }
+    });
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _scrollToBottom();
+    });
+
+    try {
+      final hostUrl = await _resolveHostUrl();
+      final success = await ref.read(apiClientProvider).sendPrompt(hostUrl, widget.session.id, text);
+      if (!success && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Failed to dispatch prompt to agent'),
+            backgroundColor: AppColors.statusCoral,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error sending prompt: $e'),
+            backgroundColor: AppColors.statusCoral,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSending = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _takeWheel() async {
+    HapticFeedback.mediumImpact();
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Taking the wheel: spawning live tmux session...'),
+        backgroundColor: AppColors.infoCyan,
+        duration: Duration(seconds: 2),
+      ),
+    );
+
+    try {
+      final hostUrl = await _resolveHostUrl();
+      final res = await ref.read(apiClientProvider).takeWheel(hostUrl, widget.session.id);
+      if (res != null && mounted) {
+        final tmuxName = res['tmux_name']?.toString() ?? '';
+        final updatedSession = widget.session.copyWith(
+          tmuxName: tmuxName,
+          engineType: 'tmux',
+          managed: true,
+        );
+        TerminalScreen.open(context, updatedSession);
+      } else if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Failed to take wheel. Ensure no headless turn is in progress.'),
+            backgroundColor: AppColors.statusCoral,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error taking wheel: $e'),
+            backgroundColor: AppColors.statusCoral,
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _cancelTurn() async {
+    HapticFeedback.mediumImpact();
+    try {
+      final hostUrl = await _resolveHostUrl();
+      await ref.read(apiClientProvider).cancelTurn(hostUrl, widget.session.id);
+      if (mounted) {
+        setState(() {
+          _isSending = false;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Turn cancelled'),
+            backgroundColor: AppColors.surfaceHighlight,
+          ),
+        );
+      }
+    } catch (_) {}
+  }
+
   @override
   Widget build(BuildContext context) {
     final messages = _transcriptData?.messages ?? [];
@@ -225,6 +345,14 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
           ],
         ),
         actions: [
+          // Take the Wheel in Terminal (Headless sessions)
+          if (widget.session.isHeadless)
+            IconButton(
+              icon: const Icon(Icons.sports_motorsports_rounded, size: 20, color: AppColors.infoCyan),
+              tooltip: 'Take the Wheel (Interactive Terminal)',
+              onPressed: _takeWheel,
+            ),
+
           // Live Terminal Quick Jump
           IconButton(
             icon: const Icon(Icons.terminal_rounded, size: 20, color: AppColors.statusEmerald),
@@ -256,94 +384,202 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
           ),
         ],
       ),
-      body: Stack(
-        children: [
-          if (_isLoading)
-            Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
+      body: SafeArea(
+        top: false,
+        child: Column(
+          children: [
+            Expanded(
+              child: Stack(
                 children: [
-                  const CircularProgressIndicator(color: AppColors.infoCyan),
-                  AppSpacing.gapH12,
-                  Text(
-                    'Loading conversation stream...',
-                    style: AppTypography.bodySmall.copyWith(color: AppColors.textSecondary),
-                  ),
-                ],
-              ),
-            )
-          else if (_errorMessage != null)
-            Center(
-              child: Padding(
-                padding: AppSpacing.paddingScreen,
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(Icons.error_outline_rounded, size: 36, color: AppColors.statusCoral),
-                    AppSpacing.gapH12,
-                    Text(
-                      _errorMessage!,
-                      textAlign: TextAlign.center,
-                      style: AppTypography.bodyMedium.copyWith(color: AppColors.statusCoral),
+                  if (_isLoading)
+                    Center(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const CircularProgressIndicator(color: AppColors.infoCyan),
+                          AppSpacing.gapH12,
+                          Text(
+                            'Loading conversation stream...',
+                            style: AppTypography.bodySmall.copyWith(color: AppColors.textSecondary),
+                          ),
+                        ],
+                      ),
+                    )
+                  else if (_errorMessage != null)
+                    Center(
+                      child: Padding(
+                        padding: AppSpacing.paddingScreen,
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(Icons.error_outline_rounded, size: 36, color: AppColors.statusCoral),
+                            AppSpacing.gapH12,
+                            Text(
+                              _errorMessage!,
+                              textAlign: TextAlign.center,
+                              style: AppTypography.bodyMedium.copyWith(color: AppColors.statusCoral),
+                            ),
+                            AppSpacing.gapH16,
+                            ElevatedButton.icon(
+                              onPressed: _loadTranscript,
+                              icon: const Icon(Icons.refresh_rounded, size: 16),
+                              label: const Text('Retry'),
+                            ),
+                          ],
+                        ),
+                      ),
+                    )
+                  else if (messages.isEmpty)
+                    Center(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.chat_bubble_outline_rounded, size: 40, color: AppColors.textMuted),
+                          AppSpacing.gapH12,
+                          Text(
+                            'No conversation messages recorded yet',
+                            style: AppTypography.bodyMedium.copyWith(color: AppColors.textMuted),
+                          ),
+                        ],
+                      ),
+                    )
+                  else
+                    ListView.builder(
+                      controller: _scrollController,
+                      padding: const EdgeInsets.fromLTRB(AppSpacing.md, AppSpacing.md, AppSpacing.md, 20),
+                      physics: const BouncingScrollPhysics(),
+                      itemCount: messages.length,
+                      itemBuilder: (context, index) {
+                        final message = messages[index];
+                        return _buildMessageTurn(message, index);
+                      },
                     ),
-                    AppSpacing.gapH16,
-                    ElevatedButton.icon(
-                      onPressed: _loadTranscript,
-                      icon: const Icon(Icons.refresh_rounded, size: 16),
-                      label: const Text('Retry'),
-                    ),
-                  ],
-                ),
-              ),
-            )
-          else if (messages.isEmpty)
-            Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Icon(Icons.chat_bubble_outline_rounded, size: 40, color: AppColors.textMuted),
-                  AppSpacing.gapH12,
-                  Text(
-                    'No conversation messages recorded yet',
-                    style: AppTypography.bodyMedium.copyWith(color: AppColors.textMuted),
-                  ),
-                ],
-              ),
-            )
-          else
-            ListView.builder(
-              controller: _scrollController,
-              padding: const EdgeInsets.fromLTRB(AppSpacing.md, AppSpacing.md, AppSpacing.md, 80),
-              physics: const BouncingScrollPhysics(),
-              itemCount: messages.length,
-              itemBuilder: (context, index) {
-                final message = messages[index];
-                return _buildMessageTurn(message, index);
-              },
-            ),
 
-          // Floating "Jump to Latest" Button
-          if (_showJumpToBottom)
-            Positioned(
-              bottom: 20,
-              right: 20,
-              child: FloatingActionButton.extended(
-                onPressed: () {
-                  HapticFeedback.selectionClick();
-                  _scrollToBottom();
-                },
-                backgroundColor: AppColors.surfaceHighlight,
-                foregroundColor: AppColors.infoCyan,
-                icon: const Icon(Icons.arrow_downward_rounded, size: 16),
-                label: Text(
-                  'Latest',
-                  style: AppTypography.codeXs.copyWith(
-                    fontWeight: FontWeight.w700,
-                    color: AppColors.infoCyan,
+                  // Floating "Jump to Latest" Button
+                  if (_showJumpToBottom)
+                    Positioned(
+                      bottom: 12,
+                      right: 16,
+                      child: FloatingActionButton.extended(
+                        onPressed: () {
+                          HapticFeedback.selectionClick();
+                          _scrollToBottom();
+                        },
+                        backgroundColor: AppColors.surfaceHighlight,
+                        foregroundColor: AppColors.infoCyan,
+                        icon: const Icon(Icons.arrow_downward_rounded, size: 16),
+                        label: Text(
+                          'Latest',
+                          style: AppTypography.codeXs.copyWith(
+                            fontWeight: FontWeight.w700,
+                            color: AppColors.infoCyan,
+                          ),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            _buildBottomComposer(),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildBottomComposer() {
+    return Container(
+      decoration: const BoxDecoration(
+        color: AppColors.surface,
+        border: Border(
+          top: BorderSide(color: AppColors.border, width: 1),
+        ),
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md, vertical: 8),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Expanded(
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: AppColors.terminalBlack,
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(
+                      color: _isSending ? AppColors.infoCyan : AppColors.border,
+                      width: 1,
+                    ),
+                  ),
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                  child: TextField(
+                    controller: _promptController,
+                    focusNode: _promptFocusNode,
+                    minLines: 1,
+                    maxLines: 5,
+                    style: AppTypography.bodySmall.copyWith(color: AppColors.textPrimary),
+                    textInputAction: TextInputAction.send,
+                    onSubmitted: (_) => _sendPrompt(),
+                    decoration: InputDecoration(
+                      isDense: true,
+                      contentPadding: EdgeInsets.zero,
+                      border: InputBorder.none,
+                      hintText: 'Ask ${widget.session.agentDisplayName}...',
+                      hintStyle: AppTypography.bodySmall.copyWith(color: AppColors.textMuted),
+                    ),
                   ),
                 ),
               ),
+              const SizedBox(width: 8),
+              if (_isSending)
+                IconButton(
+                  icon: const Icon(Icons.stop_circle_rounded, size: 28, color: AppColors.statusCoral),
+                  tooltip: 'Cancel turn',
+                  onPressed: _cancelTurn,
+                )
+              else
+                IconButton(
+                  icon: const Icon(Icons.arrow_upward_rounded, size: 22, color: AppColors.infoCyan),
+                  style: IconButton.styleFrom(
+                    backgroundColor: AppColors.surfaceHighlight,
+                    shape: const CircleBorder(),
+                  ),
+                  tooltip: 'Send prompt',
+                  onPressed: _sendPrompt,
+                ),
+            ],
+          ),
+          Padding(
+            padding: const EdgeInsets.only(top: 4, left: 2, right: 2),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  widget.session.isHeadless
+                      ? '💬 Headless turn-by-turn • OAuth Flat-rate'
+                      : '🖥️ Tmux process • Interactive shell',
+                  style: AppTypography.codeXs.copyWith(color: AppColors.textDim, fontSize: 10),
+                ),
+                if (_isSending)
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const SizedBox(
+                        width: 10,
+                        height: 10,
+                        child: CircularProgressIndicator(strokeWidth: 1.5, color: AppColors.infoCyan),
+                      ),
+                      const SizedBox(width: 4),
+                      Text(
+                        'Working...',
+                        style: AppTypography.codeXs.copyWith(color: AppColors.infoCyan, fontSize: 10),
+                      ),
+                    ],
+                  ),
+              ],
             ),
+          ),
         ],
       ),
     );

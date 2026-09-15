@@ -210,6 +210,7 @@ class Session {
   final String lastPrompt;
   final bool isUnread;
   final DateTime? lastStateChangeAt;
+  final String engineType;
 
   const Session({
     required this.id,
@@ -243,12 +244,14 @@ class Session {
     this.lastPrompt = '',
     this.isUnread = false,
     this.lastStateChangeAt,
+    this.engineType = 'tmux',
   });
 
   bool get isBlocked => state == SessionState.blocked || blocked != null;
   bool get isWorking => state == SessionState.working;
   bool get isIdle => state == SessionState.idle;
   bool get isEnded => state == SessionState.ended;
+  bool get isHeadless => engineType == 'headless';
 
   /// High-priority resolved human-friendly session title
   String get displayTitle {
@@ -406,6 +409,7 @@ class Session {
       lastPrompt: json['last_prompt']?.toString() ?? '',
       isUnread: json['is_unread'] == true || json['is_unread'] == 1,
       lastStateChangeAt: json['last_state_change_at'] != null ? DateTime.tryParse(json['last_state_change_at'].toString()) : null,
+      engineType: json['engine_type']?.toString() ?? 'tmux',
     );
   }
 
@@ -442,6 +446,7 @@ class Session {
       'last_prompt': lastPrompt,
       'is_unread': isUnread,
       if (lastStateChangeAt != null) 'last_state_change_at': lastStateChangeAt!.toIso8601String(),
+      'engine_type': engineType,
     };
   }
 
@@ -478,6 +483,7 @@ class Session {
     String? lastPrompt,
     bool? isUnread,
     DateTime? lastStateChangeAt,
+    String? engineType,
   }) {
     return Session(
       id: id ?? this.id,
@@ -511,6 +517,7 @@ class Session {
       lastPrompt: lastPrompt ?? this.lastPrompt,
       isUnread: isUnread ?? this.isUnread,
       lastStateChangeAt: lastStateChangeAt ?? this.lastStateChangeAt,
+      engineType: engineType ?? this.engineType,
     );
   }
 }
