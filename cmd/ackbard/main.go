@@ -24,6 +24,9 @@ func main() {
 	// Setup flags
 	hostFlag := flag.String("host", "0.0.0.0", "Host address to bind daemon (default 0.0.0.0)")
 	portFlag := flag.Int("port", 7777, "Port to bind daemon")
+	hostNameFlag := flag.String("host-name", "", "Canonical machine identifier (or ACKBAR_HOST env var, default 'local')")
+	nameFlag := flag.String("name", "", "Alias for --host-name")
+	displayNameFlag := flag.String("display-name", "", "Human-friendly host display name (or ACKBAR_DISPLAY_NAME env var)")
 	tokenFlag := flag.String("token", "", "Secret token for API/WebSocket authentication (or ACKBAR_TOKEN env var)")
 	relayFlag := flag.String("relay", "", "Public Ackbar Relay URL e.g. wss://relay.ackbar.dev/v1/relay/tunnel (or ACKBAR_RELAY_URL env var)")
 	relaySecretFlag := flag.String("relay-secret", "", "Secret required by relay server (or ACKBAR_RELAY_SECRET env var)")
@@ -35,6 +38,19 @@ func main() {
 	if *versionFlag {
 		fmt.Printf("ackbard version %s\n", version.Version)
 		os.Exit(0)
+	}
+
+	hostName := *hostNameFlag
+	if hostName == "" {
+		hostName = *nameFlag
+	}
+	if hostName == "" {
+		hostName = os.Getenv("ACKBAR_HOST")
+	}
+
+	displayName := *displayNameFlag
+	if displayName == "" {
+		displayName = os.Getenv("ACKBAR_DISPLAY_NAME")
 	}
 
 	token := *tokenFlag
@@ -86,6 +102,14 @@ func main() {
 
 	// Initialize HTTP Server
 	server := daemon.NewServer(db)
+	if hostName != "" || displayName != "" {
+		server.SetHostIdentity(hostName, displayName)
+	}
+	if server.DisplayName() != "" {
+		log.Printf("Host identity: %s (%q)", server.HostName(), server.DisplayName())
+	} else {
+		log.Printf("Host identity: %s", server.HostName())
+	}
 	if token != "" {
 		server.SetToken(token)
 	}

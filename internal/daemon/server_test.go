@@ -2348,3 +2348,134 @@ func TestAccountsAPI(t *testing.T) {
 		t.Errorf("Expected 200 when deleting work account, got %d", wDelWork.Code)
 	}
 }
+
+func TestHostIdentity_VersionAndSettings(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test_host_identity.db")
+	db, err := InitDB(dbPath)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := NewServer(db)
+	// Initial default should be "local"
+	if server.HostName() != "local" {
+		t.Errorf("Expected initial HostName 'local', got %q", server.HostName())
+	}
+	if server.DisplayName() != "local" {
+		t.Errorf("Expected initial DisplayName 'local', got %q", server.DisplayName())
+	}
+
+	// 1. Set host identity
+	server.SetHostIdentity("macbook", "MacBook Air")
+	if server.HostName() != "macbook" {
+		t.Errorf("Expected HostName 'macbook', got %q", server.HostName())
+	}
+	if server.DisplayName() != "MacBook Air" {
+		t.Errorf("Expected DisplayName 'MacBook Air', got %q", server.DisplayName())
+	}
+
+	// 2. Query /v1/version
+	reqVer := httptest.NewRequest(http.MethodGet, "/v1/version", nil)
+	wVer := httptest.NewRecorder()
+	server.handleVersion(wVer, reqVer)
+	if wVer.Code != http.StatusOK {
+		t.Fatalf("GET /v1/version failed: %d", wVer.Code)
+	}
+	var verResp map[string]interface{}
+	if err := json.Unmarshal(wVer.Body.Bytes(), &verResp); err != nil {
+		t.Fatalf("Failed to parse /v1/version response: %v", err)
+	}
+	if verResp["host"] != "macbook" {
+		t.Errorf("Expected version response host 'macbook', got %v", verResp["host"])
+	}
+	if verResp["display_name"] != "MacBook Air" {
+		t.Errorf("Expected version response display_name 'MacBook Air', got %v", verResp["display_name"])
+	}
+
+	// 3. Query /v1/settings GET
+	reqSettingsGet := httptest.NewRequest(http.MethodGet, "/v1/settings", nil)
+	wSettingsGet := httptest.NewRecorder()
+	server.handleSettings(wSettingsGet, reqSettingsGet)
+	if wSettingsGet.Code != http.StatusOK {
+		t.Fatalf("GET /v1/settings failed: %d", wSettingsGet.Code)
+	}
+	var settingsResp map[string]string
+	if err := json.Unmarshal(wSettingsGet.Body.Bytes(), &settingsResp); err != nil {
+		t.Fatalf("Failed to parse /v1/settings response: %v", err)
+	}
+	if settingsResp["host_name"] != "macbook" {
+		t.Errorf("Expected settings host_name 'macbook', got %q", settingsResp["host_name"])
+	}
+	if settingsResp["display_name"] != "MacBook Air" {
+		t.Errorf("Expected settings display_name 'MacBook Air', got %q", settingsResp["display_name"])
+	}
+
+	// 4. Update via /v1/settings POST
+	updatePayload := map[string]string{
+		"host_name":    "laptop",
+		"display_name": "My Work Laptop",
+	}
+	body, _ := json.Marshal(updatePayload)
+	reqSettingsPost := httptest.NewRequest(http.MethodPost, "/v1/settings", bytes.NewReader(body))
+	wSettingsPost := httptest.NewRecorder()
+	server.handleSettings(wSettingsPost, reqSettingsPost)
+	if wSettingsPost.Code != http.StatusOK {
+		t.Fatalf("POST /v1/settings failed: %d", wSettingsPost.Code)
+	}
+	if server.HostName() != "laptop" {
+		t.Errorf("Expected updated HostName 'laptop', got %q", server.HostName())
+	}
+	if server.DisplayName() != "My Work Laptop" {
+		t.Errorf("Expected updated DisplayName 'My Work Laptop', got %q", server.DisplayName())
+	}
+
+	// 5. Verify persisted in DB
+	savedHost, _ := db.GetSetting("host_name")
+	savedDisp, _ := db.GetSetting("display_name")
+	if savedHost != "laptop" || savedDisp != "My Work Laptop" {
+		t.Errorf("Expected settings in DB to be laptop / My Work Laptop, got %q / %q", savedHost, savedDisp)
+	}
+}
+
+func TestHostIdentity_HandleSpawn(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test_spawn_identity.db")
+	db, err := InitDB(dbPath)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := NewServer(db)
+	server.SetHostIdentity("macbook", "MacBook Pro")
+	server.RegisterProvider(&namedMockProvider{agentName: "mock-agent"})
+
+	cwd := filepath.Join(t.TempDir(), "project-spawn")
+	spawnPayload := map[string]string{
+		"agent": "mock-agent",
+		"cwd":   cwd,
+	}
+	body, _ := json.Marshal(spawnPayload)
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/spawn", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+
+	server.handleSpawn(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("Failed to parse spawn response: %v", err)
+	}
+
+	if resp["host"] != "macbook" {
+		t.Errorf("Expected spawn response host 'macbook', got %v", resp["host"])
+	}
+	sessID, ok := resp["id"].(string)
+	if !ok || !strings.HasPrefix(sessID, "mock-agent:macbook:") {
+		t.Errorf("Expected session ID prefix 'mock-agent:macbook:', got %v", resp["id"])
+	}
+}
+

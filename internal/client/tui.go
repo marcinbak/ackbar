@@ -1802,7 +1802,13 @@ func (m *Model) View() string {
 		if ok && !st.Online {
 			statusBadge = lipgloss.NewStyle().Foreground(lipgloss.Color("#FF3333")).Render("[OFFLINE]")
 		}
-		machineSummaries = append(machineSummaries, fmt.Sprintf("%s%s %s (%s)", h.Name, verText, statusBadge, pDir))
+		hostLabel := h.Name
+		if ok && st.DisplayName != "" {
+			hostLabel = fmt.Sprintf("%s (%s)", st.DisplayName, h.Name)
+		} else if h.DisplayName != "" {
+			hostLabel = fmt.Sprintf("%s (%s)", h.DisplayName, h.Name)
+		}
+		machineSummaries = append(machineSummaries, fmt.Sprintf("%s%s %s (%s)", hostLabel, verText, statusBadge, pDir))
 	}
 	if len(machineSummaries) > 0 {
 		summaryLine := lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Render(fmt.Sprintf("💻 Connected Machines: %s", strings.Join(machineSummaries, " | ")))
@@ -2044,10 +2050,16 @@ func (m *Model) View() string {
 			}
 
 			prefix := "  "
-			hostNameFormatted := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#1E90FF")).Render(h.Name)
+			displayLabel := h.Name
+			if ok && st.DisplayName != "" {
+				displayLabel = fmt.Sprintf("%s (%s)", st.DisplayName, h.Name)
+			} else if h.DisplayName != "" {
+				displayLabel = fmt.Sprintf("%s (%s)", h.DisplayName, h.Name)
+			}
+			hostNameFormatted := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#1E90FF")).Render(displayLabel)
 			if isSelectedHost {
 				prefix = "▶ "
-				hostNameFormatted = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#00FFFF")).Render(h.Name)
+				hostNameFormatted = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#00FFFF")).Render(displayLabel)
 			}
 
 			discBuilder.WriteString(fmt.Sprintf("%sHost: %s [%s] ➔ Status: %s | Projects Dir: %s\n",

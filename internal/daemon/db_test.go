@@ -250,3 +250,82 @@ func TestDB_Accounts(t *testing.T) {
 		t.Errorf("Expected acc3 to be deleted, found: %+v", acc3Fetched)
 	}
 }
+
+func TestDB_MigrateLocalSessions(t *testing.T) {
+	dbFile := "./test_migrate_local_sessions.db"
+	defer os.Remove(dbFile)
+
+	db, err := InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	// 1. Insert sessions with host = "local"
+	sess1 := &Session{
+		ID:          "claude-code:local:uuid-123",
+		Agent:       "claude-code",
+		Host:        "local",
+		NativeID:    "uuid-123",
+		State:       StateWorking,
+		StartedAt:   time.Now(),
+		LastEventAt: time.Now(),
+	}
+	sess2 := &Session{
+		ID:          "antigravity:local:agy-999",
+		Agent:       "antigravity",
+		Host:        "local",
+		NativeID:    "agy-999",
+		State:       StateEnded,
+		StartedAt:   time.Now().Add(-1 * time.Hour),
+		LastEventAt: time.Now().Add(-30 * time.Minute),
+	}
+
+	if err := db.SaveSession(sess1); err != nil {
+		t.Fatalf("SaveSession sess1 failed: %v", err)
+	}
+	if err := db.SaveSession(sess2); err != nil {
+		t.Fatalf("SaveSession sess2 failed: %v", err)
+	}
+
+	// Also record one in deleted_sessions table
+	if err := db.MarkSessionDeleted("mock-agent:local:deleted-1"); err != nil {
+		t.Fatalf("MarkSessionDeleted failed: %v", err)
+	}
+
+	// 2. Run migration to new host "macbook"
+	if err := db.MigrateLocalSessions("macbook"); err != nil {
+		t.Fatalf("MigrateLocalSessions failed: %v", err)
+	}
+
+	// 3. Verify session was updated in DB
+	newSess1, err := db.GetSession("claude-code:macbook:uuid-123")
+	if err != nil || newSess1 == nil {
+		t.Fatalf("GetSession with new ID failed: %v", err)
+	}
+	if newSess1.Host != "macbook" {
+		t.Errorf("Expected Host 'macbook', got %q", newSess1.Host)
+	}
+	if newSess1.ID != "claude-code:macbook:uuid-123" {
+		t.Errorf("Expected ID 'claude-code:macbook:uuid-123', got %q", newSess1.ID)
+	}
+
+	// 4. Verify backwards compatibility: looking up with legacy ID finds the session
+	legacySess1, err := db.GetSession("claude-code:local:uuid-123")
+	if err != nil || legacySess1 == nil {
+		t.Fatalf("GetSession with legacy ID failed: %v", err)
+	}
+	if legacySess1.Host != "macbook" {
+		t.Errorf("Expected legacy lookup to return migrated session with host 'macbook', got %q", legacySess1.Host)
+	}
+
+	// 5. Verify deleted_sessions table was updated
+	if !db.IsSessionDeleted("mock-agent:macbook:deleted-1") {
+		t.Errorf("Expected deleted_sessions entry to be migrated to 'macbook'")
+	}
+
+	// 6. Running migration again is idempotent
+	if err := db.MigrateLocalSessions("macbook"); err != nil {
+		t.Fatalf("Second MigrateLocalSessions failed: %v", err)
+	}
+}

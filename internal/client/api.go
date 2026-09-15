@@ -21,6 +21,7 @@ import (
 
 type HostConfig struct {
 	Name        string `json:"name"`
+	DisplayName string `json:"display_name,omitempty"`
 	URL         string `json:"url"`                    // e.g. "http://127.0.0.1:7777"
 	ProjectsDir string `json:"projects_dir,omitempty"` // e.g. "~/Projects"
 }
@@ -47,6 +48,7 @@ func SaveHostConfig(path string, hosts []HostConfig) error {
 
 type HostStatus struct {
 	Name        string `json:"name"`
+	DisplayName string `json:"display_name,omitempty"`
 	URL         string `json:"url"`
 	ProjectsDir string `json:"projects_dir"`
 	Version     string `json:"version"`
@@ -76,11 +78,15 @@ func FetchSessions(hosts []HostConfig) ([]*daemon.Session, map[string]HostStatus
 			verURL := fmt.Sprintf("%s/v1/version", strings.TrimSuffix(host.URL, "/"))
 			verResp, verErr := client.Get(verURL)
 			hostVer := "unknown"
+			dispName := host.DisplayName
 			if verErr == nil && verResp.StatusCode == http.StatusOK {
 				var verMap map[string]string
 				if err := json.NewDecoder(verResp.Body).Decode(&verMap); err == nil {
 					if v, ok := verMap["version"]; ok && v != "" {
 						hostVer = v
+					}
+					if d, ok := verMap["display_name"]; ok && d != "" {
+						dispName = d
 					}
 				}
 				verResp.Body.Close()
@@ -211,6 +217,7 @@ nohup ~/.local/bin/ackbard > ~/.ackbard.log 2>&1 &`
 				mu.Lock()
 				hostStatuses[host.Name] = HostStatus{
 					Name:        host.Name,
+					DisplayName: dispName,
 					URL:         host.URL,
 					ProjectsDir: host.ProjectsDir,
 					Version:     hostVer,
@@ -228,6 +235,7 @@ nohup ~/.local/bin/ackbard > ~/.ackbard.log 2>&1 &`
 				mu.Lock()
 				hostStatuses[host.Name] = HostStatus{
 					Name:        host.Name,
+					DisplayName: dispName,
 					URL:         host.URL,
 					ProjectsDir: host.ProjectsDir,
 					Version:     hostVer,
@@ -244,6 +252,7 @@ nohup ~/.local/bin/ackbard > ~/.ackbard.log 2>&1 &`
 				mu.Lock()
 				hostStatuses[host.Name] = HostStatus{
 					Name:        host.Name,
+					DisplayName: dispName,
 					URL:         host.URL,
 					ProjectsDir: host.ProjectsDir,
 					Version:     hostVer,
@@ -263,6 +272,7 @@ nohup ~/.local/bin/ackbard > ~/.ackbard.log 2>&1 &`
 			mu.Lock()
 			hostStatuses[host.Name] = HostStatus{
 				Name:        host.Name,
+				DisplayName: dispName,
 				URL:         host.URL,
 				ProjectsDir: host.ProjectsDir,
 				Version:     hostVer,

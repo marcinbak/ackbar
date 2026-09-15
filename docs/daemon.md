@@ -20,7 +20,7 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 
 | Method | Endpoint | Description |
 | :--- | :--- | :--- |
-| `GET` | `/v1/version` | Returns current daemon version (e.g. `{"version":"20260826.01"}`). |
+| `GET` | `/v1/version` | Returns current daemon version, canonical host name, and display name. |
 | `GET` | `/v1/sessions` | Returns all active, managed, and historic sessions with unread state. |
 | `GET` | `/v1/events` | SSE stream broadcasting real-time session mutations and state changes. |
 | `GET` | `/v1/sessions/pty` | WebSocket endpoint streaming interactive PTY data to `xterm.js`. |
@@ -30,6 +30,8 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 | `POST` | `/v1/sessions/mark-read` | Marks a session as read (`is_unread = false`), clearing visual unread cues. |
 | `GET` | `/v1/sessions/transcript`| Retrieves extracted conversation transcript (JSON or formatted Markdown). |
 | `POST` | `/v1/sessions/upload` | Uploads clipboard images or drag-and-dropped PDFs to `/tmp/ackbar-uploads/`. |
+| `GET` | `/v1/settings` | Returns daemon settings including `host_name`, `display_name`, and auto-done thresholds. |
+| `POST` | `/v1/settings` | Updates and persists daemon settings in SQLite. |
 | `GET` | `/v1/nodes` | Returns configured logical tree nodes and custom groups. |
 | `POST` | `/v1/projects/create` | Creates a new logical project node or pure category subgroup. |
 | `POST` | `/v1/nodes/move` | Moves a logical group node to a new tree path. |
@@ -100,3 +102,22 @@ systemctl --user enable --now ackbard
 # Instant non-blocking restarts
 systemctl --user restart ackbard
 ```
+
+---
+
+## 6. Host Identity & Display Name Configuration
+
+Each `ackbard` instance identifies itself across the multi-machine fleet using a canonical host name and an optional human-friendly display name:
+
+* **Canonical Host Name (`host_name`):** Alphanumeric machine identifier used in session IDs (`claude-code:<host>:<uuid>`), API routing, and SSH targeting. Defaults to `"local"` if unspecified.
+* **Display Name (`display_name`):** User-facing label displayed in Web UI badges (`@MacBook`), header host status pills, tabs, and inspector modals. Defaults to the canonical host name if unspecified.
+
+### Configuration Hierarchy:
+1. **CLI Flags:** `ackbard --host-name macbook --display-name "MacBook Air"`
+2. **Environment Variables:** `ACKBAR_HOST=macbook` and `ACKBAR_DISPLAY_NAME="MacBook Air"` (ideal for LaunchAgents and systemd units).
+3. **Persistent SQLite Settings:** Configured via the Web UI **⚙️ Settings** modal or `POST /v1/settings` with JSON `{"host_name":"macbook","display_name":"MacBook Air"}`.
+4. **Fallback:** Defaults to `"local"`.
+
+### Non-Destructive Database Migration:
+When a daemon's host name is configured away from `"local"`, `ackbard` automatically migrates existing database records (`sessions` and `deleted_sessions`) to use the new host identifier. Lookups using legacy session IDs remain fully backward-compatible.
+
