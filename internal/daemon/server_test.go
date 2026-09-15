@@ -2479,3 +2479,30 @@ func TestHostIdentity_HandleSpawn(t *testing.T) {
 	}
 }
 
+func TestIsLocalHost(t *testing.T) {
+	server := NewServer(nil)
+	server.SetHostIdentity("macbook", "MacBook Pro")
+
+	tests := []struct {
+		host     string
+		expected bool
+	}{
+		{"", true},
+		{"local", true},
+		{"localhost", true},
+		{"127.0.0.1", true},
+		{"::1", true},
+		{"macbook", true},
+		{"devbox", false},
+		{"remote-host", false},
+	}
+
+	for _, tt := range tests {
+		got := server.isLocalHost(tt.host)
+		if got != tt.expected {
+			t.Errorf("isLocalHost(%q) = %v; want %v", tt.host, got, tt.expected)
+		}
+	}
+}
+
+
