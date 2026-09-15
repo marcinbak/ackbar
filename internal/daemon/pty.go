@@ -95,15 +95,22 @@ func (s *Server) servePTYWS(ws *websocket.Conn) {
 		// Fallback 1: check with agent:host:id format
 		parts := strings.Split(sessionID, ":")
 		if len(parts) >= 3 {
-			localID := parts[2]
+			localID := fmt.Sprintf("%s:%s:%s", parts[0], s.HostName(), parts[2])
 			sess, _ = s.db.GetSession(localID)
+			if sess == nil {
+				localID = fmt.Sprintf("%s:local:%s", parts[0], parts[2])
+				sess, _ = s.db.GetSession(localID)
+			}
+			if sess == nil {
+				sess, _ = s.db.GetSession(parts[2])
+			}
 		}
 	}
 	if sess == nil {
 		// Fallback 2: Check by NativeID match
 		if all, err := s.db.ListSessions(); err == nil {
 			for _, sRecord := range all {
-				if sRecord.NativeID != "" && strings.HasSuffix(sessionID, ":"+sRecord.NativeID) {
+				if sRecord.NativeID != "" && (strings.HasSuffix(sessionID, ":"+sRecord.NativeID) || sessionID == sRecord.NativeID) {
 					sess = sRecord
 					break
 				}
@@ -155,7 +162,7 @@ func (s *Server) servePTYWS(ws *websocket.Conn) {
 		cwd = os.Getenv("HOME")
 	}
 
-	if sessHost == "local" {
+	if s.isLocalHost(sessHost) {
 		// Ensure local tmux session exists before attaching
 		if err := exec.Command("tmux", "has-session", "-t", tmuxName).Run(); err != nil {
 			if resumeCmd != "" {
@@ -171,14 +178,14 @@ func (s *Server) servePTYWS(ws *websocket.Conn) {
 					if ferr == nil {
 						_, _ = tmpFile.WriteString(transcriptText)
 						_ = tmpFile.Close()
-						shellCmd := fmt.Sprintf("cat %q 2>/dev/null; rm -f %q; cd %q 2>/dev/null || true; export PATH=\"$HOME/.local/bin:$HOME/.npm-global/bin:$PATH\"; %s; exec bash -l", tmpFile.Name(), tmpFile.Name(), cwd, resumeCmd)
+						shellCmd := fmt.Sprintf("cat %q 2>/dev/null; rm -f %q; cd %q 2>/dev/null || true; export PATH=\"/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/.npm-global/bin:$PATH\"; %s; exec bash -l", tmpFile.Name(), tmpFile.Name(), cwd, resumeCmd)
 						_ = exec.Command("tmux", "new-session", "-d", "-s", tmuxName, "-c", cwd, "bash", "-l", "-c", shellCmd).Run()
 					} else {
-						shellCmd := fmt.Sprintf("cd %q 2>/dev/null || true; export PATH=\"$HOME/.local/bin:$HOME/.npm-global/bin:$PATH\"; %s; exec bash -l", cwd, resumeCmd)
+						shellCmd := fmt.Sprintf("cd %q 2>/dev/null || true; export PATH=\"/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/.npm-global/bin:$PATH\"; %s; exec bash -l", cwd, resumeCmd)
 						_ = exec.Command("tmux", "new-session", "-d", "-s", tmuxName, "-c", cwd, "bash", "-l", "-c", shellCmd).Run()
 					}
 				} else {
-					shellCmd := fmt.Sprintf("cd %q 2>/dev/null || true; export PATH=\"$HOME/.local/bin:$HOME/.npm-global/bin:$PATH\"; %s; exec bash -l", cwd, resumeCmd)
+					shellCmd := fmt.Sprintf("cd %q 2>/dev/null || true; export PATH=\"/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/.npm-global/bin:$PATH\"; %s; exec bash -l", cwd, resumeCmd)
 					_ = exec.Command("tmux", "new-session", "-d", "-s", tmuxName, "-c", cwd, "bash", "-l", "-c", shellCmd).Run()
 				}
 			} else {
@@ -191,7 +198,7 @@ func (s *Server) servePTYWS(ws *websocket.Conn) {
 		// Ensure remote tmux session exists before attaching
 		remoteShellCmd := ""
 		if resumeCmd != "" {
-			remoteShellCmd = fmt.Sprintf(" bash -l -c %q", fmt.Sprintf("cd %q 2>/dev/null || true; export PATH=\"$HOME/.local/bin:$HOME/.npm-global/bin:$PATH\"; %s; exec bash -l", cwd, resumeCmd))
+			remoteShellCmd = fmt.Sprintf(" bash -l -c %q", fmt.Sprintf("cd %q 2>/dev/null || true; export PATH=\"/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/.npm-global/bin:$PATH\"; %s; exec bash -l", cwd, resumeCmd))
 		}
 		ensureRemoteCmd := fmt.Sprintf("tmux has-session -t %q 2>/dev/null || tmux new-session -d -s %q -c %q%s; tmux set-option -t %q mouse on 2>/dev/null || true", tmuxName, tmuxName, cwd, remoteShellCmd, tmuxName)
 		_ = exec.Command("ssh", sessHost, ensureRemoteCmd).Run()

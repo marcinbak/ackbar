@@ -43,7 +43,7 @@ func SpawnWithEnv(ctx context.Context, sessionName, cwd, command string, env map
 				envExports += fmt.Sprintf("export %s=%q; ", k, v)
 			}
 		}
-		args = append(args, "bash", "-l", "-c", fmt.Sprintf("%sexport PATH=\"$HOME/.local/bin:$HOME/.npm-global/bin:$PATH\"; %s%s; exec bash -l", cdPrefix, envExports, command))
+		args = append(args, "bash", "-l", "-c", fmt.Sprintf("%sexport PATH=\"/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/.npm-global/bin:$PATH\"; %s%s; exec bash -l", cdPrefix, envExports, command))
 	}
 
 	cmd := exec.CommandContext(ctx, "tmux", args...)
