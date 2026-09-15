@@ -1993,30 +1993,29 @@
 
   // Setup rich Chat Interface inside tab
   function setupChatInterface(tabObj, chatViewEl, session) {
-    const tabId = session.id;
     const isTmux = session.engine_type === 'tmux';
 
     chatViewEl.innerHTML = `
       <div class="chat-header-bar">
         <div class="chat-header-left">
           <span class="chat-header-title">${escapeHtml(session.name || session.agent)}</span>
-          <span class="chat-engine-badge ${isTmux ? 'badge-tmux' : ''}" id="chatEngineBadge_${tabId}">
+          <span class="chat-engine-badge ${isTmux ? 'badge-tmux' : ''}">
             ${isTmux ? '🖥️ tmux' : '💬 headless'}
           </span>
-          <span class="chat-status-badge" id="chatStatus_${tabId}" style="font-size: 11px; color: var(--text-dim);">🟢 Ready</span>
+          <span class="chat-status-badge" style="font-size: 11px; color: var(--text-dim);">🟢 Ready</span>
         </div>
         <div class="chat-header-right">
-          <button class="btn-take-wheel" id="btnTakeWheel_${tabId}" title="Spawn tmux process and attach interactive terminal">🏎️ Take the Wheel</button>
-          <button class="btn btn-secondary btn-sm" id="btnReloadChat_${tabId}" title="Reload transcript history">🔄</button>
+          <button class="btn-take-wheel" title="Spawn tmux process and attach interactive terminal">🏎️ Take the Wheel</button>
+          <button class="btn btn-secondary btn-sm btn-reload-chat" title="Reload transcript history">🔄</button>
         </div>
       </div>
-      <div class="chat-messages-container" id="chatMessages_${tabId}"></div>
+      <div class="chat-messages-container"></div>
       <div class="chat-composer-container">
         <div class="chat-composer-box">
-          <textarea class="chat-composer-textarea" id="chatInput_${tabId}" rows="1" placeholder="Ask ${escapeHtml(session.agent || 'Claude Code')} anything... (Enter to send, Shift+Enter for newline)"></textarea>
+          <textarea class="chat-composer-textarea" rows="1" placeholder="Ask ${escapeHtml(session.agent || 'Claude Code')} anything... (Enter to send, Shift+Enter for newline)"></textarea>
           <div class="chat-composer-actions">
-            <button class="btn-composer-cancel" id="btnCancelTurn_${tabId}" style="display: none;" title="Cancel turn (SIGINT)">🛑 Stop</button>
-            <button class="btn-composer-send" id="btnSendPrompt_${tabId}" title="Send Prompt (Enter)">➤</button>
+            <button class="btn-composer-cancel" style="display: none;" title="Cancel turn (SIGINT)">🛑 Stop</button>
+            <button class="btn-composer-send" title="Send Prompt (Enter)">➤</button>
           </div>
         </div>
         <div class="chat-composer-hints">
@@ -2026,19 +2025,19 @@
       </div>
     `;
 
-    tabObj.chatMessagesEl = chatViewEl.querySelector(`#chatMessages_${tabId}`);
-    tabObj.chatInputEl = chatViewEl.querySelector(`#chatInput_${tabId}`);
-    tabObj.chatSendBtn = chatViewEl.querySelector(`#btnSendPrompt_${tabId}`);
-    tabObj.chatCancelBtn = chatViewEl.querySelector(`#btnCancelTurn_${tabId}`);
-    tabObj.chatStatusBadge = chatViewEl.querySelector(`#chatStatus_${tabId}`);
-    tabObj.chatEngineBadge = chatViewEl.querySelector(`#chatEngineBadge_${tabId}`);
+    tabObj.chatMessagesEl = chatViewEl.querySelector('.chat-messages-container');
+    tabObj.chatInputEl = chatViewEl.querySelector('.chat-composer-textarea');
+    tabObj.chatSendBtn = chatViewEl.querySelector('.btn-composer-send');
+    tabObj.chatCancelBtn = chatViewEl.querySelector('.btn-composer-cancel');
+    tabObj.chatStatusBadge = chatViewEl.querySelector('.chat-status-badge');
+    tabObj.chatEngineBadge = chatViewEl.querySelector('.chat-engine-badge');
 
-    const btnTakeWheel = chatViewEl.querySelector(`#btnTakeWheel_${tabId}`);
+    const btnTakeWheel = chatViewEl.querySelector('.btn-take-wheel');
     if (btnTakeWheel) {
       btnTakeWheel.addEventListener('click', () => handleTakeWheel(session.id));
     }
 
-    const btnReload = chatViewEl.querySelector(`#btnReloadChat_${tabId}`);
+    const btnReload = chatViewEl.querySelector('.btn-reload-chat');
     if (btnReload) {
       btnReload.addEventListener('click', () => loadChatTranscript(tabObj));
     }
