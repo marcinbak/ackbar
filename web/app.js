@@ -107,6 +107,7 @@
   // Application State
   const state = {
     version: '...',
+    selfHost: { name: 'local', displayName: '', url: '', online: true, isSelf: true },
     settings: null,
     sessions: [],
     treeNodes: [],
@@ -131,9 +132,25 @@
   window.state = state;
   window.__ackbarState = state;
 
-  // Format host name to server name only (e.g. "dev4u@legion" -> "legion")
+  function isLocalHost(hostName) {
+    if (!hostName || hostName === 'local') return true;
+    if (state.selfHost && (hostName === state.selfHost.name || hostName === state.selfHost.displayName)) return true;
+    return false;
+  }
+
+  function getSelfHostName() {
+    return (state.selfHost && state.selfHost.name) ? state.selfHost.name : 'local';
+  }
+
+  function getSelfDisplayName() {
+    return (state.selfHost && state.selfHost.displayName) ? state.selfHost.displayName : getSelfHostName();
+  }
+
+  // Format host name to server name or display name
   function formatHostLabel(hostName) {
-    if (!hostName || hostName === 'local') return 'local';
+    if (!hostName || isLocalHost(hostName)) return getSelfDisplayName();
+    const hostRec = (state.hosts || []).find(h => h.name === hostName);
+    if (hostRec && hostRec.displayName) return hostRec.displayName;
     const parts = hostName.split('@');
     return parts[parts.length - 1] || hostName;
   }
@@ -178,8 +195,8 @@
       alert('Workspace directory is empty.');
       return;
     }
-    const isRemote = host && host !== 'local';
-    const hostLabel = host || 'local';
+    const isRemote = !isLocalHost(host);
+    const hostLabel = isRemote ? (host || 'local') : getSelfHostName();
     const formattedPath = cwd.startsWith('/') ? cwd : '/' + cwd;
     const directUri = isRemote 
       ? `vscode://vscode-remote/ssh-remote+${hostLabel}${formattedPath}` 
@@ -189,7 +206,7 @@
       const res = await fetch('/v1/editor/open', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: cwd, host: host || 'local' })
+        body: JSON.stringify({ path: cwd, host: isRemote ? host : getSelfHostName() })
       });
       if (res.ok) {
         const data = await res.json().catch(() => ({}));
@@ -407,6 +424,16 @@
         const data = await res.json();
         state.version = data.version || 'unknown';
         if (el.appVersion) el.appVersion.textContent = `v${state.version}`;
+        if (data.host) {
+          state.selfHost = {
+            name: data.host,
+            displayName: data.display_name || '',
+            url: '',
+            online: true,
+            isSelf: true
+          };
+          renderHosts();
+        }
       }
     } catch (err) {
       console.warn('Failed to fetch version:', err);
@@ -436,6 +463,7 @@
                 ...h,
                 online: true,
                 version: vData.version || 'online',
+                displayName: vData.display_name || h.display_name || '',
                 latencyMs: Date.now() - start
               };
             }
@@ -471,18 +499,27 @@
   function renderHosts() {
     if (!el.hostList) return;
     el.hostList.innerHTML = '';
-    const localHost = state.hosts.find(h => h.name === 'local') || { name: 'local', url: '', online: true };
-    const remoteHosts = state.hosts.filter(h => h.name !== 'local');
+    const selfName = getSelfHostName();
+    const selfDisp = getSelfDisplayName();
+    const localHost = {
+      name: selfName,
+      displayName: selfDisp,
+      url: '',
+      online: true,
+      isSelf: true
+    };
+    const remoteHosts = (state.hosts || []).filter(h => !isLocalHost(h.name));
     const hostsToRender = [localHost, ...remoteHosts];
 
     hostsToRender.forEach(h => {
       const span = document.createElement('span');
       span.className = `host-badge ${h.online ? 'host-online' : 'host-offline'}`;
       const statusDot = h.online ? '🟢' : '🔴';
-      span.textContent = `${formatHostLabel(h.name)} ${statusDot}`;
+      const label = h.displayName || formatHostLabel(h.name);
+      span.textContent = `${label} ${statusDot}`;
       span.title = h.online
-        ? `${formatHostLabel(h.name)} is ONLINE (${h.latencyMs != null ? h.latencyMs + 'ms' : 'connected'}, v${h.version || '?'})`
-        : `${formatHostLabel(h.name)} is OFFLINE (Click to reconnect SSH tunnel / inspect)`;
+        ? `${label} is ONLINE (${h.latencyMs != null ? h.latencyMs + 'ms' : 'connected'}, v${h.version || '?'})`
+        : `${label} is OFFLINE (Click to reconnect SSH tunnel / inspect)`;
       span.style.cursor = 'pointer';
       span.addEventListener('click', () => showHostSummaryModal(h));
       el.hostList.appendChild(span);
@@ -493,8 +530,8 @@
   async function fetchTreeNodes() {
     try {
       const targetHosts = [
-        { name: 'local', url: '' },
-        ...(state.hosts || []).filter(h => h.url && h.name !== 'local')
+        { name: getSelfHostName(), url: '' },
+        ...(state.hosts || []).filter(h => h.url && !isLocalHost(h.name))
       ];
 
       const nodeArrays = await Promise.all(targetHosts.map(async (h) => {
@@ -527,8 +564,8 @@
   async function fetchSessions() {
     try {
       const targetHosts = [
-        { name: 'local', url: '' },
-        ...state.hosts.filter(h => h.url && h.name !== 'local')
+        { name: getSelfHostName(), url: '' },
+        ...state.hosts.filter(h => h.url && !isLocalHost(h.name))
       ];
 
       const sessionArrays = await Promise.all(targetHosts.map(async (h) => {
@@ -539,7 +576,7 @@
             const list = await res.json() || [];
             return list.map(s => ({
               ...s,
-              host: h.name !== 'local' ? h.name : (s.host || 'local'),
+              host: !isLocalHost(h.name) ? h.name : (s.host || getSelfHostName()),
               hostUrl: h.url || ''
             }));
           }
@@ -614,6 +651,9 @@
       });
       if (res.ok) {
         state.settings = await res.json();
+        if (state.settings.host_name) state.selfHost.name = state.settings.host_name;
+        if (state.settings.display_name !== undefined) state.selfHost.displayName = state.settings.display_name;
+        renderHosts();
         renderTree();
         return true;
       }
@@ -674,7 +714,7 @@
         renderTree();
       }
       const hostRec = (state.hosts || []).find(h => h.name === sessionHost);
-      const baseUrl = (sess && sess.hostUrl) ? sess.hostUrl.replace(/\/$/, '') : (hostRec && hostRec.url && sessionHost !== 'local' ? hostRec.url.replace(/\/$/, '') : '');
+      const baseUrl = (sess && sess.hostUrl) ? sess.hostUrl.replace(/\/$/, '') : (hostRec && hostRec.url && !isLocalHost(sessionHost) ? hostRec.url.replace(/\/$/, '') : '');
       const action = isDone ? 'done' : 'active';
       const url = `${baseUrl}/v1/sessions/control?id=${encodeURIComponent(sessionId)}&action=${action}`;
       const res = await fetch(url, { method: 'POST' });
@@ -797,6 +837,23 @@
 
     const bodyHtml = `
       <div class="settings-modal-content">
+        <div class="settings-section">
+          <div class="settings-section-title"><span>🖥️</span> Host Identity & Display Name</div>
+          <div class="settings-section-desc">Configure the canonical machine identifier and human-friendly display name for this machine across the Ackbar control plane.</div>
+          <div class="settings-row">
+            <label class="settings-row-label" for="settingHostName">Host Identifier</label>
+            <div class="settings-input-group" style="flex: 1; max-width: 250px;">
+              <input type="text" id="settingHostName" class="form-input" value="${s.host_name || getSelfHostName()}" placeholder="e.g. macbook" />
+            </div>
+          </div>
+          <div class="settings-row">
+            <label class="settings-row-label" for="settingDisplayName">Display Name (Optional Alias)</label>
+            <div class="settings-input-group" style="flex: 1; max-width: 250px;">
+              <input type="text" id="settingDisplayName" class="form-input" value="${s.display_name !== undefined ? s.display_name : (state.selfHost ? state.selfHost.displayName : '')}" placeholder="e.g. MacBook Air" />
+            </div>
+          </div>
+        </div>
+
         <div class="settings-section">
           <div class="settings-section-title"><span>✓</span> Auto-Move to Done</div>
           <div class="settings-section-desc">Automatically move inactive sessions from the Active list into the per-group Done section. Submitting a prompt or active agent behavior automatically revives them back to Active.</div>
@@ -1007,6 +1064,8 @@
         btnSave.disabled = true;
         btnSave.textContent = 'Saving...';
         const newSettings = {
+          host_name: document.getElementById('settingHostName')?.value?.trim() || getSelfHostName(),
+          display_name: document.getElementById('settingDisplayName')?.value?.trim() || '',
           auto_done_enabled: document.getElementById('settingAutoDoneEnabled')?.checked ? 'true' : 'false',
           auto_done_hours: document.getElementById('settingAutoDoneHours')?.value?.trim() || '24',
           auto_archive_enabled: document.getElementById('settingAutoArchiveEnabled')?.checked ? 'true' : 'false',
@@ -1016,6 +1075,7 @@
 
         const ok = await updateSettings(newSettings);
         if (ok) {
+          await fetchSessions();
           hideModal();
         } else {
           btnSave.disabled = false;
@@ -1031,7 +1091,7 @@
 
     list.forEach(sess => {
       let dedupKey = '';
-      const host = sess.host || 'local';
+      const host = isLocalHost(sess.host) ? getSelfHostName() : sess.host;
       const nativeId = sess.native_id || '';
 
       if (nativeId && !nativeId.startsWith('proc-')) {
@@ -1101,8 +1161,8 @@
 
   function connectSSE() {
     const hostsToConnect = [
-      { name: 'local', url: '' },
-      ...(state.hosts || []).filter(h => h.url && h.name !== 'local')
+      { name: getSelfHostName(), url: '' },
+      ...(state.hosts || []).filter(h => h.url && !isLocalHost(h.name))
     ];
 
     hostsToConnect.forEach((h) => {
@@ -1122,9 +1182,11 @@
             const updatedSess = JSON.parse(event.data);
             if (!updatedSess || !updatedSess.id) return;
 
-            if (h.name !== 'local') {
+            if (!isLocalHost(h.name)) {
               updatedSess.host = h.name;
               updatedSess.hostUrl = h.url || '';
+            } else if (!updatedSess.host || updatedSess.host === 'local') {
+              updatedSess.host = getSelfHostName();
             }
 
             if (updatedSess.deleted || updatedSess.activity === 'Deleted') {
@@ -1471,7 +1533,7 @@
       row.classList.add('dragging');
       e.dataTransfer.setData('application/json', JSON.stringify({
         sessionId: session.id,
-        sessionHost: session.host || 'local',
+        sessionHost: session.host || getSelfHostName(),
         sessionPath: session.node_path || ''
       }));
       e.dataTransfer.effectAllowed = 'move';
@@ -1567,7 +1629,7 @@
       right.appendChild(ctxBadge);
     }
 
-    if (session.host && session.host !== 'local') {
+    if (session.host && !isLocalHost(session.host)) {
       const hostBadge = document.createElement('span');
       hostBadge.className = 'badge-host';
       hostBadge.textContent = `@${formatHostLabel(session.host)}`;
@@ -1598,7 +1660,7 @@
     try {
       const sess = state.sessions.find(s => s.id === sessionId);
       const hostRec = (state.hosts || []).find(h => h.name === sessionHost);
-      const baseUrl = (sess && sess.hostUrl) ? sess.hostUrl.replace(/\/$/, '') : (hostRec && hostRec.url && sessionHost !== 'local' ? hostRec.url.replace(/\/$/, '') : '');
+      const baseUrl = (sess && sess.hostUrl) ? sess.hostUrl.replace(/\/$/, '') : (hostRec && hostRec.url && !isLocalHost(sessionHost) ? hostRec.url.replace(/\/$/, '') : '');
       const url = `${baseUrl}/v1/sessions/control?id=${encodeURIComponent(sessionId)}&action=move&node_path=${encodeURIComponent(targetPath)}`;
       const res = await fetch(url, { method: 'POST' });
       if (res.ok) {
@@ -1633,7 +1695,7 @@
       tab.socket = null;
     }
 
-    const hostParam = session.host || 'local';
+    const hostParam = isLocalHost(session.host) ? getSelfHostName() : session.host;
     const wsBase = session.hostUrl ? session.hostUrl.replace(/^http/, 'ws').replace(/\/$/, '') : `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}`;
     let wsUrl = `${wsBase}/v1/sessions/pty?id=${encodeURIComponent(session.id)}&host=${encodeURIComponent(hostParam)}&cols=${term.cols}&rows=${term.rows}`;
     const token = getAuthToken();
@@ -1769,8 +1831,8 @@
     const formData = new FormData();
     formData.append('file', file, filename);
 
-    const hostParam = (tabObj.session && tabObj.session.host) ? tabObj.session.host : 'local';
-    const baseUrl = (tabObj.session && tabObj.session.hostUrl && hostParam !== 'local') ? tabObj.session.hostUrl.replace(/\/$/, '') : '';
+    const hostParam = (tabObj.session && tabObj.session.host) ? tabObj.session.host : getSelfHostName();
+    const baseUrl = (tabObj.session && tabObj.session.hostUrl && !isLocalHost(hostParam)) ? tabObj.session.hostUrl.replace(/\/$/, '') : '';
     const uploadUrl = `${baseUrl}/v1/uploads?host=${encodeURIComponent(hostParam)}&session_id=${encodeURIComponent((tabObj.session && tabObj.session.id) || '')}`;
 
     const headers = {};
@@ -1825,7 +1887,7 @@
 
     try {
       const hostRec = (state.hosts || []).find(h => h.name === session.host);
-      const baseUrl = hostRec && hostRec.url && session.host !== 'local' ? hostRec.url.replace(/\/$/, '') : '';
+      const baseUrl = hostRec && hostRec.url && !isLocalHost(session.host) ? hostRec.url.replace(/\/$/, '') : '';
       await fetch(`${baseUrl}/v1/sessions/control?id=${encodeURIComponent(session.id)}&action=read`, { method: 'POST' });
     } catch (e) {
       console.warn('Failed to mark session as read on daemon:', e);
@@ -2418,13 +2480,14 @@ ${session.last_prompt}
   async function openDocViewerTab(docPath, docTitle, host = 'local') {
     if (!docPath) return;
 
-    const tabId = `doc_${(host || 'local').replace(/[^a-zA-Z0-9_-]/g, '_')}_${docPath.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+    const hostKey = isLocalHost(host) ? getSelfHostName() : host;
+    const tabId = `doc_${hostKey.replace(/[^a-zA-Z0-9_-]/g, '_')}_${docPath.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
     if (state.openTabs.has(tabId)) {
       activateTab(tabId);
       return;
     }
 
-    const isRemote = host && host !== 'local';
+    const isRemote = !isLocalHost(host);
     const targetHost = state.hosts.find(h => h.name === host);
     const baseUrl = (isRemote && targetHost && targetHost.url) ? targetHost.url.replace(/\/$/, '') : '';
 
@@ -2555,8 +2618,8 @@ ${session.last_prompt}
       return;
     }
 
-    const host = session.host || 'local';
-    const isRemote = host && host !== 'local';
+    const host = session.host || getSelfHostName();
+    const isRemote = !isLocalHost(host);
     const targetHost = state.hosts.find(h => h.name === host);
     const baseUrl = (isRemote && targetHost && targetHost.url) ? targetHost.url.replace(/\/$/, '') : (session.hostUrl ? session.hostUrl.replace(/\/$/, '') : '');
 
@@ -2760,7 +2823,7 @@ ${session.last_prompt}
 
   // Show Project Documents Auto-Discovery Modal with Real-Time Search and Categorization
   async function showProjectDocsModal(cwd, title, host = 'local', session = null) {
-    const isRemote = host && host !== 'local';
+    const isRemote = !isLocalHost(host);
     const targetHost = state.hosts.find(h => h.name === host);
     const baseUrl = (isRemote && targetHost && targetHost.url) ? targetHost.url.replace(/\/$/, '') : '';
 
@@ -2841,7 +2904,7 @@ ${session.last_prompt}
           card.addEventListener('click', () => {
             const p = decodeURIComponent(card.dataset.path);
             const t = decodeURIComponent(card.dataset.title);
-            const h = decodeURIComponent(card.dataset.host || 'local');
+            const h = decodeURIComponent(card.dataset.host || getSelfHostName());
             hideModal();
             openDocViewerTab(p, t, h);
           });
@@ -3055,7 +3118,7 @@ ${session.last_prompt}
           tabId,
           type: tab.type,
           sessionId: tab.session ? tab.session.id : null,
-          host: tab.session ? tab.session.host : 'local'
+          host: tab.session ? (tab.session.host || getSelfHostName()) : getSelfHostName()
         });
       });
       localStorage.setItem('ackbar_persisted_tabs', JSON.stringify(list));
@@ -3616,7 +3679,7 @@ ${session.last_prompt}
 
           try {
             const hostRec = (state.hosts || []).find(h => h.name === sess.host);
-            const baseUrl = (sess && sess.hostUrl) ? sess.hostUrl.replace(/\/$/, '') : (hostRec && hostRec.url && sess.host !== 'local' ? hostRec.url.replace(/\/$/, '') : '');
+            const baseUrl = (sess && sess.hostUrl) ? sess.hostUrl.replace(/\/$/, '') : (hostRec && hostRec.url && !isLocalHost(sess.host) ? hostRec.url.replace(/\/$/, '') : '');
             const url = `${baseUrl}/v1/sessions/control?id=${encodeURIComponent(sess.id)}&action=${targetAction}`;
             const res = await fetch(url, { method: 'POST' });
             if (res.ok) {
@@ -3683,7 +3746,7 @@ ${session.last_prompt}
           const dir = (node && node.project_dir) ? node.project_dir : '';
           if (dir) {
             const groupSess = state.sessions.find(s => s.node_path === state.contextMenuGroupPath || (s.cwd && s.cwd.startsWith(dir)));
-            const host = groupSess ? groupSess.host : 'local';
+            const host = groupSess ? groupSess.host : getSelfHostName();
             openInVSCode(dir, host);
           } else {
             alert('This category subgroup does not have a linked filesystem directory.');
@@ -3699,7 +3762,7 @@ ${session.last_prompt}
           const dir = (node && node.project_dir) ? node.project_dir : '';
           if (dir) {
             const groupSess = state.sessions.find(s => s.node_path === state.contextMenuGroupPath || (s.cwd && s.cwd.startsWith(dir)));
-            const host = groupSess ? groupSess.host : 'local';
+            const host = groupSess ? groupSess.host : getSelfHostName();
             showProjectDocsModal(dir, state.contextMenuGroupPath, host, groupSess);
           } else {
             alert('This category subgroup does not have a linked filesystem directory.');
@@ -3883,11 +3946,14 @@ ${session.last_prompt}
   // Helper: Intelligent Cross-Host Path Translation
   function translatePathForHost(currentPath, fromHost, toHost) {
     if (!currentPath || fromHost === toHost) return currentPath;
+    const effFrom = isLocalHost(fromHost) ? getSelfHostName() : fromHost;
+    const effTo = isLocalHost(toHost) ? getSelfHostName() : toHost;
+    if (effFrom === effTo) return currentPath;
 
     // 1. Direct Project Key Matching on target host
-    const srcSess = (state.sessions || []).find(s => (s.host || 'local') === fromHost && s.cwd === currentPath);
+    const srcSess = (state.sessions || []).find(s => (isLocalHost(s.host) ? getSelfHostName() : s.host) === effFrom && s.cwd === currentPath);
     if (srcSess && srcSess.project_key) {
-      const tgtSess = (state.sessions || []).find(s => (s.host || 'local') === toHost && s.project_key === srcSess.project_key && s.cwd);
+      const tgtSess = (state.sessions || []).find(s => (isLocalHost(s.host) ? getSelfHostName() : s.host) === effTo && s.project_key === srcSess.project_key && s.cwd);
       if (tgtSess && tgtSess.cwd) return tgtSess.cwd;
     }
 
@@ -3895,24 +3961,24 @@ ${session.last_prompt}
     const cleanPath = currentPath.replace(/\/+$/, '');
     const currentBase = cleanPath.split('/').pop();
     if (currentBase) {
-      const tgtMatch = (state.sessions || []).find(s => (s.host || 'local') === toHost && s.cwd && (s.cwd.endsWith('/' + currentBase) || s.cwd.split('/').pop() === currentBase));
+      const tgtMatch = (state.sessions || []).find(s => (isLocalHost(s.host) ? getSelfHostName() : s.host) === effTo && s.cwd && (s.cwd.endsWith('/' + currentBase) || s.cwd.split('/').pop() === currentBase));
       if (tgtMatch && tgtMatch.cwd) return tgtMatch.cwd;
 
       // Check target host configured remote_cwd
       const targetHostRec = (state.hosts || []).find(h => h.name === toHost);
-      if (targetHostRec && targetHostRec.remote_cwd && toHost !== 'local') {
+      if (targetHostRec && targetHostRec.remote_cwd && !isLocalHost(toHost)) {
         const root = targetHostRec.remote_cwd.replace(/\/+$/, '');
         return `${root}/${currentBase}`;
       }
     }
 
     // 3. Standard Home Prefix Translation (macOS /Users/<user> <-> Linux /home/<user>)
-    if ((fromHost === 'local' || currentPath.startsWith('/Users/')) && toHost !== 'local') {
+    if ((isLocalHost(fromHost) || currentPath.startsWith('/Users/')) && !isLocalHost(toHost)) {
       // macOS -> Linux
       if (currentPath.startsWith('/Users/')) {
         return currentPath.replace(/^\/Users\/([^/]+)/, '/home/$1');
       }
-    } else if (fromHost !== 'local' && toHost === 'local') {
+    } else if (!isLocalHost(fromHost) && isLocalHost(toHost)) {
       // Linux -> macOS
       if (currentPath.startsWith('/home/')) {
         return currentPath.replace(/^\/home\/([^/]+)/, '/Users/$1');
@@ -3945,7 +4011,7 @@ ${session.last_prompt}
 
   // Record a spawn in group memory
   function recordGroupSpawn({ group, host, agent, cwd, account }) {
-    if (!host) host = 'local';
+    if (!host) host = getSelfHostName();
     if (!agent) agent = 'claude-code';
     if (!cwd) return;
 
@@ -4009,12 +4075,12 @@ ${session.last_prompt}
       if (node && node.host) {
         preferredHost = node.host;
       } else {
-        preferredHost = targetHost || 'local';
+        preferredHost = targetHost || getSelfHostName();
       }
     }
 
-    const effectiveHost = targetHost || preferredHost || 'local';
-    const hostSessions = sortedGroupSessions.filter(s => (s.host || 'local') === effectiveHost);
+    const effectiveHost = targetHost || preferredHost || getSelfHostName();
+    const hostSessions = sortedGroupSessions.filter(s => (isLocalHost(s.host) ? getSelfHostName() : s.host) === effectiveHost);
 
     // 2. Determine Preferred Agent
     let preferredAgent = '';
@@ -4076,12 +4142,13 @@ ${session.last_prompt}
 
   // Helper: Get relevant folders for a specific host
   function getFoldersForHost(targetHost) {
-    const hostSessions = (state.sessions || []).filter(s => (s.host || 'local') === targetHost && s.cwd);
+    const isTargetLocal = isLocalHost(targetHost);
+    const hostSessions = (state.sessions || []).filter(s => (isTargetLocal ? isLocalHost(s.host) : s.host === targetHost) && s.cwd);
     const hostCwds = new Set(hostSessions.map(s => s.cwd));
 
     // Also include tree node linked project dirs for this host or generic
     (state.treeNodes || []).forEach(n => {
-      if (n.project_dir && (!n.host || n.host === targetHost)) {
+      if (n.project_dir && (!n.host || (isTargetLocal ? isLocalHost(n.host) : n.host === targetHost))) {
         hostCwds.add(n.project_dir);
       }
     });
@@ -4095,7 +4162,7 @@ ${session.last_prompt}
     // If target host has few or no session history yet, translate known paths from other hosts
     const allUnique = Array.from(new Set((state.sessions || []).map(s => s.cwd).filter(Boolean)));
     allUnique.forEach(p => {
-      const translated = translatePathForHost(p, 'local', targetHost);
+      const translated = translatePathForHost(p, getSelfHostName(), targetHost);
       if (translated) hostCwds.add(translated);
     });
 
@@ -4128,7 +4195,7 @@ ${session.last_prompt}
 
       try {
         const hostRec = (state.hosts || []).find(h => h.name === targetHost);
-        const baseUrl = hostRec && hostRec.url && targetHost !== 'local' ? hostRec.url.replace(/\/$/, '') : '';
+        const baseUrl = hostRec && hostRec.url && !isLocalHost(targetHost) ? hostRec.url.replace(/\/$/, '') : '';
         const res = await fetch(`${baseUrl}/v1/agents/discovery`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const discovery = await res.json() || [];
@@ -4228,9 +4295,9 @@ ${session.last_prompt}
     }
 
     // 1. Determine initial active host based on group preference or active tab
-    let currentSelectedHost = 'local';
+    let currentSelectedHost = getSelfHostName();
     if (prefillGroup) {
-      const groupPrefs = getGroupPreferences(prefillGroup, 'local');
+      const groupPrefs = getGroupPreferences(prefillGroup, getSelfHostName());
       if (groupPrefs.preferredHost) {
         currentSelectedHost = groupPrefs.preferredHost;
       } else {
@@ -4240,17 +4307,17 @@ ${session.last_prompt}
         }
       }
     } else if (activeTab && activeTab.session && activeTab.session.host) {
-      currentSelectedHost = activeTab.session.host;
+      currentSelectedHost = isLocalHost(activeTab.session.host) ? getSelfHostName() : activeTab.session.host;
     }
 
     // 2. Populate Hosts
     if (hostSelect) {
-      hostSelect.innerHTML = '<option value="local">local (This Machine)</option>';
+      hostSelect.innerHTML = `<option value="${getSelfHostName()}">${getSelfDisplayName()} (This Machine)</option>`;
       (state.hosts || []).forEach(h => {
-        if (h.name !== 'local') {
+        if (!isLocalHost(h.name)) {
           const opt = document.createElement('option');
           opt.value = h.name;
-          opt.textContent = `${formatHostLabel(h.name)} (${h.url || 'remote'})`;
+          opt.textContent = `${h.displayName || formatHostLabel(h.name)} (${h.url || 'remote'})`;
           if (h.name === currentSelectedHost) opt.selected = true;
           hostSelect.appendChild(opt);
         }
@@ -4287,7 +4354,7 @@ ${session.last_prompt}
 
       try {
         const hostRec = (state.hosts || []).find(h => h.name === targetHost);
-        const baseUrl = hostRec && hostRec.url && targetHost !== 'local' ? hostRec.url.replace(/\/$/, '') : '';
+        const baseUrl = hostRec && hostRec.url && !isLocalHost(targetHost) ? hostRec.url.replace(/\/$/, '') : '';
         const res = await fetch(`${baseUrl}/v1/accounts`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const allAccounts = await res.json() || [];
@@ -4465,7 +4532,7 @@ ${session.last_prompt}
     const groupSelect = document.getElementById('newSessionGroup');
     const submitBtn = document.getElementById('btnSubmitNewSession');
 
-    const host = hostSelect ? hostSelect.value : 'local';
+    const host = hostSelect ? hostSelect.value : getSelfHostName();
     const agent = agentSelect ? agentSelect.value : 'claude-code';
     const account_id = (accountGroup && accountGroup.style.display !== 'none' && accountSelect) ? accountSelect.value : '';
     const cwd = folderInput ? folderInput.value.trim() : '';
@@ -4592,8 +4659,8 @@ ${session.last_prompt}
       <div class="form-group">
         <label>Target Host / Machine</label>
         <select id="mHost">
-          <option value="local">local (This Machine)</option>
-          ${(state.hosts || []).filter(h => h.name !== 'local').map(h => `<option value="${h.name}">${formatHostLabel(h.name)} (${h.url || 'remote'})</option>`).join('')}
+          <option value="${getSelfHostName()}">${getSelfDisplayName()} (This Machine)</option>
+          ${(state.hosts || []).filter(h => !isLocalHost(h.name)).map(h => `<option value="${h.name}">${formatHostLabel(h.name)} (${h.url || 'remote'})</option>`).join('')}
         </select>
       </div>
       <div class="form-group">
@@ -4736,7 +4803,7 @@ ${session.last_prompt}
 
   // Agent Hook Diagnostics / Host Inspector Modal
   async function showHooksDashboardModal() {
-    showHostSummaryModal({ name: 'local', url: '' });
+    showHostSummaryModal(state.selfHost || { name: getSelfHostName(), displayName: getSelfDisplayName(), url: '' });
   }
 
   // Smooth Reconnection Flow with Progress, Auto-Dismiss on Success, and Retry on Failure
@@ -4952,9 +5019,10 @@ ${session.last_prompt}
   // Host Summary & Diagnostics Modal
   async function showHostSummaryModal(h) {
     const baseUrl = h.url ? h.url.replace(/\/$/, '') : '';
-    const isLocal = !h.url || h.name === 'local';
+    const isLocal = !h.url || isLocalHost(h.name);
+    const hostLabel = formatHostLabel(h.name || getSelfHostName());
 
-    showModal(`Server Inspector: ${h.name}`, `
+    showModal(`Server Inspector: ${hostLabel}`, `
       <div style="padding: 20px; text-align: center; color: var(--text-muted);">
         <div style="margin-bottom: 8px;">⏳ Connecting to daemon at <code>${h.url || '127.0.0.1:7777'}</code>...</div>
       </div>
