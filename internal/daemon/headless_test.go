@@ -151,14 +151,14 @@ func TestHeadlessRunner_DatabasePersistence(t *testing.T) {
 	}
 
 	sess := &Session{
-		ID:         "claude-code:local:uuid-headless-1",
-		Agent:      "claude-code",
-		Host:       "local",
-		NativeID:   "uuid-headless-1",
-		Cwd:        "/tmp",
-		State:      StateIdle,
-		EngineType: EngineHeadless,
-		StartedAt:  time.Now(),
+		ID:          "claude-code:local:uuid-headless-1",
+		Agent:       "claude-code",
+		Host:        "local",
+		NativeID:    "uuid-headless-1",
+		Cwd:         "/tmp",
+		State:       StateIdle,
+		EngineType:  EngineHeadless,
+		StartedAt:   time.Now(),
 		LastEventAt: time.Now(),
 	}
 

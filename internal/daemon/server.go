@@ -57,6 +57,8 @@ type Server struct {
 	configuredToken string
 	relayClient     *relay.Client
 	headless        *HeadlessRunner
+	hostName        string
+	displayName     string
 }
 
 func NewServer(db *DB) *Server {
@@ -67,6 +69,9 @@ func NewServer(db *DB) *Server {
 		subscribers: make(map[chan *Session]bool),
 	}
 	s.headless = NewHeadlessRunner(db, s.broadcast)
+	if host := s.HostName(); host != "local" && db != nil {
+		_ = db.MigrateLocalSessions(host)
+	}
 	return s
 }
 
@@ -78,6 +83,48 @@ func (s *Server) SetWebFS(webFS fs.FS) {
 	s.webFS = webFS
 }
 
+func (s *Server) SetHostIdentity(hostName, displayName string) {
+	if hostName != "" {
+		s.hostName = hostName
+	}
+	if displayName != "" {
+		s.displayName = displayName
+	}
+	if s.db != nil && s.HostName() != "local" {
+		_ = s.db.MigrateLocalSessions(s.HostName())
+	}
+}
+
+func (s *Server) HostName() string {
+	if s.hostName != "" {
+		return s.hostName
+	}
+	if h := os.Getenv("ACKBAR_HOST"); h != "" {
+		return h
+	}
+	if s.db != nil {
+		if val, err := s.db.GetSetting("host_name"); err == nil && val != "" {
+			return val
+		}
+	}
+	return "local"
+}
+
+func (s *Server) DisplayName() string {
+	if s.displayName != "" {
+		return s.displayName
+	}
+	if d := os.Getenv("ACKBAR_DISPLAY_NAME"); d != "" {
+		return d
+	}
+	if s.db != nil {
+		if val, err := s.db.GetSetting("display_name"); err == nil && val != "" {
+			return val
+		}
+	}
+	return s.HostName()
+}
+
 func (s *Server) RegisterProvider(p Provider) {
 	s.providers[p.Agent()] = p
 }
@@ -86,10 +133,7 @@ func (s *Server) StartRelayClient(ctx context.Context, relayURL, relaySecret str
 	if relayURL == "" {
 		return
 	}
-	hostName := "local"
-	if h := os.Getenv("ACKBAR_HOST"); h != "" {
-		hostName = h
-	}
+	hostName := s.HostName()
 	log.Printf("[Daemon] Initializing outbound Ackbar Relay client to %s as host %q...", relayURL, hostName)
 	s.relayClient = relay.NewClient(relayURL, hostName, relaySecret, s.Mux())
 	s.relayClient.Start(ctx)
@@ -335,8 +379,8 @@ func (s *Server) processHookEventWithAccount(p Provider, urlEventName string, he
 	}
 
 	host := headerHost
-	if host == "" {
-		host = "local"
+	if host == "" || host == "local" {
+		host = s.HostName()
 	}
 
 	// ID is "{agent}:{host}:{nativeID}"
@@ -686,8 +730,12 @@ func (s *Server) handleSessionControl(w http.ResponseWriter, r *http.Request) {
 		// Fallback 1: Try with local host alias if sessionID had a remote alias or vice-versa
 		parts := strings.Split(sessionID, ":")
 		if len(parts) == 3 {
-			localID := fmt.Sprintf("%s:local:%s", parts[0], parts[2])
+			localID := fmt.Sprintf("%s:%s:%s", parts[0], s.HostName(), parts[2])
 			sess, _ = s.db.GetSession(localID)
+			if sess == nil {
+				localID = fmt.Sprintf("%s:local:%s", parts[0], parts[2])
+				sess, _ = s.db.GetSession(localID)
+			}
 		}
 	}
 	if sess == nil {
@@ -704,7 +752,7 @@ func (s *Server) handleSessionControl(w http.ResponseWriter, r *http.Request) {
 	if sess == nil {
 		// Fallback 3: If sessionID specifies a remote host, forward control action to remote host
 		parts := strings.Split(sessionID, ":")
-		if len(parts) >= 2 && parts[1] != "" && parts[1] != "local" {
+		if len(parts) >= 2 && parts[1] != "" && parts[1] != "local" && parts[1] != s.HostName() {
 			targetHost := parts[1]
 			hostRec, err := s.db.GetHost(targetHost)
 			if err != nil || hostRec == nil {
@@ -1156,8 +1204,12 @@ func (s *Server) handleRespond(w http.ResponseWriter, r *http.Request) {
 		// Fallback 1: Try with local host alias
 		parts := strings.Split(targetID, ":")
 		if len(parts) == 3 {
-			localID := fmt.Sprintf("%s:local:%s", parts[0], parts[2])
+			localID := fmt.Sprintf("%s:%s:%s", parts[0], s.HostName(), parts[2])
 			sess, _ = s.db.GetSession(localID)
+			if sess == nil {
+				localID = fmt.Sprintf("%s:local:%s", parts[0], parts[2])
+				sess, _ = s.db.GetSession(localID)
+			}
 		}
 	}
 
@@ -1669,7 +1721,7 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 1. Forward to remote host if specified
-	if req.Host != "" && req.Host != "local" {
+	if req.Host != "" && req.Host != "local" && req.Host != s.HostName() {
 		hostRec, err := s.db.GetHost(req.Host)
 		if err != nil || hostRec == nil {
 			if allHosts, lerr := s.db.ListHosts(); lerr == nil {
@@ -1784,12 +1836,13 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tempUUID := generateUUID()
+	effectiveHost := s.HostName()
 
 	if req.EngineType == EngineHeadless {
 		sess := &Session{
-			ID:          fmt.Sprintf("%s:local:%s", req.Agent, tempUUID),
+			ID:          fmt.Sprintf("%s:%s:%s", req.Agent, effectiveHost, tempUUID),
 			Agent:       req.Agent,
-			Host:        "local",
+			Host:        effectiveHost,
 			NativeID:    tempUUID,
 			Cwd:         req.Cwd,
 			NodePath:    req.NodePath,
@@ -1815,6 +1868,8 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]string{
 			"status":      "spawned",
 			"session_id":  tempUUID,
+			"id":          sess.ID,
+			"host":        effectiveHost,
 			"engine_type": EngineHeadless,
 		})
 		return
@@ -1831,9 +1886,9 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 
 	// Insert temporary spawning session
 	sess := &Session{
-		ID:          fmt.Sprintf("%s:local:%s", req.Agent, tempUUID),
+		ID:          fmt.Sprintf("%s:%s:%s", req.Agent, effectiveHost, tempUUID),
 		Agent:       req.Agent,
-		Host:        "local",
+		Host:        effectiveHost,
 		NativeID:    tempUUID,
 		Cwd:         req.Cwd,
 		NodePath:    req.NodePath,
@@ -1866,6 +1921,8 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]string{
 		"status":      "spawning",
 		"session_id":  tempUUID,
+		"id":          sess.ID,
+		"host":        effectiveHost,
 		"engine_type": EngineTmux,
 	})
 }
@@ -1940,7 +1997,7 @@ func (s *Server) isSameSupervisor(activeManaged *Session, event *Event) bool {
 	if activeManaged == nil || event == nil {
 		return false
 	}
-	if host := activeManaged.Host; host == "" || host == "local" {
+	if host := activeManaged.Host; host == "" || host == "local" || host == s.HostName() {
 		if event.Agent == "claude-code" {
 			home, _ := os.UserHomeDir()
 			eventPID, eventTmux := findClaudeSessionOwner(home, event.NativeID)
@@ -2291,7 +2348,7 @@ func (s *Server) propagateAccountToFleet(acc *AgentAccount) {
 
 	client := &http.Client{Timeout: 5 * time.Second}
 	for _, h := range allHosts {
-		if h.Name == "local" || h.URL == "" {
+		if h.Name == "local" || h.Name == s.HostName() || h.URL == "" {
 			continue
 		}
 
@@ -2853,7 +2910,7 @@ func (s *Server) handleHostUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if hostName == "local" {
+	if hostName == "local" || hostName == s.HostName() {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"status":  "error",
@@ -3497,7 +3554,11 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]string{"version": version.Version})
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"version":      version.Version,
+		"host":         s.HostName(),
+		"display_name": s.DisplayName(),
+	})
 }
 
 func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
@@ -3524,6 +3585,8 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 				settings[k] = v
 			}
 		}
+		settings["host_name"] = s.HostName()
+		settings["display_name"] = s.DisplayName()
 
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(settings)
@@ -3538,7 +3601,19 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		if newHost, ok := req["host_name"]; ok && newHost != "" {
+			s.hostName = newHost
+			if s.db != nil && newHost != "local" {
+				_ = s.db.MigrateLocalSessions(newHost)
+			}
+		}
+		if newDisp, ok := req["display_name"]; ok {
+			s.displayName = newDisp
+		}
 		settings, _ := s.db.GetAllSettings()
+		if settings == nil {
+			settings = make(map[string]string)
+		}
 		defaults := map[string]string{
 			"auto_done_enabled":         "true",
 			"auto_done_hours":           "24",
@@ -3551,6 +3626,8 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 				settings[k] = v
 			}
 		}
+		settings["host_name"] = s.HostName()
+		settings["display_name"] = s.DisplayName()
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(settings)
 
@@ -4169,7 +4246,7 @@ func (s *Server) verifySessionLiveness(ctx context.Context, sessions []*Session)
 
 		alive := true
 		if sess.Managed && sess.TmuxName != "" {
-			if sess.Host == "local" || sess.Host == "" {
+			if sess.Host == "local" || sess.Host == "" || sess.Host == s.HostName() {
 				alive = activeTmux[sess.TmuxName]
 				if alive && sess.PID > 0 && !isProcessAlive(sess.PID) {
 					if outPs, errPs := exec.CommandContext(ctx, "pgrep", "-P", strconv.Itoa(sess.PID)).Output(); errPs != nil || len(strings.TrimSpace(string(outPs))) == 0 {
@@ -4299,10 +4376,7 @@ func isIgnoredAgentCommand(agent string, fullCmd string) bool {
 }
 
 func (s *Server) scanObservedSessions(ctx context.Context) {
-	hostName := "local"
-	if h := os.Getenv("ACKBAR_HOST"); h != "" {
-		hostName = h
-	}
+	hostName := s.HostName()
 
 	existingSessions, err := s.db.ListSessions()
 	if err != nil {

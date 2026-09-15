@@ -492,7 +492,7 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
       decoration: const BoxDecoration(
         color: AppColors.surface,
         border: Border(
-          top: BorderSide(color: AppColors.border, width: 1),
+          top: BorderSide(color: AppColors.outlineSubtle, width: 1),
         ),
       ),
       padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md, vertical: 8),
@@ -508,7 +508,7 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
                     color: AppColors.terminalBlack,
                     borderRadius: BorderRadius.circular(10),
                     border: Border.all(
-                      color: _isSending ? AppColors.infoCyan : AppColors.border,
+                      color: _isSending ? AppColors.infoCyan : AppColors.outlineSubtle,
                       width: 1,
                     ),
                   ),
@@ -559,7 +559,7 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
                   widget.session.isHeadless
                       ? '💬 Headless turn-by-turn • OAuth Flat-rate'
                       : '🖥️ Tmux process • Interactive shell',
-                  style: AppTypography.codeXs.copyWith(color: AppColors.textDim, fontSize: 10),
+                  style: AppTypography.codeXs.copyWith(color: AppColors.textMuted, fontSize: 10),
                 ),
                 if (_isSending)
                   Row(

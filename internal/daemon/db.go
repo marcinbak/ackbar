@@ -291,7 +291,7 @@ func (d *DB) GetSession(id string) (*Session, error) {
 	       blocked_kind, blocked_reason, blocked_since, blocked_question, blocked_options, activity,
 	       started_at, last_event_at, managed, tmux_name, pid, archived, node_path, name, entrypoint, kind, version, context_pct, git_branch,
 	       custom_title, ai_title, ai_description, first_prompt, last_prompt, is_unread, last_state_change_at, is_done, account_id, engine_type
-	FROM sessions WHERE id = ? OR native_id = ?;
+	FROM sessions WHERE id = ? OR native_id = ? OR native_id = ?;
 	`
 
 	var s Session
@@ -301,7 +301,12 @@ func (d *DB) GetSession(id string) (*Session, error) {
 	var blockedSince, lastStateChangeAt sql.NullTime
 	var managedInt, archivedInt, isUnreadInt, isDoneInt int
 
-	row := d.db.QueryRow(query, id, id)
+	nativeCandidate := id
+	if idx := strings.LastIndex(id, ":"); idx != -1 {
+		nativeCandidate = id[idx+1:]
+	}
+
+	row := d.db.QueryRow(query, id, id, nativeCandidate)
 	err := row.Scan(
 		&s.ID, &s.Agent, &s.Host, &s.NativeID, &s.Cwd, &rootsStr, &s.ProjectKey, (*int)(&s.State),
 		&blockedKind, &blockedReason, &blockedSince, &blockedQuestion, &blockedOptions, &s.Activity,
@@ -1030,4 +1035,31 @@ func (d *DB) SetDefaultAccount(agent, id string) error {
 		return err
 	}
 	return tx.Commit()
+}
+
+// MigrateLocalSessions updates sessions and deleted_sessions that currently have host = "local"
+// (or empty host) to use the new canonical hostName.
+func (d *DB) MigrateLocalSessions(newHost string) error {
+	if newHost == "" || newHost == "local" {
+		return nil
+	}
+	// Migrate sessions
+	querySessions := `
+		UPDATE sessions 
+		SET host = ?, id = REPLACE(id, ':local:', ':' || ? || ':')
+		WHERE host = 'local' OR host = '' OR host IS NULL;
+	`
+	if _, err := d.db.Exec(querySessions, newHost, newHost); err != nil {
+		return fmt.Errorf("failed to migrate sessions host: %w", err)
+	}
+
+	// Also update deleted_sessions if any
+	queryDeleted := `
+		UPDATE deleted_sessions 
+		SET id = REPLACE(id, ':local:', ':' || ? || ':')
+		WHERE id LIKE '%:local:%';
+	`
+	_, _ = d.db.Exec(queryDeleted, newHost)
+
+	return nil
 }
