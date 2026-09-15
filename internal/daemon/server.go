@@ -123,6 +123,16 @@ func (s *Server) DisplayName() string {
 	return s.HostName()
 }
 
+func (s *Server) isLocalHost(host string) bool {
+	if host == "" || host == "local" || host == "localhost" || host == "127.0.0.1" || host == "::1" {
+		return true
+	}
+	if host == s.HostName() {
+		return true
+	}
+	return false
+}
+
 func (s *Server) RegisterProvider(p Provider) {
 	s.providers[p.Agent()] = p
 }
@@ -6094,7 +6104,7 @@ func LaunchVSCode(path, host string) (string, error) {
 	}
 
 	var vscodeURI string
-	isRemote := host != "" && host != "local"
+	isRemote := host != "" && host != "local" && host != "localhost" && host != "127.0.0.1" && (os.Getenv("ACKBAR_HOST") == "" || host != os.Getenv("ACKBAR_HOST"))
 
 	if isRemote {
 		hostLabel := host
