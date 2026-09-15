@@ -74,6 +74,11 @@
             <!-- Dynamically populated tabs -->
           </div>
           <div class="tab-strip-controls">
+            <div class="view-mode-toggle" id="viewModeToggle" style="display: none;">
+              <button class="btn-view-mode" id="btnViewChat" data-mode="chat" title="Switch to Chat Interface">💬 Chat</button>
+              <button class="btn-view-mode" id="btnViewTerminal" data-mode="terminal" title="Switch to Terminal Interface">💻 Terminal</button>
+              <button class="btn-view-mode" id="btnViewSplit" data-mode="split" title="Switch to Split View">🔲 Split</button>
+            </div>
             <div class="tab-overflow-dropdown" id="tabOverflowDropdown" style="display: none;">
               <button class="btn-tab-overflow" id="btnTabOverflow">
                 <span id="tabOverflowCount">▾ 0 more</span>
@@ -169,6 +174,15 @@
               </select>
             </div>
 
+            <div class="form-group" style="margin-bottom: 14px;">
+              <label class="form-label" style="display: block; font-size: 12px; font-weight: 600; margin-bottom: 5px; color: var(--text-dim);">Execution Engine / Mode</label>
+              <select id="newSessionEngine" class="form-input" style="width: 100%; cursor: pointer;">
+                <option value="headless">💬 Headless (Streaming Chat, Subscription OAuth)</option>
+                <option value="tmux">🖥️ Terminal (Interactive Tmux Process)</option>
+              </select>
+              <span style="display: block; font-size: 11px; color: var(--text-muted); margin-top: 4px;">Headless mode protects flat-rate Claude subscriptions and renders real-time chat with collapsible tools.</span>
+            </div>
+
             <div class="form-group" style="margin-bottom: 10px;">
               <label class="form-label" style="display: block; font-size: 12px; font-weight: 600; margin-bottom: 5px; color: var(--text-dim);">Working Directory / Project Path</label>
               <input type="text" id="newSessionFolder" class="form-input" list="folderSuggestions" placeholder="/Users/dev4u/Work/..." style="width: 100%;" required />
@@ -202,6 +216,7 @@
       <div class="context-menu-item" id="cmItemCopyName"><span>📋</span> Copy Name</div>
       <div class="context-menu-item" id="cmItemCopyPath"><span>📍</span> Copy Path</div>
       <div class="context-menu-divider"></div>
+      <div class="context-menu-item" id="cmItemTakeWheel"><span>🏎️</span> Take the Wheel in Terminal</div>
       <div class="context-menu-item" id="cmItemResume"><span>▶</span> Resume in Tmux</div>
       <div class="context-menu-item" id="cmItemNewTab"><span>↗</span> Open in New Tab</div>
       <div class="context-menu-item" id="cmItemVSCode"><span>📂</span> Open in VS Code</div>

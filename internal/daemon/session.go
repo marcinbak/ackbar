@@ -80,8 +80,14 @@ type Session struct {
 	IsUnread          bool      `json:"is_unread,omitempty"`
 	IsDone            bool      `json:"is_done,omitempty"`
 	LastStateChangeAt time.Time `json:"last_state_change_at,omitempty"`
-	AccountID         string    `json:"account_id,omitempty"` // profile/account identifier (e.g. "work", "personal", "default")
+	AccountID         string    `json:"account_id,omitempty"`  // profile/account identifier (e.g. "work", "personal", "default")
+	EngineType        string    `json:"engine_type,omitempty"` // "tmux" (default) or "headless"
 }
+
+const (
+	EngineTmux     = "tmux"
+	EngineHeadless = "headless"
+)
 
 type AgentAccount struct {
 	ID          string            `json:"id"`                     // Unique key, e.g. "claude-code:work"

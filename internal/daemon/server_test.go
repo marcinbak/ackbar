@@ -2504,5 +2504,3 @@ func TestIsLocalHost(t *testing.T) {
 		}
 	}
 }
-
-

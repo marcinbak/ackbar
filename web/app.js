@@ -344,6 +344,12 @@
     sbPID: document.getElementById('sbPID'),
     sbModeToggle: document.getElementById('sbModeToggle'),
     sbLastActive: document.getElementById('sbLastActive'),
+    // Dual Engine View Controls
+    viewModeToggle: document.getElementById('viewModeToggle'),
+    btnViewChat: document.getElementById('btnViewChat'),
+    btnViewTerminal: document.getElementById('btnViewTerminal'),
+    btnViewSplit: document.getElementById('btnViewSplit'),
+    newSessionEngine: document.getElementById('newSessionEngine'),
     // Modal elements
     modalOverlay: document.getElementById('modalOverlay'),
     modalTitle: document.getElementById('modalTitle'),
@@ -360,6 +366,7 @@
     cmItemTranscript: document.getElementById('cmItemTranscript'),
     cmItemCopyName: document.getElementById('cmItemCopyName'),
     cmItemCopyPath: document.getElementById('cmItemCopyPath'),
+    cmItemTakeWheel: document.getElementById('cmItemTakeWheel'),
     cmItemResume: document.getElementById('cmItemResume'),
     cmItemNewTab: document.getElementById('cmItemNewTab'),
     cmItemVSCode: document.getElementById('cmItemVSCode'),
@@ -1676,6 +1683,9 @@
 
   // Establish or Re-establish WebSocket Connection for a Terminal Tab
   function connectTerminalWebSocket(tab, tabId, term, fitAddon, session) {
+    if (session && session.engine_type === 'headless' && !session.tmux_name) {
+      return;
+    }
     if (tab.pingTimer) {
       clearInterval(tab.pingTimer);
       tab.pingTimer = null;
@@ -1894,7 +1904,502 @@
     }
   }
 
-  // Open Session in Terminal Tab
+  // ==========================================================================
+  // Dual-Engine Chat Interface & View Mode Handlers
+  // ==========================================================================
+
+  // Set View Mode for a session tab ('chat' | 'terminal' | 'split')
+  function setTabViewMode(tabId, mode) {
+    const tab = state.openTabs.get(tabId);
+    if (!tab || !tab.containerEl) return;
+    tab.viewMode = mode;
+
+    tab.containerEl.classList.remove('view-mode-chat', 'view-mode-terminal', 'view-mode-split');
+    tab.containerEl.classList.add(`view-mode-${mode}`);
+
+    updateViewModeButtons(mode);
+
+    if (mode === 'terminal' || mode === 'split') {
+      setTimeout(() => {
+        if (tab.fitAddon && tab.fitAddon.fit) tab.fitAddon.fit();
+        if (tab.terminal) {
+          tab.terminal.focus();
+          if (tab.socket && tab.socket.readyState === WebSocket.OPEN) {
+            sendTerminalResize(tab.socket, tab.terminal.cols, tab.terminal.rows);
+          }
+        }
+      }, 30);
+    } else if (mode === 'chat') {
+      if (tab.chatInputEl) {
+        tab.chatInputEl.focus();
+      }
+    }
+  }
+
+  function updateViewModeButtons(mode) {
+    if (el.btnViewChat) el.btnViewChat.classList.toggle('active', mode === 'chat');
+    if (el.btnViewTerminal) el.btnViewTerminal.classList.toggle('active', mode === 'terminal');
+    if (el.btnViewSplit) el.btnViewSplit.classList.toggle('active', mode === 'split');
+  }
+
+  // Handle "Take the Wheel in Terminal": resume headless session into live tmux
+  async function handleTakeWheel(sessionId) {
+    if (!sessionId) return;
+    try {
+      const res = await fetch('/v1/sessions/take-wheel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: sessionId })
+      });
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        alert(errData.message || errData.error || `Failed to take wheel: HTTP ${res.status}`);
+        return;
+      }
+
+      const data = await res.json();
+      const sess = state.sessions.find(s => s.id === sessionId);
+      if (sess) {
+        sess.engine_type = 'tmux';
+        sess.tmux_name = data.tmux_name;
+        sess.managed = true;
+      }
+
+      const tab = state.openTabs.get(sessionId);
+      if (tab) {
+        tab.session.engine_type = 'tmux';
+        tab.session.tmux_name = data.tmux_name;
+        tab.session.managed = true;
+
+        if (tab.chatEngineBadge) {
+          tab.chatEngineBadge.textContent = '🖥️ tmux';
+          tab.chatEngineBadge.classList.add('badge-tmux');
+        }
+
+        const notice = tab.termViewEl ? tab.termViewEl.querySelector('.headless-term-notice') : null;
+        if (notice) notice.remove();
+
+        connectTerminalWebSocket(tab, sessionId, tab.terminal, tab.fitAddon, tab.session);
+        setTabViewMode(sessionId, 'terminal');
+      }
+
+      await fetchSessions();
+    } catch (err) {
+      console.error('Failed to take wheel:', err);
+      alert(`Error taking wheel: ${err.message}`);
+    }
+  }
+
+  // Setup rich Chat Interface inside tab
+  function setupChatInterface(tabObj, chatViewEl, session) {
+    const tabId = session.id;
+    const isTmux = session.engine_type === 'tmux';
+
+    chatViewEl.innerHTML = `
+      <div class="chat-header-bar">
+        <div class="chat-header-left">
+          <span class="chat-header-title">${escapeHtml(session.name || session.agent)}</span>
+          <span class="chat-engine-badge ${isTmux ? 'badge-tmux' : ''}" id="chatEngineBadge_${tabId}">
+            ${isTmux ? '🖥️ tmux' : '💬 headless'}
+          </span>
+          <span class="chat-status-badge" id="chatStatus_${tabId}" style="font-size: 11px; color: var(--text-dim);">🟢 Ready</span>
+        </div>
+        <div class="chat-header-right">
+          <button class="btn-take-wheel" id="btnTakeWheel_${tabId}" title="Spawn tmux process and attach interactive terminal">🏎️ Take the Wheel</button>
+          <button class="btn btn-secondary btn-sm" id="btnReloadChat_${tabId}" title="Reload transcript history">🔄</button>
+        </div>
+      </div>
+      <div class="chat-messages-container" id="chatMessages_${tabId}"></div>
+      <div class="chat-composer-container">
+        <div class="chat-composer-box">
+          <textarea class="chat-composer-textarea" id="chatInput_${tabId}" rows="1" placeholder="Ask ${escapeHtml(session.agent || 'Claude Code')} anything... (Enter to send, Shift+Enter for newline)"></textarea>
+          <div class="chat-composer-actions">
+            <button class="btn-composer-cancel" id="btnCancelTurn_${tabId}" style="display: none;" title="Cancel turn (SIGINT)">🛑 Stop</button>
+            <button class="btn-composer-send" id="btnSendPrompt_${tabId}" title="Send Prompt (Enter)">➤</button>
+          </div>
+        </div>
+        <div class="chat-composer-hints">
+          <span>💡 Flat-rate OAuth active • Headless streaming • Press Shift+Enter for new line</span>
+          <span class="chat-status-hint"></span>
+        </div>
+      </div>
+    `;
+
+    tabObj.chatMessagesEl = chatViewEl.querySelector(`#chatMessages_${tabId}`);
+    tabObj.chatInputEl = chatViewEl.querySelector(`#chatInput_${tabId}`);
+    tabObj.chatSendBtn = chatViewEl.querySelector(`#btnSendPrompt_${tabId}`);
+    tabObj.chatCancelBtn = chatViewEl.querySelector(`#btnCancelTurn_${tabId}`);
+    tabObj.chatStatusBadge = chatViewEl.querySelector(`#chatStatus_${tabId}`);
+    tabObj.chatEngineBadge = chatViewEl.querySelector(`#chatEngineBadge_${tabId}`);
+
+    const btnTakeWheel = chatViewEl.querySelector(`#btnTakeWheel_${tabId}`);
+    if (btnTakeWheel) {
+      btnTakeWheel.addEventListener('click', () => handleTakeWheel(session.id));
+    }
+
+    const btnReload = chatViewEl.querySelector(`#btnReloadChat_${tabId}`);
+    if (btnReload) {
+      btnReload.addEventListener('click', () => loadChatTranscript(tabObj));
+    }
+
+    if (tabObj.chatCancelBtn) {
+      tabObj.chatCancelBtn.addEventListener('click', () => cancelChatTurn(tabObj));
+    }
+
+    if (tabObj.chatSendBtn) {
+      tabObj.chatSendBtn.addEventListener('click', () => sendChatPrompt(tabObj));
+    }
+
+    if (tabObj.chatInputEl) {
+      tabObj.chatInputEl.addEventListener('input', () => {
+        tabObj.chatInputEl.style.height = 'auto';
+        tabObj.chatInputEl.style.height = Math.min(tabObj.chatInputEl.scrollHeight, 160) + 'px';
+      });
+
+      tabObj.chatInputEl.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault();
+          sendChatPrompt(tabObj);
+        }
+      });
+    }
+
+    loadChatTranscript(tabObj);
+    connectChatStream(tabObj);
+  }
+
+  // Load past conversation messages from daemon transcript
+  async function loadChatTranscript(tabObj) {
+    if (!tabObj || !tabObj.chatMessagesEl) return;
+    const sessionId = tabObj.session.id;
+    try {
+      const res = await fetch(`/v1/sessions/transcript?id=${encodeURIComponent(sessionId)}&format=json`);
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data && data.messages && data.messages.length > 0) {
+        tabObj.chatMessagesEl.innerHTML = '';
+        for (const msg of data.messages) {
+          appendChatMessage(tabObj, msg);
+        }
+        tabObj.chatMessagesEl.scrollTop = tabObj.chatMessagesEl.scrollHeight;
+      }
+    } catch (e) {
+      console.warn('Failed to load chat transcript:', e);
+    }
+  }
+
+  // Append a message bubble into the chat messages container
+  function appendChatMessage(tabObj, msg) {
+    if (!tabObj || !tabObj.chatMessagesEl) return;
+    const msgEl = document.createElement('div');
+    const timeStr = msg.timestamp ? new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+
+    if (msg.role === 'user') {
+      msgEl.className = 'chat-msg user-msg';
+      msgEl.innerHTML = `
+        <div class="chat-msg-header">
+          <span class="chat-msg-role">👤 You</span>
+          <span class="chat-msg-time">${timeStr}</span>
+        </div>
+        <div class="chat-msg-body">${escapeHtml(msg.content).replace(/\\n/g, '<br/>')}</div>
+      `;
+    } else if (msg.role === 'assistant') {
+      msgEl.className = 'chat-msg assistant-msg';
+      let thinkingHtml = '';
+      if (msg.thinking) {
+        thinkingHtml = `
+          <details class="chat-thinking">
+            <summary>💭 Thinking...</summary>
+            <div class="thinking-text">${escapeHtml(msg.thinking)}</div>
+          </details>
+        `;
+      }
+      let toolsHtml = '';
+      if (msg.tool_calls && msg.tool_calls.length > 0) {
+        toolsHtml = msg.tool_calls.map(tc => `
+          <details class="chat-tool-card">
+            <summary>⚡ ${escapeHtml(tc)}</summary>
+            <div class="chat-tool-content">${escapeHtml(tc)}</div>
+          </details>
+        `).join('');
+      }
+      const bodyHtml = window.marked ? window.marked.parse(msg.content || '') : `<pre>${escapeHtml(msg.content || '')}</pre>`;
+      msgEl.innerHTML = `
+        <div class="chat-msg-header">
+          <span class="chat-msg-role">🤖 ${escapeHtml(tabObj.session.agent || 'Claude Code')}</span>
+          <span class="chat-msg-time">${timeStr}</span>
+        </div>
+        ${thinkingHtml}
+        ${toolsHtml ? `<div class="chat-tools">${toolsHtml}</div>` : ''}
+        <div class="chat-msg-body markdown-body">${bodyHtml}</div>
+      `;
+    } else {
+      msgEl.className = 'chat-msg system-msg';
+      msgEl.innerHTML = `<span class="system-tag">ℹ️ ${escapeHtml(msg.content)}</span>`;
+    }
+
+    tabObj.chatMessagesEl.appendChild(msgEl);
+    return msgEl;
+  }
+
+  // Send Prompt to daemon (/v1/sessions/prompt)
+  async function sendChatPrompt(tabObj) {
+    if (!tabObj || !tabObj.chatInputEl) return;
+    const promptText = tabObj.chatInputEl.value.trim();
+    if (!promptText) return;
+
+    tabObj.chatInputEl.value = '';
+    tabObj.chatInputEl.style.height = 'auto';
+
+    appendChatMessage(tabObj, {
+      role: 'user',
+      content: promptText,
+      timestamp: new Date().toISOString()
+    });
+
+    const assistantMsgEl = document.createElement('div');
+    assistantMsgEl.className = 'chat-msg assistant-msg in-flight';
+    assistantMsgEl.innerHTML = `
+      <div class="chat-msg-header">
+        <span class="chat-msg-role">🤖 ${escapeHtml(tabObj.session.agent || 'Claude Code')}</span>
+        <span class="chat-msg-time">${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+      </div>
+      <div class="chat-thinking-slot"></div>
+      <div class="chat-tools-slot"></div>
+      <div class="chat-msg-body markdown-body"><span class="chat-streaming-cursor"></span></div>
+    `;
+    tabObj.chatMessagesEl.appendChild(assistantMsgEl);
+    tabObj.chatMessagesEl.scrollTop = tabObj.chatMessagesEl.scrollHeight;
+
+    tabObj.activeTurnMsgEl = assistantMsgEl;
+    tabObj.activeTurnBuffer = '';
+
+    if (tabObj.chatCancelBtn) tabObj.chatCancelBtn.style.display = 'inline-flex';
+    if (tabObj.chatSendBtn) tabObj.chatSendBtn.disabled = true;
+    if (tabObj.chatStatusBadge) tabObj.chatStatusBadge.textContent = '⚡ Working...';
+
+    connectChatStream(tabObj);
+
+    try {
+      const res = await fetch('/v1/sessions/prompt', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          session_id: tabObj.session.id,
+          prompt: promptText
+        })
+      });
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.message || errData.error || `HTTP ${res.status}`);
+      }
+    } catch (err) {
+      console.error('Failed to dispatch prompt:', err);
+      const bodyEl = assistantMsgEl.querySelector('.chat-msg-body');
+      if (bodyEl) {
+        bodyEl.innerHTML = `<span style="color: var(--accent-red);">⚠️ Error sending prompt: ${escapeHtml(err.message)}</span>`;
+      }
+      resetChatComposer(tabObj);
+    }
+  }
+
+  // Connect SSE for active session turn events
+  function connectChatStream(tabObj) {
+    if (tabObj.chatEventSource && tabObj.chatEventSource.readyState !== EventSource.CLOSED) {
+      return;
+    }
+
+    const sessionId = tabObj.session.id;
+    const token = getAuthToken();
+    let sseUrl = `/v1/sessions/chat/stream?session_id=${encodeURIComponent(sessionId)}`;
+    if (token) {
+      sseUrl += `&token=${encodeURIComponent(token)}`;
+    }
+
+    try {
+      const es = new EventSource(sseUrl);
+      tabObj.chatEventSource = es;
+
+      es.onmessage = (event) => {
+        if (!event.data) return;
+        try {
+          const evt = JSON.parse(event.data);
+          handleChatStreamEvent(tabObj, evt);
+        } catch (e) {
+          console.warn('Failed to parse SSE event data:', e);
+        }
+      };
+    } catch (e) {
+      console.error('Failed to open EventSource:', e);
+    }
+  }
+
+  // Handle stream event from SSE
+  function handleChatStreamEvent(tabObj, evt) {
+    if (!tabObj || !tabObj.chatMessagesEl) return;
+
+    if (!tabObj.activeTurnMsgEl && evt.type !== 'status') {
+      let inFlight = tabObj.chatMessagesEl.querySelector('.chat-msg.assistant-msg.in-flight');
+      if (!inFlight && evt.type !== 'turn_complete' && evt.type !== 'turn_cancelled') {
+        inFlight = document.createElement('div');
+        inFlight.className = 'chat-msg assistant-msg in-flight';
+        inFlight.innerHTML = `
+          <div class="chat-msg-header">
+            <span class="chat-msg-role">🤖 ${escapeHtml(tabObj.session.agent || 'Claude Code')}</span>
+            <span class="chat-msg-time">${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+          </div>
+          <div class="chat-thinking-slot"></div>
+          <div class="chat-tools-slot"></div>
+          <div class="chat-msg-body markdown-body"><span class="chat-streaming-cursor"></span></div>
+        `;
+        tabObj.chatMessagesEl.appendChild(inFlight);
+      }
+      tabObj.activeTurnMsgEl = inFlight;
+      if (!tabObj.activeTurnBuffer) tabObj.activeTurnBuffer = '';
+    }
+
+    const msgEl = tabObj.activeTurnMsgEl;
+
+    switch (evt.type) {
+      case 'text_delta':
+        if (msgEl) {
+          tabObj.activeTurnBuffer = (tabObj.activeTurnBuffer || '') + (evt.text || '');
+          const bodyEl = msgEl.querySelector('.chat-msg-body');
+          if (bodyEl) {
+            const html = window.marked ? window.marked.parse(tabObj.activeTurnBuffer) : `<pre>${escapeHtml(tabObj.activeTurnBuffer)}</pre>`;
+            bodyEl.innerHTML = html + '<span class="chat-streaming-cursor"></span>';
+          }
+          tabObj.chatMessagesEl.scrollTop = tabObj.chatMessagesEl.scrollHeight;
+        }
+        break;
+
+      case 'thought_delta':
+        if (msgEl && evt.thinking) {
+          const slot = msgEl.querySelector('.chat-thinking-slot');
+          if (slot) {
+            let thinkBlock = slot.querySelector('.chat-thinking');
+            if (!thinkBlock) {
+              thinkBlock = document.createElement('details');
+              thinkBlock.className = 'chat-thinking';
+              thinkBlock.open = true;
+              thinkBlock.innerHTML = `<summary>💭 Thinking...</summary><div class="thinking-text"></div>`;
+              slot.appendChild(thinkBlock);
+            }
+            const thinkText = thinkBlock.querySelector('.thinking-text');
+            if (thinkText) {
+              thinkText.textContent += evt.thinking;
+            }
+            tabObj.chatMessagesEl.scrollTop = tabObj.chatMessagesEl.scrollHeight;
+          }
+        }
+        break;
+
+      case 'tool_start':
+        if (msgEl && evt.tool_name) {
+          const slot = msgEl.querySelector('.chat-tools-slot');
+          if (slot) {
+            const toolCard = document.createElement('details');
+            toolCard.className = 'chat-tool-card';
+            toolCard.dataset.toolName = evt.tool_name;
+            toolCard.open = true;
+            const inputStr = typeof evt.tool_input === 'string' ? evt.tool_input : JSON.stringify(evt.tool_input, null, 2);
+            toolCard.innerHTML = `
+              <summary>⚡ ${escapeHtml(evt.tool_name)}: running...</summary>
+              <div class="chat-tool-content">${escapeHtml(inputStr || '')}</div>
+            `;
+            slot.appendChild(toolCard);
+            tabObj.chatMessagesEl.scrollTop = tabObj.chatMessagesEl.scrollHeight;
+          }
+        }
+        break;
+
+      case 'tool_result':
+        if (msgEl) {
+          const slot = msgEl.querySelector('.chat-tools-slot');
+          if (slot) {
+            const card = slot.querySelector(`[data-tool-name="${evt.tool_name}"]`) || slot.lastElementChild;
+            if (card) {
+              const summary = card.querySelector('summary');
+              if (summary) {
+                summary.textContent = `⚡ ${evt.tool_name}: ${evt.is_error ? 'failed ❌' : 'completed ✓'}`;
+                if (evt.is_error) card.classList.add('tool-error');
+              }
+              const content = card.querySelector('.chat-tool-content');
+              if (content && evt.tool_output) {
+                content.textContent += `\\n\\n--- Output ---\\n${evt.tool_output}`;
+              }
+            }
+          }
+        }
+        break;
+
+      case 'turn_complete':
+        if (msgEl) {
+          msgEl.classList.remove('in-flight');
+          const cursor = msgEl.querySelector('.chat-streaming-cursor');
+          if (cursor) cursor.remove();
+        }
+        resetChatComposer(tabObj);
+        tabObj.activeTurnMsgEl = null;
+        tabObj.activeTurnBuffer = '';
+        fetchSessions();
+        break;
+
+      case 'turn_cancelled':
+        if (msgEl) {
+          msgEl.classList.remove('in-flight');
+          const cursor = msgEl.querySelector('.chat-streaming-cursor');
+          if (cursor) cursor.remove();
+          const bodyEl = msgEl.querySelector('.chat-msg-body');
+          if (bodyEl) {
+            bodyEl.innerHTML += `<div style="margin-top: 8px; color: var(--text-dim); font-style: italic;">[Turn cancelled by user]</div>`;
+          }
+        }
+        resetChatComposer(tabObj);
+        tabObj.activeTurnMsgEl = null;
+        tabObj.activeTurnBuffer = '';
+        break;
+
+      case 'error':
+        if (msgEl) {
+          msgEl.classList.remove('in-flight');
+          const cursor = msgEl.querySelector('.chat-streaming-cursor');
+          if (cursor) cursor.remove();
+          const bodyEl = msgEl.querySelector('.chat-msg-body');
+          if (bodyEl) {
+            bodyEl.innerHTML += `<div style="margin-top: 8px; color: var(--accent-red);">⚠️ ${escapeHtml(evt.text || 'Turn error')}</div>`;
+          }
+        }
+        resetChatComposer(tabObj);
+        tabObj.activeTurnMsgEl = null;
+        tabObj.activeTurnBuffer = '';
+        break;
+    }
+  }
+
+  function resetChatComposer(tabObj) {
+    if (tabObj.chatCancelBtn) tabObj.chatCancelBtn.style.display = 'none';
+    if (tabObj.chatSendBtn) tabObj.chatSendBtn.disabled = false;
+    if (tabObj.chatStatusBadge) tabObj.chatStatusBadge.textContent = '🟢 Ready';
+    if (tabObj.chatInputEl) tabObj.chatInputEl.focus();
+  }
+
+  async function cancelChatTurn(tabObj) {
+    if (!tabObj || !tabObj.session) return;
+    try {
+      await fetch('/v1/sessions/cancel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: tabObj.session.id })
+      });
+    } catch (e) {
+      console.warn('Failed to cancel turn:', e);
+    }
+  }
+
+  // Open Session in Terminal/Chat Tab
   function openSessionInTab(session) {
     if (!session) return;
     const tabId = session.id;
@@ -1988,9 +2493,10 @@
 
     if (el.tabStrip) el.tabStrip.appendChild(tabEl);
 
-    // 2. Create Terminal View Container
+    // 2. Create Terminal / Chat Container
+    const initialViewMode = session.engine_type === 'headless' ? 'chat' : 'terminal';
     const containerEl = document.createElement('div');
-    containerEl.className = 'terminal-tab-view';
+    containerEl.className = `terminal-tab-view has-session-container view-mode-${initialViewMode}`;
     containerEl.id = `termView_${tabId.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
     containerEl.addEventListener('click', () => {
       const currentTab = state.openTabs.get(tabId);
@@ -2000,26 +2506,58 @@
     });
     if (el.terminalViewport) el.terminalViewport.appendChild(containerEl);
 
+    // Sub-containers for dual-engine layout
+    const sessionContainer = document.createElement('div');
+    sessionContainer.className = 'session-view-container';
+    containerEl.appendChild(sessionContainer);
+
+    const chatViewEl = document.createElement('div');
+    chatViewEl.className = 'session-chat-view';
+    sessionContainer.appendChild(chatViewEl);
+
+    const termViewEl = document.createElement('div');
+    termViewEl.className = 'session-term-view';
+    sessionContainer.appendChild(termViewEl);
+
+    // If headless and not yet resumed into tmux, show friendly takeover card in terminal view
+    if (session.engine_type === 'headless' && !session.tmux_name) {
+      const notice = document.createElement('div');
+      notice.className = 'headless-term-notice';
+      notice.innerHTML = `
+        <div class="headless-term-notice-card">
+          <div style="font-size: 32px;">🏎️</div>
+          <h3>Headless Execution Mode</h3>
+          <p>This session is running in turn-by-turn headless streaming mode to protect flat-rate OAuth subscriptions. An interactive tmux terminal has not been spawned yet.</p>
+          <button class="btn btn-primary btn-take-wheel-prompt">🏎️ Take the Wheel in Terminal</button>
+        </div>
+      `;
+      const takeWheelBtn = notice.querySelector('.btn-take-wheel-prompt');
+      if (takeWheelBtn) {
+        takeWheelBtn.addEventListener('click', () => handleTakeWheel(tabId));
+      }
+      termViewEl.appendChild(notice);
+    }
+
     // 3. Drop Overlay for Drag-and-Drop file uploads (Images & PDFs)
     const dropOverlay = document.createElement('div');
     dropOverlay.className = 'terminal-drop-overlay';
     dropOverlay.innerHTML = `<div class="drop-badge">📎 Drop image or PDF to upload & attach</div>`;
-    containerEl.appendChild(dropOverlay);
+    termViewEl.appendChild(dropOverlay);
 
-    containerEl.addEventListener('dragover', (e) => {
+    termViewEl.addEventListener('dragover', (e) => {
       e.preventDefault();
       if (e.dataTransfer && e.dataTransfer.types && Array.from(e.dataTransfer.types).includes('Files')) {
         dropOverlay.classList.add('active');
       }
     });
 
-    containerEl.addEventListener('dragleave', (e) => {
-      if (!containerEl.contains(e.relatedTarget)) {
+    termViewEl.addEventListener('dragleave', (e) => {
+      if (!termViewEl.contains(e.relatedTarget)) {
         dropOverlay.classList.remove('active');
       }
     });
 
-    containerEl.addEventListener('drop', (e) => {
+    termViewEl.addEventListener('drop', (e) => {
       e.preventDefault();
       dropOverlay.classList.remove('active');
       const currentTab = state.openTabs.get(tabId);
@@ -2031,7 +2569,7 @@
     });
 
     // 4. Clipboard paste listener for images / PDFs
-    containerEl.addEventListener('paste', (e) => {
+    termViewEl.addEventListener('paste', (e) => {
       if (!e.clipboardData) return;
       const items = e.clipboardData.items || [];
       let handled = false;
@@ -2078,7 +2616,7 @@
       term.loadAddon(new WebLinksAddon.WebLinksAddon());
     }
 
-    term.open(containerEl);
+    term.open(termViewEl);
 
     // Register OSC 52 Clipboard handler (receives base64-encoded clipboard from remote tmux)
     if (term.parser && term.parser.registerOscHandler) {
@@ -2180,15 +2718,33 @@
       fitAddon,
       socket: null,
       containerEl,
+      sessionContainer,
+      chatViewEl,
+      termViewEl,
+      viewMode: initialViewMode,
       tabEl,
+      chatEventSource: null,
+      chatMessagesEl: null,
+      chatInputEl: null,
+      chatSendBtn: null,
+      chatCancelBtn: null,
+      chatStatusBadge: null,
+      chatEngineBadge: null,
+      activeTurnBuffer: '',
+      activeTurnMsgEl: null,
       pingTimer: null,
       reconnectTimer: null,
       reconnectAttempts: 0
     };
     state.openTabs.set(tabId, tabObj);
 
-    // 4. Connect WebSocket PTY
-    connectTerminalWebSocket(tabObj, tabId, term, fitAddon, session);
+    // Setup interactive chat UI & load history
+    setupChatInterface(tabObj, chatViewEl, session);
+
+    // 4. Connect WebSocket PTY (if tmux session is active)
+    if (session.engine_type !== 'headless' || session.tmux_name) {
+      connectTerminalWebSocket(tabObj, tabId, term, fitAddon, session);
+    }
 
     // 5. Automatic Viewport Re-flow & ResizeObserver
     let resizeTimeout = null;
@@ -2982,14 +3538,25 @@ ${session.last_prompt}
             state.lastActiveGroup = tab.session.node_path;
           }
         }
+        if (el.viewModeToggle) {
+          if (tab.session) {
+            el.viewModeToggle.style.display = 'inline-flex';
+            const mode = tab.viewMode || (tab.session.engine_type === 'headless' ? 'chat' : 'terminal');
+            updateViewModeButtons(mode);
+          } else {
+            el.viewModeToggle.style.display = 'none';
+          }
+        }
         if (tab.type === 'terminal') {
-          if (!tab.socket || tab.socket.readyState === WebSocket.CLOSED || tab.socket.readyState === WebSocket.CLOSING) {
+          if (tab.viewMode === 'chat' && tab.chatInputEl) {
+            tab.chatInputEl.focus();
+          } else if (!tab.socket || tab.socket.readyState === WebSocket.CLOSED || tab.socket.readyState === WebSocket.CLOSING) {
             reconnectTerminalTab(tabId);
           }
         }
         setTimeout(() => {
           if (tab.fitAddon && tab.fitAddon.fit) tab.fitAddon.fit();
-          if (tab.terminal) {
+          if (tab.terminal && tab.viewMode !== 'chat') {
             tab.terminal.focus();
             sendTerminalResize(tab.socket, tab.terminal.cols, tab.terminal.rows);
           }
@@ -3007,6 +3574,10 @@ ${session.last_prompt}
     const tab = state.openTabs.get(tabId);
     if (!tab) return;
 
+    if (tab.chatEventSource) {
+      try { tab.chatEventSource.close(); } catch (e) {}
+      tab.chatEventSource = null;
+    }
     if (tab.pingTimer) {
       clearInterval(tab.pingTimer);
       tab.pingTimer = null;
@@ -3448,7 +4019,10 @@ ${session.last_prompt}
     if (el.sbCwd) el.sbCwd.textContent = session.cwd || '~/';
     if (el.sbGitBranch) el.sbGitBranch.textContent = session.git_branch ? `⎇ ${session.git_branch}` : '⎇ —';
     if (el.sbContextGauge) el.sbContextGauge.textContent = session.context_pct ? `ctx: ${session.context_pct}%` : 'ctx: —';
-    if (el.sbModelBadge) el.sbModelBadge.textContent = session.agent || 'claude';
+    if (el.sbModelBadge) {
+      const engineLabel = session.engine_type === 'headless' ? 'headless' : 'tmux';
+      el.sbModelBadge.textContent = `${session.agent || 'claude'} (${engineLabel})`;
+    }
     if (el.sbPID) el.sbPID.textContent = session.pid ? `PID ${session.pid}` : 'PID —';
     if (el.sbLastActive) {
       const timeRel = formatRelativeTime(session.last_event_at || session.started_at);
@@ -3590,6 +4164,34 @@ ${session.last_prompt}
             document.body.removeChild(ta);
           }
         }
+      });
+    }
+
+    if (el.cmItemTakeWheel) {
+      el.cmItemTakeWheel.addEventListener('click', async () => {
+        if (state.contextMenuSession) {
+          const sess = state.contextMenuSession;
+          hideContextMenu();
+          await handleTakeWheel(sess.id);
+        }
+      });
+    }
+
+    if (el.btnViewChat) {
+      el.btnViewChat.addEventListener('click', () => {
+        if (state.activeTabId) setTabViewMode(state.activeTabId, 'chat');
+      });
+    }
+
+    if (el.btnViewTerminal) {
+      el.btnViewTerminal.addEventListener('click', () => {
+        if (state.activeTabId) setTabViewMode(state.activeTabId, 'terminal');
+      });
+    }
+
+    if (el.btnViewSplit) {
+      el.btnViewSplit.addEventListener('click', () => {
+        if (state.activeTabId) setTabViewMode(state.activeTabId, 'split');
       });
     }
 
@@ -4530,6 +5132,7 @@ ${session.last_prompt}
     const accountSelect = document.getElementById('newSessionAccount');
     const folderInput = document.getElementById('newSessionFolder');
     const groupSelect = document.getElementById('newSessionGroup');
+    const engineSelect = document.getElementById('newSessionEngine');
     const submitBtn = document.getElementById('btnSubmitNewSession');
 
     const host = hostSelect ? hostSelect.value : getSelfHostName();
@@ -4537,6 +5140,7 @@ ${session.last_prompt}
     const account_id = (accountGroup && accountGroup.style.display !== 'none' && accountSelect) ? accountSelect.value : '';
     const cwd = folderInput ? folderInput.value.trim() : '';
     const targetGroup = groupSelect ? groupSelect.value : '';
+    const engine_type = engineSelect ? engineSelect.value : 'headless';
 
     if (!cwd) {
       alert('Please provide a working directory or project path.');
@@ -4553,7 +5157,7 @@ ${session.last_prompt}
       const res = await fetch('/v1/sessions/spawn', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ host, agent, cwd, node_path: targetGroup, account_id })
+        body: JSON.stringify({ host, agent, cwd, node_path: targetGroup, account_id, engine_type })
       });
 
       if (!res.ok) {
@@ -4591,6 +5195,7 @@ ${session.last_prompt}
           host: host,
           cwd: cwd,
           managed: true,
+          engine_type: engine_type,
           state: 3
         });
       }
