@@ -488,6 +488,16 @@
               };
             }
           } catch (e) {}
+          // Fall back to daemon-reported live health if direct browser fetch timed out or failed
+          if (h.online !== undefined) {
+            return {
+              ...h,
+              online: !!h.online,
+              version: h.version || 'online',
+              displayName: h.display_name || h.displayName || '',
+              latencyMs: h.latency_ms != null ? h.latency_ms : (h.latencyMs != null ? h.latencyMs : null)
+            };
+          }
           return {
             ...h,
             online: false,
@@ -1938,6 +1948,9 @@
     updateViewModeButtons(mode);
 
     if (mode === 'terminal' || mode === 'split') {
+      if (mode === 'terminal') {
+        disconnectChatStream(tab);
+      }
       setTimeout(() => {
         if (tab.fitAddon && tab.fitAddon.fit) tab.fitAddon.fit();
         if (tab.terminal) {
@@ -1948,6 +1961,9 @@
         }
       }, 30);
     } else if (mode === 'chat') {
+      if (tab.session && tab.session.engine_type === 'headless') {
+        connectChatStream(tab);
+      }
       if (tab.chatInputEl) {
         tab.chatInputEl.focus();
       }
@@ -2092,7 +2108,9 @@
     }
 
     loadChatTranscript(tabObj);
-    connectChatStream(tabObj);
+    if (tabObj.session && tabObj.session.engine_type === 'headless' && (tabObj.viewMode === 'chat' || tabObj.viewMode === 'split')) {
+      connectChatStream(tabObj);
+    }
   }
 
   // Load past conversation messages from daemon transcript
@@ -2239,8 +2257,31 @@
     }
   }
 
-  // Connect SSE for active session turn events
+  // Disconnect SSE for chat turn events
+  function disconnectChatStream(tabObj) {
+    if (tabObj && tabObj.chatEventSource) {
+      try {
+        tabObj.chatEventSource.close();
+      } catch (e) {}
+      tabObj.chatEventSource = null;
+    }
+  }
+
+  // Connect SSE for active session turn events (headless sessions only)
   function connectChatStream(tabObj) {
+    if (!tabObj || !tabObj.session) return;
+    // Terminal/tmux sessions stream via WebSocket PTY, not headless SSE stream
+    if (tabObj.session.engine_type !== 'headless') {
+      return;
+    }
+    // Only connect if currently in chat view mode
+    if (tabObj.viewMode !== 'chat' && tabObj.viewMode !== 'split') {
+      return;
+    }
+    // Only connect if the tab is active
+    if (tabObj.tabEl && !tabObj.tabEl.classList.contains('active')) {
+      return;
+    }
     if (tabObj.chatEventSource && tabObj.chatEventSource.readyState !== EventSource.CLOSED) {
       return;
     }
@@ -2265,6 +2306,9 @@
         } catch (e) {
           console.warn('Failed to parse SSE event data:', e);
         }
+      };
+      es.onerror = () => {
+        disconnectChatStream(tabObj);
       };
     } catch (e) {
       console.error('Failed to open EventSource:', e);
@@ -3617,6 +3661,11 @@ ${session.last_prompt}
           }
         }, 120);
         updateStatusbar(tab.session);
+        if (tab.session && tab.session.engine_type === 'headless' && (tab.viewMode === 'chat' || tab.viewMode === 'split')) {
+          connectChatStream(tab);
+        }
+      } else {
+        disconnectChatStream(tab);
       }
     });
 

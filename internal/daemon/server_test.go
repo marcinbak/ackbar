@@ -2546,3 +2546,52 @@ func TestSpawnSSHTunnel_FailureHandling(t *testing.T) {
 		t.Errorf("spawnSSHTunnel took too long: %v", dur)
 	}
 }
+
+func TestHosts_EnrichedWithHealth(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test_hosts_health.db")
+	db, err := InitDB(dbPath)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := NewServer(db)
+	_ = db.SaveHost(&HostRecord{
+		Name:      "dev4u@legion",
+		URL:       "http://127.0.0.1:7778",
+		SSHTarget: "dev4u@legion",
+	})
+
+	server.updateHostHealth("dev4u@legion", true, "20260916.04", "Legion", 42)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/hosts", nil)
+	w := httptest.NewRecorder()
+	server.Mux().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK, got %d", w.Code)
+	}
+
+	var hosts []HostRecord
+	if err := json.Unmarshal(w.Body.Bytes(), &hosts); err != nil {
+		t.Fatalf("Failed to decode hosts JSON: %v", err)
+	}
+
+	if len(hosts) != 1 {
+		t.Fatalf("Expected 1 host, got %d", len(hosts))
+	}
+
+	h := hosts[0]
+	if !h.Online {
+		t.Errorf("Expected host to be reported online")
+	}
+	if h.Version != "20260916.04" {
+		t.Errorf("Expected version 20260916.04, got %q", h.Version)
+	}
+	if h.DisplayName != "Legion" {
+		t.Errorf("Expected display name Legion, got %q", h.DisplayName)
+	}
+	if h.LatencyMs != 42 {
+		t.Errorf("Expected latency 42ms, got %d", h.LatencyMs)
+	}
+}
