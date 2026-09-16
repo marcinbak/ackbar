@@ -220,3 +220,38 @@ func TestServer_TakeWheel(t *testing.T) {
 		_ = tmux.Kill(context.Background(), updated.TmuxName)
 	}
 }
+
+func TestServer_TakeWheel_AliasResolution(t *testing.T) {
+	srv, db := setupTestServer(t)
+
+	sess := &Session{
+		ID:          "claude-code:macbook:uuid-alias-test",
+		Agent:       "claude-code",
+		Host:        "macbook",
+		NativeID:    "uuid-alias-test",
+		Cwd:         t.TempDir(),
+		State:       StateIdle,
+		EngineType:  EngineHeadless,
+		StartedAt:   time.Now(),
+		LastEventAt: time.Now(),
+	}
+	_ = db.SaveSession(sess)
+
+	// Call take-wheel using "local" host alias instead of "macbook"
+	payload := map[string]string{
+		"session_id": "claude-code:local:uuid-alias-test",
+	}
+	body, _ := json.Marshal(payload)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/take-wheel", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	srv.Mux().ServeHTTP(w, req)
+
+	// In test environment without real tmux, it should not fail with 404
+	if w.Code == http.StatusNotFound {
+		t.Fatalf("Expected session to be found via alias resolution, got 404: %s", w.Body.String())
+	}
+}
+
