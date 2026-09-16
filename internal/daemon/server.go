@@ -48,6 +48,14 @@ type Event struct {
 	LastEventAt time.Time
 }
 
+type HostHealth struct {
+	Online      bool
+	Version     string
+	DisplayName string
+	LatencyMs   int64
+	LastCheck   time.Time
+}
+
 type Server struct {
 	db              *DB
 	providers       map[string]Provider
@@ -59,14 +67,29 @@ type Server struct {
 	headless        *HeadlessRunner
 	hostName        string
 	displayName     string
+	hostHealthMap   map[string]*HostHealth
+	hostHealthMu    sync.RWMutex
+}
+
+func (s *Server) updateHostHealth(name string, online bool, version, displayName string, latencyMs int64) {
+	s.hostHealthMu.Lock()
+	defer s.hostHealthMu.Unlock()
+	s.hostHealthMap[name] = &HostHealth{
+		Online:      online,
+		Version:     version,
+		DisplayName: displayName,
+		LatencyMs:   latencyMs,
+		LastCheck:   time.Now(),
+	}
 }
 
 func NewServer(db *DB) *Server {
 	StartUploadCleaner(defaultUploadDir, 6*time.Hour)
 	s := &Server{
-		db:          db,
-		providers:   make(map[string]Provider),
-		subscribers: make(map[chan *Session]bool),
+		db:            db,
+		providers:     make(map[string]Provider),
+		subscribers:   make(map[chan *Session]bool),
+		hostHealthMap: make(map[string]*HostHealth),
 	}
 	s.headless = NewHeadlessRunner(db, s.broadcast)
 	if host := s.HostName(); host != "local" && db != nil {
@@ -3097,6 +3120,16 @@ func (s *Server) handleHosts(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		s.hostHealthMu.RLock()
+		for _, h := range hosts {
+			if health, ok := s.hostHealthMap[h.Name]; ok {
+				h.Online = health.Online
+				h.Version = health.Version
+				h.DisplayName = health.DisplayName
+				h.LatencyMs = health.LatencyMs
+			}
+		}
+		s.hostHealthMu.RUnlock()
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(hosts)
 
@@ -3518,9 +3551,16 @@ func (s *Server) handleHostReconnect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if lastCheckErr != nil || vData == nil {
+		s.updateHostHealth(host.Name, false, "", "", 0)
 		http.Error(w, fmt.Sprintf("SSH tunnel spawned but remote daemon is unreachable: %v", lastCheckErr), http.StatusBadGateway)
 		return
 	}
+
+	var dispName string
+	if d, ok := vData["display_name"].(string); ok {
+		dispName = d
+	}
+	s.updateHostHealth(host.Name, true, fmt.Sprintf("%v", vData["version"]), dispName, 0)
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -3959,10 +3999,18 @@ func (s *Server) ensureHostTunnels(ctx context.Context) {
 		}
 
 		// Check if port is already answering
+		start := time.Now()
 		client := http.Client{Timeout: 1500 * time.Millisecond}
 		resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%s/v1/version", port))
 		if err == nil {
+			var vResp struct {
+				Version     string `json:"version"`
+				DisplayName string `json:"display_name"`
+			}
+			_ = json.NewDecoder(resp.Body).Decode(&vResp)
 			resp.Body.Close()
+			latency := time.Since(start).Milliseconds()
+			s.updateHostHealth(h.Name, true, vResp.Version, vResp.DisplayName, latency)
 			continue // tunnel is healthy!
 		}
 
@@ -3970,6 +4018,19 @@ func (s *Server) ensureHostTunnels(ctx context.Context) {
 		log.Printf("[Host Tunnel Manager] SSH tunnel for host %q (port %s) is down. Reconnecting...", h.Name, port)
 		if err := spawnSSHTunnel(port, sshTarget); err != nil {
 			log.Printf("[Host Tunnel Manager] Failed to revive tunnel for %q (port %s): %v", h.Name, port, err)
+			s.updateHostHealth(h.Name, false, "", "", 0)
+		} else {
+			start = time.Now()
+			if r2, err2 := client.Get(fmt.Sprintf("http://127.0.0.1:%s/v1/version", port)); err2 == nil {
+				var vResp struct {
+					Version     string `json:"version"`
+					DisplayName string `json:"display_name"`
+				}
+				_ = json.NewDecoder(r2.Body).Decode(&vResp)
+				r2.Body.Close()
+				latency := time.Since(start).Milliseconds()
+				s.updateHostHealth(h.Name, true, vResp.Version, vResp.DisplayName, latency)
+			}
 		}
 	}
 }

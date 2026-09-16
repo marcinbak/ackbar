@@ -110,11 +110,15 @@ type TreeNode struct {
 }
 
 type HostRecord struct {
-	Name      string    `json:"name"`       // machine alias, e.g. "devbox"
-	URL       string    `json:"url"`        // daemon HTTP endpoint, e.g. "http://127.0.0.1:7778"
-	SSHTarget string    `json:"ssh_target"` // optional SSH alias, e.g. "dev@remote-box"
-	RemoteCwd string    `json:"remote_cwd"` // default workspace root on remote
-	CreatedAt time.Time `json:"created_at"`
+	Name        string    `json:"name"`                   // machine alias, e.g. "devbox"
+	URL         string    `json:"url"`                    // daemon HTTP endpoint, e.g. "http://127.0.0.1:7778"
+	SSHTarget   string    `json:"ssh_target"`             // optional SSH alias, e.g. "dev@remote-box"
+	RemoteCwd   string    `json:"remote_cwd"`             // default workspace root on remote
+	CreatedAt   time.Time `json:"created_at"`
+	Online      bool      `json:"online,omitempty"`      // live health reported by daemon
+	Version     string    `json:"version,omitempty"`     // remote daemon version
+	DisplayName string    `json:"display_name,omitempty"`// remote daemon display name
+	LatencyMs   int64     `json:"latency_ms,omitempty"`  // remote ping latency in ms
 }
 
 // ExtractAntigravityQuestionAndOptions extracts question and option strings from Antigravity tool args
