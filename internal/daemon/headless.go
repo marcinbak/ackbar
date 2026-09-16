@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -210,12 +211,13 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 	transcriptFile := filepath.Join(home, ".claude", "projects", encodedCwd, sess.NativeID+".jsonl")
 
 	if fileExists(transcriptFile) {
-		args = []string{"-p", prompt, "--output-format", "stream-json", "--resume", sess.NativeID}
+		args = []string{"-p", prompt, "--output-format", "stream-json", "--verbose", "--resume", sess.NativeID}
 	} else {
-		args = []string{"-p", prompt, "--output-format", "stream-json", "--session-id", sess.NativeID}
+		args = []string{"-p", prompt, "--output-format", "stream-json", "--verbose", "--session-id", sess.NativeID}
 	}
 
 	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd.Stdin = strings.NewReader("")
 	if sess.Cwd != "" {
 		cmd.Dir = sess.Cwd
 	}
@@ -233,6 +235,9 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 		}
 	}
 	cmd.Env = cleanEnv
+
+	var stderrBuf bytes.Buffer
+	cmd.Stderr = &stderrBuf
 
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
@@ -351,17 +356,40 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 
 			case "assistant":
 				if msg, ok := raw["message"].(map[string]interface{}); ok {
-					if content, ok := msg["content"].(string); ok && content != "" {
+					if contentStr, ok := msg["content"].(string); ok && contentStr != "" {
 						h.Emit(sess.ID, ChatStreamEvent{
 							SessionID: sess.ID,
 							Type:      "text_delta",
-							Text:      content,
+							Text:      contentStr,
 						})
+					} else if contentArr, ok := msg["content"].([]interface{}); ok {
+						for _, item := range contentArr {
+							if itemMap, ok := item.(map[string]interface{}); ok {
+								if itemMap["type"] == "text" {
+									if txt, ok := itemMap["text"].(string); ok && txt != "" {
+										h.Emit(sess.ID, ChatStreamEvent{
+											SessionID: sess.ID,
+											Type:      "text_delta",
+											Text:      txt,
+										})
+									}
+								}
+							}
+						}
 					}
 				}
 
 			case "result":
-				if resText, ok := raw["result"].(string); ok && resText != "" {
+				resText, _ := raw["result"].(string)
+				isErr, _ := raw["is_error"].(bool)
+				if isErr && resText != "" {
+					h.Emit(sess.ID, ChatStreamEvent{
+						SessionID: sess.ID,
+						Type:      "error",
+						Text:      resText,
+						IsError:   true,
+					})
+				} else {
 					h.Emit(sess.ID, ChatStreamEvent{
 						SessionID: sess.ID,
 						Type:      "turn_complete",
@@ -384,7 +412,18 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 		sess.LastEventAt = time.Now()
 		sess.PID = 0
 		if waitErr != nil {
-			sess.Activity = "Turn completed with status: " + waitErr.Error()
+			errDetail := strings.TrimSpace(stderrBuf.String())
+			if errDetail != "" {
+				sess.Activity = "Turn error: " + errDetail
+				h.Emit(sess.ID, ChatStreamEvent{
+					SessionID: sess.ID,
+					Type:      "error",
+					Text:      errDetail,
+					IsError:   true,
+				})
+			} else {
+				sess.Activity = "Turn completed with status: " + waitErr.Error()
+			}
 		}
 
 		// Update context percentage if metadata readable

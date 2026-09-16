@@ -174,3 +174,75 @@ func TestHeadlessRunner_DatabasePersistence(t *testing.T) {
 		t.Fatalf("Expected EngineType == 'headless', got: %+v", loaded)
 	}
 }
+
+func TestHeadlessStreamParser_CommandAndAssistantBlocks(t *testing.T) {
+	sampleOutput := `
+{"type":"assistant","message":{"model":"<synthetic>","content":[{"type":"text","text":"Total cost: $0.05\nUsage: 1000 input"}],"role":"assistant"},"local_command_source":"<local-command-stdout>Total cost: $0.05</local-command-stdout>","local_command_run":{"command":"usage","args":""}}
+{"type":"result","result":"Total cost: $0.05","local_command":"cost"}
+{"type":"result","is_error":true,"result":"Failed to authenticate"}
+`
+
+	var receivedEvents []ChatStreamEvent
+	lines := strings.Split(strings.TrimSpace(sampleOutput), "\n")
+
+	for _, line := range lines {
+		var raw map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &raw); err != nil {
+			t.Fatalf("Failed to parse JSON line: %v", err)
+		}
+
+		evtType, _ := raw["type"].(string)
+		switch evtType {
+		case "assistant":
+			if msg, ok := raw["message"].(map[string]interface{}); ok {
+				if contentStr, ok := msg["content"].(string); ok && contentStr != "" {
+					receivedEvents = append(receivedEvents, ChatStreamEvent{
+						Type: "text_delta",
+						Text: contentStr,
+					})
+				} else if contentArr, ok := msg["content"].([]interface{}); ok {
+					for _, item := range contentArr {
+						if itemMap, ok := item.(map[string]interface{}); ok {
+							if itemMap["type"] == "text" {
+								if txt, ok := itemMap["text"].(string); ok && txt != "" {
+									receivedEvents = append(receivedEvents, ChatStreamEvent{
+										Type: "text_delta",
+										Text: txt,
+									})
+								}
+							}
+						}
+					}
+				}
+			}
+		case "result":
+			resText, _ := raw["result"].(string)
+			isErr, _ := raw["is_error"].(bool)
+			if isErr && resText != "" {
+				receivedEvents = append(receivedEvents, ChatStreamEvent{
+					Type:    "error",
+					Text:    resText,
+					IsError: true,
+				})
+			} else {
+				receivedEvents = append(receivedEvents, ChatStreamEvent{
+					Type: "turn_complete",
+					Text: resText,
+				})
+			}
+		}
+	}
+
+	if len(receivedEvents) != 3 {
+		t.Fatalf("Expected 3 parsed events, got %d", len(receivedEvents))
+	}
+	if receivedEvents[0].Type != "text_delta" || !strings.Contains(receivedEvents[0].Text, "Total cost: $0.05") {
+		t.Errorf("Unexpected assistant block event: %+v", receivedEvents[0])
+	}
+	if receivedEvents[1].Type != "turn_complete" || receivedEvents[1].Text != "Total cost: $0.05" {
+		t.Errorf("Unexpected turn_complete event: %+v", receivedEvents[1])
+	}
+	if receivedEvents[2].Type != "error" || receivedEvents[2].Text != "Failed to authenticate" {
+		t.Errorf("Unexpected error event: %+v", receivedEvents[2])
+	}
+}
