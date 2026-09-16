@@ -108,11 +108,28 @@ func (h *HeadlessRunner) Emit(sessionID string, evt ChatStreamEvent) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
-	for _, ch := range h.subs[sessionID] {
-		select {
-		case ch <- evt:
-		default:
-			// Non-blocking drop if listener buffer is saturated
+	broadcastTo := func(targetID string) {
+		for _, ch := range h.subs[targetID] {
+			select {
+			case ch <- evt:
+			default:
+				// Non-blocking drop if listener buffer is saturated
+			}
+		}
+	}
+
+	broadcastTo(sessionID)
+
+	// Also broadcast to any listeners subscribed by native UUID or alternate host prefix
+	parts := strings.Split(sessionID, ":")
+	if len(parts) == 3 {
+		nativeID := parts[2]
+		if nativeID != sessionID {
+			broadcastTo(nativeID)
+		}
+		localID := fmt.Sprintf("%s:local:%s", parts[0], parts[2])
+		if localID != sessionID {
+			broadcastTo(localID)
 		}
 	}
 }
@@ -121,14 +138,40 @@ func (h *HeadlessRunner) Emit(sessionID string, evt ChatStreamEvent) {
 func (h *HeadlessRunner) IsRunning(sessionID string) bool {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
-	_, ok := h.processes[sessionID]
-	return ok
+	if _, ok := h.processes[sessionID]; ok {
+		return true
+	}
+	parts := strings.Split(sessionID, ":")
+	if len(parts) == 3 {
+		nativeID := parts[2]
+		for procKey := range h.processes {
+			if procKey == nativeID || strings.HasSuffix(procKey, ":"+nativeID) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // CancelTurn sends SIGINT (and SIGKILL if needed) to interrupt the active turn process
 func (h *HeadlessRunner) CancelTurn(sessionID string) error {
 	h.mu.Lock()
 	cmd, ok := h.processes[sessionID]
+	activeKey := sessionID
+	if !ok {
+		parts := strings.Split(sessionID, ":")
+		if len(parts) == 3 {
+			nativeID := parts[2]
+			for procKey, procCmd := range h.processes {
+				if procKey == nativeID || strings.HasSuffix(procKey, ":"+nativeID) {
+					cmd = procCmd
+					activeKey = procKey
+					ok = true
+					break
+				}
+			}
+		}
+	}
 	h.mu.Unlock()
 
 	if !ok || cmd == nil || cmd.Process == nil {
@@ -140,7 +183,7 @@ func (h *HeadlessRunner) CancelTurn(sessionID string) error {
 	go func() {
 		time.Sleep(2 * time.Second)
 		h.mu.RLock()
-		activeCmd := h.processes[sessionID]
+		activeCmd := h.processes[activeKey]
 		h.mu.RUnlock()
 		if activeCmd == cmd && cmd.Process != nil {
 			_ = cmd.Process.Kill()

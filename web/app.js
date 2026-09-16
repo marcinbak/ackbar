@@ -138,6 +138,19 @@
     return false;
   }
 
+  function getSessionBaseUrl(sessionId, sessionObj) {
+    const sess = sessionObj || (state.sessions && state.sessions.find(s => s.id === sessionId));
+    if (!sess) return '';
+    if (sess.hostUrl) return sess.hostUrl.replace(/\/$/, '');
+    const sessionHost = sess.host || '';
+    if (isLocalHost(sessionHost)) return '';
+    const hostRec = (state.hosts || []).find(h => h.name === sessionHost);
+    if (hostRec && hostRec.url && !isLocalHost(sessionHost)) {
+      return hostRec.url.replace(/\/$/, '');
+    }
+    return '';
+  }
+
   function getSelfHostName() {
     return (state.selfHost && state.selfHost.name) ? state.selfHost.name : 'local';
   }
@@ -1946,27 +1959,36 @@
   async function handleTakeWheel(sessionId) {
     if (!sessionId) return;
     try {
-      const res = await fetch('/v1/sessions/take-wheel', {
+      const sess = state.sessions.find(s => s.id === sessionId);
+      const tab = state.openTabs.get(sessionId);
+      const sessionObj = sess || (tab ? tab.session : null);
+      const baseUrl = getSessionBaseUrl(sessionId, sessionObj);
+
+      const res = await fetch(`${baseUrl}/v1/sessions/take-wheel`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ session_id: sessionId })
       });
 
       if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        alert(errData.message || errData.error || `Failed to take wheel: HTTP ${res.status}`);
+        let errMsg = '';
+        try {
+          const errData = await res.json();
+          errMsg = errData.message || errData.error || '';
+        } catch (_) {
+          errMsg = await res.text().catch(() => '');
+        }
+        alert(errMsg || `Failed to take wheel: HTTP ${res.status}`);
         return;
       }
 
       const data = await res.json();
-      const sess = state.sessions.find(s => s.id === sessionId);
       if (sess) {
         sess.engine_type = 'tmux';
         sess.tmux_name = data.tmux_name;
         sess.managed = true;
       }
 
-      const tab = state.openTabs.get(sessionId);
       if (tab) {
         tab.session.engine_type = 'tmux';
         tab.session.tmux_name = data.tmux_name;
@@ -2072,8 +2094,9 @@
   async function loadChatTranscript(tabObj) {
     if (!tabObj || !tabObj.chatMessagesEl) return;
     const sessionId = tabObj.session.id;
+    const baseUrl = getSessionBaseUrl(sessionId, tabObj.session);
     try {
-      const res = await fetch(`/v1/sessions/transcript?id=${encodeURIComponent(sessionId)}&format=json`);
+      const res = await fetch(`${baseUrl}/v1/sessions/transcript?id=${encodeURIComponent(sessionId)}&format=json`);
       if (!res.ok) return;
       const data = await res.json();
       if (data && data.messages && data.messages.length > 0) {
@@ -2180,8 +2203,9 @@
 
     connectChatStream(tabObj);
 
+    const baseUrl = getSessionBaseUrl(tabObj.session.id, tabObj.session);
     try {
-      const res = await fetch('/v1/sessions/prompt', {
+      const res = await fetch(`${baseUrl}/v1/sessions/prompt`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -2191,8 +2215,14 @@
       });
 
       if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.message || errData.error || `HTTP ${res.status}`);
+        let errMsg = '';
+        try {
+          const errData = await res.json();
+          errMsg = errData.message || errData.error || '';
+        } catch (_) {
+          errMsg = await res.text().catch(() => '');
+        }
+        throw new Error(errMsg || `HTTP ${res.status}`);
       }
     } catch (err) {
       console.error('Failed to dispatch prompt:', err);
@@ -2211,8 +2241,9 @@
     }
 
     const sessionId = tabObj.session.id;
+    const baseUrl = getSessionBaseUrl(sessionId, tabObj.session);
     const token = getAuthToken();
-    let sseUrl = `/v1/sessions/chat/stream?session_id=${encodeURIComponent(sessionId)}`;
+    let sseUrl = `${baseUrl}/v1/sessions/chat/stream?session_id=${encodeURIComponent(sessionId)}`;
     if (token) {
       sseUrl += `&token=${encodeURIComponent(token)}`;
     }
@@ -2395,8 +2426,9 @@
 
   async function cancelChatTurn(tabObj) {
     if (!tabObj || !tabObj.session) return;
+    const baseUrl = getSessionBaseUrl(tabObj.session.id, tabObj.session);
     try {
-      await fetch('/v1/sessions/cancel', {
+      await fetch(`${baseUrl}/v1/sessions/cancel`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ session_id: tabObj.session.id })

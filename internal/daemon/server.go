@@ -709,6 +709,58 @@ func stringsSplit(s, sep string) []string {
 	return res
 }
 
+func (s *Server) resolveSession(sessionID string) *Session {
+	if sessionID == "" || s.db == nil {
+		return nil
+	}
+	sess, err := s.db.GetSession(sessionID)
+	if err == nil && sess != nil {
+		return sess
+	}
+
+	// Fallback 1: Try with local host alias if sessionID had a remote alias or vice-versa
+	parts := strings.Split(sessionID, ":")
+	if len(parts) == 3 {
+		localID := fmt.Sprintf("%s:%s:%s", parts[0], s.HostName(), parts[2])
+		if found, _ := s.db.GetSession(localID); found != nil {
+			return found
+		}
+		localID = fmt.Sprintf("%s:local:%s", parts[0], parts[2])
+		if found, _ := s.db.GetSession(localID); found != nil {
+			return found
+		}
+	}
+
+	// Fallback 2: Check by NativeID match
+	if all, err := s.db.ListSessions(); err == nil {
+		for _, sRecord := range all {
+			if sRecord.NativeID != "" && (sRecord.NativeID == sessionID || strings.HasSuffix(sessionID, ":"+sRecord.NativeID)) {
+				return sRecord
+			}
+		}
+	}
+
+	return nil
+}
+
+func (s *Server) resolveHost(hostName string) *HostRecord {
+	if hostName == "" || hostName == "local" || hostName == s.HostName() || s.db == nil {
+		return nil
+	}
+	hostRec, err := s.db.GetHost(hostName)
+	if err == nil && hostRec != nil {
+		return hostRec
+	}
+	if allHosts, err := s.db.ListHosts(); err == nil {
+		for _, h := range allHosts {
+			if h.Name == hostName || strings.HasSuffix(h.Name, "@"+hostName) || strings.Contains(h.Name, hostName) {
+				return h
+			}
+		}
+	}
+	return nil
+}
+
 func (s *Server) handleSessionControl(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -731,51 +783,12 @@ func (s *Server) handleSessionControl(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sess, err := s.db.GetSession(sessionID)
-	if err != nil {
-		http.Error(w, "Database error", http.StatusInternalServerError)
-		return
-	}
+	sess := s.resolveSession(sessionID)
 	if sess == nil {
-		// Fallback 1: Try with local host alias if sessionID had a remote alias or vice-versa
+		// Fallback: If sessionID specifies a remote host, forward control action to remote host
 		parts := strings.Split(sessionID, ":")
-		if len(parts) == 3 {
-			localID := fmt.Sprintf("%s:%s:%s", parts[0], s.HostName(), parts[2])
-			sess, _ = s.db.GetSession(localID)
-			if sess == nil {
-				localID = fmt.Sprintf("%s:local:%s", parts[0], parts[2])
-				sess, _ = s.db.GetSession(localID)
-			}
-		}
-	}
-	if sess == nil {
-		// Fallback 2: Check by NativeID match
-		if all, err := s.db.ListSessions(); err == nil {
-			for _, sRecord := range all {
-				if sRecord.NativeID != "" && strings.HasSuffix(sessionID, ":"+sRecord.NativeID) {
-					sess = sRecord
-					break
-				}
-			}
-		}
-	}
-	if sess == nil {
-		// Fallback 3: If sessionID specifies a remote host, forward control action to remote host
-		parts := strings.Split(sessionID, ":")
-		if len(parts) >= 2 && parts[1] != "" && parts[1] != "local" && parts[1] != s.HostName() {
-			targetHost := parts[1]
-			hostRec, err := s.db.GetHost(targetHost)
-			if err != nil || hostRec == nil {
-				if allHosts, lerr := s.db.ListHosts(); lerr == nil {
-					for _, h := range allHosts {
-						if h.Name == targetHost || strings.HasSuffix(h.Name, "@"+targetHost) || strings.Contains(h.Name, targetHost) {
-							hostRec = h
-							break
-						}
-					}
-				}
-			}
-			if hostRec != nil && hostRec.URL != "" {
+		if len(parts) >= 2 {
+			if hostRec := s.resolveHost(parts[1]); hostRec != nil && hostRec.URL != "" {
 				targetURL := fmt.Sprintf("%s/v1/sessions/control?id=%s&action=%s", strings.TrimSuffix(hostRec.URL, "/"), url.QueryEscape(sessionID), url.QueryEscape(action))
 				fwdReq, err := http.NewRequest(r.Method, targetURL, r.Body)
 				if err == nil {
@@ -792,6 +805,21 @@ func (s *Server) handleSessionControl(w http.ResponseWriter, r *http.Request) {
 		}
 		http.Error(w, "Session not found", http.StatusNotFound)
 		return
+	}
+
+	if hostRec := s.resolveHost(sess.Host); hostRec != nil && hostRec.URL != "" {
+		targetURL := fmt.Sprintf("%s/v1/sessions/control?id=%s&action=%s", strings.TrimSuffix(hostRec.URL, "/"), url.QueryEscape(sessionID), url.QueryEscape(action))
+		fwdReq, err := http.NewRequest(r.Method, targetURL, r.Body)
+		if err == nil {
+			fwdReq.Header.Set("Content-Type", r.Header.Get("Content-Type"))
+			if resp, err := http.DefaultClient.Do(fwdReq); err == nil {
+				defer resp.Body.Close()
+				w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
+				w.WriteHeader(resp.StatusCode)
+				_, _ = io.Copy(w, resp.Body)
+				return
+			}
+		}
 	}
 
 	switch action {
@@ -1310,8 +1338,12 @@ func (s *Server) handlePrompt(w http.ResponseWriter, r *http.Request) {
 		SessionID string `json:"session_id"`
 		Prompt    string `json:"prompt"`
 	}
-
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	bodyBytes, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "Failed to read request body", http.StatusBadRequest)
+		return
+	}
+	if err := json.Unmarshal(bodyBytes, &req); err != nil {
 		http.Error(w, "Invalid payload", http.StatusBadRequest)
 		return
 	}
@@ -1321,10 +1353,42 @@ func (s *Server) handlePrompt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sess, err := s.db.GetSession(req.SessionID)
-	if err != nil || sess == nil {
+	sess := s.resolveSession(req.SessionID)
+	if sess == nil {
+		parts := strings.Split(req.SessionID, ":")
+		if len(parts) >= 2 {
+			if hostRec := s.resolveHost(parts[1]); hostRec != nil && hostRec.URL != "" {
+				targetURL := fmt.Sprintf("%s/v1/sessions/prompt", strings.TrimSuffix(hostRec.URL, "/"))
+				fwdReq, err := http.NewRequest(r.Method, targetURL, bytes.NewReader(bodyBytes))
+				if err == nil {
+					fwdReq.Header.Set("Content-Type", "application/json")
+					if resp, err := http.DefaultClient.Do(fwdReq); err == nil {
+						defer resp.Body.Close()
+						w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
+						w.WriteHeader(resp.StatusCode)
+						_, _ = io.Copy(w, resp.Body)
+						return
+					}
+				}
+			}
+		}
 		http.Error(w, "Session not found", http.StatusNotFound)
 		return
+	}
+
+	if hostRec := s.resolveHost(sess.Host); hostRec != nil && hostRec.URL != "" {
+		targetURL := fmt.Sprintf("%s/v1/sessions/prompt", strings.TrimSuffix(hostRec.URL, "/"))
+		fwdReq, err := http.NewRequest(r.Method, targetURL, bytes.NewReader(bodyBytes))
+		if err == nil {
+			fwdReq.Header.Set("Content-Type", "application/json")
+			if resp, err := http.DefaultClient.Do(fwdReq); err == nil {
+				defer resp.Body.Close()
+				w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
+				w.WriteHeader(resp.StatusCode)
+				_, _ = io.Copy(w, resp.Body)
+				return
+			}
+		}
 	}
 
 	if sess.EngineType == EngineHeadless {
@@ -1387,12 +1451,17 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ch, cleanup := s.headless.Subscribe(sessionID)
+	targetID := sessionID
+	if sess := s.resolveSession(sessionID); sess != nil {
+		targetID = sess.ID
+	}
+
+	ch, cleanup := s.headless.Subscribe(targetID)
 	defer cleanup()
 
 	// Initial connected heartbeat
 	initEvt, _ := json.Marshal(ChatStreamEvent{
-		SessionID: sessionID,
+		SessionID: targetID,
 		Type:      "status",
 		Text:      "connected",
 		Timestamp: time.Now(),
@@ -1428,7 +1497,12 @@ func (s *Server) handleCancelTurn(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		SessionID string `json:"session_id"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	bodyBytes, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "Failed to read request body", http.StatusBadRequest)
+		return
+	}
+	if err := json.Unmarshal(bodyBytes, &req); err != nil {
 		req.SessionID = r.URL.Query().Get("session_id")
 		if req.SessionID == "" {
 			req.SessionID = r.URL.Query().Get("id")
@@ -1439,10 +1513,42 @@ func (s *Server) handleCancelTurn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sess, err := s.db.GetSession(req.SessionID)
-	if err != nil || sess == nil {
+	sess := s.resolveSession(req.SessionID)
+	if sess == nil {
+		parts := strings.Split(req.SessionID, ":")
+		if len(parts) >= 2 {
+			if hostRec := s.resolveHost(parts[1]); hostRec != nil && hostRec.URL != "" {
+				targetURL := fmt.Sprintf("%s/v1/sessions/cancel", strings.TrimSuffix(hostRec.URL, "/"))
+				fwdReq, err := http.NewRequest(r.Method, targetURL, bytes.NewReader(bodyBytes))
+				if err == nil {
+					fwdReq.Header.Set("Content-Type", "application/json")
+					if resp, err := http.DefaultClient.Do(fwdReq); err == nil {
+						defer resp.Body.Close()
+						w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
+						w.WriteHeader(resp.StatusCode)
+						_, _ = io.Copy(w, resp.Body)
+						return
+					}
+				}
+			}
+		}
 		http.Error(w, "Session not found", http.StatusNotFound)
 		return
+	}
+
+	if hostRec := s.resolveHost(sess.Host); hostRec != nil && hostRec.URL != "" {
+		targetURL := fmt.Sprintf("%s/v1/sessions/cancel", strings.TrimSuffix(hostRec.URL, "/"))
+		fwdReq, err := http.NewRequest(r.Method, targetURL, bytes.NewReader(bodyBytes))
+		if err == nil {
+			fwdReq.Header.Set("Content-Type", "application/json")
+			if resp, err := http.DefaultClient.Do(fwdReq); err == nil {
+				defer resp.Body.Close()
+				w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
+				w.WriteHeader(resp.StatusCode)
+				_, _ = io.Copy(w, resp.Body)
+				return
+			}
+		}
 	}
 
 	if sess.EngineType == EngineHeadless {
@@ -1474,7 +1580,12 @@ func (s *Server) handleTakeWheel(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		SessionID string `json:"session_id"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	bodyBytes, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "Failed to read request body", http.StatusBadRequest)
+		return
+	}
+	if err := json.Unmarshal(bodyBytes, &req); err != nil {
 		http.Error(w, "Invalid payload", http.StatusBadRequest)
 		return
 	}
@@ -1484,10 +1595,42 @@ func (s *Server) handleTakeWheel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sess, err := s.db.GetSession(req.SessionID)
-	if err != nil || sess == nil {
+	sess := s.resolveSession(req.SessionID)
+	if sess == nil {
+		parts := strings.Split(req.SessionID, ":")
+		if len(parts) >= 2 {
+			if hostRec := s.resolveHost(parts[1]); hostRec != nil && hostRec.URL != "" {
+				targetURL := fmt.Sprintf("%s/v1/sessions/take-wheel", strings.TrimSuffix(hostRec.URL, "/"))
+				fwdReq, err := http.NewRequest(r.Method, targetURL, bytes.NewReader(bodyBytes))
+				if err == nil {
+					fwdReq.Header.Set("Content-Type", "application/json")
+					if resp, err := http.DefaultClient.Do(fwdReq); err == nil {
+						defer resp.Body.Close()
+						w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
+						w.WriteHeader(resp.StatusCode)
+						_, _ = io.Copy(w, resp.Body)
+						return
+					}
+				}
+			}
+		}
 		http.Error(w, "Session not found", http.StatusNotFound)
 		return
+	}
+
+	if hostRec := s.resolveHost(sess.Host); hostRec != nil && hostRec.URL != "" {
+		targetURL := fmt.Sprintf("%s/v1/sessions/take-wheel", strings.TrimSuffix(hostRec.URL, "/"))
+		fwdReq, err := http.NewRequest(r.Method, targetURL, bytes.NewReader(bodyBytes))
+		if err == nil {
+			fwdReq.Header.Set("Content-Type", "application/json")
+			if resp, err := http.DefaultClient.Do(fwdReq); err == nil {
+				defer resp.Body.Close()
+				w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
+				w.WriteHeader(resp.StatusCode)
+				_, _ = io.Copy(w, resp.Body)
+				return
+			}
+		}
 	}
 
 	if sess.EngineType == EngineHeadless && s.headless != nil && s.headless.IsRunning(sess.ID) {
@@ -1504,8 +1647,42 @@ func (s *Server) handleTakeWheel(w http.ResponseWriter, r *http.Request) {
 		resumeCmd = fmt.Sprintf("claude --resume %s", sess.NativeID)
 	}
 
-	if err := tmux.Spawn(r.Context(), tmuxName, sess.Cwd, resumeCmd); err != nil {
-		http.Error(w, fmt.Sprintf("Failed to spawn tmux session: %v", err), http.StatusInternalServerError)
+	// Resolve account env vars if assigned to session
+	var envVars map[string]string
+	if sess.AccountID != "" && sess.AccountID != "default" {
+		acc, _ := s.db.GetAccount(sess.AccountID)
+		if acc == nil && !strings.Contains(sess.AccountID, ":") {
+			acc, _ = s.db.GetAccount(fmt.Sprintf("%s:%s", sess.Agent, sess.AccountID))
+		}
+		if acc != nil {
+			envVars = make(map[string]string)
+			home, _ := os.UserHomeDir()
+			if acc.ConfigDir != "" {
+				cfgDir := acc.ConfigDir
+				if strings.HasPrefix(cfgDir, "~/") && home != "" {
+					cfgDir = filepath.Join(home, cfgDir[2:])
+				}
+				if sess.Agent == "claude-code" {
+					envVars["CLAUDE_CONFIG_DIR"] = cfgDir
+				} else if sess.Agent == "antigravity" {
+					envVars["GEMINI_CLI_HOME"] = cfgDir
+				}
+			}
+			for k, v := range acc.Env {
+				envVars[k] = v
+			}
+			envVars["ACKBAR_ACCOUNT"] = acc.Name
+		}
+	}
+
+	var spawnErr error
+	if len(envVars) > 0 {
+		spawnErr = tmux.SpawnWithEnv(r.Context(), tmuxName, sess.Cwd, resumeCmd, envVars)
+	} else {
+		spawnErr = tmux.Spawn(r.Context(), tmuxName, sess.Cwd, resumeCmd)
+	}
+	if spawnErr != nil {
+		http.Error(w, fmt.Sprintf("Failed to spawn tmux session: %v", spawnErr), http.StatusInternalServerError)
 		return
 	}
 
@@ -1537,6 +1714,9 @@ func (s *Server) handleSessionTranscript(w http.ResponseWriter, r *http.Request)
 
 	sessionID := r.URL.Query().Get("id")
 	if sessionID == "" {
+		sessionID = r.URL.Query().Get("session_id")
+	}
+	if sessionID == "" {
 		http.Error(w, "Missing id parameter", http.StatusBadRequest)
 		return
 	}
@@ -1546,7 +1726,34 @@ func (s *Server) handleSessionTranscript(w http.ResponseWriter, r *http.Request)
 		format = "json"
 	}
 
-	sess, _ := s.db.GetSession(sessionID)
+	sess := s.resolveSession(sessionID)
+	if sess == nil {
+		parts := strings.Split(sessionID, ":")
+		if len(parts) >= 2 {
+			if hostRec := s.resolveHost(parts[1]); hostRec != nil && hostRec.URL != "" {
+				targetURL := fmt.Sprintf("%s/v1/sessions/transcript?%s", strings.TrimSuffix(hostRec.URL, "/"), r.URL.RawQuery)
+				resp, err := http.Get(targetURL)
+				if err == nil {
+					defer resp.Body.Close()
+					w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
+					w.WriteHeader(resp.StatusCode)
+					_, _ = io.Copy(w, resp.Body)
+					return
+				}
+			}
+		}
+	} else if hostRec := s.resolveHost(sess.Host); hostRec != nil && hostRec.URL != "" {
+		targetURL := fmt.Sprintf("%s/v1/sessions/transcript?%s", strings.TrimSuffix(hostRec.URL, "/"), r.URL.RawQuery)
+		resp, err := http.Get(targetURL)
+		if err == nil {
+			defer resp.Body.Close()
+			w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
+			w.WriteHeader(resp.StatusCode)
+			_, _ = io.Copy(w, resp.Body)
+			return
+		}
+	}
+
 	agent := "claude-code"
 	nativeID := sessionID
 	cwd := ""
