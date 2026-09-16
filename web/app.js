@@ -2336,6 +2336,14 @@
 
       case 'turn_complete':
         if (msgEl) {
+          if (!tabObj.activeTurnBuffer && evt.text) {
+            tabObj.activeTurnBuffer = evt.text;
+            const bodyEl = msgEl.querySelector('.chat-msg-body');
+            if (bodyEl) {
+              const html = window.marked ? window.marked.parse(tabObj.activeTurnBuffer) : `<pre>${escapeHtml(tabObj.activeTurnBuffer)}</pre>`;
+              bodyEl.innerHTML = html;
+            }
+          }
           msgEl.classList.remove('in-flight');
           const cursor = msgEl.querySelector('.chat-streaming-cursor');
           if (cursor) cursor.remove();
