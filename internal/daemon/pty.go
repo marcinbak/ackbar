@@ -193,6 +193,11 @@ func (s *Server) servePTYWS(ws *websocket.Conn) {
 			}
 		}
 		_ = exec.Command("tmux", "set-option", "-t", tmuxName, "mouse", "on").Run()
+		_ = exec.Command("tmux", "set-option", "-t", tmuxName, "window-size", "latest").Run()
+		_ = exec.Command("tmux", "set-window-option", "-t", tmuxName, "window-size", "latest").Run()
+		if cols >= 10 && rows >= 4 {
+			_ = exec.Command("tmux", "resize-window", "-t", tmuxName, "-x", strconv.Itoa(cols), "-y", strconv.Itoa(rows)).Run()
+		}
 		cmd = exec.Command("tmux", "attach-session", "-t", tmuxName)
 	} else {
 		// Ensure remote tmux session exists before attaching
@@ -200,9 +205,13 @@ func (s *Server) servePTYWS(ws *websocket.Conn) {
 		if resumeCmd != "" {
 			remoteShellCmd = fmt.Sprintf(" bash -l -c %q", fmt.Sprintf("cd %q 2>/dev/null || true; export PATH=\"/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/.npm-global/bin:$PATH\"; %s; exec bash -l", cwd, resumeCmd))
 		}
-		ensureRemoteCmd := fmt.Sprintf("tmux has-session -t %q 2>/dev/null || tmux new-session -d -s %q -c %q%s; tmux set-option -t %q mouse on 2>/dev/null || true", tmuxName, tmuxName, cwd, remoteShellCmd, tmuxName)
-		_ = exec.Command("ssh", sessHost, ensureRemoteCmd).Run()
-		cmd = exec.Command("ssh", "-t", sessHost, fmt.Sprintf("tmux attach-session -t %q", tmuxName))
+		ensureRemoteCmd := fmt.Sprintf("tmux has-session -t %q 2>/dev/null || tmux new-session -d -s %q -c %q%s; tmux set-option -t %q mouse on 2>/dev/null || true; tmux set-option -t %q window-size latest 2>/dev/null || true; tmux set-window-option -t %q window-size latest 2>/dev/null || true", tmuxName, tmuxName, cwd, remoteShellCmd, tmuxName, tmuxName, tmuxName)
+		if cols >= 10 && rows >= 4 {
+			ensureRemoteCmd += fmt.Sprintf("; tmux resize-window -t %q -x %d -y %d 2>/dev/null || true", tmuxName, cols, rows)
+		}
+		sshTarget := s.resolveSSHTarget(sessHost)
+		_ = exec.Command("ssh", sshTarget, ensureRemoteCmd).Run()
+		cmd = exec.Command("ssh", "-t", sshTarget, fmt.Sprintf("tmux attach-session -t %q", tmuxName))
 	}
 
 	var cleanEnv []string
@@ -306,12 +315,14 @@ func (s *Server) servePTYWS(ws *websocket.Conn) {
 								Rows: uint16(ctrl.Rows),
 								Cols: uint16(ctrl.Cols),
 							})
-							if sessHost == "local" {
+							if s.isLocalHost(sessHost) {
 								_ = exec.Command("tmux", "set-option", "-t", tmuxName, "window-size", "latest").Run()
+								_ = exec.Command("tmux", "set-window-option", "-t", tmuxName, "window-size", "latest").Run()
 								_ = exec.Command("tmux", "resize-window", "-t", tmuxName, "-x", strconv.Itoa(ctrl.Cols), "-y", strconv.Itoa(ctrl.Rows)).Run()
 								_ = exec.Command("tmux", "refresh-client", "-S").Run()
 							} else {
-								_ = exec.Command("ssh", sessHost, fmt.Sprintf("tmux set-option -t %q window-size latest 2>/dev/null; tmux resize-window -t %q -x %d -y %d 2>/dev/null; tmux refresh-client -S 2>/dev/null", tmuxName, tmuxName, ctrl.Cols, ctrl.Rows)).Run()
+								sshTarget := s.resolveSSHTarget(sessHost)
+								_ = exec.Command("ssh", sshTarget, fmt.Sprintf("tmux set-option -t %q window-size latest 2>/dev/null; tmux set-window-option -t %q window-size latest 2>/dev/null; tmux resize-window -t %q -x %d -y %d 2>/dev/null; tmux refresh-client -S 2>/dev/null", tmuxName, tmuxName, tmuxName, ctrl.Cols, ctrl.Rows)).Run()
 							}
 							continue
 						}

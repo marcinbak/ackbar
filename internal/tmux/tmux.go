@@ -54,6 +54,10 @@ func SpawnWithEnv(ctx context.Context, sessionName, cwd, command string, env map
 		return fmt.Errorf("failed to spawn tmux session: %w (stderr: %s)", err, stderr.String())
 	}
 
+	// Configure window-size latest so new sessions adapt dynamically to client geometries
+	_ = exec.CommandContext(ctx, "tmux", "set-option", "-t", sessionName, "window-size", "latest").Run()
+	_ = exec.CommandContext(ctx, "tmux", "set-window-option", "-t", sessionName, "window-size", "latest").Run()
+
 	return nil
 }
 

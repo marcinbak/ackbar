@@ -2803,6 +2803,7 @@
       }
     });
     resizeObserver.observe(containerEl);
+    if (termViewEl) resizeObserver.observe(termViewEl);
     tabObj.resizeObserver = resizeObserver;
 
     term.onData((data) => {
@@ -3600,6 +3601,16 @@ ${session.last_prompt}
             sendTerminalResize(tab.socket, tab.terminal.cols, tab.terminal.rows);
           }
         }, 30);
+        setTimeout(() => {
+          if (tab.fitAddon && tab.fitAddon.fit) {
+            try {
+              tab.fitAddon.fit();
+              if (tab.terminal && tab.viewMode !== 'chat') {
+                sendTerminalResize(tab.socket, tab.terminal.cols, tab.terminal.rows);
+              }
+            } catch (e) {}
+          }
+        }, 120);
         updateStatusbar(tab.session);
       }
     });
