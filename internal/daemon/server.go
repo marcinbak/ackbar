@@ -132,7 +132,35 @@ func (s *Server) isLocalHost(host string) bool {
 	if host == s.HostName() {
 		return true
 	}
+	parts := strings.Split(host, "@")
+	if parts[len(parts)-1] == s.HostName() {
+		return true
+	}
 	return false
+}
+
+// resolveSSHTarget resolves a host identifier to its configured SSH target or alias
+func (s *Server) resolveSSHTarget(host string) string {
+	if s.db != nil {
+		if hosts, err := s.db.ListHosts(); err == nil {
+			for _, h := range hosts {
+				if h.Name == host || h.SSHTarget == host {
+					if h.SSHTarget != "" {
+						return h.SSHTarget
+					}
+					return h.Name
+				}
+				parts := strings.Split(h.Name, "@")
+				if parts[len(parts)-1] == host {
+					if h.SSHTarget != "" {
+						return h.SSHTarget
+					}
+					return h.Name
+				}
+			}
+		}
+	}
+	return host
 }
 
 func (s *Server) RegisterProvider(p Provider) {

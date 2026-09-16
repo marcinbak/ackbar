@@ -2493,7 +2493,9 @@ func TestIsLocalHost(t *testing.T) {
 		{"127.0.0.1", true},
 		{"::1", true},
 		{"macbook", true},
+		{"dev4u@macbook", true},
 		{"devbox", false},
+		{"dev4u@legion", false},
 		{"remote-host", false},
 	}
 
@@ -2504,3 +2506,30 @@ func TestIsLocalHost(t *testing.T) {
 		}
 	}
 }
+
+func TestResolveSSHTarget(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test_ssh_target.db")
+	db, err := InitDB(dbPath)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := NewServer(db)
+	_ = db.SaveHost(&HostRecord{
+		Name:      "dev4u@legion",
+		URL:       "http://127.0.0.1:7778",
+		SSHTarget: "dev4u@legion",
+	})
+
+	if target := server.resolveSSHTarget("legion"); target != "dev4u@legion" {
+		t.Errorf("Expected resolveSSHTarget('legion') = 'dev4u@legion', got %q", target)
+	}
+	if target := server.resolveSSHTarget("dev4u@legion"); target != "dev4u@legion" {
+		t.Errorf("Expected resolveSSHTarget('dev4u@legion') = 'dev4u@legion', got %q", target)
+	}
+	if target := server.resolveSSHTarget("other-box"); target != "other-box" {
+		t.Errorf("Expected resolveSSHTarget('other-box') = 'other-box', got %q", target)
+	}
+}
+
