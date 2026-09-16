@@ -3402,7 +3402,14 @@ func spawnSSHTunnel(port, sshTarget string) error {
 		_ = killTunnelOnPort(port)
 		time.Sleep(200 * time.Millisecond)
 
-		cmd := exec.Command("ssh",
+		tmp, err := os.CreateTemp("", "ssh-tunnel-*")
+		if err != nil {
+			return fmt.Errorf("create temp file for ssh tunnel: %w", err)
+		}
+		tmpName := tmp.Name()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		cmd := exec.CommandContext(ctx, "ssh",
 			"-f",
 			"-o", "ExitOnForwardFailure=yes",
 			"-o", "BatchMode=yes",
@@ -3413,12 +3420,21 @@ func spawnSSHTunnel(port, sshTarget string) error {
 			"-L", fmt.Sprintf("%s:127.0.0.1:7777", port),
 			sshTarget,
 		)
-		out, err := cmd.CombinedOutput()
-		if err == nil {
+		cmd.Stdout = tmp
+		cmd.Stderr = tmp
+
+		runErr := cmd.Run()
+		cancel()
+		_ = tmp.Close()
+
+		outBytes, _ := os.ReadFile(tmpName)
+		_ = os.Remove(tmpName)
+
+		if runErr == nil {
 			return nil
 		}
-		lastErr = err
-		lastOut = strings.TrimSpace(string(out))
+		lastErr = runErr
+		lastOut = strings.TrimSpace(string(outBytes))
 		time.Sleep(500 * time.Millisecond)
 	}
 

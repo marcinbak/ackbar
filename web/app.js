@@ -580,6 +580,8 @@
     }
   }
 
+  const lastReconnectAttempt = {};
+
   // Client-Side Multi-Host Session Aggregation & Deduplication
   async function fetchSessions() {
     try {
@@ -602,7 +604,10 @@
           }
         } catch (e) {
           console.warn(`Host ${h.name} unreachable:`, e);
-          if (h.url && (h.url.includes('127.0.0.1') || h.url.includes('localhost'))) {
+          const now = Date.now();
+          const lastAttempt = lastReconnectAttempt[h.name] || 0;
+          if (now - lastAttempt > 15000 && h.url && (h.url.includes('127.0.0.1') || h.url.includes('localhost'))) {
+            lastReconnectAttempt[h.name] = now;
             fetch('/v1/hosts/reconnect', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -4848,7 +4853,14 @@ ${session.last_prompt}
       try {
         const hostRec = (state.hosts || []).find(h => h.name === targetHost);
         const baseUrl = hostRec && hostRec.url && !isLocalHost(targetHost) ? hostRec.url.replace(/\/$/, '') : '';
-        const res = await fetch(`${baseUrl}/v1/agents/discovery`);
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 5000);
+        let res;
+        try {
+          res = await fetch(`${baseUrl}/v1/agents/discovery`, { signal: controller.signal });
+        } finally {
+          clearTimeout(timeoutId);
+        }
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const discovery = await res.json() || [];
 

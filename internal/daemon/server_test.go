@@ -2533,3 +2533,16 @@ func TestResolveSSHTarget(t *testing.T) {
 	}
 }
 
+func TestSpawnSSHTunnel_FailureHandling(t *testing.T) {
+	start := time.Now()
+	err := spawnSSHTunnel("19999", "nonexistent-test-host.invalid")
+	dur := time.Since(start)
+
+	if err == nil {
+		t.Errorf("Expected spawnSSHTunnel to fail for nonexistent host, but got nil")
+	}
+
+	if dur > 10*time.Second {
+		t.Errorf("spawnSSHTunnel took too long: %v", dur)
+	}
+}
