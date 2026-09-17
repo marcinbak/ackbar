@@ -395,7 +395,6 @@
     viewModeToggle: document.getElementById('viewModeToggle'),
     btnViewChat: document.getElementById('btnViewChat'),
     btnViewTerminal: document.getElementById('btnViewTerminal'),
-    btnViewSplit: document.getElementById('btnViewSplit'),
     newSessionEngine: document.getElementById('newSessionEngine'),
     // Modal elements
     modalOverlay: document.getElementById('modalOverlay'),
@@ -2003,34 +2002,43 @@
   // Dual-Engine Chat Interface & View Mode Handlers
   // ==========================================================================
 
-  // Set View Mode for a session tab ('chat' | 'terminal' | 'split')
+  // Set View Mode for a session tab ('chat' | 'terminal')
   function setTabViewMode(tabId, mode) {
     const tab = state.openTabs.get(tabId);
     if (!tab || !tab.containerEl) return;
-    tab.viewMode = mode;
+    const targetMode = mode === 'terminal' ? 'terminal' : 'chat';
+    tab.viewMode = targetMode;
 
     tab.containerEl.classList.remove('view-mode-chat', 'view-mode-terminal', 'view-mode-split');
-    tab.containerEl.classList.add(`view-mode-${mode}`);
+    tab.containerEl.classList.add(`view-mode-${targetMode}`);
 
-    updateViewModeButtons(mode);
+    updateViewModeButtons(targetMode);
 
-    if (mode === 'terminal' || mode === 'split') {
-      if (mode === 'terminal') {
-        disconnectChatStream(tab);
+    if (targetMode === 'terminal') {
+      disconnectChatStream(tab);
+      // Ensure WebSocket PTY is connected for tmux sessions
+      if ((tab.session.engine_type !== 'headless' || tab.session.tmux_name) && (!tab.socket || tab.socket.readyState !== WebSocket.OPEN)) {
+        connectTerminalWebSocket(tab, tabId, tab.terminal, tab.fitAddon, tab.session);
       }
       setTimeout(() => {
-        if (tab.fitAddon && tab.fitAddon.fit) tab.fitAddon.fit();
+        if (tab.fitAddon && tab.fitAddon.fit) {
+          try { tab.fitAddon.fit(); } catch (_) {}
+        }
         if (tab.terminal) {
           tab.terminal.focus();
           if (tab.socket && tab.socket.readyState === WebSocket.OPEN) {
             sendTerminalResize(tab.socket, tab.terminal.cols, tab.terminal.rows);
+            // Send Ctrl+L (form feed / redraw) so tmux re-renders current screen buffer
+            tab.socket.send(new Uint8Array([0x0c]));
           }
         }
-      }, 30);
-    } else if (mode === 'chat') {
+      }, 50);
+    } else if (targetMode === 'chat') {
       if (tab.session && tab.session.engine_type === 'headless') {
         connectChatStream(tab);
       }
+      // Reload transcript so any activity that occurred in the terminal appears in chat
+      loadChatTranscript(tab);
       if (tab.chatInputEl) {
         tab.chatInputEl.focus();
       }
@@ -2040,7 +2048,6 @@
   function updateViewModeButtons(mode) {
     if (el.btnViewChat) el.btnViewChat.classList.toggle('active', mode === 'chat');
     if (el.btnViewTerminal) el.btnViewTerminal.classList.toggle('active', mode === 'terminal');
-    if (el.btnViewSplit) el.btnViewSplit.classList.toggle('active', mode === 'split');
   }
 
   // Handle "Take the Wheel in Terminal": resume headless session into live tmux
@@ -2066,25 +2073,30 @@
         } catch (_) {
           errMsg = await res.text().catch(() => '');
         }
-        alert(errMsg || `Failed to take wheel: HTTP ${res.status}`);
+        showUploadToast(`Take the wheel: ${errMsg || res.statusText}`, 'error', 4000);
         return;
       }
 
       const data = await res.json();
+      const tmuxName = data.tmux_name;
       if (sess) {
         sess.engine_type = 'tmux';
-        sess.tmux_name = data.tmux_name;
+        sess.tmux_name = tmuxName;
         sess.managed = true;
       }
 
       if (tab) {
         tab.session.engine_type = 'tmux';
-        tab.session.tmux_name = data.tmux_name;
+        tab.session.tmux_name = tmuxName;
         tab.session.managed = true;
 
         if (tab.chatEngineBadge) {
           tab.chatEngineBadge.textContent = '🖥️ tmux';
           tab.chatEngineBadge.classList.add('badge-tmux');
+        }
+
+        if (tab.chatTakeWheelBtn) {
+          tab.chatTakeWheelBtn.style.display = 'none';
         }
 
         const notice = tab.termViewEl ? tab.termViewEl.querySelector('.headless-term-notice') : null;
@@ -2094,10 +2106,11 @@
         setTabViewMode(sessionId, 'terminal');
       }
 
+      showUploadToast('Attached interactive terminal', 'success', 2500);
       await fetchSessions();
     } catch (err) {
       console.error('Failed to take wheel:', err);
-      alert(`Error taking wheel: ${err.message}`);
+      showUploadToast(`Error taking wheel: ${err.message}`, 'error', 4000);
     }
   }
 
@@ -2258,9 +2271,14 @@
       });
     }
 
-    const btnTakeWheel = chatViewEl.querySelector('.btn-take-wheel');
-    if (btnTakeWheel) {
-      btnTakeWheel.addEventListener('click', () => handleTakeWheel(session.id));
+    tabObj.chatTakeWheelBtn = chatViewEl.querySelector('.btn-take-wheel');
+    if (tabObj.chatTakeWheelBtn) {
+      if (session.engine_type === 'tmux') {
+        tabObj.chatTakeWheelBtn.style.display = 'none';
+      } else {
+        tabObj.chatTakeWheelBtn.style.display = 'inline-flex';
+        tabObj.chatTakeWheelBtn.addEventListener('click', () => handleTakeWheel(session.id));
+      }
     }
 
     const btnReload = chatViewEl.querySelector('.btn-reload-chat');
@@ -2337,7 +2355,7 @@
 
     loadChatTranscript(tabObj);
     loadChatQueue(tabObj);
-    if (tabObj.session && tabObj.session.engine_type === 'headless' && (tabObj.viewMode === 'chat' || tabObj.viewMode === 'split')) {
+    if (tabObj.session && tabObj.session.engine_type === 'headless' && tabObj.viewMode === 'chat') {
       connectChatStream(tabObj);
     }
   }
@@ -3323,7 +3341,7 @@
       return;
     }
     // Only connect if currently in chat view mode
-    if (tabObj.viewMode !== 'chat' && tabObj.viewMode !== 'split') {
+    if (tabObj.viewMode !== 'chat') {
       return;
     }
     // Only connect if the tab is active
@@ -4833,7 +4851,7 @@ ${session.last_prompt}
           }
         }, 120);
         updateStatusbar(tab.session);
-        if (tab.session && tab.session.engine_type === 'headless' && (tab.viewMode === 'chat' || tab.viewMode === 'split')) {
+        if (tab.session && tab.session.engine_type === 'headless' && tab.viewMode === 'chat') {
           connectChatStream(tab);
         }
       } else {
@@ -5467,12 +5485,6 @@ ${session.last_prompt}
     if (el.btnViewTerminal) {
       el.btnViewTerminal.addEventListener('click', () => {
         if (state.activeTabId) setTabViewMode(state.activeTabId, 'terminal');
-      });
-    }
-
-    if (el.btnViewSplit) {
-      el.btnViewSplit.addEventListener('click', () => {
-        if (state.activeTabId) setTabViewMode(state.activeTabId, 'split');
       });
     }
 

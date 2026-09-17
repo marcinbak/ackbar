@@ -1911,6 +1911,27 @@ func (s *Server) handleTakeWheel(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// If tmux session already exists, reuse it gracefully instead of failing
+	if tmux.HasSession(r.Context(), tmuxName) {
+		sess.TmuxName = tmuxName
+		sess.EngineType = EngineTmux
+		sess.Managed = true
+		sess.State = StateWorking
+		sess.Activity = "Interactive terminal attached"
+		sess.LastEventAt = time.Now()
+		if pid, perr := tmux.GetPID(r.Context(), tmuxName); perr == nil {
+			sess.PID = pid
+		}
+		_ = s.db.SaveSession(sess)
+		s.broadcast(sess)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"status":    "ok",
+			"tmux_name": tmuxName,
+		})
+		return
+	}
+
 	var spawnErr error
 	if len(envVars) > 0 {
 		spawnErr = tmux.SpawnWithEnv(r.Context(), tmuxName, sess.Cwd, resumeCmd, envVars)

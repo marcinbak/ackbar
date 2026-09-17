@@ -2055,16 +2055,6 @@ body, html {
   flex: 1 1 100% !important;
 }
 
-.terminal-tab-view.view-mode-split .session-chat-view {
-  display: flex !important;
-  flex: 1 1 50% !important;
-  border-right: 1px solid var(--border-color);
-}
-.terminal-tab-view.view-mode-split .session-term-view {
-  display: flex !important;
-  flex: 1 1 50% !important;
-}
-
 /* Terminal wrapper inside session container */
 .session-term-view {
   display: flex;
