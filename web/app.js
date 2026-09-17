@@ -1882,19 +1882,48 @@
     return toast;
   }
 
-  // Upload file (Image or PDF) to daemon and inject path into active terminal
-  async function uploadAndAttachFile(file, tabObj) {
+  // Insert quoted file path into prompt textarea at cursor position or append with clean spacing
+  function insertPathIntoPromptInput(inputEl, filePath) {
+    if (!inputEl) return;
+    const quotedPath = `"${filePath}" `;
+    const val = inputEl.value || '';
+    const start = inputEl.selectionStart;
+    const end = inputEl.selectionEnd;
+
+    if (typeof start === 'number' && typeof end === 'number' && document.activeElement === inputEl) {
+      const before = val.substring(0, start);
+      const after = val.substring(end);
+      const spaceBefore = (before.length > 0 && !before.endsWith(' ') && !before.endsWith('\n')) ? ' ' : '';
+      inputEl.value = before + spaceBefore + quotedPath + after;
+      const newPos = start + spaceBefore.length + quotedPath.length;
+      inputEl.selectionStart = newPos;
+      inputEl.selectionEnd = newPos;
+    } else {
+      const spaceBefore = (val.length > 0 && !val.endsWith(' ') && !val.endsWith('\n')) ? ' ' : '';
+      inputEl.value = val + spaceBefore + quotedPath;
+      inputEl.selectionStart = inputEl.value.length;
+      inputEl.selectionEnd = inputEl.value.length;
+    }
+
+    inputEl.style.height = 'auto';
+    inputEl.style.height = Math.min(inputEl.scrollHeight, 180) + 'px';
+    inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+    inputEl.focus();
+  }
+
+  // Upload file (Image, PDF, Document, or Text) to daemon and inject path into prompt input or active terminal
+  async function uploadAndAttachFile(file, tabObj, target = 'auto') {
     if (!file || !tabObj) return;
 
     const filename = file.name || 'clipboard_image.png';
     const ext = filename.split('.').pop().toLowerCase();
-    const allowed = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'svg', 'pdf'];
+    const allowed = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'svg', 'pdf', 'txt', 'md', 'log', 'json', 'yaml', 'yml', 'csv'];
     const type = (file.type || '').toLowerCase();
-    const isAllowedMime = type.startsWith('image/') || type === 'application/pdf' || type.includes('bmp');
+    const isAllowedMime = type.startsWith('image/') || type === 'application/pdf' || type.includes('bmp') || type.startsWith('text/') || type === 'application/json';
     const isAllowedExt = allowed.includes(ext);
 
     if (!isAllowedMime && !isAllowedExt) {
-      showUploadToast(`Unsupported file type: ${filename} (allowed: PNG, JPG, WEBP, GIF, BMP, SVG, PDF)`, 'error', 4000);
+      showUploadToast(`Unsupported file type: ${filename} (allowed: images, PDF, TXT, MD, LOG, JSON, YAML, CSV)`, 'error', 4000);
       return;
     }
 
@@ -1931,10 +1960,14 @@
       if (data.status === 'ok' && data.path) {
         showUploadToast(`Attached: ${data.filename || filename}`, 'success', 3000);
 
-        // Inject quoted path with trailing space into active terminal
-        const quotedPath = `"${data.path}" `;
-        if (tabObj.socket && tabObj.socket.readyState === WebSocket.OPEN) {
+        const isChat = target === 'chat' || (target === 'auto' && tabObj.viewMode === 'chat') || (tabObj.chatInputEl && (!tabObj.socket || tabObj.socket.readyState !== WebSocket.OPEN));
+        if (isChat && tabObj.chatInputEl) {
+          insertPathIntoPromptInput(tabObj.chatInputEl, data.path);
+        } else if (tabObj.socket && tabObj.socket.readyState === WebSocket.OPEN) {
+          const quotedPath = `"${data.path}" `;
           tabObj.socket.send(quotedPath);
+        } else if (tabObj.chatInputEl) {
+          insertPathIntoPromptInput(tabObj.chatInputEl, data.path);
         }
       }
     } catch (err) {
@@ -2121,11 +2154,60 @@
     tabObj.isQueuePaused = false;
 
     tabObj.chatMessagesEl = chatViewEl.querySelector('.chat-messages-container');
+    tabObj.chatComposerBox = chatViewEl.querySelector('.chat-composer-box');
     tabObj.chatInputEl = chatViewEl.querySelector('.chat-composer-textarea');
     tabObj.chatSendBtn = chatViewEl.querySelector('.btn-composer-send');
     tabObj.chatCancelBtn = chatViewEl.querySelector('.btn-composer-cancel');
     tabObj.chatStatusBadge = chatViewEl.querySelector('.chat-status-badge');
     tabObj.chatEngineBadge = chatViewEl.querySelector('.chat-engine-badge');
+
+    // Drop Overlay for Drag-and-Drop file uploads (Images, PDFs, Documents, Text)
+    const chatDropOverlay = document.createElement('div');
+    chatDropOverlay.className = 'chat-drop-overlay';
+    chatDropOverlay.innerHTML = `<div class="drop-badge">📎 Drop file to attach to prompt</div>`;
+    chatViewEl.appendChild(chatDropOverlay);
+
+    let chatDragCounter = 0;
+    chatViewEl.addEventListener('dragenter', (e) => {
+      if (e.dataTransfer && e.dataTransfer.types && Array.from(e.dataTransfer.types).includes('Files')) {
+        e.preventDefault();
+        chatDragCounter++;
+        chatDropOverlay.classList.add('active');
+        if (tabObj.chatComposerBox) tabObj.chatComposerBox.classList.add('drag-over');
+      }
+    });
+
+    chatViewEl.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      if (e.dataTransfer && e.dataTransfer.types && Array.from(e.dataTransfer.types).includes('Files')) {
+        e.dataTransfer.dropEffect = 'copy';
+        chatDropOverlay.classList.add('active');
+        if (tabObj.chatComposerBox) tabObj.chatComposerBox.classList.add('drag-over');
+      }
+    });
+
+    chatViewEl.addEventListener('dragleave', (e) => {
+      chatDragCounter--;
+      if (chatDragCounter <= 0 || !chatViewEl.contains(e.relatedTarget)) {
+        chatDragCounter = 0;
+        chatDropOverlay.classList.remove('active');
+        if (tabObj.chatComposerBox) tabObj.chatComposerBox.classList.remove('drag-over');
+      }
+    });
+
+    chatViewEl.addEventListener('drop', async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      chatDragCounter = 0;
+      chatDropOverlay.classList.remove('active');
+      if (tabObj.chatComposerBox) tabObj.chatComposerBox.classList.remove('drag-over');
+      const currentTab = state.openTabs.get(tabId) || tabObj;
+      if (currentTab && e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+        for (const file of e.dataTransfer.files) {
+          await uploadAndAttachFile(file, currentTab, 'chat');
+        }
+      }
+    });
 
     tabObj.chatQueueContainer = chatViewEl.querySelector('.chat-queue-container');
     tabObj.chatQueueBar = chatViewEl.querySelector('.chat-queue-bar');
@@ -2198,6 +2280,48 @@
     }
 
     if (tabObj.chatInputEl) {
+      tabObj.chatInputEl.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+      });
+
+      tabObj.chatInputEl.addEventListener('drop', async (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        chatDragCounter = 0;
+        chatDropOverlay.classList.remove('active');
+        if (tabObj.chatComposerBox) tabObj.chatComposerBox.classList.remove('drag-over');
+        const currentTab = state.openTabs.get(tabId) || tabObj;
+        if (currentTab && e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+          for (const file of e.dataTransfer.files) {
+            await uploadAndAttachFile(file, currentTab, 'chat');
+          }
+        }
+      });
+
+      tabObj.chatInputEl.addEventListener('paste', async (e) => {
+        if (!e.clipboardData) return;
+        const items = e.clipboardData.items || [];
+        let handled = false;
+        const currentTab = state.openTabs.get(tabId) || tabObj;
+        for (const item of items) {
+          if (item.kind === 'file') {
+            const itemType = (item.type || '').toLowerCase();
+            if (itemType.startsWith('image/') || itemType === 'application/pdf' || itemType.includes('bmp') || itemType.startsWith('text/') || itemType === 'application/json') {
+              const file = item.getAsFile();
+              if (file) {
+                handled = true;
+                await uploadAndAttachFile(file, currentTab, 'chat');
+              }
+            }
+          }
+        }
+        if (handled) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
+      });
+
       tabObj.chatInputEl.addEventListener('input', () => {
         tabObj.chatInputEl.style.height = 'auto';
         tabObj.chatInputEl.style.height = Math.min(tabObj.chatInputEl.scrollHeight, 180) + 'px';
@@ -5215,6 +5339,19 @@ ${session.last_prompt}
 
     window.addEventListener('resize', hideChatFileContextMenu);
     window.addEventListener('scroll', hideChatFileContextMenu, true);
+
+    // Prevent browser default behavior of opening dropped files in a new tab
+    window.addEventListener('dragover', (e) => {
+      if (e.dataTransfer && e.dataTransfer.types && Array.from(e.dataTransfer.types).includes('Files')) {
+        e.preventDefault();
+      }
+    });
+
+    window.addEventListener('drop', (e) => {
+      if (e.dataTransfer && e.dataTransfer.types && Array.from(e.dataTransfer.types).includes('Files')) {
+        e.preventDefault();
+      }
+    });
 
     window.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') {

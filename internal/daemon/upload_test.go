@@ -119,6 +119,46 @@ func TestHandleUploadPDF(t *testing.T) {
 	defer os.Remove(res.Path)
 }
 
+func TestHandleUploadTextAndDataFiles(t *testing.T) {
+	srv := createTestServer(t)
+
+	// Test .txt upload
+	txtData := []byte("error log trace content")
+	reqTxt := httptest.NewRequest("POST", "/v1/uploads?filename=trace.txt&host=local", bytes.NewReader(txtData))
+	reqTxt.Header.Set("Content-Type", "text/plain")
+	recTxt := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(recTxt, reqTxt)
+	if recTxt.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK for txt upload, got %d: %s", recTxt.Code, recTxt.Body.String())
+	}
+	var resTxt UploadResponse
+	if err := json.Unmarshal(recTxt.Body.Bytes(), &resTxt); err != nil {
+		t.Fatalf("Failed to parse txt upload JSON: %v", err)
+	}
+	if !strings.HasSuffix(resTxt.Filename, ".txt") {
+		t.Errorf("Expected .txt extension, got %q", resTxt.Filename)
+	}
+	defer os.Remove(resTxt.Path)
+
+	// Test .json upload
+	jsonData := []byte(`{"key": "value"}`)
+	reqJSON := httptest.NewRequest("POST", "/v1/uploads?filename=config.json&host=local", bytes.NewReader(jsonData))
+	reqJSON.Header.Set("Content-Type", "application/json")
+	recJSON := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(recJSON, reqJSON)
+	if recJSON.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK for json upload, got %d: %s", recJSON.Code, recJSON.Body.String())
+	}
+	var resJSON UploadResponse
+	if err := json.Unmarshal(recJSON.Body.Bytes(), &resJSON); err != nil {
+		t.Fatalf("Failed to parse json upload JSON: %v", err)
+	}
+	if !strings.HasSuffix(resJSON.Filename, ".json") {
+		t.Errorf("Expected .json extension, got %q", resJSON.Filename)
+	}
+	defer os.Remove(resJSON.Path)
+}
+
 func TestHandleUploadDisallowedExtension(t *testing.T) {
 	srv := createTestServer(t)
 
