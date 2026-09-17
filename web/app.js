@@ -2054,6 +2054,20 @@
       </div>
       <div class="chat-messages-container"></div>
       <div class="chat-composer-container">
+        <div class="chat-queue-container" style="display: none;">
+          <div class="chat-queue-bar">
+            <div class="chat-queue-summary">
+              <span class="chat-queue-icon">⏳</span>
+              <span class="chat-queue-count-text">0 messages queued up</span>
+              <span class="chat-queue-chevron">▾</span>
+            </div>
+            <div class="chat-queue-actions">
+              <button class="btn-chat-queue-resume" style="display: none;" type="button" title="Resume queue execution">▶ Resume</button>
+              <button class="btn-chat-queue-clear" type="button" title="Clear all queued messages">Clear all</button>
+            </div>
+          </div>
+          <div class="chat-queue-list" style="display: none;"></div>
+        </div>
         <div class="chat-composer-box">
           <textarea class="chat-composer-textarea" rows="1" placeholder="Ask ${escapeHtml(session.agent || 'Claude Code')} anything... (Enter to send, Shift+Enter for newline)"></textarea>
           <div class="chat-composer-actions">
@@ -2068,12 +2082,50 @@
       </div>
     `;
 
+    tabObj.promptQueue = tabObj.promptQueue || [];
+    tabObj.isQueueExpanded = false;
+    tabObj.isQueuePaused = false;
+
     tabObj.chatMessagesEl = chatViewEl.querySelector('.chat-messages-container');
     tabObj.chatInputEl = chatViewEl.querySelector('.chat-composer-textarea');
     tabObj.chatSendBtn = chatViewEl.querySelector('.btn-composer-send');
     tabObj.chatCancelBtn = chatViewEl.querySelector('.btn-composer-cancel');
     tabObj.chatStatusBadge = chatViewEl.querySelector('.chat-status-badge');
     tabObj.chatEngineBadge = chatViewEl.querySelector('.chat-engine-badge');
+
+    tabObj.chatQueueContainer = chatViewEl.querySelector('.chat-queue-container');
+    tabObj.chatQueueBar = chatViewEl.querySelector('.chat-queue-bar');
+    tabObj.chatQueueCountText = chatViewEl.querySelector('.chat-queue-count-text');
+    tabObj.chatQueueChevron = chatViewEl.querySelector('.chat-queue-chevron');
+    tabObj.chatQueueList = chatViewEl.querySelector('.chat-queue-list');
+    tabObj.chatQueueClearBtn = chatViewEl.querySelector('.btn-chat-queue-clear');
+    tabObj.chatQueueResumeBtn = chatViewEl.querySelector('.btn-chat-queue-resume');
+
+    const queueSummary = chatViewEl.querySelector('.chat-queue-summary');
+    if (queueSummary) {
+      queueSummary.addEventListener('click', () => {
+        tabObj.isQueueExpanded = !tabObj.isQueueExpanded;
+        renderChatQueue(tabObj);
+      });
+    }
+
+    if (tabObj.chatQueueClearBtn) {
+      tabObj.chatQueueClearBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        tabObj.promptQueue = [];
+        tabObj.isQueuePaused = false;
+        renderChatQueue(tabObj);
+      });
+    }
+
+    if (tabObj.chatQueueResumeBtn) {
+      tabObj.chatQueueResumeBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        tabObj.isQueuePaused = false;
+        renderChatQueue(tabObj);
+        dispatchNextQueuedPrompt(tabObj);
+      });
+    }
 
     const btnTakeWheel = chatViewEl.querySelector('.btn-take-wheel');
     if (btnTakeWheel) {
@@ -2333,14 +2385,174 @@
     return msgEl;
   }
 
-  // Send Prompt to daemon (/v1/sessions/prompt)
-  async function sendChatPrompt(tabObj) {
+  // Update composer send button state based on active turn
+  function updateComposerButtonState(tabObj) {
+    if (!tabObj || !tabObj.chatSendBtn) return;
+    const isTurnActive = (tabObj.activeTurnMsgEl !== null && tabObj.activeTurnMsgEl !== undefined) ||
+                         (tabObj.chatCancelBtn && tabObj.chatCancelBtn.style.display !== 'none');
+    if (isTurnActive) {
+      tabObj.chatSendBtn.disabled = false;
+      tabObj.chatSendBtn.classList.add('is-queue');
+      tabObj.chatSendBtn.title = 'Queue prompt (Enter)';
+      tabObj.chatSendBtn.innerHTML = `
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="12" y1="5" x2="12" y2="19"></line>
+          <line x1="5" y1="12" x2="19" y2="12"></line>
+        </svg>
+      `;
+      if (tabObj.chatInputEl) {
+        tabObj.chatInputEl.placeholder = 'Queue a follow-up prompt... (Enter to queue, Shift+Enter for newline)';
+      }
+    } else {
+      tabObj.chatSendBtn.disabled = false;
+      tabObj.chatSendBtn.classList.remove('is-queue');
+      tabObj.chatSendBtn.title = 'Send Prompt (Enter)';
+      tabObj.chatSendBtn.innerHTML = '➤';
+      if (tabObj.chatInputEl) {
+        tabObj.chatInputEl.placeholder = `Ask ${escapeHtml(tabObj.session && tabObj.session.agent ? tabObj.session.agent : 'Claude Code')} anything... (Enter to send, Shift+Enter for newline)`;
+      }
+    }
+  }
+
+  // Render Prompt Queue box docked above composer
+  function renderChatQueue(tabObj) {
+    if (!tabObj || !tabObj.chatQueueContainer) return;
+    const q = tabObj.promptQueue || [];
+
+    if (q.length === 0) {
+      tabObj.chatQueueContainer.style.display = 'none';
+      tabObj.isQueueExpanded = false;
+      tabObj.isQueuePaused = false;
+      updateComposerButtonState(tabObj);
+      return;
+    }
+
+    tabObj.chatQueueContainer.style.display = 'flex';
+    const countText = q.length === 1 ? '1 message queued up' : `${q.length} messages queued up`;
+    if (tabObj.chatQueueCountText) {
+      if (tabObj.isQueuePaused) {
+        tabObj.chatQueueCountText.textContent = `⏸️ Queue paused (${countText})`;
+      } else {
+        tabObj.chatQueueCountText.textContent = countText;
+      }
+    }
+
+    if (tabObj.chatQueueResumeBtn) {
+      tabObj.chatQueueResumeBtn.style.display = tabObj.isQueuePaused ? 'inline-flex' : 'none';
+    }
+
+    if (tabObj.chatQueueChevron) {
+      tabObj.chatQueueChevron.textContent = tabObj.isQueueExpanded ? '▴' : '▾';
+    }
+
+    if (!tabObj.isQueueExpanded) {
+      if (tabObj.chatQueueList) tabObj.chatQueueList.style.display = 'none';
+    } else {
+      if (tabObj.chatQueueList) {
+        tabObj.chatQueueList.style.display = 'flex';
+        tabObj.chatQueueList.innerHTML = '';
+
+        q.forEach((item, idx) => {
+          const itemEl = document.createElement('div');
+          itemEl.className = `chat-queue-item ${item.expanded ? 'expanded' : ''}`;
+          itemEl.dataset.id = item.id;
+
+          itemEl.innerHTML = `
+            <div class="chat-queue-item-header">
+              <span class="chat-queue-item-index">#${idx + 1}</span>
+              <div class="chat-queue-item-preview" title="Click to ${item.expanded ? 'collapse' : 'expand full message'}">
+                ${escapeHtml(item.text)}
+              </div>
+              <div class="chat-queue-item-actions">
+                <button class="btn-queue-item-toggle" type="button" title="${item.expanded ? 'Collapse' : 'Expand'}">
+                  ${item.expanded ? '▴' : '▾'}
+                </button>
+                <button class="btn-queue-item-trash" type="button" title="Remove from queue" aria-label="Remove message">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="3 6 5 6 21 6"></polyline>
+                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                    <line x1="10" y1="11" x2="10" y2="17"></line>
+                    <line x1="14" y1="11" x2="14" y2="17"></line>
+                  </svg>
+                </button>
+              </div>
+            </div>
+            ${item.expanded ? `
+              <div class="chat-queue-item-body">
+                <div class="chat-queue-item-full">${escapeHtml(item.text)}</div>
+              </div>
+            ` : ''}
+          `;
+
+          const previewEl = itemEl.querySelector('.chat-queue-item-preview');
+          const toggleBtn = itemEl.querySelector('.btn-queue-item-toggle');
+          const toggleFn = (e) => {
+            e.stopPropagation();
+            item.expanded = !item.expanded;
+            renderChatQueue(tabObj);
+          };
+          if (previewEl) previewEl.addEventListener('click', toggleFn);
+          if (toggleBtn) toggleBtn.addEventListener('click', toggleFn);
+
+          const trashBtn = itemEl.querySelector('.btn-queue-item-trash');
+          if (trashBtn) {
+            trashBtn.addEventListener('click', (e) => {
+              e.stopPropagation();
+              tabObj.promptQueue = tabObj.promptQueue.filter(p => p.id !== item.id);
+              renderChatQueue(tabObj);
+            });
+          }
+
+          tabObj.chatQueueList.appendChild(itemEl);
+        });
+      }
+    }
+
+    updateComposerButtonState(tabObj);
+  }
+
+  // Pop and dispatch the next queued prompt if idle
+  function dispatchNextQueuedPrompt(tabObj) {
+    if (!tabObj || !tabObj.promptQueue || tabObj.promptQueue.length === 0) return;
+    if (tabObj.isQueuePaused) return;
+    const isTurnActive = (tabObj.activeTurnMsgEl !== null && tabObj.activeTurnMsgEl !== undefined) ||
+                         (tabObj.chatCancelBtn && tabObj.chatCancelBtn.style.display !== 'none');
+    if (isTurnActive) return;
+
+    const nextItem = tabObj.promptQueue.shift();
+    renderChatQueue(tabObj);
+    sendChatPrompt(tabObj, nextItem.text);
+  }
+
+  // Send Prompt to daemon (/v1/sessions/prompt) or queue if turn is in progress
+  async function sendChatPrompt(tabObj, forcedPromptText) {
     if (!tabObj || !tabObj.chatInputEl) return;
-    const promptText = tabObj.chatInputEl.value.trim();
+    let promptText = '';
+    if (typeof forcedPromptText === 'string') {
+      promptText = forcedPromptText.trim();
+    } else {
+      promptText = tabObj.chatInputEl.value.trim();
+      if (!promptText) return;
+      tabObj.chatInputEl.value = '';
+      tabObj.chatInputEl.style.height = 'auto';
+    }
     if (!promptText) return;
 
-    tabObj.chatInputEl.value = '';
-    tabObj.chatInputEl.style.height = 'auto';
+    const isTurnActive = (tabObj.activeTurnMsgEl !== null && tabObj.activeTurnMsgEl !== undefined) ||
+                         (tabObj.chatCancelBtn && tabObj.chatCancelBtn.style.display !== 'none');
+
+    // If turn is already in progress and this is not an automated dequeue, queue it!
+    if (isTurnActive && typeof forcedPromptText !== 'string') {
+      if (!tabObj.promptQueue) tabObj.promptQueue = [];
+      tabObj.promptQueue.push({
+        id: 'q_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7),
+        text: promptText,
+        createdAt: new Date(),
+        expanded: false
+      });
+      renderChatQueue(tabObj);
+      return;
+    }
 
     appendChatMessage(tabObj, {
       role: 'user',
@@ -2375,8 +2587,8 @@
     tabObj.activeTurnBuffer = '';
 
     if (tabObj.chatCancelBtn) tabObj.chatCancelBtn.style.display = 'inline-flex';
-    if (tabObj.chatSendBtn) tabObj.chatSendBtn.disabled = true;
     if (tabObj.chatStatusBadge) tabObj.chatStatusBadge.textContent = '⚡ Working...';
+    updateComposerButtonState(tabObj);
 
     connectChatStream(tabObj);
 
@@ -2408,6 +2620,8 @@
         bodyEl.innerHTML = `<span style="color: var(--accent-red);">⚠️ Error sending prompt: ${escapeHtml(err.message)}</span>`;
       }
       resetChatComposer(tabObj);
+      tabObj.activeTurnMsgEl = null;
+      tabObj.activeTurnBuffer = '';
     }
   }
 
@@ -2599,6 +2813,13 @@
         tabObj.activeTurnMsgEl = null;
         tabObj.activeTurnBuffer = '';
         fetchSessions();
+
+        // Dispatch next queued prompt if available and not paused
+        if (tabObj.promptQueue && tabObj.promptQueue.length > 0 && !tabObj.isQueuePaused) {
+          setTimeout(() => {
+            dispatchNextQueuedPrompt(tabObj);
+          }, 100);
+        }
         break;
 
       case 'turn_cancelled':
@@ -2616,6 +2837,11 @@
         resetChatComposer(tabObj);
         tabObj.activeTurnMsgEl = null;
         tabObj.activeTurnBuffer = '';
+        if (tabObj.promptQueue && tabObj.promptQueue.length > 0) {
+          tabObj.isQueuePaused = true;
+          renderChatQueue(tabObj);
+        }
+        fetchSessions();
         break;
 
       case 'error':
@@ -2631,14 +2857,18 @@
         resetChatComposer(tabObj);
         tabObj.activeTurnMsgEl = null;
         tabObj.activeTurnBuffer = '';
+        if (tabObj.promptQueue && tabObj.promptQueue.length > 0) {
+          tabObj.isQueuePaused = true;
+          renderChatQueue(tabObj);
+        }
         break;
     }
   }
 
   function resetChatComposer(tabObj) {
     if (tabObj.chatCancelBtn) tabObj.chatCancelBtn.style.display = 'none';
-    if (tabObj.chatSendBtn) tabObj.chatSendBtn.disabled = false;
     if (tabObj.chatStatusBadge) tabObj.chatStatusBadge.textContent = '🟢 Ready';
+    updateComposerButtonState(tabObj);
     if (tabObj.chatInputEl) tabObj.chatInputEl.focus();
   }
 
@@ -3009,6 +3239,16 @@
       chatEngineBadge: null,
       activeTurnBuffer: '',
       activeTurnMsgEl: null,
+      promptQueue: [],
+      isQueueExpanded: false,
+      isQueuePaused: false,
+      chatQueueContainer: null,
+      chatQueueBar: null,
+      chatQueueCountText: null,
+      chatQueueChevron: null,
+      chatQueueList: null,
+      chatQueueClearBtn: null,
+      chatQueueResumeBtn: null,
       pingTimer: null,
       reconnectTimer: null,
       reconnectAttempts: 0
