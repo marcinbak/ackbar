@@ -254,4 +254,3 @@ func TestServer_TakeWheel_AliasResolution(t *testing.T) {
 		t.Fatalf("Expected session to be found via alias resolution, got 404: %s", w.Body.String())
 	}
 }
-
