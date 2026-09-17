@@ -172,14 +172,23 @@
     return false;
   }
 
+  function findHostRecord(hostName) {
+    if (!hostName || isLocalHost(hostName)) return null;
+    return (state.hosts || []).find(h =>
+      h.name === hostName ||
+      h.name.endsWith('@' + hostName) ||
+      (h.displayName && h.displayName.toLowerCase() === hostName.toLowerCase())
+    ) || null;
+  }
+
   function getSessionBaseUrl(sessionId, sessionObj) {
     const sess = sessionObj || (state.sessions && state.sessions.find(s => s.id === sessionId));
     if (!sess) return '';
     if (sess.hostUrl) return sess.hostUrl.replace(/\/$/, '');
     const sessionHost = sess.host || '';
     if (isLocalHost(sessionHost)) return '';
-    const hostRec = (state.hosts || []).find(h => h.name === sessionHost);
-    if (hostRec && hostRec.url && !isLocalHost(sessionHost)) {
+    const hostRec = findHostRecord(sessionHost);
+    if (hostRec && hostRec.url && !isLocalHost(hostRec.name)) {
       return hostRec.url.replace(/\/$/, '');
     }
     return '';
@@ -196,7 +205,7 @@
   // Format host name to server name or display name
   function formatHostLabel(hostName) {
     if (!hostName || isLocalHost(hostName)) return getSelfDisplayName();
-    const hostRec = (state.hosts || []).find(h => h.name === hostName);
+    const hostRec = findHostRecord(hostName);
     if (hostRec && hostRec.displayName) return hostRec.displayName;
     const parts = hostName.split('@');
     return parts[parts.length - 1] || hostName;
@@ -1910,9 +1919,179 @@
     inputEl.focus();
   }
 
+  function getAttachmentIcon(filename, type) {
+    const ext = (filename || '').split('.').pop().toLowerCase();
+    if ((type && type.startsWith('image/')) || ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'svg'].includes(ext)) {
+      return '🖼️';
+    }
+    if (ext === 'pdf') return '📑';
+    if (['json', 'yaml', 'yml', 'csv'].includes(ext)) return '📊';
+    if (['txt', 'log'].includes(ext)) return '📝';
+    if (ext === 'md') return '📋';
+    return '📄';
+  }
+
+  function removePendingAttachment(tabObj, id) {
+    if (!tabObj || !tabObj.pendingAttachments) return;
+    const idx = tabObj.pendingAttachments.findIndex(a => a.id === id);
+    if (idx !== -1) {
+      const att = tabObj.pendingAttachments[idx];
+      if (att.previewUrl && typeof URL !== 'undefined' && URL.revokeObjectURL) {
+        try { URL.revokeObjectURL(att.previewUrl); } catch (_) {}
+      }
+      tabObj.pendingAttachments.splice(idx, 1);
+      renderPendingAttachments(tabObj);
+    }
+  }
+
+  function renderPendingAttachments(tabObj) {
+    if (!tabObj || !tabObj.chatComposerAttachments) return;
+    const items = tabObj.pendingAttachments || [];
+
+    if (items.length === 0) {
+      tabObj.chatComposerAttachments.style.display = 'none';
+      tabObj.chatComposerAttachments.innerHTML = '';
+      return;
+    }
+
+    tabObj.chatComposerAttachments.style.display = 'flex';
+    tabObj.chatComposerAttachments.innerHTML = '';
+
+    items.forEach(att => {
+      const chip = document.createElement('div');
+      chip.className = `chat-attachment-chip ${att.status}`;
+      chip.dataset.id = att.id;
+
+      let thumbHtml = '';
+      if (att.previewUrl) {
+        thumbHtml = `<img class="chat-attachment-thumb" src="${att.previewUrl}" alt="${escapeHtml(att.filename)}" />`;
+      } else {
+        thumbHtml = `<span class="chat-attachment-icon">${getAttachmentIcon(att.filename, att.type)}</span>`;
+      }
+
+      let statusHtml = '';
+      if (att.status === 'uploading') {
+        statusHtml = `<span class="chat-attachment-spinner" title="Uploading...">⏳</span>`;
+      } else if (att.status === 'error') {
+        statusHtml = `<span class="chat-attachment-error-badge" title="${escapeHtml(att.error || 'Upload failed')}">⚠️</span>`;
+      }
+
+      chip.innerHTML = `
+        ${thumbHtml}
+        <div class="chat-attachment-info">
+          <span class="chat-attachment-name" title="${escapeHtml(att.filename)}">${escapeHtml(att.filename)}</span>
+          <span class="chat-attachment-size">${formatBytes(att.size)}</span>
+        </div>
+        ${statusHtml}
+        <button class="chat-attachment-remove" type="button" title="Remove attachment" aria-label="Remove">&times;</button>
+      `;
+
+      const removeBtn = chip.querySelector('.chat-attachment-remove');
+      if (removeBtn) {
+        removeBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          removePendingAttachment(tabObj, att.id);
+        });
+      }
+
+      tabObj.chatComposerAttachments.appendChild(chip);
+    });
+  }
+
+  async function addPendingAttachment(tabObj, file) {
+    if (!file || !tabObj) return;
+
+    tabObj.pendingAttachments = tabObj.pendingAttachments || [];
+
+    const filename = file.name || (file.type && file.type.startsWith('image/') ? 'pasted_image.png' : 'attachment');
+    const ext = filename.split('.').pop().toLowerCase();
+    const allowed = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'svg', 'pdf', 'txt', 'md', 'log', 'json', 'yaml', 'yml', 'csv'];
+    const type = (file.type || '').toLowerCase();
+    const isAllowedMime = type.startsWith('image/') || type === 'application/pdf' || type.includes('bmp') || type.startsWith('text/') || type === 'application/json';
+    const isAllowedExt = allowed.includes(ext);
+
+    if (!isAllowedMime && !isAllowedExt) {
+      showUploadToast(`Unsupported file type: ${filename} (allowed: images, PDF, TXT, MD, LOG, JSON, YAML, CSV)`, 'error', 4000);
+      return;
+    }
+
+    const attId = 'att_' + Date.now() + '_' + Math.random().toString(36).substring(2, 8);
+    const isImg = type.startsWith('image/') || ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'svg'].includes(ext);
+    let previewUrl = null;
+    if (isImg && typeof URL !== 'undefined' && URL.createObjectURL) {
+      try {
+        previewUrl = URL.createObjectURL(file);
+      } catch (_) {}
+    }
+
+    const item = {
+      id: attId,
+      file,
+      filename,
+      size: file.size,
+      type: file.type,
+      isImage: isImg,
+      previewUrl,
+      status: 'uploading',
+      path: null,
+      error: null
+    };
+
+    tabObj.pendingAttachments.push(item);
+    renderPendingAttachments(tabObj);
+
+    const formData = new FormData();
+    formData.append('file', file, filename);
+
+    const hostParam = (tabObj.session && tabObj.session.host) ? tabObj.session.host : getSelfHostName();
+    const baseUrl = getSessionBaseUrl(tabObj.session && tabObj.session.id, tabObj.session);
+    const uploadUrl = `${baseUrl}/v1/uploads?host=${encodeURIComponent(hostParam)}&session_id=${encodeURIComponent((tabObj.session && tabObj.session.id) || '')}`;
+
+    const headers = {};
+    const token = getAuthToken();
+    if (token) {
+      headers['X-Ackbar-Token'] = token;
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+
+    try {
+      const res = await fetch(uploadUrl, {
+        method: 'POST',
+        headers,
+        body: formData
+      });
+
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(errText || `Upload failed (HTTP ${res.status})`);
+      }
+
+      const data = await res.json();
+      if (data.status === 'ok' && data.path) {
+        item.status = 'ready';
+        item.path = data.path;
+        if (data.filename) item.filename = data.filename;
+        renderPendingAttachments(tabObj);
+      } else {
+        throw new Error('Upload succeeded but no destination path returned');
+      }
+    } catch (err) {
+      console.error('Failed to upload attachment:', err);
+      item.status = 'error';
+      item.error = err.message || 'Upload error';
+      showUploadToast(`Upload failed: ${err.message}`, 'error', 4000);
+      renderPendingAttachments(tabObj);
+    }
+  }
+
   // Upload file (Image, PDF, Document, or Text) to daemon and inject path into prompt input or active terminal
   async function uploadAndAttachFile(file, tabObj, target = 'auto') {
     if (!file || !tabObj) return;
+
+    const isChat = target === 'chat' || (target === 'auto' && tabObj.viewMode === 'chat') || (tabObj.chatInputEl && (!tabObj.socket || tabObj.socket.readyState !== WebSocket.OPEN));
+    if (isChat && tabObj.chatComposerAttachments) {
+      return addPendingAttachment(tabObj, file);
+    }
 
     const filename = file.name || 'clipboard_image.png';
     const ext = filename.split('.').pop().toLowerCase();
@@ -1932,7 +2111,7 @@
     formData.append('file', file, filename);
 
     const hostParam = (tabObj.session && tabObj.session.host) ? tabObj.session.host : getSelfHostName();
-    const baseUrl = (tabObj.session && tabObj.session.hostUrl && !isLocalHost(hostParam)) ? tabObj.session.hostUrl.replace(/\/$/, '') : '';
+    const baseUrl = getSessionBaseUrl(tabObj.session && tabObj.session.id, tabObj.session);
     const uploadUrl = `${baseUrl}/v1/uploads?host=${encodeURIComponent(hostParam)}&session_id=${encodeURIComponent((tabObj.session && tabObj.session.id) || '')}`;
 
     const headers = {};
@@ -1959,10 +2138,7 @@
       if (data.status === 'ok' && data.path) {
         showUploadToast(`Attached: ${data.filename || filename}`, 'success', 3000);
 
-        const isChat = target === 'chat' || (target === 'auto' && tabObj.viewMode === 'chat') || (tabObj.chatInputEl && (!tabObj.socket || tabObj.socket.readyState !== WebSocket.OPEN));
-        if (isChat && tabObj.chatInputEl) {
-          insertPathIntoPromptInput(tabObj.chatInputEl, data.path);
-        } else if (tabObj.socket && tabObj.socket.readyState === WebSocket.OPEN) {
+        if (tabObj.socket && tabObj.socket.readyState === WebSocket.OPEN) {
           const quotedPath = `"${data.path}" `;
           tabObj.socket.send(quotedPath);
         } else if (tabObj.chatInputEl) {
@@ -2148,7 +2324,14 @@
           </div>
           <div class="chat-queue-list" style="display: none;"></div>
         </div>
+        <div class="chat-composer-attachments" style="display: none;"></div>
         <div class="chat-composer-box">
+          <button class="btn-composer-attach" type="button" title="Attach file or image">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
+            </svg>
+          </button>
+          <input type="file" class="chat-file-input" multiple style="display: none;" accept="image/*,.pdf,.txt,.md,.log,.json,.yaml,.yml,.csv" />
           <textarea class="chat-composer-textarea" rows="1" placeholder="Ask ${escapeHtml(session.agent || 'Claude Code')} anything... (Enter to send, Shift+Enter for newline)"></textarea>
           <div class="chat-composer-actions">
             <button class="btn-composer-cancel" style="display: none;" title="Cancel turn (SIGINT)">🛑 Stop</button>
@@ -2165,14 +2348,33 @@
     tabObj.promptQueue = tabObj.promptQueue || [];
     tabObj.isQueueExpanded = false;
     tabObj.isQueuePaused = false;
+    tabObj.pendingAttachments = [];
 
     tabObj.chatMessagesEl = chatViewEl.querySelector('.chat-messages-container');
+    tabObj.chatComposerAttachments = chatViewEl.querySelector('.chat-composer-attachments');
     tabObj.chatComposerBox = chatViewEl.querySelector('.chat-composer-box');
+    tabObj.chatAttachBtn = chatViewEl.querySelector('.btn-composer-attach');
+    tabObj.chatFileInput = chatViewEl.querySelector('.chat-file-input');
     tabObj.chatInputEl = chatViewEl.querySelector('.chat-composer-textarea');
     tabObj.chatSendBtn = chatViewEl.querySelector('.btn-composer-send');
     tabObj.chatCancelBtn = chatViewEl.querySelector('.btn-composer-cancel');
     tabObj.chatStatusBadge = chatViewEl.querySelector('.chat-status-badge');
     tabObj.chatEngineBadge = chatViewEl.querySelector('.chat-engine-badge');
+
+    if (tabObj.chatAttachBtn && tabObj.chatFileInput) {
+      tabObj.chatAttachBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        tabObj.chatFileInput.click();
+      });
+
+      tabObj.chatFileInput.addEventListener('change', async () => {
+        const files = Array.from(tabObj.chatFileInput.files || []);
+        tabObj.chatFileInput.value = '';
+        for (const file of files) {
+          await addPendingAttachment(tabObj, file);
+        }
+      });
+    }
 
     // Drop Overlay for Drag-and-Drop file uploads (Images, PDFs, Documents, Text)
     const chatDropOverlay = document.createElement('div');
@@ -2217,7 +2419,7 @@
       const currentTab = state.openTabs.get(tabId) || tabObj;
       if (currentTab && e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
         for (const file of e.dataTransfer.files) {
-          await uploadAndAttachFile(file, currentTab, 'chat');
+          await addPendingAttachment(currentTab, file);
         }
       }
     });
@@ -2312,7 +2514,7 @@
         const currentTab = state.openTabs.get(tabId) || tabObj;
         if (currentTab && e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
           for (const file of e.dataTransfer.files) {
-            await uploadAndAttachFile(file, currentTab, 'chat');
+            await addPendingAttachment(currentTab, file);
           }
         }
       });
@@ -2329,7 +2531,7 @@
               const file = item.getAsFile();
               if (file) {
                 handled = true;
-                await uploadAndAttachFile(file, currentTab, 'chat');
+                await addPendingAttachment(currentTab, file);
               }
             }
           }
@@ -3005,6 +3207,53 @@
 
     if (msg.role === 'user') {
       msgEl.className = 'chat-msg user-msg';
+
+      let displayContent = msg.content || '';
+      const attachments = msg.attachments ? [...msg.attachments] : [];
+
+      // Extract attachments embedded in the prompt format [Attached file: "..."]
+      if (!msg.attachments && displayContent.includes('[Attached file: "')) {
+        const regex = /\[Attached file:\s*"([^"]+)"\](?:\s*Please inspect the attached file\.)?/g;
+        let match;
+        while ((match = regex.exec(msg.content)) !== null) {
+          const filePath = match[1];
+          const fname = filePath.split('/').pop();
+          const ext = fname.split('.').pop().toLowerCase();
+          const isImg = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'svg'].includes(ext);
+          attachments.push({
+            filename: fname,
+            path: filePath,
+            isImage: isImg,
+            previewUrl: isImg ? getChatFileContentUrl(filePath, tabObj.session) : null
+          });
+        }
+        displayContent = displayContent.replace(/\[Attached file:\s*"[^"]+"\](?:\s*Please inspect the attached file\.)?/g, '').trim();
+      }
+
+      let attachmentsHtml = '';
+      if (attachments.length > 0) {
+        const chipsHtml = attachments.map(att => {
+          let thumb = '';
+          if (att.previewUrl) {
+            thumb = `<img class="chat-attachment-thumb" src="${att.previewUrl}" alt="${escapeHtml(att.filename)}" />`;
+          } else {
+            thumb = `<span class="chat-attachment-icon">${getAttachmentIcon(att.filename, att.type)}</span>`;
+          }
+          return `
+            <div class="chat-attachment-chip" data-path="${escapeHtml(att.path || '')}" title="Click to open or preview">
+              ${thumb}
+              <div class="chat-attachment-info">
+                <span class="chat-attachment-name" title="${escapeHtml(att.filename)}">${escapeHtml(att.filename)}</span>
+                ${att.size ? `<span class="chat-attachment-size">${formatBytes(att.size)}</span>` : ''}
+              </div>
+            </div>
+          `;
+        }).join('');
+        attachmentsHtml = `<div class="chat-msg-attachments">${chipsHtml}</div>`;
+      }
+
+      const bodyHtml = displayContent ? `<div class="chat-msg-body">${escapeHtml(displayContent)}</div>` : '';
+
       msgEl.innerHTML = `
         <div class="chat-msg-header">
           <span class="chat-msg-role">👤 You</span>
@@ -3018,8 +3267,18 @@
             </button>
           </div>
         </div>
-        <div class="chat-msg-body">${escapeHtml(msg.content || '')}</div>
+        ${attachmentsHtml}
+        ${bodyHtml}
       `;
+
+      msgEl.querySelectorAll('.chat-msg-attachments .chat-attachment-chip').forEach(chip => {
+        chip.addEventListener('click', (e) => {
+          const path = chip.dataset.path;
+          if (path) {
+            showChatFileContextMenu(chip, path, tabObj.session, e.clientX, e.clientY);
+          }
+        });
+      });
     } else if (msg.role === 'assistant') {
       msgEl.className = 'chat-msg assistant-msg';
       let thinkingHtml = '';
@@ -3226,11 +3485,44 @@
       promptText = forcedPromptText.trim();
     } else {
       promptText = tabObj.chatInputEl.value.trim();
-      if (!promptText) return;
+    }
+
+    const pending = tabObj.pendingAttachments || [];
+    if (pending.some(a => a.status === 'uploading')) {
+      showUploadToast('Please wait for file upload to finish...', 'info', 2500);
+      return;
+    }
+
+    const failed = pending.filter(a => a.status === 'error');
+    if (failed.length > 0) {
+      showUploadToast(`Attachment "${failed[0].filename}" failed to upload. Please remove or retry.`, 'error', 3000);
+      return;
+    }
+
+    const readyAttachments = pending.filter(a => a.status === 'ready' && a.path);
+
+    if (!promptText && readyAttachments.length === 0) return;
+
+    if (typeof forcedPromptText !== 'string') {
       tabObj.chatInputEl.value = '';
       tabObj.chatInputEl.style.height = 'auto';
     }
-    if (!promptText) return;
+
+    let daemonPrompt = promptText;
+    if (readyAttachments.length > 0) {
+      const attachInstructions = readyAttachments.map(att =>
+        `[Attached file: "${att.path}"]\nPlease inspect the attached file.`
+      ).join('\n\n');
+      if (daemonPrompt) {
+        daemonPrompt = `${daemonPrompt}\n\n${attachInstructions}`;
+      } else {
+        daemonPrompt = `Please inspect the attached file(s).\n\n${attachInstructions}`;
+      }
+    }
+
+    const sentAttachments = [...readyAttachments];
+    tabObj.pendingAttachments = [];
+    renderPendingAttachments(tabObj);
 
     connectChatStream(tabObj);
     const baseUrl = getSessionBaseUrl(tabObj.session.id, tabObj.session);
@@ -3240,7 +3532,7 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           session_id: tabObj.session.id,
-          prompt: promptText
+          prompt: daemonPrompt
         })
       });
 
@@ -3265,6 +3557,7 @@
       appendChatMessage(tabObj, {
         role: 'user',
         content: promptText,
+        attachments: sentAttachments,
         timestamp: new Date().toISOString()
       });
 
@@ -3303,6 +3596,7 @@
       appendChatMessage(tabObj, {
         role: 'user',
         content: promptText,
+        attachments: sentAttachments,
         timestamp: new Date().toISOString()
       });
       const errEl = document.createElement('div');
