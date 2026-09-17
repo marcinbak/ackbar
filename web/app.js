@@ -2572,6 +2572,15 @@
       });
     }
 
+    // Auto-load older messages when user scrolls near top of chat
+    if (tabObj.chatMessagesEl) {
+      tabObj.chatMessagesEl.addEventListener('scroll', () => {
+        if (tabObj.chatMessagesEl.scrollTop < 60) {
+          loadOlderTranscriptMessages(tabObj);
+        }
+      }, { passive: true });
+    }
+
     loadChatTranscript(tabObj);
     loadChatQueue(tabObj);
     if (tabObj.session && tabObj.session.engine_type === 'headless' && tabObj.viewMode === 'chat') {
@@ -2598,7 +2607,88 @@
     }
   }
 
-  // Load past conversation messages from daemon transcript
+  const CHAT_PAGE_SIZE = 25;
+
+  // Render or update load more banner at top of chat container
+  function renderLoadMoreBanner(tabObj) {
+    if (!tabObj || !tabObj.chatMessagesEl) return;
+    const container = tabObj.chatMessagesEl;
+    let banner = container.querySelector('.chat-load-more-container');
+    const remaining = tabObj.loadedTranscriptStartIndex || 0;
+
+    if (remaining <= 0) {
+      if (banner) banner.remove();
+      return;
+    }
+
+    if (!banner) {
+      banner = document.createElement('div');
+      banner.className = 'chat-load-more-container';
+      banner.innerHTML = `
+        <button type="button" class="btn-chat-load-more">
+          <span class="load-more-icon">↑</span>
+          <span class="load-more-text">Load older messages (${remaining} remaining)</span>
+        </button>
+      `;
+      const btn = banner.querySelector('.btn-chat-load-more');
+      if (btn) {
+        btn.addEventListener('click', (e) => {
+          e.preventDefault();
+          loadOlderTranscriptMessages(tabObj);
+        });
+      }
+      container.insertBefore(banner, container.firstChild);
+    } else {
+      const textEl = banner.querySelector('.load-more-text');
+      if (textEl) {
+        textEl.textContent = `Load older messages (${remaining} remaining)`;
+      }
+    }
+  }
+
+  // Load older messages chunk from in-memory transcript cache and prepend upward
+  function loadOlderTranscriptMessages(tabObj) {
+    if (!tabObj || !tabObj.chatMessagesEl) return;
+    if (!tabObj.allTranscriptMessages || tabObj.loadedTranscriptStartIndex <= 0) return;
+    if (tabObj.isLoadingOlderTranscript) return;
+
+    tabObj.isLoadingOlderTranscript = true;
+
+    const container = tabObj.chatMessagesEl;
+    const prevScrollHeight = container.scrollHeight;
+    const prevScrollTop = container.scrollTop;
+
+    const nextStartIndex = Math.max(0, tabObj.loadedTranscriptStartIndex - CHAT_PAGE_SIZE);
+    const olderBatch = tabObj.allTranscriptMessages.slice(nextStartIndex, tabObj.loadedTranscriptStartIndex);
+    tabObj.loadedTranscriptStartIndex = nextStartIndex;
+
+    const bannerEl = container.querySelector('.chat-load-more-container');
+    const insertReference = bannerEl ? bannerEl.nextSibling : container.firstChild;
+
+    const fragment = document.createDocumentFragment();
+    for (const msg of olderBatch) {
+      const msgEl = createChatMessageElement(tabObj, msg);
+      if (msgEl) {
+        fragment.appendChild(msgEl);
+      }
+    }
+
+    if (insertReference) {
+      container.insertBefore(fragment, insertReference);
+    } else {
+      container.appendChild(fragment);
+    }
+
+    renderLoadMoreBanner(tabObj);
+
+    // Compensate scroll position so visual content remains locked in place without jumping
+    const heightDelta = container.scrollHeight - prevScrollHeight;
+    container.scrollTop = prevScrollTop + heightDelta;
+
+    tabObj.isLoadingOlderTranscript = false;
+  }
+
+  // Load past conversation messages from daemon transcript (latest first, paginated upward)
   async function loadChatTranscript(tabObj) {
     if (!tabObj || !tabObj.chatMessagesEl) return;
     const sessionId = tabObj.session.id;
@@ -2607,12 +2697,36 @@
       const res = await fetch(`${baseUrl}/v1/sessions/transcript?id=${encodeURIComponent(sessionId)}&format=json`);
       if (!res.ok) return;
       const data = await res.json();
-      if (data && data.messages && data.messages.length > 0) {
+      if (data && Array.isArray(data.messages)) {
+        tabObj.allTranscriptMessages = data.messages;
+        tabObj.isLoadingOlderTranscript = false;
         tabObj.chatMessagesEl.innerHTML = '';
-        for (const msg of data.messages) {
-          appendChatMessage(tabObj, msg);
+
+        const total = data.messages.length;
+        if (total === 0) {
+          tabObj.loadedTranscriptStartIndex = 0;
+          return;
+        }
+
+        if (total <= CHAT_PAGE_SIZE) {
+          tabObj.loadedTranscriptStartIndex = 0;
+          for (const msg of data.messages) {
+            appendChatMessage(tabObj, msg);
+          }
+        } else {
+          tabObj.loadedTranscriptStartIndex = total - CHAT_PAGE_SIZE;
+          renderLoadMoreBanner(tabObj);
+          const initialMessages = data.messages.slice(tabObj.loadedTranscriptStartIndex);
+          for (const msg of initialMessages) {
+            appendChatMessage(tabObj, msg);
+          }
         }
         tabObj.chatMessagesEl.scrollTop = tabObj.chatMessagesEl.scrollHeight;
+        requestAnimationFrame(() => {
+          if (tabObj.chatMessagesEl) {
+            tabObj.chatMessagesEl.scrollTop = tabObj.chatMessagesEl.scrollHeight;
+          }
+        });
       }
     } catch (e) {
       console.warn('Failed to load chat transcript:', e);
@@ -3216,9 +3330,9 @@
     });
   }
 
-  // Append a message bubble into the chat messages container
-  function appendChatMessage(tabObj, msg) {
-    if (!tabObj || !tabObj.chatMessagesEl) return;
+  // Create a chat message DOM element from message object
+  function createChatMessageElement(tabObj, msg) {
+    if (!tabObj || !msg) return null;
     const msgEl = document.createElement('div');
     const timeStr = msg.timestamp ? new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
 
@@ -3322,9 +3436,10 @@
         `).join('');
       }
       const bodyHtml = renderMarkdown(msg.content || '');
+      const agentName = tabObj.session ? (tabObj.session.agent || 'Claude Code') : 'Claude Code';
       msgEl.innerHTML = `
         <div class="chat-msg-header">
-          <span class="chat-msg-role">🤖 ${escapeHtml(tabObj.session.agent || 'Claude Code')}</span>
+          <span class="chat-msg-role">🤖 ${escapeHtml(agentName)}</span>
           <div class="chat-msg-actions">
             <span class="chat-msg-time">${timeStr}</span>
             <button class="btn-copy-chat-msg" title="Copy message" type="button" aria-label="Copy message">
@@ -3346,9 +3461,20 @@
 
     attachChatMessageListeners(msgEl, msg.content);
     attachCodeBlockCopyButtons(msgEl);
-    linkifyChatFiles(msgEl, tabObj.session);
+    if (tabObj.session) {
+      linkifyChatFiles(msgEl, tabObj.session);
+    }
 
-    tabObj.chatMessagesEl.appendChild(msgEl);
+    return msgEl;
+  }
+
+  // Append a message bubble into the chat messages container
+  function appendChatMessage(tabObj, msg) {
+    if (!tabObj || !tabObj.chatMessagesEl) return null;
+    const msgEl = createChatMessageElement(tabObj, msg);
+    if (msgEl) {
+      tabObj.chatMessagesEl.appendChild(msgEl);
+    }
     return msgEl;
   }
 
