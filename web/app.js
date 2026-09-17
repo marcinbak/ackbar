@@ -2134,6 +2134,132 @@
     }
   }
 
+  // Copy text to clipboard with modern API and textarea fallback
+  async function copyTextToClipboard(text) {
+    if (!text) return false;
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text);
+        return true;
+      }
+    } catch (e) {
+      // fallback below
+    }
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      ta.style.left = '-9999px';
+      ta.style.pointerEvents = 'none';
+      document.body.appendChild(ta);
+      ta.select();
+      const success = document.execCommand('copy');
+      document.body.removeChild(ta);
+      return success;
+    } catch (e) {
+      console.warn('Failed to copy to clipboard:', e);
+      return false;
+    }
+  }
+
+  // Attach code block copy buttons to all <pre> elements inside container
+  function attachCodeBlockCopyButtons(container) {
+    if (!container) return;
+    const preEls = container.querySelectorAll('pre');
+    preEls.forEach(pre => {
+      if (pre.querySelector('.btn-copy-code')) return;
+      if (pre.closest('.chat-thinking') || pre.closest('.chat-tool-card')) return;
+
+      const copyBtn = document.createElement('button');
+      copyBtn.className = 'btn-copy-code';
+      copyBtn.type = 'button';
+      copyBtn.title = 'Copy code';
+      copyBtn.setAttribute('aria-label', 'Copy code snippet');
+      copyBtn.innerHTML = `
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+        </svg>
+        <span>Copy</span>
+      `;
+      copyBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        const codeEl = pre.querySelector('code');
+        let text = '';
+        if (codeEl) {
+          text = codeEl.innerText;
+        } else {
+          const clone = pre.cloneNode(true);
+          const btn = clone.querySelector('.btn-copy-code');
+          if (btn) btn.remove();
+          text = clone.innerText;
+        }
+        text = text.replace(/\r\n/g, '\n').replace(/\n+$/, '');
+        const ok = await copyTextToClipboard(text);
+        if (ok) {
+          copyBtn.classList.add('copied');
+          copyBtn.innerHTML = `
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="20 6 9 17 4 12"></polyline>
+            </svg>
+            <span>Copied!</span>
+          `;
+          setTimeout(() => {
+            copyBtn.classList.remove('copied');
+            copyBtn.innerHTML = `
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+              </svg>
+              <span>Copy</span>
+            `;
+          }, 1500);
+        }
+      });
+      pre.appendChild(copyBtn);
+    });
+  }
+
+  // Attach message-level copy button handler
+  function attachChatMessageListeners(msgEl, rawContent) {
+    if (!msgEl) return;
+    const copyBtn = msgEl.querySelector('.btn-copy-chat-msg');
+    if (!copyBtn) return;
+    copyBtn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      let textToCopy = rawContent;
+      if (!textToCopy) {
+        const bodyEl = msgEl.querySelector('.chat-msg-body') || msgEl.querySelector('.msg-body') || msgEl.querySelector('.markdown-body');
+        if (bodyEl) {
+          const clone = bodyEl.cloneNode(true);
+          clone.querySelectorAll('.btn-copy-code, .chat-streaming-cursor').forEach(el => el.remove());
+          textToCopy = clone.innerText || clone.textContent || '';
+        }
+      }
+      if (!textToCopy) return;
+      textToCopy = textToCopy.replace(/\r\n/g, '\n').trim();
+      const ok = await copyTextToClipboard(textToCopy);
+      if (ok) {
+        copyBtn.classList.add('copied');
+        copyBtn.title = 'Copied!';
+        const origSvg = copyBtn.innerHTML;
+        copyBtn.innerHTML = `
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="20 6 9 17 4 12"></polyline>
+          </svg>
+        `;
+        setTimeout(() => {
+          copyBtn.classList.remove('copied');
+          copyBtn.title = 'Copy message';
+          copyBtn.innerHTML = origSvg;
+        }, 1500);
+      }
+    });
+  }
+
   // Append a message bubble into the chat messages container
   function appendChatMessage(tabObj, msg) {
     if (!tabObj || !tabObj.chatMessagesEl) return;
@@ -2145,7 +2271,15 @@
       msgEl.innerHTML = `
         <div class="chat-msg-header">
           <span class="chat-msg-role">👤 You</span>
-          <span class="chat-msg-time">${timeStr}</span>
+          <div class="chat-msg-actions">
+            <span class="chat-msg-time">${timeStr}</span>
+            <button class="btn-copy-chat-msg" title="Copy message" type="button" aria-label="Copy message">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+              </svg>
+            </button>
+          </div>
         </div>
         <div class="chat-msg-body">${escapeHtml(msg.content).replace(/\\n/g, '<br/>')}</div>
       `;
@@ -2173,7 +2307,15 @@
       msgEl.innerHTML = `
         <div class="chat-msg-header">
           <span class="chat-msg-role">🤖 ${escapeHtml(tabObj.session.agent || 'Claude Code')}</span>
-          <span class="chat-msg-time">${timeStr}</span>
+          <div class="chat-msg-actions">
+            <span class="chat-msg-time">${timeStr}</span>
+            <button class="btn-copy-chat-msg" title="Copy message" type="button" aria-label="Copy message">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+              </svg>
+            </button>
+          </div>
         </div>
         ${thinkingHtml}
         ${toolsHtml ? `<div class="chat-tools">${toolsHtml}</div>` : ''}
@@ -2183,6 +2325,9 @@
       msgEl.className = 'chat-msg system-msg';
       msgEl.innerHTML = `<span class="system-tag">ℹ️ ${escapeHtml(msg.content)}</span>`;
     }
+
+    attachChatMessageListeners(msgEl, msg.content);
+    attachCodeBlockCopyButtons(msgEl);
 
     tabObj.chatMessagesEl.appendChild(msgEl);
     return msgEl;
@@ -2208,12 +2353,21 @@
     assistantMsgEl.innerHTML = `
       <div class="chat-msg-header">
         <span class="chat-msg-role">🤖 ${escapeHtml(tabObj.session.agent || 'Claude Code')}</span>
-        <span class="chat-msg-time">${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+        <div class="chat-msg-actions">
+          <span class="chat-msg-time">${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+          <button class="btn-copy-chat-msg" title="Copy message" type="button" aria-label="Copy message">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+            </svg>
+          </button>
+        </div>
       </div>
       <div class="chat-thinking-slot"></div>
       <div class="chat-tools-slot"></div>
       <div class="chat-msg-body markdown-body"><span class="chat-streaming-cursor"></span></div>
     `;
+    attachChatMessageListeners(assistantMsgEl);
     tabObj.chatMessagesEl.appendChild(assistantMsgEl);
     tabObj.chatMessagesEl.scrollTop = tabObj.chatMessagesEl.scrollHeight;
 
@@ -2327,12 +2481,21 @@
         inFlight.innerHTML = `
           <div class="chat-msg-header">
             <span class="chat-msg-role">🤖 ${escapeHtml(tabObj.session.agent || 'Claude Code')}</span>
-            <span class="chat-msg-time">${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+            <div class="chat-msg-actions">
+              <span class="chat-msg-time">${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+              <button class="btn-copy-chat-msg" title="Copy message" type="button" aria-label="Copy message">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                </svg>
+              </button>
+            </div>
           </div>
           <div class="chat-thinking-slot"></div>
           <div class="chat-tools-slot"></div>
           <div class="chat-msg-body markdown-body"><span class="chat-streaming-cursor"></span></div>
         `;
+        attachChatMessageListeners(inFlight);
         tabObj.chatMessagesEl.appendChild(inFlight);
       }
       tabObj.activeTurnMsgEl = inFlight;
@@ -2407,7 +2570,7 @@
               }
               const content = card.querySelector('.chat-tool-content');
               if (content && evt.tool_output) {
-                content.textContent += `\\n\\n--- Output ---\\n${evt.tool_output}`;
+                content.textContent += `\n\n--- Output ---\n${evt.tool_output}`;
               }
             }
           }
@@ -2418,6 +2581,8 @@
         if (msgEl) {
           if (!tabObj.activeTurnBuffer && evt.text) {
             tabObj.activeTurnBuffer = evt.text;
+          }
+          if (tabObj.activeTurnBuffer) {
             const bodyEl = msgEl.querySelector('.chat-msg-body');
             if (bodyEl) {
               const html = window.marked ? window.marked.parse(tabObj.activeTurnBuffer) : `<pre>${escapeHtml(tabObj.activeTurnBuffer)}</pre>`;
@@ -2427,6 +2592,8 @@
           msgEl.classList.remove('in-flight');
           const cursor = msgEl.querySelector('.chat-streaming-cursor');
           if (cursor) cursor.remove();
+          attachCodeBlockCopyButtons(msgEl);
+          attachChatMessageListeners(msgEl, tabObj.activeTurnBuffer);
         }
         resetChatComposer(tabObj);
         tabObj.activeTurnMsgEl = null;
@@ -2443,6 +2610,8 @@
           if (bodyEl) {
             bodyEl.innerHTML += `<div style="margin-top: 8px; color: var(--text-dim); font-style: italic;">[Turn cancelled by user]</div>`;
           }
+          attachCodeBlockCopyButtons(msgEl);
+          attachChatMessageListeners(msgEl, tabObj.activeTurnBuffer);
         }
         resetChatComposer(tabObj);
         tabObj.activeTurnMsgEl = null;
@@ -3379,7 +3548,15 @@ ${session.last_prompt}
             <div class="transcript-msg user-msg">
               <div class="msg-header">
                 <span class="msg-role">👤 User</span>
-                <span class="msg-time">${timeStr}</span>
+                <div class="chat-msg-actions">
+                  <span class="msg-time">${timeStr}</span>
+                  <button class="btn-copy-chat-msg" title="Copy message" type="button" aria-label="Copy message">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                    </svg>
+                  </button>
+                </div>
               </div>
               <div class="msg-body">${escapeHtml(m.content).replace(/\n/g, '<br/>')}</div>
             </div>
@@ -3401,7 +3578,15 @@ ${session.last_prompt}
             <div class="transcript-msg assistant-msg">
               <div class="msg-header">
                 <span class="msg-role">🤖 Assistant</span>
-                <span class="msg-time">${timeStr}</span>
+                <div class="chat-msg-actions">
+                  <span class="msg-time">${timeStr}</span>
+                  <button class="btn-copy-chat-msg" title="Copy message" type="button" aria-label="Copy message">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                    </svg>
+                  </button>
+                </div>
               </div>
               ${toolsHtml}
               ${thinkingHtml}
@@ -3443,6 +3628,11 @@ ${session.last_prompt}
 
     containerEl.appendChild(transContainer);
     if (el.terminalViewport) el.terminalViewport.appendChild(containerEl);
+
+    transContainer.querySelectorAll('.transcript-msg').forEach(msgEl => {
+      attachChatMessageListeners(msgEl);
+    });
+    attachCodeBlockCopyButtons(transContainer);
 
     transContainer.querySelector('#transBtnResume').addEventListener('click', () => {
       openSessionInTab(session);
@@ -4257,16 +4447,7 @@ ${session.last_prompt}
         if (state.contextMenuSession) {
           const sess = state.contextMenuSession;
           const text = sess.name || sess.agent || '';
-          try {
-            await navigator.clipboard.writeText(text);
-          } catch (e) {
-            const ta = document.createElement('textarea');
-            ta.value = text;
-            document.body.appendChild(ta);
-            ta.select();
-            document.execCommand('copy');
-            document.body.removeChild(ta);
-          }
+          await copyTextToClipboard(text);
         }
       });
     }
@@ -4277,16 +4458,7 @@ ${session.last_prompt}
           const sess = state.contextMenuSession;
           const sessName = sess.name || sess.agent || '';
           const fullPath = sess.node_path ? `${sess.node_path}/${sessName}` : sessName;
-          try {
-            await navigator.clipboard.writeText(fullPath);
-          } catch (e) {
-            const ta = document.createElement('textarea');
-            ta.value = fullPath;
-            document.body.appendChild(ta);
-            ta.select();
-            document.execCommand('copy');
-            document.body.removeChild(ta);
-          }
+          await copyTextToClipboard(fullPath);
         }
       });
     }
