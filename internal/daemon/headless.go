@@ -655,7 +655,7 @@ func (h *HeadlessRunner) processStream(sessionID string, r io.Reader) {
 				}
 				if len(textBlocks) > 0 {
 					joined := strings.Join(textBlocks, "\n\n")
-					if (hasEmittedAssistantText || needsSeparation) {
+					if hasEmittedAssistantText || needsSeparation {
 						if !strings.HasPrefix(joined, "\n") {
 							joined = "\n\n" + joined
 						} else if !strings.HasPrefix(joined, "\n\n") {
