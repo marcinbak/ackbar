@@ -174,12 +174,11 @@ func (s *Server) transferUploadToRemote(hostName, localPath, filename string) (s
 	// Check if host has an SSH target
 	sshTarget := hostName
 	if s.db != nil {
-		if hosts, err := s.db.ListHosts(); err == nil {
-			for _, h := range hosts {
-				if h.Name == hostName && h.SSHTarget != "" {
-					sshTarget = h.SSHTarget
-					break
-				}
+		if hostRec := s.resolveHost(hostName); hostRec != nil {
+			if hostRec.SSHTarget != "" {
+				sshTarget = hostRec.SSHTarget
+			} else if hostRec.Name != "" {
+				sshTarget = hostRec.Name
 			}
 		}
 	}
