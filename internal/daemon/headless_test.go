@@ -68,6 +68,12 @@ func TestHeadlessRunner_SubscribeAndEmit(t *testing.T) {
 }
 
 func TestHeadlessStreamParser(t *testing.T) {
+	runner := NewHeadlessRunner(nil, nil)
+	sessionID := "test-session-parser"
+
+	ch, cleanup := runner.Subscribe(sessionID)
+	defer cleanup()
+
 	sampleOutput := `
 {"type":"message_start","message":{"id":"msg_123","role":"assistant"}}
 {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
@@ -78,52 +84,23 @@ func TestHeadlessStreamParser(t *testing.T) {
 {"type":"result","result":"Done."}
 `
 
+	go func() {
+		runner.processStream(sessionID, strings.NewReader(sampleOutput))
+	}()
+
 	var receivedEvents []ChatStreamEvent
-	lines := strings.Split(strings.TrimSpace(sampleOutput), "\n")
-
-	for _, line := range lines {
-		var raw map[string]interface{}
-		if err := json.Unmarshal([]byte(line), &raw); err != nil {
-			t.Fatalf("Failed to parse JSON line: %v", err)
-		}
-
-		evtType, _ := raw["type"].(string)
-		switch evtType {
-		case "content_block_delta":
-			if delta, ok := raw["delta"].(map[string]interface{}); ok {
-				deltaType, _ := delta["type"].(string)
-				if deltaType == "text_delta" {
-					text, _ := delta["text"].(string)
-					receivedEvents = append(receivedEvents, ChatStreamEvent{
-						Type: "text_delta",
-						Text: text,
-					})
-				}
+	for {
+		select {
+		case evt := <-ch:
+			receivedEvents = append(receivedEvents, evt)
+			if evt.Type == "turn_complete" {
+				goto done
 			}
-		case "content_block_start":
-			if cb, ok := raw["content_block"].(map[string]interface{}); ok {
-				if cb["type"] == "tool_use" {
-					toolName, _ := cb["name"].(string)
-					receivedEvents = append(receivedEvents, ChatStreamEvent{
-						Type:     "tool_start",
-						ToolName: toolName,
-					})
-				}
-			}
-		case "tool_result":
-			out, _ := raw["content"].(string)
-			receivedEvents = append(receivedEvents, ChatStreamEvent{
-				Type:       "tool_result",
-				ToolOutput: out,
-			})
-		case "result":
-			res, _ := raw["result"].(string)
-			receivedEvents = append(receivedEvents, ChatStreamEvent{
-				Type: "turn_complete",
-				Text: res,
-			})
+		case <-time.After(1 * time.Second):
+			t.Fatalf("Timeout waiting for events, received %d so far", len(receivedEvents))
 		}
 	}
+done:
 
 	if len(receivedEvents) != 5 {
 		t.Fatalf("Expected 5 parsed events, got %d", len(receivedEvents))
@@ -140,6 +117,99 @@ func TestHeadlessStreamParser(t *testing.T) {
 	}
 	if receivedEvents[4].Type != "turn_complete" || receivedEvents[4].Text != "Done." {
 		t.Errorf("Unexpected turn_complete event: %+v", receivedEvents[4])
+	}
+}
+
+func TestHeadlessStreamParser_PostToolTextSpacing(t *testing.T) {
+	runner := NewHeadlessRunner(nil, nil)
+	sessionID := "test-session-post-tool"
+
+	ch, cleanup := runner.Subscribe(sessionID)
+	defer cleanup()
+
+	sampleOutput := `
+{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Checking now."}}
+{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","name":"Bash","input":{}}}
+{"type":"tool_result","content":"ok"}
+{"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":"All files look good."}}
+{"type":"result","result":"Done."}
+`
+
+	go func() {
+		runner.processStream(sessionID, strings.NewReader(sampleOutput))
+	}()
+
+	var textDeltas []string
+	for {
+		select {
+		case evt := <-ch:
+			if evt.Type == "text_delta" {
+				textDeltas = append(textDeltas, evt.Text)
+			} else if evt.Type == "turn_complete" {
+				goto done
+			}
+		case <-time.After(1 * time.Second):
+			t.Fatalf("Timeout waiting for events")
+		}
+	}
+done:
+
+	if len(textDeltas) != 2 {
+		t.Fatalf("Expected 2 text deltas, got %d: %v", len(textDeltas), textDeltas)
+	}
+	if textDeltas[0] != "Checking now." {
+		t.Errorf("Expected first delta 'Checking now.', got %q", textDeltas[0])
+	}
+	if textDeltas[1] != "\n\nAll files look good." {
+		t.Errorf("Expected post-tool delta to start with double newline, got %q", textDeltas[1])
+	}
+}
+
+func TestHeadlessStreamParser_ConsecutiveAssistantMessages(t *testing.T) {
+	runner := NewHeadlessRunner(nil, nil)
+	sessionID := "test-session-consecutive-assistant"
+
+	ch, cleanup := runner.Subscribe(sessionID)
+	defer cleanup()
+
+	sampleOutput := `
+{"type":"assistant","message":{"content":"First message."}}
+{"type":"assistant","message":{"content":"Second message."}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Third part A."},{"type":"text","text":"Third part B."}]}}
+{"type":"result","result":"Done."}
+`
+
+	go func() {
+		runner.processStream(sessionID, strings.NewReader(sampleOutput))
+	}()
+
+	var textDeltas []string
+	for {
+		select {
+		case evt := <-ch:
+			if evt.Type == "text_delta" {
+				textDeltas = append(textDeltas, evt.Text)
+			} else if evt.Type == "turn_complete" {
+				goto done
+			}
+		case <-time.After(1 * time.Second):
+			t.Fatalf("Timeout waiting for events")
+		}
+	}
+done:
+
+	if len(textDeltas) != 3 {
+		t.Fatalf("Expected 3 text deltas, got %d: %v", len(textDeltas), textDeltas)
+	}
+	if textDeltas[0] != "First message." {
+		t.Errorf("Expected 'First message.', got %q", textDeltas[0])
+	}
+	if textDeltas[1] != "\n\nSecond message." {
+		t.Errorf("Expected consecutive message to have double newline prefix, got %q", textDeltas[1])
+	}
+	if textDeltas[2] != "\n\nThird part A.\n\nThird part B." {
+		t.Errorf("Expected consecutive multipart message to separate with double newlines, got %q", textDeltas[2])
 	}
 }
 
