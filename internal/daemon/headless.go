@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -466,121 +467,7 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 			h.mu.Unlock()
 		}()
 
-		scanner := bufio.NewScanner(stdoutPipe)
-		buf := make([]byte, 1024*1024)
-		scanner.Buffer(buf, 10*1024*1024)
-
-		for scanner.Scan() {
-			line := strings.TrimSpace(scanner.Text())
-			if line == "" {
-				continue
-			}
-
-			var raw map[string]interface{}
-			if err := json.Unmarshal([]byte(line), &raw); err != nil {
-				continue
-			}
-
-			evtType, _ := raw["type"].(string)
-			switch evtType {
-			case "content_block_delta":
-				if delta, ok := raw["delta"].(map[string]interface{}); ok {
-					deltaType, _ := delta["type"].(string)
-					if deltaType == "text_delta" {
-						text, _ := delta["text"].(string)
-						h.Emit(sess.ID, ChatStreamEvent{
-							SessionID: sess.ID,
-							Type:      "text_delta",
-							Text:      text,
-						})
-					} else if deltaType == "thinking_delta" {
-						thinking, _ := delta["thinking"].(string)
-						h.Emit(sess.ID, ChatStreamEvent{
-							SessionID: sess.ID,
-							Type:      "thought_delta",
-							Thinking:  thinking,
-						})
-					}
-				}
-
-			case "content_block_start":
-				if cb, ok := raw["content_block"].(map[string]interface{}); ok {
-					cbType, _ := cb["type"].(string)
-					if cbType == "tool_use" {
-						toolName, _ := cb["name"].(string)
-						toolInput := cb["input"]
-						h.Emit(sess.ID, ChatStreamEvent{
-							SessionID: sess.ID,
-							Type:      "tool_start",
-							ToolName:  toolName,
-							ToolInput: toolInput,
-						})
-					}
-				}
-
-			case "tool_result":
-				outputStr := ""
-				if out, ok := raw["content"].(string); ok {
-					outputStr = out
-				} else if contentArr, ok := raw["content"].([]interface{}); ok {
-					for _, part := range contentArr {
-						if partMap, ok := part.(map[string]interface{}); ok {
-							if txt, ok := partMap["text"].(string); ok {
-								outputStr += txt
-							}
-						}
-					}
-				}
-				h.Emit(sess.ID, ChatStreamEvent{
-					SessionID:  sess.ID,
-					Type:       "tool_result",
-					ToolOutput: outputStr,
-				})
-
-			case "assistant":
-				if msg, ok := raw["message"].(map[string]interface{}); ok {
-					if contentStr, ok := msg["content"].(string); ok && contentStr != "" {
-						h.Emit(sess.ID, ChatStreamEvent{
-							SessionID: sess.ID,
-							Type:      "text_delta",
-							Text:      contentStr,
-						})
-					} else if contentArr, ok := msg["content"].([]interface{}); ok {
-						for _, item := range contentArr {
-							if itemMap, ok := item.(map[string]interface{}); ok {
-								if itemMap["type"] == "text" {
-									if txt, ok := itemMap["text"].(string); ok && txt != "" {
-										h.Emit(sess.ID, ChatStreamEvent{
-											SessionID: sess.ID,
-											Type:      "text_delta",
-											Text:      txt,
-										})
-									}
-								}
-							}
-						}
-					}
-				}
-
-			case "result":
-				resText, _ := raw["result"].(string)
-				isErr, _ := raw["is_error"].(bool)
-				if isErr && resText != "" {
-					h.Emit(sess.ID, ChatStreamEvent{
-						SessionID: sess.ID,
-						Type:      "error",
-						Text:      resText,
-						IsError:   true,
-					})
-				} else {
-					h.Emit(sess.ID, ChatStreamEvent{
-						SessionID: sess.ID,
-						Type:      "turn_complete",
-						Text:      resText,
-					})
-				}
-			}
-		}
+		h.processStream(sess.ID, stdoutPipe)
 
 		waitErr := cmd.Wait()
 
@@ -661,4 +548,147 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 	}()
 
 	return nil
+}
+
+func (h *HeadlessRunner) processStream(sessionID string, r io.Reader) {
+	scanner := bufio.NewScanner(r)
+	buf := make([]byte, 1024*1024)
+	scanner.Buffer(buf, 10*1024*1024)
+
+	hasEmittedAssistantText := false
+	needsSeparation := false
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+
+		var raw map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &raw); err != nil {
+			continue
+		}
+
+		evtType, _ := raw["type"].(string)
+		switch evtType {
+		case "content_block_delta":
+			if delta, ok := raw["delta"].(map[string]interface{}); ok {
+				deltaType, _ := delta["type"].(string)
+				if deltaType == "text_delta" {
+					text, _ := delta["text"].(string)
+					if needsSeparation && hasEmittedAssistantText {
+						if !strings.HasPrefix(text, "\n") {
+							text = "\n\n" + text
+						} else if !strings.HasPrefix(text, "\n\n") {
+							text = "\n" + text
+						}
+						needsSeparation = false
+					}
+					hasEmittedAssistantText = true
+					h.Emit(sessionID, ChatStreamEvent{
+						SessionID: sessionID,
+						Type:      "text_delta",
+						Text:      text,
+					})
+				} else if deltaType == "thinking_delta" {
+					thinking, _ := delta["thinking"].(string)
+					h.Emit(sessionID, ChatStreamEvent{
+						SessionID: sessionID,
+						Type:      "thought_delta",
+						Thinking:  thinking,
+					})
+				}
+			}
+
+		case "content_block_start":
+			if cb, ok := raw["content_block"].(map[string]interface{}); ok {
+				cbType, _ := cb["type"].(string)
+				if cbType == "tool_use" {
+					needsSeparation = true
+					toolName, _ := cb["name"].(string)
+					toolInput := cb["input"]
+					h.Emit(sessionID, ChatStreamEvent{
+						SessionID: sessionID,
+						Type:      "tool_start",
+						ToolName:  toolName,
+						ToolInput: toolInput,
+					})
+				} else if cbType == "text" && hasEmittedAssistantText {
+					needsSeparation = true
+				}
+			}
+
+		case "tool_result":
+			needsSeparation = true
+			outputStr := ""
+			if out, ok := raw["content"].(string); ok {
+				outputStr = out
+			} else if contentArr, ok := raw["content"].([]interface{}); ok {
+				for _, part := range contentArr {
+					if partMap, ok := part.(map[string]interface{}); ok {
+						if txt, ok := partMap["text"].(string); ok {
+							outputStr += txt
+						}
+					}
+				}
+			}
+			h.Emit(sessionID, ChatStreamEvent{
+				SessionID:  sessionID,
+				Type:       "tool_result",
+				ToolOutput: outputStr,
+			})
+
+		case "assistant":
+			if msg, ok := raw["message"].(map[string]interface{}); ok {
+				var textBlocks []string
+				if contentStr, ok := msg["content"].(string); ok && contentStr != "" {
+					textBlocks = append(textBlocks, contentStr)
+				} else if contentArr, ok := msg["content"].([]interface{}); ok {
+					for _, item := range contentArr {
+						if itemMap, ok := item.(map[string]interface{}); ok {
+							if itemMap["type"] == "text" {
+								if txt, ok := itemMap["text"].(string); ok && txt != "" {
+									textBlocks = append(textBlocks, txt)
+								}
+							}
+						}
+					}
+				}
+				if len(textBlocks) > 0 {
+					joined := strings.Join(textBlocks, "\n\n")
+					if (hasEmittedAssistantText || needsSeparation) {
+						if !strings.HasPrefix(joined, "\n") {
+							joined = "\n\n" + joined
+						} else if !strings.HasPrefix(joined, "\n\n") {
+							joined = "\n" + joined
+						}
+					}
+					hasEmittedAssistantText = true
+					needsSeparation = false
+					h.Emit(sessionID, ChatStreamEvent{
+						SessionID: sessionID,
+						Type:      "text_delta",
+						Text:      joined,
+					})
+				}
+			}
+
+		case "result":
+			resText, _ := raw["result"].(string)
+			isErr, _ := raw["is_error"].(bool)
+			if isErr && resText != "" {
+				h.Emit(sessionID, ChatStreamEvent{
+					SessionID: sessionID,
+					Type:      "error",
+					Text:      resText,
+					IsError:   true,
+				})
+			} else {
+				h.Emit(sessionID, ChatStreamEvent{
+					SessionID: sessionID,
+					Type:      "turn_complete",
+					Text:      resText,
+				})
+			}
+		}
+	}
 }

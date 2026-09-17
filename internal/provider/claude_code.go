@@ -508,7 +508,7 @@ func (c *ClaudeProvider) ExtractTranscript(home, cwd, nativeID string) ([]daemon
 							}
 						}
 					}
-					fullText := strings.Join(textParts, "\n")
+					fullText := strings.Join(textParts, "\n\n")
 					if fullText != "" || len(tools) > 0 {
 						messages = append(messages, daemon.TranscriptMessage{
 							Role:      "assistant",

@@ -51,6 +51,40 @@
     });
   };
 
+  function configureMarked() {
+    if (window.marked) {
+      if (typeof window.marked.use === 'function') {
+        window.marked.use({ breaks: true, gfm: true });
+      } else if (typeof window.marked.setOptions === 'function') {
+        window.marked.setOptions({ breaks: true, gfm: true });
+      }
+    }
+  }
+  configureMarked();
+
+  function renderMarkdown(content) {
+    if (!window.marked) {
+      return `<pre>${escapeHtml(content || '')}</pre>`;
+    }
+    configureMarked();
+    return window.marked.parse(content || '');
+  }
+
+  function ensureDoubleNewlineSeparation(prev, next) {
+    if (!prev) return next || '';
+    if (!next) return prev || '';
+    const prevEndsWithNL = prev.endsWith('\n\n') ? 2 : (prev.endsWith('\n') ? 1 : 0);
+    const nextStartsWithNL = next.startsWith('\n\n') ? 2 : (next.startsWith('\n') ? 1 : 0);
+    const totalNL = prevEndsWithNL + nextStartsWithNL;
+    if (totalNL >= 2) {
+      return prev + next;
+    }
+    if (totalNL === 1) {
+      return prev + '\n' + next;
+    }
+    return prev + '\n\n' + next;
+  }
+
   function loadCollapsedGroups() {
     try {
       const saved = localStorage.getItem('ackbar_collapsed_groups');
@@ -2647,7 +2681,7 @@
           </details>
         `).join('');
       }
-      const bodyHtml = window.marked ? window.marked.parse(msg.content || '') : `<pre>${escapeHtml(msg.content || '')}</pre>`;
+      const bodyHtml = renderMarkdown(msg.content || '');
       msgEl.innerHTML = `
         <div class="chat-msg-header">
           <span class="chat-msg-role">🤖 ${escapeHtml(tabObj.session.agent || 'Claude Code')}</span>
@@ -2900,6 +2934,7 @@
 
       tabObj.activeTurnMsgEl = assistantMsgEl;
       tabObj.activeTurnBuffer = '';
+      tabObj.activeTurnHadTool = false;
 
       if (tabObj.chatCancelBtn) tabObj.chatCancelBtn.style.display = 'inline-flex';
       if (tabObj.chatStatusBadge) tabObj.chatStatusBadge.textContent = '⚡ Working...';
@@ -2925,6 +2960,7 @@
       resetChatComposer(tabObj);
       tabObj.activeTurnMsgEl = null;
       tabObj.activeTurnBuffer = '';
+      tabObj.activeTurnHadTool = false;
     }
   }
 
@@ -3031,6 +3067,7 @@
         break;
 
       case 'turn_start':
+        tabObj.activeTurnHadTool = false;
         if (evt.text) {
           const lastMsg = tabObj.chatMessagesEl.lastElementChild;
           const userBody = lastMsg ? lastMsg.querySelector('.chat-msg-body') : null;
@@ -3051,13 +3088,21 @@
 
       case 'text_delta':
         if (msgEl) {
-          tabObj.activeTurnBuffer = (tabObj.activeTurnBuffer || '') + (evt.text || '');
-          const bodyEl = msgEl.querySelector('.chat-msg-body');
-          if (bodyEl) {
-            const html = window.marked ? window.marked.parse(tabObj.activeTurnBuffer) : `<pre>${escapeHtml(tabObj.activeTurnBuffer)}</pre>`;
-            bodyEl.innerHTML = html + '<span class="chat-streaming-cursor"></span>';
+          const incoming = evt.text || '';
+          if (incoming) {
+            if (tabObj.activeTurnHadTool && tabObj.activeTurnBuffer) {
+              tabObj.activeTurnBuffer = ensureDoubleNewlineSeparation(tabObj.activeTurnBuffer, incoming);
+              tabObj.activeTurnHadTool = false;
+            } else {
+              tabObj.activeTurnBuffer = (tabObj.activeTurnBuffer || '') + incoming;
+            }
+            const bodyEl = msgEl.querySelector('.chat-msg-body');
+            if (bodyEl) {
+              const html = renderMarkdown(tabObj.activeTurnBuffer);
+              bodyEl.innerHTML = html + '<span class="chat-streaming-cursor"></span>';
+            }
+            tabObj.chatMessagesEl.scrollTop = tabObj.chatMessagesEl.scrollHeight;
           }
-          tabObj.chatMessagesEl.scrollTop = tabObj.chatMessagesEl.scrollHeight;
         }
         break;
 
@@ -3083,6 +3128,7 @@
         break;
 
       case 'tool_start':
+        tabObj.activeTurnHadTool = true;
         if (msgEl && evt.tool_name) {
           const slot = msgEl.querySelector('.chat-tools-slot');
           if (slot) {
@@ -3102,6 +3148,7 @@
         break;
 
       case 'tool_result':
+        tabObj.activeTurnHadTool = true;
         if (msgEl) {
           const slot = msgEl.querySelector('.chat-tools-slot');
           if (slot) {
@@ -3132,7 +3179,7 @@
           if (tabObj.activeTurnBuffer) {
             const bodyEl = msgEl.querySelector('.chat-msg-body');
             if (bodyEl) {
-              const html = window.marked ? window.marked.parse(tabObj.activeTurnBuffer) : `<pre>${escapeHtml(tabObj.activeTurnBuffer)}</pre>`;
+              const html = renderMarkdown(tabObj.activeTurnBuffer);
               bodyEl.innerHTML = html;
             }
           }
@@ -3146,6 +3193,7 @@
         resetChatComposer(tabObj);
         tabObj.activeTurnMsgEl = null;
         tabObj.activeTurnBuffer = '';
+        tabObj.activeTurnHadTool = false;
         fetchSessions();
         break;
 
@@ -3165,6 +3213,7 @@
         resetChatComposer(tabObj);
         tabObj.activeTurnMsgEl = null;
         tabObj.activeTurnBuffer = '';
+        tabObj.activeTurnHadTool = false;
         if (tabObj.promptQueue && tabObj.promptQueue.length > 0) {
           tabObj.isQueuePaused = true;
           renderChatQueue(tabObj);
@@ -3185,6 +3234,7 @@
         resetChatComposer(tabObj);
         tabObj.activeTurnMsgEl = null;
         tabObj.activeTurnBuffer = '';
+        tabObj.activeTurnHadTool = false;
         if (tabObj.promptQueue && tabObj.promptQueue.length > 0) {
           tabObj.isQueuePaused = true;
           renderChatQueue(tabObj);
@@ -3197,6 +3247,7 @@
     if (tabObj.chatCancelBtn) tabObj.chatCancelBtn.style.display = 'none';
     if (tabObj.chatStatusBadge) tabObj.chatStatusBadge.textContent = '🟢 Ready';
     updateComposerButtonState(tabObj);
+    tabObj.activeTurnHadTool = false;
     if (tabObj.chatInputEl) tabObj.chatInputEl.focus();
   }
 
@@ -3566,6 +3617,7 @@
       chatStatusBadge: null,
       chatEngineBadge: null,
       activeTurnBuffer: '',
+      activeTurnHadTool: false,
       activeTurnMsgEl: null,
       promptQueue: [],
       isQueueExpanded: false,
@@ -3974,7 +4026,7 @@ ${session.last_prompt}
     const docContainer = document.createElement('div');
     docContainer.className = 'doc-viewer-container';
 
-    const renderedHtml = window.marked ? window.marked.parse(markdownContent) : `<pre>${markdownContent}</pre>`;
+    const renderedHtml = renderMarkdown(markdownContent);
 
     docContainer.innerHTML = `
       <div class="doc-viewer-header">
@@ -4130,7 +4182,7 @@ ${session.last_prompt}
             </div>
           `;
         } else if (m.role === 'assistant') {
-          const bodyHtml = window.marked ? window.marked.parse(m.content || '') : `<pre>${escapeHtml(m.content)}</pre>`;
+          const bodyHtml = renderMarkdown(m.content || '');
           const toolsHtml = m.tool_calls && m.tool_calls.length > 0 ? `
             <div class="msg-tools">
               ${m.tool_calls.map(tc => `<span class="tool-tag">⚡ ${escapeHtml(tc)}</span>`).join(' ')}
