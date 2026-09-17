@@ -31,10 +31,10 @@ var allowedExtensions = map[string]bool{
 	".bmp":  true,
 	".svg":  true,
 	// Documents & Text
-	".pdf":  true,
-	".txt":  true,
-	".md":   true,
-	".log":  true,
+	".pdf": true,
+	".txt": true,
+	".md":  true,
+	".log": true,
 	// Data & Config
 	".json": true,
 	".yaml": true,
