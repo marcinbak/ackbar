@@ -289,6 +289,8 @@ func (s *Server) Mux() http.Handler {
 	mux.HandleFunc("/v1/projects/create", s.handleCreateProject)
 	mux.HandleFunc("/v1/maintenance/purge", s.handlePurge)
 	mux.HandleFunc("/v1/editor/open", s.handleEditorOpen)
+	mux.HandleFunc("/v1/files/content", s.handleFileContent)
+	mux.HandleFunc("/v1/files/open", s.handleFileOpen)
 	mux.HandleFunc("/v1/version", s.handleVersion)
 	mux.HandleFunc("/v1/settings", s.handleSettings)
 	mux.HandleFunc("/v1/uploads", s.handleUpload)

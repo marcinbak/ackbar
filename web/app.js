@@ -2312,6 +2312,260 @@
     });
   }
 
+  // Known file extensions for linkification & action pills
+  const KNOWN_CHAT_FILE_EXTS = new Set([
+    'png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico',
+    'html', 'htm', 'pdf', 'md', 'markdown', 'txt', 'csv', 'json', 'yaml', 'yml', 'xml', 'log',
+    'js', 'jsx', 'ts', 'tsx', 'go', 'py', 'rs', 'sh', 'bash', 'zsh', 'css', 'scss',
+    'sql', 'java', 'c', 'cpp', 'h', 'swift', 'kt', 'dart', 'zip', 'tar', 'gz', 'mp4', 'webm', 'mp3', 'wav'
+  ]);
+
+  const CHAT_IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico']);
+
+  // Construct URL to stream/view file content through the daemon
+  function getChatFileContentUrl(filePath, session, download = false) {
+    let url = `/v1/files/content?path=${encodeURIComponent(filePath)}`;
+    if (session) {
+      if (session.id) url += `&session_id=${encodeURIComponent(session.id)}`;
+      if (session.host) url += `&host=${encodeURIComponent(session.host)}`;
+    }
+    if (download) url += '&download=1';
+    const token = getAuthToken();
+    if (token) url += `&token=${encodeURIComponent(token)}`;
+    return url;
+  }
+
+  // Open file in local application (e.g. Preview, Browser, VS Code)
+  async function openChatFileInApp(filePath, session, app = 'default') {
+    const host = session ? session.host : null;
+    const sessionId = session ? session.id : null;
+    if (app === 'vscode') {
+      return openInVSCode(filePath, host);
+    }
+    try {
+      const res = await fetch('/v1/files/open', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          path: filePath,
+          session_id: sessionId,
+          host: host,
+          app: app
+        })
+      });
+      const filename = filePath.split('/').pop();
+      if (!res.ok) {
+        const errText = await res.text().catch(() => res.statusText);
+        showUploadToast(`Failed to open ${filename}: ${errText}`, 'error');
+      } else {
+        const data = await res.json().catch(() => ({}));
+        const appLabel = app === 'preview' ? 'Preview' : (data.remote ? 'macOS App (staged from remote)' : 'App');
+        showUploadToast(`Opened ${filename} in ${appLabel}`, 'success');
+      }
+    } catch (err) {
+      showUploadToast(`Error opening file: ${err.message}`, 'error');
+    }
+  }
+
+  // Check if string looks like a file path
+  function isChatFilePath(str) {
+    if (!str || typeof str !== 'string') return false;
+    const trimmed = str.trim();
+    if (trimmed.length < 3 || trimmed.length > 250) return false;
+    if (trimmed.includes('\n') || trimmed.includes('\r')) return false;
+    if (trimmed.startsWith('http://') || trimmed.startsWith('https://') || trimmed.includes('@')) return false;
+    if (trimmed.includes(' ') && !trimmed.startsWith('/')) return false;
+
+    let pathWithoutQuery = trimmed.split('?')[0].split('#')[0];
+    if (pathWithoutQuery.startsWith('file://')) {
+      pathWithoutQuery = pathWithoutQuery.replace(/^file:\/\//, '');
+    }
+
+    const parts = pathWithoutQuery.split('.');
+    if (parts.length < 2) return false;
+    const ext = parts.pop().toLowerCase();
+    if (!KNOWN_CHAT_FILE_EXTS.has(ext)) return false;
+
+    // Filter out common code expressions like obj.property if not common file extension
+    if (/^[a-zA-Z0-9_]+\.[a-zA-Z0-9_]+$/.test(pathWithoutQuery) && !['html', 'htm', 'png', 'jpg', 'jpeg', 'gif', 'svg', 'pdf', 'md', 'txt', 'csv', 'json', 'yaml', 'yml', 'css', 'js', 'ts', 'go', 'py'].includes(ext)) {
+      return false;
+    }
+
+    return true;
+  }
+
+  // Build an interactive file action pill element
+  function createChatFilePill(filePath, session) {
+    let cleanPath = filePath.trim();
+    if (cleanPath.startsWith('file://')) {
+      cleanPath = cleanPath.replace(/^file:\/\//, '');
+    }
+    const ext = cleanPath.split('?')[0].split('.').pop().toLowerCase();
+    const isImg = CHAT_IMAGE_EXTS.has(ext);
+    const isHtml = (ext === 'html' || ext === 'htm');
+    const isPdf = (ext === 'pdf');
+    const filename = cleanPath.split('/').pop();
+    const contentUrl = getChatFileContentUrl(cleanPath, session);
+
+    let icon = '📄';
+    if (isImg) icon = '🖼️';
+    else if (isHtml) icon = '🌐';
+    else if (isPdf) icon = '📑';
+    else if (['js', 'jsx', 'ts', 'tsx', 'go', 'py', 'rs', 'c', 'cpp', 'swift'].includes(ext)) icon = '💻';
+
+    const pill = document.createElement('span');
+    pill.className = 'chat-file-pill';
+    pill.title = cleanPath;
+
+    const appTitle = isImg || isPdf ? 'Open in macOS Preview' : 'Open in native App';
+    const appLabel = isImg || isPdf ? 'Preview' : 'App';
+
+    pill.innerHTML = `
+      <span class="chat-file-icon">${icon}</span>
+      <a class="chat-file-name" href="${escapeHtml(contentUrl)}" target="_blank" title="View ${escapeHtml(filename)} in browser">${escapeHtml(filename)}</a>
+      <span class="chat-file-actions">
+        <a class="chat-file-btn btn-view" href="${escapeHtml(contentUrl)}" target="_blank" title="View / Render in Browser">🌐 View</a>
+        <button class="chat-file-btn" data-action="app" title="${appTitle}">💻 ${appLabel}</button>
+        <button class="chat-file-btn btn-vscode" data-action="vscode" title="Open in VS Code">✏️ Code</button>
+      </span>
+    `;
+
+    const appBtn = pill.querySelector('button[data-action="app"]');
+    if (appBtn) {
+      appBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const appChoice = isImg || isPdf ? 'preview' : 'default';
+        openChatFileInApp(cleanPath, session, appChoice);
+      });
+    }
+
+    const vscodeBtn = pill.querySelector('button[data-action="vscode"]');
+    if (vscodeBtn) {
+      vscodeBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        openChatFileInApp(cleanPath, session, 'vscode');
+      });
+    }
+
+    return pill;
+  }
+
+  // Build an inline image preview card
+  function createChatImagePreviewCard(filePath, session) {
+    let cleanPath = filePath.trim();
+    if (cleanPath.startsWith('file://')) {
+      cleanPath = cleanPath.replace(/^file:\/\//, '');
+    }
+    const filename = cleanPath.split('/').pop();
+    const contentUrl = getChatFileContentUrl(cleanPath, session);
+
+    const card = document.createElement('div');
+    card.className = 'chat-file-preview-card';
+    card.innerHTML = `
+      <div class="chat-file-preview-header">
+        <span>🖼️ ${escapeHtml(filename)}</span>
+        <button class="chat-file-btn" data-action="preview" title="Open in macOS Preview">💻 Open in Preview</button>
+      </div>
+      <div class="chat-file-preview-body">
+        <img src="${escapeHtml(contentUrl)}" alt="${escapeHtml(filename)}" loading="lazy" title="Click to open full size" />
+      </div>
+    `;
+
+    const img = card.querySelector('img');
+    if (img) {
+      img.addEventListener('click', () => {
+        window.open(contentUrl, '_blank');
+      });
+    }
+
+    const previewBtn = card.querySelector('button[data-action="preview"]');
+    if (previewBtn) {
+      previewBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        openChatFileInApp(cleanPath, session, 'preview');
+      });
+    }
+
+    return card;
+  }
+
+  // Linkify file paths inside chat message container
+  function linkifyChatFiles(containerEl, session) {
+    if (!containerEl) return;
+
+    // 1. Process <a> markdown links
+    containerEl.querySelectorAll('a').forEach(a => {
+      if (a.dataset.fileLinkified) return;
+      const href = a.getAttribute('href') || '';
+      let cleanPath = '';
+      if (href.startsWith('file://')) {
+        cleanPath = href.replace(/^file:\/\//, '');
+      } else if (!href.startsWith('http://') && !href.startsWith('https://') && !href.startsWith('#') && !href.startsWith('mailto:')) {
+        const ext = href.split('?')[0].split('.').pop().toLowerCase();
+        if (KNOWN_CHAT_FILE_EXTS.has(ext)) {
+          cleanPath = href;
+        }
+      }
+      if (cleanPath && isChatFilePath(cleanPath)) {
+        a.dataset.fileLinkified = 'true';
+        const pill = createChatFilePill(cleanPath, session);
+        a.replaceWith(pill);
+      }
+    });
+
+    // 2. Process inline <code> elements (excluding multiline <pre><code> blocks)
+    containerEl.querySelectorAll('code').forEach(code => {
+      if (code.closest('pre')) return;
+      if (code.dataset.fileLinkified) return;
+      const text = (code.textContent || '').trim();
+      if (isChatFilePath(text)) {
+        code.dataset.fileLinkified = 'true';
+        const pill = createChatFilePill(text, session);
+        const ext = text.split('?')[0].split('.').pop().toLowerCase();
+        if (CHAT_IMAGE_EXTS.has(ext)) {
+          const preview = createChatImagePreviewCard(text, session);
+          if (code.parentNode) {
+            code.parentNode.replaceChild(pill, code);
+            pill.parentNode.insertBefore(preview, pill.nextSibling);
+          }
+        } else {
+          if (code.parentNode) {
+            code.parentNode.replaceChild(pill, code);
+          }
+        }
+      }
+    });
+
+    // 3. Process tool cards (Write, Edit, Read tools)
+    containerEl.querySelectorAll('.chat-tool-card').forEach(card => {
+      if (card.dataset.fileBarProcessed) return;
+      card.dataset.fileBarProcessed = 'true';
+
+      const contentEl = card.querySelector('.chat-tool-content');
+      const text = contentEl ? contentEl.textContent || '' : '';
+
+      // Match path parameter in tool input (e.g. {"path": "...", "file_path": "..."})
+      const pathMatches = text.match(/"(?:file_)?path"\s*:\s*"([^"]+)"/i) ||
+                          text.match(/(?:created|written|saved|editing|writing|reading)\s+(?:file\s+)?([a-zA-Z0-9_\-\.\/]+)/i);
+
+      if (pathMatches && pathMatches[1] && isChatFilePath(pathMatches[1])) {
+        const filePath = pathMatches[1];
+        const bar = document.createElement('div');
+        bar.className = 'chat-tool-file-bar';
+        bar.innerHTML = `<span style="font-size: 10.5px; color: var(--text-dim);">File:</span>`;
+        bar.appendChild(createChatFilePill(filePath, session));
+        if (card.querySelector('.chat-tool-content')) {
+          card.insertBefore(bar, card.querySelector('.chat-tool-content'));
+        } else {
+          card.appendChild(bar);
+        }
+      }
+    });
+  }
+
   // Attach message-level copy button handler
   function attachChatMessageListeners(msgEl, rawContent) {
     if (!msgEl) return;
@@ -2418,6 +2672,7 @@
 
     attachChatMessageListeners(msgEl, msg.content);
     attachCodeBlockCopyButtons(msgEl);
+    linkifyChatFiles(msgEl, tabObj.session);
 
     tabObj.chatMessagesEl.appendChild(msgEl);
     return msgEl;
@@ -2860,6 +3115,7 @@
                 outEl.textContent = evt.tool_output;
                 lastCard.appendChild(outEl);
               }
+              linkifyChatFiles(lastCard, tabObj.session);
             }
           }
           tabObj.chatMessagesEl.scrollTop = tabObj.chatMessagesEl.scrollHeight;
@@ -2883,6 +3139,7 @@
           if (cursor) cursor.remove();
           attachCodeBlockCopyButtons(msgEl);
           attachChatMessageListeners(msgEl, tabObj.activeTurnBuffer);
+          linkifyChatFiles(msgEl, tabObj.session);
         }
         resetChatComposer(tabObj);
         tabObj.activeTurnMsgEl = null;
@@ -2901,6 +3158,7 @@
           }
           attachCodeBlockCopyButtons(msgEl);
           attachChatMessageListeners(msgEl, tabObj.activeTurnBuffer);
+          linkifyChatFiles(msgEl, tabObj.session);
         }
         resetChatComposer(tabObj);
         tabObj.activeTurnMsgEl = null;
@@ -3939,6 +4197,7 @@ ${session.last_prompt}
 
     transContainer.querySelectorAll('.transcript-msg').forEach(msgEl => {
       attachChatMessageListeners(msgEl);
+      linkifyChatFiles(msgEl, session);
     });
     attachCodeBlockCopyButtons(transContainer);
 
