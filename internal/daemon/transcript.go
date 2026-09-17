@@ -146,13 +146,37 @@ func loadAntigravityTranscript(t *Transcript, home, convID string) error {
 			}
 
 			if entry.Content != "" || entry.Thinking != "" || len(toolSummaries) > 0 {
-				t.Messages = append(t.Messages, TranscriptMessage{
-					Role:      "assistant",
-					Content:   entry.Content,
-					Thinking:  entry.Thinking,
-					ToolCalls: toolSummaries,
-					Timestamp: ts,
-				})
+				if len(t.Messages) > 0 && t.Messages[len(t.Messages)-1].Role == "assistant" {
+					last := &t.Messages[len(t.Messages)-1]
+					if entry.Content != "" {
+						if last.Content != "" {
+							if !strings.Contains(last.Content, entry.Content) {
+								last.Content += "\n\n" + entry.Content
+							}
+						} else {
+							last.Content = entry.Content
+						}
+					}
+					if entry.Thinking != "" {
+						if last.Thinking == "" {
+							last.Thinking = entry.Thinking
+						} else if !strings.Contains(last.Thinking, entry.Thinking) {
+							last.Thinking += "\n\n" + entry.Thinking
+						}
+					}
+					if len(toolSummaries) > 0 {
+						last.ToolCalls = append(last.ToolCalls, toolSummaries...)
+					}
+					last.Timestamp = ts
+				} else {
+					t.Messages = append(t.Messages, TranscriptMessage{
+						Role:      "assistant",
+						Content:   entry.Content,
+						Thinking:  entry.Thinking,
+						ToolCalls: toolSummaries,
+						Timestamp: ts,
+					})
+				}
 			}
 
 		case "CHECKPOINT":
@@ -268,11 +292,23 @@ func loadClaudeTranscript(t *Transcript, home, sessionID, cwd string) error {
 		} else if msgType == "assistant" {
 			if msgObj, ok := raw["message"].(map[string]interface{}); ok {
 				if contentStr, ok := msgObj["content"].(string); ok && contentStr != "" {
-					t.Messages = append(t.Messages, TranscriptMessage{
-						Role:      "assistant",
-						Content:   contentStr,
-						Timestamp: ts,
-					})
+					if len(t.Messages) > 0 && t.Messages[len(t.Messages)-1].Role == "assistant" {
+						last := &t.Messages[len(t.Messages)-1]
+						if last.Content != "" {
+							if !strings.Contains(last.Content, contentStr) {
+								last.Content += "\n\n" + contentStr
+							}
+						} else {
+							last.Content = contentStr
+						}
+						last.Timestamp = ts
+					} else {
+						t.Messages = append(t.Messages, TranscriptMessage{
+							Role:      "assistant",
+							Content:   contentStr,
+							Timestamp: ts,
+						})
+					}
 				} else if contentArr, ok := msgObj["content"].([]interface{}); ok {
 					var textParts []string
 					var tools []string
@@ -286,7 +322,27 @@ func loadClaudeTranscript(t *Transcript, home, sessionID, cwd string) error {
 								} else if cType == "tool_use" {
 									tName, _ := cMap["name"].(string)
 									if tName != "" {
-										tools = append(tools, tName)
+										detail := ""
+										if inputMap, ok := cMap["input"].(map[string]interface{}); ok {
+											if cmd, ok := inputMap["command"].(string); ok && cmd != "" {
+												detail = strings.TrimSpace(cmd)
+											} else if desc, ok := inputMap["description"].(string); ok && desc != "" {
+												detail = strings.TrimSpace(desc)
+											} else if fp, ok := inputMap["file_path"].(string); ok && fp != "" {
+												detail = strings.TrimSpace(fp)
+											} else if p, ok := inputMap["path"].(string); ok && p != "" {
+												detail = strings.TrimSpace(p)
+											} else if pat, ok := inputMap["pattern"].(string); ok && pat != "" {
+												detail = strings.TrimSpace(pat)
+											} else if q, ok := inputMap["query"].(string); ok && q != "" {
+												detail = strings.TrimSpace(q)
+											}
+										}
+										if detail != "" {
+											tools = append(tools, fmt.Sprintf("%s: %s", tName, detail))
+										} else {
+											tools = append(tools, tName)
+										}
 									}
 								}
 							}
@@ -294,12 +350,29 @@ func loadClaudeTranscript(t *Transcript, home, sessionID, cwd string) error {
 					}
 					fullText := strings.Join(textParts, "\n")
 					if fullText != "" || len(tools) > 0 {
-						t.Messages = append(t.Messages, TranscriptMessage{
-							Role:      "assistant",
-							Content:   fullText,
-							ToolCalls: tools,
-							Timestamp: ts,
-						})
+						if len(t.Messages) > 0 && t.Messages[len(t.Messages)-1].Role == "assistant" {
+							last := &t.Messages[len(t.Messages)-1]
+							if fullText != "" {
+								if last.Content != "" {
+									if !strings.Contains(last.Content, fullText) {
+										last.Content += "\n\n" + fullText
+									}
+								} else {
+									last.Content = fullText
+								}
+							}
+							if len(tools) > 0 {
+								last.ToolCalls = append(last.ToolCalls, tools...)
+							}
+							last.Timestamp = ts
+						} else {
+							t.Messages = append(t.Messages, TranscriptMessage{
+								Role:      "assistant",
+								Content:   fullText,
+								ToolCalls: tools,
+								Timestamp: ts,
+							})
+						}
 					}
 				}
 			}
@@ -349,6 +422,45 @@ func cleanAntigravityPrompt(raw string) string {
 	return strings.TrimSpace(s)
 }
 
+// formatToolSummaryCounts summarizes tool calls by tool name (e.g. "Bash x12" or "Bash x3, Grep x2")
+func formatToolSummaryCounts(tools []string) string {
+	if len(tools) == 0 {
+		return ""
+	}
+	counts := make(map[string]int)
+	var orderedNames []string
+	for _, t := range tools {
+		name := strings.TrimSpace(t)
+		if idx := strings.Index(name, ":"); idx != -1 {
+			name = strings.TrimSpace(name[:idx])
+		} else if idx := strings.Index(name, "("); idx != -1 {
+			name = strings.TrimSpace(name[:idx])
+		}
+		if name == "" {
+			name = "tool"
+		}
+		if counts[name] == 0 {
+			orderedNames = append(orderedNames, name)
+		}
+		counts[name]++
+	}
+
+	if len(orderedNames) == 1 {
+		name := orderedNames[0]
+		count := counts[name]
+		if count > 1 {
+			return fmt.Sprintf("%s x%d", name, count)
+		}
+		return name
+	}
+
+	var parts []string
+	for _, name := range orderedNames {
+		parts = append(parts, fmt.Sprintf("%s x%d", name, counts[name]))
+	}
+	return strings.Join(parts, ", ")
+}
+
 // FormatTranscriptANSI converts messages into colorized terminal output
 func FormatTranscriptANSI(t *Transcript) string {
 	if t == nil || len(t.Messages) == 0 {
@@ -374,7 +486,8 @@ func FormatTranscriptANSI(t *Transcript) string {
 		case "assistant":
 			sb.WriteString(fmt.Sprintf("\x1b[1;34m┌── 🤖 Assistant [%s] ──────────────────────────\x1b[0m\r\n", timeLabel))
 			if len(m.ToolCalls) > 0 {
-				sb.WriteString(fmt.Sprintf("\x1b[34m│\x1b[0m \x1b[33m⚡ Tools:\x1b[0m %s\r\n", strings.Join(m.ToolCalls, ", ")))
+				toolCountLabel := formatToolSummaryCounts(m.ToolCalls)
+				sb.WriteString(fmt.Sprintf("\x1b[34m│\x1b[0m \x1b[33m⚡ Tools (%s):\x1b[0m %s\r\n", toolCountLabel, strings.Join(m.ToolCalls, ", ")))
 			}
 			if m.Thinking != "" {
 				firstLine := strings.Split(strings.TrimSpace(m.Thinking), "\n")[0]
@@ -435,7 +548,8 @@ func FormatTranscriptMarkdown(t *Transcript) string {
 		case "assistant":
 			sb.WriteString(fmt.Sprintf("### 🤖 Assistant (`%s`)\n\n", timeLabel))
 			if len(m.ToolCalls) > 0 {
-				sb.WriteString("**Tools Invoked:**\n")
+				toolCountLabel := formatToolSummaryCounts(m.ToolCalls)
+				sb.WriteString(fmt.Sprintf("**Tools Invoked (%s):**\n", toolCountLabel))
 				for _, tc := range m.ToolCalls {
 					sb.WriteString(fmt.Sprintf("- 🛠️ `%s`\n", tc))
 				}
