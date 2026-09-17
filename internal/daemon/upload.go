@@ -22,6 +22,7 @@ const (
 
 // Allowed file extensions for multimodal coding agent attachments
 var allowedExtensions = map[string]bool{
+	// Images
 	".png":  true,
 	".jpg":  true,
 	".jpeg": true,
@@ -29,7 +30,16 @@ var allowedExtensions = map[string]bool{
 	".gif":  true,
 	".bmp":  true,
 	".svg":  true,
-	".pdf":  true,
+	// Documents & Text
+	".pdf": true,
+	".txt": true,
+	".md":  true,
+	".log": true,
+	// Data & Config
+	".json": true,
+	".yaml": true,
+	".yml":  true,
+	".csv":  true,
 }
 
 var safeFilenameRegex = regexp.MustCompile(`[^a-zA-Z0-9_\.\-]`)
@@ -211,6 +221,16 @@ func mimeToExt(mime string) string {
 		return ".svg"
 	case "application/pdf":
 		return ".pdf"
+	case "text/plain":
+		return ".txt"
+	case "text/markdown":
+		return ".md"
+	case "application/json", "text/json":
+		return ".json"
+	case "text/yaml", "application/x-yaml":
+		return ".yaml"
+	case "text/csv":
+		return ".csv"
 	default:
 		return ".png"
 	}

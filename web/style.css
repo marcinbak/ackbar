@@ -1733,8 +1733,9 @@ body, html {
   font-size: 14px;
 }
 
-/* Terminal Drag & Drop Overlay */
-.terminal-drop-overlay {
+/* Terminal & Chat Drag & Drop Overlay */
+.terminal-drop-overlay,
+.chat-drop-overlay {
   position: absolute;
   inset: 0;
   background: rgba(15, 23, 42, 0.85);
@@ -1750,7 +1751,13 @@ body, html {
   transition: opacity 0.15s ease-in-out;
 }
 
-.terminal-drop-overlay.active {
+.chat-drop-overlay {
+  border-color: #38bdf8;
+  border-radius: 0;
+}
+
+.terminal-drop-overlay.active,
+.chat-drop-overlay.active {
   opacity: 1;
   pointer-events: auto;
 }
@@ -1771,7 +1778,8 @@ body, html {
   transition: transform 0.15s ease;
 }
 
-.terminal-drop-overlay.active .drop-badge {
+.terminal-drop-overlay.active .drop-badge,
+.chat-drop-overlay.active .drop-badge {
   transform: scale(1);
 }
 
@@ -2748,6 +2756,12 @@ body, html {
 .chat-composer-box:focus-within {
   border-color: var(--accent-blue);
   box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+}
+
+.chat-composer-box.drag-over {
+  border-color: #38bdf8;
+  box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.35);
+  background: rgba(14, 165, 233, 0.08);
 }
 
 .chat-composer-textarea {
