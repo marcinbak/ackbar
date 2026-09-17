@@ -2625,7 +2625,7 @@
             </button>
           </div>
         </div>
-        <div class="chat-msg-body">${escapeHtml(msg.content).replace(/\\n/g, '<br/>')}</div>
+        <div class="chat-msg-body">${escapeHtml(msg.content || '')}</div>
       `;
     } else if (msg.role === 'assistant') {
       msgEl.className = 'chat-msg assistant-msg';
@@ -3033,7 +3033,9 @@
       case 'turn_start':
         if (evt.text) {
           const lastMsg = tabObj.chatMessagesEl.lastElementChild;
-          const isAlreadyRendered = lastMsg && lastMsg.classList.contains('user-msg') && lastMsg.textContent.includes(evt.text);
+          const userBody = lastMsg ? lastMsg.querySelector('.chat-msg-body') : null;
+          const isAlreadyRendered = lastMsg && lastMsg.classList.contains('user-msg') && 
+            (lastMsg.textContent.includes(evt.text) || (userBody && userBody.textContent.trim() === evt.text.trim()));
           if (!isAlreadyRendered) {
             appendChatMessage(tabObj, {
               role: 'user',
@@ -4124,7 +4126,7 @@ ${session.last_prompt}
                   </button>
                 </div>
               </div>
-              <div class="msg-body">${escapeHtml(m.content).replace(/\n/g, '<br/>')}</div>
+              <div class="msg-body">${escapeHtml(m.content || '')}</div>
             </div>
           `;
         } else if (m.role === 'assistant') {

@@ -1644,6 +1644,11 @@ body, html {
   border: 1px solid rgba(59, 130, 246, 0.25);
 }
 
+.transcript-msg.user-msg .msg-body {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .transcript-msg.assistant-msg {
   align-self: flex-start;
   background: var(--bg-card);
@@ -2206,6 +2211,11 @@ body, html {
   border: 1px solid rgba(59, 130, 246, 0.32);
   border-radius: 12px 12px 2px 12px;
   padding: 10px 14px;
+}
+
+.chat-msg.user-msg .chat-msg-body {
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .chat-msg.assistant-msg {
