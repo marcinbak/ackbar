@@ -23,16 +23,26 @@ var (
 
 // ChatStreamEvent represents a real-time event pushed over SSE to chat clients
 type ChatStreamEvent struct {
-	SessionID  string    `json:"session_id"`
-	TurnID     string    `json:"turn_id,omitempty"`
-	Type       string    `json:"type"` // "turn_start", "text_delta", "thought_delta", "tool_start", "tool_result", "turn_complete", "turn_cancelled", "error"
-	Text       string    `json:"text,omitempty"`
-	Thinking   string    `json:"thinking,omitempty"`
-	ToolName   string    `json:"tool_name,omitempty"`
-	ToolInput  any       `json:"tool_input,omitempty"`
-	ToolOutput string    `json:"tool_output,omitempty"`
-	IsError    bool      `json:"is_error,omitempty"`
-	Timestamp  time.Time `json:"timestamp"`
+	SessionID   string             `json:"session_id"`
+	TurnID      string             `json:"turn_id,omitempty"`
+	Type        string             `json:"type"` // "turn_start", "text_delta", "thought_delta", "tool_start", "tool_result", "turn_complete", "turn_cancelled", "error", "queue_update"
+	Text        string             `json:"text,omitempty"`
+	Thinking    string             `json:"thinking,omitempty"`
+	ToolName    string             `json:"tool_name,omitempty"`
+	ToolInput   any                `json:"tool_input,omitempty"`
+	ToolOutput  string             `json:"tool_output,omitempty"`
+	IsError     bool               `json:"is_error,omitempty"`
+	QueueItems  []*PromptQueueItem `json:"queue_items,omitempty"`
+	QueuePaused bool               `json:"queue_paused,omitempty"`
+	Timestamp   time.Time          `json:"timestamp"`
+}
+
+// PromptQueueItem represents a queued prompt held in daemon memory
+type PromptQueueItem struct {
+	ID        string    `json:"id"`
+	SessionID string    `json:"session_id"`
+	Text      string    `json:"text"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // StripBilledCredentials removes API keys and billed auth tokens from the environment,
@@ -58,6 +68,8 @@ type HeadlessRunner struct {
 	mu        sync.RWMutex
 	processes map[string]*exec.Cmd
 	subs      map[string][]chan ChatStreamEvent
+	queues    map[string][]*PromptQueueItem // sessionID -> queued prompts
+	paused    map[string]bool               // sessionID -> is queue paused
 	db        *DB
 	broadcast func(s *Session)
 }
@@ -66,6 +78,8 @@ func NewHeadlessRunner(db *DB, broadcast func(s *Session)) *HeadlessRunner {
 	return &HeadlessRunner{
 		processes: make(map[string]*exec.Cmd),
 		subs:      make(map[string][]chan ChatStreamEvent),
+		queues:    make(map[string][]*PromptQueueItem),
+		paused:    make(map[string]bool),
 		db:        db,
 		broadcast: broadcast,
 	}
@@ -153,6 +167,129 @@ func (h *HeadlessRunner) IsRunning(sessionID string) bool {
 	return false
 }
 
+func (h *HeadlessRunner) resolveQueueKey(sessionID string) string {
+	if _, ok := h.queues[sessionID]; ok {
+		return sessionID
+	}
+	parts := strings.Split(sessionID, ":")
+	if len(parts) == 3 {
+		nativeID := parts[2]
+		for k := range h.queues {
+			if k == nativeID || strings.HasSuffix(k, ":"+nativeID) {
+				return k
+			}
+		}
+	}
+	return sessionID
+}
+
+// EnqueuePrompt adds a prompt to the session's in-memory FIFO queue
+func (h *HeadlessRunner) EnqueuePrompt(sessionID string, text string) *PromptQueueItem {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	key := h.resolveQueueKey(sessionID)
+	item := &PromptQueueItem{
+		ID:        fmt.Sprintf("q_%d_%s", time.Now().UnixNano(), generateUUID()[:6]),
+		SessionID: key,
+		Text:      text,
+		CreatedAt: time.Now(),
+	}
+	h.queues[key] = append(h.queues[key], item)
+	return item
+}
+
+// GetPromptQueue returns a snapshot of queued prompts and pause state for a session
+func (h *HeadlessRunner) GetPromptQueue(sessionID string) ([]*PromptQueueItem, bool) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	key := h.resolveQueueKey(sessionID)
+	items := h.queues[key]
+	paused := h.paused[key]
+
+	res := make([]*PromptQueueItem, len(items))
+	copy(res, items)
+	return res, paused
+}
+
+// DequeuePrompt pops the next prompt from the session queue, or nil if empty
+func (h *HeadlessRunner) DequeuePrompt(sessionID string) *PromptQueueItem {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	key := h.resolveQueueKey(sessionID)
+	items := h.queues[key]
+	if len(items) == 0 {
+		return nil
+	}
+	next := items[0]
+	h.queues[key] = items[1:]
+	return next
+}
+
+// DeletePromptQueueItem removes a specific prompt from the queue by ID
+func (h *HeadlessRunner) DeletePromptQueueItem(sessionID string, itemID string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	key := h.resolveQueueKey(sessionID)
+	items := h.queues[key]
+	found := false
+	var updated []*PromptQueueItem
+	for _, it := range items {
+		if it.ID == itemID {
+			found = true
+			continue
+		}
+		updated = append(updated, it)
+	}
+	if found {
+		h.queues[key] = updated
+	}
+	return found
+}
+
+// ClearPromptQueue removes all queued prompts and resets pause state
+func (h *HeadlessRunner) ClearPromptQueue(sessionID string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	key := h.resolveQueueKey(sessionID)
+	delete(h.queues, key)
+	delete(h.paused, key)
+}
+
+// SetQueuePaused updates the pause state of a session's prompt queue
+func (h *HeadlessRunner) SetQueuePaused(sessionID string, paused bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	key := h.resolveQueueKey(sessionID)
+	h.paused[key] = paused
+}
+
+// IsQueuePaused checks whether prompt queue processing is paused for a session
+func (h *HeadlessRunner) IsQueuePaused(sessionID string) bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	key := h.resolveQueueKey(sessionID)
+	return h.paused[key]
+}
+
+// EmitQueueUpdate broadcasts current queue items and pause status over SSE
+func (h *HeadlessRunner) EmitQueueUpdate(sessionID string) {
+	items, paused := h.GetPromptQueue(sessionID)
+	h.Emit(sessionID, ChatStreamEvent{
+		SessionID:   sessionID,
+		Type:        "queue_update",
+		QueueItems:  items,
+		QueuePaused: paused,
+		Timestamp:   time.Now(),
+	})
+}
+
 // CancelTurn sends SIGINT (and SIGKILL if needed) to interrupt the active turn process
 func (h *HeadlessRunner) CancelTurn(sessionID string) error {
 	h.mu.Lock()
@@ -189,6 +326,9 @@ func (h *HeadlessRunner) CancelTurn(sessionID string) error {
 			_ = cmd.Process.Kill()
 		}
 	}()
+
+	h.SetQueuePaused(sessionID, true)
+	h.EmitQueueUpdate(sessionID)
 
 	h.Emit(sessionID, ChatStreamEvent{
 		SessionID: sessionID,
@@ -444,10 +584,16 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 
 		waitErr := cmd.Wait()
 
+		h.mu.Lock()
+		delete(h.processes, sess.ID)
+		h.mu.Unlock()
+
 		// Reload session from DB to preserve title/flags updated during the turn
-		currentSess, err := h.db.GetSession(sess.ID)
-		if err == nil && currentSess != nil {
-			sess = currentSess
+		if h.db != nil {
+			currentSess, err := h.db.GetSession(sess.ID)
+			if err == nil && currentSess != nil {
+				sess = currentSess
+			}
 		}
 
 		sess.State = StateIdle
@@ -467,6 +613,8 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 			} else {
 				sess.Activity = "Turn completed with status: " + waitErr.Error()
 			}
+			h.SetQueuePaused(sess.ID, true)
+			h.EmitQueueUpdate(sess.ID)
 		}
 
 		// Update context percentage if metadata readable
@@ -480,7 +628,9 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 			}
 		}
 
-		_ = h.db.SaveSession(sess)
+		if h.db != nil {
+			_ = h.db.SaveSession(sess)
+		}
 		if h.broadcast != nil {
 			h.broadcast(sess)
 		}
@@ -490,6 +640,24 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 			Type:      "turn_complete",
 			Timestamp: time.Now(),
 		})
+
+		// Auto-dispatch next queued prompt if queue is not paused
+		if !h.IsQueuePaused(sess.ID) {
+			nextItem := h.DequeuePrompt(sess.ID)
+			if nextItem != nil {
+				h.EmitQueueUpdate(sess.ID)
+				go func(nextPrompt string) {
+					time.Sleep(50 * time.Millisecond)
+					var targetSess *Session = sess
+					if h.db != nil {
+						if currentSess, err := h.db.GetSession(sess.ID); err == nil && currentSess != nil {
+							targetSess = currentSess
+						}
+					}
+					_ = h.RunTurn(context.Background(), targetSess, nextPrompt)
+				}(nextItem.Text)
+			}
+		}
 	}()
 
 	return nil
