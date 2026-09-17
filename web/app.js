@@ -2428,12 +2428,106 @@
     return true;
   }
 
-  // Build an interactive file action pill element
-  function createChatFilePill(filePath, session) {
-    let cleanPath = filePath.trim();
-    if (cleanPath.startsWith('file://')) {
-      cleanPath = cleanPath.replace(/^file:\/\//, '');
+  // Authentic Application SVG Icons for File Context Menu
+  const APP_ICONS = {
+    vscode: `<svg width="18" height="18" viewBox="0 0 256 256" fill="none" class="menu-app-svg">
+      <path d="M177.6 2.3a12.8 12.8 0 0 0-11 3.5L78 88.6 36.3 56.4a12.8 12.8 0 0 0-16.7 1.7L4.7 74.2a12.8 12.8 0 0 0 1.6 17.6l38.7 34.6L6.3 161a12.8 12.8 0 0 0-1.6 17.6l14.9 16.1a12.8 12.8 0 0 0 16.7 1.7l41.7-32.2 88.6 82.8a12.8 12.8 0 0 0 20.3-9.5V11.8a12.8 12.8 0 0 0-9.3-9.5z" fill="#007ACC"/>
+      <path d="M177.6 2.3a12.8 12.8 0 0 0-11 3.5L78 88.6l19.8 18.2 68.8-63.4a6.4 6.4 0 0 1 10.8 4.7v-36a12.8 12.8 0 0 0-9.8-9.8z" fill="#1F9CF0"/>
+      <path d="M166.6 207.9l-68.8-63.4L78 162.7l88.6 82.8a12.8 12.8 0 0 0 20.3-9.5v-36a6.4 6.4 0 0 1-10.8 4.7l.5 3.2z" fill="#0065A9"/>
+      <path d="M177.4 48.1a6.4 6.4 0 0 0-10.8-4.7L78 125.7l88.6 82.2a6.4 6.4 0 0 0 10.8-4.7V48.1z" fill="#007ACC"/>
+    </svg>`,
+
+    preview: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" class="menu-app-svg">
+      <defs>
+        <linearGradient id="previewSky" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#38bdf8"/>
+          <stop offset="50%" stop-color="#60a5fa"/>
+          <stop offset="100%" stop-color="#818cf8"/>
+        </linearGradient>
+        <linearGradient id="previewGlass" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stop-color="#ffffff" stop-opacity="0.85"/>
+          <stop offset="50%" stop-color="#e0f2fe" stop-opacity="0.3"/>
+          <stop offset="100%" stop-color="#38bdf8" stop-opacity="0.1"/>
+        </linearGradient>
+        <linearGradient id="previewHandle" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stop-color="#475569"/>
+          <stop offset="50%" stop-color="#1e293b"/>
+          <stop offset="100%" stop-color="#0f172a"/>
+        </linearGradient>
+      </defs>
+      <rect x="2.5" y="3.5" width="15" height="15" rx="2" fill="#cbd5e1" transform="rotate(-7 10 11)"/>
+      <rect x="2.5" y="2" width="16" height="17" rx="2" fill="#ffffff"/>
+      <rect x="3.8" y="3.2" width="13.4" height="11" rx="1.2" fill="url(#previewSky)"/>
+      <circle cx="13" cy="5.8" r="1.8" fill="#fbbf24"/>
+      <path d="M3.8 12.5l3.8-4.2 3 3 2.2-2 4.4 4.8v.1H3.8v-1.7z" fill="#22c55e"/>
+      <path d="M6 14.2l3.4-3.2 2.8 2.2 2.8-2.6 2.2 2.4v1.2H6vz" fill="#15803d"/>
+      <circle cx="14" cy="11" r="5" fill="none" stroke="#94a3b8" stroke-width="1.8"/>
+      <circle cx="14" cy="11" r="4.1" fill="url(#previewGlass)"/>
+      <path d="M11.8 8.8a3.2 3.2 0 0 1 3.2-0.2" stroke="#ffffff" stroke-width="1" stroke-linecap="round" fill="none"/>
+      <circle cx="17.6" cy="14.6" r="1" fill="#94a3b8"/>
+      <line x1="17.6" y1="14.6" x2="22.2" y2="19.2" stroke="url(#previewHandle)" stroke-width="2.6" stroke-linecap="round"/>
+      <line x1="18.2" y1="15.2" x2="21.6" y2="18.6" stroke="#94a3b8" stroke-width="1" stroke-linecap="round"/>
+    </svg>`,
+
+    browser: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" class="menu-app-svg">
+      <circle cx="12" cy="12" r="10" fill="#0284c7"/>
+      <circle cx="12" cy="12" r="9" fill="none" stroke="#ffffff" stroke-width="0.8" stroke-dasharray="1.2 1.5" opacity="0.6"/>
+      <polygon points="12,4.5 14.2,12 12,19.5 9.8,12" fill="#ffffff" opacity="0.25"/>
+      <polygon points="12,4.5 14.2,12 12,12" fill="#ef4444"/>
+      <polygon points="12,4.5 9.8,12 12,12" fill="#dc2626"/>
+      <polygon points="12,19.5 14.2,12 12,12" fill="#ffffff"/>
+      <polygon points="12,19.5 9.8,12 12,12" fill="#e2e8f0"/>
+      <circle cx="12" cy="12" r="1.3" fill="#ffffff"/>
+    </svg>`,
+
+    app: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" class="menu-app-svg">
+      <rect x="2.5" y="3" width="19" height="18" rx="4" fill="#3b82f6"/>
+      <rect x="2.5" y="3" width="19" height="5.5" rx="3" fill="#1d4ed8"/>
+      <circle cx="5.5" cy="5.7" r="1.1" fill="#ef4444"/>
+      <circle cx="8.5" cy="5.7" r="1.1" fill="#eab308"/>
+      <circle cx="11.5" cy="5.7" r="1.1" fill="#22c55e"/>
+      <path d="M7 14.5l3.2 3.2 6.8-6.8" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>`,
+
+    copy: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="menu-app-svg">
+      <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+    </svg>`
+  };
+
+  let activeFileMenuPill = null;
+  let fileContextMenuEl = null;
+
+  function getOrCreateFileContextMenu() {
+    if (fileContextMenuEl) return fileContextMenuEl;
+    fileContextMenuEl = document.createElement('div');
+    fileContextMenuEl.className = 'chat-file-context-menu context-menu';
+    fileContextMenuEl.id = 'chatFileContextMenu';
+    document.body.appendChild(fileContextMenuEl);
+    return fileContextMenuEl;
+  }
+
+  function hideChatFileContextMenu() {
+    if (fileContextMenuEl) {
+      fileContextMenuEl.style.display = 'none';
+      fileContextMenuEl.style.visibility = 'hidden';
     }
+    if (activeFileMenuPill) {
+      activeFileMenuPill.classList.remove('menu-active');
+      activeFileMenuPill = null;
+    }
+  }
+
+  function showChatFileContextMenu(pill, cleanPath, session, clickX, clickY) {
+    if (typeof hideContextMenu === 'function') hideContextMenu();
+    if (typeof hideGroupContextMenu === 'function') hideGroupContextMenu();
+    if (typeof hideTabContextMenu === 'function') hideTabContextMenu();
+    hideChatFileContextMenu();
+
+    const menu = getOrCreateFileContextMenu();
+    activeFileMenuPill = pill;
+    pill.classList.add('menu-active');
+
     const ext = cleanPath.split('?')[0].split('.').pop().toLowerCase();
     const isImg = CHAT_IMAGE_EXTS.has(ext);
     const isHtml = (ext === 'html' || ext === 'htm');
@@ -2447,41 +2541,162 @@
     else if (isPdf) icon = '📑';
     else if (['js', 'jsx', 'ts', 'tsx', 'go', 'py', 'rs', 'c', 'cpp', 'swift'].includes(ext)) icon = '💻';
 
+    const previewSub = isImg || isPdf ? 'macOS Preview.app' : 'Native preview';
+
+    menu.innerHTML = `
+      <div class="chat-file-menu-header">
+        <span class="chat-file-menu-icon">${icon}</span>
+        <span class="chat-file-menu-name" title="${escapeHtml(cleanPath)}">${escapeHtml(filename)}</span>
+      </div>
+      <div class="context-menu-item" data-action="browser">
+        <span class="menu-app-icon">${APP_ICONS.browser}</span>
+        <div class="menu-item-text">
+          <span class="menu-item-title">Open in Browser</span>
+          <span class="menu-item-sub">View / render inline</span>
+        </div>
+      </div>
+      <div class="context-menu-item" data-action="preview">
+        <span class="menu-app-icon">${APP_ICONS.preview}</span>
+        <div class="menu-item-text">
+          <span class="menu-item-title">Open in Preview</span>
+          <span class="menu-item-sub">${previewSub}</span>
+        </div>
+      </div>
+      <div class="context-menu-item" data-action="app">
+        <span class="menu-app-icon">${APP_ICONS.app}</span>
+        <div class="menu-item-text">
+          <span class="menu-item-title">Open in Default App</span>
+          <span class="menu-item-sub">System application</span>
+        </div>
+      </div>
+      <div class="context-menu-item" data-action="vscode">
+        <span class="menu-app-icon">${APP_ICONS.vscode}</span>
+        <div class="menu-item-text">
+          <span class="menu-item-title">Open in VS Code</span>
+          <span class="menu-item-sub">Visual Studio Code</span>
+        </div>
+      </div>
+      <div class="context-menu-divider"></div>
+      <div class="context-menu-item" data-action="copy">
+        <span class="menu-app-icon">${APP_ICONS.copy}</span>
+        <div class="menu-item-text">
+          <span class="menu-item-title">Copy File Path</span>
+          <span class="menu-item-sub">${escapeHtml(cleanPath)}</span>
+        </div>
+      </div>
+    `;
+
+    menu.querySelectorAll('.context-menu-item').forEach(item => {
+      item.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const action = item.dataset.action;
+        hideChatFileContextMenu();
+
+        if (action === 'browser') {
+          window.open(contentUrl, '_blank');
+        } else if (action === 'preview') {
+          openChatFileInApp(cleanPath, session, 'preview');
+        } else if (action === 'app') {
+          openChatFileInApp(cleanPath, session, 'default');
+        } else if (action === 'vscode') {
+          openChatFileInApp(cleanPath, session, 'vscode');
+        } else if (action === 'copy') {
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(cleanPath).then(() => {
+              showUploadToast(`Copied path: ${cleanPath}`, 'success');
+            }).catch(() => {
+              showUploadToast(`Copied path: ${cleanPath}`, 'info');
+            });
+          } else {
+            const ta = document.createElement('textarea');
+            ta.value = cleanPath;
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand('copy');
+            document.body.removeChild(ta);
+            showUploadToast(`Copied path: ${cleanPath}`, 'success');
+          }
+        }
+      });
+    });
+
+    menu.style.visibility = 'hidden';
+    menu.style.display = 'block';
+
+    const menuWidth = menu.offsetWidth || 230;
+    const menuHeight = menu.offsetHeight || 260;
+
+    let posX = 0;
+    let posY = 0;
+
+    if (typeof clickX === 'number' && typeof clickY === 'number') {
+      posX = clickX;
+      posY = clickY;
+    } else {
+      const rect = pill.getBoundingClientRect();
+      posX = rect.left;
+      posY = rect.bottom + 4;
+      if (posY + menuHeight > window.innerHeight - 10) {
+        posY = Math.max(10, rect.top - menuHeight - 4);
+      }
+    }
+
+    if (posY + menuHeight > window.innerHeight - 10) {
+      posY = Math.max(10, window.innerHeight - menuHeight - 10);
+    }
+    if (posX + menuWidth > window.innerWidth - 10) {
+      posX = Math.max(10, window.innerWidth - menuWidth - 10);
+    }
+
+    menu.style.left = `${posX}px`;
+    menu.style.top = `${posY}px`;
+    menu.style.visibility = 'visible';
+  }
+
+  // Build an interactive compact file badge element
+  function createChatFilePill(filePath, session) {
+    let cleanPath = filePath.trim();
+    if (cleanPath.startsWith('file://')) {
+      cleanPath = cleanPath.replace(/^file:\/\//, '');
+    }
+    const ext = cleanPath.split('?')[0].split('.').pop().toLowerCase();
+    const isImg = CHAT_IMAGE_EXTS.has(ext);
+    const isHtml = (ext === 'html' || ext === 'htm');
+    const isPdf = (ext === 'pdf');
+    const filename = cleanPath.split('/').pop();
+
+    let icon = '📄';
+    if (isImg) icon = '🖼️';
+    else if (isHtml) icon = '🌐';
+    else if (isPdf) icon = '📑';
+    else if (['js', 'jsx', 'ts', 'tsx', 'go', 'py', 'rs', 'c', 'cpp', 'swift'].includes(ext)) icon = '💻';
+
     const pill = document.createElement('span');
     pill.className = 'chat-file-pill';
-    pill.title = cleanPath;
-
-    const appTitle = isImg || isPdf ? 'Open in macOS Preview' : 'Open in native App';
-    const appLabel = isImg || isPdf ? 'Preview' : 'App';
+    pill.title = `${cleanPath} (Click for actions)`;
 
     pill.innerHTML = `
       <span class="chat-file-icon">${icon}</span>
-      <a class="chat-file-name" href="${escapeHtml(contentUrl)}" target="_blank" title="View ${escapeHtml(filename)} in browser">${escapeHtml(filename)}</a>
-      <span class="chat-file-actions">
-        <a class="chat-file-btn btn-view" href="${escapeHtml(contentUrl)}" target="_blank" title="View / Render in Browser">🌐 View</a>
-        <button class="chat-file-btn" data-action="app" title="${appTitle}">💻 ${appLabel}</button>
-        <button class="chat-file-btn btn-vscode" data-action="vscode" title="Open in VS Code">✏️ Code</button>
-      </span>
+      <span class="chat-file-name">${escapeHtml(filename)}</span>
+      <span class="chat-file-chevron">▾</span>
     `;
 
-    const appBtn = pill.querySelector('button[data-action="app"]');
-    if (appBtn) {
-      appBtn.addEventListener('click', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        const appChoice = isImg || isPdf ? 'preview' : 'default';
-        openChatFileInApp(cleanPath, session, appChoice);
-      });
-    }
+    pill.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (activeFileMenuPill === pill && fileContextMenuEl && fileContextMenuEl.style.display !== 'none') {
+        hideChatFileContextMenu();
+      } else {
+        showChatFileContextMenu(pill, cleanPath, session);
+      }
+    });
 
-    const vscodeBtn = pill.querySelector('button[data-action="vscode"]');
-    if (vscodeBtn) {
-      vscodeBtn.addEventListener('click', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        openChatFileInApp(cleanPath, session, 'vscode');
-      });
-    }
+    pill.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      showChatFileContextMenu(pill, cleanPath, session, e.clientX, e.clientY);
+    });
 
     return pill;
   }
@@ -2500,7 +2715,9 @@
     card.innerHTML = `
       <div class="chat-file-preview-header">
         <span>🖼️ ${escapeHtml(filename)}</span>
-        <button class="chat-file-btn" data-action="preview" title="Open in macOS Preview">💻 Open in Preview</button>
+        <button class="chat-file-btn" data-action="preview" title="Open in macOS Preview" style="display:inline-flex;align-items:center;gap:4px;">
+          ${APP_ICONS.preview} <span>Open in Preview</span>
+        </button>
       </div>
       <div class="chat-file-preview-body">
         <img src="${escapeHtml(contentUrl)}" alt="${escapeHtml(filename)}" loading="lazy" title="Click to open full size" />
@@ -2559,7 +2776,7 @@
         code.dataset.fileLinkified = 'true';
         const pill = createChatFilePill(text, session);
         const ext = text.split('?')[0].split('.').pop().toLowerCase();
-        if (CHAT_IMAGE_EXTS.has(ext)) {
+        if (CHAT_IMAGE_EXTS.has(ext) && !code.closest('table')) {
           const preview = createChatImagePreviewCard(text, session);
           if (code.parentNode) {
             code.parentNode.replaceChild(pill, code);
@@ -4744,6 +4961,8 @@ ${session.last_prompt}
   function showContextMenu(x, y, session) {
     if (!el.contextMenu) return;
     hideGroupContextMenu();
+    hideTabContextMenu();
+    hideChatFileContextMenu();
     state.contextMenuSession = session;
 
     if (el.cmItemDone) {
@@ -4788,6 +5007,8 @@ ${session.last_prompt}
   function showGroupContextMenu(x, y, groupPath) {
     if (!el.groupContextMenu) return;
     hideContextMenu();
+    hideTabContextMenu();
+    hideChatFileContextMenu();
     state.contextMenuGroupPath = groupPath;
 
     el.groupContextMenu.style.visibility = 'hidden';
@@ -4822,6 +5043,7 @@ ${session.last_prompt}
     if (!el.tabContextMenu) return;
     hideContextMenu();
     hideGroupContextMenu();
+    hideChatFileContextMenu();
     state.contextMenuTabId = tabId;
 
     const tabIds = Array.from(state.openTabs.keys());
@@ -4988,13 +5210,18 @@ ${session.last_prompt}
       hideContextMenu();
       hideGroupContextMenu();
       hideTabContextMenu();
+      hideChatFileContextMenu();
     });
+
+    window.addEventListener('resize', hideChatFileContextMenu);
+    window.addEventListener('scroll', hideChatFileContextMenu, true);
 
     window.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') {
         hideContextMenu();
         hideGroupContextMenu();
         hideTabContextMenu();
+        hideChatFileContextMenu();
         if (el.cmdPaletteOverlay) el.cmdPaletteOverlay.style.display = 'none';
         hideModal();
       }

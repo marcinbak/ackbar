@@ -2869,91 +2869,167 @@ body, html {
   margin: 0;
 }
 
-/* Interactive File Action Pills in Chat & Transcripts */
+/* Interactive Compact File Badges in Chat & Transcripts */
 .chat-file-pill {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  background: rgba(31, 35, 43, 0.85);
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  border-radius: 5px;
-  padding: 1px 6px 1px 6px;
-  margin: 2px 2px;
+  background: rgba(30, 41, 59, 0.75);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 6px;
+  padding: 2px 7px 2px 6px;
+  margin: 1px 3px;
   font-family: var(--font-mono, monospace);
   font-size: 11.5px;
-  vertical-align: baseline;
+  line-height: 1.4;
+  vertical-align: middle;
+  cursor: pointer;
+  user-select: none;
   transition: all 0.15s ease;
   max-width: 100%;
 }
 
-.chat-file-pill:hover {
+.chat-file-pill:hover,
+.chat-file-pill.menu-active {
   border-color: #38bdf8;
-  background: rgba(15, 23, 42, 0.95);
+  background: rgba(14, 165, 233, 0.15);
+  box-shadow: 0 0 10px rgba(56, 189, 248, 0.15);
 }
 
 .chat-file-pill .chat-file-icon {
   font-size: 12px;
   flex-shrink: 0;
-  user-select: none;
+  line-height: 1;
 }
 
 .chat-file-pill .chat-file-name {
   color: #38bdf8;
-  text-decoration: none;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-weight: 500;
-  cursor: pointer;
+  line-height: 1.2;
 }
 
-.chat-file-pill .chat-file-name:hover {
-  text-decoration: underline;
+.chat-file-pill:hover .chat-file-name,
+.chat-file-pill.menu-active .chat-file-name {
   color: #7dd3fc;
 }
 
-.chat-file-actions {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  margin-left: 2px;
+.chat-file-pill .chat-file-chevron {
+  font-size: 9px;
+  color: #64748b;
+  margin-left: 1px;
+  transition: transform 0.15s ease, color 0.15s ease;
+  line-height: 1;
 }
 
-.chat-file-btn {
-  display: inline-flex;
+.chat-file-pill:hover .chat-file-chevron,
+.chat-file-pill.menu-active .chat-file-chevron {
+  color: #38bdf8;
+}
+
+.chat-file-pill.menu-active .chat-file-chevron {
+  transform: rotate(180deg);
+}
+
+/* File Actions Dropdown Context Menu */
+.chat-file-context-menu {
+  position: fixed;
+  background: #0f172a;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 10px;
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.85), 0 0 0 1px rgba(255, 255, 255, 0.05);
+  z-index: 3500;
+  min-width: 230px;
+  padding: 6px 0;
+  display: none;
+  backdrop-filter: blur(12px);
+  animation: fileMenuFadeIn 0.12s ease-out;
+}
+
+@keyframes fileMenuFadeIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.chat-file-menu-header {
+  display: flex;
   align-items: center;
-  justify-content: center;
-  padding: 1px 5px;
-  font-size: 10px;
-  font-weight: 500;
+  gap: 8px;
+  padding: 6px 14px 8px 14px;
   font-family: var(--font-mono, monospace);
-  border-radius: 3px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(255, 255, 255, 0.05);
+  font-size: 11.5px;
   color: #94a3b8;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  margin-bottom: 3px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.chat-file-menu-icon {
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.chat-file-menu-name {
+  font-weight: 600;
+  color: #f1f5f9;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-file-context-menu .context-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 14px;
+  font-size: 12px;
+  color: #e2e8f0;
   cursor: pointer;
   transition: all 0.12s ease;
-  text-decoration: none;
-  line-height: 1.3;
-  user-select: none;
 }
 
-.chat-file-btn:hover {
-  background: #0284c7;
+.chat-file-context-menu .context-menu-item:hover {
+  background: rgba(56, 189, 248, 0.12);
   color: #ffffff;
-  border-color: #38bdf8;
 }
 
-.chat-file-btn.btn-vscode:hover {
-  background: #007acc;
-  color: #ffffff;
-  border-color: #007acc;
+.chat-file-context-menu .menu-app-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
 }
 
-.chat-file-btn.btn-view:hover {
-  background: #10b981;
-  color: #ffffff;
-  border-color: #34d399;
+.chat-file-context-menu .menu-app-svg {
+  width: 18px;
+  height: 18px;
+  display: block;
+}
+
+.chat-file-context-menu .menu-item-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.chat-file-context-menu .menu-item-title {
+  font-size: 12px;
+  font-weight: 500;
+  color: #f8fafc;
+}
+
+.chat-file-context-menu .menu-item-sub {
+  font-size: 10px;
+  color: #64748b;
+  font-family: var(--font-mono, monospace);
+}
+
+.chat-file-context-menu .context-menu-item:hover .menu-item-sub {
+  color: #93c5fd;
 }
 
 /* Inline collapsible image & preview card */
