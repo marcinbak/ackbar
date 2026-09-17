@@ -2706,15 +2706,35 @@
 
     term.open(termViewEl);
 
+    // Helper: Safely decode base64 UTF-8 text (handles multi-byte unicode such as box drawings, emoji, diacritics)
+    function decodeBase64Utf8(b64) {
+      if (!b64) return '';
+      try {
+        const cleanB64 = b64.trim();
+        const binaryString = atob(cleanB64);
+        const bytes = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) {
+          bytes[i] = binaryString.charCodeAt(i);
+        }
+        return new TextDecoder('utf-8').decode(bytes);
+      } catch (e) {
+        try {
+          return atob(b64.trim());
+        } catch (e2) {
+          return '';
+        }
+      }
+    }
+
     // Register OSC 52 Clipboard handler (receives base64-encoded clipboard from remote tmux)
     if (term.parser && term.parser.registerOscHandler) {
       term.parser.registerOscHandler(52, (data) => {
         // Format: "c;<base64-payload>" or ";<base64-payload>"
-        const parts = data.split(';');
-        const b64 = parts.length > 1 ? parts[1] : parts[0];
+        const firstSemi = data.indexOf(';');
+        const b64 = firstSemi !== -1 ? data.slice(firstSemi + 1) : data;
         if (b64) {
           try {
-            const decoded = atob(b64);
+            const decoded = decodeBase64Utf8(b64);
             if (decoded && navigator.clipboard && navigator.clipboard.writeText) {
               navigator.clipboard.writeText(decoded).catch(() => {});
             }
