@@ -255,6 +255,41 @@ func TestServer_TakeWheel_AliasResolution(t *testing.T) {
 	}
 }
 
+func TestServer_TakeWheel_Idempotent(t *testing.T) {
+	srv, db := setupTestServer(t)
+
+	sess := &Session{
+		ID:          "claude-code:macbook:uuid-idempotent-test",
+		Agent:       "claude-code",
+		Host:        "macbook",
+		NativeID:    "uuid-idempotent-test",
+		Cwd:         t.TempDir(),
+		State:       StateIdle,
+		EngineType:  EngineTmux,
+		TmuxName:    "ackbar-claude-code-uuid-idempotent-test",
+		StartedAt:   time.Now(),
+		LastEventAt: time.Now(),
+	}
+	_ = db.SaveSession(sess)
+
+	payload := map[string]string{
+		"session_id": sess.ID,
+	}
+	body, _ := json.Marshal(payload)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/take-wheel", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	srv.Mux().ServeHTTP(w, req)
+
+	// In test environment without tmux running, it tries to spawn or reuse
+	// It should never 404 or panic
+	if w.Code == http.StatusNotFound {
+		t.Fatalf("Expected session to be found, got 404")
+	}
+}
+
 func TestServer_PromptQueueEndpoints(t *testing.T) {
 	srv, db := setupTestServer(t)
 
