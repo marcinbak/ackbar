@@ -322,4 +322,3 @@ func TestHeadlessRunner_PromptQueue(t *testing.T) {
 		t.Errorf("Expected empty unpaused queue after ClearPromptQueue, got len=%d paused=%v", len(items), paused)
 	}
 }
-
