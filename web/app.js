@@ -2416,10 +2416,29 @@
       chatDragCounter = 0;
       chatDropOverlay.classList.remove('active');
       if (tabObj.chatComposerBox) tabObj.chatComposerBox.classList.remove('drag-over');
-      const currentTab = state.openTabs.get(tabId) || tabObj;
-      if (currentTab && e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
         for (const file of e.dataTransfer.files) {
-          await addPendingAttachment(currentTab, file);
+          await addPendingAttachment(tabObj, file);
+        }
+      }
+    });
+
+    chatDropOverlay.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      if (e.dataTransfer && e.dataTransfer.types && Array.from(e.dataTransfer.types).includes('Files')) {
+        e.dataTransfer.dropEffect = 'copy';
+      }
+    });
+
+    chatDropOverlay.addEventListener('drop', async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      chatDragCounter = 0;
+      chatDropOverlay.classList.remove('active');
+      if (tabObj.chatComposerBox) tabObj.chatComposerBox.classList.remove('drag-over');
+      if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+        for (const file of e.dataTransfer.files) {
+          await addPendingAttachment(tabObj, file);
         }
       }
     });
@@ -2511,10 +2530,9 @@
         chatDragCounter = 0;
         chatDropOverlay.classList.remove('active');
         if (tabObj.chatComposerBox) tabObj.chatComposerBox.classList.remove('drag-over');
-        const currentTab = state.openTabs.get(tabId) || tabObj;
-        if (currentTab && e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+        if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
           for (const file of e.dataTransfer.files) {
-            await addPendingAttachment(currentTab, file);
+            await addPendingAttachment(tabObj, file);
           }
         }
       });
@@ -2523,7 +2541,6 @@
         if (!e.clipboardData) return;
         const items = e.clipboardData.items || [];
         let handled = false;
-        const currentTab = state.openTabs.get(tabId) || tabObj;
         for (const item of items) {
           if (item.kind === 'file') {
             const itemType = (item.type || '').toLowerCase();
@@ -2531,7 +2548,7 @@
               const file = item.getAsFile();
               if (file) {
                 handled = true;
-                await addPendingAttachment(currentTab, file);
+                await addPendingAttachment(tabObj, file);
               }
             }
           }
@@ -3207,6 +3224,11 @@
 
     if (msg.role === 'user') {
       msgEl.className = 'chat-msg user-msg';
+      if (msg.rawPrompt) {
+        msgEl.dataset.rawPrompt = msg.rawPrompt;
+      } else if (msg.content) {
+        msgEl.dataset.rawPrompt = msg.content;
+      }
 
       let displayContent = msg.content || '';
       const attachments = msg.attachments ? [...msg.attachments] : [];
@@ -3556,7 +3578,8 @@
 
       appendChatMessage(tabObj, {
         role: 'user',
-        content: promptText,
+        content: promptText || 'Please inspect the attached file(s).',
+        rawPrompt: daemonPrompt,
         attachments: sentAttachments,
         timestamp: new Date().toISOString()
       });
@@ -3595,7 +3618,8 @@
       console.error('Failed to dispatch prompt:', err);
       appendChatMessage(tabObj, {
         role: 'user',
-        content: promptText,
+        content: promptText || 'Please inspect the attached file(s).',
+        rawPrompt: daemonPrompt,
         attachments: sentAttachments,
         timestamp: new Date().toISOString()
       });
@@ -3722,16 +3746,37 @@
       case 'turn_start':
         tabObj.activeTurnHadTool = false;
         if (evt.text) {
-          const lastMsg = tabObj.chatMessagesEl.lastElementChild;
-          const userBody = lastMsg ? lastMsg.querySelector('.chat-msg-body') : null;
-          const isAlreadyRendered = lastMsg && lastMsg.classList.contains('user-msg') && 
-            (lastMsg.textContent.includes(evt.text) || (userBody && userBody.textContent.trim() === evt.text.trim()));
+          const evtText = (evt.text || '').trim();
+          const userMsgs = tabObj.chatMessagesEl.querySelectorAll('.chat-msg.user-msg');
+          let isAlreadyRendered = false;
+          for (let i = userMsgs.length - 1; i >= Math.max(0, userMsgs.length - 3); i--) {
+            const uMsg = userMsgs[i];
+            const raw = uMsg.dataset.rawPrompt ? uMsg.dataset.rawPrompt.trim() : '';
+            const uBody = uMsg.querySelector('.chat-msg-body');
+            const bodyText = uBody ? uBody.textContent.trim() : '';
+            if (raw && (raw === evtText || evtText.startsWith(raw))) {
+              isAlreadyRendered = true;
+              break;
+            }
+            if (bodyText && (evtText === bodyText || evtText.startsWith(bodyText) || bodyText.startsWith(evtText))) {
+              isAlreadyRendered = true;
+              break;
+            }
+            if (uMsg.textContent.includes(evtText)) {
+              isAlreadyRendered = true;
+              break;
+            }
+          }
           if (!isAlreadyRendered) {
-            appendChatMessage(tabObj, {
+            const newMsgEl = appendChatMessage(tabObj, {
               role: 'user',
               content: evt.text,
+              rawPrompt: evt.text,
               timestamp: evt.timestamp || new Date().toISOString()
             });
+            if (tabObj.activeTurnMsgEl && tabObj.activeTurnMsgEl.parentNode === tabObj.chatMessagesEl) {
+              tabObj.chatMessagesEl.insertBefore(newMsgEl, tabObj.activeTurnMsgEl);
+            }
           }
         }
         if (tabObj.chatCancelBtn) tabObj.chatCancelBtn.style.display = 'inline-flex';
