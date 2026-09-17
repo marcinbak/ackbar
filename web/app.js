@@ -2110,8 +2110,16 @@
     }
 
     if (tabObj.chatQueueClearBtn) {
-      tabObj.chatQueueClearBtn.addEventListener('click', (e) => {
+      tabObj.chatQueueClearBtn.addEventListener('click', async (e) => {
         e.stopPropagation();
+        const baseUrl = getSessionBaseUrl(tabObj.session.id, tabObj.session);
+        try {
+          await fetch(`${baseUrl}/v1/sessions/prompt/queue?session_id=${encodeURIComponent(tabObj.session.id)}`, {
+            method: 'DELETE'
+          });
+        } catch (err) {
+          console.error('Failed to clear queue on daemon:', err);
+        }
         tabObj.promptQueue = [];
         tabObj.isQueuePaused = false;
         renderChatQueue(tabObj);
@@ -2119,11 +2127,18 @@
     }
 
     if (tabObj.chatQueueResumeBtn) {
-      tabObj.chatQueueResumeBtn.addEventListener('click', (e) => {
+      tabObj.chatQueueResumeBtn.addEventListener('click', async (e) => {
         e.stopPropagation();
+        const baseUrl = getSessionBaseUrl(tabObj.session.id, tabObj.session);
+        try {
+          await fetch(`${baseUrl}/v1/sessions/prompt/queue/resume?session_id=${encodeURIComponent(tabObj.session.id)}`, {
+            method: 'POST'
+          });
+        } catch (err) {
+          console.error('Failed to resume queue on daemon:', err);
+        }
         tabObj.isQueuePaused = false;
         renderChatQueue(tabObj);
-        dispatchNextQueuedPrompt(tabObj);
       });
     }
 
@@ -2134,7 +2149,10 @@
 
     const btnReload = chatViewEl.querySelector('.btn-reload-chat');
     if (btnReload) {
-      btnReload.addEventListener('click', () => loadChatTranscript(tabObj));
+      btnReload.addEventListener('click', () => {
+        loadChatTranscript(tabObj);
+        loadChatQueue(tabObj);
+      });
     }
 
     if (tabObj.chatCancelBtn) {
@@ -2148,7 +2166,7 @@
     if (tabObj.chatInputEl) {
       tabObj.chatInputEl.addEventListener('input', () => {
         tabObj.chatInputEl.style.height = 'auto';
-        tabObj.chatInputEl.style.height = Math.min(tabObj.chatInputEl.scrollHeight, 160) + 'px';
+        tabObj.chatInputEl.style.height = Math.min(tabObj.chatInputEl.scrollHeight, 180) + 'px';
       });
 
       tabObj.chatInputEl.addEventListener('keydown', (e) => {
@@ -2160,8 +2178,28 @@
     }
 
     loadChatTranscript(tabObj);
+    loadChatQueue(tabObj);
     if (tabObj.session && tabObj.session.engine_type === 'headless' && (tabObj.viewMode === 'chat' || tabObj.viewMode === 'split')) {
       connectChatStream(tabObj);
+    }
+  }
+
+  // Load prompt queue from daemon
+  async function loadChatQueue(tabObj) {
+    if (!tabObj || !tabObj.session) return;
+    const baseUrl = getSessionBaseUrl(tabObj.session.id, tabObj.session);
+    try {
+      const res = await fetch(`${baseUrl}/v1/sessions/prompt/queue?session_id=${encodeURIComponent(tabObj.session.id)}`);
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data.items)) {
+          tabObj.promptQueue = data.items;
+        }
+        tabObj.isQueuePaused = !!data.paused;
+        renderChatQueue(tabObj);
+      }
+    } catch (e) {
+      console.warn('Failed to load prompt queue from daemon:', e);
     }
   }
 
@@ -2496,8 +2534,16 @@
 
           const trashBtn = itemEl.querySelector('.btn-queue-item-trash');
           if (trashBtn) {
-            trashBtn.addEventListener('click', (e) => {
+            trashBtn.addEventListener('click', async (e) => {
               e.stopPropagation();
+              const baseUrl = getSessionBaseUrl(tabObj.session.id, tabObj.session);
+              try {
+                await fetch(`${baseUrl}/v1/sessions/prompt/queue?session_id=${encodeURIComponent(tabObj.session.id)}&item_id=${encodeURIComponent(item.id)}`, {
+                  method: 'DELETE'
+                });
+              } catch (err) {
+                console.error('Failed to delete queue item on daemon:', err);
+              }
               tabObj.promptQueue = tabObj.promptQueue.filter(p => p.id !== item.id);
               renderChatQueue(tabObj);
             });
@@ -2512,16 +2558,16 @@
   }
 
   // Pop and dispatch the next queued prompt if idle
-  function dispatchNextQueuedPrompt(tabObj) {
-    if (!tabObj || !tabObj.promptQueue || tabObj.promptQueue.length === 0) return;
-    if (tabObj.isQueuePaused) return;
-    const isTurnActive = (tabObj.activeTurnMsgEl !== null && tabObj.activeTurnMsgEl !== undefined) ||
-                         (tabObj.chatCancelBtn && tabObj.chatCancelBtn.style.display !== 'none');
-    if (isTurnActive) return;
-
-    const nextItem = tabObj.promptQueue.shift();
-    renderChatQueue(tabObj);
-    sendChatPrompt(tabObj, nextItem.text);
+  async function dispatchNextQueuedPrompt(tabObj) {
+    if (!tabObj || !tabObj.session) return;
+    const baseUrl = getSessionBaseUrl(tabObj.session.id, tabObj.session);
+    try {
+      await fetch(`${baseUrl}/v1/sessions/prompt/queue/resume?session_id=${encodeURIComponent(tabObj.session.id)}`, {
+        method: 'POST'
+      });
+    } catch (err) {
+      console.error('Failed to resume queue dispatch on daemon:', err);
+    }
   }
 
   // Send Prompt to daemon (/v1/sessions/prompt) or queue if turn is in progress
@@ -2538,60 +2584,7 @@
     }
     if (!promptText) return;
 
-    const isTurnActive = (tabObj.activeTurnMsgEl !== null && tabObj.activeTurnMsgEl !== undefined) ||
-                         (tabObj.chatCancelBtn && tabObj.chatCancelBtn.style.display !== 'none');
-
-    // If turn is already in progress and this is not an automated dequeue, queue it!
-    if (isTurnActive && typeof forcedPromptText !== 'string') {
-      if (!tabObj.promptQueue) tabObj.promptQueue = [];
-      tabObj.promptQueue.push({
-        id: 'q_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7),
-        text: promptText,
-        createdAt: new Date(),
-        expanded: false
-      });
-      renderChatQueue(tabObj);
-      return;
-    }
-
-    appendChatMessage(tabObj, {
-      role: 'user',
-      content: promptText,
-      timestamp: new Date().toISOString()
-    });
-
-    const assistantMsgEl = document.createElement('div');
-    assistantMsgEl.className = 'chat-msg assistant-msg in-flight';
-    assistantMsgEl.innerHTML = `
-      <div class="chat-msg-header">
-        <span class="chat-msg-role">🤖 ${escapeHtml(tabObj.session.agent || 'Claude Code')}</span>
-        <div class="chat-msg-actions">
-          <span class="chat-msg-time">${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-          <button class="btn-copy-chat-msg" title="Copy message" type="button" aria-label="Copy message">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-            </svg>
-          </button>
-        </div>
-      </div>
-      <div class="chat-thinking-slot"></div>
-      <div class="chat-tools-slot"></div>
-      <div class="chat-msg-body markdown-body"><span class="chat-streaming-cursor"></span></div>
-    `;
-    attachChatMessageListeners(assistantMsgEl);
-    tabObj.chatMessagesEl.appendChild(assistantMsgEl);
-    tabObj.chatMessagesEl.scrollTop = tabObj.chatMessagesEl.scrollHeight;
-
-    tabObj.activeTurnMsgEl = assistantMsgEl;
-    tabObj.activeTurnBuffer = '';
-
-    if (tabObj.chatCancelBtn) tabObj.chatCancelBtn.style.display = 'inline-flex';
-    if (tabObj.chatStatusBadge) tabObj.chatStatusBadge.textContent = '⚡ Working...';
-    updateComposerButtonState(tabObj);
-
     connectChatStream(tabObj);
-
     const baseUrl = getSessionBaseUrl(tabObj.session.id, tabObj.session);
     try {
       const res = await fetch(`${baseUrl}/v1/sessions/prompt`, {
@@ -2613,12 +2606,67 @@
         }
         throw new Error(errMsg || `HTTP ${res.status}`);
       }
+
+      const data = await res.json().catch(() => ({}));
+      if (data && data.status === 'queued') {
+        // Prompt queued on daemon
+        loadChatQueue(tabObj);
+        return;
+      }
+
+      appendChatMessage(tabObj, {
+        role: 'user',
+        content: promptText,
+        timestamp: new Date().toISOString()
+      });
+
+      const assistantMsgEl = document.createElement('div');
+      assistantMsgEl.className = 'chat-msg assistant-msg in-flight';
+      assistantMsgEl.innerHTML = `
+        <div class="chat-msg-header">
+          <span class="chat-msg-role">🤖 ${escapeHtml(tabObj.session.agent || 'Claude Code')}</span>
+          <div class="chat-msg-actions">
+            <span class="chat-msg-time">${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+            <button class="btn-copy-chat-msg" title="Copy message" type="button" aria-label="Copy message">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+              </svg>
+            </button>
+          </div>
+        </div>
+        <div class="chat-thinking-slot"></div>
+        <div class="chat-tools-slot"></div>
+        <div class="chat-msg-body markdown-body"><span class="chat-streaming-cursor"></span></div>
+      `;
+      attachChatMessageListeners(assistantMsgEl);
+      tabObj.chatMessagesEl.appendChild(assistantMsgEl);
+      tabObj.chatMessagesEl.scrollTop = tabObj.chatMessagesEl.scrollHeight;
+
+      tabObj.activeTurnMsgEl = assistantMsgEl;
+      tabObj.activeTurnBuffer = '';
+
+      if (tabObj.chatCancelBtn) tabObj.chatCancelBtn.style.display = 'inline-flex';
+      if (tabObj.chatStatusBadge) tabObj.chatStatusBadge.textContent = '⚡ Working...';
+      updateComposerButtonState(tabObj);
     } catch (err) {
       console.error('Failed to dispatch prompt:', err);
-      const bodyEl = assistantMsgEl.querySelector('.chat-msg-body');
-      if (bodyEl) {
-        bodyEl.innerHTML = `<span style="color: var(--accent-red);">⚠️ Error sending prompt: ${escapeHtml(err.message)}</span>`;
-      }
+      appendChatMessage(tabObj, {
+        role: 'user',
+        content: promptText,
+        timestamp: new Date().toISOString()
+      });
+      const errEl = document.createElement('div');
+      errEl.className = 'chat-msg assistant-msg';
+      errEl.innerHTML = `
+        <div class="chat-msg-header">
+          <span class="chat-msg-role">🤖 ${escapeHtml(tabObj.session.agent || 'Claude Code')}</span>
+        </div>
+        <div class="chat-msg-body markdown-body">
+          <span style="color: var(--accent-red);">⚠️ Error sending prompt: ${escapeHtml(err.message)}</span>
+        </div>
+      `;
+      tabObj.chatMessagesEl.appendChild(errEl);
       resetChatComposer(tabObj);
       tabObj.activeTurnMsgEl = null;
       tabObj.activeTurnBuffer = '';
@@ -2687,7 +2735,7 @@
   function handleChatStreamEvent(tabObj, evt) {
     if (!tabObj || !tabObj.chatMessagesEl) return;
 
-    if (!tabObj.activeTurnMsgEl && evt.type !== 'status') {
+    if (!tabObj.activeTurnMsgEl && evt.type !== 'status' && evt.type !== 'queue_update') {
       let inFlight = tabObj.chatMessagesEl.querySelector('.chat-msg.assistant-msg.in-flight');
       if (!inFlight && evt.type !== 'turn_complete' && evt.type !== 'turn_cancelled') {
         inFlight = document.createElement('div');
@@ -2719,6 +2767,31 @@
     const msgEl = tabObj.activeTurnMsgEl;
 
     switch (evt.type) {
+      case 'queue_update':
+        if (Array.isArray(evt.queue_items)) {
+          tabObj.promptQueue = evt.queue_items;
+        }
+        tabObj.isQueuePaused = !!evt.queue_paused;
+        renderChatQueue(tabObj);
+        break;
+
+      case 'turn_start':
+        if (evt.text) {
+          const lastMsg = tabObj.chatMessagesEl.lastElementChild;
+          const isAlreadyRendered = lastMsg && lastMsg.classList.contains('user-msg') && lastMsg.textContent.includes(evt.text);
+          if (!isAlreadyRendered) {
+            appendChatMessage(tabObj, {
+              role: 'user',
+              content: evt.text,
+              timestamp: evt.timestamp || new Date().toISOString()
+            });
+          }
+        }
+        if (tabObj.chatCancelBtn) tabObj.chatCancelBtn.style.display = 'inline-flex';
+        if (tabObj.chatStatusBadge) tabObj.chatStatusBadge.textContent = '⚡ Working...';
+        updateComposerButtonState(tabObj);
+        break;
+
       case 'text_delta':
         if (msgEl) {
           tabObj.activeTurnBuffer = (tabObj.activeTurnBuffer || '') + (evt.text || '');
@@ -2775,19 +2848,21 @@
         if (msgEl) {
           const slot = msgEl.querySelector('.chat-tools-slot');
           if (slot) {
-            const card = slot.querySelector(`[data-tool-name="${evt.tool_name}"]`) || slot.lastElementChild;
-            if (card) {
-              const summary = card.querySelector('summary');
-              if (summary) {
-                summary.textContent = `⚡ ${evt.tool_name}: ${evt.is_error ? 'failed ❌' : 'completed ✓'}`;
-                if (evt.is_error) card.classList.add('tool-error');
+            const lastCard = slot.querySelector('.chat-tool-card:last-child');
+            if (lastCard) {
+              const summaryEl = lastCard.querySelector('summary');
+              if (summaryEl && summaryEl.textContent.includes('running...')) {
+                summaryEl.textContent = `✅ ${lastCard.dataset.toolName || 'tool'}: done`;
               }
-              const content = card.querySelector('.chat-tool-content');
-              if (content && evt.tool_output) {
-                content.textContent += `\n\n--- Output ---\n${evt.tool_output}`;
+              if (evt.tool_output) {
+                const outEl = document.createElement('div');
+                outEl.className = 'chat-tool-output';
+                outEl.textContent = evt.tool_output;
+                lastCard.appendChild(outEl);
               }
             }
           }
+          tabObj.chatMessagesEl.scrollTop = tabObj.chatMessagesEl.scrollHeight;
         }
         break;
 
@@ -2813,13 +2888,6 @@
         tabObj.activeTurnMsgEl = null;
         tabObj.activeTurnBuffer = '';
         fetchSessions();
-
-        // Dispatch next queued prompt if available and not paused
-        if (tabObj.promptQueue && tabObj.promptQueue.length > 0 && !tabObj.isQueuePaused) {
-          setTimeout(() => {
-            dispatchNextQueuedPrompt(tabObj);
-          }, 100);
-        }
         break;
 
       case 'turn_cancelled':

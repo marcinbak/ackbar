@@ -270,6 +270,8 @@ func (s *Server) Mux() http.Handler {
 	mux.HandleFunc("/v1/sessions/pty", s.handlePTY)
 	mux.HandleFunc("/v1/sessions/spawn", s.handleSpawn)
 	mux.HandleFunc("/v1/sessions/prompt", s.handlePrompt)
+	mux.HandleFunc("/v1/sessions/prompt/queue", s.handlePromptQueue)
+	mux.HandleFunc("/v1/sessions/prompt/queue/resume", s.handlePromptQueueResume)
 	mux.HandleFunc("/v1/sessions/chat/stream", s.handleChatStream)
 	mux.HandleFunc("/v1/sessions/cancel", s.handleCancelTurn)
 	mux.HandleFunc("/v1/sessions/take-wheel", s.handleTakeWheel)
@@ -1444,7 +1446,13 @@ func (s *Server) handlePrompt(w http.ResponseWriter, r *http.Request) {
 
 	if sess.EngineType == EngineHeadless {
 		if s.headless != nil && s.headless.IsRunning(sess.ID) {
-			http.Error(w, "A turn is already in progress for this session", http.StatusConflict)
+			item := s.headless.EnqueuePrompt(sess.ID, req.Prompt)
+			s.headless.EmitQueueUpdate(sess.ID)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"status": "queued",
+				"id":     item.ID,
+			})
 			return
 		}
 		if s.headless != nil {
@@ -1474,6 +1482,167 @@ func (s *Server) handlePrompt(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]string{
 		"status": "sent",
 	})
+}
+
+func (s *Server) handlePromptQueue(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.URL.Query().Get("session_id")
+	if sessionID == "" {
+		sessionID = r.URL.Query().Get("id")
+	}
+	if sessionID == "" {
+		http.Error(w, "Missing session_id query parameter", http.StatusBadRequest)
+		return
+	}
+
+	sess := s.resolveSession(sessionID)
+	if sess == nil {
+		parts := strings.Split(sessionID, ":")
+		if len(parts) >= 2 {
+			if hostRec := s.resolveHost(parts[1]); hostRec != nil && hostRec.URL != "" {
+				targetURL := fmt.Sprintf("%s/v1/sessions/prompt/queue?%s", strings.TrimSuffix(hostRec.URL, "/"), r.URL.RawQuery)
+				fwdReq, err := http.NewRequest(r.Method, targetURL, r.Body)
+				if err == nil {
+					fwdReq.Header.Set("Content-Type", r.Header.Get("Content-Type"))
+					if resp, err := http.DefaultClient.Do(fwdReq); err == nil {
+						defer resp.Body.Close()
+						w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
+						w.WriteHeader(resp.StatusCode)
+						_, _ = io.Copy(w, resp.Body)
+						return
+					}
+				}
+			}
+		}
+		http.Error(w, "Session not found", http.StatusNotFound)
+		return
+	}
+
+	if hostRec := s.resolveHost(sess.Host); hostRec != nil && hostRec.URL != "" {
+		targetURL := fmt.Sprintf("%s/v1/sessions/prompt/queue?%s", strings.TrimSuffix(hostRec.URL, "/"), r.URL.RawQuery)
+		fwdReq, err := http.NewRequest(r.Method, targetURL, r.Body)
+		if err == nil {
+			fwdReq.Header.Set("Content-Type", r.Header.Get("Content-Type"))
+			if resp, err := http.DefaultClient.Do(fwdReq); err == nil {
+				defer resp.Body.Close()
+				w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
+				w.WriteHeader(resp.StatusCode)
+				_, _ = io.Copy(w, resp.Body)
+				return
+			}
+		}
+	}
+
+	if s.headless == nil {
+		http.Error(w, "Headless engine not available", http.StatusInternalServerError)
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		items, paused := s.headless.GetPromptQueue(sess.ID)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"items":  items,
+			"paused": paused,
+		})
+
+	case http.MethodDelete:
+		itemID := r.URL.Query().Get("item_id")
+		if itemID != "" {
+			s.headless.DeletePromptQueueItem(sess.ID, itemID)
+		} else {
+			s.headless.ClearPromptQueue(sess.ID)
+		}
+		s.headless.EmitQueueUpdate(sess.ID)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Server) handlePromptQueueResume(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	sessionID := r.URL.Query().Get("session_id")
+	if sessionID == "" {
+		sessionID = r.URL.Query().Get("id")
+	}
+	if sessionID == "" {
+		var req struct {
+			SessionID string `json:"session_id"`
+		}
+		if bodyBytes, err := io.ReadAll(r.Body); err == nil && len(bodyBytes) > 0 {
+			_ = json.Unmarshal(bodyBytes, &req)
+			sessionID = req.SessionID
+		}
+	}
+	if sessionID == "" {
+		http.Error(w, "Missing session_id", http.StatusBadRequest)
+		return
+	}
+
+	sess := s.resolveSession(sessionID)
+	if sess == nil {
+		parts := strings.Split(sessionID, ":")
+		if len(parts) >= 2 {
+			if hostRec := s.resolveHost(parts[1]); hostRec != nil && hostRec.URL != "" {
+				targetURL := fmt.Sprintf("%s/v1/sessions/prompt/queue/resume?session_id=%s", strings.TrimSuffix(hostRec.URL, "/"), url.QueryEscape(sessionID))
+				fwdReq, err := http.NewRequest(r.Method, targetURL, nil)
+				if err == nil {
+					if resp, err := http.DefaultClient.Do(fwdReq); err == nil {
+						defer resp.Body.Close()
+						w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
+						w.WriteHeader(resp.StatusCode)
+						_, _ = io.Copy(w, resp.Body)
+						return
+					}
+				}
+			}
+		}
+		http.Error(w, "Session not found", http.StatusNotFound)
+		return
+	}
+
+	if hostRec := s.resolveHost(sess.Host); hostRec != nil && hostRec.URL != "" {
+		targetURL := fmt.Sprintf("%s/v1/sessions/prompt/queue/resume?session_id=%s", strings.TrimSuffix(hostRec.URL, "/"), url.QueryEscape(sess.ID))
+		fwdReq, err := http.NewRequest(r.Method, targetURL, nil)
+		if err == nil {
+			if resp, err := http.DefaultClient.Do(fwdReq); err == nil {
+				defer resp.Body.Close()
+				w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
+				w.WriteHeader(resp.StatusCode)
+				_, _ = io.Copy(w, resp.Body)
+				return
+			}
+		}
+	}
+
+	if s.headless == nil {
+		http.Error(w, "Headless engine not available", http.StatusInternalServerError)
+		return
+	}
+
+	s.headless.SetQueuePaused(sess.ID, false)
+	s.headless.EmitQueueUpdate(sess.ID)
+
+	// If runner is not currently running, trigger next queued prompt
+	if !s.headless.IsRunning(sess.ID) {
+		nextItem := s.headless.DequeuePrompt(sess.ID)
+		if nextItem != nil {
+			s.headless.EmitQueueUpdate(sess.ID)
+			go func() {
+				_ = s.headless.RunTurn(context.Background(), sess, nextItem.Text)
+			}()
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "resumed"})
 }
 
 func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
@@ -1519,6 +1688,20 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	})
 	_, _ = fmt.Fprintf(w, "data: %s\n\n", initEvt)
 	flusher.Flush()
+
+	// Initial prompt queue state snapshot
+	items, paused := s.headless.GetPromptQueue(targetID)
+	if len(items) > 0 || paused {
+		qEvt, _ := json.Marshal(ChatStreamEvent{
+			SessionID:   targetID,
+			Type:        "queue_update",
+			QueueItems:  items,
+			QueuePaused: paused,
+			Timestamp:   time.Now(),
+		})
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", qEvt)
+		flusher.Flush()
+	}
 
 	notify := r.Context().Done()
 	for {

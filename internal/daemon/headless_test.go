@@ -246,3 +246,80 @@ func TestHeadlessStreamParser_CommandAndAssistantBlocks(t *testing.T) {
 		t.Errorf("Unexpected error event: %+v", receivedEvents[2])
 	}
 }
+
+func TestHeadlessRunner_PromptQueue(t *testing.T) {
+	runner := NewHeadlessRunner(nil, nil)
+	sessionID := "claude-code:local:test-queue-sess"
+
+	// Initial state should be empty
+	items, paused := runner.GetPromptQueue(sessionID)
+	if len(items) != 0 {
+		t.Fatalf("Expected empty queue, got %d items", len(items))
+	}
+	if paused {
+		t.Fatalf("Expected queue not paused initially")
+	}
+
+	// Subscribe to events
+	ch, cleanup := runner.Subscribe(sessionID)
+	defer cleanup()
+
+	// Enqueue 3 items
+	q1 := runner.EnqueuePrompt(sessionID, "Prompt 1")
+	q2 := runner.EnqueuePrompt(sessionID, "Prompt 2")
+	q3 := runner.EnqueuePrompt(sessionID, "Prompt 3")
+
+	items, _ = runner.GetPromptQueue(sessionID)
+	if len(items) != 3 {
+		t.Fatalf("Expected 3 queued items, got %d", len(items))
+	}
+	if items[0].Text != "Prompt 1" || items[1].Text != "Prompt 2" || items[2].Text != "Prompt 3" {
+		t.Errorf("Queue order mismatch: %+v", items)
+	}
+
+	// Delete item 2
+	deleted := runner.DeletePromptQueueItem(sessionID, q2.ID)
+	if !deleted {
+		t.Errorf("Expected q2 to be deleted")
+	}
+	items, _ = runner.GetPromptQueue(sessionID)
+	if len(items) != 2 {
+		t.Fatalf("Expected 2 queued items after deletion, got %d", len(items))
+	}
+	if items[0].ID != q1.ID || items[1].ID != q3.ID {
+		t.Errorf("Unexpected items after deletion: %+v", items)
+	}
+
+	// Pause and Emit update
+	runner.SetQueuePaused(sessionID, true)
+	if !runner.IsQueuePaused(sessionID) {
+		t.Errorf("Expected queue to be paused")
+	}
+	runner.EmitQueueUpdate(sessionID)
+
+	select {
+	case evt := <-ch:
+		if evt.Type != "queue_update" {
+			t.Errorf("Expected queue_update event, got %s", evt.Type)
+		}
+		if len(evt.QueueItems) != 2 || !evt.QueuePaused {
+			t.Errorf("Unexpected queue_update payload: %+v", evt)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatalf("Timeout waiting for queue_update event")
+	}
+
+	// Dequeue prompt (FIFO)
+	next := runner.DequeuePrompt(sessionID)
+	if next == nil || next.ID != q1.ID {
+		t.Errorf("Expected q1 dequeued, got %+v", next)
+	}
+
+	// Clear queue
+	runner.ClearPromptQueue(sessionID)
+	items, paused = runner.GetPromptQueue(sessionID)
+	if len(items) != 0 || paused {
+		t.Errorf("Expected empty unpaused queue after ClearPromptQueue, got len=%d paused=%v", len(items), paused)
+	}
+}
+
