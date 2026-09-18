@@ -402,10 +402,42 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 	// Build arguments: if first turn vs follow-up turn
 	var args []string
 	home, _ := os.UserHomeDir()
-	encodedCwd := encodeClaudeProjectDir(sess.Cwd)
-	transcriptFile := filepath.Join(home, ".claude", "projects", encodedCwd, sess.NativeID+".jsonl")
+	claudeDir := filepath.Join(home, ".claude")
+	if sess.AccountID != "" && h.db != nil {
+		if acc, _ := h.db.GetAccount(sess.AccountID); acc != nil && acc.ConfigDir != "" {
+			cfgDir := acc.ConfigDir
+			if strings.HasPrefix(cfgDir, "~/") && home != "" {
+				cfgDir = filepath.Join(home, cfgDir[2:])
+			}
+			claudeDir = cfgDir
+		}
+	}
 
-	if fileExists(transcriptFile) {
+	encodedCwd := encodeClaudeProjectDir(sess.Cwd)
+	transcriptFile := filepath.Join(claudeDir, "projects", encodedCwd, sess.NativeID+".jsonl")
+
+	hasTranscript := fileExists(transcriptFile)
+	if !hasTranscript {
+		projectsDir := filepath.Join(claudeDir, "projects")
+		if entries, err := os.ReadDir(projectsDir); err == nil {
+			for _, e := range entries {
+				if e.IsDir() {
+					cand := filepath.Join(projectsDir, e.Name(), sess.NativeID+".jsonl")
+					if fileExists(cand) {
+						hasTranscript = true
+						break
+					}
+				}
+			}
+		}
+	}
+
+	if !hasTranscript && fileExists(filepath.Join(claudeDir, "session-env", sess.NativeID)) {
+		hasTranscript = true
+	}
+
+	// If transcript or session-env exists, or if a previous turn ran in this session, resume conversation
+	if hasTranscript || sess.FirstPrompt != "" || sess.LastPrompt != "" {
 		args = []string{"-p", prompt, "--output-format", "stream-json", "--verbose", "--resume", sess.NativeID}
 	} else {
 		args = []string{"-p", prompt, "--output-format", "stream-json", "--verbose", "--session-id", sess.NativeID}

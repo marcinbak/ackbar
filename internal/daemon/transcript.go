@@ -394,7 +394,16 @@ func loadClaudeTranscript(t *Transcript, home, sessionID, cwd string) error {
 
 func encodeClaudeProjectDir(p string) string {
 	clean := filepath.Clean(p)
-	return strings.ReplaceAll(clean, string(filepath.Separator), "-")
+	var b strings.Builder
+	for i := 0; i < len(clean); i++ {
+		c := clean[i]
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') {
+			b.WriteByte(c)
+		} else {
+			b.WriteByte('-')
+		}
+	}
+	return b.String()
 }
 
 func cleanAntigravityPrompt(raw string) string {
