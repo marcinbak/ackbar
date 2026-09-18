@@ -1296,6 +1296,20 @@
             state.sessions = deduplicateSessions(state.sessions);
             renderTree();
             updateOpenTabsState();
+
+            // Sync running subagents for open chat tabs
+            if (typeof updatedSess.running_subagents === 'number') {
+              for (const [, tabObj] of state.openTabs.entries()) {
+                if (tabObj && tabObj.session && (tabObj.session.id === updatedSess.id || tabObj.session.native_id === updatedSess.native_id)) {
+                  if (updatedSess.running_subagents === 0) {
+                    tabObj.runningSubagents = [];
+                    renderSubagentsBar(tabObj);
+                  } else if (!tabObj.runningSubagents || tabObj.runningSubagents.length !== updatedSess.running_subagents) {
+                    fetchRunningSubagents(tabObj);
+                  }
+                }
+              }
+            }
           } catch (e) {
             console.error(`[SSE ${h.name}] parse error:`, e);
           }
@@ -2324,6 +2338,17 @@
           </div>
           <div class="chat-queue-list" style="display: none;"></div>
         </div>
+        <div class="chat-subagents-container" style="display: none;">
+          <div class="chat-subagents-bar">
+            <div class="chat-subagents-summary">
+              <span class="chat-subagents-pulse"></span>
+              <span class="chat-subagents-icon">⚡</span>
+              <span class="chat-subagents-count-text">0 subagents running...</span>
+              <span class="chat-subagents-chevron">▾</span>
+            </div>
+          </div>
+          <div class="chat-subagents-list" style="display: none;"></div>
+        </div>
         <div class="chat-composer-attachments" style="display: none;"></div>
         <div class="chat-composer-box">
           <button class="btn-composer-attach" type="button" title="Attach file or image">
@@ -2349,8 +2374,15 @@
     tabObj.isQueueExpanded = false;
     tabObj.isQueuePaused = false;
     tabObj.pendingAttachments = [];
+    tabObj.runningSubagents = [];
+    tabObj.isSubagentsExpanded = false;
 
     tabObj.chatMessagesEl = chatViewEl.querySelector('.chat-messages-container');
+    tabObj.chatSubagentsContainer = chatViewEl.querySelector('.chat-subagents-container');
+    tabObj.chatSubagentsBar = chatViewEl.querySelector('.chat-subagents-bar');
+    tabObj.chatSubagentsCountText = chatViewEl.querySelector('.chat-subagents-count-text');
+    tabObj.chatSubagentsChevron = chatViewEl.querySelector('.chat-subagents-chevron');
+    tabObj.chatSubagentsList = chatViewEl.querySelector('.chat-subagents-list');
     tabObj.chatComposerAttachments = chatViewEl.querySelector('.chat-composer-attachments');
     tabObj.chatComposerBox = chatViewEl.querySelector('.chat-composer-box');
     tabObj.chatAttachBtn = chatViewEl.querySelector('.btn-composer-attach');
@@ -2360,6 +2392,13 @@
     tabObj.chatCancelBtn = chatViewEl.querySelector('.btn-composer-cancel');
     tabObj.chatStatusBadge = chatViewEl.querySelector('.chat-status-badge');
     tabObj.chatEngineBadge = chatViewEl.querySelector('.chat-engine-badge');
+
+    if (tabObj.chatSubagentsBar) {
+      tabObj.chatSubagentsBar.addEventListener('click', () => {
+        tabObj.isSubagentsExpanded = !tabObj.isSubagentsExpanded;
+        renderSubagentsBar(tabObj);
+      });
+    }
 
     if (tabObj.chatAttachBtn && tabObj.chatFileInput) {
       tabObj.chatAttachBtn.addEventListener('click', (e) => {
@@ -2763,6 +2802,18 @@
             tabObj.chatMessagesEl.scrollTop = tabObj.chatMessagesEl.scrollHeight;
           }
         });
+
+        if (Array.isArray(data.running_subagents)) {
+          tabObj.runningSubagents = data.running_subagents;
+          renderSubagentsBar(tabObj);
+        } else if (Array.isArray(data.subagents)) {
+          tabObj.runningSubagents = data.subagents;
+          renderSubagentsBar(tabObj);
+        } else {
+          fetchRunningSubagents(tabObj);
+        }
+      } else {
+        fetchRunningSubagents(tabObj);
       }
     } catch (e) {
       console.warn('Failed to load chat transcript:', e);
@@ -3731,6 +3782,95 @@
     updateComposerButtonState(tabObj);
   }
 
+  // Render running subagents box directly above prompt composer
+  function renderSubagentsBar(tabObj) {
+    if (!tabObj || !tabObj.chatSubagentsContainer) return;
+    const running = (tabObj.runningSubagents || []).filter(s => s.state === 'running');
+    if (running.length === 0) {
+      tabObj.chatSubagentsContainer.style.display = 'none';
+      if (tabObj.chatSubagentsList) tabObj.chatSubagentsList.style.display = 'none';
+      return;
+    }
+
+    tabObj.chatSubagentsContainer.style.display = 'flex';
+    const countText = running.length === 1 ? '1 subagent running...' : `${running.length} subagents running...`;
+    if (tabObj.chatSubagentsCountText) {
+      tabObj.chatSubagentsCountText.textContent = countText;
+    }
+
+    if (tabObj.isSubagentsExpanded) {
+      if (tabObj.chatSubagentsList) {
+        tabObj.chatSubagentsList.style.display = 'flex';
+        tabObj.chatSubagentsList.innerHTML = running.map((sub, idx) => {
+          const name = sub.name || sub.role || `Subagent #${idx + 1}`;
+          const role = sub.role && sub.role !== name ? sub.role : '';
+          const prompt = (sub.prompt || '').trim();
+          return `
+            <div class="chat-subagent-item">
+              <div class="chat-subagent-header">
+                <div class="chat-subagent-role">
+                  <span class="chat-subagents-pulse"></span>
+                  <span class="chat-subagent-name">${escapeHtml(name)}</span>
+                  ${role ? `<span class="chat-subagent-badge">${escapeHtml(role)}</span>` : ''}
+                </div>
+                ${prompt ? `
+                  <button class="btn-copy-subagent-prompt" title="Copy prompt" type="button" data-prompt="${escapeHtml(prompt)}">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                    </svg>
+                  </button>
+                ` : ''}
+              </div>
+              ${prompt ? `<div class="chat-subagent-prompt">${escapeHtml(prompt)}</div>` : ''}
+            </div>
+          `;
+        }).join('');
+
+        tabObj.chatSubagentsList.querySelectorAll('.btn-copy-subagent-prompt').forEach(btn => {
+          btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const p = btn.getAttribute('data-prompt') || '';
+            copyToClipboard(p, btn);
+          });
+        });
+      }
+      if (tabObj.chatSubagentsChevron) {
+        tabObj.chatSubagentsChevron.style.transform = 'rotate(180deg)';
+      }
+    } else {
+      if (tabObj.chatSubagentsList) {
+        tabObj.chatSubagentsList.style.display = 'none';
+      }
+      if (tabObj.chatSubagentsChevron) {
+        tabObj.chatSubagentsChevron.style.transform = 'none';
+      }
+    }
+  }
+
+  // Fetch running subagents for tabObj
+  async function fetchRunningSubagents(tabObj) {
+    if (!tabObj || !tabObj.session) return;
+    const baseUrl = getSessionBaseUrl(tabObj.session.id, tabObj.session);
+    const token = getAuthToken();
+    let url = `${baseUrl}/v1/sessions/subagents?id=${encodeURIComponent(tabObj.session.id)}`;
+    if (token) {
+      url += `&token=${encodeURIComponent(token)}`;
+    }
+    try {
+      const res = await fetch(url);
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data.subagents)) {
+          tabObj.runningSubagents = data.subagents;
+          renderSubagentsBar(tabObj);
+        }
+      }
+    } catch (e) {
+      // Background fetch ignore
+    }
+  }
+
   // Pop and dispatch the next queued prompt if idle
   async function dispatchNextQueuedPrompt(tabObj) {
     if (!tabObj || !tabObj.session) return;
@@ -3988,6 +4128,13 @@
         renderChatQueue(tabObj);
         break;
 
+      case 'subagents_update':
+        if (Array.isArray(evt.subagents)) {
+          tabObj.runningSubagents = evt.subagents;
+          renderSubagentsBar(tabObj);
+        }
+        break;
+
       case 'turn_start':
         tabObj.activeTurnHadTool = false;
         if (evt.text) {
@@ -4128,10 +4275,31 @@
             tabObj.chatMessagesEl.scrollTop = tabObj.chatMessagesEl.scrollHeight;
           }
         }
+        if (evt.tool_name === 'Agent' || evt.tool_name === 'Task') {
+          let promptText = '';
+          if (evt.tool_input && typeof evt.tool_input === 'object') {
+            promptText = evt.tool_input.prompt || evt.tool_input.description || '';
+          } else if (typeof evt.tool_input === 'string') {
+            promptText = evt.tool_input;
+          }
+          const sub = {
+            id: 'sub-' + Date.now(),
+            name: evt.tool_name,
+            prompt: promptText,
+            state: 'running'
+          };
+          tabObj.runningSubagents = tabObj.runningSubagents || [];
+          tabObj.runningSubagents.push(sub);
+          renderSubagentsBar(tabObj);
+        }
         break;
 
       case 'tool_result':
         tabObj.activeTurnHadTool = true;
+        if (evt.tool_name === 'Agent' || evt.tool_name === 'Task') {
+          tabObj.runningSubagents = (tabObj.runningSubagents || []).filter(s => s.name !== evt.tool_name);
+          renderSubagentsBar(tabObj);
+        }
         if (msgEl) {
           const slot = msgEl.querySelector('.chat-tools-slot');
           if (slot) {
@@ -4158,6 +4326,8 @@
         break;
 
       case 'turn_complete':
+        tabObj.runningSubagents = [];
+        renderSubagentsBar(tabObj);
         if (msgEl) {
           const groupCard = msgEl.querySelector('.chat-tool-group');
           if (groupCard) {
@@ -4196,6 +4366,8 @@
         break;
 
       case 'turn_cancelled':
+        tabObj.runningSubagents = [];
+        renderSubagentsBar(tabObj);
         if (msgEl) {
           msgEl.classList.remove('in-flight');
           const cursor = msgEl.querySelector('.chat-streaming-cursor');

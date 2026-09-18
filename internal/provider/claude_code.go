@@ -76,6 +76,7 @@ type claudePayload struct {
 	IsSidechainCamel bool   `json:"isSidechain"`
 	AgentID          string `json:"agent_id"`
 	AgentIDCamel     string `json:"agentId"`
+	AgentType        string `json:"agent_type"`
 	Question         string `json:"question"`
 	Questions        []struct {
 		Question string   `json:"question"`
@@ -144,9 +145,15 @@ func (c *ClaudeProvider) ParseHook(eventName string, payload []byte) (*daemon.Ev
 		return nil, fmt.Errorf("failed to unmarshal Claude Code hook payload: %w", err)
 	}
 
+	// Allow SubagentStart and SubagentStop through so daemon can track active subagents
+	isSubagentLifecycle := strings.EqualFold(p.HookEventName, "SubagentStart") || strings.EqualFold(p.HookEventName, "SubagentStop") ||
+		strings.EqualFold(eventName, "SubagentStart") || strings.EqualFold(eventName, "SubagentStop")
+
 	// Filter out child subagents and sidechain hook events per docs/providers.md §4
-	if p.IsSidechain || p.IsSidechainCamel || (p.AgentID != "" && p.AgentID != "default") || (p.AgentIDCamel != "" && p.AgentIDCamel != "default") {
-		return nil, nil
+	if !isSubagentLifecycle {
+		if p.IsSidechain || p.IsSidechainCamel || (p.AgentID != "" && p.AgentID != "default") || (p.AgentIDCamel != "" && p.AgentIDCamel != "default") {
+			return nil, nil
+		}
 	}
 
 	// Filter out events with invalid or non-UUID session IDs (e.g. mock/test hooks like "test", "default")
@@ -154,11 +161,22 @@ func (c *ClaudeProvider) ParseHook(eventName string, payload []byte) (*daemon.Ev
 		return nil, nil
 	}
 
+	toolName := p.ToolName
+	if isSubagentLifecycle && toolName == "" {
+		if p.AgentType != "" {
+			toolName = p.AgentType
+		} else if p.AgentID != "" {
+			toolName = p.AgentID
+		}
+	}
+
 	event := &daemon.Event{
 		Agent:       "claude-code",
 		NativeID:    p.SessionID,
 		Cwd:         p.Cwd,
 		EventName:   p.HookEventName,
+		ToolName:    toolName,
+		ToolInput:   p.ToolInput,
 		LastEventAt: time.Now(),
 		State:       daemon.StateWorking, // default assumption
 	}

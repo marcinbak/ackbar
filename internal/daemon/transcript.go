@@ -27,6 +27,16 @@ type Transcript struct {
 	Messages  []TranscriptMessage `json:"messages"`
 }
 
+// SubagentInfo represents an active or completed subagent spawned by an AI agent
+type SubagentInfo struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	Role      string    `json:"role,omitempty"`
+	Prompt    string    `json:"prompt"`
+	State     string    `json:"state"` // "running", "completed"
+	StartedAt time.Time `json:"started_at"`
+}
+
 // ExtractTranscript loads and parses conversation logs for a session from disk
 func ExtractTranscript(agent, nativeID, cwd string) (*Transcript, error) {
 	home, err := os.UserHomeDir()
@@ -572,4 +582,323 @@ func FormatTranscriptMarkdown(t *Transcript) string {
 	}
 
 	return sb.String()
+}
+
+// ExtractSubagents extracts currently running subagents for a session
+func ExtractSubagents(agent, nativeID, cwd string) ([]SubagentInfo, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get home dir: %w", err)
+	}
+
+	switch agent {
+	case "antigravity":
+		return loadAntigravitySubagents(home, nativeID)
+	case "claude-code":
+		return loadClaudeSubagents(home, nativeID, cwd)
+	default:
+		subs, err := loadAntigravitySubagents(home, nativeID)
+		if err == nil && len(subs) > 0 {
+			return subs, nil
+		}
+		return loadClaudeSubagents(home, nativeID, cwd)
+	}
+}
+
+func loadAntigravitySubagents(home, convID string) ([]SubagentInfo, error) {
+	candidatePaths := []string{
+		filepath.Join(home, ".gemini", "antigravity", "brain", convID, ".system_generated", "logs", "transcript.jsonl"),
+		filepath.Join(home, ".gemini", "antigravity-cli", "brain", convID, ".system_generated", "logs", "transcript.jsonl"),
+		filepath.Join(home, ".antigravity", "brain", convID, ".system_generated", "logs", "transcript.jsonl"),
+	}
+
+	var file *os.File
+	var err error
+	for _, path := range candidatePaths {
+		file, err = os.Open(path)
+		if err == nil {
+			break
+		}
+	}
+
+	if file == nil {
+		return nil, fmt.Errorf("antigravity log not found for conversation %s: %w", convID, err)
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	buf := make([]byte, 1024*1024)
+	scanner.Buffer(buf, 10*1024*1024)
+
+	var activeSubagents []*SubagentInfo
+	convMap := make(map[string]*SubagentInfo)
+	var latestPendingBatch []*SubagentInfo
+
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+
+		var entry struct {
+			StepIndex int    `json:"step_index"`
+			Source    string `json:"source"`
+			Type      string `json:"type"`
+			Status    string `json:"status"`
+			CreatedAt string `json:"created_at"`
+			Content   string `json:"content"`
+			ToolCalls []struct {
+				Name string                 `json:"name"`
+				Args map[string]interface{} `json:"args"`
+			} `json:"tool_calls"`
+		}
+
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			continue
+		}
+
+		ts, _ := time.Parse(time.RFC3339, entry.CreatedAt)
+		if ts.IsZero() {
+			ts = time.Now()
+		}
+
+		// When a new user prompt begins, previous turn's subagents are done
+		if entry.Type == "USER_INPUT" {
+			activeSubagents = nil
+			convMap = make(map[string]*SubagentInfo)
+			latestPendingBatch = nil
+			continue
+		}
+
+		// Check for invoke_subagent tool call
+		if entry.Type == "PLANNER_RESPONSE" {
+			for _, tc := range entry.ToolCalls {
+				if tc.Name == "invoke_subagent" && tc.Args != nil {
+					subagentsRaw := tc.Args["Subagents"]
+					var subList []map[string]interface{}
+
+					switch v := subagentsRaw.(type) {
+					case string:
+						var parsed []map[string]interface{}
+						if err := json.Unmarshal([]byte(v), &parsed); err == nil {
+							subList = parsed
+						}
+					case []interface{}:
+						for _, item := range v {
+							if m, ok := item.(map[string]interface{}); ok {
+								subList = append(subList, m)
+							}
+						}
+					}
+
+					var batch []*SubagentInfo
+					for i, subItem := range subList {
+						role, _ := subItem["Role"].(string)
+						typeName, _ := subItem["TypeName"].(string)
+						prompt, _ := subItem["Prompt"].(string)
+						name := role
+						if name == "" {
+							name = typeName
+						}
+						if name == "" {
+							name = fmt.Sprintf("Subagent #%d", i+1)
+						}
+
+						sub := &SubagentInfo{
+							ID:        fmt.Sprintf("subagent-%d-%d", entry.StepIndex, i),
+							Name:      name,
+							Role:      role,
+							Prompt:    prompt,
+							State:     "running",
+							StartedAt: ts,
+						}
+						activeSubagents = append(activeSubagents, sub)
+						batch = append(batch, sub)
+					}
+					latestPendingBatch = batch
+				}
+			}
+		}
+
+		// Check if this step declares the created subagent IDs
+		if len(latestPendingBatch) > 0 && strings.Contains(entry.Content, "Created the following subagents:") {
+			lines := strings.Split(entry.Content, "\n")
+			batchIdx := 0
+			for _, l := range lines {
+				if strings.Contains(l, `"conversationId":`) {
+					parts := strings.Split(l, `"conversationId":`)
+					if len(parts) >= 2 {
+						idVal := strings.Trim(parts[1], " \t\r\n,\"} ")
+						idVal = strings.Trim(idVal, `"`)
+						if idVal != "" && batchIdx < len(latestPendingBatch) {
+							latestPendingBatch[batchIdx].ID = idVal
+							convMap[idVal] = latestPendingBatch[batchIdx]
+							batchIdx++
+						}
+					}
+				}
+			}
+			latestPendingBatch = nil
+		}
+
+		// Check if a subagent sent a response back or completed
+		if len(activeSubagents) > 0 {
+			for cId, sub := range convMap {
+				if strings.Contains(entry.Content, fmt.Sprintf("sender=%s", cId)) ||
+					strings.Contains(entry.Content, fmt.Sprintf(`sender="%s"`, cId)) ||
+					(strings.Contains(line, fmt.Sprintf(`"conversationId":"%s"`, cId)) && strings.Contains(line, `"state":"idle"`)) {
+					sub.State = "completed"
+				}
+			}
+		}
+	}
+
+	var running []SubagentInfo
+	for _, s := range activeSubagents {
+		if s != nil && s.State == "running" {
+			running = append(running, *s)
+		}
+	}
+
+	return running, nil
+}
+
+func loadClaudeSubagents(home, sessionID, cwd string) ([]SubagentInfo, error) {
+	var targetFile string
+	projectsDir := filepath.Join(home, ".claude", "projects")
+
+	if cwd != "" {
+		encodedCwd := encodeClaudeProjectDir(cwd)
+		cand := filepath.Join(projectsDir, encodedCwd, sessionID+".jsonl")
+		if fileExists(cand) {
+			targetFile = cand
+		}
+	}
+
+	if targetFile == "" && dirExists(projectsDir) {
+		entries, err := os.ReadDir(projectsDir)
+		if err == nil {
+			for _, e := range entries {
+				if e.IsDir() {
+					cand := filepath.Join(projectsDir, e.Name(), sessionID+".jsonl")
+					if fileExists(cand) {
+						targetFile = cand
+						break
+					}
+				}
+			}
+		}
+	}
+
+	if targetFile == "" {
+		return nil, fmt.Errorf("claude log not found for session %s", sessionID)
+	}
+
+	file, err := os.Open(targetFile)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	buf := make([]byte, 1024*1024)
+	scanner.Buffer(buf, 10*1024*1024)
+
+	var activeSubagents []*SubagentInfo
+	toolUseMap := make(map[string]*SubagentInfo)
+
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+
+		var raw map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &raw); err != nil {
+			continue
+		}
+
+		msgType, _ := raw["type"].(string)
+		tsStr, _ := raw["timestamp"].(string)
+		ts, _ := time.Parse(time.RFC3339, tsStr)
+		if ts.IsZero() {
+			ts = time.Now()
+		}
+
+		if msgType == "user" {
+			isToolResult := false
+			if msgObj, ok := raw["message"].(map[string]interface{}); ok {
+				if contentArr, ok := msgObj["content"].([]interface{}); ok {
+					for _, item := range contentArr {
+						if block, ok := item.(map[string]interface{}); ok {
+							if bType, _ := block["type"].(string); bType == "tool_result" {
+								isToolResult = true
+								toolID, _ := block["tool_use_id"].(string)
+								if sub, found := toolUseMap[toolID]; found {
+									sub.State = "completed"
+								}
+							}
+						}
+					}
+				}
+			}
+			if !isToolResult {
+				activeSubagents = nil
+				toolUseMap = make(map[string]*SubagentInfo)
+			}
+		} else if msgType == "assistant" {
+			if msgObj, ok := raw["message"].(map[string]interface{}); ok {
+				if contentArr, ok := msgObj["content"].([]interface{}); ok {
+					for _, item := range contentArr {
+						if block, ok := item.(map[string]interface{}); ok {
+							bType, _ := block["type"].(string)
+							toolName, _ := block["name"].(string)
+							if bType == "tool_use" && (toolName == "Agent" || toolName == "Task") {
+								toolID, _ := block["id"].(string)
+								var prompt, desc, subType string
+								if inputMap, ok := block["input"].(map[string]interface{}); ok {
+									if pr, ok := inputMap["prompt"].(string); ok {
+										prompt = pr
+									}
+									if d, ok := inputMap["description"].(string); ok {
+										desc = d
+									}
+									if st, ok := inputMap["subagent_type"].(string); ok {
+										subType = st
+									}
+								}
+								name := subType
+								if name == "" {
+									name = desc
+								}
+								if name == "" {
+									name = toolName
+								}
+								sub := &SubagentInfo{
+									ID:        toolID,
+									Name:      name,
+									Role:      subType,
+									Prompt:    prompt,
+									State:     "running",
+									StartedAt: ts,
+								}
+								activeSubagents = append(activeSubagents, sub)
+								if toolID != "" {
+									toolUseMap[toolID] = sub
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	var running []SubagentInfo
+	for _, s := range activeSubagents {
+		if s != nil && s.State == "running" {
+			running = append(running, *s)
+		}
+	}
+	return running, nil
 }

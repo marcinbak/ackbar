@@ -185,3 +185,97 @@ func TestFormatToolSummaryCounts(t *testing.T) {
 		t.Errorf("Expected 'Bash x2, Grep x1, View x1', got %q", res)
 	}
 }
+
+func TestExtractSubagents_Antigravity(t *testing.T) {
+	tmpHome, err := os.MkdirTemp("", "test-subagents-agy-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpHome)
+
+	convID := "test-conv-subagents"
+	logDir := filepath.Join(tmpHome, ".gemini", "antigravity", "brain", convID, ".system_generated", "logs")
+	_ = os.MkdirAll(logDir, 0755)
+
+	jsonlContent := `{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","created_at":"2026-09-18T00:00:00Z","content":"Review the auth service"}
+{"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-09-18T00:01:00Z","content":"Spawning parallel reviewers","tool_calls":[{"name":"invoke_subagent","args":{"Subagents":[{"Role":"Code Reviewer A","TypeName":"research","Prompt":"Review Kotlin backend"},{"Role":"Security Reviewer","TypeName":"research","Prompt":"Audit JWT validation"}]}}]}
+{"step_index":2,"source":"MODEL","type":"GENERIC","status":"DONE","created_at":"2026-09-18T00:01:05Z","content":"Created the following subagents:\n{\n  \"conversationId\": \"sub-conv-a\"\n}\n{\n  \"conversationId\": \"sub-conv-sec\"\n}"}
+{"step_index":3,"source":"SYSTEM","type":"SYSTEM_MESSAGE","status":"DONE","created_at":"2026-09-18T00:02:00Z","content":"[Message] timestamp=2026-09-18T00:02:00Z sender=sub-conv-a content=Kotlin review done"}
+`
+	logFile := filepath.Join(logDir, "transcript.jsonl")
+	if err := os.WriteFile(logFile, []byte(jsonlContent), 0644); err != nil {
+		t.Fatalf("Failed to write mock transcript: %v", err)
+	}
+
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpHome)
+	defer os.Setenv("HOME", origHome)
+
+	running, err := ExtractSubagents("antigravity", convID, "/tmp")
+	if err != nil {
+		t.Fatalf("ExtractSubagents failed: %v", err)
+	}
+
+	// sub-conv-a completed; only Security Reviewer (sub-conv-sec) should still be running
+	if len(running) != 1 {
+		t.Fatalf("Expected 1 running subagent, got %d: %+v", len(running), running)
+	}
+
+	if running[0].Name != "Security Reviewer" {
+		t.Errorf("Expected Security Reviewer, got %s", running[0].Name)
+	}
+	if running[0].Prompt != "Audit JWT validation" {
+		t.Errorf("Expected 'Audit JWT validation', got %s", running[0].Prompt)
+	}
+	if running[0].State != "running" {
+		t.Errorf("Expected running state, got %s", running[0].State)
+	}
+}
+
+func TestExtractSubagents_ClaudeCode(t *testing.T) {
+	tmpHome, err := os.MkdirTemp("", "test-subagents-claude-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpHome)
+
+	sessionID := "test-session-subagents"
+	cwd := "/Users/dev4u/Work/testapp"
+	encodedCwd := encodeClaudeProjectDir(cwd)
+	logDir := filepath.Join(tmpHome, ".claude", "projects", encodedCwd)
+	_ = os.MkdirAll(logDir, 0755)
+
+	jsonlContent := `{"type":"user","message":{"role":"user","content":"Run tests in parallel"},"timestamp":"2026-09-18T00:00:00.000Z"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Spawning agents"},{"type":"tool_use","id":"toolu-1","name":"Agent","input":{"subagent_type":"Explore","prompt":"Explore API routes"}},{"type":"tool_use","id":"toolu-2","name":"Agent","input":{"subagent_type":"Tester","prompt":"Run unit tests"}}]},"timestamp":"2026-09-18T00:01:00.000Z"}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu-1","content":"Exploration finished"}]},"timestamp":"2026-09-18T00:02:00.000Z"}
+`
+	logFile := filepath.Join(logDir, sessionID+".jsonl")
+	if err := os.WriteFile(logFile, []byte(jsonlContent), 0644); err != nil {
+		t.Fatalf("Failed to write mock claude transcript: %v", err)
+	}
+
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpHome)
+	defer os.Setenv("HOME", origHome)
+
+	running, err := ExtractSubagents("claude-code", sessionID, cwd)
+	if err != nil {
+		t.Fatalf("ExtractSubagents failed: %v", err)
+	}
+
+	// toolu-1 completed; only toolu-2 (Tester) should still be running
+	if len(running) != 1 {
+		t.Fatalf("Expected 1 running subagent, got %d: %+v", len(running), running)
+	}
+
+	if running[0].Name != "Tester" {
+		t.Errorf("Expected Tester, got %s", running[0].Name)
+	}
+	if running[0].Prompt != "Run unit tests" {
+		t.Errorf("Expected 'Run unit tests', got %s", running[0].Prompt)
+	}
+	if running[0].State != "running" {
+		t.Errorf("Expected running state, got %s", running[0].State)
+	}
+}
+
