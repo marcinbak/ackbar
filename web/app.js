@@ -51,23 +51,82 @@
     });
   };
 
+  let markedConfigured = false;
   function configureMarked() {
-    if (window.marked) {
-      if (typeof window.marked.use === 'function') {
-        window.marked.use({ breaks: true, gfm: true });
-      } else if (typeof window.marked.setOptions === 'function') {
-        window.marked.setOptions({ breaks: true, gfm: true });
+    if (!window.marked || markedConfigured) return;
+
+    const customRenderer = {
+      link(href, title, text) {
+        let linkHref = href;
+        let linkTitle = title;
+        let linkText = text;
+        if (typeof href === 'object' && href !== null) {
+          linkHref = href.href;
+          linkTitle = href.title;
+          linkText = href.text;
+        }
+        linkHref = linkHref || '';
+        linkText = linkText || linkHref;
+
+        const isAnchor = linkHref.startsWith('#');
+        const isFile = linkHref.startsWith('file://');
+        const targetAttr = (!isAnchor && !isFile) ? ' target="_blank" rel="noopener noreferrer"' : '';
+        const titleAttr = linkTitle ? ` title="${escapeHtml(linkTitle)}"` : '';
+
+        return `<a href="${escapeHtml(linkHref)}"${titleAttr}${targetAttr}>${linkText}</a>`;
       }
+    };
+
+    if (typeof window.marked.use === 'function') {
+      window.marked.use({
+        breaks: true,
+        gfm: true,
+        renderer: customRenderer
+      });
+      markedConfigured = true;
+    } else if (typeof window.marked.setOptions === 'function') {
+      const renderer = window.marked.Renderer ? new window.marked.Renderer() : {};
+      renderer.link = customRenderer.link;
+      window.marked.setOptions({
+        breaks: true,
+        gfm: true,
+        renderer: renderer
+      });
+      markedConfigured = true;
     }
   }
   configureMarked();
+
+  function ensureExternalLinksTargetBlank(html) {
+    if (!html || typeof html !== 'string') return html || '';
+    return html.replace(/<a\b([^>]*)>/gi, (match, attrs) => {
+      const hrefMatch = attrs.match(/href\s*=\s*["']([^"']*)["']/i);
+      const href = hrefMatch ? hrefMatch[1] : '';
+      if (!href || href.startsWith('#') || href.startsWith('file://') || href.startsWith('javascript:')) {
+        return match;
+      }
+      let newAttrs = attrs;
+      if (/target\s*=/i.test(newAttrs)) {
+        newAttrs = newAttrs.replace(/target\s*=\s*["'][^"']*["']/i, 'target="_blank"');
+      } else {
+        newAttrs += ' target="_blank"';
+      }
+      if (/rel\s*=/i.test(newAttrs)) {
+        newAttrs = newAttrs.replace(/rel\s*=\s*["'][^"']*["']/i, 'rel="noopener noreferrer"');
+      } else {
+        newAttrs += ' rel="noopener noreferrer"';
+      }
+      return `<a${newAttrs}>`;
+    });
+  }
 
   function renderMarkdown(content) {
     if (!window.marked) {
       return `<pre>${escapeHtml(content || '')}</pre>`;
     }
     configureMarked();
-    return window.marked.parse(content || '');
+    const raw = window.marked.parse(content || '');
+    return ensureExternalLinksTargetBlank(raw);
   }
 
   function ensureDoubleNewlineSeparation(prev, next) {
@@ -3326,6 +3385,9 @@
         a.dataset.fileLinkified = 'true';
         const pill = createChatFilePill(cleanPath, session);
         a.replaceWith(pill);
+      } else if (!href.startsWith('#') && !href.startsWith('javascript:')) {
+        a.setAttribute('target', '_blank');
+        a.setAttribute('rel', 'noopener noreferrer');
       }
     });
 
@@ -6165,6 +6227,29 @@ ${session.last_prompt}
       hideTabContextMenu();
       hideChatFileContextMenu();
     });
+
+    // Intercept clicks on links in chat or markdown to open in system browser / new tab
+    document.addEventListener('click', (e) => {
+      const link = e.target.closest('a');
+      if (!link) return;
+
+      // Ignore file pills, internal buttons, or anchor links
+      if (link.dataset.fileLinkified === 'true' || link.classList.contains('chat-file-pill') || link.closest('.chat-file-pill')) {
+        return;
+      }
+
+      const href = link.getAttribute('href') || '';
+      if (!href || href.startsWith('#') || href.startsWith('javascript:')) {
+        return;
+      }
+
+      // External web links (http://, https://, or protocol-relative //)
+      if (/^https?:\/\//i.test(href) || href.startsWith('//')) {
+        e.preventDefault();
+        e.stopPropagation();
+        window.open(href, '_blank', 'noopener,noreferrer');
+      }
+    }, true);
 
     window.addEventListener('resize', hideChatFileContextMenu);
     window.addEventListener('scroll', hideChatFileContextMenu, true);
