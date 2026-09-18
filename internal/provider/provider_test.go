@@ -365,3 +365,52 @@ func TestProviderInterfaceConformance(t *testing.T) {
 		}
 	}
 }
+
+func TestClaudeProvider_ExtractTranscript_CoalescesToolCalls(t *testing.T) {
+	tmpHome, err := os.MkdirTemp("", "test-provider-claude-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpHome)
+
+	sessionID := "11111111-2222-3333-4444-555555555555"
+	cwd := "/Users/dev4u/Work/App"
+	encodedCwd := strings.ReplaceAll(cwd, "/", "-")
+	logDir := filepath.Join(tmpHome, ".claude", "projects", encodedCwd)
+	_ = os.MkdirAll(logDir, 0755)
+
+	jsonlContent := `{"type":"user","message":{"role":"user","content":"Run linter and tests"},"timestamp":"2026-08-20T18:28:20.000Z"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","input":{"command":"npm run lint"}}]},"timestamp":"2026-08-20T18:28:21.000Z"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","input":{"command":"npm test"}}]},"timestamp":"2026-08-20T18:28:22.000Z"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Linter and tests passed."}]},"timestamp":"2026-08-20T18:28:23.000Z"}
+`
+	logFile := filepath.Join(logDir, sessionID+".jsonl")
+	if err := os.WriteFile(logFile, []byte(jsonlContent), 0644); err != nil {
+		t.Fatalf("Failed to write mock claude transcript: %v", err)
+	}
+
+	p := NewClaudeProvider()
+	msgs, err := p.ExtractTranscript(tmpHome, cwd, sessionID)
+	if err != nil {
+		t.Fatalf("ExtractTranscript failed: %v", err)
+	}
+
+	if len(msgs) != 2 {
+		t.Fatalf("Expected 2 coalesced messages, got %d", len(msgs))
+	}
+	if msgs[0].Role != "user" || msgs[0].Content != "Run linter and tests" {
+		t.Errorf("Unexpected user message: %+v", msgs[0])
+	}
+	if msgs[1].Role != "assistant" || !strings.Contains(msgs[1].Content, "passed") {
+		t.Errorf("Unexpected assistant message: %+v", msgs[1])
+	}
+	if len(msgs[1].ToolCalls) != 2 {
+		t.Fatalf("Expected 2 tool calls in assistant turn, got %d: %v", len(msgs[1].ToolCalls), msgs[1].ToolCalls)
+	}
+	if !strings.Contains(msgs[1].ToolCalls[0], "Bash: npm run lint") {
+		t.Errorf("Expected first tool call 'Bash: npm run lint', got %q", msgs[1].ToolCalls[0])
+	}
+	if !strings.Contains(msgs[1].ToolCalls[1], "Bash: npm test") {
+		t.Errorf("Expected second tool call 'Bash: npm test', got %q", msgs[1].ToolCalls[1])
+	}
+}

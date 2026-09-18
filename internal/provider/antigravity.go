@@ -293,17 +293,53 @@ func (a *AntigravityProvider) ExtractTranscript(home, cwd, nativeID string) ([]d
 		} else if entry.Type == "PLANNER_RESPONSE" {
 			var tools []string
 			for _, tc := range entry.ToolCalls {
-				if tc.Name != "" {
+				action := ""
+				if tc.Args != nil {
+					if act, ok := tc.Args["toolAction"].(string); ok && act != "" {
+						action = strings.Trim(act, "\"")
+					} else if sum, ok := tc.Args["toolSummary"].(string); ok && sum != "" {
+						action = strings.Trim(sum, "\"")
+					}
+				}
+				if action != "" {
+					tools = append(tools, fmt.Sprintf("%s (%s)", tc.Name, action))
+				} else if tc.Name != "" {
 					tools = append(tools, tc.Name)
 				}
 			}
-			messages = append(messages, daemon.TranscriptMessage{
-				Role:      "assistant",
-				Content:   entry.Content,
-				Thinking:  entry.Thinking,
-				ToolCalls: tools,
-				Timestamp: ts,
-			})
+			if entry.Content != "" || entry.Thinking != "" || len(tools) > 0 {
+				if len(messages) > 0 && messages[len(messages)-1].Role == "assistant" {
+					last := &messages[len(messages)-1]
+					if entry.Content != "" {
+						if last.Content != "" {
+							if !strings.Contains(last.Content, entry.Content) {
+								last.Content += "\n\n" + entry.Content
+							}
+						} else {
+							last.Content = entry.Content
+						}
+					}
+					if entry.Thinking != "" {
+						if last.Thinking == "" {
+							last.Thinking = entry.Thinking
+						} else if !strings.Contains(last.Thinking, entry.Thinking) {
+							last.Thinking += "\n\n" + entry.Thinking
+						}
+					}
+					if len(tools) > 0 {
+						last.ToolCalls = append(last.ToolCalls, tools...)
+					}
+					last.Timestamp = ts
+				} else {
+					messages = append(messages, daemon.TranscriptMessage{
+						Role:      "assistant",
+						Content:   entry.Content,
+						Thinking:  entry.Thinking,
+						ToolCalls: tools,
+						Timestamp: ts,
+					})
+				}
+			}
 		}
 	}
 

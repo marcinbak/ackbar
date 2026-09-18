@@ -484,11 +484,23 @@ func (c *ClaudeProvider) ExtractTranscript(home, cwd, nativeID string) ([]daemon
 		} else if msgType == "assistant" {
 			if msgObj, ok := raw["message"].(map[string]interface{}); ok {
 				if contentStr, ok := msgObj["content"].(string); ok && contentStr != "" {
-					messages = append(messages, daemon.TranscriptMessage{
-						Role:      "assistant",
-						Content:   contentStr,
-						Timestamp: ts,
-					})
+					if len(messages) > 0 && messages[len(messages)-1].Role == "assistant" {
+						last := &messages[len(messages)-1]
+						if last.Content != "" {
+							if !strings.Contains(last.Content, contentStr) {
+								last.Content += "\n\n" + contentStr
+							}
+						} else {
+							last.Content = contentStr
+						}
+						last.Timestamp = ts
+					} else {
+						messages = append(messages, daemon.TranscriptMessage{
+							Role:      "assistant",
+							Content:   contentStr,
+							Timestamp: ts,
+						})
+					}
 				} else if contentArr, ok := msgObj["content"].([]interface{}); ok {
 					var textParts []string
 					var tools []string
@@ -502,7 +514,27 @@ func (c *ClaudeProvider) ExtractTranscript(home, cwd, nativeID string) ([]daemon
 								} else if cType == "tool_use" {
 									tName, _ := cMap["name"].(string)
 									if tName != "" {
-										tools = append(tools, tName)
+										detail := ""
+										if inputMap, ok := cMap["input"].(map[string]interface{}); ok {
+											if cmd, ok := inputMap["command"].(string); ok && cmd != "" {
+												detail = strings.TrimSpace(cmd)
+											} else if desc, ok := inputMap["description"].(string); ok && desc != "" {
+												detail = strings.TrimSpace(desc)
+											} else if fp, ok := inputMap["file_path"].(string); ok && fp != "" {
+												detail = strings.TrimSpace(fp)
+											} else if p, ok := inputMap["path"].(string); ok && p != "" {
+												detail = strings.TrimSpace(p)
+											} else if pat, ok := inputMap["pattern"].(string); ok && pat != "" {
+												detail = strings.TrimSpace(pat)
+											} else if q, ok := inputMap["query"].(string); ok && q != "" {
+												detail = strings.TrimSpace(q)
+											}
+										}
+										if detail != "" {
+											tools = append(tools, fmt.Sprintf("%s: %s", tName, detail))
+										} else {
+											tools = append(tools, tName)
+										}
 									}
 								}
 							}
@@ -510,12 +542,29 @@ func (c *ClaudeProvider) ExtractTranscript(home, cwd, nativeID string) ([]daemon
 					}
 					fullText := strings.Join(textParts, "\n\n")
 					if fullText != "" || len(tools) > 0 {
-						messages = append(messages, daemon.TranscriptMessage{
-							Role:      "assistant",
-							Content:   fullText,
-							ToolCalls: tools,
-							Timestamp: ts,
-						})
+						if len(messages) > 0 && messages[len(messages)-1].Role == "assistant" {
+							last := &messages[len(messages)-1]
+							if fullText != "" {
+								if last.Content != "" {
+									if !strings.Contains(last.Content, fullText) {
+										last.Content += "\n\n" + fullText
+									}
+								} else {
+									last.Content = fullText
+								}
+							}
+							if len(tools) > 0 {
+								last.ToolCalls = append(last.ToolCalls, tools...)
+							}
+							last.Timestamp = ts
+						} else {
+							messages = append(messages, daemon.TranscriptMessage{
+								Role:      "assistant",
+								Content:   fullText,
+								ToolCalls: tools,
+								Timestamp: ts,
+							})
+						}
 					}
 				}
 			}
