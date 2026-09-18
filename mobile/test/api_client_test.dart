@@ -255,6 +255,60 @@ void main() {
       expect(ok, isTrue);
     });
 
+    test('getSubagents returns parsed SubagentInfo list on 200 OK', () async {
+      final mockClient = MockClient((request) async {
+        expect(request.url.path, equals('/v1/sessions/subagents'));
+        expect(request.url.queryParameters['id'], equals('sess-100'));
+        return http.Response(
+          jsonEncode({
+            'session_id': 'sess-100',
+            'running_count': 2,
+            'subagents': [
+              {
+                'id': 'sub-1',
+                'name': 'Researcher',
+                'role': 'research',
+                'prompt': 'Examine files',
+                'state': 'running',
+                'started_at': '2026-09-18T10:00:00Z',
+              },
+              {
+                'id': 'sub-2',
+                'name': 'Self',
+                'role': 'self',
+                'prompt': 'Run tests',
+                'state': 'running',
+                'started_at': '2026-09-18T10:01:00Z',
+              },
+            ],
+          }),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      });
+
+      final api = ApiClient(client: mockClient);
+      final subagents = await api.getSubagents('http://127.0.0.1:7777', 'sess-100');
+
+      expect(subagents.length, equals(2));
+      expect(subagents[0].id, equals('sub-1'));
+      expect(subagents[0].name, equals('Researcher'));
+      expect(subagents[0].isRunning, isTrue);
+      expect(subagents[1].id, equals('sub-2'));
+      expect(subagents[1].prompt, equals('Run tests'));
+    });
+
+    test('getSubagents returns empty list on HTTP error', () async {
+      final mockClient = MockClient((request) async {
+        return http.Response('Not Found', 404);
+      });
+
+      final api = ApiClient(client: mockClient);
+      final subagents = await api.getSubagents('http://127.0.0.1:7777', 'sess-unknown');
+
+      expect(subagents, isEmpty);
+    });
+
     test('dispose cleans up resources safely', () {
       final mockClient = MockClient((request) async => http.Response('', 200));
       final api = ApiClient(client: mockClient);

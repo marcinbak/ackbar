@@ -211,6 +211,7 @@ class Session {
   final bool isUnread;
   final DateTime? lastStateChangeAt;
   final String engineType;
+  final int runningSubagents;
 
   const Session({
     required this.id,
@@ -245,6 +246,7 @@ class Session {
     this.isUnread = false,
     this.lastStateChangeAt,
     this.engineType = 'tmux',
+    this.runningSubagents = 0,
   });
 
   bool get isBlocked => state == SessionState.blocked || blocked != null;
@@ -410,6 +412,9 @@ class Session {
       isUnread: json['is_unread'] == true || json['is_unread'] == 1,
       lastStateChangeAt: json['last_state_change_at'] != null ? DateTime.tryParse(json['last_state_change_at'].toString()) : null,
       engineType: json['engine_type']?.toString() ?? 'tmux',
+      runningSubagents: json['running_subagents'] is int
+          ? json['running_subagents'] as int
+          : int.tryParse(json['running_subagents']?.toString() ?? '') ?? 0,
     );
   }
 
@@ -447,6 +452,7 @@ class Session {
       'is_unread': isUnread,
       if (lastStateChangeAt != null) 'last_state_change_at': lastStateChangeAt!.toIso8601String(),
       'engine_type': engineType,
+      'running_subagents': runningSubagents,
     };
   }
 
@@ -484,6 +490,7 @@ class Session {
     bool? isUnread,
     DateTime? lastStateChangeAt,
     String? engineType,
+    int? runningSubagents,
   }) {
     return Session(
       id: id ?? this.id,
@@ -518,6 +525,7 @@ class Session {
       isUnread: isUnread ?? this.isUnread,
       lastStateChangeAt: lastStateChangeAt ?? this.lastStateChangeAt,
       engineType: engineType ?? this.engineType,
+      runningSubagents: runningSubagents ?? this.runningSubagents,
     );
   }
 }
