@@ -2688,6 +2688,41 @@
     tabObj.isLoadingOlderTranscript = false;
   }
 
+  // Coalesce consecutive assistant transcript messages into single turns
+  function coalesceTranscriptMessages(messages) {
+    if (!Array.isArray(messages)) return [];
+    const coalesced = [];
+    for (const msg of messages) {
+      const last = coalesced[coalesced.length - 1];
+      if (last && last.role === 'assistant' && msg.role === 'assistant') {
+        if (msg.content) {
+          if (last.content) {
+            if (!last.content.includes(msg.content)) {
+              last.content += '\n\n' + msg.content;
+            }
+          } else {
+            last.content = msg.content;
+          }
+        }
+        if (msg.thinking && !last.thinking) {
+          last.thinking = msg.thinking;
+        }
+        if (Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) {
+          last.tool_calls = (last.tool_calls || []).concat(msg.tool_calls);
+        }
+        if (msg.timestamp) {
+          last.timestamp = msg.timestamp;
+        }
+      } else {
+        coalesced.push({
+          ...msg,
+          tool_calls: Array.isArray(msg.tool_calls) ? [...msg.tool_calls] : []
+        });
+      }
+    }
+    return coalesced;
+  }
+
   // Load past conversation messages from daemon transcript (latest first, paginated upward)
   async function loadChatTranscript(tabObj) {
     if (!tabObj || !tabObj.chatMessagesEl) return;
@@ -2698,11 +2733,12 @@
       if (!res.ok) return;
       const data = await res.json();
       if (data && Array.isArray(data.messages)) {
-        tabObj.allTranscriptMessages = data.messages;
+        const coalesced = coalesceTranscriptMessages(data.messages);
+        tabObj.allTranscriptMessages = coalesced;
         tabObj.isLoadingOlderTranscript = false;
         tabObj.chatMessagesEl.innerHTML = '';
 
-        const total = data.messages.length;
+        const total = coalesced.length;
         if (total === 0) {
           tabObj.loadedTranscriptStartIndex = 0;
           return;
@@ -2710,13 +2746,13 @@
 
         if (total <= CHAT_PAGE_SIZE) {
           tabObj.loadedTranscriptStartIndex = 0;
-          for (const msg of data.messages) {
+          for (const msg of coalesced) {
             appendChatMessage(tabObj, msg);
           }
         } else {
           tabObj.loadedTranscriptStartIndex = total - CHAT_PAGE_SIZE;
           renderLoadMoreBanner(tabObj);
-          const initialMessages = data.messages.slice(tabObj.loadedTranscriptStartIndex);
+          const initialMessages = coalesced.slice(tabObj.loadedTranscriptStartIndex);
           for (const msg of initialMessages) {
             appendChatMessage(tabObj, msg);
           }
@@ -3330,6 +3366,94 @@
     });
   }
 
+  // Parse tool call string into tool name and detail (e.g. "Bash: ls -la" -> { name: "Bash", detail: "ls -la" })
+  function parseToolCall(tc) {
+    if (!tc || typeof tc !== 'string') return { name: 'tool', detail: '' };
+    const trimmed = tc.trim();
+    // Pattern 1: "ToolName: detail"
+    const colonIdx = trimmed.indexOf(': ');
+    if (colonIdx > 0 && colonIdx < 40) {
+      return {
+        name: trimmed.substring(0, colonIdx).trim(),
+        detail: trimmed.substring(colonIdx + 2).trim()
+      };
+    }
+    // Pattern 2: "tool_name (action description)"
+    const parenMatch = trimmed.match(/^([a-zA-Z0-9_\-]+)\s*\((.+)\)$/);
+    if (parenMatch) {
+      return {
+        name: parenMatch[1].trim(),
+        detail: parenMatch[2].trim()
+      };
+    }
+    return { name: trimmed, detail: '' };
+  }
+
+  // Generate collapsed tool group summary label (e.g. "Bash x12" or "5 tools (Bash x3, Grep x2)")
+  function getToolGroupSummaryLabel(toolCalls) {
+    if (!toolCalls || toolCalls.length === 0) return '⚡ Tools';
+    const parsed = toolCalls.map(parseToolCall);
+    const counts = new Map();
+    for (const p of parsed) {
+      counts.set(p.name, (counts.get(p.name) || 0) + 1);
+    }
+    const uniqueTools = Array.from(counts.keys());
+    const total = toolCalls.length;
+
+    if (uniqueTools.length === 1) {
+      const name = uniqueTools[0];
+      if (total > 1) {
+        return `⚡ ${name} x${total}`;
+      }
+      if (parsed[0].detail) {
+        const shortDetail = parsed[0].detail.length > 50 ? parsed[0].detail.substring(0, 47) + '...' : parsed[0].detail;
+        return `⚡ ${name}: ${shortDetail}`;
+      }
+      return `⚡ ${name}`;
+    }
+
+    // Multiple unique tools
+    const breakdown = uniqueTools.map(name => `${name} x${counts.get(name)}`).join(', ');
+    return `⚡ ${total} tools (${breakdown})`;
+  }
+
+  // Render a collapsed tool group card for assistant messages
+  function renderToolGroupHtml(toolCalls) {
+    if (!toolCalls || toolCalls.length === 0) return '';
+    const summaryLabel = getToolGroupSummaryLabel(toolCalls);
+    const parsed = toolCalls.map(parseToolCall);
+    const total = toolCalls.length;
+
+    const itemsHtml = parsed.map((item, idx) => {
+      const detailHtml = item.detail
+        ? `<div class="chat-tool-call-detail"><code>${escapeHtml(item.detail)}</code></div>`
+        : '';
+      return `
+        <div class="chat-tool-call-item">
+          <div class="chat-tool-call-header">
+            <span class="chat-tool-call-idx">#${idx + 1}</span>
+            <span class="chat-tool-call-badge">${escapeHtml(item.name)}</span>
+          </div>
+          ${detailHtml}
+        </div>
+      `;
+    }).join('');
+
+    return `
+      <details class="chat-tool-card chat-tool-group">
+        <summary>
+          <span class="tool-group-title">${escapeHtml(summaryLabel)}</span>
+          <span class="tool-group-pill">${total} ${total === 1 ? 'action' : 'actions'}</span>
+        </summary>
+        <div class="chat-tool-content chat-tool-group-content">
+          <div class="chat-tool-call-list">
+            ${itemsHtml}
+          </div>
+        </div>
+      </details>
+    `;
+  }
+
   // Create a chat message DOM element from message object
   function createChatMessageElement(tabObj, msg) {
     if (!tabObj || !msg) return null;
@@ -3428,12 +3552,7 @@
       }
       let toolsHtml = '';
       if (msg.tool_calls && msg.tool_calls.length > 0) {
-        toolsHtml = msg.tool_calls.map(tc => `
-          <details class="chat-tool-card">
-            <summary>⚡ ${escapeHtml(tc)}</summary>
-            <div class="chat-tool-content">${escapeHtml(tc)}</div>
-          </details>
-        `).join('');
+        toolsHtml = renderToolGroupHtml(msg.tool_calls);
       }
       const bodyHtml = renderMarkdown(msg.content || '');
       const agentName = tabObj.session ? (tabObj.session.agent || 'Claude Code') : 'Claude Code';
@@ -3956,16 +4075,56 @@
         if (msgEl && evt.tool_name) {
           const slot = msgEl.querySelector('.chat-tools-slot');
           if (slot) {
-            const toolCard = document.createElement('details');
-            toolCard.className = 'chat-tool-card';
-            toolCard.dataset.toolName = evt.tool_name;
-            toolCard.open = true;
-            const inputStr = typeof evt.tool_input === 'string' ? evt.tool_input : JSON.stringify(evt.tool_input, null, 2);
-            toolCard.innerHTML = `
-              <summary>⚡ ${escapeHtml(evt.tool_name)}: running...</summary>
-              <div class="chat-tool-content">${escapeHtml(inputStr || '')}</div>
-            `;
-            slot.appendChild(toolCard);
+            let groupCard = slot.querySelector('.chat-tool-group');
+            if (!groupCard) {
+              groupCard = document.createElement('details');
+              groupCard.className = 'chat-tool-card chat-tool-group';
+              groupCard.open = true;
+              groupCard.dataset.toolCalls = JSON.stringify([]);
+              groupCard.innerHTML = `
+                <summary>
+                  <span class="tool-group-title">⚡ ${escapeHtml(evt.tool_name)}: running...</span>
+                  <span class="tool-group-pill">1 action</span>
+                </summary>
+                <div class="chat-tool-content chat-tool-group-content">
+                  <div class="chat-tool-call-list"></div>
+                </div>
+              `;
+              slot.appendChild(groupCard);
+            }
+
+            let toolList = [];
+            try {
+              toolList = JSON.parse(groupCard.dataset.toolCalls || '[]');
+            } catch (_) {}
+
+            const inputStr = typeof evt.tool_input === 'string'
+              ? evt.tool_input
+              : (evt.tool_input ? JSON.stringify(evt.tool_input, null, 2) : '');
+
+            toolList.push({ name: evt.tool_name, detail: inputStr });
+            groupCard.dataset.toolCalls = JSON.stringify(toolList);
+
+            const summaryTitle = groupCard.querySelector('.tool-group-title');
+            const summaryPill = groupCard.querySelector('.tool-group-pill');
+            const label = getToolGroupSummaryLabel(toolList.map(t => t.detail ? `${t.name}: ${t.detail}` : t.name));
+            if (summaryTitle) summaryTitle.textContent = `${label} (running...)`;
+            if (summaryPill) summaryPill.textContent = `${toolList.length} ${toolList.length === 1 ? 'action' : 'actions'}`;
+
+            const listEl = groupCard.querySelector('.chat-tool-call-list');
+            if (listEl) {
+              const itemEl = document.createElement('div');
+              itemEl.className = 'chat-tool-call-item in-progress';
+              itemEl.innerHTML = `
+                <div class="chat-tool-call-header">
+                  <span class="chat-tool-call-idx">#${toolList.length}</span>
+                  <span class="chat-tool-call-badge">${escapeHtml(evt.tool_name)}</span>
+                  <span class="chat-tool-status">running...</span>
+                </div>
+                ${inputStr ? `<div class="chat-tool-call-detail"><code>${escapeHtml(inputStr)}</code></div>` : ''}
+              `;
+              listEl.appendChild(itemEl);
+            }
             tabObj.chatMessagesEl.scrollTop = tabObj.chatMessagesEl.scrollHeight;
           }
         }
@@ -3976,19 +4135,22 @@
         if (msgEl) {
           const slot = msgEl.querySelector('.chat-tools-slot');
           if (slot) {
-            const lastCard = slot.querySelector('.chat-tool-card:last-child');
-            if (lastCard) {
-              const summaryEl = lastCard.querySelector('summary');
-              if (summaryEl && summaryEl.textContent.includes('running...')) {
-                summaryEl.textContent = `✅ ${lastCard.dataset.toolName || 'tool'}: done`;
+            const groupCard = slot.querySelector('.chat-tool-group');
+            if (groupCard) {
+              const listEl = groupCard.querySelector('.chat-tool-call-list');
+              const lastItem = listEl ? (listEl.querySelector('.chat-tool-call-item.in-progress:last-child') || listEl.lastElementChild) : null;
+              if (lastItem) {
+                lastItem.classList.remove('in-progress');
+                const statusEl = lastItem.querySelector('.chat-tool-status');
+                if (statusEl) statusEl.textContent = 'done';
+                if (evt.tool_output) {
+                  const outEl = document.createElement('div');
+                  outEl.className = 'chat-tool-output';
+                  outEl.textContent = evt.tool_output;
+                  lastItem.appendChild(outEl);
+                }
+                linkifyChatFiles(lastItem, tabObj.session);
               }
-              if (evt.tool_output) {
-                const outEl = document.createElement('div');
-                outEl.className = 'chat-tool-output';
-                outEl.textContent = evt.tool_output;
-                lastCard.appendChild(outEl);
-              }
-              linkifyChatFiles(lastCard, tabObj.session);
             }
           }
           tabObj.chatMessagesEl.scrollTop = tabObj.chatMessagesEl.scrollHeight;
@@ -3997,6 +4159,18 @@
 
       case 'turn_complete':
         if (msgEl) {
+          const groupCard = msgEl.querySelector('.chat-tool-group');
+          if (groupCard) {
+            groupCard.open = false; // collapse on completion so it doesn't pollute
+            let toolList = [];
+            try {
+              toolList = JSON.parse(groupCard.dataset.toolCalls || '[]');
+            } catch (_) {}
+            const label = getToolGroupSummaryLabel(toolList.map(t => t.detail ? `${t.name}: ${t.detail}` : t.name));
+            const summaryTitle = groupCard.querySelector('.tool-group-title');
+            if (summaryTitle) summaryTitle.textContent = label;
+          }
+
           if (!tabObj.activeTurnBuffer && evt.text) {
             tabObj.activeTurnBuffer = evt.text;
           }
