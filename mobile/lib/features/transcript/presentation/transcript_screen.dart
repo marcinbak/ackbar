@@ -1,8 +1,10 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/models/session.dart';
+import '../../../core/models/subagent.dart';
 import '../../../core/models/transcript.dart';
 import '../../../core/providers/fleet_providers.dart';
 import '../../../core/theme/app_colors.dart';
@@ -55,16 +57,26 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
   bool _isSending = false;
   String? _errorMessage;
   TranscriptData? _transcriptData;
+  List<SubagentInfo> _runningSubagents = [];
+  bool _isSubagentsExpanded = false;
+  Timer? _subagentPollingTimer;
 
   @override
   void initState() {
     super.initState();
     _loadTranscript();
+    _loadSubagents();
     _scrollController.addListener(_onScroll);
+    _subagentPollingTimer = Timer.periodic(const Duration(seconds: 3), (_) {
+      if (mounted) {
+        _loadSubagents();
+      }
+    });
   }
 
   @override
   void dispose() {
+    _subagentPollingTimer?.cancel();
     _scrollController.removeListener(_onScroll);
     _scrollController.dispose();
     _promptController.dispose();
@@ -164,6 +176,7 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _scrollToBottom(animate: false);
       });
+      _loadSubagents();
     } catch (e) {
       if (mounted) {
         setState(() {
@@ -172,6 +185,31 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
         });
       }
     }
+  }
+
+  Future<void> _loadSubagents() async {
+    try {
+      final hostUrl = await _resolveHostUrl();
+      final list = await ref.read(apiClientProvider).getSubagents(hostUrl, widget.session.id);
+      if (mounted) {
+        final running = list.where((s) => s.isRunning).toList();
+        if (!_areSubagentListsEqual(running, _runningSubagents)) {
+          setState(() {
+            _runningSubagents = running;
+          });
+        }
+      }
+    } catch (_) {}
+  }
+
+  bool _areSubagentListsEqual(List<SubagentInfo> a, List<SubagentInfo> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i].id != b[i].id || a[i].state != b[i].state || a[i].name != b[i].name || a[i].prompt != b[i].prompt) {
+        return false;
+      }
+    }
+    return true;
   }
 
   void _scrollToBottom({bool animate = true}) {
@@ -380,7 +418,10 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
           IconButton(
             icon: const Icon(Icons.refresh_rounded, size: 20, color: AppColors.textMuted),
             tooltip: 'Reload Conversation',
-            onPressed: _loadTranscript,
+            onPressed: () {
+              _loadTranscript();
+              _loadSubagents();
+            },
           ),
         ],
       ),
@@ -421,7 +462,10 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
                             ),
                             AppSpacing.gapH16,
                             ElevatedButton.icon(
-                              onPressed: _loadTranscript,
+                              onPressed: () {
+                                _loadTranscript();
+                                _loadSubagents();
+                              },
                               icon: const Icon(Icons.refresh_rounded, size: 16),
                               label: const Text('Retry'),
                             ),
@@ -480,6 +524,7 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
                 ],
               ),
             ),
+            _buildSubagentsDock(),
             _buildBottomComposer(),
           ],
         ),
@@ -742,10 +787,10 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
               ],
             ),
 
-            // Tool Invocations Accordion
+            // Tool Invocations Group Accordion
             if (message.toolCalls.isNotEmpty) ...[
               const SizedBox(height: 8),
-              _buildToolCallsPills(message.toolCalls),
+              _buildToolCallsGroup(message.toolCalls),
             ],
 
             // Thought Process Accordion
@@ -794,63 +839,375 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
     );
   }
 
-  // --- 3. Tool Invocations Pills ---
+  // --- 3. Collapsible Tool Invocations Group Accordion ---
 
-  Widget _buildToolCallsPills(List<String> tools) {
+  String _getToolGroupSummaryLabel(List<String> toolCalls) {
+    if (toolCalls.isEmpty) return '⚡ Tools';
+    final parsed = toolCalls.map(_ParsedToolCall.parse).toList();
+    final counts = <String, int>{};
+    for (final p in parsed) {
+      counts[p.name] = (counts[p.name] ?? 0) + 1;
+    }
+    final uniqueTools = counts.keys.toList();
+    final total = toolCalls.length;
+
+    if (uniqueTools.length == 1) {
+      final name = uniqueTools[0];
+      if (total > 1) {
+        return '⚡ $name x$total';
+      }
+      if (parsed[0].detail.isNotEmpty) {
+        final shortDetail = parsed[0].detail.length > 35
+            ? '${parsed[0].detail.substring(0, 32)}...'
+            : parsed[0].detail;
+        return '⚡ $name: $shortDetail';
+      }
+      return '⚡ $name';
+    }
+
+    // Multiple unique tools
+    final breakdown = uniqueTools.map((name) => '$name x${counts[name]}').join(', ');
+    return '⚡ $total tools ($breakdown)';
+  }
+
+  Widget _buildToolCallsGroup(List<String> tools) {
+    final summaryLabel = _getToolGroupSummaryLabel(tools);
+    final parsed = tools.map(_ParsedToolCall.parse).toList();
+    final total = tools.length;
+
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
       decoration: BoxDecoration(
         color: AppColors.terminalBlack.withOpacity(0.6),
         borderRadius: AppSpacing.roundedSm,
         border: Border.all(color: AppColors.outlineSubtle.withOpacity(0.7), width: 0.6),
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
+      child: Theme(
+        data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+        child: ExpansionTile(
+          tilePadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 0),
+          childrenPadding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
+          dense: true,
+          leading: const Icon(Icons.bolt_rounded, size: 16, color: AppColors.statusAmberLight),
+          title: Row(
             children: [
-              const Icon(Icons.bolt_rounded, size: 14, color: AppColors.statusAmberLight),
-              const SizedBox(width: 4),
-              Text(
-                'Tools Executed',
-                style: AppTypography.codeXs.copyWith(
-                  color: AppColors.statusAmberLight,
-                  fontWeight: FontWeight.w700,
-                  fontSize: 10.5,
+              Expanded(
+                child: Text(
+                  summaryLabel,
+                  style: AppTypography.codeXs.copyWith(
+                    color: AppColors.statusAmberLight,
+                    fontWeight: FontWeight.w700,
+                    fontSize: 11,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                 ),
               ),
-            ],
-          ),
-          const SizedBox(height: 6),
-          Wrap(
-            spacing: 6,
-            runSpacing: 4,
-            children: tools.map((t) {
-              return Container(
-                padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2.5),
+              const SizedBox(width: 6),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
                 decoration: BoxDecoration(
                   color: AppColors.surfaceHighlight,
                   borderRadius: BorderRadius.circular(4),
                   border: Border.all(color: AppColors.outlineSubtle, width: 0.5),
                 ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Text('🛠️', style: TextStyle(fontSize: 10)),
-                    const SizedBox(width: 4),
-                    Text(
-                      t,
+                child: Text(
+                  '$total ${total == 1 ? 'action' : 'actions'}',
+                  style: AppTypography.codeXs.copyWith(
+                    color: AppColors.textMuted,
+                    fontSize: 9.5,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          children: [
+            ListView.separated(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              itemCount: parsed.length,
+              separatorBuilder: (_, __) => const SizedBox(height: 6),
+              itemBuilder: (context, idx) {
+                final item = parsed[idx];
+                return Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: AppColors.surfaceHighlight.withOpacity(0.5),
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: AppColors.outlineSubtle.withOpacity(0.5), width: 0.5),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Text(
+                            '#${idx + 1}',
+                            style: AppTypography.codeXs.copyWith(
+                              color: AppColors.textMuted,
+                              fontSize: 10,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          const SizedBox(width: 6),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                            decoration: BoxDecoration(
+                              color: AppColors.surface,
+                              borderRadius: BorderRadius.circular(4),
+                              border: Border.all(color: AppColors.statusAmberLight.withOpacity(0.3), width: 0.5),
+                            ),
+                            child: Text(
+                              item.name,
+                              style: AppTypography.codeXs.copyWith(
+                                color: AppColors.statusAmberLight,
+                                fontSize: 10.5,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ),
+                          const Spacer(),
+                          if (item.detail.isNotEmpty)
+                            InkWell(
+                              onTap: () {
+                                Clipboard.setData(ClipboardData(text: item.detail));
+                                HapticFeedback.lightImpact();
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text('Command copied to clipboard'),
+                                    duration: Duration(seconds: 1),
+                                    backgroundColor: AppColors.surfaceHighlight,
+                                  ),
+                                );
+                              },
+                              child: const Padding(
+                                padding: EdgeInsets.all(2),
+                                child: Icon(Icons.copy_rounded, size: 13, color: AppColors.textMuted),
+                              ),
+                            ),
+                        ],
+                      ),
+                      if (item.detail.isNotEmpty) ...[
+                        const SizedBox(height: 4),
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: AppColors.terminalBlack,
+                            borderRadius: BorderRadius.circular(4),
+                            border: Border.all(color: AppColors.outlineSubtle.withOpacity(0.4), width: 0.5),
+                          ),
+                          child: SelectableText(
+                            item.detail,
+                            style: AppTypography.codeXs.copyWith(
+                              color: AppColors.infoCyan,
+                              fontSize: 10.5,
+                              height: 1.3,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                );
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // --- Subagents Running Dock ---
+
+  Widget _buildSubagentsDock() {
+    if (_runningSubagents.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    final count = _runningSubagents.length;
+    final countText = count == 1 ? '1 subagent running...' : '$count subagents running...';
+
+    return Container(
+      decoration: const BoxDecoration(
+        color: Color(0xFF141720),
+        border: Border(
+          top: BorderSide(color: Color(0xFF2C3245), width: 1),
+          bottom: BorderSide(color: AppColors.outlineSubtle, width: 0.5),
+        ),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // Collapsible Header Bar
+          InkWell(
+            onTap: () {
+              HapticFeedback.selectionClick();
+              setState(() {
+                _isSubagentsExpanded = !_isSubagentsExpanded;
+              });
+            },
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md, vertical: 7),
+              child: Row(
+                children: [
+                  // Pulsing Amber Dot
+                  Container(
+                    width: 7,
+                    height: 7,
+                    decoration: const BoxDecoration(
+                      color: AppColors.statusAmber,
+                      shape: BoxShape.circle,
+                      boxShadow: [
+                        BoxShadow(
+                          color: AppColors.statusAmber,
+                          blurRadius: 4,
+                          spreadRadius: 1,
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  const Text(
+                    '⚡',
+                    style: TextStyle(fontSize: 11),
+                  ),
+                  const SizedBox(width: 4),
+                  Expanded(
+                    child: Text(
+                      countText,
                       style: AppTypography.codeXs.copyWith(
-                        color: AppColors.textPrimary,
+                        color: AppColors.statusAmberLight,
+                        fontWeight: FontWeight.w700,
                         fontSize: 11,
-                        fontWeight: FontWeight.w600,
                       ),
                     ),
-                  ],
-                ),
-              );
-            }).toList(),
+                  ),
+                  Icon(
+                    _isSubagentsExpanded ? Icons.keyboard_arrow_up_rounded : Icons.keyboard_arrow_down_rounded,
+                    size: 18,
+                    color: AppColors.textMuted,
+                  ),
+                ],
+              ),
+            ),
           ),
+
+          // Expanded Subagent Cards List
+          if (_isSubagentsExpanded)
+            Container(
+              constraints: const BoxConstraints(maxHeight: 200),
+              padding: const EdgeInsets.fromLTRB(AppSpacing.md, 0, AppSpacing.md, 8),
+              child: ListView.separated(
+                shrinkWrap: true,
+                itemCount: _runningSubagents.length,
+                separatorBuilder: (_, __) => const SizedBox(height: 6),
+                itemBuilder: (context, idx) {
+                  final sub = _runningSubagents[idx];
+                  final prompt = sub.prompt.trim();
+
+                  return Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: AppColors.surfaceHighlight.withOpacity(0.6),
+                      borderRadius: BorderRadius.circular(6),
+                      border: Border.all(color: AppColors.outlineSubtle.withOpacity(0.6), width: 0.6),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Container(
+                              width: 6,
+                              height: 6,
+                              decoration: const BoxDecoration(
+                                color: AppColors.statusAmber,
+                                shape: BoxShape.circle,
+                              ),
+                            ),
+                            const SizedBox(width: 6),
+                            Expanded(
+                              child: Text(
+                                sub.displayName,
+                                style: AppTypography.codeXs.copyWith(
+                                  color: AppColors.textPrimary,
+                                  fontWeight: FontWeight.w700,
+                                  fontSize: 11,
+                                ),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                            if (sub.displayRole != null) ...[
+                              const SizedBox(width: 6),
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                                decoration: BoxDecoration(
+                                  color: AppColors.surface,
+                                  borderRadius: BorderRadius.circular(4),
+                                  border: Border.all(color: AppColors.infoCyan.withOpacity(0.4), width: 0.5),
+                                ),
+                                child: Text(
+                                  sub.displayRole!,
+                                  style: AppTypography.codeXs.copyWith(
+                                    color: AppColors.infoCyan,
+                                    fontSize: 9.5,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ),
+                            ],
+                            if (prompt.isNotEmpty) ...[
+                              const SizedBox(width: 6),
+                              InkWell(
+                                onTap: () {
+                                  Clipboard.setData(ClipboardData(text: prompt));
+                                  HapticFeedback.lightImpact();
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    const SnackBar(
+                                      content: Text('Subagent prompt copied'),
+                                      duration: Duration(seconds: 1),
+                                      backgroundColor: AppColors.surfaceHighlight,
+                                    ),
+                                  );
+                                },
+                                child: const Padding(
+                                  padding: EdgeInsets.all(2),
+                                  child: Icon(Icons.copy_rounded, size: 13, color: AppColors.textMuted),
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
+                        if (prompt.isNotEmpty) ...[
+                          const SizedBox(height: 5),
+                          Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.all(6),
+                            decoration: BoxDecoration(
+                              color: AppColors.terminalBlack,
+                              borderRadius: BorderRadius.circular(4),
+                              border: Border.all(color: AppColors.outlineSubtle.withOpacity(0.4), width: 0.5),
+                            ),
+                            child: Text(
+                              prompt,
+                              style: AppTypography.codeXs.copyWith(
+                                color: AppColors.textSecondary,
+                                fontSize: 10,
+                                height: 1.3,
+                              ),
+                              maxLines: 4,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  );
+                },
+              ),
+            ),
         ],
       ),
     );
@@ -934,5 +1291,35 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
     final min = dt.minute.toString().padLeft(2, '0');
     final sec = dt.second.toString().padLeft(2, '0');
     return '$hour:$min:$sec';
+  }
+}
+
+class _ParsedToolCall {
+  final String name;
+  final String detail;
+
+  const _ParsedToolCall({required this.name, required this.detail});
+
+  factory _ParsedToolCall.parse(String raw) {
+    final trimmed = raw.trim();
+    if (trimmed.isEmpty) return const _ParsedToolCall(name: 'tool', detail: '');
+
+    // Pattern 1: "tool_name: detail/command"
+    final colonIdx = trimmed.indexOf(':');
+    if (colonIdx > 0 && colonIdx < 30) {
+      final n = trimmed.substring(0, colonIdx).trim();
+      final d = trimmed.substring(colonIdx + 1).trim();
+      if (!n.contains(' ') || n.length < 20) {
+        return _ParsedToolCall(name: n, detail: d);
+      }
+    }
+
+    // Pattern 2: "tool_name (description)"
+    final match = RegExp(r'^([a-zA-Z0-9_\-]+)\s*\((.+)\)$').firstMatch(trimmed);
+    if (match != null) {
+      return _ParsedToolCall(name: match.group(1)!.trim(), detail: match.group(2)!.trim());
+    }
+
+    return _ParsedToolCall(name: trimmed, detail: '');
   }
 }

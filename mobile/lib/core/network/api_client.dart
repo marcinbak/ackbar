@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import '../models/host.dart';
 import '../models/session.dart';
+import '../models/subagent.dart';
 import '../models/transcript.dart';
 
 /// HTTP Client communicating with ackbard daemon control plane endpoints.
@@ -295,6 +296,25 @@ class ApiClient {
       return null;
     } catch (_) {
       return null;
+    }
+  }
+
+  /// GET /v1/sessions/subagents: Retrieve active/completed subagents spawned by a session
+  Future<List<SubagentInfo>> getSubagents(String hostUrl, String sessionId, {String? authToken}) async {
+    final clean = _cleanUrl(hostUrl);
+    final uri = Uri.parse('$clean/v1/sessions/subagents').replace(queryParameters: {'id': sessionId});
+    try {
+      final response = await _client.get(uri, headers: _headers(authToken)).timeout(const Duration(seconds: 5));
+      if (response.statusCode == 200) {
+        final Map<String, dynamic> decoded = jsonDecode(response.body);
+        if (decoded['subagents'] is List) {
+          final list = decoded['subagents'] as List;
+          return list.map((item) => SubagentInfo.fromJson(item as Map<String, dynamic>)).toList();
+        }
+      }
+      return [];
+    } catch (_) {
+      return [];
     }
   }
 

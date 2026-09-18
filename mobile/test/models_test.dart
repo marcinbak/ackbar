@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ackbar_mobile/core/models/session.dart';
+import 'package:ackbar_mobile/core/models/subagent.dart';
 import 'package:ackbar_mobile/core/models/host.dart';
 import 'package:ackbar_mobile/core/models/plan.dart';
 import 'package:ackbar_mobile/core/models/transcript.dart';
@@ -792,6 +793,119 @@ Refactoring complete.
       expect(parsed.messages[0].content, equals('Please refactor this method'));
       expect(parsed.messages[1].isAssistant, isTrue);
       expect(parsed.messages[1].content, equals('Refactoring complete.'));
+    });
+  });
+
+  group('SubagentInfo Model Tests', () {
+    test('SubagentInfo.fromJson parses all fields correctly', () {
+      final json = {
+        'id': 'sub-123',
+        'name': 'Researcher',
+        'role': 'research',
+        'prompt': 'Analyze codebase architecture',
+        'state': 'running',
+        'started_at': '2026-09-18T10:00:00.000Z',
+      };
+
+      final sub = SubagentInfo.fromJson(json);
+      expect(sub.id, equals('sub-123'));
+      expect(sub.name, equals('Researcher'));
+      expect(sub.role, equals('research'));
+      expect(sub.prompt, equals('Analyze codebase architecture'));
+      expect(sub.state, equals('running'));
+      expect(sub.isRunning, isTrue);
+      expect(sub.displayName, equals('Researcher'));
+      expect(sub.displayRole, equals('research'));
+    });
+
+    test('SubagentInfo display getters handle fallbacks', () {
+      final sub1 = SubagentInfo(
+        id: 'sub-1',
+        name: '',
+        role: 'tester',
+        startedAt: DateTime.now(),
+      );
+      expect(sub1.displayName, equals('tester'));
+      expect(sub1.displayRole, isNull);
+
+      final sub2 = SubagentInfo(
+        id: 'sub-2',
+        name: 'Worker',
+        role: 'Worker',
+        startedAt: DateTime.now(),
+      );
+      expect(sub2.displayName, equals('Worker'));
+      expect(sub2.displayRole, isNull); // role == name
+
+      final sub3 = SubagentInfo(
+        id: 'sub-3',
+        name: '',
+        role: null,
+        startedAt: DateTime.now(),
+      );
+      expect(sub3.displayName, equals('Subagent'));
+    });
+
+    test('SubagentInfo.toJson and copyWith round-trip', () {
+      final sub = SubagentInfo(
+        id: 'sub-456',
+        name: 'Agent X',
+        role: 'general',
+        prompt: 'Do tasks',
+        state: 'completed',
+        startedAt: DateTime.parse('2026-09-18T12:00:00Z'),
+      );
+
+      expect(sub.isRunning, isFalse);
+      final json = sub.toJson();
+      expect(json['id'], equals('sub-456'));
+      expect(json['state'], equals('completed'));
+
+      final updated = sub.copyWith(state: 'running', prompt: 'New prompt');
+      expect(updated.isRunning, isTrue);
+      expect(updated.prompt, equals('New prompt'));
+      expect(updated.id, equals('sub-456'));
+    });
+  });
+
+  group('Session Running Subagents Tests', () {
+    test('Session.fromJson parses running_subagents', () {
+      final json = {
+        'id': 'sess-1',
+        'agent': 'claude-code',
+        'host': 'local',
+        'native_id': 'native-1',
+        'cwd': '/tmp',
+        'state': 1,
+        'started_at': '2026-09-18T10:00:00Z',
+        'last_event_at': '2026-09-18T10:05:00Z',
+        'running_subagents': 4,
+      };
+
+      final session = Session.fromJson(json);
+      expect(session.runningSubagents, equals(4));
+
+      final serialized = session.toJson();
+      expect(serialized['running_subagents'], equals(4));
+
+      final copied = session.copyWith(runningSubagents: 0);
+      expect(copied.runningSubagents, equals(0));
+    });
+
+    test('Session defaults runningSubagents to 0 if absent', () {
+      final json = {
+        'id': 'sess-2',
+        'agent': 'antigravity',
+        'host': 'macbook',
+        'native_id': 'native-2',
+        'cwd': '/tmp',
+        'state': 1,
+        'started_at': '2026-09-18T10:00:00Z',
+        'last_event_at': '2026-09-18T10:05:00Z',
+      };
+
+      final session = Session.fromJson(json);
+      expect(session.runningSubagents, equals(0));
     });
   });
 }
