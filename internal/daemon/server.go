@@ -44,6 +44,8 @@ type Event struct {
 	Kind        string
 	Version     string
 	ContextPct  int
+	ToolName    string
+	ToolInput   any
 	StartedAt   time.Time
 	LastEventAt time.Time
 }
@@ -69,6 +71,8 @@ type Server struct {
 	displayName     string
 	hostHealthMap   map[string]*HostHealth
 	hostHealthMu    sync.RWMutex
+	activeSubagents map[string][]*SubagentInfo
+	subagentsMu     sync.RWMutex
 }
 
 func (s *Server) updateHostHealth(name string, online bool, version, displayName string, latencyMs int64) {
@@ -86,10 +90,11 @@ func (s *Server) updateHostHealth(name string, online bool, version, displayName
 func NewServer(db *DB) *Server {
 	StartUploadCleaner(defaultUploadDir, 6*time.Hour)
 	s := &Server{
-		db:            db,
-		providers:     make(map[string]Provider),
-		subscribers:   make(map[chan *Session]bool),
-		hostHealthMap: make(map[string]*HostHealth),
+		db:              db,
+		providers:       make(map[string]Provider),
+		subscribers:     make(map[chan *Session]bool),
+		hostHealthMap:   make(map[string]*HostHealth),
+		activeSubagents: make(map[string][]*SubagentInfo),
 	}
 	s.headless = NewHeadlessRunner(db, s.broadcast)
 	if host := s.HostName(); host != "local" && db != nil {
@@ -264,6 +269,7 @@ func (s *Server) Mux() http.Handler {
 	mux.HandleFunc("/v1/hooks/", s.handleHook)
 	mux.HandleFunc("/v1/sessions", s.handleSessions)
 	mux.HandleFunc("/v1/sessions/respond", s.handleRespond)
+	mux.HandleFunc("/v1/sessions/subagents", s.handleSessionSubagents)
 	mux.HandleFunc("/v1/sessions/transcript", s.handleSessionTranscript)
 	mux.HandleFunc("/v1/sessions/", s.handleSessionControl)
 	mux.HandleFunc("/v1/sessions/control", s.handleSessionControl)
@@ -633,6 +639,61 @@ func (s *Server) processHookEventWithAccount(p Provider, urlEventName string, he
 	if sess.ProjectKey == "" || (event.Cwd != "" && event.Cwd != sess.Cwd) {
 		sess.ProjectKey = GetProjectKey(sess.Cwd)
 	}
+
+	// Process subagent tracking from hooks
+	evtNameLower := strings.ToLower(event.EventName)
+	if strings.EqualFold(event.EventName, "SubagentStart") {
+		subName := event.ToolName
+		if subName == "" {
+			subName = "Subagent"
+		}
+		s.addSubagent(sessionID, event.NativeID, &SubagentInfo{
+			ID:        generateUUID(),
+			Name:      subName,
+			Role:      subName,
+			State:     "running",
+			StartedAt: time.Now(),
+		})
+	} else if strings.EqualFold(event.EventName, "SubagentStop") {
+		s.removeSubagent(sessionID, event.NativeID, event.ToolName)
+	} else if evtNameLower == "userpromptsubmit" || evtNameLower == "sessionend" || evtNameLower == "stop" {
+		s.clearSubagents(sessionID, event.NativeID)
+	} else if evtNameLower == "pretooluse" && (event.ToolName == "Agent" || event.ToolName == "Task") {
+		var prompt, desc, subType string
+		if event.ToolInput != nil {
+			if m, ok := event.ToolInput.(map[string]interface{}); ok {
+				if pr, ok := m["prompt"].(string); ok {
+					prompt = pr
+				}
+				if d, ok := m["description"].(string); ok {
+					desc = d
+				}
+				if st, ok := m["subagent_type"].(string); ok {
+					subType = st
+				}
+			}
+		}
+		name := subType
+		if name == "" {
+			name = desc
+		}
+		if name == "" {
+			name = event.ToolName
+		}
+		s.addSubagent(sessionID, event.NativeID, &SubagentInfo{
+			ID:        generateUUID(),
+			Name:      name,
+			Role:      subType,
+			Prompt:    prompt,
+			State:     "running",
+			StartedAt: time.Now(),
+		})
+	} else if evtNameLower == "posttooluse" && (event.ToolName == "Agent" || event.ToolName == "Task") {
+		s.removeSubagent(sessionID, event.NativeID, "")
+	}
+
+	// Update running subagents count on session
+	sess.RunningSubagents = len(s.getRunningSubagents(sessionID, event.NativeID, event.Agent, event.Cwd))
 
 	// Save to SQLite
 	if err := s.db.SaveSession(sess); err != nil {
@@ -2048,17 +2109,217 @@ func (s *Server) handleSessionTranscript(w http.ResponseWriter, r *http.Request)
 		w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
 		_, _ = w.Write([]byte(FormatTranscriptMarkdown(transcript)))
 	default:
+		runningSubs := s.getRunningSubagents(sessionID, nativeID, agent, cwd)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"session_id": sessionID,
-			"native_id":  nativeID,
-			"agent":      agent,
-			"title":      transcript.Title,
-			"cwd":        transcript.Cwd,
-			"messages":   transcript.Messages,
-			"ansi":       FormatTranscriptANSI(transcript),
-			"markdown":   FormatTranscriptMarkdown(transcript),
+			"session_id":        sessionID,
+			"native_id":         nativeID,
+			"agent":             agent,
+			"title":             transcript.Title,
+			"cwd":               transcript.Cwd,
+			"messages":          transcript.Messages,
+			"running_subagents": runningSubs,
+			"subagents":         runningSubs,
+			"ansi":              FormatTranscriptANSI(transcript),
+			"markdown":          FormatTranscriptMarkdown(transcript),
 		})
+	}
+}
+
+func (s *Server) handleSessionSubagents(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.URL.Query().Get("id")
+	if sessionID == "" {
+		sessionID = r.URL.Query().Get("session_id")
+	}
+	if sessionID == "" {
+		http.Error(w, "Missing id or session_id parameter", http.StatusBadRequest)
+		return
+	}
+
+	sess := s.resolveSession(sessionID)
+	if sess == nil {
+		parts := strings.Split(sessionID, ":")
+		if len(parts) >= 2 {
+			if hostRec := s.resolveHost(parts[1]); hostRec != nil && hostRec.URL != "" {
+				targetURL := fmt.Sprintf("%s/v1/sessions/subagents?%s", strings.TrimSuffix(hostRec.URL, "/"), r.URL.RawQuery)
+				resp, err := http.Get(targetURL)
+				if err == nil {
+					defer resp.Body.Close()
+					w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
+					w.WriteHeader(resp.StatusCode)
+					_, _ = io.Copy(w, resp.Body)
+					return
+				}
+			}
+		}
+	} else if hostRec := s.resolveHost(sess.Host); hostRec != nil && hostRec.URL != "" {
+		targetURL := fmt.Sprintf("%s/v1/sessions/subagents?%s", strings.TrimSuffix(hostRec.URL, "/"), r.URL.RawQuery)
+		resp, err := http.Get(targetURL)
+		if err == nil {
+			defer resp.Body.Close()
+			w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
+			w.WriteHeader(resp.StatusCode)
+			_, _ = io.Copy(w, resp.Body)
+			return
+		}
+	}
+
+	agent := "claude-code"
+	nativeID := sessionID
+	cwd := ""
+
+	if sess != nil {
+		agent = sess.Agent
+		nativeID = sess.NativeID
+		cwd = sess.Cwd
+	} else {
+		parts := strings.Split(sessionID, ":")
+		if len(parts) >= 3 {
+			agent = parts[0]
+			nativeID = parts[2]
+		}
+	}
+
+	running := s.getRunningSubagents(sessionID, nativeID, agent, cwd)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"session_id":    sessionID,
+		"native_id":     nativeID,
+		"running_count": len(running),
+		"subagents":     running,
+	})
+}
+
+func (s *Server) getRunningSubagents(sessionID, nativeID, agent, cwd string) []SubagentInfo {
+	s.subagentsMu.RLock()
+	var inMem []*SubagentInfo
+	if list, ok := s.activeSubagents[sessionID]; ok && len(list) > 0 {
+		inMem = list
+	} else if nativeID != "" {
+		if list, ok := s.activeSubagents[nativeID]; ok && len(list) > 0 {
+			inMem = list
+		}
+	}
+	s.subagentsMu.RUnlock()
+
+	if len(inMem) > 0 {
+		var running []SubagentInfo
+		for _, sub := range inMem {
+			if sub != nil && sub.State == "running" {
+				running = append(running, *sub)
+			}
+		}
+		if len(running) > 0 {
+			return running
+		}
+	}
+
+	subs, err := ExtractSubagents(agent, nativeID, cwd)
+	if err == nil {
+		var running []SubagentInfo
+		for _, sub := range subs {
+			if sub.State == "running" {
+				running = append(running, sub)
+			}
+		}
+		return running
+	}
+	return []SubagentInfo{}
+}
+
+func (s *Server) addSubagent(sessionID, nativeID string, info *SubagentInfo) {
+	if info == nil {
+		return
+	}
+	s.subagentsMu.Lock()
+	s.activeSubagents[sessionID] = append(s.activeSubagents[sessionID], info)
+	if nativeID != "" && nativeID != sessionID {
+		s.activeSubagents[nativeID] = append(s.activeSubagents[nativeID], info)
+	}
+	list := s.activeSubagents[sessionID]
+	s.subagentsMu.Unlock()
+
+	var running []*SubagentInfo
+	for _, sub := range list {
+		if sub != nil && sub.State == "running" {
+			running = append(running, sub)
+		}
+	}
+
+	if sess := s.resolveSession(sessionID); sess != nil {
+		sess.RunningSubagents = len(running)
+		_ = s.db.SaveSession(sess)
+		s.broadcast(sess)
+	}
+	if s.headless != nil {
+		s.headless.EmitSubagentsUpdate(sessionID, running)
+	}
+}
+
+func (s *Server) removeSubagent(sessionID, nativeID, subagentID string) {
+	s.subagentsMu.Lock()
+	updateList := func(key string) []*SubagentInfo {
+		list := s.activeSubagents[key]
+		var updated []*SubagentInfo
+		found := false
+		for _, sub := range list {
+			if sub == nil {
+				continue
+			}
+			if subagentID != "" && (sub.ID == subagentID || sub.Name == subagentID) {
+				found = true
+				continue
+			}
+			updated = append(updated, sub)
+		}
+		if !found && subagentID == "" && len(updated) > 0 {
+			updated = updated[1:]
+		}
+		s.activeSubagents[key] = updated
+		return updated
+	}
+
+	var remaining []*SubagentInfo
+	if sessionID != "" {
+		remaining = updateList(sessionID)
+	}
+	if nativeID != "" && nativeID != sessionID {
+		updateList(nativeID)
+	}
+	s.subagentsMu.Unlock()
+
+	var running []*SubagentInfo
+	for _, sub := range remaining {
+		if sub != nil && sub.State == "running" {
+			running = append(running, sub)
+		}
+	}
+
+	if sess := s.resolveSession(sessionID); sess != nil {
+		sess.RunningSubagents = len(running)
+		_ = s.db.SaveSession(sess)
+		s.broadcast(sess)
+	}
+	if s.headless != nil {
+		s.headless.EmitSubagentsUpdate(sessionID, running)
+	}
+}
+
+func (s *Server) clearSubagents(sessionID, nativeID string) {
+	s.subagentsMu.Lock()
+	delete(s.activeSubagents, sessionID)
+	if nativeID != "" {
+		delete(s.activeSubagents, nativeID)
+	}
+	s.subagentsMu.Unlock()
+
+	if sess := s.resolveSession(sessionID); sess != nil {
+		sess.RunningSubagents = 0
+		_ = s.db.SaveSession(sess)
+		s.broadcast(sess)
+	}
+	if s.headless != nil {
+		s.headless.EmitSubagentsUpdate(sessionID, []*SubagentInfo{})
 	}
 }
 

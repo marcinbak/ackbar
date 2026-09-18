@@ -82,6 +82,7 @@ type Session struct {
 	LastStateChangeAt time.Time `json:"last_state_change_at,omitempty"`
 	AccountID         string    `json:"account_id,omitempty"`  // profile/account identifier (e.g. "work", "personal", "default")
 	EngineType        string    `json:"engine_type,omitempty"` // "tmux" (default) or "headless"
+	RunningSubagents  int       `json:"running_subagents,omitempty"`
 }
 
 const (

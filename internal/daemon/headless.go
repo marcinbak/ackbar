@@ -35,6 +35,7 @@ type ChatStreamEvent struct {
 	IsError     bool               `json:"is_error,omitempty"`
 	QueueItems  []*PromptQueueItem `json:"queue_items,omitempty"`
 	QueuePaused bool               `json:"queue_paused,omitempty"`
+	Subagents   []*SubagentInfo    `json:"subagents,omitempty"`
 	Timestamp   time.Time          `json:"timestamp"`
 }
 
@@ -288,6 +289,16 @@ func (h *HeadlessRunner) EmitQueueUpdate(sessionID string) {
 		QueueItems:  items,
 		QueuePaused: paused,
 		Timestamp:   time.Now(),
+	})
+}
+
+// EmitSubagentsUpdate broadcasts current running subagents over SSE
+func (h *HeadlessRunner) EmitSubagentsUpdate(sessionID string, subagents []*SubagentInfo) {
+	h.Emit(sessionID, ChatStreamEvent{
+		SessionID: sessionID,
+		Type:      "subagents_update",
+		Subagents: subagents,
+		Timestamp: time.Now(),
 	})
 }
 

@@ -2595,3 +2595,76 @@ func TestHosts_EnrichedWithHealth(t *testing.T) {
 		t.Errorf("Expected latency 42ms, got %d", h.LatencyMs)
 	}
 }
+
+func TestHandleSessionSubagents(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test_subagents.db")
+	db, err := InitDB(dbPath)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := NewServer(db)
+	sessionID := "claude-code:local:test-subagents-sess"
+	sess := &Session{
+		ID:        sessionID,
+		Agent:     "claude-code",
+		Host:      "local",
+		NativeID:  "test-subagents-sess",
+		Cwd:       "/tmp/test",
+		State:     StateWorking,
+		StartedAt: time.Now(),
+	}
+	_ = db.SaveSession(sess)
+
+	// Initially 0 running subagents
+	req := httptest.NewRequest(http.MethodGet, "/v1/sessions/subagents?id="+sessionID, nil)
+	w := httptest.NewRecorder()
+	server.handleSessionSubagents(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var res struct {
+		SessionID    string         `json:"session_id"`
+		RunningCount int            `json:"running_count"`
+		Subagents    []SubagentInfo `json:"subagents"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &res)
+	if res.RunningCount != 0 || len(res.Subagents) != 0 {
+		t.Fatalf("Expected 0 subagents, got %d", res.RunningCount)
+	}
+
+	// Add an active subagent in memory
+	sub := &SubagentInfo{
+		ID:        "sub-1",
+		Name:      "Reviewer A",
+		Role:      "research",
+		Prompt:    "Verify changes",
+		State:     "running",
+		StartedAt: time.Now(),
+	}
+	server.addSubagent(sessionID, sess.NativeID, sub)
+
+	// Verify /v1/sessions/subagents returns it
+	w2 := httptest.NewRecorder()
+	server.handleSessionSubagents(w2, req)
+	_ = json.Unmarshal(w2.Body.Bytes(), &res)
+	if res.RunningCount != 1 || len(res.Subagents) != 1 {
+		t.Fatalf("Expected 1 running subagent, got %d", res.RunningCount)
+	}
+	if res.Subagents[0].Name != "Reviewer A" || res.Subagents[0].Prompt != "Verify changes" {
+		t.Errorf("Unexpected subagent details: %+v", res.Subagents[0])
+	}
+
+	// Remove subagent
+	server.removeSubagent(sessionID, sess.NativeID, "sub-1")
+
+	w3 := httptest.NewRecorder()
+	server.handleSessionSubagents(w3, req)
+	_ = json.Unmarshal(w3.Body.Bytes(), &res)
+	if res.RunningCount != 0 {
+		t.Fatalf("Expected 0 running subagents after removal, got %d", res.RunningCount)
+	}
+}
+
