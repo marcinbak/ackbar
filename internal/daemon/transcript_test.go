@@ -279,3 +279,30 @@ func TestExtractSubagents_ClaudeCode(t *testing.T) {
 	}
 }
 
+func TestEncodeClaudeProjectDir(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{
+			input:    "/Users/dev4u/Work/Ackbar",
+			expected: "-Users-dev4u-Work-Ackbar",
+		},
+		{
+			input:    "/home/dev4u/Work/ngl-android/.claude/worktrees/fix-e2e-onboarding-back-race",
+			expected: "-home-dev4u-Work-ngl-android--claude-worktrees-fix-e2e-onboarding-back-race",
+		},
+		{
+			input:    "/home/dev4u/Work/repo_name.with.dots/sub-dir",
+			expected: "-home-dev4u-Work-repo-name-with-dots-sub-dir",
+		},
+	}
+
+	for _, tc := range tests {
+		got := encodeClaudeProjectDir(tc.input)
+		if got != tc.expected {
+			t.Errorf("encodeClaudeProjectDir(%q) = %q; want %q", tc.input, got, tc.expected)
+		}
+	}
+}
+

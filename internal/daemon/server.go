@@ -6153,7 +6153,7 @@ func ReadClaudeContextUsage(cwd, sessionID string) int {
 		targetID = ""
 	}
 
-	encodedCwd := strings.ReplaceAll(cwd, "/", "-")
+	encodedCwd := encodeClaudeProjectDir(cwd)
 	projDir := filepath.Join(home, ".claude", "projects", encodedCwd)
 
 	files, err := os.ReadDir(projDir)
@@ -6285,7 +6285,7 @@ func ReadClaudeSessionMeta(cwd, sessionID string) *SessionMeta {
 	}
 
 	// 2. Scan transcript file for prompts, summaries, and titles
-	encodedCwd := strings.ReplaceAll(cwd, "/", "-")
+	encodedCwd := encodeClaudeProjectDir(cwd)
 	var targetFiles []string
 	claudeProjectsDir := filepath.Join(home, ".claude", "projects")
 
@@ -6708,7 +6708,7 @@ func ReadClaudeSessionTitle(cwd, sessionID string) string {
 		// 2. Check ~/.claude/projects/ strictly for targetID transcript
 		claudeProjectsDir := filepath.Join(home, ".claude", "projects")
 		var targetFiles []string
-		encodedCwd := strings.ReplaceAll(cwd, "/", "-")
+		encodedCwd := encodeClaudeProjectDir(cwd)
 		if encodedCwd != "" && encodedCwd != "-" {
 			projDir := filepath.Join(claudeProjectsDir, encodedCwd)
 			tf := filepath.Join(projDir, targetID+".jsonl")
