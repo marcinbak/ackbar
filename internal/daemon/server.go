@@ -2482,13 +2482,25 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 				"engine_type": req.EngineType,
 				"prompt":      req.Prompt,
 			})
-			resp, err := http.Post(targetURL, "application/json", bytes.NewBuffer(payload))
+			fwdReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, targetURL, bytes.NewBuffer(payload))
+			if err != nil {
+				http.Error(w, fmt.Sprintf("Failed to create remote request: %v", err), http.StatusInternalServerError)
+				return
+			}
+			fwdReq.Header.Set("Content-Type", "application/json")
+			if auth := r.Header.Get("Authorization"); auth != "" {
+				fwdReq.Header.Set("Authorization", auth)
+			}
+			if tok := r.Header.Get("X-Ackbar-Token"); tok != "" {
+				fwdReq.Header.Set("X-Ackbar-Token", tok)
+			}
+			resp, err := http.DefaultClient.Do(fwdReq)
 			if err != nil {
 				http.Error(w, fmt.Sprintf("Failed to spawn on remote host %s: %v", req.Host, err), http.StatusInternalServerError)
 				return
 			}
 			defer resp.Body.Close()
-			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
 			w.WriteHeader(resp.StatusCode)
 			_, _ = io.Copy(w, resp.Body)
 			return

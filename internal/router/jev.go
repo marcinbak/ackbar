@@ -259,6 +259,9 @@ func (c *JevClient) classify(ctx context.Context, req ResolveRequest) (*ResolveR
 	if err := json.NewDecoder(resp.Body).Decode(&jevResp); err != nil {
 		return nil, err
 	}
+	if jevResp.Error != "" {
+		return nil, fmt.Errorf("jev API error: %s", jevResp.Error)
+	}
 
 	chosenHost := jevResp.Answers["host"].Choice
 	if chosenHost == "" {

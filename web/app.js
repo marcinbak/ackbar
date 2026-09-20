@@ -6560,6 +6560,16 @@ ${session.last_prompt}
     }
 
     // Dispatcher Preview Buttons & Keyboard Controls
+    if (el.dispatchGroup) {
+      el.dispatchGroup.addEventListener('change', () => {
+        const val = el.dispatchGroup.value;
+        const node = (state.treeNodes || []).find(n => n.path === val);
+        if (node && node.project_dir && el.dispatchCwd) {
+          el.dispatchCwd.value = node.project_dir;
+        }
+      });
+    }
+
     if (el.btnDispatchCancel) {
       el.btnDispatchCancel.addEventListener('click', () => {
         if (el.dispatchPreview) el.dispatchPreview.style.display = 'none';
