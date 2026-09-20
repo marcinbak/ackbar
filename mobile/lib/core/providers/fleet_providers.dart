@@ -369,6 +369,33 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
     await _apiClient.controlSession(hostUrl, session.id, 'restart', authToken: host?.authToken);
   }
 
+  Future<bool> handoverSession(
+    String sessionId, {
+    String strategy = 'in_place',
+    String? customInstruction,
+  }) async {
+    final session = state.firstWhere(
+      (s) => s.id == sessionId || s.nativeId == sessionId,
+      orElse: () => state.first,
+    );
+    final host = _getHostRecord(session.host);
+    final hostUrl = host?.url ?? 'http://127.0.0.1:7777';
+
+    _upsertSession(session.copyWith(
+      state: SessionState.working,
+      activity: 'Handover: Generating briefing...',
+      lastEventAt: DateTime.now(),
+    ));
+
+    return await _apiClient.handoverSession(
+      hostUrl,
+      session.id,
+      strategy: strategy,
+      customInstruction: customInstruction,
+      authToken: host?.authToken,
+    );
+  }
+
   Future<void> terminateSession(String sessionId) async {
     final session = state.firstWhere((s) => s.id == sessionId);
     final host = _getHostRecord(session.host);

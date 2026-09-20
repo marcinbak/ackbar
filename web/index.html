@@ -215,6 +215,7 @@
       <div class="context-menu-item" id="cmItemCopyName"><span>📋</span> Copy Name</div>
       <div class="context-menu-item" id="cmItemCopyPath"><span>📍</span> Copy Path</div>
       <div class="context-menu-divider"></div>
+      <div class="context-menu-item" id="cmItemHandover"><span>🔄</span> Handover to Fresh Turn</div>
       <div class="context-menu-item" id="cmItemTakeWheel"><span>🏎️</span> Take the Wheel in Terminal</div>
       <div class="context-menu-item" id="cmItemResume"><span>▶</span> Resume in Tmux</div>
       <div class="context-menu-item" id="cmItemNewTab"><span>↗</span> Open in New Tab</div>
@@ -242,11 +243,43 @@
 
     <!-- Right-Click Tab Context Menu -->
     <div class="context-menu" id="tabContextMenu">
+      <div class="context-menu-item" id="tcmItemHandover"><span>🔄</span> Handover to Fresh Turn</div>
+      <div class="context-menu-divider"></div>
       <div class="context-menu-item" id="tcmItemClose"><span>✕</span> Close Tab</div>
       <div class="context-menu-item" id="tcmItemCloseOthers"><span>🗂️</span> Close Other Tabs</div>
       <div class="context-menu-item" id="tcmItemCloseRight"><span>➡️</span> Close Tabs to the Right</div>
       <div class="context-menu-divider"></div>
       <div class="context-menu-item danger" id="tcmItemCloseAll"><span>🗑️</span> Close All Tabs</div>
+    </div>
+
+    <!-- Handover Modal Dialog -->
+    <div class="modal-overlay" id="handoverModalOverlay" style="display: none;">
+      <div class="modal-card" id="handoverModalCard" style="max-width: 480px;">
+        <div class="modal-header">
+          <h3 id="handoverModalTitle"><span>🔄</span> Context Handover</h3>
+          <button class="modal-close-btn" id="btnHandoverModalClose">✕</button>
+        </div>
+        <div class="modal-body" style="display: flex; flex-direction: column; gap: 14px;">
+          <div id="handoverModalAlert" style="font-size: 13px; color: var(--text-muted); line-height: 1.5;">
+            Rotate this session's context window. An automated handover briefing will be generated and seeded into the fresh turn.
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 6px;">
+            <label style="font-size: 12px; font-weight: 600; color: var(--text-main);">Strategy</label>
+            <select id="handoverStrategySelect" style="background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px; padding: 7px 10px; font-size: 13px;">
+              <option value="in_place">In-Place Turn Rotation (/clear reset)</option>
+              <option value="new_session">Parallel Fresh Session</option>
+            </select>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 6px;">
+            <label style="font-size: 12px; font-weight: 600; color: var(--text-main);">Additional Next Steps / Custom Instructions (Optional)</label>
+            <textarea id="handoverCustomInstruction" placeholder="e.g. Focus next on adding unit tests for server.go..." rows="3" style="background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px; padding: 8px 10px; font-size: 12px; font-family: inherit; resize: vertical;"></textarea>
+          </div>
+        </div>
+        <div class="modal-footer" style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px;">
+          <button class="btn btn-secondary" id="btnHandoverCancel">Cancel</button>
+          <button class="btn btn-primary" id="btnHandoverConfirm" style="background: #f59e0b; border-color: #d97706; color: #fff;">Confirm Handover</button>
+        </div>
+      </div>
     </div>
   </div>
 

@@ -950,6 +950,219 @@ func TestSessionControl_ResumeAction(t *testing.T) {
 	}
 }
 
+func TestSessionHandover_Settings(t *testing.T) {
+	dbFile := "./test_handover_settings.db"
+	defer os.Remove(dbFile)
+
+	db, err := InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := NewServer(db)
+
+	// 1. GET /v1/settings returns handover defaults
+	reqGet := httptest.NewRequest(http.MethodGet, "/v1/settings", nil)
+	wGet := httptest.NewRecorder()
+	server.Mux().ServeHTTP(wGet, reqGet)
+
+	if wGet.Code != http.StatusOK {
+		t.Fatalf("GET /v1/settings failed: %d", wGet.Code)
+	}
+	var settings map[string]string
+	if err := json.Unmarshal(wGet.Body.Bytes(), &settings); err != nil {
+		t.Fatalf("Failed to parse settings: %v", err)
+	}
+	if settings["handover_suggestion_enabled"] != "true" {
+		t.Errorf("Expected handover_suggestion_enabled default 'true', got %q", settings["handover_suggestion_enabled"])
+	}
+	if settings["handover_threshold_pct"] != "60" {
+		t.Errorf("Expected handover_threshold_pct default '60', got %q", settings["handover_threshold_pct"])
+	}
+
+	// 2. POST /v1/settings updates handover settings
+	newSettings := map[string]string{
+		"handover_suggestion_enabled": "false",
+		"handover_threshold_pct":      "75",
+	}
+	body, _ := json.Marshal(newSettings)
+	reqPost := httptest.NewRequest(http.MethodPost, "/v1/settings", bytes.NewReader(body))
+	wPost := httptest.NewRecorder()
+	server.Mux().ServeHTTP(wPost, reqPost)
+
+	if wPost.Code != http.StatusOK {
+		t.Fatalf("POST /v1/settings failed: %d", wPost.Code)
+	}
+	var updatedSettings map[string]string
+	_ = json.Unmarshal(wPost.Body.Bytes(), &updatedSettings)
+	if updatedSettings["handover_suggestion_enabled"] != "false" {
+		t.Errorf("Expected handover_suggestion_enabled 'false', got %q", updatedSettings["handover_suggestion_enabled"])
+	}
+	if updatedSettings["handover_threshold_pct"] != "75" {
+		t.Errorf("Expected handover_threshold_pct '75', got %q", updatedSettings["handover_threshold_pct"])
+	}
+}
+
+func TestSessionHandover_Validation(t *testing.T) {
+	dbFile := "./test_handover_val.db"
+	defer os.Remove(dbFile)
+
+	db, err := InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := NewServer(db)
+
+	// 1. Missing ID
+	reqNoID := httptest.NewRequest(http.MethodPost, "/v1/sessions/handover", bytes.NewReader([]byte(`{}`)))
+	wNoID := httptest.NewRecorder()
+	server.Mux().ServeHTTP(wNoID, reqNoID)
+	if wNoID.Code != http.StatusBadRequest {
+		t.Errorf("Expected 400 Bad Request for missing ID, got %d", wNoID.Code)
+	}
+
+	// 2. Non-existent session
+	reqNotFound := httptest.NewRequest(http.MethodPost, "/v1/sessions/handover?id=non-existent", nil)
+	wNotFound := httptest.NewRecorder()
+	server.Mux().ServeHTTP(wNotFound, reqNotFound)
+	if wNotFound.Code != http.StatusNotFound {
+		t.Errorf("Expected 404 Not Found for non-existent session, got %d", wNotFound.Code)
+	}
+
+	// 3. Unmanaged session
+	unmanagedSess := &Session{
+		ID:          "claude-code:local:unmanaged-1",
+		Agent:       "claude-code",
+		Host:        "local",
+		NativeID:    "unmanaged-1",
+		Managed:     false,
+		State:       StateIdle,
+		StartedAt:   time.Now(),
+		LastEventAt: time.Now(),
+	}
+	_ = db.SaveSession(unmanagedSess)
+
+	reqUnmanaged := httptest.NewRequest(http.MethodPost, "/v1/sessions/handover?id=claude-code:local:unmanaged-1", nil)
+	wUnmanaged := httptest.NewRecorder()
+	server.Mux().ServeHTTP(wUnmanaged, reqUnmanaged)
+	if wUnmanaged.Code != http.StatusBadRequest {
+		t.Errorf("Expected 400 Bad Request for unmanaged session, got %d (%s)", wUnmanaged.Code, wUnmanaged.Body.String())
+	}
+
+	// 4. Actively working session
+	workingSess := &Session{
+		ID:          "claude-code:local:working-1",
+		Agent:       "claude-code",
+		Host:        "local",
+		NativeID:    "working-1",
+		Managed:     true,
+		TmuxName:    "ackbar-working-1",
+		State:       StateWorking,
+		StartedAt:   time.Now(),
+		LastEventAt: time.Now(),
+	}
+	_ = db.SaveSession(workingSess)
+
+	reqWorking := httptest.NewRequest(http.MethodPost, "/v1/sessions/handover?id=claude-code:local:working-1", nil)
+	wWorking := httptest.NewRecorder()
+	server.Mux().ServeHTTP(wWorking, reqWorking)
+	if wWorking.Code != http.StatusConflict {
+		t.Errorf("Expected 409 Conflict for actively working session, got %d (%s)", wWorking.Code, wWorking.Body.String())
+	}
+
+	// 5. Valid Idle session (Async trigger)
+	idleSess := &Session{
+		ID:          "claude-code:local:idle-1",
+		Agent:       "claude-code",
+		Host:        "local",
+		NativeID:    "idle-1",
+		Managed:     true,
+		TmuxName:    "ackbar-idle-1",
+		State:       StateIdle,
+		StartedAt:   time.Now(),
+		LastEventAt: time.Now(),
+	}
+	_ = db.SaveSession(idleSess)
+
+	reqIdle := httptest.NewRequest(http.MethodPost, "/v1/sessions/handover?id=claude-code:local:idle-1", nil)
+	wIdle := httptest.NewRecorder()
+	server.Mux().ServeHTTP(wIdle, reqIdle)
+	if wIdle.Code != http.StatusAccepted {
+		t.Errorf("Expected 202 Accepted for async handover, got %d (%s)", wIdle.Code, wIdle.Body.String())
+	}
+
+	var resp map[string]interface{}
+	_ = json.Unmarshal(wIdle.Body.Bytes(), &resp)
+	if resp["status"] != "handover_initiated" {
+		t.Errorf("Expected status 'handover_initiated', got %v", resp["status"])
+	}
+
+	// 6. Valid via control action parameter: /v1/sessions/control?action=handover&id=...
+	controlSess := &Session{
+		ID:          "claude-code:local:control-1",
+		Host:        "local",
+		Agent:       "claude-code",
+		Managed:     true,
+		TmuxName:    "ackbar-control-1",
+		State:       StateIdle,
+		StartedAt:   time.Now(),
+		LastEventAt: time.Now(),
+	}
+	_ = db.SaveSession(controlSess)
+
+	reqControl := httptest.NewRequest(http.MethodPost, "/v1/sessions/control?action=handover&id=claude-code:local:control-1", nil)
+	wControl := httptest.NewRecorder()
+	server.Mux().ServeHTTP(wControl, reqControl)
+	if wControl.Code != http.StatusAccepted {
+		t.Errorf("Expected 202 Accepted from control endpoint, got %d", wControl.Code)
+	}
+}
+
+func TestSessionHandover_Execution(t *testing.T) {
+	dbFile := "./test_handover_exec.db"
+	defer os.Remove(dbFile)
+
+	db, err := InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := NewServer(db)
+
+	sess := &Session{
+		ID:          "claude-code:local:exec-1",
+		Agent:       "claude-code",
+		Host:        "local",
+		NativeID:    "exec-1",
+		Name:        "Feature Task",
+		Managed:     true,
+		TmuxName:    "ackbar-mock-handover-test",
+		State:       StateIdle,
+		StartedAt:   time.Now(),
+		LastEventAt: time.Now(),
+		ContextPct:  75,
+	}
+	_ = db.SaveSession(sess)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	// executeSessionHandover will attempt prompt dispatch
+	_ = server.executeSessionHandover(ctx, sess, "in_place", "Verify tests", "Generate briefing prompt")
+
+	updated, err := db.GetSession("claude-code:local:exec-1")
+	if err != nil || updated == nil {
+		t.Fatalf("Expected session to exist after handover attempt: %v", err)
+	}
+	if !strings.Contains(updated.Activity, "Handover") {
+		t.Errorf("Expected activity to record Handover lifecycle, got %q", updated.Activity)
+	}
+}
+
 func TestInspectClaudeStatus_TmuxIntegration(t *testing.T) {
 	if !tmux.IsTmuxInstalled() {
 		t.Skip("tmux not installed, skipping TestInspectClaudeStatus_TmuxIntegration")

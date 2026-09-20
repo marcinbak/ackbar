@@ -26,11 +26,12 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 | `GET` | `/v1/sessions/pty` | WebSocket endpoint streaming interactive PTY data to `xterm.js`. |
 | `POST` | `/v1/sessions/spawn` | Spawns a new agent process in a supervised tmux session using RFC 4122 UUIDv4. |
 | `POST` | `/v1/hooks/{agent}` | Ingests agent lifecycle and tool hook events with in-place `/clear` rotation detection. |
-| `POST` | `/v1/sessions/control` | Executes control actions: `resume`, `restart`, `kill`, `move`, `rename`, `delete`. |
+| `POST` | `/v1/sessions/control` | Executes control actions: `resume`, `restart`, `kill`, `move`, `rename`, `delete`, `handover`. |
+| `POST` | `/v1/sessions/handover`| Initiates automated session handover, briefing extraction, and context rotation. |
 | `POST` | `/v1/sessions/mark-read` | Marks a session as read (`is_unread = false`), clearing visual unread cues. |
 | `GET` | `/v1/sessions/transcript`| Retrieves extracted conversation transcript (JSON or formatted Markdown). |
 | `POST` | `/v1/sessions/upload` | Uploads clipboard images or drag-and-dropped PDFs to `/tmp/ackbar-uploads/`. |
-| `GET` | `/v1/settings` | Returns daemon settings including `host_name`, `display_name`, and auto-done thresholds. |
+| `GET` | `/v1/settings` | Returns daemon settings including `host_name`, `display_name`, auto-done thresholds, and handover suggestions. |
 | `POST` | `/v1/settings` | Updates and persists daemon settings in SQLite. |
 | `GET` | `/v1/nodes` | Returns configured logical tree nodes and custom groups. |
 | `POST` | `/v1/projects/create` | Creates a new logical project node or pure category subgroup. |
@@ -52,7 +53,33 @@ When an agent resets its conversation context in-place (e.g. `/clear` in Claude 
 
 ---
 
-## 4. Database Schema & Auto-Migrations
+## 4. Automated Session Handover & Context Rotation (`POST /v1/sessions/handover`)
+
+When long-running autonomous sessions consume significant token context (`context_pct >= 60%`), Ackbar provides 1-click Automated Session Handover to eliminate context bloat while maintaining task continuity:
+
+### Request Format:
+```json
+{
+  "id": "claude-code:local:uuid-here",
+  "strategy": "in_place", // "in_place" (default) or "new_session"
+  "custom_instruction": "Focus next on adding unit tests for server.go",
+  "sync": false // default false; returns 202 Accepted and orchestrates asynchronously
+}
+```
+
+### Execution Flow:
+1. **Safety Verification:** Requires sessions to be managed and idle/blocked (`StateIdle` or `StateBlocked`). In-flight active command runs (`StateWorking`) are rejected with `409 Conflict`.
+2. **Automated Handover Extraction:** Injects a structured briefing prompt into the agent's PTY. The agent synthesizes a 4-point briefing (Objectives, Milestones, Git State, Next Steps).
+3. **Context Rotation:** Once the briefing finishes, sends `/reset` (Antigravity) or `/clear` (Claude Code / Codex) to trigger context rotation.
+4. **Reseeding:** Re-injects the generated briefing and custom instructions into the fresh turn, achieving 0% token context with uninterrupted productivity.
+
+### Handover Settings (`/v1/settings`):
+* `handover_suggestion_enabled`: `"true"` | `"false"` (default: `"true"`) — toggle automated UI suggestions.
+* `handover_threshold_pct`: Integer between `10` and `95` (default: `"60"`) — context window threshold for triggering warnings and quick-action chips.
+
+---
+
+## 5. Database Schema & Auto-Migrations
 
 The SQLite database (`~/.config/ackbar/ackbard.db`) uses CGO-free pure Go SQLite (`modernc.org/sqlite`). On daemon startup, `InitDB()` automatically applies non-destructive schema migrations:
 
@@ -67,7 +94,7 @@ The SQLite database (`~/.config/ackbar/ackbard.db`) uses CGO-free pure Go SQLite
 
 ---
 
-## 5. Linux Service Management (`systemd`)
+## 6. Linux Service Management (`systemd`)
 
 On Linux hosts (such as remote GPU compute boxes), `ackbard` can run as a background `systemd` user service:
 

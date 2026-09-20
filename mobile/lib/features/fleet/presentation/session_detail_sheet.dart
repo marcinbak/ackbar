@@ -227,6 +227,57 @@ class SessionDetailSheet extends ConsumerWidget {
             AppSpacing.gapH12,
           ],
 
+          if (session.contextPct >= 60 && session.managed) ...[
+            ElevatedButton.icon(
+              onPressed: () async {
+                final confirm = await showDialog<bool>(
+                  context: context,
+                  builder: (ctx) => AlertDialog(
+                    backgroundColor: AppColors.surface,
+                    title: const Text('🔄 Handover Context'),
+                    content: Text(
+                      'Context window is at ${session.contextPct}%. Generate an automated handover briefing and rotate to a clean turn?',
+                      style: AppTypography.bodySm,
+                    ),
+                    actions: [
+                      TextButton(
+                        onPressed: () => Navigator.of(ctx).pop(false),
+                        child: const Text('Cancel'),
+                      ),
+                      ElevatedButton(
+                        onPressed: () => Navigator.of(ctx).pop(true),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: AppColors.statusAmber,
+                          foregroundColor: Colors.black,
+                        ),
+                        child: const Text('Confirm Handover'),
+                      ),
+                    ],
+                  ),
+                );
+                if (confirm == true) {
+                  Navigator.of(context).pop();
+                  await ref.read(fleetSessionsProvider.notifier).handoverSession(session.id);
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text('Handover initiated for ${session.displayTitle}'),
+                        backgroundColor: AppColors.statusAmber.withOpacity(0.8),
+                      ),
+                    );
+                  }
+                }
+              },
+              icon: const Icon(Icons.sync_rounded, size: 16),
+              label: Text('Rotate Context (${session.contextPct}%)'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.statusAmber.withOpacity(0.18),
+                foregroundColor: AppColors.statusAmber,
+                side: const BorderSide(color: AppColors.statusAmber, width: 1.5),
+              ),
+            ),
+            AppSpacing.gapH8,
+          ],
           Row(
             children: [
               Expanded(
