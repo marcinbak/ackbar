@@ -2753,5 +2753,3 @@ func TestHandleMetaResolve(t *testing.T) {
 		t.Errorf("Expected Source 'heuristic' when no API key is provided, got %q", res.Source)
 	}
 }
-
-
