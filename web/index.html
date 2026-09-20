@@ -197,14 +197,65 @@
       </div>
     </div>
 
-    <!-- Command Palette Modal -->
+    <!-- Command Palette & Smart Dispatcher Modal -->
     <div class="modal-overlay" id="cmdPaletteOverlay" style="display: none;">
       <div class="cmd-palette-card" id="cmdPaletteCard">
         <div class="cmd-palette-header">
-          <span class="search-icon">🔍</span>
-          <input type="text" id="cmdPaletteInput" placeholder="Type a command or search sessions... (Esc to close)" />
+          <span class="search-icon" id="cmdPaletteIcon">⚡</span>
+          <input type="text" id="cmdPaletteInput" placeholder="Describe task, paste ticket, or search... (Esc to close)" />
         </div>
         <div class="cmd-palette-results" id="cmdPaletteResults"></div>
+
+        <!-- Dispatcher 2-Step Expansion Preview -->
+        <div class="dispatch-preview" id="dispatchPreview" style="display: none;">
+          <!-- Matched Active Session Banner -->
+          <div class="dispatch-matched-banner" id="dispatchMatchedBanner" style="display: none;">
+            <div class="dispatch-matched-icon">🔗</div>
+            <div class="dispatch-matched-body">
+              <div class="dispatch-matched-title" id="dispatchMatchedTitle">Active Session Found</div>
+              <div class="dispatch-matched-subtitle" id="dispatchMatchedSubtitle">An existing session is already working on this task.</div>
+            </div>
+            <button class="btn btn-sm btn-primary" id="btnDispatchSwitchActive" type="button">↵ Switch to Session</button>
+          </div>
+
+          <div class="dispatch-preview-header">
+            <span class="dispatch-preview-tag">🎯 DERIVED LAUNCH CONFIGURATION</span>
+            <span class="dispatch-preview-source" id="dispatchPreviewSource">via Jev AI</span>
+          </div>
+
+          <div class="dispatch-form-grid">
+            <div class="form-group">
+              <label for="dispatchHost">Host</label>
+              <select id="dispatchHost" class="form-control"></select>
+            </div>
+            <div class="form-group">
+              <label for="dispatchAgent">Agent</label>
+              <select id="dispatchAgent" class="form-control">
+                <option value="claude-code">Claude Code (Anthropic)</option>
+                <option value="antigravity">Google Antigravity (agy)</option>
+                <option value="codex">OpenAI Codex</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="dispatchGroup">Group / Project</label>
+              <select id="dispatchGroup" class="form-control"></select>
+            </div>
+            <div class="form-group">
+              <label for="dispatchCwd">Directory</label>
+              <input type="text" id="dispatchCwd" class="form-control" placeholder="~/path/to/project" />
+            </div>
+          </div>
+
+          <div class="form-group" style="margin-top: 10px;">
+            <label for="dispatchPrompt">Prompt to Inject into Agent</label>
+            <textarea id="dispatchPrompt" class="form-control" rows="2" placeholder="Task prompt sent to agent PTY..."></textarea>
+          </div>
+
+          <div class="dispatch-preview-actions">
+            <button class="btn btn-secondary" id="btnDispatchCancel" type="button">Cancel (Esc)</button>
+            <button class="btn btn-primary" id="btnDispatchLaunch" type="button">🚀 Launch Session (Enter)</button>
+          </div>
+        </div>
       </div>
     </div>
 
