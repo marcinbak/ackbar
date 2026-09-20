@@ -27,8 +27,9 @@ type CandidateSession struct {
 
 // CandidateNode represents a tree group node in Ackbar.
 type CandidateNode struct {
-	Path       string `json:"path"`
-	ProjectDir string `json:"project_dir"`
+	Path           string `json:"path"`
+	ProjectDir     string `json:"project_dir"`
+	PreferredAgent string `json:"preferred_agent,omitempty"`
 }
 
 // CandidateHost represents a compute host in Ackbar.
@@ -166,11 +167,25 @@ func (c *JevClient) classify(ctx context.Context, req ResolveRequest) (*ResolveR
 		groupCriteria["Default"] = "Default root workspace."
 	}
 
-	// Build agent criteria
-	agentCriteria := map[string]string{
-		"claude-code": "Anthropic Claude Code. Best for complex codebases, Go backend, refactoring, systems programming.",
-		"antigravity": "Google Antigravity (agy). Best for mobile (Flutter/Dart), workspace-wide changes, web UI.",
-		"codex":       "OpenAI Codex. Best for Python, scripting, data pipelines, automation.",
+	// Build agent criteria emphasizing project-to-agent affinity
+	agentCriteria := make(map[string]string)
+	for _, n := range req.Nodes {
+		if n.PreferredAgent != "" {
+			if existing, ok := agentCriteria[n.PreferredAgent]; ok {
+				agentCriteria[n.PreferredAgent] = existing + fmt.Sprintf(" Also default for %s.", n.Path)
+			} else {
+				agentCriteria[n.PreferredAgent] = fmt.Sprintf("Default agent for project %s.", n.Path)
+			}
+		}
+	}
+	if _, ok := agentCriteria["claude-code"]; !ok {
+		agentCriteria["claude-code"] = "Anthropic Claude Code. General-purpose agent."
+	}
+	if _, ok := agentCriteria["antigravity"]; !ok {
+		agentCriteria["antigravity"] = "Google Antigravity (agy). Multi-modal & workspace agent."
+	}
+	if _, ok := agentCriteria["codex"]; !ok {
+		agentCriteria["codex"] = "OpenAI Codex. Scripting and automation agent."
 	}
 
 	// Build existing session criteria
@@ -207,7 +222,7 @@ func (c *JevClient) classify(ctx context.Context, req ResolveRequest) (*ResolveR
 			},
 			"agent": {
 				Type:         "choice",
-				Instructions: "Which AI coding agent is best suited for this task?",
+				Instructions: "Which AI coding agent should run this task? Select primarily based on the project referenced and its associated agent conventions, or explicit agent mentions in the prompt.",
 				Criteria:     agentCriteria,
 			},
 			"existing_session": {
@@ -311,7 +326,7 @@ func (c *JevClient) classify(ctx context.Context, req ResolveRequest) (*ResolveR
 	}, nil
 }
 
-// FallbackResolve applies deterministic keyword and context heuristics.
+// FallbackResolve applies deterministic project-driven heuristics.
 func FallbackResolve(req ResolveRequest) *ResolveResult {
 	promptLower := strings.ToLower(req.Prompt)
 
@@ -359,23 +374,14 @@ func FallbackResolve(req ResolveRequest) *ResolveResult {
 		}
 	}
 
-	// 3. Derive Agent
-	chosenAgent := "claude-code" // Default best-in-class general agent
-	if strings.Contains(promptLower, "flutter") || strings.Contains(promptLower, "dart") ||
-		strings.Contains(promptLower, "mobile") || strings.Contains(promptLower, "ios") ||
-		strings.Contains(promptLower, "android") {
-		chosenAgent = "antigravity"
-	} else if strings.Contains(promptLower, "python") || strings.Contains(promptLower, "script") ||
-		strings.Contains(promptLower, "notebook") || regexp.MustCompile(`\b(data\s+analysis|dataset|ml|pytorch)\b`).MatchString(promptLower) {
-		chosenAgent = "codex"
-	}
-
-	// 4. Derive Group & Cwd
+	// 3. Derive Group & Cwd (Project Resolution)
 	chosenGroup := ""
 	chosenCwd := ""
+	var matchedNode *CandidateNode
 
 	// Check if prompt matches existing node path names
-	for _, n := range req.Nodes {
+	for i := range req.Nodes {
+		n := &req.Nodes[i]
 		pLower := strings.ToLower(n.Path)
 		parts := strings.Split(pLower, "/")
 		for _, part := range parts {
@@ -383,6 +389,7 @@ func FallbackResolve(req ResolveRequest) *ResolveResult {
 			if len(part) > 2 && strings.Contains(promptLower, part) {
 				chosenGroup = n.Path
 				chosenCwd = n.ProjectDir
+				matchedNode = n
 				break
 			}
 		}
@@ -395,10 +402,50 @@ func FallbackResolve(req ResolveRequest) *ResolveResult {
 	if chosenGroup == "" && len(req.Nodes) > 0 {
 		chosenGroup = req.Nodes[0].Path
 		chosenCwd = req.Nodes[0].ProjectDir
+		matchedNode = &req.Nodes[0]
 	}
 	if chosenCwd == "" {
 		home, _ := os.UserHomeDir()
 		chosenCwd = home
+	}
+
+	// 4. Derive Agent based primarily on the Project Referenced
+	chosenAgent := ""
+
+	// Check if prompt explicitly requested an agent by name
+	if strings.Contains(promptLower, "antigravity") || strings.Contains(promptLower, "agy") {
+		chosenAgent = "antigravity"
+	} else if strings.Contains(promptLower, "codex") {
+		chosenAgent = "codex"
+	} else if strings.Contains(promptLower, "claude") {
+		chosenAgent = "claude-code"
+	}
+
+	// If no explicit agent in prompt, use project's preferred agent
+	if chosenAgent == "" && matchedNode != nil && matchedNode.PreferredAgent != "" {
+		chosenAgent = matchedNode.PreferredAgent
+	}
+
+	// If still undetermined, inspect session history for this project
+	if chosenAgent == "" && chosenGroup != "" {
+		agentCounts := make(map[string]int)
+		for _, s := range req.Sessions {
+			if s.NodePath == chosenGroup && s.Agent != "" {
+				agentCounts[s.Agent]++
+			}
+		}
+		maxCount := 0
+		for ag, count := range agentCounts {
+			if count > maxCount {
+				maxCount = count
+				chosenAgent = ag
+			}
+		}
+	}
+
+	// Fallback general default
+	if chosenAgent == "" {
+		chosenAgent = "claude-code"
 	}
 
 	taskName := deriveTaskName(req.Prompt)

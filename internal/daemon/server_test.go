@@ -2705,14 +2705,22 @@ func TestHandleMetaResolve(t *testing.T) {
 	}
 	defer db.Close()
 
-	// Seed nodes
+	// Seed nodes and historical sessions to establish project-to-agent affinity
 	_ = db.SaveNode(&TreeNode{Path: "Ackbar/Backend", ProjectDir: "/path/to/backend"})
 	_ = db.SaveNode(&TreeNode{Path: "Ackbar/Mobile", ProjectDir: "/path/to/mobile"})
+	_ = db.SaveSession(&Session{
+		ID:       "antigravity:local:sess-mobile",
+		Agent:    "antigravity",
+		Host:     "local",
+		NodePath: "Ackbar/Mobile",
+		Managed:  true,
+		State:    StateIdle,
+	})
 
 	server := NewServer(db)
 
-	// Test 1: POST with prompt for mobile
-	body := `{"prompt": "Fix Flutter state management bug in mobile drawer"}`
+	// Test 1: POST with prompt for mobile project
+	body := `{"prompt": "Fix drawer navigation in mobile"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/meta/resolve", strings.NewReader(body))
 	w := httptest.NewRecorder()
 	server.handleMetaResolve(w, req)

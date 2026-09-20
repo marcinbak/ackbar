@@ -2711,21 +2711,17 @@ func (s *Server) handleMetaResolve(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 2. Gather Candidate Nodes
-	var candidateNodes []router.CandidateNode
-	if nodes, err := s.db.ListNodes(); err == nil {
-		for _, n := range nodes {
-			candidateNodes = append(candidateNodes, router.CandidateNode{
-				Path:       n.Path,
-				ProjectDir: n.ProjectDir,
-			})
-		}
-	}
-
-	// 3. Gather Candidate Sessions
+	// 2. Gather Candidate Sessions & Compute Project Preferred Agents
+	nodeAgentFreq := make(map[string]map[string]int)
 	var candidateSessions []router.CandidateSession
 	if sessions, err := s.db.ListSessions(); err == nil {
 		for _, sess := range sessions {
+			if sess.NodePath != "" && sess.Agent != "" {
+				if nodeAgentFreq[sess.NodePath] == nil {
+					nodeAgentFreq[sess.NodePath] = make(map[string]int)
+				}
+				nodeAgentFreq[sess.NodePath][sess.Agent]++
+			}
 			if sess.Managed && sess.State != StateEnded {
 				candidateSessions = append(candidateSessions, router.CandidateSession{
 					ID:        sess.ID,
@@ -2741,12 +2737,35 @@ func (s *Server) handleMetaResolve(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 4. Check for API key in env or DB settings
-	apiKey := os.Getenv("TYPESAFE_API_KEY")
-	if apiKey == "" {
-		if val, err := s.db.GetSetting("typesafe_api_key"); err == nil && val != "" {
-			apiKey = val
+	// 3. Gather Candidate Nodes with Preferred Agent from session history
+	var candidateNodes []router.CandidateNode
+	if nodes, err := s.db.ListNodes(); err == nil {
+		for _, n := range nodes {
+			preferred := ""
+			maxCount := 0
+			if freq, ok := nodeAgentFreq[n.Path]; ok {
+				for ag, count := range freq {
+					if count > maxCount {
+						maxCount = count
+						preferred = ag
+					}
+				}
+			}
+			candidateNodes = append(candidateNodes, router.CandidateNode{
+				Path:           n.Path,
+				ProjectDir:     n.ProjectDir,
+				PreferredAgent: preferred,
+			})
 		}
+	}
+
+	// 4. Check for API key in DB settings or env
+	apiKey := ""
+	if val, err := s.db.GetSetting("typesafe_api_key"); err == nil && val != "" {
+		apiKey = val
+	}
+	if apiKey == "" {
+		apiKey = os.Getenv("TYPESAFE_API_KEY")
 	}
 
 	resolveReq := router.ResolveRequest{

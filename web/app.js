@@ -1004,6 +1004,17 @@
         </div>
 
         <div class="settings-section">
+          <div class="settings-section-title"><span>⚡</span> TypeSafe AI (Jev) Integration</div>
+          <div class="settings-section-desc">Configure your TypeSafe API Key for ultra-fast (70–200ms) System-1 dispatch routing and decision making. If omitted, Ackbar automatically uses local project heuristics.</div>
+          <div class="settings-row">
+            <label class="settings-row-label" for="settingTypesafeApiKey">TypeSafe API Key</label>
+            <div class="settings-input-group" style="flex: 1; max-width: 320px;">
+              <input type="password" id="settingTypesafeApiKey" class="form-input" value="${s.typesafe_api_key || ''}" placeholder="Enter API key..." autocomplete="off" />
+            </div>
+          </div>
+        </div>
+
+        <div class="settings-section">
           <div class="settings-section-title"><span>✓</span> Auto-Move to Done</div>
           <div class="settings-section-desc">Automatically move inactive sessions from the Active list into the per-group Done section. Submitting a prompt or active agent behavior automatically revives them back to Active.</div>
           <div class="settings-row">
@@ -1219,7 +1230,8 @@
           auto_done_hours: document.getElementById('settingAutoDoneHours')?.value?.trim() || '24',
           auto_archive_enabled: document.getElementById('settingAutoArchiveEnabled')?.checked ? 'true' : 'false',
           auto_archive_days: document.getElementById('settingAutoArchiveDays')?.value?.trim() || '7',
-          done_collapsed_by_default: document.getElementById('settingDoneCollapsed')?.checked ? 'true' : 'false'
+          done_collapsed_by_default: document.getElementById('settingDoneCollapsed')?.checked ? 'true' : 'false',
+          typesafe_api_key: document.getElementById('settingTypesafeApiKey')?.value?.trim() || ''
         };
 
         const ok = await updateSettings(newSettings);

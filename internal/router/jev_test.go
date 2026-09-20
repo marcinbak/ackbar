@@ -61,8 +61,8 @@ func TestFallbackResolve_MobileAndRemote(t *testing.T) {
 			{Name: "legion", URL: "http://legion:7777"},
 		},
 		Nodes: []CandidateNode{
-			{Path: "Ackbar/Backend", ProjectDir: "/work/backend"},
-			{Path: "Ackbar/Mobile", ProjectDir: "/work/mobile"},
+			{Path: "Ackbar/Backend", ProjectDir: "/work/backend", PreferredAgent: "claude-code"},
+			{Path: "Ackbar/Mobile", ProjectDir: "/work/mobile", PreferredAgent: "antigravity"},
 		},
 	}
 
@@ -76,7 +76,7 @@ func TestFallbackResolve_MobileAndRemote(t *testing.T) {
 		t.Errorf("Expected Host 'legion', got %q", result.Host)
 	}
 
-	// Should derive antigravity because flutter/mobile is mentioned
+	// Should derive antigravity because mobile project prefers antigravity
 	if result.Agent != "antigravity" {
 		t.Errorf("Expected Agent 'antigravity', got %q", result.Agent)
 	}
@@ -84,6 +84,34 @@ func TestFallbackResolve_MobileAndRemote(t *testing.T) {
 	// Should derive Ackbar/Mobile group
 	if result.NodePath != "Ackbar/Mobile" {
 		t.Errorf("Expected NodePath 'Ackbar/Mobile', got %q", result.NodePath)
+	}
+}
+
+func TestFallbackResolve_ProjectAffinityOverridesTechStack(t *testing.T) {
+	req := ResolveRequest{
+		Prompt: "Write a migration script for Ackbar/Backend",
+		Hosts: []CandidateHost{
+			{Name: "local", URL: "http://127.0.0.1:7777"},
+		},
+		Nodes: []CandidateNode{
+			{Path: "Ackbar/Backend", ProjectDir: "/work/backend", PreferredAgent: "claude-code"},
+			{Path: "Data/Scripts", ProjectDir: "/work/scripts", PreferredAgent: "codex"},
+		},
+	}
+
+	result := FallbackResolve(req)
+	if result == nil {
+		t.Fatal("Expected non-nil result")
+	}
+
+	if result.NodePath != "Ackbar/Backend" {
+		t.Errorf("Expected NodePath 'Ackbar/Backend', got %q", result.NodePath)
+	}
+
+	// Agent should be claude-code because project Ackbar/Backend prefers claude-code,
+	// NOT codex despite the word 'script' being in the prompt!
+	if result.Agent != "claude-code" {
+		t.Errorf("Expected Agent 'claude-code' due to project affinity, got %q", result.Agent)
 	}
 }
 
