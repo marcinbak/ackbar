@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -166,6 +167,11 @@ func TestHandleFileOpen_VSCode(t *testing.T) {
 	}
 	defer os.RemoveAll(tmpDir)
 
+	testFile := filepath.Join(tmpDir, "main.go")
+	if err := os.WriteFile(testFile, []byte("package main\n"), 0644); err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+
 	dbFile := filepath.Join(tmpDir, "test.db")
 	db, err := InitDB(dbFile)
 	if err != nil {
@@ -175,7 +181,8 @@ func TestHandleFileOpen_VSCode(t *testing.T) {
 
 	server := NewServer(db)
 
-	body := strings.NewReader(`{"path":"/some/repo/main.go","app":"vscode"}`)
+	// 1. Valid existing local file
+	body := strings.NewReader(fmt.Sprintf(`{"path":%q,"app":"vscode"}`, testFile))
 	req := httptest.NewRequest("POST", "/v1/files/open", body)
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -195,6 +202,21 @@ func TestHandleFileOpen_VSCode(t *testing.T) {
 	}
 	if resp["app"] != "vscode" {
 		t.Errorf("Expected app 'vscode', got %v", resp["app"])
+	}
+	if resp["path"] != testFile {
+		t.Errorf("Expected path %q, got %v", testFile, resp["path"])
+	}
+
+	// 2. Non-existent local file returns 404
+	bodyMissing := strings.NewReader(`{"path":"/nonexistent/path/file.go","app":"vscode"}`)
+	reqMissing := httptest.NewRequest("POST", "/v1/files/open", bodyMissing)
+	reqMissing.Header.Set("Content-Type", "application/json")
+	recMissing := httptest.NewRecorder()
+
+	server.Mux().ServeHTTP(recMissing, reqMissing)
+
+	if recMissing.Code != http.StatusNotFound {
+		t.Errorf("Expected 404 Not Found for missing file, got %d: %s", recMissing.Code, recMissing.Body.String())
 	}
 }
 

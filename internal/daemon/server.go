@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"io/fs"
@@ -2344,6 +2345,14 @@ func (s *Server) handleEditorOpen(w http.ResponseWriter, r *http.Request) {
 	if path == "" {
 		http.Error(w, "Missing path parameter", http.StatusBadRequest)
 		return
+	}
+
+	isLocal := host == "" || host == "local" || host == "localhost" || host == "127.0.0.1" || (os.Getenv("ACKBAR_HOST") != "" && host == os.Getenv("ACKBAR_HOST"))
+	if isLocal && filepath.IsAbs(path) {
+		if _, err := os.Stat(path); err != nil && os.IsNotExist(err) {
+			http.Error(w, fmt.Sprintf("File not found: %s", path), http.StatusNotFound)
+			return
+		}
 	}
 
 	uri, err := LaunchVSCode(path, host)
@@ -7158,7 +7167,18 @@ func cleanEnvForVSCode(env []string) []string {
 	return cleaned
 }
 
+func isTestEnv() bool {
+	return flag.Lookup("test.v") != nil || os.Getenv("ACKBAR_TEST_MODE") == "1"
+}
+
+// LaunchVSCodeFunc allows mocking or overriding VS Code launching in tests.
+var LaunchVSCodeFunc = defaultLaunchVSCode
+
 func LaunchVSCode(path, host string) (string, error) {
+	return LaunchVSCodeFunc(path, host)
+}
+
+func defaultLaunchVSCode(path, host string) (string, error) {
 	if path == "" {
 		return "", fmt.Errorf("path is empty")
 	}
@@ -7179,6 +7199,11 @@ func LaunchVSCode(path, host string) (string, error) {
 			formattedPath = "/" + formattedPath
 		}
 		vscodeURI = fmt.Sprintf("vscode://file%s", formattedPath)
+	}
+
+	// Under automated tests (e.g. go test), do not launch real external GUI processes
+	if isTestEnv() {
+		return vscodeURI, nil
 	}
 
 	var launchErr error

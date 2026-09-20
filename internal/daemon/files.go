@@ -185,8 +185,20 @@ func sanitizeHostCacheSubdir(host string) string {
 	}, host)
 }
 
+// OpenFileLocallyFunc allows mocking or overriding local file opening in tests.
+var OpenFileLocallyFunc = defaultOpenFileLocally
+
 // openFileLocally opens a local file using the system's default or requested application
 func openFileLocally(filePath string, app string) error {
+	return OpenFileLocallyFunc(filePath, app)
+}
+
+func defaultOpenFileLocally(filePath string, app string) error {
+	// Under automated tests (e.g. go test), do not launch real external GUI processes
+	if isTestEnv() {
+		return nil
+	}
+
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":
@@ -382,7 +394,22 @@ func (s *Server) handleFileOpen(w http.ResponseWriter, r *http.Request) {
 
 	// If app is VS Code, delegate to LaunchVSCode
 	if strings.ToLower(req.App) == "vscode" {
-		uri, err := LaunchVSCode(req.Path, targetHost)
+		targetPath := req.Path
+		if sess != nil && !filepath.IsAbs(targetPath) {
+			if resolved, err := s.resolveFilePath(sess, targetPath); err == nil {
+				targetPath = resolved
+			}
+		}
+
+		// Verify local file exists before opening to prevent VS Code "file does not exist" modals
+		if (targetHost == "" || s.isLocalHost(targetHost)) && filepath.IsAbs(targetPath) {
+			if _, err := os.Stat(targetPath); err != nil && os.IsNotExist(err) {
+				http.Error(w, fmt.Sprintf("File not found: %s", req.Path), http.StatusNotFound)
+				return
+			}
+		}
+
+		uri, err := LaunchVSCode(targetPath, targetHost)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("Failed to launch VS Code: %v", err), http.StatusInternalServerError)
 			return
@@ -391,7 +418,7 @@ func (s *Server) handleFileOpen(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"status": "opened",
 			"app":    "vscode",
-			"path":   req.Path,
+			"path":   targetPath,
 			"host":   targetHost,
 			"uri":    uri,
 		})
