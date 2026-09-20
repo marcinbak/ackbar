@@ -66,3 +66,8 @@
   * Terminal clipboard synchronization from remote Linux/Legion tmux sessions to macOS host clipboard and Web UI.
 * [x] **Strict PR-Based Git Worktree Workflow & Open Source Guidelines:**
   * Branch protection enforced on `main`, `AGENTS.md` worktree workflow, `CONTRIBUTING.md`, and issue/PR templates.
+* [x] **Automated Session Handover & Context Rotation:**
+  * 1-click context rotation (`POST /v1/sessions/handover`) with automated briefing synthesis, context clearing (`/clear`, `/reset`), and fresh turn reseeding.
+  * Configurable suggestion toggle and token threshold percentage (`handover_suggestion_enabled`, `handover_threshold_pct`) via daemon settings API and Settings dialog.
+  * Warning/danger context badges, quick-action handover button, confirmation modal, and right-click context menu options across Web UI and Mobile companion.
+

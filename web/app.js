@@ -333,6 +333,9 @@
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
+      } else if (res.status === 404) {
+        const errText = await res.text().catch(() => 'File or directory not found');
+        showUploadToast(`Cannot open in VS Code: ${errText}`, 'error');
       } else {
         window.location.href = directUri;
       }
@@ -493,6 +496,7 @@
     cmItemTranscript: document.getElementById('cmItemTranscript'),
     cmItemCopyName: document.getElementById('cmItemCopyName'),
     cmItemCopyPath: document.getElementById('cmItemCopyPath'),
+    cmItemHandover: document.getElementById('cmItemHandover'),
     cmItemTakeWheel: document.getElementById('cmItemTakeWheel'),
     cmItemResume: document.getElementById('cmItemResume'),
     cmItemNewTab: document.getElementById('cmItemNewTab'),
@@ -512,10 +516,21 @@
     gcmItemDelete: document.getElementById('gcmItemDelete'),
     // Tab Context Menu
     tabContextMenu: document.getElementById('tabContextMenu'),
+    tcmItemHandover: document.getElementById('tcmItemHandover'),
     tcmItemClose: document.getElementById('tcmItemClose'),
     tcmItemCloseOthers: document.getElementById('tcmItemCloseOthers'),
     tcmItemCloseRight: document.getElementById('tcmItemCloseRight'),
-    tcmItemCloseAll: document.getElementById('tcmItemCloseAll')
+    tcmItemCloseAll: document.getElementById('tcmItemCloseAll'),
+    // Handover Modal
+    handoverModalOverlay: document.getElementById('handoverModalOverlay'),
+    handoverModalCard: document.getElementById('handoverModalCard'),
+    handoverModalTitle: document.getElementById('handoverModalTitle'),
+    handoverModalAlert: document.getElementById('handoverModalAlert'),
+    handoverStrategySelect: document.getElementById('handoverStrategySelect'),
+    handoverCustomInstruction: document.getElementById('handoverCustomInstruction'),
+    btnHandoverCancel: document.getElementById('btnHandoverCancel'),
+    btnHandoverConfirm: document.getElementById('btnHandoverConfirm'),
+    btnHandoverModalClose: document.getElementById('btnHandoverModalClose')
   };
 
   // Initialize Application
@@ -983,6 +998,8 @@
     const autoArchiveEnabled = s.auto_archive_enabled !== 'false';
     const autoArchiveDays = s.auto_archive_days || '7';
     const doneCollapsed = s.done_collapsed_by_default !== 'false';
+    const handoverSuggestionEnabled = s.handover_suggestion_enabled !== 'false';
+    const handoverThresholdPct = s.handover_threshold_pct || '60';
 
     const bodyHtml = `
       <div class="settings-modal-content">
@@ -1010,6 +1027,22 @@
             <label class="settings-row-label" for="settingTypesafeApiKey">TypeSafe API Key</label>
             <div class="settings-input-group" style="flex: 1; max-width: 320px;">
               <input type="password" id="settingTypesafeApiKey" class="form-input" value="${s.typesafe_api_key || ''}" placeholder="Enter API key..." autocomplete="off" />
+            </div>
+          </div>
+        </div>
+
+        <div class="settings-section">
+          <div class="settings-section-title"><span>🔄</span> Context Handover & Rotation</div>
+          <div class="settings-section-desc">Configure automated context rotation suggestions when agent token usage reaches high thresholds.</div>
+          <div class="settings-row">
+            <label class="settings-row-label" for="settingHandoverSuggestionEnabled">Enable Handover Suggestions</label>
+            <input type="checkbox" id="settingHandoverSuggestionEnabled" ${handoverSuggestionEnabled ? 'checked' : ''} />
+          </div>
+          <div class="settings-row">
+            <label class="settings-row-label" for="settingHandoverThresholdPct">Suggestion Threshold</label>
+            <div class="settings-input-group">
+              <input type="number" id="settingHandoverThresholdPct" class="settings-number-input" min="10" max="95" value="${handoverThresholdPct}" />
+              <span style="font-size: 12px; color: var(--text-muted);">% context</span>
             </div>
           </div>
         </div>
@@ -1231,7 +1264,9 @@
           auto_archive_enabled: document.getElementById('settingAutoArchiveEnabled')?.checked ? 'true' : 'false',
           auto_archive_days: document.getElementById('settingAutoArchiveDays')?.value?.trim() || '7',
           done_collapsed_by_default: document.getElementById('settingDoneCollapsed')?.checked ? 'true' : 'false',
-          typesafe_api_key: document.getElementById('settingTypesafeApiKey')?.value?.trim() || ''
+          typesafe_api_key: document.getElementById('settingTypesafeApiKey')?.value?.trim() || '',
+          handover_suggestion_enabled: document.getElementById('settingHandoverSuggestionEnabled')?.checked ? 'true' : 'false',
+          handover_threshold_pct: document.getElementById('settingHandoverThresholdPct')?.value?.trim() || '60'
         };
 
         const ok = await updateSettings(newSettings);
@@ -1801,7 +1836,30 @@
       ctxBadge.className = 'badge-ctx';
       ctxBadge.textContent = `${session.context_pct}%`;
       ctxBadge.title = `Context Window Used: ${session.context_pct}%`;
+
+      const settings = state.settings || {};
+      const handoverEnabled = settings.handover_suggestion_enabled !== 'false';
+      const handoverThreshold = parseInt(settings.handover_threshold_pct || '60', 10);
+
+      if (session.context_pct >= 80) {
+        ctxBadge.classList.add('context-danger');
+      } else if (session.context_pct >= handoverThreshold) {
+        ctxBadge.classList.add('context-warning');
+      }
+
       right.appendChild(ctxBadge);
+
+      if (handoverEnabled && session.context_pct >= handoverThreshold && (session.managed || session.tmux_name) && session.state !== 'ended') {
+        const btnHandover = document.createElement('button');
+        btnHandover.className = 'btn-handover-quick';
+        btnHandover.innerHTML = '🔄 Handover';
+        btnHandover.title = `Context is at ${session.context_pct}%. Click to rotate to a clean turn with automated handover briefing.`;
+        btnHandover.addEventListener('click', (e) => {
+          e.stopPropagation();
+          openHandoverModal(session.id);
+        });
+        right.appendChild(btnHandover);
+      }
     }
 
     if (session.host && !isLocalHost(session.host)) {
@@ -3020,7 +3078,10 @@
     const host = session ? session.host : null;
     const sessionId = session ? session.id : null;
     if (app === 'vscode') {
-      return openInVSCode(filePath, host);
+      const targetPath = (!filePath.startsWith('/') && session && session.cwd)
+        ? `${session.cwd.replace(/\/$/, '')}/${filePath}`
+        : filePath;
+      return openInVSCode(targetPath, host);
     }
     try {
       const res = await fetch('/v1/files/open', {
@@ -6410,8 +6471,21 @@ ${session.last_prompt}
     if (el.sbSessionName) el.sbSessionName.textContent = session.name || session.agent;
     if (el.sbHostBadge) el.sbHostBadge.textContent = `@${formatHostLabel(session.host || 'local')}`;
     if (el.sbCwd) el.sbCwd.textContent = session.cwd || '~/';
-    if (el.sbGitBranch) el.sbGitBranch.textContent = session.git_branch ? `⎇ ${session.git_branch}` : '⎇ —';
-    if (el.sbContextGauge) el.sbContextGauge.textContent = session.context_pct ? `ctx: ${session.context_pct}%` : 'ctx: —';
+    if (el.sbContextGauge) {
+      el.sbContextGauge.className = 'statusbar-item';
+      if (session.context_pct) {
+        el.sbContextGauge.textContent = `ctx: ${session.context_pct}%`;
+        const settings = state.settings || {};
+        const handoverThreshold = parseInt(settings.handover_threshold_pct || '60', 10);
+        if (session.context_pct >= 80) {
+          el.sbContextGauge.classList.add('context-danger');
+        } else if (session.context_pct >= handoverThreshold) {
+          el.sbContextGauge.classList.add('context-warning');
+        }
+      } else {
+        el.sbContextGauge.textContent = 'ctx: —';
+      }
+    }
     if (el.sbModelBadge) {
       const engineLabel = session.engine_type === 'headless' ? 'headless' : 'tmux';
       el.sbModelBadge.textContent = `${session.agent || 'claude'} (${engineLabel})`;
@@ -6430,7 +6504,10 @@ ${session.last_prompt}
     if (el.sbHostBadge) el.sbHostBadge.textContent = '@local';
     if (el.sbCwd) el.sbCwd.textContent = '~/';
     if (el.sbGitBranch) el.sbGitBranch.textContent = '⎇ —';
-    if (el.sbContextGauge) el.sbContextGauge.textContent = 'ctx: —';
+    if (el.sbContextGauge) {
+      el.sbContextGauge.className = 'statusbar-item';
+      el.sbContextGauge.textContent = 'ctx: —';
+    }
     if (el.sbModelBadge) el.sbModelBadge.textContent = 'claude';
     if (el.sbPID) el.sbPID.textContent = 'PID —';
     if (el.sbLastActive) {
@@ -6623,6 +6700,16 @@ ${session.last_prompt}
           const sessName = sess.name || sess.agent || '';
           const fullPath = sess.node_path ? `${sess.node_path}/${sessName}` : sessName;
           await copyTextToClipboard(fullPath);
+        }
+      });
+    }
+
+    if (el.cmItemHandover) {
+      el.cmItemHandover.addEventListener('click', () => {
+        if (state.contextMenuSession) {
+          const sess = state.contextMenuSession;
+          hideContextMenu();
+          openHandoverModal(sess.id);
         }
       });
     }
@@ -6848,6 +6935,34 @@ ${session.last_prompt}
     }
 
     // Tab Context Menu actions
+    if (el.tcmItemHandover) {
+      el.tcmItemHandover.addEventListener('click', () => {
+        if (state.contextMenuTabId) {
+          const tabId = state.contextMenuTabId;
+          hideTabContextMenu();
+          openHandoverModal(tabId);
+        }
+      });
+    }
+
+    if (el.btnHandoverCancel) {
+      el.btnHandoverCancel.addEventListener('click', () => {
+        closeHandoverModal();
+      });
+    }
+
+    if (el.btnHandoverModalClose) {
+      el.btnHandoverModalClose.addEventListener('click', () => {
+        closeHandoverModal();
+      });
+    }
+
+    if (el.btnHandoverConfirm) {
+      el.btnHandoverConfirm.addEventListener('click', () => {
+        submitHandover();
+      });
+    }
+
     if (el.tcmItemClose) {
       el.tcmItemClose.addEventListener('click', () => {
         if (state.contextMenuTabId) {
@@ -7708,6 +7823,94 @@ ${session.last_prompt}
 
   function hideModal() {
     if (el.modalOverlay) el.modalOverlay.style.display = 'none';
+  }
+
+  // Handover Modal Dialog
+  function openHandoverModal(sessionId) {
+    const session = state.sessions.find(s => s.id === sessionId || s.native_id === sessionId);
+    if (!session) return;
+
+    if (session.state === 'working') {
+      alert('Cannot perform handover while session is actively running. Please wait for the current turn to complete or cancel it first.');
+      return;
+    }
+
+    if (!el.handoverModalOverlay) return;
+
+    state.handoverTargetSessionId = session.id;
+
+    if (el.handoverModalTitle) {
+      el.handoverModalTitle.innerHTML = `<span>🔄</span> Context Handover — ${escapeHtml(session.name || session.agent)}`;
+    }
+
+    if (el.handoverModalAlert) {
+      const pct = session.context_pct || 0;
+      el.handoverModalAlert.innerHTML = `Context window is at <strong>${pct}%</strong>. Rotating will generate an automated handover briefing, execute context reset, and seed the fresh turn with full task continuity.`;
+    }
+
+    if (el.handoverStrategySelect) {
+      el.handoverStrategySelect.value = 'in_place';
+    }
+
+    if (el.handoverCustomInstruction) {
+      el.handoverCustomInstruction.value = '';
+    }
+
+    if (el.btnHandoverConfirm) {
+      el.btnHandoverConfirm.disabled = false;
+      el.btnHandoverConfirm.textContent = 'Confirm Handover';
+    }
+
+    el.handoverModalOverlay.style.display = 'flex';
+  }
+
+  function closeHandoverModal() {
+    if (el.handoverModalOverlay) {
+      el.handoverModalOverlay.style.display = 'none';
+    }
+    state.handoverTargetSessionId = null;
+  }
+
+  async function submitHandover() {
+    if (!state.handoverTargetSessionId) return;
+    const sessionId = state.handoverTargetSessionId;
+    const session = state.sessions.find(s => s.id === sessionId || s.native_id === sessionId);
+    if (!session) return;
+
+    const strategy = el.handoverStrategySelect ? el.handoverStrategySelect.value : 'in_place';
+    const customInstruction = el.handoverCustomInstruction ? el.handoverCustomInstruction.value.trim() : '';
+
+    if (el.btnHandoverConfirm) {
+      el.btnHandoverConfirm.disabled = true;
+      el.btnHandoverConfirm.textContent = 'Initiating...';
+    }
+
+    try {
+      const baseUrl = session.hostUrl ? session.hostUrl.replace(/\/$/, '') : '';
+      const res = await fetch(`${baseUrl}/v1/sessions/handover`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: session.id,
+          strategy: strategy,
+          custom_instruction: customInstruction
+        })
+      });
+
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(errText || `HTTP ${res.status}`);
+      }
+
+      closeHandoverModal();
+      await fetchSessions();
+    } catch (err) {
+      alert(`Handover failed: ${err.message}`);
+      if (el.btnHandoverConfirm) {
+        el.btnHandoverConfirm.disabled = false;
+        el.btnHandoverConfirm.textContent = 'Confirm Handover';
+      }
+    }
   }
 
   // New Group Modal

@@ -134,6 +134,30 @@ void main() {
       expect(ok, isTrue);
     });
 
+    test('handoverSession sends POST to /v1/sessions/handover with expected JSON body', () async {
+      final mockClient = MockClient((request) async {
+        expect(request.url.path, equals('/v1/sessions/handover'));
+        expect(request.method, equals('POST'));
+        expect(request.headers['Content-Type'], contains('application/json'));
+
+        final body = jsonDecode(request.body) as Map<String, dynamic>;
+        expect(body['id'], equals('claude-code:local:session-100'));
+        expect(body['strategy'], equals('in_place'));
+        expect(body['custom_instruction'], equals('Focus on unit tests'));
+
+        return http.Response(jsonEncode({'status': 'handover_initiated', 'id': 'claude-code:local:session-100'}), 202);
+      });
+
+      final api = ApiClient(client: mockClient);
+      final ok = await api.handoverSession(
+        'http://127.0.0.1:7777',
+        'claude-code:local:session-100',
+        strategy: 'in_place',
+        customInstruction: 'Focus on unit tests',
+      );
+      expect(ok, isTrue);
+    });
+
     test('getHosts returns list of HostRecord objects', () async {
       final mockClient = MockClient((request) async {
         expect(request.url.path, equals('/v1/hosts'));
