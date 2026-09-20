@@ -640,6 +640,60 @@ class _AttentionScreenState extends ConsumerState<AttentionScreen> {
               ),
             ],
           ),
+          if (session.contextPct >= 60 && session.managed) ...[
+            AppSpacing.gapH8,
+            SizedBox(
+              width: double.infinity,
+              height: 38,
+              child: OutlinedButton.icon(
+                onPressed: () async {
+                  final confirm = await showDialog<bool>(
+                    context: context,
+                    builder: (ctx) => AlertDialog(
+                      backgroundColor: AppColors.surface,
+                      title: const Text('🔄 Handover Context'),
+                      content: Text(
+                        'Context window is at ${session.contextPct}%. Generate an automated handover briefing and rotate to a clean turn?',
+                        style: AppTypography.bodySmall,
+                      ),
+                      actions: [
+                        TextButton(
+                          onPressed: () => Navigator.of(ctx).pop(false),
+                          child: const Text('Cancel'),
+                        ),
+                        ElevatedButton(
+                          onPressed: () => Navigator.of(ctx).pop(true),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: AppColors.statusAmber,
+                            foregroundColor: Colors.black,
+                          ),
+                          child: const Text('Confirm Handover'),
+                        ),
+                      ],
+                    ),
+                  );
+                  if (confirm == true) {
+                    await ref.read(fleetSessionsProvider.notifier).handoverSession(session.id);
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text('Handover initiated for ${session.displayTitle}'),
+                          backgroundColor: AppColors.statusAmber,
+                        ),
+                      );
+                    }
+                  }
+                },
+                icon: const Icon(Icons.sync_rounded, size: 15),
+                label: Text('Rotate Context (${session.contextPct}%)'),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppColors.statusAmber,
+                  side: const BorderSide(color: AppColors.statusAmber, width: 1),
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                ),
+              ),
+            ),
+          ],
         ],
       ),
     );

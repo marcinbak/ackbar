@@ -274,6 +274,7 @@ func (s *Server) Mux() http.Handler {
 	mux.HandleFunc("/v1/sessions/transcript", s.handleSessionTranscript)
 	mux.HandleFunc("/v1/sessions/", s.handleSessionControl)
 	mux.HandleFunc("/v1/sessions/control", s.handleSessionControl)
+	mux.HandleFunc("/v1/sessions/handover", s.handleSessionHandover)
 	mux.HandleFunc("/v1/sessions/pty", s.handlePTY)
 	mux.HandleFunc("/v1/sessions/spawn", s.handleSpawn)
 	mux.HandleFunc("/v1/sessions/prompt", s.handlePrompt)
@@ -1301,6 +1302,10 @@ func (s *Server) handleSessionControl(w http.ResponseWriter, r *http.Request) {
 			"session": sess,
 		})
 
+	case "handover":
+		s.handleSessionHandover(w, r)
+		return
+
 	default:
 		http.Error(w, "Unknown action", http.StatusBadRequest)
 	}
@@ -2023,6 +2028,296 @@ func (s *Server) handleTakeWheel(w http.ResponseWriter, r *http.Request) {
 		"status":    "ok",
 		"tmux_name": tmuxName,
 	})
+}
+
+func (s *Server) handleSessionHandover(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		ID                string `json:"id"`
+		SessionID         string `json:"session_id"`
+		Strategy          string `json:"strategy"` // "in_place" (default) or "new_session"
+		CustomInstruction string `json:"custom_instruction"`
+		Sync              bool   `json:"sync"`
+	}
+
+	bodyBytes, err := io.ReadAll(r.Body)
+	if err == nil && len(bodyBytes) > 0 {
+		_ = json.Unmarshal(bodyBytes, &req)
+	}
+
+	if req.ID == "" {
+		req.ID = req.SessionID
+	}
+	if req.ID == "" {
+		req.ID = r.URL.Query().Get("id")
+		if req.ID == "" {
+			req.ID = r.URL.Query().Get("session_id")
+		}
+	}
+	if req.Strategy == "" {
+		req.Strategy = r.URL.Query().Get("strategy")
+	}
+	if req.Strategy == "" {
+		req.Strategy = "in_place"
+	}
+	if req.CustomInstruction == "" {
+		req.CustomInstruction = r.URL.Query().Get("custom_instruction")
+	}
+	if !req.Sync && r.URL.Query().Get("sync") == "true" {
+		req.Sync = true
+	}
+
+	if req.ID == "" {
+		http.Error(w, "Missing session ID", http.StatusBadRequest)
+		return
+	}
+
+	sess := s.resolveSession(req.ID)
+	if sess == nil {
+		parts := strings.Split(req.ID, ":")
+		if len(parts) >= 2 {
+			if hostRec := s.resolveHost(parts[1]); hostRec != nil && hostRec.URL != "" {
+				targetURL := fmt.Sprintf("%s/v1/sessions/handover", strings.TrimSuffix(hostRec.URL, "/"))
+				payload, _ := json.Marshal(req)
+				fwdReq, err := http.NewRequest(r.Method, targetURL, bytes.NewReader(payload))
+				if err == nil {
+					fwdReq.Header.Set("Content-Type", "application/json")
+					if resp, err := http.DefaultClient.Do(fwdReq); err == nil {
+						defer resp.Body.Close()
+						w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
+						w.WriteHeader(resp.StatusCode)
+						_, _ = io.Copy(w, resp.Body)
+						return
+					}
+				}
+			}
+		}
+		http.Error(w, "Session not found", http.StatusNotFound)
+		return
+	}
+
+	if hostRec := s.resolveHost(sess.Host); hostRec != nil && hostRec.URL != "" {
+		targetURL := fmt.Sprintf("%s/v1/sessions/handover", strings.TrimSuffix(hostRec.URL, "/"))
+		payload, _ := json.Marshal(req)
+		fwdReq, err := http.NewRequest(r.Method, targetURL, bytes.NewReader(payload))
+		if err == nil {
+			fwdReq.Header.Set("Content-Type", "application/json")
+			if resp, err := http.DefaultClient.Do(fwdReq); err == nil {
+				defer resp.Body.Close()
+				w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
+				w.WriteHeader(resp.StatusCode)
+				_, _ = io.Copy(w, resp.Body)
+				return
+			}
+		}
+	}
+
+	// Validation constraints
+	if !sess.Managed && sess.TmuxName == "" && sess.EngineType != EngineHeadless {
+		http.Error(w, "Cannot perform handover on unmanaged session without process supervisor", http.StatusBadRequest)
+		return
+	}
+
+	if sess.State == StateWorking {
+		http.Error(w, "Cannot perform handover while session is actively working. Wait for turn to complete or cancel it first.", http.StatusConflict)
+		return
+	}
+
+	if sess.State == StateEnded || sess.Deleted {
+		http.Error(w, "Cannot perform handover on ended or deleted session", http.StatusBadRequest)
+		return
+	}
+
+	briefingPrompt := "Please generate a concise, structured handover briefing for a fresh session continuing this work:\n" +
+		"1. **Core Objective:** What is the primary task?\n" +
+		"2. **Completed Milestones:** What has been implemented, verified, or tested?\n" +
+		"3. **Current State:** Active git branch, modified files, uncommitted changes.\n" +
+		"4. **Immediate Next Steps:** Exact next steps for the incoming turn to pick up.\n" +
+		"Format your response clearly so it can be ingested by the next agent turn."
+
+	if req.CustomInstruction != "" {
+		briefingPrompt += "\n\nAdditional instructions for the next session:\n" + req.CustomInstruction
+	}
+
+	if req.Sync {
+		if err := s.executeSessionHandover(r.Context(), sess, req.Strategy, req.CustomInstruction, briefingPrompt); err != nil {
+			http.Error(w, fmt.Sprintf("Handover execution failed: %v", err), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"status":   "completed",
+			"id":       sess.ID,
+			"strategy": req.Strategy,
+			"message":  "Handover executed successfully",
+		})
+		return
+	}
+
+	// Asynchronous background execution
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		defer cancel()
+		_ = s.executeSessionHandover(ctx, sess, req.Strategy, req.CustomInstruction, briefingPrompt)
+	}()
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":   "handover_initiated",
+		"id":       sess.ID,
+		"strategy": req.Strategy,
+		"message":  "Generating handover briefing and rotating context...",
+	})
+}
+
+func (s *Server) executeSessionHandover(ctx context.Context, sess *Session, strategy, customInstruction, prompt string) error {
+	// 1. Mark session as generating briefing
+	sess.Activity = "Handover: Generating briefing..."
+	sess.State = StateWorking
+	sess.LastEventAt = time.Now()
+	_ = s.db.SaveSession(sess)
+	s.broadcast(sess)
+
+	// 2. Dispatch briefing generation prompt
+	if sess.EngineType == EngineHeadless && s.headless != nil {
+		go func() {
+			_ = s.headless.RunTurn(ctx, sess, prompt)
+		}()
+	} else if sess.TmuxName != "" {
+		if err := tmux.SendInput(ctx, sess.TmuxName, prompt, true); err != nil {
+			sess.Activity = fmt.Sprintf("Handover failed: %v", err)
+			sess.State = StateIdle
+			_ = s.db.SaveSession(sess)
+			s.broadcast(sess)
+			return err
+		}
+	}
+
+	// 3. Wait for briefing turn completion (up to 90s)
+	pollTicker := time.NewTicker(500 * time.Millisecond)
+	defer pollTicker.Stop()
+
+	briefingDone := false
+	startTime := time.Now()
+	for !briefingDone {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-pollTicker.C:
+			current := s.resolveSession(sess.ID)
+			if current == nil {
+				return fmt.Errorf("session disappeared during handover")
+			}
+			if (current.State == StateIdle || current.State == StateBlocked) && current.Activity != "Handover: Generating briefing..." {
+				briefingDone = true
+				sess = current
+				break
+			}
+			if time.Since(startTime) > 90*time.Second {
+				briefingDone = true
+				sess = current
+				break
+			}
+		}
+	}
+
+	// 4. Extract generated briefing from transcript
+	var briefingContent string
+	if transcript, err := s.ExtractTranscript(sess.Agent, sess.NativeID, sess.Cwd); err == nil && transcript != nil && len(transcript.Messages) > 0 {
+		for i := len(transcript.Messages) - 1; i >= 0; i-- {
+			if transcript.Messages[i].Role == "assistant" && strings.TrimSpace(transcript.Messages[i].Content) != "" {
+				briefingContent = strings.TrimSpace(transcript.Messages[i].Content)
+				break
+			}
+		}
+	}
+
+	if briefingContent == "" {
+		briefingContent = fmt.Sprintf("Handover briefing for %s in %s (branch: %s).\nPlease inspect latest changes and continue with pending tasks.",
+			sess.Name, sess.Cwd, sess.GitBranch)
+	}
+
+	// 5. Build continuation / reseeding prompt
+	var reseedingPrompt strings.Builder
+	reseedingPrompt.WriteString("Continuing work from previous session handover:\n\n")
+	reseedingPrompt.WriteString(briefingContent)
+	if customInstruction != "" {
+		reseedingPrompt.WriteString("\n\n**Additional instructions for this turn:**\n")
+		reseedingPrompt.WriteString(customInstruction)
+	}
+	reseedingPrompt.WriteString("\n\nPlease review the briefing above and continue with the immediate next steps.")
+
+	// 6. Context Rotation based on strategy
+	resetCmd := "/clear"
+	if sess.Agent == "antigravity" {
+		resetCmd = "/reset"
+	}
+
+	if strategy == "new_session" {
+		sess.Managed = false
+		sess.State = StateEnded
+		sess.Activity = "Handover complete (rotated to new session)"
+		_ = s.db.SaveSession(sess)
+		s.broadcast(sess)
+
+		newUUID := generateUUID()
+		newTmuxName := fmt.Sprintf("ackbar-%s-%s", sess.Agent, newUUID)
+		launchCmd := s.getSpawnCmd(sess.Agent, newUUID)
+		if err := tmux.Spawn(ctx, newTmuxName, sess.Cwd, launchCmd); err != nil {
+			return fmt.Errorf("failed to spawn new handover session: %w", err)
+		}
+
+		newSess := &Session{
+			ID:          fmt.Sprintf("%s:%s:%s", sess.Agent, sess.Host, newUUID),
+			Agent:       sess.Agent,
+			Host:        sess.Host,
+			NativeID:    newUUID,
+			Cwd:         sess.Cwd,
+			NodePath:    sess.NodePath,
+			ProjectKey:  sess.ProjectKey,
+			Name:        fmt.Sprintf("%s (Handover)", sess.Name),
+			Managed:     true,
+			TmuxName:    newTmuxName,
+			State:       StateWorking,
+			Activity:    "Seeding fresh handover turn...",
+			StartedAt:   time.Now(),
+			LastEventAt: time.Now(),
+			AccountID:   sess.AccountID,
+		}
+		_ = s.db.SaveSession(newSess)
+		s.broadcast(newSess)
+
+		time.Sleep(1500 * time.Millisecond)
+		_ = tmux.SendInput(ctx, newTmuxName, reseedingPrompt.String(), true)
+		newSess.Activity = "Handover briefing reseeded"
+		_ = s.db.SaveSession(newSess)
+		s.broadcast(newSess)
+		return nil
+	}
+
+	// In-place turn rotation (/clear or /reset)
+	if sess.TmuxName != "" {
+		sess.Activity = "Handover: Resetting context window..."
+		_ = s.db.SaveSession(sess)
+		s.broadcast(sess)
+
+		_ = tmux.SendInput(ctx, sess.TmuxName, resetCmd, true)
+
+		time.Sleep(1500 * time.Millisecond)
+
+		_ = tmux.SendInput(ctx, sess.TmuxName, reseedingPrompt.String(), true)
+
+		sess.Activity = "Handover: Briefing reseeded into fresh turn"
+		_ = s.db.SaveSession(sess)
+		s.broadcast(sess)
+	}
+
+	return nil
 }
 
 func (s *Server) handleSessionTranscript(w http.ResponseWriter, r *http.Request) {
@@ -4351,11 +4646,13 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		// Populate defaults for any unconfigured keys
 		defaults := map[string]string{
-			"auto_done_enabled":         "true",
-			"auto_done_hours":           "24",
-			"auto_archive_enabled":      "true",
-			"auto_archive_days":         "7",
-			"done_collapsed_by_default": "true",
+			"auto_done_enabled":           "true",
+			"auto_done_hours":             "24",
+			"auto_archive_enabled":        "true",
+			"auto_archive_days":           "7",
+			"done_collapsed_by_default":   "true",
+			"handover_suggestion_enabled": "true",
+			"handover_threshold_pct":      "60",
 		}
 		for k, v := range defaults {
 			if _, exists := settings[k]; !exists {
@@ -4392,11 +4689,13 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			settings = make(map[string]string)
 		}
 		defaults := map[string]string{
-			"auto_done_enabled":         "true",
-			"auto_done_hours":           "24",
-			"auto_archive_enabled":      "true",
-			"auto_archive_days":         "7",
-			"done_collapsed_by_default": "true",
+			"auto_done_enabled":           "true",
+			"auto_done_hours":             "24",
+			"auto_archive_enabled":        "true",
+			"auto_archive_days":           "7",
+			"done_collapsed_by_default":   "true",
+			"handover_suggestion_enabled": "true",
+			"handover_threshold_pct":      "60",
 		}
 		for k, v := range defaults {
 			if _, exists := settings[k]; !exists {

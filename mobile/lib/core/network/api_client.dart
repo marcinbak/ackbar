@@ -103,6 +103,35 @@ class ApiClient {
     return controlSession(hostUrl, sessionID, 'read', authToken: authToken);
   }
 
+  /// POST /v1/sessions/handover: Trigger automated session handover and context rotation
+  Future<bool> handoverSession(
+    String hostUrl,
+    String sessionID, {
+    String strategy = 'in_place',
+    String? customInstruction,
+    String? authToken,
+  }) async {
+    final clean = _cleanUrl(hostUrl);
+    final uri = Uri.parse('$clean/v1/sessions/handover');
+    try {
+      final response = await _client
+          .post(
+            uri,
+            headers: _headers(authToken, {'Content-Type': 'application/json'}),
+            body: jsonEncode({
+              'id': sessionID,
+              'strategy': strategy,
+              if (customInstruction != null && customInstruction.isNotEmpty)
+                'custom_instruction': customInstruction,
+            }),
+          )
+          .timeout(const Duration(seconds: 5));
+      return response.statusCode == 200 || response.statusCode == 202;
+    } catch (_) {
+      return false;
+    }
+  }
+
   /// GET /v1/hosts: Retrieve configured remote hosts from the daemon
   Future<List<HostRecord>> getHosts(String hostUrl, {String? authToken}) async {
     final clean = _cleanUrl(hostUrl);
