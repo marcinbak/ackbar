@@ -333,6 +333,9 @@
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
+      } else if (res.status === 404) {
+        const errText = await res.text().catch(() => 'File or directory not found');
+        showUploadToast(`Cannot open in VS Code: ${errText}`, 'error');
       } else {
         window.location.href = directUri;
       }
@@ -2995,7 +2998,10 @@
     const host = session ? session.host : null;
     const sessionId = session ? session.id : null;
     if (app === 'vscode') {
-      return openInVSCode(filePath, host);
+      const targetPath = (!filePath.startsWith('/') && session && session.cwd)
+        ? `${session.cwd.replace(/\/$/, '')}/${filePath}`
+        : filePath;
+      return openInVSCode(targetPath, host);
     }
     try {
       const res = await fetch('/v1/files/open', {
