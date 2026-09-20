@@ -2880,4 +2880,3 @@ func TestHandleSessionSubagents(t *testing.T) {
 		t.Fatalf("Expected 0 running subagents after removal, got %d", res.RunningCount)
 	}
 }
-

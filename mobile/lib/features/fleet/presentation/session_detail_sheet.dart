@@ -237,7 +237,7 @@ class SessionDetailSheet extends ConsumerWidget {
                     title: const Text('🔄 Handover Context'),
                     content: Text(
                       'Context window is at ${session.contextPct}%. Generate an automated handover briefing and rotate to a clean turn?',
-                      style: AppTypography.bodySm,
+                      style: AppTypography.bodySmall,
                     ),
                     actions: [
                       TextButton(

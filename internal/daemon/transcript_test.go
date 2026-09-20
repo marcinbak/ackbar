@@ -305,4 +305,3 @@ func TestEncodeClaudeProjectDir(t *testing.T) {
 		}
 	}
 }
-
