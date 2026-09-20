@@ -2317,6 +2317,35 @@ func TestHandleSpawn_PersistsTreeNode(t *testing.T) {
 	}
 }
 
+func TestHandleSpawn_WithPrompt(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test_spawn_prompt.db")
+	db, err := InitDB(dbPath)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := NewServer(db)
+	server.RegisterProvider(&namedMockProvider{agentName: "mock-agent"})
+
+	cwd := filepath.Join(t.TempDir(), "my-project-prompt")
+	spawnPayload := map[string]string{
+		"agent":     "mock-agent",
+		"cwd":       cwd,
+		"node_path": "Personal/Ackbar",
+		"prompt":    "Initial task prompt to inject",
+	}
+	body, _ := json.Marshal(spawnPayload)
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/spawn", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+
+	server.handleSpawn(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
 func TestIsAntigravitySubagent_ReviewerPromptsAndMessages(t *testing.T) {
 	tempHome := t.TempDir()
 	convIDReviewer := "11111111-2222-3333-4444-555555555555"
@@ -2878,5 +2907,61 @@ func TestHandleSessionSubagents(t *testing.T) {
 	_ = json.Unmarshal(w3.Body.Bytes(), &res)
 	if res.RunningCount != 0 {
 		t.Fatalf("Expected 0 running subagents after removal, got %d", res.RunningCount)
+	}
+}
+func TestHandleMetaResolve(t *testing.T) {
+	dbFile := filepath.Join(t.TempDir(), "test_meta_resolve.db")
+	db, err := InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	// Seed nodes and historical sessions to establish project-to-agent affinity
+	_ = db.SaveNode(&TreeNode{Path: "Ackbar/Backend", ProjectDir: "/path/to/backend"})
+	_ = db.SaveNode(&TreeNode{Path: "Ackbar/Mobile", ProjectDir: "/path/to/mobile"})
+	_ = db.SaveSession(&Session{
+		ID:       "antigravity:local:sess-mobile",
+		Agent:    "antigravity",
+		Host:     "local",
+		NodePath: "Ackbar/Mobile",
+		Managed:  true,
+		State:    StateIdle,
+	})
+
+	server := NewServer(db)
+
+	// Test 1: POST with prompt for mobile project
+	body := `{"prompt": "Fix drawer navigation in mobile"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/meta/resolve", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	server.handleMetaResolve(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var res struct {
+		Host     string `json:"host"`
+		Agent    string `json:"agent"`
+		NodePath string `json:"node_path"`
+		Cwd      string `json:"cwd"`
+		Source   string `json:"source"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+		t.Fatalf("Failed to unmarshal response: %v", err)
+	}
+
+	if res.Agent != "antigravity" {
+		t.Errorf("Expected Agent 'antigravity', got %q", res.Agent)
+	}
+	if res.NodePath != "Ackbar/Mobile" {
+		t.Errorf("Expected NodePath 'Ackbar/Mobile', got %q", res.NodePath)
+	}
+	if res.Cwd != "/path/to/mobile" {
+		t.Errorf("Expected Cwd '/path/to/mobile', got %q", res.Cwd)
+	}
+	if res.Source != "heuristic" {
+		t.Errorf("Expected Source 'heuristic' when no API key is provided, got %q", res.Source)
 	}
 }

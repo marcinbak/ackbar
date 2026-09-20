@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"ackbar/internal/relay"
+	"ackbar/internal/router"
 	"ackbar/internal/tmux"
 	"ackbar/internal/version"
 )
@@ -277,6 +278,7 @@ func (s *Server) Mux() http.Handler {
 	mux.HandleFunc("/v1/sessions/handover", s.handleSessionHandover)
 	mux.HandleFunc("/v1/sessions/pty", s.handlePTY)
 	mux.HandleFunc("/v1/sessions/spawn", s.handleSpawn)
+	mux.HandleFunc("/v1/meta/resolve", s.handleMetaResolve)
 	mux.HandleFunc("/v1/sessions/prompt", s.handlePrompt)
 	mux.HandleFunc("/v1/sessions/prompt/queue", s.handlePromptQueue)
 	mux.HandleFunc("/v1/sessions/prompt/queue/resume", s.handlePromptQueueResume)
@@ -2739,6 +2741,7 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		Name       string `json:"name"`
 		AccountID  string `json:"account_id"`
 		EngineType string `json:"engine_type"`
+		Prompt     string `json:"prompt"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -2781,14 +2784,27 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 				"name":        req.Name,
 				"account_id":  req.AccountID,
 				"engine_type": req.EngineType,
+				"prompt":      req.Prompt,
 			})
-			resp, err := http.Post(targetURL, "application/json", bytes.NewBuffer(payload))
+			fwdReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, targetURL, bytes.NewBuffer(payload))
+			if err != nil {
+				http.Error(w, fmt.Sprintf("Failed to create remote request: %v", err), http.StatusInternalServerError)
+				return
+			}
+			fwdReq.Header.Set("Content-Type", "application/json")
+			if auth := r.Header.Get("Authorization"); auth != "" {
+				fwdReq.Header.Set("Authorization", auth)
+			}
+			if tok := r.Header.Get("X-Ackbar-Token"); tok != "" {
+				fwdReq.Header.Set("X-Ackbar-Token", tok)
+			}
+			resp, err := http.DefaultClient.Do(fwdReq)
 			if err != nil {
 				http.Error(w, fmt.Sprintf("Failed to spawn on remote host %s: %v", req.Host, err), http.StatusInternalServerError)
 				return
 			}
 			defer resp.Body.Close()
-			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
 			w.WriteHeader(resp.StatusCode)
 			_, _ = io.Copy(w, resp.Body)
 			return
@@ -2923,6 +2939,15 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.Prompt != "" && req.EngineType == EngineTmux {
+		go func(sessName, promptText string) {
+			time.Sleep(1500 * time.Millisecond)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = tmux.SendInput(ctx, sessName, promptText, true)
+		}(tmuxName, req.Prompt)
+	}
+
 	// Insert temporary spawning session
 	sess := &Session{
 		ID:          fmt.Sprintf("%s:%s:%s", req.Agent, effectiveHost, tempUUID),
@@ -2964,6 +2989,117 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		"host":        effectiveHost,
 		"engine_type": EngineTmux,
 	})
+}
+
+func (s *Server) handleMetaResolve(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var body struct {
+		Prompt string `json:"prompt"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "Invalid JSON payload", http.StatusBadRequest)
+		return
+	}
+
+	if strings.TrimSpace(body.Prompt) == "" {
+		http.Error(w, "Prompt is required", http.StatusBadRequest)
+		return
+	}
+
+	// 1. Gather Candidate Hosts
+	var candidateHosts []router.CandidateHost
+	candidateHosts = append(candidateHosts, router.CandidateHost{
+		Name: s.HostName(),
+		URL:  "http://127.0.0.1:7777",
+	})
+	if hosts, err := s.db.ListHosts(); err == nil {
+		for _, h := range hosts {
+			if h.Name != "" && h.Name != s.HostName() && h.Name != "local" {
+				candidateHosts = append(candidateHosts, router.CandidateHost{
+					Name: h.Name,
+					URL:  h.URL,
+				})
+			}
+		}
+	}
+
+	// 2. Gather Candidate Sessions & Compute Project Preferred Agents
+	nodeAgentFreq := make(map[string]map[string]int)
+	var candidateSessions []router.CandidateSession
+	if sessions, err := s.db.ListSessions(); err == nil {
+		for _, sess := range sessions {
+			if sess.NodePath != "" && sess.Agent != "" {
+				if nodeAgentFreq[sess.NodePath] == nil {
+					nodeAgentFreq[sess.NodePath] = make(map[string]int)
+				}
+				nodeAgentFreq[sess.NodePath][sess.Agent]++
+			}
+			if sess.Managed && sess.State != StateEnded {
+				candidateSessions = append(candidateSessions, router.CandidateSession{
+					ID:        sess.ID,
+					Name:      sess.Name,
+					Agent:     sess.Agent,
+					Host:      sess.Host,
+					NodePath:  sess.NodePath,
+					Cwd:       sess.Cwd,
+					GitBranch: sess.GitBranch,
+					Activity:  sess.Activity,
+				})
+			}
+		}
+	}
+
+	// 3. Gather Candidate Nodes with Preferred Agent from session history
+	var candidateNodes []router.CandidateNode
+	if nodes, err := s.db.ListNodes(); err == nil {
+		for _, n := range nodes {
+			preferred := ""
+			maxCount := 0
+			if freq, ok := nodeAgentFreq[n.Path]; ok {
+				for ag, count := range freq {
+					if count > maxCount {
+						maxCount = count
+						preferred = ag
+					}
+				}
+			}
+			candidateNodes = append(candidateNodes, router.CandidateNode{
+				Path:           n.Path,
+				ProjectDir:     n.ProjectDir,
+				PreferredAgent: preferred,
+			})
+		}
+	}
+
+	// 4. Check for API key in DB settings or env
+	apiKey := ""
+	if val, err := s.db.GetSetting("typesafe_api_key"); err == nil && val != "" {
+		apiKey = val
+	}
+	if apiKey == "" {
+		apiKey = os.Getenv("TYPESAFE_API_KEY")
+	}
+
+	resolveReq := router.ResolveRequest{
+		Prompt:   body.Prompt,
+		Hosts:    candidateHosts,
+		Nodes:    candidateNodes,
+		Sessions: candidateSessions,
+		APIKey:   apiKey,
+	}
+
+	result, err := router.Resolve(r.Context(), resolveReq)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Resolution failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(result)
 }
 
 func (s *Server) findSpawningSession(agent, cwd string) (*Session, error) {
