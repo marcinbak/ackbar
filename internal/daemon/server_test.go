@@ -2965,3 +2965,136 @@ func TestHandleMetaResolve(t *testing.T) {
 		t.Errorf("Expected Source 'heuristic' when no API key is provided, got %q", res.Source)
 	}
 }
+
+func TestExtractConvIDFromPath(t *testing.T) {
+	cases := []struct {
+		path     string
+		expected string
+	}{
+		{
+			path:     "/home/dev4u/.gemini/antigravity-cli/presence/b06d1787-6f62-4515-9a05-acea8c7958a6.lock",
+			expected: "b06d1787-6f62-4515-9a05-acea8c7958a6",
+		},
+		{
+			path:     "/Users/dev4u/.gemini/antigravity-cli/presence/f74f0375-1d61-4c1c-baa4-67c8c8630a4e.lock",
+			expected: "f74f0375-1d61-4c1c-baa4-67c8c8630a4e",
+		},
+		{
+			path:     "/home/dev4u/.gemini/antigravity-cli/brain/b06d1787-6f62-4515-9a05-acea8c7958a6/.system_generated/logs/transcript.jsonl",
+			expected: "b06d1787-6f62-4515-9a05-acea8c7958a6",
+		},
+		{
+			path:     "/home/dev4u/.gemini/antigravity-cli/conversations/b06d1787-6f62-4515-9a05-acea8c7958a6.db",
+			expected: "b06d1787-6f62-4515-9a05-acea8c7958a6",
+		},
+		{
+			path:     "/home/dev4u/.gemini/antigravity-cli/annotations/b06d1787-6f62-4515-9a05-acea8c7958a6.pbtxt",
+			expected: "b06d1787-6f62-4515-9a05-acea8c7958a6",
+		},
+		{
+			path:     "/some/other/path/not-uuid.lock",
+			expected: "",
+		},
+		{
+			path:     "/proc/1234/fd/1",
+			expected: "",
+		},
+		{
+			path:     "",
+			expected: "",
+		},
+	}
+
+	for _, tc := range cases {
+		got := extractConvIDFromPath(tc.path)
+		if got != tc.expected {
+			t.Errorf("extractConvIDFromPath(%q) = %q; expected %q", tc.path, got, tc.expected)
+		}
+	}
+}
+
+func TestNewlySpawnedSession_StartupGracePeriodPreserved(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	db, err := InitDB(dbPath)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := NewServer(db)
+
+	tempUUID := "088ed517-ac0f-4b81-b387-16d401a0db58"
+	sess := &Session{
+		ID:          "antigravity:local:" + tempUUID,
+		Agent:       "antigravity",
+		Host:        "local",
+		NativeID:    tempUUID,
+		Cwd:         "/tmp/project",
+		State:       StateUnknown,
+		Activity:    "Spawning session...",
+		Managed:     true,
+		StartedAt:   time.Now(),
+		LastEventAt: time.Now(),
+	}
+	if err := db.SaveSession(sess); err != nil {
+		t.Fatalf("SaveSession failed: %v", err)
+	}
+
+	// Trigger scanObservedSessions with a bounded context
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	server.scanObservedSessions(ctx)
+
+	stored, err := db.GetSession(sess.ID)
+	if err != nil {
+		t.Fatalf("GetSession failed: %v", err)
+	}
+	if stored == nil {
+		t.Fatalf("Session was deleted!")
+	}
+	// Session was spawned within 15 seconds, so it must NOT be marked StateEnded
+	if stored.State == StateEnded {
+		t.Errorf("Newly spawned session in StateUnknown was prematurely marked StateEnded during startup grace period")
+	}
+}
+
+func TestAntigravityProcess_NoSessionID_DoesNotCreateProcSession(t *testing.T) {
+	// Verify that findAntigravitySessionForPID returns empty string for non-existent PID
+	fakePID := 99999997
+	sID := findAntigravitySessionForPID(context.Background(), fakePID)
+	if sID != "" {
+		t.Errorf("Expected empty sessionID for non-existent PID, got %q", sID)
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	db, err := InitDB(dbPath)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := NewServer(db)
+
+	// Seed a dead ghost proc session
+	ghostID := fmt.Sprintf("local:observed:proc-%d", fakePID)
+	ghostSess := &Session{
+		ID:       ghostID,
+		Agent:    "antigravity",
+		Host:     "local",
+		NativeID: fmt.Sprintf("proc-%d", fakePID),
+		Name:     "antigravity (proc-99999997)",
+		State:    StateWorking,
+		PID:      fakePID,
+	}
+	_ = db.SaveSession(ghostSess)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	server.scanObservedSessions(ctx)
+
+	// Verify dead ghost session was cleaned up
+	retrievedGhost, _ := db.GetSession(ghostID)
+	if retrievedGhost != nil {
+		t.Errorf("Expected ghost proc session %s to be pruned from DB, but still found: %+v", ghostID, retrievedGhost)
+	}
+}

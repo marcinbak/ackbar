@@ -5620,6 +5620,7 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 	knownIDs := make(map[string]*Session, len(existingSessions))
 	knownByPID := make(map[int]*Session, len(existingSessions))
 	knownByNativeID := make(map[string]*Session, len(existingSessions))
+	knownByTmux := make(map[string]*Session, len(existingSessions))
 
 	for _, sess := range existingSessions {
 		knownIDs[sess.ID] = sess
@@ -5628,6 +5629,9 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 		}
 		if sess.NativeID != "" {
 			knownByNativeID[sess.NativeID] = sess
+		}
+		if sess.TmuxName != "" {
+			knownByTmux[sess.TmuxName] = sess
 		}
 	}
 
@@ -5762,19 +5766,21 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 							if ppidVal == panePID {
 								cPid, _ := strconv.Atoi(fields[1])
 								cCmd := strings.ToLower(strings.Join(fields[2:], " "))
+								matchedAgent := ""
 								for _, p := range s.providers {
 									for _, pName := range p.ProcessNames() {
 										if strings.Contains(cCmd, pName) {
-											agent = p.Agent()
+											matchedAgent = p.Agent()
 											actualPID = cPid
 											break
 										}
 									}
-									if agent != "" {
+									if matchedAgent != "" {
+										agent = matchedAgent
 										break
 									}
 								}
-								if agent != "" {
+								if matchedAgent != "" {
 									break
 								}
 							}
@@ -5815,26 +5821,35 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 							targetNativeID = parts[len(parts)-1]
 						}
 					}
+					var existing *Session
 					if targetNativeID != "" && (agent != "claude-code" || IsUUID(targetNativeID)) {
-						var existing *Session
 						if ex, ok := knownIDs[fmt.Sprintf("%s:%s:%s", agent, hostName, targetNativeID)]; ok {
 							existing = ex
 						} else if ex, ok := knownByNativeID[targetNativeID]; ok {
 							existing = ex
 						}
-						if existing != nil && existing.State != StateEnded {
-							existing.State = StateEnded
-							existing.Activity = "Session ended (process exited)"
-							existing.PID = 0
-							existing.Blocked = nil
-							_ = s.db.SaveSession(existing)
-							s.broadcast(existing)
-						}
+					}
+					// Fallback to tmux lookup (handles adopted sessions where targetNativeID in tmuxName was tempUUID)
+					if existing == nil && tmuxName != "" {
+						existing = knownByTmux[tmuxName]
+					}
+
+					// Do not mark as ended if the session was just spawned and still initializing (within 15s)
+					if existing != nil && time.Since(existing.StartedAt) < 15*time.Second {
+						continue
+					}
+					if existing != nil && existing.State != StateEnded {
+						existing.State = StateEnded
+						existing.Activity = "Session ended (process exited)"
+						existing.PID = 0
+						existing.Blocked = nil
+						_ = s.db.SaveSession(existing)
+						s.broadcast(existing)
 					}
 					continue
 				}
 
-				// Try resolving the session UUID from tmuxName or ~/.claude/sessions/
+				// Try resolving the session UUID from tmuxName or ~/.claude/sessions/ or antigravity presence
 				targetNativeID := ""
 				if strings.HasPrefix(tmuxName, fmt.Sprintf("ackbar-%s-", agent)) {
 					targetNativeID = strings.TrimPrefix(tmuxName, fmt.Sprintf("ackbar-%s-", agent))
@@ -5853,6 +5868,48 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 						if sID != "" && IsUUID(sID) {
 							targetNativeID = sID
 						}
+					}
+				} else if agent == "antigravity" {
+					sID := findAntigravitySessionForPID(ctx, pid)
+					if sID != "" && IsUUID(sID) && sID != targetNativeID {
+						oldSessID := fmt.Sprintf("%s:%s:%s", agent, hostName, targetNativeID)
+						realSessID := fmt.Sprintf("%s:%s:%s", agent, hostName, sID)
+
+						var existingOld *Session
+						if ex, ok := knownIDs[oldSessID]; ok {
+							existingOld = ex
+						} else if ex, ok := knownByNativeID[targetNativeID]; ok {
+							existingOld = ex
+						}
+
+						if existingOld != nil {
+							_ = s.db.DeleteSession(existingOld.ID)
+							delete(knownIDs, existingOld.ID)
+							delete(knownByNativeID, existingOld.NativeID)
+
+							// Broadcast deletion tombstone for oldSessID so UI immediately evicts the temporary placeholder
+							tombstone := *existingOld
+							tombstone.ID = oldSessID
+							tombstone.NativeID = targetNativeID
+							tombstone.Deleted = true
+							tombstone.Activity = "Deleted"
+							s.broadcast(&tombstone)
+
+							if existingReal, ok := knownIDs[realSessID]; ok {
+								if existingOld.NodePath != "" && existingReal.NodePath == "" {
+									existingReal.NodePath = existingOld.NodePath
+								}
+							} else {
+								existingOld.ID = realSessID
+								existingOld.NativeID = sID
+								if title := ReadAntigravitySessionTitle(existingOld.Cwd, sID); title != "" && !isRawSessionName(title) {
+									existingOld.Name = title
+								}
+								knownIDs[realSessID] = existingOld
+								knownByNativeID[sID] = existingOld
+							}
+						}
+						targetNativeID = sID
 					}
 				}
 
@@ -5874,6 +5931,9 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 						existing = ex
 					}
 				}
+				if existing == nil && tmuxName != "" {
+					existing = knownByTmux[tmuxName]
+				}
 
 				if existing != nil {
 					// Adopt and elevate existing session in place (no duplicate!)
@@ -5881,6 +5941,7 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 					existing.PID = pid
 					if tmuxName != "" && tmuxName != "(deleted)" {
 						existing.TmuxName = tmuxName
+						knownByTmux[tmuxName] = existing
 					}
 					if existing.NodePath == "" && existing.Cwd != "" {
 						existing.NodePath = s.resolveSessionNodePath(existing.Cwd)
@@ -6172,20 +6233,23 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 						}
 					}
 				} else if agent == "antigravity" {
-					for i, arg := range cmdFields {
-						if (arg == "--conversation" || arg == "-c" || arg == "--conversation-id") && i+1 < len(cmdFields) {
-							cID := strings.TrimSpace(cmdFields[i+1])
-							if IsUUID(cID) {
-								sID = cID
-								break
+					sID = findAntigravitySessionForPID(ctx, pid)
+					if sID == "" {
+						for i, arg := range cmdFields {
+							if (arg == "--conversation" || arg == "-c" || arg == "--conversation-id") && i+1 < len(cmdFields) {
+								cID := strings.TrimSpace(cmdFields[i+1])
+								if IsUUID(cID) {
+									sID = cID
+									break
+								}
 							}
 						}
 					}
 				}
 
-				// For Claude Code, interactive sessions always initialize ~/.claude/sessions/<pid>.json with a UUID.
-				// If no session ID was resolved, it is either an unmanaged child process or transient command.
-				if agent == "claude-code" && sID == "" {
+				// For interactive agents, drop processes where no session ID / conversation UUID was resolved.
+				// This prevents transient commands, utility tools, and subagents from creating ghost proc-<pid> sessions.
+				if (agent == "claude-code" || agent == "antigravity") && sID == "" {
 					continue
 				}
 
@@ -6562,6 +6626,83 @@ func findClaudeSessionForPID(home string, pid int) (sessionID, name string) {
 		}
 	}
 	return "", ""
+}
+
+func extractConvIDFromPath(path string) string {
+	clean := filepath.ToSlash(path)
+	markers := []string{"/presence/", "/brain/", "/conversations/", "/annotations/"}
+	for _, m := range markers {
+		if idx := strings.Index(clean, m); idx != -1 {
+			sub := clean[idx+len(m):]
+			seg := sub
+			if slashIdx := strings.Index(sub, "/"); slashIdx != -1 {
+				seg = sub[:slashIdx]
+			}
+			seg = strings.TrimSuffix(seg, ".lock")
+			seg = strings.TrimSuffix(seg, ".db")
+			seg = strings.TrimSuffix(seg, ".pbtxt")
+			if IsUUID(seg) {
+				return seg
+			}
+		}
+	}
+	return ""
+}
+
+func findAntigravitySessionForPID(ctx context.Context, pid int) string {
+	return findAntigravitySessionForPIDWithDepth(ctx, pid, 0)
+}
+
+func findAntigravitySessionForPIDWithDepth(ctx context.Context, pid int, depth int) string {
+	if pid <= 0 || depth > 2 {
+		return ""
+	}
+
+	// 1. Linux: scan /proc/<pid>/fd/
+	fdDir := fmt.Sprintf("/proc/%d/fd", pid)
+	if entries, err := os.ReadDir(fdDir); err == nil {
+		for _, e := range entries {
+			link, err := os.Readlink(filepath.Join(fdDir, e.Name()))
+			if err == nil && link != "" {
+				if convID := extractConvIDFromPath(link); convID != "" {
+					return convID
+				}
+			}
+		}
+	}
+
+	// 2. Cross-platform / macOS / fallback: lsof -a -n -P -p <pid> -Fn
+	// Bounded with 1-second timeout to avoid any hang on blocked mounts
+	subCtx, cancel := context.WithTimeout(ctx, 1*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(subCtx, "lsof", "-a", "-n", "-P", "-p", strconv.Itoa(pid), "-Fn")
+	out, err := cmd.Output()
+	if err == nil || len(out) > 0 {
+		for _, line := range strings.Split(string(out), "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "n") {
+				path := line[1:]
+				if convID := extractConvIDFromPath(path); convID != "" {
+					return convID
+				}
+			}
+		}
+	}
+
+	// 3. Inspect child processes if wrapper process (capped at depth 2)
+	pgrepCmd := exec.CommandContext(subCtx, "pgrep", "-P", strconv.Itoa(pid))
+	if pgrepOut, pErr := pgrepCmd.Output(); pErr == nil {
+		for _, cpStr := range strings.Fields(string(pgrepOut)) {
+			if cp, err := strconv.Atoi(cpStr); err == nil && cp > 0 {
+				if sID := findAntigravitySessionForPIDWithDepth(ctx, cp, depth+1); sID != "" {
+					return sID
+				}
+			}
+		}
+	}
+
+	return ""
 }
 
 type TitleCacheEntry struct {
