@@ -287,6 +287,14 @@ function getAgentBadgeHtml(agent, iconOnly = false) {
   return `<span class="agent-icon-badge" title="Agent: ${agent}">${svg}${iconOnly ? '' : ' ' + agent}</span>`;
 }
 
+function formatAgentChatName(agent) {
+  const a = (agent || 'claude-code').toLowerCase();
+  if (a.includes('claude')) return 'Claude Code';
+  if (a.includes('antigravity') || a.includes('agy') || a.includes('gemini')) return 'Google Antigravity';
+  if (a.includes('codex') || a.includes('openai')) return 'OpenAI Codex';
+  return agent || 'Claude Code';
+}
+
 // DOM Elements
 
 function escapeHtml(str) {
@@ -555,6 +563,7 @@ export {
   getStateRawEmoji,
   getStateEmoji,
   getAgentBadgeHtml,
+  formatAgentChatName,
   escapeHtml,
   formatBytes,
   translatePathForHost,
