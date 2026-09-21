@@ -30,6 +30,7 @@ Detailed architectural and technical domain documentation is organized in the `d
 *   **Agent Providers & Token Limits:** See [docs/providers.md](file:///Users/dev4u/Work/Ackbar/docs/providers.md) for Claude Code, Antigravity, and Codex integrations, dynamic context window limits, and subagent filtering.
 *   **Session Naming & Caching:** See [docs/session-naming.md](file:///Users/dev4u/Work/Ackbar/docs/session-naming.md) for title resolution hierarchy and tiered caching rules.
 *   **Building & Testing:** See [docs/building.md](file:///Users/dev4u/Work/Ackbar/docs/building.md) for prerequisite packages, compilation steps, test suite execution, and local dev mode setup.
+*   **Development Workflow Manifest:** See [docs/dev-workflow.md](file:///Users/dev4u/Work/Ackbar/docs/dev-workflow.md) for automated verification gates, test tiers (T0-T3), skip rules, and review policies governed by the `dev-workflow` skill.
 *   **Distribution & Upgrades:** See [docs/distribution.md](file:///Users/dev4u/Work/Ackbar/docs/distribution.md) for Homebrew Tap setup, GoReleaser automation, and service management.
 *   **Voice Companion & Audio Briefings:** See [docs/voice-companion.md](file:///Users/dev4u/Work/Ackbar/docs/voice-companion.md) for speech architecture, conversational audio briefings, and hands-free plan approvals.
 *   **Backlog & Roadmap:** See [docs/backlog.md](file:///Users/dev4u/Work/Ackbar/docs/backlog.md) for the master feature roadmap and completed milestones.
@@ -68,62 +69,40 @@ Detailed architectural and technical domain documentation is organized in the `d
 2.  **CGO-Free SQLite:** Always maintain pure Go database drivers (`modernc.org/sqlite`).
 3.  **In-Place Attachment:** Attachment MUST suspend the Bubble Tea app using `tea.ExecProcess`, run `tmux attach` or `ssh -t host tmux attach`, and resume/redraw upon detach.
 4.  **No Direct Pushes to `main`:** Direct pushes to `main` are strictly blocked by GitHub branch protection. All code changes must be submitted via Pull Requests.
-5.  **Strict PR-Based Git Worktree Workflow:** All development, bug fixes, refactoring, and feature additions MUST follow the PR workflow outlined below. Only the repository owner (`marcinbak`) is authorized to merge PRs into `main`.
+5.  **Strict PR-Based Git Worktree Workflow:** All development, bug fixes, refactoring, and feature additions MUST follow the PR workflow governed by the `dev-workflow` skill and [docs/dev-workflow.md](file:///Users/dev4u/Work/Ackbar/docs/dev-workflow.md). Only the repository owner (`marcinbak`) is authorized to merge PRs into `main`.
 
 ---
 
-## 5. PR-Based Development Workflow
+## 5. Development Workflow & PR Guidelines
 
-Every developer and AI coding agent working on Project Ackbar must follow this standardized development lifecycle:
+All development on Project Ackbar is governed by the **`dev-workflow`** skill and project facts defined in [docs/dev-workflow.md](file:///Users/dev4u/Work/Ackbar/docs/dev-workflow.md).
+
+### Core Lifecycle
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                     DEVELOPMENT & PULL REQUEST LIFECYCLE                    │
 │                                                                             │
-│  1. Create Worktree ──► 2. Implement & Test ──► 3. Push & Create PR ──► 4. User Merges │
-│     .worktrees/<branch>    go test / flutter test   gh pr create            marcinbak    │
+│  1. Plan (N2) ──► 2. Worktree (N3) ──► 3. T0 Tests (N5) ──► 4. Review (N6) │
+│     Change brief    .worktrees/<branch>     go/flutter tests     Fan-out x3 │
+│                                                                             │
+│               ──► 5. Push & PR (N11) ──► 6. Merge & Clean (N14)             │
+│                      gh pr create            marcinbak (owner)              │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Step 1: Create an Isolated Git Worktree
-Never work directly in the root workspace or on the `main` branch. Always create an isolated git worktree with an appropriate branch prefix (`feat/`, `fix/`, `refactor/`, `docs/`):
-```bash
-git worktree add -b feat/<feature-name> .worktrees/<feature-name> main
-```
-
-### Step 2: Implement Changes & Run Test Suite
-Navigate to the worktree directory and make your changes. Verify that all automated tests pass before committing:
-```bash
-# In the worktree directory:
-# Run Go unit & integration test suites
-go test -v ./...
-
-# If mobile/Flutter files were modified:
-cd mobile && flutter test
-```
-
-### Step 3: Commit & Push Branch
-Commit changes with semantic commit messages and push the dedicated branch to `origin`:
-```bash
-git add -A
-git commit -m "feat(subsystem): brief summary of changes"
-git push -u origin feat/<feature-name>
-```
-
-### Step 4: Create a GitHub Pull Request (PR)
-Create a Pull Request against `main` using the GitHub CLI:
-```bash
-gh pr create \
-  --title "feat(subsystem): brief description" \
-  --body "### Summary of Changes\n- Detail 1\n- Detail 2\n\n### Verification\n- go test ./... passed\n- flutter test passed"
-```
-
-### Step 5: Clean Up Worktree After Merge
-Once the PR has been reviewed and merged by `@marcinbak`:
-```bash
-git checkout main
-git pull origin main
-git worktree remove .worktrees/<feature-name>
-git branch -d feat/<feature-name>
-```
+1. **Preflight & Planning (N0–N2):** Manifest facts are loaded from [docs/dev-workflow.md](file:///Users/dev4u/Work/Ackbar/docs/dev-workflow.md). Architecture plans require explicit user confirmation before any code is modified.
+2. **Isolated Git Worktrees (N3):** Never work directly in the root workspace or on the `main` branch. Always create an isolated git worktree branched from `origin/main`:
+   ```bash
+   git worktree add -b feat/<name> .worktrees/<name> origin/main
+   ```
+3. **Static Verification (N5):** Verify against the T0 gate set defined in [docs/dev-workflow.md](file:///Users/dev4u/Work/Ackbar/docs/dev-workflow.md) (`gofmt -l .`, `go test -v ./...`, and `flutter test` if mobile was touched).
+4. **Three-Way Review Fan-Out (N6–N8):** Automated reviews run across `context-reviewer`, `clean-reviewer`, and `security-reviewer` before creating a PR.
+5. **PR Submission & Branch Protection (N11–N14):** Push branch and create PR using `gh pr create`. Direct pushes to `main` are strictly blocked. Only the repository owner (`marcinbak`) is authorized to merge PRs.
+6. **Worktree Cleanup:** Once merged, pull `main` in the root workspace, remove the worktree, and delete the branch:
+   ```bash
+   git checkout main && git pull origin main
+   git worktree remove .worktrees/<name>
+   git branch -d <branch>
+   ```
 
