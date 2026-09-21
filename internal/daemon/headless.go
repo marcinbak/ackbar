@@ -19,7 +19,7 @@ import (
 
 var (
 	ErrTurnInProgress   = errors.New("a turn is already in progress for this session")
-	ErrAgentUnsupported = errors.New("headless engine is currently supported for claude-code")
+	ErrAgentUnsupported = errors.New("headless engine is currently supported for claude-code and antigravity")
 )
 
 // ChatStreamEvent represents a real-time event pushed over SSE to chat clients
@@ -53,6 +53,8 @@ func StripBilledCredentials(env []string) []string {
 	billedVars := map[string]bool{
 		"ANTHROPIC_API_KEY":    true,
 		"ANTHROPIC_AUTH_TOKEN": true,
+		"GEMINI_API_KEY":       true,
+		"GOOGLE_API_KEY":       true,
 	}
 	var clean []string
 	for _, e := range env {
@@ -377,9 +379,67 @@ func resolveClaudeBinary() (string, error) {
 	return "claude", nil
 }
 
+// resolveAntigravityBinary discovers the installed agy / antigravity CLI executable
+func resolveAntigravityBinary() (string, error) {
+	if path, err := exec.LookPath("agy"); err == nil {
+		return path, nil
+	}
+	if path, err := exec.LookPath("antigravity"); err == nil {
+		return path, nil
+	}
+
+	home, _ := os.UserHomeDir()
+	var candidates []string
+	if home != "" {
+		candidates = append(candidates,
+			filepath.Join(home, ".local", "bin", "agy"),
+			filepath.Join(home, ".local", "bin", "antigravity"),
+			filepath.Join(home, "bin", "agy"),
+			filepath.Join(home, "bin", "antigravity"),
+		)
+	}
+	candidates = append(candidates,
+		"/opt/homebrew/bin/agy",
+		"/opt/homebrew/bin/antigravity",
+		"/usr/local/bin/agy",
+		"/usr/local/bin/antigravity",
+		"/usr/bin/agy",
+		"/usr/bin/antigravity",
+	)
+
+	for _, c := range candidates {
+		if stat, err := os.Stat(c); err == nil && !stat.IsDir() {
+			return c, nil
+		}
+	}
+
+	return "agy", nil
+}
+
+// hasAntigravityConversation checks if a conversation already exists on disk for nativeID
+func hasAntigravityConversation(home, nativeID string) bool {
+	if home == "" || nativeID == "" || filepath.Base(nativeID) != nativeID {
+		return false
+	}
+	candidates := []string{
+		filepath.Join(home, ".gemini", "antigravity-cli", "conversations", nativeID+".db"),
+		filepath.Join(home, ".gemini", "antigravity-cli", "brain", nativeID),
+		filepath.Join(home, ".gemini", "antigravity", "brain", nativeID),
+		filepath.Join(home, ".antigravity", "brain", nativeID),
+	}
+	for _, c := range candidates {
+		if stat, err := os.Stat(c); err == nil {
+			if stat.IsDir() || stat.Size() > 0 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // RunTurn launches an asynchronous headless turn for the session.
 func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt string) error {
-	if sess.Agent != "claude-code" {
+	if sess.Agent != "claude-code" && sess.Agent != "antigravity" {
 		return ErrAgentUnsupported
 	}
 
@@ -389,58 +449,75 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 		return ErrTurnInProgress
 	}
 
-	bin, err := resolveClaudeBinary()
-	if err != nil {
-		h.mu.Unlock()
-		return fmt.Errorf("failed to locate claude binary: %w", err)
-	}
-
 	if sess.NativeID == "" {
 		sess.NativeID = generateUUID()
 	}
 
-	// Build arguments: if first turn vs follow-up turn
-	var args []string
 	home, _ := os.UserHomeDir()
-	claudeDir := filepath.Join(home, ".claude")
-	if sess.AccountID != "" && h.db != nil {
-		if acc, _ := h.db.GetAccount(sess.AccountID); acc != nil && acc.ConfigDir != "" {
-			cfgDir := acc.ConfigDir
-			if strings.HasPrefix(cfgDir, "~/") && home != "" {
-				cfgDir = filepath.Join(home, cfgDir[2:])
-			}
-			claudeDir = cfgDir
+	var bin string
+	var args []string
+
+	if sess.Agent == "antigravity" {
+		var err error
+		bin, err = resolveAntigravityBinary()
+		if err != nil {
+			h.mu.Unlock()
+			return fmt.Errorf("failed to locate agy binary: %w", err)
 		}
-	}
 
-	encodedCwd := encodeClaudeProjectDir(sess.Cwd)
-	transcriptFile := filepath.Join(claudeDir, "projects", encodedCwd, sess.NativeID+".jsonl")
+		if hasAntigravityConversation(home, sess.NativeID) || sess.FirstPrompt != "" || sess.LastPrompt != "" {
+			args = []string{"-p", prompt, "--output-format", "stream-json", "--dangerously-skip-permissions", "--conversation", sess.NativeID}
+		} else {
+			args = []string{"-p", prompt, "--output-format", "stream-json", "--dangerously-skip-permissions"}
+		}
+	} else {
+		var err error
+		bin, err = resolveClaudeBinary()
+		if err != nil {
+			h.mu.Unlock()
+			return fmt.Errorf("failed to locate claude binary: %w", err)
+		}
 
-	hasTranscript := fileExists(transcriptFile)
-	if !hasTranscript {
-		projectsDir := filepath.Join(claudeDir, "projects")
-		if entries, err := os.ReadDir(projectsDir); err == nil {
-			for _, e := range entries {
-				if e.IsDir() {
-					cand := filepath.Join(projectsDir, e.Name(), sess.NativeID+".jsonl")
-					if fileExists(cand) {
-						hasTranscript = true
-						break
+		claudeDir := filepath.Join(home, ".claude")
+		if sess.AccountID != "" && h.db != nil {
+			if acc, _ := h.db.GetAccount(sess.AccountID); acc != nil && acc.ConfigDir != "" {
+				cfgDir := acc.ConfigDir
+				if strings.HasPrefix(cfgDir, "~/") && home != "" {
+					cfgDir = filepath.Join(home, cfgDir[2:])
+				}
+				claudeDir = cfgDir
+			}
+		}
+
+		encodedCwd := encodeClaudeProjectDir(sess.Cwd)
+		transcriptFile := filepath.Join(claudeDir, "projects", encodedCwd, sess.NativeID+".jsonl")
+
+		hasTranscript := fileExists(transcriptFile)
+		if !hasTranscript {
+			projectsDir := filepath.Join(claudeDir, "projects")
+			if entries, err := os.ReadDir(projectsDir); err == nil {
+				for _, e := range entries {
+					if e.IsDir() {
+						cand := filepath.Join(projectsDir, e.Name(), sess.NativeID+".jsonl")
+						if fileExists(cand) {
+							hasTranscript = true
+							break
+						}
 					}
 				}
 			}
 		}
-	}
 
-	if !hasTranscript && fileExists(filepath.Join(claudeDir, "session-env", sess.NativeID)) {
-		hasTranscript = true
-	}
+		if !hasTranscript && fileExists(filepath.Join(claudeDir, "session-env", sess.NativeID)) {
+			hasTranscript = true
+		}
 
-	// If transcript or session-env exists, or if a previous turn ran in this session, resume conversation
-	if hasTranscript || sess.FirstPrompt != "" || sess.LastPrompt != "" {
-		args = []string{"-p", prompt, "--output-format", "stream-json", "--verbose", "--resume", sess.NativeID}
-	} else {
-		args = []string{"-p", prompt, "--output-format", "stream-json", "--verbose", "--session-id", sess.NativeID}
+		// If transcript or session-env exists, or if a previous turn ran in this session, resume conversation
+		if hasTranscript || sess.FirstPrompt != "" || sess.LastPrompt != "" {
+			args = []string{"-p", prompt, "--output-format", "stream-json", "--verbose", "--resume", sess.NativeID}
+		} else {
+			args = []string{"-p", prompt, "--output-format", "stream-json", "--verbose", "--session-id", sess.NativeID}
+		}
 	}
 
 	cmd := exec.CommandContext(ctx, bin, args...)
@@ -451,14 +528,22 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 
 	// Clean environment enforcing Subscription OAuth protection
 	cleanEnv := StripBilledCredentials(os.Environ())
-	if sess.AccountID != "" {
-		// If custom account directory is configured
-		if acc, _ := h.db.GetAccount(sess.AccountID); acc != nil && acc.ConfigDir != "" {
+	if sess.AccountID != "" && h.db != nil {
+		if acc, _ := h.db.GetAccount(sess.AccountID); acc != nil {
 			cfgDir := acc.ConfigDir
-			if strings.HasPrefix(cfgDir, "~/") && home != "" {
-				cfgDir = filepath.Join(home, cfgDir[2:])
+			if cfgDir != "" {
+				if strings.HasPrefix(cfgDir, "~/") && home != "" {
+					cfgDir = filepath.Join(home, cfgDir[2:])
+				}
+				if sess.Agent == "claude-code" {
+					cleanEnv = append(cleanEnv, "CLAUDE_CONFIG_DIR="+cfgDir)
+				} else if sess.Agent == "antigravity" {
+					cleanEnv = append(cleanEnv, "GEMINI_CLI_HOME="+cfgDir)
+				}
 			}
-			cleanEnv = append(cleanEnv, "CLAUDE_CONFIG_DIR="+cfgDir)
+			for k, v := range acc.Env {
+				cleanEnv = append(cleanEnv, fmt.Sprintf("%s=%s", k, v))
+			}
 		}
 	}
 	cmd.Env = cleanEnv
@@ -510,7 +595,7 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 			h.mu.Unlock()
 		}()
 
-		h.processStream(sess.ID, stdoutPipe)
+		h.processStream(sess.ID, stdoutPipe, sess)
 
 		waitErr := cmd.Wait()
 
@@ -547,13 +632,28 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 			h.EmitQueueUpdate(sess.ID)
 		}
 
-		// Update context percentage if metadata readable
-		if home != "" {
+		// Update title / context metadata
+		if sess.Agent == "antigravity" {
+			if sess.CustomTitle != "" {
+				sess.Name = sess.CustomTitle
+			} else if title := ReadAntigravitySessionTitle(sess.Cwd, sess.NativeID); title != "" && !isRawSessionName(title) {
+				sess.Name = title
+			} else if sess.Name == "" || isRawSessionName(sess.Name) {
+				sess.Name = TruncateTitle(prompt)
+			}
+		} else if home != "" {
 			meta := ReadClaudeSessionMeta(sess.Cwd, sess.NativeID)
 			if meta != nil {
 				sess.ContextPct = meta.ContextPct
 				if meta.CustomTitle != "" {
 					sess.CustomTitle = meta.CustomTitle
+				}
+			}
+			if sess.Name == "" || isRawSessionName(sess.Name) {
+				if sess.CustomTitle != "" {
+					sess.Name = sess.CustomTitle
+				} else {
+					sess.Name = TruncateTitle(prompt)
 				}
 			}
 		}
@@ -593,7 +693,12 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 	return nil
 }
 
-func (h *HeadlessRunner) processStream(sessionID string, r io.Reader) {
+func (h *HeadlessRunner) processStream(sessionID string, r io.Reader, optionalSess ...*Session) {
+	var sess *Session
+	if len(optionalSess) > 0 {
+		sess = optionalSess[0]
+	}
+
 	scanner := bufio.NewScanner(r)
 	buf := make([]byte, 1024*1024)
 	scanner.Buffer(buf, 10*1024*1024)
@@ -608,6 +713,110 @@ func (h *HeadlessRunner) processStream(sessionID string, r io.Reader) {
 
 		var raw map[string]interface{}
 		if err := json.Unmarshal([]byte(line), &raw); err != nil {
+			continue
+		}
+
+		// Check for Antigravity stream format: top-level "event" field
+		if agyEvt, ok := raw["event"].(string); ok && agyEvt != "" {
+			switch agyEvt {
+			case "init":
+				if convID, ok := raw["conversation_id"].(string); ok && convID != "" {
+					if sess != nil && sess.NativeID != convID {
+						sess.NativeID = convID
+						if h.db != nil {
+							_ = h.db.SaveSession(sess)
+						}
+						if h.broadcast != nil {
+							h.broadcast(sess)
+						}
+					}
+				}
+
+			case "step_update":
+				if su, ok := raw["step_update"].(map[string]interface{}); ok {
+					stepType, _ := su["step_type"].(string)
+					state, _ := su["state"].(string)
+
+					switch stepType {
+					case "agent_response":
+						if textDelta, ok := su["text_delta"].(string); ok && textDelta != "" {
+							h.Emit(sessionID, ChatStreamEvent{
+								SessionID: sessionID,
+								Type:      "text_delta",
+								Text:      textDelta,
+							})
+						}
+						if thoughtDelta, ok := su["thought_delta"].(string); ok && thoughtDelta != "" {
+							h.Emit(sessionID, ChatStreamEvent{
+								SessionID: sessionID,
+								Type:      "thought_delta",
+								Thinking:  thoughtDelta,
+							})
+						} else if thinking, ok := su["thinking"].(string); ok && thinking != "" {
+							h.Emit(sessionID, ChatStreamEvent{
+								SessionID: sessionID,
+								Type:      "thought_delta",
+								Thinking:  thinking,
+							})
+						}
+
+					case "tool":
+						toolName, _ := su["tool_name"].(string)
+						toolInfo, _ := su["tool_info"].(map[string]interface{})
+
+						if state == "ACTIVE" {
+							var toolInput any
+							if toolInfo != nil {
+								toolInput = toolInfo["parameters"]
+							}
+							h.Emit(sessionID, ChatStreamEvent{
+								SessionID: sessionID,
+								Type:      "tool_start",
+								ToolName:  toolName,
+								ToolInput: toolInput,
+							})
+						} else if state == "DONE" || state == "ERROR" {
+							toolOutput := ""
+							if toolInfo != nil {
+								if out, ok := toolInfo["output"].(string); ok {
+									toolOutput = out
+								}
+							}
+							h.Emit(sessionID, ChatStreamEvent{
+								SessionID:  sessionID,
+								Type:       "tool_result",
+								ToolName:   toolName,
+								ToolOutput: toolOutput,
+								IsError:    state == "ERROR",
+							})
+						}
+					}
+				}
+
+			case "result":
+				if res, ok := raw["result"].(map[string]interface{}); ok {
+					status, _ := res["status"].(string)
+					respText, _ := res["response"].(string)
+					if status == "ERROR" {
+						errText, _ := res["error"].(string)
+						if errText == "" {
+							errText = respText
+						}
+						h.Emit(sessionID, ChatStreamEvent{
+							SessionID: sessionID,
+							Type:      "error",
+							Text:      errText,
+							IsError:   true,
+						})
+					} else {
+						h.Emit(sessionID, ChatStreamEvent{
+							SessionID: sessionID,
+							Type:      "turn_complete",
+							Text:      respText,
+						})
+					}
+				}
+			}
 			continue
 		}
 

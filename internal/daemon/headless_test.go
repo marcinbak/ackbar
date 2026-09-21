@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,8 @@ func TestStripBilledCredentials(t *testing.T) {
 		"ANTHROPIC_API_KEY=sk-ant-api03-secretkey",
 		"USER=dev4u",
 		"ANTHROPIC_AUTH_TOKEN=auth_token_xyz",
+		"GEMINI_API_KEY=gemini-secret-key-123",
+		"GOOGLE_API_KEY=google-api-key-456",
 		"HOME=/Users/dev4u",
 		"CLAUDE_CONFIG_DIR=/Users/dev4u/.claude",
 	}
@@ -26,6 +29,12 @@ func TestStripBilledCredentials(t *testing.T) {
 		}
 		if strings.HasPrefix(v, "ANTHROPIC_AUTH_TOKEN=") {
 			t.Errorf("Expected ANTHROPIC_AUTH_TOKEN to be stripped, got %s", v)
+		}
+		if strings.HasPrefix(v, "GEMINI_API_KEY=") {
+			t.Errorf("Expected GEMINI_API_KEY to be stripped, got %s", v)
+		}
+		if strings.HasPrefix(v, "GOOGLE_API_KEY=") {
+			t.Errorf("Expected GOOGLE_API_KEY to be stripped, got %s", v)
 		}
 	}
 
@@ -390,5 +399,142 @@ func TestHeadlessRunner_PromptQueue(t *testing.T) {
 	items, paused = runner.GetPromptQueue(sessionID)
 	if len(items) != 0 || paused {
 		t.Errorf("Expected empty unpaused queue after ClearPromptQueue, got len=%d paused=%v", len(items), paused)
+	}
+}
+
+func TestHeadlessStreamParser_Antigravity(t *testing.T) {
+	runner := NewHeadlessRunner(nil, nil)
+	sessionID := "antigravity:local:temp-uuid-999"
+	sess := &Session{
+		ID:       sessionID,
+		Agent:    "antigravity",
+		NativeID: "temp-uuid-999",
+	}
+
+	ch, cleanup := runner.Subscribe(sessionID)
+	defer cleanup()
+
+	sampleOutput := `
+{"event":"init","conversation_id":"real-ag-conv-456","init":{"cwd":"/tmp","tools":["run_command"]}}
+{"event":"step_update","step_update":{"conversation_id":"real-ag-conv-456","step_index":0,"state":"DONE","step_type":"user_input"}}
+{"event":"step_update","step_update":{"conversation_id":"real-ag-conv-456","step_index":1,"state":"ACTIVE","step_type":"agent_response","text_delta":"Let me check."}}
+{"event":"step_update","step_update":{"conversation_id":"real-ag-conv-456","step_index":2,"state":"ACTIVE","step_type":"tool","tool_name":"run_command","tool_info":{"name":"run_command","parameters":{"CommandLine":"echo hello"}}}}
+{"event":"step_update","step_update":{"conversation_id":"real-ag-conv-456","step_index":2,"state":"DONE","step_type":"tool","tool_name":"run_command","tool_info":{"name":"run_command","parameters":{"CommandLine":"echo hello"},"output":"hello\n"}}}
+{"event":"step_update","step_update":{"conversation_id":"real-ag-conv-456","step_index":3,"state":"ACTIVE","step_type":"agent_response","text_delta":"Command returned hello."}}
+{"event":"result","result":{"conversation_id":"real-ag-conv-456","status":"SUCCESS","response":"Command returned hello."}}
+`
+
+	go func() {
+		runner.processStream(sessionID, strings.NewReader(sampleOutput), sess)
+	}()
+
+	var receivedEvents []ChatStreamEvent
+	for {
+		select {
+		case evt := <-ch:
+			receivedEvents = append(receivedEvents, evt)
+			if evt.Type == "turn_complete" {
+				goto done
+			}
+		case <-time.After(1 * time.Second):
+			t.Fatalf("Timeout waiting for events, received %d so far", len(receivedEvents))
+		}
+	}
+
+done:
+	if sess.NativeID != "real-ag-conv-456" {
+		t.Errorf("Expected sess.NativeID to be updated to 'real-ag-conv-456', got '%s'", sess.NativeID)
+	}
+
+	if len(receivedEvents) < 5 {
+		t.Fatalf("Expected at least 5 events, got %d", len(receivedEvents))
+	}
+
+	hasText1 := false
+	hasToolStart := false
+	hasToolResult := false
+	hasText2 := false
+	hasComplete := false
+
+	for _, evt := range receivedEvents {
+		switch evt.Type {
+		case "text_delta":
+			if evt.Text == "Let me check." {
+				hasText1 = true
+			}
+			if evt.Text == "Command returned hello." {
+				hasText2 = true
+			}
+		case "tool_start":
+			if evt.ToolName == "run_command" {
+				hasToolStart = true
+				if params, ok := evt.ToolInput.(map[string]interface{}); ok {
+					if cmd, _ := params["CommandLine"].(string); cmd != "echo hello" {
+						t.Errorf("Unexpected tool params: %+v", params)
+					}
+				}
+			}
+		case "tool_result":
+			if evt.ToolName == "run_command" && evt.ToolOutput == "hello\n" && !evt.IsError {
+				hasToolResult = true
+			}
+		case "turn_complete":
+			if evt.Text == "Command returned hello." {
+				hasComplete = true
+			}
+		}
+	}
+
+	if !hasText1 {
+		t.Errorf("Missing first text delta event")
+	}
+	if !hasToolStart {
+		t.Errorf("Missing tool_start event")
+	}
+	if !hasToolResult {
+		t.Errorf("Missing tool_result event")
+	}
+	if !hasText2 {
+		t.Errorf("Missing second text delta event")
+	}
+	if !hasComplete {
+		t.Errorf("Missing turn_complete event")
+	}
+}
+
+func TestHeadlessStreamParser_AntigravityError(t *testing.T) {
+	runner := NewHeadlessRunner(nil, nil)
+	sessionID := "antigravity:local:err-session"
+
+	ch, cleanup := runner.Subscribe(sessionID)
+	defer cleanup()
+
+	sampleOutput := `
+{"event":"result","result":{"conversation_id":"ag-err-1","status":"ERROR","error":"API rate limit exceeded"}}
+`
+	go func() {
+		runner.processStream(sessionID, strings.NewReader(sampleOutput))
+	}()
+
+	select {
+	case evt := <-ch:
+		if evt.Type != "error" || !evt.IsError || evt.Text != "API rate limit exceeded" {
+			t.Errorf("Unexpected event received: %+v", evt)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatalf("Timeout waiting for error event")
+	}
+}
+
+func TestHeadlessRunner_AgentValidation(t *testing.T) {
+	runner := NewHeadlessRunner(nil, nil)
+
+	unsupportedSess := &Session{
+		ID:    "unknown:local:123",
+		Agent: "some-unknown-agent",
+	}
+	err := runner.RunTurn(context.Background(), unsupportedSess, "hello")
+	if err != ErrAgentUnsupported {
+		t.Errorf("Expected ErrAgentUnsupported for unknown agent, got: %v", err)
 	}
 }

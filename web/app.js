@@ -427,6 +427,14 @@
     return `<span class="agent-icon-badge" title="Agent: ${agent}">${svg}${iconOnly ? '' : ' ' + agent}</span>`;
   }
 
+  function formatAgentChatName(agent) {
+    const a = (agent || 'claude-code').toLowerCase();
+    if (a.includes('claude')) return 'Claude Code';
+    if (a.includes('antigravity') || a.includes('agy') || a.includes('gemini')) return 'Google Antigravity';
+    if (a.includes('codex') || a.includes('openai')) return 'OpenAI Codex';
+    return agent || 'Claude Code';
+  }
+
   // DOM Elements
   const el = {
     appVersion: document.getElementById('appVersion'),
@@ -3754,7 +3762,7 @@
         toolsHtml = renderToolGroupHtml(msg.tool_calls);
       }
       const bodyHtml = renderMarkdown(msg.content || '');
-      const agentName = tabObj.session ? (tabObj.session.agent || 'Claude Code') : 'Claude Code';
+      const agentName = formatAgentChatName(tabObj.session ? tabObj.session.agent : null);
       msgEl.innerHTML = `
         <div class="chat-msg-header">
           <span class="chat-msg-role">🤖 ${escapeHtml(agentName)}</span>
@@ -3820,7 +3828,7 @@
       tabObj.chatSendBtn.title = 'Send Prompt (Enter)';
       tabObj.chatSendBtn.innerHTML = '➤';
       if (tabObj.chatInputEl) {
-        tabObj.chatInputEl.placeholder = `Ask ${escapeHtml(tabObj.session && tabObj.session.agent ? tabObj.session.agent : 'Claude Code')} anything... (Enter to send, Shift+Enter for newline)`;
+        tabObj.chatInputEl.placeholder = `Ask ${escapeHtml(formatAgentChatName(tabObj.session ? tabObj.session.agent : null))} anything... (Enter to send, Shift+Enter for newline)`;
       }
     }
   }
@@ -4121,7 +4129,7 @@
       assistantMsgEl.className = 'chat-msg assistant-msg in-flight';
       assistantMsgEl.innerHTML = `
         <div class="chat-msg-header">
-          <span class="chat-msg-role">🤖 ${escapeHtml(tabObj.session.agent || 'Claude Code')}</span>
+          <span class="chat-msg-role">🤖 ${escapeHtml(formatAgentChatName(tabObj.session ? tabObj.session.agent : null))}</span>
           <div class="chat-msg-actions">
             <span class="chat-msg-time">${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
             <button class="btn-copy-chat-msg" title="Copy message" type="button" aria-label="Copy message">
@@ -4160,7 +4168,7 @@
       errEl.className = 'chat-msg assistant-msg';
       errEl.innerHTML = `
         <div class="chat-msg-header">
-          <span class="chat-msg-role">🤖 ${escapeHtml(tabObj.session.agent || 'Claude Code')}</span>
+          <span class="chat-msg-role">🤖 ${escapeHtml(formatAgentChatName(tabObj.session ? tabObj.session.agent : null))}</span>
         </div>
         <div class="chat-msg-body markdown-body">
           <span style="color: var(--accent-red);">⚠️ Error sending prompt: ${escapeHtml(err.message)}</span>
@@ -4243,7 +4251,7 @@
         inFlight.className = 'chat-msg assistant-msg in-flight';
         inFlight.innerHTML = `
           <div class="chat-msg-header">
-            <span class="chat-msg-role">🤖 ${escapeHtml(tabObj.session.agent || 'Claude Code')}</span>
+            <span class="chat-msg-role">🤖 ${escapeHtml(formatAgentChatName(tabObj.session ? tabObj.session.agent : null))}</span>
             <div class="chat-msg-actions">
               <span class="chat-msg-time">${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
               <button class="btn-copy-chat-msg" title="Copy message" type="button" aria-label="Copy message">
