@@ -1,5 +1,7 @@
 // Markdown, Formatting & Host Utilities
 import { state, el } from './state.js';
+import { sortSessionsByInteraction } from './tree.js';
+import { showUploadToast } from './terminal.js';
 
 let markedConfigured = false;
 function configureMarked() {
@@ -536,6 +538,7 @@ function getFoldersForHost(targetHost) {
 
 export {
   markedConfigured,
+  openInVSCode,
   configureMarked,
   ensureExternalLinksTargetBlank,
   renderMarkdown,

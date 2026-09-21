@@ -6,19 +6,31 @@ import {
   formatBytes,
   formatRelativeTime,
   formatFullDateTime,
+  formatHostLabel,
   getStateEmoji,
   getStateText,
   getAgentBadgeHtml,
   getSessionBaseUrl,
-  isLocalHost
+  getSelfHostName,
+  isLocalHost,
+  openInVSCode
 } from './utils.js';
 import { fetchSessions, updateSettings } from './api.js';
-import { openHandoverModal } from './modals.js';
+import { openHandoverModal, showProjectDocsModal } from './modals.js';
 import {
   activateTab,
   closeTab,
-  openSessionInTab
+  openSessionInTab,
+  handleTabOverflow
 } from './tabs.js';
+import { showTabContextMenu } from './context-menu.js';
+import { renderTree } from './tree.js';
+import {
+  attachChatMessageListeners,
+  linkifyChatFiles,
+  attachCodeBlockCopyButtons
+} from './chat.js';
+
 
 function openSessionDetailsTab(session) {
   if (!session) return;

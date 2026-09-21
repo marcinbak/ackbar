@@ -3,22 +3,34 @@ import { state, el } from './state.js';
 import {
   escapeHtml,
   getStateEmoji,
-  getAgentBadgeHtml
+  getAgentBadgeHtml,
+  formatFullDateTime,
+  formatRelativeTime,
+  formatHostLabel,
+  getSessionBaseUrl,
+  getSelfHostName
 } from './utils.js';
 import {
   connectTerminalWebSocket,
   sendTerminalResize,
   reconnectTerminalTab,
-  markSessionAsRead
+  markSessionAsRead,
+  showUploadToast,
+  uploadAndAttachFile
 } from './terminal.js';
 import {
   setupChatInterface,
-  disconnectChatStream
+  disconnectChatStream,
+  connectChatStream,
+  loadChatTranscript
 } from './chat.js';
 import { openSessionDetailsTab } from './details.js';
 import { updateStatusbar, resetStatusbar } from './statusbar.js';
 import { showTabContextMenu } from './context-menu.js';
 import { fetchSessions } from './api.js';
+import { toggleCommandPalette } from './palette.js';
+import { renderTree } from './tree.js';
+
 
 function setTabViewMode(tabId, mode) {
   const tab = state.openTabs.get(tabId);

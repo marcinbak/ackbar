@@ -5,6 +5,7 @@ import {
   getSessionBaseUrl,
   isLocalHost
 } from './utils.js';
+import { isSessionDone } from './tree.js';
 import {
   openSessionInTab,
   handleTakeWheel,
@@ -28,6 +29,14 @@ import {
   fetchSessions,
   setSessionDoneState
 } from './api.js';
+import { showUploadToast } from './terminal.js';
+import {
+  openChatFileInApp,
+  CHAT_IMAGE_EXTS,
+  getChatFileContentUrl,
+  APP_ICONS
+} from './chat.js';
+
 
 let activeFileMenuPill = null;
 let fileContextMenuEl = null;

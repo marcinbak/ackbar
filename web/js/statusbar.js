@@ -1,10 +1,13 @@
 // Status Bar Controller
-import { el } from './state.js';
+import { state, el } from './state.js';
 import {
+  formatHostLabel,
+  formatFullDateTime,
+  formatRelativeTime,
   getStateEmoji,
-  getStateText,
-  formatRelativeTime
+  getStateText
 } from './utils.js';
+
 
 function updateStatusbar(session) {
   if (!session) return;

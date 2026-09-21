@@ -2,12 +2,20 @@
 import { state } from './state.js';
 import { getAuthToken } from './auth.js';
 import {
+  getSelfHostName,
+  isLocalHost
+} from './utils.js';
+import {
   fetchSessions,
   fetchHosts,
-  fetchTreeNodes
+  fetchTreeNodes,
+  deduplicateSessions,
+  isRawSessionName
 } from './api.js';
 import { renderTree } from './tree.js';
-import { checkAndReconnectActiveTabs } from './tabs.js';
+import { closeTab, updateOpenTabsState, checkAndReconnectActiveTabs } from './tabs.js';
+import { renderSubagentsBar, fetchRunningSubagents } from './chat.js';
+
 
 const activeEventSources = new Map();
 

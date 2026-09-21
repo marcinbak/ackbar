@@ -1,13 +1,18 @@
 // Command Palette & Dispatcher Launcher
 import { state, el } from './state.js';
-import { escapeHtml, getStateEmoji } from './utils.js';
+import { escapeHtml, getStateEmoji, getStateText, formatHostLabel } from './utils.js';
 import { openSessionInTab, activateTab } from './tabs.js';
 import {
   showNewSessionModal,
   showAddHostModal,
   showSettingsModal,
-  handleSpawnNewSession
+  handleSpawnNewSession,
+  showNewGroupModal,
+  showHooksDashboardModal
 } from './modals.js';
+import { fetchSessions } from './api.js';
+import { renderTree } from './tree.js';
+
 
 function toggleCommandPalette() {
   if (!el.cmdPaletteOverlay) return;
@@ -194,12 +199,7 @@ async function executeDispatchLaunch() {
     if (newSess) {
       openSessionInTab(newSess);
     } else {
-      openTab(`session-${spawnedSessId}`, name, `
-        <div class="terminal-placeholder">
-          <div class="terminal-spinner"></div>
-          <div>Attaching to spawned ${agent} session...</div>
-        </div>
-      `, true, { id: spawnedSessId, host, agent, native_id: spawnedNativeId, name });
+      openSessionInTab({ id: spawnedSessId, host, agent, native_id: spawnedNativeId, name, cwd, managed: true, engine_type: 'headless', state: 3 });
     }
   } catch (err) {
     alert(`Failed to launch session: ${err.message}`);
@@ -249,7 +249,7 @@ function renderCommandPaletteResults(query) {
                         (sess.agent && sess.agent.toLowerCase().includes(q));
     if (match) {
       state.cmdPaletteItems.push({
-        title: `${getStateEmojiText(sess)} ${sess.name || sess.agent}`,
+        title: `${getStateEmoji(sess)} ${sess.name || sess.agent}`,
         subtitle: `${sess.host ? '@' + formatHostLabel(sess.host) : '@local'}${sess.git_branch ? ' • ⎇ ' + sess.git_branch : ''} • ${sess.cwd || ''}`,
         action: () => openSessionInTab(sess)
       });

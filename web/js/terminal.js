@@ -1,8 +1,17 @@
 // xterm.js Terminal Tab & WebSocket PTY Connection
 import { state, el } from './state.js';
 import { getAuthToken } from './auth.js';
-import { getSessionBaseUrl, escapeHtml } from './utils.js';
+import {
+  getSessionBaseUrl,
+  escapeHtml,
+  formatBytes,
+  isLocalHost,
+  getSelfHostName
+} from './utils.js';
 import { fetchSessions } from './api.js';
+import { closeTab } from './tabs.js';
+import { renderTree } from './tree.js';
+
 
 function connectTerminalWebSocket(tab, tabId, term, fitAddon, session) {
   if (session && session.engine_type === 'headless' && !session.tmux_name) {

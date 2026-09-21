@@ -1,7 +1,8 @@
 // Modal Dialogs (New Session, Hosts, Groups, Settings, Handover)
-import { state, el } from './state.js';
+import { state, el, saveCollapsedGroups } from './state.js';
 import {
   escapeHtml,
+  formatBytes,
   formatHostLabel,
   isLocalHost,
   translatePathForHost,
@@ -9,7 +10,9 @@ import {
   getGroupPreferences,
   recordGroupSpawn,
   renderMarkdown,
-  ensureExternalLinksTargetBlank
+  ensureExternalLinksTargetBlank,
+  getSelfHostName,
+  getSelfDisplayName
 } from './utils.js';
 import {
   fetchHosts,
@@ -19,10 +22,13 @@ import {
   updateSettings,
   handleReconnectHost,
   handleUpdateHost,
-  lastReconnectAttempt
+  lastReconnectAttempt,
+  moveSessionToGroup
 } from './api.js';
 import { renderTree } from './tree.js';
 import { openSessionInTab, setTabViewMode } from './tabs.js';
+import { openDocViewerTab } from './details.js';
+
 
 function showSettingsModal() {
   const s = state.settings || {
@@ -879,7 +885,7 @@ async function handleSpawnNewSession() {
       openSessionInTab({
         id: spawnedSessId,
         native_id: spawnedNativeId,
-        name: sessionTitle || agent,
+        name: agent,
         agent: agent,
         host: host,
         cwd: cwd,

@@ -6,7 +6,8 @@ import {
   renderMarkdown,
   formatRelativeTime,
   ensureDoubleNewlineSeparation,
-  getSessionBaseUrl
+  getSessionBaseUrl,
+  openInVSCode
 } from './utils.js';
 import { openSessionDetailsTab } from './details.js';
 import { openHandoverModal } from './modals.js';
@@ -15,6 +16,14 @@ import {
   hideChatFileContextMenu,
   showChatFileContextMenu
 } from './context-menu.js';
+import { handleTakeWheel } from './tabs.js';
+import {
+  addPendingAttachment,
+  renderPendingAttachments,
+  showUploadToast
+} from './terminal.js';
+import { fetchSessions } from './api.js';
+
 
 function setupChatInterface(tabObj, chatViewEl, session) {
   const isTmux = session.engine_type === 'tmux';

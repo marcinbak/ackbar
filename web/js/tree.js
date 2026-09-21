@@ -8,10 +8,14 @@ import {
 import {
   escapeHtml,
   formatRelativeTime,
+  formatFullDateTime,
+  formatHostLabel,
   getStateEmoji,
   getStateText,
   getAgentBadgeHtml,
-  findHostRecord
+  findHostRecord,
+  isLocalHost,
+  getSelfHostName
 } from './utils.js';
 import {
   fetchSessions,
@@ -23,7 +27,8 @@ import {
   showContextMenu,
   showGroupContextMenu
 } from './context-menu.js';
-import { showNewSessionModal } from './modals.js';
+import { showNewSessionModal, openHandoverModal } from './modals.js';
+
 
 function getSessionTimestamp(s) {
   if (!s) return 0;

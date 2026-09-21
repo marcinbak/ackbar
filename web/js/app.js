@@ -1,11 +1,15 @@
 // Ackbar GUI Application Main Entrypoint (ES Module)
-import { state, el } from './state.js';
+import { state, el, saveCollapsedGroups } from './state.js';
 import './auth.js';
 import {
   configureMarked,
   escapeHtml,
   getGroupPreferences,
-  recordGroupSpawn
+  recordGroupSpawn,
+  openInVSCode,
+  isLocalHost,
+  getSelfHostName,
+  formatHostLabel
 } from './utils.js';
 import {
   fetchVersion,
@@ -21,7 +25,8 @@ import { connectSSE } from './sse.js';
 import {
   renderTree,
   getSessionTimestamp,
-  sortSessionsByInteraction
+  sortSessionsByInteraction,
+  isSessionDone
 } from './tree.js';
 import {
   openSessionInTab,
@@ -33,13 +38,18 @@ import {
   checkAndReconnectActiveTabs,
   restorePersistedTabs,
   handleTabOverflow,
-  setTabViewMode
+  setTabViewMode,
+  handleTakeWheel
 } from './tabs.js';
 import {
   sendTerminalResize,
   reconnectTerminalTab
 } from './terminal.js';
-import { openSessionDetailsTab } from './details.js';
+import {
+  openSessionDetailsTab,
+  openTranscriptViewerTab,
+  openDocViewerTab
+} from './details.js';
 import {
   toggleCommandPalette,
   renderCommandPaletteResults,
@@ -67,9 +77,12 @@ import {
   submitHandover,
   showNewGroupModal,
   showAddHostModal,
-  showEditHostModal
+  showEditHostModal,
+  showHooksDashboardModal
 } from './modals.js';
 import { updateStatusbar, resetStatusbar } from './statusbar.js';
+import { copyTextToClipboard } from './chat.js';
+
 
 async function init() {
   setupEventListeners();

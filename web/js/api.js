@@ -2,12 +2,16 @@
 import { state, el } from './state.js';
 import {
   getSelfHostName,
+  getSelfDisplayName,
   isLocalHost,
   findHostRecord,
   formatHostLabel,
-  escapeHtml
+  escapeHtml,
+  recordGroupSpawn
 } from './utils.js';
-import { renderTree } from './tree.js';
+import { renderTree, getSessionTimestamp, sortSessionsByInteraction } from './tree.js';
+import { updateOpenTabsState } from './tabs.js';
+import { showModal, hideModal, showHostSummaryModal } from './modals.js';
 
 // Fetch Providers
 async function fetchProviders() {
