@@ -1532,7 +1532,7 @@ function showInStreamActivity(tabObj, { icon, text, badge }) {
     el.className = 'chat-instream-activity';
     el.innerHTML = `
       <span class="chat-activity-spinner"></span>
-      <span class="chat-activity-icon">${icon || '⚡'}</span>
+      <span class="chat-activity-icon">${escapeHtml(icon || '⚡')}</span>
       <span class="chat-activity-text">${escapeHtml(text || 'Working...')}</span>
       <span class="chat-activity-badge" style="${badge ? '' : 'display: none;'}">${escapeHtml(badge || '')}</span>
       <span class="chat-activity-timer">(0s)</span>
@@ -1601,7 +1601,7 @@ function renderBufferedToolsIntoSlot(slot, tools) {
   groupCard.dataset.toolCalls = JSON.stringify(tools.map(t => ({ name: t.name, detail: t.detail })));
   groupCard.innerHTML = `
     <summary>
-      <span class="tool-group-title">⚡ ${escapeHtml(summaryLabel)}</span>
+      <span class="tool-group-title">${escapeHtml(summaryLabel)}</span>
       <span class="tool-group-pill">${tools.length} ${tools.length === 1 ? 'action' : 'actions'}</span>
     </summary>
     <div class="chat-tool-content chat-tool-group-content">
@@ -1788,11 +1788,17 @@ async function sendChatPrompt(tabObj, forcedPromptText) {
       attachments: sentAttachments,
       timestamp: new Date().toISOString()
     });
-    appendChatMessage(tabObj, {
-      role: 'assistant',
-      content: `⚠️ Error sending prompt: ${err.message}`,
-      timestamp: new Date().toISOString()
-    });
+    const errEl = document.createElement('div');
+    errEl.className = 'chat-msg assistant-msg';
+    errEl.innerHTML = `
+      <div class="chat-msg-header">
+        <span class="chat-msg-role">🤖 ${escapeHtml(formatAgentChatName(tabObj.session ? tabObj.session.agent : null))}</span>
+      </div>
+      <div class="chat-msg-body markdown-body">
+        <span style="color: var(--accent-red);">⚠️ Error sending prompt: ${escapeHtml(err.message)}</span>
+      </div>
+    `;
+    tabObj.chatMessagesEl.appendChild(errEl);
     resetChatComposer(tabObj);
     tabObj.activeTurnMsgEl = null;
     tabObj.activeTurnBuffer = '';
@@ -2215,20 +2221,18 @@ function handleChatStreamEvent(tabObj, evt) {
       renderSubagentsBar(tabObj);
       hideInStreamActivity(tabObj);
 
-      if (!tabObj.activeTurnMsgEl) {
-        appendChatMessage(tabObj, {
-          role: 'assistant',
-          content: `⚠️ ${evt.text || 'Turn error'}`,
-          timestamp: new Date().toISOString()
-        });
-      } else {
-        tabObj.activeTurnMsgEl.classList.remove('in-flight');
-        const cursor = tabObj.activeTurnMsgEl.querySelector('.chat-streaming-cursor');
+      const activeMsg = ensureActiveAssistantMessage(tabObj);
+      if (activeMsg) {
+        activeMsg.classList.remove('in-flight');
+        const cursor = activeMsg.querySelector('.chat-streaming-cursor');
         if (cursor) cursor.remove();
-        const bodyEl = tabObj.activeTurnMsgEl.querySelector('.chat-msg-body');
+        const bodyEl = activeMsg.querySelector('.chat-msg-body');
         if (bodyEl) {
-          bodyEl.innerHTML += `<div style="margin-top: 8px; color: var(--accent-red);">⚠️ ${escapeHtml(evt.text || 'Turn error')}</div>`;
+          bodyEl.innerHTML += `<div style="margin-top: 8px; color: var(--accent-red);">⚠️ Error: ${escapeHtml(evt.text || 'Turn error')}</div>`;
         }
+        attachCodeBlockCopyButtons(activeMsg);
+        attachChatMessageListeners(activeMsg, tabObj.activeTurnBuffer);
+        linkifyChatFiles(activeMsg, tabObj.session);
       }
       resetChatComposer(tabObj);
       tabObj.activeTurnMsgEl = null;
