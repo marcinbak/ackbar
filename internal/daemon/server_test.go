@@ -3098,3 +3098,116 @@ func TestAntigravityProcess_NoSessionID_DoesNotCreateProcSession(t *testing.T) {
 		t.Errorf("Expected ghost proc session %s to be pruned from DB, but still found: %+v", ghostID, retrievedGhost)
 	}
 }
+
+func TestParsePbtxtTitle(t *testing.T) {
+	cases := []struct {
+		input    string
+		expected string
+	}{
+		{`title:"Preparing for MacMini setup"`, "Preparing for MacMini setup"},
+		{`title: "Preparing for MacMini setup"`, "Preparing for MacMini setup"},
+		{`  title:   "Indented with spaces"  `, "Indented with spaces"},
+		{`last_user_view_time:{seconds:123}`, ""},
+		{``, ""},
+	}
+	for _, c := range cases {
+		got := parsePbtxtTitle(c.input)
+		if got != c.expected {
+			t.Errorf("parsePbtxtTitle(%q) = %q; want %q", c.input, got, c.expected)
+		}
+	}
+}
+
+func TestAntigravitySession_RenameAnnotationUpgradesName(t *testing.T) {
+	tempHome := t.TempDir()
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempHome)
+	defer os.Setenv("HOME", origHome)
+
+	annoDir := filepath.Join(tempHome, ".gemini", "antigravity-cli", "annotations")
+	if err := os.MkdirAll(annoDir, 0755); err != nil {
+		t.Fatalf("Failed to create annoDir: %v", err)
+	}
+
+	convUUID := "b06d1787-6f62-4515-9a05-acea8c7958a6"
+	annoFile := filepath.Join(annoDir, convUUID+".pbtxt")
+	if err := os.WriteFile(annoFile, []byte(`title:"Preparing for MacMini setup"`), 0644); err != nil {
+		t.Fatalf("Failed to write annoFile: %v", err)
+	}
+
+	// 1. Verify ReadAntigravityAnnotationTitle reads the title correctly
+	gotTitle := ReadAntigravityAnnotationTitle(convUUID)
+	if gotTitle != "Preparing for MacMini setup" {
+		t.Fatalf("Expected ReadAntigravityAnnotationTitle to return 'Preparing for MacMini setup', got %q", gotTitle)
+	}
+
+	// 2. Set up DB and server
+	dbPath := filepath.Join(t.TempDir(), "test_rename.db")
+	db, err := InitDB(dbPath)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := NewServer(db)
+
+	// Create dummy brain directory with transcript so Step 4 disk scan finds it
+	brainDir := filepath.Join(tempHome, ".gemini", "antigravity-cli", "brain", convUUID, ".system_generated", "logs")
+	if err := os.MkdirAll(brainDir, 0755); err != nil {
+		t.Fatalf("Failed to create brainDir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(brainDir, "transcript.jsonl"), []byte(`{"type":"USER_INPUT","content":"Initial prompt"}`+"\n"), 0644); err != nil {
+		t.Fatalf("Failed to write transcript: %v", err)
+	}
+
+	sessID := fmt.Sprintf("antigravity:local:%s", convUUID)
+	existing := &Session{
+		ID:          sessID,
+		Agent:       "antigravity",
+		Host:        "local",
+		NativeID:    convUUID,
+		Name:        "Automating New Mac Setup", // Non-raw initial name
+		State:       StateEnded,
+		StartedAt:   time.Now(),
+		LastEventAt: time.Now(),
+	}
+	if err := db.SaveSession(existing); err != nil {
+		t.Fatalf("Failed to save session: %v", err)
+	}
+
+	// Run disk scan
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	server.scanObservedSessions(ctx)
+
+	// Verify name was upgraded from annotation
+	updated, err := db.GetSession(sessID)
+	if err != nil {
+		t.Fatalf("GetSession failed: %v", err)
+	}
+	if updated == nil {
+		t.Fatalf("Session %s not found in DB", sessID)
+	}
+	if updated.Name != "Preparing for MacMini setup" {
+		t.Errorf("Expected session Name to be upgraded to 'Preparing for MacMini setup', got %q", updated.Name)
+	}
+
+	// 3. Verify user's CustomTitle is NOT overwritten by subsequent annotation
+	updated.CustomTitle = "My Custom Overridden Title"
+	updated.Name = "My Custom Overridden Title"
+	if err := db.SaveSession(updated); err != nil {
+		t.Fatalf("SaveSession failed: %v", err)
+	}
+	if err := os.WriteFile(annoFile, []byte(`title:"A Different Title"`), 0644); err != nil {
+		t.Fatalf("Failed to write annoFile: %v", err)
+	}
+
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel2()
+	server.scanObservedSessions(ctx2)
+
+	reChecked, _ := db.GetSession(sessID)
+	if reChecked.Name != "My Custom Overridden Title" {
+		t.Errorf("Expected CustomTitle to be preserved, got %q", reChecked.Name)
+	}
+}

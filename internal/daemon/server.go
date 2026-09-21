@@ -592,6 +592,10 @@ func (s *Server) processHookEventWithAccount(p Provider, urlEventName string, he
 				}
 			}
 		}
+	} else if sess.Agent == "antigravity" && sess.CustomTitle == "" {
+		if anno := ReadAntigravityAnnotationTitle(sess.NativeID); anno != "" && anno != sess.Name {
+			sess.Name = anno
+		}
 	}
 	isStateChange := sess.State != event.State
 	prevState := sess.State
@@ -5899,11 +5903,18 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 								if existingOld.NodePath != "" && existingReal.NodePath == "" {
 									existingReal.NodePath = existingOld.NodePath
 								}
+								if existingReal.CustomTitle == "" {
+									if title := ReadAntigravitySessionTitle(existingReal.Cwd, sID); title != "" && !isRawSessionName(title) {
+										existingReal.Name = title
+									}
+								}
 							} else {
 								existingOld.ID = realSessID
 								existingOld.NativeID = sID
-								if title := ReadAntigravitySessionTitle(existingOld.Cwd, sID); title != "" && !isRawSessionName(title) {
-									existingOld.Name = title
+								if existingOld.CustomTitle == "" {
+									if title := ReadAntigravitySessionTitle(existingOld.Cwd, sID); title != "" && !isRawSessionName(title) {
+										existingOld.Name = title
+									}
 								}
 								knownIDs[realSessID] = existingOld
 								knownByNativeID[sID] = existingOld
@@ -5952,6 +5963,15 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 					if existing.State == StateEnded || existing.State == StateUnknown {
 						existing.State = StateIdle
 						existing.Activity = "Awaiting user prompt"
+					}
+					if agent == "antigravity" && existing.CustomTitle == "" {
+						if isRawSessionName(existing.Name) {
+							if title := ReadAntigravitySessionTitle(existing.Cwd, existing.NativeID); title != "" && !isRawSessionName(title) {
+								existing.Name = title
+							}
+						} else if anno := ReadAntigravityAnnotationTitle(existing.NativeID); anno != "" && anno != existing.Name {
+							existing.Name = anno
+						}
 					}
 					_ = s.db.SaveSession(existing)
 					knownIDs[existing.ID] = existing
@@ -6552,9 +6572,14 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 							s.broadcast(newSess)
 						} else {
 							changed := false
-							if isRawSessionName(existing.Name) {
-								if title := ReadAntigravitySessionTitle(existing.Cwd, convID); title != "" && !isRawSessionName(title) {
-									existing.Name = title
+							if existing.CustomTitle == "" {
+								if isRawSessionName(existing.Name) {
+									if title := ReadAntigravitySessionTitle(existing.Cwd, convID); title != "" && !isRawSessionName(title) {
+										existing.Name = title
+										changed = true
+									}
+								} else if anno := ReadAntigravityAnnotationTitle(convID); anno != "" && anno != existing.Name {
+									existing.Name = anno
 									changed = true
 								}
 							}
@@ -6988,12 +7013,44 @@ func ReadClaudeSessionMeta(cwd, sessionID string) *SessionMeta {
 	return metaInfo
 }
 
-func ReadAntigravitySessionTitle(cwd, sessionID string) string {
+func parsePbtxtTitle(content string) string {
+	re := regexp.MustCompile(`title\s*:\s*"([^"]+)"`)
+	m := re.FindStringSubmatch(content)
+	if len(m) > 1 {
+		return strings.TrimSpace(m[1])
+	}
+	return ""
+}
+
+func ReadAntigravityAnnotationTitle(sessionID string) string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""
 	}
+	targetID := sessionID
+	if strings.HasPrefix(sessionID, "proc-") {
+		return ""
+	}
+	if targetID == "" {
+		return ""
+	}
+	annotationDirs := []string{
+		filepath.Join(home, ".gemini", "antigravity", "annotations"),
+		filepath.Join(home, ".gemini", "antigravity-cli", "annotations"),
+		filepath.Join(home, ".antigravity", "annotations"),
+	}
+	for _, aDir := range annotationDirs {
+		annoPath := filepath.Join(aDir, targetID+".pbtxt")
+		if data, err := os.ReadFile(annoPath); err == nil {
+			if title := parsePbtxtTitle(string(data)); title != "" {
+				return title
+			}
+		}
+	}
+	return ""
+}
 
+func ReadAntigravitySessionTitle(cwd, sessionID string) string {
 	targetID := sessionID
 	if strings.HasPrefix(sessionID, "proc-") {
 		targetID = ""
@@ -7004,25 +7061,13 @@ func ReadAntigravitySessionTitle(cwd, sessionID string) string {
 	}
 
 	// 1. Direct Lookup: Check annotations in all Antigravity dirs (.gemini/antigravity, .gemini/antigravity-cli, .antigravity)
-	annotationDirs := []string{
-		filepath.Join(home, ".gemini", "antigravity", "annotations"),
-		filepath.Join(home, ".gemini", "antigravity-cli", "annotations"),
-		filepath.Join(home, ".antigravity", "annotations"),
+	if annoTitle := ReadAntigravityAnnotationTitle(targetID); annoTitle != "" {
+		return annoTitle
 	}
-	for _, aDir := range annotationDirs {
-		annoPath := filepath.Join(aDir, targetID+".pbtxt")
-		if data, err := os.ReadFile(annoPath); err == nil {
-			content := string(data)
-			if idx := strings.Index(content, `title:"`); idx != -1 {
-				sub := content[idx+len(`title:"`):]
-				if endIdx := strings.Index(sub, `"`); endIdx != -1 {
-					t := strings.TrimSpace(sub[:endIdx])
-					if t != "" {
-						return t
-					}
-				}
-			}
-		}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
 	}
 
 	// 2. Check conversation_metadata.json cache
