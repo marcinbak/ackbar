@@ -2428,6 +2428,17 @@ func TestIsAntigravitySubagent_ParentSubagentRegistry(t *testing.T) {
 	if isAntigravitySubagent(tempHome, parentID) {
 		t.Fatalf("expected parentID NOT to be recognized as subagent")
 	}
+
+	// Test precomputed map support
+	precomputed := map[string]bool{
+		strings.ToLower(childID): true,
+	}
+	if !isAntigravitySubagent(tempHome, childID, precomputed) {
+		t.Fatalf("expected childID to be recognized via precomputed map")
+	}
+	if isAntigravitySubagent(tempHome, parentID, precomputed) {
+		t.Fatalf("expected parentID NOT to be recognized via precomputed map")
+	}
 }
 
 func TestDatabaseSanitation_AntigravitySubagentsPurged(t *testing.T) {
@@ -2445,14 +2456,20 @@ func TestDatabaseSanitation_AntigravitySubagentsPurged(t *testing.T) {
 
 	parentID := "11111111-aaaa-bbbb-cccc-111111111111"
 	subagentID := "33333333-cccc-dddd-eeee-333333333333"
+	activeSubID := "33333333-cccc-dddd-eeee-444444444444"
+	managedSubID := "33333333-cccc-dddd-eeee-555555555555"
+	alivePIDSubID := "33333333-cccc-dddd-eeee-666666666666"
 	userSessID := "44444444-dddd-eeee-ffff-444444444444"
 
-	// Register subagent under parent
+	// Register subagents under parent
 	subagentDir := filepath.Join(tempHome, ".gemini", "antigravity", "brain", parentID, ".system_generated", "subagents")
 	_ = os.MkdirAll(subagentDir, 0755)
 	_ = os.WriteFile(filepath.Join(subagentDir, subagentID+".json"), []byte(`{}`), 0644)
+	_ = os.WriteFile(filepath.Join(subagentDir, activeSubID+".json"), []byte(`{}`), 0644)
+	_ = os.WriteFile(filepath.Join(subagentDir, managedSubID+".json"), []byte(`{}`), 0644)
+	_ = os.WriteFile(filepath.Join(subagentDir, alivePIDSubID+".json"), []byte(`{}`), 0644)
 
-	// Save subagent session (ended, unmanaged) in DB
+	// 1. Ended, unmanaged subagent -> MUST be purged
 	subSess := &Session{
 		ID:       "antigravity:local:" + subagentID,
 		Agent:    "antigravity",
@@ -2466,7 +2483,50 @@ func TestDatabaseSanitation_AntigravitySubagentsPurged(t *testing.T) {
 		t.Fatalf("SaveSession failed: %v", err)
 	}
 
-	// Save legitimate user session (ended, unmanaged) in DB
+	// 2. Active subagent (StateWorking) -> MUST NOT be purged
+	activeSubSess := &Session{
+		ID:       "antigravity:local:" + activeSubID,
+		Agent:    "antigravity",
+		Host:     "local",
+		NativeID: activeSubID,
+		Cwd:      tempHome,
+		State:    StateWorking,
+		Managed:  false,
+	}
+	if err := db.SaveSession(activeSubSess); err != nil {
+		t.Fatalf("SaveSession failed: %v", err)
+	}
+
+	// 3. Managed subagent -> MUST NOT be purged
+	managedSubSess := &Session{
+		ID:       "antigravity:local:" + managedSubID,
+		Agent:    "antigravity",
+		Host:     "local",
+		NativeID: managedSubID,
+		Cwd:      tempHome,
+		State:    StateEnded,
+		Managed:  true,
+	}
+	if err := db.SaveSession(managedSubSess); err != nil {
+		t.Fatalf("SaveSession failed: %v", err)
+	}
+
+	// 4. Subagent with alive PID -> MUST NOT be purged
+	alivePIDSubSess := &Session{
+		ID:       "antigravity:local:" + alivePIDSubID,
+		Agent:    "antigravity",
+		Host:     "local",
+		NativeID: alivePIDSubID,
+		Cwd:      tempHome,
+		State:    StateEnded,
+		PID:      os.Getpid(),
+		Managed:  false,
+	}
+	if err := db.SaveSession(alivePIDSubSess); err != nil {
+		t.Fatalf("SaveSession failed: %v", err)
+	}
+
+	// 5. Legitimate user session (ended, unmanaged) -> MUST NOT be purged
 	userSess := &Session{
 		ID:       "antigravity:local:" + userSessID,
 		Agent:    "antigravity",
@@ -2494,6 +2554,33 @@ func TestDatabaseSanitation_AntigravitySubagentsPurged(t *testing.T) {
 		t.Fatalf("expected subagent session %s to be purged from DB, but it still exists", subSess.ID)
 	}
 
+	// Verify active subagent was NOT purged
+	activeAfter, err := db.GetSession(activeSubSess.ID)
+	if err != nil {
+		t.Fatalf("GetSession failed: %v", err)
+	}
+	if activeAfter == nil {
+		t.Fatalf("expected active subagent session %s to remain in DB, but it was purged", activeSubSess.ID)
+	}
+
+	// Verify managed subagent was NOT purged
+	managedAfter, err := db.GetSession(managedSubSess.ID)
+	if err != nil {
+		t.Fatalf("GetSession failed: %v", err)
+	}
+	if managedAfter == nil {
+		t.Fatalf("expected managed subagent session %s to remain in DB, but it was purged", managedSubSess.ID)
+	}
+
+	// Verify alive PID subagent was NOT purged
+	aliveAfter, err := db.GetSession(alivePIDSubSess.ID)
+	if err != nil {
+		t.Fatalf("GetSession failed: %v", err)
+	}
+	if aliveAfter == nil {
+		t.Fatalf("expected alive PID subagent session %s to remain in DB, but it was purged", alivePIDSubSess.ID)
+	}
+
 	// Verify user session was NOT purged
 	userAfter, err := db.GetSession(userSess.ID)
 	if err != nil {
@@ -2501,6 +2588,79 @@ func TestDatabaseSanitation_AntigravitySubagentsPurged(t *testing.T) {
 	}
 	if userAfter == nil {
 		t.Fatalf("expected user session %s to remain in DB, but it was purged", userSess.ID)
+	}
+}
+
+func TestSessionControl_EmptyCwdFallbackToNodePath(t *testing.T) {
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "test_fallback.db")
+	db, err := InitDB(dbPath)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := NewServer(db)
+	server.RegisterProvider(&namedMockProvider{agentName: "mock-agent"})
+
+	projectDir := filepath.Join(tempDir, "my-project")
+	_ = os.MkdirAll(projectDir, 0755)
+
+	// Save TreeNode with ProjectDir
+	_ = db.SaveNode(&TreeNode{
+		Path:       "Work/MyProject",
+		ProjectDir: projectDir,
+	})
+
+	// Save session with empty Cwd and valid NodePath
+	sessID := "mock-agent:local:test-fallback-sess"
+	expectedTmuxName := "ackbar-mock-agent-test-fallback-sess"
+	defer func() {
+		_ = tmux.Kill(context.Background(), expectedTmuxName)
+	}()
+
+	sess := &Session{
+		ID:       sessID,
+		Agent:    "mock-agent",
+		Host:     "local",
+		NativeID: "test-fallback-sess",
+		Cwd:      "", // Empty!
+		NodePath: "Work/MyProject",
+		State:    StateEnded,
+		Managed:  true,
+	}
+	if err := db.SaveSession(sess); err != nil {
+		t.Fatalf("SaveSession failed: %v", err)
+	}
+
+	// 1. Test resume fallback
+	reqResume := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/v1/sessions/control?id=%s&action=resume", sessID), nil)
+	wResume := httptest.NewRecorder()
+	server.handleSessionControl(wResume, reqResume)
+
+	if wResume.Code != http.StatusOK {
+		t.Fatalf("expected resume with empty Cwd to succeed via NodePath fallback, got %d: %s", wResume.Code, wResume.Body.String())
+	}
+
+	updatedResume, _ := db.GetSession(sessID)
+	if updatedResume == nil || updatedResume.Cwd != projectDir {
+		t.Fatalf("expected Cwd to be populated with %q, got %+v", projectDir, updatedResume)
+	}
+
+	// 2. Test restart fallback
+	sess.Cwd = ""
+	_ = db.SaveSession(sess)
+	reqRestart := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/v1/sessions/control?id=%s&action=restart", sessID), nil)
+	wRestart := httptest.NewRecorder()
+	server.handleSessionControl(wRestart, reqRestart)
+
+	if wRestart.Code != http.StatusOK {
+		t.Fatalf("expected restart with empty Cwd to succeed via NodePath fallback, got %d: %s", wRestart.Code, wRestart.Body.String())
+	}
+
+	updatedRestart, _ := db.GetSession(sessID)
+	if updatedRestart == nil || updatedRestart.Cwd != projectDir {
+		t.Fatalf("expected Cwd to be populated with %q, got %+v", projectDir, updatedRestart)
 	}
 }
 

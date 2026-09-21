@@ -1090,6 +1090,7 @@ func (s *Server) handleSessionControl(w http.ResponseWriter, r *http.Request) {
 		if tmuxName == "" {
 			tmuxName = fmt.Sprintf("ackbar-%s-%s", sess.Agent, sess.NativeID)
 		}
+		_ = tmux.Kill(r.Context(), tmuxName)
 
 		// Spawn new tmux session
 		resumeCmd := s.getResumeCmd(sess.Agent, sess.NativeID)
@@ -6528,7 +6529,7 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 				for _, m := range matches {
 					id := strings.TrimSuffix(filepath.Base(m), ".json")
 					if isUUID(id) {
-						subagentIDs[id] = true
+						subagentIDs[strings.ToLower(id)] = true
 					}
 				}
 			}
@@ -6548,7 +6549,7 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 						}
 
 						// Check if this is an internal subagent conversation
-						if subagentIDs[convID] || isAntigravitySubagent(home, convID) {
+						if isAntigravitySubagent(home, convID, subagentIDs) {
 							if existing := knownIDs[sessID]; existing != nil {
 								// Safety guard: NEVER delete a managed session or an active session!
 								if existing.Managed || (existing.TmuxName != "" && tmux.HasSession(ctx, existing.TmuxName)) || (existing.PID > 0 && isProcessAlive(existing.PID)) || existing.State != StateEnded {
@@ -6559,6 +6560,7 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 									existing.Activity = "Deleted"
 									s.broadcast(existing)
 									delete(knownIDs, sessID)
+									delete(knownByNativeID, convID)
 								}
 							}
 							continue
@@ -6634,12 +6636,18 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 
 		// 5. Database Sanitation: Clean up any obsolete/orphaned subagents in DB
 		for _, sObj := range existingSessions {
+			if sObj.Deleted {
+				continue
+			}
+			if !s.isLocalHost(sObj.Host) {
+				continue
+			}
 			if sObj.Agent == "antigravity" && sObj.NativeID != "" && isUUID(sObj.NativeID) {
 				// Safety guard: NEVER purge a session that is managed, or currently alive/running in tmux/process!
 				if sObj.Managed || (sObj.TmuxName != "" && tmux.HasSession(ctx, sObj.TmuxName)) || (sObj.PID > 0 && isProcessAlive(sObj.PID)) || sObj.State != StateEnded {
 					continue
 				}
-				if subagentIDs[sObj.NativeID] || isAntigravitySubagent(home, sObj.NativeID) {
+				if isAntigravitySubagent(home, sObj.NativeID, subagentIDs) {
 					_ = s.db.DeleteSession(sObj.ID)
 					sObj.Deleted = true
 					sObj.Activity = "Deleted"
@@ -7715,7 +7723,16 @@ func isGenericDirSlug(n string) bool {
 	return false
 }
 
-func isAntigravitySubagent(home, convID string) bool {
+// isAntigravitySubagent determines whether a given conversation UUID is an internal
+// subagent (such as code reviewer, security auditor, or background worker) rather
+// than a primary interactive user session.
+// Evaluation order:
+// 1. User annotation check (.pbtxt) - real user sessions always have annotations, returns false immediately.
+// 2. Parent subagent registry (.system_generated/subagents/*.json) - consults precomputed map or filesystem.
+// 3. Cache metadata (conversation_metadata.json).
+// 4. Transcript prompt markers (e.g. advisory, reviewer roles).
+// 5. Inter-agent messages (.system_generated/messages/).
+func isAntigravitySubagent(home, convID string, precomputedSubagents ...map[string]bool) bool {
 	if convID == "" || !IsUUID(convID) {
 		return false
 	}
@@ -7733,15 +7750,21 @@ func isAntigravitySubagent(home, convID string) bool {
 
 	// 2. Direct parent subagent registration check:
 	// Every subagent created via invoke_subagent is recorded in <parent_brain>/.system_generated/subagents/<convID>.json
-	brainDirs := []string{
-		filepath.Join(home, ".gemini", "antigravity", "brain"),
-		filepath.Join(home, ".gemini", "antigravity-cli", "brain"),
-		filepath.Join(home, ".antigravity", "brain"),
-	}
-	for _, bDir := range brainDirs {
-		matches, err := filepath.Glob(filepath.Join(bDir, "*", ".system_generated", "subagents", convID+".json"))
-		if err == nil && len(matches) > 0 {
+	if len(precomputedSubagents) > 0 && precomputedSubagents[0] != nil {
+		if precomputedSubagents[0][strings.ToLower(convID)] {
 			return true
+		}
+	} else {
+		brainDirs := []string{
+			filepath.Join(home, ".gemini", "antigravity", "brain"),
+			filepath.Join(home, ".gemini", "antigravity-cli", "brain"),
+			filepath.Join(home, ".antigravity", "brain"),
+		}
+		for _, bDir := range brainDirs {
+			matches, err := filepath.Glob(filepath.Join(bDir, "*", ".system_generated", "subagents", convID+".json"))
+			if err == nil && len(matches) > 0 {
+				return true
+			}
 		}
 	}
 
@@ -7767,6 +7790,11 @@ func isAntigravitySubagent(home, convID string) bool {
 	}
 
 	// 4. Check transcript file for explicit subagent invocation markers
+	brainDirs := []string{
+		filepath.Join(home, ".gemini", "antigravity", "brain"),
+		filepath.Join(home, ".gemini", "antigravity-cli", "brain"),
+		filepath.Join(home, ".antigravity", "brain"),
+	}
 	for _, bDir := range brainDirs {
 		logPath := filepath.Join(bDir, convID, ".system_generated", "logs", "transcript.jsonl")
 		if data, err := readHead(logPath, 64*1024); err == nil {
@@ -7780,14 +7808,15 @@ func isAntigravitySubagent(home, convID string) bool {
 					continue
 				}
 				lineLower := strings.ToLower(line)
-				if strings.Contains(line, "<subagent_invocation>") ||
+				if strings.Contains(lineLower, "<subagent_invocation>") ||
 					strings.Contains(lineLower, "you are a subagent") ||
-					strings.Contains(line, "Subagent Defined") ||
-					strings.Contains(line, "subagent_analyst") ||
-					strings.Contains(line, "invoke_subagent") ||
-					strings.Contains(line, "This is a side question from the user") ||
+					strings.Contains(lineLower, "subagent defined") ||
+					strings.Contains(lineLower, "subagent_analyst") ||
+					strings.Contains(lineLower, "invoke_subagent") ||
+					strings.Contains(lineLower, "this is a side question from the user") ||
 					strings.Contains(lineLower, "you are reviewer") ||
 					strings.Contains(lineLower, "you are code reviewer") ||
+					strings.Contains(lineLower, "you are a code reviewer") ||
 					strings.Contains(lineLower, "you are the dedicated security reviewer") ||
 					strings.Contains(lineLower, "you are the security reviewer") ||
 					strings.Contains(lineLower, "you are the security auditor") ||
@@ -7795,7 +7824,7 @@ func isAntigravitySubagent(home, convID string) bool {
 					strings.Contains(lineLower, "you are the clean-reviewer") ||
 					strings.Contains(lineLower, "you are the context-reviewer") ||
 					strings.Contains(lineLower, "advisory: you are read-only") ||
-					strings.Contains(lineLower, "-reviewer for project") {
+					((strings.Contains(lineLower, "you are the ") || strings.Contains(lineLower, "you are a ")) && strings.Contains(lineLower, "-reviewer for project")) {
 					return true
 				}
 			}
