@@ -1544,7 +1544,7 @@ function showInStreamActivity(tabObj, { icon, text, badge }) {
       clearInterval(tabObj.activeActivityTimer);
     }
     tabObj.activeActivityTimer = setInterval(() => {
-      if (!tabObj.activeInStreamActivityEl) {
+      if (!tabObj.activeInStreamActivityEl || !tabObj.activeInStreamActivityEl.isConnected) {
         clearInterval(tabObj.activeActivityTimer);
         tabObj.activeActivityTimer = null;
         return;
@@ -1626,9 +1626,10 @@ function renderBufferedToolsIntoSlot(slot, tools) {
 // Ensure assistant message bubble exists, creating it only when real message content arrives
 function ensureActiveAssistantMessage(tabObj) {
   if (!tabObj || !tabObj.chatMessagesEl) return null;
+  if (tabObj.activeInStreamActivityEl) {
+    hideInStreamActivity(tabObj);
+  }
   if (tabObj.activeTurnMsgEl) return tabObj.activeTurnMsgEl;
-
-  hideInStreamActivity(tabObj);
 
   const assistantMsgEl = document.createElement('div');
   assistantMsgEl.className = 'chat-msg assistant-msg in-flight';
@@ -1870,8 +1871,6 @@ function handleChatStreamEvent(tabObj, evt) {
       tabObj.activeTurnMsgEl = existingInFlight;
     }
   }
-
-  const msgEl = tabObj.activeTurnMsgEl;
 
   switch (evt.type) {
     case 'queue_update':
