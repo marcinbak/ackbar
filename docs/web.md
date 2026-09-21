@@ -101,3 +101,27 @@ It is embedded directly into the `ackbard` Go binary and served on `http://127.0
 ## 4. Progressive Web App (PWA) Support
 
 The Web Dashboard includes a valid Web App Manifest (`internal/web/manifest.json`) and service worker hooks. You can install it as a standalone desktop app via Google Chrome, Arc, Edge, or Safari (*"Add to Dock / Install Ackbar"*).
+
+---
+
+## 5. Modular Frontend Architecture (`web/js/`)
+
+The web frontend is organized as zero-build native ECMAScript modules (`<script type="module">`) embedded directly into the Go binary via `//go:embed index.html style.css app.js manifest.json js/*.js`:
+
+* **`state.js`**: Central application state (`sessions`, `hosts`, `openTabs`, `treeNodes`), element cache `el`, and localStorage persistence.
+* **`auth.js`**: Token management and `window.fetch` interceptor with automatic 401 token authentication prompt.
+* **`utils.js`**: Markdown setup and rendering (`marked.js`), formatting helpers, host utilities, and path translation.
+* **`api.js`**: REST client endpoints (`/v1/sessions`, `/v1/hosts`, `/v1/nodes`, `/v1/settings`, etc.).
+* **`sse.js`**: Server-Sent Events multi-host subscriber and real-time state synchronization.
+* **`tree.js`**: Sidebar tree hierarchy, drag-and-drop reordering, and done / auto-archived sections.
+* **`tabs.js`**: Terminal and chat tab strip lifecycle, overflow menu, and persistence.
+* **`terminal.js`**: `xterm.js` terminal tabs, WebSocket PTY streams, resizing, and attachment uploads.
+* **`chat.js`**: Interactive chat interface, streaming transcript, tool call formatters, and composer queue.
+* **`details.js`**: Session details view, token meter, markdown plan/doc viewer, and tmux logs.
+* **`palette.js`**: Command palette fuzzy search (`Cmd+K` / `Ctrl+K`) and dispatcher launcher.
+* **`context-menu.js`**: Context menus for sessions, groups, tabs, and chat files.
+* **`modals.js`**: Modal dialogs for new sessions, groups, hosts, settings, and context handover.
+* **`statusbar.js`**: Status bar indicators.
+* **`app.js`**: Main module entrypoint, event listeners, and lifecycle boot.
+* **`web/app.js`**: Backward-compatibility proxy dynamically importing `/js/app.js`.
+

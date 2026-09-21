@@ -5,7 +5,7 @@ import (
 	"io/fs"
 )
 
-//go:embed index.html style.css app.js manifest.json
+//go:embed index.html style.css app.js manifest.json js/*.js
 var embeddedFiles embed.FS
 
 // GetFS returns the embedded file system for the web GUI directly from web/
