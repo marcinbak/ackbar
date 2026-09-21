@@ -2351,6 +2351,8 @@ func TestIsAntigravitySubagent_ReviewerPromptsAndMessages(t *testing.T) {
 	convIDReviewer := "11111111-2222-3333-4444-555555555555"
 	convIDSecurity := "22222222-3333-4444-5555-666666666666"
 	convIDMessage := "33333333-4444-5555-6666-777777777777"
+	convIDAdvisory := "55555555-6666-7777-8888-999999999999"
+	convIDClean := "66666666-7777-8888-9999-000000000000"
 	convIDUser := "44444444-5555-6666-7777-888888888888"
 
 	// 1. Reviewer A transcript
@@ -2368,7 +2370,17 @@ func TestIsAntigravitySubagent_ReviewerPromptsAndMessages(t *testing.T) {
 	_ = os.MkdirAll(msgDir, 0755)
 	_ = os.WriteFile(filepath.Join(msgDir, "msg-1.json"), []byte(`{"sourceMetadata":{"tool":{"conversationId":"root-conv-123","name":"send_message"}}}`), 0644)
 
-	// 4. Real user session with annotation
+	// 4. Advisory read-only subagent
+	advLogDir := filepath.Join(tempHome, ".gemini", "antigravity", "brain", convIDAdvisory, ".system_generated", "logs")
+	_ = os.MkdirAll(advLogDir, 0755)
+	_ = os.WriteFile(filepath.Join(advLogDir, "transcript.jsonl"), []byte(`{"type":"USER_INPUT","content":"ADVISORY: You are read-only. Do not edit files, run commands, or invoke subagents."}`), 0644)
+
+	// 5. Clean reviewer subagent
+	cleanLogDir := filepath.Join(tempHome, ".gemini", "antigravity", "brain", convIDClean, ".system_generated", "logs")
+	_ = os.MkdirAll(cleanLogDir, 0755)
+	_ = os.WriteFile(filepath.Join(cleanLogDir, "transcript.jsonl"), []byte(`{"type":"USER_INPUT","content":"You are the clean-reviewer for Project Ackbar. Audit git diff..."}`), 0644)
+
+	// 6. Real user session with annotation
 	annoDir := filepath.Join(tempHome, ".gemini", "antigravity", "annotations")
 	_ = os.MkdirAll(annoDir, 0755)
 	_ = os.WriteFile(filepath.Join(annoDir, convIDUser+".pbtxt"), []byte(`title:"My Real Task"`), 0644)
@@ -2385,8 +2397,110 @@ func TestIsAntigravitySubagent_ReviewerPromptsAndMessages(t *testing.T) {
 	if !isAntigravitySubagent(tempHome, convIDMessage) {
 		t.Errorf("expected convIDMessage to be detected as subagent")
 	}
+	if !isAntigravitySubagent(tempHome, convIDAdvisory) {
+		t.Errorf("expected convIDAdvisory to be detected as subagent")
+	}
+	if !isAntigravitySubagent(tempHome, convIDClean) {
+		t.Errorf("expected convIDClean to be detected as subagent")
+	}
 	if isAntigravitySubagent(tempHome, convIDUser) {
 		t.Errorf("expected convIDUser NOT to be detected as subagent")
+	}
+}
+
+func TestIsAntigravitySubagent_ParentSubagentRegistry(t *testing.T) {
+	tempHome := t.TempDir()
+	parentID := "11111111-aaaa-bbbb-cccc-111111111111"
+	childID := "22222222-bbbb-cccc-dddd-222222222222"
+
+	// Create child record under parent's .system_generated/subagents/ directory
+	subagentDir := filepath.Join(tempHome, ".gemini", "antigravity", "brain", parentID, ".system_generated", "subagents")
+	if err := os.MkdirAll(subagentDir, 0755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(subagentDir, childID+".json"), []byte(`{"id":"`+childID+`","role":"Security Reviewer"}`), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	if !isAntigravitySubagent(tempHome, childID) {
+		t.Fatalf("expected childID to be recognized as subagent from parent registry")
+	}
+	if isAntigravitySubagent(tempHome, parentID) {
+		t.Fatalf("expected parentID NOT to be recognized as subagent")
+	}
+}
+
+func TestDatabaseSanitation_AntigravitySubagentsPurged(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+
+	dbPath := filepath.Join(tempHome, "test_sanitation.db")
+	db, err := InitDB(dbPath)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := NewServer(db)
+
+	parentID := "11111111-aaaa-bbbb-cccc-111111111111"
+	subagentID := "33333333-cccc-dddd-eeee-333333333333"
+	userSessID := "44444444-dddd-eeee-ffff-444444444444"
+
+	// Register subagent under parent
+	subagentDir := filepath.Join(tempHome, ".gemini", "antigravity", "brain", parentID, ".system_generated", "subagents")
+	_ = os.MkdirAll(subagentDir, 0755)
+	_ = os.WriteFile(filepath.Join(subagentDir, subagentID+".json"), []byte(`{}`), 0644)
+
+	// Save subagent session (ended, unmanaged) in DB
+	subSess := &Session{
+		ID:       "antigravity:local:" + subagentID,
+		Agent:    "antigravity",
+		Host:     "local",
+		NativeID: subagentID,
+		Cwd:      tempHome,
+		State:    StateEnded,
+		Managed:  false,
+	}
+	if err := db.SaveSession(subSess); err != nil {
+		t.Fatalf("SaveSession failed: %v", err)
+	}
+
+	// Save legitimate user session (ended, unmanaged) in DB
+	userSess := &Session{
+		ID:       "antigravity:local:" + userSessID,
+		Agent:    "antigravity",
+		Host:     "local",
+		NativeID: userSessID,
+		Cwd:      tempHome,
+		State:    StateEnded,
+		Managed:  false,
+	}
+	if err := db.SaveSession(userSess); err != nil {
+		t.Fatalf("SaveSession failed: %v", err)
+	}
+
+	// Run scanObservedSessions
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	server.scanObservedSessions(ctx)
+
+	// Verify subagent session was purged from DB
+	subAfter, err := db.GetSession(subSess.ID)
+	if err != nil {
+		t.Fatalf("GetSession failed: %v", err)
+	}
+	if subAfter != nil {
+		t.Fatalf("expected subagent session %s to be purged from DB, but it still exists", subSess.ID)
+	}
+
+	// Verify user session was NOT purged
+	userAfter, err := db.GetSession(userSess.ID)
+	if err != nil {
+		t.Fatalf("GetSession failed: %v", err)
+	}
+	if userAfter == nil {
+		t.Fatalf("expected user session %s to remain in DB, but it was purged", userSess.ID)
 	}
 }
 
