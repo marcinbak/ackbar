@@ -7,7 +7,8 @@ import {
   formatRelativeTime,
   ensureDoubleNewlineSeparation,
   getSessionBaseUrl,
-  openInVSCode
+  openInVSCode,
+  formatAgentChatName
 } from './utils.js';
 import { openSessionDetailsTab } from './details.js';
 import { openHandoverModal } from './modals.js';
@@ -77,7 +78,7 @@ function setupChatInterface(tabObj, chatViewEl, session) {
           </svg>
         </button>
         <input type="file" class="chat-file-input" multiple style="display: none;" accept="image/*,.pdf,.txt,.md,.log,.json,.yaml,.yml,.csv" />
-        <textarea class="chat-composer-textarea" rows="1" placeholder="Ask ${escapeHtml(session.agent || 'Claude Code')} anything... (Enter to send, Shift+Enter for newline)"></textarea>
+        <textarea class="chat-composer-textarea" rows="1" placeholder="Ask ${escapeHtml(formatAgentChatName(session.agent))} anything... (Enter to send, Shift+Enter for newline)"></textarea>
         <div class="chat-composer-actions">
           <button class="btn-composer-cancel" style="display: none;" title="Cancel turn (SIGINT)">🛑 Stop</button>
           <button class="btn-composer-send" title="Send Prompt (Enter)">➤</button>
@@ -1174,7 +1175,7 @@ function createChatMessageElement(tabObj, msg) {
       toolsHtml = renderToolGroupHtml(msg.tool_calls);
     }
     const bodyHtml = renderMarkdown(msg.content || '');
-    const agentName = tabObj.session ? (tabObj.session.agent || 'Claude Code') : 'Claude Code';
+    const agentName = formatAgentChatName(tabObj.session ? tabObj.session.agent : null);
     msgEl.innerHTML = `
       <div class="chat-msg-header">
         <span class="chat-msg-role">🤖 ${escapeHtml(agentName)}</span>
@@ -1240,7 +1241,7 @@ function updateComposerButtonState(tabObj) {
     tabObj.chatSendBtn.title = 'Send Prompt (Enter)';
     tabObj.chatSendBtn.innerHTML = '➤';
     if (tabObj.chatInputEl) {
-      tabObj.chatInputEl.placeholder = `Ask ${escapeHtml(tabObj.session && tabObj.session.agent ? tabObj.session.agent : 'Claude Code')} anything... (Enter to send, Shift+Enter for newline)`;
+      tabObj.chatInputEl.placeholder = `Ask ${escapeHtml(formatAgentChatName(tabObj.session ? tabObj.session.agent : null))} anything... (Enter to send, Shift+Enter for newline)`;
     }
   }
 }
@@ -1541,7 +1542,7 @@ async function sendChatPrompt(tabObj, forcedPromptText) {
     assistantMsgEl.className = 'chat-msg assistant-msg in-flight';
     assistantMsgEl.innerHTML = `
       <div class="chat-msg-header">
-        <span class="chat-msg-role">🤖 ${escapeHtml(tabObj.session.agent || 'Claude Code')}</span>
+        <span class="chat-msg-role">🤖 ${escapeHtml(formatAgentChatName(tabObj.session ? tabObj.session.agent : null))}</span>
         <div class="chat-msg-actions">
           <span class="chat-msg-time">${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
           <button class="btn-copy-chat-msg" title="Copy message" type="button" aria-label="Copy message">
@@ -1580,7 +1581,7 @@ async function sendChatPrompt(tabObj, forcedPromptText) {
     errEl.className = 'chat-msg assistant-msg';
     errEl.innerHTML = `
       <div class="chat-msg-header">
-        <span class="chat-msg-role">🤖 ${escapeHtml(tabObj.session.agent || 'Claude Code')}</span>
+        <span class="chat-msg-role">🤖 ${escapeHtml(formatAgentChatName(tabObj.session ? tabObj.session.agent : null))}</span>
       </div>
       <div class="chat-msg-body markdown-body">
         <span style="color: var(--accent-red);">⚠️ Error sending prompt: ${escapeHtml(err.message)}</span>
@@ -1663,7 +1664,7 @@ function handleChatStreamEvent(tabObj, evt) {
       inFlight.className = 'chat-msg assistant-msg in-flight';
       inFlight.innerHTML = `
         <div class="chat-msg-header">
-          <span class="chat-msg-role">🤖 ${escapeHtml(tabObj.session.agent || 'Claude Code')}</span>
+          <span class="chat-msg-role">🤖 ${escapeHtml(formatAgentChatName(tabObj.session ? tabObj.session.agent : null))}</span>
           <div class="chat-msg-actions">
             <span class="chat-msg-time">${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
             <button class="btn-copy-chat-msg" title="Copy message" type="button" aria-label="Copy message">
