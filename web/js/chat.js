@@ -1221,6 +1221,7 @@ function appendChatMessage(tabObj, msg) {
 function updateComposerButtonState(tabObj) {
   if (!tabObj || !tabObj.chatSendBtn) return;
   const isTurnActive = (tabObj.activeTurnMsgEl !== null && tabObj.activeTurnMsgEl !== undefined) ||
+                       (tabObj.activeInStreamActivityEl !== null && tabObj.activeInStreamActivityEl !== undefined) ||
                        (tabObj.chatCancelBtn && tabObj.chatCancelBtn.style.display !== 'none');
   if (isTurnActive) {
     tabObj.chatSendBtn.disabled = false;
@@ -1453,6 +1454,230 @@ async function dispatchNextQueuedPrompt(tabObj) {
   }
 }
 
+// Parse tool action and parameters into human-friendly in-stream status
+function formatToolActivity(toolName, toolInput) {
+  let params = toolInput;
+  if (typeof params === 'string') {
+    try {
+      params = JSON.parse(params);
+    } catch (_) {}
+  }
+  params = (params && typeof params === 'object') ? params : {};
+
+  const tName = (toolName || '').toLowerCase();
+  let icon = '⚙️';
+  let text = `Running ${toolName || 'tool'}...`;
+  let badge = toolName || null;
+
+  // File reading
+  if (tName === 'view_file' || tName === 'view' || tName === 'read_file') {
+    icon = '📖';
+    const p = params.AbsolutePath || params.file_path || params.path || params.TargetFile || '';
+    const filename = p ? p.split('/').pop() : '';
+    text = filename ? `Reading ${filename}` : 'Reading file...';
+  }
+  // File writing/editing
+  else if (tName === 'replace_file_content' || tName === 'write_to_file' || tName === 'edit') {
+    icon = '✏️';
+    const p = params.TargetFile || params.file_path || params.path || '';
+    const filename = p ? p.split('/').pop() : '';
+    text = filename ? `Editing ${filename}` : 'Editing file...';
+  }
+  // Shell commands
+  else if (tName === 'run_command' || tName === 'bash') {
+    icon = '⚡';
+    const cmd = (params.CommandLine || params.command || '').trim();
+    if (cmd) {
+      const firstLine = cmd.split('\n')[0];
+      text = `Running: ${firstLine.length > 50 ? firstLine.slice(0, 47) + '...' : firstLine}`;
+    } else {
+      text = 'Running command...';
+    }
+  }
+  // Searching / Grepping
+  else if (tName === 'grep_search' || tName === 'grep') {
+    icon = '🔍';
+    const q = params.Query || params.pattern || '';
+    text = q ? `Searching for "${q}"` : 'Searching codebase...';
+  }
+  // Finding by name / glob
+  else if (tName === 'find_by_name' || tName === 'glob') {
+    icon = '🔍';
+    const pat = params.Pattern || params.pattern || '';
+    text = pat ? `Finding "${pat}"` : 'Finding files...';
+  }
+  // Subagents
+  else if (tName === 'invoke_subagent' || tName === 'agent' || tName === 'task') {
+    icon = '🤖';
+    text = 'Delegating to subagent...';
+  }
+  // Web fetching
+  else if (tName === 'read_url_content' || tName === 'search_web') {
+    icon = '🌐';
+    const u = params.Url || params.query || '';
+    text = u ? `Fetching ${u}` : 'Searching web...';
+  }
+
+  return { icon, text, badge };
+}
+
+// Show or update in-stream ephemeral activity indicator
+function showInStreamActivity(tabObj, { icon, text, badge }) {
+  if (!tabObj || !tabObj.chatMessagesEl) return;
+
+  tabObj.activeActivityStartTime = Date.now();
+
+  if (!tabObj.activeInStreamActivityEl) {
+    const el = document.createElement('div');
+    el.className = 'chat-instream-activity';
+    el.innerHTML = `
+      <span class="chat-activity-spinner"></span>
+      <span class="chat-activity-icon">${escapeHtml(icon || '⚡')}</span>
+      <span class="chat-activity-text">${escapeHtml(text || 'Working...')}</span>
+      <span class="chat-activity-badge" style="${badge ? '' : 'display: none;'}">${escapeHtml(badge || '')}</span>
+      <span class="chat-activity-timer">(0s)</span>
+    `;
+    tabObj.chatMessagesEl.appendChild(el);
+    tabObj.activeInStreamActivityEl = el;
+
+    if (tabObj.activeActivityTimer) {
+      clearInterval(tabObj.activeActivityTimer);
+    }
+    tabObj.activeActivityTimer = setInterval(() => {
+      if (!tabObj.activeInStreamActivityEl || !tabObj.activeInStreamActivityEl.isConnected) {
+        clearInterval(tabObj.activeActivityTimer);
+        tabObj.activeActivityTimer = null;
+        return;
+      }
+      const sec = Math.floor((Date.now() - tabObj.activeActivityStartTime) / 1000);
+      const timerEl = tabObj.activeInStreamActivityEl.querySelector('.chat-activity-timer');
+      if (timerEl) {
+        timerEl.textContent = `(${sec}s)`;
+      }
+    }, 1000);
+  } else {
+    const iconEl = tabObj.activeInStreamActivityEl.querySelector('.chat-activity-icon');
+    const textEl = tabObj.activeInStreamActivityEl.querySelector('.chat-activity-text');
+    const badgeEl = tabObj.activeInStreamActivityEl.querySelector('.chat-activity-badge');
+    const timerEl = tabObj.activeInStreamActivityEl.querySelector('.chat-activity-timer');
+
+    if (iconEl) iconEl.textContent = icon || '⚡';
+    if (textEl) textEl.textContent = text || 'Working...';
+    if (badgeEl) {
+      badgeEl.textContent = badge || '';
+      badgeEl.style.display = badge ? 'inline-block' : 'none';
+    }
+    if (timerEl) timerEl.textContent = '(0s)';
+  }
+
+  updateComposerButtonState(tabObj);
+  tabObj.chatMessagesEl.scrollTop = tabObj.chatMessagesEl.scrollHeight;
+}
+
+// Remove in-stream ephemeral activity indicator
+function hideInStreamActivity(tabObj) {
+  if (!tabObj) return;
+  if (tabObj.activeActivityTimer) {
+    clearInterval(tabObj.activeActivityTimer);
+    tabObj.activeActivityTimer = null;
+  }
+  if (tabObj.activeInStreamActivityEl) {
+    tabObj.activeInStreamActivityEl.remove();
+    tabObj.activeInStreamActivityEl = null;
+  }
+  updateComposerButtonState(tabObj);
+}
+
+// Render buffered tool calls into the message tool slot
+function renderBufferedToolsIntoSlot(slot, tools) {
+  if (!slot || !Array.isArray(tools) || tools.length === 0) return;
+
+  const toolStringList = tools.map(t => t.detail ? `${t.name}: ${t.detail}` : t.name);
+  const summaryLabel = getToolGroupSummaryLabel(toolStringList);
+
+  const groupCard = document.createElement('details');
+  groupCard.className = 'chat-tool-card chat-tool-group';
+  groupCard.open = true;
+  groupCard.dataset.toolCalls = JSON.stringify(tools.map(t => ({ name: t.name, detail: t.detail })));
+  groupCard.innerHTML = `
+    <summary>
+      <span class="tool-group-title">${escapeHtml(summaryLabel)}</span>
+      <span class="tool-group-pill">${tools.length} ${tools.length === 1 ? 'action' : 'actions'}</span>
+    </summary>
+    <div class="chat-tool-content chat-tool-group-content">
+      <div class="chat-tool-call-list">
+        ${tools.map((t, idx) => `
+          <div class="chat-tool-call-item ${t.status === 'running' ? 'in-progress' : ''}">
+            <div class="chat-tool-call-header">
+              <span class="chat-tool-call-idx">#${idx + 1}</span>
+              <span class="chat-tool-call-badge">${escapeHtml(t.name)}</span>
+              <span class="chat-tool-status">${escapeHtml(t.status || 'done')}</span>
+            </div>
+            ${t.detail ? `<div class="chat-tool-call-detail"><code>${escapeHtml(t.detail)}</code></div>` : ''}
+            ${t.output ? `<div class="chat-tool-output">${escapeHtml(t.output)}</div>` : ''}
+          </div>
+        `).join('')}
+      </div>
+    </div>
+  `;
+  slot.appendChild(groupCard);
+}
+
+// Ensure assistant message bubble exists, creating it only when real message content arrives
+function ensureActiveAssistantMessage(tabObj) {
+  if (!tabObj || !tabObj.chatMessagesEl) return null;
+  if (tabObj.activeInStreamActivityEl) {
+    hideInStreamActivity(tabObj);
+  }
+  if (tabObj.activeTurnMsgEl) return tabObj.activeTurnMsgEl;
+
+  const assistantMsgEl = document.createElement('div');
+  assistantMsgEl.className = 'chat-msg assistant-msg in-flight';
+  assistantMsgEl.innerHTML = `
+    <div class="chat-msg-header">
+      <span class="chat-msg-role">🤖 ${escapeHtml(formatAgentChatName(tabObj.session ? tabObj.session.agent : null))}</span>
+      <div class="chat-msg-actions">
+        <span class="chat-msg-time">${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+        <button class="btn-copy-chat-msg" title="Copy message" type="button" aria-label="Copy message">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+          </svg>
+        </button>
+      </div>
+    </div>
+    <div class="chat-thinking-slot"></div>
+    <div class="chat-tools-slot"></div>
+    <div class="chat-msg-body markdown-body"><span class="chat-streaming-cursor"></span></div>
+  `;
+
+  if (tabObj.activeTurnThinking) {
+    const slot = assistantMsgEl.querySelector('.chat-thinking-slot');
+    if (slot) {
+      const thinkBlock = document.createElement('details');
+      thinkBlock.className = 'chat-thinking';
+      thinkBlock.open = false;
+      thinkBlock.innerHTML = `<summary>💭 Thinking</summary><div class="thinking-text">${escapeHtml(tabObj.activeTurnThinking)}</div>`;
+      slot.appendChild(thinkBlock);
+    }
+  }
+
+  if (Array.isArray(tabObj.activeTurnTools) && tabObj.activeTurnTools.length > 0) {
+    const slot = assistantMsgEl.querySelector('.chat-tools-slot');
+    if (slot) {
+      renderBufferedToolsIntoSlot(slot, tabObj.activeTurnTools);
+    }
+  }
+
+  attachChatMessageListeners(assistantMsgEl);
+  tabObj.chatMessagesEl.appendChild(assistantMsgEl);
+  tabObj.activeTurnMsgEl = assistantMsgEl;
+  updateComposerButtonState(tabObj);
+  tabObj.chatMessagesEl.scrollTop = tabObj.chatMessagesEl.scrollHeight;
+
+  return assistantMsgEl;
+}
+
 // Send Prompt to daemon (/v1/sessions/prompt) or queue if turn is in progress
 async function sendChatPrompt(tabObj, forcedPromptText) {
   if (!tabObj || !tabObj.chatInputEl) return;
@@ -1538,38 +1763,24 @@ async function sendChatPrompt(tabObj, forcedPromptText) {
       timestamp: new Date().toISOString()
     });
 
-    const assistantMsgEl = document.createElement('div');
-    assistantMsgEl.className = 'chat-msg assistant-msg in-flight';
-    assistantMsgEl.innerHTML = `
-      <div class="chat-msg-header">
-        <span class="chat-msg-role">🤖 ${escapeHtml(formatAgentChatName(tabObj.session ? tabObj.session.agent : null))}</span>
-        <div class="chat-msg-actions">
-          <span class="chat-msg-time">${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-          <button class="btn-copy-chat-msg" title="Copy message" type="button" aria-label="Copy message">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-            </svg>
-          </button>
-        </div>
-      </div>
-      <div class="chat-thinking-slot"></div>
-      <div class="chat-tools-slot"></div>
-      <div class="chat-msg-body markdown-body"><span class="chat-streaming-cursor"></span></div>
-    `;
-    attachChatMessageListeners(assistantMsgEl);
-    tabObj.chatMessagesEl.appendChild(assistantMsgEl);
-    tabObj.chatMessagesEl.scrollTop = tabObj.chatMessagesEl.scrollHeight;
-
-    tabObj.activeTurnMsgEl = assistantMsgEl;
+    tabObj.activeTurnMsgEl = null;
     tabObj.activeTurnBuffer = '';
     tabObj.activeTurnHadTool = false;
+    tabObj.activeTurnTools = [];
+    tabObj.activeTurnThinking = '';
+
+    showInStreamActivity(tabObj, {
+      icon: '💭',
+      text: 'Thinking...',
+      badge: null
+    });
 
     if (tabObj.chatCancelBtn) tabObj.chatCancelBtn.style.display = 'inline-flex';
     if (tabObj.chatStatusBadge) tabObj.chatStatusBadge.textContent = '⚡ Working...';
     updateComposerButtonState(tabObj);
   } catch (err) {
     console.error('Failed to dispatch prompt:', err);
+    hideInStreamActivity(tabObj);
     appendChatMessage(tabObj, {
       role: 'user',
       content: promptText || 'Please inspect the attached file(s).',
@@ -1592,6 +1803,8 @@ async function sendChatPrompt(tabObj, forcedPromptText) {
     tabObj.activeTurnMsgEl = null;
     tabObj.activeTurnBuffer = '';
     tabObj.activeTurnHadTool = false;
+    tabObj.activeTurnTools = [];
+    tabObj.activeTurnThinking = '';
   }
 }
 
@@ -1603,6 +1816,7 @@ function disconnectChatStream(tabObj) {
     } catch (e) {}
     tabObj.chatEventSource = null;
   }
+  hideInStreamActivity(tabObj);
 }
 
 // Connect SSE for active session turn events (headless sessions only)
@@ -1657,36 +1871,12 @@ function connectChatStream(tabObj) {
 function handleChatStreamEvent(tabObj, evt) {
   if (!tabObj || !tabObj.chatMessagesEl) return;
 
-  if (!tabObj.activeTurnMsgEl && evt.type !== 'status' && evt.type !== 'queue_update') {
-    let inFlight = tabObj.chatMessagesEl.querySelector('.chat-msg.assistant-msg.in-flight');
-    if (!inFlight && evt.type !== 'turn_complete' && evt.type !== 'turn_cancelled') {
-      inFlight = document.createElement('div');
-      inFlight.className = 'chat-msg assistant-msg in-flight';
-      inFlight.innerHTML = `
-        <div class="chat-msg-header">
-          <span class="chat-msg-role">🤖 ${escapeHtml(formatAgentChatName(tabObj.session ? tabObj.session.agent : null))}</span>
-          <div class="chat-msg-actions">
-            <span class="chat-msg-time">${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-            <button class="btn-copy-chat-msg" title="Copy message" type="button" aria-label="Copy message">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-              </svg>
-            </button>
-          </div>
-        </div>
-        <div class="chat-thinking-slot"></div>
-        <div class="chat-tools-slot"></div>
-        <div class="chat-msg-body markdown-body"><span class="chat-streaming-cursor"></span></div>
-      `;
-      attachChatMessageListeners(inFlight);
-      tabObj.chatMessagesEl.appendChild(inFlight);
+  if (!tabObj.activeTurnMsgEl) {
+    const existingInFlight = tabObj.chatMessagesEl.querySelector('.chat-msg.assistant-msg.in-flight');
+    if (existingInFlight) {
+      tabObj.activeTurnMsgEl = existingInFlight;
     }
-    tabObj.activeTurnMsgEl = inFlight;
-    if (!tabObj.activeTurnBuffer) tabObj.activeTurnBuffer = '';
   }
-
-  const msgEl = tabObj.activeTurnMsgEl;
 
   switch (evt.type) {
     case 'queue_update':
@@ -1735,27 +1925,31 @@ function handleChatStreamEvent(tabObj, evt) {
             rawPrompt: evt.text,
             timestamp: evt.timestamp || new Date().toISOString()
           });
-          if (tabObj.activeTurnMsgEl && tabObj.activeTurnMsgEl.parentNode === tabObj.chatMessagesEl) {
+          if (tabObj.activeInStreamActivityEl && tabObj.activeInStreamActivityEl.parentNode === tabObj.chatMessagesEl) {
+            tabObj.chatMessagesEl.insertBefore(newMsgEl, tabObj.activeInStreamActivityEl);
+          } else if (tabObj.activeTurnMsgEl && tabObj.activeTurnMsgEl.parentNode === tabObj.chatMessagesEl) {
             tabObj.chatMessagesEl.insertBefore(newMsgEl, tabObj.activeTurnMsgEl);
           }
         }
       }
+      showInStreamActivity(tabObj, { icon: '💭', text: 'Thinking...', badge: null });
       if (tabObj.chatCancelBtn) tabObj.chatCancelBtn.style.display = 'inline-flex';
       if (tabObj.chatStatusBadge) tabObj.chatStatusBadge.textContent = '⚡ Working...';
       updateComposerButtonState(tabObj);
       break;
 
-    case 'text_delta':
-      if (msgEl) {
-        const incoming = evt.text || '';
-        if (incoming) {
+    case 'text_delta': {
+      const incoming = evt.text || '';
+      if (incoming) {
+        const currentMsgEl = ensureActiveAssistantMessage(tabObj);
+        if (currentMsgEl) {
           if (tabObj.activeTurnHadTool && tabObj.activeTurnBuffer) {
             tabObj.activeTurnBuffer = ensureDoubleNewlineSeparation(tabObj.activeTurnBuffer, incoming);
             tabObj.activeTurnHadTool = false;
           } else {
             tabObj.activeTurnBuffer = (tabObj.activeTurnBuffer || '') + incoming;
           }
-          const bodyEl = msgEl.querySelector('.chat-msg-body');
+          const bodyEl = currentMsgEl.querySelector('.chat-msg-body');
           if (bodyEl) {
             const html = renderMarkdown(tabObj.activeTurnBuffer);
             bodyEl.innerHTML = html + '<span class="chat-streaming-cursor"></span>';
@@ -1764,32 +1958,55 @@ function handleChatStreamEvent(tabObj, evt) {
         }
       }
       break;
+    }
 
     case 'thought_delta':
-      if (msgEl && evt.thinking) {
-        const slot = msgEl.querySelector('.chat-thinking-slot');
-        if (slot) {
-          let thinkBlock = slot.querySelector('.chat-thinking');
-          if (!thinkBlock) {
-            thinkBlock = document.createElement('details');
-            thinkBlock.className = 'chat-thinking';
-            thinkBlock.open = true;
-            thinkBlock.innerHTML = `<summary>💭 Thinking...</summary><div class="thinking-text"></div>`;
-            slot.appendChild(thinkBlock);
+      if (evt.thinking) {
+        tabObj.activeTurnThinking = (tabObj.activeTurnThinking || '') + evt.thinking;
+        if (tabObj.activeTurnMsgEl) {
+          const slot = tabObj.activeTurnMsgEl.querySelector('.chat-thinking-slot');
+          if (slot) {
+            let thinkBlock = slot.querySelector('.chat-thinking');
+            if (!thinkBlock) {
+              thinkBlock = document.createElement('details');
+              thinkBlock.className = 'chat-thinking';
+              thinkBlock.open = true;
+              thinkBlock.innerHTML = `<summary>💭 Thinking...</summary><div class="thinking-text"></div>`;
+              slot.appendChild(thinkBlock);
+            }
+            const thinkText = thinkBlock.querySelector('.thinking-text');
+            if (thinkText) {
+              thinkText.textContent += evt.thinking;
+            }
+            tabObj.chatMessagesEl.scrollTop = tabObj.chatMessagesEl.scrollHeight;
           }
-          const thinkText = thinkBlock.querySelector('.thinking-text');
-          if (thinkText) {
-            thinkText.textContent += evt.thinking;
-          }
-          tabObj.chatMessagesEl.scrollTop = tabObj.chatMessagesEl.scrollHeight;
+        } else {
+          showInStreamActivity(tabObj, {
+            icon: '💭',
+            text: 'Thinking...',
+            badge: null
+          });
         }
       }
       break;
 
-    case 'tool_start':
+    case 'tool_start': {
       tabObj.activeTurnHadTool = true;
-      if (msgEl && evt.tool_name) {
-        const slot = msgEl.querySelector('.chat-tools-slot');
+      tabObj.activeTurnTools = tabObj.activeTurnTools || [];
+
+      const inputStr = typeof evt.tool_input === 'string'
+        ? evt.tool_input
+        : (evt.tool_input ? JSON.stringify(evt.tool_input, null, 2) : '');
+
+      tabObj.activeTurnTools.push({
+        name: evt.tool_name || 'tool',
+        detail: inputStr,
+        status: 'running',
+        output: ''
+      });
+
+      if (tabObj.activeTurnMsgEl && evt.tool_name) {
+        const slot = tabObj.activeTurnMsgEl.querySelector('.chat-tools-slot');
         if (slot) {
           let groupCard = slot.querySelector('.chat-tool-group');
           if (!groupCard) {
@@ -1813,10 +2030,6 @@ function handleChatStreamEvent(tabObj, evt) {
           try {
             toolList = JSON.parse(groupCard.dataset.toolCalls || '[]');
           } catch (_) {}
-
-          const inputStr = typeof evt.tool_input === 'string'
-            ? evt.tool_input
-            : (evt.tool_input ? JSON.stringify(evt.tool_input, null, 2) : '');
 
           toolList.push({ name: evt.tool_name, detail: inputStr });
           groupCard.dataset.toolCalls = JSON.stringify(toolList);
@@ -1844,6 +2057,11 @@ function handleChatStreamEvent(tabObj, evt) {
           tabObj.chatMessagesEl.scrollTop = tabObj.chatMessagesEl.scrollHeight;
         }
       }
+
+      // Always show/update in-stream activity for the active tool
+      const activity = formatToolActivity(evt.tool_name, evt.tool_input);
+      showInStreamActivity(tabObj, activity);
+
       if (evt.tool_name === 'Agent' || evt.tool_name === 'Task') {
         let promptText = '';
         if (evt.tool_input && typeof evt.tool_input === 'object') {
@@ -1862,15 +2080,24 @@ function handleChatStreamEvent(tabObj, evt) {
         renderSubagentsBar(tabObj);
       }
       break;
+    }
 
-    case 'tool_result':
+    case 'tool_result': {
       tabObj.activeTurnHadTool = true;
+      tabObj.activeTurnTools = tabObj.activeTurnTools || [];
+      if (tabObj.activeTurnTools.length > 0) {
+        const lastTool = tabObj.activeTurnTools[tabObj.activeTurnTools.length - 1];
+        lastTool.status = evt.is_error ? 'error' : 'done';
+        lastTool.output = evt.tool_output || '';
+      }
+
       if (evt.tool_name === 'Agent' || evt.tool_name === 'Task') {
         tabObj.runningSubagents = (tabObj.runningSubagents || []).filter(s => s.name !== evt.tool_name);
         renderSubagentsBar(tabObj);
       }
-      if (msgEl) {
-        const slot = msgEl.querySelector('.chat-tools-slot');
+
+      if (tabObj.activeTurnMsgEl) {
+        const slot = tabObj.activeTurnMsgEl.querySelector('.chat-tools-slot');
         if (slot) {
           const groupCard = slot.querySelector('.chat-tool-group');
           if (groupCard) {
@@ -1892,13 +2119,32 @@ function handleChatStreamEvent(tabObj, evt) {
         }
         tabObj.chatMessagesEl.scrollTop = tabObj.chatMessagesEl.scrollHeight;
       }
-      break;
 
-    case 'turn_complete':
+      showInStreamActivity(tabObj, {
+        icon: '✓',
+        text: `Completed ${evt.tool_name || 'tool'} • Processing next step...`,
+        badge: evt.tool_name || null
+      });
+      break;
+    }
+
+    case 'turn_complete': {
       tabObj.runningSubagents = [];
       renderSubagentsBar(tabObj);
-      if (msgEl) {
-        const groupCard = msgEl.querySelector('.chat-tool-group');
+      hideInStreamActivity(tabObj);
+
+      if (!tabObj.activeTurnBuffer && evt.text) {
+        tabObj.activeTurnBuffer = evt.text;
+      }
+
+      // If message bubble does not exist yet, create it if there is text or executed tools
+      if (!tabObj.activeTurnMsgEl && (tabObj.activeTurnBuffer || (tabObj.activeTurnTools && tabObj.activeTurnTools.length > 0))) {
+        ensureActiveAssistantMessage(tabObj);
+      }
+
+      const activeMsg = tabObj.activeTurnMsgEl;
+      if (activeMsg) {
+        const groupCard = activeMsg.querySelector('.chat-tool-group');
         if (groupCard) {
           groupCard.open = false; // collapse on completion so it doesn't pollute
           let toolList = [];
@@ -1910,79 +2156,101 @@ function handleChatStreamEvent(tabObj, evt) {
           if (summaryTitle) summaryTitle.textContent = label;
         }
 
-        if (!tabObj.activeTurnBuffer && evt.text) {
-          tabObj.activeTurnBuffer = evt.text;
-        }
         if (tabObj.activeTurnBuffer) {
-          const bodyEl = msgEl.querySelector('.chat-msg-body');
+          const bodyEl = activeMsg.querySelector('.chat-msg-body');
           if (bodyEl) {
             const html = renderMarkdown(tabObj.activeTurnBuffer);
             bodyEl.innerHTML = html;
           }
         }
-        msgEl.classList.remove('in-flight');
-        const cursor = msgEl.querySelector('.chat-streaming-cursor');
+        activeMsg.classList.remove('in-flight');
+        const cursor = activeMsg.querySelector('.chat-streaming-cursor');
         if (cursor) cursor.remove();
-        attachCodeBlockCopyButtons(msgEl);
-        attachChatMessageListeners(msgEl, tabObj.activeTurnBuffer);
-        linkifyChatFiles(msgEl, tabObj.session);
+        attachCodeBlockCopyButtons(activeMsg);
+        attachChatMessageListeners(activeMsg, tabObj.activeTurnBuffer);
+        linkifyChatFiles(activeMsg, tabObj.session);
       }
       resetChatComposer(tabObj);
       tabObj.activeTurnMsgEl = null;
       tabObj.activeTurnBuffer = '';
       tabObj.activeTurnHadTool = false;
+      tabObj.activeTurnTools = [];
+      tabObj.activeTurnThinking = '';
       fetchSessions();
       break;
+    }
 
-    case 'turn_cancelled':
+    case 'turn_cancelled': {
       tabObj.runningSubagents = [];
       renderSubagentsBar(tabObj);
-      if (msgEl) {
-        msgEl.classList.remove('in-flight');
-        const cursor = msgEl.querySelector('.chat-streaming-cursor');
+      hideInStreamActivity(tabObj);
+
+      if (!tabObj.activeTurnMsgEl && (tabObj.activeTurnBuffer || (tabObj.activeTurnTools && tabObj.activeTurnTools.length > 0))) {
+        ensureActiveAssistantMessage(tabObj);
+      }
+
+      const activeMsg = tabObj.activeTurnMsgEl;
+      if (activeMsg) {
+        activeMsg.classList.remove('in-flight');
+        const cursor = activeMsg.querySelector('.chat-streaming-cursor');
         if (cursor) cursor.remove();
-        const bodyEl = msgEl.querySelector('.chat-msg-body');
+        const bodyEl = activeMsg.querySelector('.chat-msg-body');
         if (bodyEl) {
           bodyEl.innerHTML += `<div style="margin-top: 8px; color: var(--text-dim); font-style: italic;">[Turn cancelled by user]</div>`;
         }
-        attachCodeBlockCopyButtons(msgEl);
-        attachChatMessageListeners(msgEl, tabObj.activeTurnBuffer);
-        linkifyChatFiles(msgEl, tabObj.session);
+        attachCodeBlockCopyButtons(activeMsg);
+        attachChatMessageListeners(activeMsg, tabObj.activeTurnBuffer);
+        linkifyChatFiles(activeMsg, tabObj.session);
       }
       resetChatComposer(tabObj);
       tabObj.activeTurnMsgEl = null;
       tabObj.activeTurnBuffer = '';
       tabObj.activeTurnHadTool = false;
+      tabObj.activeTurnTools = [];
+      tabObj.activeTurnThinking = '';
       if (tabObj.promptQueue && tabObj.promptQueue.length > 0) {
         tabObj.isQueuePaused = true;
         renderChatQueue(tabObj);
       }
       fetchSessions();
       break;
+    }
 
-    case 'error':
-      if (msgEl) {
-        msgEl.classList.remove('in-flight');
-        const cursor = msgEl.querySelector('.chat-streaming-cursor');
+    case 'error': {
+      tabObj.runningSubagents = [];
+      renderSubagentsBar(tabObj);
+      hideInStreamActivity(tabObj);
+
+      const activeMsg = ensureActiveAssistantMessage(tabObj);
+      if (activeMsg) {
+        activeMsg.classList.remove('in-flight');
+        const cursor = activeMsg.querySelector('.chat-streaming-cursor');
         if (cursor) cursor.remove();
-        const bodyEl = msgEl.querySelector('.chat-msg-body');
+        const bodyEl = activeMsg.querySelector('.chat-msg-body');
         if (bodyEl) {
-          bodyEl.innerHTML += `<div style="margin-top: 8px; color: var(--accent-red);">⚠️ ${escapeHtml(evt.text || 'Turn error')}</div>`;
+          bodyEl.innerHTML += `<div style="margin-top: 8px; color: var(--accent-red);">⚠️ Error: ${escapeHtml(evt.text || 'Turn error')}</div>`;
         }
+        attachCodeBlockCopyButtons(activeMsg);
+        attachChatMessageListeners(activeMsg, tabObj.activeTurnBuffer);
+        linkifyChatFiles(activeMsg, tabObj.session);
       }
       resetChatComposer(tabObj);
       tabObj.activeTurnMsgEl = null;
       tabObj.activeTurnBuffer = '';
       tabObj.activeTurnHadTool = false;
+      tabObj.activeTurnTools = [];
+      tabObj.activeTurnThinking = '';
       if (tabObj.promptQueue && tabObj.promptQueue.length > 0) {
         tabObj.isQueuePaused = true;
         renderChatQueue(tabObj);
       }
       break;
+    }
   }
 }
 
 function resetChatComposer(tabObj) {
+  hideInStreamActivity(tabObj);
   if (tabObj.chatCancelBtn) tabObj.chatCancelBtn.style.display = 'none';
   if (tabObj.chatStatusBadge) tabObj.chatStatusBadge.textContent = '🟢 Ready';
   updateComposerButtonState(tabObj);
