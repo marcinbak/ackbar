@@ -1067,6 +1067,11 @@ func (s *Server) handleSessionControl(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "deleted", "id": sess.ID})
 
 	case "restart":
+		if sess.Cwd == "" && sess.NodePath != "" {
+			if node, err := s.db.GetNode(sess.NodePath); err == nil && node != nil && node.ProjectDir != "" {
+				sess.Cwd = node.ProjectDir
+			}
+		}
 		if sess.Cwd == "" {
 			http.Error(w, "Session working directory is empty", http.StatusBadRequest)
 			return
@@ -1085,6 +1090,7 @@ func (s *Server) handleSessionControl(w http.ResponseWriter, r *http.Request) {
 		if tmuxName == "" {
 			tmuxName = fmt.Sprintf("ackbar-%s-%s", sess.Agent, sess.NativeID)
 		}
+		_ = tmux.Kill(r.Context(), tmuxName)
 
 		// Spawn new tmux session
 		resumeCmd := s.getResumeCmd(sess.Agent, sess.NativeID)
@@ -1120,6 +1126,11 @@ func (s *Server) handleSessionControl(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"status":"restarted"}`))
 
 	case "resume":
+		if sess.Cwd == "" && sess.NodePath != "" {
+			if node, err := s.db.GetNode(sess.NodePath); err == nil && node != nil && node.ProjectDir != "" {
+				sess.Cwd = node.ProjectDir
+			}
+		}
 		if sess.Cwd == "" {
 			http.Error(w, "Session working directory is empty", http.StatusBadRequest)
 			return
@@ -5954,6 +5965,16 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 						existing.TmuxName = tmuxName
 						knownByTmux[tmuxName] = existing
 					}
+					if existing.Cwd == "" {
+						if existing.NodePath != "" {
+							if node, err := s.db.GetNode(existing.NodePath); err == nil && node != nil && node.ProjectDir != "" {
+								existing.Cwd = node.ProjectDir
+							}
+						}
+						if existing.Cwd == "" && cwd != "" {
+							existing.Cwd = cwd
+						}
+					}
 					if existing.NodePath == "" && existing.Cwd != "" {
 						existing.NodePath = s.resolveSessionNodePath(existing.Cwd)
 					}
@@ -6501,6 +6522,19 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 			filepath.Join(home, ".gemini", "antigravity-cli", "brain"),
 			filepath.Join(home, ".antigravity", "brain"),
 		}
+
+		subagentIDs := make(map[string]bool)
+		for _, bDir := range brainDirs {
+			if matches, err := filepath.Glob(filepath.Join(bDir, "*", ".system_generated", "subagents", "*.json")); err == nil {
+				for _, m := range matches {
+					id := strings.TrimSuffix(filepath.Base(m), ".json")
+					if isUUID(id) {
+						subagentIDs[strings.ToLower(id)] = true
+					}
+				}
+			}
+		}
+
 		for _, brainDir := range brainDirs {
 			if bDirs, err := os.ReadDir(brainDir); err == nil {
 				for _, bDir := range bDirs {
@@ -6515,7 +6549,7 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 						}
 
 						// Check if this is an internal subagent conversation
-						if isAntigravitySubagent(home, convID) {
+						if isAntigravitySubagent(home, convID, subagentIDs) {
 							if existing := knownIDs[sessID]; existing != nil {
 								// Safety guard: NEVER delete a managed session or an active session!
 								if existing.Managed || (existing.TmuxName != "" && tmux.HasSession(ctx, existing.TmuxName)) || (existing.PID > 0 && isProcessAlive(existing.PID)) || existing.State != StateEnded {
@@ -6526,6 +6560,7 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 									existing.Activity = "Deleted"
 									s.broadcast(existing)
 									delete(knownIDs, sessID)
+									delete(knownByNativeID, convID)
 								}
 							}
 							continue
@@ -6601,12 +6636,18 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 
 		// 5. Database Sanitation: Clean up any obsolete/orphaned subagents in DB
 		for _, sObj := range existingSessions {
+			if sObj.Deleted {
+				continue
+			}
+			if !s.isLocalHost(sObj.Host) {
+				continue
+			}
 			if sObj.Agent == "antigravity" && sObj.NativeID != "" && isUUID(sObj.NativeID) {
 				// Safety guard: NEVER purge a session that is managed, or currently alive/running in tmux/process!
 				if sObj.Managed || (sObj.TmuxName != "" && tmux.HasSession(ctx, sObj.TmuxName)) || (sObj.PID > 0 && isProcessAlive(sObj.PID)) || sObj.State != StateEnded {
 					continue
 				}
-				if isAntigravitySubagent(home, sObj.NativeID) {
+				if isAntigravitySubagent(home, sObj.NativeID, subagentIDs) {
 					_ = s.db.DeleteSession(sObj.ID)
 					sObj.Deleted = true
 					sObj.Activity = "Deleted"
@@ -7682,7 +7723,16 @@ func isGenericDirSlug(n string) bool {
 	return false
 }
 
-func isAntigravitySubagent(home, convID string) bool {
+// isAntigravitySubagent determines whether a given conversation UUID is an internal
+// subagent (such as code reviewer, security auditor, or background worker) rather
+// than a primary interactive user session.
+// Evaluation order:
+// 1. User annotation check (.pbtxt) - real user sessions always have annotations, returns false immediately.
+// 2. Parent subagent registry (.system_generated/subagents/*.json) - consults precomputed map or filesystem.
+// 3. Cache metadata (conversation_metadata.json).
+// 4. Transcript prompt markers (e.g. advisory, reviewer roles).
+// 5. Inter-agent messages (.system_generated/messages/).
+func isAntigravitySubagent(home, convID string, precomputedSubagents ...map[string]bool) bool {
 	if convID == "" || !IsUUID(convID) {
 		return false
 	}
@@ -7698,7 +7748,27 @@ func isAntigravitySubagent(home, convID string) bool {
 		}
 	}
 
-	// 2. Check conversation_metadata.json if present
+	// 2. Direct parent subagent registration check:
+	// Every subagent created via invoke_subagent is recorded in <parent_brain>/.system_generated/subagents/<convID>.json
+	if len(precomputedSubagents) > 0 && precomputedSubagents[0] != nil {
+		if precomputedSubagents[0][strings.ToLower(convID)] {
+			return true
+		}
+	} else {
+		brainDirs := []string{
+			filepath.Join(home, ".gemini", "antigravity", "brain"),
+			filepath.Join(home, ".gemini", "antigravity-cli", "brain"),
+			filepath.Join(home, ".antigravity", "brain"),
+		}
+		for _, bDir := range brainDirs {
+			matches, err := filepath.Glob(filepath.Join(bDir, "*", ".system_generated", "subagents", convID+".json"))
+			if err == nil && len(matches) > 0 {
+				return true
+			}
+		}
+	}
+
+	// 3. Check conversation_metadata.json if present
 	metaPaths := []string{
 		filepath.Join(home, ".gemini", "antigravity-cli", "cache", "conversation_metadata.json"),
 		filepath.Join(home, ".gemini", "antigravity", "cache", "conversation_metadata.json"),
@@ -7712,14 +7782,14 @@ func isAntigravitySubagent(home, convID string) bool {
 				} `json:"conversations"`
 			}
 			if err := json.Unmarshal(data, &meta); err == nil {
-				if c, exists := meta.Conversations[convID]; exists {
-					return c.IsInternal
+				if c, exists := meta.Conversations[convID]; exists && c.IsInternal {
+					return true
 				}
 			}
 		}
 	}
 
-	// 3. Check transcript file for explicit subagent invocation markers
+	// 4. Check transcript file for explicit subagent invocation markers
 	brainDirs := []string{
 		filepath.Join(home, ".gemini", "antigravity", "brain"),
 		filepath.Join(home, ".gemini", "antigravity-cli", "brain"),
@@ -7737,23 +7807,30 @@ func isAntigravitySubagent(home, convID string) bool {
 				if line == "" {
 					continue
 				}
-				if strings.Contains(line, "<subagent_invocation>") ||
-					strings.Contains(line, "You are a subagent") ||
-					strings.Contains(line, "Subagent Defined") ||
-					strings.Contains(line, "subagent_analyst") ||
-					strings.Contains(line, "invoke_subagent") ||
-					strings.Contains(line, "This is a side question from the user") ||
-					strings.Contains(line, "You are Reviewer") ||
-					strings.Contains(line, "You are Code Reviewer") ||
-					strings.Contains(line, "You are the Dedicated Security Reviewer") ||
-					strings.Contains(line, "You are the Security Reviewer") ||
-					strings.Contains(line, "You are the Security Auditor") {
+				lineLower := strings.ToLower(line)
+				if strings.Contains(lineLower, "<subagent_invocation>") ||
+					strings.Contains(lineLower, "you are a subagent") ||
+					strings.Contains(lineLower, "subagent defined") ||
+					strings.Contains(lineLower, "subagent_analyst") ||
+					strings.Contains(lineLower, "invoke_subagent") ||
+					strings.Contains(lineLower, "this is a side question from the user") ||
+					strings.Contains(lineLower, "you are reviewer") ||
+					strings.Contains(lineLower, "you are code reviewer") ||
+					strings.Contains(lineLower, "you are a code reviewer") ||
+					strings.Contains(lineLower, "you are the dedicated security reviewer") ||
+					strings.Contains(lineLower, "you are the security reviewer") ||
+					strings.Contains(lineLower, "you are the security auditor") ||
+					strings.Contains(lineLower, "you are the security-reviewer") ||
+					strings.Contains(lineLower, "you are the clean-reviewer") ||
+					strings.Contains(lineLower, "you are the context-reviewer") ||
+					strings.Contains(lineLower, "advisory: you are read-only") ||
+					((strings.Contains(lineLower, "you are the ") || strings.Contains(lineLower, "you are a ")) && strings.Contains(lineLower, "-reviewer for project")) {
 					return true
 				}
 			}
 		}
 
-		// 4. Check .system_generated/messages for dispatched inter-agent messages
+		// 5. Check .system_generated/messages for dispatched inter-agent messages
 		msgDir := filepath.Join(bDir, convID, ".system_generated", "messages")
 		if entries, err := os.ReadDir(msgDir); err == nil {
 			for _, e := range entries {
@@ -7771,7 +7848,7 @@ func isAntigravitySubagent(home, convID string) bool {
 		}
 	}
 
-	// 5. Default to false: A conversation is a primary/user conversation unless proven to be a subagent!
+	// 6. Default to false: A conversation is a primary/user conversation unless proven to be a subagent!
 	return false
 }
 
