@@ -19,7 +19,8 @@ class ApiClient {
     return u.endsWith('/') ? u.substring(0, u.length - 1) : u;
   }
 
-  Map<String, String> _headers([String? authToken, Map<String, String>? extra]) {
+  Map<String, String> _headers(
+      [String? authToken, Map<String, String>? extra]) {
     final h = <String, String>{};
     if (authToken != null && authToken.isNotEmpty) {
       h['Authorization'] = 'Bearer $authToken';
@@ -36,10 +37,14 @@ class ApiClient {
     final clean = _cleanUrl(hostUrl);
     final uri = Uri.parse('$clean/v1/sessions');
     try {
-      final response = await _client.get(uri, headers: _headers(authToken)).timeout(const Duration(seconds: 4));
+      final response = await _client
+          .get(uri, headers: _headers(authToken))
+          .timeout(const Duration(seconds: 4));
       if (response.statusCode == 200) {
         final List<dynamic> decoded = jsonDecode(response.body);
-        return decoded.map((item) => Session.fromJson(item as Map<String, dynamic>)).toList();
+        return decoded
+            .map((item) => Session.fromJson(item as Map<String, dynamic>))
+            .toList();
       }
       return [];
     } catch (_) {
@@ -89,9 +94,12 @@ class ApiClient {
       'action': action,
       if (params != null) ...params,
     };
-    final uri = Uri.parse('$clean/v1/sessions/control').replace(queryParameters: queryParams);
+    final uri = Uri.parse('$clean/v1/sessions/control')
+        .replace(queryParameters: queryParams);
     try {
-      final response = await _client.post(uri, headers: _headers(authToken)).timeout(const Duration(seconds: 5));
+      final response = await _client
+          .post(uri, headers: _headers(authToken))
+          .timeout(const Duration(seconds: 5));
       return response.statusCode == 200;
     } catch (_) {
       return false;
@@ -99,7 +107,8 @@ class ApiClient {
   }
 
   /// POST /v1/sessions/control?id=...&action=read: Mark session state as read
-  Future<bool> markSessionRead(String hostUrl, String sessionID, {String? authToken}) async {
+  Future<bool> markSessionRead(String hostUrl, String sessionID,
+      {String? authToken}) async {
     return controlSession(hostUrl, sessionID, 'read', authToken: authToken);
   }
 
@@ -137,10 +146,14 @@ class ApiClient {
     final clean = _cleanUrl(hostUrl);
     final uri = Uri.parse('$clean/v1/hosts');
     try {
-      final response = await _client.get(uri, headers: _headers(authToken)).timeout(const Duration(seconds: 4));
+      final response = await _client
+          .get(uri, headers: _headers(authToken))
+          .timeout(const Duration(seconds: 4));
       if (response.statusCode == 200) {
         final List<dynamic> decoded = jsonDecode(response.body);
-        return decoded.map((item) => HostRecord.fromJson(item as Map<String, dynamic>)).toList();
+        return decoded
+            .map((item) => HostRecord.fromJson(item as Map<String, dynamic>))
+            .toList();
       }
       return [];
     } catch (_) {
@@ -149,11 +162,14 @@ class ApiClient {
   }
 
   /// GET /v1/nodes: Retrieve tree project nodes
-  Future<List<Map<String, dynamic>>> getNodes(String hostUrl, {String? authToken}) async {
+  Future<List<Map<String, dynamic>>> getNodes(String hostUrl,
+      {String? authToken}) async {
     final clean = _cleanUrl(hostUrl);
     final uri = Uri.parse('$clean/v1/nodes');
     try {
-      final response = await _client.get(uri, headers: _headers(authToken)).timeout(const Duration(seconds: 4));
+      final response = await _client
+          .get(uri, headers: _headers(authToken))
+          .timeout(const Duration(seconds: 4));
       if (response.statusCode == 200) {
         final List<dynamic> decoded = jsonDecode(response.body);
         return decoded.cast<Map<String, dynamic>>();
@@ -165,7 +181,8 @@ class ApiClient {
   }
 
   /// GET /v1/sessions/{id}/documents: Retrieve list of markdown/proposal documents
-  Future<List<String>> getDocuments(String hostUrl, String sessionID, {String? authToken}) async {
+  Future<List<String>> getDocuments(String hostUrl, String sessionID,
+      {String? authToken}) async {
     final clean = _cleanUrl(hostUrl);
     var nativeId = sessionID;
     final parts = sessionID.split(':');
@@ -174,7 +191,9 @@ class ApiClient {
     }
     final uri = Uri.parse('$clean/v1/sessions/$nativeId/documents');
     try {
-      final response = await _client.get(uri, headers: _headers(authToken)).timeout(const Duration(seconds: 4));
+      final response = await _client
+          .get(uri, headers: _headers(authToken))
+          .timeout(const Duration(seconds: 4));
       if (response.statusCode == 200) {
         final List<dynamic> decoded = jsonDecode(response.body);
         return decoded.map((e) => e.toString()).toList();
@@ -186,7 +205,9 @@ class ApiClient {
   }
 
   /// GET /v1/documents/content: Fetch specific plan or document file content
-  Future<String> getPlanContent(String hostUrl, String sessionId, String filename, {String? authToken}) async {
+  Future<String> getPlanContent(
+      String hostUrl, String sessionId, String filename,
+      {String? authToken}) async {
     final clean = _cleanUrl(hostUrl);
     final uri = Uri.parse('$clean/v1/documents/content').replace(
       queryParameters: {
@@ -195,7 +216,9 @@ class ApiClient {
       },
     );
     try {
-      final response = await _client.get(uri, headers: _headers(authToken)).timeout(const Duration(seconds: 5));
+      final response = await _client
+          .get(uri, headers: _headers(authToken))
+          .timeout(const Duration(seconds: 5));
       if (response.statusCode == 200) {
         return response.body;
       }
@@ -206,7 +229,8 @@ class ApiClient {
   }
 
   /// GET /v1/sessions/transcript: Retrieve live/historic agent conversation transcript (markdown/ansi)
-  Future<String> getTranscript(String hostUrl, String sessionId, {String format = 'markdown', String? authToken}) async {
+  Future<String> getTranscript(String hostUrl, String sessionId,
+      {String format = 'markdown', String? authToken}) async {
     final clean = _cleanUrl(hostUrl);
     final uri = Uri.parse('$clean/v1/sessions/transcript').replace(
       queryParameters: {
@@ -215,7 +239,9 @@ class ApiClient {
       },
     );
     try {
-      final response = await _client.get(uri, headers: _headers(authToken)).timeout(const Duration(seconds: 6));
+      final response = await _client
+          .get(uri, headers: _headers(authToken))
+          .timeout(const Duration(seconds: 6));
       if (response.statusCode == 200) {
         return response.body;
       }
@@ -226,7 +252,9 @@ class ApiClient {
   }
 
   /// GET /v1/sessions/transcript: Retrieve structured transcript data for rich chat stream UI
-  Future<TranscriptData?> getStructuredTranscript(String hostUrl, String sessionId, {String? authToken}) async {
+  Future<TranscriptData?> getStructuredTranscript(
+      String hostUrl, String sessionId,
+      {String? authToken}) async {
     final clean = _cleanUrl(hostUrl);
     final uri = Uri.parse('$clean/v1/sessions/transcript').replace(
       queryParameters: {
@@ -235,7 +263,9 @@ class ApiClient {
       },
     );
     try {
-      final response = await _client.get(uri, headers: _headers(authToken)).timeout(const Duration(seconds: 6));
+      final response = await _client
+          .get(uri, headers: _headers(authToken))
+          .timeout(const Duration(seconds: 6));
       if (response.statusCode == 200) {
         final Map<String, dynamic> decoded = jsonDecode(response.body);
         return TranscriptData.fromJson(decoded);
@@ -247,12 +277,15 @@ class ApiClient {
   }
 
   /// GET /v1/version: Healthcheck and version check for a host
-  Future<Map<String, dynamic>?> checkHostHealth(String hostUrl, {String? authToken}) async {
+  Future<Map<String, dynamic>?> checkHostHealth(String hostUrl,
+      {String? authToken}) async {
     final clean = _cleanUrl(hostUrl);
     final uri = Uri.parse('$clean/v1/version');
     final stopwatch = Stopwatch()..start();
     try {
-      final response = await _client.get(uri, headers: _headers(authToken)).timeout(const Duration(seconds: 5));
+      final response = await _client
+          .get(uri, headers: _headers(authToken))
+          .timeout(const Duration(seconds: 5));
       stopwatch.stop();
       if (response.statusCode == 200) {
         final Map<String, dynamic> decoded = jsonDecode(response.body);
@@ -270,7 +303,9 @@ class ApiClient {
     final clean = _cleanUrl(hostUrl);
     final uri = Uri.parse('$clean/v1/maintenance/purge');
     try {
-      final response = await _client.post(uri, headers: _headers(authToken)).timeout(const Duration(seconds: 6));
+      final response = await _client
+          .post(uri, headers: _headers(authToken))
+          .timeout(const Duration(seconds: 6));
       return response.statusCode == 200;
     } catch (_) {
       return false;
@@ -278,15 +313,18 @@ class ApiClient {
   }
 
   /// POST /v1/sessions/prompt: Dispatch a user prompt to a headless or tmux session
-  Future<bool> sendPrompt(String hostUrl, String sessionId, String prompt, {String? authToken}) async {
+  Future<bool> sendPrompt(String hostUrl, String sessionId, String prompt,
+      {String? authToken}) async {
     final clean = _cleanUrl(hostUrl);
     final uri = Uri.parse('$clean/v1/sessions/prompt');
     try {
-      final response = await _client.post(
-        uri,
-        headers: _headers(authToken, {'Content-Type': 'application/json'}),
-        body: jsonEncode({'session_id': sessionId, 'prompt': prompt}),
-      ).timeout(const Duration(seconds: 10));
+      final response = await _client
+          .post(
+            uri,
+            headers: _headers(authToken, {'Content-Type': 'application/json'}),
+            body: jsonEncode({'session_id': sessionId, 'prompt': prompt}),
+          )
+          .timeout(const Duration(seconds: 10));
       return response.statusCode == 200;
     } catch (_) {
       return false;
@@ -294,15 +332,18 @@ class ApiClient {
   }
 
   /// POST /v1/sessions/cancel: Cancel active turn for a session
-  Future<bool> cancelTurn(String hostUrl, String sessionId, {String? authToken}) async {
+  Future<bool> cancelTurn(String hostUrl, String sessionId,
+      {String? authToken}) async {
     final clean = _cleanUrl(hostUrl);
     final uri = Uri.parse('$clean/v1/sessions/cancel');
     try {
-      final response = await _client.post(
-        uri,
-        headers: _headers(authToken, {'Content-Type': 'application/json'}),
-        body: jsonEncode({'session_id': sessionId}),
-      ).timeout(const Duration(seconds: 5));
+      final response = await _client
+          .post(
+            uri,
+            headers: _headers(authToken, {'Content-Type': 'application/json'}),
+            body: jsonEncode({'session_id': sessionId}),
+          )
+          .timeout(const Duration(seconds: 5));
       return response.statusCode == 200;
     } catch (_) {
       return false;
@@ -310,15 +351,18 @@ class ApiClient {
   }
 
   /// POST /v1/sessions/take-wheel: Seamless handoff from headless session into live tmux session
-  Future<Map<String, dynamic>?> takeWheel(String hostUrl, String sessionId, {String? authToken}) async {
+  Future<Map<String, dynamic>?> takeWheel(String hostUrl, String sessionId,
+      {String? authToken}) async {
     final clean = _cleanUrl(hostUrl);
     final uri = Uri.parse('$clean/v1/sessions/take-wheel');
     try {
-      final response = await _client.post(
-        uri,
-        headers: _headers(authToken, {'Content-Type': 'application/json'}),
-        body: jsonEncode({'session_id': sessionId}),
-      ).timeout(const Duration(seconds: 8));
+      final response = await _client
+          .post(
+            uri,
+            headers: _headers(authToken, {'Content-Type': 'application/json'}),
+            body: jsonEncode({'session_id': sessionId}),
+          )
+          .timeout(const Duration(seconds: 8));
       if (response.statusCode == 200) {
         return jsonDecode(response.body) as Map<String, dynamic>;
       }
@@ -329,17 +373,85 @@ class ApiClient {
   }
 
   /// GET /v1/sessions/subagents: Retrieve active/completed subagents spawned by a session
-  Future<List<SubagentInfo>> getSubagents(String hostUrl, String sessionId, {String? authToken}) async {
+  Future<List<SubagentInfo>> getSubagents(String hostUrl, String sessionId,
+      {String? authToken}) async {
     final clean = _cleanUrl(hostUrl);
-    final uri = Uri.parse('$clean/v1/sessions/subagents').replace(queryParameters: {'id': sessionId});
+    final uri = Uri.parse('$clean/v1/sessions/subagents')
+        .replace(queryParameters: {'id': sessionId});
     try {
-      final response = await _client.get(uri, headers: _headers(authToken)).timeout(const Duration(seconds: 5));
+      final response = await _client
+          .get(uri, headers: _headers(authToken))
+          .timeout(const Duration(seconds: 5));
       if (response.statusCode == 200) {
         final Map<String, dynamic> decoded = jsonDecode(response.body);
         if (decoded['subagents'] is List) {
           final list = decoded['subagents'] as List;
-          return list.map((item) => SubagentInfo.fromJson(item as Map<String, dynamic>)).toList();
+          return list
+              .map(
+                  (item) => SubagentInfo.fromJson(item as Map<String, dynamic>))
+              .toList();
         }
+      }
+      return [];
+    } catch (_) {
+      return [];
+    }
+  }
+
+  /// POST /v1/sessions/spawn: Spawn a new agent session (tmux or headless) on a host
+  Future<Map<String, dynamic>?> spawnSession(
+    String hostUrl, {
+    required String agent,
+    required String cwd,
+    String? host,
+    String? nodePath,
+    String? name,
+    String? accountId,
+    String engineType = 'tmux',
+    String? prompt,
+    String? authToken,
+  }) async {
+    final clean = _cleanUrl(hostUrl);
+    final uri = Uri.parse('$clean/v1/sessions/spawn');
+    try {
+      final payload = <String, dynamic>{
+        'agent': agent,
+        'cwd': cwd,
+        if (host != null && host.isNotEmpty) 'host': host,
+        if (nodePath != null && nodePath.isNotEmpty) 'node_path': nodePath,
+        if (name != null && name.isNotEmpty) 'name': name,
+        if (accountId != null && accountId.isNotEmpty) 'account_id': accountId,
+        'engine_type': engineType,
+        if (prompt != null && prompt.isNotEmpty) 'prompt': prompt,
+      };
+      final response = await _client
+          .post(
+            uri,
+            headers: _headers(authToken, {'Content-Type': 'application/json'}),
+            body: jsonEncode(payload),
+          )
+          .timeout(const Duration(seconds: 12));
+      if (response.statusCode == 200) {
+        return jsonDecode(response.body) as Map<String, dynamic>;
+      }
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// GET /v1/agents/discovery: Retrieve installed agent CLI discovery results
+  Future<List<Map<String, dynamic>>> getAgentsDiscovery(String hostUrl,
+      {String? authToken}) async {
+    final clean = _cleanUrl(hostUrl);
+    final uri = Uri.parse('$clean/v1/agents/discovery');
+    try {
+      final response = await _client
+          .get(uri, headers: _headers(authToken))
+          .timeout(const Duration(seconds: 4));
+      if (response.statusCode == 200) {
+        final List<dynamic> decoded = jsonDecode(response.body);
+        return decoded.cast<Map<String, dynamic>>();
       }
       return [];
     } catch (_) {

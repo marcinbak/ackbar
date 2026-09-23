@@ -38,7 +38,8 @@ class DecisionAuditEntry {
   final String sessionTitle;
   final String agent;
   final String host;
-  final String actionType; // 'allowed' | 'denied' | 'answered' | 'approved_plan'
+  final String
+      actionType; // 'allowed' | 'denied' | 'answered' | 'approved_plan'
   final String summary;
   final DateTime timestamp;
 
@@ -80,7 +81,8 @@ class DecisionAuditNotifier extends StateNotifier<List<DecisionAuditEntry>> {
 }
 
 final decisionAuditProvider =
-    StateNotifierProvider<DecisionAuditNotifier, List<DecisionAuditEntry>>((ref) {
+    StateNotifierProvider<DecisionAuditNotifier, List<DecisionAuditEntry>>(
+        (ref) {
   return DecisionAuditNotifier();
 });
 
@@ -100,7 +102,9 @@ class HostsNotifier extends StateNotifier<List<HostRecord>> {
       final jsonStr = prefs.getString(_kHostsKey);
       if (jsonStr != null && jsonStr.isNotEmpty) {
         final List<dynamic> list = jsonDecode(jsonStr);
-        final loaded = list.map((item) => HostRecord.fromJson(item as Map<String, dynamic>)).toList();
+        final loaded = list
+            .map((item) => HostRecord.fromJson(item as Map<String, dynamic>))
+            .toList();
         if (mounted && loaded.isNotEmpty) {
           state = loaded;
           refreshHosts();
@@ -120,10 +124,12 @@ class HostsNotifier extends StateNotifier<List<HostRecord>> {
   Future<void> refreshHosts() async {
     final updated = <HostRecord>[];
     for (final h in state) {
-      final health = await _apiClient.checkHostHealth(h.url, authToken: h.authToken);
+      final health =
+          await _apiClient.checkHostHealth(h.url, authToken: h.authToken);
       if (!mounted) return;
       if (health != null) {
-        final sessions = await _apiClient.getSessions(h.url, authToken: h.authToken);
+        final sessions =
+            await _apiClient.getSessions(h.url, authToken: h.authToken);
         if (!mounted) return;
         updated.add(h.copyWith(
           online: true,
@@ -148,7 +154,11 @@ class HostsNotifier extends StateNotifier<List<HostRecord>> {
   }
 
   void updateHost(HostRecord updatedHost) {
-    state = state.map((h) => h.name == updatedHost.name || h.url == updatedHost.url ? updatedHost : h).toList();
+    state = state
+        .map((h) => h.name == updatedHost.name || h.url == updatedHost.url
+            ? updatedHost
+            : h)
+        .toList();
     _savePersistedHosts();
     refreshHosts();
   }
@@ -159,7 +169,8 @@ class HostsNotifier extends StateNotifier<List<HostRecord>> {
   }
 }
 
-final hostsListProvider = StateNotifierProvider<HostsNotifier, List<HostRecord>>((ref) {
+final hostsListProvider =
+    StateNotifierProvider<HostsNotifier, List<HostRecord>>((ref) {
   final api = ref.watch(apiClientProvider);
   return HostsNotifier(api);
 });
@@ -188,7 +199,8 @@ class PlansNotifier extends StateNotifier<List<PlanDocument>> {
   }
 }
 
-final plansListProvider = StateNotifierProvider<PlansNotifier, List<PlanDocument>>((ref) {
+final plansListProvider =
+    StateNotifierProvider<PlansNotifier, List<PlanDocument>>((ref) {
   return PlansNotifier();
 });
 
@@ -202,7 +214,8 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
 
   FleetSessionsNotifier(this._apiClient, this._ref) : super(const []) {
     _initLiveSync();
-    _hostsSub = _ref.listen<List<HostRecord>>(hostsListProvider, (previous, next) {
+    _hostsSub =
+        _ref.listen<List<HostRecord>>(hostsListProvider, (previous, next) {
       _syncWithHosts(next);
     });
   }
@@ -246,7 +259,8 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
 
     final allFetched = <Session>[];
     for (final host in hosts) {
-      final remoteSessions = await _apiClient.getSessions(host.url, authToken: host.authToken);
+      final remoteSessions =
+          await _apiClient.getSessions(host.url, authToken: host.authToken);
       if (!mounted) return;
       allFetched.addAll(remoteSessions);
     }
@@ -257,7 +271,8 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
   }
 
   void _upsertSession(Session s) {
-    final index = state.indexWhere((item) => item.id == s.id || item.nativeId == s.nativeId);
+    final index = state
+        .indexWhere((item) => item.id == s.id || item.nativeId == s.nativeId);
     if (index != -1) {
       final updated = List<Session>.from(state);
       updated[index] = s;
@@ -285,7 +300,9 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
       clearBlocked: true,
       activity: action == 'allow'
           ? 'Permission allowed: $value'
-          : (action == 'deny' ? 'Permission denied' : 'Answer submitted: $value'),
+          : (action == 'deny'
+              ? 'Permission denied'
+              : 'Answer submitted: $value'),
       lastEventAt: DateTime.now(),
     );
     _upsertSession(updatedSession);
@@ -316,7 +333,8 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
 
   /// Mark unread session state as read
   Future<void> markSessionRead(String sessionId, String hostName) async {
-    final index = state.indexWhere((s) => s.id == sessionId || s.nativeId == sessionId);
+    final index =
+        state.indexWhere((s) => s.id == sessionId || s.nativeId == sessionId);
     if (index != -1 && state[index].isUnread) {
       final updated = List<Session>.from(state);
       updated[index] = updated[index].copyWith(isUnread: false);
@@ -325,12 +343,14 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
 
     final host = _getHostRecord(hostName);
     final hostUrl = host?.url ?? 'http://127.0.0.1:7777';
-    await _apiClient.markSessionRead(hostUrl, sessionId, authToken: host?.authToken);
+    await _apiClient.markSessionRead(hostUrl, sessionId,
+        authToken: host?.authToken);
   }
 
   HostRecord? _getHostRecord(String hostName) {
     final hosts = _ref.read(hostsListProvider);
-    final match = hosts.where((h) => h.name == hostName || h.url.contains(hostName));
+    final match =
+        hosts.where((h) => h.name == hostName || h.url.contains(hostName));
     if (match.isNotEmpty) return match.first;
     if (hosts.isNotEmpty) return hosts.first;
     return null;
@@ -342,7 +362,8 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
   }
 
   Future<void> resumeSession(String sessionId) async {
-    final session = state.firstWhere((s) => s.id == sessionId || s.nativeId == sessionId);
+    final session =
+        state.firstWhere((s) => s.id == sessionId || s.nativeId == sessionId);
     final host = _getHostRecord(session.host);
     final hostUrl = host?.url ?? 'http://127.0.0.1:7777';
 
@@ -352,7 +373,8 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
       lastEventAt: DateTime.now(),
     ));
 
-    await _apiClient.controlSession(hostUrl, session.id, 'resume', authToken: host?.authToken);
+    await _apiClient.controlSession(hostUrl, session.id, 'resume',
+        authToken: host?.authToken);
   }
 
   Future<void> restartSession(String sessionId) async {
@@ -366,7 +388,8 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
       lastEventAt: DateTime.now(),
     ));
 
-    await _apiClient.controlSession(hostUrl, session.id, 'restart', authToken: host?.authToken);
+    await _apiClient.controlSession(hostUrl, session.id, 'restart',
+        authToken: host?.authToken);
   }
 
   Future<bool> handoverSession(
@@ -407,7 +430,8 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
       lastEventAt: DateTime.now(),
     ));
 
-    await _apiClient.controlSession(hostUrl, session.id, 'kill', authToken: host?.authToken);
+    await _apiClient.controlSession(hostUrl, session.id, 'kill',
+        authToken: host?.authToken);
   }
 
   Future<void> deleteSession(String sessionId) async {
@@ -416,7 +440,41 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
     final hostUrl = host?.url ?? 'http://127.0.0.1:7777';
 
     state = state.where((s) => s.id != sessionId).toList();
-    await _apiClient.controlSession(hostUrl, session.id, 'delete', authToken: host?.authToken);
+    await _apiClient.controlSession(hostUrl, session.id, 'delete',
+        authToken: host?.authToken);
+  }
+
+  /// Spawn a new agent session on a specified host
+  Future<Map<String, dynamic>?> spawnSession({
+    required String hostName,
+    required String agent,
+    required String cwd,
+    String? nodePath,
+    String? name,
+    String? accountId,
+    String engineType = 'tmux',
+    String? prompt,
+  }) async {
+    final host = _getHostRecord(hostName);
+    final hostUrl = host?.url ?? 'http://127.0.0.1:7777';
+
+    final result = await _apiClient.spawnSession(
+      hostUrl,
+      agent: agent,
+      cwd: cwd,
+      host: hostName,
+      nodePath: nodePath,
+      name: name,
+      accountId: accountId,
+      engineType: engineType,
+      prompt: prompt,
+      authToken: host?.authToken,
+    );
+
+    if (result != null) {
+      await refreshSessions();
+    }
+    return result;
   }
 }
 
@@ -424,6 +482,18 @@ final fleetSessionsProvider =
     StateNotifierProvider<FleetSessionsNotifier, List<Session>>((ref) {
   final api = ref.watch(apiClientProvider);
   return FleetSessionsNotifier(api, ref);
+});
+
+/// Unique list of working directory paths known from existing sessions to suggest in New Session sheet
+final knownProjectPathsProvider = Provider<List<String>>((ref) {
+  final sessions = ref.watch(fleetSessionsProvider);
+  final paths = <String>{};
+  for (final s in sessions) {
+    if (s.cwd.isNotEmpty) {
+      paths.add(s.cwd);
+    }
+  }
+  return paths.toList();
 });
 
 // --- Filtered Sessions Provider ---
@@ -450,7 +520,12 @@ final filteredSessionsProvider = Provider<List<Session>>((ref) {
       final matchesProject = s.projectDisplayName.toLowerCase().contains(query);
       final matchesActivity = s.activity.toLowerCase().contains(query);
       final matchesBranch = s.gitBranch.toLowerCase().contains(query);
-      if (!matchesTitle && !matchesAgent && !matchesHost && !matchesProject && !matchesActivity && !matchesBranch) {
+      if (!matchesTitle &&
+          !matchesAgent &&
+          !matchesHost &&
+          !matchesProject &&
+          !matchesActivity &&
+          !matchesBranch) {
         return false;
       }
     }
@@ -459,8 +534,10 @@ final filteredSessionsProvider = Provider<List<Session>>((ref) {
 
   // Sort sessions descending by latest interaction (newest / active first)
   list.sort((a, b) {
-    final timeA = a.lastEventAt.millisecondsSinceEpoch > 0 ? a.lastEventAt : a.startedAt;
-    final timeB = b.lastEventAt.millisecondsSinceEpoch > 0 ? b.lastEventAt : b.startedAt;
+    final timeA =
+        a.lastEventAt.millisecondsSinceEpoch > 0 ? a.lastEventAt : a.startedAt;
+    final timeB =
+        b.lastEventAt.millisecondsSinceEpoch > 0 ? b.lastEventAt : b.startedAt;
     final cmp = timeB.compareTo(timeA);
     if (cmp != 0) return cmp;
     return a.id.compareTo(b.id);
@@ -490,7 +567,9 @@ final attentionPendingSessionsProvider = Provider<List<Session>>((ref) {
 
 final inProgressSessionsProvider = Provider<List<Session>>((ref) {
   final sessions = ref.watch(fleetSessionsProvider);
-  return sessions.where((s) => !s.archived && s.state == SessionState.working).toList();
+  return sessions
+      .where((s) => !s.archived && s.state == SessionState.working)
+      .toList();
 });
 
 final attentionBadgeCountProvider = Provider<int>((ref) {

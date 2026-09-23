@@ -35,7 +35,8 @@ void main() {
           },
         ]);
 
-        return http.Response(body, 200, headers: {'content-type': 'application/json'});
+        return http.Response(body, 200,
+            headers: {'content-type': 'application/json'});
       });
 
       final api = ApiClient(client: mockClient);
@@ -123,18 +124,23 @@ void main() {
       expect(ok, isTrue);
     });
 
-    test('controlSession handles lifecycle actions like restart, kill, and delete', () async {
+    test(
+        'controlSession handles lifecycle actions like restart, kill, and delete',
+        () async {
       final mockClient = MockClient((request) async {
         expect(request.url.queryParameters['action'], equals('restart'));
         return http.Response('', 200);
       });
 
       final api = ApiClient(client: mockClient);
-      final ok = await api.controlSession('http://127.0.0.1:7777', 'sess-1', 'restart');
+      final ok = await api.controlSession(
+          'http://127.0.0.1:7777', 'sess-1', 'restart');
       expect(ok, isTrue);
     });
 
-    test('handoverSession sends POST to /v1/sessions/handover with expected JSON body', () async {
+    test(
+        'handoverSession sends POST to /v1/sessions/handover with expected JSON body',
+        () async {
       final mockClient = MockClient((request) async {
         expect(request.url.path, equals('/v1/sessions/handover'));
         expect(request.method, equals('POST'));
@@ -145,7 +151,12 @@ void main() {
         expect(body['strategy'], equals('in_place'));
         expect(body['custom_instruction'], equals('Focus on unit tests'));
 
-        return http.Response(jsonEncode({'status': 'handover_initiated', 'id': 'claude-code:local:session-100'}), 202);
+        return http.Response(
+            jsonEncode({
+              'status': 'handover_initiated',
+              'id': 'claude-code:local:session-100'
+            }),
+            202);
       });
 
       final api = ApiClient(client: mockClient);
@@ -207,7 +218,9 @@ void main() {
       expect(nodes[0]['name'], equals('Mobile Client'));
     });
 
-    test('getDocuments extracts nativeId from compound ID and returns document paths', () async {
+    test(
+        'getDocuments extracts nativeId from compound ID and returns document paths',
+        () async {
       final mockClient = MockClient((request) async {
         expect(request.url.path, equals('/v1/sessions/8492/documents'));
         final body = jsonEncode(['PLAN.md', 'WALKTHROUGH.md']);
@@ -215,47 +228,57 @@ void main() {
       });
 
       final api = ApiClient(client: mockClient);
-      final docs = await api.getDocuments('http://127.0.0.1:7777', 'claude-code:local:8492');
+      final docs = await api.getDocuments(
+          'http://127.0.0.1:7777', 'claude-code:local:8492');
 
       expect(docs.length, equals(2));
       expect(docs, contains('PLAN.md'));
       expect(docs, contains('WALKTHROUGH.md'));
     });
 
-    test('getPlanContent queries /v1/documents/content with query params and returns string body', () async {
+    test(
+        'getPlanContent queries /v1/documents/content with query params and returns string body',
+        () async {
       final mockClient = MockClient((request) async {
         expect(request.url.path, equals('/v1/documents/content'));
         expect(request.url.queryParameters['session_id'], equals('8492'));
         expect(request.url.queryParameters['filename'], equals('PLAN.md'));
 
-        return http.Response('# Implementation Plan\n\n- Step 1\n- Step 2', 200);
+        return http.Response(
+            '# Implementation Plan\n\n- Step 1\n- Step 2', 200);
       });
 
       final api = ApiClient(client: mockClient);
-      final content = await api.getPlanContent('http://127.0.0.1:7777', '8492', 'PLAN.md');
+      final content =
+          await api.getPlanContent('http://127.0.0.1:7777', '8492', 'PLAN.md');
 
       expect(content, contains('# Implementation Plan'));
     });
 
-    test('getTranscript queries /v1/sessions/transcript with id and format', () async {
+    test('getTranscript queries /v1/sessions/transcript with id and format',
+        () async {
       final mockClient = MockClient((request) async {
         expect(request.url.path, equals('/v1/sessions/transcript'));
-        expect(request.url.queryParameters['id'], equals('claude-code:local:8492'));
+        expect(request.url.queryParameters['id'],
+            equals('claude-code:local:8492'));
         expect(request.url.queryParameters['format'], equals('markdown'));
         return http.Response('# Transcript\nUser: Hello\nAgent: Hi', 200);
       });
 
       final api = ApiClient(client: mockClient);
-      final transcript = await api.getTranscript('http://127.0.0.1:7777', 'claude-code:local:8492');
+      final transcript = await api.getTranscript(
+          'http://127.0.0.1:7777', 'claude-code:local:8492');
 
       expect(transcript, contains('# Transcript'));
       expect(transcript, contains('Agent: Hi'));
     });
 
-    test('checkHostHealth measures latency and returns decoded version map', () async {
+    test('checkHostHealth measures latency and returns decoded version map',
+        () async {
       final mockClient = MockClient((request) async {
         expect(request.url.path, equals('/v1/version'));
-        return http.Response(jsonEncode({'version': 'v0.2.1', 'uptime': '4d 12h'}), 200);
+        return http.Response(
+            jsonEncode({'version': 'v0.2.1', 'uptime': '4d 12h'}), 200);
       });
 
       final api = ApiClient(client: mockClient);
@@ -312,7 +335,8 @@ void main() {
       });
 
       final api = ApiClient(client: mockClient);
-      final subagents = await api.getSubagents('http://127.0.0.1:7777', 'sess-100');
+      final subagents =
+          await api.getSubagents('http://127.0.0.1:7777', 'sess-100');
 
       expect(subagents.length, equals(2));
       expect(subagents[0].id, equals('sub-1'));
@@ -328,9 +352,98 @@ void main() {
       });
 
       final api = ApiClient(client: mockClient);
-      final subagents = await api.getSubagents('http://127.0.0.1:7777', 'sess-unknown');
+      final subagents =
+          await api.getSubagents('http://127.0.0.1:7777', 'sess-unknown');
 
       expect(subagents, isEmpty);
+    });
+
+    test(
+        'spawnSession dispatches POST to /v1/sessions/spawn with correct payload',
+        () async {
+      final mockClient = MockClient((request) async {
+        expect(request.url.path, equals('/v1/sessions/spawn'));
+        expect(request.method, equals('POST'));
+        expect(request.headers['Content-Type'], contains('application/json'));
+
+        final body = jsonDecode(request.body) as Map<String, dynamic>;
+        expect(body['agent'], equals('claude-code'));
+        expect(body['cwd'], equals('/home/user/project'));
+        expect(body['host'], equals('gpu-box'));
+        expect(body['engine_type'], equals('tmux'));
+        expect(body['name'], equals('My Feature'));
+        expect(body['prompt'], equals('Run go test'));
+
+        return http.Response(
+          jsonEncode({
+            'status': 'spawned',
+            'session_id': 'sess-uuid-99',
+            'id': 'claude-code:gpu-box:sess-uuid-99',
+            'host': 'gpu-box',
+            'engine_type': 'tmux',
+          }),
+          200,
+        );
+      });
+
+      final api = ApiClient(client: mockClient);
+      final res = await api.spawnSession(
+        'http://127.0.0.1:7777',
+        agent: 'claude-code',
+        cwd: '/home/user/project',
+        host: 'gpu-box',
+        name: 'My Feature',
+        prompt: 'Run go test',
+      );
+
+      expect(res, isNotNull);
+      expect(res!['status'], equals('spawned'));
+      expect(res['session_id'], equals('sess-uuid-99'));
+      expect(res['id'], equals('claude-code:gpu-box:sess-uuid-99'));
+    });
+
+    test('spawnSession returns null on 500 error or failure', () async {
+      final mockClient = MockClient((request) async {
+        return http.Response('Internal Server Error', 500);
+      });
+
+      final api = ApiClient(client: mockClient);
+      final res = await api.spawnSession(
+        'http://127.0.0.1:7777',
+        agent: 'antigravity',
+        cwd: '/bad/path',
+      );
+
+      expect(res, isNull);
+    });
+
+    test('getAgentsDiscovery returns parsed agent discovery list', () async {
+      final mockClient = MockClient((request) async {
+        expect(request.url.path, equals('/v1/agents/discovery'));
+        expect(request.method, equals('GET'));
+        return http.Response(
+          jsonEncode([
+            {
+              'agent': 'claude-code',
+              'display_name': 'Claude Code',
+              'installed': true
+            },
+            {
+              'agent': 'antigravity',
+              'display_name': 'Google Antigravity',
+              'installed': true
+            },
+          ]),
+          200,
+        );
+      });
+
+      final api = ApiClient(client: mockClient);
+      final agents = await api.getAgentsDiscovery('http://127.0.0.1:7777');
+
+      expect(agents.length, equals(2));
+      expect(agents[0]['agent'], equals('claude-code'));
+      expect(agents[1]['agent'], equals('antigravity'));
     });
 
     test('dispose cleans up resources safely', () {

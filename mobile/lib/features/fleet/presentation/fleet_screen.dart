@@ -11,6 +11,7 @@ import '../../../core/widgets/glass_card.dart';
 import '../../../core/widgets/segmented_filter_tabs.dart';
 import '../../../core/widgets/status_badge.dart';
 import '../../../core/widgets/token_gauge_bar.dart';
+import 'new_session_sheet.dart';
 import 'session_detail_sheet.dart';
 
 /// Screen displaying the active fleet of agent sessions across all supervised machines,
@@ -58,9 +59,11 @@ class _FleetScreenState extends ConsumerState<FleetScreen> {
     final filterIndex = ref.watch(fleetFilterIndexProvider);
     final hosts = ref.watch(hostsListProvider);
 
-    final workingCount = activeSessions.where((s) => s.state == SessionState.working).length;
+    final workingCount =
+        activeSessions.where((s) => s.state == SessionState.working).length;
     final attentionCount = activeSessions.where((s) => s.isBlocked).length;
-    final idleCount = activeSessions.where((s) => s.state == SessionState.idle).length;
+    final idleCount =
+        activeSessions.where((s) => s.state == SessionState.idle).length;
 
     final filterTabs = [
       FilterTabItem(label: 'All Sessions', count: activeSessions.length),
@@ -81,6 +84,14 @@ class _FleetScreenState extends ConsumerState<FleetScreen> {
       appBar: AckbarAppBar(
         title: 'FLEET CONTROL',
         hosts: hostIndicators,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.add_circle_outline_rounded,
+                size: 20, color: AppColors.infoCyan),
+            tooltip: 'Launch New Session',
+            onPressed: () => NewSessionSheet.show(context),
+          ),
+        ],
       ),
       body: RefreshIndicator(
         color: AppColors.infoCyan,
@@ -90,7 +101,8 @@ class _FleetScreenState extends ConsumerState<FleetScreen> {
           await ref.read(fleetSessionsProvider.notifier).refreshSessions();
         },
         child: CustomScrollView(
-          physics: const BouncingScrollPhysics(parent: AlwaysScrollableScrollPhysics()),
+          physics: const BouncingScrollPhysics(
+              parent: AlwaysScrollableScrollPhysics()),
           slivers: [
             // Search Filter Bar
             SliverToBoxAdapter(
@@ -106,24 +118,31 @@ class _FleetScreenState extends ConsumerState<FleetScreen> {
                   decoration: BoxDecoration(
                     color: AppColors.surface,
                     borderRadius: AppSpacing.roundedMd,
-                    border: Border.all(color: AppColors.outlineSubtle, width: 1),
+                    border:
+                        Border.all(color: AppColors.outlineSubtle, width: 1),
                   ),
                   child: TextField(
                     controller: _searchController,
                     onChanged: (val) {
                       ref.read(fleetSearchQueryProvider.notifier).state = val;
                     },
-                    style: AppTypography.bodyMedium.copyWith(color: AppColors.textPrimary),
+                    style: AppTypography.bodyMedium
+                        .copyWith(color: AppColors.textPrimary),
                     decoration: InputDecoration(
                       hintText: 'Filter sessions, groups, branches...',
-                      hintStyle: AppTypography.bodySmall.copyWith(color: AppColors.textMuted),
-                      prefixIcon: const Icon(Icons.search_rounded, size: 18, color: AppColors.textMuted),
+                      hintStyle: AppTypography.bodySmall
+                          .copyWith(color: AppColors.textMuted),
+                      prefixIcon: const Icon(Icons.search_rounded,
+                          size: 18, color: AppColors.textMuted),
                       suffixIcon: _searchController.text.isNotEmpty
                           ? IconButton(
-                              icon: const Icon(Icons.clear_rounded, size: 16, color: AppColors.textMuted),
+                              icon: const Icon(Icons.clear_rounded,
+                                  size: 16, color: AppColors.textMuted),
                               onPressed: () {
                                 _searchController.clear();
-                                ref.read(fleetSearchQueryProvider.notifier).state = '';
+                                ref
+                                    .read(fleetSearchQueryProvider.notifier)
+                                    .state = '';
                               },
                             )
                           : null,
@@ -165,7 +184,9 @@ class _FleetScreenState extends ConsumerState<FleetScreen> {
                         Icon(
                           hosts.isEmpty
                               ? Icons.dns_rounded
-                              : (allSessions.isEmpty ? Icons.smart_toy_outlined : Icons.search_off_rounded),
+                              : (allSessions.isEmpty
+                                  ? Icons.smart_toy_outlined
+                                  : Icons.search_off_rounded),
                           size: 36,
                           color: AppColors.textMuted,
                         ),
@@ -173,115 +194,190 @@ class _FleetScreenState extends ConsumerState<FleetScreen> {
                         Text(
                           hosts.isEmpty
                               ? 'No Hosts Connected'
-                              : (allSessions.isEmpty ? 'No Sessions on Connected Hosts' : 'No matching sessions found'),
-                          style: AppTypography.titleMedium.copyWith(color: AppColors.textSecondary),
+                              : (allSessions.isEmpty
+                                  ? 'No Sessions on Connected Hosts'
+                                  : 'No matching sessions found'),
+                          style: AppTypography.titleMedium
+                              .copyWith(color: AppColors.textSecondary),
                         ),
                         AppSpacing.gapH4,
                         Text(
                           hosts.isEmpty
                               ? 'Add a host in the Hosts tab to see active agent sessions.'
                               : (allSessions.isEmpty
-                                  ? 'Pull down to refresh or start a session on your Mac.'
+                                  ? 'Pull down to refresh or launch a new agent session.'
                                   : 'Try adjusting your search or tab filter.'),
                           textAlign: TextAlign.center,
-                          style: AppTypography.bodySmall.copyWith(color: AppColors.textMuted),
+                          style: AppTypography.bodySmall
+                              .copyWith(color: AppColors.textMuted),
                         ),
+                        if (hosts.isNotEmpty && allSessions.isEmpty) ...[
+                          AppSpacing.gapH16,
+                          ElevatedButton.icon(
+                            onPressed: () => NewSessionSheet.show(context),
+                            icon: const Icon(Icons.rocket_launch_rounded,
+                                size: 16),
+                            label: Text(
+                              'START FIRST SESSION',
+                              style: AppTypography.codeXs.copyWith(
+                                fontWeight: FontWeight.w700,
+                                color: AppColors.terminalBlack,
+                              ),
+                            ),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: AppColors.infoCyan,
+                              foregroundColor: AppColors.terminalBlack,
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 16, vertical: 10),
+                              shape: RoundedRectangleBorder(
+                                  borderRadius: AppSpacing.roundedMd),
+                            ),
+                          ),
+                        ],
                       ],
                     ),
                   ),
                 ),
               )
             else
-            SliverPadding(
-              padding: const EdgeInsets.symmetric(horizontal: AppSpacing.lg, vertical: AppSpacing.xs),
-              sliver: SliverList(
-                delegate: SliverChildBuilderDelegate(
-                  (context, index) {
-                    final folderName = groupedSessions.keys.elementAt(index);
-                    final sessionsInFolder = groupedSessions[folderName]!;
-                    final isCollapsed = _collapsedFolders.contains(folderName);
+              SliverPadding(
+                padding: const EdgeInsets.symmetric(
+                    horizontal: AppSpacing.lg, vertical: AppSpacing.xs),
+                sliver: SliverList(
+                  delegate: SliverChildBuilderDelegate(
+                    (context, index) {
+                      final folderName = groupedSessions.keys.elementAt(index);
+                      final sessionsInFolder = groupedSessions[folderName]!;
+                      final isCollapsed =
+                          _collapsedFolders.contains(folderName);
 
-                    return Padding(
-                      padding: const EdgeInsets.only(bottom: AppSpacing.lg),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          // Collapsible Folder Header
-                          InkWell(
-                            onTap: () => _toggleFolder(folderName),
-                            borderRadius: AppSpacing.roundedSm,
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(vertical: 6.0, horizontal: 2.0),
-                              child: Row(
-                                children: [
-                                  Icon(
-                                    isCollapsed ? Icons.folder_rounded : Icons.folder_open_rounded,
-                                    size: 16,
-                                    color: AppColors.infoCyan,
-                                  ),
-                                  const SizedBox(width: 8),
-                                  Text(
-                                    folderName.toUpperCase(),
-                                    style: AppTypography.codeXs.copyWith(
-                                      letterSpacing: 0.8,
-                                      fontWeight: FontWeight.w700,
-                                      color: AppColors.textPrimary,
+                      return Padding(
+                        padding: const EdgeInsets.only(bottom: AppSpacing.lg),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            // Collapsible Folder Header
+                            InkWell(
+                              onTap: () => _toggleFolder(folderName),
+                              borderRadius: AppSpacing.roundedSm,
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(
+                                    vertical: 6.0, horizontal: 2.0),
+                                child: Row(
+                                  children: [
+                                    Icon(
+                                      isCollapsed
+                                          ? Icons.folder_rounded
+                                          : Icons.folder_open_rounded,
+                                      size: 16,
+                                      color: AppColors.infoCyan,
                                     ),
-                                  ),
-                                  const SizedBox(width: 8),
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
-                                    decoration: BoxDecoration(
-                                      color: AppColors.surfaceHighlight,
-                                      borderRadius: BorderRadius.circular(10),
-                                      border: Border.all(color: AppColors.outlineSubtle, width: 0.5),
-                                    ),
-                                    child: Text(
-                                      '${sessionsInFolder.length}',
+                                    const SizedBox(width: 8),
+                                    Text(
+                                      folderName.toUpperCase(),
                                       style: AppTypography.codeXs.copyWith(
-                                        fontSize: 9.5,
-                                        color: AppColors.infoCyan,
+                                        letterSpacing: 0.8,
                                         fontWeight: FontWeight.w700,
+                                        color: AppColors.textPrimary,
                                       ),
                                     ),
-                                  ),
-                                  const Spacer(),
-                                  Icon(
-                                    isCollapsed ? Icons.expand_more_rounded : Icons.expand_less_rounded,
-                                    size: 18,
-                                    color: AppColors.textMuted,
-                                  ),
-                                ],
+                                    const SizedBox(width: 8),
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(
+                                          horizontal: 6, vertical: 1),
+                                      decoration: BoxDecoration(
+                                        color: AppColors.surfaceHighlight,
+                                        borderRadius: BorderRadius.circular(10),
+                                        border: Border.all(
+                                            color: AppColors.outlineSubtle,
+                                            width: 0.5),
+                                      ),
+                                      child: Text(
+                                        '${sessionsInFolder.length}',
+                                        style: AppTypography.codeXs.copyWith(
+                                          fontSize: 9.5,
+                                          color: AppColors.infoCyan,
+                                          fontWeight: FontWeight.w700,
+                                        ),
+                                      ),
+                                    ),
+                                    const Spacer(),
+                                    InkWell(
+                                      onTap: () {
+                                        final firstSess =
+                                            sessionsInFolder.firstOrNull;
+                                        NewSessionSheet.show(
+                                          context,
+                                          prefillFolder: folderName,
+                                          prefillCwd: firstSess?.cwd,
+                                          prefillHost: firstSess?.host,
+                                        );
+                                      },
+                                      borderRadius: BorderRadius.circular(12),
+                                      child: const Padding(
+                                        padding: EdgeInsets.symmetric(
+                                            horizontal: 6, vertical: 2),
+                                        child: Icon(
+                                          Icons.add_circle_outline_rounded,
+                                          size: 16,
+                                          color: AppColors.infoCyan,
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 4),
+                                    Icon(
+                                      isCollapsed
+                                          ? Icons.expand_more_rounded
+                                          : Icons.expand_less_rounded,
+                                      size: 18,
+                                      color: AppColors.textMuted,
+                                    ),
+                                  ],
+                                ),
                               ),
                             ),
-                          ),
-                          AppSpacing.gapH6,
+                            AppSpacing.gapH6,
 
-                          // Session cards inside folder
-                          if (!isCollapsed)
-                            ...sessionsInFolder.map((session) {
-                              return Padding(
-                                padding: const EdgeInsets.only(bottom: AppSpacing.md),
-                                child: _buildSessionCard(session),
-                              );
-                            }),
-                        ],
-                      ),
-                    );
-                  },
-                  childCount: groupedSessions.length,
+                            // Session cards inside folder
+                            if (!isCollapsed)
+                              ...sessionsInFolder.map((session) {
+                                return Padding(
+                                  padding: const EdgeInsets.only(
+                                      bottom: AppSpacing.md),
+                                  child: _buildSessionCard(session),
+                                );
+                              }),
+                          ],
+                        ),
+                      );
+                    },
+                    childCount: groupedSessions.length,
+                  ),
                 ),
               ),
-            ),
 
-          const SliverToBoxAdapter(
-            child: SizedBox(height: AppSpacing.xxl),
-          ),
-        ],
+            const SliverToBoxAdapter(
+              child: SizedBox(height: AppSpacing.xxl),
+            ),
+          ],
+        ),
       ),
-    ),
-  );
-}
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: () => NewSessionSheet.show(context),
+        backgroundColor: AppColors.infoCyan,
+        foregroundColor: AppColors.terminalBlack,
+        icon: const Icon(Icons.add_rounded, size: 20),
+        label: Text(
+          'NEW SESSION',
+          style: AppTypography.codeXs.copyWith(
+            color: AppColors.terminalBlack,
+            fontWeight: FontWeight.w800,
+            letterSpacing: 0.6,
+          ),
+        ),
+      ),
+    );
+  }
 
   Widget _buildSessionCard(Session session) {
     final statusColor = session.state.toBadgeStatus().color;
@@ -301,7 +397,8 @@ class _FleetScreenState extends ConsumerState<FleetScreen> {
                 decoration: BoxDecoration(
                   color: AppColors.surfaceHighlight,
                   borderRadius: AppSpacing.roundedSm,
-                  border: Border.all(color: AppColors.outlineSubtle, width: 0.5),
+                  border:
+                      Border.all(color: AppColors.outlineSubtle, width: 0.5),
                 ),
                 child: Text(
                   session.hostTag,
@@ -319,12 +416,16 @@ class _FleetScreenState extends ConsumerState<FleetScreen> {
                 decoration: BoxDecoration(
                   color: session.agentColor.withOpacity(0.12),
                   borderRadius: AppSpacing.roundedSm,
-                  border: Border.all(color: session.agentColor.withOpacity(0.3), width: 0.8),
+                  border: Border.all(
+                      color: session.agentColor.withOpacity(0.3), width: 0.8),
                 ),
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    AgentLogo(agent: session.agent, size: 10, color: session.agentColor),
+                    AgentLogo(
+                        agent: session.agent,
+                        size: 10,
+                        color: session.agentColor),
                     const SizedBox(width: 4),
                     Text(
                       session.agentDisplayName,
@@ -341,7 +442,8 @@ class _FleetScreenState extends ConsumerState<FleetScreen> {
               if (session.gitBranch.isNotEmpty) ...[
                 const SizedBox(width: 6),
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
                   decoration: BoxDecoration(
                     color: AppColors.surfaceHighlight,
                     borderRadius: AppSpacing.roundedSm,
@@ -375,7 +477,8 @@ class _FleetScreenState extends ConsumerState<FleetScreen> {
                   ),
                 ),
               ],
-              StatusBadge(status: session.state.toBadgeStatus(), isCompact: true),
+              StatusBadge(
+                  status: session.state.toBadgeStatus(), isCompact: true),
             ],
           ),
           AppSpacing.gapH8,
@@ -397,7 +500,9 @@ class _FleetScreenState extends ConsumerState<FleetScreen> {
             Row(
               children: [
                 Icon(
-                  session.isBlocked ? Icons.help_outline_rounded : Icons.bolt_rounded,
+                  session.isBlocked
+                      ? Icons.help_outline_rounded
+                      : Icons.bolt_rounded,
                   size: 13,
                   color: statusColor,
                 ),
@@ -406,7 +511,9 @@ class _FleetScreenState extends ConsumerState<FleetScreen> {
                   child: Text(
                     session.activity,
                     style: AppTypography.codeXs.copyWith(
-                      color: session.isBlocked ? AppColors.statusCoral : AppColors.textSecondary,
+                      color: session.isBlocked
+                          ? AppColors.statusCoral
+                          : AppColors.textSecondary,
                       fontSize: 11,
                     ),
                     maxLines: 1,
@@ -420,7 +527,8 @@ class _FleetScreenState extends ConsumerState<FleetScreen> {
           // Directory path & runtime clock
           Row(
             children: [
-              const Icon(Icons.folder_outlined, size: 12, color: AppColors.textMuted),
+              const Icon(Icons.folder_outlined,
+                  size: 12, color: AppColors.textMuted),
               const SizedBox(width: 4),
               Expanded(
                 child: Text(

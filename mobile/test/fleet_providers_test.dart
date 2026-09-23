@@ -45,7 +45,8 @@ final _testSessions = [
       kind: BlockKind.question,
       reason: 'Database schema migration requires database driver confirmation',
       since: DateTime.now().subtract(const Duration(minutes: 8)),
-      question: 'Which SQLite driver implementation should be used for pure Go cross-compilation without CGO dependencies?',
+      question:
+          'Which SQLite driver implementation should be used for pure Go cross-compilation without CGO dependencies?',
       options: [
         'modernc.org/sqlite (Pure Go, no CGO, Recommended)',
         'mattn/go-sqlite3 (Requires CGO, faster on Linux)',
@@ -304,7 +305,9 @@ void main() {
       mockSseClient.dispose();
     });
 
-    test('respondToSession unblocks session optimistically and adds audit entry', () async {
+    test(
+        'respondToSession unblocks session optimistically and adds audit entry',
+        () async {
       final container = ProviderContainer(
         overrides: [
           apiClientProvider.overrideWithValue(mockApiClient),
@@ -326,13 +329,15 @@ void main() {
       expect(ok, isTrue);
 
       final sessions = container.read(fleetSessionsProvider);
-      final session = sessions.firstWhere((s) => s.id == 'antigravity:devbox:8491');
+      final session =
+          sessions.firstWhere((s) => s.id == 'antigravity:devbox:8491');
       expect(session.state, equals(SessionState.working));
       expect(session.blocked, isNull);
 
       final audits = container.read(decisionAuditProvider);
       expect(audits.first.sessionId, equals('antigravity:devbox:8491'));
-      expect(audits.first.summary, equals('Selected modernc.org/sqlite driver'));
+      expect(
+          audits.first.summary, equals('Selected modernc.org/sqlite driver'));
     });
   });
 
@@ -341,7 +346,8 @@ void main() {
     late SSEClient mockSseClient;
 
     setUp(() {
-      final mockClient = MockClient((request) async => http.Response('[]', 200));
+      final mockClient =
+          MockClient((request) async => http.Response('[]', 200));
       mockApiClient = ApiClient(client: mockClient);
       mockSseClient = SSEClient(client: mockClient);
     });
@@ -421,7 +427,9 @@ void main() {
       expect(grouped.containsKey('Acme Web Platform'), isTrue);
     });
 
-    test('filteredSessionsProvider sorts sessions by latest interaction descending', () {
+    test(
+        'filteredSessionsProvider sorts sessions by latest interaction descending',
+        () {
       final container = ProviderContainer(
         overrides: [
           apiClientProvider.overrideWithValue(mockApiClient),
@@ -438,6 +446,105 @@ void main() {
       expect(sessions.first.id, equals('claude-code:devbox:8472'));
       // Second session should be the one with lastEventAt 40s ago: 'claude-code:local:8492'
       expect(sessions[1].id, equals('claude-code:local:8492'));
+    });
+
+    test('knownProjectPathsProvider extracts unique working directories', () {
+      final container = ProviderContainer(
+        overrides: [
+          apiClientProvider.overrideWithValue(mockApiClient),
+          sseClientProvider.overrideWithValue(mockSseClient),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      container.read(fleetSessionsProvider.notifier).setSessions(_testSessions);
+
+      final paths = container.read(knownProjectPathsProvider);
+      expect(paths.contains('~/Work/Ackbar/mobile'), isTrue);
+      expect(paths.contains('~/Work/AcmePlatform/billing'), isTrue);
+    });
+
+    test(
+        'FleetSessionsNotifier.spawnSession delegates to ApiClient and refreshes sessions',
+        () async {
+      bool spawnCalled = false;
+      bool getSessionsCalled = false;
+
+      final customMock = MockClient((request) async {
+        if (request.url.path == '/v1/sessions/spawn') {
+          spawnCalled = true;
+          return http.Response(
+            jsonEncode({
+              'status': 'spawned',
+              'session_id': 'new-sess-1',
+              'id': 'claude-code:local:new-sess-1',
+            }),
+            200,
+          );
+        } else if (request.url.path == '/v1/sessions') {
+          getSessionsCalled = true;
+          return http.Response(
+            jsonEncode([
+              {
+                'id': 'claude-code:local:new-sess-1',
+                'agent': 'claude-code',
+                'host': 'local',
+                'native_id': 'new-sess-1',
+                'cwd': '/my/project',
+                'state': 1,
+                'activity': 'Started',
+              }
+            ]),
+            200,
+          );
+        }
+        return http.Response('[]', 200);
+      });
+
+      final testApi = ApiClient(client: customMock);
+      final testSse = SSEClient(client: customMock);
+      addTearDown(() {
+        testApi.dispose();
+        testSse.dispose();
+      });
+
+      final container = ProviderContainer(
+        overrides: [
+          apiClientProvider.overrideWithValue(testApi),
+          sseClientProvider.overrideWithValue(testSse),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      container.read(hostsListProvider.notifier).addHost(
+            HostRecord(
+              name: 'local',
+              url: 'http://127.0.0.1:7777',
+              online: true,
+              latencyMs: 1,
+              version: 'v0.2.1',
+              uptime: 'Active',
+              sessionsCount: 0,
+              createdAt: DateTime.now(),
+            ),
+          );
+
+      final result =
+          await container.read(fleetSessionsProvider.notifier).spawnSession(
+                hostName: 'local',
+                agent: 'claude-code',
+                cwd: '/my/project',
+                name: 'New Session Test',
+              );
+
+      expect(spawnCalled, isTrue);
+      expect(result, isNotNull);
+      expect(result!['status'], equals('spawned'));
+      expect(getSessionsCalled, isTrue);
+
+      final sessions = container.read(fleetSessionsProvider);
+      expect(
+          sessions.any((s) => s.id == 'claude-code:local:new-sess-1'), isTrue);
     });
   });
 }

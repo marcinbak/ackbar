@@ -56,6 +56,7 @@ It communicates with local and remote `ackbard` daemons over standard HTTP/REST,
 * **Unread State Indicator:** A glowing pulse indicator highlights sessions that transitioned into `BLOCKED` or `IDLE`. Tapping the card automatically clears the unread state via `POST /v1/sessions/mark-read`.
 * **Live Search & Filter:** Real-time fuzzy filtering by session title, agent, or group.
 * **Session Details & Controls Sheet:** Tap any session to inspect metadata, **▶ Resume Conversation**, restart, kill, archive, or delete.
+* **New Agent Session Creation:** Spawn new sessions across supervised hosts directly from mobile via Floating Action Button (`+ NEW SESSION`), top AppBar action, per-folder quick shortcuts (`+`), or empty-state CTA. Supports Claude Code, Google Antigravity, and OpenAI Codex in either live `tmux` terminal or `headless` chat mode, with autocomplete chips for known project directories.
 
 ---
 
