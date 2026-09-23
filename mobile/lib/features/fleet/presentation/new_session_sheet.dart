@@ -99,6 +99,7 @@ class _NewSessionSheetState extends ConsumerState<NewSessionSheet> {
     final prompt = _promptController.text.trim();
     final group = _groupController.text.trim();
 
+    final messenger = ScaffoldMessenger.of(context);
     setState(() => _isLaunching = true);
 
     final notifier = ref.read(fleetSessionsProvider.notifier);
@@ -116,23 +117,26 @@ class _NewSessionSheetState extends ConsumerState<NewSessionSheet> {
       setState(() => _isLaunching = false);
       if (result != null) {
         Navigator.of(context).pop();
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('🚀 Session spawned on $_selectedHost'),
-            backgroundColor: AppColors.statusEmerald,
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-                'Failed to spawn session on $_selectedHost. Check connection.'),
-            backgroundColor: AppColors.statusCoral,
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
       }
+    }
+
+    if (result != null) {
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text('🚀 Session spawned on $_selectedHost'),
+          backgroundColor: AppColors.statusEmerald,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } else {
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(
+              'Failed to spawn session on $_selectedHost. Check connection.'),
+          backgroundColor: AppColors.statusCoral,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
     }
   }
 
@@ -274,6 +278,50 @@ class _NewSessionSheetState extends ConsumerState<NewSessionSheet> {
                       },
                     ),
                   ),
+                ),
+                AppSpacing.gapH16,
+              ] else if (hosts.length == 1) ...[
+                Row(
+                  children: [
+                    Text('TARGET HOST:',
+                        style: AppTypography.codeXs.copyWith(
+                            color: AppColors.textSecondary,
+                            fontWeight: FontWeight.w700)),
+                    const SizedBox(width: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: AppColors.surface,
+                        borderRadius: AppSpacing.roundedSm,
+                        border: Border.all(
+                            color: AppColors.outlineSubtle, width: 0.8),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Container(
+                            width: 6,
+                            height: 6,
+                            decoration: BoxDecoration(
+                              color: hosts.first.online
+                                  ? AppColors.statusEmerald
+                                  : AppColors.statusCoral,
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                          const SizedBox(width: 5),
+                          Text(
+                            hosts.first.name,
+                            style: AppTypography.codeXs.copyWith(
+                              color: AppColors.textPrimary,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
                 ),
                 AppSpacing.gapH16,
               ],
