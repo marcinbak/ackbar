@@ -639,6 +639,10 @@ func (c *ClaudeProvider) ListSubagents(home, cwd, nativeID string) ([]*daemon.Ac
 	if nativeID == "" {
 		return nil, nil
 	}
+	cleanID := filepath.Base(filepath.Clean(nativeID))
+	if cleanID == "" || cleanID == "." || cleanID == ".." || strings.ContainsAny(cleanID, "*?[") {
+		return nil, nil
+	}
 	if home == "" {
 		home, _ = os.UserHomeDir()
 	}
@@ -650,11 +654,11 @@ func (c *ClaudeProvider) ListSubagents(home, cwd, nativeID string) ([]*daemon.Ac
 	var candidateDirs []string
 	if cwd != "" {
 		slug := strings.ReplaceAll(cwd, "/", "-")
-		candidateDirs = append(candidateDirs, filepath.Join(home, ".claude", "projects", slug, nativeID, "subagents"))
+		candidateDirs = append(candidateDirs, filepath.Join(home, ".claude", "projects", slug, cleanID, "subagents"))
 	}
 
 	// Glob across projects for this nativeID
-	if matches, err := filepath.Glob(filepath.Join(home, ".claude", "projects", "*", nativeID, "subagents")); err == nil {
+	if matches, err := filepath.Glob(filepath.Join(home, ".claude", "projects", "*", cleanID, "subagents")); err == nil {
 		for _, m := range matches {
 			already := false
 			for _, cd := range candidateDirs {
@@ -773,6 +777,68 @@ func (c *ClaudeProvider) ListSubagents(home, cwd, nativeID string) ([]*daemon.Ac
 				State:     state,
 				StartedAt: startTime,
 			})
+		}
+	}
+
+	// 2. Discover teammates from ~/.claude/teams/
+	teamsDir := filepath.Join(home, ".claude", "teams")
+	if teamMatches, err := filepath.Glob(filepath.Join(teamsDir, "*", "config.json")); err == nil {
+		for _, cfgPath := range teamMatches {
+			data, err := os.ReadFile(cfgPath)
+			if err != nil {
+				continue
+			}
+			var teamCfg struct {
+				Name          string `json:"name"`
+				LeadSessionID string `json:"leadSessionId"`
+				Members       []struct {
+					AgentID   string `json:"agentId"`
+					Name      string `json:"name"`
+					AgentType string `json:"agentType"`
+					Prompt    string `json:"prompt"`
+					Model     string `json:"model"`
+					JoinedAt  int64  `json:"joinedAt"`
+				} `json:"members"`
+			}
+			if err := json.Unmarshal(data, &teamCfg); err != nil {
+				continue
+			}
+			// Match either exact leadSessionId or name (e.g. session-16bef887 matching nativeID prefix)
+			isMatch := teamCfg.LeadSessionID == cleanID
+			if !isMatch && len(cleanID) >= 8 && teamCfg.Name == "session-"+cleanID[:8] {
+				isMatch = true
+			}
+			if isMatch {
+				for _, mem := range teamCfg.Members {
+					if mem.Name == "team-lead" {
+						continue // skip the lead session itself
+					}
+					if seen[mem.Name] || seen[mem.AgentID] {
+						continue
+					}
+					subID := mem.AgentID
+					if subID == "" {
+						subID = mem.Name
+					}
+					seen[subID] = true
+					seen[mem.Name] = true
+
+					startTime := time.Now()
+					if mem.JoinedAt > 0 {
+						startTime = time.UnixMilli(mem.JoinedAt)
+					}
+
+					results = append(results, &daemon.ActiveSubagent{
+						ID:        subID,
+						Name:      mem.Name,
+						Role:      mem.AgentType,
+						Prompt:    mem.Prompt,
+						Model:     mem.Model,
+						State:     "running",
+						StartedAt: startTime,
+					})
+				}
+			}
 		}
 	}
 

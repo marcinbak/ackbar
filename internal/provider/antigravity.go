@@ -364,6 +364,10 @@ func (a *AntigravityProvider) ListSubagents(home, cwd, nativeID string) ([]*daem
 	if nativeID == "" {
 		return nil, nil
 	}
+	cleanID := filepath.Base(filepath.Clean(nativeID))
+	if cleanID == "" || cleanID == "." || cleanID == ".." || strings.ContainsAny(cleanID, "*?[") {
+		return nil, nil
+	}
 	if home == "" {
 		home, _ = os.UserHomeDir()
 	}
@@ -372,15 +376,15 @@ func (a *AntigravityProvider) ListSubagents(home, cwd, nativeID string) ([]*daem
 	}
 
 	candidateDirs := []string{
-		filepath.Join(home, ".gemini", "antigravity", "brain", nativeID, ".system_generated", "subagents"),
-		filepath.Join(home, ".gemini", "antigravity-cli", "brain", nativeID, ".system_generated", "subagents"),
-		filepath.Join(home, ".antigravity", "brain", nativeID, ".system_generated", "subagents"),
+		filepath.Join(home, ".gemini", "antigravity", "brain", cleanID, ".system_generated", "subagents"),
+		filepath.Join(home, ".gemini", "antigravity-cli", "brain", cleanID, ".system_generated", "subagents"),
+		filepath.Join(home, ".antigravity", "brain", cleanID, ".system_generated", "subagents"),
 	}
 
-	if profiles, _ := filepath.Glob(filepath.Join(home, ".gemini-profiles", "*", "brain", nativeID, ".system_generated", "subagents")); len(profiles) > 0 {
+	if profiles, _ := filepath.Glob(filepath.Join(home, ".gemini-profiles", "*", "brain", cleanID, ".system_generated", "subagents")); len(profiles) > 0 {
 		candidateDirs = append(candidateDirs, profiles...)
 	}
-	if profiles2, _ := filepath.Glob(filepath.Join(home, ".gemini-profiles", "*", "antigravity", "brain", nativeID, ".system_generated", "subagents")); len(profiles2) > 0 {
+	if profiles2, _ := filepath.Glob(filepath.Join(home, ".gemini-profiles", "*", "antigravity", "brain", cleanID, ".system_generated", "subagents")); len(profiles2) > 0 {
 		candidateDirs = append(candidateDirs, profiles2...)
 	}
 

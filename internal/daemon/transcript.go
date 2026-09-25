@@ -615,15 +615,19 @@ func ExtractSubagents(agent, nativeID, cwd string) ([]SubagentInfo, error) {
 }
 
 func loadAntigravitySubagentsFromDir(home, convID string) []SubagentInfo {
-	candidateDirs := []string{
-		filepath.Join(home, ".gemini", "antigravity", "brain", convID, ".system_generated", "subagents"),
-		filepath.Join(home, ".gemini", "antigravity-cli", "brain", convID, ".system_generated", "subagents"),
-		filepath.Join(home, ".antigravity", "brain", convID, ".system_generated", "subagents"),
+	cleanID := filepath.Base(filepath.Clean(convID))
+	if cleanID == "" || cleanID == "." || cleanID == ".." || strings.ContainsAny(cleanID, "*?[") {
+		return nil
 	}
-	if profiles, _ := filepath.Glob(filepath.Join(home, ".gemini-profiles", "*", "brain", convID, ".system_generated", "subagents")); len(profiles) > 0 {
+	candidateDirs := []string{
+		filepath.Join(home, ".gemini", "antigravity", "brain", cleanID, ".system_generated", "subagents"),
+		filepath.Join(home, ".gemini", "antigravity-cli", "brain", cleanID, ".system_generated", "subagents"),
+		filepath.Join(home, ".antigravity", "brain", cleanID, ".system_generated", "subagents"),
+	}
+	if profiles, _ := filepath.Glob(filepath.Join(home, ".gemini-profiles", "*", "brain", cleanID, ".system_generated", "subagents")); len(profiles) > 0 {
 		candidateDirs = append(candidateDirs, profiles...)
 	}
-	if profiles2, _ := filepath.Glob(filepath.Join(home, ".gemini-profiles", "*", "antigravity", "brain", convID, ".system_generated", "subagents")); len(profiles2) > 0 {
+	if profiles2, _ := filepath.Glob(filepath.Join(home, ".gemini-profiles", "*", "antigravity", "brain", cleanID, ".system_generated", "subagents")); len(profiles2) > 0 {
 		candidateDirs = append(candidateDirs, profiles2...)
 	}
 
@@ -866,12 +870,16 @@ func loadAntigravitySubagents(home, convID string) ([]SubagentInfo, error) {
 }
 
 func loadClaudeSubagentsFromDir(home, sessionID, cwd string) []SubagentInfo {
+	cleanID := filepath.Base(filepath.Clean(sessionID))
+	if cleanID == "" || cleanID == "." || cleanID == ".." || strings.ContainsAny(cleanID, "*?[") {
+		return nil
+	}
 	var candidateDirs []string
 	if cwd != "" {
 		slug := strings.ReplaceAll(cwd, "/", "-")
-		candidateDirs = append(candidateDirs, filepath.Join(home, ".claude", "projects", slug, sessionID, "subagents"))
+		candidateDirs = append(candidateDirs, filepath.Join(home, ".claude", "projects", slug, cleanID, "subagents"))
 	}
-	if matches, err := filepath.Glob(filepath.Join(home, ".claude", "projects", "*", sessionID, "subagents")); err == nil {
+	if matches, err := filepath.Glob(filepath.Join(home, ".claude", "projects", "*", cleanID, "subagents")); err == nil {
 		for _, m := range matches {
 			already := false
 			for _, cd := range candidateDirs {

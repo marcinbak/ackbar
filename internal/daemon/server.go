@@ -598,9 +598,10 @@ func (s *Server) processHookEventWithAccount(p Provider, urlEventName string, he
 		}
 	}
 	if strings.EqualFold(event.EventName, "stop") || strings.EqualFold(event.EventName, "sessionend") {
-		if subs, err := ExtractSubagents(event.Agent, event.NativeID, event.Cwd); err == nil && len(subs) > 0 {
+		runningSubs := s.getRunningSubagents(sessionID, event.NativeID, event.Agent, event.Cwd)
+		if len(runningSubs) > 0 {
 			event.State = StateWorking
-			event.Activity = "Subagent running: " + subs[0].Name
+			event.Activity = "Subagent running: " + runningSubs[0].Name
 		} else if sess.PID > 0 {
 			if activeChildren := getActiveChildProcesses(context.Background(), sess.PID); len(activeChildren) > 0 {
 				event.State = StateWorking
@@ -2539,6 +2540,30 @@ func (s *Server) getRunningSubagents(sessionID, nativeID, agent, cwd string) []S
 		}
 	}
 
+	// 1. Query Provider interface abstraction
+	if p, ok := s.providers[agent]; ok {
+		home, _ := os.UserHomeDir()
+		if activeSubs, err := p.ListSubagents(home, cwd, nativeID); err == nil && len(activeSubs) > 0 {
+			var running []SubagentInfo
+			for _, sub := range activeSubs {
+				if sub != nil && sub.State == "running" {
+					running = append(running, SubagentInfo{
+						ID:        sub.ID,
+						Name:      sub.Name,
+						Role:      sub.Role,
+						Prompt:    sub.Prompt,
+						State:     sub.State,
+						StartedAt: sub.StartedAt,
+					})
+				}
+			}
+			if len(running) > 0 {
+				return running
+			}
+		}
+	}
+
+	// 2. Fallback to transcript and file extraction
 	subs, err := ExtractSubagents(agent, nativeID, cwd)
 	if err == nil {
 		var running []SubagentInfo
@@ -5299,7 +5324,20 @@ func InspectAntigravityStatus(ctx context.Context, sess *Session) bool {
 		}
 	}
 
-	// 4. If it was blocked, but live tmux pane and transcript show it is now unblocked
+	// 4. Check for active child processes
+	if sess.State != StateBlocked && sess.PID > 0 {
+		if activeChildren := getActiveChildProcesses(ctx, sess.PID); len(activeChildren) > 0 {
+			if sess.State != StateWorking {
+				sess.State = StateWorking
+				sess.Blocked = nil
+				sess.Activity = "Running " + activeChildren[0]
+				sess.LastEventAt = time.Now()
+				changed = true
+			}
+		}
+	}
+
+	// 5. If it was blocked, but live tmux pane and transcript show it is now unblocked
 	if sess.State == StateBlocked {
 		if sess.TmuxName != "" || isProcessAlive(sess.PID) {
 			sess.State = StateWorking
@@ -5368,24 +5406,27 @@ func InspectClaudeStatus(ctx context.Context, sess *Session) bool {
 
 	// 2. Structured Background Task Output Discovery (/tmp/claude-$UID/.../tasks/*.output)
 	if sess.NativeID != "" {
-		tmpPattern := fmt.Sprintf("/tmp/claude-*/*/%s/tasks/*.output", sess.NativeID)
-		if matches, err := filepath.Glob(tmpPattern); err == nil && len(matches) > 0 {
-			for _, taskPath := range matches {
-				info, err := os.Stat(taskPath)
-				if err != nil {
-					continue
-				}
-				if time.Since(info.ModTime()) < 15*time.Minute {
-					if data, err := readTail(taskPath, 256); err == nil {
-						if !strings.Contains(string(data), "[exited with code") {
-							if sess.State != StateWorking {
-								sess.State = StateWorking
-								sess.Blocked = nil
-								sess.Activity = "Executing background task..."
-								sess.LastEventAt = time.Now()
-								changed = true
+		cleanID := filepath.Base(filepath.Clean(sess.NativeID))
+		if cleanID != "" && cleanID != "." && cleanID != ".." && !strings.ContainsAny(cleanID, "*?[") {
+			tmpPattern := fmt.Sprintf("/tmp/claude-*/*/%s/tasks/*.output", cleanID)
+			if matches, err := filepath.Glob(tmpPattern); err == nil && len(matches) > 0 {
+				for _, taskPath := range matches {
+					info, err := os.Stat(taskPath)
+					if err != nil {
+						continue
+					}
+					if time.Since(info.ModTime()) < 15*time.Minute {
+						if data, err := readTail(taskPath, 256); err == nil {
+							if !strings.Contains(string(data), "[exited with code") {
+								if sess.State != StateWorking {
+									sess.State = StateWorking
+									sess.Blocked = nil
+									sess.Activity = "Executing background task..."
+									sess.LastEventAt = time.Now()
+									changed = true
+								}
+								return changed
 							}
-							return changed
 						}
 					}
 				}
@@ -5690,7 +5731,7 @@ func isProcessAlive(pid int) bool {
 }
 
 // getActiveChildProcesses inspects active direct or indirect child processes using pgrep and ps.
-// It returns non-zombie command names of child processes.
+// It returns non-zombie command names of child processes, prioritizing worker grandchildren.
 func getActiveChildProcesses(ctx context.Context, parentPID int) []string {
 	if parentPID <= 0 {
 		return nil
@@ -5700,39 +5741,60 @@ func getActiveChildProcesses(ctx context.Context, parentPID int) []string {
 		return nil
 	}
 	pids := strings.Fields(string(out))
+	if len(pids) == 0 {
+		return nil
+	}
+
+	// Batch query all child processes in a single ps call
+	statOut, err := exec.CommandContext(ctx, "ps", "-o", "pid=,stat=,comm=", "-p", strings.Join(pids, ",")).Output()
+	if err != nil || len(statOut) == 0 {
+		return nil
+	}
+
 	var activeCommands []string
-	for _, pidStr := range pids {
-		childPID, err := strconv.Atoi(pidStr)
-		if err != nil || childPID <= 0 {
-			continue
-		}
-		statOut, err := exec.CommandContext(ctx, "ps", "-o", "stat=,comm=", "-p", strconv.Itoa(childPID)).Output()
-		if err != nil || len(statOut) == 0 {
-			continue
-		}
-		fields := strings.Fields(string(statOut))
-		if len(fields) >= 2 {
-			stat := fields[0]
-			comm := filepath.Base(fields[1])
+	var intermediatePIDs []string
+
+	for _, line := range strings.Split(string(statOut), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 3 {
+			pidStr := fields[0]
+			stat := fields[1]
+			comm := filepath.Base(fields[2])
 			if strings.HasPrefix(stat, "Z") || strings.HasPrefix(stat, "z") {
 				continue
 			}
-			// If child is a shell or node runner, inspect grandchild processes (e.g. gradle, cargo, npm, clang)
 			if comm == "bash" || comm == "sh" || comm == "zsh" || comm == "node" {
-				if gOut, gErr := exec.CommandContext(ctx, "pgrep", "-P", strconv.Itoa(childPID)).Output(); gErr == nil && len(gOut) > 0 {
-					for _, gPidStr := range strings.Fields(string(gOut)) {
-						if gStatOut, gErr := exec.CommandContext(ctx, "ps", "-o", "stat=,comm=", "-p", gPidStr).Output(); gErr == nil && len(gStatOut) > 0 {
-							gFields := strings.Fields(string(gStatOut))
-							if len(gFields) >= 2 && !strings.HasPrefix(gFields[0], "Z") && !strings.HasPrefix(gFields[0], "z") {
-								activeCommands = append(activeCommands, filepath.Base(gFields[1]))
-							}
-						}
-					}
-				}
+				intermediatePIDs = append(intermediatePIDs, pidStr)
 			}
 			activeCommands = append(activeCommands, comm)
 		}
 	}
+
+	// Inspect grandchildren under shell/runner processes (e.g. gradle, cargo, npm, clang)
+	if len(intermediatePIDs) > 0 {
+		var grandPIDs []string
+		for _, ipid := range intermediatePIDs {
+			if gOut, gErr := exec.CommandContext(ctx, "pgrep", "-P", ipid).Output(); gErr == nil && len(gOut) > 0 {
+				grandPIDs = append(grandPIDs, strings.Fields(string(gOut))...)
+			}
+		}
+		if len(grandPIDs) > 0 {
+			if gStatOut, gErr := exec.CommandContext(ctx, "ps", "-o", "stat=,comm=", "-p", strings.Join(grandPIDs, ",")).Output(); gErr == nil && len(gStatOut) > 0 {
+				var grandCommands []string
+				for _, line := range strings.Split(string(gStatOut), "\n") {
+					gFields := strings.Fields(line)
+					if len(gFields) >= 2 && !strings.HasPrefix(gFields[0], "Z") && !strings.HasPrefix(gFields[0], "z") {
+						grandCommands = append(grandCommands, filepath.Base(gFields[1]))
+					}
+				}
+				if len(grandCommands) > 0 {
+					// Prioritize worker grandchildren over shell parents
+					activeCommands = append(grandCommands, activeCommands...)
+				}
+			}
+		}
+	}
+
 	return activeCommands
 }
 
