@@ -68,6 +68,10 @@ func (m *MockProvider) InspectStatus(ctx context.Context, sess *Session) bool {
 	return false
 }
 
+func (m *MockProvider) ListSubagents(home, cwd, nativeID string) ([]*ActiveSubagent, error) {
+	return nil, nil
+}
+
 func (m *MockProvider) IsInstalled() bool {
 	return true
 }
@@ -779,8 +783,11 @@ func (m *mockDynamicProvider) ExtractTranscript(home, cwd, nativeID string) ([]T
 }
 func (m *mockDynamicProvider) CleanSessionFiles(home, cwd, nativeID string) error    { return nil }
 func (m *mockDynamicProvider) InspectStatus(ctx context.Context, sess *Session) bool { return false }
-func (m *mockDynamicProvider) IsInstalled() bool                                     { return true }
-func (m *mockDynamicProvider) CheckHookConfig() (bool, string, error)                { return true, "", nil }
+func (m *mockDynamicProvider) ListSubagents(home, cwd, nativeID string) ([]*ActiveSubagent, error) {
+	return nil, nil
+}
+func (m *mockDynamicProvider) IsInstalled() bool                      { return true }
+func (m *mockDynamicProvider) CheckHookConfig() (bool, string, error) { return true, "", nil }
 func (m *mockDynamicProvider) ParseHook(eventName string, payload []byte) (*Event, error) {
 	return m.event, nil
 }

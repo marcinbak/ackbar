@@ -597,6 +597,18 @@ func (s *Server) processHookEventWithAccount(p Provider, urlEventName string, he
 			sess.Name = anno
 		}
 	}
+	if strings.EqualFold(event.EventName, "stop") || strings.EqualFold(event.EventName, "sessionend") {
+		if subs, err := ExtractSubagents(event.Agent, event.NativeID, event.Cwd); err == nil && len(subs) > 0 {
+			event.State = StateWorking
+			event.Activity = "Subagent running: " + subs[0].Name
+		} else if sess.PID > 0 {
+			if activeChildren := getActiveChildProcesses(context.Background(), sess.PID); len(activeChildren) > 0 {
+				event.State = StateWorking
+				event.Activity = "Running " + activeChildren[0]
+			}
+		}
+	}
+
 	isStateChange := sess.State != event.State
 	prevState := sess.State
 	if isStateChange {
@@ -665,7 +677,9 @@ func (s *Server) processHookEventWithAccount(p Provider, urlEventName string, he
 	} else if strings.EqualFold(event.EventName, "SubagentStop") {
 		s.removeSubagent(sessionID, event.NativeID, event.ToolName)
 	} else if evtNameLower == "userpromptsubmit" || evtNameLower == "sessionend" || evtNameLower == "stop" {
-		s.clearSubagents(sessionID, event.NativeID)
+		if len(s.getRunningSubagents(sessionID, event.NativeID, event.Agent, event.Cwd)) == 0 {
+			s.clearSubagents(sessionID, event.NativeID)
+		}
 	} else if evtNameLower == "pretooluse" && (event.ToolName == "Agent" || event.ToolName == "Task") {
 		var prompt, desc, subType string
 		if event.ToolInput != nil {
@@ -696,8 +710,6 @@ func (s *Server) processHookEventWithAccount(p Provider, urlEventName string, he
 			State:     "running",
 			StartedAt: time.Now(),
 		})
-	} else if evtNameLower == "posttooluse" && (event.ToolName == "Agent" || event.ToolName == "Task") {
-		s.removeSubagent(sessionID, event.NativeID, "")
 	}
 
 	// Update running subagents count on session
@@ -4961,6 +4973,11 @@ func (s *Server) ensureHostTunnels(ctx context.Context) {
 	}
 }
 
+// ReadTail reads up to maxBytes from the end of a file to prevent high memory allocations
+func ReadTail(path string, maxBytes int64) ([]byte, error) {
+	return readTail(path, maxBytes)
+}
+
 // readTail reads up to maxBytes from the end of a file to prevent high memory allocations
 func readTail(path string, maxBytes int64) ([]byte, error) {
 	file, err := os.Open(path)
@@ -5253,7 +5270,36 @@ func InspectAntigravityStatus(ctx context.Context, sess *Session) bool {
 		}
 	}
 
-	// 3. If it was blocked, but live tmux pane and transcript show it is now unblocked
+	// 3. Check for active subagents on disk
+	if sess.NativeID != "" {
+		if subs, err := ExtractSubagents("antigravity", sess.NativeID, sess.Cwd); err == nil {
+			runningCount := 0
+			var activeRole string
+			for _, sub := range subs {
+				if sub.State == "running" {
+					runningCount++
+					if activeRole == "" {
+						activeRole = sub.Role
+					}
+				}
+			}
+			if sess.RunningSubagents != runningCount {
+				sess.RunningSubagents = runningCount
+				changed = true
+			}
+			if runningCount > 0 && sess.State != StateBlocked {
+				if sess.State != StateWorking {
+					sess.State = StateWorking
+					sess.Blocked = nil
+					sess.Activity = "Subagent running: " + activeRole
+					sess.LastEventAt = time.Now()
+					changed = true
+				}
+			}
+		}
+	}
+
+	// 4. If it was blocked, but live tmux pane and transcript show it is now unblocked
 	if sess.State == StateBlocked {
 		if sess.TmuxName != "" || isProcessAlive(sess.PID) {
 			sess.State = StateWorking
@@ -5281,6 +5327,71 @@ func InspectClaudeStatus(ctx context.Context, sess *Session) bool {
 		return false
 	}
 	changed := false
+
+	// Resolve PID from tmux if missing
+	if sess.PID <= 0 && sess.TmuxName != "" {
+		if pid, err := tmux.GetPID(ctx, sess.TmuxName); err == nil && pid > 0 {
+			sess.PID = pid
+			changed = true
+		}
+	}
+
+	// 1. Structured Subagent Discovery from disk
+	if sess.NativeID != "" {
+		if subs, err := ExtractSubagents("claude-code", sess.NativeID, sess.Cwd); err == nil {
+			runningCount := 0
+			var activeSubName string
+			for _, sub := range subs {
+				if sub.State == "running" {
+					runningCount++
+					if activeSubName == "" {
+						activeSubName = sub.Name
+					}
+				}
+			}
+			if sess.RunningSubagents != runningCount {
+				sess.RunningSubagents = runningCount
+				changed = true
+			}
+			if runningCount > 0 {
+				if sess.State != StateWorking {
+					sess.State = StateWorking
+					sess.Blocked = nil
+					sess.Activity = "Subagent running: " + activeSubName
+					sess.LastEventAt = time.Now()
+					changed = true
+				}
+				return changed
+			}
+		}
+	}
+
+	// 2. Structured Background Task Output Discovery (/tmp/claude-$UID/.../tasks/*.output)
+	if sess.NativeID != "" {
+		tmpPattern := fmt.Sprintf("/tmp/claude-*/*/%s/tasks/*.output", sess.NativeID)
+		if matches, err := filepath.Glob(tmpPattern); err == nil && len(matches) > 0 {
+			for _, taskPath := range matches {
+				info, err := os.Stat(taskPath)
+				if err != nil {
+					continue
+				}
+				if time.Since(info.ModTime()) < 15*time.Minute {
+					if data, err := readTail(taskPath, 256); err == nil {
+						if !strings.Contains(string(data), "[exited with code") {
+							if sess.State != StateWorking {
+								sess.State = StateWorking
+								sess.Blocked = nil
+								sess.Activity = "Executing background task..."
+								sess.LastEventAt = time.Now()
+								changed = true
+							}
+							return changed
+						}
+					}
+				}
+			}
+		}
+	}
 
 	if sess.TmuxName != "" {
 		out, err := exec.CommandContext(ctx, "tmux", "capture-pane", "-pt", sess.TmuxName, "-p").Output()
@@ -5313,7 +5424,7 @@ func InspectClaudeStatus(ctx context.Context, sess *Session) bool {
 		}
 		tailText := strings.Join(lines[startIdx:], "\n")
 
-		// 1. Permission prompt / confirmation
+		// 3. Permission prompt / confirmation
 		if strings.Contains(tailText, "Do you want to run") ||
 			strings.Contains(tailText, "Do you want to proceed") ||
 			strings.Contains(tailText, "Allow once") ||
@@ -5339,7 +5450,7 @@ func InspectClaudeStatus(ctx context.Context, sess *Session) bool {
 			return changed
 		}
 
-		// 2. Question / user choice / prompt selection
+		// 4. Question / user choice / prompt selection
 		if strings.Contains(tailText, "Enter to select") ||
 			strings.Contains(tailText, "Tab/Arrow keys to navigate") ||
 			strings.Contains(tailText, "✔ Submit") ||
@@ -5368,7 +5479,7 @@ func InspectClaudeStatus(ctx context.Context, sess *Session) bool {
 			return changed
 		}
 
-		// 3. Active generation / tool spinner
+		// 5. Active generation / tool spinner / active background shells
 		hasSpinner := strings.Contains(tailText, "⠋") || strings.Contains(tailText, "⠙") ||
 			strings.Contains(tailText, "⠹") || strings.Contains(tailText, "⠸") ||
 			strings.Contains(tailText, "⠼") || strings.Contains(tailText, "⠴") ||
@@ -5377,22 +5488,39 @@ func InspectClaudeStatus(ctx context.Context, sess *Session) bool {
 			strings.Contains(tailText, "Thinking...") ||
 			strings.Contains(tailText, "Running tool:")
 
-		if hasSpinner {
+		hasBackgroundShell := regexp.MustCompile(`\b\d+\s+shells?\b`).MatchString(tailText)
+
+		if hasSpinner || hasBackgroundShell {
 			if sess.State != StateWorking {
 				sess.State = StateWorking
 				sess.Blocked = nil
-				sess.Activity = "Working..."
+				if hasBackgroundShell {
+					sess.Activity = "Executing background shell..."
+				} else {
+					sess.Activity = "Working..."
+				}
+				sess.LastEventAt = time.Now()
 				changed = true
 			}
 			return changed
 		}
 
-		// 4. Interactive prompt idle (sitting at ❯ or awaiting prompt)
-		hasPrompt := strings.Contains(tailText, "❯") ||
-			strings.Contains(tailText, "auto mode on") ||
-			strings.Contains(tailText, "bypass mode") ||
-			strings.Contains(tailText, "shift+tab to cycle") ||
-			strings.Contains(tailText, "? for shortcuts")
+		// 6. Interactive prompt idle (strictly at bottom prompt ❯, no background tasks, no active background shells)
+		var nonEmpty []string
+		for _, l := range lines {
+			t := strings.TrimSpace(l)
+			if t != "" {
+				nonEmpty = append(nonEmpty, t)
+			}
+		}
+
+		hasPrompt := false
+		for i := len(nonEmpty) - 1; i >= 0 && i >= len(nonEmpty)-4; i-- {
+			if isClaudePromptLine(nonEmpty[i]) {
+				hasPrompt = true
+				break
+			}
+		}
 
 		if hasPrompt {
 			if sess.State != StateIdle {
@@ -5404,7 +5532,20 @@ func InspectClaudeStatus(ctx context.Context, sess *Session) bool {
 			return changed
 		}
 
-		// 5. If it was blocked, but tmux pane is unblocked and alive
+		// 7. Active OS child processes (when not at interactive prompt)
+		activeChildren := getActiveChildProcesses(ctx, sess.PID)
+		if len(activeChildren) > 0 {
+			if sess.State != StateWorking {
+				sess.State = StateWorking
+				sess.Blocked = nil
+				sess.Activity = "Running " + activeChildren[0]
+				sess.LastEventAt = time.Now()
+				changed = true
+			}
+			return changed
+		}
+
+		// 8. If it was blocked, but tmux pane is unblocked and alive
 		if sess.State == StateBlocked {
 			sess.State = StateIdle
 			sess.Blocked = nil
@@ -5414,6 +5555,16 @@ func InspectClaudeStatus(ctx context.Context, sess *Session) bool {
 	}
 
 	return changed
+}
+
+func isClaudePromptLine(trimmed string) bool {
+	if trimmed == "❯" {
+		return true
+	}
+	if strings.HasPrefix(trimmed, "❯ Type ") || strings.HasPrefix(trimmed, "❯ Try ") {
+		return true
+	}
+	return false
 }
 
 func extractClaudeQuestionAndOptions(tailText string) (string, []string) {
@@ -5536,6 +5687,53 @@ func isProcessAlive(pid int) bool {
 		return false
 	}
 	return proc.Signal(syscall.Signal(0)) == nil
+}
+
+// getActiveChildProcesses inspects active direct or indirect child processes using pgrep and ps.
+// It returns non-zombie command names of child processes.
+func getActiveChildProcesses(ctx context.Context, parentPID int) []string {
+	if parentPID <= 0 {
+		return nil
+	}
+	out, err := exec.CommandContext(ctx, "pgrep", "-P", strconv.Itoa(parentPID)).Output()
+	if err != nil || len(out) == 0 {
+		return nil
+	}
+	pids := strings.Fields(string(out))
+	var activeCommands []string
+	for _, pidStr := range pids {
+		childPID, err := strconv.Atoi(pidStr)
+		if err != nil || childPID <= 0 {
+			continue
+		}
+		statOut, err := exec.CommandContext(ctx, "ps", "-o", "stat=,comm=", "-p", strconv.Itoa(childPID)).Output()
+		if err != nil || len(statOut) == 0 {
+			continue
+		}
+		fields := strings.Fields(string(statOut))
+		if len(fields) >= 2 {
+			stat := fields[0]
+			comm := filepath.Base(fields[1])
+			if strings.HasPrefix(stat, "Z") || strings.HasPrefix(stat, "z") {
+				continue
+			}
+			// If child is a shell or node runner, inspect grandchild processes (e.g. gradle, cargo, npm, clang)
+			if comm == "bash" || comm == "sh" || comm == "zsh" || comm == "node" {
+				if gOut, gErr := exec.CommandContext(ctx, "pgrep", "-P", strconv.Itoa(childPID)).Output(); gErr == nil && len(gOut) > 0 {
+					for _, gPidStr := range strings.Fields(string(gOut)) {
+						if gStatOut, gErr := exec.CommandContext(ctx, "ps", "-o", "stat=,comm=", "-p", gPidStr).Output(); gErr == nil && len(gStatOut) > 0 {
+							gFields := strings.Fields(string(gStatOut))
+							if len(gFields) >= 2 && !strings.HasPrefix(gFields[0], "Z") && !strings.HasPrefix(gFields[0], "z") {
+								activeCommands = append(activeCommands, filepath.Base(gFields[1]))
+							}
+						}
+					}
+				}
+			}
+			activeCommands = append(activeCommands, comm)
+		}
+	}
+	return activeCommands
 }
 
 // isIgnoredAgentCommand returns true if the command line represents a utility subcommand,

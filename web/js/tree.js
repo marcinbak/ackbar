@@ -523,7 +523,7 @@ function createSessionRowElement(session) {
   const dot = document.createElement('span');
   dot.className = 'session-state-dot';
   dot.innerHTML = getStateEmoji(session);
-  const stateStr = session.state === 1 ? 'Work in progress (agent is working)' : (session.state === 2 ? 'Waiting for feedback (agent is asking a question)' : (session.state === 3 ? 'Idle (completed work, not waiting)' : (session.state === 4 ? 'Ended (process terminated)' : (session.state === 5 ? 'Failed (process error)' : 'Not connected / Status unknown'))));
+  const stateStr = session.state === 1 ? 'Work in progress (agent is working)' : (session.state === 2 ? 'Waiting for feedback (agent is asking a question)' : (session.state === 3 ? 'Idle (ready for prompt)' : (session.state === 4 ? 'Ended (process terminated)' : (session.state === 5 ? 'Failed (process error)' : 'Not connected / Status unknown'))));
   dot.title = `Status: ${stateStr}\nMode: ${isManaged ? 'Live tmux session' : 'Observed process/transcript'}`;
 
   if (session.is_unread) {
