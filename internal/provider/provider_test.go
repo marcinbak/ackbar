@@ -414,3 +414,82 @@ func TestClaudeProvider_ExtractTranscript_CoalescesToolCalls(t *testing.T) {
 		t.Errorf("Expected second tool call 'Bash: npm test', got %q", msgs[1].ToolCalls[1])
 	}
 }
+
+func TestProvider_ListSubagents_ClaudeAndAntigravity(t *testing.T) {
+	tmpHome := t.TempDir()
+	sessionID := "16bef887-9a34-43e5-897f-49c514e6bf6a"
+	cwd := "/test/workspace"
+	slug := "-test-workspace"
+
+	// 1. Create subagents/ on disk for Claude
+	subDir := filepath.Join(tmpHome, ".claude", "projects", slug, sessionID, "subagents")
+	if err := os.MkdirAll(subDir, 0755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+	metaContent := `{"name":"recovery-agent","agentType":"task-runner","description":"Running recovery"}`
+	if err := os.WriteFile(filepath.Join(subDir, "agent-rec-1.meta.json"), []byte(metaContent), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	// 2. Create teams/ config for Claude
+	teamDir := filepath.Join(tmpHome, ".claude", "teams", "session-16bef887")
+	if err := os.MkdirAll(teamDir, 0755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+	teamCfg := `{
+		"name": "session-16bef887",
+		"leadSessionId": "16bef887-9a34-43e5-897f-49c514e6bf6a",
+		"members": [
+			{"name": "team-lead", "agentType": "team-lead"},
+			{"name": "planner-997", "agentType": "Plan", "prompt": "Plan task"}
+		]
+	}`
+	if err := os.WriteFile(filepath.Join(teamDir, "config.json"), []byte(teamCfg), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	// Test Claude ListSubagents
+	cp := NewClaudeProvider()
+	subs, err := cp.ListSubagents(tmpHome, cwd, sessionID)
+	if err != nil {
+		t.Fatalf("Claude ListSubagents failed: %v", err)
+	}
+	if len(subs) != 2 {
+		t.Fatalf("Expected 2 subagents (1 disk + 1 team), got %d: %+v", len(subs), subs)
+	}
+
+	// Test path traversal sanitization
+	traversalSubs, err := cp.ListSubagents(tmpHome, cwd, "../../../etc/passwd")
+	if err != nil {
+		t.Fatalf("Expected nil error for traversal, got %v", err)
+	}
+	if len(traversalSubs) != 0 {
+		t.Errorf("Expected 0 subagents for path traversal, got %d", len(traversalSubs))
+	}
+
+	// 3. Create Antigravity subagent on disk
+	agDir := filepath.Join(tmpHome, ".gemini", "antigravity", "brain", sessionID, ".system_generated", "subagents")
+	if err := os.MkdirAll(agDir, 0755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+	agMeta := `{
+		"conversationId": "sub-ag-1",
+		"subagentDescriptor": {"typeName": "reviewer", "role": "Code Reviewer"},
+		"state": "RUNNING"
+	}`
+	if err := os.WriteFile(filepath.Join(agDir, "sub-ag-1.json"), []byte(agMeta), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	ap := NewAntigravityProvider()
+	agSubs, err := ap.ListSubagents(tmpHome, cwd, sessionID)
+	if err != nil {
+		t.Fatalf("Antigravity ListSubagents failed: %v", err)
+	}
+	if len(agSubs) != 1 {
+		t.Fatalf("Expected 1 antigravity subagent, got %d", len(agSubs))
+	}
+	if agSubs[0].Name != "reviewer" || agSubs[0].Role != "Code Reviewer" || agSubs[0].State != "running" {
+		t.Errorf("Unexpected antigravity subagent: %+v", agSubs[0])
+	}
+}

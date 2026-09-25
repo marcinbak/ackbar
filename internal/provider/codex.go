@@ -209,3 +209,7 @@ func (c *CodexProvider) CleanSessionFiles(home, cwd, nativeID string) error {
 func (c *CodexProvider) InspectStatus(ctx context.Context, sess *daemon.Session) bool {
 	return false
 }
+
+func (c *CodexProvider) ListSubagents(home, cwd, nativeID string) ([]*daemon.ActiveSubagent, error) {
+	return nil, nil
+}

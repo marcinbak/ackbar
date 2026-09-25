@@ -34,11 +34,14 @@ Token usage percentage calculation dynamically adapts to model families:
 
 ---
 
-## 4. Subagent Isolation
+## 4. Subagent Discovery & Isolation
 
-Child subagents (e.g. Claude Code Explore/Task sidechains or Antigravity subtrajectories) are filtered out:
-* Hook payloads with `is_sidechain: true` or non-empty `agent_id` are discarded.
-* Transcript directories ignore `<parent-id>/subagents/` subfolders.
+Child subagents (e.g. Claude Code Explore/Task teammates or Antigravity subtrajectories) are filtered from polluting the top-level tree as standalone sessions, but their live lifecycle is actively tracked under the parent session:
+* **Session Tree Isolation:** Hook payloads with `is_sidechain: true` or non-empty `agent_id` are ignored as top-level sessions.
+* **Structured Discovery (`Provider.ListSubagents`):**
+  * **Claude Code:** Discovers teammates from `~/.claude/projects/<slug>/<session-id>/subagents/` (`agent-*.meta.json` and companion `.jsonl` stop reasons) and team configurations in `~/.claude/teams/*/config.json`.
+  * **Antigravity:** Discovers subagents from `.system_generated/subagents/*.json` across brain directories and profiles.
+* **Working State Reflection:** When subagents are actively running, parent sessions evaluate to `StateWorking` (1) with dynamic activity descriptions (`Subagent running: <name>`) and active spinners.
 
 ---
 

@@ -21,6 +21,17 @@ type SessionMeta struct {
 	LastMessageAt time.Time `json:"last_message_at,omitempty"`
 }
 
+// ActiveSubagent represents a structured subagent discovered on disk or via hooks
+type ActiveSubagent struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	Role      string    `json:"role"`
+	Prompt    string    `json:"prompt,omitempty"`
+	State     string    `json:"state"` // "running", "completed", "killed"
+	Model     string    `json:"model,omitempty"`
+	StartedAt time.Time `json:"started_at"`
+}
+
 // Provider defines the complete contract for AI agent integrations in Ackbar
 type Provider interface {
 	// 1. Identity & UI Presentation
@@ -47,8 +58,9 @@ type Provider interface {
 	ExtractTranscript(home, cwd, nativeID string) ([]TranscriptMessage, error)
 	CleanSessionFiles(home, cwd, nativeID string) error
 
-	// 6. Live Status Inspection
+	// 6. Live Status Inspection & Subagent Discovery
 	InspectStatus(ctx context.Context, sess *Session) bool
+	ListSubagents(home, cwd, nativeID string) ([]*ActiveSubagent, error)
 }
 
 // ProviderDTO represents provider discovery metadata exposed over the REST API

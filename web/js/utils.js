@@ -248,8 +248,8 @@ function getStateEmoji(session) {
       return '<span class="state-working-spinner" title="Working (generating / executing tools)">⚙️</span>';
     case 2: // StateBlocked (waiting for feedback - agent is asking a question and waiting for response)
       return '<span title="Blocked (waiting for feedback / authorization)">❓</span>';
-    case 3: // StateIdle (idle - completed work and not waiting for anything)
-      return '<span title="Idle (turn completed, awaiting next prompt)">✅</span>';
+    case 3: // StateIdle (idle - ready for next prompt)
+      return '<span title="Idle (ready for prompt)">✅</span>';
     case 4: // StateEnded (session terminated / exited)
       return '<span title="Ended (process terminated)">⏹️</span>';
     case 5: // StateFailed (process crashed or error)

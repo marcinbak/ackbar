@@ -614,7 +614,104 @@ func ExtractSubagents(agent, nativeID, cwd string) ([]SubagentInfo, error) {
 	}
 }
 
+func loadAntigravitySubagentsFromDir(home, convID string) []SubagentInfo {
+	cleanID := filepath.Base(filepath.Clean(convID))
+	if cleanID == "" || cleanID == "." || cleanID == ".." || strings.ContainsAny(cleanID, "*?[") {
+		return nil
+	}
+	candidateDirs := []string{
+		filepath.Join(home, ".gemini", "antigravity", "brain", cleanID, ".system_generated", "subagents"),
+		filepath.Join(home, ".gemini", "antigravity-cli", "brain", cleanID, ".system_generated", "subagents"),
+		filepath.Join(home, ".antigravity", "brain", cleanID, ".system_generated", "subagents"),
+	}
+	if profiles, _ := filepath.Glob(filepath.Join(home, ".gemini-profiles", "*", "brain", cleanID, ".system_generated", "subagents")); len(profiles) > 0 {
+		candidateDirs = append(candidateDirs, profiles...)
+	}
+	if profiles2, _ := filepath.Glob(filepath.Join(home, ".gemini-profiles", "*", "antigravity", "brain", cleanID, ".system_generated", "subagents")); len(profiles2) > 0 {
+		candidateDirs = append(candidateDirs, profiles2...)
+	}
+
+	var results []SubagentInfo
+	seen := make(map[string]bool)
+
+	for _, dir := range candidateDirs {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+				continue
+			}
+			filePath := filepath.Join(dir, entry.Name())
+			data, err := os.ReadFile(filePath)
+			if err != nil {
+				continue
+			}
+			var payload struct {
+				ConversationID     string `json:"conversationId"`
+				SubagentDescriptor struct {
+					TypeName string `json:"typeName"`
+					Role     string `json:"role"`
+				} `json:"subagentDescriptor"`
+				State string `json:"state"`
+			}
+			if err := json.Unmarshal(data, &payload); err != nil {
+				continue
+			}
+			subID := payload.ConversationID
+			if subID == "" {
+				subID = strings.TrimSuffix(entry.Name(), ".json")
+			}
+			if seen[subID] {
+				continue
+			}
+			seen[subID] = true
+
+			stateNorm := "completed"
+			stUpper := strings.ToUpper(payload.State)
+			if strings.Contains(stUpper, "RUNNING") {
+				stateNorm = "running"
+			} else if strings.Contains(stUpper, "KILLED") || strings.Contains(stUpper, "CANCEL") {
+				stateNorm = "killed"
+			}
+
+			role := payload.SubagentDescriptor.Role
+			if role == "" {
+				role = payload.SubagentDescriptor.TypeName
+			}
+			if role == "" {
+				role = "Subagent"
+			}
+			name := payload.SubagentDescriptor.TypeName
+			if name == "" {
+				name = role
+			}
+
+			info, _ := entry.Info()
+			startTime := time.Now()
+			if info != nil {
+				startTime = info.ModTime()
+			}
+
+			results = append(results, SubagentInfo{
+				ID:        subID,
+				Name:      name,
+				Role:      role,
+				State:     stateNorm,
+				StartedAt: startTime,
+			})
+		}
+	}
+	return results
+}
+
 func loadAntigravitySubagents(home, convID string) ([]SubagentInfo, error) {
+	// 1. Structured files in .system_generated/subagents/
+	if diskSubs := loadAntigravitySubagentsFromDir(home, convID); len(diskSubs) > 0 {
+		return diskSubs, nil
+	}
+
 	candidatePaths := []string{
 		filepath.Join(home, ".gemini", "antigravity", "brain", convID, ".system_generated", "logs", "transcript.jsonl"),
 		filepath.Join(home, ".gemini", "antigravity-cli", "brain", convID, ".system_generated", "logs", "transcript.jsonl"),
@@ -772,7 +869,139 @@ func loadAntigravitySubagents(home, convID string) ([]SubagentInfo, error) {
 	return running, nil
 }
 
+func loadClaudeSubagentsFromDir(home, sessionID, cwd string) []SubagentInfo {
+	cleanID := filepath.Base(filepath.Clean(sessionID))
+	if cleanID == "" || cleanID == "." || cleanID == ".." || strings.ContainsAny(cleanID, "*?[") {
+		return nil
+	}
+	var candidateDirs []string
+	if cwd != "" {
+		slug := strings.ReplaceAll(cwd, "/", "-")
+		candidateDirs = append(candidateDirs, filepath.Join(home, ".claude", "projects", slug, cleanID, "subagents"))
+	}
+	if matches, err := filepath.Glob(filepath.Join(home, ".claude", "projects", "*", cleanID, "subagents")); err == nil {
+		for _, m := range matches {
+			already := false
+			for _, cd := range candidateDirs {
+				if cd == m {
+					already = true
+					break
+				}
+			}
+			if !already {
+				candidateDirs = append(candidateDirs, m)
+			}
+		}
+	}
+
+	var results []SubagentInfo
+	seen := make(map[string]bool)
+
+	for _, subDir := range candidateDirs {
+		entries, err := os.ReadDir(subDir)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".meta.json") {
+				continue
+			}
+			baseName := strings.TrimSuffix(entry.Name(), ".meta.json")
+			if seen[baseName] {
+				continue
+			}
+			seen[baseName] = true
+
+			metaPath := filepath.Join(subDir, entry.Name())
+			data, err := os.ReadFile(metaPath)
+			if err != nil {
+				continue
+			}
+			var meta struct {
+				Name            string `json:"name"`
+				AgentType       string `json:"agentType"`
+				CustomAgentType string `json:"customAgentType"`
+				Description     string `json:"description"`
+				Model           string `json:"model"`
+				TaskKind        string `json:"taskKind"`
+				Color           string `json:"color"`
+				JoinedAt        int64  `json:"joinedAt"`
+			}
+			if err := json.Unmarshal(data, &meta); err != nil {
+				continue
+			}
+			name := meta.Name
+			if name == "" {
+				name = meta.AgentType
+			}
+			if name == "" {
+				name = baseName
+			}
+			role := meta.CustomAgentType
+			if role == "" {
+				role = meta.AgentType
+			}
+			if role == "" {
+				role = name
+			}
+
+			startTime := time.Now()
+			if meta.JoinedAt > 0 {
+				startTime = time.UnixMilli(meta.JoinedAt)
+			} else if info, err := entry.Info(); err == nil {
+				startTime = info.ModTime()
+			}
+
+			state := "running"
+			jsonlPath := filepath.Join(subDir, baseName+".jsonl")
+			if jsonlData, err := readTail(jsonlPath, 8192); err == nil && len(jsonlData) > 0 {
+				lines := strings.Split(strings.TrimSpace(string(jsonlData)), "\n")
+				for i := len(lines) - 1; i >= 0; i-- {
+					line := strings.TrimSpace(lines[i])
+					if line == "" {
+						continue
+					}
+					var step struct {
+						Type       string `json:"type"`
+						StopReason string `json:"stop_reason"`
+						Message    struct {
+							StopReason string `json:"stop_reason"`
+						} `json:"message"`
+					}
+					if jerr := json.Unmarshal([]byte(line), &step); jerr == nil {
+						sr := step.StopReason
+						if sr == "" {
+							sr = step.Message.StopReason
+						}
+						if sr == "end_turn" {
+							state = "completed"
+						} else {
+							state = "running"
+						}
+						break
+					}
+				}
+			}
+
+			results = append(results, SubagentInfo{
+				ID:        baseName,
+				Name:      name,
+				Role:      role,
+				Prompt:    meta.Description,
+				State:     state,
+				StartedAt: startTime,
+			})
+		}
+	}
+	return results
+}
+
 func loadClaudeSubagents(home, sessionID, cwd string) ([]SubagentInfo, error) {
+	// 1. Structured files in ~/.claude/projects/*/<sessionID>/subagents/
+	if diskSubs := loadClaudeSubagentsFromDir(home, sessionID, cwd); len(diskSubs) > 0 {
+		return diskSubs, nil
+	}
+
 	var targetFile string
 	projectsDir := filepath.Join(home, ".claude", "projects")
 
@@ -844,7 +1073,10 @@ func loadClaudeSubagents(home, sessionID, cwd string) ([]SubagentInfo, error) {
 								isToolResult = true
 								toolID, _ := block["tool_use_id"].(string)
 								if sub, found := toolUseMap[toolID]; found {
-									sub.State = "completed"
+									resStr := fmt.Sprintf("%v", block["content"])
+									if !strings.Contains(resStr, "teammate_spawned") && !strings.Contains(resStr, "Spawned successfully") {
+										sub.State = "completed"
+									}
 								}
 							}
 						}
