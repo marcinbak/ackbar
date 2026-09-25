@@ -114,31 +114,40 @@ func (c *ClaudeProvider) ListSubagents(home, cwd, nativeID string) ([]*daemon.Ac
 			// Check companion .jsonl transcript to evaluate running vs completed
 			state := "running"
 			jsonlPath := filepath.Join(subDir, baseName+".jsonl")
-			if jsonlData, err := daemon.ReadTail(jsonlPath, 8192); err == nil && len(jsonlData) > 0 {
-				lines := strings.Split(strings.TrimSpace(string(jsonlData)), "\n")
-				for i := len(lines) - 1; i >= 0; i-- {
-					line := strings.TrimSpace(lines[i])
-					if line == "" {
-						continue
-					}
-					var step struct {
-						Type       string `json:"type"`
-						StopReason string `json:"stop_reason"`
-						Message    struct {
+			if jsonlInfo, err := os.Stat(jsonlPath); err == nil {
+				if time.Since(jsonlInfo.ModTime()) > 30*time.Minute {
+					state = "completed"
+				}
+			}
+			if state == "running" {
+				if jsonlData, err := daemon.ReadTail(jsonlPath, 16384); err == nil && len(jsonlData) > 0 {
+					lines := strings.Split(strings.TrimSpace(string(jsonlData)), "\n")
+					for i := len(lines) - 1; i >= 0; i-- {
+						line := strings.TrimSpace(lines[i])
+						if line == "" {
+							continue
+						}
+						var step struct {
+							Type       string `json:"type"`
 							StopReason string `json:"stop_reason"`
-						} `json:"message"`
-					}
-					if jerr := json.Unmarshal([]byte(line), &step); jerr == nil {
-						sr := step.StopReason
-						if sr == "" {
-							sr = step.Message.StopReason
+							Message    struct {
+								StopReason string `json:"stop_reason"`
+							} `json:"message"`
 						}
-						if sr == "end_turn" {
-							state = "completed"
-						} else {
-							state = "running"
+						if jerr := json.Unmarshal([]byte(line), &step); jerr == nil {
+							sr := step.StopReason
+							if sr == "" {
+								sr = step.Message.StopReason
+							}
+							if sr != "" {
+								if sr == "end_turn" || sr == "stop" {
+									state = "completed"
+								} else {
+									state = "running"
+								}
+								break
+							}
 						}
-						break
 					}
 				}
 			}
@@ -159,6 +168,14 @@ func (c *ClaudeProvider) ListSubagents(home, cwd, nativeID string) ([]*daemon.Ac
 	teamsDir := filepath.Join(home, ".claude", "teams")
 	if teamMatches, err := filepath.Glob(filepath.Join(teamsDir, "*", "config.json")); err == nil {
 		for _, cfgPath := range teamMatches {
+			cfgInfo, err := os.Stat(cfgPath)
+			if err != nil {
+				continue
+			}
+			teamState := "running"
+			if time.Since(cfgInfo.ModTime()) > 30*time.Minute {
+				teamState = "completed"
+			}
 			data, err := os.ReadFile(cfgPath)
 			if err != nil {
 				continue
@@ -209,7 +226,7 @@ func (c *ClaudeProvider) ListSubagents(home, cwd, nativeID string) ([]*daemon.Ac
 						Role:      mem.AgentType,
 						Prompt:    mem.Prompt,
 						Model:     mem.Model,
-						State:     "running",
+						State:     teamState,
 						StartedAt: startTime,
 					})
 				}

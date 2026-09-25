@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestClaudeProvider_ParseHook(t *testing.T) {
@@ -552,5 +553,80 @@ func TestProvider_ListSubagents_ClaudeAndAntigravity(t *testing.T) {
 	}
 	if agSubs[0].Name != "reviewer" || agSubs[0].Role != "Code Reviewer" || agSubs[0].State != "running" {
 		t.Errorf("Unexpected antigravity subagent: %+v", agSubs[0])
+	}
+}
+
+func TestClaudeProvider_ListSubagents_StopReasonAndInactivity(t *testing.T) {
+	tmpHome := t.TempDir()
+	sessionID := "22222222-3333-4444-5555-666666666666"
+	cwd := "/test/workspace"
+	slug := "-test-workspace"
+
+	subDir := filepath.Join(tmpHome, ".claude", "projects", slug, sessionID, "subagents")
+	if err := os.MkdirAll(subDir, 0755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+
+	// 1. Subagent with companion .jsonl ending in attachment lines after an "end_turn" message
+	meta1 := `{"name":"subagent-1","agentType":"task-runner","description":"Completed task"}`
+	if err := os.WriteFile(filepath.Join(subDir, "agent-1.meta.json"), []byte(meta1), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	jsonl1 := `{"type":"assistant","message":{"stop_reason":"end_turn"}}` + "\n" +
+		`{"type":"attachment","payload":{"reminder":"total_tokens_reminder"}}` + "\n"
+	if err := os.WriteFile(filepath.Join(subDir, "agent-1.jsonl"), []byte(jsonl1), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	// 2. Subagent whose file is older than 30 minutes (stale running subagent)
+	meta2 := `{"name":"subagent-2","agentType":"task-runner","description":"Stale task"}`
+	if err := os.WriteFile(filepath.Join(subDir, "agent-2.meta.json"), []byte(meta2), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	jsonl2 := `{"type":"assistant","message":{"stop_reason":null}}` + "\n"
+	jsonl2Path := filepath.Join(subDir, "agent-2.jsonl")
+	if err := os.WriteFile(jsonl2Path, []byte(jsonl2), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	oldTime := time.Now().Add(-45 * time.Minute)
+	if err := os.Chtimes(jsonl2Path, oldTime, oldTime); err != nil {
+		t.Fatalf("Chtimes failed: %v", err)
+	}
+
+	// 3. Stale team config older than 30 minutes
+	teamDir := filepath.Join(tmpHome, ".claude", "teams", "session-22222222")
+	if err := os.MkdirAll(teamDir, 0755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+	teamCfg := `{
+		"name": "session-22222222",
+		"leadSessionId": "22222222-3333-4444-5555-666666666666",
+		"members": [
+			{"name": "team-lead", "agentType": "team-lead"},
+			{"name": "worker-1", "agentType": "Worker"}
+		]
+	}`
+	teamCfgPath := filepath.Join(teamDir, "config.json")
+	if err := os.WriteFile(teamCfgPath, []byte(teamCfg), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	if err := os.Chtimes(teamCfgPath, oldTime, oldTime); err != nil {
+		t.Fatalf("Chtimes failed: %v", err)
+	}
+
+	cp := NewClaudeProvider()
+	subs, err := cp.ListSubagents(tmpHome, cwd, sessionID)
+	if err != nil {
+		t.Fatalf("ListSubagents failed: %v", err)
+	}
+
+	if len(subs) != 3 {
+		t.Fatalf("Expected 3 subagents, got %d: %+v", len(subs), subs)
+	}
+
+	for _, sub := range subs {
+		if sub.State != "completed" {
+			t.Errorf("Expected subagent %s to have state 'completed', got %q", sub.Name, sub.State)
+		}
 	}
 }

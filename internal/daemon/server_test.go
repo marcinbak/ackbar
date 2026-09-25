@@ -1271,6 +1271,170 @@ Enter to select · Tab/Arrow keys to navigate · Esc to cancel
 	}
 }
 
+func TestExtractClaudeQuestionAndOptions_BoxDrawingBorders(t *testing.T) {
+	samplePane := `
+│   Which parts of the backup do you want to restore?                                                                                               │
+│ ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── │
+│ ❯ 1. Restore local config files (~/.config, ~/.zshrc, ~/.ssh, etc.)                                                                               │
+│   2. Restore app data & preferences (~/Library/Application Support, Preferences)                                                                  │
+│   3. Restore work workspaces and git repositories                                                                                                 │
+│   4. Type something.                                                                                                                              │
+│ ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── │
+│   5. Chat about this                                                                                                                              │
+│                                                                                                                                                   │
+│ ↑/↓ to navigate · Enter to select · Esc to cancel                                                                                                 │
+`
+	q, opts := extractClaudeQuestionAndOptions(samplePane)
+	if q != "Which parts of the backup do you want to restore?" {
+		t.Errorf("Unexpected question: %q", q)
+	}
+	if len(opts) != 3 {
+		t.Fatalf("Expected 3 options, got %d: %v", len(opts), opts)
+	}
+	if opts[0] != "Restore local config files (~/.config, ~/.zshrc, ~/.ssh, etc.)" {
+		t.Errorf("Option 0 mismatch: %q", opts[0])
+	}
+	if opts[1] != "Restore app data & preferences (~/Library/Application Support, Preferences)" {
+		t.Errorf("Option 1 mismatch: %q", opts[1])
+	}
+	if opts[2] != "Restore work workspaces and git repositories" {
+		t.Errorf("Option 2 mismatch: %q", opts[2])
+	}
+}
+
+func TestInspectClaudeStatus_QuestionPrioritizedOverSubagent(t *testing.T) {
+	if !tmux.IsTmuxInstalled() {
+		t.Skip("tmux not installed, skipping TestInspectClaudeStatus_QuestionPrioritizedOverSubagent")
+	}
+
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	sessionID := "33333333-4444-5555-6666-777777777777"
+	cwd := "/test/workspace"
+	slug := "-test-workspace"
+
+	// Create a running subagent on disk
+	subDir := filepath.Join(tmpHome, ".claude", "projects", slug, sessionID, "subagents")
+	if err := os.MkdirAll(subDir, 0755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+	meta := `{"name":"device-verifier","agentType":"verifier","description":"Verifying device"}`
+	if err := os.WriteFile(filepath.Join(subDir, "agent-v1.meta.json"), []byte(meta), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(subDir, "agent-v1.jsonl"), []byte(`{"type":"assistant"}`+"\n"), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	ctx := context.Background()
+	tmuxName := fmt.Sprintf("test-claude-q-sub-%d", time.Now().UnixNano())
+	defer tmux.Kill(ctx, tmuxName)
+
+	script := `
+echo "│   Which parts of the backup do you want to restore?                                                                                               │"
+echo "│ ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── │"
+echo "│ ❯ 1. Restore local config files                                                                                                                   │"
+echo "│   2. Restore app data                                                                                                                             │"
+echo "│ ↑/↓ to navigate · Enter to select · Esc to cancel                                                                                                 │"
+sleep 30
+`
+	if err := tmux.Spawn(ctx, tmuxName, os.TempDir(), script); err != nil {
+		t.Fatalf("Failed to spawn test tmux session: %v", err)
+	}
+
+	time.Sleep(150 * time.Millisecond)
+	pid, _ := tmux.GetPID(ctx, tmuxName)
+
+	sess := &Session{
+		ID:          "claude-code:local:" + sessionID,
+		Agent:       "claude-code",
+		Host:        "local",
+		NativeID:    sessionID,
+		Cwd:         cwd,
+		State:       StateWorking,
+		Activity:    "Subagent running: device-verifier",
+		TmuxName:    tmuxName,
+		PID:         pid,
+		StartedAt:   time.Now(),
+		LastEventAt: time.Now(),
+	}
+
+	var changed bool
+	for i := 0; i < 20; i++ {
+		time.Sleep(50 * time.Millisecond)
+		if InspectClaudeStatus(ctx, sess) {
+			changed = true
+			break
+		}
+	}
+	if !changed {
+		t.Errorf("Expected InspectClaudeStatus to report changed=true")
+	}
+	if sess.State != StateBlocked {
+		t.Fatalf("Expected session state StateBlocked, got %v (activity: %s)", sess.State, sess.Activity)
+	}
+	if sess.Blocked == nil || sess.Blocked.Kind != BlockQuestion {
+		t.Fatalf("Expected Blocked with BlockQuestion, got %+v", sess.Blocked)
+	}
+	if sess.Blocked.Question != "Which parts of the backup do you want to restore?" {
+		t.Errorf("Expected question text, got %q", sess.Blocked.Question)
+	}
+	if len(sess.Blocked.Options) != 2 {
+		t.Errorf("Expected 2 options, got %d: %v", len(sess.Blocked.Options), sess.Blocked.Options)
+	}
+}
+
+func TestInspectAntigravityStatus_QuestionDetectedWithTrailingOutput(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	convUUID := "44444444-5555-6666-7777-888888888888"
+	brainDir := filepath.Join(tmpHome, ".gemini", "antigravity", "brain", convUUID, ".system_generated", "logs")
+	if err := os.MkdirAll(brainDir, 0755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+
+	transcript := `{"step_index":1,"source":"USER_EXPLICIT","type":"USER_INPUT","content":"Hello"}` + "\n" +
+		`{"step_index":2,"type":"PLANNER_RESPONSE","created_at":"2026-09-25T15:00:00Z","tool_calls":[{"name":"ask_question","args":{"questions":[{"question":"Proceed with deployment?","options":["Yes","No"]}]}}]}` + "\n" +
+		`{"step_index":3,"type":"GENERIC","content":"Command output from pre-check"}` + "\n" +
+		`{"step_index":4,"type":"PLANNER_RESPONSE","content":"Please make your choice above."}` + "\n"
+
+	if err := os.WriteFile(filepath.Join(brainDir, "transcript.jsonl"), []byte(transcript), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	sess := &Session{
+		ID:          "antigravity:local:" + convUUID,
+		Agent:       "antigravity",
+		Host:        "local",
+		NativeID:    convUUID,
+		State:       StateWorking,
+		Activity:    "Working...",
+		PID:         os.Getpid(),
+		StartedAt:   time.Now(),
+		LastEventAt: time.Now(),
+	}
+
+	ctx := context.Background()
+	changed := InspectAntigravityStatus(ctx, sess)
+	if !changed {
+		t.Errorf("Expected InspectAntigravityStatus to report changed=true")
+	}
+	if sess.State != StateBlocked {
+		t.Fatalf("Expected session state StateBlocked, got %v (activity: %s)", sess.State, sess.Activity)
+	}
+	if sess.Blocked == nil || sess.Blocked.Kind != BlockQuestion {
+		t.Fatalf("Expected Blocked with BlockQuestion, got %+v", sess.Blocked)
+	}
+	if sess.Blocked.Question != "Proceed with deployment?" {
+		t.Errorf("Expected question 'Proceed with deployment?', got %q", sess.Blocked.Question)
+	}
+	if len(sess.Blocked.Options) != 2 || sess.Blocked.Options[0] != "Yes" || sess.Blocked.Options[1] != "No" {
+		t.Errorf("Expected ['Yes', 'No'], got %v", sess.Blocked.Options)
+	}
+}
+
 func TestInspectClaudeStatus_QuestionPromptBlocked(t *testing.T) {
 	if !tmux.IsTmuxInstalled() {
 		t.Skip("tmux not installed, skipping TestInspectClaudeStatus_QuestionPromptBlocked")

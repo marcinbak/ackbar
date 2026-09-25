@@ -94,7 +94,8 @@ func InspectAntigravityStatus(ctx context.Context, sess *Session) bool {
 		for _, logPath := range brainDirs {
 			if data, err := readTail(logPath, 64*1024); err == nil && len(data) > 0 {
 				lines := strings.Split(string(data), "\n")
-				for i := len(lines) - 1; i >= 0; i-- {
+				stepsChecked := 0
+				for i := len(lines) - 1; i >= 0 && stepsChecked < 30; i-- {
 					line := strings.TrimSpace(lines[i])
 					if line == "" {
 						continue
@@ -109,6 +110,12 @@ func InspectAntigravityStatus(ctx context.Context, sess *Session) bool {
 						CreatedAt string `json:"created_at"`
 					}
 					if jerr := json.Unmarshal([]byte(line), &step); jerr == nil {
+						stepsChecked++
+						// If the user already provided input after this, any prior question in this conversation was answered
+						if step.Type == "USER_INPUT" {
+							break
+						}
+
 						stepTime, _ := time.Parse(time.RFC3339, step.CreatedAt)
 						if stepTime.IsZero() {
 							stepTime = time.Now()
@@ -155,8 +162,6 @@ func InspectAntigravityStatus(ctx context.Context, sess *Session) bool {
 							}
 							return changed
 						}
-
-						break
 					}
 				}
 				break
@@ -209,9 +214,9 @@ func InspectAntigravityStatus(ctx context.Context, sess *Session) bool {
 	// 5. If it was blocked, but live tmux pane and transcript show it is now unblocked
 	if sess.State == StateBlocked {
 		if sess.TmuxName != "" || isProcessAlive(sess.PID) {
-			sess.State = StateWorking
+			sess.State = StateIdle
 			sess.Blocked = nil
-			sess.Activity = "Working..."
+			sess.Activity = "Awaiting user prompt"
 			sess.LastEventAt = time.Now()
 			changed = true
 		} else {
@@ -243,7 +248,101 @@ func InspectClaudeStatus(ctx context.Context, sess *Session) bool {
 		}
 	}
 
-	// 1. Structured Subagent Discovery from disk
+	var tailText string
+	var lines []string
+
+	// 1. Live Tmux Pane Check: Priority on Permission and Question Prompts
+	if sess.TmuxName != "" {
+		out, err := exec.CommandContext(ctx, "tmux", "capture-pane", "-pt", sess.TmuxName, "-p").Output()
+		if err != nil {
+			sess.State = StateEnded
+			sess.Activity = "Session ended (process exited)"
+			sess.PID = 0
+			sess.Blocked = nil
+			return true
+		}
+
+		// Check if Claude process is actually alive under pane PID
+		if sess.PID > 0 && !isProcessAlive(sess.PID) {
+			if outPs, errPs := exec.CommandContext(ctx, "pgrep", "-P", strconv.Itoa(sess.PID)).Output(); errPs == nil && len(strings.TrimSpace(string(outPs))) > 0 {
+				// Child process alive
+			} else {
+				sess.State = StateEnded
+				sess.Activity = "Session ended (process exited)"
+				sess.PID = 0
+				sess.Blocked = nil
+				return true
+			}
+		}
+
+		paneText := string(out)
+		lines = strings.Split(paneText, "\n")
+		startIdx := len(lines) - 25
+		if startIdx < 0 {
+			startIdx = 0
+		}
+		tailText = strings.Join(lines[startIdx:], "\n")
+
+		// 1A. Permission prompt / confirmation
+		if strings.Contains(tailText, "Do you want to run") ||
+			strings.Contains(tailText, "Do you want to proceed") ||
+			strings.Contains(tailText, "Allow once") ||
+			strings.Contains(tailText, "Allow always") ||
+			strings.Contains(tailText, "[y/N]") ||
+			strings.Contains(tailText, "[Y/n]") ||
+			strings.Contains(tailText, "Permission requested") ||
+			strings.Contains(tailText, "Authorize tool execution") ||
+			strings.Contains(tailText, "Are you sure?") {
+			if sess.State != StateBlocked || sess.Blocked == nil || sess.Blocked.Kind != BlockPermission {
+				sess.State = StateBlocked
+				sess.Blocked = &Blocked{
+					Kind:     BlockPermission,
+					Reason:   "Tool permission requested",
+					Question: "Permission required",
+					Options:  []string{"Allow", "Deny"},
+					Since:    time.Now(),
+				}
+				sess.Activity = "Waiting for tool authorization"
+				sess.LastEventAt = time.Now()
+				changed = true
+			}
+			return changed
+		}
+
+		// 1B. Question / user choice / prompt selection
+		if strings.Contains(tailText, "Enter to select") ||
+			strings.Contains(tailText, "Tab/Arrow keys to navigate") ||
+			strings.Contains(tailText, "↑/↓ to navigate") ||
+			strings.Contains(tailText, "↑ / ↓ to navigate") ||
+			strings.Contains(tailText, "Esc to cancel") ||
+			strings.Contains(tailText, "✔ Submit") ||
+			strings.Contains(tailText, "Waiting for user response") ||
+			strings.Contains(tailText, "AskUserQuestion") ||
+			strings.Contains(tailText, "Type something.") ||
+			strings.Contains(tailText, "Chat about this") {
+			q, opts := extractClaudeQuestionAndOptions(tailText)
+			if sess.State != StateBlocked || sess.Blocked == nil || sess.Blocked.Question != q {
+				sess.State = StateBlocked
+				sess.Blocked = &Blocked{
+					Kind:     BlockQuestion,
+					Reason:   q,
+					Question: q,
+					Options:  opts,
+					Since:    time.Now(),
+				}
+				if q != "" && q != "Waiting for user response" && q != "Waiting for user input" {
+					sess.Activity = "Question: " + truncateTitle(q)
+				} else {
+					sess.Activity = "Waiting for user input"
+				}
+				sess.LastEventAt = time.Now()
+				changed = true
+			}
+			return changed
+		}
+	}
+
+	// 2. Structured Subagent Discovery from disk (only when not blocked on question/permission)
 	if sess.NativeID != "" {
 		if subs, err := ExtractSubagents("claude-code", sess.NativeID, sess.Cwd); err == nil {
 			runningCount := 0
@@ -273,7 +372,7 @@ func InspectClaudeStatus(ctx context.Context, sess *Session) bool {
 		}
 	}
 
-	// 2. Structured Background Task Output Discovery (/tmp/claude-$UID/.../tasks/*.output)
+	// 3. Structured Background Task Output Discovery (/tmp/claude-$UID/.../tasks/*.output)
 	if sess.NativeID != "" {
 		cleanID := filepath.Base(filepath.Clean(sess.NativeID))
 		if cleanID != "" && cleanID != "." && cleanID != ".." && !strings.ContainsAny(cleanID, "*?[") {
@@ -304,92 +403,7 @@ func InspectClaudeStatus(ctx context.Context, sess *Session) bool {
 	}
 
 	if sess.TmuxName != "" {
-		out, err := exec.CommandContext(ctx, "tmux", "capture-pane", "-pt", sess.TmuxName, "-p").Output()
-		if err != nil {
-			sess.State = StateEnded
-			sess.Activity = "Session ended (process exited)"
-			sess.PID = 0
-			sess.Blocked = nil
-			return true
-		}
-
-		// Check if Claude process is actually alive under pane PID
-		if sess.PID > 0 && !isProcessAlive(sess.PID) {
-			if outPs, errPs := exec.CommandContext(ctx, "pgrep", "-P", strconv.Itoa(sess.PID)).Output(); errPs == nil && len(strings.TrimSpace(string(outPs))) > 0 {
-				// Child process alive
-			} else {
-				sess.State = StateEnded
-				sess.Activity = "Session ended (process exited)"
-				sess.PID = 0
-				sess.Blocked = nil
-				return true
-			}
-		}
-
-		paneText := string(out)
-		lines := strings.Split(paneText, "\n")
-		startIdx := len(lines) - 25
-		if startIdx < 0 {
-			startIdx = 0
-		}
-		tailText := strings.Join(lines[startIdx:], "\n")
-
-		// 3. Permission prompt / confirmation
-		if strings.Contains(tailText, "Do you want to run") ||
-			strings.Contains(tailText, "Do you want to proceed") ||
-			strings.Contains(tailText, "Allow once") ||
-			strings.Contains(tailText, "Allow always") ||
-			strings.Contains(tailText, "[y/N]") ||
-			strings.Contains(tailText, "[Y/n]") ||
-			strings.Contains(tailText, "Permission requested") ||
-			strings.Contains(tailText, "Authorize tool execution") ||
-			strings.Contains(tailText, "Are you sure?") {
-			if sess.State != StateBlocked || sess.Blocked == nil || sess.Blocked.Kind != BlockPermission {
-				sess.State = StateBlocked
-				sess.Blocked = &Blocked{
-					Kind:     BlockPermission,
-					Reason:   "Tool permission requested",
-					Question: "Permission required",
-					Options:  []string{"Allow", "Deny"},
-					Since:    time.Now(),
-				}
-				sess.Activity = "Waiting for tool authorization"
-				sess.LastEventAt = time.Now()
-				changed = true
-			}
-			return changed
-		}
-
-		// 4. Question / user choice / prompt selection
-		if strings.Contains(tailText, "Enter to select") ||
-			strings.Contains(tailText, "Tab/Arrow keys to navigate") ||
-			strings.Contains(tailText, "✔ Submit") ||
-			strings.Contains(tailText, "Waiting for user response") ||
-			strings.Contains(tailText, "AskUserQuestion") ||
-			strings.Contains(tailText, "Type something.") ||
-			strings.Contains(tailText, "Chat about this") {
-			q, opts := extractClaudeQuestionAndOptions(tailText)
-			if sess.State != StateBlocked || sess.Blocked == nil || sess.Blocked.Question != q {
-				sess.State = StateBlocked
-				sess.Blocked = &Blocked{
-					Kind:     BlockQuestion,
-					Reason:   q,
-					Question: q,
-					Options:  opts,
-					Since:    time.Now(),
-				}
-				if q != "" && q != "Waiting for user response" && q != "Waiting for user input" {
-					sess.Activity = "Question: " + truncateTitle(q)
-				} else {
-					sess.Activity = "Waiting for user input"
-				}
-				sess.LastEventAt = time.Now()
-				changed = true
-			}
-			return changed
-		}
-
-		// 5. Active generation / tool spinner / active background shells
+		// 4. Active generation / tool spinner / active background shells
 		hasSpinner := strings.Contains(tailText, "⠋") || strings.Contains(tailText, "⠙") ||
 			strings.Contains(tailText, "⠹") || strings.Contains(tailText, "⠸") ||
 			strings.Contains(tailText, "⠼") || strings.Contains(tailText, "⠴") ||
@@ -415,7 +429,7 @@ func InspectClaudeStatus(ctx context.Context, sess *Session) bool {
 			return changed
 		}
 
-		// 6. Interactive prompt idle (strictly at bottom prompt ❯, no background tasks, no active background shells)
+		// 5. Interactive prompt idle (strictly at bottom prompt ❯, no background tasks, no active background shells)
 		var nonEmpty []string
 		for _, l := range lines {
 			t := strings.TrimSpace(l)
@@ -442,7 +456,7 @@ func InspectClaudeStatus(ctx context.Context, sess *Session) bool {
 			return changed
 		}
 
-		// 7. Active OS child processes (when not at interactive prompt)
+		// 6. Active OS child processes (when not at interactive prompt)
 		activeChildren := getActiveChildProcesses(ctx, sess.PID)
 		if len(activeChildren) > 0 {
 			if sess.State != StateWorking {
@@ -455,7 +469,7 @@ func InspectClaudeStatus(ctx context.Context, sess *Session) bool {
 			return changed
 		}
 
-		// 8. If it was blocked, but tmux pane is unblocked and alive
+		// 7. If it was blocked, but tmux pane is unblocked and alive
 		if sess.State == StateBlocked {
 			sess.State = StateIdle
 			sess.Blocked = nil
@@ -484,12 +498,15 @@ func extractClaudeQuestionAndOptions(tailText string) (string, []string) {
 
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
-		clean := strings.TrimPrefix(trimmed, "❯ ")
+		clean := strings.Trim(trimmed, " │┌└─")
+		clean = strings.TrimPrefix(clean, "❯ ")
 		clean = strings.TrimPrefix(clean, "❯")
 		clean = strings.TrimSpace(clean)
 
 		if len(clean) > 2 && clean[0] >= '1' && clean[0] <= '9' && clean[1] == '.' {
 			optText := strings.TrimSpace(clean[2:])
+			optText = strings.Trim(optText, " │┌└─")
+			optText = strings.TrimSpace(optText)
 			if optText != "" && !strings.HasPrefix(optText, "Type something") && !strings.HasPrefix(optText, "Chat about this") {
 				options = append(options, optText)
 				if firstOptIdx == -1 {
@@ -503,10 +520,11 @@ func extractClaudeQuestionAndOptions(tailText string) (string, []string) {
 	if firstOptIdx != -1 {
 		for j := firstOptIdx - 1; j >= 0; j-- {
 			prev := strings.TrimSpace(lines[j])
-			if prev == "" || strings.HasPrefix(prev, "─") || strings.HasPrefix(prev, "←") || strings.HasPrefix(prev, "❯") || strings.HasPrefix(prev, "┌") || strings.HasPrefix(prev, "│") || strings.HasPrefix(prev, "└") {
+			cleanPrev := strings.Trim(prev, " │┌└─")
+			if cleanPrev == "" || strings.HasPrefix(cleanPrev, "←") || strings.HasPrefix(cleanPrev, "❯") {
 				continue
 			}
-			question = prev
+			question = cleanPrev
 			break
 		}
 	}
@@ -514,8 +532,9 @@ func extractClaudeQuestionAndOptions(tailText string) (string, []string) {
 	if question == "" {
 		for _, line := range lines {
 			trimmed := strings.TrimSpace(line)
-			if strings.HasSuffix(trimmed, "?") && !strings.Contains(trimmed, "shortcuts") && !strings.Contains(trimmed, "want to proceed") {
-				question = trimmed
+			cleanLine := strings.Trim(trimmed, " │┌└─")
+			if strings.HasSuffix(cleanLine, "?") && !strings.Contains(cleanLine, "shortcuts") && !strings.Contains(cleanLine, "want to proceed") {
+				question = cleanLine
 				break
 			}
 		}
