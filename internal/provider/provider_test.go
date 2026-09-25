@@ -366,6 +366,67 @@ func TestProviderInterfaceConformance(t *testing.T) {
 	}
 }
 
+func TestProviderCapabilityConformance(t *testing.T) {
+	claude := NewClaudeProvider()
+	antigravity := NewAntigravityProvider()
+	codex := NewCodexProvider()
+
+	// 1. Verify Core Role Interfaces for all providers
+	allProviders := []any{claude, antigravity, codex}
+	for _, p := range allProviders {
+		if _, ok := p.(daemon.AgentIdentity); !ok {
+			t.Errorf("Provider %T must implement daemon.AgentIdentity", p)
+		}
+		if _, ok := p.(daemon.ProcessDetector); !ok {
+			t.Errorf("Provider %T must implement daemon.ProcessDetector", p)
+		}
+		if _, ok := p.(daemon.HookParser); !ok {
+			t.Errorf("Provider %T must implement daemon.HookParser", p)
+		}
+		if _, ok := p.(daemon.SessionLifecycle); !ok {
+			t.Errorf("Provider %T must implement daemon.SessionLifecycle", p)
+		}
+		if _, ok := p.(daemon.TranscriptReader); !ok {
+			t.Errorf("Provider %T must implement daemon.TranscriptReader", p)
+		}
+		if _, ok := p.(daemon.Provider); !ok {
+			t.Errorf("Provider %T must implement daemon.Provider", p)
+		}
+	}
+
+	// 2. Claude & Antigravity support FullProvider (StatusInspector + SubagentDiscoverer)
+	if _, ok := any(claude).(daemon.StatusInspector); !ok {
+		t.Errorf("ClaudeProvider should implement daemon.StatusInspector")
+	}
+	if _, ok := any(claude).(daemon.SubagentDiscoverer); !ok {
+		t.Errorf("ClaudeProvider should implement daemon.SubagentDiscoverer")
+	}
+	if _, ok := any(claude).(daemon.FullProvider); !ok {
+		t.Errorf("ClaudeProvider should implement daemon.FullProvider")
+	}
+
+	if _, ok := any(antigravity).(daemon.StatusInspector); !ok {
+		t.Errorf("AntigravityProvider should implement daemon.StatusInspector")
+	}
+	if _, ok := any(antigravity).(daemon.SubagentDiscoverer); !ok {
+		t.Errorf("AntigravityProvider should implement daemon.SubagentDiscoverer")
+	}
+	if _, ok := any(antigravity).(daemon.FullProvider); !ok {
+		t.Errorf("AntigravityProvider should implement daemon.FullProvider")
+	}
+
+	// 3. Codex does NOT implement optional capability interfaces (no dummy stubs)
+	if _, ok := any(codex).(daemon.StatusInspector); ok {
+		t.Errorf("CodexProvider should not implement daemon.StatusInspector")
+	}
+	if _, ok := any(codex).(daemon.SubagentDiscoverer); ok {
+		t.Errorf("CodexProvider should not implement daemon.SubagentDiscoverer")
+	}
+	if _, ok := any(codex).(daemon.FullProvider); ok {
+		t.Errorf("CodexProvider should not implement daemon.FullProvider")
+	}
+}
+
 func TestClaudeProvider_ExtractTranscript_CoalescesToolCalls(t *testing.T) {
 	tmpHome, err := os.MkdirTemp("", "test-provider-claude-*")
 	if err != nil {
