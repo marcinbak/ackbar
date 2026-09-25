@@ -111,8 +111,22 @@ func InspectAntigravityStatus(ctx context.Context, sess *Session) bool {
 					}
 					if jerr := json.Unmarshal([]byte(line), &step); jerr == nil {
 						stepsChecked++
-						// If the user already provided input after this, any prior question in this conversation was answered
-						if step.Type == "USER_INPUT" {
+						// If the user already provided input or answered the question, any prior question in this conversation was answered
+						if step.Type == "USER_INPUT" || step.Type == "ASK_QUESTION" {
+							break
+						}
+
+						// If the agent is actively invoking tools other than ask_question, it is working, not blocked
+						hasOtherTools := false
+						hasAskQuestion := false
+						for _, tc := range step.ToolCalls {
+							if tc.Name == "ask_question" {
+								hasAskQuestion = true
+							} else if tc.Name != "" {
+								hasOtherTools = true
+							}
+						}
+						if hasOtherTools && !hasAskQuestion {
 							break
 						}
 
@@ -491,6 +505,8 @@ func isClaudePromptLine(trimmed string) bool {
 	return false
 }
 
+const claudeBorderChars = " │┌└─┐┘╭╮╰╯├┤┬┴┼"
+
 func extractClaudeQuestionAndOptions(tailText string) (string, []string) {
 	lines := strings.Split(tailText, "\n")
 	var options []string
@@ -498,14 +514,14 @@ func extractClaudeQuestionAndOptions(tailText string) (string, []string) {
 
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
-		clean := strings.Trim(trimmed, " │┌└─")
+		clean := strings.Trim(trimmed, claudeBorderChars)
 		clean = strings.TrimPrefix(clean, "❯ ")
 		clean = strings.TrimPrefix(clean, "❯")
 		clean = strings.TrimSpace(clean)
 
 		if len(clean) > 2 && clean[0] >= '1' && clean[0] <= '9' && clean[1] == '.' {
 			optText := strings.TrimSpace(clean[2:])
-			optText = strings.Trim(optText, " │┌└─")
+			optText = strings.Trim(optText, claudeBorderChars)
 			optText = strings.TrimSpace(optText)
 			if optText != "" && !strings.HasPrefix(optText, "Type something") && !strings.HasPrefix(optText, "Chat about this") {
 				options = append(options, optText)
@@ -520,7 +536,7 @@ func extractClaudeQuestionAndOptions(tailText string) (string, []string) {
 	if firstOptIdx != -1 {
 		for j := firstOptIdx - 1; j >= 0; j-- {
 			prev := strings.TrimSpace(lines[j])
-			cleanPrev := strings.Trim(prev, " │┌└─")
+			cleanPrev := strings.Trim(prev, claudeBorderChars)
 			if cleanPrev == "" || strings.HasPrefix(cleanPrev, "←") || strings.HasPrefix(cleanPrev, "❯") {
 				continue
 			}
@@ -532,7 +548,7 @@ func extractClaudeQuestionAndOptions(tailText string) (string, []string) {
 	if question == "" {
 		for _, line := range lines {
 			trimmed := strings.TrimSpace(line)
-			cleanLine := strings.Trim(trimmed, " │┌└─")
+			cleanLine := strings.Trim(trimmed, claudeBorderChars)
 			if strings.HasSuffix(cleanLine, "?") && !strings.Contains(cleanLine, "shortcuts") && !strings.Contains(cleanLine, "want to proceed") {
 				question = cleanLine
 				break

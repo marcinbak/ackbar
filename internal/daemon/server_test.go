@@ -1302,6 +1302,30 @@ func TestExtractClaudeQuestionAndOptions_BoxDrawingBorders(t *testing.T) {
 	}
 }
 
+func TestExtractClaudeQuestionAndOptions_TopAndBottomBoxBorders(t *testing.T) {
+	samplePane := `
+Which database engine should we configure for local development?
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│ ❯ 1. SQLite (pure Go)                                                           │
+│   2. PostgreSQL (Docker)                                                        │
+└─────────────────────────────────────────────────────────────────────────────────┘
+↑/↓ to navigate · Enter to select · Esc to cancel
+`
+	q, opts := extractClaudeQuestionAndOptions(samplePane)
+	if q != "Which database engine should we configure for local development?" {
+		t.Errorf("Unexpected question: %q", q)
+	}
+	if len(opts) != 2 {
+		t.Fatalf("Expected 2 options, got %d: %v", len(opts), opts)
+	}
+	if opts[0] != "SQLite (pure Go)" {
+		t.Errorf("Option 0 mismatch: %q", opts[0])
+	}
+	if opts[1] != "PostgreSQL (Docker)" {
+		t.Errorf("Option 1 mismatch: %q", opts[1])
+	}
+}
+
 func TestInspectClaudeStatus_QuestionPrioritizedOverSubagent(t *testing.T) {
 	if !tmux.IsTmuxInstalled() {
 		t.Skip("tmux not installed, skipping TestInspectClaudeStatus_QuestionPrioritizedOverSubagent")
@@ -1432,6 +1456,44 @@ func TestInspectAntigravityStatus_QuestionDetectedWithTrailingOutput(t *testing.
 	}
 	if len(sess.Blocked.Options) != 2 || sess.Blocked.Options[0] != "Yes" || sess.Blocked.Options[1] != "No" {
 		t.Errorf("Expected ['Yes', 'No'], got %v", sess.Blocked.Options)
+	}
+}
+
+func TestInspectAntigravityStatus_AnsweredQuestionDoesNotBlock(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	convUUID := "55555555-6666-7777-8888-999999999999"
+	brainDir := filepath.Join(tmpHome, ".gemini", "antigravity", "brain", convUUID, ".system_generated", "logs")
+	if err := os.MkdirAll(brainDir, 0755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+
+	transcript := `{"step_index":1,"source":"USER_EXPLICIT","type":"USER_INPUT","content":"Deploy"}` + "\n" +
+		`{"step_index":2,"type":"PLANNER_RESPONSE","created_at":"2026-09-25T15:00:00Z","tool_calls":[{"name":"ask_question","args":{"questions":[{"question":"Proceed?","options":["Yes","No"]}]}}]}` + "\n" +
+		`{"step_index":3,"source":"MODEL","type":"ASK_QUESTION","created_at":"2026-09-25T15:01:00Z","content":"A1: Yes"}` + "\n" +
+		`{"step_index":4,"type":"PLANNER_RESPONSE","tool_calls":[{"name":"run_command","args":{"CommandLine":"make build"}}]}` + "\n"
+
+	if err := os.WriteFile(filepath.Join(brainDir, "transcript.jsonl"), []byte(transcript), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	sess := &Session{
+		ID:          "antigravity:local:" + convUUID,
+		Agent:       "antigravity",
+		Host:        "local",
+		NativeID:    convUUID,
+		State:       StateWorking,
+		Activity:    "Working...",
+		PID:         os.Getpid(),
+		StartedAt:   time.Now(),
+		LastEventAt: time.Now(),
+	}
+
+	ctx := context.Background()
+	InspectAntigravityStatus(ctx, sess)
+	if sess.State == StateBlocked {
+		t.Fatalf("Expected session NOT to be blocked since question was answered, got StateBlocked")
 	}
 }
 
