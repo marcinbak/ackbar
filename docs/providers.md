@@ -56,3 +56,40 @@ Ackbar supports running separate account profiles (e.g. Work, Personal, Client) 
 * **Fleet Propagation:** When adding an account (`--all-hosts` or via the Settings modal), Ackbar automatically checks agent discovery (`/v1/agents/discovery`) on each host and registers the profile only on hosts where the agent is installed.
 * **Group Memory:** Ackbar remembers the preferred account for each group/subgroup on each host (`by_host[host].account`), pre-selecting it when spawning subsequent sessions.
 
+---
+
+## 6. Provider Interface Architecture (Interface Segregation)
+
+Ackbar's agent integration model follows the Interface Segregation Principle (ISP), decomposing provider responsibilities into cohesive role interfaces and optional capability interfaces:
+
+### Core Role Interfaces (`internal/daemon/provider.go`)
+1. **`AgentIdentity`:** Provides agent identity, display naming, brand hex color, and SVG icon.
+2. **`ProcessDetector`:** Inspects CLI binary existence, process names, and hook setup.
+3. **`HookParser`:** Ingests incoming telemetry payloads and translates them into canonical `daemon.Event` objects.
+4. **`SessionLifecycle`:** Generates shell commands for spawning (`GetSpawnCommand`) and resuming (`GetResumeCommand`) agent sessions.
+5. **`TranscriptReader`:** Extracts session metadata, titles, transcripts, and cleans session storage.
+
+The base `Provider` interface embeds these 5 core interfaces:
+```go
+type Provider interface {
+	AgentIdentity
+	ProcessDetector
+	HookParser
+	SessionLifecycle
+	TranscriptReader
+}
+```
+
+### Optional Capability Interfaces
+Optional capabilities are probed dynamically at runtime using Go type assertions, eliminating dummy stubs in lightweight CLI adapters:
+1. **`StatusInspector` (`p.(StatusInspector)`):** Optional live tmux pane, status bar, and child process inspection for active working/idle/blocked states.
+2. **`SubagentDiscoverer` (`p.(SubagentDiscoverer)`):** Optional structured on-disk subagent tracking (`ListSubagents`).
+3. **`FullProvider`:** Helper interface representing providers that implement all core and optional capabilities.
+
+### Modular File Structure (`internal/provider/`)
+Concrete provider implementations are organized into focused, single-responsibility files:
+* `<agent>.go`: Struct definition, identity, detection, and lifecycle commands.
+* `<agent>_hook.go`: Webhook and stdin JSON payloads and `ParseHook`.
+* `<agent>_transcript.go`: Session metadata, title resolution, transcript extraction, and file cleanup.
+* `<agent>_subagent.go`: Structured subagent discovery and metadata parsing.
+

@@ -32,35 +32,66 @@ type ActiveSubagent struct {
 	StartedAt time.Time `json:"started_at"`
 }
 
-// Provider defines the complete contract for AI agent integrations in Ackbar
-type Provider interface {
-	// 1. Identity & UI Presentation
+// AgentIdentity provides agent naming, branding, and UI presentation metadata.
+type AgentIdentity interface {
 	Agent() string
 	DisplayName() string
 	BrandColor() string
 	IconSVG() string
+}
 
-	// 2. Binary & Process Discovery
+// ProcessDetector provides binary existence, process name matching, and hook configuration checks.
+type ProcessDetector interface {
 	IsInstalled() bool
 	ProcessNames() []string
 	CheckHookConfig() (configured bool, setupCmd string, err error)
+}
 
-	// 3. Telemetry & Hooks
+// HookParser translates incoming agent-specific telemetry webhooks or stdin payloads into canonical Ackbar Events.
+type HookParser interface {
 	ParseHook(eventName string, payload []byte) (*Event, error)
+}
 
-	// 4. Lifecycle Commands
+// SessionLifecycle provides CLI launch and resume command templates for tmux or terminal sessions.
+type SessionLifecycle interface {
 	GetSpawnCommand(tempUUID string) string
 	GetResumeCommand(nativeID string) string
+}
 
-	// 5. Workspace Metadata & Transcripts
+// TranscriptReader extracts past conversation messages, session titles, and cleans agent storage.
+type TranscriptReader interface {
 	ReadSessionMetadata(cwd, nativeID string) *SessionMeta
 	ResolveSessionTitle(cwd, nativeID string) string
 	ExtractTranscript(home, cwd, nativeID string) ([]TranscriptMessage, error)
 	CleanSessionFiles(home, cwd, nativeID string) error
+}
 
-	// 6. Live Status Inspection & Subagent Discovery
+// StatusInspector is an optional capability interface for agents that perform custom pane,
+// process, or output inspection to detect working/idle/blocked states.
+type StatusInspector interface {
 	InspectStatus(ctx context.Context, sess *Session) bool
+}
+
+// SubagentDiscoverer is an optional capability interface for agents that maintain structured
+// subagent state on disk or across teammate processes.
+type SubagentDiscoverer interface {
 	ListSubagents(home, cwd, nativeID string) ([]*ActiveSubagent, error)
+}
+
+// Provider defines the core contract required for an AI agent integration in Ackbar.
+type Provider interface {
+	AgentIdentity
+	ProcessDetector
+	HookParser
+	SessionLifecycle
+	TranscriptReader
+}
+
+// FullProvider represents an agent integration supporting all core and optional capabilities.
+type FullProvider interface {
+	Provider
+	StatusInspector
+	SubagentDiscoverer
 }
 
 // ProviderDTO represents provider discovery metadata exposed over the REST API
