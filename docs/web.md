@@ -55,6 +55,7 @@ It is embedded directly into the `ackbard` Go binary and served on `http://127.0
   * `🛑` **FAILED:** Process crashed or error.
   * `◌` **STANDBY:** Unmanaged session or host disconnected.
 * **Unread vs. Read State Cue:** A pulsing dot indicates unread transitions to `BLOCKED` or `IDLE`. Focusing or clicking the session automatically marks it as read.
+* **⏳ Later Section & Collapsible Parking:** Each project group and Unassigned folder contains a collapsible `⏳ Later` section for parked sessions. Sessions in Later are immune to auto-completion (`auto_done`) and auto-archival, and remain in Later during prompt interaction until explicitly moved to Active or Done.
 * **1-Click Conversation Resumption:** Ended turns can be resumed directly into a new tmux tab via right-click **`▶ Resume in Tmux`** or the details view button.
 * Context token usage meter (adapting dynamically to 200k, 1M, and 128k token limits).
 

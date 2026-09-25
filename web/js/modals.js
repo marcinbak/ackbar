@@ -36,7 +36,8 @@ function showSettingsModal() {
     auto_done_hours: '24',
     auto_archive_enabled: 'true',
     auto_archive_days: '7',
-    done_collapsed_by_default: 'true'
+    done_collapsed_by_default: 'true',
+    later_collapsed_by_default: 'false'
   };
 
   const autoDoneEnabled = s.auto_done_enabled !== 'false';
@@ -44,6 +45,7 @@ function showSettingsModal() {
   const autoArchiveEnabled = s.auto_archive_enabled !== 'false';
   const autoArchiveDays = s.auto_archive_days || '7';
   const doneCollapsed = s.done_collapsed_by_default !== 'false';
+  const laterCollapsed = s.later_collapsed_by_default === 'true';
   const handoverSuggestionEnabled = s.handover_suggestion_enabled !== 'false';
   const handoverThresholdPct = s.handover_threshold_pct || '60';
 
@@ -131,6 +133,15 @@ function showSettingsModal() {
         <div class="settings-row">
           <label class="settings-row-label" for="settingDoneCollapsed">Start Done Sections Collapsed</label>
           <input type="checkbox" id="settingDoneCollapsed" ${doneCollapsed ? 'checked' : ''} />
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-section-title"><span>⏳</span> Later Section Presentation</div>
+        <div class="settings-section-desc">Configure the initial display state of the Later section in the session sidebar tree.</div>
+        <div class="settings-row">
+          <label class="settings-row-label" for="settingLaterCollapsed">Start Later Sections Collapsed</label>
+          <input type="checkbox" id="settingLaterCollapsed" ${laterCollapsed ? 'checked' : ''} />
         </div>
       </div>
 
@@ -310,6 +321,7 @@ function showSettingsModal() {
         auto_archive_enabled: document.getElementById('settingAutoArchiveEnabled')?.checked ? 'true' : 'false',
         auto_archive_days: document.getElementById('settingAutoArchiveDays')?.value?.trim() || '7',
         done_collapsed_by_default: document.getElementById('settingDoneCollapsed')?.checked ? 'true' : 'false',
+        later_collapsed_by_default: document.getElementById('settingLaterCollapsed')?.checked ? 'true' : 'false',
         typesafe_api_key: document.getElementById('settingTypesafeApiKey')?.value?.trim() || '',
         handover_suggestion_enabled: document.getElementById('settingHandoverSuggestionEnabled')?.checked ? 'true' : 'false',
         handover_threshold_pct: document.getElementById('settingHandoverThresholdPct')?.value?.trim() || '60'

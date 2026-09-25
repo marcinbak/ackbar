@@ -19,14 +19,16 @@ import {
   fetchSessions,
   fetchSettings,
   fetchProviders,
-  setSessionDoneState
+  setSessionDoneState,
+  setSessionLaterState
 } from './api.js';
 import { connectSSE } from './sse.js';
 import {
   renderTree,
   getSessionTimestamp,
   sortSessionsByInteraction,
-  isSessionDone
+  isSessionDone,
+  isSessionLater
 } from './tree.js';
 import {
   openSessionInTab,
@@ -394,6 +396,17 @@ function setupEventListeners() {
         const baseUrl = sess.hostUrl ? sess.hostUrl.replace(/\/$/, '') : '';
         await fetch(`${baseUrl}/v1/sessions/control?id=${encodeURIComponent(sess.id)}&action=kill`, { method: 'POST' });
         await fetchSessions();
+      }
+    });
+  }
+
+  if (el.cmItemLater) {
+    el.cmItemLater.addEventListener('click', async () => {
+      if (state.contextMenuSession) {
+        const sess = state.contextMenuSession;
+        const isLater = isSessionLater(sess);
+        hideContextMenu();
+        await setSessionLaterState(sess.id, sess.host, !isLater);
       }
     });
   }

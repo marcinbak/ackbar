@@ -982,6 +982,7 @@ func (s *Server) handleSessionControl(w http.ResponseWriter, r *http.Request) {
 
 	case "done", "mark_done":
 		sess.IsDone = true
+		sess.IsLater = false
 		if err := s.db.SaveSession(sess); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -990,8 +991,30 @@ func (s *Server) handleSessionControl(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"done"}`))
 
+	case "later", "mark_later":
+		sess.IsLater = true
+		sess.IsDone = false
+		if err := s.db.SaveSession(sess); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		s.broadcast(sess)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"later"}`))
+
+	case "unlater":
+		sess.IsLater = false
+		if err := s.db.SaveSession(sess); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		s.broadcast(sess)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"active"}`))
+
 	case "undone", "active", "mark_active":
 		sess.IsDone = false
+		sess.IsLater = false
 		if err := s.db.SaveSession(sess); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -4841,6 +4864,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			"auto_archive_enabled":        "true",
 			"auto_archive_days":           "7",
 			"done_collapsed_by_default":   "true",
+			"later_collapsed_by_default":  "false",
 			"handover_suggestion_enabled": "true",
 			"handover_threshold_pct":      "60",
 		}
@@ -4884,6 +4908,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			"auto_archive_enabled":        "true",
 			"auto_archive_days":           "7",
 			"done_collapsed_by_default":   "true",
+			"later_collapsed_by_default":  "false",
 			"handover_suggestion_enabled": "true",
 			"handover_threshold_pct":      "60",
 		}

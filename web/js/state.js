@@ -52,6 +52,39 @@ function saveCollapsedDoneGroups() {
   }
 }
 
+function loadCollapsedLaterGroups() {
+  try {
+    const saved = localStorage.getItem('ackbar_collapsed_later_groups');
+    if (saved) {
+      return new Set(JSON.parse(saved));
+    }
+  } catch (e) {
+    console.error('Failed to load collapsed later groups from localStorage:', e);
+  }
+  return new Set();
+}
+
+function loadExpandedLaterGroups() {
+  try {
+    const saved = localStorage.getItem('ackbar_expanded_later_groups');
+    if (saved) {
+      return new Set(JSON.parse(saved));
+    }
+  } catch (e) {
+    console.error('Failed to load expanded later groups from localStorage:', e);
+  }
+  return new Set();
+}
+
+function saveCollapsedLaterGroups() {
+  try {
+    localStorage.setItem('ackbar_collapsed_later_groups', JSON.stringify(Array.from(state.collapsedLaterGroups)));
+    localStorage.setItem('ackbar_expanded_later_groups', JSON.stringify(Array.from(state.expandedLaterGroups)));
+  } catch (e) {
+    console.error('Failed to save collapsed later groups to localStorage:', e);
+  }
+}
+
 
 export const state = {
   version: '...',
@@ -66,6 +99,8 @@ export const state = {
   collapsedGroups: loadCollapsedGroups(),
   collapsedDoneGroups: loadCollapsedDoneGroups(),
   expandedDoneGroups: loadExpandedDoneGroups(),
+  collapsedLaterGroups: loadCollapsedLaterGroups(),
+  expandedLaterGroups: loadExpandedLaterGroups(),
   searchQuery: '',
   showArchived: false,
   draggedSession: null,
@@ -157,6 +192,7 @@ export const el = {
   cmItemDocs: document.getElementById('cmItemDocs'),
   cmItemRestart: document.getElementById('cmItemRestart'),
   cmItemKill: document.getElementById('cmItemKill'),
+  cmItemLater: document.getElementById('cmItemLater'),
   cmItemDone: document.getElementById('cmItemDone'),
   cmItemArchive: document.getElementById('cmItemArchive'),
   cmItemDelete: document.getElementById('cmItemDelete'),
@@ -191,5 +227,8 @@ export {
   saveCollapsedGroups,
   loadCollapsedDoneGroups,
   loadExpandedDoneGroups,
-  saveCollapsedDoneGroups
+  saveCollapsedDoneGroups,
+  loadCollapsedLaterGroups,
+  loadExpandedLaterGroups,
+  saveCollapsedLaterGroups
 };

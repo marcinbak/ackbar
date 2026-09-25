@@ -27,12 +27,12 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 | `POST` | `/v1/sessions/spawn` | Spawns a new agent process in a supervised tmux session using RFC 4122 UUIDv4 (supports prompt injection). |
 | `POST` | `/v1/meta/resolve` | Derives host, agent, group, and existing session match from prompt via Jev AI / heuristics. |
 | `POST` | `/v1/hooks/{agent}` | Ingests agent lifecycle and tool hook events with in-place `/clear` rotation detection. |
-| `POST` | `/v1/sessions/control` | Executes control actions: `resume`, `restart`, `kill`, `move`, `rename`, `delete`, `handover`. |
+| `POST` | `/v1/sessions/control` | Executes control actions: `resume`, `restart`, `kill`, `move`, `rename`, `delete`, `handover`, `later`, `unlater`, `done`, `active`. |
 | `POST` | `/v1/sessions/handover`| Initiates automated session handover, briefing extraction, and context rotation. |
 | `POST` | `/v1/sessions/mark-read` | Marks a session as read (`is_unread = false`), clearing visual unread cues. |
 | `GET` | `/v1/sessions/transcript`| Retrieves extracted conversation transcript (JSON or formatted Markdown). |
 | `POST` | `/v1/sessions/upload` | Uploads clipboard images or drag-and-dropped PDFs to `/tmp/ackbar-uploads/`. |
-| `GET` | `/v1/settings` | Returns daemon settings including `host_name`, `display_name`, auto-done thresholds, and handover suggestions. |
+| `GET` | `/v1/settings` | Returns daemon settings including `host_name`, `display_name`, auto-done thresholds, `later_collapsed_by_default`, and handover suggestions. |
 | `POST` | `/v1/settings` | Updates and persists daemon settings in SQLite. |
 | `GET` | `/v1/nodes` | Returns configured logical tree nodes and custom groups. |
 | `POST` | `/v1/projects/create` | Creates a new logical project node or pure category subgroup. |
@@ -77,6 +77,7 @@ When long-running autonomous sessions consume significant token context (`contex
 ### Handover Settings (`/v1/settings`):
 * `handover_suggestion_enabled`: `"true"` | `"false"` (default: `"true"`) — toggle automated UI suggestions.
 * `handover_threshold_pct`: Integer between `10` and `95` (default: `"60"`) — context window threshold for triggering warnings and quick-action chips.
+* `later_collapsed_by_default`: `"true"` | `"false"` (default: `"false"`) — whether the ⏳ Later subsections start collapsed by default.
 
 ---
 
@@ -85,6 +86,7 @@ When long-running autonomous sessions consume significant token context (`contex
 The SQLite database (`~/.config/ackbar/ackbard.db`) uses CGO-free pure Go SQLite (`modernc.org/sqlite`). On daemon startup, `InitDB()` automatically applies non-destructive schema migrations:
 
 * `is_unread`: Tracks whether the session has unviewed state transitions (`1` = unread, `0` = read).
+* `is_later`: Tracks whether the session is parked in the Later section (`1` = later, `0` = normal). Sessions marked as later are immune to auto-done and auto-archive timers.
 * `last_state_change_at`: Timestamp of the most recent lifecycle state mutation.
 * `entrypoint`: Identifies session launch context (`claude-vscode`, `cli`, `antigravity`).
 * `kind`: Interactive vs headless mode.
