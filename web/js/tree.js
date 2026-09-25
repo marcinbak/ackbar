@@ -3,7 +3,8 @@ import {
   state,
   el,
   saveCollapsedGroups,
-  saveCollapsedDoneGroups
+  saveCollapsedDoneGroups,
+  saveCollapsedLaterGroups
 } from './state.js';
 import {
   escapeHtml,
@@ -20,6 +21,7 @@ import {
 import {
   fetchSessions,
   setSessionDoneState,
+  setSessionLaterState,
   moveSessionToGroup
 } from './api.js';
 import { openSessionInTab } from './tabs.js';
@@ -52,8 +54,15 @@ function sortSessionsByInteraction(list) {
 
 // Settings API
 
+function isSessionLater(sess) {
+  if (!sess) return false;
+  return !!sess.is_later;
+}
+
 function isSessionDone(sess) {
   if (!sess) return false;
+  // Sessions in Later section do not get auto completed
+  if (isSessionLater(sess)) return false;
   if (sess.is_done) return true;
 
   const settings = state.settings || {};
@@ -76,6 +85,8 @@ function isSessionDone(sess) {
 function isSessionAutoArchived(sess) {
   if (!sess) return false;
   if (sess.archived) return true;
+  // Sessions in Later section do not get auto archived
+  if (isSessionLater(sess)) return false;
 
   const settings = state.settings || {};
   if (settings.auto_archive_enabled === 'false') return false;
@@ -91,6 +102,101 @@ function isSessionAutoArchived(sess) {
 
   const inactivityMs = Date.now() - ts;
   return inactivityMs > days * 24 * 3600 * 1000;
+}
+
+// Control Session Later / Active State via Daemon API
+
+function isLaterSectionCollapsed(groupKey) {
+  const settings = state.settings || {};
+  const defaultCollapsed = settings.later_collapsed_by_default === 'true';
+  if (defaultCollapsed) {
+    return !state.expandedLaterGroups.has(groupKey);
+  } else {
+    return state.collapsedLaterGroups.has(groupKey);
+  }
+}
+
+function toggleLaterSection(groupKey, sectionEl) {
+  const wasCollapsed = sectionEl.classList.contains('collapsed');
+  if (wasCollapsed) {
+    sectionEl.classList.remove('collapsed');
+    state.collapsedLaterGroups.delete(groupKey);
+    state.expandedLaterGroups.add(groupKey);
+  } else {
+    sectionEl.classList.add('collapsed');
+    state.collapsedLaterGroups.add(groupKey);
+    state.expandedLaterGroups.delete(groupKey);
+  }
+  saveCollapsedLaterGroups();
+}
+
+function renderLaterSection(groupKey, laterSessions) {
+  const sectionEl = document.createElement('div');
+  sectionEl.className = 'tree-later-section';
+
+  const isCollapsed = isLaterSectionCollapsed(groupKey);
+  if (isCollapsed) {
+    sectionEl.classList.add('collapsed');
+  }
+
+  const headerEl = document.createElement('div');
+  headerEl.className = 'tree-later-header';
+  headerEl.title = `Later sessions in this group (${laterSessions.length}). Click to toggle. Drag sessions here to mark for Later.`;
+
+  const chevron = document.createElement('span');
+  chevron.className = 'tree-later-chevron';
+  chevron.textContent = '▼';
+
+  const title = document.createElement('span');
+  title.className = 'tree-later-title';
+  title.innerHTML = `⏳ Later <span class="tree-later-count">(${laterSessions.length})</span>`;
+
+  headerEl.appendChild(chevron);
+  headerEl.appendChild(title);
+
+  headerEl.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleLaterSection(groupKey, sectionEl);
+  });
+
+  headerEl.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = 'move';
+    headerEl.classList.add('drag-over');
+  });
+
+  headerEl.addEventListener('dragleave', (e) => {
+    e.stopPropagation();
+    headerEl.classList.remove('drag-over');
+  });
+
+  headerEl.addEventListener('drop', async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    headerEl.classList.remove('drag-over');
+    try {
+      const data = JSON.parse(e.dataTransfer.getData('application/json'));
+      if (data && data.sessionId) {
+        if (groupKey !== 'Unassigned' && data.sessionPath !== groupKey) {
+          await moveSessionToGroup(data.sessionId, data.sessionHost, groupKey);
+        }
+        await setSessionLaterState(data.sessionId, data.sessionHost, true);
+      }
+    } catch (err) {
+      console.error('Later drop error:', err);
+    }
+  });
+
+  const childrenListEl = document.createElement('div');
+  childrenListEl.className = 'tree-later-children';
+  laterSessions.forEach(sess => {
+    childrenListEl.appendChild(createSessionRowElement(sess));
+  });
+
+  sectionEl.appendChild(headerEl);
+  sectionEl.appendChild(childrenListEl);
+  return sectionEl;
 }
 
 // Control Session Done / Active State via Daemon API
@@ -330,6 +436,9 @@ function renderTree() {
           if (sess && isSessionDone(sess)) {
             await setSessionDoneState(data.sessionId, data.sessionHost, false);
           }
+          if (sess && isSessionLater(sess)) {
+            await setSessionLaterState(data.sessionId, data.sessionHost, false);
+          }
         }
       } catch (err) {
         console.error('Drop error:', err);
@@ -369,14 +478,17 @@ function renderTree() {
     const childrenEl = document.createElement('div');
     childrenEl.className = 'tree-group-children';
 
-    // 3a. Direct Sessions matching this exact path (partitioned into active and done)
+    // 3a. Direct Sessions matching this exact path (partitioned into active, later, and done)
     const directSessions = sortSessionsByInteraction(sessionsByPath.get(path) || []);
     const activeSessions = [];
+    const laterSessions = [];
     const doneSessions = [];
 
     directSessions.forEach(sess => {
       if (isSessionDone(sess)) {
         doneSessions.push(sess);
+      } else if (isSessionLater(sess)) {
+        laterSessions.push(sess);
       } else {
         activeSessions.push(sess);
       }
@@ -386,12 +498,17 @@ function renderTree() {
       childrenEl.appendChild(createSessionRowElement(sess));
     });
 
-    // 3b. Done Subsection (if any sessions in Done state)
+    // 3b. Later Subsection (if any sessions in Later state)
+    if (laterSessions.length > 0) {
+      childrenEl.appendChild(renderLaterSection(path, laterSessions));
+    }
+
+    // 3c. Done Subsection (if any sessions in Done state)
     if (doneSessions.length > 0) {
       childrenEl.appendChild(renderDoneSection(path, doneSessions));
     }
 
-    // 3c. Direct Child Subgroups (nested recursive call)
+    // 3d. Direct Child Subgroups (nested recursive call)
     let childSubgroupsCount = 0;
     sortedGroupPaths.forEach(childPath => {
       if (childPath.startsWith(path + '/')) {
@@ -404,8 +521,8 @@ function renderTree() {
       }
     });
 
-    // 3d. Empty group placeholder hint
-    if (activeSessions.length === 0 && doneSessions.length === 0 && childSubgroupsCount === 0) {
+    // 3e. Empty group placeholder hint
+    if (activeSessions.length === 0 && laterSessions.length === 0 && doneSessions.length === 0 && childSubgroupsCount === 0) {
       const emptyHint = document.createElement('div');
       emptyHint.className = 'tree-group-empty-hint';
       emptyHint.textContent = 'Empty group (drag sessions here or right-click to spawn)';
@@ -450,11 +567,14 @@ function renderTree() {
     childrenEl.className = 'tree-group-children';
     const sortedUnassigned = sortSessionsByInteraction(unassigned);
     const activeUnassigned = [];
+    const laterUnassigned = [];
     const doneUnassigned = [];
 
     sortedUnassigned.forEach(sess => {
       if (isSessionDone(sess)) {
         doneUnassigned.push(sess);
+      } else if (isSessionLater(sess)) {
+        laterUnassigned.push(sess);
       } else {
         activeUnassigned.push(sess);
       }
@@ -463,6 +583,10 @@ function renderTree() {
     activeUnassigned.forEach(sess => {
       childrenEl.appendChild(createSessionRowElement(sess));
     });
+
+    if (laterUnassigned.length > 0) {
+      childrenEl.appendChild(renderLaterSection('Unassigned', laterUnassigned));
+    }
 
     if (doneUnassigned.length > 0) {
       childrenEl.appendChild(renderDoneSection('Unassigned', doneUnassigned));
@@ -542,6 +666,10 @@ function createSessionRowElement(session) {
     row.classList.add('is-done');
   }
 
+  if (isSessionLater(session)) {
+    row.classList.add('is-later');
+  }
+
   const name = document.createElement('span');
   name.className = 'session-name';
   name.textContent = sessionFullName;
@@ -552,6 +680,14 @@ function createSessionRowElement(session) {
 
   const right = document.createElement('div');
   right.className = 'session-item-right';
+
+  if (isSessionLater(session)) {
+    const laterBadge = document.createElement('span');
+    laterBadge.className = 'badge-later';
+    laterBadge.textContent = '⏳';
+    laterBadge.title = 'Parked for Later';
+    right.appendChild(laterBadge);
+  }
 
   if (session.archived) {
     const archBadge = document.createElement('span');
@@ -638,8 +774,12 @@ function createSessionRowElement(session) {
 export {
   getSessionTimestamp,
   sortSessionsByInteraction,
+  isSessionLater,
   isSessionDone,
   isSessionAutoArchived,
+  isLaterSectionCollapsed,
+  toggleLaterSection,
+  renderLaterSection,
   isDoneSectionCollapsed,
   toggleDoneSection,
   renderDoneSection,
