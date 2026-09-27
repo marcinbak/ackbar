@@ -58,6 +58,11 @@
   * Universal 1-click conversation resumption (`POST /v1/sessions/control?action=resume&id=...`) launching native provider resume CLIs across Web (`▶ Resume in Tmux`), TUI (`r`), and Mobile (`▶ Resume Conversation`).
 * [x] **Web Multi-Tab Lifecycle Context Menu:**
   * Right-click tab context menu supporting Close Tab, Close Other Tabs, Close Tabs to the Right, and Close All Tabs.
+* [x] **Later Section & Session Parking:**
+  * Added collapsible `⏳ Later` subsections to project groups and Unassigned folder with toggleable collapse memory and configurable default.
+  * Parked sessions are immune to auto-done (`isSessionDone`) and auto-archive (`isSessionAutoArchived`) timers.
+  * Direct session controls (`POST /v1/sessions/control?action=later` / `unlater`), drag-and-drop support, and right-click context menu options.
+  * Sessions in Later remain parked during prompt interaction until explicitly moved by the user.
 * [x] **Official Provider Vector Logos:**
   * High-performance vector `CustomPainter` paths and inline SVGs for Claude Code (pixelated CLI creature), Google Antigravity (Gaussian arch curve with Google gradient), and OpenAI Codex (interlocking Blossom vortex).
 * [x] **Single Source of Truth Versioning:**

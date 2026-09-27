@@ -5,7 +5,7 @@ import {
   getSessionBaseUrl,
   isLocalHost
 } from './utils.js';
-import { isSessionDone } from './tree.js';
+import { isSessionDone, isSessionLater } from './tree.js';
 import {
   openSessionInTab,
   handleTakeWheel,
@@ -206,8 +206,14 @@ function showContextMenu(x, y, session) {
   hideChatFileContextMenu();
   state.contextMenuSession = session;
 
+  const isLater = isSessionLater(session);
+  const isDone = isSessionDone(session);
+
+  if (el.cmItemLater) {
+    el.cmItemLater.innerHTML = isLater ? '<span>↺</span> Move to Active' : '<span>⏳</span> Move to Later';
+  }
+
   if (el.cmItemDone) {
-    const isDone = isSessionDone(session);
     el.cmItemDone.innerHTML = isDone ? '<span>↺</span> Move to Active' : '<span>✓</span> Mark as Done';
   }
 

@@ -242,7 +242,8 @@ async function fetchSettings() {
       auto_done_hours: '24',
       auto_archive_enabled: 'true',
       auto_archive_days: '7',
-      done_collapsed_by_default: 'true'
+      done_collapsed_by_default: 'true',
+      later_collapsed_by_default: 'false'
     };
   }
 }
@@ -275,6 +276,9 @@ async function setSessionDoneState(sessionId, sessionHost, isDone) {
     const sess = state.sessions.find(s => s.id === sessionId);
     if (sess) {
       sess.is_done = isDone;
+      if (isDone) {
+        sess.is_later = false;
+      }
       renderTree();
     }
     const hostRec = (state.hosts || []).find(h => h.name === sessionHost);
@@ -287,6 +291,29 @@ async function setSessionDoneState(sessionId, sessionHost, isDone) {
     }
   } catch (err) {
     console.error(`Failed to set session ${sessionId} done state:`, err);
+  }
+}
+
+async function setSessionLaterState(sessionId, sessionHost, isLater) {
+  try {
+    const sess = state.sessions.find(s => s.id === sessionId);
+    if (sess) {
+      sess.is_later = isLater;
+      if (isLater) {
+        sess.is_done = false;
+      }
+      renderTree();
+    }
+    const hostRec = (state.hosts || []).find(h => h.name === sessionHost);
+    const baseUrl = (sess && sess.hostUrl) ? sess.hostUrl.replace(/\/$/, '') : (hostRec && hostRec.url && !isLocalHost(sessionHost) ? hostRec.url.replace(/\/$/, '') : '');
+    const action = isLater ? 'later' : 'active';
+    const url = `${baseUrl}/v1/sessions/control?id=${encodeURIComponent(sessionId)}&action=${action}`;
+    const res = await fetch(url, { method: 'POST' });
+    if (res.ok) {
+      await fetchSessions();
+    }
+  } catch (err) {
+    console.error(`Failed to set session ${sessionId} later state:`, err);
   }
 }
 
@@ -545,6 +572,7 @@ export {
   fetchSettings,
   updateSettings,
   setSessionDoneState,
+  setSessionLaterState,
   deduplicateSessions,
   isRawSessionName,
   moveSessionToGroup,

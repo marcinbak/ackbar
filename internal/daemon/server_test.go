@@ -1912,6 +1912,111 @@ func TestSessionDoneControl_PersistsAndTogglesInDB(t *testing.T) {
 	}
 }
 
+func TestSessionLaterControl_PersistsAndTogglesInDB(t *testing.T) {
+	dbFile := "./test_session_later.db"
+	defer os.Remove(dbFile)
+
+	db, err := InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := NewServer(db)
+
+	sess := &Session{
+		ID:        "claude-code:local:later-test-1",
+		Agent:     "claude-code",
+		Host:      "local",
+		NativeID:  "later-test-1",
+		Cwd:       "/workspace/project",
+		State:     StateIdle,
+		StartedAt: time.Now(),
+		IsDone:    false,
+		IsLater:   false,
+	}
+	if err := db.SaveSession(sess); err != nil {
+		t.Fatalf("SaveSession failed: %v", err)
+	}
+
+	// 1. Mark as later via /v1/sessions/control?id=...&action=later
+	reqLater := httptest.NewRequest(http.MethodPost, "/v1/sessions/control?id=claude-code:local:later-test-1&action=later", nil)
+	wLater := httptest.NewRecorder()
+	server.handleSessionControl(wLater, reqLater)
+
+	if wLater.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK, got %d: %s", wLater.Code, wLater.Body.String())
+	}
+
+	sessLater, err := db.GetSession("claude-code:local:later-test-1")
+	if err != nil || sessLater == nil {
+		t.Fatalf("GetSession failed: %v", err)
+	}
+	if !sessLater.IsLater {
+		t.Errorf("Expected IsLater to be true, got false")
+	}
+	if sessLater.IsDone {
+		t.Errorf("Expected IsDone to be false, got true")
+	}
+
+	// 2. Mark as done while in later (mutual exclusivity: is_later must become false)
+	reqDone := httptest.NewRequest(http.MethodPost, "/v1/sessions/control?id=claude-code:local:later-test-1&action=done", nil)
+	wDone := httptest.NewRecorder()
+	server.handleSessionControl(wDone, reqDone)
+
+	sessDone, err := db.GetSession("claude-code:local:later-test-1")
+	if err != nil || sessDone == nil {
+		t.Fatalf("GetSession failed: %v", err)
+	}
+	if !sessDone.IsDone {
+		t.Errorf("Expected IsDone to be true, got false")
+	}
+	if sessDone.IsLater {
+		t.Errorf("Expected IsLater to be false after marking done, got true")
+	}
+
+	// 3. Move back to later (mutual exclusivity: is_done must become false)
+	reqLaterAgain := httptest.NewRequest(http.MethodPost, "/v1/sessions/control?id=claude-code:local:later-test-1&action=later", nil)
+	wLaterAgain := httptest.NewRecorder()
+	server.handleSessionControl(wLaterAgain, reqLaterAgain)
+
+	sessLaterAgain, err := db.GetSession("claude-code:local:later-test-1")
+	if err != nil || sessLaterAgain == nil {
+		t.Fatalf("GetSession failed: %v", err)
+	}
+	if !sessLaterAgain.IsLater {
+		t.Errorf("Expected IsLater to be true, got false")
+	}
+	if sessLaterAgain.IsDone {
+		t.Errorf("Expected IsDone to be false after marking later, got true")
+	}
+
+	// 4. Mark as active via action=active (both is_later and is_done should be false)
+	reqActive := httptest.NewRequest(http.MethodPost, "/v1/sessions/control?id=claude-code:local:later-test-1&action=active", nil)
+	wActive := httptest.NewRecorder()
+	server.handleSessionControl(wActive, reqActive)
+
+	sessActive, err := db.GetSession("claude-code:local:later-test-1")
+	if err != nil || sessActive == nil {
+		t.Fatalf("GetSession failed: %v", err)
+	}
+	if sessActive.IsLater {
+		t.Errorf("Expected IsLater to be false, got true")
+	}
+	if sessActive.IsDone {
+		t.Errorf("Expected IsDone to be false, got true")
+	}
+
+	// 5. Test MarkSessionLater direct DB helper
+	if err := db.MarkSessionLater("claude-code:local:later-test-1", true); err != nil {
+		t.Fatalf("MarkSessionLater failed: %v", err)
+	}
+	sessDB, _ := db.GetSession("claude-code:local:later-test-1")
+	if !sessDB.IsLater {
+		t.Errorf("Expected IsLater from DB to be true")
+	}
+}
+
 func TestSettings_GetAndSetEndpoints(t *testing.T) {
 	dbFile := "./test_settings_endpoint.db"
 	defer os.Remove(dbFile)
@@ -1937,7 +2042,7 @@ func TestSettings_GetAndSetEndpoints(t *testing.T) {
 	if err := json.Unmarshal(wGet.Body.Bytes(), &defaults); err != nil {
 		t.Fatalf("Failed to parse defaults: %v", err)
 	}
-	if defaults["auto_done_enabled"] != "true" || defaults["auto_done_hours"] != "24" {
+	if defaults["auto_done_enabled"] != "true" || defaults["auto_done_hours"] != "24" || defaults["later_collapsed_by_default"] != "false" {
 		t.Errorf("Unexpected default settings: %+v", defaults)
 	}
 
