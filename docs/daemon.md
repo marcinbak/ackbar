@@ -46,6 +46,9 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 | `POST` | `/v1/tasks/propose` | Quickly records discovered work proposals into the `NEW` inbox column with duplicate detection. |
 | `POST` | `/v1/tasks/deliverable` | Attaches design mockups, change briefs, retrospectives, or external artifacts to a task. |
 | `POST` | `/v1/tasks/sync-workflow` | Triggers immediate synchronization scan of `~/.claude/dev-workflow-runs/` run states and companions. |
+| `POST` | `/v1/tasks/merge-pr` | Executes 1-click `gh pr merge --squash` for a task with an open PR and transitions state to `DONE`. |
+| `GET` | `/v1/standup` | Deterministic daily standup and weekly retro report generation (grouped by project in Markdown or JSON). |
+| `POST` | `/v1/briefings/synthesize` | Generates speech-optimized conversational text briefing (<45s) for voice synthesis. |
 
 ---
 

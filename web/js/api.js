@@ -612,6 +612,53 @@ async function sendTaskEvent(taskID, eventType, payload) {
   return await res.json();
 }
 
+async function fetchStandup(group = '', days = 1, format = 'json') {
+  const params = new URLSearchParams();
+  if (group && group !== 'all') params.set('group', group);
+  if (days) params.set('days', days);
+  if (format) params.set('format', format);
+  const res = await fetch(`/v1/standup?${params.toString()}`);
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(errText || `Failed to fetch standup (${res.status})`);
+  }
+  if (format === 'json') {
+    return await res.json();
+  }
+  return await res.text();
+}
+
+async function synthesizeBriefing(group = '', days = 1) {
+  const res = await fetch('/v1/briefings/synthesize', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ group: group && group !== 'all' ? group : '', mode: 'standup', days: days || 1 })
+  });
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(errText || 'Failed to synthesize briefing');
+  }
+  return await res.json();
+}
+
+async function mergeTaskPR(taskID, method = 'squash') {
+  const res = await fetch('/v1/tasks/merge-pr', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ task_id: taskID, method })
+  });
+  if (!res.ok) {
+    const errText = await res.text();
+    let msg = errText;
+    try {
+      const errObj = JSON.parse(errText);
+      if (errObj.message) msg = errObj.message;
+    } catch (_) {}
+    throw new Error(msg || 'Failed to merge PR');
+  }
+  return await res.json();
+}
+
 export {
   fetchProviders,
   fetchVersion,
@@ -632,5 +679,8 @@ export {
   fetchTasks,
   createTask,
   updateTask,
-  sendTaskEvent
+  sendTaskEvent,
+  fetchStandup,
+  synthesizeBriefing,
+  mergeTaskPR
 };
