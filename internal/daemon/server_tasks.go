@@ -18,6 +18,29 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Failed to get tasks: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
+
+		// Filter by query parameters if present
+		groupFilter := strings.TrimSpace(r.URL.Query().Get("group"))
+		projFilter := strings.TrimSpace(r.URL.Query().Get("project"))
+		statusFilter := strings.TrimSpace(r.URL.Query().Get("status"))
+
+		if groupFilter != "" || projFilter != "" || statusFilter != "" {
+			var filtered []Task
+			for _, task := range tasks {
+				if groupFilter != "" && !strings.EqualFold(task.GroupName, groupFilter) {
+					continue
+				}
+				if projFilter != "" && !strings.EqualFold(task.ProjectName, projFilter) {
+					continue
+				}
+				if statusFilter != "" && !strings.EqualFold(task.Status, statusFilter) {
+					continue
+				}
+				filtered = append(filtered, task)
+			}
+			tasks = filtered
+		}
+
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(tasks)
 		return
@@ -68,6 +91,9 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 			}
 			if t.Substatus != "" {
 				existing.Substatus = t.Substatus
+				if t.Substatus == "active" {
+					existing.BlockerQuestion = ""
+				}
 			}
 			if t.Notes != "" {
 				existing.Notes = t.Notes

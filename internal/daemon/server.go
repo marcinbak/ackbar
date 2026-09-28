@@ -75,6 +75,7 @@ type Server struct {
 	hostHealthMu    sync.RWMutex
 	activeSubagents map[string][]*SubagentInfo
 	subagentsMu     sync.RWMutex
+	homeDir         string
 }
 
 func (s *Server) updateHostHealth(name string, online bool, version, displayName string, latencyMs int64) {
@@ -313,6 +314,8 @@ func (s *Server) Mux() http.Handler {
 	mux.HandleFunc("/v1/tasks/merge-pr", s.handleTaskMergePR)
 	mux.HandleFunc("/v1/standup", s.handleStandup)
 	mux.HandleFunc("/v1/briefings/synthesize", s.handleBriefingSynthesize)
+	mux.HandleFunc("/v1/agents/status", s.handleAgentsStatus)
+	mux.HandleFunc("/v1/agents/provision", s.handleAgentsProvision)
 	mux.HandleFunc("/v1/events", s.handleEvents)
 
 	// Serve embedded Web GUI

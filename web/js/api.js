@@ -659,6 +659,38 @@ async function mergeTaskPR(taskID, method = 'squash') {
   return await res.json();
 }
 
+async function fetchAgentStatuses() {
+  const res = await fetch('/v1/agents/status');
+  if (!res.ok) {
+    const errText = await res.text();
+    let msg = errText;
+    try {
+      const errObj = JSON.parse(errText);
+      if (errObj.message) msg = errObj.message;
+    } catch (_) {}
+    throw new Error(msg || 'Failed to fetch agent statuses');
+  }
+  return await res.json();
+}
+
+async function provisionAgents(agents = ['all']) {
+  const res = await fetch('/v1/agents/provision', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ agents })
+  });
+  if (!res.ok) {
+    const errText = await res.text();
+    let msg = errText;
+    try {
+      const errObj = JSON.parse(errText);
+      if (errObj.message) msg = errObj.message;
+    } catch (_) {}
+    throw new Error(msg || 'Failed to configure agents');
+  }
+  return await res.json();
+}
+
 export {
   fetchProviders,
   fetchVersion,
@@ -682,5 +714,7 @@ export {
   sendTaskEvent,
   fetchStandup,
   synthesizeBriefing,
-  mergeTaskPR
+  mergeTaskPR,
+  fetchAgentStatuses,
+  provisionAgents
 };

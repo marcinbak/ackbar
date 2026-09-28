@@ -593,3 +593,79 @@ func TestTelemetry_HardenedProposalsAndWorkflow(t *testing.T) {
 		t.Errorf("Expected 400 for invalid deliverable kind, got %d", rec.Code)
 	}
 }
+
+func TestTasks_FilteringAndBlockerClearing(t *testing.T) {
+	dbFile := filepath.Join(t.TempDir(), "test_filter.db")
+	db, err := InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := NewServer(db)
+
+	_ = db.CreateTask(&Task{
+		ID:              "task_f1",
+		Title:           "Modemobile NGL Task",
+		GroupName:       "Modemobile",
+		ProjectName:     "NGL",
+		Status:          "IN_PROGRESS",
+		Substatus:       "blocked",
+		BlockerQuestion: "Which database schema should we use?",
+	})
+	_ = db.CreateTask(&Task{
+		ID:          "task_f2",
+		Title:       "Ackbar Control Plane Task",
+		GroupName:   "Ackbar",
+		ProjectName: "Ackbar",
+		Status:      "DONE",
+		Substatus:   "active",
+	})
+
+	// 1. Filter by status=IN_PROGRESS
+	req := httptest.NewRequest("GET", "/v1/tasks?status=IN_PROGRESS", nil)
+	rec := httptest.NewRecorder()
+	server.handleTasks(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected 200, got %d", rec.Code)
+	}
+	var res []Task
+	_ = json.Unmarshal(rec.Body.Bytes(), &res)
+	if len(res) != 1 || res[0].ID != "task_f1" {
+		t.Errorf("Expected 1 task matching status=IN_PROGRESS, got %d", len(res))
+	}
+
+	// 2. Filter by group=Ackbar
+	req = httptest.NewRequest("GET", "/v1/tasks?group=Ackbar", nil)
+	rec = httptest.NewRecorder()
+	server.handleTasks(rec, req)
+	var resAckbar []Task
+	_ = json.Unmarshal(rec.Body.Bytes(), &resAckbar)
+	if len(resAckbar) != 1 || resAckbar[0].ID != "task_f2" {
+		t.Errorf("Expected 1 task matching group=Ackbar, got %d", len(resAckbar))
+	}
+
+	// 3. Clear blocker: POST with substatus=active
+	bodyUnblock, _ := json.Marshal(map[string]any{
+		"id":        "task_f1",
+		"substatus": "active",
+	})
+	req = httptest.NewRequest("POST", "/v1/tasks", bytes.NewReader(bodyUnblock))
+	rec = httptest.NewRecorder()
+	server.handleTasks(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected 200 on unblock POST, got %d", rec.Code)
+	}
+
+	// Verify blocker question was reset in database
+	unblocked, err := db.GetTaskByID("task_f1")
+	if err != nil {
+		t.Fatalf("GetTaskByID failed: %v", err)
+	}
+	if unblocked.Substatus != "active" {
+		t.Errorf("Expected substatus active, got %s", unblocked.Substatus)
+	}
+	if unblocked.BlockerQuestion != "" {
+		t.Errorf("Expected blocker question to be cleared, got: %s", unblocked.BlockerQuestion)
+	}
+}

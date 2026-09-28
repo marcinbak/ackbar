@@ -1,5 +1,5 @@
 import { state } from './state.js';
-import { fetchTasks, createTask, updateTask, sendTaskEvent, fetchStandup, mergeTaskPR } from './api.js';
+import { fetchTasks, createTask, updateTask, sendTaskEvent, fetchStandup, mergeTaskPR, fetchAgentStatuses, provisionAgents } from './api.js';
 import { escapeHtml } from './utils.js';
 import { activateTab, openSessionInTab } from './tabs.js';
 import { showModal, hideModal } from './modals.js';
@@ -725,6 +725,121 @@ export async function showStandupModal() {
   // Initial load
   loadReport();
 }
+export async function showAgentSetupModal() {
+  const bodyHtml = `
+    <div style="display: flex; flex-direction: column; gap: 16px;">
+      <div style="font-size: 13px; color: var(--text-muted); line-height: 1.5;">
+        Configure connected AI coding agents to natively report task status, blockers, deliverables, and discovered work to Ackbar using the versioned <code>ackbar mcp</code> server and <code>ackbar-tasks</code> skill.
+      </div>
+      <div id="mAgentCardsContainer" style="display: flex; flex-direction: column; gap: 12px;">
+        <div style="text-align: center; color: var(--text-muted); padding: 24px;">Detecting agent configurations...</div>
+      </div>
+    </div>
+  `;
+
+  const footerHtml = `
+    <button class="btn btn-secondary" id="mBtnCloseAgentSetup">Close</button>
+    <button class="btn btn-primary" id="mBtnAutoConfigureAgents" style="background: var(--accent-blue); border-color: var(--accent-blue); color: #fff;">
+      ⚡ Auto-Configure Agents
+    </button>
+  `;
+
+  showModal('⚙️ Agent Tool & Skill Setup', bodyHtml, footerHtml);
+
+  async function loadStatuses() {
+    const container = document.getElementById('mAgentCardsContainer');
+    if (!container) return;
+
+    try {
+      const data = await fetchAgentStatuses();
+      const agents = data.agents || [];
+
+      if (agents.length === 0) {
+        container.innerHTML = '<div style="color: var(--text-muted); padding: 16px;">No supported agents found.</div>';
+        return;
+      }
+
+      container.innerHTML = agents.map(a => {
+        const icon = a.key.includes('claude') ? '🟠' : a.key.includes('antigravity') ? '🟣' : '🟢';
+        const detectedBadge = a.detected
+          ? '<span style="background: rgba(34, 197, 94, 0.15); color: var(--accent-green); padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600;">Detected</span>'
+          : '<span style="background: rgba(156, 163, 175, 0.15); color: var(--text-muted); padding: 2px 8px; border-radius: 10px; font-size: 11px;">Not Found</span>';
+
+        const mcpBadge = a.mcp_installed
+          ? '<span style="color: var(--accent-green); font-size: 12px; font-weight: 600;">✓ Configured</span>'
+          : '<span style="color: var(--accent-red); font-size: 12px; font-weight: 600;">✗ Missing</span>';
+
+        const skillBadge = a.skill_installed
+          ? `<span style="color: var(--accent-green); font-size: 12px; font-weight: 600;">✓ Installed (v${escapeHtml(a.skill_version || data.version)})</span>`
+          : '<span style="color: var(--accent-red); font-size: 12px; font-weight: 600;">✗ Missing</span>';
+
+        const driftWarning = a.drift_detected
+          ? '<span style="background: rgba(239, 68, 68, 0.12); color: var(--accent-red); border: 1px solid rgba(239, 68, 68, 0.3); padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600;">⚠️ Drift Detected</span>'
+          : '<span style="background: rgba(34, 197, 94, 0.12); color: var(--accent-green); border: 1px solid rgba(34, 197, 94, 0.3); padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600;">Up to Date</span>';
+
+        return `
+          <div style="background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 6px; padding: 14px; display: flex; flex-direction: column; gap: 8px;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+              <div style="display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 14px; color: var(--text-main);">
+                <span>${icon}</span> ${escapeHtml(a.display_name)}
+                ${detectedBadge}
+              </div>
+              <div>${driftWarning}</div>
+            </div>
+
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 4px; font-size: 12px;">
+              <div style="background: var(--bg-subtle, rgba(0,0,0,0.15)); padding: 8px; border-radius: 4px; border: 1px solid var(--border-color);">
+                <div style="color: var(--text-muted); font-size: 11px; margin-bottom: 2px;">MCP SERVER</div>
+                <div style="margin-bottom: 4px;">${mcpBadge}</div>
+                <div style="color: var(--text-muted); font-family: monospace; font-size: 10px; word-break: break-all;">${escapeHtml(a.config_file)}</div>
+              </div>
+              <div style="background: var(--bg-subtle, rgba(0,0,0,0.15)); padding: 8px; border-radius: 4px; border: 1px solid var(--border-color);">
+                <div style="color: var(--text-muted); font-size: 11px; margin-bottom: 2px;">SKILL (SKILL.md)</div>
+                <div style="margin-bottom: 4px;">${skillBadge}</div>
+                <div style="color: var(--text-muted); font-family: monospace; font-size: 10px; word-break: break-all;">${escapeHtml(a.skills_dir)}/ackbar-tasks</div>
+              </div>
+            </div>
+          </div>
+        `;
+      }).join('');
+    } catch (err) {
+      container.innerHTML = `<div style="color: var(--accent-red); padding: 16px;">Failed to load agent statuses: ${escapeHtml(err.message)}</div>`;
+    }
+  }
+
+  document.getElementById('mBtnAutoConfigureAgents')?.addEventListener('click', async () => {
+    const btn = document.getElementById('mBtnAutoConfigureAgents');
+    if (!btn) return;
+    const origHtml = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '⚡ Configuring Agents...';
+
+    try {
+      await provisionAgents(['all']);
+      btn.innerHTML = '✓ Configured Successfully!';
+      btn.style.background = 'var(--accent-green)';
+      btn.style.borderColor = 'var(--accent-green)';
+      await loadStatuses();
+      setTimeout(() => {
+        if (btn) {
+          btn.disabled = false;
+          btn.innerHTML = origHtml;
+          btn.style.background = 'var(--accent-blue)';
+          btn.style.borderColor = 'var(--accent-blue)';
+        }
+      }, 2000);
+    } catch (err) {
+      alert('Failed to configure agents: ' + err.message);
+      btn.disabled = false;
+      btn.innerHTML = origHtml;
+    }
+  });
+
+  document.getElementById('mBtnCloseAgentSetup')?.addEventListener('click', hideModal);
+
+  // Initial load
+  loadStatuses();
+}
 
 export function initWorkBoard() {
   // Mode switcher listeners
@@ -754,7 +869,8 @@ export function initWorkBoard() {
     renderWorkBoard();
   });
 
-  // Standup, Refresh & New Task
+  // Agent Setup, Standup, Refresh & New Task
+  document.getElementById('btnAgentSetup')?.addEventListener('click', showAgentSetupModal);
   document.getElementById('btnDailyStandup')?.addEventListener('click', showStandupModal);
   document.getElementById('btnRefreshWorkBoard')?.addEventListener('click', refreshWorkBoard);
   document.getElementById('btnNewTask')?.addEventListener('click', showNewTaskModal);
