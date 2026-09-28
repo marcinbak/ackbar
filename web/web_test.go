@@ -101,7 +101,7 @@ func TestChatDeduplication_JS(t *testing.T) {
 	}
 	content := string(contentBytes)
 
-	// Verify required functions are present
+	// Verify required functions and invariants are present
 	if !strings.Contains(content, "normalizePromptText") {
 		t.Errorf("expected js/chat.js to contain normalizePromptText")
 	}
@@ -110,5 +110,11 @@ func TestChatDeduplication_JS(t *testing.T) {
 	}
 	if !strings.Contains(content, "dataset.inFlight") {
 		t.Errorf("expected js/chat.js to mark inFlight on optimistic element")
+	}
+	if !strings.Contains(content, "data.status === 'queued'") {
+		t.Errorf("expected js/chat.js to handle queued prompt status")
+	}
+	if strings.Contains(content, "fullNorm.includes(evtNorm)") {
+		t.Errorf("js/chat.js must not perform broad fullNorm.includes(evtNorm) substring matching across past messages")
 	}
 }

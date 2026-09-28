@@ -1107,6 +1107,9 @@ function createChatMessageElement(tabObj, msg) {
     if (rawVal) {
       msgEl.dataset.rawPrompt = normalizePromptText(rawVal);
     }
+    if (msg.timestamp) {
+      msgEl.dataset.timestamp = msg.timestamp;
+    }
 
     let displayContent = msg.content || '';
     const attachments = msg.attachments ? [...msg.attachments] : [];
@@ -1761,21 +1764,10 @@ async function sendChatPrompt(tabObj, forcedPromptText) {
     timestamp: Date.now()
   };
 
-  tabObj.activeTurnMsgEl = null;
-  tabObj.activeTurnBuffer = '';
-  tabObj.activeTurnHadTool = false;
-  tabObj.activeTurnTools = [];
-  tabObj.activeTurnThinking = '';
-
-  showInStreamActivity(tabObj, {
-    icon: '💭',
-    text: 'Thinking...',
-    badge: null
-  });
-
-  if (tabObj.chatCancelBtn) tabObj.chatCancelBtn.style.display = 'inline-flex';
-  if (tabObj.chatStatusBadge) tabObj.chatStatusBadge.textContent = '⚡ Working...';
-  updateComposerButtonState(tabObj);
+  // Temporarily disable send button during dispatch to prevent double-submitting
+  if (tabObj.chatSendBtn) {
+    tabObj.chatSendBtn.disabled = true;
+  }
 
   connectChatStream(tabObj);
   const baseUrl = getSessionBaseUrl(tabObj.session.id, tabObj.session);
@@ -1802,27 +1794,48 @@ async function sendChatPrompt(tabObj, forcedPromptText) {
 
     const data = await res.json().catch(() => ({}));
     if (data && data.status === 'queued') {
-      // Prompt queued on daemon - remove optimistic bubble from active chat and update queue box
+      // Prompt queued on daemon - remove optimistic bubble from active chat and update queue box.
+      // Do not touch active turn buffers or stream activity so ongoing assistant streams continue undisturbed.
       if (optimisticMsgEl && optimisticMsgEl.parentNode) {
         optimisticMsgEl.parentNode.removeChild(optimisticMsgEl);
       }
       tabObj.inFlightPrompt = null;
-      hideInStreamActivity(tabObj);
       loadChatQueue(tabObj);
       updateComposerButtonState(tabObj);
       return;
     }
 
-    // Prompt accepted and running/sent: clear inFlight flag on optimistic element
-    if (optimisticMsgEl) {
-      delete optimisticMsgEl.dataset.inFlight;
-    }
-    if (tabObj.inFlightPrompt && tabObj.inFlightPrompt.el === optimisticMsgEl) {
-      tabObj.inFlightPrompt = null;
-    }
+    // Prompt accepted for immediate execution (running/sent):
+    // Now (and only now) reset active turn state and display stream activity
+    tabObj.activeTurnMsgEl = null;
+    tabObj.activeTurnBuffer = '';
+    tabObj.activeTurnHadTool = false;
+    tabObj.activeTurnTools = [];
+    tabObj.activeTurnThinking = '';
+
+    showInStreamActivity(tabObj, {
+      icon: '💭',
+      text: 'Thinking...',
+      badge: null
+    });
+
+    if (tabObj.chatCancelBtn) tabObj.chatCancelBtn.style.display = 'inline-flex';
+    if (tabObj.chatStatusBadge) tabObj.chatStatusBadge.textContent = '⚡ Working...';
+    updateComposerButtonState(tabObj);
+
+    // Retain tabObj.inFlightPrompt so turn_start can claim it.
+    // Safety cleanup after 15s in case turn_start is never emitted by this agent.
+    setTimeout(() => {
+      if (tabObj.inFlightPrompt && tabObj.inFlightPrompt.el === optimisticMsgEl) {
+        if (optimisticMsgEl) delete optimisticMsgEl.dataset.inFlight;
+        tabObj.inFlightPrompt = null;
+      }
+    }, 15000);
   } catch (err) {
     console.error('Failed to dispatch prompt:', err);
-    hideInStreamActivity(tabObj);
+    if (!tabObj.activeTurnMsgEl) {
+      hideInStreamActivity(tabObj);
+    }
     tabObj.inFlightPrompt = null;
     if (optimisticMsgEl) {
       delete optimisticMsgEl.dataset.inFlight;
@@ -1952,26 +1965,32 @@ function handleChatStreamEvent(tabObj, evt) {
           }
         }
 
-        // 2. Check DOM for matching user message bubbles
+        // 2. Check DOM for matching user message bubble (only the last user message)
         if (!isAlreadyRendered) {
           const userMsgs = tabObj.chatMessagesEl.querySelectorAll('.chat-msg.user-msg');
-          for (let i = userMsgs.length - 1; i >= Math.max(0, userMsgs.length - 5); i--) {
-            const uMsg = userMsgs[i];
-            const raw = normalizePromptText(uMsg.dataset.rawPrompt || '');
-            const uBody = uMsg.querySelector('.chat-msg-body');
+          if (userMsgs.length > 0) {
+            const lastMsg = userMsgs[userMsgs.length - 1];
+            const isUnconfirmed = lastMsg.dataset.inFlight === 'true';
+            const raw = normalizePromptText(lastMsg.dataset.rawPrompt || '');
+            const uBody = lastMsg.querySelector('.chat-msg-body');
             const bodyText = normalizePromptText(uBody ? uBody.textContent : '');
-            if (raw && (raw === evtNorm || evtNorm.startsWith(raw) || raw.startsWith(evtNorm))) {
-              isAlreadyRendered = true;
-              break;
-            }
-            if (bodyText && (evtNorm === bodyText || evtNorm.startsWith(bodyText) || bodyText.startsWith(evtNorm))) {
-              isAlreadyRendered = true;
-              break;
-            }
-            const fullNorm = normalizePromptText(uMsg.textContent);
-            if (fullNorm && fullNorm.includes(evtNorm)) {
-              isAlreadyRendered = true;
-              break;
+
+            if (isUnconfirmed) {
+              // Unconfirmed in-flight optimistic message allows prefix match if daemon truncated
+              if ((raw && (raw === evtNorm || evtNorm.startsWith(raw) || raw.startsWith(evtNorm))) ||
+                  (bodyText && (bodyText === evtNorm || evtNorm.startsWith(bodyText) || bodyText.startsWith(evtNorm)))) {
+                isAlreadyRendered = true;
+                delete lastMsg.dataset.inFlight;
+              }
+            } else {
+              // For confirmed messages, require strict exact equality and recent creation (< 5s)
+              // to prevent dropping legitimate identical or short user prompts
+              if ((raw && raw === evtNorm) || (bodyText && bodyText === evtNorm)) {
+                const msgTime = lastMsg.dataset.timestamp ? new Date(lastMsg.dataset.timestamp).getTime() : 0;
+                if (!msgTime || (Date.now() - msgTime) < 5000) {
+                  isAlreadyRendered = true;
+                }
+              }
             }
           }
         }
