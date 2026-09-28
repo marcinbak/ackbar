@@ -2069,22 +2069,8 @@ func (m *Model) View() string {
 				statusText,
 				lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#00FF00")).Render(pDir)))
 
-			if discList, exists := m.discoveryResults[h.Name]; exists && len(discList) > 0 {
-				for _, d := range discList {
-					instText := lipgloss.NewStyle().Foreground(lipgloss.Color("#FF3333")).Render("❌ Not Installed")
-					if d.Installed {
-						instText = lipgloss.NewStyle().Foreground(lipgloss.Color("#00FF00")).Render("✅ Installed")
-					}
-					hookText := lipgloss.NewStyle().Foreground(lipgloss.Color("#FF3333")).Render("❌ Hook Missing")
-					if d.HookConfigured {
-						hookText = lipgloss.NewStyle().Foreground(lipgloss.Color("#00FF00")).Render("✅ Hook Active")
-					}
-
-					discBuilder.WriteString(fmt.Sprintf("    ↳ Agent: %s ➔ Status: %s | %s\n", lipgloss.NewStyle().Bold(true).Render(d.Agent), instText, hookText))
-					if d.Installed && !d.HookConfigured {
-						discBuilder.WriteString(fmt.Sprintf("      Setup Cmd: %s\n", lipgloss.NewStyle().Foreground(lipgloss.Color("#00FFFF")).Render(d.SetupCmd)))
-					}
-				}
+			if discList, exists := m.discoveryResults[h.Name]; exists {
+				discBuilder.WriteString(renderHostAgentDiscovery(discList))
 			} else {
 				discBuilder.WriteString("    ↳ Agent Discovery: Querying host agents...\n")
 			}
@@ -2327,4 +2313,56 @@ func findCodeBinary() string {
 		}
 	}
 	return "code"
+}
+
+func renderHostAgentDiscovery(discList []daemon.AgentDiscoveryResult) string {
+	if len(discList) == 0 {
+		return "    ↳ Agent Discovery: Querying host agents...\n"
+	}
+
+	var sb strings.Builder
+	var installedBadges []string
+	var missingHooks []string
+	var uninstalledNames []string
+
+	for _, d := range discList {
+		name := d.DisplayName
+		if name == "" {
+			name = d.Agent
+		}
+		if d.Installed {
+			if d.HookConfigured {
+				badge := lipgloss.NewStyle().Foreground(lipgloss.Color("#00FF00")).Render(name + " 🟢")
+				installedBadges = append(installedBadges, badge)
+			} else {
+				badge := lipgloss.NewStyle().Foreground(lipgloss.Color("#FFCC00")).Render(name + " 🟡")
+				installedBadges = append(installedBadges, badge)
+				if d.SetupCmd != "" {
+					missingHooks = append(missingHooks, fmt.Sprintf("%s (%s)", d.Agent, d.SetupCmd))
+				} else {
+					missingHooks = append(missingHooks, d.Agent)
+				}
+			}
+		} else {
+			uninstalledNames = append(uninstalledNames, d.Agent)
+		}
+	}
+
+	if len(installedBadges) > 0 {
+		sb.WriteString(fmt.Sprintf("    ↳ Installed: %s\n", strings.Join(installedBadges, "  ")))
+	} else {
+		sb.WriteString("    ↳ Installed: " + lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Render("(none detected)") + "\n")
+	}
+
+	if len(missingHooks) > 0 {
+		hookWarning := lipgloss.NewStyle().Foreground(lipgloss.Color("#FFCC00")).Render("⚠️ Hook Missing: " + strings.Join(missingHooks, ", "))
+		sb.WriteString(fmt.Sprintf("    ↳ %s\n", hookWarning))
+	}
+
+	if len(uninstalledNames) > 0 {
+		dimmedOther := lipgloss.NewStyle().Foreground(lipgloss.Color("#666666")).Render(strings.Join(uninstalledNames, ", "))
+		sb.WriteString(fmt.Sprintf("    ↳ Not Installed: %s\n", dimmedOther))
+	}
+
+	return sb.String()
 }
