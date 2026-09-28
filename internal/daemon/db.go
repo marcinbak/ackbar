@@ -144,7 +144,7 @@ func InitDB(dbPath string) (*DB, error) {
 		return nil, fmt.Errorf("failed to create db directory: %w", err)
 	}
 
-	dsn := dbPath + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)"
+	dsn := dbPath + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(1)"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open sqlite database: %w", err)
@@ -1210,7 +1210,7 @@ func (d *DB) GetTasks() ([]Task, error) {
 	}
 	defer rows.Close()
 
-	var tasks []Task
+	tasks := []Task{}
 	var taskIDs []string
 	for rows.Next() {
 		var t Task
@@ -1349,92 +1349,128 @@ func (d *DB) GetTaskByID(id string) (*Task, error) {
 	return &t, nil
 }
 
+func chunkSlice(slice []string, chunkSize int) [][]string {
+	if len(slice) == 0 {
+		return nil
+	}
+	var chunks [][]string
+	for i := 0; i < len(slice); i += chunkSize {
+		end := i + chunkSize
+		if end > len(slice) {
+			end = len(slice)
+		}
+		chunks = append(chunks, slice[i:end])
+	}
+	return chunks
+}
+
 func (d *DB) getExternalRefsForTasks(taskIDs []string) (map[string][]TaskExternalRef, error) {
-	if len(taskIDs) == 0 {
-		return make(map[string][]TaskExternalRef), nil
-	}
-	placeholders := make([]string, len(taskIDs))
-	args := make([]interface{}, len(taskIDs))
-	for i, id := range taskIDs {
-		placeholders[i] = "?"
-		args[i] = id
-	}
-	query := fmt.Sprintf(`SELECT task_id, tracker, ref_key, url FROM task_external_refs WHERE task_id IN (%s)`, strings.Join(placeholders, ","))
-	rows, err := d.db.Query(query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
 	res := make(map[string][]TaskExternalRef)
-	for rows.Next() {
-		var r TaskExternalRef
-		var url sql.NullString
-		if err := rows.Scan(&r.TaskID, &r.Tracker, &r.RefKey, &url); err != nil {
+	if len(taskIDs) == 0 {
+		return res, nil
+	}
+	for _, chunk := range chunkSlice(taskIDs, 500) {
+		placeholders := make([]string, len(chunk))
+		args := make([]interface{}, len(chunk))
+		for i, id := range chunk {
+			placeholders[i] = "?"
+			args[i] = id
+		}
+		query := fmt.Sprintf(`SELECT task_id, tracker, ref_key, url FROM task_external_refs WHERE task_id IN (%s)`, strings.Join(placeholders, ","))
+		rows, err := d.db.Query(query, args...)
+		if err != nil {
 			return nil, err
 		}
-		r.URL = url.String
-		res[r.TaskID] = append(res[r.TaskID], r)
+		for rows.Next() {
+			var r TaskExternalRef
+			var url sql.NullString
+			if err := rows.Scan(&r.TaskID, &r.Tracker, &r.RefKey, &url); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			r.URL = url.String
+			res[r.TaskID] = append(res[r.TaskID], r)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		rows.Close()
 	}
-	return res, rows.Err()
+	return res, nil
 }
 
 func (d *DB) getWorkersForTasks(taskIDs []string) (map[string][]TaskWorker, error) {
-	if len(taskIDs) == 0 {
-		return make(map[string][]TaskWorker), nil
-	}
-	placeholders := make([]string, len(taskIDs))
-	args := make([]interface{}, len(taskIDs))
-	for i, id := range taskIDs {
-		placeholders[i] = "?"
-		args[i] = id
-	}
-	query := fmt.Sprintf(`SELECT task_id, session_id, agent, host, is_active, assigned_at FROM task_workers WHERE task_id IN (%s)`, strings.Join(placeholders, ","))
-	rows, err := d.db.Query(query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
 	res := make(map[string][]TaskWorker)
-	for rows.Next() {
-		var w TaskWorker
-		var isActive int
-		if err := rows.Scan(&w.TaskID, &w.SessionID, &w.Agent, &w.Host, &isActive, &w.AssignedAt); err != nil {
+	if len(taskIDs) == 0 {
+		return res, nil
+	}
+	for _, chunk := range chunkSlice(taskIDs, 500) {
+		placeholders := make([]string, len(chunk))
+		args := make([]interface{}, len(chunk))
+		for i, id := range chunk {
+			placeholders[i] = "?"
+			args[i] = id
+		}
+		query := fmt.Sprintf(`SELECT task_id, session_id, agent, host, is_active, assigned_at FROM task_workers WHERE task_id IN (%s)`, strings.Join(placeholders, ","))
+		rows, err := d.db.Query(query, args...)
+		if err != nil {
 			return nil, err
 		}
-		w.IsActive = isActive == 1
-		res[w.TaskID] = append(res[w.TaskID], w)
+		for rows.Next() {
+			var w TaskWorker
+			var isActive int
+			if err := rows.Scan(&w.TaskID, &w.SessionID, &w.Agent, &w.Host, &isActive, &w.AssignedAt); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			w.IsActive = isActive == 1
+			res[w.TaskID] = append(res[w.TaskID], w)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		rows.Close()
 	}
-	return res, rows.Err()
+	return res, nil
 }
 
 func (d *DB) getDeliverablesForTasks(taskIDs []string) (map[string][]TaskDeliverable, error) {
-	if len(taskIDs) == 0 {
-		return make(map[string][]TaskDeliverable), nil
-	}
-	placeholders := make([]string, len(taskIDs))
-	args := make([]interface{}, len(taskIDs))
-	for i, id := range taskIDs {
-		placeholders[i] = "?"
-		args[i] = id
-	}
-	query := fmt.Sprintf(`SELECT id, task_id, kind, title, host, file_path, url, created_at FROM task_deliverables WHERE task_id IN (%s)`, strings.Join(placeholders, ","))
-	rows, err := d.db.Query(query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
 	res := make(map[string][]TaskDeliverable)
-	for rows.Next() {
-		var del TaskDeliverable
-		var fp, u sql.NullString
-		if err := rows.Scan(&del.ID, &del.TaskID, &del.Kind, &del.Title, &del.Host, &fp, &u, &del.CreatedAt); err != nil {
+	if len(taskIDs) == 0 {
+		return res, nil
+	}
+	for _, chunk := range chunkSlice(taskIDs, 500) {
+		placeholders := make([]string, len(chunk))
+		args := make([]interface{}, len(chunk))
+		for i, id := range chunk {
+			placeholders[i] = "?"
+			args[i] = id
+		}
+		query := fmt.Sprintf(`SELECT id, task_id, kind, title, host, file_path, url, created_at FROM task_deliverables WHERE task_id IN (%s)`, strings.Join(placeholders, ","))
+		rows, err := d.db.Query(query, args...)
+		if err != nil {
 			return nil, err
 		}
-		del.FilePath = fp.String
-		del.URL = u.String
-		res[del.TaskID] = append(res[del.TaskID], del)
+		for rows.Next() {
+			var del TaskDeliverable
+			var fp, u sql.NullString
+			if err := rows.Scan(&del.ID, &del.TaskID, &del.Kind, &del.Title, &del.Host, &fp, &u, &del.CreatedAt); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			del.FilePath = fp.String
+			del.URL = u.String
+			res[del.TaskID] = append(res[del.TaskID], del)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		rows.Close()
 	}
-	return res, rows.Err()
+	return res, nil
 }
 
 func (d *DB) CreateTask(t *Task) error {
@@ -1517,13 +1553,20 @@ func (d *DB) UpdateTask(t *Task) error {
 		completedAt.Valid = true
 	}
 
-	_, err = tx.Exec(query,
+	res, err := tx.Exec(query,
 		t.Title, t.GroupName, t.ProjectName, t.SubprojectName, t.Status, t.Substatus,
 		t.Notes, t.BlockerQuestion, t.Branch, t.WorktreePath, t.PRURL, t.PRNumber,
 		t.PRState, t.CIStatus, t.UpdatedAt, completedAt, t.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to update task: %w", err)
+	}
+	rowsAffected, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to check rows affected: %w", err)
+	}
+	if rowsAffected == 0 {
+		return fmt.Errorf("task with id %s not found", t.ID)
 	}
 
 	// Handle Workers

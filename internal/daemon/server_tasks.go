@@ -22,6 +22,7 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.Method == http.MethodPost {
+		r.Body = http.MaxBytesReader(w, r.Body, 1048576) // 1MB limit
 		var t Task
 		if err := json.NewDecoder(r.Body).Decode(&t); err != nil {
 			http.Error(w, "Invalid JSON: "+err.Error(), http.StatusBadRequest)
@@ -42,6 +43,9 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			w.WriteHeader(http.StatusOK)
+			if fresh, err := s.db.GetTaskByID(t.ID); err == nil && fresh != nil {
+				t = *fresh
+			}
 		}
 
 		json.NewEncoder(w).Encode(t)
@@ -66,6 +70,7 @@ func (s *Server) handleTaskEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, 1048576) // 1MB limit
 	var event TaskEventPayload
 	if err := json.NewDecoder(r.Body).Decode(&event); err != nil {
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)

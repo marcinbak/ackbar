@@ -137,4 +137,33 @@ func TestTasks_DatabaseAndAPI(t *testing.T) {
 	if afterEvent.PRState != "OPEN" {
 		t.Errorf("Expected PRState 'OPEN', got '%s'", afterEvent.PRState)
 	}
+
+	// 6. Test UpdateTask fails for non-existent task
+	nonExistent := &Task{ID: "does_not_exist", Title: "Fake"}
+	if err := db.UpdateTask(nonExistent); err == nil {
+		t.Fatalf("Expected error updating non-existent task, got nil")
+	}
+
+	// 7. Test Cascade Delete
+	if _, err := db.db.Exec("DELETE FROM tasks WHERE id = 'task_001'"); err != nil {
+		t.Fatalf("Failed to delete task: %v", err)
+	}
+	var count int
+	_ = db.db.QueryRow("SELECT COUNT(*) FROM task_workers WHERE task_id = 'task_001'").Scan(&count)
+	if count != 0 {
+		t.Errorf("Expected 0 workers after cascade delete, got %d", count)
+	}
+
+	// 8. Test Empty GetTasks returns empty slice, not null
+	emptyTasks, err := db.GetTasks()
+	if err != nil {
+		t.Fatalf("GetTasks failed on empty DB: %v", err)
+	}
+	if emptyTasks == nil {
+		t.Errorf("Expected non-nil slice from empty GetTasks")
+	}
+	emptyBytes, _ := json.Marshal(emptyTasks)
+	if string(emptyBytes) != "[]" {
+		t.Errorf("Expected '[]' json output, got '%s'", string(emptyBytes))
+	}
 }
