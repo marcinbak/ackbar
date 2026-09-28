@@ -20,6 +20,11 @@ Ackbar supports the three major agent ecosystems:
 * **Session Annotations:** `~/.gemini/antigravity/annotations/<session-id>.pbtxt` contains custom user-assigned titles (`title: "..."`).
 * **Artifact Metadata:** `task.md.metadata.json`, `implementation_plan.md`, `walkthrough.md` under `~/.gemini/antigravity/brain/<session-id>/`.
 
+### OpenAI Codex
+* **Session Index:** `~/.codex/session_index.jsonl` contains thread titles (`thread_name`), native IDs (`id`), and update timestamps.
+* **Transcripts:** `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` and `~/.codex/archived_sessions/` contain structured execution history, tool invocations, and token usage blocks.
+* **Hook Configuration:** `~/.codex/hooks.json` pipes event payloads to `ackbar-hook --agent=codex`.
+
 ---
 
 ## 3. Dynamic Model Context Window Ceilings

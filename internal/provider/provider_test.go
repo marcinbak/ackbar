@@ -1,12 +1,14 @@
 package provider
 
 import (
-	"ackbar/internal/daemon"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"ackbar/internal/daemon"
 )
 
 func TestClaudeProvider_ParseHook(t *testing.T) {
@@ -416,9 +418,9 @@ func TestProviderCapabilityConformance(t *testing.T) {
 		t.Errorf("AntigravityProvider should implement daemon.FullProvider")
 	}
 
-	// 3. Codex does NOT implement optional capability interfaces (no dummy stubs)
-	if _, ok := any(codex).(daemon.StatusInspector); ok {
-		t.Errorf("CodexProvider should not implement daemon.StatusInspector")
+	// 3. Codex implements StatusInspector, but not SubagentDiscoverer
+	if _, ok := any(codex).(daemon.StatusInspector); !ok {
+		t.Errorf("CodexProvider should implement daemon.StatusInspector")
 	}
 	if _, ok := any(codex).(daemon.SubagentDiscoverer); ok {
 		t.Errorf("CodexProvider should not implement daemon.SubagentDiscoverer")
@@ -628,5 +630,168 @@ func TestClaudeProvider_ListSubagents_StopReasonAndInactivity(t *testing.T) {
 		if sub.State != "completed" {
 			t.Errorf("Expected subagent %s to have state 'completed', got %q", sub.Name, sub.State)
 		}
+	}
+}
+
+func TestCodexCheckHookConfig(t *testing.T) {
+	tmpHome, err := os.MkdirTemp("", "test-codex-hook-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpHome)
+
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpHome)
+	defer os.Setenv("HOME", origHome)
+
+	p := NewCodexProvider()
+
+	// 1. When no config exists
+	configured, _, err := p.CheckHookConfig()
+	if err != nil {
+		t.Fatalf("CheckHookConfig returned unexpected error: %v", err)
+	}
+	if configured {
+		t.Errorf("Expected false when no hook config exists")
+	}
+
+	// 2. When ~/.codex/hooks.json has ackbar-hook configured
+	codexDir := filepath.Join(tmpHome, ".codex")
+	_ = os.MkdirAll(codexDir, 0755)
+	hooksContent := `{
+		"hooks": {
+			"UserPromptSubmit": [{
+				"hooks": [{"type": "command", "command": "ackbar-hook --agent=codex"}]
+			}]
+		}
+	}`
+	_ = os.WriteFile(filepath.Join(codexDir, "hooks.json"), []byte(hooksContent), 0644)
+
+	configured, _, err = p.CheckHookConfig()
+	if err != nil {
+		t.Fatalf("CheckHookConfig returned unexpected error: %v", err)
+	}
+	if !configured {
+		t.Errorf("Expected true when hooks.json contains ackbar-hook")
+	}
+
+	// 3. Fallback when hooks.json is removed but config.toml exists
+	_ = os.Remove(filepath.Join(codexDir, "hooks.json"))
+	configToml := `hooks = "http://127.0.0.1:7777/v1/hooks/codex"`
+	_ = os.WriteFile(filepath.Join(codexDir, "config.toml"), []byte(configToml), 0644)
+
+	configured, _, err = p.CheckHookConfig()
+	if err != nil {
+		t.Fatalf("CheckHookConfig returned unexpected error: %v", err)
+	}
+	if !configured {
+		t.Errorf("Expected true when config.toml contains 127.0.0.1:7777")
+	}
+}
+
+func TestCodexResolveSessionTitle(t *testing.T) {
+	tmpHome, err := os.MkdirTemp("", "test-codex-title-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpHome)
+
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpHome)
+	defer os.Setenv("HOME", origHome)
+
+	p := NewCodexProvider()
+
+	// 1. With non-existent index
+	if title := p.ResolveSessionTitle("/tmp", "session-123"); title != "" {
+		t.Errorf("Expected empty title when index does not exist, got %q", title)
+	}
+
+	// 2. Populate session_index.jsonl with initial and updated thread names
+	codexDir := filepath.Join(tmpHome, ".codex")
+	_ = os.MkdirAll(codexDir, 0755)
+	indexLines := `{"id":"session-123","thread_name":"Build responsive fleet UI","updated_at":"2026-09-28T09:00:00Z"}` + "\n" +
+		`{"id":"session-456","thread_name":"Implement auth middleware","updated_at":"2026-09-28T10:00:00Z"}` + "\n" +
+		`{"id":"session-123","thread_name":"Build responsive fleet UI - Updated","updated_at":"2026-09-28T10:30:00Z"}` + "\n"
+	_ = os.WriteFile(filepath.Join(codexDir, "session_index.jsonl"), []byte(indexLines), 0644)
+
+	if title := p.ResolveSessionTitle("/tmp", "session-123"); title != "Build responsive fleet UI - Updated" {
+		t.Errorf("Expected 'Build responsive fleet UI - Updated', got %q", title)
+	}
+	if title := p.ResolveSessionTitle("/tmp", "session-456"); title != "Implement auth middleware" {
+		t.Errorf("Expected 'Implement auth middleware', got %q", title)
+	}
+	if title := p.ResolveSessionTitle("/tmp", "session-unknown"); title != "" {
+		t.Errorf("Expected empty title for unknown session, got %q", title)
+	}
+}
+
+func TestCodexExtractTranscriptAndMetadata(t *testing.T) {
+	tmpHome, err := os.MkdirTemp("", "test-codex-transcript-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpHome)
+
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpHome)
+	defer os.Setenv("HOME", origHome)
+
+	sessionID := "019fa2cd-7d2b-7510-8940-e80ae59e2757"
+	sessDir := filepath.Join(tmpHome, ".codex", "sessions", "2026", "09", "28")
+	_ = os.MkdirAll(sessDir, 0755)
+
+	logLines := []string{
+		`{"timestamp":"2026-09-28T09:00:00Z","ordinal":0,"type":"session_meta","payload":{"id":"` + sessionID + `","cli_version":"0.150.0","provenance":{"model":"gpt-5.6-terra"}}}`,
+		`{"timestamp":"2026-09-28T09:00:01Z","ordinal":1,"type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"System prompt"}]}}`,
+		`{"timestamp":"2026-09-28T09:00:02Z","ordinal":2,"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<environment_context>\n/work\n</environment_context>"}]}}`,
+		`{"timestamp":"2026-09-28T09:00:03Z","ordinal":3,"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Refactor the database queries"}]}}`,
+		`{"timestamp":"2026-09-28T09:00:04Z","ordinal":4,"type":"response_item","payload":{"type":"custom_tool_call","name":"exec","input":"git status"}}`,
+		`{"timestamp":"2026-09-28T09:00:05Z","ordinal":5,"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"I analyzed git status and refactored the queries."}]}}`,
+		`{"timestamp":"2026-09-28T09:00:06Z","ordinal":6,"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":50000},"model_context_window":200000},"rate_limits":{"primary":{"used_percent":25.0}}}}`,
+	}
+
+	logPath := filepath.Join(sessDir, fmt.Sprintf("rollout-2026-09-28T09-00-00-%s.jsonl", sessionID))
+	_ = os.WriteFile(logPath, []byte(strings.Join(logLines, "\n")), 0644)
+
+	p := NewCodexProvider()
+
+	// 1. Test ExtractTranscript
+	msgs, err := p.ExtractTranscript(tmpHome, "/work", sessionID)
+	if err != nil {
+		t.Fatalf("ExtractTranscript failed: %v", err)
+	}
+
+	if len(msgs) != 2 {
+		t.Fatalf("Expected 2 transcript messages (1 user, 1 assistant), got %d: %+v", len(msgs), msgs)
+	}
+
+	if msgs[0].Role != "user" || msgs[0].Content != "Refactor the database queries" {
+		t.Errorf("Unexpected user message: %+v", msgs[0])
+	}
+
+	if msgs[1].Role != "assistant" || !strings.Contains(msgs[1].Content, "refactored the queries") {
+		t.Errorf("Unexpected assistant message: %+v", msgs[1])
+	}
+	if len(msgs[1].ToolCalls) != 1 || !strings.Contains(msgs[1].ToolCalls[0], "exec") {
+		t.Errorf("Expected tool call attached to assistant, got: %+v", msgs[1].ToolCalls)
+	}
+
+	// 2. Test ReadSessionMetadata
+	meta := p.ReadSessionMetadata("/work", sessionID)
+	if meta == nil {
+		t.Fatalf("Expected non-nil SessionMeta")
+	}
+	if meta.FirstPrompt != "Refactor the database queries" {
+		t.Errorf("Expected FirstPrompt 'Refactor the database queries', got %q", meta.FirstPrompt)
+	}
+	if meta.Version != "0.150.0" {
+		t.Errorf("Expected Version '0.150.0', got %q", meta.Version)
+	}
+	if meta.ContextPct != 25 {
+		t.Errorf("Expected ContextPct 25, got %d", meta.ContextPct)
+	}
+	if meta.LastMessageAt.IsZero() {
+		t.Errorf("Expected non-zero LastMessageAt")
 	}
 }

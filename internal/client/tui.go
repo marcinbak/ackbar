@@ -2179,7 +2179,8 @@ func (m *Model) View() string {
 		cmdBuilder.WriteString(fmt.Sprintf("Session ID: %s\n", lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#00FFFF")).Render(m.showingResumeCmd.NativeID)))
 		cmdBuilder.WriteString(fmt.Sprintf("Working Directory: %s\n\n", m.showingResumeCmd.Cwd))
 		cmdBuilder.WriteString("To resume this session manually in your shell, run:\n")
-		cmdBuilder.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#00FF00")).Render(fmt.Sprintf("cd %s && claude resume %s", m.showingResumeCmd.Cwd, m.showingResumeCmd.NativeID)))
+		resumeCmd := FormatResumeCmd(m.showingResumeCmd.Agent, m.showingResumeCmd.NativeID)
+		cmdBuilder.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#00FF00")).Render(fmt.Sprintf("cd %s && %s", m.showingResumeCmd.Cwd, resumeCmd)))
 		cmdBuilder.WriteString("\n\n[Press any key or Esc to Dismiss]")
 
 		cmdBox := lipgloss.NewStyle().
@@ -2239,7 +2240,7 @@ func FormatResumeCmd(agent, nativeID string) string {
 	case "claude-code":
 		return fmt.Sprintf("claude resume %s", nativeID)
 	case "codex":
-		return fmt.Sprintf("codex resume %s", nativeID)
+		return fmt.Sprintf("codex exec resume %s", nativeID)
 	case "antigravity":
 		return fmt.Sprintf("agy resume %s", nativeID)
 	default:

@@ -482,6 +482,8 @@ async function showNewSessionModal(prefillGroup = '') {
   const folderList = document.getElementById('folderSuggestions');
   const groupSelect = document.getElementById('newSessionGroup');
 
+  const submitBtn = document.getElementById('btnSubmitNewSession');
+
   // If no group explicitly passed, check active tab's session group or last active group
   const activeTab = state.openTabs.get(state.activeTabId);
   if (!prefillGroup && activeTab && activeTab.session && activeTab.session.node_path) {
@@ -518,8 +520,21 @@ async function showNewSessionModal(prefillGroup = '') {
       const installed = discovery.filter(d => d.installed);
       agentSelect.innerHTML = '';
 
-      const listToRender = installed.length > 0 ? installed : discovery;
-      const availableAgents = listToRender.map(d => d.agent);
+      if (installed.length === 0) {
+        agentSelect.innerHTML = '<option value="" disabled selected>(No supported agents detected on this host)</option>';
+        if (submitBtn) {
+          submitBtn.disabled = true;
+          submitBtn.title = 'No supported agents installed on target host';
+        }
+        return;
+      }
+
+      if (submitBtn) {
+        submitBtn.disabled = false;
+        submitBtn.title = '';
+      }
+
+      const availableAgents = installed.map(d => d.agent);
 
       // Determine which agent should be selected
       // Priority: preferredAgent (if available) -> 'claude-code' (if available) -> first available
@@ -531,11 +546,10 @@ async function showNewSessionModal(prefillGroup = '') {
         selectedAgent = availableAgents[0];
       }
 
-      listToRender.forEach(d => {
+      installed.forEach(d => {
         const opt = document.createElement('option');
         opt.value = d.agent;
-        const statusLabel = d.installed ? '(Installed)' : '(Not detected)';
-        opt.textContent = `${d.display_name || agentDisplayNames[d.agent] || d.agent} ${statusLabel}`;
+        opt.textContent = d.display_name || agentDisplayNames[d.agent] || d.agent;
         if (d.agent === selectedAgent) {
           opt.selected = true;
         }
@@ -852,6 +866,11 @@ async function handleSpawnNewSession() {
   if (!cwd) {
     alert('Please provide a working directory or project path.');
     if (folderInput) folderInput.focus();
+    return;
+  }
+
+  if (!agent) {
+    alert('No supported AI agent is installed on the selected host.');
     return;
   }
 
