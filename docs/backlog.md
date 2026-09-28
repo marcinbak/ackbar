@@ -75,4 +75,10 @@
   * 1-click context rotation (`POST /v1/sessions/handover`) with automated briefing synthesis, context clearing (`/clear`, `/reset`), and fresh turn reseeding.
   * Configurable suggestion toggle and token threshold percentage (`handover_suggestion_enabled`, `handover_threshold_pct`) via daemon settings API and Settings dialog.
   * Warning/danger context badges, quick-action handover button, confirmation modal, and right-click context menu options across Web UI and Mobile companion.
+* [x] **Chat Message Deduplication & Streaming Turn Preservation:**
+  * Eliminated user prompt duplication in Web GUI caused by race condition between prompt dispatch fetch and immediate SSE `turn_start` events.
+  * Normalized CRLF (`\r\n`) newlines to LF (`\n`) to ensure reliable text comparison on multi-line and pasted inputs.
+  * Preserved ongoing assistant streaming turns when follow-up prompts are queued.
+  * Added defensive consecutive message deduplication in mobile companion transcript views.
+
 
