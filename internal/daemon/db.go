@@ -134,8 +134,6 @@ CREATE TABLE IF NOT EXISTS archived_tasks (
 CREATE INDEX IF NOT EXISTS idx_tasks_group_project ON tasks(group_name, project_name);
 CREATE INDEX IF NOT EXISTS idx_tasks_status_updated ON tasks(status, updated_at);
 CREATE INDEX IF NOT EXISTS idx_task_workers_active ON task_workers(is_active);
-CREATE INDEX IF NOT EXISTS idx_task_workers_task_id ON task_workers(task_id);
-CREATE INDEX IF NOT EXISTS idx_task_external_refs_task_id ON task_external_refs(task_id);
 CREATE INDEX IF NOT EXISTS idx_task_deliverables_task_id ON task_deliverables(task_id);
 `
 

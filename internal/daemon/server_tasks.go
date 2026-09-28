@@ -28,6 +28,7 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		w.Header().Set("Content-Type", "application/json")
 		if t.ID == "" {
 			t.ID = fmt.Sprintf("task_%d", time.Now().UnixNano())
 			if err := s.db.CreateTask(&t); err != nil {
@@ -43,7 +44,6 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
 		}
 
-		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(t)
 		return
 	}
@@ -113,6 +113,7 @@ func (s *Server) handleTaskEvent(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(`{"status":"ok"}`))
 }
