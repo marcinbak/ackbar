@@ -630,3 +630,106 @@ func getActiveChildProcesses(ctx context.Context, parentPID int) []string {
 
 	return activeCommands
 }
+
+func (s *Server) inspectCodexStatus(ctx context.Context, sess *Session) bool {
+	return InspectCodexStatus(ctx, sess)
+}
+
+func InspectCodexStatus(ctx context.Context, sess *Session) bool {
+	if sess == nil || sess.Agent != "codex" || sess.State == StateEnded {
+		return false
+	}
+	changed := false
+
+	// Resolve PID from tmux if missing
+	if sess.PID <= 0 && sess.TmuxName != "" {
+		if pid, err := tmux.GetPID(ctx, sess.TmuxName); err == nil && pid > 0 {
+			sess.PID = pid
+			changed = true
+		}
+	}
+
+	if sess.TmuxName != "" {
+		out, err := exec.CommandContext(ctx, "tmux", "capture-pane", "-pt", sess.TmuxName, "-p").Output()
+		if err != nil {
+			sess.State = StateEnded
+			sess.Activity = "Session ended (process exited)"
+			sess.PID = 0
+			sess.Blocked = nil
+			return true
+		}
+
+		if sess.PID > 0 && !isProcessAlive(sess.PID) {
+			if outPs, errPs := exec.CommandContext(ctx, "pgrep", "-P", strconv.Itoa(sess.PID)).Output(); errPs == nil && len(strings.TrimSpace(string(outPs))) > 0 {
+				// Child process alive
+			} else {
+				sess.State = StateEnded
+				sess.Activity = "Session ended (process exited)"
+				sess.PID = 0
+				sess.Blocked = nil
+				return true
+			}
+		}
+
+		paneText := string(out)
+		lines := strings.Split(paneText, "\n")
+		startIdx := len(lines) - 25
+		if startIdx < 0 {
+			startIdx = 0
+		}
+		tailText := strings.Join(lines[startIdx:], "\n")
+
+		// 1. Permission request / confirmation
+		if strings.Contains(tailText, "requires approval") ||
+			strings.Contains(tailText, "Approval required") ||
+			strings.Contains(tailText, "Authorize execution") ||
+			strings.Contains(tailText, "[y/N]") ||
+			strings.Contains(tailText, "[Y/n]") ||
+			strings.Contains(tailText, "Do you want to proceed") {
+			if sess.State != StateBlocked || sess.Blocked == nil || sess.Blocked.Kind != BlockPermission {
+				sess.State = StateBlocked
+				sess.Blocked = &Blocked{
+					Kind:     BlockPermission,
+					Reason:   "Tool permission requested",
+					Question: "Permission required",
+					Options:  []string{"Allow", "Deny"},
+					Since:    time.Now(),
+				}
+				sess.Activity = "Waiting for tool authorization"
+				sess.LastEventAt = time.Now()
+				changed = true
+			}
+			return changed
+		}
+
+		// 2. Question / user response
+		if strings.Contains(tailText, "Waiting for user response") ||
+			strings.Contains(tailText, "request_user_input") {
+			if sess.State != StateBlocked || sess.Blocked == nil || sess.Blocked.Kind != BlockQuestion {
+				sess.State = StateBlocked
+				sess.Blocked = &Blocked{
+					Kind:     BlockQuestion,
+					Reason:   "Waiting for user response",
+					Question: "Waiting for user response",
+					Options:  nil,
+					Since:    time.Now(),
+				}
+				sess.Activity = "Waiting for user response"
+				sess.LastEventAt = time.Now()
+				changed = true
+			}
+			return changed
+		}
+
+		// 3. If it was blocked, but live tmux pane is now unblocked and alive
+		if sess.State == StateBlocked {
+			sess.State = StateIdle
+			sess.Blocked = nil
+			sess.Activity = "Awaiting user prompt"
+			sess.LastEventAt = time.Now()
+			changed = true
+		}
+	}
+
+	return changed
+}

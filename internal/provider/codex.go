@@ -1,7 +1,7 @@
 package provider
 
 import (
-	"fmt"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -40,7 +40,7 @@ func (c *CodexProvider) GetSpawnCommand(tempUUID string) string {
 }
 
 func (c *CodexProvider) GetResumeCommand(nativeID string) string {
-	if nativeID != "" {
+	if nativeID != "" && isValidUUID(nativeID) {
 		return "codex exec resume " + nativeID
 	}
 	return "codex exec"
@@ -66,35 +66,38 @@ func (c *CodexProvider) CheckHookConfig() (bool, string, error) {
 		return false, setupCmd, nil
 	}
 
-	configPath := filepath.Join(home, ".codex", "config.toml")
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		return false, setupCmd, nil
+	// 1. Check ~/.codex/hooks.json (standard Codex hook config)
+	hooksPath := filepath.Join(home, ".codex", "hooks.json")
+	if data, err := os.ReadFile(hooksPath); err == nil {
+		content := string(data)
+		if strings.Contains(content, "127.0.0.1:7777") || strings.Contains(content, "localhost:7777") || strings.Contains(content, "ackbar-hook") {
+			return true, setupCmd, nil
+		}
 	}
 
-	if strings.Contains(string(data), "127.0.0.1:7777") || strings.Contains(string(data), "localhost:7777") || strings.Contains(string(data), "ackbar-hook") {
-		return true, setupCmd, nil
+	// 2. Check ~/.codex/config.toml (legacy / alternative config)
+	configPath := filepath.Join(home, ".codex", "config.toml")
+	if data, err := os.ReadFile(configPath); err == nil {
+		content := string(data)
+		if strings.Contains(content, "127.0.0.1:7777") || strings.Contains(content, "localhost:7777") || strings.Contains(content, "ackbar-hook") {
+			return true, setupCmd, nil
+		}
 	}
 
 	return false, setupCmd, nil
 }
 
-func (c *CodexProvider) ReadSessionMetadata(cwd, nativeID string) *daemon.SessionMeta {
-	return nil
-}
-
-func (c *CodexProvider) ResolveSessionTitle(cwd, nativeID string) string {
-	return ""
-}
-
-func (c *CodexProvider) ExtractTranscript(home, cwd, nativeID string) ([]daemon.TranscriptMessage, error) {
-	return nil, fmt.Errorf("codex native transcript extraction not supported")
-}
-
 func (c *CodexProvider) CleanSessionFiles(home, cwd, nativeID string) error {
-	if nativeID == "" {
+	if !isSafeSessionID(nativeID) {
 		return nil
 	}
 	_ = os.RemoveAll(filepath.Join(home, ".codex", "sessions", nativeID))
+	if logFile := findCodexSessionLog(home, nativeID); logFile != "" {
+		_ = os.Remove(logFile)
+	}
 	return nil
+}
+
+func (c *CodexProvider) InspectStatus(ctx context.Context, sess *daemon.Session) bool {
+	return daemon.InspectCodexStatus(ctx, sess)
 }
