@@ -33,7 +33,9 @@ class TranscriptMessage {
     DateTime ts;
     try {
       final tsStr = json['timestamp']?.toString();
-      ts = tsStr != null && tsStr.isNotEmpty ? DateTime.parse(tsStr) : DateTime.now();
+      ts = tsStr != null && tsStr.isNotEmpty
+          ? DateTime.parse(tsStr)
+          : DateTime.now();
     } catch (_) {
       ts = DateTime.now();
     }
@@ -45,7 +47,8 @@ class TranscriptMessage {
     return TranscriptMessage(
       role: role,
       content: content,
-      thinking: (thinking != null && thinking.trim().isNotEmpty) ? thinking : null,
+      thinking:
+          (thinking != null && thinking.trim().isNotEmpty) ? thinking : null,
       toolCalls: tools,
       timestamp: ts,
     );
@@ -90,6 +93,14 @@ class TranscriptData {
           if (msg.content.trim().isNotEmpty ||
               (msg.thinking != null && msg.thinking!.trim().isNotEmpty) ||
               msg.toolCalls.isNotEmpty) {
+            if (msgs.isNotEmpty &&
+                msgs.last.isUser &&
+                msg.isUser &&
+                msgs.last.content.trim() == msg.content.trim() &&
+                msg.timestamp.difference(msgs.last.timestamp).inSeconds.abs() <=
+                    5) {
+              continue;
+            }
             msgs.add(msg);
           }
         }
@@ -114,13 +125,16 @@ class TranscriptData {
     required String markdown,
   }) {
     final messages = <TranscriptMessage>[];
-    final pattern = RegExp(r'(### 👤 User [^\n]*|### 🤖 Assistant [^\n]*|> ℹ️ System [^\n]*)');
+    final pattern = RegExp(
+      r'(### 👤 User [^\n]*|### 🤖 Assistant [^\n]*|> ℹ️ System [^\n]*)',
+    );
     final matches = pattern.allMatches(markdown).toList();
 
     for (var i = 0; i < matches.length; i++) {
       final header = matches[i].group(0) ?? '';
       final start = matches[i].end;
-      final end = (i + 1 < matches.length) ? matches[i + 1].start : markdown.length;
+      final end =
+          (i + 1 < matches.length) ? matches[i + 1].start : markdown.length;
       var body = markdown.substring(start, end).trim();
       body = body.replaceAll(RegExp(r'\n*---\n*$'), '').trim();
 
@@ -134,11 +148,19 @@ class TranscriptData {
       }
 
       if (body.isNotEmpty) {
-        messages.add(TranscriptMessage(
-          role: role,
-          content: body,
-          timestamp: DateTime.now(),
-        ));
+        if (messages.isNotEmpty &&
+            messages.last.isUser &&
+            role == 'user' &&
+            messages.last.content.trim() == body) {
+          continue;
+        }
+        messages.add(
+          TranscriptMessage(
+            role: role,
+            content: body,
+            timestamp: DateTime.now(),
+          ),
+        );
       }
     }
 

@@ -29,7 +29,10 @@ void main() {
       expect(SessionState.fromString('idle'), equals(SessionState.idle));
       expect(SessionState.fromString('ended'), equals(SessionState.ended));
       expect(SessionState.fromString('failed'), equals(SessionState.failed));
-      expect(SessionState.fromString('invalid_state'), equals(SessionState.unknown));
+      expect(
+        SessionState.fromString('invalid_state'),
+        equals(SessionState.unknown),
+      );
       expect(SessionState.fromString(''), equals(SessionState.unknown));
     });
 
@@ -42,25 +45,55 @@ void main() {
       expect(SessionState.unknown.label, equals('UNKNOWN'));
     });
 
-    test('SessionState toBadgeStatus maps correctly to AckbarSessionStatus', () {
-      expect(SessionState.working.toBadgeStatus(), equals(AckbarSessionStatus.working));
-      expect(SessionState.blocked.toBadgeStatus(), equals(AckbarSessionStatus.blocked));
-      expect(SessionState.idle.toBadgeStatus(), equals(AckbarSessionStatus.idle));
-      expect(SessionState.ended.toBadgeStatus(), equals(AckbarSessionStatus.ended));
-      expect(SessionState.failed.toBadgeStatus(), equals(AckbarSessionStatus.failed));
-      expect(SessionState.unknown.toBadgeStatus(), equals(AckbarSessionStatus.unknown));
-    });
+    test(
+      'SessionState toBadgeStatus maps correctly to AckbarSessionStatus',
+      () {
+        expect(
+          SessionState.working.toBadgeStatus(),
+          equals(AckbarSessionStatus.working),
+        );
+        expect(
+          SessionState.blocked.toBadgeStatus(),
+          equals(AckbarSessionStatus.blocked),
+        );
+        expect(
+          SessionState.idle.toBadgeStatus(),
+          equals(AckbarSessionStatus.idle),
+        );
+        expect(
+          SessionState.ended.toBadgeStatus(),
+          equals(AckbarSessionStatus.ended),
+        );
+        expect(
+          SessionState.failed.toBadgeStatus(),
+          equals(AckbarSessionStatus.failed),
+        );
+        expect(
+          SessionState.unknown.toBadgeStatus(),
+          equals(AckbarSessionStatus.unknown),
+        );
+      },
+    );
   });
 
   group('BlockKind Enum Tests', () {
-    test('BlockKind.fromString handles permission, question, unknown, and null', () {
-      expect(BlockKind.fromString('permission'), equals(BlockKind.permission));
-      expect(BlockKind.fromString('PERMISSION'), equals(BlockKind.permission));
-      expect(BlockKind.fromString('question'), equals(BlockKind.question));
-      expect(BlockKind.fromString('QUESTION'), equals(BlockKind.question));
-      expect(BlockKind.fromString('other'), equals(BlockKind.unknown));
-      expect(BlockKind.fromString(null), equals(BlockKind.unknown));
-    });
+    test(
+      'BlockKind.fromString handles permission, question, unknown, and null',
+      () {
+        expect(
+          BlockKind.fromString('permission'),
+          equals(BlockKind.permission),
+        );
+        expect(
+          BlockKind.fromString('PERMISSION'),
+          equals(BlockKind.permission),
+        );
+        expect(BlockKind.fromString('question'), equals(BlockKind.question));
+        expect(BlockKind.fromString('QUESTION'), equals(BlockKind.question));
+        expect(BlockKind.fromString('other'), equals(BlockKind.unknown));
+        expect(BlockKind.fromString(null), equals(BlockKind.unknown));
+      },
+    );
 
     test('BlockKind label returns expected values', () {
       expect(BlockKind.permission.label, equals('PERMISSION'));
@@ -92,10 +125,7 @@ void main() {
     });
 
     test('Blocked.fromJson handles missing optional fields gracefully', () {
-      final json = {
-        'kind': 'permission',
-        'reason': 'Confirm rm',
-      };
+      final json = {'kind': 'permission', 'reason': 'Confirm rm'};
 
       final blocked = Blocked.fromJson(json);
       expect(blocked.kind, equals(BlockKind.permission));
@@ -150,75 +180,80 @@ void main() {
   });
 
   group('Session Model - JSON Serialization & Parsing', () {
-    test('Session.fromJson parses complete JSON with string and int states', () {
-      final json = {
-        'id': 'claude-code:local:1001',
-        'agent': 'claude-code',
-        'host': 'local',
-        'native_id': '1001',
-        'cwd': '/Users/dev4u/Work/Ackbar',
-        'roots': ['/Users/dev4u/Work/Ackbar'],
-        'project_key': 'github.com/marcinbak/ackbar',
-        'state': 1, // integer working
-        'activity': 'Writing tests',
-        'started_at': '2026-08-20T10:00:00.000Z',
-        'last_event_at': '2026-08-20T10:30:00.000Z',
-        'managed': true,
-        'tmux_name': 'ackbar-claude-1001',
-        'pid': 12345,
-        'archived': false,
-        'node_path': 'Ackbar/Backend',
-        'name': 'Test Session',
-        'entrypoint': 'main.go',
-        'kind': 'cli',
-        'version': '1.0.0',
-        'context_pct': 42,
-        'git_branch': 'feat/tests',
-        'deleted': false,
-        'custom_title': 'Custom Test Session',
-        'ai_title': 'AI Generated Title',
-        'ai_description': 'Session description',
-        'first_prompt': 'First prompt instruction',
-        'last_prompt': 'Last prompt response',
-        'blocked': {
-          'kind': 'question',
-          'reason': 'Confirm choice',
-          'since': '2026-08-20T10:25:00.000Z',
-          'question': 'Proceed?',
-          'options': ['Yes', 'No'],
-        },
-      };
+    test(
+      'Session.fromJson parses complete JSON with string and int states',
+      () {
+        final json = {
+          'id': 'claude-code:local:1001',
+          'agent': 'claude-code',
+          'host': 'local',
+          'native_id': '1001',
+          'cwd': '/Users/dev4u/Work/Ackbar',
+          'roots': ['/Users/dev4u/Work/Ackbar'],
+          'project_key': 'github.com/marcinbak/ackbar',
+          'state': 1, // integer working
+          'activity': 'Writing tests',
+          'started_at': '2026-08-20T10:00:00.000Z',
+          'last_event_at': '2026-08-20T10:30:00.000Z',
+          'managed': true,
+          'tmux_name': 'ackbar-claude-1001',
+          'pid': 12345,
+          'archived': false,
+          'node_path': 'Ackbar/Backend',
+          'name': 'Test Session',
+          'entrypoint': 'main.go',
+          'kind': 'cli',
+          'version': '1.0.0',
+          'context_pct': 42,
+          'git_branch': 'feat/tests',
+          'deleted': false,
+          'custom_title': 'Custom Test Session',
+          'ai_title': 'AI Generated Title',
+          'ai_description': 'Session description',
+          'first_prompt': 'First prompt instruction',
+          'last_prompt': 'Last prompt response',
+          'blocked': {
+            'kind': 'question',
+            'reason': 'Confirm choice',
+            'since': '2026-08-20T10:25:00.000Z',
+            'question': 'Proceed?',
+            'options': ['Yes', 'No'],
+          },
+        };
 
-      final session = Session.fromJson(json);
-      expect(session.id, equals('claude-code:local:1001'));
-      expect(session.agent, equals('claude-code'));
-      expect(session.host, equals('local'));
-      expect(session.nativeId, equals('1001'));
-      expect(session.cwd, equals('/Users/dev4u/Work/Ackbar'));
-      expect(session.roots, equals(['/Users/dev4u/Work/Ackbar']));
-      expect(session.projectKey, equals('github.com/marcinbak/ackbar'));
-      expect(session.state, equals(SessionState.working));
-      expect(session.activity, equals('Writing tests'));
-      expect(session.managed, isTrue);
-      expect(session.tmuxName, equals('ackbar-claude-1001'));
-      expect(session.pid, equals(12345));
-      expect(session.archived, isFalse);
-      expect(session.nodePath, equals('Ackbar/Backend'));
-      expect(session.name, equals('Test Session'));
-      expect(session.contextPct, equals(42));
-      expect(session.gitBranch, equals('feat/tests'));
-      expect(session.deleted, isFalse);
-      expect(session.customTitle, equals('Custom Test Session'));
-      expect(session.aiTitle, equals('AI Generated Title'));
-      expect(session.firstPrompt, equals('First prompt instruction'));
-      expect(session.lastPrompt, equals('Last prompt response'));
-      expect(session.blocked, isNotNull);
-      expect(session.blocked!.question, equals('Proceed?'));
-      expect(session.isBlocked, isTrue);
-      expect(session.isWorking, isTrue);
-    });
+        final session = Session.fromJson(json);
+        expect(session.id, equals('claude-code:local:1001'));
+        expect(session.agent, equals('claude-code'));
+        expect(session.host, equals('local'));
+        expect(session.nativeId, equals('1001'));
+        expect(session.cwd, equals('/Users/dev4u/Work/Ackbar'));
+        expect(session.roots, equals(['/Users/dev4u/Work/Ackbar']));
+        expect(session.projectKey, equals('github.com/marcinbak/ackbar'));
+        expect(session.state, equals(SessionState.working));
+        expect(session.activity, equals('Writing tests'));
+        expect(session.managed, isTrue);
+        expect(session.tmuxName, equals('ackbar-claude-1001'));
+        expect(session.pid, equals(12345));
+        expect(session.archived, isFalse);
+        expect(session.nodePath, equals('Ackbar/Backend'));
+        expect(session.name, equals('Test Session'));
+        expect(session.contextPct, equals(42));
+        expect(session.gitBranch, equals('feat/tests'));
+        expect(session.deleted, isFalse);
+        expect(session.customTitle, equals('Custom Test Session'));
+        expect(session.aiTitle, equals('AI Generated Title'));
+        expect(session.firstPrompt, equals('First prompt instruction'));
+        expect(session.lastPrompt, equals('Last prompt response'));
+        expect(session.blocked, isNotNull);
+        expect(session.blocked!.question, equals('Proceed?'));
+        expect(session.isBlocked, isTrue);
+        expect(session.isWorking, isTrue);
+      },
+    );
 
-    test('Session.fromJson handles string states, string pid/contextPct, and missing defaults', () {
+    test(
+        'Session.fromJson handles string states, string pid/contextPct, and missing defaults',
+        () {
       final json = {
         'id': 'antigravity:remote:2002',
         'agent': 'antigravity',
@@ -314,24 +349,28 @@ void main() {
       expect(session.displayTitle, equals('AI Suggested Title'));
     });
 
-    test('Priority 3: name is used if not equal to agent and not starting with <', () {
-      final session = Session(
-        id: '3',
-        agent: 'claude-code',
-        host: 'local',
-        nativeId: '100',
-        cwd: '/work',
-        state: SessionState.working,
-        startedAt: baseTime,
-        lastEventAt: baseTime,
-        name: 'Feature Auth Flow',
-        firstPrompt: 'First prompt line',
-      );
-      expect(session.displayTitle, equals('Feature Auth Flow'));
-    });
+    test(
+      'Priority 3: name is used if not equal to agent and not starting with <',
+      () {
+        final session = Session(
+          id: '3',
+          agent: 'claude-code',
+          host: 'local',
+          nativeId: '100',
+          cwd: '/work',
+          state: SessionState.working,
+          startedAt: baseTime,
+          lastEventAt: baseTime,
+          name: 'Feature Auth Flow',
+          firstPrompt: 'First prompt line',
+        );
+        expect(session.displayTitle, equals('Feature Auth Flow'));
+      },
+    );
 
     test('Priority 4: firstPrompt first line truncated to 60 chars', () {
-      final longPrompt = 'This is a very long first prompt instruction that exceeds sixty characters easily and will be truncated\nSecond line';
+      final longPrompt =
+          'This is a very long first prompt instruction that exceeds sixty characters easily and will be truncated\nSecond line';
       final session = Session(
         id: '4',
         agent: 'claude-code',
@@ -344,7 +383,10 @@ void main() {
         name: 'claude-code',
         firstPrompt: longPrompt,
       );
-      expect(session.displayTitle, equals('This is a very long first prompt instruction that exceeds...'));
+      expect(
+        session.displayTitle,
+        equals('This is a very long first prompt instruction that exceeds...'),
+      );
       expect(session.displayTitle.length, equals(60));
     });
 
@@ -382,60 +424,350 @@ void main() {
     final now = DateTime.now();
 
     test('agentDisplayName formats standard agent names', () {
-      expect(Session(id: '1', agent: 'claude-code', host: 'l', nativeId: '1', cwd: '', state: SessionState.idle, startedAt: now, lastEventAt: now).agentDisplayName, equals('Claude Code'));
-      expect(Session(id: '2', agent: 'claude', host: 'l', nativeId: '1', cwd: '', state: SessionState.idle, startedAt: now, lastEventAt: now).agentDisplayName, equals('Claude Code'));
-      expect(Session(id: '3', agent: 'antigravity', host: 'l', nativeId: '1', cwd: '', state: SessionState.idle, startedAt: now, lastEventAt: now).agentDisplayName, equals('Antigravity'));
-      expect(Session(id: '4', agent: 'gemini', host: 'l', nativeId: '1', cwd: '', state: SessionState.idle, startedAt: now, lastEventAt: now).agentDisplayName, equals('Antigravity'));
-      expect(Session(id: '5', agent: 'codex', host: 'l', nativeId: '1', cwd: '', state: SessionState.idle, startedAt: now, lastEventAt: now).agentDisplayName, equals('OpenAI Codex'));
-      expect(Session(id: '6', agent: 'openai-codex', host: 'l', nativeId: '1', cwd: '', state: SessionState.idle, startedAt: now, lastEventAt: now).agentDisplayName, equals('OpenAI Codex'));
-      expect(Session(id: '7', agent: 'custom-agent', host: 'l', nativeId: '1', cwd: '', state: SessionState.idle, startedAt: now, lastEventAt: now).agentDisplayName, equals('custom-agent'));
-      expect(Session(id: '8', agent: '', host: 'l', nativeId: '1', cwd: '', state: SessionState.idle, startedAt: now, lastEventAt: now).agentDisplayName, equals('Agent'));
+      expect(
+        Session(
+          id: '1',
+          agent: 'claude-code',
+          host: 'l',
+          nativeId: '1',
+          cwd: '',
+          state: SessionState.idle,
+          startedAt: now,
+          lastEventAt: now,
+        ).agentDisplayName,
+        equals('Claude Code'),
+      );
+      expect(
+        Session(
+          id: '2',
+          agent: 'claude',
+          host: 'l',
+          nativeId: '1',
+          cwd: '',
+          state: SessionState.idle,
+          startedAt: now,
+          lastEventAt: now,
+        ).agentDisplayName,
+        equals('Claude Code'),
+      );
+      expect(
+        Session(
+          id: '3',
+          agent: 'antigravity',
+          host: 'l',
+          nativeId: '1',
+          cwd: '',
+          state: SessionState.idle,
+          startedAt: now,
+          lastEventAt: now,
+        ).agentDisplayName,
+        equals('Antigravity'),
+      );
+      expect(
+        Session(
+          id: '4',
+          agent: 'gemini',
+          host: 'l',
+          nativeId: '1',
+          cwd: '',
+          state: SessionState.idle,
+          startedAt: now,
+          lastEventAt: now,
+        ).agentDisplayName,
+        equals('Antigravity'),
+      );
+      expect(
+        Session(
+          id: '5',
+          agent: 'codex',
+          host: 'l',
+          nativeId: '1',
+          cwd: '',
+          state: SessionState.idle,
+          startedAt: now,
+          lastEventAt: now,
+        ).agentDisplayName,
+        equals('OpenAI Codex'),
+      );
+      expect(
+        Session(
+          id: '6',
+          agent: 'openai-codex',
+          host: 'l',
+          nativeId: '1',
+          cwd: '',
+          state: SessionState.idle,
+          startedAt: now,
+          lastEventAt: now,
+        ).agentDisplayName,
+        equals('OpenAI Codex'),
+      );
+      expect(
+        Session(
+          id: '7',
+          agent: 'custom-agent',
+          host: 'l',
+          nativeId: '1',
+          cwd: '',
+          state: SessionState.idle,
+          startedAt: now,
+          lastEventAt: now,
+        ).agentDisplayName,
+        equals('custom-agent'),
+      );
+      expect(
+        Session(
+          id: '8',
+          agent: '',
+          host: 'l',
+          nativeId: '1',
+          cwd: '',
+          state: SessionState.idle,
+          startedAt: now,
+          lastEventAt: now,
+        ).agentDisplayName,
+        equals('Agent'),
+      );
     });
 
     test('agentSymbol returns corresponding emojis', () {
-      expect(Session(id: '1', agent: 'claude-code', host: 'l', nativeId: '1', cwd: '', state: SessionState.idle, startedAt: now, lastEventAt: now).agentSymbol, equals('🤖'));
-      expect(Session(id: '2', agent: 'antigravity', host: 'l', nativeId: '1', cwd: '', state: SessionState.idle, startedAt: now, lastEventAt: now).agentSymbol, equals('✨'));
-      expect(Session(id: '3', agent: 'codex', host: 'l', nativeId: '1', cwd: '', state: SessionState.idle, startedAt: now, lastEventAt: now).agentSymbol, equals('⚡'));
-      expect(Session(id: '4', agent: 'other', host: 'l', nativeId: '1', cwd: '', state: SessionState.idle, startedAt: now, lastEventAt: now).agentSymbol, equals('💻'));
+      expect(
+        Session(
+          id: '1',
+          agent: 'claude-code',
+          host: 'l',
+          nativeId: '1',
+          cwd: '',
+          state: SessionState.idle,
+          startedAt: now,
+          lastEventAt: now,
+        ).agentSymbol,
+        equals('🤖'),
+      );
+      expect(
+        Session(
+          id: '2',
+          agent: 'antigravity',
+          host: 'l',
+          nativeId: '1',
+          cwd: '',
+          state: SessionState.idle,
+          startedAt: now,
+          lastEventAt: now,
+        ).agentSymbol,
+        equals('✨'),
+      );
+      expect(
+        Session(
+          id: '3',
+          agent: 'codex',
+          host: 'l',
+          nativeId: '1',
+          cwd: '',
+          state: SessionState.idle,
+          startedAt: now,
+          lastEventAt: now,
+        ).agentSymbol,
+        equals('⚡'),
+      );
+      expect(
+        Session(
+          id: '4',
+          agent: 'other',
+          host: 'l',
+          nativeId: '1',
+          cwd: '',
+          state: SessionState.idle,
+          startedAt: now,
+          lastEventAt: now,
+        ).agentSymbol,
+        equals('💻'),
+      );
     });
 
     test('agentColor returns semantic accent colors', () {
-      expect(Session(id: '1', agent: 'claude-code', host: 'l', nativeId: '1', cwd: '', state: SessionState.idle, startedAt: now, lastEventAt: now).agentColor, equals(const Color(0xFFD97706)));
-      expect(Session(id: '2', agent: 'antigravity', host: 'l', nativeId: '1', cwd: '', state: SessionState.idle, startedAt: now, lastEventAt: now).agentColor, equals(AppColors.infoCyan));
-      expect(Session(id: '3', agent: 'codex', host: 'l', nativeId: '1', cwd: '', state: SessionState.idle, startedAt: now, lastEventAt: now).agentColor, equals(AppColors.statusEmerald));
-      expect(Session(id: '4', agent: 'unknown', host: 'l', nativeId: '1', cwd: '', state: SessionState.idle, startedAt: now, lastEventAt: now).agentColor, equals(AppColors.textSecondary));
+      expect(
+        Session(
+          id: '1',
+          agent: 'claude-code',
+          host: 'l',
+          nativeId: '1',
+          cwd: '',
+          state: SessionState.idle,
+          startedAt: now,
+          lastEventAt: now,
+        ).agentColor,
+        equals(const Color(0xFFD97706)),
+      );
+      expect(
+        Session(
+          id: '2',
+          agent: 'antigravity',
+          host: 'l',
+          nativeId: '1',
+          cwd: '',
+          state: SessionState.idle,
+          startedAt: now,
+          lastEventAt: now,
+        ).agentColor,
+        equals(AppColors.infoCyan),
+      );
+      expect(
+        Session(
+          id: '3',
+          agent: 'codex',
+          host: 'l',
+          nativeId: '1',
+          cwd: '',
+          state: SessionState.idle,
+          startedAt: now,
+          lastEventAt: now,
+        ).agentColor,
+        equals(AppColors.statusEmerald),
+      );
+      expect(
+        Session(
+          id: '4',
+          agent: 'unknown',
+          host: 'l',
+          nativeId: '1',
+          cwd: '',
+          state: SessionState.idle,
+          startedAt: now,
+          lastEventAt: now,
+        ).agentColor,
+        equals(AppColors.textSecondary),
+      );
     });
 
     test('hostTag prepends @ if missing', () {
-      expect(Session(id: '1', agent: 'a', host: 'local', nativeId: '1', cwd: '', state: SessionState.idle, startedAt: now, lastEventAt: now).hostTag, equals('@local'));
-      expect(Session(id: '2', agent: 'a', host: '@devbox', nativeId: '1', cwd: '', state: SessionState.idle, startedAt: now, lastEventAt: now).hostTag, equals('@devbox'));
+      expect(
+        Session(
+          id: '1',
+          agent: 'a',
+          host: 'local',
+          nativeId: '1',
+          cwd: '',
+          state: SessionState.idle,
+          startedAt: now,
+          lastEventAt: now,
+        ).hostTag,
+        equals('@local'),
+      );
+      expect(
+        Session(
+          id: '2',
+          agent: 'a',
+          host: '@devbox',
+          nativeId: '1',
+          cwd: '',
+          state: SessionState.idle,
+          startedAt: now,
+          lastEventAt: now,
+        ).hostTag,
+        equals('@devbox'),
+      );
     });
 
     test('projectDisplayName resolution hierarchy', () {
-      final sessWithKey = Session(id: '1', agent: 'a', host: 'l', nativeId: '1', cwd: '/work/other', projectKey: 'github.com/org/my-project.git', state: SessionState.idle, startedAt: now, lastEventAt: now);
+      final sessWithKey = Session(
+        id: '1',
+        agent: 'a',
+        host: 'l',
+        nativeId: '1',
+        cwd: '/work/other',
+        projectKey: 'github.com/org/my-project.git',
+        state: SessionState.idle,
+        startedAt: now,
+        lastEventAt: now,
+      );
       expect(sessWithKey.projectDisplayName, equals('my-project'));
 
-      final sessWithNode = Session(id: '2', agent: 'a', host: 'l', nativeId: '1', cwd: '/work/dir', nodePath: 'Mobile Client/UI', state: SessionState.idle, startedAt: now, lastEventAt: now);
+      final sessWithNode = Session(
+        id: '2',
+        agent: 'a',
+        host: 'l',
+        nativeId: '1',
+        cwd: '/work/dir',
+        nodePath: 'Mobile Client/UI',
+        state: SessionState.idle,
+        startedAt: now,
+        lastEventAt: now,
+      );
       expect(sessWithNode.projectDisplayName, equals('Mobile Client'));
 
-      final sessWithCwd = Session(id: '3', agent: 'a', host: 'l', nativeId: '1', cwd: '/home/dev/AckbarCore', state: SessionState.idle, startedAt: now, lastEventAt: now);
+      final sessWithCwd = Session(
+        id: '3',
+        agent: 'a',
+        host: 'l',
+        nativeId: '1',
+        cwd: '/home/dev/AckbarCore',
+        state: SessionState.idle,
+        startedAt: now,
+        lastEventAt: now,
+      );
       expect(sessWithCwd.projectDisplayName, equals('AckbarCore'));
 
-      final sessFallback = Session(id: '4', agent: 'a', host: 'l', nativeId: '1', cwd: '', state: SessionState.idle, startedAt: now, lastEventAt: now);
+      final sessFallback = Session(
+        id: '4',
+        agent: 'a',
+        host: 'l',
+        nativeId: '1',
+        cwd: '',
+        state: SessionState.idle,
+        startedAt: now,
+        lastEventAt: now,
+      );
       expect(sessFallback.projectDisplayName, equals('Default Project'));
     });
 
     test('timeElapsedFormatted formats seconds, minutes, hours, and days', () {
-      final sAgo = Session(id: '1', agent: 'a', host: 'l', nativeId: '1', cwd: '', state: SessionState.idle, startedAt: now.subtract(const Duration(seconds: 25)), lastEventAt: now.subtract(const Duration(seconds: 25)));
+      final sAgo = Session(
+        id: '1',
+        agent: 'a',
+        host: 'l',
+        nativeId: '1',
+        cwd: '',
+        state: SessionState.idle,
+        startedAt: now.subtract(const Duration(seconds: 25)),
+        lastEventAt: now.subtract(const Duration(seconds: 25)),
+      );
       expect(sAgo.timeElapsedFormatted, contains('s ago'));
 
-      final mAgo = Session(id: '2', agent: 'a', host: 'l', nativeId: '1', cwd: '', state: SessionState.idle, startedAt: now.subtract(const Duration(minutes: 15)), lastEventAt: now.subtract(const Duration(minutes: 15)));
+      final mAgo = Session(
+        id: '2',
+        agent: 'a',
+        host: 'l',
+        nativeId: '1',
+        cwd: '',
+        state: SessionState.idle,
+        startedAt: now.subtract(const Duration(minutes: 15)),
+        lastEventAt: now.subtract(const Duration(minutes: 15)),
+      );
       expect(mAgo.timeElapsedFormatted, contains('15m ago'));
 
-      final hAgo = Session(id: '3', agent: 'a', host: 'l', nativeId: '1', cwd: '', state: SessionState.idle, startedAt: now.subtract(const Duration(hours: 3, minutes: 12)), lastEventAt: now.subtract(const Duration(hours: 3, minutes: 12)));
+      final hAgo = Session(
+        id: '3',
+        agent: 'a',
+        host: 'l',
+        nativeId: '1',
+        cwd: '',
+        state: SessionState.idle,
+        startedAt: now.subtract(const Duration(hours: 3, minutes: 12)),
+        lastEventAt: now.subtract(const Duration(hours: 3, minutes: 12)),
+      );
       expect(hAgo.timeElapsedFormatted, contains('3h 12m'));
 
-      final dAgo = Session(id: '4', agent: 'a', host: 'l', nativeId: '1', cwd: '', state: SessionState.idle, startedAt: now.subtract(const Duration(days: 4)), lastEventAt: now.subtract(const Duration(days: 4)));
+      final dAgo = Session(
+        id: '4',
+        agent: 'a',
+        host: 'l',
+        nativeId: '1',
+        cwd: '',
+        state: SessionState.idle,
+        startedAt: now.subtract(const Duration(days: 4)),
+        lastEventAt: now.subtract(const Duration(days: 4)),
+      );
       expect(dAgo.timeElapsedFormatted, contains('4d ago'));
     });
 
@@ -498,47 +830,83 @@ void main() {
       expect(host.createdAt, equals(now));
     });
 
-    test('HostRecord.fromJson handles projects_dir fallback and string numbers', () {
-      final json = {
-        'name': 'cloud',
-        'url': 'http://127.0.0.1:7777',
-        'projects_dir': '/custom/projects',
-        'latency_ms': '45',
-        'sessions_count': '3',
-      };
+    test(
+      'HostRecord.fromJson handles projects_dir fallback and string numbers',
+      () {
+        final json = {
+          'name': 'cloud',
+          'url': 'http://127.0.0.1:7777',
+          'projects_dir': '/custom/projects',
+          'latency_ms': '45',
+          'sessions_count': '3',
+        };
 
-      final host = HostRecord.fromJson(json);
-      expect(host.name, equals('cloud'));
-      expect(host.remoteCwd, equals('/custom/projects'));
-      expect(host.latencyMs, equals(45));
-      expect(host.sessionsCount, equals(3));
-      expect(host.isLocal, isTrue);
-    });
+        final host = HostRecord.fromJson(json);
+        expect(host.name, equals('cloud'));
+        expect(host.remoteCwd, equals('/custom/projects'));
+        expect(host.latencyMs, equals(45));
+        expect(host.sessionsCount, equals(3));
+        expect(host.isLocal, isTrue);
+      },
+    );
 
     test('HostRecord.isLocal detects local name and localhost url', () {
-      final localByName = HostRecord(name: 'Local', url: 'http://custom:7777', createdAt: now);
+      final localByName = HostRecord(
+        name: 'Local',
+        url: 'http://custom:7777',
+        createdAt: now,
+      );
       expect(localByName.isLocal, isTrue);
 
-      final localByUrl = HostRecord(name: 'my-mac', url: 'http://127.0.0.1:7777', createdAt: now);
+      final localByUrl = HostRecord(
+        name: 'my-mac',
+        url: 'http://127.0.0.1:7777',
+        createdAt: now,
+      );
       expect(localByUrl.isLocal, isTrue);
 
-      final remoteHost = HostRecord(name: 'remote-gpu', url: 'http://10.0.0.5:7777', createdAt: now);
+      final remoteHost = HostRecord(
+        name: 'remote-gpu',
+        url: 'http://10.0.0.5:7777',
+        createdAt: now,
+      );
       expect(remoteHost.isLocal, isFalse);
     });
 
     test('HostRecord.endpointDisplay resolves Tailscale, SSH, and URL', () {
-      final withTailscale = HostRecord(name: 'h1', url: 'http://10.0.0.1:7777', tailscaleIp: '100.64.1.2', sshTarget: 'user@box', createdAt: now);
+      final withTailscale = HostRecord(
+        name: 'h1',
+        url: 'http://10.0.0.1:7777',
+        tailscaleIp: '100.64.1.2',
+        sshTarget: 'user@box',
+        createdAt: now,
+      );
       expect(withTailscale.endpointDisplay, equals('100.64.1.2'));
 
-      final withSsh = HostRecord(name: 'h2', url: 'http://10.0.0.1:7777', sshTarget: 'user@box', createdAt: now);
+      final withSsh = HostRecord(
+        name: 'h2',
+        url: 'http://10.0.0.1:7777',
+        sshTarget: 'user@box',
+        createdAt: now,
+      );
       expect(withSsh.endpointDisplay, equals('ssh://user@box'));
 
-      final withUrlOnly = HostRecord(name: 'h3', url: 'http://10.0.0.1:7777', createdAt: now);
+      final withUrlOnly = HostRecord(
+        name: 'h3',
+        url: 'http://10.0.0.1:7777',
+        createdAt: now,
+      );
       expect(withUrlOnly.endpointDisplay, equals('10.0.0.1:7777'));
     });
 
     test('HostRecord status helpers and indicator conversion', () {
-      final onlineHost = HostRecord(name: 'devbox', url: 'http://127.0.0.1:7777', online: true, latencyMs: 12, createdAt: now);
+      final onlineHost = HostRecord(
+        name: 'devbox',
+        url: 'http://127.0.0.1:7777',
+        online: true,
+        latencyMs: 12,
+        createdAt: now,
+      );
       expect(onlineHost.latencyDisplay, equals('12ms'));
       expect(onlineHost.statusColor, equals(AppColors.statusEmerald));
       expect(onlineHost.badgeStatus, equals(AckbarSessionStatus.active));
@@ -548,7 +916,12 @@ void main() {
       expect(indicator.isOnline, isTrue);
       expect(indicator.latency, equals('12ms'));
 
-      final offlineHost = HostRecord(name: 'cloud-gpu', url: 'http://10.0.0.5:7777', online: false, createdAt: now);
+      final offlineHost = HostRecord(
+        name: 'cloud-gpu',
+        url: 'http://10.0.0.5:7777',
+        online: false,
+        createdAt: now,
+      );
       expect(offlineHost.statusColor, equals(AppColors.statusCoral));
       expect(offlineHost.badgeStatus, equals(AckbarSessionStatus.offline));
     });
@@ -586,23 +959,38 @@ void main() {
     test('PlanStatus enum labels, colors, and badge status mapping', () {
       expect(PlanStatus.pendingReview.label, equals('PENDING REVIEW'));
       expect(PlanStatus.pendingReview.color, equals(AppColors.statusAmber));
-      expect(PlanStatus.pendingReview.toBadgeStatus(), equals(AckbarSessionStatus.blocked));
+      expect(
+        PlanStatus.pendingReview.toBadgeStatus(),
+        equals(AckbarSessionStatus.blocked),
+      );
 
       expect(PlanStatus.inProgress.label, equals('IN PROGRESS'));
       expect(PlanStatus.inProgress.color, equals(AppColors.infoCyan));
-      expect(PlanStatus.inProgress.toBadgeStatus(), equals(AckbarSessionStatus.working));
+      expect(
+        PlanStatus.inProgress.toBadgeStatus(),
+        equals(AckbarSessionStatus.working),
+      );
 
       expect(PlanStatus.approved.label, equals('APPROVED'));
       expect(PlanStatus.approved.color, equals(AppColors.statusEmerald));
-      expect(PlanStatus.approved.toBadgeStatus(), equals(AckbarSessionStatus.idle));
+      expect(
+        PlanStatus.approved.toBadgeStatus(),
+        equals(AckbarSessionStatus.idle),
+      );
 
       expect(PlanStatus.completed.label, equals('COMPLETED'));
       expect(PlanStatus.completed.color, equals(AppColors.statusEmerald));
-      expect(PlanStatus.completed.toBadgeStatus(), equals(AckbarSessionStatus.idle));
+      expect(
+        PlanStatus.completed.toBadgeStatus(),
+        equals(AckbarSessionStatus.idle),
+      );
 
       expect(PlanStatus.rejected.label, equals('REJECTED'));
       expect(PlanStatus.rejected.color, equals(AppColors.statusCoral));
-      expect(PlanStatus.rejected.toBadgeStatus(), equals(AckbarSessionStatus.offline));
+      expect(
+        PlanStatus.rejected.toBadgeStatus(),
+        equals(AckbarSessionStatus.offline),
+      );
     });
 
     test('PlanDocument.fromJson parses all fields and status keywords', () {
@@ -650,19 +1038,99 @@ void main() {
     });
 
     test('PlanDocument.fromJson maps various status strings', () {
-      expect(PlanDocument.fromJson({'status': 'working', 'created_at': now.toIso8601String()}).status, equals(PlanStatus.inProgress));
-      expect(PlanDocument.fromJson({'status': 'approved', 'created_at': now.toIso8601String()}).status, equals(PlanStatus.approved));
-      expect(PlanDocument.fromJson({'status': 'completed', 'created_at': now.toIso8601String()}).status, equals(PlanStatus.completed));
-      expect(PlanDocument.fromJson({'status': 'done', 'created_at': now.toIso8601String()}).status, equals(PlanStatus.completed));
-      expect(PlanDocument.fromJson({'status': 'rejected', 'created_at': now.toIso8601String()}).status, equals(PlanStatus.rejected));
-      expect(PlanDocument.fromJson({'status': 'unknown_str', 'created_at': now.toIso8601String()}).status, equals(PlanStatus.pendingReview));
+      expect(
+        PlanDocument.fromJson({
+          'status': 'working',
+          'created_at': now.toIso8601String(),
+        }).status,
+        equals(PlanStatus.inProgress),
+      );
+      expect(
+        PlanDocument.fromJson({
+          'status': 'approved',
+          'created_at': now.toIso8601String(),
+        }).status,
+        equals(PlanStatus.approved),
+      );
+      expect(
+        PlanDocument.fromJson({
+          'status': 'completed',
+          'created_at': now.toIso8601String(),
+        }).status,
+        equals(PlanStatus.completed),
+      );
+      expect(
+        PlanDocument.fromJson({
+          'status': 'done',
+          'created_at': now.toIso8601String(),
+        }).status,
+        equals(PlanStatus.completed),
+      );
+      expect(
+        PlanDocument.fromJson({
+          'status': 'rejected',
+          'created_at': now.toIso8601String(),
+        }).status,
+        equals(PlanStatus.rejected),
+      );
+      expect(
+        PlanDocument.fromJson({
+          'status': 'unknown_str',
+          'created_at': now.toIso8601String(),
+        }).status,
+        equals(PlanStatus.pendingReview),
+      );
     });
 
     test('PlanDocument agentDisplayName formatting for different agents', () {
-      expect(PlanDocument(id: '1', title: 'T', agent: 'antigravity', host: 'l', project: 'P', goal: 'G', createdAt: now).agentDisplayName, equals('Antigravity'));
-      expect(PlanDocument(id: '2', title: 'T', agent: 'codex', host: 'l', project: 'P', goal: 'G', createdAt: now).agentDisplayName, equals('OpenAI Codex'));
-      expect(PlanDocument(id: '3', title: 'T', agent: 'custom', host: 'l', project: 'P', goal: 'G', createdAt: now).agentDisplayName, equals('custom'));
-      expect(PlanDocument(id: '4', title: 'T', agent: '', host: 'l', project: 'P', goal: 'G', createdAt: now).agentDisplayName, equals('Agent'));
+      expect(
+        PlanDocument(
+          id: '1',
+          title: 'T',
+          agent: 'antigravity',
+          host: 'l',
+          project: 'P',
+          goal: 'G',
+          createdAt: now,
+        ).agentDisplayName,
+        equals('Antigravity'),
+      );
+      expect(
+        PlanDocument(
+          id: '2',
+          title: 'T',
+          agent: 'codex',
+          host: 'l',
+          project: 'P',
+          goal: 'G',
+          createdAt: now,
+        ).agentDisplayName,
+        equals('OpenAI Codex'),
+      );
+      expect(
+        PlanDocument(
+          id: '3',
+          title: 'T',
+          agent: 'custom',
+          host: 'l',
+          project: 'P',
+          goal: 'G',
+          createdAt: now,
+        ).agentDisplayName,
+        equals('custom'),
+      );
+      expect(
+        PlanDocument(
+          id: '4',
+          title: 'T',
+          agent: '',
+          host: 'l',
+          project: 'P',
+          goal: 'G',
+          createdAt: now,
+        ).agentDisplayName,
+        equals('Agent'),
+      );
     });
 
     test('PlanDocument.toJson and copyWith', () {
@@ -906,6 +1374,98 @@ Refactoring complete.
 
       final session = Session.fromJson(json);
       expect(session.runningSubagents, equals(0));
+    });
+  });
+
+  group('TranscriptData User Message Deduplication Tests', () {
+    test(
+        'TranscriptData.fromJson deduplicates consecutive identical user messages',
+        () {
+      final now = DateTime.now();
+      final json = {
+        'session_id': 'sess-test',
+        'agent': 'claude-code',
+        'title': 'Test Session',
+        'messages': [
+          {
+            'role': 'user',
+            'content': 'I have a set of PRs to review:\nhttps://github.com/...',
+            'timestamp': now.toIso8601String(),
+          },
+          {
+            'role': 'user',
+            'content': 'I have a set of PRs to review:\nhttps://github.com/...',
+            'timestamp':
+                now.add(const Duration(milliseconds: 1200)).toIso8601String(),
+          },
+          {
+            'role': 'assistant',
+            'content': 'I will review the PRs now.',
+            'timestamp': now.add(const Duration(seconds: 3)).toIso8601String(),
+          },
+        ],
+      };
+
+      final transcript = TranscriptData.fromJson(json);
+      expect(transcript.messages.length, equals(2));
+      expect(transcript.messages[0].role, equals('user'));
+      expect(transcript.messages[1].role, equals('assistant'));
+    });
+
+    test('TranscriptData.fromJson keeps separate distinct user messages', () {
+      final now = DateTime.now();
+      final json = {
+        'session_id': 'sess-test',
+        'agent': 'claude-code',
+        'title': 'Test Session',
+        'messages': [
+          {
+            'role': 'user',
+            'content': 'Prompt A',
+            'timestamp': now.toIso8601String(),
+          },
+          {
+            'role': 'user',
+            'content': 'Prompt B',
+            'timestamp': now.add(const Duration(seconds: 1)).toIso8601String(),
+          },
+        ],
+      };
+
+      final transcript = TranscriptData.fromJson(json);
+      expect(transcript.messages.length, equals(2));
+      expect(transcript.messages[0].content, equals('Prompt A'));
+      expect(transcript.messages[1].content, equals('Prompt B'));
+    });
+
+    test(
+        'TranscriptData.fromRawMarkdown deduplicates consecutive identical user messages',
+        () {
+      const rawMarkdown = '''
+### 👤 User (10:00 AM)
+I have a set of PRs to review:
+https://github.com/test
+
+---
+### 👤 User (10:00 AM)
+I have a set of PRs to review:
+https://github.com/test
+
+---
+### 🤖 Assistant (10:01 AM)
+Understood.
+''';
+
+      final transcript = TranscriptData.fromRawMarkdown(
+        sessionId: 'sess-1',
+        agent: 'claude-code',
+        title: 'Review PRs',
+        markdown: rawMarkdown,
+      );
+
+      expect(transcript.messages.length, equals(2));
+      expect(transcript.messages[0].role, equals('user'));
+      expect(transcript.messages[1].role, equals('assistant'));
     });
   });
 }
