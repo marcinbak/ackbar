@@ -138,6 +138,15 @@ export function renderWorkBoard() {
   attachCardEventListeners();
 }
 
+function safeUrl(rawUrl) {
+  if (!rawUrl || typeof rawUrl !== 'string') return '#';
+  const trimmed = rawUrl.trim();
+  if (trimmed.startsWith('https://') || trimmed.startsWith('http://') || trimmed.startsWith('/v1/') || trimmed.startsWith('#')) {
+    return trimmed;
+  }
+  return '#';
+}
+
 function renderTaskCards(tasks) {
   if (tasks.length === 0) {
     return `<div class="kanban-empty-state">No tasks</div>`;
@@ -146,7 +155,8 @@ function renderTaskCards(tasks) {
   return tasks.map(task => {
     const trackerBadges = (task.external_refs || []).map(ref => {
       const icon = ref.tracker === 'jira' ? '🔷' : ref.tracker === 'linear' ? '📐' : '🔗';
-      return `<a href="${escapeHtml(ref.url || '#')}" target="_blank" class="task-tracker-badge" title="${escapeHtml(ref.tracker)}: ${escapeHtml(ref.ref_key)}">${icon} ${escapeHtml(ref.ref_key)}</a>`;
+      const cleanUrl = safeUrl(ref.url);
+      return `<a href="${escapeHtml(cleanUrl)}" target="_blank" rel="noopener noreferrer" class="task-tracker-badge" title="${escapeHtml(ref.tracker)}: ${escapeHtml(ref.ref_key)}">${icon} ${escapeHtml(ref.ref_key)}</a>`;
     }).join(' ');
 
     const projectTag = task.project_name ? `<span class="task-project-tag">${escapeHtml(task.project_name)}</span>` : '';
@@ -162,8 +172,8 @@ function renderTaskCards(tasks) {
 
     const deliverablesHtml = (task.deliverables || []).map(d => {
       const kindIcon = d.kind === 'html_ui' ? '🎨' : d.kind === 'video' ? '📹' : d.kind === 'plan' ? '📝' : '📦';
-      const targetUrl = d.url || (d.file_path ? `/v1/files/content?path=${encodeURIComponent(d.file_path)}` : '#');
-      return `<a href="${escapeHtml(targetUrl)}" target="_blank" class="task-deliverable-chip" title="${escapeHtml(d.title)}">
+      const targetUrl = safeUrl(d.url || (d.file_path ? `/v1/files/content?path=${encodeURIComponent(d.file_path)}` : '#'));
+      return `<a href="${escapeHtml(targetUrl)}" target="_blank" rel="noopener noreferrer" class="task-deliverable-chip" title="${escapeHtml(d.title)}">
         ${kindIcon} ${escapeHtml(d.title)}
       </a>`;
     }).join('');
@@ -178,11 +188,12 @@ function renderTaskCards(tasks) {
     }
 
     if (task.pr_url) {
+      const cleanPrUrl = safeUrl(task.pr_url);
       actionButtons += `<div class="task-pr-bar">
-        <a href="${escapeHtml(task.pr_url)}" target="_blank" class="task-pr-link">
+        <a href="${escapeHtml(cleanPrUrl)}" target="_blank" rel="noopener noreferrer" class="task-pr-link">
           🐙 PR #${escapeHtml(String(task.pr_number || ''))} (${escapeHtml(task.pr_state || 'OPEN')})
         </a>
-        ${task.substatus === 'approved' ? `<button class="btn btn-success btn-xs btn-merge-pr" data-pr-url="${escapeHtml(task.pr_url)}">⚡ Merge PR</button>` : ''}
+        ${task.substatus === 'approved' ? `<button class="btn btn-success btn-xs btn-merge-pr" data-pr-url="${escapeHtml(cleanPrUrl)}">⚡ Merge PR</button>` : ''}
       </div>`;
     }
 
