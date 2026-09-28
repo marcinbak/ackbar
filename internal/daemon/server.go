@@ -307,6 +307,9 @@ func (s *Server) Mux() http.Handler {
 	mux.HandleFunc("/v1/shutdown", s.handleShutdown)
 	mux.HandleFunc("/v1/tasks", s.handleTasks)
 	mux.HandleFunc("/v1/tasks/event", s.handleTaskEvent)
+	mux.HandleFunc("/v1/tasks/propose", s.handleTaskPropose)
+	mux.HandleFunc("/v1/tasks/deliverable", s.handleTaskDeliverable)
+	mux.HandleFunc("/v1/tasks/sync-workflow", s.handleTaskSyncWorkflow)
 	mux.HandleFunc("/v1/events", s.handleEvents)
 
 	// Serve embedded Web GUI
@@ -723,6 +726,10 @@ func (s *Server) processHookEventWithAccount(p Provider, urlEventName string, he
 		log.Printf("Error saving session: %v", err)
 		return
 	}
+
+	// Synchronize session with task board and ingest ambient tool telemetry
+	s.SyncSessionTaskWorker(sess)
+	s.IngestToolTelemetry(sess, event)
 
 	// Broadcast update
 	s.broadcast(sess)
@@ -4941,9 +4948,10 @@ func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) StartBackgroundLoop(ctx context.Context) {
 	go func() {
-		// Run initial scan & host tunnel check asynchronously on startup
+		// Run initial scan, host tunnel check, and dev-workflow run ingestion asynchronously on startup
 		go s.scanObservedSessions(ctx)
 		go s.ensureHostTunnels(ctx)
+		go s.IngestDevWorkflowRuns()
 
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
@@ -4955,6 +4963,7 @@ func (s *Server) StartBackgroundLoop(ctx context.Context) {
 			case <-ticker.C:
 				s.scanObservedSessions(ctx)
 				go s.ensureHostTunnels(ctx)
+				go s.IngestDevWorkflowRuns()
 				sessions, err := s.db.ListActiveSessions()
 				if err == nil && len(sessions) > 0 {
 					s.verifySessionLiveness(ctx, sessions)
