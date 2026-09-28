@@ -1333,19 +1333,52 @@ async function showHostSummaryModal(h) {
       console.warn('Discovery check failed:', e);
     }
 
-    let rowsHtml = '';
-    discovery.forEach(d => {
-      const instBadge = d.installed ? '<span style="color: var(--accent-green);">● Installed</span>' : '<span style="color: var(--text-dim);">○ Not Detected</span>';
+    const installedAgents = discovery.filter(d => d.installed);
+    const uninstalledAgents = discovery.filter(d => !d.installed);
+
+    let installedRowsHtml = '';
+    installedAgents.forEach(d => {
       const hookBadge = d.hook_configured ? '<span style="color: var(--accent-green);">🟢 Active</span>' : '<span style="color: var(--accent-yellow);">⚠️ Missing</span>';
-      rowsHtml += `
+      installedRowsHtml += `
         <tr>
-          <td><strong>${d.agent}</strong></td>
-          <td>${instBadge}</td>
+          <td><strong>${escapeHtml(d.display_name || d.agent)}</strong> <span style="font-size: 11px; color: var(--text-muted);">(${escapeHtml(d.agent)})</span></td>
+          <td><span style="color: var(--accent-green);">● Installed</span></td>
           <td>${hookBadge}</td>
-          <td><code>${d.setup_cmd || '—'}</code></td>
+          <td><code>${escapeHtml(d.setup_cmd || '—')}</code></td>
         </tr>
       `;
     });
+
+    const installedSectionHtml = installedAgents.length > 0 ? `
+      <table class="hook-table">
+        <thead>
+          <tr>
+            <th>Installed Agent</th>
+            <th>CLI Status</th>
+            <th>Hook Status</th>
+            <th>Configuration</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${installedRowsHtml}
+        </tbody>
+      </table>
+    ` : `
+      <div style="padding: 12px; background: rgba(255,255,255,0.03); border: 1px dashed var(--border-color); border-radius: 6px; text-align: center; color: var(--text-muted); font-size: 12px;">
+        No supported AI agent CLIs detected on this host.
+      </div>
+    `;
+
+    const uninstalledSectionHtml = uninstalledAgents.length > 0 ? `
+      <details style="margin-top: 12px; background: rgba(255,255,255,0.02); border: 1px solid var(--border-color); border-radius: 6px; padding: 8px 12px; font-size: 12px;">
+        <summary style="cursor: pointer; color: var(--text-muted); user-select: none; font-weight: 500;">
+          <span>Other Supported Adapters (${uninstalledAgents.length} not detected)</span>
+        </summary>
+        <div style="margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px;">
+          ${uninstalledAgents.map(d => `<span style="background: rgba(255,255,255,0.05); padding: 3px 8px; border-radius: 4px; font-size: 11px; color: var(--text-dim); border: 1px solid rgba(255,255,255,0.05);">${escapeHtml(d.display_name || d.agent)} <span style="opacity: 0.6;">(not detected)</span></span>`).join('')}
+        </div>
+      </details>
+    ` : '';
 
     const setupCmd = isLocal ? 'ackbar setup-hooks' : `ssh ${h.ssh_target || h.name} "ackbar setup-hooks"`;
 
@@ -1368,20 +1401,9 @@ async function showHostSummaryModal(h) {
       </div>
       ${updateBanner}
 
-      <h4 style="font-size: 12px; color: var(--text-muted); text-transform: uppercase; margin: 14px 0 8px 0; letter-spacing: 0.5px;">Agent Hook Configuration on ${h.name}</h4>
-      <table class="hook-table">
-        <thead>
-          <tr>
-            <th>Agent</th>
-            <th>CLI Status</th>
-            <th>Hook Status</th>
-            <th>Configuration</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${rowsHtml || '<tr><td colspan="4" style="text-align: center; color: var(--text-dim);">No agent diagnostics returned</td></tr>'}
-        </tbody>
-      </table>
+      <h4 style="font-size: 12px; color: var(--text-muted); text-transform: uppercase; margin: 14px 0 8px 0; letter-spacing: 0.5px;">Agent Hook Configuration on ${escapeHtml(h.name)}</h4>
+      ${installedSectionHtml}
+      ${uninstalledSectionHtml}
 
       <div style="background: #090a0f; border: 1px solid var(--border-color); border-radius: 6px; padding: 10px; margin-top: 14px; font-size: 11px; font-family: var(--font-mono);">
         <span style="color: var(--accent-cyan); font-weight: 600;">⚡ 1-Click CLI Setup Command:</span><br>

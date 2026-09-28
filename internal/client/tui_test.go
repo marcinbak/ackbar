@@ -1,6 +1,7 @@
 package client
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -214,5 +215,71 @@ func TestBuildVisibleRows_AssignsSessionByNodePathLeafFallback(t *testing.T) {
 	}
 	if !foundUnderPersonalAckbar {
 		t.Errorf("expected session to be assigned to Personal/Ackbar by leaf fallback, but was not")
+	}
+}
+
+func TestRenderHostAgentDiscovery_CompactBadges(t *testing.T) {
+	// 1. Empty list
+	emptyOut := renderHostAgentDiscovery(nil)
+	if !strings.Contains(emptyOut, "Querying host agents...") {
+		t.Errorf("expected querying message for empty list, got %q", emptyOut)
+	}
+
+	// 2. Mixed list
+	discList := []daemon.AgentDiscoveryResult{
+		{Agent: "claude-code", DisplayName: "Claude Code", Installed: true, HookConfigured: true},
+		{Agent: "antigravity", DisplayName: "Antigravity", Installed: true, HookConfigured: true},
+		{Agent: "grok", DisplayName: "Grok", Installed: true, HookConfigured: false, SetupCmd: "ackbar-hook --agent=grok"},
+		{Agent: "codex", DisplayName: "Codex", Installed: false},
+		{Agent: "opencode", DisplayName: "OpenCode", Installed: false},
+	}
+
+	out := renderHostAgentDiscovery(discList)
+
+	// Check installed badges
+	if !strings.Contains(out, "Installed: ") {
+		t.Errorf("expected 'Installed: ' line, got %q", out)
+	}
+	if !strings.Contains(out, "Claude Code 🟢") {
+		t.Errorf("expected Claude Code 🟢 badge, got %q", out)
+	}
+	if !strings.Contains(out, "Grok 🟡") {
+		t.Errorf("expected Grok 🟡 badge, got %q", out)
+	}
+
+	// Check missing hook warning
+	if !strings.Contains(out, "⚠️ Hook Missing: grok (ackbar-hook --agent=grok)") {
+		t.Errorf("expected hook missing warning, got %q", out)
+	}
+
+	// Check not installed line
+	if !strings.Contains(out, "Not Installed: codex, opencode") {
+		t.Errorf("expected not installed list, got %q", out)
+	}
+
+	// 3. No installed agents
+	noneList := []daemon.AgentDiscoveryResult{
+		{Agent: "codex", Installed: false},
+		{Agent: "grok", Installed: false},
+	}
+	noneOut := renderHostAgentDiscovery(noneList)
+	if !strings.Contains(noneOut, "Installed: (none detected)") {
+		t.Errorf("expected (none detected) for no installed agents, got %q", noneOut)
+	}
+	if !strings.Contains(noneOut, "Not Installed: codex, grok") {
+		t.Errorf("expected not installed line, got %q", noneOut)
+	}
+
+	// 4. All installed and active
+	allList := []daemon.AgentDiscoveryResult{
+		{Agent: "claude-code", DisplayName: "Claude Code", Installed: true, HookConfigured: true},
+		{Agent: "antigravity", DisplayName: "Antigravity", Installed: true, HookConfigured: true},
+	}
+	allOut := renderHostAgentDiscovery(allList)
+	if strings.Contains(allOut, "Hook Missing") {
+		t.Errorf("did not expect Hook Missing when all hooks are configured, got %q", allOut)
+	}
+	if strings.Contains(allOut, "Not Installed") {
+		t.Errorf("did not expect Not Installed when all are installed, got %q", allOut)
 	}
 }
