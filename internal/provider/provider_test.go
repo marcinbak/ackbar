@@ -332,6 +332,7 @@ func TestProviderInterfaceConformance(t *testing.T) {
 		NewAntigravityProvider(),
 		NewCodexProvider(),
 		NewGrokProvider(),
+		NewOpenCodeProvider(),
 	}
 
 	testUUID := "12345678-1234-1234-1234-123456789abc"
@@ -376,9 +377,10 @@ func TestProviderCapabilityConformance(t *testing.T) {
 	antigravity := NewAntigravityProvider()
 	codex := NewCodexProvider()
 	grok := NewGrokProvider()
+	opencode := NewOpenCodeProvider()
 
 	// 1. Verify Core Role Interfaces for all providers
-	allProviders := []any{claude, antigravity, codex, grok}
+	allProviders := []any{claude, antigravity, codex, grok, opencode}
 	for _, p := range allProviders {
 		if _, ok := p.(daemon.AgentIdentity); !ok {
 			t.Errorf("Provider %T must implement daemon.AgentIdentity", p)
@@ -441,6 +443,17 @@ func TestProviderCapabilityConformance(t *testing.T) {
 	}
 	if _, ok := any(grok).(daemon.FullProvider); ok {
 		t.Errorf("GrokProvider should not implement daemon.FullProvider")
+	}
+
+	// 5. OpenCode implements StatusInspector, but not SubagentDiscoverer
+	if _, ok := any(opencode).(daemon.StatusInspector); !ok {
+		t.Errorf("OpenCodeProvider should implement daemon.StatusInspector")
+	}
+	if _, ok := any(opencode).(daemon.SubagentDiscoverer); ok {
+		t.Errorf("OpenCodeProvider should not implement daemon.SubagentDiscoverer")
+	}
+	if _, ok := any(opencode).(daemon.FullProvider); ok {
+		t.Errorf("OpenCodeProvider should not implement daemon.FullProvider")
 	}
 }
 
@@ -1042,5 +1055,252 @@ func TestGrokExtractTranscriptAndMetadata(t *testing.T) {
 	}
 	if meta.LastMessageAt.IsZero() {
 		t.Errorf("Expected non-zero LastMessageAt")
+	}
+}
+
+func TestOpenCodeProvider_ParseHook(t *testing.T) {
+	p := NewOpenCodeProvider()
+
+	// 1. UserPromptSubmit
+	promptPayload := `{"session_id": "opencode-sess-1", "event": "UserPromptSubmit", "cwd": "/work"}`
+	evPrompt, err := p.ParseHook("", []byte(promptPayload))
+	if err != nil {
+		t.Fatalf("ParseHook prompt failed: %v", err)
+	}
+	if evPrompt.State != daemon.StateWorking || evPrompt.Activity != "Processing user prompt" {
+		t.Errorf("Unexpected prompt event: %+v", evPrompt)
+	}
+
+	// 2. PreToolUse
+	toolPayload := `{"session_id": "opencode-sess-1", "event": "PreToolUse", "tool_name": "bash"}`
+	evTool, err := p.ParseHook("", []byte(toolPayload))
+	if err != nil {
+		t.Fatalf("ParseHook tool failed: %v", err)
+	}
+	if evTool.State != daemon.StateWorking || evTool.Activity != "Executing tool: bash" {
+		t.Errorf("Unexpected tool event: %+v", evTool)
+	}
+
+	// 3. ApprovalRequest
+	permPayload := `{"session_id": "opencode-sess-1", "event": "ApprovalRequest", "reason": "Run migration script"}`
+	evPerm, err := p.ParseHook("", []byte(permPayload))
+	if err != nil {
+		t.Fatalf("ParseHook approval failed: %v", err)
+	}
+	if evPerm.State != daemon.StateBlocked || evPerm.Blocked == nil || evPerm.Blocked.Kind != daemon.BlockPermission {
+		t.Errorf("Unexpected approval event: %+v", evPerm)
+	}
+
+	// 4. Stop
+	stopPayload := `{"session_id": "opencode-sess-1", "event": "Stop"}`
+	evStop, err := p.ParseHook("", []byte(stopPayload))
+	if err != nil {
+		t.Fatalf("ParseHook stop failed: %v", err)
+	}
+	if evStop.State != daemon.StateIdle {
+		t.Errorf("Unexpected stop event: %+v", evStop)
+	}
+
+	// 5. Corrupt JSON payload returns error
+	if _, err := p.ParseHook("", []byte("{corrupt json")); err == nil {
+		t.Errorf("Expected error on corrupt JSON payload")
+	}
+}
+
+func TestOpenCodeProvider_GetResumeCommand(t *testing.T) {
+	p := NewOpenCodeProvider()
+
+	if cmd := p.GetResumeCommand(""); cmd != "opencode" {
+		t.Errorf("Expected 'opencode' for empty id, got %q", cmd)
+	}
+	if cmd := p.GetResumeCommand("valid-session-123"); cmd != "opencode resume valid-session-123" {
+		t.Errorf("Expected 'opencode resume valid-session-123', got %q", cmd)
+	}
+	if cmd := p.GetResumeCommand("../unsafe/path"); cmd != "opencode" {
+		t.Errorf("Expected fallback 'opencode' for path traversal id, got %q", cmd)
+	}
+	if cmd := p.GetResumeCommand("session\nrm -rf /"); cmd != "opencode" {
+		t.Errorf("Expected fallback 'opencode' for newline injection id, got %q", cmd)
+	}
+	if cmd := p.GetResumeCommand("session with spaces"); cmd != "opencode" {
+		t.Errorf("Expected fallback 'opencode' for space-containing id, got %q", cmd)
+	}
+}
+
+func TestOpenCodeCheckHookConfig(t *testing.T) {
+	tmpHome, err := os.MkdirTemp("", "test-opencode-hook-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpHome)
+
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpHome)
+	defer os.Setenv("HOME", origHome)
+
+	p := NewOpenCodeProvider()
+
+	// 1. When no config exists
+	configured, setupCmd, err := p.CheckHookConfig()
+	if err != nil {
+		t.Fatalf("CheckHookConfig returned unexpected error: %v", err)
+	}
+	if configured {
+		t.Errorf("Expected false when no hook config exists")
+	}
+	if setupCmd != "ackbar-hook --agent=opencode" {
+		t.Errorf("Expected setupCmd 'ackbar-hook --agent=opencode', got %q", setupCmd)
+	}
+
+	// 2. When ~/.opencode/hooks.json has ackbar-hook configured
+	opencodeDir := filepath.Join(tmpHome, ".opencode")
+	_ = os.MkdirAll(opencodeDir, 0755)
+	hooksContent := `{"hooks": [{"command": "ackbar-hook --agent=opencode"}]}`
+	_ = os.WriteFile(filepath.Join(opencodeDir, "hooks.json"), []byte(hooksContent), 0644)
+
+	configured, _, err = p.CheckHookConfig()
+	if err != nil {
+		t.Fatalf("CheckHookConfig returned unexpected error: %v", err)
+	}
+	if !configured {
+		t.Errorf("Expected true when hooks.json contains ackbar-hook")
+	}
+
+	// 3. Fallback when hooks.json is removed but config.json exists
+	_ = os.Remove(filepath.Join(opencodeDir, "hooks.json"))
+	configJson := `{"hook": "http://127.0.0.1:7777/v1/hooks/opencode"}`
+	_ = os.WriteFile(filepath.Join(opencodeDir, "config.json"), []byte(configJson), 0644)
+
+	configured, _, err = p.CheckHookConfig()
+	if err != nil {
+		t.Fatalf("CheckHookConfig returned unexpected error: %v", err)
+	}
+	if !configured {
+		t.Errorf("Expected true when config.json contains 127.0.0.1:7777")
+	}
+
+	// 4. Fallback when config.json is removed but config.toml exists
+	_ = os.Remove(filepath.Join(opencodeDir, "config.json"))
+	configToml := `hooks = "http://127.0.0.1:7777/v1/hooks/opencode"`
+	_ = os.WriteFile(filepath.Join(opencodeDir, "config.toml"), []byte(configToml), 0644)
+
+	configured, _, err = p.CheckHookConfig()
+	if err != nil {
+		t.Fatalf("CheckHookConfig returned unexpected error: %v", err)
+	}
+	if !configured {
+		t.Errorf("Expected true when config.toml contains 127.0.0.1:7777")
+	}
+}
+
+func TestOpenCodeResolveSessionTitle(t *testing.T) {
+	tmpHome, err := os.MkdirTemp("", "test-opencode-title-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpHome)
+
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpHome)
+	defer os.Setenv("HOME", origHome)
+
+	p := NewOpenCodeProvider()
+
+	// 1. With non-existent session
+	if title := p.ResolveSessionTitle("/tmp", "session-123"); title != "" {
+		t.Errorf("Expected empty title when session file does not exist, got %q", title)
+	}
+
+	// 2. Populate session JSONL file with user prompt
+	sessDir := filepath.Join(tmpHome, ".opencode", "sessions")
+	_ = os.MkdirAll(sessDir, 0755)
+	logLines := `{"timestamp":"2026-09-28T09:00:00Z","type":"init","version":"0.5.0"}` + "\n" +
+		`{"timestamp":"2026-09-28T09:00:01Z","role":"user","content":"Implement dark mode theme"}` + "\n"
+	_ = os.WriteFile(filepath.Join(sessDir, "session-123.jsonl"), []byte(logLines), 0644)
+
+	if title := p.ResolveSessionTitle("/tmp", "session-123"); title != "Implement dark mode theme" {
+		t.Errorf("Expected 'Implement dark mode theme', got %q", title)
+	}
+
+	// 3. Custom title in metadata takes precedence
+	logLinesWithTitle := logLines + `{"timestamp":"2026-09-28T09:00:02Z","title":"Dark Mode Overhaul"}` + "\n"
+	_ = os.WriteFile(filepath.Join(sessDir, "session-123.jsonl"), []byte(logLinesWithTitle), 0644)
+
+	if title := p.ResolveSessionTitle("/tmp", "session-123"); title != "Dark Mode Overhaul" {
+		t.Errorf("Expected 'Dark Mode Overhaul', got %q", title)
+	}
+}
+
+func TestOpenCodeExtractTranscriptAndMetadata(t *testing.T) {
+	tmpHome, err := os.MkdirTemp("", "test-opencode-transcript-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpHome)
+
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpHome)
+	defer os.Setenv("HOME", origHome)
+
+	sessionID := "opencode-sess-999"
+	sessDir := filepath.Join(tmpHome, ".opencode", "sessions", sessionID)
+	_ = os.MkdirAll(sessDir, 0755)
+
+	logLines := []string{
+		`{"timestamp":"2026-09-28T09:00:00Z","type":"init","version":"0.5.0"}`,
+		`{"timestamp":"2026-09-28T09:00:01Z","role":"user","content":"Implement auth middleware"}`,
+		`{"timestamp":"2026-09-28T09:00:02Z","type":"tool_call","name":"read_file","input":{"path":"internal/auth.go"}}`,
+		`{"timestamp":"2026-09-28T09:00:03Z","role":"assistant","content":"I implemented JWT verification in auth middleware."}`,
+		`{"timestamp":"2026-09-28T09:00:04Z","type":"usage","rate_limits":{"primary":{"used_percent":55.0}}}`,
+	}
+
+	logPath := filepath.Join(sessDir, "transcript.jsonl")
+	_ = os.WriteFile(logPath, []byte(strings.Join(logLines, "\n")), 0644)
+
+	p := NewOpenCodeProvider()
+
+	// 1. Test ExtractTranscript
+	msgs, err := p.ExtractTranscript(tmpHome, "/work", sessionID)
+	if err != nil {
+		t.Fatalf("ExtractTranscript failed: %v", err)
+	}
+
+	if len(msgs) != 2 {
+		t.Fatalf("Expected 2 messages (1 user, 1 assistant), got %d: %+v", len(msgs), msgs)
+	}
+	if msgs[0].Role != "user" || msgs[0].Content != "Implement auth middleware" {
+		t.Errorf("Unexpected user message: %+v", msgs[0])
+	}
+	if msgs[1].Role != "assistant" || !strings.Contains(msgs[1].Content, "JWT verification") {
+		t.Errorf("Unexpected assistant message: %+v", msgs[1])
+	}
+	if len(msgs[1].ToolCalls) != 1 || !strings.Contains(msgs[1].ToolCalls[0], "read_file") {
+		t.Errorf("Expected tool call attached to assistant, got: %+v", msgs[1].ToolCalls)
+	}
+
+	// 2. Test ReadSessionMetadata
+	meta := p.ReadSessionMetadata("/work", sessionID)
+	if meta == nil {
+		t.Fatalf("Expected non-nil SessionMeta")
+	}
+	if meta.FirstPrompt != "Implement auth middleware" {
+		t.Errorf("Expected FirstPrompt 'Implement auth middleware', got %q", meta.FirstPrompt)
+	}
+	if meta.Version != "0.5.0" {
+		t.Errorf("Expected Version '0.5.0', got %q", meta.Version)
+	}
+	if meta.ContextPct != 55 {
+		t.Errorf("Expected ContextPct 55, got %d", meta.ContextPct)
+	}
+	if meta.LastMessageAt.IsZero() {
+		t.Errorf("Expected non-zero LastMessageAt")
+	}
+
+	// 3. Test CleanSessionFiles
+	if err := p.CleanSessionFiles(tmpHome, "/work", sessionID); err != nil {
+		t.Fatalf("CleanSessionFiles failed: %v", err)
+	}
+	if _, err := os.Stat(sessDir); !os.IsNotExist(err) {
+		t.Errorf("Expected sessDir %q to be deleted", sessDir)
 	}
 }

@@ -5332,6 +5332,11 @@ func isIgnoredAgentCommand(agent string, fullCmd string) bool {
 			case "login", "logout", "auth", "update", "upgrade", "models":
 				return true
 			}
+		case "opencode", "open-code":
+			switch firstSubcommand {
+			case "login", "logout", "auth", "update", "upgrade", "models", "config":
+				return true
+			}
 		}
 	}
 
@@ -7410,13 +7415,13 @@ func IsRawSessionName(n string) bool {
 	n = strings.TrimSpace(n)
 	n = strings.TrimSuffix(n, ":")
 	n = strings.TrimSpace(n)
-	if n == "" || n == "antigravity" || n == "claude-code" || n == "codex" || n == "grok" || n == "cli" || n == "mock-agent" {
+	if n == "" || n == "antigravity" || n == "claude-code" || n == "codex" || n == "grok" || n == "opencode" || n == "cli" || n == "mock-agent" {
 		return true
 	}
 	if strings.HasPrefix(n, "ackbar-") || strings.HasPrefix(n, "proc-") || IsUUID(n) {
 		return true
 	}
-	if strings.HasPrefix(n, "antigravity (") || strings.HasPrefix(n, "claude-code (") || strings.HasPrefix(n, "codex (") || strings.HasPrefix(n, "grok (") || strings.HasPrefix(n, "Claude Code (") || strings.HasPrefix(n, "Antigravity (") || strings.HasPrefix(n, "xAI Grok (") {
+	if strings.HasPrefix(n, "antigravity (") || strings.HasPrefix(n, "claude-code (") || strings.HasPrefix(n, "codex (") || strings.HasPrefix(n, "grok (") || strings.HasPrefix(n, "opencode (") || strings.HasPrefix(n, "Claude Code (") || strings.HasPrefix(n, "Antigravity (") || strings.HasPrefix(n, "xAI Grok (") || strings.HasPrefix(n, "OpenCode (") {
 		return true
 	}
 	if isGenericDirSlug(n) {

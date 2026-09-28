@@ -7,6 +7,7 @@ Ackbar supports the major agent ecosystems:
 2. **Google Antigravity (`antigravity`)**
 3. **OpenAI Codex (`codex`)**
 4. **xAI Grok (`grok`)**
+5. **OpenCode (`opencode`)**
 
 ---
 
@@ -30,6 +31,11 @@ Ackbar supports the major agent ecosystems:
 * **Session Index:** `~/.grok/session_index.jsonl` contains session IDs, titles, and update timestamps.
 * **Transcripts:** `~/.grok/sessions/<id>.jsonl` and `~/.grok/sessions/<id>/transcript.jsonl` record user prompts, assistant outputs, tool invocations, and token usage blocks.
 * **Hook Configuration:** `~/.grok/hooks.json` (or `~/.grok/config.toml`) pipes event payloads to `ackbar-hook --agent=grok`.
+
+### OpenCode
+* **Session Index:** `~/.opencode/sessions/` directory contains active and completed sessions in JSONL format (`<id>.jsonl` or `<id>/transcript.jsonl`).
+* **Transcripts:** Records message history, tool calls, user queries, and token usage blocks.
+* **Hook Configuration:** `~/.opencode/hooks.json` (or `~/.opencode/config.json`) pipes event payloads to `ackbar-hook --agent=opencode`.
 
 ---
 
