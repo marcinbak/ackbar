@@ -559,7 +559,58 @@ async function handleUpdateHost(h) {
   }
 }
 
-// Edit Remote Host Modal
+// Task API Endpoints
+async function fetchTasks() {
+  const res = await fetch('/v1/tasks');
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(errText || `Failed to fetch tasks (${res.status})`);
+  }
+  return await res.json() || [];
+}
+
+async function createTask(task) {
+  const res = await fetch('/v1/tasks', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(task)
+  });
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(errText || 'Failed to create task');
+  }
+  return await res.json();
+}
+
+async function updateTask(task) {
+  const res = await fetch('/v1/tasks', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(task)
+  });
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(errText || 'Failed to update task');
+  }
+  return await res.json();
+}
+
+async function sendTaskEvent(taskID, eventType, payload) {
+  const res = await fetch('/v1/tasks/event', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      task_id: taskID,
+      event_type: eventType,
+      payload: payload
+    })
+  });
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(errText || 'Failed to send task event');
+  }
+  return await res.json();
+}
 
 export {
   fetchProviders,
@@ -577,5 +628,9 @@ export {
   isRawSessionName,
   moveSessionToGroup,
   handleReconnectHost,
-  handleUpdateHost
+  handleUpdateHost,
+  fetchTasks,
+  createTask,
+  updateTask,
+  sendTaskEvent
 };
