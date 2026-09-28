@@ -40,6 +40,9 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 | `DELETE`| `/v1/nodes` | Deletes a logical group node from the database. |
 | `GET` | `/v1/hosts` | Returns registered local and remote compute hosts. |
 | `POST` | `/v1/hosts/update` | Upgrades and restarts `ackbard` on a remote target host. |
+| `GET` | `/v1/tasks` | Returns tasks across all projects with associated workers, external refs, and deliverables. |
+| `POST` | `/v1/tasks` | Creates a new task or updates an existing task with associated child relations in a single transaction. |
+| `POST` | `/v1/tasks/event` | Ingests lifecycle events for a task, performing ambient detection of git branches and PR URLs. |
 
 ---
 
