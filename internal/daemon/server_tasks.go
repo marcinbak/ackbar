@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"strconv"
 	"time"
 )
 
@@ -56,7 +57,7 @@ type TaskEventPayload struct {
 	Payload   string `json:"payload"`
 }
 
-var prRegex = regexp.MustCompile(`(https://github\.com/[^/]+/[^/]+/pull/\d+)`)
+var prRegex = regexp.MustCompile(`(https://github\.com/[^/]+/[^/]+/pull/(\d+))`)
 var branchRegex = regexp.MustCompile(`branch ['"]?([\w\-/\.]+)['"]?`)
 
 func (s *Server) handleTaskEvent(w http.ResponseWriter, r *http.Request) {
@@ -76,18 +77,10 @@ func (s *Server) handleTaskEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tasks, err := s.db.GetTasks()
+	task, err := s.db.GetTaskByID(event.TaskID)
 	if err != nil {
 		http.Error(w, "Internal Error", http.StatusInternalServerError)
 		return
-	}
-
-	var task *Task
-	for _, t := range tasks {
-		if t.ID == event.TaskID {
-			task = &t
-			break
-		}
 	}
 
 	if task == nil {
@@ -104,8 +97,11 @@ func (s *Server) handleTaskEvent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Ambient ingestion: detect PRs
-	if m := prRegex.FindStringSubmatch(event.Payload); len(m) > 1 {
+	if m := prRegex.FindStringSubmatch(event.Payload); len(m) > 2 {
 		task.PRURL = m[1]
+		if prNum, err := strconv.Atoi(m[2]); err == nil {
+			task.PRNumber = prNum
+		}
 		task.PRState = "OPEN" // assumption for new PRs
 		updated = true
 	}

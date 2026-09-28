@@ -130,6 +130,13 @@ CREATE TABLE IF NOT EXISTS archived_tasks (
 	original_task_json TEXT NOT NULL,
 	archived_at TIMESTAMP NOT NULL
 );
+
+CREATE INDEX IF NOT EXISTS idx_tasks_group_project ON tasks(group_name, project_name);
+CREATE INDEX IF NOT EXISTS idx_tasks_status_updated ON tasks(status, updated_at);
+CREATE INDEX IF NOT EXISTS idx_task_workers_active ON task_workers(is_active);
+CREATE INDEX IF NOT EXISTS idx_task_workers_task_id ON task_workers(task_id);
+CREATE INDEX IF NOT EXISTS idx_task_external_refs_task_id ON task_external_refs(task_id);
+CREATE INDEX IF NOT EXISTS idx_task_deliverables_task_id ON task_deliverables(task_id);
 `
 
 func InitDB(dbPath string) (*DB, error) {
@@ -199,10 +206,6 @@ func InitDB(dbPath string) (*DB, error) {
 	_, _ = db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_project_key ON sessions(project_key);")
 	_, _ = db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_account_id ON sessions(account_id);")
 	_, _ = db.Exec("CREATE INDEX IF NOT EXISTS idx_accounts_agent ON accounts(agent);")
-
-	_, _ = db.Exec("CREATE INDEX IF NOT EXISTS idx_tasks_group_project ON tasks(group_name, project_name);")
-	_, _ = db.Exec("CREATE INDEX IF NOT EXISTS idx_tasks_status_updated ON tasks(status, updated_at);")
-	_, _ = db.Exec("CREATE INDEX IF NOT EXISTS idx_task_workers_active ON task_workers(is_active);")
 
 	return &DB{db: db}, nil
 }
@@ -1210,6 +1213,7 @@ func (d *DB) GetTasks() ([]Task, error) {
 	defer rows.Close()
 
 	var tasks []Task
+	var taskIDs []string
 	for rows.Next() {
 		var t Task
 		var subprojectName, notes, blockerQuestion, branch, worktreePath, prURL, prState, ciStatus sql.NullString
@@ -1238,24 +1242,41 @@ func (d *DB) GetTasks() ([]Task, error) {
 		}
 
 		tasks = append(tasks, t)
+		taskIDs = append(taskIDs, t.ID)
 	}
 
-	// Fetch relations manually or handle it outside. For simplicity, just return basic tasks here,
-	// or we can fetch them.
-	// Let's fetch them
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
 	if len(tasks) > 0 {
-		refs, err := d.getAllExternalRefs()
-		if err == nil {
-			workers, err := d.getAllWorkers()
-			if err == nil {
-				dels, err := d.getAllDeliverables()
-				if err == nil {
-					for i, t := range tasks {
-						tasks[i].ExternalRefs = refs[t.ID]
-						tasks[i].Workers = workers[t.ID]
-						tasks[i].Deliverables = dels[t.ID]
-					}
-				}
+		refs, err := d.getExternalRefsForTasks(taskIDs)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get external refs: %w", err)
+		}
+		workers, err := d.getWorkersForTasks(taskIDs)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get workers: %w", err)
+		}
+		dels, err := d.getDeliverablesForTasks(taskIDs)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get deliverables: %w", err)
+		}
+		for i, t := range tasks {
+			if r, ok := refs[t.ID]; ok {
+				tasks[i].ExternalRefs = r
+			} else {
+				tasks[i].ExternalRefs = []TaskExternalRef{}
+			}
+			if w, ok := workers[t.ID]; ok {
+				tasks[i].Workers = w
+			} else {
+				tasks[i].Workers = []TaskWorker{}
+			}
+			if de, ok := dels[t.ID]; ok {
+				tasks[i].Deliverables = de
+			} else {
+				tasks[i].Deliverables = []TaskDeliverable{}
 			}
 		}
 	}
@@ -1263,8 +1284,85 @@ func (d *DB) GetTasks() ([]Task, error) {
 	return tasks, nil
 }
 
-func (d *DB) getAllExternalRefs() (map[string][]TaskExternalRef, error) {
-	rows, err := d.db.Query(`SELECT task_id, tracker, ref_key, url FROM task_external_refs`)
+func (d *DB) GetTaskByID(id string) (*Task, error) {
+	query := `SELECT id, title, group_name, project_name, subproject_name, status, substatus, notes, blocker_question, branch, worktree_path, pr_url, pr_number, pr_state, ci_status, created_at, updated_at, completed_at FROM tasks WHERE id = ?;`
+	row := d.db.QueryRow(query, id)
+
+	var t Task
+	var subprojectName, notes, blockerQuestion, branch, worktreePath, prURL, prState, ciStatus sql.NullString
+	var prNumber sql.NullInt64
+	var completedAt sql.NullTime
+
+	if err := row.Scan(
+		&t.ID, &t.Title, &t.GroupName, &t.ProjectName, &subprojectName,
+		&t.Status, &t.Substatus, &notes, &blockerQuestion, &branch, &worktreePath,
+		&prURL, &prNumber, &prState, &ciStatus, &t.CreatedAt, &t.UpdatedAt, &completedAt,
+	); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to query task by id: %w", err)
+	}
+
+	t.SubprojectName = subprojectName.String
+	t.Notes = notes.String
+	t.BlockerQuestion = blockerQuestion.String
+	t.Branch = branch.String
+	t.WorktreePath = worktreePath.String
+	t.PRURL = prURL.String
+	t.PRNumber = int(prNumber.Int64)
+	t.PRState = prState.String
+	t.CIStatus = ciStatus.String
+	if completedAt.Valid {
+		t.CompletedAt = &completedAt.Time
+	}
+
+	taskIDs := []string{t.ID}
+
+	refs, err := d.getExternalRefsForTasks(taskIDs)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get external refs: %w", err)
+	}
+	workers, err := d.getWorkersForTasks(taskIDs)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get workers: %w", err)
+	}
+	dels, err := d.getDeliverablesForTasks(taskIDs)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get deliverables: %w", err)
+	}
+
+	if r, ok := refs[t.ID]; ok {
+		t.ExternalRefs = r
+	} else {
+		t.ExternalRefs = []TaskExternalRef{}
+	}
+	if w, ok := workers[t.ID]; ok {
+		t.Workers = w
+	} else {
+		t.Workers = []TaskWorker{}
+	}
+	if de, ok := dels[t.ID]; ok {
+		t.Deliverables = de
+	} else {
+		t.Deliverables = []TaskDeliverable{}
+	}
+
+	return &t, nil
+}
+
+func (d *DB) getExternalRefsForTasks(taskIDs []string) (map[string][]TaskExternalRef, error) {
+	if len(taskIDs) == 0 {
+		return make(map[string][]TaskExternalRef), nil
+	}
+	placeholders := make([]string, len(taskIDs))
+	args := make([]interface{}, len(taskIDs))
+	for i, id := range taskIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	query := fmt.Sprintf(`SELECT task_id, tracker, ref_key, url FROM task_external_refs WHERE task_id IN (%s)`, strings.Join(placeholders, ","))
+	rows, err := d.db.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -1279,11 +1377,21 @@ func (d *DB) getAllExternalRefs() (map[string][]TaskExternalRef, error) {
 		r.URL = url.String
 		res[r.TaskID] = append(res[r.TaskID], r)
 	}
-	return res, nil
+	return res, rows.Err()
 }
 
-func (d *DB) getAllWorkers() (map[string][]TaskWorker, error) {
-	rows, err := d.db.Query(`SELECT task_id, session_id, agent, host, is_active, assigned_at FROM task_workers`)
+func (d *DB) getWorkersForTasks(taskIDs []string) (map[string][]TaskWorker, error) {
+	if len(taskIDs) == 0 {
+		return make(map[string][]TaskWorker), nil
+	}
+	placeholders := make([]string, len(taskIDs))
+	args := make([]interface{}, len(taskIDs))
+	for i, id := range taskIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	query := fmt.Sprintf(`SELECT task_id, session_id, agent, host, is_active, assigned_at FROM task_workers WHERE task_id IN (%s)`, strings.Join(placeholders, ","))
+	rows, err := d.db.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -1298,11 +1406,21 @@ func (d *DB) getAllWorkers() (map[string][]TaskWorker, error) {
 		w.IsActive = isActive == 1
 		res[w.TaskID] = append(res[w.TaskID], w)
 	}
-	return res, nil
+	return res, rows.Err()
 }
 
-func (d *DB) getAllDeliverables() (map[string][]TaskDeliverable, error) {
-	rows, err := d.db.Query(`SELECT id, task_id, kind, title, host, file_path, url, created_at FROM task_deliverables`)
+func (d *DB) getDeliverablesForTasks(taskIDs []string) (map[string][]TaskDeliverable, error) {
+	if len(taskIDs) == 0 {
+		return make(map[string][]TaskDeliverable), nil
+	}
+	placeholders := make([]string, len(taskIDs))
+	args := make([]interface{}, len(taskIDs))
+	for i, id := range taskIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	query := fmt.Sprintf(`SELECT id, task_id, kind, title, host, file_path, url, created_at FROM task_deliverables WHERE task_id IN (%s)`, strings.Join(placeholders, ","))
+	rows, err := d.db.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -1318,7 +1436,7 @@ func (d *DB) getAllDeliverables() (map[string][]TaskDeliverable, error) {
 		del.URL = u.String
 		res[del.TaskID] = append(res[del.TaskID], del)
 	}
-	return res, nil
+	return res, rows.Err()
 }
 
 func (d *DB) CreateTask(t *Task) error {
@@ -1326,6 +1444,12 @@ func (d *DB) CreateTask(t *Task) error {
 		t.CreatedAt = time.Now()
 	}
 	t.UpdatedAt = time.Now()
+
+	tx, err := d.db.Begin()
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
 
 	query := `INSERT INTO tasks (
 		id, title, group_name, project_name, subproject_name, status, substatus, notes, blocker_question, branch, worktree_path, pr_url, pr_number, pr_state, ci_status, created_at, updated_at, completed_at
@@ -1337,7 +1461,7 @@ func (d *DB) CreateTask(t *Task) error {
 		completedAt.Valid = true
 	}
 
-	_, err := d.db.Exec(query,
+	_, err = tx.Exec(query,
 		t.ID, t.Title, t.GroupName, t.ProjectName, t.SubprojectName,
 		t.Status, t.Substatus, t.Notes, t.BlockerQuestion, t.Branch, t.WorktreePath,
 		t.PRURL, t.PRNumber, t.PRState, t.CIStatus, t.CreatedAt, t.UpdatedAt, completedAt,
@@ -1346,22 +1470,42 @@ func (d *DB) CreateTask(t *Task) error {
 		return fmt.Errorf("failed to create task: %w", err)
 	}
 
-	for _, w := range t.Workers {
-		if err := d.InsertTaskWorker(&w); err != nil {
+	for i := range t.Workers {
+		w := &t.Workers[i]
+		w.TaskID = t.ID
+		if err := insertTaskWorkerTx(tx, w); err != nil {
 			return err
 		}
 	}
-	for _, r := range t.ExternalRefs {
-		if err := d.InsertTaskExternalRef(&r); err != nil {
+	for i := range t.ExternalRefs {
+		r := &t.ExternalRefs[i]
+		r.TaskID = t.ID
+		if err := insertTaskExternalRefTx(tx, r); err != nil {
+			return err
+		}
+	}
+	for i := range t.Deliverables {
+		del := &t.Deliverables[i]
+		del.TaskID = t.ID
+		if del.ID == "" {
+			del.ID = fmt.Sprintf("del_%d_%d", time.Now().UnixNano(), i)
+		}
+		if err := insertTaskDeliverableTx(tx, del); err != nil {
 			return err
 		}
 	}
 
-	return nil
+	return tx.Commit()
 }
 
 func (d *DB) UpdateTask(t *Task) error {
 	t.UpdatedAt = time.Now()
+
+	tx, err := d.db.Begin()
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
 
 	query := `UPDATE tasks SET
 		title = ?, group_name = ?, project_name = ?, subproject_name = ?, status = ?, substatus = ?,
@@ -1375,7 +1519,7 @@ func (d *DB) UpdateTask(t *Task) error {
 		completedAt.Valid = true
 	}
 
-	_, err := d.db.Exec(query,
+	_, err = tx.Exec(query,
 		t.Title, t.GroupName, t.ProjectName, t.SubprojectName, t.Status, t.Substatus,
 		t.Notes, t.BlockerQuestion, t.Branch, t.WorktreePath, t.PRURL, t.PRNumber,
 		t.PRState, t.CIStatus, t.UpdatedAt, completedAt, t.ID,
@@ -1383,10 +1527,53 @@ func (d *DB) UpdateTask(t *Task) error {
 	if err != nil {
 		return fmt.Errorf("failed to update task: %w", err)
 	}
-	return nil
+
+	// Handle Workers
+	_, err = tx.Exec(`DELETE FROM task_workers WHERE task_id = ?`, t.ID)
+	if err != nil {
+		return err
+	}
+	for i := range t.Workers {
+		w := &t.Workers[i]
+		w.TaskID = t.ID
+		if err := insertTaskWorkerTx(tx, w); err != nil {
+			return err
+		}
+	}
+
+	// Handle ExternalRefs
+	_, err = tx.Exec(`DELETE FROM task_external_refs WHERE task_id = ?`, t.ID)
+	if err != nil {
+		return err
+	}
+	for i := range t.ExternalRefs {
+		r := &t.ExternalRefs[i]
+		r.TaskID = t.ID
+		if err := insertTaskExternalRefTx(tx, r); err != nil {
+			return err
+		}
+	}
+
+	// Handle Deliverables
+	_, err = tx.Exec(`DELETE FROM task_deliverables WHERE task_id = ?`, t.ID)
+	if err != nil {
+		return err
+	}
+	for i := range t.Deliverables {
+		del := &t.Deliverables[i]
+		del.TaskID = t.ID
+		if del.ID == "" {
+			del.ID = fmt.Sprintf("del_%d_%d", time.Now().UnixNano(), i)
+		}
+		if err := insertTaskDeliverableTx(tx, del); err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
 }
 
-func (d *DB) InsertTaskWorker(w *TaskWorker) error {
+func insertTaskWorkerTx(tx *sql.Tx, w *TaskWorker) error {
 	isActive := 0
 	if w.IsActive {
 		isActive = 1
@@ -1400,24 +1587,60 @@ func (d *DB) InsertTaskWorker(w *TaskWorker) error {
 			  is_active = excluded.is_active,
 			  agent = excluded.agent,
 			  host = excluded.host`
-	_, err := d.db.Exec(query, w.TaskID, w.SessionID, w.Agent, w.Host, isActive, w.AssignedAt)
+	_, err := tx.Exec(query, w.TaskID, w.SessionID, w.Agent, w.Host, isActive, w.AssignedAt)
 	return err
 }
 
-func (d *DB) InsertTaskExternalRef(r *TaskExternalRef) error {
+func insertTaskExternalRefTx(tx *sql.Tx, r *TaskExternalRef) error {
 	query := `INSERT INTO task_external_refs (task_id, tracker, ref_key, url)
 			  VALUES (?, ?, ?, ?)
 			  ON CONFLICT(task_id, tracker, ref_key) DO UPDATE SET url = excluded.url`
-	_, err := d.db.Exec(query, r.TaskID, r.Tracker, r.RefKey, r.URL)
+	_, err := tx.Exec(query, r.TaskID, r.Tracker, r.RefKey, r.URL)
 	return err
 }
 
-func (d *DB) InsertTaskDeliverable(td *TaskDeliverable) error {
+func insertTaskDeliverableTx(tx *sql.Tx, td *TaskDeliverable) error {
 	if td.CreatedAt.IsZero() {
 		td.CreatedAt = time.Now()
 	}
 	query := `INSERT INTO task_deliverables (id, task_id, kind, title, host, file_path, url, created_at)
 			  VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-	_, err := d.db.Exec(query, td.ID, td.TaskID, td.Kind, td.Title, td.Host, td.FilePath, td.URL, td.CreatedAt)
+	_, err := tx.Exec(query, td.ID, td.TaskID, td.Kind, td.Title, td.Host, td.FilePath, td.URL, td.CreatedAt)
 	return err
+}
+
+func (d *DB) InsertTaskWorker(w *TaskWorker) error {
+	tx, err := d.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := insertTaskWorkerTx(tx, w); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (d *DB) InsertTaskExternalRef(r *TaskExternalRef) error {
+	tx, err := d.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := insertTaskExternalRefTx(tx, r); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (d *DB) InsertTaskDeliverable(td *TaskDeliverable) error {
+	tx, err := d.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := insertTaskDeliverableTx(tx, td); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
