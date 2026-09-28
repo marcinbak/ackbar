@@ -1282,10 +1282,11 @@ func (d *DB) GetTasks() ([]Task, error) {
 	return tasks, nil
 }
 
-func (d *DB) GetTaskByID(id string) (*Task, error) {
-	query := `SELECT id, title, group_name, project_name, subproject_name, status, substatus, notes, blocker_question, branch, worktree_path, pr_url, pr_number, pr_state, ci_status, created_at, updated_at, completed_at FROM tasks WHERE id = ?;`
-	row := d.db.QueryRow(query, id)
+type scannableRow interface {
+	Scan(dest ...any) error
+}
 
+func scanTaskRow(row scannableRow) (*Task, error) {
 	var t Task
 	var subprojectName, notes, blockerQuestion, branch, worktreePath, prURL, prState, ciStatus sql.NullString
 	var prNumber sql.NullInt64
@@ -1299,7 +1300,7 @@ func (d *DB) GetTaskByID(id string) (*Task, error) {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("failed to query task by id: %w", err)
+		return nil, fmt.Errorf("failed to scan task row: %w", err)
 	}
 
 	t.SubprojectName = subprojectName.String
@@ -1314,20 +1315,23 @@ func (d *DB) GetTaskByID(id string) (*Task, error) {
 	if completedAt.Valid {
 		t.CompletedAt = &completedAt.Time
 	}
+	return &t, nil
+}
 
+func (d *DB) populateTaskRelations(t *Task) error {
 	taskIDs := []string{t.ID}
 
 	refs, err := d.getExternalRefsForTasks(taskIDs)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get external refs: %w", err)
+		return fmt.Errorf("failed to get external refs: %w", err)
 	}
 	workers, err := d.getWorkersForTasks(taskIDs)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get workers: %w", err)
+		return fmt.Errorf("failed to get workers: %w", err)
 	}
 	dels, err := d.getDeliverablesForTasks(taskIDs)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get deliverables: %w", err)
+		return fmt.Errorf("failed to get deliverables: %w", err)
 	}
 
 	if r, ok := refs[t.ID]; ok {
@@ -1345,8 +1349,72 @@ func (d *DB) GetTaskByID(id string) (*Task, error) {
 	} else {
 		t.Deliverables = []TaskDeliverable{}
 	}
+	return nil
+}
 
-	return &t, nil
+func (d *DB) GetTaskByID(id string) (*Task, error) {
+	query := `SELECT id, title, group_name, project_name, subproject_name, status, substatus, notes, blocker_question, branch, worktree_path, pr_url, pr_number, pr_state, ci_status, created_at, updated_at, completed_at FROM tasks WHERE id = ?;`
+	row := d.db.QueryRow(query, id)
+	t, err := scanTaskRow(row)
+	if err != nil || t == nil {
+		return t, err
+	}
+	if err := d.populateTaskRelations(t); err != nil {
+		return nil, err
+	}
+	return t, nil
+}
+
+func (d *DB) GetTaskByBranch(branch string) (*Task, error) {
+	if branch == "" {
+		return nil, nil
+	}
+	query := `SELECT id, title, group_name, project_name, subproject_name, status, substatus, notes, blocker_question, branch, worktree_path, pr_url, pr_number, pr_state, ci_status, created_at, updated_at, completed_at FROM tasks WHERE branch = ? ORDER BY updated_at DESC LIMIT 1;`
+	row := d.db.QueryRow(query, branch)
+	t, err := scanTaskRow(row)
+	if err != nil || t == nil {
+		return t, err
+	}
+	if err := d.populateTaskRelations(t); err != nil {
+		return nil, err
+	}
+	return t, nil
+}
+
+func (d *DB) GetTaskByWorktree(worktreePath string) (*Task, error) {
+	if worktreePath == "" {
+		return nil, nil
+	}
+	query := `SELECT id, title, group_name, project_name, subproject_name, status, substatus, notes, blocker_question, branch, worktree_path, pr_url, pr_number, pr_state, ci_status, created_at, updated_at, completed_at FROM tasks WHERE worktree_path = ? ORDER BY updated_at DESC LIMIT 1;`
+	row := d.db.QueryRow(query, worktreePath)
+	t, err := scanTaskRow(row)
+	if err != nil || t == nil {
+		return t, err
+	}
+	if err := d.populateTaskRelations(t); err != nil {
+		return nil, err
+	}
+	return t, nil
+}
+
+func (d *DB) GetActiveTaskForSession(sessionID string) (*Task, error) {
+	if sessionID == "" {
+		return nil, nil
+	}
+	query := `SELECT t.id, t.title, t.group_name, t.project_name, t.subproject_name, t.status, t.substatus, t.notes, t.blocker_question, t.branch, t.worktree_path, t.pr_url, t.pr_number, t.pr_state, t.ci_status, t.created_at, t.updated_at, t.completed_at
+			  FROM tasks t
+			  JOIN task_workers w ON t.id = w.task_id
+			  WHERE w.session_id = ? AND w.is_active = 1
+			  ORDER BY t.updated_at DESC LIMIT 1;`
+	row := d.db.QueryRow(query, sessionID)
+	t, err := scanTaskRow(row)
+	if err != nil || t == nil {
+		return t, err
+	}
+	if err := d.populateTaskRelations(t); err != nil {
+		return nil, err
+	}
+	return t, nil
 }
 
 func chunkSlice(slice []string, chunkSize int) [][]string {
@@ -1641,9 +1709,30 @@ func insertTaskExternalRefTx(tx *sql.Tx, r *TaskExternalRef) error {
 }
 
 func insertTaskDeliverableTx(tx *sql.Tx, td *TaskDeliverable) error {
+	if td.ID == "" {
+		td.ID = fmt.Sprintf("del_%d", time.Now().UnixNano())
+	}
 	if td.CreatedAt.IsZero() {
 		td.CreatedAt = time.Now()
 	}
+
+	// Deduplicate deliverable for same task and file path
+	if td.FilePath != "" {
+		var existingID string
+		err := tx.QueryRow(`SELECT id FROM task_deliverables WHERE task_id = ? AND file_path = ?`, td.TaskID, td.FilePath).Scan(&existingID)
+		if err == nil && existingID != "" {
+			_, err = tx.Exec(`UPDATE task_deliverables SET kind = ?, title = ?, host = ? WHERE id = ?`, td.Kind, td.Title, td.Host, existingID)
+			return err
+		}
+	} else if td.URL != "" {
+		var existingID string
+		err := tx.QueryRow(`SELECT id FROM task_deliverables WHERE task_id = ? AND url = ?`, td.TaskID, td.URL).Scan(&existingID)
+		if err == nil && existingID != "" {
+			_, err = tx.Exec(`UPDATE task_deliverables SET kind = ?, title = ?, host = ? WHERE id = ?`, td.Kind, td.Title, td.Host, existingID)
+			return err
+		}
+	}
+
 	query := `INSERT INTO task_deliverables (id, task_id, kind, title, host, file_path, url, created_at)
 			  VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
 	_, err := tx.Exec(query, td.ID, td.TaskID, td.Kind, td.Title, td.Host, td.FilePath, td.URL, td.CreatedAt)
