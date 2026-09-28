@@ -1295,6 +1295,71 @@ func TestInspectCodexStatus_TmuxIntegration(t *testing.T) {
 	}
 }
 
+func TestInspectGrokStatus_TmuxIntegration(t *testing.T) {
+	if !tmux.IsTmuxInstalled() {
+		t.Skip("tmux not installed, skipping TestInspectGrokStatus_TmuxIntegration")
+	}
+
+	ctx := context.Background()
+	tmuxName := fmt.Sprintf("test-grok-%d", time.Now().UnixNano())
+	defer tmux.Kill(ctx, tmuxName)
+
+	// Spawn tmux session with a permission prompt that automatically scrolls away after 1 second
+	cmd := "sh -c 'echo \"Tool execution requires approval [y/N]: \"; sleep 1; for i in $(seq 1 30); do echo \"\"; done; echo \"Task done\"; sleep 30'"
+	if err := tmux.Spawn(ctx, tmuxName, os.TempDir(), cmd); err != nil {
+		t.Fatalf("Failed to spawn test tmux session: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+	pid, _ := tmux.GetPID(ctx, tmuxName)
+
+	sess := &Session{
+		ID:          "grok:local:test-sess-grok-1",
+		Agent:       "grok",
+		Host:        "local",
+		NativeID:    "test-sess-grok-1",
+		State:       StateWorking,
+		TmuxName:    tmuxName,
+		PID:         pid,
+		StartedAt:   time.Now(),
+		LastEventAt: time.Now(),
+	}
+
+	// 1. Inspect should detect permission prompt and set StateBlocked
+	var changed bool
+	for i := 0; i < 20; i++ {
+		time.Sleep(50 * time.Millisecond)
+		if InspectGrokStatus(ctx, sess) {
+			changed = true
+			break
+		}
+	}
+	if !changed {
+		t.Errorf("Expected InspectGrokStatus to report changed=true on permission prompt")
+	}
+	if sess.State != StateBlocked || sess.Blocked == nil || sess.Blocked.Kind != BlockPermission {
+		t.Fatalf("Expected StateBlocked with BlockPermission, got state %v, blocked: %+v", sess.State, sess.Blocked)
+	}
+
+	// 2. Wait for the 1s sleep in the script to pass, scrolling prompt away, and verify recovery to StateIdle
+	time.Sleep(1100 * time.Millisecond)
+
+	unblocked := false
+	for i := 0; i < 20; i++ {
+		time.Sleep(50 * time.Millisecond)
+		if InspectGrokStatus(ctx, sess) {
+			unblocked = true
+			break
+		}
+	}
+	if !unblocked {
+		t.Errorf("Expected InspectGrokStatus to report changed=true when recovering from blocked")
+	}
+	if sess.State != StateIdle || sess.Blocked != nil {
+		t.Errorf("Expected StateIdle and nil Blocked after unblocking, got state %v, blocked: %+v", sess.State, sess.Blocked)
+	}
+}
+
 func TestExtractClaudeQuestionAndOptions(t *testing.T) {
 	samplePane := `
   Three forks I'd like settled before writing:
