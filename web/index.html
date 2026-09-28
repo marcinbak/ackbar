@@ -20,6 +20,10 @@
           <span class="brand-title">ACKBAR</span>
           <span class="brand-badge" id="appVersion">v...</span>
         </div>
+        <div class="app-mode-switcher" id="appModeSwitcher">
+          <button class="app-mode-btn active" id="btnModeWorkspace" title="Terminal & Chat Workspace">💻 Workspace</button>
+          <button class="app-mode-btn" id="btnModeWorkBoard" title="Tasks & Fleet Overview">📋 Work Board</button>
+        </div>
       </div>
 
       <div class="header-center">
@@ -44,9 +48,11 @@
     </header>
 
     <!-- Main Content Workspace -->
-    <div class="workspace-body">
-      <!-- Left Sidebar: Collapsible Logical Tree & Drag-and-Drop -->
-      <aside class="sidebar-panel" id="sidebarPanel">
+    <div class="workspace-body" id="workspaceBody">
+      <!-- Standard Terminal & Chat Workspace View -->
+      <div class="workspace-view" id="workspaceView" style="display: flex; flex: 1; width: 100%; height: 100%; overflow: hidden;">
+        <!-- Left Sidebar: Collapsible Logical Tree & Drag-and-Drop -->
+        <aside class="sidebar-panel" id="sidebarPanel">
         <div class="sidebar-header">
           <span class="sidebar-title">SESSIONS & PROJECTS</span>
           <div class="sidebar-actions">
@@ -120,6 +126,92 @@
           </div>
         </footer>
       </main>
+      </div>
+
+      <!-- Work & Fleet Overview Kanban Board View -->
+      <div class="work-board-view" id="workBoardView" style="display: none;">
+        <!-- Board Toolbar -->
+        <div class="work-board-toolbar">
+          <div class="toolbar-left">
+            <div class="task-group-filters">
+              <button class="task-group-filter-btn active" data-group="all">All Work</button>
+              <button class="task-group-filter-btn" data-group="work">🏢 Modemobile</button>
+              <button class="task-group-filter-btn" data-group="personal">👤 Personal</button>
+            </div>
+            <div class="toolbar-divider"></div>
+            <select class="task-filter-select" id="taskProjectFilter">
+              <option value="all">All Projects</option>
+            </select>
+          </div>
+
+          <div class="toolbar-center">
+            <div class="task-search-box">
+              <span class="search-icon">🔍</span>
+              <input type="text" id="taskSearchInput" placeholder="Filter tasks by title, tracker, branch..." />
+            </div>
+          </div>
+
+          <div class="toolbar-right">
+            <button class="btn btn-secondary btn-sm" id="btnRefreshWorkBoard" title="Refresh Board">🔄 Refresh</button>
+            <button class="btn btn-primary btn-sm" id="btnNewTask" title="Create New Task">＋ New Task</button>
+          </div>
+        </div>
+
+        <!-- 4-Pillar Kanban Grid -->
+        <div class="kanban-grid">
+          <!-- Pillar 1: NEW -->
+          <div class="kanban-column" id="colNew">
+            <div class="kanban-column-header">
+              <div class="col-title-group">
+                <span class="col-dot dot-new"></span>
+                <span class="col-title">NEW</span>
+                <span class="col-count-pill" id="countNewTasks">0</span>
+              </div>
+              <span class="col-subtitle">Backlog / Discovered</span>
+            </div>
+            <div class="kanban-column-body" id="colNewTasks"></div>
+          </div>
+
+          <!-- Pillar 2: IN_PROGRESS -->
+          <div class="kanban-column" id="colInProgress">
+            <div class="kanban-column-header">
+              <div class="col-title-group">
+                <span class="col-dot dot-in-progress"></span>
+                <span class="col-title">IN PROGRESS</span>
+                <span class="col-count-pill" id="countInProgressTasks">0</span>
+              </div>
+              <span class="col-subtitle">Agent Executing</span>
+            </div>
+            <div class="kanban-column-body" id="colInProgressTasks"></div>
+          </div>
+
+          <!-- Pillar 3: REVIEW -->
+          <div class="kanban-column" id="colReview">
+            <div class="kanban-column-header">
+              <div class="col-title-group">
+                <span class="col-dot dot-review"></span>
+                <span class="col-title">REVIEW</span>
+                <span class="col-count-pill" id="countReviewTasks">0</span>
+              </div>
+              <span class="col-subtitle">Human Evaluation</span>
+            </div>
+            <div class="kanban-column-body" id="colReviewTasks"></div>
+          </div>
+
+          <!-- Pillar 4: DONE -->
+          <div class="kanban-column" id="colDone">
+            <div class="kanban-column-header">
+              <div class="col-title-group">
+                <span class="col-dot dot-done"></span>
+                <span class="col-title">DONE</span>
+                <span class="col-count-pill" id="countDoneTasks">0</span>
+              </div>
+              <span class="col-subtitle">Closed / Merged</span>
+            </div>
+            <div class="kanban-column-body" id="colDoneTasks"></div>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- Modal Dialogs -->

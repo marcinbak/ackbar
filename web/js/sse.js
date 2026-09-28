@@ -15,7 +15,16 @@ import {
 import { renderTree } from './tree.js';
 import { closeTab, updateOpenTabsState, checkAndReconnectActiveTabs } from './tabs.js';
 import { renderSubagentsBar, fetchRunningSubagents } from './chat.js';
+import { getAppMode, refreshWorkBoard } from './tasks.js';
 
+let taskRefreshTimer = null;
+function triggerTaskBoardRefresh() {
+  if (getAppMode() !== 'workboard') return;
+  if (taskRefreshTimer) clearTimeout(taskRefreshTimer);
+  taskRefreshTimer = setTimeout(() => {
+    refreshWorkBoard();
+  }, 300);
+}
 
 const activeEventSources = new Map();
 
@@ -79,6 +88,7 @@ function connectSSE() {
           state.sessions = deduplicateSessions(state.sessions);
           renderTree();
           updateOpenTabsState();
+          triggerTaskBoardRefresh();
 
           // Sync running subagents for open chat tabs
           if (typeof updatedSess.running_subagents === 'number') {

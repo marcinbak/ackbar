@@ -84,10 +84,12 @@ import {
 } from './modals.js';
 import { updateStatusbar, resetStatusbar } from './statusbar.js';
 import { copyTextToClipboard } from './chat.js';
+import { initWorkBoard } from './tasks.js';
 
 
 async function init() {
   setupEventListeners();
+  initWorkBoard();
   await fetchVersion();
   await fetchSettings();
   await fetchProviders();

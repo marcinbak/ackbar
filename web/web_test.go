@@ -31,6 +31,7 @@ func TestGetFS(t *testing.T) {
 		"js/state.js",
 		"js/statusbar.js",
 		"js/tabs.js",
+		"js/tasks.js",
 		"js/terminal.js",
 		"js/tree.js",
 		"js/utils.js",
