@@ -69,13 +69,14 @@ func StripBilledCredentials(env []string) []string {
 
 // HeadlessRunner coordinates turn-by-turn headless execution of agent sessions
 type HeadlessRunner struct {
-	mu        sync.RWMutex
-	processes map[string]*exec.Cmd
-	subs      map[string][]chan ChatStreamEvent
-	queues    map[string][]*PromptQueueItem // sessionID -> queued prompts
-	paused    map[string]bool               // sessionID -> is queue paused
-	db        *DB
-	broadcast func(s *Session)
+	mu             sync.RWMutex
+	processes      map[string]*exec.Cmd
+	subs           map[string][]chan ChatStreamEvent
+	queues         map[string][]*PromptQueueItem // sessionID -> queued prompts
+	paused         map[string]bool               // sessionID -> is queue paused
+	db             *DB
+	broadcast      func(s *Session)
+	onTurnComplete func(sessionID, nativeID string)
 }
 
 func NewHeadlessRunner(db *DB, broadcast func(s *Session)) *HeadlessRunner {
@@ -87,6 +88,13 @@ func NewHeadlessRunner(db *DB, broadcast func(s *Session)) *HeadlessRunner {
 		db:        db,
 		broadcast: broadcast,
 	}
+}
+
+// SetOnTurnComplete registers a callback invoked when a headless turn completes
+func (h *HeadlessRunner) SetOnTurnComplete(fn func(sessionID, nativeID string)) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.onTurnComplete = fn
 }
 
 // Subscribe opens a stream of ChatStreamEvents for a given session.
@@ -152,19 +160,35 @@ func (h *HeadlessRunner) Emit(sessionID string, evt ChatStreamEvent) {
 	}
 }
 
-// IsRunning reports whether sessionID currently has an active turn running
+// IsRunning reports whether sessionID currently has an active turn running.
+// It verifies that tracked OS processes are genuinely alive, cleaning up dead processes.
 func (h *HeadlessRunner) IsRunning(sessionID string) bool {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	if _, ok := h.processes[sessionID]; ok {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	checkProcess := func(key string, cmd *exec.Cmd) bool {
+		if cmd != nil && cmd.Process != nil && cmd.Process.Pid > 0 {
+			if !isProcessAlive(cmd.Process.Pid) {
+				delete(h.processes, key)
+				return false
+			}
+		}
 		return true
+	}
+
+	if cmd, ok := h.processes[sessionID]; ok {
+		if checkProcess(sessionID, cmd) {
+			return true
+		}
 	}
 	parts := strings.Split(sessionID, ":")
 	if len(parts) == 3 {
 		nativeID := parts[2]
-		for procKey := range h.processes {
+		for procKey, cmd := range h.processes {
 			if procKey == nativeID || strings.HasSuffix(procKey, ":"+nativeID) {
-				return true
+				if checkProcess(procKey, cmd) {
+					return true
+				}
 			}
 		}
 	}
@@ -521,7 +545,12 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 	}
 
 	cmd := exec.CommandContext(ctx, bin, args...)
-	cmd.Stdin = strings.NewReader("")
+	devNull, devNullErr := os.Open(os.DevNull)
+	if devNullErr == nil {
+		cmd.Stdin = devNull
+	} else {
+		cmd.Stdin = strings.NewReader("")
+	}
 	if sess.Cwd != "" {
 		cmd.Dir = sess.Cwd
 	}
@@ -553,13 +582,22 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
+		if devNull != nil {
+			_ = devNull.Close()
+		}
 		h.mu.Unlock()
 		return fmt.Errorf("failed to pipe stdout: %w", err)
 	}
 
 	if err := cmd.Start(); err != nil {
+		if devNull != nil {
+			_ = devNull.Close()
+		}
 		h.mu.Unlock()
 		return fmt.Errorf("failed to start headless process: %w", err)
+	}
+	if devNull != nil {
+		_ = devNull.Close()
 	}
 
 	h.processes[sess.ID] = cmd
@@ -671,6 +709,13 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 			Timestamp: time.Now(),
 		})
 
+		h.mu.RLock()
+		onDone := h.onTurnComplete
+		h.mu.RUnlock()
+		if onDone != nil {
+			onDone(sess.ID, sess.NativeID)
+		}
+
 		// Auto-dispatch next queued prompt if queue is not paused
 		if !h.IsQueuePaused(sess.ID) {
 			nextItem := h.DequeuePrompt(sess.ID)
@@ -703,6 +748,7 @@ func (h *HeadlessRunner) processStream(sessionID string, r io.Reader, optionalSe
 	buf := make([]byte, 1024*1024)
 	scanner.Buffer(buf, 10*1024*1024)
 
+	toolUses := make(map[string]string)
 	hasEmittedAssistantText := false
 	needsSeparation := false
 	for scanner.Scan() {
@@ -857,6 +903,10 @@ func (h *HeadlessRunner) processStream(sessionID string, r io.Reader, optionalSe
 				if cbType == "tool_use" {
 					needsSeparation = true
 					toolName, _ := cb["name"].(string)
+					toolID, _ := cb["id"].(string)
+					if toolID != "" && toolName != "" {
+						toolUses[toolID] = toolName
+					}
 					toolInput := cb["input"]
 					h.Emit(sessionID, ChatStreamEvent{
 						SessionID: sessionID,
@@ -872,6 +922,11 @@ func (h *HeadlessRunner) processStream(sessionID string, r io.Reader, optionalSe
 		case "tool_result":
 			needsSeparation = true
 			outputStr := ""
+			toolID, _ := raw["tool_use_id"].(string)
+			toolName := ""
+			if toolID != "" {
+				toolName = toolUses[toolID]
+			}
 			if out, ok := raw["content"].(string); ok {
 				outputStr = out
 			} else if contentArr, ok := raw["content"].([]interface{}); ok {
@@ -886,6 +941,7 @@ func (h *HeadlessRunner) processStream(sessionID string, r io.Reader, optionalSe
 			h.Emit(sessionID, ChatStreamEvent{
 				SessionID:  sessionID,
 				Type:       "tool_result",
+				ToolName:   toolName,
 				ToolOutput: outputStr,
 			})
 

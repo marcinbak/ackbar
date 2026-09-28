@@ -398,3 +398,81 @@ func TestServer_PromptQueueEndpoints(t *testing.T) {
 		t.Errorf("Expected queue to be unpaused after resume")
 	}
 }
+
+type mockDiscovererProvider struct {
+	MockProvider
+}
+
+func (m *mockDiscovererProvider) Agent() string { return "claude-code" }
+func (m *mockDiscovererProvider) ListSubagents(home, cwd, nativeID string) ([]*ActiveSubagent, error) {
+	return nil, nil
+}
+
+func TestServer_GetRunningSubagents_ReconciliationPruning(t *testing.T) {
+	srv, db := setupTestServer(t)
+	srv.RegisterProvider(&mockDiscovererProvider{})
+
+	sess := &Session{
+		ID:          "claude-code:local:test-stale-subagent",
+		Agent:       "claude-code",
+		Host:        "local",
+		NativeID:    "test-stale-subagent",
+		Cwd:         t.TempDir(),
+		State:       StateWorking,
+		EngineType:  EngineHeadless,
+		StartedAt:   time.Now(),
+		LastEventAt: time.Now(),
+	}
+	_ = db.SaveSession(sess)
+
+	// Add an in-memory subagent with StartedAt 10 minutes ago
+	srv.subagentsMu.Lock()
+	srv.activeSubagents[sess.ID] = []*SubagentInfo{
+		{
+			ID:        "sub-stale-1",
+			Name:      "Stale Worker",
+			Role:      "Worker",
+			State:     "running",
+			StartedAt: time.Now().Add(-10 * time.Minute),
+		},
+	}
+	srv.subagentsMu.Unlock()
+
+	// getRunningSubagents should reconcile against disk, find 0 on disk, and prune the stale in-memory subagent
+	running := srv.getRunningSubagents(sess.ID, sess.NativeID, sess.Agent, sess.Cwd)
+	if len(running) != 0 {
+		t.Errorf("Expected stale subagent to be pruned, got %d running subagents", len(running))
+	}
+
+	// Verify in-memory map was pruned
+	srv.subagentsMu.RLock()
+	inMem := srv.activeSubagents[sess.ID]
+	srv.subagentsMu.RUnlock()
+	if len(inMem) != 0 {
+		t.Errorf("Expected activeSubagents map to be cleaned, got %d entries", len(inMem))
+	}
+}
+
+func TestInspectClaudeStatus_SessionNotFoundError(t *testing.T) {
+	sess := &Session{
+		ID:          "claude-code:local:test-sess-not-found",
+		Agent:       "claude-code",
+		Host:        "local",
+		NativeID:    "test-sess-not-found",
+		Cwd:         t.TempDir(),
+		State:       StateWorking,
+		EngineType:  EngineTmux,
+		TmuxName:    "ackbar-claude-code-test-sess-not-found",
+		StartedAt:   time.Now(),
+		LastEventAt: time.Now(),
+	}
+
+	// In test environment without tmux running, InspectClaudeStatus should transition to StateEnded
+	changed := InspectClaudeStatus(context.Background(), sess)
+	if !changed {
+		t.Errorf("Expected InspectClaudeStatus to return changed=true when pane is absent or ended")
+	}
+	if sess.State != StateEnded {
+		t.Errorf("Expected sess.State to be StateEnded, got: %s", sess.State)
+	}
+}

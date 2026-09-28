@@ -538,3 +538,76 @@ func TestHeadlessRunner_AgentValidation(t *testing.T) {
 		t.Errorf("Expected ErrAgentUnsupported for unknown agent, got: %v", err)
 	}
 }
+
+func TestHeadlessRunner_ToolResultNamePropagation(t *testing.T) {
+	runner := NewHeadlessRunner(nil, nil)
+	sessionID := "test-session-tool-propagation"
+
+	ch, cleanup := runner.Subscribe(sessionID)
+	defer cleanup()
+
+	sampleOutput := `
+{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"tool_use_123","name":"Agent","input":{"prompt":"Do work"}}}
+{"type":"tool_result","tool_use_id":"tool_use_123","content":"Finished successfully"}
+{"type":"result","result":"Done."}
+`
+	go func() {
+		runner.processStream(sessionID, strings.NewReader(sampleOutput))
+	}()
+
+	var receivedToolStart, receivedToolResult bool
+	var resultToolName string
+	for {
+		select {
+		case evt := <-ch:
+			if evt.Type == "tool_start" {
+				receivedToolStart = true
+				if evt.ToolName != "Agent" {
+					t.Errorf("Expected ToolName 'Agent', got %q", evt.ToolName)
+				}
+			} else if evt.Type == "tool_result" {
+				receivedToolResult = true
+				resultToolName = evt.ToolName
+			} else if evt.Type == "turn_complete" {
+				goto done
+			}
+		case <-time.After(1 * time.Second):
+			t.Fatalf("Timeout waiting for events")
+		}
+	}
+done:
+	if !receivedToolStart {
+		t.Errorf("Expected tool_start event")
+	}
+	if !receivedToolResult {
+		t.Errorf("Expected tool_result event")
+	}
+	if resultToolName != "Agent" {
+		t.Errorf("Expected tool_result event to have ToolName 'Agent', got %q", resultToolName)
+	}
+}
+
+func TestHeadlessRunner_OnTurnCompleteCallback(t *testing.T) {
+	runner := NewHeadlessRunner(nil, nil)
+	var callbackCalled bool
+	var cbSessionID, cbNativeID string
+
+	runner.SetOnTurnComplete(func(sessID, natID string) {
+		callbackCalled = true
+		cbSessionID = sessID
+		cbNativeID = natID
+	})
+
+	runner.mu.RLock()
+	cb := runner.onTurnComplete
+	runner.mu.RUnlock()
+
+	if cb == nil {
+		t.Fatalf("Expected onTurnComplete callback to be registered")
+	}
+	cb("test-sess-id", "test-nat-id")
+
+	if !callbackCalled || cbSessionID != "test-sess-id" || cbNativeID != "test-nat-id" {
+		t.Errorf("Callback not called with expected args")
+	}
+}
