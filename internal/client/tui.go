@@ -2243,6 +2243,8 @@ func FormatResumeCmd(agent, nativeID string) string {
 		return fmt.Sprintf("codex exec resume %s", nativeID)
 	case "antigravity":
 		return fmt.Sprintf("agy resume %s", nativeID)
+	case "grok":
+		return fmt.Sprintf("grok resume %s", nativeID)
 	default:
 		return fmt.Sprintf("claude resume %s", nativeID)
 	}
