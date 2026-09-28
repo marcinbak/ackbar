@@ -4295,5 +4295,41 @@ body, html {
   color: #fff;
 }
 
+/* Standup & Briefing Modal Styles */
+#mStandupPreview h2 {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-main);
+  margin: 0 0 12px 0;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border-color);
+}
 
+#mStandupPreview h3 {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent-blue);
+  margin: 14px 0 6px 0;
+}
 
+#mStandupPreview ul {
+  margin: 0 0 10px 0;
+  padding-left: 18px;
+}
+
+#mStandupPreview li {
+  margin-bottom: 5px;
+  color: var(--text-main);
+  line-height: 1.5;
+}
+
+#mStandupPreview hr {
+  border: none;
+  border-top: 1px solid var(--border-color);
+  margin: 12px 0;
+}
+
+#mStandupPreview strong {
+  color: var(--text-main);
+  font-weight: 600;
+}

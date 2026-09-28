@@ -310,6 +310,9 @@ func (s *Server) Mux() http.Handler {
 	mux.HandleFunc("/v1/tasks/propose", s.handleTaskPropose)
 	mux.HandleFunc("/v1/tasks/deliverable", s.handleTaskDeliverable)
 	mux.HandleFunc("/v1/tasks/sync-workflow", s.handleTaskSyncWorkflow)
+	mux.HandleFunc("/v1/tasks/merge-pr", s.handleTaskMergePR)
+	mux.HandleFunc("/v1/standup", s.handleStandup)
+	mux.HandleFunc("/v1/briefings/synthesize", s.handleBriefingSynthesize)
 	mux.HandleFunc("/v1/events", s.handleEvents)
 
 	// Serve embedded Web GUI

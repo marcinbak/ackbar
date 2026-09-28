@@ -55,6 +55,12 @@ Task persistence is managed in `ackbard.db` using CGO-free pure Go SQLite (`mode
 * **`GET /v1/tasks`**: Returns all tasks with joined workers, external references, and deliverables. Supports optional query filters: `?group=`, `?project=`, `?status=`.
 * **`POST /v1/tasks`**: Creates or updates a task.
 * **`POST /v1/tasks/event`**: Ingests structured task lifecycle events (`task_id`, `event_type`, `payload`).
+* **`POST /v1/tasks/propose`**: Records discovered work proposals with title deduplication into `NEW`.
+* **`POST /v1/tasks/deliverable`**: Attaches design mockups, change briefs, retrospectives, or external artifacts.
+* **`POST /v1/tasks/sync-workflow`**: Scans `~/.claude/dev-workflow-runs/` to sync node states and companions.
+* **`POST /v1/tasks/merge-pr`**: Executes 1-click `gh pr merge --squash` directly from the dashboard.
+* **`GET /v1/standup`**: Generates instant, deterministic daily standups or retrospectives in Markdown or JSON.
+* **`POST /v1/briefings/synthesize`**: Produces speech-optimized conversational briefings (<45s) for audio playback.
 * **`DELETE /v1/tasks?id=<id>`**: Deletes or archives a task.
 
 ---
@@ -71,9 +77,14 @@ Task persistence is managed in `ackbard.db` using CGO-free pure Go SQLite (`mode
 3. **Zero Context-Switch Navigation:**
    * Clicking any worker badge on a task card instantly switches to Workspace mode and focuses the agent's live terminal/chat tab via `openSessionInTab(session)` / `activateTab(sessionId)`.
 4. **Contextual Action Controls:**
-   * **Merge PR:** One-click launch to review and merge pull requests on GitHub.
+   * **1-Click Merge PR:** Directly executes `gh pr merge --squash` on GitHub with loading cues and instant state transition to `DONE`.
    * **Unblock Worker:** Immediately switches to and focuses a blocked agent waiting for input.
    * **Edit Task:** Modal to adjust title, status, substatus, notes, branch, or PR URL.
    * **Create Task:** Quick task creator modal with group and project defaults.
-5. **Real-time SSE Sync:**
+5. **Daily Standup & Voice Companion Briefing:**
+   * `[📋 Daily Standup]` toolbar button opens the Standup Modal.
+   * Filterable by Scope (`All`, `Modemobile`, `Personal`) and Lookback Window (24h, 48h, 7d).
+   * 1-click **"📋 Copy to Clipboard"** for fast Slack/Teams standup updates.
+   * **"🎙️ Audio Briefing"** voice playback using the Web Speech API (`SpeechSynthesis`).
+6. **Real-time SSE Sync:**
    * Daemon broadcasts trigger debounced task board reloads when the Work Board view is active.

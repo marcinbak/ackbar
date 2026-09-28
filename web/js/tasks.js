@@ -1,6 +1,5 @@
-// Ackbar Work & Fleet Overview Dashboard (Kanban Board)
 import { state } from './state.js';
-import { fetchTasks, createTask, updateTask, sendTaskEvent } from './api.js';
+import { fetchTasks, createTask, updateTask, sendTaskEvent, fetchStandup, mergeTaskPR } from './api.js';
 import { escapeHtml } from './utils.js';
 import { activateTab, openSessionInTab } from './tabs.js';
 import { showModal, hideModal } from './modals.js';
@@ -198,11 +197,12 @@ function renderTaskCards(tasks) {
 
     if (task.pr_url) {
       const cleanPrUrl = safeUrl(task.pr_url);
+      const canMerge = task.status !== 'DONE' && (task.status === 'REVIEW' || task.substatus === 'approved') && task.pr_state !== 'MERGED';
       actionButtons += `<div class="task-pr-bar">
         <a href="${escapeHtml(cleanPrUrl)}" target="_blank" rel="noopener noreferrer" class="task-pr-link">
           🐙 PR #${escapeHtml(String(task.pr_number || ''))} (${escapeHtml(task.pr_state || 'OPEN')})
         </a>
-        ${task.substatus === 'approved' ? `<button class="btn btn-success btn-xs btn-merge-pr" data-pr-url="${escapeHtml(cleanPrUrl)}">⚡ Merge PR</button>` : ''}
+        ${canMerge ? `<button class="btn btn-success btn-xs btn-merge-pr" data-task-id="${escapeHtml(task.id)}" data-pr-url="${escapeHtml(cleanPrUrl)}" title="Squash and merge pull request">⚡ Merge PR</button>` : ''}
       </div>`;
     }
 
@@ -327,10 +327,29 @@ function attachCardEventListeners() {
 
   // 4. Merge PR button
   document.querySelectorAll('.btn-merge-pr').forEach(btn => {
-    btn.addEventListener('click', (e) => {
+    btn.addEventListener('click', async (e) => {
       e.stopPropagation();
+      const taskId = btn.getAttribute('data-task-id');
       const prUrl = btn.getAttribute('data-pr-url');
-      if (prUrl) window.open(prUrl, '_blank');
+      if (!taskId) {
+        if (prUrl) window.open(prUrl, '_blank');
+        return;
+      }
+      const task = boardTasks.find(t => t.id === taskId);
+      const taskTitle = task ? task.title : 'this task';
+      if (!confirm(`Are you sure you want to squash and merge PR for "${taskTitle}"?`)) {
+        return;
+      }
+      btn.disabled = true;
+      btn.textContent = '⏳ Merging...';
+      try {
+        await mergeTaskPR(taskId, 'squash');
+        refreshWorkBoard();
+      } catch (err) {
+        alert(`Failed to merge PR: ${err.message}`);
+        btn.disabled = false;
+        btn.textContent = '⚡ Merge PR';
+      }
     });
   });
 }
@@ -495,6 +514,218 @@ export function showEditTaskModal(task) {
   });
 }
 
+export async function showStandupModal() {
+  const initialGroup = currentGroupFilter !== 'all' ? (currentGroupFilter === 'work' ? 'Modemobile' : 'Personal') : '';
+  let activeDays = 1;
+  let activeGroup = initialGroup;
+  let currentMarkdown = '';
+  let currentSpoken = '';
+  let isVoicePlaying = false;
+  let synth = window.speechSynthesis;
+  let utterance = null;
+
+  const bodyHtml = `
+    <div style="display: flex; flex-direction: column; gap: 14px; min-width: 550px; max-width: 720px;">
+      <div style="display: flex; gap: 12px; align-items: center; justify-content: space-between; flex-wrap: wrap;">
+        <div style="display: flex; gap: 8px; align-items: center;">
+          <label style="font-size: 11px; font-weight: 600; color: var(--text-muted);">SCOPE:</label>
+          <select id="mStandupGroupSelect" style="background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px; padding: 6px 10px; font-size: 12px;">
+            <option value="" ${!activeGroup ? 'selected' : ''}>All Work</option>
+            <option value="Modemobile" ${activeGroup === 'Modemobile' ? 'selected' : ''}>🏢 Modemobile</option>
+            <option value="Personal" ${activeGroup === 'Personal' ? 'selected' : ''}>👤 Personal</option>
+          </select>
+        </div>
+        <div style="display: flex; gap: 8px; align-items: center;">
+          <label style="font-size: 11px; font-weight: 600; color: var(--text-muted);">WINDOW:</label>
+          <select id="mStandupDaysSelect" style="background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px; padding: 6px 10px; font-size: 12px;">
+            <option value="1" selected>Last 24 Hours (Daily Standup)</option>
+            <option value="2">Last 48 Hours</option>
+            <option value="7">Last 7 Days (Weekly Retro)</option>
+          </select>
+        </div>
+        <div style="display: flex; gap: 6px;">
+          <button class="btn btn-secondary btn-xs" id="mBtnToggleVoice" title="Listen to conversational audio briefing">🎙️ Audio Briefing</button>
+        </div>
+      </div>
+
+      <!-- Spoken Audio Player Card -->
+      <div id="mVoicePlayerCard" style="display: none; background: rgba(59, 130, 246, 0.08); border: 1px solid rgba(59, 130, 246, 0.25); border-radius: 6px; padding: 12px; font-size: 13px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+          <span style="font-weight: 600; color: var(--accent-blue); display: flex; align-items: center; gap: 6px; font-size: 12px;">
+            <span>🔊</span> Conversational Voice Companion Briefing
+          </span>
+          <div style="display: flex; gap: 6px;">
+            <button class="btn btn-primary btn-xs" id="mBtnPlayVoice">▶ Play</button>
+            <button class="btn btn-secondary btn-xs" id="mBtnStopVoice" disabled>⏹ Stop</button>
+          </div>
+        </div>
+        <div id="mVoiceText" style="color: var(--text-main); line-height: 1.5; font-size: 12px; max-height: 80px; overflow-y: auto;">
+          Loading audio briefing...
+        </div>
+      </div>
+
+      <!-- Markdown Output Box -->
+      <div style="position: relative;">
+        <div id="mStandupPreview" style="background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 6px; padding: 14px; max-height: 380px; overflow-y: auto; font-size: 13px; line-height: 1.6; user-select: text;">
+          <div style="text-align: center; color: var(--text-muted); padding: 24px;">Generating standup report...</div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  const footerHtml = `
+    <button class="btn btn-secondary" id="mBtnCloseStandup">Close</button>
+    <button class="btn btn-primary" id="mBtnCopyStandup" style="background: var(--accent-blue); border-color: var(--accent-blue); color: #fff;">
+      📋 Copy to Clipboard
+    </button>
+  `;
+
+  showModal('📋 Daily Standup & Work Briefing', bodyHtml, footerHtml);
+
+  async function loadReport() {
+    const previewEl = document.getElementById('mStandupPreview');
+    const voiceTextEl = document.getElementById('mVoiceText');
+    if (previewEl) previewEl.innerHTML = '<div style="text-align: center; color: var(--text-muted); padding: 24px;">Generating standup report...</div>';
+
+    try {
+      const report = await fetchStandup(activeGroup, activeDays, 'json');
+      currentMarkdown = report.markdown || '';
+      currentSpoken = report.spoken_briefing || '';
+
+      if (previewEl) {
+        if (window.marked && typeof window.marked.parse === 'function') {
+          const rawHtml = window.marked.parse(currentMarkdown);
+          const parser = new DOMParser();
+          const doc = parser.parseFromString(rawHtml, 'text/html');
+          doc.querySelectorAll('script, iframe, object, embed, style').forEach(el => el.remove());
+          doc.querySelectorAll('*').forEach(el => {
+            for (const attr of Array.from(el.attributes)) {
+              if (attr.name.startsWith('on') || (attr.value && attr.value.trim().toLowerCase().startsWith('javascript:'))) {
+                el.removeAttribute(attr.name);
+              }
+            }
+          });
+          previewEl.replaceChildren(...doc.body.childNodes);
+        } else {
+          previewEl.innerHTML = `<pre style="white-space: pre-wrap; font-family: monospace; font-size: 12px;">${escapeHtml(currentMarkdown)}</pre>`;
+        }
+      }
+      if (voiceTextEl) {
+        voiceTextEl.textContent = currentSpoken || 'No audio briefing available for this period.';
+      }
+    } catch (err) {
+      if (previewEl) {
+        previewEl.innerHTML = `<div style="color: var(--accent-red); padding: 16px;">Failed to load standup: ${escapeHtml(err.message)}</div>`;
+      }
+    }
+  }
+
+  // Voice player controls
+  function playVoice() {
+    if (!synth) {
+      alert('Speech synthesis is not supported by your browser.');
+      return;
+    }
+    if (!currentSpoken || !currentSpoken.trim()) {
+      return;
+    }
+    synth.cancel();
+    utterance = new SpeechSynthesisUtterance(currentSpoken);
+    utterance.rate = 1.05;
+    utterance.pitch = 1.0;
+
+    const voices = synth.getVoices();
+    const natural = voices.find(v => v.lang && v.lang.startsWith('en') && (v.name.includes('Natural') || v.name.includes('Google') || v.name.includes('Samantha') || v.name.includes('Siri')));
+    if (natural) utterance.voice = natural;
+
+    utterance.onend = () => {
+      isVoicePlaying = false;
+      const playBtn = document.getElementById('mBtnPlayVoice');
+      const stopBtn = document.getElementById('mBtnStopVoice');
+      if (playBtn) playBtn.disabled = false;
+      if (stopBtn) stopBtn.disabled = true;
+    };
+    utterance.onerror = () => {
+      isVoicePlaying = false;
+      const playBtn = document.getElementById('mBtnPlayVoice');
+      const stopBtn = document.getElementById('mBtnStopVoice');
+      if (playBtn) playBtn.disabled = false;
+      if (stopBtn) stopBtn.disabled = true;
+    };
+
+    isVoicePlaying = true;
+    const playBtn = document.getElementById('mBtnPlayVoice');
+    const stopBtn = document.getElementById('mBtnStopVoice');
+    if (playBtn) playBtn.disabled = true;
+    if (stopBtn) stopBtn.disabled = false;
+    synth.speak(utterance);
+  }
+
+  function stopVoice() {
+    if (synth) synth.cancel();
+    isVoicePlaying = false;
+    const playBtn = document.getElementById('mBtnPlayVoice');
+    const stopBtn = document.getElementById('mBtnStopVoice');
+    if (playBtn) playBtn.disabled = false;
+    if (stopBtn) stopBtn.disabled = true;
+  }
+
+  document.getElementById('mStandupGroupSelect')?.addEventListener('change', (e) => {
+    activeGroup = e.target.value;
+    stopVoice();
+    loadReport();
+  });
+
+  document.getElementById('mStandupDaysSelect')?.addEventListener('change', (e) => {
+    activeDays = parseInt(e.target.value, 10) || 1;
+    stopVoice();
+    loadReport();
+  });
+
+  document.getElementById('mBtnToggleVoice')?.addEventListener('click', () => {
+    const card = document.getElementById('mVoicePlayerCard');
+    if (card) {
+      card.style.display = card.style.display === 'none' ? 'block' : 'none';
+    }
+  });
+
+  document.getElementById('mBtnPlayVoice')?.addEventListener('click', playVoice);
+  document.getElementById('mBtnStopVoice')?.addEventListener('click', stopVoice);
+
+  document.getElementById('mBtnCopyStandup')?.addEventListener('click', async () => {
+    if (!currentMarkdown) return;
+    try {
+      await navigator.clipboard.writeText(currentMarkdown);
+      const btn = document.getElementById('mBtnCopyStandup');
+      if (btn) {
+        const origText = btn.innerHTML;
+        btn.innerHTML = '✓ Copied to Clipboard!';
+        btn.style.background = 'var(--accent-green)';
+        btn.style.borderColor = 'var(--accent-green)';
+        setTimeout(() => {
+          if (btn) {
+            btn.innerHTML = origText;
+            btn.style.background = 'var(--accent-blue)';
+            btn.style.borderColor = 'var(--accent-blue)';
+          }
+        }, 2000);
+      }
+    } catch (err) {
+      alert('Failed to copy to clipboard: ' + err.message);
+    }
+  });
+
+  document.getElementById('mBtnCloseStandup')?.addEventListener('click', () => {
+    stopVoice();
+    hideModal();
+  });
+
+  document.getElementById('modalCloseBtn')?.addEventListener('click', stopVoice);
+
+  // Initial load
+  loadReport();
+}
+
 export function initWorkBoard() {
   // Mode switcher listeners
   document.getElementById('btnModeWorkspace')?.addEventListener('click', () => switchAppMode('workspace'));
@@ -523,7 +754,8 @@ export function initWorkBoard() {
     renderWorkBoard();
   });
 
-  // Refresh & New Task
+  // Standup, Refresh & New Task
+  document.getElementById('btnDailyStandup')?.addEventListener('click', showStandupModal);
   document.getElementById('btnRefreshWorkBoard')?.addEventListener('click', refreshWorkBoard);
   document.getElementById('btnNewTask')?.addEventListener('click', showNewTaskModal);
 }
