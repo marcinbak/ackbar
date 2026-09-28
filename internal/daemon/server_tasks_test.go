@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -468,5 +469,127 @@ Enable Face ID and Touch ID authentication across login workflows.`
 	}
 	if proposalCount != 2 {
 		t.Errorf("Expected 2 discovered proposals in NEW, got %d", proposalCount)
+	}
+}
+
+func TestTelemetry_HardenedProposalsAndWorkflow(t *testing.T) {
+	dbFile := "./test_hardened.db"
+	defer os.Remove(dbFile)
+
+	db, err := InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := &Server{
+		db: db,
+	}
+
+	// 1. Test Node mapping N12, N13 -> REVIEW: in_review, N14, N15 -> DONE: completed
+	s12, sub12 := mapWorkflowNodeToTaskStatus("N12")
+	if s12 != "REVIEW" || sub12 != "in_review" {
+		t.Errorf("Expected N12 to map to REVIEW/in_review, got %s/%s", s12, sub12)
+	}
+	s13, sub13 := mapWorkflowNodeToTaskStatus("N13")
+	if s13 != "REVIEW" || sub13 != "in_review" {
+		t.Errorf("Expected N13 to map to REVIEW/in_review, got %s/%s", s13, sub13)
+	}
+	s14, sub14 := mapWorkflowNodeToTaskStatus("N14")
+	if s14 != "DONE" || sub14 != "completed" {
+		t.Errorf("Expected N14 to map to DONE/completed, got %s/%s", s14, sub14)
+	}
+
+	// 2. Test Retro Proposal parsing with numbers in title and dedup
+	tempDir := t.TempDir()
+	retroPath := filepath.Join(tempDir, "sample.retro.md")
+	retroContent := `# Retro
+## Proposals
+- 12-factor configuration support
+* Add 2FA security prompt
+1. 3D map rendering feature
+`
+	_ = os.WriteFile(retroPath, []byte(retroContent), 0644)
+
+	server.parseRetroProposalsIntoNewTasks(retroPath, "Modemobile", "Ackbar")
+
+	tasks, err := db.GetTasks()
+	if err != nil || len(tasks) != 3 {
+		t.Fatalf("Expected 3 tasks created from retro proposals, got %d (err: %v)", len(tasks), err)
+	}
+
+	// Verify "12-factor" was preserved cleanly
+	found12 := false
+	for _, tk := range tasks {
+		if tk.Title == "12-factor configuration support" {
+			found12 = true
+			break
+		}
+	}
+	if !found12 {
+		t.Errorf("Expected title '12-factor configuration support' preserved intact, got tasks: %+v", tasks)
+	}
+
+	// Move one task to IN_PROGRESS
+	tasks[0].Status = "IN_PROGRESS"
+	if err := db.UpdateTask(&tasks[0]); err != nil {
+		t.Fatalf("UpdateTask failed: %v", err)
+	}
+
+	// Run parseRetroProposalsIntoNewTasks again — should not create duplicate tasks!
+	server.parseRetroProposalsIntoNewTasks(retroPath, "Modemobile", "Ackbar")
+	tasksAfter, err := db.GetTasks()
+	if err != nil || len(tasksAfter) != 3 {
+		t.Errorf("Expected 3 tasks (no duplicates created on second run), got %d", len(tasksAfter))
+	}
+
+	// 3. Test handleTaskPropose validation
+	// Empty title rejected
+	bodyEmpty, _ := json.Marshal(map[string]any{"title": ""})
+	req := httptest.NewRequest("POST", "/v1/tasks/propose", bytes.NewReader(bodyEmpty))
+	rec := httptest.NewRecorder()
+	server.handleTaskPropose(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("Expected 400 for empty propose title, got %d", rec.Code)
+	}
+
+	// 4. Test handleTaskDeliverable validation
+	// Path traversal rejected
+	bodyTraversal, _ := json.Marshal(map[string]any{
+		"task_id":   tasks[0].ID,
+		"kind":      "plan",
+		"file_path": "../../../etc/passwd",
+	})
+	req = httptest.NewRequest("POST", "/v1/tasks/deliverable", bytes.NewReader(bodyTraversal))
+	rec = httptest.NewRecorder()
+	server.handleTaskDeliverable(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("Expected 400 for deliverable path traversal, got %d", rec.Code)
+	}
+
+	// Invalid URL scheme rejected
+	bodyBadURL, _ := json.Marshal(map[string]any{
+		"task_id": tasks[0].ID,
+		"kind":    "plan",
+		"url":     "ftp://malicious.example.com",
+	})
+	req = httptest.NewRequest("POST", "/v1/tasks/deliverable", bytes.NewReader(bodyBadURL))
+	rec = httptest.NewRecorder()
+	server.handleTaskDeliverable(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("Expected 400 for non-http(s) URL, got %d", rec.Code)
+	}
+
+	// Invalid kind rejected
+	bodyBadKind, _ := json.Marshal(map[string]any{
+		"task_id": tasks[0].ID,
+		"kind":    "invalid_kind",
+		"title":   "Valid title",
+	})
+	req = httptest.NewRequest("POST", "/v1/tasks/deliverable", bytes.NewReader(bodyBadKind))
+	rec = httptest.NewRecorder()
+	server.handleTaskDeliverable(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("Expected 400 for invalid deliverable kind, got %d", rec.Code)
 	}
 }

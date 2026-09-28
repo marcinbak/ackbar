@@ -727,9 +727,9 @@ func (s *Server) processHookEventWithAccount(p Provider, urlEventName string, he
 		return
 	}
 
-	// Ingest ambient tool telemetry and synchronize session with task board
-	s.IngestToolTelemetry(sess, event)
+	// Synchronize session with task board and ingest ambient tool telemetry
 	s.SyncSessionTaskWorker(sess)
+	s.IngestToolTelemetry(sess, event)
 
 	// Broadcast update
 	s.broadcast(sess)

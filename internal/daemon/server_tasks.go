@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -39,14 +40,78 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 			}
 			w.WriteHeader(http.StatusCreated)
 		} else {
-			if err := s.db.UpdateTask(&t); err != nil {
+			existing, err := s.db.GetTaskByID(t.ID)
+			if err != nil {
+				http.Error(w, "Failed to query existing task: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if existing == nil {
+				http.Error(w, "Task not found", http.StatusNotFound)
+				return
+			}
+
+			// Merge fields from t into existing if provided
+			if t.Title != "" {
+				existing.Title = t.Title
+			}
+			if t.GroupName != "" {
+				existing.GroupName = t.GroupName
+			}
+			if t.ProjectName != "" {
+				existing.ProjectName = t.ProjectName
+			}
+			if t.SubprojectName != "" {
+				existing.SubprojectName = t.SubprojectName
+			}
+			if t.Status != "" {
+				existing.Status = t.Status
+			}
+			if t.Substatus != "" {
+				existing.Substatus = t.Substatus
+			}
+			if t.Notes != "" {
+				existing.Notes = t.Notes
+			}
+			if t.BlockerQuestion != "" {
+				existing.BlockerQuestion = t.BlockerQuestion
+			}
+			if t.Branch != "" {
+				existing.Branch = t.Branch
+			}
+			if t.WorktreePath != "" {
+				existing.WorktreePath = t.WorktreePath
+			}
+			if t.PRURL != "" {
+				existing.PRURL = t.PRURL
+			}
+			if t.PRNumber != 0 {
+				existing.PRNumber = t.PRNumber
+			}
+			if t.PRState != "" {
+				existing.PRState = t.PRState
+			}
+			if t.CIStatus != "" {
+				existing.CIStatus = t.CIStatus
+			}
+			if t.CompletedAt != nil {
+				existing.CompletedAt = t.CompletedAt
+			}
+			if t.Workers != nil {
+				existing.Workers = t.Workers
+			}
+			if t.ExternalRefs != nil {
+				existing.ExternalRefs = t.ExternalRefs
+			}
+			if t.Deliverables != nil {
+				existing.Deliverables = t.Deliverables
+			}
+
+			if err := s.db.UpdateTask(existing); err != nil {
 				http.Error(w, "Failed to update task: "+err.Error(), http.StatusInternalServerError)
 				return
 			}
 			w.WriteHeader(http.StatusOK)
-			if fresh, err := s.db.GetTaskByID(t.ID); err == nil && fresh != nil {
-				t = *fresh
-			}
+			t = *existing
 		}
 
 		json.NewEncoder(w).Encode(t)
@@ -109,6 +174,10 @@ func (s *Server) handleTaskEvent(w http.ResponseWriter, r *http.Request) {
 			task.PRNumber = prNum
 		}
 		task.PRState = "OPEN" // assumption for new PRs
+		if task.Status == "IN_PROGRESS" {
+			task.Status = "REVIEW"
+			task.Substatus = "in_review"
+		}
 		updated = true
 	}
 
@@ -152,6 +221,30 @@ func (s *Server) handleTaskPropose(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "title is required", http.StatusBadRequest)
 		return
 	}
+	if len(title) > 256 {
+		title = title[:256]
+	}
+
+	propType := strings.ToLower(strings.TrimSpace(p.Type))
+	if propType != "" && propType != "bug" && propType != "opportunity" && propType != "tech_debt" {
+		http.Error(w, "invalid type: must be bug, opportunity, or tech_debt", http.StatusBadRequest)
+		return
+	}
+
+	severity := strings.ToLower(strings.TrimSpace(p.Severity))
+	if severity != "" && severity != "low" && severity != "medium" && severity != "high" {
+		http.Error(w, "invalid severity: must be low, medium, or high", http.StatusBadRequest)
+		return
+	}
+
+	rationale := strings.TrimSpace(p.Rationale)
+	if len(rationale) > 4096 {
+		rationale = rationale[:4096]
+	}
+	fileRef := strings.TrimSpace(p.FileReference)
+	if len(fileRef) > 1024 {
+		fileRef = fileRef[:1024]
+	}
 
 	groupName := strings.TrimSpace(p.GroupName)
 	if groupName == "" {
@@ -163,17 +256,17 @@ func (s *Server) handleTaskPropose(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var notesList []string
-	if p.Type != "" {
-		notesList = append(notesList, fmt.Sprintf("Type: %s", p.Type))
+	if propType != "" {
+		notesList = append(notesList, fmt.Sprintf("Type: %s", propType))
 	}
-	if p.Severity != "" {
-		notesList = append(notesList, fmt.Sprintf("Severity: %s", p.Severity))
+	if severity != "" {
+		notesList = append(notesList, fmt.Sprintf("Severity: %s", severity))
 	}
-	if p.FileReference != "" {
-		notesList = append(notesList, fmt.Sprintf("Ref: %s", p.FileReference))
+	if fileRef != "" {
+		notesList = append(notesList, fmt.Sprintf("Ref: %s", fileRef))
 	}
-	if p.Rationale != "" {
-		notesList = append(notesList, p.Rationale)
+	if rationale != "" {
+		notesList = append(notesList, rationale)
 	}
 
 	task := &Task{
@@ -222,8 +315,43 @@ func (s *Server) handleTaskDeliverable(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "task_id is required", http.StatusBadRequest)
 		return
 	}
-	if p.Title == "" {
+	title := strings.TrimSpace(p.Title)
+	if title == "" {
 		http.Error(w, "title is required", http.StatusBadRequest)
+		return
+	}
+
+	filePath := strings.TrimSpace(p.FilePath)
+	urlStr := strings.TrimSpace(p.URL)
+
+	if filePath == "" && urlStr == "" {
+		http.Error(w, "either file_path or url is required", http.StatusBadRequest)
+		return
+	}
+
+	if filePath != "" {
+		clean := filepath.Clean(filePath)
+		if strings.Contains(clean, "..") {
+			http.Error(w, "path traversal detected in file_path", http.StatusBadRequest)
+			return
+		}
+		filePath = clean
+	}
+
+	if urlStr != "" {
+		lowerURL := strings.ToLower(urlStr)
+		if !strings.HasPrefix(lowerURL, "http://") && !strings.HasPrefix(lowerURL, "https://") {
+			http.Error(w, "url must begin with http:// or https://", http.StatusBadRequest)
+			return
+		}
+	}
+
+	kind := strings.ToLower(strings.TrimSpace(p.Kind))
+	if kind == "" {
+		kind = "doc"
+	}
+	if kind != "mockup" && kind != "plan" && kind != "retrospective" && kind != "doc" {
+		http.Error(w, "invalid kind: must be mockup, plan, retrospective, or doc", http.StatusBadRequest)
 		return
 	}
 
@@ -244,11 +372,11 @@ func (s *Server) handleTaskDeliverable(w http.ResponseWriter, r *http.Request) {
 
 	del := &TaskDeliverable{
 		TaskID:   p.TaskID,
-		Kind:     p.Kind,
-		Title:    p.Title,
+		Kind:     kind,
+		Title:    title,
 		Host:     hostName,
-		FilePath: p.FilePath,
-		URL:      p.URL,
+		FilePath: filePath,
+		URL:      urlStr,
 	}
 
 	if err := s.db.InsertTaskDeliverable(del); err != nil {

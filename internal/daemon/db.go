@@ -1637,45 +1637,51 @@ func (d *DB) UpdateTask(t *Task) error {
 		return fmt.Errorf("task with id %s not found", t.ID)
 	}
 
-	// Handle Workers
-	_, err = tx.Exec(`DELETE FROM task_workers WHERE task_id = ?`, t.ID)
-	if err != nil {
-		return err
-	}
-	for i := range t.Workers {
-		w := &t.Workers[i]
-		w.TaskID = t.ID
-		if err := insertTaskWorkerTx(tx, w); err != nil {
+	// Only update Workers if explicitly provided (non-nil)
+	if t.Workers != nil {
+		_, err = tx.Exec(`DELETE FROM task_workers WHERE task_id = ?`, t.ID)
+		if err != nil {
 			return err
+		}
+		for i := range t.Workers {
+			w := &t.Workers[i]
+			w.TaskID = t.ID
+			if err := insertTaskWorkerTx(tx, w); err != nil {
+				return err
+			}
 		}
 	}
 
-	// Handle ExternalRefs
-	_, err = tx.Exec(`DELETE FROM task_external_refs WHERE task_id = ?`, t.ID)
-	if err != nil {
-		return err
-	}
-	for i := range t.ExternalRefs {
-		r := &t.ExternalRefs[i]
-		r.TaskID = t.ID
-		if err := insertTaskExternalRefTx(tx, r); err != nil {
+	// Only update ExternalRefs if explicitly provided (non-nil)
+	if t.ExternalRefs != nil {
+		_, err = tx.Exec(`DELETE FROM task_external_refs WHERE task_id = ?`, t.ID)
+		if err != nil {
 			return err
+		}
+		for i := range t.ExternalRefs {
+			r := &t.ExternalRefs[i]
+			r.TaskID = t.ID
+			if err := insertTaskExternalRefTx(tx, r); err != nil {
+				return err
+			}
 		}
 	}
 
-	// Handle Deliverables
-	_, err = tx.Exec(`DELETE FROM task_deliverables WHERE task_id = ?`, t.ID)
-	if err != nil {
-		return err
-	}
-	for i := range t.Deliverables {
-		del := &t.Deliverables[i]
-		del.TaskID = t.ID
-		if del.ID == "" {
-			del.ID = fmt.Sprintf("del_%d_%d", time.Now().UnixNano(), i)
-		}
-		if err := insertTaskDeliverableTx(tx, del); err != nil {
+	// Only update Deliverables if explicitly provided (non-nil)
+	if t.Deliverables != nil {
+		_, err = tx.Exec(`DELETE FROM task_deliverables WHERE task_id = ?`, t.ID)
+		if err != nil {
 			return err
+		}
+		for i := range t.Deliverables {
+			del := &t.Deliverables[i]
+			del.TaskID = t.ID
+			if del.ID == "" {
+				del.ID = fmt.Sprintf("del_%d_%d", time.Now().UnixNano(), i)
+			}
+			if err := insertTaskDeliverableTx(tx, del); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -1721,6 +1727,7 @@ func insertTaskDeliverableTx(tx *sql.Tx, td *TaskDeliverable) error {
 		var existingID string
 		err := tx.QueryRow(`SELECT id FROM task_deliverables WHERE task_id = ? AND file_path = ?`, td.TaskID, td.FilePath).Scan(&existingID)
 		if err == nil && existingID != "" {
+			td.ID = existingID
 			_, err = tx.Exec(`UPDATE task_deliverables SET kind = ?, title = ?, host = ? WHERE id = ?`, td.Kind, td.Title, td.Host, existingID)
 			return err
 		}
@@ -1728,6 +1735,7 @@ func insertTaskDeliverableTx(tx *sql.Tx, td *TaskDeliverable) error {
 		var existingID string
 		err := tx.QueryRow(`SELECT id FROM task_deliverables WHERE task_id = ? AND url = ?`, td.TaskID, td.URL).Scan(&existingID)
 		if err == nil && existingID != "" {
+			td.ID = existingID
 			_, err = tx.Exec(`UPDATE task_deliverables SET kind = ?, title = ?, host = ? WHERE id = ?`, td.Kind, td.Title, td.Host, existingID)
 			return err
 		}

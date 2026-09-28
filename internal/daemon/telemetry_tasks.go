@@ -10,8 +10,8 @@ import (
 )
 
 var (
-	// Issue key pattern: e.g. NGL-409, ENG-12, PROJ-101
-	issueKeyRegex = regexp.MustCompile(`(?i)\b([A-Z][A-Z0-9]{1,9}-[0-9]+)\b`)
+	// Issue key pattern: e.g. NGL-409, ENG-12, PROJ-101 (strictly uppercase letters and numbers)
+	issueKeyRegex = regexp.MustCompile(`\b([A-Z]{2,10}-[0-9]+)\b`)
 	// PR URL pattern: e.g. https://github.com/owner/repo/pull/123
 	prURLRegex = regexp.MustCompile(`(https://github\.com/([^/\s]+)/([^/\s]+)/pull/(\d+))`)
 	// Git branch checkout / switch / worktree creation pattern
@@ -107,7 +107,11 @@ func formatTaskTitleFromBranch(branch string, issueKey string) string {
 		cleaned := strings.TrimPrefix(branch, "feat/")
 		cleaned = strings.TrimPrefix(cleaned, "fix/")
 		cleaned = strings.TrimPrefix(cleaned, "refactor/")
-		cleaned = strings.ReplaceAll(cleaned, issueKey, "")
+		lowerCleaned := strings.ToLower(cleaned)
+		lowerKey := strings.ToLower(issueKey)
+		if idx := strings.Index(lowerCleaned, lowerKey); idx != -1 {
+			cleaned = cleaned[:idx] + cleaned[idx+len(lowerKey):]
+		}
 		cleaned = strings.ReplaceAll(cleaned, "-", " ")
 		cleaned = strings.ReplaceAll(cleaned, "_", " ")
 		cleaned = strings.TrimSpace(cleaned)
@@ -136,11 +140,13 @@ func (s *Server) IngestToolTelemetry(sess *Session, event *Event) {
 
 	cmd := extractCommandFromToolInput(event.ToolInput)
 	filePath := extractFilePathFromToolInput(event.ToolInput)
+	toolName := strings.ToLower(event.ToolName)
 
 	// Check if branch was changed via command
 	if cmd != "" {
 		if newBranch := ExtractBranchCommand(cmd); newBranch != "" {
 			sess.GitBranch = newBranch
+			_ = s.db.SaveSession(sess)
 		}
 	}
 
@@ -179,10 +185,12 @@ func (s *Server) IngestToolTelemetry(sess *Session, event *Event) {
 		}
 	}
 
-	// 2. Check for issue key in command or branch
-	issueKey := ExtractIssueKey(cmd)
-	if issueKey == "" {
-		issueKey = ExtractIssueKey(sess.GitBranch)
+	// 2. Check for issue key: prioritize branch name over raw commands
+	issueKey := ExtractIssueKey(sess.GitBranch)
+	if issueKey == "" && cmd != "" {
+		if strings.Contains(cmd, "git") || strings.Contains(cmd, "gh") {
+			issueKey = ExtractIssueKey(cmd)
+		}
 	}
 	if issueKey != "" {
 		hasRef := false
@@ -193,54 +201,62 @@ func (s *Server) IngestToolTelemetry(sess *Session, event *Event) {
 			}
 		}
 		if !hasRef {
-			_ = s.db.InsertTaskExternalRef(&TaskExternalRef{
+			newRef := TaskExternalRef{
 				TaskID:  task.ID,
 				Tracker: "jira",
 				RefKey:  issueKey,
-			})
-			task.ExternalRefs = append(task.ExternalRefs, TaskExternalRef{
-				TaskID:  task.ID,
-				Tracker: "jira",
-				RefKey:  issueKey,
-			})
+			}
+			_ = s.db.InsertTaskExternalRef(&newRef)
+			task.ExternalRefs = append(task.ExternalRefs, newRef)
 		}
 	}
 
-	// 3. Check for test execution
-	if cmd != "" && testCmdRegex.MatchString(cmd) {
-		task.CIStatus = "PASSING"
-		taskUpdated = true
+	// 3. Check file writes / deliverable creations (only for write/edit tools)
+	isWriteTool := false
+	for _, wt := range []string{"write_to_file", "replace_file_content", "create_file", "file_writer", "write", "edit"} {
+		if strings.EqualFold(toolName, wt) {
+			isWriteTool = true
+			break
+		}
 	}
 
-	// 4. Check file writes / deliverable creations
-	if filePath != "" {
-		baseName := filepath.Base(filePath)
-		ext := strings.ToLower(filepath.Ext(filePath))
+	if isWriteTool && filePath != "" {
+		clean := filepath.Clean(filePath)
+		if !strings.Contains(clean, "..") {
+			baseName := filepath.Base(clean)
+			ext := strings.ToLower(filepath.Ext(clean))
+			var newDel *TaskDeliverable
 
-		if strings.HasSuffix(baseName, ".retro.md") {
-			_ = s.db.InsertTaskDeliverable(&TaskDeliverable{
-				TaskID:   task.ID,
-				Kind:     "retrospective",
-				Title:    "Retrospective",
-				Host:     sess.Host,
-				FilePath: filePath,
-			})
-		} else if ext == ".html" || ext == ".png" || ext == ".jpg" || ext == ".svg" {
-			_ = s.db.InsertTaskDeliverable(&TaskDeliverable{
-				TaskID:   task.ID,
-				Kind:     "mockup",
-				Title:    baseName,
-				Host:     sess.Host,
-				FilePath: filePath,
-			})
-		} else if strings.Contains(baseName, "plan") || strings.Contains(baseName, "brief") {
-			_ = s.db.InsertTaskDeliverable(&TaskDeliverable{
-				TaskID:   task.ID,
-				Kind:     "plan",
-				Title:    baseName,
-				Host:     sess.Host,
-				FilePath: filePath,
-			})
+			if strings.HasSuffix(baseName, ".retro.md") {
+				newDel = &TaskDeliverable{
+					TaskID:   task.ID,
+					Kind:     "retrospective",
+					Title:    "Retrospective",
+					Host:     sess.Host,
+					FilePath: clean,
+				}
+			} else if ext == ".html" || ext == ".png" || ext == ".jpg" || ext == ".svg" {
+				newDel = &TaskDeliverable{
+					TaskID:   task.ID,
+					Kind:     "mockup",
+					Title:    baseName,
+					Host:     sess.Host,
+					FilePath: clean,
+				}
+			} else if strings.Contains(baseName, "plan") || strings.Contains(baseName, "brief") {
+				newDel = &TaskDeliverable{
+					TaskID:   task.ID,
+					Kind:     "plan",
+					Title:    baseName,
+					Host:     sess.Host,
+					FilePath: clean,
+				}
+			}
+
+			if newDel != nil {
+				_ = s.db.InsertTaskDeliverable(newDel)
+				task.Deliverables = append(task.Deliverables, *newDel)
+			}
 		}
 	}
 
@@ -306,21 +322,21 @@ func (s *Server) findActiveTaskForSession(sess *Session) (*Task, error) {
 	if sess == nil {
 		return nil, nil
 	}
-	// 1. Try by session ID
-	if t, err := s.db.GetActiveTaskForSession(sess.ID); err == nil && t != nil {
-		return t, nil
-	}
-	// 2. Try by branch
+	// 1. Try by branch (highest priority so switching branches switches tasks)
 	if sess.GitBranch != "" && sess.GitBranch != "main" && sess.GitBranch != "master" {
-		if t, err := s.db.GetTaskByBranch(sess.GitBranch); err == nil && t != nil {
+		if t, err := s.db.GetTaskByBranch(sess.GitBranch); err == nil && t != nil && t.Status != "DONE" {
 			return t, nil
 		}
 	}
-	// 3. Try by worktree
+	// 2. Try by worktree
 	if sess.Cwd != "" {
-		if t, err := s.db.GetTaskByWorktree(sess.Cwd); err == nil && t != nil {
+		if t, err := s.db.GetTaskByWorktree(sess.Cwd); err == nil && t != nil && t.Status != "DONE" {
 			return t, nil
 		}
+	}
+	// 3. Fall back to active session worker record (only if active / not DONE)
+	if t, err := s.db.GetActiveTaskForSession(sess.ID); err == nil && t != nil && t.Status != "DONE" {
+		return t, nil
 	}
 	return nil, nil
 }

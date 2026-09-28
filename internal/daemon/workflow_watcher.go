@@ -4,12 +4,35 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
+
+var reBulletNumbered = regexp.MustCompile(`^\d+\.\s+`)
+
+func readWorkflowFileBounded(path string, maxBytes int64) ([]byte, error) {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, fmt.Errorf("not a regular file: %s", path)
+	}
+	if fi.Size() > maxBytes {
+		return nil, fmt.Errorf("file %s exceeds maximum size limit (%d > %d)", path, fi.Size(), maxBytes)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return io.ReadAll(io.LimitReader(f, maxBytes))
+}
 
 type DevWorkflowRun struct {
 	Ticket             *string          `json:"ticket"`
@@ -68,7 +91,7 @@ func (s *Server) IngestDevWorkflowRuns() error {
 }
 
 func (s *Server) ingestSingleWorkflowRun(jsonPath string) error {
-	data, err := os.ReadFile(jsonPath)
+	data, err := readWorkflowFileBounded(jsonPath, 2*1024*1024)
 	if err != nil {
 		return err
 	}
@@ -141,6 +164,11 @@ func (s *Server) ingestSingleWorkflowRun(jsonPath string) error {
 			WorktreePath: run.Worktree,
 		}
 
+		if status == "DONE" {
+			now := time.Now()
+			task.CompletedAt = &now
+		}
+
 		if run.PR != nil && run.PR.URL != "" {
 			task.PRURL = run.PR.URL
 			task.PRNumber = run.PR.Number
@@ -162,7 +190,17 @@ func (s *Server) ingestSingleWorkflowRun(jsonPath string) error {
 		taskUpdated = true
 	} else {
 		// Existing task: synchronize status and PR if run is further along
-		if task.Status != "DONE" && status != "" {
+		if status == "DONE" {
+			if task.CompletedAt == nil {
+				now := time.Now()
+				task.CompletedAt = &now
+			}
+			if task.Status != "DONE" {
+				task.Status = status
+				task.Substatus = substatus
+				taskUpdated = true
+			}
+		} else if task.Status != "DONE" && status != "" {
 			task.Status = status
 			task.Substatus = substatus
 			taskUpdated = true
@@ -238,9 +276,9 @@ func mapWorkflowNodeToTaskStatus(node string) (string, string) {
 		return "IN_PROGRESS", "active"
 	case "N6", "N7", "N8":
 		return "REVIEW", "task_review"
-	case "N9", "N10", "N11":
+	case "N9", "N10", "N11", "N12", "N13":
 		return "REVIEW", "in_review"
-	case "N12", "N13", "N14", "N15":
+	case "N14", "N15":
 		return "DONE", "completed"
 	default:
 		if strings.HasPrefix(n, "N") {
@@ -251,7 +289,7 @@ func mapWorkflowNodeToTaskStatus(node string) (string, string) {
 }
 
 func extractBriefMetadata(briefPath string) (title string, notes string) {
-	data, err := os.ReadFile(briefPath)
+	data, err := readWorkflowFileBounded(briefPath, 1*1024*1024)
 	if err != nil {
 		return "", ""
 	}
@@ -300,7 +338,7 @@ func extractBriefMetadata(briefPath string) (title string, notes string) {
 }
 
 func (s *Server) parseRetroProposalsIntoNewTasks(retroPath, groupName, projectName string) {
-	data, err := os.ReadFile(retroPath)
+	data, err := readWorkflowFileBounded(retroPath, 1*1024*1024)
 	if err != nil {
 		return
 	}
@@ -320,33 +358,38 @@ func (s *Server) parseRetroProposalsIntoNewTasks(retroPath, groupName, projectNa
 			if strings.HasPrefix(line, "## ") {
 				break
 			}
-			if strings.HasPrefix(line, "- ") || strings.HasPrefix(line, "* ") || (len(line) > 3 && line[1] == '.' && line[2] == ' ') {
-				bullet := strings.TrimLeft(line, "-*0123456789. ")
-				bullet = strings.TrimSpace(bullet)
-				if len(bullet) > 5 {
-					// Check if task with this title already exists in NEW
-					existingTasks, err := s.db.GetTasks()
-					exists := false
-					if err == nil {
-						for _, et := range existingTasks {
-							if strings.EqualFold(et.Title, bullet) && et.Status == "NEW" {
-								exists = true
-								break
-							}
+			var bullet string
+			if strings.HasPrefix(line, "- ") {
+				bullet = strings.TrimPrefix(line, "- ")
+			} else if strings.HasPrefix(line, "* ") {
+				bullet = strings.TrimPrefix(line, "* ")
+			} else if reBulletNumbered.MatchString(line) {
+				bullet = reBulletNumbered.ReplaceAllString(line, "")
+			}
+			bullet = strings.TrimSpace(bullet)
+			if len(bullet) > 5 {
+				// Check if task with this title already exists in any status
+				existingTasks, err := s.db.GetTasks()
+				exists := false
+				if err == nil {
+					for _, et := range existingTasks {
+						if strings.EqualFold(et.Title, bullet) {
+							exists = true
+							break
 						}
 					}
-					if !exists {
-						newTask := &Task{
-							ID:          fmt.Sprintf("task_%d", time.Now().UnixNano()),
-							Title:       bullet,
-							GroupName:   groupName,
-							ProjectName: projectName,
-							Status:      "NEW",
-							Substatus:   "discovered",
-							Notes:       fmt.Sprintf("Proposed in retrospective: %s", filepath.Base(retroPath)),
-						}
-						_ = s.db.CreateTask(newTask)
+				}
+				if !exists {
+					newTask := &Task{
+						ID:          fmt.Sprintf("task_%d", time.Now().UnixNano()),
+						Title:       bullet,
+						GroupName:   groupName,
+						ProjectName: projectName,
+						Status:      "NEW",
+						Substatus:   "discovered",
+						Notes:       fmt.Sprintf("Proposed in retrospective: %s", filepath.Base(retroPath)),
 					}
+					_ = s.db.CreateTask(newTask)
 				}
 			}
 		}
