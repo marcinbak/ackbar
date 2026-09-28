@@ -305,6 +305,8 @@ func (s *Server) Mux() http.Handler {
 	mux.HandleFunc("/v1/settings", s.handleSettings)
 	mux.HandleFunc("/v1/uploads", s.handleUpload)
 	mux.HandleFunc("/v1/shutdown", s.handleShutdown)
+	mux.HandleFunc("/v1/tasks", s.handleTasks)
+	mux.HandleFunc("/v1/tasks/event", s.handleTaskEvent)
 	mux.HandleFunc("/v1/events", s.handleEvents)
 
 	// Serve embedded Web GUI
