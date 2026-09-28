@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -8,12 +9,16 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"text/tabwriter"
 	"time"
 
 	"ackbar/internal/client"
+	"ackbar/internal/daemon"
+	"ackbar/internal/mcp"
 	"ackbar/internal/version"
 
 	"github.com/charmbracelet/bubbletea"
@@ -26,6 +31,16 @@ type Config struct {
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "mcp" {
+		runMCPCmd(os.Args[2:])
+		os.Exit(0)
+	}
+
+	if len(os.Args) > 1 && (os.Args[1] == "agent" || os.Args[1] == "agents") {
+		runAgentCmd(os.Args[2:])
+		os.Exit(0)
+	}
+
 	if len(os.Args) > 1 && (os.Args[1] == "account" || os.Args[1] == "accounts") {
 		runAccountCmd(os.Args[2:])
 		os.Exit(0)
@@ -547,4 +562,83 @@ func runLoginCmd(hostURL, accountID string) {
 	cmd.Stderr = os.Stderr
 	_ = cmd.Run()
 	fmt.Println("✅ Detached from login session.")
+}
+
+func runMCPCmd(args []string) {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	server := mcp.NewServer(nil, os.Stdin, os.Stdout)
+	if err := server.Run(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "MCP server exited: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func runAgentCmd(args []string) {
+	if len(args) == 0 || args[0] == "status" || args[0] == "list" || args[0] == "ls" {
+		statuses, err := daemon.GetAgentStatuses("")
+		if err != nil {
+			fmt.Printf("❌ Failed to query agent statuses: %v\n", err)
+			os.Exit(1)
+		}
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
+		fmt.Fprintln(w, "AGENT\tDETECTED\tMCP CONFIGURED\tSKILL INSTALLED\tVERSION\tSTATUS")
+		for _, s := range statuses {
+			detStr := "no"
+			if s.Detected {
+				detStr = "yes"
+			}
+			mcpStr := "no"
+			if s.MCPInstalled {
+				mcpStr = "yes"
+			}
+			skillStr := "no"
+			if s.SkillInstalled {
+				skillStr = "yes"
+			}
+			statusStr := "UP TO DATE"
+			if !s.Detected {
+				statusStr = "NOT DETECTED"
+			} else if s.DriftDetected {
+				statusStr = "DRIFT DETECTED"
+			}
+			vStr := s.SkillVersion
+			if vStr == "" {
+				vStr = "-"
+			}
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", s.DisplayName, detStr, mcpStr, skillStr, vStr, statusStr)
+		}
+		_ = w.Flush()
+		return
+	}
+
+	subcmd := args[0]
+	switch subcmd {
+	case "setup", "configure", "install":
+		fs := flag.NewFlagSet("agent setup", flag.ExitOnError)
+		agentFlag := fs.String("agent", "all", "Target agent (claude-code, antigravity, codex, or all)")
+		_ = fs.Parse(args[1:])
+		if fs.NArg() > 0 && *agentFlag == "all" {
+			*agentFlag = fs.Arg(0)
+		}
+
+		targets := []string{*agentFlag}
+		fmt.Printf("⚡ Configuring Ackbar Tasks MCP server and Skill for: %s...\n", *agentFlag)
+		updated, err := daemon.ProvisionAgents("", targets)
+		if err != nil {
+			fmt.Printf("❌ Provisioning failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("✅ Successfully configured agents:")
+		for _, s := range updated {
+			if s.Detected {
+				fmt.Printf("  • %s: MCP server registered (%s), Skill installed (%s)\n", s.DisplayName, s.ConfigFile, s.SkillVersion)
+			}
+		}
+	default:
+		fmt.Printf("Unknown agent command: %s\n", subcmd)
+		fmt.Println("Usage: ackbar agent [status|setup]")
+		os.Exit(1)
+	}
 }

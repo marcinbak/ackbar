@@ -86,5 +86,9 @@ Task persistence is managed in `ackbard.db` using CGO-free pure Go SQLite (`mode
    * Filterable by Scope (`All`, `Modemobile`, `Personal`) and Lookback Window (24h, 48h, 7d).
    * 1-click **"📋 Copy to Clipboard"** for fast Slack/Teams standup updates.
    * **"🎙️ Audio Briefing"** voice playback using the Web Speech API (`SpeechSynthesis`).
-6. **Real-time SSE Sync:**
+6. **Agent Tool & Skill Setup (`ackbar mcp`):**
+   * `[⚙️ Agent Setup]` toolbar button opens the Multi-Agent Setup modal.
+   * Native pure Go stdio MCP server (`ackbar mcp`) providing task lifecycle, blocker callouts, deliverables, and discovered work triage.
+   * 1-click auto-configuration for Claude Code, Google Antigravity, and OpenAI Codex with version drift detection.
+7. **Real-time SSE Sync:**
    * Daemon broadcasts trigger debounced task board reloads when the Work Board view is active.
