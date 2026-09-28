@@ -158,6 +158,8 @@ function showSettingsModal() {
             <select id="newAccAgent" class="form-input" style="flex: 1; min-width: 120px;">
               <option value="claude-code">Claude Code</option>
               <option value="antigravity">Antigravity</option>
+              <option value="codex">OpenAI Codex</option>
+              <option value="grok">xAI Grok</option>
             </select>
             <input type="text" id="newAccName" class="form-input" placeholder="profile-name (e.g. work)" style="flex: 1; min-width: 140px;" />
             <input type="text" id="newAccDisplayName" class="form-input" placeholder="Display Name (optional)" style="flex: 1; min-width: 160px;" />
@@ -514,7 +516,8 @@ async function showNewSessionModal(prefillGroup = '') {
       const agentDisplayNames = {
         'claude-code': 'Claude Code (Anthropic)',
         'antigravity': 'Google Antigravity (agy)',
-        'codex': 'OpenAI Codex'
+        'codex': 'OpenAI Codex',
+        'grok': 'xAI Grok'
       };
 
       const installed = discovery.filter(d => d.installed);
@@ -565,6 +568,7 @@ async function showNewSessionModal(prefillGroup = '') {
         <option value="claude-code">Claude Code (Anthropic)</option>
         <option value="antigravity">Google Antigravity (agy)</option>
         <option value="codex">OpenAI Codex</option>
+        <option value="grok">xAI Grok</option>
       `;
       agentSelect.value = preferredAgent || 'claude-code';
     }

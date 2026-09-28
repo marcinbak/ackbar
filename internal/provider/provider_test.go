@@ -228,6 +228,7 @@ func TestProviderDiscovery(t *testing.T) {
 		NewClaudeProvider(),
 		NewCodexProvider(),
 		NewAntigravityProvider(),
+		NewGrokProvider(),
 	}
 
 	for _, p := range providers {
@@ -330,6 +331,7 @@ func TestProviderInterfaceConformance(t *testing.T) {
 		NewClaudeProvider(),
 		NewAntigravityProvider(),
 		NewCodexProvider(),
+		NewGrokProvider(),
 	}
 
 	testUUID := "12345678-1234-1234-1234-123456789abc"
@@ -373,9 +375,10 @@ func TestProviderCapabilityConformance(t *testing.T) {
 	claude := NewClaudeProvider()
 	antigravity := NewAntigravityProvider()
 	codex := NewCodexProvider()
+	grok := NewGrokProvider()
 
 	// 1. Verify Core Role Interfaces for all providers
-	allProviders := []any{claude, antigravity, codex}
+	allProviders := []any{claude, antigravity, codex, grok}
 	for _, p := range allProviders {
 		if _, ok := p.(daemon.AgentIdentity); !ok {
 			t.Errorf("Provider %T must implement daemon.AgentIdentity", p)
@@ -427,6 +430,17 @@ func TestProviderCapabilityConformance(t *testing.T) {
 	}
 	if _, ok := any(codex).(daemon.FullProvider); ok {
 		t.Errorf("CodexProvider should not implement daemon.FullProvider")
+	}
+
+	// 4. Grok implements StatusInspector, but not SubagentDiscoverer
+	if _, ok := any(grok).(daemon.StatusInspector); !ok {
+		t.Errorf("GrokProvider should implement daemon.StatusInspector")
+	}
+	if _, ok := any(grok).(daemon.SubagentDiscoverer); ok {
+		t.Errorf("GrokProvider should not implement daemon.SubagentDiscoverer")
+	}
+	if _, ok := any(grok).(daemon.FullProvider); ok {
+		t.Errorf("GrokProvider should not implement daemon.FullProvider")
 	}
 }
 
@@ -790,6 +804,241 @@ func TestCodexExtractTranscriptAndMetadata(t *testing.T) {
 	}
 	if meta.ContextPct != 25 {
 		t.Errorf("Expected ContextPct 25, got %d", meta.ContextPct)
+	}
+	if meta.LastMessageAt.IsZero() {
+		t.Errorf("Expected non-zero LastMessageAt")
+	}
+}
+
+func TestGrokProvider_ParseHook(t *testing.T) {
+	p := NewGrokProvider()
+
+	// 1. UserPromptSubmit / prompt
+	promptPayload := `{"session_id": "grok-sess-1", "event": "UserPromptSubmit", "prompt": "Fix unit tests", "cwd": "/repo"}`
+	ev, err := p.ParseHook("", []byte(promptPayload))
+	if err != nil {
+		t.Fatalf("ParseHook failed: %v", err)
+	}
+	if ev.Agent != "grok" || ev.State != daemon.StateWorking || ev.NativeID != "grok-sess-1" || !strings.Contains(ev.Activity, "Fix unit tests") {
+		t.Errorf("Unexpected prompt event: %+v", ev)
+	}
+
+	// 2. PreToolUse
+	toolPayload := `{"session_id": "grok-sess-1", "event": "PreToolUse", "name": "bash"}`
+	evTool, err := p.ParseHook("", []byte(toolPayload))
+	if err != nil {
+		t.Fatalf("ParseHook tool failed: %v", err)
+	}
+	if evTool.State != daemon.StateWorking || evTool.Activity != "Running bash" {
+		t.Errorf("Unexpected tool event: %+v", evTool)
+	}
+
+	// 3. ApprovalRequest
+	permPayload := `{"session_id": "grok-sess-1", "event": "ApprovalRequest", "reason": "Run sudo command"}`
+	evPerm, err := p.ParseHook("", []byte(permPayload))
+	if err != nil {
+		t.Fatalf("ParseHook approval failed: %v", err)
+	}
+	if evPerm.State != daemon.StateBlocked || evPerm.Blocked == nil || evPerm.Blocked.Kind != daemon.BlockPermission {
+		t.Errorf("Unexpected approval event: %+v", evPerm)
+	}
+
+	// 4. Stop
+	stopPayload := `{"session_id": "grok-sess-1", "event": "Stop"}`
+	evStop, err := p.ParseHook("", []byte(stopPayload))
+	if err != nil {
+		t.Fatalf("ParseHook stop failed: %v", err)
+	}
+	if evStop.State != daemon.StateIdle {
+		t.Errorf("Unexpected stop event: %+v", evStop)
+	}
+
+	// 5. Corrupt JSON payload returns error
+	if _, err := p.ParseHook("", []byte("{corrupt json")); err == nil {
+		t.Errorf("Expected error on corrupt JSON payload")
+	}
+}
+
+func TestGrokProvider_GetResumeCommand(t *testing.T) {
+	p := NewGrokProvider()
+
+	if cmd := p.GetResumeCommand(""); cmd != "grok" {
+		t.Errorf("Expected 'grok' for empty id, got %q", cmd)
+	}
+	if cmd := p.GetResumeCommand("valid-session-123"); cmd != "grok resume valid-session-123" {
+		t.Errorf("Expected 'grok resume valid-session-123', got %q", cmd)
+	}
+	if cmd := p.GetResumeCommand("../unsafe/path"); cmd != "grok" {
+		t.Errorf("Expected fallback 'grok' for path traversal id, got %q", cmd)
+	}
+	if cmd := p.GetResumeCommand("session\nrm -rf /"); cmd != "grok" {
+		t.Errorf("Expected fallback 'grok' for newline injection id, got %q", cmd)
+	}
+	if cmd := p.GetResumeCommand("session with spaces"); cmd != "grok" {
+		t.Errorf("Expected fallback 'grok' for space-containing id, got %q", cmd)
+	}
+}
+
+func TestGrokCheckHookConfig(t *testing.T) {
+	tmpHome, err := os.MkdirTemp("", "test-grok-hook-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpHome)
+
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpHome)
+	defer os.Setenv("HOME", origHome)
+
+	p := NewGrokProvider()
+
+	// 1. When no config exists
+	configured, setupCmd, err := p.CheckHookConfig()
+	if err != nil {
+		t.Fatalf("CheckHookConfig returned unexpected error: %v", err)
+	}
+	if configured {
+		t.Errorf("Expected false when no hook config exists")
+	}
+	if setupCmd != "ackbar-hook --agent=grok" {
+		t.Errorf("Expected setupCmd 'ackbar-hook --agent=grok', got %q", setupCmd)
+	}
+
+	// 2. When ~/.grok/hooks.json has ackbar-hook configured
+	grokDir := filepath.Join(tmpHome, ".grok")
+	_ = os.MkdirAll(grokDir, 0755)
+	hooksContent := `{"hooks": [{"command": "ackbar-hook --agent=grok"}]}`
+	_ = os.WriteFile(filepath.Join(grokDir, "hooks.json"), []byte(hooksContent), 0644)
+
+	configured, _, err = p.CheckHookConfig()
+	if err != nil {
+		t.Fatalf("CheckHookConfig returned unexpected error: %v", err)
+	}
+	if !configured {
+		t.Errorf("Expected true when hooks.json contains ackbar-hook")
+	}
+
+	// 3. Fallback when hooks.json is removed but config.toml exists
+	_ = os.Remove(filepath.Join(grokDir, "hooks.json"))
+	configToml := `hooks = "http://127.0.0.1:7777/v1/hooks/grok"`
+	_ = os.WriteFile(filepath.Join(grokDir, "config.toml"), []byte(configToml), 0644)
+
+	configured, _, err = p.CheckHookConfig()
+	if err != nil {
+		t.Fatalf("CheckHookConfig returned unexpected error: %v", err)
+	}
+	if !configured {
+		t.Errorf("Expected true when config.toml contains 127.0.0.1:7777")
+	}
+
+	// 4. Fallback when config.toml is removed but config.json exists
+	_ = os.Remove(filepath.Join(grokDir, "config.toml"))
+	configJson := `{"hook": "http://127.0.0.1:7777/v1/hooks/grok"}`
+	_ = os.WriteFile(filepath.Join(grokDir, "config.json"), []byte(configJson), 0644)
+
+	configured, _, err = p.CheckHookConfig()
+	if err != nil {
+		t.Fatalf("CheckHookConfig returned unexpected error: %v", err)
+	}
+	if !configured {
+		t.Errorf("Expected true when config.json contains 127.0.0.1:7777")
+	}
+}
+
+func TestGrokResolveSessionTitle(t *testing.T) {
+	tmpHome, err := os.MkdirTemp("", "test-grok-title-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpHome)
+
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpHome)
+	defer os.Setenv("HOME", origHome)
+
+	p := NewGrokProvider()
+
+	// 1. With non-existent index
+	if title := p.ResolveSessionTitle("/tmp", "session-123"); title != "" {
+		t.Errorf("Expected empty title when index does not exist, got %q", title)
+	}
+
+	// 2. Populate session_index.jsonl
+	grokDir := filepath.Join(tmpHome, ".grok")
+	_ = os.MkdirAll(grokDir, 0755)
+	indexLines := `{"id":"session-123","title":"Add search filters","updated_at":"2026-09-28T09:00:00Z"}` + "\n" +
+		`{"id":"session-456","title":"Refactor router","updated_at":"2026-09-28T10:00:00Z"}` + "\n" +
+		`{"id":"session-123","title":"Add search filters - Updated","updated_at":"2026-09-28T10:30:00Z"}` + "\n"
+	_ = os.WriteFile(filepath.Join(grokDir, "session_index.jsonl"), []byte(indexLines), 0644)
+
+	if title := p.ResolveSessionTitle("/tmp", "session-123"); title != "Add search filters - Updated" {
+		t.Errorf("Expected 'Add search filters - Updated', got %q", title)
+	}
+	if title := p.ResolveSessionTitle("/tmp", "session-456"); title != "Refactor router" {
+		t.Errorf("Expected 'Refactor router', got %q", title)
+	}
+}
+
+func TestGrokExtractTranscriptAndMetadata(t *testing.T) {
+	tmpHome, err := os.MkdirTemp("", "test-grok-transcript-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpHome)
+
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpHome)
+	defer os.Setenv("HOME", origHome)
+
+	sessionID := "grok-sess-999"
+	sessDir := filepath.Join(tmpHome, ".grok", "sessions")
+	_ = os.MkdirAll(sessDir, 0755)
+
+	logLines := []string{
+		`{"timestamp":"2026-09-28T09:00:00Z","type":"init","version":"1.2.0"}`,
+		`{"timestamp":"2026-09-28T09:00:01Z","role":"user","content":"Optimize database performance"}`,
+		`{"timestamp":"2026-09-28T09:00:02Z","type":"tool_call","name":"explain","input":{"query":"SELECT * FROM users"}}`,
+		`{"timestamp":"2026-09-28T09:00:03Z","role":"assistant","content":"I analyzed the query plan and added indexes."}`,
+		`{"timestamp":"2026-09-28T09:00:04Z","type":"usage","rate_limits":{"primary":{"used_percent":40.0}}}`,
+	}
+
+	logPath := filepath.Join(sessDir, fmt.Sprintf("%s.jsonl", sessionID))
+	_ = os.WriteFile(logPath, []byte(strings.Join(logLines, "\n")), 0644)
+
+	p := NewGrokProvider()
+
+	// 1. Test ExtractTranscript
+	msgs, err := p.ExtractTranscript(tmpHome, "/work", sessionID)
+	if err != nil {
+		t.Fatalf("ExtractTranscript failed: %v", err)
+	}
+
+	if len(msgs) != 2 {
+		t.Fatalf("Expected 2 messages (1 user, 1 assistant), got %d: %+v", len(msgs), msgs)
+	}
+	if msgs[0].Role != "user" || msgs[0].Content != "Optimize database performance" {
+		t.Errorf("Unexpected user message: %+v", msgs[0])
+	}
+	if msgs[1].Role != "assistant" || !strings.Contains(msgs[1].Content, "added indexes") {
+		t.Errorf("Unexpected assistant message: %+v", msgs[1])
+	}
+	if len(msgs[1].ToolCalls) != 1 || !strings.Contains(msgs[1].ToolCalls[0], "explain") {
+		t.Errorf("Expected tool call attached to assistant, got: %+v", msgs[1].ToolCalls)
+	}
+
+	// 2. Test ReadSessionMetadata
+	meta := p.ReadSessionMetadata("/work", sessionID)
+	if meta == nil {
+		t.Fatalf("Expected non-nil SessionMeta")
+	}
+	if meta.FirstPrompt != "Optimize database performance" {
+		t.Errorf("Expected FirstPrompt 'Optimize database performance', got %q", meta.FirstPrompt)
+	}
+	if meta.Version != "1.2.0" {
+		t.Errorf("Expected Version '1.2.0', got %q", meta.Version)
+	}
+	if meta.ContextPct != 40 {
+		t.Errorf("Expected ContextPct 40, got %d", meta.ContextPct)
 	}
 	if meta.LastMessageAt.IsZero() {
 		t.Errorf("Expected non-zero LastMessageAt")

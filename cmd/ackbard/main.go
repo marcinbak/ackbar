@@ -119,6 +119,7 @@ func main() {
 	server.RegisterProvider(provider.NewClaudeProvider())
 	server.RegisterProvider(provider.NewCodexProvider())
 	server.RegisterProvider(provider.NewAntigravityProvider())
+	server.RegisterProvider(provider.NewGrokProvider())
 
 	// Start asynchronous background scanner & liveness loop
 	server.StartBackgroundLoop(context.Background())

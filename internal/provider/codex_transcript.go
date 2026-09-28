@@ -308,19 +308,6 @@ func (c *CodexProvider) ExtractTranscript(home, cwd, nativeID string) ([]daemon.
 	return messages, nil
 }
 
-func isSafeSessionID(id string) bool {
-	if id == "" {
-		return false
-	}
-	if isValidUUID(id) {
-		return true
-	}
-	if strings.ContainsAny(id, "/\\*?[]~`$\";|&<>'") || strings.Contains(id, "..") || filepath.Base(id) != id {
-		return false
-	}
-	return true
-}
-
 func findCodexSessionLog(home, nativeID string) string {
 	if !isSafeSessionID(nativeID) {
 		return ""
@@ -362,41 +349,5 @@ func findCodexSessionLog(home, nativeID string) string {
 }
 
 func cleanCodexUserPrompt(text string) string {
-	trimmed := strings.TrimSpace(text)
-	if trimmed == "" {
-		return ""
-	}
-
-	xmlTags := []string{
-		"environment_context",
-		"recommended_plugins",
-		"permissions instructions",
-		"permissions_instructions",
-		"collaboration_mode",
-		"apps_instructions",
-		"plugins_instructions",
-		"skills_instructions",
-		"multi_agent_mode",
-	}
-
-	clean := trimmed
-	for _, tag := range xmlTags {
-		startTag := "<" + tag + ">"
-		endTag := "</" + tag + ">"
-		for {
-			sIdx := strings.Index(clean, startTag)
-			if sIdx == -1 {
-				break
-			}
-			relEnd := strings.Index(clean[sIdx+len(startTag):], endTag)
-			if relEnd == -1 {
-				clean = clean[:sIdx]
-				break
-			}
-			eIdx := sIdx + len(startTag) + relEnd
-			clean = clean[:sIdx] + clean[eIdx+len(endTag):]
-		}
-	}
-
-	return strings.TrimSpace(clean)
+	return cleanInjectedXMLTags(text)
 }

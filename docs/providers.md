@@ -2,10 +2,11 @@
 
 ## 1. Supported Providers
 
-Ackbar supports the three major agent ecosystems:
+Ackbar supports the major agent ecosystems:
 1. **Claude Code (`claude-code`)**
 2. **Google Antigravity (`antigravity`)**
 3. **OpenAI Codex (`codex`)**
+4. **xAI Grok (`grok`)**
 
 ---
 
@@ -24,6 +25,11 @@ Ackbar supports the three major agent ecosystems:
 * **Session Index:** `~/.codex/session_index.jsonl` contains thread titles (`thread_name`), native IDs (`id`), and update timestamps.
 * **Transcripts:** `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` and `~/.codex/archived_sessions/` contain structured execution history, tool invocations, and token usage blocks.
 * **Hook Configuration:** `~/.codex/hooks.json` pipes event payloads to `ackbar-hook --agent=codex`.
+
+### xAI Grok
+* **Session Index:** `~/.grok/session_index.jsonl` contains session IDs, titles, and update timestamps.
+* **Transcripts:** `~/.grok/sessions/<id>.jsonl` and `~/.grok/sessions/<id>/transcript.jsonl` record user prompts, assistant outputs, tool invocations, and token usage blocks.
+* **Hook Configuration:** `~/.grok/hooks.json` (or `~/.grok/config.toml`) pipes event payloads to `ackbar-hook --agent=grok`.
 
 ---
 
