@@ -84,6 +84,14 @@ It is embedded directly into the `ackbard` Go binary and served on `http://127.0
   3. *Home Prefix Mapping:* Automatic `/Users/<user>/...` $\longleftrightarrow$ `/home/<user>/...` translation.
 * **Auto-Discovery of Installed Agents:** Dynamically detects and updates installed agent options (`Claude Code`, `Google Antigravity`, `OpenAI Codex`) whenever the host dropdown changes.
 
+### 📋 8. Work & Fleet Overview Kanban Board
+* **Dual View Modes:** Seamlessly switch between **`[💻 Workspace]`** (multi-tab terminals & agent chats) and **`[📋 Work Board]`** (cross-host agent Kanban dashboard).
+* **4-Pillar Lifecycle Columns:** `NEW` (Backlog/queued), `IN_PROGRESS` (Agent actively executing), `REVIEW` (Human evaluation & PR review), and `DONE` (Merged & closed).
+* **Cross-Host Task Filtering:** Filter by Organization/Group (`All`, `Modemobile`, `Personal`), Project dropdown, or instant full-text search across titles, branches, and tracker tickets.
+* **Zero Context-Switch Navigation:** Clicking any active worker pill on a task card switches straight to Workspace mode and focuses the agent session tab (`openSessionInTab` / `activateTab`).
+* **Interactive Controls:** Merge PRs, unblock waiting agents, view deliverables, create new tasks, and edit task status in-place.
+
+
 ---
 
 ## 3. Keyboard Shortcuts
@@ -115,6 +123,7 @@ The web frontend is organized as zero-build native ECMAScript modules (`<script 
 * **`api.js`**: REST client endpoints (`/v1/sessions`, `/v1/hosts`, `/v1/nodes`, `/v1/settings`, etc.).
 * **`sse.js`**: Server-Sent Events multi-host subscriber and real-time state synchronization.
 * **`tree.js`**: Sidebar tree hierarchy, drag-and-drop reordering, and done / auto-archived sections.
+* **`tasks.js`**: Work & Fleet Overview Kanban board, 4-pillar task lifecycle, organization/project filters, and zero context-switch workspace tab navigation.
 * **`tabs.js`**: Terminal and chat tab strip lifecycle, overflow menu, and persistence.
 * **`terminal.js`**: `xterm.js` terminal tabs, WebSocket PTY streams, resizing, and attachment uploads.
 * **`chat.js`**: Interactive chat interface, streaming transcript, tool call formatters, and composer queue.
