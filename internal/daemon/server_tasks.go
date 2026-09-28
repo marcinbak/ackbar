@@ -26,7 +26,7 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Invalid JSON: "+err.Error(), http.StatusBadRequest)
 			return
 		}
-		
+
 		if t.ID == "" {
 			t.ID = fmt.Sprintf("task_%d", time.Now().UnixNano())
 			if err := s.db.CreateTask(&t); err != nil {

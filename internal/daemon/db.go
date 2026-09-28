@@ -1151,27 +1151,27 @@ func (d *DB) MigrateLocalSessions(newHost string) error {
 }
 
 type Task struct {
-	ID              string               `json:"id"`
-	Title           string               `json:"title"`
-	GroupName       string               `json:"group_name"`
-	ProjectName     string               `json:"project_name"`
-	SubprojectName  string               `json:"subproject_name,omitempty"`
-	Status          string               `json:"status"`
-	Substatus       string               `json:"substatus"`
-	Notes           string               `json:"notes,omitempty"`
-	BlockerQuestion string               `json:"blocker_question,omitempty"`
-	Branch          string               `json:"branch,omitempty"`
-	WorktreePath    string               `json:"worktree_path,omitempty"`
-	PRURL           string               `json:"pr_url,omitempty"`
-	PRNumber        int                  `json:"pr_number,omitempty"`
-	PRState         string               `json:"pr_state,omitempty"`
-	CIStatus        string               `json:"ci_status,omitempty"`
-	CreatedAt       time.Time            `json:"created_at"`
-	UpdatedAt       time.Time            `json:"updated_at"`
-	CompletedAt     *time.Time           `json:"completed_at,omitempty"`
-	ExternalRefs    []TaskExternalRef    `json:"external_refs"`
-	Workers         []TaskWorker         `json:"workers"`
-	Deliverables    []TaskDeliverable    `json:"deliverables"`
+	ID              string            `json:"id"`
+	Title           string            `json:"title"`
+	GroupName       string            `json:"group_name"`
+	ProjectName     string            `json:"project_name"`
+	SubprojectName  string            `json:"subproject_name,omitempty"`
+	Status          string            `json:"status"`
+	Substatus       string            `json:"substatus"`
+	Notes           string            `json:"notes,omitempty"`
+	BlockerQuestion string            `json:"blocker_question,omitempty"`
+	Branch          string            `json:"branch,omitempty"`
+	WorktreePath    string            `json:"worktree_path,omitempty"`
+	PRURL           string            `json:"pr_url,omitempty"`
+	PRNumber        int               `json:"pr_number,omitempty"`
+	PRState         string            `json:"pr_state,omitempty"`
+	CIStatus        string            `json:"ci_status,omitempty"`
+	CreatedAt       time.Time         `json:"created_at"`
+	UpdatedAt       time.Time         `json:"updated_at"`
+	CompletedAt     *time.Time        `json:"completed_at,omitempty"`
+	ExternalRefs    []TaskExternalRef `json:"external_refs"`
+	Workers         []TaskWorker      `json:"workers"`
+	Deliverables    []TaskDeliverable `json:"deliverables"`
 }
 
 type TaskExternalRef struct {
@@ -1240,7 +1240,7 @@ func (d *DB) GetTasks() ([]Task, error) {
 		tasks = append(tasks, t)
 	}
 
-	// Fetch relations manually or handle it outside. For simplicity, just return basic tasks here, 
+	// Fetch relations manually or handle it outside. For simplicity, just return basic tasks here,
 	// or we can fetch them.
 	// Let's fetch them
 	if len(tasks) > 0 {
