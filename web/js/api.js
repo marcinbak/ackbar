@@ -561,15 +561,12 @@ async function handleUpdateHost(h) {
 
 // Task API Endpoints
 async function fetchTasks() {
-  try {
-    const res = await fetch('/v1/tasks');
-    if (res.ok) {
-      return await res.json() || [];
-    }
-  } catch (err) {
-    console.warn('Failed to fetch tasks:', err);
+  const res = await fetch('/v1/tasks');
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(errText || `Failed to fetch tasks (${res.status})`);
   }
-  return [];
+  return await res.json() || [];
 }
 
 async function createTask(task) {

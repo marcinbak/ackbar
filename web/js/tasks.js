@@ -33,11 +33,20 @@ export function switchAppMode(mode) {
     if (workspaceView) workspaceView.style.display = 'flex';
     btnWorkBoard?.classList.remove('active');
     btnWorkspace?.classList.add('active');
+    // Dispatch window resize event so Xterm.js fit addon re-fits terminal layout
+    window.dispatchEvent(new Event('resize'));
   }
 }
 
 export async function refreshWorkBoard() {
-  boardTasks = await fetchTasks();
+  try {
+    const tasks = await fetchTasks();
+    if (Array.isArray(tasks)) {
+      boardTasks = tasks;
+    }
+  } catch (err) {
+    console.warn('Failed to refresh tasks:', err);
+  }
   updateProjectFilterDropdown();
   renderWorkBoard();
 }
@@ -254,10 +263,12 @@ function getSubstatusBadge(substatus) {
 
 function formatRelativeTime(isoStr) {
   try {
+    if (!isoStr) return '';
     const date = new Date(isoStr);
+    if (isNaN(date.getTime())) return '';
     const now = new Date();
     const diffSec = Math.floor((now - date) / 1000);
-    if (diffSec < 60) return 'just now';
+    if (diffSec < 0 || diffSec < 60) return 'just now';
     const diffMin = Math.floor(diffSec / 60);
     if (diffMin < 60) return `${diffMin}m ago`;
     const diffHours = Math.floor(diffMin / 60);
@@ -458,11 +469,17 @@ export function showEditTaskModal(task) {
 
   document.getElementById('mBtnCancelEdit')?.addEventListener('click', hideModal);
   document.getElementById('mBtnUpdateTask')?.addEventListener('click', async () => {
+    const titleVal = document.getElementById('mEditTitle')?.value?.trim();
+    if (!titleVal) {
+      alert('Task title is required');
+      return;
+    }
+    const substatusInput = document.getElementById('mEditSubstatus');
     const updated = {
       ...task,
-      title: document.getElementById('mEditTitle')?.value?.trim() || task.title,
+      title: titleVal,
       status: document.getElementById('mEditStatus')?.value || task.status,
-      substatus: document.getElementById('mEditSubstatus')?.value?.trim() || task.substatus,
+      substatus: substatusInput ? substatusInput.value.trim() : (task.substatus || ''),
       notes: document.getElementById('mEditNotes')?.value?.trim() || '',
       branch: document.getElementById('mEditBranch')?.value?.trim() || '',
       pr_url: document.getElementById('mEditPRURL')?.value?.trim() || ''
