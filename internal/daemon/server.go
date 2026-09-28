@@ -100,6 +100,7 @@ func NewServer(db *DB) *Server {
 		activeSubagents: make(map[string][]*SubagentInfo),
 	}
 	s.headless = NewHeadlessRunner(db, s.broadcast)
+	s.headless.SetOnTurnComplete(s.clearSubagents)
 	if host := s.HostName(); host != "local" && db != nil {
 		_ = db.MigrateLocalSessions(host)
 	}
@@ -2046,25 +2047,34 @@ func (s *Server) handleTakeWheel(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// If tmux session already exists, reuse it gracefully instead of failing
+	// If tmux session already exists, check whether an active agent child process is running in the pane
 	if tmux.HasSession(r.Context(), tmuxName) {
-		sess.TmuxName = tmuxName
-		sess.EngineType = EngineTmux
-		sess.Managed = true
-		sess.State = StateWorking
-		sess.Activity = "Interactive terminal attached"
-		sess.LastEventAt = time.Now()
-		if pid, perr := tmux.GetPID(r.Context(), tmuxName); perr == nil {
-			sess.PID = pid
+		panePID, perr := tmux.GetPID(r.Context(), tmuxName)
+		hasActiveAgent := false
+		if perr == nil && panePID > 0 {
+			activeChildren := getActiveChildProcesses(r.Context(), panePID)
+			hasActiveAgent = len(activeChildren) > 0
 		}
-		_ = s.db.SaveSession(sess)
-		s.broadcast(sess)
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{
-			"status":    "ok",
-			"tmux_name": tmuxName,
-		})
-		return
+		if hasActiveAgent {
+			sess.TmuxName = tmuxName
+			sess.EngineType = EngineTmux
+			sess.Managed = true
+			sess.State = StateWorking
+			sess.Activity = "Interactive terminal attached"
+			sess.LastEventAt = time.Now()
+			sess.PID = panePID
+			_ = s.db.SaveSession(sess)
+			s.broadcast(sess)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"status":    "ok",
+				"tmux_name": tmuxName,
+			})
+			return
+		}
+		// Stale / zombie tmux session with no active agent child processes (e.g. dead bash shell).
+		// Kill dead session so a fresh one can be spawned with resumeCmd.
+		_ = tmux.Kill(r.Context(), tmuxName)
 	}
 
 	var spawnErr error
@@ -2555,38 +2565,17 @@ func (s *Server) handleSessionSubagents(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) getRunningSubagents(sessionID, nativeID, agent, cwd string) []SubagentInfo {
-	s.subagentsMu.RLock()
-	var inMem []*SubagentInfo
-	if list, ok := s.activeSubagents[sessionID]; ok && len(list) > 0 {
-		inMem = list
-	} else if nativeID != "" {
-		if list, ok := s.activeSubagents[nativeID]; ok && len(list) > 0 {
-			inMem = list
-		}
-	}
-	s.subagentsMu.RUnlock()
-
-	if len(inMem) > 0 {
-		var running []SubagentInfo
-		for _, sub := range inMem {
-			if sub != nil && sub.State == "running" {
-				running = append(running, *sub)
-			}
-		}
-		if len(running) > 0 {
-			return running
-		}
-	}
-
-	// 1. Query Provider interface abstraction
+	// 1. Query Provider interface abstraction (source of truth on disk)
+	var diskSubs []SubagentInfo
+	var hasDiscoverer bool
 	if p, ok := s.providers[agent]; ok {
 		if discoverer, ok := p.(SubagentDiscoverer); ok {
+			hasDiscoverer = true
 			home, _ := os.UserHomeDir()
-			if activeSubs, err := discoverer.ListSubagents(home, cwd, nativeID); err == nil && len(activeSubs) > 0 {
-				var running []SubagentInfo
+			if activeSubs, err := discoverer.ListSubagents(home, cwd, nativeID); err == nil {
 				for _, sub := range activeSubs {
 					if sub != nil && sub.State == "running" {
-						running = append(running, SubagentInfo{
+						diskSubs = append(diskSubs, SubagentInfo{
 							ID:        sub.ID,
 							Name:      sub.Name,
 							Role:      sub.Role,
@@ -2596,14 +2585,61 @@ func (s *Server) getRunningSubagents(sessionID, nativeID, agent, cwd string) []S
 						})
 					}
 				}
-				if len(running) > 0 {
-					return running
-				}
 			}
 		}
 	}
 
-	// 2. Fallback to transcript and file extraction
+	// 2. Query and reconcile in-memory subagents
+	s.subagentsMu.Lock()
+	var inMem []*SubagentInfo
+	targetKey := sessionID
+	if list, ok := s.activeSubagents[sessionID]; ok && len(list) > 0 {
+		inMem = list
+	} else if nativeID != "" {
+		if list, ok := s.activeSubagents[nativeID]; ok && len(list) > 0 {
+			inMem = list
+			targetKey = nativeID
+		}
+	}
+
+	var activeInMem []*SubagentInfo
+	var freshRunningInMem []SubagentInfo
+	for _, sub := range inMem {
+		if sub == nil {
+			continue
+		}
+		// If disk discoverer checked disk and found no running subagents,
+		// prune stale in-memory subagents older than 2 minutes.
+		// If no discoverer exists, prune stale in-memory subagents older than 15 minutes.
+		if hasDiscoverer && len(diskSubs) == 0 && time.Since(sub.StartedAt) > 2*time.Minute {
+			continue
+		} else if !hasDiscoverer && time.Since(sub.StartedAt) > 15*time.Minute {
+			continue
+		}
+		if sub.State == "running" {
+			freshRunningInMem = append(freshRunningInMem, *sub)
+		}
+		activeInMem = append(activeInMem, sub)
+	}
+	if len(activeInMem) != len(inMem) {
+		s.activeSubagents[targetKey] = activeInMem
+		if nativeID != "" && nativeID != targetKey {
+			s.activeSubagents[nativeID] = activeInMem
+		}
+	}
+	s.subagentsMu.Unlock()
+
+	// If disk discovery found running subagents, return them (disk is source of truth)
+	if len(diskSubs) > 0 {
+		return diskSubs
+	}
+
+	// If disk discovery found none, return very recent in-memory subagents (<2m)
+	if len(freshRunningInMem) > 0 {
+		return freshRunningInMem
+	}
+
+	// 3. Fallback to transcript and file extraction
 	subs, err := ExtractSubagents(agent, nativeID, cwd)
 	if err == nil {
 		var running []SubagentInfo

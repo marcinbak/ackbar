@@ -80,5 +80,10 @@
   * Normalized CRLF (`\r\n`) newlines to LF (`\n`) to ensure reliable text comparison on multi-line and pasted inputs.
   * Preserved ongoing assistant streaming turns when follow-up prompts are queued.
   * Added defensive consecutive message deduplication in mobile companion transcript views.
+* [x] **Take the Wheel Zombie Shell Resilience & Subagent Lifecycle:**
+  * Prevented `handleTakeWheel` from reusing stale/zombie tmux sessions containing dead bash shells; stale sessions are terminated and cleanly respawned with `resumeCmd`.
+  * Fixed subagent completion tracking by propagating `ToolName` in headless `tool_result` SSE events and reconciling daemon in-memory `activeSubagents` with disk discoverers (`SubagentDiscoverer`).
+  * Optimized headless CLI execution using `/dev/null` for Stdin, eliminating Claude Code's 3-second startup stdin wait delay.
+  * Added OS-level liveliness verification in `HeadlessRunner.IsRunning` to prune dead processes and prevent prompt queue locks.
 
 

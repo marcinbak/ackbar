@@ -2162,14 +2162,15 @@ function handleChatStreamEvent(tabObj, evt) {
     case 'tool_result': {
       tabObj.activeTurnHadTool = true;
       tabObj.activeTurnTools = tabObj.activeTurnTools || [];
-      if (tabObj.activeTurnTools.length > 0) {
-        const lastTool = tabObj.activeTurnTools[tabObj.activeTurnTools.length - 1];
+      const lastTool = tabObj.activeTurnTools.length > 0 ? tabObj.activeTurnTools[tabObj.activeTurnTools.length - 1] : null;
+      if (lastTool) {
         lastTool.status = evt.is_error ? 'error' : 'done';
         lastTool.output = evt.tool_output || '';
       }
 
-      if (evt.tool_name === 'Agent' || evt.tool_name === 'Task') {
-        tabObj.runningSubagents = (tabObj.runningSubagents || []).filter(s => s.name !== evt.tool_name);
+      const toolName = evt.tool_name || (lastTool ? lastTool.name : '');
+      if (toolName === 'Agent' || toolName === 'Task') {
+        tabObj.runningSubagents = (tabObj.runningSubagents || []).filter(s => s.name !== toolName && s.role !== toolName);
         renderSubagentsBar(tabObj);
       }
 
@@ -2199,8 +2200,8 @@ function handleChatStreamEvent(tabObj, evt) {
 
       showInStreamActivity(tabObj, {
         icon: '✓',
-        text: `Completed ${evt.tool_name || 'tool'} • Processing next step...`,
-        badge: evt.tool_name || null
+        text: `Completed ${toolName || 'tool'} • Processing next step...`,
+        badge: toolName || null
       });
       break;
     }

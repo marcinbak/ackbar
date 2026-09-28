@@ -483,7 +483,18 @@ func InspectClaudeStatus(ctx context.Context, sess *Session) bool {
 			return changed
 		}
 
-		// 7. If it was blocked, but tmux pane is unblocked and alive
+		// 7. Explicit agent failure in dead pane
+		if strings.Contains(tailText, "No conversation found with session ID") {
+			if sess.State != StateEnded {
+				sess.State = StateEnded
+				sess.Activity = "Agent process exited: No conversation found"
+				sess.Blocked = nil
+				changed = true
+			}
+			return changed
+		}
+
+		// 8. If it was blocked, but tmux pane is unblocked and alive
 		if sess.State == StateBlocked {
 			sess.State = StateIdle
 			sess.Blocked = nil
