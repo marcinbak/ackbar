@@ -3,6 +3,7 @@ package web_test
 import (
 	"io"
 	"io/fs"
+	"strings"
 	"testing"
 
 	"ackbar/web"
@@ -83,5 +84,31 @@ func TestGetFS(t *testing.T) {
 
 	if entriesCount < len(requiredFiles) {
 		t.Fatalf("expected at least %d files, walked %d", len(requiredFiles), entriesCount)
+	}
+}
+
+func TestChatDeduplication_JS(t *testing.T) {
+	embeddedFS := web.GetFS()
+	f, err := embeddedFS.Open("js/chat.js")
+	if err != nil {
+		t.Fatalf("failed to open js/chat.js: %v", err)
+	}
+	defer f.Close()
+
+	contentBytes, err := io.ReadAll(f)
+	if err != nil {
+		t.Fatalf("failed to read js/chat.js: %v", err)
+	}
+	content := string(contentBytes)
+
+	// Verify required functions are present
+	if !strings.Contains(content, "normalizePromptText") {
+		t.Errorf("expected js/chat.js to contain normalizePromptText")
+	}
+	if !strings.Contains(content, "tabObj.inFlightPrompt") {
+		t.Errorf("expected js/chat.js to track inFlightPrompt on tabObj")
+	}
+	if !strings.Contains(content, "dataset.inFlight") {
+		t.Errorf("expected js/chat.js to mark inFlight on optimistic element")
 	}
 }

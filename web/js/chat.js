@@ -449,7 +449,12 @@ function loadOlderTranscriptMessages(tabObj) {
   tabObj.isLoadingOlderTranscript = false;
 }
 
-// Coalesce consecutive assistant transcript messages into single turns
+// Normalize prompt text by stripping CRLF to LF and trimming whitespace
+function normalizePromptText(text) {
+  return (text || '').replace(/\r\n/g, '\n').trim();
+}
+
+// Coalesce consecutive assistant transcript messages into single turns and deduplicate consecutive identical user turns
 function coalesceTranscriptMessages(messages) {
   if (!Array.isArray(messages)) return [];
   const coalesced = [];
@@ -474,6 +479,19 @@ function coalesceTranscriptMessages(messages) {
       if (msg.timestamp) {
         last.timestamp = msg.timestamp;
       }
+    } else if (last && last.role === 'user' && msg.role === 'user') {
+      const lastText = normalizePromptText(last.content || last.rawPrompt || '');
+      const currText = normalizePromptText(msg.content || msg.rawPrompt || '');
+      if (lastText && currText && lastText === currText) {
+        if (Array.isArray(msg.attachments) && msg.attachments.length > 0) {
+          last.attachments = [...(last.attachments || []), ...msg.attachments];
+        }
+        continue;
+      }
+      coalesced.push({
+        ...msg,
+        tool_calls: Array.isArray(msg.tool_calls) ? [...msg.tool_calls] : []
+      });
     } else {
       coalesced.push({
         ...msg,
@@ -1082,10 +1100,12 @@ function createChatMessageElement(tabObj, msg) {
 
   if (msg.role === 'user') {
     msgEl.className = 'chat-msg user-msg';
-    if (msg.rawPrompt) {
-      msgEl.dataset.rawPrompt = msg.rawPrompt;
-    } else if (msg.content) {
-      msgEl.dataset.rawPrompt = msg.content;
+    if (msg.inFlight) {
+      msgEl.dataset.inFlight = 'true';
+    }
+    const rawVal = msg.rawPrompt || msg.content || '';
+    if (rawVal) {
+      msgEl.dataset.rawPrompt = normalizePromptText(rawVal);
     }
 
     let displayContent = msg.content || '';
@@ -1725,6 +1745,38 @@ async function sendChatPrompt(tabObj, forcedPromptText) {
   tabObj.pendingAttachments = [];
   renderPendingAttachments(tabObj);
 
+  // Optimistically append user message immediately to give instant UI feedback
+  const optimisticMsgEl = appendChatMessage(tabObj, {
+    role: 'user',
+    content: promptText || 'Please inspect the attached file(s).',
+    rawPrompt: daemonPrompt,
+    attachments: sentAttachments,
+    inFlight: true,
+    timestamp: new Date().toISOString()
+  });
+
+  tabObj.inFlightPrompt = {
+    text: normalizePromptText(daemonPrompt),
+    el: optimisticMsgEl,
+    timestamp: Date.now()
+  };
+
+  tabObj.activeTurnMsgEl = null;
+  tabObj.activeTurnBuffer = '';
+  tabObj.activeTurnHadTool = false;
+  tabObj.activeTurnTools = [];
+  tabObj.activeTurnThinking = '';
+
+  showInStreamActivity(tabObj, {
+    icon: '💭',
+    text: 'Thinking...',
+    badge: null
+  });
+
+  if (tabObj.chatCancelBtn) tabObj.chatCancelBtn.style.display = 'inline-flex';
+  if (tabObj.chatStatusBadge) tabObj.chatStatusBadge.textContent = '⚡ Working...';
+  updateComposerButtonState(tabObj);
+
   connectChatStream(tabObj);
   const baseUrl = getSessionBaseUrl(tabObj.session.id, tabObj.session);
   try {
@@ -1750,44 +1802,32 @@ async function sendChatPrompt(tabObj, forcedPromptText) {
 
     const data = await res.json().catch(() => ({}));
     if (data && data.status === 'queued') {
-      // Prompt queued on daemon
+      // Prompt queued on daemon - remove optimistic bubble from active chat and update queue box
+      if (optimisticMsgEl && optimisticMsgEl.parentNode) {
+        optimisticMsgEl.parentNode.removeChild(optimisticMsgEl);
+      }
+      tabObj.inFlightPrompt = null;
+      hideInStreamActivity(tabObj);
       loadChatQueue(tabObj);
+      updateComposerButtonState(tabObj);
       return;
     }
 
-    appendChatMessage(tabObj, {
-      role: 'user',
-      content: promptText || 'Please inspect the attached file(s).',
-      rawPrompt: daemonPrompt,
-      attachments: sentAttachments,
-      timestamp: new Date().toISOString()
-    });
-
-    tabObj.activeTurnMsgEl = null;
-    tabObj.activeTurnBuffer = '';
-    tabObj.activeTurnHadTool = false;
-    tabObj.activeTurnTools = [];
-    tabObj.activeTurnThinking = '';
-
-    showInStreamActivity(tabObj, {
-      icon: '💭',
-      text: 'Thinking...',
-      badge: null
-    });
-
-    if (tabObj.chatCancelBtn) tabObj.chatCancelBtn.style.display = 'inline-flex';
-    if (tabObj.chatStatusBadge) tabObj.chatStatusBadge.textContent = '⚡ Working...';
-    updateComposerButtonState(tabObj);
+    // Prompt accepted and running/sent: clear inFlight flag on optimistic element
+    if (optimisticMsgEl) {
+      delete optimisticMsgEl.dataset.inFlight;
+    }
+    if (tabObj.inFlightPrompt && tabObj.inFlightPrompt.el === optimisticMsgEl) {
+      tabObj.inFlightPrompt = null;
+    }
   } catch (err) {
     console.error('Failed to dispatch prompt:', err);
     hideInStreamActivity(tabObj);
-    appendChatMessage(tabObj, {
-      role: 'user',
-      content: promptText || 'Please inspect the attached file(s).',
-      rawPrompt: daemonPrompt,
-      attachments: sentAttachments,
-      timestamp: new Date().toISOString()
-    });
+    tabObj.inFlightPrompt = null;
+    if (optimisticMsgEl) {
+      delete optimisticMsgEl.dataset.inFlight;
+      optimisticMsgEl.classList.add('prompt-error');
+    }
     const errEl = document.createElement('div');
     errEl.className = 'chat-msg assistant-msg';
     errEl.innerHTML = `
@@ -1897,27 +1937,45 @@ function handleChatStreamEvent(tabObj, evt) {
     case 'turn_start':
       tabObj.activeTurnHadTool = false;
       if (evt.text) {
-        const evtText = (evt.text || '').trim();
-        const userMsgs = tabObj.chatMessagesEl.querySelectorAll('.chat-msg.user-msg');
+        const evtNorm = normalizePromptText(evt.text);
         let isAlreadyRendered = false;
-        for (let i = userMsgs.length - 1; i >= Math.max(0, userMsgs.length - 3); i--) {
-          const uMsg = userMsgs[i];
-          const raw = uMsg.dataset.rawPrompt ? uMsg.dataset.rawPrompt.trim() : '';
-          const uBody = uMsg.querySelector('.chat-msg-body');
-          const bodyText = uBody ? uBody.textContent.trim() : '';
-          if (raw && (raw === evtText || evtText.startsWith(raw))) {
+
+        // 1. Match against currently in-flight client prompt
+        if (tabObj.inFlightPrompt) {
+          const inFlightNorm = tabObj.inFlightPrompt.text;
+          if (inFlightNorm && (inFlightNorm === evtNorm || evtNorm.startsWith(inFlightNorm) || inFlightNorm.startsWith(evtNorm))) {
             isAlreadyRendered = true;
-            break;
-          }
-          if (bodyText && (evtText === bodyText || evtText.startsWith(bodyText) || bodyText.startsWith(evtText))) {
-            isAlreadyRendered = true;
-            break;
-          }
-          if (uMsg.textContent.includes(evtText)) {
-            isAlreadyRendered = true;
-            break;
+            if (tabObj.inFlightPrompt.el) {
+              delete tabObj.inFlightPrompt.el.dataset.inFlight;
+            }
+            tabObj.inFlightPrompt = null;
           }
         }
+
+        // 2. Check DOM for matching user message bubbles
+        if (!isAlreadyRendered) {
+          const userMsgs = tabObj.chatMessagesEl.querySelectorAll('.chat-msg.user-msg');
+          for (let i = userMsgs.length - 1; i >= Math.max(0, userMsgs.length - 5); i--) {
+            const uMsg = userMsgs[i];
+            const raw = normalizePromptText(uMsg.dataset.rawPrompt || '');
+            const uBody = uMsg.querySelector('.chat-msg-body');
+            const bodyText = normalizePromptText(uBody ? uBody.textContent : '');
+            if (raw && (raw === evtNorm || evtNorm.startsWith(raw) || raw.startsWith(evtNorm))) {
+              isAlreadyRendered = true;
+              break;
+            }
+            if (bodyText && (evtNorm === bodyText || evtNorm.startsWith(bodyText) || bodyText.startsWith(evtNorm))) {
+              isAlreadyRendered = true;
+              break;
+            }
+            const fullNorm = normalizePromptText(uMsg.textContent);
+            if (fullNorm && fullNorm.includes(evtNorm)) {
+              isAlreadyRendered = true;
+              break;
+            }
+          }
+        }
+
         if (!isAlreadyRendered) {
           const newMsgEl = appendChatMessage(tabObj, {
             role: 'user',
@@ -2283,6 +2341,7 @@ export {
   loadChatQueue,
   renderLoadMoreBanner,
   loadOlderTranscriptMessages,
+  normalizePromptText,
   coalesceTranscriptMessages,
   loadChatTranscript,
   copyTextToClipboard,

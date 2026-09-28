@@ -1,8 +1,10 @@
 import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+
 import '../../../core/models/session.dart';
 import '../../../core/models/subagent.dart';
 import '../../../core/models/transcript.dart';
@@ -29,7 +31,11 @@ class TranscriptScreen extends ConsumerStatefulWidget {
     );
   }
 
-  static Future<void> showModal(BuildContext context, WidgetRef ref, Session session) {
+  static Future<void> showModal(
+    BuildContext context,
+    WidgetRef ref,
+    Session session,
+  ) {
     return showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -108,7 +114,10 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
     }
 
     // 1. Direct name or URL match
-    final match = hosts.where((h) => h.name == widget.session.host || h.url.contains(widget.session.host));
+    final match = hosts.where(
+      (h) =>
+          h.name == widget.session.host || h.url.contains(widget.session.host),
+    );
     if (match.isNotEmpty) return match.first.url;
 
     // 2. Any online host
@@ -121,6 +130,22 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
     return 'http://127.0.0.1:7777';
   }
 
+  List<TranscriptMessage> _deduplicateMessages(List<TranscriptMessage> msgs) {
+    if (msgs.length <= 1) return msgs;
+    final result = <TranscriptMessage>[];
+    for (final m in msgs) {
+      if (result.isNotEmpty &&
+          result.last.role == 'user' &&
+          m.role == 'user' &&
+          result.last.content.trim() == m.content.trim() &&
+          m.timestamp.difference(result.last.timestamp).inSeconds.abs() <= 5) {
+        continue;
+      }
+      result.add(m);
+    }
+    return result;
+  }
+
   Future<void> _loadTranscript() async {
     if (!mounted) return;
     setState(() {
@@ -130,18 +155,24 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
 
     try {
       final hostUrl = await _resolveHostUrl();
-      final structured = await ref.read(apiClientProvider).getStructuredTranscript(hostUrl, widget.session.id);
-      
+      final structured = await ref
+          .read(apiClientProvider)
+          .getStructuredTranscript(hostUrl, widget.session.id);
+
       if (structured != null && structured.messages.isNotEmpty) {
         if (mounted) {
           setState(() {
-            _transcriptData = structured;
+            _transcriptData = structured.copyWith(
+              messages: _deduplicateMessages(structured.messages),
+            );
             _isLoading = false;
           });
         }
       } else {
         // Fallback to markdown parser
-        final rawMd = await ref.read(apiClientProvider).getTranscript(hostUrl, widget.session.id);
+        final rawMd = await ref
+            .read(apiClientProvider)
+            .getTranscript(hostUrl, widget.session.id);
         if (rawMd.trim().isNotEmpty) {
           final parsed = TranscriptData.fromRawMarkdown(
             sessionId: widget.session.id,
@@ -151,22 +182,25 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
           );
           if (mounted) {
             setState(() {
-              _transcriptData = parsed;
+              _transcriptData = parsed.copyWith(
+                messages: _deduplicateMessages(parsed.messages),
+              );
               _isLoading = false;
             });
           }
         } else {
           if (mounted) {
             setState(() {
-              _transcriptData = structured ?? TranscriptData(
-                sessionId: widget.session.id,
-                nativeId: widget.session.nativeId,
-                agent: widget.session.agent,
-                title: widget.session.displayTitle,
-                cwd: widget.session.cwd,
-                messages: const [],
-                rawMarkdown: '',
-              );
+              _transcriptData = structured ??
+                  TranscriptData(
+                    sessionId: widget.session.id,
+                    nativeId: widget.session.nativeId,
+                    agent: widget.session.agent,
+                    title: widget.session.displayTitle,
+                    cwd: widget.session.cwd,
+                    messages: const [],
+                    rawMarkdown: '',
+                  );
               _isLoading = false;
             });
           }
@@ -190,7 +224,9 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
   Future<void> _loadSubagents() async {
     try {
       final hostUrl = await _resolveHostUrl();
-      final list = await ref.read(apiClientProvider).getSubagents(hostUrl, widget.session.id);
+      final list = await ref
+          .read(apiClientProvider)
+          .getSubagents(hostUrl, widget.session.id);
       if (mounted) {
         final running = list.where((s) => s.isRunning).toList();
         if (!_areSubagentListsEqual(running, _runningSubagents)) {
@@ -205,7 +241,10 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
   bool _areSubagentListsEqual(List<SubagentInfo> a, List<SubagentInfo> b) {
     if (a.length != b.length) return false;
     for (var i = 0; i < a.length; i++) {
-      if (a[i].id != b[i].id || a[i].state != b[i].state || a[i].name != b[i].name || a[i].prompt != b[i].prompt) {
+      if (a[i].id != b[i].id ||
+          a[i].state != b[i].state ||
+          a[i].name != b[i].name ||
+          a[i].prompt != b[i].prompt) {
         return false;
       }
     }
@@ -243,7 +282,10 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
       _isSending = true;
       if (_transcriptData != null) {
         _transcriptData = _transcriptData!.copyWith(
-          messages: [..._transcriptData!.messages, userMsg],
+          messages: _deduplicateMessages([
+            ..._transcriptData!.messages,
+            userMsg,
+          ]),
         );
       }
     });
@@ -254,7 +296,9 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
 
     try {
       final hostUrl = await _resolveHostUrl();
-      final success = await ref.read(apiClientProvider).sendPrompt(hostUrl, widget.session.id, text);
+      final success = await ref
+          .read(apiClientProvider)
+          .sendPrompt(hostUrl, widget.session.id, text);
       if (!success && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -293,7 +337,9 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
 
     try {
       final hostUrl = await _resolveHostUrl();
-      final res = await ref.read(apiClientProvider).takeWheel(hostUrl, widget.session.id);
+      final res = await ref
+          .read(apiClientProvider)
+          .takeWheel(hostUrl, widget.session.id);
       if (res != null && mounted) {
         final tmuxName = res['tmux_name']?.toString() ?? '';
         final updatedSession = widget.session.copyWith(
@@ -305,7 +351,9 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
       } else if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Failed to take wheel. Ensure no headless turn is in progress.'),
+            content: Text(
+              'Failed to take wheel. Ensure no headless turn is in progress.',
+            ),
             backgroundColor: AppColors.statusCoral,
           ),
         );
@@ -351,7 +399,11 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
         backgroundColor: AppColors.surface,
         elevation: 0,
         leading: IconButton(
-          icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 18, color: AppColors.textPrimary),
+          icon: const Icon(
+            Icons.arrow_back_ios_new_rounded,
+            size: 18,
+            color: AppColors.textPrimary,
+          ),
           onPressed: () => Navigator.of(context).pop(),
         ),
         title: Column(
@@ -359,7 +411,11 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
           children: [
             Row(
               children: [
-                const Icon(Icons.forum_outlined, size: 16, color: AppColors.infoCyan),
+                const Icon(
+                  Icons.forum_outlined,
+                  size: 16,
+                  color: AppColors.infoCyan,
+                ),
                 const SizedBox(width: 6),
                 Expanded(
                   child: Text(
@@ -376,7 +432,9 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
             ),
             Text(
               '${widget.session.agentDisplayName} @ ${widget.session.hostTag} • ${messages.length} messages',
-              style: AppTypography.codeXs.copyWith(color: AppColors.textSecondary),
+              style: AppTypography.codeXs.copyWith(
+                color: AppColors.textSecondary,
+              ),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
             ),
@@ -386,25 +444,40 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
           // Take the Wheel in Terminal (Headless sessions)
           if (widget.session.isHeadless)
             IconButton(
-              icon: const Icon(Icons.sports_motorsports_rounded, size: 20, color: AppColors.infoCyan),
+              icon: const Icon(
+                Icons.sports_motorsports_rounded,
+                size: 20,
+                color: AppColors.infoCyan,
+              ),
               tooltip: 'Take the Wheel (Interactive Terminal)',
               onPressed: _takeWheel,
             ),
 
           // Live Terminal Quick Jump
           IconButton(
-            icon: const Icon(Icons.terminal_rounded, size: 20, color: AppColors.statusEmerald),
+            icon: const Icon(
+              Icons.terminal_rounded,
+              size: 20,
+              color: AppColors.statusEmerald,
+            ),
             tooltip: 'Open Live Terminal',
             onPressed: () => TerminalScreen.open(context, widget.session),
           ),
 
           // Copy Full Transcript
-          if (_transcriptData != null && _transcriptData!.rawMarkdown.isNotEmpty)
+          if (_transcriptData != null &&
+              _transcriptData!.rawMarkdown.isNotEmpty)
             IconButton(
-              icon: const Icon(Icons.copy_all_rounded, size: 20, color: AppColors.textMuted),
+              icon: const Icon(
+                Icons.copy_all_rounded,
+                size: 20,
+                color: AppColors.textMuted,
+              ),
               tooltip: 'Copy Full Transcript',
               onPressed: () {
-                Clipboard.setData(ClipboardData(text: _transcriptData!.rawMarkdown));
+                Clipboard.setData(
+                  ClipboardData(text: _transcriptData!.rawMarkdown),
+                );
                 ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(
                     content: Text('Full transcript copied to clipboard'),
@@ -416,7 +489,11 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
 
           // Refresh
           IconButton(
-            icon: const Icon(Icons.refresh_rounded, size: 20, color: AppColors.textMuted),
+            icon: const Icon(
+              Icons.refresh_rounded,
+              size: 20,
+              color: AppColors.textMuted,
+            ),
             tooltip: 'Reload Conversation',
             onPressed: () {
               _loadTranscript();
@@ -437,11 +514,15 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
                       child: Column(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          const CircularProgressIndicator(color: AppColors.infoCyan),
+                          const CircularProgressIndicator(
+                            color: AppColors.infoCyan,
+                          ),
                           AppSpacing.gapH12,
                           Text(
                             'Loading conversation stream...',
-                            style: AppTypography.bodySmall.copyWith(color: AppColors.textSecondary),
+                            style: AppTypography.bodySmall.copyWith(
+                              color: AppColors.textSecondary,
+                            ),
                           ),
                         ],
                       ),
@@ -453,12 +534,18 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
                         child: Column(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            const Icon(Icons.error_outline_rounded, size: 36, color: AppColors.statusCoral),
+                            const Icon(
+                              Icons.error_outline_rounded,
+                              size: 36,
+                              color: AppColors.statusCoral,
+                            ),
                             AppSpacing.gapH12,
                             Text(
                               _errorMessage!,
                               textAlign: TextAlign.center,
-                              style: AppTypography.bodyMedium.copyWith(color: AppColors.statusCoral),
+                              style: AppTypography.bodyMedium.copyWith(
+                                color: AppColors.statusCoral,
+                              ),
                             ),
                             AppSpacing.gapH16,
                             ElevatedButton.icon(
@@ -478,11 +565,17 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
                       child: Column(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          const Icon(Icons.chat_bubble_outline_rounded, size: 40, color: AppColors.textMuted),
+                          const Icon(
+                            Icons.chat_bubble_outline_rounded,
+                            size: 40,
+                            color: AppColors.textMuted,
+                          ),
                           AppSpacing.gapH12,
                           Text(
                             'No conversation messages recorded yet',
-                            style: AppTypography.bodyMedium.copyWith(color: AppColors.textMuted),
+                            style: AppTypography.bodyMedium.copyWith(
+                              color: AppColors.textMuted,
+                            ),
                           ),
                         ],
                       ),
@@ -490,7 +583,12 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
                   else
                     ListView.builder(
                       controller: _scrollController,
-                      padding: const EdgeInsets.fromLTRB(AppSpacing.md, AppSpacing.md, AppSpacing.md, 20),
+                      padding: const EdgeInsets.fromLTRB(
+                        AppSpacing.md,
+                        AppSpacing.md,
+                        AppSpacing.md,
+                        20,
+                      ),
                       physics: const BouncingScrollPhysics(),
                       itemCount: messages.length,
                       itemBuilder: (context, index) {
@@ -511,7 +609,10 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
                         },
                         backgroundColor: AppColors.surfaceHighlight,
                         foregroundColor: AppColors.infoCyan,
-                        icon: const Icon(Icons.arrow_downward_rounded, size: 16),
+                        icon: const Icon(
+                          Icons.arrow_downward_rounded,
+                          size: 16,
+                        ),
                         label: Text(
                           'Latest',
                           style: AppTypography.codeXs.copyWith(
@@ -540,7 +641,10 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
           top: BorderSide(color: AppColors.outlineSubtle, width: 1),
         ),
       ),
-      padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md, vertical: 8),
+      padding: const EdgeInsets.symmetric(
+        horizontal: AppSpacing.md,
+        vertical: 8,
+      ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -553,17 +657,24 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
                     color: AppColors.terminalBlack,
                     borderRadius: BorderRadius.circular(10),
                     border: Border.all(
-                      color: _isSending ? AppColors.infoCyan : AppColors.outlineSubtle,
+                      color: _isSending
+                          ? AppColors.infoCyan
+                          : AppColors.outlineSubtle,
                       width: 1,
                     ),
                   ),
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 6,
+                  ),
                   child: TextField(
                     controller: _promptController,
                     focusNode: _promptFocusNode,
                     minLines: 1,
                     maxLines: 5,
-                    style: AppTypography.bodySmall.copyWith(color: AppColors.textPrimary),
+                    style: AppTypography.bodySmall.copyWith(
+                      color: AppColors.textPrimary,
+                    ),
                     textInputAction: TextInputAction.send,
                     onSubmitted: (_) => _sendPrompt(),
                     decoration: InputDecoration(
@@ -571,7 +682,9 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
                       contentPadding: EdgeInsets.zero,
                       border: InputBorder.none,
                       hintText: 'Ask ${widget.session.agentDisplayName}...',
-                      hintStyle: AppTypography.bodySmall.copyWith(color: AppColors.textMuted),
+                      hintStyle: AppTypography.bodySmall.copyWith(
+                        color: AppColors.textMuted,
+                      ),
                     ),
                   ),
                 ),
@@ -579,13 +692,21 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
               const SizedBox(width: 8),
               if (_isSending)
                 IconButton(
-                  icon: const Icon(Icons.stop_circle_rounded, size: 28, color: AppColors.statusCoral),
+                  icon: const Icon(
+                    Icons.stop_circle_rounded,
+                    size: 28,
+                    color: AppColors.statusCoral,
+                  ),
                   tooltip: 'Cancel turn',
                   onPressed: _cancelTurn,
                 )
               else
                 IconButton(
-                  icon: const Icon(Icons.arrow_upward_rounded, size: 22, color: AppColors.infoCyan),
+                  icon: const Icon(
+                    Icons.arrow_upward_rounded,
+                    size: 22,
+                    color: AppColors.infoCyan,
+                  ),
                   style: IconButton.styleFrom(
                     backgroundColor: AppColors.surfaceHighlight,
                     shape: const CircleBorder(),
@@ -604,7 +725,10 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
                   widget.session.isHeadless
                       ? '💬 Headless turn-by-turn • OAuth Flat-rate'
                       : '🖥️ Tmux process • Interactive shell',
-                  style: AppTypography.codeXs.copyWith(color: AppColors.textMuted, fontSize: 10),
+                  style: AppTypography.codeXs.copyWith(
+                    color: AppColors.textMuted,
+                    fontSize: 10,
+                  ),
                 ),
                 if (_isSending)
                   Row(
@@ -613,12 +737,18 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
                       const SizedBox(
                         width: 10,
                         height: 10,
-                        child: CircularProgressIndicator(strokeWidth: 1.5, color: AppColors.infoCyan),
+                        child: CircularProgressIndicator(
+                          strokeWidth: 1.5,
+                          color: AppColors.infoCyan,
+                        ),
                       ),
                       const SizedBox(width: 4),
                       Text(
                         'Working...',
-                        style: AppTypography.codeXs.copyWith(color: AppColors.infoCyan, fontSize: 10),
+                        style: AppTypography.codeXs.copyWith(
+                          color: AppColors.infoCyan,
+                          fontSize: 10,
+                        ),
                       ),
                     ],
                   ),
@@ -738,16 +868,26 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
             Row(
               children: [
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 6,
+                    vertical: 2,
+                  ),
                   decoration: BoxDecoration(
                     color: widget.session.agentColor.withOpacity(0.15),
                     borderRadius: AppSpacing.roundedSm,
-                    border: Border.all(color: widget.session.agentColor.withOpacity(0.4), width: 0.8),
+                    border: Border.all(
+                      color: widget.session.agentColor.withOpacity(0.4),
+                      width: 0.8,
+                    ),
                   ),
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      AgentLogo(agent: widget.session.agent, size: 11, color: widget.session.agentColor),
+                      AgentLogo(
+                        agent: widget.session.agent,
+                        size: 11,
+                        color: widget.session.agentColor,
+                      ),
                       const SizedBox(width: 4),
                       Text(
                         widget.session.agentDisplayName,
@@ -770,9 +910,16 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
                 ),
                 const SizedBox(width: 4),
                 IconButton(
-                  icon: const Icon(Icons.copy_rounded, size: 14, color: AppColors.textMuted),
+                  icon: const Icon(
+                    Icons.copy_rounded,
+                    size: 14,
+                    color: AppColors.textMuted,
+                  ),
                   padding: EdgeInsets.zero,
-                  constraints: const BoxConstraints(minWidth: 24, minHeight: 24),
+                  constraints: const BoxConstraints(
+                    minWidth: 24,
+                    minHeight: 24,
+                  ),
                   tooltip: 'Copy message',
                   onPressed: () {
                     Clipboard.setData(ClipboardData(text: message.content));
@@ -794,7 +941,8 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
             ],
 
             // Thought Process Accordion
-            if (message.thinking != null && message.thinking!.trim().isNotEmpty) ...[
+            if (message.thinking != null &&
+                message.thinking!.trim().isNotEmpty) ...[
               const SizedBox(height: 8),
               _buildThinkingAccordion(message.thinking!),
             ],
@@ -819,17 +967,32 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
                   codeblockDecoration: BoxDecoration(
                     color: AppColors.terminalBlack,
                     borderRadius: AppSpacing.roundedSm,
-                    border: Border.all(color: AppColors.outlineSubtle, width: 0.8),
+                    border: Border.all(
+                      color: AppColors.outlineSubtle,
+                      width: 0.8,
+                    ),
                   ),
-                  h1: AppTypography.titleLarge.copyWith(color: AppColors.textPrimary),
-                  h2: AppTypography.titleMedium.copyWith(color: AppColors.textPrimary),
-                  h3: AppTypography.titleSmall.copyWith(color: AppColors.textPrimary),
-                  blockquote: AppTypography.bodySmall.copyWith(color: AppColors.textSecondary),
+                  h1: AppTypography.titleLarge.copyWith(
+                    color: AppColors.textPrimary,
+                  ),
+                  h2: AppTypography.titleMedium.copyWith(
+                    color: AppColors.textPrimary,
+                  ),
+                  h3: AppTypography.titleSmall.copyWith(
+                    color: AppColors.textPrimary,
+                  ),
+                  blockquote: AppTypography.bodySmall.copyWith(
+                    color: AppColors.textSecondary,
+                  ),
                   blockquoteDecoration: BoxDecoration(
-                    border: const Border(left: BorderSide(color: AppColors.infoCyan, width: 3)),
+                    border: const Border(
+                      left: BorderSide(color: AppColors.infoCyan, width: 3),
+                    ),
                     color: AppColors.surfaceHighlight.withOpacity(0.3),
                   ),
-                  listBullet: AppTypography.bodyMedium.copyWith(color: AppColors.infoCyan),
+                  listBullet: AppTypography.bodyMedium.copyWith(
+                    color: AppColors.infoCyan,
+                  ),
                 ),
               ),
             ],
@@ -866,7 +1029,8 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
     }
 
     // Multiple unique tools
-    final breakdown = uniqueTools.map((name) => '$name x${counts[name]}').join(', ');
+    final breakdown =
+        uniqueTools.map((name) => '$name x${counts[name]}').join(', ');
     return '⚡ $total tools ($breakdown)';
   }
 
@@ -879,7 +1043,10 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
       decoration: BoxDecoration(
         color: AppColors.terminalBlack.withOpacity(0.6),
         borderRadius: AppSpacing.roundedSm,
-        border: Border.all(color: AppColors.outlineSubtle.withOpacity(0.7), width: 0.6),
+        border: Border.all(
+          color: AppColors.outlineSubtle.withOpacity(0.7),
+          width: 0.6,
+        ),
       ),
       child: Theme(
         data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
@@ -887,7 +1054,11 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
           tilePadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 0),
           childrenPadding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
           dense: true,
-          leading: const Icon(Icons.bolt_rounded, size: 16, color: AppColors.statusAmberLight),
+          leading: const Icon(
+            Icons.bolt_rounded,
+            size: 16,
+            color: AppColors.statusAmberLight,
+          ),
           title: Row(
             children: [
               Expanded(
@@ -904,11 +1075,17 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
               ),
               const SizedBox(width: 6),
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 6,
+                  vertical: 1.5,
+                ),
                 decoration: BoxDecoration(
                   color: AppColors.surfaceHighlight,
                   borderRadius: BorderRadius.circular(4),
-                  border: Border.all(color: AppColors.outlineSubtle, width: 0.5),
+                  border: Border.all(
+                    color: AppColors.outlineSubtle,
+                    width: 0.5,
+                  ),
                 ),
                 child: Text(
                   '$total ${total == 1 ? 'action' : 'actions'}',
@@ -934,7 +1111,10 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
                   decoration: BoxDecoration(
                     color: AppColors.surfaceHighlight.withOpacity(0.5),
                     borderRadius: BorderRadius.circular(6),
-                    border: Border.all(color: AppColors.outlineSubtle.withOpacity(0.5), width: 0.5),
+                    border: Border.all(
+                      color: AppColors.outlineSubtle.withOpacity(0.5),
+                      width: 0.5,
+                    ),
                   ),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -951,11 +1131,19 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
                           ),
                           const SizedBox(width: 6),
                           Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 6,
+                              vertical: 1,
+                            ),
                             decoration: BoxDecoration(
                               color: AppColors.surface,
                               borderRadius: BorderRadius.circular(4),
-                              border: Border.all(color: AppColors.statusAmberLight.withOpacity(0.3), width: 0.5),
+                              border: Border.all(
+                                color: AppColors.statusAmberLight.withOpacity(
+                                  0.3,
+                                ),
+                                width: 0.5,
+                              ),
                             ),
                             child: Text(
                               item.name,
@@ -970,11 +1158,15 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
                           if (item.detail.isNotEmpty)
                             InkWell(
                               onTap: () {
-                                Clipboard.setData(ClipboardData(text: item.detail));
+                                Clipboard.setData(
+                                  ClipboardData(text: item.detail),
+                                );
                                 HapticFeedback.lightImpact();
                                 ScaffoldMessenger.of(context).showSnackBar(
                                   const SnackBar(
-                                    content: Text('Command copied to clipboard'),
+                                    content: Text(
+                                      'Command copied to clipboard',
+                                    ),
                                     duration: Duration(seconds: 1),
                                     backgroundColor: AppColors.surfaceHighlight,
                                   ),
@@ -982,7 +1174,11 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
                               },
                               child: const Padding(
                                 padding: EdgeInsets.all(2),
-                                child: Icon(Icons.copy_rounded, size: 13, color: AppColors.textMuted),
+                                child: Icon(
+                                  Icons.copy_rounded,
+                                  size: 13,
+                                  color: AppColors.textMuted,
+                                ),
                               ),
                             ),
                         ],
@@ -991,11 +1187,17 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
                         const SizedBox(height: 4),
                         Container(
                           width: double.infinity,
-                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 6,
+                            vertical: 4,
+                          ),
                           decoration: BoxDecoration(
                             color: AppColors.terminalBlack,
                             borderRadius: BorderRadius.circular(4),
-                            border: Border.all(color: AppColors.outlineSubtle.withOpacity(0.4), width: 0.5),
+                            border: Border.all(
+                              color: AppColors.outlineSubtle.withOpacity(0.4),
+                              width: 0.5,
+                            ),
                           ),
                           child: SelectableText(
                             item.detail,
@@ -1026,7 +1228,8 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
     }
 
     final count = _runningSubagents.length;
-    final countText = count == 1 ? '1 subagent running...' : '$count subagents running...';
+    final countText =
+        count == 1 ? '1 subagent running...' : '$count subagents running...';
 
     return Container(
       decoration: const BoxDecoration(
@@ -1048,7 +1251,10 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
               });
             },
             child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md, vertical: 7),
+              padding: const EdgeInsets.symmetric(
+                horizontal: AppSpacing.md,
+                vertical: 7,
+              ),
               child: Row(
                 children: [
                   // Pulsing Amber Dot
@@ -1068,10 +1274,7 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
                     ),
                   ),
                   const SizedBox(width: 8),
-                  const Text(
-                    '⚡',
-                    style: TextStyle(fontSize: 11),
-                  ),
+                  const Text('⚡', style: TextStyle(fontSize: 11)),
                   const SizedBox(width: 4),
                   Expanded(
                     child: Text(
@@ -1084,7 +1287,9 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
                     ),
                   ),
                   Icon(
-                    _isSubagentsExpanded ? Icons.keyboard_arrow_up_rounded : Icons.keyboard_arrow_down_rounded,
+                    _isSubagentsExpanded
+                        ? Icons.keyboard_arrow_up_rounded
+                        : Icons.keyboard_arrow_down_rounded,
                     size: 18,
                     color: AppColors.textMuted,
                   ),
@@ -1097,7 +1302,12 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
           if (_isSubagentsExpanded)
             Container(
               constraints: const BoxConstraints(maxHeight: 200),
-              padding: const EdgeInsets.fromLTRB(AppSpacing.md, 0, AppSpacing.md, 8),
+              padding: const EdgeInsets.fromLTRB(
+                AppSpacing.md,
+                0,
+                AppSpacing.md,
+                8,
+              ),
               child: ListView.separated(
                 shrinkWrap: true,
                 itemCount: _runningSubagents.length,
@@ -1111,7 +1321,10 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
                     decoration: BoxDecoration(
                       color: AppColors.surfaceHighlight.withOpacity(0.6),
                       borderRadius: BorderRadius.circular(6),
-                      border: Border.all(color: AppColors.outlineSubtle.withOpacity(0.6), width: 0.6),
+                      border: Border.all(
+                        color: AppColors.outlineSubtle.withOpacity(0.6),
+                        width: 0.6,
+                      ),
                     ),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1142,11 +1355,17 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
                             if (sub.displayRole != null) ...[
                               const SizedBox(width: 6),
                               Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 5,
+                                  vertical: 1,
+                                ),
                                 decoration: BoxDecoration(
                                   color: AppColors.surface,
                                   borderRadius: BorderRadius.circular(4),
-                                  border: Border.all(color: AppColors.infoCyan.withOpacity(0.4), width: 0.5),
+                                  border: Border.all(
+                                    color: AppColors.infoCyan.withOpacity(0.4),
+                                    width: 0.5,
+                                  ),
                                 ),
                                 child: Text(
                                   sub.displayRole!,
@@ -1162,19 +1381,26 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
                               const SizedBox(width: 6),
                               InkWell(
                                 onTap: () {
-                                  Clipboard.setData(ClipboardData(text: prompt));
+                                  Clipboard.setData(
+                                    ClipboardData(text: prompt),
+                                  );
                                   HapticFeedback.lightImpact();
                                   ScaffoldMessenger.of(context).showSnackBar(
                                     const SnackBar(
                                       content: Text('Subagent prompt copied'),
                                       duration: Duration(seconds: 1),
-                                      backgroundColor: AppColors.surfaceHighlight,
+                                      backgroundColor:
+                                          AppColors.surfaceHighlight,
                                     ),
                                   );
                                 },
                                 child: const Padding(
                                   padding: EdgeInsets.all(2),
-                                  child: Icon(Icons.copy_rounded, size: 13, color: AppColors.textMuted),
+                                  child: Icon(
+                                    Icons.copy_rounded,
+                                    size: 13,
+                                    color: AppColors.textMuted,
+                                  ),
                                 ),
                               ),
                             ],
@@ -1188,7 +1414,10 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
                             decoration: BoxDecoration(
                               color: AppColors.terminalBlack,
                               borderRadius: BorderRadius.circular(4),
-                              border: Border.all(color: AppColors.outlineSubtle.withOpacity(0.4), width: 0.5),
+                              border: Border.all(
+                                color: AppColors.outlineSubtle.withOpacity(0.4),
+                                width: 0.5,
+                              ),
                             ),
                             child: Text(
                               prompt,
@@ -1220,7 +1449,10 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
       decoration: BoxDecoration(
         color: AppColors.surfaceHighlight.withOpacity(0.4),
         borderRadius: AppSpacing.roundedSm,
-        border: Border.all(color: AppColors.outlineSubtle.withOpacity(0.6), width: 0.6),
+        border: Border.all(
+          color: AppColors.outlineSubtle.withOpacity(0.6),
+          width: 0.6,
+        ),
       ),
       child: Theme(
         data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
@@ -1228,7 +1460,11 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
           tilePadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 0),
           childrenPadding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
           dense: true,
-          leading: const Icon(Icons.psychology_outlined, size: 16, color: AppColors.textMuted),
+          leading: const Icon(
+            Icons.psychology_outlined,
+            size: 16,
+            color: AppColors.textMuted,
+          ),
           title: Text(
             '💭 Thought Process',
             style: AppTypography.codeXs.copyWith(
@@ -1267,11 +1503,17 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.info_outline_rounded, size: 12, color: AppColors.textMuted),
+            const Icon(
+              Icons.info_outline_rounded,
+              size: 12,
+              color: AppColors.textMuted,
+            ),
             const SizedBox(width: 6),
             Flexible(
               child: Text(
-                message.content.length > 80 ? '${message.content.substring(0, 80)}...' : message.content,
+                message.content.length > 80
+                    ? '${message.content.substring(0, 80)}...'
+                    : message.content,
                 style: AppTypography.codeXs.copyWith(
                   color: AppColors.textMuted,
                   fontSize: 10.5,
@@ -1317,7 +1559,10 @@ class _ParsedToolCall {
     // Pattern 2: "tool_name (description)"
     final match = RegExp(r'^([a-zA-Z0-9_\-]+)\s*\((.+)\)$').firstMatch(trimmed);
     if (match != null) {
-      return _ParsedToolCall(name: match.group(1)!.trim(), detail: match.group(2)!.trim());
+      return _ParsedToolCall(
+        name: match.group(1)!.trim(),
+        detail: match.group(2)!.trim(),
+      );
     }
 
     return _ParsedToolCall(name: trimmed, detail: '');
