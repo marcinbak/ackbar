@@ -217,7 +217,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sessionUpdateMsg:
 		found := false
 		for i, s := range m.sessions {
-			if s.ID == msg.ID {
+			if s.ID == msg.ID || (msg.OldID != "" && s.ID == msg.OldID) {
 				m.sessions[i] = msg
 				found = true
 				break

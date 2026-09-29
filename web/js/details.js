@@ -73,21 +73,21 @@ function openSessionDetailsTab(session) {
   closeBtn.textContent = '✕';
   closeBtn.addEventListener('click', (e) => {
     e.stopPropagation();
-    closeTab(tabId);
+    closeTab(tabEl.dataset.tabId || tabId);
   });
 
   tabEl.appendChild(titleWrap);
   tabEl.appendChild(closeBtn);
 
   tabEl.addEventListener('click', (e) => {
-    if (e.button === 0) activateTab(tabId);
+    if (e.button === 0) activateTab(tabEl.dataset.tabId || tabId);
   });
 
   tabEl.addEventListener('auxclick', (e) => {
     if (e.button === 1) {
       e.preventDefault();
       e.stopPropagation();
-      closeTab(tabId);
+      closeTab(tabEl.dataset.tabId || tabId);
     }
   });
 
@@ -95,7 +95,7 @@ function openSessionDetailsTab(session) {
   tabEl.addEventListener('contextmenu', (e) => {
     e.preventDefault();
     e.stopPropagation();
-    showTabContextMenu(e.clientX, e.clientY, tabId);
+    showTabContextMenu(e.clientX, e.clientY, tabEl.dataset.tabId || tabId);
   });
 
   if (el.tabStrip) el.tabStrip.appendChild(tabEl);

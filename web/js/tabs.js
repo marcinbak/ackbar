@@ -205,7 +205,7 @@ function openSessionInTab(session) {
   closeBtn.title = 'Close Tab';
   closeBtn.addEventListener('click', (e) => {
     e.stopPropagation();
-    closeTab(tabId);
+    closeTab(tabEl.dataset.tabId || tabId);
   });
 
   tabEl.appendChild(titleWrap);
@@ -213,7 +213,7 @@ function openSessionInTab(session) {
 
   // Left click to activate tab
   tabEl.addEventListener('click', (e) => {
-    if (e.button === 0) activateTab(tabId);
+    if (e.button === 0) activateTab(tabEl.dataset.tabId || tabId);
   });
 
   // Middle mouse click to close tab
@@ -221,7 +221,7 @@ function openSessionInTab(session) {
     if (e.button === 1) {
       e.preventDefault();
       e.stopPropagation();
-      closeTab(tabId);
+      closeTab(tabEl.dataset.tabId || tabId);
     }
   });
 
@@ -229,7 +229,7 @@ function openSessionInTab(session) {
   tabEl.addEventListener('contextmenu', (e) => {
     e.preventDefault();
     e.stopPropagation();
-    showTabContextMenu(e.clientX, e.clientY, tabId);
+    showTabContextMenu(e.clientX, e.clientY, tabEl.dataset.tabId || tabId);
   });
 
   tabEl.addEventListener('mousedown', (e) => {
@@ -238,15 +238,19 @@ function openSessionInTab(session) {
 
   if (el.tabStrip) el.tabStrip.appendChild(tabEl);
 
+  const getActiveTabId = () => tabEl.dataset.tabId || tabId;
+  let tabObj = null;
+  const getCurrentTab = () => (state.openTabs ? state.openTabs.get(getActiveTabId()) : null) || tabObj;
+
   // 2. Create Terminal / Chat Container
   const initialViewMode = session.engine_type === 'headless' ? 'chat' : 'terminal';
   const containerEl = document.createElement('div');
   containerEl.className = `terminal-tab-view has-session-container view-mode-${initialViewMode}`;
   containerEl.id = `termView_${tabId.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
   containerEl.addEventListener('click', () => {
-    const currentTab = state.openTabs.get(tabId);
+    const currentTab = getCurrentTab();
     if (currentTab && (!currentTab.socket || currentTab.socket.readyState === WebSocket.CLOSED || currentTab.socket.readyState === WebSocket.CLOSING)) {
-      reconnectTerminalTab(tabId);
+      reconnectTerminalTab(getActiveTabId());
     }
   });
   if (el.terminalViewport) el.terminalViewport.appendChild(containerEl);
@@ -278,7 +282,7 @@ function openSessionInTab(session) {
     `;
     const takeWheelBtn = notice.querySelector('.btn-take-wheel-prompt');
     if (takeWheelBtn) {
-      takeWheelBtn.addEventListener('click', () => handleTakeWheel(tabId));
+      takeWheelBtn.addEventListener('click', () => handleTakeWheel(getActiveTabId()));
     }
     termViewEl.appendChild(notice);
   }
@@ -305,7 +309,7 @@ function openSessionInTab(session) {
   termViewEl.addEventListener('drop', (e) => {
     e.preventDefault();
     dropOverlay.classList.remove('active');
-    const currentTab = state.openTabs.get(tabId);
+    const currentTab = getCurrentTab();
     if (currentTab && e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
       for (const file of e.dataTransfer.files) {
         uploadAndAttachFile(file, currentTab);
@@ -318,7 +322,7 @@ function openSessionInTab(session) {
     if (!e.clipboardData) return;
     const items = e.clipboardData.items || [];
     let handled = false;
-    const currentTab = state.openTabs.get(tabId);
+    const currentTab = getCurrentTab();
     if (!currentTab) return;
 
     for (const item of items) {
@@ -428,7 +432,7 @@ function openSessionInTab(session) {
     // 2. Allow Cmd+W / Ctrl+W to close active tab
     if ((event.metaKey || event.ctrlKey) && (event.key === 'w' || event.key === 'W')) {
       if (event.type === 'keydown') {
-        closeTab(tabId);
+        closeTab(getActiveTabId());
       }
       return false;
     }
@@ -465,7 +469,7 @@ function openSessionInTab(session) {
       if (event.type === 'keydown') {
         event.preventDefault();
         event.stopPropagation();
-        const currentTab = state.openTabs.get(tabId);
+        const currentTab = getCurrentTab();
         if (currentTab && currentTab.socket && currentTab.socket.readyState === WebSocket.OPEN) {
           currentTab.socket.send(new Uint8Array([0x1b, 0x5b, 0x5a]));
         }
@@ -476,7 +480,8 @@ function openSessionInTab(session) {
   });
 
   // Save in State
-  const tabObj = {
+  tabObj = {
+    id: tabId,
     type: 'terminal',
     session,
     terminal: term,
@@ -544,7 +549,7 @@ function openSessionInTab(session) {
   tabObj.resizeObserver = resizeObserver;
 
   term.onData((data) => {
-    const currentTab = state.openTabs.get(tabId);
+    const currentTab = getCurrentTab();
     if (currentTab && currentTab.socket && currentTab.socket.readyState === WebSocket.OPEN) {
       currentTab.socket.send(data);
       // If user submitted input (e.g. Enter key), bump last_event_at and re-sort
@@ -557,12 +562,12 @@ function openSessionInTab(session) {
         renderTree();
       }
     } else if (!currentTab || !currentTab.socket || currentTab.socket.readyState === WebSocket.CLOSED || currentTab.socket.readyState === WebSocket.CLOSING) {
-      reconnectTerminalTab(tabId);
+      reconnectTerminalTab(getActiveTabId());
     }
   });
 
   term.onResize((size) => {
-    const currentTab = state.openTabs.get(tabId);
+    const currentTab = getCurrentTab();
     if (currentTab && currentTab.socket) {
       sendTerminalResize(currentTab.socket, size.cols, size.rows);
     }
@@ -699,6 +704,55 @@ function closeTab(tabId) {
 
   savePersistedTabs();
   handleTabOverflow();
+  renderTree();
+}
+
+// Migrate tab ID smoothly when a placeholder session adopts its real native conversation ID
+function migrateTabId(oldId, newId, session) {
+  if (!oldId || !newId || oldId === newId) return;
+
+  const tab = state.openTabs.get(oldId);
+  if (tab) {
+    state.openTabs.delete(oldId);
+    tab.id = newId;
+    tab.session = session;
+    if (tab.tabEl) {
+      tab.tabEl.dataset.tabId = newId;
+      const titleSpan = tab.tabEl.querySelector('.tab-title');
+      if (titleSpan) {
+        titleSpan.textContent = session.name || session.agent;
+        titleSpan.title = session.name || session.agent;
+      }
+    }
+    state.openTabs.set(newId, tab);
+
+    if (state.activeTabId === oldId) {
+      state.activeTabId = newId;
+    }
+  }
+
+  const detailsOldId = `details_${oldId}`;
+  const detailsNewId = `details_${newId}`;
+  const detailsTab = state.openTabs.get(detailsOldId);
+  if (detailsTab) {
+    state.openTabs.delete(detailsOldId);
+    detailsTab.id = detailsNewId;
+    detailsTab.session = session;
+    if (detailsTab.tabEl) {
+      detailsTab.tabEl.dataset.tabId = detailsNewId;
+      const titleSpan = detailsTab.tabEl.querySelector('.tab-title');
+      if (titleSpan) {
+        titleSpan.textContent = session.name || session.agent;
+        titleSpan.title = session.name || session.agent;
+      }
+    }
+    state.openTabs.set(detailsNewId, detailsTab);
+    if (state.activeTabId === detailsOldId) {
+      state.activeTabId = detailsNewId;
+    }
+  }
+
+  savePersistedTabs();
   renderTree();
 }
 
@@ -897,5 +951,6 @@ export {
   restorePersistedTabs,
   updateOpenTabsState,
   handleTabOverflow,
-  renderOverflowMenu
+  renderOverflowMenu,
+  migrateTabId
 };
