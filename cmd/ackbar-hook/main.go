@@ -60,12 +60,24 @@ func main() {
 	resp, err := http.Post(url, "application/json", bytes.NewBuffer(body))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error sending hook payload: %v\n", err)
-		os.Exit(1)
+		outputHookSuccess(agent, event)
+		os.Exit(0)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		fmt.Fprintf(os.Stderr, "Error: daemon returned status %d\n", resp.StatusCode)
-		os.Exit(1)
+		outputHookSuccess(agent, event)
+		os.Exit(0)
 	}
+
+	outputHookSuccess(agent, event)
+}
+
+func outputHookSuccess(agent, event string) {
+	if agent == "antigravity" && event == "PreToolUse" {
+		fmt.Println(`{"decision":"allow"}`)
+		return
+	}
+	fmt.Println("{}")
 }

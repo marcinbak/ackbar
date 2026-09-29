@@ -390,15 +390,64 @@ func runSetupHooks() error {
 	geminiHooksDir := filepath.Join(home, ".gemini", "config")
 	_ = os.MkdirAll(geminiHooksDir, 0755)
 	geminiHooksFile := filepath.Join(geminiHooksDir, "hooks.json")
-	geminiHookData := fmt.Sprintf(`{
-  "hooks": [
-    {
-      "command": "%s --agent=antigravity"
-    }
-  ]
-}`, hookBinTarget)
-	_ = os.WriteFile(geminiHooksFile, []byte(geminiHookData), 0644)
-	fmt.Printf("✅ Configured Antigravity hook in %s\n", geminiHooksFile)
+
+	var existingHooks map[string]interface{}
+	if data, err := os.ReadFile(geminiHooksFile); err == nil {
+		_ = json.Unmarshal(data, &existingHooks)
+	}
+	if existingHooks == nil {
+		existingHooks = make(map[string]interface{})
+	}
+	delete(existingHooks, "hooks") // remove legacy flat array if present
+
+	hookCmd := fmt.Sprintf("%s --agent=antigravity", hookBinTarget)
+	existingHooks["ackbar"] = map[string]interface{}{
+		"PreInvocation": []map[string]interface{}{
+			{
+				"type":    "command",
+				"command": hookCmd + " --event=PreInvocation",
+			},
+		},
+		"PostInvocation": []map[string]interface{}{
+			{
+				"type":    "command",
+				"command": hookCmd + " --event=PostInvocation",
+			},
+		},
+		"Stop": []map[string]interface{}{
+			{
+				"type":    "command",
+				"command": hookCmd + " --event=Stop",
+			},
+		},
+		"PreToolUse": []map[string]interface{}{
+			{
+				"matcher": "*",
+				"hooks": []map[string]interface{}{
+					{
+						"type":    "command",
+						"command": hookCmd + " --event=PreToolUse",
+					},
+				},
+			},
+		},
+		"PostToolUse": []map[string]interface{}{
+			{
+				"matcher": "*",
+				"hooks": []map[string]interface{}{
+					{
+						"type":    "command",
+						"command": hookCmd + " --event=PostToolUse",
+					},
+				},
+			},
+		},
+	}
+
+	if updated, err := json.MarshalIndent(existingHooks, "", "  "); err == nil {
+		_ = os.WriteFile(geminiHooksFile, updated, 0644)
+		fmt.Printf("✅ Configured Antigravity lifecycle hooks in %s\n", geminiHooksFile)
+	}
 
 	return nil
 }

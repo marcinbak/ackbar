@@ -74,6 +74,7 @@ func (a *AntigravityProvider) CheckHookConfig() (bool, string, error) {
 	}
 
 	paths := []string{
+		filepath.Join(home, ".gemini", "config", "hooks.json"),
 		filepath.Join(home, ".gemini", "settings.json"),
 		filepath.Join(home, ".gemini", "antigravity", "settings.json"),
 		filepath.Join(home, ".antigravity", "settings.json"),
