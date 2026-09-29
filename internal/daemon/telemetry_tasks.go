@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -184,13 +185,17 @@ func (s *Server) IngestToolTelemetry(sess *Session, event *Event) {
 		prURL, prNum = ExtractPRURL(event.Activity)
 	}
 	if prURL != "" {
-		if task.PRURL != prURL {
-			task.PRURL = prURL
-			task.PRNumber = prNum
-			task.PRState = "OPEN"
-			task.Status = "REVIEW"
-			task.Substatus = "in_review"
-			taskUpdated = true
+		// Only attach PR if task has no PR or if session branch matches task branch
+		branchMatches := task.Branch == "" || sess.GitBranch == "" || task.Branch == sess.GitBranch
+		if branchMatches || task.PRURL == "" {
+			if task.PRURL != prURL {
+				task.PRURL = prURL
+				task.PRNumber = prNum
+				task.PRState = "OPEN"
+				task.Status = "REVIEW"
+				task.Substatus = "in_review"
+				taskUpdated = true
+			}
 		}
 	} else if strings.Contains(cmd, "gh pr create") {
 		// Even if stdout hasn't arrived, gh pr create means we are entering review
@@ -203,10 +208,8 @@ func (s *Server) IngestToolTelemetry(sess *Session, event *Event) {
 
 	// 2. Check for issue key: prioritize branch name over raw commands
 	issueKey := ExtractIssueKey(sess.GitBranch)
-	if issueKey == "" && cmd != "" {
-		if strings.Contains(cmd, "git") || strings.Contains(cmd, "gh") {
-			issueKey = ExtractIssueKey(cmd)
-		}
+	if issueKey == "" {
+		issueKey = ExtractIssueKey(sess.Name)
 	}
 	if issueKey != "" {
 		hasRef := false
@@ -217,13 +220,18 @@ func (s *Server) IngestToolTelemetry(sess *Session, event *Event) {
 			}
 		}
 		if !hasRef {
-			newRef := TaskExternalRef{
-				TaskID:  task.ID,
-				Tracker: "jira",
-				RefKey:  issueKey,
+			// Invariant: Do not contaminate an existing task with foreign issue keys from shell commands!
+			// Only attach issueKey if task has no refs yet, or if session branch explicitly matches the key
+			canAttach := len(task.ExternalRefs) == 0 || (sess.GitBranch != "" && strings.Contains(strings.ToUpper(sess.GitBranch), strings.ToUpper(issueKey)))
+			if canAttach {
+				newRef := TaskExternalRef{
+					TaskID:  task.ID,
+					Tracker: "jira",
+					RefKey:  issueKey,
+				}
+				_ = s.db.InsertTaskExternalRef(&newRef)
+				task.ExternalRefs = append(task.ExternalRefs, newRef)
 			}
-			_ = s.db.InsertTaskExternalRef(&newRef)
-			task.ExternalRefs = append(task.ExternalRefs, newRef)
 		}
 	}
 
@@ -334,6 +342,23 @@ func (s *Server) SyncSessionTaskWorker(sess *Session) {
 	}
 }
 
+func isIsolatedWorktree(path string) bool {
+	if path == "" {
+		return false
+	}
+	clean := filepath.Clean(path)
+	if strings.Contains(clean, ".worktree") || strings.Contains(clean, "worktrees") {
+		return true
+	}
+	// In git worktrees, .git is a file referencing the parent repository's gitdir.
+	// In primary root checkouts, .git is a directory.
+	fi, err := os.Stat(filepath.Join(clean, ".git"))
+	if err == nil && !fi.IsDir() {
+		return true
+	}
+	return false
+}
+
 func (s *Server) findActiveTaskForSession(sess *Session) (*Task, error) {
 	if sess == nil {
 		return nil, nil
@@ -344,24 +369,31 @@ func (s *Server) findActiveTaskForSession(sess *Session) (*Task, error) {
 			return t, nil
 		}
 	}
-	// 2. Try by worktree
-	if sess.Cwd != "" {
-		if t, err := s.db.GetTaskByWorktree(sess.Cwd); err == nil && t != nil && t.Status != "DONE" {
+	// 2. Try by issueKey if branch or session title contains ticket key (e.g. NGL-1041, NGL-993, NGL-1040)
+	// Prioritize issueKey before worktree so separate tickets always bind to their own tasks!
+	issueKey := ExtractIssueKey(sess.GitBranch)
+	if issueKey == "" {
+		issueKey = ExtractIssueKey(sess.Name)
+	}
+	if issueKey != "" {
+		if t, err := s.db.GetTaskByExternalRef(issueKey); err == nil && t != nil && t.Status != "DONE" {
 			return t, nil
 		}
 	}
-	// 3. Fall back to active session worker record (only if active / not DONE)
-	if t, err := s.db.GetActiveTaskForSession(sess.ID); err == nil && t != nil && t.Status != "DONE" {
-		return t, nil
-	}
-	// 4. Try by issueKey if branch contains ticket key (e.g. NGL-1041, NGL-993)
-	if sess.GitBranch != "" {
-		issueKey := ExtractIssueKey(sess.GitBranch)
-		if issueKey != "" {
-			if t, err := s.db.GetTaskByExternalRef(issueKey); err == nil && t != nil && t.Status != "DONE" {
+	// 3. Try by worktree (only if branch matches or session is on same branch)
+	if sess.Cwd != "" {
+		if t, err := s.db.GetTaskByWorktree(sess.Cwd); err == nil && t != nil && t.Status != "DONE" {
+			// Invariant: Do NOT match by CWD if git branches explicitly differ!
+			// A session on branch X or main cannot be matched to a task on branch Y just because both share repo CWD.
+			branchMatches := t.Branch == "" || sess.GitBranch == "" || t.Branch == sess.GitBranch
+			if branchMatches {
 				return t, nil
 			}
 		}
+	}
+	// 4. Fall back to active session worker record (only if active / not DONE)
+	if t, err := s.db.GetActiveTaskForSession(sess.ID); err == nil && t != nil && t.Status != "DONE" {
+		return t, nil
 	}
 	return nil, nil
 }
@@ -372,13 +404,17 @@ func (s *Server) findOrCreateTaskForSession(sess *Session) (*Task, error) {
 		return t, nil
 	}
 
-	// Do not auto-create tasks for main/master branches or empty session
+	// Do not auto-create tasks for main/master branches or empty session unless session title has ticket key
 	branch := sess.GitBranch
-	if branch == "" || branch == "main" || branch == "master" {
+	issueKey := ExtractIssueKey(branch)
+	if issueKey == "" {
+		issueKey = ExtractIssueKey(sess.Name)
+	}
+
+	if (branch == "" || branch == "main" || branch == "master") && issueKey == "" {
 		return nil, nil
 	}
 
-	issueKey := ExtractIssueKey(branch)
 	title := formatTaskTitleFromBranch(branch, issueKey)
 	if sess.Name != "" && !isRawSessionName(sess.Name) {
 		title = sess.Name
@@ -393,6 +429,12 @@ func (s *Server) findOrCreateTaskForSession(sess *Session) (*Task, error) {
 		projectName = "General"
 	}
 
+	// Only store worktree_path if it's an actual isolated worktree path or non-main branch
+	worktreePath := sess.Cwd
+	if !isIsolatedWorktree(worktreePath) && (branch == "main" || branch == "master") {
+		worktreePath = ""
+	}
+
 	newTask := &Task{
 		ID:           fmt.Sprintf("task_%d", time.Now().UnixNano()),
 		Title:        title,
@@ -401,7 +443,7 @@ func (s *Server) findOrCreateTaskForSession(sess *Session) (*Task, error) {
 		Status:       "IN_PROGRESS",
 		Substatus:    "active",
 		Branch:       branch,
-		WorktreePath: sess.Cwd,
+		WorktreePath: worktreePath,
 		Workers: []TaskWorker{
 			{
 				SessionID:  sess.ID,

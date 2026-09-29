@@ -1188,3 +1188,137 @@ func TestServer_TaskDeduplicateEndpoint(t *testing.T) {
 		t.Errorf("Expected status 'success', got %q", resp.Status)
 	}
 }
+
+func TestTelemetry_WorktreeBranchGuard(t *testing.T) {
+	dbFile := "./test_worktree_guard.db"
+	defer os.Remove(dbFile)
+
+	db, err := InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := &Server{db: db}
+
+	repoRoot := "/Users/dev4u/Work/Modemobile/NGL/ngl-ios"
+
+	// 1. Task A on release branch with CWD set to repoRoot
+	taskA := &Task{
+		ID:           "task_release",
+		Title:        "icloud restore",
+		GroupName:    "Modemobile",
+		ProjectName:  "ngl-ios",
+		Status:       "IN_PROGRESS",
+		Branch:       "ci/release-submit-only",
+		WorktreePath: repoRoot,
+	}
+	if err := db.CreateTask(taskA); err != nil {
+		t.Fatalf("CreateTask A failed: %v", err)
+	}
+
+	// 2. Session B on branch main in the same repoRoot (worktree cleaned up)
+	sessB := &Session{
+		ID:        "sess_main",
+		Agent:     "claude-code",
+		Cwd:       repoRoot,
+		GitBranch: "main",
+	}
+
+	foundB, err := server.findActiveTaskForSession(sessB)
+	if err != nil {
+		t.Fatalf("findActiveTaskForSession B failed: %v", err)
+	}
+	if foundB != nil {
+		t.Errorf("Session B on main should NOT match Task A on release branch, got task %s (%s)", foundB.ID, foundB.Title)
+	}
+
+	// 3. Task C for NGL-1040 exists
+	taskC := &Task{
+		ID:          "task_ngl1040",
+		Title:       "NGL-1040: Fix PKHUD crash",
+		GroupName:   "Modemobile",
+		ProjectName: "ngl-ios",
+		Status:      "REVIEW",
+		Branch:      "NGL-1040-fix-pkhud",
+		ExternalRefs: []TaskExternalRef{
+			{Tracker: "jira", RefKey: "NGL-1040"},
+		},
+	}
+	if err := db.CreateTask(taskC); err != nil {
+		t.Fatalf("CreateTask C failed: %v", err)
+	}
+
+	// 4. Session C in repoRoot with title mentioning NGL-1040
+	sessC := &Session{
+		ID:        "sess_ngl1040",
+		Agent:     "claude-code",
+		Name:      "[NGL-1040] Fix PKHUD crash",
+		Cwd:       repoRoot,
+		GitBranch: "main", // branch is main after worktree cleanup
+	}
+
+	foundC, err := server.findActiveTaskForSession(sessC)
+	if err != nil {
+		t.Fatalf("findActiveTaskForSession C failed: %v", err)
+	}
+	if foundC == nil || foundC.ID != "task_ngl1040" {
+		t.Errorf("Session C should match Task C by issueKey NGL-1040, got: %v", foundC)
+	}
+}
+
+func TestTelemetry_IssueKeyNotContaminatedByCommands(t *testing.T) {
+	dbFile := "./test_telemetry_isolation.db"
+	defer os.Remove(dbFile)
+
+	db, err := InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := &Server{db: db}
+
+	task := &Task{
+		ID:          "task_original_1040",
+		Title:       "NGL-1040 Task",
+		GroupName:   "Modemobile",
+		ProjectName: "ngl-ios",
+		Status:      "IN_PROGRESS",
+		Branch:      "NGL-1040-fix",
+		ExternalRefs: []TaskExternalRef{
+			{Tracker: "jira", RefKey: "NGL-1040"},
+		},
+	}
+	if err := db.CreateTask(task); err != nil {
+		t.Fatalf("CreateTask failed: %v", err)
+	}
+
+	sess := &Session{
+		ID:        "sess_active",
+		Agent:     "claude-code",
+		GitBranch: "NGL-1040-fix",
+	}
+
+	// Session runs a command referencing a foreign ticket, e.g. cherry-pick or commit message
+	event := &Event{
+		ToolName: "bash",
+		ToolInput: map[string]any{
+			"command": "git cherry-pick NGL-997",
+		},
+	}
+
+	server.IngestToolTelemetry(sess, event)
+
+	saved, err := db.GetTaskByID(task.ID)
+	if err != nil || saved == nil {
+		t.Fatalf("GetTaskByID failed: %v", err)
+	}
+
+	if len(saved.ExternalRefs) != 1 {
+		t.Fatalf("Expected strictly 1 external ref, got %d: %v", len(saved.ExternalRefs), saved.ExternalRefs)
+	}
+	if saved.ExternalRefs[0].RefKey != "NGL-1040" {
+		t.Errorf("Expected NGL-1040, got %q", saved.ExternalRefs[0].RefKey)
+	}
+}

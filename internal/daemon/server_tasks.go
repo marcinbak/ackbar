@@ -109,7 +109,13 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 				existing.WorktreePath = t.WorktreePath
 			}
 			if t.PRURL != "" {
-				existing.PRURL = t.PRURL
+				if t.PRURL == "-" {
+					existing.PRURL = ""
+					existing.PRNumber = 0
+					existing.PRState = ""
+				} else {
+					existing.PRURL = t.PRURL
+				}
 			}
 			if t.PRNumber != 0 {
 				existing.PRNumber = t.PRNumber
