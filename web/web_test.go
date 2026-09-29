@@ -118,3 +118,57 @@ func TestChatDeduplication_JS(t *testing.T) {
 		t.Errorf("js/chat.js must not perform broad fullNorm.includes(evtNorm) substring matching across past messages")
 	}
 }
+
+func TestMultiHostAgentSetup_JS(t *testing.T) {
+	embeddedFS := web.GetFS()
+
+	// 1. Verify js/api.js multi-host functions
+	fAPI, err := embeddedFS.Open("js/api.js")
+	if err != nil {
+		t.Fatalf("failed to open js/api.js: %v", err)
+	}
+	defer fAPI.Close()
+
+	apiBytes, err := io.ReadAll(fAPI)
+	if err != nil {
+		t.Fatalf("failed to read js/api.js: %v", err)
+	}
+	apiContent := string(apiBytes)
+
+	for _, expected := range []string{
+		"function getTargetHosts()",
+		"async function fetchAllAgentStatuses()",
+		"async function provisionAllHosts(",
+		"fetchAllAgentStatuses,",
+		"provisionAllHosts",
+	} {
+		if !strings.Contains(apiContent, expected) {
+			t.Errorf("expected js/api.js to contain %q", expected)
+		}
+	}
+
+	// 2. Verify js/tasks.js multi-host setup modal
+	fTasks, err := embeddedFS.Open("js/tasks.js")
+	if err != nil {
+		t.Fatalf("failed to open js/tasks.js: %v", err)
+	}
+	defer fTasks.Close()
+
+	tasksBytes, err := io.ReadAll(fTasks)
+	if err != nil {
+		t.Fatalf("failed to read js/tasks.js: %v", err)
+	}
+	tasksContent := string(tasksBytes)
+
+	for _, expected := range []string{
+		"fetchAllAgentStatuses",
+		"provisionAllHosts",
+		"mAgentHostTabs",
+		"renderHostSections",
+		"btn-configure-single-host",
+	} {
+		if !strings.Contains(tasksContent, expected) {
+			t.Errorf("expected js/tasks.js to contain %q", expected)
+		}
+	}
+}

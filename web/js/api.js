@@ -659,8 +659,31 @@ async function mergeTaskPR(taskID, method = 'squash') {
   return await res.json();
 }
 
-async function fetchAgentStatuses() {
-  const res = await fetch('/v1/agents/status');
+function getTargetHosts() {
+  const selfName = getSelfHostName();
+  const selfDisp = getSelfDisplayName();
+  const localHost = {
+    name: selfName,
+    displayName: selfDisp || formatHostLabel(selfName),
+    url: '',
+    online: true,
+    isSelf: true
+  };
+  const remoteHosts = (state.hosts || [])
+    .filter(h => !isLocalHost(h.name))
+    .map(h => ({
+      name: h.name,
+      displayName: h.displayName || formatHostLabel(h.name),
+      url: (h.url || '').replace(/\/$/, ''),
+      online: h.online !== false,
+      isSelf: false
+    }));
+  return [localHost, ...remoteHosts];
+}
+
+async function fetchAgentStatuses(hostUrl = '') {
+  const base = hostUrl ? hostUrl.replace(/\/$/, '') : '';
+  const res = await fetch(`${base}/v1/agents/status`);
   if (!res.ok) {
     const errText = await res.text();
     let msg = errText;
@@ -673,8 +696,56 @@ async function fetchAgentStatuses() {
   return await res.json();
 }
 
-async function provisionAgents(agents = ['all']) {
-  const res = await fetch('/v1/agents/provision', {
+async function fetchAllAgentStatuses() {
+  const targetHosts = getTargetHosts();
+  const results = await Promise.allSettled(targetHosts.map(async (h) => {
+    try {
+      const data = await fetchAgentStatuses(h.url);
+      return {
+        host: h.name,
+        displayName: h.displayName,
+        url: h.url,
+        isSelf: h.isSelf,
+        online: true,
+        agents: data.agents || [],
+        version: data.version || state.version || '',
+        error: null
+      };
+    } catch (err) {
+      return {
+        host: h.name,
+        displayName: h.displayName,
+        url: h.url,
+        isSelf: h.isSelf,
+        online: false,
+        agents: [],
+        version: '',
+        error: err.message || 'Host unreachable'
+      };
+    }
+  }));
+
+  return results.map((r, i) => {
+    if (r.status === 'fulfilled') {
+      return r.value;
+    }
+    const h = targetHosts[i] || {};
+    return {
+      host: h.name || 'unknown',
+      displayName: h.displayName || 'Unknown',
+      url: h.url || '',
+      isSelf: !!h.isSelf,
+      online: false,
+      agents: [],
+      version: '',
+      error: r.reason ? (r.reason.message || String(r.reason)) : 'Request failed'
+    };
+  });
+}
+
+async function provisionAgents(agents = ['all'], hostUrl = '') {
+  const base = hostUrl ? hostUrl.replace(/\/$/, '') : '';
+  const res = await fetch(`${base}/v1/agents/provision`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ agents })
@@ -689,6 +760,50 @@ async function provisionAgents(agents = ['all']) {
     throw new Error(msg || 'Failed to configure agents');
   }
   return await res.json();
+}
+
+async function provisionAllHosts(agents = ['all']) {
+  const targetHosts = getTargetHosts();
+  const results = await Promise.allSettled(targetHosts.map(async (h) => {
+    try {
+      const data = await provisionAgents(agents, h.url);
+      return {
+        host: h.name,
+        displayName: h.displayName,
+        url: h.url,
+        isSelf: h.isSelf,
+        success: true,
+        agents: data.agents || [],
+        error: null
+      };
+    } catch (err) {
+      return {
+        host: h.name,
+        displayName: h.displayName,
+        url: h.url,
+        isSelf: h.isSelf,
+        success: false,
+        agents: [],
+        error: err.message || 'Provisioning failed'
+      };
+    }
+  }));
+
+  return results.map((r, i) => {
+    if (r.status === 'fulfilled') {
+      return r.value;
+    }
+    const h = targetHosts[i] || {};
+    return {
+      host: h.name || 'unknown',
+      displayName: h.displayName || 'Unknown',
+      url: h.url || '',
+      isSelf: !!h.isSelf,
+      success: false,
+      agents: [],
+      error: r.reason ? (r.reason.message || String(r.reason)) : 'Request failed'
+    };
+  });
 }
 
 async function deleteTask(taskId) {
@@ -750,5 +865,8 @@ export {
   synthesizeBriefing,
   mergeTaskPR,
   fetchAgentStatuses,
-  provisionAgents
+  provisionAgents,
+  getTargetHosts,
+  fetchAllAgentStatuses,
+  provisionAllHosts
 };
