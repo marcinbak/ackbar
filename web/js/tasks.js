@@ -1,5 +1,5 @@
 import { state } from './state.js';
-import { fetchTasks, createTask, updateTask, deleteTask, fetchStandup, mergeTaskPR, fetchAgentStatuses, provisionAgents } from './api.js';
+import { fetchTasks, createTask, updateTask, deleteTask, fetchStandup, mergeTaskPR, fetchAgentStatuses, provisionAgents, fetchAllAgentStatuses, provisionAllHosts } from './api.js';
 import { escapeHtml } from './utils.js';
 import { activateTab, openSessionInTab } from './tabs.js';
 import { showModal, hideModal } from './modals.js';
@@ -898,13 +898,17 @@ export async function showStandupModal() {
   loadReport();
 }
 export async function showAgentSetupModal() {
+  let selectedHost = 'all';
+  let cachedHostStatuses = [];
+
   const bodyHtml = `
-    <div style="display: flex; flex-direction: column; gap: 16px;">
+    <div style="display: flex; flex-direction: column; gap: 14px;">
       <div style="font-size: 13px; color: var(--text-muted); line-height: 1.5;">
         Configure connected AI coding agents to natively report task status, blockers, deliverables, and discovered work to Ackbar using the versioned <code>ackbar mcp</code> server and <code>ackbar-tasks</code> skill.
       </div>
-      <div id="mAgentCardsContainer" style="display: flex; flex-direction: column; gap: 12px;">
-        <div style="text-align: center; color: var(--text-muted); padding: 24px;">Detecting agent configurations...</div>
+      <div id="mAgentHostTabs" style="display: none; gap: 8px; border-bottom: 1px solid var(--border-color); padding-bottom: 10px; overflow-x: auto;"></div>
+      <div id="mAgentCardsContainer" style="display: flex; flex-direction: column; gap: 14px; max-height: 60vh; overflow-y: auto;">
+        <div style="text-align: center; color: var(--text-muted); padding: 24px;">Detecting agent configurations across hosts...</div>
       </div>
     </div>
   `;
@@ -918,62 +922,188 @@ export async function showAgentSetupModal() {
 
   showModal('⚙️ Agent Tool & Skill Setup', bodyHtml, footerHtml);
 
+  function renderAgentCard(a, hostVersion) {
+    const icon = a.key.includes('claude') ? '🟠' : a.key.includes('antigravity') ? '🟣' : '🟢';
+    const detectedBadge = a.detected
+      ? '<span style="background: rgba(34, 197, 94, 0.15); color: var(--accent-green); padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600;">Detected</span>'
+      : '<span style="background: rgba(156, 163, 175, 0.15); color: var(--text-muted); padding: 2px 8px; border-radius: 10px; font-size: 11px;">Not Found</span>';
+
+    const mcpBadge = a.mcp_installed
+      ? '<span style="color: var(--accent-green); font-size: 12px; font-weight: 600;">✓ Configured</span>'
+      : '<span style="color: var(--accent-red); font-size: 12px; font-weight: 600;">✗ Missing</span>';
+
+    const skillBadge = a.skill_installed
+      ? `<span style="color: var(--accent-green); font-size: 12px; font-weight: 600;">✓ Installed (v${escapeHtml(a.skill_version || hostVersion || '')})</span>`
+      : '<span style="color: var(--accent-red); font-size: 12px; font-weight: 600;">✗ Missing</span>';
+
+    const driftWarning = a.drift_detected
+      ? '<span style="background: rgba(239, 68, 68, 0.12); color: var(--accent-red); border: 1px solid rgba(239, 68, 68, 0.3); padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600;">⚠️ Drift Detected</span>'
+      : '<span style="background: rgba(34, 197, 94, 0.12); color: var(--accent-green); border: 1px solid rgba(34, 197, 94, 0.3); padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600;">Up to Date</span>';
+
+    return `
+      <div style="background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 6px; padding: 14px; display: flex; flex-direction: column; gap: 8px;">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <div style="display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 14px; color: var(--text-main);">
+            <span>${icon}</span> ${escapeHtml(a.display_name)}
+            ${detectedBadge}
+          </div>
+          <div>${driftWarning}</div>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 4px; font-size: 12px;">
+          <div style="background: var(--bg-subtle, rgba(0,0,0,0.15)); padding: 8px; border-radius: 4px; border: 1px solid var(--border-color);">
+            <div style="color: var(--text-muted); font-size: 11px; margin-bottom: 2px;">MCP SERVER</div>
+            <div style="margin-bottom: 4px;">${mcpBadge}</div>
+            <div style="color: var(--text-muted); font-family: monospace; font-size: 10px; word-break: break-all;">${escapeHtml(a.config_file)}</div>
+          </div>
+          <div style="background: var(--bg-subtle, rgba(0,0,0,0.15)); padding: 8px; border-radius: 4px; border: 1px solid var(--border-color);">
+            <div style="color: var(--text-muted); font-size: 11px; margin-bottom: 2px;">SKILL (SKILL.md)</div>
+            <div style="margin-bottom: 4px;">${skillBadge}</div>
+            <div style="color: var(--text-muted); font-family: monospace; font-size: 10px; word-break: break-all;">${escapeHtml(a.skills_dir)}/ackbar-tasks</div>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  function renderHostSections() {
+    const container = document.getElementById('mAgentCardsContainer');
+    const tabsContainer = document.getElementById('mAgentHostTabs');
+    const actionBtn = document.getElementById('mBtnAutoConfigureAgents');
+    if (!container) return;
+
+    if (cachedHostStatuses.length === 0) {
+      container.innerHTML = '<div style="color: var(--text-muted); padding: 16px;">No connected hosts found.</div>';
+      return;
+    }
+
+    // Update Host Tabs if multiple hosts
+    if (tabsContainer) {
+      if (cachedHostStatuses.length > 1) {
+        tabsContainer.style.display = 'flex';
+        tabsContainer.innerHTML = [
+          `<button class="task-group-filter-btn ${selectedHost === 'all' ? 'active' : ''}" data-host-tab="all" style="padding: 4px 12px; font-size: 12px; border-radius: 14px;">🌐 All Hosts (${cachedHostStatuses.length})</button>`,
+          ...cachedHostStatuses.map(h => {
+            const dot = h.online ? '🟢' : '🔴';
+            const icon = h.isSelf ? '💻' : '🖥️';
+            const label = h.displayName || h.host;
+            return `<button class="task-group-filter-btn ${selectedHost === h.host ? 'active' : ''}" data-host-tab="${escapeHtml(h.host)}" style="padding: 4px 12px; font-size: 12px; border-radius: 14px;">${icon} ${escapeHtml(label)} ${dot}</button>`;
+          })
+        ].join('');
+
+        tabsContainer.querySelectorAll('button[data-host-tab]').forEach(btn => {
+          btn.addEventListener('click', () => {
+            selectedHost = btn.getAttribute('data-host-tab');
+            renderHostSections();
+          });
+        });
+      } else {
+        tabsContainer.style.display = 'none';
+      }
+    }
+
+    // Update Action Button Text
+    if (actionBtn) {
+      if (selectedHost === 'all') {
+        actionBtn.innerHTML = cachedHostStatuses.length > 1 ? '⚡ Auto-Configure All Hosts' : '⚡ Auto-Configure Agents';
+      } else {
+        const target = cachedHostStatuses.find(h => h.host === selectedHost);
+        const name = target ? (target.displayName || target.host) : 'Host';
+        actionBtn.innerHTML = `⚡ Configure ${escapeHtml(name)}`;
+      }
+    }
+
+    // Filter hosts to render
+    const hostsToRender = selectedHost === 'all'
+      ? cachedHostStatuses
+      : cachedHostStatuses.filter(h => h.host === selectedHost);
+
+    if (hostsToRender.length === 0) {
+      container.innerHTML = '<div style="color: var(--text-muted); padding: 16px;">Selected host not found.</div>';
+      return;
+    }
+
+    container.innerHTML = hostsToRender.map(h => {
+      const icon = h.isSelf ? '💻' : '🖥️';
+      const label = h.displayName || h.host;
+      const statusBadge = h.online
+        ? '<span style="background: rgba(34, 197, 94, 0.15); color: var(--accent-green); padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600;">ONLINE</span>'
+        : '<span style="background: rgba(239, 68, 68, 0.15); color: var(--accent-red); padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600;">OFFLINE</span>';
+
+      const showHostHeader = cachedHostStatuses.length > 1;
+
+      let contentHtml = '';
+      if (!h.online) {
+        contentHtml = `
+          <div style="color: var(--accent-red); font-size: 12px; padding: 14px; background: rgba(239, 68, 68, 0.08); border-radius: 6px; border: 1px dashed rgba(239, 68, 68, 0.3);">
+            ⚠️ Host is offline or unreachable: ${escapeHtml(h.error || 'Connection failed')}
+          </div>
+        `;
+      } else if (!h.agents || h.agents.length === 0) {
+        contentHtml = '<div style="color: var(--text-muted); padding: 12px;">No supported agents found on this host.</div>';
+      } else {
+        contentHtml = `
+          <div style="display: flex; flex-direction: column; gap: 10px;">
+            ${h.agents.map(a => renderAgentCard(a, h.version)).join('')}
+          </div>
+        `;
+      }
+
+      if (!showHostHeader) {
+        return contentHtml;
+      }
+
+      return `
+        <div class="agent-host-section" style="display: flex; flex-direction: column; gap: 12px; background: rgba(255,255,255,0.02); border: 1px solid var(--border-color); border-radius: 8px; padding: 14px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border-color); padding-bottom: 10px;">
+            <div style="display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 14px; color: var(--text-main);">
+              <span>${icon}</span>
+              <span>${escapeHtml(label)}</span>
+              <span style="font-size: 11px; color: var(--text-muted); font-family: monospace;">(${h.url ? escapeHtml(h.url) : 'local'})</span>
+              ${statusBadge}
+            </div>
+            ${h.online ? `
+              <button class="btn btn-secondary btn-configure-single-host" data-host-key="${escapeHtml(h.host)}" style="padding: 3px 10px; font-size: 11px;">
+                ⚡ Configure Host
+              </button>
+            ` : ''}
+          </div>
+          ${contentHtml}
+        </div>
+      `;
+    }).join('');
+
+    // Bind per-host configure buttons
+    container.querySelectorAll('.btn-configure-single-host').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const hostKey = btn.getAttribute('data-host-key');
+        const target = cachedHostStatuses.find(h => h.host === hostKey);
+        if (!target) return;
+
+        const origText = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '⚡ Configuring...';
+        try {
+          await provisionAgents(['all'], target.url);
+          btn.innerHTML = '✓ Configured';
+          btn.style.color = 'var(--accent-green)';
+          await loadStatuses();
+        } catch (err) {
+          alert(`Failed to configure ${target.displayName || target.host}: ${err.message}`);
+          btn.disabled = false;
+          btn.innerHTML = origText;
+        }
+      });
+    });
+  }
+
   async function loadStatuses() {
     const container = document.getElementById('mAgentCardsContainer');
     if (!container) return;
 
     try {
-      const data = await fetchAgentStatuses();
-      const agents = data.agents || [];
-
-      if (agents.length === 0) {
-        container.innerHTML = '<div style="color: var(--text-muted); padding: 16px;">No supported agents found.</div>';
-        return;
-      }
-
-      container.innerHTML = agents.map(a => {
-        const icon = a.key.includes('claude') ? '🟠' : a.key.includes('antigravity') ? '🟣' : '🟢';
-        const detectedBadge = a.detected
-          ? '<span style="background: rgba(34, 197, 94, 0.15); color: var(--accent-green); padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600;">Detected</span>'
-          : '<span style="background: rgba(156, 163, 175, 0.15); color: var(--text-muted); padding: 2px 8px; border-radius: 10px; font-size: 11px;">Not Found</span>';
-
-        const mcpBadge = a.mcp_installed
-          ? '<span style="color: var(--accent-green); font-size: 12px; font-weight: 600;">✓ Configured</span>'
-          : '<span style="color: var(--accent-red); font-size: 12px; font-weight: 600;">✗ Missing</span>';
-
-        const skillBadge = a.skill_installed
-          ? `<span style="color: var(--accent-green); font-size: 12px; font-weight: 600;">✓ Installed (v${escapeHtml(a.skill_version || data.version)})</span>`
-          : '<span style="color: var(--accent-red); font-size: 12px; font-weight: 600;">✗ Missing</span>';
-
-        const driftWarning = a.drift_detected
-          ? '<span style="background: rgba(239, 68, 68, 0.12); color: var(--accent-red); border: 1px solid rgba(239, 68, 68, 0.3); padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600;">⚠️ Drift Detected</span>'
-          : '<span style="background: rgba(34, 197, 94, 0.12); color: var(--accent-green); border: 1px solid rgba(34, 197, 94, 0.3); padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600;">Up to Date</span>';
-
-        return `
-          <div style="background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 6px; padding: 14px; display: flex; flex-direction: column; gap: 8px;">
-            <div style="display: flex; justify-content: space-between; align-items: center;">
-              <div style="display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 14px; color: var(--text-main);">
-                <span>${icon}</span> ${escapeHtml(a.display_name)}
-                ${detectedBadge}
-              </div>
-              <div>${driftWarning}</div>
-            </div>
-
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 4px; font-size: 12px;">
-              <div style="background: var(--bg-subtle, rgba(0,0,0,0.15)); padding: 8px; border-radius: 4px; border: 1px solid var(--border-color);">
-                <div style="color: var(--text-muted); font-size: 11px; margin-bottom: 2px;">MCP SERVER</div>
-                <div style="margin-bottom: 4px;">${mcpBadge}</div>
-                <div style="color: var(--text-muted); font-family: monospace; font-size: 10px; word-break: break-all;">${escapeHtml(a.config_file)}</div>
-              </div>
-              <div style="background: var(--bg-subtle, rgba(0,0,0,0.15)); padding: 8px; border-radius: 4px; border: 1px solid var(--border-color);">
-                <div style="color: var(--text-muted); font-size: 11px; margin-bottom: 2px;">SKILL (SKILL.md)</div>
-                <div style="margin-bottom: 4px;">${skillBadge}</div>
-                <div style="color: var(--text-muted); font-family: monospace; font-size: 10px; word-break: break-all;">${escapeHtml(a.skills_dir)}/ackbar-tasks</div>
-              </div>
-            </div>
-          </div>
-        `;
-      }).join('');
+      cachedHostStatuses = await fetchAllAgentStatuses();
+      renderHostSections();
     } catch (err) {
       container.innerHTML = `<div style="color: var(--accent-red); padding: 16px;">Failed to load agent statuses: ${escapeHtml(err.message)}</div>`;
     }
@@ -987,8 +1117,17 @@ export async function showAgentSetupModal() {
     btn.innerHTML = '⚡ Configuring Agents...';
 
     try {
-      await provisionAgents(['all']);
-      btn.innerHTML = '✓ Configured Successfully!';
+      if (selectedHost === 'all') {
+        const results = await provisionAllHosts(['all']);
+        const successCount = results.filter(r => r.success).length;
+        const totalCount = results.length;
+        btn.innerHTML = `✓ Configured ${successCount}/${totalCount} Host(s)`;
+      } else {
+        const target = cachedHostStatuses.find(h => h.host === selectedHost);
+        await provisionAgents(['all'], target ? target.url : '');
+        btn.innerHTML = '✓ Configured Successfully!';
+      }
+
       btn.style.background = 'var(--accent-green)';
       btn.style.borderColor = 'var(--accent-green)';
       await loadStatuses();
@@ -999,7 +1138,7 @@ export async function showAgentSetupModal() {
           btn.style.background = 'var(--accent-blue)';
           btn.style.borderColor = 'var(--accent-blue)';
         }
-      }, 2000);
+      }, 2500);
     } catch (err) {
       alert('Failed to configure agents: ' + err.message);
       btn.disabled = false;
