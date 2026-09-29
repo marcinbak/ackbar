@@ -146,6 +146,7 @@ func (s *Server) ingestSingleWorkflowRun(jsonPath string) error {
 	basePrefix := strings.TrimSuffix(jsonPath, ".json")
 	briefPath := basePrefix + ".brief.md"
 	retroPath := basePrefix + ".retro.md"
+	briefTitle, briefNotes := extractBriefMetadata(briefPath)
 
 	ticketStr := ""
 	if run.Ticket != nil && *run.Ticket != "" {
