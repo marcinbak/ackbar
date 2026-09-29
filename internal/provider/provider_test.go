@@ -283,6 +283,20 @@ func TestAntigravityDiscoveryInLocalBin(t *testing.T) {
 	if !installed {
 		t.Errorf("Expected hook config in ~/.antigravity/config/hooks.json to be detected")
 	}
+
+	// 4. Test hook detection in ~/.gemini/config/hooks.json
+	_ = os.Remove(hooksDir + "/hooks.json")
+	geminiConfigDir := tmpHome + "/.gemini/config"
+	_ = os.MkdirAll(geminiConfigDir, 0755)
+	_ = os.WriteFile(geminiConfigDir+"/hooks.json", []byte(`{"ackbar":{"PreInvocation":[{"type":"command","command":"ackbar-hook --agent=antigravity --event=PreInvocation"}]}}`), 0644)
+
+	installed, _, err = p.CheckHookConfig()
+	if err != nil {
+		t.Fatalf("CheckHookConfig failed for ~/.gemini/config/hooks.json: %v", err)
+	}
+	if !installed {
+		t.Errorf("Expected hook config in ~/.gemini/config/hooks.json to be detected")
+	}
 }
 
 func TestClaudeCheckHookConfig_OnlySettingsJson(t *testing.T) {

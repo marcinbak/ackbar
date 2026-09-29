@@ -17,6 +17,21 @@ import (
 
 var backgroundShellRegex = regexp.MustCompile(`\b\d+\s+shells?\b`)
 
+func extractTailText(lines []string, count int) string {
+	lastNonEmpty := len(lines) - 1
+	for lastNonEmpty >= 0 && strings.TrimSpace(lines[lastNonEmpty]) == "" {
+		lastNonEmpty--
+	}
+	if lastNonEmpty < 0 {
+		return ""
+	}
+	startIdx := lastNonEmpty - count
+	if startIdx < 0 {
+		startIdx = 0
+	}
+	return strings.Join(lines[startIdx:lastNonEmpty+1], "\n")
+}
+
 func (s *Server) inspectAntigravityStatus(ctx context.Context, sess *Session) bool {
 	return InspectAntigravityStatus(ctx, sess)
 }
@@ -28,162 +43,15 @@ func InspectAntigravityStatus(ctx context.Context, sess *Session) bool {
 	changed := false
 	home, _ := os.UserHomeDir()
 
-	// 1. Check live tmux screen for permission prompts or confirmations
-	if sess.TmuxName != "" {
-		if out, err := exec.CommandContext(ctx, "tmux", "capture-pane", "-pt", sess.TmuxName, "-p").Output(); err == nil {
-			paneText := string(out)
-			lines := strings.Split(paneText, "\n")
-			startIdx := len(lines) - 25
-			if startIdx < 0 {
-				startIdx = 0
-			}
-			tailText := strings.Join(lines[startIdx:], "\n")
-
-			if strings.Contains(tailText, "Requesting permission for:") || strings.Contains(tailText, "Do you want to proceed?") {
-				cmdReason := ""
-				if idx := strings.Index(tailText, "Requesting permission for:"); idx != -1 {
-					sub := tailText[idx+len("Requesting permission for:"):]
-					if endIdx := strings.Index(sub, "Do you want to proceed?"); endIdx != -1 {
-						cmdReason = strings.TrimSpace(sub[:endIdx])
-					}
-				}
-				if cmdReason == "" {
-					cmdReason = "Tool permission requested"
-				}
-
-				if sess.State != StateBlocked || sess.Blocked == nil {
-					sess.State = StateBlocked
-					sess.Blocked = &Blocked{
-						Kind:     BlockPermission,
-						Reason:   cmdReason,
-						Question: "Do you want to proceed with: " + truncateTitle(cmdReason),
-						Options:  []string{"1. Yes", "2. Yes, and always allow in this conversation", "4. No"},
-						Since:    time.Now(),
-					}
-					sess.Activity = "Waiting for permission: " + truncateTitle(cmdReason)
-					sess.LastEventAt = time.Now()
-					changed = true
-				}
-				return changed
-			} else if strings.Contains(tailText, "Are you sure?") || strings.Contains(tailText, "[y/N]") || strings.Contains(tailText, "[Y/n]") {
-				if sess.State != StateBlocked || sess.Blocked == nil {
-					sess.State = StateBlocked
-					sess.Blocked = &Blocked{
-						Kind:     BlockPermission,
-						Reason:   "Confirmation required",
-						Question: "Confirmation required",
-						Options:  []string{"Yes", "No"},
-						Since:    time.Now(),
-					}
-					sess.Activity = "Waiting for confirmation"
-					sess.LastEventAt = time.Now()
-					changed = true
-				}
-				return changed
-			}
+	// Resolve PID from tmux if missing
+	if sess.PID <= 0 && sess.TmuxName != "" {
+		if pid, err := tmux.GetPID(ctx, sess.TmuxName); err == nil && pid > 0 {
+			sess.PID = pid
+			changed = true
 		}
 	}
 
-	// 2. Check transcript.jsonl for ask_question or plan approval (using tail 64KB read to avoid reading entire file)
-	if home != "" && sess.NativeID != "" {
-		brainDirs := []string{
-			filepath.Join(home, ".gemini", "antigravity", "brain", sess.NativeID, ".system_generated", "logs", "transcript.jsonl"),
-			filepath.Join(home, ".gemini", "antigravity-cli", "brain", sess.NativeID, ".system_generated", "logs", "transcript.jsonl"),
-			filepath.Join(home, ".antigravity", "brain", sess.NativeID, ".system_generated", "logs", "transcript.jsonl"),
-		}
-		for _, logPath := range brainDirs {
-			if data, err := readTail(logPath, 64*1024); err == nil && len(data) > 0 {
-				lines := strings.Split(string(data), "\n")
-				stepsChecked := 0
-				for i := len(lines) - 1; i >= 0 && stepsChecked < 30; i-- {
-					line := strings.TrimSpace(lines[i])
-					if line == "" {
-						continue
-					}
-					var step struct {
-						Type      string `json:"type"`
-						Content   string `json:"content"`
-						ToolCalls []struct {
-							Name string                 `json:"name"`
-							Args map[string]interface{} `json:"args"`
-						} `json:"tool_calls"`
-						CreatedAt string `json:"created_at"`
-					}
-					if jerr := json.Unmarshal([]byte(line), &step); jerr == nil {
-						stepsChecked++
-						// If the user already provided input or answered the question, any prior question in this conversation was answered
-						if step.Type == "USER_INPUT" || step.Type == "ASK_QUESTION" {
-							break
-						}
-
-						// If the agent is actively invoking tools other than ask_question, it is working, not blocked
-						hasOtherTools := false
-						hasAskQuestion := false
-						for _, tc := range step.ToolCalls {
-							if tc.Name == "ask_question" {
-								hasAskQuestion = true
-							} else if tc.Name != "" {
-								hasOtherTools = true
-							}
-						}
-						if hasOtherTools && !hasAskQuestion {
-							break
-						}
-
-						stepTime, _ := time.Parse(time.RFC3339, step.CreatedAt)
-						if stepTime.IsZero() {
-							stepTime = time.Now()
-						}
-
-						for _, tc := range step.ToolCalls {
-							if tc.Name == "ask_question" {
-								q, opts := ExtractAntigravityQuestionAndOptions(tc.Args)
-								if sess.State != StateBlocked || sess.Blocked == nil || sess.Blocked.Question != q {
-									sess.State = StateBlocked
-									sess.Blocked = &Blocked{
-										Kind:     BlockQuestion,
-										Reason:   q,
-										Question: q,
-										Options:  opts,
-										Since:    stepTime,
-									}
-									if q != "" {
-										sess.Activity = "Question: " + truncateTitle(q)
-									} else {
-										sess.Activity = "Waiting for user response"
-									}
-									sess.LastEventAt = stepTime
-									changed = true
-								}
-								return changed
-							}
-						}
-
-						if strings.Contains(step.Content, "Note: You have just created an artifact and requested user feedback") ||
-							strings.Contains(step.Content, "Stop calling tools to end your turn, and allow the user to review the artifact") {
-							if sess.State != StateBlocked || sess.Blocked == nil {
-								sess.State = StateBlocked
-								sess.Blocked = &Blocked{
-									Kind:     BlockQuestion,
-									Reason:   "Plan approval required",
-									Question: "Please review and approve the implementation plan",
-									Options:  []string{"Proceed", "Provide Feedback"},
-									Since:    stepTime,
-								}
-								sess.Activity = "Waiting for plan feedback"
-								sess.LastEventAt = stepTime
-								changed = true
-							}
-							return changed
-						}
-					}
-				}
-				break
-			}
-		}
-	}
-
-	// 3. Check for active subagents on disk
+	// 1. Structured Subagents on Disk
 	if sess.NativeID != "" {
 		if subs, err := ExtractSubagents("antigravity", sess.NativeID, sess.Cwd); err == nil {
 			runningCount := 0
@@ -208,11 +76,278 @@ func InspectAntigravityStatus(ctx context.Context, sess *Session) bool {
 					sess.LastEventAt = time.Now()
 					changed = true
 				}
+				return changed
 			}
 		}
 	}
 
-	// 4. Check for active child processes
+	// 2. Live Tmux Screen Inspection
+	if sess.TmuxName != "" {
+		out, err := exec.CommandContext(ctx, "tmux", "capture-pane", "-pt", sess.TmuxName, "-p").Output()
+		if err != nil {
+			sess.State = StateEnded
+			sess.Activity = "Session ended (process exited)"
+			sess.PID = 0
+			sess.Blocked = nil
+			return true
+		}
+
+		if sess.PID > 0 && !isProcessAlive(sess.PID) {
+			if outPs, errPs := exec.CommandContext(ctx, "pgrep", "-P", strconv.Itoa(sess.PID)).Output(); errPs == nil && len(strings.TrimSpace(string(outPs))) > 0 {
+				// Child process alive
+			} else {
+				sess.State = StateEnded
+				sess.Activity = "Session ended (process exited)"
+				sess.PID = 0
+				sess.Blocked = nil
+				return true
+			}
+		}
+
+		paneText := string(out)
+		lines := strings.Split(paneText, "\n")
+		tailText := extractTailText(lines, 25)
+
+		// 2A. Permission prompts or confirmations
+		if strings.Contains(tailText, "Requesting permission for:") || strings.Contains(tailText, "Do you want to proceed?") {
+			cmdReason := ""
+			if idx := strings.Index(tailText, "Requesting permission for:"); idx != -1 {
+				sub := tailText[idx+len("Requesting permission for:"):]
+				if endIdx := strings.Index(sub, "Do you want to proceed?"); endIdx != -1 {
+					cmdReason = strings.TrimSpace(sub[:endIdx])
+				}
+			}
+			if cmdReason == "" {
+				cmdReason = "Tool permission requested"
+			}
+
+			if sess.State != StateBlocked || sess.Blocked == nil {
+				sess.State = StateBlocked
+				sess.Blocked = &Blocked{
+					Kind:     BlockPermission,
+					Reason:   cmdReason,
+					Question: "Do you want to proceed with: " + truncateTitle(cmdReason),
+					Options:  []string{"1. Yes", "2. Yes, and always allow in this conversation", "4. No"},
+					Since:    time.Now(),
+				}
+				sess.Activity = "Waiting for permission: " + truncateTitle(cmdReason)
+				sess.LastEventAt = time.Now()
+				changed = true
+			}
+			return changed
+		} else if strings.Contains(tailText, "Are you sure?") || strings.Contains(tailText, "[y/N]") || strings.Contains(tailText, "[Y/n]") {
+			if sess.State != StateBlocked || sess.Blocked == nil {
+				sess.State = StateBlocked
+				sess.Blocked = &Blocked{
+					Kind:     BlockPermission,
+					Reason:   "Confirmation required",
+					Question: "Confirmation required",
+					Options:  []string{"Yes", "No"},
+					Since:    time.Now(),
+				}
+				sess.Activity = "Waiting for confirmation"
+				sess.LastEventAt = time.Now()
+				changed = true
+			}
+			return changed
+		}
+
+		// 2B. Active generation / tool execution / active spinners
+		hasSpinner := strings.Contains(tailText, "⠋") || strings.Contains(tailText, "⠙") ||
+			strings.Contains(tailText, "⠹") || strings.Contains(tailText, "⠸") ||
+			strings.Contains(tailText, "⠼") || strings.Contains(tailText, "⠴") ||
+			strings.Contains(tailText, "⠦") || strings.Contains(tailText, "⠧") ||
+			strings.Contains(tailText, "⠇") || strings.Contains(tailText, "⠏") ||
+			strings.Contains(tailText, "⢿") ||
+			strings.Contains(tailText, "Thinking...") ||
+			strings.Contains(tailText, "Running command...") ||
+			strings.Contains(tailText, "Running tool:")
+
+		hasCancel := strings.Contains(tailText, "esc to cancel")
+
+		if hasSpinner || hasCancel {
+			if sess.State != StateWorking {
+				sess.State = StateWorking
+				sess.Blocked = nil
+				sess.Activity = "Working..."
+				sess.LastEventAt = time.Now()
+				changed = true
+			}
+			return changed
+		}
+
+		// 2C. Interactive prompt idle (sitting at > prompt or shortcuts footer)
+		var nonEmpty []string
+		for _, l := range lines {
+			t := strings.TrimSpace(l)
+			if t != "" {
+				nonEmpty = append(nonEmpty, t)
+			}
+		}
+
+		hasPrompt := false
+		for i := len(nonEmpty) - 1; i >= 0 && i >= len(nonEmpty)-6; i-- {
+			if isAntigravityPromptLine(nonEmpty[i]) {
+				hasPrompt = true
+				break
+			}
+		}
+
+		if hasPrompt || strings.Contains(tailText, "? for shortcuts") {
+			if sess.State != StateIdle {
+				sess.State = StateIdle
+				sess.Blocked = nil
+				sess.Activity = "Awaiting user prompt"
+				changed = true
+			}
+			return changed
+		}
+	}
+
+	// 3. Structured Transcript Inspection (tail 64KB)
+	if home != "" && sess.NativeID != "" {
+		brainDirs := []string{
+			filepath.Join(home, ".gemini", "antigravity", "brain", sess.NativeID, ".system_generated", "logs", "transcript.jsonl"),
+			filepath.Join(home, ".gemini", "antigravity-cli", "brain", sess.NativeID, ".system_generated", "logs", "transcript.jsonl"),
+			filepath.Join(home, ".antigravity", "brain", sess.NativeID, ".system_generated", "logs", "transcript.jsonl"),
+		}
+		for _, logPath := range brainDirs {
+			if data, err := readTail(logPath, 64*1024); err == nil && len(data) > 0 {
+				lines := strings.Split(string(data), "\n")
+
+				var lastStep struct {
+					Source    string `json:"source"`
+					Type      string `json:"type"`
+					Status    string `json:"status"`
+					Content   string `json:"content"`
+					ToolCalls []struct {
+						Name string                 `json:"name"`
+						Args map[string]interface{} `json:"args"`
+					} `json:"tool_calls"`
+					CreatedAt string `json:"created_at"`
+				}
+				lastValidIdx := -1
+				for i := len(lines) - 1; i >= 0; i-- {
+					line := strings.TrimSpace(lines[i])
+					if line == "" {
+						continue
+					}
+					if err := json.Unmarshal([]byte(line), &lastStep); err == nil {
+						lastValidIdx = i
+						break
+					}
+				}
+
+				if lastValidIdx != -1 {
+					// 3A. Check if blocked on ask_question or plan approval
+					stepsChecked := 0
+					for i := lastValidIdx; i >= 0 && stepsChecked < 30; i-- {
+						line := strings.TrimSpace(lines[i])
+						if line == "" {
+							continue
+						}
+						var step struct {
+							Type      string `json:"type"`
+							Content   string `json:"content"`
+							ToolCalls []struct {
+								Name string                 `json:"name"`
+								Args map[string]interface{} `json:"args"`
+							} `json:"tool_calls"`
+							CreatedAt string `json:"created_at"`
+						}
+						if jerr := json.Unmarshal([]byte(line), &step); jerr == nil {
+							stepsChecked++
+							if step.Type == "USER_INPUT" || step.Type == "ASK_QUESTION" {
+								break
+							}
+
+							hasOtherTools := false
+							hasAskQuestion := false
+							for _, tc := range step.ToolCalls {
+								if tc.Name == "ask_question" {
+									hasAskQuestion = true
+								} else if tc.Name != "" {
+									hasOtherTools = true
+								}
+							}
+							if hasOtherTools && !hasAskQuestion {
+								break
+							}
+
+							stepTime, _ := time.Parse(time.RFC3339, step.CreatedAt)
+							if stepTime.IsZero() {
+								stepTime = time.Now()
+							}
+
+							for _, tc := range step.ToolCalls {
+								if tc.Name == "ask_question" {
+									q, opts := ExtractAntigravityQuestionAndOptions(tc.Args)
+									if sess.State != StateBlocked || sess.Blocked == nil || sess.Blocked.Question != q {
+										sess.State = StateBlocked
+										sess.Blocked = &Blocked{
+											Kind:     BlockQuestion,
+											Reason:   q,
+											Question: q,
+											Options:  opts,
+											Since:    stepTime,
+										}
+										if q != "" {
+											sess.Activity = "Question: " + truncateTitle(q)
+										} else {
+											sess.Activity = "Waiting for user response"
+										}
+										sess.LastEventAt = stepTime
+										changed = true
+									}
+									return changed
+								}
+							}
+
+							if strings.Contains(step.Content, "Note: You have just created an artifact and requested user feedback") ||
+								strings.Contains(step.Content, "Stop calling tools to end your turn, and allow the user to review the artifact") {
+								if sess.State != StateBlocked || sess.Blocked == nil {
+									sess.State = StateBlocked
+									sess.Blocked = &Blocked{
+										Kind:     BlockQuestion,
+										Reason:   "Plan approval required",
+										Question: "Please review and approve the implementation plan",
+										Options:  []string{"Proceed", "Provide Feedback"},
+										Since:    stepTime,
+									}
+									sess.Activity = "Waiting for plan feedback"
+									sess.LastEventAt = stepTime
+									changed = true
+								}
+								return changed
+							}
+						}
+					}
+
+					// 3B. Turn completion detection
+					if lastStep.Type == "USER_INPUT" {
+						if sess.State != StateWorking {
+							sess.State = StateWorking
+							sess.Blocked = nil
+							sess.Activity = "Thinking..."
+							changed = true
+						}
+						return changed
+					} else if (lastStep.Type == "PLANNER_RESPONSE" || lastStep.Type == "GENERIC") && lastStep.Status == "DONE" && len(lastStep.ToolCalls) == 0 {
+						if sess.State != StateIdle {
+							sess.State = StateIdle
+							sess.Blocked = nil
+							sess.Activity = "Awaiting user prompt"
+							changed = true
+						}
+						return changed
+					}
+				}
+				break
+			}
+		}
+	}
+
+	// 4. Active OS Child Processes (Worker Grandchildren)
 	if sess.State != StateBlocked && sess.PID > 0 {
 		if activeChildren := getActiveChildProcesses(ctx, sess.PID); len(activeChildren) > 0 {
 			if sess.State != StateWorking {
@@ -222,10 +357,11 @@ func InspectAntigravityStatus(ctx context.Context, sess *Session) bool {
 				sess.LastEventAt = time.Now()
 				changed = true
 			}
+			return changed
 		}
 	}
 
-	// 5. If it was blocked, but live tmux pane and transcript show it is now unblocked
+	// 5. If it was blocked, but unblocked and alive
 	if sess.State == StateBlocked {
 		if sess.TmuxName != "" || isProcessAlive(sess.PID) {
 			sess.State = StateIdle
@@ -242,6 +378,19 @@ func InspectAntigravityStatus(ctx context.Context, sess *Session) bool {
 	}
 
 	return changed
+}
+
+func isAntigravityPromptLine(trimmed string) bool {
+	if trimmed == ">" {
+		return true
+	}
+	if strings.HasPrefix(trimmed, "> ") ||
+		strings.HasPrefix(trimmed, "> Accept-edits") ||
+		strings.HasPrefix(trimmed, "> Plan mode") ||
+		strings.HasPrefix(trimmed, "> Auto mode") {
+		return true
+	}
+	return false
 }
 
 func (s *Server) inspectClaudeStatus(ctx context.Context, sess *Session) bool {
@@ -291,11 +440,7 @@ func InspectClaudeStatus(ctx context.Context, sess *Session) bool {
 
 		paneText := string(out)
 		lines = strings.Split(paneText, "\n")
-		startIdx := len(lines) - 25
-		if startIdx < 0 {
-			startIdx = 0
-		}
-		tailText = strings.Join(lines[startIdx:], "\n")
+		tailText = extractTailText(lines, 25)
 
 		// 1A. Permission prompt / confirmation
 		if strings.Contains(tailText, "Do you want to run") ||
@@ -575,7 +720,8 @@ func extractClaudeQuestionAndOptions(tailText string) (string, []string) {
 }
 
 // getActiveChildProcesses inspects active direct or indirect child processes using pgrep and ps.
-// It returns non-zombie command names of child processes, prioritizing worker grandchildren.
+// It returns non-zombie command names of child processes, prioritizing worker grandchildren
+// while ignoring intermediate shells, agent runners, and long-running MCP servers.
 func getActiveChildProcesses(ctx context.Context, parentPID int) []string {
 	if parentPID <= 0 {
 		return nil
@@ -589,8 +735,8 @@ func getActiveChildProcesses(ctx context.Context, parentPID int) []string {
 		return nil
 	}
 
-	// Batch query all child processes in a single ps call
-	statOut, err := exec.CommandContext(ctx, "ps", "-o", "pid=,stat=,comm=", "-p", strings.Join(pids, ",")).Output()
+	// Batch query all child processes in a single ps call with pid, stat, comm, and full command arguments
+	statOut, err := exec.CommandContext(ctx, "ps", "-o", "pid=,stat=,comm=,args=", "-p", strings.Join(pids, ",")).Output()
 	if err != nil || len(statOut) == 0 {
 		return nil
 	}
@@ -604,17 +750,22 @@ func getActiveChildProcesses(ctx context.Context, parentPID int) []string {
 			pidStr := fields[0]
 			stat := fields[1]
 			comm := filepath.Base(fields[2])
+			args := strings.Join(fields[2:], " ")
 			if strings.HasPrefix(stat, "Z") || strings.HasPrefix(stat, "z") {
 				continue
 			}
-			if comm == "bash" || comm == "sh" || comm == "zsh" || comm == "node" {
+			if isIntermediateRunner(comm) {
 				intermediatePIDs = append(intermediatePIDs, pidStr)
+				continue
+			}
+			if isIgnoredMCPOrDaemon(comm, args) {
+				continue
 			}
 			activeCommands = append(activeCommands, comm)
 		}
 	}
 
-	// Inspect grandchildren under shell/runner processes (e.g. gradle, cargo, npm, clang)
+	// Inspect grandchildren under shell/runner processes (e.g. gradle, cargo, npm, clang, go)
 	if len(intermediatePIDs) > 0 {
 		var grandPIDs []string
 		for _, ipid := range intermediatePIDs {
@@ -623,12 +774,17 @@ func getActiveChildProcesses(ctx context.Context, parentPID int) []string {
 			}
 		}
 		if len(grandPIDs) > 0 {
-			if gStatOut, gErr := exec.CommandContext(ctx, "ps", "-o", "stat=,comm=", "-p", strings.Join(grandPIDs, ",")).Output(); gErr == nil && len(gStatOut) > 0 {
+			if gStatOut, gErr := exec.CommandContext(ctx, "ps", "-o", "pid=,stat=,comm=,args=", "-p", strings.Join(grandPIDs, ",")).Output(); gErr == nil && len(gStatOut) > 0 {
 				var grandCommands []string
 				for _, line := range strings.Split(string(gStatOut), "\n") {
 					gFields := strings.Fields(line)
-					if len(gFields) >= 2 && !strings.HasPrefix(gFields[0], "Z") && !strings.HasPrefix(gFields[0], "z") {
-						grandCommands = append(grandCommands, filepath.Base(gFields[1]))
+					if len(gFields) >= 3 && !strings.HasPrefix(gFields[1], "Z") && !strings.HasPrefix(gFields[1], "z") {
+						gComm := filepath.Base(gFields[2])
+						gArgs := strings.Join(gFields[2:], " ")
+						if isIntermediateRunner(gComm) || isIgnoredMCPOrDaemon(gComm, gArgs) {
+							continue
+						}
+						grandCommands = append(grandCommands, gComm)
 					}
 				}
 				if len(grandCommands) > 0 {
@@ -640,6 +796,27 @@ func getActiveChildProcesses(ctx context.Context, parentPID int) []string {
 	}
 
 	return activeCommands
+}
+
+func isIntermediateRunner(comm string) bool {
+	base := strings.ToLower(comm)
+	switch base {
+	case "bash", "sh", "zsh", "fish", "node", "agy", "antigravity", "claude", "codex", "opencode", "grok":
+		return true
+	}
+	return false
+}
+
+func isIgnoredMCPOrDaemon(comm, args string) bool {
+	lowerArgs := strings.ToLower(args)
+	if strings.Contains(lowerArgs, "mcp-remote") ||
+		strings.Contains(lowerArgs, "mcp-server") ||
+		strings.Contains(lowerArgs, "modelcontextprotocol") ||
+		strings.Contains(lowerArgs, "@modelcontextprotocol") ||
+		strings.Contains(lowerArgs, "mcp/") {
+		return true
+	}
+	return false
 }
 
 func (s *Server) inspectCodexStatus(ctx context.Context, sess *Session) bool {
@@ -684,11 +861,7 @@ func InspectCodexStatus(ctx context.Context, sess *Session) bool {
 
 		paneText := string(out)
 		lines := strings.Split(paneText, "\n")
-		startIdx := len(lines) - 25
-		if startIdx < 0 {
-			startIdx = 0
-		}
-		tailText := strings.Join(lines[startIdx:], "\n")
+		tailText := extractTailText(lines, 25)
 
 		// 1. Permission request / confirmation
 		if strings.Contains(tailText, "requires approval") ||
@@ -787,11 +960,7 @@ func InspectGrokStatus(ctx context.Context, sess *Session) bool {
 
 		paneText := string(out)
 		lines := strings.Split(paneText, "\n")
-		startIdx := len(lines) - 25
-		if startIdx < 0 {
-			startIdx = 0
-		}
-		tailText := strings.Join(lines[startIdx:], "\n")
+		tailText := extractTailText(lines, 25)
 
 		// 1. Permission request / confirmation
 		if strings.Contains(tailText, "requires approval") ||
@@ -891,11 +1060,7 @@ func InspectOpenCodeStatus(ctx context.Context, sess *Session) bool {
 
 		paneText := string(out)
 		lines := strings.Split(paneText, "\n")
-		startIdx := len(lines) - 25
-		if startIdx < 0 {
-			startIdx = 0
-		}
-		tailText := strings.Join(lines[startIdx:], "\n")
+		tailText := extractTailText(lines, 25)
 
 		// 1. Permission request / confirmation
 		if strings.Contains(tailText, "requires approval") ||

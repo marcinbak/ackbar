@@ -66,6 +66,10 @@ func main() {
 
 	if resp.StatusCode != http.StatusOK {
 		fmt.Fprintf(os.Stderr, "Error: daemon returned status %d\n", resp.StatusCode)
+		fmt.Println("{}")
 		os.Exit(1)
 	}
+
+	// Agents expecting JSON on stdout (e.g. Antigravity) receive a valid empty object
+	fmt.Println("{}")
 }

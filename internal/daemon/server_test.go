@@ -1696,6 +1696,113 @@ func TestInspectAntigravityStatus_AnsweredQuestionDoesNotBlock(t *testing.T) {
 	}
 }
 
+func TestInspectAntigravityStatus_TranscriptTurnConcluded(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	convUUID := "66666666-7777-8888-9999-000000000000"
+	brainDir := filepath.Join(tmpHome, ".gemini", "antigravity-cli", "brain", convUUID, ".system_generated", "logs")
+	if err := os.MkdirAll(brainDir, 0755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+
+	transcript := `{"step_index":1,"source":"USER_EXPLICIT","type":"USER_INPUT","content":"Fix the bug"}` + "\n" +
+		`{"step_index":2,"type":"PLANNER_RESPONSE","status":"DONE","tool_calls":[{"name":"run_command","args":{"CommandLine":"git status"}}]}` + "\n" +
+		`{"step_index":3,"type":"GENERIC","status":"DONE","content":"clean"}` + "\n" +
+		`{"step_index":4,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","content":"Bug is fixed.","tool_calls":null}` + "\n"
+
+	if err := os.WriteFile(filepath.Join(brainDir, "transcript.jsonl"), []byte(transcript), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	sess := &Session{
+		ID:          "antigravity:local:" + convUUID,
+		Agent:       "antigravity",
+		Host:        "local",
+		NativeID:    convUUID,
+		State:       StateWorking,
+		Activity:    "Working...",
+		PID:         os.Getpid(),
+		StartedAt:   time.Now(),
+		LastEventAt: time.Now(),
+	}
+
+	ctx := context.Background()
+	changed := InspectAntigravityStatus(ctx, sess)
+	if !changed {
+		t.Errorf("Expected InspectAntigravityStatus to report changed=true when turn concluded")
+	}
+	if sess.State != StateIdle {
+		t.Fatalf("Expected session state StateIdle, got %v (activity: %s)", sess.State, sess.Activity)
+	}
+	if sess.Activity != "Awaiting user prompt" {
+		t.Errorf("Expected activity 'Awaiting user prompt', got %q", sess.Activity)
+	}
+}
+
+func TestInspectAntigravityStatus_TranscriptUserInputWorking(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	convUUID := "77777777-8888-9999-aaaa-bbbbbbbbbbbb"
+	brainDir := filepath.Join(tmpHome, ".gemini", "antigravity-cli", "brain", convUUID, ".system_generated", "logs")
+	if err := os.MkdirAll(brainDir, 0755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+
+	transcript := `{"step_index":1,"source":"USER_EXPLICIT","type":"USER_INPUT","content":"Fix the bug"}` + "\n"
+
+	if err := os.WriteFile(filepath.Join(brainDir, "transcript.jsonl"), []byte(transcript), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	sess := &Session{
+		ID:          "antigravity:local:" + convUUID,
+		Agent:       "antigravity",
+		Host:        "local",
+		NativeID:    convUUID,
+		State:       StateIdle,
+		Activity:    "Awaiting user prompt",
+		PID:         os.Getpid(),
+		StartedAt:   time.Now(),
+		LastEventAt: time.Now(),
+	}
+
+	ctx := context.Background()
+	changed := InspectAntigravityStatus(ctx, sess)
+	if !changed {
+		t.Errorf("Expected InspectAntigravityStatus to report changed=true on new USER_INPUT")
+	}
+	if sess.State != StateWorking {
+		t.Fatalf("Expected session state StateWorking, got %v (activity: %s)", sess.State, sess.Activity)
+	}
+	if sess.Activity != "Thinking..." {
+		t.Errorf("Expected activity 'Thinking...', got %q", sess.Activity)
+	}
+}
+
+func TestGetActiveChildProcesses_FiltersMCPAndRunners(t *testing.T) {
+	if !isIntermediateRunner("agy") || !isIntermediateRunner("claude") || !isIntermediateRunner("bash") {
+		t.Errorf("Expected agy, claude, and bash to be recognized as intermediate runners")
+	}
+	if isIntermediateRunner("git") || isIntermediateRunner("go") || isIntermediateRunner("cargo") {
+		t.Errorf("Expected git, go, and cargo not to be intermediate runners")
+	}
+
+	if !isIgnoredMCPOrDaemon("npm", "npm exec mcp-remote https://mcp.linear.app/mcp") {
+		t.Errorf("Expected Linear MCP server to be ignored")
+	}
+	if !isIgnoredMCPOrDaemon("node", "node /path/to/mcp-server-git") {
+		t.Errorf("Expected mcp-server to be ignored")
+	}
+	if isIgnoredMCPOrDaemon("npm", "npm test") {
+		t.Errorf("Expected 'npm test' not to be ignored as daemon")
+	}
+	if isIgnoredMCPOrDaemon("go", "go test -v ./...") {
+		t.Errorf("Expected 'go test' not to be ignored as daemon")
+	}
+}
+
 func TestInspectClaudeStatus_QuestionPromptBlocked(t *testing.T) {
 	if !tmux.IsTmuxInstalled() {
 		t.Skip("tmux not installed, skipping TestInspectClaudeStatus_QuestionPromptBlocked")
