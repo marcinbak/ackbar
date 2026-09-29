@@ -313,6 +313,7 @@ func (s *Server) Mux() http.Handler {
 	mux.HandleFunc("/v1/tasks/deliverable", s.handleTaskDeliverable)
 	mux.HandleFunc("/v1/tasks/sync-workflow", s.handleTaskSyncWorkflow)
 	mux.HandleFunc("/v1/tasks/merge-pr", s.handleTaskMergePR)
+	mux.HandleFunc("/v1/tasks/deduplicate", s.handleTaskDeduplicate)
 	mux.HandleFunc("/v1/standup", s.handleStandup)
 	mux.HandleFunc("/v1/briefings/synthesize", s.handleBriefingSynthesize)
 	mux.HandleFunc("/v1/agents/status", s.handleAgentsStatus)

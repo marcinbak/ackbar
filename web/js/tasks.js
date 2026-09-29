@@ -187,6 +187,49 @@ export function renderWorkBoard() {
     return true;
   });
 
+  // Defensive client-side deduplication guard:
+  // Suppress orphaned empty-branch tasks if an active task for the same ticket exists,
+  // or redundant empty-branch tasks sharing identical title and group.
+  const seenTaskKeys = new Set();
+  const dedupedTasks = [];
+
+  // Sort so branch-holding tasks take precedence over empty-branch tasks
+  filtered.sort((a, b) => {
+    const aHasBranch = (a.branch || '').trim() !== '';
+    const bHasBranch = (b.branch || '').trim() !== '';
+    if (aHasBranch !== bHasBranch) return aHasBranch ? -1 : 1;
+    return (new Date(b.updated_at || 0)) - (new Date(a.updated_at || 0));
+  });
+
+  filtered.forEach(task => {
+    const branch = (task.branch || '').trim();
+    if (branch !== '') {
+      const branchKey = `branch:${(task.project_name || '').toLowerCase()}:${branch.toLowerCase()}`;
+      if (!seenTaskKeys.has(branchKey)) {
+        seenTaskKeys.add(branchKey);
+        (task.external_refs || []).forEach(r => {
+          if (r.ref_key) seenTaskKeys.add(`ref:${r.ref_key.toLowerCase()}`);
+        });
+        dedupedTasks.push(task);
+      }
+    } else {
+      let covered = false;
+      const refs = (task.external_refs || []).map(r => (r.ref_key || '').toLowerCase()).filter(Boolean);
+      for (const ref of refs) {
+        if (seenTaskKeys.has(`ref:${ref}`)) {
+          covered = true;
+          break;
+        }
+      }
+      const titleKey = `title:${(task.group_name || '').toLowerCase()}:${(task.title || '').trim().toLowerCase()}`;
+      if (!covered && !seenTaskKeys.has(titleKey)) {
+        seenTaskKeys.add(titleKey);
+        refs.forEach(ref => seenTaskKeys.add(`ref:${ref}`));
+        dedupedTasks.push(task);
+      }
+    }
+  });
+
   const columns = {
     NEW: [],
     IN_PROGRESS: [],
@@ -194,7 +237,7 @@ export function renderWorkBoard() {
     DONE: []
   };
 
-  filtered.forEach(task => {
+  dedupedTasks.forEach(task => {
     const status = (task.status || 'NEW').toUpperCase();
     if (columns[status]) {
       columns[status].push(task);

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -1861,6 +1862,7 @@ func (d *DB) InsertTaskDeliverable(td *TaskDeliverable) error {
 
 // DeduplicateTasks removes redundant duplicate tasks sharing the same external reference
 // or identical title and project when branch is empty, consolidating workers and deliverables.
+// Invariant: Tasks with different non-empty git branches are NEVER merged or deleted.
 func (d *DB) DeduplicateTasks() (int64, error) {
 	var totalDeleted int64
 
@@ -1891,20 +1893,17 @@ func (d *DB) DeduplicateTasks() (int64, error) {
 			taskQuery := `SELECT t.id, t.title, t.group_name, t.project_name, t.subproject_name, t.status, t.substatus, t.notes, t.blocker_question, t.branch, t.worktree_path, t.pr_url, t.pr_number, t.pr_state, t.ci_status, t.created_at, t.updated_at, t.completed_at
 						  FROM tasks t
 						  JOIN task_external_refs r ON t.id = r.task_id
-						  WHERE r.tracker = ? AND r.ref_key = ?
-						  ORDER BY 
-							(CASE WHEN t.branch != '' AND t.branch IS NOT NULL THEN 1 ELSE 0 END) DESC,
-							(SELECT count(*) FROM task_workers WHERE task_id = t.id) DESC,
-							(SELECT count(*) FROM task_deliverables WHERE task_id = t.id) DESC,
-							t.created_at ASC;`
+						  WHERE r.tracker = ? AND r.ref_key = ?;`
 			tRows, err := d.db.Query(taskQuery, dr.tracker, dr.refKey)
 			if err != nil {
 				continue
 			}
 			var tasks []*Task
+			seenIDs := make(map[string]bool)
 			for tRows.Next() {
 				t, err := scanTaskRow(tRows)
-				if err == nil && t != nil {
+				if err == nil && t != nil && !seenIDs[t.ID] {
+					seenIDs[t.ID] = true
 					tasks = append(tasks, t)
 				}
 			}
@@ -1914,35 +1913,47 @@ func (d *DB) DeduplicateTasks() (int64, error) {
 				continue
 			}
 
-			primary := tasks[0]
-			for _, dup := range tasks[1:] {
-				if primary.Branch == "" && dup.Branch != "" {
-					primary.Branch = dup.Branch
-				}
-				if primary.WorktreePath == "" && dup.WorktreePath != "" {
-					primary.WorktreePath = dup.WorktreePath
-				}
-				if primary.Notes == "" && dup.Notes != "" {
-					primary.Notes = dup.Notes
-				}
-				if primary.PRURL == "" && dup.PRURL != "" {
-					primary.PRURL = dup.PRURL
-					primary.PRNumber = dup.PRNumber
-					primary.PRState = dup.PRState
+			// Cluster tasks into groups that can be safely deduplicated.
+			// Invariant: Tasks with different non-empty git branches MUST NEVER be in the same cluster.
+			clusters := clusterTasksForDeduplication(tasks, dr.refKey)
+
+			for _, cluster := range clusters {
+				if len(cluster) <= 1 {
+					continue
 				}
 
-				_, _ = d.db.Exec(`UPDATE OR IGNORE task_workers SET task_id = ? WHERE task_id = ?`, primary.ID, dup.ID)
-				_, _ = d.db.Exec(`UPDATE OR IGNORE task_deliverables SET task_id = ? WHERE task_id = ?`, primary.ID, dup.ID)
-				_, _ = d.db.Exec(`DELETE FROM task_workers WHERE task_id = ?`, dup.ID)
-				_, _ = d.db.Exec(`DELETE FROM task_deliverables WHERE task_id = ?`, dup.ID)
-				_, _ = d.db.Exec(`DELETE FROM task_external_refs WHERE task_id = ?`, dup.ID)
-				res, err := d.db.Exec(`DELETE FROM tasks WHERE id = ?`, dup.ID)
-				if err == nil {
-					n, _ := res.RowsAffected()
-					totalDeleted += n
+				sortTasksForPrimary(d, cluster)
+				primary := cluster[0]
+
+				for _, dup := range cluster[1:] {
+					if primary.Branch == "" && dup.Branch != "" {
+						primary.Branch = dup.Branch
+					}
+					if primary.WorktreePath == "" && dup.WorktreePath != "" {
+						primary.WorktreePath = dup.WorktreePath
+					}
+					if primary.Notes == "" && dup.Notes != "" {
+						primary.Notes = dup.Notes
+					}
+					if primary.PRURL == "" && dup.PRURL != "" {
+						primary.PRURL = dup.PRURL
+						primary.PRNumber = dup.PRNumber
+						primary.PRState = dup.PRState
+					}
+
+					_, _ = d.db.Exec(`UPDATE OR IGNORE task_workers SET task_id = ? WHERE task_id = ?`, primary.ID, dup.ID)
+					_, _ = d.db.Exec(`UPDATE OR IGNORE task_deliverables SET task_id = ? WHERE task_id = ?`, primary.ID, dup.ID)
+					_, _ = d.db.Exec(`DELETE FROM task_workers WHERE task_id = ?`, dup.ID)
+					_, _ = d.db.Exec(`DELETE FROM task_deliverables WHERE task_id = ?`, dup.ID)
+					_, _ = d.db.Exec(`DELETE FROM task_external_refs WHERE task_id = ?`, dup.ID)
+					res, err := d.db.Exec(`DELETE FROM tasks WHERE id = ?`, dup.ID)
+					if err == nil {
+						n, _ := res.RowsAffected()
+						totalDeleted += n
+					}
 				}
+				_ = d.UpdateTask(primary)
 			}
-			_ = d.UpdateTask(primary)
 		}
 	}
 
@@ -2014,4 +2025,146 @@ func (d *DB) DeduplicateTasks() (int64, error) {
 	}
 
 	return totalDeleted, nil
+}
+
+// clusterTasksForDeduplication groups tasks sharing a refKey into safe deduplication clusters.
+// Invariant: Two tasks with different non-empty git branches are NEVER placed in the same cluster.
+func clusterTasksForDeduplication(tasks []*Task, refKey string) [][]*Task {
+	cleanRef := strings.ToUpper(strings.TrimSpace(refKey))
+	branchMap := make(map[string][]*Task)
+	var emptyBranchTasks []*Task
+
+	for _, t := range tasks {
+		b := strings.TrimSpace(t.Branch)
+		if b != "" {
+			branchMap[b] = append(branchMap[b], t)
+		} else {
+			emptyBranchTasks = append(emptyBranchTasks, t)
+		}
+	}
+
+	// Identify which branch clusters match the refKey (in branch name or task title)
+	var matchingBranches []string
+	for b, bTasks := range branchMap {
+		bUpper := strings.ToUpper(b)
+		matches := false
+		if cleanRef != "" && strings.Contains(bUpper, cleanRef) {
+			matches = true
+		} else if issueKey := ExtractIssueKey(b); issueKey != "" && strings.EqualFold(issueKey, cleanRef) {
+			matches = true
+		} else {
+			// Check if any task in this branch cluster has the refKey in its title
+			for _, bt := range bTasks {
+				if cleanRef != "" && strings.Contains(strings.ToUpper(bt.Title), cleanRef) {
+					matches = true
+					break
+				}
+			}
+		}
+		if matches {
+			matchingBranches = append(matchingBranches, b)
+		}
+	}
+
+	// Distribute empty-branch tasks
+	if len(emptyBranchTasks) > 0 {
+		var targetBranch string
+		if len(matchingBranches) == 1 {
+			// Exactly one branch cluster clearly corresponds to this refKey
+			targetBranch = matchingBranches[0]
+		} else if len(branchMap) == 1 && len(matchingBranches) == 0 {
+			// Only one branch cluster exists overall for this refKey
+			for b := range branchMap {
+				targetBranch = b
+			}
+		}
+
+		if targetBranch != "" {
+			branchMap[targetBranch] = append(branchMap[targetBranch], emptyBranchTasks...)
+		} else {
+			// Cannot assign empty-branch tasks to any single branch without ambiguity.
+			// Group empty-branch tasks by (group_name, project_name) so they can still
+			// deduplicate among themselves without destroying any branch task.
+			groupProjMap := make(map[string][]*Task)
+			for _, et := range emptyBranchTasks {
+				key := strings.ToLower(et.GroupName) + "|" + strings.ToLower(et.ProjectName)
+				groupProjMap[key] = append(groupProjMap[key], et)
+			}
+			var result [][]*Task
+			for _, cluster := range branchMap {
+				result = append(result, cluster)
+			}
+			for _, cluster := range groupProjMap {
+				result = append(result, cluster)
+			}
+			return result
+		}
+	}
+
+	var result [][]*Task
+	for _, cluster := range branchMap {
+		result = append(result, cluster)
+	}
+	return result
+}
+
+func sortTasksForPrimary(d *DB, cluster []*Task) {
+	statusWeight := func(status string) int {
+		switch strings.ToUpper(status) {
+		case "REVIEW":
+			return 4
+		case "DONE":
+			return 3
+		case "IN_PROGRESS":
+			return 2
+		case "NEW":
+			return 1
+		default:
+			return 0
+		}
+	}
+
+	sort.SliceStable(cluster, func(i, j int) bool {
+		ti, tj := cluster[i], cluster[j]
+
+		// 1. Task with non-empty branch first
+		iHasBranch := strings.TrimSpace(ti.Branch) != ""
+		jHasBranch := strings.TrimSpace(tj.Branch) != ""
+		if iHasBranch != jHasBranch {
+			return iHasBranch
+		}
+
+		// 2. Task with PR URL first
+		iHasPR := strings.TrimSpace(ti.PRURL) != ""
+		jHasPR := strings.TrimSpace(tj.PRURL) != ""
+		if iHasPR != jHasPR {
+			return iHasPR
+		}
+
+		// 3. Status priority: REVIEW > DONE > IN_PROGRESS > NEW
+		iScore := statusWeight(ti.Status)
+		jScore := statusWeight(tj.Status)
+		if iScore != jScore {
+			return iScore > jScore
+		}
+
+		// 4. More workers count
+		var iWorkers, jWorkers int
+		_ = d.db.QueryRow(`SELECT count(*) FROM task_workers WHERE task_id = ?`, ti.ID).Scan(&iWorkers)
+		_ = d.db.QueryRow(`SELECT count(*) FROM task_workers WHERE task_id = ?`, tj.ID).Scan(&jWorkers)
+		if iWorkers != jWorkers {
+			return iWorkers > jWorkers
+		}
+
+		// 5. More deliverables count
+		var iDelivs, jDelivs int
+		_ = d.db.QueryRow(`SELECT count(*) FROM task_deliverables WHERE task_id = ?`, ti.ID).Scan(&iDelivs)
+		_ = d.db.QueryRow(`SELECT count(*) FROM task_deliverables WHERE task_id = ?`, tj.ID).Scan(&jDelivs)
+		if iDelivs != jDelivs {
+			return iDelivs > jDelivs
+		}
+
+		// 6. Earliest created_at
+		return ti.CreatedAt.Before(tj.CreatedAt)
+	})
 }

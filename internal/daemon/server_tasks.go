@@ -109,7 +109,13 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 				existing.WorktreePath = t.WorktreePath
 			}
 			if t.PRURL != "" {
-				existing.PRURL = t.PRURL
+				if t.PRURL == "-" {
+					existing.PRURL = ""
+					existing.PRNumber = 0
+					existing.PRState = ""
+				} else {
+					existing.PRURL = t.PRURL
+				}
 			}
 			if t.PRNumber != 0 {
 				existing.PRNumber = t.PRNumber
@@ -500,4 +506,24 @@ func (s *Server) handleTaskSyncWorkflow(w http.ResponseWriter, r *http.Request) 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(`{"status":"ok"}`))
+}
+
+func (s *Server) handleTaskDeduplicate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	deleted, err := s.db.DeduplicateTasks()
+	if err != nil {
+		http.Error(w, "Failed to deduplicate tasks: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]any{
+		"deleted": deleted,
+		"status":  "success",
+	})
 }
