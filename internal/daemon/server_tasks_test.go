@@ -994,4 +994,3 @@ func TestTask_DeduplicateTasks(t *testing.T) {
 		t.Errorf("Expected 1 task remaining after dedup, got %d", len(allTasks))
 	}
 }
-

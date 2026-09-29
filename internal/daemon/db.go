@@ -2015,4 +2015,3 @@ func (d *DB) DeduplicateTasks() (int64, error) {
 
 	return totalDeleted, nil
 }
-
