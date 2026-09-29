@@ -96,6 +96,12 @@ body, html {
   gap: 16px;
 }
 
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
 .header-left .brand {
   display: flex;
   align-items: center;
@@ -122,6 +128,45 @@ body, html {
   padding: 2px 6px;
   border-radius: 4px;
   border: 1px solid var(--border-color);
+}
+
+/* Mode Switcher (Workspace vs Work Board) */
+.app-mode-switcher {
+  display: flex;
+  align-items: center;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 2px;
+  gap: 2px;
+}
+
+.app-mode-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 500;
+  padding: 4px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.app-mode-btn:hover {
+  color: var(--text-main);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.app-mode-btn.active {
+  background: var(--bg-card);
+  color: #fff;
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  border-color: rgba(255, 255, 255, 0.08);
 }
 
 .header-center {
@@ -3845,45 +3890,6 @@ body, html {
    Work & Fleet Overview Dashboard (Kanban Board) Styles
    ========================================================================== */
 
-/* Top Header Mode Switcher */
-.app-mode-switcher {
-  display: flex;
-  align-items: center;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid var(--border-color);
-  border-radius: 6px;
-  padding: 2px;
-  margin-left: 12px;
-  gap: 2px;
-}
-
-.app-mode-btn {
-  background: transparent;
-  border: none;
-  color: var(--text-muted);
-  font-size: 11px;
-  font-weight: 500;
-  padding: 4px 10px;
-  border-radius: 4px;
-  cursor: pointer;
-  transition: all 0.15s ease;
-  display: flex;
-  align-items: center;
-  gap: 5px;
-}
-
-.app-mode-btn:hover {
-  color: var(--text-main);
-  background: rgba(255, 255, 255, 0.06);
-}
-
-.app-mode-btn.active {
-  background: var(--bg-card);
-  color: #fff;
-  font-weight: 600;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-}
 
 /* Work Board View Main Container */
 .work-board-view {
