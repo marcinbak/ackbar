@@ -121,6 +121,11 @@ func (s *Server) IngestDevWorkflowRuns() error {
 		}
 	}
 
+	// Run periodic deduplication pass to consolidate any newly orphaned planning tasks
+	if n, err := s.db.DeduplicateTasks(); err == nil && n > 0 {
+		log.Printf("[DevWorkflowWatcher] Deduplicated %d redundant task(s)", n)
+	}
+
 	return nil
 }
 

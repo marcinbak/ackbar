@@ -707,6 +707,22 @@ async function deleteTask(taskId) {
   return res.json();
 }
 
+async function deduplicateTasks() {
+  const res = await fetch('/v1/tasks/deduplicate', {
+    method: 'POST'
+  });
+  if (!res.ok) {
+    const errText = await res.text();
+    let msg = errText;
+    try {
+      const errObj = JSON.parse(errText);
+      if (errObj.message) msg = errObj.message;
+    } catch (_) {}
+    throw new Error(msg || 'Failed to deduplicate tasks');
+  }
+  return res.json();
+}
+
 export {
   fetchProviders,
   fetchVersion,
@@ -728,6 +744,7 @@ export {
   createTask,
   updateTask,
   deleteTask,
+  deduplicateTasks,
   sendTaskEvent,
   fetchStandup,
   synthesizeBriefing,

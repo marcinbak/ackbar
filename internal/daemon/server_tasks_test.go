@@ -995,3 +995,196 @@ func TestTask_DeduplicateTasks(t *testing.T) {
 		t.Errorf("Expected 1 task remaining after dedup, got %d", len(allTasks))
 	}
 }
+
+func TestTask_DeduplicateTasks_BranchAware(t *testing.T) {
+	dbFile := "./test_task_dedup_branch.db"
+	defer os.Remove(dbFile)
+
+	db, err := InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	// 1. Legitimate task A for NGL-1041 with its own branch and PR
+	taskA := &Task{
+		ID:          "task_ngl1041_branch",
+		Title:       "NGL-1041 — Add Firebase Crashlytics (iOS)",
+		GroupName:   "Modemobile",
+		ProjectName: "ngl-ios",
+		Status:      "REVIEW",
+		Substatus:   "active",
+		Branch:      "NGL-1041-add-firebase-crashlytics",
+		PRURL:       "https://github.com/CurrentMobile/ngl-ios/pull/561",
+		PRNumber:    561,
+		ExternalRefs: []TaskExternalRef{
+			{Tracker: "jira", RefKey: "NGL-1041"},
+		},
+	}
+	if err := db.CreateTask(taskA); err != nil {
+		t.Fatalf("CreateTask A failed: %v", err)
+	}
+	_ = db.InsertTaskWorker(&TaskWorker{
+		TaskID:    taskA.ID,
+		SessionID: "sess_worker_a",
+		Agent:     "claude-code",
+		Host:      "macbook",
+		IsActive:  true,
+	})
+
+	// 2. Legitimate task B with a completely DIFFERENT branch, which happens to reference NGL-1041 in external refs
+	taskB := &Task{
+		ID:          "task_icloud_release",
+		Title:       "icloud restore",
+		GroupName:   "Modemobile",
+		ProjectName: "ngl-ios",
+		Status:      "REVIEW",
+		Substatus:   "active",
+		Branch:      "ci/release-submit-only-and-phased-release",
+		PRURL:       "https://github.com/CurrentMobile/ngl-ios/pull/560",
+		PRNumber:    560,
+		ExternalRefs: []TaskExternalRef{
+			{Tracker: "jira", RefKey: "NGL-1040"},
+			{Tracker: "jira", RefKey: "NGL-1041"},
+			{Tracker: "jira", RefKey: "NGL-974"},
+		},
+	}
+	if err := db.CreateTask(taskB); err != nil {
+		t.Fatalf("CreateTask B failed: %v", err)
+	}
+	// Give task B more workers than task A
+	for w := 1; w <= 3; w++ {
+		_ = db.InsertTaskWorker(&TaskWorker{
+			TaskID:    taskB.ID,
+			SessionID: fmt.Sprintf("sess_worker_b_%d", w),
+			Agent:     "claude-code",
+			Host:      "macbook",
+			IsActive:  true,
+		})
+	}
+
+	// 3. Three orphaned empty-branch tasks for NGL-1041 (created during planning before branch existed)
+	for i := 1; i <= 3; i++ {
+		taskDup := &Task{
+			ID:          fmt.Sprintf("task_orphan_%d", i),
+			Title:       "NGL-1041",
+			GroupName:   "Modemobile",
+			ProjectName: "ngl-ios",
+			Status:      "IN_PROGRESS",
+			Substatus:   "active",
+			Branch:      "",
+			ExternalRefs: []TaskExternalRef{
+				{Tracker: "jira", RefKey: "NGL-1041"},
+			},
+		}
+		if err := db.CreateTask(taskDup); err != nil {
+			t.Fatalf("CreateTask orphan %d failed: %v", i, err)
+		}
+	}
+
+	tasksBefore, err := db.GetTasks()
+	if err != nil {
+		t.Fatalf("GetTasks failed: %v", err)
+	}
+	if len(tasksBefore) != 5 {
+		t.Fatalf("Expected 5 tasks before dedup, got %d", len(tasksBefore))
+	}
+
+	deleted, err := db.DeduplicateTasks()
+	if err != nil {
+		t.Fatalf("DeduplicateTasks failed: %v", err)
+	}
+	if deleted != 3 {
+		t.Errorf("Expected exactly 3 orphaned tasks deleted, got %d", deleted)
+	}
+
+	tasksAfter, err := db.GetTasks()
+	if err != nil {
+		t.Fatalf("GetTasks failed: %v", err)
+	}
+	if len(tasksAfter) != 2 {
+		t.Fatalf("Expected exactly 2 tasks remaining, got %d", len(tasksAfter))
+	}
+
+	// Verify Task A was preserved as the primary for NGL-1041
+	savedA, err := db.GetTaskByID("task_ngl1041_branch")
+	if err != nil || savedA == nil {
+		t.Fatalf("Task A should NOT have been deleted: %v", err)
+	}
+	if savedA.Branch != "NGL-1041-add-firebase-crashlytics" {
+		t.Errorf("Expected Task A branch preserved, got %q", savedA.Branch)
+	}
+	if savedA.PRNumber != 561 {
+		t.Errorf("Expected Task A PR 561 preserved, got %d", savedA.PRNumber)
+	}
+
+	// Verify Task B was also preserved with its own distinct branch
+	savedB, err := db.GetTaskByID("task_icloud_release")
+	if err != nil || savedB == nil {
+		t.Fatalf("Task B should NOT have been deleted: %v", err)
+	}
+	if savedB.Branch != "ci/release-submit-only-and-phased-release" {
+		t.Errorf("Expected Task B branch preserved, got %q", savedB.Branch)
+	}
+	if savedB.PRNumber != 560 {
+		t.Errorf("Expected Task B PR 560 preserved, got %d", savedB.PRNumber)
+	}
+}
+
+func TestServer_TaskDeduplicateEndpoint(t *testing.T) {
+	dbFile := "./test_task_dedup_endpoint.db"
+	defer os.Remove(dbFile)
+
+	db, err := InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := &Server{db: db}
+
+	// Insert duplicate tasks
+	for i := 1; i <= 2; i++ {
+		task := &Task{
+			ID:          fmt.Sprintf("task_dup_ep_%d", i),
+			Title:       "DUP-100",
+			GroupName:   "Personal",
+			ProjectName: "Ackbar",
+			Status:      "IN_PROGRESS",
+			ExternalRefs: []TaskExternalRef{
+				{Tracker: "jira", RefKey: "DUP-100"},
+			},
+		}
+		_ = db.CreateTask(task)
+	}
+
+	// 1. GET not allowed
+	reqGet := httptest.NewRequest(http.MethodGet, "/v1/tasks/deduplicate", nil)
+	wGet := httptest.NewRecorder()
+	server.handleTaskDeduplicate(wGet, reqGet)
+	if wGet.Code != http.StatusMethodNotAllowed {
+		t.Errorf("Expected 405 Method Not Allowed, got %d", wGet.Code)
+	}
+
+	// 2. POST triggers deduplication
+	reqPost := httptest.NewRequest(http.MethodPost, "/v1/tasks/deduplicate", nil)
+	wPost := httptest.NewRecorder()
+	server.handleTaskDeduplicate(wPost, reqPost)
+	if wPost.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK, got %d: %s", wPost.Code, wPost.Body.String())
+	}
+
+	var resp struct {
+		Deleted int64  `json:"deleted"`
+		Status  string `json:"status"`
+	}
+	if err := json.Unmarshal(wPost.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("Failed to parse response: %v", err)
+	}
+	if resp.Deleted != 1 {
+		t.Errorf("Expected 1 deleted task, got %d", resp.Deleted)
+	}
+	if resp.Status != "success" {
+		t.Errorf("Expected status 'success', got %q", resp.Status)
+	}
+}
