@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -48,7 +49,7 @@ type DevWorkflowRun struct {
 	ReviewBudgetLeft   int              `json:"review_budget_left"`
 	ReviewRounds       int              `json:"review_rounds"`
 	HumanInterventions []map[string]any `json:"human_interventions"`
-	ImplementerAgent   string           `json:"implementer_agent"`
+	ImplementerAgent   any              `json:"implementer_agent"`
 	Tier               string           `json:"tier"`
 	Artifacts          []string         `json:"artifacts"`
 	PR                 *DevWorkflowPR   `json:"pr"`
@@ -58,6 +59,39 @@ type DevWorkflowRun struct {
 type DevWorkflowPR struct {
 	Number int    `json:"number"`
 	URL    string `json:"url"`
+}
+
+var rePullNumber = regexp.MustCompile(`/pull/(\d+)`)
+
+func (p *DevWorkflowPR) UnmarshalJSON(data []byte) error {
+	str := strings.TrimSpace(string(data))
+	if str == "" || str == "null" {
+		return nil
+	}
+	// 1. Structured object
+	type rawPR DevWorkflowPR
+	var obj rawPR
+	if err := json.Unmarshal(data, &obj); err == nil && (obj.Number != 0 || obj.URL != "") {
+		p.Number = obj.Number
+		p.URL = obj.URL
+		return nil
+	}
+	// 2. Integer number
+	var num int
+	if err := json.Unmarshal(data, &num); err == nil {
+		p.Number = num
+		return nil
+	}
+	// 3. String URL
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		p.URL = s
+		if m := rePullNumber.FindStringSubmatch(s); len(m) > 1 {
+			p.Number, _ = strconv.Atoi(m[1])
+		}
+		return nil
+	}
+	return nil
 }
 
 // IngestDevWorkflowRuns scans ~/.claude/dev-workflow-runs/ and synchronizes run states to tasks
@@ -112,13 +146,29 @@ func (s *Server) ingestSingleWorkflowRun(jsonPath string) error {
 	basePrefix := strings.TrimSuffix(jsonPath, ".json")
 	briefPath := basePrefix + ".brief.md"
 	retroPath := basePrefix + ".retro.md"
-
 	briefTitle, briefNotes := extractBriefMetadata(briefPath)
 
-	// Resolve task by branch or worktree
-	task, _ := s.db.GetTaskByBranch(run.Branch)
+	ticketStr := ""
+	if run.Ticket != nil && *run.Ticket != "" {
+		ticketStr = strings.TrimSpace(*run.Ticket)
+	}
+
+	// Resolve task by external reference ticket key, branch, worktree, or title
+	var task *Task
+	if ticketStr != "" {
+		task, _ = s.db.GetTaskByExternalRef(ticketStr)
+	}
+	if task == nil && run.Branch != "" {
+		task, _ = s.db.GetTaskByBranch(run.Branch)
+	}
 	if task == nil && run.Worktree != "" {
 		task, _ = s.db.GetTaskByWorktree(run.Worktree)
+	}
+	if task == nil && briefTitle != "" {
+		task, _ = s.db.GetTaskByTitle(briefTitle)
+	}
+	if task == nil && ticketStr != "" {
+		task, _ = s.db.GetTaskByTitle(ticketStr)
 	}
 
 	taskUpdated := false
@@ -127,10 +177,6 @@ func (s *Server) ingestSingleWorkflowRun(jsonPath string) error {
 		// Create new task
 		title := briefTitle
 		if title == "" {
-			ticketStr := ""
-			if run.Ticket != nil && *run.Ticket != "" {
-				ticketStr = *run.Ticket
-			}
 			title = formatTaskTitleFromBranch(run.Branch, ticketStr)
 		}
 
@@ -177,11 +223,11 @@ func (s *Server) ingestSingleWorkflowRun(jsonPath string) error {
 			task.PRState = "OPEN"
 		}
 
-		if run.Ticket != nil && *run.Ticket != "" {
+		if ticketStr != "" {
 			task.ExternalRefs = []TaskExternalRef{
 				{
 					Tracker: "jira",
-					RefKey:  *run.Ticket,
+					RefKey:  ticketStr,
 				},
 			}
 		}
@@ -226,6 +272,29 @@ func (s *Server) ingestSingleWorkflowRun(jsonPath string) error {
 				task.Notes = briefNotes
 			}
 			taskUpdated = true
+		}
+
+		if task.Branch == "" && run.Branch != "" {
+			task.Branch = run.Branch
+			taskUpdated = true
+		}
+
+		if task.WorktreePath == "" && run.Worktree != "" {
+			task.WorktreePath = run.Worktree
+			taskUpdated = true
+		}
+
+		if len(task.ExternalRefs) == 0 && ticketStr != "" {
+			_ = s.db.InsertTaskExternalRef(&TaskExternalRef{
+				TaskID:  task.ID,
+				Tracker: "jira",
+				RefKey:  ticketStr,
+			})
+			task.ExternalRefs = append(task.ExternalRefs, TaskExternalRef{
+				TaskID:  task.ID,
+				Tracker: "jira",
+				RefKey:  ticketStr,
+			})
 		}
 
 		if taskUpdated {

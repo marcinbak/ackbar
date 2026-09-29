@@ -3,6 +3,7 @@ package daemon
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -828,5 +829,169 @@ func TestTelemetry_ResolveTaskGroupName(t *testing.T) {
 	}
 	if g := resolveTaskGroupName(sessMode); g != "Modemobile" {
 		t.Errorf("Expected Modemobile, got %q", g)
+	}
+}
+
+func TestWorkflowWatcher_Deduplication(t *testing.T) {
+	dbFile := "./test_workflow_dedup.db"
+	defer os.Remove(dbFile)
+
+	db, err := InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := &Server{
+		db: db,
+	}
+
+	tempDir, err := os.MkdirTemp("", "dev-workflow-dedup-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	jsonPath := filepath.Join(tempDir, "ngl-android-NGL-993.json")
+	ticket := "NGL-993"
+
+	// 1. Initial planning state: Branch and Worktree are empty (Node N2)
+	run := DevWorkflowRun{
+		Ticket:   &ticket,
+		Repo:     "ngl-android",
+		Branch:   "",
+		Worktree: "",
+		Node:     "N2",
+		Notes:    "Initial planning",
+	}
+	data, _ := json.Marshal(run)
+	_ = os.WriteFile(jsonPath, data, 0644)
+
+	// Ingest 3 times in a row (simulating 30s background loop)
+	for i := 0; i < 3; i++ {
+		if err := server.ingestSingleWorkflowRun(jsonPath); err != nil {
+			t.Fatalf("ingestSingleWorkflowRun attempt %d failed: %v", i+1, err)
+		}
+	}
+
+	tasks, err := db.GetTasks()
+	if err != nil {
+		t.Fatalf("GetTasks failed: %v", err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("Expected exactly 1 task after 3 ingestions, got %d", len(tasks))
+	}
+	if tasks[0].Title != "NGL-993" {
+		t.Errorf("Expected title NGL-993, got %q", tasks[0].Title)
+	}
+	if tasks[0].Status != "IN_PROGRESS" {
+		t.Errorf("Expected status IN_PROGRESS, got %s", tasks[0].Status)
+	}
+
+	// 2. Transition to Node N4: Branch and Worktree are now created
+	run.Branch = "feat/NGL-993-size-matters"
+	run.Worktree = "/home/dev4u/Work/ngl-android/.claude/worktrees/NGL-993"
+	run.Node = "N4"
+	data, _ = json.Marshal(run)
+	_ = os.WriteFile(jsonPath, data, 0644)
+
+	if err := server.ingestSingleWorkflowRun(jsonPath); err != nil {
+		t.Fatalf("ingestSingleWorkflowRun transition to N4 failed: %v", err)
+	}
+
+	tasks, err = db.GetTasks()
+	if err != nil {
+		t.Fatalf("GetTasks failed: %v", err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("Expected still exactly 1 task after branch creation, got %d", len(tasks))
+	}
+	if tasks[0].Branch != "feat/NGL-993-size-matters" {
+		t.Errorf("Expected updated branch, got %q", tasks[0].Branch)
+	}
+	if tasks[0].WorktreePath != "/home/dev4u/Work/ngl-android/.claude/worktrees/NGL-993" {
+		t.Errorf("Expected updated worktree, got %q", tasks[0].WorktreePath)
+	}
+
+	// 3. Test string PR URL unmarshaling and transition to REVIEW
+	jsonContent := `{
+		"ticket": "NGL-993",
+		"repo": "ngl-android",
+		"branch": "feat/NGL-993-size-matters",
+		"worktree": "/home/dev4u/Work/ngl-android/.claude/worktrees/NGL-993",
+		"node": "N12",
+		"pr": "https://github.com/CurrentMobile/ngl-android/pull/555"
+	}`
+	_ = os.WriteFile(jsonPath, []byte(jsonContent), 0644)
+
+	if err := server.ingestSingleWorkflowRun(jsonPath); err != nil {
+		t.Fatalf("ingestSingleWorkflowRun with string PR failed: %v", err)
+	}
+
+	task, err := db.GetTaskByExternalRef("NGL-993")
+	if err != nil || task == nil {
+		t.Fatalf("GetTaskByExternalRef failed: %v", err)
+	}
+	if task.PRNumber != 555 {
+		t.Errorf("Expected PR number 555, got %d", task.PRNumber)
+	}
+	if task.Status != "REVIEW" {
+		t.Errorf("Expected status REVIEW, got %s", task.Status)
+	}
+}
+
+func TestTask_DeduplicateTasks(t *testing.T) {
+	dbFile := "./test_task_dedup.db"
+	defer os.Remove(dbFile)
+
+	db, err := InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	// Insert 3 duplicated tasks for NGL-1041
+	for i := 1; i <= 3; i++ {
+		task := &Task{
+			ID:          fmt.Sprintf("task_dup_%d", i),
+			Title:       "NGL-1041",
+			GroupName:   "Modemobile",
+			ProjectName: "ngl-android",
+			Status:      "IN_PROGRESS",
+			Substatus:   "active",
+			ExternalRefs: []TaskExternalRef{
+				{
+					Tracker: "jira",
+					RefKey:  "NGL-1041",
+				},
+			},
+		}
+		if err := db.CreateTask(task); err != nil {
+			t.Fatalf("CreateTask failed: %v", err)
+		}
+	}
+
+	allTasks, err := db.GetTasks()
+	if err != nil {
+		t.Fatalf("GetTasks failed: %v", err)
+	}
+	if len(allTasks) != 3 {
+		t.Fatalf("Expected 3 tasks before dedup, got %d", len(allTasks))
+	}
+
+	deleted, err := db.DeduplicateTasks()
+	if err != nil {
+		t.Fatalf("DeduplicateTasks failed: %v", err)
+	}
+	if deleted != 2 {
+		t.Errorf("Expected 2 deleted tasks, got %d", deleted)
+	}
+
+	allTasks, err = db.GetTasks()
+	if err != nil {
+		t.Fatalf("GetTasks failed: %v", err)
+	}
+	if len(allTasks) != 1 {
+		t.Errorf("Expected 1 task remaining after dedup, got %d", len(allTasks))
 	}
 }

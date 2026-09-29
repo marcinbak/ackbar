@@ -354,6 +354,15 @@ func (s *Server) findActiveTaskForSession(sess *Session) (*Task, error) {
 	if t, err := s.db.GetActiveTaskForSession(sess.ID); err == nil && t != nil && t.Status != "DONE" {
 		return t, nil
 	}
+	// 4. Try by issueKey if branch contains ticket key (e.g. NGL-1041, NGL-993)
+	if sess.GitBranch != "" {
+		issueKey := ExtractIssueKey(sess.GitBranch)
+		if issueKey != "" {
+			if t, err := s.db.GetTaskByExternalRef(issueKey); err == nil && t != nil && t.Status != "DONE" {
+				return t, nil
+			}
+		}
+	}
 	return nil, nil
 }
 
