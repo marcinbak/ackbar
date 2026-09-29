@@ -25,7 +25,7 @@ func extractTailText(lines []string, count int) string {
 	if lastNonEmpty < 0 {
 		return ""
 	}
-	startIdx := lastNonEmpty - count
+	startIdx := lastNonEmpty - count + 1
 	if startIdx < 0 {
 		startIdx = 0
 	}
@@ -81,6 +81,8 @@ func InspectAntigravityStatus(ctx context.Context, sess *Session) bool {
 		}
 	}
 
+	var lines []string
+
 	// 2. Live Tmux Screen Inspection
 	if sess.TmuxName != "" {
 		out, err := exec.CommandContext(ctx, "tmux", "capture-pane", "-pt", sess.TmuxName, "-p").Output()
@@ -105,7 +107,7 @@ func InspectAntigravityStatus(ctx context.Context, sess *Session) bool {
 		}
 
 		paneText := string(out)
-		lines := strings.Split(paneText, "\n")
+		lines = strings.Split(paneText, "\n")
 		tailText := extractTailText(lines, 25)
 
 		// 2A. Permission prompts or confirmations
@@ -171,33 +173,6 @@ func InspectAntigravityStatus(ctx context.Context, sess *Session) bool {
 				sess.Blocked = nil
 				sess.Activity = "Working..."
 				sess.LastEventAt = time.Now()
-				changed = true
-			}
-			return changed
-		}
-
-		// 2C. Interactive prompt idle (sitting at > prompt or shortcuts footer)
-		var nonEmpty []string
-		for _, l := range lines {
-			t := strings.TrimSpace(l)
-			if t != "" {
-				nonEmpty = append(nonEmpty, t)
-			}
-		}
-
-		hasPrompt := false
-		for i := len(nonEmpty) - 1; i >= 0 && i >= len(nonEmpty)-6; i-- {
-			if isAntigravityPromptLine(nonEmpty[i]) {
-				hasPrompt = true
-				break
-			}
-		}
-
-		if hasPrompt || strings.Contains(tailText, "? for shortcuts") {
-			if sess.State != StateIdle {
-				sess.State = StateIdle
-				sess.Blocked = nil
-				sess.Activity = "Awaiting user prompt"
 				changed = true
 			}
 			return changed
@@ -332,7 +307,7 @@ func InspectAntigravityStatus(ctx context.Context, sess *Session) bool {
 							changed = true
 						}
 						return changed
-					} else if (lastStep.Type == "PLANNER_RESPONSE" || lastStep.Type == "GENERIC") && lastStep.Status == "DONE" && len(lastStep.ToolCalls) == 0 {
+					} else if lastStep.Type == "PLANNER_RESPONSE" && lastStep.Status == "DONE" && len(lastStep.ToolCalls) == 0 {
 						if sess.State != StateIdle {
 							sess.State = StateIdle
 							sess.Blocked = nil
@@ -361,7 +336,36 @@ func InspectAntigravityStatus(ctx context.Context, sess *Session) bool {
 		}
 	}
 
-	// 5. If it was blocked, but unblocked and alive
+	// 5. Fallback Live Tmux Pane Prompt Detection (if transcript did not determine state)
+	if sess.TmuxName != "" && len(lines) > 0 {
+		var nonEmpty []string
+		for _, l := range lines {
+			t := strings.TrimSpace(l)
+			if t != "" {
+				nonEmpty = append(nonEmpty, t)
+			}
+		}
+
+		hasPrompt := false
+		for i := len(nonEmpty) - 1; i >= 0 && i >= len(nonEmpty)-6; i-- {
+			if isAntigravityPromptLine(nonEmpty[i]) {
+				hasPrompt = true
+				break
+			}
+		}
+
+		if hasPrompt {
+			if sess.State != StateIdle {
+				sess.State = StateIdle
+				sess.Blocked = nil
+				sess.Activity = "Awaiting user prompt"
+				changed = true
+			}
+			return changed
+		}
+	}
+
+	// 6. If it was blocked, but unblocked and alive
 	if sess.State == StateBlocked {
 		if sess.TmuxName != "" || isProcessAlive(sess.PID) {
 			sess.State = StateIdle
@@ -381,13 +385,10 @@ func InspectAntigravityStatus(ctx context.Context, sess *Session) bool {
 }
 
 func isAntigravityPromptLine(trimmed string) bool {
-	if trimmed == ">" {
+	if trimmed == ">" || trimmed == "> " {
 		return true
 	}
-	if strings.HasPrefix(trimmed, "> ") ||
-		strings.HasPrefix(trimmed, "> Accept-edits") ||
-		strings.HasPrefix(trimmed, "> Plan mode") ||
-		strings.HasPrefix(trimmed, "> Auto mode") {
+	if trimmed == "> Accept-edits" || trimmed == "> Plan mode" || trimmed == "> Auto mode" {
 		return true
 	}
 	return false
@@ -812,8 +813,7 @@ func isIgnoredMCPOrDaemon(comm, args string) bool {
 	if strings.Contains(lowerArgs, "mcp-remote") ||
 		strings.Contains(lowerArgs, "mcp-server") ||
 		strings.Contains(lowerArgs, "modelcontextprotocol") ||
-		strings.Contains(lowerArgs, "@modelcontextprotocol") ||
-		strings.Contains(lowerArgs, "mcp/") {
+		strings.Contains(lowerArgs, "@modelcontextprotocol") {
 		return true
 	}
 	return false

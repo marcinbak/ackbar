@@ -1801,6 +1801,47 @@ func TestGetActiveChildProcesses_FiltersMCPAndRunners(t *testing.T) {
 	if isIgnoredMCPOrDaemon("go", "go test -v ./...") {
 		t.Errorf("Expected 'go test' not to be ignored as daemon")
 	}
+	if isIgnoredMCPOrDaemon("go", "go test -v ./mcp/...") {
+		t.Errorf("Expected 'go test ./mcp/...' not to be ignored as daemon")
+	}
+}
+
+func TestExtractTailText_ExactCount(t *testing.T) {
+	lines := []string{
+		"line 0", "line 1", "line 2", "line 3", "line 4",
+		"line 5", "line 6", "line 7", "line 8", "line 9",
+		"", "   ",
+	}
+	tail := extractTailText(lines, 5)
+	tailLines := strings.Split(tail, "\n")
+	if len(tailLines) != 5 {
+		t.Fatalf("Expected exactly 5 lines, got %d: %q", len(tailLines), tail)
+	}
+	if tailLines[0] != "line 5" || tailLines[4] != "line 9" {
+		t.Errorf("Unexpected tail content: %q", tailLines)
+	}
+}
+
+func TestIsAntigravityPromptLine(t *testing.T) {
+	if !isAntigravityPromptLine(">") {
+		t.Errorf("Expected '>' to match prompt")
+	}
+	if !isAntigravityPromptLine("> ") {
+		t.Errorf("Expected '> ' to match prompt")
+	}
+	if !isAntigravityPromptLine("> Accept-edits") {
+		t.Errorf("Expected '> Accept-edits' to match prompt")
+	}
+	if !isAntigravityPromptLine("> Plan mode") {
+		t.Errorf("Expected '> Plan mode' to match prompt")
+	}
+	// Crucial: previous user prompt must NOT match as an idle prompt
+	if isAntigravityPromptLine("> Fix the bug in main.go") {
+		t.Errorf("Expected user prompt '> Fix the bug in main.go' NOT to match idle prompt")
+	}
+	if isAntigravityPromptLine("> Update documentation") {
+		t.Errorf("Expected user prompt '> Update documentation' NOT to match idle prompt")
+	}
 }
 
 func TestInspectClaudeStatus_QuestionPromptBlocked(t *testing.T) {
