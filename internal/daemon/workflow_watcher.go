@@ -134,17 +134,19 @@ func (s *Server) ingestSingleWorkflowRun(jsonPath string) error {
 			title = formatTaskTitleFromBranch(run.Branch, ticketStr)
 		}
 
-		groupName := "Modemobile"
-		repoLower := strings.ToLower(run.Repo)
-		if repoLower != "" && !strings.Contains(repoLower, "modemobile") && !strings.Contains(repoLower, "ackbar") && !strings.Contains(repoLower, "ngl") && !strings.Contains(repoLower, "mea") {
-			groupName = "Personal"
-		}
-
 		projectName := filepath.Base(run.Repo)
 		if projectName == "" || projectName == "." {
 			projectName = "General"
 		} else if strings.Contains(strings.ToLower(projectName), "ackbar") {
 			projectName = "Ackbar"
+		}
+
+		groupName := "Modemobile"
+		repoLower := strings.ToLower(run.Repo)
+		if strings.Contains(repoLower, "ackbar") || projectName == "Ackbar" {
+			groupName = "Personal"
+		} else if repoLower != "" && !strings.Contains(repoLower, "modemobile") && !strings.Contains(repoLower, "ngl") && !strings.Contains(repoLower, "mea") {
+			groupName = "Personal"
 		}
 
 		notes := run.Notes

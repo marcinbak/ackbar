@@ -3,6 +3,7 @@ package daemon
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"path/filepath"
 	"regexp"
@@ -144,6 +145,40 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if r.Method == http.MethodDelete {
+		r.Body = http.MaxBytesReader(w, r.Body, 64*1024)
+		taskID := strings.TrimSpace(r.URL.Query().Get("id"))
+		if taskID == "" {
+			var body struct {
+				ID string `json:"id"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			taskID = strings.TrimSpace(body.ID)
+		}
+		if taskID == "" || len(taskID) > 128 {
+			http.Error(w, "Valid task ID is required", http.StatusBadRequest)
+			return
+		}
+
+		if err := s.db.DeleteTask(taskID); err != nil {
+			if strings.Contains(err.Error(), "not found") {
+				http.Error(w, "Task not found", http.StatusNotFound)
+				return
+			}
+			log.Printf("error: failed to delete task %s: %v", taskID, err)
+			http.Error(w, "Failed to delete task", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"status":  "success",
+			"message": "Task deleted successfully",
+			"id":      taskID,
+		})
+		return
+	}
+
 	http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 }
 
@@ -272,13 +307,49 @@ func (s *Server) handleTaskPropose(w http.ResponseWriter, r *http.Request) {
 		fileRef = fileRef[:1024]
 	}
 
-	groupName := strings.TrimSpace(p.GroupName)
-	if groupName == "" {
-		groupName = "Modemobile"
-	}
 	projectName := strings.TrimSpace(p.ProjectName)
 	if projectName == "" {
 		projectName = "General"
+	}
+
+	groupName := strings.TrimSpace(p.GroupName)
+	if groupName == "" {
+		if strings.EqualFold(projectName, "Ackbar") {
+			groupName = "Personal"
+		} else {
+			nodes, err := s.db.ListNodes()
+			if err != nil {
+				log.Printf("warn: failed to list tree nodes for group inference: %v", err)
+			} else {
+				for _, n := range nodes {
+					parts := strings.Split(n.Path, "/")
+					if len(parts) > 1 && strings.EqualFold(parts[len(parts)-1], projectName) {
+						groupName = parts[0]
+						break
+					}
+				}
+			}
+		}
+		if groupName == "" {
+			groupName = "Personal"
+		}
+	}
+
+	// Deduplicate proposed tasks: if an active/new task with identical title already exists for this project, return it
+	existingTasks, err := s.db.GetTasks()
+	if err != nil {
+		log.Printf("warn: failed to fetch tasks for deduplication: %v", err)
+	} else {
+		for _, et := range existingTasks {
+			if strings.EqualFold(strings.TrimSpace(et.Title), title) &&
+				strings.EqualFold(strings.TrimSpace(et.ProjectName), projectName) &&
+				(et.Status == "NEW" || et.Status == "IN_PROGRESS") {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				json.NewEncoder(w).Encode(et)
+				return
+			}
+		}
 	}
 
 	var notesList []string

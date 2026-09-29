@@ -691,6 +691,22 @@ async function provisionAgents(agents = ['all']) {
   return await res.json();
 }
 
+async function deleteTask(taskId) {
+  const res = await fetch(`/v1/tasks?id=${encodeURIComponent(taskId)}`, {
+    method: 'DELETE'
+  });
+  if (!res.ok) {
+    const errText = await res.text();
+    let msg = errText;
+    try {
+      const errObj = JSON.parse(errText);
+      if (errObj.message) msg = errObj.message;
+    } catch (_) {}
+    throw new Error(msg || 'Failed to delete task');
+  }
+  return res.json();
+}
+
 export {
   fetchProviders,
   fetchVersion,
@@ -711,6 +727,7 @@ export {
   fetchTasks,
   createTask,
   updateTask,
+  deleteTask,
   sendTaskEvent,
   fetchStandup,
   synthesizeBriefing,

@@ -88,17 +88,33 @@ func extractFilePathFromToolInput(toolInput any) string {
 }
 
 func resolveTaskGroupName(sess *Session) string {
-	acc := strings.ToLower(sess.AccountID)
-	node := strings.ToLower(sess.NodePath)
+	if sess == nil {
+		return "Personal"
+	}
+
+	// 1. If session has an assigned NodePath (e.g. "Personal/Ackbar" or "Modemobile/NGL/ngl-ios")
+	if sess.NodePath != "" && !strings.EqualFold(sess.NodePath, "unassigned") {
+		parts := strings.Split(sess.NodePath, "/")
+		if len(parts) > 0 && strings.TrimSpace(parts[0]) != "" {
+			return strings.TrimSpace(parts[0])
+		}
+	}
+
+	// 2. Specific known project keys or workspace path patterns
 	proj := strings.ToLower(sess.ProjectKey)
 	cwd := strings.ToLower(sess.Cwd)
+	acc := strings.ToLower(sess.AccountID)
 
-	if strings.Contains(acc, "work") || strings.Contains(acc, "mode") ||
-		strings.Contains(node, "work") || strings.Contains(node, "modemobile") ||
+	if proj == "ackbar" || strings.Contains(cwd, "/work/ackbar") || strings.HasSuffix(cwd, "/ackbar") {
+		return "Personal"
+	}
+
+	if strings.Contains(acc, "modemobile") || strings.Contains(acc, "mode") ||
 		strings.Contains(proj, "modemobile") || strings.Contains(proj, "ngl") || strings.Contains(proj, "mea") ||
-		strings.Contains(cwd, "work") || strings.Contains(cwd, "modemobile") {
+		strings.Contains(cwd, "/modemobile") || strings.Contains(cwd, "/ngl") || strings.HasSuffix(cwd, "/ngl") {
 		return "Modemobile"
 	}
+
 	return "Personal"
 }
 

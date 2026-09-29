@@ -1,5 +1,5 @@
 import { state } from './state.js';
-import { fetchTasks, createTask, updateTask, sendTaskEvent, fetchStandup, mergeTaskPR, fetchAgentStatuses, provisionAgents } from './api.js';
+import { fetchTasks, createTask, updateTask, deleteTask, fetchStandup, mergeTaskPR, fetchAgentStatuses, provisionAgents } from './api.js';
 import { escapeHtml } from './utils.js';
 import { activateTab, openSessionInTab } from './tabs.js';
 import { showModal, hideModal } from './modals.js';
@@ -9,6 +9,74 @@ let currentGroupFilter = 'all';
 let currentProjectFilter = 'all';
 let currentSearchQuery = '';
 let currentMode = 'workspace';
+
+export function getGroupIcon(groupName) {
+  if (!groupName) return '📁';
+  const g = groupName.toLowerCase();
+  if (g.includes('personal')) return '👤';
+  if (g.includes('mode') || g.includes('work')) return '🏢';
+  return '📁';
+}
+
+export function getDiscoveredTopGroups() {
+  const groupMap = new Map();
+  // 1. Discovered from registered tree nodes
+  if (state.treeNodes && Array.isArray(state.treeNodes)) {
+    state.treeNodes.forEach(n => {
+      if (n.path) {
+        const top = n.path.split('/')[0].trim();
+        if (top && top !== 'Unassigned' && !groupMap.has(top.toLowerCase())) {
+          groupMap.set(top.toLowerCase(), top);
+        }
+      }
+    });
+  }
+  // 2. Discovered from current tasks on board
+  boardTasks.forEach(t => {
+    if (t.group_name && t.group_name.trim()) {
+      const g = t.group_name.trim();
+      if (!groupMap.has(g.toLowerCase())) {
+        groupMap.set(g.toLowerCase(), g);
+      }
+    }
+  });
+  if (groupMap.size === 0) {
+    groupMap.set('personal', 'Personal');
+    groupMap.set('modemobile', 'Modemobile');
+  }
+  const sorted = Array.from(groupMap.values()).sort((a, b) => a.localeCompare(b));
+  // If currentGroupFilter is set to a group that no longer exists, reset to 'all'
+  if (currentGroupFilter !== 'all' && !sorted.some(g => g.toLowerCase() === currentGroupFilter.toLowerCase())) {
+    currentGroupFilter = 'all';
+  }
+  return sorted;
+}
+
+export function renderGroupFilters() {
+  const container = document.getElementById('taskGroupFilters');
+  if (!container) return;
+
+  const groups = getDiscoveredTopGroups();
+  let html = `<button class="task-group-filter-btn ${currentGroupFilter === 'all' ? 'active' : ''}" data-group="all">All Work</button>`;
+
+  groups.forEach(g => {
+    const isActive = currentGroupFilter.toLowerCase() === g.toLowerCase();
+    const icon = getGroupIcon(g);
+    html += `<button class="task-group-filter-btn ${isActive ? 'active' : ''}" data-group="${escapeHtml(g)}">${icon} ${escapeHtml(g)}</button>`;
+  });
+
+  container.innerHTML = html;
+
+  container.querySelectorAll('.task-group-filter-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      container.querySelectorAll('.task-group-filter-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      currentGroupFilter = btn.getAttribute('data-group') || 'all';
+      updateProjectFilterDropdown();
+      renderWorkBoard();
+    });
+  });
+}
 
 export function getAppMode() {
   return currentMode;
@@ -46,6 +114,7 @@ export async function refreshWorkBoard() {
   } catch (err) {
     console.warn('Failed to refresh tasks:', err);
   }
+  renderGroupFilters();
   updateProjectFilterDropdown();
   renderWorkBoard();
 }
@@ -57,7 +126,11 @@ function updateProjectFilterDropdown() {
   const previousValue = select.value || 'all';
   const projects = new Set();
   boardTasks.forEach(t => {
-    if (t.project_name) projects.add(t.project_name);
+    if (t.project_name) {
+      if (currentGroupFilter === 'all' || (t.group_name && t.group_name.toLowerCase() === currentGroupFilter.toLowerCase())) {
+        projects.add(t.project_name);
+      }
+    }
   });
 
   let html = '<option value="all">All Projects</option>';
@@ -66,6 +139,10 @@ function updateProjectFilterDropdown() {
     html += `<option value="${escapeHtml(p)}" ${selected}>${escapeHtml(p)}</option>`;
   });
   select.innerHTML = html;
+
+  if (previousValue !== 'all' && !projects.has(previousValue)) {
+    select.value = 'all';
+  }
   currentProjectFilter = select.value;
 }
 
@@ -84,14 +161,10 @@ export function renderWorkBoard() {
 
   // Filter tasks
   const filtered = boardTasks.filter(t => {
-    // 1. Group Filter (e.g. Modemobile vs Personal)
+    // 1. Group Filter (strict match by group, not by path)
     if (currentGroupFilter !== 'all') {
       const g = (t.group_name || '').toLowerCase();
-      if (currentGroupFilter === 'work') {
-        if (!g.includes('modemobile') && !g.includes('work') && g !== 'mode') return false;
-      } else if (currentGroupFilter === 'personal') {
-        if (g.includes('modemobile') || g.includes('work') || g === 'mode') return false;
-      } else if (g !== currentGroupFilter.toLowerCase()) {
+      if (g !== currentGroupFilter.toLowerCase()) {
         return false;
       }
     }
@@ -355,6 +428,10 @@ function attachCardEventListeners() {
 }
 
 export function showNewTaskModal() {
+  const topGroups = getDiscoveredTopGroups();
+  const defaultGroup = currentGroupFilter !== 'all' ? currentGroupFilter : (topGroups[0] || 'Personal');
+  const groupOptionsHtml = topGroups.map(g => `<option value="${escapeHtml(g)}" ${g.toLowerCase() === defaultGroup.toLowerCase() ? 'selected' : ''}>${escapeHtml(g)}</option>`).join('');
+
   showModal('Create New Task', `
     <div style="display: flex; flex-direction: column; gap: 12px; padding: 4px;">
       <div>
@@ -364,11 +441,13 @@ export function showNewTaskModal() {
       <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
         <div>
           <label style="font-size: 11px; font-weight: 600; color: var(--text-muted); display: block; margin-bottom: 4px;">ORGANIZATION / GROUP</label>
-          <input type="text" id="mTaskGroup" placeholder="e.g. Modemobile" value="Modemobile" style="width: 100%; background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px; padding: 7px 10px; font-size: 12px;" />
+          <select id="mTaskGroup" style="width: 100%; background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px; padding: 7px 10px; font-size: 12px;">
+            ${groupOptionsHtml}
+          </select>
         </div>
         <div>
           <label style="font-size: 11px; font-weight: 600; color: var(--text-muted); display: block; margin-bottom: 4px;">PROJECT NAME</label>
-          <input type="text" id="mTaskProject" placeholder="e.g. NGL" style="width: 100%; background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px; padding: 7px 10px; font-size: 12px;" />
+          <input type="text" id="mTaskProject" placeholder="e.g. Ackbar" style="width: 100%; background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px; padding: 7px 10px; font-size: 12px;" />
         </div>
       </div>
       <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
@@ -413,7 +492,7 @@ export function showNewTaskModal() {
       alert('Task title is required');
       return;
     }
-    const groupName = document.getElementById('mTaskGroup')?.value?.trim() || 'Modemobile';
+    const groupName = document.getElementById('mTaskGroup')?.value?.trim() || 'Personal';
     const projectName = document.getElementById('mTaskProject')?.value?.trim() || 'General';
     const status = document.getElementById('mTaskStatus')?.value || 'IN_PROGRESS';
     const substatus = document.getElementById('mTaskSubstatus')?.value?.trim() || 'active';
@@ -445,11 +524,30 @@ export function showNewTaskModal() {
 }
 
 export function showEditTaskModal(task) {
-  showModal(`Edit Task: ${escapeHtml(task.title)}`, `
+  const topGroups = getDiscoveredTopGroups();
+  const currentGroup = task.group_name || 'Personal';
+  if (!topGroups.some(g => g.toLowerCase() === currentGroup.toLowerCase())) {
+    topGroups.push(currentGroup);
+  }
+  const groupOptionsHtml = topGroups.map(g => `<option value="${escapeHtml(g)}" ${g.toLowerCase() === currentGroup.toLowerCase() ? 'selected' : ''}>${escapeHtml(g)}</option>`).join('');
+
+  showModal(`Edit Task: ${task.title}`, `
     <div style="display: flex; flex-direction: column; gap: 12px; padding: 4px;">
       <div>
         <label style="font-size: 11px; font-weight: 600; color: var(--text-muted); display: block; margin-bottom: 4px;">TASK TITLE</label>
         <input type="text" id="mEditTitle" value="${escapeHtml(task.title)}" style="width: 100%; background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px; padding: 8px 10px; font-size: 13px;" />
+      </div>
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+        <div>
+          <label style="font-size: 11px; font-weight: 600; color: var(--text-muted); display: block; margin-bottom: 4px;">GROUP / ORGANIZATION</label>
+          <select id="mEditGroup" style="width: 100%; background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px; padding: 7px 10px; font-size: 12px;">
+            ${groupOptionsHtml}
+          </select>
+        </div>
+        <div>
+          <label style="font-size: 11px; font-weight: 600; color: var(--text-muted); display: block; margin-bottom: 4px;">PROJECT NAME</label>
+          <input type="text" id="mEditProject" value="${escapeHtml(task.project_name || '')}" placeholder="e.g. Ackbar" style="width: 100%; background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px; padding: 7px 10px; font-size: 12px;" />
+        </div>
       </div>
       <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
         <div>
@@ -482,11 +580,30 @@ export function showEditTaskModal(task) {
       </div>
     </div>
   `, `
-    <button class="btn btn-secondary" id="mBtnCancelEdit">Cancel</button>
-    <button class="btn btn-primary" id="mBtnUpdateTask">Save Changes</button>
+    <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
+      <button class="btn btn-danger btn-xs" id="mBtnDeleteTask" style="background: rgba(239, 68, 68, 0.15); border: 1px solid var(--accent-red); color: var(--accent-red); padding: 6px 12px; border-radius: 4px; font-size: 12px; cursor: pointer;">🗑️ Delete Task</button>
+      <div style="display: flex; gap: 8px;">
+        <button class="btn btn-secondary" id="mBtnCancelEdit">Cancel</button>
+        <button class="btn btn-primary" id="mBtnUpdateTask">Save Changes</button>
+      </div>
+    </div>
   `);
 
   document.getElementById('mBtnCancelEdit')?.addEventListener('click', hideModal);
+
+  document.getElementById('mBtnDeleteTask')?.addEventListener('click', async () => {
+    if (!confirm(`Are you sure you want to permanently delete task "${task.title}"?`)) {
+      return;
+    }
+    try {
+      await deleteTask(task.id);
+      hideModal();
+      refreshWorkBoard();
+    } catch (err) {
+      alert(`Error deleting task: ${err.message}`);
+    }
+  });
+
   document.getElementById('mBtnUpdateTask')?.addEventListener('click', async () => {
     const titleVal = document.getElementById('mEditTitle')?.value?.trim();
     if (!titleVal) {
@@ -497,6 +614,8 @@ export function showEditTaskModal(task) {
     const updated = {
       ...task,
       title: titleVal,
+      group_name: document.getElementById('mEditGroup')?.value?.trim() || task.group_name || 'Personal',
+      project_name: document.getElementById('mEditProject')?.value?.trim() || task.project_name || 'General',
       status: document.getElementById('mEditStatus')?.value || task.status,
       substatus: substatusInput ? substatusInput.value.trim() : (task.substatus || ''),
       notes: document.getElementById('mEditNotes')?.value?.trim() || '',
@@ -515,7 +634,7 @@ export function showEditTaskModal(task) {
 }
 
 export async function showStandupModal() {
-  const initialGroup = currentGroupFilter !== 'all' ? (currentGroupFilter === 'work' ? 'Modemobile' : 'Personal') : '';
+  const initialGroup = currentGroupFilter !== 'all' ? currentGroupFilter : '';
   let activeDays = 1;
   let activeGroup = initialGroup;
   let currentMarkdown = '';
@@ -524,15 +643,20 @@ export async function showStandupModal() {
   let synth = window.speechSynthesis;
   let utterance = null;
 
+  const topGroups = getDiscoveredTopGroups();
+  const groupOptionsHtml = `<option value="" ${!activeGroup ? 'selected' : ''}>All Work</option>` +
+    topGroups.map(g => {
+      const icon = getGroupIcon(g);
+      return `<option value="${escapeHtml(g)}" ${activeGroup.toLowerCase() === g.toLowerCase() ? 'selected' : ''}>${icon} ${escapeHtml(g)}</option>`;
+    }).join('');
+
   const bodyHtml = `
-    <div style="display: flex; flex-direction: column; gap: 14px; min-width: 550px; max-width: 720px;">
+    <div style="display: flex; flex-direction: column; gap: 14px; width: 100%;">
       <div style="display: flex; gap: 12px; align-items: center; justify-content: space-between; flex-wrap: wrap;">
         <div style="display: flex; gap: 8px; align-items: center;">
           <label style="font-size: 11px; font-weight: 600; color: var(--text-muted);">SCOPE:</label>
           <select id="mStandupGroupSelect" style="background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px; padding: 6px 10px; font-size: 12px;">
-            <option value="" ${!activeGroup ? 'selected' : ''}>All Work</option>
-            <option value="Modemobile" ${activeGroup === 'Modemobile' ? 'selected' : ''}>🏢 Modemobile</option>
-            <option value="Personal" ${activeGroup === 'Personal' ? 'selected' : ''}>👤 Personal</option>
+            ${groupOptionsHtml}
           </select>
         </div>
         <div style="display: flex; gap: 8px; align-items: center;">
@@ -566,7 +690,7 @@ export async function showStandupModal() {
 
       <!-- Markdown Output Box -->
       <div style="position: relative;">
-        <div id="mStandupPreview" style="background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 6px; padding: 14px; max-height: 380px; overflow-y: auto; font-size: 13px; line-height: 1.6; user-select: text;">
+        <div id="mStandupPreview" style="background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 6px; padding: 14px; max-height: 480px; overflow-y: auto; overflow-x: hidden; word-break: break-word; overflow-wrap: break-word; font-size: 13px; line-height: 1.6; user-select: text;">
           <div style="text-align: center; color: var(--text-muted); padding: 24px;">Generating standup report...</div>
         </div>
       </div>
@@ -580,7 +704,7 @@ export async function showStandupModal() {
     </button>
   `;
 
-  showModal('📋 Daily Standup & Work Briefing', bodyHtml, footerHtml);
+  showModal('📋 Daily Standup & Work Briefing', bodyHtml, footerHtml, { wide: true });
 
   async function loadReport() {
     const previewEl = document.getElementById('mStandupPreview');
@@ -605,9 +729,14 @@ export async function showStandupModal() {
               }
             }
           });
+          doc.querySelectorAll('pre, code').forEach(el => {
+            el.style.whiteSpace = 'pre-wrap';
+            el.style.wordBreak = 'break-word';
+            el.style.overflowWrap = 'break-word';
+          });
           previewEl.replaceChildren(...doc.body.childNodes);
         } else {
-          previewEl.innerHTML = `<pre style="white-space: pre-wrap; font-family: monospace; font-size: 12px;">${escapeHtml(currentMarkdown)}</pre>`;
+          previewEl.innerHTML = `<pre style="white-space: pre-wrap; word-break: break-word; overflow-x: hidden; font-family: monospace; font-size: 12px;">${escapeHtml(currentMarkdown)}</pre>`;
         }
       }
       if (voiceTextEl) {
@@ -720,7 +849,7 @@ export async function showStandupModal() {
     hideModal();
   });
 
-  document.getElementById('modalCloseBtn')?.addEventListener('click', stopVoice);
+  document.getElementById('modalCloseBtn')?.addEventListener('click', stopVoice, { once: true });
 
   // Initial load
   loadReport();
@@ -846,16 +975,8 @@ export function initWorkBoard() {
   document.getElementById('btnModeWorkspace')?.addEventListener('click', () => switchAppMode('workspace'));
   document.getElementById('btnModeWorkBoard')?.addEventListener('click', () => switchAppMode('workboard'));
 
-  // Group filter buttons
-  const groupBtns = document.querySelectorAll('.task-group-filter-btn');
-  groupBtns.forEach(btn => {
-    btn.addEventListener('click', () => {
-      groupBtns.forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      currentGroupFilter = btn.getAttribute('data-group') || 'all';
-      renderWorkBoard();
-    });
-  });
+  // Dynamic group filter buttons
+  renderGroupFilters();
 
   // Project filter
   document.getElementById('taskProjectFilter')?.addEventListener('change', (e) => {

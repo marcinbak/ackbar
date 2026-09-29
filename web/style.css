@@ -990,6 +990,11 @@ body, html {
   flex-direction: column;
 }
 
+.modal-card.modal-card-wide {
+  width: 840px;
+  max-width: 94vw;
+}
+
 .modal-header {
   padding: 14px 18px;
   border-bottom: 1px solid var(--border-color);
@@ -3970,6 +3975,14 @@ body, html {
   border-radius: 5px;
   padding: 4px 8px;
   gap: 6px;
+}
+
+.task-search-box .search-icon {
+  position: static;
+  font-size: 12px;
+  opacity: 0.5;
+  pointer-events: none;
+  flex-shrink: 0;
 }
 
 .task-search-box input {
