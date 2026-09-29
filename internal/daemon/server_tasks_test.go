@@ -669,3 +669,164 @@ func TestTasks_FilteringAndBlockerClearing(t *testing.T) {
 		t.Errorf("Expected blocker question to be cleared, got: %s", unblocked.BlockerQuestion)
 	}
 }
+
+func TestTasks_DeleteAndDeduplication(t *testing.T) {
+	dbFile := filepath.Join(t.TempDir(), "test_del_dedup.db")
+	db, err := InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := NewServer(db)
+
+	// 1. Create a task with worker, external ref, deliverable
+	task := &Task{
+		ID:          "task_to_del",
+		Title:       "Task to be deleted",
+		GroupName:   "Personal",
+		ProjectName: "Ackbar",
+		Status:      "NEW",
+		Substatus:   "discovered",
+		Workers: []TaskWorker{
+			{SessionID: "sess_1", Agent: "claude-code", Host: "mac", IsActive: true},
+		},
+		ExternalRefs: []TaskExternalRef{
+			{Tracker: "linear", RefKey: "ACK-123"},
+		},
+		Deliverables: []TaskDeliverable{
+			{Kind: "plan", Title: "Brief"},
+		},
+	}
+	if err := db.CreateTask(task); err != nil {
+		t.Fatalf("CreateTask failed: %v", err)
+	}
+
+	// 2. Propose a task with identical title -> should deduplicate and return 200 with existing task
+	prop := TaskProposePayload{
+		Title:       "Task to be deleted",
+		GroupName:   "Personal",
+		ProjectName: "Ackbar",
+	}
+	propBody, _ := json.Marshal(prop)
+	reqProp := httptest.NewRequest(http.MethodPost, "/v1/tasks/propose", bytes.NewReader(propBody))
+	recProp := httptest.NewRecorder()
+	server.handleTaskPropose(recProp, reqProp)
+
+	if recProp.Code != http.StatusOK {
+		t.Errorf("Expected 200 OK for deduplicated propose, got %d: %s", recProp.Code, recProp.Body.String())
+	}
+	var dedupTask Task
+	_ = json.Unmarshal(recProp.Body.Bytes(), &dedupTask)
+	if dedupTask.ID != "task_to_del" {
+		t.Errorf("Expected existing task_to_del returned, got %s", dedupTask.ID)
+	}
+
+	// Ensure still only 1 task in DB
+	allTasks, err := db.GetTasks()
+	if err != nil || len(allTasks) != 1 {
+		t.Fatalf("Expected 1 task after dedup, got %d (err: %v)", len(allTasks), err)
+	}
+
+	// Proposing for a different project with identical title should NOT deduplicate
+	propOther := TaskProposePayload{
+		Title:       "Task to be deleted",
+		GroupName:   "Modemobile",
+		ProjectName: "OtherProject",
+	}
+	propOtherBody, _ := json.Marshal(propOther)
+	reqPropOther := httptest.NewRequest(http.MethodPost, "/v1/tasks/propose", bytes.NewReader(propOtherBody))
+	recPropOther := httptest.NewRecorder()
+	server.handleTaskPropose(recPropOther, reqPropOther)
+
+	if recPropOther.Code != http.StatusCreated {
+		t.Errorf("Expected 201 Created for different project propose, got %d", recPropOther.Code)
+	}
+	var createdOther Task
+	_ = json.Unmarshal(recPropOther.Body.Bytes(), &createdOther)
+	if createdOther.ID == "task_to_del" {
+		t.Errorf("Expected new task ID for different project, got %s", createdOther.ID)
+	}
+	_ = db.DeleteTask(createdOther.ID)
+
+	// 3. Test DELETE /v1/tasks?id=task_to_del
+	reqDel := httptest.NewRequest(http.MethodDelete, "/v1/tasks?id=task_to_del", nil)
+	recDel := httptest.NewRecorder()
+	server.handleTasks(recDel, reqDel)
+
+	if recDel.Code != http.StatusOK {
+		t.Errorf("Expected 200 OK for task deletion, got %d: %s", recDel.Code, recDel.Body.String())
+	}
+
+	// Verify task deleted
+	fetched, err := db.GetTaskByID("task_to_del")
+	if err != nil {
+		t.Fatalf("GetTaskByID error: %v", err)
+	}
+	if fetched != nil {
+		t.Errorf("Expected task to be nil after deletion, got %+v", fetched)
+	}
+
+	// Verify cascading deletes
+	var workerCount, refCount, delCount int
+	_ = db.db.QueryRow("SELECT COUNT(*) FROM task_workers WHERE task_id = 'task_to_del'").Scan(&workerCount)
+	_ = db.db.QueryRow("SELECT COUNT(*) FROM task_external_refs WHERE task_id = 'task_to_del'").Scan(&refCount)
+	_ = db.db.QueryRow("SELECT COUNT(*) FROM task_deliverables WHERE task_id = 'task_to_del'").Scan(&delCount)
+	if workerCount != 0 || refCount != 0 || delCount != 0 {
+		t.Errorf("Expected 0 cascaded rows, got workers=%d, refs=%d, dels=%d", workerCount, refCount, delCount)
+	}
+
+	// 4. Test DELETE /v1/tasks for non-existent task -> 404
+	reqDel404 := httptest.NewRequest(http.MethodDelete, "/v1/tasks?id=non_existent", nil)
+	recDel404 := httptest.NewRecorder()
+	server.handleTasks(recDel404, reqDel404)
+	if recDel404.Code != http.StatusNotFound {
+		t.Errorf("Expected 404 for non-existent task, got %d", recDel404.Code)
+	}
+
+	// 5. Test DELETE /v1/tasks without ID -> 400
+	reqDel400 := httptest.NewRequest(http.MethodDelete, "/v1/tasks", nil)
+	recDel400 := httptest.NewRecorder()
+	server.handleTasks(recDel400, reqDel400)
+	if recDel400.Code != http.StatusBadRequest {
+		t.Errorf("Expected 400 for delete without ID, got %d", recDel400.Code)
+	}
+}
+
+func TestTelemetry_ResolveTaskGroupName(t *testing.T) {
+	// 1. Session with NodePath takes precedence
+	sessNode := &Session{
+		NodePath: "Personal/Ackbar",
+		Cwd:      "/Users/dev4u/Work/Ackbar",
+	}
+	if g := resolveTaskGroupName(sessNode); g != "Personal" {
+		t.Errorf("Expected Personal from NodePath, got %q", g)
+	}
+
+	sessModemobile := &Session{
+		NodePath: "Modemobile/NGL/ngl-ios",
+		Cwd:      "/Users/dev4u/Work/ngl-ios",
+	}
+	if g := resolveTaskGroupName(sessModemobile); g != "Modemobile" {
+		t.Errorf("Expected Modemobile from NodePath, got %q", g)
+	}
+
+	// 2. Ackbar cwd without NodePath should be Personal, not Modemobile (even if under /Work/Ackbar)
+	sessAckbar := &Session{
+		Cwd:        "/Users/dev4u/Work/Ackbar",
+		ProjectKey: "Ackbar",
+	}
+	if g := resolveTaskGroupName(sessAckbar); g != "Personal" {
+		t.Errorf("Expected Personal for Ackbar in /Work/Ackbar, got %q", g)
+	}
+
+	// 3. Modemobile project or account
+	sessMode := &Session{
+		Cwd:        "/Users/dev4u/Work/ngl-ios",
+		ProjectKey: "ngl-ios",
+		AccountID:  "claude:work:modemobile",
+	}
+	if g := resolveTaskGroupName(sessMode); g != "Modemobile" {
+		t.Errorf("Expected Modemobile, got %q", g)
+	}
+}

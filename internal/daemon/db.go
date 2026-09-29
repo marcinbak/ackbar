@@ -196,6 +196,7 @@ func InitDB(dbPath string) (*DB, error) {
 	_, _ = db.Exec("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);")
 	_, _ = db.Exec("DELETE FROM tree_nodes WHERE path LIKE 'Project Y%' OR path LIKE 'ProjectY%' OR path LIKE '%Project Y%';")
 	_, _ = db.Exec("UPDATE sessions SET tmux_name = 'ackbar-' || agent || '-' || native_id WHERE tmux_name = '(deleted)' OR tmux_name = '';")
+	_, _ = db.Exec("UPDATE tasks SET group_name = 'Personal' WHERE project_name = 'Ackbar' AND group_name = 'Modemobile';")
 
 	// High-performance indices for fast session lookups, filtering, and liveness checks
 	_, _ = db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_state ON sessions(state);")
@@ -1683,6 +1684,42 @@ func (d *DB) UpdateTask(t *Task) error {
 				return err
 			}
 		}
+	}
+
+	return tx.Commit()
+}
+
+// DeleteTask deletes a task and all associated workers, external refs, and deliverables
+func (d *DB) DeleteTask(taskID string) error {
+	taskID = strings.TrimSpace(taskID)
+	if taskID == "" {
+		return fmt.Errorf("task ID cannot be empty")
+	}
+	tx, err := d.db.Begin()
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`DELETE FROM task_workers WHERE task_id = ?`, taskID); err != nil {
+		return fmt.Errorf("failed to delete task workers: %w", err)
+	}
+	if _, err := tx.Exec(`DELETE FROM task_external_refs WHERE task_id = ?`, taskID); err != nil {
+		return fmt.Errorf("failed to delete task external refs: %w", err)
+	}
+	if _, err := tx.Exec(`DELETE FROM task_deliverables WHERE task_id = ?`, taskID); err != nil {
+		return fmt.Errorf("failed to delete task deliverables: %w", err)
+	}
+	res, err := tx.Exec(`DELETE FROM tasks WHERE id = ?`, taskID)
+	if err != nil {
+		return fmt.Errorf("failed to delete task: %w", err)
+	}
+	rowsAffected, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to check rows affected: %w", err)
+	}
+	if rowsAffected == 0 {
+		return fmt.Errorf("task with id %s not found", taskID)
 	}
 
 	return tx.Commit()

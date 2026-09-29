@@ -42,6 +42,7 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 | `POST` | `/v1/hosts/update` | Upgrades and restarts `ackbard` on a remote target host. |
 | `GET` | `/v1/tasks` | Returns tasks across all projects with associated workers, external refs, and deliverables. |
 | `POST` | `/v1/tasks` | Creates a new task or updates an existing task with associated child relations in a single transaction. |
+| `DELETE` | `/v1/tasks` | Deletes a task and all associated workers, external refs, and deliverables with cascade cleanup. |
 | `POST` | `/v1/tasks/event` | Ingests lifecycle events for a task, performing ambient detection of git branches and PR URLs. |
 | `POST` | `/v1/tasks/propose` | Quickly records discovered work proposals into the `NEW` inbox column with duplicate detection. |
 | `POST` | `/v1/tasks/deliverable` | Attaches design mockups, change briefs, retrospectives, or external artifacts to a task. |

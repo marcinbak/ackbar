@@ -971,15 +971,19 @@ async function handleSpawnNewSession() {
 
 // Modals
 
-function showModal(title, bodyHtml, footerHtml) {
+function showModal(title, bodyHtml, footerHtml, options = {}) {
   if (!el.modalOverlay) return;
   el.modalTitle.textContent = title;
   el.modalBody.innerHTML = bodyHtml;
   el.modalFooter.innerHTML = footerHtml;
+  el.modalCard?.classList.toggle('modal-card-wide', Boolean(options?.wide));
   el.modalOverlay.style.display = 'flex';
 }
 
 function hideModal() {
+  if (el.modalCard) {
+    el.modalCard.classList.remove('modal-card-wide');
+  }
   if (el.modalOverlay) el.modalOverlay.style.display = 'none';
 }
 
