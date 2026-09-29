@@ -205,8 +205,9 @@ func InitDB(dbPath string) (*DB, error) {
 	_, _ = db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_project_key ON sessions(project_key);")
 	_, _ = db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_account_id ON sessions(account_id);")
 	_, _ = db.Exec("CREATE INDEX IF NOT EXISTS idx_accounts_agent ON accounts(agent);")
-
-	return &DB{db: db}, nil
+	d := &DB{db: db}
+	_, _ = d.DeduplicateTasks()
+	return d, nil
 }
 
 func (d *DB) Close() error {
@@ -1398,6 +1399,44 @@ func (d *DB) GetTaskByWorktree(worktreePath string) (*Task, error) {
 	return t, nil
 }
 
+func (d *DB) GetTaskByExternalRef(refKey string) (*Task, error) {
+	cleanKey := strings.TrimSpace(refKey)
+	if cleanKey == "" {
+		return nil, nil
+	}
+	query := `SELECT t.id, t.title, t.group_name, t.project_name, t.subproject_name, t.status, t.substatus, t.notes, t.blocker_question, t.branch, t.worktree_path, t.pr_url, t.pr_number, t.pr_state, t.ci_status, t.created_at, t.updated_at, t.completed_at
+			  FROM tasks t
+			  JOIN task_external_refs r ON t.id = r.task_id
+			  WHERE r.ref_key = ?
+			  ORDER BY t.updated_at DESC LIMIT 1;`
+	row := d.db.QueryRow(query, cleanKey)
+	t, err := scanTaskRow(row)
+	if err != nil || t == nil {
+		return t, err
+	}
+	if err := d.populateTaskRelations(t); err != nil {
+		return nil, err
+	}
+	return t, nil
+}
+
+func (d *DB) GetTaskByTitle(title string) (*Task, error) {
+	cleanTitle := strings.TrimSpace(title)
+	if cleanTitle == "" {
+		return nil, nil
+	}
+	query := `SELECT id, title, group_name, project_name, subproject_name, status, substatus, notes, blocker_question, branch, worktree_path, pr_url, pr_number, pr_state, ci_status, created_at, updated_at, completed_at FROM tasks WHERE title = ? COLLATE NOCASE ORDER BY updated_at DESC LIMIT 1;`
+	row := d.db.QueryRow(query, cleanTitle)
+	t, err := scanTaskRow(row)
+	if err != nil || t == nil {
+		return t, err
+	}
+	if err := d.populateTaskRelations(t); err != nil {
+		return nil, err
+	}
+	return t, nil
+}
+
 func (d *DB) GetActiveTaskForSession(sessionID string) (*Task, error) {
 	if sessionID == "" {
 		return nil, nil
@@ -1819,3 +1858,161 @@ func (d *DB) InsertTaskDeliverable(td *TaskDeliverable) error {
 	}
 	return tx.Commit()
 }
+
+// DeduplicateTasks removes redundant duplicate tasks sharing the same external reference
+// or identical title and project when branch is empty, consolidating workers and deliverables.
+func (d *DB) DeduplicateTasks() (int64, error) {
+	var totalDeleted int64
+
+	// 1. Group tasks by tracker and ref_key
+	query := `SELECT r.tracker, r.ref_key, count(DISTINCT r.task_id) as cnt
+			  FROM task_external_refs r
+			  JOIN tasks t ON r.task_id = t.id
+			  WHERE r.ref_key != ''
+			  GROUP BY r.tracker, r.ref_key
+			  HAVING cnt > 1;`
+	rows, err := d.db.Query(query)
+	if err == nil {
+		type dupRef struct {
+			tracker string
+			refKey  string
+		}
+		var dupRefs []dupRef
+		for rows.Next() {
+			var dr dupRef
+			var cnt int
+			if err := rows.Scan(&dr.tracker, &dr.refKey, &cnt); err == nil {
+				dupRefs = append(dupRefs, dr)
+			}
+		}
+		rows.Close()
+
+		for _, dr := range dupRefs {
+			taskQuery := `SELECT t.id, t.title, t.group_name, t.project_name, t.subproject_name, t.status, t.substatus, t.notes, t.blocker_question, t.branch, t.worktree_path, t.pr_url, t.pr_number, t.pr_state, t.ci_status, t.created_at, t.updated_at, t.completed_at
+						  FROM tasks t
+						  JOIN task_external_refs r ON t.id = r.task_id
+						  WHERE r.tracker = ? AND r.ref_key = ?
+						  ORDER BY 
+							(CASE WHEN t.branch != '' AND t.branch IS NOT NULL THEN 1 ELSE 0 END) DESC,
+							(SELECT count(*) FROM task_workers WHERE task_id = t.id) DESC,
+							(SELECT count(*) FROM task_deliverables WHERE task_id = t.id) DESC,
+							t.created_at ASC;`
+			tRows, err := d.db.Query(taskQuery, dr.tracker, dr.refKey)
+			if err != nil {
+				continue
+			}
+			var tasks []*Task
+			for tRows.Next() {
+				t, err := scanTaskRow(tRows)
+				if err == nil && t != nil {
+					tasks = append(tasks, t)
+				}
+			}
+			tRows.Close()
+
+			if len(tasks) <= 1 {
+				continue
+			}
+
+			primary := tasks[0]
+			for _, dup := range tasks[1:] {
+				if primary.Branch == "" && dup.Branch != "" {
+					primary.Branch = dup.Branch
+				}
+				if primary.WorktreePath == "" && dup.WorktreePath != "" {
+					primary.WorktreePath = dup.WorktreePath
+				}
+				if primary.Notes == "" && dup.Notes != "" {
+					primary.Notes = dup.Notes
+				}
+				if primary.PRURL == "" && dup.PRURL != "" {
+					primary.PRURL = dup.PRURL
+					primary.PRNumber = dup.PRNumber
+					primary.PRState = dup.PRState
+				}
+
+				_, _ = d.db.Exec(`UPDATE OR IGNORE task_workers SET task_id = ? WHERE task_id = ?`, primary.ID, dup.ID)
+				_, _ = d.db.Exec(`UPDATE OR IGNORE task_deliverables SET task_id = ? WHERE task_id = ?`, primary.ID, dup.ID)
+				_, _ = d.db.Exec(`DELETE FROM task_workers WHERE task_id = ?`, dup.ID)
+				_, _ = d.db.Exec(`DELETE FROM task_deliverables WHERE task_id = ?`, dup.ID)
+				_, _ = d.db.Exec(`DELETE FROM task_external_refs WHERE task_id = ?`, dup.ID)
+				res, err := d.db.Exec(`DELETE FROM tasks WHERE id = ?`, dup.ID)
+				if err == nil {
+					n, _ := res.RowsAffected()
+					totalDeleted += n
+				}
+			}
+			_ = d.UpdateTask(primary)
+		}
+	}
+
+	// 2. Deduplicate empty-branch tasks with identical (title, group_name, project_name)
+	titleDupQuery := `SELECT title, group_name, project_name, count(*) as cnt
+					  FROM tasks
+					  WHERE (branch = '' OR branch IS NULL)
+					  GROUP BY lower(title), lower(group_name), lower(project_name)
+					  HAVING cnt > 1;`
+	titleRows, err := d.db.Query(titleDupQuery)
+	if err == nil {
+		type titleDup struct {
+			title       string
+			groupName   string
+			projectName string
+		}
+		var dupTitles []titleDup
+		for titleRows.Next() {
+			var td titleDup
+			var cnt int
+			if err := titleRows.Scan(&td.title, &td.groupName, &td.projectName, &cnt); err == nil {
+				dupTitles = append(dupTitles, td)
+			}
+		}
+		titleRows.Close()
+
+		for _, td := range dupTitles {
+			tRows, err := d.db.Query(`SELECT id, title, group_name, project_name, subproject_name, status, substatus, notes, blocker_question, branch, worktree_path, pr_url, pr_number, pr_state, ci_status, created_at, updated_at, completed_at
+									  FROM tasks
+									  WHERE lower(title) = lower(?) AND lower(group_name) = lower(?) AND lower(project_name) = lower(?) AND (branch = '' OR branch IS NULL)
+									  ORDER BY 
+										(SELECT count(*) FROM task_workers WHERE task_id = tasks.id) DESC,
+										(SELECT count(*) FROM task_deliverables WHERE task_id = tasks.id) DESC,
+										created_at ASC;`, td.title, td.groupName, td.projectName)
+			if err != nil {
+				continue
+			}
+			var tasks []*Task
+			for tRows.Next() {
+				t, err := scanTaskRow(tRows)
+				if err == nil && t != nil {
+					tasks = append(tasks, t)
+				}
+			}
+			tRows.Close()
+
+			if len(tasks) <= 1 {
+				continue
+			}
+
+			primary := tasks[0]
+			for _, dup := range tasks[1:] {
+				if primary.Notes == "" && dup.Notes != "" {
+					primary.Notes = dup.Notes
+				}
+				_, _ = d.db.Exec(`UPDATE OR IGNORE task_workers SET task_id = ? WHERE task_id = ?`, primary.ID, dup.ID)
+				_, _ = d.db.Exec(`UPDATE OR IGNORE task_deliverables SET task_id = ? WHERE task_id = ?`, primary.ID, dup.ID)
+				_, _ = d.db.Exec(`DELETE FROM task_workers WHERE task_id = ?`, dup.ID)
+				_, _ = d.db.Exec(`DELETE FROM task_deliverables WHERE task_id = ?`, dup.ID)
+				_, _ = d.db.Exec(`DELETE FROM task_external_refs WHERE task_id = ?`, dup.ID)
+				res, err := d.db.Exec(`DELETE FROM tasks WHERE id = ?`, dup.ID)
+				if err == nil {
+					n, _ := res.RowsAffected()
+					totalDeleted += n
+				}
+			}
+			_ = d.UpdateTask(primary)
+		}
+	}
+
+	return totalDeleted, nil
+}
+
