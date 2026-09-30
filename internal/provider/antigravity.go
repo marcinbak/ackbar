@@ -40,7 +40,7 @@ func (a *AntigravityProvider) GetSpawnCommand(tempUUID string) string {
 }
 
 func (a *AntigravityProvider) GetResumeCommand(nativeID string) string {
-	if nativeID != "" {
+	if nativeID != "" && isValidUUID(nativeID) {
 		return "agy --conversation " + nativeID
 	}
 	return "agy"

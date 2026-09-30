@@ -166,8 +166,14 @@ func (s *Server) servePTYWS(ws *websocket.Conn) {
 		// Ensure local tmux session exists before attaching
 		if err := exec.Command("tmux", "has-session", "-t", tmuxName).Run(); err != nil {
 			if resumeCmd != "" {
+				replaySetting := ""
+				if s.db != nil {
+					replaySetting, _ = s.db.GetSetting("replay_transcript_on_resume")
+				}
+				replayRequested := req.URL.Query().Get("replay") == "true" || replaySetting == "true"
+
 				transcriptText := ""
-				if sess != nil && sess.NativeID != "" {
+				if replayRequested && sess != nil && sess.NativeID != "" {
 					if t, terr := s.ExtractTranscript(sess.Agent, sess.NativeID, cwd); terr == nil && t != nil && len(t.Messages) > 0 {
 						transcriptText = FormatTranscriptANSI(t)
 					}

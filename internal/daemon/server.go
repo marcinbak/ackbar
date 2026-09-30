@@ -5678,26 +5678,26 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 							delete(knownIDs, existingOld.ID)
 							delete(knownByNativeID, existingOld.NativeID)
 
-							// Broadcast deletion tombstone for oldSessID so UI immediately evicts the temporary placeholder
-							tombstone := *existingOld
-							tombstone.ID = oldSessID
-							tombstone.NativeID = targetNativeID
-							tombstone.Deleted = true
-							tombstone.Activity = "Deleted"
-							s.broadcast(&tombstone)
-
+							var targetSess *Session
 							if existingReal, ok := knownIDs[realSessID]; ok {
 								if existingOld.NodePath != "" && existingReal.NodePath == "" {
 									existingReal.NodePath = existingOld.NodePath
+								}
+								if existingReal.CustomTitle == "" && existingOld.CustomTitle != "" {
+									existingReal.CustomTitle = existingOld.CustomTitle
+									existingReal.Name = existingOld.Name
 								}
 								if existingReal.CustomTitle == "" {
 									if title := ReadAntigravitySessionTitle(existingReal.Cwd, sID); title != "" && !isRawSessionName(title) {
 										existingReal.Name = title
 									}
 								}
+								existingReal.OldID = oldSessID
+								targetSess = existingReal
 							} else {
 								existingOld.ID = realSessID
 								existingOld.NativeID = sID
+								existingOld.OldID = oldSessID
 								if existingOld.CustomTitle == "" {
 									if title := ReadAntigravitySessionTitle(existingOld.Cwd, sID); title != "" && !isRawSessionName(title) {
 										existingOld.Name = title
@@ -5705,7 +5705,10 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 								}
 								knownIDs[realSessID] = existingOld
 								knownByNativeID[sID] = existingOld
+								targetSess = existingOld
 							}
+							_ = s.db.SaveSession(targetSess)
+							s.broadcast(targetSess)
 						}
 						targetNativeID = sID
 					}

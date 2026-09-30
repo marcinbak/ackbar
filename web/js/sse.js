@@ -13,7 +13,7 @@ import {
   isRawSessionName
 } from './api.js';
 import { renderTree } from './tree.js';
-import { closeTab, updateOpenTabsState, checkAndReconnectActiveTabs } from './tabs.js';
+import { closeTab, updateOpenTabsState, checkAndReconnectActiveTabs, migrateTabId } from './tabs.js';
 import { renderSubagentsBar, fetchRunningSubagents } from './chat.js';
 import { getAppMode, refreshWorkBoard } from './tasks.js';
 
@@ -58,7 +58,17 @@ function connectSSE() {
             updatedSess.host = getSelfHostName();
           }
 
+          if (updatedSess.old_id) {
+            const oldId = updatedSess.old_id;
+            const newId = updatedSess.id;
+            state.sessions = state.sessions.filter(s => s.id !== oldId && (!updatedSess.native_id || s.native_id !== updatedSess.native_id || s.id === newId));
+            migrateTabId(oldId, newId, updatedSess);
+          }
+
           if (updatedSess.deleted || updatedSess.activity === 'Deleted') {
+            if (updatedSess.migrated_to) {
+              return;
+            }
             const targetId = updatedSess.id;
             const targetName = updatedSess.name;
             const nativeId = updatedSess.native_id;

@@ -84,6 +84,8 @@ type Session struct {
 	AccountID         string    `json:"account_id,omitempty"`  // profile/account identifier (e.g. "work", "personal", "default")
 	EngineType        string    `json:"engine_type,omitempty"` // "tmux" (default) or "headless"
 	RunningSubagents  int       `json:"running_subagents,omitempty"`
+	OldID             string    `json:"old_id,omitempty"`      // populated during identity migration (e.g. placeholder tempUUID -> real native UUID)
+	MigratedTo        string    `json:"migrated_to,omitempty"` // populated if identity was migrated to another session ID
 }
 
 const (
