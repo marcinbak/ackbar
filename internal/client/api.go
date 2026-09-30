@@ -53,6 +53,8 @@ type HostStatus struct {
 	ProjectsDir string `json:"projects_dir"`
 	Version     string `json:"version"`
 	Online      bool   `json:"online"`
+	Ahead       bool   `json:"ahead,omitempty"`    // host version is newer than client
+	Outdated    bool   `json:"outdated,omitempty"` // host version is older than client
 	ErrorStage  string `json:"error_stage,omitempty"`
 	Error       string `json:"error,omitempty"`
 }
@@ -92,12 +94,25 @@ func FetchSessions(hosts []HostConfig) ([]*daemon.Session, map[string]HostStatus
 				verResp.Body.Close()
 			}
 
-			// Auto-upgrade remote daemon if running outdated version
-			if hostVer != "unknown" && hostVer != version.Version && host.Name != "local" {
+			// Assess version parity
+			ahead := false
+			outdated := false
+			if hostVer != "unknown" && hostVer != "" {
+				cmp := version.Compare(hostVer, version.Version)
+				if cmp > 0 {
+					ahead = true
+				} else if cmp < 0 {
+					outdated = true
+				}
+			}
+
+			// Auto-upgrade remote daemon ONLY if remote host is confirmed older than client
+			if outdated && host.Name != "local" {
 				go func(h HostConfig) {
-					shutdownURL := fmt.Sprintf("%s/v1/shutdown", strings.TrimSuffix(h.URL, "/"))
-					_, _ = client.Post(shutdownURL, "application/json", nil)
-					time.Sleep(200 * time.Millisecond)
+					// Ensure we have access to Go source code before attempting to compile
+					if _, err := os.Stat("./cmd/ackbard/main.go"); err != nil {
+						return
+					}
 
 					osOut, _ := exec.Command("ssh", "-o", "BatchMode=yes", h.Name, "uname -s").Output()
 					archOut, _ := exec.Command("ssh", "-o", "BatchMode=yes", h.Name, "uname -m").Output()
@@ -116,11 +131,17 @@ func FetchSessions(hosts []HostConfig) ([]*daemon.Session, map[string]HostStatus
 
 					cmdBard := exec.Command("go", "build", "-o", tmpBard, "./cmd/ackbard")
 					cmdBard.Env = append(os.Environ(), "GOOS="+remoteOS, "GOARCH="+remoteArch, "CGO_ENABLED=0")
-					_ = cmdBard.Run()
+					if err := cmdBard.Run(); err != nil {
+						return
+					}
 
 					cmdHook := exec.Command("go", "build", "-o", tmpHook, "./cmd/ackbar-hook")
 					cmdHook.Env = append(os.Environ(), "GOOS="+remoteOS, "GOARCH="+remoteArch, "CGO_ENABLED=0")
 					_ = cmdHook.Run()
+
+					shutdownURL := fmt.Sprintf("%s/v1/shutdown", strings.TrimSuffix(h.URL, "/"))
+					_, _ = client.Post(shutdownURL, "application/json", nil)
+					time.Sleep(200 * time.Millisecond)
 
 					_ = exec.Command("ssh", "-o", "BatchMode=yes", h.Name, "mkdir -p ~/.local/bin").Run()
 					if _, err := os.Stat(tmpBard); err == nil {
@@ -277,6 +298,8 @@ nohup ~/.local/bin/ackbard > ~/.ackbard.log 2>&1 &`
 				ProjectsDir: host.ProjectsDir,
 				Version:     hostVer,
 				Online:      true,
+				Ahead:       ahead,
+				Outdated:    outdated,
 			}
 			allSessions = append(allSessions, sessions...)
 			mu.Unlock()

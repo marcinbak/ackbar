@@ -95,6 +95,33 @@ GitHub Actions will automatically:
 
 ---
 
+## 3. Automated Update Discovery & Built-in Self-Updater
+
+Ackbar features built-in version discovery and automated self-updates across all clients:
+
+### CLI Update Commands
+
+```bash
+# Check GitHub releases for newer version status
+ackbar check-update
+
+# Run update (detects Homebrew vs. Standalone ~/.local/bin)
+ackbar update
+
+# Force re-install of the current latest release
+ackbar update --force
+```
+
+### How Updates Work Under the Hood
+* **Homebrew Users:** `ackbar update` detects the Homebrew installation and automatically executes `brew upgrade ackbar && brew services restart ackbar`, ensuring the Cellar and background services stay cleanly synchronized.
+* **Standalone / Local Bin Users (`~/.local/bin`):** `ackbar update` downloads the platform-specific release archive (`.tar.gz`) directly from GitHub Releases, verifies binaries, stages them atomically, replaces `ackbar`, `ackbard`, `ackbar-hook`, and `ackbar-relay`, and gracefully restarts the daemon.
+* **In-App TUI & Web Discovery:**
+  * **TUI:** Displays a header alert `⚡ UPDATE: v... ('u')`. Pressing `u` opens the interactive update modal with release highlights and a one-key upgrade trigger (`[Enter]`).
+  * **Web GUI:** Displays an update pill in the top header and provides a 1-click update modal.
+  * **Fleet Peers:** Cross-compares daemon versions in multi-machine setups; remote hosts ahead of the local client are tagged `[AHEAD]` while preventing accidental downgrades.
+
+---
+
 ## 4. Direct `go install` (Go Toolchain Users)
 
 For developers with the Go toolchain installed who prefer compiling from source:

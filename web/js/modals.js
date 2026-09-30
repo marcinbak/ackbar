@@ -1474,6 +1474,77 @@ async function showHostSummaryModal(h) {
   }
 }
 
+function showUpdateModal(data) {
+  const curVer = state.version || '...';
+  const latestVer = data.latest_version || 'latest';
+  const releaseUrl = data.release_url || `https://github.com/marcinbak/ackbar/releases/tag/v${latestVer}`;
+  const isHomebrew = data.is_homebrew;
+  const methodStr = isHomebrew ? 'Homebrew (brew upgrade ackbar)' : 'Prebuilt Binary (~/.local/bin)';
+
+  const bodyHtml = `
+    <div style="padding: 12px 4px;">
+      <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px; background: rgba(255, 187, 0, 0.1); border: 1px solid rgba(255, 187, 0, 0.3); border-radius: 8px; padding: 12px 16px;">
+        <span style="font-size: 24px;">⚡</span>
+        <div>
+          <div style="font-size: 15px; font-weight: 600; color: #ffbb00;">New Ackbar Version Available!</div>
+          <div style="font-size: 13px; color: var(--text-muted);">Current: <code>v${escapeHtml(curVer)}</code> ➔ Latest: <strong style="color: #fff;"><code>v${escapeHtml(latestVer)}</code></strong></div>
+        </div>
+      </div>
+      <div style="margin-bottom: 12px; font-size: 13px; color: var(--text-muted);">
+        <strong>Installation Channel:</strong> <code>${escapeHtml(methodStr)}</code>
+      </div>
+      <div style="margin-bottom: 16px; font-size: 13px;">
+        <a href="${escapeHtml(releaseUrl)}" target="_blank" rel="noopener noreferrer" style="color: var(--accent-blue); text-decoration: underline;">
+          🔗 View Release Notes & Artifacts on GitHub
+        </a>
+      </div>
+      <div id="updateOutput" style="display: none; padding: 10px; background: rgba(0,0,0,0.5); border-radius: 6px; font-family: monospace; font-size: 12px; max-height: 140px; overflow-y: auto; margin-top: 10px;"></div>
+    </div>
+  `;
+
+  const footerHtml = `
+    <button class="btn btn-secondary" id="btnDismissUpdate">Dismiss</button>
+    <button class="btn btn-primary" id="btnExecuteUpdate" style="background: #ffbb00; color: #000; font-weight: 600;">Upgrade to v${escapeHtml(latestVer)}</button>
+  `;
+
+  showModal('⚡ Ackbar Update Available', bodyHtml, footerHtml);
+
+  document.getElementById('btnDismissUpdate')?.addEventListener('click', hideModal);
+  document.getElementById('btnExecuteUpdate')?.addEventListener('click', async () => {
+    const btn = document.getElementById('btnExecuteUpdate');
+    const out = document.getElementById('updateOutput');
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = 'Updating...';
+    }
+    if (out) {
+      out.style.display = 'block';
+      out.textContent = 'Executing update... please wait.';
+    }
+
+    try {
+      const res = await fetch('/v1/update', { method: 'POST' });
+      const resData = await res.json().catch(() => ({}));
+      if (res.ok) {
+        if (out) out.textContent = resData.message || 'Update completed successfully!';
+        if (btn) btn.textContent = '✅ Updated!';
+        setTimeout(() => {
+          location.reload();
+        }, 1500);
+      } else {
+        if (out) out.textContent = `Error: ${resData.message || res.statusText}`;
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = 'Retry Update';
+        }
+      }
+    } catch (e) {
+      if (out) out.textContent = 'Update triggered. The daemon may be restarting. Reloading page in 3 seconds...';
+      setTimeout(() => location.reload(), 3000);
+    }
+  });
+}
+
 // Sidebar Drag Resizer
 
 export {
@@ -1491,5 +1562,6 @@ export {
   showAddHostModal,
   showHooksDashboardModal,
   showEditHostModal,
-  showHostSummaryModal
+  showHostSummaryModal,
+  showUpdateModal
 };

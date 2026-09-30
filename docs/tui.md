@@ -40,6 +40,7 @@ The TUI is built with Charm.sh Bubble Tea and Lip Gloss, presenting a responsive
 | `P` | Purge & Re-index | Safe database maintenance: purges stale entries while strictly preserving groups. |
 | `x` | Archive Session | Toggle session between active and archived views. |
 | `v` | Toggle Archived View | Switch between active and archived session lists. |
+| `u` | Update & Version Control | Open interactive update dialog showing latest GitHub release and one-key upgrade. |
 | `d` | Delete Session / Group | Delete session or empty category group node. |
 
 ---

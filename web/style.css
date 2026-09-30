@@ -130,6 +130,24 @@ body, html {
   border: 1px solid var(--border-color);
 }
 
+.update-badge {
+  background: rgba(255, 187, 0, 0.15) !important;
+  color: #ffbb00 !important;
+  border: 1px solid rgba(255, 187, 0, 0.4) !important;
+  box-shadow: 0 0 8px rgba(255, 187, 0, 0.4);
+  animation: pulse-update-badge 2s infinite ease-in-out;
+  cursor: pointer;
+}
+
+@keyframes pulse-update-badge {
+  0%, 100% {
+    box-shadow: 0 0 4px rgba(255, 187, 0, 0.3);
+  }
+  50% {
+    box-shadow: 0 0 12px rgba(255, 187, 0, 0.7);
+  }
+}
+
 /* Mode Switcher (Workspace vs Work Board) */
 .app-mode-switcher {
   display: flex;
