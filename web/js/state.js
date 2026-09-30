@@ -88,6 +88,8 @@ function saveCollapsedLaterGroups() {
 
 export const state = {
   version: '...',
+  updateAvailable: false,
+  updateInfo: null,
   selfHost: { name: 'local', displayName: '', url: '', online: true, isSelf: true },
   settings: null,
   sessions: [],
@@ -118,6 +120,7 @@ window.__ackbarState = state;
 
 export const el = {
   appVersion: document.getElementById('appVersion'),
+  updateBadge: document.getElementById('updateBadge'),
   hostList: document.getElementById('hostList'),
   searchInput: document.getElementById('searchInput'),
   treeContainer: document.getElementById('treeContainer'),

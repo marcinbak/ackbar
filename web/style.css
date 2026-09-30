@@ -130,6 +130,19 @@ body, html {
   border: 1px solid var(--border-color);
 }
 
+.update-badge {
+  color: #fbbf24;
+  background: rgba(245, 158, 11, 0.15);
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.update-badge:hover {
+  background: rgba(245, 158, 11, 0.25);
+  border-color: #fbbf24;
+}
+
 /* Mode Switcher (Workspace vs Work Board) */
 .app-mode-switcher {
   display: flex;

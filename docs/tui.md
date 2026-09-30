@@ -35,6 +35,7 @@ The TUI is built with Charm.sh Bubble Tea and Lip Gloss, presenting a responsive
 | `V` | View Documents | View workspace plans (`task.md`, `implementation_plan.md`, `walkthrough.md`). |
 | `H` | Agent Discovery | Discover installed agent binaries and configure missing hook handlers. |
 | `R` | Register Host | Wizard to connect and cross-compile `ackbard` for a remote SSH machine. |
+| `u` | Update Manager | Open Release & Update Manager modal, view upstream changelog, and upgrade (`ackbar update`). |
 | `r` | Restart / Resume | Restart active session or resume ended/cleared conversation in a fresh tmux tab. |
 | `k` | Terminate (Kill) | Send SIGKILL to terminate the agent process/tmux session. |
 | `P` | Purge & Re-index | Safe database maintenance: purges stale entries while strictly preserving groups. |

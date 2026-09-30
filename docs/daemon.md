@@ -20,7 +20,9 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 
 | Method | Endpoint | Description |
 | :--- | :--- | :--- |
-| `GET` | `/v1/version` | Returns current daemon version, canonical host name, and display name. |
+| `GET` | `/v1/version` | Returns current daemon version, canonical host name, display name, and upstream update availability. |
+| `GET` | `/v1/update` | Returns upstream GitHub release metadata, changelog summary, and prebuilt platform asset URLs. |
+| `POST`| `/v1/update/check` | Triggers an immediate upstream release check bypassing the 1-hour cache TTL. |
 | `GET` | `/v1/sessions` | Returns all active, managed, and historic sessions with unread state. |
 | `GET` | `/v1/events` | SSE stream broadcasting real-time session mutations and state changes. |
 | `GET` | `/v1/sessions/pty` | WebSocket endpoint streaming interactive PTY data to `xterm.js`. |

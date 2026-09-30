@@ -11,7 +11,7 @@ import {
 } from './utils.js';
 import { renderTree, getSessionTimestamp, sortSessionsByInteraction } from './tree.js';
 import { updateOpenTabsState } from './tabs.js';
-import { showModal, hideModal, showHostSummaryModal } from './modals.js';
+import { showModal, hideModal, showHostSummaryModal, showUpdateModal, compareVersions } from './modals.js';
 
 // Fetch Providers
 async function fetchProviders() {
@@ -33,6 +33,17 @@ async function fetchVersion() {
       const data = await res.json();
       state.version = data.version || 'unknown';
       if (el.appVersion) el.appVersion.textContent = `v${state.version}`;
+      if (data.update_available) {
+        state.updateAvailable = true;
+        state.updateInfo = data;
+        if (el.updateBadge) {
+          el.updateBadge.style.display = 'inline-block';
+          el.updateBadge.textContent = `⚡ Update: v${data.latest_version}`;
+          el.updateBadge.onclick = () => showUpdateModal(data);
+        }
+      } else if (el.updateBadge) {
+        el.updateBadge.style.display = 'none';
+      }
       if (data.host) {
         state.selfHost = {
           name: data.host,
@@ -490,7 +501,11 @@ async function handleReconnectHost(h) {
 
 // Smooth Host Binary Upgrade Flow
 async function handleUpdateHost(h) {
-  if (!confirm(`Upgrade and restart ackbard daemon & hook binaries on "${h.name}" to v${state.version}?`)) return;
+  if (compareVersions(h.version, state.version) > 0) {
+    if (!confirm(`Warning: Remote host "${h.name}" is already running newer v${h.version} than control plane v${state.version}. Are you sure you want to downgrade?`)) return;
+  } else if (!confirm(`Upgrade and restart ackbard daemon & hook binaries on "${h.name}" to v${state.version}?`)) {
+    return;
+  }
 
   showModal(`Updating ${h.name}`, `
     <div style="padding: 32px 20px; text-align: center;">

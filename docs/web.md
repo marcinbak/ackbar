@@ -92,6 +92,12 @@ It is embedded directly into the `ackbard` Go binary and served on `http://127.0
 * **Interactive Controls:** Merge PRs, unblock waiting agents, view deliverables, create new tasks, and edit task status in-place.
 
 
+### ⚡ 9. Header Release Version & Update Discovery
+* **Live Version Indicator:** Displays current control plane version (`vYYYYMMDD.rev`) in the top global header.
+* **Animated Upstream Update Badge:** When a newer official release is published on GitHub, a glowing gold badge (`⚡ Update: v...`) appears next to the version badge.
+* **Interactive Release Modal:** Clicking the badge opens the update dialog showing current vs. latest version, changelog highlights, and CLI upgrade instructions (`ackbar update`).
+* **Host Version Safety:** Prevents accidental downgrades of remote hosts that are running newer builds than the control plane.
+
 ---
 
 ## 3. Keyboard Shortcuts

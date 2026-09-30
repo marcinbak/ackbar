@@ -47,14 +47,17 @@ func SaveHostConfig(path string, hosts []HostConfig) error {
 }
 
 type HostStatus struct {
-	Name        string `json:"name"`
-	DisplayName string `json:"display_name,omitempty"`
-	URL         string `json:"url"`
-	ProjectsDir string `json:"projects_dir"`
-	Version     string `json:"version"`
-	Online      bool   `json:"online"`
-	ErrorStage  string `json:"error_stage,omitempty"`
-	Error       string `json:"error,omitempty"`
+	Name            string `json:"name"`
+	DisplayName     string `json:"display_name,omitempty"`
+	URL             string `json:"url"`
+	ProjectsDir     string `json:"projects_dir"`
+	Version         string `json:"version"`
+	Online          bool   `json:"online"`
+	UpdateAvailable bool   `json:"update_available,omitempty"`
+	LatestVersion   string `json:"latest_version,omitempty"`
+	IsAhead         bool   `json:"is_ahead,omitempty"`
+	ErrorStage      string `json:"error_stage,omitempty"`
+	Error           string `json:"error,omitempty"`
 }
 
 // FetchSessions retrieves all sessions from all configured daemons and returns host connection statuses
@@ -79,21 +82,33 @@ func FetchSessions(hosts []HostConfig) ([]*daemon.Session, map[string]HostStatus
 			verResp, verErr := client.Get(verURL)
 			hostVer := "unknown"
 			dispName := host.DisplayName
-			if verErr == nil && verResp.StatusCode == http.StatusOK {
-				var verMap map[string]string
-				if err := json.NewDecoder(verResp.Body).Decode(&verMap); err == nil {
-					if v, ok := verMap["version"]; ok && v != "" {
-						hostVer = v
-					}
-					if d, ok := verMap["display_name"]; ok && d != "" {
-						dispName = d
+			updateAvailable := false
+			latestVer := ""
+			if verErr == nil {
+				if verResp.StatusCode == http.StatusOK {
+					var verMap map[string]interface{}
+					if err := json.NewDecoder(verResp.Body).Decode(&verMap); err == nil {
+						if v, ok := verMap["version"].(string); ok && v != "" {
+							hostVer = v
+						}
+						if d, ok := verMap["display_name"].(string); ok && d != "" {
+							dispName = d
+						}
+						if ua, ok := verMap["update_available"].(bool); ok {
+							updateAvailable = ua
+						}
+						if lv, ok := verMap["latest_version"].(string); ok {
+							latestVer = lv
+						}
 					}
 				}
 				verResp.Body.Close()
 			}
 
-			// Auto-upgrade remote daemon if running outdated version
-			if hostVer != "unknown" && hostVer != version.Version && host.Name != "local" {
+			isAhead := hostVer != "unknown" && version.IsNewer(hostVer, version.Version)
+
+			// Auto-upgrade remote daemon ONLY if local client is strictly newer
+			if hostVer != "unknown" && version.IsNewer(version.Version, hostVer) && host.Name != "local" {
 				go func(h HostConfig) {
 					shutdownURL := fmt.Sprintf("%s/v1/shutdown", strings.TrimSuffix(h.URL, "/"))
 					_, _ = client.Post(shutdownURL, "application/json", nil)
@@ -216,14 +231,17 @@ nohup ~/.local/bin/ackbard > ~/.ackbard.log 2>&1 &`
 
 				mu.Lock()
 				hostStatuses[host.Name] = HostStatus{
-					Name:        host.Name,
-					DisplayName: dispName,
-					URL:         host.URL,
-					ProjectsDir: host.ProjectsDir,
-					Version:     hostVer,
-					Online:      false,
-					ErrorStage:  errorStage,
-					Error:       err.Error(),
+					Name:            host.Name,
+					DisplayName:     dispName,
+					URL:             host.URL,
+					ProjectsDir:     host.ProjectsDir,
+					Version:         hostVer,
+					Online:          false,
+					UpdateAvailable: updateAvailable,
+					LatestVersion:   latestVer,
+					IsAhead:         isAhead,
+					ErrorStage:      errorStage,
+					Error:           err.Error(),
 				}
 				errors = append(errors, fmt.Sprintf("[%s] Failed to reach host %s (%s): %v", errorStage, host.Name, host.URL, err))
 				mu.Unlock()
@@ -234,13 +252,16 @@ nohup ~/.local/bin/ackbard > ~/.ackbard.log 2>&1 &`
 			if resp.StatusCode != http.StatusOK {
 				mu.Lock()
 				hostStatuses[host.Name] = HostStatus{
-					Name:        host.Name,
-					DisplayName: dispName,
-					URL:         host.URL,
-					ProjectsDir: host.ProjectsDir,
-					Version:     hostVer,
-					Online:      false,
-					Error:       fmt.Sprintf("Status %d", resp.StatusCode),
+					Name:            host.Name,
+					DisplayName:     dispName,
+					URL:             host.URL,
+					ProjectsDir:     host.ProjectsDir,
+					Version:         hostVer,
+					Online:          false,
+					UpdateAvailable: updateAvailable,
+					LatestVersion:   latestVer,
+					IsAhead:         isAhead,
+					Error:           fmt.Sprintf("Status %d", resp.StatusCode),
 				}
 				errors = append(errors, fmt.Sprintf("Host %s returned status %d", host.Name, resp.StatusCode))
 				mu.Unlock()
@@ -251,13 +272,16 @@ nohup ~/.local/bin/ackbard > ~/.ackbard.log 2>&1 &`
 			if err := json.NewDecoder(resp.Body).Decode(&sessions); err != nil {
 				mu.Lock()
 				hostStatuses[host.Name] = HostStatus{
-					Name:        host.Name,
-					DisplayName: dispName,
-					URL:         host.URL,
-					ProjectsDir: host.ProjectsDir,
-					Version:     hostVer,
-					Online:      false,
-					Error:       err.Error(),
+					Name:            host.Name,
+					DisplayName:     dispName,
+					URL:             host.URL,
+					ProjectsDir:     host.ProjectsDir,
+					Version:         hostVer,
+					Online:          false,
+					UpdateAvailable: updateAvailable,
+					LatestVersion:   latestVer,
+					IsAhead:         isAhead,
+					Error:           err.Error(),
 				}
 				errors = append(errors, fmt.Sprintf("Failed to decode sessions from host %s: %v", host.Name, err))
 				mu.Unlock()
@@ -271,12 +295,15 @@ nohup ~/.local/bin/ackbard > ~/.ackbard.log 2>&1 &`
 
 			mu.Lock()
 			hostStatuses[host.Name] = HostStatus{
-				Name:        host.Name,
-				DisplayName: dispName,
-				URL:         host.URL,
-				ProjectsDir: host.ProjectsDir,
-				Version:     hostVer,
-				Online:      true,
+				Name:            host.Name,
+				DisplayName:     dispName,
+				URL:             host.URL,
+				ProjectsDir:     host.ProjectsDir,
+				Version:         hostVer,
+				Online:          true,
+				UpdateAvailable: updateAvailable,
+				LatestVersion:   latestVer,
+				IsAhead:         isAhead,
 			}
 			allSessions = append(allSessions, sessions...)
 			mu.Unlock()

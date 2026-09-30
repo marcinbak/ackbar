@@ -1386,10 +1386,15 @@ async function showHostSummaryModal(h) {
 
     const setupCmd = isLocal ? 'ackbar setup-hooks' : `ssh ${h.ssh_target || h.name} "ackbar setup-hooks"`;
 
-    const isOutdated = !isLocal && isOnline && daemonVersion !== '...' && daemonVersion !== state.version;
+    const isOutdated = !isLocal && isOnline && daemonVersion !== '...' && compareVersions(state.version, daemonVersion) > 0;
+    const isAhead = !isLocal && isOnline && daemonVersion !== '...' && compareVersions(daemonVersion, state.version) > 0;
     const updateBanner = isOutdated ? `
       <div style="margin-top: 10px; padding: 10px 12px; background: rgba(245, 158, 11, 0.15); border: 1px solid rgba(245, 158, 11, 0.4); border-radius: 6px; font-size: 11px; display: flex; align-items: center; justify-content: space-between; color: #fbbf24;">
         <div>⚠️ <strong>Update Available:</strong> Remote host is running <code>v${daemonVersion}</code>, control plane is <code>v${state.version}</code>.</div>
+      </div>
+    ` : isAhead ? `
+      <div style="margin-top: 10px; padding: 10px 12px; background: rgba(0, 255, 255, 0.1); border: 1px solid rgba(0, 255, 255, 0.3); border-radius: 6px; font-size: 11px; display: flex; align-items: center; justify-content: space-between; color: var(--accent-cyan);">
+        <div>🌟 <strong>Remote Host Ahead:</strong> Remote host is running newer build <code>v${daemonVersion}</code> (control plane is <code>v${state.version}</code>).</div>
       </div>
     ` : '';
 
@@ -1472,6 +1477,55 @@ async function showHostSummaryModal(h) {
   } catch (err) {
     showModal(`Server Inspector: ${h.name}`, `<div style="color: var(--accent-red); padding: 12px;">Error connecting to host: ${err.message}</div>`, `<button class="btn btn-secondary" onclick="document.getElementById('modalOverlay').style.display='none'">Close</button>`);
   }
+}
+
+export function compareVersions(vA, vB) {
+  if (!vA || !vB || vA === '...' || vB === '...' || vA === 'unknown' || vA === 'online' || vB === 'online') return 0;
+  const cleanA = vA.replace(/^v/i, '').split(/[-+]/)[0];
+  const cleanB = vB.replace(/^v/i, '').split(/[-+]/)[0];
+  const partsA = cleanA.split(/[._]/);
+  const partsB = cleanB.split(/[._]/);
+  const maxLen = Math.max(partsA.length, partsB.length);
+  for (let i = 0; i < maxLen; i++) {
+    const numA = parseInt(partsA[i] || '0', 10);
+    const numB = parseInt(partsB[i] || '0', 10);
+    if (!isNaN(numA) && !isNaN(numB)) {
+      if (numA > numB) return 1;
+      if (numA < numB) return -1;
+    } else {
+      const cmp = (partsA[i] || '').localeCompare(partsB[i] || '');
+      if (cmp !== 0) return cmp;
+    }
+  }
+  return 0;
+}
+
+export function showUpdateModal(data) {
+  const latest = data.latest_version || 'latest';
+  const current = data.version || state.version;
+  const releaseUrl = data.release_url || 'https://github.com/marcinbak/ackbar/releases';
+  showModal('⚡ Ackbar Release Update', `
+    <div style="padding: 16px 20px;">
+      <div style="display: flex; gap: 12px; align-items: center; background: var(--bg-card); padding: 14px; border-radius: 8px; border: 1px solid var(--border-color); margin-bottom: 16px;">
+        <div style="font-size: 28px;">🚀</div>
+        <div style="flex: 1;">
+          <div style="font-weight: 600; font-size: 15px; color: #fff;">New Release Available</div>
+          <div style="font-size: 12px; color: var(--text-muted); margin-top: 2px;">
+            Installed: <code>v${escapeHtml(current)}</code> &nbsp;→&nbsp; Latest: <code style="color: var(--accent-green); font-weight: 600;">v${escapeHtml(latest)}</code>
+          </div>
+        </div>
+      </div>
+      <p style="font-size: 12px; color: var(--text-dim); line-height: 1.5; margin-bottom: 14px;">
+        A newer official Ackbar release has been published upstream. You can upgrade this machine directly in your terminal:
+      </p>
+      <div style="background: #090a0f; border: 1px solid var(--border-color); border-radius: 6px; padding: 12px; margin-bottom: 14px; font-family: var(--font-mono); font-size: 12px; color: var(--accent-green);">
+        ackbar update
+      </div>
+      <div style="font-size: 11px; color: var(--text-muted);">
+        Or view full changelog & details on <a href="${escapeHtml(releaseUrl)}" target="_blank" rel="noopener noreferrer" style="color: var(--accent-cyan); text-decoration: underline;">GitHub Releases</a>.
+      </div>
+    </div>
+  `, '');
 }
 
 // Sidebar Drag Resizer

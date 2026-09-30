@@ -89,6 +89,15 @@ type loadDocsMsg []string
 type discoveryMsg map[string][]daemon.AgentDiscoveryResult
 type nodesMsg []*daemon.TreeNode
 type errorMsg string
+type updateCheckMsg struct {
+	available bool
+	latest    string
+	url       string
+	changelog string
+}
+type updateFinishedMsg struct {
+	err error
+}
 
 type TreeRow struct {
 	IsGroup   bool
@@ -140,6 +149,11 @@ type Model struct {
 	discoveryHostIdx      int
 	visibleRows           []TreeRow
 	spinnerFrame          int
+	updateAvailable       bool
+	latestVersion         string
+	releaseURL            string
+	releaseChangelog      string
+	showingUpdateModal    bool
 }
 
 type spinnerTickMsg time.Time
@@ -170,19 +184,44 @@ func NewModel(hosts []HostConfig, projectsDir string, groups map[string][]string
 func (m *Model) Init() tea.Cmd {
 	SubscribeEvents(m.ctx, m.hosts, m.eventChan)
 
-	fetchCmd := func() tea.Msg {
+	waitForEvents := func() tea.Msg {
+		return sessionUpdateMsg(<-m.eventChan)
+	}
+
+	return tea.Batch(m.clearErrorCmd(), m.fetchSessionsCmd(), m.fetchDiscoveryCmd(), m.fetchNodesCmd(), waitForEvents, m.spinnerTickCmd(), m.checkUpdateCmd())
+}
+
+func (m *Model) checkUpdateCmd() tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+		defer cancel()
+		res, err := version.CheckLatestRelease(ctx, false)
+		if err == nil && res != nil {
+			url := ""
+			changelog := ""
+			if res.ReleaseInfo != nil {
+				url = res.ReleaseInfo.ReleaseURL
+				changelog = res.ReleaseInfo.Changelog
+			}
+			return updateCheckMsg{
+				available: res.UpdateAvailable,
+				latest:    res.LatestVersion,
+				url:       url,
+				changelog: changelog,
+			}
+		}
+		return nil
+	}
+}
+
+func (m *Model) fetchSessionsCmd() tea.Cmd {
+	return func() tea.Msg {
 		sessions, statuses, err := FetchSessions(m.hosts)
 		if err != nil {
 			return errorMsg(err.Error())
 		}
 		return fetchSessionsResult{sessions: sessions, statuses: statuses}
 	}
-
-	waitForEvents := func() tea.Msg {
-		return sessionUpdateMsg(<-m.eventChan)
-	}
-
-	return tea.Batch(m.clearErrorCmd(), fetchCmd, m.fetchDiscoveryCmd(), m.fetchNodesCmd(), waitForEvents, m.spinnerTickCmd())
 }
 
 func (m *Model) clearErrorCmd() tea.Cmd {
@@ -207,11 +246,35 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.treeNodes = msg
 		return m, nil
 
+	case updateCheckMsg:
+		m.updateAvailable = msg.available
+		m.latestVersion = msg.latest
+		m.releaseURL = msg.url
+		m.releaseChangelog = msg.changelog
+		return m, nil
+
+	case updateFinishedMsg:
+		m.showingUpdateModal = false
+		if msg.err != nil {
+			m.errMsg = fmt.Sprintf("Update failed: %v", msg.err)
+		} else {
+			m.updateAvailable = false
+		}
+		return m, m.fetchSessionsCmd()
+
 	case fetchSessionsResult:
 		m.loading = false
 		m.sessions = msg.sessions
 		m.hostStatuses = msg.statuses
 		m.selectedIdx = 0
+		for _, st := range msg.statuses {
+			if st.UpdateAvailable {
+				m.updateAvailable = true
+				if st.LatestVersion != "" {
+					m.latestVersion = st.LatestVersion
+				}
+			}
+		}
 		return m, nil
 
 	case sessionUpdateMsg:
@@ -253,6 +316,21 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.errMsg != "" {
 			m.errMsg = ""
 			return m, nil
+		}
+		if m.showingUpdateModal {
+			switch msg.String() {
+			case "esc", "q":
+				m.showingUpdateModal = false
+				return m, nil
+			case "enter":
+				m.showingUpdateModal = false
+				cmd := exec.Command("ackbar", "update")
+				return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
+					return updateFinishedMsg{err: err}
+				})
+			default:
+				return m, nil
+			}
 		}
 		if m.showDiscovery {
 			switch msg.String() {
@@ -512,6 +590,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, m.markReadCmd(prevSess)
 				}
 			}
+
+		case "u":
+			m.showingUpdateModal = true
+			if !m.updateAvailable {
+				return m, m.checkUpdateCmd()
+			}
+			return m, nil
 
 		case "v":
 			m.archivedView = !m.archivedView
@@ -1778,6 +1863,9 @@ func (m *Model) View() string {
 
 	// Header block
 	headerText := fmt.Sprintf("⚓ ACKBAR SESSION TACTICAL DISPLAY [v%s]", version.Version)
+	if m.updateAvailable {
+		headerText += lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FFCC00")).Render(fmt.Sprintf("  ⚡ UPDATE: v%s (press 'u')", m.latestVersion))
+	}
 	if m.archivedView {
 		headerText += " [ARCHIVED VIEW]"
 	}
@@ -1801,6 +1889,8 @@ func (m *Model) View() string {
 		statusBadge := lipgloss.NewStyle().Foreground(lipgloss.Color("#00FF00")).Render("[ONLINE]")
 		if ok && !st.Online {
 			statusBadge = lipgloss.NewStyle().Foreground(lipgloss.Color("#FF3333")).Render("[OFFLINE]")
+		} else if ok && st.IsAhead {
+			statusBadge = lipgloss.NewStyle().Foreground(lipgloss.Color("#00FFFF")).Render("[AHEAD]")
 		}
 		hostLabel := h.Name
 		if ok && st.DisplayName != "" {
@@ -2216,7 +2306,57 @@ func (m *Model) View() string {
 		sb.WriteString("\n")
 	}
 
-	sb.WriteString(helpStyle.Render("↑/↓: navigate | Enter/a: attach | t: new tab | s: spawn | c: resume cmd | N: new | M: move | H: hooks | R: remote | r: restart | k: kill | d: delete | o: code | V: docs | q: quit"))
+	if m.showingUpdateModal {
+		var updateBuilder strings.Builder
+		updateBuilder.WriteString("⚡ ACKBAR RELEASE & UPDATE MANAGER\n\n")
+		updateBuilder.WriteString(fmt.Sprintf("Installed Version: %s\n", lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#00FFFF")).Render("v"+version.Version)))
+		if m.latestVersion != "" {
+			if m.updateAvailable {
+				updateBuilder.WriteString(fmt.Sprintf("Latest Version:    %s\n", lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#00FF00")).Render("v"+m.latestVersion)))
+			} else {
+				updateBuilder.WriteString(fmt.Sprintf("Latest Version:    %s %s\n", lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#00FF00")).Render("v"+m.latestVersion), lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Render("(Up to date)")))
+			}
+		} else {
+			updateBuilder.WriteString("Checking GitHub for the latest release...\n")
+		}
+
+		if m.releaseURL != "" {
+			updateBuilder.WriteString(fmt.Sprintf("Release Page:      %s\n", lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Render(m.releaseURL)))
+		}
+
+		if m.releaseChangelog != "" {
+			updateBuilder.WriteString("\nChangelog Summary:\n")
+			lines := strings.Split(m.releaseChangelog, "\n")
+			maxLines := 6
+			if len(lines) < maxLines {
+				maxLines = len(lines)
+			}
+			for i := 0; i < maxLines; i++ {
+				l := strings.TrimSpace(lines[i])
+				if l != "" {
+					updateBuilder.WriteString(fmt.Sprintf("  • %s\n", l))
+				}
+			}
+		}
+
+		if m.updateAvailable {
+			updateBuilder.WriteString("\n[Enter] Upgrade Now (`ackbar update`) | [esc/q] Dismiss")
+		} else {
+			updateBuilder.WriteString("\n[Enter] Force Reinstall (`ackbar update`) | [esc/q] Dismiss")
+		}
+
+		updateBox := lipgloss.NewStyle().
+			Border(lipgloss.DoubleBorder()).
+			BorderForeground(lipgloss.Color("#FFCC00")).
+			Padding(1, 2).
+			MarginTop(1).
+			Render(updateBuilder.String())
+		sb.WriteString("\n")
+		sb.WriteString(updateBox)
+		sb.WriteString("\n")
+	}
+
+	sb.WriteString(helpStyle.Render("↑/↓: navigate | Enter/a: attach | t: new tab | s: spawn | c: resume cmd | N: new | M: move | H: hooks | R: remote | u: update | r: restart | k: kill | d: delete | o: code | V: docs | q: quit"))
 
 	return sb.String()
 }
