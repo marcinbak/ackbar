@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"text/tabwriter"
@@ -31,6 +32,16 @@ type Config struct {
 }
 
 func main() {
+	if len(os.Args) > 1 && (os.Args[1] == "update" || os.Args[1] == "upgrade") {
+		runUpdateCmd(os.Args[2:])
+		os.Exit(0)
+	}
+
+	if len(os.Args) > 1 && os.Args[1] == "check-update" {
+		runCheckUpdateCmd(os.Args[2:])
+		os.Exit(0)
+	}
+
 	if len(os.Args) > 1 && os.Args[1] == "mcp" {
 		runMCPCmd(os.Args[2:])
 		os.Exit(0)
@@ -690,4 +701,108 @@ func runAgentCmd(args []string) {
 		fmt.Println("Usage: ackbar agent [status|setup]")
 		os.Exit(1)
 	}
+}
+
+func runCheckUpdateCmd(args []string) {
+	fmt.Printf("⚓ Checking GitHub for latest Ackbar release...\n")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	info, err := version.CheckLatestRelease(ctx, true)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌ Failed to check for updates: %v\n", err)
+		os.Exit(1)
+	}
+
+	installType, exePath := version.DetectInstallType()
+
+	fmt.Printf("\n📦 Ackbar Version Status:\n")
+	fmt.Printf("  • Installed Version: v%s\n", version.Version)
+	fmt.Printf("  • Latest Release:    v%s\n", info.Version)
+	fmt.Printf("  • Install Method:    %s (%s)\n", strings.Title(installType), exePath)
+	if !info.PublishedAt.IsZero() {
+		fmt.Printf("  • Published:         %s\n", info.PublishedAt.Format("2006-01-02 15:04:05 MST"))
+	}
+	if info.ReleaseURL != "" {
+		fmt.Printf("  • Release Notes:     %s\n", info.ReleaseURL)
+	}
+
+	fmt.Println()
+	if info.IsNewer {
+		fmt.Printf("⚡ A newer version of Ackbar is available (v%s -> v%s)!\n", version.Version, info.Version)
+		if installType == "homebrew" {
+			fmt.Printf("👉 Run 'brew upgrade ackbar' or 'ackbar update' to upgrade.\n")
+		} else {
+			fmt.Printf("👉 Run 'ackbar update' to download and install the prebuilt binaries.\n")
+		}
+		os.Exit(0)
+	}
+
+	fmt.Printf("✅ You are running the latest version of Ackbar!\n")
+}
+
+func runUpdateCmd(args []string) {
+	force := false
+	for _, a := range args {
+		if a == "--force" || a == "-f" {
+			force = true
+		}
+	}
+
+	fmt.Printf("🔍 Checking for Ackbar updates...\n")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	info, err := version.CheckLatestRelease(ctx, true)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌ Failed to query GitHub releases: %v\n", err)
+		os.Exit(1)
+	}
+
+	installType, exePath := version.DetectInstallType()
+
+	if !info.IsNewer && !force {
+		fmt.Printf("✅ Ackbar is already up to date (v%s).\n", version.Version)
+		fmt.Printf("Use 'ackbar update --force' to re-install the latest release.\n")
+		return
+	}
+
+	if info.IsNewer {
+		fmt.Printf("⚡ New version available: v%s (current: v%s)\n", info.Version, version.Version)
+	} else {
+		fmt.Printf("⚡ Re-installing latest release: v%s\n", info.Version)
+	}
+
+	if installType == "homebrew" {
+		fmt.Printf("🍺 Detected Homebrew installation (%s). Upgrading via Homebrew...\n\n", exePath)
+		res, err := version.RunHomebrewUpgrade(ctx)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "❌ Homebrew upgrade failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println(res.Message)
+		fmt.Printf("\n✅ Homebrew upgrade complete!\n")
+		return
+	}
+
+	fmt.Printf("📦 Standalone install detected. Downloading prebuilt release for %s/%s...\n", runtime.GOOS, runtime.GOARCH)
+	if info.AssetURL != "" {
+		fmt.Printf("⬇️  Asset: %s\n", info.AssetName)
+	}
+
+	targetDir := ""
+	if exePath != "" {
+		targetDir = filepath.Dir(exePath)
+	}
+	res, err := version.DownloadAndInstall(ctx, info, targetDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌ Update installation failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("✅ %s\n", res.Message)
+	if len(res.UpdatedBinaries) > 0 {
+		fmt.Printf("🚀 Updated binaries: %s\n", strings.Join(res.UpdatedBinaries, ", "))
+	}
+	fmt.Printf("🎉 Successfully upgraded Ackbar to v%s!\n", info.Version)
 }

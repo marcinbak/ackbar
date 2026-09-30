@@ -304,6 +304,7 @@ func (s *Server) Mux() http.Handler {
 	mux.HandleFunc("/v1/files/content", s.handleFileContent)
 	mux.HandleFunc("/v1/files/open", s.handleFileOpen)
 	mux.HandleFunc("/v1/version", s.handleVersion)
+	mux.HandleFunc("/v1/update", s.handleUpdate)
 	mux.HandleFunc("/v1/settings", s.handleSettings)
 	mux.HandleFunc("/v1/uploads", s.handleUpload)
 	mux.HandleFunc("/v1/shutdown", s.handleShutdown)
@@ -4891,11 +4892,61 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]string{
+	resp := map[string]interface{}{
 		"version":      version.Version,
 		"host":         s.HostName(),
 		"display_name": s.DisplayName(),
-	})
+	}
+
+	info, err := version.CheckLatestRelease(r.Context(), false)
+	if err == nil && info != nil {
+		resp["latest_version"] = info.Version
+		resp["update_available"] = info.IsNewer
+		resp["release_url"] = info.ReleaseURL
+		resp["install_type"] = info.InstallType
+		resp["is_homebrew"] = info.IsHomebrew
+	}
+
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		force := r.URL.Query().Get("force") == "true"
+		info, err := version.CheckLatestRelease(r.Context(), force)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Failed to check for updates: %v", err), http.StatusBadGateway)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(info)
+
+	case http.MethodPost:
+		info, err := version.CheckLatestRelease(r.Context(), true)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Failed to query latest release: %v", err), http.StatusBadGateway)
+			return
+		}
+
+		installType, _ := version.DetectInstallType()
+		var res *version.UpdateResult
+		if installType == "homebrew" {
+			res, err = version.RunHomebrewUpgrade(r.Context())
+		} else {
+			res, err = version.DownloadAndInstall(r.Context(), info, "")
+		}
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Update failed: %v", err), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(res)
+
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
 }
 
 func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {

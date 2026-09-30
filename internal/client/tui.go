@@ -140,6 +140,20 @@ type Model struct {
 	discoveryHostIdx      int
 	visibleRows           []TreeRow
 	spinnerFrame          int
+	updateInfo            *version.ReleaseInfo
+	showUpdateModal       bool
+	updateProgress        string
+	updateRunning         bool
+}
+
+type updateCheckMsg struct {
+	info *version.ReleaseInfo
+	err  error
+}
+
+type updateResultMsg struct {
+	res *version.UpdateResult
+	err error
 }
 
 type spinnerTickMsg time.Time
@@ -182,7 +196,14 @@ func (m *Model) Init() tea.Cmd {
 		return sessionUpdateMsg(<-m.eventChan)
 	}
 
-	return tea.Batch(m.clearErrorCmd(), fetchCmd, m.fetchDiscoveryCmd(), m.fetchNodesCmd(), waitForEvents, m.spinnerTickCmd())
+	checkUpdateCmd := func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		info, err := version.CheckLatestRelease(ctx, false)
+		return updateCheckMsg{info: info, err: err}
+	}
+
+	return tea.Batch(m.clearErrorCmd(), fetchCmd, m.fetchDiscoveryCmd(), m.fetchNodesCmd(), waitForEvents, m.spinnerTickCmd(), checkUpdateCmd)
 }
 
 func (m *Model) clearErrorCmd() tea.Cmd {
@@ -241,6 +262,21 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading = false
 		m.discoveryResults = msg
 
+	case updateCheckMsg:
+		if msg.err == nil && msg.info != nil {
+			m.updateInfo = msg.info
+		}
+		return m, nil
+
+	case updateResultMsg:
+		m.updateRunning = false
+		if msg.err != nil {
+			m.updateProgress = fmt.Sprintf("❌ Update failed: %v", msg.err)
+		} else if msg.res != nil {
+			m.updateProgress = fmt.Sprintf("✅ %s", msg.res.Message)
+		}
+		return m, nil
+
 	case errorMsg:
 		m.loading = false
 		if string(msg) != "" {
@@ -252,6 +288,33 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		if m.errMsg != "" {
 			m.errMsg = ""
+			return m, nil
+		}
+		if m.showUpdateModal {
+			switch msg.String() {
+			case "esc", "q":
+				if !m.updateRunning {
+					m.showUpdateModal = false
+					m.updateProgress = ""
+				}
+				return m, nil
+			case "enter":
+				if !m.updateRunning && m.updateInfo != nil {
+					m.updateRunning = true
+					m.updateProgress = "⏳ Running Ackbar update..."
+					return m, func() tea.Msg {
+						ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+						defer cancel()
+						if m.updateInfo.IsHomebrew {
+							res, err := version.RunHomebrewUpgrade(ctx)
+							return updateResultMsg{res: res, err: err}
+						}
+						res, err := version.DownloadAndInstall(ctx, m.updateInfo, "")
+						return updateResultMsg{res: res, err: err}
+					}
+				}
+				return m, nil
+			}
 			return m, nil
 		}
 		if m.showDiscovery {
@@ -673,6 +736,19 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.loading = true
 				return m, m.fetchDocsCmd(row.Session)
 			}
+		case "u", "U":
+			m.showUpdateModal = true
+			m.updateProgress = ""
+			if m.updateInfo == nil {
+				m.loading = true
+				return m, func() tea.Msg {
+					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer cancel()
+					info, err := version.CheckLatestRelease(ctx, true)
+					return updateCheckMsg{info: info, err: err}
+				}
+			}
+			return m, nil
 		case "H":
 			m.showDiscovery = true
 			m.loading = true
@@ -1778,6 +1854,9 @@ func (m *Model) View() string {
 
 	// Header block
 	headerText := fmt.Sprintf("⚓ ACKBAR SESSION TACTICAL DISPLAY [v%s]", version.Version)
+	if m.updateInfo != nil && m.updateInfo.IsNewer {
+		headerText += " " + lipgloss.NewStyle().Foreground(lipgloss.Color("#FFCC00")).Bold(true).Render(fmt.Sprintf("⚡ UPDATE: v%s ('u')", m.updateInfo.Version))
+	}
 	if m.archivedView {
 		headerText += " [ARCHIVED VIEW]"
 	}
@@ -1808,7 +1887,14 @@ func (m *Model) View() string {
 		} else if h.DisplayName != "" {
 			hostLabel = fmt.Sprintf("%s (%s)", h.DisplayName, h.Name)
 		}
-		machineSummaries = append(machineSummaries, fmt.Sprintf("%s%s %s (%s)", hostLabel, verText, statusBadge, pDir))
+
+		aheadBadge := ""
+		if ok && st.Ahead {
+			aheadBadge = " " + lipgloss.NewStyle().Foreground(lipgloss.Color("#00FFFF")).Bold(true).Render("[AHEAD]")
+		} else if ok && st.Outdated {
+			aheadBadge = " " + lipgloss.NewStyle().Foreground(lipgloss.Color("#FFA500")).Bold(true).Render("[OUTDATED]")
+		}
+		machineSummaries = append(machineSummaries, fmt.Sprintf("%s%s %s%s (%s)", hostLabel, verText, statusBadge, aheadBadge, pDir))
 	}
 	if len(machineSummaries) > 0 {
 		summaryLine := lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Render(fmt.Sprintf("💻 Connected Machines: %s", strings.Join(machineSummaries, " | ")))
@@ -2216,7 +2302,78 @@ func (m *Model) View() string {
 		sb.WriteString("\n")
 	}
 
-	sb.WriteString(helpStyle.Render("↑/↓: navigate | Enter/a: attach | t: new tab | s: spawn | c: resume cmd | N: new | M: move | H: hooks | R: remote | r: restart | k: kill | d: delete | o: code | V: docs | q: quit"))
+	if m.showUpdateModal {
+		var updateBuilder strings.Builder
+		updateBuilder.WriteString("⚡ ACKBAR UPDATE & VERSION CONTROL\n\n")
+
+		curVer := version.Version
+		latestVer := "checking..."
+		statusLine := "Checking GitHub for updates..."
+		methodStr := "Prebuilt Binary (Direct Download -> ~/.local/bin)"
+		releaseURL := ""
+
+		if m.updateInfo != nil {
+			latestVer = m.updateInfo.Version
+			if m.updateInfo.IsHomebrew {
+				methodStr = "Homebrew (brew upgrade ackbar)"
+			}
+			releaseURL = m.updateInfo.ReleaseURL
+			if m.updateInfo.IsNewer {
+				statusLine = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFCC00")).Bold(true).Render(fmt.Sprintf("✨ Update Available: v%s ➔ v%s", curVer, latestVer))
+			} else {
+				statusLine = lipgloss.NewStyle().Foreground(lipgloss.Color("#00FF00")).Render(fmt.Sprintf("✅ You are running the latest version (v%s)", curVer))
+			}
+		}
+
+		updateBuilder.WriteString(fmt.Sprintf("Installed Version: v%s\n", curVer))
+		updateBuilder.WriteString(fmt.Sprintf("Latest Release:    v%s\n", latestVer))
+		updateBuilder.WriteString(fmt.Sprintf("Install Method:    %s\n\n", methodStr))
+		updateBuilder.WriteString(fmt.Sprintf("%s\n\n", statusLine))
+
+		if m.updateInfo != nil && m.updateInfo.Changelog != "" {
+			lines := strings.Split(m.updateInfo.Changelog, "\n")
+			if len(lines) > 6 {
+				lines = lines[:6]
+			}
+			updateBuilder.WriteString("Release Highlights:\n")
+			for _, l := range lines {
+				if strings.TrimSpace(l) != "" {
+					updateBuilder.WriteString(fmt.Sprintf("  %s\n", l))
+				}
+			}
+			updateBuilder.WriteString("\n")
+		}
+
+		if releaseURL != "" {
+			updateBuilder.WriteString(fmt.Sprintf("Notes: %s\n\n", releaseURL))
+		}
+
+		if m.updateProgress != "" {
+			updateBuilder.WriteString(fmt.Sprintf("%s\n\n", m.updateProgress))
+		}
+
+		if m.updateRunning {
+			updateBuilder.WriteString("⏳ Please wait, update in progress...\n")
+		} else if m.updateInfo != nil && m.updateInfo.IsNewer {
+			actionText := "[Enter] Run Update Now  |  [esc/q] Dismiss"
+			updateBuilder.WriteString(lipgloss.NewStyle().Bold(true).Render(actionText))
+		} else {
+			actionText := "[Enter] Force Re-install  |  [esc/q] Dismiss"
+			updateBuilder.WriteString(actionText)
+		}
+
+		updateBox := lipgloss.NewStyle().
+			Border(lipgloss.DoubleBorder()).
+			BorderForeground(lipgloss.Color("#FFCC00")).
+			Padding(1, 2).
+			Render(updateBuilder.String())
+
+		sb.WriteString("\n")
+		sb.WriteString(updateBox)
+		sb.WriteString("\n")
+	}
+
+	sb.WriteString(helpStyle.Render("↑/↓: navigate | Enter/a: attach | t: new tab | s: spawn | c: resume cmd | N: new | M: move | H: hooks | R: remote | r: restart | k: kill | d: delete | o: code | V: docs | u: update | q: quit"))
 
 	return sb.String()
 }

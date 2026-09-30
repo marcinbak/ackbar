@@ -11,7 +11,7 @@ import {
 } from './utils.js';
 import { renderTree, getSessionTimestamp, sortSessionsByInteraction } from './tree.js';
 import { updateOpenTabsState } from './tabs.js';
-import { showModal, hideModal, showHostSummaryModal } from './modals.js';
+import { showModal, hideModal, showHostSummaryModal, showUpdateModal } from './modals.js';
 
 // Fetch Providers
 async function fetchProviders() {
@@ -33,6 +33,23 @@ async function fetchVersion() {
       const data = await res.json();
       state.version = data.version || 'unknown';
       if (el.appVersion) el.appVersion.textContent = `v${state.version}`;
+
+      if (data.update_available && data.latest_version) {
+        state.updateAvailable = true;
+        state.latestVersion = data.latest_version;
+        state.releaseUrl = data.release_url;
+        const updateBadge = document.getElementById('updateBadge');
+        if (updateBadge) {
+          updateBadge.textContent = `⚡ Update: v${data.latest_version}`;
+          updateBadge.style.display = 'inline-block';
+          updateBadge.onclick = () => {
+            if (typeof showUpdateModal === 'function') {
+              showUpdateModal(data);
+            }
+          };
+        }
+      }
+
       if (data.host) {
         state.selfHost = {
           name: data.host,
