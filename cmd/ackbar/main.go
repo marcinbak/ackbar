@@ -46,6 +46,11 @@ func main() {
 		os.Exit(0)
 	}
 
+	if len(os.Args) > 1 && (os.Args[1] == "update" || os.Args[1] == "upgrade") {
+		runUpdateCmd(os.Args[2:])
+		os.Exit(0)
+	}
+
 	var argsForFlag []string
 	shouldSetup := false
 	isVersionCmd := false
@@ -241,7 +246,7 @@ func ensureDaemonRunning() {
 		if err := json.NewDecoder(resp.Body).Decode(&verRes); err == nil {
 			resp.Body.Close()
 			runningVer := verRes["version"]
-			if runningVer == version.Version {
+			if runningVer == version.Version || !version.IsNewer(version.Version, runningVer) {
 				return
 			}
 			fmt.Printf("🔄 Outdated daemon detected (running v%s, client v%s). Restarting daemon...\n", runningVer, version.Version)
@@ -277,7 +282,7 @@ func ensureDaemonRunning() {
 			var verRes map[string]string
 			if err := json.NewDecoder(resp.Body).Decode(&verRes); err == nil {
 				resp.Body.Close()
-				if verRes["version"] == version.Version {
+				if verRes["version"] != "" && !version.IsNewer(version.Version, verRes["version"]) {
 					return
 				}
 			} else {
@@ -688,6 +693,40 @@ func runAgentCmd(args []string) {
 	default:
 		fmt.Printf("Unknown agent command: %s\n", subcmd)
 		fmt.Println("Usage: ackbar agent [status|setup]")
+		os.Exit(1)
+	}
+}
+
+func runUpdateCmd(args []string) {
+	fs := flag.NewFlagSet("update", flag.ExitOnError)
+	checkOnly := fs.Bool("check", false, "Check for newer version without applying update")
+	force := fs.Bool("force", false, "Force re-download and re-install even if up to date")
+	_ = fs.Parse(args)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	if *checkOnly {
+		fmt.Printf("🔍 Checking for Ackbar updates on GitHub...\n")
+		res, err := version.CheckLatestRelease(ctx, true)
+		if err != nil && res == nil {
+			fmt.Printf("❌ Failed to check for updates: %v\n", err)
+			os.Exit(1)
+		}
+		if res.UpdateAvailable {
+			fmt.Printf("⚡ New release available: v%s (currently installed: v%s)\n", res.LatestVersion, version.Version)
+			if res.ReleaseInfo != nil && res.ReleaseInfo.ReleaseURL != "" {
+				fmt.Printf("   Release details: %s\n", res.ReleaseInfo.ReleaseURL)
+			}
+			fmt.Println("   Run 'ackbar update' to upgrade.")
+		} else {
+			fmt.Printf("✅ Ackbar is up to date (v%s).\n", version.Version)
+		}
+		return
+	}
+
+	if err := version.RunUpdate(ctx, *force, os.Stdout); err != nil {
+		fmt.Printf("❌ Update failed: %v\n", err)
 		os.Exit(1)
 	}
 }

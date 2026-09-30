@@ -222,9 +222,9 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		// Allow healthz, version, static assets, and CORS preflight OPTIONS without token
+		// Allow healthz, version, update, static assets, and CORS preflight OPTIONS without token
 		path := r.URL.Path
-		if r.Method == http.MethodOptions || path == "/healthz" || path == "/v1/version" {
+		if r.Method == http.MethodOptions || path == "/healthz" || path == "/v1/version" || path == "/v1/update" {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -304,6 +304,8 @@ func (s *Server) Mux() http.Handler {
 	mux.HandleFunc("/v1/files/content", s.handleFileContent)
 	mux.HandleFunc("/v1/files/open", s.handleFileOpen)
 	mux.HandleFunc("/v1/version", s.handleVersion)
+	mux.HandleFunc("/v1/update", s.handleUpdate)
+	mux.HandleFunc("/v1/update/check", s.handleUpdateCheck)
 	mux.HandleFunc("/v1/settings", s.handleSettings)
 	mux.HandleFunc("/v1/uploads", s.handleUpload)
 	mux.HandleFunc("/v1/shutdown", s.handleShutdown)
@@ -4891,11 +4893,49 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]string{
+	resp := map[string]interface{}{
 		"version":      version.Version,
 		"host":         s.HostName(),
 		"display_name": s.DisplayName(),
-	})
+	}
+	if updateRes := version.GetCachedRelease(); updateRes != nil {
+		resp["update_available"] = updateRes.UpdateAvailable
+		resp["latest_version"] = updateRes.LatestVersion
+		if updateRes.ReleaseInfo != nil {
+			resp["release_url"] = updateRes.ReleaseInfo.ReleaseURL
+			resp["published_at"] = updateRes.ReleaseInfo.PublishedAt
+		}
+	}
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	force := r.URL.Query().Get("force") == "true"
+	res, err := version.CheckLatestRelease(r.Context(), force)
+	if err != nil && res == nil {
+		http.Error(w, fmt.Sprintf("Failed to check for updates: %v", err), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(res)
+}
+
+func (s *Server) handleUpdateCheck(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost && r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	res, err := version.CheckLatestRelease(r.Context(), true)
+	if err != nil && res == nil {
+		http.Error(w, fmt.Sprintf("Failed to check for updates: %v", err), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(res)
 }
 
 func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
@@ -4991,10 +5031,24 @@ func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) StartBackgroundLoop(ctx context.Context) {
 	go func() {
-		// Run initial scan, host tunnel check, and dev-workflow run ingestion asynchronously on startup
+		// Run initial scan, host tunnel check, dev-workflow run ingestion, and update discovery asynchronously on startup
 		go s.scanObservedSessions(ctx)
 		go s.ensureHostTunnels(ctx)
 		go s.IngestDevWorkflowRuns()
+		go func() {
+			time.Sleep(5 * time.Second)
+			_, _ = version.CheckLatestRelease(ctx, false)
+			updateTicker := time.NewTicker(1 * time.Hour)
+			defer updateTicker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-updateTicker.C:
+					_, _ = version.CheckLatestRelease(ctx, true)
+				}
+			}
+		}()
 
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()

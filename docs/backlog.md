@@ -45,6 +45,12 @@
 
 ## ✅ Completed Milestones
 
+* [x] **Release Discovery & Seamless Updates across Fleet:**
+  * Chronological date-based and semver version comparison (`Compare`, `IsNewer`) with upstream GitHub release checker and 1-hour caching.
+  * Eliminated remote host downgrade bug in `api.go` and `cmd/ackbar/main.go` using strict `version.IsNewer` checks.
+  * Unified `ackbar update` / `ackbar upgrade` CLI supporting Homebrew, prebuilt standalone binaries, SHA256 checksum verification, and seamless daemon restarting via `launchctl` (macOS) / `systemctl --user` (Linux).
+  * Interactive Release & Update Manager in TUI (`u` keybind) with header alert, changelog summary, and one-key upgrade.
+  * Header update badge and release details modal in Web Dashboard with remote host ahead/outdated status.
 * [x] **Release Automation & Homebrew Tap:**
   * GoReleaser v2 configuration (`.goreleaser.yaml`) cross-compiling for macOS (`arm64`, `amd64`) and Linux (`amd64`, `arm64`).
   * Automated Homebrew tap formula generation (`marcinbak/homebrew-ackbar`) with `brew services` daemon management.

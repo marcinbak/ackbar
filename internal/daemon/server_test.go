@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"ackbar/internal/tmux"
+	"ackbar/internal/version"
 )
 
 type MockProvider struct{}
@@ -797,6 +798,8 @@ func (m *mockDynamicProvider) ParseHook(eventName string, payload []byte) (*Even
 }
 
 func TestInPlaceClearSessionRotation_AdoptsTmuxAndIncrementsTurn(t *testing.T) {
+	t.Setenv("ACKBAR_HOST", "")
+	t.Setenv("ACKBAR_DISPLAY_NAME", "")
 	dbFile := "./test_clear_rotation.db"
 	defer os.Remove(dbFile)
 
@@ -3551,6 +3554,8 @@ func TestAccountsAPI(t *testing.T) {
 }
 
 func TestHostIdentity_VersionAndSettings(t *testing.T) {
+	t.Setenv("ACKBAR_HOST", "")
+	t.Setenv("ACKBAR_DISPLAY_NAME", "")
 	dbPath := filepath.Join(t.TempDir(), "test_host_identity.db")
 	db, err := InitDB(dbPath)
 	if err != nil {
@@ -4168,5 +4173,48 @@ func TestAntigravitySession_RenameAnnotationUpgradesName(t *testing.T) {
 	reChecked, _ := db.GetSession(sessID)
 	if reChecked.Name != "My Custom Overridden Title" {
 		t.Errorf("Expected CustomTitle to be preserved, got %q", reChecked.Name)
+	}
+}
+
+func TestServer_UpdateEndpoints(t *testing.T) {
+	t.Setenv("ACKBAR_HOST", "")
+	t.Setenv("ACKBAR_DISPLAY_NAME", "")
+	dbPath := filepath.Join(t.TempDir(), "test_update.db")
+	db, err := InitDB(dbPath)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := NewServer(db)
+
+	// 1. GET /v1/version
+	reqVer := httptest.NewRequest(http.MethodGet, "/v1/version", nil)
+	wVer := httptest.NewRecorder()
+	server.handleVersion(wVer, reqVer)
+	if wVer.Code != http.StatusOK {
+		t.Fatalf("GET /v1/version failed: %d", wVer.Code)
+	}
+	var verResp map[string]interface{}
+	if err := json.Unmarshal(wVer.Body.Bytes(), &verResp); err != nil {
+		t.Fatalf("Failed to parse /v1/version: %v", err)
+	}
+	if verResp["version"] != version.Version {
+		t.Errorf("Expected version %s, got %v", version.Version, verResp["version"])
+	}
+
+	// 2. GET /v1/update
+	reqUp := httptest.NewRequest(http.MethodGet, "/v1/update", nil)
+	wUp := httptest.NewRecorder()
+	server.handleUpdate(wUp, reqUp)
+	if wUp.Code != http.StatusOK {
+		t.Fatalf("GET /v1/update failed: %d", wUp.Code)
+	}
+	var upResp map[string]interface{}
+	if err := json.Unmarshal(wUp.Body.Bytes(), &upResp); err != nil {
+		t.Fatalf("Failed to parse /v1/update: %v", err)
+	}
+	if upResp["current_version"] != version.Version {
+		t.Errorf("Expected current_version %s, got %v", version.Version, upResp["current_version"])
 	}
 }
