@@ -4923,19 +4923,7 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(info)
 
 	case http.MethodPost:
-		info, err := version.CheckLatestRelease(r.Context(), true)
-		if err != nil {
-			http.Error(w, fmt.Sprintf("Failed to query latest release: %v", err), http.StatusBadGateway)
-			return
-		}
-
-		installType, _ := version.DetectInstallType()
-		var res *version.UpdateResult
-		if installType == "homebrew" {
-			res, err = version.RunHomebrewUpgrade(r.Context())
-		} else {
-			res, err = version.DownloadAndInstall(r.Context(), info, "")
-		}
+		res, err := version.UpdateToLatest(r.Context(), "")
 		if err != nil {
 			http.Error(w, fmt.Sprintf("Update failed: %v", err), http.StatusInternalServerError)
 			return

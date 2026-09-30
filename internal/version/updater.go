@@ -2,8 +2,12 @@ package version
 
 import (
 	"archive/tar"
+	"bufio"
+	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
@@ -24,6 +28,15 @@ type UpdateResult struct {
 	TargetDir       string   `json:"target_dir,omitempty"`
 	UpdatedBinaries []string `json:"updated_binaries,omitempty"`
 	Message         string   `json:"message"`
+}
+
+// UpdateToLatest checks the installation type and runs either Homebrew upgrade or prebuilt binary download.
+func UpdateToLatest(ctx context.Context, destDir string) (*UpdateResult, error) {
+	installType, _ := DetectInstallType()
+	if installType == "homebrew" {
+		return RunHomebrewUpgrade(ctx)
+	}
+	return DownloadAndInstall(ctx, nil, destDir)
 }
 
 // RunHomebrewUpgrade upgrades Ackbar via Homebrew.
@@ -98,14 +111,24 @@ func DownloadAndInstall(ctx context.Context, release *ReleaseInfo, destDir strin
 		return nil, fmt.Errorf("download failed with HTTP %d from %s", resp.StatusCode, release.AssetURL)
 	}
 
-	extracted, err := ExtractTarGz(resp.Body, destDir, TargetBinaries)
+	archiveBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read release package stream: %w", err)
+	}
+
+	// Verify SHA-256 against release checksums.txt if available
+	if err := verifyArchiveChecksum(ctx, release, archiveBytes); err != nil {
+		return nil, fmt.Errorf("security verification failed: %w", err)
+	}
+
+	extracted, err := ExtractTarGz(bytes.NewReader(archiveBytes), destDir, TargetBinaries)
 	if err != nil {
 		return nil, fmt.Errorf("failed to unpack and install binaries: %w", err)
 	}
 
-	// Gracefully shutdown local daemon if running so next invocation or service manager reloads new binary
-	shutdownClient := &http.Client{Timeout: 1 * time.Second}
-	_, _ = shutdownClient.Post("http://127.0.0.1:7777/v1/shutdown", "application/json", nil)
+	if len(extracted) == 0 {
+		return nil, fmt.Errorf("no target binaries found in release archive for %s", release.Version)
+	}
 
 	return &UpdateResult{
 		PreviousVersion: Version,
@@ -115,6 +138,51 @@ func DownloadAndInstall(ctx context.Context, release *ReleaseInfo, destDir strin
 		UpdatedBinaries: extracted,
 		Message:         fmt.Sprintf("Installed v%s (%d binaries) into %s", release.Version, len(extracted), destDir),
 	}, nil
+}
+
+// verifyArchiveChecksum checks the SHA-256 hash of archiveBytes against release.ChecksumURL.
+func verifyArchiveChecksum(ctx context.Context, release *ReleaseInfo, archiveBytes []byte) error {
+	if release.ChecksumURL == "" {
+		return nil
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, release.ChecksumURL, nil)
+	if err != nil {
+		return nil
+	}
+	req.Header.Set("User-Agent", fmt.Sprintf("ackbar/%s", Version))
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		if resp != nil {
+			resp.Body.Close()
+		}
+		return nil
+	}
+	defer resp.Body.Close()
+
+	hasher := sha256.New()
+	hasher.Write(archiveBytes)
+	actualHash := hex.EncodeToString(hasher.Sum(nil))
+
+	scanner := bufio.NewScanner(resp.Body)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		parts := strings.Fields(line)
+		if len(parts) >= 2 {
+			expectedHash := parts[0]
+			assetName := strings.TrimPrefix(parts[1], "*")
+			if assetName == release.AssetName {
+				if !strings.EqualFold(expectedHash, actualHash) {
+					return fmt.Errorf("checksum mismatch for %s: expected %s, got %s", release.AssetName, expectedHash, actualHash)
+				}
+				return nil
+			}
+		}
+	}
+
+	return nil
 }
 
 // ExtractTarGz extracts specified binaryNames from a gzipped tar archive into destDir atomically.
@@ -142,21 +210,25 @@ func ExtractTarGz(r io.Reader, destDir string, binaryNames []string) ([]string, 
 			return extracted, fmt.Errorf("tar read error: %w", err)
 		}
 
+		// Skip non-regular files to prevent symlink or directory replacement attacks
+		if header.Typeflag != tar.TypeReg && header.Typeflag != tar.TypeRegA {
+			continue
+		}
+
 		baseName := filepath.Base(header.Name)
 		if !targetMap[baseName] {
 			continue
 		}
 
 		destPath := filepath.Join(destDir, baseName)
-		tempPath := fmt.Sprintf("%s.tmp-%d", destPath, time.Now().UnixNano())
-
-		outFile, err := os.OpenFile(tempPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
+		tempFile, err := os.CreateTemp(destDir, baseName+".tmp-*")
 		if err != nil {
 			return extracted, fmt.Errorf("failed to create temporary file for %s: %w", baseName, err)
 		}
+		tempPath := tempFile.Name()
 
-		_, copyErr := io.Copy(outFile, tarReader)
-		closeErr := outFile.Close()
+		_, copyErr := io.Copy(tempFile, tarReader)
+		closeErr := tempFile.Close()
 		if copyErr != nil {
 			_ = os.Remove(tempPath)
 			return extracted, fmt.Errorf("failed to write %s: %w", baseName, copyErr)

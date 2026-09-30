@@ -263,6 +263,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.discoveryResults = msg
 
 	case updateCheckMsg:
+		m.loading = false
 		if msg.err == nil && msg.info != nil {
 			m.updateInfo = msg.info
 		}
@@ -305,11 +306,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, func() tea.Msg {
 						ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 						defer cancel()
-						if m.updateInfo.IsHomebrew {
-							res, err := version.RunHomebrewUpgrade(ctx)
-							return updateResultMsg{res: res, err: err}
-						}
-						res, err := version.DownloadAndInstall(ctx, m.updateInfo, "")
+						res, err := version.UpdateToLatest(ctx, "")
 						return updateResultMsg{res: res, err: err}
 					}
 				}

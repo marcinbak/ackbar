@@ -38,6 +38,7 @@ type ReleaseInfo struct {
 	Changelog   string    `json:"changelog"`
 	AssetURL    string    `json:"asset_url"`
 	AssetName   string    `json:"asset_name"`
+	ChecksumURL string    `json:"checksum_url"`
 	IsNewer     bool      `json:"is_newer"`
 	IsHomebrew  bool      `json:"is_homebrew"`
 	InstallType string    `json:"install_type"`
@@ -175,15 +176,17 @@ func CheckLatestRelease(ctx context.Context, forceRefresh bool) (*ReleaseInfo, e
 		rawReq, rawErr := http.NewRequestWithContext(ctx, http.MethodGet, RawVersionURL, nil)
 		if rawErr == nil {
 			rawReq.Header.Set("User-Agent", fmt.Sprintf("ackbar/%s", Version))
-			if rawResp, doErr := client.Do(rawReq); doErr == nil && rawResp.StatusCode == http.StatusOK {
-				bodyBytes, _ := io.ReadAll(rawResp.Body)
-				rawResp.Body.Close()
-				rawVal := strings.TrimSpace(string(bodyBytes))
-				if rawVal != "" {
-					targetVer = CleanVersion(rawVal)
-					ghRel.TagName = "v" + targetVer
-					ghRel.HTMLURL = fmt.Sprintf("https://github.com/%s/%s/releases/tag/%s", GitHubOwner, GitHubRepo, ghRel.TagName)
-					ghRel.PublishedAt = time.Now()
+			if rawResp, doErr := client.Do(rawReq); doErr == nil {
+				defer rawResp.Body.Close()
+				if rawResp.StatusCode == http.StatusOK {
+					bodyBytes, _ := io.ReadAll(rawResp.Body)
+					rawVal := strings.TrimSpace(string(bodyBytes))
+					if rawVal != "" {
+						targetVer = CleanVersion(rawVal)
+						ghRel.TagName = "v" + targetVer
+						ghRel.HTMLURL = fmt.Sprintf("https://github.com/%s/%s/releases/tag/%s", GitHubOwner, GitHubRepo, ghRel.TagName)
+						ghRel.PublishedAt = time.Now()
+					}
 				}
 			}
 		}
@@ -196,6 +199,18 @@ func CheckLatestRelease(ctx context.Context, forceRefresh bool) (*ReleaseInfo, e
 	installType, _ := DetectInstallType()
 	isHomebrew := installType == "homebrew"
 
+	// Resolve checksums.txt asset URL
+	checksumURL := ""
+	for _, a := range ghRel.Assets {
+		if a.Name == "checksums.txt" {
+			checksumURL = a.BrowserDownloadURL
+			break
+		}
+	}
+	if checksumURL == "" {
+		checksumURL = fmt.Sprintf("https://github.com/%s/%s/releases/download/v%s/checksums.txt", GitHubOwner, GitHubRepo, targetVer)
+	}
+
 	info := &ReleaseInfo{
 		Version:     targetVer,
 		TagName:     ghRel.TagName,
@@ -205,6 +220,7 @@ func CheckLatestRelease(ctx context.Context, forceRefresh bool) (*ReleaseInfo, e
 		IsNewer:     IsNewer(targetVer, Version),
 		IsHomebrew:  isHomebrew,
 		InstallType: installType,
+		ChecksumURL: checksumURL,
 		CheckedAt:   time.Now(),
 	}
 
@@ -227,7 +243,7 @@ func resolvePlatformAsset(assets []struct {
 }, version, goos, goarch string) (string, string) {
 	expectedSuffix := fmt.Sprintf("%s_%s.tar.gz", goos, goarch)
 	for _, a := range assets {
-		if strings.HasSuffix(a.Name, expectedSuffix) {
+		if strings.HasPrefix(a.Name, "ackbar_") && strings.HasSuffix(a.Name, expectedSuffix) {
 			return a.Name, a.BrowserDownloadURL
 		}
 	}
