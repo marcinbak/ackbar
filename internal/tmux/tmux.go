@@ -62,8 +62,15 @@ func SpawnWithEnv(ctx context.Context, sessionName, cwd, command string, env map
 }
 
 // Kill terminates the tmux session with the given name.
+func exactSessionTarget(sessionName string) string {
+	if sessionName == "" || strings.HasPrefix(sessionName, "=") {
+		return sessionName
+	}
+	return "=" + sessionName
+}
+
 func Kill(ctx context.Context, sessionName string) error {
-	cmd := exec.CommandContext(ctx, "tmux", "kill-session", "-t", sessionName)
+	cmd := exec.CommandContext(ctx, "tmux", "kill-session", "-t", exactSessionTarget(sessionName))
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
@@ -75,6 +82,20 @@ func Kill(ctx context.Context, sessionName string) error {
 		return fmt.Errorf("failed to kill tmux session: %w (stderr: %s)", err, stderr.String())
 	}
 
+	return nil
+}
+
+// Rename renames an existing tmux session to newSessionName.
+func Rename(ctx context.Context, oldSessionName, newSessionName string) error {
+	if oldSessionName == "" || newSessionName == "" || oldSessionName == newSessionName {
+		return nil
+	}
+	cmd := exec.CommandContext(ctx, "tmux", "rename-session", "-t", exactSessionTarget(oldSessionName), newSessionName)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to rename tmux session %s to %s: %w (stderr: %s)", oldSessionName, newSessionName, err, stderr.String())
+	}
 	return nil
 }
 
@@ -97,7 +118,10 @@ func GetPID(ctx context.Context, sessionName string) (int, error) {
 
 // HasSession checks if a tmux session with the given name currently exists.
 func HasSession(ctx context.Context, sessionName string) bool {
-	cmd := exec.CommandContext(ctx, "tmux", "has-session", "-t", sessionName)
+	if sessionName == "" {
+		return false
+	}
+	cmd := exec.CommandContext(ctx, "tmux", "has-session", "-t", exactSessionTarget(sessionName))
 	err := cmd.Run()
 	return err == nil
 }

@@ -5662,7 +5662,8 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 					}
 				} else if agent == "antigravity" {
 					sID := findAntigravitySessionForPID(ctx, pid)
-					if sID != "" && IsUUID(sID) && sID != targetNativeID {
+					home, _ := os.UserHomeDir()
+					if sID != "" && IsUUID(sID) && sID != targetNativeID && (home == "" || !isAntigravitySubagent(home, sID)) {
 						oldSessID := fmt.Sprintf("%s:%s:%s", agent, hostName, targetNativeID)
 						realSessID := fmt.Sprintf("%s:%s:%s", agent, hostName, sID)
 
@@ -5677,6 +5678,17 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 							_ = s.db.DeleteSession(existingOld.ID)
 							delete(knownIDs, existingOld.ID)
 							delete(knownByNativeID, existingOld.NativeID)
+
+							// Synchronize tmux session name to match native conversation ID
+							newTmuxName := fmt.Sprintf("ackbar-%s-%s", agent, sID)
+							if tmuxName != "" && tmuxName != newTmuxName {
+								if rErr := tmux.Rename(ctx, tmuxName, newTmuxName); rErr == nil {
+									delete(knownByTmux, tmuxName)
+									tmuxName = newTmuxName
+								} else {
+									log.Printf("[daemon] failed to rename tmux session %s to %s: %v", tmuxName, newTmuxName, rErr)
+								}
+							}
 
 							var targetSess *Session
 							if existingReal, ok := knownIDs[realSessID]; ok {
@@ -5693,11 +5705,17 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 									}
 								}
 								existingReal.OldID = oldSessID
+								if tmuxName != "" {
+									existingReal.TmuxName = tmuxName
+								}
 								targetSess = existingReal
 							} else {
 								existingOld.ID = realSessID
 								existingOld.NativeID = sID
 								existingOld.OldID = oldSessID
+								if tmuxName != "" {
+									existingOld.TmuxName = tmuxName
+								}
 								if existingOld.CustomTitle == "" {
 									if title := ReadAntigravitySessionTitle(existingOld.Cwd, sID); title != "" && !isRawSessionName(title) {
 										existingOld.Name = title
@@ -5706,6 +5724,9 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 								knownIDs[realSessID] = existingOld
 								knownByNativeID[sID] = existingOld
 								targetSess = existingOld
+							}
+							if targetSess.TmuxName != "" {
+								knownByTmux[targetSess.TmuxName] = targetSess
 							}
 							_ = s.db.SaveSession(targetSess)
 							s.broadcast(targetSess)
@@ -5793,6 +5814,22 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 						delete(knownIDs, ghostID)
 					} else {
 						_ = s.db.DeleteSession(ghostID)
+					}
+
+					// Clean up any stale duplicate sessions in DB/memory sharing this TmuxName or PID
+					for kID, kSess := range knownIDs {
+						if kSess != nil && kID != existing.ID && s.isLocalHost(kSess.Host) {
+							if (tmuxName != "" && kSess.TmuxName == tmuxName) || (pid > 0 && kSess.PID == pid) {
+								_ = s.db.DeleteSession(kID)
+								kSess.Deleted = true
+								kSess.Activity = "Deleted"
+								s.broadcast(kSess)
+								delete(knownIDs, kID)
+								if kSess.NativeID != "" && kSess.NativeID != existing.NativeID {
+									delete(knownByNativeID, kSess.NativeID)
+								}
+							}
+						}
 					}
 					if panePID > 0 {
 						ghostPaneID := fmt.Sprintf("%s:observed:proc-%d", hostName, panePID)
@@ -6507,17 +6544,36 @@ func findAntigravitySessionForPIDWithDepth(ctx context.Context, pid int, depth i
 		return ""
 	}
 
+	home, _ := os.UserHomeDir()
+	var fallbackCandidate string
+
 	// 1. Linux: scan /proc/<pid>/fd/
 	fdDir := fmt.Sprintf("/proc/%d/fd", pid)
 	if entries, err := os.ReadDir(fdDir); err == nil {
 		for _, e := range entries {
 			link, err := os.Readlink(filepath.Join(fdDir, e.Name()))
 			if err == nil && link != "" {
-				if convID := extractConvIDFromPath(link); convID != "" {
-					return convID
+				cleanLink := filepath.ToSlash(link)
+				// Prioritize direct presence lock held by the process
+				if strings.Contains(cleanLink, "/presence/") && strings.HasSuffix(cleanLink, ".lock") {
+					if convID := extractConvIDFromPath(cleanLink); convID != "" {
+						if home == "" || !isAntigravitySubagent(home, convID) {
+							return convID
+						}
+					}
+				}
+				if fallbackCandidate == "" {
+					if convID := extractConvIDFromPath(cleanLink); convID != "" {
+						if home == "" || !isAntigravitySubagent(home, convID) {
+							fallbackCandidate = convID
+						}
+					}
 				}
 			}
 		}
+	}
+	if fallbackCandidate != "" {
+		return fallbackCandidate
 	}
 
 	// 2. Cross-platform / macOS / fallback: lsof -a -n -P -p <pid> -Fn
@@ -6532,20 +6588,38 @@ func findAntigravitySessionForPIDWithDepth(ctx context.Context, pid int, depth i
 			line = strings.TrimSpace(line)
 			if strings.HasPrefix(line, "n") {
 				path := line[1:]
-				if convID := extractConvIDFromPath(path); convID != "" {
-					return convID
+				cleanPath := filepath.ToSlash(path)
+				if strings.Contains(cleanPath, "/presence/") && strings.HasSuffix(cleanPath, ".lock") {
+					if convID := extractConvIDFromPath(cleanPath); convID != "" {
+						if home == "" || !isAntigravitySubagent(home, convID) {
+							return convID
+						}
+					}
+				}
+				if fallbackCandidate == "" {
+					if convID := extractConvIDFromPath(cleanPath); convID != "" {
+						if home == "" || !isAntigravitySubagent(home, convID) {
+							fallbackCandidate = convID
+						}
+					}
 				}
 			}
 		}
 	}
+	if fallbackCandidate != "" {
+		return fallbackCandidate
+	}
 
 	// 3. Inspect child processes if wrapper process (capped at depth 2)
+	// Only inspect children if the process itself has no conversation ID
 	pgrepCmd := exec.CommandContext(subCtx, "pgrep", "-P", strconv.Itoa(pid))
 	if pgrepOut, pErr := pgrepCmd.Output(); pErr == nil {
 		for _, cpStr := range strings.Fields(string(pgrepOut)) {
 			if cp, err := strconv.Atoi(cpStr); err == nil && cp > 0 {
 				if sID := findAntigravitySessionForPIDWithDepth(ctx, cp, depth+1); sID != "" {
-					return sID
+					if home == "" || !isAntigravitySubagent(home, sID) {
+						return sID
+					}
 				}
 			}
 		}
