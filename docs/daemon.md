@@ -63,7 +63,7 @@ Each WebSocket gets its own attach PTY running `tmux attach-session` (local) or 
 
 > **Why this matters:** every window size change delivers `SIGWINCH` to the agent. Antigravity answers each `SIGWINCH` by clearing the screen and scrollback and reprinting its whole conversation. Claude Code only repaints its live region, so redundant resizes are invisible there. Clients must therefore never resize, or send redraw keystrokes such as Ctrl+L, unless the size really changed.
 
-When several clients with different sizes are attached to one session (web, mobile, TUI), the window still resizes whenever a different client becomes the latest active one. That is inherent to `window-size latest`.
+When several clients with different sizes are attached to one session (web, mobile, TUI), the window still resizes whenever a different client becomes the latest active one. That is inherent to `window-size latest`. A client becomes "latest" through a keystroke or a real size change. Merely viewing it does not count. So after typing on mobile, switching back to an unchanged web tab keeps the mobile-sized window (cropped or letterboxed) until the first keystroke or browser resize in that tab. This is deliberate: the old behaviour forced `resize-window` on every tab activation, which caused the Antigravity replay described above.
 
 ---
 
