@@ -57,9 +57,11 @@ function setTabViewMode(tabId, mode) {
         tab.terminal.focus();
         if (tab.socket && tab.socket.readyState === WebSocket.OPEN) {
           sendTerminalResize(tab.socket, tab.terminal.cols, tab.terminal.rows);
-          // Send Ctrl+L (form feed / redraw) so tmux re-renders current screen buffer
-          tab.socket.send(new Uint8Array([0x0c]));
         }
+        // Repaint the local xterm viewport (it may have been laid out while
+        // hidden). Never send Ctrl+L to the PTY for this: it is a keystroke to
+        // the agent, which makes it clear and redraw (or replay) its screen.
+        tab.terminal.refresh(0, tab.terminal.rows - 1);
       }
     }, 50);
   } else if (targetMode === 'chat') {
