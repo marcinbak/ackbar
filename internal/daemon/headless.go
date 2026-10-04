@@ -580,6 +580,7 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 	var stderrBuf bytes.Buffer
 	cmd.Stderr = &stderrBuf
 
+	cmd.WaitDelay = 4 * time.Second
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
 		if devNull != nil {
@@ -834,6 +835,44 @@ func (h *HeadlessRunner) processStream(sessionID string, r io.Reader, optionalSe
 								ToolName:   toolName,
 								ToolOutput: toolOutput,
 								IsError:    state == "ERROR",
+							})
+						}
+
+					case "subagent":
+						role, _ := su["role"].(string)
+						taskName, _ := su["task_name"].(string)
+						subagentName := role
+						if subagentName == "" {
+							subagentName = taskName
+						}
+						if subagentName == "" {
+							subagentName = "subagent"
+						}
+
+						if state == "ACTIVE" {
+							h.Emit(sessionID, ChatStreamEvent{
+								SessionID: sessionID,
+								Type:      "tool_start",
+								ToolName:  "Task: " + subagentName,
+								ToolInput: su["description"],
+							})
+						} else if state == "DONE" || state == "ERROR" {
+							h.Emit(sessionID, ChatStreamEvent{
+								SessionID:  sessionID,
+								Type:       "tool_result",
+								ToolName:   "Task: " + subagentName,
+								ToolOutput: fmt.Sprintf("Subagent completed (%s)", state),
+								IsError:    state == "ERROR",
+							})
+						}
+
+					case "error_message":
+						if errMsg, ok := su["error"].(string); ok && errMsg != "" {
+							h.Emit(sessionID, ChatStreamEvent{
+								SessionID: sessionID,
+								Type:      "error",
+								Text:      errMsg,
+								IsError:   true,
 							})
 						}
 					}

@@ -1844,10 +1844,17 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	notify := r.Context().Done()
+	heartbeat := time.NewTicker(15 * time.Second)
+	defer heartbeat.Stop()
+
 	for {
 		select {
 		case <-notify:
 			return
+		case <-heartbeat.C:
+			// Standard SSE comment keepalive to prevent NAT / proxy / client timeout
+			_, _ = fmt.Fprintf(w, ": keepalive\n\n")
+			flusher.Flush()
 		case evt, ok := <-ch:
 			if !ok {
 				return

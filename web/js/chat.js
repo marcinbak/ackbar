@@ -1914,6 +1914,21 @@ function connectChatStream(tabObj) {
     };
     es.onerror = () => {
       disconnectChatStream(tabObj);
+      // If the tab is still active and visible, auto-heal after a brief debounce
+      if (tabObj.tabEl && tabObj.tabEl.classList.contains('active') && tabObj.viewMode === 'chat') {
+        setTimeout(async () => {
+          if (!tabObj.tabEl || !tabObj.tabEl.classList.contains('active') || tabObj.viewMode !== 'chat') return;
+          const sessMatch = state.sessions.find(s => s.id === tabObj.session.id || (tabObj.session.native_id && s.native_id === tabObj.session.native_id));
+          const currentSess = sessMatch || tabObj.session;
+          if (currentSess && (currentSess.state === 3 || currentSess.state === 2 || currentSess.state === 4)) {
+            hideInStreamActivity(tabObj);
+            resetChatComposer(tabObj);
+            loadChatTranscript(tabObj);
+          } else if (currentSess && currentSess.state === 1) {
+            connectChatStream(tabObj);
+          }
+        }, 1500);
+      }
     };
   } catch (e) {
     console.error('Failed to open EventSource:', e);
@@ -2329,10 +2344,14 @@ function handleChatStreamEvent(tabObj, evt) {
 
 function resetChatComposer(tabObj) {
   hideInStreamActivity(tabObj);
+  tabObj.activeTurnMsgEl = null;
+  tabObj.activeTurnBuffer = '';
+  tabObj.activeTurnHadTool = false;
+  tabObj.activeTurnTools = [];
+  tabObj.activeTurnThinking = '';
   if (tabObj.chatCancelBtn) tabObj.chatCancelBtn.style.display = 'none';
   if (tabObj.chatStatusBadge) tabObj.chatStatusBadge.textContent = '🟢 Ready';
   updateComposerButtonState(tabObj);
-  tabObj.activeTurnHadTool = false;
   if (tabObj.chatInputEl) tabObj.chatInputEl.focus();
 }
 
@@ -2387,6 +2406,7 @@ export {
   disconnectChatStream,
   connectChatStream,
   handleChatStreamEvent,
+  hideInStreamActivity,
   resetChatComposer,
   cancelChatTurn
 };
