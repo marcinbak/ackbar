@@ -144,13 +144,14 @@ class _NewSessionSheetState extends ConsumerState<NewSessionSheet> {
   Widget build(BuildContext context) {
     final hosts = ref.watch(hostsListProvider);
     final knownPaths = ref.watch(knownProjectPathsProvider);
-    final discoveryAsync =
-        ref.watch(hostAgentDiscoveryProvider(_selectedHost));
 
-    // Ensure selected host is valid
+    // Ensure selected host is valid before watching discovery
     if (hosts.isNotEmpty && !hosts.any((h) => h.name == _selectedHost)) {
       _selectedHost = hosts.first.name;
     }
+
+    final discoveryAsync =
+        ref.watch(hostAgentDiscoveryProvider(_selectedHost));
 
     // Determine available installed agents on _selectedHost
     List<Map<String, String>> activeAgents = _defaultAgents;
@@ -179,7 +180,8 @@ class _NewSessionSheetState extends ConsumerState<NewSessionSheet> {
     }
 
     // Auto-adjust selected agent if current selection is not installed on this host
-    if (activeAgents.isNotEmpty &&
+    if (!isDetectingAgents &&
+        activeAgents.isNotEmpty &&
         !activeAgents.any((a) => a['id'] == _selectedAgent)) {
       final nextAgent = activeAgents.any((a) => a['id'] == 'claude-code')
           ? 'claude-code'

@@ -498,13 +498,20 @@ final knownProjectPathsProvider = Provider<List<String>>((ref) {
 
 /// Fetches and caches supported agent discovery for a given host
 final hostAgentDiscoveryProvider =
-    FutureProvider.family<List<Map<String, dynamic>>, String>(
+    FutureProvider.autoDispose.family<List<Map<String, dynamic>>, String>(
         (ref, hostName) async {
   final hostConfig = ref.watch(hostsListProvider.select((hosts) {
-    final match =
-        hosts.where((h) => h.name == hostName || h.url.contains(hostName));
-    final host =
-        match.isNotEmpty ? match.first : (hosts.isNotEmpty ? hosts.first : null);
+    HostRecord? host;
+    final exactName = hosts.where((h) => h.name == hostName);
+    if (exactName.isNotEmpty) {
+      host = exactName.first;
+    } else {
+      final urlMatch =
+          hosts.where((h) => h.url == hostName || h.url.contains(hostName));
+      if (urlMatch.isNotEmpty) {
+        host = urlMatch.first;
+      }
+    }
     return (host?.url ?? 'http://127.0.0.1:7777', host?.authToken);
   }));
 
