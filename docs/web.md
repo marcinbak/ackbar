@@ -38,6 +38,7 @@ It is embedded directly into the `ackbard` Go binary and served on `http://127.0
 * Powered by `xterm.js` with `FitAddon` and `WebglAddon` (where hardware acceleration is available).
 * Attach simultaneously to multiple local and remote agent sessions.
 * Full keyboard fidelity, ANSI color rendering, mouse wheel scrolling, and window resize propagation.
+* **No redundant redraws:** `sendTerminalResize` only sends a resize when the size differs from the last one sent on that socket. Reconnects always re-send. Switching a tab from chat to terminal view repaints the xterm viewport locally (`terminal.refresh`) and never sends Ctrl+L to the agent. Each extra resize or Ctrl+L made agents such as Antigravity clear and replay their whole transcript. See [daemon PTY sizing](daemon.md#pty-terminal-sizing-v1sessionspty).
 * **Tab Right-Click Context Menu:** Right-click any tab for quick lifecycle actions:
   * **✕ Close Tab:** Closes the target tab.
   * **🗂️ Close Other Tabs:** Closes all open tabs except the selected one.

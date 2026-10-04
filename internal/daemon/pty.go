@@ -23,6 +23,46 @@ type PTYResizeMsg struct {
 	Rows int    `json:"rows"`
 }
 
+// Minimum terminal dimensions accepted from a client resize request.
+const (
+	ptyMinCols = 10
+	ptyMinRows = 4
+)
+
+// ptyResizeTracker deduplicates client resize requests for one attach PTY.
+//
+// Every TIOCSWINSZ on the attach PTY makes the tmux client report its size,
+// and any resulting window size change delivers SIGWINCH to the agent. Some
+// agents (e.g. Antigravity) answer each SIGWINCH by clearing the screen and
+// reprinting their entire transcript, so redundant resizes must never reach
+// the PTY. Not safe for concurrent use; owned by the WS->PTY goroutine.
+type ptyResizeTracker struct {
+	cols, rows int
+	setsize    func(cols, rows int) error
+}
+
+// newPTYResizeTracker returns a tracker seeded with the size the PTY was
+// started with, so a first resize message repeating it is a no-op.
+func newPTYResizeTracker(cols, rows int, setsize func(cols, rows int) error) *ptyResizeTracker {
+	return &ptyResizeTracker{cols: cols, rows: rows, setsize: setsize}
+}
+
+// Apply resizes the PTY only when the requested size is valid and differs
+// from the last applied size. It reports whether setsize was called.
+func (t *ptyResizeTracker) Apply(cols, rows int) (bool, error) {
+	if cols < ptyMinCols || rows < ptyMinRows || cols > 0xFFFF || rows > 0xFFFF {
+		return false, nil
+	}
+	if cols == t.cols && rows == t.rows {
+		return false, nil
+	}
+	if err := t.setsize(cols, rows); err != nil {
+		return true, err
+	}
+	t.cols, t.rows = cols, rows
+	return true, nil
+}
+
 // ptyCodec handles both text and binary WebSocket frames seamlessly across Web, Mobile, and CLI clients
 var ptyCodec = websocket.Codec{
 	Marshal: func(v interface{}) ([]byte, byte, error) {
@@ -198,12 +238,14 @@ func (s *Server) servePTYWS(ws *websocket.Conn) {
 				_ = exec.Command("tmux", "new-session", "-d", "-s", tmuxName, "-c", cwd).Run()
 			}
 		}
+		// Window sizing is left entirely to tmux: the attach PTY below is started
+		// at the client's size and `window-size latest` makes the window follow
+		// the most recently active client. Re-asserting `latest` on every attach
+		// also heals sessions left in `manual` mode by older builds, which used
+		// `resize-window` (that implicitly switches window-size to manual).
 		_ = exec.Command("tmux", "set-option", "-t", tmuxName, "mouse", "on").Run()
 		_ = exec.Command("tmux", "set-option", "-t", tmuxName, "window-size", "latest").Run()
 		_ = exec.Command("tmux", "set-window-option", "-t", tmuxName, "window-size", "latest").Run()
-		if cols >= 10 && rows >= 4 {
-			_ = exec.Command("tmux", "resize-window", "-t", tmuxName, "-x", strconv.Itoa(cols), "-y", strconv.Itoa(rows)).Run()
-		}
 		cmd = exec.Command("tmux", "attach-session", "-t", tmuxName)
 	} else {
 		// Ensure remote tmux session exists before attaching
@@ -211,10 +253,9 @@ func (s *Server) servePTYWS(ws *websocket.Conn) {
 		if resumeCmd != "" {
 			remoteShellCmd = fmt.Sprintf(" bash -l -c %q", fmt.Sprintf("cd %q 2>/dev/null || true; export PATH=\"/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/.npm-global/bin:$PATH\"; %s; exec bash -l", cwd, resumeCmd))
 		}
+		// Same window sizing policy as the local branch: no resize-window, the
+		// `ssh -t` client PTY carries the size and `window-size latest` follows it.
 		ensureRemoteCmd := fmt.Sprintf("tmux has-session -t %q 2>/dev/null || tmux new-session -d -s %q -c %q%s; tmux set-option -t %q mouse on 2>/dev/null || true; tmux set-option -t %q window-size latest 2>/dev/null || true; tmux set-window-option -t %q window-size latest 2>/dev/null || true", tmuxName, tmuxName, cwd, remoteShellCmd, tmuxName, tmuxName, tmuxName)
-		if cols >= 10 && rows >= 4 {
-			ensureRemoteCmd += fmt.Sprintf("; tmux resize-window -t %q -x %d -y %d 2>/dev/null || true", tmuxName, cols, rows)
-		}
 		sshTarget := s.resolveSSHTarget(sessHost)
 		_ = exec.Command("ssh", sshTarget, ensureRemoteCmd).Run()
 		cmd = exec.Command("ssh", "-t", sshTarget, fmt.Sprintf("tmux attach-session -t %q", tmuxName))
@@ -270,6 +311,10 @@ func (s *Server) servePTYWS(ws *websocket.Conn) {
 	done := make(chan struct{})
 	var wsMu sync.Mutex
 
+	resizer := newPTYResizeTracker(cols, rows, func(c, r int) error {
+		return pty.Setsize(ptyFile, &pty.Winsize{Rows: uint16(r), Cols: uint16(c)})
+	})
+
 	safeWrite := func(data []byte) error {
 		wsMu.Lock()
 		defer wsMu.Unlock()
@@ -316,19 +361,15 @@ func (s *Server) servePTYWS(ws *websocket.Conn) {
 						Rows int    `json:"rows"`
 					}
 					if jerr := json.Unmarshal(msg, &ctrl); jerr == nil {
-						if ctrl.Type == "resize" && ctrl.Cols >= 10 && ctrl.Rows >= 4 {
-							_ = pty.Setsize(ptyFile, &pty.Winsize{
-								Rows: uint16(ctrl.Rows),
-								Cols: uint16(ctrl.Cols),
-							})
-							if s.isLocalHost(sessHost) {
-								_ = exec.Command("tmux", "set-option", "-t", tmuxName, "window-size", "latest").Run()
-								_ = exec.Command("tmux", "set-window-option", "-t", tmuxName, "window-size", "latest").Run()
-								_ = exec.Command("tmux", "resize-window", "-t", tmuxName, "-x", strconv.Itoa(ctrl.Cols), "-y", strconv.Itoa(ctrl.Rows)).Run()
-								_ = exec.Command("tmux", "refresh-client", "-S").Run()
-							} else {
-								sshTarget := s.resolveSSHTarget(sessHost)
-								_ = exec.Command("ssh", sshTarget, fmt.Sprintf("tmux set-option -t %q window-size latest 2>/dev/null; tmux set-window-option -t %q window-size latest 2>/dev/null; tmux resize-window -t %q -x %d -y %d 2>/dev/null; tmux refresh-client -S 2>/dev/null", tmuxName, tmuxName, tmuxName, ctrl.Cols, ctrl.Rows)).Run()
+						if ctrl.Type == "resize" {
+							// Only the attach PTY is resized: the tmux client attached
+							// to it (local `tmux attach` or remote `ssh -t`) forwards
+							// the new size and `window-size latest` makes the window
+							// follow. Unchanged or invalid sizes are dropped so they
+							// never SIGWINCH the agent. The message is always consumed
+							// so it is never typed into the terminal.
+							if _, rerr := resizer.Apply(ctrl.Cols, ctrl.Rows); rerr != nil {
+								log.Printf("[PTY] Resize to %dx%d failed: %v", ctrl.Cols, ctrl.Rows, rerr)
 							}
 							continue
 						}

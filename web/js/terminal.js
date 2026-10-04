@@ -441,10 +441,17 @@ async function markSessionAsRead(session) {
 
 // Set View Mode for a session tab ('chat' | 'terminal')
 
+// Send a PTY resize to the daemon, skipping it when this socket already sent
+// the same size. Tab activation, socket open and fits fire several of these in
+// a row; each redundant one used to SIGWINCH the agent (Antigravity reprints
+// its whole transcript on every SIGWINCH). The last-sent size lives on the
+// socket object, so a reconnect (new socket) always re-sends.
 function sendTerminalResize(socket, cols, rows) {
-  if (socket && socket.readyState === WebSocket.OPEN && cols >= 10 && rows >= 4) {
-    socket.send(JSON.stringify({ type: 'resize', cols, rows }));
-  }
+  if (!socket || socket.readyState !== WebSocket.OPEN || cols < 10 || rows < 4) return;
+  const last = socket.ackbarLastResize;
+  if (last && last.cols === cols && last.rows === rows) return;
+  socket.send(JSON.stringify({ type: 'resize', cols, rows }));
+  socket.ackbarLastResize = { cols, rows };
 }
 
 // Activate Tab

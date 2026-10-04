@@ -7,7 +7,7 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 ### Key Subsystems:
 1. **HTTP Control Plane:** Exposes REST endpoints for session listing, lifecycle controls (`kill`, `restart`, `move`, `rename`, `delete`), host management, and project node creation.
 2. **Web Dashboard & PWA Frontend:** Serves an embedded desktop/mobile Web GUI with tabs, real-time live terminal emulation (`xterm.js`), and collapsible project trees.
-3. **PTY WebSocket Multiplexer (`/v1/sessions/pty`):** Attaches in-place to running tmux panes using binary WebSocket frames, bidirectional keepalive heartbeats, and dynamic canvas resizing.
+3. **PTY WebSocket Multiplexer (`/v1/sessions/pty`):** Attaches in-place to running tmux panes using binary WebSocket frames and bidirectional keepalive heartbeats. Resizing is deduplicated so the agent only gets `SIGWINCH` on real size changes (see [PTY Terminal Sizing](#pty-terminal-sizing-v1sessionspty)).
 4. **Hook Ingestion Engine:** Ingests live telemetry hooks from agents (`/v1/hooks/<agent>`). Responses are sent immediately (`200 OK`) and processed asynchronously to prevent blocking the agent execution loop.
 5. **SSE Broadcaster:** Streams real-time updates to all connected TUI and Web clients over `/v1/events`.
 6. **SQLite Persistence:** Stores session state, activity history, and logical tree hierarchies in `~/.config/ackbar/ackbard.db` (CGO-free pure Go SQLite).
@@ -52,6 +52,18 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 | `POST` | `/v1/briefings/synthesize` | Generates speech-optimized conversational text briefing (<45s) for voice synthesis. |
 | `GET` | `/v1/agents/status` | Returns detected agent runtimes (Claude, Antigravity, Codex) with MCP and skill install statuses. |
 | `POST` | `/v1/agents/provision` | Provisions or upgrades the Ackbar Tasks MCP server and Skill into connected agent configs. |
+
+### PTY Terminal Sizing (`/v1/sessions/pty`)
+
+Each WebSocket gets its own attach PTY running `tmux attach-session` (local) or `ssh -t <host> tmux attach-session` (remote), started at the client's `cols`/`rows` query parameters.
+
+* **Pre-attach:** the daemon sets `mouse on` and `window-size latest` (both the session option and the window option). It never calls `resize-window`: that silently switches the window to `window-size manual` and sizes it to the full client height, hiding the bottom row behind the status line. Re-asserting `latest` on every attach also heals sessions left in `manual` mode by older builds.
+* **Resize messages** (`{"type":"resize","cols":C,"rows":R}`) only call `TIOCSWINSZ` on the attach PTY. The tmux client forwards the new size and `window-size latest` makes the window follow it. No `tmux` or `ssh` subprocess runs per resize.
+* **Deduplication:** a resize whose size matches the last applied size (seeded with the start size), or that is below 10×4, is dropped (`ptyResizeTracker` in `internal/daemon/pty.go`). Resize messages are always consumed and never written to the terminal.
+
+> **Why this matters:** every window size change delivers `SIGWINCH` to the agent. Antigravity answers each `SIGWINCH` by clearing the screen and scrollback and reprinting its whole conversation. Claude Code only repaints its live region, so redundant resizes are invisible there. Clients must therefore never resize, or send redraw keystrokes such as Ctrl+L, unless the size really changed.
+
+When several clients with different sizes are attached to one session (web, mobile, TUI), the window still resizes whenever a different client becomes the latest active one. That is inherent to `window-size latest`. A client becomes "latest" through a keystroke or a real size change. Merely viewing it does not count. So after typing on mobile, switching back to an unchanged web tab keeps the mobile-sized window (cropped or letterboxed) until the first keystroke or browser resize in that tab. This is deliberate: the old behaviour forced `resize-window` on every tab activation, which caused the Antigravity replay described above.
 
 ---
 
