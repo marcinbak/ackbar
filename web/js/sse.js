@@ -102,7 +102,7 @@ function connectSSE() {
 
           // Sync running subagents and auto-heal completed turn states for open chat tabs
           for (const [, tabObj] of state.openTabs.entries()) {
-            if (tabObj && tabObj.session && (tabObj.session.id === updatedSess.id || tabObj.session.native_id === updatedSess.native_id)) {
+            if (tabObj && tabObj.session && (tabObj.session.id === updatedSess.id || (tabObj.session.native_id && tabObj.session.native_id === updatedSess.native_id))) {
               if (typeof updatedSess.running_subagents === 'number') {
                 if (updatedSess.running_subagents === 0) {
                   tabObj.runningSubagents = [];
