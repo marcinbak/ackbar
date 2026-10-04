@@ -114,7 +114,11 @@ function connectSSE() {
 
               // If session is now Idle (3), Blocked (2), or Ended (4), heal any lingering in-flight turn indicators
               const isTurnFinished = updatedSess.state === 3 || updatedSess.state === 2 || updatedSess.state === 4;
-              if (isTurnFinished && (tabObj.activeInStreamActivityEl || (tabObj.chatCancelBtn && tabObj.chatCancelBtn.style.display !== 'none'))) {
+              const hasLingeringTurnUI = tabObj.activeInStreamActivityEl ||
+                                         tabObj.activeTurnMsgEl ||
+                                         (tabObj.chatCancelBtn && tabObj.chatCancelBtn.style.display !== 'none') ||
+                                         (tabObj.chatSendBtn && tabObj.chatSendBtn.classList.contains('is-queue'));
+              if (isTurnFinished && hasLingeringTurnUI) {
                 hideInStreamActivity(tabObj);
                 resetChatComposer(tabObj);
                 // Reload transcript to render the completed assistant message

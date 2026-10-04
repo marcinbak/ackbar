@@ -2344,10 +2344,14 @@ function handleChatStreamEvent(tabObj, evt) {
 
 function resetChatComposer(tabObj) {
   hideInStreamActivity(tabObj);
+  tabObj.activeTurnMsgEl = null;
+  tabObj.activeTurnBuffer = '';
+  tabObj.activeTurnHadTool = false;
+  tabObj.activeTurnTools = [];
+  tabObj.activeTurnThinking = '';
   if (tabObj.chatCancelBtn) tabObj.chatCancelBtn.style.display = 'none';
   if (tabObj.chatStatusBadge) tabObj.chatStatusBadge.textContent = '🟢 Ready';
   updateComposerButtonState(tabObj);
-  tabObj.activeTurnHadTool = false;
   if (tabObj.chatInputEl) tabObj.chatInputEl.focus();
 }
 

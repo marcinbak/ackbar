@@ -647,7 +647,11 @@ function activateTab(tabId) {
         const isFinished = currentSess.state === 3 || currentSess.state === 2 || currentSess.state === 4;
 
         if (isFinished) {
-          if (tab.activeInStreamActivityEl || (tab.chatCancelBtn && tab.chatCancelBtn.style.display !== 'none')) {
+          const hasLingeringTurnUI = tab.activeInStreamActivityEl ||
+                                     tab.activeTurnMsgEl ||
+                                     (tab.chatCancelBtn && tab.chatCancelBtn.style.display !== 'none') ||
+                                     (tab.chatSendBtn && tab.chatSendBtn.classList.contains('is-queue'));
+          if (hasLingeringTurnUI) {
             hideInStreamActivity(tab);
             resetChatComposer(tab);
             loadChatTranscript(tab);
@@ -812,7 +816,11 @@ function checkAndReconnectActiveTabs() {
         const isFinished = currentSess && (currentSess.state === 3 || currentSess.state === 2 || currentSess.state === 4);
 
         if (isFinished) {
-          if (tab.activeInStreamActivityEl || (tab.chatCancelBtn && tab.chatCancelBtn.style.display !== 'none')) {
+          const hasLingeringTurnUI = tab.activeInStreamActivityEl ||
+                                     tab.activeTurnMsgEl ||
+                                     (tab.chatCancelBtn && tab.chatCancelBtn.style.display !== 'none') ||
+                                     (tab.chatSendBtn && tab.chatSendBtn.classList.contains('is-queue'));
+          if (hasLingeringTurnUI) {
             hideInStreamActivity(tab);
             resetChatComposer(tab);
             loadChatTranscript(tab);
@@ -828,15 +836,15 @@ function checkAndReconnectActiveTabs() {
 }
 
 window.addEventListener('focus', checkAndReconnectActiveTabs);
-document.addEventListener('visibilitychange', () => {
+document.addEventListener('visibilitychange', async () => {
   if (document.visibilityState === 'visible') {
+    await fetchSessions();
     checkAndReconnectActiveTabs();
-    fetchSessions();
   }
 });
-window.addEventListener('online', () => {
+window.addEventListener('online', async () => {
+  await fetchSessions();
   checkAndReconnectActiveTabs();
-  fetchSessions();
 });
 
 // Persist Open Tabs to localStorage
