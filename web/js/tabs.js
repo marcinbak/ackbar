@@ -22,7 +22,9 @@ import {
   setupChatInterface,
   disconnectChatStream,
   connectChatStream,
-  loadChatTranscript
+  loadChatTranscript,
+  hideInStreamActivity,
+  resetChatComposer
 } from './chat.js';
 import { openSessionDetailsTab } from './details.js';
 import { updateStatusbar, resetStatusbar } from './statusbar.js';
@@ -639,8 +641,20 @@ function activateTab(tabId) {
         }
       }, 120);
       updateStatusbar(tab.session);
-      if (tab.session && tab.session.engine_type === 'headless' && tab.viewMode === 'chat') {
-        connectChatStream(tab);
+      if (tab.session && tab.viewMode === 'chat') {
+        const sessMatch = state.sessions.find(s => s.id === tab.session.id || (tab.session.native_id && s.native_id === tab.session.native_id));
+        const currentSess = sessMatch || tab.session;
+        const isFinished = currentSess.state === 3 || currentSess.state === 2 || currentSess.state === 4;
+
+        if (isFinished) {
+          if (tab.activeInStreamActivityEl || (tab.chatCancelBtn && tab.chatCancelBtn.style.display !== 'none')) {
+            hideInStreamActivity(tab);
+            resetChatComposer(tab);
+            loadChatTranscript(tab);
+          }
+        } else if (currentSess.engine_type === 'headless') {
+          connectChatStream(tab);
+        }
       }
     } else {
       disconnectChatStream(tab);
@@ -792,7 +806,21 @@ function closeAllTabs() {
 function checkAndReconnectActiveTabs() {
   state.openTabs.forEach((tab, tabId) => {
     if (tab.type === 'terminal') {
-      if (!tab.socket || tab.socket.readyState === WebSocket.CLOSED || tab.socket.readyState === WebSocket.CLOSING) {
+      if (tab.viewMode === 'chat') {
+        const sessMatch = state.sessions.find(s => s.id === (tab.session && tab.session.id) || (tab.session && tab.session.native_id && s.native_id === tab.session.native_id));
+        const currentSess = sessMatch || tab.session;
+        const isFinished = currentSess && (currentSess.state === 3 || currentSess.state === 2 || currentSess.state === 4);
+
+        if (isFinished) {
+          if (tab.activeInStreamActivityEl || (tab.chatCancelBtn && tab.chatCancelBtn.style.display !== 'none')) {
+            hideInStreamActivity(tab);
+            resetChatComposer(tab);
+            loadChatTranscript(tab);
+          }
+        } else if (currentSess && currentSess.engine_type === 'headless' && state.activeTabId === tabId) {
+          connectChatStream(tab);
+        }
+      } else if (!tab.socket || tab.socket.readyState === WebSocket.CLOSED || tab.socket.readyState === WebSocket.CLOSING) {
         reconnectTerminalTab(tabId);
       }
     }

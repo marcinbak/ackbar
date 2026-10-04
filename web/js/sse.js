@@ -14,7 +14,7 @@ import {
 } from './api.js';
 import { renderTree } from './tree.js';
 import { closeTab, updateOpenTabsState, checkAndReconnectActiveTabs, migrateTabId } from './tabs.js';
-import { renderSubagentsBar, fetchRunningSubagents } from './chat.js';
+import { renderSubagentsBar, fetchRunningSubagents, loadChatTranscript, resetChatComposer, hideInStreamActivity } from './chat.js';
 import { getAppMode, refreshWorkBoard } from './tasks.js';
 
 let taskRefreshTimer = null;
@@ -100,16 +100,25 @@ function connectSSE() {
           updateOpenTabsState();
           triggerTaskBoardRefresh();
 
-          // Sync running subagents for open chat tabs
-          if (typeof updatedSess.running_subagents === 'number') {
-            for (const [, tabObj] of state.openTabs.entries()) {
-              if (tabObj && tabObj.session && (tabObj.session.id === updatedSess.id || tabObj.session.native_id === updatedSess.native_id)) {
+          // Sync running subagents and auto-heal completed turn states for open chat tabs
+          for (const [, tabObj] of state.openTabs.entries()) {
+            if (tabObj && tabObj.session && (tabObj.session.id === updatedSess.id || tabObj.session.native_id === updatedSess.native_id)) {
+              if (typeof updatedSess.running_subagents === 'number') {
                 if (updatedSess.running_subagents === 0) {
                   tabObj.runningSubagents = [];
                   renderSubagentsBar(tabObj);
                 } else if (!tabObj.runningSubagents || tabObj.runningSubagents.length !== updatedSess.running_subagents) {
                   fetchRunningSubagents(tabObj);
                 }
+              }
+
+              // If session is now Idle (3), Blocked (2), or Ended (4), heal any lingering in-flight turn indicators
+              const isTurnFinished = updatedSess.state === 3 || updatedSess.state === 2 || updatedSess.state === 4;
+              if (isTurnFinished && (tabObj.activeInStreamActivityEl || (tabObj.chatCancelBtn && tabObj.chatCancelBtn.style.display !== 'none'))) {
+                hideInStreamActivity(tabObj);
+                resetChatComposer(tabObj);
+                // Reload transcript to render the completed assistant message
+                loadChatTranscript(tabObj);
               }
             }
           }

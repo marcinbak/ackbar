@@ -23,6 +23,7 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 | `GET` | `/v1/version` | Returns current daemon version, canonical host name, and display name. |
 | `GET` | `/v1/sessions` | Returns all active, managed, and historic sessions with unread state. |
 | `GET` | `/v1/events` | SSE stream broadcasting real-time session mutations and state changes. |
+| `GET` | `/v1/sessions/chat/stream` | SSE stream for real-time turn text, thoughts, subagents, and keepalive heartbeats. |
 | `GET` | `/v1/sessions/pty` | WebSocket endpoint streaming interactive PTY data to `xterm.js`. |
 | `POST` | `/v1/sessions/spawn` | Spawns a new agent process in a supervised tmux session using RFC 4122 UUIDv4 (supports prompt injection). |
 | `POST` | `/v1/meta/resolve` | Derives host, agent, group, and existing session match from prompt via Jev AI / heuristics. |

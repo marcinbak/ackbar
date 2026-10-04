@@ -39,6 +39,8 @@ It is embedded directly into the `ackbard` Go binary and served on `http://127.0
 * Attach simultaneously to multiple local and remote agent sessions.
 * Full keyboard fidelity, ANSI color rendering, mouse wheel scrolling, and window resize propagation.
 * **No redundant redraws:** `sendTerminalResize` only sends a resize when the size differs from the last one sent on that socket. Reconnects always re-send. Switching a tab from chat to terminal view repaints the xterm viewport locally (`terminal.refresh`) and never sends Ctrl+L to the agent. Each extra resize or Ctrl+L made agents such as Antigravity clear and replay their whole transcript. See [daemon PTY sizing](daemon.md#pty-terminal-sizing-v1sessionspty).
+* **Dual View Mode (Chat & Terminal):** Seamlessly toggle between raw interactive PTY terminal and structured turn-by-turn chat interface. Headless turns stream real-time tokens, thoughts, and subagent actions over `/v1/sessions/chat/stream`.
+* **Auto-Healing Turn Recovery:** When returning to an inactive session or waking up from laptop sleep, the tab auto-detects finished turns from background SSE events (`/v1/events`) and auto-reconnects live streams on tab switch and focus.
 * **Tab Right-Click Context Menu:** Right-click any tab for quick lifecycle actions:
   * **✕ Close Tab:** Closes the target tab.
   * **🗂️ Close Other Tabs:** Closes all open tabs except the selected one.
