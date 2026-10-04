@@ -496,6 +496,29 @@ final knownProjectPathsProvider = Provider<List<String>>((ref) {
   return paths.toList();
 });
 
+/// Fetches and caches supported agent discovery for a given host
+final hostAgentDiscoveryProvider =
+    FutureProvider.autoDispose.family<List<Map<String, dynamic>>, String>(
+        (ref, hostName) async {
+  final hostConfig = ref.watch(hostsListProvider.select((hosts) {
+    HostRecord? host;
+    final exactName = hosts.where((h) => h.name == hostName);
+    if (exactName.isNotEmpty) {
+      host = exactName.first;
+    } else {
+      final urlMatch =
+          hosts.where((h) => h.url == hostName || h.url.contains(hostName));
+      if (urlMatch.isNotEmpty) {
+        host = urlMatch.first;
+      }
+    }
+    return (host?.url ?? 'http://127.0.0.1:7777', host?.authToken);
+  }));
+
+  final api = ref.watch(apiClientProvider);
+  return api.getAgentsDiscovery(hostConfig.$1, authToken: hostConfig.$2);
+});
+
 // --- Filtered Sessions Provider ---
 
 final filteredSessionsProvider = Provider<List<Session>>((ref) {
