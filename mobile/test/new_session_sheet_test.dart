@@ -164,5 +164,160 @@ void main() {
       // Sheet should now be popped
       expect(find.text('LAUNCH AGENT SESSION'), findsNothing);
     });
+
+    testWidgets(
+        'filters agent choices based on host discovery (omits Codex when not installed)',
+        (tester) async {
+      final mockClient = MockClient((request) async {
+        if (request.url.path == '/v1/agents/discovery') {
+          return http.Response(
+            jsonEncode([
+              {
+                'agent': 'claude-code',
+                'display_name': 'Claude Code',
+                'installed': true
+              },
+              {
+                'agent': 'antigravity',
+                'display_name': 'Antigravity',
+                'installed': true
+              },
+              {'agent': 'codex', 'display_name': 'Codex', 'installed': false},
+            ]),
+            200,
+          );
+        }
+        return http.Response('[]', 200);
+      });
+
+      final testApi = ApiClient(client: mockClient);
+      final testSse = SSEClient(client: mockClient);
+
+      await tester.pumpWidget(
+        _wrapWithScope(
+          const NewSessionSheet(prefillHost: 'Legion'),
+          overrides: [
+            apiClientProvider.overrideWithValue(testApi),
+            sseClientProvider.overrideWithValue(testSse),
+          ],
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Claude Code'), findsOneWidget);
+      expect(find.text('Antigravity'), findsOneWidget);
+      expect(find.text('Codex'), findsNothing);
+    });
+
+    testWidgets(
+        'auto-adjusts selected agent if default selection is not installed',
+        (tester) async {
+      String? spawnedAgent;
+      final mockClient = MockClient((request) async {
+        if (request.url.path == '/v1/agents/discovery') {
+          return http.Response(
+            jsonEncode([
+              {
+                'agent': 'claude-code',
+                'display_name': 'Claude Code',
+                'installed': false
+              },
+              {
+                'agent': 'antigravity',
+                'display_name': 'Antigravity',
+                'installed': true
+              },
+              {'agent': 'codex', 'display_name': 'Codex', 'installed': false},
+            ]),
+            200,
+          );
+        }
+        if (request.url.path == '/v1/sessions/spawn') {
+          final body = jsonDecode(request.body) as Map<String, dynamic>;
+          spawnedAgent = body['agent'] as String?;
+          return http.Response(
+            jsonEncode({'status': 'spawned', 'session_id': 'sess-101'}),
+            200,
+          );
+        }
+        return http.Response('[]', 200);
+      });
+
+      final testApi = ApiClient(client: mockClient);
+      final testSse = SSEClient(client: mockClient);
+
+      await tester.pumpWidget(
+        _wrapWithScope(
+          const NewSessionSheet(
+            prefillCwd: '/my/test/project',
+            prefillHost: 'devbox',
+          ),
+          overrides: [
+            apiClientProvider.overrideWithValue(testApi),
+            sseClientProvider.overrideWithValue(testSse),
+          ],
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Antigravity'), findsOneWidget);
+      expect(find.text('Claude Code'), findsNothing);
+      expect(find.text('Codex'), findsNothing);
+
+      // Launch session and verify it spawned antigravity
+      await tester.tap(find.text('LAUNCH SESSION'));
+      await tester.pumpAndSettle();
+
+      expect(spawnedAgent, equals('antigravity'));
+    });
+
+    testWidgets(
+        'shows warning banner and disables launch when no agents installed',
+        (tester) async {
+      final mockClient = MockClient((request) async {
+        if (request.url.path == '/v1/agents/discovery') {
+          return http.Response(
+            jsonEncode([
+              {
+                'agent': 'claude-code',
+                'display_name': 'Claude Code',
+                'installed': false
+              },
+              {
+                'agent': 'antigravity',
+                'display_name': 'Antigravity',
+                'installed': false
+              },
+              {'agent': 'codex', 'display_name': 'Codex', 'installed': false},
+            ]),
+            200,
+          );
+        }
+        return http.Response('[]', 200);
+      });
+
+      final testApi = ApiClient(client: mockClient);
+      final testSse = SSEClient(client: mockClient);
+
+      await tester.pumpWidget(
+        _wrapWithScope(
+          const NewSessionSheet(
+            prefillCwd: '/my/test/project',
+            prefillHost: 'remote-vm',
+          ),
+          overrides: [
+            apiClientProvider.overrideWithValue(testApi),
+            sseClientProvider.overrideWithValue(testSse),
+          ],
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('No supported agents detected on remote-vm.'),
+          findsOneWidget);
+      final launchBtn = tester.widget<ElevatedButton>(
+          find.widgetWithText(ElevatedButton, 'LAUNCH SESSION'));
+      expect(launchBtn.onPressed, isNull);
+    });
   });
 }

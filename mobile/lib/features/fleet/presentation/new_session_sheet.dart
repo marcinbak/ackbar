@@ -55,7 +55,7 @@ class _NewSessionSheetState extends ConsumerState<NewSessionSheet> {
   bool _showAdvanced = false;
   bool _isLaunching = false;
 
-  final List<Map<String, String>> _agents = const [
+  static const List<Map<String, String>> _defaultAgents = [
     {
       'id': 'claude-code',
       'name': 'Claude Code',
@@ -144,10 +144,53 @@ class _NewSessionSheetState extends ConsumerState<NewSessionSheet> {
   Widget build(BuildContext context) {
     final hosts = ref.watch(hostsListProvider);
     final knownPaths = ref.watch(knownProjectPathsProvider);
+    final discoveryAsync =
+        ref.watch(hostAgentDiscoveryProvider(_selectedHost));
 
     // Ensure selected host is valid
     if (hosts.isNotEmpty && !hosts.any((h) => h.name == _selectedHost)) {
       _selectedHost = hosts.first.name;
+    }
+
+    // Determine available installed agents on _selectedHost
+    List<Map<String, String>> activeAgents = _defaultAgents;
+    final isDetectingAgents = discoveryAsync.isLoading;
+
+    if (discoveryAsync.hasValue &&
+        discoveryAsync.value != null &&
+        discoveryAsync.value!.isNotEmpty) {
+      final installedRaw =
+          discoveryAsync.value!.where((d) => d['installed'] == true).toList();
+      final installedMap = <String, Map<String, String>>{};
+      for (final raw in installedRaw) {
+        final id = raw['agent']?.toString() ?? '';
+        if (id.isEmpty) continue;
+        final defaultMatch = _defaultAgents.firstWhere(
+          (a) => a['id'] == id,
+          orElse: () => {
+            'id': id,
+            'name': raw['display_name']?.toString() ?? id,
+            'desc': 'Agent Engine',
+          },
+        );
+        installedMap[id] = defaultMatch;
+      }
+      activeAgents = installedMap.values.toList();
+    }
+
+    // Auto-adjust selected agent if current selection is not installed on this host
+    if (activeAgents.isNotEmpty &&
+        !activeAgents.any((a) => a['id'] == _selectedAgent)) {
+      final nextAgent = activeAgents.any((a) => a['id'] == 'claude-code')
+          ? 'claude-code'
+          : activeAgents.first['id']!;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _selectedAgent != nextAgent) {
+          setState(() {
+            _selectedAgent = nextAgent;
+          });
+        }
+      });
     }
 
     return Container(
@@ -327,63 +370,116 @@ class _NewSessionSheetState extends ConsumerState<NewSessionSheet> {
               ],
 
               // Agent Selection
-              Text('SELECT AGENT',
-                  style: AppTypography.codeXs.copyWith(
-                      color: AppColors.textSecondary,
-                      fontWeight: FontWeight.w700)),
-              const SizedBox(height: 6),
               Row(
-                children: _agents.map((ag) {
-                  final isSelected = _selectedAgent == ag['id'];
-                  return Expanded(
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 3.0),
-                      child: InkWell(
-                        onTap: () => setState(() => _selectedAgent = ag['id']!),
-                        borderRadius: AppSpacing.roundedMd,
-                        child: AnimatedContainer(
-                          duration: const Duration(milliseconds: 150),
-                          padding: const EdgeInsets.symmetric(
-                              vertical: 10, horizontal: 8),
-                          decoration: BoxDecoration(
-                            color: isSelected
-                                ? AppColors.infoCyan.withOpacity(0.12)
-                                : AppColors.surface,
-                            borderRadius: AppSpacing.roundedMd,
-                            border: Border.all(
-                              color: isSelected
-                                  ? AppColors.infoCyan
-                                  : AppColors.outlineSubtle,
-                              width: isSelected ? 1.5 : 1,
-                            ),
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text('SELECT AGENT',
+                      style: AppTypography.codeXs.copyWith(
+                          color: AppColors.textSecondary,
+                          fontWeight: FontWeight.w700)),
+                  if (isDetectingAgents)
+                    Row(
+                      children: [
+                        const SizedBox(
+                          width: 10,
+                          height: 10,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 1.5,
+                            color: AppColors.infoCyan,
                           ),
-                          child: Column(
-                            children: [
-                              AgentLogo(agent: ag['id']!, size: 20),
-                              const SizedBox(height: 6),
-                              Text(
-                                ag['name']!,
-                                style: AppTypography.codeXs.copyWith(
-                                  fontSize: 10.5,
-                                  color: isSelected
-                                      ? AppColors.infoCyan
-                                      : AppColors.textPrimary,
-                                  fontWeight: isSelected
-                                      ? FontWeight.w700
-                                      : FontWeight.w500,
-                                ),
-                                textAlign: TextAlign.center,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ],
+                        ),
+                        const SizedBox(width: 6),
+                        Text(
+                          'Detecting...',
+                          style: AppTypography.codeXs.copyWith(
+                            color: AppColors.textSecondary,
+                            fontSize: 10,
+                          ),
+                        ),
+                      ],
+                    ),
+                ],
+              ),
+              const SizedBox(height: 6),
+              if (activeAgents.isEmpty)
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: AppColors.statusCoral.withOpacity(0.08),
+                    borderRadius: AppSpacing.roundedMd,
+                    border: Border.all(
+                      color: AppColors.statusCoral.withOpacity(0.3),
+                    ),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.warning_amber_rounded,
+                          size: 16, color: AppColors.statusCoral),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'No supported agents detected on $_selectedHost.',
+                          style: AppTypography.codeXs.copyWith(
+                            color: AppColors.statusCoral,
                           ),
                         ),
                       ),
-                    ),
-                  );
-                }).toList(),
-              ),
+                    ],
+                  ),
+                )
+              else
+                Row(
+                  children: activeAgents.map((ag) {
+                    final isSelected = _selectedAgent == ag['id'];
+                    return Expanded(
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 3.0),
+                        child: InkWell(
+                          onTap: () => setState(() => _selectedAgent = ag['id']!),
+                          borderRadius: AppSpacing.roundedMd,
+                          child: AnimatedContainer(
+                            duration: const Duration(milliseconds: 150),
+                            padding: const EdgeInsets.symmetric(
+                                vertical: 10, horizontal: 8),
+                            decoration: BoxDecoration(
+                              color: isSelected
+                                  ? AppColors.infoCyan.withOpacity(0.12)
+                                  : AppColors.surface,
+                              borderRadius: AppSpacing.roundedMd,
+                              border: Border.all(
+                                color: isSelected
+                                    ? AppColors.infoCyan
+                                    : AppColors.outlineSubtle,
+                                width: isSelected ? 1.5 : 1,
+                              ),
+                            ),
+                            child: Column(
+                              children: [
+                                AgentLogo(agent: ag['id']!, size: 20),
+                                const SizedBox(height: 6),
+                                Text(
+                                  ag['name']!,
+                                  style: AppTypography.codeXs.copyWith(
+                                    fontSize: 10.5,
+                                    color: isSelected
+                                        ? AppColors.infoCyan
+                                        : AppColors.textPrimary,
+                                    fontWeight: isSelected
+                                        ? FontWeight.w700
+                                        : FontWeight.w500,
+                                  ),
+                                  textAlign: TextAlign.center,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    );
+                  }).toList(),
+                ),
               AppSpacing.gapH16,
 
               // Working Directory Input
@@ -647,7 +743,8 @@ class _NewSessionSheetState extends ConsumerState<NewSessionSheet> {
 
               // Launch Submit Button
               ElevatedButton(
-                onPressed: _isLaunching ? null : _onLaunch,
+                onPressed:
+                    (_isLaunching || activeAgents.isEmpty) ? null : _onLaunch,
                 style: ElevatedButton.styleFrom(
                   backgroundColor: AppColors.infoCyan,
                   foregroundColor: AppColors.terminalBlack,

@@ -546,5 +546,73 @@ void main() {
       expect(
           sessions.any((s) => s.id == 'claude-code:local:new-sess-1'), isTrue);
     });
+
+    test('hostAgentDiscoveryProvider fetches agent discovery using matching host url and token',
+        () async {
+      SharedPreferences.setMockInitialValues({});
+      String? requestedUrl;
+      String? authHeader;
+
+      final mockClient = MockClient((request) async {
+        if (request.url.path == '/v1/agents/discovery') {
+          requestedUrl = request.url.toString();
+          authHeader = request.headers['Authorization'];
+          return http.Response(
+            jsonEncode([
+              {
+                'agent': 'claude-code',
+                'display_name': 'Claude Code',
+                'installed': true
+              },
+              {'agent': 'codex', 'display_name': 'Codex', 'installed': false},
+              {
+                'agent': 'antigravity',
+                'display_name': 'Antigravity',
+                'installed': true
+              },
+            ]),
+            200,
+          );
+        }
+        return http.Response(jsonEncode({'status': 'ok'}), 200);
+      });
+
+      final testApi = ApiClient(client: mockClient);
+      addTearDown(testApi.dispose);
+
+      final container = ProviderContainer(
+        overrides: [
+          apiClientProvider.overrideWithValue(testApi),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      container.read(hostsListProvider.notifier).addHost(
+            HostRecord(
+              name: 'Legion',
+              url: 'http://legion.local:7777',
+              authToken: 'secret-token-123',
+              online: true,
+              latencyMs: 12,
+              version: 'v0.2.1',
+              uptime: 'Active',
+              sessionsCount: 0,
+              createdAt: DateTime.now(),
+            ),
+          );
+
+      final discovery =
+          await container.read(hostAgentDiscoveryProvider('Legion').future);
+
+      expect(requestedUrl,
+          equals('http://legion.local:7777/v1/agents/discovery'));
+      expect(authHeader, equals('Bearer secret-token-123'));
+      expect(discovery.length, equals(3));
+      expect(discovery.where((d) => d['installed'] == true).length, equals(2));
+      expect(
+          discovery
+              .any((d) => d['agent'] == 'codex' && d['installed'] == false),
+          isTrue);
+    });
   });
 }
