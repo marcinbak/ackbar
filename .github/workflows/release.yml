@@ -10,6 +10,7 @@ on:
 permissions:
   contents: write
   packages: write
+  pull-requests: write
 
 jobs:
   goreleaser:
@@ -25,6 +26,7 @@ jobs:
         run: |
           VERSION=$(cat VERSION | tr -d '[:space:]')
           TAG="v$VERSION"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "Target tag: $TAG"
 
           # Fetch remote tags to ensure local cache is current
@@ -64,4 +66,12 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+
+      - name: Merge Homebrew formula PR
+        if: steps.check_tag.outputs.should_release == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BRANCH="homebrew-formula-${{ steps.check_tag.outputs.tag }}"
+          echo "Merging Homebrew formula PR from branch $BRANCH..."
+          gh pr merge "$BRANCH" --squash --delete-branch

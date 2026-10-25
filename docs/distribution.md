@@ -12,7 +12,7 @@ The official Homebrew tap provides the cleanest user experience for installation
 
 ```bash
 # Add official Homebrew tap
-brew tap marcinbak/ackbar
+brew tap marcinbak/ackbar https://github.com/marcinbak/ackbar
 
 # Install ackbard daemon, ackbar TUI, ackbar-hook, and ackbar-relay
 brew install ackbar
@@ -77,7 +77,7 @@ Simply bump the `VERSION` file in your PR (e.g. `20260904.04`). When the PR is m
 1. Detects the version change.
 2. Creates and pushes the Git tag `v<VERSION>`.
 3. Runs GoReleaser to compile and publish the GitHub Release with prebuilt binaries.
-4. Updates the version badge in `README.md` and the Homebrew formula in `marcinbak/homebrew-ackbar`.
+4. Updates the version badge in `README.md` and the Homebrew formula (`Formula/ackbar.rb`) in `marcinbak/ackbar`.
 
 ### Method B: Manual Git Tag
 Alternatively, you can tag and push directly:
@@ -91,7 +91,7 @@ GitHub Actions will automatically:
 1. Run full unit and integration test suites.
 2. Compile and package release tarballs (`.tar.gz`) and SHA-256 checksums (`checksums.txt`).
 3. Create the GitHub Release with automated changelog.
-4. Update the Homebrew formula in `marcinbak/homebrew-ackbar`.
+4. Update the Homebrew formula (`Formula/ackbar.rb`) in `marcinbak/ackbar`.
 
 ---
 
