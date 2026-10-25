@@ -147,15 +147,92 @@ async function handleTakeWheel(sessionId) {
   }
 }
 
+// Helper: Check if two session objects represent the same underlying terminal session
+function isSameUnderlyingSession(sessA, sessB) {
+  if (!sessA || !sessB) return false;
+  if (sessA.id && sessB.id && sessA.id === sessB.id) return true;
+  if (sessA.old_id && (sessA.old_id === sessB.id || (sessB.old_id && sessA.old_id === sessB.old_id))) return true;
+  if (sessB.old_id && sessB.old_id === sessA.id) return true;
+
+  const hostA = sessA.host || 'local';
+  const hostB = sessB.host || 'local';
+  if (hostA === hostB) {
+    if (sessA.tmux_name && sessB.tmux_name && sessA.tmux_name === sessB.tmux_name) {
+      return true;
+    }
+    const agent = sessA.agent || sessB.agent;
+    if (agent) {
+      if (sessA.tmux_name && sessB.native_id && sessA.tmux_name === `ackbar-${agent}-${sessB.native_id}`) {
+        return true;
+      }
+      if (sessB.tmux_name && sessA.native_id && sessB.tmux_name === `ackbar-${agent}-${sessA.native_id}`) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+// Helper: Cleanly tear down a tab object's connections, observers, terminal, and DOM elements
+function destroyTabResources(tab) {
+  if (!tab) return;
+  if (tab.chatEventSource) {
+    try { tab.chatEventSource.close(); } catch (e) {}
+    tab.chatEventSource = null;
+  }
+  if (tab.pingTimer) {
+    clearInterval(tab.pingTimer);
+    tab.pingTimer = null;
+  }
+  if (tab.reconnectTimer) {
+    clearTimeout(tab.reconnectTimer);
+    tab.reconnectTimer = null;
+  }
+  if (tab.resizeObserver) {
+    try { tab.resizeObserver.disconnect(); } catch (e) {}
+    tab.resizeObserver = null;
+  }
+  if (tab.socket) {
+    try {
+      tab.socket.onopen = null;
+      tab.socket.onclose = null;
+      tab.socket.onerror = null;
+      tab.socket.onmessage = null;
+      tab.socket.close();
+    } catch (e) {}
+    tab.socket = null;
+  }
+  if (tab.terminal) {
+    try { tab.terminal.dispose(); } catch (e) {}
+    tab.terminal = null;
+  }
+  if (tab.tabEl && tab.tabEl.parentNode) {
+    tab.tabEl.parentNode.removeChild(tab.tabEl);
+  }
+  if (tab.containerEl && tab.containerEl.parentNode) {
+    tab.containerEl.parentNode.removeChild(tab.containerEl);
+  }
+}
+
 // Setup rich Chat Interface inside tab
 
 function openSessionInTab(session) {
   if (!session) return;
   const tabId = session.id;
 
+  if (!state.openTabs.has(tabId)) {
+    for (const [existingId, existingTab] of state.openTabs.entries()) {
+      if (existingTab && existingTab.type === 'terminal' && existingTab.session && isSameUnderlyingSession(session, existingTab.session)) {
+        migrateTabId(existingId, tabId, session);
+        break;
+      }
+    }
+  }
+
   if (state.openTabs.has(tabId)) {
     const existingTab = state.openTabs.get(tabId);
     if (existingTab && existingTab.type === 'terminal') {
+      existingTab.session = session;
       if (!existingTab.socket || existingTab.socket.readyState === WebSocket.CLOSED || existingTab.socket.readyState === WebSocket.CLOSING) {
         reconnectTerminalTab(tabId);
       }
@@ -671,47 +748,33 @@ function activateTab(tabId) {
 
 // Close Tab
 function closeTab(tabId) {
+  if (!tabId) return;
   const tab = state.openTabs.get(tabId);
-  if (!tab) return;
-
-  if (tab.chatEventSource) {
-    try { tab.chatEventSource.close(); } catch (e) {}
-    tab.chatEventSource = null;
-  }
-  if (tab.pingTimer) {
-    clearInterval(tab.pingTimer);
-    tab.pingTimer = null;
-  }
-  if (tab.reconnectTimer) {
-    clearTimeout(tab.reconnectTimer);
-    tab.reconnectTimer = null;
+  if (tab) {
+    destroyTabResources(tab);
+    state.openTabs.delete(tabId);
   }
 
-  if (tab.resizeObserver) {
-    try { tab.resizeObserver.disconnect(); } catch (e) {}
+  // Always clean up any orphaned DOM tab/container elements matching tabId
+  if (el.tabStrip) {
+    const matchingTabs = el.tabStrip.querySelectorAll('.terminal-tab');
+    matchingTabs.forEach(node => {
+      if (node.dataset.tabId === tabId) {
+        node.remove();
+      }
+    });
   }
-  if (tab.socket) {
-    try {
-      tab.socket.onopen = null;
-      tab.socket.onclose = null;
-      tab.socket.onerror = null;
-      tab.socket.onmessage = null;
-      tab.socket.close();
-    } catch (e) {}
-  }
-  if (tab.terminal) {
-    try { tab.terminal.dispose(); } catch (e) {}
-  }
-  if (tab.tabEl && tab.tabEl.parentNode) {
-    tab.tabEl.parentNode.removeChild(tab.tabEl);
-  }
-  if (tab.containerEl && tab.containerEl.parentNode) {
-    tab.containerEl.parentNode.removeChild(tab.containerEl);
+  if (el.terminalViewport && !state.openTabs.has(tabId)) {
+    const rawId = tabId.startsWith('details_') ? tabId.slice('details_'.length) : tabId;
+    const sanitized = rawId.replace(/[^a-zA-Z0-9_-]/g, '_');
+    const viewPrefix = tabId.startsWith('details_') ? 'detailsView_' : 'termView_';
+    const orphanView = document.getElementById(`${viewPrefix}${sanitized}`);
+    if (orphanView && orphanView.parentNode === el.terminalViewport) {
+      orphanView.remove();
+    }
   }
 
-  state.openTabs.delete(tabId);
-
-  if (state.activeTabId === tabId) {
+  if (state.activeTabId === tabId || (state.activeTabId && !state.openTabs.has(state.activeTabId))) {
     const remainingTabIds = Array.from(state.openTabs.keys());
     if (remainingTabIds.length > 0) {
       activateTab(remainingTabIds[remainingTabIds.length - 1]);
@@ -733,6 +796,12 @@ function migrateTabId(oldId, newId, session) {
 
   const tab = state.openTabs.get(oldId);
   if (tab) {
+    const existingNewTab = state.openTabs.get(newId);
+    if (existingNewTab && existingNewTab !== tab) {
+      destroyTabResources(existingNewTab);
+      state.openTabs.delete(newId);
+    }
+
     state.openTabs.delete(oldId);
     tab.id = newId;
     tab.session = session;
@@ -744,6 +813,9 @@ function migrateTabId(oldId, newId, session) {
         titleSpan.title = session.name || session.agent;
       }
     }
+    if (tab.containerEl) {
+      tab.containerEl.id = `termView_${newId.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+    }
     state.openTabs.set(newId, tab);
 
     if (state.activeTabId === oldId) {
@@ -751,10 +823,26 @@ function migrateTabId(oldId, newId, session) {
     }
   }
 
+  // Deduplicate any orphaned DOM tab elements for oldId / newId
+  if (el.tabStrip) {
+    const canonicalTab = state.openTabs.get(newId);
+    el.tabStrip.querySelectorAll('.terminal-tab').forEach(node => {
+      if (node.dataset.tabId === oldId || (node.dataset.tabId === newId && canonicalTab && node !== canonicalTab.tabEl)) {
+        node.remove();
+      }
+    });
+  }
+
   const detailsOldId = `details_${oldId}`;
   const detailsNewId = `details_${newId}`;
   const detailsTab = state.openTabs.get(detailsOldId);
   if (detailsTab) {
+    const existingDetailsNew = state.openTabs.get(detailsNewId);
+    if (existingDetailsNew && existingDetailsNew !== detailsTab) {
+      destroyTabResources(existingDetailsNew);
+      state.openTabs.delete(detailsNewId);
+    }
+
     state.openTabs.delete(detailsOldId);
     detailsTab.id = detailsNewId;
     detailsTab.session = session;
@@ -765,6 +853,9 @@ function migrateTabId(oldId, newId, session) {
         titleSpan.textContent = session.name || session.agent;
         titleSpan.title = session.name || session.agent;
       }
+    }
+    if (detailsTab.containerEl) {
+      detailsTab.containerEl.id = `detailsView_${newId.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
     }
     state.openTabs.set(detailsNewId, detailsTab);
     if (state.activeTabId === detailsOldId) {
@@ -874,11 +965,23 @@ function restorePersistedTabs() {
     const list = JSON.parse(savedStr);
     if (!Array.isArray(list) || list.length === 0) return;
 
+    const seenTabKeys = new Set();
+    const seenTmuxKeys = new Set();
+
     list.forEach(item => {
       if (item.sessionId) {
-        const sess = state.sessions.find(s => s.id === item.sessionId);
+        const sess = state.sessions.find(s => s.id === item.sessionId || s.old_id === item.sessionId);
         if (sess) {
+          const tabKey = `${item.type || 'terminal'}:${sess.id}`;
+          if (seenTabKeys.has(tabKey)) return;
+          seenTabKeys.add(tabKey);
+
           if (item.type === 'terminal') {
+            if (sess.tmux_name) {
+              const tmuxKey = `${sess.host || 'local'}:${sess.tmux_name}`;
+              if (seenTmuxKeys.has(tmuxKey)) return;
+              seenTmuxKeys.add(tmuxKey);
+            }
             openSessionInTab(sess);
           } else if (item.type === 'details') {
             openSessionDetailsTab(sess);
@@ -888,14 +991,49 @@ function restorePersistedTabs() {
     });
 
     const activeId = localStorage.getItem('ackbar_active_tab_id');
-    if (activeId && state.openTabs.has(activeId)) {
-      activateTab(activeId);
+    if (activeId) {
+      if (state.openTabs.has(activeId)) {
+        activateTab(activeId);
+      } else {
+        const migratedSess = state.sessions.find(s => s.old_id === activeId);
+        if (migratedSess && state.openTabs.has(migratedSess.id)) {
+          activateTab(migratedSess.id);
+        }
+      }
     }
   } catch (e) {}
 }
 
 // Update Tab States (Emojis & Titles) when Session Events arrive
 function updateOpenTabsState() {
+  // First reconcile any open tabs whose underlying session ID migrated
+  const pendingMigrations = [];
+  state.openTabs.forEach((tab, id) => {
+    if (tab && tab.type === 'terminal' && tab.session) {
+      const exactMatch = state.sessions.find(s => s.id === id);
+      if (!exactMatch) {
+        const migratedSess = state.sessions.find(s => isSameUnderlyingSession(s, tab.session));
+        if (migratedSess && migratedSess.id !== id) {
+          pendingMigrations.push({ oldId: id, newId: migratedSess.id, sess: migratedSess });
+        }
+      }
+    }
+  });
+  pendingMigrations.forEach(({ oldId, newId, sess }) => {
+    migrateTabId(oldId, newId, sess);
+  });
+
+  // Remove any orphaned DOM tab nodes in #tabStrip that are no longer canonical in state.openTabs
+  if (el.tabStrip) {
+    el.tabStrip.querySelectorAll('.terminal-tab').forEach(node => {
+      const tId = node.dataset.tabId;
+      const canonical = tId ? state.openTabs.get(tId) : null;
+      if (!canonical || canonical.tabEl !== node) {
+        node.remove();
+      }
+    });
+  }
+
   state.openTabs.forEach((tab, id) => {
     const updatedSess = state.sessions.find(s => s.id === id || `details_${s.id}` === id);
     if (updatedSess) {

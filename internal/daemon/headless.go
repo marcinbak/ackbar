@@ -627,18 +627,21 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 	})
 
 	// Process output stream asynchronously
+	origSessionID := sess.ID
 	go func() {
 		defer func() {
 			h.mu.Lock()
+			delete(h.processes, origSessionID)
 			delete(h.processes, sess.ID)
 			h.mu.Unlock()
 		}()
 
-		h.processStream(sess.ID, stdoutPipe, sess)
+		h.processStream(origSessionID, stdoutPipe, sess)
 
 		waitErr := cmd.Wait()
 
 		h.mu.Lock()
+		delete(h.processes, origSessionID)
 		delete(h.processes, sess.ID)
 		h.mu.Unlock()
 
@@ -646,6 +649,9 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 		if h.db != nil {
 			currentSess, err := h.db.GetSession(sess.ID)
 			if err == nil && currentSess != nil {
+				if sess.OldID != "" && currentSess.OldID == "" {
+					currentSess.OldID = sess.OldID
+				}
 				sess = currentSess
 			}
 		}
@@ -658,12 +664,16 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 			errDetail := strings.TrimSpace(stderrBuf.String())
 			if errDetail != "" {
 				sess.Activity = "Turn error: " + errDetail
-				h.Emit(sess.ID, ChatStreamEvent{
+				errEvt := ChatStreamEvent{
 					SessionID: sess.ID,
 					Type:      "error",
 					Text:      errDetail,
 					IsError:   true,
-				})
+				}
+				h.Emit(sess.ID, errEvt)
+				if origSessionID != sess.ID {
+					h.Emit(origSessionID, errEvt)
+				}
 			} else {
 				sess.Activity = "Turn completed with status: " + waitErr.Error()
 			}
@@ -704,11 +714,15 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 			h.broadcast(sess)
 		}
 
-		h.Emit(sess.ID, ChatStreamEvent{
+		completeEvt := ChatStreamEvent{
 			SessionID: sess.ID,
 			Type:      "turn_complete",
 			Timestamp: time.Now(),
-		})
+		}
+		h.Emit(sess.ID, completeEvt)
+		if origSessionID != sess.ID {
+			h.Emit(origSessionID, completeEvt)
+		}
 
 		h.mu.RLock()
 		onDone := h.onTurnComplete
@@ -769,7 +783,24 @@ func (h *HeadlessRunner) processStream(sessionID string, r io.Reader, optionalSe
 			case "init":
 				if convID, ok := raw["conversation_id"].(string); ok && convID != "" {
 					if sess != nil && sess.NativeID != convID {
+						oldID := sess.ID
 						sess.NativeID = convID
+						if sess.Agent != "" && sess.Host != "" {
+							newID := fmt.Sprintf("%s:%s:%s", sess.Agent, sess.Host, convID)
+							if oldID != "" && oldID != newID {
+								sess.OldID = oldID
+								sess.ID = newID
+								if h.db != nil {
+									_ = h.db.DeleteSession(oldID)
+								}
+								h.mu.Lock()
+								if cmd, exists := h.processes[oldID]; exists {
+									delete(h.processes, oldID)
+									h.processes[newID] = cmd
+								}
+								h.mu.Unlock()
+							}
+						}
 						if h.db != nil {
 							_ = h.db.SaveSession(sess)
 						}
