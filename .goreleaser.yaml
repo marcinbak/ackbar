@@ -92,8 +92,16 @@ changelog:
 brews:
   - repository:
       owner: marcinbak
-      name: homebrew-ackbar
-      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+      name: ackbar
+      branch: "homebrew-formula-{{ .Tag }}"
+      token: "{{ .Env.GITHUB_TOKEN }}"
+      pull_request:
+        enabled: true
+        base:
+          owner: marcinbak
+          name: ackbar
+          branch: main
+    directory: Formula
     name: ackbar
     homepage: "https://github.com/marcinbak/ackbar"
     description: "Lightweight, cross-machine control plane and session manager for autonomous AI coding agents"
