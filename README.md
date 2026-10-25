@@ -109,7 +109,7 @@ A fast, keyboard-driven dashboard built with Charm.sh Bubble Tea and Lip Gloss:
 #### Option A: Homebrew (macOS & Linux — Recommended)
 ```bash
 # Add official Homebrew tap and install binaries
-brew tap marcinbak/ackbar
+brew tap marcinbak/ackbar https://github.com/marcinbak/ackbar
 brew install ackbar
 
 # Start background daemon service

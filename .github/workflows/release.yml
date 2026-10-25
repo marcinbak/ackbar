@@ -26,16 +26,18 @@ jobs:
         run: |
           VERSION=$(cat VERSION | tr -d '[:space:]')
           TAG="v$VERSION"
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "Target tag: $TAG"
 
           # Fetch remote tags to ensure local cache is current
           git fetch --tags origin
 
           if [ "${{ github.ref_type }}" = "tag" ]; then
-            echo "Triggered by tag push (${{ github.ref_name }}), proceeding with release."
+            TAG="$GITHUB_REF_NAME"
+            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+            echo "Triggered by tag push ($TAG), proceeding with release."
             echo "should_release=true" >> "$GITHUB_OUTPUT"
           else
+            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
             # Triggered on main branch push
             if git rev-parse "$TAG" >/dev/null 2>&1; then
               echo "Tag $TAG already exists on remote. No new version bump detected on main."
@@ -71,7 +73,8 @@ jobs:
         if: steps.check_tag.outputs.should_release == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.check_tag.outputs.tag }}
         run: |
-          BRANCH="homebrew-formula-${{ steps.check_tag.outputs.tag }}"
+          BRANCH="homebrew-formula-$TAG"
           echo "Merging Homebrew formula PR from branch $BRANCH..."
           gh pr merge "$BRANCH" --squash --delete-branch
