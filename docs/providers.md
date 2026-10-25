@@ -21,6 +21,7 @@ Ackbar supports the major agent ecosystems:
 ### Antigravity
 * **Session Annotations:** `~/.gemini/antigravity/annotations/<session-id>.pbtxt` contains custom user-assigned titles (`title: "..."`).
 * **Artifact Metadata:** `task.md.metadata.json`, `implementation_plan.md`, `walkthrough.md` under `~/.gemini/antigravity/brain/<session-id>/`.
+* **Conversation ID Adoption & Workspace Normalization:** Because Antigravity (`agy`) allocates its native conversation UUID lazily upon the first user prompt (rather than via a CLI `--session-id` flag at spawn time), `ackbard` automatically adopts the placeholder session (`tempUUID`) into the real conversation UUID across hooks, headless `"init"` events, presence `.lock` inspection, and brain transcript scans, normalizing tool-call paths (`AbsolutePath`, `Path`, `TargetFile`, `Cwd`, `DirectoryPath`, `SearchPath`) to the enclosing Git repository or `.worktrees/<branch>` root and emitting `old_id` so open client tabs migrate seamlessly.
 
 ### OpenAI Codex
 * **Session Index:** `~/.codex/session_index.jsonl` contains thread titles (`thread_name`), native IDs (`id`), and update timestamps.
