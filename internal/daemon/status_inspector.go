@@ -809,11 +809,14 @@ func isIntermediateRunner(comm string) bool {
 }
 
 func isIgnoredMCPOrDaemon(comm, args string) bool {
+	lowerComm := strings.ToLower(comm)
 	lowerArgs := strings.ToLower(args)
 	if strings.Contains(lowerArgs, "mcp-remote") ||
 		strings.Contains(lowerArgs, "mcp-server") ||
 		strings.Contains(lowerArgs, "modelcontextprotocol") ||
-		strings.Contains(lowerArgs, "@modelcontextprotocol") {
+		strings.Contains(lowerArgs, "@modelcontextprotocol") ||
+		strings.Contains(lowerArgs, "ackbar mcp") ||
+		(lowerComm == "ackbar" && strings.Contains(lowerArgs, "mcp")) {
 		return true
 	}
 	return false

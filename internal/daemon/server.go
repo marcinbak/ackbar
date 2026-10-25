@@ -482,20 +482,36 @@ func (s *Server) processHookEventWithAccount(p Provider, urlEventName string, he
 		return
 	}
 
-	if sess == nil {
+	if sess == nil || !sess.Managed {
 		// Look for a spawning managed session to adopt
-		spawningSess, err := s.findSpawningSession(event.Agent, event.Cwd)
-		if err == nil && spawningSess != nil {
+		if spawningSess, err := s.findSpawningSession(event.Agent, event.Cwd); err == nil && spawningSess != nil && spawningSess.ID != sessionID {
 			// Adopt! Delete the spawning temp record
 			_ = s.db.DeleteSession(spawningSess.ID)
 
+			tmuxName := spawningSess.TmuxName
+			if strings.HasPrefix(tmuxName, "ackbar-") && event.NativeID != "" {
+				newTmuxName := fmt.Sprintf("ackbar-%s-%s", event.Agent, event.NativeID)
+				if tmuxName != newTmuxName {
+					if rErr := tmux.Rename(context.Background(), tmuxName, newTmuxName); rErr == nil {
+						tmuxName = newTmuxName
+					} else {
+						log.Printf("[daemon] failed to rename tmux session %s to %s on hook adoption: %v", tmuxName, newTmuxName, rErr)
+					}
+				}
+			}
+
 			sess = &Session{
 				ID:          sessionID,
+				OldID:       spawningSess.ID,
 				Agent:       event.Agent,
 				Host:        host,
 				NativeID:    event.NativeID,
 				Managed:     true,
-				TmuxName:    spawningSess.TmuxName,
+				PID:         spawningSess.PID,
+				EngineType:  spawningSess.EngineType,
+				TmuxName:    tmuxName,
+				Cwd:         spawningSess.Cwd,
+				ProjectKey:  spawningSess.ProjectKey,
 				NodePath:    spawningSess.NodePath,
 				CustomTitle: spawningSess.CustomTitle,
 				StartedAt:   spawningSess.StartedAt,
@@ -507,7 +523,11 @@ func (s *Server) processHookEventWithAccount(p Provider, urlEventName string, he
 			} else if spawningSess.Name != "" && !isRawSessionName(spawningSess.Name) {
 				sess.Name = spawningSess.Name
 			}
-		} else if activeManaged, err := s.findActiveManagedSessionInCwd(event.Agent, host, event.Cwd); err == nil && activeManaged != nil && activeManaged.NativeID != event.NativeID && s.isSameSupervisor(activeManaged, event) {
+		}
+	}
+
+	if sess == nil {
+		if activeManaged, err := s.findActiveManagedSessionInCwd(event.Agent, host, event.Cwd); err == nil && activeManaged != nil && activeManaged.NativeID != event.NativeID && s.isSameSupervisor(activeManaged, event) {
 			// An active managed tmux session rotated its internal conversation ID (e.g. via /clear or /reset)
 			reConv := regexp.MustCompile(`\s*\(Conv\s*(\d+)\)$`)
 			var newTurnName string
@@ -572,7 +592,9 @@ func (s *Server) processHookEventWithAccount(p Provider, urlEventName string, he
 
 	// Update fields
 	if event.Cwd != "" {
-		sess.Cwd = event.Cwd
+		if sess.Cwd == "" || !sameOrRelatedDir(sess.Cwd, event.Cwd) || len(event.Cwd) < len(sess.Cwd) {
+			sess.Cwd = event.Cwd
+		}
 	}
 	if sess.NodePath == "" && sess.Cwd != "" {
 		sess.NodePath = s.resolveSessionNodePath(sess.Cwd)
@@ -3239,14 +3261,143 @@ func (s *Server) handleMetaResolve(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(result)
 }
 
+func canonicalProjectRoot(dir, cleanHome string) (string, bool) {
+	curr := filepath.Clean(dir)
+	for curr != "" && curr != "/" && curr != "." && curr != cleanHome {
+		if filepath.Base(filepath.Dir(curr)) == ".worktrees" {
+			return curr, true
+		}
+		if _, err := os.Stat(filepath.Join(curr, ".git")); err == nil {
+			return curr, true
+		}
+		parent := filepath.Dir(curr)
+		if parent == curr {
+			break
+		}
+		curr = parent
+	}
+	return dir, false
+}
+
+func isBroadHomeContainer(dir, cleanHome string) bool {
+	if cleanHome == "" || filepath.Dir(dir) != cleanHome {
+		return false
+	}
+	switch strings.ToLower(filepath.Base(dir)) {
+	case "work", "projects", "code", "repos", "desktop", "documents", "downloads", "src", "dev", "workspace", "workspaces":
+		return true
+	}
+	return false
+}
+
+func sameOrRelatedDir(dirA, dirB string) bool {
+	if dirA == "" || dirB == "" {
+		return false
+	}
+	a := expandPath(dirA)
+	b := expandPath(dirB)
+	if a == "" || b == "" || a == "/" || b == "/" || a == "." || b == "." {
+		return false
+	}
+	home, _ := os.UserHomeDir()
+	cleanHome := ""
+	if home != "" {
+		cleanHome = filepath.Clean(home)
+		if a == cleanHome || b == cleanHome {
+			return false
+		}
+	}
+	if a == b {
+		return true
+	}
+	rootA, markedA := canonicalProjectRoot(a, cleanHome)
+	rootB, markedB := canonicalProjectRoot(b, cleanHome)
+	if markedA || markedB {
+		return markedA && markedB && rootA == rootB
+	}
+	if isBroadHomeContainer(a, cleanHome) || isBroadHomeContainer(b, cleanHome) {
+		return false
+	}
+	return sameOrSubDir(a, b) || sameOrSubDir(b, a)
+}
+
+func hasAntigravityConversationArtifacts(home, nativeID string) bool {
+	if home == "" || nativeID == "" || !IsUUID(nativeID) {
+		return false
+	}
+	candidates := []string{
+		filepath.Join(home, ".gemini", "antigravity", "brain", nativeID),
+		filepath.Join(home, ".gemini", "antigravity-cli", "brain", nativeID),
+		filepath.Join(home, ".antigravity", "brain", nativeID),
+		filepath.Join(home, ".gemini", "antigravity-cli", "conversations", nativeID+".db"),
+		filepath.Join(home, ".gemini", "antigravity", "conversations", nativeID+".db"),
+		filepath.Join(home, ".antigravity", "conversations", nativeID+".db"),
+		filepath.Join(home, ".gemini", "antigravity-cli", "presence", nativeID+".lock"),
+		filepath.Join(home, ".gemini", "antigravity", "presence", nativeID+".lock"),
+		filepath.Join(home, ".antigravity", "presence", nativeID+".lock"),
+		filepath.Join(home, ".gemini", "antigravity", "annotations", nativeID+".pbtxt"),
+		filepath.Join(home, ".gemini", "antigravity-cli", "annotations", nativeID+".pbtxt"),
+		filepath.Join(home, ".antigravity", "annotations", nativeID+".pbtxt"),
+	}
+	for _, p := range candidates {
+		if _, err := os.Stat(p); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Server) findSpawningSession(agent, cwd string) (*Session, error) {
 	sessions, err := s.db.ListSessions()
 	if err != nil {
 		return nil, err
 	}
+	home, _ := os.UserHomeDir()
+	// 1. Exact CWD + StateUnknown match
 	for _, sess := range sessions {
-		if sess.Agent == agent && sess.Cwd == cwd && sess.Managed && sess.State == StateUnknown {
+		if sess.Agent == agent && sess.Cwd == cwd && sess.Managed && sess.State == StateUnknown && sess.OldID == "" {
+			if agent == "antigravity" && hasAntigravityConversationArtifacts(home, sess.NativeID) {
+				continue
+			}
 			return sess, nil
+		}
+	}
+	// 2. Subdirectory / parent CWD (within same project/worktree root) + StateUnknown match
+	for _, sess := range sessions {
+		if sess.Agent == agent && sameOrRelatedDir(sess.Cwd, cwd) && sess.Managed && sess.State == StateUnknown && sess.OldID == "" {
+			if agent == "antigravity" && hasAntigravityConversationArtifacts(home, sess.NativeID) {
+				continue
+			}
+			return sess, nil
+		}
+	}
+	// 3. For Antigravity: match a managed placeholder session whose State was updated by scanObservedSessions
+	// before the user submitted their first prompt (still holds synthetic tempUUID with no brain artifacts).
+	if agent == "antigravity" {
+		var best *Session
+		for _, sess := range sessions {
+			if sess.Agent != "antigravity" || !sess.Managed || sess.State == StateEnded || sess.OldID != "" {
+				continue
+			}
+			if !sameOrRelatedDir(sess.Cwd, cwd) {
+				continue
+			}
+			expectedTmux := fmt.Sprintf("ackbar-antigravity-%s", sess.NativeID)
+			if sess.TmuxName != expectedTmux {
+				continue
+			}
+			if sess.FirstPrompt != "" || (sess.CustomTitle == "" && !isRawSessionName(sess.Name)) {
+				continue
+			}
+			if hasAntigravityConversationArtifacts(home, sess.NativeID) {
+				continue
+			}
+			if best == nil || sess.StartedAt.After(best.StartedAt) {
+				best = sess
+			}
+		}
+		if best != nil {
+			return best, nil
 		}
 	}
 	return nil, nil
@@ -5556,6 +5707,29 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 	// 1. Scan tmux panes for running agent CLIs
 	out, err := exec.CommandContext(ctx, "tmux", "list-panes", "-a", "-F", "#{pane_pid}\t#{pane_current_path}\t#{session_name}\t#{pane_current_command}").Output()
 	if err == nil {
+		type procEntry struct {
+			pid int
+			cmd string
+		}
+		childrenByPPID := make(map[int][]procEntry)
+		if psOut, psErr := exec.CommandContext(ctx, "ps", "-eo", "ppid,pid,command").Output(); psErr == nil {
+			for _, pline := range strings.Split(string(psOut), "\n") {
+				pline = strings.TrimSpace(pline)
+				if pline == "" {
+					continue
+				}
+				fields := strings.Fields(pline)
+				if len(fields) >= 3 {
+					ppidVal, err1 := strconv.Atoi(fields[0])
+					cPid, err2 := strconv.Atoi(fields[1])
+					if err1 == nil && err2 == nil && ppidVal > 0 && cPid > 0 {
+						cCmd := strings.ToLower(strings.Join(fields[2:], " "))
+						childrenByPPID[ppidVal] = append(childrenByPPID[ppidVal], procEntry{pid: cPid, cmd: cCmd})
+					}
+				}
+			}
+		}
+
 		lines := strings.Split(string(out), "\n")
 		for _, line := range lines {
 			line = strings.TrimSpace(line)
@@ -5570,7 +5744,7 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 			cwd = strings.TrimSuffix(cwd, " (deleted)")
 			cmdLower := strings.ToLower(cmdName)
 
-			if tmuxName == "(deleted)" || tmuxName == "" {
+			if tmuxName == "(deleted)" || tmuxName == "" || strings.HasPrefix(tmuxName, "ackbar-mock-agent-") {
 				continue
 			}
 
@@ -5591,37 +5765,23 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 			}
 
 			if panePID > 0 {
-				if out, err := exec.CommandContext(ctx, "ps", "-eo", "ppid,pid,command").Output(); err == nil {
-					for _, pline := range strings.Split(string(out), "\n") {
-						pline = strings.TrimSpace(pline)
-						if pline == "" {
-							continue
-						}
-						fields := strings.Fields(pline)
-						if len(fields) >= 3 {
-							ppidVal, _ := strconv.Atoi(fields[0])
-							if ppidVal == panePID {
-								cPid, _ := strconv.Atoi(fields[1])
-								cCmd := strings.ToLower(strings.Join(fields[2:], " "))
-								matchedAgent := ""
-								for _, p := range s.providers {
-									for _, pName := range p.ProcessNames() {
-										if strings.Contains(cCmd, pName) {
-											matchedAgent = p.Agent()
-											actualPID = cPid
-											break
-										}
-									}
-									if matchedAgent != "" {
-										agent = matchedAgent
-										break
-									}
-								}
-								if matchedAgent != "" {
-									break
-								}
+				for _, child := range childrenByPPID[panePID] {
+					matchedAgent := ""
+					for _, p := range s.providers {
+						for _, pName := range p.ProcessNames() {
+							if strings.Contains(child.cmd, pName) {
+								matchedAgent = p.Agent()
+								actualPID = child.pid
+								break
 							}
 						}
+						if matchedAgent != "" {
+							agent = matchedAgent
+							break
+						}
+					}
+					if matchedAgent != "" {
+						break
 					}
 				}
 			}
@@ -5713,6 +5873,17 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 						oldSessID := fmt.Sprintf("%s:%s:%s", agent, hostName, targetNativeID)
 						realSessID := fmt.Sprintf("%s:%s:%s", agent, hostName, sID)
 
+						// Synchronize managed ackbar tmux session name to match native conversation ID even if old DB record was already deleted
+						newTmuxName := fmt.Sprintf("ackbar-%s-%s", agent, sID)
+						if strings.HasPrefix(tmuxName, "ackbar-") && tmuxName != newTmuxName {
+							if rErr := tmux.Rename(ctx, tmuxName, newTmuxName); rErr == nil {
+								delete(knownByTmux, tmuxName)
+								tmuxName = newTmuxName
+							} else {
+								log.Printf("[daemon] failed to rename tmux session %s to %s: %v", tmuxName, newTmuxName, rErr)
+							}
+						}
+
 						var existingOld *Session
 						if ex, ok := knownIDs[oldSessID]; ok {
 							existingOld = ex
@@ -5725,20 +5896,13 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 							delete(knownIDs, existingOld.ID)
 							delete(knownByNativeID, existingOld.NativeID)
 
-							// Synchronize tmux session name to match native conversation ID
-							newTmuxName := fmt.Sprintf("ackbar-%s-%s", agent, sID)
-							if tmuxName != "" && tmuxName != newTmuxName {
-								if rErr := tmux.Rename(ctx, tmuxName, newTmuxName); rErr == nil {
-									delete(knownByTmux, tmuxName)
-									tmuxName = newTmuxName
-								} else {
-									log.Printf("[daemon] failed to rename tmux session %s to %s: %v", tmuxName, newTmuxName, rErr)
-								}
-							}
-
 							var targetSess *Session
 							if existingReal, ok := knownIDs[realSessID]; ok {
-								if existingOld.NodePath != "" && existingReal.NodePath == "" {
+								if existingOld.Cwd != "" && (existingReal.Cwd == "" || (sameOrRelatedDir(existingOld.Cwd, existingReal.Cwd) && len(existingOld.Cwd) < len(existingReal.Cwd))) {
+									existingReal.Cwd = existingOld.Cwd
+									existingReal.ProjectKey = GetProjectKey(existingOld.Cwd)
+								}
+								if existingOld.NodePath != "" && (existingReal.NodePath == "" || existingReal.Cwd == existingOld.Cwd) {
 									existingReal.NodePath = existingOld.NodePath
 								}
 								if existingReal.CustomTitle == "" && existingOld.CustomTitle != "" {
@@ -5750,6 +5914,8 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 										existingReal.Name = title
 									}
 								}
+								existingReal.Managed = true
+								existingReal.PID = pid
 								existingReal.OldID = oldSessID
 								if tmuxName != "" {
 									existingReal.TmuxName = tmuxName
@@ -5776,6 +5942,16 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 							}
 							_ = s.db.SaveSession(targetSess)
 							s.broadcast(targetSess)
+						} else if existingReal, ok := knownIDs[realSessID]; ok {
+							if tmuxName != "" && existingReal.TmuxName != tmuxName {
+								existingReal.TmuxName = tmuxName
+								if targetNativeID != "" {
+									existingReal.OldID = oldSessID
+								}
+								knownByTmux[tmuxName] = existingReal
+								_ = s.db.SaveSession(existingReal)
+								s.broadcast(existingReal)
+							}
 						}
 						targetNativeID = sID
 					}
@@ -6440,13 +6616,77 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 							title := ReadAntigravitySessionTitle("", convID)
 							cwd := extractAntigravityWorkspace(logPath, home)
 							modTime := time.Now()
+							convStartTime := modTime
 
 							if stat, serr := os.Stat(convPath); serr == nil {
 								modTime = stat.ModTime()
+								convStartTime = modTime
 							}
+							if lstat, lerr := os.Stat(logPath); lerr == nil && lstat.ModTime().After(modTime) {
+								modTime = lstat.ModTime()
+							}
+							convStartTime = extractAntigravityStartTime(logPath, convStartTime)
 
 							if title == "" {
 								title = fmt.Sprintf("Antigravity (%s)", convID[:8])
+							}
+
+							// Check if a newly spawned managed Antigravity session in this workspace should adopt convID
+							if cwd != "" && time.Since(convStartTime) < 15*time.Minute {
+								if spawningSess, err := s.findSpawningSession("antigravity", cwd); err == nil && spawningSess != nil && spawningSess.NativeID != convID && convStartTime.After(spawningSess.StartedAt.Add(-5*time.Second)) {
+									oldSessID := spawningSess.ID
+									_ = s.db.DeleteSession(oldSessID)
+									delete(knownIDs, oldSessID)
+									delete(knownByNativeID, spawningSess.NativeID)
+
+									tmuxName := spawningSess.TmuxName
+									newTmuxName := fmt.Sprintf("ackbar-antigravity-%s", convID)
+									if strings.HasPrefix(tmuxName, "ackbar-") && tmuxName != newTmuxName {
+										if rErr := tmux.Rename(ctx, tmuxName, newTmuxName); rErr == nil {
+											delete(knownByTmux, tmuxName)
+											tmuxName = newTmuxName
+										} else {
+											log.Printf("[daemon] failed to rename tmux session %s to %s in brain scan adoption: %v", tmuxName, newTmuxName, rErr)
+										}
+									}
+
+									adoptedCwd := spawningSess.Cwd
+									if adoptedCwd == "" {
+										adoptedCwd = cwd
+									}
+									adoptedName := title
+									if spawningSess.CustomTitle != "" {
+										adoptedName = spawningSess.CustomTitle
+									}
+									adoptedNodePath := spawningSess.NodePath
+									if adoptedNodePath == "" && adoptedCwd != "" {
+										adoptedNodePath = s.resolveSessionNodePath(adoptedCwd)
+									}
+
+									spawningSess.ID = sessID
+									spawningSess.OldID = oldSessID
+									spawningSess.NativeID = convID
+									spawningSess.Name = adoptedName
+									spawningSess.Cwd = adoptedCwd
+									spawningSess.ProjectKey = GetProjectKey(adoptedCwd)
+									spawningSess.NodePath = adoptedNodePath
+									spawningSess.TmuxName = tmuxName
+									spawningSess.LastEventAt = modTime
+
+									if p, ok := s.providers["antigravity"]; ok {
+										if inspector, ok := p.(StatusInspector); ok {
+											inspector.InspectStatus(ctx, spawningSess)
+										}
+									}
+									_ = s.db.SaveSession(spawningSess)
+									knownIDs[sessID] = spawningSess
+									knownByNativeID[convID] = spawningSess
+									if tmuxName != "" {
+										knownByTmux[tmuxName] = spawningSess
+									}
+									s.broadcast(spawningSess)
+									continue
+								}
 							}
 
 							isOld := time.Since(modTime) > 7*24*time.Hour
@@ -6463,7 +6703,7 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 								State:       StateEnded,
 								Managed:     false,
 								Activity:    "Session ended",
-								StartedAt:   modTime,
+								StartedAt:   convStartTime,
 								LastEventAt: modTime,
 								ContextPct:  0,
 								Archived:    isOld,
@@ -6473,6 +6713,65 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 							s.broadcast(newSess)
 						} else {
 							changed := false
+							if existing.Cwd == "" {
+								if cwd := extractAntigravityWorkspace(logPath, home); cwd != "" {
+									existing.Cwd = cwd
+									existing.ProjectKey = GetProjectKey(cwd)
+									changed = true
+								}
+							}
+							if !existing.Managed && existing.Cwd != "" {
+								convStartTime := existing.StartedAt
+								if stat, serr := os.Stat(convPath); serr == nil && convStartTime.IsZero() {
+									convStartTime = stat.ModTime()
+								}
+								convStartTime = extractAntigravityStartTime(logPath, convStartTime)
+								if time.Since(convStartTime) < 15*time.Minute {
+									if spawningSess, err := s.findSpawningSession("antigravity", existing.Cwd); err == nil && spawningSess != nil && spawningSess.NativeID != convID && convStartTime.After(spawningSess.StartedAt.Add(-5*time.Second)) {
+										oldSessID := spawningSess.ID
+										_ = s.db.DeleteSession(oldSessID)
+										delete(knownIDs, oldSessID)
+										delete(knownByNativeID, spawningSess.NativeID)
+
+										tmuxName := spawningSess.TmuxName
+										newTmuxName := fmt.Sprintf("ackbar-antigravity-%s", convID)
+										if strings.HasPrefix(tmuxName, "ackbar-") && tmuxName != newTmuxName {
+											if rErr := tmux.Rename(ctx, tmuxName, newTmuxName); rErr == nil {
+												delete(knownByTmux, tmuxName)
+												tmuxName = newTmuxName
+											} else {
+												log.Printf("[daemon] failed to rename tmux session %s to %s in deferred brain scan adoption: %v", tmuxName, newTmuxName, rErr)
+											}
+										}
+
+										existing.OldID = oldSessID
+										existing.Managed = true
+										existing.PID = spawningSess.PID
+										existing.EngineType = spawningSess.EngineType
+										existing.TmuxName = tmuxName
+										if spawningSess.Cwd != "" {
+											existing.Cwd = spawningSess.Cwd
+											existing.ProjectKey = GetProjectKey(spawningSess.Cwd)
+										}
+										if spawningSess.NodePath != "" {
+											existing.NodePath = spawningSess.NodePath
+										}
+										if spawningSess.CustomTitle != "" {
+											existing.CustomTitle = spawningSess.CustomTitle
+											existing.Name = spawningSess.CustomTitle
+										}
+										if tmuxName != "" {
+											knownByTmux[tmuxName] = existing
+										}
+										if p, ok := s.providers["antigravity"]; ok {
+											if inspector, ok := p.(StatusInspector); ok {
+												inspector.InspectStatus(ctx, existing)
+											}
+										}
+										changed = true
+									}
+								}
+							}
 							if existing.CustomTitle == "" {
 								if isRawSessionName(existing.Name) {
 									if title := ReadAntigravitySessionTitle(existing.Cwd, convID); title != "" && !isRawSessionName(title) {
@@ -7142,6 +7441,55 @@ func ReadAntigravitySessionTitle(cwd, sessionID string) string {
 	return ""
 }
 
+func normalizeToGitRoot(dir, home string) string {
+	if dir == "" {
+		return ""
+	}
+	cleanHome := ""
+	if home != "" {
+		cleanHome = filepath.Clean(home)
+	}
+	curr := filepath.Clean(dir)
+	for curr != "" && curr != "/" && curr != "." && curr != cleanHome {
+		gitPath := filepath.Join(curr, ".git")
+		if _, err := os.Stat(gitPath); err == nil {
+			return curr
+		}
+		parent := filepath.Dir(curr)
+		if parent == curr {
+			break
+		}
+		curr = parent
+	}
+	return dir
+}
+
+func extractAntigravityStartTime(logPath string, fallback time.Time) time.Time {
+	data, err := readHead(logPath, 8*1024)
+	if err != nil {
+		return fallback
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var step struct {
+			CreatedAt string `json:"created_at"`
+		}
+		if err := json.Unmarshal([]byte(line), &step); err == nil && step.CreatedAt != "" {
+			if t, err := time.Parse(time.RFC3339Nano, step.CreatedAt); err == nil {
+				return t
+			}
+			if t, err := time.Parse(time.RFC3339, step.CreatedAt); err == nil {
+				return t
+			}
+		}
+		break
+	}
+	return fallback
+}
+
 func extractAntigravityWorkspace(logPath, home string) string {
 	data, err := readHead(logPath, 64*1024)
 	if err != nil {
@@ -7166,7 +7514,7 @@ func extractAntigravityWorkspace(logPath, home string) string {
 			cand := strings.TrimSpace(line[startIdx:idx])
 			cand = strings.TrimPrefix(cand, "file://")
 			if dirExists(cand) && cand != home && !strings.Contains(cand, "/.gemini") {
-				return cand
+				return normalizeToGitRoot(cand, home)
 			}
 		}
 	}
@@ -7194,17 +7542,19 @@ func extractAntigravityWorkspace(logPath, home string) string {
 						if s, ok := v.(string); ok && s != "" {
 							s = strings.Trim(s, "\"")
 							if dirExists(s) && s != home && !strings.Contains(s, "/.gemini") {
-								return s
+								return normalizeToGitRoot(s, home)
 							}
 						}
 					}
 				}
-				if v, ok := tc.Args["AbsolutePath"]; ok {
-					if s, ok := v.(string); ok && s != "" {
-						s = strings.Trim(s, "\"")
-						dir := filepath.Dir(s)
-						if dirExists(dir) && dir != home && !strings.Contains(dir, "/.gemini") {
-							return dir
+				for _, k := range []string{"AbsolutePath", "Path", "TargetFile"} {
+					if v, ok := tc.Args[k]; ok {
+						if s, ok := v.(string); ok && s != "" {
+							s = strings.Trim(s, "\"")
+							dir := filepath.Dir(s)
+							if dirExists(dir) && dir != home && !strings.Contains(dir, "/.gemini") {
+								return normalizeToGitRoot(dir, home)
+							}
 						}
 					}
 				}

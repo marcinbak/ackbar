@@ -248,6 +248,9 @@ func TestServer_TakeWheel_AliasResolution(t *testing.T) {
 	w := httptest.NewRecorder()
 
 	srv.Mux().ServeHTTP(w, req)
+	defer func() {
+		_ = tmux.Kill(context.Background(), "ackbar-claude-code-uuid-alias-test")
+	}()
 
 	// In test environment without real tmux, it should not fail with 404
 	if w.Code == http.StatusNotFound {
@@ -282,6 +285,9 @@ func TestServer_TakeWheel_Idempotent(t *testing.T) {
 	w := httptest.NewRecorder()
 
 	srv.Mux().ServeHTTP(w, req)
+	defer func() {
+		_ = tmux.Kill(context.Background(), "ackbar-claude-code-uuid-idempotent-test")
+	}()
 
 	// In test environment without tmux running, it tries to spawn or reuse
 	// It should never 404 or panic

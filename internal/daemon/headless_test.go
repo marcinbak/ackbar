@@ -408,6 +408,7 @@ func TestHeadlessStreamParser_Antigravity(t *testing.T) {
 	sess := &Session{
 		ID:       sessionID,
 		Agent:    "antigravity",
+		Host:     "local",
 		NativeID: "temp-uuid-999",
 	}
 
@@ -444,6 +445,12 @@ func TestHeadlessStreamParser_Antigravity(t *testing.T) {
 done:
 	if sess.NativeID != "real-ag-conv-456" {
 		t.Errorf("Expected sess.NativeID to be updated to 'real-ag-conv-456', got '%s'", sess.NativeID)
+	}
+	if sess.ID != "antigravity:local:real-ag-conv-456" {
+		t.Errorf("Expected sess.ID to be migrated to 'antigravity:local:real-ag-conv-456', got %q", sess.ID)
+	}
+	if sess.OldID != sessionID {
+		t.Errorf("Expected sess.OldID to be %q, got %q", sessionID, sess.OldID)
 	}
 
 	if len(receivedEvents) < 5 {

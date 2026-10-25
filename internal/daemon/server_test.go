@@ -2838,6 +2838,15 @@ func (p *namedMockProvider) DisplayName() string {
 	return p.agentName
 }
 
+func (p *namedMockProvider) ParseHook(eventName string, payload []byte) (*Event, error) {
+	ev, err := p.MockProvider.ParseHook(eventName, payload)
+	if err != nil || ev == nil {
+		return ev, err
+	}
+	ev.Agent = p.agentName
+	return ev, nil
+}
+
 func TestAgentDiscoveryDeterministicOrdering(t *testing.T) {
 	dbFile := filepath.Join(t.TempDir(), "test_discovery.db")
 	db, err := InitDB(dbFile)
@@ -2985,6 +2994,15 @@ func TestHandleSpawn_PersistsTreeNode(t *testing.T) {
 	w := httptest.NewRecorder()
 
 	server.handleSpawn(w, req)
+	defer func() {
+		if sessions, err := db.ListSessions(); err == nil {
+			for _, s := range sessions {
+				if s.TmuxName != "" {
+					_ = tmux.Kill(context.Background(), s.TmuxName)
+				}
+			}
+		}
+	}()
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("Expected 200, got %d: %s", w.Code, w.Body.String())
@@ -3025,6 +3043,15 @@ func TestHandleSpawn_WithPrompt(t *testing.T) {
 	w := httptest.NewRecorder()
 
 	server.handleSpawn(w, req)
+	defer func() {
+		if sessions, err := db.ListSessions(); err == nil {
+			for _, s := range sessions {
+				if s.TmuxName != "" {
+					_ = tmux.Kill(context.Background(), s.TmuxName)
+				}
+			}
+		}
+	}()
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("Expected 200, got %d: %s", w.Code, w.Body.String())
@@ -3661,6 +3688,15 @@ func TestHostIdentity_HandleSpawn(t *testing.T) {
 	w := httptest.NewRecorder()
 
 	server.handleSpawn(w, req)
+	defer func() {
+		if sessions, err := db.ListSessions(); err == nil {
+			for _, s := range sessions {
+				if s.TmuxName != "" {
+					_ = tmux.Kill(context.Background(), s.TmuxName)
+				}
+			}
+		}
+	}()
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("Expected 200, got %d: %s", w.Code, w.Body.String())
@@ -4168,5 +4204,304 @@ func TestAntigravitySession_RenameAnnotationUpgradesName(t *testing.T) {
 	reChecked, _ := db.GetSession(sessID)
 	if reChecked.Name != "My Custom Overridden Title" {
 		t.Errorf("Expected CustomTitle to be preserved, got %q", reChecked.Name)
+	}
+}
+
+func TestIsIgnoredMCPOrDaemon_AckbarMCP(t *testing.T) {
+	if !isIgnoredMCPOrDaemon("ackbar", "ackbar mcp") {
+		t.Errorf("Expected 'ackbar mcp' to be ignored as an MCP child process")
+	}
+	if !isIgnoredMCPOrDaemon("/opt/homebrew/bin/ackbar", "/opt/homebrew/bin/ackbar mcp") {
+		t.Errorf("Expected '/opt/homebrew/bin/ackbar mcp' to be ignored as an MCP child process")
+	}
+	if isIgnoredMCPOrDaemon("ackbar", "ackbar --version") {
+		t.Errorf("Did not expect 'ackbar --version' to be classified as MCP process")
+	}
+}
+
+func TestProcessHookEvent_AdoptsSpawningAntigravitySessionWithOldIDAndGitRootCwd(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+
+	dbPath := filepath.Join(t.TempDir(), "test_hook_adopt.db")
+	db, err := InitDB(dbPath)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := NewServer(db)
+	p := &namedMockProvider{agentName: "antigravity"}
+	server.RegisterProvider(p)
+
+	repoRoot := filepath.Join(tempHome, "Work", "Ackbar")
+	docsDir := filepath.Join(repoRoot, "docs")
+	_ = os.MkdirAll(docsDir, 0755)
+
+	tempUUID := "11111111-2222-3333-4444-555555555555"
+	oldID := "antigravity:local:" + tempUUID
+	spawning := &Session{
+		ID:          oldID,
+		Agent:       "antigravity",
+		Host:        "local",
+		NativeID:    tempUUID,
+		Name:        "antigravity",
+		Cwd:         repoRoot,
+		ProjectKey:  GetProjectKey(repoRoot),
+		NodePath:    "Personal/Ackbar",
+		TmuxName:    "ackbar-antigravity-" + tempUUID,
+		Managed:     true,
+		State:       StateIdle, // Even if scanObservedSessions moved state from StateUnknown to StateIdle
+		StartedAt:   time.Now().Add(-30 * time.Second),
+		LastEventAt: time.Now().Add(-10 * time.Second),
+	}
+	if err := db.SaveSession(spawning); err != nil {
+		t.Fatalf("SaveSession failed: %v", err)
+	}
+
+	ch := make(chan *Session, 10)
+	server.subMutex.Lock()
+	server.subscribers[ch] = true
+	server.subMutex.Unlock()
+	defer func() {
+		server.subMutex.Lock()
+		delete(server.subscribers, ch)
+		server.subMutex.Unlock()
+	}()
+
+	realUUID := "66666666-7777-8888-9999-aaaaaaaaaaaa"
+	payload := fmt.Sprintf(`{"session_id":%q,"cwd":%q,"state":1,"activity":"Thinking...","name":"MacMini M6 Development Setup"}`, realUUID, docsDir)
+	server.processHookEventWithAccount(p, "", "local", []byte(payload), "")
+
+	var broadcasted []*Session
+	select {
+	case s := <-ch:
+		broadcasted = append(broadcasted, s)
+	case <-time.After(1 * time.Second):
+		t.Fatalf("Timed out waiting for broadcast")
+	}
+
+	if oldSess, _ := db.GetSession(oldID); oldSess != nil {
+		t.Errorf("Expected spawning placeholder session %s to be deleted from DB", oldID)
+	}
+
+	newID := "antigravity:local:" + realUUID
+	adopted, err := db.GetSession(newID)
+	if err != nil || adopted == nil {
+		t.Fatalf("Expected adopted session %s in DB, got err=%v", newID, err)
+	}
+	if !adopted.Managed {
+		t.Errorf("Expected adopted session to remain Managed=true")
+	}
+	if adopted.Cwd != repoRoot {
+		t.Errorf("Expected adopted session to preserve parent repo root Cwd %q over subdirectory %q, got %q", repoRoot, docsDir, adopted.Cwd)
+	}
+	if adopted.NodePath != "Personal/Ackbar" {
+		t.Errorf("Expected NodePath 'Personal/Ackbar', got %q", adopted.NodePath)
+	}
+	if len(broadcasted) == 0 || broadcasted[0].OldID != oldID {
+		t.Errorf("Expected broadcast SSE event to include OldID=%q, got %+v", oldID, broadcasted)
+	}
+}
+
+func TestScanObservedSessions_AdoptsSpawningAntigravitySessionInStep4AndNormalizesGitRoot(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+
+	dbPath := filepath.Join(t.TempDir(), "test_step4_adopt.db")
+	db, err := InitDB(dbPath)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := NewServer(db)
+
+	// Create git repository with .git directory and a docs subdirectory
+	repoRoot := filepath.Join(tempHome, "Work", "Ackbar")
+	docsDir := filepath.Join(repoRoot, "docs")
+	_ = os.MkdirAll(filepath.Join(repoRoot, ".git"), 0755)
+	_ = os.MkdirAll(docsDir, 0755)
+
+	// Seed a spawning placeholder session whose state already transitioned to StateWorking
+	tempUUID := "bbbbbbbb-cccc-dddd-eeee-ffffffffffff"
+	oldID := "antigravity:local:" + tempUUID
+	spawning := &Session{
+		ID:          oldID,
+		Agent:       "antigravity",
+		Host:        "local",
+		NativeID:    tempUUID,
+		Name:        "",
+		Cwd:         repoRoot,
+		ProjectKey:  GetProjectKey(repoRoot),
+		NodePath:    "Personal/Ackbar",
+		TmuxName:    "ackbar-antigravity-" + tempUUID,
+		Managed:     true,
+		State:       StateWorking,
+		StartedAt:   time.Now().Add(-1 * time.Minute),
+		LastEventAt: time.Now().Add(-30 * time.Second),
+	}
+	if err := db.SaveSession(spawning); err != nil {
+		t.Fatalf("SaveSession failed: %v", err)
+	}
+
+	// Create a brain conversation whose first tool call reads a file in /Work/Ackbar/docs/dev-workflow.md
+	realUUID := "cccccccc-dddd-eeee-ffff-000000000000"
+	logDir := filepath.Join(tempHome, ".gemini", "antigravity", "brain", realUUID, ".system_generated", "logs")
+	_ = os.MkdirAll(logDir, 0755)
+	docFile := filepath.Join(docsDir, "dev-workflow.md")
+	transcript := fmt.Sprintf(`{"step_index":1,"type":"USER_INPUT","content":"Update Control Plane App Icon"}`+"\n"+
+		`{"step_index":2,"type":"PLANNER_RESPONSE","tool_calls":[{"name":"read_file","args":{"Path":%q}}]}`+"\n", docFile)
+	logPath := filepath.Join(logDir, "transcript.jsonl")
+	if err := os.WriteFile(logPath, []byte(transcript), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	// Verify extractAntigravityWorkspace normalizes subdirectory tool call to git root
+	extractedCwd := extractAntigravityWorkspace(logPath, tempHome)
+	if extractedCwd != repoRoot {
+		t.Fatalf("Expected extractAntigravityWorkspace to normalize to git root %q, got %q", repoRoot, extractedCwd)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	server.scanObservedSessions(ctx)
+
+	// Verify placeholder session was deleted and adopted into realUUID (no duplicate session in tree!)
+	if oldSess, _ := db.GetSession(oldID); oldSess != nil {
+		t.Errorf("Expected placeholder session %s to be deleted after adoption, but still present", oldID)
+	}
+
+	realID := "antigravity:local:" + realUUID
+	adopted, err := db.GetSession(realID)
+	if err != nil || adopted == nil {
+		t.Fatalf("Expected adopted session %s to exist in DB, err=%v", realID, err)
+	}
+	if !adopted.Managed {
+		t.Errorf("Expected adopted session to remain Managed=true")
+	}
+	if adopted.Cwd != repoRoot {
+		t.Errorf("Expected adopted session Cwd=%q, got %q", repoRoot, adopted.Cwd)
+	}
+	if adopted.NodePath != "Personal/Ackbar" {
+		t.Errorf("Expected adopted session NodePath='Personal/Ackbar', got %q", adopted.NodePath)
+	}
+	if adopted.Name != "Update Control Plane App Icon" {
+		t.Errorf("Expected adopted session Name='Update Control Plane App Icon', got %q", adopted.Name)
+	}
+}
+
+func TestSameOrRelatedDir_IsolatesWorktreesAndHomeContainers(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+
+	repoRoot := filepath.Join(tempHome, "Work", "Ackbar")
+	docsDir := filepath.Join(repoRoot, "docs")
+	worktreeRoot := filepath.Join(repoRoot, ".worktrees", "feat-branch")
+	worktreeSub := filepath.Join(worktreeRoot, "internal", "daemon")
+	_ = os.MkdirAll(filepath.Join(repoRoot, ".git"), 0755)
+	_ = os.MkdirAll(docsDir, 0755)
+	_ = os.MkdirAll(worktreeSub, 0755)
+	_ = os.WriteFile(filepath.Join(worktreeRoot, ".git"), []byte("gitdir: ../../.git/worktrees/feat-branch\n"), 0644)
+
+	if !sameOrRelatedDir(repoRoot, docsDir) {
+		t.Errorf("Expected repoRoot and docsDir to be related")
+	}
+	if !sameOrRelatedDir(worktreeRoot, worktreeSub) {
+		t.Errorf("Expected worktreeRoot and worktreeSub to be related")
+	}
+	if sameOrRelatedDir(repoRoot, worktreeRoot) {
+		t.Errorf("Expected repoRoot and worktreeRoot NOT to be related")
+	}
+	if sameOrRelatedDir(tempHome, repoRoot) {
+		t.Errorf("Expected HOME and repoRoot NOT to be related")
+	}
+	if sameOrRelatedDir(filepath.Join(tempHome, "Work"), repoRoot) {
+		t.Errorf("Expected ~/Work and repoRoot NOT to be related")
+	}
+	if sameOrRelatedDir("/", repoRoot) {
+		t.Errorf("Expected '/' and repoRoot NOT to be related")
+	}
+}
+
+func TestScanObservedSessions_DeferredStep4AdoptionAfterToolCall(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+
+	dbPath := filepath.Join(t.TempDir(), "test_step4_deferred.db")
+	db, err := InitDB(dbPath)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := NewServer(db)
+
+	repoRoot := filepath.Join(tempHome, "Work", "Ackbar")
+	docsDir := filepath.Join(repoRoot, "docs")
+	_ = os.MkdirAll(filepath.Join(repoRoot, ".git"), 0755)
+	_ = os.MkdirAll(docsDir, 0755)
+
+	tempUUID := "dddddddd-eeee-ffff-0000-111111111111"
+	oldID := "antigravity:local:" + tempUUID
+	spawning := &Session{
+		ID:          oldID,
+		Agent:       "antigravity",
+		Host:        "local",
+		NativeID:    tempUUID,
+		Name:        "antigravity",
+		Cwd:         repoRoot,
+		ProjectKey:  GetProjectKey(repoRoot),
+		NodePath:    "Personal/Ackbar",
+		TmuxName:    "ackbar-antigravity-" + tempUUID,
+		Managed:     true,
+		State:       StateIdle,
+		StartedAt:   time.Now().Add(-1 * time.Minute),
+		LastEventAt: time.Now().Add(-30 * time.Second),
+	}
+	if err := db.SaveSession(spawning); err != nil {
+		t.Fatalf("SaveSession failed: %v", err)
+	}
+
+	// Scan 1: conversation exists with USER_INPUT only (no workspace path or tool call yet)
+	realUUID := "eeeeeeee-ffff-0000-1111-222222222222"
+	logDir := filepath.Join(tempHome, ".gemini", "antigravity", "brain", realUUID, ".system_generated", "logs")
+	_ = os.MkdirAll(logDir, 0755)
+	logPath := filepath.Join(logDir, "transcript.jsonl")
+	step1 := `{"step_index":1,"type":"USER_INPUT","content":"Update Control Plane App Icon"}` + "\n"
+	if err := os.WriteFile(logPath, []byte(step1), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	server.scanObservedSessions(ctx)
+
+	// Scan 2: agent makes its first tool call in repoRoot/docs
+	docFile := filepath.Join(docsDir, "dev-workflow.md")
+	step2 := step1 + fmt.Sprintf(`{"step_index":2,"type":"PLANNER_RESPONSE","tool_calls":[{"name":"read_file","args":{"Path":%q}}]}`+"\n", docFile)
+	if err := os.WriteFile(logPath, []byte(step2), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	server.scanObservedSessions(ctx)
+
+	if oldSess, _ := db.GetSession(oldID); oldSess != nil {
+		t.Errorf("Expected placeholder session %s to be deleted after deferred Step 4 adoption", oldID)
+	}
+
+	realID := "antigravity:local:" + realUUID
+	adopted, err := db.GetSession(realID)
+	if err != nil || adopted == nil {
+		t.Fatalf("Expected adopted session %s to exist in DB, err=%v", realID, err)
+	}
+	if !adopted.Managed {
+		t.Errorf("Expected adopted session to be Managed=true after deferred adoption")
+	}
+	if adopted.Cwd != repoRoot {
+		t.Errorf("Expected Cwd=%q, got %q", repoRoot, adopted.Cwd)
+	}
+	if adopted.NodePath != "Personal/Ackbar" {
+		t.Errorf("Expected NodePath='Personal/Ackbar', got %q", adopted.NodePath)
 	}
 }

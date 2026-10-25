@@ -176,3 +176,30 @@ func TestMultiHostAgentSetup_JS(t *testing.T) {
 		}
 	}
 }
+
+func TestTabDeduplicationAndSafeMigration_JS(t *testing.T) {
+	embeddedFS := web.GetFS()
+	f, err := embeddedFS.Open("js/tabs.js")
+	if err != nil {
+		t.Fatalf("failed to open js/tabs.js: %v", err)
+	}
+	defer f.Close()
+
+	contentBytes, err := io.ReadAll(f)
+	if err != nil {
+		t.Fatalf("failed to read js/tabs.js: %v", err)
+	}
+	content := string(contentBytes)
+
+	for _, expected := range []string{
+		"function isSameUnderlyingSession(",
+		"function destroyTabResources(",
+		"existingNewTab && existingNewTab !== tab",
+		"destroyTabResources(existingNewTab)",
+		"isSameUnderlyingSession(session, existingTab.session)",
+	} {
+		if !strings.Contains(content, expected) {
+			t.Errorf("expected js/tabs.js to contain %q", expected)
+		}
+	}
+}
