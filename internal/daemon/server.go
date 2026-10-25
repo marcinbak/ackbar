@@ -229,7 +229,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			return
 		}
 		// Allow static web assets so the UI and favicon load before entering token
-		if path == "/" || path == "/index.html" || path == "/style.css" || path == "/app.js" || path == "/manifest.json" || path == "/favicon.ico" || strings.HasPrefix(path, "/static/") {
+		if path == "/" || path == "/index.html" || path == "/style.css" || path == "/app.js" || path == "/manifest.json" || path == "/favicon.ico" || path == "/apple-touch-icon.png" || strings.HasPrefix(path, "/static/") || strings.HasPrefix(path, "/icons/") {
 			next.ServeHTTP(w, r)
 			return
 		}
