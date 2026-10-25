@@ -67,6 +67,7 @@ function connectTerminalWebSocket(tab, tabId, term, fitAddon, session) {
     };
 
     socket.onmessage = (event) => {
+      const currentTabId = (tab && tab.id) || tabId;
       if (event.data instanceof ArrayBuffer) {
         const u8 = new Uint8Array(event.data);
         if (u8.length === 0) return;
@@ -78,14 +79,14 @@ function connectTerminalWebSocket(tab, tabId, term, fitAddon, session) {
         }
         const textPreview = new TextDecoder().decode(u8.slice(0, 100));
         if (textPreview.includes('[Session was deleted]')) {
-          closeTab(tabId);
+          closeTab(currentTabId);
           return;
         }
         term.write(u8);
       } else if (typeof event.data === 'string') {
         if (!event.data || event.data.startsWith('{"type":')) return;
         if (event.data.includes('[Session was deleted]')) {
-          closeTab(tabId);
+          closeTab(currentTabId);
           return;
         }
         term.write(event.data);
@@ -100,15 +101,18 @@ function connectTerminalWebSocket(tab, tabId, term, fitAddon, session) {
         tab.pingTimer = null;
       }
 
+      const currentTabId = (tab && tab.id) || tabId;
+      const currentSess = (tab && tab.session) || session;
+
       // If session was deleted from state, close tab immediately without reconnecting
-      const sessMatch = state.sessions.find(s => s.id === tabId || (tab.session && s.id === tab.session.id));
+      const sessMatch = state.sessions.find(s => s.id === currentTabId || (currentSess && s.id === currentSess.id));
       if (!sessMatch || sessMatch.deleted) {
-        closeTab(tabId);
+        closeTab(currentTabId);
         return;
       }
 
       // Only auto-reconnect if tab is still open
-      if (state.openTabs.has(tabId)) {
+      if (state.openTabs.has(currentTabId)) {
         if (document.visibilityState === 'visible') {
           if (!tab.reconnectAttempts || tab.reconnectAttempts === 0) {
             term.write('\r\n\x1b[90m[Connection interrupted — Reconnecting...]\x1b[0m\r\n');
@@ -116,8 +120,10 @@ function connectTerminalWebSocket(tab, tabId, term, fitAddon, session) {
           tab.reconnectAttempts = (tab.reconnectAttempts || 0) + 1;
           const delay = Math.min(10000, 1000 * Math.min(tab.reconnectAttempts, 5));
           tab.reconnectTimer = setTimeout(() => {
-            if (state.openTabs.has(tabId)) {
-              connectTerminalWebSocket(tab, tabId, term, fitAddon, session);
+            const latestTabId = (tab && tab.id) || currentTabId;
+            const latestSess = (tab && tab.session) || currentSess;
+            if (state.openTabs.has(latestTabId)) {
+              connectTerminalWebSocket(tab, latestTabId, term, fitAddon, latestSess);
             }
           }, delay);
         } else {

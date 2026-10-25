@@ -4390,3 +4390,118 @@ func TestScanObservedSessions_AdoptsSpawningAntigravitySessionInStep4AndNormaliz
 		t.Errorf("Expected adopted session Name='Update Control Plane App Icon', got %q", adopted.Name)
 	}
 }
+
+func TestSameOrRelatedDir_IsolatesWorktreesAndHomeContainers(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+
+	repoRoot := filepath.Join(tempHome, "Work", "Ackbar")
+	docsDir := filepath.Join(repoRoot, "docs")
+	worktreeRoot := filepath.Join(repoRoot, ".worktrees", "feat-branch")
+	worktreeSub := filepath.Join(worktreeRoot, "internal", "daemon")
+	_ = os.MkdirAll(filepath.Join(repoRoot, ".git"), 0755)
+	_ = os.MkdirAll(docsDir, 0755)
+	_ = os.MkdirAll(worktreeSub, 0755)
+	_ = os.WriteFile(filepath.Join(worktreeRoot, ".git"), []byte("gitdir: ../../.git/worktrees/feat-branch\n"), 0644)
+
+	if !sameOrRelatedDir(repoRoot, docsDir) {
+		t.Errorf("Expected repoRoot and docsDir to be related")
+	}
+	if !sameOrRelatedDir(worktreeRoot, worktreeSub) {
+		t.Errorf("Expected worktreeRoot and worktreeSub to be related")
+	}
+	if sameOrRelatedDir(repoRoot, worktreeRoot) {
+		t.Errorf("Expected repoRoot and worktreeRoot NOT to be related")
+	}
+	if sameOrRelatedDir(tempHome, repoRoot) {
+		t.Errorf("Expected HOME and repoRoot NOT to be related")
+	}
+	if sameOrRelatedDir(filepath.Join(tempHome, "Work"), repoRoot) {
+		t.Errorf("Expected ~/Work and repoRoot NOT to be related")
+	}
+	if sameOrRelatedDir("/", repoRoot) {
+		t.Errorf("Expected '/' and repoRoot NOT to be related")
+	}
+}
+
+func TestScanObservedSessions_DeferredStep4AdoptionAfterToolCall(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+
+	dbPath := filepath.Join(t.TempDir(), "test_step4_deferred.db")
+	db, err := InitDB(dbPath)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := NewServer(db)
+
+	repoRoot := filepath.Join(tempHome, "Work", "Ackbar")
+	docsDir := filepath.Join(repoRoot, "docs")
+	_ = os.MkdirAll(filepath.Join(repoRoot, ".git"), 0755)
+	_ = os.MkdirAll(docsDir, 0755)
+
+	tempUUID := "dddddddd-eeee-ffff-0000-111111111111"
+	oldID := "antigravity:local:" + tempUUID
+	spawning := &Session{
+		ID:          oldID,
+		Agent:       "antigravity",
+		Host:        "local",
+		NativeID:    tempUUID,
+		Name:        "antigravity",
+		Cwd:         repoRoot,
+		ProjectKey:  GetProjectKey(repoRoot),
+		NodePath:    "Personal/Ackbar",
+		TmuxName:    "ackbar-antigravity-" + tempUUID,
+		Managed:     true,
+		State:       StateIdle,
+		StartedAt:   time.Now().Add(-1 * time.Minute),
+		LastEventAt: time.Now().Add(-30 * time.Second),
+	}
+	if err := db.SaveSession(spawning); err != nil {
+		t.Fatalf("SaveSession failed: %v", err)
+	}
+
+	// Scan 1: conversation exists with USER_INPUT only (no workspace path or tool call yet)
+	realUUID := "eeeeeeee-ffff-0000-1111-222222222222"
+	logDir := filepath.Join(tempHome, ".gemini", "antigravity", "brain", realUUID, ".system_generated", "logs")
+	_ = os.MkdirAll(logDir, 0755)
+	logPath := filepath.Join(logDir, "transcript.jsonl")
+	step1 := `{"step_index":1,"type":"USER_INPUT","content":"Update Control Plane App Icon"}` + "\n"
+	if err := os.WriteFile(logPath, []byte(step1), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	server.scanObservedSessions(ctx)
+
+	// Scan 2: agent makes its first tool call in repoRoot/docs
+	docFile := filepath.Join(docsDir, "dev-workflow.md")
+	step2 := step1 + fmt.Sprintf(`{"step_index":2,"type":"PLANNER_RESPONSE","tool_calls":[{"name":"read_file","args":{"Path":%q}}]}`+"\n", docFile)
+	if err := os.WriteFile(logPath, []byte(step2), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	server.scanObservedSessions(ctx)
+
+	if oldSess, _ := db.GetSession(oldID); oldSess != nil {
+		t.Errorf("Expected placeholder session %s to be deleted after deferred Step 4 adoption", oldID)
+	}
+
+	realID := "antigravity:local:" + realUUID
+	adopted, err := db.GetSession(realID)
+	if err != nil || adopted == nil {
+		t.Fatalf("Expected adopted session %s to exist in DB, err=%v", realID, err)
+	}
+	if !adopted.Managed {
+		t.Errorf("Expected adopted session to be Managed=true after deferred adoption")
+	}
+	if adopted.Cwd != repoRoot {
+		t.Errorf("Expected Cwd=%q, got %q", repoRoot, adopted.Cwd)
+	}
+	if adopted.NodePath != "Personal/Ackbar" {
+		t.Errorf("Expected NodePath='Personal/Ackbar', got %q", adopted.NodePath)
+	}
+}

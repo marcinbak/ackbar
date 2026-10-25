@@ -15,6 +15,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"ackbar/internal/tmux"
 )
 
 var (
@@ -766,6 +768,14 @@ func (h *HeadlessRunner) processStream(sessionID string, r io.Reader, optionalSe
 	toolUses := make(map[string]string)
 	hasEmittedAssistantText := false
 	needsSeparation := false
+	emitStreamEvt := func(evt ChatStreamEvent) {
+		h.Emit(sessionID, evt)
+		if sess != nil && sess.ID != "" && sess.ID != sessionID {
+			evtCopy := evt
+			evtCopy.SessionID = sess.ID
+			h.Emit(sess.ID, evtCopy)
+		}
+	}
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
@@ -785,6 +795,14 @@ func (h *HeadlessRunner) processStream(sessionID string, r io.Reader, optionalSe
 					if sess != nil && sess.NativeID != convID {
 						oldID := sess.ID
 						sess.NativeID = convID
+						if sess.TmuxName != "" {
+							newTmuxName := fmt.Sprintf("ackbar-%s-%s", sess.Agent, convID)
+							if sess.TmuxName != newTmuxName {
+								if err := tmux.Rename(context.Background(), sess.TmuxName, newTmuxName); err == nil {
+									sess.TmuxName = newTmuxName
+								}
+							}
+						}
 						if sess.Agent != "" && sess.Host != "" {
 							newID := fmt.Sprintf("%s:%s:%s", sess.Agent, sess.Host, convID)
 							if oldID != "" && oldID != newID {
@@ -797,6 +815,21 @@ func (h *HeadlessRunner) processStream(sessionID string, r io.Reader, optionalSe
 								if cmd, exists := h.processes[oldID]; exists {
 									delete(h.processes, oldID)
 									h.processes[newID] = cmd
+								}
+								if oldQueue, exists := h.queues[oldID]; exists {
+									for _, item := range oldQueue {
+										if item != nil {
+											item.SessionID = newID
+										}
+									}
+									h.queues[newID] = append(oldQueue, h.queues[newID]...)
+									delete(h.queues, oldID)
+								}
+								if oldPaused, exists := h.paused[oldID]; exists {
+									if oldPaused {
+										h.paused[newID] = true
+									}
+									delete(h.paused, oldID)
 								}
 								h.mu.Unlock()
 							}
@@ -818,20 +851,20 @@ func (h *HeadlessRunner) processStream(sessionID string, r io.Reader, optionalSe
 					switch stepType {
 					case "agent_response":
 						if textDelta, ok := su["text_delta"].(string); ok && textDelta != "" {
-							h.Emit(sessionID, ChatStreamEvent{
+							emitStreamEvt(ChatStreamEvent{
 								SessionID: sessionID,
 								Type:      "text_delta",
 								Text:      textDelta,
 							})
 						}
 						if thoughtDelta, ok := su["thought_delta"].(string); ok && thoughtDelta != "" {
-							h.Emit(sessionID, ChatStreamEvent{
+							emitStreamEvt(ChatStreamEvent{
 								SessionID: sessionID,
 								Type:      "thought_delta",
 								Thinking:  thoughtDelta,
 							})
 						} else if thinking, ok := su["thinking"].(string); ok && thinking != "" {
-							h.Emit(sessionID, ChatStreamEvent{
+							emitStreamEvt(ChatStreamEvent{
 								SessionID: sessionID,
 								Type:      "thought_delta",
 								Thinking:  thinking,
@@ -847,7 +880,7 @@ func (h *HeadlessRunner) processStream(sessionID string, r io.Reader, optionalSe
 							if toolInfo != nil {
 								toolInput = toolInfo["parameters"]
 							}
-							h.Emit(sessionID, ChatStreamEvent{
+							emitStreamEvt(ChatStreamEvent{
 								SessionID: sessionID,
 								Type:      "tool_start",
 								ToolName:  toolName,
@@ -860,7 +893,7 @@ func (h *HeadlessRunner) processStream(sessionID string, r io.Reader, optionalSe
 									toolOutput = out
 								}
 							}
-							h.Emit(sessionID, ChatStreamEvent{
+							emitStreamEvt(ChatStreamEvent{
 								SessionID:  sessionID,
 								Type:       "tool_result",
 								ToolName:   toolName,
@@ -881,14 +914,14 @@ func (h *HeadlessRunner) processStream(sessionID string, r io.Reader, optionalSe
 						}
 
 						if state == "ACTIVE" {
-							h.Emit(sessionID, ChatStreamEvent{
+							emitStreamEvt(ChatStreamEvent{
 								SessionID: sessionID,
 								Type:      "tool_start",
 								ToolName:  "Task: " + subagentName,
 								ToolInput: su["description"],
 							})
 						} else if state == "DONE" || state == "ERROR" {
-							h.Emit(sessionID, ChatStreamEvent{
+							emitStreamEvt(ChatStreamEvent{
 								SessionID:  sessionID,
 								Type:       "tool_result",
 								ToolName:   "Task: " + subagentName,
@@ -899,7 +932,7 @@ func (h *HeadlessRunner) processStream(sessionID string, r io.Reader, optionalSe
 
 					case "error_message":
 						if errMsg, ok := su["error"].(string); ok && errMsg != "" {
-							h.Emit(sessionID, ChatStreamEvent{
+							emitStreamEvt(ChatStreamEvent{
 								SessionID: sessionID,
 								Type:      "error",
 								Text:      errMsg,
@@ -918,14 +951,14 @@ func (h *HeadlessRunner) processStream(sessionID string, r io.Reader, optionalSe
 						if errText == "" {
 							errText = respText
 						}
-						h.Emit(sessionID, ChatStreamEvent{
+						emitStreamEvt(ChatStreamEvent{
 							SessionID: sessionID,
 							Type:      "error",
 							Text:      errText,
 							IsError:   true,
 						})
 					} else {
-						h.Emit(sessionID, ChatStreamEvent{
+						emitStreamEvt(ChatStreamEvent{
 							SessionID: sessionID,
 							Type:      "turn_complete",
 							Text:      respText,

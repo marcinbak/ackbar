@@ -818,8 +818,13 @@ function migrateTabId(oldId, newId, session) {
     }
     state.openTabs.set(newId, tab);
 
-    if (state.activeTabId === oldId) {
+    if (state.activeTabId === oldId || state.activeTabId === newId) {
       state.activeTabId = newId;
+      if (tab.tabEl) tab.tabEl.classList.add('active');
+      if (tab.containerEl) tab.containerEl.classList.add('active');
+    }
+    if (tab.chatEventSource) {
+      connectChatStream(tab);
     }
   }
 
@@ -858,8 +863,10 @@ function migrateTabId(oldId, newId, session) {
       detailsTab.containerEl.id = `detailsView_${newId.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
     }
     state.openTabs.set(detailsNewId, detailsTab);
-    if (state.activeTabId === detailsOldId) {
+    if (state.activeTabId === detailsOldId || state.activeTabId === detailsNewId) {
       state.activeTabId = detailsNewId;
+      if (detailsTab.tabEl) detailsTab.tabEl.classList.add('active');
+      if (detailsTab.containerEl) detailsTab.containerEl.classList.add('active');
     }
   }
 
