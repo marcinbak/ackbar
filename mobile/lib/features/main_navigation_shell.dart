@@ -24,6 +24,9 @@ class MainNavigationShell extends ConsumerWidget {
     final currentIndex = ref.watch(mainTabNavIndexProvider);
     final attentionCount = ref.watch(attentionBadgeCountProvider);
     final plansCount = ref.watch(pendingPlansCountProvider);
+    final hosts = ref.watch(hostsListProvider);
+    final hostsCount = hosts.length;
+    final hostsOnlineCount = hosts.where((h) => h.online).length;
 
     return Scaffold(
       backgroundColor: AppColors.background,
@@ -38,6 +41,8 @@ class MainNavigationShell extends ConsumerWidget {
         },
         attentionCount: attentionCount,
         plansCount: plansCount,
+        hostsCount: hostsCount,
+        hostsOnlineCount: hostsOnlineCount,
       ),
     );
   }

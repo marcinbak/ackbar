@@ -1,6 +1,7 @@
 name: ackbar_mobile
 description: "Ackbar Mobile - Agent Control Plane & Session Manager"
 publish_to: 'none'
+# UI display version is defined in lib/core/constants/app_version.dart (synced with ../VERSION)
 version: 0.1.0+1
 
 environment:

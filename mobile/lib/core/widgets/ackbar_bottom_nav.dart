@@ -10,6 +10,8 @@ class AckbarBottomNav extends StatelessWidget {
   final ValueChanged<int> onTap;
   final int attentionCount;
   final int plansCount;
+  final int? hostsCount;
+  final int? hostsOnlineCount;
 
   const AckbarBottomNav({
     super.key,
@@ -17,7 +19,23 @@ class AckbarBottomNav extends StatelessWidget {
     required this.onTap,
     this.attentionCount = 0,
     this.plansCount = 0,
+    this.hostsCount,
+    this.hostsOnlineCount,
   });
+
+  /// Resolves the semantic health color for the Hosts badge:
+  /// - Green (`statusEmerald`): all configured hosts are online (`total > 0 && online == total`)
+  /// - Orange (`statusAmber`): some hosts are down (`online > 0 && online < total`)
+  /// - Red (`statusCoral`): all hosts are down (`online == 0`)
+  static Color hostsBadgeColor({required int total, required int online}) {
+    if (total > 0 && online == total) {
+      return AppColors.statusEmerald;
+    }
+    if (online > 0 && online < total) {
+      return AppColors.statusAmber;
+    }
+    return AppColors.statusCoral;
+  }
 
   void _handleTap(int index) {
     HapticFeedback.selectionClick();
@@ -50,6 +68,14 @@ class AckbarBottomNav extends StatelessWidget {
         label: 'Hosts',
         icon: Icons.dns_outlined,
         selectedIcon: Icons.dns_rounded,
+        badgeCount: hostsCount ?? 0,
+        showBadgeWhenZero: hostsCount != null,
+        badgeColor: hostsCount != null
+            ? hostsBadgeColor(
+                total: hostsCount!,
+                online: hostsOnlineCount ?? 0,
+              )
+            : null,
       ),
     ];
 
@@ -91,6 +117,7 @@ class _NavItemData {
   final IconData icon;
   final IconData selectedIcon;
   final int badgeCount;
+  final bool showBadgeWhenZero;
   final Color? badgeColor;
 
   const _NavItemData({
@@ -98,6 +125,7 @@ class _NavItemData {
     required this.icon,
     required this.selectedIcon,
     this.badgeCount = 0,
+    this.showBadgeWhenZero = false,
     this.badgeColor,
   });
 }
@@ -135,18 +163,21 @@ class _NavButton extends StatelessWidget {
                 color: color,
                 size: 22,
               ),
-              if (item.badgeCount > 0)
+              if (item.badgeCount > 0 || item.showBadgeWhenZero)
                 Positioned(
                   top: -4,
                   right: -8,
                   child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 4.5, vertical: 1.5),
+                    key: Key('bottom_nav_badge_${item.label.toLowerCase()}'),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 4.5, vertical: 1.5),
                     decoration: BoxDecoration(
                       color: item.badgeColor ?? AppColors.statusCoral,
                       borderRadius: BorderRadius.circular(10),
                       boxShadow: [
                         BoxShadow(
-                          color: (item.badgeColor ?? AppColors.statusCoral).withOpacity(0.4),
+                          color: (item.badgeColor ?? AppColors.statusCoral)
+                              .withOpacity(0.4),
                           blurRadius: 4,
                           spreadRadius: 1,
                         ),

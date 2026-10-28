@@ -1,8 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:ackbar_mobile/core/constants/app_version.dart';
 import 'package:ackbar_mobile/core/theme/app_colors.dart';
 import 'package:ackbar_mobile/core/theme/app_theme.dart';
+import 'package:ackbar_mobile/core/widgets/ackbar_app_bar.dart';
+import 'package:ackbar_mobile/core/widgets/ackbar_bottom_nav.dart';
 import 'package:ackbar_mobile/core/widgets/glass_card.dart';
 import 'package:ackbar_mobile/core/widgets/segmented_filter_tabs.dart';
 import 'package:ackbar_mobile/core/widgets/status_badge.dart';
@@ -417,5 +420,135 @@ void main() {
 
       expect(pressedKey, equals('⌫'));
     });
+  });
+
+  group('AckbarAppBar Widget Tests', () {
+    testWidgets(
+      'hides version pill by default and does not render host pills',
+      (tester) async {
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: AppTheme.darkTheme,
+            home: const Scaffold(
+              appBar: AckbarAppBar(
+                title: 'FLEET CONTROL',
+                hosts: [
+                  HostStatusIndicator(name: 'local', isOnline: true),
+                  HostStatusIndicator(name: 'gpu-box', isOnline: false),
+                ],
+              ),
+            ),
+          ),
+        );
+
+        expect(find.text('FLEET CONTROL'), findsOneWidget);
+        expect(find.text(AppVersion.displayVersion), findsNothing);
+        expect(find.text('local'), findsNothing);
+        expect(find.text('gpu-box'), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'displays AppVersion.displayVersion when showVersion is true',
+      (tester) async {
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: AppTheme.darkTheme,
+            home: const Scaffold(
+              appBar: AckbarAppBar(
+                title: 'DAEMON HOSTS',
+                showVersion: true,
+              ),
+            ),
+          ),
+        );
+
+        expect(find.text('DAEMON HOSTS'), findsOneWidget);
+        expect(find.text(AppVersion.displayVersion), findsOneWidget);
+      },
+    );
+  });
+
+  group('AckbarBottomNav Widget Tests', () {
+    testWidgets(
+      'renders Hosts badge with emerald green when all hosts are online',
+      (tester) async {
+        await tester.pumpWidget(
+          _wrapWithTheme(
+            AckbarBottomNav(
+              currentIndex: 0,
+              onTap: (_) {},
+              hostsCount: 3,
+              hostsOnlineCount: 3,
+            ),
+          ),
+        );
+
+        final badgeFinder = find.byKey(const Key('bottom_nav_badge_hosts'));
+        expect(badgeFinder, findsOneWidget);
+        expect(
+          find.descendant(of: badgeFinder, matching: find.text('3')),
+          findsOneWidget,
+        );
+
+        final container = tester.widget<Container>(badgeFinder);
+        final decoration = container.decoration as BoxDecoration;
+        expect(decoration.color, equals(AppColors.statusEmerald));
+      },
+    );
+
+    testWidgets(
+      'renders Hosts badge with amber orange when some hosts are down',
+      (tester) async {
+        await tester.pumpWidget(
+          _wrapWithTheme(
+            AckbarBottomNav(
+              currentIndex: 0,
+              onTap: (_) {},
+              hostsCount: 3,
+              hostsOnlineCount: 2,
+            ),
+          ),
+        );
+
+        final badgeFinder = find.byKey(const Key('bottom_nav_badge_hosts'));
+        expect(badgeFinder, findsOneWidget);
+        expect(
+          find.descendant(of: badgeFinder, matching: find.text('3')),
+          findsOneWidget,
+        );
+
+        final container = tester.widget<Container>(badgeFinder);
+        final decoration = container.decoration as BoxDecoration;
+        expect(decoration.color, equals(AppColors.statusAmber));
+      },
+    );
+
+    testWidgets(
+      'renders Hosts badge with coral red when all hosts are down',
+      (tester) async {
+        await tester.pumpWidget(
+          _wrapWithTheme(
+            AckbarBottomNav(
+              currentIndex: 0,
+              onTap: (_) {},
+              hostsCount: 3,
+              hostsOnlineCount: 0,
+            ),
+          ),
+        );
+
+        final badgeFinder = find.byKey(const Key('bottom_nav_badge_hosts'));
+        expect(badgeFinder, findsOneWidget);
+        expect(
+          find.descendant(of: badgeFinder, matching: find.text('3')),
+          findsOneWidget,
+        );
+
+        final container = tester.widget<Container>(badgeFinder);
+        final decoration = container.decoration as BoxDecoration;
+        expect(decoration.color, equals(AppColors.statusCoral));
+      },
+    );
   });
 }

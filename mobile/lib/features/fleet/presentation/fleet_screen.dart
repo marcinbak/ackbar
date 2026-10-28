@@ -77,13 +77,10 @@ class _FleetScreenState extends ConsumerState<FleetScreen> {
       FilterTabItem(label: 'Idle', count: idleCount),
     ];
 
-    final hostIndicators = hosts.map((h) => h.toIndicator()).toList();
-
     return Scaffold(
       backgroundColor: AppColors.background,
       appBar: AckbarAppBar(
         title: 'FLEET CONTROL',
-        hosts: hostIndicators,
         actions: [
           IconButton(
             icon: const Icon(Icons.add_circle_outline_rounded,

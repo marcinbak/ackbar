@@ -19,7 +19,6 @@ class PlansScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final plans = ref.watch(plansListProvider);
     final filterIndex = ref.watch(plansFilterIndexProvider);
-    final hosts = ref.watch(hostsListProvider);
 
     final pendingPlans = plans.where((p) => p.isPendingReview).toList();
     final inProgressPlans = plans.where((p) => p.isInProgress).toList();
@@ -44,13 +43,10 @@ class PlansScreen extends ConsumerWidget {
       ),
     ];
 
-    final hostIndicators = hosts.map((h) => h.toIndicator()).toList();
-
     return Scaffold(
       backgroundColor: AppColors.background,
-      appBar: AckbarAppBar(
+      appBar: const AckbarAppBar(
         title: 'PLANS & PROPOSALS',
-        hosts: hostIndicators,
       ),
       body: CustomScrollView(
         physics: const BouncingScrollPhysics(parent: AlwaysScrollableScrollPhysics()),
