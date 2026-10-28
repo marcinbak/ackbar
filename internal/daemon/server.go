@@ -633,7 +633,10 @@ func (s *Server) processHookEventWithAccount(p Provider, urlEventName string, he
 			sess.Name = anno
 		}
 	}
-	if strings.EqualFold(event.EventName, "stop") || strings.EqualFold(event.EventName, "sessionend") {
+	isPureHeadless := sess.EngineType == EngineHeadless && sess.TmuxName == ""
+	headlessRunning := isPureHeadless && s.headless != nil && s.headless.IsRunning(sess.ID)
+
+	if !isPureHeadless && (strings.EqualFold(event.EventName, "stop") || strings.EqualFold(event.EventName, "sessionend")) {
 		runningSubs := s.getRunningSubagents(sessionID, event.NativeID, event.Agent, event.Cwd)
 		if len(runningSubs) > 0 {
 			event.State = StateWorking
@@ -643,6 +646,16 @@ func (s *Server) processHookEventWithAccount(p Provider, urlEventName string, he
 				event.State = StateWorking
 				event.Activity = "Running " + activeChildren[0]
 			}
+		}
+	}
+
+	if isPureHeadless {
+		if !headlessRunning && (event.State == StateWorking || event.State == StateEnded) {
+			event.State = StateIdle
+			event.Activity = ""
+		} else if event.State == StateEnded {
+			event.State = StateIdle
+			event.Activity = ""
 		}
 	}
 
@@ -750,7 +763,12 @@ func (s *Server) processHookEventWithAccount(p Provider, urlEventName string, he
 	}
 
 	// Update running subagents count on session
-	sess.RunningSubagents = len(s.getRunningSubagents(sessionID, event.NativeID, event.Agent, event.Cwd))
+	if isPureHeadless && !headlessRunning {
+		s.clearSubagents(sessionID, event.NativeID)
+		sess.RunningSubagents = 0
+	} else {
+		sess.RunningSubagents = len(s.getRunningSubagents(sessionID, event.NativeID, event.Agent, event.Cwd))
+	}
 
 	// Save to SQLite
 	if err := s.db.SaveSession(sess); err != nil {
@@ -3059,6 +3077,7 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 			Host:        effectiveHost,
 			NativeID:    tempUUID,
 			Cwd:         req.Cwd,
+			ProjectKey:  GetProjectKey(req.Cwd),
 			NodePath:    req.NodePath,
 			Name:        req.Name,
 			Managed:     true,
@@ -3070,14 +3089,20 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 			LastEventAt: time.Now(),
 			AccountID:   accountID,
 		}
+		initialPrompt := strings.TrimSpace(req.Prompt)
 		if req.Name != "" {
 			sess.CustomTitle = req.Name
+		} else if initialPrompt != "" {
+			sess.Name = TruncateTitle(initialPrompt)
 		}
 		if err := s.db.SaveSession(sess); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		s.broadcast(sess)
+		if initialPrompt != "" && s.headless != nil {
+			_ = s.headless.RunTurn(context.Background(), sess, initialPrompt)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{
 			"status":      "spawned",
@@ -3355,6 +3380,9 @@ func (s *Server) findSpawningSession(agent, cwd string) (*Session, error) {
 	home, _ := os.UserHomeDir()
 	// 1. Exact CWD + StateUnknown match
 	for _, sess := range sessions {
+		if sess.EngineType == EngineHeadless && sess.TmuxName == "" {
+			continue
+		}
 		if sess.Agent == agent && sess.Cwd == cwd && sess.Managed && sess.State == StateUnknown && sess.OldID == "" {
 			if agent == "antigravity" && hasAntigravityConversationArtifacts(home, sess.NativeID) {
 				continue
@@ -3364,6 +3392,9 @@ func (s *Server) findSpawningSession(agent, cwd string) (*Session, error) {
 	}
 	// 2. Subdirectory / parent CWD (within same project/worktree root) + StateUnknown match
 	for _, sess := range sessions {
+		if sess.EngineType == EngineHeadless && sess.TmuxName == "" {
+			continue
+		}
 		if sess.Agent == agent && sameOrRelatedDir(sess.Cwd, cwd) && sess.Managed && sess.State == StateUnknown && sess.OldID == "" {
 			if agent == "antigravity" && hasAntigravityConversationArtifacts(home, sess.NativeID) {
 				continue
@@ -5435,6 +5466,29 @@ func (s *Server) verifySessionLiveness(ctx context.Context, sessions []*Session)
 			continue
 		}
 
+		if sess.EngineType == EngineHeadless && sess.TmuxName == "" {
+			isRunning := s.headless != nil && s.headless.IsRunning(sess.ID)
+			if isRunning {
+				if sess.State != StateWorking {
+					sess.State = StateWorking
+					if sess.Activity == "" {
+						sess.Activity = "Thinking..."
+					}
+					_ = s.db.SaveSession(sess)
+					s.broadcast(sess)
+				}
+			} else if sess.State == StateWorking {
+				sess.State = StateIdle
+				sess.Activity = ""
+				sess.PID = 0
+				sess.Blocked = nil
+				sess.RunningSubagents = 0
+				_ = s.db.SaveSession(sess)
+				s.broadcast(sess)
+			}
+			continue
+		}
+
 		if p, ok := s.providers[sess.Agent]; ok {
 			if inspector, ok := p.(StatusInspector); ok {
 				if inspector.InspectStatus(ctx, sess) {
@@ -5686,7 +5740,20 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 					}
 				}
 			}
-			if inspector, ok := p.(StatusInspector); ok {
+			if sess.EngineType == EngineHeadless && sess.TmuxName == "" {
+				isRunning := s.headless != nil && s.headless.IsRunning(sess.ID)
+				if !isRunning && sess.State == StateWorking {
+					sess.State = StateIdle
+					sess.Activity = ""
+					sess.PID = 0
+					sess.Blocked = nil
+					sess.RunningSubagents = 0
+					changed = true
+				} else if isRunning && sess.State != StateWorking {
+					sess.State = StateWorking
+					changed = true
+				}
+			} else if inspector, ok := p.(StatusInspector); ok {
 				if inspector.InspectStatus(ctx, sess) {
 					changed = true
 				}

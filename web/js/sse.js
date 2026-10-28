@@ -14,7 +14,7 @@ import {
 } from './api.js';
 import { renderTree } from './tree.js';
 import { closeTab, updateOpenTabsState, checkAndReconnectActiveTabs, migrateTabId } from './tabs.js';
-import { renderSubagentsBar, fetchRunningSubagents, loadChatTranscript, resetChatComposer, hideInStreamActivity } from './chat.js';
+import { renderSubagentsBar, fetchRunningSubagents, loadChatTranscript, resetChatComposer, hideInStreamActivity, onSessionUpdated } from './chat.js';
 import { getAppMode, refreshWorkBoard } from './tasks.js';
 
 let taskRefreshTimer = null;
@@ -40,7 +40,12 @@ function connectSSE() {
     if (token) {
       sseUrl += (sseUrl.includes('?') ? '&' : '?') + `token=${encodeURIComponent(token)}`;
     }
-    if (activeEventSources.has(h.name)) return;
+    const existingSse = activeEventSources.get(h.name);
+    if (existingSse && existingSse.readyState !== EventSource.CLOSED) return;
+    if (existingSse) {
+      try { existingSse.close(); } catch (e) {}
+      activeEventSources.delete(h.name);
+    }
 
     try {
       const sse = new EventSource(sseUrl);
@@ -100,31 +105,11 @@ function connectSSE() {
           updateOpenTabsState();
           triggerTaskBoardRefresh();
 
-          // Sync running subagents and auto-heal completed turn states for open chat tabs
-          for (const [, tabObj] of state.openTabs.entries()) {
-            if (tabObj && tabObj.session && (tabObj.session.id === updatedSess.id || (tabObj.session.native_id && tabObj.session.native_id === updatedSess.native_id))) {
-              if (typeof updatedSess.running_subagents === 'number') {
-                if (updatedSess.running_subagents === 0) {
-                  tabObj.runningSubagents = [];
-                  renderSubagentsBar(tabObj);
-                } else if (!tabObj.runningSubagents || tabObj.runningSubagents.length !== updatedSess.running_subagents) {
-                  fetchRunningSubagents(tabObj);
-                }
-              }
-
-              // If session is now Idle (3), Blocked (2), or Ended (4), heal any lingering in-flight turn indicators
-              const isTurnFinished = updatedSess.state === 3 || updatedSess.state === 2 || updatedSess.state === 4;
-              const hasLingeringTurnUI = tabObj.activeInStreamActivityEl ||
-                                         tabObj.activeTurnMsgEl ||
-                                         (tabObj.chatCancelBtn && tabObj.chatCancelBtn.style.display !== 'none') ||
-                                         (tabObj.chatSendBtn && tabObj.chatSendBtn.classList.contains('is-queue'));
-              if (isTurnFinished && hasLingeringTurnUI) {
-                hideInStreamActivity(tabObj);
-                resetChatComposer(tabObj);
-                // Reload transcript to render the completed assistant message
-                loadChatTranscript(tabObj);
-              }
-            }
+          // Sync running subagents and reconcile working/idle turn states for open chat tabs
+          if (window.AckbarChat && typeof window.AckbarChat.onSessionUpdated === 'function') {
+            window.AckbarChat.onSessionUpdated(updatedSess);
+          } else {
+            onSessionUpdated(updatedSess);
           }
         } catch (e) {
           console.error(`[SSE ${h.name}] parse error:`, e);
@@ -140,6 +125,15 @@ function connectSSE() {
     }
   });
 }
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') {
+    connectSSE();
+  }
+});
+window.addEventListener('online', () => {
+  connectSSE();
+});
 
 // Render Sidebar Tree Hierarchy with Recursive Group Nesting & Drag-and-Drop
 

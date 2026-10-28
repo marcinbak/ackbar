@@ -463,6 +463,66 @@ func hasAntigravityConversation(home, nativeID string) bool {
 	return false
 }
 
+// buildArgs constructs the binary path and CLI arguments for a headless turn.
+func (h *HeadlessRunner) buildArgs(sess *Session, prompt, home string) (string, []string, error) {
+	if sess.Agent == "antigravity" {
+		bin, err := resolveAntigravityBinary()
+		if err != nil {
+			return "", nil, fmt.Errorf("failed to locate agy binary: %w", err)
+		}
+
+		if hasAntigravityConversation(home, sess.NativeID) || sess.FirstPrompt != "" || sess.LastPrompt != "" {
+			return bin, []string{"-p", prompt, "--output-format", "stream-json", "--dangerously-skip-permissions", "--conversation", sess.NativeID}, nil
+		}
+		return bin, []string{"-p", prompt, "--output-format", "stream-json", "--dangerously-skip-permissions"}, nil
+	}
+
+	bin, err := resolveClaudeBinary()
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to locate claude binary: %w", err)
+	}
+
+	claudeDir := filepath.Join(home, ".claude")
+	if sess.AccountID != "" && h.db != nil {
+		if acc, _ := h.db.GetAccount(sess.AccountID); acc != nil && acc.ConfigDir != "" {
+			cfgDir := acc.ConfigDir
+			if strings.HasPrefix(cfgDir, "~/") && home != "" {
+				cfgDir = filepath.Join(home, cfgDir[2:])
+			}
+			claudeDir = cfgDir
+		}
+	}
+
+	encodedCwd := encodeClaudeProjectDir(sess.Cwd)
+	transcriptFile := filepath.Join(claudeDir, "projects", encodedCwd, sess.NativeID+".jsonl")
+
+	hasTranscript := fileExists(transcriptFile)
+	if !hasTranscript {
+		projectsDir := filepath.Join(claudeDir, "projects")
+		if entries, err := os.ReadDir(projectsDir); err == nil {
+			for _, e := range entries {
+				if e.IsDir() {
+					cand := filepath.Join(projectsDir, e.Name(), sess.NativeID+".jsonl")
+					if fileExists(cand) {
+						hasTranscript = true
+						break
+					}
+				}
+			}
+		}
+	}
+
+	if !hasTranscript && fileExists(filepath.Join(claudeDir, "session-env", sess.NativeID)) {
+		hasTranscript = true
+	}
+
+	// If transcript or session-env exists, or if a previous turn ran in this session, resume conversation
+	if hasTranscript || sess.FirstPrompt != "" || sess.LastPrompt != "" {
+		return bin, []string{"-p", prompt, "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions", "--resume", sess.NativeID}, nil
+	}
+	return bin, []string{"-p", prompt, "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions", "--session-id", sess.NativeID}, nil
+}
+
 // RunTurn launches an asynchronous headless turn for the session.
 func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt string) error {
 	if sess.Agent != "claude-code" && sess.Agent != "antigravity" {
@@ -480,70 +540,10 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 	}
 
 	home, _ := os.UserHomeDir()
-	var bin string
-	var args []string
-
-	if sess.Agent == "antigravity" {
-		var err error
-		bin, err = resolveAntigravityBinary()
-		if err != nil {
-			h.mu.Unlock()
-			return fmt.Errorf("failed to locate agy binary: %w", err)
-		}
-
-		if hasAntigravityConversation(home, sess.NativeID) || sess.FirstPrompt != "" || sess.LastPrompt != "" {
-			args = []string{"-p", prompt, "--output-format", "stream-json", "--dangerously-skip-permissions", "--conversation", sess.NativeID}
-		} else {
-			args = []string{"-p", prompt, "--output-format", "stream-json", "--dangerously-skip-permissions"}
-		}
-	} else {
-		var err error
-		bin, err = resolveClaudeBinary()
-		if err != nil {
-			h.mu.Unlock()
-			return fmt.Errorf("failed to locate claude binary: %w", err)
-		}
-
-		claudeDir := filepath.Join(home, ".claude")
-		if sess.AccountID != "" && h.db != nil {
-			if acc, _ := h.db.GetAccount(sess.AccountID); acc != nil && acc.ConfigDir != "" {
-				cfgDir := acc.ConfigDir
-				if strings.HasPrefix(cfgDir, "~/") && home != "" {
-					cfgDir = filepath.Join(home, cfgDir[2:])
-				}
-				claudeDir = cfgDir
-			}
-		}
-
-		encodedCwd := encodeClaudeProjectDir(sess.Cwd)
-		transcriptFile := filepath.Join(claudeDir, "projects", encodedCwd, sess.NativeID+".jsonl")
-
-		hasTranscript := fileExists(transcriptFile)
-		if !hasTranscript {
-			projectsDir := filepath.Join(claudeDir, "projects")
-			if entries, err := os.ReadDir(projectsDir); err == nil {
-				for _, e := range entries {
-					if e.IsDir() {
-						cand := filepath.Join(projectsDir, e.Name(), sess.NativeID+".jsonl")
-						if fileExists(cand) {
-							hasTranscript = true
-							break
-						}
-					}
-				}
-			}
-		}
-
-		if !hasTranscript && fileExists(filepath.Join(claudeDir, "session-env", sess.NativeID)) {
-			hasTranscript = true
-		}
-
-		// If transcript or session-env exists, or if a previous turn ran in this session, resume conversation
-		if hasTranscript || sess.FirstPrompt != "" || sess.LastPrompt != "" {
-			args = []string{"-p", prompt, "--output-format", "stream-json", "--verbose", "--resume", sess.NativeID}
-		} else {
-			args = []string{"-p", prompt, "--output-format", "stream-json", "--verbose", "--session-id", sess.NativeID}
-		}
+	bin, args, err := h.buildArgs(sess, prompt, home)
+	if err != nil {
+		h.mu.Unlock()
+		return err
 	}
 
 	cmd := exec.CommandContext(ctx, bin, args...)
@@ -610,12 +610,10 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 	sess.State = StateWorking
 	sess.Activity = "Thinking..."
 	sess.LastEventAt = time.Now()
-	if sess.FirstPrompt == "" {
-		sess.FirstPrompt = prompt
-	}
-	sess.LastPrompt = prompt
 	sess.PID = cmd.Process.Pid
-	_ = h.db.SaveSession(sess)
+	if h.db != nil {
+		_ = h.db.SaveSession(sess)
+	}
 	if h.broadcast != nil {
 		h.broadcast(sess)
 	}
@@ -638,7 +636,7 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 			h.mu.Unlock()
 		}()
 
-		h.processStream(origSessionID, stdoutPipe, sess)
+		h.processStreamWithPrompt(origSessionID, stdoutPipe, prompt, sess)
 
 		waitErr := cmd.Wait()
 
@@ -662,7 +660,12 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 		sess.Activity = ""
 		sess.LastEventAt = time.Now()
 		sess.PID = 0
-		if waitErr != nil {
+		if waitErr == nil {
+			if sess.FirstPrompt == "" {
+				sess.FirstPrompt = prompt
+			}
+			sess.LastPrompt = prompt
+		} else {
 			errDetail := strings.TrimSpace(stderrBuf.String())
 			if errDetail != "" {
 				sess.Activity = "Turn error: " + errDetail
@@ -756,6 +759,79 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 }
 
 func (h *HeadlessRunner) processStream(sessionID string, r io.Reader, optionalSess ...*Session) {
+	h.processStreamWithPrompt(sessionID, r, "", optionalSess...)
+}
+
+func (h *HeadlessRunner) handleAntigravityInit(sess *Session, convID, prompt string) {
+	if sess == nil || convID == "" {
+		return
+	}
+	changed := false
+	if prompt != "" {
+		if sess.FirstPrompt == "" {
+			sess.FirstPrompt = prompt
+			changed = true
+		}
+		if sess.LastPrompt != prompt {
+			sess.LastPrompt = prompt
+			changed = true
+		}
+	}
+	if sess.NativeID != convID {
+		oldID := sess.ID
+		sess.NativeID = convID
+		changed = true
+		if sess.TmuxName != "" {
+			newTmuxName := fmt.Sprintf("ackbar-%s-%s", sess.Agent, convID)
+			if sess.TmuxName != newTmuxName {
+				if err := tmux.Rename(context.Background(), sess.TmuxName, newTmuxName); err == nil {
+					sess.TmuxName = newTmuxName
+				}
+			}
+		}
+		if sess.Agent != "" && sess.Host != "" {
+			newID := fmt.Sprintf("%s:%s:%s", sess.Agent, sess.Host, convID)
+			if oldID != "" && oldID != newID {
+				sess.OldID = oldID
+				sess.ID = newID
+				if h.db != nil {
+					_ = h.db.DeleteSession(oldID)
+				}
+				h.mu.Lock()
+				if cmd, exists := h.processes[oldID]; exists {
+					delete(h.processes, oldID)
+					h.processes[newID] = cmd
+				}
+				if oldQueue, exists := h.queues[oldID]; exists {
+					for _, item := range oldQueue {
+						if item != nil {
+							item.SessionID = newID
+						}
+					}
+					h.queues[newID] = append(oldQueue, h.queues[newID]...)
+					delete(h.queues, oldID)
+				}
+				if oldPaused, exists := h.paused[oldID]; exists {
+					if oldPaused {
+						h.paused[newID] = true
+					}
+					delete(h.paused, oldID)
+				}
+				h.mu.Unlock()
+			}
+		}
+	}
+	if changed {
+		if h.db != nil {
+			_ = h.db.SaveSession(sess)
+		}
+		if h.broadcast != nil {
+			h.broadcast(sess)
+		}
+	}
+}
+
+func (h *HeadlessRunner) processStreamWithPrompt(sessionID string, r io.Reader, prompt string, optionalSess ...*Session) {
 	var sess *Session
 	if len(optionalSess) > 0 {
 		sess = optionalSess[0]
@@ -766,7 +842,9 @@ func (h *HeadlessRunner) processStream(sessionID string, r io.Reader, optionalSe
 	scanner.Buffer(buf, 10*1024*1024)
 
 	toolUses := make(map[string]string)
+	emittedToolStart := make(map[string]bool)
 	hasEmittedAssistantText := false
+	hasEmittedDeltaInTurn := false
 	needsSeparation := false
 	emitStreamEvt := func(evt ChatStreamEvent) {
 		h.Emit(sessionID, evt)
@@ -792,55 +870,7 @@ func (h *HeadlessRunner) processStream(sessionID string, r io.Reader, optionalSe
 			switch agyEvt {
 			case "init":
 				if convID, ok := raw["conversation_id"].(string); ok && convID != "" {
-					if sess != nil && sess.NativeID != convID {
-						oldID := sess.ID
-						sess.NativeID = convID
-						if sess.TmuxName != "" {
-							newTmuxName := fmt.Sprintf("ackbar-%s-%s", sess.Agent, convID)
-							if sess.TmuxName != newTmuxName {
-								if err := tmux.Rename(context.Background(), sess.TmuxName, newTmuxName); err == nil {
-									sess.TmuxName = newTmuxName
-								}
-							}
-						}
-						if sess.Agent != "" && sess.Host != "" {
-							newID := fmt.Sprintf("%s:%s:%s", sess.Agent, sess.Host, convID)
-							if oldID != "" && oldID != newID {
-								sess.OldID = oldID
-								sess.ID = newID
-								if h.db != nil {
-									_ = h.db.DeleteSession(oldID)
-								}
-								h.mu.Lock()
-								if cmd, exists := h.processes[oldID]; exists {
-									delete(h.processes, oldID)
-									h.processes[newID] = cmd
-								}
-								if oldQueue, exists := h.queues[oldID]; exists {
-									for _, item := range oldQueue {
-										if item != nil {
-											item.SessionID = newID
-										}
-									}
-									h.queues[newID] = append(oldQueue, h.queues[newID]...)
-									delete(h.queues, oldID)
-								}
-								if oldPaused, exists := h.paused[oldID]; exists {
-									if oldPaused {
-										h.paused[newID] = true
-									}
-									delete(h.paused, oldID)
-								}
-								h.mu.Unlock()
-							}
-						}
-						if h.db != nil {
-							_ = h.db.SaveSession(sess)
-						}
-						if h.broadcast != nil {
-							h.broadcast(sess)
-						}
-					}
+					h.handleAntigravityInit(sess, convID, prompt)
 				}
 
 			case "step_update":
@@ -971,6 +1001,32 @@ func (h *HeadlessRunner) processStream(sessionID string, r io.Reader, optionalSe
 
 		evtType, _ := raw["type"].(string)
 		switch evtType {
+		case "init":
+			if convID, ok := raw["conversation_id"].(string); ok && convID != "" {
+				h.handleAntigravityInit(sess, convID, prompt)
+			} else if sess != nil && prompt != "" {
+				if sess.FirstPrompt == "" {
+					sess.FirstPrompt = prompt
+				}
+				sess.LastPrompt = prompt
+				if h.db != nil {
+					_ = h.db.SaveSession(sess)
+				}
+			}
+
+		case "system":
+			if subtype, _ := raw["subtype"].(string); subtype == "init" {
+				if sess != nil && prompt != "" {
+					if sess.FirstPrompt == "" {
+						sess.FirstPrompt = prompt
+					}
+					sess.LastPrompt = prompt
+					if h.db != nil {
+						_ = h.db.SaveSession(sess)
+					}
+				}
+			}
+
 		case "content_block_delta":
 			if delta, ok := raw["delta"].(map[string]interface{}); ok {
 				deltaType, _ := delta["type"].(string)
@@ -985,14 +1041,16 @@ func (h *HeadlessRunner) processStream(sessionID string, r io.Reader, optionalSe
 						needsSeparation = false
 					}
 					hasEmittedAssistantText = true
-					h.Emit(sessionID, ChatStreamEvent{
+					hasEmittedDeltaInTurn = true
+					emitStreamEvt(ChatStreamEvent{
 						SessionID: sessionID,
 						Type:      "text_delta",
 						Text:      text,
 					})
 				} else if deltaType == "thinking_delta" {
 					thinking, _ := delta["thinking"].(string)
-					h.Emit(sessionID, ChatStreamEvent{
+					hasEmittedDeltaInTurn = true
+					emitStreamEvt(ChatStreamEvent{
 						SessionID: sessionID,
 						Type:      "thought_delta",
 						Thinking:  thinking,
@@ -1007,11 +1065,14 @@ func (h *HeadlessRunner) processStream(sessionID string, r io.Reader, optionalSe
 					needsSeparation = true
 					toolName, _ := cb["name"].(string)
 					toolID, _ := cb["id"].(string)
-					if toolID != "" && toolName != "" {
-						toolUses[toolID] = toolName
+					if toolID != "" {
+						emittedToolStart[toolID] = true
+						if toolName != "" {
+							toolUses[toolID] = toolName
+						}
 					}
 					toolInput := cb["input"]
-					h.Emit(sessionID, ChatStreamEvent{
+					emitStreamEvt(ChatStreamEvent{
 						SessionID: sessionID,
 						Type:      "tool_start",
 						ToolName:  toolName,
@@ -1024,6 +1085,7 @@ func (h *HeadlessRunner) processStream(sessionID string, r io.Reader, optionalSe
 
 		case "tool_result":
 			needsSeparation = true
+			hasEmittedDeltaInTurn = false
 			outputStr := ""
 			toolID, _ := raw["tool_use_id"].(string)
 			toolName := ""
@@ -1041,60 +1103,135 @@ func (h *HeadlessRunner) processStream(sessionID string, r io.Reader, optionalSe
 					}
 				}
 			}
-			h.Emit(sessionID, ChatStreamEvent{
+			isErr, _ := raw["is_error"].(bool)
+			emitStreamEvt(ChatStreamEvent{
 				SessionID:  sessionID,
 				Type:       "tool_result",
 				ToolName:   toolName,
 				ToolOutput: outputStr,
+				IsError:    isErr,
 			})
+
+		case "user":
+			hasEmittedDeltaInTurn = false
+			if msg, ok := raw["message"].(map[string]interface{}); ok {
+				if contentArr, ok := msg["content"].([]interface{}); ok {
+					for _, item := range contentArr {
+						if itemMap, ok := item.(map[string]interface{}); ok {
+							if itemMap["type"] == "tool_result" {
+								needsSeparation = true
+								toolID, _ := itemMap["tool_use_id"].(string)
+								toolName := ""
+								if toolID != "" {
+									toolName = toolUses[toolID]
+								}
+								outputStr := ""
+								if out, ok := itemMap["content"].(string); ok {
+									outputStr = out
+								} else if partArr, ok := itemMap["content"].([]interface{}); ok {
+									for _, part := range partArr {
+										if partMap, ok := part.(map[string]interface{}); ok {
+											if txt, ok := partMap["text"].(string); ok {
+												outputStr += txt
+											}
+										}
+									}
+								}
+								isErr, _ := itemMap["is_error"].(bool)
+								emitStreamEvt(ChatStreamEvent{
+									SessionID:  sessionID,
+									Type:       "tool_result",
+									ToolName:   toolName,
+									ToolOutput: outputStr,
+									IsError:    isErr,
+								})
+							}
+						}
+					}
+				}
+			}
 
 		case "assistant":
 			if msg, ok := raw["message"].(map[string]interface{}); ok {
 				var textBlocks []string
+				flushTextBlocks := func() {
+					if len(textBlocks) > 0 && !hasEmittedDeltaInTurn {
+						joined := strings.Join(textBlocks, "\n\n")
+						if hasEmittedAssistantText || needsSeparation {
+							if !strings.HasPrefix(joined, "\n") {
+								joined = "\n\n" + joined
+							} else if !strings.HasPrefix(joined, "\n\n") {
+								joined = "\n" + joined
+							}
+						}
+						hasEmittedAssistantText = true
+						needsSeparation = false
+						emitStreamEvt(ChatStreamEvent{
+							SessionID: sessionID,
+							Type:      "text_delta",
+							Text:      joined,
+						})
+					}
+					textBlocks = nil
+				}
 				if contentStr, ok := msg["content"].(string); ok && contentStr != "" {
 					textBlocks = append(textBlocks, contentStr)
 				} else if contentArr, ok := msg["content"].([]interface{}); ok {
 					for _, item := range contentArr {
 						if itemMap, ok := item.(map[string]interface{}); ok {
-							if itemMap["type"] == "text" {
+							switch itemMap["type"] {
+							case "thinking":
+								if !hasEmittedDeltaInTurn {
+									if thinking, ok := itemMap["thinking"].(string); ok && thinking != "" {
+										emitStreamEvt(ChatStreamEvent{
+											SessionID: sessionID,
+											Type:      "thought_delta",
+											Thinking:  thinking,
+										})
+									}
+								}
+							case "text":
 								if txt, ok := itemMap["text"].(string); ok && txt != "" {
 									textBlocks = append(textBlocks, txt)
+								}
+							case "tool_use":
+								flushTextBlocks()
+								needsSeparation = true
+								toolName, _ := itemMap["name"].(string)
+								toolID, _ := itemMap["id"].(string)
+								if toolID != "" && toolName != "" {
+									toolUses[toolID] = toolName
+								}
+								if toolID == "" || !emittedToolStart[toolID] {
+									if toolID != "" {
+										emittedToolStart[toolID] = true
+									}
+									emitStreamEvt(ChatStreamEvent{
+										SessionID: sessionID,
+										Type:      "tool_start",
+										ToolName:  toolName,
+										ToolInput: itemMap["input"],
+									})
 								}
 							}
 						}
 					}
 				}
-				if len(textBlocks) > 0 {
-					joined := strings.Join(textBlocks, "\n\n")
-					if hasEmittedAssistantText || needsSeparation {
-						if !strings.HasPrefix(joined, "\n") {
-							joined = "\n\n" + joined
-						} else if !strings.HasPrefix(joined, "\n\n") {
-							joined = "\n" + joined
-						}
-					}
-					hasEmittedAssistantText = true
-					needsSeparation = false
-					h.Emit(sessionID, ChatStreamEvent{
-						SessionID: sessionID,
-						Type:      "text_delta",
-						Text:      joined,
-					})
-				}
+				flushTextBlocks()
 			}
 
 		case "result":
 			resText, _ := raw["result"].(string)
 			isErr, _ := raw["is_error"].(bool)
 			if isErr && resText != "" {
-				h.Emit(sessionID, ChatStreamEvent{
+				emitStreamEvt(ChatStreamEvent{
 					SessionID: sessionID,
 					Type:      "error",
 					Text:      resText,
 					IsError:   true,
 				})
 			} else {
-				h.Emit(sessionID, ChatStreamEvent{
+				emitStreamEvt(ChatStreamEvent{
 					SessionID: sessionID,
 					Type:      "turn_complete",
 					Text:      resText,
