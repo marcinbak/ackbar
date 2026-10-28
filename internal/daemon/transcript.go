@@ -204,35 +204,50 @@ func loadAntigravityTranscript(t *Transcript, home, convID string) error {
 	return nil
 }
 
-func loadClaudeTranscript(t *Transcript, home, sessionID, cwd string) error {
-	var targetFile string
+func findClaudeTranscriptPath(home, sessionID, cwd string) string {
+	cleanID := filepath.Base(filepath.Clean(sessionID))
+	if cleanID == "" || cleanID == "." || cleanID == ".." || strings.ContainsAny(cleanID, "*?[") {
+		return ""
+	}
 	projectsDir := filepath.Join(home, ".claude", "projects")
 
-	// Look directly in projects dir if cwd encoded
 	if cwd != "" {
 		encodedCwd := encodeClaudeProjectDir(cwd)
-		cand := filepath.Join(projectsDir, encodedCwd, sessionID+".jsonl")
+		cand := filepath.Join(projectsDir, encodedCwd, cleanID+".jsonl")
 		if fileExists(cand) {
-			targetFile = cand
+			return cand
+		}
+		slug := strings.ReplaceAll(cwd, "/", "-")
+		if slug != encodedCwd {
+			cand2 := filepath.Join(projectsDir, slug, cleanID+".jsonl")
+			if fileExists(cand2) {
+				return cand2
+			}
 		}
 	}
 
-	// Fallback: search all project dirs for sessionID.jsonl
-	if targetFile == "" && dirExists(projectsDir) {
-		entries, err := os.ReadDir(projectsDir)
-		if err == nil {
+	if dirExists(projectsDir) {
+		if entries, err := os.ReadDir(projectsDir); err == nil {
 			for _, e := range entries {
 				if e.IsDir() {
-					cand := filepath.Join(projectsDir, e.Name(), sessionID+".jsonl")
+					cand := filepath.Join(projectsDir, e.Name(), cleanID+".jsonl")
 					if fileExists(cand) {
-						targetFile = cand
-						break
+						return cand
 					}
 				}
 			}
 		}
 	}
 
+	if matches, err := filepath.Glob(filepath.Join(home, ".claude-profiles", "*", "projects", "*", cleanID+".jsonl")); err == nil && len(matches) > 0 {
+		return matches[0]
+	}
+
+	return ""
+}
+
+func loadClaudeTranscript(t *Transcript, home, sessionID, cwd string) error {
+	targetFile := findClaudeTranscriptPath(home, sessionID, cwd)
 	if targetFile == "" {
 		return fmt.Errorf("claude log not found for session %s", sessionID)
 	}
@@ -717,6 +732,12 @@ func loadAntigravitySubagents(home, convID string) ([]SubagentInfo, error) {
 		filepath.Join(home, ".gemini", "antigravity-cli", "brain", convID, ".system_generated", "logs", "transcript.jsonl"),
 		filepath.Join(home, ".antigravity", "brain", convID, ".system_generated", "logs", "transcript.jsonl"),
 	}
+	if profiles, _ := filepath.Glob(filepath.Join(home, ".gemini-profiles", "*", "brain", convID, ".system_generated", "logs", "transcript.jsonl")); len(profiles) > 0 {
+		candidatePaths = append(candidatePaths, profiles...)
+	}
+	if profiles2, _ := filepath.Glob(filepath.Join(home, ".gemini-profiles", "*", "antigravity", "brain", convID, ".system_generated", "logs", "transcript.jsonl")); len(profiles2) > 0 {
+		candidatePaths = append(candidatePaths, profiles2...)
+	}
 
 	var file *os.File
 	var err error
@@ -731,6 +752,11 @@ func loadAntigravitySubagents(home, convID string) ([]SubagentInfo, error) {
 		return nil, fmt.Errorf("antigravity log not found for conversation %s: %w", convID, err)
 	}
 	defer file.Close()
+
+	var fileModTime time.Time
+	if fStat, serr := file.Stat(); serr == nil {
+		fileModTime = fStat.ModTime()
+	}
 
 	scanner := bufio.NewScanner(file)
 	buf := make([]byte, 1024*1024)
@@ -776,10 +802,12 @@ func loadAntigravitySubagents(home, convID string) ([]SubagentInfo, error) {
 			continue
 		}
 
-		// Check for invoke_subagent tool call
+		// Check for invoke_subagent tool call or turn completion
 		if entry.Type == "PLANNER_RESPONSE" {
+			hasInvoke := false
 			for _, tc := range entry.ToolCalls {
 				if tc.Name == "invoke_subagent" && tc.Args != nil {
+					hasInvoke = true
 					subagentsRaw := tc.Args["Subagents"]
 					var subList []map[string]interface{}
 
@@ -824,6 +852,15 @@ func loadAntigravitySubagents(home, convID string) ([]SubagentInfo, error) {
 					latestPendingBatch = batch
 				}
 			}
+
+			if !hasInvoke && len(entry.ToolCalls) == 0 && (entry.Status == "DONE" || entry.Status == "CANCELED" || entry.Status == "CANCELLED" || entry.Status == "ERROR") {
+				for _, sub := range activeSubagents {
+					if sub != nil {
+						sub.State = "completed"
+					}
+				}
+				latestPendingBatch = nil
+			}
 		}
 
 		// Check if this step declares the created subagent IDs
@@ -855,6 +892,14 @@ func loadAntigravitySubagents(home, convID string) ([]SubagentInfo, error) {
 					(strings.Contains(line, fmt.Sprintf(`"conversationId":"%s"`, cId)) && strings.Contains(line, `"state":"idle"`)) {
 					sub.State = "completed"
 				}
+			}
+		}
+	}
+
+	if !fileModTime.IsZero() && time.Since(fileModTime) > 2*time.Minute {
+		for _, s := range activeSubagents {
+			if s != nil {
+				s.State = "completed"
 			}
 		}
 	}
@@ -956,7 +1001,8 @@ func loadClaudeSubagentsFromDir(home, sessionID, cwd string) []SubagentInfo {
 			}
 
 			jsonlPath := filepath.Join(subDir, baseName+".jsonl")
-			if jInfo, err := os.Stat(jsonlPath); err == nil {
+			jInfo, statErr := os.Stat(jsonlPath)
+			if statErr == nil {
 				modTime = jInfo.ModTime()
 			}
 
@@ -964,9 +1010,13 @@ func loadClaudeSubagentsFromDir(home, sessionID, cwd string) []SubagentInfo {
 			if time.Since(modTime) < 30*time.Minute {
 				state = "running"
 			}
-			if jsonlData, err := readTail(jsonlPath, 8192); err == nil && len(jsonlData) > 0 {
+			if jsonlData, err := readTail(jsonlPath, 65536); err == nil && len(jsonlData) > 0 {
 				lines := strings.Split(strings.TrimSpace(string(jsonlData)), "\n")
-				for i := len(lines) - 1; i >= 0; i-- {
+				minIdx := 0
+				if statErr == nil && jInfo.Size() > 65536 && len(lines) > 1 {
+					minIdx = 1
+				}
+				for i := len(lines) - 1; i >= minIdx; i-- {
 					line := strings.TrimSpace(lines[i])
 					if line == "" {
 						continue
@@ -983,12 +1033,14 @@ func loadClaudeSubagentsFromDir(home, sessionID, cwd string) []SubagentInfo {
 						if sr == "" {
 							sr = step.Message.StopReason
 						}
-						if sr == "end_turn" || time.Since(modTime) >= 30*time.Minute {
-							state = "completed"
-						} else {
-							state = "running"
+						if sr != "" {
+							if sr == "end_turn" || sr == "stop_sequence" || sr == "stop" || time.Since(modTime) >= 30*time.Minute {
+								state = "completed"
+							} else {
+								state = "running"
+							}
+							break
 						}
-						break
 					}
 				}
 			}
@@ -1012,32 +1064,7 @@ func loadClaudeSubagents(home, sessionID, cwd string) ([]SubagentInfo, error) {
 		return diskSubs, nil
 	}
 
-	var targetFile string
-	projectsDir := filepath.Join(home, ".claude", "projects")
-
-	if cwd != "" {
-		encodedCwd := encodeClaudeProjectDir(cwd)
-		cand := filepath.Join(projectsDir, encodedCwd, sessionID+".jsonl")
-		if fileExists(cand) {
-			targetFile = cand
-		}
-	}
-
-	if targetFile == "" && dirExists(projectsDir) {
-		entries, err := os.ReadDir(projectsDir)
-		if err == nil {
-			for _, e := range entries {
-				if e.IsDir() {
-					cand := filepath.Join(projectsDir, e.Name(), sessionID+".jsonl")
-					if fileExists(cand) {
-						targetFile = cand
-						break
-					}
-				}
-			}
-		}
-	}
-
+	targetFile := findClaudeTranscriptPath(home, sessionID, cwd)
 	if targetFile == "" {
 		return nil, fmt.Errorf("claude log not found for session %s", sessionID)
 	}
@@ -1048,12 +1075,18 @@ func loadClaudeSubagents(home, sessionID, cwd string) ([]SubagentInfo, error) {
 	}
 	defer file.Close()
 
+	var fileModTime time.Time
+	if fStat, serr := file.Stat(); serr == nil {
+		fileModTime = fStat.ModTime()
+	}
+
 	scanner := bufio.NewScanner(file)
 	buf := make([]byte, 1024*1024)
 	scanner.Buffer(buf, 10*1024*1024)
 
 	var activeSubagents []*SubagentInfo
 	toolUseMap := make(map[string]*SubagentInfo)
+	lastAssistantStopReason := ""
 
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -1074,6 +1107,7 @@ func loadClaudeSubagents(home, sessionID, cwd string) ([]SubagentInfo, error) {
 		}
 
 		if msgType == "user" {
+			lastAssistantStopReason = ""
 			isToolResult := false
 			if msgObj, ok := raw["message"].(map[string]interface{}); ok {
 				if contentArr, ok := msgObj["content"].([]interface{}); ok {
@@ -1099,6 +1133,9 @@ func loadClaudeSubagents(home, sessionID, cwd string) ([]SubagentInfo, error) {
 			}
 		} else if msgType == "assistant" {
 			if msgObj, ok := raw["message"].(map[string]interface{}); ok {
+				if sr, ok := msgObj["stop_reason"].(string); ok && sr != "" {
+					lastAssistantStopReason = sr
+				}
 				if contentArr, ok := msgObj["content"].([]interface{}); ok {
 					for _, item := range contentArr {
 						if block, ok := item.(map[string]interface{}); ok {
@@ -1141,6 +1178,14 @@ func loadClaudeSubagents(home, sessionID, cwd string) ([]SubagentInfo, error) {
 						}
 					}
 				}
+			}
+		}
+	}
+
+	if lastAssistantStopReason == "end_turn" || lastAssistantStopReason == "stop_sequence" || (!fileModTime.IsZero() && time.Since(fileModTime) > 2*time.Minute) {
+		for _, s := range activeSubagents {
+			if s != nil {
+				s.State = "completed"
 			}
 		}
 	}

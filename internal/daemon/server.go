@@ -61,21 +61,29 @@ type HostHealth struct {
 }
 
 type Server struct {
-	db              *DB
-	providers       map[string]Provider
-	subscribers     map[chan *Session]bool
-	subMutex        sync.Mutex
-	webFS           fs.FS
-	configuredToken string
-	relayClient     *relay.Client
-	headless        *HeadlessRunner
-	hostName        string
-	displayName     string
-	hostHealthMap   map[string]*HostHealth
-	hostHealthMu    sync.RWMutex
-	activeSubagents map[string][]*SubagentInfo
-	subagentsMu     sync.RWMutex
-	homeDir         string
+	db               *DB
+	providers        map[string]Provider
+	subscribers      map[chan *Session]bool
+	subMutex         sync.Mutex
+	webFS            fs.FS
+	configuredToken  string
+	relayClient      *relay.Client
+	headless         *HeadlessRunner
+	hostName         string
+	displayName      string
+	hostHealthMap    map[string]*HostHealth
+	hostHealthMu     sync.RWMutex
+	activeSubagents  map[string][]*SubagentInfo
+	subagentsMu      sync.RWMutex
+	sessionHookLocks sync.Map
+	homeDir          string
+}
+
+func (s *Server) lockSessionHook(sessionID string) func() {
+	val, _ := s.sessionHookLocks.LoadOrStore(sessionID, &sync.Mutex{})
+	mu := val.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
 }
 
 func (s *Server) updateHostHealth(name string, online bool, version, displayName string, latencyMs int64) {
@@ -461,6 +469,9 @@ func (s *Server) processHookEventWithAccount(p Provider, urlEventName string, he
 	if event == nil {
 		return
 	}
+	if event.EventName == "" && urlEventName != "" {
+		event.EventName = urlEventName
+	}
 
 	if event.Agent == "claude-code" && !IsUUID(event.NativeID) {
 		log.Printf("Dropping claude-code hook event with invalid non-UUID native ID %q", event.NativeID)
@@ -474,6 +485,13 @@ func (s *Server) processHookEventWithAccount(p Provider, urlEventName string, he
 
 	// ID is "{agent}:{host}:{nativeID}"
 	sessionID := fmt.Sprintf("%s:%s:%s", event.Agent, host, event.NativeID)
+
+	unlock := s.lockSessionHook(sessionID)
+	defer func() {
+		if unlock != nil {
+			unlock()
+		}
+	}()
 
 	// Load existing or initialize new
 	sess, err := s.db.GetSession(sessionID)
@@ -633,18 +651,26 @@ func (s *Server) processHookEventWithAccount(p Provider, urlEventName string, he
 			sess.Name = anno
 		}
 	}
+	if sess.ID != "" && sess.ID != sessionID {
+		unlock()
+		sessionID = sess.ID
+		unlock = s.lockSessionHook(sessionID)
+	}
+
 	isPureHeadless := sess.EngineType == EngineHeadless && sess.TmuxName == ""
 	headlessRunning := isPureHeadless && s.headless != nil && s.headless.IsRunning(sess.ID)
 
-	if !isPureHeadless && (strings.EqualFold(event.EventName, "stop") || strings.EqualFold(event.EventName, "sessionend")) {
-		runningSubs := s.getRunningSubagents(sessionID, event.NativeID, event.Agent, event.Cwd)
-		if len(runningSubs) > 0 {
-			event.State = StateWorking
-			event.Activity = "Subagent running: " + runningSubs[0].Name
-		} else if sess.PID > 0 {
-			if activeChildren := getActiveChildProcesses(context.Background(), sess.PID); len(activeChildren) > 0 {
-				event.State = StateWorking
-				event.Activity = "Running " + activeChildren[0]
+	if !strings.EqualFold(event.EventName, "SubagentStop") && (strings.EqualFold(event.EventName, "stop") || strings.EqualFold(event.EventName, "sessionend")) {
+		s.clearInMemorySubagents(sessionID, event.NativeID)
+		if !isPureHeadless {
+			if diskSubs, err := ExtractSubagents(event.Agent, event.NativeID, sess.Cwd); err == nil {
+				for _, sub := range diskSubs {
+					if sub.State == "running" && time.Since(sub.StartedAt) < 2*time.Minute {
+						event.State = StateWorking
+						event.Activity = "Subagent running: " + sub.Name
+						break
+					}
+				}
 			}
 		}
 	}
@@ -716,6 +742,7 @@ func (s *Server) processHookEventWithAccount(p Provider, urlEventName string, he
 
 	// Process subagent tracking from hooks
 	evtNameLower := strings.ToLower(event.EventName)
+	isSubagentTool := event.ToolName == "Agent" || event.ToolName == "Task" || event.ToolName == "invoke_subagent" || strings.EqualFold(event.ToolName, "subagent")
 	if strings.EqualFold(event.EventName, "SubagentStart") {
 		subName := event.ToolName
 		if subName == "" {
@@ -730,11 +757,11 @@ func (s *Server) processHookEventWithAccount(p Provider, urlEventName string, he
 		})
 	} else if strings.EqualFold(event.EventName, "SubagentStop") {
 		s.removeSubagent(sessionID, event.NativeID, event.ToolName)
+	} else if (evtNameLower == "posttooluse" || evtNameLower == "post_tool_use") && isSubagentTool {
+		s.removeSubagent(sessionID, event.NativeID, event.ToolName)
 	} else if evtNameLower == "userpromptsubmit" || evtNameLower == "sessionend" || evtNameLower == "stop" {
-		if len(s.getRunningSubagents(sessionID, event.NativeID, event.Agent, event.Cwd)) == 0 {
-			s.clearSubagents(sessionID, event.NativeID)
-		}
-	} else if evtNameLower == "pretooluse" && (event.ToolName == "Agent" || event.ToolName == "Task") {
+		s.clearInMemorySubagents(sessionID, event.NativeID)
+	} else if (evtNameLower == "pretooluse" || evtNameLower == "pre_tool_use") && isSubagentTool {
 		var prompt, desc, subType string
 		if event.ToolInput != nil {
 			if m, ok := event.ToolInput.(map[string]interface{}); ok {
@@ -768,11 +795,12 @@ func (s *Server) processHookEventWithAccount(p Provider, urlEventName string, he
 
 	// Update running subagents count on session
 	if isPureHeadless && !headlessRunning {
-		s.clearSubagents(sessionID, event.NativeID)
+		s.clearInMemorySubagents(sessionID, event.NativeID)
 		sess.RunningSubagents = 0
 	} else {
-		sess.RunningSubagents = len(s.getRunningSubagents(sessionID, event.NativeID, event.Agent, event.Cwd))
+		sess.RunningSubagents = len(s.getRunningSubagents(sessionID, event.NativeID, event.Agent, sess.Cwd))
 	}
+	sess.UpdatedAt = time.Now()
 
 	// Save to SQLite
 	if err := s.db.SaveSession(sess); err != nil {
@@ -2745,13 +2773,13 @@ func (s *Server) removeSubagent(sessionID, nativeID, subagentID string) {
 			if sub == nil {
 				continue
 			}
-			if subagentID != "" && (sub.ID == subagentID || sub.Name == subagentID) {
+			if !found && subagentID != "" && (sub.ID == subagentID || sub.Name == subagentID || sub.Role == subagentID) {
 				found = true
 				continue
 			}
 			updated = append(updated, sub)
 		}
-		if !found && subagentID == "" && len(updated) > 0 {
+		if !found && len(updated) > 0 {
 			updated = updated[1:]
 		}
 		s.activeSubagents[key] = updated
@@ -2784,21 +2812,25 @@ func (s *Server) removeSubagent(sessionID, nativeID, subagentID string) {
 	}
 }
 
-func (s *Server) clearSubagents(sessionID, nativeID string) {
+func (s *Server) clearInMemorySubagents(sessionID, nativeID string) {
 	s.subagentsMu.Lock()
 	delete(s.activeSubagents, sessionID)
 	if nativeID != "" {
 		delete(s.activeSubagents, nativeID)
 	}
 	s.subagentsMu.Unlock()
+	if s.headless != nil {
+		s.headless.EmitSubagentsUpdate(sessionID, []*SubagentInfo{})
+	}
+}
+
+func (s *Server) clearSubagents(sessionID, nativeID string) {
+	s.clearInMemorySubagents(sessionID, nativeID)
 
 	if sess := s.resolveSession(sessionID); sess != nil {
 		sess.RunningSubagents = 0
 		_ = s.db.SaveSession(sess)
 		s.broadcast(sess)
-	}
-	if s.headless != nil {
-		s.headless.EmitSubagentsUpdate(sessionID, []*SubagentInfo{})
 	}
 }
 
@@ -3826,14 +3858,73 @@ func setupProfileDirectory(agent, name, configDir string) (string, error) {
 		cfgDir := filepath.Join(configDir, "config")
 		_ = os.MkdirAll(cfgDir, 0755)
 		hookFile := filepath.Join(cfgDir, "hooks.json")
-		hookData := `{
-  "hooks": [
-    {
-      "command": "ackbar-hook --agent=antigravity"
-    }
-  ]
-}`
-		_ = os.WriteFile(hookFile, []byte(hookData), 0644)
+		var existingHooks map[string]interface{}
+		if data, err := os.ReadFile(hookFile); err == nil {
+			_ = json.Unmarshal(data, &existingHooks)
+		}
+		if existingHooks == nil {
+			existingHooks = make(map[string]interface{})
+		}
+		delete(existingHooks, "hooks")
+
+		hookCmd := "ackbar-hook --agent=antigravity"
+		existingHooks["ackbar"] = map[string]interface{}{
+			"SessionStart": []map[string]interface{}{
+				{
+					"type":    "command",
+					"command": hookCmd + " --event=SessionStart",
+				},
+			},
+			"PreInvocation": []map[string]interface{}{
+				{
+					"type":    "command",
+					"command": hookCmd + " --event=PreInvocation",
+				},
+			},
+			"PostInvocation": []map[string]interface{}{
+				{
+					"type":    "command",
+					"command": hookCmd + " --event=PostInvocation",
+				},
+			},
+			"Notification": []map[string]interface{}{
+				{
+					"type":    "command",
+					"command": hookCmd + " --event=Notification",
+				},
+			},
+			"Stop": []map[string]interface{}{
+				{
+					"type":    "command",
+					"command": hookCmd + " --event=Stop",
+				},
+			},
+			"PreToolUse": []map[string]interface{}{
+				{
+					"matcher": "*",
+					"hooks": []map[string]interface{}{
+						{
+							"type":    "command",
+							"command": hookCmd + " --event=PreToolUse",
+						},
+					},
+				},
+			},
+			"PostToolUse": []map[string]interface{}{
+				{
+					"matcher": "*",
+					"hooks": []map[string]interface{}{
+						{
+							"type":    "command",
+							"command": hookCmd + " --event=PostToolUse",
+						},
+					},
+				},
+			},
+		}
+		if updated, err := json.MarshalIndent(existingHooks, "", "  "); err == nil {
+			_ = os.WriteFile(hookFile, updated, 0644)
+		}
 	}
 
 	return configDir, nil

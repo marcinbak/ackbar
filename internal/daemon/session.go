@@ -1,6 +1,8 @@
 package daemon
 
 import (
+	"encoding/json"
+	"strings"
 	"time"
 )
 
@@ -81,6 +83,7 @@ type Session struct {
 	IsDone            bool      `json:"is_done,omitempty"`
 	IsLater           bool      `json:"is_later,omitempty"`
 	LastStateChangeAt time.Time `json:"last_state_change_at,omitempty"`
+	UpdatedAt         time.Time `json:"updated_at,omitempty"`
 	AccountID         string    `json:"account_id,omitempty"`  // profile/account identifier (e.g. "work", "personal", "default")
 	EngineType        string    `json:"engine_type,omitempty"` // "tmux" (default) or "headless"
 	RunningSubagents  int       `json:"running_subagents,omitempty"`
@@ -125,6 +128,57 @@ type HostRecord struct {
 	LatencyMs   int64     `json:"latency_ms,omitempty"`   // remote ping latency in ms
 }
 
+func parseInterfaceSlice(raw interface{}) []interface{} {
+	switch v := raw.(type) {
+	case []interface{}:
+		return v
+	case []string:
+		out := make([]interface{}, len(v))
+		for i, s := range v {
+			out[i] = s
+		}
+		return out
+	case []map[string]interface{}:
+		out := make([]interface{}, len(v))
+		for i, m := range v {
+			out[i] = m
+		}
+		return out
+	case string:
+		trimmed := strings.TrimSpace(v)
+		if trimmed != "" {
+			var parsed []interface{}
+			if err := json.Unmarshal([]byte(trimmed), &parsed); err == nil {
+				return parsed
+			}
+		}
+	}
+	return nil
+}
+
+func extractOptionStrings(raw interface{}) []string {
+	var optionsList []string
+	for _, opt := range parseInterfaceSlice(raw) {
+		if s, ok := opt.(string); ok && s != "" {
+			optionsList = append(optionsList, s)
+		} else if optMap, ok := opt.(map[string]interface{}); ok {
+			if label, ok := optMap["label"].(string); ok && label != "" {
+				optionsList = append(optionsList, label)
+			} else if text, ok := optMap["text"].(string); ok && text != "" {
+				optionsList = append(optionsList, text)
+			} else if title, ok := optMap["title"].(string); ok && title != "" {
+				optionsList = append(optionsList, title)
+			}
+		}
+	}
+	return optionsList
+}
+
+// ExtractQuestionAndOptions extracts question and option strings from tool input args
+func ExtractQuestionAndOptions(toolName string, args map[string]interface{}) (string, []string) {
+	return ExtractAntigravityQuestionAndOptions(args)
+}
+
 // ExtractAntigravityQuestionAndOptions extracts question and option strings from Antigravity tool args
 func ExtractAntigravityQuestionAndOptions(args map[string]interface{}) (string, []string) {
 	if args == nil {
@@ -134,25 +188,21 @@ func ExtractAntigravityQuestionAndOptions(args map[string]interface{}) (string, 
 	var questionText string
 	var optionsList []string
 
-	// 1. Array of questions (standard ask_question schema)
-	if questionsRaw, ok := args["questions"].([]interface{}); ok && len(questionsRaw) > 0 {
+	// 1. Array of questions (standard ask_question schema, or JSON-stringified array)
+	if questionsRaw := parseInterfaceSlice(args["questions"]); len(questionsRaw) > 0 {
 		for _, qItem := range questionsRaw {
 			if qMap, ok := qItem.(map[string]interface{}); ok {
-				if qStr, ok := qMap["question"].(string); ok && questionText == "" {
-					questionText = qStr
-				}
-				if optsRaw, ok := qMap["options"].([]interface{}); ok {
-					for _, opt := range optsRaw {
-						if s, ok := opt.(string); ok {
-							optionsList = append(optionsList, s)
-						} else if optMap, ok := opt.(map[string]interface{}); ok {
-							if label, ok := optMap["label"].(string); ok {
-								optionsList = append(optionsList, label)
-							} else if text, ok := optMap["text"].(string); ok {
-								optionsList = append(optionsList, text)
-							}
-						}
+				if questionText == "" {
+					if qStr, ok := qMap["question"].(string); ok && qStr != "" {
+						questionText = qStr
+					} else if pStr, ok := qMap["prompt"].(string); ok && pStr != "" {
+						questionText = pStr
+					} else if tStr, ok := qMap["text"].(string); ok && tStr != "" {
+						questionText = tStr
 					}
+				}
+				if opts := extractOptionStrings(qMap["options"]); len(opts) > 0 {
+					optionsList = append(optionsList, opts...)
 				}
 			}
 		}
@@ -169,13 +219,7 @@ func ExtractAntigravityQuestionAndOptions(args map[string]interface{}) (string, 
 
 	// 3. Direct options field
 	if len(optionsList) == 0 {
-		if optsRaw, ok := args["options"].([]interface{}); ok {
-			for _, opt := range optsRaw {
-				if s, ok := opt.(string); ok {
-					optionsList = append(optionsList, s)
-				}
-			}
-		}
+		optionsList = extractOptionStrings(args["options"])
 	}
 
 	return questionText, optionsList

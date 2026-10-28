@@ -126,11 +126,16 @@ func (c *ClaudeProvider) ParseHook(eventName string, payload []byte) (*daemon.Ev
 		}
 	}
 
+	evtName := p.HookEventName
+	if evtName == "" {
+		evtName = eventName
+	}
+
 	event := &daemon.Event{
 		Agent:       "claude-code",
 		NativeID:    p.SessionID,
 		Cwd:         p.Cwd,
-		EventName:   p.HookEventName,
+		EventName:   evtName,
 		ToolName:    toolName,
 		ToolInput:   p.ToolInput,
 		LastEventAt: time.Now(),
