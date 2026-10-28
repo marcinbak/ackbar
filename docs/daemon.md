@@ -66,6 +66,18 @@ Each WebSocket gets its own attach PTY running `tmux attach-session` (local) or 
 
 When several clients with different sizes are attached to one session (web, mobile, TUI), the window still resizes whenever a different client becomes the latest active one. That is inherent to `window-size latest`. A client becomes "latest" through a keystroke or a real size change. Merely viewing it does not count. So after typing on mobile, switching back to an unchanged web tab keeps the mobile-sized window (cropped or letterboxed) until the first keystroke or browser resize in that tab. This is deliberate: the old behaviour forced `resize-window` on every tab activation, which caused the Antigravity replay described above.
 
+### Headless Execution Engine (`internal/daemon/headless.go`)
+
+Headless sessions (`engine_type = "headless"`, `tmux_name = ""`) execute turns directly as child processes of `ackbard` without allocating a `tmux` session:
+
+* **State Authority (`s.headless.IsRunning`):** For pure headless sessions (`engine_type == "headless" && tmux_name == ""`), `HeadlessRunner.IsRunning(sess.ID)` is the single source of truth for whether a turn is active. Background scanners (`verifySessionLiveness`, `scanObservedSessions`) and asynchronous hook handlers (`processHookEventWithAccount`) never flip an idle headless session to `StateWorking` or `StateEnded`, and keep `StateWorking` when a `SessionStart` hook (`StateIdle`) fires at the start of a headless turn.
+* **Daemon Restart Resilience (`InitDB`):** Startup SQLite migrations preserve `tmux_name = ''` on headless sessions, repair any legacy headless rows that were assigned a `tmux_name`, and reset any headless sessions left in `StateWorking` back to `StateIdle` (`pid = 0, activity = ''`) on daemon boot.
+* **Per-Turn Invocation & Conversation Continuity:**
+  * **Claude Code:** Runs `claude -p <prompt> --output-format stream-json --verbose --dangerously-skip-permissions` with `--session-id <native_id>` on the first turn and `--resume <native_id>` on subsequent turns. `processStream` emits `thought_delta`, `text_delta`, and `tool_start` from `assistant` message content blocks and `tool_result` from `user` message content blocks.
+  * **Google Antigravity:** Runs `agy -p <prompt> --output-format stream-json --dangerously-skip-permissions` on the first turn and adds `--conversation <native_id>` once initialized. When Turn 1 emits its `init` event with the canonical `conversation_id`, `handleAntigravityInit` migrates active processes, prompt queues, pause flags, and SSE chat stream subscribers (`h.subs`) from the temporary spawn ID (`oldID`) to the canonical session ID (`newID`).
+  * **Safe First-Turn Recovery:** `sess.FirstPrompt` and `sess.LastPrompt` are persisted only after the `init` event arrives or `cmd.Wait()` succeeds, ensuring an immediate startup failure on Turn 1 does not break Turn 2 with `--conversation` on an uninitialized UUID.
+  * **Initial Prompt on Spawn:** Passing a non-empty `prompt` to `POST /v1/sessions/spawn` with `engine_type = "headless"` immediately triggers Turn 1 in the background.
+
 ---
 
 ## 3. In-Place `/clear` Conversation Turn Rotation

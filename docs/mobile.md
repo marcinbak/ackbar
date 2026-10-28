@@ -78,6 +78,7 @@ Tap **Transcript** on any session to open a dedicated agentic chat stream:
 * **Left-Aligned Agent Cards:** High-width terminal surface cards (`#161922`) with full GitHub Flavored Markdown, syntax highlighting, and copy buttons.
 * **⚡ Collapsible Tool Invocations:** Visual badges showing executed tools (`🛠️ Bash`, `🛠️ Read`, `🛠️ Edit`) without cluttering the chat.
 * **💭 Thought Process Accordions:** Expandable chain-of-thought dropdowns for reasoning analysis.
+* **Live Turn Synchronization & Auto-Refresh:** Tracks real-time session state via `fleetSessionsProvider` alongside optimistic send tracking (`_awaitingTurnCompletion`) so the `Working...` indicator and Stop button stay active for the full duration of a headless turn while allowing follow-up prompts to be queued. Silently polls transcript updates every 3 seconds while a turn is working, immediately reloads when transitioning out of `working`, and refreshes automatically on `AppLifecycleState.resumed`.
 * **Quick Navigation:** Floating **`[↓ Latest]`** button to glide directly to the latest turn, plus one-tap jump to the interactive terminal.
 
 ---
@@ -125,7 +126,7 @@ flutter run
 cd mobile
 flutter test
 ```
-*Executes all 116 unit and widget tests covering models, theme extensions, Riverpod providers, and core UI components.*
+*Executes all 147 unit and widget tests covering models, theme extensions, Riverpod providers, transcript live turn synchronization, and core UI components.*
 
 ### Installing to iOS Device
 ```bash
