@@ -636,7 +636,8 @@ func TestClaudeProvider_ListSubagents_StopReasonAndInactivity(t *testing.T) {
 		t.Fatalf("Chtimes failed: %v", err)
 	}
 
-	// 3. Stale team config older than 30 minutes
+	// 3. Team config (even with recent mtime) must default to completed without active transcripts,
+	// and deduplicate "subagent-1" which was already discovered in Step 1 under "agent-1.meta.json"
 	teamDir := filepath.Join(tmpHome, ".claude", "teams", "session-22222222")
 	if err := os.MkdirAll(teamDir, 0755); err != nil {
 		t.Fatalf("MkdirAll failed: %v", err)
@@ -646,15 +647,13 @@ func TestClaudeProvider_ListSubagents_StopReasonAndInactivity(t *testing.T) {
 		"leadSessionId": "22222222-3333-4444-5555-666666666666",
 		"members": [
 			{"name": "team-lead", "agentType": "team-lead"},
+			{"name": "subagent-1", "agentId": "team-sub-1", "agentType": "task-runner"},
 			{"name": "worker-1", "agentType": "Worker"}
 		]
 	}`
 	teamCfgPath := filepath.Join(teamDir, "config.json")
 	if err := os.WriteFile(teamCfgPath, []byte(teamCfg), 0644); err != nil {
 		t.Fatalf("WriteFile failed: %v", err)
-	}
-	if err := os.Chtimes(teamCfgPath, oldTime, oldTime); err != nil {
-		t.Fatalf("Chtimes failed: %v", err)
 	}
 
 	cp := NewClaudeProvider()
@@ -664,7 +663,7 @@ func TestClaudeProvider_ListSubagents_StopReasonAndInactivity(t *testing.T) {
 	}
 
 	if len(subs) != 3 {
-		t.Fatalf("Expected 3 subagents, got %d: %+v", len(subs), subs)
+		t.Fatalf("Expected 3 subagents (subagent-1 deduplicated), got %d: %+v", len(subs), subs)
 	}
 
 	for _, sub := range subs {

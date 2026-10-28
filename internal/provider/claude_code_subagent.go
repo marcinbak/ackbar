@@ -95,6 +95,10 @@ func (c *ClaudeProvider) ListSubagents(home, cwd, nativeID string) ([]*daemon.Ac
 			if name == "" {
 				name = baseName
 			}
+			seen[name] = true
+			if meta.Name != "" {
+				seen[meta.Name] = true
+			}
 
 			role := meta.CustomAgentType
 			if role == "" {
@@ -114,15 +118,20 @@ func (c *ClaudeProvider) ListSubagents(home, cwd, nativeID string) ([]*daemon.Ac
 			// Check companion .jsonl transcript to evaluate running vs completed
 			state := "running"
 			jsonlPath := filepath.Join(subDir, baseName+".jsonl")
-			if jsonlInfo, err := os.Stat(jsonlPath); err == nil {
+			jsonlInfo, statErr := os.Stat(jsonlPath)
+			if statErr == nil {
 				if time.Since(jsonlInfo.ModTime()) > 30*time.Minute {
 					state = "completed"
 				}
 			}
 			if state == "running" {
-				if jsonlData, err := daemon.ReadTail(jsonlPath, 16384); err == nil && len(jsonlData) > 0 {
+				if jsonlData, err := daemon.ReadTail(jsonlPath, 65536); err == nil && len(jsonlData) > 0 {
 					lines := strings.Split(strings.TrimSpace(string(jsonlData)), "\n")
-					for i := len(lines) - 1; i >= 0; i-- {
+					minIdx := 0
+					if statErr == nil && jsonlInfo.Size() > 65536 && len(lines) > 1 {
+						minIdx = 1
+					}
+					for i := len(lines) - 1; i >= minIdx; i-- {
 						line := strings.TrimSpace(lines[i])
 						if line == "" {
 							continue
@@ -140,7 +149,7 @@ func (c *ClaudeProvider) ListSubagents(home, cwd, nativeID string) ([]*daemon.Ac
 								sr = step.Message.StopReason
 							}
 							if sr != "" {
-								if sr == "end_turn" || sr == "stop" {
+								if sr == "end_turn" || sr == "stop_sequence" || sr == "stop" {
 									state = "completed"
 								} else {
 									state = "running"
@@ -168,14 +177,10 @@ func (c *ClaudeProvider) ListSubagents(home, cwd, nativeID string) ([]*daemon.Ac
 	teamsDir := filepath.Join(home, ".claude", "teams")
 	if teamMatches, err := filepath.Glob(filepath.Join(teamsDir, "*", "config.json")); err == nil {
 		for _, cfgPath := range teamMatches {
-			cfgInfo, err := os.Stat(cfgPath)
-			if err != nil {
+			if _, err := os.Stat(cfgPath); err != nil {
 				continue
 			}
-			teamState := "running"
-			if time.Since(cfgInfo.ModTime()) > 30*time.Minute {
-				teamState = "completed"
-			}
+			teamState := "completed"
 			data, err := os.ReadFile(cfgPath)
 			if err != nil {
 				continue

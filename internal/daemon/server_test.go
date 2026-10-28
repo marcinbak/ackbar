@@ -4505,3 +4505,558 @@ func TestScanObservedSessions_DeferredStep4AdoptionAfterToolCall(t *testing.T) {
 		t.Errorf("Expected NodePath='Personal/Ackbar', got %q", adopted.NodePath)
 	}
 }
+
+func TestExtractAntigravityQuestionAndOptions_JSONStringifiedAndNative(t *testing.T) {
+	// 1. Native JSON array of questions
+	nativeArgs := map[string]interface{}{
+		"questions": []interface{}{
+			map[string]interface{}{
+				"question": "Which storage backend should we use?",
+				"options":  []interface{}{"SQLite", "PostgreSQL"},
+			},
+		},
+	}
+	q1, opts1 := ExtractAntigravityQuestionAndOptions(nativeArgs)
+	if q1 != "Which storage backend should we use?" {
+		t.Errorf("Expected question from native array, got %q", q1)
+	}
+	if len(opts1) != 2 || opts1[0] != "SQLite" || opts1[1] != "PostgreSQL" {
+		t.Errorf("Expected options [SQLite PostgreSQL], got %v", opts1)
+	}
+
+	// 2. JSON-stringified questions array (as written in real transcript.jsonl)
+	stringifiedArgs := map[string]interface{}{
+		"questions": `[{"question":"Deploy to production now?","options":["(Recommended) Yes, deploy","No, wait for staging"]}]`,
+	}
+	q2, opts2 := ExtractAntigravityQuestionAndOptions(stringifiedArgs)
+	if q2 != "Deploy to production now?" {
+		t.Errorf("Expected question from JSON-stringified questions, got %q", q2)
+	}
+	if len(opts2) != 2 || opts2[0] != "(Recommended) Yes, deploy" || opts2[1] != "No, wait for staging" {
+		t.Errorf("Expected 2 options from JSON-stringified questions, got %v", opts2)
+	}
+
+	// 3. JSON-stringified options with title/text objects
+	titleObjArgs := map[string]interface{}{
+		"question": "Select mode",
+		"options":  `[{"title":"Fast Mode"},{"text":"Safe Mode"},{"label":"Custom Mode"}]`,
+	}
+	q3, opts3 := ExtractAntigravityQuestionAndOptions(titleObjArgs)
+	if q3 != "Select mode" {
+		t.Errorf("Expected 'Select mode', got %q", q3)
+	}
+	if len(opts3) != 3 || opts3[0] != "Fast Mode" || opts3[1] != "Safe Mode" || opts3[2] != "Custom Mode" {
+		t.Errorf("Expected [Fast Mode Safe Mode Custom Mode], got %v", opts3)
+	}
+}
+
+func TestInspectAntigravityStatus_JSONStringifiedQuestionAndTranscriptFullFallback(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	convUUID := "99999999-aaaa-bbbb-cccc-dddddddddddd"
+	brainDir := filepath.Join(tmpHome, ".gemini", "antigravity-cli", "brain", convUUID, ".system_generated", "logs")
+	if err := os.MkdirAll(brainDir, 0755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+
+	// Compact transcript has truncated_fields: ["tool_calls"], while transcript_full.jsonl has full JSON-stringified questions
+	compactTranscript := `{"step_index":1,"source":"USER_EXPLICIT","type":"USER_INPUT","content":"Start deployment"}` + "\n" +
+		`{"step_index":2,"type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-10-28T20:00:00Z","truncated_fields":["tool_calls"],"tool_calls":[{"name":"ask_question","args":{}}]}` + "\n" +
+		`{"step_index":3,"type":"CHECKPOINT","content":"CHECKPOINT 1"}` + "\n"
+	fullTranscript := `{"step_index":1,"source":"USER_EXPLICIT","type":"USER_INPUT","content":"Start deployment"}` + "\n" +
+		`{"step_index":2,"type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-10-28T20:00:00Z","tool_calls":[{"name":"ask_question","args":{"questions":"[{\"question\":\"Which region should we deploy to?\",\"options\":[\"us-east-1\",\"eu-west-1\"]}]"}}]}` + "\n"
+
+	if err := os.WriteFile(filepath.Join(brainDir, "transcript.jsonl"), []byte(compactTranscript), 0644); err != nil {
+		t.Fatalf("WriteFile transcript.jsonl failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(brainDir, "transcript_full.jsonl"), []byte(fullTranscript), 0644); err != nil {
+		t.Fatalf("WriteFile transcript_full.jsonl failed: %v", err)
+	}
+
+	ctx := context.Background()
+	tmuxName := ""
+	pid := os.Getpid()
+	if tmux.IsTmuxInstalled() {
+		tmuxName = fmt.Sprintf("test-agy-q-full-%d", time.Now().UnixNano())
+		defer tmux.Kill(ctx, tmuxName)
+		// Tmux pane contains "Running tool:" and "esc to cancel", which must NOT clobber StateBlocked
+		script := `
+echo "Running tool: ask_question"
+echo "Which region should we deploy to?"
+echo "  1. us-east-1"
+echo "  2. eu-west-1"
+echo "esc to cancel"
+sleep 30
+`
+		if err := tmux.Spawn(ctx, tmuxName, os.TempDir(), script); err == nil {
+			time.Sleep(150 * time.Millisecond)
+			if p, err := tmux.GetPID(ctx, tmuxName); err == nil && p > 0 {
+				pid = p
+			}
+		} else {
+			tmuxName = ""
+		}
+	}
+
+	sess := &Session{
+		ID:          "antigravity:local:" + convUUID,
+		Agent:       "antigravity",
+		Host:        "local",
+		NativeID:    convUUID,
+		State:       StateWorking,
+		Activity:    "Working...",
+		TmuxName:    tmuxName,
+		PID:         pid,
+		StartedAt:   time.Now(),
+		LastEventAt: time.Now(),
+	}
+
+	changed := InspectAntigravityStatus(ctx, sess)
+	if !changed {
+		t.Errorf("Expected InspectAntigravityStatus to report changed=true")
+	}
+	if sess.State != StateBlocked {
+		t.Fatalf("Expected StateBlocked, got %v (activity: %s)", sess.State, sess.Activity)
+	}
+	if sess.Blocked == nil || sess.Blocked.Question != "Which region should we deploy to?" {
+		t.Fatalf("Expected question 'Which region should we deploy to?', got %+v", sess.Blocked)
+	}
+	if len(sess.Blocked.Options) != 2 || sess.Blocked.Options[0] != "us-east-1" || sess.Blocked.Options[1] != "eu-west-1" {
+		t.Errorf("Expected options [us-east-1 eu-west-1], got %v", sess.Blocked.Options)
+	}
+}
+
+func TestExtractSubagentsAndInspectClaudeStatus_TrailingAttachmentAfterEndTurn(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	sessionID := "aaaa1111-bbbb-2222-cccc-333333333333"
+	cwd := "/test/workspace"
+	slug := "-test-workspace"
+
+	subDir := filepath.Join(tmpHome, ".claude", "projects", slug, sessionID, "subagents")
+	if err := os.MkdirAll(subDir, 0755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+
+	meta := `{"name":"context-reviewer","agentType":"context-reviewer","description":"Review context"}`
+	if err := os.WriteFile(filepath.Join(subDir, "agent-ctx1.meta.json"), []byte(meta), 0644); err != nil {
+		t.Fatalf("WriteFile meta failed: %v", err)
+	}
+	// Trailing attachment entry with empty stop_reason after assistant end_turn
+	subJsonl := `{"type":"assistant","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"LGTM"}]}}` + "\n" +
+		`{"type":"attachment","payload":{"type":"total_tokens_reminder"}}` + "\n"
+	if err := os.WriteFile(filepath.Join(subDir, "agent-ctx1.jsonl"), []byte(subJsonl), 0644); err != nil {
+		t.Fatalf("WriteFile subJsonl failed: %v", err)
+	}
+
+	subs, err := ExtractSubagents("claude-code", sessionID, cwd)
+	if err != nil {
+		t.Fatalf("ExtractSubagents failed: %v", err)
+	}
+	if len(subs) != 1 {
+		t.Fatalf("Expected 1 subagent, got %d", len(subs))
+	}
+	if subs[0].State != "completed" {
+		t.Errorf("Expected subagent state 'completed' despite trailing attachment line, got %q", subs[0].State)
+	}
+}
+
+func TestInspectClaudeStatus_HistoricalAskUserQuestionInScrollbackAndEndTurnFallback(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	sessionID := "bbbb2222-cccc-3333-dddd-444444444444"
+	cwd := "/test/workspace"
+	encodedCwd := encodeClaudeProjectDir(cwd)
+	projDir := filepath.Join(tmpHome, ".claude", "projects", encodedCwd)
+	if err := os.MkdirAll(projDir, 0755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+
+	// Main transcript has concluded with stop_reason: "end_turn"
+	mainJsonl := `{"type":"user","timestamp":"2026-10-28T20:00:00Z","message":{"role":"user","content":"Implement feature"}}` + "\n" +
+		`{"type":"assistant","timestamp":"2026-10-28T20:01:00Z","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Feature implemented."}]}}` + "\n"
+	if err := os.WriteFile(filepath.Join(projDir, sessionID+".jsonl"), []byte(mainJsonl), 0644); err != nil {
+		t.Fatalf("WriteFile mainJsonl failed: %v", err)
+	}
+
+	ctx := context.Background()
+
+	// 1. Test transcript stop_reason: "end_turn" fallback without tmux
+	sessNoTmux := &Session{
+		ID:          "claude-code:local:" + sessionID,
+		Agent:       "claude-code",
+		Host:        "local",
+		NativeID:    sessionID,
+		Cwd:         cwd,
+		State:       StateWorking,
+		Activity:    "Working...",
+		PID:         os.Getpid(),
+		StartedAt:   time.Now(),
+		LastEventAt: time.Now(),
+	}
+	if !InspectClaudeStatus(ctx, sessNoTmux) {
+		t.Errorf("Expected InspectClaudeStatus to report changed=true via transcript end_turn fallback")
+	}
+	if sessNoTmux.State != StateIdle {
+		t.Errorf("Expected StateIdle via transcript end_turn fallback, got %v", sessNoTmux.State)
+	}
+
+	// 2. Test tmux pane with historical "⏺ AskUserQuestion" in scrollback above an idle "❯" prompt
+	if tmux.IsTmuxInstalled() {
+		tmuxName := fmt.Sprintf("test-claude-hist-q-%d", time.Now().UnixNano())
+		defer tmux.Kill(ctx, tmuxName)
+
+		script := `
+echo "⏺ AskUserQuestion(question: \"Which option?\")"
+echo "  ⎿  User selected: Option 1"
+echo "⏺ Finished applying Option 1."
+echo "─────────────────────────────────────────"
+echo "❯ "
+echo "  ? for shortcuts · 1 shell"
+sleep 30
+`
+		if err := tmux.Spawn(ctx, tmuxName, os.TempDir(), script); err != nil {
+			t.Fatalf("Failed to spawn tmux: %v", err)
+		}
+		time.Sleep(150 * time.Millisecond)
+		pid, _ := tmux.GetPID(ctx, tmuxName)
+
+		sessTmux := &Session{
+			ID:          "claude-code:local:" + sessionID,
+			Agent:       "claude-code",
+			Host:        "local",
+			NativeID:    sessionID,
+			Cwd:         cwd,
+			State:       StateWorking,
+			Activity:    "Working...",
+			TmuxName:    tmuxName,
+			PID:         pid,
+			StartedAt:   time.Now(),
+			LastEventAt: time.Now(),
+		}
+
+		InspectClaudeStatus(ctx, sessTmux)
+		if sessTmux.State != StateIdle {
+			t.Errorf("Expected StateIdle when AskUserQuestion is in scrollback above idle ❯ prompt, got %v (activity: %s)", sessTmux.State, sessTmux.Activity)
+		}
+	}
+}
+
+func TestStopHook_NotOverriddenBySyntheticPreToolUseSubagentOrAckbarHookChild(t *testing.T) {
+	if !isIgnoredMCPOrDaemon("ackbar-hook", "ackbar-hook --agent=claude-code --event=Stop") {
+		t.Errorf("Expected ackbar-hook to be ignored by isIgnoredMCPOrDaemon")
+	}
+
+	dbFile := filepath.Join(t.TempDir(), "test_stop_hook_subagent.db")
+	db, err := InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := NewServer(db)
+	mockP := &mockDynamicProvider{agentName: "claude-code"}
+	server.RegisterProvider(mockP)
+
+	sessionUUID := "12345678-1234-4321-8765-123456789abc"
+	sessionID := "claude-code:local:" + sessionUUID
+
+	// 1. PreToolUse spawns a synthetic in-memory subagent
+	preEvent := &Event{
+		Agent:       "claude-code",
+		NativeID:    sessionUUID,
+		Cwd:         "/tmp/project",
+		EventName:   "PreToolUse",
+		ToolName:    "Agent",
+		ToolInput:   map[string]interface{}{"subagent_type": "research", "prompt": "Check files"},
+		State:       StateWorking,
+		Activity:    "Running tool: Agent",
+		LastEventAt: time.Now(),
+	}
+	server.processHookEvent(&mockDynamicProvider{agentName: "claude-code", event: preEvent}, "PreToolUse", "local", []byte(`{}`))
+
+	sessAfterPre, _ := db.GetSession(sessionID)
+	if sessAfterPre == nil || sessAfterPre.State != StateWorking {
+		t.Fatalf("Expected session StateWorking after PreToolUse, got %+v", sessAfterPre)
+	}
+	if len(server.getRunningSubagents(sessionID, sessionUUID, "claude-code", "/tmp/project")) == 0 {
+		t.Fatalf("Expected synthetic in-memory subagent to be recorded after PreToolUse")
+	}
+
+	// 2. Stop hook arrives — must clear synthetic in-memory subagents and transition to StateIdle
+	stopEvent := &Event{
+		Agent:       "claude-code",
+		NativeID:    sessionUUID,
+		Cwd:         "/tmp/project",
+		EventName:   "Stop",
+		State:       StateIdle,
+		Activity:    "Awaiting user prompt",
+		LastEventAt: time.Now(),
+	}
+	server.processHookEvent(&mockDynamicProvider{agentName: "claude-code", event: stopEvent}, "Stop", "local", []byte(`{}`))
+
+	sessAfterStop, _ := db.GetSession(sessionID)
+	if sessAfterStop == nil {
+		t.Fatalf("Expected session in DB after Stop")
+	}
+	if sessAfterStop.State != StateIdle {
+		t.Errorf("Expected session state StateIdle after Stop hook, got %v (activity: %s)", sessAfterStop.State, sessAfterStop.Activity)
+	}
+	if sessAfterStop.RunningSubagents != 0 {
+		t.Errorf("Expected RunningSubagents=0 after Stop hook, got %d", sessAfterStop.RunningSubagents)
+	}
+}
+
+func TestIsClaudePromptLine_RejectsSubmittedPromptsAndSelectorOptions(t *testing.T) {
+	if !isClaudePromptLine("❯") {
+		t.Errorf("Expected bare '❯' to match as idle prompt")
+	}
+	if !isClaudePromptLine("│ ❯ Type a message... │") {
+		t.Errorf("Expected '❯ Type ...' placeholder to match as idle prompt")
+	}
+	if !isClaudePromptLine("❯ Try \"refactor foo\"") {
+		t.Errorf("Expected '❯ Try ...' placeholder to match as idle prompt")
+	}
+	if isClaudePromptLine("❯ Fix the bug") {
+		t.Errorf("Expected submitted user prompt '❯ Fix the bug' NOT to match as idle prompt")
+	}
+	if isClaudePromptLine("❯ Yes") || isClaudePromptLine("❯ Allow once") {
+		t.Errorf("Expected unnumbered selector option '❯ Yes' / '❯ Allow once' NOT to match as idle prompt")
+	}
+}
+
+func TestParallelSubagents_PostToolUseDoesNotPopUnmatchedSibling(t *testing.T) {
+	dbFile := filepath.Join(t.TempDir(), "test_parallel_subagents.db")
+	db, err := InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := NewServer(db)
+	sessionUUID := "11112222-3333-4444-5555-666677778888"
+	sessionID := "claude-code:local:" + sessionUUID
+
+	// 1. Spawn two parallel subagents: "explorer" and "tester" via PreToolUse + SubagentStart
+	for _, name := range []string{"explorer", "tester"} {
+		preEv := &Event{
+			Agent:       "claude-code",
+			NativeID:    sessionUUID,
+			Cwd:         "/tmp/project",
+			EventName:   "PreToolUse",
+			ToolName:    "Agent",
+			ToolInput:   map[string]interface{}{"subagent_type": name},
+			State:       StateWorking,
+			LastEventAt: time.Now(),
+		}
+		server.processParsedHookEvent(preEv, "PreToolUse", "local", "", false)
+
+		startEv := &Event{
+			Agent:       "claude-code",
+			NativeID:    sessionUUID,
+			Cwd:         "/tmp/project",
+			EventName:   "SubagentStart",
+			ToolName:    name,
+			State:       StateWorking,
+			LastEventAt: time.Now(),
+		}
+		server.processParsedHookEvent(startEv, "SubagentStart", "local", "", false)
+	}
+
+	running := server.getRunningSubagents(sessionID, sessionUUID, "claude-code", "/tmp/project")
+	if len(running) != 2 {
+		t.Fatalf("Expected 2 deduplicated running subagents ('explorer' and 'tester'), got %d: %+v", len(running), running)
+	}
+
+	// 2. "explorer" finishes: SubagentStop("explorer") followed by PostToolUse("Agent")
+	stopExplorer := &Event{
+		Agent:       "claude-code",
+		NativeID:    sessionUUID,
+		Cwd:         "/tmp/project",
+		EventName:   "SubagentStop",
+		ToolName:    "explorer",
+		State:       StateWorking,
+		LastEventAt: time.Now(),
+	}
+	server.processParsedHookEvent(stopExplorer, "SubagentStop", "local", "", false)
+
+	postAgent := &Event{
+		Agent:       "claude-code",
+		NativeID:    sessionUUID,
+		Cwd:         "/tmp/project",
+		EventName:   "PostToolUse",
+		ToolName:    "Agent",
+		State:       StateWorking,
+		LastEventAt: time.Now(),
+	}
+	server.processParsedHookEvent(postAgent, "PostToolUse", "local", "", false)
+
+	// 3. "tester" must still be running!
+	remaining := server.getRunningSubagents(sessionID, sessionUUID, "claude-code", "/tmp/project")
+	if len(remaining) != 1 || remaining[0].Name != "tester" {
+		t.Fatalf("Expected 'tester' to remain running after explorer finished, got %+v", remaining)
+	}
+}
+
+func TestResolveFullAntigravityStep_DoesNotFallbackToEarlierTurnWhenStepIndexSpecified(t *testing.T) {
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "transcript.jsonl")
+	fullPath := filepath.Join(tmpDir, "transcript_full.jsonl")
+
+	// Earlier turn had an ask_question at step 2; current turn is at step 5 (not yet flushed to transcript_full.jsonl)
+	fullContent := `{"step_index":2,"type":"PLANNER_RESPONSE","status":"DONE","tool_calls":[{"name":"ask_question","args":{"question":"Old question?"}}]}` + "\n" +
+		`{"step_index":3,"type":"USER_INPUT","content":"New turn"}` + "\n"
+	if err := os.WriteFile(fullPath, []byte(fullContent), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	if step, ok := resolveFullAntigravityStep(logPath, 5); ok || step != nil {
+		t.Errorf("Expected resolveFullAntigravityStep(logPath, 5) to return false when step 5 is missing, got %+v", step)
+	}
+	if step, ok := resolveFullAntigravityStep(logPath, 2); !ok || step == nil || step.StepIndex != 2 {
+		t.Errorf("Expected resolveFullAntigravityStep(logPath, 2) to return step 2, got %+v, ok=%v", step, ok)
+	}
+}
+
+func TestInspectAntigravityStatus_NonPlannerErrorDoesNotCompleteTurnAndGraceWindowRespected(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	convUUID := "77777777-8888-9999-aaaa-bbbbbbbbbbbb"
+	brainDir := filepath.Join(tmpHome, ".gemini", "antigravity-cli", "brain", convUUID, ".system_generated", "logs")
+	if err := os.MkdirAll(brainDir, 0755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+
+	// 1. Mid-turn RUN_COMMAND with status ERROR must NOT mark session StateIdle
+	cmdErrorTranscript := `{"step_index":1,"type":"USER_INPUT","content":"Run tests"}` + "\n" +
+		`{"step_index":2,"type":"RUN_COMMAND","status":"ERROR","created_at":"2026-10-28T20:00:00Z"}` + "\n"
+	logPath := filepath.Join(brainDir, "transcript.jsonl")
+	if err := os.WriteFile(logPath, []byte(cmdErrorTranscript), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	sess := &Session{
+		ID:          "antigravity:local:" + convUUID,
+		Agent:       "antigravity",
+		Host:        "local",
+		NativeID:    convUUID,
+		State:       StateWorking,
+		Activity:    "Running command...",
+		PID:         os.Getpid(),
+		StartedAt:   time.Now(),
+		LastEventAt: time.Now(),
+	}
+	InspectAntigravityStatus(context.Background(), sess)
+	if sess.State != StateWorking {
+		t.Errorf("Expected session to remain StateWorking on non-PLANNER_RESPONSE ERROR step, got %v", sess.State)
+	}
+
+	// 2. Grace window with zero Blocked.Since (using UpdatedAt) and older completed turn in transcript must NOT reset StateBlocked
+	olderDoneTranscript := `{"step_index":1,"type":"PLANNER_RESPONSE","status":"DONE","created_at":"2020-01-01T00:00:00Z"}` + "\n"
+	if err := os.WriteFile(logPath, []byte(olderDoneTranscript), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	blockedSess := &Session{
+		ID:        "antigravity:local:" + convUUID,
+		Agent:     "antigravity",
+		Host:      "local",
+		NativeID:  convUUID,
+		State:     StateBlocked,
+		Blocked:   &Blocked{Kind: BlockPermission, Reason: "Allow command"},
+		UpdatedAt: time.Now(),
+		PID:       os.Getpid(),
+	}
+	InspectAntigravityStatus(context.Background(), blockedSess)
+	if blockedSess.State != StateBlocked {
+		t.Errorf("Expected StateBlocked to be preserved within 15s grace window via UpdatedAt, got %v", blockedSess.State)
+	}
+
+	// 3. Path traversal / glob metacharacters in NativeID must be ignored safely
+	if _, err := loadAntigravitySubagents(tmpHome, "../../../etc/passwd"); err == nil {
+		t.Errorf("Expected error from loadAntigravitySubagents for path traversal")
+	}
+	if _, err := loadAntigravitySubagents(tmpHome, "*"); err == nil {
+		t.Errorf("Expected error from loadAntigravitySubagents for wildcard convID")
+	}
+}
+
+func TestHookOrdering_OutOfOrderPostToolUseAndPreToolUseGuards(t *testing.T) {
+	dbFile := filepath.Join(t.TempDir(), "test_hook_guards.db")
+	db, err := InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := NewServer(db)
+	sessionUUID := "aaaa9999-bbbb-4444-8888-ccccdddd0000"
+	sessionID := "claude-code:local:" + sessionUUID
+
+	// 1. Stop followed immediately by late PostToolUse must remain StateIdle
+	stopEv := &Event{
+		Agent:       "claude-code",
+		NativeID:    sessionUUID,
+		Cwd:         "/tmp/project",
+		EventName:   "Stop",
+		State:       StateIdle,
+		Activity:    "Awaiting user prompt",
+		LastEventAt: time.Now(),
+	}
+	server.processParsedHookEvent(stopEv, "Stop", "local", "", false)
+
+	latePostEv := &Event{
+		Agent:       "claude-code",
+		NativeID:    sessionUUID,
+		Cwd:         "/tmp/project",
+		EventName:   "PostToolUse",
+		ToolName:    "Bash",
+		State:       StateWorking,
+		Activity:    "Tool execution completed",
+		LastEventAt: time.Now(),
+	}
+	server.processParsedHookEvent(latePostEv, "PostToolUse", "local", "", false)
+
+	sess, _ := db.GetSession(sessionID)
+	if sess == nil || sess.State != StateIdle {
+		t.Fatalf("Expected session to remain StateIdle after late PostToolUse, got %+v", sess)
+	}
+
+	// 2. PermissionRequest followed immediately by late PreToolUse must remain StateBlocked
+	permEv := &Event{
+		Agent:     "claude-code",
+		NativeID:  sessionUUID,
+		Cwd:       "/tmp/project",
+		EventName: "PermissionRequest",
+		State:     StateBlocked,
+		Blocked: &Blocked{
+			Kind:     BlockPermission,
+			Reason:   "Bash",
+			Question: "Allow Bash?",
+			Since:    time.Now(),
+		},
+		Activity:    "Waiting for permission: Bash",
+		LastEventAt: time.Now(),
+	}
+	server.processParsedHookEvent(permEv, "PermissionRequest", "local", "", false)
+
+	latePreEv := &Event{
+		Agent:       "claude-code",
+		NativeID:    sessionUUID,
+		Cwd:         "/tmp/project",
+		EventName:   "PreToolUse",
+		ToolName:    "Bash",
+		State:       StateWorking,
+		Activity:    "Running tool: Bash",
+		LastEventAt: time.Now(),
+	}
+	server.processParsedHookEvent(latePreEv, "PreToolUse", "local", "", false)
+
+	sessPerm, _ := db.GetSession(sessionID)
+	if sessPerm == nil || sessPerm.State != StateBlocked || sessPerm.Blocked == nil || sessPerm.Blocked.Kind != BlockPermission {
+		t.Fatalf("Expected session to remain StateBlocked (BlockPermission) after late PreToolUse, got %+v", sessPerm)
+	}
+}

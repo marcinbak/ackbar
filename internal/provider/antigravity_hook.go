@@ -38,6 +38,10 @@ func (a *AntigravityProvider) ParseHook(eventName string, payload []byte) (*daem
 		LastEventAt: time.Now(),
 		State:       daemon.StateWorking, // default assumption
 	}
+	if p.ToolCall != nil {
+		event.ToolName = p.ToolCall.Name
+		event.ToolInput = p.ToolCall.Args
+	}
 
 	if event.NativeID == "" {
 		event.NativeID = "default"
@@ -46,6 +50,15 @@ func (a *AntigravityProvider) ParseHook(eventName string, payload []byte) (*daem
 	evt := strings.ToLower(eventName)
 
 	switch evt {
+	case "sessionstart":
+		event.State = daemon.StateIdle
+		event.Activity = "Session started"
+		event.StartedAt = time.Now()
+
+	case "notification":
+		event.State = daemon.StateIdle
+		event.Activity = "Awaiting user prompt"
+
 	case "stop":
 		event.State = daemon.StateEnded
 		event.Activity = "Session ended"

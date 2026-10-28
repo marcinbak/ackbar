@@ -61,21 +61,60 @@ type HostHealth struct {
 }
 
 type Server struct {
-	db              *DB
-	providers       map[string]Provider
-	subscribers     map[chan *Session]bool
-	subMutex        sync.Mutex
-	webFS           fs.FS
-	configuredToken string
-	relayClient     *relay.Client
-	headless        *HeadlessRunner
-	hostName        string
-	displayName     string
-	hostHealthMap   map[string]*HostHealth
-	hostHealthMu    sync.RWMutex
-	activeSubagents map[string][]*SubagentInfo
-	subagentsMu     sync.RWMutex
-	homeDir         string
+	db               *DB
+	providers        map[string]Provider
+	subscribers      map[chan *Session]bool
+	subMutex         sync.Mutex
+	webFS            fs.FS
+	configuredToken  string
+	relayClient      *relay.Client
+	headless         *HeadlessRunner
+	hostName         string
+	displayName      string
+	hostHealthMap    map[string]*HostHealth
+	hostHealthMu     sync.RWMutex
+	activeSubagents  map[string][]*SubagentInfo
+	subagentsMu      sync.RWMutex
+	sessionHookLocks sync.Map
+	homeDir          string
+}
+
+type sessionHookQueue struct {
+	mu   sync.Mutex
+	tail chan struct{}
+}
+
+func hookLockKey(agent, nativeID, sessionID string) string {
+	if nativeID != "" {
+		return agent + ":" + nativeID
+	}
+	return sessionID
+}
+
+func (s *Server) reserveSessionHook(lockKey string) (func(), func()) {
+	val, _ := s.sessionHookLocks.LoadOrStore(lockKey, &sessionHookQueue{})
+	q := val.(*sessionHookQueue)
+	q.mu.Lock()
+	prev := q.tail
+	curr := make(chan struct{})
+	q.tail = curr
+	q.mu.Unlock()
+	var once sync.Once
+	return func() {
+			if prev != nil {
+				<-prev
+			}
+		}, func() {
+			once.Do(func() {
+				close(curr)
+			})
+		}
+}
+
+func (s *Server) lockSessionHook(lockKey string) func() {
+	wait, release := s.reserveSessionHook(lockKey)
+	wait()
+	return release
 }
 
 func (s *Server) updateHostHealth(name string, online bool, version, displayName string, latencyMs int64) {
@@ -440,12 +479,48 @@ func (s *Server) handleHook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	urlEventName := r.URL.Query().Get("event")
+	headerHost := r.Header.Get("X-Ackbar-Host")
+	accountParam := r.URL.Query().Get("account")
+
+	event, parseErr := p.ParseHook(urlEventName, body)
+	var wait, release func()
+	if parseErr == nil && event != nil {
+		if event.EventName == "" && urlEventName != "" {
+			event.EventName = urlEventName
+		}
+		if !(event.Agent == "claude-code" && !IsUUID(event.NativeID)) {
+			host := headerHost
+			if host == "" || host == "local" {
+				host = s.HostName()
+			}
+			sessionID := fmt.Sprintf("%s:%s:%s", event.Agent, host, event.NativeID)
+			lockKey := hookLockKey(event.Agent, event.NativeID, sessionID)
+			wait, release = s.reserveSessionHook(lockKey)
+		}
+	}
+
 	// Fast response to prevent blocking the agent loop
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"status":"enqueued"}`))
 
-	// Process in a goroutine so ingest is single-digit milliseconds
-	go s.processHookEventWithAccount(p, r.URL.Query().Get("event"), r.Header.Get("X-Ackbar-Host"), body, r.URL.Query().Get("account"))
+	// Process in a goroutine so ingest is single-digit milliseconds while preserving arrival order
+	go func() {
+		if release != nil {
+			defer release()
+		}
+		if parseErr != nil {
+			log.Printf("Error parsing hook payload: %v", parseErr)
+			return
+		}
+		if event == nil {
+			return
+		}
+		if wait != nil {
+			wait()
+		}
+		s.processParsedHookEvent(event, urlEventName, headerHost, accountParam, release != nil)
+	}()
 }
 
 func (s *Server) processHookEvent(p Provider, urlEventName string, headerHost string, body []byte) {
@@ -461,6 +536,13 @@ func (s *Server) processHookEventWithAccount(p Provider, urlEventName string, he
 	if event == nil {
 		return
 	}
+	s.processParsedHookEvent(event, urlEventName, headerHost, accountParam, false)
+}
+
+func (s *Server) processParsedHookEvent(event *Event, urlEventName string, headerHost string, accountParam string, preLocked bool) {
+	if event.EventName == "" && urlEventName != "" {
+		event.EventName = urlEventName
+	}
 
 	if event.Agent == "claude-code" && !IsUUID(event.NativeID) {
 		log.Printf("Dropping claude-code hook event with invalid non-UUID native ID %q", event.NativeID)
@@ -474,6 +556,12 @@ func (s *Server) processHookEventWithAccount(p Provider, urlEventName string, he
 
 	// ID is "{agent}:{host}:{nativeID}"
 	sessionID := fmt.Sprintf("%s:%s:%s", event.Agent, host, event.NativeID)
+	lockKey := hookLockKey(event.Agent, event.NativeID, sessionID)
+
+	if !preLocked {
+		unlock := s.lockSessionHook(lockKey)
+		defer unlock()
+	}
 
 	// Load existing or initialize new
 	sess, err := s.db.GetSession(sessionID)
@@ -633,18 +721,30 @@ func (s *Server) processHookEventWithAccount(p Provider, urlEventName string, he
 			sess.Name = anno
 		}
 	}
+	if sess.ID != "" && sess.ID != sessionID {
+		sessionID = sess.ID
+		secondKey := hookLockKey(sess.Agent, sess.NativeID, sess.ID)
+		if secondKey != lockKey {
+			unlock2 := s.lockSessionHook(secondKey)
+			defer unlock2()
+		}
+	}
+
 	isPureHeadless := sess.EngineType == EngineHeadless && sess.TmuxName == ""
 	headlessRunning := isPureHeadless && s.headless != nil && s.headless.IsRunning(sess.ID)
+	evtLower := strings.ToLower(event.EventName)
 
-	if !isPureHeadless && (strings.EqualFold(event.EventName, "stop") || strings.EqualFold(event.EventName, "sessionend")) {
-		runningSubs := s.getRunningSubagents(sessionID, event.NativeID, event.Agent, event.Cwd)
-		if len(runningSubs) > 0 {
-			event.State = StateWorking
-			event.Activity = "Subagent running: " + runningSubs[0].Name
-		} else if sess.PID > 0 {
-			if activeChildren := getActiveChildProcesses(context.Background(), sess.PID); len(activeChildren) > 0 {
-				event.State = StateWorking
-				event.Activity = "Running " + activeChildren[0]
+	if !strings.EqualFold(event.EventName, "SubagentStop") && (strings.EqualFold(event.EventName, "stop") || strings.EqualFold(event.EventName, "sessionend")) {
+		s.clearInMemorySubagents(sessionID, event.NativeID)
+		if !isPureHeadless {
+			if diskSubs, err := ExtractSubagents(event.Agent, event.NativeID, sess.Cwd); err == nil {
+				for _, sub := range diskSubs {
+					if sub.State == "running" && time.Since(sub.StartedAt) < 2*time.Minute {
+						event.State = StateWorking
+						event.Activity = "Subagent running: " + sub.Name
+						break
+					}
+				}
 			}
 		}
 	}
@@ -663,8 +763,28 @@ func (s *Server) processHookEventWithAccount(p Provider, urlEventName string, he
 		}
 	}
 
-	isStateChange := sess.State != event.State
 	prevState := sess.State
+	// Guard against out-of-order PostToolUse overwriting a session that just transitioned to StateIdle via Stop/SessionEnd
+	if prevState == StateIdle && !sess.LastStateChangeAt.IsZero() && time.Since(sess.LastStateChangeAt) < 2*time.Second &&
+		(evtLower == "posttooluse" || evtLower == "post_tool_use") {
+		event.State = StateIdle
+		event.Blocked = nil
+		if sess.Activity != "" {
+			event.Activity = sess.Activity
+		}
+	}
+	// Guard against out-of-order PreToolUse (for non-question tools) overwriting a StateBlocked permission prompt just set by PermissionRequest
+	if prevState == StateBlocked && sess.Blocked != nil && sess.Blocked.Kind == BlockPermission &&
+		!sess.LastStateChangeAt.IsZero() && time.Since(sess.LastStateChangeAt) < 2*time.Second &&
+		(evtLower == "pretooluse" || evtLower == "pre_tool_use") && event.State == StateWorking {
+		event.State = StateBlocked
+		event.Blocked = sess.Blocked
+		if sess.Activity != "" {
+			event.Activity = sess.Activity
+		}
+	}
+
+	isStateChange := sess.State != event.State
 	if isStateChange {
 		if event.State != StateWorking {
 			sess.IsUnread = true
@@ -687,7 +807,6 @@ func (s *Server) processHookEventWithAccount(p Provider, urlEventName string, he
 	// - Agent tool execution, progress, turn completion ("pretooluse", "posttooluse", "stop", "sessionend", "permissionrequest", "notification")
 	// - Active working or blocked state transitions (into StateWorking, into StateBlocked, or StateWorking -> StateIdle)
 	// Do NOT update LastEventAt on passive process boot / reconnect on an existing session ("sessionstart", "start", or StateEnded/Unknown -> StateIdle)
-	evtLower := strings.ToLower(event.EventName)
 	shouldUpdateLastEvent := false
 
 	if sess.LastEventAt.IsZero() {
@@ -716,6 +835,7 @@ func (s *Server) processHookEventWithAccount(p Provider, urlEventName string, he
 
 	// Process subagent tracking from hooks
 	evtNameLower := strings.ToLower(event.EventName)
+	isSubagentTool := event.ToolName == "Agent" || event.ToolName == "Task" || event.ToolName == "invoke_subagent" || strings.EqualFold(event.ToolName, "subagent")
 	if strings.EqualFold(event.EventName, "SubagentStart") {
 		subName := event.ToolName
 		if subName == "" {
@@ -729,12 +849,23 @@ func (s *Server) processHookEventWithAccount(p Provider, urlEventName string, he
 			StartedAt: time.Now(),
 		})
 	} else if strings.EqualFold(event.EventName, "SubagentStop") {
+		s.markSessionSubagentLifecycleActive(sessionID, event.NativeID)
 		s.removeSubagent(sessionID, event.NativeID, event.ToolName)
-	} else if evtNameLower == "userpromptsubmit" || evtNameLower == "sessionend" || evtNameLower == "stop" {
-		if len(s.getRunningSubagents(sessionID, event.NativeID, event.Agent, event.Cwd)) == 0 {
-			s.clearSubagents(sessionID, event.NativeID)
+	} else if (evtNameLower == "posttooluse" || evtNameLower == "post_tool_use") && isSubagentTool {
+		targetSub := event.ToolName
+		if event.ToolInput != nil {
+			if m, ok := event.ToolInput.(map[string]interface{}); ok {
+				if st, ok := m["subagent_type"].(string); ok && st != "" {
+					targetSub = st
+				} else if d, ok := m["description"].(string); ok && d != "" {
+					targetSub = d
+				}
+			}
 		}
-	} else if evtNameLower == "pretooluse" && (event.ToolName == "Agent" || event.ToolName == "Task") {
+		s.removeSubagent(sessionID, event.NativeID, targetSub)
+	} else if evtNameLower == "userpromptsubmit" || evtNameLower == "sessionend" || evtNameLower == "stop" {
+		s.clearInMemorySubagents(sessionID, event.NativeID)
+	} else if (evtNameLower == "pretooluse" || evtNameLower == "pre_tool_use") && isSubagentTool {
 		var prompt, desc, subType string
 		if event.ToolInput != nil {
 			if m, ok := event.ToolInput.(map[string]interface{}); ok {
@@ -763,16 +894,19 @@ func (s *Server) processHookEventWithAccount(p Provider, urlEventName string, he
 			Prompt:    prompt,
 			State:     "running",
 			StartedAt: time.Now(),
+			ToolName:  event.ToolName,
+			Synthetic: true,
 		})
 	}
 
 	// Update running subagents count on session
 	if isPureHeadless && !headlessRunning {
-		s.clearSubagents(sessionID, event.NativeID)
+		s.clearInMemorySubagents(sessionID, event.NativeID)
 		sess.RunningSubagents = 0
 	} else {
-		sess.RunningSubagents = len(s.getRunningSubagents(sessionID, event.NativeID, event.Agent, event.Cwd))
+		sess.RunningSubagents = len(s.getRunningSubagents(sessionID, event.NativeID, event.Agent, sess.Cwd))
 	}
+	sess.UpdatedAt = time.Now()
 
 	// Save to SQLite
 	if err := s.db.SaveSession(sess); err != nil {
@@ -2706,14 +2840,47 @@ func (s *Server) getRunningSubagents(sessionID, nativeID, agent, cwd string) []S
 	return []SubagentInfo{}
 }
 
+func (s *Server) markSessionSubagentLifecycleActive(sessionID, nativeID string) {
+	s.subagentsMu.Lock()
+	defer s.subagentsMu.Unlock()
+	for _, sub := range s.activeSubagents[sessionID] {
+		if sub != nil && sub.Name != "" && !strings.EqualFold(sub.Name, sub.ToolName) {
+			sub.Synthetic = false
+		}
+	}
+	if nativeID != "" && nativeID != sessionID {
+		for _, sub := range s.activeSubagents[nativeID] {
+			if sub != nil && sub.Name != "" && !strings.EqualFold(sub.Name, sub.ToolName) {
+				sub.Synthetic = false
+			}
+		}
+	}
+}
+
 func (s *Server) addSubagent(sessionID, nativeID string, info *SubagentInfo) {
 	if info == nil {
 		return
 	}
 	s.subagentsMu.Lock()
-	s.activeSubagents[sessionID] = append(s.activeSubagents[sessionID], info)
-	if nativeID != "" && nativeID != sessionID {
-		s.activeSubagents[nativeID] = append(s.activeSubagents[nativeID], info)
+	merged := false
+	if !info.Synthetic {
+		for _, sub := range s.activeSubagents[sessionID] {
+			if sub != nil && sub.Synthetic && time.Since(sub.StartedAt) < 5*time.Second {
+				if sub.Name == info.Name || sub.Role == info.Name || strings.EqualFold(sub.Name, sub.ToolName) || sub.Role == "" {
+					sub.Name = info.Name
+					sub.Role = info.Role
+					sub.Synthetic = false
+					merged = true
+					break
+				}
+			}
+		}
+	}
+	if !merged {
+		s.activeSubagents[sessionID] = append(s.activeSubagents[sessionID], info)
+		if nativeID != "" && nativeID != sessionID {
+			s.activeSubagents[nativeID] = append(s.activeSubagents[nativeID], info)
+		}
 	}
 	list := s.activeSubagents[sessionID]
 	s.subagentsMu.Unlock()
@@ -2745,14 +2912,26 @@ func (s *Server) removeSubagent(sessionID, nativeID, subagentID string) {
 			if sub == nil {
 				continue
 			}
-			if subagentID != "" && (sub.ID == subagentID || sub.Name == subagentID) {
+			if !found && subagentID != "" && (sub.ID == subagentID || sub.Name == subagentID || sub.Role == subagentID) {
 				found = true
 				continue
 			}
 			updated = append(updated, sub)
 		}
-		if !found && subagentID == "" && len(updated) > 0 {
-			updated = updated[1:]
+		if !found && len(updated) > 0 {
+			if subagentID == "" {
+				updated = updated[1:]
+			} else {
+				var afterFallback []*SubagentInfo
+				for _, sub := range updated {
+					if !found && sub.Synthetic && strings.EqualFold(sub.ToolName, subagentID) {
+						found = true
+						continue
+					}
+					afterFallback = append(afterFallback, sub)
+				}
+				updated = afterFallback
+			}
 		}
 		s.activeSubagents[key] = updated
 		return updated
@@ -2784,21 +2963,25 @@ func (s *Server) removeSubagent(sessionID, nativeID, subagentID string) {
 	}
 }
 
-func (s *Server) clearSubagents(sessionID, nativeID string) {
+func (s *Server) clearInMemorySubagents(sessionID, nativeID string) {
 	s.subagentsMu.Lock()
 	delete(s.activeSubagents, sessionID)
 	if nativeID != "" {
 		delete(s.activeSubagents, nativeID)
 	}
 	s.subagentsMu.Unlock()
+	if s.headless != nil {
+		s.headless.EmitSubagentsUpdate(sessionID, []*SubagentInfo{})
+	}
+}
+
+func (s *Server) clearSubagents(sessionID, nativeID string) {
+	s.clearInMemorySubagents(sessionID, nativeID)
 
 	if sess := s.resolveSession(sessionID); sess != nil {
 		sess.RunningSubagents = 0
 		_ = s.db.SaveSession(sess)
 		s.broadcast(sess)
-	}
-	if s.headless != nil {
-		s.headless.EmitSubagentsUpdate(sessionID, []*SubagentInfo{})
 	}
 }
 
@@ -3826,14 +4009,73 @@ func setupProfileDirectory(agent, name, configDir string) (string, error) {
 		cfgDir := filepath.Join(configDir, "config")
 		_ = os.MkdirAll(cfgDir, 0755)
 		hookFile := filepath.Join(cfgDir, "hooks.json")
-		hookData := `{
-  "hooks": [
-    {
-      "command": "ackbar-hook --agent=antigravity"
-    }
-  ]
-}`
-		_ = os.WriteFile(hookFile, []byte(hookData), 0644)
+		var existingHooks map[string]interface{}
+		if data, err := os.ReadFile(hookFile); err == nil {
+			_ = json.Unmarshal(data, &existingHooks)
+		}
+		if existingHooks == nil {
+			existingHooks = make(map[string]interface{})
+		}
+		delete(existingHooks, "hooks")
+
+		hookCmd := "ackbar-hook --agent=antigravity"
+		existingHooks["ackbar"] = map[string]interface{}{
+			"SessionStart": []map[string]interface{}{
+				{
+					"type":    "command",
+					"command": hookCmd + " --event=SessionStart",
+				},
+			},
+			"PreInvocation": []map[string]interface{}{
+				{
+					"type":    "command",
+					"command": hookCmd + " --event=PreInvocation",
+				},
+			},
+			"PostInvocation": []map[string]interface{}{
+				{
+					"type":    "command",
+					"command": hookCmd + " --event=PostInvocation",
+				},
+			},
+			"Notification": []map[string]interface{}{
+				{
+					"type":    "command",
+					"command": hookCmd + " --event=Notification",
+				},
+			},
+			"Stop": []map[string]interface{}{
+				{
+					"type":    "command",
+					"command": hookCmd + " --event=Stop",
+				},
+			},
+			"PreToolUse": []map[string]interface{}{
+				{
+					"matcher": "*",
+					"hooks": []map[string]interface{}{
+						{
+							"type":    "command",
+							"command": hookCmd + " --event=PreToolUse",
+						},
+					},
+				},
+			},
+			"PostToolUse": []map[string]interface{}{
+				{
+					"matcher": "*",
+					"hooks": []map[string]interface{}{
+						{
+							"type":    "command",
+							"command": hookCmd + " --event=PostToolUse",
+						},
+					},
+				},
+			},
+		}
+		if updated, err := json.MarshalIndent(existingHooks, "", "  "); err == nil {
+			_ = os.WriteFile(hookFile, updated, 0644)
+		}
 	}
 
 	return configDir, nil

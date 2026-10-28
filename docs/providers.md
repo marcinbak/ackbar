@@ -57,9 +57,13 @@ Token usage percentage calculation dynamically adapts to model families:
 Child subagents (e.g. Claude Code Explore/Task teammates or Antigravity subtrajectories) are filtered from polluting the top-level tree as standalone sessions, but their live lifecycle is actively tracked under the parent session:
 * **Session Tree Isolation:** Hook payloads with `is_sidechain: true` or non-empty `agent_id` are ignored as top-level sessions.
 * **Structured Discovery (`Provider.ListSubagents`):**
-  * **Claude Code:** Discovers teammates from `~/.claude/projects/<slug>/<session-id>/subagents/` (`agent-*.meta.json` and companion `.jsonl` stop reasons) and team configurations in `~/.claude/teams/*/config.json`.
-  * **Antigravity:** Discovers subagents from `.system_generated/subagents/*.json` across brain directories and profiles.
-* **Working State Reflection:** When subagents are actively running, parent sessions evaluate to `StateWorking` (1) with dynamic activity descriptions (`Subagent running: <name>`) and active spinners.
+  * **Claude Code:** Discovers teammates from `~/.claude/projects/<slug>/<session-id>/subagents/` (`agent-*.meta.json` and companion `.jsonl` non-empty `stop_reason` inspection across 64KB tails, ignoring trailing attachment entries) and team configurations in `~/.claude/teams/*/config.json` (which default to `"completed"` unless backed by an active subagent transcript).
+  * **Antigravity:** Discovers subagents from `.system_generated/subagents/*.json` across brain directories and `~/.gemini-profiles/*/brain/`.
+* **Working & Blocked State Inspection (`InspectClaudeStatus` & `InspectAntigravityStatus`):**
+  * When subagents are actively running, parent sessions evaluate to `StateWorking` (1) with dynamic activity descriptions (`Subagent running: <name>`) and active spinners.
+  * **Antigravity Question & Transcript Inspection:** Parses both native JSON arrays and JSON-stringified `questions`/`options` in `ask_question` tool calls, falls back to `transcript_full.jsonl` when `truncated_fields` contains `"tool_calls"`, and evaluates transcript questions before bottom-of-pane spinner checks.
+  * **Claude Code Question, Prompt & Transcript Inspection:** Evaluates permission and question prompts in the bottom 8 non-empty tmux lines against idle prompt (`❯`, `❯ Type `, `❯ Try `, `❯ Press `) and spinner line indices, and falls back to the main `.jsonl` transcript (`stop_reason: "tool_use"` for `AskUserQuestion`/`ExitPlanMode` -> `StateBlocked`; `stop_reason: "end_turn"` -> `StateIdle`).
+  * **15s Blocked Grace Window:** Both status inspectors preserve `StateBlocked` for 15 seconds after `Blocked.Since` / `UpdatedAt` / `LastStateChangeAt` unless a newer transcript step or active spinner proves the turn has progressed.
 
 ---
 
