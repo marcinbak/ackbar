@@ -1,9 +1,15 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -616,5 +622,471 @@ func TestHeadlessRunner_OnTurnCompleteCallback(t *testing.T) {
 
 	if !callbackCalled || cbSessionID != "test-sess-id" || cbNativeID != "test-nat-id" {
 		t.Errorf("Callback not called with expected args")
+	}
+}
+
+func TestInitDB_HeadlessMigrationsAndBootCleanup(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "headless_migration.db")
+	db, err := InitDB(dbPath)
+	if err != nil {
+		t.Fatalf("Failed to init db: %v", err)
+	}
+
+	// 1. Clean headless session with empty tmux_name and working state
+	headlessClean := &Session{
+		ID:          "claude-code:local:uuid-clean-headless",
+		Agent:       "claude-code",
+		Host:        "local",
+		NativeID:    "uuid-clean-headless",
+		Cwd:         "/tmp",
+		State:       StateWorking,
+		Activity:    "Thinking...",
+		PID:         999999,
+		TmuxName:    "",
+		EngineType:  EngineHeadless,
+		StartedAt:   time.Now(),
+		LastEventAt: time.Now(),
+	}
+	if err := db.SaveSession(headlessClean); err != nil {
+		t.Fatalf("SaveSession failed: %v", err)
+	}
+
+	// 2. Corrupted headless session whose tmux_name was previously set to ackbar-<agent>-<nativeID>
+	headlessCorrupted := &Session{
+		ID:          "antigravity:local:uuid-corrupted-headless",
+		Agent:       "antigravity",
+		Host:        "local",
+		NativeID:    "uuid-corrupted-headless",
+		Cwd:         "/tmp",
+		State:       StateIdle,
+		TmuxName:    "ackbar-antigravity-uuid-corrupted-headless",
+		EngineType:  EngineHeadless,
+		StartedAt:   time.Now(),
+		LastEventAt: time.Now(),
+	}
+	if err := db.SaveSession(headlessCorrupted); err != nil {
+		t.Fatalf("SaveSession failed: %v", err)
+	}
+
+	// 3. Tmux session with empty tmux_name (should still be populated by migration)
+	tmuxSess := &Session{
+		ID:          "claude-code:local:uuid-tmux-sess",
+		Agent:       "claude-code",
+		Host:        "local",
+		NativeID:    "uuid-tmux-sess",
+		Cwd:         "/tmp",
+		State:       StateIdle,
+		TmuxName:    "",
+		EngineType:  EngineTmux,
+		StartedAt:   time.Now(),
+		LastEventAt: time.Now(),
+	}
+	if err := db.SaveSession(tmuxSess); err != nil {
+		t.Fatalf("SaveSession failed: %v", err)
+	}
+	_ = db.Close()
+
+	// Re-open DB to run startup migrations
+	db2, err := InitDB(dbPath)
+	if err != nil {
+		t.Fatalf("Failed to re-init db: %v", err)
+	}
+	defer db2.Close()
+
+	gotClean, err := db2.GetSession(headlessClean.ID)
+	if err != nil || gotClean == nil {
+		t.Fatalf("GetSession failed: %v", err)
+	}
+	if gotClean.TmuxName != "" {
+		t.Errorf("Expected headless session tmux_name to remain empty, got %q", gotClean.TmuxName)
+	}
+	if gotClean.State != StateIdle {
+		t.Errorf("Expected stale working headless session to be reset to StateIdle on startup, got %v", gotClean.State)
+	}
+	if gotClean.PID != 0 {
+		t.Errorf("Expected stale working headless session PID to be reset to 0, got %d", gotClean.PID)
+	}
+
+	gotCorrupted, err := db2.GetSession(headlessCorrupted.ID)
+	if err != nil || gotCorrupted == nil {
+		t.Fatalf("GetSession failed: %v", err)
+	}
+	if gotCorrupted.TmuxName != "" {
+		t.Errorf("Expected corrupted headless session tmux_name to be repaired to empty, got %q", gotCorrupted.TmuxName)
+	}
+
+	gotTmux, err := db2.GetSession(tmuxSess.ID)
+	if err != nil || gotTmux == nil {
+		t.Fatalf("GetSession failed: %v", err)
+	}
+	if gotTmux.TmuxName != "ackbar-claude-code-uuid-tmux-sess" {
+		t.Errorf("Expected tmux session tmux_name to be migrated, got %q", gotTmux.TmuxName)
+	}
+}
+
+func TestHeadlessRunner_BuildArgs_ClaudeAndAntigravity(t *testing.T) {
+	tmpHome := t.TempDir()
+	runner := NewHeadlessRunner(nil, nil)
+
+	// 1. Claude Code Turn 1: should include --dangerously-skip-permissions and --session-id
+	claudeSess := &Session{
+		ID:         "claude-code:local:11111111-2222-3333-4444-555555555555",
+		Agent:      "claude-code",
+		Host:       "local",
+		NativeID:   "11111111-2222-3333-4444-555555555555",
+		Cwd:        "/tmp/proj",
+		EngineType: EngineHeadless,
+	}
+	_, args1, err := runner.buildArgs(claudeSess, "Hello Claude", tmpHome)
+	if err != nil {
+		t.Fatalf("buildArgs failed: %v", err)
+	}
+	if !slices.Contains(args1, "--dangerously-skip-permissions") {
+		t.Errorf("Expected Claude args to contain --dangerously-skip-permissions, got %v", args1)
+	}
+	if !slices.Contains(args1, "--session-id") {
+		t.Errorf("Expected Claude Turn 1 args to contain --session-id, got %v", args1)
+	}
+
+	// 2. Claude Code Turn 2: after FirstPrompt is set, should use --resume
+	claudeSess.FirstPrompt = "Hello Claude"
+	_, args2, err := runner.buildArgs(claudeSess, "Follow up", tmpHome)
+	if err != nil {
+		t.Fatalf("buildArgs failed: %v", err)
+	}
+	if !slices.Contains(args2, "--dangerously-skip-permissions") {
+		t.Errorf("Expected Claude Turn 2 args to contain --dangerously-skip-permissions, got %v", args2)
+	}
+	if !slices.Contains(args2, "--resume") {
+		t.Errorf("Expected Claude Turn 2 args to contain --resume, got %v", args2)
+	}
+
+	// 3. Antigravity Turn 1: before init, should NOT pass --conversation
+	agySess := &Session{
+		ID:         "antigravity:local:temp-uuid-1",
+		Agent:      "antigravity",
+		Host:       "local",
+		NativeID:   "temp-uuid-1",
+		Cwd:        "/tmp/proj",
+		EngineType: EngineHeadless,
+	}
+	_, agyArgs1, err := runner.buildArgs(agySess, "First agy prompt", tmpHome)
+	if err != nil {
+		t.Fatalf("buildArgs failed: %v", err)
+	}
+	if slices.Contains(agyArgs1, "--conversation") {
+		t.Errorf("Expected Antigravity Turn 1 args not to contain --conversation, got %v", agyArgs1)
+	}
+
+	// Simulate init event updating NativeID and persisting FirstPrompt
+	runner.processStreamWithPrompt(agySess.ID, strings.NewReader(`{"event":"init","conversation_id":"real-agy-uuid-2"}`), "First agy prompt", agySess)
+	if agySess.NativeID != "real-agy-uuid-2" {
+		t.Errorf("Expected NativeID 'real-agy-uuid-2', got %q", agySess.NativeID)
+	}
+	if agySess.FirstPrompt != "First agy prompt" {
+		t.Errorf("Expected FirstPrompt 'First agy prompt' after init, got %q", agySess.FirstPrompt)
+	}
+
+	_, agyArgs2, err := runner.buildArgs(agySess, "Second agy prompt", tmpHome)
+	if err != nil {
+		t.Fatalf("buildArgs failed: %v", err)
+	}
+	if !slices.Contains(agyArgs2, "--conversation") || !slices.Contains(agyArgs2, "real-agy-uuid-2") {
+		t.Errorf("Expected Antigravity Turn 2 args to contain --conversation real-agy-uuid-2, got %v", agyArgs2)
+	}
+}
+
+func TestHeadlessStreamParser_ClaudeAssistantToolUseAndUserToolResult(t *testing.T) {
+	runner := NewHeadlessRunner(nil, nil)
+	sessionID := "claude-code:local:test-assistant-tool-blocks"
+
+	ch, cleanup := runner.Subscribe(sessionID)
+	defer cleanup()
+
+	sampleOutput := `
+{"type":"system","subtype":"init","session_id":"test-assistant-tool-blocks"}
+{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"Inspecting workspace"},{"type":"text","text":"Running ls now."},{"type":"tool_use","id":"toolu_abc","name":"Bash","input":{"command":"ls"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_abc","content":"README.md\ngo.mod","is_error":false}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Found README.md and go.mod."}]}}
+{"type":"result","result":"Found README.md and go.mod.","is_error":false}
+`
+
+	go func() {
+		runner.processStream(sessionID, strings.NewReader(sampleOutput))
+	}()
+
+	var events []ChatStreamEvent
+	for {
+		select {
+		case evt := <-ch:
+			events = append(events, evt)
+			if evt.Type == "turn_complete" {
+				goto done
+			}
+		case <-time.After(1 * time.Second):
+			t.Fatalf("Timeout waiting for stream events, got %d: %+v", len(events), events)
+		}
+	}
+done:
+	var hasThought, hasText1, hasToolStart, hasToolResult, hasText2 bool
+	for _, e := range events {
+		switch e.Type {
+		case "thought_delta":
+			if e.Thinking == "Inspecting workspace" {
+				hasThought = true
+			}
+		case "text_delta":
+			if e.Text == "Running ls now." {
+				hasText1 = true
+			}
+			if e.Text == "\n\nFound README.md and go.mod." {
+				hasText2 = true
+			}
+		case "tool_start":
+			if e.ToolName == "Bash" {
+				hasToolStart = true
+			}
+		case "tool_result":
+			if e.ToolName == "Bash" && e.ToolOutput == "README.md\ngo.mod" {
+				hasToolResult = true
+			}
+		}
+	}
+	if !hasThought || !hasText1 || !hasToolStart || !hasToolResult || !hasText2 {
+		t.Errorf("Missing expected stream events: thought=%v text1=%v toolStart=%v toolResult=%v text2=%v (all=%+v)",
+			hasThought, hasText1, hasToolStart, hasToolResult, hasText2, events)
+	}
+}
+
+func TestHandleSpawn_HeadlessWithPromptTriggersTurn(t *testing.T) {
+	tmpDir := t.TempDir()
+	binDir := filepath.Join(tmpDir, "bin")
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+	mockClaude := filepath.Join(binDir, "claude")
+	script := "#!/bin/sh\necho '{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"Hello from headless spawn\"}]}}'\necho '{\"type\":\"result\",\"result\":\"Hello from headless spawn\"}'\n"
+	if err := os.WriteFile(mockClaude, []byte(script), 0755); err != nil {
+		t.Fatalf("WriteFile mock claude failed: %v", err)
+	}
+	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+
+	db, err := InitDB(filepath.Join(tmpDir, "spawn_headless.db"))
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := NewServer(db)
+	payload, _ := json.Marshal(map[string]string{
+		"agent":       "claude-code",
+		"cwd":         tmpDir,
+		"engine_type": EngineHeadless,
+		"prompt":      "Initial headless prompt",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/spawn", bytes.NewReader(payload))
+	w := httptest.NewRecorder()
+	server.handleSpawn(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK from handleSpawn, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("Failed to decode spawn response: %v", err)
+	}
+	sessID := resp["id"]
+	if sessID == "" {
+		t.Fatalf("Expected non-empty session id in spawn response")
+	}
+
+	// Wait for the triggered headless turn to complete and persist FirstPrompt
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		sess, _ := db.GetSession(sessID)
+		if sess != nil && sess.FirstPrompt == "Initial headless prompt" && sess.State == StateIdle {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	sess, _ := db.GetSession(sessID)
+	t.Fatalf("Expected headless session to complete initial turn with FirstPrompt set, got: %+v", sess)
+}
+
+func TestHeadlessLivenessAndHookStateAuthority(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	db, err := InitDB(filepath.Join(tmpDir, "liveness_headless.db"))
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := NewServer(db)
+	mockP := &mockDynamicProvider{agentName: "claude-code"}
+	server.RegisterProvider(mockP)
+
+	nativeUUID := "11111111-2222-3333-4444-555555555999"
+	sessID := "claude-code:local:" + nativeUUID
+	sess := &Session{
+		ID:          sessID,
+		Agent:       "claude-code",
+		Host:        "local",
+		NativeID:    nativeUUID,
+		Cwd:         tmpDir,
+		Managed:     true,
+		TmuxName:    "",
+		EngineType:  EngineHeadless,
+		State:       StateWorking,
+		Activity:    "Thinking...",
+		StartedAt:   time.Now().Add(-1 * time.Hour),
+		LastEventAt: time.Now().Add(-1 * time.Hour),
+	}
+	if err := db.SaveSession(sess); err != nil {
+		t.Fatalf("SaveSession failed: %v", err)
+	}
+
+	// 1. verifySessionLiveness must heal working -> idle when !s.headless.IsRunning(sess.ID), and must NOT mark StateEnded
+	server.verifySessionLiveness(context.Background(), []*Session{sess})
+	afterHeal, _ := db.GetSession(sessID)
+	if afterHeal == nil || afterHeal.State != StateIdle {
+		t.Fatalf("Expected verifySessionLiveness to heal headless session to StateIdle, got %+v", afterHeal)
+	}
+
+	// 2. Late PreToolUse or SessionEnd hook when !IsRunning must NOT flip headless session to StateWorking or StateEnded
+	mockP.event = &Event{
+		Agent:       "claude-code",
+		NativeID:    nativeUUID,
+		Cwd:         tmpDir,
+		EventName:   "PreToolUse",
+		State:       StateWorking,
+		Activity:    "Running Bash",
+		LastEventAt: time.Now(),
+	}
+	server.processHookEvent(mockP, "PreToolUse", "local", []byte(`{}`))
+	afterHook, _ := db.GetSession(sessID)
+	if afterHook == nil || afterHook.State != StateIdle {
+		t.Fatalf("Expected late PreToolUse hook not to flip idle headless session to StateWorking, got %+v", afterHook)
+	}
+
+	mockP.event = &Event{
+		Agent:       "claude-code",
+		NativeID:    nativeUUID,
+		Cwd:         tmpDir,
+		EventName:   "SessionEnd",
+		State:       StateEnded,
+		Activity:    "Session ended",
+		LastEventAt: time.Now(),
+	}
+	server.processHookEvent(mockP, "SessionEnd", "local", []byte(`{}`))
+	afterEndHook, _ := db.GetSession(sessID)
+	if afterEndHook == nil || afterEndHook.State != StateIdle {
+		t.Fatalf("Expected SessionEnd hook not to flip headless session to StateEnded, got %+v", afterEndHook)
+	}
+
+	// 3. Stale subagent file (> 30m old) without end_turn must be marked completed
+	subDir := filepath.Join(tmpDir, ".claude", "projects", encodeClaudeProjectDir(tmpDir), nativeUUID, "subagents")
+	if err := os.MkdirAll(subDir, 0755); err != nil {
+		t.Fatalf("MkdirAll subDir failed: %v", err)
+	}
+	metaFile := filepath.Join(subDir, "agent-1.meta.json")
+	jsonlFile := filepath.Join(subDir, "agent-1.jsonl")
+	_ = os.WriteFile(metaFile, []byte(`{"name":"worker-1","agentType":"implementer"}`), 0644)
+	_ = os.WriteFile(jsonlFile, []byte(`{"type":"assistant","message":{"stop_reason":"tool_use"}}`), 0644)
+	oldTime := time.Now().Add(-45 * time.Minute)
+	_ = os.Chtimes(metaFile, oldTime, oldTime)
+	_ = os.Chtimes(jsonlFile, oldTime, oldTime)
+
+	subs := loadClaudeSubagentsFromDir(tmpDir, nativeUUID, tmpDir)
+	if len(subs) != 1 || subs[0].State != "completed" {
+		t.Errorf("Expected stale subagent (>30m) to be marked completed, got %+v", subs)
+	}
+
+	// 4. SessionStart (StateIdle) hook while headless turn IS running must keep StateWorking
+	sess.State = StateWorking
+	sess.Activity = "Thinking..."
+	if err := db.SaveSession(sess); err != nil {
+		t.Fatalf("SaveSession failed: %v", err)
+	}
+	server.headless.mu.Lock()
+	server.headless.processes[sessID] = &exec.Cmd{Process: &os.Process{Pid: os.Getpid()}}
+	server.headless.mu.Unlock()
+	defer func() {
+		server.headless.mu.Lock()
+		delete(server.headless.processes, sessID)
+		server.headless.mu.Unlock()
+	}()
+
+	mockP.event = &Event{
+		Agent:       "claude-code",
+		NativeID:    nativeUUID,
+		Cwd:         tmpDir,
+		EventName:   "SessionStart",
+		State:       StateIdle,
+		Activity:    "Session started",
+		LastEventAt: time.Now(),
+	}
+	server.processHookEvent(mockP, "SessionStart", "local", []byte(`{}`))
+	afterStartHook, _ := db.GetSession(sessID)
+	if afterStartHook == nil || afterStartHook.State != StateWorking {
+		t.Fatalf("Expected SessionStart hook during active headless turn to keep StateWorking, got %+v", afterStartHook)
+	}
+	if afterStartHook.Activity != "Thinking..." {
+		t.Errorf("Expected Activity 'Thinking...' to be preserved, got %q", afterStartHook.Activity)
+	}
+}
+
+func TestHeadlessRunner_AntigravityInitMigratesSubscribersAcrossTurns(t *testing.T) {
+	runner := NewHeadlessRunner(nil, nil)
+	oldID := "antigravity:local:temp-uuid-sub-1"
+	sess := &Session{
+		ID:         oldID,
+		Agent:      "antigravity",
+		Host:       "local",
+		NativeID:   "temp-uuid-sub-1",
+		EngineType: EngineHeadless,
+	}
+
+	ch, cleanup := runner.Subscribe(oldID)
+	defer cleanup()
+
+	// Turn 1: init migrates oldID -> antigravity:local:real-conv-sub-2
+	turn1Stream := `
+{"event":"init","conversation_id":"real-conv-sub-2"}
+{"event":"step_update","step_update":{"step_type":"agent_response","text_delta":"Turn 1 response"}}
+{"event":"result","result":{"status":"SUCCESS","response":"Turn 1 response"}}
+`
+	runner.processStreamWithPrompt(oldID, strings.NewReader(turn1Stream), "Turn 1 prompt", sess)
+
+	newID := "antigravity:local:real-conv-sub-2"
+	if sess.ID != newID {
+		t.Fatalf("Expected sess.ID migrated to %q, got %q", newID, sess.ID)
+	}
+
+	// Drain Turn 1 events
+	for i := 0; i < 2; i++ {
+		select {
+		case <-ch:
+		case <-time.After(1 * time.Second):
+			t.Fatalf("Timed out waiting for Turn 1 event %d", i)
+		}
+	}
+
+	// Turn 2: emits directly to newID; subscriber originally registered on oldID must still receive it
+	runner.Emit(newID, ChatStreamEvent{
+		SessionID: newID,
+		Type:      "text_delta",
+		Text:      "Turn 2 delta on migrated ID",
+	})
+
+	select {
+	case evt := <-ch:
+		if evt.Type != "text_delta" || evt.Text != "Turn 2 delta on migrated ID" {
+			t.Errorf("Unexpected Turn 2 event received: %+v", evt)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatalf("Subscriber on oldID did not receive Turn 2 event emitted to newID")
 	}
 }

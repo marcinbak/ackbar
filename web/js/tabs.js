@@ -24,7 +24,8 @@ import {
   connectChatStream,
   loadChatTranscript,
   hideInStreamActivity,
-  resetChatComposer
+  resetChatComposer,
+  onSessionUpdated
 } from './chat.js';
 import { openSessionDetailsTab } from './details.js';
 import { updateStatusbar, resetStatusbar } from './statusbar.js';
@@ -176,6 +177,10 @@ function isSameUnderlyingSession(sessA, sessB) {
 // Helper: Cleanly tear down a tab object's connections, observers, terminal, and DOM elements
 function destroyTabResources(tab) {
   if (!tab) return;
+  if (tab.chatReconnectTimer) {
+    clearTimeout(tab.chatReconnectTimer);
+    tab.chatReconnectTimer = null;
+  }
   if (tab.chatEventSource) {
     try { tab.chatEventSource.close(); } catch (e) {}
     tab.chatEventSource = null;
@@ -721,19 +726,10 @@ function activateTab(tabId) {
       if (tab.session && tab.viewMode === 'chat') {
         const sessMatch = state.sessions.find(s => s.id === tab.session.id || (tab.session.native_id && s.native_id === tab.session.native_id));
         const currentSess = sessMatch || tab.session;
-        const isFinished = currentSess.state === 3 || currentSess.state === 2 || currentSess.state === 4;
-
-        if (isFinished) {
-          const hasLingeringTurnUI = tab.activeInStreamActivityEl ||
-                                     tab.activeTurnMsgEl ||
-                                     (tab.chatCancelBtn && tab.chatCancelBtn.style.display !== 'none') ||
-                                     (tab.chatSendBtn && tab.chatSendBtn.classList.contains('is-queue'));
-          if (hasLingeringTurnUI) {
-            hideInStreamActivity(tab);
-            resetChatComposer(tab);
-            loadChatTranscript(tab);
-          }
-        } else if (currentSess.engine_type === 'headless') {
+        if (currentSess) {
+          onSessionUpdated(currentSess);
+        }
+        if (currentSess && currentSess.engine_type === 'headless') {
           connectChatStream(tab);
         }
       }
@@ -911,19 +907,10 @@ function checkAndReconnectActiveTabs() {
       if (tab.viewMode === 'chat') {
         const sessMatch = state.sessions.find(s => s.id === (tab.session && tab.session.id) || (tab.session && tab.session.native_id && s.native_id === tab.session.native_id));
         const currentSess = sessMatch || tab.session;
-        const isFinished = currentSess && (currentSess.state === 3 || currentSess.state === 2 || currentSess.state === 4);
-
-        if (isFinished) {
-          const hasLingeringTurnUI = tab.activeInStreamActivityEl ||
-                                     tab.activeTurnMsgEl ||
-                                     (tab.chatCancelBtn && tab.chatCancelBtn.style.display !== 'none') ||
-                                     (tab.chatSendBtn && tab.chatSendBtn.classList.contains('is-queue'));
-          if (hasLingeringTurnUI) {
-            hideInStreamActivity(tab);
-            resetChatComposer(tab);
-            loadChatTranscript(tab);
-          }
-        } else if (currentSess && currentSess.engine_type === 'headless' && state.activeTabId === tabId) {
+        if (currentSess) {
+          onSessionUpdated(currentSess);
+        }
+        if (currentSess && currentSess.engine_type === 'headless' && state.activeTabId === tabId) {
           connectChatStream(tab);
         }
       } else if (!tab.socket || tab.socket.readyState === WebSocket.CLOSED || tab.socket.readyState === WebSocket.CLOSING) {

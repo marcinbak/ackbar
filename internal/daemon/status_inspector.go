@@ -40,6 +40,9 @@ func InspectAntigravityStatus(ctx context.Context, sess *Session) bool {
 	if sess == nil || sess.Agent != "antigravity" || sess.State == StateEnded {
 		return false
 	}
+	if sess.EngineType == EngineHeadless && sess.TmuxName == "" && (sess.PID <= 0 || !isProcessAlive(sess.PID)) {
+		return false
+	}
 	changed := false
 	home, _ := os.UserHomeDir()
 
@@ -300,6 +303,12 @@ func InspectAntigravityStatus(ctx context.Context, sess *Session) bool {
 
 					// 3B. Turn completion detection
 					if lastStep.Type == "USER_INPUT" {
+						if sess.EngineType == EngineHeadless && sess.TmuxName == "" {
+							break
+						}
+						if stat, serr := os.Stat(logPath); serr == nil && time.Since(stat.ModTime()) >= 30*time.Minute {
+							break
+						}
 						if sess.State != StateWorking {
 							sess.State = StateWorking
 							sess.Blocked = nil
@@ -400,6 +409,9 @@ func (s *Server) inspectClaudeStatus(ctx context.Context, sess *Session) bool {
 
 func InspectClaudeStatus(ctx context.Context, sess *Session) bool {
 	if sess == nil || sess.Agent != "claude-code" || sess.State == StateEnded {
+		return false
+	}
+	if sess.EngineType == EngineHeadless && sess.TmuxName == "" && (sess.PID <= 0 || !isProcessAlive(sess.PID)) {
 		return false
 	}
 	changed := false

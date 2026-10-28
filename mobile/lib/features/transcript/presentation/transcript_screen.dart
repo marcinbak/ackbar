@@ -54,13 +54,22 @@ class TranscriptScreen extends ConsumerStatefulWidget {
   ConsumerState<TranscriptScreen> createState() => _TranscriptScreenState();
 }
 
-class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
+class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
+    with WidgetsBindingObserver {
   final ScrollController _scrollController = ScrollController();
   final TextEditingController _promptController = TextEditingController();
   final FocusNode _promptFocusNode = FocusNode();
   bool _showJumpToBottom = false;
   bool _isLoading = true;
   bool _isSending = false;
+  bool _awaitingTurnCompletion = false;
+  bool _sawWorkingState = false;
+  bool _isRefreshingTranscript = false;
+  bool _hasPromptText = false;
+  int _assistantCountAtSend = 0;
+  int _messageCountAtSend = 0;
+  DateTime? _awaitingTurnStartedAt;
+  TranscriptMessage? _pendingUserMessage;
   String? _errorMessage;
   TranscriptData? _transcriptData;
   List<SubagentInfo> _runningSubagents = [];
@@ -70,24 +79,88 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _sawWorkingState = widget.session.state == SessionState.working;
+    _promptController.addListener(_onPromptChanged);
     _loadTranscript();
     _loadSubagents();
     _scrollController.addListener(_onScroll);
     _subagentPollingTimer = Timer.periodic(const Duration(seconds: 3), (_) {
-      if (mounted) {
-        _loadSubagents();
+      if (!mounted) return;
+      _loadSubagents();
+      if (_isSessionWorking) {
+        if (_awaitingTurnCompletion &&
+            !_sawWorkingState &&
+            _awaitingTurnStartedAt != null &&
+            DateTime.now().difference(_awaitingTurnStartedAt!) >
+                const Duration(seconds: 45) &&
+            _resolveLiveSession().state != SessionState.working) {
+          setState(() {
+            _awaitingTurnCompletion = false;
+            _awaitingTurnStartedAt = null;
+            _pendingUserMessage = null;
+          });
+        }
+        _refreshTranscriptSilently();
       }
     });
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _subagentPollingTimer?.cancel();
+    _promptController.removeListener(_onPromptChanged);
     _scrollController.removeListener(_onScroll);
     _scrollController.dispose();
     _promptController.dispose();
     _promptFocusNode.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    if (state == AppLifecycleState.resumed && mounted) {
+      _refreshTranscriptSilently();
+      _loadSubagents();
+      if (ref.read(hostsListProvider).isNotEmpty) {
+        ref.read(fleetSessionsProvider.notifier).refreshSessions();
+      }
+    }
+  }
+
+  void _onPromptChanged() {
+    final hasText = _promptController.text.trim().isNotEmpty;
+    if (hasText != _hasPromptText && mounted) {
+      setState(() {
+        _hasPromptText = hasText;
+      });
+    }
+  }
+
+  Session? _findMatchingSession(List<Session>? sessions) {
+    if (sessions == null) return null;
+    for (final s in sessions) {
+      if (s.id == widget.session.id ||
+          (widget.session.nativeId.isNotEmpty &&
+              s.nativeId == widget.session.nativeId)) {
+        return s;
+      }
+    }
+    return null;
+  }
+
+  Session _resolveLiveSession([List<Session>? sessions]) {
+    final list = sessions ?? ref.read(fleetSessionsProvider);
+    return _findMatchingSession(list) ?? widget.session;
+  }
+
+  bool get _isSessionWorking {
+    final liveSession = _resolveLiveSession();
+    return _isSending ||
+        _awaitingTurnCompletion ||
+        liveSession.state == SessionState.working;
   }
 
   void _onScroll() {
@@ -146,6 +219,65 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
     return result;
   }
 
+  Future<TranscriptData> _fetchTranscriptData(String hostUrl) async {
+    final api = ref.read(apiClientProvider);
+    final session = _resolveLiveSession();
+    final structured = await api.getStructuredTranscript(
+      hostUrl,
+      widget.session.id,
+    );
+
+    if (structured != null && structured.messages.isNotEmpty) {
+      return structured.copyWith(
+        messages: _deduplicateMessages(structured.messages),
+      );
+    }
+
+    // Fallback to markdown parser
+    final rawMd = await api.getTranscript(hostUrl, widget.session.id);
+    if (rawMd.trim().isNotEmpty) {
+      final parsed = TranscriptData.fromRawMarkdown(
+        sessionId: widget.session.id,
+        agent: session.agent,
+        title: session.displayTitle,
+        markdown: rawMd,
+      );
+      return parsed.copyWith(
+        messages: _deduplicateMessages(parsed.messages),
+      );
+    }
+
+    return structured ??
+        TranscriptData(
+          sessionId: widget.session.id,
+          nativeId: session.nativeId,
+          agent: session.agent,
+          title: session.displayTitle,
+          cwd: session.cwd,
+          messages: const [],
+          rawMarkdown: '',
+        );
+  }
+
+  bool _hasTranscriptChanged(TranscriptData? prev, TranscriptData next) {
+    if (prev == null) return true;
+    if (prev.rawMarkdown != next.rawMarkdown && next.rawMarkdown.isNotEmpty) {
+      return true;
+    }
+    final a = prev.messages;
+    final b = next.messages;
+    if (a.length != b.length) return true;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i].role != b[i].role ||
+          a[i].content != b[i].content ||
+          a[i].thinking != b[i].thinking ||
+          a[i].toolCalls.length != b[i].toolCalls.length) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   Future<void> _loadTranscript() async {
     if (!mounted) return;
     setState(() {
@@ -155,57 +287,14 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
 
     try {
       final hostUrl = await _resolveHostUrl();
-      final structured = await ref
-          .read(apiClientProvider)
-          .getStructuredTranscript(hostUrl, widget.session.id);
+      if (!mounted) return;
+      final fetched = await _fetchTranscriptData(hostUrl);
+      if (!mounted) return;
 
-      if (structured != null && structured.messages.isNotEmpty) {
-        if (mounted) {
-          setState(() {
-            _transcriptData = structured.copyWith(
-              messages: _deduplicateMessages(structured.messages),
-            );
-            _isLoading = false;
-          });
-        }
-      } else {
-        // Fallback to markdown parser
-        final rawMd = await ref
-            .read(apiClientProvider)
-            .getTranscript(hostUrl, widget.session.id);
-        if (rawMd.trim().isNotEmpty) {
-          final parsed = TranscriptData.fromRawMarkdown(
-            sessionId: widget.session.id,
-            agent: widget.session.agent,
-            title: widget.session.displayTitle,
-            markdown: rawMd,
-          );
-          if (mounted) {
-            setState(() {
-              _transcriptData = parsed.copyWith(
-                messages: _deduplicateMessages(parsed.messages),
-              );
-              _isLoading = false;
-            });
-          }
-        } else {
-          if (mounted) {
-            setState(() {
-              _transcriptData = structured ??
-                  TranscriptData(
-                    sessionId: widget.session.id,
-                    nativeId: widget.session.nativeId,
-                    agent: widget.session.agent,
-                    title: widget.session.displayTitle,
-                    cwd: widget.session.cwd,
-                    messages: const [],
-                    rawMarkdown: '',
-                  );
-              _isLoading = false;
-            });
-          }
-        }
-      }
+      setState(() {
+        _transcriptData = fetched;
+        _isLoading = false;
+      });
 
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _scrollToBottom(animate: false);
@@ -218,6 +307,73 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
           _isLoading = false;
         });
       }
+    }
+  }
+
+  Future<void> _refreshTranscriptSilently() async {
+    if (!mounted || _isRefreshingTranscript) return;
+    _isRefreshingTranscript = true;
+
+    try {
+      final hostUrl = await _resolveHostUrl();
+      if (!mounted) return;
+      final fetched = await _fetchTranscriptData(hostUrl);
+      if (!mounted) return;
+
+      var mergedMessages = fetched.messages;
+      final assistantCount = mergedMessages.where((m) => m.isAssistant).length;
+
+      if (_pendingUserMessage != null) {
+        final hasPendingUser = mergedMessages.skip(_messageCountAtSend).any(
+              (m) =>
+                  m.isUser &&
+                  m.content.trim() == _pendingUserMessage!.content.trim(),
+            );
+        if (hasPendingUser || assistantCount > _assistantCountAtSend) {
+          _pendingUserMessage = null;
+        } else {
+          mergedMessages = _deduplicateMessages([
+            ...mergedMessages,
+            _pendingUserMessage!,
+          ]);
+        }
+      }
+
+      final liveSession = _resolveLiveSession();
+      final turnCompletedByReply = _awaitingTurnCompletion &&
+          assistantCount > _assistantCountAtSend &&
+          liveSession.state != SessionState.working;
+
+      final updatedData = fetched.copyWith(messages: mergedMessages);
+      final hadChanges = _hasTranscriptChanged(_transcriptData, updatedData);
+
+      if (hadChanges || turnCompletedByReply || _isLoading) {
+        final shouldAutoScroll = !_showJumpToBottom && hadChanges;
+        setState(() {
+          if (hadChanges || _transcriptData == null) {
+            _transcriptData = updatedData;
+          }
+          _isLoading = false;
+          _errorMessage = null;
+          if (turnCompletedByReply) {
+            _awaitingTurnCompletion = false;
+            _awaitingTurnStartedAt = null;
+            _pendingUserMessage = null;
+          }
+        });
+
+        if (shouldAutoScroll) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) {
+              _scrollToBottom(animate: true);
+            }
+          });
+        }
+      }
+    } catch (_) {
+      // Ignore transient errors during silent background polling
+    } finally {
+      _isRefreshingTranscript = false;
     }
   }
 
@@ -278,8 +434,18 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
       timestamp: DateTime.now(),
     );
 
+    final currentAssistantCount =
+        _transcriptData?.messages.where((m) => m.isAssistant).length ?? 0;
+    final currentMessageCount = _transcriptData?.messages.length ?? 0;
+
     setState(() {
       _isSending = true;
+      _awaitingTurnCompletion = true;
+      _sawWorkingState = _resolveLiveSession().state == SessionState.working;
+      _awaitingTurnStartedAt = DateTime.now();
+      _assistantCountAtSend = currentAssistantCount;
+      _messageCountAtSend = currentMessageCount;
+      _pendingUserMessage = userMsg;
       if (_transcriptData != null) {
         _transcriptData = _transcriptData!.copyWith(
           messages: _deduplicateMessages([
@@ -300,6 +466,11 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
           .read(apiClientProvider)
           .sendPrompt(hostUrl, widget.session.id, text);
       if (!success && mounted) {
+        setState(() {
+          _awaitingTurnCompletion = false;
+          _awaitingTurnStartedAt = null;
+          _pendingUserMessage = null;
+        });
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('Failed to dispatch prompt to agent'),
@@ -309,6 +480,11 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
       }
     } catch (e) {
       if (mounted) {
+        setState(() {
+          _awaitingTurnCompletion = false;
+          _awaitingTurnStartedAt = null;
+          _pendingUserMessage = null;
+        });
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('Error sending prompt: $e'),
@@ -342,7 +518,7 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
           .takeWheel(hostUrl, widget.session.id);
       if (res != null && mounted) {
         final tmuxName = res['tmux_name']?.toString() ?? '';
-        final updatedSession = widget.session.copyWith(
+        final updatedSession = _resolveLiveSession().copyWith(
           tmuxName: tmuxName,
           engineType: 'tmux',
           managed: true,
@@ -378,6 +554,10 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
       if (mounted) {
         setState(() {
           _isSending = false;
+          _awaitingTurnCompletion = false;
+          _sawWorkingState = false;
+          _awaitingTurnStartedAt = null;
+          _pendingUserMessage = null;
         });
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -391,6 +571,35 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
 
   @override
   Widget build(BuildContext context) {
+    ref.listen<List<Session>>(fleetSessionsProvider, (previous, next) {
+      final prevSession = _findMatchingSession(previous) ?? widget.session;
+      final nextSession = _findMatchingSession(next);
+      if (nextSession == null) return;
+
+      if (nextSession.state == SessionState.working) {
+        _sawWorkingState = true;
+      } else if (prevSession.state == SessionState.working ||
+          _sawWorkingState) {
+        _sawWorkingState = false;
+        if (_awaitingTurnCompletion && mounted) {
+          setState(() {
+            _awaitingTurnCompletion = false;
+            _awaitingTurnStartedAt = null;
+            _pendingUserMessage = null;
+          });
+        }
+        _refreshTranscriptSilently();
+        _loadSubagents();
+      }
+    });
+
+    final liveSession = ref.watch(
+      fleetSessionsProvider.select(_findMatchingSession),
+    );
+    final currentSession = liveSession ?? widget.session;
+    final isWorking = _isSending ||
+        _awaitingTurnCompletion ||
+        currentSession.state == SessionState.working;
     final messages = _transcriptData?.messages ?? [];
 
     return Scaffold(
@@ -419,7 +628,7 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
                 const SizedBox(width: 6),
                 Expanded(
                   child: Text(
-                    widget.session.displayTitle,
+                    currentSession.displayTitle,
                     style: AppTypography.codeSm.copyWith(
                       color: AppColors.textPrimary,
                       fontWeight: FontWeight.w700,
@@ -431,7 +640,7 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
               ],
             ),
             Text(
-              '${widget.session.agentDisplayName} @ ${widget.session.hostTag} • ${messages.length} messages',
+              '${currentSession.agentDisplayName} @ ${currentSession.hostTag} • ${messages.length} messages',
               style: AppTypography.codeXs.copyWith(
                 color: AppColors.textSecondary,
               ),
@@ -442,7 +651,7 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
         ),
         actions: [
           // Take the Wheel in Terminal (Headless sessions)
-          if (widget.session.isHeadless)
+          if (currentSession.isHeadless)
             IconButton(
               icon: const Icon(
                 Icons.sports_motorsports_rounded,
@@ -461,7 +670,7 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
               color: AppColors.statusEmerald,
             ),
             tooltip: 'Open Live Terminal',
-            onPressed: () => TerminalScreen.open(context, widget.session),
+            onPressed: () => TerminalScreen.open(context, currentSession),
           ),
 
           // Copy Full Transcript
@@ -626,14 +835,14 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
               ),
             ),
             _buildSubagentsDock(),
-            _buildBottomComposer(),
+            _buildBottomComposer(currentSession, isWorking),
           ],
         ),
       ),
     );
   }
 
-  Widget _buildBottomComposer() {
+  Widget _buildBottomComposer(Session currentSession, bool isWorking) {
     return Container(
       decoration: const BoxDecoration(
         color: AppColors.surface,
@@ -657,7 +866,7 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
                     color: AppColors.terminalBlack,
                     borderRadius: BorderRadius.circular(10),
                     border: Border.all(
-                      color: _isSending
+                      color: isWorking
                           ? AppColors.infoCyan
                           : AppColors.outlineSubtle,
                       width: 1,
@@ -681,7 +890,7 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
                       isDense: true,
                       contentPadding: EdgeInsets.zero,
                       border: InputBorder.none,
-                      hintText: 'Ask ${widget.session.agentDisplayName}...',
+                      hintText: 'Ask ${currentSession.agentDisplayName}...',
                       hintStyle: AppTypography.bodySmall.copyWith(
                         color: AppColors.textMuted,
                       ),
@@ -690,7 +899,7 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
                 ),
               ),
               const SizedBox(width: 8),
-              if (_isSending)
+              if (isWorking)
                 IconButton(
                   icon: const Icon(
                     Icons.stop_circle_rounded,
@@ -699,8 +908,8 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
                   ),
                   tooltip: 'Cancel turn',
                   onPressed: _cancelTurn,
-                )
-              else
+                ),
+              if (!isWorking || _hasPromptText)
                 IconButton(
                   icon: const Icon(
                     Icons.arrow_upward_rounded,
@@ -722,7 +931,7 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 Text(
-                  widget.session.isHeadless
+                  currentSession.isHeadless
                       ? '💬 Headless turn-by-turn • OAuth Flat-rate'
                       : '🖥️ Tmux process • Interactive shell',
                   style: AppTypography.codeXs.copyWith(
@@ -730,7 +939,7 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen> {
                     fontSize: 10,
                   ),
                 ),
-                if (_isSending)
+                if (isWorking)
                   Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [

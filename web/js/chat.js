@@ -343,6 +343,9 @@ function setupChatInterface(tabObj, chatViewEl, session) {
 
   loadChatTranscript(tabObj);
   loadChatQueue(tabObj);
+  if (tabObj.session && isSessionWorking(tabObj.session)) {
+    setChatSending(tabObj, true);
+  }
   if (tabObj.session && tabObj.session.engine_type === 'headless' && tabObj.viewMode === 'chat') {
     connectChatStream(tabObj);
   }
@@ -504,24 +507,54 @@ function coalesceTranscriptMessages(messages) {
 
 // Load past conversation messages from daemon transcript (latest first, paginated upward)
 async function loadChatTranscript(tabObj) {
-  if (!tabObj || !tabObj.chatMessagesEl) return;
+  if (!tabObj || !tabObj.chatMessagesEl || !tabObj.session) return;
   const sessionId = tabObj.session.id;
   const baseUrl = getSessionBaseUrl(sessionId, tabObj.session);
+  const reqId = (tabObj._transcriptReqId || 0) + 1;
+  tabObj._transcriptReqId = reqId;
+
+  const container = tabObj.chatMessagesEl;
+  const hadMessages = container.children.length > 0;
+  const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+  const shouldStickToBottom = !hadMessages || distanceFromBottom < 120 || hasActiveTurnUI(tabObj);
+  const prevScrollTop = container.scrollTop;
+
   try {
     const res = await fetch(`${baseUrl}/v1/sessions/transcript?id=${encodeURIComponent(sessionId)}&format=json`);
     if (!res.ok) return;
     const data = await res.json();
+    if (tabObj._transcriptReqId !== reqId) return;
+
     if (data && Array.isArray(data.messages)) {
       const coalesced = coalesceTranscriptMessages(data.messages);
       tabObj.allTranscriptMessages = coalesced;
       tabObj.isLoadingOlderTranscript = false;
-      tabObj.chatMessagesEl.innerHTML = '';
+
+      const liveTurnMsgEl = (tabObj.activeTurnMsgEl && tabObj.activeTurnMsgEl.classList.contains('in-flight'))
+        ? tabObj.activeTurnMsgEl
+        : null;
+      const liveActivityEl = tabObj.activeInStreamActivityEl || null;
+      const inFlightPrompt = tabObj.inFlightPrompt || null;
+      const recentTurn = (!liveTurnMsgEl && tabObj.lastCompletedTurn && (Date.now() - tabObj.lastCompletedTurn.timestamp) < 10000)
+        ? tabObj.lastCompletedTurn
+        : null;
 
       const total = coalesced.length;
       if (total === 0) {
         tabObj.loadedTranscriptStartIndex = 0;
+        if (!inFlightPrompt && !liveTurnMsgEl && !liveActivityEl && !container.querySelector('.chat-msg')) {
+          container.innerHTML = '';
+        }
+        if (recentTurn && !tabObj._pendingTranscriptFollowup) {
+          tabObj._pendingTranscriptFollowup = setTimeout(() => {
+            tabObj._pendingTranscriptFollowup = null;
+            loadChatTranscript(tabObj);
+          }, 600);
+        }
         return;
       }
+
+      container.innerHTML = '';
 
       if (total <= CHAT_PAGE_SIZE) {
         tabObj.loadedTranscriptStartIndex = 0;
@@ -536,12 +569,82 @@ async function loadChatTranscript(tabObj) {
           appendChatMessage(tabObj, msg);
         }
       }
-      tabObj.chatMessagesEl.scrollTop = tabObj.chatMessagesEl.scrollHeight;
-      requestAnimationFrame(() => {
-        if (tabObj.chatMessagesEl) {
-          tabObj.chatMessagesEl.scrollTop = tabObj.chatMessagesEl.scrollHeight;
+
+      // Re-attach optimistic in-flight user prompt if not yet present in on-disk transcript
+      if (inFlightPrompt && inFlightPrompt.el) {
+        const lastUserMsg = [...coalesced].reverse().find(m => m.role === 'user');
+        const lastUserNorm = lastUserMsg ? normalizePromptText(lastUserMsg.content || lastUserMsg.rawPrompt || '') : '';
+        if (lastUserNorm && (lastUserNorm === inFlightPrompt.text || lastUserNorm.startsWith(inFlightPrompt.text) || inFlightPrompt.text.startsWith(lastUserNorm))) {
+          tabObj.inFlightPrompt = null;
+        } else {
+          container.appendChild(inFlightPrompt.el);
         }
-      });
+      }
+
+      // Re-attach live streaming assistant bubble and activity indicator if a turn is currently in flight
+      if (liveTurnMsgEl) {
+        const lastMsg = coalesced[coalesced.length - 1];
+        const activeNorm = normalizePromptText(tabObj.activeTurnBuffer || '');
+        const lastAssistantNorm = (lastMsg && lastMsg.role === 'assistant') ? normalizePromptText(lastMsg.content || '') : '';
+        if (lastMsg && lastMsg.role === 'assistant' && activeNorm && lastAssistantNorm &&
+            (lastAssistantNorm.includes(activeNorm) || activeNorm.includes(lastAssistantNorm))) {
+          if (container.lastElementChild && container.lastElementChild.classList.contains('assistant-msg')) {
+            container.lastElementChild.remove();
+          }
+        }
+        container.appendChild(liveTurnMsgEl);
+        tabObj.activeTurnMsgEl = liveTurnMsgEl;
+      } else if (recentTurn) {
+        // Preserve just-completed turn bubbles if on-disk transcript hasn't flushed the final turn yet
+        let missingUser = false;
+        if (recentTurn.userEl && recentTurn.userText) {
+          const lastUserMsg = [...coalesced].reverse().find(m => m.role === 'user');
+          const lastUserNorm = lastUserMsg ? normalizePromptText(lastUserMsg.content || lastUserMsg.rawPrompt || '') : '';
+          if (!lastUserNorm || (lastUserNorm !== recentTurn.userText && !lastUserNorm.startsWith(recentTurn.userText) && !recentTurn.userText.startsWith(lastUserNorm))) {
+            missingUser = true;
+          }
+        }
+        let missingAssistant = false;
+        if (recentTurn.assistantEl) {
+          const lastMsg = coalesced[coalesced.length - 1];
+          const lastAssistantNorm = (lastMsg && lastMsg.role === 'assistant') ? normalizePromptText(lastMsg.content || '') : '';
+          if (!lastMsg || lastMsg.role !== 'assistant' ||
+              (recentTurn.assistantText && (!lastAssistantNorm || (!lastAssistantNorm.includes(recentTurn.assistantText) && !recentTurn.assistantText.includes(lastAssistantNorm))))) {
+            missingAssistant = true;
+          }
+        }
+        if (missingUser && recentTurn.userEl) {
+          container.appendChild(recentTurn.userEl);
+        }
+        if (missingAssistant && recentTurn.assistantEl) {
+          container.appendChild(recentTurn.assistantEl);
+        }
+        if (missingUser || missingAssistant) {
+          if (!tabObj._pendingTranscriptFollowup) {
+            tabObj._pendingTranscriptFollowup = setTimeout(() => {
+              tabObj._pendingTranscriptFollowup = null;
+              loadChatTranscript(tabObj);
+            }, 600);
+          }
+        } else {
+          tabObj.lastCompletedTurn = null;
+        }
+      }
+      if (liveActivityEl && hasActiveTurnUI(tabObj)) {
+        container.appendChild(liveActivityEl);
+        tabObj.activeInStreamActivityEl = liveActivityEl;
+      }
+
+      if (shouldStickToBottom) {
+        container.scrollTop = container.scrollHeight;
+        requestAnimationFrame(() => {
+          if (tabObj.chatMessagesEl) {
+            tabObj.chatMessagesEl.scrollTop = tabObj.chatMessagesEl.scrollHeight;
+          }
+        });
+      } else {
+        container.scrollTop = prevScrollTop;
+      }
 
       if (Array.isArray(data.running_subagents)) {
         tabObj.runningSubagents = data.running_subagents;
@@ -1240,10 +1343,50 @@ function appendChatMessage(tabObj, msg) {
   return msgEl;
 }
 
+// Check whether a session is currently in Working state
+function isSessionWorking(session) {
+  if (!session) return false;
+  return session.state === 1 || session.state === 'working';
+}
+
+// Check whether a chat tab has active or lingering turn UI indicators
+function hasActiveTurnUI(tabObj) {
+  if (!tabObj) return false;
+  return Boolean(
+    tabObj.sending ||
+    tabObj.activeInStreamActivityEl ||
+    tabObj.activeTurnMsgEl ||
+    (tabObj.chatCancelBtn && tabObj.chatCancelBtn.style.display !== 'none') ||
+    (tabObj.chatStatusBadge && tabObj.chatStatusBadge.textContent && tabObj.chatStatusBadge.textContent.includes('Working')) ||
+    (tabObj.chatSendBtn && tabObj.chatSendBtn.classList.contains('is-queue'))
+  );
+}
+
+// Toggle sending/working UI state on a chat tab
+function setChatSending(tabObj, isSending) {
+  if (!tabObj) return;
+  tabObj.sending = Boolean(isSending);
+  if (isSending) {
+    if (tabObj.chatCancelBtn) tabObj.chatCancelBtn.style.display = 'inline-flex';
+    if (tabObj.chatStatusBadge) tabObj.chatStatusBadge.textContent = '⚡ Working...';
+    if (!tabObj.activeTurnMsgEl && !tabObj.activeInStreamActivityEl) {
+      showInStreamActivity(tabObj, {
+        icon: '💭',
+        text: 'Thinking...',
+        badge: null
+      });
+    }
+    updateComposerButtonState(tabObj);
+  } else {
+    resetChatComposer(tabObj);
+  }
+}
+
 // Update composer send button state based on active turn
 function updateComposerButtonState(tabObj) {
   if (!tabObj || !tabObj.chatSendBtn) return;
-  const isTurnActive = (tabObj.activeTurnMsgEl !== null && tabObj.activeTurnMsgEl !== undefined) ||
+  const isTurnActive = Boolean(tabObj.sending) ||
+                       (tabObj.activeTurnMsgEl !== null && tabObj.activeTurnMsgEl !== undefined) ||
                        (tabObj.activeInStreamActivityEl !== null && tabObj.activeInStreamActivityEl !== undefined) ||
                        (tabObj.chatCancelBtn && tabObj.chatCancelBtn.style.display !== 'none');
   if (isTurnActive) {
@@ -1550,7 +1693,7 @@ function showInStreamActivity(tabObj, { icon, text, badge }) {
 
   tabObj.activeActivityStartTime = Date.now();
 
-  if (!tabObj.activeInStreamActivityEl) {
+  if (!tabObj.activeInStreamActivityEl || !tabObj.activeInStreamActivityEl.isConnected) {
     const el = document.createElement('div');
     el.className = 'chat-instream-activity';
     el.innerHTML = `
@@ -1652,7 +1795,8 @@ function ensureActiveAssistantMessage(tabObj) {
   if (tabObj.activeInStreamActivityEl) {
     hideInStreamActivity(tabObj);
   }
-  if (tabObj.activeTurnMsgEl) return tabObj.activeTurnMsgEl;
+  if (tabObj.activeTurnMsgEl && tabObj.activeTurnMsgEl.isConnected) return tabObj.activeTurnMsgEl;
+  tabObj.activeTurnMsgEl = null;
 
   const assistantMsgEl = document.createElement('div');
   assistantMsgEl.className = 'chat-msg assistant-msg in-flight';
@@ -1812,16 +1956,7 @@ async function sendChatPrompt(tabObj, forcedPromptText) {
     tabObj.activeTurnHadTool = false;
     tabObj.activeTurnTools = [];
     tabObj.activeTurnThinking = '';
-
-    showInStreamActivity(tabObj, {
-      icon: '💭',
-      text: 'Thinking...',
-      badge: null
-    });
-
-    if (tabObj.chatCancelBtn) tabObj.chatCancelBtn.style.display = 'inline-flex';
-    if (tabObj.chatStatusBadge) tabObj.chatStatusBadge.textContent = '⚡ Working...';
-    updateComposerButtonState(tabObj);
+    setChatSending(tabObj, true);
 
     // Retain tabObj.inFlightPrompt so turn_start can claim it.
     // Safety cleanup after 15s in case turn_start is never emitted by this agent.
@@ -1852,23 +1987,28 @@ async function sendChatPrompt(tabObj, forcedPromptText) {
       </div>
     `;
     tabObj.chatMessagesEl.appendChild(errEl);
-    resetChatComposer(tabObj);
-    tabObj.activeTurnMsgEl = null;
-    tabObj.activeTurnBuffer = '';
-    tabObj.activeTurnHadTool = false;
-    tabObj.activeTurnTools = [];
-    tabObj.activeTurnThinking = '';
+    setChatSending(tabObj, false);
   }
 }
 
 // Disconnect SSE for chat turn events
 function disconnectChatStream(tabObj) {
-  if (tabObj && tabObj.chatEventSource) {
+  if (!tabObj) return;
+  if (tabObj.chatReconnectTimer) {
+    clearTimeout(tabObj.chatReconnectTimer);
+    tabObj.chatReconnectTimer = null;
+  }
+  if (tabObj._pendingTranscriptFollowup) {
+    clearTimeout(tabObj._pendingTranscriptFollowup);
+    tabObj._pendingTranscriptFollowup = null;
+  }
+  if (tabObj.chatEventSource) {
     try {
       tabObj.chatEventSource.close();
     } catch (e) {}
     tabObj.chatEventSource = null;
   }
+  tabObj.chatStreamSessionId = null;
   hideInStreamActivity(tabObj);
 }
 
@@ -1887,11 +2027,22 @@ function connectChatStream(tabObj) {
   if (tabObj.tabEl && !tabObj.tabEl.classList.contains('active')) {
     return;
   }
+  const sessionId = tabObj.session.id;
   if (tabObj.chatEventSource && tabObj.chatEventSource.readyState !== EventSource.CLOSED) {
-    return;
+    if (tabObj.chatStreamSessionId === sessionId) {
+      return;
+    }
+    try {
+      tabObj.chatEventSource.close();
+    } catch (e) {}
+    tabObj.chatEventSource = null;
+    tabObj.chatStreamSessionId = null;
+  }
+  if (tabObj.chatReconnectTimer) {
+    clearTimeout(tabObj.chatReconnectTimer);
+    tabObj.chatReconnectTimer = null;
   }
 
-  const sessionId = tabObj.session.id;
   const baseUrl = getSessionBaseUrl(sessionId, tabObj.session);
   const token = getAuthToken();
   let sseUrl = `${baseUrl}/v1/sessions/chat/stream?session_id=${encodeURIComponent(sessionId)}`;
@@ -1902,6 +2053,7 @@ function connectChatStream(tabObj) {
   try {
     const es = new EventSource(sseUrl);
     tabObj.chatEventSource = es;
+    tabObj.chatStreamSessionId = sessionId;
 
     es.onmessage = (event) => {
       if (!event.data) return;
@@ -1913,18 +2065,30 @@ function connectChatStream(tabObj) {
       }
     };
     es.onerror = () => {
-      disconnectChatStream(tabObj);
-      // If the tab is still active and visible, auto-heal after a brief debounce
-      if (tabObj.tabEl && tabObj.tabEl.classList.contains('active') && tabObj.viewMode === 'chat') {
-        setTimeout(async () => {
+      if (es.readyState === EventSource.CLOSED || tabObj.chatEventSource === es) {
+        try { es.close(); } catch (e) {}
+        if (tabObj.chatEventSource === es) {
+          tabObj.chatEventSource = null;
+          tabObj.chatStreamSessionId = null;
+        }
+      }
+      if (tabObj.chatReconnectTimer) {
+        clearTimeout(tabObj.chatReconnectTimer);
+      }
+      // If the tab is still open in state.openTabs, reconcile state and schedule a reconnect
+      if (state.openTabs && state.openTabs.has(tabObj.id)) {
+        tabObj.chatReconnectTimer = setTimeout(async () => {
+          tabObj.chatReconnectTimer = null;
+          if (!state.openTabs || !state.openTabs.has(tabObj.id)) return;
           if (!tabObj.tabEl || !tabObj.tabEl.classList.contains('active') || tabObj.viewMode !== 'chat') return;
           const sessMatch = state.sessions.find(s => s.id === tabObj.session.id || (tabObj.session.native_id && s.native_id === tabObj.session.native_id));
           const currentSess = sessMatch || tabObj.session;
-          if (currentSess && (currentSess.state === 3 || currentSess.state === 2 || currentSess.state === 4)) {
-            hideInStreamActivity(tabObj);
-            resetChatComposer(tabObj);
+          if (currentSess && !isSessionWorking(currentSess) && hasActiveTurnUI(tabObj)) {
+            setChatSending(tabObj, false);
             loadChatTranscript(tabObj);
-          } else if (currentSess && currentSess.state === 1) {
+            loadChatQueue(tabObj);
+          }
+          if (currentSess && currentSess.engine_type === 'headless') {
             connectChatStream(tabObj);
           }
         }, 1500);
@@ -1939,11 +2103,9 @@ function connectChatStream(tabObj) {
 function handleChatStreamEvent(tabObj, evt) {
   if (!tabObj || !tabObj.chatMessagesEl) return;
 
-  if (!tabObj.activeTurnMsgEl) {
+  if (!tabObj.activeTurnMsgEl || !tabObj.activeTurnMsgEl.isConnected) {
     const existingInFlight = tabObj.chatMessagesEl.querySelector('.chat-msg.assistant-msg.in-flight');
-    if (existingInFlight) {
-      tabObj.activeTurnMsgEl = existingInFlight;
-    }
+    tabObj.activeTurnMsgEl = existingInFlight || null;
   }
 
   switch (evt.type) {
@@ -1964,6 +2126,7 @@ function handleChatStreamEvent(tabObj, evt) {
 
     case 'turn_start':
       tabObj.activeTurnHadTool = false;
+      tabObj.lastCompletedTurn = null;
       if (evt.text) {
         const evtNorm = normalizePromptText(evt.text);
         let isAlreadyRendered = false;
@@ -2024,15 +2187,15 @@ function handleChatStreamEvent(tabObj, evt) {
           }
         }
       }
-      showInStreamActivity(tabObj, { icon: '💭', text: 'Thinking...', badge: null });
-      if (tabObj.chatCancelBtn) tabObj.chatCancelBtn.style.display = 'inline-flex';
-      if (tabObj.chatStatusBadge) tabObj.chatStatusBadge.textContent = '⚡ Working...';
-      updateComposerButtonState(tabObj);
+      setChatSending(tabObj, true);
       break;
 
     case 'text_delta': {
       const incoming = evt.text || '';
       if (incoming) {
+        tabObj.sending = true;
+        if (tabObj.chatCancelBtn) tabObj.chatCancelBtn.style.display = 'inline-flex';
+        if (tabObj.chatStatusBadge) tabObj.chatStatusBadge.textContent = '⚡ Working...';
         const currentMsgEl = ensureActiveAssistantMessage(tabObj);
         if (currentMsgEl) {
           if (tabObj.activeTurnHadTool && tabObj.activeTurnBuffer) {
@@ -2054,6 +2217,9 @@ function handleChatStreamEvent(tabObj, evt) {
 
     case 'thought_delta':
       if (evt.thinking) {
+        tabObj.sending = true;
+        if (tabObj.chatCancelBtn) tabObj.chatCancelBtn.style.display = 'inline-flex';
+        if (tabObj.chatStatusBadge) tabObj.chatStatusBadge.textContent = '⚡ Working...';
         tabObj.activeTurnThinking = (tabObj.activeTurnThinking || '') + evt.thinking;
         if (tabObj.activeTurnMsgEl) {
           const slot = tabObj.activeTurnMsgEl.querySelector('.chat-thinking-slot');
@@ -2083,6 +2249,9 @@ function handleChatStreamEvent(tabObj, evt) {
       break;
 
     case 'tool_start': {
+      tabObj.sending = true;
+      if (tabObj.chatCancelBtn) tabObj.chatCancelBtn.style.display = 'inline-flex';
+      if (tabObj.chatStatusBadge) tabObj.chatStatusBadge.textContent = '⚡ Working...';
       tabObj.activeTurnHadTool = true;
       tabObj.activeTurnTools = tabObj.activeTurnTools || [];
 
@@ -2175,6 +2344,9 @@ function handleChatStreamEvent(tabObj, evt) {
     }
 
     case 'tool_result': {
+      tabObj.sending = true;
+      if (tabObj.chatCancelBtn) tabObj.chatCancelBtn.style.display = 'inline-flex';
+      if (tabObj.chatStatusBadge) tabObj.chatStatusBadge.textContent = '⚡ Working...';
       tabObj.activeTurnHadTool = true;
       tabObj.activeTurnTools = tabObj.activeTurnTools || [];
       const lastTool = tabObj.activeTurnTools.length > 0 ? tabObj.activeTurnTools[tabObj.activeTurnTools.length - 1] : null;
@@ -2221,6 +2393,7 @@ function handleChatStreamEvent(tabObj, evt) {
       break;
     }
 
+    case 'done':
     case 'turn_complete': {
       tabObj.runningSubagents = [];
       renderSubagentsBar(tabObj);
@@ -2263,12 +2436,26 @@ function handleChatStreamEvent(tabObj, evt) {
         attachChatMessageListeners(activeMsg, tabObj.activeTurnBuffer);
         linkifyChatFiles(activeMsg, tabObj.session);
       }
-      resetChatComposer(tabObj);
-      tabObj.activeTurnMsgEl = null;
-      tabObj.activeTurnBuffer = '';
-      tabObj.activeTurnHadTool = false;
-      tabObj.activeTurnTools = [];
-      tabObj.activeTurnThinking = '';
+      const prevCompleted = tabObj.lastCompletedTurn;
+      const userMsgs = tabObj.chatMessagesEl.querySelectorAll('.chat-msg.user-msg');
+      const lastUserEl = userMsgs.length > 0 ? userMsgs[userMsgs.length - 1] : null;
+      const lastUserBody = lastUserEl ? lastUserEl.querySelector('.chat-msg-body') : null;
+      const lastUserText = normalizePromptText(
+        (lastUserEl && lastUserEl.dataset.rawPrompt) ||
+        (lastUserBody && lastUserBody.textContent) ||
+        ''
+      );
+      tabObj.lastCompletedTurn = {
+        userEl: lastUserEl || (prevCompleted && prevCompleted.userEl) || null,
+        assistantEl: activeMsg || (prevCompleted && prevCompleted.assistantEl) || null,
+        userText: lastUserText || (prevCompleted && prevCompleted.userText) || '',
+        assistantText: normalizePromptText(tabObj.activeTurnBuffer || evt.text || '') || (prevCompleted && prevCompleted.assistantText) || '',
+        timestamp: Date.now()
+      };
+      setChatSending(tabObj, false);
+      // Asynchronously fetch the authoritative on-disk transcript so any missed SSE chunks or tool outputs are reconciled
+      loadChatTranscript(tabObj);
+      loadChatQueue(tabObj);
       fetchSessions();
       break;
     }
@@ -2295,12 +2482,7 @@ function handleChatStreamEvent(tabObj, evt) {
         attachChatMessageListeners(activeMsg, tabObj.activeTurnBuffer);
         linkifyChatFiles(activeMsg, tabObj.session);
       }
-      resetChatComposer(tabObj);
-      tabObj.activeTurnMsgEl = null;
-      tabObj.activeTurnBuffer = '';
-      tabObj.activeTurnHadTool = false;
-      tabObj.activeTurnTools = [];
-      tabObj.activeTurnThinking = '';
+      setChatSending(tabObj, false);
       if (tabObj.promptQueue && tabObj.promptQueue.length > 0) {
         tabObj.isQueuePaused = true;
         renderChatQueue(tabObj);
@@ -2327,12 +2509,7 @@ function handleChatStreamEvent(tabObj, evt) {
         attachChatMessageListeners(activeMsg, tabObj.activeTurnBuffer);
         linkifyChatFiles(activeMsg, tabObj.session);
       }
-      resetChatComposer(tabObj);
-      tabObj.activeTurnMsgEl = null;
-      tabObj.activeTurnBuffer = '';
-      tabObj.activeTurnHadTool = false;
-      tabObj.activeTurnTools = [];
-      tabObj.activeTurnThinking = '';
+      setChatSending(tabObj, false);
       if (tabObj.promptQueue && tabObj.promptQueue.length > 0) {
         tabObj.isQueuePaused = true;
         renderChatQueue(tabObj);
@@ -2343,6 +2520,8 @@ function handleChatStreamEvent(tabObj, evt) {
 }
 
 function resetChatComposer(tabObj) {
+  if (!tabObj) return;
+  tabObj.sending = false;
   hideInStreamActivity(tabObj);
   tabObj.activeTurnMsgEl = null;
   tabObj.activeTurnBuffer = '';
@@ -2354,6 +2533,78 @@ function resetChatComposer(tabObj) {
   updateComposerButtonState(tabObj);
   if (tabObj.chatInputEl) tabObj.chatInputEl.focus();
 }
+
+// Reconcile open chat tabs when a session update arrives via main SSE (/v1/events) or poll
+function onSessionUpdated(updatedSess) {
+  if (!updatedSess || !updatedSess.id || !state.openTabs) return;
+
+  for (const [, tabObj] of state.openTabs.entries()) {
+    if (!tabObj || !tabObj.session) continue;
+    const isMatch = tabObj.session.id === updatedSess.id ||
+      (updatedSess.old_id && tabObj.session.id === updatedSess.old_id) ||
+      (tabObj.session.native_id && updatedSess.native_id && tabObj.session.native_id === updatedSess.native_id);
+    if (!isMatch) continue;
+
+    tabObj.session = {
+      ...tabObj.session,
+      ...updatedSess,
+      id: updatedSess.id,
+      native_id: updatedSess.native_id || tabObj.session.native_id,
+      name: updatedSess.name || tabObj.session.name
+    };
+
+    if (tabObj.chatStreamSessionId && tabObj.chatStreamSessionId !== updatedSess.id) {
+      connectChatStream(tabObj);
+    }
+
+    if (typeof updatedSess.running_subagents === 'number') {
+      if (updatedSess.running_subagents === 0) {
+        tabObj.runningSubagents = [];
+        renderSubagentsBar(tabObj);
+      } else if (!tabObj.runningSubagents || tabObj.runningSubagents.length !== updatedSess.running_subagents) {
+        fetchRunningSubagents(tabObj);
+      }
+    }
+
+    const working = isSessionWorking(updatedSess);
+    const activeTurnUI = hasActiveTurnUI(tabObj);
+
+    if (!working && activeTurnUI) {
+      setChatSending(tabObj, false);
+      loadChatTranscript(tabObj);
+      loadChatQueue(tabObj);
+    } else if (working && !tabObj.sending) {
+      if (tabObj.session.engine_type === 'headless' || tabObj.viewMode === 'chat') {
+        setChatSending(tabObj, true);
+        if (tabObj.session.engine_type === 'headless' && tabObj.viewMode === 'chat') {
+          connectChatStream(tabObj);
+        }
+      }
+    }
+  }
+}
+
+// Reconcile transcript and reconnect headless stream when browser tab wakes or regains visibility
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') return;
+  if (!state.openTabs || !state.activeTabId) return;
+  const activeTab = state.openTabs.get(state.activeTabId);
+  if (!activeTab || !activeTab.session || activeTab.viewMode !== 'chat') return;
+
+  const sessMatch = (state.sessions || []).find(s =>
+    s.id === activeTab.session.id ||
+    (activeTab.session.native_id && s.native_id === activeTab.session.native_id)
+  );
+  if (sessMatch) {
+    onSessionUpdated(sessMatch);
+  }
+  loadChatTranscript(activeTab);
+  loadChatQueue(activeTab);
+  if (activeTab.session.engine_type === 'headless' &&
+      (!activeTab.chatEventSource || activeTab.chatEventSource.readyState === EventSource.CLOSED)) {
+    connectChatStream(activeTab);
+  }
+});
 
 async function cancelChatTurn(tabObj) {
   if (!tabObj || !tabObj.session) return;
@@ -2367,6 +2618,16 @@ async function cancelChatTurn(tabObj) {
   } catch (e) {
     console.warn('Failed to cancel turn:', e);
   }
+}
+
+if (typeof window !== 'undefined') {
+  window.AckbarChat = {
+    onSessionUpdated,
+    setChatSending,
+    loadChatTranscript,
+    connectChatStream,
+    disconnectChatStream
+  };
 }
 
 // Open Session in Terminal/Chat Tab
@@ -2397,6 +2658,9 @@ export {
   renderToolGroupHtml,
   createChatMessageElement,
   appendChatMessage,
+  isSessionWorking,
+  hasActiveTurnUI,
+  setChatSending,
   updateComposerButtonState,
   renderChatQueue,
   renderSubagentsBar,
@@ -2408,5 +2672,6 @@ export {
   handleChatStreamEvent,
   hideInStreamActivity,
   resetChatComposer,
+  onSessionUpdated,
   cancelChatTurn
 };

@@ -946,14 +946,24 @@ func loadClaudeSubagentsFromDir(home, sessionID, cwd string) []SubagentInfo {
 			}
 
 			startTime := time.Now()
+			modTime := startTime
+			if info, err := entry.Info(); err == nil {
+				modTime = info.ModTime()
+				startTime = modTime
+			}
 			if meta.JoinedAt > 0 {
 				startTime = time.UnixMilli(meta.JoinedAt)
-			} else if info, err := entry.Info(); err == nil {
-				startTime = info.ModTime()
 			}
 
-			state := "running"
 			jsonlPath := filepath.Join(subDir, baseName+".jsonl")
+			if jInfo, err := os.Stat(jsonlPath); err == nil {
+				modTime = jInfo.ModTime()
+			}
+
+			state := "completed"
+			if time.Since(modTime) < 30*time.Minute {
+				state = "running"
+			}
 			if jsonlData, err := readTail(jsonlPath, 8192); err == nil && len(jsonlData) > 0 {
 				lines := strings.Split(strings.TrimSpace(string(jsonlData)), "\n")
 				for i := len(lines) - 1; i >= 0; i-- {
@@ -973,7 +983,7 @@ func loadClaudeSubagentsFromDir(home, sessionID, cwd string) []SubagentInfo {
 						if sr == "" {
 							sr = step.Message.StopReason
 						}
-						if sr == "end_turn" {
+						if sr == "end_turn" || time.Since(modTime) >= 30*time.Minute {
 							state = "completed"
 						} else {
 							state = "running"

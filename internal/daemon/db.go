@@ -196,7 +196,9 @@ func InitDB(dbPath string) (*DB, error) {
 	);`)
 	_, _ = db.Exec("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);")
 	_, _ = db.Exec("DELETE FROM tree_nodes WHERE path LIKE 'Project Y%' OR path LIKE 'ProjectY%' OR path LIKE '%Project Y%';")
-	_, _ = db.Exec("UPDATE sessions SET tmux_name = 'ackbar-' || agent || '-' || native_id WHERE tmux_name = '(deleted)' OR tmux_name = '';")
+	_, _ = db.Exec("UPDATE sessions SET tmux_name = 'ackbar-' || agent || '-' || native_id WHERE (tmux_name = '(deleted)' OR tmux_name = '') AND COALESCE(engine_type, 'tmux') != 'headless';")
+	_, _ = db.Exec("UPDATE sessions SET tmux_name = '' WHERE engine_type = 'headless' AND tmux_name = 'ackbar-' || agent || '-' || native_id;")
+	_, _ = db.Exec("UPDATE sessions SET state = ?, pid = 0, activity = '' WHERE engine_type = 'headless' AND (state = ? OR state = 'working');", int(StateIdle), int(StateWorking))
 	_, _ = db.Exec("UPDATE tasks SET group_name = 'Personal' WHERE project_name = 'Ackbar' AND group_name = 'Modemobile';")
 
 	// High-performance indices for fast session lookups, filtering, and liveness checks
