@@ -268,10 +268,13 @@ func (a ClaudeAgentAdapter) ScanDiskSessions(ctx context.Context, s *Server, hom
 			continue
 		}
 		for _, f := range files {
-			if !strings.HasSuffix(f.Name(), ".jsonl") || strings.HasPrefix(f.Name(), "agent-") {
+			if !strings.HasSuffix(f.Name(), ".jsonl") {
 				continue
 			}
 			sessionUUID := strings.TrimSuffix(f.Name(), ".jsonl")
+			if a.IsSubagentSession(home, sessionUUID, nil) {
+				continue
+			}
 			sessID := fmt.Sprintf("claude-code:%s:%s", hostName, sessionUUID)
 			if s.db.IsSessionDeleted(sessID) || s.db.IsSessionDeleted(sessionUUID) {
 				continue

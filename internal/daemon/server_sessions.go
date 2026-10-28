@@ -215,12 +215,17 @@ func (s *Server) handleSessionControl(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sess, proxied := s.resolveSessionOrProxy(w, r.Method, sessionID, r.Header.Get("Content-Type"), r.Body, func(_ *Session) string {
+	var bodyBytes []byte
+	if r.Body != nil {
+		bodyBytes, _ = io.ReadAll(r.Body)
+	}
+	sess, proxied := s.resolveSessionOrProxy(w, r.Method, sessionID, r.Header.Get("Content-Type"), bytes.NewReader(bodyBytes), func(_ *Session) string {
 		return fmt.Sprintf("/v1/sessions/control?id=%s&action=%s", url.QueryEscape(sessionID), url.QueryEscape(action))
 	})
 	if proxied {
 		return
 	}
+	r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 
 	switch action {
 	case "archive":
@@ -559,34 +564,7 @@ func (s *Server) handleSessionControl(w http.ResponseWriter, r *http.Request) {
 			respAction = "answer"
 		}
 		actionLower := strings.ToLower(respAction)
-		if (sess.Managed || sess.TmuxName != "") && sess.TmuxName != "" {
-			adapter := s.agentAdapter(sess.Agent)
-			switch actionLower {
-			case "answer", "input":
-				_ = tmux.SendInput(r.Context(), sess.TmuxName, value, true)
-			case "allow", "yes", "proceed", "1":
-				keys := adapter.GetApprovalKeys(true)
-				_ = tmux.SendKeys(r.Context(), sess.TmuxName, keys...)
-			case "deny", "no", "4":
-				keys := adapter.GetApprovalKeys(false)
-				_ = tmux.SendKeys(r.Context(), sess.TmuxName, keys...)
-			}
-		}
-		sess.State = StateWorking
-		sess.Blocked = nil
-		sess.LastEventAt = time.Now()
-		switch actionLower {
-		case "allow":
-			sess.Activity = "Permission allowed"
-		case "deny":
-			sess.Activity = "Permission denied"
-		case "answer", "input":
-			if value != "" {
-				sess.Activity = fmt.Sprintf("Answered: %s", value)
-			} else {
-				sess.Activity = "User answered"
-			}
-		}
+		_ = s.applyInteractiveResponse(r.Context(), sess, actionLower, value, sess.TmuxName != "", false, false)
 		if err := s.db.SaveSession(sess); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -620,6 +598,58 @@ func (s *Server) handleSessionControl(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "Unknown action", http.StatusBadRequest)
 	}
+}
+
+func (s *Server) applyInteractiveResponse(ctx context.Context, sess *Session, actionLower, value string, sendToTmux, strictAction, clearIsDone bool) error {
+	if sendToTmux && sess.TmuxName != "" {
+		adapter := s.agentAdapter(sess.Agent)
+		switch actionLower {
+		case "answer", "input":
+			if err := tmux.SendInput(ctx, sess.TmuxName, value, true); err != nil {
+				log.Printf("Warning: failed to send input to tmux session %s: %v", sess.TmuxName, err)
+			}
+		case "allow", "yes", "proceed", "1":
+			if strictAction && actionLower != "allow" {
+				return fmt.Errorf("Unsupported action: %s", actionLower)
+			}
+			keys := adapter.GetApprovalKeys(true)
+			if err := tmux.SendKeys(ctx, sess.TmuxName, keys...); err != nil {
+				log.Printf("Warning: failed to send allow to tmux session %s: %v", sess.TmuxName, err)
+			}
+		case "deny", "no", "4":
+			if strictAction && actionLower != "deny" {
+				return fmt.Errorf("Unsupported action: %s", actionLower)
+			}
+			keys := adapter.GetApprovalKeys(false)
+			if err := tmux.SendKeys(ctx, sess.TmuxName, keys...); err != nil {
+				log.Printf("Warning: failed to send deny to tmux session %s: %v", sess.TmuxName, err)
+			}
+		default:
+			if strictAction {
+				return fmt.Errorf("Unsupported action: %s", actionLower)
+			}
+		}
+	}
+
+	sess.State = StateWorking
+	sess.Blocked = nil
+	sess.LastEventAt = time.Now()
+	if clearIsDone {
+		sess.IsDone = false
+	}
+	switch actionLower {
+	case "allow":
+		sess.Activity = "Permission allowed"
+	case "deny":
+		sess.Activity = "Permission denied"
+	case "answer", "input":
+		if value != "" {
+			sess.Activity = fmt.Sprintf("Answered: %s", value)
+		} else {
+			sess.Activity = "User answered"
+		}
+	}
+	return nil
 }
 
 func (s *Server) handleRespond(w http.ResponseWriter, r *http.Request) {
@@ -672,47 +702,9 @@ func (s *Server) handleRespond(w http.ResponseWriter, r *http.Request) {
 	}
 
 	actionLower := strings.ToLower(action)
-
-	// Send keystrokes if session is managed in tmux
-	if sess.Managed && sess.TmuxName != "" {
-		adapter := s.agentAdapter(sess.Agent)
-		switch actionLower {
-		case "answer", "input":
-			if err := tmux.SendInput(r.Context(), sess.TmuxName, value, true); err != nil {
-				log.Printf("Warning: failed to send input to tmux session %s: %v", sess.TmuxName, err)
-			}
-		case "allow":
-			keys := adapter.GetApprovalKeys(true)
-			if err := tmux.SendKeys(r.Context(), sess.TmuxName, keys...); err != nil {
-				log.Printf("Warning: failed to send allow to tmux session %s: %v", sess.TmuxName, err)
-			}
-		case "deny":
-			keys := adapter.GetApprovalKeys(false)
-			if err := tmux.SendKeys(r.Context(), sess.TmuxName, keys...); err != nil {
-				log.Printf("Warning: failed to send deny to tmux session %s: %v", sess.TmuxName, err)
-			}
-		default:
-			http.Error(w, fmt.Sprintf("Unsupported action: %s", action), http.StatusBadRequest)
-			return
-		}
-	}
-
-	// Update session state to StateWorking, clear Blocked, update LastEventAt, clear IsDone
-	sess.State = StateWorking
-	sess.Blocked = nil
-	sess.LastEventAt = time.Now()
-	sess.IsDone = false
-	switch actionLower {
-	case "allow":
-		sess.Activity = "Permission allowed"
-	case "deny":
-		sess.Activity = "Permission denied"
-	case "answer", "input":
-		if value != "" {
-			sess.Activity = fmt.Sprintf("Answered: %s", value)
-		} else {
-			sess.Activity = "User answered"
-		}
+	if err := s.applyInteractiveResponse(r.Context(), sess, actionLower, value, sess.Managed && sess.TmuxName != "", true, true); err != nil {
+		http.Error(w, fmt.Sprintf("Unsupported action: %s", action), http.StatusBadRequest)
+		return
 	}
 
 	if err := s.db.SaveSession(sess); err != nil {

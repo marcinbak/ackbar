@@ -49,8 +49,8 @@ Detailed architectural and technical domain documentation is organized in the `d
 │   └── ackbar-relay/   # Outbound reverse WebSocket tunnel relay server entrypoint
 ├── internal/
 │   ├── client/         # TUI model, views, keybinds, and API client helpers
-│   ├── daemon/         # SQLite DB, HTTP server routes, SSE streaming, project normalizer
-│   ├── provider/       # Agent adapters (Claude Code, Codex, Antigravity)
+│   ├── daemon/         # SQLite DB, modular HTTP server handlers (server_*.go), session_scanner.go, SSE streaming, and agent capability adapters (agent_*.go)
+│   ├── provider/       # Agent adapters (Claude Code, Codex, Antigravity, Grok, OpenCode)
 │   ├── relay/          # Outbound reverse tunnel server and daemon client
 │   ├── tmux/           # Tmux process supervision wrapper (Spawn, Kill, GetPID)
 │   └── version/        # Version source of truth (VERSION file & go:embed)

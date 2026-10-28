@@ -433,7 +433,7 @@ func (s *Server) scanTmuxPanes(ctx context.Context, state *ScanState) {
 			}
 		} else if agent == "antigravity" {
 			sID := findAntigravitySessionForPID(ctx, pid)
-			if sID != "" && IsUUID(sID) && sID != targetNativeID && (home == "" || !isAntigravitySubagent(home, sID)) {
+			if sID != "" && IsUUID(sID) && sID != targetNativeID && (home == "" || !adapter.IsSubagentSession(home, sID, nil)) {
 				tmuxName, targetNativeID = s.reconcileAntigravityTmuxSession(ctx, state, agent, tmuxName, targetNativeID, sID, pid)
 			}
 		}
@@ -773,7 +773,7 @@ func (s *Server) scanOSProcessTable(ctx context.Context, state *ScanState) {
 	}
 
 	home, _ := os.UserHomeDir()
-	candidateAgents := []string{"claude-code", "antigravity", "codex"}
+	candidateAgents := []string{"claude-code", "antigravity", "codex", "grok", "opencode"}
 
 	for _, pe := range procEntries {
 		pid := pe.pid

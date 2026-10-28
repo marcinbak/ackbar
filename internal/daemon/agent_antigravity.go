@@ -293,7 +293,7 @@ func (a AntigravityAgentAdapter) ScanDiskSessions(ctx context.Context, s *Server
 			}
 
 			// Check if this is an internal subagent conversation
-			if isAntigravitySubagent(home, convID, subagentIDs) {
+			if a.IsSubagentSession(home, convID, subagentIDs) {
 				if existing := state.knownIDs[sessID]; existing != nil {
 					// Safety guard: NEVER delete a managed session or an active session!
 					if existing.Managed || (existing.TmuxName != "" && tmux.HasSession(ctx, existing.TmuxName)) || (existing.PID > 0 && isProcessAlive(existing.PID)) || existing.State != StateEnded {
@@ -512,7 +512,7 @@ func (a AntigravityAgentAdapter) ScanDiskSessions(ctx context.Context, s *Server
 			if sObj.Managed || (sObj.TmuxName != "" && tmux.HasSession(ctx, sObj.TmuxName)) || (sObj.PID > 0 && isProcessAlive(sObj.PID)) || sObj.State != StateEnded {
 				continue
 			}
-			if isAntigravitySubagent(home, sObj.NativeID, subagentIDs) {
+			if a.IsSubagentSession(home, sObj.NativeID, subagentIDs) {
 				_ = s.db.DeleteSession(sObj.ID)
 				sObj.Deleted = true
 				sObj.Activity = "Deleted"
