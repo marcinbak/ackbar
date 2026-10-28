@@ -9,7 +9,11 @@ import (
 	"ackbar/internal/daemon"
 )
 
-type ClaudeProvider struct{}
+type ClaudeProvider struct {
+	daemon.ClaudeAgentAdapter
+}
+
+var _ daemon.AgentAdapter = (*ClaudeProvider)(nil)
 
 func NewClaudeProvider() *ClaudeProvider {
 	return &ClaudeProvider{}
