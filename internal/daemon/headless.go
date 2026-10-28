@@ -111,12 +111,17 @@ func (h *HeadlessRunner) Subscribe(sessionID string) (chan ChatStreamEvent, func
 	cleanup := func() {
 		h.mu.Lock()
 		defer h.mu.Unlock()
-		subList := h.subs[sessionID]
-		for i, c := range subList {
-			if c == ch {
-				h.subs[sessionID] = append(subList[:i], subList[i+1:]...)
-				close(ch)
-				break
+		closed := false
+		for key, subList := range h.subs {
+			for i, c := range subList {
+				if c == ch {
+					h.subs[key] = append(subList[:i], subList[i+1:]...)
+					if !closed {
+						close(ch)
+						closed = true
+					}
+					break
+				}
 			}
 		}
 	}
@@ -816,6 +821,10 @@ func (h *HeadlessRunner) handleAntigravityInit(sess *Session, convID, prompt str
 						h.paused[newID] = true
 					}
 					delete(h.paused, oldID)
+				}
+				if oldSubs, exists := h.subs[oldID]; exists {
+					h.subs[newID] = append(h.subs[newID], oldSubs...)
+					delete(h.subs, oldID)
 				}
 				h.mu.Unlock()
 			}

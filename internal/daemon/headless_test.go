@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -1001,5 +1002,91 @@ func TestHeadlessLivenessAndHookStateAuthority(t *testing.T) {
 	subs := loadClaudeSubagentsFromDir(tmpDir, nativeUUID, tmpDir)
 	if len(subs) != 1 || subs[0].State != "completed" {
 		t.Errorf("Expected stale subagent (>30m) to be marked completed, got %+v", subs)
+	}
+
+	// 4. SessionStart (StateIdle) hook while headless turn IS running must keep StateWorking
+	sess.State = StateWorking
+	sess.Activity = "Thinking..."
+	if err := db.SaveSession(sess); err != nil {
+		t.Fatalf("SaveSession failed: %v", err)
+	}
+	server.headless.mu.Lock()
+	server.headless.processes[sessID] = &exec.Cmd{Process: &os.Process{Pid: os.Getpid()}}
+	server.headless.mu.Unlock()
+	defer func() {
+		server.headless.mu.Lock()
+		delete(server.headless.processes, sessID)
+		server.headless.mu.Unlock()
+	}()
+
+	mockP.event = &Event{
+		Agent:       "claude-code",
+		NativeID:    nativeUUID,
+		Cwd:         tmpDir,
+		EventName:   "SessionStart",
+		State:       StateIdle,
+		Activity:    "Session started",
+		LastEventAt: time.Now(),
+	}
+	server.processHookEvent(mockP, "SessionStart", "local", []byte(`{}`))
+	afterStartHook, _ := db.GetSession(sessID)
+	if afterStartHook == nil || afterStartHook.State != StateWorking {
+		t.Fatalf("Expected SessionStart hook during active headless turn to keep StateWorking, got %+v", afterStartHook)
+	}
+	if afterStartHook.Activity != "Thinking..." {
+		t.Errorf("Expected Activity 'Thinking...' to be preserved, got %q", afterStartHook.Activity)
+	}
+}
+
+func TestHeadlessRunner_AntigravityInitMigratesSubscribersAcrossTurns(t *testing.T) {
+	runner := NewHeadlessRunner(nil, nil)
+	oldID := "antigravity:local:temp-uuid-sub-1"
+	sess := &Session{
+		ID:         oldID,
+		Agent:      "antigravity",
+		Host:       "local",
+		NativeID:   "temp-uuid-sub-1",
+		EngineType: EngineHeadless,
+	}
+
+	ch, cleanup := runner.Subscribe(oldID)
+	defer cleanup()
+
+	// Turn 1: init migrates oldID -> antigravity:local:real-conv-sub-2
+	turn1Stream := `
+{"event":"init","conversation_id":"real-conv-sub-2"}
+{"event":"step_update","step_update":{"step_type":"agent_response","text_delta":"Turn 1 response"}}
+{"event":"result","result":{"status":"SUCCESS","response":"Turn 1 response"}}
+`
+	runner.processStreamWithPrompt(oldID, strings.NewReader(turn1Stream), "Turn 1 prompt", sess)
+
+	newID := "antigravity:local:real-conv-sub-2"
+	if sess.ID != newID {
+		t.Fatalf("Expected sess.ID migrated to %q, got %q", newID, sess.ID)
+	}
+
+	// Drain Turn 1 events
+	for i := 0; i < 2; i++ {
+		select {
+		case <-ch:
+		case <-time.After(1 * time.Second):
+			t.Fatalf("Timed out waiting for Turn 1 event %d", i)
+		}
+	}
+
+	// Turn 2: emits directly to newID; subscriber originally registered on oldID must still receive it
+	runner.Emit(newID, ChatStreamEvent{
+		SessionID: newID,
+		Type:      "text_delta",
+		Text:      "Turn 2 delta on migrated ID",
+	})
+
+	select {
+	case evt := <-ch:
+		if evt.Type != "text_delta" || evt.Text != "Turn 2 delta on migrated ID" {
+			t.Errorf("Unexpected Turn 2 event received: %+v", evt)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatalf("Subscriber on oldID did not receive Turn 2 event emitted to newID")
 	}
 }

@@ -376,5 +376,76 @@ void main() {
         findsOneWidget,
       );
     });
+
+    testWidgets(
+        'preserves optimistic user bubble on silent poll when repeated prompt matches earlier historical message',
+        (tester) async {
+      final mockClient = MockClient((request) async {
+        if (request.url.path == '/v1/sessions/transcript') {
+          return http.Response(
+            jsonEncode({
+              'session_id': 'claude-code:local:sess-headless-1',
+              'native_id': 'sess-headless-1',
+              'agent': 'claude-code',
+              'title': 'Headless Test Session',
+              'cwd': '/workspace/ackbar',
+              'messages': [
+                {
+                  'role': 'user',
+                  'content': 'continue',
+                  'timestamp': '2026-03-28T12:00:00Z',
+                },
+                {
+                  'role': 'assistant',
+                  'content': 'Step 1 finished.',
+                  'timestamp': '2026-03-28T12:00:05Z',
+                },
+              ],
+              'markdown': '',
+            }),
+            200,
+          );
+        }
+        if (request.url.path == '/v1/sessions/subagents') {
+          return http.Response(jsonEncode({'subagents': []}), 200);
+        }
+        if (request.url.path == '/v1/sessions/prompt') {
+          return http.Response(jsonEncode({'status': 'running'}), 200);
+        }
+        return http.Response('[]', 200);
+      });
+
+      final api = ApiClient(client: mockClient);
+      final sse = SSEClient(client: mockClient);
+      final session = _makeHeadlessSession(state: SessionState.idle);
+
+      await tester.pumpWidget(
+        _wrapTranscriptScreen(session, api: api, sse: sse),
+      );
+      await tester.pump(const Duration(milliseconds: 600));
+      await tester.pump();
+
+      expect(find.text('continue'), findsOneWidget);
+      expect(find.text('Step 1 finished.'), findsOneWidget);
+
+      // Send "continue" again (matching the earlier user message)
+      await tester.enterText(find.byType(TextField), 'continue');
+      await tester.pump();
+      await tester.tap(find.byIcon(Icons.arrow_upward_rounded));
+      await tester.pump(const Duration(milliseconds: 600));
+      await tester.pump();
+
+      // Both the historical and optimistic "continue" bubbles should be visible
+      expect(find.text('continue'), findsNWidgets(2));
+
+      // Advance 3s periodic poll before backend writes the new turn to disk
+      await tester.pump(const Duration(seconds: 3));
+      await tester.pump(const Duration(milliseconds: 600));
+      await tester.pump();
+
+      // Optimistic second "continue" bubble must still be preserved
+      expect(find.text('continue'), findsNWidgets(2));
+      expect(find.text('Working...'), findsOneWidget);
+    });
   });
 }

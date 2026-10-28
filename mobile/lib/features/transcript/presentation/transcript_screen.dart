@@ -67,6 +67,7 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
   bool _isRefreshingTranscript = false;
   bool _hasPromptText = false;
   int _assistantCountAtSend = 0;
+  int _messageCountAtSend = 0;
   DateTime? _awaitingTurnStartedAt;
   TranscriptMessage? _pendingUserMessage;
   String? _errorMessage;
@@ -323,11 +324,11 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
       final assistantCount = mergedMessages.where((m) => m.isAssistant).length;
 
       if (_pendingUserMessage != null) {
-        final hasPendingUser = mergedMessages.any(
-          (m) =>
-              m.isUser &&
-              m.content.trim() == _pendingUserMessage!.content.trim(),
-        );
+        final hasPendingUser = mergedMessages.skip(_messageCountAtSend).any(
+              (m) =>
+                  m.isUser &&
+                  m.content.trim() == _pendingUserMessage!.content.trim(),
+            );
         if (hasPendingUser || assistantCount > _assistantCountAtSend) {
           _pendingUserMessage = null;
         } else {
@@ -435,6 +436,7 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
 
     final currentAssistantCount =
         _transcriptData?.messages.where((m) => m.isAssistant).length ?? 0;
+    final currentMessageCount = _transcriptData?.messages.length ?? 0;
 
     setState(() {
       _isSending = true;
@@ -442,6 +444,7 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
       _sawWorkingState = _resolveLiveSession().state == SessionState.working;
       _awaitingTurnStartedAt = DateTime.now();
       _assistantCountAtSend = currentAssistantCount;
+      _messageCountAtSend = currentMessageCount;
       _pendingUserMessage = userMsg;
       if (_transcriptData != null) {
         _transcriptData = _transcriptData!.copyWith(

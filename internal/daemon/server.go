@@ -653,9 +653,13 @@ func (s *Server) processHookEventWithAccount(p Provider, urlEventName string, he
 		if !headlessRunning && (event.State == StateWorking || event.State == StateEnded) {
 			event.State = StateIdle
 			event.Activity = ""
-		} else if event.State == StateEnded {
-			event.State = StateIdle
-			event.Activity = ""
+		} else if headlessRunning && (event.State == StateIdle || event.State == StateEnded) {
+			event.State = StateWorking
+			if sess.Activity != "" {
+				event.Activity = sess.Activity
+			} else if event.Activity == "" {
+				event.Activity = "Thinking..."
+			}
 		}
 	}
 
@@ -3099,6 +3103,7 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		spawnID := sess.ID
 		s.broadcast(sess)
 		if initialPrompt != "" && s.headless != nil {
 			_ = s.headless.RunTurn(context.Background(), sess, initialPrompt)
@@ -3107,7 +3112,7 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]string{
 			"status":      "spawned",
 			"session_id":  tempUUID,
-			"id":          sess.ID,
+			"id":          spawnID,
 			"host":        effectiveHost,
 			"engine_type": EngineHeadless,
 		})
