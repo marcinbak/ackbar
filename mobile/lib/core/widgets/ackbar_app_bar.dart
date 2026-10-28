@@ -1,9 +1,10 @@
 import 'package:flutter/material.dart';
+import '../constants/app_version.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_spacing.dart';
 import '../theme/app_typography.dart';
 
-/// Data class representing host connectivity for the top header status pills.
+/// Data class representing host connectivity for the status indicator model.
 class HostStatusIndicator {
   final String name;
   final bool isOnline;
@@ -16,10 +17,11 @@ class HostStatusIndicator {
   });
 }
 
-/// Standard top AppBar for Ackbar Mobile with branding, version, and host pills.
+/// Standard top AppBar for Ackbar Mobile with branding and optional version badge.
 class AckbarAppBar extends StatelessWidget implements PreferredSizeWidget {
   final String title;
   final String version;
+  final bool showVersion;
   final List<HostStatusIndicator>? hosts;
   final List<Widget>? actions;
   final bool showBackButton;
@@ -29,7 +31,8 @@ class AckbarAppBar extends StatelessWidget implements PreferredSizeWidget {
   const AckbarAppBar({
     super.key,
     this.title = 'ACKBAR',
-    this.version = 'v0.2.1',
+    this.version = AppVersion.displayVersion,
+    this.showVersion = false,
     this.hosts,
     this.actions,
     this.showBackButton = false,
@@ -47,8 +50,6 @@ class AckbarAppBar extends StatelessWidget implements PreferredSizeWidget {
 
   @override
   Widget build(BuildContext context) {
-    final activeHosts = hosts ?? defaultHosts;
-
     return AppBar(
       backgroundColor: AppColors.background,
       elevation: 0,
@@ -59,7 +60,8 @@ class AckbarAppBar extends StatelessWidget implements PreferredSizeWidget {
           ? IconButton(
               icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 18),
               color: AppColors.textPrimary,
-              onPressed: onBackPressed ?? () => Navigator.of(context).maybePop(),
+              onPressed:
+                  onBackPressed ?? () => Navigator.of(context).maybePop(),
             )
           : null,
       title: Row(
@@ -81,87 +83,30 @@ class AckbarAppBar extends StatelessWidget implements PreferredSizeWidget {
               ),
             ],
           ),
-          const SizedBox(width: 8),
+          if (showVersion) ...[
+            const SizedBox(width: 8),
 
-          // Version badge pill
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
-            decoration: BoxDecoration(
-              color: AppColors.surfaceHighlight,
-              borderRadius: AppSpacing.roundedSm,
-              border: Border.all(color: AppColors.outlineSubtle, width: 0.8),
-            ),
-            child: Text(
-              version,
-              style: AppTypography.codeXs.copyWith(
-                color: AppColors.infoCyan,
-                fontSize: 9.5,
+            // Version badge pill
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+              decoration: BoxDecoration(
+                color: AppColors.surfaceHighlight,
+                borderRadius: AppSpacing.roundedSm,
+                border: Border.all(color: AppColors.outlineSubtle, width: 0.8),
+              ),
+              child: Text(
+                version,
+                style: AppTypography.codeXs.copyWith(
+                  color: AppColors.infoCyan,
+                  fontSize: 9.5,
+                ),
               ),
             ),
-          ),
+          ],
         ],
       ),
       actions: [
-        // Live Host Status Pills
-        Padding(
-          padding: const EdgeInsets.symmetric(vertical: 12.0),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: activeHosts.map((host) {
-              return Padding(
-                padding: const EdgeInsets.only(right: 6.0),
-                child: Material(
-                  color: AppColors.surface,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(10),
-                    side: BorderSide(
-                      color: host.isOnline
-                          ? AppColors.statusEmerald.withOpacity(0.3)
-                          : AppColors.statusCoral.withOpacity(0.3),
-                      width: 0.8,
-                    ),
-                  ),
-                  clipBehavior: Clip.antiAlias,
-                  child: InkWell(
-                    onTap: onHostTapped != null ? () => onHostTapped!(host) : null,
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2.5),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Container(
-                            width: 6,
-                            height: 6,
-                            decoration: BoxDecoration(
-                              color: host.isOnline
-                                  ? AppColors.statusEmerald
-                                  : AppColors.statusCoral,
-                              shape: BoxShape.circle,
-                            ),
-                          ),
-                          const SizedBox(width: 4.5),
-                          Text(
-                            host.name,
-                            style: AppTypography.codeXs.copyWith(
-                              color: host.isOnline
-                                  ? AppColors.textPrimary
-                                  : AppColors.textMuted,
-                              fontSize: 10,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-              );
-            }).toList(),
-          ),
-        ),
-
         if (actions != null) ...actions!,
-
         const SizedBox(width: AppSpacing.md),
       ],
       bottom: const PreferredSize(

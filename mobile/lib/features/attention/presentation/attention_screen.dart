@@ -91,7 +91,6 @@ class _AttentionScreenState extends ConsumerState<AttentionScreen> {
     final attentionFilter = ref.watch(attentionFilterIndexProvider);
     final inProgressSessions = ref.watch(inProgressSessionsProvider);
     final auditHistory = ref.watch(decisionAuditProvider);
-    final hosts = ref.watch(hostsListProvider);
 
     final tabs = [
       FilterTabItem(
@@ -110,13 +109,10 @@ class _AttentionScreenState extends ConsumerState<AttentionScreen> {
       ),
     ];
 
-    final hostIndicators = hosts.map((h) => h.toIndicator()).toList();
-
     return Scaffold(
       backgroundColor: AppColors.background,
-      appBar: AckbarAppBar(
+      appBar: const AckbarAppBar(
         title: 'ATTENTION CONTROL',
-        hosts: hostIndicators,
       ),
       body: Column(
         children: [

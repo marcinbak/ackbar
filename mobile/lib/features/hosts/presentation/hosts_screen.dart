@@ -21,13 +21,12 @@ class HostsScreen extends ConsumerWidget {
     final sessions = ref.watch(fleetSessionsProvider);
 
     final onlineCount = hosts.where((h) => h.online).length;
-    final hostIndicators = hosts.map((h) => h.toIndicator()).toList();
 
     return Scaffold(
       backgroundColor: AppColors.background,
-      appBar: AckbarAppBar(
+      appBar: const AckbarAppBar(
         title: 'DAEMON HOSTS',
-        hosts: hostIndicators,
+        showVersion: true,
       ),
       body: ListView(
         padding: AppSpacing.paddingScreen,
