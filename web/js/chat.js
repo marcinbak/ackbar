@@ -2436,6 +2436,7 @@ function handleChatStreamEvent(tabObj, evt) {
         attachChatMessageListeners(activeMsg, tabObj.activeTurnBuffer);
         linkifyChatFiles(activeMsg, tabObj.session);
       }
+      const prevCompleted = tabObj.lastCompletedTurn;
       const userMsgs = tabObj.chatMessagesEl.querySelectorAll('.chat-msg.user-msg');
       const lastUserEl = userMsgs.length > 0 ? userMsgs[userMsgs.length - 1] : null;
       const lastUserBody = lastUserEl ? lastUserEl.querySelector('.chat-msg-body') : null;
@@ -2445,10 +2446,10 @@ function handleChatStreamEvent(tabObj, evt) {
         ''
       );
       tabObj.lastCompletedTurn = {
-        userEl: lastUserEl || null,
-        assistantEl: activeMsg || null,
-        userText: lastUserText,
-        assistantText: normalizePromptText(tabObj.activeTurnBuffer || evt.text || ''),
+        userEl: lastUserEl || (prevCompleted && prevCompleted.userEl) || null,
+        assistantEl: activeMsg || (prevCompleted && prevCompleted.assistantEl) || null,
+        userText: lastUserText || (prevCompleted && prevCompleted.userText) || '',
+        assistantText: normalizePromptText(tabObj.activeTurnBuffer || evt.text || '') || (prevCompleted && prevCompleted.assistantText) || '',
         timestamp: Date.now()
       };
       setChatSending(tabObj, false);
