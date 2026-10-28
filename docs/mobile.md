@@ -101,6 +101,8 @@ Tap **Live Terminal** on any session to attach to the live `tmux` terminal:
 ---
 
 ### 🌐 6. Multi-Host Mesh & Tailscale
+* **Bottom-Bar Fleet Health Badge:** The `Hosts` bottom navigation tab displays a round count badge showing the total number of configured hosts, dynamically colored by fleet connectivity: emerald green when all hosts are online, amber orange when some hosts are offline, and coral red when all hosts are offline.
+* **App Version Header:** The top `DAEMON HOSTS` toolbar on the `Hosts` tab displays the mobile app version pill (`AppVersion.displayVersion`, synced with `VERSION`) alongside per-node daemon versions, keeping the `Fleet`, `Attention`, and `Plans` toolbars uncluttered.
 * **Tailnet Status Banner:** Live connection indicator for your Tailscale network.
 * **Host Management:** Register multiple Mac, Linux, and cloud servers.
 * **Telemetry & Health:** Real-time latency tracking (ms), uptime, active session counts, and daemon version checks.
@@ -126,7 +128,7 @@ flutter run
 cd mobile
 flutter test
 ```
-*Executes all 147 unit and widget tests covering models, theme extensions, Riverpod providers, transcript live turn synchronization, and core UI components.*
+*Executes all 152 unit and widget tests covering models, theme extensions, Riverpod providers, transcript live turn synchronization, and core UI components.*
 
 ### Installing to iOS Device
 ```bash
