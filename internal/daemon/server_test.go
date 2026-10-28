@@ -4809,3 +4809,254 @@ func TestStopHook_NotOverriddenBySyntheticPreToolUseSubagentOrAckbarHookChild(t 
 		t.Errorf("Expected RunningSubagents=0 after Stop hook, got %d", sessAfterStop.RunningSubagents)
 	}
 }
+
+func TestIsClaudePromptLine_RejectsSubmittedPromptsAndSelectorOptions(t *testing.T) {
+	if !isClaudePromptLine("❯") {
+		t.Errorf("Expected bare '❯' to match as idle prompt")
+	}
+	if !isClaudePromptLine("│ ❯ Type a message... │") {
+		t.Errorf("Expected '❯ Type ...' placeholder to match as idle prompt")
+	}
+	if !isClaudePromptLine("❯ Try \"refactor foo\"") {
+		t.Errorf("Expected '❯ Try ...' placeholder to match as idle prompt")
+	}
+	if isClaudePromptLine("❯ Fix the bug") {
+		t.Errorf("Expected submitted user prompt '❯ Fix the bug' NOT to match as idle prompt")
+	}
+	if isClaudePromptLine("❯ Yes") || isClaudePromptLine("❯ Allow once") {
+		t.Errorf("Expected unnumbered selector option '❯ Yes' / '❯ Allow once' NOT to match as idle prompt")
+	}
+}
+
+func TestParallelSubagents_PostToolUseDoesNotPopUnmatchedSibling(t *testing.T) {
+	dbFile := filepath.Join(t.TempDir(), "test_parallel_subagents.db")
+	db, err := InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := NewServer(db)
+	sessionUUID := "11112222-3333-4444-5555-666677778888"
+	sessionID := "claude-code:local:" + sessionUUID
+
+	// 1. Spawn two parallel subagents: "explorer" and "tester" via PreToolUse + SubagentStart
+	for _, name := range []string{"explorer", "tester"} {
+		preEv := &Event{
+			Agent:       "claude-code",
+			NativeID:    sessionUUID,
+			Cwd:         "/tmp/project",
+			EventName:   "PreToolUse",
+			ToolName:    "Agent",
+			ToolInput:   map[string]interface{}{"subagent_type": name},
+			State:       StateWorking,
+			LastEventAt: time.Now(),
+		}
+		server.processParsedHookEvent(preEv, "PreToolUse", "local", "", false)
+
+		startEv := &Event{
+			Agent:       "claude-code",
+			NativeID:    sessionUUID,
+			Cwd:         "/tmp/project",
+			EventName:   "SubagentStart",
+			ToolName:    name,
+			State:       StateWorking,
+			LastEventAt: time.Now(),
+		}
+		server.processParsedHookEvent(startEv, "SubagentStart", "local", "", false)
+	}
+
+	running := server.getRunningSubagents(sessionID, sessionUUID, "claude-code", "/tmp/project")
+	if len(running) != 2 {
+		t.Fatalf("Expected 2 deduplicated running subagents ('explorer' and 'tester'), got %d: %+v", len(running), running)
+	}
+
+	// 2. "explorer" finishes: SubagentStop("explorer") followed by PostToolUse("Agent")
+	stopExplorer := &Event{
+		Agent:       "claude-code",
+		NativeID:    sessionUUID,
+		Cwd:         "/tmp/project",
+		EventName:   "SubagentStop",
+		ToolName:    "explorer",
+		State:       StateWorking,
+		LastEventAt: time.Now(),
+	}
+	server.processParsedHookEvent(stopExplorer, "SubagentStop", "local", "", false)
+
+	postAgent := &Event{
+		Agent:       "claude-code",
+		NativeID:    sessionUUID,
+		Cwd:         "/tmp/project",
+		EventName:   "PostToolUse",
+		ToolName:    "Agent",
+		State:       StateWorking,
+		LastEventAt: time.Now(),
+	}
+	server.processParsedHookEvent(postAgent, "PostToolUse", "local", "", false)
+
+	// 3. "tester" must still be running!
+	remaining := server.getRunningSubagents(sessionID, sessionUUID, "claude-code", "/tmp/project")
+	if len(remaining) != 1 || remaining[0].Name != "tester" {
+		t.Fatalf("Expected 'tester' to remain running after explorer finished, got %+v", remaining)
+	}
+}
+
+func TestResolveFullAntigravityStep_DoesNotFallbackToEarlierTurnWhenStepIndexSpecified(t *testing.T) {
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "transcript.jsonl")
+	fullPath := filepath.Join(tmpDir, "transcript_full.jsonl")
+
+	// Earlier turn had an ask_question at step 2; current turn is at step 5 (not yet flushed to transcript_full.jsonl)
+	fullContent := `{"step_index":2,"type":"PLANNER_RESPONSE","status":"DONE","tool_calls":[{"name":"ask_question","args":{"question":"Old question?"}}]}` + "\n" +
+		`{"step_index":3,"type":"USER_INPUT","content":"New turn"}` + "\n"
+	if err := os.WriteFile(fullPath, []byte(fullContent), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	if step, ok := resolveFullAntigravityStep(logPath, 5); ok || step != nil {
+		t.Errorf("Expected resolveFullAntigravityStep(logPath, 5) to return false when step 5 is missing, got %+v", step)
+	}
+	if step, ok := resolveFullAntigravityStep(logPath, 2); !ok || step == nil || step.StepIndex != 2 {
+		t.Errorf("Expected resolveFullAntigravityStep(logPath, 2) to return step 2, got %+v, ok=%v", step, ok)
+	}
+}
+
+func TestInspectAntigravityStatus_NonPlannerErrorDoesNotCompleteTurnAndGraceWindowRespected(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	convUUID := "77777777-8888-9999-aaaa-bbbbbbbbbbbb"
+	brainDir := filepath.Join(tmpHome, ".gemini", "antigravity-cli", "brain", convUUID, ".system_generated", "logs")
+	if err := os.MkdirAll(brainDir, 0755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+
+	// 1. Mid-turn RUN_COMMAND with status ERROR must NOT mark session StateIdle
+	cmdErrorTranscript := `{"step_index":1,"type":"USER_INPUT","content":"Run tests"}` + "\n" +
+		`{"step_index":2,"type":"RUN_COMMAND","status":"ERROR","created_at":"2026-10-28T20:00:00Z"}` + "\n"
+	logPath := filepath.Join(brainDir, "transcript.jsonl")
+	if err := os.WriteFile(logPath, []byte(cmdErrorTranscript), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	sess := &Session{
+		ID:          "antigravity:local:" + convUUID,
+		Agent:       "antigravity",
+		Host:        "local",
+		NativeID:    convUUID,
+		State:       StateWorking,
+		Activity:    "Running command...",
+		PID:         os.Getpid(),
+		StartedAt:   time.Now(),
+		LastEventAt: time.Now(),
+	}
+	InspectAntigravityStatus(context.Background(), sess)
+	if sess.State != StateWorking {
+		t.Errorf("Expected session to remain StateWorking on non-PLANNER_RESPONSE ERROR step, got %v", sess.State)
+	}
+
+	// 2. Grace window with zero Blocked.Since (using UpdatedAt) and older completed turn in transcript must NOT reset StateBlocked
+	olderDoneTranscript := `{"step_index":1,"type":"PLANNER_RESPONSE","status":"DONE","created_at":"2020-01-01T00:00:00Z"}` + "\n"
+	if err := os.WriteFile(logPath, []byte(olderDoneTranscript), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	blockedSess := &Session{
+		ID:        "antigravity:local:" + convUUID,
+		Agent:     "antigravity",
+		Host:      "local",
+		NativeID:  convUUID,
+		State:     StateBlocked,
+		Blocked:   &Blocked{Kind: BlockPermission, Reason: "Allow command"},
+		UpdatedAt: time.Now(),
+		PID:       os.Getpid(),
+	}
+	InspectAntigravityStatus(context.Background(), blockedSess)
+	if blockedSess.State != StateBlocked {
+		t.Errorf("Expected StateBlocked to be preserved within 15s grace window via UpdatedAt, got %v", blockedSess.State)
+	}
+
+	// 3. Path traversal / glob metacharacters in NativeID must be ignored safely
+	if _, err := loadAntigravitySubagents(tmpHome, "../../../etc/passwd"); err == nil {
+		t.Errorf("Expected error from loadAntigravitySubagents for path traversal")
+	}
+	if _, err := loadAntigravitySubagents(tmpHome, "*"); err == nil {
+		t.Errorf("Expected error from loadAntigravitySubagents for wildcard convID")
+	}
+}
+
+func TestHookOrdering_OutOfOrderPostToolUseAndPreToolUseGuards(t *testing.T) {
+	dbFile := filepath.Join(t.TempDir(), "test_hook_guards.db")
+	db, err := InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := NewServer(db)
+	sessionUUID := "aaaa9999-bbbb-4444-8888-ccccdddd0000"
+	sessionID := "claude-code:local:" + sessionUUID
+
+	// 1. Stop followed immediately by late PostToolUse must remain StateIdle
+	stopEv := &Event{
+		Agent:       "claude-code",
+		NativeID:    sessionUUID,
+		Cwd:         "/tmp/project",
+		EventName:   "Stop",
+		State:       StateIdle,
+		Activity:    "Awaiting user prompt",
+		LastEventAt: time.Now(),
+	}
+	server.processParsedHookEvent(stopEv, "Stop", "local", "", false)
+
+	latePostEv := &Event{
+		Agent:       "claude-code",
+		NativeID:    sessionUUID,
+		Cwd:         "/tmp/project",
+		EventName:   "PostToolUse",
+		ToolName:    "Bash",
+		State:       StateWorking,
+		Activity:    "Tool execution completed",
+		LastEventAt: time.Now(),
+	}
+	server.processParsedHookEvent(latePostEv, "PostToolUse", "local", "", false)
+
+	sess, _ := db.GetSession(sessionID)
+	if sess == nil || sess.State != StateIdle {
+		t.Fatalf("Expected session to remain StateIdle after late PostToolUse, got %+v", sess)
+	}
+
+	// 2. PermissionRequest followed immediately by late PreToolUse must remain StateBlocked
+	permEv := &Event{
+		Agent:     "claude-code",
+		NativeID:  sessionUUID,
+		Cwd:       "/tmp/project",
+		EventName: "PermissionRequest",
+		State:     StateBlocked,
+		Blocked: &Blocked{
+			Kind:     BlockPermission,
+			Reason:   "Bash",
+			Question: "Allow Bash?",
+			Since:    time.Now(),
+		},
+		Activity:    "Waiting for permission: Bash",
+		LastEventAt: time.Now(),
+	}
+	server.processParsedHookEvent(permEv, "PermissionRequest", "local", "", false)
+
+	latePreEv := &Event{
+		Agent:       "claude-code",
+		NativeID:    sessionUUID,
+		Cwd:         "/tmp/project",
+		EventName:   "PreToolUse",
+		ToolName:    "Bash",
+		State:       StateWorking,
+		Activity:    "Running tool: Bash",
+		LastEventAt: time.Now(),
+	}
+	server.processParsedHookEvent(latePreEv, "PreToolUse", "local", "", false)
+
+	sessPerm, _ := db.GetSession(sessionID)
+	if sessPerm == nil || sessPerm.State != StateBlocked || sessPerm.Blocked == nil || sessPerm.Blocked.Kind != BlockPermission {
+		t.Fatalf("Expected session to remain StateBlocked (BlockPermission) after late PreToolUse, got %+v", sessPerm)
+	}
+}

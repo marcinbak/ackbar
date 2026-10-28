@@ -95,6 +95,10 @@ func (c *ClaudeProvider) ListSubagents(home, cwd, nativeID string) ([]*daemon.Ac
 			if name == "" {
 				name = baseName
 			}
+			seen[name] = true
+			if meta.Name != "" {
+				seen[meta.Name] = true
+			}
 
 			role := meta.CustomAgentType
 			if role == "" {
@@ -173,14 +177,10 @@ func (c *ClaudeProvider) ListSubagents(home, cwd, nativeID string) ([]*daemon.Ac
 	teamsDir := filepath.Join(home, ".claude", "teams")
 	if teamMatches, err := filepath.Glob(filepath.Join(teamsDir, "*", "config.json")); err == nil {
 		for _, cfgPath := range teamMatches {
-			cfgInfo, err := os.Stat(cfgPath)
-			if err != nil {
+			if _, err := os.Stat(cfgPath); err != nil {
 				continue
 			}
-			teamState := "running"
-			if time.Since(cfgInfo.ModTime()) > 60*time.Second {
-				teamState = "completed"
-			}
+			teamState := "completed"
 			data, err := os.ReadFile(cfgPath)
 			if err != nil {
 				continue

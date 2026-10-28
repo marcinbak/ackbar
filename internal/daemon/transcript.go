@@ -35,6 +35,8 @@ type SubagentInfo struct {
 	Prompt    string    `json:"prompt"`
 	State     string    `json:"state"` // "running", "completed"
 	StartedAt time.Time `json:"started_at"`
+	ToolName  string    `json:"-"`
+	Synthetic bool      `json:"-"`
 }
 
 // ExtractTranscript loads and parses conversation logs for a session from disk
@@ -73,10 +75,14 @@ func ExtractTranscript(agent, nativeID, cwd string) (*Transcript, error) {
 }
 
 func loadAntigravityTranscript(t *Transcript, home, convID string) error {
+	cleanID := filepath.Base(filepath.Clean(convID))
+	if cleanID == "" || cleanID == "." || cleanID == ".." || strings.ContainsAny(cleanID, "*?[") {
+		return fmt.Errorf("invalid conversation ID %q", convID)
+	}
 	candidatePaths := []string{
-		filepath.Join(home, ".gemini", "antigravity", "brain", convID, ".system_generated", "logs", "transcript.jsonl"),
-		filepath.Join(home, ".gemini", "antigravity-cli", "brain", convID, ".system_generated", "logs", "transcript.jsonl"),
-		filepath.Join(home, ".antigravity", "brain", convID, ".system_generated", "logs", "transcript.jsonl"),
+		filepath.Join(home, ".gemini", "antigravity", "brain", cleanID, ".system_generated", "logs", "transcript.jsonl"),
+		filepath.Join(home, ".gemini", "antigravity-cli", "brain", cleanID, ".system_generated", "logs", "transcript.jsonl"),
+		filepath.Join(home, ".antigravity", "brain", cleanID, ".system_generated", "logs", "transcript.jsonl"),
 	}
 
 	var file *os.File
@@ -722,20 +728,25 @@ func loadAntigravitySubagentsFromDir(home, convID string) []SubagentInfo {
 }
 
 func loadAntigravitySubagents(home, convID string) ([]SubagentInfo, error) {
+	cleanID := filepath.Base(filepath.Clean(convID))
+	if cleanID == "" || cleanID == "." || cleanID == ".." || strings.ContainsAny(cleanID, "*?[") {
+		return nil, fmt.Errorf("invalid conversation ID %q", convID)
+	}
+
 	// 1. Structured files in .system_generated/subagents/
-	if diskSubs := loadAntigravitySubagentsFromDir(home, convID); len(diskSubs) > 0 {
+	if diskSubs := loadAntigravitySubagentsFromDir(home, cleanID); len(diskSubs) > 0 {
 		return diskSubs, nil
 	}
 
 	candidatePaths := []string{
-		filepath.Join(home, ".gemini", "antigravity", "brain", convID, ".system_generated", "logs", "transcript.jsonl"),
-		filepath.Join(home, ".gemini", "antigravity-cli", "brain", convID, ".system_generated", "logs", "transcript.jsonl"),
-		filepath.Join(home, ".antigravity", "brain", convID, ".system_generated", "logs", "transcript.jsonl"),
+		filepath.Join(home, ".gemini", "antigravity", "brain", cleanID, ".system_generated", "logs", "transcript.jsonl"),
+		filepath.Join(home, ".gemini", "antigravity-cli", "brain", cleanID, ".system_generated", "logs", "transcript.jsonl"),
+		filepath.Join(home, ".antigravity", "brain", cleanID, ".system_generated", "logs", "transcript.jsonl"),
 	}
-	if profiles, _ := filepath.Glob(filepath.Join(home, ".gemini-profiles", "*", "brain", convID, ".system_generated", "logs", "transcript.jsonl")); len(profiles) > 0 {
+	if profiles, _ := filepath.Glob(filepath.Join(home, ".gemini-profiles", "*", "brain", cleanID, ".system_generated", "logs", "transcript.jsonl")); len(profiles) > 0 {
 		candidatePaths = append(candidatePaths, profiles...)
 	}
-	if profiles2, _ := filepath.Glob(filepath.Join(home, ".gemini-profiles", "*", "antigravity", "brain", convID, ".system_generated", "logs", "transcript.jsonl")); len(profiles2) > 0 {
+	if profiles2, _ := filepath.Glob(filepath.Join(home, ".gemini-profiles", "*", "antigravity", "brain", cleanID, ".system_generated", "logs", "transcript.jsonl")); len(profiles2) > 0 {
 		candidatePaths = append(candidatePaths, profiles2...)
 	}
 

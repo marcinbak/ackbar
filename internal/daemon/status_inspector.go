@@ -37,6 +37,22 @@ func extractTailText(lines []string, count int) string {
 	return strings.Join(tail, "\n")
 }
 
+func effectiveBlockedSince(sess *Session) time.Time {
+	if sess == nil {
+		return time.Time{}
+	}
+	if sess.Blocked != nil && !sess.Blocked.Since.IsZero() {
+		return sess.Blocked.Since
+	}
+	if !sess.UpdatedAt.IsZero() {
+		return sess.UpdatedAt
+	}
+	if !sess.LastStateChangeAt.IsZero() {
+		return sess.LastStateChangeAt
+	}
+	return time.Time{}
+}
+
 func isWithinBlockedGraceWindow(sess *Session) bool {
 	if sess == nil || sess.State != StateBlocked || sess.Blocked == nil {
 		return false
@@ -91,16 +107,23 @@ func resolveFullAntigravityStep(logPath string, stepIndex int) (*antigravityStep
 		}
 		var s antigravityStep
 		if err := json.Unmarshal([]byte(line), &s); err == nil {
-			if stepIndex > 0 && s.StepIndex == stepIndex {
-				return &s, true
+			if stepIndex > 0 {
+				if s.StepIndex == stepIndex {
+					return &s, true
+				}
+				continue
+			}
+			if s.Type == "USER_INPUT" || s.Type == "TOOL_RESPONSE" {
+				break
 			}
 			if fallbackPlanner == nil && s.Type == "PLANNER_RESPONSE" {
 				sCopy := s
 				fallbackPlanner = &sCopy
+				break
 			}
 		}
 	}
-	if fallbackPlanner != nil {
+	if stepIndex <= 0 && fallbackPlanner != nil {
 		return fallbackPlanner, true
 	}
 	return nil, false
@@ -275,16 +298,20 @@ func InspectAntigravityStatus(ctx context.Context, sess *Session) bool {
 	// 3. Structured Transcript Inspection (tail up to 256KB)
 	transcriptTurnCompletedAfterBlock := false
 	if home != "" && sess.NativeID != "" {
-		brainDirs := []string{
-			filepath.Join(home, ".gemini", "antigravity", "brain", sess.NativeID, ".system_generated", "logs", "transcript.jsonl"),
-			filepath.Join(home, ".gemini", "antigravity-cli", "brain", sess.NativeID, ".system_generated", "logs", "transcript.jsonl"),
-			filepath.Join(home, ".antigravity", "brain", sess.NativeID, ".system_generated", "logs", "transcript.jsonl"),
-		}
-		if profiles, _ := filepath.Glob(filepath.Join(home, ".gemini-profiles", "*", "brain", sess.NativeID, ".system_generated", "logs", "transcript.jsonl")); len(profiles) > 0 {
-			brainDirs = append(brainDirs, profiles...)
-		}
-		if profiles2, _ := filepath.Glob(filepath.Join(home, ".gemini-profiles", "*", "antigravity", "brain", sess.NativeID, ".system_generated", "logs", "transcript.jsonl")); len(profiles2) > 0 {
-			brainDirs = append(brainDirs, profiles2...)
+		cleanID := filepath.Base(filepath.Clean(sess.NativeID))
+		var brainDirs []string
+		if cleanID != "" && cleanID != "." && cleanID != ".." && !strings.ContainsAny(cleanID, "*?[") {
+			brainDirs = []string{
+				filepath.Join(home, ".gemini", "antigravity", "brain", cleanID, ".system_generated", "logs", "transcript.jsonl"),
+				filepath.Join(home, ".gemini", "antigravity-cli", "brain", cleanID, ".system_generated", "logs", "transcript.jsonl"),
+				filepath.Join(home, ".antigravity", "brain", cleanID, ".system_generated", "logs", "transcript.jsonl"),
+			}
+			if profiles, _ := filepath.Glob(filepath.Join(home, ".gemini-profiles", "*", "brain", cleanID, ".system_generated", "logs", "transcript.jsonl")); len(profiles) > 0 {
+				brainDirs = append(brainDirs, profiles...)
+			}
+			if profiles2, _ := filepath.Glob(filepath.Join(home, ".gemini-profiles", "*", "antigravity", "brain", cleanID, ".system_generated", "logs", "transcript.jsonl")); len(profiles2) > 0 {
+				brainDirs = append(brainDirs, profiles2...)
+			}
 		}
 
 		for _, logPath := range brainDirs {
@@ -432,15 +459,18 @@ func InspectAntigravityStatus(ctx context.Context, sess *Session) bool {
 							changed = true
 						}
 						return changed
-					} else if (lastStep.Type == "PLANNER_RESPONSE" && lastStep.Status == "DONE" && len(lastStep.ToolCalls) == 0) ||
+					} else if lastStep.Type == "PLANNER_RESPONSE" && ((lastStep.Status == "DONE" && len(lastStep.ToolCalls) == 0) ||
 						strings.EqualFold(lastStep.Status, "CANCELED") ||
 						strings.EqualFold(lastStep.Status, "CANCELLED") ||
-						strings.EqualFold(lastStep.Status, "ERROR") {
+						strings.EqualFold(lastStep.Status, "ERROR")) {
 						lastStepTime, _ := time.Parse(time.RFC3339, lastStep.CreatedAt)
-						if isWithinBlockedGraceWindow(sess) && !lastStepTime.IsZero() && !sess.Blocked.Since.IsZero() && lastStepTime.Before(sess.Blocked.Since) {
+						blockSince := effectiveBlockedSince(sess)
+						if !lastStepTime.IsZero() && (blockSince.IsZero() || !lastStepTime.Before(blockSince)) {
+							transcriptTurnCompletedAfterBlock = true
+						}
+						if isWithinBlockedGraceWindow(sess) && !transcriptTurnCompletedAfterBlock {
 							return changed
 						}
-						transcriptTurnCompletedAfterBlock = true
 						if !hasSpinner {
 							if sess.State != StateIdle {
 								sess.State = StateIdle
@@ -652,16 +682,32 @@ func InspectClaudeStatus(ctx context.Context, sess *Session) bool {
 		}
 
 		tailText = extractTailText(lines, 25)
-		bottom8Lines := extractTailLines(lines, 8)
-		bottom6Text = extractTailText(lines, 6)
+		bottom8Lines := extractTailLines(nonEmpty, 8)
+		bottom6Text = strings.Join(extractTailLines(nonEmpty, 6), "\n")
 
+		lastPromptIdx := -1
+		lastSpinnerIdx := -1
 		lastPromptOrSpinnerIdx := -1
 		lastPermIdx := -1
 		lastQuestionIdx := -1
 		hasNumOpt := hasNumberedSelectorOption(bottom8Lines)
 
+		promptMinIdx := len(bottom8Lines) - 6
+		if promptMinIdx < 0 {
+			promptMinIdx = 0
+		}
+
 		for i, l := range bottom8Lines {
-			if isClaudePromptLine(l) || hasClaudeSpinner(l) {
+			if isClaudePromptLine(l) {
+				if i >= promptMinIdx {
+					lastPromptIdx = i
+				}
+				lastPromptOrSpinnerIdx = i
+			}
+			if hasClaudeSpinner(l) {
+				if i >= promptMinIdx {
+					lastSpinnerIdx = i
+				}
 				lastPromptOrSpinnerIdx = i
 			}
 			if isClaudePermissionLine(l) {
@@ -713,13 +759,8 @@ func InspectClaudeStatus(ctx context.Context, sess *Session) bool {
 			return changed
 		}
 
-		for i := len(nonEmpty) - 1; i >= 0 && i >= len(nonEmpty)-6; i-- {
-			if isClaudePromptLine(nonEmpty[i]) {
-				hasPrompt = true
-				break
-			}
-		}
-		hasSpinner = !hasPrompt && hasClaudeSpinner(bottom6Text)
+		hasPrompt = lastPromptIdx != -1 && lastPromptIdx > lastSpinnerIdx && lastPromptIdx > lastPermIdx && lastPromptIdx > lastQuestionIdx
+		hasSpinner = lastSpinnerIdx != -1 && lastSpinnerIdx > lastPromptIdx && hasClaudeSpinner(bottom6Text)
 	}
 
 	// Inspect Claude .jsonl transcript for blocked tool_use (AskUserQuestion / ExitPlanMode) or completed turn (end_turn / stop_sequence)
@@ -805,12 +846,14 @@ func InspectClaudeStatus(ctx context.Context, sess *Session) bool {
 							}
 						} else if sr == "end_turn" || sr == "stop_sequence" {
 							transcriptEndTurn = true
-							if sess.Blocked == nil || sess.Blocked.Since.IsZero() || (!entryTime.IsZero() && !entryTime.Before(sess.Blocked.Since)) {
+							blockSince := effectiveBlockedSince(sess)
+							if !entryTime.IsZero() && (blockSince.IsZero() || !entryTime.Before(blockSince)) {
 								transcriptTurnCompletedAfterBlock = true
 							}
 						}
 					} else if entry.Type == "user" {
-						if sess.Blocked != nil && !sess.Blocked.Since.IsZero() && !entryTime.IsZero() && entryTime.After(sess.Blocked.Since) {
+						blockSince := effectiveBlockedSince(sess)
+						if !entryTime.IsZero() && !blockSince.IsZero() && entryTime.After(blockSince) {
 							transcriptTurnCompletedAfterBlock = true
 						}
 					}
@@ -955,11 +998,7 @@ func isClaudePromptLine(trimmed string) bool {
 	if clean == "❯" {
 		return true
 	}
-	if strings.HasPrefix(clean, "❯ ") {
-		rest := strings.TrimSpace(strings.TrimPrefix(clean, "❯ "))
-		if len(rest) >= 2 && rest[0] >= '1' && rest[0] <= '9' && (rest[1] == '.' || rest[1] == ')') {
-			return false
-		}
+	if strings.HasPrefix(clean, "❯ Type ") || strings.HasPrefix(clean, "❯ Try ") || strings.HasPrefix(clean, "❯ Press ") {
 		return true
 	}
 	return false

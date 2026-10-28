@@ -79,11 +79,42 @@ type Server struct {
 	homeDir          string
 }
 
-func (s *Server) lockSessionHook(sessionID string) func() {
-	val, _ := s.sessionHookLocks.LoadOrStore(sessionID, &sync.Mutex{})
-	mu := val.(*sync.Mutex)
-	mu.Lock()
-	return mu.Unlock
+type sessionHookQueue struct {
+	mu   sync.Mutex
+	tail chan struct{}
+}
+
+func hookLockKey(agent, nativeID, sessionID string) string {
+	if nativeID != "" {
+		return agent + ":" + nativeID
+	}
+	return sessionID
+}
+
+func (s *Server) reserveSessionHook(lockKey string) (func(), func()) {
+	val, _ := s.sessionHookLocks.LoadOrStore(lockKey, &sessionHookQueue{})
+	q := val.(*sessionHookQueue)
+	q.mu.Lock()
+	prev := q.tail
+	curr := make(chan struct{})
+	q.tail = curr
+	q.mu.Unlock()
+	var once sync.Once
+	return func() {
+			if prev != nil {
+				<-prev
+			}
+		}, func() {
+			once.Do(func() {
+				close(curr)
+			})
+		}
+}
+
+func (s *Server) lockSessionHook(lockKey string) func() {
+	wait, release := s.reserveSessionHook(lockKey)
+	wait()
+	return release
 }
 
 func (s *Server) updateHostHealth(name string, online bool, version, displayName string, latencyMs int64) {
@@ -448,12 +479,48 @@ func (s *Server) handleHook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	urlEventName := r.URL.Query().Get("event")
+	headerHost := r.Header.Get("X-Ackbar-Host")
+	accountParam := r.URL.Query().Get("account")
+
+	event, parseErr := p.ParseHook(urlEventName, body)
+	var wait, release func()
+	if parseErr == nil && event != nil {
+		if event.EventName == "" && urlEventName != "" {
+			event.EventName = urlEventName
+		}
+		if !(event.Agent == "claude-code" && !IsUUID(event.NativeID)) {
+			host := headerHost
+			if host == "" || host == "local" {
+				host = s.HostName()
+			}
+			sessionID := fmt.Sprintf("%s:%s:%s", event.Agent, host, event.NativeID)
+			lockKey := hookLockKey(event.Agent, event.NativeID, sessionID)
+			wait, release = s.reserveSessionHook(lockKey)
+		}
+	}
+
 	// Fast response to prevent blocking the agent loop
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"status":"enqueued"}`))
 
-	// Process in a goroutine so ingest is single-digit milliseconds
-	go s.processHookEventWithAccount(p, r.URL.Query().Get("event"), r.Header.Get("X-Ackbar-Host"), body, r.URL.Query().Get("account"))
+	// Process in a goroutine so ingest is single-digit milliseconds while preserving arrival order
+	go func() {
+		if release != nil {
+			defer release()
+		}
+		if parseErr != nil {
+			log.Printf("Error parsing hook payload: %v", parseErr)
+			return
+		}
+		if event == nil {
+			return
+		}
+		if wait != nil {
+			wait()
+		}
+		s.processParsedHookEvent(event, urlEventName, headerHost, accountParam, release != nil)
+	}()
 }
 
 func (s *Server) processHookEvent(p Provider, urlEventName string, headerHost string, body []byte) {
@@ -469,6 +536,10 @@ func (s *Server) processHookEventWithAccount(p Provider, urlEventName string, he
 	if event == nil {
 		return
 	}
+	s.processParsedHookEvent(event, urlEventName, headerHost, accountParam, false)
+}
+
+func (s *Server) processParsedHookEvent(event *Event, urlEventName string, headerHost string, accountParam string, preLocked bool) {
 	if event.EventName == "" && urlEventName != "" {
 		event.EventName = urlEventName
 	}
@@ -485,13 +556,12 @@ func (s *Server) processHookEventWithAccount(p Provider, urlEventName string, he
 
 	// ID is "{agent}:{host}:{nativeID}"
 	sessionID := fmt.Sprintf("%s:%s:%s", event.Agent, host, event.NativeID)
+	lockKey := hookLockKey(event.Agent, event.NativeID, sessionID)
 
-	unlock := s.lockSessionHook(sessionID)
-	defer func() {
-		if unlock != nil {
-			unlock()
-		}
-	}()
+	if !preLocked {
+		unlock := s.lockSessionHook(lockKey)
+		defer unlock()
+	}
 
 	// Load existing or initialize new
 	sess, err := s.db.GetSession(sessionID)
@@ -652,13 +722,17 @@ func (s *Server) processHookEventWithAccount(p Provider, urlEventName string, he
 		}
 	}
 	if sess.ID != "" && sess.ID != sessionID {
-		unlock()
 		sessionID = sess.ID
-		unlock = s.lockSessionHook(sessionID)
+		secondKey := hookLockKey(sess.Agent, sess.NativeID, sess.ID)
+		if secondKey != lockKey {
+			unlock2 := s.lockSessionHook(secondKey)
+			defer unlock2()
+		}
 	}
 
 	isPureHeadless := sess.EngineType == EngineHeadless && sess.TmuxName == ""
 	headlessRunning := isPureHeadless && s.headless != nil && s.headless.IsRunning(sess.ID)
+	evtLower := strings.ToLower(event.EventName)
 
 	if !strings.EqualFold(event.EventName, "SubagentStop") && (strings.EqualFold(event.EventName, "stop") || strings.EqualFold(event.EventName, "sessionend")) {
 		s.clearInMemorySubagents(sessionID, event.NativeID)
@@ -689,8 +763,28 @@ func (s *Server) processHookEventWithAccount(p Provider, urlEventName string, he
 		}
 	}
 
-	isStateChange := sess.State != event.State
 	prevState := sess.State
+	// Guard against out-of-order PostToolUse overwriting a session that just transitioned to StateIdle via Stop/SessionEnd
+	if prevState == StateIdle && !sess.LastStateChangeAt.IsZero() && time.Since(sess.LastStateChangeAt) < 2*time.Second &&
+		(evtLower == "posttooluse" || evtLower == "post_tool_use") {
+		event.State = StateIdle
+		event.Blocked = nil
+		if sess.Activity != "" {
+			event.Activity = sess.Activity
+		}
+	}
+	// Guard against out-of-order PreToolUse (for non-question tools) overwriting a StateBlocked permission prompt just set by PermissionRequest
+	if prevState == StateBlocked && sess.Blocked != nil && sess.Blocked.Kind == BlockPermission &&
+		!sess.LastStateChangeAt.IsZero() && time.Since(sess.LastStateChangeAt) < 2*time.Second &&
+		(evtLower == "pretooluse" || evtLower == "pre_tool_use") && event.State == StateWorking {
+		event.State = StateBlocked
+		event.Blocked = sess.Blocked
+		if sess.Activity != "" {
+			event.Activity = sess.Activity
+		}
+	}
+
+	isStateChange := sess.State != event.State
 	if isStateChange {
 		if event.State != StateWorking {
 			sess.IsUnread = true
@@ -713,7 +807,6 @@ func (s *Server) processHookEventWithAccount(p Provider, urlEventName string, he
 	// - Agent tool execution, progress, turn completion ("pretooluse", "posttooluse", "stop", "sessionend", "permissionrequest", "notification")
 	// - Active working or blocked state transitions (into StateWorking, into StateBlocked, or StateWorking -> StateIdle)
 	// Do NOT update LastEventAt on passive process boot / reconnect on an existing session ("sessionstart", "start", or StateEnded/Unknown -> StateIdle)
-	evtLower := strings.ToLower(event.EventName)
 	shouldUpdateLastEvent := false
 
 	if sess.LastEventAt.IsZero() {
@@ -756,9 +849,20 @@ func (s *Server) processHookEventWithAccount(p Provider, urlEventName string, he
 			StartedAt: time.Now(),
 		})
 	} else if strings.EqualFold(event.EventName, "SubagentStop") {
+		s.markSessionSubagentLifecycleActive(sessionID, event.NativeID)
 		s.removeSubagent(sessionID, event.NativeID, event.ToolName)
 	} else if (evtNameLower == "posttooluse" || evtNameLower == "post_tool_use") && isSubagentTool {
-		s.removeSubagent(sessionID, event.NativeID, event.ToolName)
+		targetSub := event.ToolName
+		if event.ToolInput != nil {
+			if m, ok := event.ToolInput.(map[string]interface{}); ok {
+				if st, ok := m["subagent_type"].(string); ok && st != "" {
+					targetSub = st
+				} else if d, ok := m["description"].(string); ok && d != "" {
+					targetSub = d
+				}
+			}
+		}
+		s.removeSubagent(sessionID, event.NativeID, targetSub)
 	} else if evtNameLower == "userpromptsubmit" || evtNameLower == "sessionend" || evtNameLower == "stop" {
 		s.clearInMemorySubagents(sessionID, event.NativeID)
 	} else if (evtNameLower == "pretooluse" || evtNameLower == "pre_tool_use") && isSubagentTool {
@@ -790,6 +894,8 @@ func (s *Server) processHookEventWithAccount(p Provider, urlEventName string, he
 			Prompt:    prompt,
 			State:     "running",
 			StartedAt: time.Now(),
+			ToolName:  event.ToolName,
+			Synthetic: true,
 		})
 	}
 
@@ -2734,14 +2840,47 @@ func (s *Server) getRunningSubagents(sessionID, nativeID, agent, cwd string) []S
 	return []SubagentInfo{}
 }
 
+func (s *Server) markSessionSubagentLifecycleActive(sessionID, nativeID string) {
+	s.subagentsMu.Lock()
+	defer s.subagentsMu.Unlock()
+	for _, sub := range s.activeSubagents[sessionID] {
+		if sub != nil && sub.Name != "" && !strings.EqualFold(sub.Name, sub.ToolName) {
+			sub.Synthetic = false
+		}
+	}
+	if nativeID != "" && nativeID != sessionID {
+		for _, sub := range s.activeSubagents[nativeID] {
+			if sub != nil && sub.Name != "" && !strings.EqualFold(sub.Name, sub.ToolName) {
+				sub.Synthetic = false
+			}
+		}
+	}
+}
+
 func (s *Server) addSubagent(sessionID, nativeID string, info *SubagentInfo) {
 	if info == nil {
 		return
 	}
 	s.subagentsMu.Lock()
-	s.activeSubagents[sessionID] = append(s.activeSubagents[sessionID], info)
-	if nativeID != "" && nativeID != sessionID {
-		s.activeSubagents[nativeID] = append(s.activeSubagents[nativeID], info)
+	merged := false
+	if !info.Synthetic {
+		for _, sub := range s.activeSubagents[sessionID] {
+			if sub != nil && sub.Synthetic && time.Since(sub.StartedAt) < 5*time.Second {
+				if sub.Name == info.Name || sub.Role == info.Name || strings.EqualFold(sub.Name, sub.ToolName) || sub.Role == "" {
+					sub.Name = info.Name
+					sub.Role = info.Role
+					sub.Synthetic = false
+					merged = true
+					break
+				}
+			}
+		}
+	}
+	if !merged {
+		s.activeSubagents[sessionID] = append(s.activeSubagents[sessionID], info)
+		if nativeID != "" && nativeID != sessionID {
+			s.activeSubagents[nativeID] = append(s.activeSubagents[nativeID], info)
+		}
 	}
 	list := s.activeSubagents[sessionID]
 	s.subagentsMu.Unlock()
@@ -2780,7 +2919,19 @@ func (s *Server) removeSubagent(sessionID, nativeID, subagentID string) {
 			updated = append(updated, sub)
 		}
 		if !found && len(updated) > 0 {
-			updated = updated[1:]
+			if subagentID == "" {
+				updated = updated[1:]
+			} else {
+				var afterFallback []*SubagentInfo
+				for _, sub := range updated {
+					if !found && sub.Synthetic && strings.EqualFold(sub.ToolName, subagentID) {
+						found = true
+						continue
+					}
+					afterFallback = append(afterFallback, sub)
+				}
+				updated = afterFallback
+			}
 		}
 		s.activeSubagents[key] = updated
 		return updated
