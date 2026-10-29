@@ -9,7 +9,11 @@ import (
 	"ackbar/internal/daemon"
 )
 
-type GrokProvider struct{}
+type GrokProvider struct {
+	daemon.GrokAgentAdapter
+}
+
+var _ daemon.AgentAdapter = (*GrokProvider)(nil)
 
 func NewGrokProvider() *GrokProvider {
 	return &GrokProvider{}

@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"strings"
 	"time"
 )
 
@@ -78,6 +79,46 @@ type SubagentDiscoverer interface {
 	ListSubagents(home, cwd, nativeID string) ([]*ActiveSubagent, error)
 }
 
+// InteractiveController provides agent-specific interactive terminal commands and keystrokes.
+type InteractiveController interface {
+	GetResetCommand() string
+	GetApprovalKeys(allow bool) []string
+}
+
+// AccountConfigurator provides agent-specific multi-account profile setup, login, and environment injection.
+type AccountConfigurator interface {
+	AccountEnvVars(home string, acc *AgentAccount) map[string]string
+	IsAccountLoggedIn(home string, acc *AgentAccount) bool
+	SetupProfileDir(home, name, configDir string) (string, error)
+	GetLoginCommand() string
+}
+
+// ProcessInspector provides agent-specific process matching, command filtering, and PID-to-session resolution.
+type ProcessInspector interface {
+	IsValidNativeID(nativeID string) bool
+	IsIgnoredCommand(fullCmd string) bool
+	MatchProcessCommand(binLower, cmdLower string) bool
+	RequiresResolvedSessionID() bool
+	ResolveSessionForPID(ctx context.Context, home string, pid int, cmdFields []string) string
+	ResolveSessionOwner(home, sessionID string) (pid int, tmuxName string)
+}
+
+// DiskSessionDiscoverer provides agent-specific disk artifact checks, workspace doc listing, and past session discovery.
+type DiskSessionDiscoverer interface {
+	HasConversationArtifacts(home, nativeID string) bool
+	IsSubagentSession(home, nativeID string, precomputed map[string]bool) bool
+	ListWorkspaceDocuments(home, cwd, nativeID string, addDoc func(fullPath, title, relPath, category, categoryLabel string, priority int))
+	ScanDiskSessions(ctx context.Context, s *Server, home string, state *ScanState)
+}
+
+// AgentAdapter combines all agent-specific operational capabilities used by the daemon server and session scanner.
+type AgentAdapter interface {
+	InteractiveController
+	AccountConfigurator
+	ProcessInspector
+	DiskSessionDiscoverer
+}
+
 // Provider defines the core contract required for an AI agent integration in Ackbar.
 type Provider interface {
 	AgentIdentity
@@ -104,4 +145,36 @@ type ProviderDTO struct {
 	HookConfigured bool     `json:"hook_configured"`
 	SetupCmd       string   `json:"setup_cmd"`
 	ProcessNames   []string `json:"process_names"`
+}
+
+func getDefaultAgentAdapter(agent string) AgentAdapter {
+	switch agent {
+	case "claude-code":
+		return &ClaudeAgentAdapter{}
+	case "antigravity":
+		return &AntigravityAgentAdapter{}
+	case "codex":
+		return &CodexAgentAdapter{}
+	case "grok", "grok-cli":
+		return &GrokAgentAdapter{}
+	case "opencode", "open-code":
+		return &OpenCodeAgentAdapter{}
+	default:
+		lower := strings.ToLower(agent)
+		if strings.Contains(lower, "antigravity") || strings.Contains(lower, "agy") {
+			return &AntigravityAgentAdapter{}
+		}
+		return &defaultAgentAdapter{agent: agent}
+	}
+}
+
+func (s *Server) agentAdapter(agent string) AgentAdapter {
+	if s != nil {
+		if p, ok := s.providers[agent]; ok {
+			if adapter, ok := p.(AgentAdapter); ok {
+				return adapter
+			}
+		}
+	}
+	return getDefaultAgentAdapter(agent)
 }

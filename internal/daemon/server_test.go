@@ -5060,3 +5060,61 @@ func TestHookOrdering_OutOfOrderPostToolUseAndPreToolUseGuards(t *testing.T) {
 		t.Fatalf("Expected session to remain StateBlocked (BlockPermission) after late PreToolUse, got %+v", sessPerm)
 	}
 }
+
+func TestAgentAdapter_ApprovalKeysAndRespond(t *testing.T) {
+	db, err := InitDB(":memory:")
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := NewServer(db)
+
+	claudeAllow := server.agentAdapter("claude-code").GetApprovalKeys(true)
+	claudeDeny := server.agentAdapter("claude-code").GetApprovalKeys(false)
+	if len(claudeAllow) != 2 || claudeAllow[0] != "y" || claudeAllow[1] != "Enter" {
+		t.Fatalf("expected claude-code allow keys [y Enter], got %v", claudeAllow)
+	}
+	if len(claudeDeny) != 2 || claudeDeny[0] != "n" || claudeDeny[1] != "Enter" {
+		t.Fatalf("expected claude-code deny keys [n Enter], got %v", claudeDeny)
+	}
+
+	agyAllow := server.agentAdapter("antigravity").GetApprovalKeys(true)
+	agyDeny := server.agentAdapter("antigravity").GetApprovalKeys(false)
+	if len(agyAllow) != 2 || agyAllow[0] != "1" || agyAllow[1] != "Enter" {
+		t.Fatalf("expected antigravity allow keys [1 Enter], got %v", agyAllow)
+	}
+	if len(agyDeny) != 2 || agyDeny[0] != "4" || agyDeny[1] != "Enter" {
+		t.Fatalf("expected antigravity deny keys [4 Enter], got %v", agyDeny)
+	}
+
+	sessID := "antigravity:local:11111111-2222-3333-4444-555555555555"
+	_ = db.SaveSession(&Session{
+		ID:       sessID,
+		Agent:    "antigravity",
+		Host:     "local",
+		NativeID: "11111111-2222-3333-4444-555555555555",
+		State:    StateBlocked,
+		Blocked: &Blocked{
+			Kind:     BlockPermission,
+			Reason:   "run_command",
+			Question: "Allow command?",
+			Since:    time.Now(),
+		},
+		IsDone: true,
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/respond", strings.NewReader(`{"id":"`+sessID+`","action":"allow"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	server.Mux().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK from /v1/sessions/respond, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	updated, _ := db.GetSession(sessID)
+	if updated == nil || updated.State != StateWorking || updated.Blocked != nil || updated.IsDone || updated.Activity != "Permission allowed" {
+		t.Fatalf("unexpected updated session after respond allow: %+v", updated)
+	}
+}

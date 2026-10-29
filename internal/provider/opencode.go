@@ -9,7 +9,11 @@ import (
 	"ackbar/internal/daemon"
 )
 
-type OpenCodeProvider struct{}
+type OpenCodeProvider struct {
+	daemon.OpenCodeAgentAdapter
+}
+
+var _ daemon.AgentAdapter = (*OpenCodeProvider)(nil)
 
 func NewOpenCodeProvider() *OpenCodeProvider {
 	return &OpenCodeProvider{}

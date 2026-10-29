@@ -12,7 +12,19 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 5. **SSE Broadcaster:** Streams real-time updates to all connected TUI and Web clients over `/v1/events`.
 6. **SQLite Persistence:** Stores session state, activity history, and logical tree hierarchies in `~/.config/ackbar/ackbard.db` (CGO-free pure Go SQLite).
 7. **Built-in Self-Rotating Logger:** Automatically writes, caps (10MB), and daily-rotates daemon logs in `~/.config/ackbar/logs/` with 7-day automatic retention pruning.
-8. **Background Process Scanner:** Periodically inspects `tmux list-panes` and the OS process table (`ps`) to supervise unmanaged and managed agent sessions.
+8. **Background Process Scanner:** Periodically inspects `tmux list-panes`, the OS process table (`ps`), and on-disk conversation directories (`session_scanner.go`) to supervise unmanaged and managed agent sessions.
+
+### Modular Daemon File Layout (`internal/daemon/`)
+* **`server.go`:** Core `Server` struct, HTTP `Mux()` route registration, token `authMiddleware`, CORS wrapper, SSE `/v1/events` broadcaster, background loop, version/update/settings/shutdown handlers.
+* **`server_hooks.go`:** Hook ingestion (`/v1/hooks/<agent>`), per-session FIFO serialization (`reserveSessionHook`), spawning session adoption, in-place `/clear` / `/reset` turn rotation, and hook-driven subagent tracking.
+* **`server_sessions.go`:** Session listing, maintenance purge, remote-host proxy resolution (`resolveSessionOrProxy`), lifecycle control actions (`/v1/sessions/control`), interactive response dispatch (`applyInteractiveResponse`, `/v1/sessions/respond`), take-wheel (`/v1/sessions/take-wheel`), session spawn (`/v1/sessions/spawn`), and meta-routing (`/v1/meta/resolve`).
+* **`server_chat.go`:** Headless/tmux prompt submission (`/v1/sessions/prompt`), prompt queue management, SSE chat streaming (`/v1/sessions/chat/stream`), turn cancellation, automated session handover (`/v1/sessions/handover`), and transcript endpoints.
+* **`server_subagents.go`:** Subagent discovery endpoint (`/v1/sessions/subagents`) and in-memory/disk subagent lifecycle reconciliation.
+* **`server_accounts.go`:** Multi-account profile management (`/v1/accounts`), agent discovery (`/v1/agents/discovery`), provider catalog (`/v1/providers`), and fleet propagation.
+* **`server_hosts.go`:** Remote host health tracking, SSH target resolution, host CRUD (`/v1/hosts`), cross-compiled remote upgrades (`/v1/hosts/update`), and resilient SSH tunnel management (`/v1/hosts/reconnect`, `ensureHostTunnels`).
+* **`server_projects.go`:** Workspace document discovery (`/v1/documents`), tree node CRUD and move (`/v1/nodes`), project creation (`/v1/projects/create`), worktree/path normalization, and VS Code URI launching (`/v1/editor/open`).
+* **`session_scanner.go`:** Liveness verification (`verifySessionLiveness`) and background session scanner (`scanObservedSessions` decomposed into `refreshExistingSessions`, `scanTmuxPanes`, `scanOSProcessTable`, and `scanDiskSessions`).
+* **`agent_claude.go`, `agent_antigravity.go`, `agent_other.go`:** Per-agent `AgentAdapter` implementations (`ClaudeAgentAdapter`, `AntigravityAgentAdapter`, `CodexAgentAdapter`, `GrokAgentAdapter`, `OpenCodeAgentAdapter`) encapsulating agent-specific CLI flags, approval keys, account profile setup, PID-to-session resolution, and disk session discovery.
 
 ---
 

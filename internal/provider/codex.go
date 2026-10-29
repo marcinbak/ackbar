@@ -9,7 +9,11 @@ import (
 	"ackbar/internal/daemon"
 )
 
-type CodexProvider struct{}
+type CodexProvider struct {
+	daemon.CodexAgentAdapter
+}
+
+var _ daemon.AgentAdapter = (*CodexProvider)(nil)
 
 func NewCodexProvider() *CodexProvider {
 	return &CodexProvider{}

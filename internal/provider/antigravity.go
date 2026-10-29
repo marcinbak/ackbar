@@ -9,7 +9,11 @@ import (
 	"ackbar/internal/daemon"
 )
 
-type AntigravityProvider struct{}
+type AntigravityProvider struct {
+	daemon.AntigravityAgentAdapter
+}
+
+var _ daemon.AgentAdapter = (*AntigravityProvider)(nil)
 
 func NewAntigravityProvider() *AntigravityProvider {
 	return &AntigravityProvider{}

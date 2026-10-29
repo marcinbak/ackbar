@@ -106,7 +106,12 @@ type Provider interface {
 Optional capabilities are probed dynamically at runtime using Go type assertions, eliminating dummy stubs in lightweight CLI adapters:
 1. **`StatusInspector` (`p.(StatusInspector)`):** Optional live tmux pane, status bar, and child process inspection for active working/idle/blocked states.
 2. **`SubagentDiscoverer` (`p.(SubagentDiscoverer)`):** Optional structured on-disk subagent tracking (`ListSubagents`).
-3. **`FullProvider`:** Helper interface representing providers that implement all core and optional capabilities.
+3. **`InteractiveController`:** Provides agent-specific interactive terminal commands (`GetResetCommand`) and permission prompt keystrokes (`GetApprovalKeys`).
+4. **`AccountConfigurator`:** Provides multi-account profile environment injection (`AccountEnvVars`), login verification (`IsAccountLoggedIn`), profile directory & hook initialization (`SetupProfileDir`), and CLI login commands (`GetLoginCommand`).
+5. **`ProcessInspector`:** Provides native session ID validation (`IsValidNativeID`), non-interactive CLI subcommand filtering (`IsIgnoredCommand`), OS process matching (`MatchProcessCommand`), and PID-to-session resolution (`ResolveSessionForPID`, `ResolveSessionOwner`).
+6. **`DiskSessionDiscoverer`:** Provides conversation artifact detection (`HasConversationArtifacts`), subagent session filtering (`IsSubagentSession`), workspace/brain document scanning (`ListWorkspaceDocuments`), and historic disk session restoration (`ScanDiskSessions`).
+7. **`AgentAdapter`:** Composite operational adapter interface combining `InteractiveController`, `AccountConfigurator`, `ProcessInspector`, and `DiskSessionDiscoverer` (implemented by `ClaudeAgentAdapter`, `AntigravityAgentAdapter`, `CodexAgentAdapter`, `GrokAgentAdapter`, and `OpenCodeAgentAdapter` in `internal/daemon/agent_*.go` and embedded on each provider in `internal/provider/`).
+8. **`FullProvider`:** Helper interface representing providers that implement all core and optional capabilities.
 
 ### Modular File Structure (`internal/provider/`)
 Concrete provider implementations are organized into focused, single-responsibility files:
