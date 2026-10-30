@@ -1,11 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/models/host.dart';
+import '../../../core/models/session.dart';
 import '../../../core/providers/fleet_providers.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_typography.dart';
 import '../../../core/widgets/agent_logo.dart';
+import '../../terminal/presentation/terminal_screen.dart';
+import '../../transcript/presentation/transcript_screen.dart';
 
 /// Modal bottom sheet for configuring and spawning a new agent session on a supervised host.
 class NewSessionSheet extends ConsumerStatefulWidget {
@@ -20,13 +23,13 @@ class NewSessionSheet extends ConsumerStatefulWidget {
     this.prefillHost,
   });
 
-  static Future<void> show(
+  static Future<Session?> show(
     BuildContext context, {
     String? prefillCwd,
     String? prefillFolder,
     String? prefillHost,
   }) {
-    return showModalBottomSheet(
+    return showModalBottomSheet<Session>(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
@@ -54,6 +57,7 @@ class _NewSessionSheetState extends ConsumerState<NewSessionSheet> {
   String _engineType = 'tmux';
   bool _showAdvanced = false;
   bool _isLaunching = false;
+  String? _errorMessage;
 
   static const List<Map<String, String>> _defaultAgents = [
     {
@@ -100,27 +104,69 @@ class _NewSessionSheetState extends ConsumerState<NewSessionSheet> {
     final group = _groupController.text.trim();
 
     final messenger = ScaffoldMessenger.of(context);
-    setState(() => _isLaunching = true);
+    setState(() {
+      _isLaunching = true;
+      _errorMessage = null;
+    });
 
-    final notifier = ref.read(fleetSessionsProvider.notifier);
-    final result = await notifier.spawnSession(
-      hostName: _selectedHost,
-      agent: _selectedAgent,
-      cwd: cwd,
-      name: title.isNotEmpty ? title : null,
-      prompt: prompt.isNotEmpty ? prompt : null,
-      nodePath: group.isNotEmpty ? group : null,
-      engineType: _engineType,
-    );
-
-    if (mounted) {
-      setState(() => _isLaunching = false);
-      if (result != null) {
-        Navigator.of(context).pop();
-      }
+    Map<String, dynamic>? result;
+    try {
+      final notifier = ref.read(fleetSessionsProvider.notifier);
+      result = await notifier.spawnSession(
+        hostName: _selectedHost,
+        agent: _selectedAgent,
+        cwd: cwd,
+        name: title.isNotEmpty ? title : null,
+        prompt: prompt.isNotEmpty ? prompt : null,
+        nodePath: group.isNotEmpty ? group : null,
+        engineType: _engineType,
+      );
+    } catch (_) {
+      result = null;
     }
 
+    if (!mounted) return;
+
     if (result != null) {
+      setState(() => _isLaunching = false);
+
+      Session? spawnedSession;
+      if (result['session'] is Map<String, dynamic>) {
+        spawnedSession =
+            Session.fromJson(result['session'] as Map<String, dynamic>);
+      } else {
+        final resId = result['id']?.toString() ?? '';
+        final resNativeId = result['session_id']?.toString() ?? '';
+        final sessions = ref.read(fleetSessionsProvider);
+        for (final s in sessions) {
+          if ((resId.isNotEmpty && s.id == resId) ||
+              (resNativeId.isNotEmpty && s.nativeId == resNativeId)) {
+            spawnedSession = s;
+            break;
+          }
+        }
+      }
+
+      spawnedSession ??= Session(
+        id: result['id']?.toString() ??
+            'antigravity-local-${result['session_id'] ?? ''}',
+        nativeId: result['session_id']?.toString() ?? '',
+        agent: _selectedAgent,
+        cwd: cwd,
+        name: title.isNotEmpty
+            ? title
+            : cwd.split('/').where((p) => p.isNotEmpty).lastOrNull ??
+                _selectedAgent,
+        host: _selectedHost.isNotEmpty ? _selectedHost : 'local',
+        engineType: _engineType,
+        state: _engineType == 'headless'
+            ? SessionState.idle
+            : SessionState.working,
+        managed: true,
+        startedAt: DateTime.now(),
+        lastEventAt: DateTime.now(),
+      );
+
       messenger.showSnackBar(
         SnackBar(
           content: Text('🚀 Session spawned on $_selectedHost'),
@@ -128,7 +174,23 @@ class _NewSessionSheetState extends ConsumerState<NewSessionSheet> {
           behavior: SnackBarBehavior.floating,
         ),
       );
+
+      final nav = Navigator.of(context);
+      final canPopSheet = nav.canPop();
+      nav.pop(spawnedSession);
+      if (canPopSheet && mounted) {
+        if (spawnedSession.isHeadless) {
+          TranscriptScreen.open(context, spawnedSession);
+        } else {
+          TerminalScreen.open(context, spawnedSession);
+        }
+      }
     } else {
+      setState(() {
+        _isLaunching = false;
+        _errorMessage =
+            'Failed to launch session on $_selectedHost. Check daemon connection and directory path.';
+      });
       messenger.showSnackBar(
         SnackBar(
           content: Text(
@@ -145,13 +207,20 @@ class _NewSessionSheetState extends ConsumerState<NewSessionSheet> {
     final hosts = ref.watch(hostsListProvider);
     final knownPaths = ref.watch(knownProjectPathsProvider);
 
-    // Ensure selected host is valid before watching discovery
-    if (hosts.isNotEmpty && !hosts.any((h) => h.name == _selectedHost)) {
-      _selectedHost = hosts.first.name;
+    // Ensure selected host is valid and normalized case-insensitively before watching discovery
+    if (hosts.isNotEmpty) {
+      final target = _selectedHost.toLowerCase();
+      final matching = hosts.where((h) =>
+          h.name.toLowerCase() == target ||
+          h.url.toLowerCase().contains(target));
+      if (matching.isNotEmpty) {
+        _selectedHost = matching.first.name;
+      } else {
+        _selectedHost = hosts.first.name;
+      }
     }
 
-    final discoveryAsync =
-        ref.watch(hostAgentDiscoveryProvider(_selectedHost));
+    final discoveryAsync = ref.watch(hostAgentDiscoveryProvider(_selectedHost));
 
     // Determine available installed agents on _selectedHost
     List<Map<String, String>> activeAgents = _defaultAgents;
@@ -437,7 +506,8 @@ class _NewSessionSheetState extends ConsumerState<NewSessionSheet> {
                       child: Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 3.0),
                         child: InkWell(
-                          onTap: () => setState(() => _selectedAgent = ag['id']!),
+                          onTap: () =>
+                              setState(() => _selectedAgent = ag['id']!),
                           borderRadius: AppSpacing.roundedMd,
                           child: AnimatedContainer(
                             duration: const Duration(milliseconds: 150),
@@ -742,6 +812,38 @@ class _NewSessionSheetState extends ConsumerState<NewSessionSheet> {
                 ),
               ],
               AppSpacing.gapH20,
+
+              if (_errorMessage != null) ...[
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: AppColors.statusCoral.withOpacity(0.1),
+                    borderRadius: AppSpacing.roundedMd,
+                    border: Border.all(
+                      color: AppColors.statusCoral.withOpacity(0.4),
+                    ),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(
+                        Icons.error_outline_rounded,
+                        size: 16,
+                        color: AppColors.statusCoral,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          _errorMessage!,
+                          style: AppTypography.codeXs.copyWith(
+                            color: AppColors.statusCoral,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                AppSpacing.gapH12,
+              ],
 
               // Launch Submit Button
               ElevatedButton(

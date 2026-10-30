@@ -134,12 +134,33 @@ func (s *Server) resolveSession(sessionID string) *Session {
 		if found, _ := s.db.GetSession(localID); found != nil {
 			return found
 		}
+	} else if strings.HasPrefix(sessionID, "antigravity-") {
+		rest := strings.TrimPrefix(sessionID, "antigravity-")
+		if idx := strings.Index(rest, "-"); idx > 0 && idx < len(rest)-1 {
+			uuidPart := rest[idx+1:]
+			for _, candidate := range []string{
+				fmt.Sprintf("antigravity:%s:%s", s.HostName(), uuidPart),
+				fmt.Sprintf("antigravity:local:%s", uuidPart),
+				fmt.Sprintf("antigravity-%s-%s", s.HostName(), uuidPart),
+				fmt.Sprintf("antigravity-local-%s", uuidPart),
+			} {
+				if found, _ := s.db.GetSession(candidate); found != nil {
+					return found
+				}
+			}
+		}
 	}
 
-	// Fallback 2: Check by NativeID match
+	// Fallback 2: Check by OldID or NativeID match
 	if all, err := s.db.ListSessions(); err == nil {
 		for _, sRecord := range all {
-			if sRecord.NativeID != "" && (sRecord.NativeID == sessionID || strings.HasSuffix(sessionID, ":"+sRecord.NativeID)) {
+			if sRecord.OldID != "" && (sRecord.OldID == sessionID || strings.EqualFold(sRecord.OldID, sessionID)) {
+				return sRecord
+			}
+			if sRecord.NativeID != "" && (sRecord.NativeID == sessionID || strings.HasSuffix(sessionID, ":"+sRecord.NativeID) || strings.HasSuffix(sessionID, "-"+sRecord.NativeID)) {
+				return sRecord
+			}
+			if strings.EqualFold(sRecord.ID, sessionID) {
 				return sRecord
 			}
 		}
@@ -902,9 +923,9 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 1. Forward to remote host if specified
-	if req.Host != "" && req.Host != "local" && req.Host != s.HostName() {
+	if !s.isRequestForLocalDaemon(r, req.Host) {
 		hostRec := s.resolveHost(req.Host)
-		if hostRec != nil && hostRec.URL != "" {
+		if hostRec != nil && hostRec.URL != "" && !s.isLocalHost(hostRec.Name) && hostRec.URL != "http://127.0.0.1:7777" {
 			targetURL := strings.TrimSuffix(hostRec.URL, "/") + "/v1/sessions/spawn"
 			payload, _ := json.Marshal(map[string]string{
 				"agent":       req.Agent,
@@ -937,9 +958,10 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(resp.StatusCode)
 			_, _ = io.Copy(w, resp.Body)
 			return
+		} else if hostRec == nil || (!s.isLocalHost(hostRec.Name) && hostRec.URL != "http://127.0.0.1:7777") {
+			http.Error(w, fmt.Sprintf("Remote host '%s' not found or unreachable", req.Host), http.StatusNotFound)
+			return
 		}
-		http.Error(w, fmt.Sprintf("Remote host '%s' not found or unreachable", req.Host), http.StatusNotFound)
-		return
 	}
 
 	// Expand ~ to user home directory and ensure directory exists
@@ -1005,12 +1027,13 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 			_ = s.headless.RunTurn(context.Background(), sess, initialPrompt)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"status":      "spawned",
 			"session_id":  tempUUID,
 			"id":          spawnID,
 			"host":        effectiveHost,
 			"engine_type": EngineHeadless,
+			"session":     sess,
 		})
 		return
 	}
@@ -1040,6 +1063,7 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		Host:        effectiveHost,
 		NativeID:    tempUUID,
 		Cwd:         req.Cwd,
+		ProjectKey:  GetProjectKey(req.Cwd),
 		NodePath:    req.NodePath,
 		Name:        req.Name,
 		Managed:     true,
@@ -1067,12 +1091,13 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 	s.broadcast(sess)
 
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]string{
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"status":      "spawning",
 		"session_id":  tempUUID,
 		"id":          sess.ID,
 		"host":        effectiveHost,
 		"engine_type": EngineTmux,
+		"session":     sess,
 	})
 }
 

@@ -143,6 +143,7 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
     if (sessions == null) return null;
     for (final s in sessions) {
       if (s.id == widget.session.id ||
+          (s.oldId.isNotEmpty && s.oldId == widget.session.id) ||
           (widget.session.nativeId.isNotEmpty &&
               s.nativeId == widget.session.nativeId)) {
         return s;
@@ -186,10 +187,12 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
       }
     }
 
-    // 1. Direct name or URL match
+    // 1. Direct name or URL match (case-insensitive)
+    final sessionHost = _resolveLiveSession().host.toLowerCase();
     final match = hosts.where(
       (h) =>
-          h.name == widget.session.host || h.url.contains(widget.session.host),
+          h.name.toLowerCase() == sessionHost ||
+          h.url.toLowerCase().contains(sessionHost),
     );
     if (match.isNotEmpty) return match.first.url;
 
@@ -222,9 +225,10 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
   Future<TranscriptData> _fetchTranscriptData(String hostUrl) async {
     final api = ref.read(apiClientProvider);
     final session = _resolveLiveSession();
+    final activeSessionId = session.id;
     final structured = await api.getStructuredTranscript(
       hostUrl,
-      widget.session.id,
+      activeSessionId,
     );
 
     if (structured != null && structured.messages.isNotEmpty) {
@@ -234,10 +238,10 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
     }
 
     // Fallback to markdown parser
-    final rawMd = await api.getTranscript(hostUrl, widget.session.id);
+    final rawMd = await api.getTranscript(hostUrl, activeSessionId);
     if (rawMd.trim().isNotEmpty) {
       final parsed = TranscriptData.fromRawMarkdown(
-        sessionId: widget.session.id,
+        sessionId: activeSessionId,
         agent: session.agent,
         title: session.displayTitle,
         markdown: rawMd,
@@ -249,7 +253,7 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
 
     return structured ??
         TranscriptData(
-          sessionId: widget.session.id,
+          sessionId: activeSessionId,
           nativeId: session.nativeId,
           agent: session.agent,
           title: session.displayTitle,
@@ -380,9 +384,10 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
   Future<void> _loadSubagents() async {
     try {
       final hostUrl = await _resolveHostUrl();
+      final activeSessionId = _resolveLiveSession().id;
       final list = await ref
           .read(apiClientProvider)
-          .getSubagents(hostUrl, widget.session.id);
+          .getSubagents(hostUrl, activeSessionId);
       if (mounted) {
         final running = list.where((s) => s.isRunning).toList();
         if (!_areSubagentListsEqual(running, _runningSubagents)) {
@@ -462,9 +467,10 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
 
     try {
       final hostUrl = await _resolveHostUrl();
+      final activeSessionId = _resolveLiveSession().id;
       final success = await ref
           .read(apiClientProvider)
-          .sendPrompt(hostUrl, widget.session.id, text);
+          .sendPrompt(hostUrl, activeSessionId, text);
       if (!success && mounted) {
         setState(() {
           _awaitingTurnCompletion = false;
@@ -513,9 +519,9 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
 
     try {
       final hostUrl = await _resolveHostUrl();
-      final res = await ref
-          .read(apiClientProvider)
-          .takeWheel(hostUrl, widget.session.id);
+      final activeSessionId = _resolveLiveSession().id;
+      final res =
+          await ref.read(apiClientProvider).takeWheel(hostUrl, activeSessionId);
       if (res != null && mounted) {
         final tmuxName = res['tmux_name']?.toString() ?? '';
         final updatedSession = _resolveLiveSession().copyWith(
@@ -550,7 +556,8 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
     HapticFeedback.mediumImpact();
     try {
       final hostUrl = await _resolveHostUrl();
-      await ref.read(apiClientProvider).cancelTurn(hostUrl, widget.session.id);
+      final activeSessionId = _resolveLiveSession().id;
+      await ref.read(apiClientProvider).cancelTurn(hostUrl, activeSessionId);
       if (mounted) {
         setState(() {
           _isSending = false;

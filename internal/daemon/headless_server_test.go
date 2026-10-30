@@ -48,7 +48,7 @@ func TestServer_SpawnHeadlessSession(t *testing.T) {
 		t.Fatalf("Expected 200 OK, got %d: %s", w.Code, w.Body.String())
 	}
 
-	var resp map[string]string
+	var resp map[string]interface{}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("Failed to parse response: %v", err)
 	}
@@ -57,7 +57,7 @@ func TestServer_SpawnHeadlessSession(t *testing.T) {
 		t.Errorf("Unexpected response: %+v", resp)
 	}
 
-	sessionID := resp["session_id"]
+	sessionID, _ := resp["session_id"].(string)
 	fullID := "claude-code:local:" + sessionID
 
 	sess, err := db.GetSession(fullID)

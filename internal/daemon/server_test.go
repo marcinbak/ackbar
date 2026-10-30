@@ -226,9 +226,9 @@ func TestServer_Integration(t *testing.T) {
 			}
 		}
 
-		var spawnResp map[string]string
+		var spawnResp map[string]interface{}
 		_ = json.NewDecoder(respSpawn.Body).Decode(&spawnResp)
-		tempUUID := spawnResp["session_id"]
+		tempUUID, _ := spawnResp["session_id"].(string)
 		if tempUUID == "" {
 			t.Errorf("Expected session_id in spawn response")
 		}
@@ -5116,5 +5116,140 @@ func TestAgentAdapter_ApprovalKeysAndRespond(t *testing.T) {
 	updated, _ := db.GetSession(sessID)
 	if updated == nil || updated.State != StateWorking || updated.Blocked != nil || updated.IsDone || updated.Activity != "Permission allowed" {
 		t.Fatalf("unexpected updated session after respond allow: %+v", updated)
+	}
+}
+
+func TestHandleSpawn_HostCaseVariantAndRequestHostAndTmuxProjectKey(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test_spawn_host_case.db")
+	db, err := InitDB(dbPath)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := NewServer(db)
+	server.SetHostIdentity("legion", "Legion Workstation")
+	server.RegisterProvider(&namedMockProvider{agentName: "antigravity"})
+
+	defer func() {
+		if sessions, err := db.ListSessions(); err == nil {
+			for _, s := range sessions {
+				if s.TmuxName != "" {
+					_ = tmux.Kill(context.Background(), s.TmuxName)
+				}
+			}
+		}
+	}()
+
+	cwd := filepath.Join(t.TempDir(), "project-antigravity")
+
+	// 1. Spawn with case-variant of HostName ("Legion" vs "legion") on EngineTmux
+	if _, err := exec.LookPath("tmux"); err == nil {
+		payload1, _ := json.Marshal(map[string]string{
+			"agent":       "antigravity",
+			"cwd":         cwd,
+			"host":        "Legion",
+			"engine_type": EngineTmux,
+		})
+		req1 := httptest.NewRequest(http.MethodPost, "/v1/sessions/spawn", bytes.NewReader(payload1))
+		w1 := httptest.NewRecorder()
+		server.handleSpawn(w1, req1)
+
+		if w1.Code != http.StatusOK {
+			if !strings.Contains(w1.Body.String(), "Operation not permitted") {
+				t.Fatalf("Expected 200 OK for case-variant host 'Legion', got %d: %s", w1.Code, w1.Body.String())
+			}
+		} else {
+			var resp1 map[string]interface{}
+			if err := json.Unmarshal(w1.Body.Bytes(), &resp1); err != nil {
+				t.Fatalf("Failed to parse spawn response: %v", err)
+			}
+			sessMap, ok := resp1["session"].(map[string]interface{})
+			if !ok || sessMap == nil {
+				t.Fatalf("Expected 'session' object in tmux spawn response, got %+v", resp1)
+			}
+			if sessMap["project_key"] == "" || sessMap["project_key"] == nil {
+				t.Errorf("Expected non-empty project_key on spawned tmux session, got %v", sessMap["project_key"])
+			}
+			sessID, _ := resp1["id"].(string)
+			dbSess, _ := db.GetSession(sessID)
+			if dbSess == nil || dbSess.ProjectKey == "" {
+				t.Errorf("Expected persisted tmux session to have ProjectKey set, got %+v", dbSess)
+			}
+		}
+	}
+
+	// 2. Spawn when req.Host matches request's r.Host IP/hostname (e.g. Tailscale IP)
+	payload2, _ := json.Marshal(map[string]string{
+		"agent":       "antigravity",
+		"cwd":         cwd,
+		"host":        "100.125.180.4",
+		"engine_type": EngineHeadless,
+	})
+	req2 := httptest.NewRequest(http.MethodPost, "http://100.125.180.4:7777/v1/sessions/spawn", bytes.NewReader(payload2))
+	req2.Host = "100.125.180.4:7777"
+	w2 := httptest.NewRecorder()
+	server.handleSpawn(w2, req2)
+
+	if w2.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK when req.Host matches r.Host IP, got %d: %s", w2.Code, w2.Body.String())
+	}
+	var resp2 map[string]interface{}
+	if err := json.Unmarshal(w2.Body.Bytes(), &resp2); err != nil {
+		t.Fatalf("Failed to parse headless spawn response: %v", err)
+	}
+	if _, ok := resp2["session"].(map[string]interface{}); !ok {
+		t.Errorf("Expected 'session' object in headless spawn response, got %+v", resp2)
+	}
+}
+
+func TestResolveSession_ByOldIDAfterAntigravityAdoption(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test_resolve_oldid.db")
+	db, err := InitDB(dbPath)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := NewServer(db)
+	server.SetHostIdentity("legion", "Legion")
+
+	oldID := "antigravity:legion:11111111-2222-3333-4444-555555555555"
+	adoptedID := "antigravity:legion:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+	realConvID := "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+
+	sess := &Session{
+		ID:          adoptedID,
+		OldID:       oldID,
+		Agent:       "antigravity",
+		Host:        "legion",
+		NativeID:    realConvID,
+		Cwd:         "/tmp/project",
+		EngineType:  EngineHeadless,
+		Managed:     true,
+		State:       StateIdle,
+		StartedAt:   time.Now(),
+		LastEventAt: time.Now(),
+	}
+	if err := db.SaveSession(sess); err != nil {
+		t.Fatalf("SaveSession failed: %v", err)
+	}
+
+	resolved := server.resolveSession(oldID)
+	if resolved == nil {
+		t.Fatalf("Expected resolveSession(%q) to resolve adopted session, got nil", oldID)
+	}
+	if resolved.ID != adoptedID {
+		t.Errorf("Expected resolved session ID %q, got %q", adoptedID, resolved.ID)
+	}
+	if resolved.OldID != oldID {
+		t.Errorf("Expected resolved session OldID %q, got %q", oldID, resolved.OldID)
+	}
+
+	// Also verify dash-separated fallback resolution
+	dashID := "antigravity-legion-" + realConvID
+	resolvedDash := server.resolveSession(dashID)
+	if resolvedDash == nil || resolvedDash.ID != adoptedID {
+		t.Errorf("Expected resolveSession(%q) to resolve %q, got %+v", dashID, adoptedID, resolvedDash)
 	}
 }

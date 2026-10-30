@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -131,16 +133,57 @@ func (s *Server) DisplayName() string {
 	return s.HostName()
 }
 
+func extractHostname(val string) string {
+	h := strings.TrimSpace(val)
+	if h == "" {
+		return ""
+	}
+	if strings.Contains(h, "://") {
+		if u, err := url.Parse(h); err == nil && u.Host != "" {
+			h = u.Host
+		}
+	}
+	if idx := strings.LastIndex(h, "@"); idx != -1 {
+		h = h[idx+1:]
+	}
+	if hostOnly, _, err := net.SplitHostPort(h); err == nil && hostOnly != "" {
+		return hostOnly
+	}
+	return h
+}
+
 func (s *Server) isLocalHost(host string) bool {
-	if host == "" || host == "local" || host == "localhost" || host == "127.0.0.1" || host == "::1" {
+	h := strings.TrimSpace(host)
+	if h == "" || strings.EqualFold(h, "local") || strings.EqualFold(h, "localhost") || h == "127.0.0.1" || h == "::1" {
 		return true
 	}
-	if host == s.HostName() {
+	hostName := s.HostName()
+	displayName := s.DisplayName()
+	if strings.EqualFold(h, hostName) || (displayName != "" && strings.EqualFold(h, displayName)) {
 		return true
 	}
-	parts := strings.Split(host, "@")
-	if parts[len(parts)-1] == s.HostName() {
+	extracted := extractHostname(h)
+	if extracted != "" {
+		if strings.EqualFold(extracted, "local") || strings.EqualFold(extracted, "localhost") || extracted == "127.0.0.1" || extracted == "::1" {
+			return true
+		}
+		if strings.EqualFold(extracted, hostName) || (displayName != "" && strings.EqualFold(extracted, displayName)) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) isRequestForLocalDaemon(r *http.Request, host string) bool {
+	if s.isLocalHost(host) {
 		return true
+	}
+	if r != nil && r.Host != "" {
+		reqHostName := extractHostname(r.Host)
+		targetHostName := extractHostname(host)
+		if reqHostName != "" && targetHostName != "" && strings.EqualFold(reqHostName, targetHostName) {
+			return true
+		}
 	}
 	return false
 }

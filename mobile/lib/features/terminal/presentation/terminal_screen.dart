@@ -32,7 +32,8 @@ class TerminalScreen extends ConsumerStatefulWidget {
   ConsumerState<TerminalScreen> createState() => _TerminalScreenState();
 }
 
-class _TerminalScreenState extends ConsumerState<TerminalScreen> with WidgetsBindingObserver {
+class _TerminalScreenState extends ConsumerState<TerminalScreen>
+    with WidgetsBindingObserver {
   late final Terminal _terminal;
   late final TerminalController _terminalController;
   final FocusNode _terminalFocusNode = FocusNode();
@@ -109,13 +110,21 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> with WidgetsBin
 
   void _connectWebSocket() {
     final hosts = ref.read(hostsListProvider);
-    final match = hosts.where((h) => h.name == widget.session.host || h.url.contains(widget.session.host));
-    final hostUrl = match.isNotEmpty ? match.first.url : (hosts.isNotEmpty ? hosts.first.url : 'http://127.0.0.1:7777');
+    final sessionHost = widget.session.host.toLowerCase();
+    final match = hosts.where((h) =>
+        h.name.toLowerCase() == sessionHost ||
+        h.url.toLowerCase().contains(sessionHost));
+    final hostUrl = match.isNotEmpty
+        ? match.first.url
+        : (hosts.isNotEmpty ? hosts.first.url : 'http://127.0.0.1:7777');
     final parsed = Uri.parse(hostUrl);
     final wsScheme = parsed.scheme == 'https' ? 'wss' : 'ws';
-    final hostAddress = parsed.authority.isNotEmpty ? parsed.authority : '127.0.0.1:7777';
+    final hostAddress =
+        parsed.authority.isNotEmpty ? parsed.authority : '127.0.0.1:7777';
 
-    final host = match.isNotEmpty ? match.first : (hosts.isNotEmpty ? hosts.first : null);
+    final host = match.isNotEmpty
+        ? match.first
+        : (hosts.isNotEmpty ? hosts.first : null);
 
     final queryParams = {
       'id': widget.session.id,
@@ -167,7 +176,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> with WidgetsBin
           setState(() {
             _connecting = false;
             if (_errorMessage == null) {
-              _terminal.write('\r\n\x1b[90m[Disconnected from session]\x1b[0m\r\n');
+              _terminal
+                  .write('\r\n\x1b[90m[Disconnected from session]\x1b[0m\r\n');
             }
           });
         },
@@ -213,14 +223,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> with WidgetsBin
       _sendResize(fixedCols, fitRows);
     }
 
-    if (_verticalScrollController.hasClients && _verticalScrollController.offset != 0.0) {
+    if (_verticalScrollController.hasClients &&
+        _verticalScrollController.offset != 0.0) {
       _verticalScrollController.jumpTo(0.0);
     }
   }
 
   void _handleAccessoryKey(String key) {
     if (key == '⌨️' || key == 'Hide ⌨️' || key == 'Dismiss') {
-      if (_terminalFocusNode.hasFocus || MediaQuery.of(context).viewInsets.bottom > 0) {
+      if (_terminalFocusNode.hasFocus ||
+          MediaQuery.of(context).viewInsets.bottom > 0) {
         _terminalFocusNode.unfocus();
         FocusScope.of(context).unfocus();
         WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -381,7 +393,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> with WidgetsBin
 
   @override
   Widget build(BuildContext context) {
-    final keyboardOpen = MediaQuery.of(context).viewInsets.bottom > 0 || _terminalFocusNode.hasFocus;
+    final keyboardOpen = MediaQuery.of(context).viewInsets.bottom > 0 ||
+        _terminalFocusNode.hasFocus;
 
     return Scaffold(
       backgroundColor: AppColors.terminalBlack,
@@ -389,7 +402,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> with WidgetsBin
         backgroundColor: AppColors.surface,
         elevation: 0,
         leading: IconButton(
-          icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 18, color: AppColors.textPrimary),
+          icon: const Icon(Icons.arrow_back_ios_new_rounded,
+              size: 18, color: AppColors.textPrimary),
           onPressed: () => Navigator.of(context).pop(),
         ),
         title: Column(
@@ -397,7 +411,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> with WidgetsBin
           children: [
             Row(
               children: [
-                const Icon(Icons.terminal_rounded, size: 16, color: AppColors.infoCyan),
+                const Icon(Icons.terminal_rounded,
+                    size: 16, color: AppColors.infoCyan),
                 const SizedBox(width: 6),
                 Expanded(
                   child: Text(
@@ -414,7 +429,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> with WidgetsBin
             ),
             Text(
               '${widget.session.agentDisplayName} @ ${widget.session.hostTag} • ${_currentCols}x$_currentRows',
-              style: AppTypography.codeXs.copyWith(color: AppColors.textSecondary),
+              style:
+                  AppTypography.codeXs.copyWith(color: AppColors.textSecondary),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
             ),
@@ -424,9 +440,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> with WidgetsBin
           // Keyboard toggle button (shows/hides on-screen keyboard)
           IconButton(
             icon: Icon(
-              keyboardOpen ? Icons.keyboard_hide_rounded : Icons.keyboard_rounded,
+              keyboardOpen
+                  ? Icons.keyboard_hide_rounded
+                  : Icons.keyboard_rounded,
               size: 20,
-              color: keyboardOpen ? AppColors.infoCyan : AppColors.textSecondary,
+              color:
+                  keyboardOpen ? AppColors.infoCyan : AppColors.textSecondary,
             ),
             tooltip: keyboardOpen ? 'Hide Keyboard' : 'Show Keyboard',
             onPressed: () {
@@ -454,17 +473,21 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> with WidgetsBin
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
               decoration: BoxDecoration(
-                color: _autoFit ? AppColors.infoCyan.withOpacity(0.15) : AppColors.surfaceHighlight,
+                color: _autoFit
+                    ? AppColors.infoCyan.withOpacity(0.15)
+                    : AppColors.surfaceHighlight,
                 borderRadius: BorderRadius.circular(4),
                 border: Border.all(
-                  color: _autoFit ? AppColors.infoCyan : AppColors.outlineSubtle,
+                  color:
+                      _autoFit ? AppColors.infoCyan : AppColors.outlineSubtle,
                   width: 0.8,
                 ),
               ),
               child: Text(
                 _autoFit ? 'FIT' : '80 COL',
                 style: AppTypography.codeXs.copyWith(
-                  color: _autoFit ? AppColors.infoCyan : AppColors.textSecondary,
+                  color:
+                      _autoFit ? AppColors.infoCyan : AppColors.textSecondary,
                   fontWeight: FontWeight.w700,
                   fontSize: 10,
                 ),
@@ -474,13 +497,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> with WidgetsBin
 
           // Tmux scroll mode helper
           IconButton(
-            icon: const Icon(Icons.history_rounded, size: 18, color: AppColors.textSecondary),
+            icon: const Icon(Icons.history_rounded,
+                size: 18, color: AppColors.textSecondary),
             tooltip: 'Tmux Scrollback Mode (Ctrl+B [)',
             onPressed: () {
               _channel?.sink.add('\x02[');
               ScaffoldMessenger.of(context).showSnackBar(
                 const SnackBar(
-                  content: Text('Tmux Scroll Mode active. Swipe or use ↑/↓/PgUp to scroll, Esc to exit.'),
+                  content: Text(
+                      'Tmux Scroll Mode active. Swipe or use ↑/↓/PgUp to scroll, Esc to exit.'),
                   duration: Duration(seconds: 2),
                 ),
               );
@@ -489,21 +514,24 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> with WidgetsBin
 
           // Zoom Out
           IconButton(
-            icon: const Icon(Icons.remove_rounded, size: 18, color: AppColors.textSecondary),
+            icon: const Icon(Icons.remove_rounded,
+                size: 18, color: AppColors.textSecondary),
             tooltip: 'Decrease font size',
             onPressed: _zoomOut,
           ),
 
           // Zoom In
           IconButton(
-            icon: const Icon(Icons.add_rounded, size: 18, color: AppColors.textSecondary),
+            icon: const Icon(Icons.add_rounded,
+                size: 18, color: AppColors.textSecondary),
             tooltip: 'Increase font size',
             onPressed: _zoomIn,
           ),
 
           // Reconnect
           IconButton(
-            icon: const Icon(Icons.refresh_rounded, size: 20, color: AppColors.textMuted),
+            icon: const Icon(Icons.refresh_rounded,
+                size: 20, color: AppColors.textMuted),
             tooltip: 'Reconnect PTY',
             onPressed: () {
               _sub?.cancel();
@@ -529,15 +557,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> with WidgetsBin
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    const SizedBox(
-                      width: 12,
-                      height: 12,
-                      child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.infoCyan),
+                    const Icon(
+                      Icons.sync_rounded,
+                      size: 14,
+                      color: AppColors.infoCyan,
                     ),
                     const SizedBox(width: 8),
                     Text(
                       'Connecting to tmux session...',
-                      style: AppTypography.codeXs.copyWith(color: AppColors.infoCyan),
+                      style: AppTypography.codeXs
+                          .copyWith(color: AppColors.infoCyan),
                     ),
                   ],
                 ),
@@ -549,7 +578,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> with WidgetsBin
                 color: AppColors.statusCoral.withOpacity(0.15),
                 child: Text(
                   _errorMessage!,
-                  style: AppTypography.codeXs.copyWith(color: AppColors.statusCoral),
+                  style: AppTypography.codeXs
+                      .copyWith(color: AppColors.statusCoral),
                 ),
               ),
             Expanded(
@@ -567,7 +597,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> with WidgetsBin
                     final charWidth = _fontSize * 0.60;
                     final terminalRenderWidth = _autoFit
                         ? constraints.maxWidth
-                        : max(constraints.maxWidth, _currentCols * charWidth + 16.0);
+                        : max(constraints.maxWidth,
+                            _currentCols * charWidth + 16.0);
 
                     return GestureDetector(
                       onVerticalDragUpdate: _handleVerticalDragUpdate,
@@ -588,7 +619,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> with WidgetsBin
                               controller: _horizontalScrollController,
                               thumbVisibility: !_autoFit,
                               trackVisibility: !_autoFit,
-                              notificationPredicate: (notif) => notif.metrics.axis == Axis.horizontal,
+                              notificationPredicate: (notif) =>
+                                  notif.metrics.axis == Axis.horizontal,
                               child: SingleChildScrollView(
                                 controller: _horizontalScrollController,
                                 scrollDirection: Axis.horizontal,
@@ -601,9 +633,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> with WidgetsBin
                                     controller: _terminalController,
                                     scrollController: _verticalScrollController,
                                     focusNode: _terminalFocusNode,
-                                    autofocus: false, // Clean startup: keyboard hidden by default
+                                    autofocus:
+                                        false, // Clean startup: keyboard hidden by default
                                     autoResize: false,
-                                    deleteDetection: true, // Fix for iOS backspace/delete
+                                    deleteDetection:
+                                        true, // Fix for iOS backspace/delete
                                     keyboardType: TextInputType.text,
                                     keyboardAppearance: Brightness.dark,
                                     backgroundOpacity: 0.0,
@@ -621,18 +655,22 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> with WidgetsBin
                               bottom: 8,
                               right: 16,
                               child: Material(
-                                color: AppColors.surfaceHighlight.withOpacity(0.9),
+                                color:
+                                    AppColors.surfaceHighlight.withOpacity(0.9),
                                 borderRadius: BorderRadius.circular(20),
                                 elevation: 4,
                                 child: InkWell(
                                   borderRadius: BorderRadius.circular(20),
                                   onTap: _scrollToBottom,
                                   child: Padding(
-                                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 10, vertical: 6),
                                     child: Row(
                                       mainAxisSize: MainAxisSize.min,
                                       children: [
-                                        const Icon(Icons.arrow_downward_rounded, size: 14, color: AppColors.infoCyan),
+                                        const Icon(Icons.arrow_downward_rounded,
+                                            size: 14,
+                                            color: AppColors.infoCyan),
                                         const SizedBox(width: 4),
                                         Text(
                                           'Bottom',
@@ -664,6 +702,3 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> with WidgetsBin
     );
   }
 }
-
-
-

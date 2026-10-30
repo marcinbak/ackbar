@@ -308,6 +308,27 @@ void main() {
       expect(json['git_branch'], equals('main'));
       expect(json['custom_title'], equals('Supervisor PTY'));
     });
+
+    test('Session.fromJson parses old_id and preserves it in copyWith/toJson',
+        () {
+      final json = {
+        'id': 'antigravity:legion:real-uuid-999',
+        'old_id': 'antigravity:legion:temp-uuid-111',
+        'agent': 'antigravity',
+        'host': 'legion',
+        'native_id': 'real-uuid-999',
+        'cwd': '/home/dev/ackbar',
+        'state': 3,
+      };
+
+      final session = Session.fromJson(json);
+      expect(session.oldId, equals('antigravity:legion:temp-uuid-111'));
+      expect(session.toJson()['old_id'],
+          equals('antigravity:legion:temp-uuid-111'));
+
+      final updated = session.copyWith(name: 'Renamed');
+      expect(updated.oldId, equals('antigravity:legion:temp-uuid-111'));
+    });
   });
 
   group('Session Model - Title Resolution Hierarchy', () {
