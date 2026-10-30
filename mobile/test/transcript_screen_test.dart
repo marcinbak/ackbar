@@ -447,5 +447,97 @@ void main() {
       expect(find.text('continue'), findsNWidgets(2));
       expect(find.text('Working...'), findsOneWidget);
     });
+
+    testWidgets(
+        'stays bound to adopted Antigravity session via oldId and sends subsequent prompts with adopted session ID',
+        (tester) async {
+      String? lastPromptSessionId;
+      final mockClient = MockClient((request) async {
+        if (request.url.path == '/v1/sessions/transcript') {
+          return http.Response(
+            jsonEncode({
+              'session_id': request.url.queryParameters['id'] ?? '',
+              'native_id': 'real-conv-999',
+              'agent': 'antigravity',
+              'title': 'Adopted Antigravity Session',
+              'cwd': '/workspace/ackbar',
+              'messages': [],
+              'markdown': '',
+            }),
+            200,
+          );
+        }
+        if (request.url.path == '/v1/sessions/subagents') {
+          return http.Response(jsonEncode({'subagents': []}), 200);
+        }
+        if (request.url.path == '/v1/sessions/prompt') {
+          final body = jsonDecode(request.body) as Map<String, dynamic>;
+          lastPromptSessionId = body['session_id'] as String?;
+          return http.Response(jsonEncode({'status': 'running'}), 200);
+        }
+        return http.Response('[]', 200);
+      });
+
+      final api = ApiClient(client: mockClient);
+      final sse = SSEClient(client: mockClient);
+      final initialSession = Session(
+        id: 'antigravity:legion:temp-uuid-111',
+        agent: 'antigravity',
+        host: 'legion',
+        nativeId: 'temp-uuid-111',
+        cwd: '/workspace/ackbar',
+        state: SessionState.idle,
+        startedAt: DateTime.utc(2026, 3, 28, 12, 0, 0),
+        lastEventAt: DateTime.utc(2026, 3, 28, 12, 0, 0),
+        managed: true,
+        engineType: 'headless',
+        name: 'Spawning Antigravity',
+      );
+
+      final container = ProviderContainer(
+        overrides: [
+          apiClientProvider.overrideWithValue(api),
+          sseClientProvider.overrideWithValue(sse),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      // Simulate adoption in fleetSessionsProvider where id and nativeId changed, and oldId matches initialSession.id
+      final adoptedSession = initialSession.copyWith(
+        id: 'antigravity:legion:real-conv-999',
+        nativeId: 'real-conv-999',
+        oldId: 'antigravity:legion:temp-uuid-111',
+        customTitle: 'Adopted Antigravity Session',
+      );
+      container
+          .read(fleetSessionsProvider.notifier)
+          .setSessions([adoptedSession]);
+
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: MaterialApp(
+            theme: AppTheme.darkTheme,
+            home: TranscriptScreen(session: initialSession),
+          ),
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 600));
+      await tester.pump();
+
+      expect(find.text('Adopted Antigravity Session'), findsOneWidget);
+
+      await tester.enterText(
+          find.byType(TextField), 'Follow up after adoption');
+      await tester.pump();
+      await tester.tap(find.byIcon(Icons.arrow_upward_rounded));
+      await tester.pump(const Duration(milliseconds: 600));
+      await tester.pump();
+
+      expect(
+        lastPromptSessionId,
+        equals('antigravity:legion:real-conv-999'),
+      );
+    });
   });
 }

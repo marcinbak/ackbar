@@ -55,7 +55,7 @@ func (s *Server) resolveSSHTarget(host string) string {
 }
 
 func (s *Server) resolveHost(hostName string) *HostRecord {
-	if hostName == "" || hostName == "local" || hostName == s.HostName() || s.db == nil {
+	if s.isLocalHost(hostName) || s.db == nil {
 		return nil
 	}
 	hostRec, err := s.db.GetHost(hostName)
@@ -64,7 +64,7 @@ func (s *Server) resolveHost(hostName string) *HostRecord {
 	}
 	if allHosts, err := s.db.ListHosts(); err == nil {
 		for _, h := range allHosts {
-			if h.Name == hostName || strings.HasSuffix(h.Name, "@"+hostName) || strings.Contains(h.Name, hostName) {
+			if h.Name == hostName || strings.EqualFold(h.Name, hostName) || strings.HasSuffix(h.Name, "@"+hostName) || strings.Contains(h.Name, hostName) {
 				return h
 			}
 		}

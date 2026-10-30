@@ -183,6 +183,7 @@ func InitDB(dbPath string) (*DB, error) {
 	_, _ = db.Exec("ALTER TABLE sessions ADD COLUMN last_state_change_at TIMESTAMP;")
 	_, _ = db.Exec("ALTER TABLE sessions ADD COLUMN account_id TEXT;")
 	_, _ = db.Exec("ALTER TABLE sessions ADD COLUMN engine_type TEXT DEFAULT 'tmux';")
+	_, _ = db.Exec("ALTER TABLE sessions ADD COLUMN old_id TEXT;")
 	_, _ = db.Exec(`CREATE TABLE IF NOT EXISTS accounts (
 		id TEXT PRIMARY KEY,
 		agent TEXT NOT NULL,
@@ -234,6 +235,9 @@ func (d *DB) SaveSession(s *Session) error {
 		if s.GitBranch == "" && existing.GitBranch != "" {
 			s.GitBranch = existing.GitBranch
 		}
+		if s.OldID == "" && existing.OldID != "" {
+			s.OldID = existing.OldID
+		}
 	}
 
 	if s.GitBranch == "" && s.Cwd != "" {
@@ -284,8 +288,8 @@ func (d *DB) SaveSession(s *Session) error {
 		id, agent, host, native_id, cwd, roots, project_key, state, 
 		blocked_kind, blocked_reason, blocked_since, blocked_question, blocked_options, activity, 
 		started_at, last_event_at, managed, tmux_name, pid, archived, node_path, name, entrypoint, kind, version, context_pct, git_branch,
-		custom_title, ai_title, ai_description, first_prompt, last_prompt, is_unread, last_state_change_at, is_done, is_later, account_id, engine_type
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		custom_title, ai_title, ai_description, first_prompt, last_prompt, is_unread, last_state_change_at, is_done, is_later, account_id, engine_type, old_id
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(id) DO UPDATE SET
 		cwd=excluded.cwd,
 		roots=excluded.roots,
@@ -319,7 +323,8 @@ func (d *DB) SaveSession(s *Session) error {
 		is_done=excluded.is_done,
 		is_later=excluded.is_later,
 		account_id=COALESCE(NULLIF(excluded.account_id, ''), sessions.account_id),
-		engine_type=COALESCE(NULLIF(excluded.engine_type, ''), sessions.engine_type);
+		engine_type=COALESCE(NULLIF(excluded.engine_type, ''), sessions.engine_type),
+		old_id=COALESCE(NULLIF(excluded.old_id, ''), sessions.old_id);
 	`
 
 	managedInt := 0
@@ -344,6 +349,7 @@ func (d *DB) SaveSession(s *Session) error {
 	firstPromptVal := sql.NullString{String: s.FirstPrompt, Valid: s.FirstPrompt != ""}
 	lastPromptVal := sql.NullString{String: s.LastPrompt, Valid: s.LastPrompt != ""}
 	accountIDVal := sql.NullString{String: s.AccountID, Valid: s.AccountID != ""}
+	oldIDVal := sql.NullString{String: s.OldID, Valid: s.OldID != ""}
 	engineType := s.EngineType
 	if engineType == "" {
 		engineType = EngineTmux
@@ -353,7 +359,7 @@ func (d *DB) SaveSession(s *Session) error {
 		s.ID, s.Agent, s.Host, s.NativeID, s.Cwd, string(rootsJSON), s.ProjectKey, int(s.State),
 		blockedKind, blockedReason, blockedSince, blockedQuestion, blockedOptions, s.Activity,
 		s.StartedAt, s.LastEventAt, managedInt, s.TmuxName, s.PID, archivedInt, nodePath, sessName, entrypointVal, kindVal, versionVal, s.ContextPct, gitBranchVal,
-		customTitleVal, aiTitleVal, aiDescVal, firstPromptVal, lastPromptVal, isUnreadInt, lastStateChangeAt, isDoneInt, isLaterInt, accountIDVal, engineType,
+		customTitleVal, aiTitleVal, aiDescVal, firstPromptVal, lastPromptVal, isUnreadInt, lastStateChangeAt, isDoneInt, isLaterInt, accountIDVal, engineType, oldIDVal,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to save session: %w", err)
@@ -367,13 +373,13 @@ func (d *DB) GetSession(id string) (*Session, error) {
 	SELECT id, agent, host, native_id, cwd, roots, project_key, state,
 	       blocked_kind, blocked_reason, blocked_since, blocked_question, blocked_options, activity,
 	       started_at, last_event_at, managed, tmux_name, pid, archived, node_path, name, entrypoint, kind, version, context_pct, git_branch,
-	       custom_title, ai_title, ai_description, first_prompt, last_prompt, is_unread, last_state_change_at, is_done, is_later, account_id, engine_type
+	       custom_title, ai_title, ai_description, first_prompt, last_prompt, is_unread, last_state_change_at, is_done, is_later, account_id, engine_type, old_id
 	FROM sessions WHERE id = ? OR native_id = ? OR native_id = ?;
 	`
 
 	var s Session
 	var rootsStr, blockedKind, blockedReason, blockedQuestion, blockedOptions, nodePath, sessName, entrypointVal, kindVal, versionVal, gitBranchVal sql.NullString
-	var customTitleVal, aiTitleVal, aiDescVal, firstPromptVal, lastPromptVal, accountIDVal, engineTypeVal sql.NullString
+	var customTitleVal, aiTitleVal, aiDescVal, firstPromptVal, lastPromptVal, accountIDVal, engineTypeVal, oldIDVal sql.NullString
 	var ctxPct sql.NullInt64
 	var blockedSince, lastStateChangeAt sql.NullTime
 	var managedInt, archivedInt, isUnreadInt, isDoneInt, isLaterInt int
@@ -388,7 +394,7 @@ func (d *DB) GetSession(id string) (*Session, error) {
 		&s.ID, &s.Agent, &s.Host, &s.NativeID, &s.Cwd, &rootsStr, &s.ProjectKey, (*int)(&s.State),
 		&blockedKind, &blockedReason, &blockedSince, &blockedQuestion, &blockedOptions, &s.Activity,
 		&s.StartedAt, &s.LastEventAt, &managedInt, &s.TmuxName, &s.PID, &archivedInt, &nodePath, &sessName, &entrypointVal, &kindVal, &versionVal, &ctxPct, &gitBranchVal,
-		&customTitleVal, &aiTitleVal, &aiDescVal, &firstPromptVal, &lastPromptVal, &isUnreadInt, &lastStateChangeAt, &isDoneInt, &isLaterInt, &accountIDVal, &engineTypeVal,
+		&customTitleVal, &aiTitleVal, &aiDescVal, &firstPromptVal, &lastPromptVal, &isUnreadInt, &lastStateChangeAt, &isDoneInt, &isLaterInt, &accountIDVal, &engineTypeVal, &oldIDVal,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -398,6 +404,9 @@ func (d *DB) GetSession(id string) (*Session, error) {
 
 	if accountIDVal.Valid {
 		s.AccountID = accountIDVal.String
+	}
+	if oldIDVal.Valid {
+		s.OldID = oldIDVal.String
 	}
 	if engineTypeVal.Valid && engineTypeVal.String != "" {
 		s.EngineType = engineTypeVal.String
@@ -480,7 +489,7 @@ func (d *DB) ListSessions() ([]*Session, error) {
 	SELECT id, agent, host, native_id, cwd, roots, project_key, state,
 	       blocked_kind, blocked_reason, blocked_since, blocked_question, blocked_options, activity,
 	       started_at, last_event_at, managed, tmux_name, pid, archived, node_path, name, entrypoint, kind, version, context_pct, git_branch,
-	       custom_title, ai_title, ai_description, first_prompt, last_prompt, is_unread, last_state_change_at, is_done, is_later, account_id, engine_type
+	       custom_title, ai_title, ai_description, first_prompt, last_prompt, is_unread, last_state_change_at, is_done, is_later, account_id, engine_type, old_id
 	FROM sessions
 	ORDER BY last_event_at DESC;
 	`
@@ -495,7 +504,7 @@ func (d *DB) ListSessions() ([]*Session, error) {
 	for rows.Next() {
 		var s Session
 		var rootsStr, blockedKind, blockedReason, blockedQuestion, blockedOptions, nodePath, sessName, entrypointVal, kindVal, versionVal, gitBranchVal sql.NullString
-		var customTitleVal, aiTitleVal, aiDescVal, firstPromptVal, lastPromptVal, accountIDVal, engineTypeVal sql.NullString
+		var customTitleVal, aiTitleVal, aiDescVal, firstPromptVal, lastPromptVal, accountIDVal, engineTypeVal, oldIDVal sql.NullString
 		var ctxPct sql.NullInt64
 		var blockedSince, lastStateChangeAt sql.NullTime
 		var managedInt, archivedInt, isUnreadInt, isDoneInt, isLaterInt int
@@ -504,7 +513,7 @@ func (d *DB) ListSessions() ([]*Session, error) {
 			&s.ID, &s.Agent, &s.Host, &s.NativeID, &s.Cwd, &rootsStr, &s.ProjectKey, (*int)(&s.State),
 			&blockedKind, &blockedReason, &blockedSince, &blockedQuestion, &blockedOptions, &s.Activity,
 			&s.StartedAt, &s.LastEventAt, &managedInt, &s.TmuxName, &s.PID, &archivedInt, &nodePath, &sessName, &entrypointVal, &kindVal, &versionVal, &ctxPct, &gitBranchVal,
-			&customTitleVal, &aiTitleVal, &aiDescVal, &firstPromptVal, &lastPromptVal, &isUnreadInt, &lastStateChangeAt, &isDoneInt, &isLaterInt, &accountIDVal, &engineTypeVal,
+			&customTitleVal, &aiTitleVal, &aiDescVal, &firstPromptVal, &lastPromptVal, &isUnreadInt, &lastStateChangeAt, &isDoneInt, &isLaterInt, &accountIDVal, &engineTypeVal, &oldIDVal,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan session in list: %w", err)
@@ -512,6 +521,9 @@ func (d *DB) ListSessions() ([]*Session, error) {
 
 		if accountIDVal.Valid {
 			s.AccountID = accountIDVal.String
+		}
+		if oldIDVal.Valid {
+			s.OldID = oldIDVal.String
 		}
 		if engineTypeVal.Valid && engineTypeVal.String != "" {
 			s.EngineType = engineTypeVal.String
@@ -671,7 +683,7 @@ func (d *DB) ListActiveSessions() ([]*Session, error) {
 	SELECT id, agent, host, native_id, cwd, roots, project_key, state,
 	       blocked_kind, blocked_reason, blocked_since, blocked_question, blocked_options, activity,
 	       started_at, last_event_at, managed, tmux_name, pid, archived, node_path, name, entrypoint, kind, version, context_pct, git_branch,
-	       custom_title, ai_title, ai_description, first_prompt, last_prompt, is_unread, last_state_change_at, is_done, is_later, account_id, engine_type
+	       custom_title, ai_title, ai_description, first_prompt, last_prompt, is_unread, last_state_change_at, is_done, is_later, account_id, engine_type, old_id
 	FROM sessions
 	WHERE state != ?
 	ORDER BY last_event_at DESC;
@@ -687,7 +699,7 @@ func (d *DB) ListActiveSessions() ([]*Session, error) {
 	for rows.Next() {
 		var s Session
 		var rootsStr, blockedKind, blockedReason, blockedQuestion, blockedOptions, nodePath, sessName, entrypointVal, kindVal, versionVal, gitBranchVal sql.NullString
-		var customTitleVal, aiTitleVal, aiDescVal, firstPromptVal, lastPromptVal, accountIDVal, engineTypeVal sql.NullString
+		var customTitleVal, aiTitleVal, aiDescVal, firstPromptVal, lastPromptVal, accountIDVal, engineTypeVal, oldIDVal sql.NullString
 		var ctxPct sql.NullInt64
 		var blockedSince, lastStateChangeAt sql.NullTime
 		var managedInt, archivedInt, isUnreadInt, isDoneInt, isLaterInt int
@@ -696,7 +708,7 @@ func (d *DB) ListActiveSessions() ([]*Session, error) {
 			&s.ID, &s.Agent, &s.Host, &s.NativeID, &s.Cwd, &rootsStr, &s.ProjectKey, (*int)(&s.State),
 			&blockedKind, &blockedReason, &blockedSince, &blockedQuestion, &blockedOptions, &s.Activity,
 			&s.StartedAt, &s.LastEventAt, &managedInt, &s.TmuxName, &s.PID, &archivedInt, &nodePath, &sessName, &entrypointVal, &kindVal, &versionVal, &ctxPct, &gitBranchVal,
-			&customTitleVal, &aiTitleVal, &aiDescVal, &firstPromptVal, &lastPromptVal, &isUnreadInt, &lastStateChangeAt, &isDoneInt, &isLaterInt, &accountIDVal, &engineTypeVal,
+			&customTitleVal, &aiTitleVal, &aiDescVal, &firstPromptVal, &lastPromptVal, &isUnreadInt, &lastStateChangeAt, &isDoneInt, &isLaterInt, &accountIDVal, &engineTypeVal, &oldIDVal,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan active session in list: %w", err)
@@ -704,6 +716,9 @@ func (d *DB) ListActiveSessions() ([]*Session, error) {
 
 		if accountIDVal.Valid {
 			s.AccountID = accountIDVal.String
+		}
+		if oldIDVal.Valid {
+			s.OldID = oldIDVal.String
 		}
 		if engineTypeVal.Valid && engineTypeVal.String != "" {
 			s.EngineType = engineTypeVal.String

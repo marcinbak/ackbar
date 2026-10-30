@@ -892,11 +892,11 @@ func TestHandleSpawn_HeadlessWithPromptTriggersTurn(t *testing.T) {
 		t.Fatalf("Expected 200 OK from handleSpawn, got %d: %s", w.Code, w.Body.String())
 	}
 
-	var resp map[string]string
+	var resp map[string]interface{}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("Failed to decode spawn response: %v", err)
 	}
-	sessID := resp["id"]
+	sessID, _ := resp["id"].(string)
 	if sessID == "" {
 		t.Fatalf("Expected non-empty session id in spawn response")
 	}

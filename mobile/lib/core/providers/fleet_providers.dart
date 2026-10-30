@@ -271,8 +271,10 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
   }
 
   void _upsertSession(Session s) {
-    final index = state
-        .indexWhere((item) => item.id == s.id || item.nativeId == s.nativeId);
+    final index = state.indexWhere((item) =>
+        item.id == s.id ||
+        (s.nativeId.isNotEmpty && item.nativeId == s.nativeId) ||
+        (s.oldId.isNotEmpty && item.id == s.oldId));
     if (index != -1) {
       final updated = List<Session>.from(state);
       updated[index] = s;
@@ -349,8 +351,9 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
 
   HostRecord? _getHostRecord(String hostName) {
     final hosts = _ref.read(hostsListProvider);
-    final match =
-        hosts.where((h) => h.name == hostName || h.url.contains(hostName));
+    final target = hostName.toLowerCase();
+    final match = hosts.where((h) =>
+        h.name.toLowerCase() == target || h.url.toLowerCase().contains(target));
     if (match.isNotEmpty) return match.first;
     if (hosts.isNotEmpty) return hosts.first;
     return null;
@@ -457,12 +460,14 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
   }) async {
     final host = _getHostRecord(hostName);
     final hostUrl = host?.url ?? 'http://127.0.0.1:7777';
+    final resolvedHostName =
+        host?.name ?? (hostName.isNotEmpty ? hostName : 'local');
 
     final result = await _apiClient.spawnSession(
       hostUrl,
       agent: agent,
       cwd: cwd,
-      host: hostName,
+      host: 'local',
       nodePath: nodePath,
       name: name,
       accountId: accountId,
@@ -472,7 +477,56 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
     );
 
     if (result != null) {
+      Session spawnedSession;
+      if (result['session'] is Map<String, dynamic>) {
+        final parsed =
+            Session.fromJson(result['session'] as Map<String, dynamic>);
+        spawnedSession = (parsed.host.isEmpty || parsed.host == 'local') &&
+                resolvedHostName != 'local'
+            ? parsed.copyWith(host: resolvedHostName)
+            : parsed;
+      } else {
+        final nativeId = result['session_id']?.toString() ?? '';
+        final sessionId =
+            result['id']?.toString() ?? '$agent:$resolvedHostName:$nativeId';
+        final now = DateTime.now();
+        final fallbackTitle = (name != null && name.trim().isNotEmpty)
+            ? name.trim()
+            : cwd.split('/').where((p) => p.isNotEmpty).lastOrNull ?? agent;
+        spawnedSession = Session(
+          id: sessionId,
+          agent: agent,
+          host: resolvedHostName,
+          nativeId: nativeId,
+          cwd: cwd,
+          nodePath: nodePath ?? '',
+          name: fallbackTitle,
+          customTitle: name ?? '',
+          firstPrompt: prompt ?? '',
+          lastPrompt: prompt ?? '',
+          state: engineType == 'headless'
+              ? SessionState.idle
+              : SessionState.working,
+          activity: engineType == 'headless'
+              ? 'Headless chat session ready'
+              : 'Spawning session...',
+          startedAt: now,
+          lastEventAt: now,
+          managed: true,
+          engineType: engineType,
+        );
+      }
+      if (mounted) {
+        _upsertSession(spawnedSession);
+      }
       await refreshSessions();
+      if (mounted &&
+          !state.any((s) =>
+              s.id == spawnedSession.id ||
+              (spawnedSession.nativeId.isNotEmpty &&
+                  s.nativeId == spawnedSession.nativeId))) {
+        _upsertSession(spawnedSession);
+      }
     }
     return result;
   }
@@ -497,17 +551,18 @@ final knownProjectPathsProvider = Provider<List<String>>((ref) {
 });
 
 /// Fetches and caches supported agent discovery for a given host
-final hostAgentDiscoveryProvider =
-    FutureProvider.autoDispose.family<List<Map<String, dynamic>>, String>(
-        (ref, hostName) async {
+final hostAgentDiscoveryProvider = FutureProvider.autoDispose
+    .family<List<Map<String, dynamic>>, String>((ref, hostName) async {
   final hostConfig = ref.watch(hostsListProvider.select((hosts) {
     HostRecord? host;
-    final exactName = hosts.where((h) => h.name == hostName);
+    final target = hostName.toLowerCase();
+    final exactName = hosts.where((h) => h.name.toLowerCase() == target);
     if (exactName.isNotEmpty) {
       host = exactName.first;
     } else {
-      final urlMatch =
-          hosts.where((h) => h.url == hostName || h.url.contains(hostName));
+      final urlMatch = hosts.where((h) =>
+          h.url.toLowerCase() == target ||
+          h.url.toLowerCase().contains(target));
       if (urlMatch.isNotEmpty) {
         host = urlMatch.first;
       }

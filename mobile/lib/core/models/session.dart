@@ -121,8 +121,10 @@ class Blocked {
     this.command,
   });
 
-  bool get isQuestion => kind == BlockKind.question || (question != null && question!.isNotEmpty);
-  bool get isPermission => kind == BlockKind.permission || (command != null && command!.isNotEmpty);
+  bool get isQuestion =>
+      kind == BlockKind.question || (question != null && question!.isNotEmpty);
+  bool get isPermission =>
+      kind == BlockKind.permission || (command != null && command!.isNotEmpty);
 
   factory Blocked.fromJson(Map<String, dynamic> json) {
     DateTime sinceDate;
@@ -134,7 +136,8 @@ class Blocked {
 
     List<String> parsedOptions = [];
     if (json['options'] != null && json['options'] is List) {
-      parsedOptions = (json['options'] as List).map((e) => e.toString()).toList();
+      parsedOptions =
+          (json['options'] as List).map((e) => e.toString()).toList();
     }
 
     return Blocked(
@@ -212,6 +215,7 @@ class Session {
   final DateTime? lastStateChangeAt;
   final String engineType;
   final int runningSubagents;
+  final String oldId;
 
   const Session({
     required this.id,
@@ -247,6 +251,7 @@ class Session {
     this.lastStateChangeAt,
     this.engineType = 'tmux',
     this.runningSubagents = 0,
+    this.oldId = '',
   });
 
   bool get isBlocked => state == SessionState.blocked || blocked != null;
@@ -263,7 +268,9 @@ class Session {
     if (firstPrompt.isNotEmpty) {
       final firstLine = firstPrompt.split('\n').first.trim();
       if (firstLine.isNotEmpty) {
-        return firstLine.length > 60 ? '${firstLine.substring(0, 57)}...' : firstLine;
+        return firstLine.length > 60
+            ? '${firstLine.substring(0, 57)}...'
+            : firstLine;
       }
     }
     if (nativeId.isNotEmpty) return '$agentDisplayName ($nativeId)';
@@ -327,7 +334,8 @@ class Session {
   /// Human-readable duration since last event or start
   String get timeElapsedFormatted {
     final now = DateTime.now();
-    final duration = now.difference(startedAt.isBefore(lastEventAt) ? lastEventAt : startedAt);
+    final duration = now
+        .difference(startedAt.isBefore(lastEventAt) ? lastEventAt : startedAt);
     if (duration.inMinutes < 1) {
       return '${duration.inSeconds}s ago';
     } else if (duration.inHours < 1) {
@@ -384,15 +392,18 @@ class Session {
       roots: parseStringList(json['roots']),
       projectKey: json['project_key']?.toString() ?? '',
       state: parseState(json['state']),
-      blocked: json['blocked'] != null && json['blocked'] is Map<String, dynamic>
-          ? Blocked.fromJson(json['blocked'] as Map<String, dynamic>)
-          : null,
+      blocked:
+          json['blocked'] != null && json['blocked'] is Map<String, dynamic>
+              ? Blocked.fromJson(json['blocked'] as Map<String, dynamic>)
+              : null,
       activity: json['activity']?.toString() ?? '',
       startedAt: parseDate(json['started_at']),
       lastEventAt: parseDate(json['last_event_at']),
       managed: json['managed'] == true,
       tmuxName: json['tmux_name']?.toString() ?? '',
-      pid: json['pid'] is int ? json['pid'] as int : int.tryParse(json['pid']?.toString() ?? '') ?? 0,
+      pid: json['pid'] is int
+          ? json['pid'] as int
+          : int.tryParse(json['pid']?.toString() ?? '') ?? 0,
       archived: json['archived'] == true,
       nodePath: json['node_path']?.toString() ?? '',
       name: json['name']?.toString() ?? '',
@@ -410,11 +421,14 @@ class Session {
       firstPrompt: json['first_prompt']?.toString() ?? '',
       lastPrompt: json['last_prompt']?.toString() ?? '',
       isUnread: json['is_unread'] == true || json['is_unread'] == 1,
-      lastStateChangeAt: json['last_state_change_at'] != null ? DateTime.tryParse(json['last_state_change_at'].toString()) : null,
+      lastStateChangeAt: json['last_state_change_at'] != null
+          ? DateTime.tryParse(json['last_state_change_at'].toString())
+          : null,
       engineType: json['engine_type']?.toString() ?? 'tmux',
       runningSubagents: json['running_subagents'] is int
           ? json['running_subagents'] as int
           : int.tryParse(json['running_subagents']?.toString() ?? '') ?? 0,
+      oldId: json['old_id'] as String? ?? json['old_id']?.toString() ?? '',
     );
   }
 
@@ -450,9 +464,11 @@ class Session {
       'first_prompt': firstPrompt,
       'last_prompt': lastPrompt,
       'is_unread': isUnread,
-      if (lastStateChangeAt != null) 'last_state_change_at': lastStateChangeAt!.toIso8601String(),
+      if (lastStateChangeAt != null)
+        'last_state_change_at': lastStateChangeAt!.toIso8601String(),
       'engine_type': engineType,
       'running_subagents': runningSubagents,
+      if (oldId.isNotEmpty) 'old_id': oldId,
     };
   }
 
@@ -491,6 +507,7 @@ class Session {
     DateTime? lastStateChangeAt,
     String? engineType,
     int? runningSubagents,
+    String? oldId,
   }) {
     return Session(
       id: id ?? this.id,
@@ -526,6 +543,7 @@ class Session {
       lastStateChangeAt: lastStateChangeAt ?? this.lastStateChangeAt,
       engineType: engineType ?? this.engineType,
       runningSubagents: runningSubagents ?? this.runningSubagents,
+      oldId: oldId ?? this.oldId,
     );
   }
 }
