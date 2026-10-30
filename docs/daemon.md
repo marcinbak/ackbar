@@ -143,6 +143,7 @@ The SQLite database (`~/.config/ackbar/ackbard.db`) uses CGO-free pure Go SQLite
 * `context_pct`: Current context window token consumption percentage.
 * `git_branch`: Current Git branch associated with the session workspace.
 * `worktree_name`: Associated Git worktree directory if applicable.
+* `old_id`: Pre-adoption temporary session ID preserved when an Antigravity session adopts its canonical conversation UUID, enabling seamless fallback resolution across `/v1/sessions/*` and `/v1/sessions/pty`.
 
 ---
 
