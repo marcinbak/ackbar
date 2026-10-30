@@ -6,6 +6,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:ackbar_mobile/core/models/host.dart';
+import 'package:ackbar_mobile/core/models/session.dart';
 import 'package:ackbar_mobile/core/network/api_client.dart';
 import 'package:ackbar_mobile/core/network/sse_client.dart';
 import 'package:ackbar_mobile/core/providers/fleet_providers.dart';
@@ -321,9 +322,11 @@ void main() {
     });
 
     testWidgets(
-        'matches prefillHost case-insensitively against hostsListProvider and spawns Antigravity headless session into TranscriptScreen',
+        'matches prefillHost case-insensitively against hostsListProvider and normalizes local session host to selected host',
         (tester) async {
       Map<String, dynamic>? spawnBody;
+      String? transcriptRequestedHost;
+      Session? poppedSession;
       final mockClient = MockClient((request) async {
         if (request.url.path == '/v1/agents/discovery') {
           return http.Response(
@@ -343,13 +346,13 @@ void main() {
             jsonEncode({
               'status': 'spawned',
               'session_id': 'agy-uuid-77',
-              'id': 'antigravity:legion:agy-uuid-77',
-              'host': 'legion',
+              'id': 'antigravity:local:agy-uuid-77',
+              'host': 'local',
               'engine_type': 'headless',
               'session': {
-                'id': 'antigravity:legion:agy-uuid-77',
+                'id': 'antigravity:local:agy-uuid-77',
                 'agent': 'antigravity',
-                'host': 'legion',
+                'host': 'local',
                 'native_id': 'agy-uuid-77',
                 'cwd': '/home/dev/ackbar',
                 'state': 3,
@@ -362,9 +365,10 @@ void main() {
           );
         }
         if (request.url.path == '/v1/sessions/transcript') {
+          transcriptRequestedHost = request.url.host;
           return http.Response(
             jsonEncode({
-              'session_id': 'antigravity:legion:agy-uuid-77',
+              'session_id': 'antigravity:local:agy-uuid-77',
               'native_id': 'agy-uuid-77',
               'agent': 'antigravity',
               'title': 'Antigravity Chat',
@@ -387,18 +391,6 @@ void main() {
       final hostsNotifier = HostsNotifier(testApi);
       hostsNotifier.addHost(
         HostRecord(
-          name: 'Legion',
-          url: 'http://100.125.180.4:7777',
-          online: true,
-          latencyMs: 5,
-          version: 'v0.3.0',
-          uptime: 'Active',
-          sessionsCount: 1,
-          createdAt: DateTime.now(),
-        ),
-      );
-      hostsNotifier.addHost(
-        HostRecord(
           name: 'MacBook',
           url: 'http://100.100.10.2:7777',
           online: true,
@@ -409,16 +401,30 @@ void main() {
           createdAt: DateTime.now(),
         ),
       );
+      hostsNotifier.addHost(
+        HostRecord(
+          name: 'Legion',
+          url: 'http://100.125.180.4:7777',
+          online: true,
+          latencyMs: 5,
+          version: 'v0.3.0',
+          uptime: 'Active',
+          sessionsCount: 1,
+          createdAt: DateTime.now(),
+        ),
+      );
 
       await tester.pumpWidget(
         _wrapWithScope(
           Builder(
             builder: (context) => ElevatedButton(
-              onPressed: () => NewSessionSheet.show(
-                context,
-                prefillCwd: '/home/dev/ackbar',
-                prefillHost: 'legion', // lowercase vs 'Legion' in hosts list
-              ),
+              onPressed: () async {
+                poppedSession = await NewSessionSheet.show(
+                  context,
+                  prefillCwd: '/home/dev/ackbar',
+                  prefillHost: 'legion', // lowercase vs 'Legion' in hosts list
+                );
+              },
               child: const Text('OPEN SHEET'),
             ),
           ),
@@ -450,6 +456,11 @@ void main() {
       expect(spawnBody!['agent'], equals('antigravity'));
       expect(spawnBody!['engine_type'], equals('headless'));
       expect(spawnBody!['host'], equals('local'));
+
+      // Resulting session host should be normalized from 'local' to 'Legion'
+      expect(poppedSession, isNotNull);
+      expect(poppedSession!.host, equals('Legion'));
+      expect(transcriptRequestedHost, equals('100.125.180.4'));
 
       // Should have navigated to TranscriptScreen showing session title
       expect(find.text('Antigravity Chat'), findsOneWidget);

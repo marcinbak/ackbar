@@ -147,6 +147,13 @@ class _NewSessionSheetState extends ConsumerState<NewSessionSheet> {
         }
       }
 
+      if (spawnedSession != null &&
+          (spawnedSession.host.isEmpty || spawnedSession.host == 'local') &&
+          _selectedHost.isNotEmpty &&
+          _selectedHost != 'local') {
+        spawnedSession = spawnedSession.copyWith(host: _selectedHost);
+      }
+
       spawnedSession ??= Session(
         id: result['id']?.toString() ??
             'antigravity-local-${result['session_id'] ?? ''}',

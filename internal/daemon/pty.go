@@ -130,31 +130,10 @@ func (s *Server) servePTYWS(ws *websocket.Conn) {
 	}
 
 	// Resilient lookup of session
-	sess, _ := s.db.GetSession(sessionID)
+	sess := s.resolveSession(sessionID)
 	if sess == nil {
-		// Fallback 1: check with agent:host:id format
-		parts := strings.Split(sessionID, ":")
-		if len(parts) >= 3 {
-			localID := fmt.Sprintf("%s:%s:%s", parts[0], s.HostName(), parts[2])
-			sess, _ = s.db.GetSession(localID)
-			if sess == nil {
-				localID = fmt.Sprintf("%s:local:%s", parts[0], parts[2])
-				sess, _ = s.db.GetSession(localID)
-			}
-			if sess == nil {
-				sess, _ = s.db.GetSession(parts[2])
-			}
-		}
-	}
-	if sess == nil {
-		// Fallback 2: Check by NativeID match
-		if all, err := s.db.ListSessions(); err == nil {
-			for _, sRecord := range all {
-				if sRecord.NativeID != "" && (strings.HasSuffix(sessionID, ":"+sRecord.NativeID) || sessionID == sRecord.NativeID) {
-					sess = sRecord
-					break
-				}
-			}
+		if parts := strings.Split(sessionID, ":"); len(parts) >= 3 {
+			sess, _ = s.db.GetSession(parts[2])
 		}
 	}
 
@@ -202,7 +181,7 @@ func (s *Server) servePTYWS(ws *websocket.Conn) {
 		cwd = os.Getenv("HOME")
 	}
 
-	if s.isLocalHost(sessHost) {
+	if s.isRequestForLocalDaemon(req, sessHost) {
 		// Ensure local tmux session exists before attaching
 		if err := exec.Command("tmux", "has-session", "-t", tmuxName).Run(); err != nil {
 			if resumeCmd != "" {

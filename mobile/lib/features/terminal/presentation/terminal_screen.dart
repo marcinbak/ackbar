@@ -108,9 +108,23 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _terminal.keyInput(TerminalKey.pageDown);
   }
 
+  Session _resolveLiveSession() {
+    final sessions = ref.read(fleetSessionsProvider);
+    for (final s in sessions) {
+      if (s.id == widget.session.id ||
+          (s.oldId.isNotEmpty && s.oldId == widget.session.id) ||
+          (widget.session.nativeId.isNotEmpty &&
+              s.nativeId == widget.session.nativeId)) {
+        return s;
+      }
+    }
+    return widget.session;
+  }
+
   void _connectWebSocket() {
+    final liveSession = _resolveLiveSession();
     final hosts = ref.read(hostsListProvider);
-    final sessionHost = widget.session.host.toLowerCase();
+    final sessionHost = liveSession.host.toLowerCase();
     final match = hosts.where((h) =>
         h.name.toLowerCase() == sessionHost ||
         h.url.toLowerCase().contains(sessionHost));
@@ -127,8 +141,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         : (hosts.isNotEmpty ? hosts.first : null);
 
     final queryParams = {
-      'id': widget.session.id,
-      'host': widget.session.host.isNotEmpty ? widget.session.host : 'local',
+      'id': liveSession.id,
+      'host': liveSession.host.isNotEmpty ? liveSession.host : 'local',
       'cols': _currentCols.toString(),
       'rows': _currentRows.toString(),
       if (host != null && host.authToken.isNotEmpty) 'token': host.authToken,
@@ -393,6 +407,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   @override
   Widget build(BuildContext context) {
+    ref.watch(fleetSessionsProvider);
+    final liveSession = _resolveLiveSession();
     final keyboardOpen = MediaQuery.of(context).viewInsets.bottom > 0 ||
         _terminalFocusNode.hasFocus;
 
@@ -416,7 +432,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                 const SizedBox(width: 6),
                 Expanded(
                   child: Text(
-                    widget.session.displayTitle,
+                    liveSession.displayTitle,
                     style: AppTypography.codeSm.copyWith(
                       color: AppColors.textPrimary,
                       fontWeight: FontWeight.w700,
@@ -428,7 +444,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
               ],
             ),
             Text(
-              '${widget.session.agentDisplayName} @ ${widget.session.hostTag} • ${_currentCols}x$_currentRows',
+              '${liveSession.agentDisplayName} @ ${liveSession.hostTag} • ${_currentCols}x$_currentRows',
               style:
                   AppTypography.codeXs.copyWith(color: AppColors.textSecondary),
               maxLines: 1,
