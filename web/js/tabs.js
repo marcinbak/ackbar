@@ -29,7 +29,7 @@ import {
   isSessionWorking,
   onSessionUpdated
 } from './chat.js';
-import { openSessionDetailsTab } from './details.js';
+import { openSessionDetailsTab, closeInspectorPane } from './details.js';
 import { updateStatusbar, resetStatusbar } from './statusbar.js';
 import { showTabContextMenu } from './context-menu.js';
 import { fetchSessions } from './api.js';
@@ -831,6 +831,13 @@ function activateTab(tabId) {
 // Close Tab
 function closeTab(tabId) {
   if (!tabId) return;
+  if (tabId.startsWith('details_')) {
+    const rawId = tabId.slice('details_'.length);
+    if (state.inspectorState && state.inspectorState.sessionId === rawId) {
+      closeInspectorPane();
+    }
+    return;
+  }
   const tab = state.openTabs.get(tabId);
   if (tab) {
     destroyTabResources(tab);
@@ -920,35 +927,13 @@ function migrateTabId(oldId, newId, session) {
     });
   }
 
-  const detailsOldId = `details_${oldId}`;
-  const detailsNewId = `details_${newId}`;
-  const detailsTab = state.openTabs.get(detailsOldId);
-  if (detailsTab) {
-    const existingDetailsNew = state.openTabs.get(detailsNewId);
-    if (existingDetailsNew && existingDetailsNew !== detailsTab) {
-      destroyTabResources(existingDetailsNew);
-      state.openTabs.delete(detailsNewId);
+  if (state.inspectorState && state.inspectorState.sessionId === oldId) {
+    state.inspectorState.sessionId = newId;
+    if (state.inspectorState.session) {
+      Object.assign(state.inspectorState.session, session);
     }
-
-    state.openTabs.delete(detailsOldId);
-    detailsTab.id = detailsNewId;
-    detailsTab.session = session;
-    if (detailsTab.tabEl) {
-      detailsTab.tabEl.dataset.tabId = detailsNewId;
-      const titleSpan = detailsTab.tabEl.querySelector('.tab-title');
-      if (titleSpan) {
-        titleSpan.textContent = session.name || session.agent;
-        titleSpan.title = session.name || session.agent;
-      }
-    }
-    if (detailsTab.containerEl) {
-      detailsTab.containerEl.id = `detailsView_${newId.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
-    }
-    state.openTabs.set(detailsNewId, detailsTab);
-    if (state.activeTabId === detailsOldId || state.activeTabId === detailsNewId) {
-      state.activeTabId = detailsNewId;
-      if (detailsTab.tabEl) detailsTab.tabEl.classList.add('active');
-      if (detailsTab.containerEl) detailsTab.containerEl.classList.add('active');
+    if (state.inspectorState.type === 'details') {
+      openSessionDetailsTab(session);
     }
   }
 
@@ -1028,12 +1013,14 @@ function savePersistedTabs() {
   try {
     const list = [];
     state.openTabs.forEach((tab, tabId) => {
-      list.push({
-        tabId,
-        type: tab.type,
-        sessionId: tab.session ? tab.session.id : null,
-        host: tab.session ? (tab.session.host || getSelfHostName()) : getSelfHostName()
-      });
+      if (tab.type === 'terminal') {
+        list.push({
+          tabId,
+          type: 'terminal',
+          sessionId: tab.session ? tab.session.id : null,
+          host: tab.session ? (tab.session.host || getSelfHostName()) : getSelfHostName()
+        });
+      }
     });
     localStorage.setItem('ackbar_persisted_tabs', JSON.stringify(list));
     if (state.activeTabId) {
@@ -1056,11 +1043,10 @@ function restorePersistedTabs() {
     if (isHideTabsEnabled()) {
       const resolvedItems = [];
       list.forEach(item => {
-        if (item && item.sessionId && (item.type === 'terminal' || item.type === 'details')) {
+        if (item && item.sessionId && (!item.type || item.type === 'terminal')) {
           const sess = state.sessions.find(s => s.id === item.sessionId || s.old_id === item.sessionId);
           if (sess) {
-            const resolvedTabId = item.type === 'details' ? `details_${sess.id}` : sess.id;
-            resolvedItems.push({ item, sess, resolvedTabId });
+            resolvedItems.push({ item, sess, resolvedTabId: sess.id });
           }
         }
       });
@@ -1070,24 +1056,16 @@ function restorePersistedTabs() {
       if (activeId) {
         chosen = resolvedItems.find(entry =>
           entry.item.tabId === activeId ||
-          entry.resolvedTabId === activeId
+          entry.resolvedTabId === activeId ||
+          entry.sess.id === activeId ||
+          entry.sess.old_id === activeId
         );
-        if (!chosen) {
-          chosen = resolvedItems.find(entry =>
-            entry.item.type === 'terminal' &&
-            (entry.sess.id === activeId || entry.sess.old_id === activeId)
-          );
-        }
       }
       if (!chosen) {
         chosen = resolvedItems[resolvedItems.length - 1];
       }
       if (chosen) {
-        if (chosen.item.type === 'details') {
-          openSessionDetailsTab(chosen.sess);
-        } else {
-          openSessionInTab(chosen.sess);
-        }
+        openSessionInTab(chosen.sess);
       }
       return;
     }
@@ -1096,23 +1074,19 @@ function restorePersistedTabs() {
     const seenTmuxKeys = new Set();
 
     list.forEach(item => {
-      if (item.sessionId) {
+      if (item && item.sessionId && (!item.type || item.type === 'terminal')) {
         const sess = state.sessions.find(s => s.id === item.sessionId || s.old_id === item.sessionId);
         if (sess) {
-          const tabKey = `${item.type || 'terminal'}:${sess.id}`;
+          const tabKey = `terminal:${sess.id}`;
           if (seenTabKeys.has(tabKey)) return;
           seenTabKeys.add(tabKey);
 
-          if (item.type === 'terminal') {
-            if (sess.tmux_name) {
-              const tmuxKey = `${sess.host || 'local'}:${sess.tmux_name}`;
-              if (seenTmuxKeys.has(tmuxKey)) return;
-              seenTmuxKeys.add(tmuxKey);
-            }
-            openSessionInTab(sess);
-          } else if (item.type === 'details') {
-            openSessionDetailsTab(sess);
+          if (sess.tmux_name) {
+            const tmuxKey = `${sess.host || 'local'}:${sess.tmux_name}`;
+            if (seenTmuxKeys.has(tmuxKey)) return;
+            seenTmuxKeys.add(tmuxKey);
           }
+          openSessionInTab(sess);
         }
       }
     });

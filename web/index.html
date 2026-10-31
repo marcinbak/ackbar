@@ -125,6 +125,21 @@
           </div>
         </footer>
       </main>
+
+      <!-- Right Inspector Resizer & Collapsible Side Pane (Artifacts / Docs / Session Details / Transcript) -->
+      <div class="resizer-horizontal" id="inspectorResizer" style="display: none;"></div>
+      <aside class="inspector-panel" id="inspectorPanel" style="display: none;">
+        <div class="inspector-header">
+          <div class="inspector-header-left" id="inspectorHeaderLeft">
+            <span class="inspector-title" id="inspectorTitle">Inspector</span>
+          </div>
+          <div class="inspector-header-right">
+            <div class="inspector-header-actions" id="inspectorActions"></div>
+            <button class="inspector-close-btn" id="btnCloseInspector" title="Close Inspector Pane">✕</button>
+          </div>
+        </div>
+        <div class="inspector-body" id="inspectorBody"></div>
+      </aside>
       </div>
 
       <!-- Work & Fleet Overview Kanban Board View -->

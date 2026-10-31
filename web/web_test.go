@@ -319,3 +319,75 @@ func TestHeadlessChatDictationAndPasteFocus_JS(t *testing.T) {
 		}
 	}
 }
+
+func TestInspectorRightPane_JS(t *testing.T) {
+	embeddedFS := web.GetFS()
+
+	checkFileContains := func(path string, expectedList []string) {
+		t.Helper()
+		f, err := embeddedFS.Open(path)
+		if err != nil {
+			t.Fatalf("failed to open %s: %v", path, err)
+		}
+		defer f.Close()
+		b, err := io.ReadAll(f)
+		if err != nil {
+			t.Fatalf("failed to read %s: %v", path, err)
+		}
+		content := string(b)
+		for _, expected := range expectedList {
+			if !strings.Contains(content, expected) {
+				t.Errorf("expected %s to contain %q", path, expected)
+			}
+		}
+	}
+
+	checkFileContains("index.html", []string{
+		`id="inspectorResizer"`,
+		`id="inspectorPanel"`,
+		`id="inspectorHeaderLeft"`,
+		`id="inspectorTitle"`,
+		`id="inspectorActions"`,
+		`id="btnCloseInspector"`,
+		`id="inspectorBody"`,
+	})
+
+	checkFileContains("style.css", []string{
+		".inspector-panel",
+		".inspector-header",
+		".inspector-title",
+		".inspector-subtitle",
+		".inspector-close-btn",
+		".inspector-body",
+	})
+
+	checkFileContains("js/state.js", []string{
+		"inspectorState: null",
+		"inspectorResizer: document.getElementById('inspectorResizer')",
+		"inspectorPanel: document.getElementById('inspectorPanel')",
+		"btnCloseInspector: document.getElementById('btnCloseInspector')",
+		"inspectorBody: document.getElementById('inspectorBody')",
+	})
+
+	checkFileContains("js/details.js", []string{
+		"let inspectorRequestSeq = 0;",
+		"if (reqSeq !== inspectorRequestSeq) return;",
+		"function refitActiveTerminal()",
+		"function openInspectorPane(",
+		"function closeInspectorPane()",
+		"ackbar_inspector_width",
+		"openInspectorPane,",
+		"closeInspectorPane,",
+	})
+
+	checkFileContains("js/tabs.js", []string{
+		"closeInspectorPane",
+		"state.inspectorState.type === 'details'",
+	})
+
+	checkFileContains("js/app.js", []string{
+		"closeInspectorPane",
+		"ackbar_inspector_width",
+		"isResizingInspector",
+	})
+}

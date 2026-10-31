@@ -93,8 +93,9 @@ export const state = {
   sessions: [],
   treeNodes: [],
   hosts: [],
-  openTabs: new Map(), // tabId -> { type: 'terminal'|'details'|'doc', session, terminal, fitAddon, socket, containerEl, tabEl }
+  openTabs: new Map(), // tabId -> { type: 'terminal', session, terminal, fitAddon, socket, containerEl, tabEl }
   activeTabId: null,
+  inspectorState: null,
   providers: [],
   collapsedGroups: loadCollapsedGroups(),
   collapsedDoneGroups: loadCollapsedDoneGroups(),
@@ -141,6 +142,14 @@ export const el = {
   btnExpandAll: document.getElementById('btnExpandAll'),
   sidebarPanel: document.getElementById('sidebarPanel'),
   sidebarResizer: document.getElementById('sidebarResizer'),
+  // Right Inspector Pane elements
+  inspectorResizer: document.getElementById('inspectorResizer'),
+  inspectorPanel: document.getElementById('inspectorPanel'),
+  inspectorHeaderLeft: document.getElementById('inspectorHeaderLeft'),
+  inspectorTitle: document.getElementById('inspectorTitle'),
+  inspectorActions: document.getElementById('inspectorActions'),
+  btnCloseInspector: document.getElementById('btnCloseInspector'),
+  inspectorBody: document.getElementById('inspectorBody'),
   // Statusbar elements
   sbSessionName: document.getElementById('sbSessionName'),
   sbHostBadge: document.getElementById('sbHostBadge'),
