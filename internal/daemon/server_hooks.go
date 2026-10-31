@@ -165,6 +165,91 @@ func (s *Server) processParsedHookEvent(event *Event, urlEventName string, heade
 		defer unlock()
 	}
 
+	if event.Agent == "antigravity" {
+		home, _ := os.UserHomeDir()
+		if home != "" && s.agentAdapter(event.Agent).IsSubagentSession(home, event.NativeID, nil) {
+			if existing := s.resolveSession(sessionID); existing != nil {
+				_ = s.db.DeleteSession(existing.ID)
+				if existing.ID != sessionID {
+					_ = s.db.DeleteSession(sessionID)
+				}
+				existing.Deleted = true
+				existing.State = StateEnded
+				existing.Activity = "Deleted"
+				s.broadcast(existing)
+			}
+
+			parentConvID, role, typeName := ResolveAntigravitySubagentParent(home, event.NativeID)
+			if parentConvID != "" {
+				unlockParent := s.lockSessionHook(hookLockKey("antigravity", parentConvID, "antigravity-"+parentConvID))
+				defer unlockParent()
+				parentSessID := fmt.Sprintf("antigravity:%s:%s", host, parentConvID)
+				parentSess := s.resolveSession(parentSessID)
+				if parentSess == nil {
+					parentSess, _ = s.db.GetSession(parentSessID)
+				}
+				if parentSess != nil {
+					runningSubs := s.getRunningSubagents(parentSess.ID, parentSess.NativeID, "antigravity", parentSess.Cwd)
+					if len(runningSubs) == 0 && event.State == StateWorking {
+						subLabel := role
+						if subLabel == "" {
+							subLabel = typeName
+						}
+						if subLabel == "" {
+							subLabel = "Subagent"
+						}
+						name := typeName
+						if name == "" {
+							name = subLabel
+						}
+						runningSubs = []SubagentInfo{{
+							ID:        event.NativeID,
+							Name:      name,
+							Role:      subLabel,
+							State:     "running",
+							StartedAt: time.Now(),
+						}}
+					}
+					parentSess.RunningSubagents = len(runningSubs)
+					if s.headless != nil {
+						runningPtrs := make([]*SubagentInfo, len(runningSubs))
+						for i := range runningSubs {
+							subCopy := runningSubs[i]
+							runningPtrs[i] = &subCopy
+						}
+						s.headless.EmitSubagentsUpdate(parentSess.ID, runningPtrs)
+					}
+					if len(runningSubs) > 0 && parentSess.State != StateBlocked {
+						parentSess.State = StateWorking
+						subLabel := role
+						if subLabel == "" {
+							subLabel = typeName
+						}
+						if subLabel == "" {
+							subLabel = runningSubs[0].Role
+						}
+						if subLabel == "" {
+							subLabel = runningSubs[0].Name
+						}
+						if subLabel == "" {
+							subLabel = "Subagent"
+						}
+						if event.ToolName != "" {
+							parentSess.Activity = fmt.Sprintf("Subagent (%s): %s", subLabel, event.ToolName)
+						} else if !strings.HasPrefix(parentSess.Activity, "Subagent") {
+							parentSess.Activity = "Subagent running: " + subLabel
+						}
+						parentSess.LastEventAt = time.Now()
+					}
+					parentSess.UpdatedAt = time.Now()
+					_ = s.db.SaveSession(parentSess)
+					s.broadcast(parentSess)
+				}
+			}
+			return
+		}
+	}
+
 	sess, ok := s.resolveOrAdoptHookSession(event, host, sessionID, accountParam)
 	if !ok {
 		return

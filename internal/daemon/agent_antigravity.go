@@ -198,11 +198,17 @@ func (a AntigravityAgentAdapter) RequiresResolvedSessionID() bool {
 
 func (a AntigravityAgentAdapter) ResolveSessionForPID(ctx context.Context, home string, pid int, cmdFields []string) string {
 	sID := findAntigravitySessionForPID(ctx, pid)
+	if sID != "" && home != "" && isAntigravitySubagent(home, sID) {
+		return ""
+	}
 	if sID == "" {
 		for i, arg := range cmdFields {
 			if (arg == "--conversation" || arg == "-c" || arg == "--conversation-id") && i+1 < len(cmdFields) {
 				cID := strings.TrimSpace(cmdFields[i+1])
 				if IsUUID(cID) {
+					if home != "" && isAntigravitySubagent(home, cID) {
+						return ""
+					}
 					sID = cID
 					break
 				}
@@ -256,11 +262,7 @@ func (a AntigravityAgentAdapter) ScanDiskSessions(ctx context.Context, s *Server
 		return
 	}
 	hostName := state.hostName
-	brainDirs := []string{
-		filepath.Join(home, ".gemini", "antigravity", "brain"),
-		filepath.Join(home, ".gemini", "antigravity-cli", "brain"),
-		filepath.Join(home, ".antigravity", "brain"),
-	}
+	brainDirs := antigravityBrainDirs(home)
 
 	subagentIDs := make(map[string]bool)
 	for _, bDir := range brainDirs {
@@ -295,12 +297,12 @@ func (a AntigravityAgentAdapter) ScanDiskSessions(ctx context.Context, s *Server
 			// Check if this is an internal subagent conversation
 			if a.IsSubagentSession(home, convID, subagentIDs) {
 				if existing := state.knownIDs[sessID]; existing != nil {
-					// Safety guard: NEVER delete a managed session or an active session!
-					if existing.Managed || (existing.TmuxName != "" && tmux.HasSession(ctx, existing.TmuxName)) || (existing.PID > 0 && isProcessAlive(existing.PID)) || existing.State != StateEnded {
-						// Skip deletion of live / managed session
+					if existing.CustomTitle != "" || !IsUUID(existing.NativeID) {
+						// Protect user-customized or placeholder spawning session
 					} else {
 						_ = s.db.DeleteSession(sessID)
 						existing.Deleted = true
+						existing.State = StateEnded
 						existing.Activity = "Deleted"
 						s.broadcast(existing)
 						delete(state.knownIDs, sessID)
@@ -507,16 +509,18 @@ func (a AntigravityAgentAdapter) ScanDiskSessions(ctx context.Context, s *Server
 		if !s.isLocalHost(sObj.Host) {
 			continue
 		}
-		if sObj.Agent == "antigravity" && sObj.NativeID != "" && isUUID(sObj.NativeID) {
-			// Safety guard: NEVER purge a session that is managed, or currently alive/running in tmux/process!
-			if sObj.Managed || (sObj.TmuxName != "" && tmux.HasSession(ctx, sObj.TmuxName)) || (sObj.PID > 0 && isProcessAlive(sObj.PID)) || sObj.State != StateEnded {
+		if sObj.Agent == "antigravity" && sObj.NativeID != "" && IsUUID(sObj.NativeID) {
+			if sObj.CustomTitle != "" {
 				continue
 			}
 			if a.IsSubagentSession(home, sObj.NativeID, subagentIDs) {
 				_ = s.db.DeleteSession(sObj.ID)
 				sObj.Deleted = true
+				sObj.State = StateEnded
 				sObj.Activity = "Deleted"
 				s.broadcast(sObj)
+				delete(state.knownIDs, sObj.ID)
+				delete(state.knownByNativeID, sObj.NativeID)
 			}
 		}
 	}
@@ -971,6 +975,211 @@ func extractAntigravityWorkspace(logPath, home string) string {
 	return ""
 }
 
+func antigravityBrainDirs(home string) []string {
+	if home == "" {
+		return nil
+	}
+	dirs := []string{
+		filepath.Join(home, ".gemini", "antigravity", "brain"),
+		filepath.Join(home, ".gemini", "antigravity-cli", "brain"),
+		filepath.Join(home, ".antigravity", "brain"),
+	}
+	if m1, err := filepath.Glob(filepath.Join(home, ".gemini-profiles", "*", "brain")); err == nil {
+		dirs = append(dirs, m1...)
+	}
+	if m2, err := filepath.Glob(filepath.Join(home, ".gemini-profiles", "*", "antigravity", "brain")); err == nil {
+		dirs = append(dirs, m2...)
+	}
+	return dirs
+}
+
+func hasAntigravityUserAnnotation(home, convID string) bool {
+	if home == "" || convID == "" {
+		return false
+	}
+	annoPaths := []string{
+		filepath.Join(home, ".gemini", "antigravity", "annotations", convID+".pbtxt"),
+		filepath.Join(home, ".gemini", "antigravity-cli", "annotations", convID+".pbtxt"),
+		filepath.Join(home, ".antigravity", "annotations", convID+".pbtxt"),
+	}
+	if m1, err := filepath.Glob(filepath.Join(home, ".gemini-profiles", "*", "annotations", convID+".pbtxt")); err == nil {
+		annoPaths = append(annoPaths, m1...)
+	}
+	if m2, err := filepath.Glob(filepath.Join(home, ".gemini-profiles", "*", "antigravity", "annotations", convID+".pbtxt")); err == nil {
+		annoPaths = append(annoPaths, m2...)
+	}
+	for _, p := range annoPaths {
+		if fileExists(p) {
+			return true
+		}
+	}
+	return false
+}
+
+func extractSenderUUIDFromSystemMessage(text, selfID string) string {
+	lower := strings.ToLower(text)
+	search := lower
+	for {
+		idx := strings.Index(search, "sender=")
+		if idx == -1 {
+			break
+		}
+		rest := strings.TrimSpace(text[len(text)-len(search)+idx+len("sender="):])
+		rest = strings.TrimLeft(rest, `"'`)
+		end := strings.IndexAny(rest, " \t\r\n\"'\\>]")
+		cand := rest
+		if end != -1 {
+			cand = rest[:end]
+		}
+		cand = strings.Trim(cand, `"'`)
+		if IsUUID(cand) && (selfID == "" || !strings.EqualFold(cand, selfID)) {
+			return cand
+		}
+		search = search[idx+len("sender="):]
+	}
+	return ""
+}
+
+// ResolveAntigravitySubagentParent resolves the parent conversation UUID, role, and typeName
+// for a given Antigravity subagent conversation ID.
+func ResolveAntigravitySubagentParent(home, convID string) (parentID, role, typeName string) {
+	if home == "" || convID == "" || !IsUUID(convID) {
+		return "", "", ""
+	}
+	convID = filepath.Base(filepath.Clean(convID))
+	if hasAntigravityUserAnnotation(home, convID) {
+		return "", "", ""
+	}
+
+	brainDirs := antigravityBrainDirs(home)
+	for _, bDir := range brainDirs {
+		matches, err := filepath.Glob(filepath.Join(bDir, "*", ".system_generated", "subagents", convID+".json"))
+		if err == nil && len(matches) > 0 {
+			for _, match := range matches {
+				parentCandidate := filepath.Base(filepath.Dir(filepath.Dir(filepath.Dir(match))))
+				if IsUUID(parentCandidate) {
+					if data, rErr := os.ReadFile(match); rErr == nil {
+						var payload struct {
+							Role               string `json:"role"`
+							TypeName           string `json:"typeName"`
+							SubagentDescriptor struct {
+								Role     string `json:"role"`
+								TypeName string `json:"typeName"`
+							} `json:"subagentDescriptor"`
+						}
+						if json.Unmarshal(data, &payload) == nil {
+							role = payload.SubagentDescriptor.Role
+							if role == "" {
+								role = payload.Role
+							}
+							typeName = payload.SubagentDescriptor.TypeName
+							if typeName == "" {
+								typeName = payload.TypeName
+							}
+						}
+					}
+					return parentCandidate, role, typeName
+				}
+			}
+		}
+	}
+
+	for _, bDir := range brainDirs {
+		logPath := filepath.Join(bDir, convID, ".system_generated", "logs", "transcript.jsonl")
+		if data, err := readHead(logPath, 64*1024); err == nil {
+			lines := strings.Split(string(data), "\n")
+			for _, line := range lines {
+				line = strings.TrimSpace(line)
+				if line == "" {
+					continue
+				}
+				var step struct {
+					StepIndex int    `json:"step_index"`
+					Source    string `json:"source"`
+					Type      string `json:"type"`
+					Content   string `json:"content"`
+				}
+				if json.Unmarshal([]byte(line), &step) == nil {
+					if step.StepIndex == 0 {
+						if strings.EqualFold(step.Type, "SYSTEM_MESSAGE") || strings.EqualFold(step.Source, "SYSTEM") {
+							if strings.Contains(strings.ToLower(step.Content), "<system_message>") {
+								if senderID := extractSenderUUIDFromSystemMessage(step.Content, convID); senderID != "" {
+									return senderID, "", ""
+								}
+							}
+						}
+						if strings.EqualFold(step.Type, "USER_INPUT") || strings.EqualFold(step.Source, "USER_EXPLICIT") || strings.EqualFold(step.Source, "USER") {
+							return "", "", ""
+						}
+					}
+				} else if strings.Contains(strings.ToLower(line), "<system_message>") {
+					if senderID := extractSenderUUIDFromSystemMessage(line, convID); senderID != "" {
+						return senderID, "", ""
+					}
+				}
+				break
+			}
+		}
+
+		msgDir := filepath.Join(bDir, convID, ".system_generated", "messages")
+		if entries, err := os.ReadDir(msgDir); err == nil {
+			for _, e := range entries {
+				if !e.IsDir() && strings.HasSuffix(e.Name(), ".json") && e.Name() != "read.json" {
+					if mData, mErr := readHead(filepath.Join(msgDir, e.Name()), 8*1024); mErr == nil {
+						mStr := string(mData)
+						search := mStr
+						for {
+							idx := strings.Index(search, `"conversationId":`)
+							if idx == -1 {
+								break
+							}
+							rest := strings.TrimSpace(search[idx+len(`"conversationId":`):])
+							if strings.HasPrefix(rest, `"`) {
+								rest = rest[1:]
+								if qEnd := strings.Index(rest, `"`); qEnd != -1 {
+									otherUUID := rest[:qEnd]
+									if IsUUID(otherUUID) && !strings.EqualFold(otherUUID, convID) {
+										return otherUUID, "", ""
+									}
+								}
+							}
+							search = search[idx+len(`"conversationId":`):]
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return "", "", ""
+}
+
+func hasSystemStepSubagentMarker(lower string) bool {
+	return strings.Contains(lower, "<subagent_invocation>") ||
+		strings.Contains(lower, "you are a subagent") ||
+		strings.Contains(lower, "subagent task") ||
+		strings.Contains(lower, "invoked by parent") ||
+		strings.Contains(lower, "role contract (") ||
+		strings.Contains(lower, "advisory restriction:")
+}
+
+func hasLegacySubagentPromptPrefix(lower string) bool {
+	trimmed := strings.TrimSpace(lower)
+	return strings.Contains(trimmed, "<subagent_invocation>") ||
+		strings.HasPrefix(trimmed, "you are a subagent") ||
+		strings.HasPrefix(trimmed, "you are reviewer") ||
+		strings.HasPrefix(trimmed, "you are code reviewer") ||
+		strings.HasPrefix(trimmed, "you are a code reviewer") ||
+		strings.HasPrefix(trimmed, "you are the dedicated security reviewer") ||
+		strings.HasPrefix(trimmed, "you are the security reviewer") ||
+		strings.HasPrefix(trimmed, "you are the security auditor") ||
+		strings.HasPrefix(trimmed, "you are the security-reviewer") ||
+		strings.HasPrefix(trimmed, "you are the clean-reviewer") ||
+		strings.HasPrefix(trimmed, "you are the context-reviewer") ||
+		strings.HasPrefix(trimmed, "advisory: you are read-only") ||
+		((strings.HasPrefix(trimmed, "you are the ") || strings.HasPrefix(trimmed, "you are a ")) && strings.Contains(trimmed, "-reviewer for project"))
+}
+
 // isAntigravitySubagent determines whether a given conversation UUID is an internal
 // subagent (such as code reviewer, security auditor, or background worker) rather
 // than a primary interactive user session.
@@ -978,17 +1187,13 @@ func isAntigravitySubagent(home, convID string, precomputedSubagents ...map[stri
 	if convID == "" || !IsUUID(convID) {
 		return false
 	}
+	convID = filepath.Base(filepath.Clean(convID))
 	// 1. Check if user annotation exists (annotations are ONLY created by the IDE/CLI for real user root sessions)
-	annoPaths := []string{
-		filepath.Join(home, ".gemini", "antigravity", "annotations", convID+".pbtxt"),
-		filepath.Join(home, ".gemini", "antigravity-cli", "annotations", convID+".pbtxt"),
-		filepath.Join(home, ".antigravity", "annotations", convID+".pbtxt"),
+	if hasAntigravityUserAnnotation(home, convID) {
+		return false
 	}
-	for _, p := range annoPaths {
-		if fileExists(p) {
-			return false // It has a real user annotation file -> NOT a subagent!
-		}
-	}
+
+	brainDirs := antigravityBrainDirs(home)
 
 	// 2. Direct parent subagent registration check:
 	// Every subagent created via invoke_subagent is recorded in <parent_brain>/.system_generated/subagents/<convID>.json
@@ -997,11 +1202,6 @@ func isAntigravitySubagent(home, convID string, precomputedSubagents ...map[stri
 			return true
 		}
 	} else {
-		brainDirs := []string{
-			filepath.Join(home, ".gemini", "antigravity", "brain"),
-			filepath.Join(home, ".gemini", "antigravity-cli", "brain"),
-			filepath.Join(home, ".antigravity", "brain"),
-		}
 		for _, bDir := range brainDirs {
 			matches, err := filepath.Glob(filepath.Join(bDir, "*", ".system_generated", "subagents", convID+".json"))
 			if err == nil && len(matches) > 0 {
@@ -1031,57 +1231,61 @@ func isAntigravitySubagent(home, convID string, precomputedSubagents ...map[stri
 		}
 	}
 
-	// 4. Check transcript file for explicit subagent invocation markers
-	brainDirs := []string{
-		filepath.Join(home, ".gemini", "antigravity", "brain"),
-		filepath.Join(home, ".gemini", "antigravity-cli", "brain"),
-		filepath.Join(home, ".antigravity", "brain"),
-	}
+	// 4. Check transcript file first step (step_index == 0) for explicit subagent invocation markers
 	for _, bDir := range brainDirs {
 		logPath := filepath.Join(bDir, convID, ".system_generated", "logs", "transcript.jsonl")
 		if data, err := readHead(logPath, 64*1024); err == nil {
 			lines := strings.Split(string(data), "\n")
-			for i, line := range lines {
-				if i > 15 {
-					break
-				}
+			for _, line := range lines {
 				line = strings.TrimSpace(line)
 				if line == "" {
 					continue
 				}
-				lineLower := strings.ToLower(line)
-				if strings.Contains(lineLower, "<subagent_invocation>") ||
-					strings.Contains(lineLower, "you are a subagent") ||
-					strings.Contains(lineLower, "subagent defined") ||
-					strings.Contains(lineLower, "subagent_analyst") ||
-					strings.Contains(lineLower, "invoke_subagent") ||
-					strings.Contains(lineLower, "this is a side question from the user") ||
-					strings.Contains(lineLower, "you are reviewer") ||
-					strings.Contains(lineLower, "you are code reviewer") ||
-					strings.Contains(lineLower, "you are a code reviewer") ||
-					strings.Contains(lineLower, "you are the dedicated security reviewer") ||
-					strings.Contains(lineLower, "you are the security reviewer") ||
-					strings.Contains(lineLower, "you are the security auditor") ||
-					strings.Contains(lineLower, "you are the security-reviewer") ||
-					strings.Contains(lineLower, "you are the clean-reviewer") ||
-					strings.Contains(lineLower, "you are the context-reviewer") ||
-					strings.Contains(lineLower, "advisory: you are read-only") ||
-					((strings.Contains(lineLower, "you are the ") || strings.Contains(lineLower, "you are a ")) && strings.Contains(lineLower, "-reviewer for project")) {
-					return true
+				var step struct {
+					StepIndex int    `json:"step_index"`
+					Source    string `json:"source"`
+					Type      string `json:"type"`
+					Content   string `json:"content"`
 				}
+				if json.Unmarshal([]byte(line), &step) == nil {
+					if step.StepIndex == 0 {
+						contentLower := strings.ToLower(step.Content)
+						if strings.EqualFold(step.Type, "SYSTEM_MESSAGE") || strings.EqualFold(step.Source, "SYSTEM") {
+							if (strings.Contains(contentLower, "<system_message>") && extractSenderUUIDFromSystemMessage(step.Content, convID) != "") ||
+								hasSystemStepSubagentMarker(contentLower) ||
+								hasLegacySubagentPromptPrefix(contentLower) {
+								return true
+							}
+						}
+						if hasLegacySubagentPromptPrefix(contentLower) {
+							return true
+						}
+						if strings.EqualFold(step.Type, "USER_INPUT") || strings.EqualFold(step.Source, "USER_EXPLICIT") || strings.EqualFold(step.Source, "USER") {
+							return false
+						}
+					}
+				} else {
+					lineLower := strings.ToLower(line)
+					if (strings.Contains(lineLower, "<system_message>") && extractSenderUUIDFromSystemMessage(line, convID) != "") ||
+						hasSystemStepSubagentMarker(lineLower) ||
+						hasLegacySubagentPromptPrefix(lineLower) {
+						return true
+					}
+				}
+				break
 			}
 		}
 
-		// 5. Check .system_generated/messages for dispatched inter-agent messages
+		// 5. Check .system_generated/messages for dispatched parent-to-subagent invocation messages
 		msgDir := filepath.Join(bDir, convID, ".system_generated", "messages")
 		if entries, err := os.ReadDir(msgDir); err == nil {
 			for _, e := range entries {
 				if !e.IsDir() && strings.HasSuffix(e.Name(), ".json") && e.Name() != "read.json" {
 					if mData, mErr := readHead(filepath.Join(msgDir, e.Name()), 8*1024); mErr == nil {
 						mStr := string(mData)
-						if strings.Contains(mStr, "send_message") ||
-							strings.Contains(mStr, "Message from Root Agent") ||
-							(strings.Contains(mStr, `"conversationId":`) && !strings.Contains(mStr, fmt.Sprintf(`"conversationId":"%s"`, convID))) {
+						if strings.Contains(mStr, "invoke_subagent") ||
+							strings.Contains(mStr, "Message from Parent Agent") ||
+							strings.Contains(mStr, "Message from Root Agent") {
 							return true
 						}
 					}

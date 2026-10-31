@@ -444,6 +444,9 @@ func (s *Server) scanTmuxPanes(ctx context.Context, state *ScanState) {
 			if sID != "" && IsUUID(sID) && sID != targetNativeID && (home == "" || !adapter.IsSubagentSession(home, sID, nil)) {
 				tmuxName, targetNativeID = s.reconcileAntigravityTmuxSession(ctx, state, agent, tmuxName, targetNativeID, sID, pid)
 			}
+			if targetNativeID != "" && home != "" && adapter.IsSubagentSession(home, targetNativeID, nil) {
+				continue
+			}
 		}
 
 		if targetNativeID != "" && adapter.IsValidNativeID(targetNativeID) {

@@ -1326,3 +1326,84 @@ func TestOpenCodeExtractTranscriptAndMetadata(t *testing.T) {
 		t.Errorf("Expected sessDir %q to be deleted", sessDir)
 	}
 }
+
+func TestAntigravityProvider_ListSubagents_AliveStateAndTranscriptInspection(t *testing.T) {
+	tmpHome := t.TempDir()
+	parentID := "11111111-2222-3333-4444-555555555555"
+	activeSubID := "aaaaaaaa-1111-2222-3333-444444444444"
+	doneSubID := "bbbbbbbb-1111-2222-3333-444444444444"
+
+	subRegDir := filepath.Join(tmpHome, ".gemini", "antigravity-cli", "brain", parentID, ".system_generated", "subagents")
+	if err := os.MkdirAll(subRegDir, 0755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+
+	// Both subagents have state SUBAGENT_STATE_ALIVE in their registry JSON
+	activeReg := `{"conversationId":"` + activeSubID + `","subagentDescriptor":{"typeName":"self","role":"Implementer"},"state":"SUBAGENT_STATE_ALIVE"}`
+	doneReg := `{"conversationId":"` + doneSubID + `","subagentDescriptor":{"typeName":"research","role":"Codebase Researcher"},"state":"SUBAGENT_STATE_ALIVE"}`
+	if err := os.WriteFile(filepath.Join(subRegDir, activeSubID+".json"), []byte(activeReg), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(subRegDir, doneSubID+".json"), []byte(doneReg), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	// 1. Active subagent transcript: last step has tool_calls
+	activeLogDir := filepath.Join(tmpHome, ".gemini", "antigravity-cli", "brain", activeSubID, ".system_generated", "logs")
+	if err := os.MkdirAll(activeLogDir, 0755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+	activeTranscript := `{"step_index":0,"source":"SYSTEM","type":"SYSTEM_MESSAGE","status":"DONE","created_at":"2026-10-30T23:50:13Z","content":"<SYSTEM_MESSAGE>\n[Message] timestamp=2026-10-30T23:50:13Z sender=` + parentID + ` priority=MESSAGE_PRIORITY_HIGH content=Implement subagent filtering\n</SYSTEM_MESSAGE>"}` + "\n" +
+		`{"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-10-30T23:50:20Z","tool_calls":[{"name":"read_file","args":{}}]}` + "\n"
+	if err := os.WriteFile(filepath.Join(activeLogDir, "transcript.jsonl"), []byte(activeTranscript), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	// 2. Completed subagent transcript: last step is PLANNER_RESPONSE with status DONE and NO tool_calls
+	doneLogDir := filepath.Join(tmpHome, ".gemini", "antigravity-cli", "brain", doneSubID, ".system_generated", "logs")
+	if err := os.MkdirAll(doneLogDir, 0755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+	doneTranscript := `{"step_index":0,"source":"SYSTEM","type":"SYSTEM_MESSAGE","status":"DONE","created_at":"2026-10-30T23:40:00Z","content":"<SYSTEM_MESSAGE>\n[Message] timestamp=2026-10-30T23:40:00Z sender=` + parentID + ` priority=MESSAGE_PRIORITY_HIGH content=Audit codebase structure\n</SYSTEM_MESSAGE>"}` + "\n" +
+		`{"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-10-30T23:41:00Z","content":"Finished audit report."}` + "\n" +
+		`{"step_index":2,"type":"CHECKPOINT","content":"checkpoint"}` + "\n"
+	if err := os.WriteFile(filepath.Join(doneLogDir, "transcript.jsonl"), []byte(doneTranscript), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	ap := NewAntigravityProvider()
+	subs, err := ap.ListSubagents(tmpHome, "/work", parentID)
+	if err != nil {
+		t.Fatalf("ListSubagents failed: %v", err)
+	}
+	if len(subs) != 2 {
+		t.Fatalf("Expected 2 subagents, got %d", len(subs))
+	}
+
+	byID := make(map[string]*daemon.ActiveSubagent)
+	for _, s := range subs {
+		byID[s.ID] = s
+	}
+
+	act := byID[activeSubID]
+	if act == nil {
+		t.Fatalf("Missing activeSubID in results")
+	}
+	if act.State != "running" {
+		t.Errorf("Expected activeSubID State='running', got %q", act.State)
+	}
+	if act.Prompt != "Implement subagent filtering" {
+		t.Errorf("Expected activeSubID Prompt='Implement subagent filtering', got %q", act.Prompt)
+	}
+
+	dn := byID[doneSubID]
+	if dn == nil {
+		t.Fatalf("Missing doneSubID in results")
+	}
+	if dn.State != "completed" {
+		t.Errorf("Expected doneSubID State='completed', got %q", dn.State)
+	}
+	if dn.Prompt != "Audit codebase structure" {
+		t.Errorf("Expected doneSubID Prompt='Audit codebase structure', got %q", dn.Prompt)
+	}
+}
