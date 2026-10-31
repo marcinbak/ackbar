@@ -35,6 +35,30 @@ import { toggleCommandPalette } from './palette.js';
 import { renderTree } from './tree.js';
 
 
+function isAuxiliaryInputFocused(chatInputEl) {
+  if (el.cmdPaletteOverlay && el.cmdPaletteOverlay.style.display === 'flex') return true;
+  if (el.modalOverlay && el.modalOverlay.style.display === 'flex') return true;
+  const modalNewSession = document.getElementById('modalNewSession');
+  if (modalNewSession && modalNewSession.style.display === 'flex') return true;
+  const handoverModal = el.handoverModalOverlay || document.getElementById('handoverModalOverlay');
+  if (handoverModal && handoverModal.style.display === 'flex') return true;
+  const agentSetupModal = document.getElementById('agentSetupModalOverlay');
+  if (agentSetupModal && agentSetupModal.style.display === 'flex') return true;
+
+  const active = document.activeElement;
+  if (!active || active === document.body || active === document.documentElement || active === chatInputEl) {
+    return false;
+  }
+  if (active.classList && (active.classList.contains('xterm-helper-textarea') || active.classList.contains('chat-composer-textarea'))) {
+    return false;
+  }
+  const tag = (active.tagName || '').toUpperCase();
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || active.isContentEditable) {
+    return true;
+  }
+  return false;
+}
+
 function setTabViewMode(tabId, mode) {
   const tab = state.openTabs.get(tabId);
   if (!tab || !tab.containerEl) return;
@@ -75,6 +99,11 @@ function setTabViewMode(tabId, mode) {
     loadChatTranscript(tab);
     if (tab.chatInputEl) {
       tab.chatInputEl.focus();
+      setTimeout(() => {
+        if (tab.viewMode === 'chat' && tab.chatInputEl && !isAuxiliaryInputFocused(tab.chatInputEl)) {
+          tab.chatInputEl.focus();
+        }
+      }, 30);
     }
   }
 }
@@ -707,7 +736,11 @@ function activateTab(tabId) {
       }
       setTimeout(() => {
         if (tab.fitAddon && tab.fitAddon.fit) tab.fitAddon.fit();
-        if (tab.terminal && tab.viewMode !== 'chat') {
+        if (tab.viewMode === 'chat' && tab.chatInputEl) {
+          if (!isAuxiliaryInputFocused(tab.chatInputEl)) {
+            tab.chatInputEl.focus();
+          }
+        } else if (tab.terminal && tab.viewMode !== 'chat') {
           tab.terminal.focus();
           sendTerminalResize(tab.socket, tab.terminal.cols, tab.terminal.rows);
         }
@@ -910,8 +943,13 @@ function checkAndReconnectActiveTabs() {
         if (currentSess) {
           onSessionUpdated(currentSess);
         }
-        if (currentSess && currentSess.engine_type === 'headless' && state.activeTabId === tabId) {
-          connectChatStream(tab);
+        if (state.activeTabId === tabId) {
+          if (currentSess && currentSess.engine_type === 'headless') {
+            connectChatStream(tab);
+          }
+          if (tab.chatInputEl && !isAuxiliaryInputFocused(tab.chatInputEl) && document.activeElement !== tab.chatInputEl) {
+            tab.chatInputEl.focus();
+          }
         }
       } else if (!tab.socket || tab.socket.readyState === WebSocket.CLOSED || tab.socket.readyState === WebSocket.CLOSING) {
         reconnectTerminalTab(tabId);
@@ -1107,6 +1145,7 @@ function renderOverflowMenu() {
 // Right-Click Session Context Menu
 
 export {
+  isAuxiliaryInputFocused,
   setTabViewMode,
   updateViewModeButtons,
   handleTakeWheel,

@@ -203,3 +203,56 @@ func TestTabDeduplicationAndSafeMigration_JS(t *testing.T) {
 		}
 	}
 }
+
+func TestHeadlessChatDictationAndPasteFocus_JS(t *testing.T) {
+	embeddedFS := web.GetFS()
+
+	fChat, err := embeddedFS.Open("js/chat.js")
+	if err != nil {
+		t.Fatalf("failed to open js/chat.js: %v", err)
+	}
+	defer fChat.Close()
+
+	chatBytes, err := io.ReadAll(fChat)
+	if err != nil {
+		t.Fatalf("failed to read js/chat.js: %v", err)
+	}
+	chatContent := string(chatBytes)
+
+	for _, expected := range []string{
+		"function insertTextIntoPromptInput(",
+		"function extractPastedAttachmentFiles(",
+		"document.addEventListener('paste'",
+		"insertTextIntoPromptInput(activeTab.chatInputEl, pastedText)",
+		"tabObj.chatComposerBox.addEventListener('click'",
+		"chatViewEl.addEventListener('click'",
+		"insertTextIntoPromptInput,",
+	} {
+		if !strings.Contains(chatContent, expected) {
+			t.Errorf("expected js/chat.js to contain %q", expected)
+		}
+	}
+
+	fTabs, err := embeddedFS.Open("js/tabs.js")
+	if err != nil {
+		t.Fatalf("failed to open js/tabs.js: %v", err)
+	}
+	defer fTabs.Close()
+
+	tabsBytes, err := io.ReadAll(fTabs)
+	if err != nil {
+		t.Fatalf("failed to read js/tabs.js: %v", err)
+	}
+	tabsContent := string(tabsBytes)
+
+	for _, expected := range []string{
+		"function isAuxiliaryInputFocused(",
+		"if (!isAuxiliaryInputFocused(tab.chatInputEl))",
+		"document.activeElement !== tab.chatInputEl",
+		"isAuxiliaryInputFocused,",
+	} {
+		if !strings.Contains(tabsContent, expected) {
+			t.Errorf("expected js/tabs.js to contain %q", expected)
+		}
+	}
+}
