@@ -134,6 +134,19 @@ func isNonTurnAntigravityStep(stepType string) bool {
 	return t == "" || strings.EqualFold(t, "CHECKPOINT") || strings.EqualFold(t, "SYSTEM")
 }
 
+func parseStepTimestamp(raw string) time.Time {
+	if raw == "" {
+		return time.Time{}
+	}
+	if t, err := time.Parse(time.RFC3339Nano, raw); err == nil {
+		return t
+	}
+	if t, err := time.Parse(time.RFC3339, raw); err == nil {
+		return t
+	}
+	return time.Time{}
+}
+
 func (s *Server) inspectAntigravityStatus(ctx context.Context, sess *Session) bool {
 	return InspectAntigravityStatus(ctx, sess)
 }
@@ -178,7 +191,6 @@ func InspectAntigravityStatus(ctx context.Context, sess *Session) bool {
 					sess.State = StateWorking
 					sess.Blocked = nil
 					sess.Activity = "Subagent running: " + activeRole
-					sess.LastEventAt = time.Now()
 					changed = true
 				}
 				return changed
@@ -272,7 +284,6 @@ func InspectAntigravityStatus(ctx context.Context, sess *Session) bool {
 						Since:    time.Now(),
 					}
 					sess.Activity = "Waiting for permission: " + truncateTitle(cmdReason)
-					sess.LastEventAt = time.Now()
 					changed = true
 				}
 				return changed
@@ -287,7 +298,6 @@ func InspectAntigravityStatus(ctx context.Context, sess *Session) bool {
 						Since:    time.Now(),
 					}
 					sess.Activity = "Waiting for confirmation"
-					sess.LastEventAt = time.Now()
 					changed = true
 				}
 				return changed
@@ -317,6 +327,23 @@ func InspectAntigravityStatus(ctx context.Context, sess *Session) bool {
 		for _, logPath := range brainDirs {
 			if data, err := readTail(logPath, 256*1024); err == nil && len(data) > 0 {
 				tLines := strings.Split(string(data), "\n")
+
+				for i := len(tLines) - 1; i >= 0; i-- {
+					line := strings.TrimSpace(tLines[i])
+					if line == "" {
+						continue
+					}
+					var candidate antigravityStep
+					if err := json.Unmarshal([]byte(line), &candidate); err == nil && candidate.Type == "USER_INPUT" {
+						if userTime := parseStepTimestamp(candidate.CreatedAt); !userTime.IsZero() {
+							if sess.LastEventAt.IsZero() || userTime.After(sess.LastEventAt) {
+								sess.LastEventAt = userTime
+								changed = true
+							}
+						}
+						break
+					}
+				}
 
 				var lastStep antigravityStep
 				lastValidIdx := -1
@@ -410,7 +437,6 @@ func InspectAntigravityStatus(ctx context.Context, sess *Session) bool {
 										} else {
 											sess.Activity = "Waiting for user response"
 										}
-										sess.LastEventAt = stepTime
 										changed = true
 									}
 									return changed
@@ -429,7 +455,6 @@ func InspectAntigravityStatus(ctx context.Context, sess *Session) bool {
 										Since:    stepTime,
 									}
 									sess.Activity = "Waiting for plan feedback"
-									sess.LastEventAt = stepTime
 									changed = true
 								}
 								return changed
@@ -456,6 +481,9 @@ func InspectAntigravityStatus(ctx context.Context, sess *Session) bool {
 							sess.State = StateWorking
 							sess.Blocked = nil
 							sess.Activity = "Thinking..."
+							if sess.LastEventAt.IsZero() {
+								sess.LastEventAt = time.Now()
+							}
 							changed = true
 						}
 						return changed
@@ -496,7 +524,6 @@ func InspectAntigravityStatus(ctx context.Context, sess *Session) bool {
 			sess.State = StateWorking
 			sess.Blocked = nil
 			sess.Activity = "Working..."
-			sess.LastEventAt = time.Now()
 			changed = true
 		}
 		return changed
@@ -537,7 +564,6 @@ func InspectAntigravityStatus(ctx context.Context, sess *Session) bool {
 			sess.State = StateIdle
 			sess.Blocked = nil
 			sess.Activity = "Awaiting user prompt"
-			sess.LastEventAt = time.Now()
 			changed = true
 		} else {
 			sess.State = StateEnded
@@ -730,7 +756,6 @@ func InspectClaudeStatus(ctx context.Context, sess *Session) bool {
 					Since:    time.Now(),
 				}
 				sess.Activity = "Waiting for tool authorization"
-				sess.LastEventAt = time.Now()
 				changed = true
 			}
 			return changed
@@ -753,7 +778,6 @@ func InspectClaudeStatus(ctx context.Context, sess *Session) bool {
 				} else {
 					sess.Activity = "Waiting for user input"
 				}
-				sess.LastEventAt = time.Now()
 				changed = true
 			}
 			return changed
@@ -837,7 +861,6 @@ func InspectClaudeStatus(ctx context.Context, sess *Session) bool {
 												Since:    since,
 											}
 											sess.Activity = "Question: " + truncateTitle(q)
-											sess.LastEventAt = since
 											changed = true
 										}
 										return changed
@@ -885,7 +908,6 @@ func InspectClaudeStatus(ctx context.Context, sess *Session) bool {
 					sess.State = StateWorking
 					sess.Blocked = nil
 					sess.Activity = "Subagent running: " + activeSubName
-					sess.LastEventAt = time.Now()
 					changed = true
 				}
 				return changed
@@ -911,7 +933,6 @@ func InspectClaudeStatus(ctx context.Context, sess *Session) bool {
 									sess.State = StateWorking
 									sess.Blocked = nil
 									sess.Activity = "Executing background task..."
-									sess.LastEventAt = time.Now()
 									changed = true
 								}
 								return changed
@@ -930,7 +951,6 @@ func InspectClaudeStatus(ctx context.Context, sess *Session) bool {
 				sess.State = StateWorking
 				sess.Blocked = nil
 				sess.Activity = "Working..."
-				sess.LastEventAt = time.Now()
 				changed = true
 			}
 			return changed
@@ -1228,7 +1248,6 @@ func InspectCodexStatus(ctx context.Context, sess *Session) bool {
 					Since:    time.Now(),
 				}
 				sess.Activity = "Waiting for tool authorization"
-				sess.LastEventAt = time.Now()
 				changed = true
 			}
 			return changed
@@ -1247,7 +1266,6 @@ func InspectCodexStatus(ctx context.Context, sess *Session) bool {
 					Since:    time.Now(),
 				}
 				sess.Activity = "Waiting for user response"
-				sess.LastEventAt = time.Now()
 				changed = true
 			}
 			return changed
@@ -1258,7 +1276,6 @@ func InspectCodexStatus(ctx context.Context, sess *Session) bool {
 			sess.State = StateIdle
 			sess.Blocked = nil
 			sess.Activity = "Awaiting user prompt"
-			sess.LastEventAt = time.Now()
 			changed = true
 		}
 	}
@@ -1327,7 +1344,6 @@ func InspectGrokStatus(ctx context.Context, sess *Session) bool {
 					Since:    time.Now(),
 				}
 				sess.Activity = "Waiting for tool authorization"
-				sess.LastEventAt = time.Now()
 				changed = true
 			}
 			return changed
@@ -1347,7 +1363,6 @@ func InspectGrokStatus(ctx context.Context, sess *Session) bool {
 					Since:    time.Now(),
 				}
 				sess.Activity = "Waiting for user response"
-				sess.LastEventAt = time.Now()
 				changed = true
 			}
 			return changed
@@ -1358,7 +1373,6 @@ func InspectGrokStatus(ctx context.Context, sess *Session) bool {
 			sess.State = StateIdle
 			sess.Blocked = nil
 			sess.Activity = "Awaiting user prompt"
-			sess.LastEventAt = time.Now()
 			changed = true
 		}
 	}
@@ -1431,7 +1445,6 @@ func InspectOpenCodeStatus(ctx context.Context, sess *Session) bool {
 					Since:    time.Now(),
 				}
 				sess.Activity = "Waiting for tool authorization"
-				sess.LastEventAt = time.Now()
 				changed = true
 			}
 			return changed
@@ -1453,7 +1466,6 @@ func InspectOpenCodeStatus(ctx context.Context, sess *Session) bool {
 					Since:    time.Now(),
 				}
 				sess.Activity = "Waiting for user response"
-				sess.LastEventAt = time.Now()
 				changed = true
 			}
 			return changed
@@ -1464,7 +1476,6 @@ func InspectOpenCodeStatus(ctx context.Context, sess *Session) bool {
 			sess.State = StateIdle
 			sess.Blocked = nil
 			sess.Activity = "Awaiting user prompt"
-			sess.LastEventAt = time.Now()
 			changed = true
 		}
 	}
