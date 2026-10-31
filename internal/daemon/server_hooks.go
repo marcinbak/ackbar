@@ -190,7 +190,7 @@ func (s *Server) processParsedHookEvent(event *Event, urlEventName string, heade
 				}
 				if parentSess != nil {
 					runningSubs := s.getRunningSubagents(parentSess.ID, parentSess.NativeID, "antigravity", parentSess.Cwd)
-					if len(runningSubs) == 0 && event.State == StateWorking {
+					if len(runningSubs) == 0 && (event.State == StateWorking || event.State == StateBlocked) {
 						subLabel := role
 						if subLabel == "" {
 							subLabel = typeName
@@ -219,8 +219,43 @@ func (s *Server) processParsedHookEvent(event *Event, urlEventName string, heade
 						}
 						s.headless.EmitSubagentsUpdate(parentSess.ID, runningPtrs)
 					}
-					if len(runningSubs) > 0 && parentSess.State != StateBlocked {
+					if event.State == StateBlocked {
+						now := time.Now()
+						if parentSess.State != StateBlocked {
+							parentSess.IsUnread = true
+							parentSess.LastStateChangeAt = now
+						}
+						parentSess.State = StateBlocked
+						if event.Blocked != nil {
+							since := event.Blocked.Since
+							if since.IsZero() {
+								since = now
+							}
+							parentSess.Blocked = &Blocked{
+								Kind:     event.Blocked.Kind,
+								Reason:   event.Blocked.Reason,
+								Question: event.Blocked.Question,
+								Options:  event.Blocked.Options,
+								Since:    since,
+							}
+						} else {
+							parentSess.Blocked = &Blocked{
+								Kind:     BlockPermission,
+								Reason:   "Subagent waiting for permission",
+								Question: "Subagent requires permission",
+								Options:  []string{"1. Yes", "2. Yes, and always allow", "3. No"},
+								Since:    now,
+							}
+						}
+						if event.Activity != "" {
+							parentSess.Activity = event.Activity
+						} else {
+							parentSess.Activity = "Waiting for user permission"
+						}
+					} else if len(runningSubs) > 0 {
 						parentSess.State = StateWorking
+						parentSess.Blocked = nil
+						parentSess.IsUnread = false
 						subLabel := role
 						if subLabel == "" {
 							subLabel = typeName
@@ -240,6 +275,11 @@ func (s *Server) processParsedHookEvent(event *Event, urlEventName string, heade
 							parentSess.Activity = "Subagent running: " + subLabel
 						}
 						parentSess.LastEventAt = time.Now()
+					} else if parentSess.State == StateBlocked {
+						parentSess.State = StateWorking
+						parentSess.Blocked = nil
+						parentSess.IsUnread = false
+						parentSess.Activity = "Thinking..."
 					}
 					parentSess.UpdatedAt = time.Now()
 					_ = s.db.SaveSession(parentSess)

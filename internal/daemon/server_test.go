@@ -5812,3 +5812,462 @@ func TestHook_AntigravitySubagentRoutedToParentAndDeletesStraySession(t *testing
 		t.Errorf("expected parent RunningSubagents=0 after subagent postinvocation completion, got %d", broadcastedParentAfterIdle.RunningSubagents)
 	}
 }
+
+func TestInspectAntigravityStatus_ToolConfirmationPromptsAndSubagentApproval(t *testing.T) {
+	cases := []struct {
+		name         string
+		pane         string
+		wantQuestion string
+		wantReason   string
+		wantOptions  []string
+	}{
+		{
+			name: "command_prompt",
+			pane: `
+╭──────────────────────────────────────────────────────────────────╮
+│ Run this command?                                                │
+│                                                                  │
+│   git status --short                                             │
+│                                                                  │
+│ > 1. Yes, run command                                            │
+│   2. Yes, and always allow git in this workspace                 │
+│   3. No, and tell Antigravity CLI what to do differently (esc)   │
+╰──────────────────────────────────────────────────────────────────╯
+Enter Submit  Tab Amend
+`,
+			wantQuestion: "Run this command?",
+			wantReason:   "git status --short",
+			wantOptions: []string{
+				"1. Yes, run command",
+				"2. Yes, and always allow git in this workspace",
+				"3. No, and tell Antigravity CLI what to do differently (esc)",
+			},
+		},
+		{
+			name: "file_edit_prompt",
+			pane: `
+Accept this file edit?
+Edit: foo.go +3 -1
+  + added line
+  - removed line
+1. Yes, accept this change
+2. Yes, and always allow edits
+3. No, reject this change (esc)
+Enter Submit  Tab Amend
+`,
+			wantQuestion: "Accept this file edit?",
+			wantReason:   "Edit: foo.go +3 -1",
+			wantOptions: []string{
+				"1. Yes, accept this change",
+				"2. Yes, and always allow edits",
+				"3. No, reject this change (esc)",
+			},
+		},
+		{
+			name: "file_creation_prompt",
+			pane: `
+Allow creation of this file?
+New file: bar.go
+> 1. Yes, allow creation
+  2. Yes, and always allow edits
+  3. No, deny creation (esc)
+`,
+			wantQuestion: "Allow creation of this file?",
+			wantReason:   "New file: bar.go",
+			wantOptions: []string{
+				"1. Yes, allow creation",
+				"2. Yes, and always allow edits",
+				"3. No, deny creation (esc)",
+			},
+		},
+		{
+			name: "file_access_prompt",
+			pane: `
+Allow access to this file?
+Path: /etc/hosts
+> 1. Yes, allow access
+  2. Yes, and always allow access
+  3. No, deny access (esc)
+`,
+			wantQuestion: "Allow access to this file?",
+			wantReason:   "Path: /etc/hosts",
+			wantOptions: []string{
+				"1. Yes, allow access",
+				"2. Yes, and always allow access",
+				"3. No, deny access (esc)",
+			},
+		},
+		{
+			name: "url_access_prompt",
+			pane: `
+Allow access to this URL?
+URL: https://example.com/api
+> 1. Yes, allow access
+  2. Yes, and always allow access
+  3. No, deny access (esc)
+`,
+			wantQuestion: "Allow access to this URL?",
+			wantReason:   "URL: https://example.com/api",
+			wantOptions: []string{
+				"1. Yes, allow access",
+				"2. Yes, and always allow access",
+				"3. No, deny access (esc)",
+			},
+		},
+		{
+			name: "sandbox_bypass_prompt",
+			pane: `
+🔓 Allow sandbox bypass for command execution?
+docker build .
+> 1. Yes, run command
+  2. Yes, and always allow docker
+  3. No, and tell Antigravity CLI what to do differently (esc)
+`,
+			wantQuestion: "Allow sandbox bypass for command execution?",
+			wantReason:   "docker build .",
+			wantOptions: []string{
+				"1. Yes, run command",
+				"2. Yes, and always allow docker",
+				"3. No, and tell Antigravity CLI what to do differently (esc)",
+			},
+		},
+		{
+			name: "admin_elevation_prompt",
+			pane: `
+Allow administrator elevation?
+sudo systemctl restart nginx
+> 1. Yes, elevate
+  2. No, and tell Antigravity CLI what to do differently (esc)
+`,
+			wantQuestion: "Allow administrator elevation?",
+			wantReason:   "sudo systemctl restart nginx",
+			wantOptions: []string{
+				"1. Yes, elevate",
+				"2. No, and tell Antigravity CLI what to do differently (esc)",
+			},
+		},
+		{
+			name: "custom_permission_prompt",
+			pane: `
+Grant requested permission?
+Action: deploy_service
+Target: staging
+> 1. Yes, grant permission
+  2. Yes, and always allow
+  3. No, deny permission (esc)
+`,
+			wantQuestion: "Grant requested permission?",
+			wantReason:   "Action: deploy_service, Target: staging",
+			wantOptions: []string{
+				"1. Yes, grant permission",
+				"2. Yes, and always allow",
+				"3. No, deny permission (esc)",
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			lines := strings.Split(tc.pane, "\n")
+			q, r, opts, ok := detectAntigravityPermissionPrompt(lines)
+			if !ok {
+				t.Fatalf("expected detectAntigravityPermissionPrompt to match for %s", tc.name)
+			}
+			if q != tc.wantQuestion {
+				t.Errorf("expected question %q, got %q", tc.wantQuestion, q)
+			}
+			if r != tc.wantReason {
+				t.Errorf("expected reason %q, got %q", tc.wantReason, r)
+			}
+			if len(opts) != len(tc.wantOptions) {
+				t.Fatalf("expected %d options (%v), got %d (%v)", len(tc.wantOptions), tc.wantOptions, len(opts), opts)
+			}
+			for i := range tc.wantOptions {
+				if opts[i] != tc.wantOptions[i] {
+					t.Errorf("option[%d] mismatch: want %q, got %q", i, tc.wantOptions[i], opts[i])
+				}
+			}
+		})
+	}
+
+	// Verify live tmux integration with subagent approval alert rendered above idle '>' prompt while runningCount > 0
+	if !tmux.IsTmuxInstalled() {
+		return
+	}
+
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	ctx := context.Background()
+
+	parentUUID := "12121212-3434-5656-7878-909090909090"
+	subUUID := "abababab-cdcd-efef-1212-343434343434"
+
+	// Register a running subagent on disk
+	subRegDir := filepath.Join(tmpHome, ".gemini", "antigravity-cli", "brain", parentUUID, ".system_generated", "subagents")
+	if err := os.MkdirAll(subRegDir, 0755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+	regJSON := `{"conversationId":"` + subUUID + `","subagentDescriptor":{"typeName":"research","role":"researcher"},"state":"SUBAGENT_STATE_ALIVE"}`
+	if err := os.WriteFile(filepath.Join(subRegDir, subUUID+".json"), []byte(regJSON), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	subLogDir := filepath.Join(tmpHome, ".gemini", "antigravity-cli", "brain", subUUID, ".system_generated", "logs")
+	if err := os.MkdirAll(subLogDir, 0755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(subLogDir, "transcript.jsonl"), []byte(`{"step_index":1,"type":"PLANNER_RESPONSE","status":"RUNNING"}`+"\n"), 0644); err != nil {
+		t.Fatalf("WriteFile sub transcript failed: %v", err)
+	}
+
+	tmuxName := fmt.Sprintf("test-agy-sub-perm-%d", time.Now().UnixNano())
+	defer tmux.Kill(ctx, tmuxName)
+
+	script := `
+echo "● researcher needs approval for Run command: git status"
+echo ">"
+sleep 30
+`
+	if err := tmux.Spawn(ctx, tmuxName, os.TempDir(), script); err != nil {
+		if strings.Contains(err.Error(), "Operation not permitted") {
+			t.Skip("tmux socket restricted in sandbox")
+		}
+		t.Fatalf("Failed to spawn tmux: %v", err)
+	}
+	time.Sleep(150 * time.Millisecond)
+	pid, _ := tmux.GetPID(ctx, tmuxName)
+
+	sess := &Session{
+		ID:          "antigravity:local:" + parentUUID,
+		Agent:       "antigravity",
+		Host:        "local",
+		NativeID:    parentUUID,
+		State:       StateWorking,
+		Activity:    "Subagent running: researcher",
+		TmuxName:    tmuxName,
+		PID:         pid,
+		StartedAt:   time.Now(),
+		LastEventAt: time.Now(),
+	}
+
+	changed := InspectAntigravityStatus(ctx, sess)
+	if !changed {
+		t.Fatalf("expected InspectAntigravityStatus to report changed=true on subagent approval banner")
+	}
+	if sess.RunningSubagents != 1 {
+		t.Errorf("expected RunningSubagents=1 to be synced, got %d", sess.RunningSubagents)
+	}
+	if sess.State != StateBlocked || sess.Blocked == nil || sess.Blocked.Kind != BlockPermission {
+		t.Fatalf("expected StateBlocked (BlockPermission) despite runningCount > 0 and idle '>' prompt, got state=%v blocked=%+v", sess.State, sess.Blocked)
+	}
+	if sess.Blocked.Question != "Subagent requires permission" {
+		t.Errorf("expected Question 'Subagent requires permission', got %q", sess.Blocked.Question)
+	}
+	if !strings.Contains(sess.Blocked.Reason, "researcher needs approval for Run command: git status") {
+		t.Errorf("expected Reason to contain subagent approval line, got %q", sess.Blocked.Reason)
+	}
+}
+
+func TestInspectAntigravityStatus_TranscriptPermissionAndSubagentTranscriptBlock(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	ctx := context.Background()
+
+	convUUID := "22223333-4444-5555-6666-777788889999"
+	brainDir := filepath.Join(tmpHome, ".gemini", "antigravity-cli", "brain", convUUID, ".system_generated", "logs")
+	if err := os.MkdirAll(brainDir, 0755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+	logPath := filepath.Join(brainDir, "transcript.jsonl")
+
+	// 1. Uncompleted ask_permission tool call in parent transcript
+	permTranscript := `{"step_index":1,"type":"USER_INPUT","content":"Clean temp files"}` + "\n" +
+		`{"step_index":2,"type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-10-31T12:00:00Z","tool_calls":[{"name":"ask_permission","args":{"command":"rm -rf /tmp/build"}}]}` + "\n"
+	if err := os.WriteFile(logPath, []byte(permTranscript), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	sess := &Session{
+		ID:          "antigravity:local:" + convUUID,
+		Agent:       "antigravity",
+		Host:        "local",
+		NativeID:    convUUID,
+		State:       StateWorking,
+		Activity:    "Working...",
+		PID:         os.Getpid(),
+		StartedAt:   time.Now(),
+		LastEventAt: time.Now(),
+	}
+
+	if !InspectAntigravityStatus(ctx, sess) {
+		t.Fatalf("expected InspectAntigravityStatus to detect ask_permission block")
+	}
+	if sess.State != StateBlocked || sess.Blocked == nil || sess.Blocked.Kind != BlockPermission {
+		t.Fatalf("expected StateBlocked (BlockPermission), got state=%v blocked=%+v", sess.State, sess.Blocked)
+	}
+	if sess.Blocked.Question != "Tool requires permission" || sess.Blocked.Reason != "rm -rf /tmp/build" {
+		t.Errorf("unexpected blocked details for ask_permission: %+v", sess.Blocked)
+	}
+
+	// 2. Append TOOL_RESPONSE and verify session unblocks immediately
+	answeredTranscript := permTranscript + `{"step_index":3,"type":"TOOL_RESPONSE","content":"Permission granted"}` + "\n"
+	if err := os.WriteFile(logPath, []byte(answeredTranscript), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	if !InspectAntigravityStatus(ctx, sess) {
+		t.Fatalf("expected InspectAntigravityStatus to report changed=true when TOOL_RESPONSE arrives")
+	}
+	if sess.State != StateWorking || sess.Blocked != nil {
+		t.Fatalf("expected StateWorking and nil Blocked after TOOL_RESPONSE, got state=%v blocked=%+v", sess.State, sess.Blocked)
+	}
+
+	// 3. Uncompleted ask_custom_permission tool call in a running subagent's transcript
+	subUUID := "99998888-7777-6666-5555-444433332222"
+	subRegDir := filepath.Join(tmpHome, ".gemini", "antigravity-cli", "brain", convUUID, ".system_generated", "subagents")
+	if err := os.MkdirAll(subRegDir, 0755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+	regJSON := `{"conversationId":"` + subUUID + `","subagentDescriptor":{"typeName":"implementer","role":"Implementer"},"state":"SUBAGENT_STATE_ALIVE"}`
+	if err := os.WriteFile(filepath.Join(subRegDir, subUUID+".json"), []byte(regJSON), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	subLogDir := filepath.Join(tmpHome, ".gemini", "antigravity-cli", "brain", subUUID, ".system_generated", "logs")
+	if err := os.MkdirAll(subLogDir, 0755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+	subLogPath := filepath.Join(subLogDir, "transcript.jsonl")
+	subBlockedTranscript := `{"step_index":0,"type":"SYSTEM_MESSAGE","content":"Role: Implementer"}` + "\n" +
+		`{"step_index":1,"type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-10-31T12:05:00Z","tool_calls":[{"name":"ask_custom_permission","args":{"action":"external_api","target":"https://prod.example.com"}}]}` + "\n"
+	if err := os.WriteFile(subLogPath, []byte(subBlockedTranscript), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	if !InspectAntigravityStatus(ctx, sess) {
+		t.Fatalf("expected InspectAntigravityStatus to detect subagent ask_custom_permission block")
+	}
+	if sess.State != StateBlocked || sess.Blocked == nil || sess.Blocked.Kind != BlockPermission {
+		t.Fatalf("expected StateBlocked from subagent transcript, got state=%v blocked=%+v", sess.State, sess.Blocked)
+	}
+	if sess.Blocked.Question != "Grant requested permission?" || sess.Blocked.Reason != "external_api (https://prod.example.com)" {
+		t.Errorf("unexpected blocked details from subagent ask_custom_permission: %+v", sess.Blocked)
+	}
+
+	// 4. Subagent receives TOOL_RESPONSE -> parent session resumes StateWorking with subagent activity
+	subResumedTranscript := subBlockedTranscript + `{"step_index":2,"type":"TOOL_RESPONSE","content":"Approved"}` + "\n"
+	if err := os.WriteFile(subLogPath, []byte(subResumedTranscript), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	if !InspectAntigravityStatus(ctx, sess) {
+		t.Fatalf("expected InspectAntigravityStatus to transition parent back to StateWorking after subagent TOOL_RESPONSE")
+	}
+	if sess.State != StateWorking || sess.Blocked != nil {
+		t.Fatalf("expected StateWorking and nil Blocked after subagent TOOL_RESPONSE, got state=%v blocked=%+v", sess.State, sess.Blocked)
+	}
+}
+
+func TestHook_AntigravitySubagentPermissionPropagatesBlockedAndResumesWorking(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+
+	db, err := InitDB(filepath.Join(tempHome, "test_subagent_perm_hook.db"))
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := NewServer(db)
+	p := &namedMockProvider{agentName: "antigravity"}
+	server.RegisterProvider(p)
+
+	parentID := "aaaa1111-2222-3333-4444-555566667777"
+	subID := "bbbb1111-2222-3333-4444-555566667777"
+
+	subRegDir := filepath.Join(tempHome, ".gemini", "antigravity-cli", "brain", parentID, ".system_generated", "subagents")
+	if err := os.MkdirAll(subRegDir, 0755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+	regJSON := `{"conversationId":"` + subID + `","subagentDescriptor":{"typeName":"self","role":"Implementer"},"state":"SUBAGENT_STATE_ALIVE"}`
+	if err := os.WriteFile(filepath.Join(subRegDir, subID+".json"), []byte(regJSON), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	subLogDir := filepath.Join(tempHome, ".gemini", "antigravity-cli", "brain", subID, ".system_generated", "logs")
+	if err := os.MkdirAll(subLogDir, 0755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+	subTranscript := fmt.Sprintf(`{"step_index":0,"source":"SYSTEM","type":"SYSTEM_MESSAGE","status":"DONE","created_at":"2026-10-31T12:00:00Z","content":"<SYSTEM_MESSAGE>\n[Message] timestamp=2026-10-31T12:00:00Z sender=%s priority=MESSAGE_PRIORITY_HIGH content=Run task\n</SYSTEM_MESSAGE>"}`+"\n"+
+		`{"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-10-31T12:00:05Z","tool_calls":[{"name":"ask_permission","args":{"command":"git clean -fd"}}]}`+"\n", parentID)
+	if err := os.WriteFile(filepath.Join(subLogDir, "transcript.jsonl"), []byte(subTranscript), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	hostName := server.HostName()
+	parentSessID := fmt.Sprintf("antigravity:%s:%s", hostName, parentID)
+	parentSess := &Session{
+		ID:       parentSessID,
+		Agent:    "antigravity",
+		Host:     hostName,
+		NativeID: parentID,
+		Cwd:      "/tmp/project",
+		Name:     "Parent Session",
+		State:    StateWorking,
+		Activity: "Subagent running: Implementer",
+	}
+	if err := db.SaveSession(parentSess); err != nil {
+		t.Fatalf("SaveSession failed: %v", err)
+	}
+
+	// 1. Subagent emits PreToolUse for ask_permission (StateBlocked)
+	permSubEvent := &Event{
+		Agent:     "antigravity",
+		NativeID:  subID,
+		Cwd:       "/tmp/project",
+		EventName: "PreToolUse",
+		ToolName:  "ask_permission",
+		State:     StateBlocked,
+		Blocked: &Blocked{
+			Kind:     BlockPermission,
+			Reason:   "git clean -fd",
+			Question: "Tool requires permission",
+			Options:  []string{"1. Yes", "2. Yes, and always allow", "3. No"},
+			Since:    time.Now(),
+		},
+		Activity:    "Waiting for user permission",
+		LastEventAt: time.Now(),
+	}
+	server.processParsedHookEvent(permSubEvent, "PreToolUse", "local", "", false)
+
+	blockedParent, err := db.GetSession(parentSessID)
+	if err != nil || blockedParent == nil {
+		t.Fatalf("GetSession parent failed: %v", err)
+	}
+	if blockedParent.State != StateBlocked || blockedParent.Blocked == nil || blockedParent.Blocked.Kind != BlockPermission {
+		t.Fatalf("expected parent session StateBlocked (BlockPermission), got state=%v blocked=%+v", blockedParent.State, blockedParent.Blocked)
+	}
+	if blockedParent.Blocked.Reason != "git clean -fd" || blockedParent.Blocked.Question != "Tool requires permission" {
+		t.Errorf("unexpected parent Blocked details: %+v", blockedParent.Blocked)
+	}
+	if blockedParent.Activity != "Waiting for user permission" {
+		t.Errorf("expected parent Activity 'Waiting for user permission', got %q", blockedParent.Activity)
+	}
+
+	// 2. Subagent emits PostToolUse (StateWorking) -> parent session clears Blocked and resumes StateWorking
+	postSubEvent := &Event{
+		Agent:       "antigravity",
+		NativeID:    subID,
+		Cwd:         "/tmp/project",
+		EventName:   "PostToolUse",
+		ToolName:    "ask_permission",
+		State:       StateWorking,
+		Activity:    "Tool execution completed",
+		LastEventAt: time.Now(),
+	}
+	server.processParsedHookEvent(postSubEvent, "PostToolUse", "local", "", false)
+
+	resumedParent, err := db.GetSession(parentSessID)
+	if err != nil || resumedParent == nil {
+		t.Fatalf("GetSession parent failed: %v", err)
+	}
+	if resumedParent.State != StateWorking || resumedParent.Blocked != nil {
+		t.Fatalf("expected parent session to return to StateWorking with nil Blocked after subagent PostToolUse, got state=%v blocked=%+v", resumedParent.State, resumedParent.Blocked)
+	}
+}

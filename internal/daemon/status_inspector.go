@@ -209,14 +209,16 @@ func InspectAntigravityStatus(ctx context.Context, sess *Session) bool {
 		}
 	}
 
-	// 1. Structured Subagents on Disk
+	// 1. Structured Subagents on Disk (sync count first; evaluate StateWorking after live tmux & transcript block checks)
+	runningCount := 0
+	var activeRole string
+	var runningSubs []SubagentInfo
 	if sess.NativeID != "" {
 		if subs, err := ExtractSubagents("antigravity", sess.NativeID, sess.Cwd); err == nil {
-			runningCount := 0
-			var activeRole string
 			for _, sub := range subs {
 				if sub.State == "running" {
 					runningCount++
+					runningSubs = append(runningSubs, sub)
 					if activeRole == "" {
 						activeRole = sub.Role
 					}
@@ -226,21 +228,11 @@ func InspectAntigravityStatus(ctx context.Context, sess *Session) bool {
 				sess.RunningSubagents = runningCount
 				changed = true
 			}
-			if runningCount > 0 && sess.State != StateBlocked {
-				if sess.State != StateWorking {
-					sess.State = StateWorking
-					sess.Blocked = nil
-					sess.Activity = "Subagent running: " + activeRole
-					changed = true
-				}
-				return changed
-			}
 		}
 	}
 
 	var lines []string
 	var nonEmpty []string
-	var tailText string
 	var bottomText string
 	hasIdlePrompt := false
 	hasSpinner := false
@@ -285,7 +277,6 @@ func InspectAntigravityStatus(ctx context.Context, sess *Session) bool {
 			}
 		}
 
-		tailText = extractTailText(lines, 25)
 		bottomText = extractTailText(lines, 5)
 
 		hasSpinner = !hasIdlePrompt && (strings.Contains(bottomText, "⠋") || strings.Contains(bottomText, "⠙") ||
@@ -300,59 +291,43 @@ func InspectAntigravityStatus(ctx context.Context, sess *Session) bool {
 
 		hasCancel = !hasIdlePrompt && strings.Contains(bottomText, "esc to cancel")
 
-		// 2A. Permission prompts or confirmations
-		if !hasIdlePrompt {
-			if strings.Contains(tailText, "Requesting permission for:") || strings.Contains(tailText, "Do you want to proceed?") {
-				cmdReason := ""
-				if idx := strings.Index(tailText, "Requesting permission for:"); idx != -1 {
-					sub := tailText[idx+len("Requesting permission for:"):]
-					if endIdx := strings.Index(sub, "Do you want to proceed?"); endIdx != -1 {
-						cmdReason = strings.TrimSpace(sub[:endIdx])
-					}
-				}
-				if cmdReason == "" {
-					cmdReason = "Tool permission requested"
-				}
-
-				if sess.State != StateBlocked || sess.Blocked == nil {
-					sess.State = StateBlocked
-					sess.Blocked = &Blocked{
-						Kind:     BlockPermission,
-						Reason:   cmdReason,
-						Question: "Do you want to proceed with: " + truncateTitle(cmdReason),
-						Options:  []string{"1. Yes", "2. Yes, and always allow in this conversation", "4. No"},
-						Since:    time.Now(),
-					}
-					sess.Activity = "Waiting for permission: " + truncateTitle(cmdReason)
-					changed = true
-				}
-				return changed
-			} else if strings.Contains(tailText, "Are you sure?") || strings.Contains(tailText, "[y/N]") || strings.Contains(tailText, "[Y/n]") {
-				if sess.State != StateBlocked || sess.Blocked == nil {
-					sess.State = StateBlocked
-					sess.Blocked = &Blocked{
-						Kind:     BlockPermission,
-						Reason:   "Confirmation required",
-						Question: "Confirmation required",
-						Options:  []string{"Yes", "No"},
-						Since:    time.Now(),
-					}
-					sess.Activity = "Waiting for confirmation"
-					changed = true
-				}
-				return changed
+		// 2A. Permission prompts, ToolConfirmationModel, or subagent approval alerts
+		if question, reason, options, matched := detectAntigravityPermissionPrompt(lines); matched {
+			since := time.Now()
+			if sess.State == StateBlocked && sess.Blocked != nil && sess.Blocked.Kind == BlockPermission &&
+				sess.Blocked.Question == question && sess.Blocked.Reason == reason && !sess.Blocked.Since.IsZero() {
+				since = sess.Blocked.Since
 			}
+			if sess.State != StateBlocked || sess.Blocked == nil || sess.Blocked.Kind != BlockPermission ||
+				sess.Blocked.Question != question || sess.Blocked.Reason != reason || sess.Activity != "Waiting for user permission" {
+				sess.State = StateBlocked
+				sess.Blocked = &Blocked{
+					Kind:     BlockPermission,
+					Reason:   reason,
+					Question: question,
+					Options:  options,
+					Since:    since,
+				}
+				sess.Activity = "Waiting for user permission"
+				changed = true
+			}
+			return changed
 		}
 	}
 
 	// 3. Structured Transcript Inspection (tail up to 256KB)
 	transcriptTurnCompletedAfterBlock := false
+	transcriptBlockAnswered := false
+	var lastStep antigravityStep
+	hasLastStep := false
+	var activeLogPath string
+
 	if len(brainDirs) > 0 {
 		for _, logPath := range brainDirs {
 			if data, err := readTail(logPath, 256*1024); err == nil && len(data) > 0 {
+				activeLogPath = logPath
 				tLines := strings.Split(string(data), "\n")
 
-				var lastStep antigravityStep
 				lastValidIdx := -1
 				for i := len(tLines) - 1; i >= 0; i-- {
 					line := strings.TrimSpace(tLines[i])
@@ -371,153 +346,123 @@ func InspectAntigravityStatus(ctx context.Context, sess *Session) bool {
 						}
 						lastStep = candidate
 						lastValidIdx = i
+						hasLastStep = true
 						break
 					}
 				}
 
 				if lastValidIdx != -1 {
-					// 3A. Check if blocked on ask_question or plan approval (evaluated BEFORE Step 2B spinner/cancel)
-					stepsChecked := 0
-					for i := lastValidIdx; i >= 0 && stepsChecked < 30; i-- {
-						line := strings.TrimSpace(tLines[i])
-						if line == "" {
-							continue
-						}
-						var step antigravityStep
-						if jerr := json.Unmarshal([]byte(line), &step); jerr == nil {
-							if isNonTurnAntigravityStep(step.Type) {
-								continue
-							}
-							stepsChecked++
-							if step.Type == "USER_INPUT" || step.Type == "ASK_QUESTION" || step.Type == "TOOL_RESPONSE" {
-								break
-							}
-
-							if hasTruncatedField(step.TruncatedFields, "tool_calls") {
-								if fullStep, ok := resolveFullAntigravityStep(logPath, step.StepIndex); ok {
-									step.ToolCalls = fullStep.ToolCalls
-								}
-							}
-
-							hasOtherTools := false
-							hasAskQuestion := false
-							for _, tc := range step.ToolCalls {
-								if tc.Name == "ask_question" {
-									hasAskQuestion = true
-								} else if tc.Name != "" {
-									hasOtherTools = true
-								}
-							}
-							if hasOtherTools && !hasAskQuestion {
-								break
-							}
-
-							stepTime, _ := time.Parse(time.RFC3339, step.CreatedAt)
-							if stepTime.IsZero() {
-								stepTime = time.Now()
-							}
-
-							for _, tc := range step.ToolCalls {
-								if tc.Name == "ask_question" {
-									q, opts := ExtractAntigravityQuestionAndOptions(tc.Args)
-									if q == "" && len(opts) == 0 {
-										if fullStep, ok := resolveFullAntigravityStep(logPath, step.StepIndex); ok {
-											for _, ftc := range fullStep.ToolCalls {
-												if ftc.Name == "ask_question" {
-													q, opts = ExtractAntigravityQuestionAndOptions(ftc.Args)
-													break
-												}
-											}
-										}
-									}
-									if sess.State != StateBlocked || sess.Blocked == nil || sess.Blocked.Question != q {
-										sess.State = StateBlocked
-										sess.Blocked = &Blocked{
-											Kind:     BlockQuestion,
-											Reason:   q,
-											Question: q,
-											Options:  opts,
-											Since:    stepTime,
-										}
-										if q != "" {
-											sess.Activity = "Question: " + truncateTitle(q)
-										} else {
-											sess.Activity = "Waiting for user response"
-										}
-										changed = true
-									}
-									return changed
-								}
-							}
-
-							if strings.Contains(step.Content, "Note: You have just created an artifact and requested user feedback") ||
-								strings.Contains(step.Content, "Stop calling tools to end your turn, and allow the user to review the artifact") {
-								if sess.State != StateBlocked || sess.Blocked == nil {
-									sess.State = StateBlocked
-									sess.Blocked = &Blocked{
-										Kind:     BlockQuestion,
-										Reason:   "Plan approval required",
-										Question: "Please review and approve the implementation plan",
-										Options:  []string{"Proceed", "Provide Feedback"},
-										Since:    stepTime,
-									}
-									sess.Activity = "Waiting for plan feedback"
-									changed = true
-								}
-								return changed
-							}
-						}
-					}
-
-					// 3B. Turn completion detection
-					if lastStep.Type == "USER_INPUT" {
-						if sess.EngineType == EngineHeadless && sess.TmuxName == "" {
-							break
-						}
-						stat, serr := os.Stat(logPath)
-						if serr == nil && time.Since(stat.ModTime()) >= 30*time.Minute {
-							break
-						}
-						if serr == nil && time.Since(stat.ModTime()) > 15*time.Second && hasIdlePrompt && !hasSpinner {
-							break
-						}
-						if isWithinBlockedGraceWindow(sess) {
-							return changed
-						}
-						if sess.State != StateWorking {
-							sess.State = StateWorking
-							sess.Blocked = nil
-							sess.Activity = "Thinking..."
-							if sess.LastEventAt.IsZero() {
-								sess.LastEventAt = time.Now()
-							}
+					// 3A. Check if blocked on ask_question, ask_permission, ask_custom_permission, or plan approval
+					if blocked, activity, ok, answered := inspectAntigravityTranscriptBlocked(logPath, tLines, lastValidIdx); ok {
+						if sess.State != StateBlocked || sess.Blocked == nil || sess.Blocked.Kind != blocked.Kind ||
+							sess.Blocked.Question != blocked.Question || sess.Blocked.Reason != blocked.Reason {
+							sess.State = StateBlocked
+							sess.Blocked = blocked
+							sess.Activity = activity
 							changed = true
 						}
 						return changed
-					} else if lastStep.Type == "PLANNER_RESPONSE" && ((lastStep.Status == "DONE" && len(lastStep.ToolCalls) == 0) ||
-						strings.EqualFold(lastStep.Status, "CANCELED") ||
-						strings.EqualFold(lastStep.Status, "CANCELLED") ||
-						strings.EqualFold(lastStep.Status, "ERROR")) {
-						lastStepTime, _ := time.Parse(time.RFC3339, lastStep.CreatedAt)
-						blockSince := effectiveBlockedSince(sess)
-						if !lastStepTime.IsZero() && (blockSince.IsZero() || !lastStepTime.Before(blockSince)) {
-							transcriptTurnCompletedAfterBlock = true
-						}
-						if isWithinBlockedGraceWindow(sess) && !transcriptTurnCompletedAfterBlock {
-							return changed
-						}
-						if !hasSpinner {
-							if sess.State != StateIdle {
-								sess.State = StateIdle
-								sess.Blocked = nil
-								sess.Activity = "Awaiting user prompt"
-								changed = true
-							}
-							return changed
-						}
+					} else if answered {
+						transcriptBlockAnswered = true
+						transcriptTurnCompletedAfterBlock = true
 					}
 				}
 				break
+			}
+		}
+	}
+
+	// 3A-sub. Check running subagents' transcripts for uncompleted ask_question / ask_permission / ask_custom_permission
+	if runningCount > 0 && home != "" {
+		subBrainDirs := antigravityBrainDirs(home)
+		for _, sub := range runningSubs {
+			cleanSubID := filepath.Base(filepath.Clean(sub.ID))
+			if cleanSubID == "" || cleanSubID == "." || cleanSubID == ".." || strings.ContainsAny(cleanSubID, "*?[") {
+				continue
+			}
+			for _, bDir := range subBrainDirs {
+				subLogPath := filepath.Join(bDir, cleanSubID, ".system_generated", "logs", "transcript.jsonl")
+				if blocked, activity, ok, answered := inspectAntigravityTranscriptFileBlocked(subLogPath); ok {
+					if sess.State != StateBlocked || sess.Blocked == nil || sess.Blocked.Kind != blocked.Kind ||
+						sess.Blocked.Question != blocked.Question || sess.Blocked.Reason != blocked.Reason {
+						sess.State = StateBlocked
+						sess.Blocked = blocked
+						sess.Activity = activity
+						changed = true
+					}
+					return changed
+				} else if answered {
+					transcriptBlockAnswered = true
+					transcriptTurnCompletedAfterBlock = true
+				}
+			}
+		}
+	}
+
+	// 3A-work. If subagents are running and neither tmux nor transcripts are blocked, report StateWorking
+	if runningCount > 0 {
+		if sess.State == StateBlocked && isWithinBlockedGraceWindow(sess) && !transcriptTurnCompletedAfterBlock {
+			return changed
+		}
+		if sess.State != StateWorking || sess.Blocked != nil {
+			sess.State = StateWorking
+			sess.Blocked = nil
+			sess.Activity = "Subagent running: " + activeRole
+			changed = true
+		}
+		return changed
+	}
+
+	if hasLastStep {
+		// 3B. Turn completion or post-block continuation detection
+		if lastStep.Type == "USER_INPUT" {
+			if sess.EngineType == EngineHeadless && sess.TmuxName == "" {
+				// Pure headless waits for process/stream state
+			} else {
+				stat, serr := os.Stat(activeLogPath)
+				if (serr != nil || time.Since(stat.ModTime()) < 30*time.Minute) &&
+					!(serr == nil && time.Since(stat.ModTime()) > 15*time.Second && hasIdlePrompt && !hasSpinner) {
+					if isWithinBlockedGraceWindow(sess) && !transcriptTurnCompletedAfterBlock {
+						return changed
+					}
+					if sess.State != StateWorking {
+						sess.State = StateWorking
+						sess.Blocked = nil
+						sess.Activity = "Thinking..."
+						if sess.LastEventAt.IsZero() {
+							sess.LastEventAt = time.Now()
+						}
+						changed = true
+					}
+					return changed
+				}
+			}
+		} else if (lastStep.Type == "TOOL_RESPONSE" || lastStep.Type == "ASK_QUESTION") && sess.State == StateBlocked && transcriptBlockAnswered {
+			sess.State = StateWorking
+			sess.Blocked = nil
+			sess.Activity = "Working..."
+			changed = true
+			return changed
+		} else if lastStep.Type == "PLANNER_RESPONSE" && ((lastStep.Status == "DONE" && len(lastStep.ToolCalls) == 0) ||
+			strings.EqualFold(lastStep.Status, "CANCELED") ||
+			strings.EqualFold(lastStep.Status, "CANCELLED") ||
+			strings.EqualFold(lastStep.Status, "ERROR")) {
+			lastStepTime := parseStepTimestamp(lastStep.CreatedAt)
+			blockSince := effectiveBlockedSince(sess)
+			if !lastStepTime.IsZero() && (blockSince.IsZero() || !lastStepTime.Before(blockSince)) {
+				transcriptTurnCompletedAfterBlock = true
+			}
+			if isWithinBlockedGraceWindow(sess) && !transcriptTurnCompletedAfterBlock {
+				return changed
+			}
+			if !hasSpinner {
+				if sess.State != StateIdle {
+					sess.State = StateIdle
+					sess.Blocked = nil
+					sess.Activity = "Awaiting user prompt"
+					changed = true
+				}
+				return changed
 			}
 		}
 	}
@@ -592,6 +537,484 @@ func isAntigravityPromptLine(trimmed string) bool {
 		return true
 	}
 	return false
+}
+
+const antigravityBorderChars = " │┃┌┍┎┏┐┑┒┓└┕┖┗┘┙┚┛├┝┞┟┠┣┤┥┦┧┨┫┬┭┮┯┰┱┲┳┴┵┶┷┸┹┺┻┼┽┾┿╀╁╂╃╄╅╆╇╈╉╊╋─━╭╮╰╯"
+
+func cleanAntigravityPaneLine(line string) string {
+	s := strings.ReplaceAll(line, "\u00a0", " ")
+	s = strings.TrimSpace(s)
+	s = strings.Trim(s, antigravityBorderChars)
+	return strings.TrimSpace(s)
+}
+
+var antigravityPermissionHeaders = []string{
+	"Run this command?",
+	"Accept this file edit?",
+	"Allow creation of this file?",
+	"Allow access to this file?",
+	"Allow access to this URL?",
+	"Allow sandbox bypass for command execution?",
+	"Allow administrator elevation?",
+	"Grant requested permission?",
+	"Expanded Tool Permission Editor",
+	"Requested Permission (Editable):",
+	"Requesting permission for:",
+	"Do you want to proceed?",
+	"⚠ Approval Required",
+}
+
+var antigravityPermissionChoices = []string{
+	"Yes, run command",
+	"Yes, accept this change",
+	"No, reject this change",
+	"Yes, allow access",
+	"No, deny access",
+	"Yes, allow creation",
+	"No, deny creation",
+	"Yes, allow tool call",
+	"No, deny tool call",
+	"Yes, grant permission",
+	"No, deny permission",
+	"Yes, elevate",
+	"Yes, approve",
+	"Yes, proceed",
+	"No, and tell Antigravity CLI what to do differently",
+}
+
+func parseAntigravityNumberedOption(cleanLine string) (string, bool) {
+	s := strings.TrimSpace(cleanLine)
+	for _, prefix := range []string{"> ", "❯ ", ">", "❯"} {
+		if strings.HasPrefix(s, prefix) {
+			s = strings.TrimSpace(strings.TrimPrefix(s, prefix))
+			break
+		}
+	}
+	if len(s) > 3 && s[0] >= '1' && s[0] <= '9' && s[1] == '.' && s[2] == ' ' {
+		return s, true
+	}
+	return "", false
+}
+
+func isAntigravityHintLine(cleanLine string) bool {
+	return strings.Contains(cleanLine, "Enter Submit") ||
+		strings.Contains(cleanLine, "Tab Amend")
+}
+
+func detectAntigravityPermissionPrompt(lines []string) (question string, reason string, options []string, matched bool) {
+	var nonEmpty []string
+	for _, l := range lines {
+		if strings.TrimSpace(l) != "" {
+			nonEmpty = append(nonEmpty, l)
+		}
+	}
+	tailRaw := extractTailLines(nonEmpty, 25)
+	if len(tailRaw) == 0 {
+		return "", "", nil, false
+	}
+
+	cleaned := make([]string, len(tailRaw))
+	for i, l := range tailRaw {
+		cleaned[i] = cleanAntigravityPaneLine(l)
+	}
+
+	// Locate the last idle prompt in the bottom 6 lines
+	lastIdlePromptIdx := -1
+	minPromptSearchIdx := len(cleaned) - 6
+	if minPromptSearchIdx < 0 {
+		minPromptSearchIdx = 0
+	}
+	for i := len(cleaned) - 1; i >= minPromptSearchIdx; i-- {
+		if isAntigravityPromptLine(cleaned[i]) || isAntigravityPromptLine(strings.TrimSpace(tailRaw[i])) {
+			lastIdlePromptIdx = i
+			break
+		}
+	}
+
+	// Check for subagent approval alert in the bottom 12 lines (ConversationModel renders this directly above the input prompt box)
+	subagentAlertReason := ""
+	hasSubagentApprovalBanner := false
+	alertStartIdx := len(cleaned) - 12
+	if alertStartIdx < 0 {
+		alertStartIdx = 0
+	}
+	for i := alertStartIdx; i < len(cleaned); i++ {
+		cLine := cleaned[i]
+		if strings.Contains(cLine, " needs approval for ") {
+			hasSubagentApprovalBanner = true
+			subagentAlertReason = strings.TrimSpace(strings.TrimLeft(cLine, "●•⚠*>- "))
+		} else if strings.Contains(cLine, "⚠ Approval Required") && lastIdlePromptIdx != -1 && i < lastIdlePromptIdx {
+			hasSubagentApprovalBanner = true
+			if subagentAlertReason == "" {
+				subagentAlertReason = "Subagent approval required"
+			}
+		}
+	}
+
+	// Lines after the last idle prompt (if any) for ToolConfirmationModel / ExpandedView / SubagentDetailModel
+	postLines := cleaned
+	if lastIdlePromptIdx != -1 {
+		postLines = cleaned[lastIdlePromptIdx+1:]
+	}
+
+	headerIdx := -1
+	matchedHeader := ""
+	for i, cLine := range postLines {
+		if cLine == "" {
+			continue
+		}
+		for _, hdr := range antigravityPermissionHeaders {
+			if strings.Contains(cLine, hdr) {
+				// Do not let a generic "Do you want to proceed?" or "⚠ Approval Required" overwrite an earlier specific header
+				if matchedHeader == "" || matchedHeader == "⚠ Approval Required" || (matchedHeader == "Requesting permission for:" && hdr != "Do you want to proceed?") {
+					matchedHeader = hdr
+					if headerIdx == -1 || matchedHeader != "Requesting permission for:" {
+						headerIdx = i
+					}
+				}
+				break
+			}
+		}
+	}
+
+	var numberedOpts []string
+	firstOptionIdx := -1
+	hasPermChoice := false
+	hasConfirmHint := false
+
+	optSearchStart := 0
+	if headerIdx != -1 {
+		optSearchStart = headerIdx
+	}
+	for i := optSearchStart; i < len(postLines); i++ {
+		cLine := postLines[i]
+		if cLine == "" {
+			continue
+		}
+		if isAntigravityHintLine(cLine) {
+			hasConfirmHint = true
+			continue
+		}
+		if opt, ok := parseAntigravityNumberedOption(cLine); ok {
+			if firstOptionIdx == -1 {
+				firstOptionIdx = i
+			}
+			numberedOpts = append(numberedOpts, opt)
+			for _, phrase := range antigravityPermissionChoices {
+				if strings.Contains(opt, phrase) {
+					hasPermChoice = true
+					break
+				}
+			}
+		}
+	}
+
+	if headerIdx != -1 || hasPermChoice || (hasConfirmHint && len(numberedOpts) > 0) {
+		if matchedHeader != "" {
+			question = matchedHeader
+		} else if hasSubagentApprovalBanner {
+			question = "Subagent requires permission"
+		} else {
+			question = "Tool requires permission"
+		}
+
+		if len(numberedOpts) > 0 {
+			options = numberedOpts
+		} else {
+			options = []string{"1. Yes", "2. Yes, and always allow", "3. No"}
+		}
+
+		reasonEnd := len(postLines)
+		if firstOptionIdx != -1 {
+			reasonEnd = firstOptionIdx
+		}
+		reasonStart := 0
+		if headerIdx != -1 {
+			reasonStart = headerIdx
+		}
+
+		var keyValueDetails []string
+		var contextDetails []string
+		for i := reasonStart; i < reasonEnd; i++ {
+			cLine := postLines[i]
+			if cLine == "" || isAntigravityHintLine(cLine) {
+				continue
+			}
+			if _, isOpt := parseAntigravityNumberedOption(cLine); isOpt {
+				continue
+			}
+			if strings.HasPrefix(cLine, "Requesting permission for:") {
+				after := strings.TrimSpace(strings.TrimPrefix(cLine, "Requesting permission for:"))
+				if after != "" {
+					contextDetails = append(contextDetails, after)
+				}
+				continue
+			}
+			isHdrLine := false
+			for _, hdr := range antigravityPermissionHeaders {
+				if cLine == hdr || cLine == "🔓 "+hdr || strings.TrimSpace(strings.TrimPrefix(cLine, "🔓")) == hdr {
+					isHdrLine = true
+					break
+				}
+			}
+			if isHdrLine {
+				continue
+			}
+			if strings.HasPrefix(cLine, "Edit:") ||
+				strings.HasPrefix(cLine, "New file:") ||
+				strings.HasPrefix(cLine, "File:") ||
+				strings.HasPrefix(cLine, "Path:") ||
+				strings.HasPrefix(cLine, "URL:") ||
+				strings.HasPrefix(cLine, "Action:") ||
+				strings.HasPrefix(cLine, "Target:") ||
+				strings.HasPrefix(cLine, "Command:") ||
+				strings.HasPrefix(cLine, "Reason:") {
+				keyValueDetails = append(keyValueDetails, cLine)
+				continue
+			}
+			contextDetails = append(contextDetails, cLine)
+		}
+
+		if len(keyValueDetails) > 0 {
+			reason = strings.Join(keyValueDetails, ", ")
+		} else if len(contextDetails) > 0 {
+			if len(contextDetails) > 2 {
+				contextDetails = contextDetails[:2]
+			}
+			reason = strings.Join(contextDetails, " ")
+		} else if subagentAlertReason != "" {
+			reason = subagentAlertReason
+		} else {
+			reason = "Permission prompt active in terminal"
+		}
+
+		return question, reason, options, true
+	}
+
+	if hasSubagentApprovalBanner {
+		question = "Subagent requires permission"
+		reason = subagentAlertReason
+		if reason == "" {
+			reason = "Permission prompt active in terminal"
+		}
+		options = []string{"1. Yes", "2. Yes, and always allow", "3. No"}
+		return question, reason, options, true
+	}
+
+	if lastIdlePromptIdx == -1 {
+		for _, cLine := range postLines {
+			if strings.Contains(cLine, "Are you sure?") || strings.Contains(cLine, "[y/N]") || strings.Contains(cLine, "[Y/n]") {
+				return "Confirmation required", "Confirmation required", []string{"Yes", "No"}, true
+			}
+		}
+	}
+
+	return "", "", nil, false
+}
+
+func getAntigravityStringArg(args map[string]interface{}, keys ...string) string {
+	if len(args) == 0 {
+		return ""
+	}
+	for _, key := range keys {
+		if v, ok := args[key]; ok {
+			if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
+				return strings.TrimSpace(s)
+			}
+		}
+		for k, v := range args {
+			if strings.EqualFold(k, key) {
+				if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
+					return strings.TrimSpace(s)
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// ExtractAntigravityPermissionReason extracts a human-readable permission target/reason from
+// ask_permission or ask_custom_permission tool call arguments.
+func ExtractAntigravityPermissionReason(args map[string]interface{}) string {
+	if len(args) == 0 {
+		return "Waiting for tool permission approval"
+	}
+	action := getAntigravityStringArg(args, "action", "Action")
+	target := getAntigravityStringArg(args, "target", "Target")
+	if action != "" && target != "" {
+		return fmt.Sprintf("%s (%s)", action, target)
+	}
+	if cmd := getAntigravityStringArg(args, "command", "CommandLine", "command_line", "cmd"); cmd != "" {
+		return cmd
+	}
+	if reason := getAntigravityStringArg(args, "reason", "Reason", "description", "Description", "message", "Message"); reason != "" {
+		return reason
+	}
+	if toolName := getAntigravityStringArg(args, "tool", "Tool", "tool_name", "toolName"); toolName != "" {
+		if target != "" {
+			return fmt.Sprintf("%s (%s)", toolName, target)
+		}
+		return toolName
+	}
+	if action != "" {
+		return action
+	}
+	if target != "" {
+		return target
+	}
+	if path := getAntigravityStringArg(args, "path", "Path", "AbsolutePath", "file_path", "filePath", "TargetFile"); path != "" {
+		return path
+	}
+	if url := getAntigravityStringArg(args, "url", "Url", "URL"); url != "" {
+		return url
+	}
+	return "Waiting for tool permission approval"
+}
+
+func inspectAntigravityTranscriptFileBlocked(logPath string) (blocked *Blocked, activity string, blockedOk bool, blockAnswered bool) {
+	data, err := readTail(logPath, 256*1024)
+	if err != nil || len(data) == 0 {
+		return nil, "", false, false
+	}
+	tLines := strings.Split(string(data), "\n")
+	lastValidIdx := -1
+	for i := len(tLines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(tLines[i])
+		if line == "" {
+			continue
+		}
+		var candidate antigravityStep
+		if err := json.Unmarshal([]byte(line), &candidate); err == nil {
+			if isNonTurnAntigravityStep(candidate.Type) {
+				continue
+			}
+			lastValidIdx = i
+			break
+		}
+	}
+	if lastValidIdx == -1 {
+		return nil, "", false, false
+	}
+	return inspectAntigravityTranscriptBlocked(logPath, tLines, lastValidIdx)
+}
+
+func inspectAntigravityTranscriptBlocked(logPath string, tLines []string, lastValidIdx int) (blocked *Blocked, activity string, blockedOk bool, blockAnswered bool) {
+	stepsChecked := 0
+	sawResponseBoundary := false
+	for i := lastValidIdx; i >= 0 && stepsChecked < 30; i-- {
+		line := strings.TrimSpace(tLines[i])
+		if line == "" {
+			continue
+		}
+		var step antigravityStep
+		if jerr := json.Unmarshal([]byte(line), &step); jerr != nil {
+			continue
+		}
+		if isNonTurnAntigravityStep(step.Type) {
+			continue
+		}
+		stepsChecked++
+		if step.Type == "USER_INPUT" || step.Type == "ASK_QUESTION" || step.Type == "TOOL_RESPONSE" {
+			sawResponseBoundary = true
+			continue
+		}
+
+		if hasTruncatedField(step.TruncatedFields, "tool_calls") {
+			if fullStep, ok := resolveFullAntigravityStep(logPath, step.StepIndex); ok {
+				step.ToolCalls = fullStep.ToolCalls
+			}
+		}
+
+		hasOtherTools := false
+		hasBlockingTool := false
+		for _, tc := range step.ToolCalls {
+			if tc.Name == "ask_question" || tc.Name == "ask_permission" || tc.Name == "ask_custom_permission" {
+				hasBlockingTool = true
+			} else if tc.Name != "" {
+				hasOtherTools = true
+			}
+		}
+
+		if sawResponseBoundary {
+			if hasBlockingTool {
+				return nil, "", false, true
+			}
+			break
+		}
+
+		if hasOtherTools && !hasBlockingTool {
+			break
+		}
+
+		stepTime := parseStepTimestamp(step.CreatedAt)
+		if stepTime.IsZero() {
+			stepTime = time.Now()
+		}
+
+		for _, tc := range step.ToolCalls {
+			if tc.Name == "ask_question" {
+				q, opts := ExtractAntigravityQuestionAndOptions(tc.Args)
+				if q == "" && len(opts) == 0 {
+					if fullStep, ok := resolveFullAntigravityStep(logPath, step.StepIndex); ok {
+						for _, ftc := range fullStep.ToolCalls {
+							if ftc.Name == "ask_question" {
+								q, opts = ExtractAntigravityQuestionAndOptions(ftc.Args)
+								break
+							}
+						}
+					}
+				}
+				act := "Waiting for user response"
+				if q != "" {
+					act = "Question: " + truncateTitle(q)
+				}
+				return &Blocked{
+					Kind:     BlockQuestion,
+					Reason:   q,
+					Question: q,
+					Options:  opts,
+					Since:    stepTime,
+				}, act, true, false
+			}
+			if tc.Name == "ask_permission" || tc.Name == "ask_custom_permission" {
+				args := tc.Args
+				if len(args) == 0 {
+					if fullStep, ok := resolveFullAntigravityStep(logPath, step.StepIndex); ok {
+						for _, ftc := range fullStep.ToolCalls {
+							if ftc.Name == tc.Name {
+								args = ftc.Args
+								break
+							}
+						}
+					}
+				}
+				reason := ExtractAntigravityPermissionReason(args)
+				question := "Tool requires permission"
+				if tc.Name == "ask_custom_permission" {
+					question = "Grant requested permission?"
+				}
+				return &Blocked{
+					Kind:     BlockPermission,
+					Reason:   reason,
+					Question: question,
+					Options:  []string{"1. Yes", "2. Yes, and always allow", "3. No"},
+					Since:    stepTime,
+				}, "Waiting for user permission", true, false
+			}
+		}
+
+		if strings.Contains(step.Content, "Note: You have just created an artifact and requested user feedback") ||
+			strings.Contains(step.Content, "Stop calling tools to end your turn, and allow the user to review the artifact") {
+			return &Blocked{
+				Kind:     BlockQuestion,
+				Reason:   "Plan approval required",
+				Question: "Please review and approve the implementation plan",
+				Options:  []string{"Proceed", "Provide Feedback"},
+				Since:    stepTime,
+			}, "Waiting for plan feedback", true, false
+		}
+	}
+	return nil, "", false, false
 }
 
 func hasClaudeSpinner(text string) bool {
