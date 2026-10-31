@@ -498,6 +498,7 @@ func (s *Server) populateDefaultSettings(settings map[string]string) map[string]
 		"later_collapsed_by_default":  "false",
 		"handover_suggestion_enabled": "true",
 		"handover_threshold_pct":      "60",
+		"hide_session_tabs":           "false",
 	}
 	for k, v := range defaults {
 		if _, exists := settings[k]; !exists {

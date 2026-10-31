@@ -10,7 +10,7 @@ import {
   recordGroupSpawn
 } from './utils.js';
 import { renderTree, getSessionTimestamp, sortSessionsByInteraction } from './tree.js';
-import { updateOpenTabsState } from './tabs.js';
+import { updateOpenTabsState, applyTabStripVisibility } from './tabs.js';
 import { showModal, hideModal, showHostSummaryModal, showUpdateModal } from './modals.js';
 
 // Fetch Providers
@@ -260,9 +260,11 @@ async function fetchSettings() {
       auto_archive_enabled: 'true',
       auto_archive_days: '7',
       done_collapsed_by_default: 'true',
-      later_collapsed_by_default: 'false'
+      later_collapsed_by_default: 'false',
+      hide_session_tabs: 'false'
     };
   }
+  applyTabStripVisibility();
 }
 
 async function updateSettings(newSettings) {
@@ -276,6 +278,7 @@ async function updateSettings(newSettings) {
       state.settings = await res.json();
       if (state.settings.host_name) state.selfHost.name = state.settings.host_name;
       if (state.settings.display_name !== undefined) state.selfHost.displayName = state.settings.display_name;
+      applyTabStripVisibility();
       renderHosts();
       renderTree();
       return true;

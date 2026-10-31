@@ -21,7 +21,8 @@ import {
   activateTab,
   closeTab,
   openSessionInTab,
-  handleTabOverflow
+  handleTabOverflow,
+  isHideTabsEnabled
 } from './tabs.js';
 import { showTabContextMenu } from './context-menu.js';
 import { renderTree } from './tree.js';
@@ -35,6 +36,14 @@ import {
 function openSessionDetailsTab(session) {
   if (!session) return;
   const tabId = `details_${session.id}`;
+
+  if (isHideTabsEnabled()) {
+    for (const id of Array.from(state.openTabs.keys())) {
+      if (id !== tabId) {
+        closeTab(id);
+      }
+    }
+  }
 
   if (state.openTabs.has(tabId)) {
     activateTab(tabId);
@@ -274,6 +283,13 @@ async function openDocViewerTab(docPath, docTitle, host = 'local') {
   const hostKey = isLocalHost(host) ? getSelfHostName() : host;
   const tabId = `doc_${hostKey.replace(/[^a-zA-Z0-9_-]/g, '_')}_${docPath.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
   if (state.openTabs.has(tabId)) {
+    if (isHideTabsEnabled()) {
+      for (const id of Array.from(state.openTabs.keys())) {
+        if (id !== tabId) {
+          closeTab(id);
+        }
+      }
+    }
     activateTab(tabId);
     return;
   }
@@ -293,6 +309,18 @@ async function openDocViewerTab(docPath, docTitle, host = 'local') {
     }
   } catch (e) {
     markdownContent = `⚠️ Error loading document: ${e.message}`;
+  }
+
+  if (isHideTabsEnabled()) {
+    for (const id of Array.from(state.openTabs.keys())) {
+      if (id !== tabId) {
+        closeTab(id);
+      }
+    }
+  }
+  if (state.openTabs.has(tabId)) {
+    activateTab(tabId);
+    return;
   }
 
   if (el.emptyState) el.emptyState.style.display = 'none';
@@ -405,6 +433,13 @@ async function openTranscriptViewerTab(session) {
 
   const tabId = `transcript_${session.id.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
   if (state.openTabs.has(tabId)) {
+    if (isHideTabsEnabled()) {
+      for (const id of Array.from(state.openTabs.keys())) {
+        if (id !== tabId) {
+          closeTab(id);
+        }
+      }
+    }
     activateTab(tabId);
     return;
   }
@@ -425,6 +460,18 @@ async function openTranscriptViewerTab(session) {
     }
   } catch (e) {
     errorMsg = `Error loading transcript: ${e.message}`;
+  }
+
+  if (isHideTabsEnabled()) {
+    for (const id of Array.from(state.openTabs.keys())) {
+      if (id !== tabId) {
+        closeTab(id);
+      }
+    }
+  }
+  if (state.openTabs.has(tabId)) {
+    activateTab(tabId);
+    return;
   }
 
   if (el.emptyState) el.emptyState.style.display = 'none';

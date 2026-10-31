@@ -285,6 +285,26 @@ function setupEventListeners() {
     });
   }
 
+  if (el.cmItemViewChat) {
+    el.cmItemViewChat.addEventListener('click', () => {
+      if (state.contextMenuSession) {
+        const sess = state.contextMenuSession;
+        hideContextMenu();
+        openSessionInTab(sess, 'chat');
+      }
+    });
+  }
+
+  if (el.cmItemViewTerminal) {
+    el.cmItemViewTerminal.addEventListener('click', () => {
+      if (state.contextMenuSession) {
+        const sess = state.contextMenuSession;
+        hideContextMenu();
+        openSessionInTab(sess, 'terminal');
+      }
+    });
+  }
+
   if (el.cmItemCopyName) {
     el.cmItemCopyName.addEventListener('click', async () => {
       if (state.contextMenuSession) {

@@ -114,6 +114,40 @@ function setTabViewMode(tabId, mode) {
   }
 }
 
+function isHideTabsEnabled() {
+  return Boolean(state.settings && state.settings.hide_session_tabs === 'true');
+}
+
+function applyTabStripVisibility() {
+  const hide = isHideTabsEnabled();
+  const wrapper = el.tabStripWrapper || document.getElementById('tabStripWrapper') || document.querySelector('.tab-strip-wrapper');
+  if (wrapper) {
+    wrapper.style.display = hide ? 'none' : '';
+  }
+
+  if (hide && state.openTabs.size > 1) {
+    const tabIds = Array.from(state.openTabs.keys());
+    const keepId = (state.activeTabId && state.openTabs.has(state.activeTabId))
+      ? state.activeTabId
+      : tabIds[tabIds.length - 1];
+    if (keepId) {
+      closeOtherTabs(keepId);
+    }
+  }
+
+  const activeTab = state.activeTabId ? state.openTabs.get(state.activeTabId) : null;
+  if (activeTab && activeTab.fitAddon && typeof activeTab.fitAddon.fit === 'function') {
+    setTimeout(() => {
+      try {
+        activeTab.fitAddon.fit();
+        if (activeTab.terminal && activeTab.socket && activeTab.socket.readyState === WebSocket.OPEN) {
+          sendTerminalResize(activeTab.socket, activeTab.terminal.cols, activeTab.terminal.rows);
+        }
+      } catch (_) {}
+    }, 20);
+  }
+}
+
 function updateViewModeButtons(mode) {
   if (el.btnViewChat) el.btnViewChat.classList.toggle('active', mode === 'chat');
   if (el.btnViewTerminal) el.btnViewTerminal.classList.toggle('active', mode === 'terminal');
@@ -256,7 +290,7 @@ function destroyTabResources(tab) {
 
 // Setup rich Chat Interface inside tab
 
-function openSessionInTab(session) {
+function openSessionInTab(session, preferredViewMode = null) {
   if (!session) return;
   const tabId = session.id;
 
@@ -269,12 +303,23 @@ function openSessionInTab(session) {
     }
   }
 
+  if (isHideTabsEnabled()) {
+    for (const id of Array.from(state.openTabs.keys())) {
+      if (id !== tabId) {
+        closeTab(id);
+      }
+    }
+  }
+
   if (state.openTabs.has(tabId)) {
     const existingTab = state.openTabs.get(tabId);
     if (existingTab && existingTab.type === 'terminal') {
       existingTab.session = session;
       if (!existingTab.socket || existingTab.socket.readyState === WebSocket.CLOSED || existingTab.socket.readyState === WebSocket.CLOSING) {
         reconnectTerminalTab(tabId);
+      }
+      if (preferredViewMode === 'chat' || preferredViewMode === 'terminal') {
+        setTabViewMode(tabId, preferredViewMode);
       }
       activateTab(tabId);
       markSessionAsRead(session);
@@ -364,7 +409,9 @@ function openSessionInTab(session) {
   const getCurrentTab = () => (state.openTabs ? state.openTabs.get(getActiveTabId()) : null) || tabObj;
 
   // 2. Create Terminal / Chat Container
-  const initialViewMode = session.engine_type === 'headless' ? 'chat' : 'terminal';
+  const initialViewMode = (preferredViewMode === 'chat' || preferredViewMode === 'terminal')
+    ? preferredViewMode
+    : (session.engine_type === 'headless' ? 'chat' : 'terminal');
   const containerEl = document.createElement('div');
   containerEl.className = `terminal-tab-view has-session-container view-mode-${initialViewMode}`;
   containerEl.id = `termView_${tabId.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
@@ -723,15 +770,8 @@ function activateTab(tabId) {
         if (tab.session.node_path) {
           state.lastActiveGroup = tab.session.node_path;
         }
-      }
-      if (el.viewModeToggle) {
-        if (tab.session) {
-          el.viewModeToggle.style.display = 'inline-flex';
-          const mode = tab.viewMode || (tab.session.engine_type === 'headless' ? 'chat' : 'terminal');
-          updateViewModeButtons(mode);
-        } else {
-          el.viewModeToggle.style.display = 'none';
-        }
+        const mode = tab.viewMode || (tab.session.engine_type === 'headless' ? 'chat' : 'terminal');
+        updateViewModeButtons(mode);
       }
       if (tab.type === 'terminal') {
         if (tab.viewMode === 'chat' && tab.chatInputEl) {
@@ -1005,10 +1045,52 @@ function savePersistedTabs() {
 // Restore Open Tabs from localStorage on Load / Refresh
 function restorePersistedTabs() {
   try {
+    applyTabStripVisibility();
     const savedStr = localStorage.getItem('ackbar_persisted_tabs');
     if (!savedStr) return;
     const list = JSON.parse(savedStr);
     if (!Array.isArray(list) || list.length === 0) return;
+
+    const activeId = localStorage.getItem('ackbar_active_tab_id');
+
+    if (isHideTabsEnabled()) {
+      const resolvedItems = [];
+      list.forEach(item => {
+        if (item && item.sessionId && (item.type === 'terminal' || item.type === 'details')) {
+          const sess = state.sessions.find(s => s.id === item.sessionId || s.old_id === item.sessionId);
+          if (sess) {
+            const resolvedTabId = item.type === 'details' ? `details_${sess.id}` : sess.id;
+            resolvedItems.push({ item, sess, resolvedTabId });
+          }
+        }
+      });
+      if (resolvedItems.length === 0) return;
+
+      let chosen = null;
+      if (activeId) {
+        chosen = resolvedItems.find(entry =>
+          entry.item.tabId === activeId ||
+          entry.resolvedTabId === activeId
+        );
+        if (!chosen) {
+          chosen = resolvedItems.find(entry =>
+            entry.item.type === 'terminal' &&
+            (entry.sess.id === activeId || entry.sess.old_id === activeId)
+          );
+        }
+      }
+      if (!chosen) {
+        chosen = resolvedItems[resolvedItems.length - 1];
+      }
+      if (chosen) {
+        if (chosen.item.type === 'details') {
+          openSessionDetailsTab(chosen.sess);
+        } else {
+          openSessionInTab(chosen.sess);
+        }
+      }
+      return;
+    }
 
     const seenTabKeys = new Set();
     const seenTmuxKeys = new Set();
@@ -1035,7 +1117,6 @@ function restorePersistedTabs() {
       }
     });
 
-    const activeId = localStorage.getItem('ackbar_active_tab_id');
     if (activeId) {
       if (state.openTabs.has(activeId)) {
         activateTab(activeId);
@@ -1159,6 +1240,8 @@ function renderOverflowMenu() {
 
 export {
   isAuxiliaryInputFocused,
+  isHideTabsEnabled,
+  applyTabStripVisibility,
   setTabViewMode,
   updateViewModeButtons,
   handleTakeWheel,
