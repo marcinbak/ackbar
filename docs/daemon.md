@@ -45,7 +45,7 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 | `POST` | `/v1/sessions/mark-read` | Marks a session as read (`is_unread = false`), clearing visual unread cues. |
 | `GET` | `/v1/sessions/transcript`| Retrieves extracted conversation transcript (JSON or formatted Markdown). |
 | `POST` | `/v1/sessions/upload` | Uploads clipboard images or drag-and-dropped PDFs to `/tmp/ackbar-uploads/`. |
-| `GET` | `/v1/settings` | Returns daemon settings including `host_name`, `display_name`, auto-done thresholds, `later_collapsed_by_default`, and handover suggestions. |
+| `GET` | `/v1/settings` | Returns daemon settings including `host_name`, `display_name`, auto-done thresholds, `later_collapsed_by_default`, `hide_session_tabs`, and handover suggestions. |
 | `POST` | `/v1/settings` | Updates and persists daemon settings in SQLite. |
 | `GET` | `/v1/nodes` | Returns configured logical tree nodes and custom groups. |
 | `POST` | `/v1/projects/create` | Creates a new logical project node or pure category subgroup. |
@@ -123,10 +123,11 @@ When long-running autonomous sessions consume significant token context (`contex
 3. **Context Rotation:** Once the briefing finishes, sends `/reset` (Antigravity) or `/clear` (Claude Code / Codex) to trigger context rotation.
 4. **Reseeding:** Re-injects the generated briefing and custom instructions into the fresh turn, achieving 0% token context with uninterrupted productivity.
 
-### Handover Settings (`/v1/settings`):
+### Handover & Workspace Settings (`/v1/settings`):
 * `handover_suggestion_enabled`: `"true"` | `"false"` (default: `"true"`) — toggle automated UI suggestions.
 * `handover_threshold_pct`: Integer between `10` and `95` (default: `"60"`) — context window threshold for triggering warnings and quick-action chips.
 * `later_collapsed_by_default`: `"true"` | `"false"` (default: `"false"`) — whether the ⏳ Later subsections start collapsed by default.
+* `hide_session_tabs`: `"true"` | `"false"` (default: `"false"`) — hides the Web UI top session tab bar (`.tab-strip-wrapper`) and enables Single-View Mode where opening a session replaces the previously open view.
 
 ---
 
