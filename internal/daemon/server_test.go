@@ -6271,3 +6271,273 @@ func TestHook_AntigravitySubagentPermissionPropagatesBlockedAndResumesWorking(t 
 		t.Fatalf("expected parent session to return to StateWorking with nil Blocked after subagent PostToolUse, got state=%v blocked=%+v", resumedParent.State, resumedParent.Blocked)
 	}
 }
+
+func TestDetectAntigravityPermissionPrompt_ReviewFindings_C1_N3_N4(t *testing.T) {
+	// C1: ToolConfirmationModel rendered above a trailing "> Accept-edits" mode prompt line
+	c1Lines := []string{
+		"Accept this file edit?",
+		"Edit: internal/daemon/status_inspector.go (+12 -4)",
+		"> 1. Yes, accept this change",
+		"  2. Yes, and always allow",
+		"  3. No, reject this change",
+		"Enter Submit  Tab Amend",
+		"> Accept-edits",
+	}
+	q, r, opts, matched := detectAntigravityPermissionPrompt(c1Lines, false)
+	if !matched {
+		t.Fatalf("expected C1 ToolConfirmationModel above trailing '> Accept-edits' to match")
+	}
+	if q != "Accept this file edit?" {
+		t.Errorf("expected question 'Accept this file edit?', got %q", q)
+	}
+	if r != "Edit: internal/daemon/status_inspector.go (+12 -4)" {
+		t.Errorf("expected reason 'Edit: internal/daemon/status_inspector.go (+12 -4)', got %q", r)
+	}
+	if len(opts) != 3 {
+		t.Errorf("expected 3 options, got %v", opts)
+	}
+
+	// N3: Plain text mentioning " needs approval for " above an idle ">" prompt when runningSubagents=false
+	// and without a subagent alert prefix ("●", "•", "⚠") should NOT false-positive as StateBlocked.
+	n3PlainText := []string{
+		"The PR needs approval for deployment before merging.",
+		">",
+	}
+	if _, _, _, matched := detectAntigravityPermissionPrompt(n3PlainText, false); matched {
+		t.Errorf("expected plain text 'needs approval for' without running subagents or alert prefix NOT to match")
+	}
+	// With subagent alert prefix "● ", it SHOULD match even when runningSubagents=false
+	n3AlertPrefix := []string{
+		"● researcher needs approval for Run command: ls -la",
+		">",
+	}
+	qAlert, rAlert, _, matchedAlert := detectAntigravityPermissionPrompt(n3AlertPrefix, false)
+	if !matchedAlert || qAlert != "Subagent requires permission" || rAlert != "researcher needs approval for Run command: ls -la" {
+		t.Errorf("expected prefixed subagent alert to match, got matched=%v q=%q r=%q", matchedAlert, qAlert, rAlert)
+	}
+
+	// N4: "Requesting permission for:" followed by a specific header ("Run this command?") keeps headerIdx at the first header
+	// so intermediate detail lines are preserved in reason extraction.
+	n4Lines := []string{
+		"Requesting permission for:",
+		"git push origin main",
+		"Run this command?",
+		"> 1. Yes, run command",
+		"  2. No, deny tool call",
+	}
+	qN4, rN4, _, matchedN4 := detectAntigravityPermissionPrompt(n4Lines, false)
+	if !matchedN4 {
+		t.Fatalf("expected N4 lines to match")
+	}
+	if qN4 != "Run this command?" {
+		t.Errorf("expected question 'Run this command?', got %q", qN4)
+	}
+	if rN4 != "git push origin main" {
+		t.Errorf("expected reason 'git push origin main' preserved from before second header, got %q", rN4)
+	}
+}
+
+func TestInspectAntigravityStatus_ReviewFindings_C2_And_N2(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	convUUID := "c2n20000-1111-2222-3333-444444444444"
+	brainDir := filepath.Join(tmpHome, ".gemini", "antigravity-cli", "brain", convUUID, ".system_generated", "logs")
+	if err := os.MkdirAll(brainDir, 0755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+	logFile := filepath.Join(brainDir, "transcript.jsonl")
+
+	// N2: Session had an earlier answered ask_permission at t-10s..t-8s, and then at t-1s a new PreToolUse hook
+	// set StateBlocked (Blocked.Since = t-1s) before the new transcript step flushed to disk.
+	// Polling must NOT treat the old t-8s TOOL_RESPONSE as answering the new t-1s block!
+	now := time.Now().UTC()
+	t0 := now.Add(-10 * time.Second).Format(time.RFC3339Nano)
+	t2 := now.Add(-8 * time.Second).Format(time.RFC3339Nano)
+	t5 := now.Add(-1 * time.Second)
+
+	n2Transcript := fmt.Sprintf(
+		`{"step_index":1,"type":"PLANNER_RESPONSE","status":"DONE","created_at":%q,"tool_calls":[{"name":"ask_permission","args":{"command":"rm -rf /tmp/old"}}]}`+"\n"+
+			`{"step_index":2,"type":"TOOL_RESPONSE","status":"DONE","created_at":%q,"content":"approved"}`+"\n",
+		t0, t2,
+	)
+	if err := os.WriteFile(logFile, []byte(n2Transcript), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	sess := &Session{
+		ID:       "antigravity:local:" + convUUID,
+		Agent:    "antigravity",
+		Host:     "local",
+		NativeID: convUUID,
+		State:    StateBlocked,
+		Blocked: &Blocked{
+			Kind:     BlockPermission,
+			Reason:   "rm -rf /tmp/new",
+			Question: "Tool requires permission",
+			Options:  []string{"1. Yes", "2. Yes, and always allow", "3. No"},
+			Since:    t5,
+		},
+		Activity:          "Waiting for user permission",
+		PID:               os.Getpid(),
+		StartedAt:         now.Add(-20 * time.Second),
+		LastEventAt:       t5,
+		LastStateChangeAt: t5,
+		UpdatedAt:         t5,
+	}
+
+	ctx := context.Background()
+	InspectAntigravityStatus(ctx, sess)
+	if sess.State != StateBlocked || sess.Blocked == nil || sess.Blocked.Reason != "rm -rf /tmp/new" {
+		t.Fatalf("N2 failed: expected new hook block to be preserved during grace window despite older answered block, got state=%v blocked=%+v", sess.State, sess.Blocked)
+	}
+
+	// C2: Now the new block IS answered at t+1s by a TOOL_RESPONSE AND Antigravity immediately appends a new
+	// in-progress PLANNER_RESPONSE (with a non-blocking tool call) before the next poll.
+	// Polling must immediately unblock StateBlocked -> StateWorking without waiting 15s!
+	t6 := now.Format(time.RFC3339Nano)
+	t7 := now.Add(100 * time.Millisecond).Format(time.RFC3339Nano)
+	c2Transcript := n2Transcript + fmt.Sprintf(
+		`{"step_index":3,"type":"PLANNER_RESPONSE","status":"DONE","created_at":%q,"tool_calls":[{"name":"ask_permission","args":{"command":"rm -rf /tmp/new"}}]}`+"\n"+
+			`{"step_index":4,"type":"TOOL_RESPONSE","status":"DONE","created_at":%q,"content":"approved"}`+"\n"+
+			`{"step_index":5,"type":"PLANNER_RESPONSE","status":"GENERATING","created_at":%q,"tool_calls":[{"name":"run_command","args":{"CommandLine":"echo ok"}}]}`+"\n",
+		t5.Format(time.RFC3339Nano), t6, t7,
+	)
+	if err := os.WriteFile(logFile, []byte(c2Transcript), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	changed := InspectAntigravityStatus(ctx, sess)
+	if !changed || sess.State != StateWorking || sess.Blocked != nil {
+		t.Fatalf("C2 failed: expected session to immediately transition to StateWorking when block answered followed by new PLANNER_RESPONSE, got changed=%v state=%v blocked=%+v", changed, sess.State, sess.Blocked)
+	}
+}
+
+func TestAntigravityConcurrentSubagents_HookPreservesSiblingBlock_N1(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+
+	dbPath := filepath.Join(tempHome, "test_subagent_n1.db")
+	db, err := InitDB(dbPath)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := NewServer(db)
+	server.homeDir = tempHome
+
+	parentID := "aaaa1111-2222-3333-4444-555566668888"
+	subAID := "bbbb1111-2222-3333-4444-555566668888"
+	subBID := "cccc1111-2222-3333-4444-555566668888"
+
+	subRegDir := filepath.Join(tempHome, ".gemini", "antigravity-cli", "brain", parentID, ".system_generated", "subagents")
+	if err := os.MkdirAll(subRegDir, 0755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+	for _, id := range []string{subAID, subBID} {
+		regJSON := `{"conversationId":"` + id + `","subagentDescriptor":{"typeName":"self","role":"Implementer"},"state":"SUBAGENT_STATE_ALIVE"}`
+		if err := os.WriteFile(filepath.Join(subRegDir, id+".json"), []byte(regJSON), 0644); err != nil {
+			t.Fatalf("WriteFile failed: %v", err)
+		}
+	}
+
+	parentLogDir := filepath.Join(tempHome, ".gemini", "antigravity-cli", "brain", parentID, ".system_generated", "logs")
+	if err := os.MkdirAll(parentLogDir, 0755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+	parentTranscript := fmt.Sprintf(
+		`{"step_index":1,"type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-10-31T12:00:00Z","tool_calls":[{"name":"spawn_agent","args":{"message":"Task A","agent_type":"implementer"}},{"name":"spawn_agent","args":{"message":"Task B","agent_type":"explorer"}}]}`+"\n"+
+			`{"step_index":2,"type":"TOOL_RESPONSE","status":"DONE","created_at":"2026-10-31T12:00:01Z","content":"Spawned %s and %s"}`+"\n",
+		subAID, subBID,
+	)
+	if err := os.WriteFile(filepath.Join(parentLogDir, "transcript.jsonl"), []byte(parentTranscript), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	for _, id := range []string{subAID, subBID} {
+		subLogDir := filepath.Join(tempHome, ".gemini", "antigravity-cli", "brain", id, ".system_generated", "logs")
+		if err := os.MkdirAll(subLogDir, 0755); err != nil {
+			t.Fatalf("MkdirAll failed: %v", err)
+		}
+		subTranscript := fmt.Sprintf(`{"step_index":0,"source":"SYSTEM","type":"SYSTEM_MESSAGE","status":"DONE","created_at":"2026-10-31T12:00:00Z","content":"<SYSTEM_MESSAGE>\n[Message] timestamp=2026-10-31T12:00:00Z sender=%s priority=MESSAGE_PRIORITY_HIGH content=Run task\n</SYSTEM_MESSAGE>"}`+"\n", parentID)
+		if err := os.WriteFile(filepath.Join(subLogDir, "transcript.jsonl"), []byte(subTranscript), 0644); err != nil {
+			t.Fatalf("WriteFile failed: %v", err)
+		}
+	}
+
+	hostName := server.HostName()
+	parentSessID := fmt.Sprintf("antigravity:%s:%s", hostName, parentID)
+	parentSess := &Session{
+		ID:       parentSessID,
+		Agent:    "antigravity",
+		Host:     hostName,
+		NativeID: parentID,
+		Cwd:      "/tmp/project",
+		Name:     "Parent Concurrent Subagents",
+		State:    StateWorking,
+		Activity: "Subagent running: Implementer",
+	}
+	if err := db.SaveSession(parentSess); err != nil {
+		t.Fatalf("SaveSession failed: %v", err)
+	}
+
+	// 1. subA blocks on ask_permission
+	server.processParsedHookEvent(&Event{
+		Agent:     "antigravity",
+		NativeID:  subAID,
+		Cwd:       "/tmp/project",
+		EventName: "PreToolUse",
+		ToolName:  "ask_permission",
+		State:     StateBlocked,
+		Blocked: &Blocked{
+			Kind:     BlockPermission,
+			Reason:   "npm publish",
+			Question: "Tool requires permission",
+			Options:  []string{"1. Yes", "2. Yes, and always allow", "3. No"},
+			Since:    time.Now(),
+		},
+		Activity:    "Waiting for user permission",
+		LastEventAt: time.Now(),
+	}, "PreToolUse", "local", "", false)
+
+	// 2. Sibling subB emits a working PreToolUse event while subA is still blocked
+	server.processParsedHookEvent(&Event{
+		Agent:       "antigravity",
+		NativeID:    subBID,
+		Cwd:         "/tmp/project",
+		EventName:   "PreToolUse",
+		ToolName:    "view_file",
+		State:       StateWorking,
+		Activity:    "Running tool: view_file",
+		LastEventAt: time.Now(),
+	}, "PreToolUse", "local", "", false)
+
+	gotAfterSibling, err := db.GetSession(parentSessID)
+	if err != nil || gotAfterSibling == nil {
+		t.Fatalf("GetSession failed: %v", err)
+	}
+	if gotAfterSibling.State != StateBlocked || gotAfterSibling.Blocked == nil || gotAfterSibling.Blocked.Reason != "npm publish" {
+		t.Fatalf("N1 failed: expected parent to remain StateBlocked while subA is still blocked and sibling subB works, got state=%v blocked=%+v", gotAfterSibling.State, gotAfterSibling.Blocked)
+	}
+
+	// 3. Now subA itself emits PostToolUse (resumed) -> parent transitions back to StateWorking
+	server.processParsedHookEvent(&Event{
+		Agent:       "antigravity",
+		NativeID:    subAID,
+		Cwd:         "/tmp/project",
+		EventName:   "PostToolUse",
+		ToolName:    "ask_permission",
+		State:       StateWorking,
+		Activity:    "Tool execution completed",
+		LastEventAt: time.Now(),
+	}, "PostToolUse", "local", "", false)
+
+	gotAfterUnblock, err := db.GetSession(parentSessID)
+	if err != nil || gotAfterUnblock == nil {
+		t.Fatalf("GetSession failed: %v", err)
+	}
+	if gotAfterUnblock.State != StateWorking || gotAfterUnblock.Blocked != nil {
+		t.Fatalf("expected parent to return to StateWorking after blocking subA resumed, got state=%v blocked=%+v", gotAfterUnblock.State, gotAfterUnblock.Blocked)
+	}
+}

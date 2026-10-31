@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -190,6 +191,7 @@ func (s *Server) processParsedHookEvent(event *Event, urlEventName string, heade
 				}
 				if parentSess != nil {
 					runningSubs := s.getRunningSubagents(parentSess.ID, parentSess.NativeID, "antigravity", parentSess.Cwd)
+					hasDiskRunningSubs := len(runningSubs) > 0
 					if len(runningSubs) == 0 && (event.State == StateWorking || event.State == StateBlocked) {
 						subLabel := role
 						if subLabel == "" {
@@ -220,6 +222,7 @@ func (s *Server) processParsedHookEvent(event *Event, urlEventName string, heade
 						s.headless.EmitSubagentsUpdate(parentSess.ID, runningPtrs)
 					}
 					if event.State == StateBlocked {
+						s.blockedBySubagent.Store(parentSess.ID, event.NativeID)
 						now := time.Now()
 						if parentSess.State != StateBlocked {
 							parentSess.IsUnread = true
@@ -252,34 +255,83 @@ func (s *Server) processParsedHookEvent(event *Event, urlEventName string, heade
 						} else {
 							parentSess.Activity = "Waiting for user permission"
 						}
-					} else if len(runningSubs) > 0 {
-						parentSess.State = StateWorking
-						parentSess.Blocked = nil
-						parentSess.IsUnread = false
-						subLabel := role
-						if subLabel == "" {
-							subLabel = typeName
+					} else {
+						stillBlockedBySibling := false
+						if parentSess.State == StateBlocked {
+							if blockerVal, ok := s.blockedBySubagent.Load(parentSess.ID); ok {
+								if blockerID, ok := blockerVal.(string); ok && blockerID != "" && blockerID != event.NativeID {
+									if !hasDiskRunningSubs {
+										stillBlockedBySibling = true
+									} else {
+										for _, sub := range runningSubs {
+											if sub.ID == blockerID {
+												stillBlockedBySibling = true
+												break
+											}
+										}
+									}
+								}
+							}
 						}
-						if subLabel == "" {
-							subLabel = runningSubs[0].Role
+						if !stillBlockedBySibling && home != "" && len(runningSubs) > 0 {
+							subBrainDirs := antigravityBrainDirs(home)
+							blockSince := effectiveBlockedSince(parentSess)
+							for _, sub := range runningSubs {
+								if sub.ID == event.NativeID {
+									continue
+								}
+								cleanSubID := filepath.Base(filepath.Clean(sub.ID))
+								if cleanSubID == "" || cleanSubID == "." || cleanSubID == ".." || strings.ContainsAny(cleanSubID, "*?[") {
+									continue
+								}
+								for _, bDir := range subBrainDirs {
+									subLogPath := filepath.Join(bDir, cleanSubID, ".system_generated", "logs", "transcript.jsonl")
+									if blocked, activity, ok, _ := inspectAntigravityTranscriptFileBlocked(subLogPath, blockSince); ok {
+										stillBlockedBySibling = true
+										s.blockedBySubagent.Store(parentSess.ID, sub.ID)
+										parentSess.State = StateBlocked
+										parentSess.Blocked = blocked
+										parentSess.Activity = activity
+										break
+									}
+								}
+								if stillBlockedBySibling {
+									break
+								}
+							}
 						}
-						if subLabel == "" {
-							subLabel = runningSubs[0].Name
+						if !stillBlockedBySibling {
+							s.blockedBySubagent.Delete(parentSess.ID)
+							if len(runningSubs) > 0 {
+								parentSess.State = StateWorking
+								parentSess.Blocked = nil
+								parentSess.IsUnread = false
+								subLabel := role
+								if subLabel == "" {
+									subLabel = typeName
+								}
+								if subLabel == "" {
+									subLabel = runningSubs[0].Role
+								}
+								if subLabel == "" {
+									subLabel = runningSubs[0].Name
+								}
+								if subLabel == "" {
+									subLabel = "Subagent"
+								}
+								if event.ToolName != "" {
+									parentSess.Activity = fmt.Sprintf("Subagent (%s): %s", subLabel, event.ToolName)
+								} else if !strings.HasPrefix(parentSess.Activity, "Subagent") {
+									parentSess.Activity = "Subagent running: " + subLabel
+								}
+								parentSess.LastEventAt = time.Now()
+							} else if parentSess.State == StateBlocked {
+								parentSess.State = StateWorking
+								parentSess.Blocked = nil
+								parentSess.IsUnread = false
+								parentSess.Activity = "Thinking..."
+							}
 						}
-						if subLabel == "" {
-							subLabel = "Subagent"
-						}
-						if event.ToolName != "" {
-							parentSess.Activity = fmt.Sprintf("Subagent (%s): %s", subLabel, event.ToolName)
-						} else if !strings.HasPrefix(parentSess.Activity, "Subagent") {
-							parentSess.Activity = "Subagent running: " + subLabel
-						}
-						parentSess.LastEventAt = time.Now()
-					} else if parentSess.State == StateBlocked {
-						parentSess.State = StateWorking
-						parentSess.Blocked = nil
-						parentSess.IsUnread = false
-						parentSess.Activity = "Thinking..."
 					}
 					parentSess.UpdatedAt = time.Now()
 					_ = s.db.SaveSession(parentSess)

@@ -48,22 +48,23 @@ type HostHealth struct {
 }
 
 type Server struct {
-	db               *DB
-	providers        map[string]Provider
-	subscribers      map[chan *Session]bool
-	subMutex         sync.Mutex
-	webFS            fs.FS
-	configuredToken  string
-	relayClient      *relay.Client
-	headless         *HeadlessRunner
-	hostName         string
-	displayName      string
-	hostHealthMap    map[string]*HostHealth
-	hostHealthMu     sync.RWMutex
-	activeSubagents  map[string][]*SubagentInfo
-	subagentsMu      sync.RWMutex
-	sessionHookLocks sync.Map
-	homeDir          string
+	db                *DB
+	providers         map[string]Provider
+	subscribers       map[chan *Session]bool
+	subMutex          sync.Mutex
+	webFS             fs.FS
+	configuredToken   string
+	relayClient       *relay.Client
+	headless          *HeadlessRunner
+	hostName          string
+	displayName       string
+	hostHealthMap     map[string]*HostHealth
+	hostHealthMu      sync.RWMutex
+	activeSubagents   map[string][]*SubagentInfo
+	subagentsMu       sync.RWMutex
+	sessionHookLocks  sync.Map
+	blockedBySubagent sync.Map
+	homeDir           string
 }
 
 func NewServer(db *DB) *Server {
