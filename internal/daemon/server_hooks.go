@@ -181,6 +181,8 @@ func (s *Server) processParsedHookEvent(event *Event, urlEventName string, heade
 
 			parentConvID, role, typeName := ResolveAntigravitySubagentParent(home, event.NativeID)
 			if parentConvID != "" {
+				unlockParent := s.lockSessionHook(hookLockKey("antigravity", parentConvID, "antigravity-"+parentConvID))
+				defer unlockParent()
 				parentSessID := fmt.Sprintf("antigravity:%s:%s", host, parentConvID)
 				parentSess := s.resolveSession(parentSessID)
 				if parentSess == nil {
@@ -188,7 +190,7 @@ func (s *Server) processParsedHookEvent(event *Event, urlEventName string, heade
 				}
 				if parentSess != nil {
 					runningSubs := s.getRunningSubagents(parentSess.ID, parentSess.NativeID, "antigravity", parentSess.Cwd)
-					if len(runningSubs) == 0 {
+					if len(runningSubs) == 0 && event.State == StateWorking {
 						subLabel := role
 						if subLabel == "" {
 							subLabel = typeName

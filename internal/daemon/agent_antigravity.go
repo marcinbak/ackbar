@@ -1088,20 +1088,36 @@ func ResolveAntigravitySubagentParent(home, convID string) (parentID, role, type
 		logPath := filepath.Join(bDir, convID, ".system_generated", "logs", "transcript.jsonl")
 		if data, err := readHead(logPath, 64*1024); err == nil {
 			lines := strings.Split(string(data), "\n")
-			for i, line := range lines {
-				if i > 15 {
-					break
-				}
+			for _, line := range lines {
 				line = strings.TrimSpace(line)
 				if line == "" {
 					continue
 				}
-				lineLower := strings.ToLower(line)
-				if strings.Contains(lineLower, "<system_message>") || strings.Contains(lineLower, `"type":"system_message"`) || strings.Contains(lineLower, `"type": "system_message"`) {
+				var step struct {
+					StepIndex int    `json:"step_index"`
+					Source    string `json:"source"`
+					Type      string `json:"type"`
+					Content   string `json:"content"`
+				}
+				if json.Unmarshal([]byte(line), &step) == nil {
+					if step.StepIndex == 0 {
+						if strings.EqualFold(step.Type, "SYSTEM_MESSAGE") || strings.EqualFold(step.Source, "SYSTEM") {
+							if strings.Contains(strings.ToLower(step.Content), "<system_message>") {
+								if senderID := extractSenderUUIDFromSystemMessage(step.Content, convID); senderID != "" {
+									return senderID, "", ""
+								}
+							}
+						}
+						if strings.EqualFold(step.Type, "USER_INPUT") || strings.EqualFold(step.Source, "USER_EXPLICIT") || strings.EqualFold(step.Source, "USER") {
+							return "", "", ""
+						}
+					}
+				} else if strings.Contains(strings.ToLower(line), "<system_message>") {
 					if senderID := extractSenderUUIDFromSystemMessage(line, convID); senderID != "" {
 						return senderID, "", ""
 					}
 				}
+				break
 			}
 		}
 
@@ -1136,6 +1152,32 @@ func ResolveAntigravitySubagentParent(home, convID string) (parentID, role, type
 	}
 
 	return "", "", ""
+}
+
+func hasSystemStepSubagentMarker(lower string) bool {
+	return strings.Contains(lower, "<subagent_invocation>") ||
+		strings.Contains(lower, "you are a subagent") ||
+		strings.Contains(lower, "subagent task") ||
+		strings.Contains(lower, "invoked by parent") ||
+		strings.Contains(lower, "role contract (") ||
+		strings.Contains(lower, "advisory restriction:")
+}
+
+func hasLegacySubagentPromptPrefix(lower string) bool {
+	trimmed := strings.TrimSpace(lower)
+	return strings.Contains(trimmed, "<subagent_invocation>") ||
+		strings.HasPrefix(trimmed, "you are a subagent") ||
+		strings.HasPrefix(trimmed, "you are reviewer") ||
+		strings.HasPrefix(trimmed, "you are code reviewer") ||
+		strings.HasPrefix(trimmed, "you are a code reviewer") ||
+		strings.HasPrefix(trimmed, "you are the dedicated security reviewer") ||
+		strings.HasPrefix(trimmed, "you are the security reviewer") ||
+		strings.HasPrefix(trimmed, "you are the security auditor") ||
+		strings.HasPrefix(trimmed, "you are the security-reviewer") ||
+		strings.HasPrefix(trimmed, "you are the clean-reviewer") ||
+		strings.HasPrefix(trimmed, "you are the context-reviewer") ||
+		strings.HasPrefix(trimmed, "advisory: you are read-only") ||
+		((strings.HasPrefix(trimmed, "you are the ") || strings.HasPrefix(trimmed, "you are a ")) && strings.Contains(trimmed, "-reviewer for project"))
 }
 
 // isAntigravitySubagent determines whether a given conversation UUID is an internal
@@ -1189,58 +1231,61 @@ func isAntigravitySubagent(home, convID string, precomputedSubagents ...map[stri
 		}
 	}
 
-	// 4. Check transcript file for explicit subagent invocation markers
+	// 4. Check transcript file first step (step_index == 0) for explicit subagent invocation markers
 	for _, bDir := range brainDirs {
 		logPath := filepath.Join(bDir, convID, ".system_generated", "logs", "transcript.jsonl")
 		if data, err := readHead(logPath, 64*1024); err == nil {
 			lines := strings.Split(string(data), "\n")
-			for i, line := range lines {
-				if i > 15 {
-					break
-				}
+			for _, line := range lines {
 				line = strings.TrimSpace(line)
 				if line == "" {
 					continue
 				}
-				lineLower := strings.ToLower(line)
-				if (strings.Contains(lineLower, "<system_message>") || strings.Contains(lineLower, `"type":"system_message"`) || strings.Contains(lineLower, `"type": "system_message"`)) &&
-					extractSenderUUIDFromSystemMessage(line, convID) != "" {
-					return true
+				var step struct {
+					StepIndex int    `json:"step_index"`
+					Source    string `json:"source"`
+					Type      string `json:"type"`
+					Content   string `json:"content"`
 				}
-				if strings.Contains(lineLower, "<subagent_invocation>") ||
-					strings.Contains(lineLower, "you are a subagent") ||
-					strings.Contains(lineLower, "subagent defined") ||
-					strings.Contains(lineLower, "subagent_analyst") ||
-					strings.Contains(lineLower, "invoke_subagent") ||
-					strings.Contains(lineLower, "role contract (") ||
-					strings.Contains(lineLower, "advisory restriction:") ||
-					strings.Contains(lineLower, "this is a side question from the user") ||
-					strings.Contains(lineLower, "you are reviewer") ||
-					strings.Contains(lineLower, "you are code reviewer") ||
-					strings.Contains(lineLower, "you are a code reviewer") ||
-					strings.Contains(lineLower, "you are the dedicated security reviewer") ||
-					strings.Contains(lineLower, "you are the security reviewer") ||
-					strings.Contains(lineLower, "you are the security auditor") ||
-					strings.Contains(lineLower, "you are the security-reviewer") ||
-					strings.Contains(lineLower, "you are the clean-reviewer") ||
-					strings.Contains(lineLower, "you are the context-reviewer") ||
-					strings.Contains(lineLower, "advisory: you are read-only") ||
-					((strings.Contains(lineLower, "you are the ") || strings.Contains(lineLower, "you are a ")) && strings.Contains(lineLower, "-reviewer for project")) {
-					return true
+				if json.Unmarshal([]byte(line), &step) == nil {
+					if step.StepIndex == 0 {
+						contentLower := strings.ToLower(step.Content)
+						if strings.EqualFold(step.Type, "SYSTEM_MESSAGE") || strings.EqualFold(step.Source, "SYSTEM") {
+							if (strings.Contains(contentLower, "<system_message>") && extractSenderUUIDFromSystemMessage(step.Content, convID) != "") ||
+								hasSystemStepSubagentMarker(contentLower) ||
+								hasLegacySubagentPromptPrefix(contentLower) {
+								return true
+							}
+						}
+						if hasLegacySubagentPromptPrefix(contentLower) {
+							return true
+						}
+						if strings.EqualFold(step.Type, "USER_INPUT") || strings.EqualFold(step.Source, "USER_EXPLICIT") || strings.EqualFold(step.Source, "USER") {
+							return false
+						}
+					}
+				} else {
+					lineLower := strings.ToLower(line)
+					if (strings.Contains(lineLower, "<system_message>") && extractSenderUUIDFromSystemMessage(line, convID) != "") ||
+						hasSystemStepSubagentMarker(lineLower) ||
+						hasLegacySubagentPromptPrefix(lineLower) {
+						return true
+					}
 				}
+				break
 			}
 		}
 
-		// 5. Check .system_generated/messages for dispatched inter-agent messages
+		// 5. Check .system_generated/messages for dispatched parent-to-subagent invocation messages
 		msgDir := filepath.Join(bDir, convID, ".system_generated", "messages")
 		if entries, err := os.ReadDir(msgDir); err == nil {
 			for _, e := range entries {
 				if !e.IsDir() && strings.HasSuffix(e.Name(), ".json") && e.Name() != "read.json" {
 					if mData, mErr := readHead(filepath.Join(msgDir, e.Name()), 8*1024); mErr == nil {
 						mStr := string(mData)
-						if strings.Contains(mStr, "send_message") ||
-							strings.Contains(mStr, "Message from Root Agent") ||
-							(strings.Contains(mStr, `"conversationId":`) && !strings.Contains(mStr, fmt.Sprintf(`"conversationId":"%s"`, convID))) {
+						if strings.Contains(mStr, "invoke_subagent") ||
+							strings.Contains(mStr, "Message from Parent Agent") ||
+							strings.Contains(mStr, "Message from Root Agent") {
 							return true
 						}
 					}

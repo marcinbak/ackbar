@@ -3102,7 +3102,7 @@ func TestIsAntigravitySubagent_ReviewerPromptsAndMessages(t *testing.T) {
 	// 3. Message dispatch subagent
 	msgDir := filepath.Join(tempHome, ".gemini", "antigravity", "brain", convIDMessage, ".system_generated", "messages")
 	_ = os.MkdirAll(msgDir, 0755)
-	_ = os.WriteFile(filepath.Join(msgDir, "msg-1.json"), []byte(`{"sourceMetadata":{"tool":{"conversationId":"root-conv-123","name":"send_message"}}}`), 0644)
+	_ = os.WriteFile(filepath.Join(msgDir, "msg-1.json"), []byte(`{"sourceMetadata":{"tool":{"conversationId":"root-conv-123","name":"invoke_subagent"}}}`), 0644)
 
 	// 4. Advisory read-only subagent
 	advLogDir := filepath.Join(tempHome, ".gemini", "antigravity", "brain", convIDAdvisory, ".system_generated", "logs")
@@ -5618,6 +5618,35 @@ func TestResolveAntigravitySubagentParent_And_SystemMessageDetection(t *testing.
 	if gotParentMsg != parentID {
 		t.Fatalf("expected parent %q from messages, got %q", parentID, gotParentMsg)
 	}
+
+	// 4. Root session (without .pbtxt) starting with step_index: 0 USER_INPUT followed by
+	// step_index: 1 SYSTEM_MESSAGE with sender=<subagent-uuid> (a subagent reply) and
+	// .system_generated/messages/reply.json containing "send_message" and "conversationId"
+	// MUST NOT be classified as a subagent.
+	rootNoAnnoID := "dddddddd-5555-6666-7777-eeeeeeeeeeee"
+	rootLogDir := filepath.Join(tempHome, ".gemini", "antigravity-cli", "brain", rootNoAnnoID, ".system_generated", "logs")
+	if err := os.MkdirAll(rootLogDir, 0755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+	rootTranscript := `{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","created_at":"2026-10-30T23:50:00Z","content":"Please review and fix subagent filtering."}` + "\n" +
+		fmt.Sprintf(`{"step_index":1,"source":"SYSTEM","type":"SYSTEM_MESSAGE","status":"DONE","created_at":"2026-10-30T23:55:00Z","content":"<SYSTEM_MESSAGE>\n[Message] timestamp=2026-10-30T23:55:00Z sender=%s priority=MESSAGE_PRIORITY_HIGH content=Subagent completed task.\n</SYSTEM_MESSAGE>"}`+"\n", subByTranscriptID)
+	if err := os.WriteFile(filepath.Join(rootLogDir, "transcript.jsonl"), []byte(rootTranscript), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	rootMsgDir := filepath.Join(tempHome, ".gemini", "antigravity-cli", "brain", rootNoAnnoID, ".system_generated", "messages")
+	if err := os.MkdirAll(rootMsgDir, 0755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+	replyJSON := fmt.Sprintf(`{"sourceMetadata":{"tool":{"conversationId":%q,"name":"send_message"}}}`, subByTranscriptID)
+	if err := os.WriteFile(filepath.Join(rootMsgDir, "reply.json"), []byte(replyJSON), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	if isAntigravitySubagent(tempHome, rootNoAnnoID) {
+		t.Fatalf("expected rootNoAnnoID NOT to be classified as a subagent when step 0 is USER_INPUT and step 1 is a subagent reply")
+	}
+	if gotRootParent, _, _ := ResolveAntigravitySubagentParent(tempHome, rootNoAnnoID); gotRootParent != "" {
+		t.Fatalf("expected ResolveAntigravitySubagentParent to return empty parent for rootNoAnnoID, got %q", gotRootParent)
+	}
 }
 
 func TestHook_AntigravitySubagentRoutedToParentAndDeletesStraySession(t *testing.T) {
@@ -5747,5 +5776,38 @@ func TestHook_AntigravitySubagentRoutedToParentAndDeletesStraySession(t *testing
 	}
 	if !strings.Contains(updatedParent.Activity, "Implementer") || !strings.Contains(updatedParent.Activity, "edit_file") {
 		t.Errorf("expected parent Activity to mention subagent role and tool, got %q", updatedParent.Activity)
+	}
+
+	// 3. Complete the subagent transcript (PLANNER_RESPONSE with DONE and no tool_calls)
+	// and send a postinvocation (StateIdle) hook for the subagent; verify RunningSubagents == 0.
+	completedTranscript := subTranscript +
+		`{"step_index":2,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-10-30T23:50:20Z","content":"Done implementing feature X."}` + "\n"
+	if err := os.WriteFile(filepath.Join(subLogDir, "transcript.jsonl"), []byte(completedTranscript), 0644); err != nil {
+		t.Fatalf("WriteFile completed transcript failed: %v", err)
+	}
+
+	idleSubEvent := &Event{
+		Agent:       "antigravity",
+		NativeID:    subID,
+		Cwd:         "/tmp/project",
+		EventName:   "PostInvocation",
+		State:       StateIdle,
+		Activity:    "Idle",
+		LastEventAt: time.Now(),
+	}
+	server.processParsedHookEvent(idleSubEvent, "postinvocation", "local", "", false)
+
+	var broadcastedParentAfterIdle *Session
+	for len(ch) > 0 {
+		s := <-ch
+		if s.ID == parentSessID {
+			broadcastedParentAfterIdle = s
+		}
+	}
+	if broadcastedParentAfterIdle == nil {
+		t.Fatalf("expected broadcast for parent session %s after subagent postinvocation", parentSessID)
+	}
+	if broadcastedParentAfterIdle.RunningSubagents != 0 {
+		t.Errorf("expected parent RunningSubagents=0 after subagent postinvocation completion, got %d", broadcastedParentAfterIdle.RunningSubagents)
 	}
 }
