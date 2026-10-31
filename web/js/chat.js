@@ -512,6 +512,7 @@ async function loadChatTranscript(tabObj) {
   const baseUrl = getSessionBaseUrl(sessionId, tabObj.session);
   const reqId = (tabObj._transcriptReqId || 0) + 1;
   tabObj._transcriptReqId = reqId;
+  tabObj._lastTranscriptLoadAt = Date.now();
 
   const container = tabObj.chatMessagesEl;
   const hadMessages = container.children.length > 0;
@@ -1929,6 +1930,7 @@ async function sendChatPrompt(tabObj, forcedPromptText) {
 
   connectChatStream(tabObj);
   const baseUrl = getSessionBaseUrl(tabObj.session.id, tabObj.session);
+  tabObj.dispatchingPrompt = true;
   try {
     const res = await fetch(`${baseUrl}/v1/sessions/prompt`, {
       method: 'POST',
@@ -1938,6 +1940,7 @@ async function sendChatPrompt(tabObj, forcedPromptText) {
         prompt: daemonPrompt
       })
     });
+    tabObj.dispatchingPrompt = false;
 
     if (!res.ok) {
       let errMsg = '';
@@ -1981,6 +1984,7 @@ async function sendChatPrompt(tabObj, forcedPromptText) {
       }
     }, 15000);
   } catch (err) {
+    tabObj.dispatchingPrompt = false;
     console.error('Failed to dispatch prompt:', err);
     if (!tabObj.activeTurnMsgEl) {
       hideInStreamActivity(tabObj);
@@ -2536,6 +2540,7 @@ function handleChatStreamEvent(tabObj, evt) {
 function resetChatComposer(tabObj) {
   if (!tabObj) return;
   tabObj.sending = false;
+  tabObj.dispatchingPrompt = false;
   if (tabObj.session && isSessionWorking(tabObj.session)) {
     tabObj.session.state = 3;
     if (Array.isArray(state.sessions)) {
@@ -2589,9 +2594,8 @@ function onSessionUpdated(updatedSess) {
 
     const working = isSessionWorking(updatedSess);
     const activeTurnUI = hasActiveTurnUI(tabObj);
-    const hasRecentInFlightPrompt = Boolean(tabObj.inFlightPrompt && (Date.now() - tabObj.inFlightPrompt.timestamp) < 15000);
 
-    if (!working && activeTurnUI && !hasRecentInFlightPrompt) {
+    if (!working && activeTurnUI && !tabObj.dispatchingPrompt) {
       setChatSending(tabObj, false);
       loadChatTranscript(tabObj);
       loadChatQueue(tabObj);

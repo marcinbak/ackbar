@@ -227,9 +227,11 @@ func TestHeadlessThinkingBubblePersistence_JS(t *testing.T) {
 		"if (match) match.state = 1;",
 		"tabObj.session.state = 3;",
 		"if (match && isSessionWorking(match)) match.state = 3;",
-		"const hasRecentInFlightPrompt = Boolean(tabObj.inFlightPrompt && (Date.now() - tabObj.inFlightPrompt.timestamp) < 15000);",
-		"if (!working && activeTurnUI && !hasRecentInFlightPrompt) {",
+		"tabObj.dispatchingPrompt = true;",
+		"tabObj.dispatchingPrompt = false;",
+		"if (!working && activeTurnUI && !tabObj.dispatchingPrompt) {",
 		"} else if (working) {",
+		"tabObj._lastTranscriptLoadAt = Date.now();",
 		"if (!liveTurnMsgEl && !liveActivityEl && (tabObj.sending || isSessionWorking(tabObj.session))) {",
 		"} else if (!liveTurnMsgEl && (tabObj.sending || isSessionWorking(tabObj.session))) {",
 	} {
@@ -253,8 +255,9 @@ func TestHeadlessThinkingBubblePersistence_JS(t *testing.T) {
 	for _, expected := range []string{
 		"setChatSending,",
 		"isSessionWorking,",
-		"if (tab.sending || isSessionWorking(currentSess)) {",
+		"if (isSessionWorking(currentSess) || (tab.sending && !currentSess)) {",
 		"setChatSending(tab, true);",
+		"if ((tab._transcriptReqId || 0) === prevReqId && (Date.now() - (tab._lastTranscriptLoadAt || 0)) > 200) {",
 		"loadChatTranscript(tab);",
 	} {
 		if !strings.Contains(tabsContent, expected) {

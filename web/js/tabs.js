@@ -728,13 +728,16 @@ function activateTab(tabId) {
       if (tab.session && tab.viewMode === 'chat') {
         const sessMatch = state.sessions.find(s => s.id === tab.session.id || (tab.session.native_id && s.native_id === tab.session.native_id));
         const currentSess = sessMatch || tab.session;
+        const prevReqId = tab._transcriptReqId || 0;
         if (currentSess) {
           onSessionUpdated(currentSess);
         }
-        if (tab.sending || isSessionWorking(currentSess)) {
+        if (isSessionWorking(currentSess) || (tab.sending && !currentSess)) {
           setChatSending(tab, true);
         }
-        loadChatTranscript(tab);
+        if ((tab._transcriptReqId || 0) === prevReqId && (Date.now() - (tab._lastTranscriptLoadAt || 0)) > 200) {
+          loadChatTranscript(tab);
+        }
         if (currentSess && currentSess.engine_type === 'headless') {
           connectChatStream(tab);
         }
