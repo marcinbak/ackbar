@@ -1,4 +1,4 @@
-// Session Details, Documentation & Transcript Tabs
+// Session Details, Documentation & Transcript Inspector Pane
 import { state, el } from './state.js';
 import {
   escapeHtml,
@@ -18,13 +18,10 @@ import {
 import { fetchSessions, updateSettings } from './api.js';
 import { openHandoverModal, showProjectDocsModal } from './modals.js';
 import {
-  activateTab,
   closeTab,
-  openSessionInTab,
-  handleTabOverflow,
-  isHideTabsEnabled
+  openSessionInTab
 } from './tabs.js';
-import { showTabContextMenu } from './context-menu.js';
+import { sendTerminalResize } from './terminal.js';
 import { renderTree } from './tree.js';
 import {
   attachChatMessageListeners,
@@ -33,116 +30,122 @@ import {
 } from './chat.js';
 
 
+function refitActiveTerminal() {
+  const activeTab = state.activeTabId ? state.openTabs.get(state.activeTabId) : null;
+  if (!activeTab) return;
+  setTimeout(() => {
+    if (activeTab.fitAddon && typeof activeTab.fitAddon.fit === 'function') {
+      try {
+        activeTab.fitAddon.fit();
+        if (activeTab.terminal && activeTab.socket && activeTab.socket.readyState === WebSocket.OPEN) {
+          sendTerminalResize(activeTab.socket, activeTab.terminal.cols, activeTab.terminal.rows);
+        }
+      } catch (_) {}
+    }
+  }, 20);
+}
+
+function openInspectorPane({ titleHtml, subtitleHtml = '', actionsEl = null, bodyEl, meta = null }) {
+  if (el.inspectorHeaderLeft) {
+    const plainSub = subtitleHtml ? subtitleHtml.replace(/<[^>]*>/g, '') : '';
+    el.inspectorHeaderLeft.innerHTML = `
+      <div class="inspector-title" id="inspectorTitle">${titleHtml || 'Inspector'}</div>
+      ${subtitleHtml ? `<div class="inspector-subtitle" title="${escapeHtml(plainSub)}">${subtitleHtml}</div>` : ''}
+    `;
+  }
+
+  if (el.inspectorActions) {
+    el.inspectorActions.innerHTML = '';
+    if (actionsEl) {
+      el.inspectorActions.appendChild(actionsEl);
+    }
+  }
+
+  if (el.inspectorBody) {
+    el.inspectorBody.innerHTML = '';
+    if (bodyEl) {
+      el.inspectorBody.appendChild(bodyEl);
+    }
+  }
+
+  if (el.inspectorResizer) {
+    el.inspectorResizer.style.display = 'block';
+  }
+
+  if (el.inspectorPanel) {
+    try {
+      const savedWidth = localStorage.getItem('ackbar_inspector_width');
+      if (savedWidth) {
+        const parsed = parseInt(savedWidth, 10);
+        if (!isNaN(parsed) && parsed >= 300) {
+          el.inspectorPanel.style.width = `${parsed}px`;
+        }
+      }
+    } catch (_) {}
+    el.inspectorPanel.style.display = 'flex';
+  }
+
+  state.inspectorState = meta;
+  refitActiveTerminal();
+}
+
+function closeInspectorPane() {
+  if (el.inspectorResizer) {
+    el.inspectorResizer.style.display = 'none';
+  }
+  if (el.inspectorPanel) {
+    el.inspectorPanel.style.display = 'none';
+  }
+  if (el.inspectorBody) {
+    el.inspectorBody.innerHTML = '';
+  }
+  if (el.inspectorActions) {
+    el.inspectorActions.innerHTML = '';
+  }
+  state.inspectorState = null;
+  refitActiveTerminal();
+}
+
+
 function openSessionDetailsTab(session) {
   if (!session) return;
-  const tabId = `details_${session.id}`;
 
-  if (isHideTabsEnabled()) {
-    for (const id of Array.from(state.openTabs.keys())) {
-      if (id !== tabId) {
-        closeTab(id);
-      }
-    }
-  }
+  const titleHtml = `ℹ ${escapeHtml(session.name || session.agent)}`;
+  const subtitleHtml = `@${escapeHtml(formatHostLabel(session.host || 'local'))}${session.cwd ? ` • ${escapeHtml(session.cwd)}` : ''}`;
 
-  if (state.openTabs.has(tabId)) {
-    activateTab(tabId);
-    return;
-  }
-
-  if (el.emptyState) el.emptyState.style.display = 'none';
-
-  // 1. Create Tab Element
-  const tabEl = document.createElement('div');
-  tabEl.className = 'terminal-tab';
-  tabEl.dataset.tabId = tabId;
-
-  const titleWrap = document.createElement('div');
-  titleWrap.className = 'tab-title-wrap';
-
-  const emojiSpan = document.createElement('span');
-  emojiSpan.className = 'tab-emoji';
-  emojiSpan.textContent = 'ℹ';
-
-  const unreadDot = document.createElement('span');
-  unreadDot.className = 'tab-unread-dot unread-dot';
-  unreadDot.style.display = (session.is_unread && state.activeTabId !== tabId) ? 'inline-block' : 'none';
-
-  const titleSpan = document.createElement('span');
-  titleSpan.className = 'tab-title';
-  titleSpan.textContent = `${session.name || session.agent}`;
-  titleSpan.title = session.name || session.agent;
-
-  titleWrap.appendChild(emojiSpan);
-  titleWrap.appendChild(unreadDot);
-  titleWrap.appendChild(titleSpan);
-
-  const closeBtn = document.createElement('button');
-  closeBtn.className = 'tab-close-btn';
-  closeBtn.textContent = '✕';
-  closeBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    closeTab(tabEl.dataset.tabId || tabId);
-  });
-
-  tabEl.appendChild(titleWrap);
-  tabEl.appendChild(closeBtn);
-
-  tabEl.addEventListener('click', (e) => {
-    if (e.button === 0) activateTab(tabEl.dataset.tabId || tabId);
-  });
-
-  tabEl.addEventListener('auxclick', (e) => {
-    if (e.button === 1) {
-      e.preventDefault();
-      e.stopPropagation();
-      closeTab(tabEl.dataset.tabId || tabId);
-    }
-  });
-
-  // Right-click for Tab Context Menu
-  tabEl.addEventListener('contextmenu', (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    showTabContextMenu(e.clientX, e.clientY, tabEl.dataset.tabId || tabId);
-  });
-
-  if (el.tabStrip) el.tabStrip.appendChild(tabEl);
-
-  // 2. Create Details View DOM
-  const containerEl = document.createElement('div');
-  containerEl.className = 'terminal-tab-view';
-  containerEl.id = `detailsView_${session.id.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
-
-  const detailsView = document.createElement('div');
-  detailsView.className = 'session-details-view';
-  detailsView.innerHTML = `
+  const detailsContainer = document.createElement('div');
+  detailsContainer.className = 'session-details-view session-details-container';
+  detailsContainer.id = `detailsView_${session.id.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+  detailsContainer.innerHTML = `
     <div class="details-header">
       <div class="details-title-area">
         <div class="details-title-row">
-          <span class="details-title">${session.name || session.agent}</span>
+          <span class="details-title">${escapeHtml(session.name || session.agent)}</span>
           ${getAgentBadgeHtml(session.agent)}
-          <span class="host-badge">@${formatHostLabel(session.host || 'local')}</span>
-          ${session.git_branch ? `<span class="badge-branch">⎇ ${session.git_branch}</span>` : ''}
+          <span class="host-badge">@${escapeHtml(formatHostLabel(session.host || 'local'))}</span>
+          ${session.git_branch ? `<span class="badge-branch">⎇ ${escapeHtml(session.git_branch)}</span>` : ''}
           <span class="host-badge">${getStateEmoji(session)} ${session.managed ? 'Managed' : 'Observed'}</span>
         </div>
-        <span class="details-subtitle">${session.id}</span>
+        <span class="details-subtitle">${escapeHtml(session.id)}</span>
       </div>
       <div class="details-actions">
-        <button class="btn btn-primary" id="detBtnResume">▶ Resume in Tmux</button>
-        <button class="btn btn-secondary" id="detBtnTranscript">📜 Transcript</button>
-        <button class="btn btn-secondary" id="detBtnShell">🐚 Shell</button>
-        <button class="btn btn-secondary" id="detBtnDocs">📄 Docs</button>
-        <button class="btn btn-secondary" id="detBtnVSCode">📂 VS Code</button>
-        <button class="btn btn-secondary danger" id="detBtnKill">⛔ Terminate</button>
-        <button class="btn btn-secondary danger" id="detBtnDelete">🗑 Delete</button>
+        <button class="btn btn-primary btn-sm" id="detBtnResume">▶ Attach / Open Terminal</button>
+        <button class="btn btn-secondary btn-sm" id="detBtnTranscript">📜 Transcript</button>
+        <button class="btn btn-secondary btn-sm" id="detBtnHandover">🔄 Handover</button>
+        <button class="btn btn-secondary btn-sm" id="detBtnShell">🐚 Shell</button>
+        <button class="btn btn-secondary btn-sm" id="detBtnDocs">📄 View Project Docs</button>
+        <button class="btn btn-secondary btn-sm" id="detBtnVSCode">📂 Open in VS Code</button>
+        <button class="btn btn-secondary btn-sm" id="detBtnRestart">↻ Restart</button>
+        <button class="btn btn-secondary btn-sm" id="detBtnArchive">📦 ${session.archived ? 'Unarchive' : 'Archive'}</button>
+        <button class="btn btn-secondary btn-sm danger" id="detBtnKill">⛔ Kill Process</button>
+        <button class="btn btn-secondary btn-sm danger" id="detBtnDelete">🗑 Delete Session</button>
       </div>
     </div>
 
     <div class="details-grid">
       <div class="details-card">
         <span class="details-card-label">Directory (CWD)</span>
-        <span class="details-card-value">${session.cwd || '—'}</span>
+        <span class="details-card-value">${escapeHtml(session.cwd || '—')}</span>
       </div>
       <div class="details-card">
         <span class="details-card-label">Context Usage</span>
@@ -159,45 +162,40 @@ function openSessionDetailsTab(session) {
       ${session.custom_title ? `
       <div class="details-card">
         <span class="details-card-label">Custom Title</span>
-        <span class="details-card-value" style="color: var(--accent-cyan);">${session.custom_title}</span>
+        <span class="details-card-value" style="color: var(--accent-cyan);">${escapeHtml(session.custom_title)}</span>
       </div>` : ''}
       ${session.ai_title ? `
       <div class="details-card">
         <span class="details-card-label">AI Generated Title</span>
-        <span class="details-card-value" style="color: var(--accent-orange);">${session.ai_title}</span>
+        <span class="details-card-value" style="color: var(--accent-orange);">${escapeHtml(session.ai_title)}</span>
       </div>` : ''}
     </div>
 
     ${session.ai_description ? `
     <div class="details-section-title">AI Task Description & Summary</div>
     <div class="details-code-box" style="color: var(--text-main); font-size: 13px;">
-      ${session.ai_description}
+      ${escapeHtml(session.ai_description)}
     </div>` : ''}
 
     ${session.first_prompt ? `
     <div class="details-section-title">First User Prompt (Initiating Task)</div>
     <div class="details-code-box" style="white-space: pre-wrap; font-family: var(--font-mono); color: #93c5fd;">
-${session.first_prompt}
+${escapeHtml(session.first_prompt)}
     </div>` : ''}
 
     ${session.last_prompt && session.last_prompt !== session.first_prompt ? `
     <div class="details-section-title">Latest User Prompt</div>
     <div class="details-code-box" style="white-space: pre-wrap; font-family: var(--font-mono); color: #86efac;">
-${session.last_prompt}
+${escapeHtml(session.last_prompt)}
     </div>` : ''}
 
     <div class="details-section-title">Recorded Activity</div>
     <div class="details-code-box">
-      ${session.activity || 'No recorded live activity. Session is stored from historical transcripts.'}
+      ${escapeHtml(session.activity || 'No recorded live activity. Session is stored from historical transcripts.')}
     </div>
   `;
 
-  containerEl.appendChild(detailsView);
-  if (el.terminalViewport) el.terminalViewport.appendChild(containerEl);
-
-  // Event listeners for action buttons
-  detailsView.querySelector('#detBtnResume').addEventListener('click', async () => {
-    closeTab(tabId);
+  detailsContainer.querySelector('#detBtnResume').addEventListener('click', async () => {
     const baseUrl = session.hostUrl ? session.hostUrl.replace(/\/$/, '') : '';
     try {
       const res = await fetch(`${baseUrl}/v1/sessions/control?id=${encodeURIComponent(session.id)}&action=resume`, { method: 'POST' });
@@ -212,11 +210,15 @@ ${session.last_prompt}
     await fetchSessions();
   });
 
-  detailsView.querySelector('#detBtnTranscript').addEventListener('click', () => {
+  detailsContainer.querySelector('#detBtnTranscript').addEventListener('click', () => {
     openTranscriptViewerTab(session);
   });
 
-  detailsView.querySelector('#detBtnShell').addEventListener('click', () => {
+  detailsContainer.querySelector('#detBtnHandover').addEventListener('click', () => {
+    openHandoverModal(session.id);
+  });
+
+  detailsContainer.querySelector('#detBtnShell').addEventListener('click', () => {
     openSessionInTab({
       ...session,
       id: `shell_${session.id}`,
@@ -225,15 +227,42 @@ ${session.last_prompt}
     });
   });
 
-  detailsView.querySelector('#detBtnDocs').addEventListener('click', () => {
+  detailsContainer.querySelector('#detBtnDocs').addEventListener('click', () => {
     showProjectDocsModal(session.cwd, session.name, session.host, session);
   });
 
-  detailsView.querySelector('#detBtnVSCode').addEventListener('click', async () => {
+  detailsContainer.querySelector('#detBtnVSCode').addEventListener('click', async () => {
     openInVSCode(session.cwd, session.host);
   });
 
-  detailsView.querySelector('#detBtnKill').addEventListener('click', async () => {
+  detailsContainer.querySelector('#detBtnRestart').addEventListener('click', async () => {
+    const baseUrl = session.hostUrl ? session.hostUrl.replace(/\/$/, '') : '';
+    await fetch(`${baseUrl}/v1/sessions/control?id=${encodeURIComponent(session.id)}&action=restart`, { method: 'POST' });
+    openSessionInTab(session);
+    await fetchSessions();
+  });
+
+  const archiveBtn = detailsContainer.querySelector('#detBtnArchive');
+  if (archiveBtn) {
+    archiveBtn.addEventListener('click', async () => {
+      const targetAction = session.archived ? 'unarchive' : 'archive';
+      session.archived = !session.archived;
+      archiveBtn.textContent = `📦 ${session.archived ? 'Unarchive' : 'Archive'}`;
+      renderTree();
+      try {
+        const hostRec = (state.hosts || []).find(h => h.name === session.host);
+        const baseUrl = (session && session.hostUrl) ? session.hostUrl.replace(/\/$/, '') : (hostRec && hostRec.url && !isLocalHost(session.host) ? hostRec.url.replace(/\/$/, '') : '');
+        const res = await fetch(`${baseUrl}/v1/sessions/control?id=${encodeURIComponent(session.id)}&action=${targetAction}`, { method: 'POST' });
+        if (res.ok) {
+          await fetchSessions();
+        }
+      } catch (err) {
+        console.error(`Failed to ${targetAction} session:`, err);
+      }
+    });
+  }
+
+  detailsContainer.querySelector('#detBtnKill').addEventListener('click', async () => {
     if (confirm(`Terminate process for "${session.name}"?`)) {
       const baseUrl = session.hostUrl ? session.hostUrl.replace(/\/$/, '') : '';
       await fetch(`${baseUrl}/v1/sessions/control?id=${encodeURIComponent(session.id)}&action=kill`, { method: 'POST' });
@@ -241,22 +270,21 @@ ${session.last_prompt}
     }
   });
 
-  detailsView.querySelector('#detBtnDelete').addEventListener('click', async () => {
+  detailsContainer.querySelector('#detBtnDelete').addEventListener('click', async () => {
     const msg = `⚠️ Permanently Delete Session "${session.name}"?\n\nThis will permanently delete the session and its transcript logs from the agent on disk (~/.claude/projects/) without the possibility for recovery.\n\nUse Archive (📦) if you only want to hide it from your active list.`;
     if (confirm(msg)) {
       const targetId = session.id;
       const targetName = session.name;
       const nativeId = session.native_id;
       state.sessions = state.sessions.filter(s => s.id !== targetId && s.name !== targetName && (!nativeId || s.native_id !== nativeId));
-      closeTab(tabId);
       closeTab(targetId);
       if (nativeId) closeTab(nativeId);
-      closeTab(`details_${targetId}`);
       for (const [tId, tabObj] of state.openTabs.entries()) {
         if (tabObj.session && (tabObj.session.id === targetId || (nativeId && tabObj.session.native_id === nativeId))) {
           closeTab(tId);
         }
       }
+      closeInspectorPane();
       renderTree();
       const baseUrl = session.hostUrl ? session.hostUrl.replace(/\/$/, '') : '';
       await fetch(`${baseUrl}/v1/sessions/control?id=${encodeURIComponent(targetId)}&action=delete`, { method: 'POST' });
@@ -264,35 +292,21 @@ ${session.last_prompt}
     }
   });
 
-  state.openTabs.set(tabId, {
-    type: 'details',
-    session,
-    containerEl,
-    tabEl,
-    fitAddon: { fit: () => {} }
+  openInspectorPane({
+    titleHtml,
+    subtitleHtml,
+    bodyEl: detailsContainer,
+    meta: {
+      type: 'details',
+      sessionId: session.id,
+      host: session.host || 'local'
+    }
   });
-
-  activateTab(tabId);
-  handleTabOverflow();
 }
 
-// Open In-UI Markdown Document Viewer Tab
+// Open In-UI Markdown Document Viewer in Right Inspector Pane
 async function openDocViewerTab(docPath, docTitle, host = 'local') {
   if (!docPath) return;
-
-  const hostKey = isLocalHost(host) ? getSelfHostName() : host;
-  const tabId = `doc_${hostKey.replace(/[^a-zA-Z0-9_-]/g, '_')}_${docPath.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
-  if (state.openTabs.has(tabId)) {
-    if (isHideTabsEnabled()) {
-      for (const id of Array.from(state.openTabs.keys())) {
-        if (id !== tabId) {
-          closeTab(id);
-        }
-      }
-    }
-    activateTab(tabId);
-    return;
-  }
 
   const isRemote = !isLocalHost(host);
   const targetHost = state.hosts.find(h => h.name === host);
@@ -311,138 +325,58 @@ async function openDocViewerTab(docPath, docTitle, host = 'local') {
     markdownContent = `⚠️ Error loading document: ${e.message}`;
   }
 
-  if (isHideTabsEnabled()) {
-    for (const id of Array.from(state.openTabs.keys())) {
-      if (id !== tabId) {
-        closeTab(id);
-      }
-    }
-  }
-  if (state.openTabs.has(tabId)) {
-    activateTab(tabId);
-    return;
-  }
+  const displayTitle = docTitle || docPath.split('/').pop();
+  const titleHtml = `📄 ${escapeHtml(displayTitle)} ${isRemote ? `<span class="badge-host">@${escapeHtml(formatHostLabel(host))}</span>` : ''}`;
+  const subtitleHtml = escapeHtml(docPath);
 
-  if (el.emptyState) el.emptyState.style.display = 'none';
-
-  // 1. Tab DOM Element
-  const tabEl = document.createElement('div');
-  tabEl.className = 'terminal-tab';
-  tabEl.dataset.tabId = tabId;
-
-  const titleWrap = document.createElement('div');
-  titleWrap.className = 'tab-title-wrap';
-
-  const emojiSpan = document.createElement('span');
-  emojiSpan.className = 'tab-emoji';
-  emojiSpan.textContent = '📄';
-
-  const titleSpan = document.createElement('span');
-  titleSpan.className = 'tab-title';
-  titleSpan.textContent = docTitle || docPath.split('/').pop();
-
-  titleWrap.appendChild(emojiSpan);
-  titleWrap.appendChild(titleSpan);
-
-  if (isRemote) {
-    const hostSpan = document.createElement('span');
-    hostSpan.className = 'badge-host';
-    hostSpan.textContent = `@${formatHostLabel(host)}`;
-    titleWrap.appendChild(hostSpan);
-  }
-
-  const closeBtn = document.createElement('button');
-  closeBtn.className = 'tab-close-btn';
-  closeBtn.textContent = '✕';
-  closeBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    closeTab(tabId);
+  const actionsEl = document.createElement('div');
+  actionsEl.className = 'inspector-header-actions';
+  const vsCodeBtn = document.createElement('button');
+  vsCodeBtn.className = 'btn btn-secondary btn-sm';
+  vsCodeBtn.id = 'docBtnVSCode';
+  vsCodeBtn.textContent = '📂 VS Code';
+  vsCodeBtn.title = 'Open in VS Code';
+  vsCodeBtn.addEventListener('click', async () => {
+    openInVSCode(docPath, host);
   });
-
-  tabEl.appendChild(titleWrap);
-  tabEl.appendChild(closeBtn);
-
-  tabEl.addEventListener('click', (e) => {
-    if (e.button === 0) activateTab(tabId);
-  });
-
-  tabEl.addEventListener('auxclick', (e) => {
-    if (e.button === 1) {
-      e.preventDefault();
-      e.stopPropagation();
-      closeTab(tabId);
-    }
-  });
-
-  // Right-click for Tab Context Menu
-  tabEl.addEventListener('contextmenu', (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    showTabContextMenu(e.clientX, e.clientY, tabId);
-  });
-
-  if (el.tabStrip) el.tabStrip.appendChild(tabEl);
-
-  // 2. Document Viewer View DOM
-  const containerEl = document.createElement('div');
-  containerEl.className = 'terminal-tab-view';
-  containerEl.id = `docView_${tabId}`;
+  actionsEl.appendChild(vsCodeBtn);
 
   const docContainer = document.createElement('div');
   docContainer.className = 'doc-viewer-container';
 
   const renderedHtml = renderMarkdown(markdownContent);
-
   docContainer.innerHTML = `
-    <div class="doc-viewer-header">
-      <div>
-        <div class="doc-viewer-title">📄 ${docTitle || docPath.split('/').pop()} ${isRemote ? `<span class="badge-host">@${formatHostLabel(host)}</span>` : ''}</div>
-        <div class="doc-viewer-path">${docPath}</div>
-      </div>
-      <div>
-        <button class="btn btn-secondary" id="docBtnVSCode">📂 Open in VS Code</button>
-      </div>
-    </div>
     <div class="markdown-body">
       ${renderedHtml}
     </div>
   `;
 
-  containerEl.appendChild(docContainer);
-  if (el.terminalViewport) el.terminalViewport.appendChild(containerEl);
-
-  docContainer.querySelector('#docBtnVSCode').addEventListener('click', async () => {
-    openInVSCode(docPath, host);
+  docContainer.querySelectorAll('.markdown-body a').forEach(link => {
+    const href = link.getAttribute('href') || '';
+    if (/^https?:\/\//i.test(href) || href.startsWith('//')) {
+      link.setAttribute('target', '_blank');
+      link.setAttribute('rel', 'noopener noreferrer');
+    }
   });
+  attachCodeBlockCopyButtons(docContainer);
 
-  state.openTabs.set(tabId, {
-    type: 'doc',
-    session: { name: docTitle, cwd: docPath, host: host },
-    containerEl,
-    tabEl,
-    fitAddon: { fit: () => {} }
+  openInspectorPane({
+    titleHtml,
+    subtitleHtml,
+    actionsEl,
+    bodyEl: docContainer,
+    meta: {
+      type: 'doc',
+      docPath,
+      docTitle: displayTitle,
+      host
+    }
   });
-
-  activateTab(tabId);
-  handleTabOverflow();
 }
 
-// Open In-UI Rich Transcript Viewer Tab
+// Open In-UI Rich Transcript Viewer in Right Inspector Pane
 async function openTranscriptViewerTab(session) {
   if (!session) return;
-
-  const tabId = `transcript_${session.id.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
-  if (state.openTabs.has(tabId)) {
-    if (isHideTabsEnabled()) {
-      for (const id of Array.from(state.openTabs.keys())) {
-        if (id !== tabId) {
-          closeTab(id);
-        }
-      }
-    }
-    activateTab(tabId);
-    return;
-  }
 
   const host = session.host || getSelfHostName();
   const isRemote = !isLocalHost(host);
@@ -462,90 +396,12 @@ async function openTranscriptViewerTab(session) {
     errorMsg = `Error loading transcript: ${e.message}`;
   }
 
-  if (isHideTabsEnabled()) {
-    for (const id of Array.from(state.openTabs.keys())) {
-      if (id !== tabId) {
-        closeTab(id);
-      }
-    }
-  }
-  if (state.openTabs.has(tabId)) {
-    activateTab(tabId);
-    return;
-  }
-
-  if (el.emptyState) el.emptyState.style.display = 'none';
-
-  // 1. Tab DOM Element
-  const tabEl = document.createElement('div');
-  tabEl.className = 'terminal-tab';
-  tabEl.dataset.tabId = tabId;
-
-  const titleWrap = document.createElement('div');
-  titleWrap.className = 'tab-title-wrap';
-
-  const emojiSpan = document.createElement('span');
-  emojiSpan.className = 'tab-emoji';
-  emojiSpan.textContent = '📜';
-
-  const titleSpan = document.createElement('span');
-  titleSpan.className = 'tab-title';
-  titleSpan.textContent = `Transcript: ${session.name || session.agent}`;
-
-  titleWrap.appendChild(emojiSpan);
-  titleWrap.appendChild(titleSpan);
-
-  if (isRemote) {
-    const hostSpan = document.createElement('span');
-    hostSpan.className = 'badge-host';
-    hostSpan.textContent = `@${formatHostLabel(host)}`;
-    titleWrap.appendChild(hostSpan);
-  }
-
-  const closeBtn = document.createElement('button');
-  closeBtn.className = 'tab-close-btn';
-  closeBtn.textContent = '✕';
-  closeBtn.title = 'Close Tab';
-  closeBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    closeTab(tabId);
-  });
-
-  tabEl.appendChild(titleWrap);
-  tabEl.appendChild(closeBtn);
-
-  tabEl.addEventListener('click', (e) => {
-    if (e.button === 0) activateTab(tabId);
-  });
-
-  tabEl.addEventListener('auxclick', (e) => {
-    if (e.button === 1) {
-      e.preventDefault();
-      e.stopPropagation();
-      closeTab(tabId);
-    }
-  });
-
-  // Right-click for Tab Context Menu
-  tabEl.addEventListener('contextmenu', (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    showTabContextMenu(e.clientX, e.clientY, tabId);
-  });
-
-  if (el.tabStrip) el.tabStrip.appendChild(tabEl);
-
-  // 2. Transcript Container
-  const containerEl = document.createElement('div');
-  containerEl.className = 'terminal-tab-view';
-  containerEl.id = `transcriptView_${tabId}`;
-
   const transContainer = document.createElement('div');
   transContainer.className = 'transcript-viewer-container';
 
   let messagesHtml = '';
   if (transcriptData && transcriptData.messages && transcriptData.messages.length > 0) {
-    messagesHtml = transcriptData.messages.map((m, idx) => {
+    messagesHtml = transcriptData.messages.map((m) => {
       const timeStr = m.timestamp ? new Date(m.timestamp).toLocaleTimeString() : '';
       if (m.role === 'user') {
         return `
@@ -614,24 +470,10 @@ async function openTranscriptViewerTab(session) {
   }
 
   transContainer.innerHTML = `
-    <div class="transcript-header">
-      <div class="transcript-header-info">
-        <div class="transcript-title">📜 ${escapeHtml(session.name || session.agent)}</div>
-        <div class="transcript-subtitle">${escapeHtml(session.cwd || '')} • ${getAgentBadgeHtml(session.agent)} • ${transcriptData && transcriptData.messages ? transcriptData.messages.length : 0} steps</div>
-      </div>
-      <div class="transcript-header-actions">
-        <button class="btn btn-primary" id="transBtnResume">▶ Attach in Terminal</button>
-        <button class="btn btn-secondary" id="transBtnDocs">📄 Docs</button>
-        <button class="btn btn-secondary" id="transBtnVSCode">📂 VS Code</button>
-      </div>
-    </div>
     <div class="transcript-body">
       ${messagesHtml}
     </div>
   `;
-
-  containerEl.appendChild(transContainer);
-  if (el.terminalViewport) el.terminalViewport.appendChild(containerEl);
 
   transContainer.querySelectorAll('.transcript-msg').forEach(msgEl => {
     attachChatMessageListeners(msgEl);
@@ -639,32 +481,62 @@ async function openTranscriptViewerTab(session) {
   });
   attachCodeBlockCopyButtons(transContainer);
 
-  transContainer.querySelector('#transBtnResume').addEventListener('click', () => {
+  const actionsEl = document.createElement('div');
+  actionsEl.className = 'inspector-header-actions';
+
+  const btnResume = document.createElement('button');
+  btnResume.className = 'btn btn-primary btn-sm';
+  btnResume.id = 'transBtnResume';
+  btnResume.textContent = '▶ Terminal';
+  btnResume.title = 'Attach in Terminal';
+  btnResume.addEventListener('click', () => {
     openSessionInTab(session);
   });
 
-  transContainer.querySelector('#transBtnDocs').addEventListener('click', () => {
+  const btnDocs = document.createElement('button');
+  btnDocs.className = 'btn btn-secondary btn-sm';
+  btnDocs.id = 'transBtnDocs';
+  btnDocs.textContent = '📄 Docs';
+  btnDocs.title = 'View Project Docs';
+  btnDocs.addEventListener('click', () => {
     showProjectDocsModal(session.cwd, session.name, session.host, session);
   });
 
-  transContainer.querySelector('#transBtnVSCode').addEventListener('click', async () => {
+  const btnVSCode = document.createElement('button');
+  btnVSCode.className = 'btn btn-secondary btn-sm';
+  btnVSCode.id = 'transBtnVSCode';
+  btnVSCode.textContent = '📂 VS Code';
+  btnVSCode.title = 'Open in VS Code';
+  btnVSCode.addEventListener('click', async () => {
     openInVSCode(session.cwd, session.host);
   });
 
-  state.openTabs.set(tabId, {
-    type: 'transcript',
-    session,
-    containerEl,
-    tabEl,
-    fitAddon: { fit: () => {} }
-  });
+  actionsEl.appendChild(btnResume);
+  actionsEl.appendChild(btnDocs);
+  actionsEl.appendChild(btnVSCode);
 
-  activateTab(tabId);
-  handleTabOverflow();
+  const stepCount = transcriptData && transcriptData.messages ? transcriptData.messages.length : 0;
+  const titleHtml = `📜 ${escapeHtml(session.name || session.agent)} ${getAgentBadgeHtml(session.agent)}`;
+  const subtitleHtml = `${escapeHtml(session.cwd || '')} • ${stepCount} steps`;
+
+  openInspectorPane({
+    titleHtml,
+    subtitleHtml,
+    actionsEl,
+    bodyEl: transContainer,
+    meta: {
+      type: 'transcript',
+      sessionId: session.id,
+      host
+    }
+  });
 }
 
 
 export {
+  refitActiveTerminal,
+  openInspectorPane,
+  closeInspectorPane,
   openSessionDetailsTab,
   openDocViewerTab,
   openTranscriptViewerTab

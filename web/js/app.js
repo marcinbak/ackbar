@@ -50,7 +50,8 @@ import {
 import {
   openSessionDetailsTab,
   openTranscriptViewerTab,
-  openDocViewerTab
+  openDocViewerTab,
+  closeInspectorPane
 } from './details.js';
 import {
   toggleCommandPalette,
@@ -487,6 +488,9 @@ function setupEventListeners() {
               closeTab(tId);
             }
           }
+          if (state.inspectorState && (state.inspectorState.sessionId === targetId || (nativeId && state.inspectorState.sessionId === nativeId))) {
+            closeInspectorPane();
+          }
           renderTree();
           const baseUrl = sess.hostUrl ? sess.hostUrl.replace(/\/$/, '') : '';
           await fetch(`${baseUrl}/v1/sessions/control?id=${encodeURIComponent(targetId)}&action=delete`, { method: 'POST' });
@@ -728,6 +732,12 @@ function setupEventListeners() {
     el.modalCloseBtn.addEventListener('click', hideModal);
   }
 
+  if (el.btnCloseInspector) {
+    el.btnCloseInspector.addEventListener('click', () => {
+      closeInspectorPane();
+    });
+  }
+
   const btnNewSession = document.getElementById('btnNewSession');
   const btnSidebarNewSession = document.getElementById('btnSidebarNewSession');
   const btnCloseNewSession = document.getElementById('btnCloseNewSession');
@@ -750,19 +760,39 @@ function setupEventListeners() {
 // Helper: Intelligent Cross-Host Path Translation
 
 function setupResizer() {
-  if (!el.sidebarResizer || !el.sidebarPanel) return;
-  let isResizing = false;
+  let isResizingSidebar = false;
+  let isResizingInspector = false;
 
-  el.sidebarResizer.addEventListener('mousedown', () => {
-    isResizing = true;
-    el.sidebarResizer.classList.add('resizing');
-    document.body.style.cursor = 'col-resize';
-  });
+  if (el.sidebarResizer && el.sidebarPanel) {
+    el.sidebarResizer.addEventListener('mousedown', () => {
+      isResizingSidebar = true;
+      el.sidebarResizer.classList.add('resizing');
+      document.body.style.cursor = 'col-resize';
+    });
+  }
+
+  if (el.inspectorResizer && el.inspectorPanel) {
+    el.inspectorResizer.addEventListener('mousedown', () => {
+      isResizingInspector = true;
+      el.inspectorResizer.classList.add('resizing');
+      document.body.style.cursor = 'col-resize';
+    });
+  }
 
   document.addEventListener('mousemove', (e) => {
-    if (!isResizing) return;
-    const newWidth = Math.max(200, Math.min(600, e.clientX));
-    el.sidebarPanel.style.width = `${newWidth}px`;
+    if (!isResizingSidebar && !isResizingInspector) return;
+    if (isResizingSidebar && el.sidebarPanel) {
+      const newWidth = Math.max(200, Math.min(600, e.clientX));
+      el.sidebarPanel.style.width = `${newWidth}px`;
+    } else if (isResizingInspector && el.inspectorPanel) {
+      const maxWidth = Math.min(900, window.innerWidth * 0.65);
+      const newWidth = Math.max(300, Math.min(maxWidth, window.innerWidth - e.clientX));
+      el.inspectorPanel.style.width = `${newWidth}px`;
+      try {
+        localStorage.setItem('ackbar_inspector_width', newWidth);
+      } catch (_) {}
+    }
+
     const activeTab = state.openTabs.get(state.activeTabId);
     if (activeTab && activeTab.type === 'terminal' && activeTab.fitAddon) {
       try {
@@ -775,9 +805,11 @@ function setupResizer() {
   });
 
   document.addEventListener('mouseup', () => {
-    if (isResizing) {
-      isResizing = false;
-      el.sidebarResizer.classList.remove('resizing');
+    if (isResizingSidebar || isResizingInspector) {
+      isResizingSidebar = false;
+      isResizingInspector = false;
+      if (el.sidebarResizer) el.sidebarResizer.classList.remove('resizing');
+      if (el.inspectorResizer) el.inspectorResizer.classList.remove('resizing');
       document.body.style.cursor = '';
       state.openTabs.forEach(t => {
         if (t.fitAddon && t.fitAddon.fit) {
