@@ -247,6 +247,7 @@ func TestHeadlessChatDictationAndPasteFocus_JS(t *testing.T) {
 
 	for _, expected := range []string{
 		"function isAuxiliaryInputFocused(",
+		"workBoardView",
 		"if (!isAuxiliaryInputFocused(tab.chatInputEl))",
 		"document.activeElement !== tab.chatInputEl",
 		"isAuxiliaryInputFocused,",

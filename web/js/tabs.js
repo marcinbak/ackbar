@@ -36,6 +36,10 @@ import { renderTree } from './tree.js';
 
 
 function isAuxiliaryInputFocused(chatInputEl) {
+  const workspaceView = el.workspaceView || document.getElementById('workspaceView');
+  if (workspaceView && workspaceView.style.display === 'none') return true;
+  const workBoardView = el.workBoardView || document.getElementById('workBoardView');
+  if (workBoardView && workBoardView.style.display === 'flex') return true;
   if (el.cmdPaletteOverlay && el.cmdPaletteOverlay.style.display === 'flex') return true;
   if (el.modalOverlay && el.modalOverlay.style.display === 'flex') return true;
   const modalNewSession = document.getElementById('modalNewSession');
