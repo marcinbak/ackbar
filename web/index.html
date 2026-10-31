@@ -78,15 +78,11 @@
       <!-- Right Main Workspace: Tab Bar & Terminal Canvas -->
       <main class="terminal-workspace">
         <!-- Responsive Tab Bar -->
-        <div class="tab-strip-wrapper">
+        <div class="tab-strip-wrapper" id="tabStripWrapper">
           <div class="tab-strip" id="tabStrip">
             <!-- Dynamically populated tabs -->
           </div>
           <div class="tab-strip-controls">
-            <div class="view-mode-toggle" id="viewModeToggle" style="display: none;">
-              <button class="btn-view-mode" id="btnViewChat" data-mode="chat" title="Switch to Chat Interface">💬 Chat</button>
-              <button class="btn-view-mode" id="btnViewTerminal" data-mode="terminal" title="Switch to Terminal Interface">💻 Terminal</button>
-            </div>
             <div class="tab-overflow-dropdown" id="tabOverflowDropdown" style="display: none;">
               <button class="btn-tab-overflow" id="btnTabOverflow">
                 <span id="tabOverflowCount">▾ 0 more</span>
@@ -362,6 +358,8 @@
     <div class="context-menu" id="contextMenu">
       <div class="context-menu-item" id="cmItemInfo"><span>ℹ</span> Session Details</div>
       <div class="context-menu-item" id="cmItemTranscript"><span>📜</span> View Transcript</div>
+      <div class="context-menu-item" id="cmItemViewChat"><span>💬</span> Open in Chat View</div>
+      <div class="context-menu-item" id="cmItemViewTerminal"><span>💻</span> Open in Terminal View</div>
       <div class="context-menu-item" id="cmItemCopyName"><span>📋</span> Copy Name</div>
       <div class="context-menu-item" id="cmItemCopyPath"><span>📍</span> Copy Path</div>
       <div class="context-menu-divider"></div>

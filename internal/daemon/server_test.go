@@ -2389,7 +2389,7 @@ func TestSettings_GetAndSetEndpoints(t *testing.T) {
 	if err := json.Unmarshal(wGet.Body.Bytes(), &defaults); err != nil {
 		t.Fatalf("Failed to parse defaults: %v", err)
 	}
-	if defaults["auto_done_enabled"] != "true" || defaults["auto_done_hours"] != "24" || defaults["later_collapsed_by_default"] != "false" {
+	if defaults["auto_done_enabled"] != "true" || defaults["auto_done_hours"] != "24" || defaults["later_collapsed_by_default"] != "false" || defaults["hide_session_tabs"] != "false" {
 		t.Errorf("Unexpected default settings: %+v", defaults)
 	}
 
@@ -2397,6 +2397,7 @@ func TestSettings_GetAndSetEndpoints(t *testing.T) {
 	payload, _ := json.Marshal(map[string]string{
 		"auto_done_enabled": "false",
 		"auto_done_hours":   "48",
+		"hide_session_tabs": "true",
 	})
 	reqPost := httptest.NewRequest(http.MethodPost, "/v1/settings", bytes.NewReader(payload))
 	wPost := httptest.NewRecorder()
@@ -2410,7 +2411,7 @@ func TestSettings_GetAndSetEndpoints(t *testing.T) {
 	if err := json.Unmarshal(wPost.Body.Bytes(), &updated); err != nil {
 		t.Fatalf("Failed to parse updated settings: %v", err)
 	}
-	if updated["auto_done_enabled"] != "false" || updated["auto_done_hours"] != "48" {
+	if updated["auto_done_enabled"] != "false" || updated["auto_done_hours"] != "48" || updated["hide_session_tabs"] != "true" {
 		t.Errorf("Expected updated settings, got: %+v", updated)
 	}
 }

@@ -37,7 +37,8 @@ function showSettingsModal() {
     auto_archive_enabled: 'true',
     auto_archive_days: '7',
     done_collapsed_by_default: 'true',
-    later_collapsed_by_default: 'false'
+    later_collapsed_by_default: 'false',
+    hide_session_tabs: 'false'
   };
 
   const autoDoneEnabled = s.auto_done_enabled !== 'false';
@@ -46,6 +47,7 @@ function showSettingsModal() {
   const autoArchiveDays = s.auto_archive_days || '7';
   const doneCollapsed = s.done_collapsed_by_default !== 'false';
   const laterCollapsed = s.later_collapsed_by_default === 'true';
+  const hideSessionTabs = s.hide_session_tabs === 'true';
   const handoverSuggestionEnabled = s.handover_suggestion_enabled !== 'false';
   const handoverThresholdPct = s.handover_threshold_pct || '60';
 
@@ -65,6 +67,15 @@ function showSettingsModal() {
           <div class="settings-input-group" style="flex: 1; max-width: 250px;">
             <input type="text" id="settingDisplayName" class="form-input" value="${s.display_name !== undefined ? s.display_name : (state.selfHost ? state.selfHost.displayName : '')}" placeholder="e.g. MacBook Air" />
           </div>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-section-title"><span>🗂️</span> Workspace Tab Bar</div>
+        <div class="settings-section-desc">Hide the top session tab bar to reclaim vertical space. When enabled, selecting a session in the sidebar tree opens it in the same single window, replacing the previously open view.</div>
+        <div class="settings-row">
+          <label class="settings-row-label" for="settingHideSessionTabs">Hide Session Tabs (Single-View Mode)</label>
+          <input type="checkbox" id="settingHideSessionTabs" ${hideSessionTabs ? 'checked' : ''} />
         </div>
       </div>
 
@@ -325,6 +336,7 @@ function showSettingsModal() {
         auto_archive_days: document.getElementById('settingAutoArchiveDays')?.value?.trim() || '7',
         done_collapsed_by_default: document.getElementById('settingDoneCollapsed')?.checked ? 'true' : 'false',
         later_collapsed_by_default: document.getElementById('settingLaterCollapsed')?.checked ? 'true' : 'false',
+        hide_session_tabs: document.getElementById('settingHideSessionTabs')?.checked ? 'true' : 'false',
         typesafe_api_key: document.getElementById('settingTypesafeApiKey')?.value?.trim() || '',
         handover_suggestion_enabled: document.getElementById('settingHandoverSuggestionEnabled')?.checked ? 'true' : 'false',
         handover_threshold_pct: document.getElementById('settingHandoverThresholdPct')?.value?.trim() || '60'

@@ -12,7 +12,8 @@ import {
   closeTab,
   closeOtherTabs,
   closeTabsToTheRight,
-  closeAllTabs
+  closeAllTabs,
+  isHideTabsEnabled
 } from './tabs.js';
 import {
   openSessionDetailsTab,
@@ -208,6 +209,19 @@ function showContextMenu(x, y, session) {
 
   const isLater = isSessionLater(session);
   const isDone = isSessionDone(session);
+  const activeTab = session && state.openTabs ? state.openTabs.get(session.id) : null;
+
+  if (el.cmItemViewChat) {
+    el.cmItemViewChat.innerHTML = `<span>💬</span> ${activeTab && activeTab.viewMode === 'chat' ? 'Chat View (Active)' : 'Open in Chat View'}`;
+  }
+
+  if (el.cmItemViewTerminal) {
+    el.cmItemViewTerminal.innerHTML = `<span>💻</span> ${activeTab && activeTab.viewMode === 'terminal' ? 'Terminal View (Active)' : 'Open in Terminal View'}`;
+  }
+
+  if (el.cmItemNewTab) {
+    el.cmItemNewTab.style.display = isHideTabsEnabled() ? 'none' : '';
+  }
 
   if (el.cmItemLater) {
     el.cmItemLater.innerHTML = isLater ? '<span>↺</span> Move to Active' : '<span>⏳</span> Move to Later';
