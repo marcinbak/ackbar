@@ -5394,6 +5394,33 @@ func TestInspectStatus_OnlyUserInteractionAdvancesLastEventAt(t *testing.T) {
 		t.Errorf("Expected new USER_INPUT step to advance LastEventAt to %v, got %v", tNewPrompt, agySess.LastEventAt)
 	}
 
+	// 1b. Antigravity: even when a subagent is running (Step 1 early return), a new USER_INPUT timestamp is synced first
+	subConvUUID := "sub11111-2222-3333-4444-555555555555"
+	subBrainDir := filepath.Join(tmpHome, ".gemini", "antigravity-cli", "brain", subConvUUID, ".system_generated", "logs")
+	if err := os.MkdirAll(subBrainDir, 0755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+	subLogPath := filepath.Join(subBrainDir, "transcript.jsonl")
+	if err := os.WriteFile(subLogPath, []byte(`{"step_index":1,"type":"PLANNER_RESPONSE","status":"RUNNING"}`+"\n"), 0644); err != nil {
+		t.Fatalf("WriteFile subLogPath failed: %v", err)
+	}
+	tFollowUpPrompt := time.Date(2026, 10, 30, 12, 20, 0, 0, time.UTC)
+	withSubagentTranscript := newTurnTranscript + fmt.Sprintf(
+		`{"step_index":4,"type":"USER_INPUT","content":"Spawn subagent","created_at":%q}`+"\n"+
+			`{"step_index":5,"type":"PLANNER_RESPONSE","status":"DONE","tool_calls":[{"name":"invoke_subagent","args":{"Role":"Researcher","TypeName":"research","Prompt":"Check"}}],"content":"conversationId: %s"}`+"\n"+
+			`{"step_index":6,"type":"TOOL_RESPONSE","content":"{\"conversationId\":%q}"}`+"\n",
+		tFollowUpPrompt.Format(time.RFC3339),
+		subConvUUID,
+		subConvUUID,
+	)
+	if err := os.WriteFile(logPath, []byte(withSubagentTranscript), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	InspectAntigravityStatus(ctx, agySess)
+	if !agySess.LastEventAt.Equal(tFollowUpPrompt) {
+		t.Errorf("Expected USER_INPUT timestamp %v to be synced even when running subagent returns early, got %v", tFollowUpPrompt, agySess.LastEventAt)
+	}
+
 	// 2. Claude Code: AskUserQuestion block and running subagent do NOT advance LastEventAt
 	claudeUUID := "cccccccc-1111-2222-3333-444444444444"
 	cwd := "/test/claude-workspace"

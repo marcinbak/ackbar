@@ -169,6 +169,46 @@ func InspectAntigravityStatus(ctx context.Context, sess *Session) bool {
 		}
 	}
 
+	var brainDirs []string
+	if home != "" && sess.NativeID != "" {
+		cleanID := filepath.Base(filepath.Clean(sess.NativeID))
+		if cleanID != "" && cleanID != "." && cleanID != ".." && !strings.ContainsAny(cleanID, "*?[") {
+			brainDirs = []string{
+				filepath.Join(home, ".gemini", "antigravity", "brain", cleanID, ".system_generated", "logs", "transcript.jsonl"),
+				filepath.Join(home, ".gemini", "antigravity-cli", "brain", cleanID, ".system_generated", "logs", "transcript.jsonl"),
+				filepath.Join(home, ".antigravity", "brain", cleanID, ".system_generated", "logs", "transcript.jsonl"),
+			}
+			if profiles, _ := filepath.Glob(filepath.Join(home, ".gemini-profiles", "*", "brain", cleanID, ".system_generated", "logs", "transcript.jsonl")); len(profiles) > 0 {
+				brainDirs = append(brainDirs, profiles...)
+			}
+			if profiles2, _ := filepath.Glob(filepath.Join(home, ".gemini-profiles", "*", "antigravity", "brain", cleanID, ".system_generated", "logs", "transcript.jsonl")); len(profiles2) > 0 {
+				brainDirs = append(brainDirs, profiles2...)
+			}
+		}
+		for _, logPath := range brainDirs {
+			if data, err := readTail(logPath, 256*1024); err == nil && len(data) > 0 {
+				tLines := strings.Split(string(data), "\n")
+				for i := len(tLines) - 1; i >= 0; i-- {
+					line := strings.TrimSpace(tLines[i])
+					if line == "" {
+						continue
+					}
+					var candidate antigravityStep
+					if err := json.Unmarshal([]byte(line), &candidate); err == nil && candidate.Type == "USER_INPUT" {
+						if userTime := parseStepTimestamp(candidate.CreatedAt); !userTime.IsZero() {
+							if sess.LastEventAt.IsZero() || userTime.After(sess.LastEventAt) {
+								sess.LastEventAt = userTime
+								changed = true
+							}
+						}
+						break
+					}
+				}
+				break
+			}
+		}
+	}
+
 	// 1. Structured Subagents on Disk
 	if sess.NativeID != "" {
 		if subs, err := ExtractSubagents("antigravity", sess.NativeID, sess.Cwd); err == nil {
@@ -307,43 +347,10 @@ func InspectAntigravityStatus(ctx context.Context, sess *Session) bool {
 
 	// 3. Structured Transcript Inspection (tail up to 256KB)
 	transcriptTurnCompletedAfterBlock := false
-	if home != "" && sess.NativeID != "" {
-		cleanID := filepath.Base(filepath.Clean(sess.NativeID))
-		var brainDirs []string
-		if cleanID != "" && cleanID != "." && cleanID != ".." && !strings.ContainsAny(cleanID, "*?[") {
-			brainDirs = []string{
-				filepath.Join(home, ".gemini", "antigravity", "brain", cleanID, ".system_generated", "logs", "transcript.jsonl"),
-				filepath.Join(home, ".gemini", "antigravity-cli", "brain", cleanID, ".system_generated", "logs", "transcript.jsonl"),
-				filepath.Join(home, ".antigravity", "brain", cleanID, ".system_generated", "logs", "transcript.jsonl"),
-			}
-			if profiles, _ := filepath.Glob(filepath.Join(home, ".gemini-profiles", "*", "brain", cleanID, ".system_generated", "logs", "transcript.jsonl")); len(profiles) > 0 {
-				brainDirs = append(brainDirs, profiles...)
-			}
-			if profiles2, _ := filepath.Glob(filepath.Join(home, ".gemini-profiles", "*", "antigravity", "brain", cleanID, ".system_generated", "logs", "transcript.jsonl")); len(profiles2) > 0 {
-				brainDirs = append(brainDirs, profiles2...)
-			}
-		}
-
+	if len(brainDirs) > 0 {
 		for _, logPath := range brainDirs {
 			if data, err := readTail(logPath, 256*1024); err == nil && len(data) > 0 {
 				tLines := strings.Split(string(data), "\n")
-
-				for i := len(tLines) - 1; i >= 0; i-- {
-					line := strings.TrimSpace(tLines[i])
-					if line == "" {
-						continue
-					}
-					var candidate antigravityStep
-					if err := json.Unmarshal([]byte(line), &candidate); err == nil && candidate.Type == "USER_INPUT" {
-						if userTime := parseStepTimestamp(candidate.CreatedAt); !userTime.IsZero() {
-							if sess.LastEventAt.IsZero() || userTime.After(sess.LastEventAt) {
-								sess.LastEventAt = userTime
-								changed = true
-							}
-						}
-						break
-					}
-				}
 
 				var lastStep antigravityStep
 				lastValidIdx := -1
