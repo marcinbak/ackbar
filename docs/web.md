@@ -73,8 +73,10 @@ It is embedded directly into the `ackbard` Go binary and served on `http://127.0
 * Right-click any session or click the editor button to open the exact workspace in VS Code.
 * Automatically resolves `code --remote ssh-remote+<host> <path>` for remote machines.
 
-### 📖 5. In-App Plan & Markdown Viewer
-* Native markdown renderer for viewing `implementation_plan.md`, `task.md`, and `walkthrough.md` side-by-side with running terminals.
+### 📖 5. In-App Plan & Markdown Viewer (Right Inspector Pane)
+* **Collapsible Right Inspector Pane (`#inspectorPanel`):** **Session Details (`ℹ`)**, **Markdown Plans & Project Docs (`📄`)**, and **Conversation Transcripts (`📜`)** open in a collapsible, drag-resizable Right Inspector Pane with a header and **`✕` Close** button (`#btnCloseInspector`) so they can be viewed side-by-side without replacing the active session's Chat or Terminal view.
+* Native markdown renderer (`marked.js`) with syntax copy buttons for viewing `implementation_plan.md`, `task.md`, `walkthrough.md`, and project documentation alongside live terminal and chat sessions.
+* Width is drag-resizable via `#inspectorResizer` (`ackbar_inspector_width` in `localStorage`) and automatically refits the active `xterm.js` terminal on open, close, and resize.
 
 ### 📎 6. Clipboard Image Paste & File Drag-and-Drop
 * **Instant Clipboard Paste:** Paste screenshots (`Cmd+V`) directly into any active terminal tab.
@@ -133,7 +135,7 @@ The web frontend is organized as zero-build native ECMAScript modules (`<script 
 * **`tabs.js`**: Terminal and chat tab strip lifecycle, overflow menu, and persistence.
 * **`terminal.js`**: `xterm.js` terminal tabs, WebSocket PTY streams, resizing, and attachment uploads.
 * **`chat.js`**: Interactive chat interface, streaming transcript, tool call formatters, and composer queue.
-* **`details.js`**: Session details view, token meter, markdown plan/doc viewer, and tmux logs.
+* **`details.js`**: Right Inspector Pane (`#inspectorPanel`) controller (`openInspectorPane`, `closeInspectorPane`, `refitActiveTerminal`), session details view (`openSessionDetailsTab`), markdown plan/doc viewer (`openDocViewerTab`), and rich transcript viewer (`openTranscriptViewerTab`).
 * **`palette.js`**: Command palette fuzzy search (`Cmd+K` / `Ctrl+K`) and dispatcher launcher.
 * **`context-menu.js`**: Context menus for sessions, groups, tabs, and chat files.
 * **`modals.js`**: Modal dialogs for new sessions, groups, hosts, settings, and context handover.
