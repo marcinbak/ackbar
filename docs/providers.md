@@ -54,11 +54,14 @@ Token usage percentage calculation dynamically adapts to model families:
 
 ## 4. Subagent Discovery & Isolation
 
-Child subagents (e.g. Claude Code Explore/Task teammates or Antigravity subtrajectories) are filtered from polluting the top-level tree as standalone sessions, but their live lifecycle is actively tracked under the parent session:
-* **Session Tree Isolation:** Hook payloads with `is_sidechain: true` or non-empty `agent_id` are ignored as top-level sessions.
+Child subagents (e.g. Claude Code Explore/Task teammates or Antigravity subtrajectories) are filtered from polluting the top-level tree as standalone sessions, while their live lifecycle is actively tracked under the parent session:
+* **Session Tree Isolation & Parent Hook Routing:**
+  * Hook payloads with `is_sidechain: true` or non-empty `agent_id` are ignored as top-level sessions.
+  * For Antigravity (`invoke_subagent`), subagent conversations lack an `is_sidechain` hook field. `ackbard` identifies subagents via `<brain>/<parent>/.system_generated/subagents/<subagent>.json`, `step_index: 0` `SYSTEM_MESSAGE` steps containing `<SYSTEM_MESSAGE> ... sender=<parent-uuid>` (while protecting user-initiated root sessions whose `step_index: 0` is `USER_INPUT` or that have user `.pbtxt` annotations), and `.system_generated/messages/*.json` invocation entries.
+  * Incoming `/v1/hooks/antigravity` events for a subagent `conversationId` delete any stray standalone subagent row and route the update (`RunningSubagents`, `StateWorking` activity `Subagent (<role>): <tool>`, and headless SSE `EmitSubagentsUpdate`) to the resolved parent session via `ResolveAntigravitySubagentParent`.
 * **Structured Discovery (`Provider.ListSubagents`):**
   * **Claude Code:** Discovers teammates from `~/.claude/projects/<slug>/<session-id>/subagents/` (`agent-*.meta.json` and companion `.jsonl` non-empty `stop_reason` inspection across 64KB tails, ignoring trailing attachment entries) and team configurations in `~/.claude/teams/*/config.json` (which default to `"completed"` unless backed by an active subagent transcript).
-  * **Antigravity:** Discovers subagents from `.system_generated/subagents/*.json` across brain directories and `~/.gemini-profiles/*/brain/`.
+  * **Antigravity:** Discovers subagents from `.system_generated/subagents/*.json` across default and profile brain directories (`~/.gemini/antigravity/brain`, `~/.gemini/antigravity-cli/brain`, `~/.antigravity/brain`, `~/.gemini-profiles/*/brain`). Because Antigravity records `"state": "SUBAGENT_STATE_ALIVE"` in `.json` sidecars, `ListSubagents` inspects each subagent's own `<brain>/<subagent-id>/.system_generated/logs/transcript.jsonl` to determine whether the subagent is actively `"running"` vs `"completed"` (final `PLANNER_RESPONSE` with `DONE`/`CANCELED`/`ERROR` and no `tool_calls`) and extracts the subagent's initial task prompt and start timestamp from `step_index: 0`.
 * **Working & Blocked State Inspection (`InspectClaudeStatus` & `InspectAntigravityStatus`):**
   * When subagents are actively running, parent sessions evaluate to `StateWorking` (1) with dynamic activity descriptions (`Subagent running: <name>`) and active spinners.
   * **Antigravity Question & Transcript Inspection:** Parses both native JSON arrays and JSON-stringified `questions`/`options` in `ask_question` tool calls, falls back to `transcript_full.jsonl` when `truncated_fields` contains `"tool_calls"`, and evaluates transcript questions before bottom-of-pane spinner checks.
