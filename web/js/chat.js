@@ -512,6 +512,7 @@ async function loadChatTranscript(tabObj) {
   const baseUrl = getSessionBaseUrl(sessionId, tabObj.session);
   const reqId = (tabObj._transcriptReqId || 0) + 1;
   tabObj._transcriptReqId = reqId;
+  tabObj._lastTranscriptLoadAt = Date.now();
 
   const container = tabObj.chatMessagesEl;
   const hadMessages = container.children.length > 0;
@@ -544,6 +545,9 @@ async function loadChatTranscript(tabObj) {
         tabObj.loadedTranscriptStartIndex = 0;
         if (!inFlightPrompt && !liveTurnMsgEl && !liveActivityEl && !container.querySelector('.chat-msg')) {
           container.innerHTML = '';
+        }
+        if (!liveTurnMsgEl && !liveActivityEl && (tabObj.sending || isSessionWorking(tabObj.session))) {
+          setChatSending(tabObj, true);
         }
         if (recentTurn && !tabObj._pendingTranscriptFollowup) {
           tabObj._pendingTranscriptFollowup = setTimeout(() => {
@@ -633,6 +637,8 @@ async function loadChatTranscript(tabObj) {
       if (liveActivityEl && hasActiveTurnUI(tabObj)) {
         container.appendChild(liveActivityEl);
         tabObj.activeInStreamActivityEl = liveActivityEl;
+      } else if (!liveTurnMsgEl && (tabObj.sending || isSessionWorking(tabObj.session))) {
+        setChatSending(tabObj, true);
       }
 
       if (shouldStickToBottom) {
@@ -1367,9 +1373,18 @@ function setChatSending(tabObj, isSending) {
   if (!tabObj) return;
   tabObj.sending = Boolean(isSending);
   if (isSending) {
+    if (tabObj.session) {
+      tabObj.session.state = 1;
+      if (Array.isArray(state.sessions)) {
+        const match = state.sessions.find(s => s.id === tabObj.session.id || (tabObj.session.native_id && s.native_id === tabObj.session.native_id));
+        if (match) match.state = 1;
+      }
+    }
     if (tabObj.chatCancelBtn) tabObj.chatCancelBtn.style.display = 'inline-flex';
     if (tabObj.chatStatusBadge) tabObj.chatStatusBadge.textContent = '⚡ Working...';
-    if (!tabObj.activeTurnMsgEl && !tabObj.activeInStreamActivityEl) {
+    const hasLiveTurnMsg = Boolean(tabObj.activeTurnMsgEl && tabObj.activeTurnMsgEl.isConnected);
+    const hasLiveActivity = Boolean(tabObj.activeInStreamActivityEl && tabObj.activeInStreamActivityEl.isConnected);
+    if (!hasLiveTurnMsg && !hasLiveActivity) {
       showInStreamActivity(tabObj, {
         icon: '💭',
         text: 'Thinking...',
@@ -1915,6 +1930,7 @@ async function sendChatPrompt(tabObj, forcedPromptText) {
 
   connectChatStream(tabObj);
   const baseUrl = getSessionBaseUrl(tabObj.session.id, tabObj.session);
+  tabObj.dispatchingPrompt = true;
   try {
     const res = await fetch(`${baseUrl}/v1/sessions/prompt`, {
       method: 'POST',
@@ -1924,6 +1940,7 @@ async function sendChatPrompt(tabObj, forcedPromptText) {
         prompt: daemonPrompt
       })
     });
+    tabObj.dispatchingPrompt = false;
 
     if (!res.ok) {
       let errMsg = '';
@@ -1967,6 +1984,7 @@ async function sendChatPrompt(tabObj, forcedPromptText) {
       }
     }, 15000);
   } catch (err) {
+    tabObj.dispatchingPrompt = false;
     console.error('Failed to dispatch prompt:', err);
     if (!tabObj.activeTurnMsgEl) {
       hideInStreamActivity(tabObj);
@@ -2522,6 +2540,14 @@ function handleChatStreamEvent(tabObj, evt) {
 function resetChatComposer(tabObj) {
   if (!tabObj) return;
   tabObj.sending = false;
+  tabObj.dispatchingPrompt = false;
+  if (tabObj.session && isSessionWorking(tabObj.session)) {
+    tabObj.session.state = 3;
+    if (Array.isArray(state.sessions)) {
+      const match = state.sessions.find(s => s.id === tabObj.session.id || (tabObj.session.native_id && s.native_id === tabObj.session.native_id));
+      if (match && isSessionWorking(match)) match.state = 3;
+    }
+  }
   hideInStreamActivity(tabObj);
   tabObj.activeTurnMsgEl = null;
   tabObj.activeTurnBuffer = '';
@@ -2569,11 +2595,11 @@ function onSessionUpdated(updatedSess) {
     const working = isSessionWorking(updatedSess);
     const activeTurnUI = hasActiveTurnUI(tabObj);
 
-    if (!working && activeTurnUI) {
+    if (!working && activeTurnUI && !tabObj.dispatchingPrompt) {
       setChatSending(tabObj, false);
       loadChatTranscript(tabObj);
       loadChatQueue(tabObj);
-    } else if (working && !tabObj.sending) {
+    } else if (working) {
       if (tabObj.session.engine_type === 'headless' || tabObj.viewMode === 'chat') {
         setChatSending(tabObj, true);
         if (tabObj.session.engine_type === 'headless' && tabObj.viewMode === 'chat') {
