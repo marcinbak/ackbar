@@ -69,19 +69,19 @@ func (o *OpenCodeProvider) ReadSessionMetadata(cwd, nativeID string) *daemon.Ses
 			continue
 		}
 
+		var msgTime time.Time
 		tsStr := raw.Timestamp
 		if tsStr == "" {
 			tsStr = raw.Time
 		}
 		if tsStr != "" {
 			if t, err := time.Parse(time.RFC3339Nano, tsStr); err == nil {
-				if t.After(meta.LastMessageAt) {
-					meta.LastMessageAt = t
-				}
+				msgTime = t
 			} else if t, err := time.Parse(time.RFC3339, tsStr); err == nil {
-				if t.After(meta.LastMessageAt) {
-					meta.LastMessageAt = t
-				}
+				msgTime = t
+			}
+			if !msgTime.IsZero() && msgTime.After(meta.LastMessageAt) {
+				meta.LastMessageAt = msgTime
 			}
 		}
 
@@ -134,6 +134,9 @@ func (o *OpenCodeProvider) ReadSessionMetadata(cwd, nativeID string) *daemon.Ses
 					firstPrompt = promptText
 				}
 				lastPrompt = promptText
+				if !msgTime.IsZero() && msgTime.After(meta.LastUserMessageAt) {
+					meta.LastUserMessageAt = msgTime
+				}
 			}
 		}
 

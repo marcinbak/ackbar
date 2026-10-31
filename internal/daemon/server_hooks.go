@@ -443,26 +443,16 @@ func (s *Server) applyHookStateTransition(sess *Session, event *Event, sessionID
 	}
 	sess.Activity = event.Activity
 
-	// Only update LastEventAt on genuine user interaction or agent activity:
+	// Only update LastEventAt on initial session creation or genuine user interaction:
 	// - Brand new session initialization (sess.LastEventAt is zero)
 	// - User prompt submission ("userpromptsubmit", "usersubmit", "user_prompt")
-	// - Agent tool execution, progress, turn completion ("pretooluse", "posttooluse", "stop", "sessionend", "permissionrequest", "notification")
-	// - Active working or blocked state transitions (into StateWorking, into StateBlocked, or StateWorking -> StateIdle)
-	// Do NOT update LastEventAt on passive process boot / reconnect on an existing session ("sessionstart", "start", or StateEnded/Unknown -> StateIdle)
+	// Do NOT update LastEventAt on passive process boot / reconnect, agent tool execution, subagent events, or state transitions.
 	shouldUpdateLastEvent := false
 
 	if sess.LastEventAt.IsZero() {
 		shouldUpdateLastEvent = true
-	} else if evtLower == "sessionstart" || evtLower == "start" {
-		shouldUpdateLastEvent = false
 	} else if evtLower == "userpromptsubmit" || evtLower == "usersubmit" || evtLower == "user_prompt" {
 		shouldUpdateLastEvent = true
-	} else if evtLower == "pretooluse" || evtLower == "posttooluse" || evtLower == "stop" || evtLower == "sessionend" || evtLower == "permissionrequest" || evtLower == "permission_request" || evtLower == "notification" {
-		shouldUpdateLastEvent = true
-	} else if isStateChange {
-		if event.State == StateWorking || event.State == StateBlocked || (prevState == StateWorking && event.State == StateIdle) {
-			shouldUpdateLastEvent = true
-		}
 	}
 
 	if shouldUpdateLastEvent {

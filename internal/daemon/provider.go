@@ -8,18 +8,19 @@ import (
 
 // SessionMeta contains rich session discovery metadata resolved from workspace files
 type SessionMeta struct {
-	Title         string    `json:"title,omitempty"`
-	CustomTitle   string    `json:"custom_title,omitempty"`
-	AITitle       string    `json:"ai_title,omitempty"`
-	AIDescription string    `json:"ai_description,omitempty"`
-	FirstPrompt   string    `json:"first_prompt,omitempty"`
-	LastPrompt    string    `json:"last_prompt,omitempty"`
-	Entrypoint    string    `json:"entrypoint,omitempty"`
-	Kind          string    `json:"kind,omitempty"`
-	Version       string    `json:"version,omitempty"`
-	GitBranch     string    `json:"git_branch,omitempty"`
-	ContextPct    int       `json:"context_pct,omitempty"`
-	LastMessageAt time.Time `json:"last_message_at,omitempty"`
+	Title             string    `json:"title,omitempty"`
+	CustomTitle       string    `json:"custom_title,omitempty"`
+	AITitle           string    `json:"ai_title,omitempty"`
+	AIDescription     string    `json:"ai_description,omitempty"`
+	FirstPrompt       string    `json:"first_prompt,omitempty"`
+	LastPrompt        string    `json:"last_prompt,omitempty"`
+	Entrypoint        string    `json:"entrypoint,omitempty"`
+	Kind              string    `json:"kind,omitempty"`
+	Version           string    `json:"version,omitempty"`
+	GitBranch         string    `json:"git_branch,omitempty"`
+	ContextPct        int       `json:"context_pct,omitempty"`
+	LastMessageAt     time.Time `json:"last_message_at,omitempty"`
+	LastUserMessageAt time.Time `json:"last_user_message_at,omitempty"`
 }
 
 // ActiveSubagent represents a structured subagent discovered on disk or via hooks
