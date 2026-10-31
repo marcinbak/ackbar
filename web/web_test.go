@@ -370,12 +370,19 @@ func TestInspectorRightPane_JS(t *testing.T) {
 	})
 
 	checkFileContains("js/details.js", []string{
+		"let inspectorRequestSeq = 0;",
+		"if (reqSeq !== inspectorRequestSeq) return;",
 		"function refitActiveTerminal()",
 		"function openInspectorPane(",
 		"function closeInspectorPane()",
 		"ackbar_inspector_width",
 		"openInspectorPane,",
 		"closeInspectorPane,",
+	})
+
+	checkFileContains("js/tabs.js", []string{
+		"closeInspectorPane",
+		"state.inspectorState.type === 'details'",
 	})
 
 	checkFileContains("js/app.js", []string{

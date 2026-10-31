@@ -30,6 +30,8 @@ import {
 } from './chat.js';
 
 
+let inspectorRequestSeq = 0;
+
 function refitActiveTerminal() {
   const activeTab = state.activeTabId ? state.openTabs.get(state.activeTabId) : null;
   if (!activeTab) return;
@@ -90,6 +92,7 @@ function openInspectorPane({ titleHtml, subtitleHtml = '', actionsEl = null, bod
 }
 
 function closeInspectorPane() {
+  inspectorRequestSeq++;
   if (el.inspectorResizer) {
     el.inspectorResizer.style.display = 'none';
   }
@@ -109,6 +112,7 @@ function closeInspectorPane() {
 
 function openSessionDetailsTab(session) {
   if (!session) return;
+  inspectorRequestSeq++;
 
   const titleHtml = `ℹ ${escapeHtml(session.name || session.agent)}`;
   const subtitleHtml = `@${escapeHtml(formatHostLabel(session.host || 'local'))}${session.cwd ? ` • ${escapeHtml(session.cwd)}` : ''}`;
@@ -299,6 +303,7 @@ ${escapeHtml(session.last_prompt)}
     meta: {
       type: 'details',
       sessionId: session.id,
+      session,
       host: session.host || 'local'
     }
   });
@@ -307,6 +312,7 @@ ${escapeHtml(session.last_prompt)}
 // Open In-UI Markdown Document Viewer in Right Inspector Pane
 async function openDocViewerTab(docPath, docTitle, host = 'local') {
   if (!docPath) return;
+  const reqSeq = ++inspectorRequestSeq;
 
   const isRemote = !isLocalHost(host);
   const targetHost = state.hosts.find(h => h.name === host);
@@ -324,6 +330,7 @@ async function openDocViewerTab(docPath, docTitle, host = 'local') {
   } catch (e) {
     markdownContent = `⚠️ Error loading document: ${e.message}`;
   }
+  if (reqSeq !== inspectorRequestSeq) return;
 
   const displayTitle = docTitle || docPath.split('/').pop();
   const titleHtml = `📄 ${escapeHtml(displayTitle)} ${isRemote ? `<span class="badge-host">@${escapeHtml(formatHostLabel(host))}</span>` : ''}`;
@@ -377,6 +384,7 @@ async function openDocViewerTab(docPath, docTitle, host = 'local') {
 // Open In-UI Rich Transcript Viewer in Right Inspector Pane
 async function openTranscriptViewerTab(session) {
   if (!session) return;
+  const reqSeq = ++inspectorRequestSeq;
 
   const host = session.host || getSelfHostName();
   const isRemote = !isLocalHost(host);
@@ -395,6 +403,7 @@ async function openTranscriptViewerTab(session) {
   } catch (e) {
     errorMsg = `Error loading transcript: ${e.message}`;
   }
+  if (reqSeq !== inspectorRequestSeq) return;
 
   const transContainer = document.createElement('div');
   transContainer.className = 'transcript-viewer-container';
@@ -527,6 +536,7 @@ async function openTranscriptViewerTab(session) {
     meta: {
       type: 'transcript',
       sessionId: session.id,
+      session,
       host
     }
   });

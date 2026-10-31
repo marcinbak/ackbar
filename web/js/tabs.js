@@ -29,7 +29,7 @@ import {
   isSessionWorking,
   onSessionUpdated
 } from './chat.js';
-import { openSessionDetailsTab } from './details.js';
+import { openSessionDetailsTab, closeInspectorPane } from './details.js';
 import { updateStatusbar, resetStatusbar } from './statusbar.js';
 import { showTabContextMenu } from './context-menu.js';
 import { fetchSessions } from './api.js';
@@ -831,6 +831,13 @@ function activateTab(tabId) {
 // Close Tab
 function closeTab(tabId) {
   if (!tabId) return;
+  if (tabId.startsWith('details_')) {
+    const rawId = tabId.slice('details_'.length);
+    if (state.inspectorState && state.inspectorState.sessionId === rawId) {
+      closeInspectorPane();
+    }
+    return;
+  }
   const tab = state.openTabs.get(tabId);
   if (tab) {
     destroyTabResources(tab);
@@ -922,6 +929,12 @@ function migrateTabId(oldId, newId, session) {
 
   if (state.inspectorState && state.inspectorState.sessionId === oldId) {
     state.inspectorState.sessionId = newId;
+    if (state.inspectorState.session) {
+      Object.assign(state.inspectorState.session, session);
+    }
+    if (state.inspectorState.type === 'details') {
+      openSessionDetailsTab(session);
+    }
   }
 
   savePersistedTabs();
