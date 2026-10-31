@@ -1372,6 +1372,13 @@ function setChatSending(tabObj, isSending) {
   if (!tabObj) return;
   tabObj.sending = Boolean(isSending);
   if (isSending) {
+    if (tabObj.session) {
+      tabObj.session.state = 1;
+      if (Array.isArray(state.sessions)) {
+        const match = state.sessions.find(s => s.id === tabObj.session.id || (tabObj.session.native_id && s.native_id === tabObj.session.native_id));
+        if (match) match.state = 1;
+      }
+    }
     if (tabObj.chatCancelBtn) tabObj.chatCancelBtn.style.display = 'inline-flex';
     if (tabObj.chatStatusBadge) tabObj.chatStatusBadge.textContent = '⚡ Working...';
     const hasLiveTurnMsg = Boolean(tabObj.activeTurnMsgEl && tabObj.activeTurnMsgEl.isConnected);
@@ -2529,6 +2536,13 @@ function handleChatStreamEvent(tabObj, evt) {
 function resetChatComposer(tabObj) {
   if (!tabObj) return;
   tabObj.sending = false;
+  if (tabObj.session && isSessionWorking(tabObj.session)) {
+    tabObj.session.state = 3;
+    if (Array.isArray(state.sessions)) {
+      const match = state.sessions.find(s => s.id === tabObj.session.id || (tabObj.session.native_id && s.native_id === tabObj.session.native_id));
+      if (match && isSessionWorking(match)) match.state = 3;
+    }
+  }
   hideInStreamActivity(tabObj);
   tabObj.activeTurnMsgEl = null;
   tabObj.activeTurnBuffer = '';
@@ -2575,8 +2589,9 @@ function onSessionUpdated(updatedSess) {
 
     const working = isSessionWorking(updatedSess);
     const activeTurnUI = hasActiveTurnUI(tabObj);
+    const hasRecentInFlightPrompt = Boolean(tabObj.inFlightPrompt && (Date.now() - tabObj.inFlightPrompt.timestamp) < 15000);
 
-    if (!working && activeTurnUI) {
+    if (!working && activeTurnUI && !hasRecentInFlightPrompt) {
       setChatSending(tabObj, false);
       loadChatTranscript(tabObj);
       loadChatQueue(tabObj);
