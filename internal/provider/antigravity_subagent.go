@@ -249,14 +249,13 @@ func extractSubagentPromptText(stepType, content string) string {
 	if text == "" {
 		return ""
 	}
-	if strings.Contains(text, "<SYSTEM_MESSAGE>") {
-		if idx := strings.Index(text, "content="); idx != -1 {
-			sub := text[idx+len("content="):]
-			if endIdx := strings.Index(sub, "</SYSTEM_MESSAGE>"); endIdx != -1 {
-				sub = sub[:endIdx]
-			}
-			text = strings.TrimSpace(sub)
+	if !strings.EqualFold(stepType, "USER_INPUT") && strings.Contains(text, "<SYSTEM_MESSAGE>") && strings.Contains(text, "content=") {
+		idx := strings.Index(text, "content=")
+		sub := text[idx+len("content="):]
+		if endIdx := strings.Index(sub, "</SYSTEM_MESSAGE>"); endIdx != -1 {
+			sub = sub[:endIdx]
 		}
+		text = strings.TrimSpace(sub)
 	} else if strings.EqualFold(stepType, "USER_INPUT") {
 		text = daemon.CleanAntigravityPrompt(text)
 	} else {

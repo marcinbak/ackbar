@@ -323,6 +323,16 @@ func TestCleanAntigravityPrompt_NestedTags(t *testing.T) {
 			expected: "Look at this block:\n<USER_REQUEST>\ninner prompt\n</USER_REQUEST>\nWhy is it not stripped?",
 		},
 		{
+			name:     "quoted USER_REQUEST and ADDITIONAL_METADATA inside user message",
+			raw:      "<USER_REQUEST>\nExample payload:\n<USER_REQUEST>\nhi\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\ninner meta\n</ADDITIONAL_METADATA>\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nouter meta\n</ADDITIONAL_METADATA>",
+			expected: "Example payload:\n<USER_REQUEST>\nhi\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\ninner meta\n</ADDITIONAL_METADATA>",
+		},
+		{
+			name:     "unclosed metadata tag name mentioned inside USER_REQUEST",
+			raw:      "<USER_REQUEST>\nWhy does <ADDITIONAL_METADATA> or <SYSTEM_MESSAGE> appear in logs?\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nLocal time\n</ADDITIONAL_METADATA>",
+			expected: "Why does <ADDITIONAL_METADATA> or <SYSTEM_MESSAGE> appear in logs?",
+		},
+		{
 			name:     "context summary and ephemeral message removed",
 			raw:      "<CONTEXT_SUMMARY>\nsummary\n</CONTEXT_SUMMARY>\n<USER_REQUEST>\nDeploy to staging\n</USER_REQUEST>\n<EPHEMERAL_MESSAGE>\nreminder\n</EPHEMERAL_MESSAGE>",
 			expected: "Deploy to staging",

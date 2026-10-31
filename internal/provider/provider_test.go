@@ -1452,4 +1452,10 @@ func TestAntigravityExtractTranscript_StripsUserRequestAndMetadataTags(t *testin
 	if msgs[3].Role != "system" || msgs[3].Content != "CHECKPOINT: Context summarized" {
 		t.Errorf("Unexpected system checkpoint message: %+v", msgs[3])
 	}
+
+	// Verify extractSubagentPromptText does not bypass CleanAntigravityPrompt when USER_INPUT mentions <SYSTEM_MESSAGE>
+	subPrompt := extractSubagentPromptText("USER_INPUT", "<USER_REQUEST>\nCheck <SYSTEM_MESSAGE> handling\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nTime\n</ADDITIONAL_METADATA>")
+	if subPrompt != "Check <SYSTEM_MESSAGE> handling" {
+		t.Errorf("Expected subPrompt 'Check <SYSTEM_MESSAGE> handling', got %q", subPrompt)
+	}
 }

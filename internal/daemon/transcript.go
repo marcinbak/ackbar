@@ -431,7 +431,17 @@ func encodeClaudeProjectDir(p string) string {
 func CleanAntigravityPrompt(raw string) string {
 	s := raw
 
-	// First remove system/metadata blocks
+	// If contains <USER_REQUEST>...</USER_REQUEST>, extract the user prompt up to the last closing tag.
+	// Returning directly when closed preserves any inner quoted metadata/XML tags inside the user's message verbatim.
+	if startIdx := strings.Index(s, "<USER_REQUEST>"); startIdx != -1 {
+		start := startIdx + len("<USER_REQUEST>")
+		if end := strings.LastIndex(s, "</USER_REQUEST>"); end > start {
+			return strings.TrimSpace(s[start:end])
+		}
+		s = s[start:]
+	}
+
+	// Remove system/metadata blocks when <USER_REQUEST> was not present or not closed
 	for _, tag := range []string{"<CONTEXT_SUMMARY>", "<ADDITIONAL_METADATA>", "<USER_SETTINGS_CHANGE>", "<SYSTEM_MESSAGE>", "<EPHEMERAL_MESSAGE>"} {
 		endTag := "</" + strings.Trim(tag, "<>") + ">"
 		for {
@@ -446,16 +456,6 @@ func CleanAntigravityPrompt(raw string) string {
 				s = s[:start]
 				break
 			}
-		}
-	}
-
-	// If contains <USER_REQUEST>...</USER_REQUEST>, extract the user prompt up to the last closing tag
-	if startIdx := strings.Index(s, "<USER_REQUEST>"); startIdx != -1 {
-		start := startIdx + len("<USER_REQUEST>")
-		if end := strings.LastIndex(s, "</USER_REQUEST>"); end > start {
-			s = s[start:end]
-		} else {
-			s = s[start:]
 		}
 	}
 
@@ -772,14 +772,13 @@ func inspectAntigravitySubagentTranscriptDaemon(brainBaseDir, subID string, fall
 				}
 				if prompt == "" && (step.StepIndex == 0 || step.Type == "SYSTEM_MESSAGE" || step.Type == "USER_INPUT") {
 					text := strings.TrimSpace(step.Content)
-					if strings.Contains(text, "<SYSTEM_MESSAGE>") {
-						if idx := strings.Index(text, "content="); idx != -1 {
-							sub := text[idx+len("content="):]
-							if endIdx := strings.Index(sub, "</SYSTEM_MESSAGE>"); endIdx != -1 {
-								sub = sub[:endIdx]
-							}
-							text = strings.TrimSpace(sub)
+					if !strings.EqualFold(step.Type, "USER_INPUT") && strings.Contains(text, "<SYSTEM_MESSAGE>") && strings.Contains(text, "content=") {
+						idx := strings.Index(text, "content=")
+						sub := text[idx+len("content="):]
+						if endIdx := strings.Index(sub, "</SYSTEM_MESSAGE>"); endIdx != -1 {
+							sub = sub[:endIdx]
 						}
+						text = strings.TrimSpace(sub)
 					} else if strings.EqualFold(step.Type, "USER_INPUT") {
 						text = CleanAntigravityPrompt(text)
 					} else {
