@@ -17,13 +17,47 @@ import {
   hideChatFileContextMenu,
   showChatFileContextMenu
 } from './context-menu.js';
-import { handleTakeWheel } from './tabs.js';
+import { handleTakeWheel, isAuxiliaryInputFocused } from './tabs.js';
 import {
   addPendingAttachment,
   renderPendingAttachments,
   showUploadToast
 } from './terminal.js';
 import { fetchSessions } from './api.js';
+
+
+function extractPastedAttachmentFiles(clipboardData) {
+  if (!clipboardData || !clipboardData.items) return [];
+  const files = [];
+  for (const item of clipboardData.items) {
+    if (item.kind === 'file') {
+      const itemType = (item.type || '').toLowerCase();
+      if (itemType.startsWith('image/') || itemType === 'application/pdf' || itemType.includes('bmp') || itemType.startsWith('text/') || itemType === 'application/json') {
+        const file = item.getAsFile();
+        if (file) {
+          files.push(file);
+        }
+      }
+    }
+  }
+  return files;
+}
+
+function insertTextIntoPromptInput(inputEl, text) {
+  if (!inputEl || !text) return;
+  const value = inputEl.value || '';
+  const start = typeof inputEl.selectionStart === 'number' ? inputEl.selectionStart : value.length;
+  const end = typeof inputEl.selectionEnd === 'number' ? inputEl.selectionEnd : value.length;
+  inputEl.value = value.slice(0, start) + text + value.slice(end);
+  const caretPos = start + text.length;
+  if (typeof inputEl.setSelectionRange === 'function') {
+    try { inputEl.setSelectionRange(caretPos, caretPos); } catch (_) {}
+  }
+  inputEl.style.height = 'auto';
+  inputEl.style.height = Math.min(inputEl.scrollHeight, 180) + 'px';
+  inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+  inputEl.focus();
+}
 
 
 function setupChatInterface(tabObj, chatViewEl, session) {
@@ -299,23 +333,13 @@ function setupChatInterface(tabObj, chatViewEl, session) {
 
     tabObj.chatInputEl.addEventListener('paste', async (e) => {
       if (!e.clipboardData) return;
-      const items = e.clipboardData.items || [];
-      let handled = false;
-      for (const item of items) {
-        if (item.kind === 'file') {
-          const itemType = (item.type || '').toLowerCase();
-          if (itemType.startsWith('image/') || itemType === 'application/pdf' || itemType.includes('bmp') || itemType.startsWith('text/') || itemType === 'application/json') {
-            const file = item.getAsFile();
-            if (file) {
-              handled = true;
-              await addPendingAttachment(tabObj, file);
-            }
-          }
-        }
-      }
-      if (handled) {
+      const files = extractPastedAttachmentFiles(e.clipboardData);
+      if (files.length > 0) {
         e.preventDefault();
         e.stopPropagation();
+        for (const file of files) {
+          await addPendingAttachment(tabObj, file);
+        }
       }
     });
 
@@ -331,6 +355,25 @@ function setupChatInterface(tabObj, chatViewEl, session) {
       }
     });
   }
+
+  if (tabObj.chatComposerBox) {
+    tabObj.chatComposerBox.addEventListener('click', (e) => {
+      if (e.target && e.target.closest && e.target.closest('button, input, a')) return;
+      if (tabObj.chatInputEl) {
+        tabObj.chatInputEl.focus();
+      }
+    });
+  }
+
+  chatViewEl.addEventListener('click', (e) => {
+    if (tabObj.viewMode !== 'chat' || !tabObj.chatInputEl) return;
+    if (e.target && e.target.closest && e.target.closest('button, input, textarea, select, a, summary, details, .chat-file-pill, .chat-context-menu')) {
+      return;
+    }
+    const sel = window.getSelection ? window.getSelection() : null;
+    if (sel && !sel.isCollapsed) return;
+    tabObj.chatInputEl.focus();
+  });
 
   // Auto-load older messages when user scrolls near top of chat
   if (tabObj.chatMessagesEl) {
@@ -1889,6 +1932,7 @@ async function sendChatPrompt(tabObj, forcedPromptText) {
   if (typeof forcedPromptText !== 'string') {
     tabObj.chatInputEl.value = '';
     tabObj.chatInputEl.style.height = 'auto';
+    tabObj.chatInputEl.focus();
   }
 
   let daemonPrompt = promptText;
@@ -1926,6 +1970,9 @@ async function sendChatPrompt(tabObj, forcedPromptText) {
   // Temporarily disable send button during dispatch to prevent double-submitting
   if (tabObj.chatSendBtn) {
     tabObj.chatSendBtn.disabled = true;
+  }
+  if (typeof forcedPromptText !== 'string' && tabObj.viewMode === 'chat' && tabObj.chatInputEl) {
+    tabObj.chatInputEl.focus();
   }
 
   connectChatStream(tabObj);
@@ -2610,6 +2657,34 @@ function onSessionUpdated(updatedSess) {
   }
 }
 
+// Forward document-level paste events (such as voice dictation clipboard injection) to the active chat composer when unfocused
+document.addEventListener('paste', async (e) => {
+  if (!e.clipboardData) return;
+  if (!state.openTabs || !state.activeTabId) return;
+  const activeTab = state.openTabs.get(state.activeTabId);
+  if (!activeTab || activeTab.type !== 'terminal' || activeTab.viewMode !== 'chat' || !activeTab.chatInputEl) return;
+  if (document.activeElement === activeTab.chatInputEl) return;
+  if (isAuxiliaryInputFocused(activeTab.chatInputEl)) return;
+
+  const files = extractPastedAttachmentFiles(e.clipboardData);
+  if (files.length > 0) {
+    e.preventDefault();
+    e.stopPropagation();
+    activeTab.chatInputEl.focus();
+    for (const file of files) {
+      await addPendingAttachment(activeTab, file);
+    }
+    return;
+  }
+
+  const pastedText = e.clipboardData.getData('text/plain');
+  if (pastedText) {
+    e.preventDefault();
+    e.stopPropagation();
+    insertTextIntoPromptInput(activeTab.chatInputEl, pastedText);
+  }
+});
+
 // Reconcile transcript and reconnect headless stream when browser tab wakes or regains visibility
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'visible') return;
@@ -2652,7 +2727,8 @@ if (typeof window !== 'undefined') {
     setChatSending,
     loadChatTranscript,
     connectChatStream,
-    disconnectChatStream
+    disconnectChatStream,
+    insertTextIntoPromptInput
   };
 }
 
@@ -2663,6 +2739,8 @@ export {
   KNOWN_CHAT_FILE_EXTS,
   CHAT_IMAGE_EXTS,
   APP_ICONS,
+  extractPastedAttachmentFiles,
+  insertTextIntoPromptInput,
   setupChatInterface,
   loadChatQueue,
   renderLoadMoreBanner,
