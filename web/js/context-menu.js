@@ -209,7 +209,7 @@ function showContextMenu(x, y, session) {
 
   const isLater = isSessionLater(session);
   const isDone = isSessionDone(session);
-  const activeTab = session && state.openTabs ? state.openTabs.get(session.id) : null;
+  const activeTab = (session && state.openTabs && state.activeTabId === session.id) ? state.openTabs.get(session.id) : null;
 
   if (el.cmItemViewChat) {
     el.cmItemViewChat.innerHTML = `<span>💬</span> ${activeTab && activeTab.viewMode === 'chat' ? 'Chat View (Active)' : 'Open in Chat View'}`;

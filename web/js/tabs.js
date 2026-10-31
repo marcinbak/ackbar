@@ -318,10 +318,10 @@ function openSessionInTab(session, preferredViewMode = null) {
       if (!existingTab.socket || existingTab.socket.readyState === WebSocket.CLOSED || existingTab.socket.readyState === WebSocket.CLOSING) {
         reconnectTerminalTab(tabId);
       }
-      activateTab(tabId);
       if (preferredViewMode === 'chat' || preferredViewMode === 'terminal') {
         setTabViewMode(tabId, preferredViewMode);
       }
+      activateTab(tabId);
       markSessionAsRead(session);
       return;
     }
@@ -1056,7 +1056,7 @@ function restorePersistedTabs() {
     if (isHideTabsEnabled()) {
       const resolvedItems = [];
       list.forEach(item => {
-        if (item && item.sessionId) {
+        if (item && item.sessionId && (item.type === 'terminal' || item.type === 'details')) {
           const sess = state.sessions.find(s => s.id === item.sessionId || s.old_id === item.sessionId);
           if (sess) {
             const resolvedTabId = item.type === 'details' ? `details_${sess.id}` : sess.id;
@@ -1070,10 +1070,14 @@ function restorePersistedTabs() {
       if (activeId) {
         chosen = resolvedItems.find(entry =>
           entry.item.tabId === activeId ||
-          entry.resolvedTabId === activeId ||
-          entry.sess.id === activeId ||
-          entry.sess.old_id === activeId
+          entry.resolvedTabId === activeId
         );
+        if (!chosen) {
+          chosen = resolvedItems.find(entry =>
+            entry.item.type === 'terminal' &&
+            (entry.sess.id === activeId || entry.sess.old_id === activeId)
+          );
+        }
       }
       if (!chosen) {
         chosen = resolvedItems[resolvedItems.length - 1];
