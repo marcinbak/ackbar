@@ -203,3 +203,56 @@ func TestTabDeduplicationAndSafeMigration_JS(t *testing.T) {
 		}
 	}
 }
+
+func TestHeadlessThinkingBubblePersistence_JS(t *testing.T) {
+	embeddedFS := web.GetFS()
+
+	fChat, err := embeddedFS.Open("js/chat.js")
+	if err != nil {
+		t.Fatalf("failed to open js/chat.js: %v", err)
+	}
+	defer fChat.Close()
+
+	chatBytes, err := io.ReadAll(fChat)
+	if err != nil {
+		t.Fatalf("failed to read js/chat.js: %v", err)
+	}
+	chatContent := string(chatBytes)
+
+	for _, expected := range []string{
+		"const hasLiveTurnMsg = Boolean(tabObj.activeTurnMsgEl && tabObj.activeTurnMsgEl.isConnected);",
+		"const hasLiveActivity = Boolean(tabObj.activeInStreamActivityEl && tabObj.activeInStreamActivityEl.isConnected);",
+		"if (!hasLiveTurnMsg && !hasLiveActivity) {",
+		"} else if (working) {",
+		"if (!liveTurnMsgEl && !liveActivityEl && (tabObj.sending || isSessionWorking(tabObj.session))) {",
+		"} else if (!liveTurnMsgEl && (tabObj.sending || isSessionWorking(tabObj.session))) {",
+	} {
+		if !strings.Contains(chatContent, expected) {
+			t.Errorf("expected js/chat.js to contain %q", expected)
+		}
+	}
+
+	fTabs, err := embeddedFS.Open("js/tabs.js")
+	if err != nil {
+		t.Fatalf("failed to open js/tabs.js: %v", err)
+	}
+	defer fTabs.Close()
+
+	tabsBytes, err := io.ReadAll(fTabs)
+	if err != nil {
+		t.Fatalf("failed to read js/tabs.js: %v", err)
+	}
+	tabsContent := string(tabsBytes)
+
+	for _, expected := range []string{
+		"setChatSending,",
+		"isSessionWorking,",
+		"if (tab.sending || isSessionWorking(currentSess)) {",
+		"setChatSending(tab, true);",
+		"loadChatTranscript(tab);",
+	} {
+		if !strings.Contains(tabsContent, expected) {
+			t.Errorf("expected js/tabs.js to contain %q", expected)
+		}
+	}
+}

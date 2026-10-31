@@ -545,6 +545,9 @@ async function loadChatTranscript(tabObj) {
         if (!inFlightPrompt && !liveTurnMsgEl && !liveActivityEl && !container.querySelector('.chat-msg')) {
           container.innerHTML = '';
         }
+        if (!liveTurnMsgEl && !liveActivityEl && (tabObj.sending || isSessionWorking(tabObj.session))) {
+          setChatSending(tabObj, true);
+        }
         if (recentTurn && !tabObj._pendingTranscriptFollowup) {
           tabObj._pendingTranscriptFollowup = setTimeout(() => {
             tabObj._pendingTranscriptFollowup = null;
@@ -633,6 +636,8 @@ async function loadChatTranscript(tabObj) {
       if (liveActivityEl && hasActiveTurnUI(tabObj)) {
         container.appendChild(liveActivityEl);
         tabObj.activeInStreamActivityEl = liveActivityEl;
+      } else if (!liveTurnMsgEl && (tabObj.sending || isSessionWorking(tabObj.session))) {
+        setChatSending(tabObj, true);
       }
 
       if (shouldStickToBottom) {
@@ -1369,7 +1374,9 @@ function setChatSending(tabObj, isSending) {
   if (isSending) {
     if (tabObj.chatCancelBtn) tabObj.chatCancelBtn.style.display = 'inline-flex';
     if (tabObj.chatStatusBadge) tabObj.chatStatusBadge.textContent = '⚡ Working...';
-    if (!tabObj.activeTurnMsgEl && !tabObj.activeInStreamActivityEl) {
+    const hasLiveTurnMsg = Boolean(tabObj.activeTurnMsgEl && tabObj.activeTurnMsgEl.isConnected);
+    const hasLiveActivity = Boolean(tabObj.activeInStreamActivityEl && tabObj.activeInStreamActivityEl.isConnected);
+    if (!hasLiveTurnMsg && !hasLiveActivity) {
       showInStreamActivity(tabObj, {
         icon: '💭',
         text: 'Thinking...',
@@ -2573,7 +2580,7 @@ function onSessionUpdated(updatedSess) {
       setChatSending(tabObj, false);
       loadChatTranscript(tabObj);
       loadChatQueue(tabObj);
-    } else if (working && !tabObj.sending) {
+    } else if (working) {
       if (tabObj.session.engine_type === 'headless' || tabObj.viewMode === 'chat') {
         setChatSending(tabObj, true);
         if (tabObj.session.engine_type === 'headless' && tabObj.viewMode === 'chat') {

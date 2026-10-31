@@ -25,6 +25,8 @@ import {
   loadChatTranscript,
   hideInStreamActivity,
   resetChatComposer,
+  setChatSending,
+  isSessionWorking,
   onSessionUpdated
 } from './chat.js';
 import { openSessionDetailsTab } from './details.js';
@@ -729,6 +731,10 @@ function activateTab(tabId) {
         if (currentSess) {
           onSessionUpdated(currentSess);
         }
+        if (tab.sending || isSessionWorking(currentSess)) {
+          setChatSending(tab, true);
+        }
+        loadChatTranscript(tab);
         if (currentSess && currentSess.engine_type === 'headless') {
           connectChatStream(tab);
         }
