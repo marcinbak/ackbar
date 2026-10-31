@@ -66,15 +66,15 @@ func (c *CodexProvider) ReadSessionMetadata(cwd, nativeID string) *daemon.Sessio
 			continue
 		}
 
+		var msgTime time.Time
 		if raw.Timestamp != "" {
 			if t, err := time.Parse(time.RFC3339Nano, raw.Timestamp); err == nil {
-				if t.After(meta.LastMessageAt) {
-					meta.LastMessageAt = t
-				}
+				msgTime = t
 			} else if t, err := time.Parse(time.RFC3339, raw.Timestamp); err == nil {
-				if t.After(meta.LastMessageAt) {
-					meta.LastMessageAt = t
-				}
+				msgTime = t
+			}
+			if !msgTime.IsZero() && msgTime.After(meta.LastMessageAt) {
+				meta.LastMessageAt = msgTime
 			}
 		}
 
@@ -108,6 +108,9 @@ func (c *CodexProvider) ReadSessionMetadata(cwd, nativeID string) *daemon.Sessio
 						firstPrompt = joined
 					}
 					lastPrompt = joined
+					if !msgTime.IsZero() && msgTime.After(meta.LastUserMessageAt) {
+						meta.LastUserMessageAt = msgTime
+					}
 				}
 			}
 		} else if raw.Type == "event_msg" {

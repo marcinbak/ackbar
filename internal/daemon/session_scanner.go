@@ -242,9 +242,17 @@ func (s *Server) refreshExistingSessions(ctx context.Context, state *ScanState) 
 					sess.ContextPct = meta.ContextPct
 					changed = true
 				}
+				if !meta.LastUserMessageAt.IsZero() && meta.LastUserMessageAt.After(sess.LastEventAt) {
+					sess.LastEventAt = meta.LastUserMessageAt
+					changed = true
+				}
 				if !meta.LastMessageAt.IsZero() {
-					if sess.LastEventAt.IsZero() || meta.LastMessageAt.After(sess.LastEventAt) {
-						sess.LastEventAt = meta.LastMessageAt
+					if sess.LastEventAt.IsZero() {
+						if !meta.LastUserMessageAt.IsZero() {
+							sess.LastEventAt = meta.LastUserMessageAt
+						} else {
+							sess.LastEventAt = meta.LastMessageAt
+						}
 						changed = true
 					} else if (sess.State == StateIdle || sess.State == StateEnded) && sess.Blocked == nil && sess.LastEventAt.After(meta.LastMessageAt) {
 						sess.LastEventAt = meta.LastMessageAt

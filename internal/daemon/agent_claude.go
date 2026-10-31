@@ -760,15 +760,15 @@ func ReadClaudeSessionMeta(cwd, sessionID string) *SessionMeta {
 					Timestamp   string `json:"timestamp"`
 				}
 				if jerr := json.Unmarshal([]byte(line), &obj); jerr == nil {
+					var msgTime time.Time
 					if obj.Timestamp != "" {
 						if t, terr := time.Parse(time.RFC3339Nano, obj.Timestamp); terr == nil {
-							if metaInfo.LastMessageAt.IsZero() || t.After(metaInfo.LastMessageAt) {
-								metaInfo.LastMessageAt = t
-							}
+							msgTime = t
 						} else if t, terr := time.Parse(time.RFC3339, obj.Timestamp); terr == nil {
-							if metaInfo.LastMessageAt.IsZero() || t.After(metaInfo.LastMessageAt) {
-								metaInfo.LastMessageAt = t
-							}
+							msgTime = t
+						}
+						if !msgTime.IsZero() && (metaInfo.LastMessageAt.IsZero() || msgTime.After(metaInfo.LastMessageAt)) {
+							metaInfo.LastMessageAt = msgTime
 						}
 					}
 					if obj.GitBranch != "" && metaInfo.GitBranch == "" {
@@ -814,6 +814,9 @@ func ReadClaudeSessionMeta(cwd, sessionID string) *SessionMeta {
 								metaInfo.FirstPrompt = clean
 							}
 							metaInfo.LastPrompt = clean
+							if !msgTime.IsZero() && (metaInfo.LastUserMessageAt.IsZero() || msgTime.After(metaInfo.LastUserMessageAt)) {
+								metaInfo.LastUserMessageAt = msgTime
+							}
 						}
 					}
 				}

@@ -134,6 +134,7 @@ When long-running autonomous sessions consume significant token context (`contex
 
 The SQLite database (`~/.config/ackbar/ackbard.db`) uses CGO-free pure Go SQLite (`modernc.org/sqlite`). On daemon startup, `InitDB()` automatically applies non-destructive schema migrations:
 
+* `last_event_at`: Timestamp of the most recent user interaction (session creation/spawn/resume, `UserPromptSubmit` hook, interactive blocker response, chat/terminal prompt submission, or new user message in on-disk transcripts via `SessionMeta.LastUserMessageAt` / Antigravity `USER_INPUT` steps). Background agent tool calls (`PreToolUse`, `PostToolUse`), subagent lifecycle events, and status inspector polling do not advance `last_event_at`, keeping session tree ordering stable across concurrent working sessions.
 * `is_unread`: Tracks whether the session has unviewed state transitions (`1` = unread, `0` = read).
 * `is_later`: Tracks whether the session is parked in the Later section (`1` = later, `0` = normal). Sessions marked as later are immune to auto-done and auto-archive timers.
 * `last_state_change_at`: Timestamp of the most recent lifecycle state mutation.

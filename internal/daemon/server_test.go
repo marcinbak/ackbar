@@ -5253,3 +5253,292 @@ func TestResolveSession_ByOldIDAfterAntigravityAdoption(t *testing.T) {
 		t.Errorf("Expected resolveSession(%q) to resolve %q, got %+v", dashID, adoptedID, resolvedDash)
 	}
 }
+
+func TestAgentActivityHooks_DoNotPromoteLastEventAt(t *testing.T) {
+	dbFile := filepath.Join(t.TempDir(), "test_agent_hooks_last_event.db")
+	db, err := InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := NewServer(db)
+	mockP := &mockDynamicProvider{agentName: "claude-code"}
+	server.RegisterProvider(mockP)
+
+	initialPromptTime := time.Now().Add(-2 * time.Hour).Truncate(time.Second)
+	sessionUUID := "11111111-2222-3333-4444-555555555999"
+	sessionID := "claude-code:local:" + sessionUUID
+
+	existingSess := &Session{
+		ID:          sessionID,
+		Agent:       "claude-code",
+		Host:        "local",
+		NativeID:    sessionUUID,
+		Cwd:         "/workspace/project",
+		Name:        "Active Session",
+		State:       StateWorking,
+		StartedAt:   initialPromptTime,
+		LastEventAt: initialPromptTime,
+	}
+	if err := db.SaveSession(existingSess); err != nil {
+		t.Fatalf("SaveSession failed: %v", err)
+	}
+
+	hookSequence := []struct {
+		eventName string
+		state     State
+		blocked   *Blocked
+	}{
+		{eventName: "PreToolUse", state: StateWorking},
+		{eventName: "SubagentStart", state: StateWorking},
+		{eventName: "SubagentStop", state: StateWorking},
+		{eventName: "PostToolUse", state: StateWorking},
+		{
+			eventName: "PermissionRequest",
+			state:     StateBlocked,
+			blocked: &Blocked{
+				Kind:     BlockPermission,
+				Reason:   "Bash",
+				Question: "Allow Bash?",
+				Since:    time.Now(),
+			},
+		},
+		{eventName: "Stop", state: StateIdle},
+	}
+
+	for _, tc := range hookSequence {
+		ev := &Event{
+			Agent:       "claude-code",
+			NativeID:    sessionUUID,
+			Cwd:         "/workspace/project",
+			EventName:   tc.eventName,
+			State:       tc.state,
+			Blocked:     tc.blocked,
+			Activity:    "Hook: " + tc.eventName,
+			LastEventAt: time.Now(),
+		}
+		server.processParsedHookEvent(ev, tc.eventName, "local", "", false)
+
+		sessAfter, err := db.GetSession(sessionID)
+		if err != nil || sessAfter == nil {
+			t.Fatalf("Failed to fetch session after %s: %v", tc.eventName, err)
+		}
+		if !sessAfter.LastEventAt.Equal(initialPromptTime) {
+			t.Errorf("Hook %s unexpectedly updated LastEventAt: expected %v, got %v", tc.eventName, initialPromptTime, sessAfter.LastEventAt)
+		}
+	}
+}
+
+func TestInspectStatus_OnlyUserInteractionAdvancesLastEventAt(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	ctx := context.Background()
+
+	// 1. Antigravity: ask_question block does NOT advance LastEventAt, whereas a new USER_INPUT step DOES
+	convUUID := "88888888-9999-aaaa-bbbb-cccccccccccc"
+	brainDir := filepath.Join(tmpHome, ".gemini", "antigravity-cli", "brain", convUUID, ".system_generated", "logs")
+	if err := os.MkdirAll(brainDir, 0755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+	logPath := filepath.Join(brainDir, "transcript.jsonl")
+
+	t0 := time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)
+	tQuestion := time.Date(2026, 10, 30, 12, 5, 0, 0, time.UTC)
+	tNewPrompt := time.Date(2026, 10, 30, 12, 10, 0, 0, time.UTC)
+
+	blockedTranscript := fmt.Sprintf(
+		`{"step_index":1,"type":"USER_INPUT","content":"Start task","created_at":%q}`+"\n"+
+			`{"step_index":2,"type":"PLANNER_RESPONSE","status":"DONE","created_at":%q,"tool_calls":[{"name":"ask_question","args":{"question":"Continue?","options":["Yes","No"]}}]}`+"\n",
+		t0.Format(time.RFC3339),
+		tQuestion.Format(time.RFC3339),
+	)
+	if err := os.WriteFile(logPath, []byte(blockedTranscript), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	agySess := &Session{
+		ID:          "antigravity:local:" + convUUID,
+		Agent:       "antigravity",
+		Host:        "local",
+		NativeID:    convUUID,
+		State:       StateWorking,
+		PID:         os.Getpid(),
+		StartedAt:   t0,
+		LastEventAt: t0,
+	}
+
+	if !InspectAntigravityStatus(ctx, agySess) {
+		t.Fatalf("Expected InspectAntigravityStatus to detect blocked state")
+	}
+	if agySess.State != StateBlocked {
+		t.Fatalf("Expected StateBlocked, got %v", agySess.State)
+	}
+	if !agySess.LastEventAt.Equal(t0) {
+		t.Errorf("Expected Antigravity ask_question block NOT to advance LastEventAt (want %v, got %v)", t0, agySess.LastEventAt)
+	}
+
+	// Now append a new USER_INPUT step with tNewPrompt
+	newTurnTranscript := blockedTranscript + fmt.Sprintf(
+		`{"step_index":3,"type":"USER_INPUT","content":"Yes, proceed","created_at":%q}`+"\n",
+		tNewPrompt.Format(time.RFC3339),
+	)
+	if err := os.WriteFile(logPath, []byte(newTurnTranscript), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	if !InspectAntigravityStatus(ctx, agySess) {
+		t.Fatalf("Expected InspectAntigravityStatus to detect new USER_INPUT turn")
+	}
+	if !agySess.LastEventAt.Equal(tNewPrompt) {
+		t.Errorf("Expected new USER_INPUT step to advance LastEventAt to %v, got %v", tNewPrompt, agySess.LastEventAt)
+	}
+
+	// 1b. Antigravity: even when a subagent is running (Step 1 early return), a new USER_INPUT timestamp is synced first
+	subConvUUID := "sub11111-2222-3333-4444-555555555555"
+	subBrainDir := filepath.Join(tmpHome, ".gemini", "antigravity-cli", "brain", subConvUUID, ".system_generated", "logs")
+	if err := os.MkdirAll(subBrainDir, 0755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+	subLogPath := filepath.Join(subBrainDir, "transcript.jsonl")
+	if err := os.WriteFile(subLogPath, []byte(`{"step_index":1,"type":"PLANNER_RESPONSE","status":"RUNNING"}`+"\n"), 0644); err != nil {
+		t.Fatalf("WriteFile subLogPath failed: %v", err)
+	}
+	tFollowUpPrompt := time.Date(2026, 10, 30, 12, 20, 0, 0, time.UTC)
+	withSubagentTranscript := newTurnTranscript + fmt.Sprintf(
+		`{"step_index":4,"type":"USER_INPUT","content":"Spawn subagent","created_at":%q}`+"\n"+
+			`{"step_index":5,"type":"PLANNER_RESPONSE","status":"DONE","tool_calls":[{"name":"invoke_subagent","args":{"Role":"Researcher","TypeName":"research","Prompt":"Check"}}],"content":"conversationId: %s"}`+"\n"+
+			`{"step_index":6,"type":"TOOL_RESPONSE","content":"{\"conversationId\":%q}"}`+"\n",
+		tFollowUpPrompt.Format(time.RFC3339),
+		subConvUUID,
+		subConvUUID,
+	)
+	if err := os.WriteFile(logPath, []byte(withSubagentTranscript), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	InspectAntigravityStatus(ctx, agySess)
+	if !agySess.LastEventAt.Equal(tFollowUpPrompt) {
+		t.Errorf("Expected USER_INPUT timestamp %v to be synced even when running subagent returns early, got %v", tFollowUpPrompt, agySess.LastEventAt)
+	}
+
+	// 2. Claude Code: AskUserQuestion block and running subagent do NOT advance LastEventAt
+	claudeUUID := "cccccccc-1111-2222-3333-444444444444"
+	cwd := "/test/claude-workspace"
+	encodedCwd := encodeClaudeProjectDir(cwd)
+	projDir := filepath.Join(tmpHome, ".claude", "projects", encodedCwd)
+	if err := os.MkdirAll(projDir, 0755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+
+	claudeJsonl := fmt.Sprintf(
+		`{"type":"user","timestamp":%q,"message":{"role":"user","content":"Plan this"}}`+"\n"+
+			`{"type":"assistant","timestamp":%q,"message":{"role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","name":"ExitPlanMode","input":{}}]}}`+"\n",
+		t0.Format(time.RFC3339),
+		tQuestion.Format(time.RFC3339),
+	)
+	if err := os.WriteFile(filepath.Join(projDir, claudeUUID+".jsonl"), []byte(claudeJsonl), 0644); err != nil {
+		t.Fatalf("WriteFile claudeJsonl failed: %v", err)
+	}
+
+	claudeSess := &Session{
+		ID:          "claude-code:local:" + claudeUUID,
+		Agent:       "claude-code",
+		Host:        "local",
+		NativeID:    claudeUUID,
+		Cwd:         cwd,
+		State:       StateWorking,
+		PID:         os.Getpid(),
+		StartedAt:   t0,
+		LastEventAt: t0,
+	}
+
+	if !InspectClaudeStatus(ctx, claudeSess) {
+		t.Fatalf("Expected InspectClaudeStatus to detect ExitPlanMode block")
+	}
+	if claudeSess.State != StateBlocked {
+		t.Fatalf("Expected StateBlocked for Claude ExitPlanMode, got %v", claudeSess.State)
+	}
+	if !claudeSess.LastEventAt.Equal(t0) {
+		t.Errorf("Expected Claude ExitPlanMode block NOT to advance LastEventAt (want %v, got %v)", t0, claudeSess.LastEventAt)
+	}
+}
+
+func TestScanObservedSessions_OnlyUserMessageAdvancesLastEventAt(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	testCwd := "/Users/test/projects/sort-order-app"
+	encodedCwd := encodeClaudeProjectDir(testCwd)
+	projDir := filepath.Join(tmpHome, ".claude", "projects", encodedCwd)
+	if err := os.MkdirAll(projDir, 0755); err != nil {
+		t.Fatalf("Failed to create projDir: %v", err)
+	}
+
+	sessionUUID := "33333333-4444-5555-6666-777777777777"
+	jsonlPath := filepath.Join(projDir, sessionUUID+".jsonl")
+
+	tUser1 := time.Date(2026, 10, 30, 10, 0, 0, 0, time.UTC)
+	tAssistant1 := time.Date(2026, 10, 30, 10, 5, 0, 0, time.UTC)
+	tUser2 := time.Date(2026, 10, 30, 10, 15, 0, 0, time.UTC)
+
+	lines1 := []string{
+		fmt.Sprintf(`{"type":"user","message":{"role":"user","content":"First user prompt"},"timestamp":%q}`, tUser1.Format(time.RFC3339)),
+		fmt.Sprintf(`{"type":"assistant","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Assistant response"}]},"timestamp":%q}`, tAssistant1.Format(time.RFC3339)),
+	}
+	if err := os.WriteFile(jsonlPath, []byte(strings.Join(lines1, "\n")+"\n"), 0644); err != nil {
+		t.Fatalf("Failed to write jsonl: %v", err)
+	}
+
+	dbPath := filepath.Join(tmpHome, "test_sort_order.db")
+	db, err := InitDB(dbPath)
+	if err != nil {
+		t.Fatalf("Failed to create db: %v", err)
+	}
+	defer db.Close()
+
+	sessID := "claude-code:local:" + sessionUUID
+	sess := &Session{
+		ID:          sessID,
+		Name:        "Sort Order Session",
+		Agent:       "claude-code",
+		Host:        "local",
+		NativeID:    sessionUUID,
+		Cwd:         testCwd,
+		ProjectKey:  GetProjectKey(testCwd),
+		State:       StateIdle,
+		StartedAt:   tUser1,
+		LastEventAt: tUser1,
+	}
+	if err := db.SaveSession(sess); err != nil {
+		t.Fatalf("Failed to save session: %v", err)
+	}
+
+	server := NewServer(db)
+	server.RegisterProvider(&mockClaudeProvider{})
+	server.scanObservedSessions(context.Background())
+
+	// 1. Assistant message at tAssistant1 (> tUser1) must NOT advance LastEventAt
+	afterScan1, err := db.GetSession(sessID)
+	if err != nil || afterScan1 == nil {
+		t.Fatalf("Failed to retrieve session after scan 1: %v", err)
+	}
+	if !afterScan1.LastEventAt.Equal(tUser1) {
+		t.Errorf("Expected LastEventAt to remain at user prompt time %v despite newer assistant message at %v, got %v", tUser1, tAssistant1, afterScan1.LastEventAt)
+	}
+
+	// 2. New user prompt at tUser2 MUST advance LastEventAt to tUser2
+	lines2 := append(lines1, fmt.Sprintf(`{"type":"user","message":{"role":"user","content":"Second user prompt"},"timestamp":%q}`, tUser2.Format(time.RFC3339)))
+	if err := os.WriteFile(jsonlPath, []byte(strings.Join(lines2, "\n")+"\n"), 0644); err != nil {
+		t.Fatalf("Failed to write jsonl: %v", err)
+	}
+
+	server.scanObservedSessions(context.Background())
+
+	afterScan2, err := db.GetSession(sessID)
+	if err != nil || afterScan2 == nil {
+		t.Fatalf("Failed to retrieve session after scan 2: %v", err)
+	}
+	if !afterScan2.LastEventAt.Equal(tUser2) {
+		t.Errorf("Expected new user prompt to advance LastEventAt to %v, got %v", tUser2, afterScan2.LastEventAt)
+	}
+}

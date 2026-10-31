@@ -834,6 +834,9 @@ func TestCodexExtractTranscriptAndMetadata(t *testing.T) {
 	if meta.LastMessageAt.IsZero() {
 		t.Errorf("Expected non-zero LastMessageAt")
 	}
+	if meta.LastUserMessageAt.IsZero() {
+		t.Errorf("Expected non-zero LastUserMessageAt")
+	}
 }
 
 func TestGrokProvider_ParseHook(t *testing.T) {
@@ -1068,6 +1071,9 @@ func TestGrokExtractTranscriptAndMetadata(t *testing.T) {
 	}
 	if meta.LastMessageAt.IsZero() {
 		t.Errorf("Expected non-zero LastMessageAt")
+	}
+	if meta.LastUserMessageAt.IsZero() {
+		t.Errorf("Expected non-zero LastUserMessageAt")
 	}
 }
 
@@ -1307,6 +1313,9 @@ func TestOpenCodeExtractTranscriptAndMetadata(t *testing.T) {
 	}
 	if meta.LastMessageAt.IsZero() {
 		t.Errorf("Expected non-zero LastMessageAt")
+	}
+	if meta.LastUserMessageAt.IsZero() {
+		t.Errorf("Expected non-zero LastUserMessageAt")
 	}
 
 	// 3. Test CleanSessionFiles
