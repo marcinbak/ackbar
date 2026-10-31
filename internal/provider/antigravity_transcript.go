@@ -89,11 +89,14 @@ func (a *AntigravityProvider) ExtractTranscript(home, cwd, nativeID string) ([]d
 		}
 
 		if entry.Type == "USER_INPUT" {
-			messages = append(messages, daemon.TranscriptMessage{
-				Role:      "user",
-				Content:   entry.Content,
-				Timestamp: ts,
-			})
+			cleanContent := daemon.CleanAntigravityPrompt(entry.Content)
+			if cleanContent != "" {
+				messages = append(messages, daemon.TranscriptMessage{
+					Role:      "user",
+					Content:   cleanContent,
+					Timestamp: ts,
+				})
+			}
 		} else if entry.Type == "PLANNER_RESPONSE" {
 			var tools []string
 			for _, tc := range entry.ToolCalls {
@@ -143,6 +146,14 @@ func (a *AntigravityProvider) ExtractTranscript(home, cwd, nativeID string) ([]d
 						Timestamp: ts,
 					})
 				}
+			}
+		} else if entry.Type == "CHECKPOINT" {
+			if strings.Contains(entry.Content, "CHECKPOINT") {
+				messages = append(messages, daemon.TranscriptMessage{
+					Role:      "system",
+					Content:   strings.TrimSpace(entry.Content),
+					Timestamp: ts,
+				})
 			}
 		}
 	}

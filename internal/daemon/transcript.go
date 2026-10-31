@@ -427,39 +427,43 @@ func encodeClaudeProjectDir(p string) string {
 	return b.String()
 }
 
-func cleanAntigravityPrompt(raw string) string {
+// CleanAntigravityPrompt strips Antigravity system/metadata XML wrappers and extracts the clean user request text.
+func CleanAntigravityPrompt(raw string) string {
 	s := raw
 
-	// If contains <USER_REQUEST>...</USER_REQUEST>, extract the user prompt
-	if strings.Contains(s, "<USER_REQUEST>") {
-		start := strings.Index(s, "<USER_REQUEST>") + len("<USER_REQUEST>")
-		if end := strings.Index(s, "</USER_REQUEST>"); end > start {
-			s = s[start:end]
-		} else {
-			s = s[start:]
+	// If contains <USER_REQUEST>...</USER_REQUEST>, extract the user prompt up to the last closing tag.
+	// Returning directly when closed preserves any inner quoted metadata/XML tags inside the user's message verbatim.
+	if startIdx := strings.Index(s, "<USER_REQUEST>"); startIdx != -1 {
+		start := startIdx + len("<USER_REQUEST>")
+		if end := strings.LastIndex(s, "</USER_REQUEST>"); end > start {
+			return strings.TrimSpace(s[start:end])
 		}
+		s = s[start:]
 	}
 
-	// Remove <CONTEXT_SUMMARY>...</CONTEXT_SUMMARY>
-	if start := strings.Index(s, "<CONTEXT_SUMMARY>"); start != -1 {
-		if end := strings.Index(s, "</CONTEXT_SUMMARY>"); end != -1 {
-			s = s[:start] + s[end+len("</CONTEXT_SUMMARY>"):]
-		}
-	}
-
-	// Remove system/metadata tags
-	for _, tag := range []string{"<ADDITIONAL_METADATA>", "<USER_SETTINGS_CHANGE>", "<SYSTEM_MESSAGE>"} {
-		if idx := strings.Index(s, tag); idx != -1 {
-			if endTag := "</" + strings.Trim(tag, "<>"); strings.Contains(s, endTag) {
-				endIdx := strings.Index(s, endTag) + len(endTag)
-				s = s[:idx] + s[endIdx:]
+	// Remove system/metadata blocks when <USER_REQUEST> was not present or not closed
+	for _, tag := range []string{"<CONTEXT_SUMMARY>", "<ADDITIONAL_METADATA>", "<USER_SETTINGS_CHANGE>", "<SYSTEM_MESSAGE>", "<EPHEMERAL_MESSAGE>"} {
+		endTag := "</" + strings.Trim(tag, "<>") + ">"
+		for {
+			start := strings.Index(s, tag)
+			if start == -1 {
+				break
+			}
+			if relEnd := strings.Index(s[start+len(tag):], endTag); relEnd != -1 {
+				end := start + len(tag) + relEnd + len(endTag)
+				s = s[:start] + s[end:]
 			} else {
-				s = s[:idx]
+				s = s[:start]
+				break
 			}
 		}
 	}
 
 	return strings.TrimSpace(s)
+}
+
+func cleanAntigravityPrompt(raw string) string {
+	return CleanAntigravityPrompt(raw)
 }
 
 // formatToolSummaryCounts summarizes tool calls by tool name (e.g. "Bash x12" or "Bash x3, Grep x2")
@@ -768,15 +772,16 @@ func inspectAntigravitySubagentTranscriptDaemon(brainBaseDir, subID string, fall
 				}
 				if prompt == "" && (step.StepIndex == 0 || step.Type == "SYSTEM_MESSAGE" || step.Type == "USER_INPUT") {
 					text := strings.TrimSpace(step.Content)
-					if strings.Contains(text, "<SYSTEM_MESSAGE>") {
-						if idx := strings.Index(text, "content="); idx != -1 {
-							sub := text[idx+len("content="):]
-							if endIdx := strings.Index(sub, "</SYSTEM_MESSAGE>"); endIdx != -1 {
-								sub = sub[:endIdx]
-							}
-							text = strings.TrimSpace(sub)
+					if !strings.EqualFold(step.Type, "USER_INPUT") && strings.Contains(text, "<SYSTEM_MESSAGE>") && strings.Contains(text, "content=") {
+						idx := strings.Index(text, "content=")
+						sub := text[idx+len("content="):]
+						if endIdx := strings.Index(sub, "</SYSTEM_MESSAGE>"); endIdx != -1 {
+							sub = sub[:endIdx]
 						}
-					} else if !strings.EqualFold(step.Type, "USER_INPUT") {
+						text = strings.TrimSpace(sub)
+					} else if strings.EqualFold(step.Type, "USER_INPUT") {
+						text = CleanAntigravityPrompt(text)
+					} else {
 						text = ""
 					}
 					if len(text) > 240 {
