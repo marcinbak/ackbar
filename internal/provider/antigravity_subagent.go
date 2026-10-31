@@ -257,7 +257,9 @@ func extractSubagentPromptText(stepType, content string) string {
 			}
 			text = strings.TrimSpace(sub)
 		}
-	} else if !strings.EqualFold(stepType, "USER_INPUT") {
+	} else if strings.EqualFold(stepType, "USER_INPUT") {
+		text = daemon.CleanAntigravityPrompt(text)
+	} else {
 		return ""
 	}
 	if len(text) > 240 {

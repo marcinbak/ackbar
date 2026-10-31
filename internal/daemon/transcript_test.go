@@ -305,3 +305,41 @@ func TestEncodeClaudeProjectDir(t *testing.T) {
 		}
 	}
 }
+
+func TestCleanAntigravityPrompt_NestedTags(t *testing.T) {
+	tests := []struct {
+		name     string
+		raw      string
+		expected string
+	}{
+		{
+			name:     "standard user request with settings change and metadata",
+			raw:      "<USER_REQUEST>\nhow are you?\n</USER_REQUEST>\n<USER_SETTINGS_CHANGE>\nEffort level set to HIGH.\n</USER_SETTINGS_CHANGE>\n<ADDITIONAL_METADATA>\nThe current local time is: 2026-10-31T15:51:44+01:00.\n</ADDITIONAL_METADATA>",
+			expected: "how are you?",
+		},
+		{
+			name:     "nested USER_REQUEST inside user message",
+			raw:      "<USER_REQUEST>\nLook at this block:\n<USER_REQUEST>\ninner prompt\n</USER_REQUEST>\nWhy is it not stripped?\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nLocal time\n</ADDITIONAL_METADATA>",
+			expected: "Look at this block:\n<USER_REQUEST>\ninner prompt\n</USER_REQUEST>\nWhy is it not stripped?",
+		},
+		{
+			name:     "context summary and ephemeral message removed",
+			raw:      "<CONTEXT_SUMMARY>\nsummary\n</CONTEXT_SUMMARY>\n<USER_REQUEST>\nDeploy to staging\n</USER_REQUEST>\n<EPHEMERAL_MESSAGE>\nreminder\n</EPHEMERAL_MESSAGE>",
+			expected: "Deploy to staging",
+		},
+		{
+			name:     "only metadata returns empty string",
+			raw:      "<USER_SETTINGS_CHANGE>\nEffort level set to HIGH.\n</USER_SETTINGS_CHANGE>\n<ADDITIONAL_METADATA>\nLocal time\n</ADDITIONAL_METADATA>",
+			expected: "",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := CleanAntigravityPrompt(tc.raw)
+			if got != tc.expected {
+				t.Errorf("CleanAntigravityPrompt() = %q; want %q", got, tc.expected)
+			}
+		})
+	}
+}

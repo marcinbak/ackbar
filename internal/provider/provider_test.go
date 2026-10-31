@@ -1407,3 +1407,49 @@ func TestAntigravityProvider_ListSubagents_AliveStateAndTranscriptInspection(t *
 		t.Errorf("Expected doneSubID Prompt='Audit codebase structure', got %q", dn.Prompt)
 	}
 }
+
+func TestAntigravityExtractTranscript_StripsUserRequestAndMetadataTags(t *testing.T) {
+	tmpHome := t.TempDir()
+	convID := "test-agy-tags-conv"
+	logDir := filepath.Join(tmpHome, ".gemini", "antigravity-cli", "brain", convID, ".system_generated", "logs")
+	if err := os.MkdirAll(logDir, 0755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+
+	jsonlContent := strings.Join([]string{
+		`{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","created_at":"2026-10-31T14:51:44Z","content":"<USER_REQUEST>\nhow are you?\n</USER_REQUEST>\n<USER_SETTINGS_CHANGE>\nEffort level set to HIGH.\n</USER_SETTINGS_CHANGE>\n<ADDITIONAL_METADATA>\nThe current local time is: 2026-10-31T15:51:44+01:00.\n</ADDITIONAL_METADATA>"}`,
+		`{"step_index":1,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","created_at":"2026-10-31T14:52:00Z","content":"<USER_SETTINGS_CHANGE>\nEffort level set to HIGH.\n</USER_SETTINGS_CHANGE>\n<ADDITIONAL_METADATA>\nTime only\n</ADDITIONAL_METADATA>"}`,
+		`{"step_index":2,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","created_at":"2026-10-31T14:53:00Z","content":"<USER_REQUEST>\nPlease fix why <USER_REQUEST>example</USER_REQUEST> is shown in UI\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nLocal time\n</ADDITIONAL_METADATA>"}`,
+		`{"step_index":3,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-10-31T14:53:05Z","content":"I will fix the XML tag stripping."}`,
+		`{"step_index":4,"source":"SYSTEM","type":"CHECKPOINT","status":"DONE","created_at":"2026-10-31T14:54:00Z","content":"CHECKPOINT: Context summarized"}`,
+	}, "\n") + "\n"
+
+	if err := os.WriteFile(filepath.Join(logDir, "transcript.jsonl"), []byte(jsonlContent), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	ap := NewAntigravityProvider()
+	msgs, err := ap.ExtractTranscript(tmpHome, "/work", convID)
+	if err != nil {
+		t.Fatalf("ExtractTranscript failed: %v", err)
+	}
+
+	// Step 1 had only metadata (empty after cleaning), so we expect 4 messages: 2 user, 1 assistant, 1 system checkpoint
+	if len(msgs) != 4 {
+		t.Fatalf("Expected 4 messages, got %d: %+v", len(msgs), msgs)
+	}
+
+	if msgs[0].Role != "user" || msgs[0].Content != "how are you?" {
+		t.Errorf("Expected first user message 'how are you?', got %+v", msgs[0])
+	}
+	expectedNested := "Please fix why <USER_REQUEST>example</USER_REQUEST> is shown in UI"
+	if msgs[1].Role != "user" || msgs[1].Content != expectedNested {
+		t.Errorf("Expected second user message %q, got %q", expectedNested, msgs[1].Content)
+	}
+	if msgs[2].Role != "assistant" || msgs[2].Content != "I will fix the XML tag stripping." {
+		t.Errorf("Unexpected assistant message: %+v", msgs[2])
+	}
+	if msgs[3].Role != "system" || msgs[3].Content != "CHECKPOINT: Context summarized" {
+		t.Errorf("Unexpected system checkpoint message: %+v", msgs[3])
+	}
+}
