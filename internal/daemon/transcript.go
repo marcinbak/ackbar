@@ -660,6 +660,7 @@ func loadAntigravitySubagentsFromDir(home, convID string) []SubagentInfo {
 		if err != nil {
 			continue
 		}
+		brainBaseDir := filepath.Dir(filepath.Dir(filepath.Dir(dir)))
 		for _, entry := range entries {
 			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 				continue
@@ -689,12 +690,22 @@ func loadAntigravitySubagentsFromDir(home, convID string) []SubagentInfo {
 			}
 			seen[subID] = true
 
+			info, _ := entry.Info()
+			startTime := time.Now()
+			if info != nil {
+				startTime = info.ModTime()
+			}
+
 			stateNorm := "completed"
+			var prompt string
 			stUpper := strings.ToUpper(payload.State)
-			if strings.Contains(stUpper, "RUNNING") {
-				stateNorm = "running"
-			} else if strings.Contains(stUpper, "KILLED") || strings.Contains(stUpper, "CANCEL") {
+			if strings.Contains(stUpper, "KILLED") || strings.Contains(stUpper, "CANCEL") {
 				stateNorm = "killed"
+				_, prompt, startTime = inspectAntigravitySubagentTranscriptDaemon(brainBaseDir, subID, startTime)
+			} else if strings.Contains(stUpper, "RUNNING") || strings.Contains(stUpper, "ALIVE") {
+				stateNorm, prompt, startTime = inspectAntigravitySubagentTranscriptDaemon(brainBaseDir, subID, startTime)
+			} else {
+				_, prompt, startTime = inspectAntigravitySubagentTranscriptDaemon(brainBaseDir, subID, startTime)
 			}
 
 			role := payload.SubagentDescriptor.Role
@@ -709,22 +720,120 @@ func loadAntigravitySubagentsFromDir(home, convID string) []SubagentInfo {
 				name = role
 			}
 
-			info, _ := entry.Info()
-			startTime := time.Now()
-			if info != nil {
-				startTime = info.ModTime()
-			}
-
 			results = append(results, SubagentInfo{
 				ID:        subID,
 				Name:      name,
 				Role:      role,
+				Prompt:    prompt,
 				State:     stateNorm,
 				StartedAt: startTime,
 			})
 		}
 	}
 	return results
+}
+
+func inspectAntigravitySubagentTranscriptDaemon(brainBaseDir, subID string, fallbackStart time.Time) (state string, prompt string, startTime time.Time) {
+	startTime = fallbackStart
+	cleanSubID := filepath.Base(filepath.Clean(subID))
+	logPath := filepath.Join(brainBaseDir, cleanSubID, ".system_generated", "logs", "transcript.jsonl")
+
+	stat, statErr := os.Stat(logPath)
+	if statErr != nil {
+		if time.Since(fallbackStart) < 2*time.Minute {
+			return "running", "", fallbackStart
+		}
+		return "completed", "", fallbackStart
+	}
+
+	if headData, err := readHead(logPath, 16*1024); err == nil && len(headData) > 0 {
+		for _, line := range strings.Split(string(headData), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			var step struct {
+				StepIndex int    `json:"step_index"`
+				Type      string `json:"type"`
+				CreatedAt string `json:"created_at"`
+				Content   string `json:"content"`
+			}
+			if json.Unmarshal([]byte(line), &step) == nil {
+				if step.CreatedAt != "" && startTime.Equal(fallbackStart) {
+					if t, pErr := time.Parse(time.RFC3339Nano, step.CreatedAt); pErr == nil {
+						startTime = t
+					} else if t, pErr := time.Parse(time.RFC3339, step.CreatedAt); pErr == nil {
+						startTime = t
+					}
+				}
+				if prompt == "" && (step.StepIndex == 0 || step.Type == "SYSTEM_MESSAGE" || step.Type == "USER_INPUT") {
+					text := strings.TrimSpace(step.Content)
+					if strings.Contains(text, "<SYSTEM_MESSAGE>") {
+						if idx := strings.Index(text, "content="); idx != -1 {
+							sub := text[idx+len("content="):]
+							if endIdx := strings.Index(sub, "</SYSTEM_MESSAGE>"); endIdx != -1 {
+								sub = sub[:endIdx]
+							}
+							text = strings.TrimSpace(sub)
+						}
+					} else if !strings.EqualFold(step.Type, "USER_INPUT") {
+						text = ""
+					}
+					if len(text) > 240 {
+						text = strings.TrimSpace(text[:240]) + "..."
+					}
+					prompt = text
+				}
+				if prompt != "" {
+					break
+				}
+			}
+		}
+	}
+
+	if time.Since(stat.ModTime()) > 15*time.Minute {
+		return "completed", prompt, startTime
+	}
+
+	tailData, tailErr := readTail(logPath, 64*1024)
+	if tailErr != nil || len(tailData) == 0 {
+		return "running", prompt, startTime
+	}
+
+	lines := strings.Split(string(tailData), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		var step struct {
+			StepIndex       int                      `json:"step_index"`
+			Type            string                   `json:"type"`
+			Status          string                   `json:"status"`
+			ToolCalls       []map[string]interface{} `json:"tool_calls"`
+			TruncatedFields []string                 `json:"truncated_fields"`
+		}
+		if json.Unmarshal([]byte(line), &step) != nil {
+			continue
+		}
+		stType := strings.TrimSpace(step.Type)
+		if stType == "" || strings.EqualFold(stType, "CHECKPOINT") || (strings.EqualFold(stType, "SYSTEM") && step.StepIndex > 0) {
+			continue
+		}
+		if strings.EqualFold(stType, "PLANNER_RESPONSE") {
+			stStatus := strings.ToUpper(strings.TrimSpace(step.Status))
+			if stStatus == "DONE" || stStatus == "CANCELED" || stStatus == "CANCELLED" || stStatus == "ERROR" {
+				hasToolCalls := len(step.ToolCalls) > 0 || hasTruncatedField(step.TruncatedFields, "tool_calls")
+				if !hasToolCalls {
+					return "completed", prompt, startTime
+				}
+			}
+			return "running", prompt, startTime
+		}
+		return "running", prompt, startTime
+	}
+
+	return "running", prompt, startTime
 }
 
 func loadAntigravitySubagents(home, convID string) ([]SubagentInfo, error) {
