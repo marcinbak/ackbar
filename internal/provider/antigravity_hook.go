@@ -85,26 +85,17 @@ func (a *AntigravityProvider) ParseHook(eventName string, payload []byte) (*daem
 				} else {
 					event.Activity = "Waiting for user response"
 				}
-			} else if tool == "ask_permission" {
+			} else if tool == "ask_permission" || tool == "ask_custom_permission" {
 				event.State = daemon.StateBlocked
-				reason := "Waiting for tool permission approval"
-				if p.ToolCall.Args != nil {
-					if cmd, ok := p.ToolCall.Args["command"].(string); ok && cmd != "" {
-						reason = fmt.Sprintf("Allow command: %s", cmd)
-					} else if toolName, ok := p.ToolCall.Args["tool"].(string); ok && toolName != "" {
-						reason = fmt.Sprintf("Allow tool: %s", toolName)
-					} else if r, ok := p.ToolCall.Args["reason"].(string); ok && r != "" {
-						reason = r
-					}
-				}
+				reason := daemon.ExtractAntigravityPermissionReason(p.ToolCall.Args)
 				event.Blocked = &daemon.Blocked{
 					Kind:     daemon.BlockPermission,
 					Reason:   reason,
-					Question: reason,
-					Options:  []string{"Allow", "Deny"},
+					Question: "Tool requires permission",
+					Options:  []string{"1. Yes", "2. Yes, and always allow", "3. No"},
 					Since:    time.Now(),
 				}
-				event.Activity = "Waiting for permission"
+				event.Activity = "Waiting for user permission"
 			} else {
 				event.State = daemon.StateWorking
 				event.Activity = "Running tool: " + tool

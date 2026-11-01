@@ -205,11 +205,39 @@ func TestAntigravityProvider_ParseHook(t *testing.T) {
 	if evPerm.State != daemon.StateBlocked || evPerm.Blocked == nil || evPerm.Blocked.Kind != daemon.BlockPermission {
 		t.Errorf("Expected blocked permission state, got: %+v", evPerm)
 	}
-	if !strings.Contains(evPerm.Blocked.Question, "rm -rf /tmp/cache") {
-		t.Errorf("Expected question to contain command, got '%s'", evPerm.Blocked.Question)
+	if evPerm.Blocked.Question != "Tool requires permission" {
+		t.Errorf("Expected question 'Tool requires permission', got %q", evPerm.Blocked.Question)
 	}
-	if len(evPerm.Blocked.Options) != 2 || evPerm.Blocked.Options[0] != "Allow" || evPerm.Blocked.Options[1] != "Deny" {
-		t.Errorf("Expected options ['Allow', 'Deny'], got %+v", evPerm.Blocked.Options)
+	if !strings.Contains(evPerm.Blocked.Reason, "rm -rf /tmp/cache") {
+		t.Errorf("Expected reason to contain command, got %q", evPerm.Blocked.Reason)
+	}
+	if evPerm.Activity != "Waiting for user permission" {
+		t.Errorf("Expected activity 'Waiting for user permission', got %q", evPerm.Activity)
+	}
+	if len(evPerm.Blocked.Options) != 3 || evPerm.Blocked.Options[0] != "1. Yes" || evPerm.Blocked.Options[1] != "2. Yes, and always allow" || evPerm.Blocked.Options[2] != "3. No" {
+		t.Errorf("Expected options ['1. Yes', '2. Yes, and always allow', '3. No'], got %+v", evPerm.Blocked.Options)
+	}
+
+	// Test PreToolUse with ask_custom_permission
+	payloadCustomPerm := `{"conversationId": "session-agy", "workspacePaths": ["/workspace"], "toolCall": {"name": "ask_custom_permission", "args": {"action": "network_access", "target": "https://api.example.com"}}}`
+	evCustomPerm, err := p.ParseHook("PreToolUse", []byte(payloadCustomPerm))
+	if err != nil {
+		t.Fatalf("ParseHook ask_custom_permission failed: %v", err)
+	}
+	if evCustomPerm.State != daemon.StateBlocked || evCustomPerm.Blocked == nil || evCustomPerm.Blocked.Kind != daemon.BlockPermission {
+		t.Errorf("Expected blocked permission state for ask_custom_permission, got: %+v", evCustomPerm)
+	}
+	if evCustomPerm.Blocked.Question != "Tool requires permission" {
+		t.Errorf("Expected question 'Tool requires permission', got %q", evCustomPerm.Blocked.Question)
+	}
+	if evCustomPerm.Blocked.Reason != "network_access (https://api.example.com)" {
+		t.Errorf("Expected reason 'network_access (https://api.example.com)', got %q", evCustomPerm.Blocked.Reason)
+	}
+	if evCustomPerm.Activity != "Waiting for user permission" {
+		t.Errorf("Expected activity 'Waiting for user permission', got %q", evCustomPerm.Activity)
+	}
+	if len(evCustomPerm.Blocked.Options) != 3 || evCustomPerm.Blocked.Options[0] != "1. Yes" {
+		t.Errorf("Unexpected options for ask_custom_permission: %+v", evCustomPerm.Blocked.Options)
 	}
 
 	// Test postinvocation (should set StateIdle)
