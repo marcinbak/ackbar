@@ -48,15 +48,11 @@ func (state *ScanState) cleanupGhostProc(s *Server, excludeSessID string, pids .
 	}
 }
 
-func (s *Server) verifySessionLiveness(ctx context.Context, sessions []*Session) {
-	// Query all active local tmux sessions once to avoid O(N) subprocess executions
-	activeTmux, _ := tmux.ListSessions(ctx)
-
+func (s *Server) verifyHeadlessLiveness(sessions []*Session) {
 	for _, sess := range sessions {
-		if sess.State == StateEnded {
+		if sess == nil || sess.State == StateEnded {
 			continue
 		}
-
 		if sess.EngineType == EngineHeadless && sess.TmuxName == "" {
 			isRunning := s.headless != nil && s.headless.IsRunning(sess.ID)
 			if isRunning {
@@ -77,6 +73,46 @@ func (s *Server) verifySessionLiveness(ctx context.Context, sessions []*Session)
 				_ = s.db.SaveSession(sess)
 				s.broadcast(sess)
 			}
+		}
+	}
+}
+
+func (s *Server) triggerAsyncLiveness() {
+	if s.db == nil {
+		return
+	}
+	lastUnix := s.lastLivenessAt.Load()
+	if lastUnix > 0 && time.Since(time.Unix(0, lastUnix)) < 2*time.Second {
+		return
+	}
+	if !s.livenessRunning.CompareAndSwap(false, true) {
+		return
+	}
+	s.lastLivenessAt.Store(time.Now().UnixNano())
+	go func() {
+		defer s.livenessRunning.Store(false)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		active, err := s.db.ListActiveSessions()
+		if err != nil || len(active) == 0 {
+			return
+		}
+		s.verifySessionLiveness(ctx, active)
+	}()
+}
+
+func (s *Server) verifySessionLiveness(ctx context.Context, sessions []*Session) {
+	s.verifyHeadlessLiveness(sessions)
+
+	// Query all active local tmux sessions once to avoid O(N) subprocess executions
+	activeTmux, _ := tmux.ListSessions(ctx)
+
+	for _, sess := range sessions {
+		if sess.State == StateEnded {
+			continue
+		}
+
+		if sess.EngineType == EngineHeadless && sess.TmuxName == "" {
 			continue
 		}
 

@@ -32,24 +32,51 @@ class ApiClient {
     return h;
   }
 
-  /// GET /v1/sessions: Retrieve all active and recorded sessions from a host
-  Future<List<Session>> getSessions(String hostUrl, {String? authToken}) async {
+  /// GET /v1/sessions: Retrieve all active and recorded sessions from a host.
+  /// Returns null if the HTTP request fails, times out, or returns a non-200 status.
+  Future<List<Session>?> getSessionsOrNull(
+    String hostUrl, {
+    String? authToken,
+    String? hostName,
+  }) async {
     final clean = _cleanUrl(hostUrl);
     final uri = Uri.parse('$clean/v1/sessions');
     try {
       final response = await _client
           .get(uri, headers: _headers(authToken))
-          .timeout(const Duration(seconds: 4));
+          .timeout(const Duration(seconds: 10));
       if (response.statusCode == 200) {
-        final List<dynamic> decoded = jsonDecode(response.body);
-        return decoded
-            .map((item) => Session.fromJson(item as Map<String, dynamic>))
-            .toList();
+        final decoded = jsonDecode(response.body);
+        if (decoded is! List) return <Session>[];
+        final normalizedHost = (hostName != null && hostName.trim().isNotEmpty)
+            ? hostName.trim()
+            : null;
+        return decoded.map((item) {
+          final map = Map<String, dynamic>.from(item as Map<String, dynamic>);
+          if (normalizedHost != null) {
+            map['host'] = normalizedHost;
+          }
+          return Session.fromJson(map);
+        }).toList();
       }
-      return [];
+      return null;
     } catch (_) {
-      return [];
+      return null;
     }
+  }
+
+  /// GET /v1/sessions: Retrieve all active and recorded sessions from a host
+  Future<List<Session>> getSessions(
+    String hostUrl, {
+    String? authToken,
+    String? hostName,
+  }) async {
+    return await getSessionsOrNull(
+          hostUrl,
+          authToken: authToken,
+          hostName: hostName,
+        ) ??
+        [];
   }
 
   /// POST /v1/sessions/respond: Answer prompts, allow/deny permissions for a session
@@ -228,8 +255,9 @@ class ApiClient {
     }
   }
 
-  /// GET /v1/sessions/transcript: Retrieve live/historic agent conversation transcript (markdown/ansi)
-  Future<String> getTranscript(String hostUrl, String sessionId,
+  /// GET /v1/sessions/transcript: Retrieve live/historic agent conversation transcript (markdown/ansi).
+  /// Returns null if the request fails, times out, or returns a non-200 status.
+  Future<String?> getTranscriptOrNull(String hostUrl, String sessionId,
       {String format = 'markdown', String? authToken}) async {
     final clean = _cleanUrl(hostUrl);
     final uri = Uri.parse('$clean/v1/sessions/transcript').replace(
@@ -241,14 +269,26 @@ class ApiClient {
     try {
       final response = await _client
           .get(uri, headers: _headers(authToken))
-          .timeout(const Duration(seconds: 6));
+          .timeout(const Duration(seconds: 10));
       if (response.statusCode == 200) {
         return response.body;
       }
-      return '';
+      return null;
     } catch (_) {
-      return '';
+      return null;
     }
+  }
+
+  /// GET /v1/sessions/transcript: Retrieve live/historic agent conversation transcript (markdown/ansi)
+  Future<String> getTranscript(String hostUrl, String sessionId,
+      {String format = 'markdown', String? authToken}) async {
+    return await getTranscriptOrNull(
+          hostUrl,
+          sessionId,
+          format: format,
+          authToken: authToken,
+        ) ??
+        '';
   }
 
   /// GET /v1/sessions/transcript: Retrieve structured transcript data for rich chat stream UI
@@ -265,7 +305,7 @@ class ApiClient {
     try {
       final response = await _client
           .get(uri, headers: _headers(authToken))
-          .timeout(const Duration(seconds: 6));
+          .timeout(const Duration(seconds: 10));
       if (response.statusCode == 200) {
         final Map<String, dynamic> decoded = jsonDecode(response.body);
         return TranscriptData.fromJson(decoded);

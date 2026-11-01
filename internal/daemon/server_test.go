@@ -797,6 +797,8 @@ func (m *mockDynamicProvider) ParseHook(eventName string, payload []byte) (*Even
 }
 
 func TestInPlaceClearSessionRotation_AdoptsTmuxAndIncrementsTurn(t *testing.T) {
+	t.Setenv("ACKBAR_HOST", "")
+	t.Setenv("ACKBAR_DISPLAY_NAME", "")
 	dbFile := "./test_clear_rotation.db"
 	defer os.Remove(dbFile)
 
@@ -3602,6 +3604,8 @@ func TestAccountsAPI(t *testing.T) {
 }
 
 func TestHostIdentity_VersionAndSettings(t *testing.T) {
+	t.Setenv("ACKBAR_HOST", "")
+	t.Setenv("ACKBAR_DISPLAY_NAME", "")
 	dbPath := filepath.Join(t.TempDir(), "test_host_identity.db")
 	db, err := InitDB(dbPath)
 	if err != nil {

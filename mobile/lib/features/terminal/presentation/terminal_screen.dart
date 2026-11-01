@@ -17,8 +17,13 @@ import '../../../core/widgets/terminal_accessory_bar.dart';
 /// with horizontal scrolling, vertical swipe-to-scroll, dynamic auto-fit, zoom, and touch keyboard controls.
 class TerminalScreen extends ConsumerStatefulWidget {
   final Session session;
+  final WebSocketChannel Function(Uri uri)? channelBuilder;
 
-  const TerminalScreen({super.key, required this.session});
+  const TerminalScreen({
+    super.key,
+    required this.session,
+    this.channelBuilder,
+  });
 
   static Future<void> open(BuildContext context, Session session) {
     return Navigator.of(context).push(
@@ -56,6 +61,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   // Touch drag gesture scroll accumulator
   double _dragScrollAccumulator = 0.0;
   double _lastBottomInset = 0.0;
+  int? _activePointerId;
+  Offset? _pointerDownPos;
+  Duration? _lastPointerTimeStamp;
+  double _lastPointerVelocityY = 0.0;
+  bool _isPointerVerticalScroll = false;
 
   @override
   void initState() {
@@ -88,11 +98,21 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final maxScroll = _verticalScrollController.position.maxScrollExtent;
     final currentScroll = _verticalScrollController.offset;
     final show = (maxScroll - currentScroll) > 40.0;
-    if (show != _showScrollToBottom) {
+    if (show && !_showScrollToBottom) {
       setState(() {
-        _showScrollToBottom = show;
+        _showScrollToBottom = true;
       });
     }
+  }
+
+  void _sendScroll(String direction, {int lines = 1}) {
+    try {
+      _channel?.sink.add(jsonEncode({
+        'type': 'scroll',
+        'direction': direction,
+        'lines': lines,
+      }));
+    } catch (_) {}
   }
 
   void _scrollToBottom() {
@@ -103,9 +123,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         curve: Curves.easeOut,
       );
     }
-    // Send Page Down to tmux to ensure server viewport is at bottom
-    _channel?.sink.add('\x1b[6~');
-    _terminal.keyInput(TerminalKey.pageDown);
+    _sendScroll('bottom');
+    if (_showScrollToBottom) {
+      setState(() {
+        _showScrollToBottom = false;
+      });
+    }
   }
 
   Session _resolveLiveSession() {
@@ -153,7 +176,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
 
     try {
-      final channel = WebSocketChannel.connect(uri);
+      final channel = widget.channelBuilder != null
+          ? widget.channelBuilder!(uri)
+          : WebSocketChannel.connect(uri);
       _channel = channel;
 
       _terminal.onOutput = (data) {
@@ -276,7 +301,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       case 'Del':
       case 'Backspace':
         _channel!.sink.add('\x7f');
-        _terminal.keyInput(TerminalKey.backspace);
         break;
       case 'Ctrl+C':
         _channel!.sink.add('\x03');
@@ -289,35 +313,32 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         break;
       case '↑':
         _channel!.sink.add('\x1b[A');
-        _terminal.keyInput(TerminalKey.arrowUp);
         break;
       case '↓':
         _channel!.sink.add('\x1b[B');
-        _terminal.keyInput(TerminalKey.arrowDown);
         break;
       case '←':
         _channel!.sink.add('\x1b[D');
-        _terminal.keyInput(TerminalKey.arrowLeft);
         break;
       case '→':
         _channel!.sink.add('\x1b[C');
-        _terminal.keyInput(TerminalKey.arrowRight);
         break;
       case 'PgUp':
-        _channel!.sink.add('\x1b[5~');
-        _terminal.keyInput(TerminalKey.pageUp);
+        _sendScroll('page_up');
+        if (!_showScrollToBottom) {
+          setState(() {
+            _showScrollToBottom = true;
+          });
+        }
         break;
       case 'PgDn':
-        _channel!.sink.add('\x1b[6~');
-        _terminal.keyInput(TerminalKey.pageDown);
+        _sendScroll('page_down');
         break;
       case 'Home':
         _channel!.sink.add('\x1b[H');
-        _terminal.keyInput(TerminalKey.home);
         break;
       case 'End':
         _channel!.sink.add('\x1b[F');
-        _terminal.keyInput(TerminalKey.end);
         break;
       case 'Enter':
         _channel!.sink.add('\r');
@@ -327,8 +348,67 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
   }
 
-  void _handleVerticalDragUpdate(DragUpdateDetails details) {
-    final dy = details.primaryDelta ?? 0.0;
+  void _handlePointerDown(PointerDownEvent event) {
+    if (_activePointerId != null) return;
+    _activePointerId = event.pointer;
+    _pointerDownPos = event.position;
+    _lastPointerTimeStamp = event.timeStamp;
+    _lastPointerVelocityY = 0.0;
+    _isPointerVerticalScroll = false;
+    _dragScrollAccumulator = 0.0;
+  }
+
+  void _handlePointerMove(PointerMoveEvent event) {
+    if (event.pointer != _activePointerId || _pointerDownPos == null) return;
+
+    if (!_isPointerVerticalScroll) {
+      final totalDx = (event.position.dx - _pointerDownPos!.dx).abs();
+      final totalDy = (event.position.dy - _pointerDownPos!.dy).abs();
+      if (totalDy >= 6.0 && totalDy > totalDx) {
+        _isPointerVerticalScroll = true;
+      } else if (totalDx > 10.0 && totalDx > totalDy) {
+        _activePointerId = null;
+        return;
+      } else {
+        return;
+      }
+    }
+
+    if (_lastPointerTimeStamp != null) {
+      final dtMicros =
+          (event.timeStamp - _lastPointerTimeStamp!).inMicroseconds;
+      if (dtMicros > 0) {
+        _lastPointerVelocityY = (event.delta.dy * 1000000.0) / dtMicros;
+      }
+    }
+    _lastPointerTimeStamp = event.timeStamp;
+
+    _applyVerticalScrollDelta(event.delta.dy);
+  }
+
+  void _handlePointerUpOrCancel(PointerEvent event) {
+    if (event.pointer != _activePointerId) return;
+    if (_isPointerVerticalScroll && _lastPointerVelocityY.abs() > 800.0) {
+      if (_lastPointerVelocityY > 0) {
+        _sendScroll('page_up');
+        if (!_showScrollToBottom) {
+          setState(() {
+            _showScrollToBottom = true;
+          });
+        }
+      } else {
+        _sendScroll('page_down');
+      }
+    }
+    _activePointerId = null;
+    _pointerDownPos = null;
+    _lastPointerTimeStamp = null;
+    _lastPointerVelocityY = 0.0;
+    _isPointerVerticalScroll = false;
+    _dragScrollAccumulator = 0.0;
+  }
+
+  void _applyVerticalScrollDelta(double dy) {
     _dragScrollAccumulator += dy;
 
     // Approximately ~14px per terminal row scroll
@@ -339,35 +419,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
       if (rows > 0) {
         // Swiping finger DOWN -> Scroll UP in tmux history
-        for (var i = 0; i < rows; i++) {
-          _channel?.sink.add('\x1b[A');
-          _terminal.keyInput(TerminalKey.arrowUp);
+        _sendScroll('up', lines: rows);
+        if (!_showScrollToBottom) {
+          setState(() {
+            _showScrollToBottom = true;
+          });
         }
       } else if (rows < 0) {
         // Swiping finger UP -> Scroll DOWN towards live prompt
-        for (var i = 0; i < (-rows); i++) {
-          _channel?.sink.add('\x1b[B');
-          _terminal.keyInput(TerminalKey.arrowDown);
-        }
+        _sendScroll('down', lines: -rows);
       }
     }
-  }
-
-  void _handleVerticalDragEnd(DragEndDetails details) {
-    final velocity = details.primaryVelocity ?? 0.0;
-    // Fling gesture: fast flick scrolls a full page in tmux
-    if (velocity.abs() > 350.0) {
-      if (velocity > 0) {
-        // Fast swipe down -> Page Up in tmux
-        _channel?.sink.add('\x1b[5~');
-        _terminal.keyInput(TerminalKey.pageUp);
-      } else {
-        // Fast swipe up -> Page Down in tmux
-        _channel?.sink.add('\x1b[6~');
-        _terminal.keyInput(TerminalKey.pageDown);
-      }
-    }
-    _dragScrollAccumulator = 0.0;
   }
 
   void _zoomIn() {
@@ -616,93 +678,101 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                         : max(constraints.maxWidth,
                             _currentCols * charWidth + 16.0);
 
-                    return GestureDetector(
-                      onVerticalDragUpdate: _handleVerticalDragUpdate,
-                      onVerticalDragEnd: _handleVerticalDragEnd,
-                      onTap: () {
-                        if (!_terminalFocusNode.hasFocus) {
-                          _terminalFocusNode.requestFocus();
-                        }
-                      },
+                    return Listener(
+                      onPointerDown: _handlePointerDown,
+                      onPointerMove: _handlePointerMove,
+                      onPointerUp: _handlePointerUpOrCancel,
+                      onPointerCancel: _handlePointerUpOrCancel,
                       behavior: HitTestBehavior.translucent,
-                      child: Stack(
-                        children: [
-                          Scrollbar(
-                            controller: _verticalScrollController,
-                            thumbVisibility: true,
-                            trackVisibility: false,
-                            child: Scrollbar(
-                              controller: _horizontalScrollController,
-                              thumbVisibility: !_autoFit,
-                              trackVisibility: !_autoFit,
-                              notificationPredicate: (notif) =>
-                                  notif.metrics.axis == Axis.horizontal,
-                              child: SingleChildScrollView(
+                      child: GestureDetector(
+                        onTap: () {
+                          if (!_terminalFocusNode.hasFocus) {
+                            _terminalFocusNode.requestFocus();
+                          }
+                        },
+                        behavior: HitTestBehavior.translucent,
+                        child: Stack(
+                          children: [
+                            Scrollbar(
+                              controller: _verticalScrollController,
+                              thumbVisibility: true,
+                              trackVisibility: false,
+                              child: Scrollbar(
                                 controller: _horizontalScrollController,
-                                scrollDirection: Axis.horizontal,
-                                physics: const BouncingScrollPhysics(),
-                                child: SizedBox(
-                                  width: terminalRenderWidth,
-                                  height: constraints.maxHeight,
-                                  child: TerminalView(
-                                    _terminal,
-                                    controller: _terminalController,
-                                    scrollController: _verticalScrollController,
-                                    focusNode: _terminalFocusNode,
-                                    autofocus:
-                                        false, // Clean startup: keyboard hidden by default
-                                    autoResize: false,
-                                    deleteDetection:
-                                        true, // Fix for iOS backspace/delete
-                                    keyboardType: TextInputType.text,
-                                    keyboardAppearance: Brightness.dark,
-                                    backgroundOpacity: 0.0,
-                                    textStyle: TerminalStyle(
-                                      fontSize: _fontSize,
-                                      fontFamily: 'JetBrains Mono',
+                                thumbVisibility: !_autoFit,
+                                trackVisibility: !_autoFit,
+                                notificationPredicate: (notif) =>
+                                    notif.metrics.axis == Axis.horizontal,
+                                child: SingleChildScrollView(
+                                  controller: _horizontalScrollController,
+                                  scrollDirection: Axis.horizontal,
+                                  physics: const BouncingScrollPhysics(),
+                                  child: SizedBox(
+                                    width: terminalRenderWidth,
+                                    height: constraints.maxHeight,
+                                    child: TerminalView(
+                                      _terminal,
+                                      controller: _terminalController,
+                                      scrollController:
+                                          _verticalScrollController,
+                                      focusNode: _terminalFocusNode,
+                                      autofocus:
+                                          false, // Clean startup: keyboard hidden by default
+                                      autoResize: false,
+                                      deleteDetection:
+                                          true, // Fix for iOS backspace/delete
+                                      keyboardType: TextInputType.text,
+                                      keyboardAppearance: Brightness.dark,
+                                      backgroundOpacity: 0.0,
+                                      textStyle: TerminalStyle(
+                                        fontSize: _fontSize,
+                                        fontFamily: 'JetBrains Mono',
+                                      ),
                                     ),
                                   ),
                                 ),
                               ),
                             ),
-                          ),
-                          if (_showScrollToBottom)
-                            Positioned(
-                              bottom: 8,
-                              right: 16,
-                              child: Material(
-                                color:
-                                    AppColors.surfaceHighlight.withOpacity(0.9),
-                                borderRadius: BorderRadius.circular(20),
-                                elevation: 4,
-                                child: InkWell(
+                            if (_showScrollToBottom)
+                              Positioned(
+                                bottom: 8,
+                                right: 16,
+                                child: Material(
+                                  color: AppColors.surfaceHighlight
+                                      .withOpacity(0.9),
                                   borderRadius: BorderRadius.circular(20),
-                                  onTap: _scrollToBottom,
-                                  child: Padding(
-                                    padding: const EdgeInsets.symmetric(
-                                        horizontal: 10, vertical: 6),
-                                    child: Row(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        const Icon(Icons.arrow_downward_rounded,
-                                            size: 14,
-                                            color: AppColors.infoCyan),
-                                        const SizedBox(width: 4),
-                                        Text(
-                                          'Bottom',
-                                          style: AppTypography.codeXs.copyWith(
-                                            color: AppColors.infoCyan,
-                                            fontWeight: FontWeight.w600,
-                                            fontSize: 11,
+                                  elevation: 4,
+                                  child: InkWell(
+                                    borderRadius: BorderRadius.circular(20),
+                                    onTap: _scrollToBottom,
+                                    child: Padding(
+                                      padding: const EdgeInsets.symmetric(
+                                          horizontal: 10, vertical: 6),
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          const Icon(
+                                              Icons.arrow_downward_rounded,
+                                              size: 14,
+                                              color: AppColors.infoCyan),
+                                          const SizedBox(width: 4),
+                                          Text(
+                                            'Bottom',
+                                            style:
+                                                AppTypography.codeXs.copyWith(
+                                              color: AppColors.infoCyan,
+                                              fontWeight: FontWeight.w600,
+                                              fontSize: 11,
+                                            ),
                                           ),
-                                        ),
-                                      ],
+                                        ],
+                                      ),
                                     ),
                                   ),
                                 ),
                               ),
-                            ),
-                        ],
+                          ],
+                        ),
                       ),
                     );
                   },

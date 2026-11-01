@@ -75,30 +75,112 @@ func ExtractTranscript(agent, nativeID, cwd string) (*Transcript, error) {
 }
 
 func loadAntigravityTranscript(t *Transcript, home, convID string) error {
+	msgs, err := ExtractAntigravityTranscriptMessages(home, convID)
+	if err != nil {
+		return err
+	}
+	t.Messages = append(t.Messages, msgs...)
+	return nil
+}
+
+type antigravityTranscriptEntry struct {
+	StepIndex       int      `json:"step_index"`
+	Source          string   `json:"source"`
+	Type            string   `json:"type"`
+	Status          string   `json:"status"`
+	CreatedAt       string   `json:"created_at"`
+	Content         string   `json:"content"`
+	Thinking        string   `json:"thinking"`
+	TruncatedFields []string `json:"truncated_fields"`
+	ToolCalls       []struct {
+		Name string                 `json:"name"`
+		Args map[string]interface{} `json:"args"`
+	} `json:"tool_calls"`
+}
+
+func hasRelevantTruncatedField(fields []string) bool {
+	for _, f := range fields {
+		switch f {
+		case "content", "thinking", "tool_calls":
+			return true
+		}
+	}
+	return false
+}
+
+// ExtractAntigravityTranscriptMessages reads Antigravity conversation logs from disk,
+// hydrating any truncated steps from transcript_full.jsonl when available.
+func ExtractAntigravityTranscriptMessages(home, convID string) ([]TranscriptMessage, error) {
 	cleanID := filepath.Base(filepath.Clean(convID))
 	if cleanID == "" || cleanID == "." || cleanID == ".." || strings.ContainsAny(cleanID, "*?[") {
-		return fmt.Errorf("invalid conversation ID %q", convID)
+		return nil, fmt.Errorf("invalid conversation ID %q", convID)
 	}
-	candidatePaths := []string{
-		filepath.Join(home, ".gemini", "antigravity", "brain", cleanID, ".system_generated", "logs", "transcript.jsonl"),
-		filepath.Join(home, ".gemini", "antigravity-cli", "brain", cleanID, ".system_generated", "logs", "transcript.jsonl"),
-		filepath.Join(home, ".antigravity", "brain", cleanID, ".system_generated", "logs", "transcript.jsonl"),
+	candidateDirs := []string{
+		filepath.Join(home, ".gemini", "antigravity", "brain", cleanID, ".system_generated", "logs"),
+		filepath.Join(home, ".gemini", "antigravity-cli", "brain", cleanID, ".system_generated", "logs"),
+		filepath.Join(home, ".antigravity", "brain", cleanID, ".system_generated", "logs"),
+	}
+	if p1, _ := filepath.Glob(filepath.Join(home, ".gemini-profiles", "*", "brain", cleanID, ".system_generated", "logs")); len(p1) > 0 {
+		candidateDirs = append(candidateDirs, p1...)
+	}
+	if p2, _ := filepath.Glob(filepath.Join(home, ".gemini-profiles", "*", "antigravity", "brain", cleanID, ".system_generated", "logs")); len(p2) > 0 {
+		candidateDirs = append(candidateDirs, p2...)
+	}
+	if p3, _ := filepath.Glob(filepath.Join(home, ".gemini-profiles", "*", "antigravity-cli", "brain", cleanID, ".system_generated", "logs")); len(p3) > 0 {
+		candidateDirs = append(candidateDirs, p3...)
 	}
 
 	var file *os.File
+	var openedDir string
 	var err error
-	for _, path := range candidatePaths {
-		file, err = os.Open(path)
-		if err == nil {
+	for _, dir := range candidateDirs {
+		for _, name := range []string{"transcript.jsonl", "transcript_full.jsonl"} {
+			file, err = os.Open(filepath.Join(dir, name))
+			if err == nil {
+				openedDir = dir
+				break
+			}
+		}
+		if file != nil {
 			break
 		}
 	}
 
 	if file == nil {
-		return fmt.Errorf("antigravity log not found for conversation %s: %w", convID, err)
+		return nil, fmt.Errorf("antigravity log not found for conversation %s: %w", convID, err)
 	}
 	defer file.Close()
 
+	var fullSteps map[int]string
+	fullStepsLoaded := false
+	getFullLine := func(stepIdx int) (string, bool) {
+		if !fullStepsLoaded {
+			fullStepsLoaded = true
+			fullSteps = make(map[int]string)
+			if fullFile, ferr := os.Open(filepath.Join(openedDir, "transcript_full.jsonl")); ferr == nil {
+				defer fullFile.Close()
+				fScanner := bufio.NewScanner(fullFile)
+				fBuf := make([]byte, 1024*1024)
+				fScanner.Buffer(fBuf, 20*1024*1024)
+				for fScanner.Scan() {
+					fLine := strings.TrimSpace(fScanner.Text())
+					if fLine == "" {
+						continue
+					}
+					var idxOnly struct {
+						StepIndex int `json:"step_index"`
+					}
+					if json.Unmarshal([]byte(fLine), &idxOnly) == nil {
+						fullSteps[idxOnly.StepIndex] = fLine
+					}
+				}
+			}
+		}
+		l, ok := fullSteps[stepIdx]
+		return l, ok
+	}
+
+	messages := make([]TranscriptMessage, 0)
 	scanner := bufio.NewScanner(file)
 	buf := make([]byte, 1024*1024) // 1MB buffer for large entries
 	scanner.Buffer(buf, 10*1024*1024)
@@ -109,25 +191,24 @@ func loadAntigravityTranscript(t *Transcript, home, convID string) error {
 			continue
 		}
 
-		var entry struct {
-			StepIndex int    `json:"step_index"`
-			Source    string `json:"source"`
-			Type      string `json:"type"`
-			Status    string `json:"status"`
-			CreatedAt string `json:"created_at"`
-			Content   string `json:"content"`
-			Thinking  string `json:"thinking"`
-			ToolCalls []struct {
-				Name string                 `json:"name"`
-				Args map[string]interface{} `json:"args"`
-			} `json:"tool_calls"`
-		}
-
+		var entry antigravityTranscriptEntry
 		if err := json.Unmarshal([]byte(line), &entry); err != nil {
 			continue
 		}
 
-		ts, _ := time.Parse(time.RFC3339, entry.CreatedAt)
+		if hasRelevantTruncatedField(entry.TruncatedFields) {
+			if fullLine, ok := getFullLine(entry.StepIndex); ok {
+				var fullEntry antigravityTranscriptEntry
+				if json.Unmarshal([]byte(fullLine), &fullEntry) == nil {
+					entry = fullEntry
+				}
+			}
+		}
+
+		ts, err := time.Parse(time.RFC3339Nano, entry.CreatedAt)
+		if err != nil {
+			ts, _ = time.Parse(time.RFC3339, entry.CreatedAt)
+		}
 		if ts.IsZero() {
 			ts = time.Now()
 		}
@@ -136,7 +217,7 @@ func loadAntigravityTranscript(t *Transcript, home, convID string) error {
 		case "USER_INPUT":
 			cleanContent := cleanAntigravityPrompt(entry.Content)
 			if cleanContent != "" {
-				t.Messages = append(t.Messages, TranscriptMessage{
+				messages = append(messages, TranscriptMessage{
 					Role:      "user",
 					Content:   cleanContent,
 					Timestamp: ts,
@@ -156,14 +237,14 @@ func loadAntigravityTranscript(t *Transcript, home, convID string) error {
 				}
 				if action != "" {
 					toolSummaries = append(toolSummaries, fmt.Sprintf("%s (%s)", tc.Name, action))
-				} else {
+				} else if tc.Name != "" {
 					toolSummaries = append(toolSummaries, tc.Name)
 				}
 			}
 
 			if entry.Content != "" || entry.Thinking != "" || len(toolSummaries) > 0 {
-				if len(t.Messages) > 0 && t.Messages[len(t.Messages)-1].Role == "assistant" {
-					last := &t.Messages[len(t.Messages)-1]
+				if len(messages) > 0 && messages[len(messages)-1].Role == "assistant" {
+					last := &messages[len(messages)-1]
 					if entry.Content != "" {
 						if last.Content != "" {
 							if !strings.Contains(last.Content, entry.Content) {
@@ -185,7 +266,7 @@ func loadAntigravityTranscript(t *Transcript, home, convID string) error {
 					}
 					last.Timestamp = ts
 				} else {
-					t.Messages = append(t.Messages, TranscriptMessage{
+					messages = append(messages, TranscriptMessage{
 						Role:      "assistant",
 						Content:   entry.Content,
 						Thinking:  entry.Thinking,
@@ -198,7 +279,7 @@ func loadAntigravityTranscript(t *Transcript, home, convID string) error {
 		case "CHECKPOINT":
 			// Truncation summaries
 			if strings.Contains(entry.Content, "CHECKPOINT") {
-				t.Messages = append(t.Messages, TranscriptMessage{
+				messages = append(messages, TranscriptMessage{
 					Role:      "system",
 					Content:   strings.TrimSpace(entry.Content),
 					Timestamp: ts,
@@ -207,7 +288,7 @@ func loadAntigravityTranscript(t *Transcript, home, convID string) error {
 		}
 	}
 
-	return nil
+	return messages, nil
 }
 
 func findClaudeTranscriptPath(home, sessionID, cwd string) string {

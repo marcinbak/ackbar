@@ -12,6 +12,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"ackbar/internal/relay"
@@ -65,6 +66,8 @@ type Server struct {
 	sessionHookLocks  sync.Map
 	blockedBySubagent sync.Map
 	homeDir           string
+	livenessRunning   atomic.Bool
+	lastLivenessAt    atomic.Int64
 }
 
 func NewServer(db *DB) *Server {
@@ -375,7 +378,8 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if len(active) > 0 {
-			s.verifySessionLiveness(r.Context(), active)
+			s.verifyHeadlessLiveness(active)
+			s.triggerAsyncLiveness()
 		}
 		for _, s := range sessions {
 			data, err := json.Marshal(s)

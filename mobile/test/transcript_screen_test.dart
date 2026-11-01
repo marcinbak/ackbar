@@ -5,12 +5,21 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:ackbar_mobile/core/models/host.dart';
 import 'package:ackbar_mobile/core/models/session.dart';
 import 'package:ackbar_mobile/core/network/api_client.dart';
 import 'package:ackbar_mobile/core/network/sse_client.dart';
 import 'package:ackbar_mobile/core/providers/fleet_providers.dart';
 import 'package:ackbar_mobile/core/theme/app_theme.dart';
 import 'package:ackbar_mobile/features/transcript/presentation/transcript_screen.dart';
+
+HostRecord dynamicHostRecord() => HostRecord(
+      name: 'Legion',
+      url: 'http://100.64.0.1:7777',
+      authToken: 'secret-host-token',
+      online: false,
+      createdAt: DateTime.utc(2026, 10, 31),
+    );
 
 Session _makeHeadlessSession({
   String id = 'claude-code:local:sess-headless-1',
@@ -538,6 +547,94 @@ void main() {
         lastPromptSessionId,
         equals('antigravity:legion:real-conv-999'),
       );
+    });
+
+    testWidgets(
+        'propagates host authToken to transcript and subagent endpoints and shows Retry on fetch failure',
+        (tester) async {
+      var failRequests = true;
+      final capturedAuthHeaders = <String?>[];
+
+      final mockClient = MockClient((request) async {
+        capturedAuthHeaders.add(request.headers['Authorization']);
+        if (failRequests) {
+          return http.Response('Unauthorized or Offline', 502);
+        }
+        if (request.url.path == '/v1/sessions/transcript') {
+          return http.Response(
+            jsonEncode({
+              'session_id': 'antigravity:legion:conv-auth-1',
+              'native_id': 'conv-auth-1',
+              'agent': 'antigravity',
+              'title': 'Auth Test Session',
+              'cwd': '/workspace/ackbar',
+              'messages': [
+                {
+                  'role': 'user',
+                  'content': 'Authenticated hello',
+                  'timestamp': '2026-10-31T12:00:00Z',
+                },
+              ],
+              'markdown': '',
+            }),
+            200,
+          );
+        }
+        if (request.url.path == '/v1/sessions/subagents') {
+          return http.Response(jsonEncode({'subagents': []}), 200);
+        }
+        return http.Response('[]', 200);
+      });
+
+      final api = ApiClient(client: mockClient);
+      final sse = SSEClient(client: mockClient);
+      final session = _makeHeadlessSession(
+        id: 'antigravity:legion:conv-auth-1',
+        nativeId: 'conv-auth-1',
+      ).copyWith(host: 'Legion');
+
+      final container = ProviderContainer(
+        overrides: [
+          apiClientProvider.overrideWithValue(api),
+          sseClientProvider.overrideWithValue(sse),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      container.read(hostsListProvider.notifier).state = [
+        container.read(hostsListProvider.notifier).state.firstOrNull ??
+            // Seed host with authToken
+            // ignore: prefer_const_constructors
+            dynamicHostRecord(),
+      ];
+
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: MaterialApp(
+            theme: AppTheme.darkTheme,
+            home: TranscriptScreen(session: session),
+          ),
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 600));
+      await tester.pump();
+
+      // Should show Retry error rather than fake "No conversation messages recorded yet"
+      expect(find.textContaining('Unable to load transcript'), findsOneWidget);
+      expect(find.text('Retry'), findsOneWidget);
+      expect(
+        capturedAuthHeaders.any((h) => h == 'Bearer secret-host-token'),
+        isTrue,
+      );
+
+      // Now recover and tap Retry
+      failRequests = false;
+      await tester.tap(find.text('Retry'));
+      await tester.pump(const Duration(milliseconds: 600));
+      await tester.pump();
+
+      expect(find.text('Authenticated hello'), findsOneWidget);
     });
   });
 }

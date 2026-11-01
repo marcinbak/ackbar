@@ -35,14 +35,17 @@ class SessionDetailSheet extends ConsumerWidget {
 
     if (session.isUnread) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        ref.read(fleetSessionsProvider.notifier).markSessionRead(session.id, session.host);
+        ref
+            .read(fleetSessionsProvider.notifier)
+            .markSessionRead(session.id, session.host);
       });
     }
 
     return Container(
       decoration: const BoxDecoration(
         color: AppColors.background,
-        borderRadius: BorderRadius.vertical(top: Radius.circular(AppSpacing.radiusXl)),
+        borderRadius:
+            BorderRadius.vertical(top: Radius.circular(AppSpacing.radiusXl)),
         border: Border(
           top: BorderSide(color: AppColors.outline, width: 1.5),
         ),
@@ -78,12 +81,16 @@ class SessionDetailSheet extends ConsumerWidget {
                 decoration: BoxDecoration(
                   color: session.agentColor.withOpacity(0.15),
                   borderRadius: AppSpacing.roundedSm,
-                  border: Border.all(color: session.agentColor.withOpacity(0.4), width: 1),
+                  border: Border.all(
+                      color: session.agentColor.withOpacity(0.4), width: 1),
                 ),
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    AgentLogo(agent: session.agent, size: 12, color: session.agentColor),
+                    AgentLogo(
+                        agent: session.agent,
+                        size: 12,
+                        color: session.agentColor),
                     const SizedBox(width: 5),
                     Text(
                       session.agentDisplayName,
@@ -101,7 +108,8 @@ class SessionDetailSheet extends ConsumerWidget {
                 decoration: BoxDecoration(
                   color: AppColors.surfaceHighlight,
                   borderRadius: AppSpacing.roundedSm,
-                  border: Border.all(color: AppColors.outlineSubtle, width: 0.5),
+                  border:
+                      Border.all(color: AppColors.outlineSubtle, width: 0.5),
                 ),
                 child: Text(
                   session.hostTag,
@@ -114,7 +122,8 @@ class SessionDetailSheet extends ConsumerWidget {
               if (session.gitBranch.isNotEmpty) ...[
                 const SizedBox(width: 8),
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
                   decoration: BoxDecoration(
                     color: AppColors.surfaceHighlight,
                     borderRadius: AppSpacing.roundedSm,
@@ -122,18 +131,21 @@ class SessionDetailSheet extends ConsumerWidget {
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      const Icon(Icons.fork_right_rounded, size: 11, color: AppColors.textMuted),
+                      const Icon(Icons.fork_right_rounded,
+                          size: 11, color: AppColors.textMuted),
                       const SizedBox(width: 3),
                       Text(
                         session.gitBranch,
-                        style: AppTypography.codeXs.copyWith(color: AppColors.textSecondary),
+                        style: AppTypography.codeXs
+                            .copyWith(color: AppColors.textSecondary),
                       ),
                     ],
                   ),
                 ),
               ],
               const Spacer(),
-              StatusBadge(status: session.state.toBadgeStatus(), isCompact: true),
+              StatusBadge(
+                  status: session.state.toBadgeStatus(), isCompact: true),
             ],
           ),
           AppSpacing.gapH16,
@@ -212,7 +224,9 @@ class SessionDetailSheet extends ConsumerWidget {
             ElevatedButton.icon(
               onPressed: () async {
                 Navigator.of(context).pop();
-                await ref.read(fleetSessionsProvider.notifier).resumeSession(session.id);
+                await ref
+                    .read(fleetSessionsProvider.notifier)
+                    .resumeSession(session.id);
                 TerminalScreen.open(context, session);
               },
               icon: const Icon(Icons.play_arrow_rounded, size: 18),
@@ -220,7 +234,8 @@ class SessionDetailSheet extends ConsumerWidget {
               style: ElevatedButton.styleFrom(
                 backgroundColor: AppColors.statusEmerald.withOpacity(0.2),
                 foregroundColor: AppColors.statusEmerald,
-                side: const BorderSide(color: AppColors.statusEmerald, width: 1.5),
+                side: const BorderSide(
+                    color: AppColors.statusEmerald, width: 1.5),
                 padding: const EdgeInsets.symmetric(vertical: 12),
               ),
             ),
@@ -257,11 +272,14 @@ class SessionDetailSheet extends ConsumerWidget {
                 );
                 if (confirm == true) {
                   Navigator.of(context).pop();
-                  await ref.read(fleetSessionsProvider.notifier).handoverSession(session.id);
+                  await ref
+                      .read(fleetSessionsProvider.notifier)
+                      .handoverSession(session.id);
                   if (context.mounted) {
                     ScaffoldMessenger.of(context).showSnackBar(
                       SnackBar(
-                        content: Text('Handover initiated for ${session.displayTitle}'),
+                        content: Text(
+                            'Handover initiated for ${session.displayTitle}'),
                         backgroundColor: AppColors.statusAmber.withOpacity(0.8),
                       ),
                     );
@@ -273,7 +291,8 @@ class SessionDetailSheet extends ConsumerWidget {
               style: ElevatedButton.styleFrom(
                 backgroundColor: AppColors.statusAmber.withOpacity(0.18),
                 foregroundColor: AppColors.statusAmber,
-                side: const BorderSide(color: AppColors.statusAmber, width: 1.5),
+                side:
+                    const BorderSide(color: AppColors.statusAmber, width: 1.5),
               ),
             ),
             AppSpacing.gapH8,
@@ -291,7 +310,8 @@ class SessionDetailSheet extends ConsumerWidget {
                   style: ElevatedButton.styleFrom(
                     backgroundColor: AppColors.statusEmerald.withOpacity(0.15),
                     foregroundColor: AppColors.statusEmerald,
-                    side: const BorderSide(color: AppColors.statusEmerald, width: 1),
+                    side: const BorderSide(
+                        color: AppColors.statusEmerald, width: 1),
                   ),
                 ),
               ),
@@ -320,7 +340,9 @@ class SessionDetailSheet extends ConsumerWidget {
                 child: OutlinedButton.icon(
                   onPressed: () async {
                     Navigator.of(context).pop();
-                    await ref.read(fleetSessionsProvider.notifier).terminateSession(session.id);
+                    await ref
+                        .read(fleetSessionsProvider.notifier)
+                        .terminateSession(session.id);
                     ScaffoldMessenger.of(context).showSnackBar(
                       SnackBar(
                         content: Text('Terminated ${session.displayTitle}'),
@@ -332,7 +354,8 @@ class SessionDetailSheet extends ConsumerWidget {
                   label: const Text('Terminate'),
                   style: OutlinedButton.styleFrom(
                     foregroundColor: AppColors.statusCoral,
-                    side: BorderSide(color: AppColors.statusCoral.withOpacity(0.4)),
+                    side: BorderSide(
+                        color: AppColors.statusCoral.withOpacity(0.4)),
                   ),
                 ),
               ),
@@ -341,7 +364,9 @@ class SessionDetailSheet extends ConsumerWidget {
                 child: OutlinedButton.icon(
                   onPressed: () async {
                     Navigator.of(context).pop();
-                    await ref.read(fleetSessionsProvider.notifier).deleteSession(session.id);
+                    await ref
+                        .read(fleetSessionsProvider.notifier)
+                        .deleteSession(session.id);
                     ScaffoldMessenger.of(context).showSnackBar(
                       SnackBar(
                         content: Text('Deleted ${session.displayTitle}'),
@@ -389,10 +414,17 @@ class SessionDetailSheet extends ConsumerWidget {
     );
   }
 
-  void _showTranscriptModal(BuildContext context, WidgetRef ref, Session session) {
+  void _showTranscriptModal(
+      BuildContext context, WidgetRef ref, Session session) {
     final hosts = ref.read(hostsListProvider);
-    final match = hosts.where((h) => h.name == session.host || h.url.contains(session.host));
-    final hostUrl = match.isNotEmpty ? match.first.url : (hosts.isNotEmpty ? hosts.first.url : 'http://127.0.0.1:7777');
+    final sessionHost = session.host.toLowerCase();
+    final match = hosts.where((h) =>
+        h.name.toLowerCase() == sessionHost ||
+        h.url.toLowerCase().contains(sessionHost));
+    final host = match.isNotEmpty
+        ? match.first
+        : (hosts.where((h) => h.online).firstOrNull ?? hosts.firstOrNull);
+    final hostUrl = host?.url ?? 'http://127.0.0.1:7777';
 
     showModalBottomSheet(
       context: context,
@@ -408,7 +440,11 @@ class SessionDetailSheet extends ConsumerWidget {
         expand: false,
         builder: (context, scrollController) {
           return FutureBuilder<String>(
-            future: ref.read(apiClientProvider).getTranscript(hostUrl, session.id),
+            future: ref.read(apiClientProvider).getTranscript(
+                  hostUrl,
+                  session.id,
+                  authToken: host?.authToken,
+                ),
             builder: (context, snapshot) {
               return Padding(
                 padding: AppSpacing.paddingScreen,
@@ -429,7 +465,8 @@ class SessionDetailSheet extends ConsumerWidget {
                     AppSpacing.gapH12,
                     Row(
                       children: [
-                        const Icon(Icons.article_outlined, size: 20, color: AppColors.infoCyan),
+                        const Icon(Icons.article_outlined,
+                            size: 20, color: AppColors.infoCyan),
                         const SizedBox(width: 8),
                         Expanded(
                           child: Column(
@@ -444,7 +481,8 @@ class SessionDetailSheet extends ConsumerWidget {
                               ),
                               Text(
                                 '${session.agentDisplayName} • ${session.displayTitle}',
-                                style: AppTypography.codeXs.copyWith(color: AppColors.textSecondary),
+                                style: AppTypography.codeXs
+                                    .copyWith(color: AppColors.textSecondary),
                                 overflow: TextOverflow.ellipsis,
                               ),
                             ],
@@ -452,20 +490,24 @@ class SessionDetailSheet extends ConsumerWidget {
                         ),
                         if (snapshot.hasData && snapshot.data!.isNotEmpty)
                           IconButton(
-                            icon: const Icon(Icons.copy_rounded, size: 18, color: AppColors.textMuted),
+                            icon: const Icon(Icons.copy_rounded,
+                                size: 18, color: AppColors.textMuted),
                             tooltip: 'Copy transcript',
                             onPressed: () {
-                              Clipboard.setData(ClipboardData(text: snapshot.data!));
+                              Clipboard.setData(
+                                  ClipboardData(text: snapshot.data!));
                               ScaffoldMessenger.of(context).showSnackBar(
                                 const SnackBar(
-                                  content: Text('Transcript copied to clipboard'),
+                                  content:
+                                      Text('Transcript copied to clipboard'),
                                   backgroundColor: AppColors.surfaceHighlight,
                                 ),
                               );
                             },
                           ),
                         IconButton(
-                          icon: const Icon(Icons.close_rounded, size: 20, color: AppColors.textMuted),
+                          icon: const Icon(Icons.close_rounded,
+                              size: 20, color: AppColors.textMuted),
                           onPressed: () => Navigator.of(ctx).pop(),
                         ),
                       ],
@@ -473,17 +515,22 @@ class SessionDetailSheet extends ConsumerWidget {
                     const Divider(color: AppColors.outlineSubtle, height: 20),
                     Expanded(
                       child: snapshot.connectionState == ConnectionState.waiting
-                          ? const Center(child: CircularProgressIndicator(color: AppColors.infoCyan))
-                          : (snapshot.data == null || snapshot.data!.trim().isEmpty
+                          ? const Center(
+                              child: CircularProgressIndicator(
+                                  color: AppColors.infoCyan))
+                          : (snapshot.data == null ||
+                                  snapshot.data!.trim().isEmpty
                               ? Center(
                                   child: Column(
                                     mainAxisSize: MainAxisSize.min,
                                     children: [
-                                      const Icon(Icons.receipt_long_outlined, size: 36, color: AppColors.textMuted),
+                                      const Icon(Icons.receipt_long_outlined,
+                                          size: 36, color: AppColors.textMuted),
                                       AppSpacing.gapH8,
                                       Text(
                                         'No transcript available yet',
-                                        style: AppTypography.bodySmall.copyWith(color: AppColors.textMuted),
+                                        style: AppTypography.bodySmall.copyWith(
+                                            color: AppColors.textMuted),
                                       ),
                                     ],
                                   ),
@@ -493,13 +540,18 @@ class SessionDetailSheet extends ConsumerWidget {
                                   decoration: BoxDecoration(
                                     color: AppColors.terminalBlack,
                                     borderRadius: AppSpacing.roundedSm,
-                                    border: Border.all(color: AppColors.outlineSubtle, width: 0.5),
+                                    border: Border.all(
+                                        color: AppColors.outlineSubtle,
+                                        width: 0.5),
                                   ),
                                   child: Builder(
                                     builder: (context) {
-                                      WidgetsBinding.instance.addPostFrameCallback((_) {
+                                      WidgetsBinding.instance
+                                          .addPostFrameCallback((_) {
                                         if (scrollController.hasClients) {
-                                          scrollController.jumpTo(scrollController.position.maxScrollExtent);
+                                          scrollController.jumpTo(
+                                              scrollController
+                                                  .position.maxScrollExtent);
                                         }
                                       });
                                       return SingleChildScrollView(
@@ -507,11 +559,27 @@ class SessionDetailSheet extends ConsumerWidget {
                                         child: MarkdownBody(
                                           data: snapshot.data!,
                                           styleSheet: MarkdownStyleSheet(
-                                            p: AppTypography.codeXs.copyWith(color: AppColors.textSecondary, fontSize: 11),
-                                            code: AppTypography.codeXs.copyWith(color: AppColors.infoCyan, backgroundColor: Colors.transparent),
-                                            h1: AppTypography.titleMedium.copyWith(color: AppColors.textPrimary),
-                                            h2: AppTypography.titleSmall.copyWith(color: AppColors.textPrimary),
-                                            h3: AppTypography.bodyMedium.copyWith(color: AppColors.textPrimary, fontWeight: FontWeight.bold),
+                                            p: AppTypography.codeXs.copyWith(
+                                                color: AppColors.textSecondary,
+                                                fontSize: 11),
+                                            code: AppTypography.codeXs.copyWith(
+                                                color: AppColors.infoCyan,
+                                                backgroundColor:
+                                                    Colors.transparent),
+                                            h1: AppTypography.titleMedium
+                                                .copyWith(
+                                                    color:
+                                                        AppColors.textPrimary),
+                                            h2: AppTypography.titleSmall
+                                                .copyWith(
+                                                    color:
+                                                        AppColors.textPrimary),
+                                            h3: AppTypography.bodyMedium
+                                                .copyWith(
+                                                    color:
+                                                        AppColors.textPrimary,
+                                                    fontWeight:
+                                                        FontWeight.bold),
                                           ),
                                         ),
                                       );

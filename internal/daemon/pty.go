@@ -23,6 +23,90 @@ type PTYResizeMsg struct {
 	Rows int    `json:"rows"`
 }
 
+type PTYControlMsg struct {
+	Type      string `json:"type"`
+	Cols      int    `json:"cols"`
+	Rows      int    `json:"rows"`
+	Direction string `json:"direction"`
+	Lines     int    `json:"lines"`
+}
+
+type ptyCommandRunner func(name string, args ...string) ([]byte, error)
+
+func defaultPTYCommandRunner(name string, args ...string) ([]byte, error) {
+	return exec.Command(name, args...).CombinedOutput()
+}
+
+// performTmuxScroll executes tmux copy-mode scroll actions for mobile/web touch and page scrolling.
+func performTmuxScroll(tmuxName string, isLocal bool, sshTarget string, direction string, lines int, runCmd ptyCommandRunner) error {
+	if tmuxName == "" {
+		return nil
+	}
+	if runCmd == nil {
+		runCmd = defaultPTYCommandRunner
+	}
+	if lines <= 0 {
+		lines = 1
+	} else if lines > 100 {
+		lines = 100
+	}
+	dir := strings.ToLower(strings.TrimSpace(direction))
+
+	if isLocal {
+		switch dir {
+		case "up":
+			_, _ = runCmd("tmux", "copy-mode", "-e", "-t", tmuxName)
+			_, err := runCmd("tmux", "send-keys", "-t", tmuxName, "-X", "-N", strconv.Itoa(lines), "scroll-up")
+			return err
+		case "down":
+			_, err := runCmd("tmux", "send-keys", "-t", tmuxName, "-X", "-N", strconv.Itoa(lines), "scroll-down")
+			if out, derr := runCmd("tmux", "display-message", "-p", "-t", tmuxName, "#{pane_in_mode} #{scroll_position}"); derr == nil {
+				if strings.TrimSpace(string(out)) == "1 0" {
+					_, _ = runCmd("tmux", "copy-mode", "-q", "-t", tmuxName)
+				}
+			}
+			return err
+		case "page_up":
+			_, err := runCmd("tmux", "copy-mode", "-eu", "-t", tmuxName)
+			return err
+		case "page_down":
+			_, err := runCmd("tmux", "send-keys", "-t", tmuxName, "-X", "page-down")
+			if out, derr := runCmd("tmux", "display-message", "-p", "-t", tmuxName, "#{pane_in_mode} #{scroll_position}"); derr == nil {
+				if strings.TrimSpace(string(out)) == "1 0" {
+					_, _ = runCmd("tmux", "copy-mode", "-q", "-t", tmuxName)
+				}
+			}
+			return err
+		case "bottom":
+			_, err := runCmd("tmux", "copy-mode", "-q", "-t", tmuxName)
+			return err
+		}
+		return nil
+	}
+
+	if sshTarget == "" {
+		return nil
+	}
+
+	var remoteCmd string
+	switch dir {
+	case "up":
+		remoteCmd = fmt.Sprintf("tmux copy-mode -e -t %q 2>/dev/null; tmux send-keys -t %q -X -N %d scroll-up 2>/dev/null", tmuxName, tmuxName, lines)
+	case "down":
+		remoteCmd = fmt.Sprintf("tmux send-keys -t %q -X -N %d scroll-down 2>/dev/null; if [ \"$(tmux display-message -p -t %q '#{pane_in_mode} #{scroll_position}' 2>/dev/null)\" = '1 0' ]; then tmux copy-mode -q -t %q 2>/dev/null; fi", tmuxName, lines, tmuxName, tmuxName)
+	case "page_up":
+		remoteCmd = fmt.Sprintf("tmux copy-mode -eu -t %q 2>/dev/null", tmuxName)
+	case "page_down":
+		remoteCmd = fmt.Sprintf("tmux send-keys -t %q -X page-down 2>/dev/null; if [ \"$(tmux display-message -p -t %q '#{pane_in_mode} #{scroll_position}' 2>/dev/null)\" = '1 0' ]; then tmux copy-mode -q -t %q 2>/dev/null; fi", tmuxName, tmuxName, tmuxName)
+	case "bottom":
+		remoteCmd = fmt.Sprintf("tmux copy-mode -q -t %q 2>/dev/null", tmuxName)
+	default:
+		return nil
+	}
+	_, err := runCmd("ssh", sshTarget, remoteCmd)
+	return err
+}
+
 // Minimum terminal dimensions accepted from a client resize request.
 const (
 	ptyMinCols = 10
@@ -181,7 +265,9 @@ func (s *Server) servePTYWS(ws *websocket.Conn) {
 		cwd = os.Getenv("HOME")
 	}
 
-	if s.isRequestForLocalDaemon(req, sessHost) {
+	isLocal := s.isRequestForLocalDaemon(req, sessHost)
+	sshTarget := ""
+	if isLocal {
 		// Ensure local tmux session exists before attaching
 		if err := exec.Command("tmux", "has-session", "-t", tmuxName).Run(); err != nil {
 			if resumeCmd != "" {
@@ -235,7 +321,7 @@ func (s *Server) servePTYWS(ws *websocket.Conn) {
 		// Same window sizing policy as the local branch: no resize-window, the
 		// `ssh -t` client PTY carries the size and `window-size latest` follows it.
 		ensureRemoteCmd := fmt.Sprintf("tmux has-session -t %q 2>/dev/null || tmux new-session -d -s %q -c %q%s; tmux set-option -t %q mouse on 2>/dev/null || true; tmux set-option -t %q window-size latest 2>/dev/null || true; tmux set-window-option -t %q window-size latest 2>/dev/null || true", tmuxName, tmuxName, cwd, remoteShellCmd, tmuxName, tmuxName, tmuxName)
-		sshTarget := s.resolveSSHTarget(sessHost)
+		sshTarget = s.resolveSSHTarget(sessHost)
 		_ = exec.Command("ssh", sshTarget, ensureRemoteCmd).Run()
 		cmd = exec.Command("ssh", "-t", sshTarget, fmt.Sprintf("tmux attach-session -t %q", tmuxName))
 	}
@@ -332,13 +418,9 @@ func (s *Server) servePTYWS(ws *websocket.Conn) {
 				return
 			}
 			if len(msg) > 0 {
-				// Check if it's a JSON resize or ping control payload
+				// Check if it's a JSON resize, scroll, or ping control payload
 				if msg[0] == '{' {
-					var ctrl struct {
-						Type string `json:"type"`
-						Cols int    `json:"cols"`
-						Rows int    `json:"rows"`
-					}
+					var ctrl PTYControlMsg
 					if jerr := json.Unmarshal(msg, &ctrl); jerr == nil {
 						if ctrl.Type == "resize" {
 							// Only the attach PTY is resized: the tmux client attached
@@ -349,6 +431,12 @@ func (s *Server) servePTYWS(ws *websocket.Conn) {
 							// so it is never typed into the terminal.
 							if _, rerr := resizer.Apply(ctrl.Cols, ctrl.Rows); rerr != nil {
 								log.Printf("[PTY] Resize to %dx%d failed: %v", ctrl.Cols, ctrl.Rows, rerr)
+							}
+							continue
+						}
+						if ctrl.Type == "scroll" {
+							if serr := performTmuxScroll(tmuxName, isLocal, sshTarget, ctrl.Direction, ctrl.Lines, defaultPTYCommandRunner); serr != nil {
+								log.Printf("[PTY] Scroll (%s, %d) failed: %v", ctrl.Direction, ctrl.Lines, serr)
 							}
 							continue
 						}

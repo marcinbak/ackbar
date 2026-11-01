@@ -42,7 +42,8 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if len(active) > 0 {
-		s.verifySessionLiveness(r.Context(), active)
+		s.verifyHeadlessLiveness(active)
+		s.triggerAsyncLiveness()
 	}
 
 	w.Header().Set("Content-Type", "application/json")

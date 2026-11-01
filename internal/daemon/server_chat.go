@@ -642,6 +642,28 @@ func (s *Server) executeSessionHandover(ctx context.Context, sess *Session, stra
 	return nil
 }
 
+func proxyGETWithAuth(w http.ResponseWriter, r *http.Request, targetURL string) bool {
+	fwdReq, err := http.NewRequestWithContext(r.Context(), http.MethodGet, targetURL, nil)
+	if err != nil {
+		return false
+	}
+	if auth := r.Header.Get("Authorization"); auth != "" {
+		fwdReq.Header.Set("Authorization", auth)
+	}
+	if tok := r.Header.Get("X-Ackbar-Token"); tok != "" {
+		fwdReq.Header.Set("X-Ackbar-Token", tok)
+	}
+	resp, err := http.DefaultClient.Do(fwdReq)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
+	w.WriteHeader(resp.StatusCode)
+	_, _ = io.Copy(w, resp.Body)
+	return true
+}
+
 func (s *Server) handleSessionTranscript(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -668,24 +690,14 @@ func (s *Server) handleSessionTranscript(w http.ResponseWriter, r *http.Request)
 		if len(parts) >= 2 {
 			if hostRec := s.resolveHost(parts[1]); hostRec != nil && hostRec.URL != "" {
 				targetURL := fmt.Sprintf("%s/v1/sessions/transcript?%s", strings.TrimSuffix(hostRec.URL, "/"), r.URL.RawQuery)
-				resp, err := http.Get(targetURL)
-				if err == nil {
-					defer resp.Body.Close()
-					w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
-					w.WriteHeader(resp.StatusCode)
-					_, _ = io.Copy(w, resp.Body)
+				if proxyGETWithAuth(w, r, targetURL) {
 					return
 				}
 			}
 		}
 	} else if hostRec := s.resolveHost(sess.Host); hostRec != nil && hostRec.URL != "" {
 		targetURL := fmt.Sprintf("%s/v1/sessions/transcript?%s", strings.TrimSuffix(hostRec.URL, "/"), r.URL.RawQuery)
-		resp, err := http.Get(targetURL)
-		if err == nil {
-			defer resp.Body.Close()
-			w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
-			w.WriteHeader(resp.StatusCode)
-			_, _ = io.Copy(w, resp.Body)
+		if proxyGETWithAuth(w, r, targetURL) {
 			return
 		}
 	}
