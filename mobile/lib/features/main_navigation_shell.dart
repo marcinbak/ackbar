@@ -43,6 +43,7 @@ class _MainNavigationShellState extends ConsumerState<MainNavigationShell>
         widget.initialRoute!.isNotEmpty &&
         widget.initialRoute != '/') {
       WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
         _handleRouteString(widget.initialRoute!);
       });
     }
