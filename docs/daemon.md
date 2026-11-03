@@ -23,6 +23,7 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 * **`server_accounts.go`:** Multi-account profile management (`/v1/accounts`), agent discovery (`/v1/agents/discovery`), provider catalog (`/v1/providers`), and fleet propagation.
 * **`server_hosts.go`:** Remote host health tracking, SSH target resolution, host CRUD (`/v1/hosts`), cross-compiled remote upgrades (`/v1/hosts/update`), and resilient SSH tunnel management (`/v1/hosts/reconnect`, `ensureHostTunnels`).
 * **`server_projects.go`:** Workspace document discovery (`/v1/documents`), tree node CRUD and move (`/v1/nodes`), project creation (`/v1/projects/create`), worktree/path normalization, and VS Code URI launching (`/v1/editor/open`).
+* **`server_sync.go`:** Uniform 3-way Last-Write-Wins (LWW) peer-to-peer sync engine (`/v1/sync/state`, `/v1/sync/push`, `/v1/nodes/paths`) and background delta reconciliation.
 * **`session_scanner.go`:** Liveness verification (`verifySessionLiveness`) and background session scanner (`scanObservedSessions` decomposed into `refreshExistingSessions`, `scanTmuxPanes`, `scanOSProcessTable`, and `scanDiskSessions`).
 * **`agent_claude.go`, `agent_antigravity.go`, `agent_other.go`:** Per-agent `AgentAdapter` implementations (`ClaudeAgentAdapter`, `AntigravityAgentAdapter`, `CodexAgentAdapter`, `GrokAgentAdapter`, `OpenCodeAgentAdapter`) encapsulating agent-specific CLI flags, approval keys, account profile setup, PID-to-session resolution, and disk session discovery.
 
@@ -33,7 +34,7 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 | Method | Endpoint | Description |
 | :--- | :--- | :--- |
 | `GET` | `/v1/version` | Returns current daemon version, canonical host name, and display name. |
-| `GET` | `/v1/sessions` | Returns all active, managed, and historic sessions with unread state. |
+| `GET` | `/v1/sessions` | Returns all active, managed, and historic sessions with unread state (supports `?federated=true` for cross-host session aggregation). |
 | `GET` | `/v1/events` | SSE stream broadcasting real-time session mutations and state changes. |
 | `GET` | `/v1/sessions/chat/stream` | SSE stream for real-time turn text, thoughts, subagents, and keepalive heartbeats. |
 | `GET` | `/v1/sessions/pty` | WebSocket endpoint streaming interactive PTY data to `xterm.js`. |
@@ -47,13 +48,15 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 | `POST` | `/v1/sessions/upload` | Uploads clipboard images or drag-and-dropped PDFs to `/tmp/ackbar-uploads/`. |
 | `GET` | `/v1/settings` | Returns daemon settings including `host_name`, `display_name`, auto-done thresholds, `later_collapsed_by_default`, `hide_session_tabs`, and handover suggestions. |
 | `POST` | `/v1/settings` | Updates and persists daemon settings in SQLite. |
-| `GET` | `/v1/nodes` | Returns configured logical tree nodes and custom groups. |
+| `GET` | `/v1/nodes` | Returns configured logical tree nodes and custom groups with host paths (supports `?federated=true`). |
 | `POST` | `/v1/projects/create` | Creates a new logical project node or pure category subgroup. |
 | `POST` | `/v1/nodes/move` | Moves a logical group node to a new tree path. |
 | `DELETE`| `/v1/nodes` | Deletes a logical group node from the database. |
+| `GET` | `/v1/nodes/paths` | Returns registered host execution paths (`node_host_paths`) for tree nodes. |
+| `POST` | `/v1/nodes/paths` | Registers or updates a host-specific project execution path (`node_host_paths`) for a node. |
 | `GET` | `/v1/hosts` | Returns registered local and remote compute hosts. |
 | `POST` | `/v1/hosts/update` | Upgrades and restarts `ackbard` on a remote target host. |
-| `GET` | `/v1/tasks` | Returns tasks across all projects with associated workers, external refs, and deliverables. |
+| `GET` | `/v1/tasks` | Returns tasks across all projects with associated workers, external refs, and deliverables (supports `?federated=true`). |
 | `POST` | `/v1/tasks` | Creates a new task or updates an existing task with associated child relations in a single transaction. |
 | `DELETE` | `/v1/tasks` | Deletes a task and all associated workers, external refs, and deliverables with cascade cleanup. |
 | `POST` | `/v1/tasks/event` | Ingests lifecycle events for a task, performing ambient detection of git branches and PR URLs. |
@@ -61,6 +64,8 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 | `POST` | `/v1/tasks/deliverable` | Attaches design mockups, change briefs, retrospectives, or external artifacts to a task. |
 | `POST` | `/v1/tasks/sync-workflow` | Triggers immediate synchronization scan of `~/.claude/dev-workflow-runs/` run states and companions. |
 | `POST` | `/v1/tasks/merge-pr` | Executes 1-click `gh pr merge --squash` for a task with an open PR and transitions state to `DONE`. |
+| `GET` | `/v1/sync/state` | Returns delta sync state payload (nodes, host paths, tasks, deliverables, session metas) since `?since=<timestamp>`. |
+| `POST` | `/v1/sync/push` | Ingests and reconciles peer sync payload via 3-way Last-Write-Wins (LWW). |
 | `GET` | `/v1/standup` | Deterministic daily standup and weekly retro report generation (grouped by project in Markdown or JSON). |
 | `POST` | `/v1/briefings/synthesize` | Generates speech-optimized conversational text briefing (<45s) for voice synthesis. |
 | `GET` | `/v1/agents/status` | Returns detected agent runtimes (Claude, Antigravity, Codex) with MCP and skill install statuses, plus external skills repo status. |

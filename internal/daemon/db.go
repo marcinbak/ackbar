@@ -2857,7 +2857,7 @@ func (d *DB) ApplySyncState(payload *SyncStatePayload) ([]*Session, error) {
 				existing.MetadataUpdatedAt = meta.UpdatedAt
 			}
 
-			runtimeUpdated := existing.PID == 0 && existing.TmuxName == "" && (meta.LastEventAt.After(existing.LastEventAt) || existing.State != meta.State || existing.Activity != meta.Activity || existing.GitBranch != meta.GitBranch) && !meta.LastEventAt.Before(existing.LastEventAt)
+			runtimeUpdated := existing.PID == 0 && existing.TmuxName == "" && existing.Host != "" && existing.Host != "local" && (payload.SourceHost == "" || payload.SourceHost == meta.Host) && meta.LastEventAt.After(existing.LastEventAt)
 			if runtimeUpdated {
 				existing.State = meta.State
 				existing.Activity = meta.Activity

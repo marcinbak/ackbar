@@ -144,10 +144,14 @@ func (s *Server) getFederatedSessions(ctx context.Context, localSessions []*Sess
 	// Merge sessions: local sessions are indexed first
 	merged := make(map[string]*Session)
 	nativeToID := make(map[string]string)
+	nativeKey := func(agent, nativeID string) string {
+		return agent + "\x00" + nativeID
+	}
+
 	for _, sess := range localSessions {
 		merged[sess.ID] = sess
 		if sess.NativeID != "" {
-			nativeToID[sess.NativeID] = sess.ID
+			nativeToID[nativeKey(sess.Agent, sess.NativeID)] = sess.ID
 		}
 	}
 
@@ -166,9 +170,13 @@ func (s *Server) getFederatedSessions(ctx context.Context, localSessions []*Sess
 			existingID := peerSess.ID
 			existing, exists := merged[existingID]
 			if !exists && peerSess.NativeID != "" {
-				if matchID, ok := nativeToID[peerSess.NativeID]; ok {
-					existingID = matchID
-					existing, exists = merged[matchID]
+				if matchID, ok := nativeToID[nativeKey(peerSess.Agent, peerSess.NativeID)]; ok {
+					cand := merged[matchID]
+					if cand != nil && (cand.Host == peerSess.Host || cand.Host == "local" || cand.Host == "") {
+						existingID = matchID
+						existing = cand
+						exists = true
+					}
 				}
 			}
 
@@ -203,7 +211,7 @@ func (s *Server) getFederatedSessions(ctx context.Context, localSessions []*Sess
 			} else {
 				merged[peerSess.ID] = peerSess
 				if peerSess.NativeID != "" {
-					nativeToID[peerSess.NativeID] = peerSess.ID
+					nativeToID[nativeKey(peerSess.Agent, peerSess.NativeID)] = peerSess.ID
 				}
 			}
 		}
