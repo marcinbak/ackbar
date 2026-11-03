@@ -20,13 +20,27 @@ import (
 
 func (s *Server) updateHostHealth(name string, online bool, ver, displayName string, latencyMs int64) {
 	s.hostHealthMu.Lock()
-	defer s.hostHealthMu.Unlock()
+	wasOnline := false
+	if prev, ok := s.hostHealthMap[name]; ok && prev.Online {
+		wasOnline = true
+	}
 	s.hostHealthMap[name] = &HostHealth{
 		Online:      online,
 		Version:     ver,
 		DisplayName: displayName,
 		LatencyMs:   latencyMs,
 		LastCheck:   time.Now(),
+	}
+	s.hostHealthMu.Unlock()
+
+	// If host transitioned to online, pull/push deltas immediately for fast convergence
+	if online && !wasOnline && s.db != nil {
+		go func() {
+			if hr, err := s.db.GetHost(name); err == nil && hr != nil {
+				_ = s.PullFromPeer(context.Background(), hr)
+				s.pushSyncStateToPeer(hr)
+			}
+		}()
 	}
 }
 

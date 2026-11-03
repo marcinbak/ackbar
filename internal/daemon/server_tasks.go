@@ -14,6 +14,9 @@ import (
 
 func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
+		if r.URL.Query().Get("federated") == "true" {
+			s.PullFromPeersWithTimeout(r.Context(), 1500*time.Millisecond)
+		}
 		tasks, err := s.db.GetTasks()
 		if err != nil {
 			http.Error(w, "Failed to get tasks: "+err.Error(), http.StatusInternalServerError)
@@ -62,6 +65,7 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "Failed to create task: "+err.Error(), http.StatusInternalServerError)
 				return
 			}
+			s.pushSyncPayload(&SyncStatePayload{Tasks: []Task{t}})
 			w.WriteHeader(http.StatusCreated)
 		} else {
 			existing, err := s.db.GetTaskByID(t.ID)
@@ -143,6 +147,7 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "Failed to update task: "+err.Error(), http.StatusInternalServerError)
 				return
 			}
+			s.pushSyncPayload(&SyncStatePayload{Tasks: []Task{*existing}})
 			w.WriteHeader(http.StatusOK)
 			t = *existing
 		}
@@ -175,6 +180,9 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Failed to delete task", http.StatusInternalServerError)
 			return
 		}
+
+		now := time.Now().UTC()
+		s.pushSyncPayload(&SyncStatePayload{Tasks: []Task{{ID: taskID, UpdatedAt: now, DeletedAt: &now}}})
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
@@ -253,6 +261,7 @@ func (s *Server) handleTaskEvent(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Failed to update task", http.StatusInternalServerError)
 			return
 		}
+		s.pushSyncPayload(&SyncStatePayload{Tasks: []Task{*task}})
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -386,6 +395,7 @@ func (s *Server) handleTaskPropose(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Failed to create proposed task: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+	s.pushSyncPayload(&SyncStatePayload{Tasks: []Task{*task}})
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
@@ -486,6 +496,7 @@ func (s *Server) handleTaskDeliverable(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Failed to insert deliverable: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+	s.pushSyncPayload(&SyncStatePayload{Deliverables: []TaskDeliverable{*del}})
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)

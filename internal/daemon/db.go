@@ -45,7 +45,8 @@ CREATE TABLE IF NOT EXISTS sessions (
 	version TEXT,
 	is_done INTEGER DEFAULT 0,
 	is_later INTEGER DEFAULT 0,
-	engine_type TEXT DEFAULT 'tmux'
+	engine_type TEXT DEFAULT 'tmux',
+	metadata_updated_at TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS settings (
@@ -57,7 +58,19 @@ CREATE TABLE IF NOT EXISTS tree_nodes (
 	path TEXT PRIMARY KEY,
 	project_dir TEXT,
 	git_url TEXT,
-	created_at TIMESTAMP
+	created_at TIMESTAMP,
+	updated_at TIMESTAMP,
+	deleted_at TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS node_host_paths (
+	node_path TEXT NOT NULL,
+	host TEXT NOT NULL,
+	project_dir TEXT NOT NULL,
+	git_remote TEXT,
+	capabilities TEXT,
+	updated_at TIMESTAMP NOT NULL,
+	PRIMARY KEY (node_path, host)
 );
 
 CREATE TABLE IF NOT EXISTS hosts (
@@ -91,7 +104,8 @@ CREATE TABLE IF NOT EXISTS tasks (
 	ci_status TEXT,
 	created_at TIMESTAMP NOT NULL,
 	updated_at TIMESTAMP NOT NULL,
-	completed_at TIMESTAMP
+	completed_at TIMESTAMP,
+	deleted_at TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS task_external_refs (
@@ -122,7 +136,10 @@ CREATE TABLE IF NOT EXISTS task_deliverables (
 	host TEXT NOT NULL,
 	file_path TEXT,
 	url TEXT,
+	provider TEXT,
+	content_md TEXT,
 	created_at TIMESTAMP NOT NULL,
+	updated_at TIMESTAMP NOT NULL,
 	FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
 );
 
@@ -134,8 +151,11 @@ CREATE TABLE IF NOT EXISTS archived_tasks (
 
 CREATE INDEX IF NOT EXISTS idx_tasks_group_project ON tasks(group_name, project_name);
 CREATE INDEX IF NOT EXISTS idx_tasks_status_updated ON tasks(status, updated_at);
+CREATE INDEX IF NOT EXISTS idx_tasks_updated_at ON tasks(updated_at);
 CREATE INDEX IF NOT EXISTS idx_task_workers_active ON task_workers(is_active);
 CREATE INDEX IF NOT EXISTS idx_task_deliverables_task_id ON task_deliverables(task_id);
+CREATE INDEX IF NOT EXISTS idx_node_host_paths_node_path ON node_host_paths(node_path);
+CREATE INDEX IF NOT EXISTS idx_tree_nodes_updated_at ON tree_nodes(updated_at);
 `
 
 func InitDB(dbPath string) (*DB, error) {
@@ -184,6 +204,28 @@ func InitDB(dbPath string) (*DB, error) {
 	_, _ = db.Exec("ALTER TABLE sessions ADD COLUMN account_id TEXT;")
 	_, _ = db.Exec("ALTER TABLE sessions ADD COLUMN engine_type TEXT DEFAULT 'tmux';")
 	_, _ = db.Exec("ALTER TABLE sessions ADD COLUMN old_id TEXT;")
+	_, _ = db.Exec("ALTER TABLE sessions ADD COLUMN metadata_updated_at TIMESTAMP;")
+	_, _ = db.Exec("ALTER TABLE tree_nodes ADD COLUMN updated_at TIMESTAMP;")
+	_, _ = db.Exec("ALTER TABLE tree_nodes ADD COLUMN deleted_at TIMESTAMP;")
+	_, _ = db.Exec("ALTER TABLE tasks ADD COLUMN deleted_at TIMESTAMP;")
+	_, _ = db.Exec("ALTER TABLE task_deliverables ADD COLUMN updated_at TIMESTAMP;")
+	_, _ = db.Exec("ALTER TABLE task_deliverables ADD COLUMN provider TEXT;")
+	_, _ = db.Exec("ALTER TABLE task_deliverables ADD COLUMN content_md TEXT;")
+	_, _ = db.Exec(`CREATE TABLE IF NOT EXISTS node_host_paths (
+		node_path TEXT NOT NULL,
+		host TEXT NOT NULL,
+		project_dir TEXT NOT NULL,
+		git_remote TEXT,
+		capabilities TEXT,
+		updated_at TIMESTAMP NOT NULL,
+		PRIMARY KEY (node_path, host)
+	);`)
+	_, _ = db.Exec("UPDATE tree_nodes SET updated_at = COALESCE(created_at, CURRENT_TIMESTAMP) WHERE updated_at IS NULL;")
+	_, _ = db.Exec("UPDATE task_deliverables SET updated_at = created_at WHERE updated_at IS NULL;")
+	_, _ = db.Exec("UPDATE sessions SET metadata_updated_at = COALESCE(last_event_at, started_at, CURRENT_TIMESTAMP) WHERE metadata_updated_at IS NULL;")
+	_, _ = db.Exec("CREATE INDEX IF NOT EXISTS idx_node_host_paths_node_path ON node_host_paths(node_path);")
+	_, _ = db.Exec("CREATE INDEX IF NOT EXISTS idx_tree_nodes_updated_at ON tree_nodes(updated_at);")
+	_, _ = db.Exec("CREATE INDEX IF NOT EXISTS idx_tasks_updated_at ON tasks(updated_at);")
 	_, _ = db.Exec(`CREATE TABLE IF NOT EXISTS accounts (
 		id TEXT PRIMARY KEY,
 		agent TEXT NOT NULL,
@@ -288,8 +330,8 @@ func (d *DB) SaveSession(s *Session) error {
 		id, agent, host, native_id, cwd, roots, project_key, state, 
 		blocked_kind, blocked_reason, blocked_since, blocked_question, blocked_options, activity, 
 		started_at, last_event_at, managed, tmux_name, pid, archived, node_path, name, entrypoint, kind, version, context_pct, git_branch,
-		custom_title, ai_title, ai_description, first_prompt, last_prompt, is_unread, last_state_change_at, is_done, is_later, account_id, engine_type, old_id
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		custom_title, ai_title, ai_description, first_prompt, last_prompt, is_unread, last_state_change_at, is_done, is_later, account_id, engine_type, old_id, metadata_updated_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(id) DO UPDATE SET
 		cwd=excluded.cwd,
 		roots=excluded.roots,
@@ -324,7 +366,8 @@ func (d *DB) SaveSession(s *Session) error {
 		is_later=excluded.is_later,
 		account_id=COALESCE(NULLIF(excluded.account_id, ''), sessions.account_id),
 		engine_type=COALESCE(NULLIF(excluded.engine_type, ''), sessions.engine_type),
-		old_id=COALESCE(NULLIF(excluded.old_id, ''), sessions.old_id);
+		old_id=COALESCE(NULLIF(excluded.old_id, ''), sessions.old_id),
+		metadata_updated_at=excluded.metadata_updated_at;
 	`
 
 	managedInt := 0
@@ -355,11 +398,15 @@ func (d *DB) SaveSession(s *Session) error {
 		engineType = EngineTmux
 	}
 
+	if s.MetadataUpdatedAt.IsZero() {
+		s.MetadataUpdatedAt = time.Now().UTC()
+	}
+
 	_, err = d.db.Exec(query,
 		s.ID, s.Agent, s.Host, s.NativeID, s.Cwd, string(rootsJSON), s.ProjectKey, int(s.State),
 		blockedKind, blockedReason, blockedSince, blockedQuestion, blockedOptions, s.Activity,
 		s.StartedAt, s.LastEventAt, managedInt, s.TmuxName, s.PID, archivedInt, nodePath, sessName, entrypointVal, kindVal, versionVal, s.ContextPct, gitBranchVal,
-		customTitleVal, aiTitleVal, aiDescVal, firstPromptVal, lastPromptVal, isUnreadInt, lastStateChangeAt, isDoneInt, isLaterInt, accountIDVal, engineType, oldIDVal,
+		customTitleVal, aiTitleVal, aiDescVal, firstPromptVal, lastPromptVal, isUnreadInt, lastStateChangeAt, isDoneInt, isLaterInt, accountIDVal, engineType, oldIDVal, s.MetadataUpdatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to save session: %w", err)
@@ -373,7 +420,7 @@ func (d *DB) GetSession(id string) (*Session, error) {
 	SELECT id, agent, host, native_id, cwd, roots, project_key, state,
 	       blocked_kind, blocked_reason, blocked_since, blocked_question, blocked_options, activity,
 	       started_at, last_event_at, managed, tmux_name, pid, archived, node_path, name, entrypoint, kind, version, context_pct, git_branch,
-	       custom_title, ai_title, ai_description, first_prompt, last_prompt, is_unread, last_state_change_at, is_done, is_later, account_id, engine_type, old_id
+	       custom_title, ai_title, ai_description, first_prompt, last_prompt, is_unread, last_state_change_at, is_done, is_later, account_id, engine_type, old_id, metadata_updated_at
 	FROM sessions WHERE id = ? OR native_id = ? OR native_id = ?;
 	`
 
@@ -381,7 +428,7 @@ func (d *DB) GetSession(id string) (*Session, error) {
 	var rootsStr, blockedKind, blockedReason, blockedQuestion, blockedOptions, nodePath, sessName, entrypointVal, kindVal, versionVal, gitBranchVal sql.NullString
 	var customTitleVal, aiTitleVal, aiDescVal, firstPromptVal, lastPromptVal, accountIDVal, engineTypeVal, oldIDVal sql.NullString
 	var ctxPct sql.NullInt64
-	var blockedSince, lastStateChangeAt sql.NullTime
+	var blockedSince, lastStateChangeAt, metadataUpdatedAt sql.NullTime
 	var managedInt, archivedInt, isUnreadInt, isDoneInt, isLaterInt int
 
 	nativeCandidate := id
@@ -394,12 +441,16 @@ func (d *DB) GetSession(id string) (*Session, error) {
 		&s.ID, &s.Agent, &s.Host, &s.NativeID, &s.Cwd, &rootsStr, &s.ProjectKey, (*int)(&s.State),
 		&blockedKind, &blockedReason, &blockedSince, &blockedQuestion, &blockedOptions, &s.Activity,
 		&s.StartedAt, &s.LastEventAt, &managedInt, &s.TmuxName, &s.PID, &archivedInt, &nodePath, &sessName, &entrypointVal, &kindVal, &versionVal, &ctxPct, &gitBranchVal,
-		&customTitleVal, &aiTitleVal, &aiDescVal, &firstPromptVal, &lastPromptVal, &isUnreadInt, &lastStateChangeAt, &isDoneInt, &isLaterInt, &accountIDVal, &engineTypeVal, &oldIDVal,
+		&customTitleVal, &aiTitleVal, &aiDescVal, &firstPromptVal, &lastPromptVal, &isUnreadInt, &lastStateChangeAt, &isDoneInt, &isLaterInt, &accountIDVal, &engineTypeVal, &oldIDVal, &metadataUpdatedAt,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	} else if err != nil {
 		return nil, fmt.Errorf("failed to scan session: %w", err)
+	}
+
+	if metadataUpdatedAt.Valid {
+		s.MetadataUpdatedAt = metadataUpdatedAt.Time
 	}
 
 	if accountIDVal.Valid {
@@ -489,7 +540,7 @@ func (d *DB) ListSessions() ([]*Session, error) {
 	SELECT id, agent, host, native_id, cwd, roots, project_key, state,
 	       blocked_kind, blocked_reason, blocked_since, blocked_question, blocked_options, activity,
 	       started_at, last_event_at, managed, tmux_name, pid, archived, node_path, name, entrypoint, kind, version, context_pct, git_branch,
-	       custom_title, ai_title, ai_description, first_prompt, last_prompt, is_unread, last_state_change_at, is_done, is_later, account_id, engine_type, old_id
+	       custom_title, ai_title, ai_description, first_prompt, last_prompt, is_unread, last_state_change_at, is_done, is_later, account_id, engine_type, old_id, metadata_updated_at
 	FROM sessions
 	ORDER BY last_event_at DESC;
 	`
@@ -506,17 +557,21 @@ func (d *DB) ListSessions() ([]*Session, error) {
 		var rootsStr, blockedKind, blockedReason, blockedQuestion, blockedOptions, nodePath, sessName, entrypointVal, kindVal, versionVal, gitBranchVal sql.NullString
 		var customTitleVal, aiTitleVal, aiDescVal, firstPromptVal, lastPromptVal, accountIDVal, engineTypeVal, oldIDVal sql.NullString
 		var ctxPct sql.NullInt64
-		var blockedSince, lastStateChangeAt sql.NullTime
+		var blockedSince, lastStateChangeAt, metadataUpdatedAt sql.NullTime
 		var managedInt, archivedInt, isUnreadInt, isDoneInt, isLaterInt int
 
 		err := rows.Scan(
 			&s.ID, &s.Agent, &s.Host, &s.NativeID, &s.Cwd, &rootsStr, &s.ProjectKey, (*int)(&s.State),
 			&blockedKind, &blockedReason, &blockedSince, &blockedQuestion, &blockedOptions, &s.Activity,
 			&s.StartedAt, &s.LastEventAt, &managedInt, &s.TmuxName, &s.PID, &archivedInt, &nodePath, &sessName, &entrypointVal, &kindVal, &versionVal, &ctxPct, &gitBranchVal,
-			&customTitleVal, &aiTitleVal, &aiDescVal, &firstPromptVal, &lastPromptVal, &isUnreadInt, &lastStateChangeAt, &isDoneInt, &isLaterInt, &accountIDVal, &engineTypeVal, &oldIDVal,
+			&customTitleVal, &aiTitleVal, &aiDescVal, &firstPromptVal, &lastPromptVal, &isUnreadInt, &lastStateChangeAt, &isDoneInt, &isLaterInt, &accountIDVal, &engineTypeVal, &oldIDVal, &metadataUpdatedAt,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan session in list: %w", err)
+		}
+
+		if metadataUpdatedAt.Valid {
+			s.MetadataUpdatedAt = metadataUpdatedAt.Time
 		}
 
 		if accountIDVal.Valid {
@@ -609,24 +664,34 @@ func (d *DB) MarkSessionRead(id string) error {
 }
 
 func (d *DB) MarkSessionDone(id string, isDone bool) error {
+	now := time.Now().UTC()
 	var query string
 	if isDone {
-		query = `UPDATE sessions SET is_done = 1, is_later = 0 WHERE id = ? OR native_id = ?;`
+		query = `UPDATE sessions SET is_done = 1, is_later = 0, metadata_updated_at = ? WHERE id = ? OR native_id = ?;`
 	} else {
-		query = `UPDATE sessions SET is_done = 0 WHERE id = ? OR native_id = ?;`
+		query = `UPDATE sessions SET is_done = 0, metadata_updated_at = ? WHERE id = ? OR native_id = ?;`
 	}
-	_, err := d.db.Exec(query, id, id)
+	_, err := d.db.Exec(query, now, id, id)
 	return err
 }
 
 func (d *DB) MarkSessionLater(id string, isLater bool) error {
+	now := time.Now().UTC()
 	var query string
 	if isLater {
-		query = `UPDATE sessions SET is_later = 1, is_done = 0 WHERE id = ? OR native_id = ?;`
+		query = `UPDATE sessions SET is_later = 1, is_done = 0, metadata_updated_at = ? WHERE id = ? OR native_id = ?;`
 	} else {
-		query = `UPDATE sessions SET is_later = 0 WHERE id = ? OR native_id = ?;`
+		query = `UPDATE sessions SET is_later = 0, metadata_updated_at = ? WHERE id = ? OR native_id = ?;`
 	}
-	_, err := d.db.Exec(query, id, id)
+	_, err := d.db.Exec(query, now, id, id)
+	return err
+}
+
+func (d *DB) TouchSessionMetadata(id string, ts time.Time) error {
+	if ts.IsZero() {
+		ts = time.Now().UTC()
+	}
+	_, err := d.db.Exec("UPDATE sessions SET metadata_updated_at = ? WHERE id = ? OR native_id = ?;", ts, id, id)
 	return err
 }
 
@@ -683,7 +748,7 @@ func (d *DB) ListActiveSessions() ([]*Session, error) {
 	SELECT id, agent, host, native_id, cwd, roots, project_key, state,
 	       blocked_kind, blocked_reason, blocked_since, blocked_question, blocked_options, activity,
 	       started_at, last_event_at, managed, tmux_name, pid, archived, node_path, name, entrypoint, kind, version, context_pct, git_branch,
-	       custom_title, ai_title, ai_description, first_prompt, last_prompt, is_unread, last_state_change_at, is_done, is_later, account_id, engine_type, old_id
+	       custom_title, ai_title, ai_description, first_prompt, last_prompt, is_unread, last_state_change_at, is_done, is_later, account_id, engine_type, old_id, metadata_updated_at
 	FROM sessions
 	WHERE state != ?
 	ORDER BY last_event_at DESC;
@@ -701,17 +766,21 @@ func (d *DB) ListActiveSessions() ([]*Session, error) {
 		var rootsStr, blockedKind, blockedReason, blockedQuestion, blockedOptions, nodePath, sessName, entrypointVal, kindVal, versionVal, gitBranchVal sql.NullString
 		var customTitleVal, aiTitleVal, aiDescVal, firstPromptVal, lastPromptVal, accountIDVal, engineTypeVal, oldIDVal sql.NullString
 		var ctxPct sql.NullInt64
-		var blockedSince, lastStateChangeAt sql.NullTime
+		var blockedSince, lastStateChangeAt, metadataUpdatedAt sql.NullTime
 		var managedInt, archivedInt, isUnreadInt, isDoneInt, isLaterInt int
 
 		err := rows.Scan(
 			&s.ID, &s.Agent, &s.Host, &s.NativeID, &s.Cwd, &rootsStr, &s.ProjectKey, (*int)(&s.State),
 			&blockedKind, &blockedReason, &blockedSince, &blockedQuestion, &blockedOptions, &s.Activity,
 			&s.StartedAt, &s.LastEventAt, &managedInt, &s.TmuxName, &s.PID, &archivedInt, &nodePath, &sessName, &entrypointVal, &kindVal, &versionVal, &ctxPct, &gitBranchVal,
-			&customTitleVal, &aiTitleVal, &aiDescVal, &firstPromptVal, &lastPromptVal, &isUnreadInt, &lastStateChangeAt, &isDoneInt, &isLaterInt, &accountIDVal, &engineTypeVal, &oldIDVal,
+			&customTitleVal, &aiTitleVal, &aiDescVal, &firstPromptVal, &lastPromptVal, &isUnreadInt, &lastStateChangeAt, &isDoneInt, &isLaterInt, &accountIDVal, &engineTypeVal, &oldIDVal, &metadataUpdatedAt,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan active session in list: %w", err)
+		}
+
+		if metadataUpdatedAt.Valid {
+			s.MetadataUpdatedAt = metadataUpdatedAt.Time
 		}
 
 		if accountIDVal.Valid {
@@ -806,14 +875,20 @@ func (d *DB) DeleteSession(id string) error {
 }
 
 func (d *DB) SaveNode(node *TreeNode) error {
+	if node.CreatedAt.IsZero() {
+		node.CreatedAt = time.Now().UTC()
+	}
+	node.UpdatedAt = time.Now().UTC()
 	query := `
-	INSERT INTO tree_nodes (path, project_dir, git_url, created_at)
-	VALUES (?, ?, ?, ?)
+	INSERT INTO tree_nodes (path, project_dir, git_url, created_at, updated_at, deleted_at)
+	VALUES (?, ?, ?, ?, ?, NULL)
 	ON CONFLICT(path) DO UPDATE SET
 		project_dir=excluded.project_dir,
-		git_url=excluded.git_url;
+		git_url=excluded.git_url,
+		updated_at=excluded.updated_at,
+		deleted_at=NULL;
 	`
-	_, err := d.db.Exec(query, node.Path, node.ProjectDir, node.GitURL, node.CreatedAt)
+	_, err := d.db.Exec(query, node.Path, node.ProjectDir, node.GitURL, node.CreatedAt, node.UpdatedAt)
 	if err != nil {
 		return fmt.Errorf("failed to save node: %w", err)
 	}
@@ -823,7 +898,8 @@ func (d *DB) SaveNode(node *TreeNode) error {
 func (d *DB) GetNode(path string) (*TreeNode, error) {
 	var n TreeNode
 	var projectDir, gitURL sql.NullString
-	err := d.db.QueryRow("SELECT path, project_dir, git_url, created_at FROM tree_nodes WHERE path = ?;", path).Scan(&n.Path, &projectDir, &gitURL, &n.CreatedAt)
+	var updatedAt, deletedAt sql.NullTime
+	err := d.db.QueryRow("SELECT path, project_dir, git_url, created_at, updated_at, deleted_at FROM tree_nodes WHERE path = ? AND deleted_at IS NULL;", path).Scan(&n.Path, &projectDir, &gitURL, &n.CreatedAt, &updatedAt, &deletedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -836,11 +912,19 @@ func (d *DB) GetNode(path string) (*TreeNode, error) {
 	if gitURL.Valid {
 		n.GitURL = gitURL.String
 	}
+	if updatedAt.Valid {
+		n.UpdatedAt = updatedAt.Time
+	}
+	if deletedAt.Valid {
+		n.DeletedAt = &deletedAt.Time
+	}
+	nhps, _ := d.ListNodeHostPaths(path)
+	n.HostPaths = nhps
 	return &n, nil
 }
 
 func (d *DB) ListNodes() ([]*TreeNode, error) {
-	query := `SELECT path, project_dir, git_url, created_at FROM tree_nodes ORDER BY path ASC;`
+	query := `SELECT path, project_dir, git_url, created_at, updated_at, deleted_at FROM tree_nodes WHERE deleted_at IS NULL ORDER BY path ASC;`
 	rows, err := d.db.Query(query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query tree_nodes: %w", err)
@@ -851,7 +935,8 @@ func (d *DB) ListNodes() ([]*TreeNode, error) {
 	for rows.Next() {
 		var n TreeNode
 		var projectDir, gitURL sql.NullString
-		if err := rows.Scan(&n.Path, &projectDir, &gitURL, &n.CreatedAt); err != nil {
+		var updatedAt, deletedAt sql.NullTime
+		if err := rows.Scan(&n.Path, &projectDir, &gitURL, &n.CreatedAt, &updatedAt, &deletedAt); err != nil {
 			return nil, err
 		}
 		if projectDir.Valid {
@@ -860,40 +945,198 @@ func (d *DB) ListNodes() ([]*TreeNode, error) {
 		if gitURL.Valid {
 			n.GitURL = gitURL.String
 		}
+		if updatedAt.Valid {
+			n.UpdatedAt = updatedAt.Time
+		}
+		if deletedAt.Valid {
+			n.DeletedAt = &deletedAt.Time
+		}
 		nodes = append(nodes, &n)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	allHostPaths, _ := d.ListNodeHostPaths("")
+	if len(allHostPaths) > 0 {
+		hpMap := make(map[string][]NodeHostPath)
+		for _, hp := range allHostPaths {
+			hpMap[hp.NodePath] = append(hpMap[hp.NodePath], hp)
+		}
+		for _, node := range nodes {
+			if hps, ok := hpMap[node.Path]; ok {
+				node.HostPaths = hps
+			}
+		}
 	}
 	return nodes, nil
 }
 
 func (d *DB) DeleteNode(path string) error {
-	_, err := d.db.Exec("DELETE FROM tree_nodes WHERE path = ? OR path LIKE ?;", path, path+"/%")
+	now := time.Now().UTC()
+	_, err := d.db.Exec("UPDATE tree_nodes SET deleted_at = ?, updated_at = ? WHERE (path = ? OR path LIKE ?) AND deleted_at IS NULL;", now, now, path, path+"/%")
 	if err != nil {
 		return fmt.Errorf("failed to delete node: %w", err)
 	}
-	_, _ = d.db.Exec("UPDATE sessions SET node_path = '' WHERE node_path = ? OR node_path LIKE ?;", path, path+"/%")
+	_, _ = d.db.Exec("UPDATE sessions SET node_path = '', metadata_updated_at = ? WHERE node_path = ? OR node_path LIKE ?;", now, path, path+"/%")
 	return nil
 }
 
 func (d *DB) MoveNode(oldPath, newPath string) error {
+	now := time.Now().UTC()
 	prefix := oldPath + "/"
-	qNodes := `UPDATE tree_nodes SET path = ? || SUBSTR(path, LENGTH(?) + 1) WHERE path = ? OR path LIKE ?;`
-	if _, err := d.db.Exec(qNodes, newPath, oldPath, oldPath, prefix+"%"); err != nil {
-		return fmt.Errorf("failed to update tree_nodes path: %w", err)
+
+	// Find affected non-deleted tree_nodes
+	rows, err := d.db.Query("SELECT path, project_dir, git_url, created_at FROM tree_nodes WHERE (path = ? OR path LIKE ?) AND deleted_at IS NULL;", oldPath, prefix+"%")
+	if err != nil {
+		return fmt.Errorf("failed to query nodes to move: %w", err)
+	}
+	type moveNodeItem struct {
+		oldPath    string
+		newPath    string
+		projectDir string
+		gitURL     string
+		createdAt  time.Time
+	}
+	var items []moveNodeItem
+	for rows.Next() {
+		var item moveNodeItem
+		var pDir, gURL sql.NullString
+		if err := rows.Scan(&item.oldPath, &pDir, &gURL, &item.createdAt); err == nil {
+			if pDir.Valid {
+				item.projectDir = pDir.String
+			}
+			if gURL.Valid {
+				item.gitURL = gURL.String
+			}
+			rel := strings.TrimPrefix(item.oldPath, oldPath)
+			item.newPath = newPath + rel
+			items = append(items, item)
+		}
+	}
+	rows.Close()
+
+	// Soft-delete old paths
+	if _, err := d.db.Exec("UPDATE tree_nodes SET deleted_at = ?, updated_at = ? WHERE (path = ? OR path LIKE ?) AND deleted_at IS NULL;", now, now, oldPath, prefix+"%"); err != nil {
+		return fmt.Errorf("failed to soft-delete moved tree_nodes: %w", err)
 	}
 
-	qSess := `UPDATE sessions SET node_path = ? || SUBSTR(node_path, LENGTH(?) + 1) WHERE node_path = ? OR node_path LIKE ?;`
-	if _, err := d.db.Exec(qSess, newPath, oldPath, oldPath, prefix+"%"); err != nil {
+	// Insert or reactivate new paths
+	for _, it := range items {
+		qUpsert := `
+		INSERT INTO tree_nodes (path, project_dir, git_url, created_at, updated_at, deleted_at)
+		VALUES (?, ?, ?, ?, ?, NULL)
+		ON CONFLICT(path) DO UPDATE SET
+			project_dir=excluded.project_dir,
+			git_url=excluded.git_url,
+			updated_at=excluded.updated_at,
+			deleted_at=NULL;
+		`
+		if _, err := d.db.Exec(qUpsert, it.newPath, it.projectDir, it.gitURL, it.createdAt, now); err != nil {
+			return fmt.Errorf("failed to upsert new tree_node path: %w", err)
+		}
+	}
+
+	// Update node_host_paths
+	qHostPaths := `UPDATE node_host_paths SET node_path = ? || SUBSTR(node_path, LENGTH(?) + 1), updated_at = ? WHERE node_path = ? OR node_path LIKE ?;`
+	if _, err := d.db.Exec(qHostPaths, newPath, oldPath, now, oldPath, prefix+"%"); err != nil {
+		return fmt.Errorf("failed to update node_host_paths: %w", err)
+	}
+
+	// Update sessions
+	qSess := `UPDATE sessions SET node_path = ? || SUBSTR(node_path, LENGTH(?) + 1), metadata_updated_at = ? WHERE node_path = ? OR node_path LIKE ?;`
+	if _, err := d.db.Exec(qSess, newPath, oldPath, now, oldPath, prefix+"%"); err != nil {
 		return fmt.Errorf("failed to update sessions node_path: %w", err)
 	}
 	return nil
 }
 
 func (d *DB) MoveSessionNode(sessionID, nodePath string) error {
-	_, err := d.db.Exec("UPDATE sessions SET node_path = ? WHERE id = ? OR native_id = ?;", nodePath, sessionID, sessionID)
+	now := time.Now().UTC()
+	_, err := d.db.Exec("UPDATE sessions SET node_path = ?, metadata_updated_at = ? WHERE id = ? OR native_id = ?;", nodePath, now, sessionID, sessionID)
 	if err != nil {
 		return fmt.Errorf("failed to move session node: %w", err)
 	}
 	return nil
+}
+
+func (d *DB) SaveNodeHostPath(nhp *NodeHostPath) error {
+	if nhp.UpdatedAt.IsZero() {
+		nhp.UpdatedAt = time.Now().UTC()
+	}
+	var capsJSON string
+	if len(nhp.Capabilities) > 0 {
+		if b, err := json.Marshal(nhp.Capabilities); err == nil {
+			capsJSON = string(b)
+		}
+	}
+	query := `
+	INSERT INTO node_host_paths (node_path, host, project_dir, git_remote, capabilities, updated_at)
+	VALUES (?, ?, ?, ?, ?, ?)
+	ON CONFLICT(node_path, host) DO UPDATE SET
+		project_dir=excluded.project_dir,
+		git_remote=excluded.git_remote,
+		capabilities=excluded.capabilities,
+		updated_at=excluded.updated_at;
+	`
+	_, err := d.db.Exec(query, nhp.NodePath, nhp.Host, nhp.ProjectDir, nhp.GitRemote, capsJSON, nhp.UpdatedAt)
+	if err != nil {
+		return fmt.Errorf("failed to save node_host_path: %w", err)
+	}
+	return nil
+}
+
+func (d *DB) GetNodeHostPath(nodePath, host string) (*NodeHostPath, error) {
+	var nhp NodeHostPath
+	var gitRemote, capsStr sql.NullString
+	query := `SELECT node_path, host, project_dir, git_remote, capabilities, updated_at FROM node_host_paths WHERE node_path = ? AND host = ?;`
+	err := d.db.QueryRow(query, nodePath, host).Scan(&nhp.NodePath, &nhp.Host, &nhp.ProjectDir, &gitRemote, &capsStr, &nhp.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get node_host_path: %w", err)
+	}
+	if gitRemote.Valid {
+		nhp.GitRemote = gitRemote.String
+	}
+	if capsStr.Valid && capsStr.String != "" {
+		_ = json.Unmarshal([]byte(capsStr.String), &nhp.Capabilities)
+	}
+	return &nhp, nil
+}
+
+func (d *DB) ListNodeHostPaths(nodePath string) ([]NodeHostPath, error) {
+	var query string
+	var args []interface{}
+	if nodePath == "" {
+		query = `SELECT node_path, host, project_dir, git_remote, capabilities, updated_at FROM node_host_paths ORDER BY host ASC;`
+	} else {
+		query = `SELECT node_path, host, project_dir, git_remote, capabilities, updated_at FROM node_host_paths WHERE node_path = ? ORDER BY host ASC;`
+		args = append(args, nodePath)
+	}
+	rows, err := d.db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list node_host_paths: %w", err)
+	}
+	defer rows.Close()
+
+	var result []NodeHostPath
+	for rows.Next() {
+		var nhp NodeHostPath
+		var gitRemote, capsStr sql.NullString
+		if err := rows.Scan(&nhp.NodePath, &nhp.Host, &nhp.ProjectDir, &gitRemote, &capsStr, &nhp.UpdatedAt); err != nil {
+			return nil, err
+		}
+		if gitRemote.Valid {
+			nhp.GitRemote = gitRemote.String
+		}
+		if capsStr.Valid && capsStr.String != "" {
+			_ = json.Unmarshal([]byte(capsStr.String), &nhp.Capabilities)
+		}
+		result = append(result, nhp)
+	}
+	return result, rows.Err()
 }
 
 func (d *DB) SaveHost(h *HostRecord) error {
@@ -1190,6 +1433,7 @@ type Task struct {
 	CreatedAt       time.Time         `json:"created_at"`
 	UpdatedAt       time.Time         `json:"updated_at"`
 	CompletedAt     *time.Time        `json:"completed_at,omitempty"`
+	DeletedAt       *time.Time        `json:"deleted_at,omitempty"`
 	ExternalRefs    []TaskExternalRef `json:"external_refs"`
 	Workers         []TaskWorker      `json:"workers"`
 	Deliverables    []TaskDeliverable `json:"deliverables"`
@@ -1219,11 +1463,14 @@ type TaskDeliverable struct {
 	Host      string    `json:"host"`
 	FilePath  string    `json:"file_path,omitempty"`
 	URL       string    `json:"url,omitempty"`
+	Provider  string    `json:"provider,omitempty"`
+	ContentMD string    `json:"content_md,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at,omitempty"`
 }
 
 func (d *DB) GetTasks() ([]Task, error) {
-	query := `SELECT id, title, group_name, project_name, subproject_name, status, substatus, notes, blocker_question, branch, worktree_path, pr_url, pr_number, pr_state, ci_status, created_at, updated_at, completed_at FROM tasks ORDER BY updated_at DESC;`
+	query := `SELECT id, title, group_name, project_name, subproject_name, status, substatus, notes, blocker_question, branch, worktree_path, pr_url, pr_number, pr_state, ci_status, created_at, updated_at, completed_at, deleted_at FROM tasks WHERE deleted_at IS NULL ORDER BY updated_at DESC;`
 	rows, err := d.db.Query(query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query tasks: %w", err)
@@ -1236,12 +1483,12 @@ func (d *DB) GetTasks() ([]Task, error) {
 		var t Task
 		var subprojectName, notes, blockerQuestion, branch, worktreePath, prURL, prState, ciStatus sql.NullString
 		var prNumber sql.NullInt64
-		var completedAt sql.NullTime
+		var completedAt, deletedAt sql.NullTime
 
 		if err := rows.Scan(
 			&t.ID, &t.Title, &t.GroupName, &t.ProjectName, &subprojectName,
 			&t.Status, &t.Substatus, &notes, &blockerQuestion, &branch, &worktreePath,
-			&prURL, &prNumber, &prState, &ciStatus, &t.CreatedAt, &t.UpdatedAt, &completedAt,
+			&prURL, &prNumber, &prState, &ciStatus, &t.CreatedAt, &t.UpdatedAt, &completedAt, &deletedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -1257,6 +1504,9 @@ func (d *DB) GetTasks() ([]Task, error) {
 		t.CIStatus = ciStatus.String
 		if completedAt.Valid {
 			t.CompletedAt = &completedAt.Time
+		}
+		if deletedAt.Valid {
+			t.DeletedAt = &deletedAt.Time
 		}
 
 		tasks = append(tasks, t)
@@ -1310,12 +1560,12 @@ func scanTaskRow(row scannableRow) (*Task, error) {
 	var t Task
 	var subprojectName, notes, blockerQuestion, branch, worktreePath, prURL, prState, ciStatus sql.NullString
 	var prNumber sql.NullInt64
-	var completedAt sql.NullTime
+	var completedAt, deletedAt sql.NullTime
 
 	if err := row.Scan(
 		&t.ID, &t.Title, &t.GroupName, &t.ProjectName, &subprojectName,
 		&t.Status, &t.Substatus, &notes, &blockerQuestion, &branch, &worktreePath,
-		&prURL, &prNumber, &prState, &ciStatus, &t.CreatedAt, &t.UpdatedAt, &completedAt,
+		&prURL, &prNumber, &prState, &ciStatus, &t.CreatedAt, &t.UpdatedAt, &completedAt, &deletedAt,
 	); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
@@ -1334,6 +1584,9 @@ func scanTaskRow(row scannableRow) (*Task, error) {
 	t.CIStatus = ciStatus.String
 	if completedAt.Valid {
 		t.CompletedAt = &completedAt.Time
+	}
+	if deletedAt.Valid {
+		t.DeletedAt = &deletedAt.Time
 	}
 	return &t, nil
 }
@@ -1373,7 +1626,7 @@ func (d *DB) populateTaskRelations(t *Task) error {
 }
 
 func (d *DB) GetTaskByID(id string) (*Task, error) {
-	query := `SELECT id, title, group_name, project_name, subproject_name, status, substatus, notes, blocker_question, branch, worktree_path, pr_url, pr_number, pr_state, ci_status, created_at, updated_at, completed_at FROM tasks WHERE id = ?;`
+	query := `SELECT id, title, group_name, project_name, subproject_name, status, substatus, notes, blocker_question, branch, worktree_path, pr_url, pr_number, pr_state, ci_status, created_at, updated_at, completed_at, deleted_at FROM tasks WHERE id = ? AND deleted_at IS NULL;`
 	row := d.db.QueryRow(query, id)
 	t, err := scanTaskRow(row)
 	if err != nil || t == nil {
@@ -1389,7 +1642,7 @@ func (d *DB) GetTaskByBranch(branch string) (*Task, error) {
 	if branch == "" {
 		return nil, nil
 	}
-	query := `SELECT id, title, group_name, project_name, subproject_name, status, substatus, notes, blocker_question, branch, worktree_path, pr_url, pr_number, pr_state, ci_status, created_at, updated_at, completed_at FROM tasks WHERE branch = ? ORDER BY updated_at DESC LIMIT 1;`
+	query := `SELECT id, title, group_name, project_name, subproject_name, status, substatus, notes, blocker_question, branch, worktree_path, pr_url, pr_number, pr_state, ci_status, created_at, updated_at, completed_at, deleted_at FROM tasks WHERE branch = ? AND deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1;`
 	row := d.db.QueryRow(query, branch)
 	t, err := scanTaskRow(row)
 	if err != nil || t == nil {
@@ -1405,7 +1658,7 @@ func (d *DB) GetTaskByWorktree(worktreePath string) (*Task, error) {
 	if worktreePath == "" {
 		return nil, nil
 	}
-	query := `SELECT id, title, group_name, project_name, subproject_name, status, substatus, notes, blocker_question, branch, worktree_path, pr_url, pr_number, pr_state, ci_status, created_at, updated_at, completed_at FROM tasks WHERE worktree_path = ? ORDER BY updated_at DESC LIMIT 1;`
+	query := `SELECT id, title, group_name, project_name, subproject_name, status, substatus, notes, blocker_question, branch, worktree_path, pr_url, pr_number, pr_state, ci_status, created_at, updated_at, completed_at, deleted_at FROM tasks WHERE worktree_path = ? AND deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1;`
 	row := d.db.QueryRow(query, worktreePath)
 	t, err := scanTaskRow(row)
 	if err != nil || t == nil {
@@ -1422,10 +1675,10 @@ func (d *DB) GetTaskByExternalRef(refKey string) (*Task, error) {
 	if cleanKey == "" {
 		return nil, nil
 	}
-	query := `SELECT t.id, t.title, t.group_name, t.project_name, t.subproject_name, t.status, t.substatus, t.notes, t.blocker_question, t.branch, t.worktree_path, t.pr_url, t.pr_number, t.pr_state, t.ci_status, t.created_at, t.updated_at, t.completed_at
+	query := `SELECT t.id, t.title, t.group_name, t.project_name, t.subproject_name, t.status, t.substatus, t.notes, t.blocker_question, t.branch, t.worktree_path, t.pr_url, t.pr_number, t.pr_state, t.ci_status, t.created_at, t.updated_at, t.completed_at, t.deleted_at
 			  FROM tasks t
 			  JOIN task_external_refs r ON t.id = r.task_id
-			  WHERE r.ref_key = ?
+			  WHERE r.ref_key = ? AND t.deleted_at IS NULL
 			  ORDER BY t.updated_at DESC LIMIT 1;`
 	row := d.db.QueryRow(query, cleanKey)
 	t, err := scanTaskRow(row)
@@ -1443,7 +1696,7 @@ func (d *DB) GetTaskByTitle(title string) (*Task, error) {
 	if cleanTitle == "" {
 		return nil, nil
 	}
-	query := `SELECT id, title, group_name, project_name, subproject_name, status, substatus, notes, blocker_question, branch, worktree_path, pr_url, pr_number, pr_state, ci_status, created_at, updated_at, completed_at FROM tasks WHERE title = ? COLLATE NOCASE ORDER BY updated_at DESC LIMIT 1;`
+	query := `SELECT id, title, group_name, project_name, subproject_name, status, substatus, notes, blocker_question, branch, worktree_path, pr_url, pr_number, pr_state, ci_status, created_at, updated_at, completed_at, deleted_at FROM tasks WHERE title = ? COLLATE NOCASE AND deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1;`
 	row := d.db.QueryRow(query, cleanTitle)
 	t, err := scanTaskRow(row)
 	if err != nil || t == nil {
@@ -1459,10 +1712,10 @@ func (d *DB) GetActiveTaskForSession(sessionID string) (*Task, error) {
 	if sessionID == "" {
 		return nil, nil
 	}
-	query := `SELECT t.id, t.title, t.group_name, t.project_name, t.subproject_name, t.status, t.substatus, t.notes, t.blocker_question, t.branch, t.worktree_path, t.pr_url, t.pr_number, t.pr_state, t.ci_status, t.created_at, t.updated_at, t.completed_at
+	query := `SELECT t.id, t.title, t.group_name, t.project_name, t.subproject_name, t.status, t.substatus, t.notes, t.blocker_question, t.branch, t.worktree_path, t.pr_url, t.pr_number, t.pr_state, t.ci_status, t.created_at, t.updated_at, t.completed_at, t.deleted_at
 			  FROM tasks t
 			  JOIN task_workers w ON t.id = w.task_id
-			  WHERE w.session_id = ? AND w.is_active = 1
+			  WHERE w.session_id = ? AND w.is_active = 1 AND t.deleted_at IS NULL
 			  ORDER BY t.updated_at DESC LIMIT 1;`
 	row := d.db.QueryRow(query, sessionID)
 	t, err := scanTaskRow(row)
@@ -1574,20 +1827,26 @@ func (d *DB) getDeliverablesForTasks(taskIDs []string) (map[string][]TaskDeliver
 			placeholders[i] = "?"
 			args[i] = id
 		}
-		query := fmt.Sprintf(`SELECT id, task_id, kind, title, host, file_path, url, created_at FROM task_deliverables WHERE task_id IN (%s)`, strings.Join(placeholders, ","))
+		query := fmt.Sprintf(`SELECT id, task_id, kind, title, host, file_path, url, provider, content_md, created_at, updated_at FROM task_deliverables WHERE task_id IN (%s)`, strings.Join(placeholders, ","))
 		rows, err := d.db.Query(query, args...)
 		if err != nil {
 			return nil, err
 		}
 		for rows.Next() {
 			var del TaskDeliverable
-			var fp, u sql.NullString
-			if err := rows.Scan(&del.ID, &del.TaskID, &del.Kind, &del.Title, &del.Host, &fp, &u, &del.CreatedAt); err != nil {
+			var fp, u, prov, cMD sql.NullString
+			var updAt sql.NullTime
+			if err := rows.Scan(&del.ID, &del.TaskID, &del.Kind, &del.Title, &del.Host, &fp, &u, &prov, &cMD, &del.CreatedAt, &updAt); err != nil {
 				rows.Close()
 				return nil, err
 			}
 			del.FilePath = fp.String
 			del.URL = u.String
+			del.Provider = prov.String
+			del.ContentMD = cMD.String
+			if updAt.Valid {
+				del.UpdatedAt = updAt.Time
+			}
 			res[del.TaskID] = append(res[del.TaskID], del)
 		}
 		if err := rows.Err(); err != nil {
@@ -1601,9 +1860,9 @@ func (d *DB) getDeliverablesForTasks(taskIDs []string) (map[string][]TaskDeliver
 
 func (d *DB) CreateTask(t *Task) error {
 	if t.CreatedAt.IsZero() {
-		t.CreatedAt = time.Now()
+		t.CreatedAt = time.Now().UTC()
 	}
-	t.UpdatedAt = time.Now()
+	t.UpdatedAt = time.Now().UTC()
 
 	tx, err := d.db.Begin()
 	if err != nil {
@@ -1612,19 +1871,23 @@ func (d *DB) CreateTask(t *Task) error {
 	defer tx.Rollback()
 
 	query := `INSERT INTO tasks (
-		id, title, group_name, project_name, subproject_name, status, substatus, notes, blocker_question, branch, worktree_path, pr_url, pr_number, pr_state, ci_status, created_at, updated_at, completed_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		id, title, group_name, project_name, subproject_name, status, substatus, notes, blocker_question, branch, worktree_path, pr_url, pr_number, pr_state, ci_status, created_at, updated_at, completed_at, deleted_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
-	var completedAt sql.NullTime
+	var completedAt, deletedAt sql.NullTime
 	if t.CompletedAt != nil {
 		completedAt.Time = *t.CompletedAt
 		completedAt.Valid = true
+	}
+	if t.DeletedAt != nil {
+		deletedAt.Time = *t.DeletedAt
+		deletedAt.Valid = true
 	}
 
 	_, err = tx.Exec(query,
 		t.ID, t.Title, t.GroupName, t.ProjectName, t.SubprojectName,
 		t.Status, t.Substatus, t.Notes, t.BlockerQuestion, t.Branch, t.WorktreePath,
-		t.PRURL, t.PRNumber, t.PRState, t.CIStatus, t.CreatedAt, t.UpdatedAt, completedAt,
+		t.PRURL, t.PRNumber, t.PRState, t.CIStatus, t.CreatedAt, t.UpdatedAt, completedAt, deletedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to create task: %w", err)
@@ -1659,7 +1922,7 @@ func (d *DB) CreateTask(t *Task) error {
 }
 
 func (d *DB) UpdateTask(t *Task) error {
-	t.UpdatedAt = time.Now()
+	t.UpdatedAt = time.Now().UTC()
 
 	tx, err := d.db.Begin()
 	if err != nil {
@@ -1670,7 +1933,7 @@ func (d *DB) UpdateTask(t *Task) error {
 	query := `UPDATE tasks SET
 		title = ?, group_name = ?, project_name = ?, subproject_name = ?, status = ?, substatus = ?,
 		notes = ?, blocker_question = ?, branch = ?, worktree_path = ?, pr_url = ?, pr_number = ?,
-		pr_state = ?, ci_status = ?, updated_at = ?, completed_at = ?
+		pr_state = ?, ci_status = ?, updated_at = ?, completed_at = ?, deleted_at = NULL
 		WHERE id = ?`
 
 	var completedAt sql.NullTime
@@ -1752,34 +2015,22 @@ func (d *DB) DeleteTask(taskID string) error {
 	if taskID == "" {
 		return fmt.Errorf("task ID cannot be empty")
 	}
-	tx, err := d.db.Begin()
+	now := time.Now().UTC()
+	res, err := d.db.Exec(`UPDATE tasks SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL;`, now, now, taskID)
 	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
-	}
-	defer tx.Rollback()
-
-	if _, err := tx.Exec(`DELETE FROM task_workers WHERE task_id = ?`, taskID); err != nil {
-		return fmt.Errorf("failed to delete task workers: %w", err)
-	}
-	if _, err := tx.Exec(`DELETE FROM task_external_refs WHERE task_id = ?`, taskID); err != nil {
-		return fmt.Errorf("failed to delete task external refs: %w", err)
-	}
-	if _, err := tx.Exec(`DELETE FROM task_deliverables WHERE task_id = ?`, taskID); err != nil {
-		return fmt.Errorf("failed to delete task deliverables: %w", err)
-	}
-	res, err := tx.Exec(`DELETE FROM tasks WHERE id = ?`, taskID)
-	if err != nil {
-		return fmt.Errorf("failed to delete task: %w", err)
+		return fmt.Errorf("failed to soft delete task: %w", err)
 	}
 	rowsAffected, err := res.RowsAffected()
 	if err != nil {
 		return fmt.Errorf("failed to check rows affected: %w", err)
 	}
 	if rowsAffected == 0 {
-		return fmt.Errorf("task with id %s not found", taskID)
+		return fmt.Errorf("task with id %s not found or already deleted", taskID)
 	}
-
-	return tx.Commit()
+	_, _ = d.db.Exec(`DELETE FROM task_workers WHERE task_id = ?;`, taskID)
+	_, _ = d.db.Exec(`DELETE FROM task_external_refs WHERE task_id = ?;`, taskID)
+	_, _ = d.db.Exec(`DELETE FROM task_deliverables WHERE task_id = ?;`, taskID)
+	return nil
 }
 
 func insertTaskWorkerTx(tx *sql.Tx, w *TaskWorker) error {
@@ -1813,7 +2064,10 @@ func insertTaskDeliverableTx(tx *sql.Tx, td *TaskDeliverable) error {
 		td.ID = fmt.Sprintf("del_%d", time.Now().UnixNano())
 	}
 	if td.CreatedAt.IsZero() {
-		td.CreatedAt = time.Now()
+		td.CreatedAt = time.Now().UTC()
+	}
+	if td.UpdatedAt.IsZero() {
+		td.UpdatedAt = time.Now().UTC()
 	}
 
 	// Deduplicate deliverable for same task and file path
@@ -1822,7 +2076,7 @@ func insertTaskDeliverableTx(tx *sql.Tx, td *TaskDeliverable) error {
 		err := tx.QueryRow(`SELECT id FROM task_deliverables WHERE task_id = ? AND file_path = ?`, td.TaskID, td.FilePath).Scan(&existingID)
 		if err == nil && existingID != "" {
 			td.ID = existingID
-			_, err = tx.Exec(`UPDATE task_deliverables SET kind = ?, title = ?, host = ? WHERE id = ?`, td.Kind, td.Title, td.Host, existingID)
+			_, err = tx.Exec(`UPDATE task_deliverables SET kind = ?, title = ?, host = ?, provider = ?, content_md = ?, updated_at = ? WHERE id = ?`, td.Kind, td.Title, td.Host, td.Provider, td.ContentMD, td.UpdatedAt, existingID)
 			return err
 		}
 	} else if td.URL != "" {
@@ -1830,14 +2084,23 @@ func insertTaskDeliverableTx(tx *sql.Tx, td *TaskDeliverable) error {
 		err := tx.QueryRow(`SELECT id FROM task_deliverables WHERE task_id = ? AND url = ?`, td.TaskID, td.URL).Scan(&existingID)
 		if err == nil && existingID != "" {
 			td.ID = existingID
-			_, err = tx.Exec(`UPDATE task_deliverables SET kind = ?, title = ?, host = ? WHERE id = ?`, td.Kind, td.Title, td.Host, existingID)
+			_, err = tx.Exec(`UPDATE task_deliverables SET kind = ?, title = ?, host = ?, provider = ?, content_md = ?, updated_at = ? WHERE id = ?`, td.Kind, td.Title, td.Host, td.Provider, td.ContentMD, td.UpdatedAt, existingID)
 			return err
 		}
 	}
 
-	query := `INSERT INTO task_deliverables (id, task_id, kind, title, host, file_path, url, created_at)
-			  VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-	_, err := tx.Exec(query, td.ID, td.TaskID, td.Kind, td.Title, td.Host, td.FilePath, td.URL, td.CreatedAt)
+	query := `INSERT INTO task_deliverables (id, task_id, kind, title, host, file_path, url, provider, content_md, created_at, updated_at)
+			  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			  ON CONFLICT(id) DO UPDATE SET
+			  	kind = excluded.kind,
+			  	title = excluded.title,
+			  	host = excluded.host,
+			  	file_path = excluded.file_path,
+			  	url = excluded.url,
+			  	provider = excluded.provider,
+			  	content_md = excluded.content_md,
+			  	updated_at = excluded.updated_at;`
+	_, err := tx.Exec(query, td.ID, td.TaskID, td.Kind, td.Title, td.Host, td.FilePath, td.URL, td.Provider, td.ContentMD, td.CreatedAt, td.UpdatedAt)
 	return err
 }
 
@@ -1907,7 +2170,7 @@ func (d *DB) DeduplicateTasks() (int64, error) {
 		rows.Close()
 
 		for _, dr := range dupRefs {
-			taskQuery := `SELECT t.id, t.title, t.group_name, t.project_name, t.subproject_name, t.status, t.substatus, t.notes, t.blocker_question, t.branch, t.worktree_path, t.pr_url, t.pr_number, t.pr_state, t.ci_status, t.created_at, t.updated_at, t.completed_at
+			taskQuery := `SELECT t.id, t.title, t.group_name, t.project_name, t.subproject_name, t.status, t.substatus, t.notes, t.blocker_question, t.branch, t.worktree_path, t.pr_url, t.pr_number, t.pr_state, t.ci_status, t.created_at, t.updated_at, t.completed_at, t.deleted_at
 						  FROM tasks t
 						  JOIN task_external_refs r ON t.id = r.task_id
 						  WHERE r.tracker = ? AND r.ref_key = ?;`
@@ -1998,7 +2261,7 @@ func (d *DB) DeduplicateTasks() (int64, error) {
 		titleRows.Close()
 
 		for _, td := range dupTitles {
-			tRows, err := d.db.Query(`SELECT id, title, group_name, project_name, subproject_name, status, substatus, notes, blocker_question, branch, worktree_path, pr_url, pr_number, pr_state, ci_status, created_at, updated_at, completed_at
+			tRows, err := d.db.Query(`SELECT id, title, group_name, project_name, subproject_name, status, substatus, notes, blocker_question, branch, worktree_path, pr_url, pr_number, pr_state, ci_status, created_at, updated_at, completed_at, deleted_at
 									  FROM tasks
 									  WHERE lower(title) = lower(?) AND lower(group_name) = lower(?) AND lower(project_name) = lower(?) AND (branch = '' OR branch IS NULL)
 									  ORDER BY 
@@ -2184,4 +2447,351 @@ func sortTasksForPrimary(d *DB, cluster []*Task) {
 		// 6. Earliest created_at
 		return ti.CreatedAt.Before(tj.CreatedAt)
 	})
+}
+
+type SessionMetaSync struct {
+	ID          string    `json:"id"`
+	Agent       string    `json:"agent,omitempty"`
+	Host        string    `json:"host,omitempty"`
+	NativeID    string    `json:"native_id,omitempty"`
+	Cwd         string    `json:"cwd,omitempty"`
+	NodePath    string    `json:"node_path"`
+	Name        string    `json:"name,omitempty"`
+	CustomTitle string    `json:"custom_title,omitempty"`
+	IsDone      bool      `json:"is_done"`
+	IsLater     bool      `json:"is_later"`
+	Archived    bool      `json:"archived"`
+	State       State     `json:"state,omitempty"`
+	Activity    string    `json:"activity,omitempty"`
+	GitBranch   string    `json:"git_branch,omitempty"`
+	StartedAt   time.Time `json:"started_at,omitempty"`
+	LastEventAt time.Time `json:"last_event_at,omitempty"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+type SyncStatePayload struct {
+	SourceHost    string            `json:"source_host"`
+	Timestamp     time.Time         `json:"timestamp"`
+	Nodes         []TreeNode        `json:"nodes,omitempty"`
+	NodeHostPaths []NodeHostPath    `json:"node_host_paths,omitempty"`
+	Tasks         []Task            `json:"tasks,omitempty"`
+	Deliverables  []TaskDeliverable `json:"deliverables,omitempty"`
+	SessionMetas  []SessionMetaSync `json:"session_metas,omitempty"`
+}
+
+func (d *DB) GetSyncStateSince(since time.Time, sourceHost string) (*SyncStatePayload, error) {
+	payload := &SyncStatePayload{
+		SourceHost: sourceHost,
+		Timestamp:  time.Now().UTC(),
+	}
+
+	// 1. Nodes (including soft-deleted)
+	nodeRows, err := d.db.Query("SELECT path, project_dir, git_url, created_at, updated_at, deleted_at FROM tree_nodes;")
+	if err != nil {
+		return nil, fmt.Errorf("failed to query tree_nodes for sync: %w", err)
+	}
+	defer nodeRows.Close()
+
+	for nodeRows.Next() {
+		var n TreeNode
+		var pDir, gURL sql.NullString
+		var updAt, delAt sql.NullTime
+		if err := nodeRows.Scan(&n.Path, &pDir, &gURL, &n.CreatedAt, &updAt, &delAt); err != nil {
+			return nil, err
+		}
+		if pDir.Valid {
+			n.ProjectDir = pDir.String
+		}
+		if gURL.Valid {
+			n.GitURL = gURL.String
+		}
+		if updAt.Valid {
+			n.UpdatedAt = updAt.Time
+		}
+		if delAt.Valid {
+			n.DeletedAt = &delAt.Time
+		}
+		if since.IsZero() || n.UpdatedAt.After(since) {
+			nhps, _ := d.ListNodeHostPaths(n.Path)
+			n.HostPaths = nhps
+			payload.Nodes = append(payload.Nodes, n)
+		}
+	}
+	if err := nodeRows.Err(); err != nil {
+		return nil, err
+	}
+
+	// 2. NodeHostPaths
+	allHPs, err := d.ListNodeHostPaths("")
+	if err == nil {
+		for _, hp := range allHPs {
+			if since.IsZero() || hp.UpdatedAt.After(since) {
+				payload.NodeHostPaths = append(payload.NodeHostPaths, hp)
+			}
+		}
+	}
+
+	// 3. Tasks (including soft-deleted)
+	tRows, err := d.db.Query("SELECT id, title, group_name, project_name, subproject_name, status, substatus, notes, blocker_question, branch, worktree_path, pr_url, pr_number, pr_state, ci_status, created_at, updated_at, completed_at, deleted_at FROM tasks;")
+	if err != nil {
+		return nil, fmt.Errorf("failed to query tasks for sync: %w", err)
+	}
+	defer tRows.Close()
+
+	for tRows.Next() {
+		t, err := scanTaskRow(tRows)
+		if err != nil || t == nil {
+			continue
+		}
+		if since.IsZero() || t.UpdatedAt.After(since) {
+			if t.DeletedAt == nil {
+				_ = d.populateTaskRelations(t)
+			}
+			payload.Tasks = append(payload.Tasks, *t)
+		}
+	}
+
+	// 4. TaskDeliverables
+	delRows, err := d.db.Query("SELECT id, task_id, kind, title, host, file_path, url, provider, content_md, created_at, updated_at FROM task_deliverables;")
+	if err == nil {
+		for delRows.Next() {
+			var del TaskDeliverable
+			var fp, u, prov, cMD sql.NullString
+			var updAt sql.NullTime
+			if err := delRows.Scan(&del.ID, &del.TaskID, &del.Kind, &del.Title, &del.Host, &fp, &u, &prov, &cMD, &del.CreatedAt, &updAt); err == nil {
+				if fp.Valid {
+					del.FilePath = fp.String
+				}
+				if u.Valid {
+					del.URL = u.String
+				}
+				if prov.Valid {
+					del.Provider = prov.String
+				}
+				if cMD.Valid {
+					del.ContentMD = cMD.String
+				}
+				if updAt.Valid {
+					del.UpdatedAt = updAt.Time
+				}
+				if since.IsZero() || del.UpdatedAt.After(since) {
+					payload.Deliverables = append(payload.Deliverables, del)
+				}
+			}
+		}
+		delRows.Close()
+	}
+
+	// 5. SessionMetas
+	sRows, err := d.db.Query("SELECT id, agent, host, native_id, cwd, node_path, name, custom_title, is_done, is_later, archived, state, activity, git_branch, started_at, last_event_at, metadata_updated_at FROM sessions;")
+	if err == nil {
+		for sRows.Next() {
+			var sm SessionMetaSync
+			var nodePath, name, customTitle, activity, gitBranch sql.NullString
+			var isDoneInt, isLaterInt, archivedInt, stateInt int
+			var metaUpd sql.NullTime
+
+			if err := sRows.Scan(&sm.ID, &sm.Agent, &sm.Host, &sm.NativeID, &sm.Cwd, &nodePath, &name, &customTitle, &isDoneInt, &isLaterInt, &archivedInt, &stateInt, &activity, &gitBranch, &sm.StartedAt, &sm.LastEventAt, &metaUpd); err == nil {
+				if nodePath.Valid {
+					sm.NodePath = nodePath.String
+				}
+				if name.Valid {
+					sm.Name = name.String
+				}
+				if customTitle.Valid {
+					sm.CustomTitle = customTitle.String
+				}
+				if activity.Valid {
+					sm.Activity = activity.String
+				}
+				if gitBranch.Valid {
+					sm.GitBranch = gitBranch.String
+				}
+				sm.IsDone = isDoneInt == 1
+				sm.IsLater = isLaterInt == 1
+				sm.Archived = archivedInt == 1
+				sm.State = State(stateInt)
+
+				if metaUpd.Valid {
+					sm.UpdatedAt = metaUpd.Time
+				} else {
+					sm.UpdatedAt = sm.LastEventAt
+				}
+				if sm.UpdatedAt.IsZero() {
+					sm.UpdatedAt = sm.StartedAt
+				}
+
+				if since.IsZero() || sm.UpdatedAt.After(since) || sm.LastEventAt.After(since) {
+					payload.SessionMetas = append(payload.SessionMetas, sm)
+				}
+			}
+		}
+		sRows.Close()
+	}
+
+	return payload, nil
+}
+
+func (d *DB) ApplySyncState(payload *SyncStatePayload) ([]*Session, error) {
+	if payload == nil {
+		return nil, nil
+	}
+
+	var updatedSessions []*Session
+
+	// 1. Reconcile Nodes via LWW
+	for _, incoming := range payload.Nodes {
+		var existingUpdAt, existingDelAt sql.NullTime
+		err := d.db.QueryRow("SELECT updated_at, deleted_at FROM tree_nodes WHERE path = ?;", incoming.Path).Scan(&existingUpdAt, &existingDelAt)
+		exists := err == nil
+		if exists && existingUpdAt.Valid && !incoming.UpdatedAt.After(existingUpdAt.Time) {
+			// Existing is newer or equal, ignore incoming
+			continue
+		}
+
+		if incoming.DeletedAt != nil {
+			// Incoming is soft-deleted
+			if exists {
+				_, _ = d.db.Exec("UPDATE tree_nodes SET deleted_at = ?, updated_at = ? WHERE path = ?;", incoming.DeletedAt, incoming.UpdatedAt, incoming.Path)
+			} else {
+				_, _ = d.db.Exec("INSERT INTO tree_nodes (path, project_dir, git_url, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?);",
+					incoming.Path, incoming.ProjectDir, incoming.GitURL, incoming.CreatedAt, incoming.UpdatedAt, incoming.DeletedAt)
+			}
+			_, _ = d.db.Exec("UPDATE sessions SET node_path = '', metadata_updated_at = ? WHERE node_path = ? OR node_path LIKE ?;",
+				incoming.UpdatedAt, incoming.Path, incoming.Path+"/%")
+		} else {
+			// Incoming is active
+			q := `
+			INSERT INTO tree_nodes (path, project_dir, git_url, created_at, updated_at, deleted_at)
+			VALUES (?, ?, ?, ?, ?, NULL)
+			ON CONFLICT(path) DO UPDATE SET
+				project_dir=excluded.project_dir,
+				git_url=excluded.git_url,
+				updated_at=excluded.updated_at,
+				deleted_at=NULL;
+			`
+			_, _ = d.db.Exec(q, incoming.Path, incoming.ProjectDir, incoming.GitURL, incoming.CreatedAt, incoming.UpdatedAt)
+		}
+
+		for _, hp := range incoming.HostPaths {
+			_ = d.SaveNodeHostPath(&hp)
+		}
+	}
+
+	// 2. Reconcile NodeHostPaths via LWW
+	for _, incoming := range payload.NodeHostPaths {
+		var existingUpdAt sql.NullTime
+		err := d.db.QueryRow("SELECT updated_at FROM node_host_paths WHERE node_path = ? AND host = ?;", incoming.NodePath, incoming.Host).Scan(&existingUpdAt)
+		if err == nil && existingUpdAt.Valid && !incoming.UpdatedAt.After(existingUpdAt.Time) {
+			continue
+		}
+		_ = d.SaveNodeHostPath(&incoming)
+	}
+
+	// 3. Reconcile Tasks via LWW
+	for _, incoming := range payload.Tasks {
+		var existingUpdAt, existingDelAt sql.NullTime
+		err := d.db.QueryRow("SELECT updated_at, deleted_at FROM tasks WHERE id = ?;", incoming.ID).Scan(&existingUpdAt, &existingDelAt)
+		exists := err == nil
+		if exists && existingUpdAt.Valid && !incoming.UpdatedAt.After(existingUpdAt.Time) {
+			continue
+		}
+
+		if incoming.DeletedAt != nil {
+			if exists {
+				_, _ = d.db.Exec("UPDATE tasks SET deleted_at = ?, updated_at = ? WHERE id = ?;", incoming.DeletedAt, incoming.UpdatedAt, incoming.ID)
+			} else {
+				q := `INSERT INTO tasks (
+					id, title, group_name, project_name, subproject_name, status, substatus, notes, blocker_question, branch, worktree_path, pr_url, pr_number, pr_state, ci_status, created_at, updated_at, completed_at, deleted_at
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`
+				var compAt sql.NullTime
+				if incoming.CompletedAt != nil {
+					compAt = sql.NullTime{Time: *incoming.CompletedAt, Valid: true}
+				}
+				_, _ = d.db.Exec(q,
+					incoming.ID, incoming.Title, incoming.GroupName, incoming.ProjectName, incoming.SubprojectName,
+					incoming.Status, incoming.Substatus, incoming.Notes, incoming.BlockerQuestion, incoming.Branch, incoming.WorktreePath,
+					incoming.PRURL, incoming.PRNumber, incoming.PRState, incoming.CIStatus, incoming.CreatedAt, incoming.UpdatedAt, compAt, incoming.DeletedAt)
+			}
+		} else {
+			if exists {
+				_ = d.UpdateTask(&incoming)
+			} else {
+				_ = d.CreateTask(&incoming)
+			}
+		}
+	}
+
+	// 4. Reconcile Deliverables via LWW
+	for _, incoming := range payload.Deliverables {
+		var existingUpdAt sql.NullTime
+		err := d.db.QueryRow("SELECT updated_at FROM task_deliverables WHERE id = ?;", incoming.ID).Scan(&existingUpdAt)
+		if err == nil && existingUpdAt.Valid && !incoming.UpdatedAt.After(existingUpdAt.Time) {
+			continue
+		}
+		// Check parent task exists
+		var taskCount int
+		_ = d.db.QueryRow("SELECT COUNT(*) FROM tasks WHERE id = ?;", incoming.TaskID).Scan(&taskCount)
+		if taskCount > 0 {
+			_ = d.InsertTaskDeliverable(&incoming)
+		}
+	}
+
+	// 5. Reconcile SessionMetas via LWW
+	for _, meta := range payload.SessionMetas {
+		existing, _ := d.GetSession(meta.ID)
+		if existing == nil && meta.NativeID != "" {
+			existing, _ = d.GetSession(meta.NativeID)
+		}
+
+		if existing != nil {
+			if meta.UpdatedAt.After(existing.MetadataUpdatedAt) {
+				existing.NodePath = meta.NodePath
+				if meta.Name != "" {
+					existing.Name = meta.Name
+				}
+				if meta.CustomTitle != "" {
+					existing.CustomTitle = meta.CustomTitle
+				}
+				existing.IsDone = meta.IsDone
+				existing.IsLater = meta.IsLater
+				existing.Archived = meta.Archived
+				existing.MetadataUpdatedAt = meta.UpdatedAt
+
+				_ = d.SaveSession(existing)
+				updatedSessions = append(updatedSessions, existing)
+			}
+		} else {
+			replica := &Session{
+				ID:                meta.ID,
+				Agent:             meta.Agent,
+				Host:              meta.Host,
+				NativeID:          meta.NativeID,
+				Cwd:               meta.Cwd,
+				NodePath:          meta.NodePath,
+				Name:              meta.Name,
+				CustomTitle:       meta.CustomTitle,
+				IsDone:            meta.IsDone,
+				IsLater:           meta.IsLater,
+				Archived:          meta.Archived,
+				State:             meta.State,
+				Activity:          meta.Activity,
+				GitBranch:         meta.GitBranch,
+				StartedAt:         meta.StartedAt,
+				LastEventAt:       meta.LastEventAt,
+				MetadataUpdatedAt: meta.UpdatedAt,
+				EngineType:        EngineTmux,
+			}
+			if replica.StartedAt.IsZero() {
+				replica.StartedAt = meta.UpdatedAt
+			}
+			if replica.LastEventAt.IsZero() {
+				replica.LastEventAt = meta.UpdatedAt
+			}
+			_ = d.SaveSession(replica)
+			updatedSessions = append(updatedSessions, replica)
+		}
+	}
+
+	return updatedSessions, nil
 }

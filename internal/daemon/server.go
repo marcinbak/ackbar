@@ -289,6 +289,9 @@ func (s *Server) Mux() http.Handler {
 	mux.HandleFunc("/v1/documents/content", s.handleDocumentContent)
 	mux.HandleFunc("/v1/nodes", s.handleNodes)
 	mux.HandleFunc("/v1/nodes/move", s.handleNodeMove)
+	mux.HandleFunc("/v1/nodes/paths", s.handleNodeHostPaths)
+	mux.HandleFunc("/v1/sync/state", s.handleSyncState)
+	mux.HandleFunc("/v1/sync/push", s.handleSyncPush)
 	mux.HandleFunc("/v1/hosts", s.handleHosts)
 	mux.HandleFunc("/v1/hosts/update", s.handleHostUpdate)
 	mux.HandleFunc("/v1/hosts/reconnect", s.handleHostReconnect)
@@ -565,11 +568,12 @@ func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) StartBackgroundLoop(ctx context.Context) {
 	go func() {
-		// Run initial scan, host tunnel check, dev-workflow run ingestion, and skills repo auto-sync asynchronously on startup
+		// Run initial scan, host tunnel check, dev-workflow run ingestion, skills repo auto-sync, and peer sync asynchronously on startup
 		go s.scanObservedSessions(ctx)
 		go s.ensureHostTunnels(ctx)
 		go s.IngestDevWorkflowRuns()
 		go s.maybeAutoSyncSkillsRepo(ctx)
+		go s.PullFromPeers(ctx)
 
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
@@ -586,6 +590,7 @@ func (s *Server) StartBackgroundLoop(ctx context.Context) {
 				s.scanObservedSessions(ctx)
 				go s.ensureHostTunnels(ctx)
 				go s.IngestDevWorkflowRuns()
+				go s.PullFromPeers(ctx)
 				sessions, err := s.db.ListActiveSessions()
 				if err == nil && len(sessions) > 0 {
 					s.verifySessionLiveness(ctx, sessions)

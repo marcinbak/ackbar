@@ -200,6 +200,9 @@ func (s *Server) handleDocumentContent(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleNodes(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
+		if r.URL.Query().Get("federated") == "true" {
+			s.PullFromPeersWithTimeout(r.Context(), 1500*time.Millisecond)
+		}
 		nodes, err := s.db.ListNodes()
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -218,11 +221,35 @@ func (s *Server) handleNodes(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Missing node path", http.StatusBadRequest)
 			return
 		}
-		node.CreatedAt = time.Now()
+		now := time.Now().UTC()
+		if node.CreatedAt.IsZero() {
+			node.CreatedAt = now
+		}
+		node.UpdatedAt = now
 		if err := s.db.SaveNode(&node); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+
+		if node.ProjectDir != "" {
+			nhp := NodeHostPath{
+				NodePath:   node.Path,
+				Host:       s.HostName(),
+				ProjectDir: node.ProjectDir,
+				GitRemote:  node.GitURL,
+				UpdatedAt:  now,
+			}
+			_ = s.db.SaveNodeHostPath(&nhp)
+			s.pushSyncPayload(&SyncStatePayload{
+				Nodes:         []TreeNode{node},
+				NodeHostPaths: []NodeHostPath{nhp},
+			})
+		} else {
+			s.pushSyncPayload(&SyncStatePayload{
+				Nodes: []TreeNode{node},
+			})
+		}
+
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"saved"}`))
 
@@ -236,6 +263,16 @@ func (s *Server) handleNodes(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+
+		now := time.Now().UTC()
+		s.pushSyncPayload(&SyncStatePayload{
+			Nodes: []TreeNode{{
+				Path:      path,
+				UpdatedAt: now,
+				DeletedAt: &now,
+			}},
+		})
+
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"deleted"}`))
 
@@ -267,6 +304,23 @@ func (s *Server) handleNodeMove(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+
+	now := time.Now().UTC()
+	newNodes, _ := s.db.ListNodes()
+	var movedNodes []TreeNode
+	for _, n := range newNodes {
+		if n.Path == req.NewPath || strings.HasPrefix(n.Path, req.NewPath+"/") {
+			movedNodes = append(movedNodes, *n)
+		}
+	}
+	tombstone := TreeNode{
+		Path:      req.OldPath,
+		UpdatedAt: now,
+		DeletedAt: &now,
+	}
+	s.pushSyncPayload(&SyncStatePayload{
+		Nodes: append(movedNodes, tombstone),
+	})
 
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"status":"moved"}`))
@@ -392,12 +446,32 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		Path:       req.Path,
 		ProjectDir: targetDir,
 		GitURL:     gitURL,
-		CreatedAt:  time.Now(),
+		CreatedAt:  time.Now().UTC(),
+		UpdatedAt:  time.Now().UTC(),
 	}
 
 	if err := s.db.SaveNode(node); err != nil {
 		http.Error(w, fmt.Sprintf("Failed to save tree node: %v", err), http.StatusInternalServerError)
 		return
+	}
+
+	if targetDir != "" {
+		nhp := NodeHostPath{
+			NodePath:   node.Path,
+			Host:       s.HostName(),
+			ProjectDir: targetDir,
+			GitRemote:  gitURL,
+			UpdatedAt:  time.Now().UTC(),
+		}
+		_ = s.db.SaveNodeHostPath(&nhp)
+		s.pushSyncPayload(&SyncStatePayload{
+			Nodes:         []TreeNode{*node},
+			NodeHostPaths: []NodeHostPath{nhp},
+		})
+	} else {
+		s.pushSyncPayload(&SyncStatePayload{
+			Nodes: []TreeNode{*node},
+		})
 	}
 
 	// Auto-bind any existing sessions whose Cwd matches targetDir
@@ -534,7 +608,7 @@ func (s *Server) resolveSessionNodePath(cwd string) string {
 		return ""
 	}
 
-	// 1. Longest exact or sub-directory match against registered node.ProjectDir
+	// 1. Longest exact or sub-directory match against registered node.ProjectDir or matching NodeHostPath for current host
 	var bestMatch string
 	var bestLen int
 	for _, n := range nodes {
@@ -542,6 +616,19 @@ func (s *Server) resolveSessionNodePath(cwd string) string {
 			if len(n.ProjectDir) > bestLen {
 				bestMatch = n.Path
 				bestLen = len(n.ProjectDir)
+			}
+		}
+	}
+
+	if hostPaths, err := s.db.ListNodeHostPaths(""); err == nil {
+		for _, nhp := range hostPaths {
+			if s.isLocalHost(nhp.Host) || nhp.Host == s.HostName() || nhp.Host == "local" || nhp.Host == "" {
+				if nhp.ProjectDir != "" && sameOrSubDir(cwd, nhp.ProjectDir) {
+					if len(nhp.ProjectDir) > bestLen {
+						bestMatch = nhp.NodePath
+						bestLen = len(nhp.ProjectDir)
+					}
+				}
 			}
 		}
 	}
