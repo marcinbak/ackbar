@@ -203,6 +203,22 @@ function sanitizeMarkdownForSpeech(md) {
   return text;
 }
 
+// Resolve the currently connected DOM element for an assistant message bubble
+function resolveLiveMessageEl(tabObj, msgEl, msgIdx) {
+  if (msgEl && msgEl.isConnected) return msgEl;
+  if (!tabObj || !tabObj.chatMessagesEl) return msgEl;
+  const targetIdx = typeof msgIdx === 'number' && !isNaN(msgIdx) ? msgIdx : (msgEl && msgEl.dataset && msgEl.dataset.msgIndex ? parseInt(msgEl.dataset.msgIndex, 10) : NaN);
+  if (!isNaN(targetIdx)) {
+    const liveEl = tabObj.chatMessagesEl.querySelector(`.chat-msg.assistant-msg[data-msg-index="${targetIdx}"]`);
+    if (liveEl) return liveEl;
+  }
+  const assistantMsgs = tabObj.chatMessagesEl.querySelectorAll('.chat-msg.assistant-msg');
+  if (assistantMsgs.length > 0) {
+    return assistantMsgs[assistantMsgs.length - 1];
+  }
+  return msgEl;
+}
+
 function stopActiveSpeech() {
   if (typeof window !== 'undefined' && window.speechSynthesis) {
     try {
@@ -210,11 +226,12 @@ function stopActiveSpeech() {
     } catch (_) {}
   }
   if (activeSpeech) {
-    if (activeSpeech.msgEl) {
-      activeSpeech.msgEl.classList.remove('speaking');
-      const stopBtn = activeSpeech.msgEl.querySelector('.btn-stop-chat-msg');
-      const readBtn = activeSpeech.msgEl.querySelector('.btn-read-chat-msg');
-      const replayBtn = activeSpeech.msgEl.querySelector('.btn-replay-chat-msg');
+    const liveEl = resolveLiveMessageEl(activeSpeech.tabObj, activeSpeech.msgEl, activeSpeech.msgIdx);
+    if (liveEl) {
+      liveEl.classList.remove('speaking');
+      const stopBtn = liveEl.querySelector('.btn-stop-chat-msg');
+      const readBtn = liveEl.querySelector('.btn-read-chat-msg');
+      const replayBtn = liveEl.querySelector('.btn-replay-chat-msg');
       if (stopBtn) stopBtn.style.display = 'none';
       if (readBtn) readBtn.style.display = 'inline-flex';
       if (replayBtn) replayBtn.style.display = 'inline-flex';
@@ -230,26 +247,30 @@ function speakText(text, msgEl, tabObj, onComplete) {
     return;
   }
 
+  const msgIdx = msgEl && msgEl.dataset && msgEl.dataset.msgIndex ? parseInt(msgEl.dataset.msgIndex, 10) : NaN;
+  const liveEl = resolveLiveMessageEl(tabObj, msgEl, msgIdx);
+
   const utterance = new SpeechSynthesisUtterance(text);
   utterance.rate = 1.05;
   utterance.pitch = 1.0;
 
-  activeSpeech = { tabObj, msgEl, utterance };
+  activeSpeech = { tabObj, msgEl: liveEl, msgIdx, utterance };
 
-  if (msgEl) {
-    msgEl.classList.add('speaking');
-    const readBtn = msgEl.querySelector('.btn-read-chat-msg');
-    const stopBtn = msgEl.querySelector('.btn-stop-chat-msg');
+  if (liveEl) {
+    liveEl.classList.add('speaking');
+    const readBtn = liveEl.querySelector('.btn-read-chat-msg');
+    const stopBtn = liveEl.querySelector('.btn-stop-chat-msg');
     if (readBtn) readBtn.style.display = 'none';
     if (stopBtn) stopBtn.style.display = 'inline-flex';
   }
 
   utterance.onend = () => {
-    if (msgEl) {
-      msgEl.classList.remove('speaking');
-      const readBtn = msgEl.querySelector('.btn-read-chat-msg');
-      const stopBtn = msgEl.querySelector('.btn-stop-chat-msg');
-      const replayBtn = msgEl.querySelector('.btn-replay-chat-msg');
+    const currentLiveEl = resolveLiveMessageEl(tabObj, liveEl, msgIdx);
+    if (currentLiveEl) {
+      currentLiveEl.classList.remove('speaking');
+      const readBtn = currentLiveEl.querySelector('.btn-read-chat-msg');
+      const stopBtn = currentLiveEl.querySelector('.btn-stop-chat-msg');
+      const replayBtn = currentLiveEl.querySelector('.btn-replay-chat-msg');
       if (stopBtn) stopBtn.style.display = 'none';
       if (readBtn) readBtn.style.display = 'inline-flex';
       if (replayBtn) replayBtn.style.display = 'inline-flex';
@@ -259,11 +280,12 @@ function speakText(text, msgEl, tabObj, onComplete) {
   };
 
   utterance.onerror = () => {
-    if (msgEl) {
-      msgEl.classList.remove('speaking');
-      const readBtn = msgEl.querySelector('.btn-read-chat-msg');
-      const stopBtn = msgEl.querySelector('.btn-stop-chat-msg');
-      const replayBtn = msgEl.querySelector('.btn-replay-chat-msg');
+    const currentLiveEl = resolveLiveMessageEl(tabObj, liveEl, msgIdx);
+    if (currentLiveEl) {
+      currentLiveEl.classList.remove('speaking');
+      const readBtn = currentLiveEl.querySelector('.btn-read-chat-msg');
+      const stopBtn = currentLiveEl.querySelector('.btn-stop-chat-msg');
+      const replayBtn = currentLiveEl.querySelector('.btn-replay-chat-msg');
       if (stopBtn) stopBtn.style.display = 'none';
       if (readBtn) readBtn.style.display = 'inline-flex';
       if (replayBtn) replayBtn.style.display = 'inline-flex';
@@ -280,16 +302,17 @@ function speakText(text, msgEl, tabObj, onComplete) {
 
 async function handleReadChatMessage(tabObj, msgEl, forceFull = false) {
   if (!tabObj || !msgEl) return;
-  const rawContent = msgEl.dataset.rawContent || '';
+  const msgIdx = msgEl.dataset && msgEl.dataset.msgIndex ? parseInt(msgEl.dataset.msgIndex, 10) : 0;
+  let liveEl = resolveLiveMessageEl(tabObj, msgEl, msgIdx);
+  const rawContent = (liveEl && liveEl.dataset.rawContent) || msgEl.dataset.rawContent || '';
   if (!rawContent) return;
 
   tabObj.speechCache = tabObj.speechCache || new Map();
-  const msgIdx = parseInt(msgEl.dataset.msgIndex, 10) || 0;
-  tabObj.lastSpokenMsgEl = msgEl;
+  tabObj.lastSpokenMsgEl = liveEl;
 
   if (forceFull) {
     const sanitized = sanitizeMarkdownForSpeech(rawContent);
-    speakText(sanitized, msgEl, tabObj);
+    speakText(sanitized, liveEl, tabObj);
     return;
   }
 
@@ -299,11 +322,11 @@ async function handleReadChatMessage(tabObj, msgEl, forceFull = false) {
     if (cached.suggested_chips && cached.suggested_chips.length > 0) {
       renderSuggestedChips(tabObj, cached.suggested_chips);
     }
-    if (cached.tier === 'structural' || cached.tier === 'haiku' || cached.tier === 'llm') {
-      const fullBtn = msgEl.querySelector('.btn-full-read-chat-msg');
+    if (cached.tier === 'structural' || cached.tier === 'haiku' || cached.tier === 'llm' || cached.tier === 'api') {
+      const fullBtn = liveEl.querySelector('.btn-full-read-chat-msg');
       if (fullBtn) fullBtn.style.display = 'inline-flex';
     }
-    speakText(cached.spoken_text, msgEl, tabObj);
+    speakText(cached.spoken_text, liveEl, tabObj);
     return;
   }
 
@@ -315,7 +338,7 @@ async function handleReadChatMessage(tabObj, msgEl, forceFull = false) {
       suggested_chips: [],
       tier: 'simple'
     });
-    speakText(sanitized, msgEl, tabObj);
+    speakText(sanitized, liveEl, tabObj);
     return;
   }
 
@@ -323,7 +346,8 @@ async function handleReadChatMessage(tabObj, msgEl, forceFull = false) {
   const sessionId = tabObj.session ? tabObj.session.id : '';
   const baseUrl = getSessionBaseUrl(sessionId, tabObj.session);
 
-  const readBtn = msgEl.querySelector('.btn-read-chat-msg');
+  const readBtn = liveEl.querySelector('.btn-read-chat-msg');
+  const origReadHtml = readBtn ? readBtn.innerHTML : '';
   if (readBtn) readBtn.textContent = '⏳ ...';
 
   try {
@@ -340,7 +364,9 @@ async function handleReadChatMessage(tabObj, msgEl, forceFull = false) {
       })
     });
 
-    if (readBtn) readBtn.textContent = '🔊 Read';
+    liveEl = resolveLiveMessageEl(tabObj, liveEl, msgIdx);
+    const liveReadBtn = liveEl ? liveEl.querySelector('.btn-read-chat-msg') : readBtn;
+    if (liveReadBtn && origReadHtml) liveReadBtn.innerHTML = origReadHtml;
 
     if (res.ok) {
       const summary = await res.json();
@@ -350,31 +376,36 @@ async function handleReadChatMessage(tabObj, msgEl, forceFull = false) {
         renderSuggestedChips(tabObj, summary.suggested_chips);
       }
 
-      const fullBtn = msgEl.querySelector('.btn-full-read-chat-msg');
-      if (fullBtn) fullBtn.style.display = 'inline-flex';
+      if (liveEl) {
+        const fullBtn = liveEl.querySelector('.btn-full-read-chat-msg');
+        if (fullBtn) fullBtn.style.display = 'inline-flex';
+      }
 
-      speakText(summary.spoken_text, msgEl, tabObj);
+      speakText(summary.spoken_text, liveEl, tabObj);
       return;
     }
   } catch (err) {
     console.warn('Speech summarizer request failed, falling back to local sanitizer:', err);
   }
 
-  if (readBtn) readBtn.textContent = '🔊 Read';
+  liveEl = resolveLiveMessageEl(tabObj, liveEl, msgIdx);
+  const liveReadBtn = liveEl ? liveEl.querySelector('.btn-read-chat-msg') : readBtn;
+  if (liveReadBtn && origReadHtml) liveReadBtn.innerHTML = origReadHtml;
   const fallbackSanitized = sanitizeMarkdownForSpeech(rawContent);
-  speakText(fallbackSanitized, msgEl, tabObj);
+  speakText(fallbackSanitized, liveEl, tabObj);
 }
 
 function handleReplayChatMessage(tabObj, msgEl) {
   if (!tabObj || !msgEl) return;
   const msgIdx = parseInt(msgEl.dataset.msgIndex, 10) || 0;
+  const liveEl = resolveLiveMessageEl(tabObj, msgEl, msgIdx);
   tabObj.speechCache = tabObj.speechCache || new Map();
 
   if (tabObj.speechCache.has(msgIdx)) {
     const cached = tabObj.speechCache.get(msgIdx);
-    speakText(cached.spoken_text, msgEl, tabObj);
+    speakText(cached.spoken_text, liveEl, tabObj);
   } else {
-    handleReadChatMessage(tabObj, msgEl, false);
+    handleReadChatMessage(tabObj, liveEl, false);
   }
 }
 
@@ -403,14 +434,14 @@ function renderSuggestedChips(tabObj, chips) {
       let promptText = chip;
       const isAutoReadOn = isChatAutoReadEnabled();
 
-      if (chip.startsWith('Hear ')) {
-        const topic = chip.substring(5).trim();
-        promptText = `Tell me about ${topic}`;
+      if (chip === 'Hear Open Question') {
+        promptText = 'What is the open question and what are the trade-offs?';
         if (isAutoReadOn) {
           promptText += ' [Reply concisely in 2–3 spoken sentences]';
         }
-      } else if (chip === 'Hear Open Question') {
-        promptText = 'What is the open question and what are the trade-offs?';
+      } else if (chip.startsWith('Hear ')) {
+        const topic = chip.substring(5).trim();
+        promptText = `Tell me about ${topic}`;
         if (isAutoReadOn) {
           promptText += ' [Reply concisely in 2–3 spoken sentences]';
         }
@@ -476,7 +507,7 @@ function toggleVoiceMic(tabObj) {
     const spoken = event.results[0][0].transcript.trim();
     if (!spoken) return;
 
-    const lower = spoken.toLowerCase();
+    const lower = spoken.toLowerCase().replace(/[.,!?;:]+$/, '').trim();
     if (lower === 'repeat that' || lower === 'read that again' || lower === 'repeat' || lower === 'replay') {
       if (tabObj.lastSpokenMsgEl) {
         handleReplayChatMessage(tabObj, tabObj.lastSpokenMsgEl);
@@ -3413,6 +3444,7 @@ export {
   cancelChatTurn,
   sanitizeMarkdownForSpeech,
   isSimpleSpeechCandidate,
+  resolveLiveMessageEl,
   stopActiveSpeech,
   speakText,
   handleReadChatMessage,

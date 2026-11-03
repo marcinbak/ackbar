@@ -1133,6 +1133,9 @@ func executeGetStandup(ctx context.Context, client *DaemonClient, args map[strin
 
 func executeBindSupervisorSession(ctx context.Context, client *DaemonClient, args map[string]any) (*CallToolResult, error) {
 	sessionID := getString(args, "session_id")
+	if sessionID == "" && client != nil && client.SessionID != "" {
+		sessionID = client.SessionID
+	}
 	if sessionID == "" {
 		sessionID = os.Getenv("ACKBAR_SESSION_ID")
 	}
@@ -1451,10 +1454,14 @@ func executeSendSessionInput(ctx context.Context, client *DaemonClient, args map
 
 	// 1. If explicit response action (allow/deny/answer/select_option), send to /v1/sessions/respond
 	if action == "allow" || action == "deny" || action == "answer" || action == "select_option" {
+		targetAction := action
+		if targetAction == "select_option" {
+			targetAction = "answer"
+		}
 		payload := map[string]any{
 			"id":         sessionID,
 			"session_id": sessionID,
-			"action":     action,
+			"action":     targetAction,
 			"value":      input,
 			"input":      input,
 		}
@@ -1464,7 +1471,7 @@ func executeSendSessionInput(ctx context.Context, client *DaemonClient, args map
 		}
 		data, _ := json.MarshalIndent(res, "", "  ")
 		return &CallToolResult{
-			Content: []ToolContent{{Type: "text", Text: fmt.Sprintf("Responded with action '%s':\n%s", action, string(data))}},
+			Content: []ToolContent{{Type: "text", Text: fmt.Sprintf("Responded with action '%s':\n%s", targetAction, string(data))}},
 		}, nil
 	}
 

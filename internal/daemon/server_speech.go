@@ -10,13 +10,14 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
 
 type SummarizeSpeechRequest struct {
 	SessionID    string `json:"session_id"`
-	MessageIndex int    `json:"message_index"`
+	MessageIndex *int   `json:"message_index,omitempty"`
 	Content      string `json:"content"`
 	ForceRefresh bool   `json:"force_refresh,omitempty"`
 }
@@ -37,9 +38,12 @@ func BuildStructuralSpeechSummary(content string) (string, []string) {
 		return "The response is ready. Let me know if you would like me to read it.", []string{"Read Full"}
 	}
 
-	// 1. Extract markdown ## / ### section headings
+	// 1. Strip code blocks first so comments like "# heading" in code aren't parsed as headings
+	codeFreeContent := fencedCodeRegex.ReplaceAllString(content, " ")
+
+	// 2. Extract markdown ## / ### section headings from code-free content
 	var headings []string
-	matches := headingRegex.FindAllStringSubmatch(content, -1)
+	matches := headingRegex.FindAllStringSubmatch(codeFreeContent, -1)
 	for _, m := range matches {
 		if len(m) > 1 {
 			cleanH := mdLinkRegex.ReplaceAllString(m[1], "$1")
@@ -53,9 +57,8 @@ func BuildStructuralSpeechSummary(content string) (string, []string) {
 		}
 	}
 
-	// 2. Strip code blocks, box drawing diagrams, HTML tags, and alerts
-	cleanText := fencedCodeRegex.ReplaceAllString(content, " ")
-	cleanText = htmlTagRegex.ReplaceAllString(cleanText, " ")
+	// 3. Strip box drawing diagrams, HTML tags, and alerts
+	cleanText := htmlTagRegex.ReplaceAllString(codeFreeContent, " ")
 	cleanText = alertTagRegex.ReplaceAllString(cleanText, " ")
 
 	lines := strings.Split(cleanText, "\n")
@@ -201,6 +204,7 @@ func (s *Server) handleSummarizeSpeech(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, 2<<20)
 	var req SummarizeSpeechRequest
 	bodyBytes, err := io.ReadAll(r.Body)
 	if err == nil && len(bodyBytes) > 0 {
@@ -216,14 +220,25 @@ func (s *Server) handleSummarizeSpeech(w http.ResponseWriter, r *http.Request) {
 	if req.Content == "" {
 		req.Content = r.URL.Query().Get("content")
 	}
+	if req.MessageIndex == nil {
+		if qIdx := r.URL.Query().Get("message_index"); qIdx != "" {
+			if idxVal, err := strconv.Atoi(qIdx); err == nil {
+				req.MessageIndex = &idxVal
+			}
+		}
+	}
 
 	// If content is empty but session ID is provided, look up from transcript
 	if req.Content == "" && req.SessionID != "" {
 		if transcript, err := s.ExtractTranscript("", req.SessionID, ""); err == nil && transcript != nil {
-			if req.MessageIndex >= 0 && req.MessageIndex < len(transcript.Messages) {
-				req.Content = transcript.Messages[req.MessageIndex].Content
+			if req.MessageIndex != nil && *req.MessageIndex >= 0 && *req.MessageIndex < len(transcript.Messages) {
+				req.Content = transcript.Messages[*req.MessageIndex].Content
 			} else if len(transcript.Messages) > 0 {
-				req.Content = transcript.Messages[len(transcript.Messages)-1].Content
+				lastIdx := len(transcript.Messages) - 1
+				req.Content = transcript.Messages[lastIdx].Content
+				if req.MessageIndex == nil {
+					req.MessageIndex = &lastIdx
+				}
 			}
 		}
 	}
@@ -233,10 +248,14 @@ func (s *Server) handleSummarizeSpeech(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cacheKey := fmt.Sprintf("%s:%d", req.SessionID, req.MessageIndex)
+	msgIdx := -1
+	if req.MessageIndex != nil {
+		msgIdx = *req.MessageIndex
+	}
+	cacheKey := fmt.Sprintf("%s:%d", req.SessionID, msgIdx)
 
 	// Step 1: Check In-Memory & SQLite Cache
-	if !req.ForceRefresh && req.SessionID != "" && req.MessageIndex >= 0 {
+	if !req.ForceRefresh && req.SessionID != "" && msgIdx >= 0 {
 		s.speechCacheMu.RLock()
 		cached, ok := s.speechCache[cacheKey]
 		s.speechCacheMu.RUnlock()
@@ -250,7 +269,7 @@ func (s *Server) handleSummarizeSpeech(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if s.db != nil {
-			if dbCached, err := s.db.GetSpeechSummary(req.SessionID, req.MessageIndex); err == nil && dbCached != nil {
+			if dbCached, err := s.db.GetSpeechSummary(req.SessionID, msgIdx); err == nil && dbCached != nil {
 				s.speechCacheMu.Lock()
 				s.speechCache[cacheKey] = dbCached
 				s.speechCacheMu.Unlock()
@@ -327,6 +346,25 @@ func (s *Server) handleSummarizeSpeech(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// 2b-API. Secondary: Optional Direct Cloud API (Anthropic Messages API)
+	if spokenText == "" && s.speechLLMRunner == nil {
+		apiKey := os.Getenv("ACKBAR_SPEECH_API_KEY")
+		if apiKey == "" && s.db != nil {
+			if k, err := s.db.GetSetting("speech_api_key"); err == nil && k != "" {
+				apiKey = k
+			} else if k, err := s.db.GetSetting("anthropic_api_key"); err == nil && k != "" {
+				apiKey = k
+			}
+		}
+		if apiKey != "" {
+			if resText, resChips, err := tryCloudAPISpeechSummary(r.Context(), apiKey, req.Content); err == nil && resText != "" {
+				spokenText = resText
+				suggestedChips = resChips
+				tier = "api"
+			}
+		}
+	}
+
 	// 2c. Pure-Go Deterministic Structural Fallback
 	if spokenText == "" {
 		spokenText, suggestedChips = BuildStructuralSpeechSummary(req.Content)
@@ -335,7 +373,7 @@ func (s *Server) handleSummarizeSpeech(w http.ResponseWriter, r *http.Request) {
 
 	summary := &SpeechSummary{
 		SessionID:      req.SessionID,
-		MessageIndex:   req.MessageIndex,
+		MessageIndex:   msgIdx,
 		SpokenText:     spokenText,
 		SuggestedChips: suggestedChips,
 		Tier:           tier,
@@ -344,7 +382,7 @@ func (s *Server) handleSummarizeSpeech(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Step 3: Cache Store & Response
-	if req.SessionID != "" && req.MessageIndex >= 0 {
+	if req.SessionID != "" && msgIdx >= 0 {
 		s.speechCacheMu.Lock()
 		s.speechCache[cacheKey] = summary
 		s.speechCacheMu.Unlock()
@@ -356,4 +394,78 @@ func (s *Server) handleSummarizeSpeech(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(summary)
+}
+
+func tryCloudAPISpeechSummary(ctx context.Context, apiKey, content string) (string, []string, error) {
+	if apiKey == "" || strings.TrimSpace(content) == "" {
+		return "", nil, fmt.Errorf("empty apiKey or content")
+	}
+
+	apiCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	systemPrompt := "You are the Ackbar Voice Companion summarizing an agent turn for audio playback. Follow the Outline-First Protocol: provide a concise 1-2 sentence spoken summary, outline major sections if present, highlight any open questions, and output 2-4 interactive suggested reply chips (e.g. [\"Hear Section 1\", \"Hear Open Question\", \"Approve Plan\"]). Respond strictly in JSON format with no markdown wrappers: {\"spoken_text\": \"...\", \"suggested_chips\": [\"...\"]}"
+
+	reqBody := map[string]any{
+		"model":       "claude-3-5-haiku-latest",
+		"max_tokens":  256,
+		"temperature": 0.2,
+		"system":      systemPrompt,
+		"messages": []map[string]any{
+			{"role": "user", "content": content},
+		},
+	}
+	bodyBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return "", nil, err
+	}
+
+	httpReq, err := http.NewRequestWithContext(apiCtx, "POST", "https://api.anthropic.com/v1/messages", bytes.NewReader(bodyBytes))
+	if err != nil {
+		return "", nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("x-api-key", apiKey)
+	httpReq.Header.Set("anthropic-version", "2023-06-01")
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return "", nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", nil, fmt.Errorf("anthropic api returned status %d", resp.StatusCode)
+	}
+
+	var anthropicResp struct {
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&anthropicResp); err != nil {
+		return "", nil, err
+	}
+
+	if len(anthropicResp.Content) == 0 || anthropicResp.Content[0].Text == "" {
+		return "", nil, fmt.Errorf("empty content in anthropic api response")
+	}
+
+	rawText := strings.TrimSpace(anthropicResp.Content[0].Text)
+	rawText = strings.TrimPrefix(rawText, "```json")
+	rawText = strings.TrimPrefix(rawText, "```")
+	rawText = strings.TrimSuffix(rawText, "```")
+	rawText = strings.TrimSpace(rawText)
+
+	var parsed struct {
+		SpokenText     string   `json:"spoken_text"`
+		SuggestedChips []string `json:"suggested_chips"`
+	}
+	if err := json.Unmarshal([]byte(rawText), &parsed); err != nil || parsed.SpokenText == "" {
+		return "", nil, fmt.Errorf("failed to parse json from anthropic response: %v", err)
+	}
+
+	return parsed.SpokenText, parsed.SuggestedChips, nil
 }

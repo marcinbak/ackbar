@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 
@@ -41,6 +42,7 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, 2<<20)
 	bodyBytes, err := io.ReadAll(r.Body)
 	if err != nil {
 		sendMCPError(w, nil, mcp.CodeParseError, "Failed to read request body")
@@ -101,15 +103,10 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 			sessionID = r.URL.Query().Get("id")
 		}
 
-		scheme := "http"
-		if r.TLS != nil {
-			scheme = "https"
+		localBaseURL := "http://127.0.0.1:7777"
+		if addr, ok := r.Context().Value(http.LocalAddrContextKey).(net.Addr); ok && addr != nil {
+			localBaseURL = "http://" + addr.String()
 		}
-		host := r.Host
-		if host == "" {
-			host = "127.0.0.1:7777"
-		}
-		localBaseURL := fmt.Sprintf("%s://%s", scheme, host)
 
 		client := mcp.NewDaemonClient(localBaseURL, sessionID)
 		if auth := r.Header.Get("Authorization"); auth != "" {

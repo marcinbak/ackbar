@@ -579,6 +579,7 @@ func TestPhase4_VoiceCompanion_JS(t *testing.T) {
 	checkFileContains("js/chat.js", []string{
 		"sanitizeMarkdownForSpeech",
 		"isSimpleSpeechCandidate",
+		"resolveLiveMessageEl",
 		"stopActiveSpeech",
 		"speakText",
 		"handleReadChatMessage",

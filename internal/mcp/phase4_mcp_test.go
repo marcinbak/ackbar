@@ -162,6 +162,14 @@ func TestPhase4_SupervisorSessionTools(t *testing.T) {
 			return
 		}
 
+		// POST /v1/sessions/bind-supervisor
+		if r.URL.Path == "/v1/sessions/bind-supervisor" && r.Method == http.MethodPost {
+			var payload map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&payload)
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "bound", "bound_id": payload["session_id"]})
+			return
+		}
+
 		http.Error(w, "unhandled: "+r.URL.Path, http.StatusNotFound)
 	}))
 	defer ts.Close()
@@ -309,6 +317,37 @@ func TestPhase4_SupervisorSessionTools(t *testing.T) {
 		}
 		if lastHandoverPayload == nil || lastHandoverPayload["target_agent"] != "codex" {
 			t.Errorf("expected handover payload to be sent, got: %+v", lastHandoverPayload)
+		}
+	})
+
+	t.Run("send_session_input action select_option maps to answer", func(t *testing.T) {
+		lastRespondPayload = nil
+		res, err := ExecuteTool(ctx, client, "send_session_input", map[string]any{
+			"session_id": "claude-code:local:102",
+			"action":     "select_option",
+			"input":      "option-2",
+		})
+		if err != nil || res.IsError {
+			t.Fatalf("unexpected error: %v, res: %+v", err, res)
+		}
+		if lastRespondPayload == nil || lastRespondPayload["action"] != "answer" {
+			t.Errorf("expected select_option action to map to 'answer', got: %+v", lastRespondPayload)
+		}
+		if lastRespondPayload["value"] != "option-2" {
+			t.Errorf("expected value 'option-2', got: %+v", lastRespondPayload)
+		}
+	})
+
+	t.Run("bind_supervisor_session client.SessionID fallback", func(t *testing.T) {
+		clientWithSess := NewDaemonClient(ts.URL, "claude-code:local:supervisor-42")
+		res, err := ExecuteTool(ctx, clientWithSess, "bind_supervisor_session", map[string]any{
+			"node_path": "Personal/Ackbar",
+		})
+		if err != nil || res.IsError {
+			t.Fatalf("unexpected error: %v, res: %+v", err, res)
+		}
+		if !strings.Contains(res.Content[0].Text, "claude-code:local:supervisor-42") {
+			t.Errorf("expected bound session ID in output, got: %s", res.Content[0].Text)
 		}
 	})
 }

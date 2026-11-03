@@ -60,7 +60,7 @@ func TestBuildStructuralSpeechSummary(t *testing.T) {
 	samplePlan := `I have prepared the implementation plan for the Voice Companion layer.
 
 Here is the high-level architecture:
-` + "```go\nfunc Run() error { return nil }\n```" + `
+` + "```go\n// ## Inside Code Heading (Should be ignored)\nfunc Run() error { return nil }\n```" + `
 
 ┌────────────────────────┐
 │   Supervisor Control   │
@@ -79,6 +79,10 @@ Should we enable auto-read by default on mobile devices?
 `
 
 	spoken, chips := BuildStructuralSpeechSummary(samplePlan)
+
+	if strings.Contains(spoken, "Inside Code Heading") {
+		t.Errorf("expected headings inside fenced code blocks to be ignored, got:\n%s", spoken)
+	}
 
 	if !strings.Contains(spoken, "implementation plan") {
 		t.Errorf("expected opening prose in spoken text, got:\n%s", spoken)
@@ -142,9 +146,10 @@ First we initialize the environment.
 Then we write the code.
 `
 
+	idx1 := 1
 	reqPayload := SummarizeSpeechRequest{
 		SessionID:    "claude-code:macmini:200",
-		MessageIndex: 1,
+		MessageIndex: &idx1,
 		Content:      content,
 	}
 	reqBytes, _ := json.Marshal(reqPayload)
@@ -206,7 +211,8 @@ Then we write the code.
 		return "Custom LLM speech synthesis.", []string{"Custom Chip"}, nil
 	})
 
-	reqPayload.MessageIndex = 2
+	idx2 := 2
+	reqPayload.MessageIndex = &idx2
 	reqPayload.ForceRefresh = false
 	reqBytesLLM, _ := json.Marshal(reqPayload)
 	resp4, err := http.Post(ts.URL+"/v1/sessions/summarize-speech", "application/json", bytes.NewReader(reqBytesLLM))
@@ -222,5 +228,16 @@ Then we write the code.
 	}
 	if fourthRes.SpokenText != "Custom LLM speech synthesis." {
 		t.Errorf("unexpected spoken text: %q", fourthRes.SpokenText)
+	}
+}
+
+func TestTryCloudAPISpeechSummary_Validation(t *testing.T) {
+	_, _, err := tryCloudAPISpeechSummary(context.Background(), "", "some content")
+	if err == nil {
+		t.Errorf("expected error for empty apiKey")
+	}
+	_, _, err = tryCloudAPISpeechSummary(context.Background(), "key", "")
+	if err == nil {
+		t.Errorf("expected error for empty content")
 	}
 }

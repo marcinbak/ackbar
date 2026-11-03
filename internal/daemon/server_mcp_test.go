@@ -168,4 +168,51 @@ func TestServerMCP_Endpoint(t *testing.T) {
 			t.Errorf("expected text content in tool result")
 		}
 	})
+
+	// 6. Test POST /v1/mcp tools/call with spoofed Host header (no SSRF / token leak)
+	t.Run("POST /v1/mcp tools/call with spoofed Host header does not SSRF", func(t *testing.T) {
+		params := mcp.CallToolParams{
+			Name: "list_sessions",
+			Arguments: map[string]any{
+				"federated": false,
+			},
+		}
+		paramBytes, _ := json.Marshal(params)
+		callReq := mcp.JSONRPCRequest{
+			JSONRPC: "2.0",
+			ID:      4,
+			Method:  "tools/call",
+			Params:  paramBytes,
+		}
+		data, _ := json.Marshal(callReq)
+		req, err := http.NewRequest("POST", ts.URL+"/v1/mcp", bytes.NewReader(data))
+		if err != nil {
+			t.Fatalf("failed to create request: %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		// Malicious attacker attempts to spoof Host header to trigger loopback SSRF or leak token
+		req.Host = "evil.example.com"
+
+		resp, err := ts.Client().Do(req)
+		if err != nil {
+			t.Fatalf("tools/call with evil host failed: %v", err)
+		}
+		defer resp.Body.Close()
+
+		var rpcResp mcp.JSONRPCResponse
+		_ = json.NewDecoder(resp.Body).Decode(&rpcResp)
+		if rpcResp.Error != nil {
+			t.Fatalf("unexpected RPC error: %+v", rpcResp.Error)
+		}
+
+		resBytes, _ := json.Marshal(rpcResp.Result)
+		var callRes mcp.CallToolResult
+		_ = json.Unmarshal(resBytes, &callRes)
+		if callRes.IsError {
+			t.Fatalf("unexpected call tool error with spoofed Host: %+v", callRes)
+		}
+		if len(callRes.Content) == 0 {
+			t.Errorf("expected text content in tool result")
+		}
+	})
 }
