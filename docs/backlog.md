@@ -17,13 +17,13 @@
 
 ---
 
-### 2. 🎙️ Voice-Driven Mobile Companion & Audio Briefings
+### 2. 🎙️ Voice-Driven Supervisor Control Layer & Audio Companion
 * **Status:** Architecture Designed
 * **Detailed Spec:** [`docs/voice-companion.md`](voice-companion.md)
 * **Scope:**
-  * **On-Demand Conversational Briefing:** Spoken status summary of cross-machine work in under 45 seconds.
-  * **Spoken Plan Reviews:** Voice synthesis of `implementation_plan.md` architectural summaries and trade-offs.
-  * **Voice Approval & Keystroke Injection:** Transcribe user voice approvals ("Approve with verbose logging", "Pick option 1") and inject directly into the agent's PTY.
+  * **Decoupled Input/Output Modalities:** Hands-free mode (`🎤 Mic ON` + `🔊 Auto-Read ON` for driving/cooking), silent commuter mode (`🎤 Mic OFF` + `🔊 Auto-Read ON` + 1-tap quick chips for transit), and desk mode (`Auto-Read OFF` with ad-hoc per-message `[🔊 Read]` / `[↺ Read Again]`).
+  * **Supervisor MCP Session Tools (`ackbar mcp`):** Expand MCP server with `list_sessions`, `get_session_output`, `send_session_input`, `spawn_session`, and `control_session`, plus multi-host transcript/session proxy federation across peer `ackbard` daemons.
+  * **Progressive Plan Drill-Down & 2-Tier Lazy Speech Pipeline:** Outline-first spoken summaries for large implementation plans, 0ms client-side Markdown speech sanitizer (stripping code blocks/diagrams/URLs), and on-demand `POST /v1/sessions/summarize-speech` via stateless headless Haiku (`claude -p --model haiku`) with `(session_id, message_index)` caching.
 
 ---
 
