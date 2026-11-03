@@ -240,8 +240,10 @@ func (s *Server) ingestSingleWorkflowRun(jsonPath string) error {
 		if err := s.db.CreateTask(task); err != nil {
 			return fmt.Errorf("failed to create task from workflow run: %w", err)
 		}
+		s.maybeNotifyTaskReview("", task)
 		taskUpdated = true
 	} else {
+		oldStatus := task.Status
 		// Existing task: synchronize status and PR if run is further along
 		if status == "DONE" {
 			if task.CompletedAt == nil {
@@ -303,7 +305,9 @@ func (s *Server) ingestSingleWorkflowRun(jsonPath string) error {
 		}
 
 		if taskUpdated {
-			_ = s.db.UpdateTask(task)
+			if err := s.db.UpdateTask(task); err == nil {
+				s.maybeNotifyTaskReview(oldStatus, task)
+			}
 		}
 	}
 

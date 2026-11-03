@@ -30,6 +30,8 @@ func main() {
 	tokenFlag := flag.String("token", "", "Secret token for API/WebSocket authentication (or ACKBAR_TOKEN env var)")
 	relayFlag := flag.String("relay", "", "Public Ackbar Relay URL e.g. wss://relay.ackbar.dev/v1/relay/tunnel (or ACKBAR_RELAY_URL env var)")
 	relaySecretFlag := flag.String("relay-secret", "", "Secret required by relay server (or ACKBAR_RELAY_SECRET env var)")
+	ntfyTopicFlag := flag.String("ntfy-topic", "", "ntfy.sh topic for push notifications (or ACKBAR_NTFY_TOPIC env var)")
+	ntfyServerFlag := flag.String("ntfy-server", "", "ntfy.sh server URL (or ACKBAR_NTFY_SERVER env var, default https://ntfy.sh)")
 	dbPathFlag := flag.String("db", "", "Path to SQLite database file (default ~/.config/ackbar/ackbard.db)")
 	logDirFlag := flag.String("log-dir", "", "Path to logs directory (default ~/.config/ackbar/logs)")
 	versionFlag := flag.Bool("version", false, "Print version and exit")
@@ -68,6 +70,16 @@ func main() {
 		relaySecret = os.Getenv("ACKBAR_RELAY_SECRET")
 	}
 
+	ntfyTopic := *ntfyTopicFlag
+	if ntfyTopic == "" {
+		ntfyTopic = os.Getenv("ACKBAR_NTFY_TOPIC")
+	}
+
+	ntfyServer := *ntfyServerFlag
+	if ntfyServer == "" {
+		ntfyServer = os.Getenv("ACKBAR_NTFY_SERVER")
+	}
+
 	// Initialize Self-Rotating Logger
 	logCloser, logErr := daemon.SetupDaemonLogger(*logDirFlag)
 	if logErr != nil {
@@ -104,6 +116,9 @@ func main() {
 	server := daemon.NewServer(db)
 	if hostName != "" || displayName != "" {
 		server.SetHostIdentity(hostName, displayName)
+	}
+	if ntfyServer != "" || ntfyTopic != "" {
+		server.SetNtfyConfig(ntfyServer, ntfyTopic)
 	}
 	if server.DisplayName() != "" {
 		log.Printf("Host identity: %s (%q)", server.HostName(), server.DisplayName())
