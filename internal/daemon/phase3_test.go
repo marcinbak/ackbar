@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -226,6 +227,13 @@ func TestPhase3_SequentialRepoUnlock(t *testing.T) {
 		t.Fatalf("CreateTask failed: %v", err)
 	}
 
+	_ = db.InsertTaskDeliverable(&TaskDeliverable{
+		TaskID:    "task_unlock_001",
+		Kind:      "learnings",
+		Title:     "API Schema Learnings",
+		ContentMD: "Use proto-based serialization for repo2 clients",
+	})
+
 	// Trigger sequential unlock for repo1
 	unlocked := server.unlockSequentialWorkstreams(task, "repo1")
 	if !unlocked {
@@ -243,6 +251,11 @@ func TestPhase3_SequentialRepoUnlock(t *testing.T) {
 	// repo2 must be unlocked to IN_PROGRESS
 	if task.Workstreams[1].Status != "IN_PROGRESS" {
 		t.Errorf("Expected repo2 status IN_PROGRESS, got %s", task.Workstreams[1].Status)
+	}
+
+	// Verify handoff notes appended from learnings deliverable
+	if !strings.Contains(task.Notes, "[Handoff to repo2]") || !strings.Contains(task.Notes, "API Schema Learnings") {
+		t.Errorf("Expected handoff note in task.Notes, got %q", task.Notes)
 	}
 }
 

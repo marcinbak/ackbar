@@ -579,6 +579,19 @@ function attachCardEventListeners() {
     });
   });
 
+async function sendSessionRespondSafe(sessionId, action, value) {
+  if (!sessionId) return;
+  try {
+    await fetch('/v1/sessions/respond', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: sessionId, action, value })
+    });
+  } catch (_) {
+    // Ignore network errors if session daemon is offline or detached
+  }
+}
+
   // 5. Approve plan button -> advances to N3 / active
   document.querySelectorAll('.btn-approve-plan').forEach(btn => {
     btn.addEventListener('click', async (e) => {
@@ -595,6 +608,9 @@ function attachCardEventListeners() {
             substatus: 'active',
             workflow_node: 'N3'
           });
+          if (task.workers && task.workers.length > 0 && task.workers[0].session_id) {
+            await sendSessionRespondSafe(task.workers[0].session_id, 'answer', 'Approved. Proceed to next dev-workflow node.');
+          }
           refreshWorkBoard();
         } catch (err) {
           alert(`Failed to approve plan: ${err.message}`);
@@ -620,6 +636,9 @@ function attachCardEventListeners() {
             status: 'IN_PROGRESS',
             substatus: 'active'
           });
+          if (task.workers && task.workers.length > 0 && task.workers[0].session_id) {
+            await sendSessionRespondSafe(task.workers[0].session_id, 'answer', 'Continue dev-workflow from current node.');
+          }
           refreshWorkBoard();
         } catch (err) {
           alert(`Failed to nudge task: ${err.message}`);
@@ -871,16 +890,6 @@ export function showEditTaskModal(task) {
       branch: document.getElementById('mEditBranch')?.value?.trim() || '',
       pr_url: document.getElementById('mEditPRURL')?.value?.trim() || ''
     };
-
-    try {
-      await updateTask(updated);
-      hideModal();
-      refreshWorkBoard();
-    } catch (err) {
-      alert(`Error updating task: ${err.message}`);
-    }
-  });
-}
 
     try {
       await updateTask(updated);

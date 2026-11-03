@@ -152,4 +152,37 @@ func TestPhase3_MCPTools(t *testing.T) {
 	if len(resDeliv.Content) == 0 || !strings.Contains(resDeliv.Content[0].Text, "successfully") {
 		t.Errorf("Unexpected deliverable tool output: %+v", resDeliv.Content)
 	}
+
+	// 7. Test ExecuteTool create_task with project_node_path and string repos array
+	resStringRepos, err := ExecuteTool(context.Background(), client, "create_task", map[string]any{
+		"title":             "Multi-repo Feature Workstream",
+		"project_node_path": "Modemobile/NGL/ngl-ios",
+		"repos":             []any{"Modemobile/NGL/ngl-ios", "Modemobile/NGL/ngl-android"},
+		"depends_on":        "Modemobile/NGL/ngl-ios",
+	})
+	if err != nil || resStringRepos.IsError {
+		t.Fatalf("create_task with string repos failed: %v, res: %+v", err, resStringRepos)
+	}
+
+	if receivedTasksPayload["group_name"] != "Modemobile" {
+		t.Errorf("Expected group_name 'Modemobile', got %v", receivedTasksPayload["group_name"])
+	}
+	if receivedTasksPayload["project_name"] != "NGL" {
+		t.Errorf("Expected project_name 'NGL', got %v", receivedTasksPayload["project_name"])
+	}
+	if receivedTasksPayload["subproject_name"] != "ngl-ios" {
+		t.Errorf("Expected subproject_name 'ngl-ios', got %v", receivedTasksPayload["subproject_name"])
+	}
+	wsList, ok := receivedTasksPayload["workstreams"].([]any)
+	if !ok || len(wsList) != 2 {
+		t.Fatalf("Expected 2 workstreams, got %+v", receivedTasksPayload["workstreams"])
+	}
+	ws1 := wsList[0].(map[string]any)
+	ws2 := wsList[1].(map[string]any)
+	if ws1["repo_node_path"] != "Modemobile/NGL/ngl-ios" || ws1["status"] != "IN_PROGRESS" || ws1["depends_on"] != "" {
+		t.Errorf("Unexpected ws1: %+v", ws1)
+	}
+	if ws2["repo_node_path"] != "Modemobile/NGL/ngl-android" || ws2["status"] != "QUEUED" || ws2["depends_on"] != "Modemobile/NGL/ngl-ios" {
+		t.Errorf("Unexpected ws2: %+v", ws2)
+	}
 }

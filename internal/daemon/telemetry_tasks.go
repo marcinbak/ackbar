@@ -393,6 +393,46 @@ func (s *Server) unlockSequentialWorkstreams(task *Task, completedRepoPath strin
 			task.Substatus = "active"
 			task.CompletedAt = nil
 		}
+
+		if len(task.Deliverables) == 0 && s.db != nil && task.ID != "" {
+			if delsMap, err := s.db.getDeliverablesForTasks([]string{task.ID}); err == nil {
+				task.Deliverables = delsMap[task.ID]
+			}
+		}
+
+		// Check for learnings (or plan/prd) deliverables to construct a handoff note for newly unlocked workstreams
+		for _, ws := range task.Workstreams {
+			if ws.Status == "IN_PROGRESS" && ws.DependsOn != "" {
+				handoffPrefix := fmt.Sprintf("[Handoff to %s]", ws.RepoNodePath)
+				if !strings.Contains(task.Notes, handoffPrefix) {
+					var handoffDetails []string
+					for _, del := range task.Deliverables {
+						if del.Kind == "learnings" || del.Kind == "plan" || del.Kind == "prd" {
+							detail := del.Title
+							if del.ContentMD != "" {
+								contentSummary := strings.TrimSpace(del.ContentMD)
+								if len(contentSummary) > 200 {
+									contentSummary = contentSummary[:200] + "..."
+								}
+								detail += fmt.Sprintf(": %s", contentSummary)
+							} else if del.URL != "" {
+								detail += fmt.Sprintf(" (%s)", del.URL)
+							}
+							handoffDetails = append(handoffDetails, detail)
+						}
+					}
+					if len(handoffDetails) > 0 {
+						handoffNote := fmt.Sprintf("\n%s Upstream handoff context:\n- %s", handoffPrefix, strings.Join(handoffDetails, "\n- "))
+						if task.Notes == "" {
+							task.Notes = strings.TrimSpace(handoffNote)
+						} else {
+							task.Notes += handoffNote
+						}
+					}
+				}
+			}
+		}
+
 		_ = s.db.UpdateTask(task)
 		s.pushSyncPayload(&SyncStatePayload{Tasks: []Task{*task}, Workstreams: task.Workstreams})
 	}

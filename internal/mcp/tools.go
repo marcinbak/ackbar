@@ -106,6 +106,10 @@ func GetRegisteredTools() []Tool {
 						Type:        "string",
 						Description: "Task title.",
 					},
+					"project_node_path": {
+						Type:        "string",
+						Description: "Optional tree node path (e.g. 'Modemobile/NGL' or 'Personal/Ackbar' or 'Modemobile/NGL/ngl-ios'). Splits into group_name, project_name, and subproject_name if not explicitly set.",
+					},
 					"project_name": {
 						Type:        "string",
 						Description: "Optional project name (e.g. Ackbar, ngl-ios). Defaults to 'General'.",
@@ -125,15 +129,7 @@ func GetRegisteredTools() []Tool {
 					},
 					"repos": {
 						Type:        "array",
-						Description: "Optional list of multi-repo workstreams with repo_node_path, target_host, and depends_on.",
-						Items: &PropertyDef{
-							Type: "object",
-							Properties: map[string]PropertyDef{
-								"repo_node_path": {Type: "string", Description: "Repository tree node path or directory (e.g. Modemobile/NGL/ngl-ios)."},
-								"target_host":    {Type: "string", Description: "Optional target daemon host name."},
-								"depends_on":     {Type: "string", Description: "Optional repo_node_path this workstream depends on."},
-							},
-						},
+						Description: "Optional list of multi-repo workstreams as string paths (e.g. ['Modemobile/NGL/ngl-ios']) or objects with repo_node_path, target_host, and depends_on.",
 					},
 					"depends_on": {
 						Type:        "string",
@@ -564,9 +560,30 @@ func executeCreateTask(ctx context.Context, client *DaemonClient, args map[strin
 		return formatError("title is required"), nil
 	}
 
+	projectNodePath := getString(args, "project_node_path")
+	if projectNodePath == "" {
+		projectNodePath = getString(args, "node_path")
+	}
+	var pGroup, pProject, pSubproject string
+	if projectNodePath != "" {
+		parts := strings.Split(strings.Trim(projectNodePath, "/"), "/")
+		if len(parts) >= 1 && parts[0] != "" {
+			pGroup = parts[0]
+		}
+		if len(parts) >= 2 && parts[1] != "" {
+			pProject = parts[1]
+		}
+		if len(parts) >= 3 && parts[2] != "" {
+			pSubproject = parts[2]
+		}
+	}
+
 	projectName := getString(args, "project_name")
 	if projectName == "" {
 		projectName = getString(args, "project")
+	}
+	if projectName == "" && pProject != "" {
+		projectName = pProject
 	}
 	if projectName == "" {
 		projectName = "General"
@@ -576,8 +593,16 @@ func executeCreateTask(ctx context.Context, client *DaemonClient, args map[strin
 	if groupName == "" {
 		groupName = getString(args, "group")
 	}
+	if groupName == "" && pGroup != "" {
+		groupName = pGroup
+	}
 	if groupName == "" {
 		groupName = "Personal"
+	}
+
+	subprojectName := getString(args, "subproject_name")
+	if subprojectName == "" && pSubproject != "" {
+		subprojectName = pSubproject
 	}
 
 	taskKind := getString(args, "task_kind")
@@ -597,12 +622,42 @@ func executeCreateTask(ctx context.Context, client *DaemonClient, args map[strin
 		"task_kind":    taskKind,
 		"notes":        getString(args, "notes"),
 	}
+	if subprojectName != "" {
+		payload["subproject_name"] = subprojectName
+	}
+
+	topDependsOn := getString(args, "depends_on")
 
 	// Build workstreams if provided
 	var workstreams []map[string]any
 	if reposRaw, ok := args["repos"].([]any); ok && len(reposRaw) > 0 {
 		for _, rItem := range reposRaw {
-			if rMap, ok := rItem.(map[string]any); ok {
+			if rStr, ok := rItem.(string); ok {
+				rStr = strings.TrimSpace(rStr)
+				if rStr == "" {
+					continue
+				}
+				wsStatus := "IN_PROGRESS"
+				var dep string
+				if topDependsOn != "" {
+					if strings.EqualFold(rStr, topDependsOn) {
+						wsStatus = "IN_PROGRESS"
+						dep = ""
+					} else {
+						wsStatus = "QUEUED"
+						dep = topDependsOn
+					}
+				}
+				workstreams = append(workstreams, map[string]any{
+					"task_id":        taskID,
+					"repo_node_path": rStr,
+					"target_host":    "",
+					"depends_on":     dep,
+					"workflow_node":  "N0",
+					"status":         wsStatus,
+					"updated_at":     time.Now().UTC(),
+				})
+			} else if rMap, ok := rItem.(map[string]any); ok {
 				rPath := getString(rMap, "repo_node_path")
 				if rPath == "" {
 					rPath = getString(rMap, "path")
@@ -611,6 +666,9 @@ func executeCreateTask(ctx context.Context, client *DaemonClient, args map[strin
 					continue
 				}
 				dep := getString(rMap, "depends_on")
+				if dep == "" && topDependsOn != "" && !strings.EqualFold(rPath, topDependsOn) {
+					dep = topDependsOn
+				}
 				wsStatus := "IN_PROGRESS"
 				if dep != "" {
 					wsStatus = "QUEUED"
@@ -627,11 +685,11 @@ func executeCreateTask(ctx context.Context, client *DaemonClient, args map[strin
 				})
 			}
 		}
-	} else if dep := getString(args, "depends_on"); dep != "" {
+	} else if topDependsOn != "" {
 		workstreams = append(workstreams, map[string]any{
 			"task_id":        taskID,
 			"repo_node_path": projectName,
-			"depends_on":     dep,
+			"depends_on":     topDependsOn,
 			"workflow_node":  "N0",
 			"status":         "QUEUED",
 			"updated_at":     time.Now().UTC(),
