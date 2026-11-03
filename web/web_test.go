@@ -397,3 +397,52 @@ func TestInspectorRightPane_JS(t *testing.T) {
 		"isResizingInspector",
 	})
 }
+
+func TestSupervisorSidebarAndTreeSections_JS(t *testing.T) {
+	embeddedFS := web.GetFS()
+
+	checkFileContains := func(path string, expectedList []string) {
+		t.Helper()
+		f, err := embeddedFS.Open(path)
+		if err != nil {
+			t.Fatalf("failed to open %s: %v", path, err)
+		}
+		defer f.Close()
+		b, err := io.ReadAll(f)
+		if err != nil {
+			t.Fatalf("failed to read %s: %v", path, err)
+		}
+		content := string(b)
+		for _, expected := range expectedList {
+			if !strings.Contains(content, expected) {
+				t.Errorf("expected %s to contain %q", path, expected)
+			}
+		}
+	}
+
+	checkFileContains("index.html", []string{
+		`id="sidebarSwitcherBar"`,
+		`id="btnSidebarModeAll"`,
+		`id="btnSidebarModeSupervisors"`,
+		`id="btnNewSupervisor"`,
+		`🌐 All Tree`,
+		`⚓ Supervisors`,
+		`+ ⚓ New Supervisor`,
+	})
+
+	checkFileContains("js/tree.js", []string{
+		"function renderActiveSubsection(",
+		"function appendCategorizedActiveSessions(",
+		"'⚓ Supervisors'",
+		"'📋 Tasks'",
+		"'💻 Manual Sessions'",
+		"state.sidebarViewMode === 'supervisors'",
+	})
+
+	checkFileContains("js/api.js", []string{
+		"async function spawnZeroInputSupervisor(",
+		"is_supervisor: true",
+		"existing.is_supervisor = true",
+		"existing.current_task_id = sess.current_task_id",
+	})
+}

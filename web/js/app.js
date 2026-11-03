@@ -20,7 +20,8 @@ import {
   fetchSettings,
   fetchProviders,
   setSessionDoneState,
-  setSessionLaterState
+  setSessionLaterState,
+  spawnZeroInputSupervisor
 } from './api.js';
 import { connectSSE } from './sse.js';
 import {
@@ -680,6 +681,42 @@ function setupEventListeners() {
       state.collapsedGroups.clear();
       saveCollapsedGroups();
       renderTree();
+    });
+  }
+
+  if (el.btnSidebarModeAll) {
+    el.btnSidebarModeAll.addEventListener('click', () => {
+      state.sidebarViewMode = 'all';
+      el.btnSidebarModeAll.classList.add('active');
+      if (el.btnSidebarModeSupervisors) el.btnSidebarModeSupervisors.classList.remove('active');
+      renderTree();
+    });
+  }
+
+  if (el.btnSidebarModeSupervisors) {
+    el.btnSidebarModeSupervisors.addEventListener('click', () => {
+      state.sidebarViewMode = 'supervisors';
+      el.btnSidebarModeSupervisors.classList.add('active');
+      if (el.btnSidebarModeAll) el.btnSidebarModeAll.classList.remove('active');
+      renderTree();
+    });
+  }
+
+  if (el.btnNewSupervisor) {
+    el.btnNewSupervisor.addEventListener('click', async () => {
+      try {
+        el.btnNewSupervisor.disabled = true;
+        const data = await spawnZeroInputSupervisor();
+        const spawnedSess = (data && data.session) || state.sessions.find(s => s.id === (data && data.id));
+        if (spawnedSess) {
+          openSessionInTab(spawnedSess, 'chat');
+        }
+      } catch (err) {
+        console.error('Failed to spawn zero-input supervisor:', err);
+        alert(`Failed to spawn Supervisor session: ${err.message}`);
+      } finally {
+        el.btnNewSupervisor.disabled = false;
+      }
     });
   }
 

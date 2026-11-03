@@ -244,7 +244,7 @@ function renderDoneSection(groupKey, doneSessions) {
 
   const title = document.createElement('span');
   title.className = 'tree-done-title';
-  title.innerHTML = `✓ Done <span class="tree-done-count">(${doneSessions.length})</span>`;
+  title.innerHTML = `✅ Done <span class="tree-done-count">(${doneSessions.length})</span>`;
 
   headerEl.appendChild(chevron);
   headerEl.appendChild(title);
@@ -294,6 +294,51 @@ function renderDoneSection(groupKey, doneSessions) {
   return sectionEl;
 }
 
+function renderActiveSubsection(groupKey, sectionKey, labelText, sessions) {
+  const sectionEl = document.createElement('div');
+  sectionEl.className = `tree-active-subsection tree-subsection-${sectionKey}`;
+
+  const headerEl = document.createElement('div');
+  headerEl.className = 'tree-subsection-header';
+  headerEl.innerHTML = `<span class="tree-subsection-title">${labelText} <span class="tree-subsection-count">(${sessions.length})</span></span>`;
+
+  const childrenListEl = document.createElement('div');
+  childrenListEl.className = 'tree-subsection-children';
+  sessions.forEach(sess => {
+    childrenListEl.appendChild(createSessionRowElement(sess));
+  });
+
+  sectionEl.appendChild(headerEl);
+  sectionEl.appendChild(childrenListEl);
+  return sectionEl;
+}
+
+function appendCategorizedActiveSessions(containerEl, groupKey, activeSessions) {
+  const supervisorSessions = [];
+  const taskSessions = [];
+  const manualSessions = [];
+
+  activeSessions.forEach(sess => {
+    if (sess.is_supervisor) {
+      supervisorSessions.push(sess);
+    } else if (sess.current_task_id) {
+      taskSessions.push(sess);
+    } else {
+      manualSessions.push(sess);
+    }
+  });
+
+  if (supervisorSessions.length > 0) {
+    containerEl.appendChild(renderActiveSubsection(groupKey, 'supervisors', '⚓ Supervisors', supervisorSessions));
+  }
+  if (taskSessions.length > 0) {
+    containerEl.appendChild(renderActiveSubsection(groupKey, 'tasks', '📋 Tasks', taskSessions));
+  }
+  if (manualSessions.length > 0) {
+    containerEl.appendChild(renderActiveSubsection(groupKey, 'manual', '💻 Manual Sessions', manualSessions));
+  }
+}
+
 // Settings Modal Dialog
 
 function renderTree() {
@@ -301,6 +346,7 @@ function renderTree() {
   el.treeContainer.innerHTML = '';
 
   const query = state.searchQuery.toLowerCase().trim();
+  const supervisorsOnly = state.sidebarViewMode === 'supervisors';
 
   // Pre-discover known group paths from registered tree nodes
   const knownGroupPaths = new Set();
@@ -318,6 +364,10 @@ function renderTree() {
   const unassigned = [];
 
   state.sessions.forEach(sess => {
+    if (supervisorsOnly && !sess.is_supervisor) {
+      return;
+    }
+
     if ((sess.archived || isSessionAutoArchived(sess)) && !state.showArchived) {
       return;
     }
@@ -331,7 +381,7 @@ function renderTree() {
     }
 
     let assignedPath = sess.node_path;
-    if (!assignedPath && (sess.cwd || sess.git_remote)) {
+    if (!assignedPath && !sess.is_supervisor && (sess.cwd || sess.git_remote)) {
       for (const n of state.treeNodes) {
         // 1. Match by Git URL across any host
         if (n.git_url && sess.git_remote && (sess.git_remote === n.git_url || normalizeGitURL(sess.git_remote) === normalizeGitURL(n.git_url))) {
@@ -380,14 +430,16 @@ function renderTree() {
   // 2. Discover all unique group paths and their parent prefixes
   const allGroupPaths = new Set();
 
-  state.treeNodes.forEach(node => {
-    if (node.path) {
-      const parts = node.path.split('/');
-      for (let i = 1; i <= parts.length; i++) {
-        allGroupPaths.add(parts.slice(0, i).join('/'));
+  if (!supervisorsOnly) {
+    state.treeNodes.forEach(node => {
+      if (node.path) {
+        const parts = node.path.split('/');
+        for (let i = 1; i <= parts.length; i++) {
+          allGroupPaths.add(parts.slice(0, i).join('/'));
+        }
       }
-    }
-  });
+    });
+  }
 
   sessionsByPath.forEach((sessList, path) => {
     if (path && sessList.length > 0) {
@@ -399,6 +451,16 @@ function renderTree() {
   });
 
   const sortedGroupPaths = Array.from(allGroupPaths).sort();
+
+  if (supervisorsOnly && sortedGroupPaths.length === 0 && unassigned.length === 0) {
+    const emptySup = document.createElement('div');
+    emptySup.className = 'tree-group-empty-hint';
+    emptySup.style.padding = '16px 12px';
+    emptySup.style.textAlign = 'center';
+    emptySup.textContent = 'No ⚓ Supervisor sessions yet. Click "+ ⚓ New Supervisor" above to launch one with zero input.';
+    el.treeContainer.appendChild(emptySup);
+    return;
+  }
 
   // 3. Helper to recursively render a group node and its nested subgroups
   function renderGroupBranch(path, indentLevel) {
@@ -494,9 +556,7 @@ function renderTree() {
       }
     });
 
-    activeSessions.forEach(sess => {
-      childrenEl.appendChild(createSessionRowElement(sess));
-    });
+    appendCategorizedActiveSessions(childrenEl, path, activeSessions);
 
     // 3b. Later Subsection (if any sessions in Later state)
     if (laterSessions.length > 0) {
@@ -580,9 +640,7 @@ function renderTree() {
       }
     });
 
-    activeUnassigned.forEach(sess => {
-      childrenEl.appendChild(createSessionRowElement(sess));
-    });
+    appendCategorizedActiveSessions(childrenEl, 'Unassigned', activeUnassigned);
 
     if (laterUnassigned.length > 0) {
       childrenEl.appendChild(renderLaterSection('Unassigned', laterUnassigned));
@@ -670,16 +728,33 @@ function createSessionRowElement(session) {
     row.classList.add('is-later');
   }
 
+  if (session.is_supervisor) {
+    row.classList.add('session-supervisor');
+  } else if (session.current_task_id) {
+    row.classList.add('session-task');
+  }
+
   const name = document.createElement('span');
   name.className = 'session-name';
-  name.textContent = sessionFullName;
-  name.title = sessionFullName;
+  const displayTitle = (session.is_supervisor && !String(sessionFullName).trim().startsWith('⚓'))
+    ? `⚓ ${sessionFullName}`
+    : sessionFullName;
+  name.textContent = displayTitle;
+  name.title = displayTitle;
 
   left.appendChild(dot);
   left.appendChild(name);
 
   const right = document.createElement('div');
   right.className = 'session-item-right';
+
+  if (session.current_task_id && !session.is_supervisor) {
+    const taskBadge = document.createElement('span');
+    taskBadge.className = 'badge-task';
+    taskBadge.textContent = '📋';
+    taskBadge.title = `Bound to Task: ${session.current_task_id}`;
+    right.appendChild(taskBadge);
+  }
 
   if (isSessionLater(session)) {
     const laterBadge = document.createElement('span');

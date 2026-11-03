@@ -31,6 +31,8 @@ The TUI is built with Charm.sh Bubble Tea and Lip Gloss, presenting a responsive
 | `N` | New Project / Subgroup | Launch wizard to create a project folder or empty category subgroup. |
 | `M` | Move Node / Session | Move highlighted group or session to a different logical tree path. |
 | `s` | Spawn Session | Launch a new managed tmux session in the highlighted project directory. |
+| `S` | New Supervisor | Zero-input 1-key spawn of a new `⚓ Supervisor` session in `~`. |
+| `F` / `Tab` | Toggle Supervisors Filter | Switch sidebar between `[🌐 All Tree]` and `[⚓ Supervisors]` modes. |
 | `o` | Open in VSCode | Launch `code <path>` in the session's workspace directory. |
 | `V` | View Documents | View workspace plans (`task.md`, `implementation_plan.md`, `walkthrough.md`). |
 | `H` | Agent Discovery | Discover installed agent binaries and configure missing hook handlers. |

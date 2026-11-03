@@ -82,6 +82,8 @@ type Session struct {
 	IsUnread          bool      `json:"is_unread,omitempty"`
 	IsDone            bool      `json:"is_done,omitempty"`
 	IsLater           bool      `json:"is_later,omitempty"`
+	IsSupervisor      bool      `json:"is_supervisor,omitempty"`
+	CurrentTaskID     string    `json:"current_task_id,omitempty"`
 	LastStateChangeAt time.Time `json:"last_state_change_at,omitempty"`
 	UpdatedAt         time.Time `json:"updated_at,omitempty"`
 	AccountID         string    `json:"account_id,omitempty"`  // profile/account identifier (e.g. "work", "personal", "default")

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -491,4 +492,129 @@ func TestThreeWayLWWSync_SessionMetadataAndOfflineCatchup(t *testing.T) {
 	if sessOnMacbook.CustomTitle != "Completed Feature Branch" && sessOnMacbook.Name != "Completed Feature Branch" {
 		t.Fatalf("macbook did not catch up CustomTitle/Name: %+v", sessOnMacbook)
 	}
+}
+
+func TestZeroInputSupervisorSpawnAndBind_LWWSync(t *testing.T) {
+	token := "test-sync-token-supervisor"
+	macbook := setupPeer(t, "macbook", "MacBook Pro", token)
+	defer macbook.ts.Close()
+	defer macbook.db.Close()
+
+	legion := setupPeer(t, "legion", "Lenovo Legion", token)
+	defer legion.ts.Close()
+	defer legion.db.Close()
+
+	connectPeers(t, macbook, legion)
+	ctx := context.Background()
+
+	// 1. Zero-input Supervisor spawn on macbook (omitting cwd, agent, and name)
+	spawnPayload := []byte(`{"is_supervisor":true,"engine_type":"headless"}`)
+	respSpawn := makeRequest(t, http.MethodPost, macbook.ts.URL+"/v1/sessions/spawn", token, spawnPayload)
+	if respSpawn.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(respSpawn.Body)
+		t.Fatalf("POST /v1/sessions/spawn failed: %d %s", respSpawn.StatusCode, string(body))
+	}
+	var spawnRes struct {
+		Status  string   `json:"status"`
+		ID      string   `json:"id"`
+		Session *Session `json:"session"`
+	}
+	_ = json.NewDecoder(respSpawn.Body).Decode(&spawnRes)
+	_ = respSpawn.Body.Close()
+
+	if spawnRes.Session == nil || !spawnRes.Session.IsSupervisor {
+		t.Fatalf("expected spawned session to have IsSupervisor=true, got %+v", spawnRes.Session)
+	}
+	if spawnRes.Session.Agent != "claude-code" {
+		t.Fatalf("expected default agent claude-code, got %q", spawnRes.Session.Agent)
+	}
+	if spawnRes.Session.Name != "⚓ New Supervisor" {
+		t.Fatalf("expected default name '⚓ New Supervisor', got %q", spawnRes.Session.Name)
+	}
+	if spawnRes.Session.NodePath != "" {
+		t.Fatalf("expected unassigned NodePath on zero-input supervisor spawn, got %q", spawnRes.Session.NodePath)
+	}
+	home, _ := os.UserHomeDir()
+	if home != "" && spawnRes.Session.Cwd != home {
+		t.Fatalf("expected default Cwd to be user home %q, got %q", home, spawnRes.Session.Cwd)
+	}
+
+	// 2. Bind Supervisor session via POST /v1/sessions/bind-supervisor on macbook
+	time.Sleep(20 * time.Millisecond)
+	bindPayload := []byte(fmt.Sprintf(`{"session_id":%q,"node_path":"Modemobile/NGL","title":"⚓ NGL Feature Planning"}`, spawnRes.ID))
+	respBind := makeRequest(t, http.MethodPost, macbook.ts.URL+"/v1/sessions/bind-supervisor", token, bindPayload)
+	if respBind.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(respBind.Body)
+		t.Fatalf("POST /v1/sessions/bind-supervisor failed: %d %s", respBind.StatusCode, string(body))
+	}
+	var bindRes struct {
+		Status  string   `json:"status"`
+		Session *Session `json:"session"`
+	}
+	_ = json.NewDecoder(respBind.Body).Decode(&bindRes)
+	_ = respBind.Body.Close()
+
+	if bindRes.Status != "bound" || bindRes.Session == nil {
+		t.Fatalf("unexpected bind response: %+v", bindRes)
+	}
+	if !bindRes.Session.IsSupervisor || bindRes.Session.NodePath != "Modemobile/NGL" || bindRes.Session.CustomTitle != "⚓ NGL Feature Planning" {
+		t.Fatalf("unexpected bound session fields: %+v", bindRes.Session)
+	}
+
+	// Verify tree node was automatically created
+	if node, _ := macbook.db.GetNode("Modemobile/NGL"); node == nil {
+		t.Fatalf("expected tree_node 'Modemobile/NGL' to exist after bind-supervisor")
+	}
+
+	// 3. Create a task worker session on macbook and verify current_task_id LWW sync
+	workerSess := &Session{
+		ID:                "claude-code:macbook:worker-101",
+		Agent:             "claude-code",
+		Host:              "macbook",
+		NativeID:          "worker-101",
+		Cwd:               "/Users/dev4u/Work/ngl",
+		NodePath:          "Modemobile/NGL",
+		Name:              "Worker 101",
+		State:             StateWorking,
+		StartedAt:         time.Now().UTC(),
+		LastEventAt:       time.Now().UTC(),
+		MetadataUpdatedAt: time.Now().UTC(),
+	}
+	_ = macbook.db.SaveSession(workerSess)
+	task := &Task{
+		ID:          "task_ngl_101",
+		Title:       "NGL-101: Feature Work",
+		GroupName:   "Modemobile",
+		ProjectName: "NGL",
+		Status:      "IN_PROGRESS",
+		Substatus:   "active",
+		Workers: []TaskWorker{
+			{
+				TaskID:     "task_ngl_101",
+				SessionID:  workerSess.ID,
+				Agent:      "claude-code",
+				Host:       "macbook",
+				IsActive:   true,
+				AssignedAt: time.Now().UTC(),
+			},
+		},
+	}
+	if err := macbook.db.CreateTask(task); err != nil {
+		t.Fatalf("CreateTask failed: %v", err)
+	}
+	reloadedWorker, _ := macbook.db.GetSession(workerSess.ID)
+	if reloadedWorker == nil || reloadedWorker.CurrentTaskID != "task_ngl_101" {
+		t.Fatalf("expected worker session CurrentTaskID='task_ngl_101', got %+v", reloadedWorker)
+	}
+
+	// 4. Sync peers and verify legion receives both IsSupervisor and CurrentTaskID
+	waitForCondition(t, 2*time.Second, func() bool {
+		syncAllPeers(ctx, macbook, legion)
+		supLegion, _ := legion.db.GetSession(spawnRes.ID)
+		wrkLegion, _ := legion.db.GetSession(workerSess.ID)
+		return supLegion != nil && supLegion.IsSupervisor &&
+			supLegion.NodePath == "Modemobile/NGL" &&
+			supLegion.CustomTitle == "⚓ NGL Feature Planning" &&
+			wrkLegion != nil && wrkLegion.CurrentTaskID == "task_ngl_101"
+	})
 }

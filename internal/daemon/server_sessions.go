@@ -193,6 +193,8 @@ func (s *Server) getFederatedSessions(ctx context.Context, localSessions []*Sess
 						existing.IsDone = peerSess.IsDone
 						existing.IsLater = peerSess.IsLater
 						existing.Archived = peerSess.Archived
+						existing.IsSupervisor = peerSess.IsSupervisor
+						existing.CurrentTaskID = peerSess.CurrentTaskID
 						existing.MetadataUpdatedAt = peerSess.MetadataUpdatedAt
 					}
 				} else {
@@ -204,6 +206,8 @@ func (s *Server) getFederatedSessions(ctx context.Context, localSessions []*Sess
 						peerSess.IsDone = existing.IsDone
 						peerSess.IsLater = existing.IsLater
 						peerSess.Archived = existing.Archived
+						peerSess.IsSupervisor = existing.IsSupervisor
+						peerSess.CurrentTaskID = existing.CurrentTaskID
 						peerSess.MetadataUpdatedAt = existing.MetadataUpdatedAt
 					}
 					merged[existingID] = peerSess
@@ -1111,19 +1115,32 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Agent      string `json:"agent"`
-		Cwd        string `json:"cwd"`
-		Host       string `json:"host"`
-		NodePath   string `json:"node_path"`
-		Name       string `json:"name"`
-		AccountID  string `json:"account_id"`
-		EngineType string `json:"engine_type"`
-		Prompt     string `json:"prompt"`
+		Agent        string `json:"agent"`
+		Cwd          string `json:"cwd"`
+		Host         string `json:"host"`
+		NodePath     string `json:"node_path"`
+		Name         string `json:"name"`
+		AccountID    string `json:"account_id"`
+		EngineType   string `json:"engine_type"`
+		Prompt       string `json:"prompt"`
+		IsSupervisor bool   `json:"is_supervisor"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid payload", http.StatusBadRequest)
 		return
+	}
+
+	if req.IsSupervisor {
+		if req.Agent == "" {
+			req.Agent = "claude-code"
+		}
+		if req.Cwd == "" {
+			req.Cwd = "~"
+		}
+		if req.Name == "" {
+			req.Name = "⚓ New Supervisor"
+		}
 	}
 
 	if req.Agent == "" || req.Cwd == "" {
@@ -1135,7 +1152,7 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		req.EngineType = EngineTmux
 	}
 
-	if req.NodePath == "" {
+	if req.NodePath == "" && !req.IsSupervisor {
 		req.NodePath = s.resolveSessionNodePath(req.Cwd)
 	}
 
@@ -1144,14 +1161,15 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		hostRec := s.resolveHost(req.Host)
 		if hostRec != nil && hostRec.URL != "" && !s.isLocalHost(hostRec.Name) && hostRec.URL != "http://127.0.0.1:7777" {
 			targetURL := strings.TrimSuffix(hostRec.URL, "/") + "/v1/sessions/spawn"
-			payload, _ := json.Marshal(map[string]string{
-				"agent":       req.Agent,
-				"cwd":         req.Cwd,
-				"node_path":   req.NodePath,
-				"name":        req.Name,
-				"account_id":  req.AccountID,
-				"engine_type": req.EngineType,
-				"prompt":      req.Prompt,
+			payload, _ := json.Marshal(map[string]interface{}{
+				"agent":         req.Agent,
+				"cwd":           req.Cwd,
+				"node_path":     req.NodePath,
+				"name":          req.Name,
+				"account_id":    req.AccountID,
+				"engine_type":   req.EngineType,
+				"prompt":        req.Prompt,
+				"is_supervisor": req.IsSupervisor,
 			})
 			fwdReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, targetURL, bytes.NewBuffer(payload))
 			if err != nil {
@@ -1210,23 +1228,26 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 	effectiveHost := s.HostName()
 
 	if req.EngineType == EngineHeadless {
+		now := time.Now().UTC()
 		sess := &Session{
-			ID:          fmt.Sprintf("%s:%s:%s", req.Agent, effectiveHost, tempUUID),
-			Agent:       req.Agent,
-			Host:        effectiveHost,
-			NativeID:    tempUUID,
-			Cwd:         req.Cwd,
-			ProjectKey:  GetProjectKey(req.Cwd),
-			NodePath:    req.NodePath,
-			Name:        req.Name,
-			Managed:     true,
-			TmuxName:    "",
-			EngineType:  EngineHeadless,
-			State:       StateIdle,
-			Activity:    "Headless chat session ready",
-			StartedAt:   time.Now(),
-			LastEventAt: time.Now(),
-			AccountID:   accountID,
+			ID:                fmt.Sprintf("%s:%s:%s", req.Agent, effectiveHost, tempUUID),
+			Agent:             req.Agent,
+			Host:              effectiveHost,
+			NativeID:          tempUUID,
+			Cwd:               req.Cwd,
+			ProjectKey:        GetProjectKey(req.Cwd),
+			NodePath:          req.NodePath,
+			Name:              req.Name,
+			IsSupervisor:      req.IsSupervisor,
+			Managed:           true,
+			TmuxName:          "",
+			EngineType:        EngineHeadless,
+			State:             StateIdle,
+			Activity:          "Headless chat session ready",
+			StartedAt:         now,
+			LastEventAt:       now,
+			MetadataUpdatedAt: now,
+			AccountID:         accountID,
 		}
 		initialPrompt := strings.TrimSpace(req.Prompt)
 		if req.Name != "" {
@@ -1240,6 +1261,7 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		}
 		spawnID := sess.ID
 		s.broadcast(sess)
+		s.syncSessionMeta(sess)
 		if initialPrompt != "" && s.headless != nil {
 			_ = s.headless.RunTurn(context.Background(), sess, initialPrompt)
 		}
@@ -1274,23 +1296,26 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Insert temporary spawning session
+	now := time.Now().UTC()
 	sess := &Session{
-		ID:          fmt.Sprintf("%s:%s:%s", req.Agent, effectiveHost, tempUUID),
-		Agent:       req.Agent,
-		Host:        effectiveHost,
-		NativeID:    tempUUID,
-		Cwd:         req.Cwd,
-		ProjectKey:  GetProjectKey(req.Cwd),
-		NodePath:    req.NodePath,
-		Name:        req.Name,
-		Managed:     true,
-		TmuxName:    tmuxName,
-		EngineType:  EngineTmux,
-		State:       StateUnknown,
-		Activity:    "Spawning session...",
-		StartedAt:   time.Now(),
-		LastEventAt: time.Now(),
-		AccountID:   accountID,
+		ID:                fmt.Sprintf("%s:%s:%s", req.Agent, effectiveHost, tempUUID),
+		Agent:             req.Agent,
+		Host:              effectiveHost,
+		NativeID:          tempUUID,
+		Cwd:               req.Cwd,
+		ProjectKey:        GetProjectKey(req.Cwd),
+		NodePath:          req.NodePath,
+		Name:              req.Name,
+		IsSupervisor:      req.IsSupervisor,
+		Managed:           true,
+		TmuxName:          tmuxName,
+		EngineType:        EngineTmux,
+		State:             StateUnknown,
+		Activity:          "Spawning session...",
+		StartedAt:         now,
+		LastEventAt:       now,
+		MetadataUpdatedAt: now,
+		AccountID:         accountID,
 	}
 	if req.Name != "" {
 		sess.CustomTitle = req.Name
@@ -1306,6 +1331,7 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.broadcast(sess)
+	s.syncSessionMeta(sess)
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -1315,6 +1341,108 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		"host":        effectiveHost,
 		"engine_type": EngineTmux,
 		"session":     sess,
+	})
+}
+
+func (s *Server) handleBindSupervisor(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, 64*1024)
+	bodyBytes, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "Failed to read request body", http.StatusBadRequest)
+		return
+	}
+
+	var req struct {
+		SessionID       string `json:"session_id"`
+		ID              string `json:"id"`
+		NodePath        string `json:"node_path"`
+		ProjectNodePath string `json:"project_node_path"`
+		Title           string `json:"title"`
+		CustomTitle     string `json:"custom_title"`
+	}
+	if len(bodyBytes) > 0 {
+		if err := json.Unmarshal(bodyBytes, &req); err != nil {
+			http.Error(w, "Invalid JSON payload", http.StatusBadRequest)
+			return
+		}
+	}
+
+	sessionID := strings.TrimSpace(req.SessionID)
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(req.ID)
+	}
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(r.URL.Query().Get("session_id"))
+	}
+
+	nodePath := strings.TrimSpace(req.NodePath)
+	if nodePath == "" {
+		nodePath = strings.TrimSpace(req.ProjectNodePath)
+	}
+
+	title := strings.TrimSpace(req.Title)
+	if title == "" {
+		title = strings.TrimSpace(req.CustomTitle)
+	}
+
+	if sessionID == "" || nodePath == "" {
+		http.Error(w, "session_id and node_path are required", http.StatusBadRequest)
+		return
+	}
+
+	sess, proxied := s.resolveSessionOrProxy(w, r.Method, sessionID, "application/json", bytes.NewReader(bodyBytes), func(_ *Session) string {
+		return "/v1/sessions/bind-supervisor"
+	})
+	if proxied {
+		return
+	}
+
+	now := time.Now().UTC()
+	if existingNode, _ := s.db.GetNode(nodePath); existingNode == nil {
+		newNode := &TreeNode{
+			Path:      nodePath,
+			CreatedAt: now,
+			UpdatedAt: now,
+		}
+		_ = s.db.SaveNode(newNode)
+		s.pushSyncPayload(&SyncStatePayload{Nodes: []TreeNode{*newNode}})
+	}
+
+	sess.IsSupervisor = true
+	sess.NodePath = nodePath
+	if title != "" {
+		sess.Name = title
+		sess.CustomTitle = title
+		cacheKey := fmt.Sprintf("%s:%s", sess.Cwd, sess.NativeID)
+		titleCacheMutex.Lock()
+		titleCache[cacheKey] = TitleCacheEntry{
+			Title:     title,
+			Source:    "custom",
+			UpdatedAt: now,
+		}
+		titleCacheMutex.Unlock()
+	}
+	sess.MetadataUpdatedAt = now
+
+	if err := s.db.SaveSession(sess); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	s.broadcast(sess)
+	s.syncSessionMeta(sess)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":  "bound",
+		"id":      sess.ID,
+		"session": sess,
 	})
 }
 

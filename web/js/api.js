@@ -372,6 +372,16 @@ function deduplicateSessions(list) {
         if (sess.name) existing.name = sess.name;
       }
 
+      if (sess.is_supervisor) {
+        existing.is_supervisor = true;
+      }
+      if (sess.current_task_id && !existing.current_task_id) {
+        existing.current_task_id = sess.current_task_id;
+      }
+      if (sess.node_path && !existing.node_path) {
+        existing.node_path = sess.node_path;
+      }
+
       if (sess.managed || (sess.state && sess.state !== 4)) {
         existing.id = sess.id;
         existing.managed = true;
@@ -881,6 +891,26 @@ async function deduplicateTasks() {
   return res.json();
 }
 
+async function spawnZeroInputSupervisor(hostName = '') {
+  const res = await fetch('/v1/sessions/spawn', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      is_supervisor: true,
+      agent: 'claude-code',
+      engine_type: 'headless',
+      host: hostName || getSelfHostName()
+    })
+  });
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(errText || 'Failed to spawn supervisor session');
+  }
+  const data = await res.json();
+  await fetchSessions();
+  return data;
+}
+
 export {
   fetchProviders,
   fetchVersion,
@@ -903,6 +933,7 @@ export {
   updateTask,
   deleteTask,
   deduplicateTasks,
+  spawnZeroInputSupervisor,
   sendTaskEvent,
   fetchStandup,
   synthesizeBriefing,

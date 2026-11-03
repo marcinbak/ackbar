@@ -87,3 +87,13 @@ mcp__ackbar__merge_pull_request({
   "method": "squash"
 })
 ```
+
+### F. Binding a Zero-Input `⚓ Supervisor` Session (Turn 1)
+When acting as a Supervisor session (spawned via `[+ ⚓ New Supervisor]` without an upfront project folder) and the user mentions a target project or goal on Turn 1, immediately bind your session to the project tree node and set a descriptive title:
+```json
+mcp__ackbar__bind_supervisor_session({
+  "session_id": "<your-session-id>",
+  "node_path": "Modemobile/NGL",
+  "title": "⚓ NGL Feature Planning"
+})
+```
