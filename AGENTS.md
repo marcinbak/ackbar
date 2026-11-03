@@ -32,7 +32,7 @@ Detailed architectural and technical domain documentation is organized in the `d
 *   **Building & Testing:** See [docs/building.md](file:///Users/dev4u/Work/Ackbar/docs/building.md) for prerequisite packages, compilation steps, test suite execution, and local dev mode setup.
 *   **Development Workflow Manifest:** See [docs/dev-workflow.md](file:///Users/dev4u/Work/Ackbar/docs/dev-workflow.md) for automated verification gates, test tiers (T0-T3), skip rules, and review policies governed by the `dev-workflow` skill.
 *   **Distribution & Upgrades:** See [docs/distribution.md](file:///Users/dev4u/Work/Ackbar/docs/distribution.md) for Homebrew Tap setup, GoReleaser automation, and service management.
-*   **Voice Companion & Audio Briefings:** See [docs/voice-companion.md](file:///Users/dev4u/Work/Ackbar/docs/voice-companion.md) for speech architecture, conversational audio briefings, and hands-free plan approvals.
+*   **Voice Companion & Supervisor Control Layer:** See [docs/voice-companion.md](docs/voice-companion.md) for hands-free/commuter voice & text-to-audio modes, Supervisor MCP session tools, progressive plan drill-downs, and the 2-tier lazy speech pipeline.
 *   **Backlog & Roadmap:** See [docs/backlog.md](file:///Users/dev4u/Work/Ackbar/docs/backlog.md) for the master feature roadmap and completed milestones.
 *   **Backlog: Blocker Push Notifications:** See [docs/backlog-push-notifications.md](file:///Users/dev4u/Work/Ackbar/docs/backlog-push-notifications.md) for architecture trade-offs, `ntfy.sh` deep-linking, lock-screen actions, and implementation roadmap.
 
