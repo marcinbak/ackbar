@@ -478,8 +478,10 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 			if sess.Cwd != "" && sameOrSubDir(sess.Cwd, targetDir) {
 				if sess.NodePath == "" || len(req.Path) >= len(sess.NodePath) {
 					sess.NodePath = req.Path
+					sess.MetadataUpdatedAt = time.Now().UTC()
 					_ = s.db.SaveSession(sess)
 					s.broadcast(sess)
+					s.syncSessionMeta(sess)
 				}
 			}
 		}

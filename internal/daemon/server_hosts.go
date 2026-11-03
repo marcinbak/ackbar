@@ -21,8 +21,18 @@ import (
 func (s *Server) updateHostHealth(name string, online bool, ver, displayName string, latencyMs int64) {
 	s.hostHealthMu.Lock()
 	wasOnline := false
-	if prev, ok := s.hostHealthMap[name]; ok && prev.Online {
-		wasOnline = true
+	if prev, ok := s.hostHealthMap[name]; ok {
+		if prev.Online {
+			wasOnline = true
+		}
+		if online {
+			if ver == "" && prev.Version != "" {
+				ver = prev.Version
+			}
+			if displayName == "" && prev.DisplayName != "" {
+				displayName = prev.DisplayName
+			}
+		}
 	}
 	s.hostHealthMap[name] = &HostHealth{
 		Online:      online,

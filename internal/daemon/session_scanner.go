@@ -57,6 +57,10 @@ func (s *Server) verifySessionLiveness(ctx context.Context, sessions []*Session)
 			continue
 		}
 
+		if !s.isLocalHost(sess.Host) {
+			continue
+		}
+
 		if sess.EngineType == EngineHeadless && sess.TmuxName == "" {
 			isRunning := s.headless != nil && s.headless.IsRunning(sess.ID)
 			if isRunning {

@@ -2078,7 +2078,6 @@ func (d *DB) upsertTaskSync(t *Task) error {
 	}
 
 	if t.Workers != nil {
-		_, _ = tx.Exec(`DELETE FROM task_workers WHERE task_id = ?`, t.ID)
 		for i := range t.Workers {
 			w := &t.Workers[i]
 			w.TaskID = t.ID
@@ -2089,7 +2088,6 @@ func (d *DB) upsertTaskSync(t *Task) error {
 	}
 
 	if t.ExternalRefs != nil {
-		_, _ = tx.Exec(`DELETE FROM task_external_refs WHERE task_id = ?`, t.ID)
 		for i := range t.ExternalRefs {
 			r := &t.ExternalRefs[i]
 			r.TaskID = t.ID
@@ -2759,9 +2757,9 @@ func (d *DB) ApplySyncState(payload *SyncStatePayload) ([]*Session, error) {
 			// Incoming is soft-deleted: soft-delete this node and any descendants
 			qDelNodes := `UPDATE tree_nodes SET deleted_at = ?, updated_at = ? WHERE (path = ? OR SUBSTR(path, 1, LENGTH(?) + 1) = ? || '/') AND (deleted_at IS NULL OR updated_at < ?);`
 			_, _ = d.db.Exec(qDelNodes, incoming.DeletedAt, incoming.UpdatedAt, incoming.Path, incoming.Path, incoming.Path, incoming.UpdatedAt)
-			// Clear node_path on sessions for this path and any descendants
-			qClearSess := `UPDATE sessions SET node_path = '', metadata_updated_at = ? WHERE (node_path = ? OR SUBSTR(node_path, 1, LENGTH(?) + 1) = ? || '/');`
-			_, _ = d.db.Exec(qClearSess, incoming.UpdatedAt, incoming.Path, incoming.Path, incoming.Path)
+			// Clear node_path on sessions for this path and any descendants only if not updated more recently
+			qClearSess := `UPDATE sessions SET node_path = '', metadata_updated_at = ? WHERE (node_path = ? OR SUBSTR(node_path, 1, LENGTH(?) + 1) = ? || '/') AND (metadata_updated_at IS NULL OR metadata_updated_at < ?);`
+			_, _ = d.db.Exec(qClearSess, incoming.UpdatedAt, incoming.Path, incoming.Path, incoming.Path, incoming.UpdatedAt)
 		} else {
 			// Incoming is active
 			q := `
