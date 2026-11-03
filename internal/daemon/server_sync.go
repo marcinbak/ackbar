@@ -44,6 +44,7 @@ func (s *Server) handleSyncPush(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, 10*1024*1024)
 	var payload SyncStatePayload
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		http.Error(w, "Invalid payload: "+err.Error(), http.StatusBadRequest)
@@ -80,6 +81,7 @@ func (s *Server) handleNodeHostPaths(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(paths)
 
 	case http.MethodPost:
+		r.Body = http.MaxBytesReader(w, r.Body, 1048576)
 		var nhp NodeHostPath
 		if err := json.NewDecoder(r.Body).Decode(&nhp); err != nil {
 			http.Error(w, "Invalid payload", http.StatusBadRequest)
@@ -204,7 +206,10 @@ func (s *Server) pushSyncStateToPeer(host *HostRecord) {
 	if err != nil {
 		return
 	}
-	_ = resp.Body.Close()
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return
+	}
 	_ = s.db.SetSettings(map[string]string{settingKey: state.Timestamp.UTC().Format(time.RFC3339Nano)})
 }
 

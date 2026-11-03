@@ -178,21 +178,17 @@ func TestThreeWayLWWSync_NodesAndHostPaths(t *testing.T) {
 	}
 
 	// 3. LWW Conflict Resolution on updated_at
-	// Simulate legion updating the node with a newer timestamp
-	now := time.Now().UTC()
-	newerTime := now.Add(1 * time.Minute)
-	olderTime := now.Add(-1 * time.Minute)
-
-	// Send an older update from macbook directly via sync payload
+	// Advance time monotonically so legion has newer timestamp than olderNode and step 1
+	time.Sleep(50 * time.Millisecond)
 	olderNode := *nMac
 	olderNode.GitURL = "https://github.com/org/k8s-older"
-	olderNode.UpdatedAt = olderTime
+	olderNode.UpdatedAt = time.Now().UTC()
 	_ = macmini.db.SaveNode(&olderNode) // artificially put older node on macmini
 
-	// Send newer update from legion
+	time.Sleep(50 * time.Millisecond)
 	newerNode := *nMac
 	newerNode.GitURL = "https://github.com/org/k8s-newer"
-	newerNode.UpdatedAt = newerTime
+	newerNode.UpdatedAt = time.Now().UTC()
 	if err := legion.db.SaveNode(&newerNode); err != nil {
 		t.Fatalf("failed to save newer node on legion: %v", err)
 	}
@@ -208,7 +204,24 @@ func TestThreeWayLWWSync_NodesAndHostPaths(t *testing.T) {
 			n3 != nil && n3.GitURL == "https://github.com/org/k8s-newer"
 	})
 
-	// 4. Soft Delete Tombstone Propagation
+	time.Sleep(50 * time.Millisecond)
+	// Create child node infra/k8s/worker-pool on macbook
+	childPayload := []byte(`{"path":"infra/k8s/worker-pool","project_dir":"/Users/dev4u/infra/k8s/worker-pool"}`)
+	respChild := makeRequest(t, http.MethodPost, macbook.ts.URL+"/v1/nodes", token, childPayload)
+	if respChild.StatusCode != http.StatusOK {
+		t.Fatalf("POST /v1/nodes for child failed: %d", respChild.StatusCode)
+	}
+	_ = respChild.Body.Close()
+
+	waitForCondition(t, 2*time.Second, func() bool {
+		syncAllPeers(ctx, macbook, macmini, legion)
+		cMini, _ := macmini.db.GetNode("infra/k8s/worker-pool")
+		cLegion, _ := legion.db.GetNode("infra/k8s/worker-pool")
+		return cMini != nil && cLegion != nil
+	})
+
+	time.Sleep(50 * time.Millisecond)
+	// 4. Soft Delete Parent Node infra/k8s on macmini and verify Hierarchical Tombstone Propagation
 	respDel := makeRequest(t, http.MethodDelete, macmini.ts.URL+"/v1/nodes?path=infra/k8s", token, nil)
 	if respDel.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(respDel.Body)
@@ -221,33 +234,24 @@ func TestThreeWayLWWSync_NodesAndHostPaths(t *testing.T) {
 		nodesMac, _ := macbook.db.ListNodes()
 		nodesMini, _ := macmini.db.ListNodes()
 		nodesLegion, _ := legion.db.ListNodes()
-		hasMac := false
-		for _, n := range nodesMac {
-			if n.Path == "infra/k8s" {
-				hasMac = true
+		for _, list := range [][]*TreeNode{nodesMac, nodesMini, nodesLegion} {
+			for _, n := range list {
+				if n.Path == "infra/k8s" || n.Path == "infra/k8s/worker-pool" {
+					return false
+				}
 			}
 		}
-		hasMini := false
-		for _, n := range nodesMini {
-			if n.Path == "infra/k8s" {
-				hasMini = true
-			}
-		}
-		hasLegion := false
-		for _, n := range nodesLegion {
-			if n.Path == "infra/k8s" {
-				hasLegion = true
-			}
-		}
-		return !hasMac && !hasMini && !hasLegion
+		return true
 	})
 
-	// Verify tombstone is recorded in database
+	// Verify both parent and child tombstones are recorded in database across all peers
 	for _, p := range []*testPeer{macbook, macmini, legion} {
-		var dTime string
-		err := p.db.db.QueryRow("SELECT deleted_at FROM tree_nodes WHERE path = 'infra/k8s';").Scan(&dTime)
-		if err != nil || dTime == "" {
-			t.Fatalf("expected deleted_at tombstone on %s, got err=%v, dTime=%s", p.name, err, dTime)
+		for _, path := range []string{"infra/k8s", "infra/k8s/worker-pool"} {
+			var dTime string
+			err := p.db.db.QueryRow("SELECT deleted_at FROM tree_nodes WHERE path = ?;", path).Scan(&dTime)
+			if err != nil || dTime == "" {
+				t.Fatalf("expected deleted_at tombstone on %s for %s, got err=%v, dTime=%s", p.name, path, err, dTime)
+			}
 		}
 	}
 }
@@ -300,7 +304,7 @@ func TestThreeWayLWWSync_TasksAndDeliverables(t *testing.T) {
 	}
 	_ = respUpd.Body.Close()
 
-	delPayload := []byte(fmt.Sprintf(`{"task_id":"%s","kind":"plan","title":"Auth Architecture Plan","file_path":"docs/auth.md"}`, createdTask.ID))
+	delPayload := []byte(fmt.Sprintf(`{"task_id":"%s","kind":"plan","title":"Auth Architecture Plan","file_path":"docs/auth.md","provider":"linear","content_md":"# Auth Plan\nDetailed architecture"}`, createdTask.ID))
 	respDel := makeRequest(t, http.MethodPost, legion.ts.URL+"/v1/tasks/deliverable", token, delPayload)
 	if respDel.StatusCode != http.StatusOK && respDel.StatusCode != http.StatusCreated {
 		body, _ := io.ReadAll(respDel.Body)
@@ -314,7 +318,9 @@ func TestThreeWayLWWSync_TasksAndDeliverables(t *testing.T) {
 		tMini, _ := macmini.db.GetTaskByID(createdTask.ID)
 		tMac, _ := macbook.db.GetTaskByID(createdTask.ID)
 		return tMini != nil && tMini.Status == "in_progress" && len(tMini.Deliverables) == 1 &&
-			tMac != nil && tMac.Status == "in_progress" && len(tMac.Deliverables) == 1
+			tMini.Deliverables[0].Provider == "linear" && tMini.Deliverables[0].ContentMD == "# Auth Plan\nDetailed architecture" &&
+			tMac != nil && tMac.Status == "in_progress" && len(tMac.Deliverables) == 1 &&
+			tMac.Deliverables[0].Provider == "linear" && tMac.Deliverables[0].ContentMD == "# Auth Plan\nDetailed architecture"
 	})
 
 	// 3. Delete task on macmini and verify tombstone propagation

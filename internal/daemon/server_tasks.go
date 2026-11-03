@@ -403,12 +403,14 @@ func (s *Server) handleTaskPropose(w http.ResponseWriter, r *http.Request) {
 }
 
 type TaskDeliverablePayload struct {
-	TaskID   string `json:"task_id"`
-	Kind     string `json:"kind"` // mockup | plan | retrospective | doc
-	Title    string `json:"title"`
-	Host     string `json:"host"`
-	FilePath string `json:"file_path"`
-	URL      string `json:"url"`
+	TaskID    string `json:"task_id"`
+	Kind      string `json:"kind"` // mockup | plan | retrospective | doc
+	Title     string `json:"title"`
+	Host      string `json:"host"`
+	FilePath  string `json:"file_path"`
+	URL       string `json:"url"`
+	Provider  string `json:"provider,omitempty"`
+	ContentMD string `json:"content_md,omitempty"`
 }
 
 func (s *Server) handleTaskDeliverable(w http.ResponseWriter, r *http.Request) {
@@ -484,12 +486,14 @@ func (s *Server) handleTaskDeliverable(w http.ResponseWriter, r *http.Request) {
 	}
 
 	del := &TaskDeliverable{
-		TaskID:   p.TaskID,
-		Kind:     kind,
-		Title:    title,
-		Host:     hostName,
-		FilePath: filePath,
-		URL:      urlStr,
+		TaskID:    p.TaskID,
+		Kind:      kind,
+		Title:     title,
+		Host:      hostName,
+		FilePath:  filePath,
+		URL:       urlStr,
+		Provider:  p.Provider,
+		ContentMD: p.ContentMD,
 	}
 
 	if err := s.db.InsertTaskDeliverable(del); err != nil {

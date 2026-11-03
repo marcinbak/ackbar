@@ -155,6 +155,9 @@ func (s *Server) getFederatedSessions(ctx context.Context, localSessions []*Sess
 	// while user-controlled metadata is preserved via LWW
 	for _, rSessions := range peerSessions {
 		for _, peerSess := range rSessions {
+			if s.isLocalHost(peerSess.Host) {
+				continue
+			}
 			peerSess.HostOffline = false
 			existingID := peerSess.ID
 			existing, exists := merged[existingID]
@@ -166,16 +169,31 @@ func (s *Server) getFederatedSessions(ctx context.Context, localSessions []*Sess
 			}
 
 			if exists && existing != nil {
-				if existing.MetadataUpdatedAt.After(peerSess.MetadataUpdatedAt) {
-					peerSess.NodePath = existing.NodePath
-					peerSess.CustomTitle = existing.CustomTitle
-					peerSess.Name = existing.Name
-					peerSess.IsDone = existing.IsDone
-					peerSess.IsLater = existing.IsLater
-					peerSess.Archived = existing.Archived
-					peerSess.MetadataUpdatedAt = existing.MetadataUpdatedAt
+				if s.isLocalHost(existing.Host) {
+					// Active local session: keep existing as authoritative for runtime state,
+					// only apply LWW metadata from peerSess if peerSess is newer
+					if peerSess.MetadataUpdatedAt.After(existing.MetadataUpdatedAt) {
+						existing.NodePath = peerSess.NodePath
+						existing.CustomTitle = peerSess.CustomTitle
+						existing.Name = peerSess.Name
+						existing.IsDone = peerSess.IsDone
+						existing.IsLater = peerSess.IsLater
+						existing.Archived = peerSess.Archived
+						existing.MetadataUpdatedAt = peerSess.MetadataUpdatedAt
+					}
+				} else {
+					// Remote session: peerSess is authoritative for runtime state
+					if existing.MetadataUpdatedAt.After(peerSess.MetadataUpdatedAt) {
+						peerSess.NodePath = existing.NodePath
+						peerSess.CustomTitle = existing.CustomTitle
+						peerSess.Name = existing.Name
+						peerSess.IsDone = existing.IsDone
+						peerSess.IsLater = existing.IsLater
+						peerSess.Archived = existing.Archived
+						peerSess.MetadataUpdatedAt = existing.MetadataUpdatedAt
+					}
+					merged[existingID] = peerSess
 				}
-				merged[existingID] = peerSess
 			} else {
 				merged[peerSess.ID] = peerSess
 				if peerSess.NativeID != "" {

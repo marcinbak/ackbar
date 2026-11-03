@@ -268,11 +268,13 @@ func (d *DB) SaveSession(s *Session) error {
 
 	// Preserve user-assigned group (NodePath), CustomTitle, and GitBranch if existing and empty in s
 	if existing, _ := d.GetSession(s.ID); existing != nil {
-		if s.NodePath == "" && existing.NodePath != "" {
-			s.NodePath = existing.NodePath
-		}
-		if s.CustomTitle == "" && existing.CustomTitle != "" {
-			s.CustomTitle = existing.CustomTitle
+		if s.MetadataUpdatedAt.IsZero() {
+			if s.NodePath == "" && existing.NodePath != "" {
+				s.NodePath = existing.NodePath
+			}
+			if s.CustomTitle == "" && existing.CustomTitle != "" {
+				s.CustomTitle = existing.CustomTitle
+			}
 		}
 		if s.GitBranch == "" && existing.GitBranch != "" {
 			s.GitBranch = existing.GitBranch
@@ -878,7 +880,9 @@ func (d *DB) SaveNode(node *TreeNode) error {
 	if node.CreatedAt.IsZero() {
 		node.CreatedAt = time.Now().UTC()
 	}
-	node.UpdatedAt = time.Now().UTC()
+	if node.UpdatedAt.IsZero() {
+		node.UpdatedAt = time.Now().UTC()
+	}
 	query := `
 	INSERT INTO tree_nodes (path, project_dir, git_url, created_at, updated_at, deleted_at)
 	VALUES (?, ?, ?, ?, ?, NULL)
@@ -974,20 +978,19 @@ func (d *DB) ListNodes() ([]*TreeNode, error) {
 
 func (d *DB) DeleteNode(path string) error {
 	now := time.Now().UTC()
-	_, err := d.db.Exec("UPDATE tree_nodes SET deleted_at = ?, updated_at = ? WHERE (path = ? OR path LIKE ?) AND deleted_at IS NULL;", now, now, path, path+"/%")
+	_, err := d.db.Exec("UPDATE tree_nodes SET deleted_at = ?, updated_at = ? WHERE (path = ? OR SUBSTR(path, 1, LENGTH(?) + 1) = ? || '/') AND deleted_at IS NULL;", now, now, path, path, path)
 	if err != nil {
 		return fmt.Errorf("failed to delete node: %w", err)
 	}
-	_, _ = d.db.Exec("UPDATE sessions SET node_path = '', metadata_updated_at = ? WHERE node_path = ? OR node_path LIKE ?;", now, path, path+"/%")
+	_, _ = d.db.Exec("UPDATE sessions SET node_path = '', metadata_updated_at = ? WHERE (node_path = ? OR SUBSTR(node_path, 1, LENGTH(?) + 1) = ? || '/');", now, path, path, path)
 	return nil
 }
 
 func (d *DB) MoveNode(oldPath, newPath string) error {
 	now := time.Now().UTC()
-	prefix := oldPath + "/"
 
 	// Find affected non-deleted tree_nodes
-	rows, err := d.db.Query("SELECT path, project_dir, git_url, created_at FROM tree_nodes WHERE (path = ? OR path LIKE ?) AND deleted_at IS NULL;", oldPath, prefix+"%")
+	rows, err := d.db.Query("SELECT path, project_dir, git_url, created_at FROM tree_nodes WHERE (path = ? OR SUBSTR(path, 1, LENGTH(?) + 1) = ? || '/') AND deleted_at IS NULL;", oldPath, oldPath, oldPath)
 	if err != nil {
 		return fmt.Errorf("failed to query nodes to move: %w", err)
 	}
@@ -1017,7 +1020,7 @@ func (d *DB) MoveNode(oldPath, newPath string) error {
 	rows.Close()
 
 	// Soft-delete old paths
-	if _, err := d.db.Exec("UPDATE tree_nodes SET deleted_at = ?, updated_at = ? WHERE (path = ? OR path LIKE ?) AND deleted_at IS NULL;", now, now, oldPath, prefix+"%"); err != nil {
+	if _, err := d.db.Exec("UPDATE tree_nodes SET deleted_at = ?, updated_at = ? WHERE (path = ? OR SUBSTR(path, 1, LENGTH(?) + 1) = ? || '/') AND deleted_at IS NULL;", now, now, oldPath, oldPath, oldPath); err != nil {
 		return fmt.Errorf("failed to soft-delete moved tree_nodes: %w", err)
 	}
 
@@ -1038,14 +1041,14 @@ func (d *DB) MoveNode(oldPath, newPath string) error {
 	}
 
 	// Update node_host_paths
-	qHostPaths := `UPDATE node_host_paths SET node_path = ? || SUBSTR(node_path, LENGTH(?) + 1), updated_at = ? WHERE node_path = ? OR node_path LIKE ?;`
-	if _, err := d.db.Exec(qHostPaths, newPath, oldPath, now, oldPath, prefix+"%"); err != nil {
+	qHostPaths := `UPDATE node_host_paths SET node_path = ? || SUBSTR(node_path, LENGTH(?) + 1), updated_at = ? WHERE node_path = ? OR SUBSTR(node_path, 1, LENGTH(?) + 1) = ? || '/';`
+	if _, err := d.db.Exec(qHostPaths, newPath, oldPath, now, oldPath, oldPath, oldPath); err != nil {
 		return fmt.Errorf("failed to update node_host_paths: %w", err)
 	}
 
 	// Update sessions
-	qSess := `UPDATE sessions SET node_path = ? || SUBSTR(node_path, LENGTH(?) + 1), metadata_updated_at = ? WHERE node_path = ? OR node_path LIKE ?;`
-	if _, err := d.db.Exec(qSess, newPath, oldPath, now, oldPath, prefix+"%"); err != nil {
+	qSess := `UPDATE sessions SET node_path = ? || SUBSTR(node_path, LENGTH(?) + 1), metadata_updated_at = ? WHERE node_path = ? OR SUBSTR(node_path, 1, LENGTH(?) + 1) = ? || '/';`
+	if _, err := d.db.Exec(qSess, newPath, oldPath, now, oldPath, oldPath, oldPath); err != nil {
 		return fmt.Errorf("failed to update sessions node_path: %w", err)
 	}
 	return nil
@@ -1084,6 +1087,18 @@ func (d *DB) SaveNodeHostPath(nhp *NodeHostPath) error {
 		return fmt.Errorf("failed to save node_host_path: %w", err)
 	}
 	return nil
+}
+
+func (d *DB) UpsertNodeHostPathLWW(hp *NodeHostPath) error {
+	if hp == nil {
+		return nil
+	}
+	var existingUpdAt sql.NullTime
+	err := d.db.QueryRow("SELECT updated_at FROM node_host_paths WHERE node_path = ? AND host = ?;", hp.NodePath, hp.Host).Scan(&existingUpdAt)
+	if err == nil && existingUpdAt.Valid && !hp.UpdatedAt.After(existingUpdAt.Time) {
+		return nil
+	}
+	return d.SaveNodeHostPath(hp)
 }
 
 func (d *DB) GetNodeHostPath(nodePath, host string) (*NodeHostPath, error) {
@@ -1862,7 +1877,9 @@ func (d *DB) CreateTask(t *Task) error {
 	if t.CreatedAt.IsZero() {
 		t.CreatedAt = time.Now().UTC()
 	}
-	t.UpdatedAt = time.Now().UTC()
+	if t.UpdatedAt.IsZero() {
+		t.UpdatedAt = time.Now().UTC()
+	}
 
 	tx, err := d.db.Begin()
 	if err != nil {
@@ -1994,6 +2011,95 @@ func (d *DB) UpdateTask(t *Task) error {
 		if err != nil {
 			return err
 		}
+		for i := range t.Deliverables {
+			del := &t.Deliverables[i]
+			del.TaskID = t.ID
+			if del.ID == "" {
+				del.ID = fmt.Sprintf("del_%d_%d", time.Now().UnixNano(), i)
+			}
+			if err := insertTaskDeliverableTx(tx, del); err != nil {
+				return err
+			}
+		}
+	}
+
+	return tx.Commit()
+}
+
+func (d *DB) upsertTaskSync(t *Task) error {
+	if t.CreatedAt.IsZero() {
+		t.CreatedAt = time.Now().UTC()
+	}
+	if t.UpdatedAt.IsZero() {
+		t.UpdatedAt = time.Now().UTC()
+	}
+
+	tx, err := d.db.Begin()
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	query := `INSERT INTO tasks (
+		id, title, group_name, project_name, subproject_name, status, substatus, notes, blocker_question, branch, worktree_path, pr_url, pr_number, pr_state, ci_status, created_at, updated_at, completed_at, deleted_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+	ON CONFLICT(id) DO UPDATE SET
+		title=excluded.title,
+		group_name=excluded.group_name,
+		project_name=excluded.project_name,
+		subproject_name=excluded.subproject_name,
+		status=excluded.status,
+		substatus=excluded.substatus,
+		notes=excluded.notes,
+		blocker_question=excluded.blocker_question,
+		branch=excluded.branch,
+		worktree_path=excluded.worktree_path,
+		pr_url=excluded.pr_url,
+		pr_number=excluded.pr_number,
+		pr_state=excluded.pr_state,
+		ci_status=excluded.ci_status,
+		updated_at=excluded.updated_at,
+		completed_at=excluded.completed_at,
+		deleted_at=NULL;`
+
+	var completedAt sql.NullTime
+	if t.CompletedAt != nil {
+		completedAt.Time = *t.CompletedAt
+		completedAt.Valid = true
+	}
+
+	_, err = tx.Exec(query,
+		t.ID, t.Title, t.GroupName, t.ProjectName, t.SubprojectName,
+		t.Status, t.Substatus, t.Notes, t.BlockerQuestion, t.Branch, t.WorktreePath,
+		t.PRURL, t.PRNumber, t.PRState, t.CIStatus, t.CreatedAt, t.UpdatedAt, completedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to upsert task sync: %w", err)
+	}
+
+	if t.Workers != nil {
+		_, _ = tx.Exec(`DELETE FROM task_workers WHERE task_id = ?`, t.ID)
+		for i := range t.Workers {
+			w := &t.Workers[i]
+			w.TaskID = t.ID
+			if err := insertTaskWorkerTx(tx, w); err != nil {
+				return err
+			}
+		}
+	}
+
+	if t.ExternalRefs != nil {
+		_, _ = tx.Exec(`DELETE FROM task_external_refs WHERE task_id = ?`, t.ID)
+		for i := range t.ExternalRefs {
+			r := &t.ExternalRefs[i]
+			r.TaskID = t.ID
+			if err := insertTaskExternalRefTx(tx, r); err != nil {
+				return err
+			}
+		}
+	}
+
+	if t.Deliverables != nil {
 		for i := range t.Deliverables {
 			del := &t.Deliverables[i]
 			del.TaskID = t.ID
@@ -2650,15 +2756,12 @@ func (d *DB) ApplySyncState(payload *SyncStatePayload) ([]*Session, error) {
 		}
 
 		if incoming.DeletedAt != nil {
-			// Incoming is soft-deleted
-			if exists {
-				_, _ = d.db.Exec("UPDATE tree_nodes SET deleted_at = ?, updated_at = ? WHERE path = ?;", incoming.DeletedAt, incoming.UpdatedAt, incoming.Path)
-			} else {
-				_, _ = d.db.Exec("INSERT INTO tree_nodes (path, project_dir, git_url, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?);",
-					incoming.Path, incoming.ProjectDir, incoming.GitURL, incoming.CreatedAt, incoming.UpdatedAt, incoming.DeletedAt)
-			}
-			_, _ = d.db.Exec("UPDATE sessions SET node_path = '', metadata_updated_at = ? WHERE node_path = ? OR node_path LIKE ?;",
-				incoming.UpdatedAt, incoming.Path, incoming.Path+"/%")
+			// Incoming is soft-deleted: soft-delete this node and any descendants
+			qDelNodes := `UPDATE tree_nodes SET deleted_at = ?, updated_at = ? WHERE (path = ? OR SUBSTR(path, 1, LENGTH(?) + 1) = ? || '/') AND (deleted_at IS NULL OR updated_at < ?);`
+			_, _ = d.db.Exec(qDelNodes, incoming.DeletedAt, incoming.UpdatedAt, incoming.Path, incoming.Path, incoming.Path, incoming.UpdatedAt)
+			// Clear node_path on sessions for this path and any descendants
+			qClearSess := `UPDATE sessions SET node_path = '', metadata_updated_at = ? WHERE (node_path = ? OR SUBSTR(node_path, 1, LENGTH(?) + 1) = ? || '/');`
+			_, _ = d.db.Exec(qClearSess, incoming.UpdatedAt, incoming.Path, incoming.Path, incoming.Path)
 		} else {
 			// Incoming is active
 			q := `
@@ -2674,18 +2777,13 @@ func (d *DB) ApplySyncState(payload *SyncStatePayload) ([]*Session, error) {
 		}
 
 		for _, hp := range incoming.HostPaths {
-			_ = d.SaveNodeHostPath(&hp)
+			_ = d.UpsertNodeHostPathLWW(&hp)
 		}
 	}
 
 	// 2. Reconcile NodeHostPaths via LWW
 	for _, incoming := range payload.NodeHostPaths {
-		var existingUpdAt sql.NullTime
-		err := d.db.QueryRow("SELECT updated_at FROM node_host_paths WHERE node_path = ? AND host = ?;", incoming.NodePath, incoming.Host).Scan(&existingUpdAt)
-		if err == nil && existingUpdAt.Valid && !incoming.UpdatedAt.After(existingUpdAt.Time) {
-			continue
-		}
-		_ = d.SaveNodeHostPath(&incoming)
+		_ = d.UpsertNodeHostPathLWW(&incoming)
 	}
 
 	// 3. Reconcile Tasks via LWW
@@ -2713,12 +2811,11 @@ func (d *DB) ApplySyncState(payload *SyncStatePayload) ([]*Session, error) {
 					incoming.Status, incoming.Substatus, incoming.Notes, incoming.BlockerQuestion, incoming.Branch, incoming.WorktreePath,
 					incoming.PRURL, incoming.PRNumber, incoming.PRState, incoming.CIStatus, incoming.CreatedAt, incoming.UpdatedAt, compAt, incoming.DeletedAt)
 			}
+			_, _ = d.db.Exec(`DELETE FROM task_workers WHERE task_id = ?;`, incoming.ID)
+			_, _ = d.db.Exec(`DELETE FROM task_external_refs WHERE task_id = ?;`, incoming.ID)
+			_, _ = d.db.Exec(`DELETE FROM task_deliverables WHERE task_id = ?;`, incoming.ID)
 		} else {
-			if exists {
-				_ = d.UpdateTask(&incoming)
-			} else {
-				_ = d.CreateTask(&incoming)
-			}
+			_ = d.upsertTaskSync(&incoming)
 		}
 	}
 
@@ -2741,18 +2838,17 @@ func (d *DB) ApplySyncState(payload *SyncStatePayload) ([]*Session, error) {
 	for _, meta := range payload.SessionMetas {
 		existing, _ := d.GetSession(meta.ID)
 		if existing == nil && meta.NativeID != "" {
-			existing, _ = d.GetSession(meta.NativeID)
+			cand, _ := d.GetSession(meta.NativeID)
+			if cand != nil && cand.Agent == meta.Agent && (cand.Host == meta.Host || cand.Host == "local" || cand.Host == "") {
+				existing = cand
+			}
 		}
 
 		if existing != nil {
 			if meta.UpdatedAt.After(existing.MetadataUpdatedAt) {
 				existing.NodePath = meta.NodePath
-				if meta.Name != "" {
-					existing.Name = meta.Name
-				}
-				if meta.CustomTitle != "" {
-					existing.CustomTitle = meta.CustomTitle
-				}
+				existing.Name = meta.Name
+				existing.CustomTitle = meta.CustomTitle
 				existing.IsDone = meta.IsDone
 				existing.IsLater = meta.IsLater
 				existing.Archived = meta.Archived

@@ -259,19 +259,15 @@ func (s *Server) handleNodes(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Missing path parameter", http.StatusBadRequest)
 			return
 		}
+		before := time.Now().UTC().Add(-time.Millisecond)
 		if err := s.db.DeleteNode(path); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 
-		now := time.Now().UTC()
-		s.pushSyncPayload(&SyncStatePayload{
-			Nodes: []TreeNode{{
-				Path:      path,
-				UpdatedAt: now,
-				DeletedAt: &now,
-			}},
-		})
+		if state, err := s.db.GetSyncStateSince(before, s.HostName()); err == nil && state != nil {
+			s.pushSyncPayload(state)
+		}
 
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"deleted"}`))
@@ -300,27 +296,15 @@ func (s *Server) handleNodeMove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	before := time.Now().UTC().Add(-time.Millisecond)
 	if err := s.db.MoveNode(req.OldPath, req.NewPath); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	now := time.Now().UTC()
-	newNodes, _ := s.db.ListNodes()
-	var movedNodes []TreeNode
-	for _, n := range newNodes {
-		if n.Path == req.NewPath || strings.HasPrefix(n.Path, req.NewPath+"/") {
-			movedNodes = append(movedNodes, *n)
-		}
+	if state, err := s.db.GetSyncStateSince(before, s.HostName()); err == nil && state != nil {
+		s.pushSyncPayload(state)
 	}
-	tombstone := TreeNode{
-		Path:      req.OldPath,
-		UpdatedAt: now,
-		DeletedAt: &now,
-	}
-	s.pushSyncPayload(&SyncStatePayload{
-		Nodes: append(movedNodes, tombstone),
-	})
 
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"status":"moved"}`))
@@ -365,11 +349,24 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 				"base_dir":    req.BaseDir,
 				"clone_repo":  req.CloneRepo,
 			})
-			resp, rErr := http.Post(targetURL, "application/json", bytes.NewBuffer(remotePayload))
-			if rErr != nil {
-				log.Printf("[Daemon] Warning: failed to forward project create to remote host %s: %v", req.Host, rErr)
-			} else {
-				_ = resp.Body.Close()
+			fwdReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, targetURL, bytes.NewBuffer(remotePayload))
+			if err == nil {
+				fwdReq.Header.Set("Content-Type", "application/json")
+				token := s.configuredToken
+				if token == "" {
+					token = os.Getenv("ACKBAR_TOKEN")
+				}
+				if token != "" {
+					fwdReq.Header.Set("Authorization", "Bearer "+token)
+					fwdReq.Header.Set("X-Ackbar-Token", token)
+				}
+				client := &http.Client{Timeout: 5 * time.Second}
+				resp, rErr := client.Do(fwdReq)
+				if rErr != nil {
+					log.Printf("[Daemon] Warning: failed to forward project create to remote host %s: %v", req.Host, rErr)
+				} else {
+					_ = resp.Body.Close()
+				}
 			}
 		}
 	}
