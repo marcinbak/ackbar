@@ -3,6 +3,7 @@ package daemon
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -81,9 +82,14 @@ func validateGitURL(u string) error {
 		return fmt.Errorf("git URL cannot start with '-'")
 	}
 	if strings.HasPrefix(u, "https://") || strings.HasPrefix(u, "http://") ||
-		strings.HasPrefix(u, "ssh://") || strings.HasPrefix(u, "git@") ||
-		filepath.IsAbs(u) {
+		strings.HasPrefix(u, "ssh://") || strings.HasPrefix(u, "git@") {
 		return nil
+	}
+	if filepath.IsAbs(u) {
+		if fi, err := os.Stat(u); err == nil && fi.IsDir() {
+			return nil
+		}
+		return fmt.Errorf("local git repository path does not exist or is not a directory: %s", u)
 	}
 	return fmt.Errorf("invalid git URL scheme: %s", u)
 }
@@ -138,9 +144,19 @@ func DiscoverSkillsRepo(home string, db *DB) (repoPath, repoURL string) {
 			var candidateRoot string
 			for _, mf := range markerFiles {
 				if data, err := os.ReadFile(mf); err == nil {
+					// First attempt JSON parsing (e.g. .personal-config-managed contains {"source_repo": "/path/to/repo", ...})
+					var meta struct {
+						SourceRepo string `json:"source_repo"`
+					}
+					if err := json.Unmarshal(data, &meta); err == nil && meta.SourceRepo != "" {
+						candidateRoot = meta.SourceRepo
+						break
+					}
+
+					// Fallback to line-by-line parsing
 					for _, line := range strings.Split(string(data), "\n") {
 						line = strings.TrimSpace(line)
-						if strings.HasPrefix(line, "#") || line == "" {
+						if strings.HasPrefix(line, "#") || line == "" || strings.HasPrefix(line, "{") {
 							continue
 						}
 						if strings.HasPrefix(line, "source_repo=") {
@@ -148,6 +164,7 @@ func DiscoverSkillsRepo(home string, db *DB) (repoPath, repoURL string) {
 							break
 						} else if candidateRoot == "" {
 							candidateRoot = line
+							break
 						}
 					}
 					if candidateRoot != "" {
@@ -279,16 +296,19 @@ func GetSkillsRepoStatus(home string, db *DB, fetchRemote bool) SkillsRepoStatus
 				status.InstallerFound = true
 			}
 
-			// If remote fetch requested, fetch origin with 10s timeout
+			// If remote fetch requested, fetch origin with 10s timeout (if origin remote exists)
 			if fetchRemote {
-				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer cancel()
-				cmdFetch := exec.CommandContext(ctx, "git", "-C", repoPath, "fetch", "--quiet", "origin")
-				_ = cmdFetch.Run()
-				nowStr := time.Now().UTC().Format(time.RFC3339)
-				status.LastCheckedAt = nowStr
-				if db != nil {
-					_ = db.SetSettings(map[string]string{"skills_repo_last_check": nowStr})
+				cmdRemoteCheck := exec.Command("git", "-C", repoPath, "remote", "get-url", "origin")
+				if err := cmdRemoteCheck.Run(); err == nil {
+					ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+					defer cancel()
+					cmdFetch := exec.CommandContext(ctx, "git", "-C", repoPath, "fetch", "--quiet", "origin")
+					_ = cmdFetch.Run()
+					nowStr := time.Now().UTC().Format(time.RFC3339)
+					status.LastCheckedAt = nowStr
+					if db != nil {
+						_ = db.SetSettings(map[string]string{"skills_repo_last_check": nowStr})
+					}
 				}
 			}
 
@@ -444,20 +464,23 @@ func SyncSkillsRepo(home string, db *DB, opts SyncSkillsRepoOptions) (*SkillsRep
 		}
 	}
 
-	// Cloned repository maintenance: fetch & fast-forward pull if clean
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
+	// Cloned repository maintenance: fetch & fast-forward pull if clean and origin remote exists
+	cmdRemoteCheck := exec.Command("git", "-C", repoPath, "remote", "get-url", "origin")
+	if err := cmdRemoteCheck.Run(); err == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
 
-	cmdFetch := exec.CommandContext(ctx, "git", "-C", repoPath, "fetch", "--quiet", "origin")
-	_ = cmdFetch.Run()
+		cmdFetch := exec.CommandContext(ctx, "git", "-C", repoPath, "fetch", "--quiet", "origin")
+		_ = cmdFetch.Run()
 
-	cmdDirty := exec.Command("git", "-C", repoPath, "status", "--porcelain")
-	outDirty, err := cmdDirty.Output()
-	isDirty := err == nil && len(bytes.TrimSpace(outDirty)) > 0
+		cmdDirty := exec.Command("git", "-C", repoPath, "status", "--porcelain")
+		outDirty, err := cmdDirty.Output()
+		isDirty := err == nil && len(bytes.TrimSpace(outDirty)) > 0
 
-	if !isDirty {
-		cmdPull := exec.CommandContext(ctx, "git", "-C", repoPath, "pull", "--ff-only")
-		_ = cmdPull.Run()
+		if !isDirty {
+			cmdPull := exec.CommandContext(ctx, "git", "-C", repoPath, "pull", "--ff-only")
+			_ = cmdPull.Run()
+		}
 	}
 
 	// Run installer script or fallback copy

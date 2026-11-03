@@ -124,8 +124,13 @@ func TestSkillsRepo_Validation(t *testing.T) {
 	if err := validateGitURL("git@github.com:org/repo.git"); err != nil {
 		t.Errorf("expected valid git@ url, got: %v", err)
 	}
-	if err := validateGitURL("/Users/test/repo.git"); err != nil {
-		t.Errorf("expected valid local path git url, got: %v", err)
+	localDir := filepath.Join(tempHome, "fake-repo.git")
+	_ = os.MkdirAll(localDir, 0755)
+	if err := validateGitURL(localDir); err != nil {
+		t.Errorf("expected valid local path git url for existing dir, got: %v", err)
+	}
+	if err := validateGitURL("/nonexistent/path/repo.git"); err == nil {
+		t.Errorf("expected error for non-existent local git directory")
 	}
 	if err := validateGitURL("-u dangerous"); err == nil {
 		t.Errorf("expected error for git url starting with '-'")
@@ -201,6 +206,24 @@ func TestSkillsRepo_Discovery(t *testing.T) {
 	discoveredMarkerPath, _ := DiscoverSkillsRepo(tempHome, db)
 	if discoveredMarkerPath != localRepo {
 		t.Errorf("expected discovered marker repo %s, got %s", localRepo, discoveredMarkerPath)
+	}
+
+	// 4. JSON marker file discovery (.personal-config-managed)
+	_ = db.SetSettings(map[string]string{
+		"skills_repo_path": "",
+		"skills_repo_url":  "",
+	})
+	_ = os.Remove(markerFile)
+
+	jsonSkillDir := filepath.Join(tempHome, ".gemini", "antigravity-cli", "skills", "json-skill")
+	_ = os.MkdirAll(jsonSkillDir, 0755)
+	jsonMarkerFile := filepath.Join(jsonSkillDir, ".personal-config-managed")
+	jsonContent := fmt.Sprintf(`{"source_repo": %q, "files": {}}`, localRepo)
+	_ = os.WriteFile(jsonMarkerFile, []byte(jsonContent), 0644)
+
+	discoveredJSONPath, _ := DiscoverSkillsRepo(tempHome, db)
+	if discoveredJSONPath != localRepo {
+		t.Errorf("expected discovered JSON marker repo %s, got %s", localRepo, discoveredJSONPath)
 	}
 }
 
