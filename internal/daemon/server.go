@@ -68,6 +68,10 @@ type Server struct {
 	homeDir           string
 	livenessRunning   atomic.Bool
 	lastLivenessAt    atomic.Int64
+	ntfyServer        string
+	ntfyTopic         string
+	ntfyClient        *http.Client
+	ntfyHook          func(payload NtfyPayload)
 }
 
 func NewServer(db *DB) *Server {
@@ -78,6 +82,7 @@ func NewServer(db *DB) *Server {
 		subscribers:     make(map[chan *Session]bool),
 		hostHealthMap:   make(map[string]*HostHealth),
 		activeSubagents: make(map[string][]*SubagentInfo),
+		ntfyClient:      &http.Client{Timeout: 5 * time.Second},
 	}
 	s.headless = NewHeadlessRunner(db, s.broadcast)
 	s.headless.SetOnTurnComplete(s.clearSubagents)
@@ -135,6 +140,49 @@ func (s *Server) DisplayName() string {
 		}
 	}
 	return s.HostName()
+}
+
+func (s *Server) SetNtfyConfig(server, topic string) {
+	if server != "" {
+		s.ntfyServer = server
+	}
+	if topic != "" {
+		s.ntfyTopic = topic
+	}
+}
+
+func (s *Server) SetNtfyHook(hook func(payload NtfyPayload)) {
+	s.ntfyHook = hook
+}
+
+func (s *Server) NtfyServer() string {
+	if s.ntfyServer != "" {
+		return s.ntfyServer
+	}
+	if env := os.Getenv("ACKBAR_NTFY_SERVER"); env != "" {
+		return env
+	}
+	if s.db != nil {
+		if val, err := s.db.GetSetting("ntfy_server"); err == nil && val != "" {
+			return val
+		}
+	}
+	return "https://ntfy.sh"
+}
+
+func (s *Server) NtfyTopic() string {
+	if s.ntfyTopic != "" {
+		return s.ntfyTopic
+	}
+	if env := os.Getenv("ACKBAR_NTFY_TOPIC"); env != "" {
+		return env
+	}
+	if s.db != nil {
+		if val, err := s.db.GetSetting("ntfy_topic"); err == nil && val != "" {
+			return val
+		}
+	}
+	return ""
 }
 
 func extractHostname(val string) string {
@@ -277,6 +325,7 @@ func (s *Server) Mux() http.Handler {
 	mux.HandleFunc("/v1/sessions/handover", s.handleSessionHandover)
 	mux.HandleFunc("/v1/sessions/pty", s.handlePTY)
 	mux.HandleFunc("/v1/sessions/spawn", s.handleSpawn)
+	mux.HandleFunc("/v1/sessions/bind-supervisor", s.handleBindSupervisor)
 	mux.HandleFunc("/v1/meta/resolve", s.handleMetaResolve)
 	mux.HandleFunc("/v1/sessions/prompt", s.handlePrompt)
 	mux.HandleFunc("/v1/sessions/prompt/queue", s.handlePromptQueue)
@@ -292,6 +341,9 @@ func (s *Server) Mux() http.Handler {
 	mux.HandleFunc("/v1/documents/content", s.handleDocumentContent)
 	mux.HandleFunc("/v1/nodes", s.handleNodes)
 	mux.HandleFunc("/v1/nodes/move", s.handleNodeMove)
+	mux.HandleFunc("/v1/nodes/paths", s.handleNodeHostPaths)
+	mux.HandleFunc("/v1/sync/state", s.handleSyncState)
+	mux.HandleFunc("/v1/sync/push", s.handleSyncPush)
 	mux.HandleFunc("/v1/hosts", s.handleHosts)
 	mux.HandleFunc("/v1/hosts/update", s.handleHostUpdate)
 	mux.HandleFunc("/v1/hosts/reconnect", s.handleHostReconnect)
@@ -316,6 +368,7 @@ func (s *Server) Mux() http.Handler {
 	mux.HandleFunc("/v1/briefings/synthesize", s.handleBriefingSynthesize)
 	mux.HandleFunc("/v1/agents/status", s.handleAgentsStatus)
 	mux.HandleFunc("/v1/agents/provision", s.handleAgentsProvision)
+	mux.HandleFunc("/v1/agents/skills-repo/sync", s.handleSkillsRepoSync)
 	mux.HandleFunc("/v1/events", s.handleEvents)
 
 	// Serve embedded Web GUI
@@ -373,7 +426,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	if err == nil {
 		var active []*Session
 		for _, sess := range sessions {
-			if sess.State != StateEnded {
+			if sess.State != StateEnded && s.isLocalHost(sess.Host) {
 				active = append(active, sess)
 			}
 		}
@@ -504,6 +557,8 @@ func (s *Server) populateDefaultSettings(settings map[string]string) map[string]
 		"handover_suggestion_enabled": "true",
 		"handover_threshold_pct":      "60",
 		"hide_session_tabs":           "false",
+		"ntfy_server":                 "https://ntfy.sh",
+		"ntfy_topic":                  "",
 	}
 	for k, v := range defaults {
 		if _, exists := settings[k]; !exists {
@@ -568,22 +623,29 @@ func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) StartBackgroundLoop(ctx context.Context) {
 	go func() {
-		// Run initial scan, host tunnel check, and dev-workflow run ingestion asynchronously on startup
+		// Run initial scan, host tunnel check, dev-workflow run ingestion, skills repo auto-sync, and peer sync asynchronously on startup
 		go s.scanObservedSessions(ctx)
 		go s.ensureHostTunnels(ctx)
 		go s.IngestDevWorkflowRuns()
+		go s.maybeAutoSyncSkillsRepo(ctx)
+		go s.PullFromPeers(ctx)
 
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
+		hourlyTicker := time.NewTicker(1 * time.Hour)
+		defer hourlyTicker.Stop()
 
 		for {
 			select {
 			case <-ctx.Done():
 				return
+			case <-hourlyTicker.C:
+				go s.maybeAutoSyncSkillsRepo(ctx)
 			case <-ticker.C:
 				s.scanObservedSessions(ctx)
 				go s.ensureHostTunnels(ctx)
 				go s.IngestDevWorkflowRuns()
+				go s.PullFromPeers(ctx)
 				sessions, err := s.db.ListActiveSessions()
 				if err == nil && len(sessions) > 0 {
 					s.verifySessionLiveness(ctx, sessions)
@@ -591,4 +653,14 @@ func (s *Server) StartBackgroundLoop(ctx context.Context) {
 			}
 		}
 	}()
+}
+
+func (s *Server) maybeAutoSyncSkillsRepo(ctx context.Context) {
+	home := s.homeDir
+	if home == "" {
+		if h, err := os.UserHomeDir(); err == nil {
+			home = h
+		}
+	}
+	MaybeAutoSyncSkillsRepo(ctx, home, s.db)
 }

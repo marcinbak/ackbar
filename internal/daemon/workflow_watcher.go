@@ -145,7 +145,7 @@ func (s *Server) ingestSingleWorkflowRun(jsonPath string) error {
 	}
 
 	// Determine status and substatus based on workflow node
-	status, substatus := mapWorkflowNodeToTaskStatus(run.Node)
+	status, substatus := ClassifyWorkflowNodeState(run.Node, StateWorking, false)
 
 	// Check for companion brief and retro files
 	basePrefix := strings.TrimSuffix(jsonPath, ".json")
@@ -240,8 +240,10 @@ func (s *Server) ingestSingleWorkflowRun(jsonPath string) error {
 		if err := s.db.CreateTask(task); err != nil {
 			return fmt.Errorf("failed to create task from workflow run: %w", err)
 		}
+		s.maybeNotifyTaskReview("", task)
 		taskUpdated = true
 	} else {
+		oldStatus := task.Status
 		// Existing task: synchronize status and PR if run is further along
 		if status == "DONE" {
 			if task.CompletedAt == nil {
@@ -303,26 +305,64 @@ func (s *Server) ingestSingleWorkflowRun(jsonPath string) error {
 		}
 
 		if taskUpdated {
+			if err := s.db.UpdateTask(task); err == nil {
+				s.maybeNotifyTaskReview(oldStatus, task)
+			}
+		}
+	}
+
+	if run.Node != "" {
+		nodeUpdated := false
+		for i := range task.Workers {
+			w := &task.Workers[i]
+			if w.IsActive && w.WorkflowNode != run.Node {
+				w.WorkflowNode = run.Node
+				nodeUpdated = true
+			}
+		}
+		for i := range task.Workstreams {
+			ws := &task.Workstreams[i]
+			if run.Repo == "" || strings.EqualFold(ws.RepoNodePath, run.Repo) {
+				if ws.WorkflowNode != run.Node {
+					ws.WorkflowNode = run.Node
+					ws.UpdatedAt = time.Now().UTC()
+					nodeUpdated = true
+				}
+			}
+		}
+		if run.Node == "N14" || run.Node == "N15" {
+			if s.unlockSequentialWorkstreams(task, run.Repo) {
+				nodeUpdated = true
+			}
+		}
+		if run.Node == "N15" {
+			s.completeAndCloseTaskSession(task, nil)
+		}
+		if nodeUpdated {
 			_ = s.db.UpdateTask(task)
 		}
 	}
 
 	// Attach companion deliverables
-	if _, err := os.Stat(briefPath); err == nil {
+	if data, err := readWorkflowFileBounded(briefPath, 1*1024*1024); err == nil {
 		_ = s.db.InsertTaskDeliverable(&TaskDeliverable{
-			TaskID:   task.ID,
-			Kind:     "plan",
-			Title:    "Change Brief",
-			FilePath: briefPath,
+			TaskID:    task.ID,
+			Kind:      "plan",
+			Title:     "Change Brief",
+			FilePath:  briefPath,
+			Provider:  "local",
+			ContentMD: string(data),
 		})
 	}
 
-	if _, err := os.Stat(retroPath); err == nil {
+	if data, err := readWorkflowFileBounded(retroPath, 1*1024*1024); err == nil {
 		_ = s.db.InsertTaskDeliverable(&TaskDeliverable{
-			TaskID:   task.ID,
-			Kind:     "retrospective",
-			Title:    "Retrospective",
-			FilePath: retroPath,
+			TaskID:    task.ID,
+			Kind:      "retrospective",
+			Title:     "Retrospective",
+			FilePath:  retroPath,
+			Provider:  "local",
+			ContentMD: string(data),
 		})
 
 		// Parse retro proposals into NEW discovered inbox tasks
@@ -336,6 +376,7 @@ func (s *Server) ingestSingleWorkflowRun(jsonPath string) error {
 				Kind:     "mockup",
 				Title:    filepath.Base(art),
 				FilePath: art,
+				Provider: "local",
 			})
 		}
 	}
@@ -344,24 +385,7 @@ func (s *Server) ingestSingleWorkflowRun(jsonPath string) error {
 }
 
 func mapWorkflowNodeToTaskStatus(node string) (string, string) {
-	n := strings.ToUpper(strings.TrimSpace(node))
-	switch n {
-	case "N0", "N1":
-		return "NEW", "ready"
-	case "N2", "N3", "N4", "N5":
-		return "IN_PROGRESS", "active"
-	case "N6", "N7", "N8":
-		return "REVIEW", "task_review"
-	case "N9", "N10", "N11", "N12", "N13":
-		return "REVIEW", "in_review"
-	case "N14", "N15":
-		return "DONE", "completed"
-	default:
-		if strings.HasPrefix(n, "N") {
-			return "IN_PROGRESS", "active"
-		}
-		return "IN_PROGRESS", "active"
-	}
+	return ClassifyWorkflowNodeState(node, StateWorking, false)
 }
 
 func extractBriefMetadata(briefPath string) (title string, notes string) {

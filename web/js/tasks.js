@@ -1,8 +1,9 @@
 import { state } from './state.js';
-import { fetchTasks, createTask, updateTask, deleteTask, fetchStandup, mergeTaskPR, fetchAgentStatuses, provisionAgents, fetchAllAgentStatuses, provisionAllHosts } from './api.js';
+import { fetchTasks, createTask, updateTask, deleteTask, fetchStandup, mergeTaskPR, fetchAgentStatuses, provisionAgents, fetchAllAgentStatuses, provisionAllHosts, syncSkillsRepo } from './api.js';
 import { escapeHtml } from './utils.js';
 import { activateTab, openSessionInTab } from './tabs.js';
 import { showModal, hideModal } from './modals.js';
+import { renderTree } from './tree.js';
 
 let boardTasks = [];
 let currentGroupFilter = 'all';
@@ -110,6 +111,8 @@ export async function refreshWorkBoard() {
     const tasks = await fetchTasks();
     if (Array.isArray(tasks)) {
       boardTasks = tasks;
+      state.tasks = boardTasks;
+      try { renderTree(); } catch (_) {}
     }
   } catch (err) {
     console.warn('Failed to refresh tasks:', err);
@@ -271,6 +274,46 @@ function safeUrl(rawUrl) {
   return '#';
 }
 
+export function getDeliverableIcon(d) {
+  if (!d) return '📦';
+  const provider = (d.provider || '').toLowerCase();
+  if (provider === 'gdocs') return '📄';
+  if (provider === 'gslides') return '📊';
+  if (provider === 'gsheets') return '📈';
+  if (provider === 'gdrive') return '📁';
+  if (provider === 'claude_artifact') return '🟠';
+  if (provider === 'github') return '🐙';
+
+  const kind = (d.kind || '').toLowerCase();
+  if (kind === 'learnings') return '🧠';
+  if (kind === 'plan') return '📋';
+  if (kind === 'prd') return '📝';
+  if (kind === 'retro' || kind === 'retrospective') return '🔍';
+  if (kind === 'html_ui' || kind === 'mockup') return '🎨';
+  if (kind === 'video') return '📹';
+  if (kind === 'screenshot') return '🖼️';
+  return '📦';
+}
+
+export function showDeliverableContentModal(deliverable) {
+  if (!deliverable) return;
+  const content = deliverable.content_md || '';
+  let externalLinkBtn = '';
+  if (deliverable.url || deliverable.file_path) {
+    const targetUrl = safeUrl(deliverable.url || `/v1/files/content?path=${encodeURIComponent(deliverable.file_path)}`);
+    externalLinkBtn = `<a href="${escapeHtml(targetUrl)}" target="_blank" rel="noopener noreferrer" class="btn btn-primary">↗ Open External Link</a>`;
+  }
+  showModal(deliverable.title || 'Deliverable Content', `
+    <div style="max-height: 70vh; overflow-y: auto; padding: 12px; background: var(--bg-card); border-radius: 6px; border: 1px solid var(--border-color);">
+      <pre style="white-space: pre-wrap; font-family: var(--font-mono); font-size: 12px; line-height: 1.5; color: var(--text-main); margin: 0;">${escapeHtml(content)}</pre>
+    </div>
+  `, `
+    ${externalLinkBtn}
+    <button class="btn btn-secondary" id="mBtnCloseDeliverableModal">Close</button>
+  `);
+  document.getElementById('mBtnCloseDeliverableModal')?.addEventListener('click', hideModal);
+}
+
 function renderTaskCards(tasks) {
   if (tasks.length === 0) {
     return `<div class="kanban-empty-state">No tasks</div>`;
@@ -284,36 +327,92 @@ function renderTaskCards(tasks) {
     }).join(' ');
 
     const projectTag = task.project_name ? `<span class="task-project-tag">${escapeHtml(task.project_name)}</span>` : '';
+    const kindBadge = task.task_kind === 'design'
+      ? `<span class="task-kind-badge" title="Design Task">🎨 Design</span>`
+      : `<span class="task-kind-badge" title="Code Task">⚙️ Code</span>`;
+
+    let activeWorkflowNode = '';
+    if (task.workers) {
+      for (const w of task.workers) {
+        if (w.workflow_node) {
+          activeWorkflowNode = w.workflow_node;
+          break;
+        }
+      }
+    }
+    if (!activeWorkflowNode && task.workstreams) {
+      for (const ws of task.workstreams) {
+        if (ws.workflow_node) {
+          activeWorkflowNode = ws.workflow_node;
+          break;
+        }
+      }
+    }
+    const nodeBadge = activeWorkflowNode ? `<span class="task-node-badge" title="dev-workflow ${escapeHtml(activeWorkflowNode)}">[${escapeHtml(activeWorkflowNode)}]</span>` : '';
+
     const substatusDot = getSubstatusBadge(task.substatus);
 
     const workerPills = (task.workers || []).map(w => {
       const activeClass = w.is_active ? 'active' : 'idle';
       const icon = w.agent?.includes('claude') ? '🟠' : w.agent?.includes('antigravity') ? '🟣' : '🟢';
+      const nodeText = w.workflow_node ? ` [${escapeHtml(w.workflow_node)}]` : '';
       return `<button class="task-worker-pill ${activeClass}" data-session-id="${escapeHtml(w.session_id)}" title="Focus session: ${escapeHtml(w.session_id)}">
-        ${icon} ${escapeHtml(w.agent || 'agent')} @${escapeHtml(w.host || 'local')}
+        ${icon} ${escapeHtml(w.agent || 'agent')}${nodeText} @${escapeHtml(w.host || 'local')}
       </button>`;
     }).join('');
 
-    const deliverablesHtml = (task.deliverables || []).map(d => {
-      const kindIcon = d.kind === 'html_ui' ? '🎨' : d.kind === 'video' ? '📹' : d.kind === 'plan' ? '📝' : '📦';
+    const workstreamsHtml = (task.workstreams || []).length > 0 ? `<div class="task-workstreams-bar">` + (task.workstreams || []).map(ws => {
+      const cleanStatus = (ws.status || 'new').toLowerCase().replace(/[^a-z0-9_]/g, '');
+      const statusClass = `status-${cleanStatus}`;
+      const icon = ws.status === 'DONE' ? '✓' : ws.status === 'IN_PROGRESS' ? '▶' : ws.status === 'QUEUED' ? '⏳' : '○';
+      const nodeLabel = ws.workflow_node ? ` [${escapeHtml(ws.workflow_node)}]` : '';
+      const depTitle = ws.depends_on ? ` (depends on: ${escapeHtml(ws.depends_on)})` : '';
+      return `<span class="task-workstream-pill ${statusClass}" title="${escapeHtml(ws.repo_node_path)}: ${escapeHtml(ws.status)}${depTitle}">
+        ${icon} ${escapeHtml(ws.repo_node_path)}${nodeLabel}
+      </span>`;
+    }).join('') + `</div>` : '';
+
+    const deliverablesHtml = (task.deliverables || []).map((d, idx) => {
+      const kindIcon = getDeliverableIcon(d);
+      const isContentMD = !!(d.content_md && d.content_md.trim());
+      if (isContentMD) {
+        return `<button class="task-deliverable-chip btn-view-deliverable-md" data-task-id="${escapeHtml(task.id)}" data-del-idx="${idx}" title="View ${escapeHtml(d.title)}">
+          ${kindIcon} ${escapeHtml(d.title)}
+        </button>`;
+      }
       const targetUrl = safeUrl(d.url || (d.file_path ? `/v1/files/content?path=${encodeURIComponent(d.file_path)}` : '#'));
-      return `<a href="${escapeHtml(targetUrl)}" target="_blank" rel="noopener noreferrer" class="task-deliverable-chip" title="${escapeHtml(d.title)}">
+      return `<a href="${escapeHtml(targetUrl)}" target="_blank" rel="noopener noreferrer" class="task-deliverable-chip" title="${escapeHtml(d.title)} (${escapeHtml(d.provider || d.kind)})">
         ${kindIcon} ${escapeHtml(d.title)}
       </a>`;
     }).join('');
 
     // Contextual actions
     let actionButtons = '';
-    if (task.substatus === 'blocked' && task.blocker_question) {
+    if (task.substatus === 'plan_review') {
+      actionButtons += `<div class="task-blocker-callout" style="background: rgba(14, 165, 233, 0.1); border-color: rgba(14, 165, 233, 0.3);">
+        <div class="task-blocker-q" style="color: #7dd3fc;">📋 <strong>Plan Ready:</strong> Implementation plan ready for review</div>
+        <button class="btn btn-primary btn-xs btn-approve-plan" data-task-id="${escapeHtml(task.id)}">✅ Approve Plan</button>
+      </div>`;
+    } else if (task.substatus === 'stalled') {
+      actionButtons += `<div class="task-blocker-callout" style="background: rgba(245, 158, 11, 0.1); border-color: rgba(245, 158, 11, 0.3);">
+        <div class="task-blocker-q" style="color: #fcd34d;">⏳ <strong>Stalled:</strong> Session is idle during active workflow node</div>
+        <button class="btn btn-warning btn-xs btn-nudge-task" data-task-id="${escapeHtml(task.id)}">▶ Nudge</button>
+      </div>`;
+    } else if (task.substatus === 'blocked' && task.blocker_question) {
       actionButtons += `<div class="task-blocker-callout">
         <div class="task-blocker-q">⚠️ <strong>Question:</strong> ${escapeHtml(task.blocker_question)}</div>
+        <button class="btn btn-warning btn-xs btn-unblock-task" data-task-id="${escapeHtml(task.id)}">💬 Answer / Unblock</button>
+      </div>`;
+    } else if (task.substatus === 'question') {
+      actionButtons += `<div class="task-blocker-callout" style="background: rgba(245, 158, 11, 0.1); border-color: rgba(245, 158, 11, 0.3);">
+        <div class="task-blocker-q" style="color: #fcd34d;">❓ <strong>Question:</strong> Agent requires decision or clarification</div>
         <button class="btn btn-warning btn-xs btn-unblock-task" data-task-id="${escapeHtml(task.id)}">💬 Answer / Unblock</button>
       </div>`;
     }
 
     if (task.pr_url) {
       const cleanPrUrl = safeUrl(task.pr_url);
-      const canMerge = task.status !== 'DONE' && (task.status === 'REVIEW' || task.substatus === 'approved') && task.pr_state !== 'MERGED';
+      const canMerge = task.status !== 'DONE' && (task.status === 'REVIEW' || task.substatus === 'approved' || task.substatus === 'pr_review') && task.pr_state !== 'MERGED';
       actionButtons += `<div class="task-pr-bar">
         <a href="${escapeHtml(cleanPrUrl)}" target="_blank" rel="noopener noreferrer" class="task-pr-link">
           🐙 PR #${escapeHtml(String(task.pr_number || ''))} (${escapeHtml(task.pr_state || 'OPEN')})
@@ -328,6 +427,8 @@ function renderTaskCards(tasks) {
       <div class="task-card" data-task-id="${escapeHtml(task.id)}">
         <div class="task-card-header">
           <div class="task-card-tags">
+            ${kindBadge}
+            ${nodeBadge}
             ${trackerBadges}
             ${projectTag}
           </div>
@@ -335,6 +436,7 @@ function renderTaskCards(tasks) {
         </div>
         <div class="task-card-title">${escapeHtml(task.title)}</div>
         ${task.notes ? `<div class="task-card-notes">${escapeHtml(task.notes)}</div>` : ''}
+        ${workstreamsHtml}
         ${actionButtons}
         ${deliverablesHtml ? `<div class="task-card-deliverables">${deliverablesHtml}</div>` : ''}
         <div class="task-card-footer">
@@ -353,7 +455,7 @@ function getSubstatusBadge(substatus) {
   if (!substatus) return '';
   const s = substatus.toLowerCase();
   let color = 'var(--text-muted)';
-  let label = substatus;
+  let label = substatus.replace('_', ' ');
 
   if (s === 'active' || s === 'running') {
     color = 'var(--accent-green)';
@@ -361,6 +463,18 @@ function getSubstatusBadge(substatus) {
   } else if (s === 'blocked') {
     color = 'var(--accent-red)';
     label = 'blocked';
+  } else if (s === 'question') {
+    color = 'var(--accent-amber)';
+    label = 'question';
+  } else if (s === 'plan_review') {
+    color = 'var(--accent-cyan)';
+    label = 'plan review';
+  } else if (s === 'stalled') {
+    color = 'var(--accent-amber)';
+    label = 'stalled';
+  } else if (s === 'pr_review') {
+    color = 'var(--accent-amber)';
+    label = 'pr review';
   } else if (s === 'approved') {
     color = 'var(--accent-cyan)';
     label = 'approved';
@@ -370,6 +484,12 @@ function getSubstatusBadge(substatus) {
   } else if (s === 'completed') {
     color = 'var(--accent-green)';
     label = 'completed';
+  } else if (s === 'ready') {
+    color = 'var(--accent-cyan)';
+    label = 'ready';
+  } else if (s === 'discovered') {
+    color = 'var(--text-muted)';
+    label = 'discovered';
   }
 
   return `<span class="task-substatus-badge" style="--substatus-color: ${color};">
@@ -431,12 +551,15 @@ function attachCardEventListeners() {
       e.stopPropagation();
       const taskId = btn.getAttribute('data-task-id');
       const task = boardTasks.find(t => t.id === taskId);
-      if (task && task.workers && task.workers.length > 0) {
-        switchAppMode('workspace');
-        const sId = task.workers[0].session_id;
-        const session = state.sessions.find(s => s.id === sId);
-        if (session) openSessionInTab(session);
-        else activateTab(sId);
+      if (task) {
+        const activeWorker = (task.workers || []).find(w => w.is_active) || (task.workers && task.workers[0]);
+        if (activeWorker && activeWorker.session_id) {
+          switchAppMode('workspace');
+          const sId = activeWorker.session_id;
+          const session = state.sessions.find(s => s.id === sId);
+          if (session) openSessionInTab(session);
+          else activateTab(sId);
+        }
       }
     });
   });
@@ -468,6 +591,91 @@ function attachCardEventListeners() {
       }
     });
   });
+
+async function sendSessionRespondSafe(sessionId, action, value) {
+  if (!sessionId) return;
+  try {
+    await fetch('/v1/sessions/respond', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: sessionId, action, value })
+    });
+  } catch (_) {
+    // Ignore network errors if session daemon is offline or detached
+  }
+}
+
+  // 5. Approve plan button -> advances to N3 / active
+  document.querySelectorAll('.btn-approve-plan').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const taskId = btn.getAttribute('data-task-id');
+      const task = boardTasks.find(t => t.id === taskId);
+      if (task) {
+        btn.disabled = true;
+        btn.textContent = '⏳ Approving...';
+        try {
+          await updateTask({
+            ...task,
+            status: 'IN_PROGRESS',
+            substatus: 'active',
+            workflow_node: 'N3'
+          });
+          const activeWorker = (task.workers || []).find(w => w.is_active) || (task.workers && task.workers[0]);
+          if (activeWorker && activeWorker.session_id) {
+            await sendSessionRespondSafe(activeWorker.session_id, 'answer', 'Approved. Proceed to next dev-workflow node.');
+          }
+          refreshWorkBoard();
+        } catch (err) {
+          alert(`Failed to approve plan: ${err.message}`);
+          btn.disabled = false;
+          btn.textContent = '✅ Approve Plan';
+        }
+      }
+    });
+  });
+
+  // 6. Nudge stalled task button
+  document.querySelectorAll('.btn-nudge-task').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const taskId = btn.getAttribute('data-task-id');
+      const task = boardTasks.find(t => t.id === taskId);
+      if (task) {
+        btn.disabled = true;
+        btn.textContent = '⏳ Nudging...';
+        try {
+          await updateTask({
+            ...task,
+            status: 'IN_PROGRESS',
+            substatus: 'active'
+          });
+          const activeWorker = (task.workers || []).find(w => w.is_active) || (task.workers && task.workers[0]);
+          if (activeWorker && activeWorker.session_id) {
+            await sendSessionRespondSafe(activeWorker.session_id, 'answer', 'Continue dev-workflow from current node.');
+          }
+          refreshWorkBoard();
+        } catch (err) {
+          alert(`Failed to nudge task: ${err.message}`);
+          btn.disabled = false;
+          btn.textContent = '▶ Nudge';
+        }
+      }
+    });
+  });
+
+  // 7. View deliverable Markdown modal button
+  document.querySelectorAll('.btn-view-deliverable-md').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const taskId = btn.getAttribute('data-task-id');
+      const delIdx = parseInt(btn.getAttribute('data-del-idx'), 10);
+      const task = boardTasks.find(t => t.id === taskId);
+      if (task && task.deliverables && task.deliverables[delIdx]) {
+        showDeliverableContentModal(task.deliverables[delIdx]);
+      }
+    });
+  });
 }
 
 export function showNewTaskModal() {
@@ -480,6 +688,19 @@ export function showNewTaskModal() {
       <div>
         <label style="font-size: 11px; font-weight: 600; color: var(--text-muted); display: block; margin-bottom: 4px;">TASK TITLE</label>
         <input type="text" id="mTaskTitle" placeholder="e.g. Implement WebSocket reconnection" style="width: 100%; background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px; padding: 8px 10px; font-size: 13px;" />
+      </div>
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+        <div>
+          <label style="font-size: 11px; font-weight: 600; color: var(--text-muted); display: block; margin-bottom: 4px;">TASK KIND</label>
+          <select id="mTaskKind" style="width: 100%; background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px; padding: 7px 10px; font-size: 12px;">
+            <option value="code" selected>⚙️ Code (Engineering)</option>
+            <option value="design">🎨 Design (Prototyping / Research)</option>
+          </select>
+        </div>
+        <div>
+          <label style="font-size: 11px; font-weight: 600; color: var(--text-muted); display: block; margin-bottom: 4px;">DEV-WORKFLOW NODE</label>
+          <input type="text" id="mTaskWorkflowNode" placeholder="e.g. N0, N1, N2" value="N0" style="width: 100%; background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px; padding: 7px 10px; font-size: 12px;" />
+        </div>
       </div>
       <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
         <div>
@@ -537,6 +758,8 @@ export function showNewTaskModal() {
     }
     const groupName = document.getElementById('mTaskGroup')?.value?.trim() || 'Personal';
     const projectName = document.getElementById('mTaskProject')?.value?.trim() || 'General';
+    const taskKind = document.getElementById('mTaskKind')?.value || 'code';
+    const workflowNode = document.getElementById('mTaskWorkflowNode')?.value?.trim() || '';
     const status = document.getElementById('mTaskStatus')?.value || 'IN_PROGRESS';
     const substatus = document.getElementById('mTaskSubstatus')?.value?.trim() || 'active';
     const notes = document.getElementById('mTaskNotes')?.value?.trim() || '';
@@ -547,6 +770,8 @@ export function showNewTaskModal() {
       title,
       group_name: groupName,
       project_name: projectName,
+      task_kind: taskKind,
+      workflow_node: workflowNode,
       status,
       substatus,
       notes,
@@ -579,6 +804,19 @@ export function showEditTaskModal(task) {
       <div>
         <label style="font-size: 11px; font-weight: 600; color: var(--text-muted); display: block; margin-bottom: 4px;">TASK TITLE</label>
         <input type="text" id="mEditTitle" value="${escapeHtml(task.title)}" style="width: 100%; background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px; padding: 8px 10px; font-size: 13px;" />
+      </div>
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+        <div>
+          <label style="font-size: 11px; font-weight: 600; color: var(--text-muted); display: block; margin-bottom: 4px;">TASK KIND</label>
+          <select id="mEditKind" style="width: 100%; background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px; padding: 7px 10px; font-size: 12px;">
+            <option value="code" ${task.task_kind !== 'design' ? 'selected' : ''}>⚙️ Code (Engineering)</option>
+            <option value="design" ${task.task_kind === 'design' ? 'selected' : ''}>🎨 Design (Prototyping / Research)</option>
+          </select>
+        </div>
+        <div>
+          <label style="font-size: 11px; font-weight: 600; color: var(--text-muted); display: block; margin-bottom: 4px;">DEV-WORKFLOW NODE</label>
+          <input type="text" id="mEditWorkflowNode" value="${escapeHtml(task.workflow_node || (task.workers && task.workers[0] && task.workers[0].workflow_node) || '')}" placeholder="e.g. N0, N2, N11" style="width: 100%; background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px; padding: 7px 10px; font-size: 12px;" />
+        </div>
       </div>
       <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
         <div>
@@ -659,6 +897,8 @@ export function showEditTaskModal(task) {
       title: titleVal,
       group_name: document.getElementById('mEditGroup')?.value?.trim() || task.group_name || 'Personal',
       project_name: document.getElementById('mEditProject')?.value?.trim() || task.project_name || 'General',
+      task_kind: document.getElementById('mEditKind')?.value || task.task_kind || 'code',
+      workflow_node: document.getElementById('mEditWorkflowNode')?.value?.trim() || '',
       status: document.getElementById('mEditStatus')?.value || task.status,
       substatus: substatusInput ? substatusInput.value.trim() : (task.substatus || ''),
       notes: document.getElementById('mEditNotes')?.value?.trim() || '',
@@ -966,6 +1206,114 @@ export async function showAgentSetupModal() {
     `;
   }
 
+  function renderSkillsRepoCard(h) {
+    if (!h.online) return '';
+
+    const sr = h.skillsRepo;
+    const isCloned = sr && sr.cloned;
+
+    if (isCloned) {
+      let statusBadge = '<span style="background: rgba(34, 197, 94, 0.12); color: var(--accent-green); border: 1px solid rgba(34, 197, 94, 0.3); padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600;">Up to Date</span>';
+      if (sr.dirty) {
+        statusBadge = '<span style="background: rgba(239, 68, 68, 0.12); color: var(--accent-red); border: 1px solid rgba(239, 68, 68, 0.3); padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600;">⚠️ Dirty Working Tree</span>';
+      } else if (sr.behind_count > 0) {
+        statusBadge = `<span style="background: rgba(234, 179, 8, 0.12); color: #eab308; border: 1px solid rgba(234, 179, 8, 0.3); padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600;">Behind by ${sr.behind_count} commits</span>`;
+      }
+
+      const installerText = sr.installer_found ? '✓ install.sh found' : 'Fallback directory copy';
+
+      return `
+        <div style="background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 6px; padding: 14px; display: flex; flex-direction: column; gap: 8px;">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <div style="display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 14px; color: var(--text-main);">
+              <span>📦</span> Shared Skills Repository
+              <span style="background: rgba(34, 197, 94, 0.15); color: var(--accent-green); padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600;">Cloned</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 10px;">
+              ${statusBadge}
+              <button class="btn btn-secondary btn-sync-skills-repo" data-host-key="${escapeHtml(h.host)}" style="padding: 3px 10px; font-size: 11px;">
+                🔄 Sync Skills
+              </button>
+            </div>
+          </div>
+
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 4px; font-size: 12px;">
+            <div style="background: var(--bg-subtle, rgba(0,0,0,0.15)); padding: 8px; border-radius: 4px; border: 1px solid var(--border-color);">
+              <div style="color: var(--text-muted); font-size: 11px; margin-bottom: 2px;">LOCAL REPOSITORY</div>
+              <div style="font-family: monospace; font-size: 11px; word-break: break-all; margin-bottom: 2px;">${escapeHtml(sr.repo_path || '')}</div>
+              <div style="color: var(--text-muted); font-size: 10px;">Branch: <code>${escapeHtml(sr.branch || 'main')}</code> @ <code>${escapeHtml(sr.local_sha || '')}</code></div>
+            </div>
+            <div style="background: var(--bg-subtle, rgba(0,0,0,0.15)); padding: 8px; border-radius: 4px; border: 1px solid var(--border-color);">
+              <div style="color: var(--text-muted); font-size: 11px; margin-bottom: 2px;">SYNC & INSTALLER</div>
+              <div style="color: var(--text-main); font-size: 11px; margin-bottom: 2px;">${installerText}</div>
+              <div style="color: var(--text-muted); font-family: monospace; font-size: 10px; word-break: break-all;">${sr.repo_url ? escapeHtml(sr.repo_url) : 'Local repository'}</div>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    // Not cloned or not configured
+    // Check if any other host in cachedHostStatuses has a repo_url configured
+    const otherWithURL = cachedHostStatuses.find(other => other.skillsRepo && other.skillsRepo.repo_url);
+    const knownURL = (sr && sr.repo_url) || (otherWithURL ? otherWithURL.skillsRepo.repo_url : '');
+    const defaultRepoName = knownURL ? knownURL.split('/').pop().replace(/\.git$/, '') : 'skills';
+    const suggestedPath = (sr && sr.suggested_path) || (defaultRepoName ? `~/Work/Personal/${defaultRepoName}` : '~/Work/Personal/skills');
+
+    if (knownURL) {
+      return `
+        <div style="background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 6px; padding: 14px; display: flex; flex-direction: column; gap: 10px;">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <div style="display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 14px; color: var(--text-main);">
+              <span>📦</span> Shared Skills Repository
+              <span style="background: rgba(234, 179, 8, 0.15); color: #eab308; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600;">Not Cloned</span>
+            </div>
+            <span style="font-size: 11px; color: var(--text-muted);">Configured on cluster</span>
+          </div>
+
+          <div style="font-size: 12px; color: var(--text-muted);">
+            Clone <code>${escapeHtml(knownURL)}</code> onto this host to sync shared agent skills.
+          </div>
+
+          <div style="display: flex; gap: 8px; align-items: center;">
+            <input type="text" class="input-skills-target-path" data-host-key="${escapeHtml(h.host)}" value="${escapeHtml(suggestedPath)}" style="flex: 1; padding: 5px 8px; font-size: 12px; font-family: monospace; background: var(--bg-subtle, rgba(0,0,0,0.15)); border: 1px solid var(--border-color); border-radius: 4px; color: var(--text-main);" placeholder="Target clone directory" />
+            <button class="btn btn-primary btn-clone-skills-repo" data-host-key="${escapeHtml(h.host)}" data-repo-url="${escapeHtml(knownURL)}" style="padding: 5px 12px; font-size: 12px; white-space: nowrap;">
+              📥 Clone & Sync
+            </button>
+          </div>
+        </div>
+      `;
+    }
+
+    // No repo URL known yet
+    return `
+      <div style="background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 6px; padding: 14px; display: flex; flex-direction: column; gap: 10px;">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <div style="display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 14px; color: var(--text-main);">
+            <span>📦</span> Shared Skills Repository
+            <span style="background: rgba(156, 163, 175, 0.15); color: var(--text-muted); padding: 2px 8px; border-radius: 10px; font-size: 11px;">Not Configured</span>
+          </div>
+        </div>
+
+        <div style="font-size: 12px; color: var(--text-muted);">
+          Connect an external Git repository to distribute and synchronize custom skills across all agents.
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 8px;">
+          <div style="display: flex; gap: 8px;">
+            <input type="text" class="input-custom-repo-url" data-host-key="${escapeHtml(h.host)}" placeholder="Git URL (e.g. https://github.com/org/skills.git)" style="flex: 1; padding: 5px 8px; font-size: 12px; font-family: monospace; background: var(--bg-subtle, rgba(0,0,0,0.15)); border: 1px solid var(--border-color); border-radius: 4px; color: var(--text-main);" />
+            <input type="text" class="input-custom-repo-path" data-host-key="${escapeHtml(h.host)}" placeholder="Destination path (e.g. ~/Work/Personal/skills)" style="flex: 1; padding: 5px 8px; font-size: 12px; font-family: monospace; background: var(--bg-subtle, rgba(0,0,0,0.15)); border: 1px solid var(--border-color); border-radius: 4px; color: var(--text-main);" />
+          </div>
+          <div style="display: flex; justify-content: flex-end;">
+            <button class="btn btn-secondary btn-configure-custom-skills-repo" data-host-key="${escapeHtml(h.host)}" style="padding: 4px 12px; font-size: 12px;">
+              📥 Configure & Sync
+            </button>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
   function renderHostSections() {
     const container = document.getElementById('mAgentCardsContainer');
     const tabsContainer = document.getElementById('mAgentHostTabs');
@@ -1039,12 +1387,16 @@ export async function showAgentSetupModal() {
             ⚠️ Host is offline or unreachable: ${escapeHtml(h.error || 'Connection failed')}
           </div>
         `;
-      } else if (!h.agents || h.agents.length === 0) {
-        contentHtml = '<div style="color: var(--text-muted); padding: 12px;">No supported agents found on this host.</div>';
       } else {
+        const skillsCardHtml = renderSkillsRepoCard(h);
+        const agentsHtml = (!h.agents || h.agents.length === 0)
+          ? '<div style="color: var(--text-muted); padding: 12px;">No supported agents found on this host.</div>'
+          : `<div style="display: flex; flex-direction: column; gap: 10px;">${h.agents.map(a => renderAgentCard(a, h.version)).join('')}</div>`;
+
         contentHtml = `
-          <div style="display: flex; flex-direction: column; gap: 10px;">
-            ${h.agents.map(a => renderAgentCard(a, h.version)).join('')}
+          <div style="display: flex; flex-direction: column; gap: 12px;">
+            ${skillsCardHtml}
+            ${agentsHtml}
           </div>
         `;
       }
@@ -1090,6 +1442,102 @@ export async function showAgentSetupModal() {
           await loadStatuses();
         } catch (err) {
           alert(`Failed to configure ${target.displayName || target.host}: ${err.message}`);
+          btn.disabled = false;
+          btn.innerHTML = origText;
+        }
+      });
+    });
+
+    // Bind skills repo sync buttons
+    container.querySelectorAll('.btn-sync-skills-repo').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const hostKey = btn.getAttribute('data-host-key');
+        const target = cachedHostStatuses.find(h => h.host === hostKey);
+        if (!target) return;
+
+        const origText = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '🔄 Syncing...';
+        try {
+          await syncSkillsRepo(target.url, {
+            repo_path: target.skillsRepo?.repo_path || '',
+            repo_url: target.skillsRepo?.repo_url || ''
+          });
+          btn.innerHTML = '✓ Synced';
+          btn.style.color = 'var(--accent-green)';
+          await loadStatuses();
+        } catch (err) {
+          alert(`Failed to sync skills on ${target.displayName || target.host}: ${err.message}`);
+          btn.disabled = false;
+          btn.innerHTML = origText;
+        }
+      });
+    });
+
+    // Bind skills repo clone buttons
+    container.querySelectorAll('.btn-clone-skills-repo').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const hostKey = btn.getAttribute('data-host-key');
+        const repoURL = btn.getAttribute('data-repo-url');
+        const target = cachedHostStatuses.find(h => h.host === hostKey);
+        if (!target) return;
+
+        const safeKey = (window.CSS && CSS.escape) ? CSS.escape(hostKey) : hostKey;
+        const inputPath = container.querySelector(`.input-skills-target-path[data-host-key="${safeKey}"]`);
+        const targetPath = inputPath ? inputPath.value.trim() : '';
+
+        const origText = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '📥 Cloning...';
+        try {
+          await syncSkillsRepo(target.url, {
+            repo_path: targetPath,
+            repo_url: repoURL,
+            clone_if_missing: true
+          });
+          btn.innerHTML = '✓ Cloned & Synced';
+          btn.style.color = 'var(--accent-green)';
+          await loadStatuses();
+        } catch (err) {
+          alert(`Failed to clone skills on ${target.displayName || target.host}: ${err.message}`);
+          btn.disabled = false;
+          btn.innerHTML = origText;
+        }
+      });
+    });
+
+    // Bind custom skills repo configure buttons
+    container.querySelectorAll('.btn-configure-custom-skills-repo').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const hostKey = btn.getAttribute('data-host-key');
+        const target = cachedHostStatuses.find(h => h.host === hostKey);
+        if (!target) return;
+
+        const safeKey = (window.CSS && CSS.escape) ? CSS.escape(hostKey) : hostKey;
+        const inputURL = container.querySelector(`.input-custom-repo-url[data-host-key="${safeKey}"]`);
+        const inputPath = container.querySelector(`.input-custom-repo-path[data-host-key="${safeKey}"]`);
+        const urlVal = inputURL ? inputURL.value.trim() : '';
+        const pathVal = inputPath ? inputPath.value.trim() : '';
+
+        if (!urlVal) {
+          alert('Please enter a Git repository URL');
+          return;
+        }
+
+        const origText = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '📥 Configuring...';
+        try {
+          await syncSkillsRepo(target.url, {
+            repo_path: pathVal,
+            repo_url: urlVal,
+            clone_if_missing: true
+          });
+          btn.innerHTML = '✓ Configured';
+          btn.style.color = 'var(--accent-green)';
+          await loadStatuses();
+        } catch (err) {
+          alert(`Failed to configure skills on ${target.displayName || target.host}: ${err.message}`);
           btn.disabled = false;
           btn.innerHTML = origText;
         }

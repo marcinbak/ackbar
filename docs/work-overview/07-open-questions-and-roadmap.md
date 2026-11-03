@@ -32,30 +32,51 @@
 
 ---
 
-## 3. Phased Implementation Roadmap
+## 3. Unified 5-Phase Implementation Roadmap
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
 │                        IMPLEMENTATION PHASES                           │
 │                                                                        │
-│  PHASE 1: CORE DATA MODEL & DAEMON ENGINE                              │
-│  • SQLite tables: `tasks`, `task_external_refs`, `task_workers`.       │
-│  • REST API: `GET/POST /v1/tasks`, `POST /v1/tasks/event`.             │
-│  • Ambient Git branch / PR regex parser.                               │
+│  PHASE 1: 3-WAY LWW PEER SYNC & DYNAMIC `node_host_paths` (DONE)       │
+│  • Uniform LWW peer sync across `macbook`, `macmini` & `legion` for    │
+│    `tree_nodes`, `node_host_paths`, `tasks`, `task_deliverables`, and  │
+│    session metadata (`node_path`, `custom_title`, `is_later`).         │
+│  • Implement startup/wake delta pull (`/v1/sync/state?since=<ts>`) and │
+│    `[offline]` badges for asleep hosts.                                │
 │                                                                        │
-│  PHASE 2: EMBEDDED WEB DASHBOARD & NAVIGATION                          │
-│  • Add `[📋 Work Board]` mode switcher to `web/index.html`.            │
-│  • Wire tab switching: Clicking worker pill focuses session tab.       │
-│  • Progressive disclosure card layout & 4-pillar columns.              │
+│  PHASE 2: ZERO-INPUT `⚓ SUPERVISORS` & `📋 TASKS` TREE SECTIONS (DONE)│
+│  • Add `is_supervisor` flag, `[⚓ Supervisors]` sidebar switcher, and   │
+│    1-tap `[+ ⚓ New Supervisor]` (zero upfront inputs).                 │
+│  • Add `bind_supervisor_session` MCP tool to auto-bind project & title │
+│    on the first turn, plus dedicated `📋 Tasks` folder grouping.        │
 │                                                                        │
-│  PHASE 3: HOOKS, DEV-WORKFLOW & DISCOVERY MCP                          │
-│  • Wire `PreToolUse`/`PostToolUse` for `gh pr create` & test runners.   │
-│  • Ingest `dev-workflow` N15 `.retro.md` sidecars.                     │
-│  • Deploy `propose_task` MCP tool for in-flight bug triage.            │
+│  PHASE 3: NATIVE CLOUD ARTIFACTS & `dev-workflow` NODE MAPPING (DONE)  │
+│  • Support Product/Design tasks (`kind="design"`, `guard.py` bypassed) │
+│    and Code tasks (`kind="code"`, 1 Tmux session per repo workstream). │
+│  • Connect `attach_deliverable` to Claude Published Artifacts and      │
+│    Antigravity Google Workspace (`gdrive`/`gdocs`/`gslides`/`gsheets`) │
+│    + synced `content_md` for cross-host learnings.                     │
+│  • Map `dev-workflow` nodes (`N1`/`N2`/`N11`/`N15`) on `StateIdle`,    │
+│    auto-close Tmux at `N15`, and unlock sequential repos on `N14`.     │
 │                                                                        │
-│  PHASE 4: STANDUP SYNTHESIS & VOICE COMPANION                          │
-│  • Implement `/v1/standup` aggregation endpoint (grouped by project).  │
-│  • Connect to Voice Companion `/v1/briefings/synthesize`.              │
-│  • 1-Click `gh pr merge` action execution.                             │
+│  PHASE 4: VOICE COMPANION & 2-TIER LAZY SPEECH PIPELINE                │
+│  • Implement `POST /v1/sessions/summarize-speech` with `$0` stateless  │
+│    Haiku (`claude -p --model haiku`) and `(session_id, msg_idx)` cache.│
+│  • Add Tier 1 client Markdown speech sanitizer, `[🔊 Auto-Read]`,      │
+│    `[🎤 Mic]`, and per-message `[🔊 Read]` / `[↺ Read Again]` buttons. │
+│                                                                        │
+│  PHASE 5: MOBILE APP ALIGNMENT (`mobile/` FLUTTER CLIENT)              │
+│  • Replace flat `groupedSessionsProvider` (`projectDisplayName`) with  │
+│    hierarchical `tree_nodes` (`/v1/nodes?federated=true`) + Dart port  │
+│    of `resolveSessionNodePath()` so Mobile matches Web/TUI folders.    │
+│  • Add `[🌐 All Tree | ⚓ Supervisors]` switcher, 1-tap                 │
+│    `[+ ⚓ New Supervisor]` FAB, and `⚓ Supervisors` / `📋 Tasks` /      │
+│    `⏳ Later` / `✅ Done` folder subsections in `fleet_screen.dart`.    │
+│  • Add Mobile Work Board / Tasks view (`GET /v1/tasks?federated=true`) │
+│    with 1-tap links to hosted deliverables (Claude Artifacts / Google  │
+│    Docs & Slides) and `[⚡ Squash & Merge PR]`.                        │
+│  • Wire Voice Companion controls (`[🔊 Auto-Read]`, `[🎤 Mic]`,         │
+│    `[🔊 Read]`, `[↺ Read Again]`, quick chips) into `transcript_screen`│
 └────────────────────────────────────────────────────────────────────────┘
 ```

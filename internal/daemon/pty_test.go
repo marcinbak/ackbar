@@ -199,4 +199,13 @@ func TestPerformTmuxScroll_RemoteSSHAndControlJSON(t *testing.T) {
 	if len(calls) != 1 || calls[0][0] != "ssh" || calls[0][1] != "devbox" || !strings.Contains(calls[0][2], "scroll-up") {
 		t.Fatalf("Unexpected remote SSH call: %v", calls)
 	}
+
+	// Unsafe tmuxName characters must be rejected before shell interpolation
+	calls = nil
+	if err := performTmuxScroll("bad$(id)", false, "devbox", "up", 1, runner); err != nil {
+		t.Fatalf("performTmuxScroll(unsafe name) returned error: %v", err)
+	}
+	if len(calls) != 0 {
+		t.Fatalf("Expected 0 calls for unsafe tmuxName, got %v", calls)
+	}
 }

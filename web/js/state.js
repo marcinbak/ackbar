@@ -102,6 +102,7 @@ export const state = {
   expandedDoneGroups: loadExpandedDoneGroups(),
   collapsedLaterGroups: loadCollapsedLaterGroups(),
   expandedLaterGroups: loadExpandedLaterGroups(),
+  sidebarViewMode: 'all',
   searchQuery: '',
   showArchived: false,
   draggedSession: null,
@@ -140,6 +141,9 @@ export const el = {
   btnToggleArchived: document.getElementById('btnToggleArchived'),
   btnCollapseAll: document.getElementById('btnCollapseAll'),
   btnExpandAll: document.getElementById('btnExpandAll'),
+  btnSidebarModeAll: document.getElementById('btnSidebarModeAll'),
+  btnSidebarModeSupervisors: document.getElementById('btnSidebarModeSupervisors'),
+  btnNewSupervisor: document.getElementById('btnNewSupervisor'),
   sidebarPanel: document.getElementById('sidebarPanel'),
   sidebarResizer: document.getElementById('sidebarResizer'),
   // Right Inspector Pane elements

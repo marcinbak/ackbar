@@ -82,11 +82,15 @@ type Session struct {
 	IsUnread          bool      `json:"is_unread,omitempty"`
 	IsDone            bool      `json:"is_done,omitempty"`
 	IsLater           bool      `json:"is_later,omitempty"`
+	IsSupervisor      bool      `json:"is_supervisor,omitempty"`
+	CurrentTaskID     string    `json:"current_task_id,omitempty"`
 	LastStateChangeAt time.Time `json:"last_state_change_at,omitempty"`
 	UpdatedAt         time.Time `json:"updated_at,omitempty"`
 	AccountID         string    `json:"account_id,omitempty"`  // profile/account identifier (e.g. "work", "personal", "default")
 	EngineType        string    `json:"engine_type,omitempty"` // "tmux" (default) or "headless"
 	RunningSubagents  int       `json:"running_subagents,omitempty"`
+	HostOffline       bool      `json:"host_offline,omitempty"`
+	MetadataUpdatedAt time.Time `json:"metadata_updated_at,omitempty"`
 	OldID             string    `json:"old_id,omitempty"`      // populated during identity migration (e.g. placeholder tempUUID -> real native UUID)
 	MigratedTo        string    `json:"migrated_to,omitempty"` // populated if identity was migrated to another session ID
 }
@@ -109,11 +113,23 @@ type AgentAccount struct {
 	UpdatedAt   time.Time         `json:"updated_at"`
 }
 
+type NodeHostPath struct {
+	NodePath     string    `json:"node_path"`
+	Host         string    `json:"host"`
+	ProjectDir   string    `json:"project_dir"`
+	GitRemote    string    `json:"git_remote,omitempty"`
+	Capabilities []string  `json:"capabilities,omitempty"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
 type TreeNode struct {
-	Path       string    `json:"path"`        // e.g. "Work/ProjectY/ProjectY-web/analytics-integration"
-	ProjectDir string    `json:"project_dir"` // optional local/remote working directory
-	GitURL     string    `json:"git_url"`     // optional git remote URL
-	CreatedAt  time.Time `json:"created_at"`
+	Path       string         `json:"path"`        // e.g. "Work/ProjectY/ProjectY-web/analytics-integration"
+	ProjectDir string         `json:"project_dir"` // optional local/remote working directory
+	GitURL     string         `json:"git_url"`     // optional git remote URL
+	CreatedAt  time.Time      `json:"created_at"`
+	UpdatedAt  time.Time      `json:"updated_at,omitempty"`
+	DeletedAt  *time.Time     `json:"deleted_at,omitempty"`
+	HostPaths  []NodeHostPath `json:"host_paths,omitempty"`
 }
 
 type HostRecord struct {

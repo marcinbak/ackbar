@@ -127,6 +127,16 @@ func TestProvisioner_FullLifecycle(t *testing.T) {
 	if !strings.Contains(string(skillContent), "mcp__ackbar__report_blocker") {
 		t.Errorf("Expected report_blocker tool usage in deployed SKILL.md")
 	}
+
+	// Verify Antigravity skills in both config and antigravity-cli
+	agyConfigSkill := filepath.Join(tempHome, ".gemini", "config", "skills", "ackbar-tasks", "SKILL.md")
+	if _, err := os.Stat(agyConfigSkill); err != nil {
+		t.Errorf("Expected Antigravity config skill at %s: %v", agyConfigSkill, err)
+	}
+	agyCliSkill := filepath.Join(tempHome, ".gemini", "antigravity-cli", "skills", "ackbar-tasks", "SKILL.md")
+	if _, err := os.Stat(agyCliSkill); err != nil {
+		t.Errorf("Expected Antigravity CLI skill at %s: %v", agyCliSkill, err)
+	}
 }
 
 func TestProvisioner_MalformedJSONRefusesOverwrite(t *testing.T) {

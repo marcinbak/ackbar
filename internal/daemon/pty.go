@@ -39,7 +39,7 @@ func defaultPTYCommandRunner(name string, args ...string) ([]byte, error) {
 
 // performTmuxScroll executes tmux copy-mode scroll actions for mobile/web touch and page scrolling.
 func performTmuxScroll(tmuxName string, isLocal bool, sshTarget string, direction string, lines int, runCmd ptyCommandRunner) error {
-	if tmuxName == "" {
+	if tmuxName == "" || !validTaskIDRegex.MatchString(tmuxName) {
 		return nil
 	}
 	if runCmd == nil {

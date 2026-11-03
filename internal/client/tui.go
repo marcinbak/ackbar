@@ -91,11 +91,13 @@ type nodesMsg []*daemon.TreeNode
 type errorMsg string
 
 type TreeRow struct {
-	IsGroup   bool
-	GroupPath string
-	GroupName string
-	Session   *daemon.Session
-	Indent    int
+	IsGroup       bool
+	GroupPath     string
+	GroupName     string
+	Session       *daemon.Session
+	Indent        int
+	Section       string
+	SectionHeader string
 }
 
 type Model struct {
@@ -111,6 +113,7 @@ type Model struct {
 	termWidth             int
 	termHeight            int
 	archivedView          bool
+	supervisorsOnly       bool
 	collapsed             map[string]bool // groupPath -> collapsed state
 	confirmRestartSession *daemon.Session
 	viewingDocuments      *daemon.Session
@@ -579,6 +582,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if prevSess != nil && prevSess.IsUnread {
 				return m, m.markReadCmd(prevSess)
 			}
+
+		case "F", "tab":
+			m.supervisorsOnly = !m.supervisorsOnly
+			m.selectedIdx = 0
+			return m, nil
+
+		case "S":
+			return m, m.spawnSupervisorCmd()
 
 		case "space", "enter", "a":
 			if len(visibleRows) == 0 {
@@ -1134,54 +1145,30 @@ func (m *Model) reapplyHooksCmd(target string) tea.Cmd {
 	return func() tea.Msg {
 		if target == "local" {
 			if exe, err := os.Executable(); err == nil {
-				_ = exec.Command(exe, "setup-hooks").Run()
+				_ = exec.Command(exe, "setup-hooks", "--no-tui").Run()
 			}
 		} else {
-			remoteSetupScript := `export PATH=$PATH:$HOME/.local/bin:$HOME/go/bin
-python3 -c '
-import json, os
-home = os.path.expanduser("~")
-
-# 1. Claude Code Hooks (~/.claude/settings.json)
-claude_hook = os.path.join(home, ".local", "bin", "ackbar-hook") + " claude-code "
-claude_events = ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PermissionRequest", "Notification", "Stop"]
-claude_obj = {ev: [{"matcher": "", "hooks": [{"type": "command", "command": claude_hook + ev}]}] for ev in claude_events}
-claude_settings = os.path.join(home, ".claude", "settings.json")
-os.makedirs(os.path.dirname(claude_settings), exist_ok=True)
-cfg = {}
-if os.path.exists(claude_settings):
-    try:
-        with open(claude_settings) as f: cfg = json.load(f)
-    except: pass
-cfg["hooks"] = claude_obj
-with open(claude_settings, "w") as f: json.dump(cfg, f, indent=2)
-
-# Clean legacy hooks from ~/.claude.json if present
-legacy_p = os.path.join(home, ".claude.json")
-if os.path.exists(legacy_p):
-    try:
-        with open(legacy_p) as f: leg_cfg = json.load(f)
-        if "hooks" in leg_cfg:
-            del leg_cfg["hooks"]
-            with open(legacy_p, "w") as f: json.dump(leg_cfg, f, indent=2)
-    except: pass
-
-# 2. Antigravity Hooks
-agy_hook = os.path.join(home, ".local", "bin", "ackbar-hook") + " antigravity "
-agy_events = ["PreInvocation", "PostToolUse", "PermissionRequest", "PostInvocation"]
-agy_obj = {ev: [{"command": agy_hook + ev}] for ev in agy_events}
-for p in [os.path.join(home, ".gemini", "config", "hooks.json"), os.path.join(home, ".antigravity", "config", "hooks.json")]:
-    os.makedirs(os.path.dirname(p), exist_ok=True)
-    cfg = {}
-    if os.path.exists(p):
-        try:
-            with open(p) as f: cfg = json.load(f)
-        except: pass
-    cfg["hooks"] = agy_obj
-    with open(p, "w") as f: json.dump(cfg, f, indent=2)
-'`
-			_ = exec.Command("ssh", "-o", "BatchMode=yes", target, remoteSetupScript).Run()
+			_ = exec.Command("ssh", "-o", "BatchMode=yes", target, "export PATH=$PATH:$HOME/.local/bin:$HOME/go/bin; ~/.local/bin/ackbar setup-hooks --no-tui").Run()
 		}
+
+		// Also call POST /v1/agents/provision on the host's URL if reachable
+		var targetURL string
+		for _, h := range m.hosts {
+			if h.Name == target || (target == "local" && (h.Name == "local" || h.URL == "http://127.0.0.1:7777")) {
+				targetURL = h.URL
+				break
+			}
+		}
+		if targetURL != "" {
+			reqURL := fmt.Sprintf("%s/v1/agents/provision", strings.TrimSuffix(targetURL, "/"))
+			reqBody := []byte(`{"agents":["all"]}`)
+			client := &http.Client{Timeout: 5 * time.Second}
+			resp, err := client.Post(reqURL, "application/json", bytes.NewReader(reqBody))
+			if err == nil {
+				_ = resp.Body.Close()
+			}
+		}
+
 		results := FetchAllAgentDiscovery(m.hosts)
 		return discoveryMsg(results)
 	}
@@ -1250,6 +1237,40 @@ func (m *Model) spawnCmd(cwd string) tea.Cmd {
 		if resp.StatusCode != http.StatusOK {
 			respBody, _ := io.ReadAll(resp.Body)
 			return errorMsg(fmt.Sprintf("Failed to spawn session (%d): %s", resp.StatusCode, strings.TrimSpace(string(respBody))))
+		}
+
+		sessions, statuses, err := FetchSessions(m.hosts)
+		if err != nil {
+			return errorMsg(err.Error())
+		}
+		return fetchSessionsResult{sessions: sessions, statuses: statuses}
+	}
+}
+
+func (m *Model) spawnSupervisorCmd() tea.Cmd {
+	return func() tea.Msg {
+		var hostURL string
+		for _, h := range m.hosts {
+			if h.Name == "local" || hostURL == "" {
+				hostURL = h.URL
+			}
+		}
+
+		payload := map[string]interface{}{
+			"is_supervisor": true,
+			"agent":         "claude-code",
+		}
+		body, _ := json.Marshal(payload)
+		reqURL := fmt.Sprintf("%s/v1/sessions/spawn", strings.TrimSuffix(hostURL, "/"))
+		resp, err := http.Post(reqURL, "application/json", bytes.NewBuffer(body))
+		if err != nil {
+			return errorMsg("Failed to spawn supervisor session: " + err.Error())
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			respBody, _ := io.ReadAll(resp.Body)
+			return errorMsg(fmt.Sprintf("Failed to spawn supervisor session (%d): %s", resp.StatusCode, strings.TrimSpace(string(respBody))))
 		}
 
 		sessions, statuses, err := FetchSessions(m.hosts)
@@ -1579,6 +1600,12 @@ func (m *Model) buildVisibleRows() []TreeRow {
 		if target.NodePath == "" && src.NodePath != "" {
 			target.NodePath = src.NodePath
 		}
+		if src.IsSupervisor {
+			target.IsSupervisor = true
+		}
+		if target.CurrentTaskID == "" && src.CurrentTaskID != "" {
+			target.CurrentTaskID = src.CurrentTaskID
+		}
 		// If either representation was archived, preserve archived state
 		if src.Archived {
 			target.Archived = true
@@ -1641,9 +1668,12 @@ func (m *Model) buildVisibleRows() []TreeRow {
 		if s.Archived != m.archivedView {
 			continue
 		}
+		if m.supervisorsOnly && !s.IsSupervisor {
+			continue
+		}
 
 		assignedPath := s.NodePath
-		if assignedPath == "" && s.Cwd != "" {
+		if assignedPath == "" && !s.IsSupervisor && s.Cwd != "" {
 			for _, node := range nodesCopy {
 				if node.ProjectDir != "" && sameOrSubDir(s.Cwd, node.ProjectDir) {
 					assignedPath = node.Path
@@ -1652,7 +1682,7 @@ func (m *Model) buildVisibleRows() []TreeRow {
 			}
 		}
 
-		if assignedPath == "" {
+		if assignedPath == "" && !s.IsSupervisor {
 			for path, projKeys := range m.groups {
 				for _, pk := range projKeys {
 					if s.ProjectKey == pk {
@@ -1666,7 +1696,7 @@ func (m *Model) buildVisibleRows() []TreeRow {
 			}
 		}
 
-		if assignedPath == "" && s.Cwd != "" {
+		if assignedPath == "" && !s.IsSupervisor && s.Cwd != "" {
 			cleanCwd := strings.ToLower(filepath.Clean(s.Cwd))
 			cwdParts := strings.Split(cleanCwd, string(filepath.Separator))
 
@@ -1718,22 +1748,24 @@ func (m *Model) buildVisibleRows() []TreeRow {
 	// 2. Discover all unique group nodes for registered tree nodes, group configs, and active session paths
 	allGroupPaths := make(map[string]bool)
 
-	for _, node := range m.treeNodes {
-		if node.Path != "" {
-			parts := strings.Split(node.Path, "/")
-			for i := 1; i <= len(parts); i++ {
-				parentPath := strings.Join(parts[:i], "/")
-				allGroupPaths[parentPath] = true
+	if !m.supervisorsOnly {
+		for _, node := range m.treeNodes {
+			if node.Path != "" {
+				parts := strings.Split(node.Path, "/")
+				for i := 1; i <= len(parts); i++ {
+					parentPath := strings.Join(parts[:i], "/")
+					allGroupPaths[parentPath] = true
+				}
 			}
 		}
-	}
 
-	for path := range m.groups {
-		if path != "" {
-			parts := strings.Split(path, "/")
-			for i := 1; i <= len(parts); i++ {
-				parentPath := strings.Join(parts[:i], "/")
-				allGroupPaths[parentPath] = true
+		for path := range m.groups {
+			if path != "" {
+				parts := strings.Split(path, "/")
+				for i := 1; i <= len(parts); i++ {
+					parentPath := strings.Join(parts[:i], "/")
+					allGroupPaths[parentPath] = true
+				}
 			}
 		}
 	}
@@ -1788,14 +1820,34 @@ func (m *Model) buildVisibleRows() []TreeRow {
 			return
 		}
 
-		// Add matching sessions directly in this group (sorted newest / active first)
+		// Add matching sessions directly in this group (grouped by section: ⚓ Supervisors, 📋 Tasks, 💻 Manual Sessions, ⏳ Later, ✅ Done)
 		var directSessions []*daemon.Session
 		if path == "Unassigned" {
 			directSessions = unassignedSessions
 		} else {
 			directSessions = sessionsByPath[path]
 		}
+		sessionSectionRank := func(s *daemon.Session) (int, string) {
+			if s.IsDone {
+				return 4, "✅ Done"
+			}
+			if s.IsLater {
+				return 3, "⏳ Later"
+			}
+			if s.IsSupervisor {
+				return 0, "⚓ Supervisors"
+			}
+			if s.CurrentTaskID != "" {
+				return 1, "📋 Tasks"
+			}
+			return 2, "💻 Manual Sessions"
+		}
 		sort.SliceStable(directSessions, func(i, j int) bool {
+			rankI, _ := sessionSectionRank(directSessions[i])
+			rankJ, _ := sessionSectionRank(directSessions[j])
+			if rankI != rankJ {
+				return rankI < rankJ
+			}
 			timeI := directSessions[i].LastEventAt
 			if timeI.IsZero() {
 				timeI = directSessions[i].StartedAt
@@ -1809,11 +1861,25 @@ func (m *Model) buildVisibleRows() []TreeRow {
 			}
 			return directSessions[i].ID < directSessions[j].ID
 		})
+		sectionCounts := make(map[string]int)
 		for _, s := range directSessions {
+			_, sec := sessionSectionRank(s)
+			sectionCounts[sec]++
+		}
+		lastSection := ""
+		for _, s := range directSessions {
+			_, sec := sessionSectionRank(s)
+			secHeader := ""
+			if sec != lastSection {
+				secHeader = fmt.Sprintf("%s (%d)", sec, sectionCounts[sec])
+				lastSection = sec
+			}
 			rows = append(rows, TreeRow{
-				IsGroup: false,
-				Session: s,
-				Indent:  indent + 1,
+				IsGroup:       false,
+				Session:       s,
+				Indent:        indent + 1,
+				Section:       sec,
+				SectionHeader: secHeader,
 			})
 		}
 
@@ -1856,6 +1922,11 @@ func (m *Model) View() string {
 	}
 	if m.archivedView {
 		headerText += " [ARCHIVED VIEW]"
+	}
+	if m.supervisorsOnly {
+		headerText += " [⚓ SUPERVISORS]"
+	} else {
+		headerText += " [🌐 ALL TREE]"
 	}
 	sb.WriteString(headerStyle.Render(headerText))
 	sb.WriteString("\n")
@@ -1929,6 +2000,11 @@ func (m *Model) View() string {
 				}
 				rowContent = fmt.Sprintf("%s %s", collapseArrow, groupStyle.Render(r.GroupName))
 			} else {
+				if r.SectionHeader != "" {
+					secLine := lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Bold(true).Render(fmt.Sprintf("%s%s", indentStr, r.SectionHeader))
+					sb.WriteString(unselectedStyle.Render(secLine))
+					sb.WriteString("\n")
+				}
 				s := r.Session
 				displayName := s.Name
 				if displayName == "" {
@@ -2168,7 +2244,7 @@ func (m *Model) View() string {
 		controlsHeader := fmt.Sprintf("── HOST CONTROLS [%s] ──────────────────────────────────────────", selectedHostName)
 		discBuilder.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#00FFFF")).Render(controlsHeader) + "\n")
 		discBuilder.WriteString(" [r] Restart ackbard Daemon    | [u] Update Binary & Restart Daemon\n")
-		discBuilder.WriteString(" [k] Re-apply Agent Hooks      | [esc/q/H] Close Management Panel")
+		discBuilder.WriteString(" [h] Re-apply Agent Hooks      | [esc/q/H] Close Management Panel")
 
 		discBox := lipgloss.NewStyle().
 			Border(lipgloss.DoubleBorder()).
@@ -2370,7 +2446,7 @@ func (m *Model) View() string {
 		sb.WriteString("\n")
 	}
 
-	sb.WriteString(helpStyle.Render("↑/↓: navigate | Enter/a: attach | t: new tab | s: spawn | c: resume cmd | N: new | M: move | H: hooks | R: remote | r: restart | k: kill | d: delete | o: code | V: docs | u: update | q: quit"))
+	sb.WriteString(helpStyle.Render("↑/↓: navigate | Enter/a: attach | F/Tab: All/Supervisors | S: +Supervisor | t: new tab | s: spawn | c: resume cmd | N: new | M: move | H: hooks | R: remote | r: restart | k: kill | d: delete | o: code | V: docs | u: update | q: quit"))
 
 	return sb.String()
 }

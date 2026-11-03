@@ -14,6 +14,9 @@ import (
 
 func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
+		if r.URL.Query().Get("federated") == "true" {
+			s.PullFromPeersWithTimeout(r.Context(), 1500*time.Millisecond)
+		}
 		tasks, err := s.db.GetTasks()
 		if err != nil {
 			http.Error(w, "Failed to get tasks: "+err.Error(), http.StatusInternalServerError)
@@ -24,8 +27,9 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 		groupFilter := strings.TrimSpace(r.URL.Query().Get("group"))
 		projFilter := strings.TrimSpace(r.URL.Query().Get("project"))
 		statusFilter := strings.TrimSpace(r.URL.Query().Get("status"))
+		kindFilter := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("kind")))
 
-		if groupFilter != "" || projFilter != "" || statusFilter != "" {
+		if groupFilter != "" || projFilter != "" || statusFilter != "" || kindFilter != "" {
 			var filtered []Task
 			for _, task := range tasks {
 				if groupFilter != "" && !strings.EqualFold(task.GroupName, groupFilter) {
@@ -35,6 +39,9 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 				if statusFilter != "" && !strings.EqualFold(task.Status, statusFilter) {
+					continue
+				}
+				if kindFilter != "" && !strings.EqualFold(task.TaskKind, kindFilter) {
 					continue
 				}
 				filtered = append(filtered, task)
@@ -49,19 +56,64 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 
 	if r.Method == http.MethodPost {
 		r.Body = http.MaxBytesReader(w, r.Body, 1048576) // 1MB limit
-		var t Task
-		if err := json.NewDecoder(r.Body).Decode(&t); err != nil {
+		var req struct {
+			Task
+			WorkflowNode string `json:"workflow_node,omitempty"`
+			RepoNodePath string `json:"repo_node_path,omitempty"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "Invalid JSON: "+err.Error(), http.StatusBadRequest)
 			return
 		}
 
+		t := req.Task
 		w.Header().Set("Content-Type", "application/json")
 		if t.ID == "" {
 			t.ID = fmt.Sprintf("task_%d", time.Now().UnixNano())
+			if t.TaskKind == "" {
+				t.TaskKind = "code"
+			}
+			if req.WorkflowNode != "" {
+				sessState := StateIdle
+				for _, w := range t.Workers {
+					if w.IsActive {
+						if sSess, _ := s.db.GetSession(w.SessionID); sSess != nil && sSess.State == StateWorking {
+							sessState = StateWorking
+							break
+						}
+					}
+				}
+				t.Status, t.Substatus = ClassifyWorkflowNodeState(req.WorkflowNode, sessState, false)
+				if req.WorkflowNode == "N14" || req.WorkflowNode == "N15" {
+					now := time.Now().UTC()
+					t.CompletedAt = &now
+				}
+			}
 			if err := s.db.CreateTask(&t); err != nil {
 				http.Error(w, "Failed to create task: "+err.Error(), http.StatusInternalServerError)
 				return
 			}
+			s.maybeNotifyTaskReview("", &t)
+			s.maybeNotifyTaskBlocked("", "", &t)
+			targetRepoPath := req.RepoNodePath
+			if targetRepoPath == "" && len(t.Workstreams) > 0 {
+				for _, ws := range t.Workstreams {
+					if ws.Status == "IN_PROGRESS" {
+						targetRepoPath = ws.RepoNodePath
+						break
+					}
+				}
+				if targetRepoPath == "" {
+					targetRepoPath = t.Workstreams[0].RepoNodePath
+				}
+			}
+			if req.WorkflowNode == "N14" || req.WorkflowNode == "N15" {
+				s.unlockSequentialWorkstreams(&t, targetRepoPath)
+			}
+			if req.WorkflowNode == "N15" {
+				s.completeAndCloseTaskSession(&t, nil)
+			}
+			s.pushSyncPayload(&SyncStatePayload{Tasks: []Task{t}, Workstreams: t.Workstreams})
 			w.WriteHeader(http.StatusCreated)
 		} else {
 			existing, err := s.db.GetTaskByID(t.ID)
@@ -73,6 +125,10 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "Task not found", http.StatusNotFound)
 				return
 			}
+
+			oldStatus := existing.Status
+			oldSubstatus := existing.Substatus
+			oldQuestion := existing.BlockerQuestion
 
 			// Merge fields from t into existing if provided
 			if t.Title != "" {
@@ -86,6 +142,9 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 			}
 			if t.SubprojectName != "" {
 				existing.SubprojectName = t.SubprojectName
+			}
+			if t.TaskKind != "" {
+				existing.TaskKind = t.TaskKind
 			}
 			if t.Status != "" {
 				existing.Status = t.Status
@@ -132,6 +191,9 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 			if t.Workers != nil {
 				existing.Workers = t.Workers
 			}
+			if t.Workstreams != nil {
+				existing.Workstreams = t.Workstreams
+			}
 			if t.ExternalRefs != nil {
 				existing.ExternalRefs = t.ExternalRefs
 			}
@@ -139,10 +201,62 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 				existing.Deliverables = t.Deliverables
 			}
 
+			if req.WorkflowNode != "" {
+				targetRepoPath := req.RepoNodePath
+				if targetRepoPath == "" && len(existing.Workstreams) > 0 {
+					for _, ws := range existing.Workstreams {
+						if ws.Status == "IN_PROGRESS" {
+							targetRepoPath = ws.RepoNodePath
+							break
+						}
+					}
+					if targetRepoPath == "" {
+						targetRepoPath = existing.Workstreams[0].RepoNodePath
+					}
+				}
+
+				for i := range existing.Workers {
+					w := &existing.Workers[i]
+					if targetRepoPath == "" || w.RepoNodePath == "" || strings.EqualFold(w.RepoNodePath, targetRepoPath) {
+						w.WorkflowNode = req.WorkflowNode
+					}
+				}
+				for i := range existing.Workstreams {
+					ws := &existing.Workstreams[i]
+					if targetRepoPath == "" || strings.EqualFold(ws.RepoNodePath, targetRepoPath) {
+						ws.WorkflowNode = req.WorkflowNode
+						ws.UpdatedAt = time.Now().UTC()
+					}
+				}
+				sessState := StateIdle
+				for _, w := range existing.Workers {
+					if w.IsActive {
+						if sSess, _ := s.db.GetSession(w.SessionID); sSess != nil && sSess.State == StateWorking {
+							sessState = StateWorking
+							break
+						}
+					}
+				}
+				existing.Status, existing.Substatus = ClassifyWorkflowNodeState(req.WorkflowNode, sessState, existing.Substatus == "blocked" && existing.BlockerQuestion != "")
+				if existing.Status == "DONE" && existing.CompletedAt == nil {
+					now := time.Now().UTC()
+					existing.CompletedAt = &now
+				}
+				if req.WorkflowNode == "N14" || req.WorkflowNode == "N15" {
+					s.unlockSequentialWorkstreams(existing, targetRepoPath)
+				}
+				if req.WorkflowNode == "N15" {
+					s.completeAndCloseTaskSession(existing, nil)
+				}
+			}
+
 			if err := s.db.UpdateTask(existing); err != nil {
 				http.Error(w, "Failed to update task: "+err.Error(), http.StatusInternalServerError)
 				return
 			}
+			s.maybeNotifyTaskReview(oldStatus, existing)
+			s.maybeNotifyTaskBlocked(oldSubstatus, oldQuestion, existing)
+			s.pushSyncPayload(&SyncStatePayload{Tasks: []Task{*existing}, Workstreams: existing.Workstreams})
 			w.WriteHeader(http.StatusOK)
 			t = *existing
 		}
@@ -175,6 +289,9 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Failed to delete task", http.StatusInternalServerError)
 			return
 		}
+
+		now := time.Now().UTC()
+		s.pushSyncPayload(&SyncStatePayload{Tasks: []Task{{ID: taskID, UpdatedAt: now, DeletedAt: &now}}})
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
@@ -226,6 +343,7 @@ func (s *Server) handleTaskEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	oldStatus := task.Status
 	updated := false
 
 	// Ambient ingestion: detect branches
@@ -253,6 +371,8 @@ func (s *Server) handleTaskEvent(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Failed to update task", http.StatusInternalServerError)
 			return
 		}
+		s.maybeNotifyTaskReview(oldStatus, task)
+		s.pushSyncPayload(&SyncStatePayload{Tasks: []Task{*task}})
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -386,6 +506,7 @@ func (s *Server) handleTaskPropose(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Failed to create proposed task: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+	s.pushSyncPayload(&SyncStatePayload{Tasks: []Task{*task}})
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
@@ -393,12 +514,14 @@ func (s *Server) handleTaskPropose(w http.ResponseWriter, r *http.Request) {
 }
 
 type TaskDeliverablePayload struct {
-	TaskID   string `json:"task_id"`
-	Kind     string `json:"kind"` // mockup | plan | retrospective | doc
-	Title    string `json:"title"`
-	Host     string `json:"host"`
-	FilePath string `json:"file_path"`
-	URL      string `json:"url"`
+	TaskID    string `json:"task_id"`
+	Kind      string `json:"kind"` // mockup | plan | retrospective | doc
+	Title     string `json:"title"`
+	Host      string `json:"host"`
+	FilePath  string `json:"file_path"`
+	URL       string `json:"url"`
+	Provider  string `json:"provider,omitempty"`
+	ContentMD string `json:"content_md,omitempty"`
 }
 
 func (s *Server) handleTaskDeliverable(w http.ResponseWriter, r *http.Request) {
@@ -426,9 +549,10 @@ func (s *Server) handleTaskDeliverable(w http.ResponseWriter, r *http.Request) {
 
 	filePath := strings.TrimSpace(p.FilePath)
 	urlStr := strings.TrimSpace(p.URL)
+	contentMD := strings.TrimSpace(p.ContentMD)
 
-	if filePath == "" && urlStr == "" {
-		http.Error(w, "either file_path or url is required", http.StatusBadRequest)
+	if filePath == "" && urlStr == "" && contentMD == "" {
+		http.Error(w, "either file_path, url, or content_md is required", http.StatusBadRequest)
 		return
 	}
 
@@ -453,9 +577,43 @@ func (s *Server) handleTaskDeliverable(w http.ResponseWriter, r *http.Request) {
 	if kind == "" {
 		kind = "doc"
 	}
-	if kind != "mockup" && kind != "plan" && kind != "retrospective" && kind != "doc" {
-		http.Error(w, "invalid kind: must be mockup, plan, retrospective, or doc", http.StatusBadRequest)
+	validKinds := map[string]bool{
+		"prd":           true,
+		"html_ui":       true,
+		"slides":        true,
+		"plan":          true,
+		"learnings":     true,
+		"pr":            true,
+		"retro":         true,
+		"retrospective": true,
+		"video":         true,
+		"screenshot":    true,
+		"mockup":        true,
+		"doc":           true,
+		"other":         true,
+	}
+	if !validKinds[kind] {
+		http.Error(w, "invalid kind: must be one of prd, html_ui, slides, plan, learnings, pr, retro, retrospective, video, screenshot, mockup, doc, other", http.StatusBadRequest)
 		return
+	}
+
+	provider := strings.TrimSpace(p.Provider)
+	if provider == "" {
+		if strings.Contains(urlStr, "docs.google.com/document") {
+			provider = "gdocs"
+		} else if strings.Contains(urlStr, "docs.google.com/presentation") {
+			provider = "gslides"
+		} else if strings.Contains(urlStr, "docs.google.com/spreadsheets") {
+			provider = "gsheets"
+		} else if strings.Contains(urlStr, "drive.google.com") {
+			provider = "gdrive"
+		} else if strings.Contains(urlStr, "claude.ai") || strings.Contains(urlStr, "claude.site") {
+			provider = "claude_artifact"
+		} else if strings.Contains(urlStr, "github.com") {
+			provider = "github"
+		} else if filePath != "" {
+			provider = "local"
+		}
 	}
 
 	task, err := s.db.GetTaskByID(p.TaskID)
@@ -474,18 +632,21 @@ func (s *Server) handleTaskDeliverable(w http.ResponseWriter, r *http.Request) {
 	}
 
 	del := &TaskDeliverable{
-		TaskID:   p.TaskID,
-		Kind:     kind,
-		Title:    title,
-		Host:     hostName,
-		FilePath: filePath,
-		URL:      urlStr,
+		TaskID:    p.TaskID,
+		Kind:      kind,
+		Title:     title,
+		Host:      hostName,
+		FilePath:  filePath,
+		URL:       urlStr,
+		Provider:  provider,
+		ContentMD: p.ContentMD,
 	}
 
 	if err := s.db.InsertTaskDeliverable(del); err != nil {
 		http.Error(w, "Failed to insert deliverable: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+	s.pushSyncPayload(&SyncStatePayload{Deliverables: []TaskDeliverable{*del}})
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)

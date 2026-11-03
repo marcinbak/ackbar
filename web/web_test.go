@@ -1,8 +1,10 @@
 package web_test
 
 import (
+	"bytes"
 	"io"
 	"io/fs"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -143,8 +145,10 @@ func TestMultiHostAgentSetup_JS(t *testing.T) {
 		"function getTargetHosts()",
 		"async function fetchAllAgentStatuses()",
 		"async function provisionAllHosts(",
+		"async function syncSkillsRepo(",
 		"fetchAllAgentStatuses,",
 		"provisionAllHosts",
+		"syncSkillsRepo",
 	} {
 		if !strings.Contains(apiContent, expected) {
 			t.Errorf("expected js/api.js to contain %q", expected)
@@ -167,9 +171,13 @@ func TestMultiHostAgentSetup_JS(t *testing.T) {
 	for _, expected := range []string{
 		"fetchAllAgentStatuses",
 		"provisionAllHosts",
+		"syncSkillsRepo",
 		"mAgentHostTabs",
 		"renderHostSections",
+		"renderSkillsRepoCard",
 		"btn-configure-single-host",
+		"btn-sync-skills-repo",
+		"btn-clone-skills-repo",
 	} {
 		if !strings.Contains(tasksContent, expected) {
 			t.Errorf("expected js/tasks.js to contain %q", expected)
@@ -390,4 +398,146 @@ func TestInspectorRightPane_JS(t *testing.T) {
 		"ackbar_inspector_width",
 		"isResizingInspector",
 	})
+}
+
+func TestSupervisorSidebarAndTreeSections_JS(t *testing.T) {
+	embeddedFS := web.GetFS()
+
+	checkFileContains := func(path string, expectedList []string) {
+		t.Helper()
+		f, err := embeddedFS.Open(path)
+		if err != nil {
+			t.Fatalf("failed to open %s: %v", path, err)
+		}
+		defer f.Close()
+		b, err := io.ReadAll(f)
+		if err != nil {
+			t.Fatalf("failed to read %s: %v", path, err)
+		}
+		content := string(b)
+		for _, expected := range expectedList {
+			if !strings.Contains(content, expected) {
+				t.Errorf("expected %s to contain %q", path, expected)
+			}
+		}
+	}
+
+	checkFileContains("index.html", []string{
+		`id="sidebarSwitcherBar"`,
+		`id="btnSidebarModeAll"`,
+		`id="btnSidebarModeSupervisors"`,
+		`id="btnNewSupervisor"`,
+		`🌐 All Tree`,
+		`⚓ Supervisors`,
+		`+ ⚓ New Supervisor`,
+	})
+
+	checkFileContains("js/tree.js", []string{
+		"function renderActiveSubsection(",
+		"function appendCategorizedActiveSessions(",
+		"'⚓ Supervisors'",
+		"'📋 Tasks'",
+		"'💻 Manual Sessions'",
+		"state.sidebarViewMode === 'supervisors'",
+	})
+
+	checkFileContains("js/api.js", []string{
+		"async function spawnZeroInputSupervisor(",
+		"is_supervisor: true",
+		"existing.is_supervisor = true",
+		"existing.current_task_id = sess.current_task_id",
+	})
+}
+
+func TestPhase3_TasksAndArtifacts_JS(t *testing.T) {
+	embeddedFS := web.GetFS()
+
+	checkFileContains := func(path string, expectedList []string) {
+		t.Helper()
+		f, err := embeddedFS.Open(path)
+		if err != nil {
+			t.Fatalf("failed to open %s: %v", path, err)
+		}
+		defer f.Close()
+		b, err := io.ReadAll(f)
+		if err != nil {
+			t.Fatalf("failed to read %s: %v", path, err)
+		}
+		content := string(b)
+		for _, expected := range expectedList {
+			if !strings.Contains(content, expected) {
+				t.Errorf("expected %s to contain %q", path, expected)
+			}
+		}
+	}
+
+	checkFileContains("js/tasks.js", []string{
+		"task-kind-badge",
+		"task-node-badge",
+		"task-workstreams-bar",
+		"task-workstream-pill",
+		"btn-approve-plan",
+		"btn-nudge-task",
+		"btn-view-deliverable-md",
+		"showDeliverableContentModal",
+		"mTaskKind",
+		"mEditKind",
+		"sendSessionRespondSafe",
+		"/v1/sessions/respond",
+		"cleanStatus",
+		"Open External Link",
+		"activeWorker",
+		"state.tasks = boardTasks",
+	})
+
+	checkFileContains("js/tree.js", []string{
+		"badge-task",
+		"task_kind === 'design'",
+	})
+
+	checkFileContains("style.css", []string{
+		".task-kind-badge",
+		".task-node-badge",
+		".task-workstreams-bar",
+		".task-workstream-pill",
+	})
+}
+
+func TestJSSyntaxValidity(t *testing.T) {
+	nodePath, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node binary not found in PATH; skipping JS syntax validation")
+	}
+
+	embeddedFS := web.GetFS()
+	entries, err := fs.ReadDir(embeddedFS, "js")
+	if err != nil {
+		t.Fatalf("failed to read js dir from embeddedFS: %v", err)
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".js") {
+			continue
+		}
+		path := "js/" + entry.Name()
+		t.Run(path, func(t *testing.T) {
+			f, err := embeddedFS.Open(path)
+			if err != nil {
+				t.Fatalf("failed to open %s: %v", path, err)
+			}
+			defer f.Close()
+
+			content, err := io.ReadAll(f)
+			if err != nil {
+				t.Fatalf("failed to read %s: %v", path, err)
+			}
+
+			cmd := exec.Command(nodePath, "--input-type=module", "--check")
+			cmd.Stdin = bytes.NewReader(content)
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("JS syntax check failed for %s: %v\nOutput:\n%s", path, err, string(out))
+			}
+		})
+	}
 }

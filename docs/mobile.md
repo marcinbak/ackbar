@@ -156,3 +156,18 @@ flutter run --release -d <android-device-id>
 * **App Display Name:** `Ackbar`
 * **App Icon:** Master 1024x1024 vector cybernetic command anchor (`⚓`) with glowing electric cyan (`#06B6D4`) and neon emerald (`#10B981`) telemetry radar graphics on an obsidian titanium background (`#0E1015`).
 * **Asset Catalog:** Located in `mobile/ios/Runner/Assets.xcassets/AppIcon.appiconset/` and `mobile/android/app/src/main/res/mipmap-*/`.
+
+---
+
+## 5. Planned Phase 5: Ackbar 2.0 Mobile App Alignment
+
+Following completion of the core daemon/Web/TUI capabilities (Phases 1–4 in [`docs/work-overview/07-open-questions-and-roadmap.md`](work-overview/07-open-questions-and-roadmap.md)), **Phase 5** aligns `mobile/` with the Ackbar 2.0 Control Plane (see [`docs/work-overview/06-ui-and-navigation.md`](work-overview/06-ui-and-navigation.md#5-mobile-app-alignment-mobile--phase-5)):
+
+1. **Hierarchical Session Tree Parity (`fleet_providers.dart` & `fleet_screen.dart`):**
+   * Fetch `GET /v1/nodes?federated=true` via `fleetNodesProvider` and port `resolveSessionNodePath()` from `web/js/state.js` so Mobile replaces the flat 1-level `projectDisplayName` map with the full multi-level `tree_nodes` hierarchy (`Modemobile / NGL / ngl-ios`, `Personal / Ackbar`), including `⚓ Supervisors`, `📋 Tasks`, `⏳ Later`, and `✅ Done` subsections and `[offline]` host badges.
+2. **Zero-Input `⚓ Supervisors` Filter & Creation:**
+   * Add the `[🌐 All Tree | ⚓ Supervisors]` segmented switcher and 1-tap `[+ ⚓ New Supervisor]` button to `fleet_screen.dart`.
+3. **Mobile Work Board & Hosted Deliverables:**
+   * Add a Mobile Tasks / Work Board view (`GET /v1/tasks?federated=true`) with 1-tap links to Claude Published Artifacts and Google Docs/Slides/Drive deliverables, plus `[⚡ Squash & Merge PR]`.
+4. **Voice & Audio Companion (`transcript_screen.dart`):**
+   * Integrate the Tier 1 Markdown speech sanitizer, `POST /v1/sessions/summarize-speech`, header toggles (`[🔊 Auto-Read]`, `[🎤 Mic]`), per-message `[🔊 Read]` / `[↺ Read Again]` controls, and commuter quick-reply chips.

@@ -200,6 +200,9 @@ func (s *Server) handleDocumentContent(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleNodes(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
+		if r.URL.Query().Get("federated") == "true" {
+			s.PullFromPeersWithTimeout(r.Context(), 1500*time.Millisecond)
+		}
 		nodes, err := s.db.ListNodes()
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -218,11 +221,35 @@ func (s *Server) handleNodes(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Missing node path", http.StatusBadRequest)
 			return
 		}
-		node.CreatedAt = time.Now()
+		now := time.Now().UTC()
+		if node.CreatedAt.IsZero() {
+			node.CreatedAt = now
+		}
+		node.UpdatedAt = now
 		if err := s.db.SaveNode(&node); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+
+		if node.ProjectDir != "" {
+			nhp := NodeHostPath{
+				NodePath:   node.Path,
+				Host:       s.HostName(),
+				ProjectDir: node.ProjectDir,
+				GitRemote:  node.GitURL,
+				UpdatedAt:  now,
+			}
+			_ = s.db.SaveNodeHostPath(&nhp)
+			s.pushSyncPayload(&SyncStatePayload{
+				Nodes:         []TreeNode{node},
+				NodeHostPaths: []NodeHostPath{nhp},
+			})
+		} else {
+			s.pushSyncPayload(&SyncStatePayload{
+				Nodes: []TreeNode{node},
+			})
+		}
+
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"saved"}`))
 
@@ -232,10 +259,16 @@ func (s *Server) handleNodes(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Missing path parameter", http.StatusBadRequest)
 			return
 		}
+		before := time.Now().UTC().Add(-time.Millisecond)
 		if err := s.db.DeleteNode(path); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+
+		if state, err := s.db.GetSyncStateSince(before, s.HostName()); err == nil && state != nil {
+			s.pushSyncPayload(state)
+		}
+
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"deleted"}`))
 
@@ -263,9 +296,14 @@ func (s *Server) handleNodeMove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	before := time.Now().UTC().Add(-time.Millisecond)
 	if err := s.db.MoveNode(req.OldPath, req.NewPath); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+
+	if state, err := s.db.GetSyncStateSince(before, s.HostName()); err == nil && state != nil {
+		s.pushSyncPayload(state)
 	}
 
 	w.WriteHeader(http.StatusOK)
@@ -311,11 +349,24 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 				"base_dir":    req.BaseDir,
 				"clone_repo":  req.CloneRepo,
 			})
-			resp, rErr := http.Post(targetURL, "application/json", bytes.NewBuffer(remotePayload))
-			if rErr != nil {
-				log.Printf("[Daemon] Warning: failed to forward project create to remote host %s: %v", req.Host, rErr)
-			} else {
-				_ = resp.Body.Close()
+			fwdReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, targetURL, bytes.NewBuffer(remotePayload))
+			if err == nil {
+				fwdReq.Header.Set("Content-Type", "application/json")
+				token := s.configuredToken
+				if token == "" {
+					token = os.Getenv("ACKBAR_TOKEN")
+				}
+				if token != "" {
+					fwdReq.Header.Set("Authorization", "Bearer "+token)
+					fwdReq.Header.Set("X-Ackbar-Token", token)
+				}
+				client := &http.Client{Timeout: 5 * time.Second}
+				resp, rErr := client.Do(fwdReq)
+				if rErr != nil {
+					log.Printf("[Daemon] Warning: failed to forward project create to remote host %s: %v", req.Host, rErr)
+				} else {
+					_ = resp.Body.Close()
+				}
 			}
 		}
 	}
@@ -392,12 +443,32 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		Path:       req.Path,
 		ProjectDir: targetDir,
 		GitURL:     gitURL,
-		CreatedAt:  time.Now(),
+		CreatedAt:  time.Now().UTC(),
+		UpdatedAt:  time.Now().UTC(),
 	}
 
 	if err := s.db.SaveNode(node); err != nil {
 		http.Error(w, fmt.Sprintf("Failed to save tree node: %v", err), http.StatusInternalServerError)
 		return
+	}
+
+	if targetDir != "" {
+		nhp := NodeHostPath{
+			NodePath:   node.Path,
+			Host:       s.HostName(),
+			ProjectDir: targetDir,
+			GitRemote:  gitURL,
+			UpdatedAt:  time.Now().UTC(),
+		}
+		_ = s.db.SaveNodeHostPath(&nhp)
+		s.pushSyncPayload(&SyncStatePayload{
+			Nodes:         []TreeNode{*node},
+			NodeHostPaths: []NodeHostPath{nhp},
+		})
+	} else {
+		s.pushSyncPayload(&SyncStatePayload{
+			Nodes: []TreeNode{*node},
+		})
 	}
 
 	// Auto-bind any existing sessions whose Cwd matches targetDir
@@ -407,8 +478,10 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 			if sess.Cwd != "" && sameOrSubDir(sess.Cwd, targetDir) {
 				if sess.NodePath == "" || len(req.Path) >= len(sess.NodePath) {
 					sess.NodePath = req.Path
+					sess.MetadataUpdatedAt = time.Now().UTC()
 					_ = s.db.SaveSession(sess)
 					s.broadcast(sess)
+					s.syncSessionMeta(sess)
 				}
 			}
 		}
@@ -534,7 +607,7 @@ func (s *Server) resolveSessionNodePath(cwd string) string {
 		return ""
 	}
 
-	// 1. Longest exact or sub-directory match against registered node.ProjectDir
+	// 1. Longest exact or sub-directory match against registered node.ProjectDir or matching NodeHostPath for current host
 	var bestMatch string
 	var bestLen int
 	for _, n := range nodes {
@@ -542,6 +615,19 @@ func (s *Server) resolveSessionNodePath(cwd string) string {
 			if len(n.ProjectDir) > bestLen {
 				bestMatch = n.Path
 				bestLen = len(n.ProjectDir)
+			}
+		}
+	}
+
+	if hostPaths, err := s.db.ListNodeHostPaths(""); err == nil {
+		for _, nhp := range hostPaths {
+			if s.isLocalHost(nhp.Host) || nhp.Host == s.HostName() || nhp.Host == "local" || nhp.Host == "" {
+				if nhp.ProjectDir != "" && sameOrSubDir(cwd, nhp.ProjectDir) {
+					if len(nhp.ProjectDir) > bestLen {
+						bestMatch = nhp.NodePath
+						bestLen = len(nhp.ProjectDir)
+					}
+				}
 			}
 		}
 	}

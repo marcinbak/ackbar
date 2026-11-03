@@ -26,8 +26,21 @@ Provides guidelines for AI coding agents (Claude Code, Google Antigravity, OpenA
 // Resolve active task for this worktree / branch
 mcp__ackbar__get_current_task({})
 
-// Or list active tasks in progress
+// Or list active tasks in progress (can filter by ?kind=code|design)
 mcp__ackbar__list_tasks({ "status": "IN_PROGRESS" })
+
+// Or create a new task with multi-repo workstreams and auto-start
+mcp__ackbar__create_task({
+  "title": "Migrate telemetry to WebSocket sync",
+  "project_name": "Ackbar",
+  "group_name": "Personal",
+  "task_kind": "code",
+  "repos": [
+    { "repo_node_path": "Personal/Ackbar", "target_host": "local" },
+    { "repo_node_path": "Modemobile/NGL/ngl-ios", "depends_on": "Personal/Ackbar" }
+  ],
+  "auto_start": true
+})
 ```
 
 ### B. Reporting & Clearing Blockers
@@ -46,17 +59,35 @@ mcp__ackbar__clear_blocker({
 })
 ```
 
-### C. Attaching Deliverables
-When creating plans, design prototypes, or retrospectives:
+### C. Attaching Deliverables & Native Cloud Artifacts
+When creating plans, design prototypes, retrospectives, architecture briefs, or linking Google Docs / Claude Artifacts:
 ```json
+// Local file deliverable
 mcp__ackbar__attach_deliverable({
   "task_id": "task_123",
   "title": "Interactive Generative UI Mockup",
   "kind": "html_ui",
   "file_path": "/path/to/mockup.html"
 })
+
+// Cloud artifact (Google Doc, Slides, Sheets, or Claude Artifact)
+mcp__ackbar__attach_deliverable({
+  "task_id": "task_123",
+  "title": "Design Specs & Flow",
+  "kind": "prd",
+  "url": "https://docs.google.com/document/d/1abc.../edit"
+})
+
+// Inline Markdown deliverable (renders directly in Web modal)
+mcp__ackbar__attach_deliverable({
+  "task_id": "task_123",
+  "title": "Post-Implementation Learnings",
+  "kind": "learnings",
+  "content_md": "## Key Learnings\n- Pure Go SQLite outperforms CGO wrapper in daemon throughput."
+})
 ```
-Supported kinds: `html_ui`, `plan`, `retrospective`, `video`, `screenshot`, `other`.
+Supported kinds: `prd`, `html_ui`, `slides`, `plan`, `learnings`, `pr`, `retro`, `retrospective`, `video`, `screenshot`, `mockup`, `doc`, `other`.
+Supported providers (auto-inferred if omitted): `claude_artifact`, `gdocs`, `gslides`, `gsheets`, `gdrive`, `github`, `local`.
 
 ### D. Proposing Discovered Tasks
 When spotting an unexpected bug or future optimization:
@@ -70,11 +101,19 @@ mcp__ackbar__propose_task({
 })
 ```
 
-### E. Moving to Review & Merging
-When your pull request is opened:
+### E. Moving to Review, Updating Workflow Nodes & Merging
+To update your dev-workflow node progress (N0 through N15) or review status:
 ```json
+// Update active workflow node (e.g. N2 plan review, N6 verification, N11 PR)
 mcp__ackbar__update_task({
   "task_id": "task_123",
+  "workflow_node": "N2"
+})
+
+// When your pull request is opened:
+mcp__ackbar__update_task({
+  "task_id": "task_123",
+  "workflow_node": "N11",
   "status": "REVIEW",
   "substatus": "in_review",
   "pr_url": "https://github.com/org/repo/pull/42"
@@ -85,5 +124,15 @@ When authorized to merge:
 mcp__ackbar__merge_pull_request({
   "task_id": "task_123",
   "method": "squash"
+})
+```
+
+### F. Binding a Zero-Input `⚓ Supervisor` Session (Turn 1)
+When acting as a Supervisor session (spawned via `[+ ⚓ New Supervisor]` without an upfront project folder) and the user mentions a target project or goal on Turn 1, immediately bind your session to the project tree node and set a descriptive title:
+```json
+mcp__ackbar__bind_supervisor_session({
+  "session_id": "<your-session-id>",
+  "node_path": "Modemobile/NGL",
+  "title": "⚓ NGL Feature Planning"
 })
 ```

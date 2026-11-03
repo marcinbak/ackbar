@@ -17,13 +17,15 @@
 
 ---
 
-### 2. 🎙️ Voice-Driven Mobile Companion & Audio Briefings
-* **Status:** Architecture Designed
-* **Detailed Spec:** [`docs/voice-companion.md`](voice-companion.md)
+### 2. 🎙️ Unified Supervisor Control Layer, Task Orchestrator & Voice Companion (Ackbar 2.0)
+* **Status:** Architecture Designed (Grilled & Locked)
+* **Detailed Specs:** [`docs/voice-companion.md`](voice-companion.md) & [`docs/work-overview/`](work-overview/README.md)
 * **Scope:**
-  * **On-Demand Conversational Briefing:** Spoken status summary of cross-machine work in under 45 seconds.
-  * **Spoken Plan Reviews:** Voice synthesis of `implementation_plan.md` architectural summaries and trade-offs.
-  * **Voice Approval & Keystroke Injection:** Transcribe user voice approvals ("Approve with verbose logging", "Pick option 1") and inject directly into the agent's PTY.
+  * **Uniform 3-Way LWW Peer Sync (`macbook` $\leftrightarrow$ `macmini` $\leftrightarrow$ `legion`) & Dynamic `node_host_paths`:** Replicate `tree_nodes`, `node_host_paths`, session metadata (`node_path`, `custom_title`, `is_later`, `is_supervisor`), `tasks`, `task_workstreams`, and `task_deliverables` across all hosts with startup/wake delta pull and `[offline]` badges for asleep hosts.
+  * **Zero-Input `⚓ Supervisor` Dispatchers & Dedicated `📋 Task` Sessions:** 1-tap `[+ ⚓ New Supervisor]` opens a blank session with zero upfront inputs, auto-binds to the project via `bind_supervisor_session` on the first turn, and dispatches dedicated **`📋 Task`** sessions for Product/Design (`kind="design"`) or Repo Code (`kind="code"`).
+  * **Native Hosted Artifacts (Claude Published Artifacts + Google Drive/Docs/Slides):** Attach hosted deliverables (`url`) + synced `content_md` via `attach_deliverable` using Claude Published Artifacts (for Claude Code) and Google Workspace (`gdrive`, `gdocs`, `gslides`, `gsheets` under `Ackbar/projects/<project>/tasks/<task>/` for Antigravity).
+  * **`dev-workflow` State Mapping, N15 Auto-Close & N14 Sequential Handoff:** Map `dev-workflow` nodes (`N1`/`N2`/`N11`/`N15`) when sessions enter `StateIdle`, auto-close Tmux at `N15`, and unlock sequential dependent repo workstreams (`ngl-ios` `@macmini` $\rightarrow$ `ngl-android` `@legion`) upon `N14` merge.
+  * **Decoupled Voice/Audio Companion & 2-Tier Lazy Speech Pipeline:** Hands-free mode (`🎤 Mic ON` + `🔊 Auto-Read ON`), silent commuter mode (`🎤 Mic OFF` + `🔊 Auto-Read ON` + 1-tap quick chips), and desk mode (`Auto-Read OFF` with ad-hoc `[🔊 Read]` / `[↺ Read Again]`), powered by a 0ms client Markdown speech sanitizer and on-demand `POST /v1/sessions/summarize-speech` via stateless headless Haiku (`claude -p --model haiku`).
 
 ---
 

@@ -23,7 +23,9 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 * **`server_accounts.go`:** Multi-account profile management (`/v1/accounts`), agent discovery (`/v1/agents/discovery`), provider catalog (`/v1/providers`), and fleet propagation.
 * **`server_hosts.go`:** Remote host health tracking, SSH target resolution, host CRUD (`/v1/hosts`), cross-compiled remote upgrades (`/v1/hosts/update`), and resilient SSH tunnel management (`/v1/hosts/reconnect`, `ensureHostTunnels`).
 * **`server_projects.go`:** Workspace document discovery (`/v1/documents`), tree node CRUD and move (`/v1/nodes`), project creation (`/v1/projects/create`), worktree/path normalization, and VS Code URI launching (`/v1/editor/open`).
+* **`server_sync.go`:** Uniform 3-way Last-Write-Wins (LWW) peer-to-peer sync engine (`/v1/sync/state`, `/v1/sync/push`, `/v1/nodes/paths`) and background delta reconciliation.
 * **`session_scanner.go`:** Liveness verification (`verifySessionLiveness`) and background session scanner (`scanObservedSessions` decomposed into `refreshExistingSessions`, `scanTmuxPanes`, `scanOSProcessTable`, and `scanDiskSessions`).
+* **`ntfy.go`:** `ntfy.sh` push notification dispatcher for PR/Plan Review transitions (`REVIEW`) and Task/Session blockers (`StateBlocked` / `substatus == "blocked"`), emitting `ackbar://` mobile deep-links and PR action buttons.
 * **`agent_claude.go`, `agent_antigravity.go`, `agent_other.go`:** Per-agent `AgentAdapter` implementations (`ClaudeAgentAdapter`, `AntigravityAgentAdapter`, `CodexAgentAdapter`, `GrokAgentAdapter`, `OpenCodeAgentAdapter`) encapsulating agent-specific CLI flags, approval keys, account profile setup, PID-to-session resolution, and disk session discovery.
 
 ---
@@ -33,11 +35,12 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 | Method | Endpoint | Description |
 | :--- | :--- | :--- |
 | `GET` | `/v1/version` | Returns current daemon version, canonical host name, and display name. |
-| `GET` | `/v1/sessions` | Returns all active, managed, and historic sessions with unread state. |
+| `GET` | `/v1/sessions` | Returns all active, managed, and historic sessions with unread state (supports `?federated=true` for cross-host session aggregation). |
 | `GET` | `/v1/events` | SSE stream broadcasting real-time session mutations and state changes. |
 | `GET` | `/v1/sessions/chat/stream` | SSE stream for real-time turn text, thoughts, subagents, and keepalive heartbeats. |
 | `GET` | `/v1/sessions/pty` | WebSocket endpoint streaming interactive PTY data to `xterm.js`. |
-| `POST` | `/v1/sessions/spawn` | Spawns a new agent process in a supervised tmux session using RFC 4122 UUIDv4 (supports prompt injection). |
+| `POST` | `/v1/sessions/spawn` | Spawns a new agent process in a supervised tmux session using RFC 4122 UUIDv4 (supports prompt injection and zero-input `is_supervisor: true`). |
+| `POST` | `/v1/sessions/bind-supervisor` | Auto-binds a Supervisor session (`is_supervisor = true`) to a logical project `node_path` and `title` on Turn 1, broadcasting SSE and LWW sync. |
 | `POST` | `/v1/meta/resolve` | Derives host, agent, group, and existing session match from prompt via Jev AI / heuristics. |
 | `POST` | `/v1/hooks/{agent}` | Ingests agent lifecycle and tool hook events with in-place `/clear` rotation detection. |
 | `POST` | `/v1/sessions/control` | Executes control actions: `resume`, `restart`, `kill`, `move`, `rename`, `delete`, `handover`, `later`, `unlater`, `done`, `active`. |
@@ -47,13 +50,15 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 | `POST` | `/v1/sessions/upload` | Uploads clipboard images or drag-and-dropped PDFs to `/tmp/ackbar-uploads/`. |
 | `GET` | `/v1/settings` | Returns daemon settings including `host_name`, `display_name`, auto-done thresholds, `later_collapsed_by_default`, `hide_session_tabs`, and handover suggestions. |
 | `POST` | `/v1/settings` | Updates and persists daemon settings in SQLite. |
-| `GET` | `/v1/nodes` | Returns configured logical tree nodes and custom groups. |
+| `GET` | `/v1/nodes` | Returns configured logical tree nodes and custom groups with host paths (supports `?federated=true`). |
 | `POST` | `/v1/projects/create` | Creates a new logical project node or pure category subgroup. |
 | `POST` | `/v1/nodes/move` | Moves a logical group node to a new tree path. |
 | `DELETE`| `/v1/nodes` | Deletes a logical group node from the database. |
+| `GET` | `/v1/nodes/paths` | Returns registered host execution paths (`node_host_paths`) for tree nodes. |
+| `POST` | `/v1/nodes/paths` | Registers or updates a host-specific project execution path (`node_host_paths`) for a node. |
 | `GET` | `/v1/hosts` | Returns registered local and remote compute hosts. |
 | `POST` | `/v1/hosts/update` | Upgrades and restarts `ackbard` on a remote target host. |
-| `GET` | `/v1/tasks` | Returns tasks across all projects with associated workers, external refs, and deliverables. |
+| `GET` | `/v1/tasks` | Returns tasks across all projects with associated workers, external refs, and deliverables (supports `?federated=true`). |
 | `POST` | `/v1/tasks` | Creates a new task or updates an existing task with associated child relations in a single transaction. |
 | `DELETE` | `/v1/tasks` | Deletes a task and all associated workers, external refs, and deliverables with cascade cleanup. |
 | `POST` | `/v1/tasks/event` | Ingests lifecycle events for a task, performing ambient detection of git branches and PR URLs. |
@@ -61,10 +66,13 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 | `POST` | `/v1/tasks/deliverable` | Attaches design mockups, change briefs, retrospectives, or external artifacts to a task. |
 | `POST` | `/v1/tasks/sync-workflow` | Triggers immediate synchronization scan of `~/.claude/dev-workflow-runs/` run states and companions. |
 | `POST` | `/v1/tasks/merge-pr` | Executes 1-click `gh pr merge --squash` for a task with an open PR and transitions state to `DONE`. |
+| `GET` | `/v1/sync/state` | Returns delta sync state payload (nodes, host paths, tasks, deliverables, session metas) since `?since=<timestamp>`. |
+| `POST` | `/v1/sync/push` | Ingests and reconciles peer sync payload via 3-way Last-Write-Wins (LWW). |
 | `GET` | `/v1/standup` | Deterministic daily standup and weekly retro report generation (grouped by project in Markdown or JSON). |
 | `POST` | `/v1/briefings/synthesize` | Generates speech-optimized conversational text briefing (<45s) for voice synthesis. |
-| `GET` | `/v1/agents/status` | Returns detected agent runtimes (Claude, Antigravity, Codex) with MCP and skill install statuses. |
-| `POST` | `/v1/agents/provision` | Provisions or upgrades the Ackbar Tasks MCP server and Skill into connected agent configs. |
+| `GET` | `/v1/agents/status` | Returns detected agent runtimes (Claude, Antigravity, Codex) with MCP and skill install statuses, plus external skills repo status. |
+| `POST` | `/v1/agents/provision` | Provisions or upgrades the Ackbar Tasks MCP server and Skill into connected agent configs, and optionally syncs external skills repo. |
+| `POST` | `/v1/agents/skills-repo/sync` | Clones or fast-forward pulls the shared skills repository and runs `./install.sh` (or fallback copy). |
 
 ### PTY Terminal Sizing (`/v1/sessions/pty`)
 
@@ -147,6 +155,8 @@ The SQLite database (`~/.config/ackbar/ackbard.db`) uses CGO-free pure Go SQLite
 * `git_branch`: Current Git branch associated with the session workspace.
 * `worktree_name`: Associated Git worktree directory if applicable.
 * `old_id`: Pre-adoption temporary session ID preserved when an Antigravity session adopts its canonical conversation UUID, enabling seamless fallback resolution across `/v1/sessions/*` and `/v1/sessions/pty`.
+* `is_supervisor`: Tracks whether the session is a zero-input `⚓ Supervisor` session (`1` = supervisor, `0` = normal), synchronized across peers via LWW `SessionMetaSync`.
+* `current_task_id`: Tracks the active Ackbar task ID bound to the session (if any), categorizing the session under the `📋 Tasks` subsection and synchronized across peers via LWW `SessionMetaSync`.
 
 ---
 
@@ -203,4 +213,35 @@ Each `ackbard` instance identifies itself across the multi-machine fleet using a
 
 ### Non-Destructive Database Migration:
 When a daemon's host name is configured away from `"local"`, `ackbard` automatically migrates existing database records (`sessions` and `deleted_sessions`) to use the new host identifier. Lookups using legacy session IDs remain fully backward-compatible.
+
+---
+
+## 7. Shared Skills Repository Synchronization
+
+Ackbar provides automated synchronization of external git repositories containing skills, tools, and extensions across all agents on local and remote fleet hosts.
+
+### Persistent Settings Keys
+Stored in the SQLite `settings` table:
+* `skills_repo_path`: Local filesystem path to the cloned repository (must reside under `$HOME`).
+* `skills_repo_url`: Git repository URL (e.g. `https://...`, `git@...`, or `ssh://...`).
+* `skills_repo_last_sync`: RFC 3339 timestamp of the last successful pull and install run.
+* `skills_repo_last_check`: RFC 3339 timestamp of the last upstream remote fetch or sync check.
+
+### Auto-Discovery Contract
+If `skills_repo_path` is not explicitly set in the database, `ackbard` inspects agent skill directories (`~/.gemini/config/skills/`, `~/.gemini/antigravity-cli/skills/`, `~/.claude/skills/`):
+1. **Marker Files:** Looks for `.ackbar-skills-source` or `.personal-config-managed` containing `source_repo=<path>`.
+2. **Symlinks:** Inspects symlink targets and walks parent directories to identify the enclosing `.git` repository root.
+3. Discovered repositories are validated against security constraints and persisted to database settings.
+
+### Security Boundaries
+* **Path Validation (`validateRepoPath`):** Target repository paths must be absolute paths strictly within the invoking user's home directory (`$HOME`). Paths starting with `-`, pointing to the root `$HOME` itself, or located within security-sensitive directories (`~/.ssh`, `~/.gnupg`, etc.) are rejected.
+* **URL Validation (`validateGitURL`):** Disallows argument/option injection (rejects leading `-`).
+* **Process Ownership:** The `install.sh` script is only executed if its POSIX file ownership (`stat_t.Uid`) strictly matches the running `ackbard` process UID.
+
+### Execution & Fallback Contract
+1. **Clean Fast-Forward Pull:** Runs `git fetch origin` followed by `git pull --ff-only` if `git status --porcelain` is clean. If uncommitted local changes exist, the pull is safely skipped to avoid clobbering work.
+2. **Installer Execution:** If `install.sh` exists at the root of the repository, executes `/bin/bash ./install.sh` with `HOME` and `ACKBAR_CLAUDE_DIRS` (colon-delimited list of custom account config directories from `accounts`).
+3. **Fallback Directory Copy:** If no `install.sh` is present, recursively mirrors any skills in `skills/*/SKILL.md` or `plugins/*/skills/*/SKILL.md` to `~/.claude/skills/`, `~/.gemini/config/skills/`, `~/.gemini/antigravity-cli/skills/`, and `~/.codex/skills/`.
+4. **Periodic Auto-Sync:** The background loop checks `skills_repo_last_check` on startup and hourly. If more than 24 hours have elapsed since the last check, an automated background sync is triggered.
+
 

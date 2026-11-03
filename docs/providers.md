@@ -23,6 +23,7 @@ Ackbar supports the major agent ecosystems:
 * **Artifact Metadata:** `task.md.metadata.json`, `implementation_plan.md`, `walkthrough.md` under `~/.gemini/antigravity/brain/<session-id>/`.
 * **Transcript XML Envelope Stripping (`CleanAntigravityPrompt`):** Antigravity wraps `USER_INPUT` entries in `transcript.jsonl` inside `<USER_REQUEST>...</USER_REQUEST>` followed by runtime metadata tags (`<ADDITIONAL_METADATA>`, `<USER_SETTINGS_CHANGE>`, `<CONTEXT_SUMMARY>`, `<SYSTEM_MESSAGE>`, `<EPHEMERAL_MESSAGE>`). Both `AntigravityProvider.ExtractTranscript` and `daemon.ExtractTranscript` pass user inputs through `daemon.CleanAntigravityPrompt`, which slices between the first `<USER_REQUEST>` and last `</USER_REQUEST>` (preserving any XML tags quoted inside the user's message verbatim) and strips standalone metadata blocks so metadata-only steps are omitted.
 * **Conversation ID Adoption & Workspace Normalization:** Because Antigravity (`agy`) allocates its native conversation UUID lazily upon the first user prompt (rather than via a CLI `--session-id` flag at spawn time), `ackbard` automatically adopts the placeholder session (`tempUUID`) into the real conversation UUID across hooks, headless `"init"` events, presence `.lock` inspection, and brain transcript scans, normalizing tool-call paths (`AbsolutePath`, `Path`, `TargetFile`, `Cwd`, `DirectoryPath`, `SearchPath`) to the enclosing Git repository or `.worktrees/<branch>` root and emitting `old_id` so open client tabs migrate seamlessly.
+* **Session File Cleanup (`CleanSessionFiles`):** Removes `brain/<session-id>/`, `conversations/<session-id>.*`, `annotations/<session-id>.*`, `presence/<session-id>.*`, and prunes `<session-id>` from `cache/conversation_metadata.json` across default (`~/.gemini/antigravity`, `~/.gemini/antigravity-cli`, `~/.antigravity`) and `~/.gemini-profiles/*` directories.
 
 ### OpenAI Codex
 * **Session Index:** `~/.codex/session_index.jsonl` contains thread titles (`thread_name`), native IDs (`id`), and update timestamps.
@@ -125,4 +126,17 @@ Concrete provider implementations are organized into focused, single-responsibil
 * `<agent>_hook.go`: Webhook and stdin JSON payloads and `ParseHook`.
 * `<agent>_transcript.go`: Session metadata, title resolution, transcript extraction, and file cleanup.
 * `<agent>_subagent.go`: Structured subagent discovery and metadata parsing.
+
+---
+
+## 7. Shared Skills & Tools Distribution
+
+Ackbar provisions the `ackbar-tasks` MCP server and task management skills across all connected agent configurations:
+
+* **Claude Code (`claude-code`):** Configures `mcpServers.ackbar` in `~/.claude.json` (or profile config directory) and deploys `SKILL.md` to `~/.claude/skills/ackbar-tasks/`.
+* **Google Antigravity (`antigravity`):** Configures `mcpServers.ackbar` in `~/.gemini/antigravity/mcp_config.json` and deploys `SKILL.md` to both `~/.gemini/config/skills/ackbar-tasks/` (for IDE / shared agent environments) and `~/.gemini/antigravity-cli/skills/ackbar-tasks/` (for CLI environments).
+* **OpenAI Codex (`codex`):** Configures `mcpServers.ackbar` in `~/.codex/config.json` and deploys `SKILL.md` to `~/.codex/skills/ackbar-tasks/`.
+
+When an external skills repository is configured (via `ackbar agent setup --skills-repo-url=...`, `POST /v1/agents/skills-repo/sync`, or Web UI modal), custom skills from the external repository are automatically synchronized and installed across all supported agents.
+
 

@@ -53,6 +53,9 @@ func (s *Server) verifyHeadlessLiveness(sessions []*Session) {
 		if sess == nil || sess.State == StateEnded {
 			continue
 		}
+		if !s.isLocalHost(sess.Host) {
+			continue
+		}
 		if sess.EngineType == EngineHeadless && sess.TmuxName == "" {
 			isRunning := s.headless != nil && s.headless.IsRunning(sess.ID)
 			if isRunning {
@@ -108,7 +111,11 @@ func (s *Server) verifySessionLiveness(ctx context.Context, sessions []*Session)
 	activeTmux, _ := tmux.ListSessions(ctx)
 
 	for _, sess := range sessions {
-		if sess.State == StateEnded {
+		if sess == nil || sess.State == StateEnded {
+			continue
+		}
+
+		if !s.isLocalHost(sess.Host) {
 			continue
 		}
 
@@ -118,8 +125,10 @@ func (s *Server) verifySessionLiveness(ctx context.Context, sessions []*Session)
 
 		if p, ok := s.providers[sess.Agent]; ok {
 			if inspector, ok := p.(StatusInspector); ok {
+				prevState := sess.State
 				if inspector.InspectStatus(ctx, sess) {
 					_ = s.db.SaveSession(sess)
+					s.maybeNotifySessionBlocked(prevState, sess)
 					s.broadcast(sess)
 				}
 			}
@@ -245,7 +254,7 @@ func (s *Server) refreshExistingSessions(ctx context.Context, state *ScanState) 
 
 		// IMMUTABILITY GUARD: Ended sessions with established names are static and do not need disk rescans
 		if sess.State == StateEnded && sess.Name != "" && !isRawSessionName(sess.Name) {
-			if sess.NodePath == "" && sess.Cwd != "" {
+			if sess.NodePath == "" && sess.Cwd != "" && !sess.IsSupervisor {
 				if np := s.resolveSessionNodePath(sess.Cwd); np != "" {
 					sess.NodePath = np
 					_ = s.db.SaveSession(sess)
@@ -255,6 +264,7 @@ func (s *Server) refreshExistingSessions(ctx context.Context, state *ScanState) 
 			continue
 		}
 
+		prevState := sess.State
 		changed := false
 		if p, ok := s.providers[sess.Agent]; ok && sess.NativeID != "" {
 			if meta := p.ReadSessionMetadata(sess.Cwd, sess.NativeID); meta != nil {
@@ -315,7 +325,7 @@ func (s *Server) refreshExistingSessions(ctx context.Context, state *ScanState) 
 				}
 			}
 		}
-		if sess.NodePath == "" && sess.Cwd != "" {
+		if sess.NodePath == "" && sess.Cwd != "" && !sess.IsSupervisor {
 			if np := s.resolveSessionNodePath(sess.Cwd); np != "" {
 				sess.NodePath = np
 				changed = true
@@ -323,6 +333,7 @@ func (s *Server) refreshExistingSessions(ctx context.Context, state *ScanState) 
 		}
 		if changed {
 			_ = s.db.SaveSession(sess)
+			s.maybeNotifySessionBlocked(prevState, sess)
 			s.broadcast(sess)
 		}
 	}
@@ -577,7 +588,7 @@ func (s *Server) scanTmuxPanes(ctx context.Context, state *ScanState) {
 				existingObs.PID = pid
 				obsChanged = true
 			}
-			if existingObs.NodePath == "" && existingObs.Cwd != "" {
+			if existingObs.NodePath == "" && existingObs.Cwd != "" && !existingObs.IsSupervisor {
 				if np := s.resolveSessionNodePath(existingObs.Cwd); np != "" {
 					existingObs.NodePath = np
 					obsChanged = true
@@ -650,6 +661,12 @@ func (s *Server) reconcileAntigravityTmuxSession(ctx context.Context, state *Sca
 				existingReal.CustomTitle = existingOld.CustomTitle
 				existingReal.Name = existingOld.Name
 			}
+			if existingOld.IsSupervisor {
+				existingReal.IsSupervisor = true
+			}
+			if existingReal.CurrentTaskID == "" && existingOld.CurrentTaskID != "" {
+				existingReal.CurrentTaskID = existingOld.CurrentTaskID
+			}
 			if existingReal.CustomTitle == "" {
 				if title := ReadAntigravitySessionTitle(existingReal.Cwd, sID); title != "" && !isRawSessionName(title) {
 					existingReal.Name = title
@@ -714,7 +731,7 @@ func (s *Server) adoptExistingTmuxSession(ctx context.Context, state *ScanState,
 			existing.Cwd = cwd
 		}
 	}
-	if existing.NodePath == "" && existing.Cwd != "" {
+	if existing.NodePath == "" && existing.Cwd != "" && !existing.IsSupervisor {
 		existing.NodePath = s.resolveSessionNodePath(existing.Cwd)
 	}
 	if p, ok := s.providers[agent]; ok {

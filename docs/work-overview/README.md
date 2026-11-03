@@ -27,25 +27,29 @@ Ackbar's **Work & Fleet Overview Dashboard** provides high-level observability a
 
 ---
 
-## 2. 4-Pillar Task Lifecycle
+## 2. 4-Pillar Task Lifecycle (`dev-workflow` + Product/Design Tasks)
 
-| Pillar | State | Description | Typical Transitions |
+Tasks progress through 4 macro pillars (`NEW` $\rightarrow$ `IN_PROGRESS` $\rightarrow$ `REVIEW` $\rightarrow$ `DONE`) supporting both **Product/Design Tasks (`kind="design"`)** and **Engineering Repo Tasks (`kind="code"`, driven by `dev-workflow` N0–N15 inside Tmux)**:
+
+| Pillar | State | Substatuses | Description & Workflow Mapping |
 | :--- | :--- | :--- | :--- |
-| **1. NEW** | `NEW` | Tasks queued in backlog or undergoing initial architecture planning. | Moves to `IN_PROGRESS` when an agent begins execution. |
-| **2. IN_PROGRESS** | `IN_PROGRESS` | Actively supervised by one or more agent worker sessions. | Emits substatuses (`active`, `blocked`, `running`). Moves to `REVIEW` upon PR creation. |
-| **3. REVIEW** | `REVIEW` | Work has completed automated testing; PR is awaiting review or human evaluation. | Substatuses include `task_review`, `in_review`, `approved`. Moves to `DONE` once merged. |
-| **4. DONE** | `DONE` | Pull request merged, worktree cleaned, or task resolved. | Retained for 30 days before auto-archival. |
+| **1. NEW** | `NEW` | `backlog`, `ready`, `discovered` | Feature, design, or bug queued via **`⚓ Supervisor`** or Work Board. |
+| **2. IN_PROGRESS** | `IN_PROGRESS` | `active`, `question` (`N1`), `stalled` (`N3–N10`) | Dedicated **`📋 Task`** session executing Product/Design work or repo `dev-workflow` in Tmux (`@macmini` / `@legion`). Stopping at `N1` flags `question`; stopping in `N3–N10` without `report_blocker` flags `stalled`. |
+| **3. REVIEW** | `REVIEW` | `design_review`, `plan_review` (`N2`), `pr_review` (`N11`), `approved` | **Human Checkpoint:** Hosted deliverable (Claude Published Artifact or Google Doc/Slides/Drive via `gdrive`/`gdocs`/`gslides`) or GitHub PR (`N11`) awaits approval. |
+| **4. DONE** | `DONE` | `completed` (`N14–N15`), `rejected`, `abandoned` | Design approved or PR merged (`N14`), `.worktrees/<branch>` removed, retro published (`N15`), Tmux window auto-closed, and session moved to `✅ Done`. |
 
 ---
 
 ## 3. Database Schema (`internal/daemon/db.go`)
 
-Task persistence is managed in `ackbard.db` using CGO-free pure Go SQLite (`modernc.org/sqlite`):
+Task and tree persistence is managed in `ackbard.db` using CGO-free pure Go SQLite (`modernc.org/sqlite`) and replicated via **Uniform 3-Way LWW Peer Sync** (`macbook` $\leftrightarrow$ `macmini` $\leftrightarrow$ `legion`):
 
-* **`tasks`**: Core task records (`id`, `title`, `notes`, `group_name`, `project_name`, `status`, `substatus`, `branch`, `worktree`, `pr_url`, `created_at`, `updated_at`, `closed_at`).
-* **`task_workers`**: Associates multiple agent sessions to a task (`task_id`, `session_id`, `role`, `host_name`, `assigned_at`).
+* **`tree_nodes` & `node_host_paths`**: Host-agnostic logical project & repo hierarchy (`tree_nodes`) paired with dynamic per-host checkout directories (`node_host_paths: node_path, host, project_dir, git_remote, capabilities, updated_at`).
+* **`tasks`**: Core task records (`id`, `title`, `task_kind`, `notes`, `group_name`, `project_name`, `status`, `substatus`, `branch`, `worktree`, `pr_url`, `created_at`, `updated_at`, `closed_at`).
+* **`task_workstreams`**: Per-repository workstream state (`task_id`, `repo_node_path`, `target_host`, `depends_on`, `workflow_node`, `status`, `branch`, `worktree_path`, `pr_url`) supporting both parallel and `N14`-merge-triggered sequential execution (e.g. `ngl-ios` `@macmini` $\rightarrow$ `ngl-android` `@legion`).
+* **`task_workers`**: Associates dedicated Tmux worker sessions to a task/workstream (`task_id`, `repo_node_path`, `workflow_node`, `session_id`, `host`, `assigned_at`).
 * **`task_external_refs`**: Links to external ticket systems (`task_id`, `tracker`, `ref_key`, `url`).
-* **`task_deliverables`**: Artifact deliverables (`task_id`, `kind`, `title`, `url_or_path`, `sha`).
+* **`task_deliverables`**: Cloud-hosted deliverables (`task_id`, `kind`, `provider`, `title`, `url`, `content_md`) linking **Claude Published Artifacts** and **Google Workspace / Drive** (`gdrive`, `gdocs`, `gslides`, `gsheets`) plus synced `content_md` for cross-host agent handoff.
 * **`task_events`**: Immutable audit log of lifecycle mutations (`task_id`, `event_type`, `payload`, `created_at`).
 
 ---

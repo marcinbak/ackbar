@@ -13,14 +13,18 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"ackbar/internal/router"
 	"ackbar/internal/tmux"
 )
+
+var validTaskIDRegex = regexp.MustCompile(`^[a-zA-Z0-9_\-]+$`)
 
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -37,7 +41,7 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	// Only verify liveness on active sessions to avoid endpoint latency & exec overhead
 	var active []*Session
 	for _, sess := range sessions {
-		if sess.State != StateEnded {
+		if sess.State != StateEnded && s.isLocalHost(sess.Host) {
 			active = append(active, sess)
 		}
 	}
@@ -46,8 +50,211 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		s.triggerAsyncLiveness()
 	}
 
+	if r.URL.Query().Get("federated") == "true" {
+		sessions = s.getFederatedSessions(r.Context(), sessions)
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(sessions)
+}
+
+func (s *Server) getFederatedSessions(ctx context.Context, localSessions []*Session) []*Session {
+	hosts, err := s.db.ListHosts()
+	if err != nil || len(hosts) == 0 {
+		return localSessions
+	}
+
+	token := s.configuredToken
+	if token == "" {
+		token = os.Getenv("ACKBAR_TOKEN")
+	}
+
+	onlinePeers := make(map[string]bool)
+	offlinePeers := make(map[string]bool)
+	peerSessions := make(map[string][]*Session)
+	var mu sync.Mutex
+
+	var wg sync.WaitGroup
+	for _, h := range hosts {
+		if h.URL == "" || s.isLocalHost(h.Name) {
+			continue
+		}
+		wg.Add(1)
+		go func(hr *HostRecord) {
+			defer wg.Done()
+			reqURL := strings.TrimSuffix(hr.URL, "/") + "/v1/sessions"
+			reqCtx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+			defer cancel()
+			req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, reqURL, nil)
+			if err != nil {
+				mu.Lock()
+				offlinePeers[hr.Name] = true
+				mu.Unlock()
+				s.updateHostHealth(hr.Name, false, "", "", 0)
+				return
+			}
+			if token != "" {
+				req.Header.Set("Authorization", "Bearer "+token)
+				req.Header.Set("X-Ackbar-Token", token)
+			}
+			client := &http.Client{Timeout: 1500 * time.Millisecond}
+			start := time.Now()
+			resp, err := client.Do(req)
+			if err != nil || resp.StatusCode != http.StatusOK {
+				mu.Lock()
+				offlinePeers[hr.Name] = true
+				mu.Unlock()
+				s.updateHostHealth(hr.Name, false, "", "", 0)
+				return
+			}
+			defer resp.Body.Close()
+
+			var remoteSessions []*Session
+			if err := json.NewDecoder(resp.Body).Decode(&remoteSessions); err != nil {
+				mu.Lock()
+				offlinePeers[hr.Name] = true
+				mu.Unlock()
+				s.updateHostHealth(hr.Name, false, "", "", 0)
+				return
+			}
+
+			latency := time.Since(start).Milliseconds()
+			mu.Lock()
+			onlinePeers[hr.Name] = true
+			peerSessions[hr.Name] = remoteSessions
+			mu.Unlock()
+			s.updateHostHealth(hr.Name, true, hr.Version, hr.DisplayName, latency)
+		}(h)
+	}
+	wg.Wait()
+
+	isHostOffline := func(host string) bool {
+		for off := range offlinePeers {
+			if off == host || strings.EqualFold(off, host) || strings.HasSuffix(off, "@"+host) || strings.HasSuffix(host, "@"+off) {
+				return true
+			}
+		}
+		return false
+	}
+	isHostOnline := func(host string) bool {
+		for on := range onlinePeers {
+			if on == host || strings.EqualFold(on, host) || strings.HasSuffix(on, "@"+host) || strings.HasSuffix(host, "@"+on) {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Merge sessions: local sessions are indexed first
+	merged := make(map[string]*Session)
+	nativeToID := make(map[string]string)
+	nativeKey := func(agent, nativeID string) string {
+		return agent + "\x00" + nativeID
+	}
+
+	for _, sess := range localSessions {
+		merged[sess.ID] = sess
+		if sess.NativeID != "" {
+			nativeToID[nativeKey(sess.Agent, sess.NativeID)] = sess.ID
+		}
+	}
+
+	peerMatchesHost := func(peerHost, sessHost string) bool {
+		return peerHost == sessHost || strings.EqualFold(peerHost, sessHost) || strings.HasSuffix(peerHost, "@"+sessHost) || strings.HasSuffix(sessHost, "@"+peerHost)
+	}
+
+	// For online peers, incoming authoritative sessions are authoritative for runtime state,
+	// while non-authoritative third-party replicas only update LWW metadata.
+	for peerHost, rSessions := range peerSessions {
+		for _, peerSess := range rSessions {
+			if s.isLocalHost(peerSess.Host) {
+				continue
+			}
+			peerSess.HostOffline = false
+			existingID := peerSess.ID
+			existing, exists := merged[existingID]
+			if !exists && peerSess.NativeID != "" {
+				if matchID, ok := nativeToID[nativeKey(peerSess.Agent, peerSess.NativeID)]; ok {
+					cand := merged[matchID]
+					if cand != nil && (cand.Host == peerSess.Host || cand.Host == "local" || cand.Host == "") {
+						existingID = matchID
+						existing = cand
+						exists = true
+					}
+				}
+			}
+
+			isAuth := peerMatchesHost(peerHost, peerSess.Host)
+			if exists && existing != nil {
+				if s.isLocalHost(existing.Host) || !isAuth {
+					// Active local session or non-authoritative third-party replica:
+					// NEVER overwrite runtime state in merged.
+					// Only apply LWW metadata from peerSess if peerSess is newer
+					if peerSess.MetadataUpdatedAt.After(existing.MetadataUpdatedAt) {
+						existing.NodePath = peerSess.NodePath
+						existing.CustomTitle = peerSess.CustomTitle
+						existing.Name = peerSess.Name
+						existing.IsDone = peerSess.IsDone
+						existing.IsLater = peerSess.IsLater
+						existing.Archived = peerSess.Archived
+						existing.IsSupervisor = peerSess.IsSupervisor
+						existing.CurrentTaskID = peerSess.CurrentTaskID
+						existing.MetadataUpdatedAt = peerSess.MetadataUpdatedAt
+					}
+				} else {
+					// Authoritative remote session: peerSess is authoritative for runtime state
+					if existing.MetadataUpdatedAt.After(peerSess.MetadataUpdatedAt) {
+						peerSess.NodePath = existing.NodePath
+						peerSess.CustomTitle = existing.CustomTitle
+						peerSess.Name = existing.Name
+						peerSess.IsDone = existing.IsDone
+						peerSess.IsLater = existing.IsLater
+						peerSess.Archived = existing.Archived
+						peerSess.IsSupervisor = existing.IsSupervisor
+						peerSess.CurrentTaskID = existing.CurrentTaskID
+						peerSess.MetadataUpdatedAt = existing.MetadataUpdatedAt
+					}
+					merged[existingID] = peerSess
+				}
+			} else {
+				merged[peerSess.ID] = peerSess
+				if peerSess.NativeID != "" {
+					nativeToID[nativeKey(peerSess.Agent, peerSess.NativeID)] = peerSess.ID
+				}
+			}
+		}
+	}
+
+	// For any session belonging to an offline peer host, set HostOffline = true
+	var result []*Session
+	for _, sess := range merged {
+		if !s.isLocalHost(sess.Host) {
+			if isHostOffline(sess.Host) {
+				sess.HostOffline = true
+			} else if isHostOnline(sess.Host) {
+				sess.HostOffline = false
+			} else {
+				s.hostHealthMu.RLock()
+				for hName, health := range s.hostHealthMap {
+					if (hName == sess.Host || strings.HasSuffix(hName, "@"+sess.Host) || strings.HasSuffix(sess.Host, "@"+hName)) && !health.Online {
+						sess.HostOffline = true
+						break
+					}
+				}
+				s.hostHealthMu.RUnlock()
+			}
+		} else {
+			sess.HostOffline = false
+		}
+		result = append(result, sess)
+	}
+
+	// Sort by LastEventAt descending
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].LastEventAt.After(result[j].LastEventAt)
+	})
+
+	return result
 }
 
 func (s *Server) handlePurge(w http.ResponseWriter, r *http.Request) {
@@ -252,64 +459,76 @@ func (s *Server) handleSessionControl(w http.ResponseWriter, r *http.Request) {
 	switch action {
 	case "archive":
 		sess.Archived = true
+		sess.MetadataUpdatedAt = time.Now().UTC()
 		if err := s.db.SaveSession(sess); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		s.broadcast(sess)
+		s.syncSessionMeta(sess)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"archived"}`))
 
 	case "unarchive":
 		sess.Archived = false
+		sess.MetadataUpdatedAt = time.Now().UTC()
 		if err := s.db.SaveSession(sess); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		s.broadcast(sess)
+		s.syncSessionMeta(sess)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"unarchived"}`))
 
 	case "done", "mark_done":
 		sess.IsDone = true
 		sess.IsLater = false
+		sess.MetadataUpdatedAt = time.Now().UTC()
 		if err := s.db.SaveSession(sess); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		s.broadcast(sess)
+		s.syncSessionMeta(sess)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"done"}`))
 
 	case "later", "mark_later":
 		sess.IsLater = true
 		sess.IsDone = false
+		sess.MetadataUpdatedAt = time.Now().UTC()
 		if err := s.db.SaveSession(sess); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		s.broadcast(sess)
+		s.syncSessionMeta(sess)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"later"}`))
 
 	case "unlater":
 		sess.IsLater = false
+		sess.MetadataUpdatedAt = time.Now().UTC()
 		if err := s.db.SaveSession(sess); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		s.broadcast(sess)
+		s.syncSessionMeta(sess)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"active"}`))
 
 	case "undone", "active", "mark_active":
 		sess.IsDone = false
 		sess.IsLater = false
+		sess.MetadataUpdatedAt = time.Now().UTC()
 		if err := s.db.SaveSession(sess); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		s.broadcast(sess)
+		s.syncSessionMeta(sess)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"active"}`))
 
@@ -518,7 +737,10 @@ func (s *Server) handleSessionControl(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		sess.NodePath = nodePath
+		sess.MetadataUpdatedAt = time.Now().UTC()
+		_ = s.db.SaveSession(sess)
 		s.broadcast(sess)
+		s.syncSessionMeta(sess)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"moved"}`))
 
@@ -533,6 +755,7 @@ func (s *Server) handleSessionControl(w http.ResponseWriter, r *http.Request) {
 		}
 		sess.Name = name
 		sess.CustomTitle = name
+		sess.MetadataUpdatedAt = time.Now().UTC()
 		if err := s.db.SaveSession(sess); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -547,6 +770,7 @@ func (s *Server) handleSessionControl(w http.ResponseWriter, r *http.Request) {
 		titleCacheMutex.Unlock()
 
 		s.broadcast(sess)
+		s.syncSessionMeta(sess)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"renamed"}`))
 
@@ -895,14 +1119,18 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Agent      string `json:"agent"`
-		Cwd        string `json:"cwd"`
-		Host       string `json:"host"`
-		NodePath   string `json:"node_path"`
-		Name       string `json:"name"`
-		AccountID  string `json:"account_id"`
-		EngineType string `json:"engine_type"`
-		Prompt     string `json:"prompt"`
+		Agent        string `json:"agent"`
+		Cwd          string `json:"cwd"`
+		Host         string `json:"host"`
+		NodePath     string `json:"node_path"`
+		Name         string `json:"name"`
+		AccountID    string `json:"account_id"`
+		EngineType   string `json:"engine_type"`
+		Prompt       string `json:"prompt"`
+		IsSupervisor bool   `json:"is_supervisor"`
+		TaskID       string `json:"task_id"`
+		TaskKind     string `json:"task_kind"`
+		RepoNodePath string `json:"repo_node_path"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -910,8 +1138,36 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Agent == "" || req.Cwd == "" {
-		http.Error(w, "Missing agent or cwd", http.StatusBadRequest)
+	if req.TaskID != "" {
+		if !validTaskIDRegex.MatchString(req.TaskID) {
+			http.Error(w, "Invalid task_id format", http.StatusBadRequest)
+			return
+		}
+	}
+
+	if req.NodePath == "" && req.RepoNodePath != "" {
+		req.NodePath = req.RepoNodePath
+	}
+
+	if req.IsSupervisor {
+		if req.Agent == "" {
+			req.Agent = "claude-code"
+		}
+		if req.Cwd == "" {
+			req.Cwd = "~"
+		}
+		if req.Name == "" {
+			req.Name = "⚓ New Supervisor"
+		}
+	}
+
+	if req.Agent == "" {
+		http.Error(w, "Missing agent", http.StatusBadRequest)
+		return
+	}
+
+	if req.Cwd == "" && req.NodePath == "" && req.RepoNodePath == "" {
+		http.Error(w, "Missing cwd or node_path", http.StatusBadRequest)
 		return
 	}
 
@@ -919,23 +1175,23 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		req.EngineType = EngineTmux
 	}
 
-	if req.NodePath == "" {
-		req.NodePath = s.resolveSessionNodePath(req.Cwd)
-	}
-
 	// 1. Forward to remote host if specified
 	if !s.isRequestForLocalDaemon(r, req.Host) {
 		hostRec := s.resolveHost(req.Host)
 		if hostRec != nil && hostRec.URL != "" && !s.isLocalHost(hostRec.Name) && hostRec.URL != "http://127.0.0.1:7777" {
 			targetURL := strings.TrimSuffix(hostRec.URL, "/") + "/v1/sessions/spawn"
-			payload, _ := json.Marshal(map[string]string{
-				"agent":       req.Agent,
-				"cwd":         req.Cwd,
-				"node_path":   req.NodePath,
-				"name":        req.Name,
-				"account_id":  req.AccountID,
-				"engine_type": req.EngineType,
-				"prompt":      req.Prompt,
+			payload, _ := json.Marshal(map[string]interface{}{
+				"agent":          req.Agent,
+				"cwd":            req.Cwd,
+				"node_path":      req.NodePath,
+				"name":           req.Name,
+				"account_id":     req.AccountID,
+				"engine_type":    req.EngineType,
+				"prompt":         req.Prompt,
+				"is_supervisor":  req.IsSupervisor,
+				"task_id":        req.TaskID,
+				"task_kind":      req.TaskKind,
+				"repo_node_path": req.RepoNodePath,
 			})
 			fwdReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, targetURL, bytes.NewBuffer(payload))
 			if err != nil {
@@ -965,6 +1221,34 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// 2. Resolve Cwd for local daemon execution
+	resolveCwdFromNode := func(candidate string) string {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			return ""
+		}
+		if nhp, _ := s.db.GetNodeHostPath(candidate, s.HostName()); nhp != nil && nhp.ProjectDir != "" {
+			return nhp.ProjectDir
+		}
+		if node, _ := s.db.GetNode(candidate); node != nil && node.ProjectDir != "" {
+			return node.ProjectDir
+		}
+		return ""
+	}
+
+	if req.Cwd == "" || !filepath.IsAbs(req.Cwd) || req.Cwd == req.NodePath || req.Cwd == req.RepoNodePath {
+		for _, cand := range []string{req.NodePath, req.RepoNodePath, req.Cwd} {
+			if dir := resolveCwdFromNode(cand); dir != "" {
+				req.Cwd = dir
+				break
+			}
+		}
+	}
+
+	if req.Cwd == "" {
+		req.Cwd = "~"
+	}
+
 	// Expand ~ to user home directory and ensure directory exists
 	home, _ := os.UserHomeDir()
 	if strings.HasPrefix(req.Cwd, "~/") && home != "" {
@@ -972,7 +1256,19 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 	} else if req.Cwd == "~" && home != "" {
 		req.Cwd = home
 	}
+	if !filepath.IsAbs(req.Cwd) {
+		if home != "" {
+			req.Cwd = home
+		} else {
+			cwd, _ := os.Getwd()
+			req.Cwd = cwd
+		}
+	}
 	_ = os.MkdirAll(req.Cwd, 0755)
+
+	if req.NodePath == "" && !req.IsSupervisor && req.Cwd != "" {
+		req.NodePath = s.resolveSessionNodePath(req.Cwd)
+	}
 
 	if req.NodePath != "" {
 		if existingNode, _ := s.db.GetNode(req.NodePath); existingNode == nil {
@@ -992,25 +1288,48 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 
 	tempUUID := generateUUID()
 	effectiveHost := s.HostName()
+	spawnSessID := fmt.Sprintf("%s:%s:%s", req.Agent, effectiveHost, tempUUID)
+	if envVars == nil {
+		envVars = make(map[string]string)
+	}
+	envVars["ACKBAR_SESSION_ID"] = spawnSessID
+
+	taskKind := strings.ToLower(strings.TrimSpace(req.TaskKind))
+	if req.TaskID != "" {
+		envVars["ACKBAR_TASK_ID"] = req.TaskID
+		if taskKind == "" {
+			if t, _ := s.db.GetTaskByID(req.TaskID); t != nil && t.TaskKind != "" {
+				taskKind = strings.ToLower(strings.TrimSpace(t.TaskKind))
+			}
+		}
+	}
+	if taskKind != "design" && taskKind != "code" {
+		taskKind = "code"
+	}
+	envVars["ACKBAR_TASK_KIND"] = taskKind
 
 	if req.EngineType == EngineHeadless {
+		now := time.Now().UTC()
 		sess := &Session{
-			ID:          fmt.Sprintf("%s:%s:%s", req.Agent, effectiveHost, tempUUID),
-			Agent:       req.Agent,
-			Host:        effectiveHost,
-			NativeID:    tempUUID,
-			Cwd:         req.Cwd,
-			ProjectKey:  GetProjectKey(req.Cwd),
-			NodePath:    req.NodePath,
-			Name:        req.Name,
-			Managed:     true,
-			TmuxName:    "",
-			EngineType:  EngineHeadless,
-			State:       StateIdle,
-			Activity:    "Headless chat session ready",
-			StartedAt:   time.Now(),
-			LastEventAt: time.Now(),
-			AccountID:   accountID,
+			ID:                fmt.Sprintf("%s:%s:%s", req.Agent, effectiveHost, tempUUID),
+			Agent:             req.Agent,
+			Host:              effectiveHost,
+			NativeID:          tempUUID,
+			Cwd:               req.Cwd,
+			ProjectKey:        GetProjectKey(req.Cwd),
+			NodePath:          req.NodePath,
+			Name:              req.Name,
+			IsSupervisor:      req.IsSupervisor,
+			CurrentTaskID:     req.TaskID,
+			Managed:           true,
+			TmuxName:          "",
+			EngineType:        EngineHeadless,
+			State:             StateIdle,
+			Activity:          "Headless chat session ready",
+			StartedAt:         now,
+			LastEventAt:       now,
+			MetadataUpdatedAt: now,
+			AccountID:         accountID,
 		}
 		initialPrompt := strings.TrimSpace(req.Prompt)
 		if req.Name != "" {
@@ -1023,7 +1342,20 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		spawnID := sess.ID
+		if req.TaskID != "" {
+			_ = s.db.InsertTaskWorker(&TaskWorker{
+				TaskID:       req.TaskID,
+				SessionID:    sess.ID,
+				Agent:        req.Agent,
+				Host:         effectiveHost,
+				IsActive:     true,
+				RepoNodePath: req.RepoNodePath,
+				WorkflowNode: "N0",
+				AssignedAt:   now,
+			})
+		}
 		s.broadcast(sess)
+		s.syncSessionMeta(sess)
 		if initialPrompt != "" && s.headless != nil {
 			_ = s.headless.RunTurn(context.Background(), sess, initialPrompt)
 		}
@@ -1058,23 +1390,27 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Insert temporary spawning session
+	now := time.Now().UTC()
 	sess := &Session{
-		ID:          fmt.Sprintf("%s:%s:%s", req.Agent, effectiveHost, tempUUID),
-		Agent:       req.Agent,
-		Host:        effectiveHost,
-		NativeID:    tempUUID,
-		Cwd:         req.Cwd,
-		ProjectKey:  GetProjectKey(req.Cwd),
-		NodePath:    req.NodePath,
-		Name:        req.Name,
-		Managed:     true,
-		TmuxName:    tmuxName,
-		EngineType:  EngineTmux,
-		State:       StateUnknown,
-		Activity:    "Spawning session...",
-		StartedAt:   time.Now(),
-		LastEventAt: time.Now(),
-		AccountID:   accountID,
+		ID:                fmt.Sprintf("%s:%s:%s", req.Agent, effectiveHost, tempUUID),
+		Agent:             req.Agent,
+		Host:              effectiveHost,
+		NativeID:          tempUUID,
+		Cwd:               req.Cwd,
+		ProjectKey:        GetProjectKey(req.Cwd),
+		NodePath:          req.NodePath,
+		Name:              req.Name,
+		IsSupervisor:      req.IsSupervisor,
+		CurrentTaskID:     req.TaskID,
+		Managed:           true,
+		TmuxName:          tmuxName,
+		EngineType:        EngineTmux,
+		State:             StateUnknown,
+		Activity:          "Spawning session...",
+		StartedAt:         now,
+		LastEventAt:       now,
+		MetadataUpdatedAt: now,
+		AccountID:         accountID,
 	}
 	if req.Name != "" {
 		sess.CustomTitle = req.Name
@@ -1089,7 +1425,21 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.TaskID != "" {
+		_ = s.db.InsertTaskWorker(&TaskWorker{
+			TaskID:       req.TaskID,
+			SessionID:    sess.ID,
+			Agent:        req.Agent,
+			Host:         effectiveHost,
+			IsActive:     true,
+			RepoNodePath: req.RepoNodePath,
+			WorkflowNode: "N0",
+			AssignedAt:   now,
+		})
+	}
+
 	s.broadcast(sess)
+	s.syncSessionMeta(sess)
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -1099,6 +1449,108 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		"host":        effectiveHost,
 		"engine_type": EngineTmux,
 		"session":     sess,
+	})
+}
+
+func (s *Server) handleBindSupervisor(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, 64*1024)
+	bodyBytes, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "Failed to read request body", http.StatusBadRequest)
+		return
+	}
+
+	var req struct {
+		SessionID       string `json:"session_id"`
+		ID              string `json:"id"`
+		NodePath        string `json:"node_path"`
+		ProjectNodePath string `json:"project_node_path"`
+		Title           string `json:"title"`
+		CustomTitle     string `json:"custom_title"`
+	}
+	if len(bodyBytes) > 0 {
+		if err := json.Unmarshal(bodyBytes, &req); err != nil {
+			http.Error(w, "Invalid JSON payload", http.StatusBadRequest)
+			return
+		}
+	}
+
+	sessionID := strings.TrimSpace(req.SessionID)
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(req.ID)
+	}
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(r.URL.Query().Get("session_id"))
+	}
+
+	nodePath := strings.TrimSpace(req.NodePath)
+	if nodePath == "" {
+		nodePath = strings.TrimSpace(req.ProjectNodePath)
+	}
+
+	title := strings.TrimSpace(req.Title)
+	if title == "" {
+		title = strings.TrimSpace(req.CustomTitle)
+	}
+
+	if sessionID == "" || nodePath == "" {
+		http.Error(w, "session_id and node_path are required", http.StatusBadRequest)
+		return
+	}
+
+	sess, proxied := s.resolveSessionOrProxy(w, r.Method, sessionID, "application/json", bytes.NewReader(bodyBytes), func(_ *Session) string {
+		return "/v1/sessions/bind-supervisor"
+	})
+	if proxied {
+		return
+	}
+
+	now := time.Now().UTC()
+	if existingNode, _ := s.db.GetNode(nodePath); existingNode == nil {
+		newNode := &TreeNode{
+			Path:      nodePath,
+			CreatedAt: now,
+			UpdatedAt: now,
+		}
+		_ = s.db.SaveNode(newNode)
+		s.pushSyncPayload(&SyncStatePayload{Nodes: []TreeNode{*newNode}})
+	}
+
+	sess.IsSupervisor = true
+	sess.NodePath = nodePath
+	if title != "" {
+		sess.Name = title
+		sess.CustomTitle = title
+		cacheKey := fmt.Sprintf("%s:%s", sess.Cwd, sess.NativeID)
+		titleCacheMutex.Lock()
+		titleCache[cacheKey] = TitleCacheEntry{
+			Title:     title,
+			Source:    "custom",
+			UpdatedAt: now,
+		}
+		titleCacheMutex.Unlock()
+	}
+	sess.MetadataUpdatedAt = now
+
+	if err := s.db.SaveSession(sess); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	s.broadcast(sess)
+	s.syncSessionMeta(sess)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":  "bound",
+		"id":      sess.ID,
+		"session": sess,
 	})
 }
 

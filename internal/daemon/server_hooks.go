@@ -221,6 +221,7 @@ func (s *Server) processParsedHookEvent(event *Event, urlEventName string, heade
 						}
 						s.headless.EmitSubagentsUpdate(parentSess.ID, runningPtrs)
 					}
+					prevParentState := parentSess.State
 					if event.State == StateBlocked {
 						s.blockedBySubagent.Store(parentSess.ID, event.NativeID)
 						now := time.Now()
@@ -335,6 +336,7 @@ func (s *Server) processParsedHookEvent(event *Event, urlEventName string, heade
 					}
 					parentSess.UpdatedAt = time.Now()
 					_ = s.db.SaveSession(parentSess)
+					s.maybeNotifySessionBlocked(prevParentState, parentSess)
 					s.broadcast(parentSess)
 				}
 			}
@@ -361,6 +363,7 @@ func (s *Server) processParsedHookEvent(event *Event, urlEventName string, heade
 	isPureHeadless := sess.EngineType == EngineHeadless && sess.TmuxName == ""
 	headlessRunning := isPureHeadless && s.headless != nil && s.headless.IsRunning(sess.ID)
 
+	prevState := sess.State
 	s.applyHookStateTransition(sess, event, sessionID, isPureHeadless, headlessRunning)
 	s.trackHookSubagentEvent(sessionID, event)
 
@@ -378,6 +381,7 @@ func (s *Server) processParsedHookEvent(event *Event, urlEventName string, heade
 		log.Printf("Error saving session: %v", err)
 		return
 	}
+	s.maybeNotifySessionBlocked(prevState, sess)
 
 	// Synchronize session with task board and ingest ambient tool telemetry
 	s.SyncSessionTaskWorker(sess)
@@ -413,27 +417,32 @@ func (s *Server) resolveOrAdoptHookSession(event *Event, host, sessionID, accoun
 			}
 
 			sess = &Session{
-				ID:          sessionID,
-				OldID:       spawningSess.ID,
-				Agent:       event.Agent,
-				Host:        host,
-				NativeID:    event.NativeID,
-				Managed:     true,
-				PID:         spawningSess.PID,
-				EngineType:  spawningSess.EngineType,
-				TmuxName:    tmuxName,
-				Cwd:         spawningSess.Cwd,
-				ProjectKey:  spawningSess.ProjectKey,
-				NodePath:    spawningSess.NodePath,
-				CustomTitle: spawningSess.CustomTitle,
-				StartedAt:   spawningSess.StartedAt,
-				LastEventAt: spawningSess.LastEventAt,
-				AccountID:   spawningSess.AccountID,
+				ID:            sessionID,
+				OldID:         spawningSess.ID,
+				Agent:         event.Agent,
+				Host:          host,
+				NativeID:      event.NativeID,
+				Managed:       true,
+				PID:           spawningSess.PID,
+				EngineType:    spawningSess.EngineType,
+				TmuxName:      tmuxName,
+				Cwd:           spawningSess.Cwd,
+				ProjectKey:    spawningSess.ProjectKey,
+				NodePath:      spawningSess.NodePath,
+				CustomTitle:   spawningSess.CustomTitle,
+				StartedAt:     spawningSess.StartedAt,
+				LastEventAt:   spawningSess.LastEventAt,
+				AccountID:     spawningSess.AccountID,
+				IsSupervisor:  spawningSess.IsSupervisor,
+				CurrentTaskID: spawningSess.CurrentTaskID,
 			}
 			if spawningSess.CustomTitle != "" {
 				sess.Name = spawningSess.CustomTitle
 			} else if spawningSess.Name != "" && !isRawSessionName(spawningSess.Name) {
 				sess.Name = spawningSess.Name
+			}
+			if spawningSess.CurrentTaskID != "" {
+				_ = s.db.ReassignWorkerSessionID(spawningSess.ID, sess.ID)
 			}
 		}
 	}
@@ -511,7 +520,7 @@ func (s *Server) updateHookSessionMetadataAndTitle(sess *Session, event *Event) 
 			sess.Cwd = event.Cwd
 		}
 	}
-	if sess.NodePath == "" && sess.Cwd != "" {
+	if sess.NodePath == "" && sess.Cwd != "" && !sess.IsSupervisor {
 		sess.NodePath = s.resolveSessionNodePath(sess.Cwd)
 	}
 	if len(event.Roots) > 0 {

@@ -487,14 +487,14 @@ func TestTelemetry_HardenedProposalsAndWorkflow(t *testing.T) {
 		db: db,
 	}
 
-	// 1. Test Node mapping N12, N13 -> REVIEW: in_review, N14, N15 -> DONE: completed
+	// 1. Test Node mapping N12, N13 -> REVIEW: pr_review, N14, N15 -> DONE: completed
 	s12, sub12 := mapWorkflowNodeToTaskStatus("N12")
-	if s12 != "REVIEW" || sub12 != "in_review" {
-		t.Errorf("Expected N12 to map to REVIEW/in_review, got %s/%s", s12, sub12)
+	if s12 != "REVIEW" || sub12 != "pr_review" {
+		t.Errorf("Expected N12 to map to REVIEW/pr_review, got %s/%s", s12, sub12)
 	}
 	s13, sub13 := mapWorkflowNodeToTaskStatus("N13")
-	if s13 != "REVIEW" || sub13 != "in_review" {
-		t.Errorf("Expected N13 to map to REVIEW/in_review, got %s/%s", s13, sub13)
+	if s13 != "REVIEW" || sub13 != "pr_review" {
+		t.Errorf("Expected N13 to map to REVIEW/pr_review, got %s/%s", s13, sub13)
 	}
 	s14, sub14 := mapWorkflowNodeToTaskStatus("N14")
 	if s14 != "DONE" || sub14 != "completed" {

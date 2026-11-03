@@ -372,6 +372,16 @@ function deduplicateSessions(list) {
         if (sess.name) existing.name = sess.name;
       }
 
+      if (sess.is_supervisor) {
+        existing.is_supervisor = true;
+      }
+      if (sess.current_task_id && !existing.current_task_id) {
+        existing.current_task_id = sess.current_task_id;
+      }
+      if (sess.node_path && !existing.node_path) {
+        existing.node_path = sess.node_path;
+      }
+
       if (sess.managed || (sess.state && sess.state !== 4)) {
         existing.id = sess.id;
         existing.managed = true;
@@ -728,6 +738,7 @@ async function fetchAllAgentStatuses() {
         isSelf: h.isSelf,
         online: true,
         agents: data.agents || [],
+        skillsRepo: data.skills_repo || null,
         version: data.version || state.version || '',
         error: null
       };
@@ -739,6 +750,7 @@ async function fetchAllAgentStatuses() {
         isSelf: h.isSelf,
         online: false,
         agents: [],
+        skillsRepo: null,
         version: '',
         error: err.message || 'Host unreachable'
       };
@@ -757,18 +769,20 @@ async function fetchAllAgentStatuses() {
       isSelf: !!h.isSelf,
       online: false,
       agents: [],
+      skillsRepo: null,
       version: '',
       error: r.reason ? (r.reason.message || String(r.reason)) : 'Request failed'
     };
   });
 }
 
-async function provisionAgents(agents = ['all'], hostUrl = '') {
+async function provisionAgents(agents = ['all'], hostUrl = '', extra = {}) {
   const base = hostUrl ? hostUrl.replace(/\/$/, '') : '';
+  const payload = { agents, ...extra };
   const res = await fetch(`${base}/v1/agents/provision`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ agents })
+    body: JSON.stringify(payload)
   });
   if (!res.ok) {
     const errText = await res.text();
@@ -778,6 +792,25 @@ async function provisionAgents(agents = ['all'], hostUrl = '') {
       if (errObj.message) msg = errObj.message;
     } catch (_) {}
     throw new Error(msg || 'Failed to configure agents');
+  }
+  return await res.json();
+}
+
+async function syncSkillsRepo(hostUrl = '', options = {}) {
+  const base = hostUrl ? hostUrl.replace(/\/$/, '') : '';
+  const res = await fetch(`${base}/v1/agents/skills-repo/sync`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(options)
+  });
+  if (!res.ok) {
+    const errText = await res.text();
+    let msg = errText;
+    try {
+      const errObj = JSON.parse(errText);
+      if (errObj.message) msg = errObj.message;
+    } catch (_) {}
+    throw new Error(msg || 'Failed to sync skills repository');
   }
   return await res.json();
 }
@@ -858,6 +891,26 @@ async function deduplicateTasks() {
   return res.json();
 }
 
+async function spawnZeroInputSupervisor(hostName = '') {
+  const res = await fetch('/v1/sessions/spawn', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      is_supervisor: true,
+      agent: 'claude-code',
+      engine_type: 'headless',
+      host: hostName || getSelfHostName()
+    })
+  });
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(errText || 'Failed to spawn supervisor session');
+  }
+  const data = await res.json();
+  await fetchSessions();
+  return data;
+}
+
 export {
   fetchProviders,
   fetchVersion,
@@ -880,12 +933,14 @@ export {
   updateTask,
   deleteTask,
   deduplicateTasks,
+  spawnZeroInputSupervisor,
   sendTaskEvent,
   fetchStandup,
   synthesizeBriefing,
   mergeTaskPR,
   fetchAgentStatuses,
   provisionAgents,
+  syncSkillsRepo,
   getTargetHosts,
   fetchAllAgentStatuses,
   provisionAllHosts

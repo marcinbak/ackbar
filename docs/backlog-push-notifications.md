@@ -66,24 +66,23 @@ Without push notifications, developers must manually check the dashboard or risk
 
 ---
 
-## 3. Implementation Plan (When Ready to Build)
+## 3. Implementation Status
 
-### Phase 1: Daemon Dispatcher (`ackbard`)
-* [ ] Create `internal/daemon/notification.go`:
-  * Add notification configuration struct to SQLite (`ntfy_topic`, `webhook_url`, `enabled_events`).
-  * Listen to session state transitions in `UpdateSessionState` / `handleHook`.
-  * Trigger push dispatch when `session.State == StateBlocked` or `session.State == StateFailed`.
-* [ ] Add CLI flag `-ntfy-topic <topic>` and config support in `~/.config/ackbar/config.json`.
+### Phase 1: Daemon Dispatcher (`ackbard`) ✅
+* [x] Created `internal/daemon/ntfy.go`:
+  * Added `ntfy_topic` and `ntfy_server` (default `https://ntfy.sh`) to SQLite `settings` (`/v1/settings`), env vars (`ACKBAR_NTFY_TOPIC`, `ACKBAR_NTFY_SERVER`), and CLI flags (`-ntfy-topic`, `-ntfy-server`).
+  * Triggers non-blocking push notifications when tasks transition into `REVIEW` (with `[Open PR #<num>]` view action and `ackbar://session?id=...` / `ackbar://task?id=...` deep-links) or into `blocked` (`ackbar://attention?session_id=...`).
+  * Triggers push notifications when sessions (or subagents) enter `StateBlocked` (`Permission Needed` vs `Question`).
 
-### Phase 2: Mobile Deep-Linking (`mobile/`)
-* [ ] Configure custom URL scheme `ackbar://` in `mobile/ios/Runner/Info.plist` and `mobile/android/app/src/main/AndroidManifest.xml`.
-* [ ] Handle deep links (`ackbar://attention?session_id=<uuid>`):
-  * Parse incoming route.
-  * Switch navigation to the **Attention** tab.
-  * Automatically open the targeted session card in **Fullscreen Attention Mode**.
+### Phase 2: Mobile Deep-Linking (`mobile/`) ✅
+* [x] Configured custom URL scheme `ackbar://` in `mobile/ios/Runner/Info.plist` and `mobile/android/app/src/main/AndroidManifest.xml`.
+* [x] Handled cold-start (`onGenerateRoute`) and warm-start (`WidgetsBindingObserver.didPushRouteInformation`) deep links in `MainNavigationShell`:
+  * `ackbar://session?id=<id>` ➔ Switches to **Fleet** tab and opens `SessionDetailSheet`.
+  * `ackbar://attention?session_id=<id>` ➔ Switches to **Attention** tab and opens `SessionDetailSheet`.
+  * `ackbar://task?id=<id>` ➔ Switches to **Plans** tab and opens `PlanDiffViewerModal`.
 
-### Phase 3: Lock-Screen Action Endpoints
-* [ ] Expose an unauthenticated or token-authorized webhook trigger in `ackbard` for lock-screen callbacks:
+### Phase 3: Lock-Screen Action Endpoints (Future)
+* [ ] Expose a token-authorized webhook trigger in `ackbard` for lock-screen allow/deny callbacks:
   * `POST /v1/notifications/action?id=<session_id>&action=allow`
   * `POST /v1/notifications/action?id=<session_id>&action=deny`
 

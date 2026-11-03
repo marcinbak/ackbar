@@ -76,29 +76,109 @@ Instead of a flat enum, the lifecycle uses 4 top-level macro columns:
 
 ---
 
-## 5. In-Flight Creation vs. Backlog Queuing
+## 5. Multi-Host 3-Way LWW Peer Sync & Dynamic Repo Mapping (`node_host_paths`)
 
-* **In-Flight Auto-Creation (Primary Day-to-Day Path):**
-  When a developer spawns a session in Ackbar with a prompt or git branch, the task entity is **born directly in `IN_PROGRESS: active`**. It completely bypasses `NEW`.
-* **Backlog / Spec-First (Optional Path):**
-  Tasks in `NEW` exist when:
-  1. Pulling unstarted tickets assigned in Jira/Linear.
-  2. An agent writes an `implementation_plan.md` that outlines future phases.
-  3. An agent discovers an unprompted bug (`discovered`).
+### 5.1 Uniform 3-Way Peer Sync (`macbook` $\leftrightarrow$ `macmini` $\leftrightarrow$ `legion`)
+Projects in Ackbar are **logical product namespaces** (`tree_nodes`), never pinned to a single physical host. A single logical project can be:
+* **A Monorepo** checked out on multiple hosts (e.g. `Personal/Ackbar` with Go backend, Web UI, and Flutter iOS/Android).
+* **A Multi-Repo Product** spanning specialized repositories (e.g. `Modemobile/NGL` containing `ngl-ios`, `ngl-android`, `ngl-web`, and `ngl-image-generation`; or `Modemobile/MEA` containing `ad-mediation-api`, `current-android`, and `news-api`).
+
+To ensure the iPhone app and MacBook always display the exact same folder tree and task board:
+* **All hosts (`macbook`, `macmini`, `legion`) participate in Peer-to-Peer Last-Write-Wins (LWW) Sync (`updated_at`):**
+  * While `macbook` is awake, any manual session, folder edit (`tree_nodes`), or task mutation on `macbook` pushes immediately to online peers (`legion` and `macmini`).
+  * When `macbook`'s lid is closed, `legion` and `macmini` remain online 24/7 and serve the full synced tree to the iPhone app, displaying `macbook` sessions with an `[offline]` badge.
+  * When `macbook` wakes up, its `ackbard` runs a delta pull (`GET /v1/sync/state?since=<last_sync_ts>`) from `legion`/`macmini` to catch up in `<100ms`.
+
+### 5.2 Dynamic Per-Host Repository Paths (`node_host_paths`)
+Rather than hardcoding host columns on `tree_nodes`, `ackbard` stores a normalized **`node_host_paths`** table (`node_path`, `host`, `project_dir`, `git_remote`, `capabilities`, `updated_at`) so any host can register its local checkout directory:
+
+| Logical Tree Node (`tree_nodes.path`) | `@macmini` (`ios`, `macos`) | `@legion` (`android`, `go`, `backend`, `gpu`) | `@macbook` (`ios`, `android`, `go`) |
+| :--- | :--- | :--- | :--- |
+| **`Personal/Ackbar`** *(Monorepo)* | `~/Personal/ackbar` | `/home/dev4u/Personal/ackbar` | `~/Work/Ackbar` |
+| **`Modemobile/NGL/ngl-ios`** | `~/Work/NGL/ngl-ios` | *(N/A — iOS/Xcode only)* | `~/Work/NGL/ngl-ios` |
+| **`Modemobile/NGL/ngl-android`** | `~/Work/NGL/ngl-android` | `/home/dev4u/Work/NGL/ngl-android` | `~/Work/NGL/ngl-android` |
+| **`Modemobile/NGL/ngl-web`** | `~/Work/NGL/ngl-web` | `/home/dev4u/Work/NGL/ngl-web` | `~/Work/NGL/ngl-web` |
+| **`Modemobile/MEA/ad-mediation-api`** | `~/Work/MEA/ad-mediation-api` | `/home/dev4u/Work/MEA/ad-mediation-api` | `~/Work/MEA/ad-mediation-api` |
 
 ---
 
-## 6. Draft SQLite Schema
+## 6. Zero-Input `⚓ Supervisor` Dispatchers, Product vs. Code Tasks & Native Cloud Artifacts
+
+### 6.1 Zero-Input `⚓ Supervisor` Sessions (Lightweight Project Dispatchers)
+1. **1-Click / 1-Tap `[+ ⚓ New Supervisor]`:** Clicking `[+ ⚓ New Supervisor]` in the **`[⚓ Supervisors]`** sidebar view opens an instant blank session on a 24/7 host (`macmini` or `legion`) with **zero upfront modal inputs** (no pre-selecting host, folder, or branch).
+2. **First-Turn Project Binding (`bind_supervisor_session`):** When the user says *"Start working on task MEA-204 in MEA"* or *"Let's prepare onboarding designs for NGL"*, the Supervisor calls `bind_supervisor_session` to bind itself to `Modemobile/MEA` or `Modemobile/NGL` (`is_supervisor=1`) and titles itself automatically.
+3. **Dispatcher Role (Zero Context Bloat):** The `⚓ Supervisor` stays lightweight—it creates the Task on the Work Board and spawns a dedicated **`📋 Task`** session (`kind="design"` or `kind="code"`) for the deep work. Multiple Supervisor sessions can exist per project (e.g. per Epic/Initiative).
+
+### 6.2 Dedicated Product/Design Tasks vs. Engineering Repo Tasks + Native Hosted Artifacts
+Both Product Discovery and Code Implementation run in their own isolated **`📋 Task`** sessions and publish **native cloud artifacts** (`attach_deliverable`) instead of cluttering a GitHub artifacts repo:
+
+* **🎨 Product / Design Task Sessions (`kind="design"`):**
+  * Used for ideation, `/grill-me`, PRDs, UI mockups, architecture slide decks, and spreadsheet models.
+  * `dev-workflow`'s `guard.py` is bypassed (`task_kind="design"`) so creative exploration is never blocked by code-worktree or unit-test gates.
+* **⚙️ Engineering Repo Task Sessions (`kind="code"`):**
+  * Spawns **one Tmux session per target repository** (e.g. `ngl-ios` on `macmini`, `ngl-android` on `legion`) starting in the main repo directory.
+  * Driven by **`dev-workflow` (`N0`–`N15`)** inside that Tmux session: creates `.worktrees/<branch>` at `N3`, runs T0 static gates & simulator checks at `N5`, runs 3-way review at `N6–N8`, opens the PR at `N11`, cleans up the worktree after merge at `N14`, writes the retro at `N15`, and **auto-closes the Tmux window at `N15`** (moving the Ackbar session to `✅ Done`).
+* **☁️ Native Hosted Artifacts (Claude Published Artifacts + Google Workspace):**
+  * **Claude Code Sessions:** Publish deliverables via **Claude Published Artifacts** and register the hosted URL + `content_md` via `attach_deliverable`.
+  * **Google Antigravity Sessions:** Publish deliverables via the **Google Workspace plugins (`gdrive`, `gdocs`, `gslides`, `gsheets`)** under `Ackbar/projects/<project-id>/tasks/<task-id>/` and register the `docs.google.com` / `drive.google.com` URL + `content_md` via `attach_deliverable`.
+
+### 6.3 Sequential Cross-Platform Workstreams (`iOS First` $\rightarrow$ `Android Second`)
+When a cross-platform feature should be validated on iOS (`@macmini`) before starting Android (`@legion`):
+* Both `ngl-ios` and `ngl-android` belong to a **single Task** via `task_workstreams`, with `ngl-android` declaring `depends_on = "Modemobile/NGL/ngl-ios"`.
+* By default, `ngl-android` waits in `QUEUED` until `ngl-ios`'s PR is **merged (`N14` / `DONE`)** (unless manually overridden earlier).
+* At `N14`/`N15`, `ngl-ios` publishes its **Learnings** deliverable (Claude Published Artifact or Google Doc + synced `content_md` in `task_deliverables`).
+* `legion` automatically unlocks `ngl-android` and seeds its Tmux session with the task spec, design artifacts, and the synced `ios-learnings` (`content_md`).
+
+### 6.4 Resolving "Premature Idle vs. Done" via `dev-workflow` Node Mapping
+Because finished task sessions **auto-close their Tmux window at `N15`** and move to **`✅ Done`**, a finished task session never sits in `StateIdle`. Whenever an open task session enters `StateIdle` (`Stop` hook), `ackbard` classifies it by its active `dev-workflow` node:
+* **`N1` (Grill-Me):** **`🟠 BLOCKED: Clarifying Question`** — surfaced in Attention Queue and Voice Companion.
+* **`N2` (Change Brief / Plan):** **`🟣 REVIEW: Plan Approval`** — links the hosted Plan artifact with `[✅ Approve Plan]`.
+* **`N3`–`N10` (Mid-Implementation / Tests / Review without `report_blocker`):** **`⚠️ STALLED MID-WORKFLOW`** — badged `⚠️ Stalled` with 1-tap `[▶ Nudge]`.
+* **`N11`–`N13` (PR Shipped):** **`🟣 REVIEW: PR Ready`** — displays PR link and `[⚡ Squash & Merge PR]`.
+* **`N14`–`N15` (Merged & Retro Complete):** **`✅ DONE`** — Tmux window auto-closed and session moved to `✅ Done`.
+
+---
+
+## 7. Coexistence with Manual Sessions & Project Folder Hierarchy
+
+Inside `[💻 Workspace]`, a top sidebar switcher (`[🌐 All Tree]` | `[⚓ Supervisors]`) provides 1-click access to all Supervisor dispatchers, while each project folder organizes sessions into four collapsible sections:
+
+```text
+▼ 📁 Modemobile / NGL
+  ├── ⚓ Supervisors (1)
+  │     └── ⚓ NGL Supervisor (Dispatcher)
+  ├── 📋 Tasks (2 active)
+  │     ├── 🎨 [Design] Onboarding PRD & UI
+  │     └── ⚙️ [N5 • iOS] NGL-409 @macmini
+  ├── 💻 Manual Sessions (2)
+  ├── ⏳ Later (1)
+  └── ✅ Done (5)  ◄── Closed N15 task workers land here
+```
+
+---
+
+## 8. SQLite Schema (`internal/daemon/db.go`)
 
 ```sql
+CREATE TABLE IF NOT EXISTS node_host_paths (
+    node_path TEXT NOT NULL,                   -- Logical tree_nodes.path, e.g. 'Modemobile/NGL/ngl-ios'
+    host TEXT NOT NULL,                        -- 'macmini', 'legion', 'macbook'
+    project_dir TEXT NOT NULL,                 -- Host-local path, e.g. '/Users/dev4u/Work/NGL/ngl-ios'
+    git_remote TEXT,                           -- Optional git origin URL for auto-linking
+    capabilities TEXT,                         -- JSON array, e.g. '["ios","macos","simulator"]'
+    updated_at TIMESTAMP NOT NULL,
+    PRIMARY KEY (node_path, host)
+);
+
 CREATE TABLE IF NOT EXISTS tasks (
     id TEXT PRIMARY KEY,                       -- Sovereign ULID, e.g. 'task_01j8x92k'
     title TEXT NOT NULL,
+    task_kind TEXT NOT NULL DEFAULT 'code',    -- 'design' (Product/UI) or 'code' (dev-workflow repo task)
     group_name TEXT NOT NULL,                  -- Top-level group, e.g. 'Modemobile', 'Personal'
     project_name TEXT NOT NULL,                -- Second-level project, e.g. 'NGL', 'MEA'
     subproject_name TEXT,                      -- Optional third-level, e.g. 'ngl-ios'
     status TEXT NOT NULL DEFAULT 'NEW',        -- 'NEW', 'IN_PROGRESS', 'REVIEW', 'DONE'
-    substatus TEXT NOT NULL DEFAULT 'ready',   -- 'active', 'blocked', 'approved', 'completed', etc.
+    substatus TEXT NOT NULL DEFAULT 'ready',   -- 'question', 'plan_review', 'active', 'stalled', 'pr_review', 'completed'
     notes TEXT,                                -- Latest summary / activity note
     blocker_question TEXT,                     -- Question string if substatus == 'blocked'
     branch TEXT,                               -- Active git branch name
@@ -110,6 +190,21 @@ CREATE TABLE IF NOT EXISTS tasks (
     created_at TIMESTAMP NOT NULL,
     updated_at TIMESTAMP NOT NULL,
     completed_at TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS task_workstreams (
+    task_id TEXT NOT NULL,
+    repo_node_path TEXT NOT NULL,              -- e.g. 'Modemobile/NGL/ngl-ios', 'Modemobile/NGL/ngl-android'
+    target_host TEXT NOT NULL,                 -- 'macmini', 'legion', 'macbook'
+    depends_on TEXT,                           -- Optional upstream repo_node_path (unlocks on N14 merge by default)
+    workflow_node TEXT DEFAULT 'N0',           -- Active dev-workflow node ('N0'..'N15')
+    status TEXT NOT NULL DEFAULT 'NEW',        -- 'QUEUED', 'IN_PROGRESS', 'REVIEW', 'DONE'
+    branch TEXT,                               -- e.g. 'feat/task-104-rokt'
+    worktree_path TEXT,                        -- e.g. '.worktrees/task-104-rokt'
+    pr_url TEXT,
+    updated_at TIMESTAMP NOT NULL,
+    PRIMARY KEY (task_id, repo_node_path),
+    FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS task_external_refs (
@@ -124,8 +219,10 @@ CREATE TABLE IF NOT EXISTS task_external_refs (
 CREATE TABLE IF NOT EXISTS task_workers (
     task_id TEXT NOT NULL,
     session_id TEXT NOT NULL,                  -- Ackbar session ID '{agent}:{host}:{nativeID}'
+    repo_node_path TEXT,                       -- Associated repo workstream
+    workflow_node TEXT,                        -- Active dev-workflow node ('N0'..'N15')
     agent TEXT NOT NULL,                       -- 'claude-code', 'antigravity', 'codex'
-    host TEXT NOT NULL,                        -- 'mac', 'legion'
+    host TEXT NOT NULL,                        -- 'macmini', 'legion', 'macbook'
     is_active INTEGER DEFAULT 1,
     assigned_at TIMESTAMP NOT NULL,
     PRIMARY KEY (task_id, session_id),
@@ -135,12 +232,15 @@ CREATE TABLE IF NOT EXISTS task_workers (
 CREATE TABLE IF NOT EXISTS task_deliverables (
     id TEXT PRIMARY KEY,
     task_id TEXT NOT NULL,
-    kind TEXT NOT NULL,                        -- 'html_ui', 'video', 'image', 'plan', 'pr', 'retro'
+    kind TEXT NOT NULL,                        -- 'prd', 'html_ui', 'slides', 'plan', 'learnings', 'pr', 'retro'
     title TEXT NOT NULL,
-    host TEXT NOT NULL,                        -- Host where artifact resides
-    file_path TEXT,                            -- Absolute path on target host
-    url TEXT,                                  -- Web URL if applicable
+    provider TEXT,                             -- 'claude_artifact', 'gdrive', 'gdocs', 'gslides', 'gsheets', 'github'
+    host TEXT NOT NULL,                        -- Host where created
+    file_path TEXT,                            -- Optional local path or Drive path
+    url TEXT,                                  -- Hosted URL (Claude Artifact URL or docs.google.com / drive.google.com)
+    content_md TEXT,                           -- Synced markdown content for cross-host agent handoff (e.g. learnings)
     created_at TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP NOT NULL,
     FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
 );
 
@@ -148,6 +248,7 @@ CREATE TABLE IF NOT EXISTS task_deliverables (
 CREATE INDEX IF NOT EXISTS idx_tasks_group_project ON tasks(group_name, project_name);
 CREATE INDEX IF NOT EXISTS idx_tasks_status_updated ON tasks(status, updated_at);
 CREATE INDEX IF NOT EXISTS idx_task_workers_active ON task_workers(is_active);
+CREATE INDEX IF NOT EXISTS idx_task_workstreams_task ON task_workstreams(task_id);
 
 -- Future-proofing: Archive table to prevent UI queries from scanning years of closed tasks
 CREATE TABLE IF NOT EXISTS archived_tasks (
