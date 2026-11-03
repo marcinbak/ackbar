@@ -68,5 +68,18 @@
 	</dict>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Ackbar connects to supervised daemon nodes across your local Wi-Fi and Tailscale mesh network.</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLName</key>
+			<string>dev.ackbar.app</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>ackbar</string>
+			</array>
+		</dict>
+	</array>
 </dict>
 </plist>

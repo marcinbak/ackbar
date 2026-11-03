@@ -221,6 +221,7 @@ func (s *Server) processParsedHookEvent(event *Event, urlEventName string, heade
 						}
 						s.headless.EmitSubagentsUpdate(parentSess.ID, runningPtrs)
 					}
+					prevParentState := parentSess.State
 					if event.State == StateBlocked {
 						s.blockedBySubagent.Store(parentSess.ID, event.NativeID)
 						now := time.Now()
@@ -335,6 +336,7 @@ func (s *Server) processParsedHookEvent(event *Event, urlEventName string, heade
 					}
 					parentSess.UpdatedAt = time.Now()
 					_ = s.db.SaveSession(parentSess)
+					s.maybeNotifySessionBlocked(prevParentState, parentSess)
 					s.broadcast(parentSess)
 				}
 			}
@@ -361,6 +363,7 @@ func (s *Server) processParsedHookEvent(event *Event, urlEventName string, heade
 	isPureHeadless := sess.EngineType == EngineHeadless && sess.TmuxName == ""
 	headlessRunning := isPureHeadless && s.headless != nil && s.headless.IsRunning(sess.ID)
 
+	prevState := sess.State
 	s.applyHookStateTransition(sess, event, sessionID, isPureHeadless, headlessRunning)
 	s.trackHookSubagentEvent(sessionID, event)
 
@@ -378,6 +381,7 @@ func (s *Server) processParsedHookEvent(event *Event, urlEventName string, heade
 		log.Printf("Error saving session: %v", err)
 		return
 	}
+	s.maybeNotifySessionBlocked(prevState, sess)
 
 	// Synchronize session with task board and ingest ambient tool telemetry
 	s.SyncSessionTaskWorker(sess)

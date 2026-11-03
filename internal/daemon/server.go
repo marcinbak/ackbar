@@ -65,6 +65,10 @@ type Server struct {
 	sessionHookLocks  sync.Map
 	blockedBySubagent sync.Map
 	homeDir           string
+	ntfyServer        string
+	ntfyTopic         string
+	ntfyClient        *http.Client
+	ntfyHook          func(payload NtfyPayload)
 }
 
 func NewServer(db *DB) *Server {
@@ -75,6 +79,7 @@ func NewServer(db *DB) *Server {
 		subscribers:     make(map[chan *Session]bool),
 		hostHealthMap:   make(map[string]*HostHealth),
 		activeSubagents: make(map[string][]*SubagentInfo),
+		ntfyClient:      &http.Client{Timeout: 5 * time.Second},
 	}
 	s.headless = NewHeadlessRunner(db, s.broadcast)
 	s.headless.SetOnTurnComplete(s.clearSubagents)
@@ -132,6 +137,49 @@ func (s *Server) DisplayName() string {
 		}
 	}
 	return s.HostName()
+}
+
+func (s *Server) SetNtfyConfig(server, topic string) {
+	if server != "" {
+		s.ntfyServer = server
+	}
+	if topic != "" {
+		s.ntfyTopic = topic
+	}
+}
+
+func (s *Server) SetNtfyHook(hook func(payload NtfyPayload)) {
+	s.ntfyHook = hook
+}
+
+func (s *Server) NtfyServer() string {
+	if s.ntfyServer != "" {
+		return s.ntfyServer
+	}
+	if env := os.Getenv("ACKBAR_NTFY_SERVER"); env != "" {
+		return env
+	}
+	if s.db != nil {
+		if val, err := s.db.GetSetting("ntfy_server"); err == nil && val != "" {
+			return val
+		}
+	}
+	return "https://ntfy.sh"
+}
+
+func (s *Server) NtfyTopic() string {
+	if s.ntfyTopic != "" {
+		return s.ntfyTopic
+	}
+	if env := os.Getenv("ACKBAR_NTFY_TOPIC"); env != "" {
+		return env
+	}
+	if s.db != nil {
+		if val, err := s.db.GetSetting("ntfy_topic"); err == nil && val != "" {
+			return val
+		}
+	}
+	return ""
 }
 
 func extractHostname(val string) string {
@@ -505,6 +553,8 @@ func (s *Server) populateDefaultSettings(settings map[string]string) map[string]
 		"handover_suggestion_enabled": "true",
 		"handover_threshold_pct":      "60",
 		"hide_session_tabs":           "false",
+		"ntfy_server":                 "https://ntfy.sh",
+		"ntfy_topic":                  "",
 	}
 	for k, v := range defaults {
 		if _, exists := settings[k]; !exists {
