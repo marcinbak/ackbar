@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"ackbar/internal/skills"
@@ -47,6 +48,14 @@ var supportedAgents = []AgentDefinition{
 		SkillsRel:   filepath.Join(".claude", "skills"),
 	},
 	{
+		Key:         "claude-desktop",
+		DisplayName: "Claude Desktop",
+		CLICommand:  "",
+		HomeSubdir:  "",
+		ConfigRel:   "",
+		SkillsRel:   "",
+	},
+	{
 		Key:         "antigravity",
 		DisplayName: "Google Antigravity",
 		CLICommand:  "agy",
@@ -62,6 +71,36 @@ var supportedAgents = []AgentDefinition{
 		ConfigRel:   filepath.Join(".codex", "config.json"),
 		SkillsRel:   filepath.Join(".codex", "skills"),
 	},
+}
+
+// getClaudeDesktopConfigPath resolves the OS-specific path for Claude Desktop config
+func getClaudeDesktopConfigPath(home string) string {
+	switch runtime.GOOS {
+	case "darwin":
+		return filepath.Join(home, "Library", "Application Support", "Claude", "claude_desktop_config.json")
+	case "windows":
+		appData := os.Getenv("APPDATA")
+		if appData != "" {
+			return filepath.Join(appData, "Claude", "claude_desktop_config.json")
+		}
+		return filepath.Join(home, "AppData", "Roaming", "Claude", "claude_desktop_config.json")
+	default:
+		return filepath.Join(home, ".config", "Claude", "claude_desktop_config.json")
+	}
+}
+
+func getAgentConfigPath(home string, def AgentDefinition) string {
+	if def.Key == "claude-desktop" {
+		return getClaudeDesktopConfigPath(home)
+	}
+	return filepath.Join(home, def.ConfigRel)
+}
+
+func getAgentHomeSubdirPath(home string, def AgentDefinition) string {
+	if def.Key == "claude-desktop" {
+		return filepath.Dir(getClaudeDesktopConfigPath(home))
+	}
+	return filepath.Join(home, def.HomeSubdir)
 }
 
 // GetAgentStatuses inspects the system and returns current status for all supported agents
@@ -86,18 +125,29 @@ func GetAgentStatuses(customHome string) ([]AgentStatus, error) {
 }
 
 func inspectAgent(home string, def AgentDefinition) AgentStatus {
-	configPath := filepath.Join(home, def.ConfigRel)
-	skillsDirPath := filepath.Join(home, def.SkillsRel)
-	homeSubdirPath := filepath.Join(home, def.HomeSubdir)
+	configPath := getAgentConfigPath(home, def)
+	skillsDirPath := ""
+	if def.SkillsRel != "" {
+		skillsDirPath = filepath.Join(home, def.SkillsRel)
+	}
+	homeSubdirPath := getAgentHomeSubdirPath(home, def)
 
 	// Check if agent is detected on machine
 	detected := false
-	if _, err := os.Stat(homeSubdirPath); err == nil {
-		detected = true
-	} else if _, err := os.Stat(configPath); err == nil {
-		detected = true
-	} else if _, err := exec.LookPath(def.CLICommand); err == nil {
-		detected = true
+	if homeSubdirPath != "" {
+		if _, err := os.Stat(homeSubdirPath); err == nil {
+			detected = true
+		}
+	}
+	if !detected && configPath != "" {
+		if _, err := os.Stat(configPath); err == nil {
+			detected = true
+		}
+	}
+	if !detected && def.CLICommand != "" {
+		if _, err := exec.LookPath(def.CLICommand); err == nil {
+			detected = true
+		}
 	}
 
 	status := AgentStatus{
@@ -128,15 +178,20 @@ func inspectAgent(home string, def AgentDefinition) AgentStatus {
 	}
 
 	// 2. Inspect Skill installation
-	skillMDPath := filepath.Join(skillsDirPath, "ackbar-tasks", "SKILL.md")
-	if data, err := os.ReadFile(skillMDPath); err == nil {
+	if def.SkillsRel == "" {
 		status.SkillInstalled = true
-		status.SkillVersion = extractSkillVersion(string(data))
-	} else if def.Key == "antigravity" {
-		cliSkillMDPath := filepath.Join(home, ".gemini", "antigravity-cli", "skills", "ackbar-tasks", "SKILL.md")
-		if data, err := os.ReadFile(cliSkillMDPath); err == nil {
+		status.SkillVersion = version.Version
+	} else {
+		skillMDPath := filepath.Join(skillsDirPath, "ackbar-tasks", "SKILL.md")
+		if data, err := os.ReadFile(skillMDPath); err == nil {
 			status.SkillInstalled = true
 			status.SkillVersion = extractSkillVersion(string(data))
+		} else if def.Key == "antigravity" {
+			cliSkillMDPath := filepath.Join(home, ".gemini", "antigravity-cli", "skills", "ackbar-tasks", "SKILL.md")
+			if data, err := os.ReadFile(cliSkillMDPath); err == nil {
+				status.SkillInstalled = true
+				status.SkillVersion = extractSkillVersion(string(data))
+			}
 		}
 	}
 
@@ -173,6 +228,14 @@ func ProvisionAgents(customHome string, targetAgentKeys []string) ([]AgentStatus
 			continue
 		}
 
+		// When provisioning all, claude-desktop is only provisioned if its parent directory exists
+		if def.Key == "claude-desktop" && provisionAll && !targetMap["claude-desktop"] {
+			claudeParent := filepath.Dir(getClaudeDesktopConfigPath(home))
+			if _, err := os.Stat(claudeParent); err != nil {
+				continue
+			}
+		}
+
 		// 1. Configure MCP server in agent's config file
 		if err := configureAgentMCP(home, def); err != nil {
 			return nil, fmt.Errorf("failed to configure MCP for %s: %w", def.DisplayName, err)
@@ -189,8 +252,19 @@ func ProvisionAgents(customHome string, targetAgentKeys []string) ([]AgentStatus
 }
 
 func configureAgentMCP(home string, def AgentDefinition) error {
-	configPath := filepath.Join(home, def.ConfigRel)
+	configPath := getAgentConfigPath(home, def)
+	return upsertJSONMCPServer(configPath, "ackbar", map[string]any{
+		"command": "ackbar",
+		"args":    []string{"mcp"},
+	})
+}
 
+// UpsertJSONMCPServer merges an MCP server configuration into a target JSON file
+func UpsertJSONMCPServer(configPath string, serverName string, serverConfig map[string]any) error {
+	return upsertJSONMCPServer(configPath, serverName, serverConfig)
+}
+
+func upsertJSONMCPServer(configPath string, serverName string, serverConfig map[string]any) error {
 	// If configPath is a symlink, resolve destination to preserve symlink
 	targetPath := configPath
 	if resolved, err := filepath.EvalSymlinks(configPath); err == nil {
@@ -219,11 +293,8 @@ func configureAgentMCP(home string, def AgentDefinition) error {
 		root["mcpServers"] = mcpServers
 	}
 
-	// Set ackbar entry
-	mcpServers["ackbar"] = map[string]any{
-		"command": "ackbar",
-		"args":    []string{"mcp"},
-	}
+	// Set entry
+	mcpServers[serverName] = serverConfig
 
 	// Ensure parent directory exists with restrictive permissions
 	parentDir := filepath.Dir(targetPath)
@@ -252,6 +323,10 @@ func configureAgentMCP(home string, def AgentDefinition) error {
 }
 
 func installAgentSkill(home string, def AgentDefinition) error {
+	if def.SkillsRel == "" {
+		return nil
+	}
+
 	skillFiles, err := skills.GetSkillFiles()
 	if err != nil {
 		return fmt.Errorf("failed to retrieve embedded skill files: %w", err)

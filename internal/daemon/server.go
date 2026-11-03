@@ -68,6 +68,9 @@ type Server struct {
 	homeDir           string
 	livenessRunning   atomic.Bool
 	lastLivenessAt    atomic.Int64
+	speechCacheMu     sync.RWMutex
+	speechCache       map[string]*SpeechSummary
+	speechLLMRunner   func(ctx context.Context, content string) (string, []string, error)
 	ntfyServer        string
 	ntfyTopic         string
 	ntfyClient        *http.Client
@@ -82,6 +85,7 @@ func NewServer(db *DB) *Server {
 		subscribers:     make(map[chan *Session]bool),
 		hostHealthMap:   make(map[string]*HostHealth),
 		activeSubagents: make(map[string][]*SubagentInfo),
+		speechCache:     make(map[string]*SpeechSummary),
 		ntfyClient:      &http.Client{Timeout: 5 * time.Second},
 	}
 	s.headless = NewHeadlessRunner(db, s.broadcast)
@@ -94,6 +98,10 @@ func NewServer(db *DB) *Server {
 
 func (s *Server) SetToken(token string) {
 	s.configuredToken = token
+}
+
+func (s *Server) SetSpeechLLMRunner(runner func(ctx context.Context, content string) (string, []string, error)) {
+	s.speechLLMRunner = runner
 }
 
 func (s *Server) SetWebFS(webFS fs.FS) {
@@ -316,6 +324,7 @@ func (s *Server) Mux() http.Handler {
 		_, _ = w.Write([]byte(`{"status":"ok","service":"ackbard"}`))
 	})
 	mux.HandleFunc("/v1/hooks/", s.handleHook)
+	mux.HandleFunc("/v1/mcp", s.handleMCP)
 	mux.HandleFunc("/v1/sessions", s.handleSessions)
 	mux.HandleFunc("/v1/sessions/respond", s.handleRespond)
 	mux.HandleFunc("/v1/sessions/subagents", s.handleSessionSubagents)
@@ -330,6 +339,7 @@ func (s *Server) Mux() http.Handler {
 	mux.HandleFunc("/v1/sessions/prompt", s.handlePrompt)
 	mux.HandleFunc("/v1/sessions/prompt/queue", s.handlePromptQueue)
 	mux.HandleFunc("/v1/sessions/prompt/queue/resume", s.handlePromptQueueResume)
+	mux.HandleFunc("/v1/sessions/summarize-speech", s.handleSummarizeSpeech)
 	mux.HandleFunc("/v1/sessions/chat/stream", s.handleChatStream)
 	mux.HandleFunc("/v1/sessions/cancel", s.handleCancelTurn)
 	mux.HandleFunc("/v1/sessions/take-wheel", s.handleTakeWheel)

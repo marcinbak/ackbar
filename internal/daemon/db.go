@@ -169,6 +169,15 @@ CREATE TABLE IF NOT EXISTS archived_tasks (
 	archived_at TIMESTAMP NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS speech_summaries (
+	session_id TEXT NOT NULL,
+	message_index INTEGER NOT NULL,
+	spoken_text TEXT NOT NULL,
+	suggested_chips TEXT NOT NULL DEFAULT '[]',
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+	PRIMARY KEY (session_id, message_index)
+);
+
 CREATE INDEX IF NOT EXISTS idx_tasks_group_project ON tasks(group_name, project_name);
 CREATE INDEX IF NOT EXISTS idx_tasks_status_updated ON tasks(status, updated_at);
 CREATE INDEX IF NOT EXISTS idx_tasks_updated_at ON tasks(updated_at);
@@ -292,6 +301,14 @@ func InitDB(dbPath string) (*DB, error) {
 	_, _ = db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_project_key ON sessions(project_key);")
 	_, _ = db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_account_id ON sessions(account_id);")
 	_, _ = db.Exec("CREATE INDEX IF NOT EXISTS idx_accounts_agent ON accounts(agent);")
+	_, _ = db.Exec(`CREATE TABLE IF NOT EXISTS speech_summaries (
+		session_id TEXT NOT NULL,
+		message_index INTEGER NOT NULL,
+		spoken_text TEXT NOT NULL,
+		suggested_chips TEXT NOT NULL DEFAULT '[]',
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY (session_id, message_index)
+	);`)
 	d := &DB{db: db}
 	_, _ = d.DeduplicateTasks()
 	return d, nil
@@ -3228,4 +3245,65 @@ func (d *DB) ApplySyncState(payload *SyncStatePayload) ([]*Session, error) {
 	}
 
 	return updatedSessions, nil
+}
+
+type SpeechSummary struct {
+	SessionID      string    `json:"session_id"`
+	MessageIndex   int       `json:"message_index"`
+	SpokenText     string    `json:"spoken_text"`
+	SuggestedChips []string  `json:"suggested_chips"`
+	Tier           string    `json:"tier,omitempty"`
+	Cached         bool      `json:"cached,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
+}
+
+func (d *DB) GetSpeechSummary(sessionID string, messageIndex int) (*SpeechSummary, error) {
+	row := d.db.QueryRow("SELECT session_id, message_index, spoken_text, suggested_chips, created_at FROM speech_summaries WHERE session_id = ? AND message_index = ?", sessionID, messageIndex)
+
+	var s SpeechSummary
+	var chipsJSON string
+	var createdAt time.Time
+	if err := row.Scan(&s.SessionID, &s.MessageIndex, &s.SpokenText, &chipsJSON, &createdAt); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to scan speech summary: %w", err)
+	}
+
+	s.CreatedAt = createdAt
+	s.SuggestedChips = []string{}
+	if chipsJSON != "" {
+		_ = json.Unmarshal([]byte(chipsJSON), &s.SuggestedChips)
+	}
+	return &s, nil
+}
+
+func (d *DB) SaveSpeechSummary(summary *SpeechSummary) error {
+	if summary == nil || summary.SessionID == "" {
+		return fmt.Errorf("invalid speech summary")
+	}
+
+	chipsJSON, err := json.Marshal(summary.SuggestedChips)
+	if err != nil {
+		chipsJSON = []byte("[]")
+	}
+
+	createdAt := summary.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = time.Now().UTC()
+	}
+
+	query := `
+		INSERT INTO speech_summaries (session_id, message_index, spoken_text, suggested_chips, created_at)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(session_id, message_index) DO UPDATE SET
+			spoken_text = excluded.spoken_text,
+			suggested_chips = excluded.suggested_chips,
+			created_at = excluded.created_at;
+	`
+	_, err = d.db.Exec(query, summary.SessionID, summary.MessageIndex, summary.SpokenText, string(chipsJSON), createdAt)
+	if err != nil {
+		return fmt.Errorf("failed to save speech summary: %w", err)
+	}
+	return nil
 }
