@@ -49,3 +49,28 @@ In the terminal Bubble Tea interface:
 * Arrow keys navigate between `NEW`, `IN_PROGRESS`, `REVIEW`, and `DONE` columns.
 * Pressing **`enter`** on an active task attaches in-place to that tmux session (`tea.ExecProcess`).
 * Pressing **`s`** pops open the formatted daily standup markdown reader.
+
+---
+
+## 5. Mobile App Alignment (`mobile/` — Phase 5)
+
+Once all core service features (Phases 1–4) are complete, **Phase 5** aligns the Flutter Mobile App (`mobile/lib/`) with the unified Supervisor & Task Control Plane:
+
+### 5.1 Hierarchical Session Tree Parity (`fleet_providers.dart` & `fleet_screen.dart`)
+* **Root Cause of Missing Mobile Tree:** Currently, `groupedSessionsProvider` in `mobile/lib/core/providers/fleet_providers.dart` ignores `/v1/nodes` and groups sessions into a flat 1-level map by `Session.projectDisplayName` (which checks `projectKey` before `nodePath` and truncates `nodePath` to `parts.first`).
+* **Fix:**
+  * Add `fleetNodesProvider` fetching `GET /v1/nodes?federated=true`.
+  * Port `resolveSessionNodePath(session, nodes)` from `web/js/state.js` to Dart so sessions resolve to their full hierarchical path (`Modemobile/NGL/ngl-ios`, `Personal/Ackbar`, etc.).
+  * Render collapsible multi-level folder trees in `fleet_screen.dart` with the four standardized project subsections: **`⚓ Supervisors`**, **`📋 Tasks`**, **Manual Sessions**, **`⏳ Later`**, and **`✅ Done`** (plus `[offline]` badges for sessions on asleep hosts).
+
+### 5.2 Zero-Input `⚓ Supervisors` Filter & Creation on Mobile
+* Add the **`[🌐 All Tree | ⚓ Supervisors]`** segmented control to the top of `fleet_screen.dart`.
+* Add a 1-tap **`[+ ⚓ New Supervisor]`** action that calls `POST /v1/sessions/spawn` (`is_supervisor: true`, zero modal inputs) and navigates directly into `TranscriptScreen`.
+
+### 5.3 Mobile Work Board & Hosted Deliverables
+* Add a Mobile **Work Board / Tasks** view backed by `GET /v1/tasks?federated=true` with horizontal pillar tabs (`NEW`, `IN_PROGRESS`, `REVIEW`, `DONE`) and group filters (`All`, `Modemobile`, `Personal`).
+* Render 1-tap deliverable chips on task cards that open **Claude Published Artifacts** and **Google Docs / Slides / Drive** links natively on iOS/Android, plus **`[⚡ Squash & Merge PR]`** (`POST /v1/tasks/merge-pr`).
+
+### 5.4 Mobile Voice & Audio Companion (`transcript_screen.dart`)
+* Add the Tier 1 Dart Markdown speech sanitizer and wire `POST /v1/sessions/summarize-speech` into `mobile/lib/features/transcript/presentation/transcript_screen.dart`.
+* Add header toggles (`[🔊 Auto-Read]`, `[🎤 Mic]`), per-message bubble actions (`[🔊 Read]`, `[⏹️ Stop]`, `[↺ Read Again]`), and commuter quick-reply chips.

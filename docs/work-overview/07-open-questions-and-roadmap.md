@@ -32,13 +32,13 @@
 
 ---
 
-## 3. Unified 4-Phase Implementation Roadmap
+## 3. Unified 5-Phase Implementation Roadmap
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
 │                        IMPLEMENTATION PHASES                           │
 │                                                                        │
-│  PHASE 1: 3-WAY LWW PEER SYNC & DYNAMIC `node_host_paths`              │
+│  PHASE 1: 3-WAY LWW PEER SYNC & DYNAMIC `node_host_paths` (DONE)       │
 │  • Uniform LWW peer sync across `macbook`, `macmini` & `legion` for    │
 │    `tree_nodes`, `node_host_paths`, `tasks`, `task_deliverables`, and  │
 │    session metadata (`node_path`, `custom_title`, `is_later`).         │
@@ -65,5 +65,18 @@
 │    Haiku (`claude -p --model haiku`) and `(session_id, msg_idx)` cache.│
 │  • Add Tier 1 client Markdown speech sanitizer, `[🔊 Auto-Read]`,      │
 │    `[🎤 Mic]`, and per-message `[🔊 Read]` / `[↺ Read Again]` buttons. │
+│                                                                        │
+│  PHASE 5: MOBILE APP ALIGNMENT (`mobile/` FLUTTER CLIENT)              │
+│  • Replace flat `groupedSessionsProvider` (`projectDisplayName`) with  │
+│    hierarchical `tree_nodes` (`/v1/nodes?federated=true`) + Dart port  │
+│    of `resolveSessionNodePath()` so Mobile matches Web/TUI folders.    │
+│  • Add `[🌐 All Tree | ⚓ Supervisors]` switcher, 1-tap                 │
+│    `[+ ⚓ New Supervisor]` FAB, and `⚓ Supervisors` / `📋 Tasks` /      │
+│    `⏳ Later` / `✅ Done` folder subsections in `fleet_screen.dart`.    │
+│  • Add Mobile Work Board / Tasks view (`GET /v1/tasks?federated=true`) │
+│    with 1-tap links to hosted deliverables (Claude Artifacts / Google  │
+│    Docs & Slides) and `[⚡ Squash & Merge PR]`.                        │
+│  • Wire Voice Companion controls (`[🔊 Auto-Read]`, `[🎤 Mic]`,         │
+│    `[🔊 Read]`, `[↺ Read Again]`, quick chips) into `transcript_screen`│
 └────────────────────────────────────────────────────────────────────────┘
 ```
