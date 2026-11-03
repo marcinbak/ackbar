@@ -55,20 +55,19 @@ Currently, `internal/mcp/tools.go` only exposes basic Task Board status tools (`
 | **`spawn_session`** | `POST /v1/meta/resolve` + `/v1/sessions/spawn` | Start a new coding session on a target host and project directory with an initial prompt. |
 | **`control_session`** | `POST /v1/sessions/control` & `/handover` | Execute lifecycle actions (`resume`, `restart`, `kill`, `handover`, `done`, `later`). |
 
-### 3.2 Task & Workstream Orchestrator Tools (Top-Down Feature Execution)
+### 3.2 Zero-Input Supervisor Dispatcher & Task Orchestration Tools
 
-See [`docs/work-overview/01-data-model-and-lifecycle.md`](work-overview/01-data-model-and-lifecycle.md) and [`docs/work-overview/08-mcp-and-skill-provisioning.md`](work-overview/08-mcp-and-skill-provisioning.md) for the complete stage-gate data model:
+See [`docs/work-overview/01-data-model-and-lifecycle.md`](work-overview/01-data-model-and-lifecycle.md) and [`docs/work-overview/08-mcp-and-skill-provisioning.md`](work-overview/08-mcp-and-skill-provisioning.md) for the complete data model:
 
 | MCP Tool | Backing `ackbard` Endpoint | Supervisor / Worker Use Case |
 | :--- | :--- | :--- |
-| **`create_task`** | `POST /v1/tasks` | Create a feature task (`project_node_path`, `repos[]`, optional `depends_on` sequential chain) and optionally auto-start `PLAN`. |
-| **`dispatch_task_stage`** | `POST /v1/tasks/dispatch-stage` | Provision `.worktrees/<task-slug>` on the target host (`macmini` or `legion`) and call `spawn_session` for `PLAN`, `IMPLEMENT`, or `REVIEW`. |
-| **`complete_stage`** | `POST /v1/tasks/complete-stage` | Called by worker sessions upon finishing a stage; runs deterministic zero-token filesystem/git gates, terminates the stage pane, and unlocks dependent workstreams (passing `.ackbar/learnings.md`). |
-| **`review_task_stage`** | `POST /v1/tasks/review-stage` | Spoken or 1-tap approval (`approve` / `request_changes` / `merge`) that advances a task from `PLAN_REVIEW` $\rightarrow$ `IMPLEMENT` or `FINAL_REVIEW` $\rightarrow$ `DONE`. |
+| **`bind_supervisor_session`** | `POST /v1/sessions/bind-supervisor` | Auto-binds a zero-input `⚓ Supervisor` session to a project (`is_supervisor=1`) and sets its title on the first user message. |
+| **`create_task`** | `POST /v1/tasks` | Creates a Product/Design (`kind="design"`) or Code (`kind="code"`) task and spawns its dedicated `📋 Task` session(s) (`depends_on` sequential chain supported). |
+| **`attach_deliverable`** | `POST /v1/tasks/deliverable` | Attaches **Claude Published Artifacts** (`url`) or **Google Workspace / Drive** files (`gdrive`, `gdocs`, `gslides`, `gsheets`) + synced `content_md` for cross-host learnings handoff. |
 
-### 3.3 24/7 Multi-Host Control Plane & Fleet Federation (`legion` + `macmini`)
+### 3.3 Uniform 3-Way LWW Peer Sync (`macbook` $\leftrightarrow$ `macmini` $\leftrightarrow$ `legion`)
 Every session ID in Ackbar is globally namespaced as `<agent>:<host>:<uuid>` (e.g. `claude-code:macmini:8492`, `antigravity:legion:8491`). Multi-host collection and state replication operate across two complementary patterns:
-1. **24/7 Control-Plane Replication (`legion` $\leftrightarrow$ `macmini`):** Control-plane tables (`tree_nodes`, session `node_path`/`custom_title`/`is_later`, `tasks`, `task_workstreams`, and `task_deliverables`) replicate across the always-on `legion` and `macmini` daemons so mobile (`iphone`) and desktop (`macbook`) clients always see the identical folder hierarchy and task board even when `macbook` is asleep.
+1. **Uniform 3-Way LWW Peer Sync (`macbook` $\leftrightarrow$ `macmini` $\leftrightarrow$ `legion`):** Control-plane tables (`tree_nodes`, `node_host_paths`, session metadata `node_path`/`custom_title`/`is_later`/`is_supervisor`, `tasks`, `task_workstreams`, and `task_deliverables`) replicate across all hosts using `updated_at` Last-Write-Wins + startup/wake delta pull (`GET /v1/sync/state?since=<ts>`). When `macbook` is asleep, `legion` and `macmini` serve the complete session tree to `iphone` with `macbook` sessions badged as `[offline]`.
 2. **Daemon Hub Federation (`ackbard` / `ackbar-relay`):** Any `ackbard` node fans out `GET /v1/sessions?federated=true`, `GET /v1/nodes?federated=true`, and `GET /v1/tasks?federated=true`, and proxies `GET /v1/sessions/transcript`, `POST /v1/sessions/spawn`, and `POST /v1/sessions/control` across peer hosts registered in SQLite (`GET /v1/hosts`), gracefully skipping offline/asleep hosts after a 1.5s health timeout.
 
 ---
