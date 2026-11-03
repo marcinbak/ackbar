@@ -630,12 +630,6 @@ func (s *Server) findActiveTaskForSession(sess *Session) (*Task, error) {
 	if sess == nil {
 		return nil, nil
 	}
-	// 0. If session explicitly points to CurrentTaskID
-	if sess.CurrentTaskID != "" {
-		if t, err := s.db.GetTaskByID(sess.CurrentTaskID); err == nil && t != nil && t.Status != "DONE" {
-			return t, nil
-		}
-	}
 	// 1. Try by branch (highest priority so switching branches switches tasks)
 	if sess.GitBranch != "" && sess.GitBranch != "main" && sess.GitBranch != "master" {
 		if t, err := s.db.GetTaskByBranch(sess.GitBranch); err == nil && t != nil && t.Status != "DONE" {
@@ -664,7 +658,13 @@ func (s *Server) findActiveTaskForSession(sess *Session) (*Task, error) {
 			}
 		}
 	}
-	// 4. Fall back to active session worker record (only if active / not DONE)
+	// 4. Try by explicit CurrentTaskID (for sessions bound to a task, e.g. design tasks or main branch)
+	if sess.CurrentTaskID != "" {
+		if t, err := s.db.GetTaskByID(sess.CurrentTaskID); err == nil && t != nil && t.Status != "DONE" {
+			return t, nil
+		}
+	}
+	// 5. Fall back to active session worker record (only if active / not DONE)
 	if t, err := s.db.GetActiveTaskForSession(sess.ID); err == nil && t != nil && t.Status != "DONE" {
 		return t, nil
 	}

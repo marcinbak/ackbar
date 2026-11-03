@@ -211,7 +211,7 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 
 				for i := range existing.Workers {
 					w := &existing.Workers[i]
-					if targetRepoPath == "" || strings.EqualFold(w.RepoNodePath, targetRepoPath) {
+					if targetRepoPath == "" || w.RepoNodePath == "" || strings.EqualFold(w.RepoNodePath, targetRepoPath) {
 						w.WorkflowNode = req.WorkflowNode
 					}
 				}

@@ -541,6 +541,15 @@ func TestPhase3_UpdateWorkflowNodeTargetsActiveWorkstream(t *testing.T) {
 		Title:     "Multi Pipeline",
 		Status:    "IN_PROGRESS",
 		Substatus: "active",
+		Workers: []TaskWorker{
+			{
+				TaskID:       "task_multi_01",
+				SessionID:    "sess_worker_generic",
+				RepoNodePath: "",
+				WorkflowNode: "N13",
+				IsActive:     true,
+			},
+		},
 		Workstreams: []TaskWorkstream{
 			{
 				TaskID:       "task_multi_01",
@@ -587,5 +596,10 @@ func TestPhase3_UpdateWorkflowNodeTargetsActiveWorkstream(t *testing.T) {
 	// repo-beta must be unlocked to IN_PROGRESS and retain its workflow_node N0 (NOT overwritten to N14!)
 	if wsBeta.Status != "IN_PROGRESS" || wsBeta.WorkflowNode != "N0" {
 		t.Errorf("Expected repo-beta to be IN_PROGRESS/N0, got %s/%s", wsBeta.Status, wsBeta.WorkflowNode)
+	}
+
+	// generic worker without repo_node_path must receive WorkflowNode N14
+	if len(updated.Workers) != 1 || updated.Workers[0].WorkflowNode != "N14" {
+		t.Errorf("Expected generic worker without repo_node_path to receive WorkflowNode N14, got %+v", updated.Workers)
 	}
 }

@@ -1144,27 +1144,8 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	resolveCwdFromNode := func(candidate string) string {
-		candidate = strings.TrimSpace(candidate)
-		if candidate == "" {
-			return ""
-		}
-		if nhp, _ := s.db.GetNodeHostPath(candidate, s.HostName()); nhp != nil && nhp.ProjectDir != "" {
-			return nhp.ProjectDir
-		}
-		if node, _ := s.db.GetNode(candidate); node != nil && node.ProjectDir != "" {
-			return node.ProjectDir
-		}
-		return ""
-	}
-
-	if req.Cwd == "" || !filepath.IsAbs(req.Cwd) || req.Cwd == req.NodePath || req.Cwd == req.RepoNodePath {
-		for _, cand := range []string{req.NodePath, req.RepoNodePath, req.Cwd} {
-			if dir := resolveCwdFromNode(cand); dir != "" {
-				req.Cwd = dir
-				break
-			}
-		}
+	if req.NodePath == "" && req.RepoNodePath != "" {
+		req.NodePath = req.RepoNodePath
 	}
 
 	if req.IsSupervisor {
@@ -1179,25 +1160,18 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if req.Cwd == "" && req.NodePath != "" {
-		req.Cwd = "~"
+	if req.Agent == "" {
+		http.Error(w, "Missing agent", http.StatusBadRequest)
+		return
 	}
 
-	if req.Agent == "" || req.Cwd == "" {
-		http.Error(w, "Missing agent or cwd", http.StatusBadRequest)
+	if req.Cwd == "" && req.NodePath == "" && req.RepoNodePath == "" {
+		http.Error(w, "Missing cwd or node_path", http.StatusBadRequest)
 		return
 	}
 
 	if req.EngineType == "" {
 		req.EngineType = EngineTmux
-	}
-
-	if req.NodePath == "" {
-		if req.RepoNodePath != "" {
-			req.NodePath = req.RepoNodePath
-		} else if !req.IsSupervisor && req.Cwd != "" {
-			req.NodePath = s.resolveSessionNodePath(req.Cwd)
-		}
 	}
 
 	// 1. Forward to remote host if specified
@@ -1246,6 +1220,34 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// 2. Resolve Cwd for local daemon execution
+	resolveCwdFromNode := func(candidate string) string {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			return ""
+		}
+		if nhp, _ := s.db.GetNodeHostPath(candidate, s.HostName()); nhp != nil && nhp.ProjectDir != "" {
+			return nhp.ProjectDir
+		}
+		if node, _ := s.db.GetNode(candidate); node != nil && node.ProjectDir != "" {
+			return node.ProjectDir
+		}
+		return ""
+	}
+
+	if req.Cwd == "" || !filepath.IsAbs(req.Cwd) || req.Cwd == req.NodePath || req.Cwd == req.RepoNodePath {
+		for _, cand := range []string{req.NodePath, req.RepoNodePath, req.Cwd} {
+			if dir := resolveCwdFromNode(cand); dir != "" {
+				req.Cwd = dir
+				break
+			}
+		}
+	}
+
+	if req.Cwd == "" {
+		req.Cwd = "~"
+	}
+
 	// Expand ~ to user home directory and ensure directory exists
 	home, _ := os.UserHomeDir()
 	if strings.HasPrefix(req.Cwd, "~/") && home != "" {
@@ -1262,6 +1264,10 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	_ = os.MkdirAll(req.Cwd, 0755)
+
+	if req.NodePath == "" && !req.IsSupervisor && req.Cwd != "" {
+		req.NodePath = s.resolveSessionNodePath(req.Cwd)
+	}
 
 	if req.NodePath != "" {
 		if existingNode, _ := s.db.GetNode(req.NodePath); existingNode == nil {
