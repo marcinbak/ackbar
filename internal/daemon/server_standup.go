@@ -250,6 +250,21 @@ func (s *Server) handleTaskMergePR(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 	task.CompletedAt = &now
 
+	repoPath := ""
+	for _, ws := range task.Workstreams {
+		if (ws.PRURL != "" && strings.EqualFold(ws.PRURL, cleanPRURL)) || (ws.Branch != "" && strings.EqualFold(ws.Branch, task.Branch)) {
+			repoPath = ws.RepoNodePath
+			break
+		}
+	}
+	if repoPath == "" && len(task.Workstreams) > 0 {
+		repoPath = task.Workstreams[0].RepoNodePath
+	}
+	if repoPath == "" {
+		repoPath = task.ProjectName
+	}
+	s.unlockSequentialWorkstreams(task, repoPath)
+
 	if err := s.db.UpdateTask(task); err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)

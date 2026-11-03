@@ -97,6 +97,57 @@ func (c *DaemonClient) doRequest(ctx context.Context, method, endpoint string, r
 func GetRegisteredTools() []Tool {
 	return []Tool{
 		{
+			Name:        "create_task",
+			Description: "Creates a new task on the Ackbar Work Board with optional workstreams, dependencies, and auto-start capability.",
+			InputSchema: ToolInputSchema{
+				Type: "object",
+				Properties: map[string]PropertyDef{
+					"title": {
+						Type:        "string",
+						Description: "Task title.",
+					},
+					"project_name": {
+						Type:        "string",
+						Description: "Optional project name (e.g. Ackbar, ngl-ios). Defaults to 'General'.",
+					},
+					"group_name": {
+						Type:        "string",
+						Description: "Optional group name (e.g. Modemobile, Personal). Defaults to 'Personal'.",
+					},
+					"notes": {
+						Type:        "string",
+						Description: "Optional task notes or instructions.",
+					},
+					"task_kind": {
+						Type:        "string",
+						Description: "Task kind: code or design. Defaults to 'code'.",
+						Enum:        []string{"code", "design"},
+					},
+					"repos": {
+						Type:        "array",
+						Description: "Optional list of multi-repo workstreams with repo_node_path, target_host, and depends_on.",
+						Items: &PropertyDef{
+							Type: "object",
+							Properties: map[string]PropertyDef{
+								"repo_node_path": {Type: "string", Description: "Repository tree node path or directory (e.g. Modemobile/NGL/ngl-ios)."},
+								"target_host":    {Type: "string", Description: "Optional target daemon host name."},
+								"depends_on":     {Type: "string", Description: "Optional repo_node_path this workstream depends on."},
+							},
+						},
+					},
+					"depends_on": {
+						Type:        "string",
+						Description: "Optional dependency for a single workstream.",
+					},
+					"auto_start": {
+						Type:        "boolean",
+						Description: "If true, immediately spawns an agent session for the first ready workstream.",
+					},
+				},
+				Required: []string{"title"},
+			},
+		},
+		{
 			Name:        "get_current_task",
 			Description: "Resolves the current task for this agent session based on working directory, Git branch, or worktree path.",
 			InputSchema: ToolInputSchema{
@@ -137,7 +188,7 @@ func GetRegisteredTools() []Tool {
 		},
 		{
 			Name:        "update_task",
-			Description: "Updates task status, substatus, notes, branch, or PR details.",
+			Description: "Updates task status, substatus, notes, branch, PR details, or workflow node.",
 			InputSchema: ToolInputSchema{
 				Type: "object",
 				Properties: map[string]PropertyDef{
@@ -161,6 +212,19 @@ func GetRegisteredTools() []Tool {
 					"pr_url": {
 						Type:        "string",
 						Description: "Pull request URL associated with this task.",
+					},
+					"workflow_node": {
+						Type:        "string",
+						Description: "dev-workflow node lifecycle phase: N0, N1, N2, ..., N15.",
+					},
+					"task_kind": {
+						Type:        "string",
+						Description: "Task kind: code or design.",
+						Enum:        []string{"code", "design"},
+					},
+					"repo_node_path": {
+						Type:        "string",
+						Description: "Optional repo node path of the active workstream being updated.",
 					},
 				},
 				Required: []string{"task_id"},
@@ -234,7 +298,7 @@ func GetRegisteredTools() []Tool {
 		},
 		{
 			Name:        "attach_deliverable",
-			Description: "Attaches a deliverable artifact (interactive HTML prototype, plan, retrospective, simulator video, screenshot) to a task.",
+			Description: "Attaches a deliverable artifact (interactive HTML prototype, plan, retrospective, simulator video, screenshot, or cloud artifact) to a task.",
 			InputSchema: ToolInputSchema{
 				Type: "object",
 				Properties: map[string]PropertyDef{
@@ -248,8 +312,13 @@ func GetRegisteredTools() []Tool {
 					},
 					"kind": {
 						Type:        "string",
-						Description: "Artifact kind: html_ui, plan, retrospective, video, screenshot, other.",
-						Enum:        []string{"html_ui", "plan", "retrospective", "video", "screenshot", "other"},
+						Description: "Artifact kind: prd, html_ui, slides, plan, learnings, pr, retro, retrospective, video, screenshot, mockup, doc, other.",
+						Enum:        []string{"prd", "html_ui", "slides", "plan", "learnings", "pr", "retro", "retrospective", "video", "screenshot", "mockup", "doc", "other"},
+					},
+					"provider": {
+						Type:        "string",
+						Description: "Artifact provider: claude_artifact, gdocs, gslides, gsheets, gdrive, github, local. Auto-inferred if omitted.",
+						Enum:        []string{"claude_artifact", "gdocs", "gslides", "gsheets", "gdrive", "github", "local"},
 					},
 					"file_path": {
 						Type:        "string",
@@ -257,10 +326,14 @@ func GetRegisteredTools() []Tool {
 					},
 					"url": {
 						Type:        "string",
-						Description: "Optional external URL (e.g. Figma link, GitHub release).",
+						Description: "Optional external URL (e.g. Google Docs, Slides, Claude Artifact, Figma, GitHub PR).",
+					},
+					"content_md": {
+						Type:        "string",
+						Description: "Raw markdown content for brief, retrospective, architecture plan, or learnings deliverable.",
 					},
 				},
-				Required: []string{"task_id", "title", "kind"},
+				Required: []string{"task_id", "title"},
 			},
 		},
 		{
@@ -334,6 +407,8 @@ func ExecuteTool(ctx context.Context, client *DaemonClient, name string, args ma
 	}
 
 	switch name {
+	case "create_task":
+		return executeCreateTask(ctx, client, args)
 	case "get_current_task":
 		return executeGetCurrentTask(ctx, client, args)
 	case "list_tasks":
@@ -483,6 +558,131 @@ func executeListTasks(ctx context.Context, client *DaemonClient, args map[string
 	}, nil
 }
 
+func executeCreateTask(ctx context.Context, client *DaemonClient, args map[string]any) (*CallToolResult, error) {
+	title := getString(args, "title")
+	if title == "" {
+		return formatError("title is required"), nil
+	}
+
+	projectName := getString(args, "project_name")
+	if projectName == "" {
+		projectName = getString(args, "project")
+	}
+	if projectName == "" {
+		projectName = "General"
+	}
+
+	groupName := getString(args, "group_name")
+	if groupName == "" {
+		groupName = getString(args, "group")
+	}
+	if groupName == "" {
+		groupName = "Personal"
+	}
+
+	taskKind := getString(args, "task_kind")
+	if taskKind == "" {
+		taskKind = "code"
+	}
+
+	taskID := fmt.Sprintf("task_%d", time.Now().UnixNano())
+
+	payload := map[string]any{
+		"id":           taskID,
+		"title":        title,
+		"project_name": projectName,
+		"group_name":   groupName,
+		"status":       "NEW",
+		"substatus":    "ready",
+		"task_kind":    taskKind,
+		"notes":        getString(args, "notes"),
+	}
+
+	// Build workstreams if provided
+	var workstreams []map[string]any
+	if reposRaw, ok := args["repos"].([]any); ok && len(reposRaw) > 0 {
+		for _, rItem := range reposRaw {
+			if rMap, ok := rItem.(map[string]any); ok {
+				rPath := getString(rMap, "repo_node_path")
+				if rPath == "" {
+					rPath = getString(rMap, "path")
+				}
+				if rPath == "" {
+					continue
+				}
+				dep := getString(rMap, "depends_on")
+				wsStatus := "IN_PROGRESS"
+				if dep != "" {
+					wsStatus = "QUEUED"
+				}
+				targetHost := getString(rMap, "target_host")
+				workstreams = append(workstreams, map[string]any{
+					"task_id":        taskID,
+					"repo_node_path": rPath,
+					"target_host":    targetHost,
+					"depends_on":     dep,
+					"workflow_node":  "N0",
+					"status":         wsStatus,
+					"updated_at":     time.Now().UTC(),
+				})
+			}
+		}
+	} else if dep := getString(args, "depends_on"); dep != "" {
+		workstreams = append(workstreams, map[string]any{
+			"task_id":        taskID,
+			"repo_node_path": projectName,
+			"depends_on":     dep,
+			"workflow_node":  "N0",
+			"status":         "QUEUED",
+			"updated_at":     time.Now().UTC(),
+		})
+	}
+
+	if len(workstreams) > 0 {
+		payload["workstreams"] = workstreams
+	}
+
+	var createdTask map[string]any
+	if err := client.doRequest(ctx, http.MethodPost, "/v1/tasks", payload, &createdTask); err != nil {
+		return formatError(fmt.Sprintf("Failed to create task: %v", err)), nil
+	}
+
+	autoStart, _ := args["auto_start"].(bool)
+	if autoStart {
+		readyRepo := ""
+		readyHost := ""
+		if len(workstreams) > 0 {
+			for _, ws := range workstreams {
+				if getString(ws, "status") == "IN_PROGRESS" {
+					readyRepo = getString(ws, "repo_node_path")
+					readyHost = getString(ws, "target_host")
+					break
+				}
+			}
+		}
+		spawnCwd := readyRepo
+		if spawnCwd == "" {
+			spawnCwd = projectName
+		}
+		spawnPayload := map[string]any{
+			"agent":          "claude-code",
+			"cwd":            spawnCwd,
+			"host":           readyHost,
+			"task_id":        taskID,
+			"task_kind":      taskKind,
+			"repo_node_path": readyRepo,
+			"name":           title,
+		}
+		var spawnRes map[string]any
+		_ = client.doRequest(ctx, http.MethodPost, "/v1/sessions/spawn", spawnPayload, &spawnRes)
+	}
+
+	data, _ := json.MarshalIndent(createdTask, "", "  ")
+	return &CallToolResult{
+		Content: []ToolContent{{Type: "text", Text: string(data)}},
+	}, nil
+}
+
 func executeUpdateTask(ctx context.Context, client *DaemonClient, args map[string]any) (*CallToolResult, error) {
 	taskID := getString(args, "task_id")
 	if taskID == "" {
@@ -503,6 +703,15 @@ func executeUpdateTask(ctx context.Context, client *DaemonClient, args map[strin
 	}
 	if prUrl := getString(args, "pr_url"); prUrl != "" {
 		payload["pr_url"] = prUrl
+	}
+	if wn := getString(args, "workflow_node"); wn != "" {
+		payload["workflow_node"] = wn
+	}
+	if tk := getString(args, "task_kind"); tk != "" {
+		payload["task_kind"] = tk
+	}
+	if rnp := getString(args, "repo_node_path"); rnp != "" {
+		payload["repo_node_path"] = rnp
 	}
 
 	var res map[string]any
@@ -604,16 +813,30 @@ func executeAttachDeliverable(ctx context.Context, client *DaemonClient, args ma
 	taskID := getString(args, "task_id")
 	title := getString(args, "title")
 	kind := getString(args, "kind")
-	if taskID == "" || title == "" || kind == "" {
-		return formatError("task_id, title, and kind are required"), nil
+	if kind == "" {
+		kind = "doc"
+	}
+	if taskID == "" || title == "" {
+		return formatError("task_id and title are required"), nil
+	}
+
+	filePath := getString(args, "file_path")
+	urlStr := getString(args, "url")
+	contentMD := getString(args, "content_md")
+	provider := getString(args, "provider")
+
+	if filePath == "" && urlStr == "" && contentMD == "" {
+		return formatError("either file_path, url, or content_md is required"), nil
 	}
 
 	payload := map[string]any{
-		"task_id":   taskID,
-		"title":     title,
-		"kind":      kind,
-		"file_path": getString(args, "file_path"),
-		"url":       getString(args, "url"),
+		"task_id":    taskID,
+		"title":      title,
+		"kind":       kind,
+		"file_path":  filePath,
+		"url":        urlStr,
+		"provider":   provider,
+		"content_md": contentMD,
 	}
 
 	var res map[string]any

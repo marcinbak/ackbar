@@ -413,27 +413,32 @@ func (s *Server) resolveOrAdoptHookSession(event *Event, host, sessionID, accoun
 			}
 
 			sess = &Session{
-				ID:          sessionID,
-				OldID:       spawningSess.ID,
-				Agent:       event.Agent,
-				Host:        host,
-				NativeID:    event.NativeID,
-				Managed:     true,
-				PID:         spawningSess.PID,
-				EngineType:  spawningSess.EngineType,
-				TmuxName:    tmuxName,
-				Cwd:         spawningSess.Cwd,
-				ProjectKey:  spawningSess.ProjectKey,
-				NodePath:    spawningSess.NodePath,
-				CustomTitle: spawningSess.CustomTitle,
-				StartedAt:   spawningSess.StartedAt,
-				LastEventAt: spawningSess.LastEventAt,
-				AccountID:   spawningSess.AccountID,
+				ID:            sessionID,
+				OldID:         spawningSess.ID,
+				Agent:         event.Agent,
+				Host:          host,
+				NativeID:      event.NativeID,
+				Managed:       true,
+				PID:           spawningSess.PID,
+				EngineType:    spawningSess.EngineType,
+				TmuxName:      tmuxName,
+				Cwd:           spawningSess.Cwd,
+				ProjectKey:    spawningSess.ProjectKey,
+				NodePath:      spawningSess.NodePath,
+				CustomTitle:   spawningSess.CustomTitle,
+				StartedAt:     spawningSess.StartedAt,
+				LastEventAt:   spawningSess.LastEventAt,
+				AccountID:     spawningSess.AccountID,
+				IsSupervisor:  spawningSess.IsSupervisor,
+				CurrentTaskID: spawningSess.CurrentTaskID,
 			}
 			if spawningSess.CustomTitle != "" {
 				sess.Name = spawningSess.CustomTitle
 			} else if spawningSess.Name != "" && !isRawSessionName(spawningSess.Name) {
 				sess.Name = spawningSess.Name
+			}
+			if spawningSess.CurrentTaskID != "" {
+				_ = s.db.ReassignWorkerSessionID(spawningSess.ID, sess.ID)
 			}
 		}
 	}

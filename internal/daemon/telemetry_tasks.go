@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -8,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"ackbar/internal/tmux"
 )
 
 var (
@@ -289,6 +292,161 @@ func (s *Server) IngestToolTelemetry(sess *Session, event *Event) {
 	}
 }
 
+// ClassifyWorkflowNodeState maps dev-workflow nodes (N0-N15) and session state to Ackbar task status/substatus
+func ClassifyWorkflowNodeState(node string, sessState State, hasExplicitBlocker bool) (status string, substatus string) {
+	n := strings.ToUpper(strings.TrimSpace(node))
+	switch n {
+	case "N0":
+		if sessState == StateWorking {
+			return "IN_PROGRESS", "active"
+		}
+		return "NEW", "ready"
+	case "N1":
+		if sessState == StateIdle || sessState == StateBlocked || hasExplicitBlocker {
+			return "IN_PROGRESS", "question"
+		}
+		return "IN_PROGRESS", "active"
+	case "N2":
+		if sessState == StateIdle || sessState == StateBlocked || hasExplicitBlocker {
+			return "REVIEW", "plan_review"
+		}
+		return "IN_PROGRESS", "active"
+	case "N3", "N4", "N5", "N6", "N7", "N8", "N9", "N10":
+		if hasExplicitBlocker || sessState == StateBlocked {
+			return "IN_PROGRESS", "blocked"
+		}
+		if sessState == StateIdle {
+			return "IN_PROGRESS", "stalled"
+		}
+		return "IN_PROGRESS", "active"
+	case "N11", "N12", "N13":
+		return "REVIEW", "pr_review"
+	case "N14", "N15":
+		return "DONE", "completed"
+	default:
+		if hasExplicitBlocker || sessState == StateBlocked {
+			return "IN_PROGRESS", "blocked"
+		}
+		if sessState == StateWorking {
+			return "IN_PROGRESS", "active"
+		}
+		return "IN_PROGRESS", "idle"
+	}
+}
+
+// unlockSequentialWorkstreams transitions downstream workstreams from QUEUED/NEW to IN_PROGRESS upon upstream completion
+func (s *Server) unlockSequentialWorkstreams(task *Task, completedRepoPath string) bool {
+	if task == nil || len(task.Workstreams) == 0 {
+		return false
+	}
+
+	normPath := func(p string) string {
+		return strings.TrimSpace(filepath.Clean(p))
+	}
+
+	completedNorm := ""
+	if completedRepoPath != "" {
+		completedNorm = normPath(completedRepoPath)
+	}
+
+	// 1. Mark completed repo workstream as DONE if specified
+	for i := range task.Workstreams {
+		ws := &task.Workstreams[i]
+		if completedNorm != "" && (normPath(ws.RepoNodePath) == completedNorm || strings.EqualFold(ws.RepoNodePath, completedRepoPath)) {
+			if ws.Status != "DONE" {
+				ws.Status = "DONE"
+				ws.UpdatedAt = time.Now().UTC()
+			}
+		}
+	}
+
+	// Helper to check if an upstream dependency is DONE
+	isUpstreamDone := func(dep string) bool {
+		depNorm := normPath(dep)
+		for _, ws := range task.Workstreams {
+			if normPath(ws.RepoNodePath) == depNorm || strings.EqualFold(ws.RepoNodePath, dep) {
+				return ws.Status == "DONE"
+			}
+		}
+		return false
+	}
+
+	// 2. Find any workstreams in QUEUED or NEW that depend on completed workstream or upstream done
+	unlockedAny := false
+	for i := range task.Workstreams {
+		ws := &task.Workstreams[i]
+		if (ws.Status == "QUEUED" || ws.Status == "NEW") && ws.DependsOn != "" {
+			depMatchesCompleted := completedNorm != "" && (normPath(ws.DependsOn) == completedNorm || strings.EqualFold(ws.DependsOn, completedRepoPath))
+			if depMatchesCompleted || isUpstreamDone(ws.DependsOn) {
+				ws.Status = "IN_PROGRESS"
+				ws.WorkflowNode = "N0"
+				ws.UpdatedAt = time.Now().UTC()
+				unlockedAny = true
+			}
+		}
+	}
+
+	if unlockedAny {
+		// If task was previously marked DONE, revert it so it stays active on the board
+		if task.Status == "DONE" {
+			task.Status = "IN_PROGRESS"
+			task.Substatus = "active"
+			task.CompletedAt = nil
+		}
+		_ = s.db.UpdateTask(task)
+		s.pushSyncPayload(&SyncStatePayload{Tasks: []Task{*task}, Workstreams: task.Workstreams})
+	}
+
+	return unlockedAny
+}
+
+// completeAndCloseTaskSession terminates Tmux sessions and updates metadata when task reaches N15
+func (s *Server) completeAndCloseTaskSession(task *Task, sess *Session) {
+	if task == nil {
+		return
+	}
+
+	now := time.Now().UTC()
+
+	// If a specific session was provided:
+	if sess != nil {
+		if sess.TmuxName != "" {
+			_ = tmux.Kill(context.Background(), sess.TmuxName)
+		}
+		sess.IsDone = true
+		sess.State = StateEnded
+		sess.Activity = "Completed (N15)"
+		sess.MetadataUpdatedAt = now
+		_ = s.db.SaveSession(sess)
+		s.broadcast(sess)
+		s.syncSessionMeta(sess)
+	} else {
+		// Close all active worker sessions for this task
+		for _, w := range task.Workers {
+			if w.SessionID != "" && w.IsActive {
+				if sSess, _ := s.db.GetSession(w.SessionID); sSess != nil && sSess.State != StateEnded {
+					if sSess.TmuxName != "" {
+						_ = tmux.Kill(context.Background(), sSess.TmuxName)
+					}
+					sSess.IsDone = true
+					sSess.State = StateEnded
+					sSess.Activity = "Completed (N15)"
+					sSess.MetadataUpdatedAt = now
+					_ = s.db.SaveSession(sSess)
+					s.broadcast(sSess)
+					s.syncSessionMeta(sSess)
+				}
+			}
+		}
+	}
+
+	// Deactivate workers in task
+	for i := range task.Workers {
+		task.Workers[i].IsActive = false
+	}
+	_ = s.db.UpdateTask(task)
+}
+
 // SyncSessionTaskWorker associates a session with an active task and syncs substatus
 func (s *Server) SyncSessionTaskWorker(sess *Session) {
 	if sess == nil || sess.ID == "" {
@@ -301,14 +459,45 @@ func (s *Server) SyncSessionTaskWorker(sess *Session) {
 		return
 	}
 
+	var repoNodePath string
+	var workflowNode string
+	for _, w := range task.Workers {
+		if w.SessionID == sess.ID {
+			repoNodePath = w.RepoNodePath
+			workflowNode = w.WorkflowNode
+			break
+		}
+	}
+	if repoNodePath == "" {
+		for _, ws := range task.Workstreams {
+			if (ws.TargetHost == sess.Host || ws.TargetHost == "") && ws.Status == "IN_PROGRESS" {
+				repoNodePath = ws.RepoNodePath
+				if workflowNode == "" {
+					workflowNode = ws.WorkflowNode
+				}
+				break
+			}
+		}
+	}
+	if workflowNode == "" {
+		for _, ws := range task.Workstreams {
+			if ws.WorkflowNode != "" {
+				workflowNode = ws.WorkflowNode
+				break
+			}
+		}
+	}
+
 	// 2. Ensure worker is registered in task_workers
 	worker := &TaskWorker{
-		TaskID:     task.ID,
-		SessionID:  sess.ID,
-		Agent:      sess.Agent,
-		Host:       sess.Host,
-		IsActive:   sess.State != StateEnded,
-		AssignedAt: time.Now(),
+		TaskID:       task.ID,
+		SessionID:    sess.ID,
+		Agent:        sess.Agent,
+		Host:         sess.Host,
+		IsActive:     sess.State != StateEnded,
+		RepoNodePath: repoNodePath,
+		WorkflowNode: workflowNode,
+		AssignedAt:   time.Now(),
 	}
 	_ = s.db.InsertTaskWorker(worker)
 
@@ -319,7 +508,7 @@ func (s *Server) SyncSessionTaskWorker(sess *Session) {
 		s.syncSessionMeta(sess)
 	}
 
-	// 3. Reflect blocked / active state
+	// 3. Reflect blocked / active / idle workflow state
 	taskNeedsUpdate := false
 	if sess.State == StateBlocked {
 		if task.Substatus != "blocked" {
@@ -342,6 +531,32 @@ func (s *Server) SyncSessionTaskWorker(sess *Session) {
 		task.Substatus = "active"
 		task.BlockerQuestion = ""
 		taskNeedsUpdate = true
+	} else if sess.State == StateIdle && task.TaskKind != "design" && workflowNode != "" {
+		newStatus, newSubstatus := ClassifyWorkflowNodeState(workflowNode, sess.State, task.Substatus == "blocked" && task.BlockerQuestion != "")
+		if task.Status != newStatus || task.Substatus != newSubstatus {
+			task.Status = newStatus
+			task.Substatus = newSubstatus
+			taskNeedsUpdate = true
+		}
+		for i := range task.Workstreams {
+			ws := &task.Workstreams[i]
+			if repoNodePath == "" || strings.EqualFold(ws.RepoNodePath, repoNodePath) {
+				if ws.WorkflowNode != workflowNode || ws.Status != newStatus {
+					ws.WorkflowNode = workflowNode
+					ws.Status = newStatus
+					ws.UpdatedAt = time.Now().UTC()
+					taskNeedsUpdate = true
+				}
+			}
+		}
+		if workflowNode == "N14" || workflowNode == "N15" {
+			if s.unlockSequentialWorkstreams(task, repoNodePath) {
+				taskNeedsUpdate = true
+			}
+		}
+		if workflowNode == "N15" {
+			s.completeAndCloseTaskSession(task, sess)
+		}
 	}
 
 	if taskNeedsUpdate {

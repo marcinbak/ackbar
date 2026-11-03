@@ -446,3 +446,51 @@ func TestSupervisorSidebarAndTreeSections_JS(t *testing.T) {
 		"existing.current_task_id = sess.current_task_id",
 	})
 }
+
+func TestPhase3_TasksAndArtifacts_JS(t *testing.T) {
+	embeddedFS := web.GetFS()
+
+	checkFileContains := func(path string, expectedList []string) {
+		t.Helper()
+		f, err := embeddedFS.Open(path)
+		if err != nil {
+			t.Fatalf("failed to open %s: %v", path, err)
+		}
+		defer f.Close()
+		b, err := io.ReadAll(f)
+		if err != nil {
+			t.Fatalf("failed to read %s: %v", path, err)
+		}
+		content := string(b)
+		for _, expected := range expectedList {
+			if !strings.Contains(content, expected) {
+				t.Errorf("expected %s to contain %q", path, expected)
+			}
+		}
+	}
+
+	checkFileContains("js/tasks.js", []string{
+		"task-kind-badge",
+		"task-node-badge",
+		"task-workstreams-bar",
+		"task-workstream-pill",
+		"btn-approve-plan",
+		"btn-nudge-task",
+		"btn-view-deliverable-md",
+		"showDeliverableContentModal",
+		"mTaskKind",
+		"mEditKind",
+	})
+
+	checkFileContains("js/tree.js", []string{
+		"badge-task",
+		"task_kind === 'design'",
+	})
+
+	checkFileContains("style.css", []string{
+		".task-kind-badge",
+		".task-node-badge",
+		".task-workstreams-bar",
+		".task-workstream-pill",
+	})
+}

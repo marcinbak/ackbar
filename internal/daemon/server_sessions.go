@@ -1124,6 +1124,9 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		EngineType   string `json:"engine_type"`
 		Prompt       string `json:"prompt"`
 		IsSupervisor bool   `json:"is_supervisor"`
+		TaskID       string `json:"task_id"`
+		TaskKind     string `json:"task_kind"`
+		RepoNodePath string `json:"repo_node_path"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -1162,14 +1165,17 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		if hostRec != nil && hostRec.URL != "" && !s.isLocalHost(hostRec.Name) && hostRec.URL != "http://127.0.0.1:7777" {
 			targetURL := strings.TrimSuffix(hostRec.URL, "/") + "/v1/sessions/spawn"
 			payload, _ := json.Marshal(map[string]interface{}{
-				"agent":         req.Agent,
-				"cwd":           req.Cwd,
-				"node_path":     req.NodePath,
-				"name":          req.Name,
-				"account_id":    req.AccountID,
-				"engine_type":   req.EngineType,
-				"prompt":        req.Prompt,
-				"is_supervisor": req.IsSupervisor,
+				"agent":          req.Agent,
+				"cwd":            req.Cwd,
+				"node_path":      req.NodePath,
+				"name":           req.Name,
+				"account_id":     req.AccountID,
+				"engine_type":    req.EngineType,
+				"prompt":         req.Prompt,
+				"is_supervisor":  req.IsSupervisor,
+				"task_id":        req.TaskID,
+				"task_kind":      req.TaskKind,
+				"repo_node_path": req.RepoNodePath,
 			})
 			fwdReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, targetURL, bytes.NewBuffer(payload))
 			if err != nil {
@@ -1232,6 +1238,19 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 	}
 	envVars["ACKBAR_SESSION_ID"] = spawnSessID
 
+	taskKind := req.TaskKind
+	if req.TaskID != "" {
+		envVars["ACKBAR_TASK_ID"] = req.TaskID
+		if taskKind == "" {
+			if t, _ := s.db.GetTaskByID(req.TaskID); t != nil && t.TaskKind != "" {
+				taskKind = t.TaskKind
+			}
+		}
+	}
+	if taskKind != "" {
+		envVars["ACKBAR_TASK_KIND"] = taskKind
+	}
+
 	if req.EngineType == EngineHeadless {
 		now := time.Now().UTC()
 		sess := &Session{
@@ -1244,6 +1263,7 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 			NodePath:          req.NodePath,
 			Name:              req.Name,
 			IsSupervisor:      req.IsSupervisor,
+			CurrentTaskID:     req.TaskID,
 			Managed:           true,
 			TmuxName:          "",
 			EngineType:        EngineHeadless,
@@ -1265,6 +1285,18 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		spawnID := sess.ID
+		if req.TaskID != "" {
+			_ = s.db.InsertTaskWorker(&TaskWorker{
+				TaskID:       req.TaskID,
+				SessionID:    sess.ID,
+				Agent:        req.Agent,
+				Host:         effectiveHost,
+				IsActive:     true,
+				RepoNodePath: req.RepoNodePath,
+				WorkflowNode: "N0",
+				AssignedAt:   now,
+			})
+		}
 		s.broadcast(sess)
 		s.syncSessionMeta(sess)
 		if initialPrompt != "" && s.headless != nil {
@@ -1312,6 +1344,7 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		NodePath:          req.NodePath,
 		Name:              req.Name,
 		IsSupervisor:      req.IsSupervisor,
+		CurrentTaskID:     req.TaskID,
 		Managed:           true,
 		TmuxName:          tmuxName,
 		EngineType:        EngineTmux,
@@ -1333,6 +1366,19 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 	if err := s.db.SaveSession(sess); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+
+	if req.TaskID != "" {
+		_ = s.db.InsertTaskWorker(&TaskWorker{
+			TaskID:       req.TaskID,
+			SessionID:    sess.ID,
+			Agent:        req.Agent,
+			Host:         effectiveHost,
+			IsActive:     true,
+			RepoNodePath: req.RepoNodePath,
+			WorkflowNode: "N0",
+			AssignedAt:   now,
+		})
 	}
 
 	s.broadcast(sess)
