@@ -59,6 +59,518 @@ function insertTextIntoPromptInput(inputEl, text) {
   inputEl.focus();
 }
 
+// --- Phase 4: Voice Companion & 2-Tier Lazy Speech Pipeline ---
+
+let activeSpeech = null; // { tabObj, msgEl, utterance }
+let activeRecognition = null;
+
+function isChatAutoReadEnabled() {
+  if (typeof localStorage === 'undefined') return false;
+  return localStorage.getItem('ackbar_voice_auto_read') === 'true';
+}
+
+function isSimpleSpeechCandidate(md) {
+  if (!md || typeof md !== 'string') return true;
+  // 1. Strip fenced code blocks
+  const withoutCode = md.replace(/```[\s\S]*?```/g, ' ').trim();
+  if (!withoutCode) return true;
+
+  // 2. Count words
+  const words = withoutCode.split(/\s+/).filter(Boolean);
+  if (words.length >= 120) {
+    return false;
+  }
+
+  // 3. Count table rows (lines containing | that are not separator lines)
+  const lines = withoutCode.split('\n');
+  let tableRows = 0;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith('|') && trimmed.endsWith('|')) {
+      if (/^\|[-:\s|]+\|$/.test(trimmed)) {
+        continue;
+      }
+      tableRows++;
+    }
+  }
+  if (tableRows > 3) {
+    return false;
+  }
+
+  // 4. Count markdown ## / ### section headings
+  let headings = 0;
+  for (const line of lines) {
+    if (/^#{2,3}\s+/.test(line.trim())) {
+      headings++;
+    }
+  }
+  if (headings >= 3) {
+    return false;
+  }
+
+  return true;
+}
+
+function sanitizeMarkdownForSpeech(md) {
+  if (!md || typeof md !== 'string') return '';
+  let text = md;
+
+  // 1. Strip fenced code blocks & diffs
+  text = text.replace(/```[\s\S]*?```/g, ' ');
+
+  // 2. Strip Mermaid blocks and ASCII box-drawing diagrams
+  const lines = text.split('\n');
+  const filteredLines = [];
+  const boxCharsRegex = /[┌┐└┘─│├┤┬┴┼═║╔╗╚╝╠╣╦╩╬]/;
+
+  let inTable = false;
+  let tableHeaderCols = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmed = line.trim();
+
+    // Skip ASCII box drawing diagrams
+    if (boxCharsRegex.test(trimmed)) {
+      continue;
+    }
+
+    // Small table conversion (<= 3 data rows)
+    if (trimmed.startsWith('|') && trimmed.endsWith('|')) {
+      if (/^\|[-:\s|]+\|$/.test(trimmed)) {
+        continue;
+      }
+      const cells = trimmed.split('|').slice(1, -1).map(c => c.trim());
+      if (!inTable) {
+        inTable = true;
+        tableHeaderCols = cells;
+      } else {
+        const rowSentences = [];
+        for (let c = 0; c < cells.length; c++) {
+          const colName = tableHeaderCols[c] || `Column ${c + 1}`;
+          const val = cells[c];
+          if (val) {
+            rowSentences.push(`${colName}: ${val}`);
+          }
+        }
+        if (rowSentences.length > 0) {
+          filteredLines.push(rowSentences.join(', ') + '.');
+        }
+      }
+      continue;
+    } else {
+      inTable = false;
+    }
+
+    filteredLines.push(line);
+  }
+  text = filteredLines.join('\n');
+
+  // 3. Shorten Markdown links with file:// or file paths to their basename
+  text = text.replace(/\[([^\]]+)\]\((?:file:\/\/)?([^)]+)\)/g, (match, label, urlPath) => {
+    if (urlPath.includes('/') || urlPath.startsWith('file:')) {
+      const cleanPath = urlPath.replace(/^file:\/\//, '').split('#')[0].split('?')[0];
+      const base = cleanPath.split('/').filter(Boolean).pop();
+      if (base) {
+        return base;
+      }
+    }
+    return label;
+  });
+
+  // Shorten raw absolute file paths
+  text = text.replace(/(?:^|\s)(?:\/[a-zA-Z0-9_\.\-]+)+\/([a-zA-Z0-9_\.\-]+(?:\.[a-zA-Z0-9]+)?)/g, ' $1');
+
+  // 4. Strip or shorten UUIDs and 40-char Git SHA hashes
+  text = text.replace(/\b[0-9a-f]{40}\b/gi, 'commit');
+  text = text.replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, '');
+
+  // 5. Strip residual Markdown formatting
+  text = text.replace(/>\s*\[!(?:NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]/gi, '');
+  text = text.replace(/^\s*>\s?/gm, '');
+  text = text.replace(/^\s*#{1,6}\s+/gm, '');
+  text = text.replace(/[*_~]{1,3}([^*_~]+)[*_~]{1,3}/g, '$1');
+  text = text.replace(/`([^`]+)`/g, '$1');
+  text = text.replace(/^\s*[-*+]\s+/gm, '');
+  text = text.replace(/^\s*\d+[\.\)]\s+/gm, '');
+  text = text.replace(/<[^>]+>/g, ' ');
+
+  // 6. Normalize whitespace
+  text = text.replace(/\r\n/g, '\n');
+  text = text.replace(/\n+/g, ' ');
+  text = text.replace(/\s+/g, ' ').trim();
+
+  return text;
+}
+
+// Resolve the currently connected DOM element for an assistant message bubble
+function resolveLiveMessageEl(tabObj, msgEl, msgIdx) {
+  if (msgEl && msgEl.isConnected) return msgEl;
+  if (!tabObj || !tabObj.chatMessagesEl) return msgEl;
+  const targetIdx = typeof msgIdx === 'number' && !isNaN(msgIdx) ? msgIdx : (msgEl && msgEl.dataset && msgEl.dataset.msgIndex ? parseInt(msgEl.dataset.msgIndex, 10) : NaN);
+  if (!isNaN(targetIdx)) {
+    const liveEl = tabObj.chatMessagesEl.querySelector(`.chat-msg.assistant-msg[data-msg-index="${targetIdx}"]`);
+    if (liveEl) return liveEl;
+  }
+  const assistantMsgs = tabObj.chatMessagesEl.querySelectorAll('.chat-msg.assistant-msg');
+  if (assistantMsgs.length > 0) {
+    return assistantMsgs[assistantMsgs.length - 1];
+  }
+  return msgEl;
+}
+
+function stopActiveSpeech() {
+  if (typeof window !== 'undefined' && window.speechSynthesis) {
+    try {
+      window.speechSynthesis.cancel();
+    } catch (_) {}
+  }
+  if (activeSpeech) {
+    const liveEl = resolveLiveMessageEl(activeSpeech.tabObj, activeSpeech.msgEl, activeSpeech.msgIdx);
+    if (liveEl) {
+      liveEl.classList.remove('speaking');
+      const stopBtn = liveEl.querySelector('.btn-stop-chat-msg');
+      const readBtn = liveEl.querySelector('.btn-read-chat-msg');
+      const replayBtn = liveEl.querySelector('.btn-replay-chat-msg');
+      if (stopBtn) stopBtn.style.display = 'none';
+      if (readBtn) readBtn.style.display = 'inline-flex';
+      if (replayBtn) replayBtn.style.display = 'inline-flex';
+    }
+    activeSpeech = null;
+  }
+}
+
+function speakText(text, msgEl, tabObj, onComplete) {
+  stopActiveSpeech();
+  if (!text || typeof window === 'undefined' || !window.speechSynthesis) {
+    if (typeof onComplete === 'function') onComplete();
+    return;
+  }
+
+  const msgIdx = msgEl && msgEl.dataset && msgEl.dataset.msgIndex ? parseInt(msgEl.dataset.msgIndex, 10) : NaN;
+  const liveEl = resolveLiveMessageEl(tabObj, msgEl, msgIdx);
+
+  const utterance = new SpeechSynthesisUtterance(text);
+  utterance.rate = 1.05;
+  utterance.pitch = 1.0;
+
+  activeSpeech = { tabObj, msgEl: liveEl, msgIdx, utterance };
+
+  if (liveEl) {
+    liveEl.classList.add('speaking');
+    const readBtn = liveEl.querySelector('.btn-read-chat-msg');
+    const stopBtn = liveEl.querySelector('.btn-stop-chat-msg');
+    if (readBtn) readBtn.style.display = 'none';
+    if (stopBtn) stopBtn.style.display = 'inline-flex';
+  }
+
+  utterance.onend = () => {
+    const currentLiveEl = resolveLiveMessageEl(tabObj, liveEl, msgIdx);
+    if (currentLiveEl) {
+      currentLiveEl.classList.remove('speaking');
+      const readBtn = currentLiveEl.querySelector('.btn-read-chat-msg');
+      const stopBtn = currentLiveEl.querySelector('.btn-stop-chat-msg');
+      const replayBtn = currentLiveEl.querySelector('.btn-replay-chat-msg');
+      if (stopBtn) stopBtn.style.display = 'none';
+      if (readBtn) readBtn.style.display = 'inline-flex';
+      if (replayBtn) replayBtn.style.display = 'inline-flex';
+    }
+    activeSpeech = null;
+    if (typeof onComplete === 'function') onComplete();
+  };
+
+  utterance.onerror = () => {
+    const currentLiveEl = resolveLiveMessageEl(tabObj, liveEl, msgIdx);
+    if (currentLiveEl) {
+      currentLiveEl.classList.remove('speaking');
+      const readBtn = currentLiveEl.querySelector('.btn-read-chat-msg');
+      const stopBtn = currentLiveEl.querySelector('.btn-stop-chat-msg');
+      const replayBtn = currentLiveEl.querySelector('.btn-replay-chat-msg');
+      if (stopBtn) stopBtn.style.display = 'none';
+      if (readBtn) readBtn.style.display = 'inline-flex';
+      if (replayBtn) replayBtn.style.display = 'inline-flex';
+    }
+    activeSpeech = null;
+  };
+
+  try {
+    window.speechSynthesis.speak(utterance);
+  } catch (e) {
+    console.warn('Speech synthesis failed:', e);
+  }
+}
+
+async function handleReadChatMessage(tabObj, msgEl, forceFull = false) {
+  if (!tabObj || !msgEl) return;
+  const msgIdx = msgEl.dataset && msgEl.dataset.msgIndex ? parseInt(msgEl.dataset.msgIndex, 10) : 0;
+  let liveEl = resolveLiveMessageEl(tabObj, msgEl, msgIdx);
+  const rawContent = (liveEl && liveEl.dataset.rawContent) || msgEl.dataset.rawContent || '';
+  if (!rawContent) return;
+
+  tabObj.speechCache = tabObj.speechCache || new Map();
+  tabObj.lastSpokenMsgEl = liveEl;
+
+  if (forceFull) {
+    const sanitized = sanitizeMarkdownForSpeech(rawContent);
+    speakText(sanitized, liveEl, tabObj);
+    return;
+  }
+
+  // 1. Check client cache
+  if (tabObj.speechCache.has(msgIdx)) {
+    const cached = tabObj.speechCache.get(msgIdx);
+    if (cached.suggested_chips && cached.suggested_chips.length > 0) {
+      renderSuggestedChips(tabObj, cached.suggested_chips);
+    }
+    if (cached.tier === 'structural' || cached.tier === 'haiku' || cached.tier === 'llm' || cached.tier === 'api') {
+      const fullBtn = liveEl.querySelector('.btn-full-read-chat-msg');
+      if (fullBtn) fullBtn.style.display = 'inline-flex';
+    }
+    speakText(cached.spoken_text, liveEl, tabObj);
+    return;
+  }
+
+  // 2. Check if simple prose (< 120 words, <= 3 table rows, < 3 headings) -> Tier 1
+  if (isSimpleSpeechCandidate(rawContent)) {
+    const sanitized = sanitizeMarkdownForSpeech(rawContent);
+    tabObj.speechCache.set(msgIdx, {
+      spoken_text: sanitized,
+      suggested_chips: [],
+      tier: 'simple'
+    });
+    speakText(sanitized, liveEl, tabObj);
+    return;
+  }
+
+  // 3. Tier 2: Call daemon POST /v1/sessions/summarize-speech
+  const sessionId = tabObj.session ? tabObj.session.id : '';
+  const baseUrl = getSessionBaseUrl(sessionId, tabObj.session);
+
+  const readBtn = liveEl.querySelector('.btn-read-chat-msg');
+  const origReadHtml = readBtn ? readBtn.innerHTML : '';
+  if (readBtn) readBtn.textContent = '⏳ ...';
+
+  try {
+    const res = await fetch(`${baseUrl}/v1/sessions/summarize-speech`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(getAuthToken() ? { 'Authorization': `Bearer ${getAuthToken()}` } : {})
+      },
+      body: JSON.stringify({
+        session_id: sessionId,
+        message_index: msgIdx,
+        content: rawContent
+      })
+    });
+
+    liveEl = resolveLiveMessageEl(tabObj, liveEl, msgIdx);
+    const liveReadBtn = liveEl ? liveEl.querySelector('.btn-read-chat-msg') : readBtn;
+    if (liveReadBtn && origReadHtml) liveReadBtn.innerHTML = origReadHtml;
+
+    if (res.ok) {
+      const summary = await res.json();
+      tabObj.speechCache.set(msgIdx, summary);
+
+      if (summary.suggested_chips && summary.suggested_chips.length > 0) {
+        renderSuggestedChips(tabObj, summary.suggested_chips);
+      }
+
+      if (liveEl) {
+        const fullBtn = liveEl.querySelector('.btn-full-read-chat-msg');
+        if (fullBtn) fullBtn.style.display = 'inline-flex';
+      }
+
+      speakText(summary.spoken_text, liveEl, tabObj);
+      return;
+    }
+  } catch (err) {
+    console.warn('Speech summarizer request failed, falling back to local sanitizer:', err);
+  }
+
+  liveEl = resolveLiveMessageEl(tabObj, liveEl, msgIdx);
+  const liveReadBtn = liveEl ? liveEl.querySelector('.btn-read-chat-msg') : readBtn;
+  if (liveReadBtn && origReadHtml) liveReadBtn.innerHTML = origReadHtml;
+  const fallbackSanitized = sanitizeMarkdownForSpeech(rawContent);
+  speakText(fallbackSanitized, liveEl, tabObj);
+}
+
+function handleReplayChatMessage(tabObj, msgEl) {
+  if (!tabObj || !msgEl) return;
+  const msgIdx = parseInt(msgEl.dataset.msgIndex, 10) || 0;
+  const liveEl = resolveLiveMessageEl(tabObj, msgEl, msgIdx);
+  tabObj.speechCache = tabObj.speechCache || new Map();
+
+  if (tabObj.speechCache.has(msgIdx)) {
+    const cached = tabObj.speechCache.get(msgIdx);
+    speakText(cached.spoken_text, liveEl, tabObj);
+  } else {
+    handleReadChatMessage(tabObj, liveEl, false);
+  }
+}
+
+function renderSuggestedChips(tabObj, chips) {
+  if (!tabObj || !tabObj.chatViewEl) return;
+  const container = tabObj.chatViewEl.querySelector('.chat-suggested-chips');
+  if (!container) return;
+
+  if (!chips || !Array.isArray(chips) || chips.length === 0) {
+    container.style.display = 'none';
+    container.innerHTML = '';
+    return;
+  }
+
+  container.innerHTML = '';
+  container.style.display = 'flex';
+
+  for (const chip of chips) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'chat-suggested-chip';
+    btn.textContent = chip;
+
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      let promptText = chip;
+      const isAutoReadOn = isChatAutoReadEnabled();
+
+      if (chip === 'Hear Open Question') {
+        promptText = 'What is the open question and what are the trade-offs?';
+        if (isAutoReadOn) {
+          promptText += ' [Reply concisely in 2–3 spoken sentences]';
+        }
+      } else if (chip.startsWith('Hear ')) {
+        const topic = chip.substring(5).trim();
+        promptText = `Tell me about ${topic}`;
+        if (isAutoReadOn) {
+          promptText += ' [Reply concisely in 2–3 spoken sentences]';
+        }
+      } else if (chip === 'Approve Plan') {
+        promptText = 'Plan looks good, please proceed with implementation.';
+      } else if (isAutoReadOn && !chip.includes('[Reply concisely')) {
+        promptText += ' [Reply concisely in 2–3 spoken sentences]';
+      }
+
+      if (tabObj.chatInputEl) {
+        tabObj.chatInputEl.value = promptText;
+        tabObj.chatInputEl.dispatchEvent(new Event('input', { bubbles: true }));
+        sendChatPrompt(tabObj);
+      }
+      container.style.display = 'none';
+      container.innerHTML = '';
+    });
+
+    container.appendChild(btn);
+  }
+}
+
+function toggleVoiceMic(tabObj) {
+  stopActiveSpeech();
+  if (!tabObj || !tabObj.chatViewEl) return;
+  const micBtn = tabObj.chatViewEl.querySelector('.btn-chat-mic');
+
+  if (activeRecognition) {
+    try {
+      activeRecognition.stop();
+    } catch (_) {}
+    activeRecognition = null;
+    if (micBtn) {
+      micBtn.classList.remove('listening');
+      micBtn.textContent = '🎤 Mic: OFF';
+    }
+    return;
+  }
+
+  const SpeechRecognition = typeof window !== 'undefined' &&
+    (window.SpeechRecognition || window.webkitSpeechRecognition);
+
+  if (!SpeechRecognition) {
+    alert('Speech recognition is not supported in this browser. Please use Chrome, Edge, or Safari.');
+    return;
+  }
+
+  const recognition = new SpeechRecognition();
+  recognition.lang = 'en-US';
+  recognition.interimResults = false;
+  recognition.maxAlternatives = 1;
+
+  recognition.onstart = () => {
+    activeRecognition = recognition;
+    if (micBtn) {
+      micBtn.classList.add('listening');
+      micBtn.textContent = '🎤 Listening...';
+    }
+  };
+
+  recognition.onresult = (event) => {
+    if (!event.results || event.results.length === 0) return;
+    const spoken = event.results[0][0].transcript.trim();
+    if (!spoken) return;
+
+    const lower = spoken.toLowerCase().replace(/[.,!?;:]+$/, '').trim();
+    if (lower === 'repeat that' || lower === 'read that again' || lower === 'repeat' || lower === 'replay') {
+      if (tabObj.lastSpokenMsgEl) {
+        handleReplayChatMessage(tabObj, tabObj.lastSpokenMsgEl);
+      } else {
+        const assistantMsgs = tabObj.chatMessagesEl ? tabObj.chatMessagesEl.querySelectorAll('.chat-msg.assistant-msg') : [];
+        if (assistantMsgs.length > 0) {
+          handleReadChatMessage(tabObj, assistantMsgs[assistantMsgs.length - 1], false);
+        }
+      }
+      return;
+    }
+
+    let finalPrompt = spoken;
+    if (isChatAutoReadEnabled() && !finalPrompt.includes('[Reply concisely')) {
+      finalPrompt += ' [Reply concisely in 2–3 spoken sentences]';
+    }
+
+    if (tabObj.chatInputEl) {
+      tabObj.chatInputEl.value = finalPrompt;
+      tabObj.chatInputEl.dispatchEvent(new Event('input', { bubbles: true }));
+      sendChatPrompt(tabObj);
+    }
+  };
+
+  recognition.onerror = (event) => {
+    console.warn('Speech recognition error:', event.error);
+    if (micBtn) {
+      micBtn.classList.remove('listening');
+      micBtn.textContent = '🎤 Mic: OFF';
+    }
+    activeRecognition = null;
+  };
+
+  recognition.onend = () => {
+    if (micBtn) {
+      micBtn.classList.remove('listening');
+      micBtn.textContent = '🎤 Mic: OFF';
+    }
+    activeRecognition = null;
+  };
+
+  try {
+    recognition.start();
+  } catch (err) {
+    console.warn('Failed to start speech recognition:', err);
+    if (micBtn) {
+      micBtn.classList.remove('listening');
+      micBtn.textContent = '🎤 Mic: OFF';
+    }
+    activeRecognition = null;
+  }
+}
+
+if (typeof window !== 'undefined') {
+  window.sanitizeMarkdownForSpeech = sanitizeMarkdownForSpeech;
+  window.isSimpleSpeechCandidate = isSimpleSpeechCandidate;
+  window.stopActiveSpeech = stopActiveSpeech;
+  window.speakText = speakText;
+  window.handleReadChatMessage = handleReadChatMessage;
+  window.toggleVoiceMic = toggleVoiceMic;
+  window.renderSuggestedChips = renderSuggestedChips;
+}
+
 
 function setupChatInterface(tabObj, chatViewEl, session) {
   const isTmux = session.engine_type === 'tmux';
@@ -73,6 +585,8 @@ function setupChatInterface(tabObj, chatViewEl, session) {
         <span class="chat-status-badge" style="font-size: 11px; color: var(--text-dim);">🟢 Ready</span>
       </div>
       <div class="chat-header-right">
+        <button class="btn btn-secondary btn-sm btn-chat-autoread" title="Toggle automatic speech playback on completion">🔊 Auto-Read: OFF</button>
+        <button class="btn btn-secondary btn-sm btn-chat-mic" title="Toggle voice microphone input">🎤 Mic: OFF</button>
         <button class="btn-take-wheel" title="Spawn tmux process and attach interactive terminal">🏎️ Take the Wheel</button>
         <button class="btn btn-secondary btn-sm btn-reload-chat" title="Reload transcript history">🔄</button>
       </div>
@@ -104,6 +618,7 @@ function setupChatInterface(tabObj, chatViewEl, session) {
         </div>
         <div class="chat-subagents-list" style="display: none;"></div>
       </div>
+      <div class="chat-suggested-chips" style="display: none;"></div>
       <div class="chat-composer-attachments" style="display: none;"></div>
       <div class="chat-composer-box">
         <button class="btn-composer-attach" type="button" title="Attach file or image">
@@ -147,6 +662,44 @@ function setupChatInterface(tabObj, chatViewEl, session) {
   tabObj.chatCancelBtn = chatViewEl.querySelector('.btn-composer-cancel');
   tabObj.chatStatusBadge = chatViewEl.querySelector('.chat-status-badge');
   tabObj.chatEngineBadge = chatViewEl.querySelector('.chat-engine-badge');
+  tabObj.chatAutoReadBtn = chatViewEl.querySelector('.btn-chat-autoread');
+  tabObj.chatMicBtn = chatViewEl.querySelector('.btn-chat-mic');
+  tabObj.chatSuggestedChipsEl = chatViewEl.querySelector('.chat-suggested-chips');
+
+  const autoReadStored = isChatAutoReadEnabled();
+  if (tabObj.chatAutoReadBtn) {
+    if (autoReadStored) {
+      tabObj.chatAutoReadBtn.textContent = '🔊 Auto-Read: ON';
+      tabObj.chatAutoReadBtn.classList.add('active');
+    } else {
+      tabObj.chatAutoReadBtn.textContent = '🔊 Auto-Read: OFF';
+      tabObj.chatAutoReadBtn.classList.remove('active');
+    }
+
+    tabObj.chatAutoReadBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      const current = isChatAutoReadEnabled();
+      const next = !current;
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem('ackbar_voice_auto_read', next ? 'true' : 'false');
+      }
+      if (next) {
+        tabObj.chatAutoReadBtn.textContent = '🔊 Auto-Read: ON';
+        tabObj.chatAutoReadBtn.classList.add('active');
+      } else {
+        tabObj.chatAutoReadBtn.textContent = '🔊 Auto-Read: OFF';
+        tabObj.chatAutoReadBtn.classList.remove('active');
+        stopActiveSpeech();
+      }
+    });
+  }
+
+  if (tabObj.chatMicBtn) {
+    tabObj.chatMicBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      toggleVoiceMic(tabObj);
+    });
+  }
 
   if (tabObj.chatSubagentsBar) {
     tabObj.chatSubagentsBar.addEventListener('click', () => {
@@ -545,6 +1098,9 @@ function coalesceTranscriptMessages(messages) {
       });
     }
   }
+  coalesced.forEach((m, idx) => {
+    m.index = idx;
+  });
   return coalesced;
 }
 
@@ -1118,42 +1674,87 @@ function linkifyChatFiles(containerEl, session) {
   });
 }
 
-// Attach message-level copy button handler
-function attachChatMessageListeners(msgEl, rawContent) {
+// Attach message-level copy and speech button handlers
+function attachChatMessageListeners(msgEl, rawContent, tabObj) {
   if (!msgEl) return;
+  if (rawContent) {
+    msgEl.dataset.rawContent = rawContent;
+  }
   const copyBtn = msgEl.querySelector('.btn-copy-chat-msg');
-  if (!copyBtn) return;
-  copyBtn.addEventListener('click', async (e) => {
-    e.stopPropagation();
-    e.preventDefault();
-    let textToCopy = rawContent;
-    if (!textToCopy) {
-      const bodyEl = msgEl.querySelector('.chat-msg-body') || msgEl.querySelector('.msg-body') || msgEl.querySelector('.markdown-body');
-      if (bodyEl) {
-        const clone = bodyEl.cloneNode(true);
-        clone.querySelectorAll('.btn-copy-code, .chat-streaming-cursor').forEach(el => el.remove());
-        textToCopy = clone.innerText || clone.textContent || '';
+  if (copyBtn && !copyBtn._bound) {
+    copyBtn._bound = true;
+    copyBtn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      let textToCopy = msgEl.dataset.rawContent || rawContent;
+      if (!textToCopy) {
+        const bodyEl = msgEl.querySelector('.chat-msg-body') || msgEl.querySelector('.msg-body') || msgEl.querySelector('.markdown-body');
+        if (bodyEl) {
+          const clone = bodyEl.cloneNode(true);
+          clone.querySelectorAll('.btn-copy-code, .chat-streaming-cursor').forEach(el => el.remove());
+          textToCopy = clone.innerText || clone.textContent || '';
+        }
       }
-    }
-    if (!textToCopy) return;
-    textToCopy = textToCopy.replace(/\r\n/g, '\n').trim();
-    const ok = await copyTextToClipboard(textToCopy);
-    if (ok) {
-      copyBtn.classList.add('copied');
-      copyBtn.title = 'Copied!';
-      const origSvg = copyBtn.innerHTML;
-      copyBtn.innerHTML = `
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <polyline points="20 6 9 17 4 12"></polyline>
-        </svg>
-      `;
-      setTimeout(() => {
-        copyBtn.classList.remove('copied');
-        copyBtn.title = 'Copy message';
-        copyBtn.innerHTML = origSvg;
-      }, 1500);
-    }
-  });
+      if (!textToCopy) return;
+      textToCopy = textToCopy.replace(/\r\n/g, '\n').trim();
+      const ok = await copyTextToClipboard(textToCopy);
+      if (ok) {
+        copyBtn.classList.add('copied');
+        copyBtn.title = 'Copied!';
+        const origSvg = copyBtn.innerHTML;
+        copyBtn.innerHTML = `
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="20 6 9 17 4 12"></polyline>
+          </svg>
+        `;
+        setTimeout(() => {
+          copyBtn.classList.remove('copied');
+          copyBtn.title = 'Copy message';
+          copyBtn.innerHTML = origSvg;
+        }, 1500);
+      }
+    });
+  }
+
+  const readBtn = msgEl.querySelector('.btn-read-chat-msg');
+  if (readBtn && !readBtn._bound) {
+    readBtn._bound = true;
+    readBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      handleReadChatMessage(tabObj, msgEl, false);
+    });
+  }
+
+  const stopBtn = msgEl.querySelector('.btn-stop-chat-msg');
+  if (stopBtn && !stopBtn._bound) {
+    stopBtn._bound = true;
+    stopBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      stopActiveSpeech();
+    });
+  }
+
+  const replayBtn = msgEl.querySelector('.btn-replay-chat-msg');
+  if (replayBtn && !replayBtn._bound) {
+    replayBtn._bound = true;
+    replayBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      handleReplayChatMessage(tabObj, msgEl);
+    });
+  }
+
+  const fullReadBtn = msgEl.querySelector('.btn-full-read-chat-msg');
+  if (fullReadBtn && !fullReadBtn._bound) {
+    fullReadBtn._bound = true;
+    fullReadBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      handleReadChatMessage(tabObj, msgEl, true);
+    });
+  }
 }
 
 // Parse tool call string into tool name and detail (e.g. "Bash: ls -la" -> { name: "Bash", detail: "ls -la" })
@@ -1336,6 +1937,10 @@ function createChatMessageElement(tabObj, msg) {
     });
   } else if (msg.role === 'assistant') {
     msgEl.className = 'chat-msg assistant-msg';
+    if (typeof msg.index === 'number') {
+      msgEl.dataset.msgIndex = String(msg.index);
+    }
+    msgEl.dataset.rawContent = msg.content || '';
     let thinkingHtml = '';
     if (msg.thinking) {
       thinkingHtml = `
@@ -1356,6 +1961,29 @@ function createChatMessageElement(tabObj, msg) {
         <span class="chat-msg-role">🤖 ${escapeHtml(agentName)}</span>
         <div class="chat-msg-actions">
           <span class="chat-msg-time">${timeStr}</span>
+          <button class="btn-read-chat-msg" title="Read message aloud" type="button" aria-label="Read message aloud">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
+              <path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"></path>
+            </svg>
+          </button>
+          <button class="btn-stop-chat-msg" title="Stop speech" type="button" aria-label="Stop speech" style="display:none;">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+              <rect x="6" y="6" width="12" height="12" rx="2"></rect>
+            </svg>
+          </button>
+          <button class="btn-replay-chat-msg" title="Replay spoken briefing" type="button" aria-label="Replay spoken briefing" style="display:none;">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="1 4 1 10 7 10"></polyline>
+              <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path>
+            </svg>
+          </button>
+          <button class="btn-full-read-chat-msg" title="Read full text" type="button" aria-label="Read full text" style="display:none;">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"></path>
+              <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"></path>
+            </svg>
+          </button>
           <button class="btn-copy-chat-msg" title="Copy message" type="button" aria-label="Copy message">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
@@ -1373,7 +2001,7 @@ function createChatMessageElement(tabObj, msg) {
     msgEl.innerHTML = `<span class="system-tag">ℹ️ ${escapeHtml(msg.content)}</span>`;
   }
 
-  attachChatMessageListeners(msgEl, msg.content);
+  attachChatMessageListeners(msgEl, msg.content, tabObj);
   attachCodeBlockCopyButtons(msgEl);
   if (tabObj.session) {
     linkifyChatFiles(msgEl, tabObj.session);
@@ -1858,11 +2486,37 @@ function ensureActiveAssistantMessage(tabObj) {
 
   const assistantMsgEl = document.createElement('div');
   assistantMsgEl.className = 'chat-msg assistant-msg in-flight';
+  const msgIdx = tabObj.chatMessagesEl ? tabObj.chatMessagesEl.querySelectorAll('.chat-msg').length : 0;
+  assistantMsgEl.dataset.msgIndex = String(msgIdx);
+  assistantMsgEl.dataset.rawContent = tabObj.activeTurnBuffer || '';
   assistantMsgEl.innerHTML = `
     <div class="chat-msg-header">
       <span class="chat-msg-role">🤖 ${escapeHtml(formatAgentChatName(tabObj.session ? tabObj.session.agent : null))}</span>
       <div class="chat-msg-actions">
         <span class="chat-msg-time">${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+        <button class="btn-read-chat-msg" title="Read message aloud" type="button" aria-label="Read message aloud">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
+            <path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"></path>
+          </svg>
+        </button>
+        <button class="btn-stop-chat-msg" title="Stop speech" type="button" aria-label="Stop speech" style="display:none;">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+            <rect x="6" y="6" width="12" height="12" rx="2"></rect>
+          </svg>
+        </button>
+        <button class="btn-replay-chat-msg" title="Replay spoken briefing" type="button" aria-label="Replay spoken briefing" style="display:none;">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="1 4 1 10 7 10"></polyline>
+            <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path>
+          </svg>
+        </button>
+        <button class="btn-full-read-chat-msg" title="Read full text" type="button" aria-label="Read full text" style="display:none;">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"></path>
+            <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"></path>
+          </svg>
+        </button>
         <button class="btn-copy-chat-msg" title="Copy message" type="button" aria-label="Copy message">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
@@ -1894,7 +2548,7 @@ function ensureActiveAssistantMessage(tabObj) {
     }
   }
 
-  attachChatMessageListeners(assistantMsgEl);
+  attachChatMessageListeners(assistantMsgEl, tabObj.activeTurnBuffer || '', tabObj);
   tabObj.chatMessagesEl.appendChild(assistantMsgEl);
   tabObj.activeTurnMsgEl = assistantMsgEl;
   updateComposerButtonState(tabObj);
@@ -1906,6 +2560,11 @@ function ensureActiveAssistantMessage(tabObj) {
 // Send Prompt to daemon (/v1/sessions/prompt) or queue if turn is in progress
 async function sendChatPrompt(tabObj, forcedPromptText) {
   if (!tabObj || !tabObj.chatInputEl) return;
+  stopActiveSpeech();
+  if (tabObj.chatSuggestedChipsEl) {
+    tabObj.chatSuggestedChipsEl.style.display = 'none';
+    tabObj.chatSuggestedChipsEl.innerHTML = '';
+  }
   let promptText = '';
   if (typeof forcedPromptText === 'string') {
     promptText = forcedPromptText.trim();
@@ -2498,8 +3157,11 @@ function handleChatStreamEvent(tabObj, evt) {
         const cursor = activeMsg.querySelector('.chat-streaming-cursor');
         if (cursor) cursor.remove();
         attachCodeBlockCopyButtons(activeMsg);
-        attachChatMessageListeners(activeMsg, tabObj.activeTurnBuffer);
+        attachChatMessageListeners(activeMsg, tabObj.activeTurnBuffer, tabObj);
         linkifyChatFiles(activeMsg, tabObj.session);
+        if (isChatAutoReadEnabled()) {
+          handleReadChatMessage(tabObj, activeMsg, false);
+        }
       }
       const prevCompleted = tabObj.lastCompletedTurn;
       const userMsgs = tabObj.chatMessagesEl.querySelectorAll('.chat-msg.user-msg');
@@ -2526,6 +3188,7 @@ function handleChatStreamEvent(tabObj, evt) {
     }
 
     case 'turn_cancelled': {
+      stopActiveSpeech();
       tabObj.runningSubagents = [];
       renderSubagentsBar(tabObj);
       hideInStreamActivity(tabObj);
@@ -2544,7 +3207,7 @@ function handleChatStreamEvent(tabObj, evt) {
           bodyEl.innerHTML += `<div style="margin-top: 8px; color: var(--text-dim); font-style: italic;">[Turn cancelled by user]</div>`;
         }
         attachCodeBlockCopyButtons(activeMsg);
-        attachChatMessageListeners(activeMsg, tabObj.activeTurnBuffer);
+        attachChatMessageListeners(activeMsg, tabObj.activeTurnBuffer, tabObj);
         linkifyChatFiles(activeMsg, tabObj.session);
       }
       setChatSending(tabObj, false);
@@ -2557,6 +3220,7 @@ function handleChatStreamEvent(tabObj, evt) {
     }
 
     case 'error': {
+      stopActiveSpeech();
       tabObj.runningSubagents = [];
       renderSubagentsBar(tabObj);
       hideInStreamActivity(tabObj);
@@ -2571,7 +3235,7 @@ function handleChatStreamEvent(tabObj, evt) {
           bodyEl.innerHTML += `<div style="margin-top: 8px; color: var(--accent-red);">⚠️ Error: ${escapeHtml(evt.text || 'Turn error')}</div>`;
         }
         attachCodeBlockCopyButtons(activeMsg);
-        attachChatMessageListeners(activeMsg, tabObj.activeTurnBuffer);
+        attachChatMessageListeners(activeMsg, tabObj.activeTurnBuffer, tabObj);
         linkifyChatFiles(activeMsg, tabObj.session);
       }
       setChatSending(tabObj, false);
@@ -2777,5 +3441,15 @@ export {
   hideInStreamActivity,
   resetChatComposer,
   onSessionUpdated,
-  cancelChatTurn
+  cancelChatTurn,
+  sanitizeMarkdownForSpeech,
+  isSimpleSpeechCandidate,
+  resolveLiveMessageEl,
+  stopActiveSpeech,
+  speakText,
+  handleReadChatMessage,
+  handleReplayChatMessage,
+  toggleVoiceMic,
+  renderSuggestedChips,
+  isChatAutoReadEnabled
 };

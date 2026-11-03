@@ -60,11 +60,14 @@
 │  • Map `dev-workflow` nodes (`N1`/`N2`/`N11`/`N15`) on `StateIdle`,    │
 │    auto-close Tmux at `N15`, and unlock sequential repos on `N14`.     │
 │                                                                        │
-│  PHASE 4: VOICE COMPANION & 2-TIER LAZY SPEECH PIPELINE                │
+│  PHASE 4: VOICE COMPANION & 2-TIER LAZY SPEECH PIPELINE (DONE)         │
 │  • Implement `POST /v1/sessions/summarize-speech` with `$0` stateless  │
 │    Haiku (`claude -p --model haiku`) and `(session_id, msg_idx)` cache.│
 │  • Add Tier 1 client Markdown speech sanitizer, `[🔊 Auto-Read]`,      │
-│    `[🎤 Mic]`, and per-message `[🔊 Read]` / `[↺ Read Again]` buttons. │
+│    `[🎤 Mic]`, per-message `[🔊 Read]` / `[↺ Read Again]` buttons, and │
+│    interactive quick-reply drill-down chips.                           │
+│  • Add `POST /v1/mcp` Streamable HTTP JSON-RPC endpoint and Claude     │
+│    Desktop supervisor config provisioning.                             │
 │                                                                        │
 │  PHASE 5: MOBILE APP ALIGNMENT (`mobile/` FLUTTER CLIENT)              │
 │  • Replace flat `groupedSessionsProvider` (`projectDisplayName`) with  │
