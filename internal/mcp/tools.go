@@ -725,6 +725,7 @@ func executeCreateTask(ctx context.Context, client *DaemonClient, args map[strin
 		spawnPayload := map[string]any{
 			"agent":          "claude-code",
 			"cwd":            spawnCwd,
+			"node_path":      readyRepo,
 			"host":           readyHost,
 			"task_id":        taskID,
 			"task_kind":      taskKind,

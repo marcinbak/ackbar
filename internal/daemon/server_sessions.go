@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -22,6 +23,8 @@ import (
 	"ackbar/internal/router"
 	"ackbar/internal/tmux"
 )
+
+var validTaskIDRegex = regexp.MustCompile(`^[a-zA-Z0-9_\-]+$`)
 
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -1134,6 +1137,36 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.TaskID != "" {
+		if !validTaskIDRegex.MatchString(req.TaskID) {
+			http.Error(w, "Invalid task_id format", http.StatusBadRequest)
+			return
+		}
+	}
+
+	resolveCwdFromNode := func(candidate string) string {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			return ""
+		}
+		if nhp, _ := s.db.GetNodeHostPath(candidate, s.HostName()); nhp != nil && nhp.ProjectDir != "" {
+			return nhp.ProjectDir
+		}
+		if node, _ := s.db.GetNode(candidate); node != nil && node.ProjectDir != "" {
+			return node.ProjectDir
+		}
+		return ""
+	}
+
+	if req.Cwd == "" || !filepath.IsAbs(req.Cwd) || req.Cwd == req.NodePath || req.Cwd == req.RepoNodePath {
+		for _, cand := range []string{req.NodePath, req.RepoNodePath, req.Cwd} {
+			if dir := resolveCwdFromNode(cand); dir != "" {
+				req.Cwd = dir
+				break
+			}
+		}
+	}
+
 	if req.IsSupervisor {
 		if req.Agent == "" {
 			req.Agent = "claude-code"
@@ -1146,6 +1179,10 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if req.Cwd == "" && req.NodePath != "" {
+		req.Cwd = "~"
+	}
+
 	if req.Agent == "" || req.Cwd == "" {
 		http.Error(w, "Missing agent or cwd", http.StatusBadRequest)
 		return
@@ -1155,8 +1192,12 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		req.EngineType = EngineTmux
 	}
 
-	if req.NodePath == "" && !req.IsSupervisor {
-		req.NodePath = s.resolveSessionNodePath(req.Cwd)
+	if req.NodePath == "" {
+		if req.RepoNodePath != "" {
+			req.NodePath = req.RepoNodePath
+		} else if !req.IsSupervisor && req.Cwd != "" {
+			req.NodePath = s.resolveSessionNodePath(req.Cwd)
+		}
 	}
 
 	// 1. Forward to remote host if specified
@@ -1212,6 +1253,14 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 	} else if req.Cwd == "~" && home != "" {
 		req.Cwd = home
 	}
+	if !filepath.IsAbs(req.Cwd) {
+		if home != "" {
+			req.Cwd = home
+		} else {
+			cwd, _ := os.Getwd()
+			req.Cwd = cwd
+		}
+	}
 	_ = os.MkdirAll(req.Cwd, 0755)
 
 	if req.NodePath != "" {
@@ -1238,18 +1287,19 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 	}
 	envVars["ACKBAR_SESSION_ID"] = spawnSessID
 
-	taskKind := req.TaskKind
+	taskKind := strings.ToLower(strings.TrimSpace(req.TaskKind))
 	if req.TaskID != "" {
 		envVars["ACKBAR_TASK_ID"] = req.TaskID
 		if taskKind == "" {
 			if t, _ := s.db.GetTaskByID(req.TaskID); t != nil && t.TaskKind != "" {
-				taskKind = t.TaskKind
+				taskKind = strings.ToLower(strings.TrimSpace(t.TaskKind))
 			}
 		}
 	}
-	if taskKind != "" {
-		envVars["ACKBAR_TASK_KIND"] = taskKind
+	if taskKind != "design" && taskKind != "code" {
+		taskKind = "code"
 	}
+	envVars["ACKBAR_TASK_KIND"] = taskKind
 
 	if req.EngineType == EngineHeadless {
 		now := time.Now().UTC()

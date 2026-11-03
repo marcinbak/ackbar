@@ -93,8 +93,20 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "Failed to create task: "+err.Error(), http.StatusInternalServerError)
 				return
 			}
+			targetRepoPath := req.RepoNodePath
+			if targetRepoPath == "" && len(t.Workstreams) > 0 {
+				for _, ws := range t.Workstreams {
+					if ws.Status == "IN_PROGRESS" {
+						targetRepoPath = ws.RepoNodePath
+						break
+					}
+				}
+				if targetRepoPath == "" {
+					targetRepoPath = t.Workstreams[0].RepoNodePath
+				}
+			}
 			if req.WorkflowNode == "N14" || req.WorkflowNode == "N15" {
-				s.unlockSequentialWorkstreams(&t, req.RepoNodePath)
+				s.unlockSequentialWorkstreams(&t, targetRepoPath)
 			}
 			if req.WorkflowNode == "N15" {
 				s.completeAndCloseTaskSession(&t, nil)
@@ -184,15 +196,28 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 			}
 
 			if req.WorkflowNode != "" {
+				targetRepoPath := req.RepoNodePath
+				if targetRepoPath == "" && len(existing.Workstreams) > 0 {
+					for _, ws := range existing.Workstreams {
+						if ws.Status == "IN_PROGRESS" {
+							targetRepoPath = ws.RepoNodePath
+							break
+						}
+					}
+					if targetRepoPath == "" {
+						targetRepoPath = existing.Workstreams[0].RepoNodePath
+					}
+				}
+
 				for i := range existing.Workers {
 					w := &existing.Workers[i]
-					if req.RepoNodePath == "" || strings.EqualFold(w.RepoNodePath, req.RepoNodePath) {
+					if targetRepoPath == "" || strings.EqualFold(w.RepoNodePath, targetRepoPath) {
 						w.WorkflowNode = req.WorkflowNode
 					}
 				}
 				for i := range existing.Workstreams {
 					ws := &existing.Workstreams[i]
-					if req.RepoNodePath == "" || strings.EqualFold(ws.RepoNodePath, req.RepoNodePath) {
+					if targetRepoPath == "" || strings.EqualFold(ws.RepoNodePath, targetRepoPath) {
 						ws.WorkflowNode = req.WorkflowNode
 						ws.UpdatedAt = time.Now().UTC()
 					}
@@ -212,7 +237,7 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 					existing.CompletedAt = &now
 				}
 				if req.WorkflowNode == "N14" || req.WorkflowNode == "N15" {
-					s.unlockSequentialWorkstreams(existing, req.RepoNodePath)
+					s.unlockSequentialWorkstreams(existing, targetRepoPath)
 				}
 				if req.WorkflowNode == "N15" {
 					s.completeAndCloseTaskSession(existing, nil)

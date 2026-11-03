@@ -349,6 +349,7 @@ func (s *Server) unlockSequentialWorkstreams(task *Task, completedRepoPath strin
 		completedNorm = normPath(completedRepoPath)
 	}
 
+	changed := false
 	// 1. Mark completed repo workstream as DONE if specified
 	for i := range task.Workstreams {
 		ws := &task.Workstreams[i]
@@ -356,6 +357,7 @@ func (s *Server) unlockSequentialWorkstreams(task *Task, completedRepoPath strin
 			if ws.Status != "DONE" {
 				ws.Status = "DONE"
 				ws.UpdatedAt = time.Now().UTC()
+				changed = true
 			}
 		}
 	}
@@ -386,9 +388,9 @@ func (s *Server) unlockSequentialWorkstreams(task *Task, completedRepoPath strin
 		}
 	}
 
-	if unlockedAny {
+	if changed || unlockedAny {
 		// If task was previously marked DONE, revert it so it stays active on the board
-		if task.Status == "DONE" {
+		if unlockedAny && task.Status == "DONE" {
 			task.Status = "IN_PROGRESS"
 			task.Substatus = "active"
 			task.CompletedAt = nil
@@ -400,33 +402,35 @@ func (s *Server) unlockSequentialWorkstreams(task *Task, completedRepoPath strin
 			}
 		}
 
-		// Check for learnings (or plan/prd) deliverables to construct a handoff note for newly unlocked workstreams
-		for _, ws := range task.Workstreams {
-			if ws.Status == "IN_PROGRESS" && ws.DependsOn != "" {
-				handoffPrefix := fmt.Sprintf("[Handoff to %s]", ws.RepoNodePath)
-				if !strings.Contains(task.Notes, handoffPrefix) {
-					var handoffDetails []string
-					for _, del := range task.Deliverables {
-						if del.Kind == "learnings" || del.Kind == "plan" || del.Kind == "prd" {
-							detail := del.Title
-							if del.ContentMD != "" {
-								contentSummary := strings.TrimSpace(del.ContentMD)
-								if len(contentSummary) > 200 {
-									contentSummary = contentSummary[:200] + "..."
+		if unlockedAny {
+			// Check for learnings (or plan/prd) deliverables to construct a handoff note for newly unlocked workstreams
+			for _, ws := range task.Workstreams {
+				if ws.Status == "IN_PROGRESS" && ws.DependsOn != "" {
+					handoffPrefix := fmt.Sprintf("[Handoff to %s]", ws.RepoNodePath)
+					if !strings.Contains(task.Notes, handoffPrefix) {
+						var handoffDetails []string
+						for _, del := range task.Deliverables {
+							if del.Kind == "learnings" || del.Kind == "plan" || del.Kind == "prd" {
+								detail := del.Title
+								if del.ContentMD != "" {
+									contentSummary := strings.TrimSpace(del.ContentMD)
+									if len(contentSummary) > 200 {
+										contentSummary = contentSummary[:200] + "..."
+									}
+									detail += fmt.Sprintf(": %s", contentSummary)
+								} else if del.URL != "" {
+									detail += fmt.Sprintf(" (%s)", del.URL)
 								}
-								detail += fmt.Sprintf(": %s", contentSummary)
-							} else if del.URL != "" {
-								detail += fmt.Sprintf(" (%s)", del.URL)
+								handoffDetails = append(handoffDetails, detail)
 							}
-							handoffDetails = append(handoffDetails, detail)
 						}
-					}
-					if len(handoffDetails) > 0 {
-						handoffNote := fmt.Sprintf("\n%s Upstream handoff context:\n- %s", handoffPrefix, strings.Join(handoffDetails, "\n- "))
-						if task.Notes == "" {
-							task.Notes = strings.TrimSpace(handoffNote)
-						} else {
-							task.Notes += handoffNote
+						if len(handoffDetails) > 0 {
+							handoffNote := fmt.Sprintf("\n%s Upstream handoff context:\n- %s", handoffPrefix, strings.Join(handoffDetails, "\n- "))
+							if task.Notes == "" {
+								task.Notes = strings.TrimSpace(handoffNote)
+							} else {
+								task.Notes += handoffNote
+							}
 						}
 					}
 				}
@@ -437,7 +441,7 @@ func (s *Server) unlockSequentialWorkstreams(task *Task, completedRepoPath strin
 		s.pushSyncPayload(&SyncStatePayload{Tasks: []Task{*task}, Workstreams: task.Workstreams})
 	}
 
-	return unlockedAny
+	return changed || unlockedAny
 }
 
 // completeAndCloseTaskSession terminates Tmux sessions and updates metadata when task reaches N15
@@ -567,7 +571,8 @@ func (s *Server) SyncSessionTaskWorker(sess *Session) {
 			task.BlockerQuestion = reason
 			taskNeedsUpdate = true
 		}
-	} else if sess.State == StateWorking && task.Substatus == "blocked" {
+	} else if sess.State == StateWorking && (task.Substatus == "blocked" || task.Substatus == "stalled" || task.Substatus == "question") {
+		task.Status = "IN_PROGRESS"
 		task.Substatus = "active"
 		task.BlockerQuestion = ""
 		taskNeedsUpdate = true
@@ -624,6 +629,12 @@ func isIsolatedWorktree(path string) bool {
 func (s *Server) findActiveTaskForSession(sess *Session) (*Task, error) {
 	if sess == nil {
 		return nil, nil
+	}
+	// 0. If session explicitly points to CurrentTaskID
+	if sess.CurrentTaskID != "" {
+		if t, err := s.db.GetTaskByID(sess.CurrentTaskID); err == nil && t != nil && t.Status != "DONE" {
+			return t, nil
+		}
 	}
 	// 1. Try by branch (highest priority so switching branches switches tasks)
 	if sess.GitBranch != "" && sess.GitBranch != "main" && sess.GitBranch != "master" {

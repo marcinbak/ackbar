@@ -3,6 +3,7 @@ import { fetchTasks, createTask, updateTask, deleteTask, fetchStandup, mergeTask
 import { escapeHtml } from './utils.js';
 import { activateTab, openSessionInTab } from './tabs.js';
 import { showModal, hideModal } from './modals.js';
+import { renderTree } from './tree.js';
 
 let boardTasks = [];
 let currentGroupFilter = 'all';
@@ -110,6 +111,8 @@ export async function refreshWorkBoard() {
     const tasks = await fetchTasks();
     if (Array.isArray(tasks)) {
       boardTasks = tasks;
+      state.tasks = boardTasks;
+      try { renderTree(); } catch (_) {}
     }
   } catch (err) {
     console.warn('Failed to refresh tasks:', err);
@@ -295,11 +298,17 @@ export function getDeliverableIcon(d) {
 export function showDeliverableContentModal(deliverable) {
   if (!deliverable) return;
   const content = deliverable.content_md || '';
+  let externalLinkBtn = '';
+  if (deliverable.url || deliverable.file_path) {
+    const targetUrl = safeUrl(deliverable.url || `/v1/files/content?path=${encodeURIComponent(deliverable.file_path)}`);
+    externalLinkBtn = `<a href="${escapeHtml(targetUrl)}" target="_blank" rel="noopener noreferrer" class="btn btn-primary">↗ Open External Link</a>`;
+  }
   showModal(deliverable.title || 'Deliverable Content', `
     <div style="max-height: 70vh; overflow-y: auto; padding: 12px; background: var(--bg-card); border-radius: 6px; border: 1px solid var(--border-color);">
       <pre style="white-space: pre-wrap; font-family: var(--font-mono); font-size: 12px; line-height: 1.5; color: var(--text-main); margin: 0;">${escapeHtml(content)}</pre>
     </div>
   `, `
+    ${externalLinkBtn}
     <button class="btn btn-secondary" id="mBtnCloseDeliverableModal">Close</button>
   `);
   document.getElementById('mBtnCloseDeliverableModal')?.addEventListener('click', hideModal);
@@ -353,7 +362,8 @@ function renderTaskCards(tasks) {
     }).join('');
 
     const workstreamsHtml = (task.workstreams || []).length > 0 ? `<div class="task-workstreams-bar">` + (task.workstreams || []).map(ws => {
-      const statusClass = `status-${(ws.status || 'new').toLowerCase()}`;
+      const cleanStatus = (ws.status || 'new').toLowerCase().replace(/[^a-z0-9_]/g, '');
+      const statusClass = `status-${cleanStatus}`;
       const icon = ws.status === 'DONE' ? '✓' : ws.status === 'IN_PROGRESS' ? '▶' : ws.status === 'QUEUED' ? '⏳' : '○';
       const nodeLabel = ws.workflow_node ? ` [${escapeHtml(ws.workflow_node)}]` : '';
       const depTitle = ws.depends_on ? ` (depends on: ${escapeHtml(ws.depends_on)})` : '';
@@ -365,7 +375,7 @@ function renderTaskCards(tasks) {
     const deliverablesHtml = (task.deliverables || []).map((d, idx) => {
       const kindIcon = getDeliverableIcon(d);
       const isContentMD = !!(d.content_md && d.content_md.trim());
-      if (isContentMD && !d.url && !d.file_path) {
+      if (isContentMD) {
         return `<button class="task-deliverable-chip btn-view-deliverable-md" data-task-id="${escapeHtml(task.id)}" data-del-idx="${idx}" title="View ${escapeHtml(d.title)}">
           ${kindIcon} ${escapeHtml(d.title)}
         </button>`;
@@ -541,12 +551,15 @@ function attachCardEventListeners() {
       e.stopPropagation();
       const taskId = btn.getAttribute('data-task-id');
       const task = boardTasks.find(t => t.id === taskId);
-      if (task && task.workers && task.workers.length > 0) {
-        switchAppMode('workspace');
-        const sId = task.workers[0].session_id;
-        const session = state.sessions.find(s => s.id === sId);
-        if (session) openSessionInTab(session);
-        else activateTab(sId);
+      if (task) {
+        const activeWorker = (task.workers || []).find(w => w.is_active) || (task.workers && task.workers[0]);
+        if (activeWorker && activeWorker.session_id) {
+          switchAppMode('workspace');
+          const sId = activeWorker.session_id;
+          const session = state.sessions.find(s => s.id === sId);
+          if (session) openSessionInTab(session);
+          else activateTab(sId);
+        }
       }
     });
   });
@@ -608,8 +621,9 @@ async function sendSessionRespondSafe(sessionId, action, value) {
             substatus: 'active',
             workflow_node: 'N3'
           });
-          if (task.workers && task.workers.length > 0 && task.workers[0].session_id) {
-            await sendSessionRespondSafe(task.workers[0].session_id, 'answer', 'Approved. Proceed to next dev-workflow node.');
+          const activeWorker = (task.workers || []).find(w => w.is_active) || (task.workers && task.workers[0]);
+          if (activeWorker && activeWorker.session_id) {
+            await sendSessionRespondSafe(activeWorker.session_id, 'answer', 'Approved. Proceed to next dev-workflow node.');
           }
           refreshWorkBoard();
         } catch (err) {
@@ -636,8 +650,9 @@ async function sendSessionRespondSafe(sessionId, action, value) {
             status: 'IN_PROGRESS',
             substatus: 'active'
           });
-          if (task.workers && task.workers.length > 0 && task.workers[0].session_id) {
-            await sendSessionRespondSafe(task.workers[0].session_id, 'answer', 'Continue dev-workflow from current node.');
+          const activeWorker = (task.workers || []).find(w => w.is_active) || (task.workers && task.workers[0]);
+          if (activeWorker && activeWorker.session_id) {
+            await sendSessionRespondSafe(activeWorker.session_id, 'answer', 'Continue dev-workflow from current node.');
           }
           refreshWorkBoard();
         } catch (err) {

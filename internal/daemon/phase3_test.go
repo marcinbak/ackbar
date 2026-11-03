@@ -418,3 +418,174 @@ func TestPhase3_TasksKindFilterAndWorkflowNode(t *testing.T) {
 		t.Errorf("Expected status REVIEW/plan_review at N2, got %s/%s", updated.Status, updated.Substatus)
 	}
 }
+
+func TestPhase3_SpawnValidationAndCwdResolution(t *testing.T) {
+	dbFile := "./test_phase3_spawn.db"
+	defer os.Remove(dbFile)
+
+	db, err := InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := &Server{
+		db: db,
+	}
+
+	tempDir := t.TempDir()
+	_ = db.SaveNode(&TreeNode{
+		Path:       "Modemobile/NGL/ngl-ios",
+		ProjectDir: tempDir,
+		CreatedAt:  time.Now(),
+	})
+
+	// 1. Invalid TaskID must return 400 Bad Request
+	spawnBad := map[string]any{
+		"agent":       "claude-code",
+		"engine_type": "headless",
+		"cwd":         tempDir,
+		"task_id":     "invalid; rm -rf /",
+	}
+	bBad, _ := json.Marshal(spawnBad)
+	reqBad := httptest.NewRequest(http.MethodPost, "/v1/sessions/spawn", bytes.NewReader(bBad))
+	recBad := httptest.NewRecorder()
+	server.handleSpawn(recBad, reqBad)
+	if recBad.Code != http.StatusBadRequest {
+		t.Fatalf("Expected 400 for malicious task_id, got %d", recBad.Code)
+	}
+
+	// 2. Logical NodePath as cwd resolved to registered ProjectDir
+	spawnGood := map[string]any{
+		"agent":       "claude-code",
+		"engine_type": "headless",
+		"cwd":         "Modemobile/NGL/ngl-ios",
+		"task_id":     "task_clean-123",
+		"task_kind":   "DESIGN",
+	}
+	bGood, _ := json.Marshal(spawnGood)
+	reqGood := httptest.NewRequest(http.MethodPost, "/v1/sessions/spawn", bytes.NewReader(bGood))
+	recGood := httptest.NewRecorder()
+	server.handleSpawn(recGood, reqGood)
+	if recGood.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK for valid spawn, got %d: %s", recGood.Code, recGood.Body.String())
+	}
+	var respGood map[string]any
+	_ = json.NewDecoder(recGood.Body).Decode(&respGood)
+	sessID, _ := respGood["session_id"].(string)
+	sess, err := db.GetSession(sessID)
+	if err != nil || sess == nil {
+		t.Fatalf("Spawned session not found in DB: %v", err)
+	}
+	if sess.Cwd != tempDir {
+		t.Errorf("Expected sess.Cwd resolved to %q, got %q", tempDir, sess.Cwd)
+	}
+}
+
+func TestPhase3_WorkingSessionUnstallsTask(t *testing.T) {
+	dbFile := "./test_phase3_unstall.db"
+	defer os.Remove(dbFile)
+
+	db, err := InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := &Server{
+		db: db,
+	}
+
+	task := &Task{
+		ID:        "task_stalled_01",
+		Title:     "Stalled Task",
+		Status:    "IN_PROGRESS",
+		Substatus: "stalled",
+	}
+	_ = db.CreateTask(task)
+
+	sess := &Session{
+		ID:            "sess_working_01",
+		Agent:         "claude-code",
+		Host:          "local",
+		State:         StateWorking,
+		CurrentTaskID: "task_stalled_01",
+	}
+	_ = db.SaveSession(sess)
+
+	server.SyncSessionTaskWorker(sess)
+
+	updated, _ := db.GetTaskByID("task_stalled_01")
+	if updated.Substatus != "active" {
+		t.Errorf("Expected task substatus 'active' when worker resumed working, got %q", updated.Substatus)
+	}
+}
+
+func TestPhase3_UpdateWorkflowNodeTargetsActiveWorkstream(t *testing.T) {
+	dbFile := "./test_phase3_target_ws.db"
+	defer os.Remove(dbFile)
+
+	db, err := InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := &Server{
+		db: db,
+	}
+
+	now := time.Now().UTC()
+	task := &Task{
+		ID:        "task_multi_01",
+		Title:     "Multi Pipeline",
+		Status:    "IN_PROGRESS",
+		Substatus: "active",
+		Workstreams: []TaskWorkstream{
+			{
+				TaskID:       "task_multi_01",
+				RepoNodePath: "repo-alpha",
+				Status:       "IN_PROGRESS",
+				WorkflowNode: "N13",
+				UpdatedAt:    now,
+			},
+			{
+				TaskID:       "task_multi_01",
+				RepoNodePath: "repo-beta",
+				DependsOn:    "repo-alpha",
+				Status:       "QUEUED",
+				WorkflowNode: "N0",
+				UpdatedAt:    now,
+			},
+		},
+	}
+	_ = db.CreateTask(task)
+
+	// Update task with WorkflowNode N14 without specifying repo_node_path
+	postBody, _ := json.Marshal(map[string]any{
+		"id":            "task_multi_01",
+		"workflow_node": "N14",
+	})
+	reqPost := httptest.NewRequest(http.MethodPost, "/v1/tasks", bytes.NewReader(postBody))
+	recPost := httptest.NewRecorder()
+	server.handleTasks(recPost, reqPost)
+
+	if recPost.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK, got %d: %s", recPost.Code, recPost.Body.String())
+	}
+
+	updated, _ := db.GetTaskByID("task_multi_01")
+	if len(updated.Workstreams) != 2 {
+		t.Fatalf("Expected 2 workstreams, got %d", len(updated.Workstreams))
+	}
+	wsAlpha := updated.Workstreams[0]
+	wsBeta := updated.Workstreams[1]
+
+	if wsAlpha.Status != "DONE" || wsAlpha.WorkflowNode != "N14" {
+		t.Errorf("Expected repo-alpha to be DONE/N14, got %s/%s", wsAlpha.Status, wsAlpha.WorkflowNode)
+	}
+	// repo-beta must be unlocked to IN_PROGRESS and retain its workflow_node N0 (NOT overwritten to N14!)
+	if wsBeta.Status != "IN_PROGRESS" || wsBeta.WorkflowNode != "N0" {
+		t.Errorf("Expected repo-beta to be IN_PROGRESS/N0, got %s/%s", wsBeta.Status, wsBeta.WorkflowNode)
+	}
+}

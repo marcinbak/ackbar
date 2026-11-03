@@ -122,7 +122,7 @@ func TestPhase3_MCPTools(t *testing.T) {
 	}
 
 	// Auto start triggered spawn
-	if receivedSpawnPayload["task_kind"] != "code" || receivedSpawnPayload["repo_node_path"] != "Personal/Ackbar" {
+	if receivedSpawnPayload["task_kind"] != "code" || receivedSpawnPayload["repo_node_path"] != "Personal/Ackbar" || receivedSpawnPayload["node_path"] != "Personal/Ackbar" {
 		t.Errorf("Unexpected spawn payload: %+v", receivedSpawnPayload)
 	}
 

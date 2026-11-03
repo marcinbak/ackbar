@@ -484,6 +484,10 @@ func TestPhase3_TasksAndArtifacts_JS(t *testing.T) {
 		"mEditKind",
 		"sendSessionRespondSafe",
 		"/v1/sessions/respond",
+		"cleanStatus",
+		"Open External Link",
+		"activeWorker",
+		"state.tasks = boardTasks",
 	})
 
 	checkFileContains("js/tree.js", []string{
