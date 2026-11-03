@@ -174,7 +174,7 @@ func TestSkillsRepo_Discovery(t *testing.T) {
 
 	claudeSkillsDir := filepath.Join(tempHome, ".claude", "skills")
 	_ = os.MkdirAll(claudeSkillsDir, 0755)
-	targetSkillDir := filepath.Join(localRepo, "my-skill")
+	targetSkillDir := filepath.Join(localRepo, "skills", "my-skill")
 	_ = os.MkdirAll(targetSkillDir, 0755)
 	_ = os.WriteFile(filepath.Join(targetSkillDir, "SKILL.md"), []byte("# My Skill\n"), 0644)
 
@@ -447,6 +447,23 @@ func TestSkillsRepo_FallbackSkillsCopy(t *testing.T) {
 	_ = os.MkdirAll(skillDir, 0755)
 	_ = os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("# Raw Skill\n"), 0644)
 
+	// Symlink in source directory pointing outside should be skipped
+	externalSecret := filepath.Join(tempHome, "secret.txt")
+	_ = os.WriteFile(externalSecret, []byte("super secret"), 0600)
+	symlinkInSrc := filepath.Join(skillDir, "leak_symlink")
+	_ = os.Symlink(externalSecret, symlinkInSrc)
+
+	// Pre-existing symlink at destination should be replaced rather than followed
+	claudeDestDir := filepath.Join(tempHome, ".claude", "skills", "my-raw-skill")
+	_ = os.MkdirAll(claudeDestDir, 0755)
+	externalVictim := filepath.Join(tempHome, "victim.txt")
+	_ = os.WriteFile(externalVictim, []byte("victim original"), 0644)
+	destSymlink := filepath.Join(claudeDestDir, "victim.txt")
+	_ = os.Symlink(externalVictim, destSymlink)
+
+	// In source, victim.txt is a normal file
+	_ = os.WriteFile(filepath.Join(skillDir, "victim.txt"), []byte("replaced content"), 0644)
+
 	// Create plugins/my-plugin/skills/plugin-skill/SKILL.md
 	plugSkillDir := filepath.Join(repoDir, "plugins", "my-plugin", "skills", "plugin-skill")
 	_ = os.MkdirAll(plugSkillDir, 0755)
@@ -471,6 +488,24 @@ func TestSkillsRepo_FallbackSkillsCopy(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(tDir, "plugin-skill", "SKILL.md")); err != nil {
 			t.Errorf("expected plugin skill deployed to %s: %v", tDir, err)
 		}
+		// Verify source symlink was skipped
+		if _, err := os.Lstat(filepath.Join(tDir, "my-raw-skill", "leak_symlink")); err == nil {
+			t.Errorf("expected source symlink to be skipped, but found at %s", filepath.Join(tDir, "my-raw-skill", "leak_symlink"))
+		}
+	}
+
+	// Verify pre-existing symlink was removed and external victim was not overwritten
+	victimData, _ := os.ReadFile(externalVictim)
+	if string(victimData) != "victim original" {
+		t.Errorf("external victim file was modified: %s", string(victimData))
+	}
+	fi, err := os.Lstat(destSymlink)
+	if err != nil || (fi.Mode()&os.ModeSymlink != 0) {
+		t.Errorf("expected destination file to be a regular file, not symlink: %v", err)
+	}
+	destData, _ := os.ReadFile(destSymlink)
+	if string(destData) != "replaced content" {
+		t.Errorf("expected replaced content at destination, got %s", string(destData))
 	}
 }
 

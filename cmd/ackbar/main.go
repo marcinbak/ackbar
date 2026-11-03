@@ -298,6 +298,25 @@ func ensureDaemonRunning() {
 	}
 }
 
+func openLocalDaemonDB(home string) *daemon.DB {
+	candidates := []string{
+		filepath.Join(home, ".config", "ackbar", "ackbard.db"),
+		filepath.Join(home, ".ackbard.db"),
+	}
+	for _, p := range candidates {
+		if _, err := os.Stat(p); err == nil {
+			if db, err := daemon.InitDB(p); err == nil {
+				return db
+			}
+		}
+	}
+	if db, err := daemon.InitDB(filepath.Join(home, ".config", "ackbar", "ackbard.db")); err == nil {
+		return db
+	}
+	db, _ := daemon.InitDB(filepath.Join(home, ".ackbard.db"))
+	return db
+}
+
 func runSetupHooks() error {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -469,10 +488,14 @@ func runSetupHooks() error {
 	}
 
 	// 5. Discover and sync external skills repository if present
-	repoPath, repoURL := daemon.DiscoverSkillsRepo(home, nil)
+	db := openLocalDaemonDB(home)
+	if db != nil {
+		defer db.Close()
+	}
+	repoPath, repoURL := daemon.DiscoverSkillsRepo(home, db)
 	if repoPath != "" || repoURL != "" {
 		fmt.Printf("🔄 Syncing external skills repository...\n")
-		syncStatus, err := daemon.SyncSkillsRepo(home, nil, daemon.SyncSkillsRepoOptions{})
+		syncStatus, err := daemon.SyncSkillsRepo(home, db, daemon.SyncSkillsRepoOptions{})
 		if err != nil {
 			fmt.Printf("⚠️ Note: Skills repository sync: %v\n", err)
 		} else if syncStatus != nil && syncStatus.Cloned {
@@ -692,7 +715,11 @@ func runAgentCmd(args []string) {
 		_ = w.Flush()
 
 		home, _ := os.UserHomeDir()
-		repoStatus := daemon.GetSkillsRepoStatus(home, nil, false)
+		db := openLocalDaemonDB(home)
+		if db != nil {
+			defer db.Close()
+		}
+		repoStatus := daemon.GetSkillsRepoStatus(home, db, false)
 		fmt.Println("\nSKILLS REPOSITORY:")
 		if !repoStatus.Configured && !repoStatus.Cloned {
 			fmt.Println("  Status: Not configured")
@@ -746,6 +773,10 @@ func runAgentCmd(args []string) {
 		}
 
 		home, _ := os.UserHomeDir()
+		db := openLocalDaemonDB(home)
+		if db != nil {
+			defer db.Close()
+		}
 
 		// 1. If setup/configure/install, configure agents
 		if subcmd != "sync" {
@@ -765,7 +796,7 @@ func runAgentCmd(args []string) {
 		}
 
 		// 2. Skills repo handling
-		repoStatus := daemon.GetSkillsRepoStatus(home, nil, false)
+		repoStatus := daemon.GetSkillsRepoStatus(home, db, false)
 		repoURL := *repoURLFlag
 		if repoURL == "" {
 			repoURL = repoStatus.RepoURL
@@ -776,10 +807,11 @@ func runAgentCmd(args []string) {
 		}
 		suggestedPath := repoStatus.SuggestedPath
 		if suggestedPath == "" && repoURL != "" {
-			suggestedPath = daemon.GetSkillsRepoStatus(home, nil, false).SuggestedPath
+			suggestedPath = daemon.GetSkillsRepoStatus(home, db, false).SuggestedPath
 		}
 
 		shouldClone := *cloneFlag
+		declinedClone := false
 		// If URL is configured/provided but not cloned locally:
 		if repoURL != "" && (repoPath == "" || !repoStatus.Cloned) {
 			if !shouldClone {
@@ -797,6 +829,7 @@ func runAgentCmd(args []string) {
 						repoPath = targetSuggest
 					}
 				} else if strings.EqualFold(input, "n") || strings.EqualFold(input, "no") {
+					declinedClone = true
 					fmt.Println("Skipping skills repository clone.")
 				} else {
 					repoPath = input
@@ -805,14 +838,14 @@ func runAgentCmd(args []string) {
 			}
 		}
 
-		if repoURL != "" || repoPath != "" || repoStatus.Cloned {
+		if !declinedClone && (repoURL != "" || repoPath != "" || repoStatus.Cloned) {
 			fmt.Println("\n🔄 Syncing skills repository...")
 			opts := daemon.SyncSkillsRepoOptions{
 				RepoPath:       repoPath,
 				RepoURL:        repoURL,
 				CloneIfMissing: shouldClone,
 			}
-			syncStatus, err := daemon.SyncSkillsRepo(home, nil, opts)
+			syncStatus, err := daemon.SyncSkillsRepo(home, db, opts)
 			if err != nil {
 				fmt.Printf("❌ Skills repo sync failed: %v\n", err)
 			} else if syncStatus != nil && syncStatus.Cloned {

@@ -1242,7 +1242,8 @@ export async function showAgentSetupModal() {
         const target = cachedHostStatuses.find(h => h.host === hostKey);
         if (!target) return;
 
-        const inputPath = container.querySelector(`.input-skills-target-path[data-host-key="${hostKey}"]`);
+        const safeKey = (window.CSS && CSS.escape) ? CSS.escape(hostKey) : hostKey;
+        const inputPath = container.querySelector(`.input-skills-target-path[data-host-key="${safeKey}"]`);
         const targetPath = inputPath ? inputPath.value.trim() : '';
 
         const origText = btn.innerHTML;
@@ -1272,8 +1273,9 @@ export async function showAgentSetupModal() {
         const target = cachedHostStatuses.find(h => h.host === hostKey);
         if (!target) return;
 
-        const inputURL = container.querySelector(`.input-custom-repo-url[data-host-key="${hostKey}"]`);
-        const inputPath = container.querySelector(`.input-custom-repo-path[data-host-key="${hostKey}"]`);
+        const safeKey = (window.CSS && CSS.escape) ? CSS.escape(hostKey) : hostKey;
+        const inputURL = container.querySelector(`.input-custom-repo-url[data-host-key="${safeKey}"]`);
+        const inputPath = container.querySelector(`.input-custom-repo-path[data-host-key="${safeKey}"]`);
         const urlVal = inputURL ? inputURL.value.trim() : '';
         const pathVal = inputPath ? inputPath.value.trim() : '';
 

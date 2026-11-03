@@ -6,9 +6,35 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strings"
 
 	"ackbar/internal/version"
 )
+
+func checkSameOriginRequest(r *http.Request) error {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return nil // Non-browser / CLI direct requests allowed
+	}
+
+	u, err := url.Parse(origin)
+	if err != nil {
+		return fmt.Errorf("invalid Origin header: %w", err)
+	}
+
+	origHost := strings.ToLower(u.Hostname())
+	if origHost == "127.0.0.1" || origHost == "localhost" || origHost == "::1" {
+		return nil
+	}
+
+	reqHost := strings.ToLower(extractHostname(r.Host))
+	if reqHost != "" && origHost == reqHost {
+		return nil
+	}
+
+	return fmt.Errorf("cross-origin requests are forbidden from %s", origin)
+}
 
 // handleAgentsStatus handles GET /v1/agents/status
 func (s *Server) handleAgentsStatus(w http.ResponseWriter, r *http.Request) {
@@ -39,6 +65,10 @@ func (s *Server) handleAgentsStatus(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleAgentsProvision(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := checkSameOriginRequest(r); err != nil {
+		http.Error(w, err.Error(), http.StatusForbidden)
 		return
 	}
 
@@ -105,6 +135,10 @@ func (s *Server) handleAgentsProvision(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleSkillsRepoSync(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := checkSameOriginRequest(r); err != nil {
+		http.Error(w, err.Error(), http.StatusForbidden)
 		return
 	}
 

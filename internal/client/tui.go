@@ -2144,7 +2144,7 @@ func (m *Model) View() string {
 		controlsHeader := fmt.Sprintf("── HOST CONTROLS [%s] ──────────────────────────────────────────", selectedHostName)
 		discBuilder.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#00FFFF")).Render(controlsHeader) + "\n")
 		discBuilder.WriteString(" [r] Restart ackbard Daemon    | [u] Update Binary & Restart Daemon\n")
-		discBuilder.WriteString(" [k] Re-apply Agent Hooks      | [esc/q/H] Close Management Panel")
+		discBuilder.WriteString(" [h] Re-apply Agent Hooks      | [esc/q/H] Close Management Panel")
 
 		discBox := lipgloss.NewStyle().
 			Border(lipgloss.DoubleBorder()).

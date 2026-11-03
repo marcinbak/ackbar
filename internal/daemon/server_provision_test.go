@@ -113,4 +113,23 @@ func TestServer_AgentsStatusAndProvisionHandlers(t *testing.T) {
 	if !syncResp.SkillsRepo.Cloned {
 		t.Errorf("Expected skills repo to be cloned")
 	}
+
+	// 5. Cross-Origin Protection
+	// Disallowed origin should return 403 Forbidden
+	reqEvil := httptest.NewRequest("POST", "/v1/agents/skills-repo/sync", bytes.NewReader(syncBody))
+	reqEvil.Header.Set("Origin", "https://evil.example.com")
+	recEvil := httptest.NewRecorder()
+	server.handleSkillsRepoSync(recEvil, reqEvil)
+	if recEvil.Code != http.StatusForbidden {
+		t.Errorf("Expected 403 Forbidden for cross-origin request from https://evil.example.com, got %d", recEvil.Code)
+	}
+
+	// Allowed origin (http://127.0.0.1:7777) should succeed
+	reqSafe := httptest.NewRequest("POST", "/v1/agents/skills-repo/sync", bytes.NewReader(syncBody))
+	reqSafe.Header.Set("Origin", "http://127.0.0.1:7777")
+	recSafe := httptest.NewRecorder()
+	server.handleSkillsRepoSync(recSafe, reqSafe)
+	if recSafe.Code != http.StatusOK {
+		t.Errorf("Expected 200 OK for safe origin http://127.0.0.1:7777, got %d", recSafe.Code)
+	}
 }

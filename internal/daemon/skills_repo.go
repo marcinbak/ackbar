@@ -94,6 +94,28 @@ func validateGitURL(u string) error {
 	return fmt.Errorf("invalid git URL scheme: %s", u)
 }
 
+// isDedicatedSkillsRepo verifies that candidateRoot contains markers or structures of a dedicated skills repository
+func isDedicatedSkillsRepo(root string) bool {
+	if _, err := os.Stat(filepath.Join(root, ".claude-plugin", "marketplace.json")); err == nil {
+		return true
+	}
+	if _, err := os.Stat(filepath.Join(root, ".ackbar-skills-source")); err == nil {
+		return true
+	}
+	if _, err := os.Stat(filepath.Join(root, ".personal-config-managed")); err == nil {
+		return true
+	}
+	if _, err := os.Stat(filepath.Join(root, "install.sh")); err == nil {
+		if fi, err := os.Stat(filepath.Join(root, "skills")); err == nil && fi.IsDir() {
+			return true
+		}
+		if fi, err := os.Stat(filepath.Join(root, "plugins")); err == nil && fi.IsDir() {
+			return true
+		}
+	}
+	return false
+}
+
 // DiscoverSkillsRepo inspects persistent settings or scans agent skill directories for an external repository
 func DiscoverSkillsRepo(home string, db *DB) (repoPath, repoURL string) {
 	if db != nil {
@@ -174,9 +196,11 @@ func DiscoverSkillsRepo(home string, db *DB) (repoPath, repoURL string) {
 			}
 
 			// 2. Check if symlink pointing inside a git repository
+			isSymlink := false
 			if candidateRoot == "" {
 				fi, err := os.Lstat(entryPath)
 				if err == nil && (fi.Mode()&os.ModeSymlink != 0) {
+					isSymlink = true
 					linkTarget, err := os.Readlink(entryPath)
 					if err == nil {
 						if !filepath.IsAbs(linkTarget) {
@@ -202,6 +226,11 @@ func DiscoverSkillsRepo(home string, db *DB) (repoPath, repoURL string) {
 			}
 
 			if candidateRoot != "" {
+				// For symlinks, verify it looks like a dedicated skills/plugin repository
+				if isSymlink && !isDedicatedSkillsRepo(candidateRoot) {
+					continue
+				}
+
 				if strings.HasPrefix(candidateRoot, "~/") {
 					candidateRoot = filepath.Join(home, candidateRoot[2:])
 				}
@@ -215,9 +244,11 @@ func DiscoverSkillsRepo(home string, db *DB) (repoPath, repoURL string) {
 						!strings.HasPrefix(slashRel, ".gemini") &&
 						!strings.HasPrefix(slashRel, ".codex") {
 						repoPath = candidateRoot
-						cmd := exec.Command("git", "-C", repoPath, "remote", "get-url", "origin")
-						if out, err := cmd.Output(); err == nil {
-							repoURL = strings.TrimSpace(string(out))
+						if repoURL == "" {
+							cmd := exec.Command("git", "-C", repoPath, "remote", "get-url", "origin")
+							if out, err := cmd.Output(); err == nil {
+								repoURL = strings.TrimSpace(string(out))
+							}
 						}
 						if db != nil {
 							_ = db.SetSettings(map[string]string{
@@ -435,6 +466,9 @@ func SyncSkillsRepo(home string, db *DB, opts SyncSkillsRepoOptions) (*SkillsRep
 		if targetPath == "" {
 			targetPath = status.SuggestedPath
 		}
+		if targetPath == "" && repoURL != "" {
+			targetPath = computeSuggestedPath(home, repoURL)
+		}
 		if targetPath == "" {
 			return &status, fmt.Errorf("cannot clone repository: no target path specified or suggested")
 		}
@@ -453,7 +487,11 @@ func SyncSkillsRepo(home string, db *DB, opts SyncSkillsRepoOptions) (*SkillsRep
 			return &status, fmt.Errorf("failed to create directory for repository clone: %w", err)
 		}
 
-		cloneCmd := exec.Command("git", "clone", "--", repoURL, targetPath)
+		ctxClone, cancelClone := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancelClone()
+
+		cloneCmd := exec.CommandContext(ctxClone, "git", "clone", "--", repoURL, targetPath)
+		cloneCmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 		if out, err := cloneCmd.CombinedOutput(); err != nil {
 			return &status, fmt.Errorf("git clone failed: %v (output: %s)", err, strings.TrimSpace(string(out)))
 		}
@@ -467,10 +505,11 @@ func SyncSkillsRepo(home string, db *DB, opts SyncSkillsRepoOptions) (*SkillsRep
 	// Cloned repository maintenance: fetch & fast-forward pull if clean and origin remote exists
 	cmdRemoteCheck := exec.Command("git", "-C", repoPath, "remote", "get-url", "origin")
 	if err := cmdRemoteCheck.Run(); err == nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 
 		cmdFetch := exec.CommandContext(ctx, "git", "-C", repoPath, "fetch", "--quiet", "origin")
+		cmdFetch.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 		_ = cmdFetch.Run()
 
 		cmdDirty := exec.Command("git", "-C", repoPath, "status", "--porcelain")
@@ -479,6 +518,7 @@ func SyncSkillsRepo(home string, db *DB, opts SyncSkillsRepoOptions) (*SkillsRep
 
 		if !isDirty {
 			cmdPull := exec.CommandContext(ctx, "git", "-C", repoPath, "pull", "--ff-only")
+			cmdPull.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 			_ = cmdPull.Run()
 		}
 	}
@@ -510,9 +550,13 @@ func SyncSkillsRepo(home string, db *DB, opts SyncSkillsRepoOptions) (*SkillsRep
 			}
 		}
 
-		cmdInstall := exec.Command("/bin/bash", "./install.sh")
+		ctxInstall, cancelInstall := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancelInstall()
+
+		cmdInstall := exec.CommandContext(ctxInstall, "/bin/bash", "./install.sh")
 		cmdInstall.Dir = repoPath
 		cmdInstall.Env = os.Environ()
+		cmdInstall.Env = append(cmdInstall.Env, "GIT_TERMINAL_PROMPT=0")
 		cmdInstall.Env = append(cmdInstall.Env, fmt.Sprintf("HOME=%s", home))
 		if len(claudeDirs) > 0 {
 			cmdInstall.Env = append(cmdInstall.Env, fmt.Sprintf("ACKBAR_CLAUDE_DIRS=%s", strings.Join(claudeDirs, ":")))
@@ -597,18 +641,21 @@ func fallbackInstallSkills(home, repoPath string) error {
 	return nil
 }
 
-// copyDirectory recursively copies a directory from src to dst
+// copyDirectory recursively copies a directory from src to dst skipping symlinks
 func copyDirectory(src, dst string) error {
-	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+	return filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
+		}
+		if d.Type()&os.ModeSymlink != 0 {
+			return nil
 		}
 		rel, err := filepath.Rel(src, path)
 		if err != nil {
 			return err
 		}
 		target := filepath.Join(dst, rel)
-		if info.IsDir() {
+		if d.IsDir() {
 			return os.MkdirAll(target, 0755)
 		}
 
@@ -619,9 +666,15 @@ func copyDirectory(src, dst string) error {
 		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
 			return err
 		}
-		perm := info.Mode().Perm()
-		if perm == 0 {
-			perm = 0644
+		if fi, err := os.Lstat(target); err == nil && (fi.Mode()&os.ModeSymlink != 0) {
+			_ = os.Remove(target)
+		}
+		info, err := d.Info()
+		perm := os.FileMode(0644)
+		if err == nil {
+			if p := info.Mode().Perm(); p != 0 {
+				perm = p
+			}
 		}
 		return os.WriteFile(target, data, perm)
 	})
