@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -22,6 +23,8 @@ import (
 	"ackbar/internal/router"
 	"ackbar/internal/tmux"
 )
+
+var validTaskIDRegex = regexp.MustCompile(`^[a-zA-Z0-9_\-]+$`)
 
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -1124,11 +1127,25 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		EngineType   string `json:"engine_type"`
 		Prompt       string `json:"prompt"`
 		IsSupervisor bool   `json:"is_supervisor"`
+		TaskID       string `json:"task_id"`
+		TaskKind     string `json:"task_kind"`
+		RepoNodePath string `json:"repo_node_path"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid payload", http.StatusBadRequest)
 		return
+	}
+
+	if req.TaskID != "" {
+		if !validTaskIDRegex.MatchString(req.TaskID) {
+			http.Error(w, "Invalid task_id format", http.StatusBadRequest)
+			return
+		}
+	}
+
+	if req.NodePath == "" && req.RepoNodePath != "" {
+		req.NodePath = req.RepoNodePath
 	}
 
 	if req.IsSupervisor {
@@ -1143,17 +1160,18 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if req.Agent == "" || req.Cwd == "" {
-		http.Error(w, "Missing agent or cwd", http.StatusBadRequest)
+	if req.Agent == "" {
+		http.Error(w, "Missing agent", http.StatusBadRequest)
+		return
+	}
+
+	if req.Cwd == "" && req.NodePath == "" && req.RepoNodePath == "" {
+		http.Error(w, "Missing cwd or node_path", http.StatusBadRequest)
 		return
 	}
 
 	if req.EngineType == "" {
 		req.EngineType = EngineTmux
-	}
-
-	if req.NodePath == "" && !req.IsSupervisor {
-		req.NodePath = s.resolveSessionNodePath(req.Cwd)
 	}
 
 	// 1. Forward to remote host if specified
@@ -1162,14 +1180,17 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		if hostRec != nil && hostRec.URL != "" && !s.isLocalHost(hostRec.Name) && hostRec.URL != "http://127.0.0.1:7777" {
 			targetURL := strings.TrimSuffix(hostRec.URL, "/") + "/v1/sessions/spawn"
 			payload, _ := json.Marshal(map[string]interface{}{
-				"agent":         req.Agent,
-				"cwd":           req.Cwd,
-				"node_path":     req.NodePath,
-				"name":          req.Name,
-				"account_id":    req.AccountID,
-				"engine_type":   req.EngineType,
-				"prompt":        req.Prompt,
-				"is_supervisor": req.IsSupervisor,
+				"agent":          req.Agent,
+				"cwd":            req.Cwd,
+				"node_path":      req.NodePath,
+				"name":           req.Name,
+				"account_id":     req.AccountID,
+				"engine_type":    req.EngineType,
+				"prompt":         req.Prompt,
+				"is_supervisor":  req.IsSupervisor,
+				"task_id":        req.TaskID,
+				"task_kind":      req.TaskKind,
+				"repo_node_path": req.RepoNodePath,
 			})
 			fwdReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, targetURL, bytes.NewBuffer(payload))
 			if err != nil {
@@ -1199,6 +1220,34 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// 2. Resolve Cwd for local daemon execution
+	resolveCwdFromNode := func(candidate string) string {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			return ""
+		}
+		if nhp, _ := s.db.GetNodeHostPath(candidate, s.HostName()); nhp != nil && nhp.ProjectDir != "" {
+			return nhp.ProjectDir
+		}
+		if node, _ := s.db.GetNode(candidate); node != nil && node.ProjectDir != "" {
+			return node.ProjectDir
+		}
+		return ""
+	}
+
+	if req.Cwd == "" || !filepath.IsAbs(req.Cwd) || req.Cwd == req.NodePath || req.Cwd == req.RepoNodePath {
+		for _, cand := range []string{req.NodePath, req.RepoNodePath, req.Cwd} {
+			if dir := resolveCwdFromNode(cand); dir != "" {
+				req.Cwd = dir
+				break
+			}
+		}
+	}
+
+	if req.Cwd == "" {
+		req.Cwd = "~"
+	}
+
 	// Expand ~ to user home directory and ensure directory exists
 	home, _ := os.UserHomeDir()
 	if strings.HasPrefix(req.Cwd, "~/") && home != "" {
@@ -1206,7 +1255,19 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 	} else if req.Cwd == "~" && home != "" {
 		req.Cwd = home
 	}
+	if !filepath.IsAbs(req.Cwd) {
+		if home != "" {
+			req.Cwd = home
+		} else {
+			cwd, _ := os.Getwd()
+			req.Cwd = cwd
+		}
+	}
 	_ = os.MkdirAll(req.Cwd, 0755)
+
+	if req.NodePath == "" && !req.IsSupervisor && req.Cwd != "" {
+		req.NodePath = s.resolveSessionNodePath(req.Cwd)
+	}
 
 	if req.NodePath != "" {
 		if existingNode, _ := s.db.GetNode(req.NodePath); existingNode == nil {
@@ -1232,6 +1293,20 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 	}
 	envVars["ACKBAR_SESSION_ID"] = spawnSessID
 
+	taskKind := strings.ToLower(strings.TrimSpace(req.TaskKind))
+	if req.TaskID != "" {
+		envVars["ACKBAR_TASK_ID"] = req.TaskID
+		if taskKind == "" {
+			if t, _ := s.db.GetTaskByID(req.TaskID); t != nil && t.TaskKind != "" {
+				taskKind = strings.ToLower(strings.TrimSpace(t.TaskKind))
+			}
+		}
+	}
+	if taskKind != "design" && taskKind != "code" {
+		taskKind = "code"
+	}
+	envVars["ACKBAR_TASK_KIND"] = taskKind
+
 	if req.EngineType == EngineHeadless {
 		now := time.Now().UTC()
 		sess := &Session{
@@ -1244,6 +1319,7 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 			NodePath:          req.NodePath,
 			Name:              req.Name,
 			IsSupervisor:      req.IsSupervisor,
+			CurrentTaskID:     req.TaskID,
 			Managed:           true,
 			TmuxName:          "",
 			EngineType:        EngineHeadless,
@@ -1265,6 +1341,18 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		spawnID := sess.ID
+		if req.TaskID != "" {
+			_ = s.db.InsertTaskWorker(&TaskWorker{
+				TaskID:       req.TaskID,
+				SessionID:    sess.ID,
+				Agent:        req.Agent,
+				Host:         effectiveHost,
+				IsActive:     true,
+				RepoNodePath: req.RepoNodePath,
+				WorkflowNode: "N0",
+				AssignedAt:   now,
+			})
+		}
 		s.broadcast(sess)
 		s.syncSessionMeta(sess)
 		if initialPrompt != "" && s.headless != nil {
@@ -1312,6 +1400,7 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		NodePath:          req.NodePath,
 		Name:              req.Name,
 		IsSupervisor:      req.IsSupervisor,
+		CurrentTaskID:     req.TaskID,
 		Managed:           true,
 		TmuxName:          tmuxName,
 		EngineType:        EngineTmux,
@@ -1333,6 +1422,19 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 	if err := s.db.SaveSession(sess); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+
+	if req.TaskID != "" {
+		_ = s.db.InsertTaskWorker(&TaskWorker{
+			TaskID:       req.TaskID,
+			SessionID:    sess.ID,
+			Agent:        req.Agent,
+			Host:         effectiveHost,
+			IsActive:     true,
+			RepoNodePath: req.RepoNodePath,
+			WorkflowNode: "N0",
+			AssignedAt:   now,
+		})
 	}
 
 	s.broadcast(sess)

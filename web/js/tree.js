@@ -751,8 +751,27 @@ function createSessionRowElement(session) {
   if (session.current_task_id && !session.is_supervisor) {
     const taskBadge = document.createElement('span');
     taskBadge.className = 'badge-task';
-    taskBadge.textContent = '📋';
-    taskBadge.title = `Bound to Task: ${session.current_task_id}`;
+    let badgeText = '📋';
+    let taskTitle = session.current_task_id;
+    if (state.tasks && Array.isArray(state.tasks)) {
+      const task = state.tasks.find(t => t.id === session.current_task_id);
+      if (task) {
+        taskTitle = task.title || session.current_task_id;
+        const kindIcon = task.task_kind === 'design' ? '🎨' : '⚙️';
+        let activeNode = '';
+        if (task.workers) {
+          const w = task.workers.find(worker => worker.session_id === session.id);
+          if (w && w.workflow_node) activeNode = w.workflow_node;
+        }
+        if (!activeNode && task.workstreams) {
+          const ws = task.workstreams.find(s => s.workflow_node);
+          if (ws) activeNode = ws.workflow_node;
+        }
+        badgeText = activeNode ? `${kindIcon} ${activeNode}` : kindIcon;
+      }
+    }
+    taskBadge.textContent = badgeText;
+    taskBadge.title = `Bound to Task: ${taskTitle}`;
     right.appendChild(taskBadge);
   }
 

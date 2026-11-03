@@ -107,7 +107,8 @@ CREATE TABLE IF NOT EXISTS tasks (
 	created_at TIMESTAMP NOT NULL,
 	updated_at TIMESTAMP NOT NULL,
 	completed_at TIMESTAMP,
-	deleted_at TIMESTAMP
+	deleted_at TIMESTAMP,
+	task_kind TEXT NOT NULL DEFAULT 'code'
 );
 
 CREATE TABLE IF NOT EXISTS task_external_refs (
@@ -126,7 +127,24 @@ CREATE TABLE IF NOT EXISTS task_workers (
 	host TEXT NOT NULL,
 	is_active INTEGER DEFAULT 1,
 	assigned_at TIMESTAMP NOT NULL,
+	repo_node_path TEXT,
+	workflow_node TEXT,
 	PRIMARY KEY (task_id, session_id),
+	FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS task_workstreams (
+	task_id TEXT NOT NULL,
+	repo_node_path TEXT NOT NULL,
+	target_host TEXT,
+	depends_on TEXT,
+	workflow_node TEXT,
+	status TEXT NOT NULL DEFAULT 'NEW',
+	branch TEXT,
+	worktree_path TEXT,
+	pr_url TEXT,
+	updated_at TIMESTAMP NOT NULL,
+	PRIMARY KEY (task_id, repo_node_path),
 	FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
 );
 
@@ -155,6 +173,7 @@ CREATE INDEX IF NOT EXISTS idx_tasks_group_project ON tasks(group_name, project_
 CREATE INDEX IF NOT EXISTS idx_tasks_status_updated ON tasks(status, updated_at);
 CREATE INDEX IF NOT EXISTS idx_tasks_updated_at ON tasks(updated_at);
 CREATE INDEX IF NOT EXISTS idx_task_workers_active ON task_workers(is_active);
+CREATE INDEX IF NOT EXISTS idx_task_workstreams_task ON task_workstreams(task_id);
 CREATE INDEX IF NOT EXISTS idx_task_deliverables_task_id ON task_deliverables(task_id);
 CREATE INDEX IF NOT EXISTS idx_node_host_paths_node_path ON node_host_paths(node_path);
 CREATE INDEX IF NOT EXISTS idx_tree_nodes_updated_at ON tree_nodes(updated_at);
@@ -212,6 +231,24 @@ func InitDB(dbPath string) (*DB, error) {
 	_, _ = db.Exec("ALTER TABLE tree_nodes ADD COLUMN updated_at TIMESTAMP;")
 	_, _ = db.Exec("ALTER TABLE tree_nodes ADD COLUMN deleted_at TIMESTAMP;")
 	_, _ = db.Exec("ALTER TABLE tasks ADD COLUMN deleted_at TIMESTAMP;")
+	_, _ = db.Exec("ALTER TABLE tasks ADD COLUMN task_kind TEXT NOT NULL DEFAULT 'code';")
+	_, _ = db.Exec("ALTER TABLE task_workers ADD COLUMN repo_node_path TEXT;")
+	_, _ = db.Exec("ALTER TABLE task_workers ADD COLUMN workflow_node TEXT;")
+	_, _ = db.Exec(`CREATE TABLE IF NOT EXISTS task_workstreams (
+		task_id TEXT NOT NULL,
+		repo_node_path TEXT NOT NULL,
+		target_host TEXT,
+		depends_on TEXT,
+		workflow_node TEXT,
+		status TEXT NOT NULL DEFAULT 'NEW',
+		branch TEXT,
+		worktree_path TEXT,
+		pr_url TEXT,
+		updated_at TIMESTAMP NOT NULL,
+		PRIMARY KEY (task_id, repo_node_path),
+		FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+	);`)
+	_, _ = db.Exec("CREATE INDEX IF NOT EXISTS idx_task_workstreams_task ON task_workstreams(task_id);")
 	_, _ = db.Exec("ALTER TABLE task_deliverables ADD COLUMN updated_at TIMESTAMP;")
 	_, _ = db.Exec("ALTER TABLE task_deliverables ADD COLUMN provider TEXT;")
 	_, _ = db.Exec("ALTER TABLE task_deliverables ADD COLUMN content_md TEXT;")
@@ -1494,8 +1531,10 @@ type Task struct {
 	UpdatedAt       time.Time         `json:"updated_at"`
 	CompletedAt     *time.Time        `json:"completed_at,omitempty"`
 	DeletedAt       *time.Time        `json:"deleted_at,omitempty"`
+	TaskKind        string            `json:"task_kind"`
 	ExternalRefs    []TaskExternalRef `json:"external_refs"`
 	Workers         []TaskWorker      `json:"workers"`
+	Workstreams     []TaskWorkstream  `json:"workstreams"`
 	Deliverables    []TaskDeliverable `json:"deliverables"`
 }
 
@@ -1507,12 +1546,27 @@ type TaskExternalRef struct {
 }
 
 type TaskWorker struct {
-	TaskID     string    `json:"task_id"`
-	SessionID  string    `json:"session_id"`
-	Agent      string    `json:"agent"`
-	Host       string    `json:"host"`
-	IsActive   bool      `json:"is_active"`
-	AssignedAt time.Time `json:"assigned_at"`
+	TaskID       string    `json:"task_id"`
+	SessionID    string    `json:"session_id"`
+	Agent        string    `json:"agent"`
+	Host         string    `json:"host"`
+	IsActive     bool      `json:"is_active"`
+	AssignedAt   time.Time `json:"assigned_at"`
+	RepoNodePath string    `json:"repo_node_path,omitempty"`
+	WorkflowNode string    `json:"workflow_node,omitempty"`
+}
+
+type TaskWorkstream struct {
+	TaskID       string    `json:"task_id"`
+	RepoNodePath string    `json:"repo_node_path"`
+	TargetHost   string    `json:"target_host"`
+	DependsOn    string    `json:"depends_on,omitempty"`
+	WorkflowNode string    `json:"workflow_node,omitempty"`
+	Status       string    `json:"status"` // NEW, QUEUED, IN_PROGRESS, REVIEW, DONE
+	Branch       string    `json:"branch,omitempty"`
+	WorktreePath string    `json:"worktree_path,omitempty"`
+	PRURL        string    `json:"pr_url,omitempty"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 type TaskDeliverable struct {
@@ -1530,7 +1584,7 @@ type TaskDeliverable struct {
 }
 
 func (d *DB) GetTasks() ([]Task, error) {
-	query := `SELECT id, title, group_name, project_name, subproject_name, status, substatus, notes, blocker_question, branch, worktree_path, pr_url, pr_number, pr_state, ci_status, created_at, updated_at, completed_at, deleted_at FROM tasks WHERE deleted_at IS NULL ORDER BY updated_at DESC;`
+	query := `SELECT id, title, group_name, project_name, subproject_name, status, substatus, notes, blocker_question, branch, worktree_path, pr_url, pr_number, pr_state, ci_status, created_at, updated_at, completed_at, deleted_at, task_kind FROM tasks WHERE deleted_at IS NULL ORDER BY updated_at DESC;`
 	rows, err := d.db.Query(query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query tasks: %w", err)
@@ -1541,14 +1595,14 @@ func (d *DB) GetTasks() ([]Task, error) {
 	var taskIDs []string
 	for rows.Next() {
 		var t Task
-		var subprojectName, notes, blockerQuestion, branch, worktreePath, prURL, prState, ciStatus sql.NullString
+		var subprojectName, notes, blockerQuestion, branch, worktreePath, prURL, prState, ciStatus, taskKindVal sql.NullString
 		var prNumber sql.NullInt64
 		var completedAt, deletedAt sql.NullTime
 
 		if err := rows.Scan(
 			&t.ID, &t.Title, &t.GroupName, &t.ProjectName, &subprojectName,
 			&t.Status, &t.Substatus, &notes, &blockerQuestion, &branch, &worktreePath,
-			&prURL, &prNumber, &prState, &ciStatus, &t.CreatedAt, &t.UpdatedAt, &completedAt, &deletedAt,
+			&prURL, &prNumber, &prState, &ciStatus, &t.CreatedAt, &t.UpdatedAt, &completedAt, &deletedAt, &taskKindVal,
 		); err != nil {
 			return nil, err
 		}
@@ -1562,6 +1616,10 @@ func (d *DB) GetTasks() ([]Task, error) {
 		t.PRNumber = int(prNumber.Int64)
 		t.PRState = prState.String
 		t.CIStatus = ciStatus.String
+		t.TaskKind = taskKindVal.String
+		if t.TaskKind == "" {
+			t.TaskKind = "code"
+		}
 		if completedAt.Valid {
 			t.CompletedAt = &completedAt.Time
 		}
@@ -1590,6 +1648,10 @@ func (d *DB) GetTasks() ([]Task, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to get deliverables: %w", err)
 		}
+		workstreams, err := d.getWorkstreamsForTasks(taskIDs)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get workstreams: %w", err)
+		}
 		for i, t := range tasks {
 			if r, ok := refs[t.ID]; ok {
 				tasks[i].ExternalRefs = r
@@ -1606,6 +1668,11 @@ func (d *DB) GetTasks() ([]Task, error) {
 			} else {
 				tasks[i].Deliverables = []TaskDeliverable{}
 			}
+			if ws, ok := workstreams[t.ID]; ok {
+				tasks[i].Workstreams = ws
+			} else {
+				tasks[i].Workstreams = []TaskWorkstream{}
+			}
 		}
 	}
 
@@ -1618,14 +1685,14 @@ type scannableRow interface {
 
 func scanTaskRow(row scannableRow) (*Task, error) {
 	var t Task
-	var subprojectName, notes, blockerQuestion, branch, worktreePath, prURL, prState, ciStatus sql.NullString
+	var subprojectName, notes, blockerQuestion, branch, worktreePath, prURL, prState, ciStatus, taskKindVal sql.NullString
 	var prNumber sql.NullInt64
 	var completedAt, deletedAt sql.NullTime
 
 	if err := row.Scan(
 		&t.ID, &t.Title, &t.GroupName, &t.ProjectName, &subprojectName,
 		&t.Status, &t.Substatus, &notes, &blockerQuestion, &branch, &worktreePath,
-		&prURL, &prNumber, &prState, &ciStatus, &t.CreatedAt, &t.UpdatedAt, &completedAt, &deletedAt,
+		&prURL, &prNumber, &prState, &ciStatus, &t.CreatedAt, &t.UpdatedAt, &completedAt, &deletedAt, &taskKindVal,
 	); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
@@ -1642,6 +1709,10 @@ func scanTaskRow(row scannableRow) (*Task, error) {
 	t.PRNumber = int(prNumber.Int64)
 	t.PRState = prState.String
 	t.CIStatus = ciStatus.String
+	t.TaskKind = taskKindVal.String
+	if t.TaskKind == "" {
+		t.TaskKind = "code"
+	}
 	if completedAt.Valid {
 		t.CompletedAt = &completedAt.Time
 	}
@@ -1666,6 +1737,10 @@ func (d *DB) populateTaskRelations(t *Task) error {
 	if err != nil {
 		return fmt.Errorf("failed to get deliverables: %w", err)
 	}
+	workstreams, err := d.getWorkstreamsForTasks(taskIDs)
+	if err != nil {
+		return fmt.Errorf("failed to get workstreams: %w", err)
+	}
 
 	if r, ok := refs[t.ID]; ok {
 		t.ExternalRefs = r
@@ -1682,11 +1757,16 @@ func (d *DB) populateTaskRelations(t *Task) error {
 	} else {
 		t.Deliverables = []TaskDeliverable{}
 	}
+	if ws, ok := workstreams[t.ID]; ok {
+		t.Workstreams = ws
+	} else {
+		t.Workstreams = []TaskWorkstream{}
+	}
 	return nil
 }
 
 func (d *DB) GetTaskByID(id string) (*Task, error) {
-	query := `SELECT id, title, group_name, project_name, subproject_name, status, substatus, notes, blocker_question, branch, worktree_path, pr_url, pr_number, pr_state, ci_status, created_at, updated_at, completed_at, deleted_at FROM tasks WHERE id = ? AND deleted_at IS NULL;`
+	query := `SELECT id, title, group_name, project_name, subproject_name, status, substatus, notes, blocker_question, branch, worktree_path, pr_url, pr_number, pr_state, ci_status, created_at, updated_at, completed_at, deleted_at, task_kind FROM tasks WHERE id = ? AND deleted_at IS NULL;`
 	row := d.db.QueryRow(query, id)
 	t, err := scanTaskRow(row)
 	if err != nil || t == nil {
@@ -1702,7 +1782,7 @@ func (d *DB) GetTaskByBranch(branch string) (*Task, error) {
 	if branch == "" {
 		return nil, nil
 	}
-	query := `SELECT id, title, group_name, project_name, subproject_name, status, substatus, notes, blocker_question, branch, worktree_path, pr_url, pr_number, pr_state, ci_status, created_at, updated_at, completed_at, deleted_at FROM tasks WHERE branch = ? AND deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1;`
+	query := `SELECT id, title, group_name, project_name, subproject_name, status, substatus, notes, blocker_question, branch, worktree_path, pr_url, pr_number, pr_state, ci_status, created_at, updated_at, completed_at, deleted_at, task_kind FROM tasks WHERE branch = ? AND deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1;`
 	row := d.db.QueryRow(query, branch)
 	t, err := scanTaskRow(row)
 	if err != nil || t == nil {
@@ -1718,7 +1798,7 @@ func (d *DB) GetTaskByWorktree(worktreePath string) (*Task, error) {
 	if worktreePath == "" {
 		return nil, nil
 	}
-	query := `SELECT id, title, group_name, project_name, subproject_name, status, substatus, notes, blocker_question, branch, worktree_path, pr_url, pr_number, pr_state, ci_status, created_at, updated_at, completed_at, deleted_at FROM tasks WHERE worktree_path = ? AND deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1;`
+	query := `SELECT id, title, group_name, project_name, subproject_name, status, substatus, notes, blocker_question, branch, worktree_path, pr_url, pr_number, pr_state, ci_status, created_at, updated_at, completed_at, deleted_at, task_kind FROM tasks WHERE worktree_path = ? AND deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1;`
 	row := d.db.QueryRow(query, worktreePath)
 	t, err := scanTaskRow(row)
 	if err != nil || t == nil {
@@ -1735,7 +1815,7 @@ func (d *DB) GetTaskByExternalRef(refKey string) (*Task, error) {
 	if cleanKey == "" {
 		return nil, nil
 	}
-	query := `SELECT t.id, t.title, t.group_name, t.project_name, t.subproject_name, t.status, t.substatus, t.notes, t.blocker_question, t.branch, t.worktree_path, t.pr_url, t.pr_number, t.pr_state, t.ci_status, t.created_at, t.updated_at, t.completed_at, t.deleted_at
+	query := `SELECT t.id, t.title, t.group_name, t.project_name, t.subproject_name, t.status, t.substatus, t.notes, t.blocker_question, t.branch, t.worktree_path, t.pr_url, t.pr_number, t.pr_state, t.ci_status, t.created_at, t.updated_at, t.completed_at, t.deleted_at, t.task_kind
 			  FROM tasks t
 			  JOIN task_external_refs r ON t.id = r.task_id
 			  WHERE r.ref_key = ? AND t.deleted_at IS NULL
@@ -1756,7 +1836,7 @@ func (d *DB) GetTaskByTitle(title string) (*Task, error) {
 	if cleanTitle == "" {
 		return nil, nil
 	}
-	query := `SELECT id, title, group_name, project_name, subproject_name, status, substatus, notes, blocker_question, branch, worktree_path, pr_url, pr_number, pr_state, ci_status, created_at, updated_at, completed_at, deleted_at FROM tasks WHERE title = ? COLLATE NOCASE AND deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1;`
+	query := `SELECT id, title, group_name, project_name, subproject_name, status, substatus, notes, blocker_question, branch, worktree_path, pr_url, pr_number, pr_state, ci_status, created_at, updated_at, completed_at, deleted_at, task_kind FROM tasks WHERE title = ? COLLATE NOCASE AND deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1;`
 	row := d.db.QueryRow(query, cleanTitle)
 	t, err := scanTaskRow(row)
 	if err != nil || t == nil {
@@ -1772,7 +1852,7 @@ func (d *DB) GetActiveTaskForSession(sessionID string) (*Task, error) {
 	if sessionID == "" {
 		return nil, nil
 	}
-	query := `SELECT t.id, t.title, t.group_name, t.project_name, t.subproject_name, t.status, t.substatus, t.notes, t.blocker_question, t.branch, t.worktree_path, t.pr_url, t.pr_number, t.pr_state, t.ci_status, t.created_at, t.updated_at, t.completed_at, t.deleted_at
+	query := `SELECT t.id, t.title, t.group_name, t.project_name, t.subproject_name, t.status, t.substatus, t.notes, t.blocker_question, t.branch, t.worktree_path, t.pr_url, t.pr_number, t.pr_state, t.ci_status, t.created_at, t.updated_at, t.completed_at, t.deleted_at, t.task_kind
 			  FROM tasks t
 			  JOIN task_workers w ON t.id = w.task_id
 			  WHERE w.session_id = ? AND w.is_active = 1 AND t.deleted_at IS NULL
@@ -1851,7 +1931,7 @@ func (d *DB) getWorkersForTasks(taskIDs []string) (map[string][]TaskWorker, erro
 			placeholders[i] = "?"
 			args[i] = id
 		}
-		query := fmt.Sprintf(`SELECT task_id, session_id, agent, host, is_active, assigned_at FROM task_workers WHERE task_id IN (%s)`, strings.Join(placeholders, ","))
+		query := fmt.Sprintf(`SELECT task_id, session_id, agent, host, is_active, assigned_at, repo_node_path, workflow_node FROM task_workers WHERE task_id IN (%s)`, strings.Join(placeholders, ","))
 		rows, err := d.db.Query(query, args...)
 		if err != nil {
 			return nil, err
@@ -1859,11 +1939,14 @@ func (d *DB) getWorkersForTasks(taskIDs []string) (map[string][]TaskWorker, erro
 		for rows.Next() {
 			var w TaskWorker
 			var isActive int
-			if err := rows.Scan(&w.TaskID, &w.SessionID, &w.Agent, &w.Host, &isActive, &w.AssignedAt); err != nil {
+			var repoNodePath, workflowNode sql.NullString
+			if err := rows.Scan(&w.TaskID, &w.SessionID, &w.Agent, &w.Host, &isActive, &w.AssignedAt, &repoNodePath, &workflowNode); err != nil {
 				rows.Close()
 				return nil, err
 			}
 			w.IsActive = isActive == 1
+			w.RepoNodePath = repoNodePath.String
+			w.WorkflowNode = workflowNode.String
 			res[w.TaskID] = append(res[w.TaskID], w)
 		}
 		if err := rows.Err(); err != nil {
@@ -1873,6 +1956,81 @@ func (d *DB) getWorkersForTasks(taskIDs []string) (map[string][]TaskWorker, erro
 		rows.Close()
 	}
 	return res, nil
+}
+
+func (d *DB) getWorkstreamsForTasks(taskIDs []string) (map[string][]TaskWorkstream, error) {
+	res := make(map[string][]TaskWorkstream)
+	if len(taskIDs) == 0 {
+		return res, nil
+	}
+	for _, chunk := range chunkSlice(taskIDs, 500) {
+		placeholders := make([]string, len(chunk))
+		args := make([]interface{}, len(chunk))
+		for i, id := range chunk {
+			placeholders[i] = "?"
+			args[i] = id
+		}
+		query := fmt.Sprintf(`SELECT task_id, repo_node_path, target_host, depends_on, workflow_node, status, branch, worktree_path, pr_url, updated_at FROM task_workstreams WHERE task_id IN (%s)`, strings.Join(placeholders, ","))
+		rows, err := d.db.Query(query, args...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var ws TaskWorkstream
+			var targetHost, dependsOn, workflowNode, branch, worktreePath, prURL sql.NullString
+			if err := rows.Scan(&ws.TaskID, &ws.RepoNodePath, &targetHost, &dependsOn, &workflowNode, &ws.Status, &branch, &worktreePath, &prURL, &ws.UpdatedAt); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			ws.TargetHost = targetHost.String
+			ws.DependsOn = dependsOn.String
+			ws.WorkflowNode = workflowNode.String
+			ws.Branch = branch.String
+			ws.WorktreePath = worktreePath.String
+			ws.PRURL = prURL.String
+			res[ws.TaskID] = append(res[ws.TaskID], ws)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		rows.Close()
+	}
+	return res, nil
+}
+
+func insertTaskWorkstreamTx(tx *sql.Tx, ws *TaskWorkstream) error {
+	if ws.Status == "" {
+		ws.Status = "NEW"
+	}
+	if ws.UpdatedAt.IsZero() {
+		ws.UpdatedAt = time.Now().UTC()
+	}
+	query := `INSERT INTO task_workstreams (task_id, repo_node_path, target_host, depends_on, workflow_node, status, branch, worktree_path, pr_url, updated_at)
+			  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			  ON CONFLICT(task_id, repo_node_path) DO UPDATE SET
+			  	target_host = COALESCE(NULLIF(excluded.target_host, ''), task_workstreams.target_host),
+			  	depends_on = COALESCE(NULLIF(excluded.depends_on, ''), task_workstreams.depends_on),
+			  	workflow_node = COALESCE(NULLIF(excluded.workflow_node, ''), task_workstreams.workflow_node),
+			  	status = excluded.status,
+			  	branch = COALESCE(NULLIF(excluded.branch, ''), task_workstreams.branch),
+			  	worktree_path = COALESCE(NULLIF(excluded.worktree_path, ''), task_workstreams.worktree_path),
+			  	pr_url = COALESCE(NULLIF(excluded.pr_url, ''), task_workstreams.pr_url),
+			  	updated_at = excluded.updated_at;`
+	_, err := tx.Exec(query, ws.TaskID, ws.RepoNodePath, ws.TargetHost, ws.DependsOn, ws.WorkflowNode, ws.Status, ws.Branch, ws.WorktreePath, ws.PRURL, ws.UpdatedAt)
+	return err
+}
+
+func (d *DB) InsertTaskWorkstream(ws *TaskWorkstream) error {
+	tx, err := d.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := insertTaskWorkstreamTx(tx, ws); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (d *DB) getDeliverablesForTasks(taskIDs []string) (map[string][]TaskDeliverable, error) {
@@ -1925,6 +2083,9 @@ func (d *DB) CreateTask(t *Task) error {
 	if t.UpdatedAt.IsZero() {
 		t.UpdatedAt = time.Now().UTC()
 	}
+	if t.TaskKind == "" {
+		t.TaskKind = "code"
+	}
 
 	tx, err := d.db.Begin()
 	if err != nil {
@@ -1933,8 +2094,8 @@ func (d *DB) CreateTask(t *Task) error {
 	defer tx.Rollback()
 
 	query := `INSERT INTO tasks (
-		id, title, group_name, project_name, subproject_name, status, substatus, notes, blocker_question, branch, worktree_path, pr_url, pr_number, pr_state, ci_status, created_at, updated_at, completed_at, deleted_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		id, title, group_name, project_name, subproject_name, status, substatus, notes, blocker_question, branch, worktree_path, pr_url, pr_number, pr_state, ci_status, created_at, updated_at, completed_at, deleted_at, task_kind
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	var completedAt, deletedAt sql.NullTime
 	if t.CompletedAt != nil {
@@ -1949,7 +2110,7 @@ func (d *DB) CreateTask(t *Task) error {
 	_, err = tx.Exec(query,
 		t.ID, t.Title, t.GroupName, t.ProjectName, t.SubprojectName,
 		t.Status, t.Substatus, t.Notes, t.BlockerQuestion, t.Branch, t.WorktreePath,
-		t.PRURL, t.PRNumber, t.PRState, t.CIStatus, t.CreatedAt, t.UpdatedAt, completedAt, deletedAt,
+		t.PRURL, t.PRNumber, t.PRState, t.CIStatus, t.CreatedAt, t.UpdatedAt, completedAt, deletedAt, t.TaskKind,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to create task: %w", err)
@@ -1959,6 +2120,13 @@ func (d *DB) CreateTask(t *Task) error {
 		w := &t.Workers[i]
 		w.TaskID = t.ID
 		if err := insertTaskWorkerTx(tx, w); err != nil {
+			return err
+		}
+	}
+	for i := range t.Workstreams {
+		ws := &t.Workstreams[i]
+		ws.TaskID = t.ID
+		if err := insertTaskWorkstreamTx(tx, ws); err != nil {
 			return err
 		}
 	}
@@ -1985,6 +2153,9 @@ func (d *DB) CreateTask(t *Task) error {
 
 func (d *DB) UpdateTask(t *Task) error {
 	t.UpdatedAt = time.Now().UTC()
+	if t.TaskKind == "" {
+		t.TaskKind = "code"
+	}
 
 	tx, err := d.db.Begin()
 	if err != nil {
@@ -1995,7 +2166,7 @@ func (d *DB) UpdateTask(t *Task) error {
 	query := `UPDATE tasks SET
 		title = ?, group_name = ?, project_name = ?, subproject_name = ?, status = ?, substatus = ?,
 		notes = ?, blocker_question = ?, branch = ?, worktree_path = ?, pr_url = ?, pr_number = ?,
-		pr_state = ?, ci_status = ?, updated_at = ?, completed_at = ?, deleted_at = NULL
+		pr_state = ?, ci_status = ?, updated_at = ?, completed_at = ?, task_kind = ?, deleted_at = NULL
 		WHERE id = ?`
 
 	var completedAt sql.NullTime
@@ -2007,7 +2178,7 @@ func (d *DB) UpdateTask(t *Task) error {
 	res, err := tx.Exec(query,
 		t.Title, t.GroupName, t.ProjectName, t.SubprojectName, t.Status, t.Substatus,
 		t.Notes, t.BlockerQuestion, t.Branch, t.WorktreePath, t.PRURL, t.PRNumber,
-		t.PRState, t.CIStatus, t.UpdatedAt, completedAt, t.ID,
+		t.PRState, t.CIStatus, t.UpdatedAt, completedAt, t.TaskKind, t.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to update task: %w", err)
@@ -2030,6 +2201,21 @@ func (d *DB) UpdateTask(t *Task) error {
 			w := &t.Workers[i]
 			w.TaskID = t.ID
 			if err := insertTaskWorkerTx(tx, w); err != nil {
+				return err
+			}
+		}
+	}
+
+	// Only update Workstreams if explicitly provided (non-nil)
+	if t.Workstreams != nil {
+		_, err = tx.Exec(`DELETE FROM task_workstreams WHERE task_id = ?`, t.ID)
+		if err != nil {
+			return err
+		}
+		for i := range t.Workstreams {
+			ws := &t.Workstreams[i]
+			ws.TaskID = t.ID
+			if err := insertTaskWorkstreamTx(tx, ws); err != nil {
 				return err
 			}
 		}
@@ -2078,6 +2264,9 @@ func (d *DB) upsertTaskSync(t *Task) error {
 	if t.UpdatedAt.IsZero() {
 		t.UpdatedAt = time.Now().UTC()
 	}
+	if t.TaskKind == "" {
+		t.TaskKind = "code"
+	}
 
 	tx, err := d.db.Begin()
 	if err != nil {
@@ -2086,8 +2275,8 @@ func (d *DB) upsertTaskSync(t *Task) error {
 	defer tx.Rollback()
 
 	query := `INSERT INTO tasks (
-		id, title, group_name, project_name, subproject_name, status, substatus, notes, blocker_question, branch, worktree_path, pr_url, pr_number, pr_state, ci_status, created_at, updated_at, completed_at, deleted_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+		id, title, group_name, project_name, subproject_name, status, substatus, notes, blocker_question, branch, worktree_path, pr_url, pr_number, pr_state, ci_status, created_at, updated_at, completed_at, deleted_at, task_kind
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
 	ON CONFLICT(id) DO UPDATE SET
 		title=excluded.title,
 		group_name=excluded.group_name,
@@ -2105,6 +2294,7 @@ func (d *DB) upsertTaskSync(t *Task) error {
 		ci_status=excluded.ci_status,
 		updated_at=excluded.updated_at,
 		completed_at=excluded.completed_at,
+		task_kind=excluded.task_kind,
 		deleted_at=NULL;`
 
 	var completedAt sql.NullTime
@@ -2116,7 +2306,7 @@ func (d *DB) upsertTaskSync(t *Task) error {
 	_, err = tx.Exec(query,
 		t.ID, t.Title, t.GroupName, t.ProjectName, t.SubprojectName,
 		t.Status, t.Substatus, t.Notes, t.BlockerQuestion, t.Branch, t.WorktreePath,
-		t.PRURL, t.PRNumber, t.PRState, t.CIStatus, t.CreatedAt, t.UpdatedAt, completedAt,
+		t.PRURL, t.PRNumber, t.PRState, t.CIStatus, t.CreatedAt, t.UpdatedAt, completedAt, t.TaskKind,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to upsert task sync: %w", err)
@@ -2127,6 +2317,16 @@ func (d *DB) upsertTaskSync(t *Task) error {
 			w := &t.Workers[i]
 			w.TaskID = t.ID
 			if err := insertTaskWorkerTx(tx, w); err != nil {
+				return err
+			}
+		}
+	}
+
+	if t.Workstreams != nil {
+		for i := range t.Workstreams {
+			ws := &t.Workstreams[i]
+			ws.TaskID = t.ID
+			if err := insertTaskWorkstreamTx(tx, ws); err != nil {
 				return err
 			}
 		}
@@ -2177,6 +2377,7 @@ func (d *DB) DeleteTask(taskID string) error {
 		return fmt.Errorf("task with id %s not found or already deleted", taskID)
 	}
 	_, _ = d.db.Exec(`DELETE FROM task_workers WHERE task_id = ?;`, taskID)
+	_, _ = d.db.Exec(`DELETE FROM task_workstreams WHERE task_id = ?;`, taskID)
 	_, _ = d.db.Exec(`DELETE FROM task_external_refs WHERE task_id = ?;`, taskID)
 	_, _ = d.db.Exec(`DELETE FROM task_deliverables WHERE task_id = ?;`, taskID)
 	_, _ = d.db.Exec(`UPDATE sessions SET current_task_id = '', metadata_updated_at = ? WHERE current_task_id = ?;`, now, taskID)
@@ -2191,13 +2392,15 @@ func insertTaskWorkerTx(tx *sql.Tx, w *TaskWorker) error {
 	if w.AssignedAt.IsZero() {
 		w.AssignedAt = time.Now()
 	}
-	query := `INSERT INTO task_workers (task_id, session_id, agent, host, is_active, assigned_at)
-			  VALUES (?, ?, ?, ?, ?, ?)
+	query := `INSERT INTO task_workers (task_id, session_id, agent, host, is_active, assigned_at, repo_node_path, workflow_node)
+			  VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 			  ON CONFLICT(task_id, session_id) DO UPDATE SET
 			  is_active = excluded.is_active,
 			  agent = excluded.agent,
-			  host = excluded.host`
-	if _, err := tx.Exec(query, w.TaskID, w.SessionID, w.Agent, w.Host, isActive, w.AssignedAt); err != nil {
+			  host = excluded.host,
+			  repo_node_path = COALESCE(NULLIF(excluded.repo_node_path, ''), task_workers.repo_node_path),
+			  workflow_node = COALESCE(NULLIF(excluded.workflow_node, ''), task_workers.workflow_node);`
+	if _, err := tx.Exec(query, w.TaskID, w.SessionID, w.Agent, w.Host, isActive, w.AssignedAt, w.RepoNodePath, w.WorkflowNode); err != nil {
 		return err
 	}
 	if w.SessionID != "" && w.TaskID != "" {
@@ -2225,7 +2428,7 @@ func insertTaskDeliverableTx(tx *sql.Tx, td *TaskDeliverable) error {
 		td.UpdatedAt = time.Now().UTC()
 	}
 
-	// Deduplicate deliverable for same task and file path
+	// Deduplicate deliverable for same task and file path or url or (kind, title)
 	if td.FilePath != "" {
 		var existingID string
 		err := tx.QueryRow(`SELECT id FROM task_deliverables WHERE task_id = ? AND file_path = ?`, td.TaskID, td.FilePath).Scan(&existingID)
@@ -2240,6 +2443,14 @@ func insertTaskDeliverableTx(tx *sql.Tx, td *TaskDeliverable) error {
 		if err == nil && existingID != "" {
 			td.ID = existingID
 			_, err = tx.Exec(`UPDATE task_deliverables SET kind = ?, title = ?, host = ?, provider = ?, content_md = ?, updated_at = ? WHERE id = ?`, td.Kind, td.Title, td.Host, td.Provider, td.ContentMD, td.UpdatedAt, existingID)
+			return err
+		}
+	} else {
+		var existingID string
+		err := tx.QueryRow(`SELECT id FROM task_deliverables WHERE task_id = ? AND kind = ? AND title = ?`, td.TaskID, td.Kind, td.Title).Scan(&existingID)
+		if err == nil && existingID != "" {
+			td.ID = existingID
+			_, err = tx.Exec(`UPDATE task_deliverables SET host = ?, provider = ?, content_md = ?, updated_at = ? WHERE id = ?`, td.Host, td.Provider, td.ContentMD, td.UpdatedAt, existingID)
 			return err
 		}
 	}
@@ -2269,6 +2480,11 @@ func (d *DB) InsertTaskWorker(w *TaskWorker) error {
 		return err
 	}
 	return tx.Commit()
+}
+
+func (d *DB) ReassignWorkerSessionID(oldSessionID, newSessionID string) error {
+	_, err := d.db.Exec(`UPDATE task_workers SET session_id = ? WHERE session_id = ?`, newSessionID, oldSessionID)
+	return err
 }
 
 func (d *DB) InsertTaskExternalRef(r *TaskExternalRef) error {
@@ -2325,7 +2541,7 @@ func (d *DB) DeduplicateTasks() (int64, error) {
 		rows.Close()
 
 		for _, dr := range dupRefs {
-			taskQuery := `SELECT t.id, t.title, t.group_name, t.project_name, t.subproject_name, t.status, t.substatus, t.notes, t.blocker_question, t.branch, t.worktree_path, t.pr_url, t.pr_number, t.pr_state, t.ci_status, t.created_at, t.updated_at, t.completed_at, t.deleted_at
+			taskQuery := `SELECT t.id, t.title, t.group_name, t.project_name, t.subproject_name, t.status, t.substatus, t.notes, t.blocker_question, t.branch, t.worktree_path, t.pr_url, t.pr_number, t.pr_state, t.ci_status, t.created_at, t.updated_at, t.completed_at, t.deleted_at, t.task_kind
 						  FROM tasks t
 						  JOIN task_external_refs r ON t.id = r.task_id
 						  WHERE r.tracker = ? AND r.ref_key = ?;`
@@ -2377,8 +2593,10 @@ func (d *DB) DeduplicateTasks() (int64, error) {
 					}
 
 					_, _ = d.db.Exec(`UPDATE OR IGNORE task_workers SET task_id = ? WHERE task_id = ?`, primary.ID, dup.ID)
+					_, _ = d.db.Exec(`UPDATE OR IGNORE task_workstreams SET task_id = ? WHERE task_id = ?`, primary.ID, dup.ID)
 					_, _ = d.db.Exec(`UPDATE OR IGNORE task_deliverables SET task_id = ? WHERE task_id = ?`, primary.ID, dup.ID)
 					_, _ = d.db.Exec(`DELETE FROM task_workers WHERE task_id = ?`, dup.ID)
+					_, _ = d.db.Exec(`DELETE FROM task_workstreams WHERE task_id = ?`, dup.ID)
 					_, _ = d.db.Exec(`DELETE FROM task_deliverables WHERE task_id = ?`, dup.ID)
 					_, _ = d.db.Exec(`DELETE FROM task_external_refs WHERE task_id = ?`, dup.ID)
 					res, err := d.db.Exec(`DELETE FROM tasks WHERE id = ?`, dup.ID)
@@ -2416,7 +2634,7 @@ func (d *DB) DeduplicateTasks() (int64, error) {
 		titleRows.Close()
 
 		for _, td := range dupTitles {
-			tRows, err := d.db.Query(`SELECT id, title, group_name, project_name, subproject_name, status, substatus, notes, blocker_question, branch, worktree_path, pr_url, pr_number, pr_state, ci_status, created_at, updated_at, completed_at, deleted_at
+			tRows, err := d.db.Query(`SELECT id, title, group_name, project_name, subproject_name, status, substatus, notes, blocker_question, branch, worktree_path, pr_url, pr_number, pr_state, ci_status, created_at, updated_at, completed_at, deleted_at, task_kind
 									  FROM tasks
 									  WHERE lower(title) = lower(?) AND lower(group_name) = lower(?) AND lower(project_name) = lower(?) AND (branch = '' OR branch IS NULL)
 									  ORDER BY 
@@ -2445,8 +2663,10 @@ func (d *DB) DeduplicateTasks() (int64, error) {
 					primary.Notes = dup.Notes
 				}
 				_, _ = d.db.Exec(`UPDATE OR IGNORE task_workers SET task_id = ? WHERE task_id = ?`, primary.ID, dup.ID)
+				_, _ = d.db.Exec(`UPDATE OR IGNORE task_workstreams SET task_id = ? WHERE task_id = ?`, primary.ID, dup.ID)
 				_, _ = d.db.Exec(`UPDATE OR IGNORE task_deliverables SET task_id = ? WHERE task_id = ?`, primary.ID, dup.ID)
 				_, _ = d.db.Exec(`DELETE FROM task_workers WHERE task_id = ?`, dup.ID)
+				_, _ = d.db.Exec(`DELETE FROM task_workstreams WHERE task_id = ?`, dup.ID)
 				_, _ = d.db.Exec(`DELETE FROM task_deliverables WHERE task_id = ?`, dup.ID)
 				_, _ = d.db.Exec(`DELETE FROM task_external_refs WHERE task_id = ?`, dup.ID)
 				res, err := d.db.Exec(`DELETE FROM tasks WHERE id = ?`, dup.ID)
@@ -2632,6 +2852,7 @@ type SyncStatePayload struct {
 	Nodes         []TreeNode        `json:"nodes,omitempty"`
 	NodeHostPaths []NodeHostPath    `json:"node_host_paths,omitempty"`
 	Tasks         []Task            `json:"tasks,omitempty"`
+	Workstreams   []TaskWorkstream  `json:"workstreams,omitempty"`
 	Deliverables  []TaskDeliverable `json:"deliverables,omitempty"`
 	SessionMetas  []SessionMetaSync `json:"session_metas,omitempty"`
 }
@@ -2689,7 +2910,7 @@ func (d *DB) GetSyncStateSince(since time.Time, sourceHost string) (*SyncStatePa
 	}
 
 	// 3. Tasks (including soft-deleted)
-	tRows, err := d.db.Query("SELECT id, title, group_name, project_name, subproject_name, status, substatus, notes, blocker_question, branch, worktree_path, pr_url, pr_number, pr_state, ci_status, created_at, updated_at, completed_at, deleted_at FROM tasks;")
+	tRows, err := d.db.Query("SELECT id, title, group_name, project_name, subproject_name, status, substatus, notes, blocker_question, branch, worktree_path, pr_url, pr_number, pr_state, ci_status, created_at, updated_at, completed_at, deleted_at, task_kind FROM tasks;")
 	if err != nil {
 		return nil, fmt.Errorf("failed to query tasks for sync: %w", err)
 	}
@@ -2706,6 +2927,27 @@ func (d *DB) GetSyncStateSince(since time.Time, sourceHost string) (*SyncStatePa
 			}
 			payload.Tasks = append(payload.Tasks, *t)
 		}
+	}
+
+	// 3b. TaskWorkstreams
+	wsRows, err := d.db.Query("SELECT task_id, repo_node_path, target_host, depends_on, workflow_node, status, branch, worktree_path, pr_url, updated_at FROM task_workstreams;")
+	if err == nil {
+		for wsRows.Next() {
+			var ws TaskWorkstream
+			var targetHost, dependsOn, workflowNode, branch, worktreePath, prURL sql.NullString
+			if err := wsRows.Scan(&ws.TaskID, &ws.RepoNodePath, &targetHost, &dependsOn, &workflowNode, &ws.Status, &branch, &worktreePath, &prURL, &ws.UpdatedAt); err == nil {
+				ws.TargetHost = targetHost.String
+				ws.DependsOn = dependsOn.String
+				ws.WorkflowNode = workflowNode.String
+				ws.Branch = branch.String
+				ws.WorktreePath = worktreePath.String
+				ws.PRURL = prURL.String
+				if since.IsZero() || ws.UpdatedAt.After(since) {
+					payload.Workstreams = append(payload.Workstreams, ws)
+				}
+			}
+		}
+		wsRows.Close()
 	}
 
 	// 4. TaskDeliverables
@@ -2859,18 +3101,23 @@ func (d *DB) ApplySyncState(payload *SyncStatePayload) ([]*Session, error) {
 				_, _ = d.db.Exec("UPDATE tasks SET deleted_at = ?, updated_at = ? WHERE id = ?;", incoming.DeletedAt, incoming.UpdatedAt, incoming.ID)
 			} else {
 				q := `INSERT INTO tasks (
-					id, title, group_name, project_name, subproject_name, status, substatus, notes, blocker_question, branch, worktree_path, pr_url, pr_number, pr_state, ci_status, created_at, updated_at, completed_at, deleted_at
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`
+					id, title, group_name, project_name, subproject_name, status, substatus, notes, blocker_question, branch, worktree_path, pr_url, pr_number, pr_state, ci_status, created_at, updated_at, completed_at, deleted_at, task_kind
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`
 				var compAt sql.NullTime
 				if incoming.CompletedAt != nil {
 					compAt = sql.NullTime{Time: *incoming.CompletedAt, Valid: true}
 				}
+				taskKind := incoming.TaskKind
+				if taskKind == "" {
+					taskKind = "code"
+				}
 				_, _ = d.db.Exec(q,
 					incoming.ID, incoming.Title, incoming.GroupName, incoming.ProjectName, incoming.SubprojectName,
 					incoming.Status, incoming.Substatus, incoming.Notes, incoming.BlockerQuestion, incoming.Branch, incoming.WorktreePath,
-					incoming.PRURL, incoming.PRNumber, incoming.PRState, incoming.CIStatus, incoming.CreatedAt, incoming.UpdatedAt, compAt, incoming.DeletedAt)
+					incoming.PRURL, incoming.PRNumber, incoming.PRState, incoming.CIStatus, incoming.CreatedAt, incoming.UpdatedAt, compAt, incoming.DeletedAt, taskKind)
 			}
 			_, _ = d.db.Exec(`DELETE FROM task_workers WHERE task_id = ?;`, incoming.ID)
+			_, _ = d.db.Exec(`DELETE FROM task_workstreams WHERE task_id = ?;`, incoming.ID)
 			_, _ = d.db.Exec(`DELETE FROM task_external_refs WHERE task_id = ?;`, incoming.ID)
 			_, _ = d.db.Exec(`DELETE FROM task_deliverables WHERE task_id = ?;`, incoming.ID)
 		} else {
@@ -2878,7 +3125,21 @@ func (d *DB) ApplySyncState(payload *SyncStatePayload) ([]*Session, error) {
 		}
 	}
 
-	// 4. Reconcile Deliverables via LWW
+	// 4. Reconcile Workstreams via LWW
+	for _, incoming := range payload.Workstreams {
+		var existingUpdAt sql.NullTime
+		err := d.db.QueryRow("SELECT updated_at FROM task_workstreams WHERE task_id = ? AND repo_node_path = ?;", incoming.TaskID, incoming.RepoNodePath).Scan(&existingUpdAt)
+		if err == nil && existingUpdAt.Valid && !incoming.UpdatedAt.After(existingUpdAt.Time) {
+			continue
+		}
+		var taskCount int
+		_ = d.db.QueryRow("SELECT COUNT(*) FROM tasks WHERE id = ?;", incoming.TaskID).Scan(&taskCount)
+		if taskCount > 0 {
+			_ = d.InsertTaskWorkstream(&incoming)
+		}
+	}
+
+	// 5. Reconcile Deliverables via LWW
 	for _, incoming := range payload.Deliverables {
 		var existingUpdAt sql.NullTime
 		err := d.db.QueryRow("SELECT updated_at FROM task_deliverables WHERE id = ?;", incoming.ID).Scan(&existingUpdAt)
@@ -2893,7 +3154,7 @@ func (d *DB) ApplySyncState(payload *SyncStatePayload) ([]*Session, error) {
 		}
 	}
 
-	// 5. Reconcile SessionMetas via LWW
+	// 6. Reconcile SessionMetas via LWW
 	for _, meta := range payload.SessionMetas {
 		existing, _ := d.GetSession(meta.ID)
 		if existing == nil && meta.NativeID != "" {
