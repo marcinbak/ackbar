@@ -38,32 +38,32 @@
 ┌────────────────────────────────────────────────────────────────────────┐
 │                        IMPLEMENTATION PHASES                           │
 │                                                                        │
-│  PHASE 1: 24/7 FEDERATED CONTROL PLANE & UNIFIED SUPERVISOR MCP        │
-│  • Sync `tree_nodes`, per-host repo paths (`path_macmini`,             │
-│    `path_legion`), and session `node_path` across `legion` + `macmini` │
-│    so Mobile (`iphone`) & Web (`macbook`) share the exact folder tree. │
-│  • Implement `GET /v1/sessions?federated=true`, `/v1/nodes`,           │
-│    and `/v1/tasks` on `ackbard`.                                       │
-│  • Expand `ackbar mcp` (`internal/mcp/tools.go`) with the 5 Session    │
-│    Control tools + 4 Task Stage-Gate tools (`complete_stage`, etc.).   │
+│  PHASE 1: 3-WAY LWW PEER SYNC & DYNAMIC `node_host_paths`              │
+│  • Uniform LWW peer sync across `macbook`, `macmini` & `legion` for    │
+│    `tree_nodes`, `node_host_paths`, `tasks`, `task_deliverables`, and  │
+│    session metadata (`node_path`, `custom_title`, `is_later`).         │
+│  • Implement startup/wake delta pull (`/v1/sync/state?since=<ts>`) and │
+│    `[offline]` badges for asleep hosts.                                │
 │                                                                        │
-│  PHASE 2: STAGE-GATE ENGINE, SEQUENTIAL WORKSTREAMS & WATCHDOG         │
-│  • Add `task_workstreams` (`depends_on`, `learnings_md`) for parallel  │
-│    and sequential cross-platform flows (e.g. `ngl-ios` ➔ `ngl-android`)│
-│  • Implement deterministic `complete_stage` verification gates and the │
-│    Premature Idle Watchdog (15s timer + up to 2 auto-nudges).          │
-│  • Group task worker sessions under `📋 Task` in the session tree and  │
-│    auto-clean `.worktrees/<task>` + archive sessions on `DONE`.        │
+│  PHASE 2: ZERO-INPUT `⚓ SUPERVISORS` & `📋 TASKS` TREE SECTIONS       │
+│  • Add `is_supervisor` flag, `[⚓ Supervisors]` sidebar switcher, and   │
+│    1-tap `[+ ⚓ New Supervisor]` (zero upfront inputs).                 │
+│  • Add `bind_supervisor_session` MCP tool to auto-bind project & title │
+│    on the first turn, plus dedicated `📋 Tasks` folder grouping.        │
 │                                                                        │
-│  PHASE 3: VOICE COMPANION & 2-TIER LAZY SPEECH PIPELINE                │
+│  PHASE 3: NATIVE CLOUD ARTIFACTS & `dev-workflow` NODE MAPPING         │
+│  • Support Product/Design tasks (`kind="design"`, `guard.py` bypassed) │
+│    and Code tasks (`kind="code"`, 1 Tmux session per repo workstream). │
+│  • Connect `attach_deliverable` to Claude Published Artifacts and      │
+│    Antigravity Google Workspace (`gdrive`/`gdocs`/`gslides`/`gsheets`) │
+│    + synced `content_md` for cross-host learnings.                     │
+│  • Map `dev-workflow` nodes (`N1`/`N2`/`N11`/`N15`) on `StateIdle`,    │
+│    auto-close Tmux at `N15`, and unlock sequential repos on `N14`.     │
+│                                                                        │
+│  PHASE 4: VOICE COMPANION & 2-TIER LAZY SPEECH PIPELINE                │
 │  • Implement `POST /v1/sessions/summarize-speech` with `$0` stateless  │
 │    Haiku (`claude -p --model haiku`) and `(session_id, msg_idx)` cache.│
 │  • Add Tier 1 client Markdown speech sanitizer, `[🔊 Auto-Read]`,      │
 │    `[🎤 Mic]`, and per-message `[🔊 Read]` / `[↺ Read Again]` buttons. │
-│                                                                        │
-│  PHASE 4: INLINE WORK BOARD ARTIFACT DRAWER & COMMUTER QUICK-CHIPS     │
-│  • Inline `.ackbar/plan.md` & `.ackbar/review/index.html` drawer with  │
-│    1-tap `[✅ Approve Stage]`, `[💬 Request Changes]`, `[⚡ Merge PR]`.│
-│  • Render interactive `suggested_chips` in mobile/web chat composer.   │
 └────────────────────────────────────────────────────────────────────────┘
 ```

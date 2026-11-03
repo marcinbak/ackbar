@@ -18,12 +18,13 @@
 ---
 
 ### 2. 🎙️ Unified Supervisor Control Layer, Task Orchestrator & Voice Companion (Ackbar 2.0)
-* **Status:** Architecture Designed
+* **Status:** Architecture Designed (Grilled & Locked)
 * **Detailed Specs:** [`docs/voice-companion.md`](voice-companion.md) & [`docs/work-overview/`](work-overview/README.md)
 * **Scope:**
-  * **24/7 Multi-Host Control Plane (`legion` + `macmini`):** Replicate `tree_nodes` (with per-host repo paths `path_macmini` / `path_legion`), session `node_path`, `tasks`, and `task_workstreams` across the 24/7 daemons via `GET /v1/nodes?federated=true`, `GET /v1/sessions?federated=true`, and `GET /v1/tasks?federated=true` so Mobile (`iphone`) and Desktop (`macbook`) always see the identical folder tree and Work Board.
-  * **Unified Supervisor & Task Stage-Gate MCP (`ackbar mcp`):** Expand MCP server with 5 Session Control tools (`list_sessions`, `get_session_output`, `send_session_input`, `spawn_session`, `control_session`) and 4 Task Stage-Gate tools (`create_task`, `dispatch_task_stage`, `complete_stage`, `review_task_stage`).
-  * **Stage-Gate Execution, Sequential Cross-Platform Workstreams & Premature Idle Watchdog:** Support both parallel and sequential (`depends_on` + `.ackbar/learnings.md` handoff, e.g. `ngl-ios` `@macmini` $\rightarrow$ `ngl-android` `@legion`) repo workstreams, deterministic zero-token `complete_stage` gates, a Premature Idle Watchdog (auto-nudging workers that go `StateIdle` without calling `complete_stage` or `report_blocker`), `📋 Task` session tree grouping, and automatic `.worktrees/<task>` + session cleanup on `DONE`.
+  * **Uniform 3-Way LWW Peer Sync (`macbook` $\leftrightarrow$ `macmini` $\leftrightarrow$ `legion`) & Dynamic `node_host_paths`:** Replicate `tree_nodes`, `node_host_paths`, session metadata (`node_path`, `custom_title`, `is_later`, `is_supervisor`), `tasks`, `task_workstreams`, and `task_deliverables` across all hosts with startup/wake delta pull and `[offline]` badges for asleep hosts.
+  * **Zero-Input `⚓ Supervisor` Dispatchers & Dedicated `📋 Task` Sessions:** 1-tap `[+ ⚓ New Supervisor]` opens a blank session with zero upfront inputs, auto-binds to the project via `bind_supervisor_session` on the first turn, and dispatches dedicated **`📋 Task`** sessions for Product/Design (`kind="design"`) or Repo Code (`kind="code"`).
+  * **Native Hosted Artifacts (Claude Published Artifacts + Google Drive/Docs/Slides):** Attach hosted deliverables (`url`) + synced `content_md` via `attach_deliverable` using Claude Published Artifacts (for Claude Code) and Google Workspace (`gdrive`, `gdocs`, `gslides`, `gsheets` under `Ackbar/projects/<project>/tasks/<task>/` for Antigravity).
+  * **`dev-workflow` State Mapping, N15 Auto-Close & N14 Sequential Handoff:** Map `dev-workflow` nodes (`N1`/`N2`/`N11`/`N15`) when sessions enter `StateIdle`, auto-close Tmux at `N15`, and unlock sequential dependent repo workstreams (`ngl-ios` `@macmini` $\rightarrow$ `ngl-android` `@legion`) upon `N14` merge.
   * **Decoupled Voice/Audio Companion & 2-Tier Lazy Speech Pipeline:** Hands-free mode (`🎤 Mic ON` + `🔊 Auto-Read ON`), silent commuter mode (`🎤 Mic OFF` + `🔊 Auto-Read ON` + 1-tap quick chips), and desk mode (`Auto-Read OFF` with ad-hoc `[🔊 Read]` / `[↺ Read Again]`), powered by a 0ms client Markdown speech sanitizer and on-demand `POST /v1/sessions/summarize-speech` via stateless headless Haiku (`claude -p --model haiku`).
 
 ---
