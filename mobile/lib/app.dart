@@ -12,7 +12,12 @@ class AckbarApp extends StatelessWidget {
       title: 'Ackbar',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.darkTheme,
-      home: const MainNavigationShell(),
+      onGenerateRoute: (settings) {
+        return MaterialPageRoute(
+          settings: settings,
+          builder: (_) => MainNavigationShell(initialRoute: settings.name),
+        );
+      },
     );
   }
 }

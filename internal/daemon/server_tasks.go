@@ -93,6 +93,8 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "Failed to create task: "+err.Error(), http.StatusInternalServerError)
 				return
 			}
+			s.maybeNotifyTaskReview("", &t)
+			s.maybeNotifyTaskBlocked("", "", &t)
 			targetRepoPath := req.RepoNodePath
 			if targetRepoPath == "" && len(t.Workstreams) > 0 {
 				for _, ws := range t.Workstreams {
@@ -123,6 +125,10 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "Task not found", http.StatusNotFound)
 				return
 			}
+
+			oldStatus := existing.Status
+			oldSubstatus := existing.Substatus
+			oldQuestion := existing.BlockerQuestion
 
 			// Merge fields from t into existing if provided
 			if t.Title != "" {
@@ -248,6 +254,8 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "Failed to update task: "+err.Error(), http.StatusInternalServerError)
 				return
 			}
+			s.maybeNotifyTaskReview(oldStatus, existing)
+			s.maybeNotifyTaskBlocked(oldSubstatus, oldQuestion, existing)
 			s.pushSyncPayload(&SyncStatePayload{Tasks: []Task{*existing}, Workstreams: existing.Workstreams})
 			w.WriteHeader(http.StatusOK)
 			t = *existing
@@ -335,6 +343,7 @@ func (s *Server) handleTaskEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	oldStatus := task.Status
 	updated := false
 
 	// Ambient ingestion: detect branches
@@ -362,6 +371,7 @@ func (s *Server) handleTaskEvent(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Failed to update task", http.StatusInternalServerError)
 			return
 		}
+		s.maybeNotifyTaskReview(oldStatus, task)
 		s.pushSyncPayload(&SyncStatePayload{Tasks: []Task{*task}})
 	}
 

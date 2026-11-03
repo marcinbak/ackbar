@@ -86,8 +86,10 @@ func (s *Server) verifySessionLiveness(ctx context.Context, sessions []*Session)
 
 		if p, ok := s.providers[sess.Agent]; ok {
 			if inspector, ok := p.(StatusInspector); ok {
+				prevState := sess.State
 				if inspector.InspectStatus(ctx, sess) {
 					_ = s.db.SaveSession(sess)
+					s.maybeNotifySessionBlocked(prevState, sess)
 					s.broadcast(sess)
 				}
 			}
@@ -223,6 +225,7 @@ func (s *Server) refreshExistingSessions(ctx context.Context, state *ScanState) 
 			continue
 		}
 
+		prevState := sess.State
 		changed := false
 		if p, ok := s.providers[sess.Agent]; ok && sess.NativeID != "" {
 			if meta := p.ReadSessionMetadata(sess.Cwd, sess.NativeID); meta != nil {
@@ -291,6 +294,7 @@ func (s *Server) refreshExistingSessions(ctx context.Context, state *ScanState) 
 		}
 		if changed {
 			_ = s.db.SaveSession(sess)
+			s.maybeNotifySessionBlocked(prevState, sess)
 			s.broadcast(sess)
 		}
 	}

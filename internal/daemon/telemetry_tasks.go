@@ -177,6 +177,7 @@ func (s *Server) IngestToolTelemetry(sess *Session, event *Event) {
 	}
 
 	taskUpdated := false
+	oldStatus := task.Status
 
 	// 1. Check for PR creation or PR URL in command / activity
 	var prURL string
@@ -288,7 +289,9 @@ func (s *Server) IngestToolTelemetry(sess *Session, event *Event) {
 	}
 
 	if taskUpdated {
-		_ = s.db.UpdateTask(task)
+		if err := s.db.UpdateTask(task); err == nil {
+			s.maybeNotifyTaskReview(oldStatus, task)
+		}
 	}
 }
 
@@ -553,6 +556,7 @@ func (s *Server) SyncSessionTaskWorker(sess *Session) {
 	}
 
 	// 3. Reflect blocked / active / idle workflow state
+	oldStatus := task.Status
 	taskNeedsUpdate := false
 	if sess.State == StateBlocked {
 		if task.Substatus != "blocked" {
@@ -605,7 +609,9 @@ func (s *Server) SyncSessionTaskWorker(sess *Session) {
 	}
 
 	if taskNeedsUpdate {
-		_ = s.db.UpdateTask(task)
+		if err := s.db.UpdateTask(task); err == nil {
+			s.maybeNotifyTaskReview(oldStatus, task)
+		}
 	}
 }
 
