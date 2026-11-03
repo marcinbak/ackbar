@@ -19,11 +19,23 @@ import (
 type DaemonClient struct {
 	BaseURL    string
 	Token      string
+	SessionID  string
 	HTTPClient *http.Client
 }
 
-func NewDaemonClient() *DaemonClient {
-	baseURL := os.Getenv("ACKBAR_DAEMON_URL")
+func NewDaemonClient(opts ...string) *DaemonClient {
+	baseURL := ""
+	sessionID := ""
+	if len(opts) > 0 {
+		baseURL = opts[0]
+	}
+	if len(opts) > 1 {
+		sessionID = opts[1]
+	}
+
+	if baseURL == "" {
+		baseURL = os.Getenv("ACKBAR_DAEMON_URL")
+	}
 	if baseURL == "" {
 		baseURL = "http://127.0.0.1:7777"
 	}
@@ -40,8 +52,9 @@ func NewDaemonClient() *DaemonClient {
 	}
 
 	return &DaemonClient{
-		BaseURL: baseURL,
-		Token:   token,
+		BaseURL:   baseURL,
+		Token:     token,
+		SessionID: sessionID,
 		HTTPClient: &http.Client{
 			Timeout: 20 * time.Second,
 		},
@@ -67,6 +80,9 @@ func (c *DaemonClient) doRequest(ctx context.Context, method, endpoint string, r
 	req.Header.Set("Content-Type", "application/json")
 	if c.Token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.Token)
+	}
+	if c.SessionID != "" {
+		req.Header.Set("X-Ackbar-Session-ID", c.SessionID)
 	}
 
 	res, err := c.HTTPClient.Do(req)
@@ -393,6 +409,153 @@ func GetRegisteredTools() []Tool {
 				},
 			},
 		},
+		{
+			Name:        "list_sessions",
+			Description: "List active, blocked, or idle sessions across local and federated hosts with current activity, context %, and blocker questions.",
+			InputSchema: ToolInputSchema{
+				Type: "object",
+				Properties: map[string]PropertyDef{
+					"host": {
+						Type:        "string",
+						Description: "Optional machine alias filter (e.g. 'local', 'devbox', 'macmini').",
+					},
+					"state": {
+						Type:        "string",
+						Description: "Optional session state filter ('working', 'idle', 'blocked', 'ended').",
+						Enum:        []string{"working", "idle", "blocked", "ended"},
+					},
+					"is_supervisor": {
+						Type:        "boolean",
+						Description: "Optional filter for supervisor sessions.",
+					},
+					"federated": {
+						Type:        "boolean",
+						Description: "Whether to query federated peer hosts (default true).",
+					},
+				},
+			},
+		},
+		{
+			Name:        "get_session_output",
+			Description: "Fetch the latest assistant messages, active implementation plan, or current blocker options for a session.",
+			InputSchema: ToolInputSchema{
+				Type: "object",
+				Properties: map[string]PropertyDef{
+					"session_id": {
+						Type:        "string",
+						Description: "Unique session ID (e.g. 'claude-code:macmini:8492' or local native ID).",
+					},
+					"recent_count": {
+						Type:        "integer",
+						Description: "Number of recent assistant messages to return (default 3).",
+					},
+				},
+				Required: []string{"session_id"},
+			},
+		},
+		{
+			Name:        "send_session_input",
+			Description: "Send a user prompt, answer a blocker question, or respond to an interactive permission prompt for a session.",
+			InputSchema: ToolInputSchema{
+				Type: "object",
+				Properties: map[string]PropertyDef{
+					"session_id": {
+						Type:        "string",
+						Description: "Target session ID.",
+					},
+					"input": {
+						Type:        "string",
+						Description: "Text input to send, answer to blocker question, or follow-up prompt (alias: text, prompt).",
+					},
+					"text": {
+						Type:        "string",
+						Description: "Alias for input.",
+					},
+					"prompt": {
+						Type:        "string",
+						Description: "Alias for input.",
+					},
+					"action": {
+						Type:        "string",
+						Description: "Action type: 'prompt' (new user prompt), 'answer' (answer blocker), 'allow' (permit operation), 'deny' (deny operation), 'select_option' (select choice).",
+						Enum:        []string{"prompt", "answer", "allow", "deny", "select_option"},
+					},
+				},
+				Required: []string{"session_id"},
+			},
+		},
+		{
+			Name:        "spawn_session",
+			Description: "Spawn a new agent session on a local or remote host with an initial prompt or task assignment.",
+			InputSchema: ToolInputSchema{
+				Type: "object",
+				Properties: map[string]PropertyDef{
+					"target_host": {
+						Type:        "string",
+						Description: "Target machine alias (e.g. 'local', 'macmini', 'legion'). Defaults to 'local'.",
+					},
+					"node_path": {
+						Type:        "string",
+						Description: "Logical tree node path (e.g. 'Personal/Ackbar' or 'Modemobile/NGL/ngl-ios').",
+					},
+					"directory": {
+						Type:        "string",
+						Description: "Working directory on the target host. Optional if node_path is provided.",
+					},
+					"agent": {
+						Type:        "string",
+						Description: "Agent runtime ('claude-code', 'codex', 'antigravity'). Defaults to 'claude-code'.",
+					},
+					"prompt": {
+						Type:        "string",
+						Description: "Initial prompt or task description to execute.",
+					},
+					"title": {
+						Type:        "string",
+						Description: "Human-readable title for the session.",
+					},
+					"is_supervisor": {
+						Type:        "boolean",
+						Description: "Whether to spawn this as an Ackbar Supervisor session.",
+					},
+					"task_id": {
+						Type:        "string",
+						Description: "Optional associated task ID.",
+					},
+					"task_kind": {
+						Type:        "string",
+						Description: "Task kind ('code' or 'design').",
+					},
+					"headless": {
+						Type:        "boolean",
+						Description: "Whether to run in headless streaming mode instead of tmux.",
+					},
+				},
+			},
+		},
+		{
+			Name:        "control_session",
+			Description: "Execute lifecycle control actions on a session (resume, restart, kill, handover, done, later).",
+			InputSchema: ToolInputSchema{
+				Type: "object",
+				Properties: map[string]PropertyDef{
+					"session_id": {
+						Type:        "string",
+						Description: "Target session ID.",
+					},
+					"action": {
+						Type:        "string",
+						Description: "Lifecycle action to perform.",
+						Enum:        []string{"resume", "restart", "kill", "handover", "done", "later"},
+					},
+					"target_agent": {
+						Type:        "string",
+						Description: "Target agent for handover action (optional).",
+					},
+				},
+				Required: []string{"session_id", "action"},
+			},
+		},
 	}
 }
 
@@ -425,6 +588,16 @@ func ExecuteTool(ctx context.Context, client *DaemonClient, name string, args ma
 		return executeGetStandup(ctx, client, args)
 	case "bind_supervisor_session":
 		return executeBindSupervisorSession(ctx, client, args)
+	case "list_sessions":
+		return executeListSessions(ctx, client, args)
+	case "get_session_output":
+		return executeGetSessionOutput(ctx, client, args)
+	case "send_session_input":
+		return executeSendSessionInput(ctx, client, args)
+	case "spawn_session":
+		return executeSpawnSession(ctx, client, args)
+	case "control_session":
+		return executeControlSession(ctx, client, args)
 	default:
 		return &CallToolResult{
 			IsError: true,
@@ -1030,4 +1203,435 @@ func formatError(msg string) *CallToolResult {
 		IsError: true,
 		Content: []ToolContent{{Type: "text", Text: "Error: " + msg}},
 	}
+}
+
+func getBool(m map[string]any, key string) (bool, bool) {
+	if m == nil {
+		return false, false
+	}
+	v, ok := m[key]
+	if !ok || v == nil {
+		return false, false
+	}
+	switch val := v.(type) {
+	case bool:
+		return val, true
+	case string:
+		s := strings.ToLower(strings.TrimSpace(val))
+		if s == "true" || s == "1" || s == "yes" {
+			return true, true
+		}
+		if s == "false" || s == "0" || s == "no" {
+			return false, true
+		}
+	case float64:
+		return val != 0, true
+	case int, int64, int32:
+		return val != 0, true
+	}
+	return false, false
+}
+
+func getInt(m map[string]any, key string, defaultVal int) int {
+	if m == nil {
+		return defaultVal
+	}
+	v, ok := m[key]
+	if !ok || v == nil {
+		return defaultVal
+	}
+	switch val := v.(type) {
+	case int:
+		return val
+	case int64:
+		return int(val)
+	case float64:
+		return int(val)
+	case string:
+		var n int
+		if _, err := fmt.Sscanf(strings.TrimSpace(val), "%d", &n); err == nil {
+			return n
+		}
+	}
+	return defaultVal
+}
+
+func executeListSessions(ctx context.Context, client *DaemonClient, args map[string]any) (*CallToolResult, error) {
+	hostFilter := getString(args, "host")
+	stateFilter := strings.ToLower(getString(args, "state"))
+	isSupervisorFilter, hasIsSupervisor := getBool(args, "is_supervisor")
+	federated := true
+	if fedVal, hasFed := getBool(args, "federated"); hasFed {
+		federated = fedVal
+	}
+
+	endpoint := fmt.Sprintf("/v1/sessions?federated=%t", federated)
+	var sessions []map[string]any
+	if err := client.doRequest(ctx, http.MethodGet, endpoint, nil, &sessions); err != nil {
+		return formatError(fmt.Sprintf("Failed to list sessions: %v", err)), nil
+	}
+
+	var matched []map[string]any
+	for _, sess := range sessions {
+		if hostFilter != "" && !strings.EqualFold(getString(sess, "host"), hostFilter) {
+			continue
+		}
+		if stateFilter != "" {
+			sessStateStr := strings.ToLower(getString(sess, "state"))
+			switch sessStateStr {
+			case "1":
+				sessStateStr = "working"
+			case "2":
+				sessStateStr = "blocked"
+			case "3":
+				sessStateStr = "idle"
+			case "4":
+				sessStateStr = "ended"
+			case "5":
+				sessStateStr = "failed"
+			}
+			if sessStateStr != stateFilter {
+				continue
+			}
+		}
+		if hasIsSupervisor {
+			isSup, _ := getBool(sess, "is_supervisor")
+			if isSup != isSupervisorFilter {
+				continue
+			}
+		}
+		matched = append(matched, sess)
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Found %d session(s):\n\n", len(matched)))
+	for _, s := range matched {
+		id := getString(s, "id")
+		name := getString(s, "name")
+		if name == "" {
+			name = getString(s, "custom_title")
+		}
+		if name == "" {
+			name = id
+		}
+		agent := getString(s, "agent")
+		host := getString(s, "host")
+		stateStr := getString(s, "state")
+		switch stateStr {
+		case "1":
+			stateStr = "working"
+		case "2":
+			stateStr = "blocked"
+		case "3":
+			stateStr = "idle"
+		case "4":
+			stateStr = "ended"
+		case "5":
+			stateStr = "failed"
+		}
+		activity := getString(s, "activity")
+		ctxPct := getString(s, "context_pct")
+		taskID := getString(s, "current_task_id")
+
+		sb.WriteString(fmt.Sprintf("- **%s** (`%s`)\n", name, id))
+		sb.WriteString(fmt.Sprintf("  - Host: `%s` | Agent: `%s` | State: **%s**", host, agent, stateStr))
+		if ctxPct != "" && ctxPct != "0" {
+			sb.WriteString(fmt.Sprintf(" | Context: %s%%", ctxPct))
+		}
+		if taskID != "" {
+			sb.WriteString(fmt.Sprintf(" | Task: `%s`", taskID))
+		}
+		sb.WriteString("\n")
+		if activity != "" {
+			sb.WriteString(fmt.Sprintf("  - Activity: %s\n", activity))
+		}
+		if blocked, ok := s["blocked"].(map[string]any); ok && blocked != nil {
+			q := getString(blocked, "question")
+			if q != "" {
+				sb.WriteString(fmt.Sprintf("  - ⚠️ Blocked Question: %s\n", q))
+			}
+			if opts, ok := blocked["options"].([]any); ok && len(opts) > 0 {
+				var optStrs []string
+				for _, opt := range opts {
+					optStrs = append(optStrs, fmt.Sprint(opt))
+				}
+				sb.WriteString(fmt.Sprintf("  - Choices: [%s]\n", strings.Join(optStrs, ", ")))
+			}
+		}
+	}
+
+	jsonBytes, _ := json.MarshalIndent(matched, "", "  ")
+	sb.WriteString("\n```json\n")
+	sb.WriteString(string(jsonBytes))
+	sb.WriteString("\n```\n")
+
+	return &CallToolResult{
+		Content: []ToolContent{{Type: "text", Text: sb.String()}},
+	}, nil
+}
+
+func executeGetSessionOutput(ctx context.Context, client *DaemonClient, args map[string]any) (*CallToolResult, error) {
+	sessionID := getString(args, "session_id")
+	if sessionID == "" {
+		return formatError("session_id is required"), nil
+	}
+	recentCount := getInt(args, "recent_count", 3)
+	if recentCount <= 0 {
+		recentCount = 3
+	}
+
+	endpoint := fmt.Sprintf("/v1/sessions/transcript?id=%s&format=json", url.QueryEscape(sessionID))
+	var data map[string]any
+	if err := client.doRequest(ctx, http.MethodGet, endpoint, nil, &data); err != nil {
+		return formatError(fmt.Sprintf("Failed to fetch session transcript: %v", err)), nil
+	}
+
+	title := getString(data, "title")
+	agent := getString(data, "agent")
+	messagesRaw, _ := data["messages"].([]any)
+
+	var assistantMsgs []map[string]any
+	for _, mRaw := range messagesRaw {
+		if m, ok := mRaw.(map[string]any); ok {
+			role := getString(m, "role")
+			if role == "assistant" {
+				assistantMsgs = append(assistantMsgs, m)
+			}
+		}
+	}
+	// Fallback to all messages if no assistant messages explicitly identified
+	if len(assistantMsgs) == 0 {
+		for _, mRaw := range messagesRaw {
+			if m, ok := mRaw.(map[string]any); ok {
+				assistantMsgs = append(assistantMsgs, m)
+			}
+		}
+	}
+
+	startIdx := 0
+	if len(assistantMsgs) > recentCount {
+		startIdx = len(assistantMsgs) - recentCount
+	}
+	recent := assistantMsgs[startIdx:]
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("### Output for Session `%s`\n", sessionID))
+	if title != "" {
+		sb.WriteString(fmt.Sprintf("**Title:** %s | **Agent:** %s\n\n", title, agent))
+	}
+
+	if len(recent) == 0 {
+		sb.WriteString("*(No messages found in transcript)*\n")
+	} else {
+		for i, m := range recent {
+			role := getString(m, "role")
+			content := getString(m, "content")
+			sb.WriteString(fmt.Sprintf("#### Message %d (%s):\n%s\n\n", i+1, role, content))
+		}
+	}
+
+	return &CallToolResult{
+		Content: []ToolContent{{Type: "text", Text: strings.TrimSpace(sb.String())}},
+	}, nil
+}
+
+func executeSendSessionInput(ctx context.Context, client *DaemonClient, args map[string]any) (*CallToolResult, error) {
+	sessionID := getString(args, "session_id")
+	if sessionID == "" {
+		return formatError("session_id is required"), nil
+	}
+	input := getString(args, "input")
+	if input == "" {
+		input = getString(args, "text")
+	}
+	if input == "" {
+		input = getString(args, "prompt")
+	}
+	action := strings.ToLower(getString(args, "action"))
+
+	// 1. If explicit response action (allow/deny/answer/select_option), send to /v1/sessions/respond
+	if action == "allow" || action == "deny" || action == "answer" || action == "select_option" {
+		payload := map[string]any{
+			"id":         sessionID,
+			"session_id": sessionID,
+			"action":     action,
+			"value":      input,
+			"input":      input,
+		}
+		var res map[string]any
+		if err := client.doRequest(ctx, http.MethodPost, "/v1/sessions/respond", payload, &res); err != nil {
+			return formatError(fmt.Sprintf("Failed to respond to session blocker: %v", err)), nil
+		}
+		data, _ := json.MarshalIndent(res, "", "  ")
+		return &CallToolResult{
+			Content: []ToolContent{{Type: "text", Text: fmt.Sprintf("Responded with action '%s':\n%s", action, string(data))}},
+		}, nil
+	}
+
+	// 2. If action is "prompt", send to /v1/sessions/prompt
+	if action == "prompt" {
+		payload := map[string]any{
+			"id":         sessionID,
+			"session_id": sessionID,
+			"prompt":     input,
+		}
+		var res map[string]any
+		if err := client.doRequest(ctx, http.MethodPost, "/v1/sessions/prompt", payload, &res); err != nil {
+			return formatError(fmt.Sprintf("Failed to send prompt to session: %v", err)), nil
+		}
+		data, _ := json.MarshalIndent(res, "", "  ")
+		return &CallToolResult{
+			Content: []ToolContent{{Type: "text", Text: fmt.Sprintf("Prompt dispatched:\n%s", string(data))}},
+		}, nil
+	}
+
+	// 3. Action is omitted (""): check if session is currently blocked
+	isBlocked := false
+	var sessions []map[string]any
+	if err := client.doRequest(ctx, http.MethodGet, "/v1/sessions?federated=true", nil, &sessions); err == nil {
+		for _, s := range sessions {
+			if getString(s, "id") == sessionID || getString(s, "native_id") == sessionID {
+				st := strings.ToLower(getString(s, "state"))
+				if st == "2" || st == "blocked" || s["blocked"] != nil {
+					isBlocked = true
+				}
+				break
+			}
+		}
+	}
+
+	if isBlocked {
+		payload := map[string]any{
+			"id":         sessionID,
+			"session_id": sessionID,
+			"action":     "answer",
+			"value":      input,
+			"input":      input,
+		}
+		var res map[string]any
+		if err := client.doRequest(ctx, http.MethodPost, "/v1/sessions/respond", payload, &res); err != nil {
+			return formatError(fmt.Sprintf("Failed to answer blocked session: %v", err)), nil
+		}
+		data, _ := json.MarshalIndent(res, "", "  ")
+		return &CallToolResult{
+			Content: []ToolContent{{Type: "text", Text: fmt.Sprintf("Answered blocked session:\n%s", string(data))}},
+		}, nil
+	}
+
+	// Send normal prompt
+	promptPayload := map[string]any{
+		"id":         sessionID,
+		"session_id": sessionID,
+		"prompt":     input,
+	}
+	var res map[string]any
+	if err := client.doRequest(ctx, http.MethodPost, "/v1/sessions/prompt", promptPayload, &res); err != nil {
+		// Fallback to respond if prompt returned an error
+		respondPayload := map[string]any{
+			"id":         sessionID,
+			"session_id": sessionID,
+			"action":     "answer",
+			"value":      input,
+			"input":      input,
+		}
+		if respErr := client.doRequest(ctx, http.MethodPost, "/v1/sessions/respond", respondPayload, &res); respErr == nil {
+			data, _ := json.MarshalIndent(res, "", "  ")
+			return &CallToolResult{
+				Content: []ToolContent{{Type: "text", Text: fmt.Sprintf("Responded to session:\n%s", string(data))}},
+			}, nil
+		}
+		return formatError(fmt.Sprintf("Failed to send prompt to session: %v", err)), nil
+	}
+
+	data, _ := json.MarshalIndent(res, "", "  ")
+	return &CallToolResult{
+		Content: []ToolContent{{Type: "text", Text: fmt.Sprintf("Prompt dispatched:\n%s", string(data))}},
+	}, nil
+}
+
+func executeSpawnSession(ctx context.Context, client *DaemonClient, args map[string]any) (*CallToolResult, error) {
+	targetHost := getString(args, "target_host")
+	if targetHost == "" {
+		targetHost = "local"
+	}
+	nodePath := getString(args, "node_path")
+	directory := getString(args, "directory")
+	agent := getString(args, "agent")
+	if agent == "" {
+		agent = "claude-code"
+	}
+	prompt := getString(args, "prompt")
+	title := getString(args, "title")
+	isSupervisor, _ := getBool(args, "is_supervisor")
+	taskID := getString(args, "task_id")
+	taskKind := getString(args, "task_kind")
+	headless, _ := getBool(args, "headless")
+
+	engineType := "tmux"
+	if headless {
+		engineType = "headless"
+	}
+
+	payload := map[string]any{
+		"host":          targetHost,
+		"agent":         agent,
+		"cwd":           directory,
+		"node_path":     nodePath,
+		"name":          title,
+		"prompt":        prompt,
+		"is_supervisor": isSupervisor,
+		"task_id":       taskID,
+		"task_kind":     taskKind,
+		"engine_type":   engineType,
+	}
+
+	var res map[string]any
+	if err := client.doRequest(ctx, http.MethodPost, "/v1/sessions/spawn", payload, &res); err != nil {
+		return formatError(fmt.Sprintf("Failed to spawn session: %v", err)), nil
+	}
+
+	data, _ := json.MarshalIndent(res, "", "  ")
+	return &CallToolResult{
+		Content: []ToolContent{{Type: "text", Text: fmt.Sprintf("Session spawned successfully:\n%s", string(data))}},
+	}, nil
+}
+
+func executeControlSession(ctx context.Context, client *DaemonClient, args map[string]any) (*CallToolResult, error) {
+	sessionID := getString(args, "session_id")
+	action := strings.ToLower(getString(args, "action"))
+	targetAgent := getString(args, "target_agent")
+
+	if sessionID == "" || action == "" {
+		return formatError("session_id and action are required"), nil
+	}
+
+	if action == "handover" {
+		payload := map[string]any{
+			"id":         sessionID,
+			"session_id": sessionID,
+			"strategy":   "in_place",
+		}
+		if targetAgent != "" {
+			payload["target_agent"] = targetAgent
+		}
+		var res map[string]any
+		if err := client.doRequest(ctx, http.MethodPost, "/v1/sessions/handover", payload, &res); err != nil {
+			return formatError(fmt.Sprintf("Failed to execute handover: %v", err)), nil
+		}
+		data, _ := json.MarshalIndent(res, "", "  ")
+		return &CallToolResult{
+			Content: []ToolContent{{Type: "text", Text: fmt.Sprintf("Handover initiated:\n%s", string(data))}},
+		}, nil
+	}
+
+	endpoint := fmt.Sprintf("/v1/sessions/control?id=%s&action=%s", url.QueryEscape(sessionID), url.QueryEscape(action))
+	var res map[string]any
+	if err := client.doRequest(ctx, http.MethodPost, endpoint, nil, &res); err != nil {
+		return formatError(fmt.Sprintf("Failed to execute control action '%s': %v", action, err)), nil
+	}
+
+	data, _ := json.MarshalIndent(res, "", "  ")
+	return &CallToolResult{
+		Content: []ToolContent{{Type: "text", Text: fmt.Sprintf("Action '%s' completed:\n%s", action, string(data))}},
+	}, nil
 }

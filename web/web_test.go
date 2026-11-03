@@ -541,3 +541,53 @@ func TestJSSyntaxValidity(t *testing.T) {
 		})
 	}
 }
+
+func TestPhase4_VoiceCompanion_JS(t *testing.T) {
+	embeddedFS := web.GetFS()
+
+	checkFileContains := func(path string, expectedList []string) {
+		t.Helper()
+		f, err := embeddedFS.Open(path)
+		if err != nil {
+			t.Fatalf("failed to open %s: %v", path, err)
+		}
+		defer f.Close()
+		b, err := io.ReadAll(f)
+		if err != nil {
+			t.Fatalf("failed to read %s: %v", path, err)
+		}
+		content := string(b)
+		for _, expected := range expectedList {
+			if !strings.Contains(content, expected) {
+				t.Errorf("expected %s to contain %q", path, expected)
+			}
+		}
+	}
+
+	checkFileContains("style.css", []string{
+		".btn-chat-autoread",
+		".btn-chat-mic",
+		".btn-read-chat-msg",
+		".btn-stop-chat-msg",
+		".btn-replay-chat-msg",
+		".btn-full-read-chat-msg",
+		".chat-msg.speaking",
+		".chat-suggested-chips",
+		".chat-suggested-chip",
+	})
+
+	checkFileContains("js/chat.js", []string{
+		"sanitizeMarkdownForSpeech",
+		"isSimpleSpeechCandidate",
+		"stopActiveSpeech",
+		"speakText",
+		"handleReadChatMessage",
+		"handleReplayChatMessage",
+		"toggleVoiceMic",
+		"renderSuggestedChips",
+		"isChatAutoReadEnabled",
+		"/v1/sessions/summarize-speech",
+		"speechSynthesis",
+		"SpeechRecognition",
+	})
+}

@@ -16,6 +16,8 @@ func TestProvisioner_FullLifecycle(t *testing.T) {
 	// Setup fake existing Claude Code and Antigravity directories
 	claudeDir := filepath.Join(tempHome, ".claude")
 	_ = os.MkdirAll(claudeDir, 0700)
+	claudeDesktopDir := filepath.Dir(getClaudeDesktopConfigPath(tempHome))
+	_ = os.MkdirAll(claudeDesktopDir, 0700)
 
 	// Create an existing .claude.json with an existing third-party MCP server
 	existingClaudeCfg := map[string]any{
@@ -182,5 +184,79 @@ func TestProvisioner_NullJSONHandling(t *testing.T) {
 	}
 	if _, ok := root["mcpServers"]; !ok {
 		t.Errorf("Expected mcpServers in parsed config")
+	}
+}
+
+func TestClaudeDesktopProvisioning(t *testing.T) {
+	tempHome := t.TempDir()
+
+	// 1. Without Claude desktop directory, "all" skips claude-desktop
+	statuses, err := ProvisionAgents(tempHome, []string{"all"})
+	if err != nil {
+		t.Fatalf("ProvisionAgents failed: %v", err)
+	}
+	var cdStatus *AgentStatus
+	for i := range statuses {
+		if statuses[i].Key == "claude-desktop" {
+			cdStatus = &statuses[i]
+		}
+	}
+	if cdStatus == nil {
+		t.Fatalf("expected claude-desktop in statuses")
+	}
+	if cdStatus.Detected || cdStatus.MCPInstalled {
+		t.Errorf("expected claude-desktop not detected or installed without parent directory")
+	}
+
+	// 2. Explicit provisioning of claude-desktop
+	statuses, err = ProvisionAgents(tempHome, []string{"claude-desktop"})
+	if err != nil {
+		t.Fatalf("Explicit ProvisionAgents for claude-desktop failed: %v", err)
+	}
+	for i := range statuses {
+		if statuses[i].Key == "claude-desktop" {
+			cdStatus = &statuses[i]
+		}
+	}
+	if cdStatus == nil || !cdStatus.MCPInstalled {
+		t.Fatalf("expected claude-desktop to be installed after explicit provisioning")
+	}
+
+	// Verify config contents
+	cfgPath := getClaudeDesktopConfigPath(tempHome)
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("failed to read claude_desktop_config.json: %v", err)
+	}
+	var root map[string]any
+	if err := json.Unmarshal(data, &root); err != nil {
+		t.Fatalf("invalid JSON in claude_desktop_config.json: %v", err)
+	}
+	mcpServers, ok := root["mcpServers"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected mcpServers map in claude desktop config")
+	}
+	if _, ok := mcpServers["ackbar"]; !ok {
+		t.Errorf("expected ackbar in mcpServers of claude desktop config")
+	}
+
+	// 3. Test non-destructive upsert preserves other servers
+	err = UpsertJSONMCPServer(cfgPath, "custom-tool", map[string]any{
+		"command": "custom",
+		"args":    []any{"run"},
+	})
+	if err != nil {
+		t.Fatalf("UpsertJSONMCPServer failed: %v", err)
+	}
+
+	data2, _ := os.ReadFile(cfgPath)
+	var root2 map[string]any
+	_ = json.Unmarshal(data2, &root2)
+	mcpServers2 := root2["mcpServers"].(map[string]any)
+	if _, ok := mcpServers2["ackbar"]; !ok {
+		t.Errorf("expected ackbar to remain in mcpServers")
+	}
+	if _, ok := mcpServers2["custom-tool"]; !ok {
+		t.Errorf("expected custom-tool to be in mcpServers")
 	}
 }
