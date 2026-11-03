@@ -260,6 +260,7 @@ func (s *Server) handleHostUpdate(w http.ResponseWriter, r *http.Request) {
 	defer os.RemoveAll(tmpDir)
 
 	ackbardPath := filepath.Join(tmpDir, "ackbard")
+	ackbarPath := filepath.Join(tmpDir, "ackbar")
 	hookPath := filepath.Join(tmpDir, "ackbar-hook")
 
 	cmdBuild1 := exec.Command("go", "build", "-ldflags=-s -w", "-o", ackbardPath, "./cmd/ackbard")
@@ -284,6 +285,19 @@ func (s *Server) handleHostUpdate(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"status":  "error",
 			"message": fmt.Sprintf("Failed to cross-compile ackbar-hook for %s/%s: %s", goos, goarch, string(bout)),
+		})
+		return
+	}
+
+	cmdBuild3 := exec.Command("go", "build", "-ldflags=-s -w", "-o", ackbarPath, "./cmd/ackbar")
+	cmdBuild3.Dir = srcDir
+	cmdBuild3.Env = append(os.Environ(), "GOOS="+goos, "GOARCH="+goarch, "CGO_ENABLED=0")
+	if bout, berr := cmdBuild3.CombinedOutput(); berr != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"status":  "error",
+			"message": fmt.Sprintf("Failed to cross-compile ackbar for %s/%s: %s", goos, goarch, string(bout)),
 		})
 		return
 	}
@@ -313,8 +327,19 @@ func (s *Server) handleHostUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	scpCmd3 := exec.Command("scp", "-o", "BatchMode=yes", ackbarPath, fmt.Sprintf("%s:~/.local/bin/ackbar.new", sshTarget))
+	if sout, serr := scpCmd3.CombinedOutput(); serr != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadGateway)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"status":  "error",
+			"message": fmt.Sprintf("Failed to upload ackbar to %s: %s", sshTarget, string(sout)),
+		})
+		return
+	}
+
 	// 5. Atomically replace binaries, set permissions, and restart daemon on remote host
-	remoteRestartScript := `chmod +x ~/.local/bin/ackbard.new ~/.local/bin/ackbar-hook.new && mv -f ~/.local/bin/ackbard.new ~/.local/bin/ackbard && mv -f ~/.local/bin/ackbar-hook.new ~/.local/bin/ackbar-hook && pkill -9 -x ackbard || true; sleep 0.5; nohup ~/.local/bin/ackbard >/dev/null 2>&1 < /dev/null &`
+	remoteRestartScript := `chmod +x ~/.local/bin/ackbard.new ~/.local/bin/ackbar.new ~/.local/bin/ackbar-hook.new && mv -f ~/.local/bin/ackbard.new ~/.local/bin/ackbard && mv -f ~/.local/bin/ackbar.new ~/.local/bin/ackbar && mv -f ~/.local/bin/ackbar-hook.new ~/.local/bin/ackbar-hook && pkill -9 -x ackbard || true; sleep 0.5; nohup ~/.local/bin/ackbard >/dev/null 2>&1 < /dev/null &`
 	restartCmd := exec.Command("ssh", "-n", "-f", "-o", "BatchMode=yes", sshTarget, remoteRestartScript)
 	_ = restartCmd.Run()
 
