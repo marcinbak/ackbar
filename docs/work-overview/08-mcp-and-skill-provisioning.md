@@ -17,19 +17,28 @@ Ackbar's Work & Fleet Overview Dashboard manages the lifecycle of tasks across f
 * **Command:** `ackbar mcp`
 * **Daemon Link:** Connects to local `ackbard` (`http://127.0.0.1:7777` or `ACKBAR_DAEMON_URL`).
 
-### Exposed Tools:
+### Exposed Tools (Unified Session Control + Task Stage-Gate Orchestration):
 
-| Tool | Parameters | Description |
-| :--- | :--- | :--- |
-| **`get_current_task`** | `worktree_path?`, `branch?` | Auto-detects and binds to the active task based on working directory, Git branch, or session. |
-| **`list_tasks`** | `group?`, `project?`, `status?` | Queries tasks filtered by scope and lifecycle state (`NEW`, `IN_PROGRESS`, `REVIEW`, `DONE`). |
-| **`update_task`** | `task_id!`, `status?`, `substatus?`, `notes?`, `pr_url?` | Updates task progress, lifecycle column, or branch/PR URL. |
-| **`report_blocker`** | `task_id!`, `question!` | Flags task as `blocked` and records the blocker question. Surfaces immediate red warning alert on board. |
-| **`clear_blocker`** | `task_id!`, `resolution_notes?` | Clears blocker and resumes task to `active`. |
-| **`propose_task`** | `title!`, `group?`, `project?`, `notes?`, `rationale?` | Logs discovered bugs or tech debt into the `NEW` inbox column with title deduplication. |
-| **`attach_deliverable`** | `task_id!`, `title!`, `kind!`, `file_path?`, `url?` | Attaches HTML UI prototypes, plans, retrospectives, or test recordings to the task. |
-| **`merge_pull_request`** | `task_id!`, `method?` | Executes 1-click squash & merge via daemon. |
-| **`get_standup_report`** | `group?`, `days?` | Generates project-grouped Markdown and conversational audio briefing text. |
+| Tool | Category | Parameters | Description |
+| :--- | :--- | :--- | :--- |
+| **`list_sessions`** | Supervisor Session | `host?`, `state?` | Lists active, blocked, or idle sessions across all federated hosts (`GET /v1/sessions?federated=true`). |
+| **`get_session_output`** | Supervisor Session | `session_id!`, `limit?` | Fetches the latest assistant messages, implementation plan, or blocker options (`GET /v1/sessions/transcript`). |
+| **`send_session_input`** | Supervisor Session | `session_id!`, `input!` | Answers a blocked question, approves a plan, or sends a follow-up prompt (`POST /v1/sessions/respond`). |
+| **`spawn_session`** | Supervisor Session | `host!`, `dir!`, `agent!`, `prompt?` | Spawns a new interactive or headless coding session on the target host (`POST /v1/sessions/spawn`). |
+| **`control_session`** | Supervisor Session | `session_id!`, `action!` | Executes session lifecycle actions (`resume`, `restart`, `kill`, `handover`, `done`, `later`). |
+| **`create_task`** | Task Orchestrator | `title!`, `project_node_path!`, `repos[]`, `depends_on?`, `auto_start?` | Creates a single or multi-repo task on the Work Board (`NEW` or immediately dispatches `PLAN`). |
+| **`dispatch_task_stage`** | Task Orchestrator | `task_id!`, `repo_node_path!`, `stage!`, `host!` | Provisions `.worktrees/<task-slug>` on `macmini` or `legion` and calls `spawn_session` for `PLAN`, `IMPLEMENT`, or `REVIEW`. |
+| **`complete_stage`** | Task Stage Gate | `task_id!`, `stage!`, `summary!`, `learnings_md?` | Called by worker sessions upon finishing a stage; runs deterministic zero-token filesystem/git gates, terminates the stage pane, and unlocks dependent workstreams. |
+| **`review_task_stage`** | Task Stage Gate | `task_id!`, `action!`, `feedback?` | Approves (`approve`), requests revisions (`request_changes`), or merges (`merge`) at `PLAN_REVIEW` or `FINAL_REVIEW`. |
+| **`get_current_task`** | Task Worker | `worktree_path?`, `branch?` | Auto-detects and binds to the active task based on working directory, Git branch, or session. |
+| **`list_tasks`** | Task Worker | `group?`, `project?`, `status?` | Queries tasks filtered by scope and lifecycle state (`NEW`, `IN_PROGRESS`, `REVIEW`, `DONE`). |
+| **`update_task`** | Task Worker | `task_id!`, `status?`, `substatus?`, `notes?`, `pr_url?` | Updates task progress, lifecycle column, or branch/PR URL. |
+| **`report_blocker`** | Task Worker | `task_id!`, `question!` | Flags task as `blocked` and records the blocker question. Surfaces immediate red warning alert on board & Voice Companion. |
+| **`clear_blocker`** | Task Worker | `task_id!`, `resolution_notes?` | Clears blocker and resumes task to `active`. |
+| **`propose_task`** | Task Worker | `title!`, `group?`, `project?`, `notes?`, `rationale?` | Logs discovered bugs or tech debt into the `NEW` inbox column with title deduplication. |
+| **`attach_deliverable`** | Task Worker | `task_id!`, `title!`, `kind!`, `file_path?`, `url?` | Attaches HTML UI prototypes, `.ackbar/plan.md`, `.ackbar/learnings.md`, retrospectives, or test recordings. |
+| **`merge_pull_request`** | Task Worker | `task_id!`, `method?` | Executes 1-click squash & merge via daemon and triggers automatic `.worktrees/<task-slug>` teardown. |
+| **`get_standup_report`** | Supervisor / Reporting | `group?`, `days?` | Generates project-grouped Markdown and conversational audio briefing text. |
 
 ---
 
@@ -52,7 +61,7 @@ Ackbar automatically detects and configures the following agents:
 | Agent | Config File | Skill Destination |
 | :--- | :--- | :--- |
 | **Claude Code** | `~/.claude.json` | `~/.claude/skills/ackbar-tasks/SKILL.md` |
-| **Google Antigravity** | `~/.gemini/antigravity/mcp_config.json` | `~/.gemini/antigravity/skills/ackbar-tasks/SKILL.md` |
+| **Google Antigravity** | `~/.gemini/config/mcp_config.json` *(and legacy `~/.gemini/antigravity/mcp_config.json`)* | `~/.gemini/antigravity-cli/skills/ackbar-tasks/SKILL.md` |
 | **OpenAI Codex** | `~/.codex/config.json` | `~/.codex/skills/ackbar-tasks/SKILL.md` |
 
 ### Non-Destructive JSON Merging

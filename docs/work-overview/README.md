@@ -27,23 +27,27 @@ Ackbar's **Work & Fleet Overview Dashboard** provides high-level observability a
 
 ---
 
-## 2. 4-Pillar Task Lifecycle
+## 2. 4-Pillar Task Lifecycle & Stage-Gate Engine
 
-| Pillar | State | Description | Typical Transitions |
+Tasks progress through 4 macro pillars (`NEW` $\rightarrow$ `IN_PROGRESS` $\rightarrow$ `REVIEW` $\rightarrow$ `DONE`) driven by explicit **Stage-Gate substatuses** (`PLAN`, `PLAN_REVIEW`, `IMPLEMENT`, `REVIEW`, `FINAL_REVIEW`):
+
+| Pillar | State | Substatuses | Description & Stage Gates |
 | :--- | :--- | :--- | :--- |
-| **1. NEW** | `NEW` | Tasks queued in backlog or undergoing initial architecture planning. | Moves to `IN_PROGRESS` when an agent begins execution. |
-| **2. IN_PROGRESS** | `IN_PROGRESS` | Actively supervised by one or more agent worker sessions. | Emits substatuses (`active`, `blocked`, `running`). Moves to `REVIEW` upon PR creation. |
-| **3. REVIEW** | `REVIEW` | Work has completed automated testing; PR is awaiting review or human evaluation. | Substatuses include `task_review`, `in_review`, `approved`. Moves to `DONE` once merged. |
-| **4. DONE** | `DONE` | Pull request merged, worktree cleaned, or task resolved. | Retained for 30 days before auto-archival. |
+| **1. NEW** | `NEW` | `backlog`, `ready`, `discovered` | Feature/bug spec queued (`title`, `spec_md`, `project_node_path`, target `repos[]`). No sessions or worktrees running yet (`$0` idle cost). |
+| **2. IN_PROGRESS** | `IN_PROGRESS` | `PLAN`, `IMPLEMENT`, `REVIEW`, `blocked` | Supervised worker session(s) executing in `.worktrees/<task-slug>` on `macmini` (`ios`/`macos`) or `legion` (`android`/`go`/`backend`). Protected by deterministic `complete_stage` verification and the **Premature Idle Watchdog**. |
+| **3. REVIEW** | `REVIEW` | `PLAN_REVIEW`, `FINAL_REVIEW`, `approved` | **Human Gate:** Agent stage pane has exited cleanly (`0` idle RAM); `.ackbar/plan.md` or `.ackbar/review/index.html` + PR awaits 1-tap or spoken approval via **⚓ Ackbar Supervisor** (`review_task_stage`). |
+| **4. DONE** | `DONE` | `completed`, `rejected`, `abandoned` | PR merged (`gh pr merge`), `.worktrees/<task-slug>` automatically removed on all hosts, and task worker sessions auto-archived. |
 
 ---
 
 ## 3. Database Schema (`internal/daemon/db.go`)
 
-Task persistence is managed in `ackbard.db` using CGO-free pure Go SQLite (`modernc.org/sqlite`):
+Task and tree persistence is managed in `ackbard.db` using CGO-free pure Go SQLite (`modernc.org/sqlite`) and replicated across the 24/7 Control Plane (`legion` $\leftrightarrow$ `macmini`):
 
+* **`tree_nodes`**: Host-agnostic logical project & repo hierarchy (`path`, `parent_path`, `is_project`, `path_macmini`, `path_legion`, `capabilities`, `updated_at`) synced across hosts so Mobile (`iphone`) and Desktop (`macbook`) see the identical session tree.
 * **`tasks`**: Core task records (`id`, `title`, `notes`, `group_name`, `project_name`, `status`, `substatus`, `branch`, `worktree`, `pr_url`, `created_at`, `updated_at`, `closed_at`).
-* **`task_workers`**: Associates multiple agent sessions to a task (`task_id`, `session_id`, `role`, `host_name`, `assigned_at`).
+* **`task_workstreams`**: Per-repository workstream state (`task_id`, `repo_node_path`, `target_host`, `depends_on`, `stage`, `status`, `branch`, `worktree_path`, `pr_url`, `learnings_md`) supporting both parallel and sequential cross-platform execution (e.g. `ngl-ios` `@macmini` $\rightarrow$ `ngl-android` `@legion`).
+* **`task_workers`**: Associates ephemeral stage worker sessions to a task/workstream (`task_id`, `repo_node_path`, `stage`, `session_id`, `role`, `host_name`, `assigned_at`).
 * **`task_external_refs`**: Links to external ticket systems (`task_id`, `tracker`, `ref_key`, `url`).
 * **`task_deliverables`**: Artifact deliverables (`task_id`, `kind`, `title`, `url_or_path`, `sha`).
 * **`task_events`**: Immutable audit log of lifecycle mutations (`task_id`, `event_type`, `payload`, `created_at`).
