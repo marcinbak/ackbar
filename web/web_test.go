@@ -143,8 +143,10 @@ func TestMultiHostAgentSetup_JS(t *testing.T) {
 		"function getTargetHosts()",
 		"async function fetchAllAgentStatuses()",
 		"async function provisionAllHosts(",
+		"async function syncSkillsRepo(",
 		"fetchAllAgentStatuses,",
 		"provisionAllHosts",
+		"syncSkillsRepo",
 	} {
 		if !strings.Contains(apiContent, expected) {
 			t.Errorf("expected js/api.js to contain %q", expected)
@@ -167,9 +169,13 @@ func TestMultiHostAgentSetup_JS(t *testing.T) {
 	for _, expected := range []string{
 		"fetchAllAgentStatuses",
 		"provisionAllHosts",
+		"syncSkillsRepo",
 		"mAgentHostTabs",
 		"renderHostSections",
+		"renderSkillsRepoCard",
 		"btn-configure-single-host",
+		"btn-sync-skills-repo",
+		"btn-clone-skills-repo",
 	} {
 		if !strings.Contains(tasksContent, expected) {
 			t.Errorf("expected js/tasks.js to contain %q", expected)

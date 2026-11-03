@@ -460,6 +460,26 @@ func runSetupHooks() error {
 		fmt.Printf("✅ Configured Antigravity lifecycle hooks in %s\n", geminiHooksFile)
 	}
 
+	// 4. Provision agent MCP servers and ackbar-tasks skills
+	fmt.Printf("⚡ Configuring agent MCP servers and ackbar-tasks skills...\n")
+	if _, err := daemon.ProvisionAgents(home, []string{"all"}); err != nil {
+		fmt.Printf("⚠️ Warning: Agent provisioning encountered an error: %v\n", err)
+	} else {
+		fmt.Printf("✅ Provisioned agent MCP servers and skills\n")
+	}
+
+	// 5. Discover and sync external skills repository if present
+	repoPath, repoURL := daemon.DiscoverSkillsRepo(home, nil)
+	if repoPath != "" || repoURL != "" {
+		fmt.Printf("🔄 Syncing external skills repository...\n")
+		syncStatus, err := daemon.SyncSkillsRepo(home, nil, daemon.SyncSkillsRepoOptions{})
+		if err != nil {
+			fmt.Printf("⚠️ Note: Skills repository sync: %v\n", err)
+		} else if syncStatus != nil && syncStatus.Cloned {
+			fmt.Printf("✅ Synced external skills repository (%s @ %s)\n", syncStatus.RepoPath, syncStatus.LocalSHA)
+		}
+	}
+
 	return nil
 }
 
@@ -670,35 +690,138 @@ func runAgentCmd(args []string) {
 			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", s.DisplayName, detStr, mcpStr, skillStr, vStr, statusStr)
 		}
 		_ = w.Flush()
+
+		home, _ := os.UserHomeDir()
+		repoStatus := daemon.GetSkillsRepoStatus(home, nil, false)
+		fmt.Println("\nSKILLS REPOSITORY:")
+		if !repoStatus.Configured && !repoStatus.Cloned {
+			fmt.Println("  Status: Not configured")
+			if repoStatus.SuggestedPath != "" {
+				fmt.Printf("  Suggested Path: %s\n", repoStatus.SuggestedPath)
+			}
+		} else {
+			if repoStatus.RepoPath != "" {
+				fmt.Printf("  Path:    %s\n", repoStatus.RepoPath)
+			}
+			if repoStatus.RepoURL != "" {
+				fmt.Printf("  URL:     %s\n", repoStatus.RepoURL)
+			}
+			if repoStatus.Cloned {
+				fmt.Printf("  Branch:  %s\n", repoStatus.Branch)
+				fmt.Printf("  Commit:  %s\n", repoStatus.LocalSHA)
+				if repoStatus.RemoteSHA != "" {
+					fmt.Printf("  Remote:  %s\n", repoStatus.RemoteSHA)
+				}
+				syncStatus := "UP TO DATE"
+				if repoStatus.Dirty {
+					syncStatus = "DIRTY WORKING TREE"
+				} else if repoStatus.BehindCount > 0 {
+					syncStatus = fmt.Sprintf("BEHIND BY %d COMMITS", repoStatus.BehindCount)
+				}
+				fmt.Printf("  Status:  %s\n", syncStatus)
+				if repoStatus.LastSyncedAt != "" {
+					fmt.Printf("  Synced:  %s\n", repoStatus.LastSyncedAt)
+				}
+			} else {
+				fmt.Println("  Status:  CONFIGURED BUT NOT CLONED LOCALLY")
+				if repoStatus.SuggestedPath != "" {
+					fmt.Printf("  Suggested Path: %s\n", repoStatus.SuggestedPath)
+				}
+			}
+		}
 		return
 	}
 
 	subcmd := args[0]
 	switch subcmd {
-	case "setup", "configure", "install":
-		fs := flag.NewFlagSet("agent setup", flag.ExitOnError)
+	case "setup", "configure", "install", "sync":
+		fs := flag.NewFlagSet("agent "+subcmd, flag.ExitOnError)
 		agentFlag := fs.String("agent", "all", "Target agent (claude-code, antigravity, codex, or all)")
+		repoURLFlag := fs.String("skills-repo-url", "", "Git repository URL for shared skills")
+		repoPathFlag := fs.String("skills-repo-path", "", "Local destination directory for skills repo")
+		cloneFlag := fs.Bool("clone", false, "Automatically clone without confirmation prompt if missing")
 		_ = fs.Parse(args[1:])
-		if fs.NArg() > 0 && *agentFlag == "all" {
+		if fs.NArg() > 0 && *agentFlag == "all" && !strings.HasPrefix(fs.Arg(0), "-") {
 			*agentFlag = fs.Arg(0)
 		}
 
-		targets := []string{*agentFlag}
-		fmt.Printf("⚡ Configuring Ackbar Tasks MCP server and Skill for: %s...\n", *agentFlag)
-		updated, err := daemon.ProvisionAgents("", targets)
-		if err != nil {
-			fmt.Printf("❌ Provisioning failed: %v\n", err)
-			os.Exit(1)
+		home, _ := os.UserHomeDir()
+
+		// 1. If setup/configure/install, configure agents
+		if subcmd != "sync" {
+			targets := []string{*agentFlag}
+			fmt.Printf("⚡ Configuring Ackbar Tasks MCP server and Skill for: %s...\n", *agentFlag)
+			updated, err := daemon.ProvisionAgents(home, targets)
+			if err != nil {
+				fmt.Printf("❌ Provisioning failed: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Println("✅ Successfully configured agents:")
+			for _, s := range updated {
+				if s.Detected {
+					fmt.Printf("  • %s: MCP server registered (%s), Skill installed (%s)\n", s.DisplayName, s.ConfigFile, s.SkillVersion)
+				}
+			}
 		}
-		fmt.Println("✅ Successfully configured agents:")
-		for _, s := range updated {
-			if s.Detected {
-				fmt.Printf("  • %s: MCP server registered (%s), Skill installed (%s)\n", s.DisplayName, s.ConfigFile, s.SkillVersion)
+
+		// 2. Skills repo handling
+		repoStatus := daemon.GetSkillsRepoStatus(home, nil, false)
+		repoURL := *repoURLFlag
+		if repoURL == "" {
+			repoURL = repoStatus.RepoURL
+		}
+		repoPath := *repoPathFlag
+		if repoPath == "" {
+			repoPath = repoStatus.RepoPath
+		}
+		suggestedPath := repoStatus.SuggestedPath
+		if suggestedPath == "" && repoURL != "" {
+			suggestedPath = daemon.GetSkillsRepoStatus(home, nil, false).SuggestedPath
+		}
+
+		shouldClone := *cloneFlag
+		// If URL is configured/provided but not cloned locally:
+		if repoURL != "" && (repoPath == "" || !repoStatus.Cloned) {
+			if !shouldClone {
+				targetSuggest := repoPath
+				if targetSuggest == "" {
+					targetSuggest = suggestedPath
+				}
+				fmt.Printf("\n📦 Clone skills repo %s to %s? [Y/n/custom path]: ", repoURL, targetSuggest)
+				var input string
+				_, _ = fmt.Scanln(&input)
+				input = strings.TrimSpace(input)
+				if input == "" || strings.EqualFold(input, "y") || strings.EqualFold(input, "yes") {
+					shouldClone = true
+					if repoPath == "" {
+						repoPath = targetSuggest
+					}
+				} else if strings.EqualFold(input, "n") || strings.EqualFold(input, "no") {
+					fmt.Println("Skipping skills repository clone.")
+				} else {
+					repoPath = input
+					shouldClone = true
+				}
+			}
+		}
+
+		if repoURL != "" || repoPath != "" || repoStatus.Cloned {
+			fmt.Println("\n🔄 Syncing skills repository...")
+			opts := daemon.SyncSkillsRepoOptions{
+				RepoPath:       repoPath,
+				RepoURL:        repoURL,
+				CloneIfMissing: shouldClone,
+			}
+			syncStatus, err := daemon.SyncSkillsRepo(home, nil, opts)
+			if err != nil {
+				fmt.Printf("❌ Skills repo sync failed: %v\n", err)
+			} else if syncStatus != nil && syncStatus.Cloned {
+				fmt.Printf("✅ Skills repository synced successfully at %s (branch: %s, commit: %s)\n", syncStatus.RepoPath, syncStatus.Branch, syncStatus.LocalSHA)
 			}
 		}
 	default:
 		fmt.Printf("Unknown agent command: %s\n", subcmd)
-		fmt.Println("Usage: ackbar agent [status|setup]")
+		fmt.Println("Usage: ackbar agent [status|setup|sync]")
 		os.Exit(1)
 	}
 }

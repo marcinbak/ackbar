@@ -1134,54 +1134,30 @@ func (m *Model) reapplyHooksCmd(target string) tea.Cmd {
 	return func() tea.Msg {
 		if target == "local" {
 			if exe, err := os.Executable(); err == nil {
-				_ = exec.Command(exe, "setup-hooks").Run()
+				_ = exec.Command(exe, "setup-hooks", "--no-tui").Run()
 			}
 		} else {
-			remoteSetupScript := `export PATH=$PATH:$HOME/.local/bin:$HOME/go/bin
-python3 -c '
-import json, os
-home = os.path.expanduser("~")
-
-# 1. Claude Code Hooks (~/.claude/settings.json)
-claude_hook = os.path.join(home, ".local", "bin", "ackbar-hook") + " claude-code "
-claude_events = ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PermissionRequest", "Notification", "Stop"]
-claude_obj = {ev: [{"matcher": "", "hooks": [{"type": "command", "command": claude_hook + ev}]}] for ev in claude_events}
-claude_settings = os.path.join(home, ".claude", "settings.json")
-os.makedirs(os.path.dirname(claude_settings), exist_ok=True)
-cfg = {}
-if os.path.exists(claude_settings):
-    try:
-        with open(claude_settings) as f: cfg = json.load(f)
-    except: pass
-cfg["hooks"] = claude_obj
-with open(claude_settings, "w") as f: json.dump(cfg, f, indent=2)
-
-# Clean legacy hooks from ~/.claude.json if present
-legacy_p = os.path.join(home, ".claude.json")
-if os.path.exists(legacy_p):
-    try:
-        with open(legacy_p) as f: leg_cfg = json.load(f)
-        if "hooks" in leg_cfg:
-            del leg_cfg["hooks"]
-            with open(legacy_p, "w") as f: json.dump(leg_cfg, f, indent=2)
-    except: pass
-
-# 2. Antigravity Hooks
-agy_hook = os.path.join(home, ".local", "bin", "ackbar-hook") + " antigravity "
-agy_events = ["PreInvocation", "PostToolUse", "PermissionRequest", "PostInvocation"]
-agy_obj = {ev: [{"command": agy_hook + ev}] for ev in agy_events}
-for p in [os.path.join(home, ".gemini", "config", "hooks.json"), os.path.join(home, ".antigravity", "config", "hooks.json")]:
-    os.makedirs(os.path.dirname(p), exist_ok=True)
-    cfg = {}
-    if os.path.exists(p):
-        try:
-            with open(p) as f: cfg = json.load(f)
-        except: pass
-    cfg["hooks"] = agy_obj
-    with open(p, "w") as f: json.dump(cfg, f, indent=2)
-'`
-			_ = exec.Command("ssh", "-o", "BatchMode=yes", target, remoteSetupScript).Run()
+			_ = exec.Command("ssh", "-o", "BatchMode=yes", target, "export PATH=$PATH:$HOME/.local/bin:$HOME/go/bin; ~/.local/bin/ackbar setup-hooks --no-tui").Run()
 		}
+
+		// Also call POST /v1/agents/provision on the host's URL if reachable
+		var targetURL string
+		for _, h := range m.hosts {
+			if h.Name == target || (target == "local" && (h.Name == "local" || h.URL == "http://127.0.0.1:7777")) {
+				targetURL = h.URL
+				break
+			}
+		}
+		if targetURL != "" {
+			reqURL := fmt.Sprintf("%s/v1/agents/provision", strings.TrimSuffix(targetURL, "/"))
+			reqBody := []byte(`{"agents":["all"]}`)
+			client := &http.Client{Timeout: 5 * time.Second}
+			resp, err := client.Post(reqURL, "application/json", bytes.NewReader(reqBody))
+			if err == nil {
+				_ = resp.Body.Close()
+			}
+		}
+
 		results := FetchAllAgentDiscovery(m.hosts)
 		return discoveryMsg(results)
 	}

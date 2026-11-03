@@ -52,7 +52,7 @@ var supportedAgents = []AgentDefinition{
 		CLICommand:  "agy",
 		HomeSubdir:  filepath.Join(".gemini", "antigravity"),
 		ConfigRel:   filepath.Join(".gemini", "antigravity", "mcp_config.json"),
-		SkillsRel:   filepath.Join(".gemini", "antigravity", "skills"),
+		SkillsRel:   filepath.Join(".gemini", "config", "skills"),
 	},
 	{
 		Key:         "codex",
@@ -132,6 +132,12 @@ func inspectAgent(home string, def AgentDefinition) AgentStatus {
 	if data, err := os.ReadFile(skillMDPath); err == nil {
 		status.SkillInstalled = true
 		status.SkillVersion = extractSkillVersion(string(data))
+	} else if def.Key == "antigravity" {
+		cliSkillMDPath := filepath.Join(home, ".gemini", "antigravity-cli", "skills", "ackbar-tasks", "SKILL.md")
+		if data, err := os.ReadFile(cliSkillMDPath); err == nil {
+			status.SkillInstalled = true
+			status.SkillVersion = extractSkillVersion(string(data))
+		}
 	}
 
 	// 3. Evaluate Drift
@@ -246,23 +252,29 @@ func configureAgentMCP(home string, def AgentDefinition) error {
 }
 
 func installAgentSkill(home string, def AgentDefinition) error {
-	targetSkillDir := filepath.Join(home, def.SkillsRel, "ackbar-tasks")
-	if err := os.MkdirAll(targetSkillDir, 0755); err != nil {
-		return fmt.Errorf("failed to create skill directory %s: %w", targetSkillDir, err)
-	}
-
 	skillFiles, err := skills.GetSkillFiles()
 	if err != nil {
 		return fmt.Errorf("failed to retrieve embedded skill files: %w", err)
 	}
 
-	for relPath, content := range skillFiles {
-		filePath := filepath.Join(targetSkillDir, relPath)
-		if err := os.MkdirAll(filepath.Dir(filePath), 0755); err != nil {
-			return fmt.Errorf("failed to create directory for %s: %w", filePath, err)
+	targetDirs := []string{filepath.Join(home, def.SkillsRel, "ackbar-tasks")}
+	if def.Key == "antigravity" {
+		targetDirs = append(targetDirs, filepath.Join(home, ".gemini", "antigravity-cli", "skills", "ackbar-tasks"))
+	}
+
+	for _, targetSkillDir := range targetDirs {
+		if err := os.MkdirAll(targetSkillDir, 0755); err != nil {
+			return fmt.Errorf("failed to create skill directory %s: %w", targetSkillDir, err)
 		}
-		if err := os.WriteFile(filePath, content, 0644); err != nil {
-			return fmt.Errorf("failed to write skill file %s: %w", filePath, err)
+
+		for relPath, content := range skillFiles {
+			filePath := filepath.Join(targetSkillDir, relPath)
+			if err := os.MkdirAll(filepath.Dir(filePath), 0755); err != nil {
+				return fmt.Errorf("failed to create directory for %s: %w", filePath, err)
+			}
+			if err := os.WriteFile(filePath, content, 0644); err != nil {
+				return fmt.Errorf("failed to write skill file %s: %w", filePath, err)
+			}
 		}
 	}
 
