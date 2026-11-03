@@ -41,9 +41,11 @@ We evaluated four architectures against the scenarios above:
 
 ---
 
-## 3. Supervisor MCP Control Layer (`ackbar mcp`)
+## 3. Unified Supervisor & Task MCP Control Layer (`ackbar mcp`)
 
-Currently, `internal/mcp/tools.go` only exposes Task Board tools (`list_tasks`, `update_task`, `report_blocker`, etc.) meant for worker agents inside a worktree. To support full session supervision without requiring manual Task Board curation, `ackbar mcp` is expanded with **Session Control Tools** backed by `ackbard`'s existing REST APIs:
+Currently, `internal/mcp/tools.go` only exposes basic Task Board status tools (`list_tasks`, `update_task`, `report_blocker`, etc.) meant for worker agents inside a worktree. To enable the **⚓ Ackbar Supervisor** session to act as both a hands-free **Session Chief of Staff** and a top-down **Task & Stage Orchestrator**, `ackbar mcp` unifies **Session Control Tools** with **Task & Workstream Stage-Gate Tools**:
+
+### 3.1 Session Control Tools (Direct Session Supervision)
 
 | MCP Tool | Backing `ackbard` Endpoint | Supervisor Use Case |
 | :--- | :--- | :--- |
@@ -53,10 +55,21 @@ Currently, `internal/mcp/tools.go` only exposes Task Board tools (`list_tasks`, 
 | **`spawn_session`** | `POST /v1/meta/resolve` + `/v1/sessions/spawn` | Start a new coding session on a target host and project directory with an initial prompt. |
 | **`control_session`** | `POST /v1/sessions/control` & `/handover` | Execute lifecycle actions (`resume`, `restart`, `kill`, `handover`, `done`, `later`). |
 
-### Multi-Host Fleet Collection
-Every session ID in Ackbar is globally namespaced as `<agent>:<host>:<uuid>` (e.g. `claude-code:macbook:8492`, `antigravity:legion:8491`). Multi-host collection operates across two complementary patterns:
-1. **Mobile Client Fan-Out (`mobile/`):** `FleetSessionsNotifier` (`mobile/lib/core/providers/fleet_providers.dart`) queries `GET /v1/sessions` across all configured `HostRecord` entries in parallel and routes session actions (`respondToSession`, `getTranscript`) to the owning host's URL.
-2. **Daemon Hub Federation (`ackbard` / `ackbar-relay`):** A primary `ackbard` hub fans out `GET /v1/sessions?federated=true` and proxies `GET /v1/sessions/transcript`, `POST /v1/sessions/spawn`, and `POST /v1/sessions/control` across peer hosts registered in SQLite (`GET /v1/hosts`), gracefully skipping offline/asleep hosts after a 1.5s health timeout.
+### 3.2 Task & Workstream Orchestrator Tools (Top-Down Feature Execution)
+
+See [`docs/work-overview/01-data-model-and-lifecycle.md`](work-overview/01-data-model-and-lifecycle.md) and [`docs/work-overview/08-mcp-and-skill-provisioning.md`](work-overview/08-mcp-and-skill-provisioning.md) for the complete stage-gate data model:
+
+| MCP Tool | Backing `ackbard` Endpoint | Supervisor / Worker Use Case |
+| :--- | :--- | :--- |
+| **`create_task`** | `POST /v1/tasks` | Create a feature task (`project_node_path`, `repos[]`, optional `depends_on` sequential chain) and optionally auto-start `PLAN`. |
+| **`dispatch_task_stage`** | `POST /v1/tasks/dispatch-stage` | Provision `.worktrees/<task-slug>` on the target host (`macmini` or `legion`) and call `spawn_session` for `PLAN`, `IMPLEMENT`, or `REVIEW`. |
+| **`complete_stage`** | `POST /v1/tasks/complete-stage` | Called by worker sessions upon finishing a stage; runs deterministic zero-token filesystem/git gates, terminates the stage pane, and unlocks dependent workstreams (passing `.ackbar/learnings.md`). |
+| **`review_task_stage`** | `POST /v1/tasks/review-stage` | Spoken or 1-tap approval (`approve` / `request_changes` / `merge`) that advances a task from `PLAN_REVIEW` $\rightarrow$ `IMPLEMENT` or `FINAL_REVIEW` $\rightarrow$ `DONE`. |
+
+### 3.3 24/7 Multi-Host Control Plane & Fleet Federation (`legion` + `macmini`)
+Every session ID in Ackbar is globally namespaced as `<agent>:<host>:<uuid>` (e.g. `claude-code:macmini:8492`, `antigravity:legion:8491`). Multi-host collection and state replication operate across two complementary patterns:
+1. **24/7 Control-Plane Replication (`legion` $\leftrightarrow$ `macmini`):** Control-plane tables (`tree_nodes`, session `node_path`/`custom_title`/`is_later`, `tasks`, `task_workstreams`, and `task_deliverables`) replicate across the always-on `legion` and `macmini` daemons so mobile (`iphone`) and desktop (`macbook`) clients always see the identical folder hierarchy and task board even when `macbook` is asleep.
+2. **Daemon Hub Federation (`ackbard` / `ackbar-relay`):** Any `ackbard` node fans out `GET /v1/sessions?federated=true`, `GET /v1/nodes?federated=true`, and `GET /v1/tasks?federated=true`, and proxies `GET /v1/sessions/transcript`, `POST /v1/sessions/spawn`, and `POST /v1/sessions/control` across peer hosts registered in SQLite (`GET /v1/hosts`), gracefully skipping offline/asleep hosts after a 1.5s health timeout.
 
 ---
 

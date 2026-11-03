@@ -32,30 +32,38 @@
 
 ---
 
-## 3. Phased Implementation Roadmap
+## 3. Unified 4-Phase Implementation Roadmap
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
 │                        IMPLEMENTATION PHASES                           │
 │                                                                        │
-│  PHASE 1: CORE DATA MODEL & DAEMON ENGINE                              │
-│  • SQLite tables: `tasks`, `task_external_refs`, `task_workers`.       │
-│  • REST API: `GET/POST /v1/tasks`, `POST /v1/tasks/event`.             │
-│  • Ambient Git branch / PR regex parser.                               │
+│  PHASE 1: 24/7 FEDERATED CONTROL PLANE & UNIFIED SUPERVISOR MCP        │
+│  • Sync `tree_nodes`, per-host repo paths (`path_macmini`,             │
+│    `path_legion`), and session `node_path` across `legion` + `macmini` │
+│    so Mobile (`iphone`) & Web (`macbook`) share the exact folder tree. │
+│  • Implement `GET /v1/sessions?federated=true`, `/v1/nodes`,           │
+│    and `/v1/tasks` on `ackbard`.                                       │
+│  • Expand `ackbar mcp` (`internal/mcp/tools.go`) with the 5 Session    │
+│    Control tools + 4 Task Stage-Gate tools (`complete_stage`, etc.).   │
 │                                                                        │
-│  PHASE 2: EMBEDDED WEB DASHBOARD & NAVIGATION                          │
-│  • Add `[📋 Work Board]` mode switcher to `web/index.html`.            │
-│  • Wire tab switching: Clicking worker pill focuses session tab.       │
-│  • Progressive disclosure card layout & 4-pillar columns.              │
+│  PHASE 2: STAGE-GATE ENGINE, SEQUENTIAL WORKSTREAMS & WATCHDOG         │
+│  • Add `task_workstreams` (`depends_on`, `learnings_md`) for parallel  │
+│    and sequential cross-platform flows (e.g. `ngl-ios` ➔ `ngl-android`)│
+│  • Implement deterministic `complete_stage` verification gates and the │
+│    Premature Idle Watchdog (15s timer + up to 2 auto-nudges).          │
+│  • Group task worker sessions under `📋 Task` in the session tree and  │
+│    auto-clean `.worktrees/<task>` + archive sessions on `DONE`.        │
 │                                                                        │
-│  PHASE 3: HOOKS, DEV-WORKFLOW & DISCOVERY MCP                          │
-│  • Wire `PreToolUse`/`PostToolUse` for `gh pr create` & test runners.   │
-│  • Ingest `dev-workflow` N15 `.retro.md` sidecars.                     │
-│  • Deploy `propose_task` MCP tool for in-flight bug triage.            │
+│  PHASE 3: VOICE COMPANION & 2-TIER LAZY SPEECH PIPELINE                │
+│  • Implement `POST /v1/sessions/summarize-speech` with `$0` stateless  │
+│    Haiku (`claude -p --model haiku`) and `(session_id, msg_idx)` cache.│
+│  • Add Tier 1 client Markdown speech sanitizer, `[🔊 Auto-Read]`,      │
+│    `[🎤 Mic]`, and per-message `[🔊 Read]` / `[↺ Read Again]` buttons. │
 │                                                                        │
-│  PHASE 4: STANDUP SYNTHESIS & VOICE COMPANION                          │
-│  • Implement `/v1/standup` aggregation endpoint (grouped by project).  │
-│  • Connect to Voice Companion `/v1/briefings/synthesize`.              │
-│  • 1-Click `gh pr merge` action execution.                             │
+│  PHASE 4: INLINE WORK BOARD ARTIFACT DRAWER & COMMUTER QUICK-CHIPS     │
+│  • Inline `.ackbar/plan.md` & `.ackbar/review/index.html` drawer with  │
+│    1-tap `[✅ Approve Stage]`, `[💬 Request Changes]`, `[⚡ Merge PR]`.│
+│  • Render interactive `suggested_chips` in mobile/web chat composer.   │
 └────────────────────────────────────────────────────────────────────────┘
 ```

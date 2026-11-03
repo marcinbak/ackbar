@@ -17,13 +17,14 @@
 
 ---
 
-### 2. 🎙️ Voice-Driven Supervisor Control Layer & Audio Companion
+### 2. 🎙️ Unified Supervisor Control Layer, Task Orchestrator & Voice Companion (Ackbar 2.0)
 * **Status:** Architecture Designed
-* **Detailed Spec:** [`docs/voice-companion.md`](voice-companion.md)
+* **Detailed Specs:** [`docs/voice-companion.md`](voice-companion.md) & [`docs/work-overview/`](work-overview/README.md)
 * **Scope:**
-  * **Decoupled Input/Output Modalities:** Hands-free mode (`🎤 Mic ON` + `🔊 Auto-Read ON` for driving/cooking), silent commuter mode (`🎤 Mic OFF` + `🔊 Auto-Read ON` + 1-tap quick chips for transit), and desk mode (`Auto-Read OFF` with ad-hoc per-message `[🔊 Read]` / `[↺ Read Again]`).
-  * **Supervisor MCP Session Tools (`ackbar mcp`):** Expand MCP server with `list_sessions`, `get_session_output`, `send_session_input`, `spawn_session`, and `control_session`, plus multi-host transcript/session proxy federation across peer `ackbard` daemons.
-  * **Progressive Plan Drill-Down & 2-Tier Lazy Speech Pipeline:** Outline-first spoken summaries for large implementation plans, 0ms client-side Markdown speech sanitizer (stripping code blocks/diagrams/URLs), and on-demand `POST /v1/sessions/summarize-speech` via stateless headless Haiku (`claude -p --model haiku`) with `(session_id, message_index)` caching.
+  * **24/7 Multi-Host Control Plane (`legion` + `macmini`):** Replicate `tree_nodes` (with per-host repo paths `path_macmini` / `path_legion`), session `node_path`, `tasks`, and `task_workstreams` across the 24/7 daemons via `GET /v1/nodes?federated=true`, `GET /v1/sessions?federated=true`, and `GET /v1/tasks?federated=true` so Mobile (`iphone`) and Desktop (`macbook`) always see the identical folder tree and Work Board.
+  * **Unified Supervisor & Task Stage-Gate MCP (`ackbar mcp`):** Expand MCP server with 5 Session Control tools (`list_sessions`, `get_session_output`, `send_session_input`, `spawn_session`, `control_session`) and 4 Task Stage-Gate tools (`create_task`, `dispatch_task_stage`, `complete_stage`, `review_task_stage`).
+  * **Stage-Gate Execution, Sequential Cross-Platform Workstreams & Premature Idle Watchdog:** Support both parallel and sequential (`depends_on` + `.ackbar/learnings.md` handoff, e.g. `ngl-ios` `@macmini` $\rightarrow$ `ngl-android` `@legion`) repo workstreams, deterministic zero-token `complete_stage` gates, a Premature Idle Watchdog (auto-nudging workers that go `StateIdle` without calling `complete_stage` or `report_blocker`), `📋 Task` session tree grouping, and automatic `.worktrees/<task>` + session cleanup on `DONE`.
+  * **Decoupled Voice/Audio Companion & 2-Tier Lazy Speech Pipeline:** Hands-free mode (`🎤 Mic ON` + `🔊 Auto-Read ON`), silent commuter mode (`🎤 Mic OFF` + `🔊 Auto-Read ON` + 1-tap quick chips), and desk mode (`Auto-Read OFF` with ad-hoc `[🔊 Read]` / `[↺ Read Again]`), powered by a 0ms client Markdown speech sanitizer and on-demand `POST /v1/sessions/summarize-speech` via stateless headless Haiku (`claude -p --model haiku`).
 
 ---
 
