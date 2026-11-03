@@ -1,5 +1,5 @@
 import { state } from './state.js';
-import { fetchTasks, createTask, updateTask, deleteTask, fetchStandup, mergeTaskPR, fetchAgentStatuses, provisionAgents, fetchAllAgentStatuses, provisionAllHosts } from './api.js';
+import { fetchTasks, createTask, updateTask, deleteTask, fetchStandup, mergeTaskPR, fetchAgentStatuses, provisionAgents, fetchAllAgentStatuses, provisionAllHosts, syncSkillsRepo } from './api.js';
 import { escapeHtml } from './utils.js';
 import { activateTab, openSessionInTab } from './tabs.js';
 import { showModal, hideModal } from './modals.js';
@@ -966,6 +966,114 @@ export async function showAgentSetupModal() {
     `;
   }
 
+  function renderSkillsRepoCard(h) {
+    if (!h.online) return '';
+
+    const sr = h.skillsRepo;
+    const isCloned = sr && sr.cloned;
+
+    if (isCloned) {
+      let statusBadge = '<span style="background: rgba(34, 197, 94, 0.12); color: var(--accent-green); border: 1px solid rgba(34, 197, 94, 0.3); padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600;">Up to Date</span>';
+      if (sr.dirty) {
+        statusBadge = '<span style="background: rgba(239, 68, 68, 0.12); color: var(--accent-red); border: 1px solid rgba(239, 68, 68, 0.3); padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600;">⚠️ Dirty Working Tree</span>';
+      } else if (sr.behind_count > 0) {
+        statusBadge = `<span style="background: rgba(234, 179, 8, 0.12); color: #eab308; border: 1px solid rgba(234, 179, 8, 0.3); padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600;">Behind by ${sr.behind_count} commits</span>`;
+      }
+
+      const installerText = sr.installer_found ? '✓ install.sh found' : 'Fallback directory copy';
+
+      return `
+        <div style="background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 6px; padding: 14px; display: flex; flex-direction: column; gap: 8px;">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <div style="display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 14px; color: var(--text-main);">
+              <span>📦</span> Shared Skills Repository
+              <span style="background: rgba(34, 197, 94, 0.15); color: var(--accent-green); padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600;">Cloned</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 10px;">
+              ${statusBadge}
+              <button class="btn btn-secondary btn-sync-skills-repo" data-host-key="${escapeHtml(h.host)}" style="padding: 3px 10px; font-size: 11px;">
+                🔄 Sync Skills
+              </button>
+            </div>
+          </div>
+
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 4px; font-size: 12px;">
+            <div style="background: var(--bg-subtle, rgba(0,0,0,0.15)); padding: 8px; border-radius: 4px; border: 1px solid var(--border-color);">
+              <div style="color: var(--text-muted); font-size: 11px; margin-bottom: 2px;">LOCAL REPOSITORY</div>
+              <div style="font-family: monospace; font-size: 11px; word-break: break-all; margin-bottom: 2px;">${escapeHtml(sr.repo_path || '')}</div>
+              <div style="color: var(--text-muted); font-size: 10px;">Branch: <code>${escapeHtml(sr.branch || 'main')}</code> @ <code>${escapeHtml(sr.local_sha || '')}</code></div>
+            </div>
+            <div style="background: var(--bg-subtle, rgba(0,0,0,0.15)); padding: 8px; border-radius: 4px; border: 1px solid var(--border-color);">
+              <div style="color: var(--text-muted); font-size: 11px; margin-bottom: 2px;">SYNC & INSTALLER</div>
+              <div style="color: var(--text-main); font-size: 11px; margin-bottom: 2px;">${installerText}</div>
+              <div style="color: var(--text-muted); font-family: monospace; font-size: 10px; word-break: break-all;">${sr.repo_url ? escapeHtml(sr.repo_url) : 'Local repository'}</div>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    // Not cloned or not configured
+    // Check if any other host in cachedHostStatuses has a repo_url configured
+    const otherWithURL = cachedHostStatuses.find(other => other.skillsRepo && other.skillsRepo.repo_url);
+    const knownURL = (sr && sr.repo_url) || (otherWithURL ? otherWithURL.skillsRepo.repo_url : '');
+    const defaultRepoName = knownURL ? knownURL.split('/').pop().replace(/\.git$/, '') : 'skills';
+    const suggestedPath = (sr && sr.suggested_path) || (defaultRepoName ? `~/Work/Personal/${defaultRepoName}` : '~/Work/Personal/skills');
+
+    if (knownURL) {
+      return `
+        <div style="background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 6px; padding: 14px; display: flex; flex-direction: column; gap: 10px;">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <div style="display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 14px; color: var(--text-main);">
+              <span>📦</span> Shared Skills Repository
+              <span style="background: rgba(234, 179, 8, 0.15); color: #eab308; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600;">Not Cloned</span>
+            </div>
+            <span style="font-size: 11px; color: var(--text-muted);">Configured on cluster</span>
+          </div>
+
+          <div style="font-size: 12px; color: var(--text-muted);">
+            Clone <code>${escapeHtml(knownURL)}</code> onto this host to sync shared agent skills.
+          </div>
+
+          <div style="display: flex; gap: 8px; align-items: center;">
+            <input type="text" class="input-skills-target-path" data-host-key="${escapeHtml(h.host)}" value="${escapeHtml(suggestedPath)}" style="flex: 1; padding: 5px 8px; font-size: 12px; font-family: monospace; background: var(--bg-subtle, rgba(0,0,0,0.15)); border: 1px solid var(--border-color); border-radius: 4px; color: var(--text-main);" placeholder="Target clone directory" />
+            <button class="btn btn-primary btn-clone-skills-repo" data-host-key="${escapeHtml(h.host)}" data-repo-url="${escapeHtml(knownURL)}" style="padding: 5px 12px; font-size: 12px; white-space: nowrap;">
+              📥 Clone & Sync
+            </button>
+          </div>
+        </div>
+      `;
+    }
+
+    // No repo URL known yet
+    return `
+      <div style="background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 6px; padding: 14px; display: flex; flex-direction: column; gap: 10px;">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <div style="display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 14px; color: var(--text-main);">
+            <span>📦</span> Shared Skills Repository
+            <span style="background: rgba(156, 163, 175, 0.15); color: var(--text-muted); padding: 2px 8px; border-radius: 10px; font-size: 11px;">Not Configured</span>
+          </div>
+        </div>
+
+        <div style="font-size: 12px; color: var(--text-muted);">
+          Connect an external Git repository to distribute and synchronize custom skills across all agents.
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 8px;">
+          <div style="display: flex; gap: 8px;">
+            <input type="text" class="input-custom-repo-url" data-host-key="${escapeHtml(h.host)}" placeholder="Git URL (e.g. https://github.com/org/skills.git)" style="flex: 1; padding: 5px 8px; font-size: 12px; font-family: monospace; background: var(--bg-subtle, rgba(0,0,0,0.15)); border: 1px solid var(--border-color); border-radius: 4px; color: var(--text-main);" />
+            <input type="text" class="input-custom-repo-path" data-host-key="${escapeHtml(h.host)}" placeholder="Destination path (e.g. ~/Work/Personal/skills)" style="flex: 1; padding: 5px 8px; font-size: 12px; font-family: monospace; background: var(--bg-subtle, rgba(0,0,0,0.15)); border: 1px solid var(--border-color); border-radius: 4px; color: var(--text-main);" />
+          </div>
+          <div style="display: flex; justify-content: flex-end;">
+            <button class="btn btn-secondary btn-configure-custom-skills-repo" data-host-key="${escapeHtml(h.host)}" style="padding: 4px 12px; font-size: 12px;">
+              📥 Configure & Sync
+            </button>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
   function renderHostSections() {
     const container = document.getElementById('mAgentCardsContainer');
     const tabsContainer = document.getElementById('mAgentHostTabs');
@@ -1039,12 +1147,16 @@ export async function showAgentSetupModal() {
             ⚠️ Host is offline or unreachable: ${escapeHtml(h.error || 'Connection failed')}
           </div>
         `;
-      } else if (!h.agents || h.agents.length === 0) {
-        contentHtml = '<div style="color: var(--text-muted); padding: 12px;">No supported agents found on this host.</div>';
       } else {
+        const skillsCardHtml = renderSkillsRepoCard(h);
+        const agentsHtml = (!h.agents || h.agents.length === 0)
+          ? '<div style="color: var(--text-muted); padding: 12px;">No supported agents found on this host.</div>'
+          : `<div style="display: flex; flex-direction: column; gap: 10px;">${h.agents.map(a => renderAgentCard(a, h.version)).join('')}</div>`;
+
         contentHtml = `
-          <div style="display: flex; flex-direction: column; gap: 10px;">
-            ${h.agents.map(a => renderAgentCard(a, h.version)).join('')}
+          <div style="display: flex; flex-direction: column; gap: 12px;">
+            ${skillsCardHtml}
+            ${agentsHtml}
           </div>
         `;
       }
@@ -1090,6 +1202,102 @@ export async function showAgentSetupModal() {
           await loadStatuses();
         } catch (err) {
           alert(`Failed to configure ${target.displayName || target.host}: ${err.message}`);
+          btn.disabled = false;
+          btn.innerHTML = origText;
+        }
+      });
+    });
+
+    // Bind skills repo sync buttons
+    container.querySelectorAll('.btn-sync-skills-repo').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const hostKey = btn.getAttribute('data-host-key');
+        const target = cachedHostStatuses.find(h => h.host === hostKey);
+        if (!target) return;
+
+        const origText = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '🔄 Syncing...';
+        try {
+          await syncSkillsRepo(target.url, {
+            repo_path: target.skillsRepo?.repo_path || '',
+            repo_url: target.skillsRepo?.repo_url || ''
+          });
+          btn.innerHTML = '✓ Synced';
+          btn.style.color = 'var(--accent-green)';
+          await loadStatuses();
+        } catch (err) {
+          alert(`Failed to sync skills on ${target.displayName || target.host}: ${err.message}`);
+          btn.disabled = false;
+          btn.innerHTML = origText;
+        }
+      });
+    });
+
+    // Bind skills repo clone buttons
+    container.querySelectorAll('.btn-clone-skills-repo').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const hostKey = btn.getAttribute('data-host-key');
+        const repoURL = btn.getAttribute('data-repo-url');
+        const target = cachedHostStatuses.find(h => h.host === hostKey);
+        if (!target) return;
+
+        const safeKey = (window.CSS && CSS.escape) ? CSS.escape(hostKey) : hostKey;
+        const inputPath = container.querySelector(`.input-skills-target-path[data-host-key="${safeKey}"]`);
+        const targetPath = inputPath ? inputPath.value.trim() : '';
+
+        const origText = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '📥 Cloning...';
+        try {
+          await syncSkillsRepo(target.url, {
+            repo_path: targetPath,
+            repo_url: repoURL,
+            clone_if_missing: true
+          });
+          btn.innerHTML = '✓ Cloned & Synced';
+          btn.style.color = 'var(--accent-green)';
+          await loadStatuses();
+        } catch (err) {
+          alert(`Failed to clone skills on ${target.displayName || target.host}: ${err.message}`);
+          btn.disabled = false;
+          btn.innerHTML = origText;
+        }
+      });
+    });
+
+    // Bind custom skills repo configure buttons
+    container.querySelectorAll('.btn-configure-custom-skills-repo').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const hostKey = btn.getAttribute('data-host-key');
+        const target = cachedHostStatuses.find(h => h.host === hostKey);
+        if (!target) return;
+
+        const safeKey = (window.CSS && CSS.escape) ? CSS.escape(hostKey) : hostKey;
+        const inputURL = container.querySelector(`.input-custom-repo-url[data-host-key="${safeKey}"]`);
+        const inputPath = container.querySelector(`.input-custom-repo-path[data-host-key="${safeKey}"]`);
+        const urlVal = inputURL ? inputURL.value.trim() : '';
+        const pathVal = inputPath ? inputPath.value.trim() : '';
+
+        if (!urlVal) {
+          alert('Please enter a Git repository URL');
+          return;
+        }
+
+        const origText = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '📥 Configuring...';
+        try {
+          await syncSkillsRepo(target.url, {
+            repo_path: pathVal,
+            repo_url: urlVal,
+            clone_if_missing: true
+          });
+          btn.innerHTML = '✓ Configured';
+          btn.style.color = 'var(--accent-green)';
+          await loadStatuses();
+        } catch (err) {
+          alert(`Failed to configure skills on ${target.displayName || target.host}: ${err.message}`);
           btn.disabled = false;
           btn.innerHTML = origText;
         }

@@ -6,12 +6,19 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"testing"
 )
 
 func TestServer_AgentsStatusAndProvisionHandlers(t *testing.T) {
 	tempHome := t.TempDir()
-	server := &Server{homeDir: tempHome}
+	db, err := InitDB(filepath.Join(tempHome, "test.db"))
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := &Server{homeDir: tempHome, db: db}
 
 	// 1. GET /v1/agents/status
 	reqStatus := httptest.NewRequest("GET", "/v1/agents/status", nil)
@@ -23,9 +30,10 @@ func TestServer_AgentsStatusAndProvisionHandlers(t *testing.T) {
 	}
 
 	var statusResp struct {
-		Status  string        `json:"status"`
-		Version string        `json:"version"`
-		Agents  []AgentStatus `json:"agents"`
+		Status     string           `json:"status"`
+		Version    string           `json:"version"`
+		Agents     []AgentStatus    `json:"agents"`
+		SkillsRepo SkillsRepoStatus `json:"skills_repo"`
 	}
 	if err := json.Unmarshal(recStatus.Body.Bytes(), &statusResp); err != nil {
 		t.Fatalf("Failed to parse status response: %v", err)
@@ -58,9 +66,10 @@ func TestServer_AgentsStatusAndProvisionHandlers(t *testing.T) {
 	}
 
 	var provResp struct {
-		Status  string        `json:"status"`
-		Message string        `json:"message"`
-		Agents  []AgentStatus `json:"agents"`
+		Status     string            `json:"status"`
+		Message    string            `json:"message"`
+		Agents     []AgentStatus     `json:"agents"`
+		SkillsRepo *SkillsRepoStatus `json:"skills_repo"`
 	}
 	if err := json.Unmarshal(recProv.Body.Bytes(), &provResp); err != nil {
 		t.Fatalf("Failed to parse provision response: %v", err)
@@ -72,5 +81,55 @@ func TestServer_AgentsStatusAndProvisionHandlers(t *testing.T) {
 	claudeCfgPath := tempHome + "/.claude.json"
 	if _, err := os.Stat(claudeCfgPath); err != nil {
 		t.Errorf("Expected provisioned config at %s, but file not found: %v", claudeCfgPath, err)
+	}
+
+	// 4. POST /v1/agents/skills-repo/sync
+	remoteURL, localRepo := setupTestGitRepos(t, tempHome)
+	syncBody, _ := json.Marshal(map[string]any{
+		"repo_path":        localRepo,
+		"repo_url":         remoteURL,
+		"clone_if_missing": false,
+	})
+	reqSync := httptest.NewRequest("POST", "/v1/agents/skills-repo/sync", bytes.NewReader(syncBody))
+	recSync := httptest.NewRecorder()
+	server.handleSkillsRepoSync(recSync, reqSync)
+
+	if recSync.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK from POST /v1/agents/skills-repo/sync, got %d: %s", recSync.Code, recSync.Body.String())
+	}
+
+	var syncResp struct {
+		Status     string           `json:"status"`
+		Message    string           `json:"message"`
+		SkillsRepo SkillsRepoStatus `json:"skills_repo"`
+		Agents     []AgentStatus    `json:"agents"`
+	}
+	if err := json.Unmarshal(recSync.Body.Bytes(), &syncResp); err != nil {
+		t.Fatalf("Failed to parse sync response: %v", err)
+	}
+	if syncResp.Status != "success" {
+		t.Errorf("Expected sync status 'success', got %s", syncResp.Status)
+	}
+	if !syncResp.SkillsRepo.Cloned {
+		t.Errorf("Expected skills repo to be cloned")
+	}
+
+	// 5. Cross-Origin Protection
+	// Disallowed origin should return 403 Forbidden
+	reqEvil := httptest.NewRequest("POST", "/v1/agents/skills-repo/sync", bytes.NewReader(syncBody))
+	reqEvil.Header.Set("Origin", "https://evil.example.com")
+	recEvil := httptest.NewRecorder()
+	server.handleSkillsRepoSync(recEvil, reqEvil)
+	if recEvil.Code != http.StatusForbidden {
+		t.Errorf("Expected 403 Forbidden for cross-origin request from https://evil.example.com, got %d", recEvil.Code)
+	}
+
+	// Allowed origin (http://127.0.0.1:7777) should succeed
+	reqSafe := httptest.NewRequest("POST", "/v1/agents/skills-repo/sync", bytes.NewReader(syncBody))
+	reqSafe.Header.Set("Origin", "http://127.0.0.1:7777")
+	recSafe := httptest.NewRecorder()
+	server.handleSkillsRepoSync(recSafe, reqSafe)
+	if recSafe.Code != http.StatusOK {
+		t.Errorf("Expected 200 OK for safe origin http://127.0.0.1:7777, got %d", recSafe.Code)
 	}
 }

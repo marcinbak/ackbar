@@ -126,3 +126,16 @@ Concrete provider implementations are organized into focused, single-responsibil
 * `<agent>_transcript.go`: Session metadata, title resolution, transcript extraction, and file cleanup.
 * `<agent>_subagent.go`: Structured subagent discovery and metadata parsing.
 
+---
+
+## 7. Shared Skills & Tools Distribution
+
+Ackbar provisions the `ackbar-tasks` MCP server and task management skills across all connected agent configurations:
+
+* **Claude Code (`claude-code`):** Configures `mcpServers.ackbar` in `~/.claude.json` (or profile config directory) and deploys `SKILL.md` to `~/.claude/skills/ackbar-tasks/`.
+* **Google Antigravity (`antigravity`):** Configures `mcpServers.ackbar` in `~/.gemini/antigravity/mcp_config.json` and deploys `SKILL.md` to both `~/.gemini/config/skills/ackbar-tasks/` (for IDE / shared agent environments) and `~/.gemini/antigravity-cli/skills/ackbar-tasks/` (for CLI environments).
+* **OpenAI Codex (`codex`):** Configures `mcpServers.ackbar` in `~/.codex/config.json` and deploys `SKILL.md` to `~/.codex/skills/ackbar-tasks/`.
+
+When an external skills repository is configured (via `ackbar agent setup --skills-repo-url=...`, `POST /v1/agents/skills-repo/sync`, or Web UI modal), custom skills from the external repository are automatically synchronized and installed across all supported agents.
+
+

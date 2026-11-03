@@ -63,8 +63,9 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 | `POST` | `/v1/tasks/merge-pr` | Executes 1-click `gh pr merge --squash` for a task with an open PR and transitions state to `DONE`. |
 | `GET` | `/v1/standup` | Deterministic daily standup and weekly retro report generation (grouped by project in Markdown or JSON). |
 | `POST` | `/v1/briefings/synthesize` | Generates speech-optimized conversational text briefing (<45s) for voice synthesis. |
-| `GET` | `/v1/agents/status` | Returns detected agent runtimes (Claude, Antigravity, Codex) with MCP and skill install statuses. |
-| `POST` | `/v1/agents/provision` | Provisions or upgrades the Ackbar Tasks MCP server and Skill into connected agent configs. |
+| `GET` | `/v1/agents/status` | Returns detected agent runtimes (Claude, Antigravity, Codex) with MCP and skill install statuses, plus external skills repo status. |
+| `POST` | `/v1/agents/provision` | Provisions or upgrades the Ackbar Tasks MCP server and Skill into connected agent configs, and optionally syncs external skills repo. |
+| `POST` | `/v1/agents/skills-repo/sync` | Clones or fast-forward pulls the shared skills repository and runs `./install.sh` (or fallback copy). |
 
 ### PTY Terminal Sizing (`/v1/sessions/pty`)
 
@@ -202,4 +203,35 @@ Each `ackbard` instance identifies itself across the multi-machine fleet using a
 
 ### Non-Destructive Database Migration:
 When a daemon's host name is configured away from `"local"`, `ackbard` automatically migrates existing database records (`sessions` and `deleted_sessions`) to use the new host identifier. Lookups using legacy session IDs remain fully backward-compatible.
+
+---
+
+## 7. Shared Skills Repository Synchronization
+
+Ackbar provides automated synchronization of external git repositories containing skills, tools, and extensions across all agents on local and remote fleet hosts.
+
+### Persistent Settings Keys
+Stored in the SQLite `settings` table:
+* `skills_repo_path`: Local filesystem path to the cloned repository (must reside under `$HOME`).
+* `skills_repo_url`: Git repository URL (e.g. `https://...`, `git@...`, or `ssh://...`).
+* `skills_repo_last_sync`: RFC 3339 timestamp of the last successful pull and install run.
+* `skills_repo_last_check`: RFC 3339 timestamp of the last upstream remote fetch or sync check.
+
+### Auto-Discovery Contract
+If `skills_repo_path` is not explicitly set in the database, `ackbard` inspects agent skill directories (`~/.gemini/config/skills/`, `~/.gemini/antigravity-cli/skills/`, `~/.claude/skills/`):
+1. **Marker Files:** Looks for `.ackbar-skills-source` or `.personal-config-managed` containing `source_repo=<path>`.
+2. **Symlinks:** Inspects symlink targets and walks parent directories to identify the enclosing `.git` repository root.
+3. Discovered repositories are validated against security constraints and persisted to database settings.
+
+### Security Boundaries
+* **Path Validation (`validateRepoPath`):** Target repository paths must be absolute paths strictly within the invoking user's home directory (`$HOME`). Paths starting with `-`, pointing to the root `$HOME` itself, or located within security-sensitive directories (`~/.ssh`, `~/.gnupg`, etc.) are rejected.
+* **URL Validation (`validateGitURL`):** Disallows argument/option injection (rejects leading `-`).
+* **Process Ownership:** The `install.sh` script is only executed if its POSIX file ownership (`stat_t.Uid`) strictly matches the running `ackbard` process UID.
+
+### Execution & Fallback Contract
+1. **Clean Fast-Forward Pull:** Runs `git fetch origin` followed by `git pull --ff-only` if `git status --porcelain` is clean. If uncommitted local changes exist, the pull is safely skipped to avoid clobbering work.
+2. **Installer Execution:** If `install.sh` exists at the root of the repository, executes `/bin/bash ./install.sh` with `HOME` and `ACKBAR_CLAUDE_DIRS` (colon-delimited list of custom account config directories from `accounts`).
+3. **Fallback Directory Copy:** If no `install.sh` is present, recursively mirrors any skills in `skills/*/SKILL.md` or `plugins/*/skills/*/SKILL.md` to `~/.claude/skills/`, `~/.gemini/config/skills/`, `~/.gemini/antigravity-cli/skills/`, and `~/.codex/skills/`.
+4. **Periodic Auto-Sync:** The background loop checks `skills_repo_last_check` on startup and hourly. If more than 24 hours have elapsed since the last check, an automated background sync is triggered.
+
 

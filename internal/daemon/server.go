@@ -313,6 +313,7 @@ func (s *Server) Mux() http.Handler {
 	mux.HandleFunc("/v1/briefings/synthesize", s.handleBriefingSynthesize)
 	mux.HandleFunc("/v1/agents/status", s.handleAgentsStatus)
 	mux.HandleFunc("/v1/agents/provision", s.handleAgentsProvision)
+	mux.HandleFunc("/v1/agents/skills-repo/sync", s.handleSkillsRepoSync)
 	mux.HandleFunc("/v1/events", s.handleEvents)
 
 	// Serve embedded Web GUI
@@ -564,18 +565,23 @@ func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) StartBackgroundLoop(ctx context.Context) {
 	go func() {
-		// Run initial scan, host tunnel check, and dev-workflow run ingestion asynchronously on startup
+		// Run initial scan, host tunnel check, dev-workflow run ingestion, and skills repo auto-sync asynchronously on startup
 		go s.scanObservedSessions(ctx)
 		go s.ensureHostTunnels(ctx)
 		go s.IngestDevWorkflowRuns()
+		go s.maybeAutoSyncSkillsRepo(ctx)
 
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
+		hourlyTicker := time.NewTicker(1 * time.Hour)
+		defer hourlyTicker.Stop()
 
 		for {
 			select {
 			case <-ctx.Done():
 				return
+			case <-hourlyTicker.C:
+				go s.maybeAutoSyncSkillsRepo(ctx)
 			case <-ticker.C:
 				s.scanObservedSessions(ctx)
 				go s.ensureHostTunnels(ctx)
@@ -587,4 +593,14 @@ func (s *Server) StartBackgroundLoop(ctx context.Context) {
 			}
 		}
 	}()
+}
+
+func (s *Server) maybeAutoSyncSkillsRepo(ctx context.Context) {
+	home := s.homeDir
+	if home == "" {
+		if h, err := os.UserHomeDir(); err == nil {
+			home = h
+		}
+	}
+	MaybeAutoSyncSkillsRepo(ctx, home, s.db)
 }
