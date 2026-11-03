@@ -290,6 +290,9 @@ func (d *DB) SaveSession(s *Session) error {
 			if !s.IsSupervisor && existing.IsSupervisor {
 				s.IsSupervisor = existing.IsSupervisor
 			}
+			if s.CurrentTaskID == "" && existing.CurrentTaskID != "" {
+				s.CurrentTaskID = existing.CurrentTaskID
+			}
 		}
 		if s.GitBranch == "" && existing.GitBranch != "" {
 			s.GitBranch = existing.GitBranch

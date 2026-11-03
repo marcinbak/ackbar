@@ -1226,6 +1226,11 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 
 	tempUUID := generateUUID()
 	effectiveHost := s.HostName()
+	spawnSessID := fmt.Sprintf("%s:%s:%s", req.Agent, effectiveHost, tempUUID)
+	if envVars == nil {
+		envVars = make(map[string]string)
+	}
+	envVars["ACKBAR_SESSION_ID"] = spawnSessID
 
 	if req.EngineType == EngineHeadless {
 		now := time.Now().UTC()

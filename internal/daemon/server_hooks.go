@@ -511,7 +511,7 @@ func (s *Server) updateHookSessionMetadataAndTitle(sess *Session, event *Event) 
 			sess.Cwd = event.Cwd
 		}
 	}
-	if sess.NodePath == "" && sess.Cwd != "" {
+	if sess.NodePath == "" && sess.Cwd != "" && !sess.IsSupervisor {
 		sess.NodePath = s.resolveSessionNodePath(sess.Cwd)
 	}
 	if len(event.Roots) > 0 {

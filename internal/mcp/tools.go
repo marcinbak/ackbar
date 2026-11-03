@@ -322,7 +322,6 @@ func GetRegisteredTools() []Tool {
 						Description: "Human-readable title for the Supervisor session (e.g. '⚓ NGL Feature Planning').",
 					},
 				},
-				Required: []string{"session_id", "node_path"},
 			},
 		},
 	}
