@@ -69,9 +69,11 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 | `POST` | `/v1/sync/push` | Ingests and reconciles peer sync payload via 3-way Last-Write-Wins (LWW). |
 | `GET` | `/v1/standup` | Deterministic daily standup and weekly retro report generation (grouped by project in Markdown or JSON). |
 | `POST` | `/v1/briefings/synthesize` | Generates speech-optimized conversational text briefing (<45s) for voice synthesis. |
-| `GET` | `/v1/agents/status` | Returns detected agent runtimes (Claude, Antigravity, Codex) with MCP and skill install statuses, plus external skills repo status. |
-| `POST` | `/v1/agents/provision` | Provisions or upgrades the Ackbar Tasks MCP server and Skill into connected agent configs, and optionally syncs external skills repo. |
+| `GET` | `/v1/agents/status` | Returns detected agent runtimes (Claude, Antigravity, Codex, Claude Desktop) with MCP and skill install statuses, plus external skills repo status. |
+| `POST` | `/v1/agents/provision` | Provisions or upgrades the Ackbar Tasks MCP server and Skill into connected agent configs (including `claude_desktop_config.json`), and optionally syncs external skills repo. |
 | `POST` | `/v1/agents/skills-repo/sync` | Clones or fast-forward pulls the shared skills repository and runs `./install.sh` (or fallback copy). |
+| `POST` | `/v1/mcp` | Streamable HTTP JSON-RPC 2.0 MCP endpoint (`initialize`, `tools/list`, `tools/call`). Resolves local loopback listener to prevent SSRF and hairpinning. |
+| `POST` | `/v1/sessions/summarize-speech` | On-demand speech summarizer with 2-level caching (in-memory + SQLite `speech_summaries`), headless Haiku synthesis ($0 flat OAuth), optional cloud API, and pure-Go structural AST fallback. |
 
 ### PTY Terminal Sizing (`/v1/sessions/pty`)
 
@@ -241,5 +243,30 @@ If `skills_repo_path` is not explicitly set in the database, `ackbard` inspects 
 2. **Installer Execution:** If `install.sh` exists at the root of the repository, executes `/bin/bash ./install.sh` with `HOME` and `ACKBAR_CLAUDE_DIRS` (colon-delimited list of custom account config directories from `accounts`).
 3. **Fallback Directory Copy:** If no `install.sh` is present, recursively mirrors any skills in `skills/*/SKILL.md` or `plugins/*/skills/*/SKILL.md` to `~/.claude/skills/`, `~/.gemini/config/skills/`, `~/.gemini/antigravity-cli/skills/`, and `~/.codex/skills/`.
 4. **Periodic Auto-Sync:** The background loop checks `skills_repo_last_check` on startup and hourly. If more than 24 hours have elapsed since the last check, an automated background sync is triggered.
+
+---
+
+## 8. Supervisor MCP & Voice Companion Engine
+
+### Streamable HTTP MCP Endpoint (`POST /v1/mcp`)
+Exposes JSON-RPC 2.0 MCP capabilities over HTTP for supervisor sessions and external connectors (e.g. Claude Desktop, mobile companions).
+* **Protocol Methods:** `initialize` (returns protocol `2024-11-05` and server info `ackbar-mcp`), `ping`, `tools/list`, and `tools/call`.
+* **Security & SSRF Mitigation:** Loopback listener address is extracted directly from the request context (`http.LocalAddrContextKey`) rather than the unvalidated client `Host` header, preventing internal loopback SSRF, reverse-proxy hairpinning, and token leakage. Request bodies are constrained with `http.MaxBytesReader(w, r.Body, 2<<20)`.
+* **Exposed Supervisor Tools:** `list_sessions`, `get_session_output`, `send_session_input` (with automatic `select_option -> answer` routing and blocked-state detection), `spawn_session`, `control_session`, and `bind_supervisor_session` (with `client.SessionID` fallback).
+
+### On-Demand Speech Summarizer (`POST /v1/sessions/summarize-speech`)
+Generates spoken audio briefing text and interactive suggested chips for assistant turns:
+* **2-Tier Synthesis Pipeline:**
+  1. **Fast Cache Check:** Checks in-memory sync map and SQLite `speech_summaries` table by `(session_id, message_index)` before transcript lookup.
+  2. **Stateless Flat-Rate Haiku ($0):** Invokes headless Claude CLI (`claude -p --model haiku --no-session-persistence`) using stripped billed credentials.
+  3. **Cloud API Fallback:** Queries Anthropic Messages API (`claude-3-5-haiku-latest`) if `anthropic_api_key` / `speech_api_key` is configured in DB settings or `ACKBAR_SPEECH_API_KEY` env var.
+  4. **Pure-Go Structural AST Fallback (`BuildStructuralSpeechSummary`):** Strips fenced code blocks, box drawing diagrams, and HTML tags; extracts Markdown `##`/`###` section outlines and open questions; generates 2-3 sentence spoken text and clickable reply chips.
+* **SQLite Persistence (`speech_summaries`):**
+  * `session_id TEXT NOT NULL`
+  * `message_index INTEGER NOT NULL`
+  * `spoken_text TEXT NOT NULL`
+  * `suggested_chips TEXT NOT NULL DEFAULT '[]'`
+  * `created_at DATETIME DEFAULT CURRENT_TIMESTAMP`
+  * `PRIMARY KEY (session_id, message_index)`
 
 

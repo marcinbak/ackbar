@@ -140,13 +140,13 @@ When a message contains a **large implementation plan (>150 words)**, **large ta
 
 ## 6. Phased Implementation Roadmap
 
-1. **Phase 1 — Supervisor MCP & Multi-Host Transcript Proxy (`internal/mcp`, `internal/daemon`):**
+1. **Phase 1 — Supervisor MCP & Multi-Host Transcript Proxy (`internal/mcp`, `internal/daemon`) — [DONE]:**
    * Add `list_sessions`, `get_session_output`, `send_session_input`, `spawn_session`, and `control_session` to `internal/mcp/tools.go`.
    * Add remote host proxy fallback to `GET /v1/sessions/transcript` and `GET /v1/sessions?federated=true` in `internal/daemon/server.go`.
    * Add Claude Desktop (`claude_desktop_config.json`) to `internal/daemon/provisioner.go`.
-2. **Phase 2 — On-Demand Speech Summarizer & Chat Audio Controls (`internal/daemon`, `web/`, `mobile/`):**
-   * Implement `POST /v1/sessions/summarize-speech` on `ackbard` with `(session_id, message_index)` caching, headless Haiku integration, and pure-Go structural fallback.
-   * Add the Tier 1 Markdown Speech Sanitizer, header toggles (`[🔊 Auto-Read]`, `[🎤 Mic]`), and per-message bubble buttons (`[🔊 Read]`, `[⏹️ Stop]`, `[↺ Read Again]`) to `web/js/chat.js` and `mobile/lib/features/transcript/presentation/transcript_screen.dart`.
-3. **Phase 3 — Remote HTTP MCP & Commuter Quick-Chips (`internal/daemon`, `mobile/`):**
-   * Expose Streamable HTTP MCP (`/v1/mcp`) on `ackbard` for remote mobile connectors.
-   * Render interactive `suggested_chips` in the chat composer for 1-tap Bus Commute exploration of implementation plans.
+2. **Phase 2 — On-Demand Speech Summarizer & Chat Audio Controls (`internal/daemon`, `web/`) — [DONE on Daemon & Web; Mobile in Phase 5]:**
+   * Implement `POST /v1/sessions/summarize-speech` on `ackbard` with `(session_id, message_index)` caching, headless Haiku integration, direct Cloud API support, and pure-Go structural fallback.
+   * Add the Tier 1 Markdown Speech Sanitizer, header toggles (`[🔊 Auto-Read]`, `[🎤 Mic]`), and per-message bubble buttons (`[🔊 Read]`, `[⏹️ Stop]`, `[↺ Read Again]`, `[📖 Read Full]`) to `web/js/chat.js` (mobile alignment in Phase 5).
+3. **Phase 3 — Remote HTTP MCP & Commuter Quick-Chips (`internal/daemon`, `web/`) — [DONE on Daemon & Web; Mobile in Phase 5]:**
+   * Expose Streamable HTTP MCP (`POST /v1/mcp`) on `ackbard` with JSON-RPC 2.0 and loopback listener resolution.
+   * Render interactive `suggested_chips` in `web/js/chat.js` for 1-tap exploration of implementation plans (mobile alignment in Phase 5).

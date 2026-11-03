@@ -241,3 +241,69 @@ func TestTryCloudAPISpeechSummary_Validation(t *testing.T) {
 		t.Errorf("expected error for empty content")
 	}
 }
+
+func TestServerSpeech_FastCacheAndTranscriptResolution(t *testing.T) {
+	t.Setenv("DISABLE_EXTERNAL_CLI_TESTS", "1")
+	tempDir := t.TempDir()
+	db, err := InitDB(filepath.Join(tempDir, "test.db"))
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	// Seed cache in SQLite
+	seed := &SpeechSummary{
+		SessionID:      "claude-code:local:300",
+		MessageIndex:   0,
+		SpokenText:     "Fast cached briefing.",
+		SuggestedChips: []string{"Hear Details"},
+		Tier:           "structural",
+		CreatedAt:      time.Now().UTC(),
+	}
+	if err := db.SaveSpeechSummary(seed); err != nil {
+		t.Fatalf("SaveSpeechSummary failed: %v", err)
+	}
+
+	srv := NewServer(db)
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+
+	// 1. Request with empty content but valid (session_id, message_index) -> returns cached
+	idx := 0
+	reqPayload := SummarizeSpeechRequest{
+		SessionID:    "claude-code:local:300",
+		MessageIndex: &idx,
+		Content:      "",
+	}
+	reqBytes, _ := json.Marshal(reqPayload)
+	resp, err := http.Post(ts.URL+"/v1/sessions/summarize-speech", "application/json", bytes.NewReader(reqBytes))
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 OK from fast cache, got %d", resp.StatusCode)
+	}
+	var res SpeechSummary
+	_ = json.NewDecoder(resp.Body).Decode(&res)
+	if !res.Cached || res.SpokenText != "Fast cached briefing." {
+		t.Errorf("expected cached result, got: %+v", res)
+	}
+
+	// 2. Request with nonexistent session and empty content -> returns 400 Bad Request
+	reqPayload2 := SummarizeSpeechRequest{
+		SessionID: "nonexistent:session:999",
+		Content:   "",
+	}
+	reqBytes2, _ := json.Marshal(reqPayload2)
+	resp2, err := http.Post(ts.URL+"/v1/sessions/summarize-speech", "application/json", bytes.NewReader(reqBytes2))
+	if err != nil {
+		t.Fatalf("request 2 failed: %v", err)
+	}
+	defer resp2.Body.Close()
+
+	if resp2.StatusCode != http.StatusBadRequest {
+		t.Errorf("expected 400 Bad Request for unresolvable content, got %d", resp2.StatusCode)
+	}
+}

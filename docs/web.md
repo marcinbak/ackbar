@@ -99,6 +99,18 @@ It is embedded directly into the `ackbard` Go binary and served on `http://127.0
 * **Zero Context-Switch Navigation:** Clicking any active worker pill on a task card switches straight to Workspace mode and focuses the agent session tab (`openSessionInTab` / `activateTab`).
 * **Interactive Controls:** Merge PRs, unblock waiting agents, view deliverables, create new tasks, and edit task status in-place.
 
+### 🎙️ 9. Voice Companion & 2-Tier Lazy Speech Pipeline (`chat.js`)
+* **Header Controls:**
+  * **`[🔊 Auto-Read]` (`.btn-chat-autoread`):** Toggle automated voice playback of incoming assistant messages on turn completion (`turn_complete` SSE event). Preference persists in `localStorage` (`ackbar_chat_autoread`).
+  * **`[🎤 Mic]` (`.btn-chat-mic`):** Voice dictation via Web Speech API (`SpeechRecognition` / `webkitSpeechRecognition`) with pulsing red recording animation. Includes punctuation-resilient keyword navigation (`"repeat that"`, `"replay"`, `"read that again"`) and automatic concise prompt instruction appending when Auto-Read is active.
+* **Per-Message Spoken Controls:**
+  * **`[🔊 Read]` (`.btn-read-chat-msg`):** Speaks the message. Short conversational turns (<120 words, simple prose) synthesize immediately via browser SpeechSynthesis. Complex structural turns lazily query `POST /v1/sessions/summarize-speech` to synthesize an Outline-First spoken briefing with suggested chips.
+  * **`[⏹️ Stop]` (`.btn-stop-chat-msg`):** Stops active speech playback immediately. Speech also cancels automatically when user dispatches a new prompt, cancels a turn, or encounters an error.
+  * **`[↺ Read Again]` (`.btn-replay-chat-msg`):** Replays the cached spoken briefing without re-querying the backend.
+  * **`[📖 Read Full]` (`.btn-full-read-chat-msg`):** Bypasses the outline briefing to read the full sanitized message aloud.
+* **Commuter Quick-Reply Chips (`.chat-suggested-chips`):**
+  * Displays interactive drill-down buttons (e.g. `[Hear Schema Changes]`, `[Hear Open Question]`, `[Approve Plan]`) below assistant turns for 1-tap/hands-free plan exploration.
+
 
 ---
 

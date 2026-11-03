@@ -23,13 +23,14 @@ type SummarizeSpeechRequest struct {
 }
 
 var (
-	fencedCodeRegex = regexp.MustCompile("(?s)```.*?```")
-	htmlTagRegex    = regexp.MustCompile("<[^>]+>")
-	boxDrawingRegex = regexp.MustCompile(`[┌┐└┘─│├┤┬┴┼═║╔╗╚╝╠╣╦╩╬]`)
-	headingRegex    = regexp.MustCompile(`(?m)^#{2,3}\s+(.+)$`)
-	mdLinkRegex     = regexp.MustCompile(`\[([^\]]+)\]\([^)]+\)`)
-	mdFormatting    = regexp.MustCompile(`[*_~` + "`" + `]`)
-	alertTagRegex   = regexp.MustCompile(`>\s*\[!(?:NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]`)
+	fencedCodeRegex            = regexp.MustCompile("(?s)```.*?```")
+	htmlTagRegex               = regexp.MustCompile("<[^>]+>")
+	boxDrawingRegex            = regexp.MustCompile(`[┌┐└┘─│├┤┬┴┼═║╔╗╚╝╠╣╦╩╬]`)
+	headingRegex               = regexp.MustCompile(`(?m)^#{2,3}\s+(.+)$`)
+	numberedHeadingPrefixRegex = regexp.MustCompile(`^\d+[\.\)]\s*`)
+	mdLinkRegex                = regexp.MustCompile(`\[([^\]]+)\]\([^)]+\)`)
+	mdFormatting               = regexp.MustCompile(`[*_~` + "`" + `]`)
+	alertTagRegex              = regexp.MustCompile(`>\s*\[!(?:NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]`)
 )
 
 // BuildStructuralSpeechSummary produces a deterministic, natural spoken briefing in pure Go.
@@ -50,7 +51,7 @@ func BuildStructuralSpeechSummary(content string) (string, []string) {
 			cleanH = mdFormatting.ReplaceAllString(cleanH, "")
 			cleanH = strings.TrimSpace(cleanH)
 			// Remove numbered prefix like "1. " or "1) "
-			cleanH = regexp.MustCompile(`^\d+[\.\)]\s*`).ReplaceAllString(cleanH, "")
+			cleanH = numberedHeadingPrefixRegex.ReplaceAllString(cleanH, "")
 			if cleanH != "" {
 				headings = append(headings, cleanH)
 			}
@@ -228,9 +229,53 @@ func (s *Server) handleSummarizeSpeech(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// If content is empty but session ID is provided, look up from transcript
+	// Step 1a: Fast Cache Check BEFORE Transcript Lookup if (session_id, message_index) is specified
+	if !req.ForceRefresh && req.SessionID != "" && req.MessageIndex != nil && *req.MessageIndex >= 0 {
+		msgIdx := *req.MessageIndex
+		cacheKey := fmt.Sprintf("%s:%d", req.SessionID, msgIdx)
+
+		s.speechCacheMu.RLock()
+		cached, ok := s.speechCache[cacheKey]
+		s.speechCacheMu.RUnlock()
+
+		if ok && cached != nil {
+			resp := *cached
+			resp.Cached = true
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
+			return
+		}
+
+		if s.db != nil {
+			if dbCached, err := s.db.GetSpeechSummary(req.SessionID, msgIdx); err == nil && dbCached != nil {
+				s.speechCacheMu.Lock()
+				s.speechCache[cacheKey] = dbCached
+				s.speechCacheMu.Unlock()
+
+				resp := *dbCached
+				resp.Cached = true
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(resp)
+				return
+			}
+		}
+	}
+
+	// Step 1b: If content is empty but session ID is provided, look up from transcript using resolved session metadata
 	if req.Content == "" && req.SessionID != "" {
-		if transcript, err := s.ExtractTranscript("", req.SessionID, ""); err == nil && transcript != nil {
+		sess := s.resolveSession(req.SessionID)
+		agent := "claude-code"
+		nativeID := req.SessionID
+		cwd := ""
+		if sess != nil {
+			agent = sess.Agent
+			nativeID = sess.NativeID
+			cwd = sess.Cwd
+		} else if parts := strings.Split(req.SessionID, ":"); len(parts) >= 3 {
+			agent = parts[0]
+			nativeID = parts[2]
+		}
+		if transcript, err := s.ExtractTranscript(agent, nativeID, cwd); err == nil && transcript != nil {
 			if req.MessageIndex != nil && *req.MessageIndex >= 0 && *req.MessageIndex < len(transcript.Messages) {
 				req.Content = transcript.Messages[*req.MessageIndex].Content
 			} else if len(transcript.Messages) > 0 {
@@ -243,8 +288,8 @@ func (s *Server) handleSummarizeSpeech(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if req.Content == "" && req.SessionID == "" {
-		http.Error(w, "Missing content or session_id", http.StatusBadRequest)
+	if strings.TrimSpace(req.Content) == "" {
+		http.Error(w, "Missing content or unable to resolve transcript message", http.StatusBadRequest)
 		return
 	}
 
@@ -254,7 +299,7 @@ func (s *Server) handleSummarizeSpeech(w http.ResponseWriter, r *http.Request) {
 	}
 	cacheKey := fmt.Sprintf("%s:%d", req.SessionID, msgIdx)
 
-	// Step 1: Check In-Memory & SQLite Cache
+	// Step 1c: Check In-Memory & SQLite Cache (for transcript-resolved message index or content requests)
 	if !req.ForceRefresh && req.SessionID != "" && msgIdx >= 0 {
 		s.speechCacheMu.RLock()
 		cached, ok := s.speechCache[cacheKey]
