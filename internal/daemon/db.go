@@ -45,6 +45,8 @@ CREATE TABLE IF NOT EXISTS sessions (
 	version TEXT,
 	is_done INTEGER DEFAULT 0,
 	is_later INTEGER DEFAULT 0,
+	is_supervisor INTEGER DEFAULT 0,
+	current_task_id TEXT DEFAULT '',
 	engine_type TEXT DEFAULT 'tmux',
 	metadata_updated_at TIMESTAMP
 );
@@ -200,6 +202,8 @@ func InitDB(dbPath string) (*DB, error) {
 	_, _ = db.Exec("ALTER TABLE sessions ADD COLUMN is_unread INTEGER DEFAULT 0;")
 	_, _ = db.Exec("ALTER TABLE sessions ADD COLUMN is_done INTEGER DEFAULT 0;")
 	_, _ = db.Exec("ALTER TABLE sessions ADD COLUMN is_later INTEGER DEFAULT 0;")
+	_, _ = db.Exec("ALTER TABLE sessions ADD COLUMN is_supervisor INTEGER DEFAULT 0;")
+	_, _ = db.Exec("ALTER TABLE sessions ADD COLUMN current_task_id TEXT DEFAULT '';")
 	_, _ = db.Exec("ALTER TABLE sessions ADD COLUMN last_state_change_at TIMESTAMP;")
 	_, _ = db.Exec("ALTER TABLE sessions ADD COLUMN account_id TEXT;")
 	_, _ = db.Exec("ALTER TABLE sessions ADD COLUMN engine_type TEXT DEFAULT 'tmux';")
@@ -266,7 +270,7 @@ func (d *DB) SaveSession(s *Session) error {
 		return fmt.Errorf("failed to marshal roots: %w", err)
 	}
 
-	// Preserve user-assigned group (NodePath), CustomTitle, and GitBranch if existing and empty in s
+	// Preserve user-assigned group (NodePath), CustomTitle, IsSupervisor, CurrentTaskID, and GitBranch if existing and empty in s
 	if existing, _ := d.GetSession(s.ID); existing != nil {
 		if s.MetadataUpdatedAt.IsZero() {
 			if s.NodePath == "" && existing.NodePath != "" {
@@ -275,7 +279,20 @@ func (d *DB) SaveSession(s *Session) error {
 			if s.CustomTitle == "" && existing.CustomTitle != "" {
 				s.CustomTitle = existing.CustomTitle
 			}
+			if !s.IsSupervisor && existing.IsSupervisor {
+				s.IsSupervisor = existing.IsSupervisor
+			}
+			if s.CurrentTaskID == "" && existing.CurrentTaskID != "" {
+				s.CurrentTaskID = existing.CurrentTaskID
+			}
 			s.MetadataUpdatedAt = existing.MetadataUpdatedAt
+		} else {
+			if !s.IsSupervisor && existing.IsSupervisor {
+				s.IsSupervisor = existing.IsSupervisor
+			}
+			if s.CurrentTaskID == "" && existing.CurrentTaskID != "" {
+				s.CurrentTaskID = existing.CurrentTaskID
+			}
 		}
 		if s.GitBranch == "" && existing.GitBranch != "" {
 			s.GitBranch = existing.GitBranch
@@ -323,6 +340,11 @@ func (d *DB) SaveSession(s *Session) error {
 		isLaterInt = 1
 	}
 
+	isSupervisorInt := 0
+	if s.IsSupervisor {
+		isSupervisorInt = 1
+	}
+
 	var lastStateChangeAt sql.NullTime
 	if !s.LastStateChangeAt.IsZero() {
 		lastStateChangeAt = sql.NullTime{Time: s.LastStateChangeAt, Valid: true}
@@ -333,8 +355,8 @@ func (d *DB) SaveSession(s *Session) error {
 		id, agent, host, native_id, cwd, roots, project_key, state, 
 		blocked_kind, blocked_reason, blocked_since, blocked_question, blocked_options, activity, 
 		started_at, last_event_at, managed, tmux_name, pid, archived, node_path, name, entrypoint, kind, version, context_pct, git_branch,
-		custom_title, ai_title, ai_description, first_prompt, last_prompt, is_unread, last_state_change_at, is_done, is_later, account_id, engine_type, old_id, metadata_updated_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		custom_title, ai_title, ai_description, first_prompt, last_prompt, is_unread, last_state_change_at, is_done, is_later, account_id, engine_type, old_id, metadata_updated_at, is_supervisor, current_task_id
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(id) DO UPDATE SET
 		cwd=excluded.cwd,
 		roots=excluded.roots,
@@ -370,7 +392,9 @@ func (d *DB) SaveSession(s *Session) error {
 		account_id=COALESCE(NULLIF(excluded.account_id, ''), sessions.account_id),
 		engine_type=COALESCE(NULLIF(excluded.engine_type, ''), sessions.engine_type),
 		old_id=COALESCE(NULLIF(excluded.old_id, ''), sessions.old_id),
-		metadata_updated_at=excluded.metadata_updated_at;
+		metadata_updated_at=excluded.metadata_updated_at,
+		is_supervisor=excluded.is_supervisor,
+		current_task_id=excluded.current_task_id;
 	`
 
 	managedInt := 0
@@ -396,6 +420,7 @@ func (d *DB) SaveSession(s *Session) error {
 	lastPromptVal := sql.NullString{String: s.LastPrompt, Valid: s.LastPrompt != ""}
 	accountIDVal := sql.NullString{String: s.AccountID, Valid: s.AccountID != ""}
 	oldIDVal := sql.NullString{String: s.OldID, Valid: s.OldID != ""}
+	currentTaskIDVal := sql.NullString{String: s.CurrentTaskID, Valid: s.CurrentTaskID != ""}
 	engineType := s.EngineType
 	if engineType == "" {
 		engineType = EngineTmux
@@ -409,7 +434,7 @@ func (d *DB) SaveSession(s *Session) error {
 		s.ID, s.Agent, s.Host, s.NativeID, s.Cwd, string(rootsJSON), s.ProjectKey, int(s.State),
 		blockedKind, blockedReason, blockedSince, blockedQuestion, blockedOptions, s.Activity,
 		s.StartedAt, s.LastEventAt, managedInt, s.TmuxName, s.PID, archivedInt, nodePath, sessName, entrypointVal, kindVal, versionVal, s.ContextPct, gitBranchVal,
-		customTitleVal, aiTitleVal, aiDescVal, firstPromptVal, lastPromptVal, isUnreadInt, lastStateChangeAt, isDoneInt, isLaterInt, accountIDVal, engineType, oldIDVal, s.MetadataUpdatedAt,
+		customTitleVal, aiTitleVal, aiDescVal, firstPromptVal, lastPromptVal, isUnreadInt, lastStateChangeAt, isDoneInt, isLaterInt, accountIDVal, engineType, oldIDVal, s.MetadataUpdatedAt, isSupervisorInt, currentTaskIDVal,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to save session: %w", err)
@@ -423,14 +448,14 @@ func (d *DB) GetSession(id string) (*Session, error) {
 	SELECT id, agent, host, native_id, cwd, roots, project_key, state,
 	       blocked_kind, blocked_reason, blocked_since, blocked_question, blocked_options, activity,
 	       started_at, last_event_at, managed, tmux_name, pid, archived, node_path, name, entrypoint, kind, version, context_pct, git_branch,
-	       custom_title, ai_title, ai_description, first_prompt, last_prompt, is_unread, last_state_change_at, is_done, is_later, account_id, engine_type, old_id, metadata_updated_at
+	       custom_title, ai_title, ai_description, first_prompt, last_prompt, is_unread, last_state_change_at, is_done, is_later, account_id, engine_type, old_id, metadata_updated_at, is_supervisor, current_task_id
 	FROM sessions WHERE id = ? OR native_id = ? OR native_id = ?;
 	`
 
 	var s Session
 	var rootsStr, blockedKind, blockedReason, blockedQuestion, blockedOptions, nodePath, sessName, entrypointVal, kindVal, versionVal, gitBranchVal sql.NullString
-	var customTitleVal, aiTitleVal, aiDescVal, firstPromptVal, lastPromptVal, accountIDVal, engineTypeVal, oldIDVal sql.NullString
-	var ctxPct sql.NullInt64
+	var customTitleVal, aiTitleVal, aiDescVal, firstPromptVal, lastPromptVal, accountIDVal, engineTypeVal, oldIDVal, currentTaskIDVal sql.NullString
+	var ctxPct, isSupervisorVal sql.NullInt64
 	var blockedSince, lastStateChangeAt, metadataUpdatedAt sql.NullTime
 	var managedInt, archivedInt, isUnreadInt, isDoneInt, isLaterInt int
 
@@ -444,7 +469,7 @@ func (d *DB) GetSession(id string) (*Session, error) {
 		&s.ID, &s.Agent, &s.Host, &s.NativeID, &s.Cwd, &rootsStr, &s.ProjectKey, (*int)(&s.State),
 		&blockedKind, &blockedReason, &blockedSince, &blockedQuestion, &blockedOptions, &s.Activity,
 		&s.StartedAt, &s.LastEventAt, &managedInt, &s.TmuxName, &s.PID, &archivedInt, &nodePath, &sessName, &entrypointVal, &kindVal, &versionVal, &ctxPct, &gitBranchVal,
-		&customTitleVal, &aiTitleVal, &aiDescVal, &firstPromptVal, &lastPromptVal, &isUnreadInt, &lastStateChangeAt, &isDoneInt, &isLaterInt, &accountIDVal, &engineTypeVal, &oldIDVal, &metadataUpdatedAt,
+		&customTitleVal, &aiTitleVal, &aiDescVal, &firstPromptVal, &lastPromptVal, &isUnreadInt, &lastStateChangeAt, &isDoneInt, &isLaterInt, &accountIDVal, &engineTypeVal, &oldIDVal, &metadataUpdatedAt, &isSupervisorVal, &currentTaskIDVal,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -454,6 +479,12 @@ func (d *DB) GetSession(id string) (*Session, error) {
 
 	if metadataUpdatedAt.Valid {
 		s.MetadataUpdatedAt = metadataUpdatedAt.Time
+	}
+	if isSupervisorVal.Valid {
+		s.IsSupervisor = isSupervisorVal.Int64 == 1
+	}
+	if currentTaskIDVal.Valid {
+		s.CurrentTaskID = currentTaskIDVal.String
 	}
 
 	if accountIDVal.Valid {
@@ -543,7 +574,7 @@ func (d *DB) ListSessions() ([]*Session, error) {
 	SELECT id, agent, host, native_id, cwd, roots, project_key, state,
 	       blocked_kind, blocked_reason, blocked_since, blocked_question, blocked_options, activity,
 	       started_at, last_event_at, managed, tmux_name, pid, archived, node_path, name, entrypoint, kind, version, context_pct, git_branch,
-	       custom_title, ai_title, ai_description, first_prompt, last_prompt, is_unread, last_state_change_at, is_done, is_later, account_id, engine_type, old_id, metadata_updated_at
+	       custom_title, ai_title, ai_description, first_prompt, last_prompt, is_unread, last_state_change_at, is_done, is_later, account_id, engine_type, old_id, metadata_updated_at, is_supervisor, current_task_id
 	FROM sessions
 	ORDER BY last_event_at DESC;
 	`
@@ -558,8 +589,8 @@ func (d *DB) ListSessions() ([]*Session, error) {
 	for rows.Next() {
 		var s Session
 		var rootsStr, blockedKind, blockedReason, blockedQuestion, blockedOptions, nodePath, sessName, entrypointVal, kindVal, versionVal, gitBranchVal sql.NullString
-		var customTitleVal, aiTitleVal, aiDescVal, firstPromptVal, lastPromptVal, accountIDVal, engineTypeVal, oldIDVal sql.NullString
-		var ctxPct sql.NullInt64
+		var customTitleVal, aiTitleVal, aiDescVal, firstPromptVal, lastPromptVal, accountIDVal, engineTypeVal, oldIDVal, currentTaskIDVal sql.NullString
+		var ctxPct, isSupervisorVal sql.NullInt64
 		var blockedSince, lastStateChangeAt, metadataUpdatedAt sql.NullTime
 		var managedInt, archivedInt, isUnreadInt, isDoneInt, isLaterInt int
 
@@ -567,7 +598,7 @@ func (d *DB) ListSessions() ([]*Session, error) {
 			&s.ID, &s.Agent, &s.Host, &s.NativeID, &s.Cwd, &rootsStr, &s.ProjectKey, (*int)(&s.State),
 			&blockedKind, &blockedReason, &blockedSince, &blockedQuestion, &blockedOptions, &s.Activity,
 			&s.StartedAt, &s.LastEventAt, &managedInt, &s.TmuxName, &s.PID, &archivedInt, &nodePath, &sessName, &entrypointVal, &kindVal, &versionVal, &ctxPct, &gitBranchVal,
-			&customTitleVal, &aiTitleVal, &aiDescVal, &firstPromptVal, &lastPromptVal, &isUnreadInt, &lastStateChangeAt, &isDoneInt, &isLaterInt, &accountIDVal, &engineTypeVal, &oldIDVal, &metadataUpdatedAt,
+			&customTitleVal, &aiTitleVal, &aiDescVal, &firstPromptVal, &lastPromptVal, &isUnreadInt, &lastStateChangeAt, &isDoneInt, &isLaterInt, &accountIDVal, &engineTypeVal, &oldIDVal, &metadataUpdatedAt, &isSupervisorVal, &currentTaskIDVal,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan session in list: %w", err)
@@ -575,6 +606,12 @@ func (d *DB) ListSessions() ([]*Session, error) {
 
 		if metadataUpdatedAt.Valid {
 			s.MetadataUpdatedAt = metadataUpdatedAt.Time
+		}
+		if isSupervisorVal.Valid {
+			s.IsSupervisor = isSupervisorVal.Int64 == 1
+		}
+		if currentTaskIDVal.Valid {
+			s.CurrentTaskID = currentTaskIDVal.String
 		}
 
 		if accountIDVal.Valid {
@@ -751,7 +788,7 @@ func (d *DB) ListActiveSessions() ([]*Session, error) {
 	SELECT id, agent, host, native_id, cwd, roots, project_key, state,
 	       blocked_kind, blocked_reason, blocked_since, blocked_question, blocked_options, activity,
 	       started_at, last_event_at, managed, tmux_name, pid, archived, node_path, name, entrypoint, kind, version, context_pct, git_branch,
-	       custom_title, ai_title, ai_description, first_prompt, last_prompt, is_unread, last_state_change_at, is_done, is_later, account_id, engine_type, old_id, metadata_updated_at
+	       custom_title, ai_title, ai_description, first_prompt, last_prompt, is_unread, last_state_change_at, is_done, is_later, account_id, engine_type, old_id, metadata_updated_at, is_supervisor, current_task_id
 	FROM sessions
 	WHERE state != ?
 	ORDER BY last_event_at DESC;
@@ -767,8 +804,8 @@ func (d *DB) ListActiveSessions() ([]*Session, error) {
 	for rows.Next() {
 		var s Session
 		var rootsStr, blockedKind, blockedReason, blockedQuestion, blockedOptions, nodePath, sessName, entrypointVal, kindVal, versionVal, gitBranchVal sql.NullString
-		var customTitleVal, aiTitleVal, aiDescVal, firstPromptVal, lastPromptVal, accountIDVal, engineTypeVal, oldIDVal sql.NullString
-		var ctxPct sql.NullInt64
+		var customTitleVal, aiTitleVal, aiDescVal, firstPromptVal, lastPromptVal, accountIDVal, engineTypeVal, oldIDVal, currentTaskIDVal sql.NullString
+		var ctxPct, isSupervisorVal sql.NullInt64
 		var blockedSince, lastStateChangeAt, metadataUpdatedAt sql.NullTime
 		var managedInt, archivedInt, isUnreadInt, isDoneInt, isLaterInt int
 
@@ -776,7 +813,7 @@ func (d *DB) ListActiveSessions() ([]*Session, error) {
 			&s.ID, &s.Agent, &s.Host, &s.NativeID, &s.Cwd, &rootsStr, &s.ProjectKey, (*int)(&s.State),
 			&blockedKind, &blockedReason, &blockedSince, &blockedQuestion, &blockedOptions, &s.Activity,
 			&s.StartedAt, &s.LastEventAt, &managedInt, &s.TmuxName, &s.PID, &archivedInt, &nodePath, &sessName, &entrypointVal, &kindVal, &versionVal, &ctxPct, &gitBranchVal,
-			&customTitleVal, &aiTitleVal, &aiDescVal, &firstPromptVal, &lastPromptVal, &isUnreadInt, &lastStateChangeAt, &isDoneInt, &isLaterInt, &accountIDVal, &engineTypeVal, &oldIDVal, &metadataUpdatedAt,
+			&customTitleVal, &aiTitleVal, &aiDescVal, &firstPromptVal, &lastPromptVal, &isUnreadInt, &lastStateChangeAt, &isDoneInt, &isLaterInt, &accountIDVal, &engineTypeVal, &oldIDVal, &metadataUpdatedAt, &isSupervisorVal, &currentTaskIDVal,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan active session in list: %w", err)
@@ -784,6 +821,12 @@ func (d *DB) ListActiveSessions() ([]*Session, error) {
 
 		if metadataUpdatedAt.Valid {
 			s.MetadataUpdatedAt = metadataUpdatedAt.Time
+		}
+		if isSupervisorVal.Valid {
+			s.IsSupervisor = isSupervisorVal.Int64 == 1
+		}
+		if currentTaskIDVal.Valid {
+			s.CurrentTaskID = currentTaskIDVal.String
 		}
 
 		if accountIDVal.Valid {
@@ -2136,6 +2179,7 @@ func (d *DB) DeleteTask(taskID string) error {
 	_, _ = d.db.Exec(`DELETE FROM task_workers WHERE task_id = ?;`, taskID)
 	_, _ = d.db.Exec(`DELETE FROM task_external_refs WHERE task_id = ?;`, taskID)
 	_, _ = d.db.Exec(`DELETE FROM task_deliverables WHERE task_id = ?;`, taskID)
+	_, _ = d.db.Exec(`UPDATE sessions SET current_task_id = '', metadata_updated_at = ? WHERE current_task_id = ?;`, now, taskID)
 	return nil
 }
 
@@ -2153,8 +2197,13 @@ func insertTaskWorkerTx(tx *sql.Tx, w *TaskWorker) error {
 			  is_active = excluded.is_active,
 			  agent = excluded.agent,
 			  host = excluded.host`
-	_, err := tx.Exec(query, w.TaskID, w.SessionID, w.Agent, w.Host, isActive, w.AssignedAt)
-	return err
+	if _, err := tx.Exec(query, w.TaskID, w.SessionID, w.Agent, w.Host, isActive, w.AssignedAt); err != nil {
+		return err
+	}
+	if w.SessionID != "" && w.TaskID != "" {
+		_, _ = tx.Exec(`UPDATE sessions SET current_task_id = ?, metadata_updated_at = ? WHERE id = ? OR native_id = ?;`, w.TaskID, time.Now().UTC(), w.SessionID, w.SessionID)
+	}
+	return nil
 }
 
 func insertTaskExternalRefTx(tx *sql.Tx, r *TaskExternalRef) error {
@@ -2556,23 +2605,25 @@ func sortTasksForPrimary(d *DB, cluster []*Task) {
 }
 
 type SessionMetaSync struct {
-	ID          string    `json:"id"`
-	Agent       string    `json:"agent,omitempty"`
-	Host        string    `json:"host,omitempty"`
-	NativeID    string    `json:"native_id,omitempty"`
-	Cwd         string    `json:"cwd,omitempty"`
-	NodePath    string    `json:"node_path"`
-	Name        string    `json:"name,omitempty"`
-	CustomTitle string    `json:"custom_title,omitempty"`
-	IsDone      bool      `json:"is_done"`
-	IsLater     bool      `json:"is_later"`
-	Archived    bool      `json:"archived"`
-	State       State     `json:"state,omitempty"`
-	Activity    string    `json:"activity,omitempty"`
-	GitBranch   string    `json:"git_branch,omitempty"`
-	StartedAt   time.Time `json:"started_at,omitempty"`
-	LastEventAt time.Time `json:"last_event_at,omitempty"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID            string    `json:"id"`
+	Agent         string    `json:"agent,omitempty"`
+	Host          string    `json:"host,omitempty"`
+	NativeID      string    `json:"native_id,omitempty"`
+	Cwd           string    `json:"cwd,omitempty"`
+	NodePath      string    `json:"node_path"`
+	Name          string    `json:"name,omitempty"`
+	CustomTitle   string    `json:"custom_title,omitempty"`
+	IsDone        bool      `json:"is_done"`
+	IsLater       bool      `json:"is_later"`
+	Archived      bool      `json:"archived"`
+	IsSupervisor  bool      `json:"is_supervisor"`
+	CurrentTaskID string    `json:"current_task_id,omitempty"`
+	State         State     `json:"state,omitempty"`
+	Activity      string    `json:"activity,omitempty"`
+	GitBranch     string    `json:"git_branch,omitempty"`
+	StartedAt     time.Time `json:"started_at,omitempty"`
+	LastEventAt   time.Time `json:"last_event_at,omitempty"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 type SyncStatePayload struct {
@@ -2689,15 +2740,16 @@ func (d *DB) GetSyncStateSince(since time.Time, sourceHost string) (*SyncStatePa
 	}
 
 	// 5. SessionMetas
-	sRows, err := d.db.Query("SELECT id, agent, host, native_id, cwd, node_path, name, custom_title, is_done, is_later, archived, state, activity, git_branch, started_at, last_event_at, metadata_updated_at FROM sessions;")
+	sRows, err := d.db.Query("SELECT id, agent, host, native_id, cwd, node_path, name, custom_title, is_done, is_later, archived, is_supervisor, current_task_id, state, activity, git_branch, started_at, last_event_at, metadata_updated_at FROM sessions;")
 	if err == nil {
 		for sRows.Next() {
 			var sm SessionMetaSync
-			var nodePath, name, customTitle, activity, gitBranch sql.NullString
+			var nodePath, name, customTitle, currentTaskID, activity, gitBranch sql.NullString
+			var isSupervisorVal sql.NullInt64
 			var isDoneInt, isLaterInt, archivedInt, stateInt int
 			var metaUpd sql.NullTime
 
-			if err := sRows.Scan(&sm.ID, &sm.Agent, &sm.Host, &sm.NativeID, &sm.Cwd, &nodePath, &name, &customTitle, &isDoneInt, &isLaterInt, &archivedInt, &stateInt, &activity, &gitBranch, &sm.StartedAt, &sm.LastEventAt, &metaUpd); err == nil {
+			if err := sRows.Scan(&sm.ID, &sm.Agent, &sm.Host, &sm.NativeID, &sm.Cwd, &nodePath, &name, &customTitle, &isDoneInt, &isLaterInt, &archivedInt, &isSupervisorVal, &currentTaskID, &stateInt, &activity, &gitBranch, &sm.StartedAt, &sm.LastEventAt, &metaUpd); err == nil {
 				if nodePath.Valid {
 					sm.NodePath = nodePath.String
 				}
@@ -2706,6 +2758,9 @@ func (d *DB) GetSyncStateSince(since time.Time, sourceHost string) (*SyncStatePa
 				}
 				if customTitle.Valid {
 					sm.CustomTitle = customTitle.String
+				}
+				if currentTaskID.Valid {
+					sm.CurrentTaskID = currentTaskID.String
 				}
 				if activity.Valid {
 					sm.Activity = activity.String
@@ -2716,6 +2771,9 @@ func (d *DB) GetSyncStateSince(since time.Time, sourceHost string) (*SyncStatePa
 				sm.IsDone = isDoneInt == 1
 				sm.IsLater = isLaterInt == 1
 				sm.Archived = archivedInt == 1
+				if isSupervisorVal.Valid {
+					sm.IsSupervisor = isSupervisorVal.Int64 == 1
+				}
 				sm.State = State(stateInt)
 
 				if metaUpd.Valid {
@@ -2854,6 +2912,8 @@ func (d *DB) ApplySyncState(payload *SyncStatePayload) ([]*Session, error) {
 				existing.IsDone = meta.IsDone
 				existing.IsLater = meta.IsLater
 				existing.Archived = meta.Archived
+				existing.IsSupervisor = meta.IsSupervisor
+				existing.CurrentTaskID = meta.CurrentTaskID
 				existing.MetadataUpdatedAt = meta.UpdatedAt
 			}
 
@@ -2885,6 +2945,8 @@ func (d *DB) ApplySyncState(payload *SyncStatePayload) ([]*Session, error) {
 				IsDone:            meta.IsDone,
 				IsLater:           meta.IsLater,
 				Archived:          meta.Archived,
+				IsSupervisor:      meta.IsSupervisor,
+				CurrentTaskID:     meta.CurrentTaskID,
 				State:             meta.State,
 				Activity:          meta.Activity,
 				GitBranch:         meta.GitBranch,

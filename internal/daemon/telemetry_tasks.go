@@ -312,6 +312,13 @@ func (s *Server) SyncSessionTaskWorker(sess *Session) {
 	}
 	_ = s.db.InsertTaskWorker(worker)
 
+	if sess.CurrentTaskID != task.ID {
+		sess.CurrentTaskID = task.ID
+		sess.MetadataUpdatedAt = time.Now().UTC()
+		_ = s.db.SaveSession(sess)
+		s.syncSessionMeta(sess)
+	}
+
 	// 3. Reflect blocked / active state
 	taskNeedsUpdate := false
 	if sess.State == StateBlocked {

@@ -283,3 +283,84 @@ func TestRenderHostAgentDiscovery_CompactBadges(t *testing.T) {
 		t.Errorf("did not expect Not Installed when all are installed, got %q", allOut)
 	}
 }
+
+func TestBuildVisibleRows_CategorizesSupervisorsTasksManualLaterDone(t *testing.T) {
+	now := time.Now()
+	m := &Model{
+		sessions: []*daemon.Session{
+			{
+				ID:          "sess-done",
+				Name:        "Done Session",
+				Host:        "local",
+				NodePath:    "Personal/Ackbar",
+				IsDone:      true,
+				LastEventAt: now,
+			},
+			{
+				ID:          "sess-manual",
+				Name:        "Manual Session",
+				Host:        "local",
+				NodePath:    "Personal/Ackbar",
+				LastEventAt: now.Add(-1 * time.Minute),
+			},
+			{
+				ID:          "sess-later",
+				Name:        "Later Session",
+				Host:        "local",
+				NodePath:    "Personal/Ackbar",
+				IsLater:     true,
+				LastEventAt: now,
+			},
+			{
+				ID:            "sess-task",
+				Name:          "Task Worker",
+				Host:          "local",
+				NodePath:      "Personal/Ackbar",
+				CurrentTaskID: "task_123",
+				LastEventAt:   now.Add(-2 * time.Minute),
+			},
+			{
+				ID:           "sess-sup",
+				Name:         "⚓ Ackbar Supervisor",
+				Host:         "local",
+				NodePath:     "Personal/Ackbar",
+				IsSupervisor: true,
+				LastEventAt:  now.Add(-3 * time.Minute),
+			},
+		},
+		collapsed: make(map[string]bool),
+	}
+
+	rows := m.buildVisibleRows()
+	var ids []string
+	var sections []string
+	for _, r := range rows {
+		if !r.IsGroup && r.Session != nil {
+			ids = append(ids, r.Session.ID)
+			sections = append(sections, r.Section)
+		}
+	}
+
+	expectedIDs := []string{"sess-sup", "sess-task", "sess-manual", "sess-later", "sess-done"}
+	if len(ids) != len(expectedIDs) {
+		t.Fatalf("expected %d session rows, got %d (%v)", len(expectedIDs), len(ids), ids)
+	}
+	for i := range expectedIDs {
+		if ids[i] != expectedIDs[i] {
+			t.Errorf("at index %d: expected %s, got %s (full order: %v, sections: %v)", i, expectedIDs[i], ids[i], ids, sections)
+		}
+	}
+
+	// Verify Supervisors-Only filter (F / tab key)
+	m.supervisorsOnly = true
+	supRows := m.buildVisibleRows()
+	var supIDs []string
+	for _, r := range supRows {
+		if !r.IsGroup && r.Session != nil {
+			supIDs = append(supIDs, r.Session.ID)
+		}
+	}
+	if len(supIDs) != 1 || supIDs[0] != "sess-sup" {
+		t.Errorf("expected only [sess-sup] in supervisorsOnly mode, got %v", supIDs)
+	}
+}

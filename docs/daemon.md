@@ -38,7 +38,8 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 | `GET` | `/v1/events` | SSE stream broadcasting real-time session mutations and state changes. |
 | `GET` | `/v1/sessions/chat/stream` | SSE stream for real-time turn text, thoughts, subagents, and keepalive heartbeats. |
 | `GET` | `/v1/sessions/pty` | WebSocket endpoint streaming interactive PTY data to `xterm.js`. |
-| `POST` | `/v1/sessions/spawn` | Spawns a new agent process in a supervised tmux session using RFC 4122 UUIDv4 (supports prompt injection). |
+| `POST` | `/v1/sessions/spawn` | Spawns a new agent process in a supervised tmux session using RFC 4122 UUIDv4 (supports prompt injection and zero-input `is_supervisor: true`). |
+| `POST` | `/v1/sessions/bind-supervisor` | Auto-binds a Supervisor session (`is_supervisor = true`) to a logical project `node_path` and `title` on Turn 1, broadcasting SSE and LWW sync. |
 | `POST` | `/v1/meta/resolve` | Derives host, agent, group, and existing session match from prompt via Jev AI / heuristics. |
 | `POST` | `/v1/hooks/{agent}` | Ingests agent lifecycle and tool hook events with in-place `/clear` rotation detection. |
 | `POST` | `/v1/sessions/control` | Executes control actions: `resume`, `restart`, `kill`, `move`, `rename`, `delete`, `handover`, `later`, `unlater`, `done`, `active`. |
@@ -152,6 +153,8 @@ The SQLite database (`~/.config/ackbar/ackbard.db`) uses CGO-free pure Go SQLite
 * `git_branch`: Current Git branch associated with the session workspace.
 * `worktree_name`: Associated Git worktree directory if applicable.
 * `old_id`: Pre-adoption temporary session ID preserved when an Antigravity session adopts its canonical conversation UUID, enabling seamless fallback resolution across `/v1/sessions/*` and `/v1/sessions/pty`.
+* `is_supervisor`: Tracks whether the session is a zero-input `⚓ Supervisor` session (`1` = supervisor, `0` = normal), synchronized across peers via LWW `SessionMetaSync`.
+* `current_task_id`: Tracks the active Ackbar task ID bound to the session (if any), categorizing the session under the `📋 Tasks` subsection and synchronized across peers via LWW `SessionMetaSync`.
 
 ---
 

@@ -299,6 +299,31 @@ func GetRegisteredTools() []Tool {
 				},
 			},
 		},
+		{
+			Name:        "bind_supervisor_session",
+			Description: "Binds a Supervisor session to a target project tree node and sets its custom title on Turn 1.",
+			InputSchema: ToolInputSchema{
+				Type: "object",
+				Properties: map[string]PropertyDef{
+					"session_id": {
+						Type:        "string",
+						Description: "Session ID or native UUID of the supervisor session.",
+					},
+					"node_path": {
+						Type:        "string",
+						Description: "Target project node path in the Ackbar tree (e.g. 'Personal/Ackbar' or 'Modemobile/NGL').",
+					},
+					"project_node_path": {
+						Type:        "string",
+						Description: "Optional alias for node_path.",
+					},
+					"title": {
+						Type:        "string",
+						Description: "Human-readable title for the Supervisor session (e.g. '⚓ NGL Feature Planning').",
+					},
+				},
+			},
+		},
 	}
 }
 
@@ -327,6 +352,8 @@ func ExecuteTool(ctx context.Context, client *DaemonClient, name string, args ma
 		return executeMergePR(ctx, client, args)
 	case "get_standup_report":
 		return executeGetStandup(ctx, client, args)
+	case "bind_supervisor_session":
+		return executeBindSupervisorSession(ctx, client, args)
 	default:
 		return &CallToolResult{
 			IsError: true,
@@ -646,6 +673,46 @@ func executeGetStandup(ctx context.Context, client *DaemonClient, args map[strin
 	output := fmt.Sprintf("%s\n\n---\n🎙️ **Audio Briefing Text:**\n%s", markdown, spoken)
 	return &CallToolResult{
 		Content: []ToolContent{{Type: "text", Text: output}},
+	}, nil
+}
+
+func executeBindSupervisorSession(ctx context.Context, client *DaemonClient, args map[string]any) (*CallToolResult, error) {
+	sessionID := getString(args, "session_id")
+	if sessionID == "" {
+		sessionID = os.Getenv("ACKBAR_SESSION_ID")
+	}
+	if sessionID == "" {
+		sessionID = os.Getenv("CLAUDE_SESSION_ID")
+	}
+
+	nodePath := getString(args, "node_path")
+	if nodePath == "" {
+		nodePath = getString(args, "project_node_path")
+	}
+
+	title := getString(args, "title")
+	if title == "" {
+		title = getString(args, "custom_title")
+	}
+
+	if sessionID == "" || nodePath == "" {
+		return formatError("session_id and node_path are required"), nil
+	}
+
+	payload := map[string]any{
+		"session_id": sessionID,
+		"node_path":  nodePath,
+		"title":      title,
+	}
+
+	var res map[string]any
+	if err := client.doRequest(ctx, http.MethodPost, "/v1/sessions/bind-supervisor", payload, &res); err != nil {
+		return formatError(fmt.Sprintf("Failed to bind supervisor session: %v", err)), nil
+	}
+
+	data, _ := json.MarshalIndent(res, "", "  ")
+	return &CallToolResult{
+		Content: []ToolContent{{Type: "text", Text: string(data)}},
 	}, nil
 }
 

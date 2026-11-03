@@ -564,6 +564,9 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 
 	// Clean environment enforcing Subscription OAuth protection
 	cleanEnv := StripBilledCredentials(os.Environ())
+	if sess.ID != "" {
+		cleanEnv = append(cleanEnv, "ACKBAR_SESSION_ID="+sess.ID)
+	}
 	if sess.AccountID != "" && h.db != nil {
 		if acc, _ := h.db.GetAccount(sess.AccountID); acc != nil {
 			cfgDir := acc.ConfigDir

@@ -274,6 +274,7 @@ func (s *Server) Mux() http.Handler {
 	mux.HandleFunc("/v1/sessions/handover", s.handleSessionHandover)
 	mux.HandleFunc("/v1/sessions/pty", s.handlePTY)
 	mux.HandleFunc("/v1/sessions/spawn", s.handleSpawn)
+	mux.HandleFunc("/v1/sessions/bind-supervisor", s.handleBindSupervisor)
 	mux.HandleFunc("/v1/meta/resolve", s.handleMetaResolve)
 	mux.HandleFunc("/v1/sessions/prompt", s.handlePrompt)
 	mux.HandleFunc("/v1/sessions/prompt/queue", s.handlePromptQueue)

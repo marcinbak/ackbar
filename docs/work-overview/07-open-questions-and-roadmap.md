@@ -45,7 +45,7 @@
 │  • Implement startup/wake delta pull (`/v1/sync/state?since=<ts>`) and │
 │    `[offline]` badges for asleep hosts.                                │
 │                                                                        │
-│  PHASE 2: ZERO-INPUT `⚓ SUPERVISORS` & `📋 TASKS` TREE SECTIONS       │
+│  PHASE 2: ZERO-INPUT `⚓ SUPERVISORS` & `📋 TASKS` TREE SECTIONS (DONE)│
 │  • Add `is_supervisor` flag, `[⚓ Supervisors]` sidebar switcher, and   │
 │    1-tap `[+ ⚓ New Supervisor]` (zero upfront inputs).                 │
 │  • Add `bind_supervisor_session` MCP tool to auto-bind project & title │

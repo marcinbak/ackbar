@@ -91,11 +91,13 @@ type nodesMsg []*daemon.TreeNode
 type errorMsg string
 
 type TreeRow struct {
-	IsGroup   bool
-	GroupPath string
-	GroupName string
-	Session   *daemon.Session
-	Indent    int
+	IsGroup       bool
+	GroupPath     string
+	GroupName     string
+	Session       *daemon.Session
+	Indent        int
+	Section       string
+	SectionHeader string
 }
 
 type Model struct {
@@ -111,6 +113,7 @@ type Model struct {
 	termWidth             int
 	termHeight            int
 	archivedView          bool
+	supervisorsOnly       bool
 	collapsed             map[string]bool // groupPath -> collapsed state
 	confirmRestartSession *daemon.Session
 	viewingDocuments      *daemon.Session
@@ -579,6 +582,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if prevSess != nil && prevSess.IsUnread {
 				return m, m.markReadCmd(prevSess)
 			}
+
+		case "F", "tab":
+			m.supervisorsOnly = !m.supervisorsOnly
+			m.selectedIdx = 0
+			return m, nil
+
+		case "S":
+			return m, m.spawnSupervisorCmd()
 
 		case "space", "enter", "a":
 			if len(visibleRows) == 0 {
@@ -1236,6 +1247,40 @@ func (m *Model) spawnCmd(cwd string) tea.Cmd {
 	}
 }
 
+func (m *Model) spawnSupervisorCmd() tea.Cmd {
+	return func() tea.Msg {
+		var hostURL string
+		for _, h := range m.hosts {
+			if h.Name == "local" || hostURL == "" {
+				hostURL = h.URL
+			}
+		}
+
+		payload := map[string]interface{}{
+			"is_supervisor": true,
+			"agent":         "claude-code",
+		}
+		body, _ := json.Marshal(payload)
+		reqURL := fmt.Sprintf("%s/v1/sessions/spawn", strings.TrimSuffix(hostURL, "/"))
+		resp, err := http.Post(reqURL, "application/json", bytes.NewBuffer(body))
+		if err != nil {
+			return errorMsg("Failed to spawn supervisor session: " + err.Error())
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			respBody, _ := io.ReadAll(resp.Body)
+			return errorMsg(fmt.Sprintf("Failed to spawn supervisor session (%d): %s", resp.StatusCode, strings.TrimSpace(string(respBody))))
+		}
+
+		sessions, statuses, err := FetchSessions(m.hosts)
+		if err != nil {
+			return errorMsg(err.Error())
+		}
+		return fetchSessionsResult{sessions: sessions, statuses: statuses}
+	}
+}
+
 func (m *Model) fetchDocsCmd(sess *daemon.Session) tea.Cmd {
 	return func() tea.Msg {
 		var hostURL string
@@ -1555,6 +1600,12 @@ func (m *Model) buildVisibleRows() []TreeRow {
 		if target.NodePath == "" && src.NodePath != "" {
 			target.NodePath = src.NodePath
 		}
+		if src.IsSupervisor {
+			target.IsSupervisor = true
+		}
+		if target.CurrentTaskID == "" && src.CurrentTaskID != "" {
+			target.CurrentTaskID = src.CurrentTaskID
+		}
 		// If either representation was archived, preserve archived state
 		if src.Archived {
 			target.Archived = true
@@ -1617,9 +1668,12 @@ func (m *Model) buildVisibleRows() []TreeRow {
 		if s.Archived != m.archivedView {
 			continue
 		}
+		if m.supervisorsOnly && !s.IsSupervisor {
+			continue
+		}
 
 		assignedPath := s.NodePath
-		if assignedPath == "" && s.Cwd != "" {
+		if assignedPath == "" && !s.IsSupervisor && s.Cwd != "" {
 			for _, node := range nodesCopy {
 				if node.ProjectDir != "" && sameOrSubDir(s.Cwd, node.ProjectDir) {
 					assignedPath = node.Path
@@ -1628,7 +1682,7 @@ func (m *Model) buildVisibleRows() []TreeRow {
 			}
 		}
 
-		if assignedPath == "" {
+		if assignedPath == "" && !s.IsSupervisor {
 			for path, projKeys := range m.groups {
 				for _, pk := range projKeys {
 					if s.ProjectKey == pk {
@@ -1642,7 +1696,7 @@ func (m *Model) buildVisibleRows() []TreeRow {
 			}
 		}
 
-		if assignedPath == "" && s.Cwd != "" {
+		if assignedPath == "" && !s.IsSupervisor && s.Cwd != "" {
 			cleanCwd := strings.ToLower(filepath.Clean(s.Cwd))
 			cwdParts := strings.Split(cleanCwd, string(filepath.Separator))
 
@@ -1694,22 +1748,24 @@ func (m *Model) buildVisibleRows() []TreeRow {
 	// 2. Discover all unique group nodes for registered tree nodes, group configs, and active session paths
 	allGroupPaths := make(map[string]bool)
 
-	for _, node := range m.treeNodes {
-		if node.Path != "" {
-			parts := strings.Split(node.Path, "/")
-			for i := 1; i <= len(parts); i++ {
-				parentPath := strings.Join(parts[:i], "/")
-				allGroupPaths[parentPath] = true
+	if !m.supervisorsOnly {
+		for _, node := range m.treeNodes {
+			if node.Path != "" {
+				parts := strings.Split(node.Path, "/")
+				for i := 1; i <= len(parts); i++ {
+					parentPath := strings.Join(parts[:i], "/")
+					allGroupPaths[parentPath] = true
+				}
 			}
 		}
-	}
 
-	for path := range m.groups {
-		if path != "" {
-			parts := strings.Split(path, "/")
-			for i := 1; i <= len(parts); i++ {
-				parentPath := strings.Join(parts[:i], "/")
-				allGroupPaths[parentPath] = true
+		for path := range m.groups {
+			if path != "" {
+				parts := strings.Split(path, "/")
+				for i := 1; i <= len(parts); i++ {
+					parentPath := strings.Join(parts[:i], "/")
+					allGroupPaths[parentPath] = true
+				}
 			}
 		}
 	}
@@ -1764,14 +1820,34 @@ func (m *Model) buildVisibleRows() []TreeRow {
 			return
 		}
 
-		// Add matching sessions directly in this group (sorted newest / active first)
+		// Add matching sessions directly in this group (grouped by section: ⚓ Supervisors, 📋 Tasks, 💻 Manual Sessions, ⏳ Later, ✅ Done)
 		var directSessions []*daemon.Session
 		if path == "Unassigned" {
 			directSessions = unassignedSessions
 		} else {
 			directSessions = sessionsByPath[path]
 		}
+		sessionSectionRank := func(s *daemon.Session) (int, string) {
+			if s.IsDone {
+				return 4, "✅ Done"
+			}
+			if s.IsLater {
+				return 3, "⏳ Later"
+			}
+			if s.IsSupervisor {
+				return 0, "⚓ Supervisors"
+			}
+			if s.CurrentTaskID != "" {
+				return 1, "📋 Tasks"
+			}
+			return 2, "💻 Manual Sessions"
+		}
 		sort.SliceStable(directSessions, func(i, j int) bool {
+			rankI, _ := sessionSectionRank(directSessions[i])
+			rankJ, _ := sessionSectionRank(directSessions[j])
+			if rankI != rankJ {
+				return rankI < rankJ
+			}
 			timeI := directSessions[i].LastEventAt
 			if timeI.IsZero() {
 				timeI = directSessions[i].StartedAt
@@ -1785,11 +1861,25 @@ func (m *Model) buildVisibleRows() []TreeRow {
 			}
 			return directSessions[i].ID < directSessions[j].ID
 		})
+		sectionCounts := make(map[string]int)
 		for _, s := range directSessions {
+			_, sec := sessionSectionRank(s)
+			sectionCounts[sec]++
+		}
+		lastSection := ""
+		for _, s := range directSessions {
+			_, sec := sessionSectionRank(s)
+			secHeader := ""
+			if sec != lastSection {
+				secHeader = fmt.Sprintf("%s (%d)", sec, sectionCounts[sec])
+				lastSection = sec
+			}
 			rows = append(rows, TreeRow{
-				IsGroup: false,
-				Session: s,
-				Indent:  indent + 1,
+				IsGroup:       false,
+				Session:       s,
+				Indent:        indent + 1,
+				Section:       sec,
+				SectionHeader: secHeader,
 			})
 		}
 
@@ -1832,6 +1922,11 @@ func (m *Model) View() string {
 	}
 	if m.archivedView {
 		headerText += " [ARCHIVED VIEW]"
+	}
+	if m.supervisorsOnly {
+		headerText += " [⚓ SUPERVISORS]"
+	} else {
+		headerText += " [🌐 ALL TREE]"
 	}
 	sb.WriteString(headerStyle.Render(headerText))
 	sb.WriteString("\n")
@@ -1905,6 +2000,11 @@ func (m *Model) View() string {
 				}
 				rowContent = fmt.Sprintf("%s %s", collapseArrow, groupStyle.Render(r.GroupName))
 			} else {
+				if r.SectionHeader != "" {
+					secLine := lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Bold(true).Render(fmt.Sprintf("%s%s", indentStr, r.SectionHeader))
+					sb.WriteString(unselectedStyle.Render(secLine))
+					sb.WriteString("\n")
+				}
 				s := r.Session
 				displayName := s.Name
 				if displayName == "" {
@@ -2346,7 +2446,7 @@ func (m *Model) View() string {
 		sb.WriteString("\n")
 	}
 
-	sb.WriteString(helpStyle.Render("↑/↓: navigate | Enter/a: attach | t: new tab | s: spawn | c: resume cmd | N: new | M: move | H: hooks | R: remote | r: restart | k: kill | d: delete | o: code | V: docs | u: update | q: quit"))
+	sb.WriteString(helpStyle.Render("↑/↓: navigate | Enter/a: attach | F/Tab: All/Supervisors | S: +Supervisor | t: new tab | s: spawn | c: resume cmd | N: new | M: move | H: hooks | R: remote | r: restart | k: kill | d: delete | o: code | V: docs | u: update | q: quit"))
 
 	return sb.String()
 }
