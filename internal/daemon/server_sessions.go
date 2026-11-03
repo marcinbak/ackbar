@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"ackbar/internal/router"
@@ -37,7 +38,7 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	// Only verify liveness on active sessions to avoid endpoint latency & exec overhead
 	var active []*Session
 	for _, sess := range sessions {
-		if sess.State != StateEnded {
+		if sess.State != StateEnded && s.isLocalHost(sess.Host) {
 			active = append(active, sess)
 		}
 	}
@@ -45,8 +46,207 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		s.verifySessionLiveness(r.Context(), active)
 	}
 
+	if r.URL.Query().Get("federated") == "true" {
+		sessions = s.getFederatedSessions(r.Context(), sessions)
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(sessions)
+}
+
+func (s *Server) getFederatedSessions(ctx context.Context, localSessions []*Session) []*Session {
+	hosts, err := s.db.ListHosts()
+	if err != nil || len(hosts) == 0 {
+		return localSessions
+	}
+
+	token := s.configuredToken
+	if token == "" {
+		token = os.Getenv("ACKBAR_TOKEN")
+	}
+
+	onlinePeers := make(map[string]bool)
+	offlinePeers := make(map[string]bool)
+	peerSessions := make(map[string][]*Session)
+	var mu sync.Mutex
+
+	var wg sync.WaitGroup
+	for _, h := range hosts {
+		if h.URL == "" || s.isLocalHost(h.Name) {
+			continue
+		}
+		wg.Add(1)
+		go func(hr *HostRecord) {
+			defer wg.Done()
+			reqURL := strings.TrimSuffix(hr.URL, "/") + "/v1/sessions"
+			reqCtx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+			defer cancel()
+			req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, reqURL, nil)
+			if err != nil {
+				mu.Lock()
+				offlinePeers[hr.Name] = true
+				mu.Unlock()
+				s.updateHostHealth(hr.Name, false, "", "", 0)
+				return
+			}
+			if token != "" {
+				req.Header.Set("Authorization", "Bearer "+token)
+				req.Header.Set("X-Ackbar-Token", token)
+			}
+			client := &http.Client{Timeout: 1500 * time.Millisecond}
+			start := time.Now()
+			resp, err := client.Do(req)
+			if err != nil || resp.StatusCode != http.StatusOK {
+				mu.Lock()
+				offlinePeers[hr.Name] = true
+				mu.Unlock()
+				s.updateHostHealth(hr.Name, false, "", "", 0)
+				return
+			}
+			defer resp.Body.Close()
+
+			var remoteSessions []*Session
+			if err := json.NewDecoder(resp.Body).Decode(&remoteSessions); err != nil {
+				mu.Lock()
+				offlinePeers[hr.Name] = true
+				mu.Unlock()
+				s.updateHostHealth(hr.Name, false, "", "", 0)
+				return
+			}
+
+			latency := time.Since(start).Milliseconds()
+			mu.Lock()
+			onlinePeers[hr.Name] = true
+			peerSessions[hr.Name] = remoteSessions
+			mu.Unlock()
+			s.updateHostHealth(hr.Name, true, hr.Version, hr.DisplayName, latency)
+		}(h)
+	}
+	wg.Wait()
+
+	isHostOffline := func(host string) bool {
+		for off := range offlinePeers {
+			if off == host || strings.EqualFold(off, host) || strings.HasSuffix(off, "@"+host) || strings.HasSuffix(host, "@"+off) {
+				return true
+			}
+		}
+		return false
+	}
+	isHostOnline := func(host string) bool {
+		for on := range onlinePeers {
+			if on == host || strings.EqualFold(on, host) || strings.HasSuffix(on, "@"+host) || strings.HasSuffix(host, "@"+on) {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Merge sessions: local sessions are indexed first
+	merged := make(map[string]*Session)
+	nativeToID := make(map[string]string)
+	nativeKey := func(agent, nativeID string) string {
+		return agent + "\x00" + nativeID
+	}
+
+	for _, sess := range localSessions {
+		merged[sess.ID] = sess
+		if sess.NativeID != "" {
+			nativeToID[nativeKey(sess.Agent, sess.NativeID)] = sess.ID
+		}
+	}
+
+	peerMatchesHost := func(peerHost, sessHost string) bool {
+		return peerHost == sessHost || strings.EqualFold(peerHost, sessHost) || strings.HasSuffix(peerHost, "@"+sessHost) || strings.HasSuffix(sessHost, "@"+peerHost)
+	}
+
+	// For online peers, incoming authoritative sessions are authoritative for runtime state,
+	// while non-authoritative third-party replicas only update LWW metadata.
+	for peerHost, rSessions := range peerSessions {
+		for _, peerSess := range rSessions {
+			if s.isLocalHost(peerSess.Host) {
+				continue
+			}
+			peerSess.HostOffline = false
+			existingID := peerSess.ID
+			existing, exists := merged[existingID]
+			if !exists && peerSess.NativeID != "" {
+				if matchID, ok := nativeToID[nativeKey(peerSess.Agent, peerSess.NativeID)]; ok {
+					cand := merged[matchID]
+					if cand != nil && (cand.Host == peerSess.Host || cand.Host == "local" || cand.Host == "") {
+						existingID = matchID
+						existing = cand
+						exists = true
+					}
+				}
+			}
+
+			isAuth := peerMatchesHost(peerHost, peerSess.Host)
+			if exists && existing != nil {
+				if s.isLocalHost(existing.Host) || !isAuth {
+					// Active local session or non-authoritative third-party replica:
+					// NEVER overwrite runtime state in merged.
+					// Only apply LWW metadata from peerSess if peerSess is newer
+					if peerSess.MetadataUpdatedAt.After(existing.MetadataUpdatedAt) {
+						existing.NodePath = peerSess.NodePath
+						existing.CustomTitle = peerSess.CustomTitle
+						existing.Name = peerSess.Name
+						existing.IsDone = peerSess.IsDone
+						existing.IsLater = peerSess.IsLater
+						existing.Archived = peerSess.Archived
+						existing.MetadataUpdatedAt = peerSess.MetadataUpdatedAt
+					}
+				} else {
+					// Authoritative remote session: peerSess is authoritative for runtime state
+					if existing.MetadataUpdatedAt.After(peerSess.MetadataUpdatedAt) {
+						peerSess.NodePath = existing.NodePath
+						peerSess.CustomTitle = existing.CustomTitle
+						peerSess.Name = existing.Name
+						peerSess.IsDone = existing.IsDone
+						peerSess.IsLater = existing.IsLater
+						peerSess.Archived = existing.Archived
+						peerSess.MetadataUpdatedAt = existing.MetadataUpdatedAt
+					}
+					merged[existingID] = peerSess
+				}
+			} else {
+				merged[peerSess.ID] = peerSess
+				if peerSess.NativeID != "" {
+					nativeToID[nativeKey(peerSess.Agent, peerSess.NativeID)] = peerSess.ID
+				}
+			}
+		}
+	}
+
+	// For any session belonging to an offline peer host, set HostOffline = true
+	var result []*Session
+	for _, sess := range merged {
+		if !s.isLocalHost(sess.Host) {
+			if isHostOffline(sess.Host) {
+				sess.HostOffline = true
+			} else if isHostOnline(sess.Host) {
+				sess.HostOffline = false
+			} else {
+				s.hostHealthMu.RLock()
+				for hName, health := range s.hostHealthMap {
+					if (hName == sess.Host || strings.HasSuffix(hName, "@"+sess.Host) || strings.HasSuffix(sess.Host, "@"+hName)) && !health.Online {
+						sess.HostOffline = true
+						break
+					}
+				}
+				s.hostHealthMu.RUnlock()
+			}
+		} else {
+			sess.HostOffline = false
+		}
+		result = append(result, sess)
+	}
+
+	// Sort by LastEventAt descending
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].LastEventAt.After(result[j].LastEventAt)
+	})
+
+	return result
 }
 
 func (s *Server) handlePurge(w http.ResponseWriter, r *http.Request) {
@@ -251,64 +451,76 @@ func (s *Server) handleSessionControl(w http.ResponseWriter, r *http.Request) {
 	switch action {
 	case "archive":
 		sess.Archived = true
+		sess.MetadataUpdatedAt = time.Now().UTC()
 		if err := s.db.SaveSession(sess); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		s.broadcast(sess)
+		s.syncSessionMeta(sess)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"archived"}`))
 
 	case "unarchive":
 		sess.Archived = false
+		sess.MetadataUpdatedAt = time.Now().UTC()
 		if err := s.db.SaveSession(sess); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		s.broadcast(sess)
+		s.syncSessionMeta(sess)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"unarchived"}`))
 
 	case "done", "mark_done":
 		sess.IsDone = true
 		sess.IsLater = false
+		sess.MetadataUpdatedAt = time.Now().UTC()
 		if err := s.db.SaveSession(sess); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		s.broadcast(sess)
+		s.syncSessionMeta(sess)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"done"}`))
 
 	case "later", "mark_later":
 		sess.IsLater = true
 		sess.IsDone = false
+		sess.MetadataUpdatedAt = time.Now().UTC()
 		if err := s.db.SaveSession(sess); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		s.broadcast(sess)
+		s.syncSessionMeta(sess)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"later"}`))
 
 	case "unlater":
 		sess.IsLater = false
+		sess.MetadataUpdatedAt = time.Now().UTC()
 		if err := s.db.SaveSession(sess); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		s.broadcast(sess)
+		s.syncSessionMeta(sess)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"active"}`))
 
 	case "undone", "active", "mark_active":
 		sess.IsDone = false
 		sess.IsLater = false
+		sess.MetadataUpdatedAt = time.Now().UTC()
 		if err := s.db.SaveSession(sess); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		s.broadcast(sess)
+		s.syncSessionMeta(sess)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"active"}`))
 
@@ -517,7 +729,10 @@ func (s *Server) handleSessionControl(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		sess.NodePath = nodePath
+		sess.MetadataUpdatedAt = time.Now().UTC()
+		_ = s.db.SaveSession(sess)
 		s.broadcast(sess)
+		s.syncSessionMeta(sess)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"moved"}`))
 
@@ -532,6 +747,7 @@ func (s *Server) handleSessionControl(w http.ResponseWriter, r *http.Request) {
 		}
 		sess.Name = name
 		sess.CustomTitle = name
+		sess.MetadataUpdatedAt = time.Now().UTC()
 		if err := s.db.SaveSession(sess); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -546,6 +762,7 @@ func (s *Server) handleSessionControl(w http.ResponseWriter, r *http.Request) {
 		titleCacheMutex.Unlock()
 
 		s.broadcast(sess)
+		s.syncSessionMeta(sess)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"renamed"}`))
 
