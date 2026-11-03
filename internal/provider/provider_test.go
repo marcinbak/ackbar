@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1352,6 +1353,172 @@ func TestOpenCodeExtractTranscriptAndMetadata(t *testing.T) {
 	}
 	if _, err := os.Stat(sessDir); !os.IsNotExist(err) {
 		t.Errorf("Expected sessDir %q to be deleted", sessDir)
+	}
+}
+
+func TestAntigravityProvider_CleanSessionFiles(t *testing.T) {
+	tmpHome := t.TempDir()
+	sessionID := "12345678-abcd-ef01-2345-6789abcdef01"
+	otherID := "other-session"
+
+	// 1. Create base directory: ~/.gemini/antigravity
+	agyBase := filepath.Join(tmpHome, ".gemini", "antigravity")
+
+	// Brain dir
+	brainDir := filepath.Join(agyBase, "brain", sessionID)
+	if err := os.MkdirAll(brainDir, 0755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(brainDir, "task.md"), []byte("# Task"), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	// Conversations
+	convDir := filepath.Join(agyBase, "conversations")
+	if err := os.MkdirAll(convDir, 0755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+	sessDb := filepath.Join(convDir, sessionID+".db")
+	sessWal := filepath.Join(convDir, sessionID+".db-wal")
+	otherDb := filepath.Join(convDir, otherID+".db")
+	for _, f := range []string{sessDb, sessWal, otherDb} {
+		if err := os.WriteFile(f, []byte("data"), 0644); err != nil {
+			t.Fatalf("WriteFile failed: %v", err)
+		}
+	}
+
+	// Annotations
+	annotDir := filepath.Join(agyBase, "annotations")
+	if err := os.MkdirAll(annotDir, 0755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+	sessAnnot := filepath.Join(annotDir, sessionID+".pbtxt")
+	if err := os.WriteFile(sessAnnot, []byte("annot"), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	// Presence
+	presDir := filepath.Join(agyBase, "presence")
+	if err := os.MkdirAll(presDir, 0755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+	sessLock := filepath.Join(presDir, sessionID+".lock")
+	if err := os.WriteFile(sessLock, []byte("lock"), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	// Cache conversation_metadata.json
+	cacheDir := filepath.Join(agyBase, "cache")
+	if err := os.MkdirAll(cacheDir, 0755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+	metaContent := `{
+  "conversations": {
+    "` + sessionID + `": {
+      "title": "Clean Target"
+    },
+    "` + otherID + `": {
+      "title": "Keep Target"
+    }
+  }
+}`
+	metaPath := filepath.Join(cacheDir, "conversation_metadata.json")
+	if err := os.WriteFile(metaPath, []byte(metaContent), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	// 2. Profile directory: ~/.gemini-profiles/work
+	profileWork := filepath.Join(tmpHome, ".gemini-profiles", "work")
+	profBrainDir := filepath.Join(profileWork, "brain", sessionID)
+	if err := os.MkdirAll(profBrainDir, 0755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+	profTask := filepath.Join(profBrainDir, "task.md")
+	if err := os.WriteFile(profTask, []byte("# Work Task"), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	profAnnotDir := filepath.Join(profileWork, "annotations")
+	if err := os.MkdirAll(profAnnotDir, 0755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+	profAnnot := filepath.Join(profAnnotDir, sessionID+".pbtxt")
+	if err := os.WriteFile(profAnnot, []byte("work-annot"), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	profOtherAnnot := filepath.Join(profAnnotDir, otherID+".pbtxt")
+	if err := os.WriteFile(profOtherAnnot, []byte("work-keep-annot"), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	// Execute CleanSessionFiles
+	p := NewAntigravityProvider()
+	if err := p.CleanSessionFiles(tmpHome, "/work", sessionID); err != nil {
+		t.Fatalf("CleanSessionFiles failed: %v", err)
+	}
+
+	// 3. Verify sessionID files were removed
+	if _, err := os.Stat(brainDir); !os.IsNotExist(err) {
+		t.Errorf("Expected brainDir %s to be deleted", brainDir)
+	}
+	if _, err := os.Stat(sessDb); !os.IsNotExist(err) {
+		t.Errorf("Expected sessDb %s to be deleted", sessDb)
+	}
+	if _, err := os.Stat(sessWal); !os.IsNotExist(err) {
+		t.Errorf("Expected sessWal %s to be deleted", sessWal)
+	}
+	if _, err := os.Stat(sessAnnot); !os.IsNotExist(err) {
+		t.Errorf("Expected sessAnnot %s to be deleted", sessAnnot)
+	}
+	if _, err := os.Stat(sessLock); !os.IsNotExist(err) {
+		t.Errorf("Expected sessLock %s to be deleted", sessLock)
+	}
+	if _, err := os.Stat(profBrainDir); !os.IsNotExist(err) {
+		t.Errorf("Expected profBrainDir %s to be deleted", profBrainDir)
+	}
+	if _, err := os.Stat(profAnnot); !os.IsNotExist(err) {
+		t.Errorf("Expected profAnnot %s to be deleted", profAnnot)
+	}
+
+	// 4. Verify otherID files remain untouched
+	if _, err := os.Stat(otherDb); err != nil {
+		t.Errorf("Expected otherDb %s to exist, got err: %v", otherDb, err)
+	}
+	if _, err := os.Stat(profOtherAnnot); err != nil {
+		t.Errorf("Expected profOtherAnnot %s to exist, got err: %v", profOtherAnnot, err)
+	}
+
+	// 5. Verify conversation_metadata.json pruned sessionID but kept otherID
+	metaBytes, err := os.ReadFile(metaPath)
+	if err != nil {
+		t.Fatalf("Failed to read metadata file: %v", err)
+	}
+	var metaRoot map[string]interface{}
+	if err := json.Unmarshal(metaBytes, &metaRoot); err != nil {
+		t.Fatalf("Failed to unmarshal pruned metadata: %v", err)
+	}
+	convs, ok := metaRoot["conversations"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("Expected 'conversations' map in metadata")
+	}
+	if _, exists := convs[sessionID]; exists {
+		t.Errorf("Expected sessionID %s to be pruned from conversation_metadata.json", sessionID)
+	}
+	if otherEntry, exists := convs[otherID]; !exists {
+		t.Errorf("Expected otherID %s to remain in conversation_metadata.json", otherID)
+	} else if entryMap, ok := otherEntry.(map[string]interface{}); !ok || entryMap["title"] != "Keep Target" {
+		t.Errorf("Unexpected otherID metadata content: %+v", otherEntry)
+	}
+
+	// 6. Test path traversal safety
+	if err := p.CleanSessionFiles(tmpHome, "/work", "../.."); err != nil {
+		t.Errorf("Expected nil error for traversal, got: %v", err)
+	}
+	if err := p.CleanSessionFiles(tmpHome, "/work", ""); err != nil {
+		t.Errorf("Expected nil error for empty sessionID, got: %v", err)
+	}
+	if _, err := os.Stat(otherDb); err != nil {
+		t.Errorf("Expected otherDb to still exist after invalid sessionID clean calls")
 	}
 }
 
