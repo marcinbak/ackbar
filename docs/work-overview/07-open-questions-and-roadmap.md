@@ -51,7 +51,7 @@
 │  • Add `bind_supervisor_session` MCP tool to auto-bind project & title │
 │    on the first turn, plus dedicated `📋 Tasks` folder grouping.        │
 │                                                                        │
-│  PHASE 3: NATIVE CLOUD ARTIFACTS & `dev-workflow` NODE MAPPING         │
+│  PHASE 3: NATIVE CLOUD ARTIFACTS & `dev-workflow` NODE MAPPING (DONE)  │
 │  • Support Product/Design tasks (`kind="design"`, `guard.py` bypassed) │
 │    and Code tasks (`kind="code"`, 1 Tmux session per repo workstream). │
 │  • Connect `attach_deliverable` to Claude Published Artifacts and      │
