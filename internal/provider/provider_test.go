@@ -1522,10 +1522,6 @@ func TestAntigravityProvider_CleanSessionFiles(t *testing.T) {
 	}
 }
 
-func TestAntigravityProvider_ReadMessagesAndMetadata(t *testing.T) {
-	TestAntigravityProvider_CleanSessionFiles(t)
-}
-
 func TestAntigravityProvider_ListSubagents_AliveStateAndTranscriptInspection(t *testing.T) {
 	tmpHome := t.TempDir()
 	parentID := "11111111-2222-3333-4444-555555555555"
