@@ -239,6 +239,17 @@ func TestNtfy_DuplicateSuppression(t *testing.T) {
 	if p := s.buildTaskBlockedPayload("blocked", "Same question", taskBlocked); p == nil {
 		t.Errorf("expected new question to generate notification, got nil")
 	}
+
+	// When task is active (not blocked) but BlockerQuestion changes, it must NOT notify
+	taskActive := &Task{
+		ID:              "task_act",
+		Title:           "Active task",
+		Substatus:       "active",
+		BlockerQuestion: "Stale question being cleared or edited",
+	}
+	if p := s.buildTaskBlockedPayload("active", "", taskActive); p != nil {
+		t.Errorf("expected non-blocked task with question change to return nil, got %+v", p)
+	}
 }
 
 func TestNtfy_ConfigPrecedence(t *testing.T) {

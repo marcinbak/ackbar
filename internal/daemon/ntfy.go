@@ -182,7 +182,7 @@ func (s *Server) buildTaskBlockedPayload(oldSubstatus, oldQuestion string, task 
 	isBlockedNow := strings.EqualFold(task.Substatus, "blocked")
 	wasBlocked := strings.EqualFold(oldSubstatus, "blocked")
 	questionChanged := task.BlockerQuestion != "" && task.BlockerQuestion != oldQuestion
-	if !((isBlockedNow && !wasBlocked) || questionChanged) {
+	if !isBlockedNow || (wasBlocked && !questionChanged) {
 		return nil
 	}
 
