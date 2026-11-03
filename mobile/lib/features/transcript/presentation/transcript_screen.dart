@@ -177,12 +177,12 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
     }
   }
 
-  Future<String> _resolveHostUrl() async {
+  Future<({String url, String? authToken})> _resolveHost() async {
     var hosts = ref.read(hostsListProvider);
     if (hosts.isEmpty) {
       for (var i = 0; i < 6 && hosts.isEmpty; i++) {
         await Future.delayed(const Duration(milliseconds: 80));
-        if (!mounted) return 'http://127.0.0.1:7777';
+        if (!mounted) return (url: 'http://127.0.0.1:7777', authToken: null);
         hosts = ref.read(hostsListProvider);
       }
     }
@@ -194,16 +194,25 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
           h.name.toLowerCase() == sessionHost ||
           h.url.toLowerCase().contains(sessionHost),
     );
-    if (match.isNotEmpty) return match.first.url;
+    if (match.isNotEmpty) {
+      final h = match.first;
+      return (url: h.url, authToken: h.authToken);
+    }
 
     // 2. Any online host
     final online = hosts.where((h) => h.online);
-    if (online.isNotEmpty) return online.first.url;
+    if (online.isNotEmpty) {
+      final h = online.first;
+      return (url: h.url, authToken: h.authToken);
+    }
 
     // 3. Any configured host
-    if (hosts.isNotEmpty) return hosts.first.url;
+    if (hosts.isNotEmpty) {
+      final h = hosts.first;
+      return (url: h.url, authToken: h.authToken);
+    }
 
-    return 'http://127.0.0.1:7777';
+    return (url: 'http://127.0.0.1:7777', authToken: null);
   }
 
   List<TranscriptMessage> _deduplicateMessages(List<TranscriptMessage> msgs) {
@@ -222,13 +231,16 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
     return result;
   }
 
-  Future<TranscriptData> _fetchTranscriptData(String hostUrl) async {
+  Future<TranscriptData> _fetchTranscriptData(
+    ({String url, String? authToken}) host,
+  ) async {
     final api = ref.read(apiClientProvider);
     final session = _resolveLiveSession();
     final activeSessionId = session.id;
     final structured = await api.getStructuredTranscript(
-      hostUrl,
+      host.url,
       activeSessionId,
+      authToken: host.authToken,
     );
 
     if (structured != null && structured.messages.isNotEmpty) {
@@ -238,16 +250,28 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
     }
 
     // Fallback to markdown parser
-    final rawMd = await api.getTranscript(hostUrl, activeSessionId);
-    if (rawMd.trim().isNotEmpty) {
+    final rawMd = await api.getTranscriptOrNull(
+      host.url,
+      activeSessionId,
+      authToken: host.authToken,
+    );
+    if (rawMd != null && rawMd.trim().isNotEmpty) {
       final parsed = TranscriptData.fromRawMarkdown(
         sessionId: activeSessionId,
         agent: session.agent,
         title: session.displayTitle,
         markdown: rawMd,
       );
-      return parsed.copyWith(
-        messages: _deduplicateMessages(parsed.messages),
+      if (parsed.messages.isNotEmpty || structured == null) {
+        return parsed.copyWith(
+          messages: _deduplicateMessages(parsed.messages),
+        );
+      }
+    }
+
+    if (structured == null && rawMd == null) {
+      throw Exception(
+        'Unable to load transcript from host. Tap Retry to try again.',
       );
     }
 
@@ -285,18 +309,24 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
   Future<void> _loadTranscript() async {
     if (!mounted) return;
     setState(() {
-      _isLoading = true;
+      if (_transcriptData == null || _transcriptData!.messages.isEmpty) {
+        _isLoading = true;
+      }
       _errorMessage = null;
     });
 
     try {
-      final hostUrl = await _resolveHostUrl();
+      final host = await _resolveHost();
       if (!mounted) return;
-      final fetched = await _fetchTranscriptData(hostUrl);
+      final fetched = await _fetchTranscriptData(host);
       if (!mounted) return;
 
       setState(() {
-        _transcriptData = fetched;
+        if (fetched.messages.isNotEmpty ||
+            _transcriptData == null ||
+            _transcriptData!.messages.isEmpty) {
+          _transcriptData = fetched;
+        }
         _isLoading = false;
       });
 
@@ -307,7 +337,10 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
     } catch (e) {
       if (mounted) {
         setState(() {
-          _errorMessage = 'Failed to load transcript: $e';
+          if (_transcriptData == null || _transcriptData!.messages.isEmpty) {
+            _errorMessage =
+                'Unable to load transcript from host. Tap Retry to try again.';
+          }
           _isLoading = false;
         });
       }
@@ -319,12 +352,17 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
     _isRefreshingTranscript = true;
 
     try {
-      final hostUrl = await _resolveHostUrl();
+      final host = await _resolveHost();
       if (!mounted) return;
-      final fetched = await _fetchTranscriptData(hostUrl);
+      final fetched = await _fetchTranscriptData(host);
       if (!mounted) return;
 
       var mergedMessages = fetched.messages;
+      if (mergedMessages.isEmpty &&
+          _transcriptData != null &&
+          _transcriptData!.messages.isNotEmpty) {
+        return;
+      }
       final assistantCount = mergedMessages.where((m) => m.isAssistant).length;
 
       if (_pendingUserMessage != null) {
@@ -383,11 +421,13 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
 
   Future<void> _loadSubagents() async {
     try {
-      final hostUrl = await _resolveHostUrl();
+      final host = await _resolveHost();
       final activeSessionId = _resolveLiveSession().id;
-      final list = await ref
-          .read(apiClientProvider)
-          .getSubagents(hostUrl, activeSessionId);
+      final list = await ref.read(apiClientProvider).getSubagents(
+            host.url,
+            activeSessionId,
+            authToken: host.authToken,
+          );
       if (mounted) {
         final running = list.where((s) => s.isRunning).toList();
         if (!_areSubagentListsEqual(running, _runningSubagents)) {
@@ -466,11 +506,14 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
     });
 
     try {
-      final hostUrl = await _resolveHostUrl();
+      final host = await _resolveHost();
       final activeSessionId = _resolveLiveSession().id;
-      final success = await ref
-          .read(apiClientProvider)
-          .sendPrompt(hostUrl, activeSessionId, text);
+      final success = await ref.read(apiClientProvider).sendPrompt(
+            host.url,
+            activeSessionId,
+            text,
+            authToken: host.authToken,
+          );
       if (!success && mounted) {
         setState(() {
           _awaitingTurnCompletion = false;
@@ -518,10 +561,13 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
     );
 
     try {
-      final hostUrl = await _resolveHostUrl();
+      final host = await _resolveHost();
       final activeSessionId = _resolveLiveSession().id;
-      final res =
-          await ref.read(apiClientProvider).takeWheel(hostUrl, activeSessionId);
+      final res = await ref.read(apiClientProvider).takeWheel(
+            host.url,
+            activeSessionId,
+            authToken: host.authToken,
+          );
       if (res != null && mounted) {
         final tmuxName = res['tmux_name']?.toString() ?? '';
         final updatedSession = _resolveLiveSession().copyWith(
@@ -555,9 +601,13 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
   Future<void> _cancelTurn() async {
     HapticFeedback.mediumImpact();
     try {
-      final hostUrl = await _resolveHostUrl();
+      final host = await _resolveHost();
       final activeSessionId = _resolveLiveSession().id;
-      await ref.read(apiClientProvider).cancelTurn(hostUrl, activeSessionId);
+      await ref.read(apiClientProvider).cancelTurn(
+            host.url,
+            activeSessionId,
+            authToken: host.authToken,
+          );
       if (mounted) {
         setState(() {
           _isSending = false;

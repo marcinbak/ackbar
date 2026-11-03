@@ -128,15 +128,18 @@ class HostsNotifier extends StateNotifier<List<HostRecord>> {
           await _apiClient.checkHostHealth(h.url, authToken: h.authToken);
       if (!mounted) return;
       if (health != null) {
-        final sessions =
-            await _apiClient.getSessions(h.url, authToken: h.authToken);
+        final sessions = await _apiClient.getSessionsOrNull(
+          h.url,
+          authToken: h.authToken,
+          hostName: h.name,
+        );
         if (!mounted) return;
         updated.add(h.copyWith(
           online: true,
           latencyMs: health['latency_ms'] as int? ?? 1,
           version: health['version'] as String? ?? '',
           uptime: health['uptime'] as String? ?? 'Active',
-          sessionsCount: sessions.length,
+          sessionsCount: sessions != null ? sessions.length : h.sessionsCount,
         ));
       } else {
         updated.add(h.copyWith(online: false));
@@ -216,8 +219,29 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
     _initLiveSync();
     _hostsSub =
         _ref.listen<List<HostRecord>>(hostsListProvider, (previous, next) {
-      _syncWithHosts(next);
+      if (_didHostsConnectionChange(previous, next)) {
+        _syncWithHosts(next);
+      }
     });
+  }
+
+  static bool _didHostsConnectionChange(
+    List<HostRecord>? previous,
+    List<HostRecord> next,
+  ) {
+    if (previous == null) return true;
+    if (previous.length != next.length) return true;
+    for (var i = 0; i < previous.length; i++) {
+      final a = previous[i];
+      final b = next[i];
+      if (a.name != b.name ||
+          a.url != b.url ||
+          a.authToken != b.authToken ||
+          a.online != b.online) {
+        return true;
+      }
+    }
+    return false;
   }
 
   @override
@@ -250,6 +274,14 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
     await refreshSessions();
   }
 
+  bool _sessionBelongsToHost(Session s, HostRecord host, int totalHosts) {
+    if (totalHosts <= 1) return true;
+    final sh = s.host.toLowerCase();
+    final hn = host.name.toLowerCase();
+    final hu = host.url.toLowerCase();
+    return sh == hn || hu.contains(sh) || (sh == 'local' && host.isLocal);
+  }
+
   Future<void> refreshSessions() async {
     final hosts = _ref.read(hostsListProvider);
     if (hosts.isEmpty) {
@@ -258,11 +290,21 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
     }
 
     final allFetched = <Session>[];
+    final seenIds = <String>{};
     for (final host in hosts) {
-      final remoteSessions =
-          await _apiClient.getSessions(host.url, authToken: host.authToken);
+      final remoteSessions = await _apiClient.getSessionsOrNull(
+        host.url,
+        authToken: host.authToken,
+        hostName: host.name,
+      );
       if (!mounted) return;
-      allFetched.addAll(remoteSessions);
+      final hostSessions = remoteSessions ??
+          state.where((s) => _sessionBelongsToHost(s, host, hosts.length));
+      for (final s in hostSessions) {
+        if (seenIds.add(s.id)) {
+          allFetched.add(s);
+        }
+      }
     }
 
     if (mounted) {
@@ -355,6 +397,8 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
     final match = hosts.where((h) =>
         h.name.toLowerCase() == target || h.url.toLowerCase().contains(target));
     if (match.isNotEmpty) return match.first;
+    final online = hosts.where((h) => h.online);
+    if (online.isNotEmpty) return online.first;
     if (hosts.isNotEmpty) return hosts.first;
     return null;
   }

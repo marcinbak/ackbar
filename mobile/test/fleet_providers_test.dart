@@ -547,7 +547,8 @@ void main() {
           sessions.any((s) => s.id == 'claude-code:local:new-sess-1'), isTrue);
     });
 
-    test('hostAgentDiscoveryProvider fetches agent discovery using matching host url and token',
+    test(
+        'hostAgentDiscoveryProvider fetches agent discovery using matching host url and token',
         () async {
       SharedPreferences.setMockInitialValues({});
       String? requestedUrl;
@@ -604,8 +605,8 @@ void main() {
       final discovery =
           await container.read(hostAgentDiscoveryProvider('Legion').future);
 
-      expect(requestedUrl,
-          equals('http://legion.local:7777/v1/agents/discovery'));
+      expect(
+          requestedUrl, equals('http://legion.local:7777/v1/agents/discovery'));
       expect(authHeader, equals('Bearer secret-token-123'));
       expect(discovery.length, equals(3));
       expect(discovery.where((d) => d['installed'] == true).length, equals(2));
@@ -613,6 +614,75 @@ void main() {
           discovery
               .any((d) => d['agent'] == 'codex' && d['installed'] == false),
           isTrue);
+    });
+
+    test(
+        'FleetSessionsNotifier.refreshSessions preserves existing host sessions when getSessionsOrNull fails instead of wiping state',
+        () async {
+      SharedPreferences.setMockInitialValues({});
+      var failSessionsFetch = false;
+
+      final mockClient = MockClient((request) async {
+        if (request.url.path == '/v1/version') {
+          return http.Response(jsonEncode({'version': 'v0.2.2'}), 200);
+        }
+        if (request.url.path == '/v1/sessions') {
+          if (failSessionsFetch) {
+            return http.Response('Gateway Timeout', 504);
+          }
+          return http.Response(
+            jsonEncode([
+              {
+                'id': 'antigravity:local:conv-777',
+                'agent': 'antigravity',
+                'host': 'local',
+                'native_id': 'conv-777',
+                'cwd': '/home/dev/ackbar',
+                'state': 1,
+                'activity': 'Working',
+              }
+            ]),
+            200,
+          );
+        }
+        return http.Response('[]', 200);
+      });
+
+      final testApi = ApiClient(client: mockClient);
+      final testSse = SSEClient(client: mockClient);
+      addTearDown(() {
+        testApi.dispose();
+        testSse.dispose();
+      });
+
+      final container = ProviderContainer(
+        overrides: [
+          apiClientProvider.overrideWithValue(testApi),
+          sseClientProvider.overrideWithValue(testSse),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      container.read(hostsListProvider.notifier).addHost(
+            HostRecord(
+              name: 'Legion',
+              url: 'http://100.64.0.1:7777',
+              online: true,
+              createdAt: DateTime.now(),
+            ),
+          );
+
+      await container.read(fleetSessionsProvider.notifier).refreshSessions();
+      final initial = container.read(fleetSessionsProvider);
+      expect(initial.length, equals(1));
+      expect(initial.first.host, equals('Legion'));
+
+      // Now simulate a timeout / 504 on /v1/sessions
+      failSessionsFetch = true;
+      await container.read(fleetSessionsProvider.notifier).refreshSessions();
+      final afterFailure = container.read(fleetSessionsProvider);
+      expect(afterFailure.length, equals(1));
+      expect(afterFailure.first.id, equals('antigravity:local:conv-777'));
     });
   });
 }

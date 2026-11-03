@@ -79,6 +79,7 @@ Tap **Transcript** on any session to open a dedicated agentic chat stream:
 * **⚡ Collapsible Tool Invocations:** Visual badges showing executed tools (`🛠️ Bash`, `🛠️ Read`, `🛠️ Edit`) without cluttering the chat.
 * **💭 Thought Process Accordions:** Expandable chain-of-thought dropdowns for reasoning analysis.
 * **Live Turn Synchronization & Auto-Refresh:** Tracks real-time session state via `fleetSessionsProvider` alongside optimistic send tracking (`_awaitingTurnCompletion`) so the `Working...` indicator and Stop button stay active for the full duration of a headless turn while allowing follow-up prompts to be queued. Silently polls transcript updates every 3 seconds while a turn is working, immediately reloads when transitioning out of `working`, and refreshes automatically on `AppLifecycleState.resumed`.
+* **Resilient Host & Transcript Resolution:** Preserves existing session and transcript state across transient network/timeout failures, avoids SSE connection churn during background host health polls, forwards per-host `authToken` across all transcript/subagent/prompt endpoints, and surfaces retryable error banners when transcript endpoints are unreachable.
 * **Quick Navigation:** Floating **`[↓ Latest]`** button to glide directly to the latest turn, plus one-tap jump to the interactive terminal.
 
 ---
@@ -89,7 +90,8 @@ Tap **Live Terminal** on any session to attach to the live `tmux` terminal:
 * **WebSocket PTY Stream:** Full-duplex interactive terminal powered by `flutter_pty` / xterm over `ws://<host>:7777/v1/sessions/pty`.
 * **Dynamic Auto-Fit & Horizontal Scroll:** Automatically calculates terminal columns and rows on viewport resize, with horizontal scrolling and zoom controls (`-` / `+`).
 * **Display Modes:** Toggle between responsive auto-fit mode and standard `80 COL` fixed layout.
-* **Touch Accessory Bar:** Dedicated on-screen touch keys for `[Esc]`, `[Tab]`, `[Shift+Tab]`, `[Ctrl+C]`, `[↑]`, `[↓]`, and `[Enter]`.
+* **Tmux Touch Scrollback & Floating Bottom Pill:** Vertical touch dragging and fling gestures on the terminal canvas dispatch structured `scroll` control messages (`up`, `down`, `page_up`, `page_down`, `bottom`) over the PTY WebSocket so `tmux` copy-mode scrolls smoothly even while `tmux` is in the alternate screen buffer (`smcup`), displaying a floating **`[↓ Bottom]`** pill while scrolled up in history.
+* **Touch Accessory Bar:** Dedicated on-screen touch keys for `[Esc]`, `[Tab]`, `[Shift+Tab]`, `[Ctrl+C]`, `[↑]`, `[↓]`, `[PgUp]`, `[PgDn]`, and `[Enter]`.
 
 ---
 
@@ -128,7 +130,7 @@ flutter run
 cd mobile
 flutter test
 ```
-*Executes all 156 unit and widget tests covering models, theme extensions, Riverpod providers, session spawning, transcript live turn synchronization, and core UI components.*
+*Executes all 159 unit and widget tests covering models, theme extensions, Riverpod providers, session spawning, transcript live turn synchronization, terminal touch scrolling, and core UI components.*
 
 ### Installing to iOS Device
 ```bash

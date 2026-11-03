@@ -29,7 +29,8 @@ class AttentionScreen extends ConsumerStatefulWidget {
     this.initialPageIndex = 0,
   });
 
-  static Future<void> openFullscreen(BuildContext context, {int initialPageIndex = 0}) {
+  static Future<void> openFullscreen(BuildContext context,
+      {int initialPageIndex = 0}) {
     return Navigator.of(context, rootNavigator: true).push(
       MaterialPageRoute(
         fullscreenDialog: true,
@@ -96,7 +97,8 @@ class _AttentionScreenState extends ConsumerState<AttentionScreen> {
       FilterTabItem(
         label: '🔴 Pending',
         count: pendingSessions.length,
-        countBadgeColor: pendingSessions.isNotEmpty ? AppColors.statusCoral : null,
+        countBadgeColor:
+            pendingSessions.isNotEmpty ? AppColors.statusCoral : null,
         countTextColor: pendingSessions.isNotEmpty ? Colors.white : null,
       ),
       FilterTabItem(
@@ -151,7 +153,8 @@ class _AttentionScreenState extends ConsumerState<AttentionScreen> {
 
   // --- Sub-View 1: Pending Blocked Sessions ViewPager ---
 
-  Widget _buildPendingSubView(List<Session> pendingSessions, {bool isFullscreen = false}) {
+  Widget _buildPendingSubView(List<Session> pendingSessions,
+      {bool isFullscreen = false}) {
     if (pendingSessions.isEmpty) {
       return Center(
         child: Padding(
@@ -164,7 +167,9 @@ class _AttentionScreenState extends ConsumerState<AttentionScreen> {
                 decoration: BoxDecoration(
                   color: AppColors.statusEmerald.withOpacity(0.1),
                   shape: BoxShape.circle,
-                  border: Border.all(color: AppColors.statusEmerald.withOpacity(0.3), width: 1.5),
+                  border: Border.all(
+                      color: AppColors.statusEmerald.withOpacity(0.3),
+                      width: 1.5),
                 ),
                 child: const Text('🎉', style: TextStyle(fontSize: 36)),
               ),
@@ -180,7 +185,8 @@ class _AttentionScreenState extends ConsumerState<AttentionScreen> {
               Text(
                 'No agent sessions currently blocked or requiring manual approval.',
                 textAlign: TextAlign.center,
-                style: AppTypography.bodyMedium.copyWith(color: AppColors.textSecondary),
+                style: AppTypography.bodyMedium
+                    .copyWith(color: AppColors.textSecondary),
               ),
               if (isFullscreen) ...[
                 AppSpacing.gapH16,
@@ -200,26 +206,31 @@ class _AttentionScreenState extends ConsumerState<AttentionScreen> {
       );
     }
 
-    final safePageIndex = _currentPageIndex.clamp(0, pendingSessions.length - 1);
+    final safePageIndex =
+        _currentPageIndex.clamp(0, pendingSessions.length - 1);
 
     return Column(
       children: [
         // Page Navigation Indicator Bar
         Padding(
-          padding: const EdgeInsets.symmetric(horizontal: AppSpacing.lg, vertical: 4.0),
+          padding: const EdgeInsets.symmetric(
+              horizontal: AppSpacing.lg, vertical: 4.0),
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               if (isFullscreen)
                 IconButton(
-                  icon: const Icon(Icons.fullscreen_exit_rounded, size: 22, color: AppColors.infoCyan),
+                  icon: const Icon(Icons.fullscreen_exit_rounded,
+                      size: 22, color: AppColors.infoCyan),
                   tooltip: 'Exit Fullscreen',
                   onPressed: () => Navigator.of(context).pop(),
                 )
               else
                 IconButton(
                   icon: const Icon(Icons.arrow_back_ios_rounded, size: 16),
-                  color: safePageIndex > 0 ? AppColors.infoCyan : AppColors.textMuted,
+                  color: safePageIndex > 0
+                      ? AppColors.infoCyan
+                      : AppColors.textMuted,
                   onPressed: safePageIndex > 0
                       ? () {
                           _pageController.previousPage(
@@ -247,7 +258,9 @@ class _AttentionScreenState extends ConsumerState<AttentionScreen> {
                         width: isCurrent ? 14 : 6,
                         height: 6,
                         decoration: BoxDecoration(
-                          color: isCurrent ? AppColors.infoCyan : AppColors.surfaceHighlight,
+                          color: isCurrent
+                              ? AppColors.infoCyan
+                              : AppColors.surfaceHighlight,
                           borderRadius: BorderRadius.circular(3),
                         ),
                       );
@@ -260,7 +273,9 @@ class _AttentionScreenState extends ConsumerState<AttentionScreen> {
                   if (isFullscreen) ...[
                     IconButton(
                       icon: const Icon(Icons.arrow_back_ios_rounded, size: 16),
-                      color: safePageIndex > 0 ? AppColors.infoCyan : AppColors.textMuted,
+                      color: safePageIndex > 0
+                          ? AppColors.infoCyan
+                          : AppColors.textMuted,
                       onPressed: safePageIndex > 0
                           ? () {
                               _pageController.previousPage(
@@ -303,7 +318,8 @@ class _AttentionScreenState extends ConsumerState<AttentionScreen> {
             itemBuilder: (context, index) {
               final session = pendingSessions[index];
               return Padding(
-                padding: const EdgeInsets.fromLTRB(AppSpacing.lg, 0, AppSpacing.lg, AppSpacing.xs),
+                padding: const EdgeInsets.fromLTRB(
+                    AppSpacing.lg, 0, AppSpacing.lg, AppSpacing.xs),
                 child: _buildPendingCard(session, isFullscreen: isFullscreen),
               );
             },
@@ -331,12 +347,17 @@ class _AttentionScreenState extends ConsumerState<AttentionScreen> {
                 decoration: BoxDecoration(
                   color: session.agentColor.withValues(alpha: 0.15),
                   borderRadius: AppSpacing.roundedSm,
-                  border: Border.all(color: session.agentColor.withValues(alpha: 0.4), width: 0.8),
+                  border: Border.all(
+                      color: session.agentColor.withValues(alpha: 0.4),
+                      width: 0.8),
                 ),
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    AgentLogo(agent: session.agent, size: 11, color: session.agentColor),
+                    AgentLogo(
+                        agent: session.agent,
+                        size: 11,
+                        color: session.agentColor),
                     const SizedBox(width: 4),
                     Text(
                       session.agentDisplayName,
@@ -372,7 +393,9 @@ class _AttentionScreenState extends ConsumerState<AttentionScreen> {
               const SizedBox(width: 4),
               IconButton(
                 icon: Icon(
-                  isFullscreen ? Icons.fullscreen_exit_rounded : Icons.open_in_full_rounded,
+                  isFullscreen
+                      ? Icons.fullscreen_exit_rounded
+                      : Icons.open_in_full_rounded,
                   size: 17,
                   color: AppColors.infoCyan,
                 ),
@@ -384,7 +407,8 @@ class _AttentionScreenState extends ConsumerState<AttentionScreen> {
                   if (isFullscreen) {
                     Navigator.of(context).pop();
                   } else {
-                    AttentionScreen.openFullscreen(context, initialPageIndex: _currentPageIndex);
+                    AttentionScreen.openFullscreen(context,
+                        initialPageIndex: _currentPageIndex);
                   }
                 },
               ),
@@ -395,7 +419,8 @@ class _AttentionScreenState extends ConsumerState<AttentionScreen> {
           // Session display title
           Text(
             session.displayTitle,
-            style: AppTypography.titleMedium.copyWith(fontWeight: FontWeight.w700),
+            style:
+                AppTypography.titleMedium.copyWith(fontWeight: FontWeight.w700),
             maxLines: 2,
             overflow: TextOverflow.ellipsis,
           ),
@@ -415,7 +440,8 @@ class _AttentionScreenState extends ConsumerState<AttentionScreen> {
                     decoration: BoxDecoration(
                       color: AppColors.terminalBlack,
                       borderRadius: AppSpacing.roundedMd,
-                      border: Border.all(color: AppColors.outlineSubtle, width: 1),
+                      border:
+                          Border.all(color: AppColors.outlineSubtle, width: 1),
                     ),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -429,7 +455,9 @@ class _AttentionScreenState extends ConsumerState<AttentionScreen> {
                         ),
                         const SizedBox(height: 6),
                         Text(
-                          blocked?.question ?? blocked?.reason ?? session.activity,
+                          blocked?.question ??
+                              blocked?.reason ??
+                              session.activity,
                           style: AppTypography.codeMd.copyWith(
                             color: AppColors.textPrimary,
                             fontSize: 13,
@@ -477,7 +505,8 @@ class _AttentionScreenState extends ConsumerState<AttentionScreen> {
                               });
                             },
                             child: Padding(
-                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 12, vertical: 10),
                               child: Row(
                                 children: [
                                   Icon(
@@ -485,7 +514,9 @@ class _AttentionScreenState extends ConsumerState<AttentionScreen> {
                                         ? Icons.check_circle_rounded
                                         : Icons.radio_button_unchecked_rounded,
                                     size: 18,
-                                    color: isSelected ? AppColors.statusEmerald : AppColors.textMuted,
+                                    color: isSelected
+                                        ? AppColors.statusEmerald
+                                        : AppColors.textMuted,
                                   ),
                                   const SizedBox(width: 10),
                                   Expanded(
@@ -495,7 +526,9 @@ class _AttentionScreenState extends ConsumerState<AttentionScreen> {
                                         color: isSelected
                                             ? AppColors.textPrimary
                                             : AppColors.textSecondary,
-                                        fontWeight: isSelected ? FontWeight.w600 : FontWeight.w400,
+                                        fontWeight: isSelected
+                                            ? FontWeight.w600
+                                            : FontWeight.w400,
                                       ),
                                     ),
                                   ),
@@ -514,9 +547,11 @@ class _AttentionScreenState extends ConsumerState<AttentionScreen> {
                     Container(
                       padding: AppSpacing.paddingCardDense,
                       decoration: BoxDecoration(
-                        color: AppColors.surfaceHighlight.withValues(alpha: 0.5),
+                        color:
+                            AppColors.surfaceHighlight.withValues(alpha: 0.5),
                         borderRadius: AppSpacing.roundedMd,
-                        border: Border.all(color: AppColors.outlineSubtle, width: 0.8),
+                        border: Border.all(
+                            color: AppColors.outlineSubtle, width: 0.8),
                       ),
                       child: Row(
                         crossAxisAlignment: CrossAxisAlignment.start,
@@ -546,18 +581,24 @@ class _AttentionScreenState extends ConsumerState<AttentionScreen> {
           // Fixed Action Controls Pinned at Bottom
           TextField(
             controller: _customInputController,
-            style: AppTypography.bodySmall.copyWith(color: AppColors.textPrimary),
+            style:
+                AppTypography.bodySmall.copyWith(color: AppColors.textPrimary),
             decoration: InputDecoration(
               hintText: 'Custom reply or voice prompt...',
-              hintStyle: AppTypography.bodySmall.copyWith(color: AppColors.textMuted),
-              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              prefixIcon: const Icon(Icons.keyboard_outlined, size: 16, color: AppColors.textMuted),
+              hintStyle:
+                  AppTypography.bodySmall.copyWith(color: AppColors.textMuted),
+              contentPadding:
+                  const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              prefixIcon: const Icon(Icons.keyboard_outlined,
+                  size: 16, color: AppColors.textMuted),
               suffixIcon: IconButton(
-                icon: const Icon(Icons.mic_none_rounded, size: 18, color: AppColors.infoCyan),
+                icon: const Icon(Icons.mic_none_rounded,
+                    size: 18, color: AppColors.infoCyan),
                 tooltip: 'Voice Companion Input',
                 onPressed: () {
                   HapticFeedback.lightImpact();
-                  _customInputController.text = 'Proceed with pure Go modernc.org/sqlite';
+                  _customInputController.text =
+                      'Proceed with pure Go modernc.org/sqlite';
                 },
               ),
             ),
@@ -597,7 +638,8 @@ class _AttentionScreenState extends ConsumerState<AttentionScreen> {
                 }
               },
               icon: const Icon(Icons.check_circle_rounded, size: 16),
-              label: const Text('Submit Choice', style: TextStyle(fontWeight: FontWeight.w700)),
+              label: const Text('Submit Choice',
+                  style: TextStyle(fontWeight: FontWeight.w700)),
               style: ElevatedButton.styleFrom(
                 backgroundColor: AppColors.statusEmerald,
                 foregroundColor: AppColors.terminalBlack,
@@ -616,7 +658,8 @@ class _AttentionScreenState extends ConsumerState<AttentionScreen> {
                   label: const Text('Live Terminal'),
                   style: OutlinedButton.styleFrom(
                     foregroundColor: AppColors.statusEmerald,
-                    side: const BorderSide(color: AppColors.statusEmerald, width: 1),
+                    side: const BorderSide(
+                        color: AppColors.statusEmerald, width: 1),
                     padding: const EdgeInsets.symmetric(vertical: 8),
                   ),
                 ),
@@ -669,11 +712,14 @@ class _AttentionScreenState extends ConsumerState<AttentionScreen> {
                     ),
                   );
                   if (confirm == true) {
-                    await ref.read(fleetSessionsProvider.notifier).handoverSession(session.id);
+                    await ref
+                        .read(fleetSessionsProvider.notifier)
+                        .handoverSession(session.id);
                     if (context.mounted) {
                       ScaffoldMessenger.of(context).showSnackBar(
                         SnackBar(
-                          content: Text('Handover initiated for ${session.displayTitle}'),
+                          content: Text(
+                              'Handover initiated for ${session.displayTitle}'),
                           backgroundColor: AppColors.statusAmber,
                         ),
                       );
@@ -684,7 +730,8 @@ class _AttentionScreenState extends ConsumerState<AttentionScreen> {
                 label: Text('Rotate Context (${session.contextPct}%)'),
                 style: OutlinedButton.styleFrom(
                   foregroundColor: AppColors.statusAmber,
-                  side: const BorderSide(color: AppColors.statusAmber, width: 1),
+                  side:
+                      const BorderSide(color: AppColors.statusAmber, width: 1),
                   padding: const EdgeInsets.symmetric(vertical: 8),
                 ),
               ),
@@ -738,7 +785,8 @@ class _AttentionScreenState extends ConsumerState<AttentionScreen> {
                       ),
                     ),
                     const SizedBox(width: 6),
-                    Text('• ${session.agentDisplayName}', style: AppTypography.codeXs),
+                    Text('• ${session.agentDisplayName}',
+                        style: AppTypography.codeXs),
                     const Spacer(),
                     StatusBadge.working(isCompact: true),
                   ],
@@ -746,19 +794,23 @@ class _AttentionScreenState extends ConsumerState<AttentionScreen> {
                 AppSpacing.gapH8,
                 Text(
                   session.displayTitle,
-                  style: AppTypography.titleMedium.copyWith(fontWeight: FontWeight.w600),
+                  style: AppTypography.titleMedium
+                      .copyWith(fontWeight: FontWeight.w600),
                 ),
                 AppSpacing.gapH6,
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                   decoration: BoxDecoration(
                     color: AppColors.terminalBlack,
                     borderRadius: AppSpacing.roundedSm,
-                    border: Border.all(color: AppColors.outlineSubtle, width: 0.5),
+                    border:
+                        Border.all(color: AppColors.outlineSubtle, width: 0.5),
                   ),
                   child: Row(
                     children: [
-                      const Icon(Icons.terminal_rounded, size: 12, color: AppColors.statusAmber),
+                      const Icon(Icons.terminal_rounded,
+                          size: 12, color: AppColors.statusAmber),
                       const SizedBox(width: 6),
                       Expanded(
                         child: Text(
@@ -779,13 +831,15 @@ class _AttentionScreenState extends ConsumerState<AttentionScreen> {
                   children: [
                     Text(
                       '⏱ Active: ${session.timeElapsedFormatted}',
-                      style: AppTypography.codeXs.copyWith(color: AppColors.textSecondary),
+                      style: AppTypography.codeXs
+                          .copyWith(color: AppColors.textSecondary),
                     ),
                     const Spacer(),
                     if (session.gitBranch.isNotEmpty)
                       Text(
                         '🌿 ${session.gitBranch}',
-                        style: AppTypography.codeXs.copyWith(color: AppColors.textMuted),
+                        style: AppTypography.codeXs
+                            .copyWith(color: AppColors.textMuted),
                       ),
                   ],
                 ),
@@ -819,7 +873,8 @@ class _AttentionScreenState extends ConsumerState<AttentionScreen> {
       itemCount: auditList.length,
       itemBuilder: (context, index) {
         final entry = auditList[index];
-        final isApproved = entry.actionType == 'allowed' || entry.actionType == 'approved_plan';
+        final isApproved = entry.actionType == 'allowed' ||
+            entry.actionType == 'approved_plan';
         final isDenied = entry.actionType == 'denied';
 
         Color badgeColor = AppColors.infoCyan;
@@ -836,11 +891,13 @@ class _AttentionScreenState extends ConsumerState<AttentionScreen> {
                 Row(
                   children: [
                     Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 6, vertical: 2),
                       decoration: BoxDecoration(
                         color: badgeColor.withOpacity(0.15),
                         borderRadius: AppSpacing.roundedSm,
-                        border: Border.all(color: badgeColor.withOpacity(0.4), width: 0.5),
+                        border: Border.all(
+                            color: badgeColor.withOpacity(0.4), width: 0.5),
                       ),
                       child: Text(
                         entry.actionType.toUpperCase(),
@@ -853,24 +910,28 @@ class _AttentionScreenState extends ConsumerState<AttentionScreen> {
                     const SizedBox(width: 8),
                     Text(
                       '${entry.agent} @${entry.host}',
-                      style: AppTypography.codeXs.copyWith(color: AppColors.textSecondary),
+                      style: AppTypography.codeXs
+                          .copyWith(color: AppColors.textSecondary),
                     ),
                     const Spacer(),
                     Text(
                       _formatTimestamp(entry.timestamp),
-                      style: AppTypography.codeXs.copyWith(color: AppColors.textMuted),
+                      style: AppTypography.codeXs
+                          .copyWith(color: AppColors.textMuted),
                     ),
                   ],
                 ),
                 AppSpacing.gapH8,
                 Text(
                   entry.sessionTitle,
-                  style: AppTypography.titleMedium.copyWith(fontWeight: FontWeight.w600),
+                  style: AppTypography.titleMedium
+                      .copyWith(fontWeight: FontWeight.w600),
                 ),
                 AppSpacing.gapH4,
                 Text(
                   entry.summary,
-                  style: AppTypography.bodySmall.copyWith(color: AppColors.textSecondary),
+                  style: AppTypography.bodySmall
+                      .copyWith(color: AppColors.textSecondary),
                 ),
               ],
             ),
@@ -890,8 +951,14 @@ class _AttentionScreenState extends ConsumerState<AttentionScreen> {
 
   void _showTranscriptModal(BuildContext context, Session session) {
     final hosts = ref.read(hostsListProvider);
-    final match = hosts.where((h) => h.name == session.host || h.url.contains(session.host));
-    final hostUrl = match.isNotEmpty ? match.first.url : (hosts.isNotEmpty ? hosts.first.url : 'http://127.0.0.1:7777');
+    final sessionHost = session.host.toLowerCase();
+    final match = hosts.where((h) =>
+        h.name.toLowerCase() == sessionHost ||
+        h.url.toLowerCase().contains(sessionHost));
+    final host = match.isNotEmpty
+        ? match.first
+        : (hosts.where((h) => h.online).firstOrNull ?? hosts.firstOrNull);
+    final hostUrl = host?.url ?? 'http://127.0.0.1:7777';
 
     showModalBottomSheet(
       context: context,
@@ -907,7 +974,11 @@ class _AttentionScreenState extends ConsumerState<AttentionScreen> {
         expand: false,
         builder: (context, scrollController) {
           return FutureBuilder<String>(
-            future: ref.read(apiClientProvider).getTranscript(hostUrl, session.id),
+            future: ref.read(apiClientProvider).getTranscript(
+                  hostUrl,
+                  session.id,
+                  authToken: host?.authToken,
+                ),
             builder: (context, snapshot) {
               return Padding(
                 padding: AppSpacing.paddingScreen,
@@ -928,7 +999,8 @@ class _AttentionScreenState extends ConsumerState<AttentionScreen> {
                     AppSpacing.gapH12,
                     Row(
                       children: [
-                        const Icon(Icons.article_outlined, size: 20, color: AppColors.infoCyan),
+                        const Icon(Icons.article_outlined,
+                            size: 20, color: AppColors.infoCyan),
                         const SizedBox(width: 8),
                         Expanded(
                           child: Column(
@@ -943,7 +1015,8 @@ class _AttentionScreenState extends ConsumerState<AttentionScreen> {
                               ),
                               Text(
                                 '${session.agentDisplayName} • ${session.displayTitle}',
-                                style: AppTypography.codeXs.copyWith(color: AppColors.textSecondary),
+                                style: AppTypography.codeXs
+                                    .copyWith(color: AppColors.textSecondary),
                                 overflow: TextOverflow.ellipsis,
                               ),
                             ],
@@ -951,20 +1024,24 @@ class _AttentionScreenState extends ConsumerState<AttentionScreen> {
                         ),
                         if (snapshot.hasData && snapshot.data!.isNotEmpty)
                           IconButton(
-                            icon: const Icon(Icons.copy_rounded, size: 18, color: AppColors.textMuted),
+                            icon: const Icon(Icons.copy_rounded,
+                                size: 18, color: AppColors.textMuted),
                             tooltip: 'Copy transcript',
                             onPressed: () {
-                              Clipboard.setData(ClipboardData(text: snapshot.data!));
+                              Clipboard.setData(
+                                  ClipboardData(text: snapshot.data!));
                               ScaffoldMessenger.of(context).showSnackBar(
                                 const SnackBar(
-                                  content: Text('Transcript copied to clipboard'),
+                                  content:
+                                      Text('Transcript copied to clipboard'),
                                   backgroundColor: AppColors.surfaceHighlight,
                                 ),
                               );
                             },
                           ),
                         IconButton(
-                          icon: const Icon(Icons.close_rounded, size: 20, color: AppColors.textMuted),
+                          icon: const Icon(Icons.close_rounded,
+                              size: 20, color: AppColors.textMuted),
                           onPressed: () => Navigator.of(ctx).pop(),
                         ),
                       ],
@@ -972,17 +1049,22 @@ class _AttentionScreenState extends ConsumerState<AttentionScreen> {
                     const Divider(color: AppColors.outlineSubtle, height: 20),
                     Expanded(
                       child: snapshot.connectionState == ConnectionState.waiting
-                          ? const Center(child: CircularProgressIndicator(color: AppColors.infoCyan))
-                          : (snapshot.data == null || snapshot.data!.trim().isEmpty
+                          ? const Center(
+                              child: CircularProgressIndicator(
+                                  color: AppColors.infoCyan))
+                          : (snapshot.data == null ||
+                                  snapshot.data!.trim().isEmpty
                               ? Center(
                                   child: Column(
                                     mainAxisSize: MainAxisSize.min,
                                     children: [
-                                      const Icon(Icons.receipt_long_outlined, size: 36, color: AppColors.textMuted),
+                                      const Icon(Icons.receipt_long_outlined,
+                                          size: 36, color: AppColors.textMuted),
                                       AppSpacing.gapH8,
                                       Text(
                                         'No transcript available yet',
-                                        style: AppTypography.bodySmall.copyWith(color: AppColors.textMuted),
+                                        style: AppTypography.bodySmall.copyWith(
+                                            color: AppColors.textMuted),
                                       ),
                                     ],
                                   ),
@@ -992,13 +1074,18 @@ class _AttentionScreenState extends ConsumerState<AttentionScreen> {
                                   decoration: BoxDecoration(
                                     color: AppColors.terminalBlack,
                                     borderRadius: AppSpacing.roundedSm,
-                                    border: Border.all(color: AppColors.outlineSubtle, width: 0.5),
+                                    border: Border.all(
+                                        color: AppColors.outlineSubtle,
+                                        width: 0.5),
                                   ),
                                   child: Builder(
                                     builder: (context) {
-                                      WidgetsBinding.instance.addPostFrameCallback((_) {
+                                      WidgetsBinding.instance
+                                          .addPostFrameCallback((_) {
                                         if (scrollController.hasClients) {
-                                          scrollController.jumpTo(scrollController.position.maxScrollExtent);
+                                          scrollController.jumpTo(
+                                              scrollController
+                                                  .position.maxScrollExtent);
                                         }
                                       });
                                       return SingleChildScrollView(
@@ -1006,11 +1093,27 @@ class _AttentionScreenState extends ConsumerState<AttentionScreen> {
                                         child: MarkdownBody(
                                           data: snapshot.data!,
                                           styleSheet: MarkdownStyleSheet(
-                                            p: AppTypography.codeXs.copyWith(color: AppColors.textSecondary, fontSize: 11),
-                                            code: AppTypography.codeXs.copyWith(color: AppColors.infoCyan, backgroundColor: Colors.transparent),
-                                            h1: AppTypography.titleMedium.copyWith(color: AppColors.textPrimary),
-                                            h2: AppTypography.titleSmall.copyWith(color: AppColors.textPrimary),
-                                            h3: AppTypography.bodyMedium.copyWith(color: AppColors.textPrimary, fontWeight: FontWeight.bold),
+                                            p: AppTypography.codeXs.copyWith(
+                                                color: AppColors.textSecondary,
+                                                fontSize: 11),
+                                            code: AppTypography.codeXs.copyWith(
+                                                color: AppColors.infoCyan,
+                                                backgroundColor:
+                                                    Colors.transparent),
+                                            h1: AppTypography.titleMedium
+                                                .copyWith(
+                                                    color:
+                                                        AppColors.textPrimary),
+                                            h2: AppTypography.titleSmall
+                                                .copyWith(
+                                                    color:
+                                                        AppColors.textPrimary),
+                                            h3: AppTypography.bodyMedium
+                                                .copyWith(
+                                                    color:
+                                                        AppColors.textPrimary,
+                                                    fontWeight:
+                                                        FontWeight.bold),
                                           ),
                                         ),
                                       );

@@ -46,7 +46,8 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if len(active) > 0 {
-		s.verifySessionLiveness(r.Context(), active)
+		s.verifyHeadlessLiveness(active)
+		s.triggerAsyncLiveness()
 	}
 
 	if r.URL.Query().Get("federated") == "true" {

@@ -3,7 +3,6 @@ package daemon
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -26,24 +25,14 @@ func (s *Server) handleSessionSubagents(w http.ResponseWriter, r *http.Request) 
 		if len(parts) >= 2 {
 			if hostRec := s.resolveHost(parts[1]); hostRec != nil && hostRec.URL != "" {
 				targetURL := fmt.Sprintf("%s/v1/sessions/subagents?%s", strings.TrimSuffix(hostRec.URL, "/"), r.URL.RawQuery)
-				resp, err := http.Get(targetURL)
-				if err == nil {
-					defer resp.Body.Close()
-					w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
-					w.WriteHeader(resp.StatusCode)
-					_, _ = io.Copy(w, resp.Body)
+				if proxyGETWithAuth(w, r, targetURL) {
 					return
 				}
 			}
 		}
 	} else if hostRec := s.resolveHost(sess.Host); hostRec != nil && hostRec.URL != "" {
 		targetURL := fmt.Sprintf("%s/v1/sessions/subagents?%s", strings.TrimSuffix(hostRec.URL, "/"), r.URL.RawQuery)
-		resp, err := http.Get(targetURL)
-		if err == nil {
-			defer resp.Body.Close()
-			w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
-			w.WriteHeader(resp.StatusCode)
-			_, _ = io.Copy(w, resp.Body)
+		if proxyGETWithAuth(w, r, targetURL) {
 			return
 		}
 	}

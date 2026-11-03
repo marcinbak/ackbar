@@ -62,6 +62,49 @@ func TestExtractTranscript_Antigravity(t *testing.T) {
 	}
 }
 
+func TestExtractTranscript_Antigravity_HydratesTruncatedFieldsFromFullTranscript(t *testing.T) {
+	tmpHome := t.TempDir()
+	convID := "test-conv-truncated"
+	logDir := filepath.Join(tmpHome, ".gemini", "antigravity-cli", "brain", convID, ".system_generated", "logs")
+	if err := os.MkdirAll(logDir, 0755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+
+	compactJSONL := strings.Join([]string{
+		`{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","created_at":"2026-10-31T14:51:44.123456Z","content":"<USER_REQUEST>\ntruncated user prompt...\n</USER_REQUEST>","truncated_fields":["content"]}`,
+		`{"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-10-31T14:52:00.654321Z","content":"short truncated reply...","thinking":"short thought...","truncated_fields":["content","thinking"]}`,
+	}, "\n") + "\n"
+
+	fullJSONL := strings.Join([]string{
+		`{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","created_at":"2026-10-31T14:51:44.123456Z","content":"<USER_REQUEST>\nFull untruncated user prompt from transcript_full.jsonl\n</USER_REQUEST>"}`,
+		`{"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-10-31T14:52:00.654321Z","content":"Full untruncated assistant reply with complete analysis.","thinking":"Full untruncated thinking chain","tool_calls":[{"name":"read_file","args":{"Path":"/workspace/main.go"}}]}`,
+	}, "\n") + "\n"
+
+	if err := os.WriteFile(filepath.Join(logDir, "transcript.jsonl"), []byte(compactJSONL), 0644); err != nil {
+		t.Fatalf("WriteFile compact failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(logDir, "transcript_full.jsonl"), []byte(fullJSONL), 0644); err != nil {
+		t.Fatalf("WriteFile full failed: %v", err)
+	}
+
+	msgs, err := ExtractAntigravityTranscriptMessages(tmpHome, convID)
+	if err != nil {
+		t.Fatalf("ExtractAntigravityTranscriptMessages failed: %v", err)
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("Expected 2 messages, got %d", len(msgs))
+	}
+	if msgs[0].Content != "Full untruncated user prompt from transcript_full.jsonl" {
+		t.Errorf("Expected hydrated user prompt, got %q", msgs[0].Content)
+	}
+	if msgs[1].Content != "Full untruncated assistant reply with complete analysis." {
+		t.Errorf("Expected hydrated assistant content, got %q", msgs[1].Content)
+	}
+	if msgs[1].Thinking != "Full untruncated thinking chain" {
+		t.Errorf("Expected hydrated assistant thinking, got %q", msgs[1].Thinking)
+	}
+}
+
 func TestExtractTranscript_ClaudeCode(t *testing.T) {
 	tmpHome, err := os.MkdirTemp("", "test-claude-*")
 	if err != nil {

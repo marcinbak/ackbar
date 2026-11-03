@@ -12,6 +12,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"ackbar/internal/relay"
@@ -65,6 +66,8 @@ type Server struct {
 	sessionHookLocks  sync.Map
 	blockedBySubagent sync.Map
 	homeDir           string
+	livenessRunning   atomic.Bool
+	lastLivenessAt    atomic.Int64
 	speechCacheMu     sync.RWMutex
 	speechCache       map[string]*SpeechSummary
 	speechLLMRunner   func(ctx context.Context, content string) (string, []string, error)
@@ -433,12 +436,13 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	if err == nil {
 		var active []*Session
 		for _, sess := range sessions {
-			if sess.State != StateEnded {
+			if sess.State != StateEnded && s.isLocalHost(sess.Host) {
 				active = append(active, sess)
 			}
 		}
 		if len(active) > 0 {
-			s.verifySessionLiveness(r.Context(), active)
+			s.verifyHeadlessLiveness(active)
+			s.triggerAsyncLiveness()
 		}
 		for _, s := range sessions {
 			data, err := json.Marshal(s)

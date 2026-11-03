@@ -1,7 +1,10 @@
 package daemon
 
 import (
+	"encoding/json"
 	"errors"
+	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -99,5 +102,110 @@ func TestPTYResizeTracker_FailedSetsizeIsRetried(t *testing.T) {
 	}
 	if len(rec.calls) != 2 {
 		t.Fatalf("setsize called %d times, want 2", len(rec.calls))
+	}
+}
+
+func TestPerformTmuxScroll_LocalDirectionsAndAutoCancelAtBottom(t *testing.T) {
+	var calls [][]string
+	scrollPos := "1 12"
+	runner := func(name string, args ...string) ([]byte, error) {
+		cmd := append([]string{name}, args...)
+		calls = append(calls, cmd)
+		if len(args) >= 2 && args[0] == "display-message" {
+			return []byte(scrollPos + "\n"), nil
+		}
+		return nil, nil
+	}
+
+	// 1. Scroll up 4 lines: enters copy-mode -e and scrolls up 4 lines
+	calls = nil
+	if err := performTmuxScroll("ackbar-claude-1", true, "", "up", 4, runner); err != nil {
+		t.Fatalf("performTmuxScroll(up) failed: %v", err)
+	}
+	wantUp := [][]string{
+		{"tmux", "copy-mode", "-e", "-t", "ackbar-claude-1"},
+		{"tmux", "send-keys", "-t", "ackbar-claude-1", "-X", "-N", "4", "scroll-up"},
+	}
+	if !reflect.DeepEqual(calls, wantUp) {
+		t.Fatalf("scroll up calls = %v, want %v", calls, wantUp)
+	}
+
+	// 2. Scroll down 3 lines while scroll_position > 0: does NOT cancel copy-mode
+	calls = nil
+	scrollPos = "1 5"
+	if err := performTmuxScroll("ackbar-claude-1", true, "", "down", 3, runner); err != nil {
+		t.Fatalf("performTmuxScroll(down) failed: %v", err)
+	}
+	wantDownMid := [][]string{
+		{"tmux", "send-keys", "-t", "ackbar-claude-1", "-X", "-N", "3", "scroll-down"},
+		{"tmux", "display-message", "-p", "-t", "ackbar-claude-1", "#{pane_in_mode} #{scroll_position}"},
+	}
+	if !reflect.DeepEqual(calls, wantDownMid) {
+		t.Fatalf("scroll down mid calls = %v, want %v", calls, wantDownMid)
+	}
+
+	// 3. Scroll down when scroll_position reaches 0: cancels copy-mode via copy-mode -q
+	calls = nil
+	scrollPos = "1 0"
+	if err := performTmuxScroll("ackbar-claude-1", true, "", "down", 2, runner); err != nil {
+		t.Fatalf("performTmuxScroll(down at bottom) failed: %v", err)
+	}
+	wantDownBottom := [][]string{
+		{"tmux", "send-keys", "-t", "ackbar-claude-1", "-X", "-N", "2", "scroll-down"},
+		{"tmux", "display-message", "-p", "-t", "ackbar-claude-1", "#{pane_in_mode} #{scroll_position}"},
+		{"tmux", "copy-mode", "-q", "-t", "ackbar-claude-1"},
+	}
+	if !reflect.DeepEqual(calls, wantDownBottom) {
+		t.Fatalf("scroll down at bottom calls = %v, want %v", calls, wantDownBottom)
+	}
+
+	// 4. Page up, page down, and bottom
+	calls = nil
+	if err := performTmuxScroll("ackbar-claude-1", true, "", "page_up", 1, runner); err != nil {
+		t.Fatalf("performTmuxScroll(page_up) failed: %v", err)
+	}
+	if !reflect.DeepEqual(calls, [][]string{{"tmux", "copy-mode", "-eu", "-t", "ackbar-claude-1"}}) {
+		t.Fatalf("page_up calls = %v", calls)
+	}
+
+	calls = nil
+	if err := performTmuxScroll("ackbar-claude-1", true, "", "bottom", 1, runner); err != nil {
+		t.Fatalf("performTmuxScroll(bottom) failed: %v", err)
+	}
+	if !reflect.DeepEqual(calls, [][]string{{"tmux", "copy-mode", "-q", "-t", "ackbar-claude-1"}}) {
+		t.Fatalf("bottom calls = %v", calls)
+	}
+}
+
+func TestPerformTmuxScroll_RemoteSSHAndControlJSON(t *testing.T) {
+	var calls [][]string
+	runner := func(name string, args ...string) ([]byte, error) {
+		calls = append(calls, append([]string{name}, args...))
+		return nil, nil
+	}
+
+	raw := `{"type":"scroll","direction":"up","lines":5}`
+	var ctrl PTYControlMsg
+	if err := json.Unmarshal([]byte(raw), &ctrl); err != nil {
+		t.Fatalf("Unmarshal PTYControlMsg failed: %v", err)
+	}
+	if ctrl.Type != "scroll" || ctrl.Direction != "up" || ctrl.Lines != 5 {
+		t.Fatalf("Unexpected parsed PTYControlMsg: %+v", ctrl)
+	}
+
+	if err := performTmuxScroll("ackbar-agy-9", false, "devbox", ctrl.Direction, ctrl.Lines, runner); err != nil {
+		t.Fatalf("performTmuxScroll(remote) failed: %v", err)
+	}
+	if len(calls) != 1 || calls[0][0] != "ssh" || calls[0][1] != "devbox" || !strings.Contains(calls[0][2], "scroll-up") {
+		t.Fatalf("Unexpected remote SSH call: %v", calls)
+	}
+
+	// Unsafe tmuxName characters must be rejected before shell interpolation
+	calls = nil
+	if err := performTmuxScroll("bad$(id)", false, "devbox", "up", 1, runner); err != nil {
+		t.Fatalf("performTmuxScroll(unsafe name) returned error: %v", err)
+	}
+	if len(calls) != 0 {
+		t.Fatalf("Expected 0 calls for unsafe tmuxName, got %v", calls)
 	}
 }
