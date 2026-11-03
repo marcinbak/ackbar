@@ -151,9 +151,13 @@ func (s *Server) getFederatedSessions(ctx context.Context, localSessions []*Sess
 		}
 	}
 
-	// For online peers, incoming sessions are authoritative for runtime state,
-	// while user-controlled metadata is preserved via LWW
-	for _, rSessions := range peerSessions {
+	peerMatchesHost := func(peerHost, sessHost string) bool {
+		return peerHost == sessHost || strings.EqualFold(peerHost, sessHost) || strings.HasSuffix(peerHost, "@"+sessHost) || strings.HasSuffix(sessHost, "@"+peerHost)
+	}
+
+	// For online peers, incoming authoritative sessions are authoritative for runtime state,
+	// while non-authoritative third-party replicas only update LWW metadata.
+	for peerHost, rSessions := range peerSessions {
 		for _, peerSess := range rSessions {
 			if s.isLocalHost(peerSess.Host) {
 				continue
@@ -168,10 +172,12 @@ func (s *Server) getFederatedSessions(ctx context.Context, localSessions []*Sess
 				}
 			}
 
+			isAuth := peerMatchesHost(peerHost, peerSess.Host)
 			if exists && existing != nil {
-				if s.isLocalHost(existing.Host) {
-					// Active local session: keep existing as authoritative for runtime state,
-					// only apply LWW metadata from peerSess if peerSess is newer
+				if s.isLocalHost(existing.Host) || !isAuth {
+					// Active local session or non-authoritative third-party replica:
+					// NEVER overwrite runtime state in merged.
+					// Only apply LWW metadata from peerSess if peerSess is newer
 					if peerSess.MetadataUpdatedAt.After(existing.MetadataUpdatedAt) {
 						existing.NodePath = peerSess.NodePath
 						existing.CustomTitle = peerSess.CustomTitle
@@ -182,7 +188,7 @@ func (s *Server) getFederatedSessions(ctx context.Context, localSessions []*Sess
 						existing.MetadataUpdatedAt = peerSess.MetadataUpdatedAt
 					}
 				} else {
-					// Remote session: peerSess is authoritative for runtime state
+					// Authoritative remote session: peerSess is authoritative for runtime state
 					if existing.MetadataUpdatedAt.After(peerSess.MetadataUpdatedAt) {
 						peerSess.NodePath = existing.NodePath
 						peerSess.CustomTitle = existing.CustomTitle

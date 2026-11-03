@@ -275,6 +275,7 @@ func (d *DB) SaveSession(s *Session) error {
 			if s.CustomTitle == "" && existing.CustomTitle != "" {
 				s.CustomTitle = existing.CustomTitle
 			}
+			s.MetadataUpdatedAt = existing.MetadataUpdatedAt
 		}
 		if s.GitBranch == "" && existing.GitBranch != "" {
 			s.GitBranch = existing.GitBranch
@@ -983,6 +984,7 @@ func (d *DB) DeleteNode(path string) error {
 		return fmt.Errorf("failed to delete node: %w", err)
 	}
 	_, _ = d.db.Exec("UPDATE sessions SET node_path = '', metadata_updated_at = ? WHERE (node_path = ? OR SUBSTR(node_path, 1, LENGTH(?) + 1) = ? || '/');", now, path, path, path)
+	_, _ = d.db.Exec("DELETE FROM node_host_paths WHERE node_path = ? OR SUBSTR(node_path, 1, LENGTH(?) + 1) = ? || '/';", path, path, path)
 	return nil
 }
 
@@ -2760,6 +2762,7 @@ func (d *DB) ApplySyncState(payload *SyncStatePayload) ([]*Session, error) {
 			// Clear node_path on sessions for this path and any descendants only if not updated more recently
 			qClearSess := `UPDATE sessions SET node_path = '', metadata_updated_at = ? WHERE (node_path = ? OR SUBSTR(node_path, 1, LENGTH(?) + 1) = ? || '/') AND (metadata_updated_at IS NULL OR metadata_updated_at < ?);`
 			_, _ = d.db.Exec(qClearSess, incoming.UpdatedAt, incoming.Path, incoming.Path, incoming.Path, incoming.UpdatedAt)
+			_, _ = d.db.Exec("DELETE FROM node_host_paths WHERE (node_path = ? OR SUBSTR(node_path, 1, LENGTH(?) + 1) = ? || '/') AND updated_at <= ?;", incoming.Path, incoming.Path, incoming.Path, incoming.UpdatedAt)
 		} else {
 			// Incoming is active
 			q := `
@@ -2772,10 +2775,10 @@ func (d *DB) ApplySyncState(payload *SyncStatePayload) ([]*Session, error) {
 				deleted_at=NULL;
 			`
 			_, _ = d.db.Exec(q, incoming.Path, incoming.ProjectDir, incoming.GitURL, incoming.CreatedAt, incoming.UpdatedAt)
-		}
 
-		for _, hp := range incoming.HostPaths {
-			_ = d.UpsertNodeHostPathLWW(&hp)
+			for _, hp := range incoming.HostPaths {
+				_ = d.UpsertNodeHostPathLWW(&hp)
+			}
 		}
 	}
 
@@ -2843,7 +2846,8 @@ func (d *DB) ApplySyncState(payload *SyncStatePayload) ([]*Session, error) {
 		}
 
 		if existing != nil {
-			if meta.UpdatedAt.After(existing.MetadataUpdatedAt) {
+			metaUpdated := meta.UpdatedAt.After(existing.MetadataUpdatedAt)
+			if metaUpdated {
 				existing.NodePath = meta.NodePath
 				existing.Name = meta.Name
 				existing.CustomTitle = meta.CustomTitle
@@ -2851,7 +2855,20 @@ func (d *DB) ApplySyncState(payload *SyncStatePayload) ([]*Session, error) {
 				existing.IsLater = meta.IsLater
 				existing.Archived = meta.Archived
 				existing.MetadataUpdatedAt = meta.UpdatedAt
+			}
 
+			runtimeUpdated := existing.PID == 0 && existing.TmuxName == "" && (meta.LastEventAt.After(existing.LastEventAt) || existing.State != meta.State || existing.Activity != meta.Activity || existing.GitBranch != meta.GitBranch) && !meta.LastEventAt.Before(existing.LastEventAt)
+			if runtimeUpdated {
+				existing.State = meta.State
+				existing.Activity = meta.Activity
+				existing.GitBranch = meta.GitBranch
+				existing.LastEventAt = meta.LastEventAt
+				if existing.Cwd == "" && meta.Cwd != "" {
+					existing.Cwd = meta.Cwd
+				}
+			}
+
+			if metaUpdated || runtimeUpdated {
 				_ = d.SaveSession(existing)
 				updatedSessions = append(updatedSessions, existing)
 			}
