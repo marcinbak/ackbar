@@ -9,9 +9,12 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 )
+
+const AckbarNotificationIconURL = "https://raw.githubusercontent.com/marcinbak/ackbar/main/web/icons/icon-192.png"
 
 type NtfyAction struct {
 	Action string `json:"action"`
@@ -26,8 +29,10 @@ type NtfyPayload struct {
 	Message  string       `json:"message"`
 	Priority int          `json:"priority,omitempty"`
 	Tags     []string     `json:"tags,omitempty"`
+	Icon     string       `json:"icon,omitempty"`
 	Click    string       `json:"click,omitempty"`
 	Actions  []NtfyAction `json:"actions,omitempty"`
+	Server   string       `json:"-"`
 }
 
 func (s *Server) sendNtfy(ctx context.Context, payload NtfyPayload) error {
@@ -40,7 +45,15 @@ func (s *Server) sendNtfy(ctx context.Context, payload NtfyPayload) error {
 	}
 	payload.Topic = topic
 
-	serverURL := strings.TrimRight(s.NtfyServer(), "/")
+	if payload.Icon == "" {
+		payload.Icon = AckbarNotificationIconURL
+	}
+
+	serverURL := payload.Server
+	if serverURL == "" {
+		serverURL = s.NtfyServer()
+	}
+	serverURL = strings.TrimRight(serverURL, "/")
 	if serverURL == "" {
 		serverURL = "https://ntfy.sh"
 	}
@@ -105,6 +118,121 @@ func resolveTaskSessionID(task *Task) string {
 	return ""
 }
 
+func (s *Server) resolveTaskSession(task *Task) *Session {
+	if task == nil {
+		return nil
+	}
+	sessionID := resolveTaskSessionID(task)
+	if sessionID != "" {
+		if s.db != nil {
+			if sess, err := s.db.GetSession(sessionID); err == nil && sess != nil {
+				return sess
+			}
+		}
+		return &Session{ID: sessionID}
+	}
+	if s.db != nil {
+		sessions, err := s.db.ListSessions()
+		if err == nil {
+			var candidate *Session
+			for _, sess := range sessions {
+				if sess.Deleted {
+					continue
+				}
+				if sess.CurrentTaskID == task.ID {
+					if sess.State != StateEnded {
+						return sess
+					}
+					if candidate == nil {
+						candidate = sess
+					}
+				}
+			}
+			if candidate != nil {
+				return candidate
+			}
+			if task.Branch != "" {
+				for _, sess := range sessions {
+					if sess.Deleted {
+						continue
+					}
+					if sess.GitBranch == task.Branch {
+						if sess.State != StateEnded {
+							return sess
+						}
+						if candidate == nil {
+							candidate = sess
+						}
+					}
+				}
+				if candidate != nil {
+					return candidate
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func formatSessionDisplayName(sess *Session, fallbackTitle string) string {
+	if sess != nil {
+		if sess.CustomTitle != "" {
+			return sess.CustomTitle
+		}
+		if sess.Name != "" {
+			return sess.Name
+		}
+	}
+	if fallbackTitle != "" {
+		return fallbackTitle
+	}
+	if sess != nil {
+		if sess.ProjectKey != "" {
+			return sess.ProjectKey
+		}
+		if sess.ID != "" {
+			return sess.ID
+		}
+	}
+	return "Ackbar Session"
+}
+
+func formatGroupPathSubtitle(sess *Session, task *Task) string {
+	if sess != nil && sess.NodePath != "" && !strings.EqualFold(sess.NodePath, "unassigned") {
+		parts := strings.Split(sess.NodePath, "/")
+		var clean []string
+		for _, p := range parts {
+			t := strings.TrimSpace(p)
+			if t != "" {
+				clean = append(clean, t)
+			}
+		}
+		if len(clean) > 0 {
+			return strings.Join(clean, " / ")
+		}
+	}
+	if task != nil {
+		var parts []string
+		for _, seg := range []string{task.GroupName, task.ProjectName, task.SubprojectName} {
+			trimmed := strings.TrimSpace(seg)
+			if trimmed == "" {
+				continue
+			}
+			if len(parts) > 0 && strings.EqualFold(parts[len(parts)-1], trimmed) {
+				continue
+			}
+			parts = append(parts, trimmed)
+		}
+		if len(parts) > 0 {
+			return strings.Join(parts, " / ")
+		}
+	}
+	if sess != nil && sess.ProjectKey != "" {
+		return sess.ProjectKey
+	}
+	return ""
+}
+
 func (s *Server) buildTaskReviewPayload(oldStatus string, task *Task) *NtfyPayload {
 	if task == nil || s.NtfyTopic() == "" {
 		return nil
@@ -113,35 +241,34 @@ func (s *Server) buildTaskReviewPayload(oldStatus string, task *Task) *NtfyPaylo
 		return nil
 	}
 
+	sess := s.resolveTaskSession(task)
+
 	var click string
-	activeSessionID := resolveTaskSessionID(task)
-	if activeSessionID != "" {
-		click = fmt.Sprintf("ackbar://session?id=%s", url.QueryEscape(activeSessionID))
+	if sess != nil && sess.ID != "" {
+		click = fmt.Sprintf("ackbar://session?id=%s", url.QueryEscape(sess.ID))
 	} else {
 		click = fmt.Sprintf("ackbar://task?id=%s", url.QueryEscape(task.ID))
 	}
 
-	title := fmt.Sprintf("PR Review Needed: %s", task.Title)
-	if strings.EqualFold(task.Substatus, "plan_review") {
-		title = fmt.Sprintf("Plan Review Needed: %s", task.Title)
+	title := formatSessionDisplayName(sess, task.Title)
+
+	var lines []string
+	if groupPath := formatGroupPathSubtitle(sess, task); groupPath != "" {
+		lines = append(lines, fmt.Sprintf("📂 %s", groupPath))
 	}
 
-	var parts []string
-	if task.ProjectName != "" {
-		parts = append(parts, fmt.Sprintf("Project: %s", task.ProjectName))
+	statusLine := "🟢 PR Review Needed"
+	if strings.EqualFold(task.Substatus, "plan_review") {
+		statusLine = "🟢 Plan Review Needed"
+	} else if task.PRNumber > 0 {
+		statusLine = fmt.Sprintf("🟢 PR Review Needed (#%d)", task.PRNumber)
 	}
-	if task.Branch != "" {
-		parts = append(parts, fmt.Sprintf("Branch: %s", task.Branch))
+	lines = append(lines, statusLine)
+
+	if sess != nil && (sess.Name != "" || sess.CustomTitle != "") && task.Title != "" && !strings.EqualFold(title, task.Title) {
+		lines = append(lines, fmt.Sprintf("Task: %s", task.Title))
 	}
-	if task.PRNumber > 0 {
-		parts = append(parts, fmt.Sprintf("PR: #%d", task.PRNumber))
-	} else if task.PRURL != "" && task.PRURL != "-" {
-		parts = append(parts, fmt.Sprintf("PR: %s", task.PRURL))
-	}
-	message := strings.Join(parts, "\n")
-	if message == "" {
-		message = fmt.Sprintf("Review required for task %s", task.Title)
-	}
+	message := strings.Join(lines, "\n")
 
 	var actions []NtfyAction
 	if task.PRURL != "" && task.PRURL != "-" {
@@ -162,6 +289,7 @@ func (s *Server) buildTaskReviewPayload(oldStatus string, task *Task) *NtfyPaylo
 		Message:  message,
 		Priority: 4,
 		Tags:     []string{"eyes", "pull_request", "ackbar"},
+		Icon:     AckbarNotificationIconURL,
 		Click:    click,
 		Actions:  actions,
 	}
@@ -186,24 +314,28 @@ func (s *Server) buildTaskBlockedPayload(oldSubstatus, oldQuestion string, task 
 		return nil
 	}
 
+	sess := s.resolveTaskSession(task)
+
 	var click string
-	activeSessionID := resolveTaskSessionID(task)
-	if activeSessionID != "" {
-		click = fmt.Sprintf("ackbar://attention?session_id=%s", url.QueryEscape(activeSessionID))
+	if sess != nil && sess.ID != "" {
+		click = fmt.Sprintf("ackbar://session?id=%s", url.QueryEscape(sess.ID))
 	} else {
 		click = fmt.Sprintf("ackbar://task?id=%s", url.QueryEscape(task.ID))
 	}
 
-	title := fmt.Sprintf("Task Blocked: %s", task.Title)
+	title := formatSessionDisplayName(sess, task.Title)
 
 	q := task.BlockerQuestion
 	if q == "" {
 		q = "Task is blocked waiting for input"
 	}
-	message := q
-	if task.ProjectName != "" {
-		message = fmt.Sprintf("[%s] %s", task.ProjectName, q)
+
+	var lines []string
+	if groupPath := formatGroupPathSubtitle(sess, task); groupPath != "" {
+		lines = append(lines, fmt.Sprintf("📂 %s", groupPath))
 	}
+	lines = append(lines, fmt.Sprintf("❓ Blocked: %s", q))
+	message := strings.Join(lines, "\n")
 
 	return &NtfyPayload{
 		Topic:    s.NtfyTopic(),
@@ -211,6 +343,7 @@ func (s *Server) buildTaskBlockedPayload(oldSubstatus, oldQuestion string, task 
 		Message:  message,
 		Priority: 4,
 		Tags:     []string{"warning", "hand", "ackbar"},
+		Icon:     AckbarNotificationIconURL,
 		Click:    click,
 	}
 }
@@ -227,33 +360,34 @@ func (s *Server) buildSessionBlockedPayload(oldState State, sess *Session) *Ntfy
 		return nil
 	}
 
-	sessionDisplayName := sess.Name
-	if sessionDisplayName == "" {
-		sessionDisplayName = sess.ProjectKey
-	}
-	if sessionDisplayName == "" {
-		sessionDisplayName = sess.ID
-	}
+	title := formatSessionDisplayName(sess, "")
 
-	title := fmt.Sprintf("Question: %s", sessionDisplayName)
-	if sess.Blocked != nil && sess.Blocked.Kind == BlockPermission {
-		title = fmt.Sprintf("Permission Needed: %s", sessionDisplayName)
-	}
-
-	message := ""
+	detail := ""
 	if sess.Blocked != nil {
 		if sess.Blocked.Question != "" {
-			message = sess.Blocked.Question
+			detail = sess.Blocked.Question
 		} else if sess.Blocked.Reason != "" {
-			message = sess.Blocked.Reason
+			detail = sess.Blocked.Reason
 		}
 	}
-	if message == "" {
-		message = sess.Activity
+	if detail == "" {
+		detail = sess.Activity
 	}
-	if message == "" {
-		message = "Session is waiting for your input"
+	if detail == "" {
+		detail = "Session is waiting for your input"
 	}
+
+	prefix := "❓ Question: "
+	if sess.Blocked != nil && sess.Blocked.Kind == BlockPermission {
+		prefix = "🔒 Permission Needed: "
+	}
+
+	var lines []string
+	if groupPath := formatGroupPathSubtitle(sess, nil); groupPath != "" {
+		lines = append(lines, fmt.Sprintf("📂 %s", groupPath))
+	}
+	lines = append(lines, fmt.Sprintf("%s%s", prefix, detail))
+	message := strings.Join(lines, "\n")
 
 	return &NtfyPayload{
 		Topic:    s.NtfyTopic(),
@@ -261,7 +395,8 @@ func (s *Server) buildSessionBlockedPayload(oldState State, sess *Session) *Ntfy
 		Message:  message,
 		Priority: 4,
 		Tags:     []string{"warning", "hand", "ackbar"},
-		Click:    fmt.Sprintf("ackbar://attention?session_id=%s", url.QueryEscape(sess.ID)),
+		Icon:     AckbarNotificationIconURL,
+		Click:    fmt.Sprintf("ackbar://session?id=%s", url.QueryEscape(sess.ID)),
 	}
 }
 
@@ -269,5 +404,102 @@ func (s *Server) maybeNotifySessionBlocked(oldState State, sess *Session) {
 	payload := s.buildSessionBlockedPayload(oldState, sess)
 	if payload != nil {
 		s.dispatchNtfy(*payload)
+	}
+}
+
+func (s *Server) handleTestNotification(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		NtfyTopic  string `json:"ntfy_topic"`
+		NtfyServer string `json:"ntfy_server"`
+	}
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&req)
+	}
+
+	topic := strings.TrimSpace(req.NtfyTopic)
+	if topic == "" {
+		topic = s.NtfyTopic()
+	}
+	if topic == "" {
+		http.Error(w, "ntfy_topic is not configured", http.StatusBadRequest)
+		return
+	}
+
+	serverURL := strings.TrimSpace(req.NtfyServer)
+	if serverURL == "" {
+		serverURL = s.NtfyServer()
+	}
+
+	payload := NtfyPayload{
+		Topic:    topic,
+		Title:    fmt.Sprintf("Ackbar (%s)", s.DisplayName()),
+		Message:  "📂 Personal / Ackbar\n🔔 Test notification from Ackbar Web UI",
+		Priority: 4,
+		Tags:     []string{"white_check_mark", "ackbar"},
+		Icon:     AckbarNotificationIconURL,
+		Click:    "ackbar://session",
+		Server:   serverURL,
+	}
+
+	if err := s.sendNtfy(r.Context(), payload); err != nil {
+		http.Error(w, fmt.Sprintf("Failed to send notification: %v", err), http.StatusBadGateway)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "sent"})
+}
+
+func (s *Server) propagateSettingsToFleet(subset map[string]string) {
+	if s.db == nil || len(subset) == 0 {
+		return
+	}
+	hosts, err := s.db.ListHosts()
+	if err != nil || len(hosts) == 0 {
+		return
+	}
+
+	payloadMap := make(map[string]string)
+	for k, v := range subset {
+		if k != "propagate_ntfy" {
+			payloadMap[k] = v
+		}
+	}
+	bodyBytes, err := json.Marshal(payloadMap)
+	if err != nil {
+		return
+	}
+
+	token := s.configuredToken
+	if token == "" {
+		token = os.Getenv("ACKBAR_TOKEN")
+	}
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	for _, h := range hosts {
+		if h.Name == "local" || h.Name == s.HostName() || h.URL == "" || s.isLocalHost(h.Name) {
+			continue
+		}
+		targetURL := fmt.Sprintf("%s/v1/settings", strings.TrimSuffix(h.URL, "/"))
+		req, err := http.NewRequest(http.MethodPost, targetURL, bytes.NewReader(bodyBytes))
+		if err != nil {
+			continue
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+			req.Header.Set("X-Ackbar-Token", token)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			log.Printf("[Settings] Failed to propagate settings to host %s (%s): %v", h.Name, targetURL, err)
+			continue
+		}
+		resp.Body.Close()
 	}
 }

@@ -365,6 +365,7 @@ func (s *Server) Mux() http.Handler {
 	mux.HandleFunc("/v1/version", s.handleVersion)
 	mux.HandleFunc("/v1/update", s.handleUpdate)
 	mux.HandleFunc("/v1/settings", s.handleSettings)
+	mux.HandleFunc("/v1/notifications/test", s.handleTestNotification)
 	mux.HandleFunc("/v1/uploads", s.handleUpload)
 	mux.HandleFunc("/v1/shutdown", s.handleShutdown)
 	mux.HandleFunc("/v1/tasks", s.handleTasks)
@@ -598,9 +599,22 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Invalid payload", http.StatusBadRequest)
 			return
 		}
+		propagateNtfy := req["propagate_ntfy"] == "true"
+		delete(req, "propagate_ntfy")
+
 		if err := s.db.SetSettings(req); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
+		}
+		if propagateNtfy {
+			server := req["ntfy_server"]
+			if server == "" {
+				server = s.NtfyServer()
+			}
+			go s.propagateSettingsToFleet(map[string]string{
+				"ntfy_topic":  req["ntfy_topic"],
+				"ntfy_server": server,
+			})
 		}
 		if newHost, ok := req["host_name"]; ok && newHost != "" {
 			s.hostName = newHost
