@@ -52,25 +52,23 @@ In the terminal Bubble Tea interface:
 
 ---
 
-## 5. Mobile App Alignment (`mobile/` — Phase 5)
+## 5. Mobile App Alignment (`mobile/` — Phase 5 — Implemented)
 
-Once all core service features (Phases 1–4) are complete, **Phase 5** aligns the Flutter Mobile App (`mobile/lib/`) with the unified Supervisor & Task Control Plane:
+**Phase 5** is fully implemented and active, bringing the Flutter Mobile App (`mobile/lib/`) into complete functional parity with the Web GUI and TUI Supervisor & Task Control Plane:
 
-### 5.1 Hierarchical Session Tree Parity (`fleet_providers.dart` & `fleet_screen.dart`)
-* **Root Cause of Missing Mobile Tree:** Currently, `groupedSessionsProvider` in `mobile/lib/core/providers/fleet_providers.dart` ignores `/v1/nodes` and groups sessions into a flat 1-level map by `Session.projectDisplayName` (which checks `projectKey` before `nodePath` and truncates `nodePath` to `parts.first`).
-* **Fix:**
-  * Add `fleetNodesProvider` fetching `GET /v1/nodes?federated=true`.
-  * Port `resolveSessionNodePath(session, nodes)` from `web/js/state.js` to Dart so sessions resolve to their full hierarchical path (`Modemobile/NGL/ngl-ios`, `Personal/Ackbar`, etc.).
-  * Render collapsible multi-level folder trees in `fleet_screen.dart` with the four standardized project subsections: **`⚓ Supervisors`**, **`📋 Tasks`**, **Manual Sessions**, **`⏳ Later`**, and **`✅ Done`** (plus `[offline]` badges for sessions on asleep hosts).
+### 5.1 Hierarchical Session Tree Parity (`fleet_providers.dart` & `fleet_tree_view.dart`)
+* **Hierarchical Node Resolution:** Replaced the legacy flat 1-level `projectDisplayName` map with `fleetNodesProvider` (fetching `GET /v1/nodes?federated=true`) and `resolveSessionNodePath(session, nodes)` ported from `web/js/state.js` to Dart (`lib/core/models/node_path_resolver.dart`). Sessions now resolve to their full hierarchical path (`Modemobile/NGL/ngl-ios`, `Personal/Ackbar`, etc.).
+* **Collapsible Fleet Tree View:** `fleet_tree_view.dart` renders recursive, collapsible multi-level folder trees in `fleet_screen.dart` with standardized project subsections: **`⚓ Supervisors`**, **`📋 Tasks`**, **Manual Sessions**, **`⏳ Later`**, and **`✅ Done`**, including `[offline]` badges for sessions on asleep hosts.
 
 ### 5.2 Zero-Input `⚓ Supervisors` Filter & Creation on Mobile
-* Add the **`[🌐 All Tree | ⚓ Supervisors]`** segmented control to the top of `fleet_screen.dart`.
-* Add a 1-tap **`[+ ⚓ New Supervisor]`** action that calls `POST /v1/sessions/spawn` (`is_supervisor: true`, zero modal inputs) and navigates directly into `TranscriptScreen`.
+* **Filter Toggle:** The **`[🌐 All Tree | ⚓ Supervisors]`** segmented control at the top of `fleet_screen.dart` toggles between the full hierarchical tree and active supervisor sessions.
+* **1-Tap Spawning:** The **`⚓+`** 1-tap New Supervisor action spawns a supervisor session via `POST /v1/sessions/spawn` (`is_supervisor: true`, zero upfront modal inputs) and immediately pushes `TranscriptScreen`.
 
-### 5.3 Mobile Work Board & Hosted Deliverables
-* Add a Mobile **Work Board / Tasks** view backed by `GET /v1/tasks?federated=true` with horizontal pillar tabs (`NEW`, `IN_PROGRESS`, `REVIEW`, `DONE`) and group filters (`All`, `Modemobile`, `Personal`).
-* Render 1-tap deliverable chips on task cards that open **Claude Published Artifacts** and **Google Docs / Slides / Drive** links natively on iOS/Android, plus **`[⚡ Squash & Merge PR]`** (`POST /v1/tasks/merge-pr`).
+### 5.3 Mobile Work Board & Hosted Deliverables (`work_board_screen.dart`)
+* **Mobile Work Board (`WorkBoardScreen`):** Backed by `tasksProvider` (`GET /v1/tasks?federated=true`), featuring horizontal pillar tabs (**`NEW`**, **`IN_PROGRESS`**, **`REVIEW`**, **`DONE`**) and group filters (`All`, `Modemobile`, `Personal`).
+* **Interactive Task Cards (`TaskCard`):** Displays task metadata, assignee badges, workstream PR links, and `[⚡ Squash & Merge PR]` action button (`POST /v1/tasks/merge-pr`).
+* **Deliverable Inspection (`DeliverableMarkdownModal`):** Render 1-tap deliverable chips on task cards that open external links (**Claude Published Artifacts**, **Google Docs / Slides / Drive**) natively on device, or inspect inline Markdown deliverables (`.md`, `.retro.md`, `.plan.md`) via the bottom-sheet `DeliverableMarkdownModal`.
 
 ### 5.4 Mobile Voice & Audio Companion (`transcript_screen.dart`)
-* Add the Tier 1 Dart Markdown speech sanitizer and wire `POST /v1/sessions/summarize-speech` into `mobile/lib/features/transcript/presentation/transcript_screen.dart`.
-* Add header toggles (`[🔊 Auto-Read]`, `[🎤 Mic]`), per-message bubble actions (`[🔊 Read]`, `[⏹️ Stop]`, `[↺ Read Again]`), and commuter quick-reply chips.
+* **Two-Tier Speech Pipeline:** Powered by `AudioCompanionService` with Tier 1 client-side Markdown speech sanitization (`speech_sanitizer.dart`) and Tier 2 remote Haiku summarization (`POST /v1/sessions/summarize-speech`).
+* **Transcript Audio Controls (`SpeechCompanionBar`):** Embedded in `transcript_screen.dart`, providing header toggles (**`[🔊 Auto-Read]`**, **`[🎤 Mic]`**), persistent bottom companion bar, per-message bubble actions (**`[🔊 Read]`**, **`[⏹️ Stop]`**, **`[↺ Read Again]`**), and commuter quick-reply drill-down chips.

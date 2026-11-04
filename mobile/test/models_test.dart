@@ -5,6 +5,8 @@ import 'package:ackbar_mobile/core/models/subagent.dart';
 import 'package:ackbar_mobile/core/models/host.dart';
 import 'package:ackbar_mobile/core/models/plan.dart';
 import 'package:ackbar_mobile/core/models/transcript.dart';
+import 'package:ackbar_mobile/core/models/tree_node.dart';
+import 'package:ackbar_mobile/core/models/work_task.dart';
 import 'package:ackbar_mobile/core/theme/app_colors.dart';
 import 'package:ackbar_mobile/core/widgets/status_badge.dart';
 
@@ -1487,6 +1489,187 @@ Understood.
       expect(transcript.messages.length, equals(2));
       expect(transcript.messages[0].role, equals('user'));
       expect(transcript.messages[1].role, equals('assistant'));
+    });
+  });
+
+  group('TreeNode and NodeHostPath Models', () {
+    test('NodeHostPath fromJson and toJson round-trip', () {
+      final json = {
+        'node_path': 'Modemobile/NGL/ngl-ios',
+        'host': 'air.local',
+        'project_dir': '/Users/dev4u/Work/ngl-ios',
+        'git_remote': 'https://github.com/modemobile/ngl-ios.git',
+        'updated_at': '2026-11-04T07:00:00Z',
+      };
+      final hostPath = NodeHostPath.fromJson(json);
+      expect(hostPath.nodePath, equals('Modemobile/NGL/ngl-ios'));
+      expect(hostPath.host, equals('air.local'));
+      expect(hostPath.projectDir, equals('/Users/dev4u/Work/ngl-ios'));
+      expect(hostPath.gitRemote,
+          equals('https://github.com/modemobile/ngl-ios.git'));
+
+      final out = hostPath.toJson();
+      expect(out['node_path'], equals('Modemobile/NGL/ngl-ios'));
+      expect(out['host'], equals('air.local'));
+      expect(out['project_dir'], equals('/Users/dev4u/Work/ngl-ios'));
+    });
+
+    test('TreeNode fromJson and toJson round-trip with hostPaths', () {
+      final json = {
+        'path': 'Modemobile/NGL/ngl-ios',
+        'project_dir': '/Users/dev4u/Work/ngl-ios',
+        'git_url': 'git@github.com:modemobile/ngl-ios.git',
+        'created_at': '2026-11-04T07:00:00Z',
+        'updated_at': '2026-11-04T08:00:00Z',
+        'host_paths': [
+          {
+            'node_path': 'Modemobile/NGL/ngl-ios',
+            'host': 'air.local',
+            'project_dir': '/Users/dev4u/Work/ngl-ios',
+            'git_remote': 'git@github.com:modemobile/ngl-ios.git',
+          }
+        ],
+      };
+      final node = TreeNode.fromJson(json);
+      expect(node.path, equals('Modemobile/NGL/ngl-ios'));
+      expect(node.hostPaths.length, equals(1));
+      expect(node.hostPaths[0].host, equals('air.local'));
+
+      final out = node.toJson();
+      expect(out['path'], equals('Modemobile/NGL/ngl-ios'));
+      expect((out['host_paths'] as List).length, equals(1));
+    });
+  });
+
+  group('WorkTask and Deliverable Models', () {
+    test('WorkTask fromJson and toJson round-trip', () {
+      final json = {
+        'id': 'TASK-101',
+        'title': 'Implement Phase 5 Mobile Alignment',
+        'status': 'REVIEW',
+        'substatus': 'approved',
+        'group_name': 'Personal',
+        'project_name': 'Ackbar',
+        'notes': 'All tests passing',
+        'created_at': '2026-11-04T07:00:00Z',
+        'updated_at': '2026-11-04T08:00:00Z',
+        'external_refs': [
+          {
+            'task_id': 'TASK-101',
+            'tracker': 'linear',
+            'ref_key': 'NGL-409',
+            'url': 'https://linear.app/issue/NGL-409',
+          }
+        ],
+        'deliverables': [
+          {
+            'id': 'd-1',
+            'task_id': 'TASK-101',
+            'kind': 'doc',
+            'title': 'Design Spec',
+            'url': 'https://docs.google.com/document/d/xyz',
+            'provider': 'gdocs',
+            'content_md': '',
+            'created_at': '2026-11-04T07:10:00Z',
+          },
+          {
+            'id': 'd-2',
+            'task_id': 'TASK-101',
+            'kind': 'markdown',
+            'title': 'Implementation Plan',
+            'url': '',
+            'content_md': '# Plan\n- Step 1\n- Step 2',
+            'created_at': '2026-11-04T07:20:00Z',
+          }
+        ],
+        'workers': [
+          {
+            'task_id': 'TASK-101',
+            'host': 'primary.local',
+            'session_id': 'sess-123',
+            'agent': 'claude-code',
+            'state': 'working',
+            'assigned_at': '2026-11-04T07:05:00Z',
+          }
+        ],
+      };
+
+      final task = WorkTask.fromJson(json);
+      expect(task.id, equals('TASK-101'));
+      expect(task.title, equals('Implement Phase 5 Mobile Alignment'));
+      expect(task.status, equals('REVIEW'));
+      expect(task.substatus, equals('approved'));
+      expect(task.groupName, equals('Personal'));
+      expect(task.projectName, equals('Ackbar'));
+      expect(task.externalRefs.length, equals(1));
+      expect(task.externalRefs[0].refKey, equals('NGL-409'));
+      expect(task.deliverables.length, equals(2));
+      expect(task.deliverables[0].isUrl, isTrue);
+      expect(task.deliverables[0].isMarkdown, isFalse);
+      expect(task.deliverables[0].providerDisplayName, equals('Google Docs'));
+      expect(task.deliverables[1].isMarkdown, isTrue);
+      expect(task.deliverables[1].isUrl, isFalse);
+      expect(task.workers.length, equals(1));
+      expect(task.workers[0].host, equals('primary.local'));
+
+      final out = task.toJson();
+      expect(out['id'], equals('TASK-101'));
+      expect(out['status'], equals('REVIEW'));
+      expect((out['deliverables'] as List).length, equals(2));
+    });
+  });
+
+  group('Session Phase 5 Properties', () {
+    test(
+        'Session parses and serializes isSupervisor, currentTaskId, isDone, isLater, gitRemote',
+        () {
+      final json = {
+        'id': 'sup-1',
+        'agent': 'claude-code',
+        'host': 'local',
+        'native_id': 'nat-1',
+        'cwd': '/Users/dev4u/Personal/ackbar',
+        'node_path': 'Personal/Ackbar',
+        'name': 'Supervisor Main',
+        'custom_title': 'Supervisor Main',
+        'first_prompt': 'Hello',
+        'last_prompt': 'Hello',
+        'state': 3,
+        'activity': 'idle',
+        'started_at': '2026-11-04T07:00:00Z',
+        'last_event_at': '2026-11-04T07:00:00Z',
+        'managed': true,
+        'engine_type': 'headless',
+        'is_supervisor': true,
+        'current_task_id': 'TASK-101',
+        'is_done': true,
+        'is_later': false,
+        'git_remote': 'git@github.com:org/repo.git',
+      };
+
+      final session = Session.fromJson(json);
+      expect(session.isSupervisor, isTrue);
+      expect(session.currentTaskId, equals('TASK-101'));
+      expect(session.isDone, isTrue);
+      expect(session.isLater, isFalse);
+      expect(session.gitRemote, equals('git@github.com:org/repo.git'));
+
+      final out = session.toJson();
+      expect(out['is_supervisor'], isTrue);
+      expect(out['current_task_id'], equals('TASK-101'));
+      expect(out['is_done'], isTrue);
+      expect(out['is_later'], isFalse);
+      expect(out['git_remote'], equals('git@github.com:org/repo.git'));
+
+      final copied = session.copyWith(
+        isSupervisor: false,
+        currentTaskId: 'TASK-202',
+        isLater: true,
+      );
+      expect(copied.isSupervisor, isFalse);
+      expect(copied.currentTaskId, equals('TASK-202'));
+      expect(copied.isLater, isTrue);
+      expect(copied.isDone, isTrue);
     });
   });
 }

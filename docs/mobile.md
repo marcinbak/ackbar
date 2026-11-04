@@ -130,7 +130,7 @@ flutter run
 cd mobile
 flutter test
 ```
-*Executes all 159 unit and widget tests covering models, theme extensions, Riverpod providers, session spawning, transcript live turn synchronization, terminal touch scrolling, and core UI components.*
+*Executes all 202 unit and widget tests covering models, theme extensions, Riverpod providers, session spawning, transcript live turn synchronization, terminal touch scrolling, node path resolution, speech sanitizer, hierarchical fleet tree, work board, voice companion, and core UI components.*
 
 ### Installing to iOS Device
 ```bash
@@ -159,15 +159,22 @@ flutter run --release -d <android-device-id>
 
 ---
 
-## 5. Planned Phase 5: Ackbar 2.0 Mobile App Alignment
+## 5. Implemented Phase 5: Ackbar 2.0 Mobile App Alignment
 
-Following completion of the core daemon/Web/TUI capabilities (Phases 1–4 in [`docs/work-overview/07-open-questions-and-roadmap.md`](work-overview/07-open-questions-and-roadmap.md)), **Phase 5** aligns `mobile/` with the Ackbar 2.0 Control Plane (see [`docs/work-overview/06-ui-and-navigation.md`](work-overview/06-ui-and-navigation.md#5-mobile-app-alignment-mobile--phase-5)):
+In **Phase 5**, the Flutter Mobile App (`mobile/lib/`) was upgraded to complete functional parity with the Web GUI and TUI Supervisor & Task Control Plane (see [`docs/work-overview/06-ui-and-navigation.md`](work-overview/06-ui-and-navigation.md#5-mobile-app-alignment-mobile--phase-5--implemented)):
 
-1. **Hierarchical Session Tree Parity (`fleet_providers.dart` & `fleet_screen.dart`):**
-   * Fetch `GET /v1/nodes?federated=true` via `fleetNodesProvider` and port `resolveSessionNodePath()` from `web/js/state.js` so Mobile replaces the flat 1-level `projectDisplayName` map with the full multi-level `tree_nodes` hierarchy (`Modemobile / NGL / ngl-ios`, `Personal / Ackbar`), including `⚓ Supervisors`, `📋 Tasks`, `⏳ Later`, and `✅ Done` subsections and `[offline]` host badges.
-2. **Zero-Input `⚓ Supervisors` Filter & Creation:**
-   * Add the `[🌐 All Tree | ⚓ Supervisors]` segmented switcher and 1-tap `[+ ⚓ New Supervisor]` button to `fleet_screen.dart`.
-3. **Mobile Work Board & Hosted Deliverables:**
-   * Add a Mobile Tasks / Work Board view (`GET /v1/tasks?federated=true`) with 1-tap links to Claude Published Artifacts and Google Docs/Slides/Drive deliverables, plus `[⚡ Squash & Merge PR]`.
-4. **Voice & Audio Companion (`transcript_screen.dart`):**
-   * Integrate the Tier 1 Markdown speech sanitizer, `POST /v1/sessions/summarize-speech`, header toggles (`[🔊 Auto-Read]`, `[🎤 Mic]`), per-message `[🔊 Read]` / `[↺ Read Again]` controls, and commuter quick-reply chips.
+1. **Hierarchical Session Tree Parity (`fleet_providers.dart`, `node_path_resolver.dart` & `fleet_tree_view.dart`):**
+   * **Node Path Resolution:** Ported `resolveSessionNodePath(session, nodes)` from `web/js/state.js` to Dart (`mobile/lib/core/utils/node_path_resolver.dart`), resolving sessions against federated `TreeNode` trees from `fleetNodesProvider` (`GET /v1/nodes?federated=true`).
+   * **Multi-Level Tree View:** Replaced the legacy flat project map with `fleet_tree_view.dart`, rendering recursive collapsible folder trees in `fleet_screen.dart` with standardized project subsections: **`⚓ Supervisors`**, **`📋 Tasks`**, **Manual Sessions**, **`⏳ Later`**, and **`✅ Done`**, complete with `[offline]` badges for sessions on asleep hosts.
+
+2. **Zero-Input `⚓ Supervisors` Filter & 1-Tap Spawning (`fleet_screen.dart`):**
+   * **Segmented Filter:** The **`[🌐 All Tree | ⚓ Supervisors]`** toggle in `fleet_screen.dart` switches between the full tree and all active supervisor sessions across hosts.
+   * **1-Tap Creation:** The **`⚓+`** floating / header action immediately spawns an unbound supervisor session (`POST /v1/sessions/spawn` with `is_supervisor: true`, zero modal prompts) and routes directly into `TranscriptScreen`.
+
+3. **Mobile Work Board & Hosted Deliverables (`work_board_screen.dart` & `task_card.dart`):**
+   * **Work Board Screen:** Added `WorkBoardScreen` backed by `tasksProvider` (`GET /v1/tasks?federated=true`) with 4-pillar tabs (**`NEW`**, **`IN_PROGRESS`**, **`REVIEW`**, **`DONE`**) and group filter chips (`All`, `Modemobile`, `Personal`).
+   * **Task Cards & Deliverables:** `TaskCard` renders task metadata, assignee badges, workstream PR links, and the **`[⚡ Squash & Merge PR]`** action (`POST /v1/tasks/merge-pr`). External deliverables (Claude Published Artifacts, Google Docs/Slides/Drive) launch in native viewers; inline Markdown deliverables open in `DeliverableMarkdownModal`.
+
+4. **Two-Tier Voice & Audio Companion (`audio_companion_service.dart` & `transcript_screen.dart`):**
+   * **Two-Tier Pipeline:** `AudioCompanionService` integrates Tier 1 client-side Markdown speech sanitization (`speech_sanitizer.dart`) and Tier 2 remote Haiku summarization (`POST /v1/sessions/summarize-speech`) with client caching.
+   * **UI Controls:** `transcript_screen.dart` features header toggles (**`[🔊 Auto-Read]`**, **`[🎤 Mic]`**), per-message bubble actions (**`[🔊 Read]`**, **`[⏹️ Stop]`**, **`[↺ Read Again]`**), and the persistent **`SpeechCompanionBar`** with commuter quick-reply drill-down chips.

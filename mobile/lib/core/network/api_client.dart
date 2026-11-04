@@ -4,6 +4,8 @@ import '../models/host.dart';
 import '../models/session.dart';
 import '../models/subagent.dart';
 import '../models/transcript.dart';
+import '../models/tree_node.dart';
+import '../models/work_task.dart';
 
 /// HTTP Client communicating with ackbard daemon control plane endpoints.
 class ApiClient {
@@ -181,25 +183,6 @@ class ApiClient {
         return decoded
             .map((item) => HostRecord.fromJson(item as Map<String, dynamic>))
             .toList();
-      }
-      return [];
-    } catch (_) {
-      return [];
-    }
-  }
-
-  /// GET /v1/nodes: Retrieve tree project nodes
-  Future<List<Map<String, dynamic>>> getNodes(String hostUrl,
-      {String? authToken}) async {
-    final clean = _cleanUrl(hostUrl);
-    final uri = Uri.parse('$clean/v1/nodes');
-    try {
-      final response = await _client
-          .get(uri, headers: _headers(authToken))
-          .timeout(const Duration(seconds: 4));
-      if (response.statusCode == 200) {
-        final List<dynamic> decoded = jsonDecode(response.body);
-        return decoded.cast<Map<String, dynamic>>();
       }
       return [];
     } catch (_) {
@@ -438,17 +421,130 @@ class ApiClient {
     }
   }
 
+  /// GET /v1/nodes: Retrieve registered project tree nodes
+  Future<List<TreeNode>?> getNodes(
+    String hostUrl, {
+    bool federated = true,
+    String? authToken,
+  }) async {
+    final clean = _cleanUrl(hostUrl);
+    final uri = Uri.parse('$clean/v1/nodes')
+        .replace(queryParameters: {'federated': federated ? 'true' : 'false'});
+    try {
+      final response = await _client
+          .get(uri, headers: _headers(authToken))
+          .timeout(const Duration(seconds: 8));
+      if (response.statusCode == 200) {
+        final decoded = jsonDecode(response.body);
+        if (decoded is! List) return <TreeNode>[];
+        return decoded
+            .map((item) => TreeNode.fromJson(item as Map<String, dynamic>))
+            .toList();
+      }
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// GET /v1/tasks: Retrieve tasks from work board
+  Future<List<WorkTask>?> getTasks(
+    String hostUrl, {
+    bool federated = true,
+    String? authToken,
+  }) async {
+    final clean = _cleanUrl(hostUrl);
+    final uri = Uri.parse('$clean/v1/tasks')
+        .replace(queryParameters: {'federated': federated ? 'true' : 'false'});
+    try {
+      final response = await _client
+          .get(uri, headers: _headers(authToken))
+          .timeout(const Duration(seconds: 8));
+      if (response.statusCode == 200) {
+        final decoded = jsonDecode(response.body);
+        if (decoded is! List) return <WorkTask>[];
+        return decoded
+            .map((item) => WorkTask.fromJson(item as Map<String, dynamic>))
+            .toList();
+      }
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// POST /v1/tasks/merge-pr: Squash and merge a task PR
+  Future<bool> mergeTaskPR(
+    String hostUrl, {
+    required String taskId,
+    String method = 'squash',
+    String? authToken,
+  }) async {
+    final clean = _cleanUrl(hostUrl);
+    final uri = Uri.parse('$clean/v1/tasks/merge-pr');
+    try {
+      final response = await _client
+          .post(
+            uri,
+            headers: _headers(authToken, {'Content-Type': 'application/json'}),
+            body: jsonEncode({
+              'task_id': taskId,
+              'method': method,
+            }),
+          )
+          .timeout(const Duration(seconds: 15));
+      return response.statusCode == 200;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// POST /v1/sessions/summarize-speech: Produce structural/LLM spoken briefing
+  Future<Map<String, dynamic>?> summarizeSpeech(
+    String hostUrl, {
+    required String sessionId,
+    int? messageIndex,
+    required String content,
+    bool forceRefresh = false,
+    String? authToken,
+  }) async {
+    final clean = _cleanUrl(hostUrl);
+    final uri = Uri.parse('$clean/v1/sessions/summarize-speech');
+    try {
+      final payload = <String, dynamic>{
+        'session_id': sessionId,
+        if (messageIndex != null) 'message_index': messageIndex,
+        'content': content,
+        if (forceRefresh) 'force_refresh': true,
+      };
+      final response = await _client
+          .post(
+            uri,
+            headers: _headers(authToken, {'Content-Type': 'application/json'}),
+            body: jsonEncode(payload),
+          )
+          .timeout(const Duration(seconds: 10));
+      if (response.statusCode == 200) {
+        return jsonDecode(response.body) as Map<String, dynamic>;
+      }
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// POST /v1/sessions/spawn: Spawn a new agent session (tmux or headless) on a host
   Future<Map<String, dynamic>?> spawnSession(
     String hostUrl, {
-    required String agent,
-    required String cwd,
+    String agent = 'claude-code',
+    String cwd = '',
     String? host,
     String? nodePath,
     String? name,
     String? accountId,
     String engineType = 'tmux',
     String? prompt,
+    bool isSupervisor = false,
     String? authToken,
   }) async {
     final clean = _cleanUrl(hostUrl);
@@ -456,13 +552,14 @@ class ApiClient {
     try {
       final payload = <String, dynamic>{
         'agent': agent,
-        'cwd': cwd,
+        if (cwd.isNotEmpty || !isSupervisor) 'cwd': cwd,
         if (host != null && host.isNotEmpty) 'host': host,
         if (nodePath != null && nodePath.isNotEmpty) 'node_path': nodePath,
         if (name != null && name.isNotEmpty) 'name': name,
         if (accountId != null && accountId.isNotEmpty) 'account_id': accountId,
         'engine_type': engineType,
         if (prompt != null && prompt.isNotEmpty) 'prompt': prompt,
+        if (isSupervisor) 'is_supervisor': true,
       };
       final response = await _client
           .post(
