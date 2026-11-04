@@ -50,6 +50,8 @@ function showSettingsModal() {
   const hideSessionTabs = s.hide_session_tabs === 'true';
   const handoverSuggestionEnabled = s.handover_suggestion_enabled !== 'false';
   const handoverThresholdPct = s.handover_threshold_pct || '60';
+  const ntfyTopic = s.ntfy_topic || '';
+  const ntfyServer = s.ntfy_server || 'https://ntfy.sh';
 
   const bodyHtml = `
     <div class="settings-modal-content">
@@ -76,6 +78,31 @@ function showSettingsModal() {
         <div class="settings-row">
           <label class="settings-row-label" for="settingHideSessionTabs">Hide Session Tabs (Single-View Mode)</label>
           <input type="checkbox" id="settingHideSessionTabs" ${hideSessionTabs ? 'checked' : ''} />
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-section-title"><span>🔔</span> Push Notifications (ntfy.sh)</div>
+        <div class="settings-section-desc">Receive instant mobile push notifications with direct <code>ackbar://</code> session deep-links when tasks reach PR review or sessions block on permissions/questions.</div>
+        <div class="settings-row">
+          <label class="settings-row-label" for="settingNtfyTopic">ntfy Topic</label>
+          <div class="settings-input-group" style="flex: 1; max-width: 280px;">
+            <input type="text" id="settingNtfyTopic" class="form-input" value="${escapeHtml(ntfyTopic)}" placeholder="e.g. ackbar-marcin-9f8a7b6" autocomplete="off" />
+          </div>
+        </div>
+        <div class="settings-row">
+          <label class="settings-row-label" for="settingNtfyServer">ntfy Server URL</label>
+          <div class="settings-input-group" style="flex: 1; max-width: 280px;">
+            <input type="text" id="settingNtfyServer" class="form-input" value="${escapeHtml(ntfyServer)}" placeholder="https://ntfy.sh" />
+          </div>
+        </div>
+        <div class="settings-row" style="margin-top: 6px;">
+          <label class="settings-row-label" for="settingNtfyPropagateAll" style="cursor: pointer;">Propagate topic to all connected fleet hosts</label>
+          <input type="checkbox" id="settingNtfyPropagateAll" checked />
+        </div>
+        <div style="display: flex; align-items: center; gap: 10px; margin-top: 8px;">
+          <button type="button" class="btn btn-secondary btn-sm" id="btnTestNtfyNotification">🔔 Send Test Notification</button>
+          <span id="ntfyTestStatus" style="font-size: 11px; color: var(--text-muted);"></span>
         </div>
       </div>
 
@@ -322,6 +349,55 @@ function showSettingsModal() {
     });
   }
 
+  const btnTestNtfy = document.getElementById('btnTestNtfyNotification');
+  if (btnTestNtfy) {
+    btnTestNtfy.addEventListener('click', async () => {
+      const topic = document.getElementById('settingNtfyTopic')?.value?.trim();
+      const server = document.getElementById('settingNtfyServer')?.value?.trim() || 'https://ntfy.sh';
+      const statusEl = document.getElementById('ntfyTestStatus');
+
+      if (!topic) {
+        if (statusEl) {
+          statusEl.style.color = '#ff5555';
+          statusEl.textContent = '❌ Please enter an ntfy topic first';
+        }
+        return;
+      }
+
+      btnTestNtfy.disabled = true;
+      if (statusEl) {
+        statusEl.style.color = 'var(--text-muted)';
+        statusEl.textContent = 'Sending test notification...';
+      }
+
+      try {
+        const res = await fetch('/v1/notifications/test', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ntfy_topic: topic,
+            ntfy_server: server
+          })
+        });
+        if (!res.ok) {
+          const errText = await res.text();
+          throw new Error(errText || `HTTP ${res.status}`);
+        }
+        if (statusEl) {
+          statusEl.style.color = 'var(--accent-green)';
+          statusEl.textContent = '✅ Test notification sent!';
+        }
+      } catch (err) {
+        if (statusEl) {
+          statusEl.style.color = '#ff5555';
+          statusEl.textContent = `❌ ${err.message}`;
+        }
+      } finally {
+        btnTestNtfy.disabled = false;
+      }
+    });
+  }
+
   const btnSave = document.getElementById('btnSaveSettings');
   if (btnSave) {
     btnSave.addEventListener('click', async () => {
@@ -339,7 +415,10 @@ function showSettingsModal() {
         hide_session_tabs: document.getElementById('settingHideSessionTabs')?.checked ? 'true' : 'false',
         typesafe_api_key: document.getElementById('settingTypesafeApiKey')?.value?.trim() || '',
         handover_suggestion_enabled: document.getElementById('settingHandoverSuggestionEnabled')?.checked ? 'true' : 'false',
-        handover_threshold_pct: document.getElementById('settingHandoverThresholdPct')?.value?.trim() || '60'
+        handover_threshold_pct: document.getElementById('settingHandoverThresholdPct')?.value?.trim() || '60',
+        ntfy_topic: document.getElementById('settingNtfyTopic')?.value?.trim() || '',
+        ntfy_server: document.getElementById('settingNtfyServer')?.value?.trim() || 'https://ntfy.sh',
+        propagate_ntfy: (document.getElementById('settingNtfyPropagateAll')?.checked && document.getElementById('settingNtfyTopic')?.value?.trim()) ? 'true' : 'false'
       };
 
       const ok = await updateSettings(newSettings);

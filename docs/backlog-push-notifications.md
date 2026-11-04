@@ -68,11 +68,13 @@ Without push notifications, developers must manually check the dashboard or risk
 
 ## 3. Implementation Status
 
-### Phase 1: Daemon Dispatcher (`ackbard`) ✅
+### Phase 1: Daemon Dispatcher & Web UI Fleet Sync (`ackbard` & `web/`) ✅
 * [x] Created `internal/daemon/ntfy.go`:
   * Added `ntfy_topic` and `ntfy_server` (default `https://ntfy.sh`) to SQLite `settings` (`/v1/settings`), env vars (`ACKBAR_NTFY_TOPIC`, `ACKBAR_NTFY_SERVER`), and CLI flags (`-ntfy-topic`, `-ntfy-server`).
-  * Triggers non-blocking push notifications when tasks transition into `REVIEW` (with `[Open PR #<num>]` view action and `ackbar://session?id=...` / `ackbar://task?id=...` deep-links) or into `blocked` (`ackbar://attention?session_id=...`).
+  * Triggers non-blocking push notifications when tasks transition into `REVIEW` (with `[Open PR #<num>]` view action and `ackbar://session?id=...` deep-links) or into `blocked` (`ackbar://session?id=...`).
   * Triggers push notifications when sessions (or subagents) enter `StateBlocked` (`Permission Needed` vs `Question`).
+  * Uses the Ackbar app icon (`AckbarNotificationIconURL`), sets the notification title to the **Session Name**, and prefixes the message body with the **Project Group Path** (`📂 <Group Path>`).
+  * Added `POST /v1/notifications/test` endpoint and Web UI **⚙️ Settings → 🔔 Push Notifications (`ntfy.sh`)** section with 1-click test notification and optional propagation of `ntfy_topic` / `ntfy_server` to all connected fleet hosts.
 
 ### Phase 2: Mobile Deep-Linking (`mobile/`) ✅
 * [x] Configured custom URL scheme `ackbar://` in `mobile/ios/Runner/Info.plist` and `mobile/android/app/src/main/AndroidManifest.xml`.
