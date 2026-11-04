@@ -214,6 +214,9 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 	}
 
 	for _, sess := range existingSessions {
+		if s.isForeignSession(sess.Host) {
+			continue
+		}
 		state.knownIDs[sess.ID] = sess
 		if sess.PID > 0 {
 			state.knownByPID[sess.PID] = sess
@@ -235,6 +238,9 @@ func (s *Server) scanObservedSessions(ctx context.Context) {
 // refreshExistingSessions refreshes names/titles/metadata and prunes dead proc-<pid> sessions.
 func (s *Server) refreshExistingSessions(ctx context.Context, state *ScanState) {
 	for _, sess := range state.existingSessions {
+		if s.isForeignSession(sess.Host) {
+			continue
+		}
 		if strings.HasPrefix(sess.NativeID, "proc-") {
 			pidStr := strings.TrimPrefix(sess.NativeID, "proc-")
 			if pidVal, pErr := strconv.Atoi(pidStr); pErr == nil && pidVal > 0 {
@@ -471,6 +477,7 @@ func (s *Server) scanTmuxPanes(ctx context.Context, state *ScanState) {
 				existing.PID = 0
 				existing.Blocked = nil
 				_ = s.db.SaveSession(existing)
+				s.SyncSessionTaskWorker(existing)
 				s.broadcast(existing)
 			}
 			continue

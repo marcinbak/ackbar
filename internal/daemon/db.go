@@ -2952,28 +2952,6 @@ func sortTasksForPrimary(d *DB, cluster []*Task) {
 	})
 }
 
-type SessionMetaSync struct {
-	ID            string    `json:"id"`
-	Agent         string    `json:"agent,omitempty"`
-	Host          string    `json:"host,omitempty"`
-	NativeID      string    `json:"native_id,omitempty"`
-	Cwd           string    `json:"cwd,omitempty"`
-	NodePath      string    `json:"node_path"`
-	Name          string    `json:"name,omitempty"`
-	CustomTitle   string    `json:"custom_title,omitempty"`
-	IsDone        bool      `json:"is_done"`
-	IsLater       bool      `json:"is_later"`
-	Archived      bool      `json:"archived"`
-	IsSupervisor  bool      `json:"is_supervisor"`
-	CurrentTaskID string    `json:"current_task_id,omitempty"`
-	State         State     `json:"state,omitempty"`
-	Activity      string    `json:"activity,omitempty"`
-	GitBranch     string    `json:"git_branch,omitempty"`
-	StartedAt     time.Time `json:"started_at,omitempty"`
-	LastEventAt   time.Time `json:"last_event_at,omitempty"`
-	UpdatedAt     time.Time `json:"updated_at"`
-}
-
 type SyncStatePayload struct {
 	SourceHost    string            `json:"source_host"`
 	Timestamp     time.Time         `json:"timestamp"`
@@ -2982,7 +2960,6 @@ type SyncStatePayload struct {
 	Tasks         []Task            `json:"tasks,omitempty"`
 	Workstreams   []TaskWorkstream  `json:"workstreams,omitempty"`
 	Deliverables  []TaskDeliverable `json:"deliverables,omitempty"`
-	SessionMetas  []SessionMetaSync `json:"session_metas,omitempty"`
 }
 
 func (d *DB) GetSyncStateSince(since time.Time, sourceHost string) (*SyncStatePayload, error) {
@@ -3109,60 +3086,6 @@ func (d *DB) GetSyncStateSince(since time.Time, sourceHost string) (*SyncStatePa
 		delRows.Close()
 	}
 
-	// 5. SessionMetas
-	sRows, err := d.db.Query("SELECT id, agent, host, native_id, cwd, node_path, name, custom_title, is_done, is_later, archived, is_supervisor, current_task_id, state, activity, git_branch, started_at, last_event_at, metadata_updated_at FROM sessions;")
-	if err == nil {
-		for sRows.Next() {
-			var sm SessionMetaSync
-			var nodePath, name, customTitle, currentTaskID, activity, gitBranch sql.NullString
-			var isSupervisorVal sql.NullInt64
-			var isDoneInt, isLaterInt, archivedInt, stateInt int
-			var metaUpd sql.NullTime
-
-			if err := sRows.Scan(&sm.ID, &sm.Agent, &sm.Host, &sm.NativeID, &sm.Cwd, &nodePath, &name, &customTitle, &isDoneInt, &isLaterInt, &archivedInt, &isSupervisorVal, &currentTaskID, &stateInt, &activity, &gitBranch, &sm.StartedAt, &sm.LastEventAt, &metaUpd); err == nil {
-				if nodePath.Valid {
-					sm.NodePath = nodePath.String
-				}
-				if name.Valid {
-					sm.Name = name.String
-				}
-				if customTitle.Valid {
-					sm.CustomTitle = customTitle.String
-				}
-				if currentTaskID.Valid {
-					sm.CurrentTaskID = currentTaskID.String
-				}
-				if activity.Valid {
-					sm.Activity = activity.String
-				}
-				if gitBranch.Valid {
-					sm.GitBranch = gitBranch.String
-				}
-				sm.IsDone = isDoneInt == 1
-				sm.IsLater = isLaterInt == 1
-				sm.Archived = archivedInt == 1
-				if isSupervisorVal.Valid {
-					sm.IsSupervisor = isSupervisorVal.Int64 == 1
-				}
-				sm.State = State(stateInt)
-
-				if metaUpd.Valid {
-					sm.UpdatedAt = metaUpd.Time
-				} else {
-					sm.UpdatedAt = sm.LastEventAt
-				}
-				if sm.UpdatedAt.IsZero() {
-					sm.UpdatedAt = sm.StartedAt
-				}
-
-				if since.IsZero() || sm.UpdatedAt.After(since) || sm.LastEventAt.After(since) {
-					payload.SessionMetas = append(payload.SessionMetas, sm)
-				}
-			}
-		}
-		sRows.Close()
-	}
-
 	return payload, nil
 }
 
@@ -3279,79 +3202,6 @@ func (d *DB) ApplySyncState(payload *SyncStatePayload) ([]*Session, error) {
 		_ = d.db.QueryRow("SELECT COUNT(*) FROM tasks WHERE id = ?;", incoming.TaskID).Scan(&taskCount)
 		if taskCount > 0 {
 			_ = d.InsertTaskDeliverable(&incoming)
-		}
-	}
-
-	// 6. Reconcile SessionMetas via LWW
-	for _, meta := range payload.SessionMetas {
-		existing, _ := d.GetSession(meta.ID)
-		if existing == nil && meta.NativeID != "" {
-			cand, _ := d.GetSession(meta.NativeID)
-			if cand != nil && cand.Agent == meta.Agent && (cand.Host == meta.Host || cand.Host == "local" || cand.Host == "") {
-				existing = cand
-			}
-		}
-
-		if existing != nil {
-			metaUpdated := meta.UpdatedAt.After(existing.MetadataUpdatedAt)
-			if metaUpdated {
-				existing.NodePath = meta.NodePath
-				existing.Name = meta.Name
-				existing.CustomTitle = meta.CustomTitle
-				existing.IsDone = meta.IsDone
-				existing.IsLater = meta.IsLater
-				existing.Archived = meta.Archived
-				existing.IsSupervisor = meta.IsSupervisor
-				existing.CurrentTaskID = meta.CurrentTaskID
-				existing.MetadataUpdatedAt = meta.UpdatedAt
-			}
-
-			runtimeUpdated := existing.PID == 0 && existing.TmuxName == "" && existing.Host != "" && existing.Host != "local" && (payload.SourceHost == "" || payload.SourceHost == meta.Host) && meta.LastEventAt.After(existing.LastEventAt)
-			if runtimeUpdated {
-				existing.State = meta.State
-				existing.Activity = meta.Activity
-				existing.GitBranch = meta.GitBranch
-				existing.LastEventAt = meta.LastEventAt
-				if existing.Cwd == "" && meta.Cwd != "" {
-					existing.Cwd = meta.Cwd
-				}
-			}
-
-			if metaUpdated || runtimeUpdated {
-				_ = d.SaveSession(existing)
-				updatedSessions = append(updatedSessions, existing)
-			}
-		} else {
-			replica := &Session{
-				ID:                meta.ID,
-				Agent:             meta.Agent,
-				Host:              meta.Host,
-				NativeID:          meta.NativeID,
-				Cwd:               meta.Cwd,
-				NodePath:          meta.NodePath,
-				Name:              meta.Name,
-				CustomTitle:       meta.CustomTitle,
-				IsDone:            meta.IsDone,
-				IsLater:           meta.IsLater,
-				Archived:          meta.Archived,
-				IsSupervisor:      meta.IsSupervisor,
-				CurrentTaskID:     meta.CurrentTaskID,
-				State:             meta.State,
-				Activity:          meta.Activity,
-				GitBranch:         meta.GitBranch,
-				StartedAt:         meta.StartedAt,
-				LastEventAt:       meta.LastEventAt,
-				MetadataUpdatedAt: meta.UpdatedAt,
-				EngineType:        EngineTmux,
-			}
-			if replica.StartedAt.IsZero() {
-				replica.StartedAt = meta.UpdatedAt
-			}
-			if replica.LastEventAt.IsZero() {
-				replica.LastEventAt = meta.UpdatedAt
-			}
-			_ = d.SaveSession(replica)
-			updatedSessions = append(updatedSessions, replica)
 		}
 	}
 

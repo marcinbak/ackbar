@@ -400,14 +400,54 @@ func TestThreeWayLWWSync_SessionMetadataAndOfflineCatchup(t *testing.T) {
 		t.Fatalf("failed to save session on legion: %v", err)
 	}
 
-	// Sync session metadata to legion so legion has the replica record
+	// 2. Run peer sync and verify sessions are NOT replicated across hosts' local DBs
 	syncAllPeers(ctx, macbook, legion)
-	replicaOnLegion, err := legion.db.GetSession(sessMacbook.ID)
-	if err != nil || replicaOnLegion == nil {
-		t.Fatalf("expected replica session on legion: %v", err)
+	if replicaOnLegion, _ := legion.db.GetSession(sessMacbook.ID); replicaOnLegion != nil {
+		t.Fatalf("expected legion DB NOT to store macbook session replica, got %+v", replicaOnLegion)
+	}
+	if replicaOnMacbook, _ := macbook.db.GetSession(sessLegion.ID); replicaOnMacbook != nil {
+		t.Fatalf("expected macbook DB NOT to store legion session replica, got %+v", replicaOnMacbook)
 	}
 
-	// 2. Simulate macbook going offline (point its URL on legion to a dead endpoint)
+	// 3. Query non-federated GET /v1/sessions on legion -> only legion session is returned
+	respLocal := makeRequest(t, http.MethodGet, legion.ts.URL+"/v1/sessions", token, nil)
+	if respLocal.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(respLocal.Body)
+		t.Fatalf("GET /v1/sessions failed on legion: %d %s", respLocal.StatusCode, string(body))
+	}
+	var localSessions []*Session
+	_ = json.NewDecoder(respLocal.Body).Decode(&localSessions)
+	_ = respLocal.Body.Close()
+	if len(localSessions) != 1 || localSessions[0].ID != sessLegion.ID {
+		t.Fatalf("expected GET /v1/sessions on legion to return only %q, got %+v", sessLegion.ID, localSessions)
+	}
+
+	// 4. Query GET /v1/sessions?federated=true on legion while macbook is online -> both sessions returned
+	respFedOnline := makeRequest(t, http.MethodGet, legion.ts.URL+"/v1/sessions?federated=true", token, nil)
+	if respFedOnline.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(respFedOnline.Body)
+		t.Fatalf("GET /v1/sessions?federated=true failed on legion: %d %s", respFedOnline.StatusCode, string(body))
+	}
+	var fedOnlineSessions []*Session
+	_ = json.NewDecoder(respFedOnline.Body).Decode(&fedOnlineSessions)
+	_ = respFedOnline.Body.Close()
+	if len(fedOnlineSessions) != 2 {
+		t.Fatalf("expected 2 federated sessions when both hosts are online, got %d", len(fedOnlineSessions))
+	}
+
+	// 4b. Control action sent to legion for macbook's session proxies with auth token to online macbook
+	controlResp := makeRequest(t, http.MethodPost, legion.ts.URL+"/v1/sessions/control?id="+sessMacbook.ID+"&action=mark_done", token, nil)
+	if controlResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(controlResp.Body)
+		t.Fatalf("proxied control action failed on legion: %d %s", controlResp.StatusCode, string(body))
+	}
+	_ = controlResp.Body.Close()
+	sessOnMacbook, err := macbook.db.GetSession(sessMacbook.ID)
+	if err != nil || sessOnMacbook == nil || !sessOnMacbook.IsDone {
+		t.Fatalf("expected proxied mark_done to update session on macbook, got %+v (err=%v)", sessOnMacbook, err)
+	}
+
+	// 5. Simulate macbook going offline -> federated endpoint returns only online legion session
 	deadURL := "http://127.0.0.1:1"
 	_ = legion.db.SaveHost(&HostRecord{
 		Name:      "macbook",
@@ -415,82 +455,16 @@ func TestThreeWayLWWSync_SessionMetadataAndOfflineCatchup(t *testing.T) {
 		CreatedAt: time.Now(),
 	})
 
-	// 3. Query GET /v1/sessions?federated=true on legion
-	respFed := makeRequest(t, http.MethodGet, legion.ts.URL+"/v1/sessions?federated=true", token, nil)
-	if respFed.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(respFed.Body)
-		t.Fatalf("GET /v1/sessions?federated=true failed on legion: %d %s", respFed.StatusCode, string(body))
+	respFedOffline := makeRequest(t, http.MethodGet, legion.ts.URL+"/v1/sessions?federated=true", token, nil)
+	if respFedOffline.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(respFedOffline.Body)
+		t.Fatalf("GET /v1/sessions?federated=true failed on legion: %d %s", respFedOffline.StatusCode, string(body))
 	}
-	var fedSessions []*Session
-	_ = json.NewDecoder(respFed.Body).Decode(&fedSessions)
-	_ = respFed.Body.Close()
-
-	var foundMacbookSess *Session
-	var foundLegionSess *Session
-	for _, s := range fedSessions {
-		if s.ID == sessMacbook.ID {
-			foundMacbookSess = s
-		}
-		if s.ID == sessLegion.ID {
-			foundLegionSess = s
-		}
-	}
-	if foundMacbookSess == nil {
-		t.Fatalf("macbook session not returned by federated endpoint when offline")
-	}
-	if !foundMacbookSess.HostOffline {
-		t.Fatalf("expected macbook session to have HostOffline = true, got %+v", foundMacbookSess)
-	}
-	if foundLegionSess == nil {
-		t.Fatalf("legion session not returned by federated endpoint")
-	}
-	if foundLegionSess.HostOffline {
-		t.Fatalf("expected legion local session to have HostOffline = false")
-	}
-
-	// 4. On legion, mutate session metadata while macbook is offline
-	time.Sleep(50 * time.Millisecond) // Ensure MetadataUpdatedAt is strictly after
-	controlResp := makeRequest(t, http.MethodPost, legion.ts.URL+"/v1/sessions/control?id="+sessMacbook.ID+"&action=mark_done", token, nil)
-	if controlResp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(controlResp.Body)
-		t.Fatalf("control action failed on legion: %d %s", controlResp.StatusCode, string(body))
-	}
-	_ = controlResp.Body.Close()
-
-	updatedOnLegion, err := legion.db.GetSession(sessMacbook.ID)
-	if err != nil || !updatedOnLegion.IsDone {
-		t.Fatalf("expected IsDone = true on legion replica: %v", err)
-	}
-
-	// Also rename session on legion
-	renamePayload := []byte(`{"name":"Completed Feature Branch"}`)
-	renameResp := makeRequest(t, http.MethodPost, legion.ts.URL+"/v1/sessions/control?id="+sessMacbook.ID+"&action=rename", token, renamePayload)
-	if renameResp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(renameResp.Body)
-		t.Fatalf("rename failed on legion: %d %s", renameResp.StatusCode, string(body))
-	}
-	_ = renameResp.Body.Close()
-
-	// 5. Bring macbook back online
-	_ = legion.db.SaveHost(&HostRecord{
-		Name:      "macbook",
-		URL:       macbook.ts.URL,
-		CreatedAt: time.Now(),
-	})
-
-	// Run catch-up pull on macbook
-	macbook.srv.PullFromPeers(ctx)
-
-	// 6. Verify macbook's copy of session-42 has caught up
-	sessOnMacbook, err := macbook.db.GetSession(sessMacbook.ID)
-	if err != nil || sessOnMacbook == nil {
-		t.Fatalf("failed to get session on macbook: %v", err)
-	}
-	if !sessOnMacbook.IsDone {
-		t.Fatalf("macbook did not catch up IsDone: %+v", sessOnMacbook)
-	}
-	if sessOnMacbook.CustomTitle != "Completed Feature Branch" && sessOnMacbook.Name != "Completed Feature Branch" {
-		t.Fatalf("macbook did not catch up CustomTitle/Name: %+v", sessOnMacbook)
+	var fedOfflineSessions []*Session
+	_ = json.NewDecoder(respFedOffline.Body).Decode(&fedOfflineSessions)
+	_ = respFedOffline.Body.Close()
+	if len(fedOfflineSessions) != 1 || fedOfflineSessions[0].ID != sessLegion.ID {
+		t.Fatalf("expected only legion session when macbook is offline, got %+v", fedOfflineSessions)
 	}
 }
 
@@ -607,14 +581,40 @@ func TestZeroInputSupervisorSpawnAndBind_LWWSync(t *testing.T) {
 		t.Fatalf("expected worker session CurrentTaskID='task_ngl_101', got %+v", reloadedWorker)
 	}
 
-	// 4. Sync peers and verify legion receives both IsSupervisor and CurrentTaskID
+	// 4. Sync peers and verify legion receives node & task via LWW sync, while sessions stay on macbook and are visible via federated query
 	waitForCondition(t, 2*time.Second, func() bool {
 		syncAllPeers(ctx, macbook, legion)
-		supLegion, _ := legion.db.GetSession(spawnRes.ID)
-		wrkLegion, _ := legion.db.GetSession(workerSess.ID)
-		return supLegion != nil && supLegion.IsSupervisor &&
-			supLegion.NodePath == "Modemobile/NGL" &&
-			supLegion.CustomTitle == "⚓ NGL Feature Planning" &&
-			wrkLegion != nil && wrkLegion.CurrentTaskID == "task_ngl_101"
+		nodeLegion, _ := legion.db.GetNode("Modemobile/NGL")
+		taskLegion, _ := legion.db.GetTaskByID("task_ngl_101")
+		return nodeLegion != nil && taskLegion != nil && len(taskLegion.Workers) == 1 && taskLegion.Workers[0].SessionID == workerSess.ID
 	})
+
+	if supLegion, _ := legion.db.GetSession(spawnRes.ID); supLegion != nil {
+		t.Fatalf("expected legion DB not to store macbook supervisor session locally, got %+v", supLegion)
+	}
+
+	respFed := makeRequest(t, http.MethodGet, legion.ts.URL+"/v1/sessions?federated=true", token, nil)
+	if respFed.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(respFed.Body)
+		t.Fatalf("GET /v1/sessions?federated=true failed on legion: %d %s", respFed.StatusCode, string(body))
+	}
+	var fedSessions []*Session
+	_ = json.NewDecoder(respFed.Body).Decode(&fedSessions)
+	_ = respFed.Body.Close()
+
+	var supFed, wrkFed *Session
+	for _, s := range fedSessions {
+		if s.ID == spawnRes.ID {
+			supFed = s
+		}
+		if s.ID == workerSess.ID {
+			wrkFed = s
+		}
+	}
+	if supFed == nil || !supFed.IsSupervisor || supFed.NodePath != "Modemobile/NGL" || supFed.CustomTitle != "⚓ NGL Feature Planning" {
+		t.Fatalf("expected federated query on legion to return macbook supervisor session, got %+v", supFed)
+	}
+	if wrkFed == nil || wrkFed.CurrentTaskID != "task_ngl_101" {
+		t.Fatalf("expected federated query on legion to return macbook worker session with CurrentTaskID='task_ngl_101', got %+v", wrkFed)
+	}
 }

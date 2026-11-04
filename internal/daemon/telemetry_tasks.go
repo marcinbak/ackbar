@@ -323,7 +323,6 @@ func (s *Server) completeAndCloseTaskSession(task *Task, sess *Session) {
 		sess.MetadataUpdatedAt = now
 		_ = s.db.SaveSession(sess)
 		s.broadcast(sess)
-		s.syncSessionMeta(sess)
 	} else {
 		// Close all active worker sessions for this task
 		for _, w := range task.Workers {
@@ -338,7 +337,6 @@ func (s *Server) completeAndCloseTaskSession(task *Task, sess *Session) {
 					sSess.MetadataUpdatedAt = now
 					_ = s.db.SaveSession(sSess)
 					s.broadcast(sSess)
-					s.syncSessionMeta(sSess)
 				}
 			}
 		}
@@ -422,7 +420,6 @@ func (s *Server) SyncSessionTaskWorker(sess *Session) {
 		sess.CurrentTaskID = task.ID
 		sess.MetadataUpdatedAt = time.Now().UTC()
 		_ = s.db.SaveSession(sess)
-		s.syncSessionMeta(sess)
 	}
 
 	// Update task.Workers in-memory

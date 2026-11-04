@@ -481,7 +481,6 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 					sess.MetadataUpdatedAt = time.Now().UTC()
 					_ = s.db.SaveSession(sess)
 					s.broadcast(sess)
-					s.syncSessionMeta(sess)
 				}
 			}
 		}

@@ -81,14 +81,22 @@ func FetchSessions(hosts []HostConfig) ([]*daemon.Session, map[string]HostStatus
 			verResp, verErr := client.Get(verURL)
 			hostVer := "unknown"
 			dispName := host.DisplayName
+			reportedHost := ""
 			if verErr == nil && verResp.StatusCode == http.StatusOK {
-				var verMap map[string]string
-				if err := json.NewDecoder(verResp.Body).Decode(&verMap); err == nil {
-					if v, ok := verMap["version"]; ok && v != "" {
-						hostVer = v
+				var verData struct {
+					Version     string `json:"version"`
+					DisplayName string `json:"display_name"`
+					Host        string `json:"host"`
+				}
+				if err := json.NewDecoder(verResp.Body).Decode(&verData); err == nil {
+					if verData.Version != "" {
+						hostVer = verData.Version
 					}
-					if d, ok := verMap["display_name"]; ok && d != "" {
-						dispName = d
+					if verData.DisplayName != "" {
+						dispName = verData.DisplayName
+					}
+					if verData.Host != "" {
+						reportedHost = verData.Host
 					}
 				}
 				verResp.Body.Close()
@@ -285,9 +293,14 @@ nohup ~/.local/bin/ackbard > ~/.ackbard.log 2>&1 &`
 				return
 			}
 
-			// Ensure the host field is correctly set to our configured host alias
+			// Filter out foreign replicas and ensure the host field is set to our configured host alias
+			filtered := make([]*daemon.Session, 0, len(sessions))
 			for _, s := range sessions {
+				if s == nil || !sessionMatchesHostConfig(s.Host, host, hosts, reportedHost, dispName) {
+					continue
+				}
 				s.Host = host.Name
+				filtered = append(filtered, s)
 			}
 
 			mu.Lock()
@@ -301,7 +314,7 @@ nohup ~/.local/bin/ackbard > ~/.ackbard.log 2>&1 &`
 				Ahead:       ahead,
 				Outdated:    outdated,
 			}
-			allSessions = append(allSessions, sessions...)
+			allSessions = append(allSessions, filtered...)
 			mu.Unlock()
 		}(h)
 	}
@@ -309,6 +322,35 @@ nohup ~/.local/bin/ackbard > ~/.ackbard.log 2>&1 &`
 	wg.Wait()
 
 	return allSessions, hostStatuses, nil
+}
+
+func sessionMatchesHostConfig(sessHost string, host HostConfig, allHosts []HostConfig, reportedHost, dispName string) bool {
+	sh := strings.TrimSpace(sessHost)
+	if sh == "" || strings.EqualFold(sh, "local") {
+		return true
+	}
+	hostMatches := func(hName string) bool {
+		c := strings.TrimSpace(hName)
+		if c == "" || strings.EqualFold(c, "local") {
+			return false
+		}
+		return strings.EqualFold(sh, c) || strings.HasSuffix(strings.ToLower(c), "@"+strings.ToLower(sh)) || strings.HasSuffix(strings.ToLower(sh), "@"+strings.ToLower(c))
+	}
+	for _, candidate := range []string{host.Name, reportedHost, dispName, host.DisplayName} {
+		if hostMatches(candidate) {
+			return true
+		}
+	}
+	// Reject if sessHost explicitly matches a different configured host in allHosts
+	for _, other := range allHosts {
+		if other.Name == host.Name {
+			continue
+		}
+		if hostMatches(other.Name) || hostMatches(other.DisplayName) {
+			return false
+		}
+	}
+	return reportedHost == ""
 }
 
 // SubscribeEvents connects to SSE v1/events endpoint for each host
@@ -353,6 +395,9 @@ func SubscribeEvents(ctx context.Context, hosts []HostConfig, ch chan<- *daemon.
 					dataStr := strings.TrimPrefix(line, "data: ")
 					var s daemon.Session
 					if err := json.Unmarshal([]byte(dataStr), &s); err == nil {
+						if !sessionMatchesHostConfig(s.Host, host, hosts, "", host.DisplayName) {
+							continue
+						}
 						s.Host = host.Name
 						select {
 						case ch <- &s:
