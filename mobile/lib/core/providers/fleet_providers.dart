@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/host.dart';
@@ -342,7 +343,9 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
   void _upsertSession(Session s) {
     final index = state.indexWhere((item) =>
         item.id == s.id ||
-        (s.nativeId.isNotEmpty && item.nativeId == s.nativeId) ||
+        (s.nativeId.isNotEmpty &&
+            item.nativeId == s.nativeId &&
+            item.host.toLowerCase() == s.host.toLowerCase()) ||
         (s.oldId.isNotEmpty && item.id == s.oldId));
     if (index != -1) {
       final updated = List<Session>.from(state);
@@ -351,6 +354,11 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
     } else {
       state = [s, ...state];
     }
+  }
+
+  @visibleForTesting
+  void upsertSessionForTesting(Session s) {
+    _upsertSession(s);
   }
 
   /// Real-time response action to unblock a session
@@ -595,7 +603,8 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
           !state.any((s) =>
               s.id == spawnedSession.id ||
               (spawnedSession.nativeId.isNotEmpty &&
-                  s.nativeId == spawnedSession.nativeId))) {
+                  s.nativeId == spawnedSession.nativeId &&
+                  s.host.toLowerCase() == spawnedSession.host.toLowerCase()))) {
         _upsertSession(spawnedSession);
       }
     }
@@ -1121,16 +1130,60 @@ class TasksNotifier extends StateNotifier<List<WorkTask>> {
 
   Future<bool> mergePR(String taskId, {String method = 'squash'}) async {
     final hosts = _ref.read(hostsListProvider);
-    final targetHost = hosts.firstWhere(
-      (h) => h.online,
-      orElse: () => hosts.isNotEmpty
-          ? hosts.first
-          : HostRecord(
-              name: 'local',
-              url: 'http://127.0.0.1:7777',
-              createdAt: DateTime.fromMillisecondsSinceEpoch(0),
+    final taskIndex = state.indexWhere((t) => t.id == taskId);
+    String preferredHostName = '';
+    if (taskIndex != -1) {
+      final task = state[taskIndex];
+      for (final ws in task.workstreams) {
+        if (ws.targetHost.isNotEmpty) {
+          preferredHostName = ws.targetHost;
+          break;
+        }
+      }
+      if (preferredHostName.isEmpty) {
+        for (final w in task.workers) {
+          if (w.host.isNotEmpty) {
+            preferredHostName = w.host;
+            break;
+          }
+        }
+      }
+      if (preferredHostName.isEmpty) {
+        for (final d in task.deliverables) {
+          if (d.host.isNotEmpty) {
+            preferredHostName = d.host;
+            break;
+          }
+        }
+      }
+    }
+
+    final targetHost = preferredHostName.isNotEmpty
+        ? hosts.firstWhere(
+            (h) =>
+                h.name.toLowerCase() == preferredHostName.toLowerCase() ||
+                h.url.toLowerCase() == preferredHostName.toLowerCase(),
+            orElse: () => hosts.firstWhere(
+              (h) => h.online,
+              orElse: () => hosts.isNotEmpty
+                  ? hosts.first
+                  : HostRecord(
+                      name: 'local',
+                      url: 'http://127.0.0.1:7777',
+                      createdAt: DateTime.fromMillisecondsSinceEpoch(0),
+                    ),
             ),
-    );
+          )
+        : hosts.firstWhere(
+            (h) => h.online,
+            orElse: () => hosts.isNotEmpty
+                ? hosts.first
+                : HostRecord(
+                    name: 'local',
+                    url: 'http://127.0.0.1:7777',
+                    createdAt: DateTime.fromMillisecondsSinceEpoch(0),
+                  ),
+          );
     final ok = await _apiClient.mergeTaskPR(
       targetHost.url,
       taskId: taskId,

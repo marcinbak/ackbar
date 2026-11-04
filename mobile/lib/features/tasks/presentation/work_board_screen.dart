@@ -221,7 +221,7 @@ class _WorkBoardScreenState extends ConsumerState<WorkBoardScreen> {
                         Text(
                           allTasks.isEmpty
                               ? 'No Tasks on Connected Hosts'
-                              : 'No tasks in $_pillarLabels[$_pillarIndex]',
+                              : 'No tasks in ${_pillarLabels[_pillarIndex]}',
                           style: AppTypography.titleMedium
                               .copyWith(color: AppColors.textSecondary),
                         ),

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/models/plan.dart';
 import '../core/models/session.dart';
+import '../core/models/work_task.dart';
 import '../core/providers/fleet_providers.dart';
 import '../core/theme/app_colors.dart';
 import '../core/widgets/ackbar_bottom_nav.dart';
@@ -11,7 +12,9 @@ import 'fleet/presentation/session_detail_sheet.dart';
 import 'hosts/presentation/hosts_screen.dart';
 import 'plans/presentation/plan_diff_viewer_modal.dart';
 import 'plans/presentation/plans_screen.dart';
+import 'tasks/presentation/deliverable_markdown_modal.dart';
 import 'tasks/presentation/work_board_screen.dart';
+import 'transcript/presentation/transcript_screen.dart';
 
 /// Root navigation shell managing bottom navigation state and preserved screens via IndexedStack.
 class MainNavigationShell extends ConsumerStatefulWidget {
@@ -133,18 +136,70 @@ class _MainNavigationShellState extends ConsumerState<MainNavigationShell>
 
   void _openTaskOrQueue(String taskId) {
     final plans = ref.read(plansListProvider);
-    PlanDocument? matching;
+    PlanDocument? matchingPlan;
     for (final p in plans) {
       if (p.id == taskId) {
-        matching = p;
+        matchingPlan = p;
         break;
       }
     }
-    if (matching != null) {
+    if (matchingPlan != null) {
       _pendingTaskId = null;
-      PlanDiffViewerModal.show(context, matching);
+      PlanDiffViewerModal.show(context, matchingPlan);
+      return;
+    }
+
+    final tasks = ref.read(tasksProvider);
+    WorkTask? matchingTask;
+    for (final t in tasks) {
+      if (t.id == taskId || t.externalRefs.any((r) => r.refKey == taskId)) {
+        matchingTask = t;
+        break;
+      }
+    }
+    if (matchingTask != null) {
+      _pendingTaskId = null;
+      _handleOpenWorkTask(matchingTask);
     } else {
       _pendingTaskId = taskId;
+    }
+  }
+
+  void _handleOpenWorkTask(WorkTask task) {
+    if (task.deliverables.isNotEmpty) {
+      final mdDeliv = task.deliverables
+          .where((d) => d.isMarkdown || d.contentMd.isNotEmpty)
+          .firstOrNull;
+      if (mdDeliv != null) {
+        DeliverableMarkdownModal.show(context, mdDeliv);
+        return;
+      }
+    }
+    if (task.workers.isNotEmpty) {
+      final worker = task.workers.first;
+      final allSessions = ref.read(fleetSessionsProvider);
+      final match = allSessions
+          .where((s) =>
+              s.id == worker.sessionId ||
+              (worker.sessionId.isNotEmpty && s.nativeId == worker.sessionId))
+          .firstOrNull;
+      final targetSession = match ??
+          Session(
+            id: worker.sessionId.isNotEmpty
+                ? worker.sessionId
+                : 'worker-session',
+            agent: worker.agent.isNotEmpty ? worker.agent : 'claude-code',
+            host: worker.host.isNotEmpty ? worker.host : 'local',
+            nativeId: worker.sessionId,
+            cwd: worker.repoNodePath,
+            state: SessionState.working,
+            startedAt: worker.assignedAt,
+            lastEventAt: DateTime.now(),
+            managed: true,
+            name: '${worker.agent} @ ${worker.host}',
+          );
+      TranscriptScreen.open(context, targetSession);
+      return;
     }
   }
 
@@ -152,8 +207,9 @@ class _MainNavigationShellState extends ConsumerState<MainNavigationShell>
   Widget build(BuildContext context) {
     final sessions = ref.watch(fleetSessionsProvider);
     final plans = ref.watch(plansListProvider);
+    final tasks = ref.watch(tasksProvider);
 
-    // Fulfill pending deep links if sessions/plans arrive or update
+    // Fulfill pending deep links if sessions/plans/tasks arrive or update
     if (_pendingSessionId != null) {
       for (final s in sessions) {
         if (s.id == _pendingSessionId) {
@@ -180,6 +236,21 @@ class _MainNavigationShellState extends ConsumerState<MainNavigationShell>
             }
           });
           break;
+        }
+      }
+      if (_pendingTaskId != null) {
+        for (final t in tasks) {
+          if (t.id == _pendingTaskId ||
+              t.externalRefs.any((r) => r.refKey == _pendingTaskId)) {
+            final target = t;
+            _pendingTaskId = null;
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (mounted) {
+                _handleOpenWorkTask(target);
+              }
+            });
+            break;
+          }
         }
       }
     }

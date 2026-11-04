@@ -243,5 +243,55 @@ void main() {
       // Turn is dispatched
       expect(find.text('Proceed with deployment'), findsWidgets);
     });
+
+    testWidgets(
+        'auto-read waits for silent transcript refresh to complete on working -> idle transition before speaking',
+        (tester) async {
+      final workingSession = testSession.copyWith(state: SessionState.working);
+      final idleSession = testSession.copyWith(state: SessionState.idle);
+
+      final container = ProviderContainer(
+        overrides: [
+          apiClientProvider.overrideWithValue(mockApiClient),
+          sseClientProvider.overrideWithValue(mockSseClient),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      container.read(hostsListProvider.notifier).setHosts(testHosts);
+      container
+          .read(fleetSessionsProvider.notifier)
+          .setSessions([workingSession]);
+
+      // Enable auto-read
+      container.read(audioCompanionServiceProvider.notifier).state =
+          container.read(audioCompanionServiceProvider).copyWith(
+                autoReadEnabled: true,
+              );
+
+      await tester.pumpWidget(
+        _wrapScreen(
+          TranscriptScreen(session: workingSession),
+          container,
+        ),
+      );
+      await tester.pump();
+
+      // Audio companion not speaking yet
+      expect(container.read(audioCompanionServiceProvider).isSpeaking, isFalse);
+
+      // Session finishes turn: working -> idle
+      container.read(fleetSessionsProvider.notifier).setSessions([idleSession]);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 50));
+
+      // After async refresh resolves, auto-read spoke the assistant message
+      expect(
+        container.read(audioCompanionServiceProvider).lastSpokenText,
+        contains('All test suites completed successfully'),
+      );
+
+      await tester.pump(const Duration(milliseconds: 150));
+    });
   });
 }

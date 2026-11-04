@@ -249,5 +249,53 @@ void main() {
       expect(find.text('Task Session'), findsOneWidget);
       expect(find.text('Manual Session'), findsOneWidget);
     });
+
+    testWidgets(
+        '_upsertSession scopes nativeId matching to same host, preventing cross-host collision',
+        (tester) async {
+      final container = ProviderContainer(
+        overrides: [
+          apiClientProvider.overrideWithValue(mockApiClient),
+          sseClientProvider.overrideWithValue(mockSseClient),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      final notifier = container.read(fleetSessionsProvider.notifier);
+      final sessionMac = Session(
+        id: 'sess-mac-1',
+        agent: 'claude-code',
+        host: 'mac.local',
+        nativeId: 'native-dup',
+        cwd: '/Users/dev/proj',
+        state: SessionState.working,
+        startedAt: DateTime.now(),
+        lastEventAt: DateTime.now(),
+        managed: true,
+      );
+      final sessionLinux = Session(
+        id: 'sess-linux-1',
+        agent: 'claude-code',
+        host: 'linux.local',
+        nativeId: 'native-dup', // Duplicate nativeId on different host!
+        cwd: '/home/dev/proj',
+        state: SessionState.idle,
+        startedAt: DateTime.now(),
+        lastEventAt: DateTime.now(),
+        managed: true,
+      );
+
+      notifier.upsertSessionForTesting(sessionMac);
+      notifier.upsertSessionForTesting(sessionLinux);
+
+      final sessions = container.read(fleetSessionsProvider);
+      expect(sessions.length, equals(2));
+      expect(sessions.any((s) => s.id == 'sess-mac-1' && s.host == 'mac.local'),
+          isTrue);
+      expect(
+          sessions
+              .any((s) => s.id == 'sess-linux-1' && s.host == 'linux.local'),
+          isTrue);
+    });
   });
 }

@@ -266,5 +266,100 @@ void main() {
       expect(find.text('Phase 5 Notes'), findsOneWidget);
       expect(find.text('Hierarchical tree implemented.'), findsOneWidget);
     });
+
+    testWidgets(
+        'empty pillar displays correctly interpolated label without list syntax',
+        (tester) async {
+      final container = ProviderContainer(
+        overrides: [
+          apiClientProvider.overrideWithValue(mockApiClient),
+          sseClientProvider.overrideWithValue(mockSseClient),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      container.read(hostsListProvider.notifier).setHosts(testHosts);
+      container.read(fleetNodesProvider.notifier).setNodes(testNodes);
+      container.read(tasksProvider.notifier).setTasks(testTasks);
+
+      await tester.pumpWidget(
+        _wrapScreen(
+          const WorkBoardScreen(),
+          container,
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 100));
+
+      // Tap 'New' pillar tab (testTasks has 0 NEW tasks)
+      await tester.tap(find.text('New'));
+      await tester.pump(const Duration(milliseconds: 100));
+
+      // Should display 'No tasks in New' without list brackets or interpolation bugs
+      expect(find.text('No tasks in New'), findsOneWidget);
+      expect(find.textContaining('No tasks in ['), findsNothing);
+    });
+
+    testWidgets(
+        'TasksNotifier.mergePR dispatches to targetHost specified by task worker/deliverable',
+        (tester) async {
+      String? mergedUrl;
+      final customClient = MockClient((request) async {
+        if (request.url.path == '/v1/tasks/merge-pr') {
+          mergedUrl = request.url.toString();
+          return http.Response(jsonEncode({'status': 'merged'}), 200);
+        }
+        if (request.url.path == '/v1/tasks') {
+          return http.Response('[]', 200);
+        }
+        return http.Response('{}', 200);
+      });
+      final customApi = ApiClient(client: customClient);
+
+      final container = ProviderContainer(
+        overrides: [
+          apiClientProvider.overrideWithValue(customApi),
+          sseClientProvider.overrideWithValue(mockSseClient),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      final host1 = HostRecord(
+        name: 'mac-host',
+        url: 'http://127.0.0.1:7771',
+        online: true,
+        createdAt: DateTime.now(),
+      );
+      final host2 = HostRecord(
+        name: 'remote-host',
+        url: 'http://127.0.0.1:7772',
+        online: true,
+        createdAt: DateTime.now(),
+      );
+      container.read(hostsListProvider.notifier).setHosts([host1, host2]);
+
+      final remoteTask = WorkTask(
+        id: 'TASK-REMOTE',
+        title: 'Remote PR Task',
+        status: 'REVIEW',
+        substatus: 'approved',
+        createdAt: DateTime.now(),
+        updatedAt: DateTime.now(),
+        workers: [
+          TaskWorker(
+            taskId: 'TASK-REMOTE',
+            host: 'remote-host',
+            sessionId: 'sess-remote',
+            agent: 'claude-code',
+            assignedAt: DateTime.now(),
+          ),
+        ],
+      );
+      container.read(tasksProvider.notifier).setTasks([remoteTask]);
+
+      final ok =
+          await container.read(tasksProvider.notifier).mergePR('TASK-REMOTE');
+      expect(ok, isTrue);
+      expect(mergedUrl, startsWith('http://127.0.0.1:7772'));
+    });
   });
 }

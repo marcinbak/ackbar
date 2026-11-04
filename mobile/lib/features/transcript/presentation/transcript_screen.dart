@@ -676,11 +676,13 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
             _pendingUserMessage = null;
           });
         }
-        _refreshTranscriptSilently();
+        _refreshTranscriptSilently().then((_) {
+          if (mounted &&
+              ref.read(audioCompanionServiceProvider).autoReadEnabled) {
+            _autoReadLatestAssistantMessage();
+          }
+        });
         _loadSubagents();
-        if (ref.read(audioCompanionServiceProvider).autoReadEnabled) {
-          _autoReadLatestAssistantMessage();
-        }
       }
     });
 
