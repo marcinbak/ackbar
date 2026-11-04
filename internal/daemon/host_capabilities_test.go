@@ -318,3 +318,178 @@ func TestHostLoadMetrics_RollupAndUtilizationAPI(t *testing.T) {
 		}
 	}
 }
+
+func TestCLIInitPromptAndProcessScannerCompatibility(t *testing.T) {
+	claudeCmd := appendCLIInitPrompt("claude-code", "claude --session-id 550e8400-e29b-41d4-a716-446655440000")
+	if claudeCmd != `claude --session-id 550e8400-e29b-41d4-a716-446655440000 "$ACKBAR_INIT_PROMPT"` {
+		t.Fatalf("unexpected claude init prompt cmd: %s", claudeCmd)
+	}
+
+	agyCmd := appendCLIInitPrompt("antigravity", "agy")
+	if agyCmd != `agy -i "$ACKBAR_INIT_PROMPT"` {
+		t.Fatalf("unexpected antigravity init prompt cmd: %s", agyCmd)
+	}
+
+	if other := appendCLIInitPrompt("mock-agent", "sleep 5"); other != "" {
+		t.Fatalf("expected empty CLI init prompt for mock-agent, got %s", other)
+	}
+
+	claudeAdapter := ClaudeAgentAdapter{}
+	agyAdapter := AntigravityAgentAdapter{}
+
+	// Interactive Claude session whose prompt mentions "ackbar", "ackbard", "update", "mcp", and "-p"
+	claudePS := "claude --session-id 550e8400-e29b-41d4-a716-446655440000 update the mcp server in ackbard and test -p flag"
+	if !claudeAdapter.MatchProcessCommand("claude", strings.ToLower(claudePS)) {
+		t.Errorf("expected ClaudeAgentAdapter.MatchProcessCommand to match interactive claude session with ackbard in prompt")
+	}
+	if claudeAdapter.IsIgnoredCommand(claudePS) {
+		t.Errorf("expected ClaudeAgentAdapter.IsIgnoredCommand to be false for interactive claude session with prompt")
+	}
+
+	// Interactive Antigravity session with -i whose prompt starts with an ignored subcommand keyword ("update") and mentions "ackbar-hook"
+	agyPS := "agy -i update the mcp server in ackbar-hook and check --prompt handling"
+	if !agyAdapter.MatchProcessCommand("agy", strings.ToLower(agyPS)) {
+		t.Errorf("expected AntigravityAgentAdapter.MatchProcessCommand to match interactive agy session with ackbar-hook in prompt")
+	}
+	if agyAdapter.IsIgnoredCommand(agyPS) {
+		t.Errorf("expected AntigravityAgentAdapter.IsIgnoredCommand to be false for interactive agy -i session")
+	}
+
+	// Genuine subcommands and non-interactive invocations MUST still be ignored
+	for _, ignored := range []string{
+		"claude mcp serve",
+		"claude update",
+		"claude -p summarize this",
+		"claude --version",
+	} {
+		if !claudeAdapter.IsIgnoredCommand(ignored) {
+			t.Errorf("expected claude command %q to be ignored", ignored)
+		}
+	}
+	for _, ignored := range []string{
+		"agy update",
+		"agy mcp",
+		"agy --prompt summarize this",
+		"agy --help",
+	} {
+		if !agyAdapter.IsIgnoredCommand(ignored) {
+			t.Errorf("expected agy command %q to be ignored", ignored)
+		}
+	}
+
+	// Internal ackbar binaries must NOT match agent process commands
+	if claudeAdapter.MatchProcessCommand("ackbar-hook", "ackbar-hook --agent=claude-code --event=Stop") {
+		t.Errorf("expected ackbar-hook to be excluded from ClaudeAgentAdapter.MatchProcessCommand")
+	}
+	if agyAdapter.MatchProcessCommand("ackbar-hook", "ackbar-hook --agent=antigravity --event=Stop") {
+		t.Errorf("expected ackbar-hook to be excluded from AntigravityAgentAdapter.MatchProcessCommand")
+	}
+}
+
+func TestRepoPathCapabilityInferenceAndTaskActivationOnSpawn(t *testing.T) {
+	origDetect := DetectCapabilitiesFunc
+	origProbe := ProbeSystemStatsFunc
+	defer func() {
+		DetectCapabilitiesFunc = origDetect
+		ProbeSystemStatsFunc = origProbe
+	}()
+
+	DetectCapabilitiesFunc = func(home string) []string {
+		return []string{"linux", "android", "agent:claude-code", "agent:antigravity"}
+	}
+	ProbeSystemStatsFunc = func() (float64, float64, float64, float64) {
+		return 10.0, 20.0, 32.0, 200.0
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "test_spawn_task.db")
+	db, err := InitDB(dbPath)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	srv := NewServer(db)
+	srv.SetHostIdentity("legion", "Legion")
+
+	// Mock remote macmini server to receive proxied /v1/sessions/spawn for iOS repo
+	var remoteSpawnReceived map[string]any
+	remoteMacmini := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/sessions/spawn" {
+			_ = json.NewDecoder(r.Body).Decode(&remoteSpawnReceived)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status":     "spawning",
+				"id":         "claude-code:macmini:550e8400-e29b-41d4-a716-446655440000",
+				"session_id": "550e8400-e29b-41d4-a716-446655440000",
+				"host":       "macmini",
+			})
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer remoteMacmini.Close()
+
+	_ = db.SaveHost(&HostRecord{
+		Name:                 "macmini",
+		URL:                  remoteMacmini.URL,
+		PolicyTags:           []string{"24/7"},
+		RoutingWeight:        25,
+		HasExplicitWeight:    true,
+		DetectedCapabilities: []string{"macos", "ios", "android", "agent:claude-code"},
+	})
+	srv.updateHostHealthWithTelemetry("macmini", true, "1.0.0", "Mac Mini", 5,
+		[]string{"macos", "ios", "android", "agent:claude-code"},
+		[]string{"24/7"}, 25, &HostLoadSnapshot{RAMFreeGB: 12.0, RAMTotalGB: 16.0})
+
+	// Create a NEW task on legion
+	now := time.Now().UTC()
+	task := &Task{
+		ID:          "task_ios_test_1",
+		Title:       "Fix iOS push notifications",
+		ProjectName: "NGL",
+		GroupName:   "Modemobile",
+		Status:      "NEW",
+		Substatus:   "ready",
+		TaskKind:    "code",
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	if err := db.CreateTask(task); err != nil {
+		t.Fatalf("CreateTask failed: %v", err)
+	}
+
+	// Spawn a worker session for Modemobile/NGL/ngl-ios WITHOUT explicit host or required_capabilities
+	spawnBody, _ := json.Marshal(map[string]any{
+		"agent":          "claude-code",
+		"node_path":      "Modemobile/NGL/ngl-ios",
+		"repo_node_path": "Modemobile/NGL/ngl-ios",
+		"task_id":        "task_ios_test_1",
+		"prompt":         "Fix APNs token registration",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/spawn", bytes.NewReader(spawnBody))
+	w := httptest.NewRecorder()
+	srv.handleSpawn(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("handleSpawn returned %d: %s", w.Code, w.Body.String())
+	}
+	if remoteSpawnReceived == nil {
+		t.Fatalf("expected Modemobile/NGL/ngl-ios spawn to auto-infer ios capability and route to remote macmini")
+	}
+
+	// Verify task on legion transitioned from NEW to IN_PROGRESS (active) and recorded the worker
+	updatedTask, err := db.GetTaskByID("task_ios_test_1")
+	if err != nil || updatedTask == nil {
+		t.Fatalf("GetTaskByID failed: %v", err)
+	}
+	if updatedTask.Status != "IN_PROGRESS" || updatedTask.Substatus != "active" {
+		t.Fatalf("expected task status=IN_PROGRESS and substatus=active after worker spawn, got status=%s substatus=%s",
+			updatedTask.Status, updatedTask.Substatus)
+	}
+	if len(updatedTask.Workers) != 1 || updatedTask.Workers[0].Host != "macmini" || updatedTask.Workers[0].RepoNodePath != "Modemobile/NGL/ngl-ios" {
+		t.Fatalf("expected 1 active worker on macmini with RepoNodePath=Modemobile/NGL/ngl-ios recorded on task, got %+v", updatedTask.Workers)
+	}
+	if caps := inferCapabilitiesFromRepoPath("Mobile/ios/client"); len(caps) != 1 || caps[0] != "ios" {
+		t.Fatalf("expected Mobile/ios/client to infer ios capability, got %v", caps)
+	}
+}

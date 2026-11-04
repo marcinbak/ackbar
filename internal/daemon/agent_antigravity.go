@@ -185,7 +185,7 @@ func (a AntigravityAgentAdapter) IsIgnoredCommand(fullCmd string) bool {
 
 func (a AntigravityAgentAdapter) MatchProcessCommand(binLower, cmdLower string) bool {
 	if binLower == "antigravity" || binLower == "agy" || strings.Contains(cmdLower, "bin/agy") {
-		if !strings.Contains(cmdLower, "ackbar") {
+		if !isAckbarInternalProcess(binLower, cmdLower) {
 			return true
 		}
 	}

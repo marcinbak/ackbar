@@ -444,6 +444,21 @@ func defaultProbeSystemStats() (cpuPct, ramFreeGB, ramTotalGB, diskFreeGB float6
 	return cpuPct, ramFreeGB, ramTotalGB, diskFreeGB
 }
 
+func inferCapabilitiesFromRepoPath(repoPath string) []string {
+	lower := strings.ToLower(strings.Trim(strings.TrimSpace(repoPath), "/"))
+	if lower == "" {
+		return nil
+	}
+	var caps []string
+	if lower == "ios" || strings.HasSuffix(lower, "-ios") || strings.HasSuffix(lower, "/ios") || strings.Contains(lower, "-ios/") || strings.Contains(lower, "/ios/") {
+		caps = append(caps, "ios")
+	}
+	if lower == "android" || strings.HasSuffix(lower, "-android") || strings.HasSuffix(lower, "/android") || strings.Contains(lower, "-android/") || strings.Contains(lower, "/android/") {
+		caps = append(caps, "android")
+	}
+	return caps
+}
+
 func hostHasCapability(h *HostRecord, reqCap string, repoCaps []string) bool {
 	reqCap = strings.ToLower(strings.TrimSpace(reqCap))
 	if reqCap == "" {
@@ -607,8 +622,22 @@ func (s *Server) SelectTargetHost(ctx context.Context, req HostRoutingRequest) H
 
 	// 3. Check node_host_paths if a repo node path is specified
 	repoPath := strings.TrimSpace(req.RepoNodePath)
-	if repoPath == "" && req.TaskKind == "code" {
+	if repoPath == "" && req.TaskKind != "design" && !req.IsSupervisor {
 		repoPath = strings.TrimSpace(req.NodePath)
+	}
+	if repoPath != "" && req.TaskKind != "design" && !req.IsSupervisor {
+		for _, inferred := range inferCapabilitiesFromRepoPath(repoPath) {
+			alreadyPresent := false
+			for _, existing := range reqCaps {
+				if existing == inferred {
+					alreadyPresent = true
+					break
+				}
+			}
+			if !alreadyPresent {
+				reqCaps = append(reqCaps, inferred)
+			}
+		}
 	}
 	repoHostCaps := make(map[string][]string)
 	repoHostExists := make(map[string]bool)

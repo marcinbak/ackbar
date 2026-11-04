@@ -861,14 +861,21 @@ func executeCreateTask(ctx context.Context, client *DaemonClient, args map[strin
 	}
 
 	taskID := fmt.Sprintf("task_%d", time.Now().UnixNano())
+	autoStart, _ := getBool(args, "auto_start")
+	initialStatus := "NEW"
+	initialSubstatus := "ready"
+	if autoStart {
+		initialStatus = "IN_PROGRESS"
+		initialSubstatus = "active"
+	}
 
 	payload := map[string]any{
 		"id":           taskID,
 		"title":        title,
 		"project_name": projectName,
 		"group_name":   groupName,
-		"status":       "NEW",
-		"substatus":    "ready",
+		"status":       initialStatus,
+		"substatus":    initialSubstatus,
 		"task_kind":    taskKind,
 		"notes":        getString(args, "notes"),
 	}
@@ -1044,7 +1051,6 @@ func executeCreateTask(ctx context.Context, client *DaemonClient, args map[strin
 		}
 	}
 
-	autoStart, _ := args["auto_start"].(bool)
 	if autoStart {
 		readyRepo := ""
 		readyHost := ""
@@ -1070,7 +1076,7 @@ func executeCreateTask(ctx context.Context, client *DaemonClient, args map[strin
 		if readyHost == "" {
 			if topTargetHost != "" {
 				readyHost = topTargetHost
-			} else if len(reqCaps) > 0 {
+			} else if len(reqCaps) > 0 || readyRepo != "" {
 				readyHost = "auto"
 			}
 		}
@@ -1883,14 +1889,15 @@ func executeListHosts(ctx context.Context, client *DaemonClient, args map[string
 func executeSpawnSession(ctx context.Context, client *DaemonClient, args map[string]any) (*CallToolResult, error) {
 	targetHost := getString(args, "target_host")
 	reqCaps := getStringSlice(args, "required_capabilities")
+	nodePath := getString(args, "node_path")
+	isSupervisor, _ := getBool(args, "is_supervisor")
 	if targetHost == "" {
-		if len(reqCaps) > 0 {
+		if len(reqCaps) > 0 || (nodePath != "" && !isSupervisor) {
 			targetHost = "auto"
 		} else {
 			targetHost = "local"
 		}
 	}
-	nodePath := getString(args, "node_path")
 	directory := getString(args, "directory")
 	agent := getString(args, "agent")
 	if agent == "" {
@@ -1898,7 +1905,6 @@ func executeSpawnSession(ctx context.Context, client *DaemonClient, args map[str
 	}
 	prompt := getString(args, "prompt")
 	title := getString(args, "title")
-	isSupervisor, _ := getBool(args, "is_supervisor")
 	taskID := getString(args, "task_id")
 	taskKind := getString(args, "task_kind")
 	headless, _ := getBool(args, "headless")

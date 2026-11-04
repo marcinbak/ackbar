@@ -414,6 +414,12 @@ func TestPhase4_SupervisorSessionTools(t *testing.T) {
 		if lastSpawnPayload["prompt"] != "Analyze heap dump in /tmp/heap.hprof" {
 			t.Errorf("expected worker prompt 'Analyze heap dump in /tmp/heap.hprof', got %v", lastSpawnPayload["prompt"])
 		}
+		if lastSpawnPayload["host"] != "auto" {
+			t.Errorf("expected auto_start worker with repo to default host to 'auto', got %v", lastSpawnPayload["host"])
+		}
+		if lastTasksPayload == nil || lastTasksPayload["status"] != "IN_PROGRESS" || lastTasksPayload["substatus"] != "active" {
+			t.Errorf("expected create_task with auto_start=true to set status=IN_PROGRESS and substatus=active, got %+v", lastTasksPayload)
+		}
 	})
 
 	t.Run("create_task auto_start default agent and prompt from caller and notes", func(t *testing.T) {

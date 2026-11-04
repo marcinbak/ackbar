@@ -129,7 +129,7 @@ func (a CodexAgentAdapter) IsIgnoredCommand(fullCmd string) bool {
 }
 
 func (a CodexAgentAdapter) MatchProcessCommand(binLower, cmdLower string) bool {
-	return binLower == "codex" && !strings.Contains(cmdLower, "ackbar")
+	return binLower == "codex" && !isAckbarInternalProcess(binLower, cmdLower)
 }
 
 // GrokAgentAdapter implements AgentAdapter for xAI Grok.
@@ -156,7 +156,7 @@ func (a GrokAgentAdapter) IsIgnoredCommand(fullCmd string) bool {
 }
 
 func (a GrokAgentAdapter) MatchProcessCommand(binLower, cmdLower string) bool {
-	return (binLower == "grok" || binLower == "grok-cli") && !strings.Contains(cmdLower, "ackbar")
+	return (binLower == "grok" || binLower == "grok-cli") && !isAckbarInternalProcess(binLower, cmdLower)
 }
 
 // OpenCodeAgentAdapter implements AgentAdapter for OpenCode.
@@ -183,7 +183,59 @@ func (a OpenCodeAgentAdapter) IsIgnoredCommand(fullCmd string) bool {
 }
 
 func (a OpenCodeAgentAdapter) MatchProcessCommand(binLower, cmdLower string) bool {
-	return (binLower == "opencode" || binLower == "open-code") && !strings.Contains(cmdLower, "ackbar")
+	return (binLower == "opencode" || binLower == "open-code") && !isAckbarInternalProcess(binLower, cmdLower)
+}
+
+func isAckbarInternalProcess(binLower, cmdLower string) bool {
+	if strings.HasPrefix(binLower, "ackbar") {
+		return true
+	}
+	fields := strings.Fields(cmdLower)
+	for i := 0; i < len(fields) && i < 3; i++ {
+		f := fields[i]
+		if strings.HasPrefix(f, "-") {
+			continue
+		}
+		base := filepath.Base(f)
+		if base == "sh" || base == "bash" || base == "zsh" || base == "env" {
+			continue
+		}
+		if strings.HasPrefix(base, "ackbar") {
+			return true
+		}
+		break
+	}
+	return false
+}
+
+var interactiveSessionValueFlags = map[string]bool{
+	"--session-id":      true,
+	"-s":                true,
+	"--resume":          true,
+	"-r":                true,
+	"--conversation":    true,
+	"-c":                true,
+	"--conversation-id": true,
+}
+
+var cliValueFlags = map[string]bool{
+	"--model":                true,
+	"-m":                     true,
+	"--permission-mode":      true,
+	"--effort":               true,
+	"--name":                 true,
+	"-n":                     true,
+	"--add-dir":              true,
+	"--allowedtools":         true,
+	"--disallowedtools":      true,
+	"--append-system-prompt": true,
+	"--system-prompt":        true,
+	"--settings":             true,
+	"--mcp-config":           true,
+	"--agents":               true,
+	"--agent":                true,
+	"--worktree":             true,
+	"-w":                     true,
 }
 
 func checkIgnoredCLIArgs(fullCmd string, matchBin func(field, base string) bool, ignoredSubcommands map[string]bool, extraFlags map[string]bool) bool {
@@ -206,24 +258,40 @@ func checkIgnoredCLIArgs(fullCmd string, matchBin func(field, base string) bool,
 	}
 
 	args := fields[argIdx:]
-	for _, arg := range args {
+	hasSessionFlag := false
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
 		a := strings.ToLower(strings.TrimSpace(arg))
-		if a == "-v" || a == "--version" || a == "-h" || a == "--help" || a == "-p" || a == "--print" {
-			return true
-		}
-		if extraFlags != nil && extraFlags[a] {
-			return true
-		}
-	}
-
-	for _, arg := range args {
-		if !strings.HasPrefix(arg, "-") {
-			firstSubcommand := strings.ToLower(strings.TrimSpace(arg))
-			if ignoredSubcommands != nil && ignoredSubcommands[firstSubcommand] {
+		if strings.HasPrefix(a, "-") {
+			if a == "-v" || a == "--version" || a == "-h" || a == "--help" || a == "-p" || a == "--print" {
 				return true
 			}
-			break
+			if extraFlags != nil && extraFlags[a] {
+				return true
+			}
+			if a == "-i" || a == "--prompt-interactive" {
+				// Interactive prompt flag: subsequent tokens belong to the initial prompt string.
+				return false
+			}
+			if interactiveSessionValueFlags[a] {
+				hasSessionFlag = true
+				i++
+				continue
+			}
+			if cliValueFlags[a] {
+				i++
+				continue
+			}
+			continue
 		}
+
+		if !hasSessionFlag {
+			if ignoredSubcommands != nil && ignoredSubcommands[a] {
+				return true
+			}
+		}
+		// Once the first positional argument (interactive prompt) starts, remaining tokens are prompt text.
+		return false
 	}
 
 	return false

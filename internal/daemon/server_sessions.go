@@ -1084,6 +1084,8 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 
 	if req.NodePath == "" && req.RepoNodePath != "" {
 		req.NodePath = req.RepoNodePath
+	} else if req.RepoNodePath == "" && req.NodePath != "" && !req.IsSupervisor {
+		req.RepoNodePath = req.NodePath
 	}
 
 	if req.IsSupervisor {
@@ -1112,8 +1114,22 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		req.EngineType = EngineTmux
 	}
 
+	hasRoutingHint := len(req.RequiredCapabilities) > 0 ||
+		len(inferCapabilitiesFromRepoPath(req.RepoNodePath)) > 0 ||
+		len(inferCapabilitiesFromRepoPath(req.NodePath)) > 0
+	if !hasRoutingHint && !req.IsSupervisor && s.db != nil {
+		for _, p := range []string{req.RepoNodePath, req.NodePath} {
+			if strings.TrimSpace(p) != "" {
+				if nhps, err := s.db.ListNodeHostPaths(strings.TrimSpace(p)); err == nil && len(nhps) > 0 {
+					hasRoutingHint = true
+					break
+				}
+			}
+		}
+	}
+
 	targetForRouting := strings.TrimSpace(req.Host)
-	if targetForRouting == "" && len(req.RequiredCapabilities) > 0 {
+	if targetForRouting == "" && hasRoutingHint {
 		targetForRouting = "auto"
 	} else if targetForRouting == "" {
 		targetForRouting = "local"
@@ -1127,7 +1143,7 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		Agent:                req.Agent,
 		IsSupervisor:         req.IsSupervisor,
 	})
-	if strings.EqualFold(strings.TrimSpace(req.Host), "auto") || (req.Host == "" && len(req.RequiredCapabilities) > 0) {
+	if strings.EqualFold(strings.TrimSpace(req.Host), "auto") || (req.Host == "" && hasRoutingHint) {
 		req.Host = routingDecision.SelectedHost
 	}
 
@@ -1167,16 +1183,30 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			defer resp.Body.Close()
+			respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
 			if resp.StatusCode >= 200 && resp.StatusCode < 300 && s.db != nil {
 				snap := HostLoadSnapshot{}
 				if routingDecision.Load != nil {
 					snap = *routingDecision.Load
 				}
-				_ = s.db.RecordHostLoadSample(hostRec.Name, snap, 1, time.Now().UTC())
+				nowUTC := time.Now().UTC()
+				_ = s.db.RecordHostLoadSample(hostRec.Name, snap, 1, nowUTC)
+				if req.TaskID != "" {
+					var remoteSpawnResp struct {
+						ID   string `json:"id"`
+						Host string `json:"host"`
+					}
+					_ = json.Unmarshal(respBody, &remoteSpawnResp)
+					rHost := remoteSpawnResp.Host
+					if rHost == "" {
+						rHost = hostRec.Name
+					}
+					s.activateTaskForSpawnedWorker(req.TaskID, remoteSpawnResp.ID, req.Agent, rHost, req.RepoNodePath, nowUTC)
+				}
 			}
 			w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
 			w.WriteHeader(resp.StatusCode)
-			_, _ = io.Copy(w, resp.Body)
+			_, _ = w.Write(respBody)
 			return
 		} else if hostRec == nil || (!s.isLocalHost(hostRec.Name) && hostRec.URL != "http://127.0.0.1:7777") {
 			http.Error(w, fmt.Sprintf("Remote host '%s' not found or unreachable", req.Host), http.StatusNotFound)
@@ -1315,16 +1345,7 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		}
 		spawnID := sess.ID
 		if req.TaskID != "" {
-			_ = s.db.InsertTaskWorker(&TaskWorker{
-				TaskID:       req.TaskID,
-				SessionID:    sess.ID,
-				Agent:        req.Agent,
-				Host:         effectiveHost,
-				IsActive:     true,
-				RepoNodePath: req.RepoNodePath,
-				WorkflowNode: "N0",
-				AssignedAt:   now,
-			})
+			s.activateTaskForSpawnedWorker(req.TaskID, sess.ID, req.Agent, effectiveHost, req.RepoNodePath, now)
 		}
 		if s.db != nil {
 			snap := s.CollectLocalHostLoad()
@@ -1353,6 +1374,14 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 
 	tmuxName := fmt.Sprintf("ackbar-%s-%s", req.Agent, tempUUID)
 	launchCmd := s.getSpawnCmd(req.Agent, tempUUID)
+	useCLIInitPrompt := false
+	if strings.TrimSpace(req.Prompt) != "" && req.EngineType == EngineTmux {
+		if initCmd := appendCLIInitPrompt(req.Agent, launchCmd); initCmd != "" {
+			envVars["ACKBAR_INIT_PROMPT"] = req.Prompt
+			launchCmd = initCmd
+			useCLIInitPrompt = true
+		}
+	}
 
 	err := tmux.SpawnWithEnv(r.Context(), tmuxName, req.Cwd, launchCmd, envVars)
 	if err != nil {
@@ -1360,7 +1389,7 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Prompt != "" && req.EngineType == EngineTmux {
+	if strings.TrimSpace(req.Prompt) != "" && req.EngineType == EngineTmux && !useCLIInitPrompt {
 		go func(sessName, promptText string) {
 			time.Sleep(1500 * time.Millisecond)
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -1394,6 +1423,8 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Name != "" {
 		sess.CustomTitle = req.Name
+	} else if strings.TrimSpace(req.Prompt) != "" {
+		sess.Name = TruncateTitle(strings.TrimSpace(req.Prompt))
 	}
 
 	if pid, err := tmux.GetPID(r.Context(), tmuxName); err == nil {
@@ -1406,16 +1437,7 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.TaskID != "" {
-		_ = s.db.InsertTaskWorker(&TaskWorker{
-			TaskID:       req.TaskID,
-			SessionID:    sess.ID,
-			Agent:        req.Agent,
-			Host:         effectiveHost,
-			IsActive:     true,
-			RepoNodePath: req.RepoNodePath,
-			WorkflowNode: "N0",
-			AssignedAt:   now,
-		})
+		s.activateTaskForSpawnedWorker(req.TaskID, sess.ID, req.Agent, effectiveHost, req.RepoNodePath, now)
 	}
 
 	if s.db != nil {
@@ -1688,4 +1710,50 @@ func (s *Server) getSpawnCmd(agent, tempUUID string) string {
 		return "claude --session-id " + tempUUID
 	}
 	return "claude"
+}
+
+func appendCLIInitPrompt(agent, baseCmd string) string {
+	if baseCmd == "" {
+		return ""
+	}
+	switch strings.ToLower(strings.TrimSpace(agent)) {
+	case "claude-code", "claude":
+		return baseCmd + ` "$ACKBAR_INIT_PROMPT"`
+	case "antigravity", "agy":
+		return baseCmd + ` -i "$ACKBAR_INIT_PROMPT"`
+	default:
+		return ""
+	}
+}
+
+func (s *Server) activateTaskForSpawnedWorker(taskID, sessionID, agent, host, repoNodePath string, now time.Time) {
+	if taskID == "" || s.db == nil {
+		return
+	}
+	if sessionID != "" {
+		_ = s.db.InsertTaskWorker(&TaskWorker{
+			TaskID:       taskID,
+			SessionID:    sessionID,
+			Agent:        agent,
+			Host:         host,
+			IsActive:     true,
+			RepoNodePath: repoNodePath,
+			WorkflowNode: "N0",
+			AssignedAt:   now,
+		})
+	}
+	if task, err := s.db.GetTaskByID(taskID); err == nil && task != nil {
+		if task.Status == "" || strings.EqualFold(task.Status, "NEW") {
+			task.Status = "IN_PROGRESS"
+			if task.Substatus == "" || task.Substatus == "queued" || task.Substatus == "ready" {
+				task.Substatus = "active"
+			}
+			task.UpdatedAt = now
+			_ = s.db.UpdateTask(task)
+		}
+		s.pushSyncPayload(&SyncStatePayload{
+			Tasks:       []Task{*task},
+			Workstreams: task.Workstreams,
+		})
+	}
 }
