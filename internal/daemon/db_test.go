@@ -1,7 +1,9 @@
 package daemon
 
 import (
+	"database/sql"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -328,4 +330,29 @@ func TestDB_MigrateLocalSessions(t *testing.T) {
 	if err := db.MigrateLocalSessions("macbook"); err != nil {
 		t.Fatalf("Second MigrateLocalSessions failed: %v", err)
 	}
+}
+
+func TestDB_LegacySchemaMigration(t *testing.T) {
+	dbFile := filepath.Join(t.TempDir(), "legacy_tree_nodes.db")
+
+	rawDB, err := sql.Open("sqlite", dbFile)
+	if err != nil {
+		t.Fatalf("sql.Open failed: %v", err)
+	}
+	_, err = rawDB.Exec(`CREATE TABLE tree_nodes (
+		path TEXT PRIMARY KEY,
+		project_dir TEXT,
+		git_url TEXT,
+		created_at TIMESTAMP
+	);`)
+	rawDB.Close()
+	if err != nil {
+		t.Fatalf("failed to create legacy tree_nodes table: %v", err)
+	}
+
+	db, err := InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("InitDB on legacy database failed: %v", err)
+	}
+	defer db.Close()
 }

@@ -185,7 +185,6 @@ CREATE INDEX IF NOT EXISTS idx_task_workers_active ON task_workers(is_active);
 CREATE INDEX IF NOT EXISTS idx_task_workstreams_task ON task_workstreams(task_id);
 CREATE INDEX IF NOT EXISTS idx_task_deliverables_task_id ON task_deliverables(task_id);
 CREATE INDEX IF NOT EXISTS idx_node_host_paths_node_path ON node_host_paths(node_path);
-CREATE INDEX IF NOT EXISTS idx_tree_nodes_updated_at ON tree_nodes(updated_at);
 `
 
 func InitDB(dbPath string) (*DB, error) {
