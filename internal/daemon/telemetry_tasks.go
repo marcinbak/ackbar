@@ -152,149 +152,6 @@ func formatTaskTitleFromBranch(branch string, issueKey string) string {
 	return branch
 }
 
-// IngestToolTelemetry analyzes tool execution parameters and outputs to update tasks
-func (s *Server) IngestToolTelemetry(sess *Session, event *Event) {
-	if sess == nil || event == nil {
-		return
-	}
-
-	cmd := extractCommandFromToolInput(event.ToolInput)
-	filePath := extractFilePathFromToolInput(event.ToolInput)
-	toolName := strings.ToLower(event.ToolName)
-
-	// Check if branch was changed via command
-	if cmd != "" {
-		if newBranch := ExtractBranchCommand(cmd); newBranch != "" {
-			sess.GitBranch = newBranch
-			_ = s.db.SaveSession(sess)
-		}
-	}
-
-	// Active task lookup
-	task, err := s.findActiveTaskForSession(sess)
-	if err != nil || task == nil {
-		return
-	}
-
-	taskUpdated := false
-	oldStatus := task.Status
-
-	// 1. Check for PR creation or PR URL in command / activity
-	var prURL string
-	var prNum int
-	if cmd != "" {
-		prURL, prNum = ExtractPRURL(cmd)
-	}
-	if prURL == "" && event.Activity != "" {
-		prURL, prNum = ExtractPRURL(event.Activity)
-	}
-	if prURL != "" {
-		// Only attach PR if task has no PR or if session branch matches task branch
-		branchMatches := task.Branch == "" || sess.GitBranch == "" || task.Branch == sess.GitBranch
-		if branchMatches || task.PRURL == "" {
-			if task.PRURL != prURL {
-				task.PRURL = prURL
-				task.PRNumber = prNum
-				task.PRState = "OPEN"
-				task.Status = "REVIEW"
-				task.Substatus = "in_review"
-				taskUpdated = true
-			}
-		}
-	} else if strings.Contains(cmd, "gh pr create") {
-		// Even if stdout hasn't arrived, gh pr create means we are entering review
-		if task.Status == "IN_PROGRESS" {
-			task.Status = "REVIEW"
-			task.Substatus = "in_review"
-			taskUpdated = true
-		}
-	}
-
-	// 2. Check for issue key: prioritize branch name over raw commands
-	issueKey := ExtractIssueKey(sess.GitBranch)
-	if issueKey == "" {
-		issueKey = ExtractIssueKey(sess.Name)
-	}
-	if issueKey != "" {
-		hasRef := false
-		for _, r := range task.ExternalRefs {
-			if strings.EqualFold(r.RefKey, issueKey) {
-				hasRef = true
-				break
-			}
-		}
-		if !hasRef {
-			// Invariant: Do not contaminate an existing task with foreign issue keys from shell commands!
-			// Only attach issueKey if task has no refs yet, or if session branch explicitly matches the key
-			canAttach := len(task.ExternalRefs) == 0 || (sess.GitBranch != "" && strings.Contains(strings.ToUpper(sess.GitBranch), strings.ToUpper(issueKey)))
-			if canAttach {
-				newRef := TaskExternalRef{
-					TaskID:  task.ID,
-					Tracker: "jira",
-					RefKey:  issueKey,
-				}
-				_ = s.db.InsertTaskExternalRef(&newRef)
-				task.ExternalRefs = append(task.ExternalRefs, newRef)
-			}
-		}
-	}
-
-	// 3. Check file writes / deliverable creations (only for write/edit tools)
-	isWriteTool := false
-	for _, wt := range []string{"write_to_file", "replace_file_content", "create_file", "file_writer", "write", "edit"} {
-		if strings.EqualFold(toolName, wt) {
-			isWriteTool = true
-			break
-		}
-	}
-
-	if isWriteTool && filePath != "" {
-		clean := filepath.Clean(filePath)
-		if !strings.Contains(clean, "..") {
-			baseName := filepath.Base(clean)
-			ext := strings.ToLower(filepath.Ext(clean))
-			var newDel *TaskDeliverable
-
-			if strings.HasSuffix(baseName, ".retro.md") {
-				newDel = &TaskDeliverable{
-					TaskID:   task.ID,
-					Kind:     "retrospective",
-					Title:    "Retrospective",
-					Host:     sess.Host,
-					FilePath: clean,
-				}
-			} else if ext == ".html" || ext == ".png" || ext == ".jpg" || ext == ".svg" {
-				newDel = &TaskDeliverable{
-					TaskID:   task.ID,
-					Kind:     "mockup",
-					Title:    baseName,
-					Host:     sess.Host,
-					FilePath: clean,
-				}
-			} else if strings.Contains(baseName, "plan") || strings.Contains(baseName, "brief") {
-				newDel = &TaskDeliverable{
-					TaskID:   task.ID,
-					Kind:     "plan",
-					Title:    baseName,
-					Host:     sess.Host,
-					FilePath: clean,
-				}
-			}
-
-			if newDel != nil {
-				_ = s.db.InsertTaskDeliverable(newDel)
-				task.Deliverables = append(task.Deliverables, *newDel)
-			}
-		}
-	}
-
-	if taskUpdated {
-		if err := s.db.UpdateTask(task); err == nil {
-			s.maybeNotifyTaskReview(oldStatus, task)
-		}
-	}
-}
-
 // ClassifyWorkflowNodeState maps dev-workflow nodes (N0-N15) and session state to Ackbar task status/substatus
 func ClassifyWorkflowNodeState(node string, sessState State, hasExplicitBlocker bool) (status string, substatus string) {
 	n := strings.ToUpper(strings.TrimSpace(node))
@@ -324,7 +181,7 @@ func ClassifyWorkflowNodeState(node string, sessState State, hasExplicitBlocker 
 		return "IN_PROGRESS", "active"
 	case "N11", "N12", "N13":
 		return "REVIEW", "pr_review"
-	case "N14", "N15":
+	case "N14", "N15", "DONE", "COMPLETED":
 		return "DONE", "completed"
 	default:
 		if hasExplicitBlocker || sessState == StateBlocked {
@@ -494,15 +351,28 @@ func (s *Server) completeAndCloseTaskSession(task *Task, sess *Session) {
 	_ = s.db.UpdateTask(task)
 }
 
-// SyncSessionTaskWorker associates a session with an active task and syncs substatus
+// SyncSessionTaskWorker associates a session with an explicitly bound active task and syncs substatus
 func (s *Server) SyncSessionTaskWorker(sess *Session) {
 	if sess == nil || sess.ID == "" {
 		return
 	}
 
-	// 1. Locate or create active task
-	task, err := s.findOrCreateTaskForSession(sess)
-	if err != nil || task == nil {
+	// 1. Look up an existing non-DONE task that this session is explicitly bound to:
+	//    a) If sess.CurrentTaskID != "", look up s.db.GetTaskByID(sess.CurrentTaskID)
+	//    b) Else look up s.db.GetActiveTaskForSession(sess.ID)
+	//    c) If no explicitly bound task is found, return immediately!
+	var task *Task
+	if sess.CurrentTaskID != "" {
+		if t, err := s.db.GetTaskByID(sess.CurrentTaskID); err == nil && t != nil && t.Status != "DONE" {
+			task = t
+		}
+	}
+	if task == nil {
+		if t, err := s.db.GetActiveTaskForSession(sess.ID); err == nil && t != nil && t.Status != "DONE" {
+			task = t
+		}
+	}
+	if task == nil {
 		return
 	}
 
@@ -555,6 +425,43 @@ func (s *Server) SyncSessionTaskWorker(sess *Session) {
 		s.syncSessionMeta(sess)
 	}
 
+	// Update task.Workers in-memory
+	workerUpdated := false
+	for i := range task.Workers {
+		if task.Workers[i].SessionID == sess.ID {
+			task.Workers[i].IsActive = sess.State != StateEnded
+			task.Workers[i].Agent = sess.Agent
+			task.Workers[i].Host = sess.Host
+			if repoNodePath != "" {
+				task.Workers[i].RepoNodePath = repoNodePath
+			}
+			if workflowNode != "" {
+				task.Workers[i].WorkflowNode = workflowNode
+			}
+			workerUpdated = true
+			break
+		}
+	}
+	if !workerUpdated {
+		task.Workers = append(task.Workers, *worker)
+	}
+
+	// When a worker session ends, check if any active worker remains
+	if sess.State == StateEnded {
+		anyActiveWorker := false
+		for _, w := range task.Workers {
+			if w.IsActive {
+				anyActiveWorker = true
+				break
+			}
+		}
+		if !anyActiveWorker && task.Status == "IN_PROGRESS" {
+			task.Substatus = "stalled"
+			_ = s.db.UpdateTask(task)
+		}
+		return
+	}
+
 	// 3. Reflect blocked / active / idle workflow state
 	oldStatus := task.Status
 	taskNeedsUpdate := false
@@ -598,12 +505,12 @@ func (s *Server) SyncSessionTaskWorker(sess *Session) {
 				}
 			}
 		}
-		if workflowNode == "N14" || workflowNode == "N15" {
+		if workflowNode == "N14" || workflowNode == "N15" || workflowNode == "DONE" || workflowNode == "COMPLETED" {
 			if s.unlockSequentialWorkstreams(task, repoNodePath) {
 				taskNeedsUpdate = true
 			}
 		}
-		if workflowNode == "N15" {
+		if workflowNode == "N15" || workflowNode == "DONE" || workflowNode == "COMPLETED" {
 			s.completeAndCloseTaskSession(task, sess)
 		}
 	}
@@ -630,122 +537,4 @@ func isIsolatedWorktree(path string) bool {
 		return true
 	}
 	return false
-}
-
-func (s *Server) findActiveTaskForSession(sess *Session) (*Task, error) {
-	if sess == nil {
-		return nil, nil
-	}
-	// 1. Try by branch (highest priority so switching branches switches tasks)
-	if sess.GitBranch != "" && sess.GitBranch != "main" && sess.GitBranch != "master" {
-		if t, err := s.db.GetTaskByBranch(sess.GitBranch); err == nil && t != nil && t.Status != "DONE" {
-			return t, nil
-		}
-	}
-	// 2. Try by issueKey if branch or session title contains ticket key (e.g. NGL-1041, NGL-993, NGL-1040)
-	// Prioritize issueKey before worktree so separate tickets always bind to their own tasks!
-	issueKey := ExtractIssueKey(sess.GitBranch)
-	if issueKey == "" {
-		issueKey = ExtractIssueKey(sess.Name)
-	}
-	if issueKey != "" {
-		if t, err := s.db.GetTaskByExternalRef(issueKey); err == nil && t != nil && t.Status != "DONE" {
-			return t, nil
-		}
-	}
-	// 3. Try by worktree (only if branch matches or session is on same branch)
-	if sess.Cwd != "" {
-		if t, err := s.db.GetTaskByWorktree(sess.Cwd); err == nil && t != nil && t.Status != "DONE" {
-			// Invariant: Do NOT match by CWD if git branches explicitly differ!
-			// A session on branch X or main cannot be matched to a task on branch Y just because both share repo CWD.
-			branchMatches := t.Branch == "" || sess.GitBranch == "" || t.Branch == sess.GitBranch
-			if branchMatches {
-				return t, nil
-			}
-		}
-	}
-	// 4. Try by explicit CurrentTaskID (for sessions bound to a task, e.g. design tasks or main branch)
-	if sess.CurrentTaskID != "" {
-		if t, err := s.db.GetTaskByID(sess.CurrentTaskID); err == nil && t != nil && t.Status != "DONE" {
-			return t, nil
-		}
-	}
-	// 5. Fall back to active session worker record (only if active / not DONE)
-	if t, err := s.db.GetActiveTaskForSession(sess.ID); err == nil && t != nil && t.Status != "DONE" {
-		return t, nil
-	}
-	return nil, nil
-}
-
-func (s *Server) findOrCreateTaskForSession(sess *Session) (*Task, error) {
-	t, err := s.findActiveTaskForSession(sess)
-	if err == nil && t != nil {
-		return t, nil
-	}
-
-	// Do not auto-create tasks for main/master branches or empty session unless session title has ticket key
-	branch := sess.GitBranch
-	issueKey := ExtractIssueKey(branch)
-	if issueKey == "" {
-		issueKey = ExtractIssueKey(sess.Name)
-	}
-
-	if (branch == "" || branch == "main" || branch == "master") && issueKey == "" {
-		return nil, nil
-	}
-
-	title := formatTaskTitleFromBranch(branch, issueKey)
-	if sess.Name != "" && !isRawSessionName(sess.Name) {
-		title = sess.Name
-	}
-
-	groupName := resolveTaskGroupName(sess)
-	projectName := sess.ProjectKey
-	if projectName == "" && sess.Cwd != "" {
-		projectName = filepath.Base(sess.Cwd)
-	}
-	if projectName == "" {
-		projectName = "General"
-	}
-
-	// Only store worktree_path if it's an actual isolated worktree path or non-main branch
-	worktreePath := sess.Cwd
-	if !isIsolatedWorktree(worktreePath) && (branch == "main" || branch == "master") {
-		worktreePath = ""
-	}
-
-	newTask := &Task{
-		ID:           fmt.Sprintf("task_%d", time.Now().UnixNano()),
-		Title:        title,
-		GroupName:    groupName,
-		ProjectName:  projectName,
-		Status:       "IN_PROGRESS",
-		Substatus:    "active",
-		Branch:       branch,
-		WorktreePath: worktreePath,
-		Workers: []TaskWorker{
-			{
-				SessionID:  sess.ID,
-				Agent:      sess.Agent,
-				Host:       sess.Host,
-				IsActive:   sess.State != StateEnded,
-				AssignedAt: time.Now(),
-			},
-		},
-	}
-
-	if issueKey != "" {
-		newTask.ExternalRefs = []TaskExternalRef{
-			{
-				Tracker: "jira",
-				RefKey:  issueKey,
-			},
-		}
-	}
-
-	if err := s.db.CreateTask(newTask); err != nil {
-		return nil, err
-	}
-
-	return newTask, nil
 }

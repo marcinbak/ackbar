@@ -1,16 +1,62 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 )
+
+var checkGitHubPRState = func(ctx context.Context, prURL string) (string, error) {
+	cmd := exec.CommandContext(ctx, "gh", "pr", "view", prURL, "--json", "state")
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	var res struct {
+		State string `json:"state"`
+	}
+	if err := json.Unmarshal(out, &res); err != nil {
+		return "", err
+	}
+	return strings.ToUpper(strings.TrimSpace(res.State)), nil
+}
+
+func (s *Server) reconcileOpenPRTasks(ctx context.Context, tasks []Task) {
+	rctx, cancel := context.WithTimeout(ctx, 4*time.Second)
+	defer cancel()
+
+	for i := range tasks {
+		t := &tasks[i]
+		if (t.Status == "IN_PROGRESS" || t.Status == "REVIEW") && t.PRURL != "" && t.PRState != "MERGED" {
+			state, err := checkGitHubPRState(rctx, t.PRURL)
+			if err != nil {
+				continue
+			}
+			state = strings.ToUpper(strings.TrimSpace(state))
+			if state == "MERGED" {
+				t.PRState = "MERGED"
+				t.Status = "DONE"
+				t.Substatus = "completed"
+				now := time.Now().UTC()
+				t.CompletedAt = &now
+				s.completeAndCloseTaskSession(t, nil)
+				_ = s.db.UpdateTask(t)
+				s.pushSyncPayload(&SyncStatePayload{Tasks: []Task{*t}, Workstreams: t.Workstreams})
+			} else if state == "CLOSED" {
+				t.PRState = "CLOSED"
+				_ = s.db.UpdateTask(t)
+			}
+		}
+	}
+}
 
 func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
@@ -21,6 +67,10 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			http.Error(w, "Failed to get tasks: "+err.Error(), http.StatusInternalServerError)
 			return
+		}
+
+		if r.URL.Query().Get("reconcile_prs") == "true" {
+			s.reconcileOpenPRTasks(r.Context(), tasks)
 		}
 
 		// Filter by query parameters if present
@@ -49,6 +99,17 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 			tasks = filtered
 		}
 
+		// Lazy deliverable content_md handling: unless ?include_content=true, omit inline content_md
+		includeContent := r.URL.Query().Get("include_content") == "true"
+		for i := range tasks {
+			for j := range tasks[i].Deliverables {
+				tasks[i].Deliverables[j].HasContentMD = strings.TrimSpace(tasks[i].Deliverables[j].ContentMD) != ""
+				if !includeContent {
+					tasks[i].Deliverables[j].ContentMD = ""
+				}
+			}
+		}
+
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(tasks)
 		return
@@ -68,7 +129,16 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 
 		t := req.Task
 		w.Header().Set("Content-Type", "application/json")
+		sessionID := ""
+		for _, w := range t.Workers {
+			if w.SessionID != "" {
+				sessionID = w.SessionID
+				break
+			}
+		}
+
 		if t.ID == "" {
+			t.GroupName, t.ProjectName = s.normalizeTaskNodeScope(t.GroupName, t.ProjectName, t.WorktreePath, sessionID)
 			t.ID = fmt.Sprintf("task_%d", time.Now().UnixNano())
 			if t.TaskKind == "" {
 				t.TaskKind = "code"
@@ -134,11 +204,18 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 			if t.Title != "" {
 				existing.Title = t.Title
 			}
-			if t.GroupName != "" {
-				existing.GroupName = t.GroupName
-			}
-			if t.ProjectName != "" {
-				existing.ProjectName = t.ProjectName
+			if t.GroupName != "" || t.ProjectName != "" {
+				gn := t.GroupName
+				if gn == "" {
+					gn = existing.GroupName
+				}
+				pn := t.ProjectName
+				if pn == "" {
+					pn = existing.ProjectName
+				}
+				g, p := s.normalizeTaskNodeScope(gn, pn, t.WorktreePath, sessionID)
+				existing.GroupName = g
+				existing.ProjectName = p
 			}
 			if t.SubprojectName != "" {
 				existing.SubprojectName = t.SubprojectName
@@ -433,33 +510,7 @@ func (s *Server) handleTaskPropose(w http.ResponseWriter, r *http.Request) {
 		fileRef = fileRef[:1024]
 	}
 
-	projectName := strings.TrimSpace(p.ProjectName)
-	if projectName == "" {
-		projectName = "General"
-	}
-
-	groupName := strings.TrimSpace(p.GroupName)
-	if groupName == "" {
-		if strings.EqualFold(projectName, "Ackbar") {
-			groupName = "Personal"
-		} else {
-			nodes, err := s.db.ListNodes()
-			if err != nil {
-				log.Printf("warn: failed to list tree nodes for group inference: %v", err)
-			} else {
-				for _, n := range nodes {
-					parts := strings.Split(n.Path, "/")
-					if len(parts) > 1 && strings.EqualFold(parts[len(parts)-1], projectName) {
-						groupName = parts[0]
-						break
-					}
-				}
-			}
-		}
-		if groupName == "" {
-			groupName = "Personal"
-		}
-	}
+	groupName, projectName := s.normalizeTaskNodeScope(p.GroupName, p.ProjectName, "", "")
 
 	// Deduplicate proposed tasks: if an active/new task with identical title already exists for this project, return it
 	existingTasks, err := s.db.GetTasks()
@@ -525,6 +576,26 @@ type TaskDeliverablePayload struct {
 }
 
 func (s *Server) handleTaskDeliverable(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		delID := strings.TrimSpace(r.URL.Query().Get("id"))
+		if delID == "" {
+			http.Error(w, "deliverable id is required", http.StatusBadRequest)
+			return
+		}
+		del, err := s.db.GetTaskDeliverableByID(delID)
+		if err != nil {
+			http.Error(w, "Failed to get deliverable: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if del == nil {
+			http.Error(w, "Deliverable not found", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(del)
+		return
+	}
+
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -659,14 +730,144 @@ func (s *Server) handleTaskSyncWorkflow(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if err := s.IngestDevWorkflowRuns(); err != nil {
-		http.Error(w, "Failed to sync workflow runs: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(`{"status":"ok"}`))
+}
+
+func (s *Server) normalizeTaskNodeScope(groupName, projectName, cwd, sessionID string) (normGroup, normProject string) {
+	groupName = strings.TrimSpace(groupName)
+	projectName = strings.TrimSpace(projectName)
+	cwd = strings.TrimSpace(cwd)
+	sessionID = strings.TrimSpace(sessionID)
+
+	// 1. If sessionID != "" and groupName == "" / projectName == "", look up session
+	if sessionID != "" && (groupName == "" || projectName == "") {
+		if sess, err := s.db.GetSession(sessionID); err == nil && sess != nil {
+			if sess.NodePath != "" && !strings.EqualFold(sess.NodePath, "unassigned") {
+				parts := strings.Split(sess.NodePath, "/")
+				if len(parts) > 1 {
+					if groupName == "" {
+						groupName = parts[0]
+					}
+					if projectName == "" {
+						projectName = strings.Join(parts[1:], "/")
+					}
+				} else if len(parts) == 1 && projectName == "" {
+					projectName = parts[0]
+				}
+			}
+			if cwd == "" && sess.Cwd != "" {
+				cwd = sess.Cwd
+			}
+		}
+	}
+
+	// 2. If projectName is already a full tree_nodes path (e.g. "Modemobile/NGL/ngl-ios" or "Personal/Ackbar"),
+	// split on first / so GroupName = "Modemobile", ProjectName = "NGL/ngl-ios"
+	// (or if GroupName is already "Modemobile" and ProjectName starts with "Modemobile/", strip duplicate prefix!).
+	if groupName != "" && strings.HasPrefix(strings.ToLower(projectName), strings.ToLower(groupName)+"/") {
+		projectName = projectName[len(groupName)+1:]
+	}
+
+	if strings.Contains(projectName, "/") {
+		parts := strings.Split(projectName, "/")
+		nodes, _ := s.db.ListNodes()
+		isKnownGroup := false
+		for _, n := range nodes {
+			nP := strings.Split(n.Path, "/")
+			if len(nP) > 0 && strings.EqualFold(nP[0], parts[0]) {
+				isKnownGroup = true
+				break
+			}
+		}
+		if isKnownGroup || strings.EqualFold(parts[0], "Modemobile") || strings.EqualFold(parts[0], "Personal") {
+			if groupName == "" {
+				groupName = parts[0]
+			}
+			projectName = strings.Join(parts[1:], "/")
+		}
+	}
+
+	// 3. Match against registered tree_nodes
+	nodes, _ := s.db.ListNodes()
+	matchNode := func(query string) (string, string, bool) {
+		if query == "" {
+			return "", "", false
+		}
+		qLower := strings.ToLower(strings.TrimSuffix(strings.TrimSuffix(query, ".git"), "/"))
+		// Match exact node path
+		for _, n := range nodes {
+			if strings.EqualFold(n.Path, query) {
+				parts := strings.Split(n.Path, "/")
+				if len(parts) > 1 {
+					return parts[0], strings.Join(parts[1:], "/"), true
+				}
+				return "Personal", parts[0], true
+			}
+		}
+		// Match GitURL, ProjectDir, or Path slug
+		for _, n := range nodes {
+			gitLower := strings.ToLower(strings.TrimSuffix(strings.TrimSuffix(n.GitURL, ".git"), "/"))
+			projLower := strings.ToLower(strings.TrimSuffix(n.ProjectDir, "/"))
+			pathParts := strings.Split(n.Path, "/")
+			slug := ""
+			if len(pathParts) > 0 {
+				slug = strings.ToLower(pathParts[len(pathParts)-1])
+			}
+
+			if (gitLower != "" && strings.HasSuffix(gitLower, qLower)) ||
+				(projLower != "" && strings.HasSuffix(projLower, qLower)) ||
+				(slug != "" && slug == qLower) {
+				if len(pathParts) > 1 {
+					return pathParts[0], strings.Join(pathParts[1:], "/"), true
+				}
+				return "Personal", pathParts[0], true
+			}
+		}
+
+		// Match node_host_paths
+		if s.db != nil {
+			hostPaths, err := s.db.ListNodeHostPaths("")
+			if err == nil {
+				for _, hp := range hostPaths {
+					pDir := strings.ToLower(strings.TrimSuffix(hp.ProjectDir, "/"))
+					gitR := strings.ToLower(strings.TrimSuffix(strings.TrimSuffix(hp.GitRemote, ".git"), "/"))
+					if (pDir != "" && strings.HasSuffix(pDir, qLower)) || (gitR != "" && strings.HasSuffix(gitR, qLower)) {
+						parts := strings.Split(hp.NodePath, "/")
+						if len(parts) > 1 {
+							return parts[0], strings.Join(parts[1:], "/"), true
+						}
+						return "Personal", parts[0], true
+					}
+				}
+			}
+		}
+
+		return "", "", false
+	}
+
+	if g, p, ok := matchNode(projectName); ok {
+		if groupName == "" {
+			groupName = g
+		}
+		projectName = p
+	} else if cwd != "" {
+		if g, p, ok := matchNode(cwd); ok {
+			if groupName == "" {
+				groupName = g
+			}
+			if projectName == "" || projectName == "General" {
+				projectName = p
+			}
+		}
+	}
+
+	if projectName == "" {
+		projectName = "General"
+	}
+
+	return groupName, projectName
 }
 
 func (s *Server) handleTaskDeduplicate(w http.ResponseWriter, r *http.Request) {

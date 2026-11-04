@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestTasks_DatabaseAndAPI(t *testing.T) {
@@ -200,10 +202,8 @@ func TestTelemetry_RegexExtractors(t *testing.T) {
 	}
 }
 
-func TestTelemetry_ToolInterceptionAndSync(t *testing.T) {
-	dbFile := "./test_telemetry.db"
-	defer os.Remove(dbFile)
-
+func TestSyncSessionTaskWorker_ExplicitBindingAndStalled(t *testing.T) {
+	dbFile := filepath.Join(t.TempDir(), "test_worker_sync.db")
 	db, err := InitDB(dbFile)
 	if err != nil {
 		t.Fatalf("InitDB failed: %v", err)
@@ -214,66 +214,71 @@ func TestTelemetry_ToolInterceptionAndSync(t *testing.T) {
 		db: db,
 	}
 
-	// 1. Test SyncSessionTaskWorker auto-creates task for feature branch
-	sess := &Session{
-		ID:         "claude:mac:uuid-456",
+	// 1. Unbound session does NOT create a task
+	unboundSess := &Session{
+		ID:         "claude:mac:uuid-unbound",
 		Agent:      "claude-code",
 		Host:       "mac",
-		GitBranch:  "feat/NGL-409-reconnect",
+		GitBranch:  "feat/unbound",
 		Cwd:        "/Users/dev4u/Work/ngl-ios",
 		ProjectKey: "ngl-ios",
 		AccountID:  "claude-code:work",
 		State:      StateWorking,
 	}
-
-	server.SyncSessionTaskWorker(sess)
+	server.SyncSessionTaskWorker(unboundSess)
 
 	tasks, err := db.GetTasks()
-	if err != nil || len(tasks) != 1 {
-		t.Fatalf("Expected 1 task auto-created, got %d (err: %v)", len(tasks), err)
+	if err != nil {
+		t.Fatalf("GetTasks failed: %v", err)
+	}
+	if len(tasks) != 0 {
+		t.Fatalf("Expected 0 tasks created for unbound session, got %d", len(tasks))
 	}
 
-	task := &tasks[0]
-	if task.Branch != "feat/NGL-409-reconnect" {
-		t.Errorf("Expected task branch feat/NGL-409-reconnect, got %s", task.Branch)
-	}
-	if task.Status != "IN_PROGRESS" || task.Substatus != "active" {
-		t.Errorf("Expected status IN_PROGRESS/active, got %s/%s", task.Status, task.Substatus)
-	}
-	if len(task.Workers) != 1 || task.Workers[0].SessionID != sess.ID {
-		t.Errorf("Expected worker bound, got %+v", task.Workers)
-	}
-	if len(task.ExternalRefs) != 1 || task.ExternalRefs[0].RefKey != "NGL-409" {
-		t.Errorf("Expected external ref NGL-409, got %+v", task.ExternalRefs)
-	}
-
-	// 2. Test IngestToolTelemetry: PR URL detection advances to REVIEW
-	eventPR := &Event{
-		ToolName: "Bash",
-		ToolInput: map[string]any{
-			"command": "gh pr create --title 'Fix reconnect' && echo 'https://github.com/modemobile/ngl-ios/pull/99'",
+	// 2. Explicitly bound task
+	task := &Task{
+		ID:          "task-explicit-1",
+		Title:       "Implement Biometric Auth",
+		GroupName:   "Modemobile",
+		ProjectName: "ngl-ios",
+		Status:      "IN_PROGRESS",
+		Substatus:   "active",
+		Branch:      "feat/NGL-409-reconnect",
+		ExternalRefs: []TaskExternalRef{
+			{Tracker: "jira", RefKey: "NGL-409"},
+		},
+		Workers: []TaskWorker{
+			{
+				TaskID:     "task-explicit-1",
+				SessionID:  "claude:mac:uuid-bound",
+				Host:       "mac",
+				Agent:      "claude-code",
+				IsActive:   true,
+				AssignedAt: time.Now().UTC(),
+			},
 		},
 	}
-	server.IngestToolTelemetry(sess, eventPR)
+	if err := db.CreateTask(task); err != nil {
+		t.Fatalf("CreateTask failed: %v", err)
+	}
 
-	taskAfterPR, err := db.GetTaskByID(task.ID)
-	if err != nil || taskAfterPR == nil {
-		t.Fatalf("Failed to fetch task after PR: %v", err)
-	}
-	if taskAfterPR.Status != "REVIEW" || taskAfterPR.Substatus != "in_review" {
-		t.Errorf("Expected status REVIEW/in_review after PR hook, got %s/%s", taskAfterPR.Status, taskAfterPR.Substatus)
-	}
-	if taskAfterPR.PRURL != "https://github.com/modemobile/ngl-ios/pull/99" || taskAfterPR.PRNumber != 99 {
-		t.Errorf("Expected PR #99 bound, got %s (#%d)", taskAfterPR.PRURL, taskAfterPR.PRNumber)
+	boundSess := &Session{
+		ID:            "claude:mac:uuid-bound",
+		CurrentTaskID: task.ID,
+		Agent:         "claude-code",
+		Host:          "mac",
+		GitBranch:     "feat/NGL-409-reconnect",
+		Cwd:           "/Users/dev4u/Work/ngl-ios",
+		State:         StateWorking,
 	}
 
 	// 3. Test Session Blocked state sync
-	sess.State = StateBlocked
-	sess.Blocked = &Blocked{
+	boundSess.State = StateBlocked
+	boundSess.Blocked = &Blocked{
 		Kind:     BlockQuestion,
 		Question: "Which database should we use?",
 	}
-	server.SyncSessionTaskWorker(sess)
+	server.SyncSessionTaskWorker(boundSess)
 
 	taskBlocked, err := db.GetTaskByID(task.ID)
 	if err != nil || taskBlocked == nil {
@@ -287,9 +292,9 @@ func TestTelemetry_ToolInterceptionAndSync(t *testing.T) {
 	}
 
 	// 4. Test Session Unblocked
-	sess.State = StateWorking
-	sess.Blocked = nil
-	server.SyncSessionTaskWorker(sess)
+	boundSess.State = StateWorking
+	boundSess.Blocked = nil
+	server.SyncSessionTaskWorker(boundSess)
 
 	taskUnblocked, err := db.GetTaskByID(task.ID)
 	if err != nil || taskUnblocked == nil {
@@ -299,21 +304,21 @@ func TestTelemetry_ToolInterceptionAndSync(t *testing.T) {
 		t.Errorf("Expected substatus active and empty blocker question, got %s / %q", taskUnblocked.Substatus, taskUnblocked.BlockerQuestion)
 	}
 
-	// 5. Test File Deliverable Ingestion
-	eventFile := &Event{
-		ToolName: "write_to_file",
-		ToolInput: map[string]any{
-			"TargetFile": "/Users/dev4u/Work/ngl-ios/docs/mockup.png",
-		},
-	}
-	server.IngestToolTelemetry(sess, eventFile)
+	// 5. Test Session Ended -> worker marked inactive and task substatus transitions to stalled
+	boundSess.State = StateEnded
+	server.SyncSessionTaskWorker(boundSess)
 
-	taskWithDel, err := db.GetTaskByID(task.ID)
-	if err != nil || len(taskWithDel.Deliverables) == 0 {
-		t.Fatalf("Expected deliverable attached to task, got %+v", taskWithDel.Deliverables)
+	taskEnded, err := db.GetTaskByID(task.ID)
+	if err != nil || taskEnded == nil {
+		t.Fatalf("Failed to fetch task after end: %v", err)
 	}
-	if taskWithDel.Deliverables[0].Kind != "mockup" || taskWithDel.Deliverables[0].Title != "mockup.png" {
-		t.Errorf("Expected mockup deliverable, got %+v", taskWithDel.Deliverables[0])
+	if taskEnded.Substatus != "stalled" {
+		t.Errorf("Expected task substatus stalled when all workers end, got %s", taskEnded.Substatus)
+	}
+	for _, w := range taskEnded.Workers {
+		if w.SessionID == boundSess.ID && w.IsActive {
+			t.Errorf("Expected worker %s to be inactive, but was active", w.SessionID)
+		}
 	}
 }
 
@@ -381,10 +386,8 @@ func TestTelemetry_APIProposeAndDeliverables(t *testing.T) {
 	}
 }
 
-func TestTelemetry_WorkflowWatcherIngestion(t *testing.T) {
-	dbFile := "./test_workflow_watcher.db"
-	defer os.Remove(dbFile)
-
+func TestTelemetry_ProposeAndDeliverableValidation(t *testing.T) {
+	dbFile := filepath.Join(t.TempDir(), "test_validation.db")
 	db, err := InitDB(dbFile)
 	if err != nil {
 		t.Fatalf("InitDB failed: %v", err)
@@ -395,156 +398,18 @@ func TestTelemetry_WorkflowWatcherIngestion(t *testing.T) {
 		db: db,
 	}
 
-	tempDir, err := os.MkdirTemp("", "dev-workflow-test-*")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
+	dummyTask := &Task{
+		ID:          "task_validation_test",
+		Title:       "Validation test",
+		GroupName:   "Modemobile",
+		ProjectName: "Ackbar",
+		Status:      "IN_PROGRESS",
 	}
-	defer os.RemoveAll(tempDir)
-
-	jsonPath := tempDir + "/test-repo-ABC-101.json"
-	briefPath := tempDir + "/test-repo-ABC-101.brief.md"
-	retroPath := tempDir + "/test-repo-ABC-101.retro.md"
-
-	ticket := "ABC-101"
-	run := DevWorkflowRun{
-		Ticket:   &ticket,
-		Repo:     "modemobile/ngl-ios",
-		Branch:   "feat/ABC-101-auth",
-		Worktree: ".worktrees/feat-ABC-101",
-		Node:     "N15",
-		PR: &DevWorkflowPR{
-			Number: 42,
-			URL:    "https://github.com/modemobile/ngl-ios/pull/42",
-		},
-	}
-	runBytes, _ := json.Marshal(run)
-	_ = os.WriteFile(jsonPath, runBytes, 0644)
-
-	briefContent := `# Change brief — ABC-101 (Biometric authentication support)
-
-## Acceptance criteria
-Enable Face ID and Touch ID authentication across login workflows.`
-	_ = os.WriteFile(briefPath, []byte(briefContent), 0644)
-
-	retroContent := `# Retro — feat/ABC-101-auth
-
-## Proposals
-- Implement hardware security key backup for enterprise accounts
-- Add biometric lock timeout configuration`
-	_ = os.WriteFile(retroPath, []byte(retroContent), 0644)
-
-	// Ingest single run
-	if err := server.ingestSingleWorkflowRun(jsonPath); err != nil {
-		t.Fatalf("ingestSingleWorkflowRun failed: %v", err)
+	if err := db.CreateTask(dummyTask); err != nil {
+		t.Fatalf("CreateTask failed: %v", err)
 	}
 
-	// Verify main task
-	task, err := db.GetTaskByBranch("feat/ABC-101-auth")
-	if err != nil || task == nil {
-		t.Fatalf("Expected task for branch feat/ABC-101-auth, got nil (err: %v)", err)
-	}
-	if task.Title != "ABC-101 (Biometric authentication support)" {
-		t.Errorf("Expected brief title, got %q", task.Title)
-	}
-	if task.Status != "DONE" || task.Substatus != "completed" {
-		t.Errorf("Expected DONE/completed, got %s/%s", task.Status, task.Substatus)
-	}
-	if task.PRURL != "https://github.com/modemobile/ngl-ios/pull/42" {
-		t.Errorf("Expected PR URL, got %s", task.PRURL)
-	}
-	if len(task.Deliverables) < 2 {
-		t.Errorf("Expected at least 2 deliverables (brief + retro), got %d", len(task.Deliverables))
-	}
-
-	// Verify retro proposals were parsed into NEW inbox tasks
-	allTasks, err := db.GetTasks()
-	if err != nil {
-		t.Fatalf("GetTasks failed: %v", err)
-	}
-
-	var proposalCount int
-	for _, t := range allTasks {
-		if t.Status == "NEW" && t.Substatus == "discovered" {
-			proposalCount++
-		}
-	}
-	if proposalCount != 2 {
-		t.Errorf("Expected 2 discovered proposals in NEW, got %d", proposalCount)
-	}
-}
-
-func TestTelemetry_HardenedProposalsAndWorkflow(t *testing.T) {
-	dbFile := "./test_hardened.db"
-	defer os.Remove(dbFile)
-
-	db, err := InitDB(dbFile)
-	if err != nil {
-		t.Fatalf("InitDB failed: %v", err)
-	}
-	defer db.Close()
-
-	server := &Server{
-		db: db,
-	}
-
-	// 1. Test Node mapping N12, N13 -> REVIEW: pr_review, N14, N15 -> DONE: completed
-	s12, sub12 := mapWorkflowNodeToTaskStatus("N12")
-	if s12 != "REVIEW" || sub12 != "pr_review" {
-		t.Errorf("Expected N12 to map to REVIEW/pr_review, got %s/%s", s12, sub12)
-	}
-	s13, sub13 := mapWorkflowNodeToTaskStatus("N13")
-	if s13 != "REVIEW" || sub13 != "pr_review" {
-		t.Errorf("Expected N13 to map to REVIEW/pr_review, got %s/%s", s13, sub13)
-	}
-	s14, sub14 := mapWorkflowNodeToTaskStatus("N14")
-	if s14 != "DONE" || sub14 != "completed" {
-		t.Errorf("Expected N14 to map to DONE/completed, got %s/%s", s14, sub14)
-	}
-
-	// 2. Test Retro Proposal parsing with numbers in title and dedup
-	tempDir := t.TempDir()
-	retroPath := filepath.Join(tempDir, "sample.retro.md")
-	retroContent := `# Retro
-## Proposals
-- 12-factor configuration support
-* Add 2FA security prompt
-1. 3D map rendering feature
-`
-	_ = os.WriteFile(retroPath, []byte(retroContent), 0644)
-
-	server.parseRetroProposalsIntoNewTasks(retroPath, "Modemobile", "Ackbar")
-
-	tasks, err := db.GetTasks()
-	if err != nil || len(tasks) != 3 {
-		t.Fatalf("Expected 3 tasks created from retro proposals, got %d (err: %v)", len(tasks), err)
-	}
-
-	// Verify "12-factor" was preserved cleanly
-	found12 := false
-	for _, tk := range tasks {
-		if tk.Title == "12-factor configuration support" {
-			found12 = true
-			break
-		}
-	}
-	if !found12 {
-		t.Errorf("Expected title '12-factor configuration support' preserved intact, got tasks: %+v", tasks)
-	}
-
-	// Move one task to IN_PROGRESS
-	tasks[0].Status = "IN_PROGRESS"
-	if err := db.UpdateTask(&tasks[0]); err != nil {
-		t.Fatalf("UpdateTask failed: %v", err)
-	}
-
-	// Run parseRetroProposalsIntoNewTasks again — should not create duplicate tasks!
-	server.parseRetroProposalsIntoNewTasks(retroPath, "Modemobile", "Ackbar")
-	tasksAfter, err := db.GetTasks()
-	if err != nil || len(tasksAfter) != 3 {
-		t.Errorf("Expected 3 tasks (no duplicates created on second run), got %d", len(tasksAfter))
-	}
-
-	// 3. Test handleTaskPropose validation
+	// 1. Test handleTaskPropose validation
 	// Empty title rejected
 	bodyEmpty, _ := json.Marshal(map[string]any{"title": ""})
 	req := httptest.NewRequest("POST", "/v1/tasks/propose", bytes.NewReader(bodyEmpty))
@@ -554,10 +419,10 @@ func TestTelemetry_HardenedProposalsAndWorkflow(t *testing.T) {
 		t.Errorf("Expected 400 for empty propose title, got %d", rec.Code)
 	}
 
-	// 4. Test handleTaskDeliverable validation
+	// 2. Test handleTaskDeliverable validation
 	// Path traversal rejected
 	bodyTraversal, _ := json.Marshal(map[string]any{
-		"task_id":   tasks[0].ID,
+		"task_id":   dummyTask.ID,
 		"kind":      "plan",
 		"file_path": "../../../etc/passwd",
 	})
@@ -570,7 +435,7 @@ func TestTelemetry_HardenedProposalsAndWorkflow(t *testing.T) {
 
 	// Invalid URL scheme rejected
 	bodyBadURL, _ := json.Marshal(map[string]any{
-		"task_id": tasks[0].ID,
+		"task_id": dummyTask.ID,
 		"kind":    "plan",
 		"url":     "ftp://malicious.example.com",
 	})
@@ -583,7 +448,7 @@ func TestTelemetry_HardenedProposalsAndWorkflow(t *testing.T) {
 
 	// Invalid kind rejected
 	bodyBadKind, _ := json.Marshal(map[string]any{
-		"task_id": tasks[0].ID,
+		"task_id": dummyTask.ID,
 		"kind":    "invalid_kind",
 		"title":   "Valid title",
 	})
@@ -829,114 +694,6 @@ func TestTelemetry_ResolveTaskGroupName(t *testing.T) {
 	}
 	if g := resolveTaskGroupName(sessMode); g != "Modemobile" {
 		t.Errorf("Expected Modemobile, got %q", g)
-	}
-}
-
-func TestWorkflowWatcher_Deduplication(t *testing.T) {
-	dbFile := "./test_workflow_dedup.db"
-	defer os.Remove(dbFile)
-
-	db, err := InitDB(dbFile)
-	if err != nil {
-		t.Fatalf("InitDB failed: %v", err)
-	}
-	defer db.Close()
-
-	server := &Server{
-		db: db,
-	}
-
-	tempDir, err := os.MkdirTemp("", "dev-workflow-dedup-*")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tempDir)
-
-	jsonPath := filepath.Join(tempDir, "ngl-android-NGL-993.json")
-	ticket := "NGL-993"
-
-	// 1. Initial planning state: Branch and Worktree are empty (Node N2)
-	run := DevWorkflowRun{
-		Ticket:   &ticket,
-		Repo:     "ngl-android",
-		Branch:   "",
-		Worktree: "",
-		Node:     "N2",
-		Notes:    "Initial planning",
-	}
-	data, _ := json.Marshal(run)
-	_ = os.WriteFile(jsonPath, data, 0644)
-
-	// Ingest 3 times in a row (simulating 30s background loop)
-	for i := 0; i < 3; i++ {
-		if err := server.ingestSingleWorkflowRun(jsonPath); err != nil {
-			t.Fatalf("ingestSingleWorkflowRun attempt %d failed: %v", i+1, err)
-		}
-	}
-
-	tasks, err := db.GetTasks()
-	if err != nil {
-		t.Fatalf("GetTasks failed: %v", err)
-	}
-	if len(tasks) != 1 {
-		t.Fatalf("Expected exactly 1 task after 3 ingestions, got %d", len(tasks))
-	}
-	if tasks[0].Title != "NGL-993" {
-		t.Errorf("Expected title NGL-993, got %q", tasks[0].Title)
-	}
-	if tasks[0].Status != "IN_PROGRESS" {
-		t.Errorf("Expected status IN_PROGRESS, got %s", tasks[0].Status)
-	}
-
-	// 2. Transition to Node N4: Branch and Worktree are now created
-	run.Branch = "feat/NGL-993-size-matters"
-	run.Worktree = "/home/dev4u/Work/ngl-android/.claude/worktrees/NGL-993"
-	run.Node = "N4"
-	data, _ = json.Marshal(run)
-	_ = os.WriteFile(jsonPath, data, 0644)
-
-	if err := server.ingestSingleWorkflowRun(jsonPath); err != nil {
-		t.Fatalf("ingestSingleWorkflowRun transition to N4 failed: %v", err)
-	}
-
-	tasks, err = db.GetTasks()
-	if err != nil {
-		t.Fatalf("GetTasks failed: %v", err)
-	}
-	if len(tasks) != 1 {
-		t.Fatalf("Expected still exactly 1 task after branch creation, got %d", len(tasks))
-	}
-	if tasks[0].Branch != "feat/NGL-993-size-matters" {
-		t.Errorf("Expected updated branch, got %q", tasks[0].Branch)
-	}
-	if tasks[0].WorktreePath != "/home/dev4u/Work/ngl-android/.claude/worktrees/NGL-993" {
-		t.Errorf("Expected updated worktree, got %q", tasks[0].WorktreePath)
-	}
-
-	// 3. Test string PR URL unmarshaling and transition to REVIEW
-	jsonContent := `{
-		"ticket": "NGL-993",
-		"repo": "ngl-android",
-		"branch": "feat/NGL-993-size-matters",
-		"worktree": "/home/dev4u/Work/ngl-android/.claude/worktrees/NGL-993",
-		"node": "N12",
-		"pr": "https://github.com/CurrentMobile/ngl-android/pull/555"
-	}`
-	_ = os.WriteFile(jsonPath, []byte(jsonContent), 0644)
-
-	if err := server.ingestSingleWorkflowRun(jsonPath); err != nil {
-		t.Fatalf("ingestSingleWorkflowRun with string PR failed: %v", err)
-	}
-
-	task, err := db.GetTaskByExternalRef("NGL-993")
-	if err != nil || task == nil {
-		t.Fatalf("GetTaskByExternalRef failed: %v", err)
-	}
-	if task.PRNumber != 555 {
-		t.Errorf("Expected PR number 555, got %d", task.PRNumber)
-	}
-	if task.Status != "REVIEW" {
-		t.Errorf("Expected status REVIEW, got %s", task.Status)
 	}
 }
 
@@ -1189,10 +946,122 @@ func TestServer_TaskDeduplicateEndpoint(t *testing.T) {
 	}
 }
 
-func TestTelemetry_WorktreeBranchGuard(t *testing.T) {
-	dbFile := "./test_worktree_guard.db"
-	defer os.Remove(dbFile)
+func TestDB_PruneAllLegacyTasksOnce(t *testing.T) {
+	dbFile := filepath.Join(t.TempDir(), "test_prune.db")
+	db, err := InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
 
+	// Seed legacy tasks and child rows
+	task1 := &Task{
+		ID:          "legacy_task_1",
+		Title:       "Old Ambient Task 1",
+		GroupName:   "Modemobile",
+		ProjectName: "ngl-ios",
+		Status:      "IN_PROGRESS",
+		Workers: []TaskWorker{
+			{
+				TaskID:     "legacy_task_1",
+				SessionID:  "sess_1",
+				Host:       "host1",
+				Agent:      "claude",
+				AssignedAt: time.Now().UTC(),
+				IsActive:   true,
+			},
+		},
+		Deliverables: []TaskDeliverable{
+			{
+				ID:     "del_1",
+				TaskID: "legacy_task_1",
+				Kind:   "plan",
+				Title:  "Old Plan",
+				Host:   "host1",
+			},
+		},
+	}
+	task2 := &Task{
+		ID:          "legacy_task_2",
+		Title:       "Old Ambient Task 2",
+		GroupName:   "Modemobile",
+		ProjectName: "ngl-android",
+		Status:      "NEW",
+	}
+	if err := db.CreateTask(task1); err != nil {
+		t.Fatalf("CreateTask 1 failed: %v", err)
+	}
+	if err := db.CreateTask(task2); err != nil {
+		t.Fatalf("CreateTask 2 failed: %v", err)
+	}
+
+	// Reset the setting flag so PruneAllLegacyTasksOnce runs
+	if _, err := db.db.Exec("UPDATE settings SET value = 'false' WHERE key = 'legacy_tasks_pruned_v1'"); err != nil {
+		t.Fatalf("Failed to reset setting: %v", err)
+	}
+
+	count, err := db.PruneAllLegacyTasksOnce()
+	if err != nil {
+		t.Fatalf("PruneAllLegacyTasksOnce failed: %v", err)
+	}
+	if count != 2 {
+		t.Errorf("Expected 2 tasks pruned, got %d", count)
+	}
+
+	tasks, err := db.GetTasks()
+	if err != nil {
+		t.Fatalf("GetTasks failed: %v", err)
+	}
+	if len(tasks) != 0 {
+		t.Errorf("Expected 0 active tasks after pruning, got %d", len(tasks))
+	}
+
+	// Verify child table rows were cleaned
+	var workerCount int
+	_ = db.db.QueryRow("SELECT COUNT(*) FROM task_workers").Scan(&workerCount)
+	if workerCount != 0 {
+		t.Errorf("Expected 0 task_workers remaining, got %d", workerCount)
+	}
+
+	// Running again should be a no-op (idempotent)
+	count2, err := db.PruneAllLegacyTasksOnce()
+	if err != nil {
+		t.Fatalf("Second PruneAllLegacyTasksOnce failed: %v", err)
+	}
+	if count2 != 0 {
+		t.Errorf("Expected 0 pruned on second run, got %d", count2)
+	}
+}
+
+func TestClassifyWorkflowNodeState_DoneAndCompleted(t *testing.T) {
+	for _, node := range []string{"done", "DONE", "completed", "COMPLETED", "N14", "N15"} {
+		st, sub := ClassifyWorkflowNodeState(node, StateWorking, false)
+		if st != "DONE" || sub != "completed" {
+			t.Errorf("ClassifyWorkflowNodeState(%q) = (%q, %q), want (DONE, completed)", node, st, sub)
+		}
+	}
+
+	// Test blocked state
+	st, sub := ClassifyWorkflowNodeState("N4", StateBlocked, true)
+	if st != "IN_PROGRESS" || sub != "blocked" {
+		t.Errorf("Expected IN_PROGRESS/blocked for blocked state, got %s/%s", st, sub)
+	}
+
+	// Test review state
+	st, sub = ClassifyWorkflowNodeState("N12", StateWorking, false)
+	if st != "REVIEW" || sub != "pr_review" {
+		t.Errorf("Expected REVIEW/pr_review for N12, got %s/%s", st, sub)
+	}
+
+	// Test working state
+	st, sub = ClassifyWorkflowNodeState("N4", StateWorking, false)
+	if st != "IN_PROGRESS" || sub != "active" {
+		t.Errorf("Expected IN_PROGRESS/active for N4, got %s/%s", st, sub)
+	}
+}
+
+func TestTasks_LazyDeliverableContent(t *testing.T) {
+	dbFile := filepath.Join(t.TempDir(), "test_lazy_del.db")
 	db, err := InitDB(dbFile)
 	if err != nil {
 		t.Fatalf("InitDB failed: %v", err)
@@ -1201,76 +1070,86 @@ func TestTelemetry_WorktreeBranchGuard(t *testing.T) {
 
 	server := &Server{db: db}
 
-	repoRoot := "/Users/dev4u/Work/Modemobile/NGL/ngl-ios"
-
-	// 1. Task A on release branch with CWD set to repoRoot
-	taskA := &Task{
-		ID:           "task_release",
-		Title:        "icloud restore",
+	heavyContent := "# Architecture Plan\n\nDetailed breakdown with diagrams and steps..."
+	del := TaskDeliverable{
+		ID:        "del_heavy_1",
+		TaskID:    "task_lazy_test",
+		Kind:      "plan",
+		Title:     "Architecture Plan",
+		Host:      "mac",
+		ContentMD: heavyContent,
+	}
+	task := &Task{
+		ID:           "task_lazy_test",
+		Title:        "Task with heavy deliverable",
 		GroupName:    "Modemobile",
-		ProjectName:  "ngl-ios",
+		ProjectName:  "Ackbar",
 		Status:       "IN_PROGRESS",
-		Branch:       "ci/release-submit-only",
-		WorktreePath: repoRoot,
+		Deliverables: []TaskDeliverable{del},
 	}
-	if err := db.CreateTask(taskA); err != nil {
-		t.Fatalf("CreateTask A failed: %v", err)
-	}
-
-	// 2. Session B on branch main in the same repoRoot (worktree cleaned up)
-	sessB := &Session{
-		ID:        "sess_main",
-		Agent:     "claude-code",
-		Cwd:       repoRoot,
-		GitBranch: "main",
+	if err := db.CreateTask(task); err != nil {
+		t.Fatalf("CreateTask failed: %v", err)
 	}
 
-	foundB, err := server.findActiveTaskForSession(sessB)
-	if err != nil {
-		t.Fatalf("findActiveTaskForSession B failed: %v", err)
-	}
-	if foundB != nil {
-		t.Errorf("Session B on main should NOT match Task A on release branch, got task %s (%s)", foundB.ID, foundB.Title)
-	}
-
-	// 3. Task C for NGL-1040 exists
-	taskC := &Task{
-		ID:          "task_ngl1040",
-		Title:       "NGL-1040: Fix PKHUD crash",
-		GroupName:   "Modemobile",
-		ProjectName: "ngl-ios",
-		Status:      "REVIEW",
-		Branch:      "NGL-1040-fix-pkhud",
-		ExternalRefs: []TaskExternalRef{
-			{Tracker: "jira", RefKey: "NGL-1040"},
-		},
-	}
-	if err := db.CreateTask(taskC); err != nil {
-		t.Fatalf("CreateTask C failed: %v", err)
+	// 1. GET /v1/tasks without include_content -> ContentMD is stripped, HasContentMD is true
+	req1 := httptest.NewRequest("GET", "/v1/tasks", nil)
+	rec1 := httptest.NewRecorder()
+	server.handleTasks(rec1, req1)
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("GET /v1/tasks returned %d", rec1.Code)
 	}
 
-	// 4. Session C in repoRoot with title mentioning NGL-1040
-	sessC := &Session{
-		ID:        "sess_ngl1040",
-		Agent:     "claude-code",
-		Name:      "[NGL-1040] Fix PKHUD crash",
-		Cwd:       repoRoot,
-		GitBranch: "main", // branch is main after worktree cleanup
+	var tasksResp1 []Task
+	if err := json.Unmarshal(rec1.Body.Bytes(), &tasksResp1); err != nil {
+		t.Fatalf("Failed to decode tasks: %v", err)
+	}
+	if len(tasksResp1) != 1 || len(tasksResp1[0].Deliverables) != 1 {
+		t.Fatalf("Expected 1 task with 1 deliverable, got %+v", tasksResp1)
+	}
+	d1 := tasksResp1[0].Deliverables[0]
+	if d1.ContentMD != "" {
+		t.Errorf("Expected empty ContentMD in standard list, got %q", d1.ContentMD)
+	}
+	if !d1.HasContentMD {
+		t.Errorf("Expected HasContentMD to be true")
 	}
 
-	foundC, err := server.findActiveTaskForSession(sessC)
-	if err != nil {
-		t.Fatalf("findActiveTaskForSession C failed: %v", err)
+	// 2. GET /v1/tasks?include_content=true -> ContentMD is included
+	req2 := httptest.NewRequest("GET", "/v1/tasks?include_content=true", nil)
+	rec2 := httptest.NewRecorder()
+	server.handleTasks(rec2, req2)
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("GET /v1/tasks?include_content=true returned %d", rec2.Code)
 	}
-	if foundC == nil || foundC.ID != "task_ngl1040" {
-		t.Errorf("Session C should match Task C by issueKey NGL-1040, got: %v", foundC)
+
+	var tasksResp2 []Task
+	if err := json.Unmarshal(rec2.Body.Bytes(), &tasksResp2); err != nil {
+		t.Fatalf("Failed to decode tasks: %v", err)
+	}
+	d2 := tasksResp2[0].Deliverables[0]
+	if d2.ContentMD != heavyContent {
+		t.Errorf("Expected full ContentMD, got %q", d2.ContentMD)
+	}
+
+	// 3. GET /v1/tasks/deliverable?id=del_heavy_1 -> returns full deliverable JSON
+	req3 := httptest.NewRequest("GET", "/v1/tasks/deliverable?id="+del.ID, nil)
+	rec3 := httptest.NewRecorder()
+	server.handleTaskDeliverable(rec3, req3)
+	if rec3.Code != http.StatusOK {
+		t.Fatalf("GET /v1/tasks/deliverable returned %d: %s", rec3.Code, rec3.Body.String())
+	}
+
+	var singleDel TaskDeliverable
+	if err := json.Unmarshal(rec3.Body.Bytes(), &singleDel); err != nil {
+		t.Fatalf("Failed to decode single deliverable: %v", err)
+	}
+	if singleDel.ID != del.ID || singleDel.ContentMD != heavyContent {
+		t.Errorf("Single deliverable mismatch: ID=%q, ContentMD=%q", singleDel.ID, singleDel.ContentMD)
 	}
 }
 
-func TestTelemetry_IssueKeyNotContaminatedByCommands(t *testing.T) {
-	dbFile := "./test_telemetry_isolation.db"
-	defer os.Remove(dbFile)
-
+func TestTasks_ReconcilePRs(t *testing.T) {
+	dbFile := filepath.Join(t.TempDir(), "test_reconcile.db")
 	db, err := InitDB(dbFile)
 	if err != nil {
 		t.Fatalf("InitDB failed: %v", err)
@@ -1280,45 +1159,102 @@ func TestTelemetry_IssueKeyNotContaminatedByCommands(t *testing.T) {
 	server := &Server{db: db}
 
 	task := &Task{
-		ID:          "task_original_1040",
-		Title:       "NGL-1040 Task",
+		ID:          "task_open_pr",
+		Title:       "Fix network reconnect",
 		GroupName:   "Modemobile",
 		ProjectName: "ngl-ios",
 		Status:      "IN_PROGRESS",
-		Branch:      "NGL-1040-fix",
-		ExternalRefs: []TaskExternalRef{
-			{Tracker: "jira", RefKey: "NGL-1040"},
-		},
+		Substatus:   "active",
+		PRURL:       "https://github.com/modemobile/ngl-ios/pull/777",
+		PRState:     "OPEN",
 	}
 	if err := db.CreateTask(task); err != nil {
 		t.Fatalf("CreateTask failed: %v", err)
 	}
 
-	sess := &Session{
-		ID:        "sess_active",
-		Agent:     "claude-code",
-		GitBranch: "NGL-1040-fix",
+	// Mock checkGitHubPRState
+	origCheck := checkGitHubPRState
+	defer func() { checkGitHubPRState = origCheck }()
+
+	checkGitHubPRState = func(ctx context.Context, prURL string) (string, error) {
+		if prURL == "https://github.com/modemobile/ngl-ios/pull/777" {
+			return "MERGED", nil
+		}
+		return "OPEN", nil
 	}
 
-	// Session runs a command referencing a foreign ticket, e.g. cherry-pick or commit message
-	event := &Event{
-		ToolName: "bash",
-		ToolInput: map[string]any{
-			"command": "git cherry-pick NGL-997",
-		},
+	// Call GET /v1/tasks?reconcile_prs=true
+	req := httptest.NewRequest("GET", "/v1/tasks?reconcile_prs=true", nil)
+	rec := httptest.NewRecorder()
+	server.handleTasks(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /v1/tasks?reconcile_prs=true returned %d", rec.Code)
 	}
 
-	server.IngestToolTelemetry(sess, event)
-
-	saved, err := db.GetTaskByID(task.ID)
-	if err != nil || saved == nil {
+	updated, err := db.GetTaskByID(task.ID)
+	if err != nil || updated == nil {
 		t.Fatalf("GetTaskByID failed: %v", err)
 	}
-
-	if len(saved.ExternalRefs) != 1 {
-		t.Fatalf("Expected strictly 1 external ref, got %d: %v", len(saved.ExternalRefs), saved.ExternalRefs)
+	if updated.Status != "DONE" || updated.Substatus != "completed" {
+		t.Errorf("Expected task status DONE/completed, got %s/%s", updated.Status, updated.Substatus)
 	}
-	if saved.ExternalRefs[0].RefKey != "NGL-1040" {
-		t.Errorf("Expected NGL-1040, got %q", saved.ExternalRefs[0].RefKey)
+	if updated.PRState != "MERGED" {
+		t.Errorf("Expected PRState MERGED, got %s", updated.PRState)
+	}
+	if updated.CompletedAt == nil {
+		t.Errorf("Expected CompletedAt to be set")
+	}
+}
+
+func TestServer_NormalizeTaskNodeScope(t *testing.T) {
+	dbFile := filepath.Join(t.TempDir(), "test_normalize.db")
+	db, err := InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := &Server{db: db}
+
+	// Register a tree node
+	node := &TreeNode{
+		Path:       "Modemobile/NGL/ngl-ios",
+		GitURL:     "github.com/currentmobile/ngl-ios",
+		ProjectDir: "/Users/dev4u/Work/ngl-ios",
+		CreatedAt:  time.Now().UTC(),
+		UpdatedAt:  time.Now().UTC(),
+	}
+	if err := db.SaveNode(node); err != nil {
+		t.Fatalf("SaveNode failed: %v", err)
+	}
+
+	// Case 1: Full path passed in projectName
+	g, p := server.normalizeTaskNodeScope("", "Modemobile/NGL/ngl-ios", "", "")
+	if g != "Modemobile" || p != "NGL/ngl-ios" {
+		t.Errorf("Case 1: got (%q, %q), want (Modemobile, NGL/ngl-ios)", g, p)
+	}
+
+	// Case 2: Group duplicate prefix in projectName
+	g, p = server.normalizeTaskNodeScope("Modemobile", "Modemobile/NGL/ngl-ios", "", "")
+	if g != "Modemobile" || p != "NGL/ngl-ios" {
+		t.Errorf("Case 2: got (%q, %q), want (Modemobile, NGL/ngl-ios)", g, p)
+	}
+
+	// Case 3: Matched against registered node GitURL / leaf name
+	g, p = server.normalizeTaskNodeScope("", "ngl-ios", "", "")
+	if g != "Modemobile" || p != "NGL/ngl-ios" {
+		t.Errorf("Case 3: got (%q, %q), want (Modemobile, NGL/ngl-ios)", g, p)
+	}
+
+	// Case 4: Matched against session NodePath
+	sess := &Session{
+		ID:       "sess-node-1",
+		NodePath: "Personal/Ackbar",
+	}
+	_ = db.SaveSession(sess)
+
+	g, p = server.normalizeTaskNodeScope("", "", "", sess.ID)
+	if g != "Personal" || p != "Ackbar" {
+		t.Errorf("Case 4: got (%q, %q), want (Personal, Ackbar)", g, p)
 	}
 }

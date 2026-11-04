@@ -574,6 +574,7 @@ func (s *Server) handleSessionControl(w http.ResponseWriter, r *http.Request) {
 		sess.State = StateEnded
 		sess.Activity = "Terminated by user"
 		sess.LastEventAt = time.Now()
+		s.SyncSessionTaskWorker(sess)
 
 		if err := s.db.SaveSession(sess); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -607,6 +608,7 @@ func (s *Server) handleSessionControl(w http.ResponseWriter, r *http.Request) {
 		sess.State = StateEnded
 		sess.Activity = "Deleted"
 		sess.LastEventAt = time.Now()
+		s.SyncSessionTaskWorker(sess)
 		s.broadcast(sess)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "deleted", "id": sess.ID})
