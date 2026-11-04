@@ -306,6 +306,21 @@ func (s *Server) handleHostUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	res, statusCode, err := s.updateRemoteHost(host)
+	w.Header().Set("Content-Type", "application/json")
+	if err != nil {
+		w.WriteHeader(statusCode)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"status":  "error",
+			"message": err.Error(),
+		})
+		return
+	}
+	_ = json.NewEncoder(w).Encode(res)
+}
+
+func (s *Server) updateRemoteHost(host *HostRecord) (map[string]interface{}, int, error) {
+	hostName := host.Name
 	sshTarget := host.SSHTarget
 	if sshTarget == "" {
 		sshTarget = host.Name
@@ -315,24 +330,12 @@ func (s *Server) handleHostUpdate(w http.ResponseWriter, r *http.Request) {
 	detectCmd := exec.Command("ssh", "-o", "ConnectTimeout=8", "-o", "BatchMode=yes", sshTarget, "uname -s && uname -m")
 	out, err := detectCmd.CombinedOutput()
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadGateway)
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"status":  "error",
-			"message": fmt.Sprintf("SSH connection to '%s' failed: %s (%v)", sshTarget, strings.TrimSpace(string(out)), err),
-		})
-		return
+		return nil, http.StatusBadGateway, fmt.Errorf("SSH connection to '%s' failed: %s (%v)", sshTarget, strings.TrimSpace(string(out)), err)
 	}
 
 	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
 	if len(lines) < 2 {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"status":  "error",
-			"message": fmt.Sprintf("Could not parse remote OS/architecture: %q", string(out)),
-		})
-		return
+		return nil, http.StatusInternalServerError, fmt.Errorf("Could not parse remote OS/architecture: %q", string(out))
 	}
 
 	targetOSRaw := strings.ToLower(strings.TrimSpace(lines[0]))
@@ -369,138 +372,234 @@ func (s *Server) handleHostUpdate(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
-	if srcDir == "" {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"status":  "error",
-			"message": "Ackbar source directory not found to compile binaries",
-		})
-		return
-	}
 
-	// 3. Create temporary directory and cross-compile
-	tmpDir, err := os.MkdirTemp("", "ackbar-remote-update-*")
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to create temp build dir: %v", err), http.StatusInternalServerError)
-		return
-	}
-	defer os.RemoveAll(tmpDir)
-
-	ackbardPath := filepath.Join(tmpDir, "ackbard")
-	ackbarPath := filepath.Join(tmpDir, "ackbar")
-	hookPath := filepath.Join(tmpDir, "ackbar-hook")
-
-	cmdBuild1 := exec.Command("go", "build", "-ldflags=-s -w", "-o", ackbardPath, "./cmd/ackbard")
-	cmdBuild1.Dir = srcDir
-	cmdBuild1.Env = append(os.Environ(), "GOOS="+goos, "GOARCH="+goarch, "CGO_ENABLED=0")
-	if bout, berr := cmdBuild1.CombinedOutput(); berr != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"status":  "error",
-			"message": fmt.Sprintf("Failed to cross-compile ackbard for %s/%s: %s", goos, goarch, string(bout)),
-		})
-		return
-	}
-
-	cmdBuild2 := exec.Command("go", "build", "-ldflags=-s -w", "-o", hookPath, "./cmd/ackbar-hook")
-	cmdBuild2.Dir = srcDir
-	cmdBuild2.Env = append(os.Environ(), "GOOS="+goos, "GOARCH="+goarch, "CGO_ENABLED=0")
-	if bout, berr := cmdBuild2.CombinedOutput(); berr != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"status":  "error",
-			"message": fmt.Sprintf("Failed to cross-compile ackbar-hook for %s/%s: %s", goos, goarch, string(bout)),
-		})
-		return
-	}
-
-	cmdBuild3 := exec.Command("go", "build", "-ldflags=-s -w", "-o", ackbarPath, "./cmd/ackbar")
-	cmdBuild3.Dir = srcDir
-	cmdBuild3.Env = append(os.Environ(), "GOOS="+goos, "GOARCH="+goarch, "CGO_ENABLED=0")
-	if bout, berr := cmdBuild3.CombinedOutput(); berr != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"status":  "error",
-			"message": fmt.Sprintf("Failed to cross-compile ackbar for %s/%s: %s", goos, goarch, string(bout)),
-		})
-		return
-	}
-
-	// 4. Deploy binaries to remote host via SCP using atomic staging files
-	_ = exec.Command("ssh", "-o", "BatchMode=yes", sshTarget, "mkdir -p ~/.local/bin").Run()
-
-	scpCmd1 := exec.Command("scp", "-o", "BatchMode=yes", ackbardPath, fmt.Sprintf("%s:~/.local/bin/ackbard.new", sshTarget))
-	if sout, serr := scpCmd1.CombinedOutput(); serr != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadGateway)
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"status":  "error",
-			"message": fmt.Sprintf("Failed to upload ackbard to %s: %s", sshTarget, string(sout)),
-		})
-		return
-	}
-
-	scpCmd2 := exec.Command("scp", "-o", "BatchMode=yes", hookPath, fmt.Sprintf("%s:~/.local/bin/ackbar-hook.new", sshTarget))
-	if sout, serr := scpCmd2.CombinedOutput(); serr != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadGateway)
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"status":  "error",
-			"message": fmt.Sprintf("Failed to upload ackbar-hook to %s: %s", sshTarget, string(sout)),
-		})
-		return
-	}
-
-	scpCmd3 := exec.Command("scp", "-o", "BatchMode=yes", ackbarPath, fmt.Sprintf("%s:~/.local/bin/ackbar.new", sshTarget))
-	if sout, serr := scpCmd3.CombinedOutput(); serr != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadGateway)
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"status":  "error",
-			"message": fmt.Sprintf("Failed to upload ackbar to %s: %s", sshTarget, string(sout)),
-		})
-		return
-	}
-
-	// 5. Atomically replace binaries, set permissions, and restart daemon on remote host
 	shortHost := ShortRemoteHostIdentifier(host.Name)
 	hostFlagArg := ""
 	if shortHost != "" {
 		hostFlagArg = " --host-name " + shortHost
 	}
-	remoteRestartScript := fmt.Sprintf(`chmod +x ~/.local/bin/ackbard.new ~/.local/bin/ackbar.new ~/.local/bin/ackbar-hook.new && mv -f ~/.local/bin/ackbard.new ~/.local/bin/ackbard && mv -f ~/.local/bin/ackbar.new ~/.local/bin/ackbar && mv -f ~/.local/bin/ackbar-hook.new ~/.local/bin/ackbar-hook && pkill -9 -x ackbard || true; sleep 0.5; nohup ~/.local/bin/ackbard%s >/dev/null 2>&1 < /dev/null &`, hostFlagArg)
-	restartCmd := exec.Command("ssh", "-n", "-f", "-o", "BatchMode=yes", sshTarget, remoteRestartScript)
-	_ = restartCmd.Run()
 
-	// 6. Verify remote daemon responsiveness
-	time.Sleep(1 * time.Second)
-	remoteVersion := version.Version
-	if host.URL != "" {
-		client := &http.Client{Timeout: 3 * time.Second}
-		if resp, err := client.Get(strings.TrimRight(host.URL, "/") + "/v1/version"); err == nil {
-			var vResp struct {
-				Version string `json:"version"`
+	if srcDir != "" {
+		// 3a. Cross-compile from local source and SCP atomically
+		tmpDir, err := os.MkdirTemp("", "ackbar-remote-update-*")
+		if err != nil {
+			return nil, http.StatusInternalServerError, fmt.Errorf("Failed to create temp build dir: %v", err)
+		}
+		defer os.RemoveAll(tmpDir)
+
+		ackbardPath := filepath.Join(tmpDir, "ackbard")
+		ackbarPath := filepath.Join(tmpDir, "ackbar")
+		hookPath := filepath.Join(tmpDir, "ackbar-hook")
+
+		for _, target := range []struct {
+			out string
+			pkg string
+			bin string
+		}{
+			{ackbardPath, "./cmd/ackbard", "ackbard"},
+			{hookPath, "./cmd/ackbar-hook", "ackbar-hook"},
+			{ackbarPath, "./cmd/ackbar", "ackbar"},
+		} {
+			cmdBuild := exec.Command("go", "build", "-ldflags=-s -w", "-o", target.out, target.pkg)
+			cmdBuild.Dir = srcDir
+			cmdBuild.Env = append(os.Environ(), "GOOS="+goos, "GOARCH="+goarch, "CGO_ENABLED=0")
+			if bout, berr := cmdBuild.CombinedOutput(); berr != nil {
+				return nil, http.StatusInternalServerError, fmt.Errorf("Failed to cross-compile %s for %s/%s: %s", target.bin, goos, goarch, string(bout))
 			}
-			if err := json.NewDecoder(resp.Body).Decode(&vResp); err == nil && vResp.Version != "" {
-				remoteVersion = vResp.Version
+		}
+
+		// 4a. Deploy binaries to remote host via SCP using atomic staging files
+		_ = exec.Command("ssh", "-o", "BatchMode=yes", sshTarget, "mkdir -p ~/.local/bin").Run()
+
+		for _, upload := range []struct {
+			local  string
+			remote string
+			bin    string
+		}{
+			{ackbardPath, fmt.Sprintf("%s:~/.local/bin/ackbard.new", sshTarget), "ackbard"},
+			{hookPath, fmt.Sprintf("%s:~/.local/bin/ackbar-hook.new", sshTarget), "ackbar-hook"},
+			{ackbarPath, fmt.Sprintf("%s:~/.local/bin/ackbar.new", sshTarget), "ackbar"},
+		} {
+			scpCmd := exec.Command("scp", "-o", "BatchMode=yes", upload.local, upload.remote)
+			if sout, serr := scpCmd.CombinedOutput(); serr != nil {
+				return nil, http.StatusBadGateway, fmt.Errorf("Failed to upload %s to %s: %s", upload.bin, sshTarget, string(sout))
 			}
-			_ = resp.Body.Close()
+		}
+
+		// 5a. Atomically replace binaries, set permissions, and restart daemon on remote host
+		remoteRestartScript := fmt.Sprintf(`chmod +x ~/.local/bin/ackbard.new ~/.local/bin/ackbar.new ~/.local/bin/ackbar-hook.new && mv -f ~/.local/bin/ackbard.new ~/.local/bin/ackbard && mv -f ~/.local/bin/ackbar.new ~/.local/bin/ackbar && mv -f ~/.local/bin/ackbar-hook.new ~/.local/bin/ackbar-hook && pkill -9 -x ackbard || true; sleep 0.5; nohup ~/.local/bin/ackbard%s >/dev/null 2>&1 < /dev/null &`, hostFlagArg)
+		restartCmd := exec.Command("ssh", "-n", "-f", "-o", "BatchMode=yes", sshTarget, remoteRestartScript)
+		_ = restartCmd.Run()
+	} else {
+		// 3b. No local Go source repo: run `ackbar update --force` directly on the remote host via SSH and restart ackbard
+		remoteUpdateScript := fmt.Sprintf(`export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"; ackbar update --force && (pkill -9 -x ackbard || true; sleep 0.5; nohup ~/.local/bin/ackbard%s >/dev/null 2>&1 < /dev/null &)`, hostFlagArg)
+		updCmd := exec.Command("ssh", "-o", "ConnectTimeout=15", "-o", "BatchMode=yes", sshTarget, remoteUpdateScript)
+		if uout, uerr := updCmd.CombinedOutput(); uerr != nil {
+			return nil, http.StatusInternalServerError, fmt.Errorf("Remote 'ackbar update' on %s failed: %s (%v)", sshTarget, strings.TrimSpace(string(uout)), uerr)
 		}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+	// 6. Verify remote daemon responsiveness and update in-memory health cache
+	remoteVersion := version.Version
+	if host.URL != "" {
+		client := &http.Client{Timeout: 2 * time.Second}
+		for attempt := 0; attempt < 4; attempt++ {
+			time.Sleep(500 * time.Millisecond)
+			if resp, err := client.Get(strings.TrimRight(host.URL, "/") + "/v1/version"); err == nil {
+				var vResp struct {
+					Version              string            `json:"version"`
+					DisplayName          string            `json:"display_name"`
+					DetectedCapabilities []string          `json:"detected_capabilities"`
+					PolicyTags           []string          `json:"policy_tags"`
+					RoutingWeight        int               `json:"routing_weight"`
+					Load                 *HostLoadSnapshot `json:"load"`
+				}
+				vResp.RoutingWeight = -1
+				if err := json.NewDecoder(resp.Body).Decode(&vResp); err == nil && vResp.Version != "" {
+					remoteVersion = vResp.Version
+					s.updateHostHealthWithTelemetry(host.Name, true, vResp.Version, vResp.DisplayName, 0, vResp.DetectedCapabilities, vResp.PolicyTags, vResp.RoutingWeight, vResp.Load)
+					_ = resp.Body.Close()
+					break
+				}
+				_ = resp.Body.Close()
+			}
+		}
+	}
+
+	return map[string]interface{}{
 		"status":      "success",
 		"message":     fmt.Sprintf("Successfully upgraded ackbard on '%s' (%s/%s) to v%s", hostName, goos, goarch, remoteVersion),
 		"host":        hostName,
 		"version":     remoteVersion,
 		"target_os":   goos,
 		"target_arch": goarch,
-	})
+	}, http.StatusOK, nil
+}
+
+// HostUpdateSummary captures the result of updating a single fleet host.
+type HostUpdateSummary struct {
+	Host            string `json:"host"`
+	PreviousVersion string `json:"previous_version"`
+	NewVersion      string `json:"new_version"`
+	Status          string `json:"status"` // "updated", "up_to_date", "skipped_offline", "error"
+	Message         string `json:"message"`
+}
+
+// UpdateOutdatedRemoteHosts checks all registered remote hosts and upgrades any connected host running a version older than targetVersion.
+func (s *Server) UpdateOutdatedRemoteHosts(targetVersion string) []HostUpdateSummary {
+	if s.db == nil {
+		return nil
+	}
+	hosts, err := s.db.ListHosts()
+	if err != nil || len(hosts) == 0 {
+		return nil
+	}
+
+	results := make([]HostUpdateSummary, len(hosts))
+	var wg sync.WaitGroup
+
+	for idx, h := range hosts {
+		if h == nil || s.isLocalHost(h.Name) {
+			continue
+		}
+		wg.Add(1)
+		go func(i int, hostRec *HostRecord) {
+			defer wg.Done()
+
+			// Probe live remote version via HTTP if URL is configured
+			remoteVer := ""
+			isOnline := false
+			s.hostHealthMu.RLock()
+			if hh, ok := s.hostHealthMap[hostRec.Name]; ok && hh != nil {
+				isOnline = hh.Online
+				remoteVer = hh.Version
+			}
+			s.hostHealthMu.RUnlock()
+
+			if hostRec.URL != "" {
+				client := &http.Client{Timeout: 2 * time.Second}
+				if resp, gErr := client.Get(strings.TrimRight(hostRec.URL, "/") + "/v1/version"); gErr == nil {
+					var vData struct {
+						Version string `json:"version"`
+					}
+					if jErr := json.NewDecoder(resp.Body).Decode(&vData); jErr == nil && vData.Version != "" {
+						remoteVer = vData.Version
+						isOnline = true
+					}
+					_ = resp.Body.Close()
+				}
+			}
+
+			if !isOnline {
+				results[i] = HostUpdateSummary{
+					Host:            hostRec.Name,
+					PreviousVersion: remoteVer,
+					NewVersion:      remoteVer,
+					Status:          "skipped_offline",
+					Message:         fmt.Sprintf("Skipped '%s' (offline)", hostRec.Name),
+				}
+				return
+			}
+
+			if remoteVer != "" && remoteVer != "online" && !version.IsNewer(targetVersion, remoteVer) {
+				results[i] = HostUpdateSummary{
+					Host:            hostRec.Name,
+					PreviousVersion: remoteVer,
+					NewVersion:      remoteVer,
+					Status:          "up_to_date",
+					Message:         fmt.Sprintf("Host '%s' is already up to date (v%s)", hostRec.Name, remoteVer),
+				}
+				return
+			}
+
+			res, _, uErr := s.updateRemoteHost(hostRec)
+			if uErr != nil {
+				results[i] = HostUpdateSummary{
+					Host:            hostRec.Name,
+					PreviousVersion: remoteVer,
+					NewVersion:      remoteVer,
+					Status:          "error",
+					Message:         uErr.Error(),
+				}
+				return
+			}
+
+			newVer, _ := res["version"].(string)
+			msg, _ := res["message"].(string)
+			results[i] = HostUpdateSummary{
+				Host:            hostRec.Name,
+				PreviousVersion: remoteVer,
+				NewVersion:      newVer,
+				Status:          "updated",
+				Message:         msg,
+			}
+		}(idx, h)
+	}
+	wg.Wait()
+
+	var filtered []HostUpdateSummary
+	for _, r := range results {
+		if r.Host != "" {
+			filtered = append(filtered, r)
+		}
+	}
+	return filtered
+}
+
+func restartLocalDaemonAsync() {
+	exe, err := os.Executable()
+	if err != nil || exe == "" {
+		home, _ := os.UserHomeDir()
+		if home != "" {
+			exe = filepath.Join(home, ".local", "bin", "ackbard")
+		} else {
+			exe = "ackbard"
+		}
+	}
+	args := strings.Join(os.Args[1:], " ")
+	script := fmt.Sprintf("sleep 0.4; kill -9 %d 2>/dev/null || true; sleep 0.2; nohup %q %s >/dev/null 2>&1 < /dev/null &", os.Getpid(), exe, args)
+	cmd := exec.Command("sh", "-c", script)
+	_ = cmd.Start()
 }
 
 var tunnelMu sync.Mutex
