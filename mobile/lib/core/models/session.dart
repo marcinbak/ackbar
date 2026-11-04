@@ -216,6 +216,11 @@ class Session {
   final String engineType;
   final int runningSubagents;
   final String oldId;
+  final bool isSupervisor;
+  final String currentTaskId;
+  final bool isDone;
+  final bool isLater;
+  final String gitRemote;
 
   const Session({
     required this.id,
@@ -252,6 +257,11 @@ class Session {
     this.engineType = 'tmux',
     this.runningSubagents = 0,
     this.oldId = '',
+    this.isSupervisor = false,
+    this.currentTaskId = '',
+    this.isDone = false,
+    this.isLater = false,
+    this.gitRemote = '',
   });
 
   bool get isBlocked => state == SessionState.blocked || blocked != null;
@@ -429,6 +439,11 @@ class Session {
           ? json['running_subagents'] as int
           : int.tryParse(json['running_subagents']?.toString() ?? '') ?? 0,
       oldId: json['old_id'] as String? ?? json['old_id']?.toString() ?? '',
+      isSupervisor: json['is_supervisor'] == true || json['is_supervisor'] == 1,
+      currentTaskId: json['current_task_id']?.toString() ?? '',
+      isDone: json['is_done'] == true || json['is_done'] == 1,
+      isLater: json['is_later'] == true || json['is_later'] == 1,
+      gitRemote: json['git_remote']?.toString() ?? '',
     );
   }
 
@@ -469,6 +484,11 @@ class Session {
       'engine_type': engineType,
       'running_subagents': runningSubagents,
       if (oldId.isNotEmpty) 'old_id': oldId,
+      'is_supervisor': isSupervisor,
+      if (currentTaskId.isNotEmpty) 'current_task_id': currentTaskId,
+      'is_done': isDone,
+      'is_later': isLater,
+      if (gitRemote.isNotEmpty) 'git_remote': gitRemote,
     };
   }
 
@@ -508,6 +528,11 @@ class Session {
     String? engineType,
     int? runningSubagents,
     String? oldId,
+    bool? isSupervisor,
+    String? currentTaskId,
+    bool? isDone,
+    bool? isLater,
+    String? gitRemote,
   }) {
     return Session(
       id: id ?? this.id,
@@ -544,6 +569,11 @@ class Session {
       engineType: engineType ?? this.engineType,
       runningSubagents: runningSubagents ?? this.runningSubagents,
       oldId: oldId ?? this.oldId,
+      isSupervisor: isSupervisor ?? this.isSupervisor,
+      currentTaskId: currentTaskId ?? this.currentTaskId,
+      isDone: isDone ?? this.isDone,
+      isLater: isLater ?? this.isLater,
+      gitRemote: gitRemote ?? this.gitRemote,
     );
   }
 }

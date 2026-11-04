@@ -5,8 +5,31 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models/host.dart';
 import '../models/plan.dart';
 import '../models/session.dart';
+import '../models/tree_node.dart';
+import '../models/work_task.dart';
 import '../network/api_client.dart';
 import '../network/sse_client.dart';
+import '../services/audio_companion_service.dart';
+import '../utils/node_path_resolver.dart';
+
+// --- View Modes ---
+
+enum FleetViewMode { all, supervisors }
+
+final fleetViewModeProvider =
+    StateProvider<FleetViewMode>((ref) => FleetViewMode.all);
+
+/// Checks if a session host matches a configured host that is currently offline
+bool isSessionHostOffline(Session session, List<HostRecord> hosts) {
+  if (hosts.isEmpty) return false;
+  final sHost = session.host.toLowerCase();
+  for (final h in hosts) {
+    if (h.name.toLowerCase() == sHost || h.url.toLowerCase().contains(sHost)) {
+      return !h.online;
+    }
+  }
+  return false;
+}
 
 // --- Client Providers ---
 
@@ -148,6 +171,10 @@ class HostsNotifier extends StateNotifier<List<HostRecord>> {
     if (mounted) {
       state = updated;
     }
+  }
+
+  void setHosts(List<HostRecord> hosts) {
+    state = hosts;
   }
 
   void addHost(HostRecord host) {
@@ -574,6 +601,74 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
     }
     return result;
   }
+
+  /// 1-tap Zero-Input Supervisor Creation on connected host
+  Future<Session?> spawnZeroInputSupervisor({String? hostName}) async {
+    final hosts = _ref.read(hostsListProvider);
+    final targetHost = hostName != null && hostName.isNotEmpty
+        ? _getHostRecord(hostName)
+        : hosts.firstWhere(
+            (h) => h.online,
+            orElse: () => hosts.isNotEmpty
+                ? hosts.first
+                : HostRecord(
+                    name: 'local',
+                    url: 'http://127.0.0.1:7777',
+                    createdAt: DateTime.fromMillisecondsSinceEpoch(0),
+                  ),
+          );
+    final hostUrl = targetHost?.url ?? 'http://127.0.0.1:7777';
+    final resolvedHostName = targetHost?.name ?? 'local';
+
+    final result = await _apiClient.spawnSession(
+      hostUrl,
+      agent: 'claude-code',
+      cwd: '',
+      host: 'local',
+      name: '⚓ New Supervisor',
+      engineType: 'tmux',
+      isSupervisor: true,
+      authToken: targetHost?.authToken,
+    );
+
+    if (result != null) {
+      Session spawned;
+      if (result['session'] is Map<String, dynamic>) {
+        final parsed =
+            Session.fromJson(result['session'] as Map<String, dynamic>);
+        spawned = (parsed.host.isEmpty || parsed.host == 'local') &&
+                resolvedHostName != 'local'
+            ? parsed.copyWith(host: resolvedHostName)
+            : parsed;
+      } else {
+        final nativeId = result['session_id']?.toString() ?? '';
+        final sessionId = result['id']?.toString() ??
+            'claude-code:$resolvedHostName:$nativeId';
+        final now = DateTime.now();
+        spawned = Session(
+          id: sessionId,
+          agent: 'claude-code',
+          host: resolvedHostName,
+          nativeId: nativeId,
+          cwd: '~',
+          name: '⚓ New Supervisor',
+          customTitle: '⚓ New Supervisor',
+          state: SessionState.working,
+          activity: 'Spawning supervisor session...',
+          startedAt: now,
+          lastEventAt: now,
+          managed: true,
+          isSupervisor: true,
+        );
+      }
+      if (mounted) {
+        _upsertSession(spawned);
+      }
+      await refreshSessions();
+      return spawned;
+    }
+    return null;
+  }
 }
 
 final fleetSessionsProvider =
@@ -618,16 +713,112 @@ final hostAgentDiscoveryProvider = FutureProvider.autoDispose
   return api.getAgentsDiscovery(hostConfig.$1, authToken: hostConfig.$2);
 });
 
+// --- Fleet Nodes Provider ---
+
+class FleetNodesNotifier extends StateNotifier<List<TreeNode>> {
+  final ApiClient _apiClient;
+  final Ref _ref;
+  ProviderSubscription<List<HostRecord>>? _hostsSub;
+
+  FleetNodesNotifier(this._apiClient, this._ref) : super(const []) {
+    _initNodes();
+    _hostsSub = _ref.listen<List<HostRecord>>(hostsListProvider, (prev, next) {
+      if (prev == null ||
+          prev.length != next.length ||
+          prev.any((h) => !next.contains(h))) {
+        refreshNodes();
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _hostsSub?.close();
+    super.dispose();
+  }
+
+  void setNodes(List<TreeNode> nodes) {
+    state = nodes;
+  }
+
+  void _initNodes() {
+    refreshNodes();
+  }
+
+  Future<void> refreshNodes() async {
+    final hosts = _ref.read(hostsListProvider);
+    if (hosts.isEmpty) {
+      if (mounted) state = const [];
+      return;
+    }
+
+    final merged = <String, TreeNode>{};
+    for (final host in hosts) {
+      if (!host.online) continue;
+      final hostNodes = await _apiClient.getNodes(
+        host.url,
+        federated: true,
+        authToken: host.authToken,
+      );
+      if (!mounted) return;
+      if (hostNodes != null) {
+        for (final node in hostNodes) {
+          if (!merged.containsKey(node.path)) {
+            merged[node.path] = node;
+          } else {
+            final existing = merged[node.path]!;
+            final combinedHostPaths =
+                List<NodeHostPath>.from(existing.hostPaths);
+            for (final hp in node.hostPaths) {
+              if (!combinedHostPaths.any(
+                  (p) => p.host == hp.host && p.projectDir == hp.projectDir)) {
+                combinedHostPaths.add(hp);
+              }
+            }
+            merged[node.path] = TreeNode(
+              path: existing.path,
+              projectDir: existing.projectDir.isNotEmpty
+                  ? existing.projectDir
+                  : node.projectDir,
+              gitUrl:
+                  existing.gitUrl.isNotEmpty ? existing.gitUrl : node.gitUrl,
+              createdAt: existing.createdAt,
+              updatedAt: node.updatedAt.isAfter(existing.updatedAt)
+                  ? node.updatedAt
+                  : existing.updatedAt,
+              hostPaths: combinedHostPaths,
+            );
+          }
+        }
+      }
+    }
+
+    if (mounted) {
+      state = merged.values.toList();
+    }
+  }
+}
+
+final fleetNodesProvider =
+    StateNotifierProvider<FleetNodesNotifier, List<TreeNode>>((ref) {
+  final api = ref.watch(apiClientProvider);
+  return FleetNodesNotifier(api, ref);
+});
+
 // --- Filtered Sessions Provider ---
 
 final filteredSessionsProvider = Provider<List<Session>>((ref) {
   final allSessions = ref.watch(fleetSessionsProvider);
   final filterIndex = ref.watch(fleetFilterIndexProvider);
+  final viewMode = ref.watch(fleetViewModeProvider);
   final query = ref.watch(fleetSearchQueryProvider).toLowerCase().trim();
 
   final list = allSessions.where((s) {
     // Hide archived/deleted sessions from active fleet views
     if (s.archived) return false;
+
+    // ViewMode filter (All vs Supervisors)
+    if (viewMode == FleetViewMode.supervisors && !s.isSupervisor) return false;
 
     // Tab filter: 0: All, 1: Working, 2: Attention/Blocked, 3: Idle
     if (filterIndex == 1 && s.state != SessionState.working) return false;
@@ -668,16 +859,360 @@ final filteredSessionsProvider = Provider<List<Session>>((ref) {
   return list;
 });
 
-/// Grouped sessions by project / category folder
+// --- Hierarchical Tree Model & Providers ---
+
+class FleetTreeFolderNode {
+  final String path;
+  final String name;
+  final int depth;
+  final List<Session> supervisors;
+  final List<Session> tasks;
+  final List<Session> manualSessions;
+  final List<Session> laterSessions;
+  final List<Session> doneSessions;
+  final List<FleetTreeFolderNode> children;
+
+  const FleetTreeFolderNode({
+    required this.path,
+    required this.name,
+    this.depth = 0,
+    this.supervisors = const [],
+    this.tasks = const [],
+    this.manualSessions = const [],
+    this.laterSessions = const [],
+    this.doneSessions = const [],
+    this.children = const [],
+  });
+
+  int get directCount =>
+      supervisors.length +
+      tasks.length +
+      manualSessions.length +
+      laterSessions.length +
+      doneSessions.length;
+
+  int get totalCount =>
+      directCount + children.fold(0, (sum, child) => sum + child.totalCount);
+
+  bool get isEmpty => totalCount == 0;
+}
+
+final fleetTreeProvider = Provider<List<FleetTreeFolderNode>>((ref) {
+  final filteredSessions = ref.watch(filteredSessionsProvider);
+  final nodes = ref.watch(fleetNodesProvider);
+  final viewMode = ref.watch(fleetViewModeProvider);
+
+  // 1. Group sessions by resolved node path
+  final sessionsByPath = <String, List<Session>>{};
+  final unassigned = <Session>[];
+
+  for (final s in filteredSessions) {
+    final resolved = resolveSessionNodePath(s, nodes, s.host);
+    if (resolved.isNotEmpty) {
+      sessionsByPath.putIfAbsent(resolved, () => []).add(s);
+    } else {
+      unassigned.add(s);
+    }
+  }
+
+  // 2. Discover all known group paths and their ancestor prefixes
+  final allGroupPaths = <String>{};
+  if (viewMode != FleetViewMode.supervisors) {
+    for (final node in nodes) {
+      if (node.path.isNotEmpty) {
+        final parts = node.path.split('/');
+        for (int i = 1; i <= parts.length; i++) {
+          allGroupPaths.add(parts.sublist(0, i).join('/'));
+        }
+      }
+    }
+  }
+
+  for (final path in sessionsByPath.keys) {
+    final parts = path.split('/');
+    for (int i = 1; i <= parts.length; i++) {
+      allGroupPaths.add(parts.sublist(0, i).join('/'));
+    }
+  }
+
+  // Helper to partition direct sessions into the 5 subsections
+  (List<Session>, List<Session>, List<Session>, List<Session>, List<Session>)
+      partitionSessions(List<Session> direct) {
+    final sups = <Session>[];
+    final tsks = <Session>[];
+    final manuals = <Session>[];
+    final laters = <Session>[];
+    final dones = <Session>[];
+
+    for (final s in direct) {
+      if (s.isLater) {
+        laters.add(s);
+      } else if (s.isDone || s.state == SessionState.ended) {
+        dones.add(s);
+      } else if (s.isSupervisor) {
+        sups.add(s);
+      } else if (s.currentTaskId.isNotEmpty) {
+        tsks.add(s);
+      } else {
+        manuals.add(s);
+      }
+    }
+    return (sups, tsks, manuals, laters, dones);
+  }
+
+  // Recursive tree builder
+  FleetTreeFolderNode buildNode(String path, int depth) {
+    final direct = sessionsByPath[path] ?? const [];
+    final (sups, tsks, manuals, laters, dones) = partitionSessions(direct);
+
+    // Find direct child paths
+    final directChildren = <FleetTreeFolderNode>[];
+    final prefix = '$path/';
+    for (final candidate in allGroupPaths) {
+      if (candidate.startsWith(prefix)) {
+        final sub = candidate.substring(prefix.length);
+        if (!sub.contains('/')) {
+          directChildren.add(buildNode(candidate, depth + 1));
+        }
+      }
+    }
+    directChildren
+        .sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+
+    final leafName = path.split('/').last;
+    return FleetTreeFolderNode(
+      path: path,
+      name: leafName,
+      depth: depth,
+      supervisors: sups,
+      tasks: tsks,
+      manualSessions: manuals,
+      laterSessions: laters,
+      doneSessions: dones,
+      children: directChildren,
+    );
+  }
+
+  // Build root nodes (paths without '/')
+  final sortedRootPaths = allGroupPaths.where((p) => !p.contains('/')).toList()
+    ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+
+  final rootFolders = <FleetTreeFolderNode>[];
+  for (final rootPath in sortedRootPaths) {
+    final node = buildNode(rootPath, 0);
+    if (viewMode == FleetViewMode.supervisors) {
+      bool hasSupervisor(FleetTreeFolderNode n) {
+        if (n.supervisors.isNotEmpty) return true;
+        return n.children.any(hasSupervisor);
+      }
+
+      if (hasSupervisor(node)) {
+        rootFolders.add(node);
+      }
+    } else {
+      rootFolders.add(node);
+    }
+  }
+
+  // Unassigned folder if any unassigned sessions
+  if (unassigned.isNotEmpty) {
+    final (sups, tsks, manuals, laters, dones) = partitionSessions(unassigned);
+    rootFolders.add(FleetTreeFolderNode(
+      path: 'Unassigned',
+      name: 'Unassigned',
+      depth: 0,
+      supervisors: sups,
+      tasks: tsks,
+      manualSessions: manuals,
+      laterSessions: laters,
+      doneSessions: dones,
+      children: const [],
+    ));
+  }
+
+  return rootFolders;
+});
+
+/// Grouped sessions by project / category folder (upgraded with fallback to projectDisplayName)
 final groupedSessionsProvider = Provider<Map<String, List<Session>>>((ref) {
   final filtered = ref.watch(filteredSessionsProvider);
+  final nodes = ref.watch(fleetNodesProvider);
   final groups = <String, List<Session>>{};
 
   for (final s in filtered) {
-    final groupKey = s.projectDisplayName;
+    String groupKey = '';
+    if (nodes.isNotEmpty) {
+      groupKey = resolveSessionNodePath(s, nodes, s.host);
+    }
+    if (groupKey.isEmpty) {
+      groupKey = s.projectDisplayName.isNotEmpty
+          ? s.projectDisplayName
+          : (s.nodePath.isNotEmpty ? s.nodePath : 'Unassigned');
+    }
     groups.putIfAbsent(groupKey, () => []).add(s);
   }
   return groups;
+});
+
+// --- Work Board Tasks Provider ---
+
+class TasksNotifier extends StateNotifier<List<WorkTask>> {
+  final ApiClient _apiClient;
+  final Ref _ref;
+  ProviderSubscription<List<HostRecord>>? _hostsSub;
+
+  TasksNotifier(this._apiClient, this._ref) : super(const []) {
+    _initTasks();
+    _hostsSub = _ref.listen<List<HostRecord>>(hostsListProvider, (prev, next) {
+      if (prev == null ||
+          prev.length != next.length ||
+          prev.any((h) => !next.contains(h))) {
+        refreshTasks();
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _hostsSub?.close();
+    super.dispose();
+  }
+
+  void setTasks(List<WorkTask> tasks) {
+    state = tasks;
+  }
+
+  void _initTasks() {
+    refreshTasks();
+  }
+
+  Future<void> refreshTasks() async {
+    final hosts = _ref.read(hostsListProvider);
+    if (hosts.isEmpty) {
+      if (mounted) state = const [];
+      return;
+    }
+
+    final merged = <String, WorkTask>{};
+    for (final host in hosts) {
+      if (!host.online) continue;
+      final hostTasks = await _apiClient.getTasks(
+        host.url,
+        federated: true,
+        authToken: host.authToken,
+      );
+      if (!mounted) return;
+      if (hostTasks != null) {
+        for (final task in hostTasks) {
+          if (!merged.containsKey(task.id) ||
+              task.updatedAt.isAfter(merged[task.id]!.updatedAt)) {
+            merged[task.id] = task;
+          }
+        }
+      }
+    }
+
+    if (mounted) {
+      final list = merged.values.toList();
+      list.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+      state = list;
+    }
+  }
+
+  Future<bool> mergePR(String taskId, {String method = 'squash'}) async {
+    final hosts = _ref.read(hostsListProvider);
+    final targetHost = hosts.firstWhere(
+      (h) => h.online,
+      orElse: () => hosts.isNotEmpty
+          ? hosts.first
+          : HostRecord(
+              name: 'local',
+              url: 'http://127.0.0.1:7777',
+              createdAt: DateTime.fromMillisecondsSinceEpoch(0),
+            ),
+    );
+    final ok = await _apiClient.mergeTaskPR(
+      targetHost.url,
+      taskId: taskId,
+      method: method,
+      authToken: targetHost.authToken,
+    );
+    if (ok) {
+      await refreshTasks();
+    }
+    return ok;
+  }
+}
+
+final tasksProvider =
+    StateNotifierProvider<TasksNotifier, List<WorkTask>>((ref) {
+  final api = ref.watch(apiClientProvider);
+  return TasksNotifier(api, ref);
+});
+
+final taskGroupFilterProvider = StateProvider<String>((ref) => 'all');
+
+/// Discovered top-level group names from nodes and tasks (e.g. Modemobile, Personal)
+final discoveredTaskGroupsProvider = Provider<List<String>>((ref) {
+  final nodes = ref.watch(fleetNodesProvider);
+  final tasks = ref.watch(tasksProvider);
+  final groups = <String>{};
+
+  for (final n in nodes) {
+    if (n.path.isNotEmpty) {
+      final top = n.path.split('/').first;
+      if (top.isNotEmpty) groups.add(top);
+    }
+  }
+
+  for (final t in tasks) {
+    if (t.groupName.isNotEmpty) {
+      groups.add(t.groupName);
+    }
+  }
+
+  final sorted = groups.toList()
+    ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+  return ['all', ...sorted];
+});
+
+/// Pillar-grouped tasks: 'NEW', 'IN_PROGRESS', 'REVIEW', 'DONE'
+final pillarTasksProvider = Provider<Map<String, List<WorkTask>>>((ref) {
+  final allTasks = ref.watch(tasksProvider);
+  final groupFilter = ref.watch(taskGroupFilterProvider);
+
+  final filtered = allTasks.where((t) {
+    if (groupFilter != 'all') {
+      if (t.groupName.toLowerCase() != groupFilter.toLowerCase()) {
+        return false;
+      }
+    }
+    return true;
+  }).toList();
+
+  final pillars = <String, List<WorkTask>>{
+    'NEW': [],
+    'IN_PROGRESS': [],
+    'REVIEW': [],
+    'DONE': [],
+  };
+
+  for (final t in filtered) {
+    final status = t.status.toUpperCase();
+    if (pillars.containsKey(status)) {
+      pillars[status]!.add(t);
+    } else {
+      pillars['NEW']!.add(t);
+    }
+  }
+
+  return pillars;
+});
+
+final audioCompanionServiceProvider =
+    StateNotifierProvider<AudioCompanionService, AudioCompanionState>((ref) {
+  final api = ref.watch(apiClientProvider);
+  return AudioCompanionService(api);
 });
 
 // --- Attention & Plans Badges Counts ---

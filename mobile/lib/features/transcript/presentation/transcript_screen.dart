@@ -9,11 +9,13 @@ import '../../../core/models/session.dart';
 import '../../../core/models/subagent.dart';
 import '../../../core/models/transcript.dart';
 import '../../../core/providers/fleet_providers.dart';
+import '../../../core/services/audio_companion_service.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_typography.dart';
 import '../../../core/widgets/agent_logo.dart';
 import '../../terminal/presentation/terminal_screen.dart';
+import 'speech_companion_bar.dart';
 
 /// Fullscreen interactive Chat-Style Transcript Screen displaying user and agent turns
 /// with right-aligned user bubbles, left-aligned agent responses, collapsible tool calls,
@@ -626,6 +628,35 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
     } catch (_) {}
   }
 
+  Future<void> _speakMessage(
+    int index,
+    String content, {
+    bool forceRefresh = false,
+    bool forceFull = false,
+  }) async {
+    final host = await _resolveHost();
+    final liveSession = _resolveLiveSession();
+    await ref.read(audioCompanionServiceProvider.notifier).speakMessage(
+          liveSession,
+          index,
+          content,
+          forceRefresh: forceRefresh,
+          forceFull: forceFull,
+          hostUrl: host.url,
+          authToken: host.authToken,
+        );
+  }
+
+  void _autoReadLatestAssistantMessage() {
+    final msgs = _transcriptData?.messages ?? [];
+    for (var i = msgs.length - 1; i >= 0; i--) {
+      if (msgs[i].isAssistant && msgs[i].content.trim().isNotEmpty) {
+        _speakMessage(i, msgs[i].content);
+        break;
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     ref.listen<List<Session>>(fleetSessionsProvider, (previous, next) {
@@ -647,6 +678,9 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
         }
         _refreshTranscriptSilently();
         _loadSubagents();
+        if (ref.read(audioCompanionServiceProvider).autoReadEnabled) {
+          _autoReadLatestAssistantMessage();
+        }
       }
     });
 
@@ -658,6 +692,7 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
         _awaitingTurnCompletion ||
         currentSession.state == SessionState.working;
     final messages = _transcriptData?.messages ?? [];
+    final audioCompanion = ref.watch(audioCompanionServiceProvider);
 
     return Scaffold(
       backgroundColor: AppColors.terminalBlack,
@@ -707,6 +742,42 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
           ],
         ),
         actions: [
+          // Auto-Read Audio Companion Toggle
+          IconButton(
+            icon: Icon(
+              audioCompanion.autoReadEnabled
+                  ? Icons.volume_up_rounded
+                  : Icons.volume_off_rounded,
+              size: 20,
+              color: audioCompanion.autoReadEnabled
+                  ? AppColors.infoCyan
+                  : AppColors.textMuted,
+            ),
+            tooltip: audioCompanion.autoReadEnabled
+                ? 'Auto-Read: On'
+                : 'Auto-Read: Off',
+            onPressed: () {
+              ref.read(audioCompanionServiceProvider.notifier).toggleAutoRead();
+            },
+          ),
+
+          // Voice / Mic Companion Toggle
+          IconButton(
+            icon: Icon(
+              audioCompanion.micEnabled
+                  ? Icons.mic_rounded
+                  : Icons.mic_off_rounded,
+              size: 20,
+              color: audioCompanion.micEnabled
+                  ? AppColors.statusCoral
+                  : AppColors.textMuted,
+            ),
+            tooltip: audioCompanion.micEnabled ? 'Mic Active' : 'Mic Off',
+            onPressed: () {
+              ref.read(audioCompanionServiceProvider.notifier).toggleMic();
+            },
+          ),
+
           // Take the Wheel in Terminal (Headless sessions)
           if (currentSession.isHeadless)
             IconButton(
@@ -900,6 +971,7 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
   }
 
   Widget _buildBottomComposer(Session currentSession, bool isWorking) {
+    final audioCompanion = ref.watch(audioCompanionServiceProvider);
     return Container(
       decoration: const BoxDecoration(
         color: AppColors.surface,
@@ -914,6 +986,20 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
+          if (audioCompanion.activeSuggestedChips.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: SpeechCompanionBar(
+                chips: audioCompanion.activeSuggestedChips,
+                onChipSelected: (chip) {
+                  _promptController.text = chip;
+                  _sendPrompt();
+                },
+                onClear: () {
+                  ref.read(audioCompanionServiceProvider.notifier).clearChips();
+                },
+              ),
+            ),
           Row(
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
@@ -1032,7 +1118,7 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
     } else if (message.isUser) {
       return _buildUserMessageBubble(message);
     } else {
-      return _buildAssistantMessageBubble(message);
+      return _buildAssistantMessageBubble(message, index);
     }
   }
 
@@ -1108,8 +1194,12 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
 
   // --- 2. Left-Aligned Agent Response Card ---
 
-  Widget _buildAssistantMessageBubble(TranscriptMessage message) {
+  Widget _buildAssistantMessageBubble(TranscriptMessage message, int index) {
     final timeStr = _formatTimestamp(message.timestamp);
+    final audioCompanion = ref.watch(audioCompanionServiceProvider);
+    final isSpeakingThis =
+        audioCompanion.isSpeaking && audioCompanion.activeMessageIndex == index;
+    final isCached = audioCompanion.isCached(widget.session.id, index);
 
     return Align(
       alignment: Alignment.centerLeft,
@@ -1124,7 +1214,11 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
             bottomLeft: Radius.circular(3),
             bottomRight: Radius.circular(16),
           ),
-          border: Border.all(color: AppColors.outlineSubtle, width: 0.8),
+          border: Border.all(
+            color:
+                isSpeakingThis ? AppColors.infoCyan : AppColors.outlineSubtle,
+            width: isSpeakingThis ? 1.5 : 0.8,
+          ),
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -1175,6 +1269,74 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
                   ),
                 ),
                 const SizedBox(width: 4),
+                if (isSpeakingThis)
+                  IconButton(
+                    icon: const Icon(
+                      Icons.stop_circle_rounded,
+                      size: 16,
+                      color: AppColors.statusCoral,
+                    ),
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(
+                      minWidth: 24,
+                      minHeight: 24,
+                    ),
+                    tooltip: 'Stop speaking',
+                    onPressed: () {
+                      ref
+                          .read(audioCompanionServiceProvider.notifier)
+                          .stopSpeech();
+                    },
+                  )
+                else ...[
+                  IconButton(
+                    icon: const Icon(
+                      Icons.volume_up_rounded,
+                      size: 15,
+                      color: AppColors.textMuted,
+                    ),
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(
+                      minWidth: 24,
+                      minHeight: 24,
+                    ),
+                    tooltip: 'Read aloud',
+                    onPressed: () => _speakMessage(index, message.content),
+                  ),
+                  if (isCached) ...[
+                    IconButton(
+                      icon: const Icon(
+                        Icons.replay_rounded,
+                        size: 14,
+                        color: AppColors.infoCyan,
+                      ),
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(
+                        minWidth: 24,
+                        minHeight: 24,
+                      ),
+                      tooltip: 'Read again',
+                      onPressed: () => _speakMessage(index, message.content,
+                          forceRefresh: true),
+                    ),
+                    IconButton(
+                      icon: const Icon(
+                        Icons.article_outlined,
+                        size: 14,
+                        color: AppColors.infoCyan,
+                      ),
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(
+                        minWidth: 24,
+                        minHeight: 24,
+                      ),
+                      tooltip: 'Read unabridged full text',
+                      onPressed: () => _speakMessage(index, message.content,
+                          forceFull: true),
+                    ),
+                  ],
+                ],
+                const SizedBox(width: 2),
                 IconButton(
                   icon: const Icon(
                     Icons.copy_rounded,

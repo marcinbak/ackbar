@@ -204,9 +204,21 @@ void main() {
     test('getNodes returns decoded project tree nodes', () async {
       final mockClient = MockClient((request) async {
         expect(request.url.path, equals('/v1/nodes'));
+        expect(request.url.queryParameters['federated'], equals('true'));
         final body = jsonEncode([
-          {'name': 'Mobile Client', 'type': 'project'},
-          {'name': 'Backend Server', 'type': 'subproject'},
+          {
+            'path': 'Personal/Ackbar',
+            'project_dir': '/home/dev4u/Personal/ackbar',
+            'git_url': 'https://github.com/marcinbak/ackbar.git',
+            'created_at': '2026-11-01T10:00:00Z',
+            'updated_at': '2026-11-01T10:00:00Z',
+          },
+          {
+            'path': 'Work/ProjectY',
+            'project_dir': '/home/dev4u/Work/ProjectY',
+            'created_at': '2026-11-01T10:00:00Z',
+            'updated_at': '2026-11-01T10:00:00Z',
+          },
         ]);
         return http.Response(body, 200);
       });
@@ -214,8 +226,83 @@ void main() {
       final api = ApiClient(client: mockClient);
       final nodes = await api.getNodes('http://127.0.0.1:7777');
 
-      expect(nodes.length, equals(2));
-      expect(nodes[0]['name'], equals('Mobile Client'));
+      expect(nodes, isNotNull);
+      expect(nodes!.length, equals(2));
+      expect(nodes[0].path, equals('Personal/Ackbar'));
+      expect(nodes[0].projectDir, equals('/home/dev4u/Personal/ackbar'));
+      expect(
+          nodes[0].gitUrl, equals('https://github.com/marcinbak/ackbar.git'));
+    });
+
+    test('getTasks returns work board tasks', () async {
+      final mockClient = MockClient((request) async {
+        expect(request.url.path, equals('/v1/tasks'));
+        expect(request.url.queryParameters['federated'], equals('true'));
+        final body = jsonEncode([
+          {
+            'id': 'task-1',
+            'title': 'Feature Alignment',
+            'group_name': 'Personal',
+            'status': 'IN_PROGRESS',
+            'substatus': 'working',
+            'created_at': '2026-11-01T10:00:00Z',
+            'updated_at': '2026-11-01T10:00:00Z',
+          }
+        ]);
+        return http.Response(body, 200);
+      });
+
+      final api = ApiClient(client: mockClient);
+      final tasks = await api.getTasks('http://127.0.0.1:7777');
+
+      expect(tasks, isNotNull);
+      expect(tasks!.length, equals(1));
+      expect(tasks[0].id, equals('task-1'));
+      expect(tasks[0].title, equals('Feature Alignment'));
+    });
+
+    test('mergeTaskPR posts to /v1/tasks/merge-pr', () async {
+      final mockClient = MockClient((request) async {
+        expect(request.url.path, equals('/v1/tasks/merge-pr'));
+        final decoded = jsonDecode(request.body);
+        expect(decoded['task_id'], equals('task-1'));
+        expect(decoded['method'], equals('squash'));
+        return http.Response('{"status":"merged"}', 200);
+      });
+
+      final api = ApiClient(client: mockClient);
+      final ok =
+          await api.mergeTaskPR('http://127.0.0.1:7777', taskId: 'task-1');
+      expect(ok, isTrue);
+    });
+
+    test('summarizeSpeech posts to /v1/sessions/summarize-speech', () async {
+      final mockClient = MockClient((request) async {
+        expect(request.url.path, equals('/v1/sessions/summarize-speech'));
+        final decoded = jsonDecode(request.body);
+        expect(decoded['session_id'], equals('sess-1'));
+        expect(decoded['message_index'], equals(2));
+        expect(decoded['content'], equals('# Title\nSome content'));
+        return http.Response(
+            jsonEncode({
+              'spoken_text': 'Title. Some content.',
+              'suggested_chips': ['View Code', 'Done'],
+              'tier': 'structural',
+              'cached': false,
+            }),
+            200);
+      });
+
+      final api = ApiClient(client: mockClient);
+      final res = await api.summarizeSpeech(
+        'http://127.0.0.1:7777',
+        sessionId: 'sess-1',
+        messageIndex: 2,
+        content: '# Title\nSome content',
+      );
+      expect(res, isNotNull);
+      expect(res!['spoken_text'], equals('Title. Some content.'));
+      expect(res['suggested_chips'], equals(['View Code', 'Done']));
     });
 
     test(

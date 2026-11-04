@@ -6,11 +6,9 @@ import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_typography.dart';
 import '../../../core/widgets/ackbar_app_bar.dart';
-import '../../../core/widgets/agent_logo.dart';
-import '../../../core/widgets/glass_card.dart';
 import '../../../core/widgets/segmented_filter_tabs.dart';
-import '../../../core/widgets/status_badge.dart';
-import '../../../core/widgets/token_gauge_bar.dart';
+import '../../transcript/presentation/transcript_screen.dart';
+import 'fleet_tree_view.dart';
 import 'new_session_sheet.dart';
 import 'session_detail_sheet.dart';
 
@@ -25,13 +23,14 @@ class FleetScreen extends ConsumerStatefulWidget {
 
 class _FleetScreenState extends ConsumerState<FleetScreen> {
   final TextEditingController _searchController = TextEditingController();
-  final Set<String> _collapsedFolders = {};
 
   @override
   void initState() {
     super.initState();
     Future.microtask(() {
+      ref.read(hostsListProvider.notifier).refreshHosts();
       ref.read(fleetSessionsProvider.notifier).refreshSessions();
+      ref.read(fleetNodesProvider.notifier).refreshNodes();
     });
   }
 
@@ -41,21 +40,28 @@ class _FleetScreenState extends ConsumerState<FleetScreen> {
     super.dispose();
   }
 
-  void _toggleFolder(String folderName) {
-    setState(() {
-      if (_collapsedFolders.contains(folderName)) {
-        _collapsedFolders.remove(folderName);
-      } else {
-        _collapsedFolders.add(folderName);
-      }
-    });
+  Future<void> _spawnSupervisor() async {
+    final scaffoldMessenger = ScaffoldMessenger.of(context);
+    scaffoldMessenger.showSnackBar(
+      const SnackBar(
+        content: Text('Spawning zero-input supervisor...'),
+        duration: Duration(seconds: 1),
+      ),
+    );
+    final spawned = await ref
+        .read(fleetSessionsProvider.notifier)
+        .spawnZeroInputSupervisor();
+    if (spawned != null && mounted) {
+      await TranscriptScreen.open(context, spawned);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     final allSessions = ref.watch(fleetSessionsProvider);
     final activeSessions = allSessions.where((s) => !s.archived).toList();
-    final groupedSessions = ref.watch(groupedSessionsProvider);
+    final fleetTree = ref.watch(fleetTreeProvider);
+    final viewMode = ref.watch(fleetViewModeProvider);
     final filterIndex = ref.watch(fleetFilterIndexProvider);
     final hosts = ref.watch(hostsListProvider);
 
@@ -83,6 +89,18 @@ class _FleetScreenState extends ConsumerState<FleetScreen> {
         title: 'FLEET CONTROL',
         actions: [
           IconButton(
+            icon: const Text(
+              '⚓+',
+              style: TextStyle(
+                fontSize: 15,
+                fontWeight: FontWeight.bold,
+                color: AppColors.infoCyan,
+              ),
+            ),
+            tooltip: '1-Tap New Supervisor',
+            onPressed: _spawnSupervisor,
+          ),
+          IconButton(
             icon: const Icon(Icons.add_circle_outline_rounded,
                 size: 20, color: AppColors.infoCyan),
             tooltip: 'Launch New Session',
@@ -96,18 +114,113 @@ class _FleetScreenState extends ConsumerState<FleetScreen> {
         onRefresh: () async {
           await ref.read(hostsListProvider.notifier).refreshHosts();
           await ref.read(fleetSessionsProvider.notifier).refreshSessions();
+          await ref.read(fleetNodesProvider.notifier).refreshNodes();
         },
         child: CustomScrollView(
           physics: const BouncingScrollPhysics(
               parent: AlwaysScrollableScrollPhysics()),
           slivers: [
+            // View Mode Switcher: All Tree vs Supervisors
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.only(
+                  left: AppSpacing.lg,
+                  right: AppSpacing.lg,
+                  top: AppSpacing.sm,
+                  bottom: AppSpacing.xs,
+                ),
+                child: Container(
+                  padding: const EdgeInsets.all(3),
+                  decoration: BoxDecoration(
+                    color: AppColors.surface,
+                    borderRadius: BorderRadius.circular(10),
+                    border:
+                        Border.all(color: AppColors.outlineSubtle, width: 1),
+                  ),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: InkWell(
+                          key: const Key('fleet_view_mode_all'),
+                          onTap: () {
+                            ref.read(fleetViewModeProvider.notifier).state =
+                                FleetViewMode.all;
+                          },
+                          borderRadius: BorderRadius.circular(7),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(vertical: 6),
+                            decoration: BoxDecoration(
+                              color: viewMode == FleetViewMode.all
+                                  ? AppColors.surfaceHighlight
+                                  : Colors.transparent,
+                              borderRadius: BorderRadius.circular(7),
+                            ),
+                            alignment: Alignment.center,
+                            child: Text(
+                              '🌐 All Tree',
+                              style: AppTypography.codeXs.copyWith(
+                                fontWeight: viewMode == FleetViewMode.all
+                                    ? FontWeight.w700
+                                    : FontWeight.w500,
+                                color: viewMode == FleetViewMode.all
+                                    ? AppColors.textPrimary
+                                    : AppColors.textMuted,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                      Expanded(
+                        child: InkWell(
+                          key: const Key('fleet_view_mode_supervisors'),
+                          onTap: () {
+                            ref.read(fleetViewModeProvider.notifier).state =
+                                FleetViewMode.supervisors;
+                          },
+                          borderRadius: BorderRadius.circular(7),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(vertical: 6),
+                            decoration: BoxDecoration(
+                              color: viewMode == FleetViewMode.supervisors
+                                  ? AppColors.infoCyan.withOpacity(0.18)
+                                  : Colors.transparent,
+                              borderRadius: BorderRadius.circular(7),
+                              border: viewMode == FleetViewMode.supervisors
+                                  ? Border.all(
+                                      color:
+                                          AppColors.infoCyan.withOpacity(0.4),
+                                      width: 0.8)
+                                  : null,
+                            ),
+                            alignment: Alignment.center,
+                            child: Text(
+                              '⚓ Supervisors',
+                              style: AppTypography.codeXs.copyWith(
+                                fontWeight:
+                                    viewMode == FleetViewMode.supervisors
+                                        ? FontWeight.w700
+                                        : FontWeight.w500,
+                                color: viewMode == FleetViewMode.supervisors
+                                    ? AppColors.infoCyan
+                                    : AppColors.textMuted,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+
             // Search Filter Bar
             SliverToBoxAdapter(
               child: Padding(
                 padding: const EdgeInsets.only(
                   left: AppSpacing.lg,
                   right: AppSpacing.lg,
-                  top: AppSpacing.md,
+                  top: AppSpacing.xs,
                   bottom: AppSpacing.xs,
                 ),
                 child: Container(
@@ -169,7 +282,7 @@ class _FleetScreenState extends ConsumerState<FleetScreen> {
             ),
 
             // Grouped Project Folders & Sessions List
-            if (groupedSessions.isEmpty)
+            if (fleetTree.isEmpty)
               SliverFillRemaining(
                 hasScrollBody: false,
                 child: Center(
@@ -240,115 +353,23 @@ class _FleetScreenState extends ConsumerState<FleetScreen> {
               SliverPadding(
                 padding: const EdgeInsets.symmetric(
                     horizontal: AppSpacing.lg, vertical: AppSpacing.xs),
-                sliver: SliverList(
-                  delegate: SliverChildBuilderDelegate(
-                    (context, index) {
-                      final folderName = groupedSessions.keys.elementAt(index);
-                      final sessionsInFolder = groupedSessions[folderName]!;
-                      final isCollapsed =
-                          _collapsedFolders.contains(folderName);
-
-                      return Padding(
-                        padding: const EdgeInsets.only(bottom: AppSpacing.lg),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            // Collapsible Folder Header
-                            InkWell(
-                              onTap: () => _toggleFolder(folderName),
-                              borderRadius: AppSpacing.roundedSm,
-                              child: Padding(
-                                padding: const EdgeInsets.symmetric(
-                                    vertical: 6.0, horizontal: 2.0),
-                                child: Row(
-                                  children: [
-                                    Icon(
-                                      isCollapsed
-                                          ? Icons.folder_rounded
-                                          : Icons.folder_open_rounded,
-                                      size: 16,
-                                      color: AppColors.infoCyan,
-                                    ),
-                                    const SizedBox(width: 8),
-                                    Text(
-                                      folderName.toUpperCase(),
-                                      style: AppTypography.codeXs.copyWith(
-                                        letterSpacing: 0.8,
-                                        fontWeight: FontWeight.w700,
-                                        color: AppColors.textPrimary,
-                                      ),
-                                    ),
-                                    const SizedBox(width: 8),
-                                    Container(
-                                      padding: const EdgeInsets.symmetric(
-                                          horizontal: 6, vertical: 1),
-                                      decoration: BoxDecoration(
-                                        color: AppColors.surfaceHighlight,
-                                        borderRadius: BorderRadius.circular(10),
-                                        border: Border.all(
-                                            color: AppColors.outlineSubtle,
-                                            width: 0.5),
-                                      ),
-                                      child: Text(
-                                        '${sessionsInFolder.length}',
-                                        style: AppTypography.codeXs.copyWith(
-                                          fontSize: 9.5,
-                                          color: AppColors.infoCyan,
-                                          fontWeight: FontWeight.w700,
-                                        ),
-                                      ),
-                                    ),
-                                    const Spacer(),
-                                    InkWell(
-                                      onTap: () {
-                                        final firstSess =
-                                            sessionsInFolder.firstOrNull;
-                                        NewSessionSheet.show(
-                                          context,
-                                          prefillFolder: folderName,
-                                          prefillCwd: firstSess?.cwd,
-                                          prefillHost: firstSess?.host,
-                                        );
-                                      },
-                                      borderRadius: BorderRadius.circular(12),
-                                      child: const Padding(
-                                        padding: EdgeInsets.symmetric(
-                                            horizontal: 6, vertical: 2),
-                                        child: Icon(
-                                          Icons.add_circle_outline_rounded,
-                                          size: 16,
-                                          color: AppColors.infoCyan,
-                                        ),
-                                      ),
-                                    ),
-                                    const SizedBox(width: 4),
-                                    Icon(
-                                      isCollapsed
-                                          ? Icons.expand_more_rounded
-                                          : Icons.expand_less_rounded,
-                                      size: 18,
-                                      color: AppColors.textMuted,
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ),
-                            AppSpacing.gapH6,
-
-                            // Session cards inside folder
-                            if (!isCollapsed)
-                              ...sessionsInFolder.map((session) {
-                                return Padding(
-                                  padding: const EdgeInsets.only(
-                                      bottom: AppSpacing.md),
-                                  child: _buildSessionCard(session),
-                                );
-                              }),
-                          ],
-                        ),
+                sliver: SliverToBoxAdapter(
+                  child: FleetTreeView(
+                    rootFolders: fleetTree,
+                    hosts: hosts,
+                    onSessionTap: (session) =>
+                        SessionDetailSheet.show(context, session),
+                    onAddSession: (folderPath) {
+                      final matchingSession = allSessions
+                          .where((s) => s.nodePath.startsWith(folderPath))
+                          .firstOrNull;
+                      NewSessionSheet.show(
+                        context,
+                        prefillFolder: folderPath,
+                        prefillCwd: matchingSession?.cwd,
+                        prefillHost: matchingSession?.host,
                       );
                     },
-                    childCount: groupedSessions.length,
                   ),
                 ),
               ),
@@ -372,188 +393,6 @@ class _FleetScreenState extends ConsumerState<FleetScreen> {
             letterSpacing: 0.6,
           ),
         ),
-      ),
-    );
-  }
-
-  Widget _buildSessionCard(Session session) {
-    final statusColor = session.state.toBadgeStatus().color;
-
-    return GlassCard(
-      accentColor: statusColor,
-      onTap: () => SessionDetailSheet.show(context, session),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // Top Tags & Status Row
-          Row(
-            children: [
-              // Host Tag
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                decoration: BoxDecoration(
-                  color: AppColors.surfaceHighlight,
-                  borderRadius: AppSpacing.roundedSm,
-                  border:
-                      Border.all(color: AppColors.outlineSubtle, width: 0.5),
-                ),
-                child: Text(
-                  session.hostTag,
-                  style: AppTypography.codeXs.copyWith(
-                    color: AppColors.infoCyan,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-              ),
-              const SizedBox(width: 6),
-
-              // Agent Badge
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                decoration: BoxDecoration(
-                  color: session.agentColor.withOpacity(0.12),
-                  borderRadius: AppSpacing.roundedSm,
-                  border: Border.all(
-                      color: session.agentColor.withOpacity(0.3), width: 0.8),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    AgentLogo(
-                        agent: session.agent,
-                        size: 10,
-                        color: session.agentColor),
-                    const SizedBox(width: 4),
-                    Text(
-                      session.agentDisplayName,
-                      style: AppTypography.codeXs.copyWith(
-                        color: session.agentColor,
-                        fontWeight: FontWeight.w600,
-                        fontSize: 10,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-
-              if (session.gitBranch.isNotEmpty) ...[
-                const SizedBox(width: 6),
-                Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
-                  decoration: BoxDecoration(
-                    color: AppColors.surfaceHighlight,
-                    borderRadius: AppSpacing.roundedSm,
-                  ),
-                  child: Text(
-                    session.gitBranch,
-                    style: AppTypography.codeXs.copyWith(
-                      color: AppColors.textSecondary,
-                      fontSize: 10,
-                    ),
-                  ),
-                ),
-              ],
-
-              const Spacer(),
-              if (session.isUnread) ...[
-                Container(
-                  width: 8,
-                  height: 8,
-                  margin: const EdgeInsets.only(right: 6),
-                  decoration: const BoxDecoration(
-                    color: AppColors.infoCyan,
-                    shape: BoxShape.circle,
-                    boxShadow: [
-                      BoxShadow(
-                        color: Color(0x9906B6D4),
-                        blurRadius: 6,
-                        spreadRadius: 1,
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-              StatusBadge(
-                  status: session.state.toBadgeStatus(), isCompact: true),
-            ],
-          ),
-          AppSpacing.gapH8,
-
-          // Session title
-          Text(
-            session.displayTitle,
-            style: AppTypography.titleMedium.copyWith(
-              color: AppColors.textPrimary,
-              fontWeight: FontWeight.w600,
-            ),
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
-          ),
-          AppSpacing.gapH6,
-
-          // Activity Line
-          if (session.activity.isNotEmpty)
-            Row(
-              children: [
-                Icon(
-                  session.isBlocked
-                      ? Icons.help_outline_rounded
-                      : Icons.bolt_rounded,
-                  size: 13,
-                  color: statusColor,
-                ),
-                const SizedBox(width: 4),
-                Expanded(
-                  child: Text(
-                    session.activity,
-                    style: AppTypography.codeXs.copyWith(
-                      color: session.isBlocked
-                          ? AppColors.statusCoral
-                          : AppColors.textSecondary,
-                      fontSize: 11,
-                    ),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-              ],
-            ),
-          AppSpacing.gapH6,
-
-          // Directory path & runtime clock
-          Row(
-            children: [
-              const Icon(Icons.folder_outlined,
-                  size: 12, color: AppColors.textMuted),
-              const SizedBox(width: 4),
-              Expanded(
-                child: Text(
-                  session.cwd,
-                  style: AppTypography.codeXs.copyWith(
-                    color: AppColors.textMuted,
-                    fontSize: 10.5,
-                  ),
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-              Text(
-                '⏱ ${session.timeElapsedFormatted}',
-                style: AppTypography.codeXs.copyWith(
-                  color: AppColors.textSecondary,
-                  fontSize: 10.5,
-                ),
-              ),
-            ],
-          ),
-          AppSpacing.gapH12,
-
-          // Gradient Token / Context Usage Bar
-          TokenGaugeBar(
-            percentage: session.contextPct / 100.0,
-            isCompact: true,
-          ),
-        ],
       ),
     );
   }

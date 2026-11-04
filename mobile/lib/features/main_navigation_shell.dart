@@ -11,6 +11,7 @@ import 'fleet/presentation/session_detail_sheet.dart';
 import 'hosts/presentation/hosts_screen.dart';
 import 'plans/presentation/plan_diff_viewer_modal.dart';
 import 'plans/presentation/plans_screen.dart';
+import 'tasks/presentation/work_board_screen.dart';
 
 /// Root navigation shell managing bottom navigation state and preserved screens via IndexedStack.
 class MainNavigationShell extends ConsumerStatefulWidget {
@@ -28,7 +29,7 @@ class _MainNavigationShellState extends ConsumerState<MainNavigationShell>
   static const List<Widget> _screens = [
     FleetScreen(),
     AttentionScreen(),
-    PlansScreen(),
+    WorkBoardScreen(),
     HostsScreen(),
   ];
 
