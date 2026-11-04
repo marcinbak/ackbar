@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Spawn creates a new detached tmux session with the given name, running the command in the specified directory.
@@ -29,18 +30,20 @@ func SpawnWithEnv(ctx context.Context, sessionName, cwd, command string, env map
 	if command != "" {
 		cdPrefix := ""
 		if cwd != "" {
-			cdPrefix = fmt.Sprintf("cd %q 2>/dev/null || true; ", cwd)
+			cdPrefix = fmt.Sprintf("cd %s 2>/dev/null || true; ", shellSingleQuote(cwd))
 		}
 		envExports := ""
 		if len(env) > 0 {
 			keys := make([]string, 0, len(env))
 			for k := range env {
-				keys = append(keys, k)
+				if isValidEnvKey(k) {
+					keys = append(keys, k)
+				}
 			}
 			sort.Strings(keys)
 			for _, k := range keys {
 				v := env[k]
-				envExports += fmt.Sprintf("export %s=%q; ", k, v)
+				envExports += fmt.Sprintf("export %s=%s; ", k, shellSingleQuote(v))
 			}
 		}
 		args = append(args, "bash", "-l", "-c", fmt.Sprintf("%sexport PATH=\"/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/.npm-global/bin:$PATH\"; %s%s; exec bash -l", cdPrefix, envExports, command))
@@ -67,6 +70,28 @@ func exactSessionTarget(sessionName string) string {
 		return sessionName
 	}
 	return "=" + sessionName
+}
+
+func shellSingleQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+}
+
+func isValidEnvKey(k string) bool {
+	if k == "" {
+		return false
+	}
+	for i, r := range k {
+		if i == 0 {
+			if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || r == '_') {
+				return false
+			}
+		} else {
+			if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_') {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func Kill(ctx context.Context, sessionName string) error {
@@ -172,6 +197,13 @@ func SendInput(ctx context.Context, sessionName string, text string, pressEnter 
 
 		if err := cmd.Run(); err != nil {
 			return fmt.Errorf("failed to send literal input to tmux session %s: %w (stderr: %s)", sessionName, err, stderr.String())
+		}
+		if pressEnter {
+			select {
+			case <-time.After(150 * time.Millisecond):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
 		}
 	}
 	if pressEnter {

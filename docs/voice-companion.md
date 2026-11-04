@@ -52,7 +52,7 @@ Currently, `internal/mcp/tools.go` only exposes basic Task Board status tools (`
 | **`list_sessions`** | `GET /v1/sessions?federated=true` | List active, blocked, or idle sessions across all hosts with current activity, context %, and blocker questions. |
 | **`get_session_output`** | `GET /v1/sessions/transcript` | Fetch the latest 1–3 assistant messages, active implementation plan, or current blocker options for a session. |
 | **`send_session_input`** | `POST /v1/sessions/respond` / PTY | Answer a blocked question (e.g. `"Option 1"`), approve a plan, or send a follow-up prompt to an idle/working session. |
-| **`spawn_session`** | `POST /v1/meta/resolve` + `/v1/sessions/spawn` | Start a new coding session on a target host and project directory with an initial prompt. |
+| **`spawn_session`** | `POST /v1/meta/resolve` + `/v1/sessions/spawn` | Start a new coding session on a target host and project directory with an initial prompt (injected at CLI launch via `$ACKBAR_INIT_PROMPT` for `claude-code` and `antigravity`, with automatic capability routing for `-ios`/`-android` repo paths). |
 | **`control_session`** | `POST /v1/sessions/control` & `/handover` | Execute lifecycle actions (`resume`, `restart`, `kill`, `handover`, `done`, `later`). |
 
 ### 3.2 Zero-Input Supervisor Dispatcher & Task Orchestration Tools
@@ -62,7 +62,7 @@ See [`docs/work-overview/01-data-model-and-lifecycle.md`](work-overview/01-data-
 | MCP Tool | Backing `ackbard` Endpoint | Supervisor / Worker Use Case |
 | :--- | :--- | :--- |
 | **`bind_supervisor_session`** | `POST /v1/sessions/bind-supervisor` | Auto-binds a zero-input `⚓ Supervisor` session to a project (`is_supervisor=1`) and sets its title on the first user message. |
-| **`create_task`** | `POST /v1/tasks` | Creates a Product/Design (`kind="design"`) or Code (`kind="code"`) task with optional `agent` runtime and `prompt` instructions, auto-binding unbound supervisors and spawning dedicated `📋 Task` workers (`depends_on` sequential chain supported). |
+| **`create_task`** | `POST /v1/tasks` | Creates a Product/Design (`kind="design"`) or Code (`kind="code"`) task with optional `agent` runtime and `prompt` instructions, auto-binding unbound supervisors, spawning dedicated `📋 Task` workers (`depends_on` sequential chain supported), and immediately transitioning `auto_start` tasks to `IN_PROGRESS` (`active`). |
 | **`attach_deliverable`** | `POST /v1/tasks/deliverable` | Attaches **Claude Published Artifacts** (`url`) or **Google Workspace / Drive** files (`gdrive`, `gdocs`, `gslides`, `gsheets`) + synced `content_md` for cross-host learnings handoff. |
 
 ### 3.3 Uniform 3-Way LWW Peer Sync (`macbook` $\leftrightarrow$ `macmini` $\leftrightarrow$ `legion`)

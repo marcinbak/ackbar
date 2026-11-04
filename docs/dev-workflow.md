@@ -77,7 +77,8 @@ Excluded flows and why:
 
 | Key | Value |
 |---|---|
-| announce_channel | none — personal open-source project; PRs reviewed and merged directly on GitHub by `@marcinbak` |
+| merge_policy | `auto` — once T0 gates, N6–N8 three-way review, and CI checks pass, agents automatically merge PRs (`gh pr merge --squash --delete-branch`) and clean up the worktree |
+| announce_channel | none — personal open-source project |
 | cc_resolution | none |
 | doc_update_targets | `AGENTS.md` (conventions, package layout), `docs/*.md` (architecture, daemon, providers, web, mobile, tui, backlog) |
 

@@ -177,7 +177,7 @@ func (a ClaudeAgentAdapter) IsIgnoredCommand(fullCmd string) bool {
 
 func (a ClaudeAgentAdapter) MatchProcessCommand(binLower, cmdLower string) bool {
 	if binLower == "claude" || ((binLower == "node" || binLower == "bun") && (strings.Contains(cmdLower, "@anthropic-ai/claude-code") || strings.Contains(cmdLower, "claude-code") || strings.Contains(cmdLower, "/claude.js") || strings.Contains(cmdLower, "bin/claude"))) {
-		if !strings.Contains(cmdLower, "ackbar") && !strings.Contains(cmdLower, "jest-worker") && !strings.Contains(cmdLower, "react-native") && !strings.Contains(cmdLower, "yarn") {
+		if !isAckbarInternalProcess(binLower, cmdLower) && !strings.Contains(cmdLower, "jest-worker") && !strings.Contains(cmdLower, "react-native") && !strings.Contains(cmdLower, "yarn") {
 			return true
 		}
 	}
