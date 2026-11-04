@@ -81,7 +81,25 @@ CREATE TABLE IF NOT EXISTS hosts (
 	url TEXT,
 	ssh_target TEXT,
 	remote_cwd TEXT,
+	policy_tags TEXT DEFAULT '[]',
+	routing_weight INTEGER DEFAULT -1,
+	detected_capabilities TEXT DEFAULT '[]',
+	updated_at TIMESTAMP,
 	created_at TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS host_load_metrics (
+	host TEXT NOT NULL,
+	bucket_start TIMESTAMP NOT NULL,
+	bucket_sec INTEGER NOT NULL DEFAULT 300,
+	avg_working_sessions REAL NOT NULL DEFAULT 0,
+	max_working_sessions INTEGER NOT NULL DEFAULT 0,
+	avg_cpu_pct REAL NOT NULL DEFAULT 0,
+	max_cpu_pct REAL NOT NULL DEFAULT 0,
+	min_ram_free_gb REAL NOT NULL DEFAULT 0,
+	sample_count INTEGER NOT NULL DEFAULT 1,
+	tasks_spawned_count INTEGER NOT NULL DEFAULT 0,
+	PRIMARY KEY (host, bucket_start, bucket_sec)
 );
 
 CREATE TABLE IF NOT EXISTS deleted_sessions (
@@ -311,6 +329,24 @@ func InitDB(dbPath string) (*DB, error) {
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		PRIMARY KEY (session_id, message_index)
 	);`)
+	_, _ = db.Exec("ALTER TABLE hosts ADD COLUMN policy_tags TEXT DEFAULT '[]';")
+	_, _ = db.Exec("ALTER TABLE hosts ADD COLUMN routing_weight INTEGER DEFAULT -1;")
+	_, _ = db.Exec("ALTER TABLE hosts ADD COLUMN detected_capabilities TEXT DEFAULT '[]';")
+	_, _ = db.Exec("ALTER TABLE hosts ADD COLUMN updated_at TIMESTAMP;")
+	_, _ = db.Exec(`CREATE TABLE IF NOT EXISTS host_load_metrics (
+		host TEXT NOT NULL,
+		bucket_start TIMESTAMP NOT NULL,
+		bucket_sec INTEGER NOT NULL DEFAULT 300,
+		avg_working_sessions REAL NOT NULL DEFAULT 0,
+		max_working_sessions INTEGER NOT NULL DEFAULT 0,
+		avg_cpu_pct REAL NOT NULL DEFAULT 0,
+		max_cpu_pct REAL NOT NULL DEFAULT 0,
+		min_ram_free_gb REAL NOT NULL DEFAULT 0,
+		sample_count INTEGER NOT NULL DEFAULT 1,
+		tasks_spawned_count INTEGER NOT NULL DEFAULT 0,
+		PRIMARY KEY (host, bucket_start, bucket_sec)
+	);`)
+	_, _ = db.Exec("CREATE INDEX IF NOT EXISTS idx_host_load_metrics_bucket ON host_load_metrics(bucket_start);")
 	d := &DB{db: db}
 	if _, err := d.PruneAllLegacyTasksOnce(); err != nil {
 		log.Printf("[InitDB] Warning: PruneAllLegacyTasksOnce failed: %v", err)
@@ -1258,24 +1294,125 @@ func (d *DB) ListNodeHostPaths(nodePath string) ([]NodeHostPath, error) {
 	return result, rows.Err()
 }
 
+func DefaultHostPolicy(hostName string) (policyTags []string, weight int) {
+	lower := strings.ToLower(strings.TrimSpace(hostName))
+	if idx := strings.LastIndex(lower, "@"); idx != -1 {
+		lower = lower[idx+1:]
+	}
+	switch {
+	case strings.Contains(lower, "legion"):
+		return []string{"24/7"}, 75
+	case strings.Contains(lower, "macmini") || strings.Contains(lower, "mini"):
+		return []string{"24/7"}, 25
+	case strings.Contains(lower, "macbook") || strings.Contains(lower, "laptop"):
+		return []string{"ephemeral"}, 0
+	default:
+		return []string{"24/7"}, 50
+	}
+}
+
 func (d *DB) SaveHost(h *HostRecord) error {
+	if h.CreatedAt.IsZero() {
+		h.CreatedAt = time.Now().UTC()
+	}
+	if h.UpdatedAt.IsZero() {
+		h.UpdatedAt = time.Now().UTC()
+	}
+
+	// Preserve existing policy_tags, routing_weight, and detected_capabilities if not provided in update
+	existing, _ := d.GetHost(h.Name)
+	if len(h.PolicyTags) == 0 {
+		if existing != nil && len(existing.PolicyTags) > 0 {
+			h.PolicyTags = existing.PolicyTags
+		} else {
+			defTags, _ := DefaultHostPolicy(h.Name)
+			h.PolicyTags = defTags
+		}
+	}
+	if !h.HasExplicitWeight && h.RoutingWeight == 0 {
+		if existing != nil && existing.HasExplicitWeight {
+			h.RoutingWeight = existing.RoutingWeight
+			h.HasExplicitWeight = true
+		} else {
+			_, defWeight := DefaultHostPolicy(h.Name)
+			// If policy_tags explicitly omits 24/7 and has ephemeral, default weight is 0
+			isEphemeral := false
+			has247 := false
+			for _, t := range h.PolicyTags {
+				if strings.EqualFold(t, "ephemeral") {
+					isEphemeral = true
+				}
+				if strings.EqualFold(t, "24/7") || strings.EqualFold(t, "always_on") || strings.EqualFold(t, "always-on") {
+					has247 = true
+				}
+			}
+			if isEphemeral && !has247 {
+				h.RoutingWeight = 0
+			} else {
+				h.RoutingWeight = defWeight
+			}
+		}
+	}
+	if len(h.DetectedCapabilities) == 0 && existing != nil && len(existing.DetectedCapabilities) > 0 {
+		h.DetectedCapabilities = existing.DetectedCapabilities
+	}
+	if h.URL == "" && existing != nil && existing.URL != "" {
+		h.URL = existing.URL
+	}
+	if h.SSHTarget == "" && existing != nil && existing.SSHTarget != "" {
+		h.SSHTarget = existing.SSHTarget
+	}
+	if h.RemoteCwd == "" && existing != nil && existing.RemoteCwd != "" {
+		h.RemoteCwd = existing.RemoteCwd
+	}
+
+	policyJSON, _ := json.Marshal(h.PolicyTags)
+	capsJSON, _ := json.Marshal(h.DetectedCapabilities)
+
 	query := `
-	INSERT INTO hosts (name, url, ssh_target, remote_cwd, created_at)
-	VALUES (?, ?, ?, ?, ?)
+	INSERT INTO hosts (name, url, ssh_target, remote_cwd, policy_tags, routing_weight, detected_capabilities, updated_at, created_at)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(name) DO UPDATE SET
 		url=excluded.url,
 		ssh_target=excluded.ssh_target,
-		remote_cwd=excluded.remote_cwd;
+		remote_cwd=excluded.remote_cwd,
+		policy_tags=excluded.policy_tags,
+		routing_weight=excluded.routing_weight,
+		detected_capabilities=excluded.detected_capabilities,
+		updated_at=excluded.updated_at;
 	`
-	_, err := d.db.Exec(query, h.Name, h.URL, h.SSHTarget, h.RemoteCwd, h.CreatedAt)
+	_, err := d.db.Exec(query, h.Name, h.URL, h.SSHTarget, h.RemoteCwd, string(policyJSON), h.RoutingWeight, string(capsJSON), h.UpdatedAt, h.CreatedAt)
 	if err != nil {
 		return fmt.Errorf("failed to save host: %w", err)
 	}
 	return nil
 }
 
+func hydrateHostRecordDefaults(h *HostRecord, policyTagsStr, capsStr sql.NullString, routingWeightVal sql.NullInt64, updatedAt sql.NullTime) {
+	if policyTagsStr.Valid && policyTagsStr.String != "" && policyTagsStr.String != "[]" && policyTagsStr.String != "null" {
+		_ = json.Unmarshal([]byte(policyTagsStr.String), &h.PolicyTags)
+	}
+	if len(h.PolicyTags) == 0 {
+		defTags, _ := DefaultHostPolicy(h.Name)
+		h.PolicyTags = defTags
+	}
+	if routingWeightVal.Valid && routingWeightVal.Int64 >= 0 {
+		h.RoutingWeight = int(routingWeightVal.Int64)
+		h.HasExplicitWeight = true
+	} else {
+		_, defWeight := DefaultHostPolicy(h.Name)
+		h.RoutingWeight = defWeight
+	}
+	if capsStr.Valid && capsStr.String != "" && capsStr.String != "[]" && capsStr.String != "null" {
+		_ = json.Unmarshal([]byte(capsStr.String), &h.DetectedCapabilities)
+	}
+	if updatedAt.Valid {
+		h.UpdatedAt = updatedAt.Time
+	}
+}
+
 func (d *DB) ListHosts() ([]*HostRecord, error) {
-	query := `SELECT name, url, ssh_target, remote_cwd, created_at FROM hosts ORDER BY name ASC;`
+	query := `SELECT name, url, ssh_target, remote_cwd, policy_tags, routing_weight, detected_capabilities, updated_at, created_at FROM hosts ORDER BY name ASC;`
 	rows, err := d.db.Query(query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query hosts: %w", err)
@@ -1285,8 +1422,10 @@ func (d *DB) ListHosts() ([]*HostRecord, error) {
 	var hosts []*HostRecord
 	for rows.Next() {
 		var h HostRecord
-		var url, sshTarget, remoteCwd sql.NullString
-		if err := rows.Scan(&h.Name, &url, &sshTarget, &remoteCwd, &h.CreatedAt); err != nil {
+		var url, sshTarget, remoteCwd, policyStr, capsStr sql.NullString
+		var weightVal sql.NullInt64
+		var updatedAt sql.NullTime
+		if err := rows.Scan(&h.Name, &url, &sshTarget, &remoteCwd, &policyStr, &weightVal, &capsStr, &updatedAt, &h.CreatedAt); err != nil {
 			return nil, err
 		}
 		if url.Valid {
@@ -1298,17 +1437,20 @@ func (d *DB) ListHosts() ([]*HostRecord, error) {
 		if remoteCwd.Valid {
 			h.RemoteCwd = remoteCwd.String
 		}
+		hydrateHostRecordDefaults(&h, policyStr, capsStr, weightVal, updatedAt)
 		hosts = append(hosts, &h)
 	}
 	return hosts, nil
 }
 
 func (d *DB) GetHost(name string) (*HostRecord, error) {
-	query := `SELECT name, url, ssh_target, remote_cwd, created_at FROM hosts WHERE name = ? LIMIT 1;`
+	query := `SELECT name, url, ssh_target, remote_cwd, policy_tags, routing_weight, detected_capabilities, updated_at, created_at FROM hosts WHERE name = ? LIMIT 1;`
 	row := d.db.QueryRow(query, name)
 	var h HostRecord
-	var url, sshTarget, remoteCwd sql.NullString
-	if err := row.Scan(&h.Name, &url, &sshTarget, &remoteCwd, &h.CreatedAt); err != nil {
+	var url, sshTarget, remoteCwd, policyStr, capsStr sql.NullString
+	var weightVal sql.NullInt64
+	var updatedAt sql.NullTime
+	if err := row.Scan(&h.Name, &url, &sshTarget, &remoteCwd, &policyStr, &weightVal, &capsStr, &updatedAt, &h.CreatedAt); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
@@ -1323,7 +1465,202 @@ func (d *DB) GetHost(name string) (*HostRecord, error) {
 	if remoteCwd.Valid {
 		h.RemoteCwd = remoteCwd.String
 	}
+	hydrateHostRecordDefaults(&h, policyStr, capsStr, weightVal, updatedAt)
 	return &h, nil
+}
+
+func (d *DB) RecordHostLoadSample(host string, snap HostLoadSnapshot, tasksSpawnedDelta int, now time.Time) error {
+	if host == "" {
+		return nil
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	} else {
+		now = now.UTC()
+	}
+	bucketStart := now.Truncate(5 * time.Minute)
+	bucketSec := 300
+
+	var avgWork, avgCPU, maxCPU, minRAM float64
+	var maxWork, sampleCount, spawnedCount int
+	err := d.db.QueryRow(`
+		SELECT avg_working_sessions, max_working_sessions, avg_cpu_pct, max_cpu_pct, min_ram_free_gb, sample_count, tasks_spawned_count
+		FROM host_load_metrics
+		WHERE host = ? AND bucket_start = ? AND bucket_sec = ?;
+	`, host, bucketStart, bucketSec).Scan(&avgWork, &maxWork, &avgCPU, &maxCPU, &minRAM, &sampleCount, &spawnedCount)
+
+	if err == sql.ErrNoRows {
+		_, insErr := d.db.Exec(`
+			INSERT INTO host_load_metrics (host, bucket_start, bucket_sec, avg_working_sessions, max_working_sessions, avg_cpu_pct, max_cpu_pct, min_ram_free_gb, sample_count, tasks_spawned_count)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?);
+		`, host, bucketStart, bucketSec, float64(snap.WorkingSessions), snap.WorkingSessions, snap.CPULoadPct, snap.CPULoadPct, snap.RAMFreeGB, tasksSpawnedDelta)
+		return insErr
+	}
+	if err != nil {
+		return err
+	}
+
+	newSamples := sampleCount
+	newAvgWork := avgWork
+	newMaxWork := maxWork
+	newAvgCPU := avgCPU
+	newMaxCPU := maxCPU
+	newMinRAM := minRAM
+	if tasksSpawnedDelta == 0 {
+		newSamples = sampleCount + 1
+		newAvgWork = (avgWork*float64(sampleCount) + float64(snap.WorkingSessions)) / float64(newSamples)
+		if snap.WorkingSessions > maxWork {
+			newMaxWork = snap.WorkingSessions
+		}
+		newAvgCPU = (avgCPU*float64(sampleCount) + snap.CPULoadPct) / float64(newSamples)
+		if snap.CPULoadPct > maxCPU {
+			newMaxCPU = snap.CPULoadPct
+		}
+		if minRAM <= 0 || (snap.RAMFreeGB > 0 && snap.RAMFreeGB < minRAM) {
+			newMinRAM = snap.RAMFreeGB
+		}
+	}
+	newSpawned := spawnedCount + tasksSpawnedDelta
+
+	_, updErr := d.db.Exec(`
+		UPDATE host_load_metrics
+		SET avg_working_sessions = ?, max_working_sessions = ?, avg_cpu_pct = ?, max_cpu_pct = ?, min_ram_free_gb = ?, sample_count = ?, tasks_spawned_count = ?
+		WHERE host = ? AND bucket_start = ? AND bucket_sec = ?;
+	`, newAvgWork, newMaxWork, newAvgCPU, newMaxCPU, newMinRAM, newSamples, newSpawned, host, bucketStart, bucketSec)
+	return updErr
+}
+
+func (d *DB) GetHostLoadMetrics(hostFilter string, since time.Time) ([]HostLoadMetric, error) {
+	var rows *sql.Rows
+	var err error
+	if hostFilter != "" {
+		rows, err = d.db.Query(`
+			SELECT host, bucket_start, bucket_sec, avg_working_sessions, max_working_sessions, avg_cpu_pct, max_cpu_pct, min_ram_free_gb, tasks_spawned_count
+			FROM host_load_metrics
+			WHERE host = ? AND bucket_start >= ?
+			ORDER BY bucket_start ASC;
+		`, hostFilter, since.UTC())
+	} else {
+		rows, err = d.db.Query(`
+			SELECT host, bucket_start, bucket_sec, avg_working_sessions, max_working_sessions, avg_cpu_pct, max_cpu_pct, min_ram_free_gb, tasks_spawned_count
+			FROM host_load_metrics
+			WHERE bucket_start >= ?
+			ORDER BY bucket_start ASC, host ASC;
+		`, since.UTC())
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var metrics []HostLoadMetric
+	for rows.Next() {
+		var m HostLoadMetric
+		if err := rows.Scan(&m.Host, &m.BucketStart, &m.BucketSec, &m.AvgWorkingSessions, &m.MaxWorkingSessions, &m.AvgCPUPct, &m.MaxCPUPct, &m.MinRAMFreeGB, &m.TasksSpawnedCount); err != nil {
+			return nil, err
+		}
+		metrics = append(metrics, m)
+	}
+	return metrics, rows.Err()
+}
+
+// RollupAndPruneHostLoadMetrics compacts 5-min buckets older than 7 days into 1-hour buckets and prunes data older than 90 days.
+func (d *DB) RollupAndPruneHostLoadMetrics(now time.Time) error {
+	if now.IsZero() {
+		now = time.Now().UTC()
+	} else {
+		now = now.UTC()
+	}
+	sevenDaysAgo := now.Add(-7 * 24 * time.Hour).Truncate(time.Hour)
+	ninetyDaysAgo := now.Add(-90 * 24 * time.Hour)
+
+	// Prune >90d
+	_, _ = d.db.Exec("DELETE FROM host_load_metrics WHERE bucket_start < ?;", ninetyDaysAgo)
+
+	// Find 5-min buckets older than 7 days
+	rows, err := d.db.Query(`
+		SELECT host, bucket_start, avg_working_sessions, max_working_sessions, avg_cpu_pct, max_cpu_pct, min_ram_free_gb, sample_count, tasks_spawned_count
+		FROM host_load_metrics
+		WHERE bucket_sec = 300 AND bucket_start < ?
+		ORDER BY host ASC, bucket_start ASC;
+	`, sevenDaysAgo)
+	if err != nil {
+		return err
+	}
+	type rawRow struct {
+		host      string
+		hourStart time.Time
+		avgWork   float64
+		maxWork   int
+		avgCPU    float64
+		maxCPU    float64
+		minRAM    float64
+		samples   int
+		spawned   int
+	}
+	type aggKey struct {
+		host string
+		hour time.Time
+	}
+	aggMap := make(map[aggKey]*rawRow)
+	for rows.Next() {
+		var r rawRow
+		var bStart time.Time
+		if err := rows.Scan(&r.host, &bStart, &r.avgWork, &r.maxWork, &r.avgCPU, &r.maxCPU, &r.minRAM, &r.samples, &r.spawned); err != nil {
+			continue
+		}
+		if r.samples <= 0 {
+			r.samples = 1
+		}
+		k := aggKey{host: r.host, hour: bStart.UTC().Truncate(time.Hour)}
+		if existing, ok := aggMap[k]; !ok {
+			r.hourStart = k.hour
+			aggMap[k] = &r
+		} else {
+			totSamples := existing.samples + r.samples
+			existing.avgWork = (existing.avgWork*float64(existing.samples) + r.avgWork*float64(r.samples)) / float64(totSamples)
+			if r.maxWork > existing.maxWork {
+				existing.maxWork = r.maxWork
+			}
+			existing.avgCPU = (existing.avgCPU*float64(existing.samples) + r.avgCPU*float64(r.samples)) / float64(totSamples)
+			if r.maxCPU > existing.maxCPU {
+				existing.maxCPU = r.maxCPU
+			}
+			if existing.minRAM <= 0 || (r.minRAM > 0 && r.minRAM < existing.minRAM) {
+				existing.minRAM = r.minRAM
+			}
+			existing.samples = totSamples
+			existing.spawned += r.spawned
+		}
+	}
+	rows.Close()
+
+	if len(aggMap) == 0 {
+		return nil
+	}
+
+	tx, err := d.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	for _, a := range aggMap {
+		_, _ = tx.Exec(`
+			INSERT INTO host_load_metrics (host, bucket_start, bucket_sec, avg_working_sessions, max_working_sessions, avg_cpu_pct, max_cpu_pct, min_ram_free_gb, sample_count, tasks_spawned_count)
+			VALUES (?, ?, 3600, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(host, bucket_start, bucket_sec) DO UPDATE SET
+				avg_working_sessions = excluded.avg_working_sessions,
+				max_working_sessions = MAX(host_load_metrics.max_working_sessions, excluded.max_working_sessions),
+				avg_cpu_pct = excluded.avg_cpu_pct,
+				max_cpu_pct = MAX(host_load_metrics.max_cpu_pct, excluded.max_cpu_pct),
+				min_ram_free_gb = CASE WHEN host_load_metrics.min_ram_free_gb > 0 AND host_load_metrics.min_ram_free_gb < excluded.min_ram_free_gb THEN host_load_metrics.min_ram_free_gb ELSE excluded.min_ram_free_gb END,
+				sample_count = excluded.sample_count,
+				tasks_spawned_count = host_load_metrics.tasks_spawned_count + excluded.tasks_spawned_count;
+		`, a.host, a.hourStart, a.avgWork, a.maxWork, a.avgCPU, a.maxCPU, a.minRAM, a.samples, a.spawned)
+	}
+	_, _ = tx.Exec("DELETE FROM host_load_metrics WHERE bucket_sec = 300 AND bucket_start < ?;", sevenDaysAgo)
+	return tx.Commit()
 }
 
 func (d *DB) DeleteHost(name string) error {

@@ -147,6 +147,14 @@ func GetRegisteredTools() []Tool {
 						Type:        "array",
 						Description: "Optional list of multi-repo workstreams as string paths (e.g. ['Modemobile/NGL/ngl-ios']) or objects with repo_node_path, target_host, and depends_on.",
 					},
+					"target_host": {
+						Type:        "string",
+						Description: "Optional target host ('auto', 'legion', 'macmini', 'local'). Defaults to 'auto' (75/25 weighted deficit routing across capable 24/7 hosts).",
+					},
+					"required_capabilities": {
+						Type:        "array",
+						Description: "Optional list of required host capabilities (e.g. ['ios'], ['android', 'agent:antigravity'], ['mcp:gdrive']) used by the 'auto' host scheduler.",
+					},
 					"depends_on": {
 						Type:        "string",
 						Description: "Optional dependency for a single workstream.",
@@ -493,14 +501,35 @@ func GetRegisteredTools() []Tool {
 			},
 		},
 		{
+			Name:        "list_hosts",
+			Description: "List all registered fleet hosts (local and remote) with their online status, detected capabilities (ios, android, agent:*, mcp:*), policy tags (24/7, drain), routing weight (75/25), and live load telemetry (working_sessions, cpu_load_pct, ram_free_gb, overloaded).",
+			InputSchema: ToolInputSchema{
+				Type: "object",
+				Properties: map[string]PropertyDef{
+					"include_metrics": {
+						Type:        "boolean",
+						Description: "If true, includes multi-day historical utilization summaries and 24h hourly heatmap.",
+					},
+					"days": {
+						Type:        "integer",
+						Description: "Lookback window in days when include_metrics is true (default 14).",
+					},
+				},
+			},
+		},
+		{
 			Name:        "spawn_session",
-			Description: "Spawn a new agent session on a local or remote host with an initial prompt or task assignment.",
+			Description: "Spawn a new agent session on a local or remote host (or 'auto' via capability & 75/25 weighted load balancing) with an initial prompt or task assignment.",
 			InputSchema: ToolInputSchema{
 				Type: "object",
 				Properties: map[string]PropertyDef{
 					"target_host": {
 						Type:        "string",
-						Description: "Target machine alias (e.g. 'local', 'macmini', 'legion'). Defaults to 'local'.",
+						Description: "Target machine alias ('auto', 'local', 'macmini', 'legion'). Pass 'auto' for capability + 75/25 weighted load balancing.",
+					},
+					"required_capabilities": {
+						Type:        "array",
+						Description: "Optional list of required host capabilities (e.g. ['ios'], ['android'], ['mcp:gdrive']) for 'auto' host selection.",
 					},
 					"node_path": {
 						Type:        "string",
@@ -596,6 +625,8 @@ func ExecuteTool(ctx context.Context, client *DaemonClient, name string, args ma
 		return executeGetStandup(ctx, client, args)
 	case "bind_supervisor_session":
 		return executeBindSupervisorSession(ctx, client, args)
+	case "list_hosts":
+		return executeListHosts(ctx, client, args)
 	case "list_sessions":
 		return executeListSessions(ctx, client, args)
 	case "get_session_output":
@@ -846,6 +877,14 @@ func executeCreateTask(ctx context.Context, client *DaemonClient, args map[strin
 	}
 
 	topDependsOn := getString(args, "depends_on")
+	topTargetHost := getString(args, "target_host")
+	reqCaps := getStringSlice(args, "required_capabilities")
+	if topTargetHost != "" {
+		payload["target_host"] = topTargetHost
+	}
+	if len(reqCaps) > 0 {
+		payload["required_capabilities"] = reqCaps
+	}
 
 	// Build workstreams if provided
 	var workstreams []map[string]any
@@ -870,7 +909,7 @@ func executeCreateTask(ctx context.Context, client *DaemonClient, args map[strin
 				workstreams = append(workstreams, map[string]any{
 					"task_id":        taskID,
 					"repo_node_path": rStr,
-					"target_host":    "",
+					"target_host":    topTargetHost,
 					"depends_on":     dep,
 					"workflow_node":  "N0",
 					"status":         wsStatus,
@@ -893,6 +932,9 @@ func executeCreateTask(ctx context.Context, client *DaemonClient, args map[strin
 					wsStatus = "QUEUED"
 				}
 				targetHost := getString(rMap, "target_host")
+				if targetHost == "" {
+					targetHost = topTargetHost
+				}
 				workstreams = append(workstreams, map[string]any{
 					"task_id":        taskID,
 					"repo_node_path": rPath,
@@ -908,6 +950,7 @@ func executeCreateTask(ctx context.Context, client *DaemonClient, args map[strin
 		workstreams = append(workstreams, map[string]any{
 			"task_id":        taskID,
 			"repo_node_path": projectName,
+			"target_host":    topTargetHost,
 			"depends_on":     topDependsOn,
 			"workflow_node":  "N0",
 			"status":         "QUEUED",
@@ -1005,13 +1048,30 @@ func executeCreateTask(ctx context.Context, client *DaemonClient, args map[strin
 	if autoStart {
 		readyRepo := ""
 		readyHost := ""
-		if len(workstreams) > 0 {
+		// Use createdTask's resolved workstreams if available
+		if createdWS, ok := createdTask["workstreams"].([]any); ok && len(createdWS) > 0 {
+			for _, wsItem := range createdWS {
+				if ws, mOk := wsItem.(map[string]any); mOk && getString(ws, "status") == "IN_PROGRESS" {
+					readyRepo = getString(ws, "repo_node_path")
+					readyHost = getString(ws, "target_host")
+					break
+				}
+			}
+		}
+		if readyRepo == "" && len(workstreams) > 0 {
 			for _, ws := range workstreams {
 				if getString(ws, "status") == "IN_PROGRESS" {
 					readyRepo = getString(ws, "repo_node_path")
 					readyHost = getString(ws, "target_host")
 					break
 				}
+			}
+		}
+		if readyHost == "" {
+			if topTargetHost != "" {
+				readyHost = topTargetHost
+			} else if len(reqCaps) > 0 {
+				readyHost = "auto"
 			}
 		}
 		spawnCwd := readyRepo
@@ -1039,18 +1099,30 @@ func executeCreateTask(ctx context.Context, client *DaemonClient, args map[strin
 		}
 
 		spawnPayload := map[string]any{
-			"agent":          workerAgent,
-			"cwd":            spawnCwd,
-			"node_path":      readyRepo,
-			"host":           readyHost,
-			"task_id":        taskID,
-			"task_kind":      taskKind,
-			"repo_node_path": readyRepo,
-			"name":           title,
-			"prompt":         workerPrompt,
+			"agent":                 workerAgent,
+			"cwd":                   spawnCwd,
+			"node_path":             readyRepo,
+			"host":                  readyHost,
+			"required_capabilities": reqCaps,
+			"task_id":               taskID,
+			"task_kind":             taskKind,
+			"repo_node_path":        readyRepo,
+			"name":                  title,
+			"prompt":                workerPrompt,
 		}
 		var spawnRes map[string]any
 		_ = client.doRequest(ctx, http.MethodPost, "/v1/sessions/spawn", spawnPayload, &spawnRes)
+		if spawnRes != nil {
+			if warn, ok := spawnRes["load_warning"].(string); ok && warn != "" {
+				createdTask["load_warning"] = warn
+			}
+			if reason, ok := spawnRes["routing_reason"].(string); ok && reason != "" {
+				createdTask["routing_reason"] = reason
+			}
+			if h, ok := spawnRes["host"].(string); ok && h != "" {
+				createdTask["spawned_host"] = h
+			}
+		}
 	}
 
 	data, _ := json.MarshalIndent(createdTask, "", "  ")
@@ -1716,10 +1788,107 @@ func executeSendSessionInput(ctx context.Context, client *DaemonClient, args map
 	}, nil
 }
 
+func getStringSlice(m map[string]any, key string) []string {
+	if m == nil {
+		return nil
+	}
+	v, ok := m[key]
+	if !ok || v == nil {
+		return nil
+	}
+	var out []string
+	switch arr := v.(type) {
+	case []string:
+		for _, s := range arr {
+			if st := strings.TrimSpace(s); st != "" {
+				out = append(out, st)
+			}
+		}
+	case []any:
+		for _, it := range arr {
+			if st := strings.TrimSpace(fmt.Sprint(it)); st != "" {
+				out = append(out, st)
+			}
+		}
+	case string:
+		for _, part := range strings.Split(arr, ",") {
+			if st := strings.TrimSpace(part); st != "" {
+				out = append(out, st)
+			}
+		}
+	}
+	return out
+}
+
+func executeListHosts(ctx context.Context, client *DaemonClient, args map[string]any) (*CallToolResult, error) {
+	includeMetrics, _ := getBool(args, "include_metrics")
+	if includeMetrics {
+		days := getInt(args, "days", 14)
+		var utilData map[string]any
+		endpoint := fmt.Sprintf("/v1/hosts/utilization?days=%d", days)
+		if err := client.doRequest(ctx, http.MethodGet, endpoint, nil, &utilData); err != nil {
+			return formatError(fmt.Sprintf("Failed to query host utilization: %v", err)), nil
+		}
+		data, _ := json.MarshalIndent(utilData, "", "  ")
+		return &CallToolResult{
+			Content: []ToolContent{{Type: "text", Text: string(data)}},
+		}, nil
+	}
+
+	var hosts []map[string]any
+	if err := client.doRequest(ctx, http.MethodGet, "/v1/hosts?include_local=true", nil, &hosts); err != nil {
+		return formatError(fmt.Sprintf("Failed to list hosts: %v", err)), nil
+	}
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Found %d fleet host(s):\n\n", len(hosts)))
+	for _, h := range hosts {
+		name := getString(h, "name")
+		disp := getString(h, "display_name")
+		if disp == "" {
+			disp = name
+		}
+		online, _ := getBool(h, "online")
+		statusStr := "🟢 online"
+		if !online {
+			statusStr = "⚪ offline"
+		}
+		weight := getInt(h, "routing_weight", 0)
+		caps := getStringSlice(h, "detected_capabilities")
+		tags := getStringSlice(h, "policy_tags")
+		sb.WriteString(fmt.Sprintf("- **%s** (`%s`) — %s | Weight: `%d%%` | Tags: `%v`\n", disp, name, statusStr, weight, tags))
+		if len(caps) > 0 {
+			sb.WriteString(fmt.Sprintf("  - Capabilities: `%s`\n", strings.Join(caps, "`, `")))
+		}
+		if load, ok := h["load"].(map[string]any); ok && load != nil {
+			working := getInt(load, "working_sessions", 0)
+			cpu := getString(load, "cpu_load_pct")
+			ram := getString(load, "ram_free_gb")
+			overloaded, _ := getBool(load, "overloaded")
+			warn := ""
+			if overloaded {
+				warn = " ⚠️ OVERLOADED"
+			}
+			sb.WriteString(fmt.Sprintf("  - Load: `%d` working session(s) | CPU: `%s%%` | Free RAM: `%s GB`%s\n", working, cpu, ram, warn))
+		}
+	}
+	jsonBytes, _ := json.MarshalIndent(hosts, "", "  ")
+	sb.WriteString("\n```json\n")
+	sb.WriteString(string(jsonBytes))
+	sb.WriteString("\n```\n")
+	return &CallToolResult{
+		Content: []ToolContent{{Type: "text", Text: sb.String()}},
+	}, nil
+}
+
 func executeSpawnSession(ctx context.Context, client *DaemonClient, args map[string]any) (*CallToolResult, error) {
 	targetHost := getString(args, "target_host")
+	reqCaps := getStringSlice(args, "required_capabilities")
 	if targetHost == "" {
-		targetHost = "local"
+		if len(reqCaps) > 0 {
+			targetHost = "auto"
+		} else {
+			targetHost = "local"
+		}
 	}
 	nodePath := getString(args, "node_path")
 	directory := getString(args, "directory")
@@ -1740,16 +1909,17 @@ func executeSpawnSession(ctx context.Context, client *DaemonClient, args map[str
 	}
 
 	payload := map[string]any{
-		"host":          targetHost,
-		"agent":         agent,
-		"cwd":           directory,
-		"node_path":     nodePath,
-		"name":          title,
-		"prompt":        prompt,
-		"is_supervisor": isSupervisor,
-		"task_id":       taskID,
-		"task_kind":     taskKind,
-		"engine_type":   engineType,
+		"host":                  targetHost,
+		"required_capabilities": reqCaps,
+		"agent":                 agent,
+		"cwd":                   directory,
+		"node_path":             nodePath,
+		"name":                  title,
+		"prompt":                prompt,
+		"is_supervisor":         isSupervisor,
+		"task_id":               taskID,
+		"task_kind":             taskKind,
+		"engine_type":           engineType,
 	}
 
 	var res map[string]any
@@ -1758,8 +1928,12 @@ func executeSpawnSession(ctx context.Context, client *DaemonClient, args map[str
 	}
 
 	data, _ := json.MarshalIndent(res, "", "  ")
+	headerMsg := "Session spawned successfully:"
+	if warn, ok := res["load_warning"].(string); ok && warn != "" {
+		headerMsg = fmt.Sprintf("Session spawned (⚠️ %s):", warn)
+	}
 	return &CallToolResult{
-		Content: []ToolContent{{Type: "text", Text: fmt.Sprintf("Session spawned successfully:\n%s", string(data))}},
+		Content: []ToolContent{{Type: "text", Text: fmt.Sprintf("%s\n%s", headerMsg, string(data))}},
 	}, nil
 }
 

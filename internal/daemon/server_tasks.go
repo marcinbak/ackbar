@@ -123,8 +123,10 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, 1048576) // 1MB limit
 		var req struct {
 			Task
-			WorkflowNode string `json:"workflow_node,omitempty"`
-			RepoNodePath string `json:"repo_node_path,omitempty"`
+			WorkflowNode         string   `json:"workflow_node,omitempty"`
+			RepoNodePath         string   `json:"repo_node_path,omitempty"`
+			TargetHost           string   `json:"target_host,omitempty"`
+			RequiredCapabilities []string `json:"required_capabilities,omitempty"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "Invalid JSON: "+err.Error(), http.StatusBadRequest)
@@ -164,6 +166,22 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 			}
 			if t.TaskKind == "" {
 				t.TaskKind = "code"
+			}
+			for i := range t.Workstreams {
+				ws := &t.Workstreams[i]
+				targetH := strings.TrimSpace(ws.TargetHost)
+				if targetH == "" {
+					targetH = strings.TrimSpace(req.TargetHost)
+				}
+				if targetH == "" || strings.EqualFold(targetH, "auto") {
+					dec := s.SelectTargetHost(r.Context(), HostRoutingRequest{
+						TargetHost:           "auto",
+						RequiredCapabilities: req.RequiredCapabilities,
+						RepoNodePath:         ws.RepoNodePath,
+						TaskKind:             t.TaskKind,
+					})
+					ws.TargetHost = dec.SelectedHost
+				}
 			}
 			if req.WorkflowNode != "" {
 				sessState := StateIdle

@@ -41,40 +41,46 @@ type Event struct {
 }
 
 type HostHealth struct {
-	Online      bool
-	Version     string
-	DisplayName string
-	LatencyMs   int64
-	LastCheck   time.Time
+	Online               bool
+	Version              string
+	DisplayName          string
+	LatencyMs            int64
+	LastCheck            time.Time
+	DetectedCapabilities []string
+	PolicyTags           []string
+	RoutingWeight        int
+	Load                 *HostLoadSnapshot
 }
 
 type Server struct {
-	db                *DB
-	providers         map[string]Provider
-	subscribers       map[chan *Session]bool
-	subMutex          sync.Mutex
-	webFS             fs.FS
-	configuredToken   string
-	relayClient       *relay.Client
-	headless          *HeadlessRunner
-	hostName          string
-	displayName       string
-	hostHealthMap     map[string]*HostHealth
-	hostHealthMu      sync.RWMutex
-	activeSubagents   map[string][]*SubagentInfo
-	subagentsMu       sync.RWMutex
-	sessionHookLocks  sync.Map
-	blockedBySubagent sync.Map
-	homeDir           string
-	livenessRunning   atomic.Bool
-	lastLivenessAt    atomic.Int64
-	speechCacheMu     sync.RWMutex
-	speechCache       map[string]*SpeechSummary
-	speechLLMRunner   func(ctx context.Context, content string) (string, []string, error)
-	ntfyServer        string
-	ntfyTopic         string
-	ntfyClient        *http.Client
-	ntfyHook          func(payload NtfyPayload)
+	db                   *DB
+	providers            map[string]Provider
+	subscribers          map[chan *Session]bool
+	subMutex             sync.Mutex
+	webFS                fs.FS
+	configuredToken      string
+	relayClient          *relay.Client
+	headless             *HeadlessRunner
+	hostName             string
+	displayName          string
+	hostHealthMap        map[string]*HostHealth
+	hostHealthMu         sync.RWMutex
+	cachedCapabilities   []string
+	capabilitiesCachedAt time.Time
+	activeSubagents      map[string][]*SubagentInfo
+	subagentsMu          sync.RWMutex
+	sessionHookLocks     sync.Map
+	blockedBySubagent    sync.Map
+	homeDir              string
+	livenessRunning      atomic.Bool
+	lastLivenessAt       atomic.Int64
+	speechCacheMu        sync.RWMutex
+	speechCache          map[string]*SpeechSummary
+	speechLLMRunner      func(ctx context.Context, content string) (string, []string, error)
+	ntfyServer           string
+	ntfyTopic            string
+	ntfyClient           *http.Client
+	ntfyHook             func(payload NtfyPayload)
 }
 
 func NewServer(db *DB) *Server {
@@ -409,6 +415,7 @@ func (s *Server) Mux() http.Handler {
 	mux.HandleFunc("/v1/sync/state", s.handleSyncState)
 	mux.HandleFunc("/v1/sync/push", s.handleSyncPush)
 	mux.HandleFunc("/v1/hosts", s.handleHosts)
+	mux.HandleFunc("/v1/hosts/utilization", s.handleHostUtilization)
 	mux.HandleFunc("/v1/hosts/update", s.handleHostUpdate)
 	mux.HandleFunc("/v1/hosts/reconnect", s.handleHostReconnect)
 	mux.HandleFunc("/v1/projects/create", s.handleCreateProject)
@@ -572,10 +579,16 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
+	tags, weight := s.LocalPolicyAndWeight()
+	load := s.CollectLocalHostLoad()
 	resp := map[string]interface{}{
-		"version":      version.Version,
-		"host":         s.HostName(),
-		"display_name": s.DisplayName(),
+		"version":               version.Version,
+		"host":                  s.HostName(),
+		"display_name":          s.DisplayName(),
+		"detected_capabilities": s.GetDetectedCapabilities(),
+		"policy_tags":           tags,
+		"routing_weight":        weight,
+		"load":                  load,
 	}
 
 	info, err := version.CheckLatestRelease(r.Context(), false)
@@ -739,10 +752,14 @@ func (s *Server) StartBackgroundLoop(ctx context.Context) {
 				return
 			case <-hourlyTicker.C:
 				go s.maybeAutoSyncSkillsRepo(ctx)
+				if s.db != nil {
+					_ = s.db.RollupAndPruneHostLoadMetrics(time.Now().UTC())
+				}
 			case <-ticker.C:
 				s.scanObservedSessions(ctx)
 				go s.ensureHostTunnels(ctx)
 				go s.PullFromPeers(ctx)
+				go s.recordFleetLoadSamples(time.Now().UTC())
 				sessions, err := s.db.ListActiveSessions()
 				if err == nil && len(sessions) > 0 {
 					s.verifySessionLiveness(ctx, sessions)
