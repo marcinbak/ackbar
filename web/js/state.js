@@ -144,6 +144,7 @@ export const el = {
   btnSidebarModeAll: document.getElementById('btnSidebarModeAll'),
   btnSidebarModeSupervisors: document.getElementById('btnSidebarModeSupervisors'),
   btnNewSupervisor: document.getElementById('btnNewSupervisor'),
+  btnNewSupervisorAgy: document.getElementById('btnNewSupervisorAgy'),
   sidebarPanel: document.getElementById('sidebarPanel'),
   sidebarResizer: document.getElementById('sidebarResizer'),
   // Right Inspector Pane elements

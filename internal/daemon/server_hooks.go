@@ -482,17 +482,19 @@ func (s *Server) resolveOrAdoptHookSession(event *Event, host, sessionID, accoun
 
 			// Adopt the live tmux supervisor for the new conversation turn
 			sess = &Session{
-				ID:         sessionID,
-				Agent:      event.Agent,
-				Host:       host,
-				NativeID:   event.NativeID,
-				Managed:    true,
-				TmuxName:   activeManaged.TmuxName,
-				NodePath:   activeManaged.NodePath,
-				ProjectKey: activeManaged.ProjectKey,
-				Name:       newTurnName,
-				StartedAt:  time.Now(),
-				AccountID:  activeManaged.AccountID,
+				ID:            sessionID,
+				Agent:         event.Agent,
+				Host:          host,
+				NativeID:      event.NativeID,
+				Managed:       true,
+				TmuxName:      activeManaged.TmuxName,
+				NodePath:      activeManaged.NodePath,
+				ProjectKey:    activeManaged.ProjectKey,
+				Name:          newTurnName,
+				StartedAt:     time.Now(),
+				AccountID:     activeManaged.AccountID,
+				IsSupervisor:  activeManaged.IsSupervisor,
+				CurrentTaskID: activeManaged.CurrentTaskID,
 			}
 		} else {
 			// Ignore hooks from sessions created outside of Ackbar

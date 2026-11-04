@@ -260,3 +260,33 @@ func TestClaudeDesktopProvisioning(t *testing.T) {
 		t.Errorf("expected custom-tool to be in mcpServers")
 	}
 }
+
+func TestStampSkillVersion(t *testing.T) {
+	// Case 1: version line exists
+	raw1 := []byte("---\nname: test\nversion: \"old\"\n---\nBody")
+	out1 := stampSkillVersion(raw1, "20261104.05")
+	if !strings.Contains(string(out1), `version: "20261104.05"`) || strings.Contains(string(out1), "old") {
+		t.Errorf("Case 1 failed, got:\n%s", string(out1))
+	}
+
+	// Case 2: argument-hint exists, no version
+	raw2 := []byte("---\nname: test\nargument-hint: [foo]\n---\nBody")
+	out2 := stampSkillVersion(raw2, "20261104.05")
+	if !strings.Contains(string(out2), `version: "20261104.05"`) || !strings.Contains(string(out2), "argument-hint:") {
+		t.Errorf("Case 2 failed, got:\n%s", string(out2))
+	}
+
+	// Case 3: standard frontmatter without version
+	raw3 := []byte("---\nname: test\n---\nBody")
+	out3 := stampSkillVersion(raw3, "20261104.05")
+	if !strings.Contains(string(out3), `version: "20261104.05"`) {
+		t.Errorf("Case 3 failed, got:\n%s", string(out3))
+	}
+
+	// Case 4: no frontmatter at all
+	raw4 := []byte("# Just a header\nBody text")
+	out4 := stampSkillVersion(raw4, "20261104.05")
+	if !strings.Contains(string(out4), `version: "20261104.05"`) {
+		t.Errorf("Case 4 failed, got:\n%s", string(out4))
+	}
+}

@@ -509,8 +509,15 @@ func TestZeroInputSupervisorSpawnAndBind_LWWSync(t *testing.T) {
 		t.Fatalf("expected unassigned NodePath on zero-input supervisor spawn, got %q", spawnRes.Session.NodePath)
 	}
 	home, _ := os.UserHomeDir()
-	if home != "" && spawnRes.Session.Cwd != home {
-		t.Fatalf("expected default Cwd to be user home %q, got %q", home, spawnRes.Session.Cwd)
+	expectedCwd := DefaultSupervisorDir(home)
+	if home != "" && spawnRes.Session.Cwd != expectedCwd {
+		t.Fatalf("expected default Cwd to be supervisor workspace %q, got %q", expectedCwd, spawnRes.Session.Cwd)
+	}
+	if _, err := os.Stat(filepath.Join(spawnRes.Session.Cwd, "CLAUDE.md")); err != nil {
+		t.Fatalf("expected CLAUDE.md to exist in supervisor workspace: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(spawnRes.Session.Cwd, "AGENTS.md")); err != nil {
+		t.Fatalf("expected AGENTS.md to exist in supervisor workspace: %v", err)
 	}
 
 	// 2. Bind Supervisor session via POST /v1/sessions/bind-supervisor on macbook

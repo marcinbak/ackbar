@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 
@@ -347,13 +348,35 @@ func installAgentSkill(home string, def AgentDefinition) error {
 			if err := os.MkdirAll(filepath.Dir(filePath), 0755); err != nil {
 				return fmt.Errorf("failed to create directory for %s: %w", filePath, err)
 			}
-			if err := os.WriteFile(filePath, content, 0644); err != nil {
+			fileBytes := content
+			if relPath == "SKILL.md" {
+				fileBytes = stampSkillVersion(content, version.Version)
+			}
+			if err := os.WriteFile(filePath, fileBytes, 0644); err != nil {
 				return fmt.Errorf("failed to write skill file %s: %w", filePath, err)
 			}
 		}
 	}
 
 	return nil
+}
+
+var skillVersionRegex = regexp.MustCompile(`(?m)^version:\s*".*?"\s*$`)
+
+func stampSkillVersion(content []byte, ver string) []byte {
+	str := string(content)
+	vTag := fmt.Sprintf("version: %q", ver)
+	if skillVersionRegex.MatchString(str) {
+		return []byte(skillVersionRegex.ReplaceAllString(str, vTag))
+	}
+	if strings.Contains(str, "argument-hint:") {
+		return []byte(strings.Replace(str, "argument-hint:", vTag+"\nargument-hint:", 1))
+	}
+	parts := strings.SplitN(str, "---", 3)
+	if len(parts) >= 3 {
+		return []byte(parts[0] + "---\n" + vTag + "\n" + strings.TrimLeft(parts[1], "\r\n") + "---" + parts[2])
+	}
+	return []byte("---\n" + vTag + "\n---\n\n" + str)
 }
 
 func extractSkillVersion(content string) string {

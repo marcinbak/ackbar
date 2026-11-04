@@ -256,7 +256,9 @@ If `skills_repo_path` is not explicitly set in the database, `ackbard` inspects 
 Exposes JSON-RPC 2.0 MCP capabilities over HTTP for supervisor sessions and external connectors (e.g. Claude Desktop, mobile companions).
 * **Protocol Methods:** `initialize` (returns protocol `2024-11-05` and server info `ackbar-mcp`), `ping`, `tools/list`, and `tools/call`.
 * **Security & SSRF Mitigation:** Loopback listener address is extracted directly from the request context (`http.LocalAddrContextKey`) rather than the unvalidated client `Host` header, preventing internal loopback SSRF, reverse-proxy hairpinning, and token leakage. Request bodies are constrained with `http.MaxBytesReader(w, r.Body, 2<<20)`.
-* **Exposed Supervisor Tools:** `list_sessions`, `get_session_output`, `send_session_input` (with automatic `select_option -> answer` routing and blocked-state detection), `spawn_session`, `control_session`, and `bind_supervisor_session` (with `client.SessionID` fallback).
+* **Exposed Supervisor Tools:** `list_sessions`, `get_session_output`, `send_session_input` (with automatic `select_option -> answer` routing and blocked-state detection), `spawn_session`, `control_session`, and `bind_supervisor_session` (with `client.SessionID` fallback and automatic fallback binding via `create_task`).
+* **Dedicated Supervisor Dispatcher Workspace (`~/.ackbar/supervisor/`):** Zero-input supervisor sessions default to `~/.ackbar/supervisor/` with generated `CLAUDE.md` and `AGENTS.md` containing dispatcher rules and dynamic project tree nodes catalog. Spawns inject `BuildSupervisorSystemPrompt` and `ACKBAR_IS_SUPERVISOR=1`.
+* **Task Worker Auto-Dispatch:** `create_task` supports optional `agent` (`claude-code`, `antigravity`, `codex`) and `prompt` forwarding, auto-binding supervisor sessions to project groups. Conversation rotation (`/clear`) strictly preserves `IsSupervisor` and `CurrentTaskID`.
 
 ### On-Demand Speech Summarizer (`POST /v1/sessions/summarize-speech`)
 Generates spoken audio briefing text and interactive suggested chips for assistant turns:

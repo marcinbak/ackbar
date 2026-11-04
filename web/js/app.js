@@ -702,23 +702,27 @@ function setupEventListeners() {
     });
   }
 
-  if (el.btnNewSupervisor) {
-    el.btnNewSupervisor.addEventListener('click', async () => {
+  const setupSupervisorSpawnBtn = (btn, agent) => {
+    if (!btn) return;
+    btn.addEventListener('click', async () => {
       try {
-        el.btnNewSupervisor.disabled = true;
-        const data = await spawnZeroInputSupervisor();
+        btn.disabled = true;
+        const data = await spawnZeroInputSupervisor(agent);
         const spawnedSess = (data && data.session) || state.sessions.find(s => s.id === (data && data.id));
         if (spawnedSess) {
           openSessionInTab(spawnedSess, 'chat');
         }
       } catch (err) {
-        console.error('Failed to spawn zero-input supervisor:', err);
+        console.error(`Failed to spawn ${agent} supervisor:`, err);
         alert(`Failed to spawn Supervisor session: ${err.message}`);
       } finally {
-        el.btnNewSupervisor.disabled = false;
+        btn.disabled = false;
       }
     });
-  }
+  };
+
+  setupSupervisorSpawnBtn(el.btnNewSupervisor, 'claude-code');
+  setupSupervisorSpawnBtn(el.btnNewSupervisorAgy, 'antigravity');
 
   if (el.btnPurge) {
     el.btnPurge.addEventListener('click', async () => {

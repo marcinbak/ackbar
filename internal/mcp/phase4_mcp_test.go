@@ -60,6 +60,8 @@ func TestPhase4_SupervisorSessionTools(t *testing.T) {
 		lastRespondPayload  map[string]any
 		lastPromptPayload   map[string]any
 		lastHandoverPayload map[string]any
+		lastBoundPayload    map[string]any
+		lastTasksPayload    map[string]any
 	)
 
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -98,6 +100,16 @@ func TestPhase4_SupervisorSessionTools(t *testing.T) {
 					"state":         "idle",
 					"is_supervisor": true,
 					"name":          "⚓ Main Supervisor",
+				},
+				{
+					"id":            "antigravity:local:conv-uuid-real",
+					"old_id":        "antigravity:local:temp-uuid-migrated",
+					"agent":         "antigravity",
+					"host":          "local",
+					"state":         "idle",
+					"is_supervisor": true,
+					"node_path":     "Personal/Ackbar",
+					"name":          "⚓ Ackbar: Already Bound",
 				},
 			}
 			_ = json.NewEncoder(w).Encode(sessions)
@@ -162,11 +174,19 @@ func TestPhase4_SupervisorSessionTools(t *testing.T) {
 			return
 		}
 
+		// POST /v1/tasks
+		if r.URL.Path == "/v1/tasks" && r.Method == http.MethodPost {
+			var p map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&p)
+			lastTasksPayload = p
+			_ = json.NewEncoder(w).Encode(p)
+			return
+		}
+
 		// POST /v1/sessions/bind-supervisor
 		if r.URL.Path == "/v1/sessions/bind-supervisor" && r.Method == http.MethodPost {
-			var payload map[string]any
-			_ = json.NewDecoder(r.Body).Decode(&payload)
-			_ = json.NewEncoder(w).Encode(map[string]any{"status": "bound", "bound_id": payload["session_id"]})
+			_ = json.NewDecoder(r.Body).Decode(&lastBoundPayload)
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "bound", "bound_id": lastBoundPayload["session_id"]})
 			return
 		}
 
@@ -348,6 +368,141 @@ func TestPhase4_SupervisorSessionTools(t *testing.T) {
 		}
 		if !strings.Contains(res.Content[0].Text, "claude-code:local:supervisor-42") {
 			t.Errorf("expected bound session ID in output, got: %s", res.Content[0].Text)
+		}
+	})
+
+	t.Run("create_task auto-binds supervisor session and propagates custom agent/prompt", func(t *testing.T) {
+		lastBoundPayload = nil
+		lastSpawnPayload = nil
+
+		clientSup := NewDaemonClient(ts.URL, "claude-code:local:supervisor-99")
+		res, err := ExecuteTool(ctx, clientSup, "create_task", map[string]any{
+			"title":             "Investigate memory leak",
+			"project_node_path": "Modemobile/NGL/ngl-android",
+			"auto_start":        true,
+			"agent":             "antigravity",
+			"prompt":            "Analyze heap dump in /tmp/heap.hprof",
+			"repos": []any{
+				"Modemobile/NGL/ngl-android",
+			},
+		})
+		if err != nil || res.IsError {
+			t.Fatalf("unexpected error: %v, res: %+v", err, res)
+		}
+
+		// 1. Verify supervisor was auto-bound to Modemobile/NGL
+		if lastBoundPayload == nil {
+			t.Fatalf("expected supervisor to be auto-bound via POST /v1/sessions/bind-supervisor")
+		}
+		if lastBoundPayload["session_id"] != "claude-code:local:supervisor-99" {
+			t.Errorf("expected session_id 'claude-code:local:supervisor-99', got %v", lastBoundPayload["session_id"])
+		}
+		if lastBoundPayload["node_path"] != "Modemobile/NGL" {
+			t.Errorf("expected node_path 'Modemobile/NGL', got %v", lastBoundPayload["node_path"])
+		}
+		if !strings.Contains(lastBoundPayload["title"].(string), "Investigate memory leak") {
+			t.Errorf("expected title to contain task title, got %v", lastBoundPayload["title"])
+		}
+
+		// 2. Verify worker session was spawned with antigravity and custom prompt
+		if lastSpawnPayload == nil {
+			t.Fatalf("expected worker session to be spawned")
+		}
+		if lastSpawnPayload["agent"] != "antigravity" {
+			t.Errorf("expected worker agent 'antigravity', got %v", lastSpawnPayload["agent"])
+		}
+		if lastSpawnPayload["prompt"] != "Analyze heap dump in /tmp/heap.hprof" {
+			t.Errorf("expected worker prompt 'Analyze heap dump in /tmp/heap.hprof', got %v", lastSpawnPayload["prompt"])
+		}
+	})
+
+	t.Run("create_task auto_start default agent and prompt from caller and notes", func(t *testing.T) {
+		lastBoundPayload = nil
+		lastSpawnPayload = nil
+
+		clientAgy := NewDaemonClient(ts.URL, "antigravity:local:supervisor-100")
+		res, err := ExecuteTool(ctx, clientAgy, "create_task", map[string]any{
+			"title":        "Upgrade compiler toolchain",
+			"project_name": "Ackbar",
+			"group_name":   "Personal",
+			"notes":        "Switch to Go 1.24 toolchain",
+			"auto_start":   true,
+		})
+		if err != nil || res.IsError {
+			t.Fatalf("unexpected error: %v, res: %+v", err, res)
+		}
+
+		if lastSpawnPayload == nil {
+			t.Fatalf("expected worker session to be spawned")
+		}
+		// Since caller session starts with antigravity:, agent should default to antigravity
+		if lastSpawnPayload["agent"] != "antigravity" {
+			t.Errorf("expected worker agent 'antigravity' inferred from caller ID, got %v", lastSpawnPayload["agent"])
+		}
+		p, ok := lastSpawnPayload["prompt"].(string)
+		if !ok || !strings.Contains(p, "Switch to Go 1.24 toolchain") {
+			t.Errorf("expected worker prompt generated from notes, got %v", lastSpawnPayload["prompt"])
+		}
+	})
+
+	t.Run("create_task with only repos infers group and project and auto-binds supervisor", func(t *testing.T) {
+		lastBoundPayload = nil
+		lastTasksPayload = nil
+		lastSpawnPayload = nil
+
+		clientSup := NewDaemonClient(ts.URL, "claude-code:local:supervisor-infer-test")
+		res, err := ExecuteTool(ctx, clientSup, "create_task", map[string]any{
+			"title":      "Fix crash in rapid scroll",
+			"repos":      []any{"Modemobile/NGL/ngl-android"},
+			"auto_start": true,
+		})
+		if err != nil || res.IsError {
+			t.Fatalf("unexpected error: %v, res: %+v", err, res)
+		}
+
+		if lastTasksPayload == nil {
+			t.Fatalf("expected task to be created")
+		}
+		if lastTasksPayload["group_name"] != "Modemobile" {
+			t.Errorf("expected group_name 'Modemobile', got %v", lastTasksPayload["group_name"])
+		}
+		if lastTasksPayload["project_name"] != "NGL" {
+			t.Errorf("expected project_name 'NGL', got %v", lastTasksPayload["project_name"])
+		}
+		if lastTasksPayload["subproject_name"] != "ngl-android" {
+			t.Errorf("expected subproject_name 'ngl-android', got %v", lastTasksPayload["subproject_name"])
+		}
+
+		if lastBoundPayload == nil {
+			t.Fatalf("expected supervisor to be auto-bound")
+		}
+		if lastBoundPayload["node_path"] != "Modemobile/NGL" {
+			t.Errorf("expected bound node_path 'Modemobile/NGL', got %v", lastBoundPayload["node_path"])
+		}
+		if lastBoundPayload["title"] != "⚓ NGL: Fix crash in rapid scroll" {
+			t.Errorf("expected bound title '⚓ NGL: Fix crash in rapid scroll', got %v", lastBoundPayload["title"])
+		}
+	})
+
+	t.Run("create_task matches old_id and does not re-bind already bound supervisor", func(t *testing.T) {
+		lastBoundPayload = nil
+		lastTasksPayload = nil
+
+		// Caller has old_id from pre-migration (antigravity:local:temp-uuid-migrated)
+		clientMigrated := NewDaemonClient(ts.URL, "antigravity:local:temp-uuid-migrated")
+		res, err := ExecuteTool(ctx, clientMigrated, "create_task", map[string]any{
+			"title":        "Add analytics telemetry",
+			"project_name": "Ackbar",
+			"group_name":   "Personal",
+		})
+		if err != nil || res.IsError {
+			t.Fatalf("unexpected error: %v, res: %+v", err, res)
+		}
+
+		// Since the session in mock DB has old_id: "antigravity:local:temp-uuid-migrated"
+		// and already has node_path: "Personal/Ackbar", it should NOT re-bind!
+		if lastBoundPayload != nil {
+			t.Errorf("expected already-bound supervisor not to be re-bound, but got: %+v", lastBoundPayload)
 		}
 	})
 }
