@@ -1,6 +1,8 @@
 package daemon
 
 import (
+	"fmt"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -81,5 +83,65 @@ func TestSupervisorWorkspace_EnsureWorkspace(t *testing.T) {
 		if !strings.Contains(content, "devbox") || !strings.Contains(content, "/remote/path/to/ngl") {
 			t.Errorf("expected host path details in %s table, got: %s", fname, content)
 		}
+	}
+}
+
+func TestRedactGitURL(t *testing.T) {
+	cases := []struct {
+		input    string
+		expected string
+	}{
+		{"", ""},
+		{"https://github.com/org/repo.git", "https://github.com/org/repo.git"},
+		{"https://user:secret-token@github.com/org/repo.git", "https://user:xxxxx@github.com/org/repo.git"},
+		{"git@github.com:org/repo.git", "git@github.com:org/repo.git"},
+	}
+	for _, tc := range cases {
+		out := redactGitURL(tc.input)
+		if out != tc.expected {
+			t.Errorf("redactGitURL(%q) = %q; expected %q", tc.input, out, tc.expected)
+		}
+	}
+}
+
+func TestSupervisorWorkspace_CustomProjectDirNotOverwritten(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "supervisor_custom.db")
+	db, err := InitDB(dbPath)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	srv := NewServer(db)
+	tmpHome := t.TempDir()
+	srv.homeDir = tmpHome
+
+	// User repository directory with existing CLAUDE.md and AGENTS.md
+	repoDir := filepath.Join(t.TempDir(), "my-custom-repo")
+	_ = os.MkdirAll(repoDir, 0755)
+	existingClaude := []byte("# Custom Project Guidelines\nDo not overwrite!")
+	existingAgents := []byte("# Custom Agents\nDo not overwrite!")
+	_ = os.WriteFile(filepath.Join(repoDir, "CLAUDE.md"), existingClaude, 0644)
+	_ = os.WriteFile(filepath.Join(repoDir, "AGENTS.md"), existingAgents, 0644)
+
+	// Spawn a supervisor targeting the custom repo directory
+	w := httptest.NewRecorder()
+	reqBody := fmt.Sprintf(`{"is_supervisor": true, "agent": "claude-code", "cwd": %q, "engine_type": "headless"}`, repoDir)
+	r := httptest.NewRequest("POST", "/v1/sessions/spawn", strings.NewReader(reqBody))
+	r.Header.Set("Content-Type", "application/json")
+	srv.handleSpawn(w, r)
+
+	if w.Code != 200 {
+		t.Fatalf("handleSpawn failed: %d %s", w.Code, w.Body.String())
+	}
+
+	// Verify CLAUDE.md and AGENTS.md in custom repoDir were NOT overwritten
+	cData, _ := os.ReadFile(filepath.Join(repoDir, "CLAUDE.md"))
+	if string(cData) != string(existingClaude) {
+		t.Errorf("CLAUDE.md in custom repo was clobbered: %s", string(cData))
+	}
+	aData, _ := os.ReadFile(filepath.Join(repoDir, "AGENTS.md"))
+	if string(aData) != string(existingAgents) {
+		t.Errorf("AGENTS.md in custom repo was clobbered: %s", string(aData))
 	}
 }

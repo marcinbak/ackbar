@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -75,7 +76,7 @@ func (s *Server) ensureSupervisorWorkspace(dir string) {
 						gitRem = n.GitURL
 					}
 					sb.WriteString(fmt.Sprintf("| `%s` | %s | %s | %s | `%s` | %s |\n",
-						n.Path, group, proj, hName, hp.ProjectDir, gitRem))
+						n.Path, group, proj, hName, hp.ProjectDir, redactGitURL(gitRem)))
 				}
 
 				if !hasHostPaths {
@@ -85,7 +86,7 @@ func (s *Server) ensureSupervisorWorkspace(dir string) {
 						pDir = "(not set)"
 					}
 					sb.WriteString(fmt.Sprintf("| `%s` | %s | %s | %s | `%s` | %s |\n",
-						n.Path, group, proj, hName, pDir, n.GitURL))
+						n.Path, group, proj, hName, pDir, redactGitURL(n.GitURL)))
 				}
 			}
 			sb.WriteString("\n")
@@ -97,6 +98,16 @@ func (s *Server) ensureSupervisorWorkspace(dir string) {
 	}
 
 	content := []byte(sb.String())
-	_ = os.WriteFile(filepath.Join(dir, "CLAUDE.md"), content, 0644)
-	_ = os.WriteFile(filepath.Join(dir, "AGENTS.md"), content, 0644)
+	_ = os.WriteFile(filepath.Join(dir, "CLAUDE.md"), content, 0600)
+	_ = os.WriteFile(filepath.Join(dir, "AGENTS.md"), content, 0600)
+}
+
+func redactGitURL(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	if u, err := url.Parse(raw); err == nil && u.User != nil {
+		return u.Redacted()
+	}
+	return raw
 }

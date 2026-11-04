@@ -1085,11 +1085,7 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 			req.Agent = "claude-code"
 		}
 		if req.Cwd == "" || req.Cwd == "~" {
-			h := s.homeDir
-			if h == "" {
-				h, _ = os.UserHomeDir()
-			}
-			req.Cwd = DefaultSupervisorDir(h)
+			req.Cwd = "~/.ackbar/supervisor"
 		}
 		if req.Name == "" {
 			req.Name = "⚓ New Supervisor"
@@ -1185,7 +1181,10 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Expand ~ to user home directory and ensure directory exists
-	home, _ := os.UserHomeDir()
+	home := s.homeDir
+	if home == "" {
+		home, _ = os.UserHomeDir()
+	}
 	if strings.HasPrefix(req.Cwd, "~/") && home != "" {
 		req.Cwd = filepath.Join(home, req.Cwd[2:])
 	} else if req.Cwd == "~" && home != "" {
@@ -1200,7 +1199,7 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	_ = os.MkdirAll(req.Cwd, 0755)
-	if req.IsSupervisor {
+	if req.IsSupervisor && filepath.Clean(req.Cwd) == filepath.Clean(DefaultSupervisorDir(home)) {
 		s.ensureSupervisorWorkspace(req.Cwd)
 	}
 

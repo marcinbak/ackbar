@@ -777,6 +777,38 @@ func executeCreateTask(ctx context.Context, client *DaemonClient, args map[strin
 		subprojectName = pSubproject
 	}
 
+	// If project_node_path, group_name, and project_name were not explicitly provided,
+	// derive pGroup, pProject, and pSubproject from the first entry in repos/workstreams:
+	if projectNodePath == "" && projectName == "" && groupName == "" {
+		firstRepo := ""
+		if reposRaw, ok := args["repos"].([]any); ok && len(reposRaw) > 0 {
+			if rStr, ok := reposRaw[0].(string); ok {
+				firstRepo = strings.TrimSpace(rStr)
+			} else if rMap, ok := reposRaw[0].(map[string]any); ok {
+				firstRepo = getString(rMap, "repo_node_path")
+				if firstRepo == "" {
+					firstRepo = getString(rMap, "path")
+				}
+			}
+		}
+		if firstRepo != "" {
+			parts := strings.Split(strings.Trim(firstRepo, "/"), "/")
+			if len(parts) >= 1 && parts[0] != "" {
+				pGroup = parts[0]
+				groupName = parts[0]
+			}
+			if len(parts) == 2 {
+				pProject = parts[1]
+				projectName = parts[1]
+			} else if len(parts) >= 3 {
+				pProject = parts[1]
+				projectName = parts[1]
+				pSubproject = strings.Join(parts[2:], "/")
+				subprojectName = pSubproject
+			}
+		}
+	}
+
 	if groupName != "" && strings.HasPrefix(strings.ToLower(projectName), strings.ToLower(groupName)+"/") {
 		projectName = projectName[len(groupName)+1:]
 	} else if groupName == "" && strings.Contains(projectName, "/") {
@@ -908,12 +940,18 @@ func executeCreateTask(ctx context.Context, client *DaemonClient, args map[strin
 		var sessList []map[string]any
 		if err := client.doRequest(ctx, http.MethodGet, "/v1/sessions", nil, &sessList); err == nil {
 			for _, s := range sessList {
-				if id, _ := s["id"].(string); id == callerSessID {
+				id, _ := s["id"].(string)
+				oldID, _ := s["old_id"].(string)
+				nativeID, _ := s["native_id"].(string)
+				if id == callerSessID || (oldID != "" && oldID == callerSessID) || (nativeID != "" && nativeID == callerSessID) {
 					if isSup, ok := s["is_supervisor"].(bool); ok && isSup {
 						isSupervisor = true
 					}
 					if np, _ := s["node_path"].(string); strings.TrimSpace(np) != "" {
 						nodePathEmpty = false
+					}
+					if id != "" {
+						callerSessID = id
 					}
 					break
 				}
@@ -935,6 +973,23 @@ func executeCreateTask(ctx context.Context, client *DaemonClient, args map[strin
 			}
 			if targetNodePath == "" {
 				targetNodePath = groupName + "/" + projectName
+			}
+			if (targetNodePath == "" || targetNodePath == "Personal/General") && len(workstreams) > 0 {
+				rPath := getString(workstreams[0], "repo_node_path")
+				if rPath != "" {
+					parts := strings.Split(strings.Trim(rPath, "/"), "/")
+					if len(parts) >= 2 {
+						targetNodePath = parts[0] + "/" + parts[1]
+						if projectName == "General" {
+							projectName = parts[1]
+						}
+					} else {
+						targetNodePath = rPath
+						if projectName == "General" {
+							projectName = rPath
+						}
+					}
+				}
 			}
 			bindTitle := "⚓ " + projectName + ": " + title
 			var bindRes map[string]any
