@@ -1349,11 +1349,16 @@ async function showHooksDashboardModal() {
 // Smooth Reconnection Flow with Progress, Auto-Dismiss on Success, and Retry on Failure
 
 function showEditHostModal(h) {
+  const isLocal = !h.url || isLocalHost(h.name);
+  const currentTags = Array.isArray(h.policy_tags) ? h.policy_tags.join(', ') : (h.name && h.name.toLowerCase().includes('book') ? 'ephemeral' : '24/7');
+  const currentWeight = typeof h.routing_weight === 'number' ? h.routing_weight : (h.name && h.name.toLowerCase().includes('legion') ? 75 : (h.name && h.name.toLowerCase().includes('mini') ? 25 : 0));
+
   const body = `
     <div class="form-group">
       <label>Host Alias (identifier)</label>
       <input type="text" id="editHostName" value="${escapeHtml(h.name)}" readonly style="opacity: 0.7; cursor: not-allowed;" />
     </div>
+    ${!isLocal ? `
     <div class="form-group">
       <label>SSH Target (user@hostname or SSH config host)</label>
       <input type="text" id="editSshTarget" placeholder="e.g. dev4u@legion" value="${escapeHtml(h.ssh_target || '')}" />
@@ -1365,6 +1370,21 @@ function showEditHostModal(h) {
         Use <code>http://127.0.0.1:7778</code> for SSH tunnel, or direct Tailscale URL like <code>http://legion:7777</code>.
       </div>
     </div>
+    ` : ''}
+    <div class="form-group">
+      <label>Policy Tags (comma-separated)</label>
+      <input type="text" id="editHostPolicyTags" placeholder="24/7, ephemeral, priority, drain" value="${escapeHtml(currentTags)}" />
+      <div style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">
+        Use <code>24/7</code> for always-on servers, <code>ephemeral</code> for laptops (never auto-routed unless all 24/7 hosts are offline), or <code>drain</code> to pause new auto-routed tasks.
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Target Routing Share Weight (0–100): <strong id="editHostWeightVal">${currentWeight}%</strong></label>
+      <input type="range" id="editHostWeight" min="0" max="100" step="5" value="${currentWeight}" style="width: 100%; accent-color: var(--accent-cyan);" />
+      <div style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">
+        Relative share for non-capability-locked tasks (e.g. <code>legion = 75</code>, <code>macmini = 25</code>, <code>macbook = 0</code>).
+      </div>
+    </div>
   `;
 
   const footer = `
@@ -1372,7 +1392,13 @@ function showEditHostModal(h) {
     <button class="btn btn-primary" id="editBtnSave">Save Changes</button>
   `;
 
-  showModal(`Edit Host: ${h.name}`, body, footer);
+  showModal(`Edit Host Policy & Routing: ${h.name}`, body, footer);
+
+  const weightInput = document.getElementById('editHostWeight');
+  const weightVal = document.getElementById('editHostWeightVal');
+  weightInput?.addEventListener('input', () => {
+    if (weightVal) weightVal.textContent = `${weightInput.value}%`;
+  });
 
   document.getElementById('editBtnBack')?.addEventListener('click', () => {
     showHostSummaryModal(h);
@@ -1380,9 +1406,13 @@ function showEditHostModal(h) {
 
   document.getElementById('editBtnSave')?.addEventListener('click', async () => {
     const name = document.getElementById('editHostName').value.trim();
-    const ssh = document.getElementById('editSshTarget').value.trim();
-    const url = document.getElementById('editHostUrl').value.trim();
-    if (!name || !url) {
+    const ssh = document.getElementById('editSshTarget')?.value.trim() || h.ssh_target || '';
+    const url = document.getElementById('editHostUrl')?.value.trim() || h.url || '';
+    const rawTags = document.getElementById('editHostPolicyTags')?.value || '';
+    const policy_tags = rawTags.split(',').map(t => t.trim()).filter(Boolean);
+    const routing_weight = parseInt(document.getElementById('editHostWeight')?.value || '0', 10) || 0;
+
+    if (!name || (!isLocal && !url)) {
       alert('Host name and URL are required');
       return;
     }
@@ -1391,7 +1421,15 @@ function showEditHostModal(h) {
       const res = await fetch('/v1/hosts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, ssh_target: ssh, url, remote_cwd: h.remote_cwd || '' })
+        body: JSON.stringify({
+          name,
+          ssh_target: ssh,
+          url,
+          remote_cwd: h.remote_cwd || '',
+          policy_tags,
+          routing_weight,
+          has_explicit_weight: true
+        })
       });
       if (!res.ok) {
         const errText = await res.text();
@@ -1399,7 +1437,7 @@ function showEditHostModal(h) {
       }
       await fetchHosts();
       await fetchSessions();
-      const updated = (state.hosts || []).find(x => x.name === name) || { ...h, name, ssh_target: ssh, url };
+      const updated = (state.hosts || []).find(x => x.name === name) || { ...h, name, ssh_target: ssh, url, policy_tags, routing_weight };
       showHostSummaryModal(updated);
     } catch (err) {
       alert('Failed to update host: ' + err.message);
@@ -1422,15 +1460,26 @@ async function showHostSummaryModal(h) {
   try {
     let daemonVersion = 'unknown';
     let isOnline = false;
+    let vData = {};
     try {
       const vRes = await fetch(`${baseUrl}/v1/version`);
       if (vRes.ok) {
-        const vData = await vRes.json();
+        vData = await vRes.json() || {};
         daemonVersion = vData.version || 'online';
         isOnline = true;
       }
     } catch (e) {
       console.warn('Version check failed:', e);
+    }
+
+    let fleetUtil = null;
+    try {
+      const uRes = await fetch('/v1/hosts/utilization?days=14');
+      if (uRes.ok) {
+        fleetUtil = await uRes.json();
+      }
+    } catch (e) {
+      console.warn('Utilization check failed:', e);
     }
 
     let discovery = [];
@@ -1441,6 +1490,67 @@ async function showHostSummaryModal(h) {
       }
     } catch (e) {
       console.warn('Discovery check failed:', e);
+    }
+
+    const detectedCaps = vData.detected_capabilities || h.detected_capabilities || [];
+    const policyTags = vData.policy_tags || h.policy_tags || [];
+    const routingWeight = typeof vData.routing_weight === 'number' ? vData.routing_weight : (typeof h.routing_weight === 'number' ? h.routing_weight : 0);
+    const loadSnap = vData.load || h.load || {};
+
+    const policyPillsHtml = policyTags.map(tag => {
+      const color = tag === '24/7' ? 'var(--accent-green)' : (tag === 'drain' ? 'var(--accent-red)' : 'var(--accent-yellow)');
+      return `<span style="background: rgba(255,255,255,0.06); color: ${color}; border: 1px solid ${color}; padding: 2px 7px; border-radius: 4px; font-size: 11px; font-weight: 600;">${escapeHtml(tag)}</span>`;
+    }).join(' ');
+
+    const capPillsHtml = detectedCaps.length > 0 ? detectedCaps.map(cap => {
+      const isHighlight = cap === 'ios' || cap === 'android' || cap.startsWith('mcp:');
+      const border = isHighlight ? 'rgba(6, 182, 212, 0.45)' : 'rgba(255,255,255,0.12)';
+      const color = isHighlight ? 'var(--accent-cyan)' : 'var(--text-main)';
+      return `<span style="background: rgba(255,255,255,0.04); color: ${color}; border: 1px solid ${border}; padding: 2px 7px; border-radius: 4px; font-size: 11px; font-family: var(--font-mono);">${escapeHtml(cap)}</span>`;
+    }).join(' ') : `<span style="color: var(--text-muted); font-size: 11px;">None reported</span>`;
+
+    const overloadBadge = loadSnap.overloaded ? `<span style="background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.5); padding: 2px 7px; border-radius: 4px; font-size: 11px; font-weight: 600;">⚠️ High Load</span>` : '';
+
+    let heatmapHtml = '';
+    const summaries = (fleetUtil && Array.isArray(fleetUtil.host_summaries)) ? fleetUtil.host_summaries : [];
+    const heatmapCells = (fleetUtil && Array.isArray(fleetUtil.hourly_heatmap)) ? fleetUtil.hourly_heatmap : [];
+    if (summaries.length > 0) {
+      const rows = summaries.map(uh => {
+        const hostName = uh.host || uh.name || '';
+        const hrs = new Array(24).fill(0);
+        heatmapCells.forEach(c => {
+          if (c.host === hostName && c.hour_utc >= 0 && c.hour_utc < 24) {
+            hrs[c.hour_utc] = c.avg_working_sessions || 0;
+          }
+        });
+        const cells = hrs.map((val, hr) => {
+          const intensity = Math.min(1, val / 3.0);
+          const bg = val <= 0.05 ? 'rgba(255,255,255,0.04)' : `rgba(6, 182, 212, ${(0.2 + intensity * 0.75).toFixed(2)})`;
+          return `<div title="${escapeHtml(hostName)} @ ${hr}:00 UTC — avg ${val.toFixed(1)} working sessions" style="flex: 1; height: 14px; background: ${bg}; border-radius: 2px;"></div>`;
+        }).join('');
+        const headroomPct = Math.max(0, 100 - (uh.avg_cpu_pct || 0));
+        return `
+          <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px; font-size: 11px;">
+            <div style="width: 90px; font-weight: 600; color: #fff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+              ${escapeHtml(hostName)} <span style="color: var(--text-muted); font-weight: 400;">(${uh.routing_weight || 0}%)</span>
+            </div>
+            <div style="flex: 1; display: flex; gap: 2px;">${cells}</div>
+            <div style="width: 120px; text-align: right; color: var(--text-muted); font-family: var(--font-mono); font-size: 10px;">
+              ${(uh.actual_share_pct || 0).toFixed(0)}% tasks · ${headroomPct.toFixed(0)}% free
+            </div>
+          </div>
+        `;
+      }).join('');
+
+      heatmapHtml = `
+        <h4 style="font-size: 12px; color: var(--text-muted); text-transform: uppercase; margin: 14px 0 8px 0; letter-spacing: 0.5px;">Fleet 24h Utilization & Target Share (${fleetUtil.days || 14}d)</h4>
+        <div style="background: rgba(255,255,255,0.02); border: 1px solid var(--border-color); border-radius: 6px; padding: 10px 12px;">
+          ${rows}
+          <div style="display: flex; justify-content: space-between; font-size: 10px; color: var(--text-muted); margin-top: 4px; padding-left: 98px; padding-right: 128px;">
+            <span>00:00</span><span>06:00</span><span>12:00</span><span>18:00</span><span>23:00 UTC</span>
+          </div>
+        </div>
+      `;
     }
 
     const installedAgents = discovery.filter(d => d.installed);
@@ -1503,13 +1613,32 @@ async function showHostSummaryModal(h) {
       <div style="display: flex; gap: 12px; margin-bottom: 12px; align-items: center; background: var(--bg-card); padding: 12px; border-radius: 8px; border: 1px solid var(--border-color);">
         <div style="font-size: 24px;">🖥️</div>
         <div style="flex: 1;">
-          <div style="font-weight: 600; font-size: 14px; color: #fff;">${h.name} ${isOnline ? '<span style="color: var(--accent-green); font-size: 12px;">🟢 Online</span>' : '<span style="color: var(--accent-red); font-size: 12px;">🔴 Offline</span>'}</div>
-          <div style="font-size: 11px; color: var(--text-muted); font-family: var(--font-mono); margin-top: 2px;">
+          <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+            <span style="font-weight: 600; font-size: 14px; color: #fff;">${escapeHtml(h.name)}</span>
+            ${isOnline ? '<span style="color: var(--accent-green); font-size: 12px;">🟢 Online</span>' : '<span style="color: var(--accent-red); font-size: 12px;">🔴 Offline</span>'}
+            ${policyPillsHtml}
+            <span style="background: rgba(6, 182, 212, 0.12); color: var(--accent-cyan); border: 1px solid rgba(6, 182, 212, 0.35); padding: 2px 7px; border-radius: 4px; font-size: 11px; font-weight: 600;">Target Share: ${routingWeight}%</span>
+            ${overloadBadge}
+          </div>
+          <div style="font-size: 11px; color: var(--text-muted); font-family: var(--font-mono); margin-top: 4px;">
             Endpoint: ${h.url || 'http://127.0.0.1:7777'} &nbsp;|&nbsp; ackbard v${daemonVersion} ${h.ssh_target ? `&nbsp;|&nbsp; SSH: ${h.ssh_target}` : ''}
+          </div>
+          <div style="font-size: 11px; color: var(--text-muted); font-family: var(--font-mono); margin-top: 4px;">
+            Active Working: <strong style="color: #fff;">${loadSnap.working_sessions || 0}</strong> &nbsp;|&nbsp;
+            Queued: <strong style="color: #fff;">${loadSnap.queued_workstreams || 0}</strong> &nbsp;|&nbsp;
+            CPU: <strong style="color: #fff;">${(loadSnap.cpu_load_pct || 0).toFixed(0)}%</strong> &nbsp;|&nbsp;
+            Free RAM: <strong style="color: #fff;">${(loadSnap.ram_free_gb || 0).toFixed(1)} GB</strong>
           </div>
         </div>
       </div>
       ${updateBanner}
+
+      <h4 style="font-size: 12px; color: var(--text-muted); text-transform: uppercase; margin: 14px 0 8px 0; letter-spacing: 0.5px;">Detected Host Capabilities</h4>
+      <div style="display: flex; flex-wrap: wrap; gap: 6px; padding: 10px; background: rgba(255,255,255,0.02); border: 1px solid var(--border-color); border-radius: 6px;">
+        ${capPillsHtml}
+      </div>
+
+      ${heatmapHtml}
 
       <h4 style="font-size: 12px; color: var(--text-muted); text-transform: uppercase; margin: 14px 0 8px 0; letter-spacing: 0.5px;">Agent Hook Configuration on ${escapeHtml(h.name)}</h4>
       ${installedSectionHtml}
@@ -1523,7 +1652,7 @@ async function showHostSummaryModal(h) {
 
     const footer = `
       ${!isLocal ? `<button class="btn btn-danger" id="hBtnDeleteHost" style="margin-right: auto;">🗑 Remove</button>` : ''}
-      ${!isLocal ? `<button class="btn btn-secondary" id="hBtnEditHost">✏️ Edit Host</button>` : ''}
+      <button class="btn btn-secondary" id="hBtnEditHost">✏️ Edit Policy & Share</button>
       ${!isLocal && !isOnline ? `<button class="btn btn-primary" id="hBtnReconnectHost" style="background: #10b981; border-color: #059669; color: #fff; font-weight: 600;">🔄 Reconnect SSH Tunnel</button>` : ''}
       ${!isLocal && isOnline ? `<button class="btn btn-primary" id="hBtnUpdateHost" style="background: #06b6d4; border-color: #0891b2; color: #090a0f; font-weight: 600;">⬆ Update ackbard</button>` : ''}
       <button class="btn btn-secondary" id="hBtnPurgeHost">🔄 Safe Purge</button>
@@ -1535,7 +1664,7 @@ async function showHostSummaryModal(h) {
     const editBtn = document.getElementById('hBtnEditHost');
     if (editBtn) {
       editBtn.addEventListener('click', () => {
-        showEditHostModal(h);
+        showEditHostModal({ ...h, policy_tags: policyTags, routing_weight: routingWeight, detected_capabilities: detectedCaps });
       });
     }
 

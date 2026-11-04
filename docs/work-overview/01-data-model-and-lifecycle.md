@@ -100,6 +100,30 @@ Rather than hardcoding host columns on `tree_nodes`, `ackbard` stores a normaliz
 | **`Modemobile/NGL/ngl-web`** | `~/Work/NGL/ngl-web` | `/home/dev4u/Work/NGL/ngl-web` | `~/Work/NGL/ngl-web` |
 | **`Modemobile/MEA/ad-mediation-api`** | `~/Work/MEA/ad-mediation-api` | `/home/dev4u/Work/MEA/ad-mediation-api` | `~/Work/MEA/ad-mediation-api` |
 
+### 5.3 Host Capabilities, Weighted Load Balancing (`75/25`) & Utilization Telemetry
+To allow the `⚓ Supervisor` and `ackbard` (`target_host: "auto"`) to route tasks intelligently without hardcoded host names—while preserving scarce iOS capacity on `macmini`—each host reports **hybrid capabilities** and **live load telemetry** over the existing `GET /v1/version` health heartbeat (every 5–10s in `ensureHostTunnels`, plus an instant pre-spawn refresh):
+
+1. **Hybrid Host Capabilities (`detected_capabilities` + `policy_tags`):**
+   * **`detected_capabilities` (Auto-Probed by `ackbard`):**
+     * **Platform & UI Test Runtimes:** `macos`, `linux`, `ios` (`xcrun simctl`), `android` (`adb` / `emulator`), `chrome` (Playwright/Chrome), `docker`, `gpu`.
+     * **Installed & Authenticated AI Agents:** `agent:claude-code`, `agent:antigravity`, `agent:codex`.
+     * **Configured MCP Plugins:** `mcp:gdrive`, `mcp:gdocs`, `mcp:gslides`, `mcp:gsheets`, `mcp:linear`, etc.
+   * **`policy_tags` & `routing_weight` (Manual Host Policy, LWW-Synced):**
+     * `24/7` (`always_on`) vs. `ephemeral` (laptops like `macbook`), plus optional `drain` / `priority`.
+     * **Configurable `routing_weight` (`0..100`):** Defaults to **`legion = 75`**, **`macmini = 25`**, and **`macbook = 0`** so 75% of general/non-iOS tasks (Design tasks, Supervisors, Android/backend/web repos) route to `legion`, preserving `macmini` headroom for `ios`-exclusive tasks.
+     * **Ephemeral Laptop Policy:** Hosts without `24/7` (`routing_weight = 0`, e.g. `macbook`) are **never** auto-selected for background/Supervisor tasks unless explicitly targeted by the user or all `24/7` hosts are offline.
+
+2. **Live Load Telemetry & Deterministic Deficit/Headroom Scoring (`target_host: "auto"`):**
+   * Each heartbeat reports active working load (ignoring `Idle`/`Blocked`/`Later` sessions) alongside OS pressure:
+     * `working_sessions` (`StateWorking`), `queued_workstreams`, `cpu_load_pct`, `ram_free_gb`, `ram_total_gb`, `disk_free_gb`, and `overloaded` (`cpu_load_pct > 85%` or `ram_free_gb < 2GB`).
+   * **Explicit `required_capabilities` Filtering:** When the `⚓ Supervisor` calls `create_task` or `spawn_session`, it passes `required_capabilities` (e.g. `["ios"]`, `["android", "agent:antigravity"]`, `["mcp:gdrive"]`). `ackbard` filters online `24/7` hosts by `required_capabilities` (and `node_host_paths` for `kind="code"` tasks).
+   * **Capacity-Adjusted 75/25 Deficit Scoring:** When multiple `24/7` hosts qualify, `ackbard` targets the configured `75/25` ratio across active working sessions, dynamically tilted by live CPU and free RAM headroom.
+   * **Never Block on Overload (Spawn + Warn):** If the selected host is under heavy load (`overloaded == true`), `ackbard` **spawns immediately anyway** and returns a `load_warning` in the API/MCP response so the UI badges the session and the Supervisor alerts the user.
+
+3. **Multi-Week Historical Utilization (`host_load_metrics`):**
+   * Each daemon records downsampled **5-minute rollups** (compacted to **1-hour buckets** after 7 days, retained for 90 days) capturing `avg_working_sessions`, `max_working_sessions`, `avg_cpu_pct`, `max_cpu_pct`, `min_ram_free_gb`, and `tasks_spawned_count`.
+   * Surfaces in Web and Mobile as a **24-Hour Utilization Heatmap (Hour-of-Day $\times$ Host)** and **7d/30d Split & Headroom Charts** so routing weights (`75/25`) can be tuned empirically over weeks.
+
 ---
 
 ## 6. Zero-Input `⚓ Supervisor` Dispatchers, Product vs. Code Tasks & Native Cloud Artifacts
@@ -168,6 +192,22 @@ CREATE TABLE IF NOT EXISTS node_host_paths (
     capabilities TEXT,                         -- JSON array, e.g. '["ios","macos","simulator"]'
     updated_at TIMESTAMP NOT NULL,
     PRIMARY KEY (node_path, host)
+);
+
+-- Host Policy & Historical Load Rollups (5-min buckets compacted to 1-hr after 7d; retained 90d)
+-- Note: hosts table is extended with policy_tags TEXT ('["24/7"]'), routing_weight INTEGER DEFAULT 50,
+-- and detected_capabilities TEXT ('["linux","android","agent:claude-code","mcp:gdrive"]')
+CREATE TABLE IF NOT EXISTS host_load_metrics (
+    host TEXT NOT NULL,                        -- 'legion', 'macmini', 'macbook'
+    bucket_start TIMESTAMP NOT NULL,           -- 5-min or 1-hr UTC bucket start
+    bucket_sec INTEGER NOT NULL DEFAULT 300,   -- 300 (5m) or 3600 (1h)
+    avg_working_sessions REAL NOT NULL,        -- Average StateWorking sessions during bucket
+    max_working_sessions INTEGER NOT NULL,     -- Peak StateWorking sessions during bucket
+    avg_cpu_pct REAL NOT NULL,                 -- Average OS CPU load % (0..100)
+    max_cpu_pct REAL NOT NULL,                 -- Peak OS CPU load % (0..100)
+    min_ram_free_gb REAL NOT NULL,             -- Minimum free RAM in GB during bucket
+    tasks_spawned_count INTEGER DEFAULT 0,     -- Number of tasks/sessions routed to host in bucket
+    PRIMARY KEY (host, bucket_start, bucket_sec)
 );
 
 CREATE TABLE IF NOT EXISTS tasks (

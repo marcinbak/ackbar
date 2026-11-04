@@ -19,6 +19,19 @@ import (
 )
 
 func (s *Server) updateHostHealth(name string, online bool, ver, displayName string, latencyMs int64) {
+	s.updateHostHealthWithTelemetry(name, online, ver, displayName, latencyMs, nil, nil, -1, nil)
+}
+
+func (s *Server) updateHostHealthWithTelemetry(
+	name string,
+	online bool,
+	ver, displayName string,
+	latencyMs int64,
+	detectedCaps []string,
+	policyTags []string,
+	routingWeight int,
+	load *HostLoadSnapshot,
+) {
 	if strings.EqualFold(strings.TrimSpace(displayName), "local") {
 		displayName = ""
 	}
@@ -35,16 +48,44 @@ func (s *Server) updateHostHealth(name string, online bool, ver, displayName str
 			if displayName == "" && prev.DisplayName != "" && !strings.EqualFold(strings.TrimSpace(prev.DisplayName), "local") {
 				displayName = prev.DisplayName
 			}
+			if len(detectedCaps) == 0 && len(prev.DetectedCapabilities) > 0 {
+				detectedCaps = prev.DetectedCapabilities
+			}
+			if len(policyTags) == 0 && len(prev.PolicyTags) > 0 {
+				policyTags = prev.PolicyTags
+			}
+			if routingWeight < 0 && prev.RoutingWeight > 0 {
+				routingWeight = prev.RoutingWeight
+			}
+			if load == nil && prev.Load != nil {
+				load = prev.Load
+			}
 		}
 	}
 	s.hostHealthMap[name] = &HostHealth{
-		Online:      online,
-		Version:     ver,
-		DisplayName: displayName,
-		LatencyMs:   latencyMs,
-		LastCheck:   time.Now(),
+		Online:               online,
+		Version:              ver,
+		DisplayName:          displayName,
+		LatencyMs:            latencyMs,
+		LastCheck:            time.Now(),
+		DetectedCapabilities: detectedCaps,
+		PolicyTags:           policyTags,
+		RoutingWeight:        routingWeight,
+		Load:                 load,
 	}
 	s.hostHealthMu.Unlock()
+
+	if online && s.db != nil {
+		if len(detectedCaps) > 0 {
+			if hr, err := s.db.GetHost(name); err == nil && hr != nil {
+				hr.DetectedCapabilities = detectedCaps
+				_ = s.db.SaveHost(hr)
+			}
+		}
+		if load != nil {
+			_ = s.db.RecordHostLoadSample(name, *load, 0, time.Now().UTC())
+		}
+	}
 
 	// If host transitioned to online, pull/push deltas immediately for fast convergence
 	if online && !wasOnline && s.db != nil {
@@ -118,6 +159,12 @@ func (s *Server) resolveHost(hostName string) *HostRecord {
 func (s *Server) handleHosts(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
+		if r.URL.Query().Get("include_local") == "true" {
+			all := s.GetAllFleetHosts()
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(all)
+			return
+		}
 		hosts, err := s.db.ListHosts()
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -125,11 +172,25 @@ func (s *Server) handleHosts(w http.ResponseWriter, r *http.Request) {
 		}
 		s.hostHealthMu.RLock()
 		for _, h := range hosts {
-			if health, ok := s.hostHealthMap[h.Name]; ok {
+			if health, ok := s.hostHealthMap[h.Name]; ok && health != nil {
 				h.Online = health.Online
-				h.Version = health.Version
-				h.DisplayName = health.DisplayName
+				if health.Version != "" {
+					h.Version = health.Version
+				}
+				if health.DisplayName != "" {
+					h.DisplayName = health.DisplayName
+				}
 				h.LatencyMs = health.LatencyMs
+				if len(health.DetectedCapabilities) > 0 {
+					h.DetectedCapabilities = health.DetectedCapabilities
+				}
+				if len(health.PolicyTags) > 0 && !h.HasExplicitWeight {
+					h.PolicyTags = health.PolicyTags
+				}
+				if health.Load != nil {
+					loadCopy := *health.Load
+					h.Load = &loadCopy
+				}
 			}
 		}
 		s.hostHealthMu.RUnlock()
@@ -137,16 +198,40 @@ func (s *Server) handleHosts(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(hosts)
 
 	case http.MethodPost:
-		var h HostRecord
-		if err := json.NewDecoder(r.Body).Decode(&h); err != nil {
+		var raw map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
 			http.Error(w, "Invalid payload", http.StatusBadRequest)
 			return
+		}
+		rawBytes, _ := json.Marshal(raw)
+		var h HostRecord
+		_ = json.Unmarshal(rawBytes, &h)
+		if _, hasWeight := raw["routing_weight"]; hasWeight {
+			h.HasExplicitWeight = true
 		}
 		if h.Name == "" {
 			http.Error(w, "Missing host name", http.StatusBadRequest)
 			return
 		}
+		if s.isLocalHost(h.Name) {
+			settingsToSave := make(map[string]string)
+			if len(h.PolicyTags) > 0 {
+				if b, err := json.Marshal(h.PolicyTags); err == nil {
+					settingsToSave["local_policy_tags"] = string(b)
+				}
+			}
+			if h.HasExplicitWeight {
+				settingsToSave["local_routing_weight"] = fmt.Sprintf("%d", h.RoutingWeight)
+			}
+			if len(settingsToSave) > 0 {
+				_ = s.db.SetSettings(settingsToSave)
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"status":"saved"}`))
+			return
+		}
 		h.CreatedAt = time.Now()
+		h.UpdatedAt = time.Now().UTC()
 		if err := s.db.SaveHost(&h); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -629,19 +714,26 @@ func (s *Server) ensureHostTunnels(ctx context.Context) {
 			continue
 		}
 
+		type peerVersionPayload struct {
+			Version              string            `json:"version"`
+			DisplayName          string            `json:"display_name"`
+			DetectedCapabilities []string          `json:"detected_capabilities"`
+			PolicyTags           []string          `json:"policy_tags"`
+			RoutingWeight        int               `json:"routing_weight"`
+			Load                 *HostLoadSnapshot `json:"load"`
+		}
+
 		// Check if port is already answering
 		start := time.Now()
 		client := http.Client{Timeout: 1500 * time.Millisecond}
 		resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%s/v1/version", port))
 		if err == nil {
-			var vResp struct {
-				Version     string `json:"version"`
-				DisplayName string `json:"display_name"`
-			}
+			var vResp peerVersionPayload
+			vResp.RoutingWeight = -1
 			_ = json.NewDecoder(resp.Body).Decode(&vResp)
 			resp.Body.Close()
 			latency := time.Since(start).Milliseconds()
-			s.updateHostHealth(h.Name, true, vResp.Version, vResp.DisplayName, latency)
+			s.updateHostHealthWithTelemetry(h.Name, true, vResp.Version, vResp.DisplayName, latency, vResp.DetectedCapabilities, vResp.PolicyTags, vResp.RoutingWeight, vResp.Load)
 			continue // tunnel is healthy!
 		}
 
@@ -653,14 +745,12 @@ func (s *Server) ensureHostTunnels(ctx context.Context) {
 		} else {
 			start = time.Now()
 			if r2, err2 := client.Get(fmt.Sprintf("http://127.0.0.1:%s/v1/version", port)); err2 == nil {
-				var vResp struct {
-					Version     string `json:"version"`
-					DisplayName string `json:"display_name"`
-				}
+				var vResp peerVersionPayload
+				vResp.RoutingWeight = -1
 				_ = json.NewDecoder(r2.Body).Decode(&vResp)
 				r2.Body.Close()
 				latency := time.Since(start).Milliseconds()
-				s.updateHostHealth(h.Name, true, vResp.Version, vResp.DisplayName, latency)
+				s.updateHostHealthWithTelemetry(h.Name, true, vResp.Version, vResp.DisplayName, latency, vResp.DetectedCapabilities, vResp.PolicyTags, vResp.RoutingWeight, vResp.Load)
 			}
 		}
 	}

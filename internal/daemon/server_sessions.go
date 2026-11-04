@@ -1045,24 +1045,30 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Agent         string `json:"agent"`
-		Cwd           string `json:"cwd"`
-		Host          string `json:"host"`
-		NodePath      string `json:"node_path"`
-		Name          string `json:"name"`
-		AccountID     string `json:"account_id"`
-		EngineType    string `json:"engine_type"`
-		Prompt        string `json:"prompt"`
-		IsSupervisor  bool   `json:"is_supervisor"`
-		TaskID        string `json:"task_id"`
-		CurrentTaskID string `json:"current_task_id"`
-		TaskKind      string `json:"task_kind"`
-		RepoNodePath  string `json:"repo_node_path"`
+		Agent                string   `json:"agent"`
+		Cwd                  string   `json:"cwd"`
+		Host                 string   `json:"host"`
+		TargetHost           string   `json:"target_host"`
+		RequiredCapabilities []string `json:"required_capabilities"`
+		NodePath             string   `json:"node_path"`
+		Name                 string   `json:"name"`
+		AccountID            string   `json:"account_id"`
+		EngineType           string   `json:"engine_type"`
+		Prompt               string   `json:"prompt"`
+		IsSupervisor         bool     `json:"is_supervisor"`
+		TaskID               string   `json:"task_id"`
+		CurrentTaskID        string   `json:"current_task_id"`
+		TaskKind             string   `json:"task_kind"`
+		RepoNodePath         string   `json:"repo_node_path"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid payload", http.StatusBadRequest)
 		return
+	}
+
+	if req.Host == "" && req.TargetHost != "" {
+		req.Host = req.TargetHost
 	}
 
 	if req.TaskID == "" && req.CurrentTaskID != "" {
@@ -1106,6 +1112,25 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		req.EngineType = EngineTmux
 	}
 
+	targetForRouting := strings.TrimSpace(req.Host)
+	if targetForRouting == "" && len(req.RequiredCapabilities) > 0 {
+		targetForRouting = "auto"
+	} else if targetForRouting == "" {
+		targetForRouting = "local"
+	}
+	routingDecision := s.SelectTargetHost(r.Context(), HostRoutingRequest{
+		TargetHost:           targetForRouting,
+		RequiredCapabilities: req.RequiredCapabilities,
+		RepoNodePath:         req.RepoNodePath,
+		NodePath:             req.NodePath,
+		TaskKind:             req.TaskKind,
+		Agent:                req.Agent,
+		IsSupervisor:         req.IsSupervisor,
+	})
+	if strings.EqualFold(strings.TrimSpace(req.Host), "auto") || (req.Host == "" && len(req.RequiredCapabilities) > 0) {
+		req.Host = routingDecision.SelectedHost
+	}
+
 	// 1. Forward to remote host if specified
 	if !s.isRequestForLocalDaemon(r, req.Host) {
 		hostRec := s.resolveHost(req.Host)
@@ -1142,6 +1167,13 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			defer resp.Body.Close()
+			if resp.StatusCode >= 200 && resp.StatusCode < 300 && s.db != nil {
+				snap := HostLoadSnapshot{}
+				if routingDecision.Load != nil {
+					snap = *routingDecision.Load
+				}
+				_ = s.db.RecordHostLoadSample(hostRec.Name, snap, 1, time.Now().UTC())
+			}
 			w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
 			w.WriteHeader(resp.StatusCode)
 			_, _ = io.Copy(w, resp.Body)
@@ -1294,19 +1326,28 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 				AssignedAt:   now,
 			})
 		}
+		if s.db != nil {
+			snap := s.CollectLocalHostLoad()
+			_ = s.db.RecordHostLoadSample(effectiveHost, snap, 1, now)
+		}
 		s.broadcast(sess)
 		if initialPrompt != "" && s.headless != nil {
 			_ = s.headless.RunTurn(context.Background(), sess, initialPrompt)
 		}
+		respPayload := map[string]interface{}{
+			"status":         "spawned",
+			"session_id":     tempUUID,
+			"id":             spawnID,
+			"host":           effectiveHost,
+			"engine_type":    EngineHeadless,
+			"session":        sess,
+			"routing_reason": routingDecision.Reason,
+		}
+		if routingDecision.LoadWarning != "" {
+			respPayload["load_warning"] = routingDecision.LoadWarning
+		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"status":      "spawned",
-			"session_id":  tempUUID,
-			"id":          spawnID,
-			"host":        effectiveHost,
-			"engine_type": EngineHeadless,
-			"session":     sess,
-		})
+		_ = json.NewEncoder(w).Encode(respPayload)
 		return
 	}
 
@@ -1377,17 +1418,27 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	if s.db != nil {
+		snap := s.CollectLocalHostLoad()
+		_ = s.db.RecordHostLoadSample(effectiveHost, snap, 1, now)
+	}
+
 	s.broadcast(sess)
 
+	respPayload := map[string]interface{}{
+		"status":         "spawning",
+		"session_id":     tempUUID,
+		"id":             sess.ID,
+		"host":           effectiveHost,
+		"engine_type":    EngineTmux,
+		"session":        sess,
+		"routing_reason": routingDecision.Reason,
+	}
+	if routingDecision.LoadWarning != "" {
+		respPayload["load_warning"] = routingDecision.LoadWarning
+	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":      "spawning",
-		"session_id":  tempUUID,
-		"id":          sess.ID,
-		"host":        effectiveHost,
-		"engine_type": EngineTmux,
-		"session":     sess,
-	})
+	_ = json.NewEncoder(w).Encode(respPayload)
 }
 
 func (s *Server) handleBindSupervisor(w http.ResponseWriter, r *http.Request) {

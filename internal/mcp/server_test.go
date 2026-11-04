@@ -95,9 +95,10 @@ func TestMCPServer_HandshakeAndToolsList(t *testing.T) {
 		t.Errorf("Expected at least 8 tools, got %d", len(listResp.Result.Tools))
 	}
 
-	// Verify tools include report_blocker and propose_task
+	// Verify tools include report_blocker, propose_task, and list_hosts
 	hasBlockerTool := false
 	hasProposeTool := false
+	hasListHostsTool := false
 	for _, tool := range listResp.Result.Tools {
 		if tool.Name == "report_blocker" {
 			hasBlockerTool = true
@@ -105,12 +106,71 @@ func TestMCPServer_HandshakeAndToolsList(t *testing.T) {
 		if tool.Name == "propose_task" {
 			hasProposeTool = true
 		}
+		if tool.Name == "list_hosts" {
+			hasListHostsTool = true
+		}
 	}
 	if !hasBlockerTool {
 		t.Errorf("Expected report_blocker tool in tools/list")
 	}
 	if !hasProposeTool {
 		t.Errorf("Expected propose_task tool in tools/list")
+	}
+	if !hasListHostsTool {
+		t.Errorf("Expected list_hosts tool in tools/list")
+	}
+}
+
+func TestMCPServer_ListHostsExecution(t *testing.T) {
+	mockDaemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/hosts":
+			_ = json.NewEncoder(w).Encode([]map[string]any{
+				{
+					"name":                  "legion",
+					"healthy":               true,
+					"policy_tags":           []string{"24/7"},
+					"routing_weight":        75,
+					"detected_capabilities": []string{"linux", "android", "agent:claude-code"},
+				},
+				{
+					"name":                  "macmini",
+					"healthy":               true,
+					"policy_tags":           []string{"24/7"},
+					"routing_weight":        25,
+					"detected_capabilities": []string{"macos", "ios", "android", "agent:claude-code"},
+				},
+			})
+		case "/v1/hosts/utilization":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"days":               14,
+				"total_tasks_routed": 12,
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer mockDaemon.Close()
+
+	client := &DaemonClient{
+		BaseURL:    mockDaemon.URL,
+		HTTPClient: mockDaemon.Client(),
+	}
+	resHosts, err := executeListHosts(context.Background(), client, map[string]any{"include_metrics": false})
+	if err != nil || resHosts.IsError {
+		t.Fatalf("executeListHosts(include_metrics=false) failed: err=%v, res=%v", err, resHosts)
+	}
+	if len(resHosts.Content) == 0 || !strings.Contains(resHosts.Content[0].Text, `"legion"`) {
+		t.Fatalf("unexpected executeListHosts(include_metrics=false) output: %v", resHosts.Content)
+	}
+
+	resUtil, err := executeListHosts(context.Background(), client, map[string]any{"include_metrics": true, "days": 14})
+	if err != nil || resUtil.IsError {
+		t.Fatalf("executeListHosts(include_metrics=true) failed: err=%v, res=%v", err, resUtil)
+	}
+	if len(resUtil.Content) == 0 || !strings.Contains(resUtil.Content[0].Text, `"total_tasks_routed": 12`) {
+		t.Fatalf("unexpected executeListHosts(include_metrics=true) output: %v", resUtil.Content)
 	}
 }
 

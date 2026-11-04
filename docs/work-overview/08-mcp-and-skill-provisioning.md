@@ -21,13 +21,14 @@ Ackbar's Work & Fleet Overview Dashboard manages the lifecycle of tasks across f
 
 | Tool | Category | Parameters | Description |
 | :--- | :--- | :--- | :--- |
+| **`list_hosts`** | Supervisor Fleet | `include_metrics?` | Lists all registered hosts with online status, `detected_capabilities` (`ios`, `android`, `agent:*`, `mcp:*`), `policy_tags` (`24/7`, `drain`), `routing_weight` (`75`/`25`), and live `load` (`working_sessions`, `cpu_load_pct`, `ram_free_gb`, `overloaded`). |
 | **`list_sessions`** | Supervisor Session | `host?`, `state?` | Lists active, blocked, or idle sessions across all federated hosts (`GET /v1/sessions?federated=true`). |
 | **`get_session_output`** | Supervisor Session | `session_id!`, `limit?` | Fetches the latest assistant messages, implementation plan, or blocker options (`GET /v1/sessions/transcript`). |
 | **`send_session_input`** | Supervisor Session | `session_id!`, `input!` | Answers a blocked question, approves a plan, or sends a follow-up prompt (`POST /v1/sessions/respond`). |
-| **`spawn_session`** | Supervisor Session | `host!`, `dir!`, `agent!`, `prompt?` | Spawns a new interactive Tmux or headless coding session on the target host (`POST /v1/sessions/spawn`). |
+| **`spawn_session`** | Supervisor Session | `host?` (`"auto"`), `dir!`, `agent!`, `required_capabilities?`, `prompt?` | Spawns a new interactive Tmux or headless coding session on the target host (or `"auto"` via capability + 75/25 weighted deficit routing, returning `load_warning` if overloaded). |
 | **`control_session`** | Supervisor Session | `session_id!`, `action!` | Executes session lifecycle actions (`resume`, `restart`, `kill`, `handover`, `done`, `later`). |
 | **`bind_supervisor_session`** | Supervisor Dispatcher | `session_id!`, `project_node_path!`, `title!` | Auto-binds a zero-input `⚓ Supervisor` session to a project (`is_supervisor=1`) and sets its title on the first message. |
-| **`create_task`** | Task Orchestrator | `title!`, `task_kind?`, `project_node_path!`, `repos[]`, `depends_on?`, `auto_start?` | Creates a Product/Design (`kind="design"`) or Code (`kind="code"`) task on the Work Board and spawns its dedicated `📋 Task` session(s). |
+| **`create_task`** | Task Orchestrator | `title!`, `task_kind?`, `project_node_path!`, `repos[]`, `target_host?` (`"auto"`), `required_capabilities?`, `depends_on?`, `auto_start?` | Creates a Product/Design (`kind="design"`) or Code (`kind="code"`) task on the Work Board and spawns its dedicated `📋 Task` session(s) using capability filtering (`required_capabilities: ["ios"]`) and capacity-adjusted 75/25 weighted routing. |
 | **`get_current_task`** | Task Worker | `worktree_path?`, `branch?` | Auto-detects and binds to the active task based on working directory, Git branch, or session. |
 | **`list_tasks`** | Task Worker | `group?`, `project?`, `status?` | Queries tasks filtered by scope and lifecycle state (`NEW`, `IN_PROGRESS`, `REVIEW`, `DONE`). |
 | **`update_task`** | Task Worker | `task_id!`, `status?`, `substatus?`, `workflow_node?`, `notes?`, `pr_url?` | Updates task progress, active `dev-workflow` node (`N0`..`N15`), lifecycle column, or PR URL. |

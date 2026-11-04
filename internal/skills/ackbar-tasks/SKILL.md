@@ -1,6 +1,6 @@
 ---
 name: ackbar-tasks
-version: "20261104.06"
+version: "20261104.07"
 description: "Native Ackbar Task Management: track active work, report blockers without stalling, attach rich deliverables (UI mockups, plans, retros), and propose discovered bugs/tech-debt directly into the Ackbar Work Board."
 argument-hint: "[task-id or action]"
 ---
@@ -30,17 +30,22 @@ mcp__ackbar__get_current_task({})
 // Or list active tasks in progress (can filter by ?kind=code|design)
 mcp__ackbar__list_tasks({ "status": "IN_PROGRESS" })
 
-// Or create a new task with multi-repo workstreams, agent runtime, worker prompt, and auto-start
+// Or inspect fleet host capabilities, routing weights (75/25), and live load before dispatching
+mcp__ackbar__list_hosts({ "include_metrics": true, "days": 14 })
+
+// Or create a new task with multi-repo workstreams, capability routing, agent runtime, worker prompt, and auto-start
 mcp__ackbar__create_task({
   "title": "Migrate telemetry to WebSocket sync",
   "project_name": "Ackbar",
   "group_name": "Personal",
   "task_kind": "code",
   "agent": "claude-code", // or "antigravity", "codex" (defaults to caller agent or claude-code)
+  "target_host": "auto",  // "auto" uses capability filtering + 75/25 weighted deficit load balancing across 24/7 hosts
+  "required_capabilities": ["ios"], // e.g. ["ios"], ["android"], ["mcp:gdrive"]
   "prompt": "Implement WebSocket telemetry sync per specs in docs/telemetry.md",
   "repos": [
-    { "repo_node_path": "Personal/Ackbar", "target_host": "local" },
-    { "repo_node_path": "Modemobile/NGL/ngl-ios", "depends_on": "Personal/Ackbar" }
+    { "repo_node_path": "Personal/Ackbar", "target_host": "auto" },
+    { "repo_node_path": "Modemobile/NGL/ngl-ios", "depends_on": "Personal/Ackbar", "required_capabilities": ["ios"] }
   ],
   "auto_start": true
 })

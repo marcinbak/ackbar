@@ -72,3 +72,18 @@ In the terminal Bubble Tea interface:
 ### 5.4 Mobile Voice & Audio Companion (`transcript_screen.dart`)
 * **Two-Tier Speech Pipeline:** Powered by `AudioCompanionService` with Tier 1 client-side Markdown speech sanitization (`speech_sanitizer.dart`) and Tier 2 remote Haiku summarization (`POST /v1/sessions/summarize-speech`).
 * **Transcript Audio Controls (`SpeechCompanionBar`):** Embedded in `transcript_screen.dart`, providing header toggles (**`[🔊 Auto-Read]`**, **`[🎤 Mic]`**), persistent bottom companion bar, per-message bubble actions (**`[🔊 Read]`**, **`[⏹️ Stop]`**, **`[↺ Read Again]`**), and commuter quick-reply drill-down chips.
+
+---
+
+## 6. Fleet Utilization Heatmap & Weighted Routing Controls (Web & Mobile)
+
+To observe host utilization across hours of the day and tune `routing_weight` (e.g. `75%` `legion` / `25%` `macmini` for non-iOS tasks):
+
+1. **Host Cards & Live Load Badges (Settings / Fleet Modal):**
+   * Displays each host's auto-detected capability pills (`ios`, `android`, `agent:claude-code`, `mcp:gdrive`), manual policy tags (`[24/7]`, `[drain]`), and live telemetry (`2 working`, `CPU 34%`, `42 GB free`).
+   * **Overload Warning Badge (`⚠️ High Load`):** Shown when a host exceeds 85% CPU or drops below 2 GB free RAM; tasks spawned onto a busy host surface an inline warning toast without blocking execution.
+2. **Interactive Routing Weight Sliders:**
+   * Per-host weight control (`legion: 75%`, `macmini: 25%`, `macbook: 0% [Ephemeral]`) synced across peers via LWW.
+3. **24-Hour Utilization Heatmap & 7d/30d Trend Charts (`GET /v1/hosts/utilization?days=14`):**
+   * **Hour-of-Day Heatmap (00:00–23:00 $\times$ Host):** Visualizes average/peak active working sessions and CPU/RAM saturation by hour of the day across the past 7–30 days.
+   * **Task Share Breakdown:** Compares target routing weights (`75/25`) against actual spawned non-iOS task distribution and host headroom over time.

@@ -29,8 +29,8 @@ CRITICAL DISPATCHER RULES:
 1. HARD RULE 1 — NEVER WRITE CODE HERE: Never write product code, edit application repositories, or create git worktrees directly inside this Supervisor session workspace (~/.ackbar/supervisor). All implementation and refactoring MUST occur in worker sessions.
 2. HARD RULE 2 — TURN 1 DISPATCH & BINDING: On Turn 1 (or whenever the user mentions a project, Jira ticket such as NGL-XXX, or new feature), immediately:
    a. Call mcp__ackbar__bind_supervisor_session to place this supervisor session under the target project node (e.g. Modemobile/NGL) with an appropriate title.
-   b. Call mcp__ackbar__create_task with auto_start: true, passing title, repos, and prompt (containing the full ticket requirements/user instructions). This spawns a dedicated worker session in the actual repository directory.
-3. HARD RULE 3 — SUPERVISE VIA CONTROL TOOLS: Use list_sessions, get_session_output, send_session_input, list_tasks, and control_session to monitor, steer, and verify worker sessions. Inform the human user of worker progress and deliverables.`, sessStr)
+   b. Call mcp__ackbar__create_task with auto_start: true, passing title, repos, required_capabilities (e.g. ["ios"], ["android"], ["mcp:gdrive"]), target_host ("auto" for 75/25 weighted load balancing across 24/7 hosts), and prompt (containing the full ticket requirements/user instructions). This spawns a dedicated worker session in the actual repository directory.
+3. HARD RULE 3 — SUPERVISE VIA CONTROL TOOLS: Use list_hosts, list_sessions, get_session_output, send_session_input, list_tasks, and control_session to inspect host capabilities/load, monitor, steer, and verify worker sessions. Inform the human user of worker progress and deliverables.`, sessStr)
 }
 
 // ensureSupervisorWorkspace creates the supervisor workspace directory and populates CLAUDE.md and AGENTS.md
@@ -47,8 +47,8 @@ func (s *Server) ensureSupervisorWorkspace(dir string) {
 	sb.WriteString("1. **Hard Rule 1 — Zero Product Code:** Never write product code, edit repository files, or create git worktrees directly in this supervisor workspace. All execution work belongs in dedicated worker sessions.\n")
 	sb.WriteString("2. **Hard Rule 2 — Turn 1 Dispatch & Binding:** On Turn 1 (or whenever the user mentions a project, Jira ticket such as `NGL-XXX`, or initiative), immediately:\n")
 	sb.WriteString("   - Call `bind_supervisor_session` to place this supervisor session under the target project node (e.g. `Modemobile/NGL`) with a descriptive title.\n")
-	sb.WriteString("   - Call `create_task` with `auto_start: true`, specifying `repos`, `agent`, and `prompt` (with the complete ticket requirements) to launch an execution worker in the actual repository.\n")
-	sb.WriteString("3. **Hard Rule 3 — Supervise via MCP Tools:** Use `list_sessions`, `get_session_output`, `send_session_input`, `list_tasks`, and `control_session` to monitor, steer, and verify worker progress. Report milestones and blockers to the user.\n\n")
+	sb.WriteString("   - Call `create_task` with `auto_start: true`, specifying `repos`, `agent`, `required_capabilities` (e.g. `[\"ios\"]`, `[\"android\"]`, `[\"mcp:gdrive\"]`), `target_host` (`\"auto\"` for 75/25 weighted load balancing across `24/7` hosts), and `prompt` (with the complete ticket requirements) to launch an execution worker in the actual repository.\n")
+	sb.WriteString("3. **Hard Rule 3 — Supervise via MCP Tools:** Use `list_hosts`, `list_sessions`, `get_session_output`, `send_session_input`, `list_tasks`, and `control_session` to inspect fleet capabilities/load, monitor, steer, and verify worker progress. Report milestones and blockers to the user.\n\n")
 
 	sb.WriteString("## Registered Ackbar Project Nodes\n\n")
 	if s != nil && s.db != nil {
