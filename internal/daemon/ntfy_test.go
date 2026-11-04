@@ -514,6 +514,39 @@ func TestNtfy_TestNotificationEndpoint(t *testing.T) {
 	if !strings.Contains(received.Message, "Test notification from Ackbar Web UI") {
 		t.Errorf("unexpected test message: %q", received.Message)
 	}
+
+	// 3. Metadata endpoint / link-local blocked
+	metadataBody, _ := json.Marshal(map[string]string{
+		"ntfy_topic":  "metadata-test",
+		"ntfy_server": "http://169.254.169.254/latest/meta-data",
+	})
+	reqMeta := httptest.NewRequest(http.MethodPost, "/v1/notifications/test", bytes.NewReader(metadataBody))
+	wMeta := httptest.NewRecorder()
+	s.handleTestNotification(wMeta, reqMeta)
+	if wMeta.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 Bad Request for metadata IP, got %d", wMeta.Code)
+	}
+
+	// 4. Upstream failure doesn't leak raw body in 502
+	errServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte("sensitive-upstream-internal-details"))
+	}))
+	defer errServer.Close()
+
+	errBody, _ := json.Marshal(map[string]string{
+		"ntfy_topic":  "error-test",
+		"ntfy_server": errServer.URL,
+	})
+	reqErr := httptest.NewRequest(http.MethodPost, "/v1/notifications/test", bytes.NewReader(errBody))
+	wErr := httptest.NewRecorder()
+	s.handleTestNotification(wErr, reqErr)
+	if wErr.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502 Bad Gateway, got %d", wErr.Code)
+	}
+	if strings.Contains(wErr.Body.String(), "sensitive-upstream-internal-details") {
+		t.Errorf("expected 502 response not to leak upstream body, got %q", wErr.Body.String())
+	}
 }
 
 func TestSettings_PropagateNtfyToFleet(t *testing.T) {
@@ -587,15 +620,41 @@ func TestSettings_PropagateNtfyToFleet(t *testing.T) {
 	}
 
 	receivedSettingsMu.Lock()
-	defer receivedSettingsMu.Unlock()
-	if receivedSettings == nil {
+	rec := receivedSettings
+	receivedSettingsMu.Unlock()
+	if rec == nil {
 		t.Fatalf("expected mockPeer to receive settings propagation")
 	}
-	if receivedSettings["ntfy_topic"] != "fleet-wide-topic" {
-		t.Errorf("expected peer ntfy_topic 'fleet-wide-topic', got %q", receivedSettings["ntfy_topic"])
+	if rec["ntfy_topic"] != "fleet-wide-topic" {
+		t.Errorf("expected peer ntfy_topic 'fleet-wide-topic', got %q", rec["ntfy_topic"])
 	}
-	if _, ok := receivedSettings["propagate_ntfy"]; ok {
+	if _, ok := rec["propagate_ntfy"]; ok {
 		t.Errorf("propagate_ntfy should be stripped before forwarding to peer")
+	}
+
+	// Verify that propagate_ntfy: "true" with empty ntfy_topic does NOT propagate to fleet peers
+	receivedSettingsMu.Lock()
+	receivedSettings = nil
+	receivedSettingsMu.Unlock()
+
+	emptyTopicBody, _ := json.Marshal(map[string]string{
+		"ntfy_topic":     "",
+		"ntfy_server":    "https://ntfy.sh",
+		"propagate_ntfy": "true",
+	})
+	reqEmpty := httptest.NewRequest(http.MethodPost, "/v1/settings", bytes.NewReader(emptyTopicBody))
+	wEmpty := httptest.NewRecorder()
+	s.handleSettings(wEmpty, reqEmpty)
+	if wEmpty.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK from handleSettings, got %d", wEmpty.Code)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+	receivedSettingsMu.Lock()
+	emptyPropagated := receivedSettings != nil
+	receivedSettingsMu.Unlock()
+	if emptyPropagated {
+		t.Errorf("empty ntfy_topic must NOT be propagated to fleet peers")
 	}
 }
 
@@ -665,6 +724,21 @@ func TestNtfy_ResolveTaskSessionAndFormatting(t *testing.T) {
 	res = s.resolveTaskSession(taskBranch)
 	if res == nil || res.ID != "sess_branch" {
 		t.Errorf("expected sess_branch, got %+v", res)
+	}
+
+	// 4b. Exclude default branch names (e.g. "main")
+	sessMain := &Session{
+		ID:        "sess_main",
+		Agent:     "claude-code",
+		Host:      "local",
+		State:     StateWorking,
+		GitBranch: "main",
+		StartedAt: time.Now(),
+	}
+	_ = db.SaveSession(sessMain)
+	taskMain := &Task{ID: "task_default_branch", Branch: "main"}
+	if res := s.resolveTaskSession(taskMain); res != nil {
+		t.Errorf("expected nil session resolution for default branch 'main', got %+v", res)
 	}
 
 	// 5. Test formatSessionDisplayName hierarchy

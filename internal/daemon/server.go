@@ -606,13 +606,13 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		if propagateNtfy {
-			server := req["ntfy_server"]
+		if propagateNtfy && strings.TrimSpace(req["ntfy_topic"]) != "" {
+			server := strings.TrimSpace(req["ntfy_server"])
 			if server == "" {
 				server = s.NtfyServer()
 			}
 			go s.propagateSettingsToFleet(map[string]string{
-				"ntfy_topic":  req["ntfy_topic"],
+				"ntfy_topic":  strings.TrimSpace(req["ntfy_topic"]),
 				"ntfy_server": server,
 			})
 		}

@@ -418,7 +418,7 @@ function showSettingsModal() {
         handover_threshold_pct: document.getElementById('settingHandoverThresholdPct')?.value?.trim() || '60',
         ntfy_topic: document.getElementById('settingNtfyTopic')?.value?.trim() || '',
         ntfy_server: document.getElementById('settingNtfyServer')?.value?.trim() || 'https://ntfy.sh',
-        propagate_ntfy: document.getElementById('settingNtfyPropagateAll')?.checked ? 'true' : 'false'
+        propagate_ntfy: (document.getElementById('settingNtfyPropagateAll')?.checked && document.getElementById('settingNtfyTopic')?.value?.trim()) ? 'true' : 'false'
       };
 
       const ok = await updateSettings(newSettings);

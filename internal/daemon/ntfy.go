@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -49,9 +50,12 @@ func (s *Server) sendNtfy(ctx context.Context, payload NtfyPayload) error {
 		payload.Icon = AckbarNotificationIconURL
 	}
 
-	serverURL := payload.Server
+	serverURL := strings.TrimSpace(payload.Server)
 	if serverURL == "" {
-		serverURL = s.NtfyServer()
+		serverURL = strings.TrimSpace(s.NtfyServer())
+	}
+	if serverURL != "" && !strings.HasPrefix(serverURL, "http://") && !strings.HasPrefix(serverURL, "https://") {
+		serverURL = "https://" + serverURL
 	}
 	serverURL = strings.TrimRight(serverURL, "/")
 	if serverURL == "" {
@@ -151,7 +155,7 @@ func (s *Server) resolveTaskSession(task *Task) *Session {
 			if candidate != nil {
 				return candidate
 			}
-			if task.Branch != "" {
+			if task.Branch != "" && !strings.EqualFold(task.Branch, "main") && !strings.EqualFold(task.Branch, "master") && !strings.EqualFold(task.Branch, "develop") && !strings.EqualFold(task.Branch, "trunk") && !strings.EqualFold(task.Branch, "dev") {
 				for _, sess := range sessions {
 					if sess.Deleted {
 						continue
@@ -432,7 +436,30 @@ func (s *Server) handleTestNotification(w http.ResponseWriter, r *http.Request) 
 
 	serverURL := strings.TrimSpace(req.NtfyServer)
 	if serverURL == "" {
-		serverURL = s.NtfyServer()
+		serverURL = strings.TrimSpace(s.NtfyServer())
+	}
+	if serverURL != "" && !strings.HasPrefix(serverURL, "http://") && !strings.HasPrefix(serverURL, "https://") {
+		serverURL = "https://" + serverURL
+	}
+	serverURL = strings.TrimRight(serverURL, "/")
+	if serverURL == "" {
+		serverURL = "https://ntfy.sh"
+	}
+
+	parsedURL, err := url.ParseRequestURI(serverURL)
+	if err != nil || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") || parsedURL.Host == "" {
+		http.Error(w, "Invalid ntfy_server URL", http.StatusBadRequest)
+		return
+	}
+
+	hostName := parsedURL.Hostname()
+	if hostName == "169.254.169.254" || strings.HasPrefix(hostName, "169.254.") {
+		http.Error(w, "Invalid ntfy_server host", http.StatusBadRequest)
+		return
+	}
+	if ip := net.ParseIP(hostName); ip != nil && ip.IsLinkLocalUnicast() {
+		http.Error(w, "Invalid ntfy_server host", http.StatusBadRequest)
+		return
 	}
 
 	payload := NtfyPayload{
@@ -447,7 +474,8 @@ func (s *Server) handleTestNotification(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if err := s.sendNtfy(r.Context(), payload); err != nil {
-		http.Error(w, fmt.Sprintf("Failed to send notification: %v", err), http.StatusBadGateway)
+		log.Printf("[Ntfy] Test notification failed: %v", err)
+		http.Error(w, "Failed to send test notification to ntfy server", http.StatusBadGateway)
 		return
 	}
 
@@ -457,6 +485,9 @@ func (s *Server) handleTestNotification(w http.ResponseWriter, r *http.Request) 
 
 func (s *Server) propagateSettingsToFleet(subset map[string]string) {
 	if s.db == nil || len(subset) == 0 {
+		return
+	}
+	if strings.TrimSpace(subset["ntfy_topic"]) == "" {
 		return
 	}
 	hosts, err := s.db.ListHosts()
