@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"ackbar/internal/daemon"
 	"ackbar/internal/provider"
@@ -114,6 +115,13 @@ func main() {
 
 	// Initialize HTTP Server
 	server := daemon.NewServer(db)
+	if hostName == "" || strings.EqualFold(hostName, "local") {
+		if dbHost, err := db.GetSetting("host_name"); err == nil && dbHost != "" && !strings.EqualFold(dbHost, "local") {
+			hostName = dbHost
+		} else if sysHost := daemon.DefaultSystemHostName(); sysHost != "" {
+			hostName = sysHost
+		}
+	}
 	if hostName != "" || displayName != "" {
 		server.SetHostIdentity(hostName, displayName)
 	}

@@ -117,6 +117,21 @@ func TestServer_Integration(t *testing.T) {
 	server := NewServer(db)
 	server.RegisterProvider(&MockProvider{})
 
+	// Seed managed session created by Ackbar
+	if err := db.SaveSession(&Session{
+		ID:          "mock-agent:test-host:session-123",
+		Agent:       "mock-agent",
+		Host:        "test-host",
+		NativeID:    "session-123",
+		Cwd:         "/path/to/project",
+		Managed:     true,
+		State:       StateIdle,
+		StartedAt:   time.Now(),
+		LastEventAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("SaveSession failed: %v", err)
+	}
+
 	// 1. Test POST Hook Ingest
 	payload := `{"session_id": "session-123", "cwd": "/path/to/project", "activity": "compiling"}`
 	req := httptest.NewRequest("POST", "/v1/hooks/mock-agent?event=SessionStart", bytes.NewBufferString(payload))
@@ -2558,6 +2573,7 @@ func TestInitDB_CleansUpDeletedTmuxName(t *testing.T) {
 		Host:     "local",
 		NativeID: "uuid-test-1234",
 		Name:     "Test Session",
+		Managed:  true,
 		TmuxName: "(deleted)",
 		State:    StateEnded,
 	}
@@ -2814,17 +2830,14 @@ func TestTurnRotation_ConcurrentSessionDoesNotHijackLivingActiveManaged(t *testi
 		t.Errorf("Expected sess1 TmuxName to remain intact, got %q", dbSess1.TmuxName)
 	}
 
-	// 4. Verify sess2 was created as an independent unmanaged session, without stealing sess1's supervisor
+	// 4. Verify sess2 (concurrent external session created outside Ackbar) is ignored and not saved in DB
 	sess2ID := fmt.Sprintf("claude-code:local:%s", sess2UUID)
 	dbSess2, err := db.GetSession(sess2ID)
-	if err != nil || dbSess2 == nil {
-		t.Fatalf("Failed to retrieve sess2 from DB: %v", err)
+	if err != nil {
+		t.Fatalf("GetSession error for sess2: %v", err)
 	}
-	if dbSess2.Managed {
-		t.Errorf("Expected sess2 to NOT be managed (did not hijack sess1 supervisor)")
-	}
-	if dbSess2.TmuxName != "" {
-		t.Errorf("Expected sess2 TmuxName to be empty, got %q", dbSess2.TmuxName)
+	if dbSess2 != nil {
+		t.Errorf("Expected concurrent external session sess2 to be ignored, but found in DB: %+v", dbSess2)
 	}
 }
 
@@ -3447,15 +3460,24 @@ func TestScanObservedSessions_AssignsAndBackfillsNodePath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetSession failed: %v", err)
 	}
-	if sess == nil {
-		t.Fatalf("Expected session to be scanned into DB, but was nil")
-	}
-	if sess.NodePath != "Personal/Ackbar" {
-		t.Errorf("Expected newly scanned session NodePath to be 'Personal/Ackbar', got %q", sess.NodePath)
+	if sess != nil {
+		t.Fatalf("Expected external disk session not to be imported into DB, got %+v", sess)
 	}
 
-	// 2. Clear NodePath on an existing ended session and verify scanObservedSessions backfills it
-	sess.NodePath = ""
+	// 2. Seed a managed ended session with empty NodePath and verify scanObservedSessions backfills it
+	sess = &Session{
+		ID:          sessID,
+		Agent:       "antigravity",
+		Host:        "local",
+		NativeID:    convID,
+		Cwd:         targetCwd,
+		ProjectKey:  GetProjectKey(targetCwd),
+		NodePath:    "",
+		Managed:     true,
+		State:       StateEnded,
+		StartedAt:   time.Now(),
+		LastEventAt: time.Now(),
+	}
 	_ = db.SaveSession(sess)
 
 	server.scanObservedSessions(ctx)
@@ -4792,6 +4814,20 @@ func TestStopHook_NotOverriddenBySyntheticPreToolUseSubagentOrAckbarHookChild(t 
 	sessionUUID := "12345678-1234-4321-8765-123456789abc"
 	sessionID := "claude-code:local:" + sessionUUID
 
+	if err := db.SaveSession(&Session{
+		ID:          sessionID,
+		Agent:       "claude-code",
+		Host:        "local",
+		NativeID:    sessionUUID,
+		Cwd:         "/tmp/project",
+		Managed:     true,
+		State:       StateIdle,
+		StartedAt:   time.Now(),
+		LastEventAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("SaveSession failed: %v", err)
+	}
+
 	// 1. PreToolUse spawns a synthetic in-memory subagent
 	preEvent := &Event{
 		Agent:       "claude-code",
@@ -4867,6 +4903,19 @@ func TestParallelSubagents_PostToolUseDoesNotPopUnmatchedSibling(t *testing.T) {
 	server := NewServer(db)
 	sessionUUID := "11112222-3333-4444-5555-666677778888"
 	sessionID := "claude-code:local:" + sessionUUID
+	if err := db.SaveSession(&Session{
+		ID:          sessionID,
+		Agent:       "claude-code",
+		Host:        "local",
+		NativeID:    sessionUUID,
+		Cwd:         "/tmp/project",
+		Managed:     true,
+		State:       StateWorking,
+		StartedAt:   time.Now(),
+		LastEventAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("SaveSession failed: %v", err)
+	}
 
 	// 1. Spawn two parallel subagents: "explorer" and "tester" via PreToolUse + SubagentStart
 	for _, name := range []string{"explorer", "tester"} {
@@ -5023,6 +5072,19 @@ func TestHookOrdering_OutOfOrderPostToolUseAndPreToolUseGuards(t *testing.T) {
 	server := NewServer(db)
 	sessionUUID := "aaaa9999-bbbb-4444-8888-ccccdddd0000"
 	sessionID := "claude-code:local:" + sessionUUID
+	if err := db.SaveSession(&Session{
+		ID:          sessionID,
+		Agent:       "claude-code",
+		Host:        "local",
+		NativeID:    sessionUUID,
+		Cwd:         "/tmp/project",
+		Managed:     true,
+		State:       StateWorking,
+		StartedAt:   time.Now(),
+		LastEventAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("SaveSession failed: %v", err)
+	}
 
 	// 1. Stop followed immediately by late PostToolUse must remain StateIdle
 	stopEv := &Event{
@@ -6543,5 +6605,162 @@ func TestAntigravityConcurrentSubagents_HookPreservesSiblingBlock_N1(t *testing.
 	}
 	if gotAfterUnblock.State != StateWorking || gotAfterUnblock.Blocked != nil {
 		t.Fatalf("expected parent to return to StateWorking after blocking subA resumed, got state=%v blocked=%+v", gotAfterUnblock.State, gotAfterUnblock.Blocked)
+	}
+}
+
+func TestInitDB_PrunesUnmanagedSessionsAndLocalHostSettings(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test_prune_unmanaged.db")
+	db, err := InitDB(dbPath)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+
+	// Seed settings with "local"
+	_ = db.SetSettings(map[string]string{
+		"host_name":    "local",
+		"display_name": "Local",
+	})
+
+	// Seed 1: Managed session (MUST remain)
+	managedSess := &Session{
+		ID:          "claude-code:macmini:11111111-1111-1111-1111-111111111111",
+		Agent:       "claude-code",
+		Host:        "macmini",
+		NativeID:    "11111111-1111-1111-1111-111111111111",
+		Cwd:         "/Users/dev4u/Work/Ackbar",
+		Managed:     true,
+		State:       StateIdle,
+		StartedAt:   time.Now(),
+		LastEventAt: time.Now(),
+	}
+	if err := db.SaveSession(managedSess); err != nil {
+		t.Fatalf("SaveSession(managedSess) failed: %v", err)
+	}
+
+	// Seed 2: Rotated conversation turn (Cleared (context reset), MUST remain)
+	rotatedSess := &Session{
+		ID:          "claude-code:macmini:22222222-2222-2222-2222-222222222222",
+		Agent:       "claude-code",
+		Host:        "macmini",
+		NativeID:    "22222222-2222-2222-2222-222222222222",
+		Cwd:         "/Users/dev4u/Work/Ackbar",
+		Managed:     false,
+		State:       StateEnded,
+		Activity:    "Cleared (context reset)",
+		StartedAt:   time.Now(),
+		LastEventAt: time.Now(),
+	}
+	if err := db.SaveSession(rotatedSess); err != nil {
+		t.Fatalf("SaveSession(rotatedSess) failed: %v", err)
+	}
+
+	// Seed 3: External unmanaged session (MUST be pruned)
+	unmanagedSess := &Session{
+		ID:          "antigravity:macmini:33333333-3333-3333-3333-333333333333",
+		Agent:       "antigravity",
+		Host:        "macmini",
+		NativeID:    "33333333-3333-3333-3333-333333333333",
+		Cwd:         "/Users/dev4u/Work/Ackbar",
+		Managed:     false,
+		State:       StateEnded,
+		Activity:    "Session ended",
+		StartedAt:   time.Now(),
+		LastEventAt: time.Now(),
+	}
+	if err := db.SaveSession(unmanagedSess); err != nil {
+		t.Fatalf("SaveSession(unmanagedSess) failed: %v", err)
+	}
+
+	// Seed 4: Observed proc session (MUST be pruned)
+	procSess := &Session{
+		ID:          "macmini:observed:proc-4242",
+		Agent:       "claude-code",
+		Host:        "macmini",
+		NativeID:    "proc-4242",
+		Cwd:         "/Users/dev4u/Work/Ackbar",
+		Managed:     true,
+		State:       StateIdle,
+		StartedAt:   time.Now(),
+		LastEventAt: time.Now(),
+	}
+	if err := db.SaveSession(procSess); err != nil {
+		t.Fatalf("SaveSession(procSess) failed: %v", err)
+	}
+	_ = db.Close()
+
+	// Re-open with InitDB to trigger startup pruning
+	db2, err := InitDB(dbPath)
+	if err != nil {
+		t.Fatalf("Second InitDB failed: %v", err)
+	}
+	defer db2.Close()
+
+	if h, _ := db2.GetSetting("host_name"); h != "" {
+		t.Errorf("Expected 'local' host_name setting to be pruned on InitDB, got %q", h)
+	}
+	if d, _ := db2.GetSetting("display_name"); d != "" {
+		t.Errorf("Expected 'Local' display_name setting to be pruned on InitDB, got %q", d)
+	}
+
+	if got, _ := db2.GetSession(managedSess.ID); got == nil {
+		t.Errorf("Expected managed session %s to be preserved", managedSess.ID)
+	}
+	if got, _ := db2.GetSession(rotatedSess.ID); got == nil {
+		t.Errorf("Expected rotated turn session %s to be preserved", rotatedSess.ID)
+	}
+	if got, _ := db2.GetSession(unmanagedSess.ID); got != nil {
+		t.Errorf("Expected unmanaged session %s to be pruned, got %+v", unmanagedSess.ID, got)
+	}
+	if got, _ := db2.GetSession(procSess.ID); got != nil {
+		t.Errorf("Expected observed proc session %s to be pruned, got %+v", procSess.ID, got)
+	}
+}
+
+func TestHostIdentity_RemoteDisplayNameNeverOverwrittenWithLocal(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test_remote_host_local.db")
+	db, err := InitDB(dbPath)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := NewServer(db)
+	if err := db.SaveHost(&HostRecord{
+		Name:      "dev4u@macmini",
+		URL:       "http://127.0.0.1:7778",
+		SSHTarget: "dev4u@macmini",
+	}); err != nil {
+		t.Fatalf("SaveHost failed: %v", err)
+	}
+
+	// Simulate remote /v1/version returning display_name: "local"
+	server.updateHostHealth("dev4u@macmini", true, "20261104.04", "local", 12)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/hosts", nil)
+	w := httptest.NewRecorder()
+	server.handleHosts(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /v1/hosts failed: %d", w.Code)
+	}
+
+	var hosts []*HostRecord
+	if err := json.Unmarshal(w.Body.Bytes(), &hosts); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+	if len(hosts) != 1 {
+		t.Fatalf("Expected 1 host, got %d", len(hosts))
+	}
+	if strings.EqualFold(hosts[0].DisplayName, "local") {
+		t.Errorf("Expected remote host DisplayName NOT to be 'local', got %q", hosts[0].DisplayName)
+	}
+
+	if got := normalizeSystemHostName("MacMini.local"); got != "macmini" {
+		t.Errorf("normalizeSystemHostName('MacMini.local') = %q; want 'macmini'", got)
+	}
+	if got := ShortRemoteHostIdentifier("dev4u@macmini.local"); got != "macmini" {
+		t.Errorf("ShortRemoteHostIdentifier('dev4u@macmini.local') = %q; want 'macmini'", got)
+	}
+	if got := ShortRemoteHostIdentifier("dev4u@bad;host"); got != "" {
+		t.Errorf("ShortRemoteHostIdentifier('dev4u@bad;host') = %q; want ''", got)
 	}
 }

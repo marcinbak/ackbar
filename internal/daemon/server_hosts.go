@@ -19,6 +19,9 @@ import (
 )
 
 func (s *Server) updateHostHealth(name string, online bool, ver, displayName string, latencyMs int64) {
+	if strings.EqualFold(strings.TrimSpace(displayName), "local") {
+		displayName = ""
+	}
 	s.hostHealthMu.Lock()
 	wasOnline := false
 	if prev, ok := s.hostHealthMap[name]; ok {
@@ -29,7 +32,7 @@ func (s *Server) updateHostHealth(name string, online bool, ver, displayName str
 			if ver == "" && prev.Version != "" {
 				ver = prev.Version
 			}
-			if displayName == "" && prev.DisplayName != "" {
+			if displayName == "" && prev.DisplayName != "" && !strings.EqualFold(strings.TrimSpace(prev.DisplayName), "local") {
 				displayName = prev.DisplayName
 			}
 		}
@@ -76,6 +79,22 @@ func (s *Server) resolveSSHTarget(host string) string {
 		}
 	}
 	return host
+}
+
+// ShortRemoteHostIdentifier extracts and validates a safe short hostname ([a-z0-9_-])
+// from an SSH host alias or target (e.g. "user@macmini.local" -> "macmini").
+func ShortRemoteHostIdentifier(hostName string) string {
+	h := strings.TrimSpace(hostName)
+	if idx := strings.LastIndexByte(h, '@'); idx != -1 {
+		h = h[idx+1:]
+	}
+	h = normalizeSystemHostName(h)
+	for _, r := range h {
+		if !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '_') {
+			return ""
+		}
+	}
+	return h
 }
 
 func (s *Server) resolveHost(hostName string) *HostRecord {
@@ -363,7 +382,12 @@ func (s *Server) handleHostUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 5. Atomically replace binaries, set permissions, and restart daemon on remote host
-	remoteRestartScript := `chmod +x ~/.local/bin/ackbard.new ~/.local/bin/ackbar.new ~/.local/bin/ackbar-hook.new && mv -f ~/.local/bin/ackbard.new ~/.local/bin/ackbard && mv -f ~/.local/bin/ackbar.new ~/.local/bin/ackbar && mv -f ~/.local/bin/ackbar-hook.new ~/.local/bin/ackbar-hook && pkill -9 -x ackbard || true; sleep 0.5; nohup ~/.local/bin/ackbard >/dev/null 2>&1 < /dev/null &`
+	shortHost := ShortRemoteHostIdentifier(host.Name)
+	hostFlagArg := ""
+	if shortHost != "" {
+		hostFlagArg = " --host-name " + shortHost
+	}
+	remoteRestartScript := fmt.Sprintf(`chmod +x ~/.local/bin/ackbard.new ~/.local/bin/ackbar.new ~/.local/bin/ackbar-hook.new && mv -f ~/.local/bin/ackbard.new ~/.local/bin/ackbard && mv -f ~/.local/bin/ackbar.new ~/.local/bin/ackbar && mv -f ~/.local/bin/ackbar-hook.new ~/.local/bin/ackbar-hook && pkill -9 -x ackbard || true; sleep 0.5; nohup ~/.local/bin/ackbard%s >/dev/null 2>&1 < /dev/null &`, hostFlagArg)
 	restartCmd := exec.Command("ssh", "-n", "-f", "-o", "BatchMode=yes", sshTarget, remoteRestartScript)
 	_ = restartCmd.Run()
 

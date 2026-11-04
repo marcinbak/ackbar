@@ -288,6 +288,8 @@ func InitDB(dbPath string) (*DB, error) {
 		updated_at TIMESTAMP
 	);`)
 	_, _ = db.Exec("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);")
+	_, _ = db.Exec("DELETE FROM settings WHERE (key = 'host_name' OR key = 'display_name') AND LOWER(value) = 'local';")
+	_, _ = db.Exec("DELETE FROM sessions WHERE (COALESCE(managed, 0) = 0 AND COALESCE(activity, '') != 'Cleared (context reset)') OR id LIKE '%:observed:%' OR native_id LIKE 'proc-%';")
 	_, _ = db.Exec("DELETE FROM tree_nodes WHERE path LIKE 'Project Y%' OR path LIKE 'ProjectY%' OR path LIKE '%Project Y%';")
 	_, _ = db.Exec("UPDATE sessions SET tmux_name = 'ackbar-' || agent || '-' || native_id WHERE (tmux_name = '(deleted)' OR tmux_name = '') AND COALESCE(engine_type, 'tmux') != 'headless';")
 	_, _ = db.Exec("UPDATE sessions SET tmux_name = '' WHERE engine_type = 'headless' AND tmux_name = 'ackbar-' || agent || '-' || native_id;")
