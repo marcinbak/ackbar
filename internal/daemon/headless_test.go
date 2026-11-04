@@ -799,6 +799,58 @@ func TestHeadlessRunner_BuildArgs_ClaudeAndAntigravity(t *testing.T) {
 	}
 }
 
+func TestHeadlessRunner_SupervisorSystemPrompt(t *testing.T) {
+	runner := NewHeadlessRunner(nil, nil)
+	tmpHome := t.TempDir()
+
+	// 1. Claude Code Supervisor session
+	claudeSup := &Session{
+		ID:           "claude-code:local:sup-claude-1",
+		Agent:        "claude-code",
+		Host:         "local",
+		NativeID:     "sup-claude-1",
+		Cwd:          "/tmp/sup",
+		IsSupervisor: true,
+		EngineType:   EngineHeadless,
+	}
+	_, claudeArgs, err := runner.buildArgs(claudeSup, "What should I work on?", tmpHome)
+	if err != nil {
+		t.Fatalf("buildArgs failed for Claude supervisor: %v", err)
+	}
+	idx := slices.Index(claudeArgs, "--append-system-prompt")
+	if idx == -1 || idx+1 >= len(claudeArgs) {
+		t.Fatalf("Expected --append-system-prompt in Claude supervisor args, got %v", claudeArgs)
+	}
+	if !strings.Contains(claudeArgs[idx+1], "Ackbar Supervisor Dispatcher") {
+		t.Errorf("Expected system prompt content in --append-system-prompt, got %q", claudeArgs[idx+1])
+	}
+
+	// 2. Antigravity Supervisor Turn 1
+	agySup := &Session{
+		ID:           "antigravity:local:sup-agy-1",
+		Agent:        "antigravity",
+		Host:         "local",
+		NativeID:     "sup-agy-1",
+		Cwd:          "/tmp/sup",
+		IsSupervisor: true,
+		EngineType:   EngineHeadless,
+	}
+	_, agyArgs, err := runner.buildArgs(agySup, "New project dispatch", tmpHome)
+	if err != nil {
+		t.Fatalf("buildArgs failed for Antigravity supervisor: %v", err)
+	}
+	pIdx := slices.Index(agyArgs, "-p")
+	if pIdx == -1 || pIdx+1 >= len(agyArgs) {
+		t.Fatalf("Expected -p in Antigravity args, got %v", agyArgs)
+	}
+	if !strings.HasPrefix(agyArgs[pIdx+1], "[System Instruction: You are an ⚓ Ackbar Supervisor Dispatcher") {
+		t.Errorf("Expected supervisor system instruction prepended to prompt, got: %s", agyArgs[pIdx+1])
+	}
+	if !strings.Contains(agyArgs[pIdx+1], "New project dispatch") {
+		t.Errorf("Expected original prompt preserved, got: %s", agyArgs[pIdx+1])
+	}
+}
+
 func TestHeadlessStreamParser_ClaudeAssistantToolUseAndUserToolResult(t *testing.T) {
 	runner := NewHeadlessRunner(nil, nil)
 	sessionID := "claude-code:local:test-assistant-tool-blocks"

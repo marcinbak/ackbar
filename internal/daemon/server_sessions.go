@@ -1084,8 +1084,12 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		if req.Agent == "" {
 			req.Agent = "claude-code"
 		}
-		if req.Cwd == "" {
-			req.Cwd = "~"
+		if req.Cwd == "" || req.Cwd == "~" {
+			h := s.homeDir
+			if h == "" {
+				h, _ = os.UserHomeDir()
+			}
+			req.Cwd = DefaultSupervisorDir(h)
 		}
 		if req.Name == "" {
 			req.Name = "⚓ New Supervisor"
@@ -1196,6 +1200,9 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	_ = os.MkdirAll(req.Cwd, 0755)
+	if req.IsSupervisor {
+		s.ensureSupervisorWorkspace(req.Cwd)
+	}
 
 	if req.NodePath == "" && !req.IsSupervisor && req.Cwd != "" {
 		req.NodePath = s.resolveSessionNodePath(req.Cwd)
@@ -1224,6 +1231,9 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		envVars = make(map[string]string)
 	}
 	envVars["ACKBAR_SESSION_ID"] = spawnSessID
+	if req.IsSupervisor {
+		envVars["ACKBAR_IS_SUPERVISOR"] = "1"
+	}
 
 	taskKind := strings.ToLower(strings.TrimSpace(req.TaskKind))
 	if req.TaskID != "" {

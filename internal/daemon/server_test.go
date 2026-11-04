@@ -827,19 +827,21 @@ func TestInPlaceClearSessionRotation_AdoptsTmuxAndIncrementsTurn(t *testing.T) {
 
 	// 1. Initial managed session
 	sess1 := &Session{
-		ID:          "mock-agent:local:native-turn-1",
-		Agent:       "mock-agent",
-		Host:        "local",
-		NativeID:    "native-turn-1",
-		Cwd:         "/workspace/project-rot",
-		Name:        "Project Alpha",
-		Managed:     true,
-		TmuxName:    "ackbar-mock-native-turn-1",
-		NodePath:    "Work/project-rot",
-		ProjectKey:  "project-rot",
-		State:       StateWorking,
-		StartedAt:   time.Now(),
-		LastEventAt: time.Now(),
+		ID:            "mock-agent:local:native-turn-1",
+		Agent:         "mock-agent",
+		Host:          "local",
+		NativeID:      "native-turn-1",
+		Cwd:           "/workspace/project-rot",
+		Name:          "Project Alpha",
+		Managed:       true,
+		IsSupervisor:  true,
+		CurrentTaskID: "task_rot_123",
+		TmuxName:      "ackbar-mock-native-turn-1",
+		NodePath:      "Work/project-rot",
+		ProjectKey:    "project-rot",
+		State:         StateWorking,
+		StartedAt:     time.Now(),
+		LastEventAt:   time.Now(),
 	}
 	if err := db.SaveSession(sess1); err != nil {
 		t.Fatalf("SaveSession failed: %v", err)
@@ -894,6 +896,12 @@ func TestInPlaceClearSessionRotation_AdoptsTmuxAndIncrementsTurn(t *testing.T) {
 	}
 	if turn2.NodePath != "Work/project-rot" {
 		t.Errorf("Expected turn 2 NodePath 'Work/project-rot', got %q", turn2.NodePath)
+	}
+	if !turn2.IsSupervisor {
+		t.Errorf("Expected turn 2 to preserve IsSupervisor=true")
+	}
+	if turn2.CurrentTaskID != "task_rot_123" {
+		t.Errorf("Expected turn 2 to preserve CurrentTaskID 'task_rot_123', got %q", turn2.CurrentTaskID)
 	}
 
 	// 3. Ingest hook with third native ID (Turn 3 after another /clear)

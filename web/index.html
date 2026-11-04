@@ -70,7 +70,10 @@
             <button class="sidebar-switch-btn active" id="btnSidebarModeAll" title="Show All Projects & Sessions">🌐 All Tree</button>
             <button class="sidebar-switch-btn" id="btnSidebarModeSupervisors" title="Show Only ⚓ Supervisor Sessions">⚓ Supervisors</button>
           </div>
-          <button class="btn-new-supervisor" id="btnNewSupervisor" title="Spawn a Zero-Input ⚓ Supervisor Session">+ ⚓ New Supervisor</button>
+          <div class="supervisor-spawn-btns">
+            <button class="btn-new-supervisor" id="btnNewSupervisor" data-agent="claude-code" title="Spawn a Zero-Input ⚓ Claude Supervisor Session">+ ⚓ Claude</button>
+            <button class="btn-new-supervisor btn-new-supervisor-agy" id="btnNewSupervisorAgy" data-agent="antigravity" title="Spawn a Zero-Input ⚓ Antigravity Supervisor Session">+ ⚓ AGY</button>
+          </div>
         </div>
 
         <div class="tree-container" id="treeContainer">

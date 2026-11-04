@@ -155,6 +155,14 @@ func GetRegisteredTools() []Tool {
 						Type:        "boolean",
 						Description: "If true, immediately spawns an agent session for the first ready workstream.",
 					},
+					"agent": {
+						Type:        "string",
+						Description: "Optional agent runtime for spawned task worker ('claude-code', 'antigravity', 'codex'). Defaults to caller's agent or 'claude-code'.",
+					},
+					"prompt": {
+						Type:        "string",
+						Description: "Optional initial prompt or ticket instructions to send to the spawned task worker session when auto_start is true.",
+					},
 				},
 				Required: []string{"title"},
 			},
@@ -884,6 +892,60 @@ func executeCreateTask(ctx context.Context, client *DaemonClient, args map[strin
 		return formatError(fmt.Sprintf("Failed to create task: %v", err)), nil
 	}
 
+	callerSessID := client.SessionID
+	if callerSessID == "" {
+		callerSessID = os.Getenv("ACKBAR_SESSION_ID")
+	}
+	if callerSessID == "" {
+		callerSessID = os.Getenv("CLAUDE_SESSION_ID")
+	}
+
+	// Auto-bind Supervisor fallback: if caller is a supervisor session and not bound yet, bind to target project node
+	if callerSessID != "" {
+		isSupervisor := os.Getenv("ACKBAR_IS_SUPERVISOR") == "1" || strings.Contains(callerSessID, "supervisor")
+		nodePathEmpty := true
+
+		var sessList []map[string]any
+		if err := client.doRequest(ctx, http.MethodGet, "/v1/sessions", nil, &sessList); err == nil {
+			for _, s := range sessList {
+				if id, _ := s["id"].(string); id == callerSessID {
+					if isSup, ok := s["is_supervisor"].(bool); ok && isSup {
+						isSupervisor = true
+					}
+					if np, _ := s["node_path"].(string); strings.TrimSpace(np) != "" {
+						nodePathEmpty = false
+					}
+					break
+				}
+			}
+		}
+
+		if isSupervisor && nodePathEmpty {
+			targetNodePath := ""
+			if pGroup != "" && pProject != "" {
+				parts := strings.Split(pProject, "/")
+				targetNodePath = pGroup + "/" + parts[0]
+			} else if projectNodePath != "" {
+				parts := strings.Split(strings.Trim(projectNodePath, "/"), "/")
+				if len(parts) >= 2 {
+					targetNodePath = parts[0] + "/" + parts[1]
+				} else {
+					targetNodePath = projectNodePath
+				}
+			}
+			if targetNodePath == "" {
+				targetNodePath = groupName + "/" + projectName
+			}
+			bindTitle := "⚓ " + projectName + ": " + title
+			var bindRes map[string]any
+			_ = client.doRequest(ctx, http.MethodPost, "/v1/sessions/bind-supervisor", map[string]any{
+				"session_id": callerSessID,
+				"node_path":  targetNodePath,
+				"title":      bindTitle,
+			}, &bindRes)
+		}
+	}
+
 	autoStart, _ := args["auto_start"].(bool)
 	if autoStart {
 		readyRepo := ""
@@ -901,8 +963,28 @@ func executeCreateTask(ctx context.Context, client *DaemonClient, args map[strin
 		if spawnCwd == "" {
 			spawnCwd = projectName
 		}
+
+		workerAgent := getString(args, "agent")
+		if workerAgent == "" {
+			if strings.HasPrefix(callerSessID, "antigravity:") {
+				workerAgent = "antigravity"
+			} else {
+				workerAgent = "claude-code"
+			}
+		}
+
+		workerPrompt := getString(args, "prompt")
+		if workerPrompt == "" {
+			notes := getString(args, "notes")
+			if notes != "" {
+				workerPrompt = fmt.Sprintf("Work on task %s (%s): %s", taskID, title, notes)
+			} else {
+				workerPrompt = fmt.Sprintf("Work on task %s: %s", taskID, title)
+			}
+		}
+
 		spawnPayload := map[string]any{
-			"agent":          "claude-code",
+			"agent":          workerAgent,
 			"cwd":            spawnCwd,
 			"node_path":      readyRepo,
 			"host":           readyHost,
@@ -910,6 +992,7 @@ func executeCreateTask(ctx context.Context, client *DaemonClient, args map[strin
 			"task_kind":      taskKind,
 			"repo_node_path": readyRepo,
 			"name":           title,
+			"prompt":         workerPrompt,
 		}
 		var spawnRes map[string]any
 		_ = client.doRequest(ctx, http.MethodPost, "/v1/sessions/spawn", spawnPayload, &spawnRes)

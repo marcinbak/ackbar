@@ -1,5 +1,6 @@
 ---
 name: ackbar-tasks
+version: "20261104.05"
 description: "Native Ackbar Task Management: track active work, report blockers without stalling, attach rich deliverables (UI mockups, plans, retros), and propose discovered bugs/tech-debt directly into the Ackbar Work Board."
 argument-hint: "[task-id or action]"
 ---
@@ -29,12 +30,14 @@ mcp__ackbar__get_current_task({})
 // Or list active tasks in progress (can filter by ?kind=code|design)
 mcp__ackbar__list_tasks({ "status": "IN_PROGRESS" })
 
-// Or create a new task with multi-repo workstreams and auto-start
+// Or create a new task with multi-repo workstreams, agent runtime, worker prompt, and auto-start
 mcp__ackbar__create_task({
   "title": "Migrate telemetry to WebSocket sync",
   "project_name": "Ackbar",
   "group_name": "Personal",
   "task_kind": "code",
+  "agent": "claude-code", // or "antigravity", "codex" (defaults to caller agent or claude-code)
+  "prompt": "Implement WebSocket telemetry sync per specs in docs/telemetry.md",
   "repos": [
     { "repo_node_path": "Personal/Ackbar", "target_host": "local" },
     { "repo_node_path": "Modemobile/NGL/ngl-ios", "depends_on": "Personal/Ackbar" }
@@ -127,12 +130,17 @@ mcp__ackbar__merge_pull_request({
 })
 ```
 
-### F. Binding a Zero-Input `⚓ Supervisor` Session (Turn 1)
-When acting as a Supervisor session (spawned via `[+ ⚓ New Supervisor]` without an upfront project folder) and the user mentions a target project or goal on Turn 1, immediately bind your session to the project tree node and set a descriptive title:
-```json
-mcp__ackbar__bind_supervisor_session({
-  "session_id": "<your-session-id>",
-  "node_path": "Modemobile/NGL",
-  "title": "⚓ NGL Feature Planning"
-})
-```
+### F. Supervisor Dispatcher Protocol (Turn 1)
+When acting as an **⚓ Ackbar Supervisor Dispatcher** (session workspace `~/.ackbar/supervisor`):
+1. **Hard Rule 1 — Zero Product Code:** Never write product code, edit repository files, or create git worktrees directly in this supervisor session workspace. All execution work belongs in dedicated worker sessions.
+2. **Hard Rule 2 — Turn 1 Dispatch & Binding:** On Turn 1 (or whenever the user mentions a project, Jira ticket such as `NGL-XXX`, or initiative), immediately:
+   - Call `bind_supervisor_session` to place this supervisor session under the target project node:
+     ```json
+     mcp__ackbar__bind_supervisor_session({
+       "session_id": "<your-session-id>",
+       "node_path": "Modemobile/NGL",
+       "title": "⚓ NGL Feature Planning"
+     })
+     ```
+   - Call `create_task` with `auto_start: true`, specifying `title`, `repos`, `agent`, and `prompt` (with the complete ticket requirements) to launch an execution worker in the actual repository. (Note: `create_task` will also automatically fallback-bind your supervisor session to the target project node if `bind_supervisor_session` was omitted).
+3. **Hard Rule 3 — Supervise via MCP Tools:** Use `list_sessions`, `get_session_output`, `send_session_input`, `list_tasks`, and `control_session` to monitor, steer, and verify worker progress. Report milestones and blockers to the user.

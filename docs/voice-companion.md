@@ -62,7 +62,7 @@ See [`docs/work-overview/01-data-model-and-lifecycle.md`](work-overview/01-data-
 | MCP Tool | Backing `ackbard` Endpoint | Supervisor / Worker Use Case |
 | :--- | :--- | :--- |
 | **`bind_supervisor_session`** | `POST /v1/sessions/bind-supervisor` | Auto-binds a zero-input `⚓ Supervisor` session to a project (`is_supervisor=1`) and sets its title on the first user message. |
-| **`create_task`** | `POST /v1/tasks` | Creates a Product/Design (`kind="design"`) or Code (`kind="code"`) task and spawns its dedicated `📋 Task` session(s) (`depends_on` sequential chain supported). |
+| **`create_task`** | `POST /v1/tasks` | Creates a Product/Design (`kind="design"`) or Code (`kind="code"`) task with optional `agent` runtime and `prompt` instructions, auto-binding unbound supervisors and spawning dedicated `📋 Task` workers (`depends_on` sequential chain supported). |
 | **`attach_deliverable`** | `POST /v1/tasks/deliverable` | Attaches **Claude Published Artifacts** (`url`) or **Google Workspace / Drive** files (`gdrive`, `gdocs`, `gslides`, `gsheets`) + synced `content_md` for cross-host learnings handoff. |
 
 ### 3.3 Uniform 3-Way LWW Peer Sync (`macbook` $\leftrightarrow$ `macmini` $\leftrightarrow$ `legion`)

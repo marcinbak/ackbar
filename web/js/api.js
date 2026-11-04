@@ -922,15 +922,25 @@ async function deduplicateTasks() {
   return res.json();
 }
 
-async function spawnZeroInputSupervisor(hostName = '') {
+async function spawnZeroInputSupervisor(agent = 'claude-code', hostName = '') {
+  let chosenAgent = 'claude-code';
+  let chosenHost = hostName;
+  if (agent === 'claude-code' || agent === 'antigravity' || agent === 'codex') {
+    chosenAgent = agent;
+  } else if (agent && !hostName) {
+    chosenHost = agent;
+  } else if (agent) {
+    chosenAgent = agent;
+  }
+
   const res = await fetch('/v1/sessions/spawn', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       is_supervisor: true,
-      agent: 'claude-code',
+      agent: chosenAgent || 'claude-code',
       engine_type: 'headless',
-      host: hostName || getSelfHostName()
+      host: chosenHost || getSelfHostName()
     })
   });
   if (!res.ok) {

@@ -27,6 +27,12 @@ func TestPhase3_MCPTools(t *testing.T) {
 	if createTool.InputSchema.Properties["task_kind"].Type != "string" {
 		t.Errorf("expected task_kind property to be string")
 	}
+	if createTool.InputSchema.Properties["agent"].Type != "string" {
+		t.Errorf("expected agent property to be string")
+	}
+	if createTool.InputSchema.Properties["prompt"].Type != "string" {
+		t.Errorf("expected prompt property to be string")
+	}
 
 	// 2. Verify update_task has workflow_node
 	updateTool, ok := toolsByName["update_task"]
@@ -84,6 +90,7 @@ func TestPhase3_MCPTools(t *testing.T) {
 	client := &DaemonClient{
 		BaseURL:    ts.URL,
 		HTTPClient: ts.Client(),
+		SessionID:  "claude-code:local:test-sess",
 	}
 
 	res, err := ExecuteTool(context.Background(), client, "create_task", map[string]any{
@@ -124,6 +131,12 @@ func TestPhase3_MCPTools(t *testing.T) {
 	// Auto start triggered spawn
 	if receivedSpawnPayload["task_kind"] != "code" || receivedSpawnPayload["repo_node_path"] != "Personal/Ackbar" || receivedSpawnPayload["node_path"] != "Personal/Ackbar" {
 		t.Errorf("Unexpected spawn payload: %+v", receivedSpawnPayload)
+	}
+	if receivedSpawnPayload["agent"] != "claude-code" {
+		t.Errorf("Expected default worker agent 'claude-code', got %v", receivedSpawnPayload["agent"])
+	}
+	if p, ok := receivedSpawnPayload["prompt"].(string); !ok || !strings.Contains(p, "Deploy cross-cluster sync") {
+		t.Errorf("Expected prompt containing title, got %v", receivedSpawnPayload["prompt"])
 	}
 
 	// 5. Test ExecuteTool update_task with workflow_node

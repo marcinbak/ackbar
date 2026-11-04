@@ -427,9 +427,11 @@ func TestSupervisorSidebarAndTreeSections_JS(t *testing.T) {
 		`id="btnSidebarModeAll"`,
 		`id="btnSidebarModeSupervisors"`,
 		`id="btnNewSupervisor"`,
+		`id="btnNewSupervisorAgy"`,
 		`🌐 All Tree`,
 		`⚓ Supervisors`,
-		`+ ⚓ New Supervisor`,
+		`+ ⚓ Claude`,
+		`+ ⚓ AGY`,
 	})
 
 	checkFileContains("js/tree.js", []string{

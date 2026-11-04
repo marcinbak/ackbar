@@ -60,6 +60,7 @@ func TestPhase4_SupervisorSessionTools(t *testing.T) {
 		lastRespondPayload  map[string]any
 		lastPromptPayload   map[string]any
 		lastHandoverPayload map[string]any
+		lastBoundPayload    map[string]any
 	)
 
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -162,11 +163,18 @@ func TestPhase4_SupervisorSessionTools(t *testing.T) {
 			return
 		}
 
+		// POST /v1/tasks
+		if r.URL.Path == "/v1/tasks" && r.Method == http.MethodPost {
+			var p map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&p)
+			_ = json.NewEncoder(w).Encode(p)
+			return
+		}
+
 		// POST /v1/sessions/bind-supervisor
 		if r.URL.Path == "/v1/sessions/bind-supervisor" && r.Method == http.MethodPost {
-			var payload map[string]any
-			_ = json.NewDecoder(r.Body).Decode(&payload)
-			_ = json.NewEncoder(w).Encode(map[string]any{"status": "bound", "bound_id": payload["session_id"]})
+			_ = json.NewDecoder(r.Body).Decode(&lastBoundPayload)
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "bound", "bound_id": lastBoundPayload["session_id"]})
 			return
 		}
 
@@ -348,6 +356,80 @@ func TestPhase4_SupervisorSessionTools(t *testing.T) {
 		}
 		if !strings.Contains(res.Content[0].Text, "claude-code:local:supervisor-42") {
 			t.Errorf("expected bound session ID in output, got: %s", res.Content[0].Text)
+		}
+	})
+
+	t.Run("create_task auto-binds supervisor session and propagates custom agent/prompt", func(t *testing.T) {
+		lastBoundPayload = nil
+		lastSpawnPayload = nil
+
+		clientSup := NewDaemonClient(ts.URL, "claude-code:local:supervisor-99")
+		res, err := ExecuteTool(ctx, clientSup, "create_task", map[string]any{
+			"title":             "Investigate memory leak",
+			"project_node_path": "Modemobile/NGL/ngl-android",
+			"auto_start":        true,
+			"agent":             "antigravity",
+			"prompt":            "Analyze heap dump in /tmp/heap.hprof",
+			"repos": []any{
+				"Modemobile/NGL/ngl-android",
+			},
+		})
+		if err != nil || res.IsError {
+			t.Fatalf("unexpected error: %v, res: %+v", err, res)
+		}
+
+		// 1. Verify supervisor was auto-bound to Modemobile/NGL
+		if lastBoundPayload == nil {
+			t.Fatalf("expected supervisor to be auto-bound via POST /v1/sessions/bind-supervisor")
+		}
+		if lastBoundPayload["session_id"] != "claude-code:local:supervisor-99" {
+			t.Errorf("expected session_id 'claude-code:local:supervisor-99', got %v", lastBoundPayload["session_id"])
+		}
+		if lastBoundPayload["node_path"] != "Modemobile/NGL" {
+			t.Errorf("expected node_path 'Modemobile/NGL', got %v", lastBoundPayload["node_path"])
+		}
+		if !strings.Contains(lastBoundPayload["title"].(string), "Investigate memory leak") {
+			t.Errorf("expected title to contain task title, got %v", lastBoundPayload["title"])
+		}
+
+		// 2. Verify worker session was spawned with antigravity and custom prompt
+		if lastSpawnPayload == nil {
+			t.Fatalf("expected worker session to be spawned")
+		}
+		if lastSpawnPayload["agent"] != "antigravity" {
+			t.Errorf("expected worker agent 'antigravity', got %v", lastSpawnPayload["agent"])
+		}
+		if lastSpawnPayload["prompt"] != "Analyze heap dump in /tmp/heap.hprof" {
+			t.Errorf("expected worker prompt 'Analyze heap dump in /tmp/heap.hprof', got %v", lastSpawnPayload["prompt"])
+		}
+	})
+
+	t.Run("create_task auto_start default agent and prompt from caller and notes", func(t *testing.T) {
+		lastBoundPayload = nil
+		lastSpawnPayload = nil
+
+		clientAgy := NewDaemonClient(ts.URL, "antigravity:local:supervisor-100")
+		res, err := ExecuteTool(ctx, clientAgy, "create_task", map[string]any{
+			"title":        "Upgrade compiler toolchain",
+			"project_name": "Ackbar",
+			"group_name":   "Personal",
+			"notes":        "Switch to Go 1.24 toolchain",
+			"auto_start":   true,
+		})
+		if err != nil || res.IsError {
+			t.Fatalf("unexpected error: %v, res: %+v", err, res)
+		}
+
+		if lastSpawnPayload == nil {
+			t.Fatalf("expected worker session to be spawned")
+		}
+		// Since caller session starts with antigravity:, agent should default to antigravity
+		if lastSpawnPayload["agent"] != "antigravity" {
+			t.Errorf("expected worker agent 'antigravity' inferred from caller ID, got %v", lastSpawnPayload["agent"])
+		}
+		p, ok := lastSpawnPayload["prompt"].(string)
+		if !ok || !strings.Contains(p, "Switch to Go 1.24 toolchain") {
+			t.Errorf("expected worker prompt generated from notes, got %v", lastSpawnPayload["prompt"])
 		}
 	})
 }

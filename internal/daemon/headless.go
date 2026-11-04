@@ -476,10 +476,15 @@ func (h *HeadlessRunner) buildArgs(sess *Session, prompt, home string) (string, 
 			return "", nil, fmt.Errorf("failed to locate agy binary: %w", err)
 		}
 
-		if hasAntigravityConversation(home, sess.NativeID) || sess.FirstPrompt != "" || sess.LastPrompt != "" {
-			return bin, []string{"-p", prompt, "--output-format", "stream-json", "--dangerously-skip-permissions", "--conversation", sess.NativeID}, nil
+		effectivePrompt := prompt
+		if sess.IsSupervisor && sess.FirstPrompt == "" && sess.LastPrompt == "" && !hasAntigravityConversation(home, sess.NativeID) {
+			effectivePrompt = "[System Instruction: " + BuildSupervisorSystemPrompt(sess.ID) + "]\n\n" + prompt
 		}
-		return bin, []string{"-p", prompt, "--output-format", "stream-json", "--dangerously-skip-permissions"}, nil
+
+		if hasAntigravityConversation(home, sess.NativeID) || sess.FirstPrompt != "" || sess.LastPrompt != "" {
+			return bin, []string{"-p", effectivePrompt, "--output-format", "stream-json", "--dangerously-skip-permissions", "--conversation", sess.NativeID}, nil
+		}
+		return bin, []string{"-p", effectivePrompt, "--output-format", "stream-json", "--dangerously-skip-permissions"}, nil
 	}
 
 	bin, err := resolveClaudeBinary()
@@ -522,10 +527,16 @@ func (h *HeadlessRunner) buildArgs(sess *Session, prompt, home string) (string, 
 	}
 
 	// If transcript or session-env exists, or if a previous turn ran in this session, resume conversation
+	var args []string
 	if hasTranscript || sess.FirstPrompt != "" || sess.LastPrompt != "" {
-		return bin, []string{"-p", prompt, "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions", "--resume", sess.NativeID}, nil
+		args = []string{"-p", prompt, "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions", "--resume", sess.NativeID}
+	} else {
+		args = []string{"-p", prompt, "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions", "--session-id", sess.NativeID}
 	}
-	return bin, []string{"-p", prompt, "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions", "--session-id", sess.NativeID}, nil
+	if sess.IsSupervisor {
+		args = append(args, "--append-system-prompt", BuildSupervisorSystemPrompt(sess.ID))
+	}
+	return bin, args, nil
 }
 
 // RunTurn launches an asynchronous headless turn for the session.
@@ -566,6 +577,9 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 	cleanEnv := StripBilledCredentials(os.Environ())
 	if sess.ID != "" {
 		cleanEnv = append(cleanEnv, "ACKBAR_SESSION_ID="+sess.ID)
+	}
+	if sess.IsSupervisor {
+		cleanEnv = append(cleanEnv, "ACKBAR_IS_SUPERVISOR=1")
 	}
 	if sess.AccountID != "" && h.db != nil {
 		if acc, _ := h.db.GetAccount(sess.AccountID); acc != nil {
