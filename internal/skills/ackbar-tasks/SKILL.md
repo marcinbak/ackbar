@@ -1,6 +1,6 @@
 ---
 name: ackbar-tasks
-version: "20261104.07"
+version: "20261104.08"
 description: "Native Ackbar Task Management: track active work, report blockers without stalling, attach rich deliverables (UI mockups, plans, retros), and propose discovered bugs/tech-debt directly into the Ackbar Work Board."
 argument-hint: "[task-id or action]"
 ---

@@ -616,14 +616,64 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(info)
 
 	case http.MethodPost:
-		res, err := version.UpdateToLatest(r.Context(), "")
-		if err != nil {
-			http.Error(w, fmt.Sprintf("Update failed: %v", err), http.StatusInternalServerError)
-			return
+		localOnly := r.URL.Query().Get("local_only") == "true"
+		info, _ := version.CheckLatestRelease(r.Context(), true)
+		targetVer := version.Version
+		if info != nil && version.IsNewer(info.Version, targetVer) {
+			targetVer = info.Version
+		}
+
+		var res *version.UpdateResult
+		var localRestartNeeded bool
+
+		if info != nil && version.IsNewer(info.Version, version.Version) {
+			var err error
+			res, err = version.UpdateToLatest(r.Context(), "")
+			if err != nil {
+				http.Error(w, fmt.Sprintf("Update failed: %v", err), http.StatusInternalServerError)
+				return
+			}
+			localRestartNeeded = true
+			if res.NewVersion != "" && res.NewVersion != "latest" {
+				targetVer = res.NewVersion
+			}
+		} else {
+			res = &version.UpdateResult{
+				PreviousVersion: version.Version,
+				NewVersion:      version.Version,
+				Method:          "local",
+				Message:         fmt.Sprintf("Local daemon is already at v%s.", version.Version),
+			}
+		}
+
+		var hostSummaries []HostUpdateSummary
+		if !localOnly {
+			hostSummaries = s.UpdateOutdatedRemoteHosts(targetVer)
+			var msgLines []string
+			if res.Message != "" {
+				msgLines = append(msgLines, res.Message)
+			}
+			for _, hs := range hostSummaries {
+				if hs.Message != "" {
+					msgLines = append(msgLines, fmt.Sprintf("• %s: %s", hs.Host, hs.Message))
+				}
+			}
+			res.Message = strings.Join(msgLines, "\n")
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(res)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"previous_version": res.PreviousVersion,
+			"new_version":      targetVer,
+			"method":           res.Method,
+			"message":          res.Message,
+			"host_results":     hostSummaries,
+			"restarting_local": localRestartNeeded,
+		})
+
+		if localRestartNeeded {
+			restartLocalDaemonAsync()
+		}
 
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)

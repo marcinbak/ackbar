@@ -294,4 +294,27 @@ func TestHostLoadMetrics_RollupAndUtilizationAPI(t *testing.T) {
 	if weight != 80 || len(tags) != 2 {
 		t.Errorf("expected updated local policy [24/7 priority] and weight 80, got %v, %d", tags, weight)
 	}
+
+	// Verify UpdateOutdatedRemoteHosts skips offline and already up-to-date remote hosts
+	_ = db.SaveHost(&HostRecord{Name: "macmini", URL: "http://127.0.0.1:59991"})
+	_ = db.SaveHost(&HostRecord{Name: "devbox", URL: "http://127.0.0.1:59992"})
+	srv.updateHostHealth("macmini", true, "20261104.08", "Mac Mini", 5)
+	srv.updateHostHealth("devbox", false, "20261104.01", "Dev Box", 0)
+
+	updSummaries := srv.UpdateOutdatedRemoteHosts("20261104.08")
+	if len(updSummaries) != 2 {
+		t.Fatalf("expected 2 host update summaries, got %d: %+v", len(updSummaries), updSummaries)
+	}
+	for _, us := range updSummaries {
+		switch us.Host {
+		case "macmini":
+			if us.Status != "up_to_date" {
+				t.Errorf("expected macmini status=up_to_date, got %s", us.Status)
+			}
+		case "devbox":
+			if us.Status != "skipped_offline" {
+				t.Errorf("expected devbox status=skipped_offline, got %s", us.Status)
+			}
+		}
+	}
 }

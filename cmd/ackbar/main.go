@@ -960,5 +960,20 @@ func runUpdateCmd(args []string) {
 	if len(res.UpdatedBinaries) > 0 {
 		fmt.Printf("🚀 Updated binaries: %s\n", strings.Join(res.UpdatedBinaries, ", "))
 	}
+
+	// If local ackbard is currently running, restart it with the newly installed binary
+	httpClient := &http.Client{Timeout: 500 * time.Millisecond}
+	if resp, err := httpClient.Get("http://127.0.0.1:7777/v1/version"); err == nil {
+		_ = resp.Body.Close()
+		fmt.Printf("🔄 Restarting local ackbard daemon...\n")
+		_, _ = httpClient.Post("http://127.0.0.1:7777/v1/shutdown", "application/json", nil)
+		time.Sleep(400 * time.Millisecond)
+		ackbardBin := filepath.Join(res.TargetDir, "ackbard")
+		if _, err := os.Stat(ackbardBin); err != nil {
+			ackbardBin = "ackbard"
+		}
+		_ = exec.Command(ackbardBin).Start()
+	}
+
 	fmt.Printf("🎉 Successfully upgraded Ackbar to v%s!\n", info.Version)
 }

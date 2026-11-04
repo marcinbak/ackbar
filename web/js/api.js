@@ -27,6 +27,78 @@ async function fetchProviders() {
 }
 
 
+function compareVersions(vA, vB) {
+  const clean = v => String(v || '').trim().replace(/^v/i, '');
+  const a = clean(vA);
+  const b = clean(vB);
+  if (a === b) return 0;
+  if (!a) return -1;
+  if (!b) return 1;
+  const partsA = a.split('.');
+  const partsB = b.split('.');
+  const len = Math.max(partsA.length, partsB.length);
+  for (let i = 0; i < len; i++) {
+    const nA = parseInt(partsA[i] || '0', 10);
+    const nB = parseInt(partsB[i] || '0', 10);
+    if (!isNaN(nA) && !isNaN(nB)) {
+      if (nA > nB) return 1;
+      if (nA < nB) return -1;
+    } else if ((partsA[i] || '') !== (partsB[i] || '')) {
+      return (partsA[i] || '') > (partsB[i] || '') ? 1 : -1;
+    }
+  }
+  return 0;
+}
+
+function refreshUpdateBadge() {
+  const curVer = state.version && state.version !== 'unknown' ? state.version : '';
+  let targetVer = curVer;
+  if (state.latestVersion && compareVersions(state.latestVersion, targetVer) > 0) {
+    targetVer = state.latestVersion;
+  }
+
+  const localNeedsUpdate = !!(state.updateAvailable && state.latestVersion && compareVersions(state.latestVersion, curVer) > 0);
+  const remoteHosts = (state.hosts || []).filter(h => !isLocalHost(h.name));
+  const outdatedRemotes = remoteHosts.filter(h => h.online && h.version && h.version !== 'online' && compareVersions(targetVer, h.version) > 0);
+
+  const modalData = {
+    latest_version: targetVer || state.latestVersion || curVer,
+    release_url: state.releaseUrl || (targetVer ? `https://github.com/marcinbak/ackbar/releases/tag/v${targetVer}` : ''),
+    is_homebrew: !!state.isHomebrew
+  };
+
+  if (el.appVersion) {
+    el.appVersion.style.cursor = 'pointer';
+    el.appVersion.title = 'Click to inspect fleet versions & update hosts';
+    el.appVersion.onclick = () => {
+      if (typeof showUpdateModal === 'function') {
+        showUpdateModal(modalData);
+      }
+    };
+  }
+
+  const updateBadge = document.getElementById('updateBadge');
+  if (!updateBadge) return;
+
+  if (localNeedsUpdate || outdatedRemotes.length > 0) {
+    if (localNeedsUpdate && outdatedRemotes.length > 0) {
+      updateBadge.textContent = `⚡ Update All (${1 + outdatedRemotes.length}): v${targetVer}`;
+    } else if (outdatedRemotes.length > 0) {
+      updateBadge.textContent = `⚡ Update ${outdatedRemotes.length} Host${outdatedRemotes.length > 1 ? 's' : ''}: v${targetVer}`;
+    } else {
+      updateBadge.textContent = `⚡ Update: v${targetVer}`;
+    }
+    updateBadge.style.display = 'inline-block';
+    updateBadge.onclick = () => {
+      if (typeof showUpdateModal === 'function') {
+        showUpdateModal(modalData);
+      }
+    };
+  } else {
+    updateBadge.style.display = 'none';
+  }
+}
+
 async function fetchVersion() {
   try {
     const res = await fetch('/v1/version');
@@ -35,21 +107,10 @@ async function fetchVersion() {
       state.version = data.version || 'unknown';
       if (el.appVersion) el.appVersion.textContent = `v${state.version}`;
 
-      if (data.update_available && data.latest_version) {
-        state.updateAvailable = true;
-        state.latestVersion = data.latest_version;
-        state.releaseUrl = data.release_url;
-        const updateBadge = document.getElementById('updateBadge');
-        if (updateBadge) {
-          updateBadge.textContent = `⚡ Update: v${data.latest_version}`;
-          updateBadge.style.display = 'inline-block';
-          updateBadge.onclick = () => {
-            if (typeof showUpdateModal === 'function') {
-              showUpdateModal(data);
-            }
-          };
-        }
-      }
+      state.updateAvailable = !!data.update_available;
+      state.latestVersion = data.latest_version || data.version || '';
+      state.releaseUrl = data.release_url || '';
+      state.isHomebrew = !!data.is_homebrew;
 
       if (data.host) {
         state.selfHost = {
@@ -61,6 +122,7 @@ async function fetchVersion() {
         };
         renderHosts();
       }
+      refreshUpdateBadge();
     }
   } catch (err) {
     console.warn('Failed to fetch version:', err);
@@ -129,6 +191,7 @@ async function fetchHosts() {
 
       state.hosts = probedHosts;
       renderHosts();
+      refreshUpdateBadge();
 
       if (hadHostStateChange) {
         fetchSessions();
