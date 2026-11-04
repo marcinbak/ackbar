@@ -15,6 +15,10 @@ import (
 )
 
 var checkGitHubPRState = func(ctx context.Context, prURL string) (string, error) {
+	prURL = strings.TrimSpace(prURL)
+	if prURL == "" || strings.HasPrefix(prURL, "-") || !prURLRegex.MatchString(prURL) {
+		return "", nil
+	}
 	cmd := exec.CommandContext(ctx, "gh", "pr", "view", prURL, "--json", "state")
 	out, err := cmd.Output()
 	if err != nil {
@@ -35,7 +39,7 @@ func (s *Server) reconcileOpenPRTasks(ctx context.Context, tasks []Task) {
 
 	for i := range tasks {
 		t := &tasks[i]
-		if (t.Status == "IN_PROGRESS" || t.Status == "REVIEW") && t.PRURL != "" && t.PRState != "MERGED" {
+		if (t.Status == "IN_PROGRESS" || t.Status == "REVIEW") && t.PRURL != "" && t.PRState != "MERGED" && t.PRState != "CLOSED" {
 			state, err := checkGitHubPRState(rctx, t.PRURL)
 			if err != nil {
 				continue
@@ -137,9 +141,27 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		if t.ID == "" {
+		var existing *Task
+		if t.ID != "" {
+			existing, _ = s.db.GetTaskByID(t.ID)
+		}
+
+		if t.ID != "" && existing == nil && strings.TrimSpace(t.Title) == "" {
+			http.Error(w, "Task not found", http.StatusNotFound)
+			return
+		}
+
+		if t.ID == "" || existing == nil {
+			if t.ID == "" {
+				t.ID = fmt.Sprintf("task_%d", time.Now().UnixNano())
+			}
 			t.GroupName, t.ProjectName = s.normalizeTaskNodeScope(t.GroupName, t.ProjectName, t.WorktreePath, sessionID)
-			t.ID = fmt.Sprintf("task_%d", time.Now().UnixNano())
+			if t.Status == "" {
+				t.Status = "NEW"
+			}
+			if t.Substatus == "" {
+				t.Substatus = "ready"
+			}
 			if t.TaskKind == "" {
 				t.TaskKind = "code"
 			}
@@ -186,16 +208,6 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 			s.pushSyncPayload(&SyncStatePayload{Tasks: []Task{t}, Workstreams: t.Workstreams})
 			w.WriteHeader(http.StatusCreated)
 		} else {
-			existing, err := s.db.GetTaskByID(t.ID)
-			if err != nil {
-				http.Error(w, "Failed to query existing task: "+err.Error(), http.StatusInternalServerError)
-				return
-			}
-			if existing == nil {
-				http.Error(w, "Task not found", http.StatusNotFound)
-				return
-			}
-
 			oldStatus := existing.Status
 			oldSubstatus := existing.Substatus
 			oldQuestion := existing.BlockerQuestion

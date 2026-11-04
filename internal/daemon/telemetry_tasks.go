@@ -482,7 +482,7 @@ func (s *Server) SyncSessionTaskWorker(sess *Session) {
 			task.BlockerQuestion = reason
 			taskNeedsUpdate = true
 		}
-	} else if sess.State == StateWorking && (task.Substatus == "blocked" || task.Substatus == "stalled" || task.Substatus == "question") {
+	} else if sess.State == StateWorking && (task.Status == "NEW" || task.Substatus == "blocked" || task.Substatus == "stalled" || task.Substatus == "question") {
 		task.Status = "IN_PROGRESS"
 		task.Substatus = "active"
 		task.BlockerQuestion = ""

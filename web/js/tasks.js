@@ -1035,6 +1035,7 @@ export function showStartTaskModal(task) {
           name: task.title,
           node_path: fullNodePath,
           prompt: initialPrompt,
+          task_id: task.id,
           current_task_id: task.id
         })
       });

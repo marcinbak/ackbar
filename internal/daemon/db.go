@@ -2259,6 +2259,22 @@ func (d *DB) UpdateTask(t *Task) error {
 
 	// Only update Deliverables if explicitly provided (non-nil)
 	if t.Deliverables != nil {
+		// Preserve existing content_md if incoming deliverable has empty ContentMD
+		existingMDByID := make(map[string]string)
+		existingMDByTitleKind := make(map[string]string)
+		rows, err := tx.Query(`SELECT id, title, kind, content_md FROM task_deliverables WHERE task_id = ?`, t.ID)
+		if err == nil {
+			for rows.Next() {
+				var eID, eTitle, eKind string
+				var eMD sql.NullString
+				if err := rows.Scan(&eID, &eTitle, &eKind, &eMD); err == nil && eMD.Valid {
+					existingMDByID[eID] = eMD.String
+					existingMDByTitleKind[eTitle+"::"+eKind] = eMD.String
+				}
+			}
+			rows.Close()
+		}
+
 		_, err = tx.Exec(`DELETE FROM task_deliverables WHERE task_id = ?`, t.ID)
 		if err != nil {
 			return err
@@ -2268,6 +2284,13 @@ func (d *DB) UpdateTask(t *Task) error {
 			del.TaskID = t.ID
 			if del.ID == "" {
 				del.ID = fmt.Sprintf("del_%d_%d", time.Now().UnixNano(), i)
+			}
+			if strings.TrimSpace(del.ContentMD) == "" {
+				if md, ok := existingMDByID[del.ID]; ok && md != "" {
+					del.ContentMD = md
+				} else if md, ok := existingMDByTitleKind[del.Title+"::"+del.Kind]; ok && md != "" {
+					del.ContentMD = md
+				}
 			}
 			if err := insertTaskDeliverableTx(tx, del); err != nil {
 				return err
@@ -2600,6 +2623,9 @@ func (d *DB) PruneAllLegacyTasksOnce() (int, error) {
 	}
 	if _, err := tx.Exec("DELETE FROM task_external_refs;"); err != nil {
 		return 0, fmt.Errorf("failed to clear task_external_refs: %w", err)
+	}
+	if _, err := tx.Exec("UPDATE sessions SET current_task_id = '', metadata_updated_at = ? WHERE current_task_id != '' AND current_task_id IS NOT NULL;", now); err != nil {
+		return 0, fmt.Errorf("failed to clear sessions current_task_id: %w", err)
 	}
 
 	if _, err := tx.Exec("INSERT INTO settings (key, value) VALUES ('legacy_tasks_pruned_v1', 'true') ON CONFLICT(key) DO UPDATE SET value = 'true';"); err != nil {

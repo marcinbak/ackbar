@@ -167,11 +167,8 @@ func TestPhase3_MCPTools(t *testing.T) {
 	if receivedTasksPayload["group_name"] != "Modemobile" {
 		t.Errorf("Expected group_name 'Modemobile', got %v", receivedTasksPayload["group_name"])
 	}
-	if receivedTasksPayload["project_name"] != "NGL" {
-		t.Errorf("Expected project_name 'NGL', got %v", receivedTasksPayload["project_name"])
-	}
-	if receivedTasksPayload["subproject_name"] != "ngl-ios" {
-		t.Errorf("Expected subproject_name 'ngl-ios', got %v", receivedTasksPayload["subproject_name"])
+	if receivedTasksPayload["project_name"] != "NGL/ngl-ios" {
+		t.Errorf("Expected project_name 'NGL/ngl-ios', got %v", receivedTasksPayload["project_name"])
 	}
 	wsList, ok := receivedTasksPayload["workstreams"].([]any)
 	if !ok || len(wsList) != 2 {

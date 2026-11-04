@@ -995,6 +995,13 @@ func TestDB_PruneAllLegacyTasksOnce(t *testing.T) {
 		t.Fatalf("CreateTask 2 failed: %v", err)
 	}
 
+	// Seed session with legacy current_task_id
+	sessWithTask := &Session{
+		ID:            "sess_legacy_task",
+		CurrentTaskID: task1.ID,
+	}
+	_ = db.SaveSession(sessWithTask)
+
 	// Reset the setting flag so PruneAllLegacyTasksOnce runs
 	if _, err := db.db.Exec("UPDATE settings SET value = 'false' WHERE key = 'legacy_tasks_pruned_v1'"); err != nil {
 		t.Fatalf("Failed to reset setting: %v", err)
@@ -1021,6 +1028,15 @@ func TestDB_PruneAllLegacyTasksOnce(t *testing.T) {
 	_ = db.db.QueryRow("SELECT COUNT(*) FROM task_workers").Scan(&workerCount)
 	if workerCount != 0 {
 		t.Errorf("Expected 0 task_workers remaining, got %d", workerCount)
+	}
+
+	// Verify session current_task_id was cleared
+	sAfter, err := db.GetSession("sess_legacy_task")
+	if err != nil || sAfter == nil {
+		t.Fatalf("GetSession failed: %v", err)
+	}
+	if sAfter.CurrentTaskID != "" {
+		t.Errorf("Expected session current_task_id to be cleared, got %q", sAfter.CurrentTaskID)
 	}
 
 	// Running again should be a no-op (idempotent)
@@ -1206,6 +1222,18 @@ func TestTasks_ReconcilePRs(t *testing.T) {
 	}
 }
 
+func TestCheckGitHubPRState_Validation(t *testing.T) {
+	for _, badURL := range []string{"-flag", "--help", "ftp://evil.com", "not-a-url", "https://evil.com/repo/pull/1", ""} {
+		state, err := checkGitHubPRState(context.Background(), badURL)
+		if err != nil {
+			t.Errorf("Expected nil error for invalid URL %q, got %v", badURL, err)
+		}
+		if state != "" {
+			t.Errorf("Expected empty state for invalid URL %q, got %q", badURL, state)
+		}
+	}
+}
+
 func TestServer_NormalizeTaskNodeScope(t *testing.T) {
 	dbFile := filepath.Join(t.TempDir(), "test_normalize.db")
 	db, err := InitDB(dbFile)
@@ -1256,5 +1284,168 @@ func TestServer_NormalizeTaskNodeScope(t *testing.T) {
 	g, p = server.normalizeTaskNodeScope("", "", "", sess.ID)
 	if g != "Personal" || p != "Ackbar" {
 		t.Errorf("Case 4: got (%q, %q), want (Personal, Ackbar)", g, p)
+	}
+}
+
+func TestUpdateTask_PreservesDeliverableContentMD(t *testing.T) {
+	dbFile := filepath.Join(t.TempDir(), "test_preserve_md.db")
+	db, err := InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	task := &Task{
+		ID:          "task_preserve_1",
+		Title:       "Task with deliverable",
+		GroupName:   "Personal",
+		ProjectName: "Ackbar",
+		Status:      "IN_PROGRESS",
+		Deliverables: []TaskDeliverable{
+			{
+				ID:        "del_preserve_1",
+				TaskID:    "task_preserve_1",
+				Kind:      "plan",
+				Title:     "Architecture Plan",
+				Host:      "mac",
+				ContentMD: "# Full Architecture Markdown",
+			},
+		},
+	}
+	if err := db.CreateTask(task); err != nil {
+		t.Fatalf("CreateTask failed: %v", err)
+	}
+
+	// Update task sending deliverable with empty ContentMD (as web client does)
+	taskUpdate := &Task{
+		ID:          task.ID,
+		Title:       "Updated Task Title",
+		GroupName:   task.GroupName,
+		ProjectName: task.ProjectName,
+		Status:      "REVIEW",
+		Substatus:   "in_review",
+		Deliverables: []TaskDeliverable{
+			{
+				ID:        "del_preserve_1",
+				TaskID:    task.ID,
+				Kind:      "plan",
+				Title:     "Architecture Plan",
+				Host:      "mac",
+				ContentMD: "", // stripped in UI
+			},
+		},
+	}
+	if err := db.UpdateTask(taskUpdate); err != nil {
+		t.Fatalf("UpdateTask failed: %v", err)
+	}
+
+	fetchedDel, err := db.GetTaskDeliverableByID("del_preserve_1")
+	if err != nil || fetchedDel == nil {
+		t.Fatalf("GetTaskDeliverableByID failed: %v", err)
+	}
+	if fetchedDel.ContentMD != "# Full Architecture Markdown" {
+		t.Errorf("Expected content_md preserved, got %q", fetchedDel.ContentMD)
+	}
+}
+
+func TestTasks_CreateWithPreGeneratedID(t *testing.T) {
+	dbFile := filepath.Join(t.TempDir(), "test_pregen_id.db")
+	db, err := InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := &Server{db: db}
+
+	// 1. Create task with client-supplied pre-generated id
+	payload := map[string]any{
+		"id":           "task_mcp_custom_999",
+		"title":        "MCP Created Task",
+		"project_name": "Ackbar",
+	}
+	body, _ := json.Marshal(payload)
+	req := httptest.NewRequest("POST", "/v1/tasks", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	server.handleTasks(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("POST /v1/tasks with pre-generated id returned %d: %s", rec.Code, rec.Body.String())
+	}
+
+	created, err := db.GetTaskByID("task_mcp_custom_999")
+	if err != nil || created == nil {
+		t.Fatalf("Expected task_mcp_custom_999 created, got nil: %v", err)
+	}
+	if created.Title != "MCP Created Task" {
+		t.Errorf("Expected title 'MCP Created Task', got %q", created.Title)
+	}
+	if created.Status != "NEW" || created.Substatus != "ready" {
+		t.Errorf("Expected NEW/ready, got %s/%s", created.Status, created.Substatus)
+	}
+
+	// 2. Partial update to non-existent id with empty title should 404
+	updatePayload := map[string]any{
+		"id":     "task_nonexistent_000",
+		"status": "IN_PROGRESS",
+	}
+	bodyUp, _ := json.Marshal(updatePayload)
+	reqUp := httptest.NewRequest("POST", "/v1/tasks", bytes.NewReader(bodyUp))
+	recUp := httptest.NewRecorder()
+	server.handleTasks(recUp, reqUp)
+
+	if recUp.Code != http.StatusNotFound {
+		t.Errorf("Expected 404 for partial update to non-existent task, got %d", recUp.Code)
+	}
+}
+
+func TestSyncSessionTaskWorker_TransitionsNewToInProgress(t *testing.T) {
+	dbFile := filepath.Join(t.TempDir(), "test_new_to_progress.db")
+	db, err := InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := &Server{db: db}
+
+	task := &Task{
+		ID:          "task_new_1",
+		Title:       "Task in NEW",
+		GroupName:   "Personal",
+		ProjectName: "Ackbar",
+		Status:      "NEW",
+		Substatus:   "ready",
+		Workers: []TaskWorker{
+			{
+				TaskID:     "task_new_1",
+				SessionID:  "sess_worker_1",
+				Host:       "mac",
+				Agent:      "claude-code",
+				IsActive:   true,
+				AssignedAt: time.Now().UTC(),
+			},
+		},
+	}
+	if err := db.CreateTask(task); err != nil {
+		t.Fatalf("CreateTask failed: %v", err)
+	}
+
+	sess := &Session{
+		ID:            "sess_worker_1",
+		CurrentTaskID: task.ID,
+		Agent:         "claude-code",
+		Host:          "mac",
+		State:         StateWorking,
+	}
+
+	server.SyncSessionTaskWorker(sess)
+
+	updated, err := db.GetTaskByID(task.ID)
+	if err != nil || updated == nil {
+		t.Fatalf("GetTaskByID failed: %v", err)
+	}
+	if updated.Status != "IN_PROGRESS" || updated.Substatus != "active" {
+		t.Errorf("Expected task transitioned to IN_PROGRESS/active, got %s/%s", updated.Status, updated.Substatus)
 	}
 }

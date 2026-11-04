@@ -743,11 +743,8 @@ func executeCreateTask(ctx context.Context, client *DaemonClient, args map[strin
 		if len(parts) >= 1 && parts[0] != "" {
 			pGroup = parts[0]
 		}
-		if len(parts) == 2 && parts[1] != "" {
-			pProject = parts[1]
-		} else if len(parts) >= 3 {
-			pProject = parts[1]
-			pSubproject = strings.Join(parts[2:], "/")
+		if len(parts) >= 2 {
+			pProject = strings.Join(parts[1:], "/")
 		}
 	}
 
@@ -776,16 +773,8 @@ func executeCreateTask(ctx context.Context, client *DaemonClient, args map[strin
 		projectName = projectName[len(groupName)+1:]
 	} else if groupName == "" && strings.Contains(projectName, "/") {
 		parts := strings.Split(projectName, "/")
-		if len(parts) >= 3 {
-			groupName = parts[0]
-			projectName = parts[1]
-			if subprojectName == "" {
-				subprojectName = strings.Join(parts[2:], "/")
-			}
-		} else if len(parts) == 2 {
-			groupName = parts[0]
-			projectName = parts[1]
-		}
+		groupName = parts[0]
+		projectName = strings.Join(parts[1:], "/")
 	}
 
 	if projectName == "" {
