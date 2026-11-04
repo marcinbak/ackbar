@@ -86,23 +86,29 @@ async function fetchHosts() {
           clearTimeout(timer);
           if (vRes.ok) {
             const vData = await vRes.json();
+            const rawDisp = vData.display_name || h.display_name || '';
+            const cleanDisp = (!isLocalHost(h.name) && rawDisp.trim().toLowerCase() === 'local') ? '' : rawDisp;
+            const rawRepHost = vData.host || '';
+            const cleanRepHost = (!isLocalHost(h.name) && rawRepHost.trim().toLowerCase() === 'local') ? '' : rawRepHost;
             return {
               ...h,
               online: true,
               version: vData.version || 'online',
-              displayName: vData.display_name || h.display_name || '',
-              reportedHost: vData.host || '',
+              displayName: cleanDisp,
+              reportedHost: cleanRepHost,
               latencyMs: Date.now() - start
             };
           }
         } catch (e) {}
         // Fall back to daemon-reported live health if direct browser fetch timed out or failed
         if (h.online !== undefined) {
+          const fallbackDisp = h.display_name || h.displayName || '';
+          const cleanFallbackDisp = (!isLocalHost(h.name) && fallbackDisp.trim().toLowerCase() === 'local') ? '' : fallbackDisp;
           return {
             ...h,
             online: !!h.online,
             version: h.version || 'online',
-            displayName: h.display_name || h.displayName || '',
+            displayName: cleanFallbackDisp,
             latencyMs: h.latency_ms != null ? h.latency_ms : (h.latencyMs != null ? h.latencyMs : null)
           };
         }
@@ -153,7 +159,8 @@ function renderHosts() {
     const span = document.createElement('span');
     span.className = `host-badge ${h.online ? 'host-online' : 'host-offline'}`;
     const statusDot = h.online ? '🟢' : '🔴';
-    const label = h.displayName || formatHostLabel(h.name);
+    const cleanDisp = (!h.isSelf && h.displayName && h.displayName.trim().toLowerCase() === 'local') ? '' : h.displayName;
+    const label = cleanDisp || formatHostLabel(h.name);
     span.textContent = `${label} ${statusDot}`;
     span.title = h.online
       ? `${label} is ONLINE (${h.latencyMs != null ? h.latencyMs + 'ms' : 'connected'}, v${h.version || '?'})`

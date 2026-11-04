@@ -276,6 +276,14 @@ func (a AntigravityAgentAdapter) ScanDiskSessions(ctx context.Context, s *Server
 		}
 	}
 
+	hasSpawningCandidate := false
+	for _, sObj := range state.existingSessions {
+		if sObj != nil && sObj.Agent == "antigravity" && sObj.Managed && sObj.State != StateEnded && sObj.OldID == "" {
+			hasSpawningCandidate = true
+			break
+		}
+	}
+
 	for _, brainDir := range brainDirs {
 		bDirs, err := os.ReadDir(brainDir)
 		if err != nil {
@@ -317,11 +325,11 @@ func (a AntigravityAgentAdapter) ScanDiskSessions(ctx context.Context, s *Server
 				existing = state.knownByNativeID[convID]
 			}
 			if existing == nil {
-				title := ReadAntigravitySessionTitle("", convID)
-				cwd := extractAntigravityWorkspace(logPath, home)
+				if !hasSpawningCandidate {
+					continue
+				}
 				modTime := time.Now()
 				convStartTime := modTime
-
 				if stat, serr := os.Stat(convPath); serr == nil {
 					modTime = stat.ModTime()
 					convStartTime = modTime
@@ -329,92 +337,74 @@ func (a AntigravityAgentAdapter) ScanDiskSessions(ctx context.Context, s *Server
 				if lstat, lerr := os.Stat(logPath); lerr == nil && lstat.ModTime().After(modTime) {
 					modTime = lstat.ModTime()
 				}
+				if time.Since(modTime) >= 15*time.Minute {
+					continue
+				}
 				convStartTime = extractAntigravityStartTime(logPath, convStartTime)
-
-				if title == "" {
-					title = fmt.Sprintf("Antigravity (%s)", convID[:8])
+				if time.Since(convStartTime) >= 15*time.Minute {
+					continue
 				}
-
-				// Check if a newly spawned managed Antigravity session in this workspace should adopt convID
-				if cwd != "" && time.Since(convStartTime) < 15*time.Minute {
-					if spawningSess, err := s.findSpawningSession("antigravity", cwd); err == nil && spawningSess != nil && spawningSess.NativeID != convID && convStartTime.After(spawningSess.StartedAt.Add(-5*time.Second)) {
-						oldSessID := spawningSess.ID
-						_ = s.db.DeleteSession(oldSessID)
-						delete(state.knownIDs, oldSessID)
-						delete(state.knownByNativeID, spawningSess.NativeID)
-
-						tmuxName := spawningSess.TmuxName
-						newTmuxName := fmt.Sprintf("ackbar-antigravity-%s", convID)
-						if strings.HasPrefix(tmuxName, "ackbar-") && tmuxName != newTmuxName {
-							if rErr := tmux.Rename(ctx, tmuxName, newTmuxName); rErr == nil {
-								delete(state.knownByTmux, tmuxName)
-								tmuxName = newTmuxName
-							} else {
-								log.Printf("[daemon] failed to rename tmux session %s to %s in brain scan adoption: %v", tmuxName, newTmuxName, rErr)
-							}
-						}
-
-						adoptedCwd := spawningSess.Cwd
-						if adoptedCwd == "" {
-							adoptedCwd = cwd
-						}
-						adoptedName := title
-						if spawningSess.CustomTitle != "" {
-							adoptedName = spawningSess.CustomTitle
-						}
-						adoptedNodePath := spawningSess.NodePath
-						if adoptedNodePath == "" && adoptedCwd != "" {
-							adoptedNodePath = s.resolveSessionNodePath(adoptedCwd)
-						}
-
-						spawningSess.ID = sessID
-						spawningSess.OldID = oldSessID
-						spawningSess.NativeID = convID
-						spawningSess.Name = adoptedName
-						spawningSess.Cwd = adoptedCwd
-						spawningSess.ProjectKey = GetProjectKey(adoptedCwd)
-						spawningSess.NodePath = adoptedNodePath
-						spawningSess.TmuxName = tmuxName
-						spawningSess.LastEventAt = modTime
-
-						if p, ok := s.providers["antigravity"]; ok {
-							if inspector, ok := p.(StatusInspector); ok {
-								inspector.InspectStatus(ctx, spawningSess)
-							}
-						}
-						_ = s.db.SaveSession(spawningSess)
-						state.knownIDs[sessID] = spawningSess
-						state.knownByNativeID[convID] = spawningSess
-						if tmuxName != "" {
-							state.knownByTmux[tmuxName] = spawningSess
-						}
-						s.broadcast(spawningSess)
-						continue
+				cwd := extractAntigravityWorkspace(logPath, home)
+				if cwd == "" {
+					continue
+				}
+				if spawningSess, err := s.findSpawningSession("antigravity", cwd); err == nil && spawningSess != nil && spawningSess.NativeID != convID && convStartTime.After(spawningSess.StartedAt.Add(-5*time.Second)) {
+					title := ReadAntigravitySessionTitle("", convID)
+					if title == "" {
+						title = fmt.Sprintf("Antigravity (%s)", convID[:8])
 					}
-				}
+					oldSessID := spawningSess.ID
+					_ = s.db.DeleteSession(oldSessID)
+					delete(state.knownIDs, oldSessID)
+					delete(state.knownByNativeID, spawningSess.NativeID)
 
-				isOld := time.Since(modTime) > 7*24*time.Hour
+					tmuxName := spawningSess.TmuxName
+					newTmuxName := fmt.Sprintf("ackbar-antigravity-%s", convID)
+					if strings.HasPrefix(tmuxName, "ackbar-") && tmuxName != newTmuxName {
+						if rErr := tmux.Rename(ctx, tmuxName, newTmuxName); rErr == nil {
+							delete(state.knownByTmux, tmuxName)
+							tmuxName = newTmuxName
+						} else {
+							log.Printf("[daemon] failed to rename tmux session %s to %s in brain scan adoption: %v", tmuxName, newTmuxName, rErr)
+						}
+					}
 
-				newSess := &Session{
-					ID:          sessID,
-					Name:        title,
-					Agent:       "antigravity",
-					Host:        hostName,
-					NativeID:    convID,
-					Cwd:         cwd,
-					ProjectKey:  GetProjectKey(cwd),
-					NodePath:    s.resolveSessionNodePath(cwd),
-					State:       StateEnded,
-					Managed:     false,
-					Activity:    "Session ended",
-					StartedAt:   convStartTime,
-					LastEventAt: modTime,
-					ContextPct:  0,
-					Archived:    isOld,
+					adoptedCwd := spawningSess.Cwd
+					if adoptedCwd == "" {
+						adoptedCwd = cwd
+					}
+					adoptedName := title
+					if spawningSess.CustomTitle != "" {
+						adoptedName = spawningSess.CustomTitle
+					}
+					adoptedNodePath := spawningSess.NodePath
+					if adoptedNodePath == "" && adoptedCwd != "" {
+						adoptedNodePath = s.resolveSessionNodePath(adoptedCwd)
+					}
+
+					spawningSess.ID = sessID
+					spawningSess.OldID = oldSessID
+					spawningSess.NativeID = convID
+					spawningSess.Name = adoptedName
+					spawningSess.Cwd = adoptedCwd
+					spawningSess.ProjectKey = GetProjectKey(adoptedCwd)
+					spawningSess.NodePath = adoptedNodePath
+					spawningSess.TmuxName = tmuxName
+					spawningSess.LastEventAt = modTime
+
+					if p, ok := s.providers["antigravity"]; ok {
+						if inspector, ok := p.(StatusInspector); ok {
+							inspector.InspectStatus(ctx, spawningSess)
+						}
+					}
+					_ = s.db.SaveSession(spawningSess)
+					state.knownIDs[sessID] = spawningSess
+					state.knownByNativeID[convID] = spawningSess
+					if tmuxName != "" {
+						state.knownByTmux[tmuxName] = spawningSess
+					}
+					s.broadcast(spawningSess)
 				}
-				_ = s.db.SaveSession(newSess)
-				state.knownIDs[sessID] = newSess
-				s.broadcast(newSess)
 			} else {
 				changed := false
 				if existing.Cwd == "" {
@@ -422,58 +412,6 @@ func (a AntigravityAgentAdapter) ScanDiskSessions(ctx context.Context, s *Server
 						existing.Cwd = cwd
 						existing.ProjectKey = GetProjectKey(cwd)
 						changed = true
-					}
-				}
-				if !existing.Managed && existing.Cwd != "" {
-					convStartTime := existing.StartedAt
-					if stat, serr := os.Stat(convPath); serr == nil && convStartTime.IsZero() {
-						convStartTime = stat.ModTime()
-					}
-					convStartTime = extractAntigravityStartTime(logPath, convStartTime)
-					if time.Since(convStartTime) < 15*time.Minute {
-						if spawningSess, err := s.findSpawningSession("antigravity", existing.Cwd); err == nil && spawningSess != nil && spawningSess.NativeID != convID && convStartTime.After(spawningSess.StartedAt.Add(-5*time.Second)) {
-							oldSessID := spawningSess.ID
-							_ = s.db.DeleteSession(oldSessID)
-							delete(state.knownIDs, oldSessID)
-							delete(state.knownByNativeID, spawningSess.NativeID)
-
-							tmuxName := spawningSess.TmuxName
-							newTmuxName := fmt.Sprintf("ackbar-antigravity-%s", convID)
-							if strings.HasPrefix(tmuxName, "ackbar-") && tmuxName != newTmuxName {
-								if rErr := tmux.Rename(ctx, tmuxName, newTmuxName); rErr == nil {
-									delete(state.knownByTmux, tmuxName)
-									tmuxName = newTmuxName
-								} else {
-									log.Printf("[daemon] failed to rename tmux session %s to %s in deferred brain scan adoption: %v", tmuxName, newTmuxName, rErr)
-								}
-							}
-
-							existing.OldID = oldSessID
-							existing.Managed = true
-							existing.PID = spawningSess.PID
-							existing.EngineType = spawningSess.EngineType
-							existing.TmuxName = tmuxName
-							if spawningSess.Cwd != "" {
-								existing.Cwd = spawningSess.Cwd
-								existing.ProjectKey = GetProjectKey(spawningSess.Cwd)
-							}
-							if spawningSess.NodePath != "" {
-								existing.NodePath = spawningSess.NodePath
-							}
-							if spawningSess.CustomTitle != "" {
-								existing.CustomTitle = spawningSess.CustomTitle
-								existing.Name = spawningSess.CustomTitle
-							}
-							if tmuxName != "" {
-								state.knownByTmux[tmuxName] = existing
-							}
-							if p, ok := s.providers["antigravity"]; ok {
-								if inspector, ok := p.(StatusInspector); ok {
-									inspector.InspectStatus(ctx, existing)
-								}
-							}
-							changed = true
-						}
 					}
 				}
 				if existing.CustomTitle == "" {

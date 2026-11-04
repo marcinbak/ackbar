@@ -134,11 +134,38 @@ func (s *Server) SetWebFS(webFS fs.FS) {
 	s.webFS = webFS
 }
 
+// DefaultSystemHostName returns the normalized short OS hostname (lowercased,
+// with .local/.lan/.home suffix stripped), or "" if unavailable.
+func DefaultSystemHostName() string {
+	h, err := os.Hostname()
+	if err != nil {
+		return ""
+	}
+	return normalizeSystemHostName(h)
+}
+
+func normalizeSystemHostName(h string) string {
+	h = strings.TrimSpace(strings.ToLower(h))
+	for _, suffix := range []string{".localdomain", ".local", ".lan", ".home"} {
+		if strings.HasSuffix(h, suffix) {
+			h = strings.TrimSuffix(h, suffix)
+			break
+		}
+	}
+	if idx := strings.IndexByte(h, '.'); idx > 0 {
+		h = h[:idx]
+	}
+	if h == "" || h == "localhost" || h == "local" {
+		return ""
+	}
+	return h
+}
+
 func (s *Server) SetHostIdentity(hostName, displayName string) {
-	if hostName != "" {
+	if hostName != "" && !strings.EqualFold(hostName, "local") {
 		s.hostName = hostName
 	}
-	if displayName != "" {
+	if displayName != "" && !strings.EqualFold(displayName, "local") {
 		s.displayName = displayName
 	}
 	if s.db != nil && s.HostName() != "local" {
@@ -148,14 +175,14 @@ func (s *Server) SetHostIdentity(hostName, displayName string) {
 }
 
 func (s *Server) HostName() string {
-	if s.hostName != "" {
+	if s.hostName != "" && !strings.EqualFold(s.hostName, "local") {
 		return s.hostName
 	}
-	if h := os.Getenv("ACKBAR_HOST"); h != "" {
+	if h := os.Getenv("ACKBAR_HOST"); h != "" && !strings.EqualFold(h, "local") {
 		return h
 	}
 	if s.db != nil {
-		if val, err := s.db.GetSetting("host_name"); err == nil && val != "" {
+		if val, err := s.db.GetSetting("host_name"); err == nil && val != "" && !strings.EqualFold(val, "local") {
 			return val
 		}
 	}
@@ -163,14 +190,14 @@ func (s *Server) HostName() string {
 }
 
 func (s *Server) DisplayName() string {
-	if s.displayName != "" {
+	if s.displayName != "" && !strings.EqualFold(s.displayName, "local") {
 		return s.displayName
 	}
-	if d := os.Getenv("ACKBAR_DISPLAY_NAME"); d != "" {
+	if d := os.Getenv("ACKBAR_DISPLAY_NAME"); d != "" && !strings.EqualFold(d, "local") {
 		return d
 	}
 	if s.db != nil {
-		if val, err := s.db.GetSetting("display_name"); err == nil && val != "" {
+		if val, err := s.db.GetSetting("display_name"); err == nil && val != "" && !strings.EqualFold(val, "local") {
 			return val
 		}
 	}
@@ -613,7 +640,11 @@ func (s *Server) populateDefaultSettings(settings map[string]string) map[string]
 		}
 	}
 	settings["host_name"] = s.HostName()
-	settings["display_name"] = s.DisplayName()
+	if disp := s.DisplayName(); !strings.EqualFold(disp, "local") {
+		settings["display_name"] = disp
+	} else {
+		settings["display_name"] = ""
+	}
 	return settings
 }
 
@@ -637,6 +668,13 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		propagateNtfy := req["propagate_ntfy"] == "true"
 		delete(req, "propagate_ntfy")
+
+		if strings.EqualFold(strings.TrimSpace(req["host_name"]), "local") {
+			delete(req, "host_name")
+		}
+		if strings.EqualFold(strings.TrimSpace(req["display_name"]), "local") {
+			req["display_name"] = ""
+		}
 
 		if err := s.db.SetSettings(req); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)

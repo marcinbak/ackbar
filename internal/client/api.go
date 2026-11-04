@@ -81,6 +81,9 @@ func FetchSessions(hosts []HostConfig) ([]*daemon.Session, map[string]HostStatus
 			verResp, verErr := client.Get(verURL)
 			hostVer := "unknown"
 			dispName := host.DisplayName
+			if strings.EqualFold(strings.TrimSpace(dispName), "local") && !strings.EqualFold(host.Name, "local") {
+				dispName = ""
+			}
 			reportedHost := ""
 			if verErr == nil && verResp.StatusCode == http.StatusOK {
 				var verData struct {
@@ -92,10 +95,10 @@ func FetchSessions(hosts []HostConfig) ([]*daemon.Session, map[string]HostStatus
 					if verData.Version != "" {
 						hostVer = verData.Version
 					}
-					if verData.DisplayName != "" {
+					if verData.DisplayName != "" && (!strings.EqualFold(verData.DisplayName, "local") || strings.EqualFold(host.Name, "local")) {
 						dispName = verData.DisplayName
 					}
-					if verData.Host != "" {
+					if verData.Host != "" && (!strings.EqualFold(verData.Host, "local") || strings.EqualFold(host.Name, "local")) {
 						reportedHost = verData.Host
 					}
 				}
@@ -207,6 +210,9 @@ for p in [os.path.join(home, ".gemini", "config", "hooks.json"), os.path.join(ho
 '
 pkill ackbard 2>/dev/null || true
 nohup ~/.local/bin/ackbard > ~/.ackbard.log 2>&1 &`
+					if shortHost := daemon.ShortRemoteHostIdentifier(h.Name); shortHost != "" {
+						remoteSetupScript = strings.Replace(remoteSetupScript, "nohup ~/.local/bin/ackbard >", fmt.Sprintf("nohup ~/.local/bin/ackbard --host-name %s >", shortHost), 1)
+					}
 					_ = exec.Command("ssh", "-o", "BatchMode=yes", h.Name, remoteSetupScript).Run()
 				}(host)
 			}

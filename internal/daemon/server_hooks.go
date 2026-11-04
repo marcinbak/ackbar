@@ -397,7 +397,11 @@ func (s *Server) resolveOrAdoptHookSession(event *Event, host, sessionID, accoun
 		return nil, false
 	}
 
-	if sess == nil || !sess.Managed {
+	if sess != nil && !sess.Managed && sess.State == StateEnded && sess.Activity == "Cleared (context reset)" {
+		return nil, false
+	}
+
+	if sess == nil {
 		// Look for a spawning managed session to adopt
 		if spawningSess, err := s.findSpawningSession(event.Agent, event.Cwd); err == nil && spawningSess != nil && spawningSess.ID != sessionID {
 			// Adopt! Delete the spawning temp record
@@ -491,18 +495,8 @@ func (s *Server) resolveOrAdoptHookSession(event *Event, host, sessionID, accoun
 				AccountID:  activeManaged.AccountID,
 			}
 		} else {
-			accountID := ""
-			if accountParam != "" {
-				accountID = fmt.Sprintf("%s:%s", event.Agent, accountParam)
-			}
-			sess = &Session{
-				ID:        sessionID,
-				Agent:     event.Agent,
-				Host:      host,
-				NativeID:  event.NativeID,
-				StartedAt: time.Now(),
-				AccountID: accountID,
-			}
+			// Ignore hooks from sessions created outside of Ackbar
+			return nil, false
 		}
 	}
 
