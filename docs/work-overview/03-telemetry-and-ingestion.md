@@ -1,62 +1,47 @@
-# 03 — Telemetry, Hooks & Ingestion Architecture
+# 03 — Explicit MCP Telemetry & Worker Binding Architecture
 
-## 1. The Three-Tier Ingestion Strategy
+## 1. Pure MCP Telemetry & Explicit Task Creation
 
-To balance token economics, real-time speed, and high-fidelity discovery, ingestion is divided across three layers:
+To prevent duplicate/hallucinated tasks and noisy auto-attached files, the Ackbar Task Engine enforces **strict explicit task creation and 100% explicit MCP telemetry**:
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
-│                        THREE-TIER INGESTION PIPELINE                   │
+│                    EXPLICIT MCP TELEMETRY PIPELINE                     │
 │                                                                        │
-│  TIER 1: PROGRAMMATIC WATCHER (0 Tokens / 0ms Latency)                 │
-│  • Tool hooks (`PreToolUse`/`PostToolUse`) intercept commands.         │
-│  • Git branch & worktree regex (`feat/NGL-409` ➔ Jira `NGL-409`).      │
-│  • `gh pr create` stdout regex ➔ captures PR URL & flips to REVIEW.    │
-│  • Process exits ➔ transitions session state.                          │
+│  1. EXPLICIT TASK CREATION ONLY                                        │
+│  • Tasks are created exclusively via `ackbar mcp` (`create_task`,      │
+│    `propose_task`) or the Work Board UI (`POST /v1/tasks`).            │
+│  • Ad-hoc terminal sessions and file edits never auto-create tasks.    │
 │                                                                        │
-│  TIER 2: IN-FLIGHT SKILL + PROMPT + MCP (Minimal Tokens)               │
-│  • Working agent calls `propose_task` when it spots an unprompted bug. │
-│  • Agent calls `task_update` to record custom notes or milestones.     │
-│  • Prevents the agent from derailing its main objective.               │
+│  2. EXPLICIT WORKER BINDING (`SyncSessionTaskWorker`)                  │
+│  • Sessions bound via `task_id` / `current_task_id` at spawn time      │
+│    automatically sync live process state (`Working`, `Blocked`, `Idle`)│
+│    to their bound task.                                                │
+│  • If all bound worker sessions end (`StateEnded`) while a task is     │
+│    still `IN_PROGRESS`, the task transitions to `substatus: stalled`.  │
 │                                                                        │
-│  TIER 3: POST-EXECUTION SYNTHESIZER (On-Demand / Completion Only)      │
-│  • Runs when session enters REVIEW or when generating standups.        │
-│  • Lightweight model (Gemini Flash / Claude Haiku) writes 1-line       │
-│    executive bullet points from raw activity logs.                     │
+│  3. EXPLICIT MCP LIFECYCLE & DELIVERABLES                              │
+│  • Agents report workflow nodes (`N0`–`N15`, `DONE`), PR URLs,         │
+│    blockers (`report_blocker`), and deliverables (`attach_deliverable`)│
+│    directly via `ackbar mcp`.                                          │
+│                                                                        │
+│  4. ON-DEMAND PR RECONCILIATION                                        │
+│  • Opening or refreshing the Work Board (`?reconcile_prs=true`) checks │
+│    open PR URLs via `gh pr view` and advances merged PRs to `DONE`.    │
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 2. Tool Execution Hooks (`PreToolUse` & `PostToolUse`)
+## 2. Explicit MCP Tools (`internal/mcp/tools.go`)
 
-Both Claude Code and Antigravity provide native lifecycle hooks before and after tool calls. The Ackbar hook shim (`cmd/ackbar-hook` and `/v1/hooks/<agent>`) monitors these tool events transparently:
-
-### Ingested Tool Patterns:
-
-| Agent Tool Action | Intercepted Payload | Automated Dashboard Mutation |
+| MCP Tool | Purpose | Automated Dashboard Mutation |
 | :--- | :--- | :--- |
-| **`Bash` ➔ `gh pr create`** | Stdout: `https://github.com/modemobile/ngl-ios/pull/82` | Binds PR URL, attaches PR number `#82`, and transitions task to `status: REVIEW, substatus: in_review`. |
-| **`Bash` ➔ `git checkout -b feat/NGL-409`** | Command string contains `NGL-409` | Extracts Jira tracker reference `NGL-409` with zero token cost. |
-| **`Bash` ➔ `go test` / `flutter test`** | Exit code: `0` (pass) or `1` (fail) | Sets task `ci_status` badge: `PASSING` or `FAILING`. |
-| **`Write` / `Edit` ➔ `*.html`, `*.png`** | File path in tool arguments | Automatically registers file as an attached deliverable artifact. |
-| **`Write` ➔ `*.retro.md`** | Detects dev-workflow N15 retro write | Attaches retrospective deliverable and prepares standup data. |
-
----
-
-## 3. Integration with `dev-workflow` Skill
-
-The workspace's `dev-workflow` skill maintains a persistent run state on disk at `~/.claude/dev-workflow-runs/`:
-* `<repo>-<KEY>.json` (node transitions, `human_interventions`, `tier`, `artifacts`, `pr`)
-* `<repo>-<KEY>.retro.md` (Node N15 retrospective, token report, lessons learned)
-* `<repo>-<KEY>.brief.md` (Node N2 change brief, objectives)
-
-### Integration Points:
-1. **Node N2 (Change Brief):** Automatically populates the task title, requirements, and scope when the planner finishes.
-2. **Node N11 (PR Opened):** Transitions task to `REVIEW` with PR URL and branch bound.
-3. **Node N15 (Retrospective & Lessons Learned):**
-   * The daemon reads the `.retro.md` sidecar and attaches it as a deliverable.
-   * Any bullet points under `## Proposals` or `## Future Work` are automatically parsed and inserted into the `NEW` inbox as discovered tasks.
+| **`create_task`** | Creates a structured task bound to a canonical `tree_nodes` path | Inserts `NEW` (`ready`) task and optional `task_workstreams`; optionally spawns worker if `auto_start: true`. |
+| **`update_task`** | Reports `workflow_node` (`N0`–`N15`, `DONE`), `status`, `substatus`, `notes`, or `pr_url` | Deterministic `ClassifyWorkflowNodeState` transitions (`N2` $\rightarrow$ `REVIEW/plan_review`, `N11` $\rightarrow$ `REVIEW/pr_review`, `N14`/`N15`/`DONE` $\rightarrow$ `DONE/completed`). |
+| **`report_blocker` / `clear_blocker`** | Surfaces or resolves an agent blocker | Sets `substatus: blocked` + `blocker_question` (or restores `active`). |
+| **`attach_deliverable`** | Attaches a change brief, HTML prototype, Cloud doc, or retro | Stores deliverable in `task_deliverables` (with `content_md` lazy-loaded on demand in the UI). |
+| **`propose_task`** | Logs an unexpected bug or tech-debt item discovered in-flight | Deduplicates by title and inserts into `NEW` (`discovered`). |
 
 ---
 

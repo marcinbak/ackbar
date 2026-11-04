@@ -56,16 +56,17 @@ Task and tree persistence is managed in `ackbard.db` using CGO-free pure Go SQLi
 
 ## 4. REST API Endpoints
 
-* **`GET /v1/tasks`**: Returns all tasks with joined workers, external references, and deliverables. Supports optional query filters: `?group=`, `?project=`, `?status=`.
-* **`POST /v1/tasks`**: Creates or updates a task.
+* **`GET /v1/tasks`**: Returns all tasks with joined workers, external references, and deliverable metadata (`has_content_md`, omitting inline `content_md`). Supports optional query filters: `?group=`, `?project=`, `?status=`, `?federated=true`, and `?reconcile_prs=true` (on-demand GitHub PR state check via `gh pr view`).
+* **`POST /v1/tasks`**: Explicitly creates or updates a task (supports client-generated IDs and preserves lazy deliverable `content_md` on partial updates).
 * **`POST /v1/tasks/event`**: Ingests structured task lifecycle events (`task_id`, `event_type`, `payload`).
-* **`POST /v1/tasks/propose`**: Records discovered work proposals with title deduplication into `NEW`.
+* **`POST /v1/tasks/propose`**: Records explicit agent-discovered work proposals (`propose_task`) with title deduplication into `NEW`.
+* **`GET /v1/tasks/deliverable?id=<id>`**: Lazily fetches full deliverable details including `content_md` on demand.
 * **`POST /v1/tasks/deliverable`**: Attaches design mockups, change briefs, retrospectives, or external artifacts.
-* **`POST /v1/tasks/sync-workflow`**: Scans `~/.claude/dev-workflow-runs/` to sync node states and companions.
+* **`POST /v1/tasks/sync-workflow`**: Reconciles active worker session state (`SyncSessionTaskWorker`) for explicitly bound tasks.
 * **`POST /v1/tasks/merge-pr`**: Executes 1-click `gh pr merge --squash` directly from the dashboard.
 * **`GET /v1/standup`**: Generates instant, deterministic daily standups or retrospectives in Markdown or JSON.
 * **`POST /v1/briefings/synthesize`**: Produces speech-optimized conversational briefings (<45s) for audio playback.
-* **`DELETE /v1/tasks?id=<id>`**: Deletes or archives a task.
+* **`DELETE /v1/tasks?id=<id>`**: Soft-deletes a task (`deleted_at = now`) and cascades cleanup across child tables.
 
 ---
 
@@ -74,25 +75,24 @@ Task and tree persistence is managed in `ackbard.db` using CGO-free pure Go SQLi
 1. **Header Mode Switcher:**
    * Toggle between **`[💻 Workspace]`** (multi-terminal tabs, chat transcript, session tree) and **`[📋 Work Board]`** (Kanban board).
    * Restoring Workspace view triggers synthetic window resize events to ensure `xterm.js` terminals re-fit without distortion.
-2. **Scoping & Filtering:**
-   * Organization/Group pills (`All`, `Modemobile`, `Personal`).
-   * Dynamic Project dropdown populated from active task records.
+2. **Canonical `tree_nodes` Scoping & Filtering:**
+   * Organization/Group pills (`All`, `Modemobile`, `Personal`, `EnuiaLabs`) derived from `tree_nodes`.
+   * Dynamic Project dropdown populated from canonical `tree_nodes` subpaths.
    * Instant search input filtering across task titles, notes, Git branches, and issue tracker keys.
 3. **Zero Context-Switch Navigation:**
    * Clicking any worker badge on a task card instantly switches to Workspace mode and focuses the agent's live terminal/chat tab via `openSessionInTab(session)` / `activateTab(sessionId)`.
 4. **Contextual Action Controls:**
+   * **Backlog Task Creator (`+ New Task`):** Clean backlog creator (`tree_nodes` path selector, Title, Kind Code/Design, Tracker Ref, Notes) saving directly to `NEW` (`ready`).
+   * **1-Click Start Task (`[▶ Start]`):** Opens a lightweight Start modal pre-filled from `node_host_paths`, spawns a dedicated `📋 Task` session bound to `task.id`, transitions the task to `IN_PROGRESS` (`active`), and switches to the live session tab.
+   * **Stalled Task Triage:** When all worker sessions for an `IN_PROGRESS` task end without reaching `REVIEW` or `DONE`, the task is marked `stalled` with 1-click `[▶ Resume]`, `[✓ Done]`, and `[🗑️ Delete]` buttons.
    * **1-Click Merge PR:** Directly executes `gh pr merge --squash` on GitHub with loading cues and instant state transition to `DONE`.
-   * **Unblock Worker:** Immediately switches to and focuses a blocked agent waiting for input.
-   * **Edit Task:** Modal to adjust title, status, substatus, notes, branch, or PR URL.
-   * **Create Task:** Quick task creator modal with group and project defaults.
+   * **7-Day Done Cap:** `DONE` column displays tasks completed in the last 7 days by default, with a `[Show older (N)]` toggle at the bottom of the column.
 5. **Daily Standup & Voice Companion Briefing:**
    * `[📋 Daily Standup]` toolbar button opens the Standup Modal.
-   * Filterable by Scope (`All`, `Modemobile`, `Personal`) and Lookback Window (24h, 48h, 7d).
-   * 1-click **"📋 Copy to Clipboard"** for fast Slack/Teams standup updates.
-   * **"🎙️ Audio Briefing"** voice playback using the Web Speech API (`SpeechSynthesis`).
+   * Filterable by Scope and Lookback Window (24h, 48h, 7d).
+   * 1-click **"📋 Copy to Clipboard"** and **"🎙️ Audio Briefing"** playback.
 6. **Agent Tool & Skill Setup (`ackbar mcp`):**
-   * `[⚙️ Agent Setup]` toolbar button opens the Multi-Agent Setup modal.
-   * Native pure Go stdio MCP server (`ackbar mcp`) providing task lifecycle, blocker callouts, deliverables, and discovered work triage.
-   * 1-click auto-configuration for Claude Code, Google Antigravity, and OpenAI Codex with version drift detection.
+   * Accessible from the global **`⚙️ Settings`** modal (`[⚙️ Agent Tool & Skill Setup]`).
+   * Native pure Go stdio/HTTP MCP server (`ackbar mcp`) providing explicit task lifecycle, blocker callouts, deliverables, and discovered work triage.
 7. **Real-time SSE Sync:**
    * Daemon broadcasts trigger debounced task board reloads when the Work Board view is active.

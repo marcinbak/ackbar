@@ -94,10 +94,15 @@ It is embedded directly into the `ackbard` Go binary and served on `http://127.0
 
 ### 📋 8. Work & Fleet Overview Kanban Board
 * **Dual View Modes:** Seamlessly switch between **`[💻 Workspace]`** (multi-tab terminals & agent chats) and **`[📋 Work Board]`** (cross-host agent Kanban dashboard).
-* **4-Pillar Lifecycle Columns:** `NEW` (Backlog/queued), `IN_PROGRESS` (Agent actively executing), `REVIEW` (Human evaluation & PR review), and `DONE` (Merged & closed).
-* **Cross-Host Task Filtering:** Filter by Organization/Group (`All`, `Modemobile`, `Personal`), Project dropdown, or instant full-text search across titles, branches, and tracker tickets.
+* **Strict Explicit Task Creation & Pure MCP Telemetry:** Tasks are created exclusively via `ackbar mcp` (`create_task`, `propose_task`) or the Work Board **`[+ New Task]`** modal (`POST /v1/tasks`), eliminating ambient background scrapers.
+* **Canonical `tree_nodes` Scoping:** Tasks bind directly to canonical `tree_nodes` paths (e.g. `Modemobile/NGL/ngl-ios`, `Personal/Ackbar`), deriving `group_name` (top segment) and `project_name` (remaining sub-path) consistently across Group pills and the Project filter dropdown.
+* **4-Pillar Lifecycle Columns:**
+  * `NEW`: Backlog & proposed items (`ready` / `discovered`) with a 1-click **`[▶ Start]`** button that opens a lightweight Start modal pre-filled from `node_host_paths`, spawns a dedicated `📋 Task` session bound to `task.id`, transitions the task to `IN_PROGRESS`, and opens the session tab.
+  * `IN_PROGRESS`: Active agent execution (`active`, `blocked`, `question`, `stalled`). If all worker sessions for an `IN_PROGRESS` task end without reaching `REVIEW` or `DONE`, the card is marked `stalled` with 1-click **`[▶ Resume]`**, **`[✓ Done]`**, and **`[🗑️ Delete]`** actions.
+  * `REVIEW`: Human checkpoint for plans (`plan_review`), designs (`design_review`), and pull requests (`pr_review` / `in_review`).
+  * `DONE`: Completed & merged tasks. Capped by default to tasks completed in the last 7 days with a **`[Show older (N)]`** toggle at the bottom of the column.
+* **On-Demand PR Reconciliation & Lazy Deliverables:** Opening or refreshing the Work Board checks open PR states (`GET /v1/tasks?federated=true&reconcile_prs=true`) without background polling, and deliverable markdown (`content_md`) is loaded lazily on demand (`GET /v1/tasks/deliverable?id=<id>`) when a deliverable chip is clicked.
 * **Zero Context-Switch Navigation:** Clicking any active worker pill on a task card switches straight to Workspace mode and focuses the agent session tab (`openSessionInTab` / `activateTab`).
-* **Interactive Controls:** Merge PRs, unblock waiting agents, view deliverables, create new tasks, and edit task status in-place.
 
 ### 🎙️ 9. Voice Companion & 2-Tier Lazy Speech Pipeline (`chat.js`)
 * **Header Controls:**

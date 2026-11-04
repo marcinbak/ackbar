@@ -59,13 +59,14 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 | `POST` | `/v1/nodes/paths` | Registers or updates a host-specific project execution path (`node_host_paths`) for a node. |
 | `GET` | `/v1/hosts` | Returns registered local and remote compute hosts. |
 | `POST` | `/v1/hosts/update` | Upgrades and restarts `ackbard` on a remote target host. |
-| `GET` | `/v1/tasks` | Returns tasks across all projects with associated workers, external refs, and deliverables (supports `?federated=true`). |
-| `POST` | `/v1/tasks` | Creates a new task or updates an existing task with associated child relations in a single transaction. |
-| `DELETE` | `/v1/tasks` | Deletes a task and all associated workers, external refs, and deliverables with cascade cleanup. |
-| `POST` | `/v1/tasks/event` | Ingests lifecycle events for a task, performing ambient detection of git branches and PR URLs. |
-| `POST` | `/v1/tasks/propose` | Quickly records discovered work proposals into the `NEW` inbox column with duplicate detection. |
-| `POST` | `/v1/tasks/deliverable` | Attaches design mockups, change briefs, retrospectives, or external artifacts to a task. |
-| `POST` | `/v1/tasks/sync-workflow` | Triggers immediate synchronization scan of `~/.claude/dev-workflow-runs/` run states and companions. |
+| `GET` | `/v1/tasks` | Returns tasks across all projects with associated workers, external refs, and deliverable headers (`has_content_md: true`, omitting inline `content_md`). Supports `?federated=true` and `?reconcile_prs=true` (on-demand GitHub PR state check via `gh pr view`). |
+| `POST` | `/v1/tasks` | Creates a new task (explicitly via MCP or Work Board UI, supporting client-generated IDs) or updates an existing task with associated child relations in a single transaction while preserving existing deliverable `content_md`. |
+| `DELETE` | `/v1/tasks` | Soft-deletes a task (`deleted_at = now`) and cascades cleanup across workers, workstreams, external refs, and deliverables for LWW peer sync. |
+| `POST` | `/v1/tasks/event` | Ingests structured lifecycle events (`agent_blocked`, `agent_unblocked`, etc.) for explicitly bound tasks. |
+| `POST` | `/v1/tasks/propose` | Records explicit agent-discovered work proposals (`propose_task`) into the `NEW` inbox column with duplicate detection and canonical `tree_nodes` scoping. |
+| `GET` | `/v1/tasks/deliverable` | Lazily fetches a single deliverable (`?id=<id>`) including its full `content_md` payload on demand. |
+| `POST` | `/v1/tasks/deliverable` | Attaches design mockups, change briefs, retrospectives, or cloud artifacts to a task. |
+| `POST` | `/v1/tasks/sync-workflow` | Triggers immediate reconciliation of active worker liveness (`SyncSessionTaskWorker`) for explicitly bound tasks. |
 | `POST` | `/v1/tasks/merge-pr` | Executes 1-click `gh pr merge --squash` for a task with an open PR and transitions state to `DONE`. |
 | `GET` | `/v1/sync/state` | Returns delta sync state payload (nodes, host paths, tasks, deliverables, session metas) since `?since=<timestamp>`. |
 | `POST` | `/v1/sync/push` | Ingests and reconciles peer sync payload via 3-way Last-Write-Wins (LWW). |
