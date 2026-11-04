@@ -3,7 +3,8 @@ import { state } from './state.js';
 import { getAuthToken } from './auth.js';
 import {
   getSelfHostName,
-  isLocalHost
+  isLocalHost,
+  sessionBelongsToHost
 } from './utils.js';
 import {
   fetchSessions,
@@ -55,6 +56,7 @@ function connectSSE() {
         try {
           const updatedSess = JSON.parse(event.data);
           if (!updatedSess || !updatedSess.id) return;
+          if (!sessionBelongsToHost(updatedSess, h)) return;
 
           if (!isLocalHost(h.name)) {
             updatedSess.host = h.name;

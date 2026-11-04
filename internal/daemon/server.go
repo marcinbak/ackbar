@@ -92,8 +92,34 @@ func NewServer(db *DB) *Server {
 	s.headless.SetOnTurnComplete(s.clearSubagents)
 	if host := s.HostName(); host != "local" && db != nil {
 		_ = db.MigrateLocalSessions(host)
+		s.pruneForeignSessions()
 	}
 	return s
+}
+
+func (s *Server) isForeignSession(host string) bool {
+	if s.isLocalHost(host) {
+		return false
+	}
+	if s.HostName() != "local" {
+		return true
+	}
+	return s.resolveHost(host) != nil
+}
+
+func (s *Server) pruneForeignSessions() {
+	if s.db == nil {
+		return
+	}
+	sessions, err := s.db.ListSessions()
+	if err != nil {
+		return
+	}
+	for _, sess := range sessions {
+		if sess != nil && s.isForeignSession(sess.Host) {
+			_ = s.db.DeleteSession(sess.ID)
+		}
+	}
 }
 
 func (s *Server) SetToken(token string) {
@@ -117,6 +143,7 @@ func (s *Server) SetHostIdentity(hostName, displayName string) {
 	}
 	if s.db != nil && s.HostName() != "local" {
 		_ = s.db.MigrateLocalSessions(s.HostName())
+		s.pruneForeignSessions()
 	}
 }
 
@@ -435,8 +462,17 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	// Send initial list of sessions on connect
 	sessions, err := s.db.ListSessions()
 	if err == nil {
+		localSessions := make([]*Session, 0, len(sessions))
 		var active []*Session
 		for _, sess := range sessions {
+			if sess == nil {
+				continue
+			}
+			if s.isForeignSession(sess.Host) {
+				_ = s.db.DeleteSession(sess.ID)
+				continue
+			}
+			localSessions = append(localSessions, sess)
 			if sess.State != StateEnded && s.isLocalHost(sess.Host) {
 				active = append(active, sess)
 			}
@@ -445,8 +481,8 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			s.verifyHeadlessLiveness(active)
 			s.triggerAsyncLiveness()
 		}
-		for _, s := range sessions {
-			data, err := json.Marshal(s)
+		for _, sess := range localSessions {
+			data, err := json.Marshal(sess)
 			if err == nil {
 				_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
 			}
@@ -620,6 +656,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			s.hostName = newHost
 			if s.db != nil && newHost != "local" {
 				_ = s.db.MigrateLocalSessions(newHost)
+				s.pruneForeignSessions()
 			}
 		}
 		if newDisp, ok := req["display_name"]; ok {

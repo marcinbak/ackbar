@@ -68,7 +68,7 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 | `POST` | `/v1/tasks/deliverable` | Attaches design mockups, change briefs, retrospectives, or cloud artifacts to a task. |
 | `POST` | `/v1/tasks/sync-workflow` | Triggers immediate reconciliation of active worker liveness (`SyncSessionTaskWorker`) for explicitly bound tasks. |
 | `POST` | `/v1/tasks/merge-pr` | Executes 1-click `gh pr merge --squash` for a task with an open PR and transitions state to `DONE`. |
-| `GET` | `/v1/sync/state` | Returns delta sync state payload (nodes, host paths, tasks, deliverables, session metas) since `?since=<timestamp>`. |
+| `GET` | `/v1/sync/state` | Returns delta sync state payload (nodes, host paths, tasks, workstreams, deliverables) since `?since=<timestamp>`. |
 | `POST` | `/v1/sync/push` | Ingests and reconciles peer sync payload via 3-way Last-Write-Wins (LWW). |
 | `GET` | `/v1/standup` | Deterministic daily standup and weekly retro report generation (grouped by project in Markdown or JSON). |
 | `POST` | `/v1/briefings/synthesize` | Generates speech-optimized conversational text briefing (<45s) for voice synthesis. |
@@ -159,8 +159,8 @@ The SQLite database (`~/.config/ackbar/ackbard.db`) uses CGO-free pure Go SQLite
 * `git_branch`: Current Git branch associated with the session workspace.
 * `worktree_name`: Associated Git worktree directory if applicable.
 * `old_id`: Pre-adoption temporary session ID preserved when an Antigravity session adopts its canonical conversation UUID, enabling seamless fallback resolution across `/v1/sessions/*` and `/v1/sessions/pty`.
-* `is_supervisor`: Tracks whether the session is a zero-input `⚓ Supervisor` session (`1` = supervisor, `0` = normal), synchronized across peers via LWW `SessionMetaSync`.
-* `current_task_id`: Tracks the active Ackbar task ID bound to the session (if any), categorizing the session under the `📋 Tasks` subsection and synchronized across peers via LWW `SessionMetaSync`.
+* `is_supervisor`: Tracks whether the session is a zero-input `⚓ Supervisor` session (`1` = supervisor, `0` = normal).
+* `current_task_id`: Tracks the active Ackbar task ID bound to the session (if any), categorizing the session under the `📋 Tasks` subsection. Each host strictly stores only its own local sessions in the `sessions` table (no cross-host session replicas).
 
 ---
 

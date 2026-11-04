@@ -5,6 +5,7 @@ import {
   getSelfDisplayName,
   isLocalHost,
   findHostRecord,
+  sessionBelongsToHost,
   formatHostLabel,
   escapeHtml,
   recordGroupSpawn
@@ -90,6 +91,7 @@ async function fetchHosts() {
               online: true,
               version: vData.version || 'online',
               displayName: vData.display_name || h.display_name || '',
+              reportedHost: vData.host || '',
               latencyMs: Date.now() - start
             };
           }
@@ -213,11 +215,13 @@ async function fetchSessions() {
         const res = await fetch(fetchUrl);
         if (res.ok) {
           const list = await res.json() || [];
-          return list.map(s => ({
-            ...s,
-            host: !isLocalHost(h.name) ? h.name : (s.host || getSelfHostName()),
-            hostUrl: h.url || ''
-          }));
+          return list
+            .filter(s => sessionBelongsToHost(s, h))
+            .map(s => ({
+              ...s,
+              host: !isLocalHost(h.name) ? h.name : (s.host || getSelfHostName()),
+              hostUrl: h.url || ''
+            }));
         }
       } catch (e) {
         console.warn(`Host ${h.name} unreachable:`, e);

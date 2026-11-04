@@ -111,6 +111,38 @@ function findHostRecord(hostName) {
   ) || null;
 }
 
+function sessionBelongsToHost(sess, hostRecord) {
+  if (!sess || !hostRecord) return true;
+  const sHost = (sess.host || '').trim();
+  if (!sHost || sHost.toLowerCase() === 'local') return true;
+  if (isLocalHost(hostRecord.name)) {
+    return isLocalHost(sHost);
+  }
+  if (isLocalHost(sHost)) {
+    return false;
+  }
+  const sLower = sHost.toLowerCase();
+  const candidates = [
+    hostRecord.name,
+    hostRecord.reportedHost,
+    hostRecord.displayName,
+    hostRecord.display_name,
+    hostRecord.ssh_target
+  ];
+  for (const cand of candidates) {
+    const cLower = (cand || '').trim().toLowerCase();
+    if (!cLower || cLower === 'local') continue;
+    if (cLower === sLower || cLower.endsWith('@' + sLower) || sLower.endsWith('@' + cLower)) {
+      return true;
+    }
+  }
+  const matched = findHostRecord(sHost);
+  if (matched) {
+    return matched.name === hostRecord.name;
+  }
+  return !hostRecord.reportedHost;
+}
+
 function getSessionBaseUrl(sessionId, sessionObj) {
   const sess = sessionObj || (state.sessions && state.sessions.find(s => s.id === sessionId));
   if (!sess) return '';
@@ -553,6 +585,7 @@ export {
   ensureDoubleNewlineSeparation,
   isLocalHost,
   findHostRecord,
+  sessionBelongsToHost,
   getSessionBaseUrl,
   getSelfHostName,
   getSelfDisplayName,
