@@ -173,6 +173,7 @@ func (s *Server) verifySessionLiveness(ctx context.Context, sessions []*Session)
 			sess.PID = 0
 			sess.Blocked = nil
 			_ = s.db.SaveSession(sess)
+			s.SyncSessionTaskWorker(sess)
 			s.broadcast(sess)
 		}
 	}

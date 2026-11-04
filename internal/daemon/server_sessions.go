@@ -574,6 +574,7 @@ func (s *Server) handleSessionControl(w http.ResponseWriter, r *http.Request) {
 		sess.State = StateEnded
 		sess.Activity = "Terminated by user"
 		sess.LastEventAt = time.Now()
+		s.SyncSessionTaskWorker(sess)
 
 		if err := s.db.SaveSession(sess); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -607,6 +608,7 @@ func (s *Server) handleSessionControl(w http.ResponseWriter, r *http.Request) {
 		sess.State = StateEnded
 		sess.Activity = "Deleted"
 		sess.LastEventAt = time.Now()
+		s.SyncSessionTaskWorker(sess)
 		s.broadcast(sess)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "deleted", "id": sess.ID})
@@ -1119,23 +1121,28 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Agent        string `json:"agent"`
-		Cwd          string `json:"cwd"`
-		Host         string `json:"host"`
-		NodePath     string `json:"node_path"`
-		Name         string `json:"name"`
-		AccountID    string `json:"account_id"`
-		EngineType   string `json:"engine_type"`
-		Prompt       string `json:"prompt"`
-		IsSupervisor bool   `json:"is_supervisor"`
-		TaskID       string `json:"task_id"`
-		TaskKind     string `json:"task_kind"`
-		RepoNodePath string `json:"repo_node_path"`
+		Agent         string `json:"agent"`
+		Cwd           string `json:"cwd"`
+		Host          string `json:"host"`
+		NodePath      string `json:"node_path"`
+		Name          string `json:"name"`
+		AccountID     string `json:"account_id"`
+		EngineType    string `json:"engine_type"`
+		Prompt        string `json:"prompt"`
+		IsSupervisor  bool   `json:"is_supervisor"`
+		TaskID        string `json:"task_id"`
+		CurrentTaskID string `json:"current_task_id"`
+		TaskKind      string `json:"task_kind"`
+		RepoNodePath  string `json:"repo_node_path"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid payload", http.StatusBadRequest)
 		return
+	}
+
+	if req.TaskID == "" && req.CurrentTaskID != "" {
+		req.TaskID = req.CurrentTaskID
 	}
 
 	if req.TaskID != "" {

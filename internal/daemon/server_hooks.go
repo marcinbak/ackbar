@@ -383,9 +383,8 @@ func (s *Server) processParsedHookEvent(event *Event, urlEventName string, heade
 	}
 	s.maybeNotifySessionBlocked(prevState, sess)
 
-	// Synchronize session with task board and ingest ambient tool telemetry
+	// Synchronize session with explicitly bound task
 	s.SyncSessionTaskWorker(sess)
-	s.IngestToolTelemetry(sess, event)
 
 	// Broadcast update
 	s.broadcast(sess)

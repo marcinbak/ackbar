@@ -743,11 +743,8 @@ func executeCreateTask(ctx context.Context, client *DaemonClient, args map[strin
 		if len(parts) >= 1 && parts[0] != "" {
 			pGroup = parts[0]
 		}
-		if len(parts) >= 2 && parts[1] != "" {
-			pProject = parts[1]
-		}
-		if len(parts) >= 3 && parts[2] != "" {
-			pSubproject = parts[2]
+		if len(parts) >= 2 {
+			pProject = strings.Join(parts[1:], "/")
 		}
 	}
 
@@ -758,9 +755,6 @@ func executeCreateTask(ctx context.Context, client *DaemonClient, args map[strin
 	if projectName == "" && pProject != "" {
 		projectName = pProject
 	}
-	if projectName == "" {
-		projectName = "General"
-	}
 
 	groupName := getString(args, "group_name")
 	if groupName == "" {
@@ -769,13 +763,25 @@ func executeCreateTask(ctx context.Context, client *DaemonClient, args map[strin
 	if groupName == "" && pGroup != "" {
 		groupName = pGroup
 	}
-	if groupName == "" {
-		groupName = "Personal"
-	}
 
 	subprojectName := getString(args, "subproject_name")
 	if subprojectName == "" && pSubproject != "" {
 		subprojectName = pSubproject
+	}
+
+	if groupName != "" && strings.HasPrefix(strings.ToLower(projectName), strings.ToLower(groupName)+"/") {
+		projectName = projectName[len(groupName)+1:]
+	} else if groupName == "" && strings.Contains(projectName, "/") {
+		parts := strings.Split(projectName, "/")
+		groupName = parts[0]
+		projectName = strings.Join(parts[1:], "/")
+	}
+
+	if projectName == "" {
+		projectName = "General"
+	}
+	if groupName == "" {
+		groupName = "Personal"
 	}
 
 	taskKind := getString(args, "task_kind")
@@ -1022,10 +1028,26 @@ func executeProposeTask(ctx context.Context, client *DaemonClient, args map[stri
 		return formatError("title is required"), nil
 	}
 
+	groupName := getString(args, "group_name")
+	if groupName == "" {
+		groupName = getString(args, "group")
+	}
+	projectName := getString(args, "project_name")
+	if projectName == "" {
+		projectName = getString(args, "project")
+	}
+	if groupName != "" && strings.HasPrefix(strings.ToLower(projectName), strings.ToLower(groupName)+"/") {
+		projectName = projectName[len(groupName)+1:]
+	} else if groupName == "" && strings.Contains(projectName, "/") {
+		parts := strings.Split(projectName, "/")
+		groupName = parts[0]
+		projectName = strings.Join(parts[1:], "/")
+	}
+
 	payload := map[string]any{
 		"title":        title,
-		"group_name":   getString(args, "group"),
-		"project_name": getString(args, "project"),
+		"group_name":   groupName,
+		"project_name": projectName,
 		"notes":        getString(args, "notes"),
 		"rationale":    getString(args, "rationale"),
 	}

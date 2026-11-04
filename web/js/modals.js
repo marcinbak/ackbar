@@ -220,6 +220,14 @@ function showSettingsModal() {
           </div>
         </div>
       </div>
+
+      <div class="settings-section">
+        <div class="settings-section-title"><span>🤖</span> Agent Tools &amp; Skills Setup</div>
+        <div class="settings-section-desc">Provision the Ackbar Tasks MCP server and workflow skills across your coding agents (Claude Code, Antigravity, OpenAI Codex, etc.).</div>
+        <div style="margin-top: 10px;">
+          <button class="btn btn-secondary btn-sm" id="btnOpenAgentSetupFromSettings">⚙️ Agent Tool &amp; Skill Setup</button>
+        </div>
+      </div>
     </div>
   `;
 
@@ -229,6 +237,13 @@ function showSettingsModal() {
   `;
 
   showModal('⚙️ Workspace & Lifecycle Settings', bodyHtml, footerHtml);
+
+  document.getElementById('btnOpenAgentSetupFromSettings')?.addEventListener('click', () => {
+    hideModal();
+    import('./tasks.js').then(m => {
+      m.showAgentSetupModal();
+    });
+  });
 
   // Render Accounts List
   async function renderSettingsAccountsList() {

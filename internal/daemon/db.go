@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -309,6 +310,9 @@ func InitDB(dbPath string) (*DB, error) {
 		PRIMARY KEY (session_id, message_index)
 	);`)
 	d := &DB{db: db}
+	if _, err := d.PruneAllLegacyTasksOnce(); err != nil {
+		log.Printf("[InitDB] Warning: PruneAllLegacyTasksOnce failed: %v", err)
+	}
 	_, _ = d.DeduplicateTasks()
 	return d, nil
 }
@@ -1586,17 +1590,18 @@ type TaskWorkstream struct {
 }
 
 type TaskDeliverable struct {
-	ID        string    `json:"id"`
-	TaskID    string    `json:"task_id"`
-	Kind      string    `json:"kind"`
-	Title     string    `json:"title"`
-	Host      string    `json:"host"`
-	FilePath  string    `json:"file_path,omitempty"`
-	URL       string    `json:"url,omitempty"`
-	Provider  string    `json:"provider,omitempty"`
-	ContentMD string    `json:"content_md,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at,omitempty"`
+	ID           string    `json:"id"`
+	TaskID       string    `json:"task_id"`
+	Kind         string    `json:"kind"`
+	Title        string    `json:"title"`
+	Host         string    `json:"host"`
+	FilePath     string    `json:"file_path,omitempty"`
+	URL          string    `json:"url,omitempty"`
+	Provider     string    `json:"provider,omitempty"`
+	ContentMD    string    `json:"content_md,omitempty"`
+	HasContentMD bool      `json:"has_content_md,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at,omitempty"`
 }
 
 func (d *DB) GetTasks() ([]Task, error) {
@@ -2254,6 +2259,22 @@ func (d *DB) UpdateTask(t *Task) error {
 
 	// Only update Deliverables if explicitly provided (non-nil)
 	if t.Deliverables != nil {
+		// Preserve existing content_md if incoming deliverable has empty ContentMD
+		existingMDByID := make(map[string]string)
+		existingMDByTitleKind := make(map[string]string)
+		rows, err := tx.Query(`SELECT id, title, kind, content_md FROM task_deliverables WHERE task_id = ?`, t.ID)
+		if err == nil {
+			for rows.Next() {
+				var eID, eTitle, eKind string
+				var eMD sql.NullString
+				if err := rows.Scan(&eID, &eTitle, &eKind, &eMD); err == nil && eMD.Valid {
+					existingMDByID[eID] = eMD.String
+					existingMDByTitleKind[eTitle+"::"+eKind] = eMD.String
+				}
+			}
+			rows.Close()
+		}
+
 		_, err = tx.Exec(`DELETE FROM task_deliverables WHERE task_id = ?`, t.ID)
 		if err != nil {
 			return err
@@ -2263,6 +2284,13 @@ func (d *DB) UpdateTask(t *Task) error {
 			del.TaskID = t.ID
 			if del.ID == "" {
 				del.ID = fmt.Sprintf("del_%d_%d", time.Now().UnixNano(), i)
+			}
+			if strings.TrimSpace(del.ContentMD) == "" {
+				if md, ok := existingMDByID[del.ID]; ok && md != "" {
+					del.ContentMD = md
+				} else if md, ok := existingMDByTitleKind[del.Title+"::"+del.Kind]; ok && md != "" {
+					del.ContentMD = md
+				}
 			}
 			if err := insertTaskDeliverableTx(tx, del); err != nil {
 				return err
@@ -2525,6 +2553,90 @@ func (d *DB) InsertTaskDeliverable(td *TaskDeliverable) error {
 		return err
 	}
 	return tx.Commit()
+}
+
+func (d *DB) GetTaskDeliverableByID(id string) (*TaskDeliverable, error) {
+	if id == "" {
+		return nil, nil
+	}
+	query := `SELECT id, task_id, kind, title, host, file_path, url, provider, content_md, created_at, updated_at
+			  FROM task_deliverables WHERE id = ?;`
+	row := d.db.QueryRow(query, id)
+	var del TaskDeliverable
+	var filePath, urlVal, provider, contentMD sql.NullString
+	var updAt sql.NullTime
+	if err := row.Scan(&del.ID, &del.TaskID, &del.Kind, &del.Title, &del.Host, &filePath, &urlVal, &provider, &contentMD, &del.CreatedAt, &updAt); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if filePath.Valid {
+		del.FilePath = filePath.String
+	}
+	if urlVal.Valid {
+		del.URL = urlVal.String
+	}
+	if provider.Valid {
+		del.Provider = provider.String
+	}
+	if contentMD.Valid {
+		del.ContentMD = contentMD.String
+		del.HasContentMD = strings.TrimSpace(del.ContentMD) != ""
+	}
+	if updAt.Valid {
+		del.UpdatedAt = updAt.Time
+	}
+	return &del, nil
+}
+
+// PruneAllLegacyTasksOnce executes a one-time soft-delete migration for legacy ambient tasks.
+// Returns count of soft-deleted tasks.
+func (d *DB) PruneAllLegacyTasksOnce() (int, error) {
+	var val string
+	err := d.db.QueryRow("SELECT value FROM settings WHERE key = 'legacy_tasks_pruned_v1'").Scan(&val)
+	if err == nil && val == "true" {
+		return 0, nil
+	}
+
+	tx, err := d.db.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("failed to begin prune transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	now := time.Now().UTC()
+	res, err := tx.Exec("UPDATE tasks SET deleted_at = ?, updated_at = ? WHERE deleted_at IS NULL;", now, now)
+	if err != nil {
+		return 0, fmt.Errorf("failed to soft-delete tasks: %w", err)
+	}
+	rowsAffected, _ := res.RowsAffected()
+
+	if _, err := tx.Exec("DELETE FROM task_workers;"); err != nil {
+		return 0, fmt.Errorf("failed to clear task_workers: %w", err)
+	}
+	if _, err := tx.Exec("DELETE FROM task_workstreams;"); err != nil {
+		return 0, fmt.Errorf("failed to clear task_workstreams: %w", err)
+	}
+	if _, err := tx.Exec("DELETE FROM task_deliverables;"); err != nil {
+		return 0, fmt.Errorf("failed to clear task_deliverables: %w", err)
+	}
+	if _, err := tx.Exec("DELETE FROM task_external_refs;"); err != nil {
+		return 0, fmt.Errorf("failed to clear task_external_refs: %w", err)
+	}
+	if _, err := tx.Exec("UPDATE sessions SET current_task_id = '', metadata_updated_at = ? WHERE current_task_id != '' AND current_task_id IS NOT NULL;", now); err != nil {
+		return 0, fmt.Errorf("failed to clear sessions current_task_id: %w", err)
+	}
+
+	if _, err := tx.Exec("INSERT INTO settings (key, value) VALUES ('legacy_tasks_pruned_v1', 'true') ON CONFLICT(key) DO UPDATE SET value = 'true';"); err != nil {
+		return 0, fmt.Errorf("failed to set legacy_tasks_pruned_v1: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("failed to commit prune transaction: %w", err)
+	}
+
+	return int(rowsAffected), nil
 }
 
 // DeduplicateTasks removes redundant duplicate tasks sharing the same external reference

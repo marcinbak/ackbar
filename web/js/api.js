@@ -590,13 +590,33 @@ async function handleUpdateHost(h) {
 }
 
 // Task API Endpoints
-async function fetchTasks() {
-  const res = await fetch('/v1/tasks');
+async function fetchTasks(options = {}) {
+  const params = [];
+  if (options.federated !== false) {
+    params.push('federated=true');
+  }
+  if (options.reconcilePRs) {
+    params.push('reconcile_prs=true');
+  }
+  if (options.includeContent) {
+    params.push('include_content=true');
+  }
+  const qs = params.length > 0 ? '?' + params.join('&') : '';
+  const res = await fetch('/v1/tasks' + qs);
   if (!res.ok) {
     const errText = await res.text();
     throw new Error(errText || `Failed to fetch tasks (${res.status})`);
   }
   return await res.json() || [];
+}
+
+async function fetchTaskDeliverable(id) {
+  const res = await fetch(`/v1/tasks/deliverable?id=${encodeURIComponent(id)}`);
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(errText || `Failed to fetch deliverable (${res.status})`);
+  }
+  return await res.json();
 }
 
 async function createTask(task) {
@@ -929,6 +949,7 @@ export {
   handleReconnectHost,
   handleUpdateHost,
   fetchTasks,
+  fetchTaskDeliverable,
   createTask,
   updateTask,
   deleteTask,

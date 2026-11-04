@@ -1,6 +1,6 @@
 import { state } from './state.js';
-import { fetchTasks, createTask, updateTask, deleteTask, fetchStandup, mergeTaskPR, fetchAgentStatuses, provisionAgents, fetchAllAgentStatuses, provisionAllHosts, syncSkillsRepo } from './api.js';
-import { escapeHtml } from './utils.js';
+import { fetchTasks, createTask, updateTask, deleteTask, fetchStandup, mergeTaskPR, fetchAgentStatuses, provisionAgents, fetchAllAgentStatuses, provisionAllHosts, syncSkillsRepo, fetchTaskDeliverable, fetchSessions } from './api.js';
+import { escapeHtml, getSelfHostName } from './utils.js';
 import { activateTab, openSessionInTab } from './tabs.js';
 import { showModal, hideModal } from './modals.js';
 import { renderTree } from './tree.js';
@@ -10,6 +10,7 @@ let currentGroupFilter = 'all';
 let currentProjectFilter = 'all';
 let currentSearchQuery = '';
 let currentMode = 'workspace';
+let showAllDoneTasks = false;
 
 export function getGroupIcon(groupName) {
   if (!groupName) return '📁';
@@ -108,7 +109,7 @@ export function switchAppMode(mode) {
 
 export async function refreshWorkBoard() {
   try {
-    const tasks = await fetchTasks();
+    const tasks = await fetchTasks({ reconcilePRs: true });
     if (Array.isArray(tasks)) {
       boardTasks = tasks;
       state.tasks = boardTasks;
@@ -128,6 +129,27 @@ function updateProjectFilterDropdown() {
 
   const previousValue = select.value || 'all';
   const projects = new Set();
+
+  // 1. Projects from registered treeNodes under selected group
+  if (state.treeNodes && Array.isArray(state.treeNodes)) {
+    state.treeNodes.forEach(n => {
+      if (n.path) {
+        const parts = n.path.split('/');
+        const top = parts[0].trim();
+        if (top && top !== 'Unassigned') {
+          if (currentGroupFilter === 'all' || top.toLowerCase() === currentGroupFilter.toLowerCase()) {
+            if (parts.length > 1) {
+              projects.add(parts.slice(1).join('/'));
+            } else {
+              projects.add(top);
+            }
+          }
+        }
+      }
+    });
+  }
+
+  // 2. Projects from current tasks on board
   boardTasks.forEach(t => {
     if (t.project_name) {
       if (currentGroupFilter === 'all' || (t.group_name && t.group_name.toLowerCase() === currentGroupFilter.toLowerCase())) {
@@ -137,7 +159,7 @@ function updateProjectFilterDropdown() {
   });
 
   let html = '<option value="all">All Projects</option>';
-  Array.from(projects).sort().forEach(p => {
+  Array.from(projects).sort((a, b) => a.localeCompare(b)).forEach(p => {
     const selected = p === previousValue ? 'selected' : '';
     html += `<option value="${escapeHtml(p)}" ${selected}>${escapeHtml(p)}</option>`;
   });
@@ -190,46 +212,16 @@ export function renderWorkBoard() {
     return true;
   });
 
-  // Defensive client-side deduplication guard:
-  // Suppress orphaned empty-branch tasks if an active task for the same ticket exists,
-  // or redundant empty-branch tasks sharing identical title and group.
-  const seenTaskKeys = new Set();
+  // Sort tasks by updated_at descending
+  filtered.sort((a, b) => (new Date(b.updated_at || 0)) - (new Date(a.updated_at || 0)));
+
+  // Simple ID dedup
+  const seenIds = new Set();
   const dedupedTasks = [];
-
-  // Sort so branch-holding tasks take precedence over empty-branch tasks
-  filtered.sort((a, b) => {
-    const aHasBranch = (a.branch || '').trim() !== '';
-    const bHasBranch = (b.branch || '').trim() !== '';
-    if (aHasBranch !== bHasBranch) return aHasBranch ? -1 : 1;
-    return (new Date(b.updated_at || 0)) - (new Date(a.updated_at || 0));
-  });
-
   filtered.forEach(task => {
-    const branch = (task.branch || '').trim();
-    if (branch !== '') {
-      const branchKey = `branch:${(task.project_name || '').toLowerCase()}:${branch.toLowerCase()}`;
-      if (!seenTaskKeys.has(branchKey)) {
-        seenTaskKeys.add(branchKey);
-        (task.external_refs || []).forEach(r => {
-          if (r.ref_key) seenTaskKeys.add(`ref:${r.ref_key.toLowerCase()}`);
-        });
-        dedupedTasks.push(task);
-      }
-    } else {
-      let covered = false;
-      const refs = (task.external_refs || []).map(r => (r.ref_key || '').toLowerCase()).filter(Boolean);
-      for (const ref of refs) {
-        if (seenTaskKeys.has(`ref:${ref}`)) {
-          covered = true;
-          break;
-        }
-      }
-      const titleKey = `title:${(task.group_name || '').toLowerCase()}:${(task.title || '').trim().toLowerCase()}`;
-      if (!covered && !seenTaskKeys.has(titleKey)) {
-        seenTaskKeys.add(titleKey);
-        refs.forEach(ref => seenTaskKeys.add(`ref:${ref}`));
-        dedupedTasks.push(task);
-      }
+    if (task.id && !seenIds.has(task.id)) {
+      seenIds.add(task.id);
+      dedupedTasks.push(task);
     }
   });
 
@@ -249,6 +241,24 @@ export function renderWorkBoard() {
     }
   });
 
+  // Cap DONE Column to Last 7 Days
+  const nowMs = Date.now();
+  const sevenDaysMs = 7 * 24 * 3600 * 1000;
+  const recentDoneTasks = [];
+  const olderDoneTasks = [];
+
+  columns.DONE.forEach(t => {
+    const ts = new Date(t.completed_at || t.updated_at || 0).getTime();
+    if (nowMs - ts <= sevenDaysMs) {
+      recentDoneTasks.push(t);
+    } else {
+      olderDoneTasks.push(t);
+    }
+  });
+
+  const displayedDoneTasks = showAllDoneTasks ? columns.DONE : recentDoneTasks;
+  const olderDoneCount = olderDoneTasks.length;
+
   // Update counts
   if (countNew) countNew.textContent = columns.NEW.length;
   if (countInProgress) countInProgress.textContent = columns.IN_PROGRESS.length;
@@ -259,7 +269,12 @@ export function renderWorkBoard() {
   colNew.innerHTML = renderTaskCards(columns.NEW);
   colInProgress.innerHTML = renderTaskCards(columns.IN_PROGRESS);
   colReview.innerHTML = renderTaskCards(columns.REVIEW);
-  colDone.innerHTML = renderTaskCards(columns.DONE);
+
+  let doneHtml = renderTaskCards(displayedDoneTasks);
+  if (olderDoneCount > 0) {
+    doneHtml += `<button class="btn btn-secondary btn-xs" id="btnToggleOlderDone" style="width:100%; margin-top:8px;">${showAllDoneTasks ? 'Hide older completed tasks' : `Show older (${olderDoneCount})`}</button>`;
+  }
+  colDone.innerHTML = doneHtml;
 
   // Attach card event listeners
   attachCardEventListeners();
@@ -374,9 +389,9 @@ function renderTaskCards(tasks) {
 
     const deliverablesHtml = (task.deliverables || []).map((d, idx) => {
       const kindIcon = getDeliverableIcon(d);
-      const isContentMD = !!(d.content_md && d.content_md.trim());
+      const isContentMD = !!(d.has_content_md || (d.content_md && d.content_md.trim()));
       if (isContentMD) {
-        return `<button class="task-deliverable-chip btn-view-deliverable-md" data-task-id="${escapeHtml(task.id)}" data-del-idx="${idx}" title="View ${escapeHtml(d.title)}">
+        return `<button class="task-deliverable-chip btn-view-deliverable-md" data-task-id="${escapeHtml(task.id)}" data-del-id="${escapeHtml(d.id || '')}" data-del-idx="${idx}" title="View ${escapeHtml(d.title)}">
           ${kindIcon} ${escapeHtml(d.title)}
         </button>`;
       }
@@ -388,15 +403,26 @@ function renderTaskCards(tasks) {
 
     // Contextual actions
     let actionButtons = '';
-    if (task.substatus === 'plan_review') {
+    const activeWorkersCount = (task.workers || []).filter(w => w.is_active).length;
+    const isStalled = task.substatus === 'stalled' || (task.status === 'IN_PROGRESS' && activeWorkersCount === 0);
+
+    if (task.status === 'NEW') {
+      actionButtons += `<div style="margin-top: 6px;">
+        <button class="btn btn-primary btn-xs btn-start-task" data-task-id="${escapeHtml(task.id)}">▶ Start</button>
+      </div>`;
+    } else if (isStalled) {
+      actionButtons += `<div class="task-blocker-callout" style="background: rgba(245, 158, 11, 0.1); border-color: rgba(245, 158, 11, 0.3);">
+        <div class="task-blocker-q" style="color: #fcd34d;">⏳ <strong>Stalled:</strong> No active worker session</div>
+        <div style="display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap;">
+          <button class="btn btn-primary btn-xs btn-start-task" data-task-id="${escapeHtml(task.id)}">▶ Resume / Start</button>
+          <button class="btn btn-secondary btn-xs btn-mark-done-quick" data-task-id="${escapeHtml(task.id)}">✓ Mark Done</button>
+          <button class="btn btn-danger btn-xs btn-delete-task-quick" data-task-id="${escapeHtml(task.id)}">🗑️ Delete</button>
+        </div>
+      </div>`;
+    } else if (task.substatus === 'plan_review') {
       actionButtons += `<div class="task-blocker-callout" style="background: rgba(14, 165, 233, 0.1); border-color: rgba(14, 165, 233, 0.3);">
         <div class="task-blocker-q" style="color: #7dd3fc;">📋 <strong>Plan Ready:</strong> Implementation plan ready for review</div>
         <button class="btn btn-primary btn-xs btn-approve-plan" data-task-id="${escapeHtml(task.id)}">✅ Approve Plan</button>
-      </div>`;
-    } else if (task.substatus === 'stalled') {
-      actionButtons += `<div class="task-blocker-callout" style="background: rgba(245, 158, 11, 0.1); border-color: rgba(245, 158, 11, 0.3);">
-        <div class="task-blocker-q" style="color: #fcd34d;">⏳ <strong>Stalled:</strong> Session is idle during active workflow node</div>
-        <button class="btn btn-warning btn-xs btn-nudge-task" data-task-id="${escapeHtml(task.id)}">▶ Nudge</button>
       </div>`;
     } else if (task.substatus === 'blocked' && task.blocker_question) {
       actionButtons += `<div class="task-blocker-callout">
@@ -664,31 +690,143 @@ async function sendSessionRespondSafe(sessionId, action, value) {
     });
   });
 
-  // 7. View deliverable Markdown modal button
+  // 7. View deliverable Markdown modal button (with lazy loading if content_md is omitted)
   document.querySelectorAll('.btn-view-deliverable-md').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const taskId = btn.getAttribute('data-task-id');
+      const delId = btn.getAttribute('data-del-id');
+      const delIdx = parseInt(btn.getAttribute('data-del-idx'), 10);
+      const task = boardTasks.find(t => t.id === taskId);
+      if (!task || !task.deliverables || !task.deliverables[delIdx]) return;
+      const del = task.deliverables[delIdx];
+
+      if (del.content_md && del.content_md.trim()) {
+        showDeliverableContentModal(del);
+      } else {
+        try {
+          btn.disabled = true;
+          const fullDel = await fetchTaskDeliverable(del.id || delId);
+          if (fullDel && fullDel.content_md) {
+            del.content_md = fullDel.content_md;
+          }
+          showDeliverableContentModal(del);
+        } catch (err) {
+          alert('Failed to load deliverable content: ' + err.message);
+        } finally {
+          btn.disabled = false;
+        }
+      }
+    });
+  });
+
+  // 8. Start / Resume task action
+  document.querySelectorAll('.btn-start-task').forEach(btn => {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
       const taskId = btn.getAttribute('data-task-id');
-      const delIdx = parseInt(btn.getAttribute('data-del-idx'), 10);
       const task = boardTasks.find(t => t.id === taskId);
-      if (task && task.deliverables && task.deliverables[delIdx]) {
-        showDeliverableContentModal(task.deliverables[delIdx]);
+      if (task) {
+        showStartTaskModal(task);
       }
     });
+  });
+
+  // 9. Mark Done quick action on stalled cards
+  document.querySelectorAll('.btn-mark-done-quick').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const taskId = btn.getAttribute('data-task-id');
+      const task = boardTasks.find(t => t.id === taskId);
+      if (task) {
+        btn.disabled = true;
+        try {
+          await updateTask({
+            ...task,
+            status: 'DONE',
+            substatus: 'completed',
+            completed_at: new Date().toISOString()
+          });
+          refreshWorkBoard();
+        } catch (err) {
+          alert('Failed to mark task done: ' + err.message);
+          btn.disabled = false;
+        }
+      }
+    });
+  });
+
+  // 10. Delete quick action on stalled cards
+  document.querySelectorAll('.btn-delete-task-quick').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const taskId = btn.getAttribute('data-task-id');
+      const task = boardTasks.find(t => t.id === taskId);
+      if (task) {
+        if (!confirm(`Are you sure you want to delete task "${task.title}"?`)) return;
+        btn.disabled = true;
+        try {
+          await deleteTask(taskId);
+          refreshWorkBoard();
+        } catch (err) {
+          alert('Failed to delete task: ' + err.message);
+          btn.disabled = false;
+        }
+      }
+    });
+  });
+
+  // 11. Toggle older completed tasks
+  document.getElementById('btnToggleOlderDone')?.addEventListener('click', () => {
+    showAllDoneTasks = !showAllDoneTasks;
+    renderWorkBoard();
   });
 }
 
 export function showNewTaskModal() {
-  const topGroups = getDiscoveredTopGroups();
-  const defaultGroup = currentGroupFilter !== 'all' ? currentGroupFilter : (topGroups[0] || 'Personal');
-  const groupOptionsHtml = topGroups.map(g => `<option value="${escapeHtml(g)}" ${g.toLowerCase() === defaultGroup.toLowerCase() ? 'selected' : ''}>${escapeHtml(g)}</option>`).join('');
+  const treeNodes = (state.treeNodes && Array.isArray(state.treeNodes)) ? state.treeNodes : [];
+  const nodePaths = [];
+  treeNodes.forEach(n => {
+    if (n.path && n.path.trim() && n.path.toLowerCase() !== 'unassigned') {
+      nodePaths.push(n.path.trim());
+    }
+  });
+
+  // Sort paths cleanly
+  nodePaths.sort((a, b) => a.localeCompare(b));
+
+  // Default selection matching current filters
+  let defaultPath = '';
+  if (currentGroupFilter !== 'all' && currentProjectFilter !== 'all') {
+    defaultPath = nodePaths.find(p => p.toLowerCase() === `${currentGroupFilter}/${currentProjectFilter}`.toLowerCase() || p.toLowerCase() === currentProjectFilter.toLowerCase()) || '';
+  } else if (currentGroupFilter !== 'all') {
+    defaultPath = nodePaths.find(p => p.toLowerCase().startsWith(currentGroupFilter.toLowerCase() + '/')) || '';
+  }
+  if (!defaultPath && nodePaths.length > 0) {
+    defaultPath = nodePaths[0];
+  }
+
+  const optionsHtml = nodePaths.map(p => {
+    const isSelected = p === defaultPath ? 'selected' : '';
+    return `<option value="${escapeHtml(p)}" ${isSelected}>${escapeHtml(p)}</option>`;
+  }).join('');
 
   showModal('Create New Task', `
     <div style="display: flex; flex-direction: column; gap: 12px; padding: 4px;">
       <div>
+        <label style="font-size: 11px; font-weight: 600; color: var(--text-muted); display: block; margin-bottom: 4px;">PROJECT / TREE NODE</label>
+        <select id="mTaskNodePath" style="width: 100%; background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px; padding: 7px 10px; font-size: 12px;">
+          ${optionsHtml}
+          <option value="__custom__">＋ Custom path...</option>
+        </select>
+        <input type="text" id="mTaskCustomPath" placeholder="e.g. Modemobile/NGL/ngl-ios or Personal/Ackbar" style="display: none; width: 100%; margin-top: 6px; background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px; padding: 7px 10px; font-size: 12px;" />
+      </div>
+
+      <div>
         <label style="font-size: 11px; font-weight: 600; color: var(--text-muted); display: block; margin-bottom: 4px;">TASK TITLE</label>
         <input type="text" id="mTaskTitle" placeholder="e.g. Implement WebSocket reconnection" style="width: 100%; background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px; padding: 8px 10px; font-size: 13px;" />
       </div>
+
       <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
         <div>
           <label style="font-size: 11px; font-weight: 600; color: var(--text-muted); display: block; margin-bottom: 4px;">TASK KIND</label>
@@ -698,56 +836,30 @@ export function showNewTaskModal() {
           </select>
         </div>
         <div>
-          <label style="font-size: 11px; font-weight: 600; color: var(--text-muted); display: block; margin-bottom: 4px;">DEV-WORKFLOW NODE</label>
-          <input type="text" id="mTaskWorkflowNode" placeholder="e.g. N0, N1, N2" value="N0" style="width: 100%; background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px; padding: 7px 10px; font-size: 12px;" />
-        </div>
-      </div>
-      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
-        <div>
-          <label style="font-size: 11px; font-weight: 600; color: var(--text-muted); display: block; margin-bottom: 4px;">ORGANIZATION / GROUP</label>
-          <select id="mTaskGroup" style="width: 100%; background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px; padding: 7px 10px; font-size: 12px;">
-            ${groupOptionsHtml}
-          </select>
-        </div>
-        <div>
-          <label style="font-size: 11px; font-weight: 600; color: var(--text-muted); display: block; margin-bottom: 4px;">PROJECT NAME</label>
-          <input type="text" id="mTaskProject" placeholder="e.g. Ackbar" style="width: 100%; background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px; padding: 7px 10px; font-size: 12px;" />
-        </div>
-      </div>
-      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
-        <div>
-          <label style="font-size: 11px; font-weight: 600; color: var(--text-muted); display: block; margin-bottom: 4px;">STATUS</label>
-          <select id="mTaskStatus" style="width: 100%; background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px; padding: 7px 10px; font-size: 12px;">
-            <option value="NEW">NEW (Backlog)</option>
-            <option value="IN_PROGRESS" selected>IN_PROGRESS (Agent Executing)</option>
-            <option value="REVIEW">REVIEW (Human Evaluation)</option>
-            <option value="DONE">DONE (Closed / Merged)</option>
-          </select>
-        </div>
-        <div>
-          <label style="font-size: 11px; font-weight: 600; color: var(--text-muted); display: block; margin-bottom: 4px;">SUBSTATUS</label>
-          <input type="text" id="mTaskSubstatus" placeholder="e.g. active, blocked, approved" value="active" style="width: 100%; background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px; padding: 7px 10px; font-size: 12px;" />
-        </div>
-      </div>
-      <div>
-        <label style="font-size: 11px; font-weight: 600; color: var(--text-muted); display: block; margin-bottom: 4px;">SUMMARY & NOTES</label>
-        <textarea id="mTaskNotes" rows="3" placeholder="Brief summary of requirements or current state..." style="width: 100%; background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px; padding: 8px 10px; font-size: 12px; font-family: inherit; resize: vertical;"></textarea>
-      </div>
-      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
-        <div>
-          <label style="font-size: 11px; font-weight: 600; color: var(--text-muted); display: block; margin-bottom: 4px;">TRACKER REF (e.g. Jira/Linear)</label>
+          <label style="font-size: 11px; font-weight: 600; color: var(--text-muted); display: block; margin-bottom: 4px;">TRACKER REF (OPTIONAL)</label>
           <input type="text" id="mTaskRefKey" placeholder="e.g. NGL-409" style="width: 100%; background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px; padding: 7px 10px; font-size: 12px;" />
         </div>
-        <div>
-          <label style="font-size: 11px; font-weight: 600; color: var(--text-muted); display: block; margin-bottom: 4px;">GIT BRANCH</label>
-          <input type="text" id="mTaskBranch" placeholder="e.g. feat/ws-reconnect" style="width: 100%; background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px; padding: 7px 10px; font-size: 12px;" />
-        </div>
+      </div>
+
+      <div>
+        <label style="font-size: 11px; font-weight: 600; color: var(--text-muted); display: block; margin-bottom: 4px;">SUMMARY & NOTES</label>
+        <textarea id="mTaskNotes" rows="3" placeholder="Brief summary of requirements or notes..." style="width: 100%; background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px; padding: 8px 10px; font-size: 12px; font-family: inherit; resize: vertical;"></textarea>
       </div>
     </div>
   `, `
     <button class="btn btn-secondary" id="mBtnCancelTask">Cancel</button>
     <button class="btn btn-primary" id="mBtnSaveTask">Create Task</button>
   `);
+
+  const pathSelect = document.getElementById('mTaskNodePath');
+  const customInput = document.getElementById('mTaskCustomPath');
+  pathSelect?.addEventListener('change', () => {
+    if (pathSelect.value === '__custom__') {
+      if (customInput) customInput.style.display = 'block';
+    } else {
+      if (customInput) customInput.style.display = 'none';
+    }
+  });
 
   document.getElementById('mBtnCancelTask')?.addEventListener('click', hideModal);
   document.getElementById('mBtnSaveTask')?.addEventListener('click', async () => {
@@ -756,26 +868,36 @@ export function showNewTaskModal() {
       alert('Task title is required');
       return;
     }
-    const groupName = document.getElementById('mTaskGroup')?.value?.trim() || 'Personal';
-    const projectName = document.getElementById('mTaskProject')?.value?.trim() || 'General';
+
+    let nodePath = pathSelect?.value || '';
+    if (nodePath === '__custom__') {
+      nodePath = customInput?.value?.trim() || '';
+    }
+
+    let groupName = 'Personal';
+    let projectName = 'General';
+    if (nodePath) {
+      const parts = nodePath.split('/');
+      if (parts.length > 1) {
+        groupName = parts[0].trim();
+        projectName = parts.slice(1).join('/').trim();
+      } else {
+        projectName = parts[0].trim();
+      }
+    }
+
     const taskKind = document.getElementById('mTaskKind')?.value || 'code';
-    const workflowNode = document.getElementById('mTaskWorkflowNode')?.value?.trim() || '';
-    const status = document.getElementById('mTaskStatus')?.value || 'IN_PROGRESS';
-    const substatus = document.getElementById('mTaskSubstatus')?.value?.trim() || 'active';
     const notes = document.getElementById('mTaskNotes')?.value?.trim() || '';
     const refKey = document.getElementById('mTaskRefKey')?.value?.trim();
-    const branch = document.getElementById('mTaskBranch')?.value?.trim() || '';
 
     const newTask = {
       title,
       group_name: groupName,
       project_name: projectName,
       task_kind: taskKind,
-      workflow_node: workflowNode,
-      status,
-      substatus,
+      status: 'NEW',
+      substatus: 'ready',
       notes,
-      branch,
       external_refs: refKey ? [{ tracker: 'jira', ref_key: refKey }] : [],
       workers: [],
       deliverables: []
@@ -787,6 +909,180 @@ export function showNewTaskModal() {
       refreshWorkBoard();
     } catch (err) {
       alert(`Error creating task: ${err.message}`);
+    }
+  });
+}
+
+export function showStartTaskModal(task) {
+  if (!task) return;
+
+  const fullNodePath = task.group_name && task.project_name
+    ? (task.project_name.startsWith(task.group_name + '/') ? task.project_name : `${task.group_name}/${task.project_name}`)
+    : (task.project_name || '');
+
+  // Match against state.treeNodes
+  let matchedNode = null;
+  if (state.treeNodes && Array.isArray(state.treeNodes)) {
+    matchedNode = state.treeNodes.find(n => n.path === fullNodePath || n.path === task.project_name || (task.project_name && n.path.endsWith('/' + task.project_name)));
+  }
+
+  // Determine available hosts
+  const availableHosts = (state.hosts && state.hosts.length > 0)
+    ? state.hosts.map(h => h.name)
+    : [getSelfHostName() || 'macbook'];
+
+  // Host paths from matched node
+  const hostPathsMap = {};
+  if (matchedNode) {
+    if (matchedNode.project_dir) {
+      hostPathsMap[getSelfHostName() || 'macbook'] = matchedNode.project_dir;
+    }
+    if (matchedNode.host_paths && Array.isArray(matchedNode.host_paths)) {
+      matchedNode.host_paths.forEach(hp => {
+        if (hp.host && hp.project_dir) {
+          hostPathsMap[hp.host] = hp.project_dir;
+        }
+      });
+    }
+  }
+
+  // Pre-selected host
+  let defaultHost = getSelfHostName() || 'macbook';
+  if (matchedNode && matchedNode.host_paths && matchedNode.host_paths.length > 0) {
+    const foundHost = matchedNode.host_paths.find(hp => hp.host === defaultHost) || matchedNode.host_paths[0];
+    defaultHost = foundHost.host;
+  }
+
+  const defaultCwd = hostPathsMap[defaultHost] || matchedNode?.project_dir || task.worktree_path || '';
+
+  const hostOptionsHtml = availableHosts.map(h => {
+    return `<option value="${escapeHtml(h)}" ${h === defaultHost ? 'selected' : ''}>${escapeHtml(h)}</option>`;
+  }).join('');
+
+  let prompt = task.title;
+  if (task.external_refs && task.external_refs.length > 0 && task.external_refs[0].ref_key) {
+    prompt = `${task.external_refs[0].ref_key}: ${prompt}`;
+  }
+  if (task.notes && task.notes.trim()) {
+    prompt += `\n\n${task.notes.trim()}`;
+  }
+
+  showModal(`Start Task — ${escapeHtml(task.title)}`, `
+    <div style="display: flex; flex-direction: column; gap: 12px; padding: 4px;">
+      <div style="font-size: 12px; color: var(--text-muted);">
+        Launching a dedicated worker session bound to <strong>${escapeHtml(task.title)}</strong>.
+      </div>
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+        <div>
+          <label style="font-size: 11px; font-weight: 600; color: var(--text-muted); display: block; margin-bottom: 4px;">TARGET HOST</label>
+          <select id="mStartTaskHost" style="width: 100%; background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px; padding: 7px 10px; font-size: 12px;">
+            ${hostOptionsHtml}
+          </select>
+        </div>
+        <div>
+          <label style="font-size: 11px; font-weight: 600; color: var(--text-muted); display: block; margin-bottom: 4px;">CODING AGENT</label>
+          <select id="mStartTaskAgent" style="width: 100%; background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px; padding: 7px 10px; font-size: 12px;">
+            <option value="claude-code" selected>Claude Code</option>
+            <option value="antigravity">Antigravity</option>
+            <option value="codex">OpenAI Codex</option>
+          </select>
+        </div>
+      </div>
+      <div>
+        <label style="font-size: 11px; font-weight: 600; color: var(--text-muted); display: block; margin-bottom: 4px;">WORKING DIRECTORY</label>
+        <input type="text" id="mStartTaskCwd" value="${escapeHtml(defaultCwd)}" placeholder="e.g. /Users/dev4u/Work/repo" style="width: 100%; background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px; padding: 8px 10px; font-size: 12px;" />
+      </div>
+      <div>
+        <label style="font-size: 11px; font-weight: 600; color: var(--text-muted); display: block; margin-bottom: 4px;">INITIAL PROMPT</label>
+        <textarea id="mStartTaskPrompt" rows="3" style="width: 100%; background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px; padding: 8px 10px; font-size: 12px; font-family: inherit; resize: vertical;">${escapeHtml(prompt)}</textarea>
+      </div>
+    </div>
+  `, `
+    <button class="btn btn-secondary" id="mBtnCancelStartTask">Cancel</button>
+    <button class="btn btn-primary" id="mBtnConfirmStartTask">🚀 Launch Worker Session</button>
+  `);
+
+  const hostSelect = document.getElementById('mStartTaskHost');
+  hostSelect?.addEventListener('change', () => {
+    const selHost = hostSelect.value;
+    if (hostPathsMap[selHost]) {
+      const cwdInput = document.getElementById('mStartTaskCwd');
+      if (cwdInput) cwdInput.value = hostPathsMap[selHost];
+    }
+  });
+
+  document.getElementById('mBtnCancelStartTask')?.addEventListener('click', hideModal);
+  document.getElementById('mBtnConfirmStartTask')?.addEventListener('click', async () => {
+    const host = document.getElementById('mStartTaskHost')?.value || defaultHost;
+    const agent = document.getElementById('mStartTaskAgent')?.value || 'claude-code';
+    const cwd = document.getElementById('mStartTaskCwd')?.value?.trim() || '';
+    const initialPrompt = document.getElementById('mStartTaskPrompt')?.value?.trim() || prompt;
+
+    const btn = document.getElementById('mBtnConfirmStartTask');
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = '🚀 Launching...';
+    }
+
+    try {
+      const spawnRes = await fetch('/v1/sessions/spawn', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          host,
+          agent,
+          cwd,
+          name: task.title,
+          node_path: fullNodePath,
+          prompt: initialPrompt,
+          task_id: task.id,
+          current_task_id: task.id
+        })
+      });
+
+      if (!spawnRes.ok) {
+        const errText = await spawnRes.text();
+        throw new Error(errText || 'Failed to spawn session');
+      }
+
+      const spawnResult = await spawnRes.json();
+      const spawnedNativeId = spawnResult.session_id || spawnResult.native_id || '';
+      const spawnedSessId = spawnResult.id || `${agent}:${host}:${spawnedNativeId}`;
+
+      // Update task to IN_PROGRESS / active with worker
+      await updateTask({
+        ...task,
+        status: 'IN_PROGRESS',
+        substatus: 'active',
+        workers: [
+          ...(task.workers || []).filter(w => w.session_id !== spawnedSessId),
+          {
+            task_id: task.id,
+            session_id: spawnedSessId,
+            agent,
+            host,
+            is_active: true
+          }
+        ]
+      });
+
+      hideModal();
+      await fetchSessions();
+      await refreshWorkBoard();
+
+      // Switch to Workspace mode and open session tab
+      switchAppMode('workspace');
+      const newSess = state.sessions.find(s => s.id === spawnedSessId || s.native_id === spawnedNativeId || (spawnedNativeId && s.id.includes(spawnedNativeId)));
+      if (newSess) {
+        openSessionInTab(newSess);
+        activateTab(newSess.id);
+      }
+    } catch (err) {
+      alert(`Failed to launch session: ${err.message}`);
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = '🚀 Launch Worker Session';
+      }
     }
   });
 }
@@ -1620,8 +1916,7 @@ export function initWorkBoard() {
     renderWorkBoard();
   });
 
-  // Agent Setup, Standup, Refresh & New Task
-  document.getElementById('btnAgentSetup')?.addEventListener('click', showAgentSetupModal);
+  // Standup, Refresh & New Task
   document.getElementById('btnDailyStandup')?.addEventListener('click', showStandupModal);
   document.getElementById('btnRefreshWorkBoard')?.addEventListener('click', refreshWorkBoard);
   document.getElementById('btnNewTask')?.addEventListener('click', showNewTaskModal);
