@@ -150,7 +150,7 @@ The web frontend is organized as zero-build native ECMAScript modules (`<script 
 * **`details.js`**: Right Inspector Pane (`#inspectorPanel`) controller (`openInspectorPane`, `closeInspectorPane`, `refitActiveTerminal`), session details view (`openSessionDetailsTab`), markdown plan/doc viewer (`openDocViewerTab`), and rich transcript viewer (`openTranscriptViewerTab`).
 * **`palette.js`**: Command palette fuzzy search (`Cmd+K` / `Ctrl+K`) and dispatcher launcher.
 * **`context-menu.js`**: Context menus for sessions, groups, tabs, and chat files.
-* **`modals.js`**: Modal dialogs for new sessions, groups, hosts, settings, and context handover.
+* **`modals.js`**: Modal dialogs for new sessions, groups, hosts, settings (including Push Notifications `ntfy.sh` topic configuration, test notifications, and fleet-wide propagation), and context handover.
 * **`statusbar.js`**: Status bar indicators.
 * **`app.js`**: Main module entrypoint, event listeners, and lifecycle boot.
 * **`web/app.js`**: Backward-compatibility proxy dynamically importing `/js/app.js`.

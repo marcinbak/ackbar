@@ -25,7 +25,7 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 * **`server_projects.go`:** Workspace document discovery (`/v1/documents`), tree node CRUD and move (`/v1/nodes`), project creation (`/v1/projects/create`), worktree/path normalization, and VS Code URI launching (`/v1/editor/open`).
 * **`server_sync.go`:** Uniform 3-way Last-Write-Wins (LWW) peer-to-peer sync engine (`/v1/sync/state`, `/v1/sync/push`, `/v1/nodes/paths`) and background delta reconciliation.
 * **`session_scanner.go`:** Liveness verification (`verifySessionLiveness`) and background session scanner (`scanObservedSessions` decomposed into `refreshExistingSessions`, `scanTmuxPanes`, `scanOSProcessTable`, and `scanDiskSessions`).
-* **`ntfy.go`:** `ntfy.sh` push notification dispatcher for PR/Plan Review transitions (`REVIEW`) and Task/Session blockers (`StateBlocked` / `substatus == "blocked"`), emitting `ackbar://` mobile deep-links and PR action buttons.
+* **`ntfy.go`:** `ntfy.sh` push notification dispatcher for PR/Plan Review transitions (`REVIEW`) and Task/Session blockers (`StateBlocked` / `substatus == "blocked"`), emitting `ackbar://` mobile deep-links, Ackbar notification icons, session-title + group-path subtitles, test notification dispatch (`POST /v1/notifications/test`), and fleet-wide `ntfy` settings propagation.
 * **`agent_claude.go`, `agent_antigravity.go`, `agent_other.go`:** Per-agent `AgentAdapter` implementations (`ClaudeAgentAdapter`, `AntigravityAgentAdapter`, `CodexAgentAdapter`, `GrokAgentAdapter`, `OpenCodeAgentAdapter`) encapsulating agent-specific CLI flags, approval keys, account profile setup, PID-to-session resolution, and disk session discovery.
 
 ---
@@ -48,8 +48,9 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 | `POST` | `/v1/sessions/mark-read` | Marks a session as read (`is_unread = false`), clearing visual unread cues. |
 | `GET` | `/v1/sessions/transcript`| Retrieves extracted conversation transcript (JSON or formatted Markdown). |
 | `POST` | `/v1/sessions/upload` | Uploads clipboard images or drag-and-dropped PDFs to `/tmp/ackbar-uploads/`. |
-| `GET` | `/v1/settings` | Returns daemon settings including `host_name`, `display_name`, auto-done thresholds, `later_collapsed_by_default`, `hide_session_tabs`, and handover suggestions. |
-| `POST` | `/v1/settings` | Updates and persists daemon settings in SQLite. |
+| `GET` | `/v1/settings` | Returns daemon settings including `host_name`, `display_name`, auto-done thresholds, `later_collapsed_by_default`, `hide_session_tabs`, handover suggestions, and `ntfy_topic` / `ntfy_server`. |
+| `POST` | `/v1/settings` | Updates and persists daemon settings in SQLite (supports `propagate_ntfy: "true"` to push `ntfy_topic` and `ntfy_server` to all connected fleet hosts). |
+| `POST` | `/v1/notifications/test` | Dispatches an immediate test push notification to `ntfy.sh` (or custom server) to verify mobile/desktop configuration. |
 | `GET` | `/v1/nodes` | Returns configured logical tree nodes and custom groups with host paths (supports `?federated=true`). |
 | `POST` | `/v1/projects/create` | Creates a new logical project node or pure category subgroup. |
 | `POST` | `/v1/nodes/move` | Moves a logical group node to a new tree path. |
