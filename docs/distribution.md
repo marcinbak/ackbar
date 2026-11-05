@@ -73,7 +73,7 @@ Every release automatically cross-compiles 4 standalone CGO-free binaries for 4 
 Releases are completely automated:
 
 ### Method A: Automated on PR Merge (Recommended)
-Simply bump the `VERSION` file in your PR (e.g. `20260904.04`). When the PR is merged to `main`, GitHub Actions automatically:
+Bump the `VERSION` file in your PR using `./scripts/bump-version.sh` (e.g. to `20261105.02`). CI enforces that `internal/version/VERSION` is bumped above `origin/main` on every pull request via `./scripts/bump-version.sh --check`. When the PR is merged to `main`, GitHub Actions automatically:
 1. Detects the version change.
 2. Creates and pushes the Git tag `v<VERSION>`.
 3. Runs GoReleaser to compile and publish the GitHub Release with prebuilt binaries.

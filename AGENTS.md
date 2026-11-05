@@ -70,6 +70,7 @@ Detailed architectural and technical domain documentation is organized in the `d
 3.  **In-Place Attachment:** Attachment MUST suspend the Bubble Tea app using `tea.ExecProcess`, run `tmux attach` or `ssh -t host tmux attach`, and resume/redraw upon detach.
 4.  **No Direct Pushes to `main`:** Direct pushes to `main` are strictly blocked by GitHub branch protection. All code changes must be submitted via Pull Requests.
 5.  **Strict PR-Based Git Worktree Workflow:** All development, bug fixes, refactoring, and feature additions MUST follow the PR workflow governed by the `dev-workflow` skill and [docs/dev-workflow.md](file:///Users/dev4u/Work/Ackbar/docs/dev-workflow.md).
+6.  **Enforced PR Version Bump:** Every pull request MUST bump `internal/version/VERSION` above `origin/main` via `./scripts/bump-version.sh`. The bump is strictly gated by `./scripts/bump-version.sh --check` in T0 and GitHub Actions CI.
 
 ---
 
@@ -96,7 +97,7 @@ All development on Project Ackbar is governed by the **`dev-workflow`** skill an
    ```bash
    git worktree add -b feat/<name> .worktrees/<name> origin/main
    ```
-3. **Static Verification (N5):** Verify against the T0 gate set defined in [docs/dev-workflow.md](file:///Users/dev4u/Work/Ackbar/docs/dev-workflow.md) (`gofmt -l .`, `go test -v ./...`, and `flutter test` if mobile was touched).
+3. **Static Verification (N5):** Verify against the T0 gate set defined in [docs/dev-workflow.md](file:///Users/dev4u/Work/Ackbar/docs/dev-workflow.md) (`./scripts/bump-version.sh --check`, `gofmt -l .`, `go test -v ./...`, and `flutter test` if mobile was touched). Every PR must bump `internal/version/VERSION` using `./scripts/bump-version.sh` before committing.
 4. **Three-Way Review Fan-Out (N6–N8):** Automated reviews run across `context-reviewer`, `clean-reviewer`, and `security-reviewer` before creating a PR.
 5. **PR Submission & Automatic Merge (`merge_policy: auto`, N11–N14):** Push branch and create PR using `gh pr create`. Direct pushes to `main` are strictly blocked. Per `merge_policy: auto` in [docs/dev-workflow.md](file:///Users/dev4u/Work/Ackbar/docs/dev-workflow.md), once T0 verification, N6–N8 reviews, and CI checks pass, merge the PR automatically using `gh pr merge --squash --delete-branch`.
 6. **Worktree Cleanup:** Once merged, pull `main` in the root workspace, remove the worktree, and delete the branch:
