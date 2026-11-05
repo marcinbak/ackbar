@@ -158,11 +158,10 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 				t.ID = fmt.Sprintf("task_%d", time.Now().UnixNano())
 			}
 			t.GroupName, t.ProjectName = s.normalizeTaskNodeScope(t.GroupName, t.ProjectName, t.WorktreePath, sessionID)
-			if t.Status == "" {
-				t.Status = "NEW"
-			}
-			if t.Substatus == "" {
-				t.Substatus = "ready"
+			t.Status, t.Substatus = normalizeTaskStatusAndSubstatus(t.Status, t.Substatus, t.Substatus != "")
+			if strings.EqualFold(t.Status, "DONE") && t.CompletedAt == nil {
+				now := time.Now().UTC()
+				t.CompletedAt = &now
 			}
 			if t.TaskKind == "" {
 				t.TaskKind = "code"
@@ -184,6 +183,7 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			if req.WorkflowNode != "" {
+				canonicalNode := normalizeWorkflowNode(req.WorkflowNode)
 				sessState := StateIdle
 				for _, w := range t.Workers {
 					if w.IsActive {
@@ -193,8 +193,16 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 						}
 					}
 				}
-				t.Status, t.Substatus = ClassifyWorkflowNodeState(req.WorkflowNode, sessState, false)
-				if req.WorkflowNode == "N14" || req.WorkflowNode == "N15" {
+				t.Status, t.Substatus = ClassifyWorkflowNodeState(canonicalNode, sessState, false)
+				for i := range t.Workstreams {
+					ws := &t.Workstreams[i]
+					if req.RepoNodePath == "" || len(t.Workstreams) == 1 || strings.EqualFold(ws.RepoNodePath, req.RepoNodePath) {
+						ws.WorkflowNode = canonicalNode
+						ws.Status = t.Status
+						ws.UpdatedAt = time.Now().UTC()
+					}
+				}
+				if canonicalNode == "N14" || canonicalNode == "N15" {
 					now := time.Now().UTC()
 					t.CompletedAt = &now
 				}
@@ -217,10 +225,11 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 					targetRepoPath = t.Workstreams[0].RepoNodePath
 				}
 			}
-			if req.WorkflowNode == "N14" || req.WorkflowNode == "N15" {
+			canonicalReqNode := normalizeWorkflowNode(req.WorkflowNode)
+			if canonicalReqNode == "N14" || canonicalReqNode == "N15" {
 				s.unlockSequentialWorkstreams(&t, targetRepoPath)
 			}
-			if req.WorkflowNode == "N15" {
+			if canonicalReqNode == "N15" {
 				s.completeAndCloseTaskSession(&t, nil)
 			}
 			s.pushSyncPayload(&SyncStatePayload{Tasks: []Task{t}, Workstreams: t.Workstreams})
@@ -260,6 +269,31 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 				existing.Substatus = t.Substatus
 				if t.Substatus == "active" {
 					existing.BlockerQuestion = ""
+				}
+			}
+			if t.Status != "" {
+				existing.Status, existing.Substatus = normalizeTaskStatusAndSubstatus(existing.Status, existing.Substatus, t.Substatus != "")
+				if strings.EqualFold(existing.Status, "DONE") {
+					existing.Status = "DONE"
+					existing.BlockerQuestion = ""
+					if existing.CompletedAt == nil {
+						now := time.Now().UTC()
+						existing.CompletedAt = &now
+					}
+					for i := range existing.Workers {
+						existing.Workers[i].IsActive = false
+					}
+				}
+				if req.WorkflowNode == "" {
+					for i := range existing.Workstreams {
+						ws := &existing.Workstreams[i]
+						if req.RepoNodePath == "" && len(existing.Workstreams) == 1 ||
+							(req.RepoNodePath != "" && strings.EqualFold(ws.RepoNodePath, req.RepoNodePath)) ||
+							existing.Status == "DONE" {
+							ws.Status = existing.Status
+							ws.UpdatedAt = time.Now().UTC()
+						}
+					}
 				}
 			}
 			if t.Notes != "" {
@@ -309,6 +343,7 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 			}
 
 			if req.WorkflowNode != "" {
+				canonicalNode := normalizeWorkflowNode(req.WorkflowNode)
 				targetRepoPath := req.RepoNodePath
 				if targetRepoPath == "" && len(existing.Workstreams) > 0 {
 					for _, ws := range existing.Workstreams {
@@ -324,35 +359,68 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 
 				for i := range existing.Workers {
 					w := &existing.Workers[i]
-					if targetRepoPath == "" || w.RepoNodePath == "" || strings.EqualFold(w.RepoNodePath, targetRepoPath) {
-						w.WorkflowNode = req.WorkflowNode
-					}
-				}
-				for i := range existing.Workstreams {
-					ws := &existing.Workstreams[i]
-					if targetRepoPath == "" || strings.EqualFold(ws.RepoNodePath, targetRepoPath) {
-						ws.WorkflowNode = req.WorkflowNode
-						ws.UpdatedAt = time.Now().UTC()
+					matchesWorker := (sessionID != "" && w.SessionID == sessionID) || (sessionID == "" && w.IsActive)
+					if matchesWorker && (targetRepoPath == "" || w.RepoNodePath == "" || strings.EqualFold(w.RepoNodePath, targetRepoPath)) {
+						if w.WorkflowNode == "" || shouldAdvanceWorkflowNode(w.WorkflowNode, canonicalNode) {
+							w.WorkflowNode = canonicalNode
+						}
 					}
 				}
 				sessState := StateIdle
 				for _, w := range existing.Workers {
 					if w.IsActive {
-						if sSess, _ := s.db.GetSession(w.SessionID); sSess != nil && sSess.State == StateWorking {
-							sessState = StateWorking
-							break
+						if sSess, _ := s.db.GetSession(w.SessionID); sSess != nil {
+							if sSess.State == StateWorking {
+								sessState = StateWorking
+								break
+							} else if sSess.State == StateIdle && (sSess.Activity == "" || sSess.Activity == "Session started") {
+								sSess.Activity = fmt.Sprintf("Awaiting user prompt (%s)", canonicalNode)
+								_ = s.db.SaveSession(sSess)
+							}
 						}
 					}
 				}
-				existing.Status, existing.Substatus = ClassifyWorkflowNodeState(req.WorkflowNode, sessState, existing.Substatus == "blocked" && existing.BlockerQuestion != "")
+				newStatus, newSubstatus := ClassifyWorkflowNodeState(canonicalNode, sessState, existing.Substatus == "blocked" && existing.BlockerQuestion != "")
+				if newStatus == "NEW" && existing.Status != "" && !strings.EqualFold(existing.Status, "NEW") {
+					newStatus = existing.Status
+					if existing.Substatus != "" && existing.Substatus != "ready" && existing.Substatus != "queued" {
+						newSubstatus = existing.Substatus
+					} else {
+						newSubstatus = "active"
+					}
+				}
+				if (strings.EqualFold(existing.Status, "REVIEW") || existing.PRURL != "" || existing.PRNumber > 0) && (newStatus == "IN_PROGRESS" || newStatus == "NEW") {
+					newStatus = "REVIEW"
+					if existing.Substatus == "pr_review" || existing.Substatus == "in_review" || existing.Substatus == "plan_review" {
+						newSubstatus = existing.Substatus
+					} else {
+						newSubstatus = "pr_review"
+					}
+				}
+				existing.Status = newStatus
+				existing.Substatus = newSubstatus
+				for i := range existing.Workstreams {
+					ws := &existing.Workstreams[i]
+					if targetRepoPath == "" || strings.EqualFold(ws.RepoNodePath, targetRepoPath) {
+						if ws.WorkflowNode == "" || shouldAdvanceWorkflowNode(ws.WorkflowNode, canonicalNode) {
+							ws.WorkflowNode = canonicalNode
+						}
+						wsStatus := existing.Status
+						if wsStatus == "NEW" && ws.Status != "" && !strings.EqualFold(ws.Status, "NEW") && !strings.EqualFold(ws.Status, "QUEUED") {
+							wsStatus = ws.Status
+						}
+						ws.Status = wsStatus
+						ws.UpdatedAt = time.Now().UTC()
+					}
+				}
 				if existing.Status == "DONE" && existing.CompletedAt == nil {
 					now := time.Now().UTC()
 					existing.CompletedAt = &now
 				}
-				if req.WorkflowNode == "N14" || req.WorkflowNode == "N15" {
+				if canonicalNode == "N14" || canonicalNode == "N15" {
 					s.unlockSequentialWorkstreams(existing, targetRepoPath)
 				}
-				if req.WorkflowNode == "N15" {
+				if canonicalNode == "N15" {
 					s.completeAndCloseTaskSession(existing, nil)
 				}
 			}

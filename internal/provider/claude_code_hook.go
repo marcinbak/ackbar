@@ -14,6 +14,7 @@ type claudePayload struct {
 	SessionID            string      `json:"session_id"`
 	Cwd                  string      `json:"cwd"`
 	HookEventName        string      `json:"hook_event_name"`
+	Source               string      `json:"source"`
 	LastAssistantMessage string      `json:"last_assistant_message"`
 	PermissionMode       string      `json:"permission_mode"`
 	ToolName             string      `json:"tool_name"`
@@ -163,8 +164,15 @@ func (c *ClaudeProvider) ParseHook(eventName string, payload []byte) (*daemon.Ev
 	switch evt {
 	case "sessionstart":
 		event.State = daemon.StateIdle
-		event.Activity = "Session started"
-		event.StartedAt = time.Now()
+		switch strings.ToLower(strings.TrimSpace(p.Source)) {
+		case "compact":
+			event.Activity = "Context compacted"
+		case "resume":
+			event.Activity = "Session resumed"
+		default:
+			event.Activity = "Session started"
+			event.StartedAt = time.Now()
+		}
 
 	case "sessionend", "stop":
 		event.State = daemon.StateIdle

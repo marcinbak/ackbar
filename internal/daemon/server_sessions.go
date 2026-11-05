@@ -1743,11 +1743,24 @@ func (s *Server) activateTaskForSpawnedWorker(taskID, sessionID, agent, host, re
 		})
 	}
 	if task, err := s.db.GetTaskByID(taskID); err == nil && task != nil {
+		taskChanged := false
 		if task.Status == "" || strings.EqualFold(task.Status, "NEW") {
 			task.Status = "IN_PROGRESS"
 			if task.Substatus == "" || task.Substatus == "queued" || task.Substatus == "ready" {
 				task.Substatus = "active"
 			}
+			taskChanged = true
+		}
+		for i := range task.Workstreams {
+			ws := &task.Workstreams[i]
+			if (repoNodePath == "" || len(task.Workstreams) == 1 || strings.EqualFold(ws.RepoNodePath, repoNodePath)) &&
+				(ws.Status == "" || strings.EqualFold(ws.Status, "NEW")) {
+				ws.Status = "IN_PROGRESS"
+				ws.UpdatedAt = now
+				taskChanged = true
+			}
+		}
+		if taskChanged {
 			task.UpdatedAt = now
 			_ = s.db.UpdateTask(task)
 		}

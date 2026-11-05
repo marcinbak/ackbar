@@ -230,6 +230,64 @@ func normalizeWorkflowNode(node string) string {
 	return n
 }
 
+func sameOrEmptyRepoNodePath(a, b string) bool {
+	ca := strings.TrimSpace(a)
+	cb := strings.TrimSpace(b)
+	if ca == "" || cb == "" {
+		return true
+	}
+	return strings.EqualFold(filepath.Clean(ca), filepath.Clean(cb))
+}
+
+// normalizeTaskStatusAndSubstatus normalizes stale substatuses when a task transitions between pillars
+// without an explicit substatus (e.g. moving to DONE while substatus was still "working").
+func normalizeTaskStatusAndSubstatus(status, substatus string, explicitSubstatus bool) (string, string) {
+	st := strings.TrimSpace(status)
+	sub := strings.TrimSpace(substatus)
+	stUpper := strings.ToUpper(st)
+	subLower := strings.ToLower(sub)
+
+	if st == "" {
+		st = "NEW"
+		stUpper = "NEW"
+	} else if stUpper == "COMPLETED" {
+		st = "DONE"
+		stUpper = "DONE"
+	}
+
+	if explicitSubstatus && sub != "" && stUpper != "DONE" {
+		return st, sub
+	}
+
+	switch stUpper {
+	case "DONE":
+		switch subLower {
+		case "completed", "rejected", "abandoned":
+		default:
+			sub = "completed"
+		}
+	case "REVIEW":
+		switch subLower {
+		case "pr_review", "plan_review", "design_review", "in_review", "approved", "blocked", "question":
+		default:
+			sub = "pr_review"
+		}
+	case "IN_PROGRESS":
+		switch subLower {
+		case "active", "working", "question", "blocked", "stalled", "idle":
+		default:
+			sub = "active"
+		}
+	case "NEW":
+		switch subLower {
+		case "ready", "backlog", "discovered", "pending", "queued":
+		default:
+			sub = "ready"
+		}
+	}
+	return st, sub
+}
+
 // unlockSequentialWorkstreams transitions downstream workstreams from QUEUED/NEW to IN_PROGRESS upon upstream completion
 func (s *Server) unlockSequentialWorkstreams(task *Task, completedRepoPath string) bool {
 	if task == nil || len(task.Workstreams) == 0 {
@@ -472,7 +530,8 @@ func (s *Server) SyncSessionTaskWorker(sess *Session) {
 				task.Workers[i].WorkflowNode = workflowNode
 			}
 			workerUpdated = true
-			break
+		} else if worker.IsActive && sameOrEmptyRepoNodePath(task.Workers[i].RepoNodePath, repoNodePath) {
+			task.Workers[i].IsActive = false
 		}
 	}
 	if !workerUpdated {
@@ -490,7 +549,12 @@ func (s *Server) SyncSessionTaskWorker(sess *Session) {
 		}
 		if !anyActiveWorker && task.Status == "IN_PROGRESS" {
 			task.Substatus = "stalled"
-			_ = s.db.UpdateTask(task)
+			if err := s.db.UpdateTask(task); err == nil {
+				s.pushSyncPayload(&SyncStatePayload{
+					Tasks:       []Task{*task},
+					Workstreams: task.Workstreams,
+				})
+			}
 		}
 		return
 	}
@@ -519,6 +583,14 @@ func (s *Server) SyncSessionTaskWorker(sess *Session) {
 		task.Status = "IN_PROGRESS"
 		task.Substatus = "active"
 		task.BlockerQuestion = ""
+		for i := range task.Workstreams {
+			ws := &task.Workstreams[i]
+			if (repoNodePath == "" || len(task.Workstreams) == 1 || strings.EqualFold(ws.RepoNodePath, repoNodePath)) &&
+				(ws.Status == "" || strings.EqualFold(ws.Status, "NEW")) {
+				ws.Status = "IN_PROGRESS"
+				ws.UpdatedAt = time.Now().UTC()
+			}
+		}
 		taskNeedsUpdate = true
 	} else if sess.State == StateIdle && task.TaskKind != "design" && workflowNode != "" {
 		newStatus, newSubstatus := ClassifyWorkflowNodeState(workflowNode, sess.State, task.Substatus == "blocked" && task.BlockerQuestion != "")

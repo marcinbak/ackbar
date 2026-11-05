@@ -352,6 +352,7 @@ func InitDB(dbPath string) (*DB, error) {
 		log.Printf("[InitDB] Warning: PruneAllLegacyTasksOnce failed: %v", err)
 	}
 	_, _ = d.DeduplicateTasks()
+	_, _ = db.Exec(`UPDATE tasks SET status = 'DONE', substatus = 'completed' WHERE deleted_at IS NULL AND UPPER(status) IN ('DONE', 'COMPLETED') AND LOWER(COALESCE(substatus, '')) NOT IN ('completed', 'rejected', 'abandoned');`)
 	return d, nil
 }
 
@@ -2774,6 +2775,10 @@ func insertTaskWorkerTx(tx *sql.Tx, w *TaskWorker) error {
 	}
 	if w.AssignedAt.IsZero() {
 		w.AssignedAt = time.Now()
+	}
+	if w.IsActive && w.TaskID != "" && w.SessionID != "" {
+		_, _ = tx.Exec(`UPDATE task_workers SET is_active = 0 WHERE task_id = ? AND session_id != ? AND is_active = 1 AND (LOWER(COALESCE(repo_node_path, '')) = LOWER(?) OR COALESCE(repo_node_path, '') = '' OR ? = '');`,
+			w.TaskID, w.SessionID, w.RepoNodePath, w.RepoNodePath)
 	}
 	query := `INSERT INTO task_workers (task_id, session_id, agent, host, is_active, assigned_at, repo_node_path, workflow_node)
 			  VALUES (?, ?, ?, ?, ?, ?, ?, ?)
