@@ -9,7 +9,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -182,5 +184,180 @@ func TestCheckLatestRelease_Mock(t *testing.T) {
 	}
 	if info.Changelog != "Major release" {
 		t.Errorf("Expected changelog 'Major release', got %s", info.Changelog)
+	}
+}
+
+func TestBumpVersionScript(t *testing.T) {
+	// Look for scripts/bump-version.sh relative to this test file
+	scriptPath := filepath.Join("..", "..", "scripts", "bump-version.sh")
+	scriptBytes, err := os.ReadFile(scriptPath)
+	if err != nil {
+		t.Fatalf("Failed to read bump-version.sh: %v", err)
+	}
+
+	tempDir := t.TempDir()
+
+	runCmd := func(name string, args ...string) (string, error) {
+		cmd := exec.Command(name, args...)
+		cmd.Dir = tempDir
+		cmd.Env = append(os.Environ(),
+			"ACKBAR_BUMP_NO_FETCH=1",
+			"ACKBAR_BUMP_DATE=20261105",
+			"GIT_AUTHOR_NAME=Test",
+			"GIT_AUTHOR_EMAIL=test@example.com",
+			"GIT_COMMITTER_NAME=Test",
+			"GIT_COMMITTER_EMAIL=test@example.com",
+		)
+		out, runErr := cmd.CombinedOutput()
+		return string(out), runErr
+	}
+
+	// Initialize git repo
+	if out, err := runCmd("git", "init"); err != nil {
+		t.Fatalf("git init failed: %v, out: %s", err, out)
+	}
+	if out, err := runCmd("git", "checkout", "-b", "main"); err != nil {
+		t.Fatalf("git checkout -b main failed: %v, out: %s", err, out)
+	}
+	if out, err := runCmd("git", "config", "user.name", "Test"); err != nil {
+		t.Fatalf("git config failed: %v, out: %s", err, out)
+	}
+	if out, err := runCmd("git", "config", "user.email", "test@example.com"); err != nil {
+		t.Fatalf("git config failed: %v, out: %s", err, out)
+	}
+
+	// Set up initial internal/version/VERSION (20261105.01)
+	if err := os.MkdirAll(filepath.Join(tempDir, "internal", "version"), 0755); err != nil {
+		t.Fatalf("Failed to create internal/version dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tempDir, "internal", "version", "VERSION"), []byte("20261105.01\n"), 0644); err != nil {
+		t.Fatalf("Failed to write VERSION file: %v", err)
+	}
+
+	// Copy scripts/bump-version.sh
+	if err := os.MkdirAll(filepath.Join(tempDir, "scripts"), 0755); err != nil {
+		t.Fatalf("Failed to create scripts dir: %v", err)
+	}
+	destScript := filepath.Join(tempDir, "scripts", "bump-version.sh")
+	if err := os.WriteFile(destScript, scriptBytes, 0755); err != nil {
+		t.Fatalf("Failed to write bump-version.sh to temp dir: %v", err)
+	}
+
+	// Commit on main
+	if out, err := runCmd("git", "add", "-A"); err != nil {
+		t.Fatalf("git add failed: %v, out: %s", err, out)
+	}
+	if out, err := runCmd("git", "commit", "-m", "initial commit on main"); err != nil {
+		t.Fatalf("git commit failed: %v, out: %s", err, out)
+	}
+
+	// Create origin/main ref
+	if out, err := runCmd("git", "update-ref", "refs/remotes/origin/main", "HEAD"); err != nil {
+		t.Fatalf("git update-ref failed: %v, out: %s", err, out)
+	}
+	if out, err := runCmd("git", "branch", "origin/main"); err != nil {
+		t.Fatalf("git branch origin/main failed: %v, out: %s", err, out)
+	}
+
+	// Create and switch to feat/test branch
+	if out, err := runCmd("git", "checkout", "-b", "feat/test"); err != nil {
+		t.Fatalf("git checkout -b feat/test failed: %v, out: %s", err, out)
+	}
+
+	// 1. --check fails on feature branch when VERSION equals origin/main (20261105.01)
+	out, err := runCmd("./scripts/bump-version.sh", "--check")
+	if err == nil {
+		t.Fatalf("Expected --check to fail when VERSION is not bumped, but succeeded. Output:\n%s", out)
+	}
+	if !strings.Contains(out, "must be bumped above origin/main (20261105.01)") {
+		t.Errorf("Expected failure message about bump, got:\n%s", out)
+	}
+
+	// 2. Running ./scripts/bump-version.sh bumps internal/version/VERSION to 20261105.02
+	out, err = runCmd("./scripts/bump-version.sh")
+	if err != nil {
+		t.Fatalf("./scripts/bump-version.sh failed: %v, out: %s", err, out)
+	}
+	verBytes, err := os.ReadFile(filepath.Join(tempDir, "internal", "version", "VERSION"))
+	if err != nil {
+		t.Fatalf("Failed to read VERSION: %v", err)
+	}
+	if got := strings.TrimSpace(string(verBytes)); got != "20261105.02" {
+		t.Fatalf("Expected version 20261105.02, got %q", got)
+	}
+
+	// 3. Running ./scripts/bump-version.sh a second time is idempotent (stays 20261105.02)
+	out, err = runCmd("./scripts/bump-version.sh")
+	if err != nil {
+		t.Fatalf("Second ./scripts/bump-version.sh run failed: %v, out: %s", err, out)
+	}
+	verBytes, err = os.ReadFile(filepath.Join(tempDir, "internal", "version", "VERSION"))
+	if err != nil {
+		t.Fatalf("Failed to read VERSION: %v", err)
+	}
+	if got := strings.TrimSpace(string(verBytes)); got != "20261105.02" {
+		t.Fatalf("Expected version to stay 20261105.02, got %q", got)
+	}
+	if !strings.Contains(out, "Version already bumped to 20261105.02") {
+		t.Errorf("Expected idempotent message, got:\n%s", out)
+	}
+
+	// 4. --check passes once bumped to 20261105.02
+	out, err = runCmd("./scripts/bump-version.sh", "--check")
+	if err != nil {
+		t.Fatalf("Expected --check to pass for 20261105.02, but failed: %v, out: %s", err, out)
+	}
+	if !strings.Contains(out, "Version check passed: 20261105.02 (> origin/main 20261105.01)") {
+		t.Errorf("Expected passed message, got:\n%s", out)
+	}
+
+	// 5. Creating a tag v20261105.02 on origin/main causes --check to fail and ./scripts/bump-version.sh to advance to 20261105.03
+	// Commit the 20261105.02 change on feat/test first so HEAD is not at origin/main commit
+	if out, err := runCmd("git", "commit", "-am", "bump version to 20261105.02"); err != nil {
+		t.Fatalf("git commit on feat/test failed: %v, out: %s", err, out)
+	}
+	// Tag origin/main commit with v20261105.02
+	mainCommit, err := runCmd("git", "rev-parse", "refs/remotes/origin/main")
+	if err != nil {
+		t.Fatalf("git rev-parse refs/remotes/origin/main failed: %v", err)
+	}
+	if out, err := runCmd("git", "tag", "v20261105.02", strings.TrimSpace(mainCommit)); err != nil {
+		t.Fatalf("git tag failed: %v, out: %s", err, out)
+	}
+
+	out, err = runCmd("./scripts/bump-version.sh", "--check")
+	if err == nil {
+		t.Fatalf("Expected --check to fail when tag v20261105.02 exists on another commit, but succeeded. Output:\n%s", out)
+	}
+	if !strings.Contains(out, "ERROR: Tag v20261105.02 already exists. Run './scripts/bump-version.sh --force' to advance to the next free version.") {
+		t.Errorf("Expected tag already exists message, got:\n%s", out)
+	}
+
+	out, err = runCmd("./scripts/bump-version.sh")
+	if err != nil {
+		t.Fatalf("bump-version after conflicting tag failed: %v, out: %s", err, out)
+	}
+	verBytes, err = os.ReadFile(filepath.Join(tempDir, "internal", "version", "VERSION"))
+	if err != nil {
+		t.Fatalf("Failed to read VERSION: %v", err)
+	}
+	if got := strings.TrimSpace(string(verBytes)); got != "20261105.03" {
+		t.Fatalf("Expected version to advance to 20261105.03, got %q", got)
+	}
+
+	// 6. --check skips and exits 0 when branch is homebrew-formula-v20261105.01
+	if out, err := runCmd("git", "checkout", "-b", "homebrew-formula-v20261105.01"); err != nil {
+		t.Fatalf("git checkout -b homebrew-formula-... failed: %v, out: %s", err, out)
+	}
+	// Revert internal/version/VERSION to unbumped 20261105.01
+	if err := os.WriteFile(filepath.Join(tempDir, "internal", "version", "VERSION"), []byte("20261105.01\n"), 0644); err != nil {
+		t.Fatalf("Failed to revert VERSION: %v", err)
+	}
+	out, err = runCmd("./scripts/bump-version.sh", "--check")
+	if err != nil {
+		t.Fatalf("Expected --check to skip on homebrew-formula branch, but failed: %v, out: %s", err, out)
+	}
+	if !strings.Contains(out, "Version bump check skipped for branch 'homebrew-formula-v20261105.01'") {
+		t.Errorf("Expected skip message, got:\n%s", out)
 	}
 }

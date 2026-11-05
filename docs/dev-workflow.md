@@ -39,6 +39,7 @@ fail the job), `❌ not gated`, or `—` (not run in CI).
 | install | `go mod tidy && (cd mobile && flutter pub get)` | | ✅ CI | Installs Go module dependencies and Flutter packages. |
 | format | `gofmt -w . && (cd mobile && dart format .)` | | ✅ CI | Formats all Go files and Dart mobile code. |
 | lint | `if [ -n "$(gofmt -l .)" ]; then echo "Unformatted Go code:"; gofmt -l .; exit 1; fi && (cd mobile && flutter analyze --no-fatal-infos)` | ✅ | ✅ CI | Verified in CI via Go Test Suite and Flutter Analyzer. |
+| version check | `./scripts/bump-version.sh --check` | ✅ | ✅ CI | Enforces that `internal/version/VERSION` is bumped above `origin/main` on every PR. Bump via `./scripts/bump-version.sh`. |
 | typecheck | `go vet ./... && (cd mobile && flutter analyze --no-fatal-infos)` | ✅ | ✅ CI | Catches type, formatting, and static analysis defects across backend and mobile. |
 | unit test | `go test -v ./... && (cd mobile && flutter test)` | ✅ | ✅ CI | Runs complete Go test suite (daemon, provider, relay, router, tmux) and Flutter unit/widget tests. |
 | compile/bundle gate | `CGO_ENABLED=0 go build -o /dev/null ./cmd/ackbard ./cmd/ackbar ./cmd/ackbar-hook ./cmd/ackbar-relay` | ✅ | ✅ CI | **Catches broken imports, package syntax errors, and missing symbols across all four binaries.** |
@@ -46,7 +47,10 @@ fail the job), `❌ not gated`, or `—` (not run in CI).
 | install to device | `cd mobile && flutter run` | | — | Installs and runs the Flutter companion app on an attached device or simulator. |
 | e2e | `none — integration covered by internal/daemon and internal/relay end-to-end Go test suites and mobile widget tests` | | — | `TestServer_Integration` and `TestRelay_EndToEnd` run full HTTP/WebSocket loops in unit tests. |
 
-**T0 set:** lint, typecheck, unit test, compile/bundle gate.
+**T0 set:** lint, version check, typecheck, unit test, compile/bundle gate.
+
+### PR Version Bumping
+Every pull request MUST increment `internal/version/VERSION` above `origin/main`. Run `./scripts/bump-version.sh` before committing and creating a PR. The version bump is strictly verified locally via `T0` (`./scripts/bump-version.sh --check`) and in GitHub Actions CI (`Verify Version Bump`).
 
 ---
 
