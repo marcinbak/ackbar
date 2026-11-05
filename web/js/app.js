@@ -756,10 +756,6 @@ function setupEventListeners() {
     });
   }
 
-  if (el.btnNewProject) {
-    el.btnNewProject.addEventListener('click', () => showNewGroupModal());
-  }
-
   if (el.btnTabOverflow) {
     el.btnTabOverflow.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -779,14 +775,12 @@ function setupEventListeners() {
     });
   }
 
-  const btnNewSession = document.getElementById('btnNewSession');
   const btnSidebarNewSession = document.getElementById('btnSidebarNewSession');
   const btnCloseNewSession = document.getElementById('btnCloseNewSession');
   const btnCancelNewSession = document.getElementById('btnCancelNewSession');
   const btnSubmitNewSession = document.getElementById('btnSubmitNewSession');
   const modalNewSession = document.getElementById('modalNewSession');
 
-  if (btnNewSession) btnNewSession.addEventListener('click', () => showNewSessionModal());
   if (btnSidebarNewSession) btnSidebarNewSession.addEventListener('click', () => showNewSessionModal());
   if (btnCloseNewSession) btnCloseNewSession.addEventListener('click', hideNewSessionModal);
   if (btnCancelNewSession) btnCancelNewSession.addEventListener('click', hideNewSessionModal);

@@ -133,7 +133,6 @@ export const el = {
   btnTabOverflow: document.getElementById('btnTabOverflow'),
   btnNewTab: document.getElementById('btnNewTab'),
   btnAddHost: document.getElementById('btnAddHost'),
-  btnNewProject: document.getElementById('btnNewProject'),
   btnPurge: document.getElementById('btnPurge'),
   btnSettings: document.getElementById('btnSettings'),
   btnRefreshPage: document.getElementById('btnRefreshPage'),
