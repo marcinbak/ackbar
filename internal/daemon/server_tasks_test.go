@@ -1738,3 +1738,334 @@ func TestIngestBoundTaskTelemetry_ExtractsBranchAndPR(t *testing.T) {
 		t.Errorf("Expected task transitioned to REVIEW/pr_review, got %s/%s", updated.Status, updated.Substatus)
 	}
 }
+
+func TestHandleTasks_WorkflowNodeSyncsWorkstreamStatusAndMonotonic(t *testing.T) {
+	dbFile := filepath.Join(t.TempDir(), "test_ws_sync.db")
+	db, err := InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := &Server{db: db}
+	now := time.Now().UTC()
+
+	workerSess := &Session{
+		ID:            "claude-code:macmini:537751c0-56ed-43fb-8aa8-5437deaba271",
+		Agent:         "claude-code",
+		Host:          "macmini",
+		NativeID:      "537751c0-56ed-43fb-8aa8-5437deaba271",
+		State:         StateIdle,
+		Activity:      "Session started",
+		CurrentTaskID: "task_1155",
+	}
+	_ = db.SaveSession(workerSess)
+
+	task := &Task{
+		ID:          "task_1155",
+		Title:       "NGL-1155 [iOS] E2E Maestro",
+		GroupName:   "Modemobile",
+		ProjectName: "NGL/ngl-ios",
+		Status:      "NEW",
+		Substatus:   "ready",
+		Workers: []TaskWorker{
+			{
+				TaskID:       "task_1155",
+				SessionID:    workerSess.ID,
+				Agent:        "claude-code",
+				Host:         "macmini",
+				IsActive:     true,
+				RepoNodePath: "Modemobile/NGL/ngl-ios",
+				WorkflowNode: "N0",
+				AssignedAt:   now,
+			},
+		},
+		Workstreams: []TaskWorkstream{
+			{
+				TaskID:       "task_1155",
+				RepoNodePath: "Modemobile/NGL/ngl-ios",
+				TargetHost:   "macmini",
+				WorkflowNode: "N0",
+				Status:       "NEW",
+				UpdatedAt:    now,
+			},
+		},
+	}
+	if err := db.CreateTask(task); err != nil {
+		t.Fatalf("CreateTask failed: %v", err)
+	}
+
+	// 1. POST /v1/tasks with workflow_node = "N9" -> must update both parent task and workstream status to IN_PROGRESS
+	bodyN9, _ := json.Marshal(map[string]any{
+		"id":            "task_1155",
+		"workflow_node": "N9",
+	})
+	reqN9 := httptest.NewRequest(http.MethodPost, "/v1/tasks", bytes.NewReader(bodyN9))
+	recN9 := httptest.NewRecorder()
+	server.handleTasks(recN9, reqN9)
+	if recN9.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK, got %d", recN9.Code)
+	}
+
+	afterN9, _ := db.GetTaskByID("task_1155")
+	if afterN9.Status != "IN_PROGRESS" {
+		t.Errorf("Expected parent task status IN_PROGRESS at N9, got %s", afterN9.Status)
+	}
+	if len(afterN9.Workstreams) != 1 || afterN9.Workstreams[0].Status != "IN_PROGRESS" || afterN9.Workstreams[0].WorkflowNode != "N9" {
+		t.Errorf("Expected workstream IN_PROGRESS/N9, got %+v", afterN9.Workstreams)
+	}
+
+	// Verify idle worker session activity was updated from "Session started"
+	sessAfterN9, _ := db.GetSession(workerSess.ID)
+	if sessAfterN9.Activity != "Awaiting user prompt (N9)" {
+		t.Errorf("Expected worker session activity 'Awaiting user prompt (N9)', got %q", sessAfterN9.Activity)
+	}
+
+	// 2. POST /v1/tasks with workflow_node = "N13" and pr_url -> moves task & workstream to REVIEW / pr_review
+	bodyN13, _ := json.Marshal(map[string]any{
+		"id":            "task_1155",
+		"workflow_node": "N13",
+		"pr_url":        "https://github.com/CurrentMobile/ngl-ios/pull/609",
+		"pr_number":     609,
+	})
+	reqN13 := httptest.NewRequest(http.MethodPost, "/v1/tasks", bytes.NewReader(bodyN13))
+	recN13 := httptest.NewRecorder()
+	server.handleTasks(recN13, reqN13)
+
+	afterN13, _ := db.GetTaskByID("task_1155")
+	if afterN13.Status != "REVIEW" || afterN13.Substatus != "pr_review" {
+		t.Errorf("Expected REVIEW/pr_review at N13, got %s/%s", afterN13.Status, afterN13.Substatus)
+	}
+	if afterN13.Workstreams[0].Status != "REVIEW" || afterN13.Workstreams[0].WorkflowNode != "N13" {
+		t.Errorf("Expected workstream REVIEW/N13, got %+v", afterN13.Workstreams)
+	}
+
+	// 3. Monotonic Guard on POST /v1/tasks: sending N4 while PR is open must NOT downgrade REVIEW back to IN_PROGRESS
+	bodyRegress, _ := json.Marshal(map[string]any{
+		"id":            "task_1155",
+		"workflow_node": "N4",
+	})
+	reqReg := httptest.NewRequest(http.MethodPost, "/v1/tasks", bytes.NewReader(bodyRegress))
+	recReg := httptest.NewRecorder()
+	server.handleTasks(recReg, reqReg)
+
+	afterReg, _ := db.GetTaskByID("task_1155")
+	if afterReg.Status != "REVIEW" || afterReg.Workstreams[0].Status != "REVIEW" || afterReg.Workstreams[0].WorkflowNode != "N13" {
+		t.Errorf("Expected monotonic guard to preserve REVIEW/N13, got task=%s, ws=%+v", afterReg.Status, afterReg.Workstreams)
+	}
+}
+
+func TestInsertTaskWorker_DeactivatesPriorWorkerForSameRepo(t *testing.T) {
+	dbFile := filepath.Join(t.TempDir(), "test_single_active_worker.db")
+	db, err := InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := &Server{db: db}
+	now := time.Now().UTC()
+
+	task := &Task{
+		ID:          "task_1141",
+		Title:       "NGL-1141 Bump firebase-ios-sdk",
+		GroupName:   "Modemobile",
+		ProjectName: "NGL/ngl-ios",
+		Status:      "IN_PROGRESS",
+		Substatus:   "active",
+		Workers: []TaskWorker{
+			{
+				TaskID:       "task_1141",
+				SessionID:    "claude-code:macbook:worker-old",
+				Agent:        "claude-code",
+				Host:         "macbook",
+				IsActive:     true,
+				RepoNodePath: "Modemobile/NGL/ngl-ios",
+				WorkflowNode: "N4",
+				AssignedAt:   now.Add(-time.Hour),
+			},
+			{
+				TaskID:       "task_1141",
+				SessionID:    "claude-code:legion:worker-android",
+				Agent:        "claude-code",
+				Host:         "legion",
+				IsActive:     true,
+				RepoNodePath: "Modemobile/NGL/ngl-android",
+				WorkflowNode: "N3",
+				AssignedAt:   now.Add(-30 * time.Minute),
+			},
+		},
+	}
+	if err := db.CreateTask(task); err != nil {
+		t.Fatalf("CreateTask failed: %v", err)
+	}
+
+	// Spawn/register new worker on macmini for the SAME repo (Modemobile/NGL/ngl-ios)
+	err = db.InsertTaskWorker(&TaskWorker{
+		TaskID:       "task_1141",
+		SessionID:    "claude-code:macmini:worker-new",
+		Agent:        "claude-code",
+		Host:         "macmini",
+		IsActive:     true,
+		RepoNodePath: "Modemobile/NGL/ngl-ios",
+		WorkflowNode: "N5",
+		AssignedAt:   now,
+	})
+	if err != nil {
+		t.Fatalf("InsertTaskWorker failed: %v", err)
+	}
+
+	// Update workflow_node to N13 for Modemobile/NGL/ngl-ios
+	bodyUp, _ := json.Marshal(map[string]any{
+		"id":             "task_1141",
+		"repo_node_path": "Modemobile/NGL/ngl-ios",
+		"workflow_node":  "N13",
+	})
+	reqUp := httptest.NewRequest(http.MethodPost, "/v1/tasks", bytes.NewReader(bodyUp))
+	recUp := httptest.NewRecorder()
+	server.handleTasks(recUp, reqUp)
+
+	updated, _ := db.GetTaskByID("task_1141")
+	workerMap := make(map[string]TaskWorker)
+	for _, w := range updated.Workers {
+		workerMap[w.SessionID] = w
+	}
+
+	oldWorker := workerMap["claude-code:macbook:worker-old"]
+	newWorker := workerMap["claude-code:macmini:worker-new"]
+	androidWorker := workerMap["claude-code:legion:worker-android"]
+
+	if oldWorker.IsActive {
+		t.Errorf("Expected old macbook worker for ngl-ios to be deactivated (IsActive=false)")
+	}
+	if oldWorker.WorkflowNode != "N4" {
+		t.Errorf("Expected inactive old worker to retain historical WorkflowNode N4, got %q", oldWorker.WorkflowNode)
+	}
+	if !newWorker.IsActive || newWorker.WorkflowNode != "N13" {
+		t.Errorf("Expected new macmini worker to be active at N13, got IsActive=%v, Node=%q", newWorker.IsActive, newWorker.WorkflowNode)
+	}
+	if !androidWorker.IsActive {
+		t.Errorf("Expected worker on different repo (ngl-android) to remain active")
+	}
+}
+
+func TestHandleTasks_StatusNormalizationClearsStaleSubstatus(t *testing.T) {
+	dbFile := filepath.Join(t.TempDir(), "test_stale_substatus.db")
+	db, err := InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := &Server{db: db}
+	now := time.Now().UTC()
+
+	task := &Task{
+		ID:              "task_phase5",
+		Title:           "Mobile Phase 5 Work Board Alignment",
+		GroupName:       "Personal",
+		ProjectName:     "Ackbar",
+		Status:          "IN_PROGRESS",
+		Substatus:       "working",
+		BlockerQuestion: "Old question",
+		Workers: []TaskWorker{
+			{
+				TaskID:     "task_phase5",
+				SessionID:  "sess_phase5",
+				Agent:      "claude-code",
+				Host:       "legion",
+				IsActive:   true,
+				AssignedAt: now,
+			},
+		},
+		Workstreams: []TaskWorkstream{
+			{
+				TaskID:       "task_phase5",
+				RepoNodePath: "Personal/Ackbar",
+				Status:       "IN_PROGRESS",
+				UpdatedAt:    now,
+			},
+		},
+	}
+	if err := db.CreateTask(task); err != nil {
+		t.Fatalf("CreateTask failed: %v", err)
+	}
+
+	// Update status to DONE without passing substatus or workflow_node
+	bodyDone, _ := json.Marshal(map[string]any{
+		"id":     "task_phase5",
+		"status": "DONE",
+	})
+	reqDone := httptest.NewRequest(http.MethodPost, "/v1/tasks", bytes.NewReader(bodyDone))
+	recDone := httptest.NewRecorder()
+	server.handleTasks(recDone, reqDone)
+	if recDone.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK, got %d", recDone.Code)
+	}
+
+	updated, _ := db.GetTaskByID("task_phase5")
+	if updated.Status != "DONE" || updated.Substatus != "completed" {
+		t.Errorf("Expected DONE/completed, got %s/%s", updated.Status, updated.Substatus)
+	}
+	if updated.BlockerQuestion != "" {
+		t.Errorf("Expected BlockerQuestion cleared on DONE, got %q", updated.BlockerQuestion)
+	}
+	if updated.CompletedAt == nil {
+		t.Errorf("Expected CompletedAt set on DONE")
+	}
+	if len(updated.Workers) != 1 || updated.Workers[0].IsActive {
+		t.Errorf("Expected worker deactivated on DONE, got %+v", updated.Workers)
+	}
+	if len(updated.Workstreams) != 1 || updated.Workstreams[0].Status != "DONE" {
+		t.Errorf("Expected workstream status DONE, got %+v", updated.Workstreams)
+	}
+}
+
+func TestApplyHookStateTransition_PreservesActivityOnMidSessionStart(t *testing.T) {
+	dbFile := filepath.Join(t.TempDir(), "test_hook_activity.db")
+	db, err := InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := &Server{db: db}
+	sess := &Session{
+		ID:          "claude-code:legion:3d24eef2-5087-49eb-a9e2-b77d75eb586f",
+		Agent:       "claude-code",
+		Host:        "legion",
+		NativeID:    "3d24eef2-5087-49eb-a9e2-b77d75eb586f",
+		State:       StateIdle,
+		Activity:    "Awaiting user prompt (N13)",
+		StartedAt:   time.Now().Add(-2 * time.Hour),
+		LastEventAt: time.Now().Add(-10 * time.Minute),
+	}
+
+	// Subsequent SessionStart with generic "Session started" must NOT overwrite established Activity
+	evGeneric := &Event{
+		Agent:       "claude-code",
+		NativeID:    sess.NativeID,
+		EventName:   "SessionStart",
+		State:       StateIdle,
+		Activity:    "Session started",
+		LastEventAt: time.Now(),
+	}
+	server.applyHookStateTransition(sess, evGeneric, sess.ID, false, false)
+	if sess.Activity != "Awaiting user prompt (N13)" {
+		t.Errorf("Expected existing activity 'Awaiting user prompt (N13)' preserved, got %q", sess.Activity)
+	}
+
+	// Explicit compaction activity ("Context compacted") IS applied
+	evCompact := &Event{
+		Agent:       "claude-code",
+		NativeID:    sess.NativeID,
+		EventName:   "SessionStart",
+		State:       StateIdle,
+		Activity:    "Context compacted",
+		LastEventAt: time.Now(),
+	}
+	server.applyHookStateTransition(sess, evCompact, sess.ID, false, false)
+	if sess.Activity != "Context compacted" {
+		t.Errorf("Expected activity 'Context compacted', got %q", sess.Activity)
+	}
+}

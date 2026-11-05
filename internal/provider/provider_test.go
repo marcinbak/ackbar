@@ -1654,3 +1654,35 @@ func TestAntigravityExtractTranscript_StripsUserRequestAndMetadataTags(t *testin
 		t.Errorf("Expected subPrompt 'Check <SYSTEM_MESSAGE> handling', got %q", subPrompt)
 	}
 }
+
+func TestClaudeProvider_ParseHook_SessionStartSource(t *testing.T) {
+	cp := &ClaudeProvider{}
+	uuid := "3d24eef2-5087-49eb-a9e2-b77d75eb586f"
+
+	// 1. Default startup SessionStart -> "Session started" with non-zero StartedAt
+	evStart, err := cp.ParseHook("SessionStart", []byte(`{"session_id":"`+uuid+`","hook_event_name":"SessionStart","source":"startup"}`))
+	if err != nil || evStart == nil {
+		t.Fatalf("ParseHook startup failed: %v", err)
+	}
+	if evStart.Activity != "Session started" || evStart.StartedAt.IsZero() {
+		t.Errorf("Expected 'Session started' with StartedAt set, got %q (StartedAt=%v)", evStart.Activity, evStart.StartedAt)
+	}
+
+	// 2. Context compaction SessionStart -> "Context compacted" with zero StartedAt
+	evCompact, err := cp.ParseHook("SessionStart", []byte(`{"session_id":"`+uuid+`","hook_event_name":"SessionStart","source":"compact"}`))
+	if err != nil || evCompact == nil {
+		t.Fatalf("ParseHook compact failed: %v", err)
+	}
+	if evCompact.Activity != "Context compacted" || !evCompact.StartedAt.IsZero() {
+		t.Errorf("Expected 'Context compacted' with zero StartedAt, got %q (StartedAt=%v)", evCompact.Activity, evCompact.StartedAt)
+	}
+
+	// 3. Resume SessionStart -> "Session resumed" with zero StartedAt
+	evResume, err := cp.ParseHook("SessionStart", []byte(`{"session_id":"`+uuid+`","hook_event_name":"SessionStart","source":"resume"}`))
+	if err != nil || evResume == nil {
+		t.Fatalf("ParseHook resume failed: %v", err)
+	}
+	if evResume.Activity != "Session resumed" || !evResume.StartedAt.IsZero() {
+		t.Errorf("Expected 'Session resumed' with zero StartedAt, got %q (StartedAt=%v)", evResume.Activity, evResume.StartedAt)
+	}
+}

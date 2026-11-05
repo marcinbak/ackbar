@@ -623,7 +623,11 @@ func (s *Server) applyHookStateTransition(sess *Session, event *Event, sessionID
 	} else {
 		sess.Blocked = event.Blocked
 	}
-	sess.Activity = event.Activity
+	if evtLower == "sessionstart" && !sess.LastEventAt.IsZero() && sess.Activity != "" && sess.Activity != "Session started" && event.Activity == "Session started" {
+		// Preserve existing activity on mid-session SessionStart (e.g. context compaction or reconnect)
+	} else {
+		sess.Activity = event.Activity
+	}
 
 	// Only update LastEventAt on initial session creation or genuine user interaction:
 	// - Brand new session initialization (sess.LastEventAt is zero)

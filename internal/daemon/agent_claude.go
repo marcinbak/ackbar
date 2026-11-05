@@ -129,12 +129,21 @@ func (a ClaudeAgentAdapter) SetupProfileDir(home, name, configDir string) (strin
 		for _, item := range existingList {
 			if m, ok := item.(map[string]interface{}); ok {
 				if innerHooks, ok := m["hooks"].([]interface{}); ok {
+					isAckbarHook := false
 					for _, h := range innerHooks {
 						if hm, ok := h.(map[string]interface{}); ok {
-							if hm["url"] == hookURL {
-								hasHook = true
+							u, _ := hm["url"].(string)
+							cmdStr, _ := hm["command"].(string)
+							if u == hookURL || strings.Contains(u, "/v1/hooks/claude-code") || strings.Contains(cmdStr, "ackbar-hook") {
+								isAckbarHook = true
 							}
 						}
+					}
+					if isAckbarHook {
+						if hasHook {
+							continue
+						}
+						hasHook = true
 					}
 					validList = append(validList, item)
 				}

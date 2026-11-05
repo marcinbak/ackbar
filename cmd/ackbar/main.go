@@ -376,12 +376,21 @@ func runSetupHooks() error {
 				for _, item := range existingList {
 					if m, ok := item.(map[string]interface{}); ok {
 						if innerHooks, ok := m["hooks"].([]interface{}); ok {
+							isAckbarHook := false
 							for _, h := range innerHooks {
 								if hm, ok := h.(map[string]interface{}); ok {
-									if hm["url"] == "http://127.0.0.1:7777/v1/hooks/claude-code" {
-										hasHook = true
+									u, _ := hm["url"].(string)
+									cmdStr, _ := hm["command"].(string)
+									if strings.Contains(u, "/v1/hooks/claude-code") || strings.Contains(cmdStr, "ackbar-hook") {
+										isAckbarHook = true
 									}
 								}
+							}
+							if isAckbarHook {
+								if hasHook {
+									continue
+								}
+								hasHook = true
 							}
 							validList = append(validList, item)
 						}
