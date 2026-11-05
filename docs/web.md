@@ -116,6 +116,18 @@ It is embedded directly into the `ackbard` Go binary and served on `http://127.0
 * **Commuter Quick-Reply Chips (`.chat-suggested-chips`):**
   * Displays interactive drill-down buttons (e.g. `[Hear Schema Changes]`, `[Hear Open Question]`, `[Approve Plan]`) below assistant turns for 1-tap/hands-free plan exploration.
 
+### 🎛️ 10. Headless UX Controls, Interactive Tool Cards & Autocomplete (`chat.js`)
+* **Composer Status Pill Bar & `/config` Popover (`.chat-composer-bar`, `.chat-config-popover`):**
+  * Displays interactive pills above the chat input for **Model** (`claude-opus-4-6`, `claude-sonnet-4-6`, `claude-haiku-4-5`, `gemini-2.5-pro`, `gemini-2.5-flash`), **Reasoning Effort** (`low`, `medium`, `high`, `max`), **Execution Mode** (`⚡ Auto Mode` vs `📝 Plan Mode`), and **Context Usage** (`% Context` gauge derived from `session.context_pct`).
+  * Clicking `⚙️ /config` (or typing `/config`) opens the Session Configuration popover to adjust model, effort, and execution mode (`PATCH /v1/sessions/{id}/config`) and inspect context window usage.
+* **`/` Command and `@` File Autocomplete (`.chat-autocomplete-menu`):**
+  * Typing `/` at the start of input queries `GET /v1/sessions/{id}/suggestions?kind=commands`, surfacing built-in client actions (`/config`, `/plan`, `/clear`, `/compact`, `/handover`, `/terminal`) alongside discovered workspace workflows (`.claude/commands/*.md`, `.agents/workflows/*.md`) and skills (`SKILL.md`).
+  * Typing `@<query>` after start-of-input or whitespace queries `GET /v1/sessions/{id}/suggestions?kind=files` to fuzzy-match relative workspace files.
+* **Interactive Question, Plan Approval & Task Cards:**
+  * **`AskUserQuestion` / `ask_question` (`.chat-interactive-card`):** Renders single- and multi-question forms supporting radio buttons, `multi_select` checkboxes, and custom `"Other"` text answers, submitting directly to `POST /v1/sessions/respond`.
+  * **`ExitPlanMode` (`.card-approval`):** Renders the markdown plan preview with **`✓ Approve & Execute`** (auto-switching the session from `Plan Mode` to `Auto Mode`) and **`Request Changes`** feedback input.
+  * **`TodoWrite` / `todo_write` (`.chat-todo-card`):** Renders a read-only live Task Progress checklist (`completed`, `in_progress`, `pending`) both during live SSE streaming and in historical transcripts.
+
 
 ---
 

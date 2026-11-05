@@ -17,7 +17,8 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 ### Modular Daemon File Layout (`internal/daemon/`)
 * **`server.go`:** Core `Server` struct, HTTP `Mux()` route registration, token `authMiddleware`, CORS wrapper, SSE `/v1/events` broadcaster, background loop, version/update/settings/shutdown handlers, and normalized OS hostname fallback (`DefaultSystemHostName`).
 * **`server_hooks.go`:** Hook ingestion (`/v1/hooks/<agent>`), per-session FIFO serialization (`reserveSessionHook`), managed-only session resolution, spawning session adoption, in-place `/clear` / `/reset` turn rotation, and hook-driven subagent tracking.
-* **`server_sessions.go`:** Session listing, maintenance purge, remote-host proxy resolution (`resolveSessionOrProxy`), lifecycle control actions (`/v1/sessions/control`), interactive response dispatch (`applyInteractiveResponse`, `/v1/sessions/respond`), take-wheel (`/v1/sessions/take-wheel`), session spawn (`/v1/sessions/spawn`), and meta-routing (`/v1/meta/resolve`).
+* **`server_sessions.go`:** Session listing, maintenance purge, remote-host proxy resolution (`resolveSessionOrProxy`), lifecycle control actions (`/v1/sessions/control`), session configuration (`PATCH /v1/sessions/{id}/config`), interactive response dispatch (`applyInteractiveResponse`, `/v1/sessions/respond`), take-wheel (`/v1/sessions/take-wheel`), session spawn (`/v1/sessions/spawn`), and meta-routing (`/v1/meta/resolve`).
+* **`server_suggestions.go`:** Slash command (`/`) and workspace file (`@`) autocomplete endpoint (`GET /v1/sessions/{id}/suggestions?kind=commands|files&q=...`) with 10-second directory caching and bounded `git ls-files` / `filepath.WalkDir` traversal.
 * **`server_chat.go`:** Headless/tmux prompt submission (`/v1/sessions/prompt`), prompt queue management, SSE chat streaming (`/v1/sessions/chat/stream`), turn cancellation, automated session handover (`/v1/sessions/handover`), and transcript endpoints.
 * **`server_subagents.go`:** Subagent discovery endpoint (`/v1/sessions/subagents`) and in-memory/disk subagent lifecycle reconciliation.
 * **`server_accounts.go`:** Multi-account profile management (`/v1/accounts`), agent discovery (`/v1/agents/discovery`), provider catalog (`/v1/providers`), and fleet propagation.
@@ -44,7 +45,9 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 | `POST` | `/v1/sessions/bind-supervisor` | Auto-binds a Supervisor session (`is_supervisor = true`) to a logical project `node_path` and `title` on Turn 1, broadcasting SSE and LWW sync. |
 | `POST` | `/v1/meta/resolve` | Derives host, agent, group, and existing session match from prompt via Jev AI / heuristics. |
 | `POST` | `/v1/hooks/{agent}` | Ingests agent lifecycle and tool hook events with in-place `/clear` rotation detection. |
-| `POST` | `/v1/sessions/control` | Executes control actions: `resume`, `restart`, `kill`, `move`, `rename`, `delete`, `handover`, `later`, `unlater`, `done`, `active`. |
+| `POST` | `/v1/sessions/control` | Executes control actions: `resume`, `restart`, `kill`, `move`, `rename`, `delete`, `handover`, `later`, `unlater`, `done`, `active`, `update_config`, `respond`. |
+| `PATCH` | `/v1/sessions/{id}/config` | Updates persisted session configuration (`model`, `effort`, `permission_mode`: `bypassPermissions` or `plan`). |
+| `GET` | `/v1/sessions/{id}/suggestions` | Returns `/` command/skill suggestions (`kind=commands`) or `@` relative file path suggestions (`kind=files&q=...`). |
 | `POST` | `/v1/sessions/handover`| Initiates automated session handover, briefing extraction, and context rotation. |
 | `POST` | `/v1/sessions/mark-read` | Marks a session as read (`is_unread = false`), clearing visual unread cues. |
 | `GET` | `/v1/sessions/transcript`| Retrieves extracted conversation transcript (JSON or formatted Markdown). |
@@ -103,6 +106,8 @@ Headless sessions (`engine_type = "headless"`, `tmux_name = ""`) execute turns d
   * **Google Antigravity:** Runs `agy -p <prompt> --output-format stream-json --dangerously-skip-permissions` on the first turn and adds `--conversation <native_id>` once initialized. When Turn 1 emits its `init` event with the canonical `conversation_id`, `handleAntigravityInit` migrates active processes, prompt queues, pause flags, and SSE chat stream subscribers (`h.subs`) from the temporary spawn ID (`oldID`) to the canonical session ID (`newID`).
   * **Safe First-Turn Recovery:** `sess.FirstPrompt` and `sess.LastPrompt` are persisted only after the `init` event arrives or `cmd.Wait()` succeeds, ensuring an immediate startup failure on Turn 1 does not break Turn 2 with `--conversation` on an uninitialized UUID.
   * **Initial Prompt on Spawn:** Passing a non-empty `prompt` to `POST /v1/sessions/spawn` with `engine_type = "headless"` immediately triggers Turn 1 in the background.
+  * **Session Configuration (`buildArgs`):** Passes `--model <model>`, `--effort <effort>` (for Claude Code), and `--permission-mode plan` when `permission_mode == "plan"` (defaulting to `--dangerously-skip-permissions` when `bypassPermissions`).
+  * **Interactive Tool Interception (`triggerInteractiveBlock`):** When `AskUserQuestion`, `ask_question`, or `ExitPlanMode` is emitted in the stream, `HeadlessRunner` immediately persists `StateBlocked` with structured `Blocked.Questions` (or `BlockApproval`), pauses the prompt queue, emits an `interactive_block` SSE event, and gracefully interrupts the child process (`SIGINT` with `SIGKILL` fallback). Submitting `"Approve Plan"` via `/v1/sessions/respond` drains the stopping process (`ClearInteractiveBlockAndWait`), auto-promotes `permission_mode` from `plan` to `bypassPermissions`, and resumes execution.
 
 ---
 
