@@ -1,0 +1,529 @@
+package daemon
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/json"
+	"io/fs"
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+)
+
+type CommandSuggestion struct {
+	Name          string `json:"name"`    // e.g. "config", "clear", "dev-workflow"
+	Trigger       string `json:"trigger"` // e.g. "/config", "/dev-workflow"
+	Description   string `json:"description"`
+	Category      string `json:"category"`       // "Session Control", "Workspace Command", "Skill"
+	ExecutionMode string `json:"execution_mode"` // "client_action" | "prompt"
+}
+
+type FileSuggestion struct {
+	Path  string `json:"path"` // relative to sess.Cwd
+	Name  string `json:"name"` // base name
+	IsDir bool   `json:"is_dir"`
+}
+
+type cachedFileList struct {
+	files     []FileSuggestion
+	expiresAt time.Time
+}
+
+var (
+	suggestionCacheMu sync.Mutex
+	suggestionCache   = make(map[string]cachedFileList)
+)
+
+func getBuiltinCommands() []CommandSuggestion {
+	return []CommandSuggestion{
+		{
+			Name:          "config",
+			Trigger:       "/config",
+			Description:   "Configure model, reasoning effort, plan mode, and view context usage",
+			Category:      "Session Control",
+			ExecutionMode: "client_action",
+		},
+		{
+			Name:          "plan",
+			Trigger:       "/plan",
+			Description:   "Toggle Plan Mode (read-only planning vs auto execution)",
+			Category:      "Session Control",
+			ExecutionMode: "client_action",
+		},
+		{
+			Name:          "clear",
+			Trigger:       "/clear",
+			Description:   "Start a fresh conversation in this directory",
+			Category:      "Session Control",
+			ExecutionMode: "client_action",
+		},
+		{
+			Name:          "compact",
+			Trigger:       "/compact",
+			Description:   "Summarize and compact conversation context",
+			Category:      "Session Control",
+			ExecutionMode: "client_action",
+		},
+		{
+			Name:          "handover",
+			Trigger:       "/handover",
+			Description:   "Hand over session context to another agent or new session",
+			Category:      "Session Control",
+			ExecutionMode: "client_action",
+		},
+		{
+			Name:          "terminal",
+			Trigger:       "/terminal",
+			Description:   "Take the wheel in an interactive tmux terminal",
+			Category:      "Session Control",
+			ExecutionMode: "client_action",
+		},
+	}
+}
+
+// extractMarkdownDescription reads frontmatter description: or the first non-heading sentence
+func extractMarkdownDescription(filePath string) string {
+	f, err := os.Open(filePath)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	inFrontmatter := false
+	firstTextLine := ""
+
+	lineIdx := 0
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		lineIdx++
+
+		if lineIdx == 1 && line == "---" {
+			inFrontmatter = true
+			continue
+		}
+
+		if inFrontmatter {
+			if line == "---" {
+				inFrontmatter = false
+				continue
+			}
+			lower := strings.ToLower(line)
+			if strings.HasPrefix(lower, "description:") {
+				desc := strings.TrimSpace(line[len("description:"):])
+				desc = strings.Trim(desc, `"'`)
+				if desc != "" {
+					return desc
+				}
+			}
+			continue
+		}
+
+		if line == "" {
+			continue
+		}
+
+		// First non-frontmatter line
+		if firstTextLine == "" {
+			if strings.HasPrefix(line, "#") {
+				// Strip leading hashes
+				heading := strings.TrimLeft(line, "# ")
+				if heading != "" {
+					firstTextLine = heading
+				}
+			} else {
+				return line
+			}
+		} else if !strings.HasPrefix(line, "#") {
+			return line
+		}
+
+		if lineIdx > 40 {
+			break
+		}
+	}
+
+	return firstTextLine
+}
+
+func scanMarkdownCommands(dir, category string) []CommandSuggestion {
+	var results []CommandSuggestion
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if strings.HasSuffix(strings.ToLower(name), ".md") {
+			stem := strings.TrimSuffix(name, filepath.Ext(name))
+			fullPath := filepath.Join(dir, name)
+			desc := extractMarkdownDescription(fullPath)
+			if desc == "" {
+				desc = "Run workspace workflow " + stem
+			}
+			results = append(results, CommandSuggestion{
+				Name:          stem,
+				Trigger:       "/" + stem,
+				Description:   desc,
+				Category:      category,
+				ExecutionMode: "prompt",
+			})
+		}
+	}
+	return results
+}
+
+func scanSkillsInDir(parentDir string) []CommandSuggestion {
+	var results []CommandSuggestion
+	entries, err := os.ReadDir(parentDir)
+	if err != nil {
+		return nil
+	}
+
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		skillName := e.Name()
+		skillFile := filepath.Join(parentDir, skillName, "SKILL.md")
+		if stat, err := os.Stat(skillFile); err == nil && !stat.IsDir() {
+			desc := extractMarkdownDescription(skillFile)
+			if desc == "" {
+				desc = "Skill: " + skillName
+			}
+			results = append(results, CommandSuggestion{
+				Name:          skillName,
+				Trigger:       "/" + skillName,
+				Description:   desc,
+				Category:      "Skill",
+				ExecutionMode: "prompt",
+			})
+		}
+	}
+	return results
+}
+
+func (s *Server) collectCommands(cwd string) []CommandSuggestion {
+	var cmds []CommandSuggestion
+	seen := make(map[string]bool)
+
+	// 1. Builtins
+	for _, b := range getBuiltinCommands() {
+		cmds = append(cmds, b)
+		seen[b.Name] = true
+	}
+
+	// 2. Workspace Commands (.claude/commands/*.md & .agents/workflows/*.md)
+	if cwd != "" {
+		for _, c := range scanMarkdownCommands(filepath.Join(cwd, ".claude", "commands"), "Workspace Command") {
+			if !seen[c.Name] {
+				cmds = append(cmds, c)
+				seen[c.Name] = true
+			}
+		}
+		for _, c := range scanMarkdownCommands(filepath.Join(cwd, ".agents", "workflows"), "Workspace Command") {
+			if !seen[c.Name] {
+				cmds = append(cmds, c)
+				seen[c.Name] = true
+			}
+		}
+
+		// Workspace Skills
+		for _, sk := range scanSkillsInDir(filepath.Join(cwd, ".agents", "skills")) {
+			if !seen[sk.Name] {
+				cmds = append(cmds, sk)
+				seen[sk.Name] = true
+			}
+		}
+		for _, sk := range scanSkillsInDir(filepath.Join(cwd, ".claude", "skills")) {
+			if !seen[sk.Name] {
+				cmds = append(cmds, sk)
+				seen[sk.Name] = true
+			}
+		}
+	}
+
+	// 3. Global Skills
+	home, _ := os.UserHomeDir()
+	if home != "" {
+		globalSkillDirs := []string{
+			filepath.Join(home, ".gemini", "config", "skills"),
+			filepath.Join(home, ".claude", "skills"),
+			filepath.Join(home, ".agents", "skills"),
+			filepath.Join(home, ".config", "skills"),
+		}
+		if s.db != nil {
+			repoPath, _ := DiscoverSkillsRepo(home, s.db)
+			if repoPath != "" {
+				globalSkillDirs = append(globalSkillDirs, repoPath, filepath.Join(repoPath, "skills"))
+			}
+		}
+		for _, dir := range globalSkillDirs {
+			for _, sk := range scanSkillsInDir(dir) {
+				if !seen[sk.Name] {
+					cmds = append(cmds, sk)
+					seen[sk.Name] = true
+				}
+			}
+		}
+	}
+
+	return cmds
+}
+
+func (s *Server) getCachedFiles(cwd string) []FileSuggestion {
+	suggestionCacheMu.Lock()
+	cached, ok := suggestionCache[cwd]
+	if ok && time.Now().Before(cached.expiresAt) {
+		suggestionCacheMu.Unlock()
+		return cached.files
+	}
+	suggestionCacheMu.Unlock()
+
+	files := s.populateFiles(cwd)
+
+	suggestionCacheMu.Lock()
+	suggestionCache[cwd] = cachedFileList{
+		files:     files,
+		expiresAt: time.Now().Add(10 * time.Second),
+	}
+	suggestionCacheMu.Unlock()
+
+	return files
+}
+
+func (s *Server) populateFiles(cwd string) []FileSuggestion {
+	if cwd == "" {
+		return nil
+	}
+
+	// 1. Try git ls-files
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", "-C", cwd, "ls-files", "--cached", "--others", "--exclude-standard")
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	if err := cmd.Run(); err == nil && stdout.Len() > 0 {
+		var list []FileSuggestion
+		scanner := bufio.NewScanner(&stdout)
+		count := 0
+		for scanner.Scan() {
+			line := strings.TrimSpace(scanner.Text())
+			if line == "" {
+				continue
+			}
+			list = append(list, FileSuggestion{
+				Path:  line,
+				Name:  filepath.Base(line),
+				IsDir: false,
+			})
+			count++
+			if count >= 8000 {
+				break
+			}
+		}
+		if len(list) > 0 {
+			return list
+		}
+	}
+
+	// 2. Fallback to bounded filepath.WalkDir
+	var list []FileSuggestion
+	cleanRoot := filepath.Clean(cwd)
+	count := 0
+
+	ignoredDirs := map[string]bool{
+		".git":         true,
+		".worktrees":   true,
+		"node_modules": true,
+		"vendor":       true,
+		"build":        true,
+		"dist":         true,
+		"Library":      true,
+		".dart_tool":   true,
+		".gradle":      true,
+		"Pods":         true,
+	}
+
+	_ = filepath.WalkDir(cleanRoot, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if p == cleanRoot {
+			return nil
+		}
+
+		rel, err := filepath.Rel(cleanRoot, p)
+		if err != nil {
+			return nil
+		}
+
+		// Depth limit check (maxDepth = 4)
+		depth := strings.Count(rel, string(filepath.Separator))
+		if depth > 4 {
+			if d.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
+
+		base := d.Name()
+		if d.IsDir() {
+			if ignoredDirs[base] {
+				return fs.SkipDir
+			}
+			if strings.HasPrefix(base, ".") && base != ".claude" && base != ".agents" {
+				return fs.SkipDir
+			}
+			return nil
+		}
+
+		list = append(list, FileSuggestion{
+			Path:  filepath.ToSlash(rel),
+			Name:  base,
+			IsDir: false,
+		})
+		count++
+		if count >= 5000 {
+			return fs.SkipAll
+		}
+		return nil
+	})
+
+	return list
+}
+
+func (s *Server) handleSessionSuggestions(w http.ResponseWriter, r *http.Request, sessionID string) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	sess := s.resolveSession(sessionID)
+	if sess == nil {
+		http.Error(w, "Session not found", http.StatusNotFound)
+		return
+	}
+
+	kind := strings.ToLower(r.URL.Query().Get("kind"))
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	qLower := strings.ToLower(q)
+
+	w.Header().Set("Content-Type", "application/json")
+
+	switch kind {
+	case "files":
+		allFiles := s.getCachedFiles(sess.Cwd)
+		if qLower == "" {
+			limit := 50
+			if len(allFiles) < limit {
+				limit = len(allFiles)
+			}
+			_ = json.NewEncoder(w).Encode(allFiles[:limit])
+			return
+		}
+
+		type scoredFile struct {
+			file  FileSuggestion
+			score int
+		}
+		var scored []scoredFile
+		for _, f := range allFiles {
+			nameLower := strings.ToLower(f.Name)
+			pathLower := strings.ToLower(f.Path)
+
+			score := 0
+			if strings.HasPrefix(nameLower, qLower) {
+				score = 3
+			} else if strings.Contains(nameLower, qLower) {
+				score = 2
+			} else if strings.Contains(pathLower, qLower) {
+				score = 1
+			}
+
+			if score > 0 {
+				scored = append(scored, scoredFile{file: f, score: score})
+			}
+		}
+
+		sort.Slice(scored, func(i, j int) bool {
+			if scored[i].score != scored[j].score {
+				return scored[i].score > scored[j].score
+			}
+			if len(scored[i].file.Path) != len(scored[j].file.Path) {
+				return len(scored[i].file.Path) < len(scored[j].file.Path)
+			}
+			return scored[i].file.Path < scored[j].file.Path
+		})
+
+		limit := 50
+		if len(scored) < limit {
+			limit = len(scored)
+		}
+		result := make([]FileSuggestion, limit)
+		for i := 0; i < limit; i++ {
+			result[i] = scored[i].file
+		}
+		_ = json.NewEncoder(w).Encode(result)
+
+	case "commands":
+		fallthrough
+	default:
+		allCmds := s.collectCommands(sess.Cwd)
+		// Clean query of leading slash if present
+		cleanQ := strings.TrimPrefix(qLower, "/")
+
+		if cleanQ == "" {
+			_ = json.NewEncoder(w).Encode(allCmds)
+			return
+		}
+
+		type scoredCmd struct {
+			cmd   CommandSuggestion
+			score int
+		}
+		var scored []scoredCmd
+		for _, c := range allCmds {
+			nameLower := strings.ToLower(c.Name)
+			descLower := strings.ToLower(c.Description)
+			catLower := strings.ToLower(c.Category)
+
+			score := 0
+			if strings.HasPrefix(nameLower, cleanQ) {
+				score = 3
+			} else if strings.Contains(nameLower, cleanQ) {
+				score = 2
+			} else if strings.Contains(descLower, cleanQ) || strings.Contains(catLower, cleanQ) {
+				score = 1
+			}
+
+			if score > 0 {
+				scored = append(scored, scoredCmd{cmd: c, score: score})
+			}
+		}
+
+		sort.Slice(scored, func(i, j int) bool {
+			if scored[i].score != scored[j].score {
+				return scored[i].score > scored[j].score
+			}
+			return scored[i].cmd.Name < scored[j].cmd.Name
+		})
+
+		result := make([]CommandSuggestion, len(scored))
+		for i := 0; i < len(scored); i++ {
+			result[i] = scored[i].cmd
+		}
+		_ = json.NewEncoder(w).Encode(result)
+	}
+}

@@ -575,8 +575,16 @@ func (s *Server) applyHookStateTransition(sess *Session, event *Event, sessionID
 
 	if isPureHeadless {
 		if !headlessRunning && (event.State == StateWorking || event.State == StateEnded) {
-			event.State = StateIdle
-			event.Activity = ""
+			if sess.State == StateBlocked && sess.Blocked != nil {
+				event.State = StateBlocked
+				event.Blocked = sess.Blocked
+				if event.Activity == "" {
+					event.Activity = sess.Activity
+				}
+			} else {
+				event.State = StateIdle
+				event.Activity = ""
+			}
 		} else if headlessRunning && (event.State == StateIdle || event.State == StateEnded) {
 			event.State = StateWorking
 			if sess.Activity != "" {

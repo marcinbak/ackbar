@@ -39,14 +39,23 @@ type BlockKind string
 const (
 	BlockPermission BlockKind = "permission"
 	BlockQuestion   BlockKind = "question"
+	BlockApproval   BlockKind = "approval"
 )
 
+type BlockedQuestion struct {
+	Question    string   `json:"question"`
+	Header      string   `json:"header,omitempty"`
+	Options     []string `json:"options,omitempty"`
+	MultiSelect bool     `json:"multi_select,omitempty"`
+}
+
 type Blocked struct {
-	Kind     BlockKind `json:"kind"`
-	Reason   string    `json:"reason"`
-	Since    time.Time `json:"since"`
-	Question string    `json:"question,omitempty"`
-	Options  []string  `json:"options,omitempty"`
+	Kind      BlockKind         `json:"kind"`
+	Reason    string            `json:"reason"`
+	Since     time.Time         `json:"since"`
+	Question  string            `json:"question,omitempty"`
+	Options   []string          `json:"options,omitempty"`
+	Questions []BlockedQuestion `json:"questions,omitempty"`
 }
 
 type Session struct {
@@ -88,6 +97,9 @@ type Session struct {
 	UpdatedAt         time.Time `json:"updated_at,omitempty"`
 	AccountID         string    `json:"account_id,omitempty"`  // profile/account identifier (e.g. "work", "personal", "default")
 	EngineType        string    `json:"engine_type,omitempty"` // "tmux" (default) or "headless"
+	Model             string    `json:"model,omitempty"`
+	Effort            string    `json:"effort,omitempty"`
+	PermissionMode    string    `json:"permission_mode,omitempty"`
 	RunningSubagents  int       `json:"running_subagents,omitempty"`
 	HostOffline       bool      `json:"host_offline,omitempty"`
 	MetadataUpdatedAt time.Time `json:"metadata_updated_at,omitempty"`
@@ -269,4 +281,66 @@ func ExtractAntigravityQuestionAndOptions(args map[string]interface{}) (string, 
 	}
 
 	return questionText, optionsList
+}
+
+// ExtractAntigravityQuestions extracts all BlockedQuestion items from tool input args
+func ExtractAntigravityQuestions(args map[string]interface{}) []BlockedQuestion {
+	if args == nil {
+		return nil
+	}
+
+	var questions []BlockedQuestion
+	if questionsRaw := parseInterfaceSlice(args["questions"]); len(questionsRaw) > 0 {
+		for _, qItem := range questionsRaw {
+			if qMap, ok := qItem.(map[string]interface{}); ok {
+				var bq BlockedQuestion
+				if qStr, ok := qMap["question"].(string); ok {
+					bq.Question = qStr
+				} else if pStr, ok := qMap["prompt"].(string); ok {
+					bq.Question = pStr
+				} else if tStr, ok := qMap["text"].(string); ok {
+					bq.Question = tStr
+				}
+				if hStr, ok := qMap["header"].(string); ok {
+					bq.Header = hStr
+				}
+				if ms, ok := qMap["multiSelect"].(bool); ok {
+					bq.MultiSelect = ms
+				} else if ms, ok := qMap["multi_select"].(bool); ok {
+					bq.MultiSelect = ms
+				} else if ms, ok := qMap["is_multi_select"].(bool); ok {
+					bq.MultiSelect = ms
+				}
+				bq.Options = extractOptionStrings(qMap["options"])
+				if bq.Question != "" || len(bq.Options) > 0 {
+					questions = append(questions, bq)
+				}
+			}
+		}
+	}
+
+	if len(questions) == 0 {
+		var bq BlockedQuestion
+		if qStr, ok := args["question"].(string); ok {
+			bq.Question = qStr
+		} else if promptStr, ok := args["prompt"].(string); ok {
+			bq.Question = promptStr
+		}
+		if hStr, ok := args["header"].(string); ok {
+			bq.Header = hStr
+		}
+		if ms, ok := args["multiSelect"].(bool); ok {
+			bq.MultiSelect = ms
+		} else if ms, ok := args["multi_select"].(bool); ok {
+			bq.MultiSelect = ms
+		} else if ms, ok := args["is_multi_select"].(bool); ok {
+			bq.MultiSelect = ms
+		}
+		bq.Options = extractOptionStrings(args["options"])
+		if bq.Question != "" || len(bq.Options) > 0 {
+			questions = append(questions, bq)
+		}
+	}
+
+	return questions
 }
