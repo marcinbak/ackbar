@@ -197,19 +197,26 @@ func TestBumpVersionScript(t *testing.T) {
 
 	tempDir := t.TempDir()
 
-	runCmd := func(name string, args ...string) (string, error) {
+	runCmdEnv := func(extraEnv []string, name string, args ...string) (string, error) {
 		cmd := exec.Command(name, args...)
 		cmd.Dir = tempDir
-		cmd.Env = append(os.Environ(),
+		env := append(os.Environ(),
 			"ACKBAR_BUMP_NO_FETCH=1",
 			"ACKBAR_BUMP_DATE=20261105",
 			"GIT_AUTHOR_NAME=Test",
 			"GIT_AUTHOR_EMAIL=test@example.com",
 			"GIT_COMMITTER_NAME=Test",
 			"GIT_COMMITTER_EMAIL=test@example.com",
+			"GITHUB_HEAD_REF=",
+			"GITHUB_EVENT_NAME=",
 		)
+		cmd.Env = append(env, extraEnv...)
 		out, runErr := cmd.CombinedOutput()
 		return string(out), runErr
+	}
+
+	runCmd := func(name string, args ...string) (string, error) {
+		return runCmdEnv(nil, name, args...)
 	}
 
 	// Initialize git repo
@@ -359,5 +366,25 @@ func TestBumpVersionScript(t *testing.T) {
 	}
 	if !strings.Contains(out, "Version bump check skipped for branch 'homebrew-formula-v20261105.01'") {
 		t.Errorf("Expected skip message, got:\n%s", out)
+	}
+
+	// 7. --check on main skips when not a pull_request, but fails when GITHUB_EVENT_NAME=pull_request and GITHUB_HEAD_REF=main
+	if out, err := runCmd("git", "checkout", "-f", "main"); err != nil {
+		t.Fatalf("git checkout -f main failed: %v, out: %s", err, out)
+	}
+	out, err = runCmd("./scripts/bump-version.sh", "--check")
+	if err != nil {
+		t.Fatalf("Expected --check to skip on main branch when not a PR, but failed: %v, out: %s", err, out)
+	}
+	if !strings.Contains(out, "Version bump check skipped for branch 'main'") {
+		t.Errorf("Expected skip on main branch, got:\n%s", out)
+	}
+
+	out, err = runCmdEnv([]string{"GITHUB_EVENT_NAME=pull_request", "GITHUB_HEAD_REF=main"}, "./scripts/bump-version.sh", "--check")
+	if err == nil {
+		t.Fatalf("Expected --check to fail on PR from main when version is unbumped, but succeeded. Output:\n%s", out)
+	}
+	if !strings.Contains(out, "must be bumped above origin/main") {
+		t.Errorf("Expected error message about unbumped version, got:\n%s", out)
 	}
 }

@@ -129,7 +129,7 @@ if [ "$CHECK_MODE" = true ]; then
     fi
 
     BRANCH="${GITHUB_HEAD_REF:-$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")}"
-    if [ "$BRANCH" = "main" ] || [ "$BRANCH" = "origin/main" ] || [[ "$BRANCH" == homebrew-formula-* ]] || { [ "${GITHUB_EVENT_NAME:-}" = "push" ] && [ "$BRANCH" = "main" ]; }; then
+    if [[ "$BRANCH" == homebrew-formula-* ]] || { [ "${GITHUB_EVENT_NAME:-}" != "pull_request" ] && { [ "$BRANCH" = "main" ] || [ "$BRANCH" = "origin/main" ]; }; }; then
         echo "Version bump check skipped for branch '$BRANCH'."
         exit 0
     fi
