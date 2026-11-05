@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"io/fs"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -410,9 +411,13 @@ func (s *Server) handleSessionSuggestions(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	sess := s.resolveSession(sessionID)
+	sess, proxied := s.resolveSessionOrProxy(w, r.Method, sessionID, "", nil, func(target *Session) string {
+		return "/v1/sessions/" + url.PathEscape(target.ID) + "/suggestions?" + r.URL.RawQuery
+	})
+	if proxied {
+		return
+	}
 	if sess == nil {
-		http.Error(w, "Session not found", http.StatusNotFound)
 		return
 	}
 

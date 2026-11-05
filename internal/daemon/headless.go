@@ -72,26 +72,28 @@ func StripBilledCredentials(env []string) []string {
 
 // HeadlessRunner coordinates turn-by-turn headless execution of agent sessions
 type HeadlessRunner struct {
-	mu                sync.RWMutex
-	processes         map[string]*exec.Cmd
-	subs              map[string][]chan ChatStreamEvent
-	queues            map[string][]*PromptQueueItem // sessionID -> queued prompts
-	paused            map[string]bool               // sessionID -> is queue paused
-	interactiveBlocks map[string]*Blocked           // sessionID -> pending interactive Blocked struct
-	db                *DB
-	broadcast         func(s *Session)
-	onTurnComplete    func(sessionID, nativeID string)
+	mu                     sync.RWMutex
+	processes              map[string]*exec.Cmd
+	subs                   map[string][]chan ChatStreamEvent
+	queues                 map[string][]*PromptQueueItem // sessionID -> queued prompts
+	paused                 map[string]bool               // sessionID -> is queue paused
+	interactiveBlocks      map[string]*Blocked           // sessionID -> pending interactive Blocked struct
+	respondedWhileStopping map[string]bool               // sessionID -> response arrived while stopping
+	db                     *DB
+	broadcast              func(s *Session)
+	onTurnComplete         func(sessionID, nativeID string)
 }
 
 func NewHeadlessRunner(db *DB, broadcast func(s *Session)) *HeadlessRunner {
 	return &HeadlessRunner{
-		processes:         make(map[string]*exec.Cmd),
-		subs:              make(map[string][]chan ChatStreamEvent),
-		queues:            make(map[string][]*PromptQueueItem),
-		paused:            make(map[string]bool),
-		interactiveBlocks: make(map[string]*Blocked),
-		db:                db,
-		broadcast:         broadcast,
+		processes:              make(map[string]*exec.Cmd),
+		subs:                   make(map[string][]chan ChatStreamEvent),
+		queues:                 make(map[string][]*PromptQueueItem),
+		paused:                 make(map[string]bool),
+		interactiveBlocks:      make(map[string]*Blocked),
+		respondedWhileStopping: make(map[string]bool),
+		db:                     db,
+		broadcast:              broadcast,
 	}
 }
 
@@ -161,6 +163,81 @@ func (h *HeadlessRunner) stopProcessGraceful(sessionID string) {
 				_ = p.Kill()
 			}
 		}(cmd.Process)
+	}
+}
+
+func (h *HeadlessRunner) triggerInteractiveBlock(sessionID string, sess *Session, toolName string, toolInput interface{}, blocked *Blocked, emitStreamEvt func(ChatStreamEvent)) {
+	h.setInteractiveBlock(sessionID, blocked)
+	if sess != nil && sess.ID != "" && sess.ID != sessionID {
+		h.setInteractiveBlock(sess.ID, blocked)
+	}
+
+	// Immediately persist blocked state to DB and broadcast before process exits
+	if sess != nil && h.db != nil {
+		sess.State = StateBlocked
+		sess.Blocked = blocked
+		if blocked.Kind == BlockApproval {
+			sess.Activity = "Waiting for plan approval"
+		} else {
+			sess.Activity = "Waiting for user response"
+		}
+		sess.LastStateChangeAt = time.Now()
+		sess.LastEventAt = time.Now()
+		sess.IsUnread = true
+		_ = h.db.SaveSession(sess)
+		if h.broadcast != nil {
+			h.broadcast(sess)
+		}
+	}
+
+	h.SetQueuePaused(sessionID, true)
+	emitStreamEvt(ChatStreamEvent{
+		SessionID: sessionID,
+		Type:      "interactive_block",
+		ToolName:  toolName,
+		ToolInput: toolInput,
+		Blocked:   blocked,
+		Timestamp: time.Now(),
+	})
+	h.stopProcessGraceful(sessionID)
+}
+
+// ClearInteractiveBlockAndWait clears interactive blocks for a session and waits for any stopping
+// headless turn to finish so that a newly launched turn does not collide with the previous process.
+func (h *HeadlessRunner) ClearInteractiveBlockAndWait(sessionID string, timeout time.Duration) {
+	h.mu.Lock()
+	delete(h.interactiveBlocks, sessionID)
+	h.respondedWhileStopping[sessionID] = true
+	parts := strings.Split(sessionID, ":")
+	if len(parts) == 3 {
+		nativeID := parts[2]
+		delete(h.interactiveBlocks, nativeID)
+		h.respondedWhileStopping[nativeID] = true
+	}
+
+	cmd := h.processes[sessionID]
+	if cmd == nil && len(parts) == 3 {
+		cmd = h.processes[parts[2]]
+	}
+	h.mu.Unlock()
+
+	if cmd == nil || cmd.Process == nil {
+		return
+	}
+
+	deadline := time.Now().Add(timeout)
+	killAfter := time.Now().Add(200 * time.Millisecond)
+	sigkillSent := false
+
+	for time.Now().Before(deadline) {
+		if !h.IsRunning(sessionID) {
+			break
+		}
+		if !sigkillSent && time.Now().After(killAfter) {
+			_ = cmd.Process.Kill()
+			sigkillSent = true
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 
@@ -800,6 +877,7 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 
 	// Update session state to WORKING
 	sess.State = StateWorking
+	sess.Blocked = nil
 	sess.Activity = "Thinking..."
 	sess.LastEventAt = time.Now()
 	sess.PID = cmd.Process.Pid
@@ -835,7 +913,16 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 		h.mu.Lock()
 		delete(h.processes, origSessionID)
 		delete(h.processes, sess.ID)
+		responded := h.respondedWhileStopping[sess.ID] || h.respondedWhileStopping[origSessionID]
+		delete(h.respondedWhileStopping, sess.ID)
+		delete(h.respondedWhileStopping, origSessionID)
 		h.mu.Unlock()
+
+		if responded {
+			// User already responded to this interactive block and launched a new turn.
+			// Do not overwrite session state in DB or emit conflicting events.
+			return
+		}
 
 		// Reload session from DB to preserve title/flags updated during the turn
 		if h.db != nil {
@@ -871,6 +958,7 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 			sess.LastPrompt = prompt
 		} else {
 			sess.State = StateIdle
+			sess.Blocked = nil
 			sess.Activity = ""
 			sess.LastEventAt = time.Now()
 			sess.PID = 0
@@ -1137,20 +1225,7 @@ func (h *HeadlessRunner) processStreamWithPrompt(sessionID string, r io.Reader, 
 							})
 
 							if blocked := parseInteractiveToolBlock(toolName, toolInput); blocked != nil {
-								h.setInteractiveBlock(sessionID, blocked)
-								if sess != nil && sess.ID != "" && sess.ID != sessionID {
-									h.setInteractiveBlock(sess.ID, blocked)
-								}
-								h.SetQueuePaused(sessionID, true)
-								emitStreamEvt(ChatStreamEvent{
-									SessionID: sessionID,
-									Type:      "interactive_block",
-									ToolName:  toolName,
-									ToolInput: toolInput,
-									Blocked:   blocked,
-									Timestamp: time.Now(),
-								})
-								h.stopProcessGraceful(sessionID)
+								h.triggerInteractiveBlock(sessionID, sess, toolName, toolInput, blocked, emitStreamEvt)
 							}
 						} else if state == "DONE" || state == "ERROR" {
 							toolOutput := ""
@@ -1316,20 +1391,7 @@ func (h *HeadlessRunner) processStreamWithPrompt(sessionID string, r io.Reader, 
 					})
 					if toolInput != nil {
 						if blocked := parseInteractiveToolBlock(toolName, toolInput); blocked != nil {
-							h.setInteractiveBlock(sessionID, blocked)
-							if sess != nil && sess.ID != "" && sess.ID != sessionID {
-								h.setInteractiveBlock(sess.ID, blocked)
-							}
-							h.SetQueuePaused(sessionID, true)
-							emitStreamEvt(ChatStreamEvent{
-								SessionID: sessionID,
-								Type:      "interactive_block",
-								ToolName:  toolName,
-								ToolInput: toolInput,
-								Blocked:   blocked,
-								Timestamp: time.Now(),
-							})
-							h.stopProcessGraceful(sessionID)
+							h.triggerInteractiveBlock(sessionID, sess, toolName, toolInput, blocked, emitStreamEvt)
 						}
 					}
 				} else if cbType == "text" && hasEmittedAssistantText {
@@ -1469,20 +1531,7 @@ func (h *HeadlessRunner) processStreamWithPrompt(sessionID string, r io.Reader, 
 									})
 								}
 								if blocked := parseInteractiveToolBlock(toolName, toolInput); blocked != nil {
-									h.setInteractiveBlock(sessionID, blocked)
-									if sess != nil && sess.ID != "" && sess.ID != sessionID {
-										h.setInteractiveBlock(sess.ID, blocked)
-									}
-									h.SetQueuePaused(sessionID, true)
-									emitStreamEvt(ChatStreamEvent{
-										SessionID: sessionID,
-										Type:      "interactive_block",
-										ToolName:  toolName,
-										ToolInput: toolInput,
-										Blocked:   blocked,
-										Timestamp: time.Now(),
-									})
-									h.stopProcessGraceful(sessionID)
+									h.triggerInteractiveBlock(sessionID, sess, toolName, toolInput, blocked, emitStreamEvt)
 								}
 							}
 						}

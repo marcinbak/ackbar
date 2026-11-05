@@ -407,3 +407,76 @@ func TestServer_RespondApprovePlan(t *testing.T) {
 		t.Errorf("expected PermissionMode to flip to bypassPermissions, got %q", updated.PermissionMode)
 	}
 }
+
+func TestServer_RespondTmuxApproveAndReject(t *testing.T) {
+	srv, db := setupTestServer(t)
+
+	sess := &Session{
+		ID:             "sess-tmux-approval",
+		Agent:          "claude-code",
+		Cwd:            t.TempDir(),
+		State:          StateBlocked,
+		EngineType:     EngineTmux,
+		Managed:        false, // Avoid real tmux calls in unit test
+		PermissionMode: "plan",
+		Blocked: &Blocked{
+			Kind:     BlockApproval,
+			Question: "Approve Plan?",
+			Options:  []string{"Approve Plan", "Request Changes"},
+		},
+		StartedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	if err := db.SaveSession(sess); err != nil {
+		t.Fatalf("SaveSession failed: %v", err)
+	}
+
+	// 1. "approve" action
+	body1, _ := json.Marshal(map[string]string{
+		"id":     sess.ID,
+		"action": "approve",
+	})
+	req1 := httptest.NewRequest(http.MethodPost, "/v1/sessions/respond", bytes.NewBuffer(body1))
+	req1.Header.Set("Content-Type", "application/json")
+	w1 := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(w1, req1)
+
+	if w1.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for approve on tmux session, got %d: %s", w1.Code, w1.Body.String())
+	}
+
+	// 2. "reject" action with feedback
+	body2, _ := json.Marshal(map[string]string{
+		"id":     sess.ID,
+		"action": "reject",
+		"value":  "Please re-plan using SQLite",
+	})
+	req2 := httptest.NewRequest(http.MethodPost, "/v1/sessions/respond", bytes.NewBuffer(body2))
+	req2.Header.Set("Content-Type", "application/json")
+	w2 := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(w2, req2)
+
+	if w2.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for reject on tmux session, got %d: %s", w2.Code, w2.Body.String())
+	}
+}
+
+func TestHeadlessRunner_ClearInteractiveBlockAndWait(t *testing.T) {
+	runner := NewHeadlessRunner(nil, nil)
+	sessionID := "sess-interactive-test"
+
+	runner.setInteractiveBlock(sessionID, &Blocked{Kind: BlockQuestion, Question: "Continue?"})
+	if runner.takeInteractiveBlock(sessionID) == nil {
+		t.Fatalf("expected interactive block to exist")
+	}
+
+	runner.setInteractiveBlock(sessionID, &Blocked{Kind: BlockQuestion, Question: "Continue?"})
+	runner.ClearInteractiveBlockAndWait(sessionID, 100*time.Millisecond)
+
+	if runner.takeInteractiveBlock(sessionID) != nil {
+		t.Errorf("expected interactive block to be cleared")
+	}
+	if !runner.respondedWhileStopping[sessionID] {
+		t.Errorf("expected respondedWhileStopping to be true")
+	}
+}

@@ -764,21 +764,27 @@ func (s *Server) applyInteractiveResponse(ctx context.Context, sess *Session, ac
 			if err := tmux.SendInput(ctx, sess.TmuxName, value, true); err != nil {
 				log.Printf("Warning: failed to send input to tmux session %s: %v", sess.TmuxName, err)
 			}
-		case "allow", "yes", "proceed", "1":
-			if strictAction && actionLower != "allow" {
+		case "allow", "yes", "proceed", "1", "approve":
+			if strictAction && actionLower != "allow" && actionLower != "approve" {
 				return fmt.Errorf("Unsupported action: %s", actionLower)
 			}
 			keys := adapter.GetApprovalKeys(true)
 			if err := tmux.SendKeys(ctx, sess.TmuxName, keys...); err != nil {
 				log.Printf("Warning: failed to send allow to tmux session %s: %v", sess.TmuxName, err)
 			}
-		case "deny", "no", "4":
-			if strictAction && actionLower != "deny" {
-				return fmt.Errorf("Unsupported action: %s", actionLower)
-			}
-			keys := adapter.GetApprovalKeys(false)
-			if err := tmux.SendKeys(ctx, sess.TmuxName, keys...); err != nil {
-				log.Printf("Warning: failed to send deny to tmux session %s: %v", sess.TmuxName, err)
+		case "deny", "no", "4", "reject":
+			if value != "" {
+				if err := tmux.SendInput(ctx, sess.TmuxName, value, true); err != nil {
+					log.Printf("Warning: failed to send rejection feedback to tmux session %s: %v", sess.TmuxName, err)
+				}
+			} else {
+				if strictAction && actionLower != "deny" && actionLower != "reject" {
+					return fmt.Errorf("Unsupported action: %s", actionLower)
+				}
+				keys := adapter.GetApprovalKeys(false)
+				if err := tmux.SendKeys(ctx, sess.TmuxName, keys...); err != nil {
+					log.Printf("Warning: failed to send deny to tmux session %s: %v", sess.TmuxName, err)
+				}
 			}
 		default:
 			if strictAction {
@@ -794,10 +800,14 @@ func (s *Server) applyInteractiveResponse(ctx context.Context, sess *Session, ac
 		sess.IsDone = false
 	}
 	switch actionLower {
-	case "allow":
+	case "allow", "approve":
 		sess.Activity = "Permission allowed"
-	case "deny":
-		sess.Activity = "Permission denied"
+	case "deny", "reject":
+		if value != "" {
+			sess.Activity = fmt.Sprintf("Rejected: %s", value)
+		} else {
+			sess.Activity = "Permission denied"
+		}
 	case "answer", "input":
 		if value != "" {
 			sess.Activity = fmt.Sprintf("Answered: %s", value)
@@ -877,13 +887,17 @@ func (s *Server) handleRespond(w http.ResponseWriter, r *http.Request) {
 	actionLower := strings.ToLower(action)
 
 	isHeadless := sess.EngineType == EngineHeadless || (sess.Managed && sess.TmuxName == "")
-	if isHeadless && sess.Blocked != nil {
+	if isHeadless {
 		answerText := value
-		if answerText == "" && (actionLower == "allow" || actionLower == "yes" || actionLower == "1") {
+		if answerText == "" && (actionLower == "allow" || actionLower == "yes" || actionLower == "1" || actionLower == "approve") {
 			answerText = "Approve Plan"
 		}
-		if (answerText == "Approve Plan" || (sess.Blocked.Kind == BlockApproval && strings.HasPrefix(strings.ToLower(answerText), "approve"))) && sess.PermissionMode == "plan" {
+		if (answerText == "Approve Plan" || ((sess.Blocked == nil || sess.Blocked.Kind == BlockApproval) && strings.HasPrefix(strings.ToLower(answerText), "approve"))) && sess.PermissionMode == "plan" {
 			sess.PermissionMode = "bypassPermissions"
+		}
+
+		if s.headless != nil {
+			s.headless.ClearInteractiveBlockAndWait(sess.ID, 3*time.Second)
 		}
 
 		sess.Blocked = nil
@@ -964,9 +978,18 @@ func (s *Server) handleSessionConfig(w http.ResponseWriter, r *http.Request, ses
 		}
 	}
 
-	sess := s.resolveSession(sessionID)
+	var bodyBytes []byte
+	if r.Body != nil {
+		bodyBytes, _ = io.ReadAll(r.Body)
+	}
+
+	sess, proxied := s.resolveSessionOrProxy(w, r.Method, sessionID, "application/json", bytes.NewReader(bodyBytes), func(target *Session) string {
+		return "/v1/sessions/" + url.PathEscape(target.ID) + "/config"
+	})
+	if proxied {
+		return
+	}
 	if sess == nil {
-		http.Error(w, "Session not found", http.StatusNotFound)
 		return
 	}
 
@@ -976,8 +999,8 @@ func (s *Server) handleSessionConfig(w http.ResponseWriter, r *http.Request, ses
 		PermissionMode *string `json:"permission_mode"`
 	}
 
-	if r.Body != nil {
-		_ = json.NewDecoder(r.Body).Decode(&req)
+	if len(bodyBytes) > 0 {
+		_ = json.Unmarshal(bodyBytes, &req)
 	}
 
 	if req.Model != nil {

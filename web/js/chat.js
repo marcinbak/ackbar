@@ -581,6 +581,12 @@ function updateStatusPills(tabObj) {
     const model = session.model || '';
     if (!model) {
       tabObj.chatPillModel.textContent = 'Default Model';
+    } else if (model.includes('claude-opus-4-6') || model === 'claude-opus-4-6') {
+      tabObj.chatPillModel.textContent = 'Claude Opus 4.6';
+    } else if (model.includes('claude-sonnet-4-6') || model === 'claude-sonnet-4-6') {
+      tabObj.chatPillModel.textContent = 'Claude Sonnet 4.6';
+    } else if (model.includes('claude-haiku-4-5') || model === 'claude-haiku-4-5') {
+      tabObj.chatPillModel.textContent = 'Claude Haiku 4.5';
     } else if (model.includes('claude-3-7-sonnet')) {
       tabObj.chatPillModel.textContent = 'Claude 3.7 Sonnet';
     } else if (model.includes('claude-3-5-sonnet')) {
@@ -589,6 +595,10 @@ function updateStatusPills(tabObj) {
       tabObj.chatPillModel.textContent = 'Claude 3.5 Haiku';
     } else if (model.includes('claude-3-opus')) {
       tabObj.chatPillModel.textContent = 'Claude 3 Opus';
+    } else if (model.includes('gemini-2.5-pro')) {
+      tabObj.chatPillModel.textContent = 'Gemini 2.5 Pro';
+    } else if (model.includes('gemini-2.5-flash')) {
+      tabObj.chatPillModel.textContent = 'Gemini 2.5 Flash';
     } else {
       tabObj.chatPillModel.textContent = model;
     }
@@ -621,7 +631,9 @@ function updateStatusPills(tabObj) {
       : 200000;
 
     let pct = 0;
-    if (totalTokens > 0) {
+    if (typeof session.context_pct === 'number' && session.context_pct > 0) {
+      pct = Math.min(100, Math.round(session.context_pct));
+    } else if (totalTokens > 0) {
       pct = Math.min(100, Math.round((totalTokens / maxTokens) * 100));
     }
     tabObj.chatPillUsageText.textContent = `${pct}% Context`;
@@ -654,7 +666,12 @@ function renderConfigPopoverContent(tabObj) {
   const maxTokens = (typeof sess.max_context_tokens === 'number' && sess.max_context_tokens > 0)
     ? sess.max_context_tokens
     : 200000;
-  const pct = totalTokens > 0 ? Math.min(100, Math.round((totalTokens / maxTokens) * 100)) : 0;
+  let pct = 0;
+  if (typeof sess.context_pct === 'number' && sess.context_pct > 0) {
+    pct = Math.min(100, Math.round(sess.context_pct));
+  } else if (totalTokens > 0) {
+    pct = Math.min(100, Math.round((totalTokens / maxTokens) * 100));
+  }
   const inputTokens = sess.input_tokens || 0;
   const outputTokens = sess.output_tokens || 0;
 
@@ -670,10 +687,13 @@ function renderConfigPopoverContent(tabObj) {
       <label class="config-label">Model</label>
       <select class="config-select config-select-model">
         <option value="" ${!model ? 'selected' : ''}>Default (Agent Default)</option>
+        <option value="claude-opus-4-6" ${model === 'claude-opus-4-6' ? 'selected' : ''}>Claude Opus 4.6</option>
+        <option value="claude-sonnet-4-6" ${model === 'claude-sonnet-4-6' ? 'selected' : ''}>Claude Sonnet 4.6</option>
+        <option value="claude-haiku-4-5" ${model === 'claude-haiku-4-5' ? 'selected' : ''}>Claude Haiku 4.5</option>
         <option value="claude-3-7-sonnet-20250219" ${model === 'claude-3-7-sonnet-20250219' ? 'selected' : ''}>Claude 3.7 Sonnet</option>
         <option value="claude-3-5-sonnet-20241022" ${model === 'claude-3-5-sonnet-20241022' ? 'selected' : ''}>Claude 3.5 Sonnet</option>
-        <option value="claude-3-5-haiku-20241022" ${model === 'claude-3-5-haiku-20241022' ? 'selected' : ''}>Claude 3.5 Haiku</option>
-        <option value="claude-3-opus-20240229" ${model === 'claude-3-opus-20240229' ? 'selected' : ''}>Claude 3 Opus</option>
+        <option value="gemini-2.5-pro" ${model === 'gemini-2.5-pro' ? 'selected' : ''}>Gemini 2.5 Pro (Antigravity)</option>
+        <option value="gemini-2.5-flash" ${model === 'gemini-2.5-flash' ? 'selected' : ''}>Gemini 2.5 Flash (Antigravity)</option>
       </select>
     </div>
     <div class="config-row">
@@ -683,6 +703,7 @@ function renderConfigPopoverContent(tabObj) {
         <option value="low" ${effort === 'low' ? 'selected' : ''}>Low</option>
         <option value="medium" ${effort === 'medium' ? 'selected' : ''}>Medium</option>
         <option value="high" ${effort === 'high' ? 'selected' : ''}>High</option>
+        <option value="max" ${effort === 'max' ? 'selected' : ''}>Max</option>
       </select>
     </div>
     <div class="config-row">
@@ -831,15 +852,27 @@ function setupChatAutocomplete(tabObj) {
     const text = inputEl.value || '';
     const pos = inputEl.selectionStart;
     const beforeCaret = text.slice(0, pos);
-    const match = beforeCaret.match(/(?:^|\s)([\/@][^\s]*)$/);
 
-    if (!match) {
+    let match = null;
+    let kind = '';
+    let triggerWord = '';
+
+    const cmdMatch = beforeCaret.match(/^\s*(\/[^\s]*)$/);
+    const fileMatch = beforeCaret.match(/(?:^|\s)(@[^\s@]*)$/);
+
+    if (cmdMatch) {
+      match = cmdMatch;
+      triggerWord = cmdMatch[1];
+      kind = 'commands';
+    } else if (fileMatch) {
+      match = fileMatch;
+      triggerWord = fileMatch[1];
+      kind = 'files';
+    } else {
       closeMenu();
       return;
     }
 
-    const triggerWord = match[1];
-    const kind = triggerWord.startsWith('/') ? 'commands' : 'files';
     const query = triggerWord.slice(1);
     activeKind = kind;
     activeMatch = { matchStart: pos - triggerWord.length, matchEnd: pos, triggerWord };
@@ -1200,7 +1233,8 @@ function renderTodoWriteCard(tabObj, toolInput) {
     </div>
     <div class="chat-todo-list">
       ${todos.map(t => {
-        const st = (t.status || 'pending').toLowerCase();
+        const rawSt = String(t.status || 'pending').toLowerCase();
+        const st = ['completed', 'in_progress', 'pending'].includes(rawSt) ? rawSt : 'pending';
         let iconClass = 'todo-icon-pending';
         let iconChar = '○';
         if (st === 'completed') {
@@ -2728,6 +2762,30 @@ function createChatMessageElement(tabObj, msg) {
       ${toolsHtml ? `<div class="chat-tools">${toolsHtml}</div>` : ''}
       <div class="chat-msg-body markdown-body">${bodyHtml}</div>
     `;
+
+    const allTools = (msg.tool_calls && msg.tool_calls.length > 0) ? msg.tool_calls : (msg.tool_uses || []);
+    if (Array.isArray(allTools)) {
+      for (const tc of allTools) {
+        const tcName = (tc.name || '').toLowerCase();
+        if (tcName === 'todowrite' || tcName === 'todo_write') {
+          const inputData = tc.input || tc.detail;
+          const todoCard = renderTodoWriteCard(tabObj, inputData);
+          if (todoCard) {
+            const toolsSlot = msgEl.querySelector('.chat-tools');
+            if (toolsSlot) {
+              toolsSlot.appendChild(todoCard);
+            } else {
+              const bodyEl = msgEl.querySelector('.chat-msg-body');
+              if (bodyEl) {
+                msgEl.insertBefore(todoCard, bodyEl);
+              } else {
+                msgEl.appendChild(todoCard);
+              }
+            }
+          }
+        }
+      }
+    }
   } else {
     msgEl.className = 'chat-msg system-msg';
     msgEl.innerHTML = `<span class="system-tag">ℹ️ ${escapeHtml(msg.content)}</span>`;
