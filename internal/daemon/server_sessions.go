@@ -363,6 +363,11 @@ func (s *Server) handleSessionControl(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.URL.Query().Get("id")
 	action := r.URL.Query().Get("action")
 
+	var bodyBytes []byte
+	if r.Body != nil {
+		bodyBytes, _ = io.ReadAll(r.Body)
+	}
+
 	if sessionID == "" || action == "" {
 		parts := stringsSplit(r.URL.Path, "/")
 		if len(parts) >= 5 {
@@ -371,14 +376,24 @@ func (s *Server) handleSessionControl(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if (sessionID == "" || action == "") && len(bodyBytes) > 0 {
+		var reqBody struct {
+			ID     string `json:"id"`
+			Action string `json:"action"`
+		}
+		if err := json.Unmarshal(bodyBytes, &reqBody); err == nil {
+			if sessionID == "" {
+				sessionID = reqBody.ID
+			}
+			if action == "" {
+				action = reqBody.Action
+			}
+		}
+	}
+
 	if sessionID == "" || action == "" {
 		http.Error(w, "Invalid control parameters", http.StatusBadRequest)
 		return
-	}
-
-	var bodyBytes []byte
-	if r.Body != nil {
-		bodyBytes, _ = io.ReadAll(r.Body)
 	}
 	sess, proxied := s.resolveSessionOrProxy(w, r.Method, sessionID, r.Header.Get("Content-Type"), bytes.NewReader(bodyBytes), func(_ *Session) string {
 		return fmt.Sprintf("/v1/sessions/control?id=%s&action=%s", url.QueryEscape(sessionID), url.QueryEscape(action))
@@ -714,43 +729,12 @@ func (s *Server) handleSessionControl(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "opened", "path": sess.Cwd, "host": sess.Host, "uri": uri})
 
 	case "respond":
-		value := r.URL.Query().Get("value")
-		respAction := r.URL.Query().Get("resp_action")
-		if respAction == "" {
-			respAction = r.URL.Query().Get("action_type")
-		}
-		if respAction == "" {
-			var bodyData struct {
-				Action string `json:"action"`
-				Value  string `json:"value"`
-			}
-			_ = json.NewDecoder(r.Body).Decode(&bodyData)
-			if bodyData.Action != "" {
-				respAction = bodyData.Action
-			}
-			if bodyData.Value != "" {
-				value = bodyData.Value
-			}
-		}
-		if respAction == "" {
-			respAction = "answer"
-		}
-		actionLower := strings.ToLower(respAction)
-		_ = s.applyInteractiveResponse(r.Context(), sess, actionLower, value, sess.TmuxName != "", false, false)
-		if err := s.db.SaveSession(sess); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		s.broadcast(sess)
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"status":  "responded",
-			"id":      sess.ID,
-			"action":  actionLower,
-			"value":   value,
-			"state":   sess.State.String(),
-			"session": sess,
-		})
+		s.handleRespond(w, r)
+		return
+
+	case "update_config", "config":
+		s.handleSessionConfig(w, r, sess.ID)
+		return
 
 	case "read", "mark_read", "view":
 		sess.IsUnread = false
@@ -780,21 +764,27 @@ func (s *Server) applyInteractiveResponse(ctx context.Context, sess *Session, ac
 			if err := tmux.SendInput(ctx, sess.TmuxName, value, true); err != nil {
 				log.Printf("Warning: failed to send input to tmux session %s: %v", sess.TmuxName, err)
 			}
-		case "allow", "yes", "proceed", "1":
-			if strictAction && actionLower != "allow" {
+		case "allow", "yes", "proceed", "1", "approve":
+			if strictAction && actionLower != "allow" && actionLower != "approve" {
 				return fmt.Errorf("Unsupported action: %s", actionLower)
 			}
 			keys := adapter.GetApprovalKeys(true)
 			if err := tmux.SendKeys(ctx, sess.TmuxName, keys...); err != nil {
 				log.Printf("Warning: failed to send allow to tmux session %s: %v", sess.TmuxName, err)
 			}
-		case "deny", "no", "4":
-			if strictAction && actionLower != "deny" {
-				return fmt.Errorf("Unsupported action: %s", actionLower)
-			}
-			keys := adapter.GetApprovalKeys(false)
-			if err := tmux.SendKeys(ctx, sess.TmuxName, keys...); err != nil {
-				log.Printf("Warning: failed to send deny to tmux session %s: %v", sess.TmuxName, err)
+		case "deny", "no", "4", "reject":
+			if value != "" {
+				if err := tmux.SendInput(ctx, sess.TmuxName, value, true); err != nil {
+					log.Printf("Warning: failed to send rejection feedback to tmux session %s: %v", sess.TmuxName, err)
+				}
+			} else {
+				if strictAction && actionLower != "deny" && actionLower != "reject" {
+					return fmt.Errorf("Unsupported action: %s", actionLower)
+				}
+				keys := adapter.GetApprovalKeys(false)
+				if err := tmux.SendKeys(ctx, sess.TmuxName, keys...); err != nil {
+					log.Printf("Warning: failed to send deny to tmux session %s: %v", sess.TmuxName, err)
+				}
 			}
 		default:
 			if strictAction {
@@ -810,10 +800,14 @@ func (s *Server) applyInteractiveResponse(ctx context.Context, sess *Session, ac
 		sess.IsDone = false
 	}
 	switch actionLower {
-	case "allow":
+	case "allow", "approve":
 		sess.Activity = "Permission allowed"
-	case "deny":
-		sess.Activity = "Permission denied"
+	case "deny", "reject":
+		if value != "" {
+			sess.Activity = fmt.Sprintf("Rejected: %s", value)
+		} else {
+			sess.Activity = "Permission denied"
+		}
 	case "answer", "input":
 		if value != "" {
 			sess.Activity = fmt.Sprintf("Answered: %s", value)
@@ -835,6 +829,7 @@ func (s *Server) handleRespond(w http.ResponseWriter, r *http.Request) {
 		SessionID string `json:"sessionId"`
 		Action    string `json:"action"` // "answer" | "allow" | "deny" | "input"
 		Value     string `json:"value"`
+		Answer    string `json:"answer"`
 	}
 
 	if r.Body != nil {
@@ -851,6 +846,12 @@ func (s *Server) handleRespond(w http.ResponseWriter, r *http.Request) {
 	if targetID == "" {
 		targetID = r.URL.Query().Get("sessionId")
 	}
+	if targetID == "" {
+		parts := stringsSplit(r.URL.Path, "/")
+		if len(parts) >= 5 && parts[4] == "respond" {
+			targetID = parts[3]
+		}
+	}
 
 	action := req.Action
 	if action == "" {
@@ -859,7 +860,17 @@ func (s *Server) handleRespond(w http.ResponseWriter, r *http.Request) {
 
 	value := req.Value
 	if value == "" {
+		value = req.Answer
+	}
+	if value == "" {
 		value = r.URL.Query().Get("value")
+	}
+	if value == "" {
+		value = r.URL.Query().Get("answer")
+	}
+
+	if action == "" && value != "" {
+		action = "answer"
 	}
 
 	if targetID == "" || action == "" {
@@ -874,6 +885,60 @@ func (s *Server) handleRespond(w http.ResponseWriter, r *http.Request) {
 	}
 
 	actionLower := strings.ToLower(action)
+
+	isHeadless := sess.EngineType == EngineHeadless || (sess.Managed && sess.TmuxName == "")
+	if isHeadless {
+		answerText := value
+		if answerText == "" && (actionLower == "allow" || actionLower == "yes" || actionLower == "1" || actionLower == "approve") {
+			answerText = "Approve Plan"
+		}
+		if (answerText == "Approve Plan" || ((sess.Blocked == nil || sess.Blocked.Kind == BlockApproval) && strings.HasPrefix(strings.ToLower(answerText), "approve"))) && sess.PermissionMode == "plan" {
+			sess.PermissionMode = "bypassPermissions"
+		}
+
+		if s.headless != nil {
+			s.headless.ClearInteractiveBlockAndWait(sess.ID, 3*time.Second)
+		}
+
+		sess.Blocked = nil
+		sess.State = StateWorking
+		if answerText != "" {
+			sess.Activity = "Answered: " + answerText
+		} else {
+			sess.Activity = "User answered"
+		}
+		sess.LastEventAt = time.Now()
+		sess.IsUnread = false
+
+		if s.headless != nil {
+			s.headless.SetQueuePaused(sess.ID, false)
+		}
+
+		if err := s.db.SaveSession(sess); err != nil {
+			http.Error(w, fmt.Sprintf("Failed to save session: %v", err), http.StatusInternalServerError)
+			return
+		}
+		s.broadcast(sess)
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"status":  "responded",
+			"id":      sess.ID,
+			"action":  actionLower,
+			"value":   answerText,
+			"state":   sess.State.String(),
+			"session": sess,
+		})
+
+		if s.headless != nil {
+			sessCopy := *sess
+			go func() {
+				_ = s.headless.RunTurn(context.Background(), &sessCopy, answerText)
+			}()
+		}
+		return
+	}
+
 	if err := s.applyInteractiveResponse(r.Context(), sess, actionLower, value, sess.Managed && sess.TmuxName != "", true, true); err != nil {
 		http.Error(w, fmt.Sprintf("Unsupported action: %s", action), http.StatusBadRequest)
 		return
@@ -896,6 +961,89 @@ func (s *Server) handleRespond(w http.ResponseWriter, r *http.Request) {
 		"state":   sess.State.String(),
 		"session": sess,
 	})
+}
+
+func (s *Server) handleSessionConfig(w http.ResponseWriter, r *http.Request, sessionID string) {
+	if r.Method != http.MethodPost && r.Method != http.MethodPatch {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if sessionID == "" {
+		sessionID = r.URL.Query().Get("id")
+	}
+	if sessionID == "" {
+		parts := stringsSplit(r.URL.Path, "/")
+		if len(parts) >= 5 {
+			sessionID = parts[3]
+		}
+	}
+
+	var bodyBytes []byte
+	if r.Body != nil {
+		bodyBytes, _ = io.ReadAll(r.Body)
+	}
+
+	sess, proxied := s.resolveSessionOrProxy(w, r.Method, sessionID, "application/json", bytes.NewReader(bodyBytes), func(target *Session) string {
+		return "/v1/sessions/" + url.PathEscape(target.ID) + "/config"
+	})
+	if proxied {
+		return
+	}
+	if sess == nil {
+		return
+	}
+
+	var req struct {
+		Model          *string `json:"model"`
+		Effort         *string `json:"effort"`
+		PermissionMode *string `json:"permission_mode"`
+	}
+
+	if len(bodyBytes) > 0 {
+		_ = json.Unmarshal(bodyBytes, &req)
+	}
+
+	if req.Model != nil {
+		m := strings.TrimSpace(*req.Model)
+		if strings.EqualFold(m, "default") {
+			sess.Model = ""
+		} else {
+			sess.Model = m
+		}
+	}
+
+	if req.Effort != nil {
+		eff := strings.TrimSpace(*req.Effort)
+		if strings.EqualFold(eff, "default") {
+			sess.Effort = ""
+		} else {
+			sess.Effort = eff
+		}
+	}
+
+	if req.PermissionMode != nil {
+		pm := strings.TrimSpace(*req.PermissionMode)
+		if pm != "" && pm != "bypassPermissions" && pm != "plan" {
+			http.Error(w, "Invalid permission_mode: must be 'bypassPermissions' or 'plan'", http.StatusBadRequest)
+			return
+		}
+		if pm == "" {
+			pm = "bypassPermissions"
+		}
+		sess.PermissionMode = pm
+	}
+
+	sess.MetadataUpdatedAt = time.Now().UTC()
+	if err := s.db.SaveSession(sess); err != nil {
+		http.Error(w, fmt.Sprintf("Failed to save session config: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	s.broadcast(sess)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(sess)
 }
 
 func (s *Server) handleTakeWheel(w http.ResponseWriter, r *http.Request) {

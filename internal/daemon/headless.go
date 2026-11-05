@@ -28,12 +28,13 @@ var (
 type ChatStreamEvent struct {
 	SessionID   string             `json:"session_id"`
 	TurnID      string             `json:"turn_id,omitempty"`
-	Type        string             `json:"type"` // "turn_start", "text_delta", "thought_delta", "tool_start", "tool_result", "turn_complete", "turn_cancelled", "error", "queue_update"
+	Type        string             `json:"type"` // "turn_start", "text_delta", "thought_delta", "tool_start", "tool_result", "turn_complete", "turn_cancelled", "error", "queue_update", "interactive_block"
 	Text        string             `json:"text,omitempty"`
 	Thinking    string             `json:"thinking,omitempty"`
 	ToolName    string             `json:"tool_name,omitempty"`
 	ToolInput   any                `json:"tool_input,omitempty"`
 	ToolOutput  string             `json:"tool_output,omitempty"`
+	Blocked     *Blocked           `json:"blocked,omitempty"`
 	IsError     bool               `json:"is_error,omitempty"`
 	QueueItems  []*PromptQueueItem `json:"queue_items,omitempty"`
 	QueuePaused bool               `json:"queue_paused,omitempty"`
@@ -71,25 +72,248 @@ func StripBilledCredentials(env []string) []string {
 
 // HeadlessRunner coordinates turn-by-turn headless execution of agent sessions
 type HeadlessRunner struct {
-	mu             sync.RWMutex
-	processes      map[string]*exec.Cmd
-	subs           map[string][]chan ChatStreamEvent
-	queues         map[string][]*PromptQueueItem // sessionID -> queued prompts
-	paused         map[string]bool               // sessionID -> is queue paused
-	db             *DB
-	broadcast      func(s *Session)
-	onTurnComplete func(sessionID, nativeID string)
+	mu                     sync.RWMutex
+	processes              map[string]*exec.Cmd
+	subs                   map[string][]chan ChatStreamEvent
+	queues                 map[string][]*PromptQueueItem // sessionID -> queued prompts
+	paused                 map[string]bool               // sessionID -> is queue paused
+	interactiveBlocks      map[string]*Blocked           // sessionID -> pending interactive Blocked struct
+	respondedWhileStopping map[string]bool               // sessionID -> response arrived while stopping
+	db                     *DB
+	broadcast              func(s *Session)
+	onTurnComplete         func(sessionID, nativeID string)
 }
 
 func NewHeadlessRunner(db *DB, broadcast func(s *Session)) *HeadlessRunner {
 	return &HeadlessRunner{
-		processes: make(map[string]*exec.Cmd),
-		subs:      make(map[string][]chan ChatStreamEvent),
-		queues:    make(map[string][]*PromptQueueItem),
-		paused:    make(map[string]bool),
-		db:        db,
-		broadcast: broadcast,
+		processes:              make(map[string]*exec.Cmd),
+		subs:                   make(map[string][]chan ChatStreamEvent),
+		queues:                 make(map[string][]*PromptQueueItem),
+		paused:                 make(map[string]bool),
+		interactiveBlocks:      make(map[string]*Blocked),
+		respondedWhileStopping: make(map[string]bool),
+		db:                     db,
+		broadcast:              broadcast,
 	}
+}
+
+func (h *HeadlessRunner) setInteractiveBlock(sessionID string, b *Blocked) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.interactiveBlocks[sessionID] = b
+	parts := strings.Split(sessionID, ":")
+	if len(parts) == 3 {
+		h.interactiveBlocks[parts[2]] = b
+	}
+}
+
+func (h *HeadlessRunner) takeInteractiveBlock(sessionID string) *Blocked {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	var b *Blocked
+	if block, ok := h.interactiveBlocks[sessionID]; ok {
+		b = block
+		delete(h.interactiveBlocks, sessionID)
+	}
+
+	parts := strings.Split(sessionID, ":")
+	if len(parts) == 3 {
+		nativeID := parts[2]
+		if block, ok := h.interactiveBlocks[nativeID]; ok {
+			if b == nil {
+				b = block
+			}
+			delete(h.interactiveBlocks, nativeID)
+		}
+		for k, block := range h.interactiveBlocks {
+			if strings.HasSuffix(k, ":"+nativeID) {
+				if b == nil {
+					b = block
+				}
+				delete(h.interactiveBlocks, k)
+			}
+		}
+	}
+	return b
+}
+
+func (h *HeadlessRunner) stopProcessGraceful(sessionID string) {
+	h.mu.RLock()
+	cmd, ok := h.processes[sessionID]
+	if !ok {
+		parts := strings.Split(sessionID, ":")
+		if len(parts) == 3 {
+			nativeID := parts[2]
+			for k, p := range h.processes {
+				if k == nativeID || strings.HasSuffix(k, ":"+nativeID) {
+					cmd = p
+					break
+				}
+			}
+		}
+	}
+	h.mu.RUnlock()
+
+	if cmd != nil && cmd.Process != nil {
+		_ = cmd.Process.Signal(os.Interrupt)
+		go func(p *os.Process) {
+			time.Sleep(500 * time.Millisecond)
+			if p != nil && isProcessAlive(p.Pid) {
+				_ = p.Kill()
+			}
+		}(cmd.Process)
+	}
+}
+
+func (h *HeadlessRunner) triggerInteractiveBlock(sessionID string, sess *Session, toolName string, toolInput interface{}, blocked *Blocked, emitStreamEvt func(ChatStreamEvent)) {
+	h.setInteractiveBlock(sessionID, blocked)
+	if sess != nil && sess.ID != "" && sess.ID != sessionID {
+		h.setInteractiveBlock(sess.ID, blocked)
+	}
+
+	// Immediately persist blocked state to DB and broadcast before process exits
+	if sess != nil && h.db != nil {
+		sess.State = StateBlocked
+		sess.Blocked = blocked
+		if blocked.Kind == BlockApproval {
+			sess.Activity = "Waiting for plan approval"
+		} else {
+			sess.Activity = "Waiting for user response"
+		}
+		sess.LastStateChangeAt = time.Now()
+		sess.LastEventAt = time.Now()
+		sess.IsUnread = true
+		_ = h.db.SaveSession(sess)
+		if h.broadcast != nil {
+			h.broadcast(sess)
+		}
+	}
+
+	h.SetQueuePaused(sessionID, true)
+	emitStreamEvt(ChatStreamEvent{
+		SessionID: sessionID,
+		Type:      "interactive_block",
+		ToolName:  toolName,
+		ToolInput: toolInput,
+		Blocked:   blocked,
+		Timestamp: time.Now(),
+	})
+	h.stopProcessGraceful(sessionID)
+}
+
+// ClearInteractiveBlockAndWait clears interactive blocks for a session and waits for any stopping
+// headless turn to finish so that a newly launched turn does not collide with the previous process.
+func (h *HeadlessRunner) ClearInteractiveBlockAndWait(sessionID string, timeout time.Duration) {
+	h.mu.Lock()
+	delete(h.interactiveBlocks, sessionID)
+	h.respondedWhileStopping[sessionID] = true
+	parts := strings.Split(sessionID, ":")
+	if len(parts) == 3 {
+		nativeID := parts[2]
+		delete(h.interactiveBlocks, nativeID)
+		h.respondedWhileStopping[nativeID] = true
+	}
+
+	cmd := h.processes[sessionID]
+	if cmd == nil && len(parts) == 3 {
+		cmd = h.processes[parts[2]]
+	}
+	h.mu.Unlock()
+
+	if cmd == nil || cmd.Process == nil {
+		return
+	}
+
+	deadline := time.Now().Add(timeout)
+	killAfter := time.Now().Add(200 * time.Millisecond)
+	sigkillSent := false
+
+	for time.Now().Before(deadline) {
+		if !h.IsRunning(sessionID) {
+			break
+		}
+		if !sigkillSent && time.Now().After(killAfter) {
+			_ = cmd.Process.Kill()
+			sigkillSent = true
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func parseInteractiveToolBlock(toolName string, toolInput interface{}) *Blocked {
+	if toolName == "" {
+		return nil
+	}
+	tLower := strings.ToLower(toolName)
+
+	// 1. ExitPlanMode
+	if tLower == "exitplanmode" || tLower == "exit_plan_mode" {
+		planMarkdown := ""
+		if toolInput != nil {
+			switch v := toolInput.(type) {
+			case string:
+				var m map[string]interface{}
+				if err := json.Unmarshal([]byte(v), &m); err == nil {
+					if pStr, ok := m["plan"].(string); ok {
+						planMarkdown = pStr
+					}
+				} else {
+					planMarkdown = v
+				}
+			case map[string]interface{}:
+				if pStr, ok := v["plan"].(string); ok {
+					planMarkdown = pStr
+				}
+			}
+		}
+		return &Blocked{
+			Kind:     BlockApproval,
+			Reason:   planMarkdown,
+			Question: "Approve implementation plan?",
+			Options:  []string{"Approve Plan", "Request Changes"},
+			Since:    time.Now(),
+		}
+	}
+
+	// 2. AskUserQuestion / ask_question / etc.
+	if toolName == "AskUserQuestion" || toolName == "ask_question" || toolName == "AskFollowupQuestion" ||
+		strings.Contains(tLower, "question") || strings.Contains(tLower, "askuser") {
+		var inputMap map[string]interface{}
+		if toolInput != nil {
+			switch v := toolInput.(type) {
+			case string:
+				_ = json.Unmarshal([]byte(v), &inputMap)
+			case map[string]interface{}:
+				inputMap = v
+			}
+		}
+
+		questions := ExtractAntigravityQuestions(inputMap)
+		questionText, optionsList := ExtractAntigravityQuestionAndOptions(inputMap)
+		if questionText == "" && len(questions) > 0 {
+			questionText = questions[0].Question
+		}
+		if len(optionsList) == 0 && len(questions) > 0 {
+			optionsList = questions[0].Options
+		}
+
+		reason := "Waiting for user response"
+		if questionText != "" {
+			reason = questionText
+		}
+
+		return &Blocked{
+			Kind:      BlockQuestion,
+			Reason:    reason,
+			Question:  questionText,
+			Options:   optionsList,
+			Questions: questions,
+			Since:     time.Now(),
+		}
+	}
+
+	return nil
 }
 
 // SetOnTurnComplete registers a callback invoked when a headless turn completes
@@ -481,10 +705,14 @@ func (h *HeadlessRunner) buildArgs(sess *Session, prompt, home string) (string, 
 			effectivePrompt = "[System Instruction: " + BuildSupervisorSystemPrompt(sess.ID) + "]\n\n" + prompt
 		}
 
+		args := []string{"-p", effectivePrompt, "--output-format", "stream-json", "--dangerously-skip-permissions"}
 		if hasAntigravityConversation(home, sess.NativeID) || sess.FirstPrompt != "" || sess.LastPrompt != "" {
-			return bin, []string{"-p", effectivePrompt, "--output-format", "stream-json", "--dangerously-skip-permissions", "--conversation", sess.NativeID}, nil
+			args = append(args, "--conversation", sess.NativeID)
 		}
-		return bin, []string{"-p", effectivePrompt, "--output-format", "stream-json", "--dangerously-skip-permissions"}, nil
+		if sess.Model != "" && !strings.EqualFold(sess.Model, "default") {
+			args = append(args, "--model", sess.Model)
+		}
+		return bin, args, nil
 	}
 
 	bin, err := resolveClaudeBinary()
@@ -526,13 +754,32 @@ func (h *HeadlessRunner) buildArgs(sess *Session, prompt, home string) (string, 
 		hasTranscript = true
 	}
 
+	var permFlags []string
+	if strings.EqualFold(sess.PermissionMode, "plan") {
+		permFlags = []string{"--permission-mode", "plan"}
+	} else {
+		permFlags = []string{"--dangerously-skip-permissions"}
+	}
+
 	// If transcript or session-env exists, or if a previous turn ran in this session, resume conversation
 	var args []string
 	if hasTranscript || sess.FirstPrompt != "" || sess.LastPrompt != "" {
-		args = []string{"-p", prompt, "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions", "--resume", sess.NativeID}
+		args = []string{"-p", prompt, "--output-format", "stream-json", "--verbose"}
+		args = append(args, permFlags...)
+		args = append(args, "--resume", sess.NativeID)
 	} else {
-		args = []string{"-p", prompt, "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions", "--session-id", sess.NativeID}
+		args = []string{"-p", prompt, "--output-format", "stream-json", "--verbose"}
+		args = append(args, permFlags...)
+		args = append(args, "--session-id", sess.NativeID)
 	}
+
+	if sess.Model != "" && !strings.EqualFold(sess.Model, "default") {
+		args = append(args, "--model", sess.Model)
+	}
+	if sess.Effort != "" && !strings.EqualFold(sess.Effort, "default") && sess.Agent == "claude-code" {
+		args = append(args, "--effort", sess.Effort)
+	}
+
 	if sess.IsSupervisor {
 		args = append(args, "--append-system-prompt", BuildSupervisorSystemPrompt(sess.ID))
 	}
@@ -630,6 +877,7 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 
 	// Update session state to WORKING
 	sess.State = StateWorking
+	sess.Blocked = nil
 	sess.Activity = "Thinking..."
 	sess.LastEventAt = time.Now()
 	sess.PID = cmd.Process.Pid
@@ -665,7 +913,16 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 		h.mu.Lock()
 		delete(h.processes, origSessionID)
 		delete(h.processes, sess.ID)
+		responded := h.respondedWhileStopping[sess.ID] || h.respondedWhileStopping[origSessionID]
+		delete(h.respondedWhileStopping, sess.ID)
+		delete(h.respondedWhileStopping, origSessionID)
 		h.mu.Unlock()
+
+		if responded {
+			// User already responded to this interactive block and launched a new turn.
+			// Do not overwrite session state in DB or emit conflicting events.
+			return
+		}
 
 		// Reload session from DB to preserve title/flags updated during the turn
 		if h.db != nil {
@@ -678,34 +935,58 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 			}
 		}
 
-		sess.State = StateIdle
-		sess.Activity = ""
-		sess.LastEventAt = time.Now()
-		sess.PID = 0
-		if waitErr == nil {
+		interactiveBlock := h.takeInteractiveBlock(sess.ID)
+		if interactiveBlock == nil && origSessionID != sess.ID {
+			interactiveBlock = h.takeInteractiveBlock(origSessionID)
+		}
+
+		if interactiveBlock != nil {
+			sess.State = StateBlocked
+			sess.Blocked = interactiveBlock
+			if interactiveBlock.Kind == BlockApproval {
+				sess.Activity = "Waiting for plan approval"
+			} else {
+				sess.Activity = "Waiting for user response"
+			}
+			sess.PID = 0
+			sess.IsUnread = true
+			sess.LastStateChangeAt = time.Now()
+			sess.LastEventAt = time.Now()
 			if sess.FirstPrompt == "" {
 				sess.FirstPrompt = prompt
 			}
 			sess.LastPrompt = prompt
 		} else {
-			errDetail := strings.TrimSpace(stderrBuf.String())
-			if errDetail != "" {
-				sess.Activity = "Turn error: " + errDetail
-				errEvt := ChatStreamEvent{
-					SessionID: sess.ID,
-					Type:      "error",
-					Text:      errDetail,
-					IsError:   true,
+			sess.State = StateIdle
+			sess.Blocked = nil
+			sess.Activity = ""
+			sess.LastEventAt = time.Now()
+			sess.PID = 0
+			if waitErr == nil {
+				if sess.FirstPrompt == "" {
+					sess.FirstPrompt = prompt
 				}
-				h.Emit(sess.ID, errEvt)
-				if origSessionID != sess.ID {
-					h.Emit(origSessionID, errEvt)
-				}
+				sess.LastPrompt = prompt
 			} else {
-				sess.Activity = "Turn completed with status: " + waitErr.Error()
+				errDetail := strings.TrimSpace(stderrBuf.String())
+				if errDetail != "" {
+					sess.Activity = "Turn error: " + errDetail
+					errEvt := ChatStreamEvent{
+						SessionID: sess.ID,
+						Type:      "error",
+						Text:      errDetail,
+						IsError:   true,
+					}
+					h.Emit(sess.ID, errEvt)
+					if origSessionID != sess.ID {
+						h.Emit(origSessionID, errEvt)
+					}
+				} else {
+					sess.Activity = "Turn completed with status: " + waitErr.Error()
+				}
+				h.SetQueuePaused(sess.ID, true)
+				h.EmitQueueUpdate(sess.ID)
 			}
-			h.SetQueuePaused(sess.ID, true)
-			h.EmitQueueUpdate(sess.ID)
 		}
 
 		// Update title / context metadata
@@ -758,8 +1039,8 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 			onDone(sess.ID, sess.NativeID)
 		}
 
-		// Auto-dispatch next queued prompt if queue is not paused
-		if !h.IsQueuePaused(sess.ID) {
+		// Auto-dispatch next queued prompt if queue is not paused and not blocked
+		if interactiveBlock == nil && !h.IsQueuePaused(sess.ID) {
 			nextItem := h.DequeuePrompt(sess.ID)
 			if nextItem != nil {
 				h.EmitQueueUpdate(sess.ID)
@@ -942,6 +1223,10 @@ func (h *HeadlessRunner) processStreamWithPrompt(sessionID string, r io.Reader, 
 								ToolName:  toolName,
 								ToolInput: toolInput,
 							})
+
+							if blocked := parseInteractiveToolBlock(toolName, toolInput); blocked != nil {
+								h.triggerInteractiveBlock(sessionID, sess, toolName, toolInput, blocked, emitStreamEvt)
+							}
 						} else if state == "DONE" || state == "ERROR" {
 							toolOutput := ""
 							if toolInfo != nil {
@@ -1104,6 +1389,11 @@ func (h *HeadlessRunner) processStreamWithPrompt(sessionID string, r io.Reader, 
 						ToolName:  toolName,
 						ToolInput: toolInput,
 					})
+					if toolInput != nil {
+						if blocked := parseInteractiveToolBlock(toolName, toolInput); blocked != nil {
+							h.triggerInteractiveBlock(sessionID, sess, toolName, toolInput, blocked, emitStreamEvt)
+						}
+					}
 				} else if cbType == "text" && hasEmittedAssistantText {
 					needsSeparation = true
 				}
@@ -1228,6 +1518,7 @@ func (h *HeadlessRunner) processStreamWithPrompt(sessionID string, r io.Reader, 
 								if toolID != "" && toolName != "" {
 									toolUses[toolID] = toolName
 								}
+								toolInput := itemMap["input"]
 								if toolID == "" || !emittedToolStart[toolID] {
 									if toolID != "" {
 										emittedToolStart[toolID] = true
@@ -1236,8 +1527,11 @@ func (h *HeadlessRunner) processStreamWithPrompt(sessionID string, r io.Reader, 
 										SessionID: sessionID,
 										Type:      "tool_start",
 										ToolName:  toolName,
-										ToolInput: itemMap["input"],
+										ToolInput: toolInput,
 									})
+								}
+								if blocked := parseInteractiveToolBlock(toolName, toolInput); blocked != nil {
+									h.triggerInteractiveBlock(sessionID, sess, toolName, toolInput, blocked, emitStreamEvt)
 								}
 							}
 						}

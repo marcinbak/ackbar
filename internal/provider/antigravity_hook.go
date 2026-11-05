@@ -66,25 +66,44 @@ func (a *AntigravityProvider) ParseHook(eventName string, payload []byte) (*daem
 	case "pretooluse":
 		if p.ToolCall != nil {
 			tool := p.ToolCall.Name
-			if tool == "ask_question" {
+			toolLower := strings.ToLower(tool)
+			if tool == "ask_question" || tool == "AskUserQuestion" {
 				event.State = daemon.StateBlocked
 				question, options := daemon.ExtractAntigravityQuestionAndOptions(p.ToolCall.Args)
+				questions := daemon.ExtractAntigravityQuestions(p.ToolCall.Args)
 				reason := "Waiting for user response to prompt"
 				if question != "" {
 					reason = question
 				}
 				event.Blocked = &daemon.Blocked{
-					Kind:     daemon.BlockQuestion,
-					Reason:   reason,
-					Question: question,
-					Options:  options,
-					Since:    time.Now(),
+					Kind:      daemon.BlockQuestion,
+					Reason:    reason,
+					Question:  question,
+					Options:   options,
+					Questions: questions,
+					Since:     time.Now(),
 				}
 				if question != "" {
 					event.Activity = "Question: " + daemon.TruncateTitle(question)
 				} else {
 					event.Activity = "Waiting for user response"
 				}
+			} else if toolLower == "exitplanmode" || toolLower == "exit_plan_mode" {
+				event.State = daemon.StateBlocked
+				planText := ""
+				if p.ToolCall.Args != nil {
+					if pStr, ok := p.ToolCall.Args["plan"].(string); ok {
+						planText = pStr
+					}
+				}
+				event.Blocked = &daemon.Blocked{
+					Kind:     daemon.BlockApproval,
+					Reason:   planText,
+					Question: "Approve implementation plan?",
+					Options:  []string{"Approve Plan", "Request Changes"},
+					Since:    time.Now(),
+				}
+				event.Activity = "Waiting for plan approval"
 			} else if tool == "ask_permission" || tool == "ask_custom_permission" {
 				event.State = daemon.StateBlocked
 				reason := daemon.ExtractAntigravityPermissionReason(p.ToolCall.Args)

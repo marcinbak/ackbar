@@ -36,13 +36,79 @@ type claudePayload struct {
 	AgentType        string `json:"agent_type"`
 	Question         string `json:"question"`
 	Questions        []struct {
-		Question string   `json:"question"`
-		Options  []string `json:"options"`
+		Question      string      `json:"question"`
+		Header        string      `json:"header"`
+		Options       interface{} `json:"options"`
+		MultiSelect   bool        `json:"multiSelect"`
+		IsMultiSelect bool        `json:"is_multi_select"`
 	} `json:"questions"`
 	Options []string `json:"options"`
 }
 
+func extractClaudeQuestions(p *claudePayload) []daemon.BlockedQuestion {
+	var questions []daemon.BlockedQuestion
+
+	// 1. Direct Questions array from payload
+	if len(p.Questions) > 0 {
+		for _, qItem := range p.Questions {
+			var bq daemon.BlockedQuestion
+			bq.Question = qItem.Question
+			bq.Header = qItem.Header
+			bq.MultiSelect = qItem.MultiSelect || qItem.IsMultiSelect
+			switch v := qItem.Options.(type) {
+			case []string:
+				bq.Options = v
+			case []interface{}:
+				for _, opt := range v {
+					if s, ok := opt.(string); ok && s != "" {
+						bq.Options = append(bq.Options, s)
+					} else if m, ok := opt.(map[string]interface{}); ok {
+						if label, ok := m["label"].(string); ok && label != "" {
+							bq.Options = append(bq.Options, label)
+						} else if text, ok := m["text"].(string); ok && text != "" {
+							bq.Options = append(bq.Options, text)
+						}
+					}
+				}
+			}
+			if bq.Question != "" || len(bq.Options) > 0 {
+				questions = append(questions, bq)
+			}
+		}
+	}
+
+	// 2. Inspect ToolInput
+	if len(questions) == 0 && p.ToolInput != nil {
+		switch v := p.ToolInput.(type) {
+		case string:
+			if strings.TrimSpace(v) != "" {
+				var toolMap map[string]interface{}
+				if err := json.Unmarshal([]byte(v), &toolMap); err == nil {
+					questions = daemon.ExtractAntigravityQuestions(toolMap)
+				}
+			}
+		case map[string]interface{}:
+			questions = daemon.ExtractAntigravityQuestions(v)
+		}
+	}
+
+	// 3. Fallback to direct Question / Options fields
+	if len(questions) == 0 && (p.Question != "" || len(p.Options) > 0) {
+		questions = append(questions, daemon.BlockedQuestion{
+			Question: p.Question,
+			Options:  p.Options,
+		})
+	}
+
+	return questions
+}
+
 func extractClaudeQuestionAndOptions(p *claudePayload) (string, []string) {
+	questions := extractClaudeQuestions(p)
+	if len(questions) > 0 {
+		return questions[0].Question, questions[0].Options
+	}
+
 	var questionText string
 	var optionsList []string
 
@@ -52,45 +118,6 @@ func extractClaudeQuestionAndOptions(p *claudePayload) (string, []string) {
 	}
 	if len(p.Options) > 0 {
 		optionsList = append(optionsList, p.Options...)
-	}
-
-	// 2. Direct Questions array
-	if len(p.Questions) > 0 {
-		if questionText == "" && p.Questions[0].Question != "" {
-			questionText = p.Questions[0].Question
-		}
-		if len(optionsList) == 0 && len(p.Questions[0].Options) > 0 {
-			optionsList = append(optionsList, p.Questions[0].Options...)
-		}
-	}
-
-	// 3. Inspect ToolInput
-	if p.ToolInput != nil {
-		switch v := p.ToolInput.(type) {
-		case string:
-			if strings.TrimSpace(v) != "" {
-				var toolMap map[string]interface{}
-				if err := json.Unmarshal([]byte(v), &toolMap); err == nil {
-					q, opts := daemon.ExtractAntigravityQuestionAndOptions(toolMap)
-					if questionText == "" {
-						questionText = q
-					}
-					if len(optionsList) == 0 {
-						optionsList = opts
-					}
-				} else if questionText == "" {
-					questionText = v
-				}
-			}
-		case map[string]interface{}:
-			q, opts := daemon.ExtractAntigravityQuestionAndOptions(v)
-			if questionText == "" {
-				questionText = q
-			}
-			if len(optionsList) == 0 {
-				optionsList = opts
-			}
-		}
 	}
 
 	return questionText, optionsList
@@ -200,20 +227,50 @@ func (c *ClaudeProvider) ParseHook(eventName string, payload []byte) (*daemon.Ev
 	case "pretooluse", "pre_tool_use":
 		tool := p.ToolName
 		toolLower := strings.ToLower(tool)
-		if tool == "AskUserQuestion" || tool == "ask_question" || tool == "AskFollowupQuestion" ||
+		if toolLower == "exitplanmode" {
+			event.State = daemon.StateBlocked
+			planText := ""
+			if p.ToolInput != nil {
+				switch v := p.ToolInput.(type) {
+				case string:
+					var m map[string]interface{}
+					if err := json.Unmarshal([]byte(v), &m); err == nil {
+						if pStr, ok := m["plan"].(string); ok {
+							planText = pStr
+						}
+					} else {
+						planText = v
+					}
+				case map[string]interface{}:
+					if pStr, ok := v["plan"].(string); ok {
+						planText = pStr
+					}
+				}
+			}
+			event.Blocked = &daemon.Blocked{
+				Kind:     daemon.BlockApproval,
+				Reason:   planText,
+				Question: "Approve implementation plan?",
+				Options:  []string{"Approve Plan", "Request Changes"},
+				Since:    time.Now(),
+			}
+			event.Activity = "Waiting for plan approval"
+		} else if tool == "AskUserQuestion" || tool == "ask_question" || tool == "AskFollowupQuestion" ||
 			strings.Contains(toolLower, "question") || strings.Contains(toolLower, "askuser") {
 			event.State = daemon.StateBlocked
 			q, opts := extractClaudeQuestionAndOptions(&p)
+			questions := extractClaudeQuestions(&p)
 			reason := "Waiting for user response"
 			if q != "" {
 				reason = q
 			}
 			event.Blocked = &daemon.Blocked{
-				Kind:     daemon.BlockQuestion,
-				Reason:   reason,
-				Question: q,
-				Options:  opts,
-				Since:    time.Now(),
+				Kind:      daemon.BlockQuestion,
+				Reason:    reason,
+				Question:  q,
+				Options:   opts,
+				Questions: questions,
+				Since:     time.Now(),
 			}
 			if q != "" {
 				event.Activity = "Question: " + daemon.TruncateTitle(q)
@@ -234,16 +291,18 @@ func (c *ClaudeProvider) ParseHook(eventName string, payload []byte) (*daemon.Ev
 		if strings.Contains(notifLower, "input") || strings.Contains(notifLower, "question") {
 			event.State = daemon.StateBlocked
 			q, opts := extractClaudeQuestionAndOptions(&p)
+			questions := extractClaudeQuestions(&p)
 			reason := "Agent needs input"
 			if q != "" {
 				reason = q
 			}
 			event.Blocked = &daemon.Blocked{
-				Kind:     daemon.BlockQuestion,
-				Reason:   reason,
-				Question: q,
-				Options:  opts,
-				Since:    time.Now(),
+				Kind:      daemon.BlockQuestion,
+				Reason:    reason,
+				Question:  q,
+				Options:   opts,
+				Questions: questions,
+				Since:     time.Now(),
 			}
 			if q != "" {
 				event.Activity = "Input: " + daemon.TruncateTitle(q)

@@ -571,6 +571,726 @@ if (typeof window !== 'undefined') {
   window.renderSuggestedChips = renderSuggestedChips;
 }
 
+// --- Headless UX Controls: Pills, Config Popover, Autocomplete & Interactive Cards ---
+
+function updateStatusPills(tabObj) {
+  if (!tabObj || !tabObj.session) return;
+  const session = tabObj.session;
+
+  if (tabObj.chatPillModel) {
+    const model = session.model || '';
+    if (!model) {
+      tabObj.chatPillModel.textContent = 'Default Model';
+    } else if (model.includes('claude-opus-4-6') || model === 'claude-opus-4-6') {
+      tabObj.chatPillModel.textContent = 'Claude Opus 4.6';
+    } else if (model.includes('claude-sonnet-4-6') || model === 'claude-sonnet-4-6') {
+      tabObj.chatPillModel.textContent = 'Claude Sonnet 4.6';
+    } else if (model.includes('claude-haiku-4-5') || model === 'claude-haiku-4-5') {
+      tabObj.chatPillModel.textContent = 'Claude Haiku 4.5';
+    } else if (model.includes('claude-3-7-sonnet')) {
+      tabObj.chatPillModel.textContent = 'Claude 3.7 Sonnet';
+    } else if (model.includes('claude-3-5-sonnet')) {
+      tabObj.chatPillModel.textContent = 'Claude 3.5 Sonnet';
+    } else if (model.includes('claude-3-5-haiku')) {
+      tabObj.chatPillModel.textContent = 'Claude 3.5 Haiku';
+    } else if (model.includes('claude-3-opus')) {
+      tabObj.chatPillModel.textContent = 'Claude 3 Opus';
+    } else if (model.includes('gemini-2.5-pro')) {
+      tabObj.chatPillModel.textContent = 'Gemini 2.5 Pro';
+    } else if (model.includes('gemini-2.5-flash')) {
+      tabObj.chatPillModel.textContent = 'Gemini 2.5 Flash';
+    } else {
+      tabObj.chatPillModel.textContent = model;
+    }
+  }
+
+  if (tabObj.chatPillEffort) {
+    const effort = session.effort || '';
+    tabObj.chatPillEffort.textContent = effort ? `Effort: ${effort.charAt(0).toUpperCase() + effort.slice(1)}` : 'Effort: Default';
+  }
+
+  if (tabObj.chatPillMode) {
+    const isPlan = session.permission_mode === 'plan';
+    if (isPlan) {
+      tabObj.chatPillMode.className = 'chat-pill chat-pill-mode pill-plan-mode';
+      tabObj.chatPillMode.textContent = '📝 Plan Mode';
+      tabObj.chatPillMode.title = 'Plan Mode is ACTIVE (read-only planning). Click to switch to Auto Execution.';
+    } else {
+      tabObj.chatPillMode.className = 'chat-pill chat-pill-mode pill-auto-mode';
+      tabObj.chatPillMode.textContent = '⚡ Auto Mode';
+      tabObj.chatPillMode.title = 'Auto Mode is ACTIVE (actions execute automatically). Click to switch to Plan Mode.';
+    }
+  }
+
+  if (tabObj.chatPillUsageText && tabObj.chatPillUsageDot) {
+    const totalTokens = (typeof session.total_tokens === 'number' && session.total_tokens > 0)
+      ? session.total_tokens
+      : (typeof session.context_tokens === 'number' ? session.context_tokens : 0);
+    const maxTokens = (typeof session.max_context_tokens === 'number' && session.max_context_tokens > 0)
+      ? session.max_context_tokens
+      : 200000;
+
+    let pct = 0;
+    if (typeof session.context_pct === 'number' && session.context_pct > 0) {
+      pct = Math.min(100, Math.round(session.context_pct));
+    } else if (totalTokens > 0) {
+      pct = Math.min(100, Math.round((totalTokens / maxTokens) * 100));
+    }
+    tabObj.chatPillUsageText.textContent = `${pct}% Context`;
+    tabObj.chatPillUsageDot.className = 'chat-pill-dot' + (pct > 80 ? ' dot-usage-high' : (pct > 50 ? ' dot-usage-med' : ''));
+  }
+}
+
+function toggleChatConfigPopover(tabObj) {
+  if (!tabObj || !tabObj.chatConfigPopover) return;
+  const popover = tabObj.chatConfigPopover;
+  if (popover.style.display !== 'none') {
+    popover.style.display = 'none';
+  } else {
+    renderConfigPopoverContent(tabObj);
+    popover.style.display = 'flex';
+  }
+}
+
+function renderConfigPopoverContent(tabObj) {
+  if (!tabObj || !tabObj.chatConfigPopover || !tabObj.session) return;
+  const popover = tabObj.chatConfigPopover;
+  const sess = tabObj.session;
+  const model = sess.model || '';
+  const effort = sess.effort || '';
+  const isPlan = sess.permission_mode === 'plan';
+
+  const totalTokens = (typeof sess.total_tokens === 'number' && sess.total_tokens > 0)
+    ? sess.total_tokens
+    : (typeof sess.context_tokens === 'number' ? sess.context_tokens : 0);
+  const maxTokens = (typeof sess.max_context_tokens === 'number' && sess.max_context_tokens > 0)
+    ? sess.max_context_tokens
+    : 200000;
+  let pct = 0;
+  if (typeof sess.context_pct === 'number' && sess.context_pct > 0) {
+    pct = Math.min(100, Math.round(sess.context_pct));
+  } else if (totalTokens > 0) {
+    pct = Math.min(100, Math.round((totalTokens / maxTokens) * 100));
+  }
+  const inputTokens = sess.input_tokens || 0;
+  const outputTokens = sess.output_tokens || 0;
+
+  popover.innerHTML = `
+    <div class="config-popover-header">
+      <div class="config-popover-title">
+        <span>⚙️</span>
+        <span>Session Configuration</span>
+      </div>
+      <button type="button" class="btn-close-popover" title="Close">✕</button>
+    </div>
+    <div class="config-row">
+      <label class="config-label">Model</label>
+      <select class="config-select config-select-model">
+        <option value="" ${!model ? 'selected' : ''}>Default (Agent Default)</option>
+        <option value="claude-opus-4-6" ${model === 'claude-opus-4-6' ? 'selected' : ''}>Claude Opus 4.6</option>
+        <option value="claude-sonnet-4-6" ${model === 'claude-sonnet-4-6' ? 'selected' : ''}>Claude Sonnet 4.6</option>
+        <option value="claude-haiku-4-5" ${model === 'claude-haiku-4-5' ? 'selected' : ''}>Claude Haiku 4.5</option>
+        <option value="claude-3-7-sonnet-20250219" ${model === 'claude-3-7-sonnet-20250219' ? 'selected' : ''}>Claude 3.7 Sonnet</option>
+        <option value="claude-3-5-sonnet-20241022" ${model === 'claude-3-5-sonnet-20241022' ? 'selected' : ''}>Claude 3.5 Sonnet</option>
+        <option value="gemini-2.5-pro" ${model === 'gemini-2.5-pro' ? 'selected' : ''}>Gemini 2.5 Pro (Antigravity)</option>
+        <option value="gemini-2.5-flash" ${model === 'gemini-2.5-flash' ? 'selected' : ''}>Gemini 2.5 Flash (Antigravity)</option>
+      </select>
+    </div>
+    <div class="config-row">
+      <label class="config-label">Reasoning Effort</label>
+      <select class="config-select config-select-effort">
+        <option value="" ${!effort ? 'selected' : ''}>Default</option>
+        <option value="low" ${effort === 'low' ? 'selected' : ''}>Low</option>
+        <option value="medium" ${effort === 'medium' ? 'selected' : ''}>Medium</option>
+        <option value="high" ${effort === 'high' ? 'selected' : ''}>High</option>
+        <option value="max" ${effort === 'max' ? 'selected' : ''}>Max</option>
+      </select>
+    </div>
+    <div class="config-row">
+      <label class="config-label">Execution Mode</label>
+      <div class="config-toggle-group">
+        <button type="button" class="config-toggle-btn config-btn-auto ${!isPlan ? 'active' : ''}">⚡ Auto Execution</button>
+        <button type="button" class="config-toggle-btn config-btn-plan ${isPlan ? 'active' : ''}">📝 Plan Mode</button>
+      </div>
+    </div>
+    <div class="config-row">
+      <label class="config-label">Context Usage</label>
+      <div class="config-usage-card">
+        <div style="display: flex; justify-content: space-between; font-weight: 500;">
+          <span>Context Window</span>
+          <span class="config-usage-pct">${pct}%</span>
+        </div>
+        <div class="config-usage-bar">
+          <div class="config-usage-fill" style="width: ${pct}%;"></div>
+        </div>
+        <div class="config-meta-details">
+          <span>Input Tokens: ${inputTokens.toLocaleString()}</span>
+          <span>Output Tokens: ${outputTokens.toLocaleString()}</span>
+          <span>Estimated Context: ${totalTokens.toLocaleString()} / ${maxTokens.toLocaleString()}</span>
+        </div>
+      </div>
+    </div>
+  `;
+
+  const btnClose = popover.querySelector('.btn-close-popover');
+  if (btnClose) {
+    btnClose.addEventListener('click', () => {
+      popover.style.display = 'none';
+    });
+  }
+
+  const selModel = popover.querySelector('.config-select-model');
+  if (selModel) {
+    selModel.addEventListener('change', () => {
+      updateSessionConfig(tabObj, { model: selModel.value });
+    });
+  }
+
+  const selEffort = popover.querySelector('.config-select-effort');
+  if (selEffort) {
+    selEffort.addEventListener('change', () => {
+      updateSessionConfig(tabObj, { effort: selEffort.value });
+    });
+  }
+
+  const btnAuto = popover.querySelector('.config-btn-auto');
+  if (btnAuto) {
+    btnAuto.addEventListener('click', () => {
+      updateSessionConfig(tabObj, { permission_mode: 'bypassPermissions' });
+    });
+  }
+
+  const btnPlan = popover.querySelector('.config-btn-plan');
+  if (btnPlan) {
+    btnPlan.addEventListener('click', () => {
+      updateSessionConfig(tabObj, { permission_mode: 'plan' });
+    });
+  }
+}
+
+function setupChatConfigPopover(tabObj) {
+  document.addEventListener('click', (e) => {
+    if (!tabObj || !tabObj.chatConfigPopover) return;
+    if (tabObj.chatConfigPopover.style.display === 'none') return;
+    if (tabObj.chatConfigPopover.contains(e.target)) return;
+    if (tabObj.chatComposerBar && tabObj.chatComposerBar.contains(e.target)) return;
+    tabObj.chatConfigPopover.style.display = 'none';
+  });
+}
+
+function togglePlanMode(tabObj) {
+  if (!tabObj || !tabObj.session) return;
+  const current = tabObj.session.permission_mode || 'bypassPermissions';
+  const next = current === 'plan' ? 'bypassPermissions' : 'plan';
+  updateSessionConfig(tabObj, { permission_mode: next });
+}
+
+async function updateSessionConfig(tabObj, configUpdate) {
+  if (!tabObj || !tabObj.session) return;
+  const sessionId = tabObj.session.id;
+  const baseUrl = getSessionBaseUrl(sessionId, tabObj.session);
+
+  tabObj.session = { ...tabObj.session, ...configUpdate };
+  updateStatusPills(tabObj);
+  renderConfigPopoverContent(tabObj);
+
+  try {
+    const res = await fetch(`${baseUrl}/v1/sessions/${encodeURIComponent(sessionId)}/config`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(configUpdate)
+    });
+    if (!res.ok) {
+      console.error('Failed to update session config:', await res.text());
+    } else {
+      const data = await res.json();
+      const s = data && data.session ? data.session : data;
+      if (s && s.id) {
+        tabObj.session = { ...tabObj.session, ...s };
+        updateStatusPills(tabObj);
+        renderConfigPopoverContent(tabObj);
+      }
+    }
+  } catch (err) {
+    console.error('Error updating session config:', err);
+  }
+}
+
+function setupChatAutocomplete(tabObj) {
+  if (!tabObj || !tabObj.chatInputEl || !tabObj.chatAutocompleteMenu) return;
+  const inputEl = tabObj.chatInputEl;
+  const menuEl = tabObj.chatAutocompleteMenu;
+
+  let debounceTimer = null;
+  let activeKind = '';
+  let activeMatch = null;
+
+  tabObj.autocompleteItems = [];
+  tabObj.autocompleteSelectedIndex = 0;
+
+  function closeMenu() {
+    menuEl.style.display = 'none';
+    menuEl.innerHTML = '';
+    tabObj.autocompleteItems = [];
+    activeMatch = null;
+  }
+
+  function highlightActive() {
+    const items = menuEl.querySelectorAll('.chat-autocomplete-item');
+    items.forEach((item, idx) => {
+      if (idx === tabObj.autocompleteSelectedIndex) {
+        item.classList.add('active');
+        item.scrollIntoView({ block: 'nearest' });
+      } else {
+        item.classList.remove('active');
+      }
+    });
+  }
+
+  inputEl.addEventListener('input', () => {
+    if (debounceTimer) clearTimeout(debounceTimer);
+    const text = inputEl.value || '';
+    const pos = inputEl.selectionStart;
+    const beforeCaret = text.slice(0, pos);
+
+    let match = null;
+    let kind = '';
+    let triggerWord = '';
+
+    const cmdMatch = beforeCaret.match(/^\s*(\/[^\s]*)$/);
+    const fileMatch = beforeCaret.match(/(?:^|\s)(@[^\s@]*)$/);
+
+    if (cmdMatch) {
+      match = cmdMatch;
+      triggerWord = cmdMatch[1];
+      kind = 'commands';
+    } else if (fileMatch) {
+      match = fileMatch;
+      triggerWord = fileMatch[1];
+      kind = 'files';
+    } else {
+      closeMenu();
+      return;
+    }
+
+    const query = triggerWord.slice(1);
+    activeKind = kind;
+    activeMatch = { matchStart: pos - triggerWord.length, matchEnd: pos, triggerWord };
+
+    debounceTimer = setTimeout(async () => {
+      if (!tabObj.session) return;
+      const baseUrl = getSessionBaseUrl(tabObj.session.id, tabObj.session);
+      try {
+        const res = await fetch(`${baseUrl}/v1/sessions/${encodeURIComponent(tabObj.session.id)}/suggestions?kind=${encodeURIComponent(kind)}&q=${encodeURIComponent(query)}`);
+        if (!res.ok) {
+          closeMenu();
+          return;
+        }
+        const items = await res.json();
+        if (!Array.isArray(items) || items.length === 0) {
+          closeMenu();
+          return;
+        }
+
+        tabObj.autocompleteItems = items;
+        tabObj.autocompleteSelectedIndex = 0;
+        menuEl.innerHTML = '';
+
+        items.forEach((item, idx) => {
+          const itemEl = document.createElement('div');
+          itemEl.className = 'chat-autocomplete-item' + (idx === 0 ? ' active' : '');
+          if (kind === 'commands') {
+            itemEl.innerHTML = `
+              <div class="autocomplete-item-left">
+                <span class="autocomplete-icon">⚡</span>
+                <span class="autocomplete-name">${escapeHtml(item.trigger || ('/' + item.name))}</span>
+                <span class="autocomplete-desc">${escapeHtml(item.description || '')}</span>
+              </div>
+              <span class="autocomplete-category">${escapeHtml(item.category || '')}</span>
+            `;
+          } else {
+            itemEl.innerHTML = `
+              <div class="autocomplete-item-left">
+                <span class="autocomplete-icon">📄</span>
+                <span class="autocomplete-name">${escapeHtml(item.name)}</span>
+                <span class="autocomplete-desc">${escapeHtml(item.path)}</span>
+              </div>
+            `;
+          }
+
+          itemEl.addEventListener('mousedown', (e) => {
+            e.preventDefault();
+            selectAutocompleteItem(tabObj, item, kind, activeMatch);
+          });
+
+          menuEl.appendChild(itemEl);
+        });
+
+        menuEl.style.display = 'block';
+      } catch (err) {
+        console.warn('Failed to fetch suggestions:', err);
+        closeMenu();
+      }
+    }, 100);
+  });
+
+  inputEl.addEventListener('keydown', (e) => {
+    if (menuEl.style.display === 'none' || tabObj.autocompleteItems.length === 0) return;
+
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      tabObj.autocompleteSelectedIndex = (tabObj.autocompleteSelectedIndex + 1) % tabObj.autocompleteItems.length;
+      highlightActive();
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      tabObj.autocompleteSelectedIndex = (tabObj.autocompleteSelectedIndex - 1 + tabObj.autocompleteItems.length) % tabObj.autocompleteItems.length;
+      highlightActive();
+    } else if (e.key === 'Enter' || e.key === 'Tab') {
+      e.preventDefault();
+      e.stopPropagation();
+      const selected = tabObj.autocompleteItems[tabObj.autocompleteSelectedIndex];
+      if (selected) {
+        selectAutocompleteItem(tabObj, selected, activeKind, activeMatch);
+      }
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      closeMenu();
+    }
+  });
+
+  document.addEventListener('click', (e) => {
+    if (menuEl.style.display !== 'none' && !menuEl.contains(e.target) && e.target !== inputEl) {
+      closeMenu();
+    }
+  });
+}
+
+function selectAutocompleteItem(tabObj, item, kind, match) {
+  if (!tabObj || !tabObj.chatInputEl || !item) return;
+  const inputEl = tabObj.chatInputEl;
+  const menuEl = tabObj.chatAutocompleteMenu;
+  if (menuEl) menuEl.style.display = 'none';
+
+  const fullText = inputEl.value || '';
+  let start = 0;
+  let end = fullText.length;
+  if (match) {
+    start = match.matchStart;
+    end = match.matchEnd;
+  }
+
+  if (kind === 'commands') {
+    if (item.execution_mode === 'client_action') {
+      inputEl.value = fullText.slice(0, start) + fullText.slice(end);
+      inputEl.style.height = 'auto';
+      executeClientAction(tabObj, item.name);
+      return;
+    }
+    const insertText = (item.trigger || ('/' + item.name)) + ' ';
+    inputEl.value = fullText.slice(0, start) + insertText + fullText.slice(end);
+    const newPos = start + insertText.length;
+    inputEl.focus();
+    inputEl.setSelectionRange(newPos, newPos);
+  } else if (kind === 'files') {
+    const insertText = '@' + item.path + ' ';
+    inputEl.value = fullText.slice(0, start) + insertText + fullText.slice(end);
+    const newPos = start + insertText.length;
+    inputEl.focus();
+    inputEl.setSelectionRange(newPos, newPos);
+  }
+}
+
+function executeClientAction(tabObj, actionName) {
+  if (!tabObj) return;
+  switch (actionName) {
+    case 'config':
+      toggleChatConfigPopover(tabObj);
+      break;
+    case 'plan':
+      togglePlanMode(tabObj);
+      break;
+    case 'clear':
+      if (tabObj.chatMessagesEl) {
+        tabObj.chatMessagesEl.innerHTML = '';
+      }
+      loadChatTranscript(tabObj);
+      break;
+    case 'terminal':
+      if (tabObj.session) {
+        handleTakeWheel(tabObj.session.id);
+      }
+      break;
+    case 'handover':
+      if (tabObj.session) {
+        openHandoverModal(tabObj.session);
+      }
+      break;
+    case 'compact':
+      sendChatPrompt(tabObj, '/compact');
+      break;
+    default:
+      console.warn('Unknown client action:', actionName);
+  }
+}
+
+function renderInteractiveBlockCard(tabObj, blocked, toolName) {
+  if (!tabObj || !tabObj.chatMessagesEl || !blocked) return;
+
+  const existing = tabObj.chatMessagesEl.querySelector('.chat-interactive-card:not(.answered)');
+  if (existing) {
+    existing.remove();
+  }
+
+  const isApproval = blocked.kind === 'approval' ||
+    toolName === 'ExitPlanMode' ||
+    (Array.isArray(blocked.options) && blocked.options.includes('Approve Plan'));
+
+  const card = document.createElement('div');
+  card.className = 'chat-interactive-card' + (isApproval ? ' card-approval' : '');
+
+  if (isApproval) {
+    const planText = blocked.reason || '';
+    card.innerHTML = `
+      <div class="interactive-card-header">
+        <span class="interactive-card-badge">📋 Plan Approval</span>
+        <span class="interactive-card-title">${escapeHtml(blocked.question || 'Approve Implementation Plan?')}</span>
+      </div>
+      ${planText ? `<div class="interactive-card-plan">${renderMarkdown(planText)}</div>` : ''}
+      <div class="interactive-card-actions">
+        <button type="button" class="btn btn-primary btn-sm btn-approve-plan">✓ Approve & Execute</button>
+        <button type="button" class="btn btn-secondary btn-sm btn-reject-plan">Request Changes</button>
+      </div>
+      <div class="interactive-card-feedback" style="display: none;">
+        <textarea class="interactive-feedback-input" rows="2" placeholder="Describe the changes you want to the plan..."></textarea>
+        <div class="interactive-feedback-actions">
+          <button type="button" class="btn btn-primary btn-sm btn-submit-feedback">Send Feedback</button>
+          <button type="button" class="btn btn-secondary btn-sm btn-cancel-feedback">Cancel</button>
+        </div>
+      </div>
+    `;
+
+    const btnApprove = card.querySelector('.btn-approve-plan');
+    const btnReject = card.querySelector('.btn-reject-plan');
+    const feedbackBox = card.querySelector('.interactive-card-feedback');
+    const feedbackInput = card.querySelector('.interactive-feedback-input');
+    const btnSubmitFeedback = card.querySelector('.btn-submit-feedback');
+    const btnCancelFeedback = card.querySelector('.btn-cancel-feedback');
+
+    btnApprove.addEventListener('click', async () => {
+      btnApprove.disabled = true;
+      btnReject.disabled = true;
+      card.classList.add('answered');
+      card.querySelector('.interactive-card-actions').innerHTML = `<span class="interactive-answered-badge">✓ Approved Plan • Executing...</span>`;
+      feedbackBox.style.display = 'none';
+      await submitSessionResponse(tabObj, 'approve', 'Approve Plan');
+    });
+
+    btnReject.addEventListener('click', () => {
+      feedbackBox.style.display = 'flex';
+      feedbackInput.focus();
+    });
+
+    btnCancelFeedback.addEventListener('click', () => {
+      feedbackBox.style.display = 'none';
+    });
+
+    btnSubmitFeedback.addEventListener('click', async () => {
+      const feedback = feedbackInput.value.trim();
+      if (!feedback) {
+        feedbackInput.focus();
+        return;
+      }
+      btnSubmitFeedback.disabled = true;
+      btnApprove.disabled = true;
+      btnReject.disabled = true;
+      card.classList.add('answered');
+      card.querySelector('.interactive-card-actions').innerHTML = `<span class="interactive-answered-badge">Requested Changes: ${escapeHtml(feedback)}</span>`;
+      feedbackBox.style.display = 'none';
+      await submitSessionResponse(tabObj, 'reject', feedback);
+    });
+  } else {
+    const questions = (Array.isArray(blocked.questions) && blocked.questions.length > 0)
+      ? blocked.questions
+      : [{
+          question: blocked.question || 'Please provide input:',
+          options: blocked.options || [],
+          multi_select: false
+        }];
+
+    let questionsHtml = '';
+    questions.forEach((q, qIdx) => {
+      const inputType = q.multi_select ? 'checkbox' : 'radio';
+      const opts = Array.isArray(q.options) ? q.options : [];
+      questionsHtml += `
+        <div class="interactive-question-group" data-q-idx="${qIdx}">
+          ${q.header ? `<div class="interactive-question-header">${escapeHtml(q.header)}</div>` : ''}
+          <div class="interactive-question-prompt">${escapeHtml(q.question)}</div>
+          <div class="interactive-options-list">
+            ${opts.map((opt, oIdx) => `
+              <label class="interactive-option-label">
+                <input type="${inputType}" name="q_${qIdx}" value="${escapeHtml(opt)}" ${oIdx === 0 && !q.multi_select ? 'checked' : ''} />
+                <span>${escapeHtml(opt)}</span>
+              </label>
+            `).join('')}
+            <label class="interactive-option-label">
+              <input type="${inputType}" name="q_${qIdx}" value="__other__" />
+              <span>Other</span>
+            </label>
+            <div class="interactive-other-box" style="display: none;">
+              <input type="text" class="interactive-other-input" placeholder="Type custom answer..." />
+            </div>
+          </div>
+        </div>
+      `;
+    });
+
+    card.innerHTML = `
+      <div class="interactive-card-header">
+        <span class="interactive-card-badge">❓ Question</span>
+        <span class="interactive-card-title">${escapeHtml(blocked.question || 'Input Required')}</span>
+      </div>
+      <div class="interactive-card-body">
+        ${questionsHtml}
+      </div>
+      <div class="interactive-card-actions">
+        <button type="button" class="btn btn-primary btn-sm btn-submit-question">Submit Answer</button>
+      </div>
+    `;
+
+    card.querySelectorAll('.interactive-question-group').forEach(group => {
+      const otherRadio = group.querySelector('input[value="__other__"]');
+      const otherBox = group.querySelector('.interactive-other-box');
+      const otherInput = group.querySelector('.interactive-other-input');
+      const allInputs = group.querySelectorAll('input[type="radio"], input[type="checkbox"]');
+
+      allInputs.forEach(inp => {
+        inp.addEventListener('change', () => {
+          if (otherRadio.checked) {
+            otherBox.style.display = 'block';
+            otherInput.focus();
+          } else {
+            otherBox.style.display = 'none';
+          }
+        });
+      });
+    });
+
+    const btnSubmit = card.querySelector('.btn-submit-question');
+    btnSubmit.addEventListener('click', async () => {
+      const answers = [];
+      card.querySelectorAll('.interactive-question-group').forEach(group => {
+        const checked = group.querySelectorAll('input[type="radio"]:checked, input[type="checkbox"]:checked');
+        const vals = [];
+        checked.forEach(c => {
+          if (c.value === '__other__') {
+            const txt = group.querySelector('.interactive-other-input').value.trim();
+            if (txt) vals.push(txt);
+          } else {
+            vals.push(c.value);
+          }
+        });
+        if (vals.length > 0) {
+          answers.push(vals.join(', '));
+        }
+      });
+
+      const finalAnswer = answers.join('; ');
+      if (!finalAnswer) return;
+
+      btnSubmit.disabled = true;
+      card.classList.add('answered');
+      card.querySelector('.interactive-card-actions').innerHTML = `<span class="interactive-answered-badge">✓ Answered: ${escapeHtml(finalAnswer)}</span>`;
+      await submitSessionResponse(tabObj, 'answer', finalAnswer);
+    });
+  }
+
+  tabObj.chatMessagesEl.appendChild(card);
+  tabObj.chatMessagesEl.scrollTop = tabObj.chatMessagesEl.scrollHeight;
+}
+
+function renderTodoWriteCard(tabObj, toolInput) {
+  let todos = [];
+  if (toolInput) {
+    if (Array.isArray(toolInput.todos)) todos = toolInput.todos;
+    else if (typeof toolInput === 'string') {
+      try {
+        const parsed = JSON.parse(toolInput);
+        if (Array.isArray(parsed.todos)) todos = parsed.todos;
+      } catch (_) {}
+    } else if (typeof toolInput === 'object' && Array.isArray(toolInput.tasks)) {
+      todos = toolInput.tasks;
+    }
+  }
+  if (!todos || todos.length === 0) return null;
+
+  const completedCount = todos.filter(t => (t.status || '').toLowerCase() === 'completed').length;
+  const card = document.createElement('div');
+  card.className = 'chat-todo-card';
+  card.innerHTML = `
+    <div class="chat-todo-header">
+      <span>📋</span>
+      <span>Task Progress (${completedCount}/${todos.length})</span>
+    </div>
+    <div class="chat-todo-list">
+      ${todos.map(t => {
+        const rawSt = String(t.status || 'pending').toLowerCase();
+        const st = ['completed', 'in_progress', 'pending'].includes(rawSt) ? rawSt : 'pending';
+        let iconClass = 'todo-icon-pending';
+        let iconChar = '○';
+        if (st === 'completed') {
+          iconClass = 'todo-icon-completed';
+          iconChar = '✓';
+        } else if (st === 'in_progress') {
+          iconClass = 'todo-icon-inprogress';
+          iconChar = '▶';
+        }
+        return `
+          <div class="chat-todo-item ${st}">
+            <span class="chat-todo-status-icon ${iconClass}">${iconChar}</span>
+            <span class="chat-todo-text">${escapeHtml(t.content || t.text || t.name || '')}</span>
+          </div>
+        `;
+      }).join('')}
+    </div>
+  `;
+  return card;
+}
+
+async function submitSessionResponse(tabObj, action, value) {
+  if (!tabObj || !tabObj.session) return;
+  const sessionId = tabObj.session.id;
+  const baseUrl = getSessionBaseUrl(sessionId, tabObj.session);
+
+  tabObj.session.blocked = null;
+  tabObj.session.state = 1;
+
+  appendChatMessage(tabObj, {
+    role: 'user',
+    content: value,
+    rawPrompt: value,
+    timestamp: new Date().toISOString()
+  });
+
+  setChatSending(tabObj, true);
+
+  try {
+    const res = await fetch(`${baseUrl}/v1/sessions/respond`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: sessionId,
+        action: action,
+        answer: value
+      })
+    });
+    if (!res.ok) {
+      console.error('Failed to submit response:', await res.text());
+    }
+  } catch (err) {
+    console.error('Error submitting response to daemon:', err);
+  }
+}
+
 
 function setupChatInterface(tabObj, chatViewEl, session) {
   const isTmux = session.engine_type === 'tmux';
@@ -620,6 +1340,22 @@ function setupChatInterface(tabObj, chatViewEl, session) {
       </div>
       <div class="chat-suggested-chips" style="display: none;"></div>
       <div class="chat-composer-attachments" style="display: none;"></div>
+      <div class="chat-composer-bar">
+        <div class="chat-composer-pills-left">
+          <span class="chat-pill chat-pill-model" title="Change Model">Default Model</span>
+          <span class="chat-pill chat-pill-effort" title="Reasoning Effort">Effort: Default</span>
+          <span class="chat-pill chat-pill-mode pill-auto-mode" title="Click to toggle Auto / Plan Mode">⚡ Auto Mode</span>
+        </div>
+        <div class="chat-composer-pills-right">
+          <span class="chat-pill chat-pill-usage" title="Context Usage">
+            <span class="chat-pill-dot"></span>
+            <span class="chat-pill-usage-text">0% Context</span>
+          </span>
+          <button type="button" class="chat-pill chat-pill-config" title="Session Configuration">⚙️ /config</button>
+        </div>
+      </div>
+      <div class="chat-autocomplete-menu" style="display: none;"></div>
+      <div class="chat-config-popover" style="display: none;"></div>
       <div class="chat-composer-box">
         <button class="btn-composer-attach" type="button" title="Attach file or image">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -654,6 +1390,16 @@ function setupChatInterface(tabObj, chatViewEl, session) {
   tabObj.chatSubagentsChevron = chatViewEl.querySelector('.chat-subagents-chevron');
   tabObj.chatSubagentsList = chatViewEl.querySelector('.chat-subagents-list');
   tabObj.chatComposerAttachments = chatViewEl.querySelector('.chat-composer-attachments');
+  tabObj.chatComposerBar = chatViewEl.querySelector('.chat-composer-bar');
+  tabObj.chatPillModel = chatViewEl.querySelector('.chat-pill-model');
+  tabObj.chatPillEffort = chatViewEl.querySelector('.chat-pill-effort');
+  tabObj.chatPillMode = chatViewEl.querySelector('.chat-pill-mode');
+  tabObj.chatPillUsage = chatViewEl.querySelector('.chat-pill-usage');
+  tabObj.chatPillUsageText = chatViewEl.querySelector('.chat-pill-usage-text');
+  tabObj.chatPillUsageDot = chatViewEl.querySelector('.chat-pill-dot');
+  tabObj.chatPillConfig = chatViewEl.querySelector('.chat-pill-config');
+  tabObj.chatAutocompleteMenu = chatViewEl.querySelector('.chat-autocomplete-menu');
+  tabObj.chatConfigPopover = chatViewEl.querySelector('.chat-config-popover');
   tabObj.chatComposerBox = chatViewEl.querySelector('.chat-composer-box');
   tabObj.chatAttachBtn = chatViewEl.querySelector('.btn-composer-attach');
   tabObj.chatFileInput = chatViewEl.querySelector('.chat-file-input');
@@ -903,6 +1649,9 @@ function setupChatInterface(tabObj, chatViewEl, session) {
 
     tabObj.chatInputEl.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && !e.shiftKey) {
+        if (tabObj.chatAutocompleteMenu && tabObj.chatAutocompleteMenu.style.display !== 'none' && tabObj.autocompleteItems && tabObj.autocompleteItems.length > 0) {
+          return;
+        }
         e.preventDefault();
         sendChatPrompt(tabObj);
       }
@@ -936,6 +1685,16 @@ function setupChatInterface(tabObj, chatViewEl, session) {
       }
     }, { passive: true });
   }
+
+  if (tabObj.chatPillModel) tabObj.chatPillModel.addEventListener('click', () => toggleChatConfigPopover(tabObj));
+  if (tabObj.chatPillEffort) tabObj.chatPillEffort.addEventListener('click', () => toggleChatConfigPopover(tabObj));
+  if (tabObj.chatPillUsage) tabObj.chatPillUsage.addEventListener('click', () => toggleChatConfigPopover(tabObj));
+  if (tabObj.chatPillConfig) tabObj.chatPillConfig.addEventListener('click', () => toggleChatConfigPopover(tabObj));
+  if (tabObj.chatPillMode) tabObj.chatPillMode.addEventListener('click', () => togglePlanMode(tabObj));
+
+  setupChatAutocomplete(tabObj);
+  setupChatConfigPopover(tabObj);
+  updateStatusPills(tabObj);
 
   loadChatTranscript(tabObj);
   loadChatQueue(tabObj);
@@ -1260,8 +2019,15 @@ async function loadChatTranscript(tabObj) {
       } else {
         fetchRunningSubagents(tabObj);
       }
+
+      if (tabObj.session && tabObj.session.blocked && (tabObj.session.state === 2 || tabObj.session.state === 'blocked')) {
+        renderInteractiveBlockCard(tabObj, tabObj.session.blocked);
+      }
     } else {
       fetchRunningSubagents(tabObj);
+      if (tabObj.session && tabObj.session.blocked && (tabObj.session.state === 2 || tabObj.session.state === 'blocked')) {
+        renderInteractiveBlockCard(tabObj, tabObj.session.blocked);
+      }
     }
   } catch (e) {
     console.warn('Failed to load chat transcript:', e);
@@ -1996,6 +2762,30 @@ function createChatMessageElement(tabObj, msg) {
       ${toolsHtml ? `<div class="chat-tools">${toolsHtml}</div>` : ''}
       <div class="chat-msg-body markdown-body">${bodyHtml}</div>
     `;
+
+    const allTools = (msg.tool_calls && msg.tool_calls.length > 0) ? msg.tool_calls : (msg.tool_uses || []);
+    if (Array.isArray(allTools)) {
+      for (const tc of allTools) {
+        const tcName = (tc.name || '').toLowerCase();
+        if (tcName === 'todowrite' || tcName === 'todo_write') {
+          const inputData = tc.input || tc.detail;
+          const todoCard = renderTodoWriteCard(tabObj, inputData);
+          if (todoCard) {
+            const toolsSlot = msgEl.querySelector('.chat-tools');
+            if (toolsSlot) {
+              toolsSlot.appendChild(todoCard);
+            } else {
+              const bodyEl = msgEl.querySelector('.chat-msg-body');
+              if (bodyEl) {
+                msgEl.insertBefore(todoCard, bodyEl);
+              } else {
+                msgEl.appendChild(todoCard);
+              }
+            }
+          }
+        }
+      }
+    }
   } else {
     msgEl.className = 'chat-msg system-msg';
     msgEl.innerHTML = `<span class="system-tag">ℹ️ ${escapeHtml(msg.content)}</span>`;
@@ -2572,6 +3362,32 @@ async function sendChatPrompt(tabObj, forcedPromptText) {
     promptText = tabObj.chatInputEl.value.trim();
   }
 
+  if (promptText === '/config') {
+    toggleChatConfigPopover(tabObj);
+    tabObj.chatInputEl.value = '';
+    return;
+  }
+  if (promptText === '/plan') {
+    togglePlanMode(tabObj);
+    tabObj.chatInputEl.value = '';
+    return;
+  }
+  if (promptText === '/clear') {
+    tabObj.chatInputEl.value = '';
+    executeClientAction(tabObj, 'clear');
+    return;
+  }
+  if (promptText === '/terminal') {
+    tabObj.chatInputEl.value = '';
+    executeClientAction(tabObj, 'terminal');
+    return;
+  }
+  if (promptText === '/handover') {
+    tabObj.chatInputEl.value = '';
+    executeClientAction(tabObj, 'handover');
+    return;
+  }
+
   const pending = tabObj.pendingAttachments || [];
   if (pending.some(a => a.status === 'uploading')) {
     showUploadToast('Please wait for file upload to finish...', 'info', 2500);
@@ -2833,6 +3649,18 @@ function handleChatStreamEvent(tabObj, evt) {
   }
 
   switch (evt.type) {
+    case 'interactive_block': {
+      tabObj.sending = false;
+      setChatSending(tabObj, false);
+      if (evt.blocked) {
+        if (!tabObj.session) tabObj.session = {};
+        tabObj.session.blocked = evt.blocked;
+        tabObj.session.state = 2;
+        renderInteractiveBlockCard(tabObj, evt.blocked, evt.tool_name);
+      }
+      break;
+    }
+
     case 'queue_update':
       if (Array.isArray(evt.queue_items)) {
         tabObj.promptQueue = evt.queue_items;
@@ -2989,6 +3817,14 @@ function handleChatStreamEvent(tabObj, evt) {
         status: 'running',
         output: ''
       });
+
+      if (evt.tool_name === 'TodoWrite' || evt.tool_name === 'todo_write') {
+        const todoCard = renderTodoWriteCard(tabObj, evt.tool_input);
+        if (todoCard && tabObj.activeTurnMsgEl) {
+          const slot = tabObj.activeTurnMsgEl.querySelector('.chat-tools-slot');
+          if (slot) slot.appendChild(todoCard);
+        }
+      }
 
       if (tabObj.activeTurnMsgEl && evt.tool_name) {
         const slot = tabObj.activeTurnMsgEl.querySelector('.chat-tools-slot');
@@ -3290,6 +4126,11 @@ function onSessionUpdated(updatedSess) {
       name: updatedSess.name || tabObj.session.name
     };
 
+    updateStatusPills(tabObj);
+    if (tabObj.session.blocked && (tabObj.session.state === 2 || tabObj.session.state === 'blocked')) {
+      renderInteractiveBlockCard(tabObj, tabObj.session.blocked);
+    }
+
     if (tabObj.chatStreamSessionId && tabObj.chatStreamSessionId !== updatedSess.id) {
       connectChatStream(tabObj);
     }
@@ -3451,5 +4292,12 @@ export {
   handleReplayChatMessage,
   toggleVoiceMic,
   renderSuggestedChips,
-  isChatAutoReadEnabled
+  isChatAutoReadEnabled,
+  updateStatusPills,
+  toggleChatConfigPopover,
+  togglePlanMode,
+  renderInteractiveBlockCard,
+  renderTodoWriteCard,
+  submitSessionResponse,
+  executeClientAction
 };

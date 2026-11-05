@@ -389,7 +389,7 @@ func (s *Server) Mux() http.Handler {
 	mux.HandleFunc("/v1/sessions/respond", s.handleRespond)
 	mux.HandleFunc("/v1/sessions/subagents", s.handleSessionSubagents)
 	mux.HandleFunc("/v1/sessions/transcript", s.handleSessionTranscript)
-	mux.HandleFunc("/v1/sessions/", s.handleSessionControl)
+	mux.HandleFunc("/v1/sessions/", s.handleSessionDispatcher)
 	mux.HandleFunc("/v1/sessions/control", s.handleSessionControl)
 	mux.HandleFunc("/v1/sessions/handover", s.handleSessionHandover)
 	mux.HandleFunc("/v1/sessions/pty", s.handlePTY)
@@ -829,4 +829,24 @@ func (s *Server) maybeAutoSyncSkillsRepo(ctx context.Context) {
 		}
 	}
 	MaybeAutoSyncSkillsRepo(ctx, home, s.db)
+}
+
+func (s *Server) handleSessionDispatcher(w http.ResponseWriter, r *http.Request) {
+	parts := stringsSplit(r.URL.Path, "/")
+	if len(parts) >= 5 {
+		sessionID := parts[3]
+		subAction := strings.ToLower(parts[4])
+		switch subAction {
+		case "suggestions":
+			s.handleSessionSuggestions(w, r, sessionID)
+			return
+		case "config":
+			s.handleSessionConfig(w, r, sessionID)
+			return
+		case "respond":
+			s.handleRespond(w, r)
+			return
+		}
+	}
+	s.handleSessionControl(w, r)
 }
