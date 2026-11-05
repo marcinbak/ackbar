@@ -920,12 +920,6 @@ func (s *Server) handleRespond(w http.ResponseWriter, r *http.Request) {
 		}
 		s.broadcast(sess)
 
-		if s.headless != nil {
-			go func() {
-				_ = s.headless.RunTurn(context.Background(), sess, answerText)
-			}()
-		}
-
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"status":  "responded",
@@ -935,6 +929,13 @@ func (s *Server) handleRespond(w http.ResponseWriter, r *http.Request) {
 			"state":   sess.State.String(),
 			"session": sess,
 		})
+
+		if s.headless != nil {
+			sessCopy := *sess
+			go func() {
+				_ = s.headless.RunTurn(context.Background(), &sessCopy, answerText)
+			}()
+		}
 		return
 	}
 

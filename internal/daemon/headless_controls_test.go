@@ -406,6 +406,9 @@ func TestServer_RespondApprovePlan(t *testing.T) {
 	if updated.PermissionMode != "bypassPermissions" {
 		t.Errorf("expected PermissionMode to flip to bypassPermissions, got %q", updated.PermissionMode)
 	}
+	if srv.headless != nil {
+		srv.headless.ClearInteractiveBlockAndWait(sess.ID, 500*time.Millisecond)
+	}
 }
 
 func TestServer_RespondTmuxApproveAndReject(t *testing.T) {
