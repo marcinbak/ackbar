@@ -194,6 +194,42 @@ func ClassifyWorkflowNodeState(node string, sessState State, hasExplicitBlocker 
 	}
 }
 
+// workflowNodeRank returns an integer rank (0..15) for dev-workflow nodes N0..N15 (or DONE/COMPLETED -> 15), or -1 if unknown.
+func workflowNodeRank(node string) int {
+	n := strings.ToUpper(strings.TrimSpace(node))
+	if n == "DONE" || n == "COMPLETED" {
+		return 15
+	}
+	if strings.HasPrefix(n, "N") && len(n) > 1 {
+		if num, err := strconv.Atoi(n[1:]); err == nil && num >= 0 && num <= 15 {
+			return num
+		}
+	}
+	return -1
+}
+
+// shouldAdvanceWorkflowNode returns true if candidateNode is strictly further along in the workflow than currentNode.
+func shouldAdvanceWorkflowNode(currentNode, candidateNode string) bool {
+	candRank := workflowNodeRank(candidateNode)
+	if candRank < 0 {
+		return strings.TrimSpace(currentNode) == "" && strings.TrimSpace(candidateNode) != ""
+	}
+	currRank := workflowNodeRank(currentNode)
+	return candRank > currRank
+}
+
+// normalizeWorkflowNode normalizes node strings like "done", "completed", "n9" to canonical "N0".."N15".
+func normalizeWorkflowNode(node string) string {
+	n := strings.ToUpper(strings.TrimSpace(node))
+	if n == "DONE" || n == "COMPLETED" {
+		return "N15"
+	}
+	if r := workflowNodeRank(n); r >= 0 {
+		return fmt.Sprintf("N%d", r)
+	}
+	return n
+}
+
 // unlockSequentialWorkstreams transitions downstream workstreams from QUEUED/NEW to IN_PROGRESS upon upstream completion
 func (s *Server) unlockSequentialWorkstreams(task *Task, completedRepoPath string) bool {
 	if task == nil || len(task.Workstreams) == 0 {
@@ -349,27 +385,30 @@ func (s *Server) completeAndCloseTaskSession(task *Task, sess *Session) {
 	_ = s.db.UpdateTask(task)
 }
 
+// findBoundTaskForSession returns the existing non-DONE task explicitly bound to sess, or nil if none.
+func (s *Server) findBoundTaskForSession(sess *Session) *Task {
+	if sess == nil || sess.ID == "" || s.db == nil {
+		return nil
+	}
+	if sess.CurrentTaskID != "" {
+		if t, err := s.db.GetTaskByID(sess.CurrentTaskID); err == nil && t != nil && t.Status != "DONE" {
+			return t
+		}
+	}
+	if t, err := s.db.GetActiveTaskForSession(sess.ID); err == nil && t != nil && t.Status != "DONE" {
+		return t
+	}
+	return nil
+}
+
 // SyncSessionTaskWorker associates a session with an explicitly bound active task and syncs substatus
 func (s *Server) SyncSessionTaskWorker(sess *Session) {
 	if sess == nil || sess.ID == "" {
 		return
 	}
 
-	// 1. Look up an existing non-DONE task that this session is explicitly bound to:
-	//    a) If sess.CurrentTaskID != "", look up s.db.GetTaskByID(sess.CurrentTaskID)
-	//    b) Else look up s.db.GetActiveTaskForSession(sess.ID)
-	//    c) If no explicitly bound task is found, return immediately!
-	var task *Task
-	if sess.CurrentTaskID != "" {
-		if t, err := s.db.GetTaskByID(sess.CurrentTaskID); err == nil && t != nil && t.Status != "DONE" {
-			task = t
-		}
-	}
-	if task == nil {
-		if t, err := s.db.GetActiveTaskForSession(sess.ID); err == nil && t != nil && t.Status != "DONE" {
-			task = t
-		}
-	}
+	// 1. Look up an existing non-DONE task that this session is explicitly bound to
+	task := s.findBoundTaskForSession(sess)
 	if task == nil {
 		return
 	}
@@ -486,6 +525,37 @@ func (s *Server) SyncSessionTaskWorker(sess *Session) {
 		taskNeedsUpdate = true
 	} else if sess.State == StateIdle && task.TaskKind != "design" && workflowNode != "" {
 		newStatus, newSubstatus := ClassifyWorkflowNodeState(workflowNode, sess.State, task.Substatus == "blocked" && task.BlockerQuestion != "")
+
+		// Monotonic Guard 1: Once a task has left NEW (e.g. IN_PROGRESS), going idle at N0 must never snap it back to NEW.
+		if newStatus == "NEW" && task.Status != "" && !strings.EqualFold(task.Status, "NEW") {
+			newStatus = task.Status
+			if task.Substatus != "" && task.Substatus != "ready" && task.Substatus != "queued" {
+				newSubstatus = task.Substatus
+			} else {
+				newSubstatus = "active"
+			}
+		}
+
+		// Monotonic Guard 2: Never downgrade a task that is already in REVIEW (or has an open PR) back to IN_PROGRESS or NEW.
+		if (strings.EqualFold(task.Status, "REVIEW") || task.PRURL != "") && (newStatus == "IN_PROGRESS" || newStatus == "NEW") {
+			newStatus = "REVIEW"
+			if task.Substatus == "pr_review" || task.Substatus == "in_review" || task.Substatus == "plan_review" {
+				newSubstatus = task.Substatus
+			} else {
+				newSubstatus = "pr_review"
+			}
+		}
+
+		// Monotonic Guard 3: If reaching N14/N15/DONE while a PR is attached and not yet MERGED, verify PR state before closing.
+		if newStatus == "DONE" && task.PRURL != "" && task.PRState != "MERGED" {
+			if prState, err := checkGitHubPRState(context.Background(), task.PRURL); err == nil && prState == "MERGED" {
+				task.PRState = "MERGED"
+			} else if prState == "OPEN" || task.PRState == "OPEN" {
+				newStatus = "REVIEW"
+				newSubstatus = "pr_review"
+			}
+		}
+
 		if task.Status != newStatus || task.Substatus != newSubstatus {
 			task.Status = newStatus
 			task.Substatus = newSubstatus
@@ -494,25 +564,123 @@ func (s *Server) SyncSessionTaskWorker(sess *Session) {
 		for i := range task.Workstreams {
 			ws := &task.Workstreams[i]
 			if repoNodePath == "" || strings.EqualFold(ws.RepoNodePath, repoNodePath) {
-				if ws.WorkflowNode != workflowNode || ws.Status != newStatus {
+				wsNewStatus := newStatus
+				if wsNewStatus == "NEW" && ws.Status != "" && !strings.EqualFold(ws.Status, "NEW") && !strings.EqualFold(ws.Status, "QUEUED") {
+					wsNewStatus = ws.Status
+				}
+				if ws.WorkflowNode != workflowNode || ws.Status != wsNewStatus {
 					ws.WorkflowNode = workflowNode
-					ws.Status = newStatus
+					ws.Status = wsNewStatus
 					ws.UpdatedAt = time.Now().UTC()
 					taskNeedsUpdate = true
 				}
 			}
 		}
-		if workflowNode == "N14" || workflowNode == "N15" || workflowNode == "DONE" || workflowNode == "COMPLETED" {
+		if newStatus == "DONE" && (workflowNode == "N14" || workflowNode == "N15" || workflowNode == "DONE" || workflowNode == "COMPLETED") {
 			if s.unlockSequentialWorkstreams(task, repoNodePath) {
 				taskNeedsUpdate = true
 			}
 		}
-		if workflowNode == "N15" || workflowNode == "DONE" || workflowNode == "COMPLETED" {
+		if newStatus == "DONE" && (workflowNode == "N15" || workflowNode == "DONE" || workflowNode == "COMPLETED") {
 			s.completeAndCloseTaskSession(task, sess)
 		}
 	}
 
 	if taskNeedsUpdate {
+		if err := s.db.UpdateTask(task); err == nil {
+			s.pushSyncPayload(&SyncStatePayload{
+				Tasks:       []Task{*task},
+				Workstreams: task.Workstreams,
+			})
+			s.maybeNotifyTaskReview(oldStatus, task)
+		}
+	}
+}
+
+// IngestBoundTaskTelemetry updates branch, worktree, and PR state strictly for sessions explicitly bound to an active task.
+func (s *Server) IngestBoundTaskTelemetry(sess *Session, event *Event) {
+	if sess == nil || event == nil {
+		return
+	}
+
+	cmd := extractCommandFromToolInput(event.ToolInput)
+	if cmd != "" {
+		if newBranch := ExtractBranchCommand(cmd); newBranch != "" && sess.GitBranch != newBranch {
+			sess.GitBranch = newBranch
+			_ = s.db.SaveSession(sess)
+		}
+	}
+
+	task := s.findBoundTaskForSession(sess)
+	if task == nil {
+		return
+	}
+
+	taskUpdated := false
+	oldStatus := task.Status
+
+	if sess.GitBranch != "" && sess.GitBranch != "main" && sess.GitBranch != "master" && task.Branch == "" {
+		task.Branch = sess.GitBranch
+		taskUpdated = true
+	}
+	if sess.Cwd != "" && task.WorktreePath == "" && isIsolatedWorktree(sess.Cwd) {
+		task.WorktreePath = sess.Cwd
+		taskUpdated = true
+	}
+
+	var prURL string
+	var prNum int
+	if cmd != "" {
+		prURL, prNum = ExtractPRURL(cmd)
+	}
+	if prURL == "" && event.Activity != "" {
+		prURL, prNum = ExtractPRURL(event.Activity)
+	}
+
+	advanceBoundNode := func(minNode string) {
+		for i := range task.Workers {
+			w := &task.Workers[i]
+			if w.SessionID == sess.ID || w.IsActive {
+				if shouldAdvanceWorkflowNode(w.WorkflowNode, minNode) {
+					w.WorkflowNode = minNode
+					_ = s.db.InsertTaskWorker(w)
+					taskUpdated = true
+				}
+			}
+		}
+		for i := range task.Workstreams {
+			ws := &task.Workstreams[i]
+			if ws.Status == "IN_PROGRESS" || len(task.Workstreams) == 1 {
+				if shouldAdvanceWorkflowNode(ws.WorkflowNode, minNode) {
+					ws.WorkflowNode = minNode
+					ws.Status = "REVIEW"
+					ws.UpdatedAt = time.Now().UTC()
+					taskUpdated = true
+				}
+			}
+		}
+	}
+
+	if prURL != "" {
+		if task.PRURL != prURL {
+			task.PRURL = prURL
+			task.PRNumber = prNum
+			if task.PRState == "" {
+				task.PRState = "OPEN"
+			}
+			task.Status = "REVIEW"
+			task.Substatus = "pr_review"
+			advanceBoundNode("N11")
+			taskUpdated = true
+		}
+	} else if strings.Contains(cmd, "gh pr create") && (task.Status == "IN_PROGRESS" || task.Status == "NEW") {
+		task.Status = "REVIEW"
+		task.Substatus = "pr_review"
+		advanceBoundNode("N11")
+		taskUpdated = true
+	}
+
+	if taskUpdated {
 		if err := s.db.UpdateTask(task); err == nil {
 			s.pushSyncPayload(&SyncStatePayload{
 				Tasks:       []Task{*task},

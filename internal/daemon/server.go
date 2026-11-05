@@ -785,9 +785,10 @@ func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) StartBackgroundLoop(ctx context.Context) {
 	go func() {
-		// Run initial scan, host tunnel check, skills repo auto-sync, and peer sync asynchronously on startup
+		// Run initial scan, host tunnel check, dev-workflow run sync, skills repo auto-sync, and peer sync asynchronously on startup
 		go s.scanObservedSessions(ctx)
 		go s.ensureHostTunnels(ctx)
+		go func() { _ = s.IngestDevWorkflowRuns() }()
 		go s.maybeAutoSyncSkillsRepo(ctx)
 		go s.PullFromPeers(ctx)
 
@@ -808,6 +809,7 @@ func (s *Server) StartBackgroundLoop(ctx context.Context) {
 			case <-ticker.C:
 				s.scanObservedSessions(ctx)
 				go s.ensureHostTunnels(ctx)
+				go func() { _ = s.IngestDevWorkflowRuns() }()
 				go s.PullFromPeers(ctx)
 				go s.recordFleetLoadSamples(time.Now().UTC())
 				sessions, err := s.db.ListActiveSessions()

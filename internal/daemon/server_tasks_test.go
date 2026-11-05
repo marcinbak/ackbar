@@ -1449,3 +1449,292 @@ func TestSyncSessionTaskWorker_TransitionsNewToInProgress(t *testing.T) {
 		t.Errorf("Expected task transitioned to IN_PROGRESS/active, got %s/%s", updated.Status, updated.Substatus)
 	}
 }
+
+func TestSyncSessionTaskWorker_N0IdleDoesNotSnapBackToNew(t *testing.T) {
+	dbFile := filepath.Join(t.TempDir(), "test_n0_no_snapback.db")
+	db, err := InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := &Server{db: db}
+
+	now := time.Now().UTC()
+	task := &Task{
+		ID:          "task_n0_snap",
+		Title:       "NGL-1155 [iOS] E2E Maestro",
+		GroupName:   "Modemobile",
+		ProjectName: "NGL/ngl-ios",
+		Status:      "NEW",
+		Substatus:   "ready",
+		Workers: []TaskWorker{
+			{
+				TaskID:       "task_n0_snap",
+				SessionID:    "sess_n0_worker",
+				Host:         "macmini",
+				Agent:        "claude-code",
+				IsActive:     true,
+				RepoNodePath: "Modemobile/NGL/ngl-ios",
+				WorkflowNode: "N0",
+				AssignedAt:   now,
+			},
+		},
+		Workstreams: []TaskWorkstream{
+			{
+				TaskID:       "task_n0_snap",
+				RepoNodePath: "Modemobile/NGL/ngl-ios",
+				TargetHost:   "macmini",
+				WorkflowNode: "N0",
+				Status:       "IN_PROGRESS",
+				UpdatedAt:    now,
+			},
+		},
+	}
+	if err := db.CreateTask(task); err != nil {
+		t.Fatalf("CreateTask failed: %v", err)
+	}
+
+	sess := &Session{
+		ID:            "sess_n0_worker",
+		CurrentTaskID: task.ID,
+		Agent:         "claude-code",
+		Host:          "macmini",
+		State:         StateWorking,
+	}
+
+	// 1. Worker starts working -> transitions to IN_PROGRESS / active
+	server.SyncSessionTaskWorker(sess)
+
+	workingTask, _ := db.GetTaskByID(task.ID)
+	if workingTask.Status != "IN_PROGRESS" || workingTask.Substatus != "active" {
+		t.Fatalf("Expected IN_PROGRESS/active while working, got %s/%s", workingTask.Status, workingTask.Substatus)
+	}
+
+	// 2. Worker finishes turn and goes StateIdle while still at N0 -> must stay IN_PROGRESS, NOT snap back to NEW
+	sess.State = StateIdle
+	server.SyncSessionTaskWorker(sess)
+
+	idleTask, _ := db.GetTaskByID(task.ID)
+	if idleTask.Status != "IN_PROGRESS" {
+		t.Errorf("Expected task status to remain IN_PROGRESS when idle at N0, got %s (substatus %s)", idleTask.Status, idleTask.Substatus)
+	}
+	if len(idleTask.Workstreams) != 1 || idleTask.Workstreams[0].Status != "IN_PROGRESS" {
+		t.Errorf("Expected workstream status to remain IN_PROGRESS when idle at N0, got %+v", idleTask.Workstreams)
+	}
+}
+
+func TestIngestDevWorkflowRuns_UpdateOnlyAndMonotonic(t *testing.T) {
+	tmpHome := t.TempDir()
+	runsDir := filepath.Join(tmpHome, ".claude", "dev-workflow-runs")
+	if err := os.MkdirAll(runsDir, 0755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+
+	dbFile := filepath.Join(t.TempDir(), "test_workflow_runs.db")
+	db, err := InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := &Server{
+		db:      db,
+		homeDir: tmpHome,
+	}
+
+	origCheckPR := checkGitHubPRState
+	checkGitHubPRState = func(ctx context.Context, prURL string) (string, error) {
+		return "OPEN", nil
+	}
+	defer func() { checkGitHubPRState = origCheckPR }()
+
+	now := time.Now().UTC()
+
+	// Save bound worker session with github.com ProjectKey
+	workerSess := &Session{
+		ID:            "claude-code:legion:worker-1154",
+		Agent:         "claude-code",
+		Host:          "legion",
+		Cwd:           "/home/dev4u/Work/ngl-android/.claude/worktrees/NGL-1154-e2e",
+		ProjectKey:    "github.com/CurrentMobile/ngl-android",
+		CurrentTaskID: "task_1154",
+		State:         StateIdle,
+	}
+	_ = db.SaveSession(workerSess)
+
+	task := &Task{
+		ID:          "task_1154",
+		Title:       "NGL-1154 [Android] E2E Maestro: Settings pause/unpause link + delete account",
+		GroupName:   "Modemobile",
+		ProjectName: "NGL/ngl-android",
+		Status:      "NEW",
+		Substatus:   "ready",
+		Workers: []TaskWorker{
+			{
+				TaskID:       "task_1154",
+				SessionID:    workerSess.ID,
+				Agent:        "claude-code",
+				Host:         "legion",
+				IsActive:     true,
+				RepoNodePath: "Modemobile/NGL/ngl-android",
+				WorkflowNode: "N0",
+				AssignedAt:   now,
+			},
+		},
+		Workstreams: []TaskWorkstream{
+			{
+				TaskID:       "task_1154",
+				RepoNodePath: "Modemobile/NGL/ngl-android",
+				TargetHost:   "legion",
+				WorkflowNode: "N0",
+				Status:       "NEW",
+				UpdatedAt:    now,
+			},
+		},
+	}
+	if err := db.CreateTask(task); err != nil {
+		t.Fatalf("CreateTask failed: %v", err)
+	}
+
+	// 1. Write an unmatched workflow run JSON -> must NOT create a new task
+	unmatchedJSON := `{"ticket":"OTHER-999","repo":"other-repo","branch":"feat/other-999","node":"N4"}`
+	if err := os.WriteFile(filepath.Join(runsDir, "other-repo-OTHER-999.json"), []byte(unmatchedJSON), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	// 2. Write a matching workflow run JSON for NGL-1154 at N13 with numeric PR 627 + companion brief
+	matchedJSON := `{
+		"ticket": "NGL-1154",
+		"repo": "ngl-android",
+		"branch": "NGL-1154-e2e-pause-link-delete-account",
+		"worktree": "/home/dev4u/Work/ngl-android/.claude/worktrees/NGL-1154-e2e",
+		"node": "N13",
+		"pr": 627,
+		"notes": "PR #627 open and announced"
+	}`
+	if err := os.WriteFile(filepath.Join(runsDir, "ngl-android-NGL-1154.json"), []byte(matchedJSON), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(runsDir, "ngl-android-NGL-1154.brief.md"), []byte("# Change Brief — NGL-1154\n\n## Acceptance\nVerify pause link."), 0644); err != nil {
+		t.Fatalf("WriteFile brief failed: %v", err)
+	}
+
+	if err := server.IngestDevWorkflowRuns(); err != nil {
+		t.Fatalf("IngestDevWorkflowRuns failed: %v", err)
+	}
+
+	allTasks, _ := db.GetTasks()
+	if len(allTasks) != 1 {
+		t.Fatalf("Expected strictly 1 task (no auto-creation for unmatched run), got %d", len(allTasks))
+	}
+
+	updated, _ := db.GetTaskByID("task_1154")
+	if updated.Status != "REVIEW" || updated.Substatus != "pr_review" {
+		t.Errorf("Expected status REVIEW/pr_review, got %s/%s", updated.Status, updated.Substatus)
+	}
+	if updated.PRURL != "https://github.com/CurrentMobile/ngl-android/pull/627" || updated.PRNumber != 627 {
+		t.Errorf("Expected resolved PR URL and number 627, got %q (#%d)", updated.PRURL, updated.PRNumber)
+	}
+	if updated.Branch != "NGL-1154-e2e-pause-link-delete-account" {
+		t.Errorf("Expected branch populated, got %q", updated.Branch)
+	}
+	if len(updated.Workstreams) != 1 || updated.Workstreams[0].WorkflowNode != "N13" || updated.Workstreams[0].Status != "REVIEW" {
+		t.Errorf("Expected workstream at N13/REVIEW, got %+v", updated.Workstreams)
+	}
+	if len(updated.Deliverables) != 1 || updated.Deliverables[0].Kind != "plan" {
+		t.Errorf("Expected Change Brief deliverable attached, got %+v", updated.Deliverables)
+	}
+
+	// 3. Monotonic Guard: If JSON file has an older node (N4) or session syncs at N0, task must stay at REVIEW / N13
+	regressedJSON := `{
+		"ticket": "NGL-1154",
+		"repo": "ngl-android",
+		"branch": "NGL-1154-e2e-pause-link-delete-account",
+		"node": "N4",
+		"pr": 627
+	}`
+	_ = os.WriteFile(filepath.Join(runsDir, "ngl-android-NGL-1154.json"), []byte(regressedJSON), 0644)
+	_ = server.IngestDevWorkflowRuns()
+
+	afterRegress, _ := db.GetTaskByID("task_1154")
+	if afterRegress.Status != "REVIEW" || afterRegress.Workstreams[0].WorkflowNode != "N13" {
+		t.Errorf("Expected monotonic guard to preserve REVIEW/N13, got %s/%s", afterRegress.Status, afterRegress.Workstreams[0].WorkflowNode)
+	}
+
+	// 4. Open PR Guard: If JSON reaches "done" while PR #627 is still OPEN, task must stay in REVIEW (not DONE)
+	doneWhileOpenJSON := `{
+		"ticket": "NGL-1154",
+		"repo": "ngl-android",
+		"branch": "NGL-1154-e2e-pause-link-delete-account",
+		"node": "done",
+		"pr": 627
+	}`
+	_ = os.WriteFile(filepath.Join(runsDir, "ngl-android-NGL-1154.json"), []byte(doneWhileOpenJSON), 0644)
+	_ = server.IngestDevWorkflowRuns()
+
+	afterDoneOpen, _ := db.GetTaskByID("task_1154")
+	if afterDoneOpen.Status != "REVIEW" || afterDoneOpen.Substatus != "pr_review" {
+		t.Errorf("Expected task with OPEN PR to stay in REVIEW/pr_review even when retro/done written, got %s/%s", afterDoneOpen.Status, afterDoneOpen.Substatus)
+	}
+}
+
+func TestIngestBoundTaskTelemetry_ExtractsBranchAndPR(t *testing.T) {
+	dbFile := filepath.Join(t.TempDir(), "test_bound_telemetry.db")
+	db, err := InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := &Server{db: db}
+	now := time.Now().UTC()
+
+	task := &Task{
+		ID:          "task_bound_tel",
+		Title:       "NGL-1155 [iOS] E2E Maestro",
+		GroupName:   "Modemobile",
+		ProjectName: "NGL/ngl-ios",
+		Status:      "IN_PROGRESS",
+		Substatus:   "active",
+		Workers: []TaskWorker{
+			{
+				TaskID:       "task_bound_tel",
+				SessionID:    "sess_bound_tel",
+				Agent:        "claude-code",
+				Host:         "macmini",
+				IsActive:     true,
+				WorkflowNode: "N4",
+				AssignedAt:   now,
+			},
+		},
+	}
+	_ = db.CreateTask(task)
+
+	sess := &Session{
+		ID:            "sess_bound_tel",
+		CurrentTaskID: task.ID,
+		Agent:         "claude-code",
+		Host:          "macmini",
+		Cwd:           "/Users/dev4u/Work/ngl-ios/.worktrees/NGL-1155",
+		State:         StateWorking,
+	}
+	_ = db.SaveSession(sess)
+
+	server.IngestBoundTaskTelemetry(sess, &Event{
+		ToolName:  "Bash",
+		ToolInput: map[string]any{"command": "git checkout -b feat/NGL-1155-maestro"},
+		Activity:  "Opened https://github.com/CurrentMobile/ngl-ios/pull/608",
+	})
+
+	updated, _ := db.GetTaskByID(task.ID)
+	if updated.Branch != "feat/NGL-1155-maestro" {
+		t.Errorf("Expected branch feat/NGL-1155-maestro, got %q", updated.Branch)
+	}
+	if updated.PRURL != "https://github.com/CurrentMobile/ngl-ios/pull/608" || updated.PRNumber != 608 {
+		t.Errorf("Expected PR #608 attached, got %q (#%d)", updated.PRURL, updated.PRNumber)
+	}
+	if updated.Status != "REVIEW" || updated.Substatus != "pr_review" {
+		t.Errorf("Expected task transitioned to REVIEW/pr_review, got %s/%s", updated.Status, updated.Substatus)
+	}
+}

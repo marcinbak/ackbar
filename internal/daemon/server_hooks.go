@@ -385,6 +385,7 @@ func (s *Server) processParsedHookEvent(event *Event, urlEventName string, heade
 
 	// Synchronize session with explicitly bound task
 	s.SyncSessionTaskWorker(sess)
+	s.IngestBoundTaskTelemetry(sess, event)
 
 	// Broadcast update
 	s.broadcast(sess)
