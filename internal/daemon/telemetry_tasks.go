@@ -426,19 +426,16 @@ func (s *Server) SyncSessionTaskWorker(sess *Session) {
 		for _, ws := range task.Workstreams {
 			if (ws.TargetHost == sess.Host || ws.TargetHost == "") && ws.Status == "IN_PROGRESS" {
 				repoNodePath = ws.RepoNodePath
-				if workflowNode == "" {
+				if shouldAdvanceWorkflowNode(workflowNode, ws.WorkflowNode) {
 					workflowNode = ws.WorkflowNode
 				}
 				break
 			}
 		}
 	}
-	if workflowNode == "" {
-		for _, ws := range task.Workstreams {
-			if ws.WorkflowNode != "" {
-				workflowNode = ws.WorkflowNode
-				break
-			}
+	for _, ws := range task.Workstreams {
+		if (repoNodePath == "" || strings.EqualFold(ws.RepoNodePath, repoNodePath)) && shouldAdvanceWorkflowNode(workflowNode, ws.WorkflowNode) {
+			workflowNode = ws.WorkflowNode
 		}
 	}
 
@@ -537,7 +534,7 @@ func (s *Server) SyncSessionTaskWorker(sess *Session) {
 		}
 
 		// Monotonic Guard 2: Never downgrade a task that is already in REVIEW (or has an open PR) back to IN_PROGRESS or NEW.
-		if (strings.EqualFold(task.Status, "REVIEW") || task.PRURL != "") && (newStatus == "IN_PROGRESS" || newStatus == "NEW") {
+		if (strings.EqualFold(task.Status, "REVIEW") || task.PRURL != "" || task.PRNumber > 0) && (newStatus == "IN_PROGRESS" || newStatus == "NEW") {
 			newStatus = "REVIEW"
 			if task.Substatus == "pr_review" || task.Substatus == "in_review" || task.Substatus == "plan_review" {
 				newSubstatus = task.Substatus
@@ -547,12 +544,23 @@ func (s *Server) SyncSessionTaskWorker(sess *Session) {
 		}
 
 		// Monotonic Guard 3: If reaching N14/N15/DONE while a PR is attached and not yet MERGED, verify PR state before closing.
-		if newStatus == "DONE" && task.PRURL != "" && task.PRState != "MERGED" {
-			if prState, err := checkGitHubPRState(context.Background(), task.PRURL); err == nil && prState == "MERGED" {
-				task.PRState = "MERGED"
-			} else if prState == "OPEN" || task.PRState == "OPEN" {
+		if newStatus == "DONE" && (task.PRURL != "" || task.PRNumber > 0) && task.PRState != "MERGED" {
+			prMerged := false
+			if task.PRURL != "" {
+				prCtx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+				prState, err := checkGitHubPRState(prCtx, task.PRURL)
+				cancel()
+				if err == nil && prState == "MERGED" {
+					task.PRState = "MERGED"
+					prMerged = true
+				}
+			}
+			if !prMerged {
 				newStatus = "REVIEW"
 				newSubstatus = "pr_review"
+				if shouldAdvanceWorkflowNode("N13", workflowNode) {
+					workflowNode = "N13"
+				}
 			}
 		}
 
@@ -568,8 +576,10 @@ func (s *Server) SyncSessionTaskWorker(sess *Session) {
 				if wsNewStatus == "NEW" && ws.Status != "" && !strings.EqualFold(ws.Status, "NEW") && !strings.EqualFold(ws.Status, "QUEUED") {
 					wsNewStatus = ws.Status
 				}
-				if ws.WorkflowNode != workflowNode || ws.Status != wsNewStatus {
-					ws.WorkflowNode = workflowNode
+				if shouldAdvanceWorkflowNode(ws.WorkflowNode, workflowNode) || ws.Status != wsNewStatus {
+					if shouldAdvanceWorkflowNode(ws.WorkflowNode, workflowNode) {
+						ws.WorkflowNode = workflowNode
+					}
 					ws.Status = wsNewStatus
 					ws.UpdatedAt = time.Now().UTC()
 					taskNeedsUpdate = true

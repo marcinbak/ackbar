@@ -15,7 +15,7 @@ import (
 )
 
 func readWorkflowFileBounded(path string, maxBytes int64) ([]byte, error) {
-	fi, err := os.Stat(path)
+	fi, err := os.Lstat(path)
 	if err != nil {
 		return nil, err
 	}
@@ -361,8 +361,12 @@ func (s *Server) ingestSingleWorkflowRun(jsonPath string, modTime time.Time, act
 	prURL := ""
 	prNum := 0
 	if run.PR != nil {
-		prURL = strings.TrimSpace(run.PR.URL)
+		var extractedNum int
+		prURL, extractedNum = ExtractPRURL(strings.TrimSpace(run.PR.URL))
 		prNum = run.PR.Number
+		if prNum == 0 && extractedNum > 0 {
+			prNum = extractedNum
+		}
 		if prURL == "" && prNum > 0 {
 			prURL = s.resolveGitHubPRURLForTask(task, prNum)
 		}
@@ -415,7 +419,10 @@ func (s *Server) ingestSingleWorkflowRun(jsonPath string, modTime time.Time, act
 		if newStatus == "DONE" && (task.PRURL != "" || task.PRNumber > 0) && task.PRState != "MERGED" {
 			prMerged := false
 			if task.PRURL != "" {
-				if prState, err := checkGitHubPRState(context.Background(), task.PRURL); err == nil && prState == "MERGED" {
+				prCtx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+				prState, err := checkGitHubPRState(prCtx, task.PRURL)
+				cancel()
+				if err == nil && prState == "MERGED" {
 					task.PRState = "MERGED"
 					prMerged = true
 				}
@@ -520,32 +527,46 @@ func (s *Server) ingestSingleWorkflowRun(jsonPath string, modTime time.Time, act
 		taskUpdated = true
 	}
 
-	// Attach companion deliverables onto the matched task
+	// Attach companion deliverables onto the matched task only when missing or modified
+	hasDeliverableContent := func(filePath, content string) bool {
+		for _, d := range task.Deliverables {
+			if d.FilePath == filePath && d.ContentMD == content {
+				return true
+			}
+		}
+		return false
+	}
 	deliverableAdded := false
 	if briefData, err := readWorkflowFileBounded(briefPath, 1*1024*1024); err == nil {
-		del := TaskDeliverable{
-			TaskID:    task.ID,
-			Kind:      "plan",
-			Title:     "Change Brief",
-			FilePath:  briefPath,
-			Provider:  "local",
-			ContentMD: string(briefData),
-		}
-		if err := s.db.InsertTaskDeliverable(&del); err == nil {
-			deliverableAdded = true
+		content := string(briefData)
+		if !hasDeliverableContent(briefPath, content) {
+			del := TaskDeliverable{
+				TaskID:    task.ID,
+				Kind:      "plan",
+				Title:     "Change Brief",
+				FilePath:  briefPath,
+				Provider:  "local",
+				ContentMD: content,
+			}
+			if err := s.db.InsertTaskDeliverable(&del); err == nil {
+				deliverableAdded = true
+			}
 		}
 	}
 	if retroData, err := readWorkflowFileBounded(retroPath, 1*1024*1024); err == nil {
-		del := TaskDeliverable{
-			TaskID:    task.ID,
-			Kind:      "retrospective",
-			Title:     "Retrospective",
-			FilePath:  retroPath,
-			Provider:  "local",
-			ContentMD: string(retroData),
-		}
-		if err := s.db.InsertTaskDeliverable(&del); err == nil {
-			deliverableAdded = true
+		content := string(retroData)
+		if !hasDeliverableContent(retroPath, content) {
+			del := TaskDeliverable{
+				TaskID:    task.ID,
+				Kind:      "retrospective",
+				Title:     "Retrospective",
+				FilePath:  retroPath,
+				Provider:  "local",
+				ContentMD: content,
+			}
+			if err := s.db.InsertTaskDeliverable(&del); err == nil {
+				deliverableAdded = true
+			}
 		}
 	}
 
@@ -553,13 +574,15 @@ func (s *Server) ingestSingleWorkflowRun(jsonPath string, modTime time.Time, act
 		if delsMap, err := s.db.getDeliverablesForTasks([]string{task.ID}); err == nil {
 			task.Deliverables = delsMap[task.ID]
 		}
+		taskUpdated = true
 	}
 
 	if taskUpdated {
 		if err := s.db.UpdateTask(task); err == nil {
 			s.pushSyncPayload(&SyncStatePayload{
-				Tasks:       []Task{*task},
-				Workstreams: task.Workstreams,
+				Tasks:        []Task{*task},
+				Workstreams:  task.Workstreams,
+				Deliverables: task.Deliverables,
 			})
 			s.maybeNotifyTaskReview(oldStatus, task)
 		}
