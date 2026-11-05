@@ -15,15 +15,22 @@ To prevent duplicate/hallucinated tasks and noisy auto-attached files, the Ackba
 │                                                                        │
 │  2. EXPLICIT WORKER BINDING (`SyncSessionTaskWorker`)                  │
 │  • Sessions bound via `task_id` / `current_task_id` at spawn time      │
-│    automatically sync live process state (`Working`, `Blocked`, `Idle`)│
-│    to their bound task.                                                │
+│    immediately activate their task & workstream to `IN_PROGRESS` and   │
+│    enforce a single active worker (`is_active = 1`) per repo path.     │
+│  • Monotonic guards ensure late `N0` reports or `StateIdle` hooks never│
+│    regress an `IN_PROGRESS`/`REVIEW` task back to `NEW`, or downgrade  │
+│    an open-PR `REVIEW` task back to `IN_PROGRESS`.                     │
 │  • If all bound worker sessions end (`StateEnded`) while a task is     │
 │    still `IN_PROGRESS`, the task transitions to `substatus: stalled`.  │
 │                                                                        │
-│  3. EXPLICIT MCP LIFECYCLE & DELIVERABLES                              │
+│  3. EXPLICIT MCP LIFECYCLE & UPDATE-ONLY `dev-workflow` WATCHER        │
 │  • Agents report workflow nodes (`N0`–`N15`, `DONE`), PR URLs,         │
 │    blockers (`report_blocker`), and deliverables (`attach_deliverable`)│
-│    directly via `ackbar mcp`.                                          │
+│    directly via `ackbar mcp` (`update_task_state`).                    │
+│  • `IngestDevWorkflowRuns` (`workflow_watcher.go`) watches             │
+│    `~/.claude/dev-workflow-runs/*.json` in update-only mode for        │
+│    existing tasks and auto-attaches `.brief.md`, `.impl-notes.md`, and │
+│    `.retro.md` deliverables (`content_md`).                            │
 │                                                                        │
 │  4. ON-DEMAND PR RECONCILIATION                                        │
 │  • Opening or refreshing the Work Board (`?reconcile_prs=true`) checks │
@@ -37,9 +44,9 @@ To prevent duplicate/hallucinated tasks and noisy auto-attached files, the Ackba
 
 | MCP Tool | Purpose | Automated Dashboard Mutation |
 | :--- | :--- | :--- |
-| **`create_task`** | Creates a structured task bound to a canonical `tree_nodes` path | Inserts `NEW` (`ready`) task and optional `task_workstreams`; optionally spawns worker if `auto_start: true` (using `target_host: "auto"` + `required_capabilities` weighted routing). |
+| **`create_task`** | Creates a structured task bound to a canonical `tree_nodes` path | Inserts `NEW` (`ready`) task and optional `task_workstreams`; optionally spawns worker if `auto_start: true` (using `target_host: "auto"` + `required_capabilities` weighted routing and immediately activating task/workstream to `IN_PROGRESS`). |
 | **`list_hosts`** | Queries all registered hosts with capabilities, policy tags, weights, and live load | Exposes `detected_capabilities`, `policy_tags`, `routing_weight`, and live `load` (`working_sessions`, `cpu_load_pct`, `ram_free_gb`, `overloaded`) to the Supervisor. |
-| **`update_task`** | Reports `workflow_node` (`N0`–`N15`, `DONE`), `status`, `substatus`, `notes`, or `pr_url` | Deterministic `ClassifyWorkflowNodeState` transitions (`N2` $\rightarrow$ `REVIEW/plan_review`, `N11` $\rightarrow$ `REVIEW/pr_review`, `N14`/`N15`/`DONE` $\rightarrow$ `DONE/completed`). |
+| **`update_task_state`** | Reports `workflow_node` (`N0`–`N15`, `DONE`), `status`, `substatus`, `notes`, or `pr_url` | Deterministic `ClassifyWorkflowNodeState` transitions (`N2` $\rightarrow$ `REVIEW/plan_review`, `N11` $\rightarrow$ `REVIEW/pr_review`, `N14`/`N15`/`DONE` $\rightarrow$ `DONE/completed`) with monotonic guards, workstream status sync, and pillar substatus normalization (`normalizeTaskStatusAndSubstatus`). |
 | **`report_blocker` / `clear_blocker`** | Surfaces or resolves an agent blocker | Sets `substatus: blocked` + `blocker_question` (or restores `active`). |
 | **`attach_deliverable`** | Attaches a change brief, HTML prototype, Cloud doc, or retro | Stores deliverable in `task_deliverables` (with `content_md` lazy-loaded on demand in the UI). |
 | **`propose_task`** | Logs an unexpected bug or tech-debt item discovered in-flight | Deduplicates by title and inserts into `NEW` (`discovered`). |
