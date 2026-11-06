@@ -150,7 +150,7 @@ func TestHeadlessRunner_BuildArgs(t *testing.T) {
 		t.Errorf("expected --effort medium in args2: %v", args2)
 	}
 
-	// Case 3: Antigravity agent does not receive --effort
+	// Case 3: Antigravity agent in plan mode receives --mode plan, does not receive --dangerously-skip-permissions or --effort
 	sess3 := &Session{
 		ID:             "s3",
 		Agent:          "antigravity",
@@ -163,6 +163,30 @@ func TestHeadlessRunner_BuildArgs(t *testing.T) {
 	}
 	if slices.Contains(args3, "--effort") {
 		t.Errorf("antigravity should not receive --effort flag: %v", args3)
+	}
+	modeIdx := slices.Index(args3, "--mode")
+	if modeIdx == -1 || modeIdx >= len(args3)-1 || args3[modeIdx+1] != "plan" {
+		t.Errorf("expected --mode plan in args3: %v", args3)
+	}
+	if slices.Contains(args3, "--dangerously-skip-permissions") {
+		t.Errorf("antigravity in plan mode should not receive --dangerously-skip-permissions: %v", args3)
+	}
+
+	// Case 4: Default Antigravity agent receives --dangerously-skip-permissions
+	sess4 := &Session{
+		ID:             "s4",
+		Agent:          "antigravity",
+		PermissionMode: "bypassPermissions",
+	}
+	_, args4, err := runner.buildArgs(sess4, "hello", "/home/test")
+	if err != nil {
+		t.Fatalf("buildArgs failed: %v", err)
+	}
+	if !slices.Contains(args4, "--dangerously-skip-permissions") {
+		t.Errorf("expected --dangerously-skip-permissions in default antigravity args: %v", args4)
+	}
+	if slices.Contains(args4, "--mode") {
+		t.Errorf("did not expect --mode in default antigravity args: %v", args4)
 	}
 }
 
@@ -481,5 +505,140 @@ func TestHeadlessRunner_ClearInteractiveBlockAndWait(t *testing.T) {
 	}
 	if !runner.respondedWhileStopping[sessionID] {
 		t.Errorf("expected respondedWhileStopping to be true")
+	}
+}
+
+func TestParseAntigravityModelsOutput(t *testing.T) {
+	spinnerOutput := "\r⠋ Fetching available models...\rgemini-4-argon-medium     Gemini 4 Argon (Medium)\ngemini-3.8-flash-high     Gemini 3.8 Flash (High)\n"
+	models := parseAntigravityModelsOutput(spinnerOutput)
+	if len(models) != 2 {
+		t.Fatalf("expected 2 models, got %d: %+v", len(models), models)
+	}
+	if models[0].ID != "gemini-4-argon-medium" || models[0].Label != "Gemini 4 Argon (Medium)" {
+		t.Errorf("unexpected model[0]: %+v", models[0])
+	}
+	if models[1].ID != "gemini-3.8-flash-high" || models[1].Label != "Gemini 3.8 Flash (High)" {
+		t.Errorf("unexpected model[1]: %+v", models[1])
+	}
+}
+
+func TestServer_SuggestionsModelsByAgent(t *testing.T) {
+	srv, db := setupTestServer(t)
+
+	// Session 1: Claude Code
+	claudeSess := &Session{
+		ID:         "sess-sug-claude",
+		Agent:      "claude-code",
+		Cwd:        t.TempDir(),
+		State:      StateIdle,
+		EngineType: EngineHeadless,
+		StartedAt:  time.Now(),
+		UpdatedAt:  time.Now(),
+	}
+	if err := db.SaveSession(claudeSess); err != nil {
+		t.Fatalf("SaveSession claude failed: %v", err)
+	}
+
+	// Session 2: Antigravity
+	agySess := &Session{
+		ID:         "sess-sug-antigravity",
+		Agent:      "antigravity",
+		Cwd:        t.TempDir(),
+		State:      StateIdle,
+		EngineType: EngineHeadless,
+		StartedAt:  time.Now(),
+		UpdatedAt:  time.Now(),
+	}
+	if err := db.SaveSession(agySess); err != nil {
+		t.Fatalf("SaveSession agy failed: %v", err)
+	}
+
+	// 1. GET Claude models
+	reqClaude := httptest.NewRequest(http.MethodGet, "/v1/sessions/"+claudeSess.ID+"/suggestions?kind=models", nil)
+	wClaude := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(wClaude, reqClaude)
+
+	if wClaude.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for claude models, got %d: %s", wClaude.Code, wClaude.Body.String())
+	}
+
+	var claudeModels []ModelSuggestion
+	if err := json.Unmarshal(wClaude.Body.Bytes(), &claudeModels); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if len(claudeModels) == 0 {
+		t.Fatalf("expected non-empty claude models")
+	}
+
+	hasClaudeOpus := false
+	hasClaudeFable := false
+	for _, m := range claudeModels {
+		if m.ID == "claude-opus-4-6" {
+			hasClaudeOpus = true
+		}
+		if m.ID == "claude-fable-5-1" {
+			hasClaudeFable = true
+		}
+		if m.ID == "gemini-2.5-pro" || m.ID == "gemini-4-argon-medium" {
+			t.Errorf("claude models should not return gemini model %s", m.ID)
+		}
+	}
+	if !hasClaudeOpus || !hasClaudeFable {
+		t.Errorf("expected claude-opus-4-6 and claude-fable-5-1 in claude models: %+v", claudeModels)
+	}
+
+	// 2. GET Antigravity models
+	reqAgy := httptest.NewRequest(http.MethodGet, "/v1/sessions/"+agySess.ID+"/suggestions?kind=models", nil)
+	wAgy := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(wAgy, reqAgy)
+
+	if wAgy.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for antigravity models, got %d: %s", wAgy.Code, wAgy.Body.String())
+	}
+
+	var agyModels []ModelSuggestion
+	if err := json.Unmarshal(wAgy.Body.Bytes(), &agyModels); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if len(agyModels) == 0 {
+		t.Fatalf("expected non-empty antigravity models")
+	}
+
+	hasGeminiArgon := false
+	hasGeminiFlash := false
+	for _, m := range agyModels {
+		if m.ID == "gemini-4-argon-medium" {
+			hasGeminiArgon = true
+		}
+		if m.ID == "gemini-3.8-flash-high" {
+			hasGeminiFlash = true
+		}
+		if m.ID == "claude-opus-4-6" || m.ID == "claude-3-7-sonnet-20250219" {
+			t.Errorf("antigravity models should not return claude code-only model %s", m.ID)
+		}
+	}
+	if !hasGeminiArgon || !hasGeminiFlash {
+		t.Errorf("expected gemini-4-argon-medium and gemini-3.8-flash-high in antigravity models: %+v", agyModels)
+	}
+
+	// 3. Query filter on Antigravity models: ?kind=models&q=argon
+	reqAgyFilter := httptest.NewRequest(http.MethodGet, "/v1/sessions/"+agySess.ID+"/suggestions?kind=models&q=argon", nil)
+	wAgyFilter := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(wAgyFilter, reqAgyFilter)
+
+	if wAgyFilter.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for filtered antigravity models, got %d: %s", wAgyFilter.Code, wAgyFilter.Body.String())
+	}
+	var filteredAgy []ModelSuggestion
+	if err := json.Unmarshal(wAgyFilter.Body.Bytes(), &filteredAgy); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if len(filteredAgy) == 0 {
+		t.Fatalf("expected non-empty filtered antigravity models for query 'argon'")
+	}
+	for _, m := range filteredAgy {
+		if !strings.Contains(strings.ToLower(m.ID), "argon") && !strings.Contains(strings.ToLower(m.Label), "argon") {
+			t.Errorf("filtered model should contain 'argon': %+v", m)
+		}
 	}
 }
