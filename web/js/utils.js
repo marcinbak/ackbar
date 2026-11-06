@@ -72,13 +72,38 @@ function ensureExternalLinksTargetBlank(html) {
   });
 }
 
+function sanitizeRenderedMarkdownHtml(html) {
+  if (!html || typeof html !== 'string') return '';
+  if (typeof document !== 'undefined' && typeof document.createElement === 'function') {
+    const tpl = document.createElement('template');
+    tpl.innerHTML = html;
+    tpl.content.querySelectorAll('script, iframe, object, embed').forEach(node => node.remove());
+    tpl.content.querySelectorAll('*').forEach(node => {
+      for (const attr of Array.from(node.attributes)) {
+        const name = attr.name.toLowerCase();
+        const val = (attr.value || '').trim();
+        if (name.startsWith('on')) {
+          node.removeAttribute(attr.name);
+        } else if ((name === 'href' || name === 'src' || name === 'xlink:href' || name === 'action' || name === 'formaction') && /^javascript:/i.test(val)) {
+          node.setAttribute(attr.name, '#');
+        }
+      }
+    });
+    return tpl.innerHTML;
+  }
+  return html
+    .replace(/<(script|iframe|object)\b[\s\S]*?<\/\1>/gi, '')
+    .replace(/<(script|iframe|object|embed)\b[^>]*\/?>/gi, '');
+}
+
 function renderMarkdown(content) {
   if (!window.marked) {
     return `<pre>${escapeHtml(content || '')}</pre>`;
   }
   configureMarked();
   const raw = window.marked.parse(content || '');
-  return ensureExternalLinksTargetBlank(raw);
+  const linked = ensureExternalLinksTargetBlank(raw);
+  return sanitizeRenderedMarkdownHtml(linked);
 }
 
 function ensureDoubleNewlineSeparation(prev, next) {
@@ -581,6 +606,7 @@ export {
   openInVSCode,
   configureMarked,
   ensureExternalLinksTargetBlank,
+  sanitizeRenderedMarkdownHtml,
   renderMarkdown,
   ensureDoubleNewlineSeparation,
   isLocalHost,

@@ -28,6 +28,7 @@ func TestGetFS(t *testing.T) {
 		"js/chat.js",
 		"js/context-menu.js",
 		"js/details.js",
+		"js/mermaid.js",
 		"js/modals.js",
 		"js/palette.js",
 		"js/sse.js",
@@ -592,5 +593,52 @@ func TestPhase4_VoiceCompanion_JS(t *testing.T) {
 		"/v1/sessions/summarize-speech",
 		"speechSynthesis",
 		"SpeechRecognition",
+	})
+}
+
+func TestMermaidFlowcharts_JS(t *testing.T) {
+	embeddedFS := web.GetFS()
+
+	checkFileContains := func(path string, expectedList []string) {
+		t.Helper()
+		f, err := embeddedFS.Open(path)
+		if err != nil {
+			t.Fatalf("failed to open %s: %v", path, err)
+		}
+		defer f.Close()
+		b, err := io.ReadAll(f)
+		if err != nil {
+			t.Fatalf("failed to read %s: %v", path, err)
+		}
+		content := string(b)
+		for _, expected := range expectedList {
+			if !strings.Contains(content, expected) {
+				t.Errorf("expected %s to contain %q", path, expected)
+			}
+		}
+	}
+
+	checkFileContains("index.html", []string{
+		"mermaid.min.js",
+	})
+
+	checkFileContains("js/mermaid.js", []string{
+		"renderMermaidDiagrams",
+		"normalizeMermaidForRender",
+		"isMermaidSource",
+		"mermaid-diagram-block",
+		"btn-copy-mermaid",
+		"btn-mermaid-toggle",
+	})
+
+	checkFileContains("js/chat.js", []string{
+		"renderMermaidDiagrams",
+	})
+
+	checkFileContains("style.css", []string{
+		".mermaid-diagram-block",
+		".mermaid-toolbar",
+		".btn-mermaid-toggle",
+		".btn-copy-mermaid",
 	})
 }

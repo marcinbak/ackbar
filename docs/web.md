@@ -128,6 +128,13 @@ It is embedded directly into the `ackbard` Go binary and served on `http://127.0
   * **`ExitPlanMode` (`.card-approval`):** Renders the markdown plan preview with **`✓ Approve & Execute`** (auto-switching the session from `Plan Mode` to `Auto Mode`) and **`Request Changes`** feedback input.
   * **`TodoWrite` / `todo_write` (`.chat-todo-card`):** Renders a read-only live Task Progress checklist (`completed`, `in_progress`, `pending`) both during live SSE streaming and in historical transcripts.
 
+### 📊 11. Mermaid Flowchart & Architecture Diagram Rendering (`mermaid.js`)
+* **Automatic Detection:** Automatically identifies Mermaid diagrams in markdown code fences (````mermaid`) as well as unlabelled code blocks whose first non-comment line begins with valid diagram syntax (`flowchart`, `graph`, `sequenceDiagram`, `stateDiagram`, `classDiagram`, `erDiagram`, `gantt`, `pie`, `gitGraph`, `mindmap`, `timeline`, `xychart-beta`, `C4Context`, etc.).
+* **Zero-Flicker Streaming Cache:** `mermaidSvgCache` caches rendered SVGs by diagram source text, enabling instant synchronous upgrades during live SSE token streaming (`text_delta`) without layout shift or redraw flicker.
+* **Dual View Mode (`[Diagram]` / `[Code]`):** Each diagram block renders an integrated toolbar featuring a view mode toggle (`.btn-mermaid-toggle`) to switch seamlessly between the graphical SVG diagram and the raw flowchart text.
+* **1-Click Source Copy:** Includes a dedicated **`[Copy Text]`** button (`.btn-copy-mermaid`) to copy the diagram source directly to the clipboard.
+* **Multi-Surface Integration:** Enabled across interactive chat transcripts, `ExitPlanMode` plan approval cards, Right Inspector Pane markdown document/plan viewers, and Kanban task deliverable modals.
+
 
 ---
 
@@ -164,6 +171,7 @@ The web frontend is organized as zero-build native ECMAScript modules (`<script 
 * **`tabs.js`**: Terminal and chat tab strip lifecycle, overflow menu, and persistence.
 * **`terminal.js`**: `xterm.js` terminal tabs, WebSocket PTY streams, resizing, and attachment uploads.
 * **`chat.js`**: Interactive chat interface, streaming transcript, tool call formatters, and composer queue.
+* **`mermaid.js`**: Mermaid flowchart and diagram parser, dark-theme renderer, zero-flicker SVG cache, and interactive Diagram/Code view switcher.
 * **`details.js`**: Right Inspector Pane (`#inspectorPanel`) controller (`openInspectorPane`, `closeInspectorPane`, `refitActiveTerminal`), session details view (`openSessionDetailsTab`), markdown plan/doc viewer (`openDocViewerTab`), and rich transcript viewer (`openTranscriptViewerTab`).
 * **`palette.js`**: Command palette fuzzy search (`Cmd+K` / `Ctrl+K`) and dispatcher launcher.
 * **`context-menu.js`**: Context menus for sessions, groups, tabs, and chat files.
