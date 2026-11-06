@@ -7,6 +7,8 @@ let mermaidInitialized = false;
 let mermaidRenderSeq = 0;
 let mermaidRenderQueue = Promise.resolve();
 export const mermaidSvgCache = new Map();
+const mermaidInFlight = new Map();
+const mermaidFailedSources = new Set();
 
 function cleanupStrayMermaidElements(renderId) {
   if (typeof document === 'undefined') return;
@@ -213,7 +215,17 @@ export function renderMermaidDiagrams(container, copyFn, options = {}) {
       return;
     }
 
-    if (cacheOnly) {
+    if (mermaidFailedSources.has(rawSource) || cacheOnly) {
+      return;
+    }
+
+    if (mermaidInFlight.has(rawSource)) {
+      pre.dataset.mermaidRendering = 'true';
+      mermaidInFlight.get(rawSource).then(svg => {
+        if (svg && pre.isConnected) {
+          upgradePreToMermaidBlock(pre, rawSource, svg, copyFn);
+        }
+      });
       return;
     }
 
@@ -232,9 +244,11 @@ export function renderMermaidDiagrams(container, copyFn, options = {}) {
     const renderId = 'mermaid-render-' + Date.now() + '-' + mermaidRenderSeq;
     const normalized = normalizeMermaidForRender(rawSource);
 
-    mermaidRenderQueue = mermaidRenderQueue
-      .then(() => window.mermaid.render(renderId, normalized))
+    const renderPromise = (mermaidRenderQueue = mermaidRenderQueue.catch(() => null).then(() => {
+      return window.mermaid.render(renderId, normalized);
+    }))
       .then(({ svg }) => {
+        mermaidInFlight.delete(rawSource);
         cleanupStrayMermaidElements(renderId);
 
         if (mermaidSvgCache.size >= 200) {
@@ -246,11 +260,22 @@ export function renderMermaidDiagrams(container, copyFn, options = {}) {
         if (pre.isConnected) {
           upgradePreToMermaidBlock(pre, rawSource, svg, copyFn);
         }
+        return svg;
       })
       .catch(err => {
+        mermaidInFlight.delete(rawSource);
+        if (mermaidFailedSources.size >= 200) {
+          const firstFailed = mermaidFailedSources.values().next().value;
+          mermaidFailedSources.delete(firstFailed);
+        }
+        mermaidFailedSources.add(rawSource);
+
         console.warn('Mermaid rendering failed:', err);
         cleanupStrayMermaidElements(renderId);
         pre.dataset.mermaidRendering = 'failed';
+        return null;
       });
+
+    mermaidInFlight.set(rawSource, renderPromise);
   });
 }

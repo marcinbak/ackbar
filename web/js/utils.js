@@ -74,16 +74,26 @@ function ensureExternalLinksTargetBlank(html) {
 
 function sanitizeRenderedMarkdownHtml(html) {
   if (!html || typeof html !== 'string') return '';
+  if (typeof document !== 'undefined' && typeof document.createElement === 'function') {
+    const tpl = document.createElement('template');
+    tpl.innerHTML = html;
+    tpl.content.querySelectorAll('script, iframe, object, embed').forEach(node => node.remove());
+    tpl.content.querySelectorAll('*').forEach(node => {
+      for (const attr of Array.from(node.attributes)) {
+        const name = attr.name.toLowerCase();
+        const val = (attr.value || '').trim();
+        if (name.startsWith('on')) {
+          node.removeAttribute(attr.name);
+        } else if ((name === 'href' || name === 'src' || name === 'xlink:href' || name === 'action' || name === 'formaction') && /^javascript:/i.test(val)) {
+          node.setAttribute(attr.name, '#');
+        }
+      }
+    });
+    return tpl.innerHTML;
+  }
   return html
-    .replace(/<script\b[\s\S]*?<\/script>/gi, '')
-    .replace(/<script\b[^>]*>/gi, '')
-    .replace(/<iframe\b[\s\S]*?<\/iframe>/gi, '')
-    .replace(/<iframe\b[^>]*>/gi, '')
-    .replace(/<object\b[\s\S]*?<\/object>/gi, '')
-    .replace(/<object\b[^>]*>/gi, '')
-    .replace(/<embed\b[^>]*\/?>/gi, '')
-    .replace(/\son[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '')
-    .replace(/\b(href|src)\s*=\s*(["'])\s*javascript:[^"']*\2/gi, '$1="#"');
+    .replace(/<(script|iframe|object)\b[\s\S]*?<\/\1>/gi, '')
+    .replace(/<(script|iframe|object|embed)\b[^>]*\/?>/gi, '');
 }
 
 function renderMarkdown(content) {
