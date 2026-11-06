@@ -705,7 +705,12 @@ func (h *HeadlessRunner) buildArgs(sess *Session, prompt, home string) (string, 
 			effectivePrompt = "[System Instruction: " + BuildSupervisorSystemPrompt(sess.ID) + "]\n\n" + prompt
 		}
 
-		args := []string{"-p", effectivePrompt, "--output-format", "stream-json", "--dangerously-skip-permissions"}
+		args := []string{"-p", effectivePrompt, "--output-format", "stream-json"}
+		if strings.EqualFold(sess.PermissionMode, "plan") {
+			args = append(args, "--mode", "plan")
+		} else {
+			args = append(args, "--dangerously-skip-permissions")
+		}
 		if hasAntigravityConversation(home, sess.NativeID) || sess.FirstPrompt != "" || sess.LastPrompt != "" {
 			args = append(args, "--conversation", sess.NativeID)
 		}

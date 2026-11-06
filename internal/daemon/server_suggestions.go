@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -31,15 +32,142 @@ type FileSuggestion struct {
 	IsDir bool   `json:"is_dir"`
 }
 
+type ModelSuggestion struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+}
+
 type cachedFileList struct {
 	files     []FileSuggestion
+	expiresAt time.Time
+}
+
+type cachedModelList struct {
+	models    []ModelSuggestion
 	expiresAt time.Time
 }
 
 var (
 	suggestionCacheMu sync.Mutex
 	suggestionCache   = make(map[string]cachedFileList)
+
+	modelCacheMu          sync.Mutex
+	antigravityModelCache cachedModelList
+	modelIDRegex          = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]*$`)
 )
+
+func getAntigravityDefaultModels() []ModelSuggestion {
+	return []ModelSuggestion{
+		{ID: "gemini-4-argon-high", Label: "Gemini 4 Argon (High)"},
+		{ID: "gemini-4-argon-medium", Label: "Gemini 4 Argon (Medium)"},
+		{ID: "gemini-4-argon-low", Label: "Gemini 4 Argon (Low)"},
+		{ID: "gemini-3.8-flash-high", Label: "Gemini 3.8 Flash (High)"},
+		{ID: "gemini-3.8-flash-medium", Label: "Gemini 3.8 Flash (Medium)"},
+		{ID: "gemini-3.8-flash-low", Label: "Gemini 3.8 Flash (Low)"},
+		{ID: "claude-opus-5-5-high", Label: "Claude Opus 5.5 (High)"},
+		{ID: "claude-opus-5-5-medium", Label: "Claude Opus 5.5 (Medium)"},
+		{ID: "claude-opus-5-5-low", Label: "Claude Opus 5.5 (Low)"},
+		{ID: "claude-sonnet-5-5-high", Label: "Claude Sonnet 5.5 (High)"},
+		{ID: "claude-sonnet-5-5-medium", Label: "Claude Sonnet 5.5 (Medium)"},
+		{ID: "claude-sonnet-5-5-low", Label: "Claude Sonnet 5.5 (Low)"},
+		{ID: "gpt-oss-120b-medium", Label: "GPT-OSS 120B (Medium)"},
+	}
+}
+
+func getClaudeDefaultModels() []ModelSuggestion {
+	return []ModelSuggestion{
+		{ID: "claude-fable-5-1", Label: "Claude Fable 5.1"},
+		{ID: "claude-opus-5-5", Label: "Claude Opus 5.5"},
+		{ID: "claude-sonnet-5-5", Label: "Claude Sonnet 5.5"},
+		{ID: "claude-opus-4-6", Label: "Claude Opus 4.6"},
+		{ID: "claude-sonnet-4-6", Label: "Claude Sonnet 4.6"},
+		{ID: "claude-haiku-4-5", Label: "Claude Haiku 4.5"},
+		{ID: "claude-3-7-sonnet-20250219", Label: "Claude 3.7 Sonnet"},
+		{ID: "claude-3-5-sonnet-20241022", Label: "Claude 3.5 Sonnet"},
+	}
+}
+
+func parseAntigravityModelsOutput(out string) []ModelSuggestion {
+	var models []ModelSuggestion
+	seen := make(map[string]bool)
+
+	lines := strings.Split(out, "\n")
+	for _, rawLine := range lines {
+		line := rawLine
+		if idx := strings.LastIndex(line, "\r"); idx != -1 {
+			line = line[idx+1:]
+		}
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+
+		id := fields[0]
+		if !modelIDRegex.MatchString(id) {
+			continue
+		}
+		lowerID := strings.ToLower(id)
+		if lowerID == "usage" || lowerID == "available" || lowerID == "flags" {
+			continue
+		}
+
+		label := strings.TrimSpace(line[len(id):])
+		if label == "" {
+			label = id
+		}
+
+		if !seen[id] {
+			seen[id] = true
+			models = append(models, ModelSuggestion{
+				ID:    id,
+				Label: label,
+			})
+		}
+	}
+	return models
+}
+
+func (s *Server) collectModelsForAgent(agent string) []ModelSuggestion {
+	if strings.EqualFold(agent, "antigravity") {
+		modelCacheMu.Lock()
+		if len(antigravityModelCache.models) > 0 && time.Now().Before(antigravityModelCache.expiresAt) {
+			cached := antigravityModelCache.models
+			modelCacheMu.Unlock()
+			return cached
+		}
+		modelCacheMu.Unlock()
+
+		bin, err := resolveAntigravityBinary()
+		if err == nil && bin != "" {
+			ctx, cancel := context.WithTimeout(context.Background(), 2500*time.Millisecond)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, bin, "models")
+			var out bytes.Buffer
+			cmd.Stdout = &out
+			if cmdErr := cmd.Run(); cmdErr == nil && out.Len() > 0 {
+				parsed := parseAntigravityModelsOutput(out.String())
+				if len(parsed) > 0 {
+					modelCacheMu.Lock()
+					antigravityModelCache = cachedModelList{
+						models:    parsed,
+						expiresAt: time.Now().Add(5 * time.Minute),
+					}
+					modelCacheMu.Unlock()
+					return parsed
+				}
+			}
+		}
+
+		return getAntigravityDefaultModels()
+	}
+
+	return getClaudeDefaultModels()
+}
 
 func getBuiltinCommands() []CommandSuggestion {
 	return []CommandSuggestion{
@@ -481,6 +609,22 @@ func (s *Server) handleSessionSuggestions(w http.ResponseWriter, r *http.Request
 			result[i] = scored[i].file
 		}
 		_ = json.NewEncoder(w).Encode(result)
+
+	case "models":
+		models := s.collectModelsForAgent(sess.Agent)
+		if qLower != "" {
+			var filtered []ModelSuggestion
+			for _, m := range models {
+				if strings.Contains(strings.ToLower(m.ID), qLower) || strings.Contains(strings.ToLower(m.Label), qLower) {
+					filtered = append(filtered, m)
+				}
+			}
+			models = filtered
+		}
+		if models == nil {
+			models = []ModelSuggestion{}
+		}
+		_ = json.NewEncoder(w).Encode(models)
 
 	case "commands":
 		fallthrough

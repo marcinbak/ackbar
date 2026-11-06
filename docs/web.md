@@ -118,11 +118,13 @@ It is embedded directly into the `ackbard` Go binary and served on `http://127.0
 
 ### 🎛️ 10. Headless UX Controls, Interactive Tool Cards & Autocomplete (`chat.js`)
 * **Composer Status Pill Bar & `/config` Popover (`.chat-composer-bar`, `.chat-config-popover`):**
-  * Displays interactive pills above the chat input for **Model** (`claude-opus-4-6`, `claude-sonnet-4-6`, `claude-haiku-4-5`, `gemini-2.5-pro`, `gemini-2.5-flash`), **Reasoning Effort** (`low`, `medium`, `high`, `max`), **Execution Mode** (`⚡ Auto Mode` vs `📝 Plan Mode`), and **Context Usage** (`% Context` gauge derived from `session.context_pct`).
+  * Displays interactive pills above the chat input for **Model**, **Reasoning Effort** (`low`, `medium`, `high`, `max`, hidden for Antigravity sessions), **Execution Mode** (`⚡ Auto Mode` vs `📝 Plan Mode`), and **Context Usage** (`% Context` gauge derived from `session.context_pct` with agent-aware fallback limits: 1M tokens for Antigravity, 200k tokens for Claude Code).
   * Clicking `⚙️ /config` (or typing `/config`) opens the Session Configuration popover to adjust model, effort, and execution mode (`PATCH /v1/sessions/{id}/config`) and inspect context window usage.
-* **`/` Command and `@` File Autocomplete (`.chat-autocomplete-menu`):**
+  * Dynamically queries `GET /v1/sessions/{id}/suggestions?kind=models` to populate agent-specific model catalogs (e.g. Gemini 4 Argon, Gemini 3.8 Flash, GPT-OSS for Antigravity; Claude Fable 5.1, Claude Opus/Sonnet for Claude Code).
+* **`/` Command, `@` File, and Model Autocomplete (`.chat-autocomplete-menu`):**
   * Typing `/` at the start of input queries `GET /v1/sessions/{id}/suggestions?kind=commands`, surfacing built-in client actions (`/config`, `/plan`, `/clear`, `/compact`, `/handover`, `/terminal`) alongside discovered workspace workflows (`.claude/commands/*.md`, `.agents/workflows/*.md`) and skills (`SKILL.md`).
   * Typing `@<query>` after start-of-input or whitespace queries `GET /v1/sessions/{id}/suggestions?kind=files` to fuzzy-match relative workspace files.
+  * Queries `GET /v1/sessions/{id}/suggestions?kind=models` for agent-scoped model suggestion catalogs.
 * **Interactive Question, Plan Approval & Task Cards:**
   * **`AskUserQuestion` / `ask_question` (`.chat-interactive-card`):** Renders single- and multi-question forms supporting radio buttons, `multi_select` checkboxes, and custom `"Other"` text answers, submitting directly to `POST /v1/sessions/respond`.
   * **`ExitPlanMode` (`.card-approval`):** Renders the markdown plan preview with **`✓ Approve & Execute`** (auto-switching the session from `Plan Mode` to `Auto Mode`) and **`Request Changes`** feedback input.

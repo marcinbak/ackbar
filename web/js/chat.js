@@ -574,40 +574,122 @@ if (typeof window !== 'undefined') {
 
 // --- Headless UX Controls: Pills, Config Popover, Autocomplete & Interactive Cards ---
 
+const ANTIGRAVITY_DEFAULT_MODELS = [
+  { id: 'gemini-4-argon-high', label: 'Gemini 4 Argon (High)' },
+  { id: 'gemini-4-argon-medium', label: 'Gemini 4 Argon (Medium)' },
+  { id: 'gemini-4-argon-low', label: 'Gemini 4 Argon (Low)' },
+  { id: 'gemini-3.8-flash-high', label: 'Gemini 3.8 Flash (High)' },
+  { id: 'gemini-3.8-flash-medium', label: 'Gemini 3.8 Flash (Medium)' },
+  { id: 'gemini-3.8-flash-low', label: 'Gemini 3.8 Flash (Low)' },
+  { id: 'claude-opus-5-5-high', label: 'Claude Opus 5.5 (High)' },
+  { id: 'claude-opus-5-5-medium', label: 'Claude Opus 5.5 (Medium)' },
+  { id: 'claude-opus-5-5-low', label: 'Claude Opus 5.5 (Low)' },
+  { id: 'claude-sonnet-5-5-high', label: 'Claude Sonnet 5.5 (High)' },
+  { id: 'claude-sonnet-5-5-medium', label: 'Claude Sonnet 5.5 (Medium)' },
+  { id: 'claude-sonnet-5-5-low', label: 'Claude Sonnet 5.5 (Low)' },
+  { id: 'gpt-oss-120b-medium', label: 'GPT-OSS 120B (Medium)' }
+];
+
+const CLAUDE_DEFAULT_MODELS = [
+  { id: 'claude-fable-5-1', label: 'Claude Fable 5.1' },
+  { id: 'claude-opus-5-5', label: 'Claude Opus 5.5' },
+  { id: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5' },
+  { id: 'claude-opus-4-6', label: 'Claude Opus 4.6' },
+  { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
+  { id: 'claude-haiku-4-5', label: 'Claude Haiku 4.5' },
+  { id: 'claude-3-7-sonnet-20250219', label: 'Claude 3.7 Sonnet' },
+  { id: 'claude-3-5-sonnet-20241022', label: 'Claude 3.5 Sonnet' }
+];
+
+function getAgentModelOptions(agent, dynamicModels) {
+  if (Array.isArray(dynamicModels) && dynamicModels.length > 0) {
+    return dynamicModels;
+  }
+  const isAntigravity = (agent || '').toLowerCase() === 'antigravity';
+  return isAntigravity ? ANTIGRAVITY_DEFAULT_MODELS : CLAUDE_DEFAULT_MODELS;
+}
+
+function formatModelLabel(model, agent, dynamicModels) {
+  if (!model) {
+    return 'Default Model';
+  }
+
+  const options = getAgentModelOptions(agent, dynamicModels);
+  const match = options.find(m => m.id === model || model.includes(m.id));
+  if (match && match.label) {
+    return match.label;
+  }
+
+  const allDefaults = [...ANTIGRAVITY_DEFAULT_MODELS, ...CLAUDE_DEFAULT_MODELS];
+  const defaultMatch = allDefaults.find(m => m.id === model || model.includes(m.id));
+  if (defaultMatch && defaultMatch.label) {
+    return defaultMatch.label;
+  }
+
+  if (model.includes('claude-fable-5-1') || model === 'claude-fable-5-1') return 'Claude Fable 5.1';
+  if (model.includes('claude-opus-5-5') || model === 'claude-opus-5-5') return 'Claude Opus 5.5';
+  if (model.includes('claude-sonnet-5-5') || model === 'claude-sonnet-5-5') return 'Claude Sonnet 5.5';
+  if (model.includes('claude-opus-4-6') || model === 'claude-opus-4-6') return 'Claude Opus 4.6';
+  if (model.includes('claude-sonnet-4-6') || model === 'claude-sonnet-4-6') return 'Claude Sonnet 4.6';
+  if (model.includes('claude-haiku-4-5') || model === 'claude-haiku-4-5') return 'Claude Haiku 4.5';
+  if (model.includes('claude-3-7-sonnet')) return 'Claude 3.7 Sonnet';
+  if (model.includes('claude-3-5-sonnet')) return 'Claude 3.5 Sonnet';
+  if (model.includes('claude-3-5-haiku')) return 'Claude 3.5 Haiku';
+  if (model.includes('claude-3-opus')) return 'Claude 3 Opus';
+  if (model.includes('gemini-4-argon')) return 'Gemini 4 Argon';
+  if (model.includes('gemini-3.8-flash')) return 'Gemini 3.8 Flash';
+  if (model.includes('gemini-2.5-pro')) return 'Gemini 2.5 Pro';
+  if (model.includes('gemini-2.5-flash')) return 'Gemini 2.5 Flash';
+
+  return model;
+}
+
+async function fetchSessionAgentModels(tabObj) {
+  if (!tabObj || !tabObj.session) return;
+  const agent = tabObj.session.agent || '';
+  if (tabObj.agentModels && tabObj.agentModelsAgent === agent) {
+    return;
+  }
+  if (tabObj._fetchingAgentModels) return;
+  tabObj._fetchingAgentModels = true;
+
+  try {
+    const sessionId = tabObj.session.id;
+    const baseUrl = getSessionBaseUrl(sessionId, tabObj.session);
+    const res = await fetch(`${baseUrl}/v1/sessions/${encodeURIComponent(sessionId)}/suggestions?kind=models`);
+    if (res.ok) {
+      const data = await res.json();
+      if (Array.isArray(data) && data.length > 0) {
+        tabObj.agentModels = data;
+        tabObj.agentModelsAgent = agent;
+        updateStatusPills(tabObj);
+        if (tabObj.chatConfigPopover && tabObj.chatConfigPopover.style.display !== 'none') {
+          renderConfigPopoverContent(tabObj);
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('Failed to fetch session models:', err);
+  } finally {
+    tabObj._fetchingAgentModels = false;
+  }
+}
+
 function updateStatusPills(tabObj) {
   if (!tabObj || !tabObj.session) return;
   const session = tabObj.session;
+  const isAntigravity = (session.agent || '').toLowerCase() === 'antigravity';
 
   if (tabObj.chatPillModel) {
-    const model = session.model || '';
-    if (!model) {
-      tabObj.chatPillModel.textContent = 'Default Model';
-    } else if (model.includes('claude-opus-4-6') || model === 'claude-opus-4-6') {
-      tabObj.chatPillModel.textContent = 'Claude Opus 4.6';
-    } else if (model.includes('claude-sonnet-4-6') || model === 'claude-sonnet-4-6') {
-      tabObj.chatPillModel.textContent = 'Claude Sonnet 4.6';
-    } else if (model.includes('claude-haiku-4-5') || model === 'claude-haiku-4-5') {
-      tabObj.chatPillModel.textContent = 'Claude Haiku 4.5';
-    } else if (model.includes('claude-3-7-sonnet')) {
-      tabObj.chatPillModel.textContent = 'Claude 3.7 Sonnet';
-    } else if (model.includes('claude-3-5-sonnet')) {
-      tabObj.chatPillModel.textContent = 'Claude 3.5 Sonnet';
-    } else if (model.includes('claude-3-5-haiku')) {
-      tabObj.chatPillModel.textContent = 'Claude 3.5 Haiku';
-    } else if (model.includes('claude-3-opus')) {
-      tabObj.chatPillModel.textContent = 'Claude 3 Opus';
-    } else if (model.includes('gemini-2.5-pro')) {
-      tabObj.chatPillModel.textContent = 'Gemini 2.5 Pro';
-    } else if (model.includes('gemini-2.5-flash')) {
-      tabObj.chatPillModel.textContent = 'Gemini 2.5 Flash';
-    } else {
-      tabObj.chatPillModel.textContent = model;
-    }
+    tabObj.chatPillModel.textContent = formatModelLabel(session.model, session.agent, tabObj.agentModels);
   }
 
   if (tabObj.chatPillEffort) {
-    const effort = session.effort || '';
-    tabObj.chatPillEffort.textContent = effort ? `Effort: ${effort.charAt(0).toUpperCase() + effort.slice(1)}` : 'Effort: Default';
+    tabObj.chatPillEffort.style.display = isAntigravity ? 'none' : '';
+    if (!isAntigravity) {
+      const effort = session.effort || '';
+      tabObj.chatPillEffort.textContent = effort ? `Effort: ${effort.charAt(0).toUpperCase() + effort.slice(1)}` : 'Effort: Default';
+    }
   }
 
   if (tabObj.chatPillMode) {
@@ -627,9 +709,10 @@ function updateStatusPills(tabObj) {
     const totalTokens = (typeof session.total_tokens === 'number' && session.total_tokens > 0)
       ? session.total_tokens
       : (typeof session.context_tokens === 'number' ? session.context_tokens : 0);
+    const defaultMaxTokens = isAntigravity ? 1000000 : 200000;
     const maxTokens = (typeof session.max_context_tokens === 'number' && session.max_context_tokens > 0)
       ? session.max_context_tokens
-      : 200000;
+      : defaultMaxTokens;
 
     let pct = 0;
     if (typeof session.context_pct === 'number' && session.context_pct > 0) {
@@ -648,6 +731,7 @@ function toggleChatConfigPopover(tabObj) {
   if (popover.style.display !== 'none') {
     popover.style.display = 'none';
   } else {
+    fetchSessionAgentModels(tabObj);
     renderConfigPopoverContent(tabObj);
     popover.style.display = 'flex';
   }
@@ -660,13 +744,19 @@ function renderConfigPopoverContent(tabObj) {
   const model = sess.model || '';
   const effort = sess.effort || '';
   const isPlan = sess.permission_mode === 'plan';
+  const isAntigravity = (sess.agent || '').toLowerCase() === 'antigravity';
 
+  if (!tabObj.agentModels || tabObj.agentModelsAgent !== (sess.agent || '')) {
+    fetchSessionAgentModels(tabObj);
+  }
+
+  const defaultMaxTokens = isAntigravity ? 1000000 : 200000;
   const totalTokens = (typeof sess.total_tokens === 'number' && sess.total_tokens > 0)
     ? sess.total_tokens
     : (typeof sess.context_tokens === 'number' ? sess.context_tokens : 0);
   const maxTokens = (typeof sess.max_context_tokens === 'number' && sess.max_context_tokens > 0)
     ? sess.max_context_tokens
-    : 200000;
+    : defaultMaxTokens;
   let pct = 0;
   if (typeof sess.context_pct === 'number' && sess.context_pct > 0) {
     pct = Math.min(100, Math.round(sess.context_pct));
@@ -675,6 +765,30 @@ function renderConfigPopoverContent(tabObj) {
   }
   const inputTokens = sess.input_tokens || 0;
   const outputTokens = sess.output_tokens || 0;
+
+  const modelOptions = getAgentModelOptions(sess.agent, tabObj.agentModels);
+  const isModelInOptions = modelOptions.some(m => m.id === model);
+  let customOptionHtml = '';
+  if (model && !isModelInOptions) {
+    customOptionHtml = `<option value="${escapeHtml(model)}" selected>${escapeHtml(formatModelLabel(model, sess.agent, tabObj.agentModels))}</option>`;
+  }
+  const modelOptionsHtml = modelOptions.map(m => {
+    const selected = (m.id === model) ? 'selected' : '';
+    return `<option value="${escapeHtml(m.id)}" ${selected}>${escapeHtml(m.label)}</option>`;
+  }).join('\n');
+
+  const effortRowHtml = !isAntigravity ? `
+    <div class="config-row">
+      <label class="config-label">Reasoning Effort</label>
+      <select class="config-select config-select-effort">
+        <option value="" ${!effort ? 'selected' : ''}>Default</option>
+        <option value="low" ${effort === 'low' ? 'selected' : ''}>Low</option>
+        <option value="medium" ${effort === 'medium' ? 'selected' : ''}>Medium</option>
+        <option value="high" ${effort === 'high' ? 'selected' : ''}>High</option>
+        <option value="max" ${effort === 'max' ? 'selected' : ''}>Max</option>
+      </select>
+    </div>
+  ` : '';
 
   popover.innerHTML = `
     <div class="config-popover-header">
@@ -688,25 +802,11 @@ function renderConfigPopoverContent(tabObj) {
       <label class="config-label">Model</label>
       <select class="config-select config-select-model">
         <option value="" ${!model ? 'selected' : ''}>Default (Agent Default)</option>
-        <option value="claude-opus-4-6" ${model === 'claude-opus-4-6' ? 'selected' : ''}>Claude Opus 4.6</option>
-        <option value="claude-sonnet-4-6" ${model === 'claude-sonnet-4-6' ? 'selected' : ''}>Claude Sonnet 4.6</option>
-        <option value="claude-haiku-4-5" ${model === 'claude-haiku-4-5' ? 'selected' : ''}>Claude Haiku 4.5</option>
-        <option value="claude-3-7-sonnet-20250219" ${model === 'claude-3-7-sonnet-20250219' ? 'selected' : ''}>Claude 3.7 Sonnet</option>
-        <option value="claude-3-5-sonnet-20241022" ${model === 'claude-3-5-sonnet-20241022' ? 'selected' : ''}>Claude 3.5 Sonnet</option>
-        <option value="gemini-2.5-pro" ${model === 'gemini-2.5-pro' ? 'selected' : ''}>Gemini 2.5 Pro (Antigravity)</option>
-        <option value="gemini-2.5-flash" ${model === 'gemini-2.5-flash' ? 'selected' : ''}>Gemini 2.5 Flash (Antigravity)</option>
+        ${customOptionHtml}
+        ${modelOptionsHtml}
       </select>
     </div>
-    <div class="config-row">
-      <label class="config-label">Reasoning Effort</label>
-      <select class="config-select config-select-effort">
-        <option value="" ${!effort ? 'selected' : ''}>Default</option>
-        <option value="low" ${effort === 'low' ? 'selected' : ''}>Low</option>
-        <option value="medium" ${effort === 'medium' ? 'selected' : ''}>Medium</option>
-        <option value="high" ${effort === 'high' ? 'selected' : ''}>High</option>
-        <option value="max" ${effort === 'max' ? 'selected' : ''}>Max</option>
-      </select>
-    </div>
+    ${effortRowHtml}
     <div class="config-row">
       <label class="config-label">Execution Mode</label>
       <div class="config-toggle-group">
@@ -4307,9 +4407,15 @@ export {
   isChatAutoReadEnabled,
   updateStatusPills,
   toggleChatConfigPopover,
+  renderConfigPopoverContent,
   togglePlanMode,
   renderInteractiveBlockCard,
   renderTodoWriteCard,
   submitSessionResponse,
-  executeClientAction
+  executeClientAction,
+  ANTIGRAVITY_DEFAULT_MODELS,
+  CLAUDE_DEFAULT_MODELS,
+  getAgentModelOptions,
+  formatModelLabel,
+  fetchSessionAgentModels
 };
