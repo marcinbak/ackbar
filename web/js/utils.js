@@ -72,13 +72,28 @@ function ensureExternalLinksTargetBlank(html) {
   });
 }
 
+function sanitizeRenderedMarkdownHtml(html) {
+  if (!html || typeof html !== 'string') return '';
+  return html
+    .replace(/<script\b[\s\S]*?<\/script>/gi, '')
+    .replace(/<script\b[^>]*>/gi, '')
+    .replace(/<iframe\b[\s\S]*?<\/iframe>/gi, '')
+    .replace(/<iframe\b[^>]*>/gi, '')
+    .replace(/<object\b[\s\S]*?<\/object>/gi, '')
+    .replace(/<object\b[^>]*>/gi, '')
+    .replace(/<embed\b[^>]*\/?>/gi, '')
+    .replace(/\son[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+    .replace(/\b(href|src)\s*=\s*(["'])\s*javascript:[^"']*\2/gi, '$1="#"');
+}
+
 function renderMarkdown(content) {
   if (!window.marked) {
     return `<pre>${escapeHtml(content || '')}</pre>`;
   }
   configureMarked();
   const raw = window.marked.parse(content || '');
-  return ensureExternalLinksTargetBlank(raw);
+  const linked = ensureExternalLinksTargetBlank(raw);
+  return sanitizeRenderedMarkdownHtml(linked);
 }
 
 function ensureDoubleNewlineSeparation(prev, next) {
@@ -581,6 +596,7 @@ export {
   openInVSCode,
   configureMarked,
   ensureExternalLinksTargetBlank,
+  sanitizeRenderedMarkdownHtml,
   renderMarkdown,
   ensureDoubleNewlineSeparation,
   isLocalHost,

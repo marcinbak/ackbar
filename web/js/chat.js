@@ -3765,8 +3765,11 @@ function handleChatStreamEvent(tabObj, evt) {
           if (bodyEl) {
             const html = renderMarkdown(tabObj.activeTurnBuffer);
             bodyEl.innerHTML = html + '<span class="chat-streaming-cursor"></span>';
-            if (tabObj.activeTurnBuffer && tabObj.activeTurnBuffer.includes('```')) {
-              renderMermaidDiagrams(bodyEl, copyTextToClipboard);
+            if (tabObj.activeTurnBuffer) {
+              const fenceCount = (tabObj.activeTurnBuffer.match(/```/g) || []).length;
+              if (fenceCount >= 2) {
+                renderMermaidDiagrams(bodyEl, copyTextToClipboard, { cacheOnly: fenceCount % 2 !== 0 });
+              }
             }
           }
           tabObj.chatMessagesEl.scrollTop = tabObj.chatMessagesEl.scrollHeight;

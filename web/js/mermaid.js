@@ -1,11 +1,20 @@
 // Mermaid Flowchart & Diagram Rendering Module
 import { escapeHtml } from './utils.js';
 
-export const MERMAID_HEADER_REGEX = /^(?:flowchart|graph)\s+(?:TB|TD|BT|RL|LR)\b|^(?:flowchart|graph)\b|^sequenceDiagram\b|^stateDiagram(?:-v2)?\b|^classDiagram\b|^erDiagram\b|^gantt\b|^pie\b|^gitGraph\b|^mindmap\b|^timeline\b|^journey\b|^xychart-beta\b|^quadrantChart\b|^C4(?:Context|Container|Component|Dynamic|Deployment)\b|^sankey-beta\b|^block-beta\b|^packet-beta\b|^architecture-beta\b/i;
+export const MERMAID_HEADER_REGEX = /^(?:flowchart|graph)\s+(?:TB|TD|BT|RL|LR)(?:\s|;|$)|^sequenceDiagram(?:\s|$)|^stateDiagram(?:-v2)?(?:\s|$)|^classDiagram(?:\s|$)|^erDiagram(?:\s|$)|^gantt(?:\s|$)|^pie(?:\s+(?:showData|title)\b|\s*$)|^gitGraph(?:\s|:|$)|^mindmap(?:\s|$)|^timeline(?:\s+title\b|\s*$)|^journey(?:\s|$)|^xychart-beta(?:\s|$)|^quadrantChart(?:\s|$)|^C4(?:Context|Container|Component|Dynamic|Deployment)(?:\s|$)|^sankey-beta(?:\s|$)|^block-beta(?:\s|$)|^packet-beta(?:\s|$)|^architecture-beta(?:\s|$)/;
 
 let mermaidInitialized = false;
 let mermaidRenderSeq = 0;
+let mermaidRenderQueue = Promise.resolve();
 export const mermaidSvgCache = new Map();
+
+function cleanupStrayMermaidElements(renderId) {
+  if (typeof document === 'undefined') return;
+  const stray1 = document.getElementById(renderId);
+  if (stray1) stray1.remove();
+  const stray2 = document.getElementById('d' + renderId);
+  if (stray2) stray2.remove();
+}
 
 export function isMermaidSource(source) {
   if (!source || typeof source !== 'string') return false;
@@ -37,9 +46,9 @@ export function isMermaidCodeBlock(preEl, codeEl) {
 export function normalizeMermaidForRender(source) {
   if (!source || typeof source !== 'string') return '';
   let normalized = source.replace(/\r\n/g, '\n').trim();
-  normalized = normalized.replace(/(["'])((?:(?!\1)[^\\]|\\.)*)\1/g, (match, quote, inner) => {
+  normalized = normalized.replace(/"((?:(?!")[^\\]|\\.)*)"/g, (match, inner) => {
     if (!inner.includes('\\n') && !inner.includes('\n')) return match;
-    return quote + inner.replace(/\\n/g, '<br/>').replace(/\n/g, '<br/>') + quote;
+    return '"' + inner.replace(/\\n/g, '<br/>').replace(/\n/g, '<br/>') + '"';
   });
   return normalized;
 }
@@ -50,6 +59,7 @@ export function ensureMermaidInitialized() {
   try {
     window.mermaid.initialize({
       startOnLoad: false,
+      suppressErrorRendering: true,
       securityLevel: 'strict',
       theme: 'base',
       fontFamily: 'JetBrains Mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
@@ -173,8 +183,9 @@ export function upgradePreToMermaidBlock(preEl, rawSource, svgHtml, copyFn) {
   return blockEl;
 }
 
-export function renderMermaidDiagrams(container, copyFn) {
+export function renderMermaidDiagrams(container, copyFn, options = {}) {
   if (!container) return;
+  const cacheOnly = Boolean(options && options.cacheOnly);
   const preEls = container.querySelectorAll('pre');
   preEls.forEach(pre => {
     if (pre.closest('.mermaid-diagram-block') || pre.closest('.chat-thinking') || pre.closest('.chat-tool-card')) {
@@ -202,6 +213,10 @@ export function renderMermaidDiagrams(container, copyFn) {
       return;
     }
 
+    if (cacheOnly) {
+      return;
+    }
+
     if (pre.dataset.mermaidRendering === 'true' || pre.dataset.mermaidRendering === 'failed') {
       return;
     }
@@ -217,24 +232,25 @@ export function renderMermaidDiagrams(container, copyFn) {
     const renderId = 'mermaid-render-' + Date.now() + '-' + mermaidRenderSeq;
     const normalized = normalizeMermaidForRender(rawSource);
 
-    window.mermaid.render(renderId, normalized).then(({ svg }) => {
-      const stray = document.getElementById(renderId) || document.getElementById('d' + renderId);
-      if (stray) stray.remove();
+    mermaidRenderQueue = mermaidRenderQueue
+      .then(() => window.mermaid.render(renderId, normalized))
+      .then(({ svg }) => {
+        cleanupStrayMermaidElements(renderId);
 
-      if (mermaidSvgCache.size >= 200) {
-        const firstKey = mermaidSvgCache.keys().next().value;
-        mermaidSvgCache.delete(firstKey);
-      }
-      mermaidSvgCache.set(rawSource, svg);
+        if (mermaidSvgCache.size >= 200) {
+          const firstKey = mermaidSvgCache.keys().next().value;
+          mermaidSvgCache.delete(firstKey);
+        }
+        mermaidSvgCache.set(rawSource, svg);
 
-      if (pre.isConnected) {
-        upgradePreToMermaidBlock(pre, rawSource, svg, copyFn);
-      }
-    }).catch(err => {
-      console.warn('Mermaid rendering failed:', err);
-      const stray = document.getElementById(renderId) || document.getElementById('d' + renderId);
-      if (stray) stray.remove();
-      pre.dataset.mermaidRendering = 'failed';
-    });
+        if (pre.isConnected) {
+          upgradePreToMermaidBlock(pre, rawSource, svg, copyFn);
+        }
+      })
+      .catch(err => {
+        console.warn('Mermaid rendering failed:', err);
+        cleanupStrayMermaidElements(renderId);
+        pre.dataset.mermaidRendering = 'failed';
+      });
   });
 }

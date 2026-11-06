@@ -2,7 +2,6 @@ import { state } from './state.js';
 import { fetchTasks, createTask, updateTask, deleteTask, fetchStandup, mergeTaskPR, fetchAgentStatuses, provisionAgents, fetchAllAgentStatuses, provisionAllHosts, syncSkillsRepo, fetchTaskDeliverable, fetchSessions } from './api.js';
 import { escapeHtml, getSelfHostName, renderMarkdown } from './utils.js';
 import { attachCodeBlockCopyButtons } from './chat.js';
-import { renderMermaidDiagrams } from './mermaid.js';
 import { activateTab, openSessionInTab } from './tabs.js';
 import { showModal, hideModal } from './modals.js';
 import { renderTree } from './tree.js';
@@ -331,7 +330,6 @@ export function showDeliverableContentModal(deliverable) {
   const bodyEl = document.getElementById('mDeliverableMarkdownBody');
   if (bodyEl) {
     attachCodeBlockCopyButtons(bodyEl);
-    renderMermaidDiagrams(bodyEl);
   }
   document.getElementById('mBtnCloseDeliverableModal')?.addEventListener('click', hideModal);
 }
