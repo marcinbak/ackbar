@@ -28,6 +28,7 @@ import {
   linkifyChatFiles,
   attachCodeBlockCopyButtons
 } from './chat.js';
+import { renderMermaidDiagrams } from './mermaid.js';
 
 
 let inspectorRequestSeq = 0;
@@ -366,6 +367,7 @@ async function openDocViewerTab(docPath, docTitle, host = 'local') {
     }
   });
   attachCodeBlockCopyButtons(docContainer);
+  renderMermaidDiagrams(docContainer);
 
   openInspectorPane({
     titleHtml,
@@ -489,6 +491,7 @@ async function openTranscriptViewerTab(session) {
     linkifyChatFiles(msgEl, session);
   });
   attachCodeBlockCopyButtons(transContainer);
+  renderMermaidDiagrams(transContainer);
 
   const actionsEl = document.createElement('div');
   actionsEl.className = 'inspector-header-actions';

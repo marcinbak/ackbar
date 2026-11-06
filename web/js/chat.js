@@ -24,6 +24,7 @@ import {
   showUploadToast
 } from './terminal.js';
 import { fetchSessions } from './api.js';
+import { renderMermaidDiagrams } from './mermaid.js';
 
 
 function extractPastedAttachmentFiles(clipboardData) {
@@ -1069,6 +1070,8 @@ function renderInteractiveBlockCard(tabObj, blocked, toolName) {
       </div>
     `;
 
+    attachCodeBlockCopyButtons(card);
+
     const btnApprove = card.querySelector('.btn-approve-plan');
     const btnReject = card.querySelector('.btn-reject-plan');
     const feedbackBox = card.querySelector('.interactive-card-feedback');
@@ -2068,6 +2071,7 @@ function attachCodeBlockCopyButtons(container) {
   if (!container) return;
   const preEls = container.querySelectorAll('pre');
   preEls.forEach(pre => {
+    if (pre.closest('.mermaid-diagram-block')) return;
     if (pre.querySelector('.btn-copy-code')) return;
     if (pre.closest('.chat-thinking') || pre.closest('.chat-tool-card')) return;
 
@@ -2120,6 +2124,7 @@ function attachCodeBlockCopyButtons(container) {
     });
     pre.appendChild(copyBtn);
   });
+  renderMermaidDiagrams(container, copyTextToClipboard);
 }
 
 // Known file extensions for linkification & action pills
@@ -3760,6 +3765,9 @@ function handleChatStreamEvent(tabObj, evt) {
           if (bodyEl) {
             const html = renderMarkdown(tabObj.activeTurnBuffer);
             bodyEl.innerHTML = html + '<span class="chat-streaming-cursor"></span>';
+            if (tabObj.activeTurnBuffer && tabObj.activeTurnBuffer.includes('```')) {
+              renderMermaidDiagrams(bodyEl, copyTextToClipboard);
+            }
           }
           tabObj.chatMessagesEl.scrollTop = tabObj.chatMessagesEl.scrollHeight;
         }
@@ -4255,6 +4263,7 @@ export {
   loadChatTranscript,
   copyTextToClipboard,
   attachCodeBlockCopyButtons,
+  renderMermaidDiagrams,
   getChatFileContentUrl,
   openChatFileInApp,
   isChatFilePath,

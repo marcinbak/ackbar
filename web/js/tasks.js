@@ -1,6 +1,8 @@
 import { state } from './state.js';
 import { fetchTasks, createTask, updateTask, deleteTask, fetchStandup, mergeTaskPR, fetchAgentStatuses, provisionAgents, fetchAllAgentStatuses, provisionAllHosts, syncSkillsRepo, fetchTaskDeliverable, fetchSessions } from './api.js';
-import { escapeHtml, getSelfHostName } from './utils.js';
+import { escapeHtml, getSelfHostName, renderMarkdown } from './utils.js';
+import { attachCodeBlockCopyButtons } from './chat.js';
+import { renderMermaidDiagrams } from './mermaid.js';
 import { activateTab, openSessionInTab } from './tabs.js';
 import { showModal, hideModal } from './modals.js';
 import { renderTree } from './tree.js';
@@ -320,12 +322,17 @@ export function showDeliverableContentModal(deliverable) {
   }
   showModal(deliverable.title || 'Deliverable Content', `
     <div style="max-height: 70vh; overflow-y: auto; padding: 12px; background: var(--bg-card); border-radius: 6px; border: 1px solid var(--border-color);">
-      <pre style="white-space: pre-wrap; font-family: var(--font-mono); font-size: 12px; line-height: 1.5; color: var(--text-main); margin: 0;">${escapeHtml(content)}</pre>
+      <div class="markdown-body" id="mDeliverableMarkdownBody">${renderMarkdown(content)}</div>
     </div>
   `, `
     ${externalLinkBtn}
     <button class="btn btn-secondary" id="mBtnCloseDeliverableModal">Close</button>
   `);
+  const bodyEl = document.getElementById('mDeliverableMarkdownBody');
+  if (bodyEl) {
+    attachCodeBlockCopyButtons(bodyEl);
+    renderMermaidDiagrams(bodyEl);
+  }
   document.getElementById('mBtnCloseDeliverableModal')?.addEventListener('click', hideModal);
 }
 
