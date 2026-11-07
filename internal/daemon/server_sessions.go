@@ -1078,8 +1078,9 @@ func (s *Server) handleTakeWheel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if sess.EngineType == EngineHeadless && s.headless != nil && s.headless.IsRunning(sess.ID) {
-		http.Error(w, "Cannot take wheel while a headless turn is active. Please wait or cancel the turn.", http.StatusConflict)
-		return
+		_ = s.headless.CancelTurn(sess.ID)
+		s.headless.ClearInteractiveBlockAndWait(sess.ID, 1500*time.Millisecond)
+		s.clearSubagents(sess.ID, sess.NativeID)
 	}
 
 	tmuxName := fmt.Sprintf("ackbar-%s-%s", sess.Agent, sess.NativeID)
@@ -1152,6 +1153,76 @@ func (s *Server) handleTakeWheel(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]string{
 		"status":    "ok",
 		"tmux_name": tmuxName,
+	})
+}
+
+func (s *Server) handleSwitchHeadless(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		SessionID string `json:"session_id"`
+	}
+	bodyBytes, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "Failed to read request body", http.StatusBadRequest)
+		return
+	}
+	if err := json.Unmarshal(bodyBytes, &req); err != nil {
+		http.Error(w, "Invalid payload", http.StatusBadRequest)
+		return
+	}
+
+	if req.SessionID == "" {
+		http.Error(w, "Missing session_id", http.StatusBadRequest)
+		return
+	}
+
+	sess, proxied := s.resolveSessionOrProxy(w, r.Method, req.SessionID, "application/json", bytes.NewReader(bodyBytes), func(_ *Session) string {
+		return "/v1/sessions/switch-headless"
+	})
+	if proxied {
+		return
+	}
+	if sess == nil {
+		return
+	}
+
+	if sess.Agent != "claude-code" && sess.Agent != "antigravity" {
+		http.Error(w, ErrAgentUnsupported.Error(), http.StatusBadRequest)
+		return
+	}
+
+	tmuxName := sess.TmuxName
+	if tmuxName != "" && tmuxName != "(deleted)" {
+		_ = tmux.Kill(r.Context(), tmuxName)
+	}
+	if sess.NativeID != "" {
+		defaultTmuxName := fmt.Sprintf("ackbar-%s-%s", sess.Agent, sess.NativeID)
+		if defaultTmuxName != tmuxName {
+			_ = tmux.Kill(r.Context(), defaultTmuxName)
+		}
+	}
+
+	sess.TmuxName = ""
+	sess.EngineType = EngineHeadless
+	sess.Managed = true
+	sess.PID = 0
+	sess.State = StateIdle
+	sess.Blocked = nil
+	sess.Activity = "Switched to headless mode"
+	sess.LastEventAt = time.Now()
+
+	_ = s.db.SaveSession(sess)
+	s.broadcast(sess)
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"status":      "ok",
+		"engine_type": EngineHeadless,
+		"session_id":  sess.ID,
 	})
 }
 

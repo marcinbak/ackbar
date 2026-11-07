@@ -296,6 +296,137 @@ func TestServer_TakeWheel_Idempotent(t *testing.T) {
 	}
 }
 
+func TestServer_TakeWheel_CancelsActiveTurn(t *testing.T) {
+	srv, db := setupTestServer(t)
+
+	sess := &Session{
+		ID:          "claude-code:local:uuid-cancel-takewheel",
+		Agent:       "claude-code",
+		Host:        "local",
+		NativeID:    "uuid-cancel-takewheel",
+		Cwd:         t.TempDir(),
+		State:       StateWorking,
+		EngineType:  EngineHeadless,
+		StartedAt:   time.Now(),
+		LastEventAt: time.Now(),
+	}
+	_ = db.SaveSession(sess)
+
+	// Simulate an active headless turn
+	srv.headless.mu.Lock()
+	srv.headless.processes[sess.ID] = nil
+	srv.headless.mu.Unlock()
+
+	payload := map[string]string{
+		"session_id": sess.ID,
+	}
+	body, _ := json.Marshal(payload)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/take-wheel", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	srv.Mux().ServeHTTP(w, req)
+	defer func() {
+		_ = tmux.Kill(context.Background(), "ackbar-claude-code-uuid-cancel-takewheel")
+	}()
+
+	if w.Code == http.StatusConflict {
+		t.Fatalf("Expected take-wheel to cancel active turn instead of returning 409 Conflict: %s", w.Body.String())
+	}
+	if srv.headless.IsRunning(sess.ID) {
+		t.Errorf("Expected active headless turn to be stopped by take-wheel")
+	}
+}
+
+func TestServer_SwitchHeadless(t *testing.T) {
+	srv, db := setupTestServer(t)
+
+	sess := &Session{
+		ID:          "claude-code:local:uuid-switch-headless",
+		Agent:       "claude-code",
+		Host:        "local",
+		NativeID:    "uuid-switch-headless",
+		Cwd:         t.TempDir(),
+		State:       StateWorking,
+		EngineType:  EngineTmux,
+		TmuxName:    "ackbar-claude-code-uuid-switch-headless",
+		PID:         4242,
+		Managed:     true,
+		StartedAt:   time.Now(),
+		LastEventAt: time.Now(),
+	}
+	_ = db.SaveSession(sess)
+
+	payload := map[string]string{
+		"session_id": sess.ID,
+	}
+	body, _ := json.Marshal(payload)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/switch-headless", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	srv.Mux().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK from switch-headless, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]string
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["status"] != "ok" || resp["engine_type"] != EngineHeadless {
+		t.Errorf("Unexpected response: %+v", resp)
+	}
+
+	updated, err := db.GetSession(sess.ID)
+	if err != nil || updated == nil {
+		t.Fatalf("Expected session in DB, got err=%v", err)
+	}
+	if updated.EngineType != EngineHeadless {
+		t.Errorf("Expected EngineType == 'headless', got %q", updated.EngineType)
+	}
+	if updated.TmuxName != "" {
+		t.Errorf("Expected TmuxName == '', got %q", updated.TmuxName)
+	}
+	if updated.PID != 0 {
+		t.Errorf("Expected PID == 0, got %d", updated.PID)
+	}
+	if updated.State != StateIdle {
+		t.Errorf("Expected State == StateIdle, got %v", updated.State)
+	}
+
+	// Verify unsupported agent (e.g. codex) is rejected with 400 Bad Request before killing tmux
+	unsupportedSess := &Session{
+		ID:          "codex:local:uuid-codex-tmux",
+		Agent:       "codex",
+		Host:        "local",
+		NativeID:    "uuid-codex-tmux",
+		Cwd:         t.TempDir(),
+		State:       StateWorking,
+		EngineType:  EngineTmux,
+		TmuxName:    "ackbar-codex-uuid-codex-tmux",
+		Managed:     true,
+		StartedAt:   time.Now(),
+		LastEventAt: time.Now(),
+	}
+	_ = db.SaveSession(unsupportedSess)
+
+	unsupportedBody, _ := json.Marshal(map[string]string{"session_id": unsupportedSess.ID})
+	reqUnsupported := httptest.NewRequest(http.MethodPost, "/v1/sessions/switch-headless", bytes.NewBuffer(unsupportedBody))
+	reqUnsupported.Header.Set("Content-Type", "application/json")
+	wUnsupported := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(wUnsupported, reqUnsupported)
+
+	if wUnsupported.Code != http.StatusBadRequest {
+		t.Errorf("Expected 400 Bad Request for unsupported agent, got %d", wUnsupported.Code)
+	}
+	stillTmux, _ := db.GetSession(unsupportedSess.ID)
+	if stillTmux == nil || stillTmux.EngineType != EngineTmux || stillTmux.TmuxName == "" {
+		t.Errorf("Expected unsupported session to remain in tmux mode, got %+v", stillTmux)
+	}
+}
+
 func TestServer_PromptQueueEndpoints(t *testing.T) {
 	srv, db := setupTestServer(t)
 

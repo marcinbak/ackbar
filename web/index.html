@@ -128,7 +128,7 @@
             <span class="status-item status-clickable-btn" id="sbModeToggle" title="Cycle Claude Code mode (Normal / Auto / Plan) — Shortcut: Shift+Tab">⚡ Mode (Shift+Tab)</span>
             <span class="status-item" id="sbGitBranch">🌿 —</span>
             <span class="status-item" id="sbContextGauge">ctx: —</span>
-            <span class="status-item" id="sbModelBadge">claude</span>
+            <span class="status-item status-clickable-btn" id="sbModelBadge" title="Click to switch between Headless Chat and Tmux Terminal mode">claude</span>
             <span class="status-item" id="sbPID">PID —</span>
           </div>
         </footer>
@@ -387,6 +387,7 @@
       <div class="context-menu-divider"></div>
       <div class="context-menu-item" id="cmItemHandover"><span>🔄</span> Handover to Fresh Turn</div>
       <div class="context-menu-item" id="cmItemTakeWheel"><span>🏎️</span> Take the Wheel in Terminal</div>
+      <div class="context-menu-item" id="cmItemSwitchHeadless" style="display: none;"><span>💬</span> Switch to Headless Mode</div>
       <div class="context-menu-item" id="cmItemResume"><span>▶</span> Resume in Tmux</div>
       <div class="context-menu-item" id="cmItemNewTab"><span>↗</span> Open in New Tab</div>
       <div class="context-menu-item" id="cmItemVSCode"><span>📂</span> Open in VS Code</div>

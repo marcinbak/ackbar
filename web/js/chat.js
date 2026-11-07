@@ -1734,18 +1734,31 @@ function setupChatInterface(tabObj, chatViewEl, session) {
     });
 
     tabObj.chatInputEl.addEventListener('paste', async (e) => {
+      if (e._ackbarPasteHandled) return;
       if (!e.clipboardData) return;
       const files = extractPastedAttachmentFiles(e.clipboardData);
       if (files.length > 0) {
+        e._ackbarPasteHandled = true;
+        tabObj._lastPasteHandledAt = Date.now();
         e.preventDefault();
         e.stopPropagation();
         for (const file of files) {
           await addPendingAttachment(tabObj, file);
         }
+        return;
+      }
+      const pastedText = e.clipboardData.getData('text/plain');
+      if (pastedText) {
+        e._ackbarPasteHandled = true;
+        tabObj._lastPasteHandledAt = Date.now();
+        e.preventDefault();
+        e.stopPropagation();
+        insertTextIntoPromptInput(tabObj.chatInputEl, pastedText);
       }
     });
 
     tabObj.chatInputEl.addEventListener('input', () => {
+      tabObj._lastInputAt = Date.now();
       tabObj.chatInputEl.style.height = 'auto';
       tabObj.chatInputEl.style.height = Math.min(tabObj.chatInputEl.scrollHeight, 180) + 'px';
     });
@@ -2971,25 +2984,37 @@ function updateComposerButtonState(tabObj) {
                        (tabObj.activeInStreamActivityEl !== null && tabObj.activeInStreamActivityEl !== undefined) ||
                        (tabObj.chatCancelBtn && tabObj.chatCancelBtn.style.display !== 'none');
   if (isTurnActive) {
-    tabObj.chatSendBtn.disabled = false;
-    tabObj.chatSendBtn.classList.add('is-queue');
-    tabObj.chatSendBtn.title = 'Queue prompt (Enter)';
-    tabObj.chatSendBtn.innerHTML = `
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-        <line x1="12" y1="5" x2="12" y2="19"></line>
-        <line x1="5" y1="12" x2="19" y2="12"></line>
-      </svg>
-    `;
+    if (tabObj.chatSendBtn.dataset.mode !== 'queue') {
+      tabObj.chatSendBtn.dataset.mode = 'queue';
+      tabObj.chatSendBtn.disabled = false;
+      tabObj.chatSendBtn.classList.add('is-queue');
+      tabObj.chatSendBtn.title = 'Queue prompt (Enter)';
+      tabObj.chatSendBtn.innerHTML = `
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="12" y1="5" x2="12" y2="19"></line>
+          <line x1="5" y1="12" x2="19" y2="12"></line>
+        </svg>
+      `;
+    }
     if (tabObj.chatInputEl) {
-      tabObj.chatInputEl.placeholder = 'Queue a follow-up prompt... (Enter to queue, Shift+Enter for newline)';
+      const nextPlaceholder = 'Queue a follow-up prompt... (Enter to queue, Shift+Enter for newline)';
+      if (tabObj.chatInputEl.placeholder !== nextPlaceholder) {
+        tabObj.chatInputEl.placeholder = nextPlaceholder;
+      }
     }
   } else {
-    tabObj.chatSendBtn.disabled = false;
-    tabObj.chatSendBtn.classList.remove('is-queue');
-    tabObj.chatSendBtn.title = 'Send Prompt (Enter)';
-    tabObj.chatSendBtn.innerHTML = '➤';
+    if (tabObj.chatSendBtn.dataset.mode !== 'send') {
+      tabObj.chatSendBtn.dataset.mode = 'send';
+      tabObj.chatSendBtn.disabled = false;
+      tabObj.chatSendBtn.classList.remove('is-queue');
+      tabObj.chatSendBtn.title = 'Send Prompt (Enter)';
+      tabObj.chatSendBtn.innerHTML = '➤';
+    }
     if (tabObj.chatInputEl) {
-      tabObj.chatInputEl.placeholder = `Ask ${escapeHtml(formatAgentChatName(tabObj.session ? tabObj.session.agent : null))} anything... (Enter to send, Shift+Enter for newline)`;
+      const nextPlaceholder = `Ask ${escapeHtml(formatAgentChatName(tabObj.session ? tabObj.session.agent : null))} anything... (Enter to send, Shift+Enter for newline)`;
+      if (tabObj.chatInputEl.placeholder !== nextPlaceholder) {
+        tabObj.chatInputEl.placeholder = nextPlaceholder;
+      }
     }
   }
 }
@@ -4215,7 +4240,9 @@ function resetChatComposer(tabObj) {
   if (tabObj.chatCancelBtn) tabObj.chatCancelBtn.style.display = 'none';
   if (tabObj.chatStatusBadge) tabObj.chatStatusBadge.textContent = '🟢 Ready';
   updateComposerButtonState(tabObj);
-  if (tabObj.chatInputEl) tabObj.chatInputEl.focus();
+  if (tabObj.chatInputEl && state.activeTabId === tabObj.id && tabObj.viewMode === 'chat' && !isAuxiliaryInputFocused(tabObj.chatInputEl)) {
+    tabObj.chatInputEl.focus();
+  }
 }
 
 // Reconcile open chat tabs when a session update arrives via main SSE (/v1/events) or poll
@@ -4273,17 +4300,20 @@ function onSessionUpdated(updatedSess) {
   }
 }
 
-// Forward document-level paste events (such as voice dictation clipboard injection) to the active chat composer when unfocused
+// Deterministically handle document-level paste events (including Wispr Flow voice dictation clipboard injection
+// even when document.activeElement === activeTab.chatInputEl during macOS NSPanel responder transitions)
 document.addEventListener('paste', async (e) => {
+  if (e._ackbarPasteHandled) return;
   if (!e.clipboardData) return;
   if (!state.openTabs || !state.activeTabId) return;
   const activeTab = state.openTabs.get(state.activeTabId);
   if (!activeTab || activeTab.type !== 'terminal' || activeTab.viewMode !== 'chat' || !activeTab.chatInputEl) return;
-  if (document.activeElement === activeTab.chatInputEl) return;
   if (isAuxiliaryInputFocused(activeTab.chatInputEl)) return;
 
   const files = extractPastedAttachmentFiles(e.clipboardData);
   if (files.length > 0) {
+    e._ackbarPasteHandled = true;
+    activeTab._lastPasteHandledAt = Date.now();
     e.preventDefault();
     e.stopPropagation();
     activeTab.chatInputEl.focus();
@@ -4295,11 +4325,37 @@ document.addEventListener('paste', async (e) => {
 
   const pastedText = e.clipboardData.getData('text/plain');
   if (pastedText) {
+    e._ackbarPasteHandled = true;
+    activeTab._lastPasteHandledAt = Date.now();
     e.preventDefault();
     e.stopPropagation();
     insertTextIntoPromptInput(activeTab.chatInputEl, pastedText);
   }
-});
+}, true);
+
+// Fallback for synthetic Cmd+V / Ctrl+V keydowns (e.g. Wispr Flow CGEvent when macOS drops native paste event)
+document.addEventListener('keydown', (e) => {
+  if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey) return;
+  if (e.key !== 'v' && e.key !== 'V') return;
+  if (!state.openTabs || !state.activeTabId) return;
+  const activeTab = state.openTabs.get(state.activeTabId);
+  if (!activeTab || activeTab.type !== 'terminal' || activeTab.viewMode !== 'chat' || !activeTab.chatInputEl) return;
+  if (isAuxiliaryInputFocused(activeTab.chatInputEl)) return;
+
+  const keydownAt = Date.now();
+  setTimeout(async () => {
+    if ((activeTab._lastPasteHandledAt || 0) >= keydownAt) return;
+    if ((activeTab._lastInputAt || 0) >= keydownAt) return;
+    if (!navigator.clipboard || typeof navigator.clipboard.readText !== 'function') return;
+    try {
+      const clipText = await navigator.clipboard.readText();
+      if (clipText && (activeTab._lastPasteHandledAt || 0) < keydownAt && (activeTab._lastInputAt || 0) < keydownAt) {
+        activeTab._lastPasteHandledAt = Date.now();
+        insertTextIntoPromptInput(activeTab.chatInputEl, clipText);
+      }
+    } catch (_) {}
+  }, 60);
+}, true);
 
 // Reconcile transcript and reconnect headless stream when browser tab wakes or regains visibility
 document.addEventListener('visibilitychange', () => {

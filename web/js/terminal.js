@@ -14,7 +14,7 @@ import { renderTree } from './tree.js';
 
 
 function connectTerminalWebSocket(tab, tabId, term, fitAddon, session) {
-  if (session && session.engine_type === 'headless' && !session.tmux_name) {
+  if (!term || !fitAddon || (session && session.engine_type === 'headless' && !session.tmux_name)) {
     return;
   }
   if (tab.pingTimer) {
@@ -420,7 +420,8 @@ async function uploadAndAttachFile(file, tabObj, target = 'auto') {
 // Reconnect Terminal Tab Socket
 function reconnectTerminalTab(tabId) {
   const tab = state.openTabs.get(tabId);
-  if (!tab || tab.type !== 'terminal') return;
+  if (!tab || tab.type !== 'terminal' || !tab.terminal || !tab.fitAddon) return;
+  if (tab.session && tab.session.engine_type === 'headless' && !tab.session.tmux_name) return;
   connectTerminalWebSocket(tab, tabId, tab.terminal, tab.fitAddon, tab.session);
 }
 

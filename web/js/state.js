@@ -202,6 +202,7 @@ export const el = {
   cmItemCopyPath: document.getElementById('cmItemCopyPath'),
   cmItemHandover: document.getElementById('cmItemHandover'),
   cmItemTakeWheel: document.getElementById('cmItemTakeWheel'),
+  cmItemSwitchHeadless: document.getElementById('cmItemSwitchHeadless'),
   cmItemResume: document.getElementById('cmItemResume'),
   cmItemNewTab: document.getElementById('cmItemNewTab'),
   cmItemVSCode: document.getElementById('cmItemVSCode'),

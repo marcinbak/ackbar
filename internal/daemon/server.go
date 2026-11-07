@@ -403,6 +403,7 @@ func (s *Server) Mux() http.Handler {
 	mux.HandleFunc("/v1/sessions/chat/stream", s.handleChatStream)
 	mux.HandleFunc("/v1/sessions/cancel", s.handleCancelTurn)
 	mux.HandleFunc("/v1/sessions/take-wheel", s.handleTakeWheel)
+	mux.HandleFunc("/v1/sessions/switch-headless", s.handleSwitchHeadless)
 	mux.HandleFunc("/v1/accounts", s.handleAccounts)
 	mux.HandleFunc("/v1/accounts/", s.handleAccountOps)
 	mux.HandleFunc("/v1/agents/discovery", s.handleAgentDiscovery)

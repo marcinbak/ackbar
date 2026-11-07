@@ -42,7 +42,8 @@ import {
   restorePersistedTabs,
   handleTabOverflow,
   setTabViewMode,
-  handleTakeWheel
+  handleTakeWheel,
+  handleSwitchHeadless
 } from './tabs.js';
 import {
   sendTerminalResize,
@@ -288,21 +289,29 @@ function setupEventListeners() {
   }
 
   if (el.cmItemViewChat) {
-    el.cmItemViewChat.addEventListener('click', () => {
+    el.cmItemViewChat.addEventListener('click', async () => {
       if (state.contextMenuSession) {
         const sess = state.contextMenuSession;
         hideContextMenu();
-        openSessionInTab(sess, 'chat');
+        if (sess.engine_type === 'headless' && !sess.tmux_name) {
+          openSessionInTab(sess, 'chat');
+        } else {
+          await handleSwitchHeadless(sess.id);
+        }
       }
     });
   }
 
   if (el.cmItemViewTerminal) {
-    el.cmItemViewTerminal.addEventListener('click', () => {
+    el.cmItemViewTerminal.addEventListener('click', async () => {
       if (state.contextMenuSession) {
         const sess = state.contextMenuSession;
         hideContextMenu();
-        openSessionInTab(sess, 'terminal');
+        if (sess.engine_type === 'headless' && !sess.tmux_name) {
+          await handleTakeWheel(sess.id);
+        } else {
+          openSessionInTab(sess, 'terminal');
+        }
       }
     });
   }
@@ -344,6 +353,30 @@ function setupEventListeners() {
         const sess = state.contextMenuSession;
         hideContextMenu();
         await handleTakeWheel(sess.id);
+      }
+    });
+  }
+
+  if (el.cmItemSwitchHeadless) {
+    el.cmItemSwitchHeadless.addEventListener('click', async () => {
+      if (state.contextMenuSession) {
+        const sess = state.contextMenuSession;
+        hideContextMenu();
+        await handleSwitchHeadless(sess.id);
+      }
+    });
+  }
+
+  if (el.sbModelBadge) {
+    el.sbModelBadge.addEventListener('click', async () => {
+      if (!state.activeTabId || !state.openTabs) return;
+      const activeTab = state.openTabs.get(state.activeTabId);
+      if (!activeTab || !activeTab.session) return;
+      const sess = activeTab.session;
+      if (sess.engine_type === 'headless' && !sess.tmux_name) {
+        await handleTakeWheel(sess.id);
+      } else {
+        await handleSwitchHeadless(sess.id);
       }
     });
   }

@@ -55,7 +55,7 @@ function isAuxiliaryInputFocused(chatInputEl) {
   if (!active || active === document.body || active === document.documentElement || active === chatInputEl) {
     return false;
   }
-  if (active.classList && (active.classList.contains('xterm-helper-textarea') || active.classList.contains('chat-composer-textarea'))) {
+  if (active.classList && active.classList.contains('xterm-helper-textarea')) {
     return false;
   }
   const tag = (active.tagName || '').toUpperCase();
@@ -65,21 +65,364 @@ function isAuxiliaryInputFocused(chatInputEl) {
   return false;
 }
 
+function isHeadlessSession(session) {
+  return Boolean(session && session.engine_type === 'headless' && !session.tmux_name);
+}
+
+function isHeadlessSupportedAgent(session) {
+  if (!session || !session.agent) return true;
+  return session.agent === 'claude-code' || session.agent === 'antigravity';
+}
+
+// Helper: Safely decode base64 UTF-8 text (handles multi-byte unicode such as box drawings, emoji, diacritics)
+function decodeBase64Utf8(b64) {
+  if (!b64) return '';
+  try {
+    const cleanB64 = b64.trim();
+    const binaryString = atob(cleanB64);
+    const bytes = new Uint8Array(binaryString.length);
+    for (let i = 0; i < binaryString.length; i++) {
+      bytes[i] = binaryString.charCodeAt(i);
+    }
+    return new TextDecoder('utf-8').decode(bytes);
+  } catch (e) {
+    try {
+      return atob(b64.trim());
+    } catch (e2) {
+      return '';
+    }
+  }
+}
+
+function teardownChatInTab(tab) {
+  if (!tab) return;
+  disconnectChatStream(tab);
+  if (tab.chatReconnectTimer) {
+    clearTimeout(tab.chatReconnectTimer);
+    tab.chatReconnectTimer = null;
+  }
+  if (tab.chatViewEl && tab.chatViewEl.parentNode) {
+    tab.chatViewEl.parentNode.removeChild(tab.chatViewEl);
+  }
+  tab.chatViewEl = null;
+  tab.chatMessagesEl = null;
+  tab.chatInputEl = null;
+  tab.chatSendBtn = null;
+  tab.chatCancelBtn = null;
+  tab.chatStatusBadge = null;
+  tab.chatEngineBadge = null;
+  tab.chatTakeWheelBtn = null;
+}
+
+function mountChatInTab(tab) {
+  if (!tab || !tab.sessionContainer) return;
+  if (tab.chatViewEl && tab.chatViewEl.isConnected) return;
+
+  const chatViewEl = document.createElement('div');
+  chatViewEl.className = 'session-chat-view';
+  tab.sessionContainer.appendChild(chatViewEl);
+  tab.chatViewEl = chatViewEl;
+  tab.viewMode = 'chat';
+
+  if (tab.containerEl) {
+    tab.containerEl.classList.remove('view-mode-chat', 'view-mode-terminal', 'view-mode-split');
+    tab.containerEl.classList.add('view-mode-chat');
+  }
+
+  setupChatInterface(tab, chatViewEl, tab.session);
+}
+
+function teardownTerminalInTab(tab) {
+  if (!tab) return;
+  if (tab.pingTimer) {
+    clearInterval(tab.pingTimer);
+    tab.pingTimer = null;
+  }
+  if (tab.reconnectTimer) {
+    clearTimeout(tab.reconnectTimer);
+    tab.reconnectTimer = null;
+  }
+  if (tab.resizeObserver) {
+    try { tab.resizeObserver.disconnect(); } catch (e) {}
+    tab.resizeObserver = null;
+  }
+  if (tab.socket) {
+    try {
+      tab.socket.onopen = null;
+      tab.socket.onclose = null;
+      tab.socket.onerror = null;
+      tab.socket.onmessage = null;
+      tab.socket.close();
+    } catch (e) {}
+    tab.socket = null;
+  }
+  if (tab.terminal) {
+    try { tab.terminal.dispose(); } catch (e) {}
+    tab.terminal = null;
+  }
+  tab.fitAddon = null;
+  if (tab.termViewEl && tab.termViewEl.parentNode) {
+    tab.termViewEl.parentNode.removeChild(tab.termViewEl);
+  }
+  tab.termViewEl = null;
+}
+
+function mountTerminalInTab(tab) {
+  if (!tab || !tab.sessionContainer) return;
+  if (tab.terminal && tab.termViewEl && tab.termViewEl.isConnected) return;
+
+  const getActiveTabId = () => (tab.tabEl && tab.tabEl.dataset.tabId) || tab.id;
+  const getCurrentTab = () => (state.openTabs ? state.openTabs.get(getActiveTabId()) : null) || tab;
+
+  const termViewEl = document.createElement('div');
+  termViewEl.className = 'session-term-view';
+  tab.sessionContainer.appendChild(termViewEl);
+  tab.termViewEl = termViewEl;
+  tab.viewMode = 'terminal';
+
+  if (tab.containerEl) {
+    tab.containerEl.classList.remove('view-mode-chat', 'view-mode-terminal', 'view-mode-split');
+    tab.containerEl.classList.add('view-mode-terminal');
+  }
+
+  // Drop Overlay for Drag-and-Drop file uploads (Images & PDFs)
+  const dropOverlay = document.createElement('div');
+  dropOverlay.className = 'terminal-drop-overlay';
+  dropOverlay.innerHTML = `<div class="drop-badge">📎 Drop image or PDF to upload & attach</div>`;
+  termViewEl.appendChild(dropOverlay);
+
+  termViewEl.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    if (e.dataTransfer && e.dataTransfer.types && Array.from(e.dataTransfer.types).includes('Files')) {
+      dropOverlay.classList.add('active');
+    }
+  });
+
+  termViewEl.addEventListener('dragleave', (e) => {
+    if (!termViewEl.contains(e.relatedTarget)) {
+      dropOverlay.classList.remove('active');
+    }
+  });
+
+  termViewEl.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dropOverlay.classList.remove('active');
+    const currentTab = getCurrentTab();
+    if (currentTab && e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      for (const file of e.dataTransfer.files) {
+        uploadAndAttachFile(file, currentTab);
+      }
+    }
+  });
+
+  // Clipboard paste listener for images / PDFs
+  termViewEl.addEventListener('paste', (e) => {
+    if (!e.clipboardData) return;
+    const items = e.clipboardData.items || [];
+    let handled = false;
+    const currentTab = getCurrentTab();
+    if (!currentTab) return;
+
+    for (const item of items) {
+      if (item.kind === 'file') {
+        const itemType = (item.type || '').toLowerCase();
+        if (itemType.startsWith('image/') || itemType === 'application/pdf' || itemType.includes('bmp')) {
+          const file = item.getAsFile();
+          if (file) {
+            handled = true;
+            uploadAndAttachFile(file, currentTab);
+          }
+        }
+      }
+    }
+    if (handled) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  });
+
+  // Initialize xterm.js & FitAddon only for terminal mode
+  const term = new Terminal({
+    cursorBlink: true,
+    cursorStyle: 'block',
+    fontSize: 13,
+    lineHeight: 1.2,
+    fontFamily: 'ui-monospace, "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+    theme: {
+      background: '#090a0f',
+      foreground: '#e2e8f0',
+      cursor: '#3b82f6',
+      selectionBackground: 'rgba(59, 130, 246, 0.3)'
+    },
+    allowTransparency: true
+  });
+
+  const fitAddon = new FitAddon.FitAddon();
+  term.loadAddon(fitAddon);
+  if (window.WebLinksAddon) {
+    term.loadAddon(new WebLinksAddon.WebLinksAddon());
+  }
+
+  term.open(termViewEl);
+  tab.terminal = term;
+  tab.fitAddon = fitAddon;
+
+  // Register OSC 52 Clipboard handler (receives base64-encoded clipboard from remote tmux)
+  if (term.parser && term.parser.registerOscHandler) {
+    term.parser.registerOscHandler(52, (data) => {
+      const firstSemi = data.indexOf(';');
+      const b64 = firstSemi !== -1 ? data.slice(firstSemi + 1) : data;
+      if (b64) {
+        try {
+          const decoded = decodeBase64Utf8(b64);
+          if (decoded && navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(decoded).catch(() => {});
+          }
+        } catch (e) {}
+      }
+      return true;
+    });
+  }
+
+  // Auto-copy highlighted text to clipboard immediately on mouse selection
+  term.onSelectionChange(() => {
+    if (term.hasSelection()) {
+      const text = term.getSelection();
+      if (text && text.length > 0 && navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).catch(() => {});
+      }
+    }
+  });
+
+  term.attachCustomKeyEventHandler((event) => {
+    if ((event.metaKey || event.ctrlKey) && (event.key === 'r' || event.key === 'R')) {
+      if (event.type === 'keydown') {
+        window.location.reload();
+      }
+      return false;
+    }
+    if (event.key === 'F5') {
+      if (event.type === 'keydown') {
+        window.location.reload();
+      }
+      return false;
+    }
+    if ((event.metaKey || event.ctrlKey) && (event.key === 'w' || event.key === 'W')) {
+      if (event.type === 'keydown') {
+        closeTab(getActiveTabId());
+      }
+      return false;
+    }
+    if ((event.metaKey || event.ctrlKey) && (event.key === 'k' || event.key === 'K')) {
+      if (event.type === 'keydown') {
+        toggleCommandPalette();
+      }
+      return false;
+    }
+    if ((event.metaKey || event.ctrlKey) && (event.key === 'c' || event.key === 'C')) {
+      if (term.hasSelection()) {
+        const text = term.getSelection();
+        if (text && navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).catch(() => {});
+        }
+        return false;
+      }
+    }
+    if ((event.metaKey || event.ctrlKey) && event.key >= '1' && event.key <= '9') {
+      if (event.type === 'keydown') {
+        const tabIndex = parseInt(event.key, 10) - 1;
+        const tabIds = Array.from(state.openTabs.keys());
+        if (tabIds[tabIndex]) {
+          activateTab(tabIds[tabIndex]);
+        }
+      }
+      return false;
+    }
+    if (event.key === 'Tab' && event.shiftKey) {
+      if (event.type === 'keydown') {
+        event.preventDefault();
+        event.stopPropagation();
+        const currentTab = getCurrentTab();
+        if (currentTab && currentTab.socket && currentTab.socket.readyState === WebSocket.OPEN) {
+          currentTab.socket.send(new Uint8Array([0x1b, 0x5b, 0x5a]));
+        }
+      }
+      return false;
+    }
+    return true;
+  });
+
+  let resizeTimeout = null;
+  const resizeObserver = new ResizeObserver(() => {
+    if (tab.containerEl && tab.containerEl.classList.contains('active')) {
+      if (resizeTimeout) clearTimeout(resizeTimeout);
+      resizeTimeout = setTimeout(() => {
+        if (tab.fitAddon && tab.fitAddon.fit) {
+          try {
+            tab.fitAddon.fit();
+            if (tab.terminal && tab.socket && tab.socket.readyState === WebSocket.OPEN) {
+              sendTerminalResize(tab.socket, tab.terminal.cols, tab.terminal.rows);
+            }
+          } catch (e) {}
+        }
+      }, 15);
+    }
+  });
+  if (tab.containerEl) resizeObserver.observe(tab.containerEl);
+  resizeObserver.observe(termViewEl);
+  tab.resizeObserver = resizeObserver;
+
+  term.onData((data) => {
+    const currentTab = getCurrentTab();
+    if (currentTab && currentTab.socket && currentTab.socket.readyState === WebSocket.OPEN) {
+      currentTab.socket.send(data);
+      if (currentTab.session && (data.includes('\r') || data.includes('\n'))) {
+        currentTab.session.last_event_at = new Date().toISOString();
+        const targetInState = state.sessions.find(s => s.id === currentTab.session.id);
+        if (targetInState) {
+          targetInState.last_event_at = currentTab.session.last_event_at;
+        }
+        renderTree();
+      }
+    } else if (!currentTab || !currentTab.socket || currentTab.socket.readyState === WebSocket.CLOSED || currentTab.socket.readyState === WebSocket.CLOSING) {
+      reconnectTerminalTab(getActiveTabId());
+    }
+  });
+
+  term.onResize((size) => {
+    const currentTab = getCurrentTab();
+    if (currentTab && currentTab.socket) {
+      sendTerminalResize(currentTab.socket, size.cols, size.rows);
+    }
+  });
+
+  connectTerminalWebSocket(tab, getActiveTabId(), term, fitAddon, tab.session);
+}
+
 function setTabViewMode(tabId, mode) {
   const tab = state.openTabs.get(tabId);
   if (!tab || !tab.containerEl) return;
   const targetMode = mode === 'terminal' ? 'terminal' : 'chat';
-  tab.viewMode = targetMode;
 
+  if (targetMode === 'terminal' && isHeadlessSession(tab.session)) {
+    handleTakeWheel(tabId);
+    return;
+  }
+  if (targetMode === 'chat' && !isHeadlessSession(tab.session)) {
+    handleSwitchHeadless(tabId);
+    return;
+  }
+
+  tab.viewMode = targetMode;
   tab.containerEl.classList.remove('view-mode-chat', 'view-mode-terminal', 'view-mode-split');
   tab.containerEl.classList.add(`view-mode-${targetMode}`);
 
   updateViewModeButtons(targetMode);
 
   if (targetMode === 'terminal') {
-    disconnectChatStream(tab);
-    // Ensure WebSocket PTY is connected for tmux sessions
-    if ((tab.session.engine_type !== 'headless' || tab.session.tmux_name) && (!tab.socket || tab.socket.readyState !== WebSocket.OPEN)) {
+    teardownChatInTab(tab);
+    mountTerminalInTab(tab);
+    if (!tab.socket || tab.socket.readyState !== WebSocket.OPEN) {
       connectTerminalWebSocket(tab, tabId, tab.terminal, tab.fitAddon, tab.session);
     }
     setTimeout(() => {
@@ -91,17 +434,15 @@ function setTabViewMode(tabId, mode) {
         if (tab.socket && tab.socket.readyState === WebSocket.OPEN) {
           sendTerminalResize(tab.socket, tab.terminal.cols, tab.terminal.rows);
         }
-        // Repaint the local xterm viewport (it may have been laid out while
-        // hidden). Never send Ctrl+L to the PTY for this: it is a keystroke to
-        // the agent, which makes it clear and redraw (or replay) its screen.
         tab.terminal.refresh(0, tab.terminal.rows - 1);
       }
     }, 50);
   } else if (targetMode === 'chat') {
+    teardownTerminalInTab(tab);
+    mountChatInTab(tab);
     if (tab.session && tab.session.engine_type === 'headless') {
       connectChatStream(tab);
     }
-    // Reload transcript so any activity that occurred in the terminal appears in chat
     loadChatTranscript(tab);
     if (tab.chatInputEl) {
       tab.chatInputEl.focus();
@@ -153,7 +494,7 @@ function updateViewModeButtons(mode) {
   if (el.btnViewTerminal) el.btnViewTerminal.classList.toggle('active', mode === 'terminal');
 }
 
-// Handle "Take the Wheel in Terminal": resume headless session into live tmux
+// Handle "Take the Wheel in Terminal": stop headless mode and resume session in live tmux
 async function handleTakeWheel(sessionId) {
   if (!sessionId) return;
   try {
@@ -193,27 +534,79 @@ async function handleTakeWheel(sessionId) {
       tab.session.tmux_name = tmuxName;
       tab.session.managed = true;
 
-      if (tab.chatEngineBadge) {
-        tab.chatEngineBadge.textContent = '🖥️ tmux';
-        tab.chatEngineBadge.classList.add('badge-tmux');
-      }
-
-      if (tab.chatTakeWheelBtn) {
-        tab.chatTakeWheelBtn.style.display = 'none';
-      }
-
-      const notice = tab.termViewEl ? tab.termViewEl.querySelector('.headless-term-notice') : null;
-      if (notice) notice.remove();
-
-      connectTerminalWebSocket(tab, sessionId, tab.terminal, tab.fitAddon, tab.session);
-      setTabViewMode(sessionId, 'terminal');
+      teardownChatInTab(tab);
+      mountTerminalInTab(tab);
+      activateTab(sessionId);
+    } else if (sess) {
+      openSessionInTab(sess);
     }
 
-    showUploadToast('Attached interactive terminal', 'success', 2500);
+    showUploadToast('Switched to interactive terminal (tmux)', 'success', 2500);
     await fetchSessions();
   } catch (err) {
     console.error('Failed to take wheel:', err);
     showUploadToast(`Error taking wheel: ${err.message}`, 'error', 4000);
+  }
+}
+
+// Handle "Switch to Headless Mode": stop tmux process and switch session to turn-by-turn headless chat
+async function handleSwitchHeadless(sessionId) {
+  if (!sessionId) return;
+  try {
+    const sess = state.sessions.find(s => s.id === sessionId);
+    const tab = state.openTabs.get(sessionId);
+    const sessionObj = sess || (tab ? tab.session : null);
+    if (!isHeadlessSupportedAgent(sessionObj)) {
+      showUploadToast('Headless engine is currently supported for Claude Code and Antigravity', 'error', 4000);
+      return;
+    }
+    const baseUrl = getSessionBaseUrl(sessionId, sessionObj);
+
+    const res = await fetch(`${baseUrl}/v1/sessions/switch-headless`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: sessionId })
+    });
+
+    if (!res.ok) {
+      let errMsg = '';
+      try {
+        const errData = await res.json();
+        errMsg = errData.message || errData.error || '';
+      } catch (_) {
+        errMsg = await res.text().catch(() => '');
+      }
+      showUploadToast(`Switch to headless: ${errMsg || res.statusText}`, 'error', 4000);
+      return;
+    }
+
+    if (sess) {
+      sess.engine_type = 'headless';
+      sess.tmux_name = '';
+      sess.pid = 0;
+      sess.state = 3;
+      sess.managed = true;
+    }
+
+    if (tab) {
+      tab.session.engine_type = 'headless';
+      tab.session.tmux_name = '';
+      tab.session.pid = 0;
+      tab.session.state = 3;
+      tab.session.managed = true;
+
+      teardownTerminalInTab(tab);
+      mountChatInTab(tab);
+      activateTab(sessionId);
+    } else if (sess) {
+      openSessionInTab(sess);
+    }
+
+    showUploadToast('Switched to headless chat mode', 'success', 2500);
+    await fetchSessions();
+  } catch (err) {
+    console.error('Failed to switch to headless mode:', err);
+    showUploadToast(`Error switching to headless: ${err.message}`, 'error', 4000);
   }
 }
 
@@ -246,40 +639,8 @@ function isSameUnderlyingSession(sessA, sessB) {
 // Helper: Cleanly tear down a tab object's connections, observers, terminal, and DOM elements
 function destroyTabResources(tab) {
   if (!tab) return;
-  if (tab.chatReconnectTimer) {
-    clearTimeout(tab.chatReconnectTimer);
-    tab.chatReconnectTimer = null;
-  }
-  if (tab.chatEventSource) {
-    try { tab.chatEventSource.close(); } catch (e) {}
-    tab.chatEventSource = null;
-  }
-  if (tab.pingTimer) {
-    clearInterval(tab.pingTimer);
-    tab.pingTimer = null;
-  }
-  if (tab.reconnectTimer) {
-    clearTimeout(tab.reconnectTimer);
-    tab.reconnectTimer = null;
-  }
-  if (tab.resizeObserver) {
-    try { tab.resizeObserver.disconnect(); } catch (e) {}
-    tab.resizeObserver = null;
-  }
-  if (tab.socket) {
-    try {
-      tab.socket.onopen = null;
-      tab.socket.onclose = null;
-      tab.socket.onerror = null;
-      tab.socket.onmessage = null;
-      tab.socket.close();
-    } catch (e) {}
-    tab.socket = null;
-  }
-  if (tab.terminal) {
-    try { tab.terminal.dispose(); } catch (e) {}
-    tab.terminal = null;
-  }
+  teardownChatInTab(tab);
+  teardownTerminalInTab(tab);
   if (tab.tabEl && tab.tabEl.parentNode) {
     tab.tabEl.parentNode.removeChild(tab.tabEl);
   }
@@ -288,8 +649,7 @@ function destroyTabResources(tab) {
   }
 }
 
-// Setup rich Chat Interface inside tab
-
+// Setup Session Tab (exclusively Chat for headless sessions, or xterm.js Terminal for tmux sessions)
 function openSessionInTab(session, preferredViewMode = null) {
   if (!session) return;
   const tabId = session.id;
@@ -315,7 +675,14 @@ function openSessionInTab(session, preferredViewMode = null) {
     const existingTab = state.openTabs.get(tabId);
     if (existingTab && existingTab.type === 'terminal') {
       existingTab.session = session;
-      if (!existingTab.socket || existingTab.socket.readyState === WebSocket.CLOSED || existingTab.socket.readyState === WebSocket.CLOSING) {
+      const headlessNow = isHeadlessSession(session);
+      if (headlessNow && existingTab.viewMode !== 'chat') {
+        teardownTerminalInTab(existingTab);
+        mountChatInTab(existingTab);
+      } else if (!headlessNow && existingTab.viewMode !== 'terminal') {
+        teardownChatInTab(existingTab);
+        mountTerminalInTab(existingTab);
+      } else if (!headlessNow && (!existingTab.socket || existingTab.socket.readyState === WebSocket.CLOSED || existingTab.socket.readyState === WebSocket.CLOSING)) {
         reconnectTerminalTab(tabId);
       }
       if (preferredViewMode === 'chat' || preferredViewMode === 'terminal') {
@@ -408,257 +775,36 @@ function openSessionInTab(session, preferredViewMode = null) {
   let tabObj = null;
   const getCurrentTab = () => (state.openTabs ? state.openTabs.get(getActiveTabId()) : null) || tabObj;
 
-  // 2. Create Terminal / Chat Container
-  const initialViewMode = (preferredViewMode === 'chat' || preferredViewMode === 'terminal')
-    ? preferredViewMode
-    : (session.engine_type === 'headless' ? 'chat' : 'terminal');
+  // 2. Create Container for either Headless Chat OR Tmux Terminal (never both simultaneously)
+  const initialHeadless = isHeadlessSession(session);
+  const initialViewMode = initialHeadless ? 'chat' : 'terminal';
   const containerEl = document.createElement('div');
   containerEl.className = `terminal-tab-view has-session-container view-mode-${initialViewMode}`;
   containerEl.id = `termView_${tabId.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
   containerEl.addEventListener('click', () => {
     const currentTab = getCurrentTab();
-    if (currentTab && (!currentTab.socket || currentTab.socket.readyState === WebSocket.CLOSED || currentTab.socket.readyState === WebSocket.CLOSING)) {
+    if (currentTab && currentTab.viewMode === 'terminal' && (!currentTab.socket || currentTab.socket.readyState === WebSocket.CLOSED || currentTab.socket.readyState === WebSocket.CLOSING)) {
       reconnectTerminalTab(getActiveTabId());
     }
   });
   if (el.terminalViewport) el.terminalViewport.appendChild(containerEl);
 
-  // Sub-containers for dual-engine layout
   const sessionContainer = document.createElement('div');
   sessionContainer.className = 'session-view-container';
   containerEl.appendChild(sessionContainer);
-
-  const chatViewEl = document.createElement('div');
-  chatViewEl.className = 'session-chat-view';
-  sessionContainer.appendChild(chatViewEl);
-
-  const termViewEl = document.createElement('div');
-  termViewEl.className = 'session-term-view';
-  sessionContainer.appendChild(termViewEl);
-
-  // If headless and not yet resumed into tmux, show friendly takeover card in terminal view
-  if (session.engine_type === 'headless' && !session.tmux_name) {
-    const notice = document.createElement('div');
-    notice.className = 'headless-term-notice';
-    notice.innerHTML = `
-      <div class="headless-term-notice-card">
-        <div style="font-size: 32px;">🏎️</div>
-        <h3>Headless Execution Mode</h3>
-        <p>This session is running in turn-by-turn headless streaming mode to protect flat-rate OAuth subscriptions. An interactive tmux terminal has not been spawned yet.</p>
-        <button class="btn btn-primary btn-take-wheel-prompt">🏎️ Take the Wheel in Terminal</button>
-      </div>
-    `;
-    const takeWheelBtn = notice.querySelector('.btn-take-wheel-prompt');
-    if (takeWheelBtn) {
-      takeWheelBtn.addEventListener('click', () => handleTakeWheel(getActiveTabId()));
-    }
-    termViewEl.appendChild(notice);
-  }
-
-  // 3. Drop Overlay for Drag-and-Drop file uploads (Images & PDFs)
-  const dropOverlay = document.createElement('div');
-  dropOverlay.className = 'terminal-drop-overlay';
-  dropOverlay.innerHTML = `<div class="drop-badge">📎 Drop image or PDF to upload & attach</div>`;
-  termViewEl.appendChild(dropOverlay);
-
-  termViewEl.addEventListener('dragover', (e) => {
-    e.preventDefault();
-    if (e.dataTransfer && e.dataTransfer.types && Array.from(e.dataTransfer.types).includes('Files')) {
-      dropOverlay.classList.add('active');
-    }
-  });
-
-  termViewEl.addEventListener('dragleave', (e) => {
-    if (!termViewEl.contains(e.relatedTarget)) {
-      dropOverlay.classList.remove('active');
-    }
-  });
-
-  termViewEl.addEventListener('drop', (e) => {
-    e.preventDefault();
-    dropOverlay.classList.remove('active');
-    const currentTab = getCurrentTab();
-    if (currentTab && e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      for (const file of e.dataTransfer.files) {
-        uploadAndAttachFile(file, currentTab);
-      }
-    }
-  });
-
-  // 4. Clipboard paste listener for images / PDFs
-  termViewEl.addEventListener('paste', (e) => {
-    if (!e.clipboardData) return;
-    const items = e.clipboardData.items || [];
-    let handled = false;
-    const currentTab = getCurrentTab();
-    if (!currentTab) return;
-
-    for (const item of items) {
-      if (item.kind === 'file') {
-        const itemType = (item.type || '').toLowerCase();
-        if (itemType.startsWith('image/') || itemType === 'application/pdf' || itemType.includes('bmp')) {
-          const file = item.getAsFile();
-          if (file) {
-            handled = true;
-            uploadAndAttachFile(file, currentTab);
-          }
-        }
-      }
-    }
-    if (handled) {
-      e.preventDefault();
-      e.stopPropagation();
-    }
-  });
-
-  // 5. Initialize xterm.js & FitAddon
-  const term = new Terminal({
-    cursorBlink: true,
-    cursorStyle: 'block',
-    fontSize: 13,
-    lineHeight: 1.2,
-    fontFamily: 'ui-monospace, "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
-    theme: {
-      background: '#090a0f',
-      foreground: '#e2e8f0',
-      cursor: '#3b82f6',
-      selectionBackground: 'rgba(59, 130, 246, 0.3)'
-    },
-    allowTransparency: true
-  });
-
-  const fitAddon = new FitAddon.FitAddon();
-  term.loadAddon(fitAddon);
-  if (window.WebLinksAddon) {
-    term.loadAddon(new WebLinksAddon.WebLinksAddon());
-  }
-
-  term.open(termViewEl);
-
-  // Helper: Safely decode base64 UTF-8 text (handles multi-byte unicode such as box drawings, emoji, diacritics)
-  function decodeBase64Utf8(b64) {
-    if (!b64) return '';
-    try {
-      const cleanB64 = b64.trim();
-      const binaryString = atob(cleanB64);
-      const bytes = new Uint8Array(binaryString.length);
-      for (let i = 0; i < binaryString.length; i++) {
-        bytes[i] = binaryString.charCodeAt(i);
-      }
-      return new TextDecoder('utf-8').decode(bytes);
-    } catch (e) {
-      try {
-        return atob(b64.trim());
-      } catch (e2) {
-        return '';
-      }
-    }
-  }
-
-  // Register OSC 52 Clipboard handler (receives base64-encoded clipboard from remote tmux)
-  if (term.parser && term.parser.registerOscHandler) {
-    term.parser.registerOscHandler(52, (data) => {
-      // Format: "c;<base64-payload>" or ";<base64-payload>"
-      const firstSemi = data.indexOf(';');
-      const b64 = firstSemi !== -1 ? data.slice(firstSemi + 1) : data;
-      if (b64) {
-        try {
-          const decoded = decodeBase64Utf8(b64);
-          if (decoded && navigator.clipboard && navigator.clipboard.writeText) {
-            navigator.clipboard.writeText(decoded).catch(() => {});
-          }
-        } catch (e) {}
-      }
-      return true;
-    });
-  }
-
-  // Auto-copy highlighted text to clipboard immediately on mouse selection
-  term.onSelectionChange(() => {
-    if (term.hasSelection()) {
-      const text = term.getSelection();
-      if (text && text.length > 0 && navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(text).catch(() => {});
-      }
-    }
-  });
-
-  term.attachCustomKeyEventHandler((event) => {
-    // 1. Allow Cmd+R / Ctrl+R / F5 to reload webpage
-    if ((event.metaKey || event.ctrlKey) && (event.key === 'r' || event.key === 'R')) {
-      if (event.type === 'keydown') {
-        window.location.reload();
-      }
-      return false;
-    }
-    if (event.key === 'F5') {
-      if (event.type === 'keydown') {
-        window.location.reload();
-      }
-      return false;
-    }
-    // 2. Allow Cmd+W / Ctrl+W to close active tab
-    if ((event.metaKey || event.ctrlKey) && (event.key === 'w' || event.key === 'W')) {
-      if (event.type === 'keydown') {
-        closeTab(getActiveTabId());
-      }
-      return false;
-    }
-    // 3. Allow Cmd+K / Ctrl+K for command palette
-    if ((event.metaKey || event.ctrlKey) && (event.key === 'k' || event.key === 'K')) {
-      if (event.type === 'keydown') {
-        toggleCommandPalette();
-      }
-      return false;
-    }
-    // 4. Cmd+C / Ctrl+C with active selection copies to clipboard without sending SIGINT
-    if ((event.metaKey || event.ctrlKey) && (event.key === 'c' || event.key === 'C')) {
-      if (term.hasSelection()) {
-        const text = term.getSelection();
-        if (text && navigator.clipboard && navigator.clipboard.writeText) {
-          navigator.clipboard.writeText(text).catch(() => {});
-        }
-        return false;
-      }
-    }
-    // 5. Allow Cmd+1..9 to switch tabs
-    if ((event.metaKey || event.ctrlKey) && event.key >= '1' && event.key <= '9') {
-      if (event.type === 'keydown') {
-        const tabIndex = parseInt(event.key, 10) - 1;
-        const tabIds = Array.from(state.openTabs.keys());
-        if (tabIds[tabIndex]) {
-          activateTab(tabIds[tabIndex]);
-        }
-      }
-      return false;
-    }
-    // 7. Shift+Tab to cycle Claude Code modes (send raw ANSI backtab [0x1b, 0x5b, 0x5a] and prevent browser focus shift)
-    if (event.key === 'Tab' && event.shiftKey) {
-      if (event.type === 'keydown') {
-        event.preventDefault();
-        event.stopPropagation();
-        const currentTab = getCurrentTab();
-        if (currentTab && currentTab.socket && currentTab.socket.readyState === WebSocket.OPEN) {
-          currentTab.socket.send(new Uint8Array([0x1b, 0x5b, 0x5a]));
-        }
-      }
-      return false;
-    }
-    return true;
-  });
 
   // Save in State
   tabObj = {
     id: tabId,
     type: 'terminal',
     session,
-    terminal: term,
-    fitAddon,
+    terminal: null,
+    fitAddon: null,
     socket: null,
     containerEl,
     sessionContainer,
-    chatViewEl,
-    termViewEl,
+    chatViewEl: null,
+    termViewEl: null,
     viewMode: initialViewMode,
     tabEl,
     chatEventSource: null,
@@ -683,63 +829,29 @@ function openSessionInTab(session, preferredViewMode = null) {
     chatQueueResumeBtn: null,
     pingTimer: null,
     reconnectTimer: null,
+    resizeObserver: null,
     reconnectAttempts: 0
   };
   state.openTabs.set(tabId, tabObj);
 
-  // Setup interactive chat UI & load history
-  setupChatInterface(tabObj, chatViewEl, session);
-
-  // 4. Connect WebSocket PTY (if tmux session is active)
-  if (session.engine_type !== 'headless' || session.tmux_name) {
-    connectTerminalWebSocket(tabObj, tabId, term, fitAddon, session);
+  if (preferredViewMode === 'terminal' && initialHeadless) {
+    handleTabOverflow();
+    savePersistedTabs();
+    handleTakeWheel(tabId);
+    return;
+  }
+  if (preferredViewMode === 'chat' && !initialHeadless && isHeadlessSupportedAgent(session)) {
+    handleTabOverflow();
+    savePersistedTabs();
+    handleSwitchHeadless(tabId);
+    return;
   }
 
-  // 5. Automatic Viewport Re-flow & ResizeObserver
-  let resizeTimeout = null;
-  const resizeObserver = new ResizeObserver(() => {
-    if (containerEl.classList.contains('active')) {
-      if (resizeTimeout) clearTimeout(resizeTimeout);
-      resizeTimeout = setTimeout(() => {
-        if (tabObj.fitAddon && tabObj.fitAddon.fit) {
-          try {
-            tabObj.fitAddon.fit();
-            if (tabObj.terminal && tabObj.socket && tabObj.socket.readyState === WebSocket.OPEN) {
-              sendTerminalResize(tabObj.socket, tabObj.terminal.cols, tabObj.terminal.rows);
-            }
-          } catch (e) {}
-        }
-      }, 15);
-    }
-  });
-  resizeObserver.observe(containerEl);
-  if (termViewEl) resizeObserver.observe(termViewEl);
-  tabObj.resizeObserver = resizeObserver;
-
-  term.onData((data) => {
-    const currentTab = getCurrentTab();
-    if (currentTab && currentTab.socket && currentTab.socket.readyState === WebSocket.OPEN) {
-      currentTab.socket.send(data);
-      // If user submitted input (e.g. Enter key), bump last_event_at and re-sort
-      if (currentTab.session && (data.includes('\r') || data.includes('\n'))) {
-        currentTab.session.last_event_at = new Date().toISOString();
-        const targetInState = state.sessions.find(s => s.id === currentTab.session.id);
-        if (targetInState) {
-          targetInState.last_event_at = currentTab.session.last_event_at;
-        }
-        renderTree();
-      }
-    } else if (!currentTab || !currentTab.socket || currentTab.socket.readyState === WebSocket.CLOSED || currentTab.socket.readyState === WebSocket.CLOSING) {
-      reconnectTerminalTab(getActiveTabId());
-    }
-  });
-
-  term.onResize((size) => {
-    const currentTab = getCurrentTab();
-    if (currentTab && currentTab.socket) {
-      sendTerminalResize(currentTab.socket, size.cols, size.rows);
-    }
-  });
+  if (initialHeadless) {
+    mountChatInTab(tabObj);
+  } else {
+    mountTerminalInTab(tabObj);
+  }
 
   activateTab(tabId);
   handleTabOverflow();
@@ -761,6 +873,10 @@ function activateTab(tabId) {
     const isActive = id === tabId;
     tab.tabEl.classList.toggle('active', isActive);
     tab.containerEl.classList.toggle('active', isActive);
+    try {
+      tab.containerEl.inert = !isActive;
+      tab.containerEl.setAttribute('aria-hidden', isActive ? 'false' : 'true');
+    } catch (_) {}
 
     if (isActive) {
       const unreadDot = tab.tabEl.querySelector('.tab-unread-dot');
@@ -776,7 +892,7 @@ function activateTab(tabId) {
       if (tab.type === 'terminal') {
         if (tab.viewMode === 'chat' && tab.chatInputEl) {
           tab.chatInputEl.focus();
-        } else if (!tab.socket || tab.socket.readyState === WebSocket.CLOSED || tab.socket.readyState === WebSocket.CLOSING) {
+        } else if (tab.terminal && (!tab.socket || tab.socket.readyState === WebSocket.CLOSED || tab.socket.readyState === WebSocket.CLOSING)) {
           reconnectTerminalTab(tabId);
         }
       }
@@ -985,11 +1101,23 @@ function checkAndReconnectActiveTabs() {
           if (currentSess && currentSess.engine_type === 'headless') {
             connectChatStream(tab);
           }
-          if (tab.chatInputEl && !isAuxiliaryInputFocused(tab.chatInputEl) && document.activeElement !== tab.chatInputEl) {
-            tab.chatInputEl.focus();
+          if (tab.chatInputEl && !isAuxiliaryInputFocused(tab.chatInputEl)) {
+            if (document.activeElement !== tab.chatInputEl) {
+              tab.chatInputEl.focus();
+            } else {
+              // Re-assert native Cocoa responder focus after macOS dictation overlays (e.g. Wispr Flow) close
+              try {
+                const start = tab.chatInputEl.selectionStart;
+                const end = tab.chatInputEl.selectionEnd;
+                tab.chatInputEl.focus({ preventScroll: true });
+                if (typeof start === 'number' && typeof end === 'number') {
+                  tab.chatInputEl.setSelectionRange(start, end);
+                }
+              } catch (_) {}
+            }
           }
         }
-      } else if (!tab.socket || tab.socket.readyState === WebSocket.CLOSED || tab.socket.readyState === WebSocket.CLOSING) {
+      } else if (tab.terminal && (!tab.socket || tab.socket.readyState === WebSocket.CLOSED || tab.socket.readyState === WebSocket.CLOSING)) {
         reconnectTerminalTab(tabId);
       }
     }
@@ -1138,6 +1266,16 @@ function updateOpenTabsState() {
     const updatedSess = state.sessions.find(s => s.id === id || `details_${s.id}` === id);
     if (updatedSess) {
       tab.session = updatedSess;
+      if (tab.type === 'terminal') {
+        const nowHeadless = isHeadlessSession(updatedSess);
+        if (nowHeadless && tab.viewMode !== 'chat') {
+          teardownTerminalInTab(tab);
+          mountChatInTab(tab);
+        } else if (!nowHeadless && tab.viewMode !== 'terminal') {
+          teardownChatInTab(tab);
+          mountTerminalInTab(tab);
+        }
+      }
       const emojiEl = tab.tabEl.querySelector('.tab-emoji');
       const titleEl = tab.tabEl.querySelector('.tab-title');
       let unreadDot = tab.tabEl.querySelector('.tab-unread-dot');
@@ -1214,11 +1352,18 @@ function renderOverflowMenu() {
 
 export {
   isAuxiliaryInputFocused,
+  isHeadlessSession,
+  isHeadlessSupportedAgent,
+  teardownChatInTab,
+  mountChatInTab,
+  teardownTerminalInTab,
+  mountTerminalInTab,
   isHideTabsEnabled,
   applyTabStripVisibility,
   setTabViewMode,
   updateViewModeButtons,
   handleTakeWheel,
+  handleSwitchHeadless,
   openSessionInTab,
   activateTab,
   closeTab,

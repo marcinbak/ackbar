@@ -581,6 +581,11 @@ func (h *HeadlessRunner) CancelTurn(sessionID string) error {
 	h.mu.Unlock()
 
 	if !ok || cmd == nil || cmd.Process == nil {
+		if ok {
+			h.mu.Lock()
+			delete(h.processes, activeKey)
+			h.mu.Unlock()
+		}
 		return nil
 	}
 
