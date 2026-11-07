@@ -81,6 +81,8 @@ type Server struct {
 	ntfyTopic            string
 	ntfyClient           *http.Client
 	ntfyHook             func(payload NtfyPayload)
+	voiceBridgeMu        sync.Mutex
+	voiceBridge          *MicServeBridge
 }
 
 func NewServer(db *DB) *Server {
@@ -400,6 +402,8 @@ func (s *Server) Mux() http.Handler {
 	mux.HandleFunc("/v1/sessions/prompt/queue", s.handlePromptQueue)
 	mux.HandleFunc("/v1/sessions/prompt/queue/resume", s.handlePromptQueueResume)
 	mux.HandleFunc("/v1/sessions/summarize-speech", s.handleSummarizeSpeech)
+	mux.HandleFunc("/v1/sessions/voice-bridge", s.handleVoiceBridge)
+	mux.HandleFunc("/v1/sessions/voice-bridge/status", s.handleVoiceBridgeStatus)
 	mux.HandleFunc("/v1/sessions/chat/stream", s.handleChatStream)
 	mux.HandleFunc("/v1/sessions/cancel", s.handleCancelTurn)
 	mux.HandleFunc("/v1/sessions/take-wheel", s.handleTakeWheel)

@@ -1772,6 +1772,27 @@ function showUpdateModal(data = {}) {
 
   showModal('⚡ Ackbar Fleet Update', bodyHtml, footerHtml);
 
+  const waitForDaemonReadyAndReload = async (expectedVer) => {
+    const deadline = Date.now() + 8000;
+    // Give local daemon 900ms to begin its async restart if needed
+    await new Promise(r => setTimeout(r, 900));
+    while (Date.now() < deadline) {
+      try {
+        const vRes = await fetch('/v1/version', { cache: 'no-store' });
+        if (vRes.ok) {
+          const vData = await vRes.json();
+          if (!expectedVer || !vData.version || vData.version === expectedVer) {
+            break;
+          }
+        }
+      } catch (_) {
+        // Daemon is mid-restart; keep polling
+      }
+      await new Promise(r => setTimeout(r, 600));
+    }
+    location.reload();
+  };
+
   document.getElementById('btnDismissUpdate')?.addEventListener('click', hideModal);
   document.getElementById('btnExecuteUpdate')?.addEventListener('click', async () => {
     const btn = document.getElementById('btnExecuteUpdate');
@@ -1789,11 +1810,18 @@ function showUpdateModal(data = {}) {
       const res = await fetch('/v1/update', { method: 'POST' });
       const resData = await res.json().catch(() => ({}));
       if (res.ok) {
-        if (out) out.textContent = resData.message || 'Fleet update completed successfully!';
-        if (btn) btn.textContent = '✅ All Hosts Updated!';
-        setTimeout(() => {
-          location.reload();
-        }, 1800);
+        const hostResults = Array.isArray(resData.host_results) ? resData.host_results : [];
+        const failedHosts = hostResults.filter(h => h && h.status === 'error');
+        if (out) out.textContent = resData.message || 'Fleet update completed!';
+        if (failedHosts.length > 0) {
+          if (btn) {
+            btn.disabled = false;
+            btn.textContent = '⚠️ Retry Failed Hosts';
+          }
+        } else {
+          if (btn) btn.textContent = '✅ All Hosts Updated! Reloading...';
+          await waitForDaemonReadyAndReload(resData.new_version || latestVer);
+        }
       } else {
         if (out) out.textContent = `Error: ${resData.message || res.statusText}`;
         if (btn) {
@@ -1802,8 +1830,8 @@ function showUpdateModal(data = {}) {
         }
       }
     } catch (e) {
-      if (out) out.textContent = 'Update triggered. The daemon is restarting. Reloading page in 3 seconds...';
-      setTimeout(() => location.reload(), 3000);
+      if (out) out.textContent = 'Update triggered. Waiting for daemon to finish restarting...';
+      await waitForDaemonReadyAndReload(latestVer);
     }
   });
 }

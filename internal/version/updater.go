@@ -32,30 +32,224 @@ type UpdateResult struct {
 
 // UpdateToLatest checks the installation type and runs either Homebrew upgrade or prebuilt binary download.
 func UpdateToLatest(ctx context.Context, destDir string) (*UpdateResult, error) {
-	installType, _ := DetectInstallType()
+	installType, realPath := DetectInstallType()
+	var res *UpdateResult
+	var err error
 	if installType == "homebrew" {
-		return RunHomebrewUpgrade(ctx)
+		res, err = RunHomebrewUpgrade(ctx)
+	} else {
+		res, err = DownloadAndInstall(ctx, nil, destDir)
 	}
-	return DownloadAndInstall(ctx, nil, destDir)
+	if err != nil {
+		return nil, err
+	}
+
+	// Ensure secondary binary locations (~/.local/bin or /opt/homebrew/opt/ackbar/bin) do not stay stale
+	// if both exist on the same host.
+	syncSecondaryInstallLocations(ctx, res, realPath)
+	return res, nil
 }
 
-// RunHomebrewUpgrade upgrades Ackbar via Homebrew.
-func RunHomebrewUpgrade(ctx context.Context) (*UpdateResult, error) {
-	cmd := exec.CommandContext(ctx, "brew", "upgrade", "ackbar")
-	out, err := cmd.CombinedOutput()
+func findBrewBinary() string {
+	candidates := []string{
+		"/opt/homebrew/bin/brew",
+		"/usr/local/bin/brew",
+		"/home/linuxbrew/.linuxbrew/bin/brew",
+	}
+	for _, c := range candidates {
+		if st, err := os.Stat(c); err == nil && !st.IsDir() {
+			return c
+		}
+	}
+	if p, err := exec.LookPath("brew"); err == nil {
+		return p
+	}
+	return ""
+}
+
+func probeInstalledBinaryVersion(ctx context.Context, binPath string) string {
+	if binPath == "" {
+		return ""
+	}
+	pCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(pCtx, binPath, "--version").CombinedOutput()
 	if err != nil {
-		return nil, fmt.Errorf("brew upgrade ackbar failed: %s (%w)", strings.TrimSpace(string(out)), err)
+		return ""
+	}
+	fields := strings.Fields(strings.TrimSpace(string(out)))
+	if len(fields) > 0 {
+		return CleanVersion(fields[len(fields)-1])
+	}
+	return ""
+}
+
+func resolveHomebrewBinDir() string {
+	candidates := []string{
+		"/opt/homebrew/opt/ackbar/bin",
+		"/usr/local/opt/ackbar/bin",
+		"/home/linuxbrew/.linuxbrew/opt/ackbar/bin",
+	}
+	for _, c := range candidates {
+		if realDir, err := filepath.EvalSymlinks(c); err == nil && realDir != "" {
+			if st, serr := os.Stat(realDir); serr == nil && st.IsDir() {
+				return realDir
+			}
+		}
+	}
+	_, realPath := DetectInstallType()
+	if realPath != "" {
+		return filepath.Dir(realPath)
+	}
+	return ""
+}
+
+// RunHomebrewUpgrade upgrades Ackbar via Homebrew, falling back to direct release asset installation
+// if Homebrew's tap formula lags behind the latest GitHub Release or if brew fails.
+func RunHomebrewUpgrade(ctx context.Context) (*UpdateResult, error) {
+	release, _ := CheckLatestRelease(ctx, true)
+	targetVer := ""
+	if release != nil {
+		targetVer = CleanVersion(release.Version)
 	}
 
-	// Try restarting background service if managed by brew services
-	_ = exec.CommandContext(ctx, "brew", "services", "restart", "ackbar").Run()
+	brewBin := findBrewBinary()
+	var brewOut string
+	var brewErr error
 
+	if brewBin != "" {
+		// Refresh Homebrew tap metadata first so recently merged formula updates are discovered
+		updCtx, updCancel := context.WithTimeout(ctx, 30*time.Second)
+		_ = exec.CommandContext(updCtx, brewBin, "update").Run()
+		updCancel()
+
+		cmd := exec.CommandContext(ctx, brewBin, "upgrade", "ackbar")
+		out, err := cmd.CombinedOutput()
+		brewOut = strings.TrimSpace(string(out))
+		brewErr = err
+	} else {
+		brewErr = fmt.Errorf("brew executable not found")
+	}
+
+	// Verify whether the installed binary actually reached targetVer
+	brewBinDir := resolveHomebrewBinDir()
+	installedVer := ""
+	if brewBinDir != "" {
+		installedVer = probeInstalledBinaryVersion(ctx, filepath.Join(brewBinDir, "ackbard"))
+	}
+	if installedVer == "" {
+		for _, candidate := range []string{"/opt/homebrew/bin/ackbard", "/usr/local/bin/ackbard"} {
+			if v := probeInstalledBinaryVersion(ctx, candidate); v != "" {
+				installedVer = v
+				break
+			}
+		}
+	}
+
+	// If brew succeeded AND installed binary is at least targetVer, return success.
+	if brewErr == nil && installedVer != "" && (targetVer == "" || !IsNewer(targetVer, installedVer)) {
+		return &UpdateResult{
+			PreviousVersion: Version,
+			NewVersion:      installedVer,
+			Method:          "homebrew",
+			TargetDir:       brewBinDir,
+			Message:         fmt.Sprintf("Homebrew upgrade complete (v%s):\n%s", installedVer, brewOut),
+		}, nil
+	}
+
+	// Fallback: if brew failed OR Formula/ackbar.rb in tap is still older than the GitHub Release,
+	// download and install the prebuilt release binaries directly into the Homebrew Cellar bin directory.
+	if release != nil && release.AssetURL != "" {
+		fallbackDir := brewBinDir
+		if fallbackDir == "" {
+			if home, _ := os.UserHomeDir(); home != "" {
+				fallbackDir = filepath.Join(home, ".local", "bin")
+			}
+		}
+		dlRes, dlErr := DownloadAndInstall(ctx, release, fallbackDir)
+		if dlErr == nil {
+			dlRes.Method = "homebrew+release-fallback"
+			dlRes.Message = fmt.Sprintf("Upgraded Homebrew installation directly from GitHub Release v%s into %s", release.Version, fallbackDir)
+			return dlRes, nil
+		}
+	}
+
+	if brewErr != nil {
+		return nil, fmt.Errorf("brew upgrade ackbar failed: %s (%w)", brewOut, brewErr)
+	}
+
+	newVer := installedVer
+	if newVer == "" {
+		newVer = targetVer
+	}
+	if newVer == "" {
+		newVer = "latest"
+	}
 	return &UpdateResult{
 		PreviousVersion: Version,
-		NewVersion:      "latest",
+		NewVersion:      newVer,
 		Method:          "homebrew",
-		Message:         fmt.Sprintf("Homebrew upgrade complete:\n%s", strings.TrimSpace(string(out))),
+		TargetDir:       brewBinDir,
+		Message:         fmt.Sprintf("Homebrew upgrade complete:\n%s", brewOut),
 	}, nil
+}
+
+// syncSecondaryInstallLocations ensures that if a machine has both ~/.local/bin/ackbard and
+// a Homebrew installation, both binary directories are updated to prevent split-brain versions.
+func syncSecondaryInstallLocations(ctx context.Context, primaryRes *UpdateResult, primaryExePath string) {
+	if primaryRes == nil || primaryRes.TargetDir == "" {
+		return
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return
+	}
+	secondaryDirs := []string{
+		filepath.Join(home, ".local", "bin"),
+	}
+	if brewDir := resolveHomebrewBinDir(); brewDir != "" {
+		secondaryDirs = append(secondaryDirs, brewDir)
+	}
+
+	for _, secDir := range secondaryDirs {
+		if secDir == "" || filepath.Clean(secDir) == filepath.Clean(primaryRes.TargetDir) {
+			continue
+		}
+		secAckbard := filepath.Join(secDir, "ackbard")
+		if _, err := os.Stat(secAckbard); err != nil {
+			continue
+		}
+		// Copy updated binaries from primaryRes.TargetDir into secDir atomically
+		for _, binName := range TargetBinaries {
+			srcPath := filepath.Join(primaryRes.TargetDir, binName)
+			data, rErr := os.ReadFile(srcPath)
+			if rErr != nil {
+				continue
+			}
+			tmpFile, tErr := os.CreateTemp(secDir, binName+".sync-*")
+			if tErr != nil {
+				continue
+			}
+			tmpPath := tmpFile.Name()
+			_, wErr := tmpFile.Write(data)
+			_ = tmpFile.Close()
+			if wErr != nil {
+				_ = os.Remove(tmpPath)
+				continue
+			}
+			_ = os.Chmod(tmpPath, 0755)
+			_ = os.Rename(tmpPath, filepath.Join(secDir, binName))
+		}
+	}
+}
+
+// DownloadAndInstallForPlatform downloads and extracts the release archive for a specific OS/architecture into destDir.
+func DownloadAndInstallForPlatform(ctx context.Context, targetVersion, goos, goarch, destDir string) (*UpdateResult, error) {
+	rel, err := BuildReleaseInfoForPlatform(ctx, targetVersion, goos, goarch)
+	if err != nil {
+		return nil, err
+	}
+	return DownloadAndInstall(ctx, rel, destDir)
 }
 
 // DownloadAndInstall downloads the prebuilt release tarball from GitHub and installs binaries to destDir.

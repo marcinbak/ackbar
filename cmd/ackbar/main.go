@@ -938,36 +938,36 @@ func runUpdateCmd(args []string) {
 		fmt.Printf("⚡ Re-installing latest release: v%s\n", info.Version)
 	}
 
+	var res *version.UpdateResult
 	if installType == "homebrew" {
 		fmt.Printf("🍺 Detected Homebrew installation (%s). Upgrading via Homebrew...\n\n", exePath)
-		res, err := version.RunHomebrewUpgrade(ctx)
+		res, err = version.UpdateToLatest(ctx, "")
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "❌ Homebrew upgrade failed: %v\n", err)
 			os.Exit(1)
 		}
 		fmt.Println(res.Message)
 		fmt.Printf("\n✅ Homebrew upgrade complete!\n")
-		return
-	}
+	} else {
+		fmt.Printf("📦 Standalone install detected. Downloading prebuilt release for %s/%s...\n", runtime.GOOS, runtime.GOARCH)
+		if info.AssetURL != "" {
+			fmt.Printf("⬇️  Asset: %s\n", info.AssetName)
+		}
 
-	fmt.Printf("📦 Standalone install detected. Downloading prebuilt release for %s/%s...\n", runtime.GOOS, runtime.GOARCH)
-	if info.AssetURL != "" {
-		fmt.Printf("⬇️  Asset: %s\n", info.AssetName)
-	}
+		targetDir := ""
+		if exePath != "" {
+			targetDir = filepath.Dir(exePath)
+		}
+		res, err = version.UpdateToLatest(ctx, targetDir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "❌ Update installation failed: %v\n", err)
+			os.Exit(1)
+		}
 
-	targetDir := ""
-	if exePath != "" {
-		targetDir = filepath.Dir(exePath)
-	}
-	res, err := version.DownloadAndInstall(ctx, info, targetDir)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "❌ Update installation failed: %v\n", err)
-		os.Exit(1)
-	}
-
-	fmt.Printf("✅ %s\n", res.Message)
-	if len(res.UpdatedBinaries) > 0 {
-		fmt.Printf("🚀 Updated binaries: %s\n", strings.Join(res.UpdatedBinaries, ", "))
+		fmt.Printf("✅ %s\n", res.Message)
+		if len(res.UpdatedBinaries) > 0 {
+			fmt.Printf("🚀 Updated binaries: %s\n", strings.Join(res.UpdatedBinaries, ", "))
+		}
 	}
 
 	// If local ackbard is currently running, restart it with the newly installed binary
@@ -977,8 +977,13 @@ func runUpdateCmd(args []string) {
 		fmt.Printf("🔄 Restarting local ackbard daemon...\n")
 		_, _ = httpClient.Post("http://127.0.0.1:7777/v1/shutdown", "application/json", nil)
 		time.Sleep(400 * time.Millisecond)
-		ackbardBin := filepath.Join(res.TargetDir, "ackbard")
-		if _, err := os.Stat(ackbardBin); err != nil {
+		ackbardBin := ""
+		if res != nil && res.TargetDir != "" {
+			ackbardBin = filepath.Join(res.TargetDir, "ackbard")
+		}
+		if ackbardBin == "" {
+			ackbardBin = "ackbard"
+		} else if _, err := os.Stat(ackbardBin); err != nil {
 			ackbardBin = "ackbard"
 		}
 		_ = exec.Command(ackbardBin).Start()

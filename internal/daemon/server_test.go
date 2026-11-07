@@ -104,6 +104,7 @@ func (m *MockProvider) ParseHook(eventName string, payload []byte) (*Event, erro
 }
 
 func TestServer_Integration(t *testing.T) {
+	t.Setenv("ACKBAR_HOST", "")
 	// Create temporary db file
 	dbFile := "./test_integration.db"
 	defer os.Remove(dbFile)

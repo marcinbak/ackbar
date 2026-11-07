@@ -68,6 +68,10 @@
 	</dict>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Ackbar connects to supervised daemon nodes across your local Wi-Fi and Tailscale mesh network.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Ackbar uses the microphone for hands-free voice dictation and two-way Live Voice sessions with your coding agents.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Ackbar uses speech recognition to transcribe your voice commands into agent prompts.</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>

@@ -1,11 +1,13 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:xterm/xterm.dart';
+
 import '../../../core/models/session.dart';
 import '../../../core/providers/fleet_providers.dart';
 import '../../../core/theme/app_colors.dart';
@@ -19,17 +21,11 @@ class TerminalScreen extends ConsumerStatefulWidget {
   final Session session;
   final WebSocketChannel Function(Uri uri)? channelBuilder;
 
-  const TerminalScreen({
-    super.key,
-    required this.session,
-    this.channelBuilder,
-  });
+  const TerminalScreen({super.key, required this.session, this.channelBuilder});
 
   static Future<void> open(BuildContext context, Session session) {
     return Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (context) => TerminalScreen(session: session),
-      ),
+      MaterialPageRoute(builder: (context) => TerminalScreen(session: session)),
     );
   }
 
@@ -107,11 +103,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   void _sendScroll(String direction, {int lines = 1}) {
     try {
-      _channel?.sink.add(jsonEncode({
-        'type': 'scroll',
-        'direction': direction,
-        'lines': lines,
-      }));
+      _channel?.sink.add(
+        jsonEncode({'type': 'scroll', 'direction': direction, 'lines': lines}),
+      );
     } catch (_) {}
   }
 
@@ -148,16 +142,19 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final liveSession = _resolveLiveSession();
     final hosts = ref.read(hostsListProvider);
     final sessionHost = liveSession.host.toLowerCase();
-    final match = hosts.where((h) =>
-        h.name.toLowerCase() == sessionHost ||
-        h.url.toLowerCase().contains(sessionHost));
+    final match = hosts.where(
+      (h) =>
+          h.name.toLowerCase() == sessionHost ||
+          h.url.toLowerCase().contains(sessionHost),
+    );
     final hostUrl = match.isNotEmpty
         ? match.first.url
         : (hosts.isNotEmpty ? hosts.first.url : 'http://127.0.0.1:7777');
     final parsed = Uri.parse(hostUrl);
     final wsScheme = parsed.scheme == 'https' ? 'wss' : 'ws';
-    final hostAddress =
-        parsed.authority.isNotEmpty ? parsed.authority : '127.0.0.1:7777';
+    final hostAddress = parsed.authority.isNotEmpty
+        ? parsed.authority
+        : '127.0.0.1:7777';
 
     final host = match.isNotEmpty
         ? match.first
@@ -171,9 +168,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       if (host != null && host.authToken.isNotEmpty) 'token': host.authToken,
     };
 
-    final uri = Uri.parse('$wsScheme://$hostAddress/v1/sessions/pty').replace(
-      queryParameters: queryParams,
-    );
+    final uri = Uri.parse('$wsScheme://$hostAddress/v1/sessions/pty')
+        .replace(queryParameters: queryParams);
 
     try {
       final channel = widget.channelBuilder != null
@@ -215,8 +211,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           setState(() {
             _connecting = false;
             if (_errorMessage == null) {
-              _terminal
-                  .write('\r\n\x1b[90m[Disconnected from session]\x1b[0m\r\n');
+              _terminal.write(
+                '\r\n\x1b[90m[Disconnected from session]\x1b[0m\r\n',
+              );
             }
           });
         },
@@ -240,11 +237,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
 
     try {
-      _channel?.sink.add(jsonEncode({
-        'type': 'resize',
-        'cols': cols,
-        'rows': rows,
-      }));
+      _channel?.sink.add(
+        jsonEncode({'type': 'resize', 'cols': cols, 'rows': rows}),
+      );
     } catch (_) {}
   }
 
@@ -471,7 +466,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   Widget build(BuildContext context) {
     ref.watch(fleetSessionsProvider);
     final liveSession = _resolveLiveSession();
-    final keyboardOpen = MediaQuery.of(context).viewInsets.bottom > 0 ||
+    final keyboardOpen =
+        MediaQuery.of(context).viewInsets.bottom > 0 ||
         _terminalFocusNode.hasFocus;
 
     return Scaffold(
@@ -480,8 +476,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         backgroundColor: AppColors.surface,
         elevation: 0,
         leading: IconButton(
-          icon: const Icon(Icons.arrow_back_ios_new_rounded,
-              size: 18, color: AppColors.textPrimary),
+          icon: const Icon(
+            Icons.arrow_back_ios_new_rounded,
+            size: 18,
+            color: AppColors.textPrimary,
+          ),
           onPressed: () => Navigator.of(context).pop(),
         ),
         title: Column(
@@ -489,8 +488,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           children: [
             Row(
               children: [
-                const Icon(Icons.terminal_rounded,
-                    size: 16, color: AppColors.infoCyan),
+                const Icon(
+                  Icons.terminal_rounded,
+                  size: 16,
+                  color: AppColors.infoCyan,
+                ),
                 const SizedBox(width: 6),
                 Expanded(
                   child: Text(
@@ -507,14 +509,54 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             ),
             Text(
               '${liveSession.agentDisplayName} @ ${liveSession.hostTag} • ${_currentCols}x$_currentRows',
-              style:
-                  AppTypography.codeXs.copyWith(color: AppColors.textSecondary),
+              style: AppTypography.codeXs.copyWith(
+                color: AppColors.textSecondary,
+              ),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
             ),
           ],
         ),
         actions: [
+          // Antigravity Live Voice Toggle (JETSKI-AUDIO/1 Bridge)
+          if (liveSession.agent.toLowerCase() == 'antigravity')
+            Consumer(
+              builder: (context, ref, _) {
+                final audioCompanion = ref.watch(audioCompanionServiceProvider);
+                return IconButton(
+                  icon: Icon(
+                    Icons.record_voice_over_rounded,
+                    size: 20,
+                    color: audioCompanion.liveVoiceConnected
+                        ? AppColors.statusCoral
+                        : AppColors.textSecondary,
+                  ),
+                  tooltip: audioCompanion.liveVoiceConnected
+                      ? 'Live Voice: On'
+                      : 'Live Voice: Off',
+                  onPressed: () {
+                    final hosts = ref.read(hostsListProvider);
+                    final sHost = liveSession.host.toLowerCase();
+                    final match = hosts.where(
+                      (h) =>
+                          h.name.toLowerCase() == sHost ||
+                          h.url.toLowerCase().contains(sHost),
+                    );
+                    final host = match.isNotEmpty
+                        ? match.first
+                        : (hosts.isNotEmpty ? hosts.first : null);
+                    ref
+                        .read(audioCompanionServiceProvider.notifier)
+                        .toggleAntigravityLiveVoice(
+                          liveSession,
+                          hostUrl: host?.url ?? 'http://127.0.0.1:7777',
+                          authToken: host?.authToken,
+                        );
+                  },
+                );
+              },
+            ),
+
           // Keyboard toggle button (shows/hides on-screen keyboard)
           IconButton(
             icon: Icon(
@@ -522,8 +564,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                   ? Icons.keyboard_hide_rounded
                   : Icons.keyboard_rounded,
               size: 20,
-              color:
-                  keyboardOpen ? AppColors.infoCyan : AppColors.textSecondary,
+              color: keyboardOpen
+                  ? AppColors.infoCyan
+                  : AppColors.textSecondary,
             ),
             tooltip: keyboardOpen ? 'Hide Keyboard' : 'Show Keyboard',
             onPressed: () {
@@ -556,16 +599,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                     : AppColors.surfaceHighlight,
                 borderRadius: BorderRadius.circular(4),
                 border: Border.all(
-                  color:
-                      _autoFit ? AppColors.infoCyan : AppColors.outlineSubtle,
+                  color: _autoFit
+                      ? AppColors.infoCyan
+                      : AppColors.outlineSubtle,
                   width: 0.8,
                 ),
               ),
               child: Text(
                 _autoFit ? 'FIT' : '80 COL',
                 style: AppTypography.codeXs.copyWith(
-                  color:
-                      _autoFit ? AppColors.infoCyan : AppColors.textSecondary,
+                  color: _autoFit
+                      ? AppColors.infoCyan
+                      : AppColors.textSecondary,
                   fontWeight: FontWeight.w700,
                   fontSize: 10,
                 ),
@@ -575,15 +620,19 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
           // Tmux scroll mode helper
           IconButton(
-            icon: const Icon(Icons.history_rounded,
-                size: 18, color: AppColors.textSecondary),
+            icon: const Icon(
+              Icons.history_rounded,
+              size: 18,
+              color: AppColors.textSecondary,
+            ),
             tooltip: 'Tmux Scrollback Mode (Ctrl+B [)',
             onPressed: () {
               _channel?.sink.add('\x02[');
               ScaffoldMessenger.of(context).showSnackBar(
                 const SnackBar(
                   content: Text(
-                      'Tmux Scroll Mode active. Swipe or use ↑/↓/PgUp to scroll, Esc to exit.'),
+                    'Tmux Scroll Mode active. Swipe or use ↑/↓/PgUp to scroll, Esc to exit.',
+                  ),
                   duration: Duration(seconds: 2),
                 ),
               );
@@ -592,24 +641,33 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
           // Zoom Out
           IconButton(
-            icon: const Icon(Icons.remove_rounded,
-                size: 18, color: AppColors.textSecondary),
+            icon: const Icon(
+              Icons.remove_rounded,
+              size: 18,
+              color: AppColors.textSecondary,
+            ),
             tooltip: 'Decrease font size',
             onPressed: _zoomOut,
           ),
 
           // Zoom In
           IconButton(
-            icon: const Icon(Icons.add_rounded,
-                size: 18, color: AppColors.textSecondary),
+            icon: const Icon(
+              Icons.add_rounded,
+              size: 18,
+              color: AppColors.textSecondary,
+            ),
             tooltip: 'Increase font size',
             onPressed: _zoomIn,
           ),
 
           // Reconnect
           IconButton(
-            icon: const Icon(Icons.refresh_rounded,
-                size: 20, color: AppColors.textMuted),
+            icon: const Icon(
+              Icons.refresh_rounded,
+              size: 20,
+              color: AppColors.textMuted,
+            ),
             tooltip: 'Reconnect PTY',
             onPressed: () {
               _sub?.cancel();
@@ -643,8 +701,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                     const SizedBox(width: 8),
                     Text(
                       'Connecting to tmux session...',
-                      style: AppTypography.codeXs
-                          .copyWith(color: AppColors.infoCyan),
+                      style: AppTypography.codeXs.copyWith(
+                        color: AppColors.infoCyan,
+                      ),
                     ),
                   ],
                 ),
@@ -656,8 +715,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                 color: AppColors.statusCoral.withOpacity(0.15),
                 child: Text(
                   _errorMessage!,
-                  style: AppTypography.codeXs
-                      .copyWith(color: AppColors.statusCoral),
+                  style: AppTypography.codeXs.copyWith(
+                    color: AppColors.statusCoral,
+                  ),
                 ),
               ),
             Expanded(
@@ -675,8 +735,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                     final charWidth = _fontSize * 0.60;
                     final terminalRenderWidth = _autoFit
                         ? constraints.maxWidth
-                        : max(constraints.maxWidth,
-                            _currentCols * charWidth + 16.0);
+                        : max(
+                            constraints.maxWidth,
+                            _currentCols * charWidth + 16.0,
+                          );
 
                     return Listener(
                       onPointerDown: _handlePointerDown,
@@ -716,8 +778,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                                       scrollController:
                                           _verticalScrollController,
                                       focusNode: _terminalFocusNode,
-                                      autofocus:
-                                          false, // Clean startup: keyboard hidden by default
+                                      autofocus: false, // Clean startup: keyboard hidden by default
                                       autoResize: false,
                                       deleteDetection:
                                           true, // Fix for iOS backspace/delete
@@ -738,8 +799,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                                 bottom: 8,
                                 right: 16,
                                 child: Material(
-                                  color: AppColors.surfaceHighlight
-                                      .withOpacity(0.9),
+                                  color: AppColors.surfaceHighlight.withOpacity(
+                                    0.9,
+                                  ),
                                   borderRadius: BorderRadius.circular(20),
                                   elevation: 4,
                                   child: InkWell(
@@ -747,23 +809,26 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                                     onTap: _scrollToBottom,
                                     child: Padding(
                                       padding: const EdgeInsets.symmetric(
-                                          horizontal: 10, vertical: 6),
+                                        horizontal: 10,
+                                        vertical: 6,
+                                      ),
                                       child: Row(
                                         mainAxisSize: MainAxisSize.min,
                                         children: [
                                           const Icon(
-                                              Icons.arrow_downward_rounded,
-                                              size: 14,
-                                              color: AppColors.infoCyan),
+                                            Icons.arrow_downward_rounded,
+                                            size: 14,
+                                            color: AppColors.infoCyan,
+                                          ),
                                           const SizedBox(width: 4),
                                           Text(
                                             'Bottom',
-                                            style:
-                                                AppTypography.codeXs.copyWith(
-                                              color: AppColors.infoCyan,
-                                              fontWeight: FontWeight.w600,
-                                              fontSize: 11,
-                                            ),
+                                            style: AppTypography.codeXs
+                                                .copyWith(
+                                                  color: AppColors.infoCyan,
+                                                  fontWeight: FontWeight.w600,
+                                                  fontSize: 11,
+                                                ),
                                           ),
                                         ],
                                       ),
@@ -779,9 +844,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                 ),
               ),
             ),
-            TerminalAccessoryBar(
-              onKeyPressed: _handleAccessoryKey,
-            ),
+            TerminalAccessoryBar(onKeyPressed: _handleAccessoryKey),
           ],
         ),
       ),

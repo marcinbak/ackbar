@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -491,5 +492,30 @@ func TestRepoPathCapabilityInferenceAndTaskActivationOnSpawn(t *testing.T) {
 	}
 	if caps := inferCapabilitiesFromRepoPath("Mobile/ios/client"); len(caps) != 1 || caps[0] != "ios" {
 		t.Fatalf("expected Mobile/ios/client to infer ios capability, got %v", caps)
+	}
+}
+
+func TestSourceDirVersionGuard(t *testing.T) {
+	tmp := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmp, "cmd", "ackbard"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(tmp, "internal", "version"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, "cmd", "ackbard", "main.go"), []byte("package main\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, "internal", "version", "VERSION"), []byte("20261106.01\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := readSourceDirVersion(tmp); got != "20261106.01" {
+		t.Fatalf("expected readSourceDirVersion=20261106.01, got %q", got)
+	}
+
+	// Ensure findUpToDateSourceDir rejects any local repo when targetVersion is far in the future
+	if dir := findUpToDateSourceDir("20991231.99"); dir != "" {
+		t.Fatalf("expected findUpToDateSourceDir to reject stale local checkouts when targetVersion=20991231.99, got %q", dir)
 	}
 }

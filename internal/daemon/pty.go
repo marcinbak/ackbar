@@ -284,19 +284,26 @@ func (s *Server) servePTYWS(ws *websocket.Conn) {
 					}
 				}
 
+				micExport := ""
+				if sess != nil && strings.EqualFold(sess.Agent, "antigravity") {
+					if addr := s.VoiceBridgeAddr(); addr != "" {
+						micExport = fmt.Sprintf("export ANTIGRAVITY_MIC=%q; ", addr)
+					}
+				}
+
 				if transcriptText != "" {
 					tmpFile, ferr := os.CreateTemp("", "ackbar-transcript-*.txt")
 					if ferr == nil {
 						_, _ = tmpFile.WriteString(transcriptText)
 						_ = tmpFile.Close()
-						shellCmd := fmt.Sprintf("cat %q 2>/dev/null; rm -f %q; cd %q 2>/dev/null || true; export PATH=\"/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/.npm-global/bin:$PATH\"; %s; exec bash -l", tmpFile.Name(), tmpFile.Name(), cwd, resumeCmd)
+						shellCmd := fmt.Sprintf("cat %q 2>/dev/null; rm -f %q; cd %q 2>/dev/null || true; %sexport PATH=\"/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/.npm-global/bin:$PATH\"; %s; exec bash -l", tmpFile.Name(), tmpFile.Name(), cwd, micExport, resumeCmd)
 						_ = exec.Command("tmux", "new-session", "-d", "-s", tmuxName, "-c", cwd, "bash", "-l", "-c", shellCmd).Run()
 					} else {
-						shellCmd := fmt.Sprintf("cd %q 2>/dev/null || true; export PATH=\"/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/.npm-global/bin:$PATH\"; %s; exec bash -l", cwd, resumeCmd)
+						shellCmd := fmt.Sprintf("cd %q 2>/dev/null || true; %sexport PATH=\"/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/.npm-global/bin:$PATH\"; %s; exec bash -l", cwd, micExport, resumeCmd)
 						_ = exec.Command("tmux", "new-session", "-d", "-s", tmuxName, "-c", cwd, "bash", "-l", "-c", shellCmd).Run()
 					}
 				} else {
-					shellCmd := fmt.Sprintf("cd %q 2>/dev/null || true; export PATH=\"/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/.npm-global/bin:$PATH\"; %s; exec bash -l", cwd, resumeCmd)
+					shellCmd := fmt.Sprintf("cd %q 2>/dev/null || true; %sexport PATH=\"/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/.npm-global/bin:$PATH\"; %s; exec bash -l", cwd, micExport, resumeCmd)
 					_ = exec.Command("tmux", "new-session", "-d", "-s", tmuxName, "-c", cwd, "bash", "-l", "-c", shellCmd).Run()
 				}
 			} else {

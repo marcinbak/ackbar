@@ -5369,7 +5369,8 @@ body, html {
   box-shadow: 0 0 8px rgba(16, 185, 129, 0.2);
 }
 
-.btn-chat-mic {
+.btn-chat-mic,
+.btn-chat-live-voice {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -5384,13 +5385,16 @@ body, html {
   transition: all 0.2s ease;
 }
 
-.btn-chat-mic:hover {
+.btn-chat-mic:hover,
+.btn-chat-live-voice:hover {
   background: var(--bg-card-hover);
   color: var(--text-main);
   border-color: var(--border-focus);
 }
 
-.btn-chat-mic.listening {
+.btn-chat-mic.listening,
+.btn-chat-live-voice.listening,
+.btn-chat-live-voice.active {
   background: rgba(239, 68, 68, 0.18);
   color: var(--accent-red);
   border-color: rgba(239, 68, 68, 0.5);
