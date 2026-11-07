@@ -306,7 +306,12 @@ func (s *Server) handleHostUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res, statusCode, err := s.updateRemoteHost(host)
+	targetVer := version.Version
+	if info, cerr := version.CheckLatestRelease(r.Context(), false); cerr == nil && info != nil && version.IsNewer(info.Version, targetVer) {
+		targetVer = info.Version
+	}
+
+	res, statusCode, err := s.updateRemoteHostToVersion(host, targetVer)
 	w.Header().Set("Content-Type", "application/json")
 	if err != nil {
 		w.WriteHeader(statusCode)
@@ -319,7 +324,68 @@ func (s *Server) handleHostUpdate(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(res)
 }
 
+func readSourceDirVersion(srcDir string) string {
+	if srcDir == "" {
+		return ""
+	}
+	for _, rel := range []string{
+		filepath.Join("internal", "version", "VERSION"),
+		"VERSION",
+	} {
+		if data, err := os.ReadFile(filepath.Join(srcDir, rel)); err == nil {
+			if v := version.CleanVersion(string(data)); v != "" {
+				return v
+			}
+		}
+	}
+	return ""
+}
+
+// findUpToDateSourceDir returns a local Ackbar git repository path ONLY if its VERSION file
+// is at least as new as both targetVersion and the running daemon's version.Version.
+// This prevents a stale local checkout (e.g. an un-pulled ~/Work/Ackbar repo) from downgrading remote hosts.
+func findUpToDateSourceDir(targetVersion string) string {
+	home, _ := os.UserHomeDir()
+	candidates := []string{
+		filepath.Join(home, "Work/Ackbar"),
+		filepath.Join(home, "Personal/ackbar"),
+		filepath.Join(home, "src/Ackbar"),
+		filepath.Join(home, "Projects/Ackbar"),
+		".",
+	}
+	for _, c := range candidates {
+		if c == "" {
+			continue
+		}
+		if _, serr := os.Stat(filepath.Join(c, "cmd/ackbard/main.go")); serr != nil {
+			continue
+		}
+		srcVer := readSourceDirVersion(c)
+		if srcVer == "" {
+			continue
+		}
+		if targetVersion != "" && version.IsNewer(targetVersion, srcVer) {
+			continue
+		}
+		if version.IsNewer(version.Version, srcVer) {
+			continue
+		}
+		return c
+	}
+	return ""
+}
+
 func (s *Server) updateRemoteHost(host *HostRecord) (map[string]interface{}, int, error) {
+	targetVer := version.Version
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if info, err := version.CheckLatestRelease(ctx, false); err == nil && info != nil && version.IsNewer(info.Version, targetVer) {
+		targetVer = info.Version
+	}
+	cancel()
+	return s.updateRemoteHostToVersion(host, targetVer)
+}
+
+func (s *Server) updateRemoteHostToVersion(host *HostRecord, targetVersion string) (map[string]interface{}, int, error) {
 	hostName := host.Name
 	sshTarget := host.SSHTarget
 	if sshTarget == "" {
@@ -357,21 +423,8 @@ func (s *Server) updateRemoteHost(host *HostRecord) (map[string]interface{}, int
 		goarch = "386"
 	}
 
-	// 2. Find Go project source directory
-	home, _ := os.UserHomeDir()
-	candidates := []string{
-		filepath.Join(home, "Work/Ackbar"),
-		filepath.Join(home, "src/Ackbar"),
-		filepath.Join(home, "Projects/Ackbar"),
-		".",
-	}
-	srcDir := ""
-	for _, c := range candidates {
-		if _, serr := os.Stat(filepath.Join(c, "cmd/ackbard/main.go")); serr == nil {
-			srcDir = c
-			break
-		}
-	}
+	// 2. Check for an up-to-date local Go source directory (never use a checkout older than targetVersion)
+	srcDir := findUpToDateSourceDir(targetVersion)
 
 	shortHost := ShortRemoteHostIdentifier(host.Name)
 	hostFlagArg := ""
@@ -379,71 +432,120 @@ func (s *Server) updateRemoteHost(host *HostRecord) (map[string]interface{}, int
 		hostFlagArg = " --host-name " + shortHost
 	}
 
+	tmpDir, err := os.MkdirTemp("", "ackbar-remote-update-*")
+	if err != nil {
+		return nil, http.StatusInternalServerError, fmt.Errorf("Failed to create temp build dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	binariesPrepared := false
+
 	if srcDir != "" {
-		// 3a. Cross-compile from local source and SCP atomically
-		tmpDir, err := os.MkdirTemp("", "ackbar-remote-update-*")
-		if err != nil {
-			return nil, http.StatusInternalServerError, fmt.Errorf("Failed to create temp build dir: %v", err)
-		}
-		defer os.RemoveAll(tmpDir)
-
-		ackbardPath := filepath.Join(tmpDir, "ackbard")
-		ackbarPath := filepath.Join(tmpDir, "ackbar")
-		hookPath := filepath.Join(tmpDir, "ackbar-hook")
-
+		// 3a. Cross-compile from up-to-date local source
+		buildOK := true
 		for _, target := range []struct {
 			out string
 			pkg string
 			bin string
 		}{
-			{ackbardPath, "./cmd/ackbard", "ackbard"},
-			{hookPath, "./cmd/ackbar-hook", "ackbar-hook"},
-			{ackbarPath, "./cmd/ackbar", "ackbar"},
+			{filepath.Join(tmpDir, "ackbard"), "./cmd/ackbard", "ackbard"},
+			{filepath.Join(tmpDir, "ackbar-hook"), "./cmd/ackbar-hook", "ackbar-hook"},
+			{filepath.Join(tmpDir, "ackbar"), "./cmd/ackbar", "ackbar"},
+			{filepath.Join(tmpDir, "ackbar-relay"), "./cmd/ackbar-relay", "ackbar-relay"},
 		} {
 			cmdBuild := exec.Command("go", "build", "-ldflags=-s -w", "-o", target.out, target.pkg)
 			cmdBuild.Dir = srcDir
 			cmdBuild.Env = append(os.Environ(), "GOOS="+goos, "GOARCH="+goarch, "CGO_ENABLED=0")
-			if bout, berr := cmdBuild.CombinedOutput(); berr != nil {
-				return nil, http.StatusInternalServerError, fmt.Errorf("Failed to cross-compile %s for %s/%s: %s", target.bin, goos, goarch, string(bout))
+			if _, berr := cmdBuild.CombinedOutput(); berr != nil {
+				buildOK = false
+				break
 			}
 		}
+		binariesPrepared = buildOK
+	}
 
+	if !binariesPrepared {
+		// 3b. Download official prebuilt GitHub Release tarball for the remote host's (goos, goarch)
+		dlCtx, dlCancel := context.WithTimeout(context.Background(), 90*time.Second)
+		_, dlErr := version.DownloadAndInstallForPlatform(dlCtx, targetVersion, goos, goarch, tmpDir)
+		dlCancel()
+		if dlErr == nil {
+			binariesPrepared = true
+		}
+	}
+
+	if binariesPrepared {
 		// 4a. Deploy binaries to remote host via SCP using atomic staging files
 		_ = exec.Command("ssh", "-o", "BatchMode=yes", sshTarget, "mkdir -p ~/.local/bin").Run()
 
-		for _, upload := range []struct {
-			local  string
-			remote string
-			bin    string
-		}{
-			{ackbardPath, fmt.Sprintf("%s:~/.local/bin/ackbard.new", sshTarget), "ackbard"},
-			{hookPath, fmt.Sprintf("%s:~/.local/bin/ackbar-hook.new", sshTarget), "ackbar-hook"},
-			{ackbarPath, fmt.Sprintf("%s:~/.local/bin/ackbar.new", sshTarget), "ackbar"},
-		} {
-			scpCmd := exec.Command("scp", "-o", "BatchMode=yes", upload.local, upload.remote)
+		for _, binName := range []string{"ackbard", "ackbar", "ackbar-hook", "ackbar-relay"} {
+			localPath := filepath.Join(tmpDir, binName)
+			if _, serr := os.Stat(localPath); serr != nil {
+				if binName == "ackbar-relay" {
+					continue
+				}
+				return nil, http.StatusInternalServerError, fmt.Errorf("Missing prepared binary %s for %s", binName, sshTarget)
+			}
+			remotePath := fmt.Sprintf("%s:~/.local/bin/%s.new", sshTarget, binName)
+			scpCmd := exec.Command("scp", "-o", "BatchMode=yes", localPath, remotePath)
 			if sout, serr := scpCmd.CombinedOutput(); serr != nil {
-				return nil, http.StatusBadGateway, fmt.Errorf("Failed to upload %s to %s: %s", upload.bin, sshTarget, string(sout))
+				return nil, http.StatusBadGateway, fmt.Errorf("Failed to upload %s to %s: %s", binName, sshTarget, string(sout))
 			}
 		}
 
-		// 5a. Atomically replace binaries, set permissions, and restart daemon on remote host
-		remoteRestartScript := fmt.Sprintf(`chmod +x ~/.local/bin/ackbard.new ~/.local/bin/ackbar.new ~/.local/bin/ackbar-hook.new && mv -f ~/.local/bin/ackbard.new ~/.local/bin/ackbard && mv -f ~/.local/bin/ackbar.new ~/.local/bin/ackbar && mv -f ~/.local/bin/ackbar-hook.new ~/.local/bin/ackbar-hook && pkill -9 -x ackbard || true; sleep 0.5; nohup ~/.local/bin/ackbard%s >/dev/null 2>&1 < /dev/null &`, hostFlagArg)
-		restartCmd := exec.Command("ssh", "-n", "-f", "-o", "BatchMode=yes", sshTarget, remoteRestartScript)
-		_ = restartCmd.Run()
+		// 5a. Atomically replace binaries (in ~/.local/bin and Homebrew bin if present) and restart daemon cleanly
+		remoteRestartScript := fmt.Sprintf(`set -e
+export PATH="$HOME/.local/bin:$HOME/go/bin:/usr/local/go/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+for b in ackbard ackbar ackbar-hook ackbar-relay; do
+  if [ -f "$HOME/.local/bin/$b.new" ]; then
+    chmod +x "$HOME/.local/bin/$b.new"
+    mv -f "$HOME/.local/bin/$b.new" "$HOME/.local/bin/$b"
+    for brewdir in /opt/homebrew/opt/ackbar/bin /usr/local/opt/ackbar/bin; do
+      if [ -d "$brewdir" ] && [ -w "$brewdir" ]; then
+        cp -f "$HOME/.local/bin/$b" "$brewdir/$b.tmp" && mv -f "$brewdir/$b.tmp" "$brewdir/$b" || true
+      fi
+    done
+  fi
+done
+if command -v systemctl >/dev/null 2>&1 && systemctl --user is-enabled ackbard.service >/dev/null 2>&1; then
+  pkill -15 -x ackbard 2>/dev/null || true
+  sleep 0.3
+  pkill -9 -x ackbard 2>/dev/null || true
+  systemctl --user restart ackbard.service || (nohup "$HOME/.local/bin/ackbard"%s >/dev/null 2>&1 < /dev/null &)
+elif command -v launchctl >/dev/null 2>&1 && launchctl list 2>/dev/null | grep -q homebrew.mxcl.ackbar; then
+  pkill -15 -x ackbard 2>/dev/null || true
+  sleep 0.3
+  pkill -9 -x ackbard 2>/dev/null || true
+  export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+  brew services restart ackbar >/dev/null 2>&1 || true
+  sleep 0.5
+  pgrep -x ackbard >/dev/null 2>&1 || (nohup "$HOME/.local/bin/ackbard"%s >/dev/null 2>&1 < /dev/null &)
+else
+  pkill -15 -x ackbard 2>/dev/null || true
+  sleep 0.3
+  pkill -9 -x ackbard 2>/dev/null || true
+  sleep 0.2
+  nohup "$HOME/.local/bin/ackbard"%s >/dev/null 2>&1 < /dev/null &
+fi`, hostFlagArg, hostFlagArg, hostFlagArg)
+
+		restartCmd := exec.Command("ssh", "-o", "ConnectTimeout=15", "-o", "BatchMode=yes", sshTarget, remoteRestartScript)
+		if rout, rerr := restartCmd.CombinedOutput(); rerr != nil {
+			return nil, http.StatusInternalServerError, fmt.Errorf("Failed to replace binaries or restart ackbard on %s: %s (%v)", sshTarget, strings.TrimSpace(string(rout)), rerr)
+		}
 	} else {
-		// 3b. No local Go source repo: run `ackbar update --force` directly on the remote host via SSH and restart ackbard
-		remoteUpdateScript := fmt.Sprintf(`export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"; ackbar update --force && (pkill -9 -x ackbard || true; sleep 0.5; nohup ~/.local/bin/ackbard%s >/dev/null 2>&1 < /dev/null &)`, hostFlagArg)
-		updCmd := exec.Command("ssh", "-o", "ConnectTimeout=15", "-o", "BatchMode=yes", sshTarget, remoteUpdateScript)
+		// 3c. Fallback: run `ackbar update --force` directly on the remote host via SSH and restart ackbard
+		remoteUpdateScript := fmt.Sprintf(`export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"; ackbar update --force && (pkill -15 -x ackbard || true; sleep 0.3; pkill -9 -x ackbard || true; sleep 0.3; nohup ~/.local/bin/ackbard%s >/dev/null 2>&1 < /dev/null &)`, hostFlagArg)
+		updCmd := exec.Command("ssh", "-o", "ConnectTimeout=30", "-o", "BatchMode=yes", sshTarget, remoteUpdateScript)
 		if uout, uerr := updCmd.CombinedOutput(); uerr != nil {
 			return nil, http.StatusInternalServerError, fmt.Errorf("Remote 'ackbar update' on %s failed: %s (%v)", sshTarget, strings.TrimSpace(string(uout)), uerr)
 		}
 	}
 
 	// 6. Verify remote daemon responsiveness and update in-memory health cache
-	remoteVersion := version.Version
+	remoteVersion := ""
 	if host.URL != "" {
 		client := &http.Client{Timeout: 2 * time.Second}
-		for attempt := 0; attempt < 4; attempt++ {
+		for attempt := 0; attempt < 10; attempt++ {
 			time.Sleep(500 * time.Millisecond)
 			if resp, err := client.Get(strings.TrimRight(host.URL, "/") + "/v1/version"); err == nil {
 				var vResp struct {
@@ -459,11 +561,30 @@ func (s *Server) updateRemoteHost(host *HostRecord) (map[string]interface{}, int
 					remoteVersion = vResp.Version
 					s.updateHostHealthWithTelemetry(host.Name, true, vResp.Version, vResp.DisplayName, 0, vResp.DetectedCapabilities, vResp.PolicyTags, vResp.RoutingWeight, vResp.Load)
 					_ = resp.Body.Close()
-					break
+					if targetVersion == "" || !version.IsNewer(targetVersion, remoteVersion) {
+						break
+					}
+					continue
 				}
 				_ = resp.Body.Close()
 			}
 		}
+	}
+	if remoteVersion == "" {
+		// Fallback to probing binary version via SSH if HTTP tunnel isn't up yet
+		if vout, verr := exec.Command("ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", sshTarget, `~/.local/bin/ackbard --version`).CombinedOutput(); verr == nil {
+			fields := strings.Fields(strings.TrimSpace(string(vout)))
+			if len(fields) > 0 {
+				remoteVersion = version.CleanVersion(fields[len(fields)-1])
+			}
+		}
+	}
+	if remoteVersion == "" {
+		remoteVersion = targetVersion
+	}
+
+	if targetVersion != "" && version.IsNewer(targetVersion, remoteVersion) {
+		return nil, http.StatusInternalServerError, fmt.Errorf("Host '%s' restarted but is still reporting v%s (expected v%s)", hostName, remoteVersion, targetVersion)
 	}
 
 	return map[string]interface{}{
@@ -552,7 +673,7 @@ func (s *Server) UpdateOutdatedRemoteHosts(targetVersion string) []HostUpdateSum
 				return
 			}
 
-			res, _, uErr := s.updateRemoteHost(hostRec)
+			res, _, uErr := s.updateRemoteHostToVersion(hostRec, targetVersion)
 			if uErr != nil {
 				results[i] = HostUpdateSummary{
 					Host:            hostRec.Name,
@@ -586,18 +707,58 @@ func (s *Server) UpdateOutdatedRemoteHosts(targetVersion string) []HostUpdateSum
 	return filtered
 }
 
-func restartLocalDaemonAsync() {
+func resolveRestartExecutable() string {
 	exe, err := os.Executable()
-	if err != nil || exe == "" {
-		home, _ := os.UserHomeDir()
-		if home != "" {
-			exe = filepath.Join(home, ".local", "bin", "ackbard")
-		} else {
-			exe = "ackbard"
+	if err == nil && exe != "" {
+		// On macOS Homebrew, os.Executable() returns the resolved Cellar path of the old running version
+		// (e.g. /opt/homebrew/Cellar/ackbar/20261106.02/bin/ackbard). After an upgrade, we must launch the
+		// active symlink (/opt/homebrew/opt/ackbar/bin/ackbard or /opt/homebrew/bin/ackbard) so the new version starts.
+		if strings.Contains(exe, "/Cellar/ackbar/") {
+			for _, candidate := range []string{
+				"/opt/homebrew/opt/ackbar/bin/ackbard",
+				"/opt/homebrew/bin/ackbard",
+				"/usr/local/opt/ackbar/bin/ackbard",
+				"/usr/local/bin/ackbard",
+			} {
+				if _, serr := os.Stat(candidate); serr == nil {
+					return candidate
+				}
+			}
 		}
+		return exe
 	}
+	home, _ := os.UserHomeDir()
+	if home != "" {
+		return filepath.Join(home, ".local", "bin", "ackbard")
+	}
+	return "ackbard"
+}
+
+func restartLocalDaemonAsync() {
+	exe := resolveRestartExecutable()
 	args := strings.Join(os.Args[1:], " ")
-	script := fmt.Sprintf("sleep 0.4; kill -9 %d 2>/dev/null || true; sleep 0.2; nohup %q %s >/dev/null 2>&1 < /dev/null &", os.Getpid(), exe, args)
+	pid := os.Getpid()
+	script := fmt.Sprintf(`sleep 0.5
+if command -v systemctl >/dev/null 2>&1 && systemctl --user is-enabled ackbard.service >/dev/null 2>&1; then
+  kill -15 %d 2>/dev/null || true
+  sleep 0.3
+  kill -9 %d 2>/dev/null || true
+  systemctl --user restart ackbard.service || (nohup %q %s >/dev/null 2>&1 < /dev/null &)
+elif command -v launchctl >/dev/null 2>&1 && launchctl list 2>/dev/null | grep -q homebrew.mxcl.ackbar; then
+  kill -15 %d 2>/dev/null || true
+  sleep 0.3
+  kill -9 %d 2>/dev/null || true
+  export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+  brew services restart ackbar >/dev/null 2>&1 || true
+  sleep 0.6
+  pgrep -x ackbard >/dev/null 2>&1 || (nohup %q %s >/dev/null 2>&1 < /dev/null &)
+else
+  kill -15 %d 2>/dev/null || true
+  sleep 0.3
+  kill -9 %d 2>/dev/null || true
+  sleep 0.2
+  nohup %q %s >/dev/null 2>&1 < /dev/null &
+fi`, pid, pid, exe, args, pid, pid, exe, args, pid, pid, exe, args)
 	cmd := exec.Command("sh", "-c", script)
 	_ = cmd.Start()
 }

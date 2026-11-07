@@ -145,6 +145,9 @@ func main() {
 	server.RegisterProvider(provider.NewGrokProvider())
 	server.RegisterProvider(provider.NewOpenCodeProvider())
 
+	// Start Antigravity JETSKI-AUDIO/1 Live Voice Bridge (default 127.0.0.1:4713)
+	server.EnsureVoiceBridge()
+
 	// Start asynchronous background scanner & liveness loop
 	server.StartBackgroundLoop(context.Background())
 

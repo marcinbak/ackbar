@@ -265,9 +265,7 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
         markdown: rawMd,
       );
       if (parsed.messages.isNotEmpty || structured == null) {
-        return parsed.copyWith(
-          messages: _deduplicateMessages(parsed.messages),
-        );
+        return parsed.copyWith(messages: _deduplicateMessages(parsed.messages));
       }
     }
 
@@ -368,7 +366,9 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
       final assistantCount = mergedMessages.where((m) => m.isAssistant).length;
 
       if (_pendingUserMessage != null) {
-        final hasPendingUser = mergedMessages.skip(_messageCountAtSend).any(
+        final hasPendingUser = mergedMessages
+            .skip(_messageCountAtSend)
+            .any(
               (m) =>
                   m.isUser &&
                   m.content.trim() == _pendingUserMessage!.content.trim(),
@@ -384,7 +384,8 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
       }
 
       final liveSession = _resolveLiveSession();
-      final turnCompletedByReply = _awaitingTurnCompletion &&
+      final turnCompletedByReply =
+          _awaitingTurnCompletion &&
           assistantCount > _assistantCountAtSend &&
           liveSession.state != SessionState.working;
 
@@ -425,11 +426,9 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
     try {
       final host = await _resolveHost();
       final activeSessionId = _resolveLiveSession().id;
-      final list = await ref.read(apiClientProvider).getSubagents(
-            host.url,
-            activeSessionId,
-            authToken: host.authToken,
-          );
+      final list = await ref
+          .read(apiClientProvider)
+          .getSubagents(host.url, activeSessionId, authToken: host.authToken);
       if (mounted) {
         final running = list.where((s) => s.isRunning).toList();
         if (!_areSubagentListsEqual(running, _runningSubagents)) {
@@ -510,7 +509,9 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
     try {
       final host = await _resolveHost();
       final activeSessionId = _resolveLiveSession().id;
-      final success = await ref.read(apiClientProvider).sendPrompt(
+      final success = await ref
+          .read(apiClientProvider)
+          .sendPrompt(
             host.url,
             activeSessionId,
             text,
@@ -565,11 +566,9 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
     try {
       final host = await _resolveHost();
       final activeSessionId = _resolveLiveSession().id;
-      final res = await ref.read(apiClientProvider).takeWheel(
-            host.url,
-            activeSessionId,
-            authToken: host.authToken,
-          );
+      final res = await ref
+          .read(apiClientProvider)
+          .takeWheel(host.url, activeSessionId, authToken: host.authToken);
       if (res != null && mounted) {
         final tmuxName = res['tmux_name']?.toString() ?? '';
         final updatedSession = _resolveLiveSession().copyWith(
@@ -605,11 +604,9 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
     try {
       final host = await _resolveHost();
       final activeSessionId = _resolveLiveSession().id;
-      await ref.read(apiClientProvider).cancelTurn(
-            host.url,
-            activeSessionId,
-            authToken: host.authToken,
-          );
+      await ref
+          .read(apiClientProvider)
+          .cancelTurn(host.url, activeSessionId, authToken: host.authToken);
       if (mounted) {
         setState(() {
           _isSending = false;
@@ -636,7 +633,9 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
   }) async {
     final host = await _resolveHost();
     final liveSession = _resolveLiveSession();
-    await ref.read(audioCompanionServiceProvider.notifier).speakMessage(
+    await ref
+        .read(audioCompanionServiceProvider.notifier)
+        .speakMessage(
           liveSession,
           index,
           content,
@@ -655,6 +654,61 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
         break;
       }
     }
+  }
+
+  void _handleRecognizedSpeech(String text, bool isFinal) {
+    if (!mounted) return;
+    final trimmed = text.trim();
+    if (trimmed.isEmpty) return;
+
+    if (!isFinal) {
+      _promptController.text = trimmed;
+      _promptController.selection = TextSelection.fromPosition(
+        TextPosition(offset: _promptController.text.length),
+      );
+      return;
+    }
+
+    final normalized = trimmed
+        .toLowerCase()
+        .replaceAll(RegExp(r'[.,!?;:]+$'), '')
+        .trim();
+    if (normalized == 'repeat that' ||
+        normalized == 'read that again' ||
+        normalized == 'repeat' ||
+        normalized == 'replay') {
+      _promptController.clear();
+      _autoReadLatestAssistantMessage();
+      return;
+    }
+
+    var finalPrompt = trimmed;
+    final autoRead = ref.read(audioCompanionServiceProvider).autoReadEnabled;
+    if (autoRead && !finalPrompt.contains('[Reply concisely')) {
+      finalPrompt += ' [Reply concisely in 2–3 spoken sentences]';
+    }
+    _promptController.text = finalPrompt;
+    _sendPrompt();
+  }
+
+  Future<void> _toggleAntigravityLiveVoice(Session currentSession) async {
+    HapticFeedback.mediumImpact();
+    final host = await _resolveHost();
+    if (!mounted) return;
+
+    final notifier = ref.read(audioCompanionServiceProvider.notifier);
+    if (!ref.read(audioCompanionServiceProvider).liveVoiceConnected &&
+        currentSession.isHeadless) {
+      await ref
+          .read(apiClientProvider)
+          .takeWheel(host.url, currentSession.id, authToken: host.authToken);
+    }
+    if (!mounted) return;
+    await notifier.toggleAntigravityLiveVoice(
+      currentSession,
+      hostUrl: host.url,
+      authToken: host.authToken,
+    );
   }
 
   @override
@@ -690,7 +744,8 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
       fleetSessionsProvider.select(_findMatchingSession),
     );
     final currentSession = liveSession ?? widget.session;
-    final isWorking = _isSending ||
+    final isWorking =
+        _isSending ||
         _awaitingTurnCompletion ||
         currentSession.state == SessionState.working;
     final messages = _transcriptData?.messages ?? [];
@@ -744,6 +799,22 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
           ],
         ),
         actions: [
+          // Antigravity Native Gemini Live Voice Toggle (JETSKI-AUDIO/1 Bridge)
+          if (currentSession.agent.toLowerCase() == 'antigravity')
+            IconButton(
+              icon: Icon(
+                Icons.record_voice_over_rounded,
+                size: 20,
+                color: audioCompanion.liveVoiceConnected
+                    ? AppColors.statusCoral
+                    : AppColors.textMuted,
+              ),
+              tooltip: audioCompanion.liveVoiceConnected
+                  ? 'Live Voice: On'
+                  : 'Live Voice: Off',
+              onPressed: () => _toggleAntigravityLiveVoice(currentSession),
+            ),
+
           // Auto-Read Audio Companion Toggle
           IconButton(
             icon: Icon(
@@ -776,7 +847,9 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
             ),
             tooltip: audioCompanion.micEnabled ? 'Mic Active' : 'Mic Off',
             onPressed: () {
-              ref.read(audioCompanionServiceProvider.notifier).toggleMic();
+              ref
+                  .read(audioCompanionServiceProvider.notifier)
+                  .toggleMic(onResult: _handleRecognizedSpeech);
             },
           ),
 
@@ -1217,8 +1290,9 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
             bottomRight: Radius.circular(16),
           ),
           border: Border.all(
-            color:
-                isSpeakingThis ? AppColors.infoCyan : AppColors.outlineSubtle,
+            color: isSpeakingThis
+                ? AppColors.infoCyan
+                : AppColors.outlineSubtle,
             width: isSpeakingThis ? 1.5 : 0.8,
           ),
         ),
@@ -1318,8 +1392,11 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
                         minHeight: 24,
                       ),
                       tooltip: 'Read again',
-                      onPressed: () => _speakMessage(index, message.content,
-                          forceRefresh: true),
+                      onPressed: () => _speakMessage(
+                        index,
+                        message.content,
+                        forceRefresh: true,
+                      ),
                     ),
                     IconButton(
                       icon: const Icon(
@@ -1333,8 +1410,11 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
                         minHeight: 24,
                       ),
                       tooltip: 'Read unabridged full text',
-                      onPressed: () => _speakMessage(index, message.content,
-                          forceFull: true),
+                      onPressed: () => _speakMessage(
+                        index,
+                        message.content,
+                        forceFull: true,
+                      ),
                     ),
                   ],
                 ],
@@ -1459,8 +1539,9 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
     }
 
     // Multiple unique tools
-    final breakdown =
-        uniqueTools.map((name) => '$name x${counts[name]}').join(', ');
+    final breakdown = uniqueTools
+        .map((name) => '$name x${counts[name]}')
+        .join(', ');
     return '⚡ $total tools ($breakdown)';
   }
 
@@ -1658,8 +1739,9 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
     }
 
     final count = _runningSubagents.length;
-    final countText =
-        count == 1 ? '1 subagent running...' : '$count subagents running...';
+    final countText = count == 1
+        ? '1 subagent running...'
+        : '$count subagents running...';
 
     return Container(
       decoration: const BoxDecoration(

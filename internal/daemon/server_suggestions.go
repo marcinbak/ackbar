@@ -213,6 +213,13 @@ func getBuiltinCommands() []CommandSuggestion {
 			Category:      "Session Control",
 			ExecutionMode: "client_action",
 		},
+		{
+			Name:          "voice_live",
+			Trigger:       "/voice live",
+			Description:   "Toggle two-way Live Voice Mode via Ackbar Audio Bridge",
+			Category:      "Session Control",
+			ExecutionMode: "client_action",
+		},
 	}
 }
 

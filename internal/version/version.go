@@ -254,6 +254,32 @@ func resolvePlatformAsset(assets []struct {
 	return fallbackName, fallbackURL
 }
 
+// BuildReleaseInfoForPlatform constructs a ReleaseInfo targeting a specific OS/architecture and version.
+func BuildReleaseInfoForPlatform(ctx context.Context, targetVersion, goos, goarch string) (*ReleaseInfo, error) {
+	ver := CleanVersion(targetVersion)
+	if ver == "" {
+		latest, err := CheckLatestRelease(ctx, false)
+		if err != nil {
+			return nil, err
+		}
+		ver = CleanVersion(latest.Version)
+	}
+	if ver == "" {
+		return nil, fmt.Errorf("empty target release version")
+	}
+	assetName, assetURL := resolvePlatformAsset(nil, ver, goos, goarch)
+	checksumURL := fmt.Sprintf("https://github.com/%s/%s/releases/download/v%s/checksums.txt", GitHubOwner, GitHubRepo, ver)
+	return &ReleaseInfo{
+		Version:     ver,
+		TagName:     "v" + ver,
+		ReleaseURL:  fmt.Sprintf("https://github.com/%s/%s/releases/tag/v%s", GitHubOwner, GitHubRepo, ver),
+		AssetName:   assetName,
+		AssetURL:    assetURL,
+		ChecksumURL: checksumURL,
+		CheckedAt:   time.Now(),
+	}, nil
+}
+
 // DetectInstallType detects whether Ackbar was installed via Homebrew or as a standalone binary in local bin.
 func DetectInstallType() (string, string) {
 	exe, err := os.Executable()

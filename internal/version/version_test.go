@@ -388,3 +388,19 @@ func TestBumpVersionScript(t *testing.T) {
 		t.Errorf("Expected error message about unbumped version, got:\n%s", out)
 	}
 }
+
+func TestBuildReleaseInfoForPlatform(t *testing.T) {
+	rel, err := BuildReleaseInfoForPlatform(context.Background(), "v20261107.01", "linux", "amd64")
+	if err != nil {
+		t.Fatalf("BuildReleaseInfoForPlatform failed: %v", err)
+	}
+	if rel.Version != "20261107.01" {
+		t.Errorf("Expected version 20261107.01, got %s", rel.Version)
+	}
+	if rel.AssetName != "ackbar_20261107.01_linux_amd64.tar.gz" {
+		t.Errorf("Unexpected AssetName: %s", rel.AssetName)
+	}
+	if !strings.HasSuffix(rel.AssetURL, "/v20261107.01/ackbar_20261107.01_linux_amd64.tar.gz") {
+		t.Errorf("Unexpected AssetURL: %s", rel.AssetURL)
+	}
+}

@@ -93,28 +93,41 @@ func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request) {
 
 // resolveAccountEnv resolves the account record and environment variables for a session or spawn request.
 func (s *Server) resolveAccountEnv(agent, accountID, home string, fallbackToDefault bool) (string, map[string]string) {
-	if s.db == nil {
-		return accountID, nil
-	}
-	adapter := s.agentAdapter(agent)
-	if accountID != "" && accountID != "default" {
-		acc, err := s.db.GetAccount(accountID)
-		if (err != nil || acc == nil) && !strings.Contains(accountID, ":") {
-			acc, _ = s.db.GetAccount(fmt.Sprintf("%s:%s", agent, accountID))
-		}
-		if acc != nil {
-			return accountID, adapter.AccountEnvVars(home, acc)
-		}
-	} else if accountID == "" && fallbackToDefault {
-		if accList, err := s.db.ListAccounts(agent); err == nil {
-			for _, acc := range accList {
-				if acc.IsDefault && acc.Name != "default" {
-					return acc.ID, adapter.AccountEnvVars(home, acc)
+	var envVars map[string]string
+	resolvedID := accountID
+	if s.db != nil {
+		adapter := s.agentAdapter(agent)
+		if accountID != "" && accountID != "default" {
+			acc, err := s.db.GetAccount(accountID)
+			if (err != nil || acc == nil) && !strings.Contains(accountID, ":") {
+				acc, _ = s.db.GetAccount(fmt.Sprintf("%s:%s", agent, accountID))
+			}
+			if acc != nil {
+				envVars = adapter.AccountEnvVars(home, acc)
+			}
+		} else if accountID == "" && fallbackToDefault {
+			if accList, err := s.db.ListAccounts(agent); err == nil {
+				for _, acc := range accList {
+					if acc.IsDefault && acc.Name != "default" {
+						resolvedID = acc.ID
+						envVars = adapter.AccountEnvVars(home, acc)
+						break
+					}
 				}
 			}
 		}
 	}
-	return accountID, nil
+	if strings.EqualFold(strings.TrimSpace(agent), "antigravity") {
+		if envVars == nil {
+			envVars = make(map[string]string)
+		}
+		if _, exists := envVars["ANTIGRAVITY_MIC"]; !exists {
+			if addr := s.VoiceBridgeAddr(); addr != "" {
+				envVars["ANTIGRAVITY_MIC"] = addr
+			}
+		}
+	}
+	return resolvedID, envVars
 }
 
 func (s *Server) checkAccountLoggedIn(a *AgentAccount) bool {

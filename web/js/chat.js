@@ -562,6 +562,264 @@ function toggleVoiceMic(tabObj) {
   }
 }
 
+// --- Antigravity Native Live Voice Bridge (JETSKI-AUDIO/1 over WebSocket) ---
+
+let activeLiveVoiceBridge = null;
+
+function downsampleTo16kInt16(float32Samples, inputSampleRate) {
+  const targetRate = 16000;
+  if (!inputSampleRate || inputSampleRate === targetRate) {
+    const out = new Int16Array(float32Samples.length);
+    for (let i = 0; i < float32Samples.length; i++) {
+      const s = Math.max(-1, Math.min(1, float32Samples[i]));
+      out[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+    }
+    return out;
+  }
+  const ratio = inputSampleRate / targetRate;
+  const newLength = Math.round(float32Samples.length / ratio);
+  const out = new Int16Array(newLength);
+  let offsetResult = 0;
+  let offsetBuffer = 0;
+  while (offsetResult < out.length) {
+    const nextOffsetBuffer = Math.round((offsetResult + 1) * ratio);
+    let accum = 0;
+    let count = 0;
+    for (let i = offsetBuffer; i < nextOffsetBuffer && i < float32Samples.length; i++) {
+      accum += float32Samples[i];
+      count++;
+    }
+    const avg = count > 0 ? accum / count : 0;
+    const s = Math.max(-1, Math.min(1, avg));
+    out[offsetResult] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+    offsetResult++;
+    offsetBuffer = nextOffsetBuffer;
+  }
+  return out;
+}
+
+function updateLiveVoiceBtnUI(tabObj, stateLabel, isActive) {
+  if (!tabObj || !tabObj.chatLiveVoiceBtn) return;
+  const btn = tabObj.chatLiveVoiceBtn;
+  btn.textContent = stateLabel || (isActive ? '🎙️ Live Voice: ON' : '🎙️ Live Voice: OFF');
+  btn.classList.toggle('active', Boolean(isActive));
+  btn.classList.toggle('listening', Boolean(isActive));
+}
+
+export function stopAntigravityLiveVoice(sendStopCmd = true) {
+  if (!activeLiveVoiceBridge) return;
+  const bridge = activeLiveVoiceBridge;
+  activeLiveVoiceBridge = null;
+
+  if (sendStopCmd && bridge.ws && bridge.ws.readyState === WebSocket.OPEN && bridge.sessionId) {
+    try {
+      bridge.ws.send(JSON.stringify({
+        type: 'stop_voice',
+        session_id: bridge.sessionId
+      }));
+    } catch (_) {}
+  }
+
+  if (bridge.processor) {
+    try { bridge.processor.disconnect(); } catch (_) {}
+  }
+  if (bridge.micSource) {
+    try { bridge.micSource.disconnect(); } catch (_) {}
+  }
+  if (bridge.mediaStream) {
+    try {
+      bridge.mediaStream.getTracks().forEach(t => t.stop());
+    } catch (_) {}
+  }
+  if (bridge.scheduledSources) {
+    for (const src of bridge.scheduledSources) {
+      try { src.stop(); } catch (_) {}
+    }
+    bridge.scheduledSources = [];
+  }
+  if (bridge.audioCtx) {
+    try { bridge.audioCtx.close(); } catch (_) {}
+  }
+  if (bridge.ws) {
+    try { bridge.ws.close(); } catch (_) {}
+  }
+  if (bridge.tabObj) {
+    updateLiveVoiceBtnUI(bridge.tabObj, '🎙️ Live Voice: OFF', false);
+  }
+}
+
+export async function toggleAntigravityLiveVoice(tabObj, initialAction = 'start_live') {
+  stopActiveSpeech();
+  if (!tabObj || !tabObj.session) return;
+
+  if (activeLiveVoiceBridge) {
+    stopAntigravityLiveVoice(true);
+    return;
+  }
+
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    showUploadToast('Microphone access requires HTTPS or localhost in this browser.', 'error', 4000);
+    return;
+  }
+
+  // If the Antigravity session is currently headless, switch it to interactive tmux first so `/voice live` can run
+  if (tabObj.session.engine_type !== 'tmux') {
+    updateLiveVoiceBtnUI(tabObj, '🎙️ Starting tmux...', true);
+    await handleTakeWheel(tabObj.session.id);
+  }
+
+  let mediaStream;
+  try {
+    mediaStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        channelCount: 1,
+        sampleRate: 16000,
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true
+      }
+    });
+  } catch (err) {
+    console.warn('Failed to acquire microphone for Antigravity Live Voice:', err);
+    showUploadToast('Microphone permission denied.', 'error', 3500);
+    updateLiveVoiceBtnUI(tabObj, '🎙️ Live Voice: OFF', false);
+    return;
+  }
+
+  const AudioCtx = window.AudioContext || window.webkitAudioContext;
+  const audioCtx = new AudioCtx();
+  const sessionId = tabObj.session.id;
+  const baseUrl = getSessionBaseUrl(sessionId, tabObj.session);
+  const wsProto = baseUrl.startsWith('https:') ? 'wss:' : 'ws:';
+  const hostPart = baseUrl.replace(/^https?:\/\//, '') || window.location.host;
+  const token = getAuthToken();
+  const tokenParam = token ? `&token=${encodeURIComponent(token)}` : '';
+  const wsUrl = `${wsProto}//${hostPart}/v1/sessions/voice-bridge?session_id=${encodeURIComponent(sessionId)}${tokenParam}`;
+
+  const ws = new WebSocket(wsUrl);
+  ws.binaryType = 'arraybuffer';
+
+  const bridgeState = {
+    tabObj,
+    sessionId,
+    ws,
+    mediaStream,
+    audioCtx,
+    micSource: null,
+    processor: null,
+    speakerSampleRate: 24000,
+    nextPlayTime: 0,
+    scheduledSources: []
+  };
+  activeLiveVoiceBridge = bridgeState;
+  updateLiveVoiceBtnUI(tabObj, '🎙️ Connecting...', true);
+
+  const flushSpeakerQueue = () => {
+    for (const src of bridgeState.scheduledSources) {
+      try { src.stop(); } catch (_) {}
+    }
+    bridgeState.scheduledSources = [];
+    bridgeState.nextPlayTime = audioCtx.currentTime;
+  };
+
+  const playSpeakerPCM = (arrayBuffer) => {
+    if (!arrayBuffer || arrayBuffer.byteLength < 2) return;
+    const int16 = new Int16Array(arrayBuffer);
+    const float32 = new Float32Array(int16.length);
+    for (let i = 0; i < int16.length; i++) {
+      float32[i] = int16[i] / 32768.0;
+    }
+    const sampleRate = bridgeState.speakerSampleRate || 24000;
+    const audioBuffer = audioCtx.createBuffer(1, float32.length, sampleRate);
+    audioBuffer.getChannelData(0).set(float32);
+
+    const source = audioCtx.createBufferSource();
+    source.buffer = audioBuffer;
+    source.connect(audioCtx.destination);
+
+    const now = audioCtx.currentTime;
+    const startTime = Math.max(now + 0.012, bridgeState.nextPlayTime);
+    bridgeState.nextPlayTime = startTime + audioBuffer.duration;
+    bridgeState.scheduledSources.push(source);
+
+    source.onended = () => {
+      const idx = bridgeState.scheduledSources.indexOf(source);
+      if (idx !== -1) bridgeState.scheduledSources.splice(idx, 1);
+    };
+    source.start(startTime);
+  };
+
+  ws.onopen = () => {
+    if (activeLiveVoiceBridge !== bridgeState) return;
+    updateLiveVoiceBtnUI(tabObj, '🎙️ Live Voice: ON', true);
+
+    // Wire microphone capture -> 16kHz S16_LE PCM -> binary WebSocket frames
+    const micSource = audioCtx.createMediaStreamSource(mediaStream);
+    const processor = audioCtx.createScriptProcessor(2048, 1, 1);
+    bridgeState.micSource = micSource;
+    bridgeState.processor = processor;
+
+    processor.onaudioprocess = (e) => {
+      if (activeLiveVoiceBridge !== bridgeState || ws.readyState !== WebSocket.OPEN) return;
+      const inputData = e.inputBuffer.getChannelData(0);
+      const pcm16 = downsampleTo16kInt16(inputData, audioCtx.sampleRate);
+      ws.send(pcm16.buffer);
+    };
+
+    micSource.connect(processor);
+    processor.connect(audioCtx.destination);
+
+    // Trigger `/voice live` or `/voice dictate` in Antigravity tmux pane
+    if (initialAction) {
+      ws.send(JSON.stringify({
+        type: initialAction,
+        session_id: sessionId
+      }));
+    }
+  };
+
+  ws.onmessage = (event) => {
+    if (activeLiveVoiceBridge !== bridgeState) return;
+    if (event.data instanceof ArrayBuffer) {
+      playSpeakerPCM(event.data);
+      return;
+    }
+    if (typeof event.data === 'string') {
+      try {
+        const msg = JSON.parse(event.data);
+        if (msg.type === 'clear') {
+          flushSpeakerQueue();
+        } else if (msg.type === 'status') {
+          if (typeof msg.sample_rate === 'number' && msg.sample_rate > 0) {
+            bridgeState.speakerSampleRate = msg.sample_rate;
+          }
+          if (msg.playing) {
+            updateLiveVoiceBtnUI(tabObj, '🔊 Gemini Speaking...', true);
+          } else if (msg.recording) {
+            updateLiveVoiceBtnUI(tabObj, '🎙️ Live Listening...', true);
+          } else {
+            updateLiveVoiceBtnUI(tabObj, '🎙️ Live Voice: ON', true);
+          }
+        } else if (msg.type === 'error' && msg.error) {
+          showUploadToast(msg.error, 'error', 4000);
+        }
+      } catch (_) {}
+    }
+  };
+
+  ws.onerror = () => {
+    if (activeLiveVoiceBridge === bridgeState) {
+      stopAntigravityLiveVoice(false);
+    }
+  };
+
+  ws.onclose = () => {
+    if (activeLiveVoiceBridge === bridgeState) {
+      stopAntigravityLiveVoice(false);
+    }
+  };
+}
+
 if (typeof window !== 'undefined') {
   window.sanitizeMarkdownForSpeech = sanitizeMarkdownForSpeech;
   window.isSimpleSpeechCandidate = isSimpleSpeechCandidate;
@@ -569,6 +827,8 @@ if (typeof window !== 'undefined') {
   window.speakText = speakText;
   window.handleReadChatMessage = handleReadChatMessage;
   window.toggleVoiceMic = toggleVoiceMic;
+  window.toggleAntigravityLiveVoice = toggleAntigravityLiveVoice;
+  window.stopAntigravityLiveVoice = stopAntigravityLiveVoice;
   window.renderSuggestedChips = renderSuggestedChips;
 }
 
@@ -1129,6 +1389,15 @@ function executeClientAction(tabObj, actionName) {
     case 'compact':
       sendChatPrompt(tabObj, '/compact');
       break;
+    case 'voice_live':
+      toggleAntigravityLiveVoice(tabObj, 'start_live');
+      break;
+    case 'voice_dictate':
+      toggleAntigravityLiveVoice(tabObj, 'start_dictate');
+      break;
+    case 'voice_stop':
+      stopAntigravityLiveVoice(true);
+      break;
     default:
       console.warn('Unknown client action:', actionName);
   }
@@ -1408,6 +1677,7 @@ function setupChatInterface(tabObj, chatViewEl, session) {
         <span class="chat-status-badge" style="font-size: 11px; color: var(--text-dim);">🟢 Ready</span>
       </div>
       <div class="chat-header-right">
+        ${(session.agent || '').toLowerCase() === 'antigravity' ? `<button class="btn btn-secondary btn-sm btn-chat-live-voice" title="Start two-way Antigravity Gemini Live Voice call (/voice live)">🎙️ Live Voice: OFF</button>` : ''}
         <button class="btn btn-secondary btn-sm btn-chat-autoread" title="Toggle automatic speech playback on completion">🔊 Auto-Read: OFF</button>
         <button class="btn btn-secondary btn-sm btn-chat-mic" title="Toggle voice microphone input">🎤 Mic: OFF</button>
         <button class="btn-take-wheel" title="Spawn tmux process and attach interactive terminal">🏎️ Take the Wheel</button>
@@ -1513,7 +1783,15 @@ function setupChatInterface(tabObj, chatViewEl, session) {
   tabObj.chatEngineBadge = chatViewEl.querySelector('.chat-engine-badge');
   tabObj.chatAutoReadBtn = chatViewEl.querySelector('.btn-chat-autoread');
   tabObj.chatMicBtn = chatViewEl.querySelector('.btn-chat-mic');
+  tabObj.chatLiveVoiceBtn = chatViewEl.querySelector('.btn-chat-live-voice');
   tabObj.chatSuggestedChipsEl = chatViewEl.querySelector('.chat-suggested-chips');
+
+  if (tabObj.chatLiveVoiceBtn) {
+    tabObj.chatLiveVoiceBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      toggleAntigravityLiveVoice(tabObj, 'start_live');
+    });
+  }
 
   const autoReadStored = isChatAutoReadEnabled();
   if (tabObj.chatAutoReadBtn) {

@@ -1,4 +1,5 @@
 import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -27,10 +28,7 @@ class MockSSEClient extends SSEClient {
 Widget _wrapScreen(Widget child, ProviderContainer container) {
   return UncontrolledProviderScope(
     container: container,
-    child: MaterialApp(
-      theme: AppTheme.darkTheme,
-      home: child,
-    ),
+    child: MaterialApp(theme: AppTheme.darkTheme, home: child),
   );
 }
 
@@ -127,10 +125,7 @@ void main() {
       container.read(fleetSessionsProvider.notifier).setSessions([testSession]);
 
       await tester.pumpWidget(
-        _wrapScreen(
-          TranscriptScreen(session: testSession),
-          container,
-        ),
+        _wrapScreen(TranscriptScreen(session: testSession), container),
       );
       await tester.pump();
 
@@ -142,8 +137,10 @@ void main() {
       await tester.tap(autoReadBtn);
       await tester.pump();
 
-      expect(container.read(audioCompanionServiceProvider).autoReadEnabled,
-          isTrue);
+      expect(
+        container.read(audioCompanionServiceProvider).autoReadEnabled,
+        isTrue,
+      );
       expect(find.byTooltip('Auto-Read: On'), findsOneWidget);
 
       // Find Mic button
@@ -159,97 +156,209 @@ void main() {
     });
 
     testWidgets(
-        'tapping Read aloud button on assistant message starts speech playback',
-        (tester) async {
-      final container = ProviderContainer(
-        overrides: [
-          apiClientProvider.overrideWithValue(mockApiClient),
-          sseClientProvider.overrideWithValue(mockSseClient),
-        ],
-      );
-      addTearDown(container.dispose);
+      'tapping Read aloud button on assistant message starts speech playback',
+      (tester) async {
+        final container = ProviderContainer(
+          overrides: [
+            apiClientProvider.overrideWithValue(mockApiClient),
+            sseClientProvider.overrideWithValue(mockSseClient),
+          ],
+        );
+        addTearDown(container.dispose);
 
-      container.read(hostsListProvider.notifier).setHosts(testHosts);
-      container.read(fleetSessionsProvider.notifier).setSessions([testSession]);
+        container.read(hostsListProvider.notifier).setHosts(testHosts);
+        container.read(fleetSessionsProvider.notifier).setSessions([
+          testSession,
+        ]);
 
-      await tester.pumpWidget(
-        _wrapScreen(
-          TranscriptScreen(session: testSession),
-          container,
-        ),
-      );
-      await tester.pump();
+        await tester.pumpWidget(
+          _wrapScreen(TranscriptScreen(session: testSession), container),
+        );
+        await tester.pump();
 
-      // Find Read aloud button on assistant card
-      final readAloudBtn = find.byTooltip('Read aloud');
-      expect(readAloudBtn, findsOneWidget);
+        // Find Read aloud button on assistant card
+        final readAloudBtn = find.byTooltip('Read aloud');
+        expect(readAloudBtn, findsOneWidget);
 
-      // Tap Read aloud button
-      await tester.tap(readAloudBtn);
-      await tester.pump();
+        // Tap Read aloud button
+        await tester.tap(readAloudBtn);
+        await tester.pump();
 
-      // Audio companion should be speaking
-      expect(container.read(audioCompanionServiceProvider).isSpeaking, isTrue);
-      expect(
-        container.read(audioCompanionServiceProvider).lastSpokenText,
-        contains('All test suites completed successfully'),
-      );
+        // Audio companion should be speaking
+        expect(
+          container.read(audioCompanionServiceProvider).isSpeaking,
+          isTrue,
+        );
+        expect(
+          container.read(audioCompanionServiceProvider).lastSpokenText,
+          contains('All test suites completed successfully'),
+        );
 
-      // Allow 100ms speaking timer to settle
-      await tester.pump(const Duration(milliseconds: 150));
-    });
-
-    testWidgets(
-        'renders suggested commuter chips and tapping chip sends prompt',
-        (tester) async {
-      final container = ProviderContainer(
-        overrides: [
-          apiClientProvider.overrideWithValue(mockApiClient),
-          sseClientProvider.overrideWithValue(mockSseClient),
-        ],
-      );
-      addTearDown(container.dispose);
-
-      container.read(hostsListProvider.notifier).setHosts(testHosts);
-      container.read(fleetSessionsProvider.notifier).setSessions([testSession]);
-
-      // Seed active suggested chips
-      container.read(audioCompanionServiceProvider.notifier).state =
-          container.read(audioCompanionServiceProvider).copyWith(
-        activeSuggestedChips: [
-          'Proceed with deployment',
-          'Review diffs',
-          'Cancel'
-        ],
-      );
-
-      await tester.pumpWidget(
-        _wrapScreen(
-          TranscriptScreen(session: testSession),
-          container,
-        ),
-      );
-      await tester.pump();
-
-      // Chips should be visible above input composer
-      expect(find.text('Proceed with deployment'), findsOneWidget);
-      expect(find.text('Review diffs'), findsOneWidget);
-      expect(find.text('Cancel'), findsOneWidget);
-
-      // Tap a chip to send prompt
-      await tester.tap(find.text('Proceed with deployment'));
-      await tester.pump();
-
-      // Turn is dispatched
-      expect(find.text('Proceed with deployment'), findsWidgets);
-    });
+        // Allow 100ms speaking timer to settle
+        await tester.pump(const Duration(milliseconds: 150));
+      },
+    );
 
     testWidgets(
-        'auto-read waits for silent transcript refresh to complete on working -> idle transition before speaking',
-        (tester) async {
-      final workingSession = testSession.copyWith(state: SessionState.working);
-      final idleSession = testSession.copyWith(state: SessionState.idle);
+      'renders suggested commuter chips and tapping chip sends prompt',
+      (tester) async {
+        final container = ProviderContainer(
+          overrides: [
+            apiClientProvider.overrideWithValue(mockApiClient),
+            sseClientProvider.overrideWithValue(mockSseClient),
+          ],
+        );
+        addTearDown(container.dispose);
 
+        container.read(hostsListProvider.notifier).setHosts(testHosts);
+        container.read(fleetSessionsProvider.notifier).setSessions([
+          testSession,
+        ]);
+
+        // Seed active suggested chips
+        container.read(audioCompanionServiceProvider.notifier).state = container
+            .read(audioCompanionServiceProvider)
+            .copyWith(
+              activeSuggestedChips: [
+                'Proceed with deployment',
+                'Review diffs',
+                'Cancel',
+              ],
+            );
+
+        await tester.pumpWidget(
+          _wrapScreen(TranscriptScreen(session: testSession), container),
+        );
+        await tester.pump();
+
+        // Chips should be visible above input composer
+        expect(find.text('Proceed with deployment'), findsOneWidget);
+        expect(find.text('Review diffs'), findsOneWidget);
+        expect(find.text('Cancel'), findsOneWidget);
+
+        // Tap a chip to send prompt
+        await tester.tap(find.text('Proceed with deployment'));
+        await tester.pump();
+
+        // Turn is dispatched
+        expect(find.text('Proceed with deployment'), findsWidgets);
+      },
+    );
+
+    testWidgets(
+      'auto-read waits for silent transcript refresh to complete on working -> idle transition before speaking',
+      (tester) async {
+        final workingSession = testSession.copyWith(
+          state: SessionState.working,
+        );
+        final idleSession = testSession.copyWith(state: SessionState.idle);
+
+        final container = ProviderContainer(
+          overrides: [
+            apiClientProvider.overrideWithValue(mockApiClient),
+            sseClientProvider.overrideWithValue(mockSseClient),
+          ],
+        );
+        addTearDown(container.dispose);
+
+        container.read(hostsListProvider.notifier).setHosts(testHosts);
+        container.read(fleetSessionsProvider.notifier).setSessions([
+          workingSession,
+        ]);
+
+        // Enable auto-read
+        container.read(audioCompanionServiceProvider.notifier).state = container
+            .read(audioCompanionServiceProvider)
+            .copyWith(autoReadEnabled: true);
+
+        await tester.pumpWidget(
+          _wrapScreen(TranscriptScreen(session: workingSession), container),
+        );
+        await tester.pump();
+
+        // Audio companion not speaking yet
+        expect(
+          container.read(audioCompanionServiceProvider).isSpeaking,
+          isFalse,
+        );
+
+        // Session finishes turn: working -> idle
+        container.read(fleetSessionsProvider.notifier).setSessions([
+          idleSession,
+        ]);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 50));
+
+        // After async refresh resolves, auto-read spoke the assistant message
+        expect(
+          container.read(audioCompanionServiceProvider).lastSpokenText,
+          contains('All test suites completed successfully'),
+        );
+
+        await tester.pump(const Duration(milliseconds: 150));
+      },
+    );
+
+    testWidgets(
+      'STT mic dictation dispatches final recognized speech prompt to agent',
+      (tester) async {
+        final testEngine = InMemorySpeechEngine();
+        final container = ProviderContainer(
+          overrides: [
+            apiClientProvider.overrideWithValue(mockApiClient),
+            sseClientProvider.overrideWithValue(mockSseClient),
+            audioCompanionServiceProvider.overrideWith(
+              (ref) => AudioCompanionService(
+                ref.watch(apiClientProvider),
+                engine: testEngine,
+              ),
+            ),
+          ],
+        );
+        addTearDown(container.dispose);
+
+        container.read(hostsListProvider.notifier).setHosts(testHosts);
+        container.read(fleetSessionsProvider.notifier).setSessions([
+          testSession,
+        ]);
+
+        await tester.pumpWidget(
+          _wrapScreen(TranscriptScreen(session: testSession), container),
+        );
+        await tester.pump();
+
+        // Enable Mic
+        await tester.tap(find.byTooltip('Mic Off'));
+        await tester.pump();
+        expect(
+          container.read(audioCompanionServiceProvider).micEnabled,
+          isTrue,
+        );
+
+        // Simulate final speech dictation
+        testEngine.simulateSpeechResult(
+          'Check Jira sprint backlog',
+          isFinal: true,
+        );
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 50));
+
+        expect(
+          container.read(audioCompanionServiceProvider).lastRecognizedText,
+          equals('Check Jira sprint backlog'),
+        );
+        expect(find.text('Check Jira sprint backlog'), findsWidgets);
+      },
+    );
+
+    testWidgets('renders Live Voice button for Antigravity sessions', (
+      tester,
+    ) async {
+      final agySession = testSession.copyWith(
+        id: 'antigravity:mac.local:sess-agy-1',
+        agent: 'antigravity',
+        engineType: 'tmux',
+      );
       final container = ProviderContainer(
         overrides: [
           apiClientProvider.overrideWithValue(mockApiClient),
@@ -259,39 +368,14 @@ void main() {
       addTearDown(container.dispose);
 
       container.read(hostsListProvider.notifier).setHosts(testHosts);
-      container
-          .read(fleetSessionsProvider.notifier)
-          .setSessions([workingSession]);
-
-      // Enable auto-read
-      container.read(audioCompanionServiceProvider.notifier).state =
-          container.read(audioCompanionServiceProvider).copyWith(
-                autoReadEnabled: true,
-              );
+      container.read(fleetSessionsProvider.notifier).setSessions([agySession]);
 
       await tester.pumpWidget(
-        _wrapScreen(
-          TranscriptScreen(session: workingSession),
-          container,
-        ),
+        _wrapScreen(TranscriptScreen(session: agySession), container),
       );
       await tester.pump();
 
-      // Audio companion not speaking yet
-      expect(container.read(audioCompanionServiceProvider).isSpeaking, isFalse);
-
-      // Session finishes turn: working -> idle
-      container.read(fleetSessionsProvider.notifier).setSessions([idleSession]);
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 50));
-
-      // After async refresh resolves, auto-read spoke the assistant message
-      expect(
-        container.read(audioCompanionServiceProvider).lastSpokenText,
-        contains('All test suites completed successfully'),
-      );
-
-      await tester.pump(const Duration(milliseconds: 150));
+      expect(find.byTooltip('Live Voice: Off'), findsOneWidget);
     });
   });
 }

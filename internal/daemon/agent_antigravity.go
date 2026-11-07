@@ -169,8 +169,8 @@ func (a AntigravityAgentAdapter) IsValidNativeID(nativeID string) bool {
 
 var antigravityIgnoredSubcommands = map[string]bool{
 	"agent": true, "agents": true, "changelog": true, "help": true,
-	"install": true, "mcp": true, "models": true, "plugin": true,
-	"plugins": true, "update": true,
+	"install": true, "mcp": true, "mic-serve": true, "models": true,
+	"plugin": true, "plugins": true, "update": true,
 }
 
 var antigravityIgnoredFlags = map[string]bool{
