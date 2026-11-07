@@ -17,7 +17,7 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 ### Modular Daemon File Layout (`internal/daemon/`)
 * **`server.go`:** Core `Server` struct, HTTP `Mux()` route registration, token `authMiddleware`, CORS wrapper, SSE `/v1/events` broadcaster, background loop, version/update/settings/shutdown handlers, and normalized OS hostname fallback (`DefaultSystemHostName`).
 * **`server_hooks.go`:** Hook ingestion (`/v1/hooks/<agent>`), per-session FIFO serialization (`reserveSessionHook`), managed-only session resolution, spawning session adoption, in-place `/clear` / `/reset` turn rotation, and hook-driven subagent tracking.
-* **`server_sessions.go`:** Session listing, maintenance purge, remote-host proxy resolution (`resolveSessionOrProxy`), lifecycle control actions (`/v1/sessions/control`), session configuration (`PATCH /v1/sessions/{id}/config`), interactive response dispatch (`applyInteractiveResponse`, `/v1/sessions/respond`), take-wheel (`/v1/sessions/take-wheel`), session spawn (`/v1/sessions/spawn`), and meta-routing (`/v1/meta/resolve`).
+* **`server_sessions.go`:** Session listing, maintenance purge, remote-host proxy resolution (`resolveSessionOrProxy`), lifecycle control actions (`/v1/sessions/control`), session configuration (`PATCH /v1/sessions/{id}/config`), interactive response dispatch (`applyInteractiveResponse`, `/v1/sessions/respond`), mode switching between headless and tmux (`/v1/sessions/take-wheel` and `/v1/sessions/switch-headless`), session spawn (`/v1/sessions/spawn`), and meta-routing (`/v1/meta/resolve`).
 * **`server_suggestions.go`:** Slash command (`/`), workspace file (`@`), and agent-aware model suggestions endpoint (`GET /v1/sessions/{id}/suggestions?kind=commands|files|models&q=...`) with 10-second directory caching, 5-minute Antigravity model discovery caching, and bounded `git ls-files` / `filepath.WalkDir` traversal.
 * **`server_chat.go`:** Headless/tmux prompt submission (`/v1/sessions/prompt`), prompt queue management, SSE chat streaming (`/v1/sessions/chat/stream`), turn cancellation, automated session handover (`/v1/sessions/handover`), and transcript endpoints.
 * **`server_subagents.go`:** Subagent discovery endpoint (`/v1/sessions/subagents`) and in-memory/disk subagent lifecycle reconciliation.
@@ -80,6 +80,8 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 | `POST` | `/v1/agents/provision` | Provisions or upgrades the Ackbar Tasks MCP server and Skill into connected agent configs (including `claude_desktop_config.json`), and optionally syncs external skills repo. |
 | `POST` | `/v1/agents/skills-repo/sync` | Clones or fast-forward pulls the shared skills repository and runs `./install.sh` (or fallback copy). |
 | `POST` | `/v1/mcp` | Streamable HTTP JSON-RPC 2.0 MCP endpoint (`initialize`, `tools/list`, `tools/call`). Resolves local loopback listener to prevent SSRF and hairpinning. |
+| `POST` | `/v1/sessions/take-wheel` | Stops any active headless turn and resumes the session in an interactive `tmux` terminal (`engine_type = "tmux"`). |
+| `POST` | `/v1/sessions/switch-headless` | Stops the running `tmux` session and switches the session to turn-by-turn headless mode (`engine_type = "headless"`, `tmux_name = ""`). |
 | `POST` | `/v1/sessions/summarize-speech` | On-demand speech summarizer with 2-level caching (in-memory + SQLite `speech_summaries`), headless Haiku synthesis ($0 flat OAuth), optional cloud API, and pure-Go structural AST fallback. |
 
 ### PTY Terminal Sizing (`/v1/sessions/pty`)

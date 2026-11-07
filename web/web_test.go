@@ -295,6 +295,9 @@ func TestHeadlessChatDictationAndPasteFocus_JS(t *testing.T) {
 		"function extractPastedAttachmentFiles(",
 		"document.addEventListener('paste'",
 		"insertTextIntoPromptInput(activeTab.chatInputEl, pastedText)",
+		"insertTextIntoPromptInput(tabObj.chatInputEl, pastedText)",
+		"e._ackbarPasteHandled = true;",
+		"navigator.clipboard.readText()",
 		"tabObj.chatComposerBox.addEventListener('click'",
 		"chatViewEl.addEventListener('click'",
 		"insertTextIntoPromptInput,",
@@ -302,6 +305,10 @@ func TestHeadlessChatDictationAndPasteFocus_JS(t *testing.T) {
 		if !strings.Contains(chatContent, expected) {
 			t.Errorf("expected js/chat.js to contain %q", expected)
 		}
+	}
+
+	if strings.Contains(chatContent, "if (document.activeElement === activeTab.chatInputEl) return;") {
+		t.Errorf("js/chat.js must not skip document paste handling when activeElement is chatInputEl")
 	}
 
 	fTabs, err := embeddedFS.Open("js/tabs.js")
@@ -318,10 +325,18 @@ func TestHeadlessChatDictationAndPasteFocus_JS(t *testing.T) {
 
 	for _, expected := range []string{
 		"function isAuxiliaryInputFocused(",
+		"function isHeadlessSession(",
+		"function teardownChatInTab(",
+		"function mountChatInTab(",
+		"function teardownTerminalInTab(",
+		"function mountTerminalInTab(",
+		"async function handleSwitchHeadless(",
+		"/v1/sessions/switch-headless",
 		"workBoardView",
 		"if (!isAuxiliaryInputFocused(tab.chatInputEl))",
 		"document.activeElement !== tab.chatInputEl",
 		"isAuxiliaryInputFocused,",
+		"handleSwitchHeadless,",
 	} {
 		if !strings.Contains(tabsContent, expected) {
 			t.Errorf("expected js/tabs.js to contain %q", expected)

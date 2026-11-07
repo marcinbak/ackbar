@@ -9,6 +9,7 @@ import { isSessionDone, isSessionLater } from './tree.js';
 import {
   openSessionInTab,
   handleTakeWheel,
+  isHeadlessSupportedAgent,
   closeTab,
   closeOtherTabs,
   closeTabsToTheRight,
@@ -209,14 +210,24 @@ function showContextMenu(x, y, session) {
 
   const isLater = isSessionLater(session);
   const isDone = isSessionDone(session);
-  const activeTab = (session && state.openTabs && state.activeTabId === session.id) ? state.openTabs.get(session.id) : null;
+  const isHeadless = Boolean(session && session.engine_type === 'headless' && !session.tmux_name);
+  const supportsHeadless = isHeadlessSupportedAgent(session);
 
   if (el.cmItemViewChat) {
-    el.cmItemViewChat.innerHTML = `<span>💬</span> ${activeTab && activeTab.viewMode === 'chat' ? 'Chat View (Active)' : 'Open in Chat View'}`;
+    el.cmItemViewChat.style.display = (isHeadless || supportsHeadless) ? '' : 'none';
+    el.cmItemViewChat.innerHTML = isHeadless ? '<span>💬</span> Open in Chat View' : '<span>💬</span> Switch to Headless Mode';
   }
 
   if (el.cmItemViewTerminal) {
-    el.cmItemViewTerminal.innerHTML = `<span>💻</span> ${activeTab && activeTab.viewMode === 'terminal' ? 'Terminal View (Active)' : 'Open in Terminal View'}`;
+    el.cmItemViewTerminal.innerHTML = isHeadless ? '<span>🏎️</span> Switch to Terminal Mode' : '<span>💻</span> Open in Terminal View';
+  }
+
+  if (el.cmItemTakeWheel) {
+    el.cmItemTakeWheel.style.display = isHeadless ? '' : 'none';
+  }
+
+  if (el.cmItemSwitchHeadless) {
+    el.cmItemSwitchHeadless.style.display = (!isHeadless && supportsHeadless) ? '' : 'none';
   }
 
   if (el.cmItemNewTab) {

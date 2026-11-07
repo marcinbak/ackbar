@@ -30,8 +30,18 @@ function updateStatusbar(session) {
     }
   }
   if (el.sbModelBadge) {
-    const engineLabel = session.engine_type === 'headless' ? 'headless' : 'tmux';
-    el.sbModelBadge.textContent = `${session.agent || 'claude'} (${engineLabel})`;
+    const isHeadless = session.engine_type === 'headless' && !session.tmux_name;
+    const supportsHeadless = !session.agent || session.agent === 'claude-code' || session.agent === 'antigravity';
+    const engineLabel = isHeadless ? 'headless' : 'tmux';
+    if (isHeadless || supportsHeadless) {
+      el.sbModelBadge.textContent = `${session.agent || 'claude'} (${engineLabel}) ⇄`;
+      el.sbModelBadge.title = isHeadless
+        ? 'Running in Headless mode — Click to switch to Tmux Terminal'
+        : 'Running in Tmux Terminal mode — Click to switch to Headless mode';
+    } else {
+      el.sbModelBadge.textContent = `${session.agent || 'claude'} (${engineLabel})`;
+      el.sbModelBadge.title = 'Running in Tmux Terminal mode';
+    }
   }
   if (el.sbPID) el.sbPID.textContent = session.pid ? `PID ${session.pid}` : 'PID —';
   if (el.sbLastActive) {
