@@ -121,11 +121,11 @@ function buildCarouselHtml(inner) {
   return `<div class="chat-carousel" data-carousel-mode="slide"><div class="chat-carousel-slides">${slidesHtml}</div></div>`;
 }
 
-function processUnfencedSlides(text) {
-  if (!/<!--\s*slide\s*-->/i.test(text)) return text;
+function processUnfencedSlides(text, unmaskFn = (s) => s) {
+  if (!/<!--\s*slide\s*-->/i.test(text)) return typeof unmaskFn === 'function' ? unmaskFn(text) : text;
 
   const rawParts = text.split(/<!--\s*slide\s*-->/i);
-  if (rawParts.length <= 1) return text;
+  if (rawParts.length <= 1) return typeof unmaskFn === 'function' ? unmaskFn(text) : text;
 
   let prefix = '';
   let firstSlide = rawParts[0];
@@ -135,7 +135,7 @@ function processUnfencedSlides(text) {
   if (lastDoubleNewline !== -1) {
     const beforeDbl = trimmedFirst.slice(0, lastDoubleNewline).trim();
     const afterDbl = trimmedFirst.slice(lastDoubleNewline + 2).trim();
-    if (!beforeDbl.startsWith('![') && (afterDbl.startsWith('![') || afterDbl.startsWith('<img') || afterDbl.startsWith('#') || afterDbl.length > 0)) {
+    if (!beforeDbl.startsWith('![') && !beforeDbl.startsWith('<img') && (afterDbl.startsWith('![') || afterDbl.startsWith('<img') || (afterDbl.startsWith('#') && !beforeDbl.startsWith('#')))) {
       prefix = beforeDbl + '\n\n';
       firstSlide = afterDbl;
     }
@@ -148,7 +148,7 @@ function processUnfencedSlides(text) {
   if (firstDoubleNewline !== -1) {
     const beforeDbl = trimmedLast.slice(0, firstDoubleNewline).trim();
     const afterDbl = trimmedLast.slice(firstDoubleNewline + 2).trim();
-    if (!afterDbl.startsWith('![') && !afterDbl.startsWith('<img')) {
+    if ((beforeDbl.startsWith('![') || beforeDbl.startsWith('<img')) && !afterDbl.startsWith('![') && !afterDbl.startsWith('<img')) {
       lastSlide = beforeDbl;
       suffix = '\n\n' + afterDbl;
     }
@@ -158,17 +158,21 @@ function processUnfencedSlides(text) {
     .map(s => s.trim())
     .filter(Boolean);
 
-  if (slideTexts.length === 0) return text;
+  if (slideTexts.length === 0) return typeof unmaskFn === 'function' ? unmaskFn(text) : text;
 
   const slidesHtml = slideTexts.map((slideMd, idx) => {
     const activeAttr = idx === 0 ? ' data-active="true"' : '';
-    const slideParsed = renderSlideContent(slideMd);
+    const unmaskedSlideMd = typeof unmaskFn === 'function' ? unmaskFn(slideMd) : slideMd;
+    const slideParsed = renderSlideContent(unmaskedSlideMd);
     return `<div class="chat-carousel-slide" data-slide-index="${idx}"${activeAttr}>${slideParsed}</div>`;
   }).join('');
 
   const carouselHtml = `<div class="chat-carousel" data-carousel-mode="slide"><div class="chat-carousel-slides">${slidesHtml}</div></div>`;
 
-  return prefix + carouselHtml + suffix;
+  const finalPrefix = typeof unmaskFn === 'function' ? unmaskFn(prefix) : prefix;
+  const finalSuffix = typeof unmaskFn === 'function' ? unmaskFn(suffix) : suffix;
+
+  return finalPrefix + carouselHtml + finalSuffix;
 }
 
 function preprocessCarouselBlocks(content) {
@@ -190,10 +194,11 @@ function preprocessCarouselBlocks(content) {
     });
 
     if (/<!--\s*slide\s*-->/i.test(masked)) {
-      const processedUnfenced = processUnfencedSlides(masked);
-      result = processedUnfenced.replace(/%%CAROUSEL_CODE_BLOCK_(\d+)%%/g, (m, id) => {
-        return codeBlocks[parseInt(id, 10)] || m;
-      });
+      const unmaskFn = (str) => {
+        if (!str || typeof str !== 'string') return str || '';
+        return str.replace(/%%CAROUSEL_CODE_BLOCK_(\d+)%%/g, (m, id) => codeBlocks[parseInt(id, 10)] || m);
+      };
+      result = processUnfencedSlides(masked, unmaskFn);
     }
   }
 

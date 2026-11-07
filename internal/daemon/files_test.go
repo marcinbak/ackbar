@@ -481,7 +481,7 @@ func TestChatCarousel(t *testing.T) {
 	if nodePath, err := exec.LookPath("node"); err == nil && nodePath != "" {
 		script := `
 globalThis.window = {
-  marked: { parse: (s) => '<p>' + s + '</p>' },
+  marked: { parse: (s) => s.replace(/` + "```(\\w+)?\\n([\\s\\S]*?)\\n```" + `/g, '<pre><code class="language-$1">$2</code></pre>') },
   addEventListener: () => {}
 };
 globalThis.localStorage = { getItem: () => null, setItem: () => {} };
@@ -506,6 +506,20 @@ if (!t2.includes('Outro')) throw new Error('t2 missing Outro');
 
 const t3 = preprocessCarouselBlocks('` + "```markdown\\n<!-- slide -->\\n```" + `');
 if (!t3.includes('<!-- slide -->') || t3.includes('chat-carousel')) throw new Error('t3 corrupted markdown code block');
+
+// CTX-1 regression: unfenced slide with code block unmasked before renderSlideContent
+const t4 = preprocessCarouselBlocks('![A](a.png)\\n<!-- slide -->\\n` + "```js\\nconst x = 1;\\n```" + `');
+if (!t4.includes('class="chat-carousel"')) throw new Error('t4 missing chat-carousel');
+if (!t4.includes('<pre><code class="language-js">const x = 1;</code></pre>')) throw new Error('t4 code block was not parsed into pre/code');
+
+// CTX-2 regression: unfenced slides with multi-paragraph headings and prose kept in slides
+const t5 = preprocessCarouselBlocks('# Option 1\\n\\nDescription 1\\n<!-- slide -->\\n# Option 2\\n\\nDescription 2');
+if (!t5.includes('class="chat-carousel"')) throw new Error('t5 missing chat-carousel');
+const slidesT5 = t5.match(/<div class="chat-carousel-slide"[^>]*>([\s\S]*?)<\/div>/g) || [];
+if (slidesT5.length !== 2) throw new Error('t5 expected 2 slides, got ' + slidesT5.length);
+if (!slidesT5[0].includes('Option 1') || !slidesT5[0].includes('Description 1')) throw new Error('t5 slide 0 missing Option 1 or Description 1: ' + slidesT5[0]);
+if (!slidesT5[1].includes('Option 2') || !slidesT5[1].includes('Description 2')) throw new Error('t5 slide 1 missing Option 2 or Description 2: ' + slidesT5[1]);
+
 console.log('NODE_CAROUSEL_TESTS_PASS');
 `
 		cmd := exec.Command(nodePath, "--input-type=module", "-e", script)
