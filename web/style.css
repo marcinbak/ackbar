@@ -4806,6 +4806,137 @@ body, html {
   transform: scale(1.01);
 }
 
+/* Image preview card caption */
+.chat-file-preview-caption {
+  padding: 6px 10px;
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: #cbd5e1;
+  background: rgba(255, 255, 255, 0.04);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  font-style: italic;
+  word-break: break-word;
+}
+
+/* Chat Carousel & Slides Container */
+.chat-carousel {
+  margin: 10px 0;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(15, 23, 42, 0.4);
+  overflow: hidden;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+  display: flex;
+  flex-direction: column;
+}
+
+.chat-carousel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  background: rgba(255, 255, 255, 0.05);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  font-size: 12px;
+  color: #e2e8f0;
+  user-select: none;
+}
+
+.chat-carousel-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
+  font-size: 11.5px;
+}
+
+.chat-carousel-counter {
+  font-size: 11px;
+  color: #94a3b8;
+  font-family: var(--font-mono, monospace);
+  background: rgba(255, 255, 255, 0.08);
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
+.chat-carousel-nav {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.chat-carousel-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 4px;
+  color: #e2e8f0;
+  font-size: 11px;
+  padding: 3px 8px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  line-height: 1.2;
+}
+
+.chat-carousel-btn:hover {
+  background: rgba(255, 255, 255, 0.16);
+  border-color: rgba(255, 255, 255, 0.25);
+  color: #ffffff;
+}
+
+.chat-carousel-btn:active {
+  transform: translateY(1px);
+}
+
+.chat-carousel-slides {
+  padding: 10px;
+  min-height: 40px;
+}
+
+/* Slide Mode: show only active slide */
+.chat-carousel[data-carousel-mode="slide"] .chat-carousel-slide {
+  display: none;
+}
+
+.chat-carousel[data-carousel-mode="slide"] .chat-carousel-slide[data-active="true"] {
+  display: block;
+  animation: fadeInSlide 0.2s ease-in-out;
+}
+
+@keyframes fadeInSlide {
+  from { opacity: 0; transform: translateY(2px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Grid Mode: responsive multi-column comparison */
+.chat-carousel[data-carousel-mode="grid"] .chat-carousel-slides {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+.chat-carousel[data-carousel-mode="grid"] .chat-carousel-slide {
+  display: block;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  padding: 8px;
+  background: rgba(0, 0, 0, 0.2);
+}
+
+.chat-carousel-slide .chat-file-preview-card {
+  max-width: 100%;
+  margin: 0 auto;
+}
+
+/* Standalone slide divider */
+.chat-slide-divider {
+  margin: 12px 0;
+  border: none;
+  border-top: 1px dashed rgba(255, 255, 255, 0.15);
+}
+
 .chat-tool-file-bar {
   margin: 4px 0 6px 0;
   padding: 3px 6px;

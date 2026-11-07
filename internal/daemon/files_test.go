@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -84,6 +85,60 @@ func TestResolveFilePath(t *testing.T) {
 	_, err = server.resolveFilePath(sess, "~/.ssh/id_rsa")
 	if err == nil {
 		t.Errorf("Expected error for .ssh path, got nil")
+	}
+}
+
+func TestResolveFilePath_CrossOSHomeFallback(t *testing.T) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil || homeDir == "" {
+		t.Skip("UserHomeDir not available")
+	}
+	cleanHome := filepath.Clean(homeDir)
+	currentUser := filepath.Base(cleanHome)
+	if currentUser == "" || currentUser == "/" || currentUser == "." {
+		t.Skip("Cannot determine current user from home directory")
+	}
+
+	server := &Server{}
+	sess := &Session{ID: "sess-cross-os"}
+
+	// Determine the opposite OS prefix
+	var altPath string
+	if strings.HasPrefix(cleanHome, "/home/") {
+		altPath = "/Users/" + currentUser + "/test_cross_os_image.png"
+	} else if strings.HasPrefix(cleanHome, "/Users/") {
+		altPath = "/home/" + currentUser + "/test_cross_os_image.png"
+	} else {
+		altPath = "/Users/" + currentUser + "/test_cross_os_image.png"
+	}
+
+	expectedPath := filepath.Join(cleanHome, "test_cross_os_image.png")
+
+	resolved, err := server.resolveFilePath(sess, altPath)
+	if err != nil {
+		t.Fatalf("Failed to resolve cross-OS path %q: %v", altPath, err)
+	}
+	if resolved != expectedPath {
+		t.Errorf("Expected resolved path %q, got %q", expectedPath, resolved)
+	}
+
+	// Verify sensitive path with cross-OS prefix is still blocked
+	var altSensitive string
+	if strings.HasPrefix(cleanHome, "/home/") {
+		altSensitive = "/Users/" + currentUser + "/.ssh/id_rsa"
+	} else {
+		altSensitive = "/home/" + currentUser + "/.ssh/id_rsa"
+	}
+	_, err = server.resolveFilePath(sess, altSensitive)
+	if err == nil {
+		t.Errorf("Expected sensitive cross-OS path %q to be blocked, got nil error", altSensitive)
+	}
+
+	// Verify other user home path is blocked
+	otherUserPath := "/Users/someotheruser999/image.png"
+	_, err = server.resolveFilePath(sess, otherUserPath)
+	if err == nil {
+		t.Errorf("Expected other user path %q to be blocked, got nil error", otherUserPath)
 	}
 }
 
@@ -337,5 +392,130 @@ func TestHandleFileOpen_RemoteDownload(t *testing.T) {
 	}
 	if string(data) != "%PDF-1.4 test data" {
 		t.Errorf("Cached content mismatch: expected '%%PDF-1.4 test data', got %q", string(data))
+	}
+}
+
+func TestChatCarousel(t *testing.T) {
+	// Find project root (where web/ directory lives)
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Failed to get working directory: %v", err)
+	}
+	root := wd
+	for {
+		if _, err := os.Stat(filepath.Join(root, "web", "js", "utils.js")); err == nil {
+			break
+		}
+		parent := filepath.Dir(root)
+		if parent == root {
+			t.Fatalf("Could not locate project root from %s", wd)
+		}
+		root = parent
+	}
+
+	// 1. Verify web/js/utils.js
+	utilsJs, err := os.ReadFile(filepath.Join(root, "web", "js", "utils.js"))
+	if err != nil {
+		t.Fatalf("Failed to read utils.js: %v", err)
+	}
+	utilsStr := string(utilsJs)
+	if !strings.Contains(utilsStr, "preprocessCarouselBlocks") {
+		t.Errorf("utils.js missing preprocessCarouselBlocks")
+	}
+	if !strings.Contains(utilsStr, "chat-carousel") {
+		t.Errorf("utils.js missing chat-carousel class emission")
+	}
+	if !strings.Contains(utilsStr, "chat-carousel-slides") {
+		t.Errorf("utils.js missing chat-carousel-slides class emission")
+	}
+	if !strings.Contains(utilsStr, "chat-carousel-slide") {
+		t.Errorf("utils.js missing chat-carousel-slide class emission")
+	}
+
+	// 2. Verify web/js/chat.js
+	chatJs, err := os.ReadFile(filepath.Join(root, "web", "js", "chat.js"))
+	if err != nil {
+		t.Fatalf("Failed to read chat.js: %v", err)
+	}
+	chatStr := string(chatJs)
+	if !strings.Contains(chatStr, "chat-file-preview-caption") {
+		t.Errorf("chat.js missing chat-file-preview-caption")
+	}
+	if !strings.Contains(chatStr, ".chat-carousel") {
+		t.Errorf("chat.js missing .chat-carousel initialization")
+	}
+	if !strings.Contains(chatStr, "chat-carousel-prev") || !strings.Contains(chatStr, "chat-carousel-next") {
+		t.Errorf("chat.js missing chat-carousel navigation controls")
+	}
+	if !strings.Contains(chatStr, "chat-carousel-mode-btn") {
+		t.Errorf("chat.js missing chat-carousel-mode-btn")
+	}
+
+	// 3. Verify web/js/details.js
+	detailsJs, err := os.ReadFile(filepath.Join(root, "web", "js", "details.js"))
+	if err != nil {
+		t.Fatalf("Failed to read details.js: %v", err)
+	}
+	detailsStr := string(detailsJs)
+	if !strings.Contains(detailsStr, "linkifyChatFiles(docContainer") {
+		t.Errorf("details.js missing linkifyChatFiles(docContainer)")
+	}
+
+	// 4. Verify web/style.css
+	styleCss, err := os.ReadFile(filepath.Join(root, "web", "style.css"))
+	if err != nil {
+		t.Fatalf("Failed to read style.css: %v", err)
+	}
+	styleStr := string(styleCss)
+	if !strings.Contains(styleStr, ".chat-file-preview-caption") {
+		t.Errorf("style.css missing .chat-file-preview-caption")
+	}
+	if !strings.Contains(styleStr, ".chat-carousel") {
+		t.Errorf("style.css missing .chat-carousel")
+	}
+	if !strings.Contains(styleStr, `data-carousel-mode="grid"`) {
+		t.Errorf("style.css missing grid carousel mode styles")
+	}
+
+	// 5. If Node is present, execute JS unit tests for carousel preprocessor
+	if nodePath, err := exec.LookPath("node"); err == nil && nodePath != "" {
+		script := `
+globalThis.window = {
+  marked: { parse: (s) => '<p>' + s + '</p>' },
+  addEventListener: () => {}
+};
+globalThis.localStorage = { getItem: () => null, setItem: () => {} };
+globalThis.document = {
+  createElement: () => ({ setAttribute: () => {}, querySelectorAll: () => [] }),
+  getElementById: () => null,
+  querySelector: () => null,
+  querySelectorAll: () => [],
+  addEventListener: () => {}
+};
+const { preprocessCarouselBlocks } = await import('./web/js/utils.js');
+
+const t1 = preprocessCarouselBlocks('` + "````carousel\\n![A](a.png)\\n<!-- slide -->\\n![B](b.png)\\n````" + `');
+if (!t1.includes('class="chat-carousel"')) throw new Error('t1 missing chat-carousel');
+const slidesT1 = (t1.match(/class="chat-carousel-slide"/g) || []).length;
+if (slidesT1 !== 2) throw new Error('t1 expected 2 slides, got ' + slidesT1);
+
+const t2 = preprocessCarouselBlocks('Intro\\n\\n![A](a.png)\\n<!-- slide -->\\n![B](b.png)\\n\\nOutro');
+if (!t2.includes('class="chat-carousel"')) throw new Error('t2 missing chat-carousel');
+if (!t2.includes('Intro')) throw new Error('t2 missing Intro');
+if (!t2.includes('Outro')) throw new Error('t2 missing Outro');
+
+const t3 = preprocessCarouselBlocks('` + "```markdown\\n<!-- slide -->\\n```" + `');
+if (!t3.includes('<!-- slide -->') || t3.includes('chat-carousel')) throw new Error('t3 corrupted markdown code block');
+console.log('NODE_CAROUSEL_TESTS_PASS');
+`
+		cmd := exec.Command(nodePath, "--input-type=module", "-e", script)
+		cmd.Dir = root
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("Node carousel tests failed: %v\nOutput: %s", err, string(out))
+		}
+		if !strings.Contains(string(out), "NODE_CAROUSEL_TESTS_PASS") {
+			t.Errorf("Expected node output to contain NODE_CAROUSEL_TESTS_PASS, got: %s", string(out))
+		}
 	}
 }

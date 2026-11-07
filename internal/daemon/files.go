@@ -114,6 +114,30 @@ func (s *Server) resolveFilePath(sess *Session, reqPath string) (string, error) 
 
 	cleanPath := filepath.Clean(targetPath)
 
+	// Cross-OS Home Directory Path Fallback (/Users/<user> <-> /home/<user>)
+	if homeDir != "" && filepath.IsAbs(cleanPath) {
+		cleanHome := filepath.Clean(homeDir)
+		currentUser := filepath.Base(cleanHome)
+		if currentUser != "" && currentUser != "/" && currentUser != "." {
+			hasHomePrefix := cleanPath == cleanHome || strings.HasPrefix(cleanPath, cleanHome+string(filepath.Separator))
+			if !hasHomePrefix {
+				var rewritten string
+				macPrefix := "/Users/" + currentUser
+				linuxPrefix := "/home/" + currentUser
+				if cleanPath == macPrefix || strings.HasPrefix(cleanPath, macPrefix+"/") {
+					rewritten = filepath.Join(cleanHome, strings.TrimPrefix(strings.TrimPrefix(cleanPath, macPrefix), "/"))
+				} else if cleanPath == linuxPrefix || strings.HasPrefix(cleanPath, linuxPrefix+"/") {
+					rewritten = filepath.Join(cleanHome, strings.TrimPrefix(strings.TrimPrefix(cleanPath, linuxPrefix), "/"))
+				}
+				if rewritten != "" {
+					if _, err := os.Stat(cleanPath); err != nil {
+						cleanPath = filepath.Clean(rewritten)
+					}
+				}
+			}
+		}
+	}
+
 	// Block explicitly sensitive paths and credentials
 	sensitiveSubstrings := []string{
 		"/.ssh/",
