@@ -26,7 +26,8 @@ import { renderTree } from './tree.js';
 import {
   attachChatMessageListeners,
   linkifyChatFiles,
-  attachCodeBlockCopyButtons
+  attachCodeBlockCopyButtons,
+  openChatFileInApp
 } from './chat.js';
 
 
@@ -310,20 +311,39 @@ ${escapeHtml(session.last_prompt)}
 }
 
 // Open In-UI Markdown Document Viewer in Right Inspector Pane
-async function openDocViewerTab(docPath, docTitle, host = 'local') {
+async function openDocViewerTab(docPath, docTitle, host = null, session = null) {
   if (!docPath) return;
   const reqSeq = ++inspectorRequestSeq;
 
+  if (!host) {
+    host = (session && session.host) || getSelfHostName() || 'local';
+  }
+
   const isRemote = !isLocalHost(host);
-  const targetHost = state.hosts.find(h => h.name === host);
-  const baseUrl = (isRemote && targetHost && targetHost.url) ? targetHost.url.replace(/\/$/, '') : '';
+
+  const qParams = new URLSearchParams({
+    path: docPath
+  });
+  if (session && session.id) {
+    qParams.set('session_id', session.id);
+  }
+  if (session && session.cwd) {
+    qParams.set('cwd', session.cwd);
+  }
+  if (host) {
+    qParams.set('host', host);
+  }
 
   let markdownContent = '# Loading document...';
+  let resolvedPath = docPath;
   try {
-    const res = await fetch(`${baseUrl}/v1/documents/content?path=${encodeURIComponent(docPath)}`);
+    const res = await fetch(`/v1/documents/content?${qParams.toString()}`);
     if (res.ok) {
       const data = await res.json();
       markdownContent = data.content || '*(Document is empty)*';
+      if (data && data.path) {
+        resolvedPath = data.path;
+      }
     } else {
       markdownContent = `⚠️ Failed to load document: ${res.statusText}`;
     }
@@ -332,9 +352,11 @@ async function openDocViewerTab(docPath, docTitle, host = 'local') {
   }
   if (reqSeq !== inspectorRequestSeq) return;
 
-  const displayTitle = docTitle || docPath.split('/').pop();
+  const lastSep = Math.max(resolvedPath.lastIndexOf('/'), resolvedPath.lastIndexOf('\\'));
+  const resolvedDir = lastSep >= 0 ? resolvedPath.slice(0, lastSep) : ((session && session.cwd) || '');
+  const displayTitle = docTitle || (lastSep >= 0 ? resolvedPath.slice(lastSep + 1) : resolvedPath);
   const titleHtml = `📄 ${escapeHtml(displayTitle)} ${isRemote ? `<span class="badge-host">@${escapeHtml(formatHostLabel(host))}</span>` : ''}`;
-  const subtitleHtml = escapeHtml(docPath);
+  const subtitleHtml = escapeHtml(resolvedPath);
 
   const actionsEl = document.createElement('div');
   actionsEl.className = 'inspector-header-actions';
@@ -344,9 +366,19 @@ async function openDocViewerTab(docPath, docTitle, host = 'local') {
   vsCodeBtn.textContent = '📂 VS Code';
   vsCodeBtn.title = 'Open in VS Code';
   vsCodeBtn.addEventListener('click', async () => {
-    openInVSCode(docPath, host);
+    openInVSCode(resolvedPath, host);
   });
   actionsEl.appendChild(vsCodeBtn);
+
+  const appBtn = document.createElement('button');
+  appBtn.className = 'btn btn-secondary btn-sm';
+  appBtn.id = 'docBtnOpenApp';
+  appBtn.textContent = '↗ Open in App';
+  appBtn.title = 'Open in Default System Application';
+  appBtn.addEventListener('click', async () => {
+    openChatFileInApp(resolvedPath, { ...(session || {}), host, cwd: resolvedDir }, 'default');
+  });
+  actionsEl.appendChild(appBtn);
 
   const docContainer = document.createElement('div');
   docContainer.className = 'doc-viewer-container';
@@ -366,7 +398,9 @@ async function openDocViewerTab(docPath, docTitle, host = 'local') {
     }
   });
   attachCodeBlockCopyButtons(docContainer);
-  linkifyChatFiles(docContainer, { host });
+
+  const viewerSession = { ...(session || {}), host, cwd: resolvedDir };
+  linkifyChatFiles(docContainer, viewerSession);
 
   openInspectorPane({
     titleHtml,
@@ -375,7 +409,7 @@ async function openDocViewerTab(docPath, docTitle, host = 'local') {
     bodyEl: docContainer,
     meta: {
       type: 'doc',
-      docPath,
+      docPath: resolvedPath,
       docTitle: displayTitle,
       host
     }

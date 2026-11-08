@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -653,5 +654,158 @@ func TestLaunchVSCode_LineRanges(t *testing.T) {
 				t.Errorf("LaunchVSCode(%q, %q) = %q; want %q", tc.path, tc.host, uri, tc.wantURI)
 			}
 		})
+	}
+}
+
+func TestHandleDocumentContent_ResolutionAndSecurity(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "ackbar-doc-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	docsDir := filepath.Join(tmpDir, "docs")
+	if err := os.MkdirAll(docsDir, 0755); err != nil {
+		t.Fatalf("Failed to create docs dir: %v", err)
+	}
+
+	guideFile := filepath.Join(docsDir, "guide.md")
+	guideContent := "# Guide Content\nWelcome to documentation."
+	if err := os.WriteFile(guideFile, []byte(guideContent), 0644); err != nil {
+		t.Fatalf("Failed to write test guide file: %v", err)
+	}
+
+	dbFile := filepath.Join(tmpDir, "test.db")
+	db, err := InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("Failed to init DB: %v", err)
+	}
+	defer db.Close()
+
+	sess := &Session{
+		ID:  "sess-doc-1",
+		Cwd: tmpDir,
+	}
+	if err := db.SaveSession(sess); err != nil {
+		t.Fatalf("Failed to save session: %v", err)
+	}
+
+	server := NewServer(db)
+
+	// 1. Relative path resolved via cwd query param
+	{
+		req := httptest.NewRequest("GET", fmt.Sprintf("/v1/documents/content?path=docs/guide.md&cwd=%s", url.QueryEscape(tmpDir)), nil)
+		rec := httptest.NewRecorder()
+		server.Mux().ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("Expected 200 OK with cwd param, got %d: %s", rec.Code, rec.Body.String())
+		}
+		var res map[string]string
+		if err := json.NewDecoder(rec.Body).Decode(&res); err != nil {
+			t.Fatalf("Failed to decode JSON: %v", err)
+		}
+		if res["path"] != guideFile {
+			t.Errorf("Expected path %q, got %q", guideFile, res["path"])
+		}
+		if res["content"] != guideContent {
+			t.Errorf("Expected content %q, got %q", guideContent, res["content"])
+		}
+	}
+
+	// 2. Relative path resolved via session_id query param
+	{
+		req := httptest.NewRequest("GET", "/v1/documents/content?path=docs/guide.md&session_id=sess-doc-1", nil)
+		rec := httptest.NewRecorder()
+		server.Mux().ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("Expected 200 OK with session_id param, got %d: %s", rec.Code, rec.Body.String())
+		}
+		var res map[string]string
+		if err := json.NewDecoder(rec.Body).Decode(&res); err != nil {
+			t.Fatalf("Failed to decode JSON: %v", err)
+		}
+		if res["path"] != guideFile {
+			t.Errorf("Expected path %q, got %q", guideFile, res["path"])
+		}
+		if res["content"] != guideContent {
+			t.Errorf("Expected content %q, got %q", guideContent, res["content"])
+		}
+	}
+
+	// 3. Path with #L10-L20 line anchor strips anchor and returns 200 OK
+	{
+		req := httptest.NewRequest("GET", fmt.Sprintf("/v1/documents/content?path=%s&session_id=sess-doc-1", url.QueryEscape("docs/guide.md#L10-L20")), nil)
+		rec := httptest.NewRecorder()
+		server.Mux().ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("Expected 200 OK with line anchor, got %d: %s", rec.Code, rec.Body.String())
+		}
+		var res map[string]string
+		if err := json.NewDecoder(rec.Body).Decode(&res); err != nil {
+			t.Fatalf("Failed to decode JSON: %v", err)
+		}
+		if res["path"] != guideFile {
+			t.Errorf("Expected path %q, got %q", guideFile, res["path"])
+		}
+		if res["content"] != guideContent {
+			t.Errorf("Expected content %q, got %q", guideContent, res["content"])
+		}
+	}
+
+	// 4. Sensitive path (~/.ssh/id_rsa) returns 403 Forbidden
+	{
+		req := httptest.NewRequest("GET", "/v1/documents/content?path=~/.ssh/id_rsa&session_id=sess-doc-1", nil)
+		rec := httptest.NewRecorder()
+		server.Mux().ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("Expected 403 Forbidden for sensitive path, got %d: %s", rec.Code, rec.Body.String())
+		}
+	}
+
+	// 5. Unpermitted cwd outside home/temp/session returns 403 Forbidden (S1/C1)
+	{
+		req := httptest.NewRequest("GET", "/v1/documents/content?path=passwd&cwd=/etc", nil)
+		rec := httptest.NewRecorder()
+		server.Mux().ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("Expected 403 Forbidden for unpermitted cwd, got %d: %s", rec.Code, rec.Body.String())
+		}
+	}
+
+	// 6. Both session_id and subdirectory cwd with relative path returns 200 OK (C2/L1)
+	{
+		req := httptest.NewRequest("GET", fmt.Sprintf("/v1/documents/content?path=guide.md&cwd=%s&session_id=sess-doc-1", url.QueryEscape(docsDir)), nil)
+		rec := httptest.NewRecorder()
+		server.Mux().ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("Expected 200 OK with session_id and subdirectory cwd, got %d: %s", rec.Code, rec.Body.String())
+		}
+		var res map[string]string
+		if err := json.NewDecoder(rec.Body).Decode(&res); err != nil {
+			t.Fatalf("Failed to decode JSON: %v", err)
+		}
+		if res["path"] != guideFile {
+			t.Errorf("Expected path %q, got %q", guideFile, res["path"])
+		}
+		if res["content"] != guideContent {
+			t.Errorf("Expected content %q, got %q", guideContent, res["content"])
+		}
+	}
+
+	// 7. Requesting a directory returns 400 Bad Request (S2)
+	{
+		req := httptest.NewRequest("GET", "/v1/documents/content?path=docs&session_id=sess-doc-1", nil)
+		rec := httptest.NewRecorder()
+		server.Mux().ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("Expected 400 Bad Request for directory path, got %d: %s", rec.Code, rec.Body.String())
+		}
 	}
 }

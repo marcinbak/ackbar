@@ -75,8 +75,11 @@ It is embedded directly into the `ackbard` Go binary and served on `http://127.0
 
 ### 📖 5. In-App Plan & Markdown Viewer (Right Inspector Pane)
 * **Collapsible Right Inspector Pane (`#inspectorPanel`):** **Session Details (`ℹ`)**, **Markdown Plans & Project Docs (`📄`)**, and **Conversation Transcripts (`📜`)** open in a collapsible, drag-resizable Right Inspector Pane with a header and **`✕` Close** button (`#btnCloseInspector`) so they can be viewed side-by-side without replacing the active session's Chat or Terminal view.
-* Native markdown renderer (`marked.js`) with syntax copy buttons for viewing `implementation_plan.md`, `task.md`, `walkthrough.md`, and project documentation alongside live terminal and chat sessions.
-* Width is drag-resizable via `#inspectorResizer` (`ackbar_inspector_width` in `localStorage`) and automatically refits the active `xterm.js` terminal on open, close, and resize.
+* **Native Markdown Renderer & Syntax Highlighting:** Powered by `marked.js` with syntax copy buttons for viewing `implementation_plan.md`, `task.md`, `walkthrough.md`, and project documentation alongside live terminal and chat sessions.
+* **1-Click Chat & Transcript File Pill Integration:** Left-clicking any `.md` / `.markdown` file pill in Chat or Transcripts opens it directly in the built-in Right Inspector Pane Markdown Viewer (`openDocViewerTab`), while clicking `▾` or right-clicking opens the file context menu with `View in Markdown Viewer` at the top.
+* **In-Place Relative Markdown & Asset Navigation:** Relative `.md` links and inline images/media inside a viewed document resolve relative to that document's directory (`resolvedDir`), enabling in-place navigation across linked project docs.
+* **Inspector Actions & Secure Remote Document Proxying:** The inspector header includes both **`📂 VS Code`** and **`↗ Open in App`** actions. The `/v1/documents/content` endpoint proxies remote host documents and validates `cwd` / `session_id` boundaries via `resolveFilePath` (with an enforced 10MB document size limit).
+* **Drag-Resizable Width:** Drag-resizable via `#inspectorResizer` (`ackbar_inspector_width` in `localStorage`), automatically refitting the active `xterm.js` terminal on open, close, and resize.
 
 ### 📎 6. Clipboard Image Paste & File Drag-and-Drop
 * **Instant Clipboard Paste:** Paste screenshots (`Cmd+V`) directly into any active terminal tab.
@@ -137,7 +140,7 @@ It is embedded directly into the `ackbard` Go binary and served on `http://127.0
   * **Single-Pass LaTeX Math Converter (`$...$`, `$$...$$`):** Translates LaTeX macros (arrows, Greek symbols, relations, operators, functions, Big-O notation, subscripts/superscripts, fractions) into clean HTML/Unicode while protecting code blocks and ignoring currency strings.
   * **GitHub Alerts:** Transforms blockquotes starting with `[!NOTE]`, `[!TIP]`, `[!IMPORTANT]`, `[!WARNING]`, and `[!CAUTION]` into colored callout boxes with icons and left accent borders.
 * **Line-Range File Pills, `conversation://` Links & Media Cards (`chat.js`, `server_projects.go`, `files.go`):**
-  * **Line-Range File Pills (`#L123`, `:123`):** Resolves file paths with line-range anchors (`#L75-L176`, `:75:10`, `:75`) into interactive badges (`file.go:75-176`), displaying custom symbol labels when available and opening VS Code at the exact target line via URL scheme and CLI.
+  * **Line-Range File Pills (`#L123`, `:123`):** Resolves file paths with line-range anchors (`#L75-L176`, `:75:10`, `:75`) into interactive badges (`file.go:75-176`), displaying custom symbol labels when available. Left-clicking opens `.md` / `.markdown` files directly in the built-in Right Inspector Pane Markdown Viewer (or code files in VS Code at the exact target line via URL scheme and CLI), with a dropdown menu (`▾`) for alternate actions (`View in Markdown Viewer`, `Open in VS Code`, `Copy Path`).
   * **Subagent Conversation Links (`conversation://<id>`):** Converts subagent conversation URIs into interactive `.chat-subagent-pill` buttons that switch straight to the child worker session tab.
   * **Local Video & Audio Preview Cards:** Detects `.mp4`, `.webm`, `.mp3`, and `.wav` media files in chat and renders playable preview cards.
 

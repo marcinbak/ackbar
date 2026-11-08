@@ -534,7 +534,7 @@ async function showProjectDocsModal(cwd, title, host = 'local', session = null) 
           const t = decodeURIComponent(card.dataset.title);
           const h = decodeURIComponent(card.dataset.host || getSelfHostName());
           hideModal();
-          openDocViewerTab(p, t, h);
+          openDocViewerTab(p, t, h, session);
         });
       });
     }
@@ -570,7 +570,7 @@ async function showProjectDocsModal(cwd, title, host = 'local', session = null) 
           e.preventDefault();
           if (currentFiltered.length > 0) {
             hideModal();
-            openDocViewerTab(currentFiltered[0].path, currentFiltered[0].title, host);
+            openDocViewerTab(currentFiltered[0].path, currentFiltered[0].title, host, session);
           }
         }
       });
