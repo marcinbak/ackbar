@@ -18,6 +18,7 @@ import {
 } from './tabs.js';
 import {
   openSessionDetailsTab,
+  openDocViewerTab,
   openTranscriptViewerTab
 } from './details.js';
 import {
@@ -75,6 +76,7 @@ function showChatFileContextMenu(pill, cleanPath, session, clickX, clickY) {
 
   const baseFilePath = cleanPath.split('?')[0].replace(/#L\d+(?:-L?\d+)?$/i, '').replace(/:\d+(?:[-:]\d+)?$/, '');
   const ext = baseFilePath.split('.').pop().toLowerCase();
+  const isMarkdown = (ext === 'md' || ext === 'markdown');
   const isImg = CHAT_IMAGE_EXTS.has(ext);
   const isHtml = (ext === 'html' || ext === 'htm');
   const isPdf = (ext === 'pdf');
@@ -89,11 +91,22 @@ function showChatFileContextMenu(pill, cleanPath, session, clickX, clickY) {
 
   const previewSub = isImg || isPdf ? 'macOS Preview.app' : 'Native preview';
 
+  const mdMenuItemHtml = isMarkdown ? `
+    <div class="context-menu-item" data-action="md-viewer">
+      <span class="menu-app-icon">${APP_ICONS.markdown || '📖'}</span>
+      <div class="menu-item-text">
+        <span class="menu-item-title">View in Markdown Viewer</span>
+        <span class="menu-item-sub">Built-in Inspector Pane</span>
+      </div>
+    </div>
+  ` : '';
+
   menu.innerHTML = `
     <div class="chat-file-menu-header">
       <span class="chat-file-menu-icon">${icon}</span>
       <span class="chat-file-menu-name" title="${escapeHtml(cleanPath)}">${escapeHtml(filename)}</span>
     </div>
+    ${mdMenuItemHtml}
     <div class="context-menu-item" data-action="browser">
       <span class="menu-app-icon">${APP_ICONS.browser}</span>
       <div class="menu-item-text">
@@ -139,7 +152,9 @@ function showChatFileContextMenu(pill, cleanPath, session, clickX, clickY) {
       const action = item.dataset.action;
       hideChatFileContextMenu();
 
-      if (action === 'browser') {
+      if (action === 'md-viewer') {
+        openDocViewerTab(baseFilePath, filename, (session && session.host) || 'local', session);
+      } else if (action === 'browser') {
         window.open(contentUrl, '_blank');
       } else if (action === 'preview') {
         openChatFileInApp(baseFilePath, session, 'preview');
@@ -362,6 +377,8 @@ export {
   getOrCreateFileContextMenu,
   hideChatFileContextMenu,
   showChatFileContextMenu,
+  activeFileMenuPill,
+  fileContextMenuEl,
   showContextMenu,
   hideContextMenu,
   showGroupContextMenu,

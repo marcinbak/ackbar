@@ -10,12 +10,14 @@ import {
   openInVSCode,
   formatAgentChatName
 } from './utils.js';
-import { openSessionDetailsTab, openTranscriptViewerTab } from './details.js';
+import { openSessionDetailsTab, openDocViewerTab, openTranscriptViewerTab } from './details.js';
 import { openHandoverModal } from './modals.js';
 import {
   getOrCreateFileContextMenu,
   hideChatFileContextMenu,
-  showChatFileContextMenu
+  showChatFileContextMenu,
+  activeFileMenuPill,
+  fileContextMenuEl
 } from './context-menu.js';
 import { handleTakeWheel, isAuxiliaryInputFocused, openSessionInTab } from './tabs.js';
 import {
@@ -2728,12 +2730,19 @@ const APP_ICONS = {
   copy: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="menu-app-svg">
     <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
     <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+  </svg>`,
+
+  markdown: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" class="menu-app-svg">
+    <rect x="2.5" y="3" width="19" height="18" rx="3" fill="#6366f1"/>
+    <path d="M6 15V9l3 3.2L12 9v6" stroke="#ffffff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M15 12l2.5 3 2.5-3M17.5 9v6" stroke="#ffffff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
   </svg>`
 };
 
 function createChatFilePill(filePath, session, customLabel = '') {
   const { baseFilePath, lineSuffix, vscodePath } = parseLineRange(filePath);
   const ext = baseFilePath.split('?')[0].split('.').pop().toLowerCase();
+  const isMarkdown = (ext === 'md' || ext === 'markdown');
   const isImg = CHAT_IMAGE_EXTS.has(ext);
   const isVideo = CHAT_VIDEO_EXTS.has(ext);
   const isAudio = CHAT_AUDIO_EXTS.has(ext);
@@ -2757,7 +2766,9 @@ function createChatFilePill(filePath, session, customLabel = '') {
 
   const pill = document.createElement('span');
   pill.className = 'chat-file-pill';
-  pill.title = `${vscodePath} (Click for actions)`;
+  pill.title = isMarkdown
+    ? `${vscodePath} (Click to view in Ackbar, ▾ or right-click for actions)`
+    : `${vscodePath} (Click for actions)`;
 
   pill.innerHTML = `
     <span class="chat-file-icon">${icon}</span>
@@ -2768,6 +2779,12 @@ function createChatFilePill(filePath, session, customLabel = '') {
   pill.addEventListener('click', (e) => {
     e.preventDefault();
     e.stopPropagation();
+    const clickedChevron = !!e.target.closest('.chat-file-chevron');
+    if (isMarkdown && !clickedChevron) {
+      hideChatFileContextMenu();
+      openDocViewerTab(baseFilePath, filename, (session && session.host) || 'local', session);
+      return;
+    }
     if (activeFileMenuPill === pill && fileContextMenuEl && fileContextMenuEl.style.display !== 'none') {
       hideChatFileContextMenu();
     } else {

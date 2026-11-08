@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"net/http"
@@ -184,7 +185,81 @@ func (s *Server) handleDocumentContent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	content, err := os.ReadFile(docPath)
+	sessionID := r.URL.Query().Get("session_id")
+	if sessionID == "" {
+		sessionID = r.URL.Query().Get("id")
+	}
+	cwdParam := r.URL.Query().Get("cwd")
+	hostParam := r.URL.Query().Get("host")
+
+	// Resolve session if ID provided
+	var sess *Session
+	if sessionID != "" {
+		sess = s.resolveSession(sessionID)
+	}
+
+	targetHost := hostParam
+	if targetHost == "" && sess != nil {
+		targetHost = sess.Host
+	}
+	if targetHost == "" && sessionID != "" {
+		parts := strings.Split(sessionID, ":")
+		if len(parts) >= 2 && !strings.Contains(parts[1], "/") {
+			targetHost = parts[1]
+		}
+	}
+
+	// If remote host, proxy request
+	if targetHost != "" && !s.isLocalHost(targetHost) {
+		hostRec := s.resolveHost(targetHost)
+		if hostRec != nil && hostRec.URL != "" {
+			targetURL := fmt.Sprintf("%s/v1/documents/content?%s", strings.TrimSuffix(hostRec.URL, "/"), r.URL.RawQuery)
+			fwdReq, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL, nil)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if auth := r.Header.Get("Authorization"); auth != "" {
+				fwdReq.Header.Set("Authorization", auth)
+			} else if s.configuredToken != "" {
+				fwdReq.Header.Set("Authorization", "Bearer "+s.configuredToken)
+			}
+			resp, err := http.DefaultClient.Do(fwdReq)
+			if err != nil {
+				http.Error(w, fmt.Sprintf("Failed to fetch document from remote host: %v", err), http.StatusBadGateway)
+				return
+			}
+			defer resp.Body.Close()
+
+			for k, vv := range resp.Header {
+				for _, v := range vv {
+					w.Header().Add(k, v)
+				}
+			}
+			w.WriteHeader(resp.StatusCode)
+			_, _ = io.Copy(w, resp.Body)
+			return
+		}
+		http.Error(w, fmt.Sprintf("Remote host %q not found or unreachable", targetHost), http.StatusNotFound)
+		return
+	}
+
+	// Construct effective session for resolveFilePath
+	if sess == nil && cwdParam != "" {
+		sess = &Session{Cwd: cwdParam, Host: targetHost}
+	} else if sess != nil && sess.Cwd == "" && cwdParam != "" {
+		sessCopy := *sess
+		sessCopy.Cwd = cwdParam
+		sess = &sessCopy
+	}
+
+	resolvedPath, err := s.resolveFilePath(sess, docPath)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusForbidden)
+		return
+	}
+
+	content, err := os.ReadFile(resolvedPath)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to read file: %v", err), http.StatusNotFound)
 		return
@@ -192,7 +267,7 @@ func (s *Server) handleDocumentContent(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{
-		"path":    docPath,
+		"path":    resolvedPath,
 		"content": string(content),
 	})
 }
