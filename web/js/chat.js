@@ -2589,7 +2589,11 @@ function parseLineRange(filePath) {
 // Construct URL to stream/view file content through the daemon
 function getChatFileContentUrl(filePath, session, download = false) {
   const { baseFilePath } = parseLineRange(filePath);
-  let url = `/v1/files/content?path=${encodeURIComponent(baseFilePath)}`;
+  let effectivePath = baseFilePath;
+  if (!baseFilePath.startsWith('/') && !baseFilePath.startsWith('~') && !/^[a-zA-Z]:[\\/]/.test(baseFilePath) && session && session.cwd) {
+    effectivePath = `${session.cwd.replace(/[\\/]+$/, '')}/${baseFilePath}`;
+  }
+  let url = `/v1/files/content?path=${encodeURIComponent(effectivePath)}`;
   if (session) {
     if (session.id) url += `&session_id=${encodeURIComponent(session.id)}`;
     if (session.host) url += `&host=${encodeURIComponent(session.host)}`;

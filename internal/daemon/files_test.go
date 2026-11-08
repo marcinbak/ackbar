@@ -765,4 +765,47 @@ func TestHandleDocumentContent_ResolutionAndSecurity(t *testing.T) {
 			t.Fatalf("Expected 403 Forbidden for sensitive path, got %d: %s", rec.Code, rec.Body.String())
 		}
 	}
+
+	// 5. Unpermitted cwd outside home/temp/session returns 403 Forbidden (S1/C1)
+	{
+		req := httptest.NewRequest("GET", "/v1/documents/content?path=passwd&cwd=/etc", nil)
+		rec := httptest.NewRecorder()
+		server.Mux().ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("Expected 403 Forbidden for unpermitted cwd, got %d: %s", rec.Code, rec.Body.String())
+		}
+	}
+
+	// 6. Both session_id and subdirectory cwd with relative path returns 200 OK (C2/L1)
+	{
+		req := httptest.NewRequest("GET", fmt.Sprintf("/v1/documents/content?path=guide.md&cwd=%s&session_id=sess-doc-1", url.QueryEscape(docsDir)), nil)
+		rec := httptest.NewRecorder()
+		server.Mux().ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("Expected 200 OK with session_id and subdirectory cwd, got %d: %s", rec.Code, rec.Body.String())
+		}
+		var res map[string]string
+		if err := json.NewDecoder(rec.Body).Decode(&res); err != nil {
+			t.Fatalf("Failed to decode JSON: %v", err)
+		}
+		if res["path"] != guideFile {
+			t.Errorf("Expected path %q, got %q", guideFile, res["path"])
+		}
+		if res["content"] != guideContent {
+			t.Errorf("Expected content %q, got %q", guideContent, res["content"])
+		}
+	}
+
+	// 7. Requesting a directory returns 400 Bad Request (S2)
+	{
+		req := httptest.NewRequest("GET", "/v1/documents/content?path=docs&session_id=sess-doc-1", nil)
+		rec := httptest.NewRecorder()
+		server.Mux().ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("Expected 400 Bad Request for directory path, got %d: %s", rec.Code, rec.Body.String())
+		}
+	}
 }

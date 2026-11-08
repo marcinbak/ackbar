@@ -311,7 +311,7 @@ ${escapeHtml(session.last_prompt)}
 }
 
 // Open In-UI Markdown Document Viewer in Right Inspector Pane
-async function openDocViewerTab(docPath, docTitle, host = 'local', session = null) {
+async function openDocViewerTab(docPath, docTitle, host = null, session = null) {
   if (!docPath) return;
   const reqSeq = ++inspectorRequestSeq;
 
@@ -320,8 +320,6 @@ async function openDocViewerTab(docPath, docTitle, host = 'local', session = nul
   }
 
   const isRemote = !isLocalHost(host);
-  const targetHost = state.hosts.find(h => h.name === host);
-  const baseUrl = (isRemote && targetHost && targetHost.url) ? targetHost.url.replace(/\/$/, '') : '';
 
   const qParams = new URLSearchParams({
     path: docPath
@@ -339,7 +337,7 @@ async function openDocViewerTab(docPath, docTitle, host = 'local', session = nul
   let markdownContent = '# Loading document...';
   let resolvedPath = docPath;
   try {
-    const res = await fetch(`${baseUrl}/v1/documents/content?${qParams.toString()}`);
+    const res = await fetch(`/v1/documents/content?${qParams.toString()}`);
     if (res.ok) {
       const data = await res.json();
       markdownContent = data.content || '*(Document is empty)*';
@@ -354,8 +352,9 @@ async function openDocViewerTab(docPath, docTitle, host = 'local', session = nul
   }
   if (reqSeq !== inspectorRequestSeq) return;
 
-  const resolvedDir = resolvedPath.includes('/') ? resolvedPath.slice(0, resolvedPath.lastIndexOf('/')) : ((session && session.cwd) || '');
-  const displayTitle = docTitle || resolvedPath.split('/').pop();
+  const lastSep = Math.max(resolvedPath.lastIndexOf('/'), resolvedPath.lastIndexOf('\\'));
+  const resolvedDir = lastSep >= 0 ? resolvedPath.slice(0, lastSep) : ((session && session.cwd) || '');
+  const displayTitle = docTitle || (lastSep >= 0 ? resolvedPath.slice(lastSep + 1) : resolvedPath);
   const titleHtml = `📄 ${escapeHtml(displayTitle)} ${isRemote ? `<span class="badge-host">@${escapeHtml(formatHostLabel(host))}</span>` : ''}`;
   const subtitleHtml = escapeHtml(resolvedPath);
 

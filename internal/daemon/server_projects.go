@@ -232,6 +232,9 @@ func (s *Server) handleDocumentContent(w http.ResponseWriter, r *http.Request) {
 			defer resp.Body.Close()
 
 			for k, vv := range resp.Header {
+				if strings.HasPrefix(strings.ToLower(k), "access-control-allow-") {
+					continue
+				}
 				for _, v := range vv {
 					w.Header().Add(k, v)
 				}
@@ -244,18 +247,39 @@ func (s *Server) handleDocumentContent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Construct effective session for resolveFilePath
-	if sess == nil && cwdParam != "" {
-		sess = &Session{Cwd: cwdParam, Host: targetHost}
-	} else if sess != nil && sess.Cwd == "" && cwdParam != "" {
-		sessCopy := *sess
-		sessCopy.Cwd = cwdParam
-		sess = &sessCopy
+	// Validate and resolve cwdParam if provided
+	if cwdParam != "" {
+		resolvedCwd, err := s.resolveFilePath(sess, cwdParam)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusForbidden)
+			return
+		}
+		if sess == nil {
+			sess = &Session{Cwd: resolvedCwd, Host: targetHost}
+		} else {
+			sessCopy := *sess
+			sessCopy.Cwd = resolvedCwd
+			sess = &sessCopy
+		}
 	}
 
 	resolvedPath, err := s.resolveFilePath(sess, docPath)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusForbidden)
+		return
+	}
+
+	fi, err := os.Stat(resolvedPath)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to stat file: %v", err), http.StatusNotFound)
+		return
+	}
+	if fi.IsDir() {
+		http.Error(w, "Path is a directory", http.StatusBadRequest)
+		return
+	}
+	if fi.Size() > 10*1024*1024 {
+		http.Error(w, "Document exceeds maximum allowed size (10MB)", http.StatusBadRequest)
 		return
 	}
 
