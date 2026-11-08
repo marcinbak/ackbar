@@ -6,8 +6,8 @@ Ackbar is a cross-machine control plane and session manager designed to monitor,
 
 ```
 +-------------------------------------------------------------------------+
-|                              ACKBAR TUI                                  |
-|   (Interactive Charm.sh Bubble Tea Terminal Dashboard & Process Viewer) |
+|                  CLIENTS (Web Dashboard, Mobile App, CLI)               |
+|      (xterm.js multiplexer, Flutter Companion, and ackbar CLI tool)    |
 +--------------------+--------------------------------+-------------------+
                      |                                | (SSH Port Forward)
                      v                                v
@@ -33,11 +33,11 @@ SQLite DB     SSE Events      Hook API  SQLite DB     SSE Events      Hook API
    * High-throughput JSON hook ingestion endpoint (`/v1/hooks/<agent>`).
    * Real-time Server-Sent Events (SSE) broadcast stream (`/v1/events`).
    * Background process scanner combining `tmux list-panes` and OS process table (`ps`).
-2. **`ackbar` (TUI Client):**
-   * Built with Charm.sh Bubble Tea and Lip Gloss styling.
-   * Multi-host aggregation querying local and remote tunneled daemons.
-   * Hierarchical logical project & subgroup tree.
-   * In-place tmux pane attachment (`tea.ExecProcess`).
+2. **`ackbar` (CLI & Setup Utility):**
+   * Launches the browser-based Web GUI (`http://127.0.0.1:7777`).
+   * Configures lifecycle hooks for agent platforms (Claude Code, Antigravity).
+   * Runs the Ackbar MCP stdio server and manages agent authentication accounts.
+   * Supervised and monitored via Web Dashboard and Flutter Mobile clients.
 3. **`ackbar-hook` (Hook Shim CLI):**
    * Universal stdin-to-HTTP hook adapter for CLI agents lacking native HTTP hooks.
 
@@ -46,5 +46,5 @@ SQLite DB     SSE Events      Hook API  SQLite DB     SSE Events      Hook API
 ## 3. Cross-Machine Networking & Security Model
 
 * **Strict Localhost Binding:** To prevent unauthorized exposure, `ackbard` binds exclusively to `127.0.0.1:7777` on each machine.
-* **Encrypted SSH Tunneling:** The TUI establishes encrypted SSH tunnels (`ssh -L <port>:127.0.0.1:7777 <target>`) to communicate with remote daemons.
+* **Encrypted SSH Tunneling:** Clients establish encrypted SSH tunnels (`ssh -L <port>:127.0.0.1:7777 <target>`) to communicate with remote daemons.
 * **Passwordless SSH Requirement:** Remote host registration and background updates leverage standard OpenSSH keys.

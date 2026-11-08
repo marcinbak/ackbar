@@ -11,7 +11,7 @@ Ackbar is a lightweight, cross-machine control plane and session manager designe
 ### Key Components
 
 *   **`ackbard` ([cmd/ackbard/main.go](file:///Users/dev4u/Work/Ackbar/cmd/ackbard/main.go)):** The daemon engine. Listens on `127.0.0.1:7777`, manages SQLite state persistence, tracks tmux process supervision, exposes SSE event streams (`/v1/events`), and ingests hook events (`/v1/hooks/<agent>`).
-*   **`ackbar` ([cmd/ackbar/main.go](file:///Users/dev4u/Work/Ackbar/cmd/ackbar/main.go)):** The TUI dashboard. Built with Charm.sh Bubble Tea. Displays a collapsible logical tree of projects and sessions, attaches in-place to tmux sessions, and handles session controls (restart, terminate, delete, open in code, view docs).
+*   **`ackbar` ([cmd/ackbar/main.go](file:///Users/dev4u/Work/Ackbar/cmd/ackbar/main.go)):** The CLI tool, Web GUI launcher, and MCP & account management tool. Handles CLI subcommands, Web GUI launching, hook setup, MCP stdio serving, and account profile management.
 *   **`ackbar-hook` ([cmd/ackbar-hook/main.go](file:///Users/dev4u/Work/Ackbar/cmd/ackbar-hook/main.go)):** A unified stdin-to-HTTP hook shim binary for agents without native HTTP hooks.
 
 ---
@@ -23,7 +23,6 @@ Detailed architectural and technical domain documentation is organized in the `d
 *   **User Interface Clients:**
     *   **Mobile App (iOS & Android):** See [docs/mobile.md](file:///Users/dev4u/Work/Ackbar/docs/mobile.md) for Flutter architecture, Attention queue, fullscreen mode, chat transcripts, live terminal, and new session creation.
     *   **Web Dashboard & PWA:** See [docs/web.md](file:///Users/dev4u/Work/Ackbar/docs/web.md) for browser multiplexing, xterm.js tabs, and command palette.
-    *   **TUI Dashboard & Controls:** See [docs/tui.md](file:///Users/dev4u/Work/Ackbar/docs/tui.md) for keybindings, tree organization, category subgroups, and tmux attachment.
 *   **Networking & Remote Access:** See [docs/networking-and-remote-access.md](file:///Users/dev4u/Work/Ackbar/docs/networking-and-remote-access.md) for Cloudflare Tunnels, Ackbar Relay, Caddy reverse proxy, and token authentication.
 *   **Architecture & Networking:** See [docs/architecture.md](file:///Users/dev4u/Work/Ackbar/docs/architecture.md) for cross-machine design, control plane topology, and SSH tunneling.
 *   **Daemon Engine:** See [docs/daemon.md](file:///Users/dev4u/Work/Ackbar/docs/daemon.md) for API routes, SQLite migrations, SSE broadcasts, and process supervision.
@@ -43,12 +42,11 @@ Detailed architectural and technical domain documentation is organized in the `d
 ```
 .
 ├── cmd/
-│   ├── ackbar/         # Client TUI application main entrypoint
+│   ├── ackbar/         # CLI tool, Web GUI launcher, and MCP/account manager
 │   ├── ackbard/        # Daemon server application main entrypoint
 │   ├── ackbar-hook/    # Shared stdin hook shim CLI main entrypoint
 │   └── ackbar-relay/   # Outbound reverse WebSocket tunnel relay server entrypoint
 ├── internal/
-│   ├── client/         # TUI model, views, keybinds, and API client helpers
 │   ├── daemon/         # SQLite DB, modular HTTP server handlers (server_*.go), session_scanner.go, SSE streaming, and agent capability adapters (agent_*.go)
 │   ├── provider/       # Agent adapters (Claude Code, Codex, Antigravity, Grok, OpenCode)
 │   ├── relay/          # Outbound reverse tunnel server and daemon client
@@ -67,10 +65,9 @@ Detailed architectural and technical domain documentation is organized in the `d
 
 1.  **Security Constraint (§9):** The `ackbard` HTTP server binds strictly to `127.0.0.1` by default or operates behind token authentication / outbound reverse tunnel relay.
 2.  **CGO-Free SQLite:** Always maintain pure Go database drivers (`modernc.org/sqlite`).
-3.  **In-Place Attachment:** Attachment MUST suspend the Bubble Tea app using `tea.ExecProcess`, run `tmux attach` or `ssh -t host tmux attach`, and resume/redraw upon detach.
-4.  **No Direct Pushes to `main`:** Direct pushes to `main` are strictly blocked by GitHub branch protection. All code changes must be submitted via Pull Requests.
-5.  **Strict PR-Based Git Worktree Workflow:** All development, bug fixes, refactoring, and feature additions MUST follow the PR workflow governed by the `dev-workflow` skill and [docs/dev-workflow.md](file:///Users/dev4u/Work/Ackbar/docs/dev-workflow.md).
-6.  **Enforced PR Version Bump:** Every pull request MUST bump `internal/version/VERSION` above `origin/main` via `./scripts/bump-version.sh`. The bump is strictly gated by `./scripts/bump-version.sh --check` in T0 and GitHub Actions CI.
+3.  **No Direct Pushes to `main`:** Direct pushes to `main` are strictly blocked by GitHub branch protection. All code changes must be submitted via Pull Requests.
+4.  **Strict PR-Based Git Worktree Workflow:** All development, bug fixes, refactoring, and feature additions MUST follow the PR workflow governed by the `dev-workflow` skill and [docs/dev-workflow.md](file:///Users/dev4u/Work/Ackbar/docs/dev-workflow.md).
+5.  **Enforced PR Version Bump:** Every pull request MUST bump `internal/version/VERSION` above `origin/main` via `./scripts/bump-version.sh`. The bump is strictly gated by `./scripts/bump-version.sh --check` in T0 and GitHub Actions CI.
 
 ---
 

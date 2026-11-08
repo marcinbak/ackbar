@@ -60,7 +60,7 @@ Every pull request MUST increment `internal/version/VERSION` above `origin/main`
 |---|---|
 | worktree_location | `.worktrees/<branch-name>` (gitignored), branched from `origin/main` |
 | dependency_install_rule | Run `go mod tidy` in the worktree root. Run `flutter pub get` in `mobile/` if mobile files are touched. |
-| device_acquisition | Desktop daemon / TUI runs locally on macOS (`127.0.0.1:7777`). Mobile companion app runs on booted iOS Simulator (`xcrun simctl boot <udid>`) or Android Emulator. |
+| device_acquisition | Desktop daemon / Web GUI runs locally on macOS (`127.0.0.1:7777`). Mobile companion app runs on booted iOS Simulator (`xcrun simctl boot <udid>`) or Android Emulator. |
 | build_flags | Always compile pure Go with `CGO_ENABLED=0` to ensure compatibility with pure Go SQLite (`modernc.org/sqlite`). |
 | install_caveats | The daemon `ackbard` is managed locally via `launchctl` (`com.marcinbak.ackbard`). Restart after local installation with `launchctl kickstart -k gui/$(id -u)/com.marcinbak.ackbard`. |
 | device_automation | Use the `agent-device`, `ios-simulator`, or `android-emulator` skills for companion app automation. |
@@ -84,14 +84,14 @@ Excluded flows and why:
 | merge_policy | `auto` — once T0 gates, N6–N8 three-way review, and CI checks pass, agents automatically merge PRs (`gh pr merge --squash --delete-branch`) and clean up the worktree |
 | announce_channel | none — personal open-source project |
 | cc_resolution | none |
-| doc_update_targets | `AGENTS.md` (conventions, package layout), `docs/*.md` (architecture, daemon, providers, web, mobile, tui, backlog) |
+| doc_update_targets | `AGENTS.md` (conventions, package layout), `docs/*.md` (architecture, daemon, providers, web, mobile, backlog) |
 
 ---
 
 ## Skip rules
 
 N9 (on-device companion verification) is skipped when the change matches:
-- Only backend daemon (`internal/daemon/**`, `cmd/ackbard/**`, `internal/relay/**`, `internal/tmux/**`, `internal/router/**`) or TUI (`internal/client/**`, `cmd/ackbar/**`) or web GUI (`web/**`) changed (runtime surface is desktop / web browser).
+- Only backend daemon (`internal/daemon/**`, `cmd/ackbard/**`, `internal/relay/**`, `internal/tmux/**`, `internal/router/**`) or CLI / web GUI (`cmd/ackbar/**`, `web/**`) changed (runtime surface is desktop / web browser).
 - Only documentation (`docs/**`, `AGENTS.md`, `README.md`) changed.
 - Only CI workflows (`.github/**`) or GoReleaser config (`.goreleaser.yaml`) changed.
 
@@ -103,7 +103,6 @@ Project-specific risks for the N6 security reviewer, beyond generic review:
 - **Security Constraint (§9):** The `ackbard` HTTP server must bind strictly to `127.0.0.1` by default or require token authentication (`ACKBAR_TOKEN`) / outbound reverse WebSocket tunnel relay.
 - **CGO-Free SQLite:** Always maintain pure Go database drivers (`modernc.org/sqlite`). Never introduce CGO.
 - **PTY & Command Injection:** Process supervision via tmux must pass commands and prompts through sanitized arguments (`tmux.SendInput` with literal mode `-l`) to prevent shell escape or code injection.
-- **In-Place Attachment:** Attachment MUST suspend the Bubble Tea app using `tea.ExecProcess`, run `tmux attach` or `ssh -t host tmux attach`, and resume/redraw cleanly upon detach.
 - **No Hardcoded Secrets:** Never hardcode API keys or credentials (e.g. `TYPESAFE_API_KEY`, Cloudflare tokens) into binaries or git commits; persist user settings in SQLite or retrieve from environment variables.
 
 ---
