@@ -76,32 +76,150 @@ function sanitizeRenderedMarkdownHtml(html) {
   if (!html || typeof html !== 'string') return '';
   if (typeof document !== 'undefined' && typeof document.createElement === 'function') {
     const tpl = document.createElement('template');
-    tpl.innerHTML = html;
-    tpl.content.querySelectorAll('script, iframe, object, embed').forEach(node => node.remove());
-    tpl.content.querySelectorAll('*').forEach(node => {
-      for (const attr of Array.from(node.attributes)) {
-        const name = attr.name.toLowerCase();
-        const val = (attr.value || '').trim();
-        if (name.startsWith('on')) {
-          node.removeAttribute(attr.name);
-        } else if ((name === 'href' || name === 'src' || name === 'xlink:href' || name === 'action' || name === 'formaction') && /^javascript:/i.test(val)) {
-          node.setAttribute(attr.name, '#');
+    if (tpl && tpl.content && typeof tpl.content.querySelectorAll === 'function') {
+      tpl.innerHTML = html;
+      tpl.content.querySelectorAll('script, iframe, object, embed').forEach(node => node.remove());
+      tpl.content.querySelectorAll('*').forEach(node => {
+        for (const attr of Array.from(node.attributes)) {
+          const name = attr.name.toLowerCase();
+          const val = (attr.value || '').trim();
+          if (name.startsWith('on')) {
+            node.removeAttribute(attr.name);
+          } else if ((name === 'href' || name === 'src' || name === 'xlink:href' || name === 'action' || name === 'formaction') && /^javascript:/i.test(val)) {
+            node.setAttribute(attr.name, '#');
+          }
         }
-      }
-    });
-    return tpl.innerHTML;
+      });
+      return tpl.innerHTML;
+    }
   }
   return html
     .replace(/<(script|iframe|object)\b[\s\S]*?<\/\1>/gi, '')
     .replace(/<(script|iframe|object|embed)\b[^>]*\/?>/gi, '');
 }
 
+function renderSlideContent(slideMd) {
+  if (!slideMd) return '';
+  if (typeof window !== 'undefined' && window.marked && typeof window.marked.parse === 'function') {
+    configureMarked();
+    const raw = window.marked.parse(slideMd);
+    const linked = ensureExternalLinksTargetBlank(raw);
+    return sanitizeRenderedMarkdownHtml(linked);
+  }
+  return `<p>${escapeHtml(slideMd)}</p>`;
+}
+
+function buildCarouselHtml(inner) {
+  const parts = inner.split(/<!--\s*slide\s*-->/i);
+  const slides = parts.map(s => s.trim()).filter(Boolean);
+  if (slides.length === 0) return '';
+  const slidesHtml = slides.map((slideMd, idx) => {
+    const activeAttr = idx === 0 ? ' data-active="true"' : '';
+    const slideParsed = renderSlideContent(slideMd);
+    return `<div class="chat-carousel-slide" data-slide-index="${idx}"${activeAttr}>${slideParsed}</div>`;
+  }).join('');
+  return `<div class="chat-carousel" data-carousel-mode="slide"><div class="chat-carousel-slides">${slidesHtml}</div></div>`;
+}
+
+function processUnfencedSlides(text, unmaskFn = (s) => s) {
+  if (!/<!--\s*slide\s*-->/i.test(text)) return typeof unmaskFn === 'function' ? unmaskFn(text) : text;
+
+  const normalizedText = text.replace(/\r\n/g, '\n');
+  const rawParts = normalizedText.split(/<!--\s*slide\s*-->/i);
+  if (rawParts.length <= 1) return typeof unmaskFn === 'function' ? unmaskFn(normalizedText) : normalizedText;
+
+  let prefix = '';
+  let firstSlide = rawParts[0];
+
+  const trimmedFirst = firstSlide.trimEnd();
+  const lastDoubleNewline = trimmedFirst.lastIndexOf('\n\n');
+  if (lastDoubleNewline !== -1) {
+    const beforeDbl = trimmedFirst.slice(0, lastDoubleNewline).trim();
+    const afterDbl = trimmedFirst.slice(lastDoubleNewline + 2).trim();
+    const lastParaOfBefore = beforeDbl.includes('\n\n')
+      ? beforeDbl.slice(beforeDbl.lastIndexOf('\n\n') + 2).trim()
+      : beforeDbl;
+    if (!lastParaOfBefore.startsWith('![') && !lastParaOfBefore.startsWith('<img') &&
+        (afterDbl.startsWith('![') || afterDbl.startsWith('<img') || (afterDbl.startsWith('#') && !lastParaOfBefore.startsWith('#')))) {
+      prefix = beforeDbl + '\n\n';
+      firstSlide = afterDbl;
+    }
+  }
+
+  let suffix = '';
+  let lastSlide = rawParts[rawParts.length - 1];
+  const trimmedLast = lastSlide.trimStart();
+  const firstDoubleNewline = trimmedLast.indexOf('\n\n');
+  if (firstDoubleNewline !== -1) {
+    const beforeDbl = trimmedLast.slice(0, firstDoubleNewline).trim();
+    const afterDbl = trimmedLast.slice(firstDoubleNewline + 2).trim();
+    if (!firstSlide.trim().includes('\n\n') &&
+        (beforeDbl.startsWith('![') || beforeDbl.startsWith('<img')) &&
+        !afterDbl.startsWith('![') && !afterDbl.startsWith('<img')) {
+      lastSlide = beforeDbl;
+      suffix = '\n\n' + afterDbl;
+    }
+  }
+
+  const slideTexts = [firstSlide, ...rawParts.slice(1, -1), lastSlide]
+    .map(s => s.trim())
+    .filter(Boolean);
+
+  if (slideTexts.length === 0) return typeof unmaskFn === 'function' ? unmaskFn(text) : text;
+
+  const slidesHtml = slideTexts.map((slideMd, idx) => {
+    const activeAttr = idx === 0 ? ' data-active="true"' : '';
+    const unmaskedSlideMd = typeof unmaskFn === 'function' ? unmaskFn(slideMd) : slideMd;
+    const slideParsed = renderSlideContent(unmaskedSlideMd);
+    return `<div class="chat-carousel-slide" data-slide-index="${idx}"${activeAttr}>${slideParsed}</div>`;
+  }).join('');
+
+  const carouselHtml = `<div class="chat-carousel" data-carousel-mode="slide"><div class="chat-carousel-slides">${slidesHtml}</div></div>`;
+
+  const finalPrefix = typeof unmaskFn === 'function' ? unmaskFn(prefix) : prefix;
+  const finalSuffix = typeof unmaskFn === 'function' ? unmaskFn(suffix) : suffix;
+
+  return finalPrefix + carouselHtml + finalSuffix;
+}
+
+function preprocessCarouselBlocks(content) {
+  if (!content || typeof content !== 'string') return content || '';
+  let result = content;
+
+  // 1. Process 3- or 4-backtick ````carousel ... ```` blocks
+  result = result.replace(/(^|\r?\n)(`{3,4})carousel[ \t]*\r?\n([\s\S]*?)\r?\n\2(?=\r?\n|$)/gi, (match, prefix, fence, inner) => {
+    return prefix + buildCarouselHtml(inner);
+  });
+
+  // 2. Process unfenced <!-- slide --> sequences outside fenced code blocks
+  if (/<!--\s*slide\s*-->/i.test(result)) {
+    const codeBlocks = [];
+    const masked = result.replace(/(^|\r?\n)(`{3,}|~{3,})[^\n]*\r?\n[\s\S]*?\r?\n\2(?=\r?\n|$)/g, (m) => {
+      const idx = codeBlocks.length;
+      codeBlocks.push(m);
+      return `\n%%CAROUSEL_CODE_BLOCK_${idx}%%\n`;
+    });
+
+    if (/<!--\s*slide\s*-->/i.test(masked)) {
+      const unmaskFn = (str) => {
+        if (!str || typeof str !== 'string') return str || '';
+        return str.replace(/%%CAROUSEL_CODE_BLOCK_(\d+)%%/g, (m, id) => codeBlocks[parseInt(id, 10)] || m);
+      };
+      result = processUnfencedSlides(masked, unmaskFn);
+    }
+  }
+
+  return result;
+}
+
 function renderMarkdown(content) {
+  if (!content || typeof content !== 'string') return '';
   if (!window.marked) {
     return `<pre>${escapeHtml(content || '')}</pre>`;
   }
   configureMarked();
-  const raw = window.marked.parse(content || '');
+  const preprocessed = preprocessCarouselBlocks(content);
+  const raw = window.marked.parse(preprocessed || '');
   const linked = ensureExternalLinksTargetBlank(raw);
   return sanitizeRenderedMarkdownHtml(linked);
 }
@@ -607,6 +725,7 @@ export {
   configureMarked,
   ensureExternalLinksTargetBlank,
   sanitizeRenderedMarkdownHtml,
+  preprocessCarouselBlocks,
   renderMarkdown,
   ensureDoubleNewlineSeparation,
   isLocalHost,

@@ -366,6 +366,7 @@ async function openDocViewerTab(docPath, docTitle, host = 'local') {
     }
   });
   attachCodeBlockCopyButtons(docContainer);
+  linkifyChatFiles(docContainer, { host });
 
   openInspectorPane({
     titleHtml,

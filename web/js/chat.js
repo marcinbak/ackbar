@@ -2718,13 +2718,18 @@ function createChatFilePill(filePath, session) {
 }
 
 // Build an inline image preview card
-function createChatImagePreviewCard(filePath, session) {
+function createChatImagePreviewCard(filePath, session, caption = '') {
   let cleanPath = filePath.trim();
   if (cleanPath.startsWith('file://')) {
     cleanPath = cleanPath.replace(/^file:\/\//, '');
   }
   const filename = cleanPath.split('/').pop();
   const contentUrl = getChatFileContentUrl(cleanPath, session);
+
+  const cleanCaption = (caption || '').trim();
+  const hasCaption = cleanCaption && cleanCaption !== filename;
+  const captionHtml = hasCaption ? `<div class="chat-file-preview-caption">${escapeHtml(cleanCaption)}</div>` : '';
+  const altText = cleanCaption || filename;
 
   const card = document.createElement('div');
   card.className = 'chat-file-preview-card';
@@ -2735,8 +2740,9 @@ function createChatImagePreviewCard(filePath, session) {
         ${APP_ICONS.preview} <span>Open in Preview</span>
       </button>
     </div>
+    ${captionHtml}
     <div class="chat-file-preview-body">
-      <img src="${escapeHtml(contentUrl)}" alt="${escapeHtml(filename)}" loading="lazy" title="Click to open full size" />
+      <img src="${escapeHtml(contentUrl)}" alt="${escapeHtml(altText)}" loading="lazy" title="Click to open full size" />
     </div>
   `;
 
@@ -2833,6 +2839,122 @@ function linkifyChatFiles(containerEl, session) {
         card.appendChild(bar);
       }
     }
+  });
+
+  // 4. Process local markdown <img> elements
+  containerEl.querySelectorAll('img').forEach(img => {
+    if (img.dataset.fileLinkified || img.closest('.chat-file-preview-card') || img.classList.contains('chat-attachment-thumb')) return;
+    const rawSrc = (img.getAttribute('src') || '').trim();
+    if (!rawSrc || rawSrc.startsWith('http://') || rawSrc.startsWith('https://') || rawSrc.startsWith('data:') || rawSrc.startsWith('blob:') || rawSrc.startsWith('/v1/files/content')) {
+      return;
+    }
+    let cleanPath = rawSrc;
+    if (cleanPath.startsWith('file://')) {
+      cleanPath = cleanPath.replace(/^file:\/\//, '');
+    }
+    try {
+      cleanPath = decodeURIComponent(cleanPath);
+    } catch (_) {}
+
+    if (isChatFilePath(cleanPath)) {
+      img.dataset.fileLinkified = 'true';
+      const altText = (img.getAttribute('alt') || '').trim();
+      const card = createChatImagePreviewCard(cleanPath, session, altText);
+      const parentP = (img.parentElement && img.parentElement.tagName.toLowerCase() === 'p' && img.parentElement.childNodes.length === 1)
+        ? img.parentElement
+        : null;
+      if (parentP) {
+        parentP.replaceWith(card);
+      } else {
+        img.replaceWith(card);
+      }
+    }
+  });
+
+  // 5. Initialize interactive carousel controls on .chat-carousel
+  containerEl.querySelectorAll('.chat-carousel').forEach(carouselEl => {
+    if (carouselEl.dataset.carouselInitialized) return;
+    carouselEl.dataset.carouselInitialized = 'true';
+
+    const slides = Array.from(carouselEl.querySelectorAll('.chat-carousel-slide'));
+    if (slides.length <= 1) return;
+
+    if (!carouselEl.dataset.carouselMode) {
+      carouselEl.dataset.carouselMode = 'slide';
+    }
+
+    let currentIndex = slides.findIndex(s => s.dataset.active === 'true');
+    if (currentIndex === -1) {
+      currentIndex = 0;
+      slides[0].dataset.active = 'true';
+    }
+
+    const headerEl = document.createElement('div');
+    headerEl.className = 'chat-carousel-header';
+    headerEl.innerHTML = `
+      <div class="chat-carousel-title">
+        <span>🖼️ Carousel</span>
+        <span class="chat-carousel-counter">${currentIndex + 1} / ${slides.length}</span>
+      </div>
+      <div class="chat-carousel-nav">
+        <button type="button" class="chat-carousel-btn chat-carousel-prev" title="Previous slide" aria-label="Previous slide">‹ Prev</button>
+        <button type="button" class="chat-carousel-btn chat-carousel-next" title="Next slide" aria-label="Next slide">Next ›</button>
+        <button type="button" class="chat-carousel-btn chat-carousel-mode-btn" title="Toggle Grid / Slide View" aria-label="Toggle Grid / Slide View">
+          <span class="mode-icon">⊞</span> <span class="mode-label">Grid</span>
+        </button>
+      </div>
+    `;
+
+    carouselEl.insertBefore(headerEl, carouselEl.firstChild);
+
+    const counterEl = headerEl.querySelector('.chat-carousel-counter');
+    const prevBtn = headerEl.querySelector('.chat-carousel-prev');
+    const nextBtn = headerEl.querySelector('.chat-carousel-next');
+    const modeBtn = headerEl.querySelector('.chat-carousel-mode-btn');
+    const modeLabel = headerEl.querySelector('.mode-label');
+
+    function updateSlideVisibility() {
+      slides.forEach((slide, idx) => {
+        if (idx === currentIndex) {
+          slide.dataset.active = 'true';
+        } else {
+          delete slide.dataset.active;
+        }
+      });
+      if (counterEl) {
+        counterEl.textContent = `${currentIndex + 1} / ${slides.length}`;
+      }
+    }
+
+    prevBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      currentIndex = (currentIndex - 1 + slides.length) % slides.length;
+      updateSlideVisibility();
+    });
+
+    nextBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      currentIndex = (currentIndex + 1) % slides.length;
+      updateSlideVisibility();
+    });
+
+    modeBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const currentMode = carouselEl.dataset.carouselMode || 'slide';
+      const newMode = currentMode === 'slide' ? 'grid' : 'slide';
+      carouselEl.dataset.carouselMode = newMode;
+      if (modeLabel) {
+        modeLabel.textContent = newMode === 'grid' ? 'Slide' : 'Grid';
+      }
+      if (prevBtn) prevBtn.style.display = newMode === 'grid' ? 'none' : 'inline-flex';
+      if (nextBtn) nextBtn.style.display = newMode === 'grid' ? 'none' : 'inline-flex';
+      if (counterEl) counterEl.style.display = newMode === 'grid' ? 'none' : 'inline';
+    });
+
+    updateSlideVisibility();
   });
 }
 
@@ -3070,7 +3192,17 @@ function createChatMessageElement(tabObj, msg) {
       attachmentsHtml = `<div class="chat-msg-attachments">${chipsHtml}</div>`;
     }
 
-    const bodyHtml = displayContent ? `<div class="chat-msg-body">${escapeHtml(displayContent)}</div>` : '';
+    let bodyHtml = '';
+    if (displayContent) {
+      const hasMarkdownVisuals = /!\[[^\]]*\]\([^)]+\)/.test(displayContent) ||
+                                 /`{3,4}carousel/i.test(displayContent) ||
+                                 /<!--\s*slide\s*-->/i.test(displayContent);
+      if (hasMarkdownVisuals) {
+        bodyHtml = `<div class="chat-msg-body markdown-body">${renderMarkdown(displayContent)}</div>`;
+      } else {
+        bodyHtml = `<div class="chat-msg-body">${escapeHtml(displayContent)}</div>`;
+      }
+    }
 
     msgEl.innerHTML = `
       <div class="chat-msg-header">
@@ -4168,6 +4300,9 @@ function handleChatStreamEvent(tabObj, evt) {
           if (bodyEl) {
             const html = renderMarkdown(tabObj.activeTurnBuffer);
             bodyEl.innerHTML = html + '<span class="chat-streaming-cursor"></span>';
+            if (tabObj.session) {
+              linkifyChatFiles(bodyEl, tabObj.session);
+            }
             if (tabObj.activeTurnBuffer) {
               const fenceCount = (tabObj.activeTurnBuffer.match(/```/g) || []).length;
               if (fenceCount >= 2) {

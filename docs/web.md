@@ -129,6 +129,10 @@ It is embedded directly into the `ackbard` Go binary and served on `http://127.0
   * **`AskUserQuestion` / `ask_question` (`.chat-interactive-card`):** Renders single- and multi-question forms supporting radio buttons, `multi_select` checkboxes, and custom `"Other"` text answers, submitting directly to `POST /v1/sessions/respond`.
   * **`ExitPlanMode` (`.card-approval`):** Renders the markdown plan preview with **`✓ Approve & Execute`** (auto-switching the session from `Plan Mode` to `Auto Mode`) and **`Request Changes`** feedback input.
   * **`TodoWrite` / `todo_write` (`.chat-todo-card`):** Renders a read-only live Task Progress checklist (`completed`, `in_progress`, `pending`) both during live SSE streaming and in historical transcripts.
+* **Markdown Image Cards, Captions & Interactive Carousels (`chat.js`, `utils.js`):**
+  * **Inline Image Cards & Captions (`.chat-file-preview-card`, `.chat-file-preview-caption`):** Automatically rewrites local Markdown image links (`![Alt](path/to/img.png)`) into interactive preview cards with Open in Preview action and subtle captions whenever alt text provides non-filename context.
+  * **Interactive Carousels (`.chat-carousel`):** Preprocesses 3- and 4-backtick ````carousel blocks and unfenced `<!-- slide -->` separators into tabbed / step carousels featuring slide counters (`1 / N`), `‹ Prev` / `Next ›` navigation controls, and a `Grid` / `Slide` view switcher for side-by-side multi-column comparison.
+  * **Cross-OS Home Fallback (`/Users/<user>` ↔ `/home/<user>`):** Translates absolute home directory image paths between macOS and Linux in `/v1/files/content` while enforcing sensitive credential blocks.
 
 ### 📊 11. Mermaid Flowchart & Architecture Diagram Rendering (`mermaid.js`)
 * **Automatic Detection:** Automatically identifies Mermaid diagrams in markdown code fences (````mermaid`) as well as unlabelled code blocks whose first non-comment line begins with valid diagram syntax (`flowchart`, `graph`, `sequenceDiagram`, `stateDiagram`, `classDiagram`, `erDiagram`, `gantt`, `pie`, `gitGraph`, `mindmap`, `timeline`, `xychart-beta`, `C4Context`, etc.).
