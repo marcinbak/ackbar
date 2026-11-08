@@ -10,10 +10,54 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"unicode"
 )
+
+var (
+	hashLineRegex  = regexp.MustCompile(`(?i)#L(\d+)(?:-L?(\d+))?$`)
+	colonLineRegex = regexp.MustCompile(`:(\d+)(?:[-:](\d+))?$`)
+)
+
+// splitFilePathAndLine extracts clean file path, line number, and column number
+// from paths containing line anchors:
+// Supports /path/to/file.go#L75-L176, /path/to/file.go#L75, /path/to/file.go:75:10, /path/to/file.go:75-176, and /path/to/file.go:75.
+func splitFilePathAndLine(rawPath string) (cleanPath string, line int, col int) {
+	rawPath = strings.TrimSpace(rawPath)
+	if rawPath == "" {
+		return "", 0, 0
+	}
+
+	// 1. Check for #L(\d+)(?:-L?(\d+))?
+	if loc := hashLineRegex.FindStringSubmatchIndex(rawPath); loc != nil {
+		clean := rawPath[:loc[0]]
+		startStr := rawPath[loc[2]:loc[3]]
+		startL, _ := strconv.Atoi(startStr)
+		return clean, startL, 0
+	}
+
+	// 2. Check for :(\d+)(?:[-:](\d+))?
+	if loc := colonLineRegex.FindStringSubmatchIndex(rawPath); loc != nil {
+		clean := rawPath[:loc[0]]
+		startStr := rawPath[loc[2]:loc[3]]
+		startL, _ := strconv.Atoi(startStr)
+		colNum := 0
+		if loc[4] >= 0 && loc[5] >= 0 {
+			// Only treat group 2 as col when the preceding separator is ':' (not '-')
+			sepIdx := loc[4] - 1
+			if sepIdx >= 0 && rawPath[sepIdx] == ':' {
+				colStr := rawPath[loc[4]:loc[5]]
+				colNum, _ = strconv.Atoi(colStr)
+			}
+		}
+		return clean, startL, colNum
+	}
+
+	return rawPath, 0, 0
+}
 
 // detectMIMEType returns an appropriate Content-Type header value for a given file extension
 func detectMIMEType(ext string) string {
@@ -81,6 +125,12 @@ func (s *Server) resolveFilePath(sess *Session, reqPath string) (string, error) 
 	// Strip file:// prefix if present
 	if strings.HasPrefix(reqPath, "file://") {
 		reqPath = strings.TrimPrefix(reqPath, "file://")
+	}
+
+	// Strip line range anchors (#L... or :line) so /v1/files/content and /v1/files/open resolve real file on disk
+	cleanReqPath, _, _ := splitFilePathAndLine(reqPath)
+	if cleanReqPath != "" {
+		reqPath = cleanReqPath
 	}
 
 	homeDir, _ := os.UserHomeDir()
@@ -419,21 +469,36 @@ func (s *Server) handleFileOpen(w http.ResponseWriter, r *http.Request) {
 	// If app is VS Code, delegate to LaunchVSCode
 	if strings.ToLower(req.App) == "vscode" {
 		targetPath := req.Path
-		if sess != nil && !filepath.IsAbs(targetPath) {
-			if resolved, err := s.resolveFilePath(sess, targetPath); err == nil {
-				targetPath = resolved
+		cleanTarget, line, col := splitFilePathAndLine(targetPath)
+		var baseResolved string
+		if sess != nil && !filepath.IsAbs(cleanTarget) {
+			if resolved, err := s.resolveFilePath(sess, cleanTarget); err == nil {
+				baseResolved = resolved
+			} else {
+				baseResolved = cleanTarget
 			}
+		} else {
+			baseResolved = cleanTarget
 		}
 
 		// Verify local file exists before opening to prevent VS Code "file does not exist" modals
-		if (targetHost == "" || s.isLocalHost(targetHost)) && filepath.IsAbs(targetPath) {
-			if _, err := os.Stat(targetPath); err != nil && os.IsNotExist(err) {
+		if (targetHost == "" || s.isLocalHost(targetHost)) && filepath.IsAbs(baseResolved) {
+			if _, err := os.Stat(baseResolved); err != nil && os.IsNotExist(err) {
 				http.Error(w, fmt.Sprintf("File not found: %s", req.Path), http.StatusNotFound)
 				return
 			}
 		}
 
-		uri, err := LaunchVSCode(targetPath, targetHost)
+		pathForVSCode := baseResolved
+		if line > 0 {
+			if col > 0 {
+				pathForVSCode = fmt.Sprintf("%s:%d:%d", baseResolved, line, col)
+			} else {
+				pathForVSCode = fmt.Sprintf("%s:%d", baseResolved, line)
+			}
+		}
+
+		uri, err := LaunchVSCode(pathForVSCode, targetHost)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("Failed to launch VS Code: %v", err), http.StatusInternalServerError)
 			return
@@ -442,7 +507,7 @@ func (s *Server) handleFileOpen(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"status": "opened",
 			"app":    "vscode",
-			"path":   targetPath,
+			"path":   pathForVSCode,
 			"host":   targetHost,
 			"uri":    uri,
 		})

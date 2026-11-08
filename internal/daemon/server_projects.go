@@ -691,9 +691,10 @@ func (s *Server) handleEditorOpen(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	cleanPath, _, _ := splitFilePathAndLine(path)
 	isLocal := host == "" || host == "local" || host == "localhost" || host == "127.0.0.1" || (os.Getenv("ACKBAR_HOST") != "" && host == os.Getenv("ACKBAR_HOST"))
-	if isLocal && filepath.IsAbs(path) {
-		if _, err := os.Stat(path); err != nil && os.IsNotExist(err) {
+	if isLocal && filepath.IsAbs(cleanPath) {
+		if _, err := os.Stat(cleanPath); err != nil && os.IsNotExist(err) {
 			http.Error(w, fmt.Sprintf("File not found: %s", path), http.StatusNotFound)
 			return
 		}
@@ -738,22 +739,28 @@ func defaultLaunchVSCode(path, host string) (string, error) {
 		return "", fmt.Errorf("path is empty")
 	}
 
+	cleanPath, line, col := splitFilePathAndLine(path)
+	formattedPath := cleanPath
+	if !strings.HasPrefix(formattedPath, "/") {
+		formattedPath = "/" + formattedPath
+	}
+	lineSuffix := ""
+	if line > 0 {
+		if col > 0 {
+			lineSuffix = fmt.Sprintf(":%d:%d", line, col)
+		} else {
+			lineSuffix = fmt.Sprintf(":%d", line)
+		}
+	}
+
 	var vscodeURI string
 	isRemote := host != "" && host != "local" && host != "localhost" && host != "127.0.0.1" && (os.Getenv("ACKBAR_HOST") == "" || host != os.Getenv("ACKBAR_HOST"))
 
 	if isRemote {
 		hostLabel := host
-		formattedPath := path
-		if !strings.HasPrefix(formattedPath, "/") {
-			formattedPath = "/" + formattedPath
-		}
-		vscodeURI = fmt.Sprintf("vscode://vscode-remote/ssh-remote+%s%s", hostLabel, formattedPath)
+		vscodeURI = fmt.Sprintf("vscode://vscode-remote/ssh-remote+%s%s%s", hostLabel, formattedPath, lineSuffix)
 	} else {
-		formattedPath := path
-		if !strings.HasPrefix(formattedPath, "/") {
-			formattedPath = "/" + formattedPath
-		}
-		vscodeURI = fmt.Sprintf("vscode://file%s", formattedPath)
+		vscodeURI = fmt.Sprintf("vscode://file%s%s", formattedPath, lineSuffix)
 	}
 
 	// Under automated tests (e.g. go test), do not launch real external GUI processes
@@ -780,10 +787,19 @@ func defaultLaunchVSCode(path, host string) (string, error) {
 
 	codeBin := findCodeBinary()
 	var cliCmd *exec.Cmd
+	targetArg := cleanPath + lineSuffix
 	if isRemote {
-		cliCmd = exec.Command(codeBin, "--remote", fmt.Sprintf("ssh-remote+%s", host), path)
+		if line > 0 {
+			cliCmd = exec.Command(codeBin, "--remote", fmt.Sprintf("ssh-remote+%s", host), "-g", targetArg)
+		} else {
+			cliCmd = exec.Command(codeBin, "--remote", fmt.Sprintf("ssh-remote+%s", host), path)
+		}
 	} else {
-		cliCmd = exec.Command(codeBin, path)
+		if line > 0 {
+			cliCmd = exec.Command(codeBin, "-g", targetArg)
+		} else {
+			cliCmd = exec.Command(codeBin, path)
+		}
 	}
 	cliCmd.Env = cleanEnvForVSCode(os.Environ())
 

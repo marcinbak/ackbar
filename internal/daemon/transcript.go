@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -92,7 +93,11 @@ type antigravityTranscriptEntry struct {
 	Content         string   `json:"content"`
 	Thinking        string   `json:"thinking"`
 	TruncatedFields []string `json:"truncated_fields"`
-	ToolCalls       []struct {
+	Media           []struct {
+		MimeType string `json:"mime_type"`
+		URI      string `json:"uri"`
+	} `json:"media"`
+	ToolCalls []struct {
 		Name string                 `json:"name"`
 		Args map[string]interface{} `json:"args"`
 	} `json:"tool_calls"`
@@ -101,11 +106,129 @@ type antigravityTranscriptEntry struct {
 func hasRelevantTruncatedField(fields []string) bool {
 	for _, f := range fields {
 		switch f {
-		case "content", "thinking", "tool_calls":
+		case "content", "thinking", "tool_calls", "media":
 			return true
 		}
 	}
 	return false
+}
+
+var (
+	claudeSystemReminderRegex   = regexp.MustCompile(`(?s)<system-reminder>[\s\S]*?</system-reminder>`)
+	claudeLocalCmdCaveatRegex   = regexp.MustCompile(`(?s)<local-command-caveat>[\s\S]*?</local-command-caveat>`)
+	claudeIdeOpenedFileRegex    = regexp.MustCompile(`(?s)<ide_opened_file>[\s\S]*?</ide_opened_file>`)
+	claudeIdeSelectionRegex     = regexp.MustCompile(`(?s)<ide_selection>[\s\S]*?</ide_selection>`)
+	claudeCommandMsgRegex       = regexp.MustCompile(`(?s)<command-message>[\s\S]*?</command-message>`)
+	claudeCommandNameRegex      = regexp.MustCompile(`(?s)<command-name>([^<]+)</command-name>`)
+	claudeCommandArgsRegex      = regexp.MustCompile(`(?s)<command-args>([^<]*)</command-args>`)
+	claudeBashInputRegex        = regexp.MustCompile(`(?s)<bash-input>([\s\S]*?)</bash-input>`)
+	claudeBashStdoutRegex       = regexp.MustCompile(`(?s)<bash-stdout>([\s\S]*?)</bash-stdout>`)
+	claudeBashStderrRegex       = regexp.MustCompile(`(?s)<bash-stderr>([\s\S]*?)</bash-stderr>`)
+	claudeLocalCmdStdoutRegex   = regexp.MustCompile(`(?s)<local-command-stdout>([\s\S]*?)</local-command-stdout>`)
+	claudeTaskNotificationRegex = regexp.MustCompile(`(?s)<task-notification>([\s\S]*?)</task-notification>`)
+	claudeTaskSummaryRegex      = regexp.MustCompile(`(?s)<summary>([\s\S]*?)</summary>`)
+	claudeTaskStatusRegex       = regexp.MustCompile(`(?s)<status>([\s\S]*?)</status>`)
+	consecutiveNewlinesRegex    = regexp.MustCompile(`\n{3,}`)
+)
+
+// CleanClaudePrompt normalizes raw Claude Code transcripts and prompts by stripping
+// internal XML tags (<system-reminder>, <local-command-caveat>, <ide_opened_file>),
+// formatting slash commands (/cmd args), bash executions, and task notifications.
+func CleanClaudePrompt(raw string) string {
+	if raw == "" {
+		return ""
+	}
+
+	result := raw
+
+	// 1. Strip internal system noise tags
+	result = claudeSystemReminderRegex.ReplaceAllString(result, "")
+	result = claudeLocalCmdCaveatRegex.ReplaceAllString(result, "")
+	result = claudeIdeOpenedFileRegex.ReplaceAllString(result, "")
+	result = claudeIdeSelectionRegex.ReplaceAllString(result, "")
+	result = claudeCommandMsgRegex.ReplaceAllString(result, "")
+
+	// 2. Handle slash command formatting: <command-name>foo</command-name> <command-args>bar</command-args>
+	if cmdMatch := claudeCommandNameRegex.FindStringSubmatch(result); len(cmdMatch) > 1 {
+		cmdName := strings.TrimSpace(cmdMatch[1])
+		cmdArgs := ""
+		if argsMatch := claudeCommandArgsRegex.FindStringSubmatch(result); len(argsMatch) > 1 {
+			cmdArgs = strings.TrimSpace(argsMatch[1])
+		}
+		result = claudeCommandNameRegex.ReplaceAllString(result, "")
+		result = claudeCommandArgsRegex.ReplaceAllString(result, "")
+
+		formattedCmd := "/" + strings.TrimPrefix(cmdName, "/")
+		if cmdArgs != "" {
+			formattedCmd += " " + cmdArgs
+		}
+
+		trimmedRemaining := strings.TrimSpace(result)
+		if trimmedRemaining != "" {
+			result = formattedCmd + "\n\n" + trimmedRemaining
+		} else {
+			result = formattedCmd
+		}
+	}
+
+	// 3. Format <bash-input> as ```bash\n$ <input>\n```
+	result = claudeBashInputRegex.ReplaceAllStringFunc(result, func(match string) string {
+		sub := claudeBashInputRegex.FindStringSubmatch(match)
+		if len(sub) > 1 {
+			input := strings.TrimSpace(sub[1])
+			if input != "" {
+				return fmt.Sprintf("```bash\n$ %s\n```", input)
+			}
+		}
+		return ""
+	})
+
+	// 4. Format stdout / stderr blocks (or strip if empty)
+	formatOutputBlock := func(match string, re *regexp.Regexp) string {
+		sub := re.FindStringSubmatch(match)
+		if len(sub) > 1 {
+			out := strings.TrimSpace(sub[1])
+			if out != "" {
+				return fmt.Sprintf("```\n%s\n```", out)
+			}
+		}
+		return ""
+	}
+	result = claudeBashStdoutRegex.ReplaceAllStringFunc(result, func(m string) string {
+		return formatOutputBlock(m, claudeBashStdoutRegex)
+	})
+	result = claudeBashStderrRegex.ReplaceAllStringFunc(result, func(m string) string {
+		return formatOutputBlock(m, claudeBashStderrRegex)
+	})
+	result = claudeLocalCmdStdoutRegex.ReplaceAllStringFunc(result, func(m string) string {
+		return formatOutputBlock(m, claudeLocalCmdStdoutRegex)
+	})
+
+	// 5. Format <task-notification> blocks
+	result = claudeTaskNotificationRegex.ReplaceAllStringFunc(result, func(match string) string {
+		sub := claudeTaskNotificationRegex.FindStringSubmatch(match)
+		if len(sub) > 1 {
+			inner := sub[1]
+			summary := ""
+			status := ""
+			if sm := claudeTaskSummaryRegex.FindStringSubmatch(inner); len(sm) > 1 {
+				summary = strings.TrimSpace(sm[1])
+			}
+			if stm := claudeTaskStatusRegex.FindStringSubmatch(inner); len(stm) > 1 {
+				status = strings.TrimSpace(stm[1])
+			}
+			if summary != "" && status != "" {
+				return fmt.Sprintf("[Task %s: %s]", status, summary)
+			} else if summary != "" {
+				return fmt.Sprintf("[Task: %s]", summary)
+			}
+		}
+		return ""
+	})
+
+	result = consecutiveNewlinesRegex.ReplaceAllString(result, "\n\n")
+	result = strings.ReplaceAll(result, "```\n```", "```\n\n```")
+	return strings.TrimSpace(result)
 }
 
 // ExtractAntigravityTranscriptMessages reads Antigravity conversation logs from disk,
@@ -216,6 +339,17 @@ func ExtractAntigravityTranscriptMessages(home, convID string) ([]TranscriptMess
 		switch entry.Type {
 		case "USER_INPUT":
 			cleanContent := cleanAntigravityPrompt(entry.Content)
+			for _, m := range entry.Media {
+				if m.URI != "" {
+					cleanURI := strings.TrimPrefix(m.URI, "file://")
+					attachmentLine := fmt.Sprintf("[Attached file: %q]", cleanURI)
+					if cleanContent != "" {
+						cleanContent += "\n\n" + attachmentLine
+					} else {
+						cleanContent = attachmentLine
+					}
+				}
+			}
 			if cleanContent != "" {
 				messages = append(messages, TranscriptMessage{
 					Role:      "user",
@@ -242,16 +376,28 @@ func ExtractAntigravityTranscriptMessages(home, convID string) ([]TranscriptMess
 				}
 			}
 
-			if entry.Content != "" || entry.Thinking != "" || len(toolSummaries) > 0 {
+			content := entry.Content
+			for _, m := range entry.Media {
+				if m.URI != "" {
+					attachmentMarkdown := fmt.Sprintf("![Attachment](%s)", m.URI)
+					if content != "" {
+						content += "\n\n" + attachmentMarkdown
+					} else {
+						content = attachmentMarkdown
+					}
+				}
+			}
+
+			if content != "" || entry.Thinking != "" || len(toolSummaries) > 0 {
 				if len(messages) > 0 && messages[len(messages)-1].Role == "assistant" {
 					last := &messages[len(messages)-1]
-					if entry.Content != "" {
+					if content != "" {
 						if last.Content != "" {
-							if !strings.Contains(last.Content, entry.Content) {
-								last.Content += "\n\n" + entry.Content
+							if !strings.Contains(last.Content, content) {
+								last.Content += "\n\n" + content
 							}
 						} else {
-							last.Content = entry.Content
+							last.Content = content
 						}
 					}
 					if entry.Thinking != "" {
@@ -268,7 +414,7 @@ func ExtractAntigravityTranscriptMessages(home, convID string) ([]TranscriptMess
 				} else {
 					messages = append(messages, TranscriptMessage{
 						Role:      "assistant",
-						Content:   entry.Content,
+						Content:   content,
 						Thinking:  entry.Thinking,
 						ToolCalls: toolSummaries,
 						Timestamp: ts,
@@ -393,6 +539,7 @@ func loadClaudeTranscript(t *Transcript, home, sessionID, cwd string) error {
 				fullText = textStr
 			}
 
+			fullText = CleanClaudePrompt(fullText)
 			fullText = strings.TrimSpace(fullText)
 			if fullText != "" && !strings.Contains(fullText, "<EXTREMELY_IMPORTANT>") {
 				t.Messages = append(t.Messages, TranscriptMessage{
