@@ -37,21 +37,21 @@ As AI software engineering scales from single-prompt experiments to multiple par
 
 ## 🖥️ Supported User Interfaces
 
-Ackbar provides three purpose-built client interfaces:
+Ackbar provides two purpose-built client interfaces alongside the `ackbar` CLI:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                           ACKBAR CLIENT INTERFACES                          │
 │                                                                             │
-│   ┌─────────────────────┐   ┌─────────────────────┐   ┌─────────────────┐   │
-│   │   📱 Mobile App     │   │   🌐 Web Dashboard  │   │ 🖥️ Terminal UI   │   │
-│   │   (iOS & Android)   │   │   & Desktop PWA     │   │   (Bubble Tea)  │   │
-│   │   docs/mobile.md    │   │   docs/web.md       │   │   docs/tui.md   │   │
-│   └──────────┬──────────┘   └──────────┬──────────┘   └────────┬────────┘   │
-└──────────────┼─────────────────────────┼───────────────────────┼────────────┘
-               │                         │                       │
-               └─────────────────────────┼───────────────────────┘
-                                         ▼
+│         ┌─────────────────────┐             ┌─────────────────────┐         │
+│         │   📱 Mobile App     │             │   🌐 Web Dashboard  │         │
+│         │   (iOS & Android)   │             │   & Desktop PWA     │         │
+│         │   docs/mobile.md    │             │   docs/web.md       │         │
+│         └──────────┬──────────┘             └──────────┬──────────┘         │
+└────────────────────┼───────────────────────────────────┼────────────────────┘
+                     │                                   │
+                     └─────────────────┬─────────────────┘
+                                       ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                        LOCAL DAEMON ENGINE (ackbard)                        │
 │                 (HTTP Server, SQLite DB, Tmux Supervisor)                   │
@@ -78,14 +78,7 @@ A zero-dependency browser control plane served directly by `ackbard` (`http://12
 
 ---
 
-### 🖥️ 3. Pure Terminal UI (TUI)
-A fast, keyboard-driven dashboard built with Charm.sh Bubble Tea and Lip Gloss:
-* **Zero Overhead:** Ideal for remote SSH sessions and low-bandwidth environments.
-* **In-Place Attachment:** Attach directly to tmux sessions with `Enter` / `a` and resume the TUI cleanly on detach.
-* **Keyboard Navigation:** Full vim-style navigation, session creation wizards, and archiving controls.
-* 📖 **[Read the TUI Documentation](docs/tui.md)**
 
----
 
 ## 🚦 Live Status Indicators
 
@@ -98,7 +91,7 @@ A fast, keyboard-driven dashboard built with Charm.sh Bubble Tea and Lip Gloss:
 | `🛑` | **Failed** | Agent process crashed or exited with an error. |
 | `◌` | **Standby** | Unmanaged process or host daemon is disconnected. |
 
-> 💡 **Unread State Dimension:** When a session shifts to **Blocked** (`❓`) or **Idle** (`✅`), an unread glowing indicator appears. Viewing the session from the Web Dashboard, TUI, or Mobile Companion automatically marks it as read.
+> 💡 **Unread State Dimension:** When a session shifts to **Blocked** (`❓`) or **Idle** (`✅`), an unread glowing indicator appears. Viewing the session from the Web Dashboard or Mobile Companion automatically marks it as read.
 
 ---
 
@@ -136,8 +129,7 @@ ackbard
 *Listens strictly on `127.0.0.1:7777` by default with SQLite state stored in `~/.config/ackbar/ackbard.db`.*
 
 ### 4. Launch Your Interface of Choice
-* **Web GUI:** Open [http://127.0.0.1:7777](http://127.0.0.1:7777) in your browser.
-* **Terminal UI (TUI):** Run `ackbar` in your terminal.
+* **Web GUI / CLI:** Run `ackbar` or open [http://127.0.0.1:7777](http://127.0.0.1:7777) in your browser.
 * **Mobile App:** Run `cd mobile && flutter run` (or install via TestFlight / APK).
 
 ---
@@ -156,7 +148,6 @@ Ackbar aggregates multiple compute nodes using secure SSH tunnels (`ssh -L`) or 
    ```
 3. Register the host in Ackbar:
    * **Web:** Click **`+ Host`** in the navbar and enter `http://127.0.0.1:7778`.
-   * **TUI:** Press **`R`** to open the registration wizard.
    * **Mobile:** Add host endpoint in the **Hosts** tab.
 
 > 📖 **Architecture & Networking Details:** See [docs/architecture.md](docs/architecture.md).
@@ -170,7 +161,6 @@ Comprehensive guides for every component and subsystem are available in the `doc
 ### 🖥️ User Interfaces
 * 📱 **[Mobile App (iOS & Android)](docs/mobile.md):** Attention queue, chat transcripts, mobile terminal, and Tailscale setup.
 * 🌐 **[Web Dashboard & PWA](docs/web.md):** Browser control plane, xterm.js multiplexing, and command palette.
-* 🖥️ **[Terminal UI (TUI)](docs/tui.md):** Charm Bubble Tea dashboard layout, shortcuts, and tmux attachment.
 
 ### ⚙️ Architecture & Infrastructure
 * 🌍 **[Networking & Remote Access Guide](docs/networking-and-remote-access.md):** Connect across the internet via Cloudflare Tunnels, Ackbar Outbound Relay (`ackbar-relay`), Dynamic DNS/Caddy reverse proxies, or Tailscale mesh VPNs.

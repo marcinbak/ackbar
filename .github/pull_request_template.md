@@ -17,7 +17,7 @@ A concise description of the problem solved or feature introduced by this Pull R
 ## Subsystems Affected
 
 - [ ] `cmd/ackbard` / `internal/daemon` (Daemon engine, SQLite, SSE, PTY)
-- [ ] `cmd/ackbar` / `internal/client` (Bubble Tea TUI)
+- [ ] `cmd/ackbar` (CLI & setup utilities)
 - [ ] `internal/provider` (Claude Code, Antigravity, Codex adapters)
 - [ ] `internal/relay` / `cmd/ackbar-relay` (Outbound reverse tunnel relay)
 - [ ] `internal/web` / `web/` (Embedded Web GUI, xterm.js)

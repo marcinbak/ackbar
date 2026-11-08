@@ -1,12 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
-	"log"
+	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -17,19 +19,10 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"ackbar/internal/client"
 	"ackbar/internal/daemon"
 	"ackbar/internal/mcp"
 	"ackbar/internal/version"
-
-	"github.com/charmbracelet/bubbletea"
 )
-
-type Config struct {
-	Hosts       []client.HostConfig `json:"hosts"`
-	ProjectsDir string              `json:"projects_dir,omitempty"`
-	Groups      map[string][]string `json:"groups"`
-}
 
 func main() {
 	if len(os.Args) > 1 && (os.Args[1] == "update" || os.Args[1] == "upgrade") {
@@ -57,191 +50,74 @@ func main() {
 		os.Exit(0)
 	}
 
-	var argsForFlag []string
 	shouldSetup := false
-	isVersionCmd := false
-
-	noTUI := false
 	isGUICmd := false
+	noTUI := false
+
 	for _, arg := range os.Args[1:] {
-		if arg == "setup-hooks" || arg == "--setup-hooks" {
+		switch arg {
+		case "help", "--help", "-h":
+			printUsage()
+			os.Exit(0)
+		case "version", "--version", "-v":
+			fmt.Printf("ackbar version %s\n", version.Version)
+			os.Exit(0)
+		case "setup-hooks", "--setup-hooks":
 			shouldSetup = true
-		} else if arg == "--no-tui" || arg == "-no-tui" {
-			noTUI = true
-		} else if arg == "version" || arg == "--version" || arg == "-v" {
-			isVersionCmd = true
-		} else if arg == "gui" || arg == "--gui" || arg == "web" || arg == "--web" {
+		case "gui", "--gui", "web", "--web":
 			isGUICmd = true
-		} else {
-			argsForFlag = append(argsForFlag, arg)
+		case "--no-tui", "-no-tui":
+			noTUI = true
+		default:
+			fmt.Fprintf(os.Stderr, "Unknown command or flag: %s\nRun 'ackbar help' for usage.\n", arg)
+			os.Exit(1)
 		}
 	}
 
-	configFlag := flag.String("config", "", "Path to client config file (default ~/.config/ackbar/client.json)")
-	setupFlag := flag.Bool("setup-hooks", false, "Auto-configure agent hooks, install ackbar-hook binary, and start TUI")
-	versionFlag := flag.Bool("version", false, "Print version and exit")
-	setProjectsDirFlag := flag.String("set-projects-dir", "", "Permanently set default projects directory in config")
-	saveFlag := flag.Bool("save", false, "Save --projects-dir permanently to config file")
-	var projectsDirOverride string
-	flag.StringVar(&projectsDirOverride, "projects-dir", "", "Override default projects directory for new projects")
-	flag.StringVar(&projectsDirOverride, "p", "", "Override default projects directory for new projects (shorthand)")
-	_ = flag.CommandLine.Parse(argsForFlag)
-
-	if isVersionCmd || *versionFlag {
-		fmt.Printf("ackbar version %s\n", version.Version)
-		os.Exit(0)
-	}
-
-	if isGUICmd {
-		ensureDaemonRunning()
-		fmt.Printf("⚓ Ackbar GUI running at http://127.0.0.1:7777\n")
-		fmt.Println("Opening browser...")
-		if err := exec.Command("open", "http://127.0.0.1:7777").Start(); err != nil {
-			_ = exec.Command("xdg-open", "http://127.0.0.1:7777").Start()
-		}
-		os.Exit(0)
-	}
-
-	if shouldSetup || *setupFlag {
+	if shouldSetup {
 		if err := runSetupHooks(); err != nil {
 			fmt.Printf("Error setting up hooks: %v\n", err)
 			os.Exit(1)
 		}
 		fmt.Printf("🚀 Hook setup complete (v%s)!\n", version.Version)
-		if noTUI {
+		if !isGUICmd {
 			os.Exit(0)
 		}
-		fmt.Println("Launching Ackbar TUI...")
-		time.Sleep(1 * time.Second)
 	}
 
-	configFile := *configFlag
-	if configFile == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			log.Fatalf("Failed to retrieve user home directory: %v", err)
-		}
-		configFile = filepath.Join(home, ".config", "ackbar", "client.json")
-	}
-
-	// Ensure local daemon is running before loading config
+	// Default invocation (no args, or web/gui)
 	ensureDaemonRunning()
-
-	// Read or create default configuration
-	hosts, projectsDir, groups, firstRun, err := loadConfig(configFile)
-	if err != nil {
-		log.Fatalf("Failed to load configuration: %v", err)
+	if noTUI {
+		os.Exit(0)
 	}
 
-	if *setProjectsDirFlag != "" {
-		if err := client.SaveProjectsDirConfig(configFile, *setProjectsDirFlag); err != nil {
-			log.Fatalf("Failed to save projects directory: %v", err)
-		}
-		fmt.Printf("✅ Permanently set default projects directory to: %s\n", *setProjectsDirFlag)
-		if projectsDirOverride == "" {
-			os.Exit(0)
-		}
-		projectsDir = *setProjectsDirFlag
-		firstRun = false
-	}
-
-	if projectsDirOverride != "" {
-		projectsDir = projectsDirOverride
-		firstRun = false
-		if *saveFlag {
-			_ = client.SaveProjectsDirConfig(configFile, projectsDir)
-			fmt.Printf("✅ Permanently saved default projects directory to: %s\n", projectsDir)
-		}
-	}
-
-	// Create Bubble Tea Model and Program
-	model := client.NewModel(hosts, projectsDir, groups, firstRun, configFile)
-	p := tea.NewProgram(model, tea.WithAltScreen())
-
-	if _, err := p.Run(); err != nil {
-		fmt.Printf("TUI program exited with error: %v\n", err)
-		os.Exit(1)
+	fmt.Printf("⚓ Ackbar Web GUI running at http://127.0.0.1:7777\n")
+	if err := exec.Command("open", "http://127.0.0.1:7777").Start(); err != nil {
+		_ = exec.Command("xdg-open", "http://127.0.0.1:7777").Start()
 	}
 }
 
-func loadConfig(path string) ([]client.HostConfig, string, map[string][]string, bool, error) {
-	// Ensure parent directory exists
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return nil, "", nil, false, fmt.Errorf("failed to create config directory: %w", err)
-	}
+func printUsage() {
+	fmt.Println(`Ackbar - Supervisor & control plane for agentic programming sessions
 
-	_, err := os.Stat(path)
-	if os.IsNotExist(err) {
-		// Create default client configuration pointing to local daemon
-		defaultHosts := []client.HostConfig{
-			{Name: "local", URL: "http://127.0.0.1:7777"},
-		}
-		defaultGroups := make(map[string][]string)
-		cfg := Config{Hosts: defaultHosts, ProjectsDir: "~/Projects", Groups: defaultGroups}
-		data, err := json.MarshalIndent(cfg, "", "  ")
-		if err != nil {
-			return nil, "", nil, false, fmt.Errorf("failed to marshal default config: %w", err)
-		}
+Usage:
+  ackbar [command] [flags]
 
-		if err := os.WriteFile(path, data, 0644); err != nil {
-			return nil, "", nil, false, fmt.Errorf("failed to write default config file: %w", err)
-		}
-		return defaultHosts, "~/Projects", defaultGroups, true, nil
-	} else if err != nil {
-		return nil, "", nil, false, err
-	}
+Available Commands:
+  web, gui          Launch the Web GUI in your browser (default)
+  setup-hooks       Auto-configure agent hooks and install binaries
+  agent, agents     Manage agent providers, MCP servers, and skills
+  account, accounts Manage agent profiles and authentication accounts
+  mcp               Run the Ackbar MCP server over stdio
+  update, upgrade   Update Ackbar to the latest release
+  check-update      Check GitHub for newer Ackbar releases
+  version           Print version information and exit
+  help              Show this help message
 
-	// Read existing config
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, "", nil, false, fmt.Errorf("failed to read config file: %w", err)
-	}
-
-	var cfg Config
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		return nil, "", nil, false, fmt.Errorf("failed to parse config JSON: %w", err)
-	}
-
-	if len(cfg.Hosts) == 0 {
-		cfg.Hosts = []client.HostConfig{{Name: "local", URL: "http://127.0.0.1:7777"}}
-	}
-	if cfg.ProjectsDir == "" {
-		cfg.ProjectsDir = "~/Projects"
-	}
-	if cfg.Groups == nil {
-		cfg.Groups = make(map[string][]string)
-	} else {
-		for g := range cfg.Groups {
-			if strings.HasPrefix(g, "Project Y") || strings.HasPrefix(g, "ProjectY") {
-				delete(cfg.Groups, g)
-			}
-		}
-	}
-
-	// Query local daemon for persisted hosts
-	httpClient := &http.Client{Timeout: 300 * time.Millisecond}
-	resp, err := httpClient.Get("http://127.0.0.1:7777/v1/hosts")
-	if err == nil && resp.StatusCode == http.StatusOK {
-		var hostRecs []struct {
-			Name string `json:"name"`
-			URL  string `json:"url"`
-		}
-		if err := json.NewDecoder(resp.Body).Decode(&hostRecs); err == nil {
-			existing := make(map[string]bool)
-			for _, h := range cfg.Hosts {
-				existing[h.Name] = true
-			}
-			for _, rec := range hostRecs {
-				if !existing[rec.Name] && rec.Name != "" && rec.URL != "" {
-					cfg.Hosts = append(cfg.Hosts, client.HostConfig{Name: rec.Name, URL: rec.URL})
-				}
-			}
-		}
-		resp.Body.Close()
-	}
-
-	return cfg.Hosts, cfg.ProjectsDir, cfg.Groups, false, nil
+Flags:
+  -v, --version     Print version information and exit
+  -h, --help        Show this help message
+  --no-tui          Headless mode (ensure daemon is running without opening browser)`)
 }
 
 func ensureDaemonRunning() {
@@ -515,12 +391,113 @@ func runSetupHooks() error {
 	return nil
 }
 
+// fetchAccounts queries an Ackbar daemon for configured accounts
+func fetchAccounts(hostURL string) ([]*daemon.AgentAccount, error) {
+	reqURL := fmt.Sprintf("%s/v1/accounts", strings.TrimSuffix(hostURL, "/"))
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Get(reqURL)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("fetch accounts failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var accounts []*daemon.AgentAccount
+	if err := json.NewDecoder(resp.Body).Decode(&accounts); err != nil {
+		return nil, err
+	}
+	return accounts, nil
+}
+
+// saveAccount registers or updates an agent account on an Ackbar daemon
+func saveAccount(hostURL string, payload interface{}) (*daemon.AgentAccount, error) {
+	reqURL := fmt.Sprintf("%s/v1/accounts", strings.TrimSuffix(hostURL, "/"))
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Post(reqURL, "application/json", bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("save account failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var acc daemon.AgentAccount
+	if err := json.NewDecoder(resp.Body).Decode(&acc); err != nil {
+		return nil, err
+	}
+	return &acc, nil
+}
+
+// deleteAccount removes a non-default account
+func deleteAccount(hostURL, accountID string) error {
+	reqURL := fmt.Sprintf("%s/v1/accounts/%s", strings.TrimSuffix(hostURL, "/"), url.PathEscape(accountID))
+	req, err := http.NewRequest(http.MethodDelete, reqURL, nil)
+	if err != nil {
+		return err
+	}
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("delete account failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	return nil
+}
+
+// setDefaultAccount sets an account as default for its agent
+func setDefaultAccount(hostURL, accountID string) error {
+	reqURL := fmt.Sprintf("%s/v1/accounts/%s/default", strings.TrimSuffix(hostURL, "/"), url.PathEscape(accountID))
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Post(reqURL, "application/json", nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("set default account failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	return nil
+}
+
+// loginAccount requests the daemon to spawn an interactive login session in tmux
+func loginAccount(hostURL, accountID string) (string, error) {
+	reqURL := fmt.Sprintf("%s/v1/accounts/%s/login", strings.TrimSuffix(hostURL, "/"), url.PathEscape(accountID))
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Post(reqURL, "application/json", nil)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("login account failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var res struct {
+		Status      string `json:"status"`
+		TmuxSession string `json:"tmux_session"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&res)
+	return res.TmuxSession, nil
+}
+
 func runAccountCmd(args []string) {
 	ensureDaemonRunning()
 	hostURL := "http://127.0.0.1:7777"
 
 	if len(args) == 0 || args[0] == "list" || args[0] == "ls" {
-		accounts, err := client.FetchAccounts(hostURL)
+		accounts, err := fetchAccounts(hostURL)
 		if err != nil {
 			fmt.Printf("❌ Failed to fetch accounts: %v\n", err)
 			os.Exit(1)
@@ -554,7 +531,7 @@ func runAccountCmd(args []string) {
 	switch subcmd {
 	case "add":
 		fs := flag.NewFlagSet("account add", flag.ExitOnError)
-		displayName := fs.String("display-name", "", "Display name for UI/TUI")
+		displayName := fs.String("display-name", "", "Display name for UI")
 		apiKey := fs.String("api-key", "", "API key to set in profile environment")
 		configDir := fs.String("config-dir", "", "Custom configuration directory")
 		isDefault := fs.Bool("default", false, "Set this account as default for the agent")
@@ -597,7 +574,7 @@ func runAccountCmd(args []string) {
 			"env":           envMap,
 		}
 
-		acc, err := client.SaveAccount(hostURL, payload)
+		acc, err := saveAccount(hostURL, payload)
 		if err != nil {
 			fmt.Printf("❌ Failed to create account: %v\n", err)
 			os.Exit(1)
@@ -617,7 +594,7 @@ func runAccountCmd(args []string) {
 			os.Exit(1)
 		}
 		id := args[1]
-		if err := client.DeleteAccount(hostURL, id); err != nil {
+		if err := deleteAccount(hostURL, id); err != nil {
 			fmt.Printf("❌ Failed to delete account: %v\n", err)
 			os.Exit(1)
 		}
@@ -629,7 +606,7 @@ func runAccountCmd(args []string) {
 			os.Exit(1)
 		}
 		id := args[1]
-		if err := client.SetDefaultAccount(hostURL, id); err != nil {
+		if err := setDefaultAccount(hostURL, id); err != nil {
 			fmt.Printf("❌ Failed to set default account: %v\n", err)
 			os.Exit(1)
 		}
@@ -661,7 +638,7 @@ func runAccountCmd(args []string) {
 
 func runLoginCmd(hostURL, accountID string) {
 	fmt.Printf("🚀 Spawning login session for account '%s'...\n", accountID)
-	tmuxSession, err := client.LoginAccount(hostURL, accountID)
+	tmuxSession, err := loginAccount(hostURL, accountID)
 	if err != nil {
 		fmt.Printf("❌ Failed to spawn login session: %v\n", err)
 		os.Exit(1)
