@@ -72,7 +72,7 @@
 │  PHASE 5: MOBILE APP ALIGNMENT (`mobile/` FLUTTER CLIENT) (DONE)       │
 │  • Replace flat `groupedSessionsProvider` (`projectDisplayName`) with  │
 │    hierarchical `tree_nodes` (`/v1/nodes?federated=true`) + Dart port  │
-│    of `resolveSessionNodePath()` so Mobile matches Web/TUI folders.    │
+│    of `resolveSessionNodePath()` so Mobile matches Web folders.        │
 │  • Add `[🌐 All Tree | ⚓ Supervisors]` switcher, 1-tap                 │
 │    `[+ ⚓ New Supervisor]` FAB, and `⚓ Supervisors` / `📋 Tasks` /      │
 │    `⏳ Later` / `✅ Done` folder subsections in `fleet_screen.dart`.    │

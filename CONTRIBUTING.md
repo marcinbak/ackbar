@@ -41,8 +41,7 @@ Before submitting changes, please familiarize yourself with the core architectur
 
 1. **Pure Go (CGO-Free) SQLite:** All database persistence MUST use pure Go database drivers (`modernc.org/sqlite`). CGO must remain disabled for cross-compilation simplicity.
 2. **Default Localhost Binding:** The `ackbard` HTTP daemon server MUST bind strictly to `127.0.0.1` by default unless explicitly configured otherwise by the user.
-3. **In-Place Terminal Attachment:** TUI session attachment MUST suspend the Bubble Tea program using `tea.ExecProcess`, attach to tmux in-place, and resume cleanly upon detach.
-4. **Decoupled Architecture:** Client interfaces (TUI, Web Dashboard, Mobile App) are strictly decoupled from daemon internals and communicate via HTTP REST, SSE (`/v1/events`), and WebSocket PTY (`/v1/sessions/pty`).
+3. **Decoupled Architecture:** Client interfaces (Web Dashboard, Mobile App, CLI) are strictly decoupled from daemon internals and communicate via HTTP REST, SSE (`/v1/events`), and WebSocket PTY (`/v1/sessions/pty`).
 
 ---
 

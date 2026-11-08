@@ -161,7 +161,7 @@ flutter run --release -d <android-device-id>
 
 ## 5. Implemented Phase 5: Ackbar 2.0 Mobile App Alignment
 
-In **Phase 5**, the Flutter Mobile App (`mobile/lib/`) was upgraded to complete functional parity with the Web GUI and TUI Supervisor & Task Control Plane (see [`docs/work-overview/06-ui-and-navigation.md`](work-overview/06-ui-and-navigation.md#5-mobile-app-alignment-mobile--phase-5--implemented)):
+In **Phase 5**, the Flutter Mobile App (`mobile/lib/`) was upgraded to complete functional parity with the Web GUI Supervisor & Task Control Plane (see [`docs/work-overview/06-ui-and-navigation.md`](work-overview/06-ui-and-navigation.md#4-mobile-app-alignment-mobile--phase-5--implemented)):
 
 1. **Hierarchical Session Tree Parity (`fleet_providers.dart`, `node_path_resolver.dart` & `fleet_tree_view.dart`):**
    * **Node Path Resolution:** Ported `resolveSessionNodePath(session, nodes)` from `web/js/state.js` to Dart (`mobile/lib/core/utils/node_path_resolver.dart`), resolving sessions against federated `TreeNode` trees from `fleetNodesProvider` (`GET /v1/nodes?federated=true`).

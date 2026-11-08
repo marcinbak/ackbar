@@ -1,6 +1,6 @@
 # Networking & Remote Access Guide
 
-Project Ackbar supports multiple secure, production-grade networking topologies to connect your Mobile App (iOS & Android), Web Dashboard, and TUI to remote `ackbard` daemons across the internet.
+Project Ackbar supports multiple secure, production-grade networking topologies to connect your Mobile App (iOS & Android), Web Dashboard, and CLI to remote `ackbard` daemons across the internet.
 
 Whether your dev machine is behind a strict office firewall, mobile hotspot, home CGNAT, or accessible over a mesh VPN, Ackbar offers 4 flexible connection options.
 

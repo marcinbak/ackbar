@@ -14,7 +14,7 @@ The official Homebrew tap provides the cleanest user experience for installation
 # Add official Homebrew tap
 brew tap marcinbak/ackbar https://github.com/marcinbak/ackbar
 
-# Install ackbard daemon, ackbar TUI, ackbar-hook, and ackbar-relay
+# Install ackbard daemon, ackbar CLI, ackbar-hook, and ackbar-relay
 brew install ackbar
 
 # Start daemon as a background service managed by brew services
@@ -62,7 +62,7 @@ Every release automatically cross-compiles 4 standalone CGO-free binaries for 4 
 ### Binaries Bundled in Every Archive
 
 1. **`ackbard`:** Control plane daemon engine with SQLite persistence, PTY multiplexing, and SSE streams.
-2. **`ackbar`:** Bubble Tea terminal dashboard and tmux attachment interface.
+2. **`ackbar`:** CLI utility, Web GUI launcher, MCP server, and account manager.
 3. **`ackbar-hook`:** Universal stdin-to-HTTP hook shim for AI agents.
 4. **`ackbar-relay`:** Standalone reverse WebSocket tunnel relay server.
 
@@ -115,8 +115,7 @@ ackbar update --force
 ### How Updates Work Under the Hood
 * **Homebrew Users:** `ackbar update` detects the Homebrew installation and automatically executes `brew upgrade ackbar && brew services restart ackbar`, ensuring the Cellar and background services stay cleanly synchronized.
 * **Standalone / Local Bin Users (`~/.local/bin`):** `ackbar update` downloads the platform-specific release archive (`.tar.gz`) directly from GitHub Releases, verifies binaries, stages them atomically, replaces `ackbar`, `ackbard`, `ackbar-hook`, and `ackbar-relay`, and gracefully restarts the daemon.
-* **In-App TUI & Web Discovery:**
-  * **TUI:** Displays a header alert `⚡ UPDATE: v... ('u')`. Pressing `u` opens the interactive update modal with release highlights and a one-key upgrade trigger (`[Enter]`).
+* **In-App Web Discovery:**
   * **Web GUI:** Displays an update pill in the top header and provides a 1-click update modal.
   * **Fleet Peers:** Cross-compares daemon versions in multi-machine setups; remote hosts ahead of the local client are tagged `[AHEAD]` while preventing accidental downgrades.
 
