@@ -6,7 +6,7 @@ This document specifies the architecture, user scenarios, conversational protoco
 
 ## 1. Vision & Core Scenarios
 
-While Ackbar's TUI, Web Dashboard, and Mobile App provide visual control over coding sessions, developers frequently operate in contexts where looking at or typing on a screen is impractical or undesirable.
+While Ackbar's Web Dashboard and Mobile App provide visual control over coding sessions, developers frequently operate in contexts where looking at or typing on a screen is impractical or undesirable.
 
 The Supervisor Control Layer enables four distinct interaction modes by **decoupling input modality (Voice vs. Text/Tap) from output modality (Spoken Audio vs. Visual Markdown)**:
 
