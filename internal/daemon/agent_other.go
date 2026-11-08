@@ -390,6 +390,14 @@ func cleanPromptText(text string) string {
 	if text == "" {
 		return ""
 	}
+	if strings.Contains(text, "<system-reminder>") ||
+		strings.Contains(text, "<command-name>") ||
+		strings.Contains(text, "<bash-input>") ||
+		strings.Contains(text, "<local-command-") ||
+		strings.Contains(text, "<task-notification>") ||
+		strings.Contains(text, "<ide_") {
+		text = CleanClaudePrompt(text)
+	}
 	// Strip XML wrapper tags like <USER_REQUEST> or <CONTEXT_SUMMARY>
 	for strings.HasPrefix(text, "<") {
 		idx := strings.Index(text, ">")

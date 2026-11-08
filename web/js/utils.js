@@ -102,20 +102,23 @@ function renderSlideContent(slideMd) {
   if (!slideMd) return '';
   if (typeof window !== 'undefined' && window.marked && typeof window.marked.parse === 'function') {
     configureMarked();
-    const raw = window.marked.parse(slideMd);
+    const mathProcessed = preprocessLatexMath(slideMd);
+    const raw = window.marked.parse(mathProcessed);
     const linked = ensureExternalLinksTargetBlank(raw);
-    return sanitizeRenderedMarkdownHtml(linked);
+    const alerted = processMarkdownAlerts(linked);
+    return sanitizeRenderedMarkdownHtml(alerted);
   }
   return `<p>${escapeHtml(slideMd)}</p>`;
 }
 
-function buildCarouselHtml(inner) {
+function buildCarouselHtml(inner, unmaskFn = (s) => s) {
   const parts = inner.split(/<!--\s*slide\s*-->/i);
   const slides = parts.map(s => s.trim()).filter(Boolean);
   if (slides.length === 0) return '';
   const slidesHtml = slides.map((slideMd, idx) => {
     const activeAttr = idx === 0 ? ' data-active="true"' : '';
-    const slideParsed = renderSlideContent(slideMd);
+    const unmasked = typeof unmaskFn === 'function' ? unmaskFn(slideMd) : slideMd;
+    const slideParsed = renderSlideContent(unmasked);
     return `<div class="chat-carousel-slide" data-slide-index="${idx}"${activeAttr}>${slideParsed}</div>`;
   }).join('');
   return `<div class="chat-carousel" data-carousel-mode="slide"><div class="chat-carousel-slides">${slidesHtml}</div></div>`;
@@ -182,13 +185,13 @@ function processUnfencedSlides(text, unmaskFn = (s) => s) {
   return finalPrefix + carouselHtml + finalSuffix;
 }
 
-function preprocessCarouselBlocks(content) {
+function preprocessCarouselBlocks(content, unmaskFn = (s) => s) {
   if (!content || typeof content !== 'string') return content || '';
   let result = content;
 
   // 1. Process 3- or 4-backtick ````carousel ... ```` blocks
   result = result.replace(/(^|\r?\n)(`{3,4})carousel[ \t]*\r?\n([\s\S]*?)\r?\n\2(?=\r?\n|$)/gi, (match, prefix, fence, inner) => {
-    return prefix + buildCarouselHtml(inner);
+    return prefix + buildCarouselHtml(inner, unmaskFn);
   });
 
   // 2. Process unfenced <!-- slide --> sequences outside fenced code blocks
@@ -201,15 +204,306 @@ function preprocessCarouselBlocks(content) {
     });
 
     if (/<!--\s*slide\s*-->/i.test(masked)) {
-      const unmaskFn = (str) => {
+      const combinedUnmask = (str) => {
         if (!str || typeof str !== 'string') return str || '';
-        return str.replace(/%%CAROUSEL_CODE_BLOCK_(\d+)%%/g, (m, id) => codeBlocks[parseInt(id, 10)] || m);
+        let unmasked = str.replace(/%%CAROUSEL_CODE_BLOCK_(\d+)%%/g, (m, id) => codeBlocks[parseInt(id, 10)] || m);
+        if (typeof unmaskFn === 'function') {
+          unmasked = unmaskFn(unmasked);
+        }
+        return unmasked;
       };
-      result = processUnfencedSlides(masked, unmaskFn);
+      result = processUnfencedSlides(masked, combinedUnmask);
     }
   }
 
   return result;
+}
+
+// LaTeX Symbol & Macro Mapping Table (ordered from longest commands to shortest prefixes)
+const LATEX_SYMBOL_REPLACEMENTS = [
+  // Multi-character arrows & symbols
+  [/\\longleftrightarrow(?![a-zA-Z])/g, '⟷'],
+  [/\\Longleftrightarrow(?![a-zA-Z])/g, '⟺'],
+  [/\\leftrightarrow(?![a-zA-Z])/g, '↔'],
+  [/\\Leftrightarrow(?![a-zA-Z])/g, '⇔'],
+  [/\\longrightarrow(?![a-zA-Z])/g, '⟶'],
+  [/\\Longrightarrow(?![a-zA-Z])/g, '⟹'],
+  [/\\rightarrow(?![a-zA-Z])/g, '→'],
+  [/\\to(?![a-zA-Z])/g, '→'],
+  [/\\Rightarrow(?![a-zA-Z])/g, '⇒'],
+  [/\\implies(?![a-zA-Z])/g, '⇒'],
+  [/\\longleftarrow(?![a-zA-Z])/g, '⟵'],
+  [/\\Longleftarrow(?![a-zA-Z])/g, '⟸'],
+  [/\\leftarrow(?![a-zA-Z])/g, '←'],
+  [/\\gets(?![a-zA-Z])/g, '←'],
+  [/\\Leftarrow(?![a-zA-Z])/g, '⇐'],
+  [/\\mapsto(?![a-zA-Z])/g, '↦'],
+  [/\\uparrow(?![a-zA-Z])/g, '↑'],
+  [/\\downarrow(?![a-zA-Z])/g, '↓'],
+
+  // Operators & Relations
+  [/\\times(?![a-zA-Z])/g, '×'],
+  [/\\div(?![a-zA-Z])/g, '÷'],
+  [/\\pm(?![a-zA-Z])/g, '±'],
+  [/\\mp(?![a-zA-Z])/g, '∓'],
+  [/\\cdot(?![a-zA-Z])/g, '·'],
+  [/\\ast(?![a-zA-Z])/g, '∗'],
+  [/\\star(?![a-zA-Z])/g, '⋆'],
+  [/\\circ(?![a-zA-Z])/g, '∘'],
+  [/\\bullet(?![a-zA-Z])/g, '•'],
+  [/\\oplus(?![a-zA-Z])/g, '⊕'],
+  [/\\otimes(?![a-zA-Z])/g, '⊗'],
+  [/\\approx(?![a-zA-Z])/g, '≈'],
+  [/\\neq(?![a-zA-Z])/g, '≠'],
+  [/\\ne(?![a-zA-Z])/g, '≠'],
+  [/\\leq(?![a-zA-Z])/g, '≤'],
+  [/\\le(?![a-zA-Z])/g, '≤'],
+  [/\\geq(?![a-zA-Z])/g, '≥'],
+  [/\\ge(?![a-zA-Z])/g, '≥'],
+  [/\\ll(?![a-zA-Z])/g, '≪'],
+  [/\\gg(?![a-zA-Z])/g, '≫'],
+  [/\\equiv(?![a-zA-Z])/g, '≡'],
+  [/\\simeq(?![a-zA-Z])/g, '≃'],
+  [/\\sim(?![a-zA-Z])/g, '∼'],
+  [/\\cong(?![a-zA-Z])/g, '≅'],
+  [/\\propto(?![a-zA-Z])/g, '∝'],
+  [/\\infty(?![a-zA-Z])/g, '∞'],
+  [/\\notin(?![a-zA-Z])/g, '∉'],
+  [/\\in(?![a-zA-Z])/g, '∈'],
+  [/\\subseteq(?![a-zA-Z])/g, '⊆'],
+  [/\\subset(?![a-zA-Z])/g, '⊂'],
+  [/\\supseteq(?![a-zA-Z])/g, '⊇'],
+  [/\\supset(?![a-zA-Z])/g, '⊃'],
+  [/\\cup(?![a-zA-Z])/g, '∪'],
+  [/\\cap(?![a-zA-Z])/g, '∩'],
+  [/\\varnothing(?![a-zA-Z])/g, '∅'],
+  [/\\emptyset(?![a-zA-Z])/g, '∅'],
+  [/\\forall(?![a-zA-Z])/g, '∀'],
+  [/\\exists(?![a-zA-Z])/g, '∃'],
+  [/\\neg(?![a-zA-Z])/g, '¬'],
+  [/\\lnot(?![a-zA-Z])/g, '¬'],
+  [/\\wedge(?![a-zA-Z])/g, '∧'],
+  [/\\land(?![a-zA-Z])/g, '∧'],
+  [/\\vee(?![a-zA-Z])/g, '∨'],
+  [/\\lor(?![a-zA-Z])/g, '∨'],
+  [/\\nabla(?![a-zA-Z])/g, '∇'],
+  [/\\partial(?![a-zA-Z])/g, '∂'],
+  [/\\sum(?![a-zA-Z])/g, '∑'],
+  [/\\prod(?![a-zA-Z])/g, '∏'],
+  [/\\int(?![a-zA-Z])/g, '∫'],
+  [/\\checkmark(?![a-zA-Z])/g, '✓'],
+  [/\\cdots(?![a-zA-Z])/g, '…'],
+  [/\\ldots(?![a-zA-Z])/g, '…'],
+  [/\\dots(?![a-zA-Z])/g, '…'],
+
+  // Greek letters
+  [/\\alpha(?![a-zA-Z])/g, 'α'],
+  [/\\beta(?![a-zA-Z])/g, 'β'],
+  [/\\gamma(?![a-zA-Z])/g, 'γ'],
+  [/\\delta(?![a-zA-Z])/g, 'δ'],
+  [/\\varepsilon(?![a-zA-Z])/g, 'ε'],
+  [/\\epsilon(?![a-zA-Z])/g, 'ε'],
+  [/\\zeta(?![a-zA-Z])/g, 'ζ'],
+  [/\\eta(?![a-zA-Z])/g, 'η'],
+  [/\\theta(?![a-zA-Z])/g, 'θ'],
+  [/\\iota(?![a-zA-Z])/g, 'ι'],
+  [/\\kappa(?![a-zA-Z])/g, 'κ'],
+  [/\\lambda(?![a-zA-Z])/g, 'λ'],
+  [/\\mu(?![a-zA-Z])/g, 'μ'],
+  [/\\nu(?![a-zA-Z])/g, 'ν'],
+  [/\\xi(?![a-zA-Z])/g, 'ξ'],
+  [/\\pi(?![a-zA-Z])/g, 'π'],
+  [/\\rho(?![a-zA-Z])/g, 'ρ'],
+  [/\\sigma(?![a-zA-Z])/g, 'σ'],
+  [/\\tau(?![a-zA-Z])/g, 'τ'],
+  [/\\upsilon(?![a-zA-Z])/g, 'υ'],
+  [/\\varphi(?![a-zA-Z])/g, 'φ'],
+  [/\\phi(?![a-zA-Z])/g, 'φ'],
+  [/\\chi(?![a-zA-Z])/g, 'χ'],
+  [/\\psi(?![a-zA-Z])/g, 'ψ'],
+  [/\\omega(?![a-zA-Z])/g, 'ω'],
+  [/\\Gamma(?![a-zA-Z])/g, 'Γ'],
+  [/\\Delta(?![a-zA-Z])/g, 'Δ'],
+  [/\\Theta(?![a-zA-Z])/g, 'Θ'],
+  [/\\Lambda(?![a-zA-Z])/g, 'Λ'],
+  [/\\Xi(?![a-zA-Z])/g, 'Ξ'],
+  [/\\Pi(?![a-zA-Z])/g, 'Π'],
+  [/\\Sigma(?![a-zA-Z])/g, 'Σ'],
+  [/\\Phi(?![a-zA-Z])/g, 'Φ'],
+  [/\\Psi(?![a-zA-Z])/g, 'Ψ'],
+  [/\\Omega(?![a-zA-Z])/g, 'Ω'],
+
+  // Functions
+  [/\\log(?![a-zA-Z])/g, 'log'],
+  [/\\ln(?![a-zA-Z])/g, 'ln'],
+  [/\\sin(?![a-zA-Z])/g, 'sin'],
+  [/\\cos(?![a-zA-Z])/g, 'cos'],
+  [/\\tan(?![a-zA-Z])/g, 'tan'],
+  [/\\min(?![a-zA-Z])/g, 'min'],
+  [/\\max(?![a-zA-Z])/g, 'max'],
+  [/\\exp(?![a-zA-Z])/g, 'exp'],
+  [/\\lim(?![a-zA-Z])/g, 'lim']
+];
+
+function convertLatexToHtml(tex) {
+  if (!tex || typeof tex !== 'string') return '';
+  let res = escapeHtml(tex.trim());
+
+  // Formatting & text functions: \text{...}, \mathrm{...}, \mathbf{...}
+  res = res.replace(/\\(?:text|mathrm|mathbf)\{([^}]*)\}/g, '$1');
+
+  // Fractions: \frac{a}{b} -> <span class="math-frac"><sup>a</sup>⁄<sub>b</sub></span>
+  while (/\\frac\{([^{}]+)\}\{([^{}]+)\}/.test(res)) {
+    res = res.replace(/\\frac\{([^{}]+)\}\{([^{}]+)\}/g, '<span class="math-frac"><sup>$1</sup>⁄<sub>$2</sub></span>');
+  }
+
+  // Square roots: \sqrt{a} -> √(a)
+  while (/\\sqrt\{([^{}]+)\}/.test(res)) {
+    res = res.replace(/\\sqrt\{([^{}]+)\}/g, '√($1)');
+  }
+
+  // Symbol and macro replacements
+  for (const [re, repl] of LATEX_SYMBOL_REPLACEMENTS) {
+    res = res.replace(re, repl);
+  }
+
+  // Superscripts & subscripts
+  res = res.replace(/\^{([^}]+)}/g, '<sup>$1</sup>');
+  res = res.replace(/\^([a-zA-Z0-9+-])/g, '<sup>$1</sup>');
+  res = res.replace(/_{([^}]+)}/g, '<sub>$1</sub>');
+  res = res.replace(/_([a-zA-Z0-9+-])/g, '<sub>$1</sub>');
+
+  // Delimiter and spacing cleanup
+  res = res.replace(/\\([{}])/g, '$1');
+  res = res.replace(/\\([,;:!])/g, ' ');
+  res = res.replace(/\\\s/g, ' ');
+  res = res.replace(/\\\$/g, '$');
+
+  return res;
+}
+
+function isLikelyLatexMath(inner) {
+  if (!inner || typeof inner !== 'string') return false;
+  // If starts or ends with whitespace, not genuine math
+  if (inner.startsWith(' ') || inner.endsWith(' ') || inner.startsWith('\t') || inner.endsWith('\t')) {
+    return false;
+  }
+  // If looks like currency: e.g. $50, $50.00, $50k, $50 USD
+  if (/^\d+(?:[.,]\d+)*(?:\s*(?:k|m|b|usd|eur|gbp|dollars?|cents?))?$/i.test(inner)) {
+    return false;
+  }
+  // Indicators of genuine LaTeX math:
+  // 1. Contains LaTeX command like \rightarrow, \times, \frac, \alpha, etc.
+  if (/\\[a-zA-Z]+/.test(inner)) return true;
+  // 2. Contains superscript or subscript syntax
+  if (/[\^_][{a-zA-Z0-9+-]/.test(inner)) return true;
+  // 3. Contains Big-O notation e.g. O(n log n), O(1), O(n^2), O(V + E)
+  if (/^O\([^)]+\)$/.test(inner)) return true;
+  // 4. Common math relations or operators
+  if (/[=<>≤≥±≠≈×÷∈∉⊂⊆∪∩∑∏∫√]/.test(inner)) return true;
+
+  return false;
+}
+
+function preprocessLatexMath(text) {
+  if (!text || typeof text !== 'string' || !text.includes('$')) return text || '';
+
+  // 1. Convert display math blocks: $$([\s\S]+?)$$
+  let result = text.replace(/\$\$([\s\S]+?)\$\$/g, (match, inner) => {
+    return `<div class="math-block">${convertLatexToHtml(inner)}</div>`;
+  });
+
+  // 2. Convert inline math spans: $((?:\\\$|[^$\r\n])+?)$
+  result = result.replace(/(^|[^\\])\$((?:\\\$|[^$\r\n])+?)\$/g, (match, prefix, inner) => {
+    if (isLikelyLatexMath(inner)) {
+      return `${prefix}<span class="math-inline">${convertLatexToHtml(inner)}</span>`;
+    }
+    return match;
+  });
+
+  return result;
+}
+
+const ALERT_CONFIG = {
+  NOTE: { title: 'Note', icon: 'ℹ️', className: 'markdown-alert-note' },
+  TIP: { title: 'Tip', icon: '💡', className: 'markdown-alert-tip' },
+  IMPORTANT: { title: 'Important', icon: '⚡', className: 'markdown-alert-important' },
+  WARNING: { title: 'Warning', icon: '⚠️', className: 'markdown-alert-warning' },
+  CAUTION: { title: 'Caution', icon: '🛑', className: 'markdown-alert-caution' }
+};
+
+function processMarkdownAlerts(html) {
+  if (!html || typeof html !== 'string' || !/\[!(?:NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]/i.test(html)) {
+    return html || '';
+  }
+  return html.replace(/<blockquote\b[^>]*>([\s\S]*?)<\/blockquote>/gi, (match, inner) => {
+    const alertMatch = inner.match(/^\s*<p>\s*\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\](?:\s*<br\s*\/?>)?(?:[ \t]*\r?\n|[ \t]+)?([\s\S]*)/i);
+    if (!alertMatch) return match;
+    const alertType = alertMatch[1].toUpperCase();
+    const config = ALERT_CONFIG[alertType];
+    if (!config) return match;
+    let restOfFirstPara = alertMatch[2] || '';
+    let body = restOfFirstPara;
+    if (body.trim().startsWith('</p>')) {
+      body = body.trim().slice(4).trim();
+    } else {
+      body = '<p>' + body;
+    }
+    body = body.replace(/<p>\s*<\/p>/g, '').trim();
+
+    return `<div class="markdown-alert ${config.className}">\n  <div class="markdown-alert-title"><span class="markdown-alert-icon">${config.icon}</span> ${config.title}</div>\n  <div class="markdown-alert-body">${body}</div>\n</div>`;
+  });
+}
+
+function preprocessMarkdownExtensions(content) {
+  if (!content || typeof content !== 'string') return '';
+  // Fast bailout: if no carousel, slide, dollar (math), or alert indicator, return content immediately
+  if (!/`{3,4}carousel|<!--\s*slide|\$|\[!(?:NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]/i.test(content)) {
+    return content;
+  }
+
+  // Mask non-carousel code blocks and inline code spans in a single pass
+  const codeTokens = [];
+  // 1. Mask non-carousel fenced code blocks
+  let masked = content.replace(/(^|\r?\n)(`{3,}|~{3,})(?!carousel\b)[^\n]*\r?\n[\s\S]*?\r?\n\2(?=\r?\n|$)/gi, (m, prefix) => {
+    const idx = codeTokens.length;
+    codeTokens.push(m.slice(prefix.length));
+    return prefix + `%%MD_CODE_TOKEN_${idx}%%`;
+  });
+
+  // 2. Mask inline code spans `...`
+  masked = masked.replace(/(`+)(?:[^\r\n`]|(?!\1)`)+\1/g, (m) => {
+    const idx = codeTokens.length;
+    codeTokens.push(m);
+    return `%%MD_CODE_TOKEN_${idx}%%`;
+  });
+
+  // 1. Process LaTeX Math
+  if (masked.includes('$')) {
+    masked = preprocessLatexMath(masked);
+  }
+
+  // 2. Process Carousel & Unfenced <!-- slide --> blocks
+  if (/`{3,4}carousel|<!--\s*slide/i.test(masked)) {
+    const unmaskFn = (str) => {
+      if (!str || typeof str !== 'string' || codeTokens.length === 0) return str || '';
+      return str.replace(/%%MD_CODE_TOKEN_(\d+)%%/g, (m, id) => {
+        const val = codeTokens[parseInt(id, 10)];
+        return val !== undefined ? val : m;
+      });
+    };
+    masked = preprocessCarouselBlocks(masked, unmaskFn);
+  }
+
+  // Unmask remaining code tokens
+  if (codeTokens.length > 0) {
+    masked = masked.replace(/%%MD_CODE_TOKEN_(\d+)%%/g, (m, id) => {
+      const val = codeTokens[parseInt(id, 10)];
+      return val !== undefined ? val : m;
+    });
+  }
+
+  return masked;
 }
 
 function renderMarkdown(content) {
@@ -218,10 +512,11 @@ function renderMarkdown(content) {
     return `<pre>${escapeHtml(content || '')}</pre>`;
   }
   configureMarked();
-  const preprocessed = preprocessCarouselBlocks(content);
+  const preprocessed = preprocessMarkdownExtensions(content);
   const raw = window.marked.parse(preprocessed || '');
   const linked = ensureExternalLinksTargetBlank(raw);
-  return sanitizeRenderedMarkdownHtml(linked);
+  const alerted = processMarkdownAlerts(linked);
+  return sanitizeRenderedMarkdownHtml(alerted);
 }
 
 function ensureDoubleNewlineSeparation(prev, next) {
@@ -358,10 +653,21 @@ async function openInVSCode(cwd, host = 'local') {
   }
   const isRemote = !isLocalHost(host);
   const hostLabel = isRemote ? (host || 'local') : getSelfHostName();
-  const formattedPath = cwd.startsWith('/') ? cwd : '/' + cwd;
+  let cleanPath = cwd;
+  let lineSuffix = '';
+  const hashMatch = cwd.match(/#L(\d+)(?:-L?(\d+))?$/i);
+  const colonMatch = cwd.match(/:(\d+)(?::(\d+))?$/);
+  if (hashMatch) {
+    cleanPath = cwd.slice(0, hashMatch.index);
+    lineSuffix = `:${hashMatch[1]}`;
+  } else if (colonMatch) {
+    cleanPath = cwd.slice(0, colonMatch.index);
+    lineSuffix = colonMatch[0];
+  }
+  const formattedPath = cleanPath.startsWith('/') ? cleanPath : '/' + cleanPath;
   const directUri = isRemote 
-    ? `vscode://vscode-remote/ssh-remote+${hostLabel}${formattedPath}` 
-    : `vscode://file${formattedPath}`;
+    ? `vscode://vscode-remote/ssh-remote+${hostLabel}${formattedPath}${lineSuffix}` 
+    : `vscode://file${formattedPath}${lineSuffix}`;
 
   try {
     const res = await fetch('/v1/editor/open', {
@@ -726,6 +1032,10 @@ export {
   ensureExternalLinksTargetBlank,
   sanitizeRenderedMarkdownHtml,
   preprocessCarouselBlocks,
+  preprocessLatexMath,
+  convertLatexToHtml,
+  preprocessMarkdownExtensions,
+  processMarkdownAlerts,
   renderMarkdown,
   ensureDoubleNewlineSeparation,
   isLocalHost,

@@ -133,6 +133,13 @@ It is embedded directly into the `ackbard` Go binary and served on `http://127.0
   * **Inline Image Cards & Captions (`.chat-file-preview-card`, `.chat-file-preview-caption`):** Automatically rewrites local Markdown image links (`![Alt](path/to/img.png)`) into interactive preview cards with Open in Preview action and subtle captions whenever alt text provides non-filename context.
   * **Interactive Carousels (`.chat-carousel`):** Preprocesses 3- and 4-backtick ````carousel blocks and unfenced `<!-- slide -->` separators into tabbed / step carousels featuring slide counters (`1 / N`), `‹ Prev` / `Next ›` navigation controls, and a `Grid` / `Slide` view switcher for side-by-side multi-column comparison.
   * **Cross-OS Home Fallback (`/Users/<user>` ↔ `/home/<user>`):** Translates absolute home directory image paths between macOS and Linux in `/v1/files/content` while enforcing sensitive credential blocks.
+* **LaTeX Math & GitHub-Flavored Markdown Alerts (`utils.js`, `style.css`):**
+  * **Single-Pass LaTeX Math Converter (`$...$`, `$$...$$`):** Translates LaTeX macros (arrows, Greek symbols, relations, operators, functions, Big-O notation, subscripts/superscripts, fractions) into clean HTML/Unicode while protecting code blocks and ignoring currency strings.
+  * **GitHub Alerts:** Transforms blockquotes starting with `[!NOTE]`, `[!TIP]`, `[!IMPORTANT]`, `[!WARNING]`, and `[!CAUTION]` into colored callout boxes with icons and left accent borders.
+* **Line-Range File Pills, `conversation://` Links & Media Cards (`chat.js`, `server_projects.go`, `files.go`):**
+  * **Line-Range File Pills (`#L123`, `:123`):** Resolves file paths with line-range anchors (`#L75-L176`, `:75:10`, `:75`) into interactive badges (`file.go:75-176`), displaying custom symbol labels when available and opening VS Code at the exact target line via URL scheme and CLI.
+  * **Subagent Conversation Links (`conversation://<id>`):** Converts subagent conversation URIs into interactive `.chat-subagent-pill` buttons that switch straight to the child worker session tab.
+  * **Local Video & Audio Preview Cards:** Detects `.mp4`, `.webm`, `.mp3`, and `.wav` media files in chat and renders playable preview cards.
 
 ### 📊 11. Mermaid Flowchart & Architecture Diagram Rendering (`mermaid.js`)
 * **Automatic Detection:** Automatically identifies Mermaid diagrams in markdown code fences (````mermaid`) as well as unlabelled code blocks whose first non-comment line begins with valid diagram syntax (`flowchart`, `graph`, `sequenceDiagram`, `stateDiagram`, `classDiagram`, `erDiagram`, `gantt`, `pie`, `gitGraph`, `mindmap`, `timeline`, `xychart-beta`, `C4Context`, etc.).

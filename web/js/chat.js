@@ -10,14 +10,14 @@ import {
   openInVSCode,
   formatAgentChatName
 } from './utils.js';
-import { openSessionDetailsTab } from './details.js';
+import { openSessionDetailsTab, openTranscriptViewerTab } from './details.js';
 import { openHandoverModal } from './modals.js';
 import {
   getOrCreateFileContextMenu,
   hideChatFileContextMenu,
   showChatFileContextMenu
 } from './context-menu.js';
-import { handleTakeWheel, isAuxiliaryInputFocused } from './tabs.js';
+import { handleTakeWheel, isAuxiliaryInputFocused, openSessionInTab } from './tabs.js';
 import {
   addPendingAttachment,
   renderPendingAttachments,
@@ -2527,10 +2527,52 @@ const KNOWN_CHAT_FILE_EXTS = new Set([
 ]);
 
 const CHAT_IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico']);
+const CHAT_VIDEO_EXTS = new Set(['mp4', 'webm']);
+const CHAT_AUDIO_EXTS = new Set(['mp3', 'wav']);
+
+// Parse file paths with optional line numbers / line ranges:
+// e.g. /path/to/file.go#L75-L176, /path/to/file.go#L75, /path/to/file.go:75:10, /path/to/file.go:75
+function parseLineRange(filePath) {
+  let clean = (filePath || '').trim();
+  if (clean.startsWith('file://')) {
+    clean = clean.replace(/^file:\/\//, '');
+  }
+  let baseFilePath = clean;
+  let lineSuffix = '';
+  let startLine = null;
+  let endLine = null;
+
+  const hashMatch = clean.match(/#L(\d+)(?:-L?(\d+))?$/i);
+  const colonMatch = clean.match(/:(\d+)(?::(\d+))?$/);
+
+  if (hashMatch) {
+    baseFilePath = clean.slice(0, hashMatch.index);
+    startLine = hashMatch[1];
+    endLine = hashMatch[2];
+    lineSuffix = endLine ? `:${startLine}-${endLine}` : `:${startLine}`;
+  } else if (colonMatch) {
+    baseFilePath = clean.slice(0, colonMatch.index);
+    startLine = colonMatch[1];
+    endLine = colonMatch[2];
+    lineSuffix = endLine ? `:${startLine}:${endLine}` : `:${startLine}`;
+  }
+
+  baseFilePath = baseFilePath.split('?')[0];
+
+  return {
+    rawPath: filePath,
+    baseFilePath,
+    lineSuffix,
+    startLine,
+    endLine,
+    vscodePath: lineSuffix ? `${baseFilePath}${lineSuffix}` : baseFilePath
+  };
+}
 
 // Construct URL to stream/view file content through the daemon
 function getChatFileContentUrl(filePath, session, download = false) {
-  let url = `/v1/files/content?path=${encodeURIComponent(filePath)}`;
+  const { baseFilePath } = parseLineRange(filePath);
+  let url = `/v1/files/content?path=${encodeURIComponent(baseFilePath)}`;
   if (session) {
     if (session.id) url += `&session_id=${encodeURIComponent(session.id)}`;
     if (session.host) url += `&host=${encodeURIComponent(session.host)}`;
@@ -2545,10 +2587,11 @@ function getChatFileContentUrl(filePath, session, download = false) {
 async function openChatFileInApp(filePath, session, app = 'default') {
   const host = session ? session.host : null;
   const sessionId = session ? session.id : null;
+  const { baseFilePath, vscodePath } = parseLineRange(filePath);
   if (app === 'vscode') {
-    const targetPath = (!filePath.startsWith('/') && session && session.cwd)
-      ? `${session.cwd.replace(/\/$/, '')}/${filePath}`
-      : filePath;
+    const targetPath = (!vscodePath.startsWith('/') && session && session.cwd)
+      ? `${session.cwd.replace(/\/$/, '')}/${vscodePath}`
+      : vscodePath;
     return openInVSCode(targetPath, host);
   }
   try {
@@ -2556,13 +2599,13 @@ async function openChatFileInApp(filePath, session, app = 'default') {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        path: filePath,
+        path: baseFilePath,
         session_id: sessionId,
         host: host,
         app: app
       })
     });
-    const filename = filePath.split('/').pop();
+    const filename = baseFilePath.split('/').pop();
     if (!res.ok) {
       const errText = await res.text().catch(() => res.statusText);
       showUploadToast(`Failed to open ${filename}: ${errText}`, 'error');
@@ -2582,13 +2625,16 @@ function isChatFilePath(str) {
   const trimmed = str.trim();
   if (trimmed.length < 3 || trimmed.length > 250) return false;
   if (trimmed.includes('\n') || trimmed.includes('\r')) return false;
-  if (trimmed.startsWith('http://') || trimmed.startsWith('https://') || trimmed.includes('@')) return false;
+  if (trimmed.startsWith('http://') || trimmed.startsWith('https://') || trimmed.startsWith('conversation://') || trimmed.includes('@')) return false;
   if (trimmed.includes(' ') && !trimmed.startsWith('/')) return false;
 
-  let pathWithoutQuery = trimmed.split('?')[0].split('#')[0];
+  let pathWithoutQuery = trimmed.split('?')[0];
   if (pathWithoutQuery.startsWith('file://')) {
     pathWithoutQuery = pathWithoutQuery.replace(/^file:\/\//, '');
   }
+  // Strip line range anchors before evaluating file extension
+  pathWithoutQuery = pathWithoutQuery.replace(/#L\d+(?:-L?\d+)?$/i, '').replace(/:\d+(?::\d+)?$/, '');
+  pathWithoutQuery = pathWithoutQuery.split('#')[0];
 
   const parts = pathWithoutQuery.split('.');
   if (parts.length < 2) return false;
@@ -2596,7 +2642,7 @@ function isChatFilePath(str) {
   if (!KNOWN_CHAT_FILE_EXTS.has(ext)) return false;
 
   // Filter out common code expressions like obj.property if not common file extension
-  if (/^[a-zA-Z0-9_]+\.[a-zA-Z0-9_]+$/.test(pathWithoutQuery) && !['html', 'htm', 'png', 'jpg', 'jpeg', 'gif', 'svg', 'pdf', 'md', 'txt', 'csv', 'json', 'yaml', 'yml', 'css', 'js', 'ts', 'go', 'py'].includes(ext)) {
+  if (/^[a-zA-Z0-9_]+\.[a-zA-Z0-9_]+$/.test(pathWithoutQuery) && !['html', 'htm', 'png', 'jpg', 'jpeg', 'gif', 'svg', 'pdf', 'md', 'txt', 'csv', 'json', 'yaml', 'yml', 'css', 'js', 'ts', 'go', 'py', 'mp4', 'webm', 'mp3', 'wav'].includes(ext)) {
     return false;
   }
 
@@ -2670,31 +2716,37 @@ const APP_ICONS = {
   </svg>`
 };
 
-
-function createChatFilePill(filePath, session) {
-  let cleanPath = filePath.trim();
-  if (cleanPath.startsWith('file://')) {
-    cleanPath = cleanPath.replace(/^file:\/\//, '');
-  }
-  const ext = cleanPath.split('?')[0].split('.').pop().toLowerCase();
+function createChatFilePill(filePath, session, customLabel = '') {
+  const { baseFilePath, lineSuffix, vscodePath } = parseLineRange(filePath);
+  const ext = baseFilePath.split('?')[0].split('.').pop().toLowerCase();
   const isImg = CHAT_IMAGE_EXTS.has(ext);
+  const isVideo = CHAT_VIDEO_EXTS.has(ext);
+  const isAudio = CHAT_AUDIO_EXTS.has(ext);
   const isHtml = (ext === 'html' || ext === 'htm');
   const isPdf = (ext === 'pdf');
-  const filename = cleanPath.split('/').pop();
+  const filename = baseFilePath.split('/').pop();
 
   let icon = '📄';
   if (isImg) icon = '🖼️';
+  else if (isVideo) icon = '🎬';
+  else if (isAudio) icon = '🎵';
   else if (isHtml) icon = '🌐';
   else if (isPdf) icon = '📑';
   else if (['js', 'jsx', 'ts', 'tsx', 'go', 'py', 'rs', 'c', 'cpp', 'swift'].includes(ext)) icon = '💻';
 
+  const cleanLabel = (customLabel || '').trim();
+  let displayName = `${filename}${lineSuffix}`;
+  if (cleanLabel && cleanLabel !== filePath && cleanLabel !== filename && cleanLabel !== baseFilePath && !cleanLabel.startsWith('file://')) {
+    displayName = `${cleanLabel} (${filename}${lineSuffix})`;
+  }
+
   const pill = document.createElement('span');
   pill.className = 'chat-file-pill';
-  pill.title = `${cleanPath} (Click for actions)`;
+  pill.title = `${vscodePath} (Click for actions)`;
 
   pill.innerHTML = `
     <span class="chat-file-icon">${icon}</span>
-    <span class="chat-file-name">${escapeHtml(filename)}</span>
+    <span class="chat-file-name">${escapeHtml(displayName)}</span>
     <span class="chat-file-chevron">▾</span>
   `;
 
@@ -2704,17 +2756,67 @@ function createChatFilePill(filePath, session) {
     if (activeFileMenuPill === pill && fileContextMenuEl && fileContextMenuEl.style.display !== 'none') {
       hideChatFileContextMenu();
     } else {
-      showChatFileContextMenu(pill, cleanPath, session);
+      showChatFileContextMenu(pill, vscodePath, session);
     }
   });
 
   pill.addEventListener('contextmenu', (e) => {
     e.preventDefault();
     e.stopPropagation();
-    showChatFileContextMenu(pill, cleanPath, session, e.clientX, e.clientY);
+    showChatFileContextMenu(pill, vscodePath, session, e.clientX, e.clientY);
   });
 
   return pill;
+}
+
+// Build an inline media preview card (Video or Audio)
+function createChatMediaPreviewCard(filePath, session, caption = '') {
+  const { baseFilePath } = parseLineRange(filePath);
+  const ext = baseFilePath.split('?')[0].split('.').pop().toLowerCase();
+  const isVideo = CHAT_VIDEO_EXTS.has(ext);
+  const filename = baseFilePath.split('/').pop();
+  const contentUrl = getChatFileContentUrl(baseFilePath, session);
+
+  const cleanCaption = (caption || '').trim();
+  const hasCaption = cleanCaption && cleanCaption !== filename;
+  const captionHtml = hasCaption ? `<div class="chat-file-preview-caption">${escapeHtml(cleanCaption)}</div>` : '';
+  const icon = isVideo ? '🎬' : '🎵';
+
+  const card = document.createElement('div');
+  card.className = 'chat-file-preview-card';
+  card.innerHTML = `
+    <div class="chat-file-preview-header">
+      <span>${icon} ${escapeHtml(filename)}</span>
+      <button class="chat-file-btn" data-action="preview" title="Open in System App" style="display:inline-flex;align-items:center;gap:4px;">
+        ${APP_ICONS.app} <span>Open in App</span>
+      </button>
+    </div>
+    ${captionHtml}
+    <div class="chat-file-preview-body">
+      ${isVideo ? `
+        <video controls preload="metadata" style="max-width:100%;border-radius:6px;max-height:400px;background:#000;">
+          <source src="${escapeHtml(contentUrl)}" type="${ext === 'webm' ? 'video/webm' : 'video/mp4'}">
+          Your browser does not support the video tag.
+        </video>
+      ` : `
+        <audio controls preload="metadata" style="width:100%;">
+          <source src="${escapeHtml(contentUrl)}" type="${ext === 'wav' ? 'audio/wav' : 'audio/mpeg'}">
+          Your browser does not support the audio element.
+        </audio>
+      `}
+    </div>
+  `;
+
+  const previewBtn = card.querySelector('button[data-action="preview"]');
+  if (previewBtn) {
+    previewBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openChatFileInApp(baseFilePath, session, 'default');
+    });
+  }
+
+  return card;
 }
 
 // Build an inline image preview card
@@ -2773,18 +2875,52 @@ function linkifyChatFiles(containerEl, session) {
   containerEl.querySelectorAll('a').forEach(a => {
     if (a.dataset.fileLinkified) return;
     const href = a.getAttribute('href') || '';
+    const customLabel = (a.textContent || '').trim();
+
+    // 1a. Detect conversation:// links
+    if (href.startsWith('conversation://')) {
+      a.dataset.fileLinkified = 'true';
+      const convId = href.replace(/^conversation:\/\//, '').split('?')[0].split('#')[0].trim();
+      const displayText = customLabel && customLabel !== href ? customLabel : convId.slice(0, 8);
+      const pill = document.createElement('span');
+      pill.className = 'chat-subagent-pill';
+      pill.dataset.conversationId = convId;
+      pill.title = `Subagent conversation: ${convId} (Click to open session)`;
+      pill.innerHTML = `🤖 ${escapeHtml(displayText)}`;
+      pill.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const matchedSess = (state.sessions || []).find(s =>
+          s.native_id === convId ||
+          (s.id && (s.id === convId || s.id.endsWith(convId) || s.id.endsWith(`:${convId}`)))
+        );
+        if (matchedSess) {
+          openSessionInTab(matchedSess);
+        } else {
+          if (typeof openTranscriptViewerTab === 'function') {
+            openTranscriptViewerTab({ id: convId, native_id: convId, title: `Subagent ${convId.slice(0, 8)}` });
+          } else {
+            showUploadToast(`Subagent session ${convId.slice(0, 8)} not found`, 'info');
+          }
+        }
+      });
+      a.replaceWith(pill);
+      return;
+    }
+
     let cleanPath = '';
     if (href.startsWith('file://')) {
       cleanPath = href.replace(/^file:\/\//, '');
     } else if (!href.startsWith('http://') && !href.startsWith('https://') && !href.startsWith('#') && !href.startsWith('mailto:')) {
-      const ext = href.split('?')[0].split('.').pop().toLowerCase();
+      const { baseFilePath } = parseLineRange(href);
+      const ext = baseFilePath.split('?')[0].split('.').pop().toLowerCase();
       if (KNOWN_CHAT_FILE_EXTS.has(ext)) {
         cleanPath = href;
       }
     }
     if (cleanPath && isChatFilePath(cleanPath)) {
       a.dataset.fileLinkified = 'true';
-      const pill = createChatFilePill(cleanPath, session);
+      const pill = createChatFilePill(cleanPath, session, customLabel);
       a.replaceWith(pill);
     } else if (!href.startsWith('#') && !href.startsWith('javascript:')) {
       a.setAttribute('target', '_blank');
@@ -2800,9 +2936,16 @@ function linkifyChatFiles(containerEl, session) {
     if (isChatFilePath(text)) {
       code.dataset.fileLinkified = 'true';
       const pill = createChatFilePill(text, session);
-      const ext = text.split('?')[0].split('.').pop().toLowerCase();
+      const { baseFilePath } = parseLineRange(text);
+      const ext = baseFilePath.split('?')[0].split('.').pop().toLowerCase();
       if (CHAT_IMAGE_EXTS.has(ext) && !code.closest('table')) {
         const preview = createChatImagePreviewCard(text, session);
+        if (code.parentNode) {
+          code.parentNode.replaceChild(pill, code);
+          pill.parentNode.insertBefore(preview, pill.nextSibling);
+        }
+      } else if ((CHAT_VIDEO_EXTS.has(ext) || CHAT_AUDIO_EXTS.has(ext)) && !code.closest('table')) {
+        const preview = createChatMediaPreviewCard(text, session);
         if (code.parentNode) {
           code.parentNode.replaceChild(pill, code);
           pill.parentNode.insertBefore(preview, pill.nextSibling);
@@ -2859,7 +3002,14 @@ function linkifyChatFiles(containerEl, session) {
     if (isChatFilePath(cleanPath)) {
       img.dataset.fileLinkified = 'true';
       const altText = (img.getAttribute('alt') || '').trim();
-      const card = createChatImagePreviewCard(cleanPath, session, altText);
+      const { baseFilePath } = parseLineRange(cleanPath);
+      const ext = baseFilePath.split('?')[0].split('.').pop().toLowerCase();
+      let card;
+      if (CHAT_VIDEO_EXTS.has(ext) || CHAT_AUDIO_EXTS.has(ext)) {
+        card = createChatMediaPreviewCard(cleanPath, session, altText);
+      } else {
+        card = createChatImagePreviewCard(cleanPath, session, altText);
+      }
       const parentP = (img.parentElement && img.parentElement.tagName.toLowerCase() === 'p' && img.parentElement.childNodes.length === 1)
         ? img.parentElement
         : null;
@@ -3193,10 +3343,16 @@ function createChatMessageElement(tabObj, msg) {
     }
 
     let bodyHtml = '';
+    let hasMarkdownVisuals = false;
     if (displayContent) {
-      const hasMarkdownVisuals = /!\[[^\]]*\]\([^)]+\)/.test(displayContent) ||
-                                 /`{3,4}carousel/i.test(displayContent) ||
-                                 /<!--\s*slide\s*-->/i.test(displayContent);
+      hasMarkdownVisuals = /!\[[^\]]*\]\([^)]+\)/.test(displayContent) ||
+                           /`{3,4}carousel/i.test(displayContent) ||
+                           /<!--\s*slide\s*-->/i.test(displayContent) ||
+                           /\$\\[a-zA-Z]+/.test(displayContent) ||
+                           /\$\$[\s\S]+?\$\$/.test(displayContent) ||
+                           /^\s*>\s*\[!(?:NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]/im.test(displayContent) ||
+                           /file:\/\//i.test(displayContent) ||
+                           /conversation:\/\//i.test(displayContent);
       if (hasMarkdownVisuals) {
         bodyHtml = `<div class="chat-msg-body markdown-body">${renderMarkdown(displayContent)}</div>`;
       } else {
@@ -3220,6 +3376,10 @@ function createChatMessageElement(tabObj, msg) {
       ${attachmentsHtml}
       ${bodyHtml}
     `;
+
+    if (hasMarkdownVisuals) {
+      linkifyChatFiles(msgEl, tabObj ? tabObj.session : null);
+    }
 
     msgEl.querySelectorAll('.chat-msg-attachments .chat-attachment-chip').forEach(chip => {
       chip.addEventListener('click', (e) => {
@@ -4179,6 +4339,49 @@ function connectChatStream(tabObj) {
   }
 }
 
+// Stream Rendering Batcher (Coalesces high-frequency text deltas into requestAnimationFrame ticks)
+function flushActiveTurnStreamRender(tabObj) {
+  if (!tabObj) return;
+  if (tabObj._streamRenderRafId) {
+    if (typeof window !== 'undefined' && typeof window.cancelAnimationFrame === 'function') {
+      window.cancelAnimationFrame(tabObj._streamRenderRafId);
+    }
+    tabObj._streamRenderRafId = null;
+  }
+  const currentMsgEl = tabObj.activeTurnMsgEl || (tabObj.chatMessagesEl ? tabObj.chatMessagesEl.querySelector('.chat-msg.assistant-msg.in-flight') : null);
+  if (!currentMsgEl) return;
+  const bodyEl = currentMsgEl.querySelector('.chat-msg-body');
+  if (bodyEl && tabObj.activeTurnBuffer !== undefined) {
+    const html = renderMarkdown(tabObj.activeTurnBuffer);
+    bodyEl.innerHTML = html + '<span class="chat-streaming-cursor"></span>';
+    if (tabObj.session) {
+      linkifyChatFiles(bodyEl, tabObj.session);
+    }
+    if (tabObj.activeTurnBuffer) {
+      const fenceCount = (tabObj.activeTurnBuffer.match(/```/g) || []).length;
+      if (fenceCount >= 2) {
+        renderMermaidDiagrams(bodyEl, copyTextToClipboard, { cacheOnly: fenceCount % 2 !== 0 });
+      }
+    }
+  }
+  if (tabObj.chatMessagesEl) {
+    tabObj.chatMessagesEl.scrollTop = tabObj.chatMessagesEl.scrollHeight;
+  }
+}
+
+function scheduleActiveTurnStreamRender(tabObj) {
+  if (!tabObj) return;
+  if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+    if (tabObj._streamRenderRafId) return;
+    tabObj._streamRenderRafId = window.requestAnimationFrame(() => {
+      tabObj._streamRenderRafId = null;
+      flushActiveTurnStreamRender(tabObj);
+    });
+  } else {
+    flushActiveTurnStreamRender(tabObj);
+  }
+}
+
 // Handle stream event from SSE
 function handleChatStreamEvent(tabObj, evt) {
   if (!tabObj || !tabObj.chatMessagesEl) return;
@@ -4190,6 +4393,7 @@ function handleChatStreamEvent(tabObj, evt) {
 
   switch (evt.type) {
     case 'interactive_block': {
+      flushActiveTurnStreamRender(tabObj);
       tabObj.sending = false;
       setChatSending(tabObj, false);
       if (evt.blocked) {
@@ -4296,21 +4500,7 @@ function handleChatStreamEvent(tabObj, evt) {
           } else {
             tabObj.activeTurnBuffer = (tabObj.activeTurnBuffer || '') + incoming;
           }
-          const bodyEl = currentMsgEl.querySelector('.chat-msg-body');
-          if (bodyEl) {
-            const html = renderMarkdown(tabObj.activeTurnBuffer);
-            bodyEl.innerHTML = html + '<span class="chat-streaming-cursor"></span>';
-            if (tabObj.session) {
-              linkifyChatFiles(bodyEl, tabObj.session);
-            }
-            if (tabObj.activeTurnBuffer) {
-              const fenceCount = (tabObj.activeTurnBuffer.match(/```/g) || []).length;
-              if (fenceCount >= 2) {
-                renderMermaidDiagrams(bodyEl, copyTextToClipboard, { cacheOnly: fenceCount % 2 !== 0 });
-              }
-            }
-          }
-          tabObj.chatMessagesEl.scrollTop = tabObj.chatMessagesEl.scrollHeight;
+          scheduleActiveTurnStreamRender(tabObj);
         }
       }
       break;
@@ -4350,6 +4540,7 @@ function handleChatStreamEvent(tabObj, evt) {
       break;
 
     case 'tool_start': {
+      flushActiveTurnStreamRender(tabObj);
       tabObj.sending = true;
       if (tabObj.chatCancelBtn) tabObj.chatCancelBtn.style.display = 'inline-flex';
       if (tabObj.chatStatusBadge) tabObj.chatStatusBadge.textContent = '⚡ Working...';
@@ -4504,6 +4695,7 @@ function handleChatStreamEvent(tabObj, evt) {
 
     case 'done':
     case 'turn_complete': {
+      flushActiveTurnStreamRender(tabObj);
       tabObj.runningSubagents = [];
       renderSubagentsBar(tabObj);
       hideInStreamActivity(tabObj);
@@ -4573,6 +4765,7 @@ function handleChatStreamEvent(tabObj, evt) {
     }
 
     case 'turn_cancelled': {
+      flushActiveTurnStreamRender(tabObj);
       stopActiveSpeech();
       tabObj.runningSubagents = [];
       renderSubagentsBar(tabObj);
@@ -4605,6 +4798,7 @@ function handleChatStreamEvent(tabObj, evt) {
     }
 
     case 'error': {
+      flushActiveTurnStreamRender(tabObj);
       stopActiveSpeech();
       tabObj.runningSubagents = [];
       renderSubagentsBar(tabObj);
@@ -4635,6 +4829,12 @@ function handleChatStreamEvent(tabObj, evt) {
 
 function resetChatComposer(tabObj) {
   if (!tabObj) return;
+  if (tabObj._streamRenderRafId) {
+    if (typeof window !== 'undefined' && typeof window.cancelAnimationFrame === 'function') {
+      window.cancelAnimationFrame(tabObj._streamRenderRafId);
+    }
+    tabObj._streamRenderRafId = null;
+  }
   tabObj.sending = false;
   tabObj.dispatchingPrompt = false;
   if (tabObj.session && isSessionWorking(tabObj.session)) {
@@ -4839,8 +5039,12 @@ export {
   getChatFileContentUrl,
   openChatFileInApp,
   isChatFilePath,
+  parseLineRange,
+  CHAT_VIDEO_EXTS,
+  CHAT_AUDIO_EXTS,
   createChatFilePill,
   createChatImagePreviewCard,
+  createChatMediaPreviewCard,
   linkifyChatFiles,
   attachChatMessageListeners,
   parseToolCall,

@@ -477,7 +477,7 @@ func TestChatCarousel(t *testing.T) {
 		t.Errorf("style.css missing grid carousel mode styles")
 	}
 
-	// 5. If Node is present, execute JS unit tests for carousel preprocessor
+	// 5. If Node is present, execute JS unit tests for carousel preprocessor, LaTeX math, and alerts
 	if nodePath, err := exec.LookPath("node"); err == nil && nodePath != "" {
 		script := `
 globalThis.window = {
@@ -492,7 +492,7 @@ globalThis.document = {
   querySelectorAll: () => [],
   addEventListener: () => {}
 };
-const { preprocessCarouselBlocks } = await import('./web/js/utils.js');
+const { preprocessCarouselBlocks, preprocessLatexMath, convertLatexToHtml, processMarkdownAlerts, preprocessMarkdownExtensions } = await import('./web/js/utils.js');
 
 const t1 = preprocessCarouselBlocks('` + "````carousel\\n![A](a.png)\\n<!-- slide -->\\n![B](b.png)\\n````" + `');
 if (!t1.includes('class="chat-carousel"')) throw new Error('t1 missing chat-carousel');
@@ -520,6 +520,29 @@ if (slidesT5.length !== 2) throw new Error('t5 expected 2 slides, got ' + slides
 if (!slidesT5[0].includes('Option 1') || !slidesT5[0].includes('Description 1')) throw new Error('t5 slide 0 missing Option 1 or Description 1: ' + slidesT5[0]);
 if (!slidesT5[1].includes('Option 2') || !slidesT5[1].includes('Description 2')) throw new Error('t5 slide 1 missing Option 2 or Description 2: ' + slidesT5[1]);
 
+// LaTeX Math Unit Tests
+const m1 = preprocessLatexMath('Formula: $\\rightarrow$');
+if (!m1.includes('<span class="math-inline">→</span>')) throw new Error('m1 expected → arrow, got ' + m1);
+
+const m2 = preprocessLatexMath('Formula: $\\longleftrightarrow$');
+if (!m2.includes('<span class="math-inline">⟷</span>')) throw new Error('m2 expected ⟷ arrow, got ' + m2);
+
+const m3 = preprocessLatexMath('Complexity: $O(n \\log n)$');
+if (!m3.includes('<span class="math-inline">O(n log n)</span>')) throw new Error('m3 expected O(n log n), got ' + m3);
+
+const m4 = preprocessLatexMath('Cost is $50 USD and $100');
+if (m4.includes('math-inline') || !m4.includes('$50 USD and $100')) throw new Error('m4 currency was unexpectedly modified: ' + m4);
+
+const m5 = preprocessMarkdownExtensions('` + "```js\\nconst x = \"$foo\";\\n```" + `\\nHere is $\\rightarrow$');
+if (!m5.includes('const x = "$foo";') || !m5.includes('<span class="math-inline">→</span>')) throw new Error('m5 code block was modified or math was not processed: ' + m5);
+
+// GFM Alerts Unit Tests
+const a1 = processMarkdownAlerts('<blockquote><p>[!NOTE]<br>Useful information here.</p></blockquote>');
+if (!a1.includes('markdown-alert-note') || !a1.includes('ℹ️') || !a1.includes('Useful information here.')) throw new Error('a1 alert NOTE failed: ' + a1);
+
+const a2 = processMarkdownAlerts('<blockquote><p>[!WARNING]<br>Watch out!</p></blockquote>');
+if (!a2.includes('markdown-alert-warning') || !a2.includes('⚠️') || !a2.includes('Watch out!')) throw new Error('a2 alert WARNING failed: ' + a2);
+
 console.log('NODE_CAROUSEL_TESTS_PASS');
 `
 		cmd := exec.Command(nodePath, "--input-type=module", "-e", script)
@@ -531,5 +554,93 @@ console.log('NODE_CAROUSEL_TESTS_PASS');
 		if !strings.Contains(string(out), "NODE_CAROUSEL_TESTS_PASS") {
 			t.Errorf("Expected node output to contain NODE_CAROUSEL_TESTS_PASS, got: %s", string(out))
 		}
+	}
+}
+
+func TestSplitFilePathAndLine(t *testing.T) {
+	tests := []struct {
+		input    string
+		wantPath string
+		wantLine int
+		wantCol  int
+	}{
+		{
+			input:    "/path/to/file.go#L75-L176",
+			wantPath: "/path/to/file.go",
+			wantLine: 75,
+			wantCol:  0,
+		},
+		{
+			input:    "/path/to/file.go#L75",
+			wantPath: "/path/to/file.go",
+			wantLine: 75,
+			wantCol:  0,
+		},
+		{
+			input:    "/path/to/file.go:75:10",
+			wantPath: "/path/to/file.go",
+			wantLine: 75,
+			wantCol:  10,
+		},
+		{
+			input:    "/path/to/file.go:75",
+			wantPath: "/path/to/file.go",
+			wantLine: 75,
+			wantCol:  0,
+		},
+		{
+			input:    "/path/to/file.go",
+			wantPath: "/path/to/file.go",
+			wantLine: 0,
+			wantCol:  0,
+		},
+	}
+
+	for _, tc := range tests {
+		gotPath, gotLine, gotCol := splitFilePathAndLine(tc.input)
+		if gotPath != tc.wantPath || gotLine != tc.wantLine || gotCol != tc.wantCol {
+			t.Errorf("splitFilePathAndLine(%q) = (%q, %d, %d); want (%q, %d, %d)",
+				tc.input, gotPath, gotLine, gotCol, tc.wantPath, tc.wantLine, tc.wantCol)
+		}
+	}
+}
+
+func TestLaunchVSCode_LineRanges(t *testing.T) {
+	tests := []struct {
+		name    string
+		path    string
+		host    string
+		wantURI string
+	}{
+		{
+			name:    "local file with hash range",
+			path:    "/path/to/file.go#L75-L176",
+			host:    "local",
+			wantURI: "vscode://file/path/to/file.go:75",
+		},
+		{
+			name:    "local file with colon line and col",
+			path:    "/path/to/file.go:75:10",
+			host:    "local",
+			wantURI: "vscode://file/path/to/file.go:75:10",
+		},
+		{
+			name:    "remote file with hash line",
+			path:    "/path/to/file.go#L42",
+			host:    "remote-host",
+			wantURI: "vscode://vscode-remote/ssh-remote+remote-host/path/to/file.go:42",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			uri, err := LaunchVSCode(tc.path, tc.host)
+			if err != nil {
+				t.Fatalf("LaunchVSCode failed: %v", err)
+			}
+			if uri != tc.wantURI {
+				t.Errorf("LaunchVSCode(%q, %q) = %q; want %q", tc.path, tc.host, uri, tc.wantURI)
+			}
+		})
 	}
 }

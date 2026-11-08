@@ -73,12 +73,13 @@ function showChatFileContextMenu(pill, cleanPath, session, clickX, clickY) {
   activeFileMenuPill = pill;
   pill.classList.add('menu-active');
 
-  const ext = cleanPath.split('?')[0].split('.').pop().toLowerCase();
+  const baseFilePath = cleanPath.split('?')[0].replace(/#L\d+(?:-L?\d+)?$/i, '').replace(/:\d+(?::\d+)?$/, '');
+  const ext = baseFilePath.split('.').pop().toLowerCase();
   const isImg = CHAT_IMAGE_EXTS.has(ext);
   const isHtml = (ext === 'html' || ext === 'htm');
   const isPdf = (ext === 'pdf');
-  const filename = cleanPath.split('/').pop();
-  const contentUrl = getChatFileContentUrl(cleanPath, session);
+  const filename = baseFilePath.split('/').pop();
+  const contentUrl = getChatFileContentUrl(baseFilePath, session);
 
   let icon = '📄';
   if (isImg) icon = '🖼️';
@@ -141,9 +142,9 @@ function showChatFileContextMenu(pill, cleanPath, session, clickX, clickY) {
       if (action === 'browser') {
         window.open(contentUrl, '_blank');
       } else if (action === 'preview') {
-        openChatFileInApp(cleanPath, session, 'preview');
+        openChatFileInApp(baseFilePath, session, 'preview');
       } else if (action === 'app') {
-        openChatFileInApp(cleanPath, session, 'default');
+        openChatFileInApp(baseFilePath, session, 'default');
       } else if (action === 'vscode') {
         openChatFileInApp(cleanPath, session, 'vscode');
       } else if (action === 'copy') {

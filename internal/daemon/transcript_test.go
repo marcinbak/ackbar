@@ -396,3 +396,106 @@ func TestCleanAntigravityPrompt_NestedTags(t *testing.T) {
 		})
 	}
 }
+
+func TestCleanClaudePrompt(t *testing.T) {
+	tests := []struct {
+		name     string
+		raw      string
+		expected string
+	}{
+		{
+			name:     "system reminder stripped",
+			raw:      "<system-reminder>\nInternal context\n</system-reminder>\nPlease refactor utils.go",
+			expected: "Please refactor utils.go",
+		},
+		{
+			name:     "command name and args formatted as slash command",
+			raw:      "<command-name>pr</command-name>\n<command-args>create --title 'Fix bug'</command-args>\n<command-message>Creating PR...</command-message>",
+			expected: "/pr create --title 'Fix bug'",
+		},
+		{
+			name:     "command name with extra message text",
+			raw:      "<command-name>clear</command-name>\nStarting fresh session",
+			expected: "/clear\n\nStarting fresh session",
+		},
+		{
+			name:     "local command caveat stripped and stdout formatted",
+			raw:      "<local-command-caveat>Local execution</local-command-caveat>\n<local-command-stdout>\ntest passed\n</local-command-stdout>",
+			expected: "```\ntest passed\n```",
+		},
+		{
+			name:     "ide opened file and selection stripped",
+			raw:      "<ide_opened_file>internal/daemon/files.go</ide_opened_file>\n<ide_selection>splitFilePathAndLine</ide_selection>\nExplain this function",
+			expected: "Explain this function",
+		},
+		{
+			name:     "task notification with status and summary",
+			raw:      "<task-notification>\n<status>completed</status>\n<summary>Implement LaTeX support</summary>\n</task-notification>",
+			expected: "[Task completed: Implement LaTeX support]",
+		},
+		{
+			name:     "bash input and stdout formatted",
+			raw:      "<bash-input>git status</bash-input>\n<bash-stdout>On branch feat/test</bash-stdout>",
+			expected: "```bash\n$ git status\n```\n\n```\nOn branch feat/test\n```",
+		},
+		{
+			name:     "empty stdout stripped",
+			raw:      "<bash-input>echo hi</bash-input>\n<bash-stderr></bash-stderr>",
+			expected: "```bash\n$ echo hi\n```",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := CleanClaudePrompt(tc.raw)
+			if got != tc.expected {
+				t.Errorf("CleanClaudePrompt() = %q; want %q", got, tc.expected)
+			}
+		})
+	}
+}
+
+func TestExtractTranscript_Antigravity_Media(t *testing.T) {
+	tmpHome, err := os.MkdirTemp("", "test-agy-media-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpHome)
+
+	convID := "test-conv-media-1"
+	logDir := filepath.Join(tmpHome, ".gemini", "antigravity", "brain", convID, ".system_generated", "logs")
+	_ = os.MkdirAll(logDir, 0755)
+
+	jsonlContent := `{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","created_at":"2026-08-11T13:16:49Z","content":"Please analyze this architecture diagram","media":[{"mime_type":"image/png","uri":"file:///tmp/diagram.png"}]}
+{"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-08-11T13:17:00Z","content":"Here is the generated flow:","media":[{"mime_type":"image/png","uri":"/tmp/generated.png"}]}
+`
+	logFile := filepath.Join(logDir, "transcript.jsonl")
+	if err := os.WriteFile(logFile, []byte(jsonlContent), 0644); err != nil {
+		t.Fatalf("Failed to write mock transcript: %v", err)
+	}
+
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpHome)
+	defer os.Setenv("HOME", origHome)
+
+	transcript, err := ExtractTranscript("antigravity", convID, "/tmp")
+	if err != nil {
+		t.Fatalf("ExtractTranscript failed: %v", err)
+	}
+
+	if len(transcript.Messages) != 2 {
+		t.Fatalf("Expected 2 messages, got %d", len(transcript.Messages))
+	}
+
+	// Verify USER_INPUT media attachment chip
+	userMsg := transcript.Messages[0]
+	if !strings.Contains(userMsg.Content, `[Attached file: "/tmp/diagram.png"]`) {
+		t.Errorf("User message missing attached file line: %q", userMsg.Content)
+	}
+
+	// Verify PLANNER_RESPONSE inline markdown image
+	asstMsg := transcript.Messages[1]
+	if !strings.Contains(asstMsg.Content, "![Attachment](/tmp/generated.png)") {
+		t.Errorf("Assistant message missing inline image markdown: %q", asstMsg.Content)
+	}
+}
