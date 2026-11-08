@@ -92,7 +92,9 @@ func main() {
 	}
 
 	fmt.Printf("⚓ Ackbar Web GUI running at http://127.0.0.1:7777\n")
-	if err := exec.Command("open", "http://127.0.0.1:7777").Start(); err != nil {
+	if runtime.GOOS == "darwin" {
+		_ = exec.Command("open", "http://127.0.0.1:7777").Start()
+	} else {
 		_ = exec.Command("xdg-open", "http://127.0.0.1:7777").Start()
 	}
 }
@@ -486,10 +488,20 @@ func loginAccount(hostURL, accountID string) (string, error) {
 	}
 	var res struct {
 		Status      string `json:"status"`
+		TmuxName    string `json:"tmux_name"`
 		TmuxSession string `json:"tmux_session"`
 	}
-	_ = json.NewDecoder(resp.Body).Decode(&res)
-	return res.TmuxSession, nil
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		return "", fmt.Errorf("failed to decode login response: %w", err)
+	}
+	sessionName := res.TmuxName
+	if sessionName == "" {
+		sessionName = res.TmuxSession
+	}
+	if sessionName == "" {
+		return "", fmt.Errorf("daemon returned empty tmux session name")
+	}
+	return sessionName, nil
 }
 
 func runAccountCmd(args []string) {
