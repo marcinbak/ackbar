@@ -158,7 +158,7 @@ func CleanClaudePrompt(raw string) string {
 		result = claudeCommandNameRegex.ReplaceAllString(result, "")
 		result = claudeCommandArgsRegex.ReplaceAllString(result, "")
 
-		formattedCmd := "/" + cmdName
+		formattedCmd := "/" + strings.TrimPrefix(cmdName, "/")
 		if cmdArgs != "" {
 			formattedCmd += " " + cmdArgs
 		}

@@ -19,12 +19,12 @@ import (
 
 var (
 	hashLineRegex  = regexp.MustCompile(`(?i)#L(\d+)(?:-L?(\d+))?$`)
-	colonLineRegex = regexp.MustCompile(`:(\d+)(?::(\d+))?$`)
+	colonLineRegex = regexp.MustCompile(`:(\d+)(?:[-:](\d+))?$`)
 )
 
 // splitFilePathAndLine extracts clean file path, line number, and column number
 // from paths containing line anchors:
-// Supports /path/to/file.go#L75-L176, /path/to/file.go#L75, /path/to/file.go:75:10, and /path/to/file.go:75.
+// Supports /path/to/file.go#L75-L176, /path/to/file.go#L75, /path/to/file.go:75:10, /path/to/file.go:75-176, and /path/to/file.go:75.
 func splitFilePathAndLine(rawPath string) (cleanPath string, line int, col int) {
 	rawPath = strings.TrimSpace(rawPath)
 	if rawPath == "" {
@@ -39,15 +39,19 @@ func splitFilePathAndLine(rawPath string) (cleanPath string, line int, col int) 
 		return clean, startL, 0
 	}
 
-	// 2. Check for :(\d+)(?::(\d+))?
+	// 2. Check for :(\d+)(?:[-:](\d+))?
 	if loc := colonLineRegex.FindStringSubmatchIndex(rawPath); loc != nil {
 		clean := rawPath[:loc[0]]
 		startStr := rawPath[loc[2]:loc[3]]
 		startL, _ := strconv.Atoi(startStr)
 		colNum := 0
 		if loc[4] >= 0 && loc[5] >= 0 {
-			colStr := rawPath[loc[4]:loc[5]]
-			colNum, _ = strconv.Atoi(colStr)
+			// Only treat group 2 as col when the preceding separator is ':' (not '-')
+			sepIdx := loc[4] - 1
+			if sepIdx >= 0 && rawPath[sepIdx] == ':' {
+				colStr := rawPath[loc[4]:loc[5]]
+				colNum, _ = strconv.Atoi(colStr)
+			}
 		}
 		return clean, startL, colNum
 	}

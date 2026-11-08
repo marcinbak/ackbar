@@ -102,8 +102,33 @@ function renderSlideContent(slideMd) {
   if (!slideMd) return '';
   if (typeof window !== 'undefined' && window.marked && typeof window.marked.parse === 'function') {
     configureMarked();
-    const mathProcessed = preprocessLatexMath(slideMd);
-    const raw = window.marked.parse(mathProcessed);
+
+    // Mask code blocks and inline code spans before LaTeX math processing
+    const slideTokens = [];
+    let masked = slideMd.replace(/(^|\r?\n)(`{3,}|~{3,})(?![`~])[^\n]*\r?\n[\s\S]*?\r?\n\2(?=\r?\n|$)/gi, (m, prefix) => {
+      const idx = slideTokens.length;
+      slideTokens.push(m.slice(prefix.length));
+      return prefix + `%%SLIDE_CODE_TOKEN_${idx}%%`;
+    });
+    masked = masked.replace(/(`+)(?:[^\r\n`]|(?!\1)`)+\1/g, (m) => {
+      const idx = slideTokens.length;
+      slideTokens.push(m);
+      return `%%SLIDE_CODE_TOKEN_${idx}%%`;
+    });
+
+    if (masked.includes('$')) {
+      masked = preprocessLatexMath(masked);
+    }
+
+    // Unmask code blocks before feeding into marked.parse
+    if (slideTokens.length > 0) {
+      masked = masked.replace(/%%SLIDE_CODE_TOKEN_(\d+)%%/g, (m, id) => {
+        const val = slideTokens[parseInt(id, 10)];
+        return val !== undefined ? val : m;
+      });
+    }
+
+    const raw = window.marked.parse(masked);
     const linked = ensureExternalLinksTargetBlank(raw);
     const alerted = processMarkdownAlerts(linked);
     return sanitizeRenderedMarkdownHtml(alerted);
@@ -465,7 +490,7 @@ function preprocessMarkdownExtensions(content) {
   // Mask non-carousel code blocks and inline code spans in a single pass
   const codeTokens = [];
   // 1. Mask non-carousel fenced code blocks
-  let masked = content.replace(/(^|\r?\n)(`{3,}|~{3,})(?!carousel\b)[^\n]*\r?\n[\s\S]*?\r?\n\2(?=\r?\n|$)/gi, (m, prefix) => {
+  let masked = content.replace(/(^|\r?\n)(`{3,}|~{3,})(?![`~]|carousel\b)[^\n]*\r?\n[\s\S]*?\r?\n\2(?=\r?\n|$)/gi, (m, prefix) => {
     const idx = codeTokens.length;
     codeTokens.push(m.slice(prefix.length));
     return prefix + `%%MD_CODE_TOKEN_${idx}%%`;
@@ -656,13 +681,17 @@ async function openInVSCode(cwd, host = 'local') {
   let cleanPath = cwd;
   let lineSuffix = '';
   const hashMatch = cwd.match(/#L(\d+)(?:-L?(\d+))?$/i);
-  const colonMatch = cwd.match(/:(\d+)(?::(\d+))?$/);
+  const colonMatch = cwd.match(/:(\d+)(?:([-:])(\d+))?$/);
   if (hashMatch) {
     cleanPath = cwd.slice(0, hashMatch.index);
     lineSuffix = `:${hashMatch[1]}`;
   } else if (colonMatch) {
     cleanPath = cwd.slice(0, colonMatch.index);
-    lineSuffix = colonMatch[0];
+    if (colonMatch[2] === ':') {
+      lineSuffix = `:${colonMatch[1]}:${colonMatch[3]}`;
+    } else {
+      lineSuffix = `:${colonMatch[1]}`;
+    }
   }
   const formattedPath = cleanPath.startsWith('/') ? cleanPath : '/' + cleanPath;
   const directUri = isRemote 

@@ -419,6 +419,11 @@ func TestCleanClaudePrompt(t *testing.T) {
 			expected: "/clear\n\nStarting fresh session",
 		},
 		{
+			name:     "command name with leading slash not duplicated",
+			raw:      "<command-name>/compact</command-name>\nFocus on essentials",
+			expected: "/compact\n\nFocus on essentials",
+		},
+		{
 			name:     "local command caveat stripped and stdout formatted",
 			raw:      "<local-command-caveat>Local execution</local-command-caveat>\n<local-command-stdout>\ntest passed\n</local-command-stdout>",
 			expected: "```\ntest passed\n```",

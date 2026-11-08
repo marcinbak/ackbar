@@ -2531,7 +2531,7 @@ const CHAT_VIDEO_EXTS = new Set(['mp4', 'webm']);
 const CHAT_AUDIO_EXTS = new Set(['mp3', 'wav']);
 
 // Parse file paths with optional line numbers / line ranges:
-// e.g. /path/to/file.go#L75-L176, /path/to/file.go#L75, /path/to/file.go:75:10, /path/to/file.go:75
+// e.g. /path/to/file.go#L75-L176, /path/to/file.go#L75, /path/to/file.go:75:10, /path/to/file.go:75-176, /path/to/file.go:75
 function parseLineRange(filePath) {
   let clean = (filePath || '').trim();
   if (clean.startsWith('file://')) {
@@ -2541,9 +2541,10 @@ function parseLineRange(filePath) {
   let lineSuffix = '';
   let startLine = null;
   let endLine = null;
+  let isColonCol = false;
 
   const hashMatch = clean.match(/#L(\d+)(?:-L?(\d+))?$/i);
-  const colonMatch = clean.match(/:(\d+)(?::(\d+))?$/);
+  const colonMatch = clean.match(/:(\d+)(?:([-:])(\d+))?$/);
 
   if (hashMatch) {
     baseFilePath = clean.slice(0, hashMatch.index);
@@ -2553,11 +2554,25 @@ function parseLineRange(filePath) {
   } else if (colonMatch) {
     baseFilePath = clean.slice(0, colonMatch.index);
     startLine = colonMatch[1];
-    endLine = colonMatch[2];
-    lineSuffix = endLine ? `:${startLine}:${endLine}` : `:${startLine}`;
+    const sep = colonMatch[2];
+    endLine = colonMatch[3];
+    if (endLine) {
+      if (sep === ':') {
+        isColonCol = true;
+        lineSuffix = `:${startLine}:${endLine}`;
+      } else {
+        lineSuffix = `:${startLine}-${endLine}`;
+      }
+    } else {
+      lineSuffix = `:${startLine}`;
+    }
   }
 
   baseFilePath = baseFilePath.split('?')[0];
+
+  const vscodePath = startLine
+    ? (isColonCol && endLine ? `${baseFilePath}:${startLine}:${endLine}` : `${baseFilePath}:${startLine}`)
+    : baseFilePath;
 
   return {
     rawPath: filePath,
@@ -2565,7 +2580,7 @@ function parseLineRange(filePath) {
     lineSuffix,
     startLine,
     endLine,
-    vscodePath: lineSuffix ? `${baseFilePath}${lineSuffix}` : baseFilePath
+    vscodePath
   };
 }
 
@@ -2633,7 +2648,7 @@ function isChatFilePath(str) {
     pathWithoutQuery = pathWithoutQuery.replace(/^file:\/\//, '');
   }
   // Strip line range anchors before evaluating file extension
-  pathWithoutQuery = pathWithoutQuery.replace(/#L\d+(?:-L?\d+)?$/i, '').replace(/:\d+(?::\d+)?$/, '');
+  pathWithoutQuery = pathWithoutQuery.replace(/#L\d+(?:-L?\d+)?$/i, '').replace(/:\d+(?:[-:]\d+)?$/, '');
   pathWithoutQuery = pathWithoutQuery.split('#')[0];
 
   const parts = pathWithoutQuery.split('.');

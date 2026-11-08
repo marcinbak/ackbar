@@ -520,6 +520,11 @@ if (slidesT5.length !== 2) throw new Error('t5 expected 2 slides, got ' + slides
 if (!slidesT5[0].includes('Option 1') || !slidesT5[0].includes('Description 1')) throw new Error('t5 slide 0 missing Option 1 or Description 1: ' + slidesT5[0]);
 if (!slidesT5[1].includes('Option 2') || !slidesT5[1].includes('Description 2')) throw new Error('t5 slide 1 missing Option 2 or Description 2: ' + slidesT5[1]);
 
+// CTX-2 regression: code blocks in carousel slides must not have math processed
+const t6 = preprocessMarkdownExtensions('` + "````carousel\\n```bash\\n# $x = y + 1$\\n```\\n````" + `');
+if (t6.includes('math-inline')) throw new Error('t6 code block inside carousel was corrupted by math: ' + t6);
+if (!t6.includes('<pre><code class="language-bash"># $x = y + 1$</code></pre>')) throw new Error('t6 code block missing expected markup: ' + t6);
+
 // LaTeX Math Unit Tests
 const m1 = preprocessLatexMath('Formula: $\\rightarrow$');
 if (!m1.includes('<span class="math-inline">→</span>')) throw new Error('m1 expected → arrow, got ' + m1);
@@ -581,6 +586,12 @@ func TestSplitFilePathAndLine(t *testing.T) {
 			wantPath: "/path/to/file.go",
 			wantLine: 75,
 			wantCol:  10,
+		},
+		{
+			input:    "/tmp/test.go:75-176",
+			wantPath: "/tmp/test.go",
+			wantLine: 75,
+			wantCol:  0,
 		},
 		{
 			input:    "/path/to/file.go:75",

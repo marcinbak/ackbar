@@ -73,7 +73,7 @@ function showChatFileContextMenu(pill, cleanPath, session, clickX, clickY) {
   activeFileMenuPill = pill;
   pill.classList.add('menu-active');
 
-  const baseFilePath = cleanPath.split('?')[0].replace(/#L\d+(?:-L?\d+)?$/i, '').replace(/:\d+(?::\d+)?$/, '');
+  const baseFilePath = cleanPath.split('?')[0].replace(/#L\d+(?:-L?\d+)?$/i, '').replace(/:\d+(?:[-:]\d+)?$/, '');
   const ext = baseFilePath.split('.').pop().toLowerCase();
   const isImg = CHAT_IMAGE_EXTS.has(ext);
   const isHtml = (ext === 'html' || ext === 'htm');

@@ -392,7 +392,7 @@ func cleanPromptText(text string) string {
 	}
 	if strings.Contains(text, "<system-reminder>") ||
 		strings.Contains(text, "<command-name>") ||
-		strings.Contains(text, "<bash-input>") ||
+		strings.Contains(text, "<bash-") ||
 		strings.Contains(text, "<local-command-") ||
 		strings.Contains(text, "<task-notification>") ||
 		strings.Contains(text, "<ide_") {
