@@ -124,8 +124,9 @@ function buildCarouselHtml(inner) {
 function processUnfencedSlides(text, unmaskFn = (s) => s) {
   if (!/<!--\s*slide\s*-->/i.test(text)) return typeof unmaskFn === 'function' ? unmaskFn(text) : text;
 
-  const rawParts = text.split(/<!--\s*slide\s*-->/i);
-  if (rawParts.length <= 1) return typeof unmaskFn === 'function' ? unmaskFn(text) : text;
+  const normalizedText = text.replace(/\r\n/g, '\n');
+  const rawParts = normalizedText.split(/<!--\s*slide\s*-->/i);
+  if (rawParts.length <= 1) return typeof unmaskFn === 'function' ? unmaskFn(normalizedText) : normalizedText;
 
   let prefix = '';
   let firstSlide = rawParts[0];
@@ -135,7 +136,11 @@ function processUnfencedSlides(text, unmaskFn = (s) => s) {
   if (lastDoubleNewline !== -1) {
     const beforeDbl = trimmedFirst.slice(0, lastDoubleNewline).trim();
     const afterDbl = trimmedFirst.slice(lastDoubleNewline + 2).trim();
-    if (!beforeDbl.startsWith('![') && !beforeDbl.startsWith('<img') && (afterDbl.startsWith('![') || afterDbl.startsWith('<img') || (afterDbl.startsWith('#') && !beforeDbl.startsWith('#')))) {
+    const lastParaOfBefore = beforeDbl.includes('\n\n')
+      ? beforeDbl.slice(beforeDbl.lastIndexOf('\n\n') + 2).trim()
+      : beforeDbl;
+    if (!lastParaOfBefore.startsWith('![') && !lastParaOfBefore.startsWith('<img') &&
+        (afterDbl.startsWith('![') || afterDbl.startsWith('<img') || (afterDbl.startsWith('#') && !lastParaOfBefore.startsWith('#')))) {
       prefix = beforeDbl + '\n\n';
       firstSlide = afterDbl;
     }
@@ -148,7 +153,9 @@ function processUnfencedSlides(text, unmaskFn = (s) => s) {
   if (firstDoubleNewline !== -1) {
     const beforeDbl = trimmedLast.slice(0, firstDoubleNewline).trim();
     const afterDbl = trimmedLast.slice(firstDoubleNewline + 2).trim();
-    if ((beforeDbl.startsWith('![') || beforeDbl.startsWith('<img')) && !afterDbl.startsWith('![') && !afterDbl.startsWith('<img')) {
+    if (!firstSlide.trim().includes('\n\n') &&
+        (beforeDbl.startsWith('![') || beforeDbl.startsWith('<img')) &&
+        !afterDbl.startsWith('![') && !afterDbl.startsWith('<img')) {
       lastSlide = beforeDbl;
       suffix = '\n\n' + afterDbl;
     }
