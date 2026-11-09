@@ -1,5 +1,5 @@
 // xterm.js Terminal Tab & WebSocket PTY Connection
-import { state, el } from './state.js';
+import { state, el, saveChatDraft } from './state.js';
 import { getAuthToken } from './auth.js';
 import {
   getSessionBaseUrl,
@@ -214,6 +214,7 @@ function removePendingAttachment(tabObj, id) {
 function renderPendingAttachments(tabObj) {
   if (!tabObj || !tabObj.chatComposerAttachments) return;
   const items = tabObj.pendingAttachments || [];
+  saveChatDraft(tabObj.id || (tabObj.session && tabObj.session.id), tabObj.chatInputEl ? tabObj.chatInputEl.value : undefined, items);
 
   if (items.length === 0) {
     tabObj.chatComposerAttachments.style.display = 'none';

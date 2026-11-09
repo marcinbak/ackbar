@@ -1,5 +1,5 @@
 // Tab Strip Lifecycle, Persistence & Multiplexing
-import { state, el } from './state.js';
+import { state, el, saveChatDraft, migrateChatDraft } from './state.js';
 import {
   escapeHtml,
   getStateEmoji,
@@ -96,6 +96,10 @@ function decodeBase64Utf8(b64) {
 
 function teardownChatInTab(tab) {
   if (!tab) return;
+  const sessionId = tab.id || (tab.session && tab.session.id);
+  if (sessionId && (tab.chatInputEl || Array.isArray(tab.pendingAttachments))) {
+    saveChatDraft(sessionId, tab.chatInputEl ? tab.chatInputEl.value : undefined, tab.pendingAttachments);
+  }
   disconnectChatStream(tab);
   if (tab.chatReconnectTimer) {
     clearTimeout(tab.chatReconnectTimer);
@@ -998,6 +1002,7 @@ function closeTab(tabId) {
 // Migrate tab ID smoothly when a placeholder session adopts its real native conversation ID
 function migrateTabId(oldId, newId, session) {
   if (!oldId || !newId || oldId === newId) return;
+  migrateChatDraft(oldId, newId);
 
   const tab = state.openTabs.get(oldId);
   if (tab) {

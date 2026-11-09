@@ -85,6 +85,102 @@ function saveCollapsedLaterGroups() {
   }
 }
 
+function loadChatDrafts() {
+  try {
+    const saved = localStorage.getItem('ackbar_chat_drafts');
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      if (parsed && typeof parsed === 'object') {
+        const map = new Map();
+        for (const [id, val] of Object.entries(parsed)) {
+          if (typeof val === 'string') {
+            map.set(id, { text: val, attachments: [] });
+          } else if (val && typeof val === 'object') {
+            map.set(id, {
+              text: typeof val.text === 'string' ? val.text : '',
+              attachments: Array.isArray(val.attachments) ? val.attachments : []
+            });
+          }
+        }
+        return map;
+      }
+    }
+  } catch (e) {
+    console.error('Failed to load chat drafts from localStorage:', e);
+  }
+  return new Map();
+}
+
+function persistChatDraftsToStorage() {
+  try {
+    if (!state.chatDrafts || state.chatDrafts.size === 0) {
+      localStorage.removeItem('ackbar_chat_drafts');
+      return;
+    }
+    const obj = {};
+    let count = 0;
+    for (const [id, draft] of state.chatDrafts.entries()) {
+      if (draft && typeof draft.text === 'string' && draft.text) {
+        obj[id] = draft.text;
+        count++;
+      }
+    }
+    if (count > 0) {
+      localStorage.setItem('ackbar_chat_drafts', JSON.stringify(obj));
+    } else {
+      localStorage.removeItem('ackbar_chat_drafts');
+    }
+  } catch (e) {
+    console.error('Failed to save chat drafts to localStorage:', e);
+  }
+}
+
+function getChatDraft(sessionId) {
+  if (!sessionId || !state.chatDrafts) return null;
+  return state.chatDrafts.get(sessionId) || null;
+}
+
+function saveChatDraft(sessionId, text, attachments) {
+  if (!sessionId || !state.chatDrafts) return;
+  const prev = state.chatDrafts.get(sessionId);
+  const nextText = typeof text === 'string' ? text : (prev ? prev.text : '');
+  const nextAttachments = Array.isArray(attachments) ? attachments : (prev && Array.isArray(prev.attachments) ? prev.attachments : []);
+  if (!nextText && nextAttachments.length === 0) {
+    state.chatDrafts.delete(sessionId);
+  } else {
+    state.chatDrafts.set(sessionId, { text: nextText, attachments: nextAttachments });
+  }
+  persistChatDraftsToStorage();
+}
+
+function clearChatDraft(sessionId) {
+  if (!sessionId || !state.chatDrafts) return;
+  if (state.chatDrafts.delete(sessionId)) {
+    persistChatDraftsToStorage();
+  }
+}
+
+function migrateChatDraft(oldId, newId) {
+  if (!oldId || !newId || oldId === newId || !state.chatDrafts || !state.chatDrafts.has(oldId)) return;
+  const oldDraft = state.chatDrafts.get(oldId);
+  const existingNew = state.chatDrafts.get(newId);
+  let merged;
+  if (existingNew) {
+    const mergedText = (existingNew.text && existingNew.text.length > 0) ? existingNew.text : (oldDraft ? oldDraft.text : '');
+    const mergedAttachments = (Array.isArray(existingNew.attachments) && existingNew.attachments.length > 0)
+      ? existingNew.attachments
+      : (oldDraft && Array.isArray(oldDraft.attachments) ? oldDraft.attachments : []);
+    merged = { text: mergedText, attachments: mergedAttachments };
+  } else {
+    merged = oldDraft;
+  }
+  state.chatDrafts.delete(oldId);
+  if (merged && (merged.text || (merged.attachments && merged.attachments.length > 0))) {
+    state.chatDrafts.set(newId, merged);
+  }
+  persistChatDraftsToStorage();
+}
+
 
 export const state = {
   version: '...',
@@ -95,6 +191,7 @@ export const state = {
   hosts: [],
   openTabs: new Map(), // tabId -> { type: 'terminal', session, terminal, fitAddon, socket, containerEl, tabEl }
   activeTabId: null,
+  chatDrafts: loadChatDrafts(),
   inspectorState: null,
   providers: [],
   collapsedGroups: loadCollapsedGroups(),
@@ -247,5 +344,11 @@ export {
   saveCollapsedDoneGroups,
   loadCollapsedLaterGroups,
   loadExpandedLaterGroups,
-  saveCollapsedLaterGroups
+  saveCollapsedLaterGroups,
+  loadChatDrafts,
+  persistChatDraftsToStorage,
+  getChatDraft,
+  saveChatDraft,
+  clearChatDraft,
+  migrateChatDraft
 };

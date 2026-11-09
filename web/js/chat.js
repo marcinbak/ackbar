@@ -1,5 +1,5 @@
 // Interactive Chat Interface & Streaming Transcript
-import { state, el } from './state.js';
+import { state, el, getChatDraft, saveChatDraft, clearChatDraft } from './state.js';
 import { getAuthToken } from './auth.js';
 import {
   escapeHtml,
@@ -2041,6 +2041,7 @@ function setupChatInterface(tabObj, chatViewEl, session) {
       tabObj._lastInputAt = Date.now();
       tabObj.chatInputEl.style.height = 'auto';
       tabObj.chatInputEl.style.height = Math.min(tabObj.chatInputEl.scrollHeight, 180) + 'px';
+      saveChatDraft(tabObj.id || (tabObj.session && tabObj.session.id), tabObj.chatInputEl.value, tabObj.pendingAttachments);
     });
 
     tabObj.chatInputEl.addEventListener('keydown', (e) => {
@@ -2091,6 +2092,20 @@ function setupChatInterface(tabObj, chatViewEl, session) {
   setupChatAutocomplete(tabObj);
   setupChatConfigPopover(tabObj);
   updateStatusPills(tabObj);
+
+  const draftId = tabObj.id || (session && session.id);
+  const draft = getChatDraft(draftId);
+  if (draft) {
+    if (draft.text && tabObj.chatInputEl) {
+      tabObj.chatInputEl.value = draft.text;
+      tabObj.chatInputEl.style.height = 'auto';
+      tabObj.chatInputEl.style.height = Math.min(tabObj.chatInputEl.scrollHeight, 180) + 'px';
+    }
+    if (Array.isArray(draft.attachments) && draft.attachments.length > 0) {
+      tabObj.pendingAttachments = [...draft.attachments];
+      renderPendingAttachments(tabObj);
+    }
+  }
 
   loadChatTranscript(tabObj);
   loadChatQueue(tabObj);
@@ -4101,25 +4116,40 @@ async function sendChatPrompt(tabObj, forcedPromptText) {
   if (promptText === '/config') {
     toggleChatConfigPopover(tabObj);
     tabObj.chatInputEl.value = '';
+    if (typeof forcedPromptText !== 'string') {
+      clearChatDraft(tabObj.id || (tabObj.session && tabObj.session.id));
+    }
     return;
   }
   if (promptText === '/plan') {
     togglePlanMode(tabObj);
     tabObj.chatInputEl.value = '';
+    if (typeof forcedPromptText !== 'string') {
+      clearChatDraft(tabObj.id || (tabObj.session && tabObj.session.id));
+    }
     return;
   }
   if (promptText === '/clear') {
     tabObj.chatInputEl.value = '';
+    if (typeof forcedPromptText !== 'string') {
+      clearChatDraft(tabObj.id || (tabObj.session && tabObj.session.id));
+    }
     executeClientAction(tabObj, 'clear');
     return;
   }
   if (promptText === '/terminal') {
     tabObj.chatInputEl.value = '';
+    if (typeof forcedPromptText !== 'string') {
+      clearChatDraft(tabObj.id || (tabObj.session && tabObj.session.id));
+    }
     executeClientAction(tabObj, 'terminal');
     return;
   }
   if (promptText === '/handover') {
     tabObj.chatInputEl.value = '';
+    if (typeof forcedPromptText !== 'string') {
+      clearChatDraft(tabObj.id || (tabObj.session && tabObj.session.id));
+    }
     executeClientAction(tabObj, 'handover');
     return;
   }
@@ -4142,6 +4172,7 @@ async function sendChatPrompt(tabObj, forcedPromptText) {
 
   if (typeof forcedPromptText !== 'string') {
     tabObj.chatInputEl.value = '';
+    clearChatDraft(tabObj.id || (tabObj.session && tabObj.session.id));
     tabObj.chatInputEl.style.height = 'auto';
     tabObj.chatInputEl.focus();
   }
