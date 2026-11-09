@@ -128,12 +128,11 @@ func (g *GrokProvider) ReadSessionMetadata(cwd, nativeID string) *daemon.Session
 		}
 
 		if promptText != "" {
-			promptText = cleanInjectedXMLTags(promptText)
-			if promptText != "" {
+			if cleaned, keep := g.FilterUserEntry(nil, promptText); keep {
 				if firstPrompt == "" {
-					firstPrompt = promptText
+					firstPrompt = cleaned
 				}
-				lastPrompt = promptText
+				lastPrompt = cleaned
 				if !msgTime.IsZero() && msgTime.After(meta.LastUserMessageAt) {
 					meta.LastUserMessageAt = msgTime
 				}
@@ -349,8 +348,7 @@ func (g *GrokProvider) ExtractTranscript(home, cwd, nativeID string) ([]daemon.T
 
 		if role == "user" {
 			flushPendingAssistant()
-			cleaned := cleanInjectedXMLTags(content)
-			if cleaned != "" {
+			if cleaned, keep := g.FilterUserEntry(nil, content); keep {
 				messages = append(messages, daemon.TranscriptMessage{
 					Role:      "user",
 					Content:   cleaned,

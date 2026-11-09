@@ -152,16 +152,10 @@ func (c *ClaudeProvider) ExtractTranscript(home, cwd, nativeID string) ([]daemon
 				fullText = textStr
 			}
 
-			if daemon.IsSyntheticClaudeUserEntry(raw, fullText) {
-				continue
-			}
-
-			fullText = daemon.CleanClaudePrompt(fullText)
-			fullText = strings.TrimSpace(fullText)
-			if fullText != "" && !daemon.IsSyntheticClaudeUserEntry(raw, fullText) {
+			if clean, keep := c.FilterUserEntry(raw, fullText); keep {
 				messages = append(messages, daemon.TranscriptMessage{
 					Role:      "user",
-					Content:   fullText,
+					Content:   clean,
 					Timestamp: ts,
 				})
 			}

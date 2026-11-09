@@ -261,6 +261,17 @@ func (a ClaudeAgentAdapter) ScanDiskSessions(ctx context.Context, s *Server, hom
 	// Sessions created outside of Ackbar are not discovered from disk.
 }
 
+func (a ClaudeAgentAdapter) FilterUserEntry(raw map[string]interface{}, content string) (string, bool) {
+	if IsSyntheticClaudeUserEntry(raw, content) {
+		return "", false
+	}
+	clean := CleanClaudePrompt(content)
+	if clean == "" || IsSyntheticClaudeUserEntry(raw, clean) {
+		return "", false
+	}
+	return clean, true
+}
+
 func findClaudeSessionOwner(home, sessionID string) (pid int, tmuxName string) {
 	if home == "" || sessionID == "" {
 		return 0, ""
@@ -581,12 +592,13 @@ func ReadClaudeSessionMeta(cwd, sessionID string) *SessionMeta {
 						"origin":                    obj.Origin,
 					}
 
+					var claudeAdapter ClaudeAgentAdapter
 					promptText := ""
 					if obj.LastPrompt != "" {
 						promptText = obj.LastPrompt
 					} else if obj.Prompt != "" {
 						promptText = obj.Prompt
-					} else if (obj.Type == "user" || obj.Message.Role == "user") && !IsSyntheticClaudeUserEntry(rawMeta, "") {
+					} else if obj.Type == "user" || obj.Message.Role == "user" {
 						if s, ok := obj.Message.Content.(string); ok {
 							promptText = s
 						} else if arr, ok := obj.Message.Content.([]any); ok && len(arr) > 0 {
@@ -601,9 +613,8 @@ func ReadClaudeSessionMeta(cwd, sessionID string) *SessionMeta {
 						}
 					}
 
-					if promptText != "" && !IsSyntheticClaudeUserEntry(rawMeta, promptText) {
-						clean := cleanPromptText(promptText)
-						if clean != "" && !IsSyntheticClaudeUserEntry(rawMeta, clean) {
+					if promptText != "" {
+						if clean, keep := claudeAdapter.FilterUserEntry(rawMeta, promptText); keep {
 							if metaInfo.FirstPrompt == "" {
 								metaInfo.FirstPrompt = clean
 							}
@@ -812,11 +823,12 @@ func ReadClaudeSessionTitle(cwd, sessionID string) string {
 								"turnCompanion":             entry.TurnCompanion,
 								"origin":                    entry.Origin,
 							}
+							var claudeAdapter ClaudeAgentAdapter
 							pText := entry.LastPrompt
 							if pText == "" {
 								pText = entry.Prompt
 							}
-							if pText == "" && (entry.Type == "user" || entry.Message.Role == "user") && !IsSyntheticClaudeUserEntry(rawMeta, "") {
+							if pText == "" && (entry.Type == "user" || entry.Message.Role == "user") {
 								if s, ok := entry.Message.Content.(string); ok {
 									pText = s
 								} else if arr, ok := entry.Message.Content.([]any); ok && len(arr) > 0 {
@@ -830,9 +842,8 @@ func ReadClaudeSessionTitle(cwd, sessionID string) string {
 									}
 								}
 							}
-							if pText != "" && firstPrompt == "" && !IsSyntheticClaudeUserEntry(rawMeta, pText) {
-								cleaned := cleanPromptText(pText)
-								if cleaned != "" && !IsSyntheticClaudeUserEntry(rawMeta, cleaned) {
+							if pText != "" && firstPrompt == "" {
+								if cleaned, keep := claudeAdapter.FilterUserEntry(rawMeta, pText); keep {
 									firstPrompt = cleaned
 								}
 							}
@@ -905,9 +916,11 @@ func ReadClaudeSessionTitle(cwd, sessionID string) string {
 							p = entry.Prompt
 						}
 						if p != "" {
-							title = truncateTitle(cleanPromptText(p))
-							source = "prompt"
-							break
+							if cleaned, keep := (ClaudeAgentAdapter{}).FilterUserEntry(nil, p); keep {
+								title = truncateTitle(cleaned)
+								source = "prompt"
+								break
+							}
 						}
 					}
 				}

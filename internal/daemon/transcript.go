@@ -384,7 +384,10 @@ func ExtractAntigravityTranscriptMessages(home, convID string) ([]TranscriptMess
 
 		switch entry.Type {
 		case "USER_INPUT":
-			cleanContent := cleanAntigravityPrompt(entry.Content)
+			if entry.Source != "" && !strings.EqualFold(entry.Source, "USER_EXPLICIT") && !strings.EqualFold(entry.Source, "USER") {
+				continue
+			}
+			cleanContent, _ := (AntigravityAgentAdapter{}).FilterUserEntry(nil, entry.Content)
 			for _, m := range entry.Media {
 				if m.URI != "" {
 					cleanURI := strings.TrimPrefix(m.URI, "file://")
@@ -585,16 +588,10 @@ func loadClaudeTranscript(t *Transcript, home, sessionID, cwd string) error {
 				fullText = textStr
 			}
 
-			if IsSyntheticClaudeUserEntry(raw, fullText) {
-				continue
-			}
-
-			fullText = CleanClaudePrompt(fullText)
-			fullText = strings.TrimSpace(fullText)
-			if fullText != "" && !IsSyntheticClaudeUserEntry(raw, fullText) {
+			if clean, keep := (ClaudeAgentAdapter{}).FilterUserEntry(raw, fullText); keep {
 				t.Messages = append(t.Messages, TranscriptMessage{
 					Role:      "user",
-					Content:   fullText,
+					Content:   clean,
 					Timestamp: ts,
 				})
 			}
@@ -738,10 +735,6 @@ func CleanAntigravityPrompt(raw string) string {
 	}
 
 	return strings.TrimSpace(s)
-}
-
-func cleanAntigravityPrompt(raw string) string {
-	return CleanAntigravityPrompt(raw)
 }
 
 // formatToolSummaryCounts summarizes tool calls by tool name (e.g. "Bash x12" or "Bash x3, Grep x2")
@@ -1058,7 +1051,7 @@ func inspectAntigravitySubagentTranscriptDaemon(brainBaseDir, subID string, fall
 						}
 						text = strings.TrimSpace(sub)
 					} else if strings.EqualFold(step.Type, "USER_INPUT") {
-						text = CleanAntigravityPrompt(text)
+						text, _ = (AntigravityAgentAdapter{}).FilterUserEntry(nil, text)
 					} else {
 						text = ""
 					}
@@ -1538,9 +1531,11 @@ func loadClaudeSubagents(home, sessionID, cwd string) ([]SubagentInfo, error) {
 					}
 				}
 			}
-			if !isToolResult && !IsSyntheticClaudeUserEntry(raw, strings.Join(textParts, "\n")) {
-				activeSubagents = nil
-				toolUseMap = make(map[string]*SubagentInfo)
+			if !isToolResult {
+				if _, keep := (ClaudeAgentAdapter{}).FilterUserEntry(raw, strings.Join(textParts, "\n")); keep {
+					activeSubagents = nil
+					toolUseMap = make(map[string]*SubagentInfo)
+				}
 			}
 		} else if msgType == "assistant" {
 			if msgObj, ok := raw["message"].(map[string]interface{}); ok {

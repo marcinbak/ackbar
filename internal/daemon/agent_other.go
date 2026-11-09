@@ -105,6 +105,62 @@ func (a defaultAgentAdapter) ListWorkspaceDocuments(home, cwd, nativeID string, 
 func (a defaultAgentAdapter) ScanDiskSessions(ctx context.Context, s *Server, home string, state *ScanState) {
 }
 
+func (a defaultAgentAdapter) FilterUserEntry(raw map[string]interface{}, content string) (string, bool) {
+	clean := strings.TrimSpace(content)
+	if clean == "" {
+		return "", false
+	}
+	return clean, true
+}
+
+func cleanCLIEnvironmentTags(text string) string {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return ""
+	}
+
+	xmlTags := []string{
+		"environment_context",
+		"recommended_plugins",
+		"permissions instructions",
+		"permissions_instructions",
+		"collaboration_mode",
+		"apps_instructions",
+		"plugins_instructions",
+		"skills_instructions",
+		"multi_agent_mode",
+	}
+
+	clean := trimmed
+	for _, tag := range xmlTags {
+		startTag := "<" + tag + ">"
+		endTag := "</" + tag + ">"
+		for {
+			sIdx := strings.Index(clean, startTag)
+			if sIdx == -1 {
+				break
+			}
+			relEnd := strings.Index(clean[sIdx+len(startTag):], endTag)
+			if relEnd == -1 {
+				clean = clean[:sIdx]
+				break
+			}
+			eIdx := sIdx + len(startTag) + relEnd
+			clean = clean[:sIdx] + clean[eIdx+len(endTag):]
+		}
+	}
+
+	return strings.TrimSpace(clean)
+}
+
+func filterCLIUserEntry(content string) (string, bool) {
+	clean := cleanCLIEnvironmentTags(content)
+	if clean == "" {
+		return "", false
+	}
+	return clean, true
+}
+
 // CodexAgentAdapter implements AgentAdapter for OpenAI Codex.
 type CodexAgentAdapter struct {
 	defaultAgentAdapter
@@ -130,6 +186,10 @@ func (a CodexAgentAdapter) IsIgnoredCommand(fullCmd string) bool {
 
 func (a CodexAgentAdapter) MatchProcessCommand(binLower, cmdLower string) bool {
 	return binLower == "codex" && !isAckbarInternalProcess(binLower, cmdLower)
+}
+
+func (a CodexAgentAdapter) FilterUserEntry(raw map[string]interface{}, content string) (string, bool) {
+	return filterCLIUserEntry(content)
 }
 
 // GrokAgentAdapter implements AgentAdapter for xAI Grok.
@@ -159,6 +219,10 @@ func (a GrokAgentAdapter) MatchProcessCommand(binLower, cmdLower string) bool {
 	return (binLower == "grok" || binLower == "grok-cli") && !isAckbarInternalProcess(binLower, cmdLower)
 }
 
+func (a GrokAgentAdapter) FilterUserEntry(raw map[string]interface{}, content string) (string, bool) {
+	return filterCLIUserEntry(content)
+}
+
 // OpenCodeAgentAdapter implements AgentAdapter for OpenCode.
 type OpenCodeAgentAdapter struct {
 	defaultAgentAdapter
@@ -184,6 +248,10 @@ func (a OpenCodeAgentAdapter) IsIgnoredCommand(fullCmd string) bool {
 
 func (a OpenCodeAgentAdapter) MatchProcessCommand(binLower, cmdLower string) bool {
 	return (binLower == "opencode" || binLower == "open-code") && !isAckbarInternalProcess(binLower, cmdLower)
+}
+
+func (a OpenCodeAgentAdapter) FilterUserEntry(raw map[string]interface{}, content string) (string, bool) {
+	return filterCLIUserEntry(content)
 }
 
 func isAckbarInternalProcess(binLower, cmdLower string) bool {
@@ -383,35 +451,6 @@ func truncateTitle(text string) string {
 		return res[:47] + "..."
 	}
 	return res
-}
-
-func cleanPromptText(text string) string {
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return ""
-	}
-	if strings.Contains(text, "<system-reminder>") ||
-		strings.Contains(text, "<command-name>") ||
-		strings.Contains(text, "<bash-") ||
-		strings.Contains(text, "<local-command-") ||
-		strings.Contains(text, "<task-notification>") ||
-		strings.Contains(text, "<ide_") {
-		text = CleanClaudePrompt(text)
-	}
-	// Strip XML wrapper tags like <USER_REQUEST> or <CONTEXT_SUMMARY>
-	for strings.HasPrefix(text, "<") {
-		idx := strings.Index(text, ">")
-		if idx != -1 && idx < len(text)-1 {
-			text = strings.TrimSpace(text[idx+1:])
-		} else {
-			break
-		}
-	}
-	// Remove trailing closing tags
-	if idx := strings.Index(text, "</"); idx != -1 {
-		text = strings.TrimSpace(text[:idx])
-	}
-	return text
 }
 
 func fileExists(p string) bool {

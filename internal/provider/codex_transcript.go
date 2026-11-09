@@ -97,8 +97,7 @@ func (c *CodexProvider) ReadSessionMetadata(cwd, nativeID string) *daemon.Sessio
 			if err := json.Unmarshal(raw.Payload, &ri); err == nil && ri.Type == "message" && ri.Role == "user" {
 				var texts []string
 				for _, part := range ri.Content {
-					cleaned := cleanCodexUserPrompt(part.Text)
-					if cleaned != "" {
+					if cleaned, keep := c.FilterUserEntry(nil, part.Text); keep {
 						texts = append(texts, cleaned)
 					}
 				}
@@ -245,8 +244,7 @@ func (c *CodexProvider) ExtractTranscript(home, cwd, nativeID string) ([]daemon.
 				if ri.Role == "user" {
 					var textParts []string
 					for _, part := range ri.Content {
-						cleaned := cleanCodexUserPrompt(part.Text)
-						if cleaned != "" {
+						if cleaned, keep := c.FilterUserEntry(nil, part.Text); keep {
 							textParts = append(textParts, cleaned)
 						}
 					}
@@ -349,8 +347,4 @@ func findCodexSessionLog(home, nativeID string) string {
 	})
 
 	return found
-}
-
-func cleanCodexUserPrompt(text string) string {
-	return cleanInjectedXMLTags(text)
 }

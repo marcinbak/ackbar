@@ -128,12 +128,11 @@ func (o *OpenCodeProvider) ReadSessionMetadata(cwd, nativeID string) *daemon.Ses
 		}
 
 		if promptText != "" {
-			promptText = cleanInjectedXMLTags(promptText)
-			if promptText != "" {
+			if cleaned, keep := o.FilterUserEntry(nil, promptText); keep {
 				if firstPrompt == "" {
-					firstPrompt = promptText
+					firstPrompt = cleaned
 				}
-				lastPrompt = promptText
+				lastPrompt = cleaned
 				if !msgTime.IsZero() && msgTime.After(meta.LastUserMessageAt) {
 					meta.LastUserMessageAt = msgTime
 				}
@@ -265,7 +264,9 @@ func (o *OpenCodeProvider) ResolveSessionTitle(cwd, nativeID string) string {
 				return customTitle
 			}
 			if firstUserPrompt != "" {
-				return daemon.TruncateTitle(cleanInjectedXMLTags(firstUserPrompt))
+				if cleaned, keep := o.FilterUserEntry(nil, firstUserPrompt); keep {
+					return daemon.TruncateTitle(cleaned)
+				}
 			}
 		}
 	}
@@ -383,8 +384,7 @@ func (o *OpenCodeProvider) ExtractTranscript(home, cwd, nativeID string) ([]daem
 
 		if role == "user" {
 			flushPendingAssistant()
-			cleaned := cleanInjectedXMLTags(content)
-			if cleaned != "" {
+			if cleaned, keep := o.FilterUserEntry(nil, content); keep {
 				messages = append(messages, daemon.TranscriptMessage{
 					Role:      "user",
 					Content:   cleaned,

@@ -559,3 +559,68 @@ func TestExtractTranscript_ClaudeCode_FiltersSyntheticUserEntries(t *testing.T) 
 		t.Errorf("Expected LastPrompt 'merge without announcing', got %q", meta.LastPrompt)
 	}
 }
+
+func TestAgentAdapter_FilterUserEntry_AgentSpecificIsolation(t *testing.T) {
+	claudeAdapter := getDefaultAgentAdapter("claude-code")
+	agyAdapter := getDefaultAgentAdapter("antigravity")
+	codexAdapter := getDefaultAgentAdapter("codex")
+	grokAdapter := getDefaultAgentAdapter("grok")
+	openCodeAdapter := getDefaultAgentAdapter("opencode")
+	defaultAdapter := getDefaultAgentAdapter("unknown")
+
+	// 1. Claude filters its own synthetic flags/patterns and strips <system-reminder>,
+	//    but does NOT strip Antigravity <USER_REQUEST> or Codex <environment_context>.
+	if _, keep := claudeAdapter.FilterUserEntry(map[string]interface{}{"isMeta": true}, "hello"); keep {
+		t.Error("Claude adapter should reject isMeta=true")
+	}
+	if _, keep := claudeAdapter.FilterUserEntry(nil, "[Image: original 1080x2400, displayed at 900x2000. Multiply coordinates by 1.20 to map to original image.]"); keep {
+		t.Error("Claude adapter should reject image coordinate companion text")
+	}
+	if clean, keep := claudeAdapter.FilterUserEntry(nil, "<system-reminder>rule</system-reminder>\nfix login"); !keep || clean != "fix login" {
+		t.Errorf("Claude adapter failed to strip <system-reminder>: keep=%v, clean=%q", keep, clean)
+	}
+	if clean, keep := claudeAdapter.FilterUserEntry(nil, "<USER_REQUEST>literal tag in claude</USER_REQUEST>"); !keep || clean != "<USER_REQUEST>literal tag in claude</USER_REQUEST>" {
+		t.Errorf("Claude adapter should NOT strip Antigravity <USER_REQUEST> tags, got keep=%v, clean=%q", keep, clean)
+	}
+	if clean, keep := claudeAdapter.FilterUserEntry(nil, "<environment_context>ctx</environment_context>\nprompt"); !keep || !strings.Contains(clean, "<environment_context>") {
+		t.Errorf("Claude adapter should NOT strip Codex <environment_context>, got keep=%v, clean=%q", keep, clean)
+	}
+
+	// 2. Antigravity filters non-user sources and extracts <USER_REQUEST> / strips <ADDITIONAL_METADATA>,
+	//    but does NOT strip Claude <system-reminder> or reject Claude image companion strings.
+	if _, keep := agyAdapter.FilterUserEntry(map[string]interface{}{"source": "SYSTEM"}, "<USER_REQUEST>ignored</USER_REQUEST>"); keep {
+		t.Error("Antigravity adapter should reject source=SYSTEM")
+	}
+	if clean, keep := agyAdapter.FilterUserEntry(map[string]interface{}{"source": "USER_EXPLICIT"}, "<ADDITIONAL_METADATA>meta</ADDITIONAL_METADATA>\n<USER_REQUEST>\nship it\n</USER_REQUEST>"); !keep || clean != "ship it" {
+		t.Errorf("Antigravity adapter failed to extract <USER_REQUEST>: keep=%v, clean=%q", keep, clean)
+	}
+	if clean, keep := agyAdapter.FilterUserEntry(nil, "[Image: original 1080x2400, displayed at 900x2000. Multiply coordinates by 1.20 to map to original image.]"); !keep || clean == "" {
+		t.Errorf("Antigravity adapter should NOT run Claude image companion heuristic: keep=%v, clean=%q", keep, clean)
+	}
+	if clean, keep := agyAdapter.FilterUserEntry(nil, "<system-reminder>literal</system-reminder> keep me"); !keep || !strings.Contains(clean, "<system-reminder>") {
+		t.Errorf("Antigravity adapter should NOT strip Claude <system-reminder>: keep=%v, clean=%q", keep, clean)
+	}
+
+	// 3. Codex / Grok / OpenCode strip CLI environment tags (<environment_context>, <permissions_instructions>),
+	//    but do NOT run Claude or Antigravity filters.
+	for name, adapter := range map[string]UserEntryFilter{
+		"codex":    codexAdapter,
+		"grok":     grokAdapter,
+		"opencode": openCodeAdapter,
+	} {
+		if clean, keep := adapter.FilterUserEntry(nil, "<environment_context>\ncwd: /tmp\n</environment_context>\n<permissions_instructions>allow</permissions_instructions>\nrun tests"); !keep || clean != "run tests" {
+			t.Errorf("%s adapter failed to strip CLI environment tags: keep=%v, clean=%q", name, keep, clean)
+		}
+		if clean, keep := adapter.FilterUserEntry(nil, "<system-reminder>claude tag</system-reminder>"); !keep || clean != "<system-reminder>claude tag</system-reminder>" {
+			t.Errorf("%s adapter should NOT strip Claude <system-reminder>: keep=%v, clean=%q", name, keep, clean)
+		}
+		if clean, keep := adapter.FilterUserEntry(nil, "<USER_REQUEST>agy tag</USER_REQUEST>"); !keep || clean != "<USER_REQUEST>agy tag</USER_REQUEST>" {
+			t.Errorf("%s adapter should NOT strip Antigravity <USER_REQUEST>: keep=%v, clean=%q", name, keep, clean)
+		}
+	}
+
+	// 4. Default adapter only trims whitespace.
+	if clean, keep := defaultAdapter.FilterUserEntry(nil, "  <system-reminder>raw</system-reminder>  "); !keep || clean != "<system-reminder>raw</system-reminder>" {
+		t.Errorf("default adapter should only trim whitespace, got keep=%v, clean=%q", keep, clean)
+	}
+}
