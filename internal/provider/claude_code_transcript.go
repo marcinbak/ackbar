@@ -152,8 +152,13 @@ func (c *ClaudeProvider) ExtractTranscript(home, cwd, nativeID string) ([]daemon
 				fullText = textStr
 			}
 
+			if daemon.IsSyntheticClaudeUserEntry(raw, fullText) {
+				continue
+			}
+
+			fullText = daemon.CleanClaudePrompt(fullText)
 			fullText = strings.TrimSpace(fullText)
-			if fullText != "" && !strings.Contains(fullText, "<EXTREMELY_IMPORTANT>") {
+			if fullText != "" && !daemon.IsSyntheticClaudeUserEntry(raw, fullText) {
 				messages = append(messages, daemon.TranscriptMessage{
 					Role:      "user",
 					Content:   fullText,
