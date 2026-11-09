@@ -74,6 +74,7 @@ func StripBilledCredentials(env []string) []string {
 type HeadlessRunner struct {
 	mu                     sync.RWMutex
 	processes              map[string]*exec.Cmd
+	activePrompts          map[string]TranscriptMessage
 	subs                   map[string][]chan ChatStreamEvent
 	queues                 map[string][]*PromptQueueItem // sessionID -> queued prompts
 	paused                 map[string]bool               // sessionID -> is queue paused
@@ -87,6 +88,7 @@ type HeadlessRunner struct {
 func NewHeadlessRunner(db *DB, broadcast func(s *Session)) *HeadlessRunner {
 	return &HeadlessRunner{
 		processes:              make(map[string]*exec.Cmd),
+		activePrompts:          make(map[string]TranscriptMessage),
 		subs:                   make(map[string][]chan ChatStreamEvent),
 		queues:                 make(map[string][]*PromptQueueItem),
 		paused:                 make(map[string]bool),
@@ -207,11 +209,13 @@ func (h *HeadlessRunner) triggerInteractiveBlock(sessionID string, sess *Session
 func (h *HeadlessRunner) ClearInteractiveBlockAndWait(sessionID string, timeout time.Duration) {
 	h.mu.Lock()
 	delete(h.interactiveBlocks, sessionID)
+	delete(h.activePrompts, sessionID)
 	h.respondedWhileStopping[sessionID] = true
 	parts := strings.Split(sessionID, ":")
 	if len(parts) == 3 {
 		nativeID := parts[2]
 		delete(h.interactiveBlocks, nativeID)
+		delete(h.activePrompts, nativeID)
 		h.respondedWhileStopping[nativeID] = true
 	}
 
@@ -401,6 +405,7 @@ func (h *HeadlessRunner) IsRunning(sessionID string) bool {
 		if cmd != nil && cmd.Process != nil && cmd.Process.Pid > 0 {
 			if !isProcessAlive(cmd.Process.Pid) {
 				delete(h.processes, key)
+				delete(h.activePrompts, key)
 				return false
 			}
 		}
@@ -424,6 +429,40 @@ func (h *HeadlessRunner) IsRunning(sessionID string) bool {
 		}
 	}
 	return false
+}
+
+func (h *HeadlessRunner) GetActiveTurnPrompt(sessionID string) (TranscriptMessage, bool) {
+	if !h.IsRunning(sessionID) {
+		return TranscriptMessage{}, false
+	}
+
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	if msg, ok := h.activePrompts[sessionID]; ok {
+		return msg, true
+	}
+
+	parts := strings.Split(sessionID, ":")
+	if len(parts) == 3 {
+		nativeID := parts[2]
+		if msg, ok := h.activePrompts[nativeID]; ok {
+			return msg, true
+		}
+		for k, msg := range h.activePrompts {
+			if strings.HasSuffix(k, ":"+nativeID) {
+				return msg, true
+			}
+		}
+	} else if len(parts) == 1 && sessionID != "" {
+		for k, msg := range h.activePrompts {
+			if k == sessionID || strings.HasSuffix(k, ":"+sessionID) {
+				return msg, true
+			}
+		}
+	}
+
+	return TranscriptMessage{}, false
 }
 
 func (h *HeadlessRunner) resolveQueueKey(sessionID string) string {
@@ -584,6 +623,7 @@ func (h *HeadlessRunner) CancelTurn(sessionID string) error {
 		if ok {
 			h.mu.Lock()
 			delete(h.processes, activeKey)
+			delete(h.activePrompts, activeKey)
 			h.mu.Unlock()
 		}
 		return nil
@@ -883,6 +923,11 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 	}
 
 	h.processes[sess.ID] = cmd
+	h.activePrompts[sess.ID] = TranscriptMessage{
+		Role:      "user",
+		Content:   prompt,
+		Timestamp: time.Now(),
+	}
 	h.mu.Unlock()
 
 	// Update session state to WORKING
@@ -891,6 +936,10 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 	sess.Activity = "Thinking..."
 	sess.LastEventAt = time.Now()
 	sess.PID = cmd.Process.Pid
+	if sess.FirstPrompt == "" {
+		sess.FirstPrompt = prompt
+	}
+	sess.LastPrompt = prompt
 	if h.db != nil {
 		_ = h.db.SaveSession(sess)
 	}
@@ -913,6 +962,8 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 			h.mu.Lock()
 			delete(h.processes, origSessionID)
 			delete(h.processes, sess.ID)
+			delete(h.activePrompts, origSessionID)
+			delete(h.activePrompts, sess.ID)
 			h.mu.Unlock()
 		}()
 
@@ -923,6 +974,8 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 		h.mu.Lock()
 		delete(h.processes, origSessionID)
 		delete(h.processes, sess.ID)
+		delete(h.activePrompts, origSessionID)
+		delete(h.activePrompts, sess.ID)
 		responded := h.respondedWhileStopping[sess.ID] || h.respondedWhileStopping[origSessionID]
 		delete(h.respondedWhileStopping, sess.ID)
 		delete(h.respondedWhileStopping, origSessionID)
@@ -1114,6 +1167,10 @@ func (h *HeadlessRunner) handleAntigravityInit(sess *Session, convID, prompt str
 				if cmd, exists := h.processes[oldID]; exists {
 					delete(h.processes, oldID)
 					h.processes[newID] = cmd
+				}
+				if promptMsg, exists := h.activePrompts[oldID]; exists {
+					delete(h.activePrompts, oldID)
+					h.activePrompts[newID] = promptMsg
 				}
 				if oldQueue, exists := h.queues[oldID]; exists {
 					for _, item := range oldQueue {
