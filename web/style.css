@@ -1912,7 +1912,8 @@ body, html {
   color: var(--text-main);
   line-height: 1.6;
   font-size: 13.5px;
-  max-width: 850px;
+  max-width: 100%;
+  width: 100%;
   user-select: text !important;
   -webkit-user-select: text !important;
   cursor: text;
@@ -1972,19 +1973,38 @@ body, html {
 }
 
 .markdown-body table {
+  display: table;
   width: 100%;
   border-collapse: collapse;
   margin-bottom: 16px;
+  table-layout: auto;
 }
 
 .markdown-body th, .markdown-body td {
   border: 1px solid var(--border-color);
   padding: 8px 12px;
   text-align: left;
+  vertical-align: top;
+  word-break: normal;
+  overflow-wrap: break-word;
+  min-width: 8ch;
 }
 
 .markdown-body th {
   background: var(--bg-sidebar);
+  white-space: nowrap;
+}
+
+.markdown-body td .chat-file-pill,
+.markdown-body th .chat-file-pill {
+  max-width: 100%;
+  white-space: normal;
+}
+
+.markdown-body td .chat-file-pill .chat-file-name,
+.markdown-body th .chat-file-pill .chat-file-name {
+  white-space: normal;
+  word-break: break-word;
 }
 
 .markdown-body blockquote {
@@ -2254,7 +2274,7 @@ body, html {
   flex-direction: column;
   border-radius: 8px;
   padding: 14px 16px;
-  max-width: 900px;
+  max-width: 100%;
   width: 100%;
   position: relative;
   user-select: text;
@@ -3071,6 +3091,10 @@ body, html {
   font-size: 13px;
   line-height: 1.55;
   color: var(--text-main);
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: auto;
   user-select: text !important;
   -webkit-user-select: text !important;
   cursor: text;
