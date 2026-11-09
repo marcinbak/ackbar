@@ -657,3 +657,50 @@ func TestMermaidFlowcharts_JS(t *testing.T) {
 		".btn-copy-mermaid",
 	})
 }
+
+func TestWebChatDraftPersistence(t *testing.T) {
+	embeddedFS := web.GetFS()
+
+	checkFileContains := func(path string, expectedList []string) {
+		t.Helper()
+		f, err := embeddedFS.Open(path)
+		if err != nil {
+			t.Fatalf("failed to open %s: %v", path, err)
+		}
+		defer f.Close()
+		b, err := io.ReadAll(f)
+		if err != nil {
+			t.Fatalf("failed to read %s: %v", path, err)
+		}
+		content := string(b)
+		for _, expected := range expectedList {
+			if !strings.Contains(content, expected) {
+				t.Errorf("expected %s to contain %q", path, expected)
+			}
+		}
+	}
+
+	checkFileContains("js/state.js", []string{
+		"chatDrafts",
+		"ackbar_chat_drafts",
+		"saveChatDraft",
+		"getChatDraft",
+		"clearChatDraft",
+		"migrateChatDraft",
+	})
+
+	checkFileContains("js/tabs.js", []string{
+		"saveChatDraft",
+		"migrateChatDraft",
+	})
+
+	checkFileContains("js/chat.js", []string{
+		"getChatDraft",
+		"saveChatDraft",
+		"clearChatDraft",
+	})
+
+	checkFileContains("js/terminal.js", []string{
+		"saveChatDraft",
+	})
+}
