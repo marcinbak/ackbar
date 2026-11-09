@@ -22,10 +22,13 @@ type AgentStatus struct {
 	Detected       bool   `json:"detected"`        // Whether agent was detected on system
 	ConfigFile     string `json:"config_file"`     // Path to MCP configuration file
 	SkillsDir      string `json:"skills_dir"`      // Path to skills directory
+	RulesFile      string `json:"rules_file"`      // Path to global rules markdown file
 	MCPInstalled   bool   `json:"mcp_installed"`   // Whether ackbar MCP server is configured
 	MCPCommand     string `json:"mcp_command"`     // Registered command string (e.g. "ackbar mcp")
 	SkillInstalled bool   `json:"skill_installed"` // Whether ackbar-tasks skill is installed
 	SkillVersion   string `json:"skill_version"`   // Installed skill version (e.g. "20260929.02")
+	RulesInstalled bool   `json:"rules_installed"` // Whether Ackbar communication/brevity rules are installed
+	RulesVersion   string `json:"rules_version"`   // Installed rules version (e.g. "20261109.04")
 	DriftDetected  bool   `json:"drift_detected"`  // Whether configuration or skill version is out of date
 }
 
@@ -37,6 +40,7 @@ type AgentDefinition struct {
 	HomeSubdir  string // e.g. ".claude"
 	ConfigRel   string // e.g. ".claude.json" or ".gemini/antigravity/mcp_config.json"
 	SkillsRel   string // e.g. ".claude/skills"
+	RulesRel    string // e.g. ".claude/CLAUDE.md"
 }
 
 var supportedAgents = []AgentDefinition{
@@ -47,6 +51,7 @@ var supportedAgents = []AgentDefinition{
 		HomeSubdir:  ".claude",
 		ConfigRel:   ".claude.json",
 		SkillsRel:   filepath.Join(".claude", "skills"),
+		RulesRel:    filepath.Join(".claude", "CLAUDE.md"),
 	},
 	{
 		Key:         "claude-desktop",
@@ -55,6 +60,7 @@ var supportedAgents = []AgentDefinition{
 		HomeSubdir:  "",
 		ConfigRel:   "",
 		SkillsRel:   "",
+		RulesRel:    "",
 	},
 	{
 		Key:         "antigravity",
@@ -63,6 +69,7 @@ var supportedAgents = []AgentDefinition{
 		HomeSubdir:  filepath.Join(".gemini", "antigravity"),
 		ConfigRel:   filepath.Join(".gemini", "antigravity", "mcp_config.json"),
 		SkillsRel:   filepath.Join(".gemini", "config", "skills"),
+		RulesRel:    filepath.Join(".gemini", "GEMINI.md"),
 	},
 	{
 		Key:         "codex",
@@ -71,6 +78,7 @@ var supportedAgents = []AgentDefinition{
 		HomeSubdir:  ".codex",
 		ConfigRel:   filepath.Join(".codex", "config.json"),
 		SkillsRel:   filepath.Join(".codex", "skills"),
+		RulesRel:    filepath.Join(".codex", "AGENTS.md"),
 	},
 }
 
@@ -151,12 +159,18 @@ func inspectAgent(home string, def AgentDefinition) AgentStatus {
 		}
 	}
 
+	rulesFilePath := ""
+	if def.RulesRel != "" {
+		rulesFilePath = filepath.Join(home, def.RulesRel)
+	}
+
 	status := AgentStatus{
 		Key:         def.Key,
 		DisplayName: def.DisplayName,
 		Detected:    detected,
 		ConfigFile:  configPath,
 		SkillsDir:   skillsDirPath,
+		RulesFile:   rulesFilePath,
 	}
 
 	// 1. Inspect MCP config
@@ -196,10 +210,32 @@ func inspectAgent(home string, def AgentDefinition) AgentStatus {
 		}
 	}
 
-	// 3. Evaluate Drift
-	// Drift occurs if detected but MCP or Skill is missing, or Skill version is not current
+	// 3. Inspect Rules installation
+	if def.RulesRel == "" {
+		status.RulesInstalled = true
+		status.RulesVersion = version.Version
+	} else {
+		if data, err := os.ReadFile(rulesFilePath); err == nil {
+			if ver := extractRulesVersion(string(data)); ver != "" {
+				status.RulesInstalled = true
+				status.RulesVersion = ver
+			}
+		} else if def.Key == "antigravity" {
+			cliRulesPath := filepath.Join(home, ".gemini", "config", "GEMINI.md")
+			if data, err := os.ReadFile(cliRulesPath); err == nil {
+				if ver := extractRulesVersion(string(data)); ver != "" {
+					status.RulesInstalled = true
+					status.RulesVersion = ver
+				}
+			}
+		}
+	}
+
+	// 4. Evaluate Drift
+	// Drift occurs if detected but MCP, Skill, or Rules is missing, or versions are out of date
 	if detected {
-		if !status.MCPInstalled || !status.SkillInstalled || status.SkillVersion != version.Version {
+		if !status.MCPInstalled || !status.SkillInstalled || status.SkillVersion != version.Version ||
+			!status.RulesInstalled || status.RulesVersion != version.Version {
 			status.DriftDetected = true
 		}
 	}
@@ -207,7 +243,7 @@ func inspectAgent(home string, def AgentDefinition) AgentStatus {
 	return status
 }
 
-// ProvisionAgents installs the Ackbar Tasks MCP server and Skill into the specified agents
+// ProvisionAgents installs the Ackbar Tasks MCP server, Skill, and global rules into the specified agents
 func ProvisionAgents(customHome string, targetAgentKeys []string) ([]AgentStatus, error) {
 	home := customHome
 	if home == "" {
@@ -245,6 +281,11 @@ func ProvisionAgents(customHome string, targetAgentKeys []string) ([]AgentStatus
 		// 2. Install versioned skill into agent's skill directory
 		if err := installAgentSkill(home, def); err != nil {
 			return nil, fmt.Errorf("failed to install skill for %s: %w", def.DisplayName, err)
+		}
+
+		// 3. Install global communication and brevity rules
+		if err := installAgentRules(home, def); err != nil {
+			return nil, fmt.Errorf("failed to install rules for %s: %w", def.DisplayName, err)
 		}
 	}
 
@@ -390,4 +431,102 @@ func extractSkillVersion(content string) string {
 		}
 	}
 	return ""
+}
+
+func installAgentRules(home string, def AgentDefinition) error {
+	if def.RulesRel == "" {
+		return nil
+	}
+
+	targets := []string{filepath.Join(home, def.RulesRel)}
+	if def.Key == "antigravity" {
+		targets = append(targets, filepath.Join(home, ".gemini", "config", "GEMINI.md"))
+	}
+
+	for _, target := range targets {
+		if err := upsertMarkdownRulesBlock(target, version.Version); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+var rulesBlockRegex = regexp.MustCompile(`(?s)<!-- ackbar-rules:v([^>]+) -->.*?<!-- /ackbar-rules -->`)
+
+func extractRulesVersion(content string) string {
+	matches := rulesBlockRegex.FindStringSubmatch(content)
+	if len(matches) > 1 {
+		return strings.TrimSpace(matches[1])
+	}
+	return ""
+}
+
+func buildMarkdownRulesBlock(ver string) string {
+	return fmt.Sprintf(`<!-- ackbar-rules:v%s -->
+## Communication & Documentation Rules (Ackbar Managed)
+
+### Style (ASD-STE100 & Strunk Heuristic)
+- Eliminate conversational filler, greetings, sign-offs, hedging, and meta-commentary.
+- Lead with the answer, command, or code in the first sentence.
+- Write in ASD-STE100 style: active voice, literal phrasing, simplest word choice, no metaphors, no synonyms for stylistic variety.
+- State limitations as technical constraints, never apologies.
+- Prefer tables and bullet points over prose paragraphs. Keep bullets under 20 words unless explaining a complex causal chain.
+
+### Anti-Redundancy (Single Source of Truth)
+- Never duplicate information across code comments, `+"`docs/*.md`"+`, PR descriptions, and chat.
+- Code comments: document *why* (invariants/constraints), never *what* the code literally does.
+- Docs (`+"`docs/*.md`"+`): document current architecture using tables and file links; never paste large code blocks or changelog history.
+- PR bodies: max 5 bullets covering intent, blast radius, and verification gates.
+- Chat replies: report only the outcome, key decisions, and links to changed files/artifacts.
+<!-- /ackbar-rules -->`, ver)
+}
+
+func upsertMarkdownRulesBlock(filePath string, ver string) error {
+	targetPath := filePath
+	if resolved, err := filepath.EvalSymlinks(filePath); err == nil {
+		targetPath = resolved
+	}
+
+	parentDir := filepath.Dir(targetPath)
+	if err := os.MkdirAll(parentDir, 0755); err != nil {
+		return fmt.Errorf("failed to create directory %s: %w", parentDir, err)
+	}
+
+	newBlock := buildMarkdownRulesBlock(ver)
+
+	var newContent string
+	data, err := os.ReadFile(targetPath)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("failed to read rules file %s: %w", targetPath, err)
+		}
+		newContent = newBlock + "\n"
+	} else {
+		existing := string(data)
+		if rulesBlockRegex.MatchString(existing) {
+			newContent = rulesBlockRegex.ReplaceAllLiteralString(existing, newBlock)
+		} else {
+			if len(existing) == 0 {
+				newContent = newBlock + "\n"
+			} else if strings.HasSuffix(existing, "\n\n") {
+				newContent = existing + newBlock + "\n"
+			} else if strings.HasSuffix(existing, "\n") {
+				newContent = existing + "\n" + newBlock + "\n"
+			} else {
+				newContent = existing + "\n\n" + newBlock + "\n"
+			}
+		}
+	}
+
+	tmpPath := targetPath + ".tmp"
+	if err := os.WriteFile(tmpPath, []byte(newContent), 0644); err != nil {
+		return fmt.Errorf("failed to write temp rules file %s: %w", tmpPath, err)
+	}
+	if err := os.Rename(tmpPath, targetPath); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("failed to atomically update rules file %s: %w", targetPath, err)
+	}
+
+	return nil
 }

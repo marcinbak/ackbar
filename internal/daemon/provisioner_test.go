@@ -73,6 +73,12 @@ func TestProvisioner_FullLifecycle(t *testing.T) {
 		if s.SkillVersion != version.Version {
 			t.Errorf("Expected agent %s skill version to be %s, got %s", s.Key, version.Version, s.SkillVersion)
 		}
+		if !s.RulesInstalled {
+			t.Errorf("Expected agent %s to have rules installed", s.Key)
+		}
+		if s.RulesVersion != version.Version {
+			t.Errorf("Expected agent %s rules version to be %s, got %s", s.Key, version.Version, s.RulesVersion)
+		}
 		if s.DriftDetected {
 			t.Errorf("Expected no drift for agent %s after provisioning", s.Key)
 		}
@@ -288,5 +294,145 @@ func TestStampSkillVersion(t *testing.T) {
 	out4 := stampSkillVersion(raw4, "20261104.05")
 	if !strings.Contains(string(out4), `version: "20261104.05"`) {
 		t.Errorf("Case 4 failed, got:\n%s", string(out4))
+	}
+}
+
+func TestProvisioner_RulesNonDestructiveUpsertAndUpgrade(t *testing.T) {
+	tempHome := t.TempDir()
+
+	// Pre-populate ~/.claude/CLAUDE.md with custom machine notes
+	claudeDir := filepath.Join(tempHome, ".claude")
+	if err := os.MkdirAll(claudeDir, 0700); err != nil {
+		t.Fatalf("failed to create .claude dir: %v", err)
+	}
+
+	claudeMDPath := filepath.Join(claudeDir, "CLAUDE.md")
+	userNotes := "# Machine notes — legion\nKeep X11 running.\n"
+	if err := os.WriteFile(claudeMDPath, []byte(userNotes), 0644); err != nil {
+		t.Fatalf("failed to write initial CLAUDE.md: %v", err)
+	}
+
+	// 1. Initial inspection: RulesInstalled == false and DriftDetected == true
+	statuses, err := GetAgentStatuses(tempHome)
+	if err != nil {
+		t.Fatalf("GetAgentStatuses failed: %v", err)
+	}
+
+	var claudeStatus *AgentStatus
+	for i := range statuses {
+		if statuses[i].Key == "claude-code" {
+			claudeStatus = &statuses[i]
+		}
+	}
+	if claudeStatus == nil {
+		t.Fatalf("Expected claude-code in statuses")
+	}
+	if claudeStatus.RulesInstalled {
+		t.Errorf("Expected RulesInstalled == false initially")
+	}
+	if !claudeStatus.DriftDetected {
+		t.Errorf("Expected DriftDetected == true initially")
+	}
+
+	// 2. Provision claude-code
+	updatedStatuses, err := ProvisionAgents(tempHome, []string{"claude-code"})
+	if err != nil {
+		t.Fatalf("ProvisionAgents failed: %v", err)
+	}
+
+	for i := range updatedStatuses {
+		if updatedStatuses[i].Key == "claude-code" {
+			claudeStatus = &updatedStatuses[i]
+		}
+	}
+	if !claudeStatus.RulesInstalled {
+		t.Errorf("Expected RulesInstalled == true after provisioning")
+	}
+	if claudeStatus.RulesVersion != version.Version {
+		t.Errorf("Expected RulesVersion == %s, got %s", version.Version, claudeStatus.RulesVersion)
+	}
+	if claudeStatus.DriftDetected {
+		t.Errorf("Expected DriftDetected == false after provisioning")
+	}
+
+	// 3. Verify user notes preserved and ackbar rules present
+	contentBytes, err := os.ReadFile(claudeMDPath)
+	if err != nil {
+		t.Fatalf("failed to read CLAUDE.md: %v", err)
+	}
+	content := string(contentBytes)
+	if !strings.Contains(content, "# Machine notes — legion\nKeep X11 running.") {
+		t.Errorf("Expected original machine notes to be preserved, got:\n%s", content)
+	}
+	expectedMarker := "<!-- ackbar-rules:v" + version.Version + " -->"
+	if !strings.Contains(content, expectedMarker) {
+		t.Errorf("Expected marker %s in CLAUDE.md, got:\n%s", expectedMarker, content)
+	}
+	if !strings.Contains(content, "<!-- /ackbar-rules -->") {
+		t.Errorf("Expected closing marker in CLAUDE.md, got:\n%s", content)
+	}
+
+	// 4. Simulate older version by replacing marker
+	oldContent := strings.Replace(content, expectedMarker, "<!-- ackbar-rules:v20250101.01 -->", 1)
+	if err := os.WriteFile(claudeMDPath, []byte(oldContent), 0644); err != nil {
+		t.Fatalf("failed to write simulated old CLAUDE.md: %v", err)
+	}
+
+	statuses, err = GetAgentStatuses(tempHome)
+	if err != nil {
+		t.Fatalf("GetAgentStatuses failed: %v", err)
+	}
+	for i := range statuses {
+		if statuses[i].Key == "claude-code" {
+			claudeStatus = &statuses[i]
+		}
+	}
+	if !claudeStatus.RulesInstalled {
+		t.Errorf("Expected RulesInstalled == true for old version")
+	}
+	if claudeStatus.RulesVersion != "20250101.01" {
+		t.Errorf("Expected RulesVersion == 20250101.01, got %s", claudeStatus.RulesVersion)
+	}
+	if !claudeStatus.DriftDetected {
+		t.Errorf("Expected DriftDetected == true for old version")
+	}
+
+	// 5. Re-run ProvisionAgents and verify in-place update without duplication
+	updatedStatuses, err = ProvisionAgents(tempHome, []string{"claude-code"})
+	if err != nil {
+		t.Fatalf("Re-provisioning failed: %v", err)
+	}
+
+	for i := range updatedStatuses {
+		if updatedStatuses[i].Key == "claude-code" {
+			claudeStatus = &updatedStatuses[i]
+		}
+	}
+	if !claudeStatus.RulesInstalled {
+		t.Errorf("Expected RulesInstalled == true after re-provisioning")
+	}
+	if claudeStatus.RulesVersion != version.Version {
+		t.Errorf("Expected RulesVersion == %s after upgrade, got %s", version.Version, claudeStatus.RulesVersion)
+	}
+	if claudeStatus.DriftDetected {
+		t.Errorf("Expected DriftDetected == false after upgrade")
+	}
+
+	upgradedBytes, err := os.ReadFile(claudeMDPath)
+	if err != nil {
+		t.Fatalf("failed to read upgraded CLAUDE.md: %v", err)
+	}
+	upgradedContent := string(upgradedBytes)
+	if !strings.Contains(upgradedContent, "# Machine notes — legion\nKeep X11 running.") {
+		t.Errorf("Expected user machine notes to be preserved after upgrade")
+	}
+	if !strings.Contains(upgradedContent, expectedMarker) {
+		t.Errorf("Expected current marker %s after upgrade", expectedMarker)
+	}
+	if strings.Contains(upgradedContent, "20250101.01") {
+		t.Errorf("Expected old version tag to be replaced")
+	}
+	if strings.Count(upgradedContent, "<!-- /ackbar-rules -->") != 1 {
+		t.Errorf("Expected exactly 1 closing marker block, found %d", strings.Count(upgradedContent, "<!-- /ackbar-rules -->"))
 	}
 }
