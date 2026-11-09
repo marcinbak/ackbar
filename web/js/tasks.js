@@ -1477,6 +1477,10 @@ export async function showAgentSetupModal() {
       ? `<span style="color: var(--accent-green); font-size: 12px; font-weight: 600;">✓ Installed (v${escapeHtml(a.skill_version || hostVersion || '')})</span>`
       : '<span style="color: var(--accent-red); font-size: 12px; font-weight: 600;">✗ Missing</span>';
 
+    const rulesBadge = a.rules_installed
+      ? `<span style="color: var(--accent-green); font-size: 12px; font-weight: 600;">✓ Installed (v${escapeHtml(a.rules_version || hostVersion || '')})</span>`
+      : '<span style="color: var(--accent-red); font-size: 12px; font-weight: 600;">✗ Missing</span>';
+
     const driftWarning = a.drift_detected
       ? '<span style="background: rgba(239, 68, 68, 0.12); color: var(--accent-red); border: 1px solid rgba(239, 68, 68, 0.3); padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600;">⚠️ Drift Detected</span>'
       : '<span style="background: rgba(34, 197, 94, 0.12); color: var(--accent-green); border: 1px solid rgba(34, 197, 94, 0.3); padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600;">Up to Date</span>';
@@ -1491,7 +1495,7 @@ export async function showAgentSetupModal() {
           <div>${driftWarning}</div>
         </div>
 
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 4px; font-size: 12px;">
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; margin-top: 4px; font-size: 12px;">
           <div style="background: var(--bg-subtle, rgba(0,0,0,0.15)); padding: 8px; border-radius: 4px; border: 1px solid var(--border-color);">
             <div style="color: var(--text-muted); font-size: 11px; margin-bottom: 2px;">MCP SERVER</div>
             <div style="margin-bottom: 4px;">${mcpBadge}</div>
@@ -1501,6 +1505,11 @@ export async function showAgentSetupModal() {
             <div style="color: var(--text-muted); font-size: 11px; margin-bottom: 2px;">SKILL (SKILL.md)</div>
             <div style="margin-bottom: 4px;">${skillBadge}</div>
             <div style="color: var(--text-muted); font-family: monospace; font-size: 10px; word-break: break-all;">${escapeHtml(a.skills_dir)}/ackbar-tasks</div>
+          </div>
+          <div style="background: var(--bg-subtle, rgba(0,0,0,0.15)); padding: 8px; border-radius: 4px; border: 1px solid var(--border-color);">
+            <div style="color: var(--text-muted); font-size: 11px; margin-bottom: 2px;">GLOBAL RULES</div>
+            <div style="margin-bottom: 4px;">${rulesBadge}</div>
+            <div style="color: var(--text-muted); font-family: monospace; font-size: 10px; word-break: break-all;">${escapeHtml(a.rules_file || 'N/A (Desktop App)')}</div>
           </div>
         </div>
       </div>

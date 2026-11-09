@@ -68,6 +68,8 @@ Detailed architectural and technical domain documentation is organized in the `d
 3.  **No Direct Pushes to `main`:** Direct pushes to `main` are strictly blocked by GitHub branch protection. All code changes must be submitted via Pull Requests.
 4.  **Strict PR-Based Git Worktree Workflow:** All development, bug fixes, refactoring, and feature additions MUST follow the PR workflow governed by the `dev-workflow` skill and [docs/dev-workflow.md](file:///Users/dev4u/Work/Ackbar/docs/dev-workflow.md).
 5.  **Enforced PR Version Bump:** Every pull request MUST bump `internal/version/VERSION` above `origin/main` via `./scripts/bump-version.sh`. The bump is strictly gated by `./scripts/bump-version.sh --check` in T0 and GitHub Actions CI.
+6.  **Zero Redundant Comments:** Code comments may only state non-obvious invariants or *why* a workaround exists. Comments restating *what* the code does are a `minor` defect.
+7.  **Doc & File Budgets:** `AGENTS.md` must stay under 160 lines. `docs/*.md` updates must edit tables/bullets in-place without duplicating other docs.
 
 ---
 
@@ -104,4 +106,23 @@ All development on Project Ackbar is governed by the **`dev-workflow`** skill an
    git worktree remove .worktrees/<name>
    git branch -d <branch>
    ```
+
+---
+
+## 6. Communication & Documentation Rules
+
+### Style (ASD-STE100 & Strunk Heuristic)
+- Eliminate conversational filler, greetings, sign-offs, hedging, and meta-commentary.
+- Lead with the answer, command, or code in the first sentence.
+- Write in ASD-STE100 style: active voice, literal phrasing, simplest word choice, no metaphors, no synonyms for stylistic variety.
+- State limitations as technical constraints, never apologies.
+- Prefer tables and bullet points over prose paragraphs. Keep bullets under 20 words unless explaining a complex causal chain.
+
+### Anti-Redundancy (Single Source of Truth)
+- Never duplicate information across code comments, `docs/*.md`, PR descriptions, and chat.
+- Code comments: document *why* (invariants/constraints), never *what* the code literally does.
+- Docs (`docs/*.md`): document current architecture using tables and file links; never paste large code blocks or changelog history.
+- PR bodies: max 5 bullets covering intent, blast radius, and verification gates.
+- Chat replies: report only the outcome, key decisions, and links to changed files/artifacts.
+
 

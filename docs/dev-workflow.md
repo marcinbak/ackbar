@@ -38,7 +38,7 @@ fail the job), `❌ not gated`, or `—` (not run in CI).
 |---|---|---|---|---|
 | install | `go mod tidy && (cd mobile && flutter pub get)` | | ✅ CI | Installs Go module dependencies and Flutter packages. |
 | format | `gofmt -w . && (cd mobile && dart format .)` | | ✅ CI | Formats all Go files and Dart mobile code. |
-| lint | `if [ -n "$(gofmt -l .)" ]; then echo "Unformatted Go code:"; gofmt -l .; exit 1; fi && (cd mobile && flutter analyze --no-fatal-infos)` | ✅ | ✅ CI | Verified in CI via Go Test Suite and Flutter Analyzer. |
+| lint | `if [ -n "$(gofmt -l .)" ]; then echo "Unformatted Go code:"; gofmt -l .; exit 1; fi && [ "$(wc -l < AGENTS.md)" -le 160 ] && (cd mobile && flutter analyze --no-fatal-infos)` | ✅ | ✅ CI | Verified in CI via Go Test Suite and Flutter Analyzer. |
 | version check | `./scripts/bump-version.sh --check` | ✅ | ✅ CI | Enforces that `internal/version/VERSION` is bumped above `origin/main` on every PR. Bump via `./scripts/bump-version.sh`. |
 | typecheck | `go vet ./... && (cd mobile && flutter analyze --no-fatal-infos)` | ✅ | ✅ CI | Catches type, formatting, and static analysis defects across backend and mobile. |
 | unit test | `go test -v ./... && (cd mobile && flutter test)` | ✅ | ✅ CI | Runs complete Go test suite (daemon, provider, relay, router, tmux) and Flutter unit/widget tests. |
