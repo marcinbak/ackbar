@@ -257,6 +257,19 @@ func (a AntigravityAgentAdapter) ListWorkspaceDocuments(home, cwd, nativeID stri
 	}
 }
 
+func (a AntigravityAgentAdapter) FilterUserEntry(raw map[string]interface{}, content string) (string, bool) {
+	if raw != nil {
+		if src, _ := raw["source"].(string); src != "" && !strings.EqualFold(src, "USER_EXPLICIT") && !strings.EqualFold(src, "USER") {
+			return "", false
+		}
+	}
+	clean := CleanAntigravityPrompt(content)
+	if clean == "" {
+		return "", false
+	}
+	return clean, true
+}
+
 func (a AntigravityAgentAdapter) ScanDiskSessions(ctx context.Context, s *Server, home string, state *ScanState) {
 	if home == "" {
 		return
@@ -720,6 +733,7 @@ func ReadAntigravitySessionTitle(cwd, sessionID string) string {
 					continue
 				}
 				var step struct {
+					Source  string `json:"source"`
 					Type    string `json:"type"`
 					Content string `json:"content"`
 				}
@@ -735,8 +749,8 @@ func ReadAntigravitySessionTitle(cwd, sessionID string) string {
 						}
 					}
 					if step.Type == "USER_INPUT" && step.Content != "" && firstPromptTitle == "" {
-						clean := cleanAntigravityPrompt(step.Content)
-						if clean != "" && !strings.HasPrefix(clean, "/") && !strings.HasPrefix(clean, "<") && !IsRawSessionName(clean) {
+						clean, keep := (AntigravityAgentAdapter{}).FilterUserEntry(map[string]interface{}{"source": step.Source}, step.Content)
+						if keep && !strings.HasPrefix(clean, "/") && !strings.HasPrefix(clean, "<") && !IsRawSessionName(clean) {
 							firstPromptTitle = truncateTitle(clean)
 						}
 					}

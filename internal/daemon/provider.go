@@ -112,12 +112,18 @@ type DiskSessionDiscoverer interface {
 	ScanDiskSessions(ctx context.Context, s *Server, home string, state *ScanState)
 }
 
+// UserEntryFilter filters synthetic runtime entries and normalizes user prompt text for a specific agent.
+type UserEntryFilter interface {
+	FilterUserEntry(raw map[string]interface{}, content string) (clean string, keep bool)
+}
+
 // AgentAdapter combines all agent-specific operational capabilities used by the daemon server and session scanner.
 type AgentAdapter interface {
 	InteractiveController
 	AccountConfigurator
 	ProcessInspector
 	DiskSessionDiscoverer
+	UserEntryFilter
 }
 
 // Provider defines the core contract required for an AI agent integration in Ackbar.
