@@ -76,8 +76,8 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 | `POST` | `/v1/sync/push` | Ingests and reconciles peer sync payload via 3-way Last-Write-Wins (LWW). |
 | `GET` | `/v1/standup` | Deterministic daily standup and weekly retro report generation (grouped by project in Markdown or JSON). |
 | `POST` | `/v1/briefings/synthesize` | Generates speech-optimized conversational text briefing (<45s) for voice synthesis. |
-| `GET` | `/v1/agents/status` | Returns detected agent runtimes (Claude, Antigravity, Codex, Claude Desktop) with MCP and skill install statuses, plus external skills repo status. |
-| `POST` | `/v1/agents/provision` | Provisions or upgrades the Ackbar Tasks MCP server and Skill into connected agent configs (including `claude_desktop_config.json`), and optionally syncs external skills repo. |
+| `GET` | `/v1/agents/status` | Returns detected agent runtimes (Claude, Antigravity, Codex, Claude Desktop) with MCP, skill, rules (`rules_installed`, `rules_version`), and skills repo status. |
+| `POST` | `/v1/agents/provision` | Provisions or upgrades Ackbar Tasks MCP, Skill, and global rules into connected agent configs, and optionally syncs skills repo. |
 | `POST` | `/v1/agents/skills-repo/sync` | Clones or fast-forward pulls the shared skills repository and runs `./install.sh` (or fallback copy). |
 | `POST` | `/v1/mcp` | Streamable HTTP JSON-RPC 2.0 MCP endpoint (`initialize`, `tools/list`, `tools/call`). Resolves local loopback listener to prevent SSRF and hairpinning. |
 | `POST` | `/v1/sessions/take-wheel` | Stops any active headless turn and resumes the session in an interactive `tmux` terminal (`engine_type = "tmux"`). |
