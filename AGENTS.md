@@ -84,8 +84,8 @@ All development on Project Ackbar is governed by the **`dev-workflow`** skill an
 │  1. Plan (N2) ──► 2. Worktree (N3) ──► 3. T0 Tests (N5) ──► 4. Review (N6) │
 │     Change brief    .worktrees/<branch>     go/flutter tests     Fan-out x3 │
 │                                                                             │
-│               ──► 5. Push & PR (N11) ──► 6. Merge & Clean (N14)             │
-│                      gh pr create            gh pr merge --squash           │
+│     ──► 5. Docs Sync (N10) ──► 6. Push & PR (N11) ──► 7. Merge & Clean (N14)│
+│         doc_update_targets        gh pr create           gh pr merge --squash│
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -96,8 +96,9 @@ All development on Project Ackbar is governed by the **`dev-workflow`** skill an
    ```
 3. **Static Verification (N5):** Verify against the T0 gate set defined in [docs/dev-workflow.md](file:///Users/dev4u/Work/Ackbar/docs/dev-workflow.md) (`./scripts/bump-version.sh --check`, `gofmt -l .`, `go test -v ./...`, and `flutter test` if mobile was touched). Every PR must bump `internal/version/VERSION` using `./scripts/bump-version.sh` before committing.
 4. **Three-Way Review Fan-Out (N6–N8):** Automated reviews run across `context-reviewer`, `clean-reviewer`, and `security-reviewer` before creating a PR.
-5. **PR Submission & Automatic Merge (`merge_policy: auto`, N11–N14):** Push branch and create PR using `gh pr create`. Direct pushes to `main` are strictly blocked. Per `merge_policy: auto` in [docs/dev-workflow.md](file:///Users/dev4u/Work/Ackbar/docs/dev-workflow.md), once T0 verification, N6–N8 reviews, and CI checks pass, merge the PR automatically using `gh pr merge --squash --delete-branch`.
-6. **Worktree Cleanup:** Once merged, pull `main` in the root workspace, remove the worktree, and delete the branch:
+5. **Project State & Documentation Sync (N10):** After review/verification fixes settle and before opening the PR, audit the branch diff against `doc_update_targets` (`AGENTS.md`, `docs/*.md`), commit any needed doc updates, and verify accuracy (or record an explicit 1-line skip justification).
+6. **PR Submission & Automatic Merge (`merge_policy: auto`, N11–N14):** Push branch and create PR using `gh pr create`. Direct pushes to `main` are strictly blocked. Per `merge_policy: auto` in [docs/dev-workflow.md](file:///Users/dev4u/Work/Ackbar/docs/dev-workflow.md), once T0 verification, N6–N8 reviews, N10 doc sync, and CI checks pass, merge the PR automatically using `gh pr merge --squash --delete-branch`.
+7. **Worktree Cleanup:** Step out to the root workspace before merging (or after merge), pull `main`, and remove any remaining worktree/branch:
    ```bash
    git checkout main && git pull origin main
    git worktree remove .worktrees/<name>
