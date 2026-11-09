@@ -15,7 +15,7 @@ Ackbar supports the major agent ecosystems:
 
 ### Claude Code
 * **Session Registry:** `~/.claude/sessions/<pid>.json` contains process PID, native UUID, CWD, custom session name, entrypoint (`claude-vscode`, `cli`), kind, and version.
-* **Transcripts:** `~/.claude/projects/-encoded-cwd/<session-id>.jsonl` contains execution history, model name, `customTitle`, `aiTitle`, and token usage blocks.
+* **Transcripts:** `~/.claude/projects/-encoded-cwd/<session-id>.jsonl` contains execution history, model name, `customTitle`, `aiTitle`, and token usage blocks. `ClaudeProvider.ExtractTranscript`, `daemon.ExtractTranscript`, and `ReadClaudeSessionMeta` filter out synthetic `type: "user"` runtime entries via `daemon.IsSyntheticClaudeUserEntry` (`isMeta`, `isCompactSummary`, `isVisibleInTranscriptOnly`, `turnCompanion`, non-`"human"` `origin.kind`, `[Image: original ...]`, `[Request interrupted by user...]`, `<task-notification>`, `<teammate-message`, `<cross-session-message`) and normalize prompt text via `daemon.CleanClaudePrompt`.
 * **Context Usage:** Calculated from active tokens (`input_tokens + cache_creation + cache_read`) against dynamic model family context limits.
 
 ### Antigravity

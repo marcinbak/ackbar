@@ -525,8 +525,13 @@ func ReadClaudeSessionMeta(cwd, sessionID string) *SessionMeta {
 					continue
 				}
 				var obj struct {
-					Type    string `json:"type"`
-					Message struct {
+					Type                      string         `json:"type"`
+					IsMeta                    bool           `json:"isMeta"`
+					IsCompactSummary          bool           `json:"isCompactSummary"`
+					IsVisibleInTranscriptOnly bool           `json:"isVisibleInTranscriptOnly"`
+					TurnCompanion             bool           `json:"turnCompanion"`
+					Origin                    map[string]any `json:"origin"`
+					Message                   struct {
 						Role    string `json:"role"`
 						Content any    `json:"content"`
 					} `json:"message"`
@@ -568,12 +573,20 @@ func ReadClaudeSessionMeta(cwd, sessionID string) *SessionMeta {
 						metaInfo.AIDescription = obj.Summary
 					}
 
+					rawMeta := map[string]any{
+						"isMeta":                    obj.IsMeta,
+						"isCompactSummary":          obj.IsCompactSummary,
+						"isVisibleInTranscriptOnly": obj.IsVisibleInTranscriptOnly,
+						"turnCompanion":             obj.TurnCompanion,
+						"origin":                    obj.Origin,
+					}
+
 					promptText := ""
 					if obj.LastPrompt != "" {
 						promptText = obj.LastPrompt
 					} else if obj.Prompt != "" {
 						promptText = obj.Prompt
-					} else if obj.Type == "user" || obj.Message.Role == "user" {
+					} else if (obj.Type == "user" || obj.Message.Role == "user") && !IsSyntheticClaudeUserEntry(rawMeta, "") {
 						if s, ok := obj.Message.Content.(string); ok {
 							promptText = s
 						} else if arr, ok := obj.Message.Content.([]any); ok && len(arr) > 0 {
@@ -588,9 +601,9 @@ func ReadClaudeSessionMeta(cwd, sessionID string) *SessionMeta {
 						}
 					}
 
-					if promptText != "" {
+					if promptText != "" && !IsSyntheticClaudeUserEntry(rawMeta, promptText) {
 						clean := cleanPromptText(promptText)
-						if clean != "" {
+						if clean != "" && !IsSyntheticClaudeUserEntry(rawMeta, clean) {
 							if metaInfo.FirstPrompt == "" {
 								metaInfo.FirstPrompt = clean
 							}
@@ -765,8 +778,13 @@ func ReadClaudeSessionTitle(cwd, sessionID string) string {
 							continue
 						}
 						var entry struct {
-							Type    string `json:"type"`
-							Message struct {
+							Type                      string         `json:"type"`
+							IsMeta                    bool           `json:"isMeta"`
+							IsCompactSummary          bool           `json:"isCompactSummary"`
+							IsVisibleInTranscriptOnly bool           `json:"isVisibleInTranscriptOnly"`
+							TurnCompanion             bool           `json:"turnCompanion"`
+							Origin                    map[string]any `json:"origin"`
+							Message                   struct {
 								Role    string `json:"role"`
 								Content any    `json:"content"`
 							} `json:"message"`
@@ -787,17 +805,36 @@ func ReadClaudeSessionTitle(cwd, sessionID string) string {
 							if entry.Title != "" && aiTitle == "" {
 								aiTitle = entry.Title
 							}
+							rawMeta := map[string]any{
+								"isMeta":                    entry.IsMeta,
+								"isCompactSummary":          entry.IsCompactSummary,
+								"isVisibleInTranscriptOnly": entry.IsVisibleInTranscriptOnly,
+								"turnCompanion":             entry.TurnCompanion,
+								"origin":                    entry.Origin,
+							}
 							pText := entry.LastPrompt
 							if pText == "" {
 								pText = entry.Prompt
 							}
-							if pText == "" && (entry.Type == "user" || entry.Message.Role == "user") {
+							if pText == "" && (entry.Type == "user" || entry.Message.Role == "user") && !IsSyntheticClaudeUserEntry(rawMeta, "") {
 								if s, ok := entry.Message.Content.(string); ok {
 									pText = s
+								} else if arr, ok := entry.Message.Content.([]any); ok && len(arr) > 0 {
+									for _, itm := range arr {
+										if firstObj, ok := itm.(map[string]any); ok {
+											if text, ok := firstObj["text"].(string); ok && text != "" {
+												pText = text
+												break
+											}
+										}
+									}
 								}
 							}
-							if pText != "" && firstPrompt == "" {
-								firstPrompt = cleanPromptText(pText)
+							if pText != "" && firstPrompt == "" && !IsSyntheticClaudeUserEntry(rawMeta, pText) {
+								cleaned := cleanPromptText(pText)
+								if cleaned != "" && !IsSyntheticClaudeUserEntry(rawMeta, cleaned) {
+									firstPrompt = cleaned
+								}
 							}
 						}
 					}

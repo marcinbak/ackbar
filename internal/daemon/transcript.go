@@ -231,6 +231,52 @@ func CleanClaudePrompt(raw string) string {
 	return strings.TrimSpace(result)
 }
 
+// IsSyntheticClaudeUserEntry reports whether a raw Claude Code JSONL entry of type "user"
+// was injected by the runtime (e.g. image coordinate hints, skill expansions, compaction
+// summaries, background task notifications, or cross-session/teammate messages) rather
+// than sent by the human user.
+func IsSyntheticClaudeUserEntry(raw map[string]interface{}, content string) bool {
+	isExplicitHuman := false
+	if raw != nil {
+		if isMeta, _ := raw["isMeta"].(bool); isMeta {
+			return true
+		}
+		if isCompact, _ := raw["isCompactSummary"].(bool); isCompact {
+			return true
+		}
+		if isTranscriptOnly, _ := raw["isVisibleInTranscriptOnly"].(bool); isTranscriptOnly {
+			return true
+		}
+		if isTurnCompanion, _ := raw["turnCompanion"].(bool); isTurnCompanion {
+			return true
+		}
+		if origin, ok := raw["origin"].(map[string]interface{}); ok {
+			if kind, _ := origin["kind"].(string); kind != "" {
+				if kind != "human" {
+					return true
+				}
+				isExplicitHuman = true
+			}
+		}
+	}
+
+	trimmed := strings.TrimSpace(content)
+	if trimmed == "" || isExplicitHuman {
+		return false
+	}
+	if strings.Contains(trimmed, "<EXTREMELY_IMPORTANT>") ||
+		strings.HasPrefix(trimmed, "<task-notification>") ||
+		strings.HasPrefix(trimmed, "<teammate-message") ||
+		strings.HasPrefix(trimmed, "<cross-session-message") ||
+		strings.HasPrefix(trimmed, "Another Claude session sent a message:") ||
+		strings.HasPrefix(trimmed, "[Image: original ") ||
+		strings.HasPrefix(trimmed, "[Cross-session ") ||
+		strings.HasPrefix(trimmed, "[Request interrupted by user") {
+		return true
+	}
+	return false
+}
+
 // ExtractAntigravityTranscriptMessages reads Antigravity conversation logs from disk,
 // hydrating any truncated steps from transcript_full.jsonl when available.
 func ExtractAntigravityTranscriptMessages(home, convID string) ([]TranscriptMessage, error) {
@@ -539,9 +585,13 @@ func loadClaudeTranscript(t *Transcript, home, sessionID, cwd string) error {
 				fullText = textStr
 			}
 
+			if IsSyntheticClaudeUserEntry(raw, fullText) {
+				continue
+			}
+
 			fullText = CleanClaudePrompt(fullText)
 			fullText = strings.TrimSpace(fullText)
-			if fullText != "" && !strings.Contains(fullText, "<EXTREMELY_IMPORTANT>") {
+			if fullText != "" && !IsSyntheticClaudeUserEntry(raw, fullText) {
 				t.Messages = append(t.Messages, TranscriptMessage{
 					Role:      "user",
 					Content:   fullText,
@@ -1462,11 +1512,15 @@ func loadClaudeSubagents(home, sessionID, cwd string) ([]SubagentInfo, error) {
 		if msgType == "user" {
 			lastAssistantStopReason = ""
 			isToolResult := false
+			var textParts []string
 			if msgObj, ok := raw["message"].(map[string]interface{}); ok {
-				if contentArr, ok := msgObj["content"].([]interface{}); ok {
+				if contentStr, ok := msgObj["content"].(string); ok {
+					textParts = append(textParts, contentStr)
+				} else if contentArr, ok := msgObj["content"].([]interface{}); ok {
 					for _, item := range contentArr {
 						if block, ok := item.(map[string]interface{}); ok {
-							if bType, _ := block["type"].(string); bType == "tool_result" {
+							bType, _ := block["type"].(string)
+							if bType == "tool_result" {
 								isToolResult = true
 								toolID, _ := block["tool_use_id"].(string)
 								if sub, found := toolUseMap[toolID]; found {
@@ -1475,12 +1529,16 @@ func loadClaudeSubagents(home, sessionID, cwd string) ([]SubagentInfo, error) {
 										sub.State = "completed"
 									}
 								}
+							} else if bType == "text" {
+								if txt, ok := block["text"].(string); ok && txt != "" {
+									textParts = append(textParts, txt)
+								}
 							}
 						}
 					}
 				}
 			}
-			if !isToolResult {
+			if !isToolResult && !IsSyntheticClaudeUserEntry(raw, strings.Join(textParts, "\n")) {
 				activeSubagents = nil
 				toolUseMap = make(map[string]*SubagentInfo)
 			}

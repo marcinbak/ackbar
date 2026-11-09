@@ -549,6 +549,54 @@ func TestClaudeProvider_ExtractTranscript_CoalescesToolCalls(t *testing.T) {
 	}
 }
 
+func TestClaudeProvider_ExtractTranscript_FiltersSyntheticUserEntries(t *testing.T) {
+	tmpHome := t.TempDir()
+	sessionID := "97cc5fa1-9e20-4af7-90f2-d222f6bdbe8d"
+	cwd := "/home/dev4u/Work/ngl-android"
+	encodedCwd := strings.ReplaceAll(cwd, "/", "-")
+	logDir := filepath.Join(tmpHome, ".claude", "projects", encodedCwd)
+	if err := os.MkdirAll(logDir, 0755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+
+	jsonlContent := strings.Join([]string{
+		`{"type":"user","message":{"role":"user","content":"after recent RN upgrade I got feedback that debug builds of main are broken"},"timestamp":"2026-11-09T19:31:22.262Z"}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Read","input":{"file_path":"/tmp/screenshot.png"}}]},"timestamp":"2026-11-09T20:14:04.000Z"}`,
+		`{"type":"user","isMeta":true,"turnCompanion":true,"message":{"role":"user","content":"[Image: original 1080x2400, displayed at 900x2000. Multiply coordinates by 1.20 to map to original image.]"},"timestamp":"2026-11-09T20:14:05.491Z"}`,
+		`{"type":"user","isMeta":true,"message":{"role":"user","content":[{"type":"text","text":"Base directory for this skill: /home/dev4u/.claude/skills/dev-workflow\n\n# Dev Workflow"}]},"timestamp":"2026-11-09T20:14:10.000Z"}`,
+		`{"type":"user","origin":{"kind":"task-notification"},"message":{"role":"user","content":"<task-notification>\n<task-id>abc</task-id>\n<status>completed</status>\n<summary>Build finished</summary>\n</task-notification>"},"timestamp":"2026-11-09T20:15:00.000Z"}`,
+		`{"type":"user","message":{"role":"user","content":"Another Claude session sent a message:\n<teammate-message teammate_id=\"clean-review\" color=\"blue\">\n{\"type\":\"idle_notification\"}\n</teammate-message>"},"timestamp":"2026-11-09T20:16:00.000Z"}`,
+		`{"type":"user","isCompactSummary":true,"isVisibleInTranscriptOnly":true,"message":{"role":"user","content":"This session is being continued from a previous conversation that ran out of context."},"timestamp":"2026-11-09T20:17:00.000Z"}`,
+		`{"type":"user","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user for tool use]"}]},"timestamp":"2026-11-09T20:18:00.000Z"}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Verified on emulator; ready to merge."}]},"timestamp":"2026-11-09T20:20:00.000Z"}`,
+		`{"type":"user","origin":{"kind":"human"},"message":{"role":"user","content":"merge without announcing"},"timestamp":"2026-11-09T20:31:15.030Z"}`,
+	}, "\n") + "\n"
+
+	logFile := filepath.Join(logDir, sessionID+".jsonl")
+	if err := os.WriteFile(logFile, []byte(jsonlContent), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	p := NewClaudeProvider()
+	msgs, err := p.ExtractTranscript(tmpHome, cwd, sessionID)
+	if err != nil {
+		t.Fatalf("ExtractTranscript failed: %v", err)
+	}
+
+	if len(msgs) != 3 {
+		t.Fatalf("Expected 3 messages (user, assistant, user) with synthetic entries filtered and assistant turns coalesced, got %d: %+v", len(msgs), msgs)
+	}
+	if msgs[0].Role != "user" || !strings.Contains(msgs[0].Content, "after recent RN upgrade") {
+		t.Errorf("Unexpected first message: %+v", msgs[0])
+	}
+	if msgs[1].Role != "assistant" || !strings.Contains(msgs[1].Content, "Verified on emulator") || len(msgs[1].ToolCalls) != 1 {
+		t.Errorf("Expected coalesced assistant message across synthetic entries, got: %+v", msgs[1])
+	}
+	if msgs[2].Role != "user" || msgs[2].Content != "merge without announcing" {
+		t.Errorf("Unexpected second user message: %+v", msgs[2])
+	}
+}
+
 func TestProvider_ListSubagents_ClaudeAndAntigravity(t *testing.T) {
 	tmpHome := t.TempDir()
 	sessionID := "16bef887-9a34-43e5-897f-49c514e6bf6a"

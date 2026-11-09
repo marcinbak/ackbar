@@ -504,3 +504,58 @@ func TestExtractTranscript_Antigravity_Media(t *testing.T) {
 		t.Errorf("Assistant message missing inline image markdown: %q", asstMsg.Content)
 	}
 }
+
+func TestExtractTranscript_ClaudeCode_FiltersSyntheticUserEntries(t *testing.T) {
+	tmpHome := t.TempDir()
+	sessionID := "97cc5fa1-9e20-4af7-90f2-d222f6bdbe8d"
+	cwd := "/home/dev4u/Work/ngl-android"
+	encodedCwd := encodeClaudeProjectDir(cwd)
+	logDir := filepath.Join(tmpHome, ".claude", "projects", encodedCwd)
+	if err := os.MkdirAll(logDir, 0755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+
+	jsonlContent := strings.Join([]string{
+		`{"type":"user","message":{"role":"user","content":"<system-reminder>\nInternal rule\n</system-reminder>\nafter recent RN upgrade debug builds are broken"},"timestamp":"2026-11-09T19:31:22.262Z"}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu-sub","name":"Agent","input":{"subagent_type":"Tester","prompt":"Verify debug build"}}]},"timestamp":"2026-11-09T20:10:00.000Z"}`,
+		`{"type":"user","isMeta":true,"turnCompanion":true,"message":{"role":"user","content":"[Image: original 1080x2400, displayed at 900x2000. Multiply coordinates by 1.20 to map to original image.]"},"timestamp":"2026-11-09T20:14:05.491Z"}`,
+		`{"type":"user","origin":{"kind":"peer"},"isMeta":true,"message":{"role":"user","content":"Another Claude session sent a message:\n<cross-session-message from=\"peer\">Phone is free</cross-session-message>"},"timestamp":"2026-11-09T20:15:00.000Z"}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Debug bundle loads cleanly."}]},"timestamp":"2026-11-09T20:20:00.000Z"}`,
+		`{"type":"user","message":{"role":"user","content":"merge without announcing"},"timestamp":"2026-11-09T20:31:15.030Z"}`,
+	}, "\n") + "\n"
+
+	logFile := filepath.Join(logDir, sessionID+".jsonl")
+	if err := os.WriteFile(logFile, []byte(jsonlContent), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpHome)
+	defer os.Setenv("HOME", origHome)
+
+	transcript, err := ExtractTranscript("claude-code", sessionID, cwd)
+	if err != nil {
+		t.Fatalf("ExtractTranscript failed: %v", err)
+	}
+
+	if len(transcript.Messages) != 3 {
+		t.Fatalf("Expected 3 messages, got %d: %+v", len(transcript.Messages), transcript.Messages)
+	}
+	if transcript.Messages[0].Content != "after recent RN upgrade debug builds are broken" {
+		t.Errorf("Unexpected first user prompt: %q", transcript.Messages[0].Content)
+	}
+	if transcript.Messages[1].Role != "assistant" || !strings.Contains(transcript.Messages[1].Content, "Debug bundle loads cleanly.") {
+		t.Errorf("Expected coalesced assistant response, got: %+v", transcript.Messages[1])
+	}
+	if transcript.Messages[2].Content != "merge without announcing" {
+		t.Errorf("Unexpected final user prompt: %q", transcript.Messages[2].Content)
+	}
+
+	meta := ReadClaudeSessionMeta(cwd, sessionID)
+	if meta == nil {
+		t.Fatal("Expected non-nil SessionMeta")
+	}
+	if meta.LastPrompt != "merge without announcing" {
+		t.Errorf("Expected LastPrompt 'merge without announcing', got %q", meta.LastPrompt)
+	}
+}
