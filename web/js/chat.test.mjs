@@ -296,6 +296,15 @@ globalThis.setTimeout = (fn, ms, ...args) => {
   return timer;
 };
 
+const origSetInterval = globalThis.setInterval;
+globalThis.setInterval = (fn, ms, ...args) => {
+  const timer = origSetInterval(fn, ms, ...args);
+  if (timer && typeof timer.unref === 'function') {
+    timer.unref();
+  }
+  return timer;
+};
+
 globalThis.window = globalThis;
 globalThis.window.location = new URL('http://localhost:7777/');
 globalThis.window.addEventListener = () => {};
@@ -344,6 +353,45 @@ test('isPromptInTranscriptTail validates tail message matching and timestamp san
     { role: 'assistant', content: 'done earlier', timestamp: new Date(staleTime + 5000).toISOString() }
   ];
   assert.equal(isPromptInTranscriptTail(t3, 'fix login', now), false);
+
+  // Short prompt prefix in previous turn should NOT match new longer prompt starting with same prefix
+  const t4 = [
+    { role: 'user', content: 'run', rawPrompt: 'run', timestamp: new Date(now - 2000).toISOString() },
+    { role: 'assistant', content: 'done', timestamp: new Date(now - 1000).toISOString() }
+  ];
+  assert.equal(isPromptInTranscriptTail(t4, 'run all benchmarks', now), false);
+});
+
+test('handleChatStreamEvent turn_start does not drop new user prompt when preceded by identical prompt in completed turn', () => {
+  const container = new MockElement('div');
+  container.className = 'chat-messages-container';
+
+  const userMsgEl = new MockElement('div');
+  userMsgEl.className = 'chat-msg user-msg';
+  userMsgEl.dataset.rawPrompt = 'continue';
+  userMsgEl.innerHTML = '<div class="chat-msg-body">continue</div>';
+  container.appendChild(userMsgEl);
+
+  const assistantMsgEl = new MockElement('div');
+  assistantMsgEl.className = 'chat-msg assistant-msg';
+  assistantMsgEl.innerHTML = '<div class="chat-msg-body">Working on it</div>';
+  container.appendChild(assistantMsgEl);
+
+  const tabObj = {
+    id: 'tab-test-identical-turn',
+    viewMode: 'chat',
+    chatMessagesEl: container,
+    session: { id: 'claude-code:local:sess-identical', agent: 'claude-code', state: 0 }
+  };
+
+  handleChatStreamEvent(tabObj, {
+    type: 'turn_start',
+    text: 'continue',
+    timestamp: new Date().toISOString()
+  });
+
+  const userBubbles = container.querySelectorAll('.chat-msg.user-msg');
+  assert.equal(userBubbles.length, 2, 'Must append a new user bubble for Turn 2 rather than dropping it');
 });
 
 test('preserves in-flight user prompt across session switch and avoids duplicate after turn_complete', async () => {

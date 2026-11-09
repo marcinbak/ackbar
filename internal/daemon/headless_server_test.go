@@ -670,6 +670,10 @@ func TestServer_HeadlessInFlightPrompt(t *testing.T) {
 		srv.headless.mu.Unlock()
 	}()
 
+	if nativePrompt, ok := srv.headless.GetActiveTurnPrompt(sess.NativeID); !ok || !strings.Contains(nativePrompt.Content, "Implement headless in-flight prompts") {
+		t.Fatalf("Expected GetActiveTurnPrompt with bare nativeID to find prompt, got: %+v, ok=%v", nativePrompt, ok)
+	}
+
 	req := httptest.NewRequest(http.MethodGet, "/v1/sessions/transcript?id="+sess.ID+"&format=json", nil)
 	w := httptest.NewRecorder()
 	srv.Mux().ServeHTTP(w, req)
@@ -744,5 +748,41 @@ func TestServer_HeadlessInFlightPrompt(t *testing.T) {
 	streamBody := streamRec.Body.String()
 	if !strings.Contains(streamBody, `"type":"turn_start"`) || !strings.Contains(streamBody, "Implement headless in-flight prompts") {
 		t.Errorf("Expected stream to emit turn_start with active prompt upon mid-turn connection, got: %s", streamBody)
+	}
+
+	// 4. Verify that a new prompt starting with prior turn's short prompt is NOT suppressed
+	srv.headless.mu.Lock()
+	srv.headless.activePrompts[sess.ID] = TranscriptMessage{
+		Role:      "user",
+		Content:   "run all benchmarks",
+		Timestamp: time.Now(),
+	}
+	srv.headless.mu.Unlock()
+
+	priorPrefixProvider := &mockInFlightTranscriptProvider{
+		agent: "claude-code",
+		messages: []TranscriptMessage{
+			{Role: "user", Content: "run", Timestamp: time.Now().Add(-2 * time.Second)},
+			{Role: "assistant", Content: "done", Timestamp: time.Now().Add(-1 * time.Second)},
+		},
+	}
+	srv.RegisterProvider(priorPrefixProvider)
+
+	wC := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(wC, req)
+	if wC.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK, got %d", wC.Code)
+	}
+	var respC map[string]interface{}
+	if err := json.Unmarshal(wC.Body.Bytes(), &respC); err != nil {
+		t.Fatalf("Failed to parse json: %v", err)
+	}
+	msgsC, _ := respC["messages"].([]interface{})
+	if len(msgsC) != 3 {
+		t.Fatalf("Expected 3 messages (not suppressed by prefix match), got %d: %+v", len(msgsC), msgsC)
+	}
+	tailMsg, _ := msgsC[2].(map[string]interface{})
+	if tailMsg["content"] != "run all benchmarks" {
+		t.Errorf("Expected 'run all benchmarks', got %v", tailMsg["content"])
 	}
 }

@@ -827,10 +827,7 @@ func (s *Server) appendActiveHeadlessPrompt(transcript *Transcript, sess *Sessio
 
 		matchesNorm := func(content string) bool {
 			normMsg := strings.Join(strings.Fields(content), " ")
-			if normMsg == "" || normActive == "" {
-				return false
-			}
-			return normMsg == normActive || strings.HasPrefix(normMsg, normActive) || strings.HasPrefix(normActive, normMsg)
+			return normMsg != "" && normMsg == normActive
 		}
 
 		if n >= 1 && msgs[n-1].Role == "user" && matchesNorm(msgs[n-1].Content) {

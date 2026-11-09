@@ -2291,20 +2291,24 @@ function isPromptInTranscriptTail(coalesced, promptNorm, promptTimestamp, tabObj
 
   if (last && last.role === 'assistant' && coalesced.length >= 2) {
     const prev = coalesced[coalesced.length - 2];
-    if (matchesText(prev)) {
-      const parseTime = (ts) => {
-        if (!ts) return NaN;
-        const t = (typeof ts === 'number') ? ts : new Date(ts).getTime();
-        return isNaN(t) ? NaN : t;
-      };
-      const msgTime = parseTime(last.timestamp) || parseTime(prev.timestamp);
-      if (promptTimestamp && !isNaN(msgTime)) {
-        return msgTime >= (promptTimestamp - 5000);
+    if (prev && prev.role === 'user') {
+      const prevNorm = normalizePromptText(prev.content || prev.rawPrompt || '');
+      const prevMatchesExact = Boolean(prevNorm && (prevNorm === promptNorm || prevNorm.startsWith(promptNorm + ' [Attached file:')));
+      if (prevMatchesExact) {
+        const parseTime = (ts) => {
+          if (!ts) return NaN;
+          const t = (typeof ts === 'number') ? ts : new Date(ts).getTime();
+          return isNaN(t) ? NaN : t;
+        };
+        const msgTime = parseTime(last.timestamp) || parseTime(prev.timestamp);
+        if (promptTimestamp && !isNaN(msgTime)) {
+          return msgTime >= (promptTimestamp - 5000);
+        }
+        if (tabObj) {
+          return !tabObj.sending && !isSessionWorking(tabObj.session);
+        }
+        return true;
       }
-      if (tabObj) {
-        return !tabObj.sending && !isSessionWorking(tabObj.session);
-      }
-      return true;
     }
   }
 
@@ -4601,16 +4605,6 @@ function handleChatStreamEvent(tabObj, evt) {
                   el: lastMsg,
                   timestamp: tabObj.inFlightPrompt ? tabObj.inFlightPrompt.timestamp : Date.now()
                 };
-              } else if ((raw && raw === evtNorm) || (bodyText && bodyText === evtNorm)) {
-                const msgTime = lastMsg.dataset.timestamp ? new Date(lastMsg.dataset.timestamp).getTime() : 0;
-                if (!msgTime || (Date.now() - msgTime) < 5000) {
-                  isAlreadyRendered = true;
-                  tabObj.inFlightPrompt = {
-                    text: evtNorm,
-                    el: lastMsg,
-                    timestamp: tabObj.inFlightPrompt ? tabObj.inFlightPrompt.timestamp : Date.now()
-                  };
-                }
               }
             }
           }

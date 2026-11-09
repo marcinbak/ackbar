@@ -427,6 +427,14 @@ func (h *HeadlessRunner) IsRunning(sessionID string) bool {
 				}
 			}
 		}
+	} else if len(parts) == 1 && sessionID != "" {
+		for procKey, cmd := range h.processes {
+			if procKey == sessionID || strings.HasSuffix(procKey, ":"+sessionID) {
+				if checkProcess(procKey, cmd) {
+					return true
+				}
+			}
+		}
 	}
 	return false
 }
