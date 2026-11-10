@@ -292,6 +292,17 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	_, _ = fmt.Fprintf(w, "data: %s\n\n", initEvt)
 	flusher.Flush()
 
+	if activeMsg, ok := s.headless.GetActiveTurnPrompt(targetID); ok && strings.TrimSpace(activeMsg.Content) != "" {
+		turnEvt, _ := json.Marshal(ChatStreamEvent{
+			SessionID: targetID,
+			Type:      "turn_start",
+			Text:      activeMsg.Content,
+			Timestamp: activeMsg.Timestamp,
+		})
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", turnEvt)
+		flusher.Flush()
+	}
+
 	// Initial prompt queue state snapshot
 	items, paused := s.headless.GetPromptQueue(targetID)
 	if len(items) > 0 || paused {
@@ -722,8 +733,13 @@ func (s *Server) handleSessionTranscript(w http.ResponseWriter, r *http.Request)
 
 	transcript, err := s.ExtractTranscript(agent, nativeID, cwd)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to extract transcript: %v", err), http.StatusNotFound)
-		return
+		transcript = s.appendActiveHeadlessPrompt(nil, sess, sessionID, nativeID, agent, cwd)
+		if transcript == nil {
+			http.Error(w, fmt.Sprintf("Failed to extract transcript: %v", err), http.StatusNotFound)
+			return
+		}
+	} else {
+		transcript = s.appendActiveHeadlessPrompt(transcript, sess, sessionID, nativeID, agent, cwd)
 	}
 	if title != "" {
 		transcript.Title = title
@@ -754,6 +770,84 @@ func (s *Server) handleSessionTranscript(w http.ResponseWriter, r *http.Request)
 			"markdown":          FormatTranscriptMarkdown(transcript),
 		})
 	}
+}
+
+func (s *Server) appendActiveHeadlessPrompt(transcript *Transcript, sess *Session, sessionID, nativeID, agent, cwd string) *Transcript {
+	if s.headless == nil {
+		return transcript
+	}
+
+	var activeMsg TranscriptMessage
+	found := false
+	if msg, ok := s.headless.GetActiveTurnPrompt(sessionID); ok {
+		activeMsg = msg
+		found = true
+	} else if sess != nil && sess.ID != "" {
+		if msg, ok := s.headless.GetActiveTurnPrompt(sess.ID); ok {
+			activeMsg = msg
+			found = true
+		}
+	}
+	if !found && nativeID != "" {
+		if msg, ok := s.headless.GetActiveTurnPrompt(nativeID); ok {
+			activeMsg = msg
+			found = true
+		}
+	}
+
+	if transcript == nil {
+		if found || (sess != nil && sess.EngineType == EngineHeadless) {
+			transcript = &Transcript{
+				SessionID: sessionID,
+				NativeID:  nativeID,
+				Agent:     agent,
+				Cwd:       cwd,
+				Messages:  make([]TranscriptMessage, 0),
+			}
+		} else {
+			return nil
+		}
+	}
+
+	if found && strings.TrimSpace(activeMsg.Content) != "" {
+		var cleanedPrompt string
+		if agent == "antigravity" {
+			cleanedPrompt = CleanAntigravityPrompt(activeMsg.Content)
+		} else {
+			cleanedPrompt = CleanClaudePrompt(activeMsg.Content)
+		}
+		if strings.TrimSpace(cleanedPrompt) == "" {
+			cleanedPrompt = strings.TrimSpace(activeMsg.Content)
+		}
+
+		normActive := strings.Join(strings.Fields(cleanedPrompt), " ")
+		alreadyPresent := false
+		msgs := transcript.Messages
+		n := len(msgs)
+
+		matchesNorm := func(content string) bool {
+			normMsg := strings.Join(strings.Fields(content), " ")
+			return normMsg != "" && normMsg == normActive
+		}
+
+		if n >= 1 && msgs[n-1].Role == "user" && matchesNorm(msgs[n-1].Content) {
+			alreadyPresent = true
+		} else if n >= 2 && msgs[n-2].Role == "user" && matchesNorm(msgs[n-2].Content) && msgs[n-1].Role == "assistant" {
+			if !msgs[n-1].Timestamp.Before(activeMsg.Timestamp.Add(-5 * time.Second)) {
+				alreadyPresent = true
+			}
+		}
+
+		if !alreadyPresent {
+			transcript.Messages = append(transcript.Messages, TranscriptMessage{
+				Role:      "user",
+				Content:   cleanedPrompt,
+				Timestamp: activeMsg.Timestamp,
+			})
+		}
+	}
+
+	return transcript
 }
 
 func (s *Server) ExtractTranscript(agent, nativeID, cwd string) (*Transcript, error) {

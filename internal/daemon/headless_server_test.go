@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -611,5 +613,176 @@ func TestInspectClaudeStatus_SessionNotFoundError(t *testing.T) {
 	}
 	if sess.State != StateEnded {
 		t.Errorf("Expected sess.State to be StateEnded, got: %s", sess.State)
+	}
+}
+
+type mockInFlightTranscriptProvider struct {
+	MockProvider
+	agent    string
+	messages []TranscriptMessage
+}
+
+func (m *mockInFlightTranscriptProvider) Agent() string {
+	if m.agent != "" {
+		return m.agent
+	}
+	return "claude-code"
+}
+
+func (m *mockInFlightTranscriptProvider) ExtractTranscript(home, cwd, nativeID string) ([]TranscriptMessage, error) {
+	if len(m.messages) == 0 {
+		return nil, os.ErrNotExist
+	}
+	return m.messages, nil
+}
+
+func TestServer_HeadlessInFlightPrompt(t *testing.T) {
+	srv, db := setupTestServer(t)
+
+	sess := &Session{
+		ID:          "claude-code:local:uuid-inflight-turn",
+		Agent:       "claude-code",
+		Host:        "local",
+		NativeID:    "uuid-inflight-turn",
+		Cwd:         t.TempDir(),
+		State:       StateWorking,
+		EngineType:  EngineHeadless,
+		StartedAt:   time.Now(),
+		LastEventAt: time.Now(),
+	}
+	if err := db.SaveSession(sess); err != nil {
+		t.Fatalf("SaveSession failed: %v", err)
+	}
+
+	srv.headless.mu.Lock()
+	srv.headless.processes[sess.ID] = &exec.Cmd{Process: &os.Process{Pid: os.Getpid()}}
+	srv.headless.activePrompts[sess.ID] = TranscriptMessage{
+		Role:      "user",
+		Content:   "Implement headless in-flight prompts",
+		Timestamp: time.Now(),
+	}
+	srv.headless.mu.Unlock()
+
+	defer func() {
+		srv.headless.mu.Lock()
+		delete(srv.headless.processes, sess.ID)
+		delete(srv.headless.activePrompts, sess.ID)
+		srv.headless.mu.Unlock()
+	}()
+
+	if nativePrompt, ok := srv.headless.GetActiveTurnPrompt(sess.NativeID); !ok || !strings.Contains(nativePrompt.Content, "Implement headless in-flight prompts") {
+		t.Fatalf("Expected GetActiveTurnPrompt with bare nativeID to find prompt, got: %+v, ok=%v", nativePrompt, ok)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/sessions/transcript?id="+sess.ID+"&format=json", nil)
+	w := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK when transcript is empty but turn is active, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var respA map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &respA); err != nil {
+		t.Fatalf("Failed to parse transcript json: %v", err)
+	}
+	msgsA, _ := respA["messages"].([]interface{})
+	if len(msgsA) != 1 {
+		t.Fatalf("Expected 1 in-flight message, got %d", len(msgsA))
+	}
+	firstMsg, _ := msgsA[0].(map[string]interface{})
+	if firstMsg["role"] != "user" || !strings.Contains(firstMsg["content"].(string), "Implement headless in-flight prompts") {
+		t.Errorf("Unexpected in-flight message content: %+v", firstMsg)
+	}
+
+	priorProvider := &mockInFlightTranscriptProvider{
+		agent: "claude-code",
+		messages: []TranscriptMessage{
+			{Role: "user", Content: "First prompt", Timestamp: time.Now().Add(-1 * time.Minute)},
+			{Role: "assistant", Content: "First answer", Timestamp: time.Now().Add(-30 * time.Second)},
+		},
+	}
+	srv.RegisterProvider(priorProvider)
+
+	wB := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(wB, req)
+
+	if wB.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK with prior messages, got %d: %s", wB.Code, wB.Body.String())
+	}
+
+	var respB map[string]interface{}
+	if err := json.Unmarshal(wB.Body.Bytes(), &respB); err != nil {
+		t.Fatalf("Failed to parse transcript json: %v", err)
+	}
+	msgsB, _ := respB["messages"].([]interface{})
+	if len(msgsB) != 3 {
+		t.Fatalf("Expected 3 messages (2 prior + 1 in-flight), got %d: %+v", len(msgsB), msgsB)
+	}
+	lastMsg, _ := msgsB[2].(map[string]interface{})
+	if lastMsg["role"] != "user" || !strings.Contains(lastMsg["content"].(string), "Implement headless in-flight prompts") {
+		t.Errorf("Expected in-flight prompt at tail, got: %+v", lastMsg)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	streamReq := httptest.NewRequest(http.MethodGet, "/v1/sessions/chat/stream?session_id="+sess.ID, nil).WithContext(ctx)
+	streamRec := httptest.NewRecorder()
+
+	streamDone := make(chan bool)
+	go func() {
+		srv.Mux().ServeHTTP(streamRec, streamReq)
+		streamDone <- true
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-streamDone:
+	case <-time.After(1 * time.Second):
+		t.Fatalf("Stream did not finish after cancellation")
+	}
+
+	streamBody := streamRec.Body.String()
+	if !strings.Contains(streamBody, `"type":"turn_start"`) || !strings.Contains(streamBody, "Implement headless in-flight prompts") {
+		t.Errorf("Expected stream to emit turn_start with active prompt upon mid-turn connection, got: %s", streamBody)
+	}
+
+	// 4. Verify that a new prompt starting with prior turn's short prompt is NOT suppressed
+	srv.headless.mu.Lock()
+	srv.headless.activePrompts[sess.ID] = TranscriptMessage{
+		Role:      "user",
+		Content:   "run all benchmarks",
+		Timestamp: time.Now(),
+	}
+	srv.headless.mu.Unlock()
+
+	priorPrefixProvider := &mockInFlightTranscriptProvider{
+		agent: "claude-code",
+		messages: []TranscriptMessage{
+			{Role: "user", Content: "run", Timestamp: time.Now().Add(-2 * time.Second)},
+			{Role: "assistant", Content: "done", Timestamp: time.Now().Add(-1 * time.Second)},
+		},
+	}
+	srv.RegisterProvider(priorPrefixProvider)
+
+	wC := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(wC, req)
+	if wC.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK, got %d", wC.Code)
+	}
+	var respC map[string]interface{}
+	if err := json.Unmarshal(wC.Body.Bytes(), &respC); err != nil {
+		t.Fatalf("Failed to parse json: %v", err)
+	}
+	msgsC, _ := respC["messages"].([]interface{})
+	if len(msgsC) != 3 {
+		t.Fatalf("Expected 3 messages (not suppressed by prefix match), got %d: %+v", len(msgsC), msgsC)
+	}
+	tailMsg, _ := msgsC[2].(map[string]interface{})
+	if tailMsg["content"] != "run all benchmarks" {
+		t.Errorf("Expected 'run all benchmarks', got %v", tailMsg["content"])
 	}
 }
