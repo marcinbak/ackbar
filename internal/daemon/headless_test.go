@@ -1145,3 +1145,90 @@ func TestHeadlessRunner_AntigravityInitMigratesSubscribersAcrossTurns(t *testing
 		t.Fatalf("Subscriber on oldID did not receive Turn 2 event emitted to newID")
 	}
 }
+
+func TestHeadlessRunner_SingleTurnCompleteAndNoDuplicateSnapshotDeltas(t *testing.T) {
+	tmpDir := t.TempDir()
+	binDir := filepath.Join(tmpDir, "bin")
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+	mockClaude := filepath.Join(binDir, "claude")
+	script := `#!/bin/sh
+echo '{"type":"assistant","message":{"id":"msg_1","content":[{"type":"text","text":"Step 1 text"}]}}'
+echo '{"type":"assistant","message":{"id":"msg_1","content":[{"type":"text","text":"Step 1 text"},{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls"}}]}}'
+echo '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}'
+echo '{"type":"assistant","message":{"id":"msg_2","content":[{"type":"text","text":"Final answer"}]}}'
+echo '{"type":"result","result":"Final answer","is_error":false}'
+`
+	if err := os.WriteFile(mockClaude, []byte(script), 0755); err != nil {
+		t.Fatalf("WriteFile mock claude failed: %v", err)
+	}
+	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+
+	db, err := InitDB(filepath.Join(tmpDir, "single_turn_complete.db"))
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	runner := NewHeadlessRunner(db, nil)
+	sessID := "claude-code:local:uuid-single-complete"
+	sess := &Session{
+		ID:         sessID,
+		Agent:      "claude-code",
+		Host:       "local",
+		NativeID:   "uuid-single-complete",
+		Cwd:        tmpDir,
+		EngineType: EngineHeadless,
+		State:      StateIdle,
+	}
+	if err := db.SaveSession(sess); err != nil {
+		t.Fatalf("SaveSession failed: %v", err)
+	}
+
+	ch, cleanup := runner.Subscribe(sessID)
+	defer cleanup()
+
+	if err := runner.RunTurn(context.Background(), sess, "Run check"); err != nil {
+		t.Fatalf("RunTurn failed: %v", err)
+	}
+
+	var textDeltas []string
+	turnCompleteCount := 0
+	timeout := time.After(2 * time.Second)
+loop:
+	for {
+		select {
+		case evt := <-ch:
+			if evt.Type == "text_delta" {
+				textDeltas = append(textDeltas, evt.Text)
+			} else if evt.Type == "turn_complete" {
+				turnCompleteCount++
+				// Wait briefly to verify no second turn_complete is emitted
+				select {
+				case extraEvt := <-ch:
+					if extraEvt.Type == "turn_complete" {
+						turnCompleteCount++
+					}
+				case <-time.After(100 * time.Millisecond):
+				}
+				break loop
+			}
+		case <-timeout:
+			t.Fatalf("Timed out waiting for turn_complete")
+		}
+	}
+
+	if turnCompleteCount != 1 {
+		t.Errorf("Expected exactly 1 turn_complete event, got %d", turnCompleteCount)
+	}
+	if len(textDeltas) != 2 {
+		t.Fatalf("Expected 2 text_delta events (deduplicated snapshot), got %d: %v", len(textDeltas), textDeltas)
+	}
+	if textDeltas[0] != "Step 1 text" {
+		t.Errorf("Unexpected first text delta: %q", textDeltas[0])
+	}
+	if textDeltas[1] != "\n\nFinal answer" {
+		t.Errorf("Unexpected second text delta: %q", textDeltas[1])
+	}
+}

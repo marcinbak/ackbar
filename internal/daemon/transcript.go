@@ -654,7 +654,7 @@ func loadClaudeTranscript(t *Transcript, home, sessionID, cwd string) error {
 							}
 						}
 					}
-					fullText := strings.Join(textParts, "\n")
+					fullText := strings.Join(textParts, "\n\n")
 					if fullText != "" || len(tools) > 0 {
 						if len(t.Messages) > 0 && t.Messages[len(t.Messages)-1].Role == "assistant" {
 							last := &t.Messages[len(t.Messages)-1]

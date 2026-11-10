@@ -514,3 +514,94 @@ test('preserves in-flight user prompt across session switch and avoids duplicate
   const finalAssistantBubbles = container.querySelectorAll('.chat-msg.assistant-msg');
   assert.equal(finalAssistantBubbles.length, 2, 'Should have 2 assistant bubbles');
 });
+
+test('avoids duplicate assistant bubbles and DOM wipe when reconciling multi-block response and duplicate turn_complete', async () => {
+  const container = new MockElement('div');
+  container.className = 'chat-messages-container';
+
+  const inputEl = new MockElement('textarea');
+  inputEl.value = 'Check status';
+
+  const sendBtn = new MockElement('button');
+  const cancelBtn = new MockElement('button');
+  cancelBtn.style.display = 'none';
+  const statusBadge = new MockElement('span');
+
+  const tabObj = {
+    id: 'tab-test-no-blink-dup',
+    viewMode: 'chat',
+    chatMessagesEl: container,
+    chatInputEl: inputEl,
+    chatSendBtn: sendBtn,
+    chatCancelBtn: cancelBtn,
+    chatStatusBadge: statusBadge,
+    pendingAttachments: [],
+    session: {
+      id: 'claude-code:local:sess-no-blink-dup',
+      agent: 'claude-code',
+      engine_type: 'headless',
+      state: 0
+    }
+  };
+
+  let mockTranscriptMessages = [];
+  globalThis.fetch = async (url) => {
+    const urlStr = String(url);
+    if (urlStr.includes('/v1/sessions/prompt')) {
+      return { ok: true, status: 200, json: async () => ({ status: 'running' }) };
+    }
+    if (urlStr.includes('/v1/sessions/transcript')) {
+      return { ok: true, status: 200, json: async () => ({ messages: mockTranscriptMessages }) };
+    }
+    if (urlStr.includes('/v1/sessions/queue')) {
+      return { ok: true, status: 200, json: async () => ({ items: [], paused: false }) };
+    }
+    if (urlStr.includes('/v1/sessions')) {
+      return { ok: true, status: 200, json: async () => [] };
+    }
+    return { ok: true, status: 200, json: async () => ({}) };
+  };
+
+  await sendChatPrompt(tabObj);
+
+  handleChatStreamEvent(tabObj, {
+    type: 'turn_start',
+    text: 'Check status',
+    timestamp: new Date().toISOString()
+  });
+
+  handleChatStreamEvent(tabObj, {
+    type: 'text_delta',
+    text: 'Part 1.\n\nPart 2.'
+  });
+
+  // On-disk transcript uses single newline between text blocks
+  mockTranscriptMessages = [
+    { role: 'user', content: 'Check status', rawPrompt: 'Check status', timestamp: new Date().toISOString() },
+    { role: 'assistant', content: 'Part 1.\nPart 2.', timestamp: new Date().toISOString() }
+  ];
+
+  handleChatStreamEvent(tabObj, {
+    type: 'turn_complete',
+    text: 'Part 1.\n\nPart 2.',
+    timestamp: new Date().toISOString()
+  });
+
+  // Duplicate turn_complete must not create a second assistant bubble
+  handleChatStreamEvent(tabObj, {
+    type: 'turn_complete',
+    text: 'Part 1.\n\nPart 2.',
+    timestamp: new Date().toISOString()
+  });
+
+  const existingAssistantEl = container.querySelectorAll('.chat-msg.assistant-msg')[0];
+  assert.ok(existingAssistantEl, 'Assistant bubble should exist');
+
+  await loadChatTranscript(tabObj);
+
+  const assistantBubbles = container.querySelectorAll('.chat-msg.assistant-msg');
+  assert.equal(assistantBubbles.length, 1, 'Must have exactly 1 assistant bubble without duplication');
+  assert.equal(assistantBubbles[0], existingAssistantEl, 'Should reuse existing assistant DOM node without wiping innerHTML');
+  assert.ok(!tabObj._pendingTranscriptFollowup, 'Should not schedule 600ms follow-up reload loop when text matches');
+});
+
