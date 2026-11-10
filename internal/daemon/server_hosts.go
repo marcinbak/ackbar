@@ -385,6 +385,10 @@ func (s *Server) updateRemoteHost(host *HostRecord) (map[string]interface{}, int
 	return s.updateRemoteHostToVersion(host, targetVer)
 }
 
+func shellSingleQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
+}
+
 func (s *Server) updateRemoteHostToVersion(host *HostRecord, targetVersion string) (map[string]interface{}, int, error) {
 	hostName := host.Name
 	sshTarget := host.SSHTarget
@@ -474,6 +478,13 @@ func (s *Server) updateRemoteHostToVersion(host *HostRecord, targetVersion strin
 		}
 	}
 
+	authToken := s.configuredToken
+	if authToken == "" {
+		authToken = os.Getenv("ACKBAR_TOKEN")
+	}
+
+	quotedAuthToken := shellSingleQuote(authToken)
+
 	if binariesPrepared {
 		// 4a. Deploy binaries to remote host via SCP using atomic staging files
 		_ = exec.Command("ssh", "-o", "BatchMode=yes", sshTarget, "mkdir -p ~/.local/bin").Run()
@@ -507,6 +518,18 @@ for b in ackbard ackbar ackbar-hook ackbar-relay; do
     done
   fi
 done
+AUTH_TOKEN=%s
+if [ -n "$AUTH_TOKEN" ]; then
+  DRAIN_RES=$(curl -fsS -H "Authorization: Bearer $AUTH_TOKEN" -X POST "http://127.0.0.1:7777/v1/shutdown?drain=true" 2>/dev/null || true)
+elif [ -n "$ACKBAR_TOKEN" ]; then
+  DRAIN_RES=$(curl -fsS -H "Authorization: Bearer $ACKBAR_TOKEN" -X POST "http://127.0.0.1:7777/v1/shutdown?drain=true" 2>/dev/null || true)
+else
+  DRAIN_RES=$(curl -fsS -X POST "http://127.0.0.1:7777/v1/shutdown?drain=true" 2>/dev/null || true)
+fi
+if echo "$DRAIN_RES" | grep -q '"restart_deferred":true'; then
+  echo "RESTART_DEFERRED"
+  exit 0
+fi
 if command -v systemctl >/dev/null 2>&1 && systemctl --user is-enabled ackbard.service >/dev/null 2>&1; then
   pkill -15 -x ackbard 2>/dev/null || true
   sleep 0.3
@@ -526,18 +549,49 @@ else
   pkill -9 -x ackbard 2>/dev/null || true
   sleep 0.2
   nohup "$HOME/.local/bin/ackbard"%s >/dev/null 2>&1 < /dev/null &
-fi`, hostFlagArg, hostFlagArg, hostFlagArg)
+fi`, quotedAuthToken, hostFlagArg, hostFlagArg, hostFlagArg)
 
 		restartCmd := exec.Command("ssh", "-o", "ConnectTimeout=15", "-o", "BatchMode=yes", sshTarget, remoteRestartScript)
-		if rout, rerr := restartCmd.CombinedOutput(); rerr != nil {
+		rout, rerr := restartCmd.CombinedOutput()
+		if rerr != nil {
 			return nil, http.StatusInternalServerError, fmt.Errorf("Failed to replace binaries or restart ackbard on %s: %s (%v)", sshTarget, strings.TrimSpace(string(rout)), rerr)
+		}
+		if strings.Contains(string(rout), "RESTART_DEFERRED") {
+			return map[string]interface{}{
+				"status":      "restart_deferred",
+				"message":     fmt.Sprintf("Upgraded binaries on '%s' to v%s (daemon restart deferred until active headless turn completes)", hostName, targetVersion),
+				"host":        hostName,
+				"version":     targetVersion,
+				"target_os":   goos,
+				"target_arch": goarch,
+			}, http.StatusOK, nil
 		}
 	} else {
 		// 3c. Fallback: run `ackbar update --force` directly on the remote host via SSH and restart ackbard
-		remoteUpdateScript := fmt.Sprintf(`export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"; ackbar update --force && (pkill -15 -x ackbard || true; sleep 0.3; pkill -9 -x ackbard || true; sleep 0.3; nohup ~/.local/bin/ackbard%s >/dev/null 2>&1 < /dev/null &)`, hostFlagArg)
+		remoteUpdateScript := fmt.Sprintf(`set -e
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+AUTH_TOKEN=%s
+UPD_OUT=$(if [ -n "$AUTH_TOKEN" ]; then ACKBAR_TOKEN="$AUTH_TOKEN" ackbar update --force 2>&1; else ackbar update --force 2>&1; fi)
+echo "$UPD_OUT"
+if echo "$UPD_OUT" | grep -q "restart automatically once the current turn finishes"; then
+  echo "RESTART_DEFERRED"
+  exit 0
+fi
+pgrep -x ackbard >/dev/null 2>&1 || (nohup ~/.local/bin/ackbard%s >/dev/null 2>&1 < /dev/null &)`, quotedAuthToken, hostFlagArg)
 		updCmd := exec.Command("ssh", "-o", "ConnectTimeout=30", "-o", "BatchMode=yes", sshTarget, remoteUpdateScript)
-		if uout, uerr := updCmd.CombinedOutput(); uerr != nil {
+		uout, uerr := updCmd.CombinedOutput()
+		if uerr != nil {
 			return nil, http.StatusInternalServerError, fmt.Errorf("Remote 'ackbar update' on %s failed: %s (%v)", sshTarget, strings.TrimSpace(string(uout)), uerr)
+		}
+		if strings.Contains(string(uout), "RESTART_DEFERRED") {
+			return map[string]interface{}{
+				"status":      "restart_deferred",
+				"message":     fmt.Sprintf("Upgraded binaries on '%s' to v%s (daemon restart deferred until active headless turn completes)", hostName, targetVersion),
+				"host":        hostName,
+				"version":     targetVersion,
+				"target_os":   goos,
+				"target_arch": goarch,
+			}, http.StatusOK, nil
 		}
 	}
 
@@ -687,11 +741,15 @@ func (s *Server) UpdateOutdatedRemoteHosts(targetVersion string) []HostUpdateSum
 
 			newVer, _ := res["version"].(string)
 			msg, _ := res["message"].(string)
+			status, _ := res["status"].(string)
+			if status == "" {
+				status = "updated"
+			}
 			results[i] = HostUpdateSummary{
 				Host:            hostRec.Name,
 				PreviousVersion: remoteVer,
 				NewVersion:      newVer,
-				Status:          "updated",
+				Status:          status,
 				Message:         msg,
 			}
 		}(idx, h)

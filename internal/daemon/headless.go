@@ -83,6 +83,8 @@ type HeadlessRunner struct {
 	paused                 map[string]bool               // sessionID -> is queue paused
 	interactiveBlocks      map[string]*Blocked           // sessionID -> pending interactive Blocked struct
 	respondedWhileStopping map[string]bool               // sessionID -> response arrived while stopping
+	pendingRestart         bool
+	onAllTurnsDrained      func()
 	db                     *DB
 	broadcast              func(s *Session)
 	onTurnComplete         func(sessionID, nativeID string)
@@ -469,6 +471,67 @@ func (h *HeadlessRunner) IsRunning(sessionID string) bool {
 	return false
 }
 
+func (h *HeadlessRunner) activeTurnCountLocked() int {
+	seenProcs := make(map[*exec.Cmd]bool)
+	seenKeys := make(map[string]bool)
+	count := 0
+	for key, active := range h.activeTurns {
+		if !active {
+			continue
+		}
+		dedupKey := key
+		if parts := strings.Split(key, ":"); len(parts) == 3 && parts[2] != "" {
+			dedupKey = parts[2]
+		}
+		if seenKeys[dedupKey] {
+			continue
+		}
+		seenKeys[dedupKey] = true
+
+		cmd := h.processes[key]
+		if cmd != nil {
+			if seenProcs[cmd] {
+				continue
+			}
+			seenProcs[cmd] = true
+		}
+		count++
+	}
+	return count
+}
+
+func (h *HeadlessRunner) ActiveTurnCount() int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.activeTurnCountLocked()
+}
+
+func (h *HeadlessRunner) DeferRestartIfActive(restartFn func()) (bool, int) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	count := h.activeTurnCountLocked()
+	if count == 0 {
+		return false, 0
+	}
+	h.pendingRestart = true
+	h.onAllTurnsDrained = restartFn
+	return true, count
+}
+
+func (h *HeadlessRunner) RequestRestartAfterDrain(restartFn func()) (bool, int) {
+	deferred, count := h.DeferRestartIfActive(restartFn)
+	if !deferred && restartFn != nil {
+		restartFn()
+	}
+	return deferred, count
+}
+
+func (h *HeadlessRunner) IsRestartPending() bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.pendingRestart
+}
+
 func (h *HeadlessRunner) GetActiveTurnPrompt(sessionID string) (TranscriptMessage, bool) {
 	if !h.IsRunning(sessionID) {
 		return TranscriptMessage{}, false
@@ -592,7 +655,6 @@ func (h *HeadlessRunner) EnqueuePrompt(sessionID string, text string) *PromptQue
 }
 
 // EnqueueDelayedPrompt adds a prompt to the session's FIFO queue with optional scheduled delivery time.
-// If deliverAt is non-nil, the prompt is persisted to SQLite.
 func (h *HeadlessRunner) EnqueueDelayedPrompt(sessionID string, text string, deliverAt *time.Time) *PromptQueueItem {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -606,7 +668,7 @@ func (h *HeadlessRunner) EnqueueDelayedPrompt(sessionID string, text string, del
 		CreatedAt: time.Now(),
 	}
 	h.queues[key] = append(h.queues[key], item)
-	if h.db != nil && deliverAt != nil {
+	if h.db != nil {
 		_ = h.db.SaveScheduledPrompt(item)
 	}
 	return item
@@ -666,7 +728,7 @@ func (h *HeadlessRunner) DequeuePrompt(sessionID string) *PromptQueueItem {
 	for idx, it := range items {
 		if it.DeliverAt == nil || !it.DeliverAt.After(now) {
 			h.queues[key] = append(items[:idx], items[idx+1:]...)
-			if it.DeliverAt != nil && h.db != nil {
+			if h.db != nil {
 				_ = h.db.DeleteScheduledPrompt(it.ID)
 			}
 			return it
@@ -727,7 +789,7 @@ func (h *HeadlessRunner) TriggerPromptQueueItemNow(sessionID string, itemID stri
 		if it.ID == itemID {
 			it.DeliverAt = nil
 			if h.db != nil {
-				_ = h.db.DeleteScheduledPrompt(itemID)
+				_ = h.db.SaveScheduledPrompt(it)
 			}
 			if idx > 0 {
 				rest := append(items[:idx], items[idx+1:]...)
@@ -918,6 +980,42 @@ func hasAntigravityConversation(home, nativeID string) bool {
 	return false
 }
 
+func hasConversationOnDisk(sess *Session, home string, db *DB) bool {
+	if sess == nil || sess.NativeID == "" {
+		return false
+	}
+	if sess.Agent == "antigravity" {
+		return hasAntigravityConversation(home, sess.NativeID)
+	}
+	claudeDir := filepath.Join(home, ".claude")
+	if sess.AccountID != "" && db != nil {
+		if acc, _ := db.GetAccount(sess.AccountID); acc != nil && acc.ConfigDir != "" {
+			cfgDir := acc.ConfigDir
+			if strings.HasPrefix(cfgDir, "~/") && home != "" {
+				cfgDir = filepath.Join(home, cfgDir[2:])
+			}
+			claudeDir = cfgDir
+		}
+	}
+	encodedCwd := encodeClaudeProjectDir(sess.Cwd)
+	transcriptFile := filepath.Join(claudeDir, "projects", encodedCwd, sess.NativeID+".jsonl")
+	if fileExists(transcriptFile) {
+		return true
+	}
+	projectsDir := filepath.Join(claudeDir, "projects")
+	if entries, err := os.ReadDir(projectsDir); err == nil {
+		for _, e := range entries {
+			if e.IsDir() {
+				cand := filepath.Join(projectsDir, e.Name(), sess.NativeID+".jsonl")
+				if fileExists(cand) {
+					return true
+				}
+			}
+		}
+	}
+	return fileExists(filepath.Join(claudeDir, "session-env", sess.NativeID))
+}
+
 // buildArgs constructs the binary path and CLI arguments for a headless turn.
 func (h *HeadlessRunner) buildArgs(sess *Session, prompt, home string) (string, []string, error) {
 	if sess.Agent == "antigravity" {
@@ -951,39 +1049,7 @@ func (h *HeadlessRunner) buildArgs(sess *Session, prompt, home string) (string, 
 		return "", nil, fmt.Errorf("failed to locate claude binary: %w", err)
 	}
 
-	claudeDir := filepath.Join(home, ".claude")
-	if sess.AccountID != "" && h.db != nil {
-		if acc, _ := h.db.GetAccount(sess.AccountID); acc != nil && acc.ConfigDir != "" {
-			cfgDir := acc.ConfigDir
-			if strings.HasPrefix(cfgDir, "~/") && home != "" {
-				cfgDir = filepath.Join(home, cfgDir[2:])
-			}
-			claudeDir = cfgDir
-		}
-	}
-
-	encodedCwd := encodeClaudeProjectDir(sess.Cwd)
-	transcriptFile := filepath.Join(claudeDir, "projects", encodedCwd, sess.NativeID+".jsonl")
-
-	hasTranscript := fileExists(transcriptFile)
-	if !hasTranscript {
-		projectsDir := filepath.Join(claudeDir, "projects")
-		if entries, err := os.ReadDir(projectsDir); err == nil {
-			for _, e := range entries {
-				if e.IsDir() {
-					cand := filepath.Join(projectsDir, e.Name(), sess.NativeID+".jsonl")
-					if fileExists(cand) {
-						hasTranscript = true
-						break
-					}
-				}
-			}
-		}
-	}
-
-	if !hasTranscript && fileExists(filepath.Join(claudeDir, "session-env", sess.NativeID)) {
-		hasTranscript = true
-	}
+	hasTranscript := hasConversationOnDisk(sess, home, h.db)
 
 	var permFlags []string
 	if strings.EqualFold(sess.PermissionMode, "plan") {
@@ -1142,17 +1208,34 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 	// Process output stream asynchronously
 	origSessionID := sess.ID
 	go func() {
+		cleanupTurn := func() {
+			for _, id := range []string{origSessionID, sess.ID} {
+				if id == "" {
+					continue
+				}
+				if currentCmd, exists := h.processes[id]; !exists || currentCmd == nil || currentCmd == cmd {
+					delete(h.processes, id)
+					delete(h.activeSessions, id)
+					delete(h.activeTurns, id)
+					delete(h.activePrompts, id)
+				}
+			}
+		}
+
 		defer func() {
+			var drainFn func()
 			h.mu.Lock()
-			delete(h.processes, origSessionID)
-			delete(h.processes, sess.ID)
-			delete(h.activeSessions, origSessionID)
-			delete(h.activeSessions, sess.ID)
-			delete(h.activeTurns, origSessionID)
-			delete(h.activeTurns, sess.ID)
-			delete(h.activePrompts, origSessionID)
-			delete(h.activePrompts, sess.ID)
+			cleanupTurn()
+			hasReplacedTurn := h.processes[sess.ID] != nil && h.processes[sess.ID] != cmd
+			if !hasReplacedTurn && h.pendingRestart && h.activeTurnCountLocked() == 0 {
+				h.pendingRestart = false
+				drainFn = h.onAllTurnsDrained
+				h.onAllTurnsDrained = nil
+			}
 			h.mu.Unlock()
+			if drainFn != nil {
+				drainFn()
+			}
 		}()
 
 		lastTurnText, resultText, streamHadError := h.processStreamCore(origSessionID, stdoutPipe, prompt, false, sess)
@@ -1295,12 +1378,7 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 		}
 
 		h.mu.Lock()
-		delete(h.processes, origSessionID)
-		delete(h.processes, sess.ID)
-		delete(h.activeTurns, origSessionID)
-		delete(h.activeTurns, sess.ID)
-		delete(h.activePrompts, origSessionID)
-		delete(h.activePrompts, sess.ID)
+		cleanupTurn()
 		h.mu.Unlock()
 
 		if h.db != nil {
@@ -1328,8 +1406,22 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 			onDone(sess.ID, sess.NativeID)
 		}
 
-		// Auto-dispatch next queued prompt if queue is not paused and not blocked
-		if interactiveBlock == nil && !h.IsQueuePaused(sess.ID) {
+		var drainRestartFn func()
+		h.mu.Lock()
+		hasReplacedTurn := h.processes[sess.ID] != nil && h.processes[sess.ID] != cmd
+		if !hasReplacedTurn && h.pendingRestart && h.activeTurnCountLocked() == 0 {
+			h.pendingRestart = false
+			drainRestartFn = h.onAllTurnsDrained
+			h.onAllTurnsDrained = nil
+		}
+		h.mu.Unlock()
+
+		if drainRestartFn != nil {
+			drainRestartFn()
+			return
+		}
+
+		if !h.IsRestartPending() && interactiveBlock == nil && !h.IsQueuePaused(sess.ID) {
 			nextItem := h.DequeuePrompt(sess.ID)
 			if nextItem != nil {
 				h.EmitQueueUpdate(sess.ID)

@@ -960,11 +960,44 @@ func runUpdateCmd(args []string) {
 	}
 
 	// If local ackbard is currently running, restart it with the newly installed binary
-	httpClient := &http.Client{Timeout: 500 * time.Millisecond}
-	if resp, err := httpClient.Get("http://127.0.0.1:7777/v1/version"); err == nil {
+	token := os.Getenv("ACKBAR_TOKEN")
+	httpClient := &http.Client{Timeout: 5 * time.Second}
+	vReq, _ := http.NewRequest(http.MethodGet, "http://127.0.0.1:7777/v1/version", nil)
+	if token != "" {
+		vReq.Header.Set("Authorization", "Bearer "+token)
+	}
+	if resp, err := httpClient.Do(vReq); err == nil {
 		_ = resp.Body.Close()
 		fmt.Printf("🔄 Restarting local ackbard daemon...\n")
-		_, _ = httpClient.Post("http://127.0.0.1:7777/v1/shutdown", "application/json", nil)
+		sReq, _ := http.NewRequest(http.MethodPost, "http://127.0.0.1:7777/v1/shutdown?drain=true", nil)
+		sReq.Header.Set("Content-Type", "application/json")
+		if token != "" {
+			sReq.Header.Set("Authorization", "Bearer "+token)
+		}
+		shutdownResp, sErr := httpClient.Do(sReq)
+		if sErr == nil && shutdownResp != nil {
+			if shutdownResp.StatusCode == http.StatusUnauthorized || shutdownResp.StatusCode == http.StatusForbidden {
+				_ = shutdownResp.Body.Close()
+				fmt.Printf("⚠️ Local ackbard requires ACKBAR_TOKEN to restart automatically; restart ackbard manually.\n")
+				return
+			}
+			restartDeferred := false
+			if shutdownResp.StatusCode == http.StatusOK {
+				var sData struct {
+					RestartDeferred bool `json:"restart_deferred"`
+				}
+				if err := json.NewDecoder(shutdownResp.Body).Decode(&sData); err == nil {
+					restartDeferred = sData.RestartDeferred
+				}
+			}
+			_ = shutdownResp.Body.Close()
+
+			if restartDeferred {
+				fmt.Printf("⏳ Active headless session turn(s) in progress — ackbard will restart automatically once the current turn finishes.\n")
+				return
+			}
+		}
+
 		time.Sleep(400 * time.Millisecond)
 		ackbardBin := ""
 		if res != nil && res.TargetDir != "" {

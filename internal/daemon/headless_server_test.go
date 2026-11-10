@@ -25,6 +25,8 @@ func setupTestServer(t *testing.T) (*Server, *DB) {
 	}
 
 	srv := NewServer(db)
+	srv.restartDaemonFn = func() {}
+	srv.shutdownExitFn = func(int) {}
 	srv.RegisterProvider(&MockProvider{})
 	return srv, db
 }

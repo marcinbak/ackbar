@@ -9,13 +9,16 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
 )
 
 type DB struct {
-	db *sql.DB
+	db                     *sql.DB
+	mu                     sync.Mutex
+	interruptedHeadlessIDs []string
 }
 
 const schema = `
@@ -339,6 +342,16 @@ func InitDB(dbPath string) (*DB, error) {
 	_, _ = db.Exec("DELETE FROM tree_nodes WHERE path LIKE 'Project Y%' OR path LIKE 'ProjectY%' OR path LIKE '%Project Y%';")
 	_, _ = db.Exec("UPDATE sessions SET tmux_name = 'ackbar-' || agent || '-' || native_id WHERE (tmux_name = '(deleted)' OR tmux_name = '') AND COALESCE(engine_type, 'tmux') != 'headless';")
 	_, _ = db.Exec("UPDATE sessions SET tmux_name = '' WHERE engine_type = 'headless' AND tmux_name = 'ackbar-' || agent || '-' || native_id;")
+	var interruptedIDs []string
+	if rows, err := db.Query("SELECT id FROM sessions WHERE engine_type = 'headless' AND (state = ? OR state = 'working');", int(StateWorking)); err == nil {
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err == nil && id != "" {
+				interruptedIDs = append(interruptedIDs, id)
+			}
+		}
+		_ = rows.Close()
+	}
 	_, _ = db.Exec("UPDATE sessions SET state = ?, pid = 0, activity = '' WHERE engine_type = 'headless' AND (state = ? OR state = 'working');", int(StateIdle), int(StateWorking))
 	_, _ = db.Exec("UPDATE tasks SET group_name = 'Personal' WHERE project_name = 'Ackbar' AND group_name = 'Modemobile';")
 
@@ -375,13 +388,24 @@ func InitDB(dbPath string) (*DB, error) {
 		PRIMARY KEY (host, bucket_start, bucket_sec)
 	);`)
 	_, _ = db.Exec("CREATE INDEX IF NOT EXISTS idx_host_load_metrics_bucket ON host_load_metrics(bucket_start);")
-	d := &DB{db: db}
+	d := &DB{db: db, interruptedHeadlessIDs: interruptedIDs}
 	if _, err := d.PruneAllLegacyTasksOnce(); err != nil {
 		log.Printf("[InitDB] Warning: PruneAllLegacyTasksOnce failed: %v", err)
 	}
 	_, _ = d.DeduplicateTasks()
 	_, _ = db.Exec(`UPDATE tasks SET status = 'DONE', substatus = 'completed' WHERE deleted_at IS NULL AND UPPER(status) IN ('DONE', 'COMPLETED') AND LOWER(COALESCE(substatus, '')) NOT IN ('completed', 'rejected', 'abandoned');`)
 	return d, nil
+}
+
+func (d *DB) PopInterruptedHeadlessSessionIDs() []string {
+	if d == nil {
+		return nil
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	ids := d.interruptedHeadlessIDs
+	d.interruptedHeadlessIDs = nil
+	return ids
 }
 
 func (d *DB) Close() error {
