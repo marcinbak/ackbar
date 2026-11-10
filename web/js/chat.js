@@ -2426,6 +2426,47 @@ function coalesceTranscriptMessages(messages) {
   return coalesced;
 }
 
+function isPromptInTranscriptTail(coalesced, promptNorm, promptTimestamp, tabObj) {
+  if (!Array.isArray(coalesced) || coalesced.length === 0 || !promptNorm) {
+    return false;
+  }
+  const matchesText = (msg) => {
+    if (!msg || msg.role !== 'user') return false;
+    const norm = normalizePromptText(msg.content || msg.rawPrompt || '');
+    return Boolean(norm && (norm === promptNorm || norm.startsWith(promptNorm) || promptNorm.startsWith(norm)));
+  };
+
+  const last = coalesced[coalesced.length - 1];
+  if (last && last.role === 'user') {
+    return matchesText(last);
+  }
+
+  if (last && last.role === 'assistant' && coalesced.length >= 2) {
+    const prev = coalesced[coalesced.length - 2];
+    if (prev && prev.role === 'user') {
+      const prevNorm = normalizePromptText(prev.content || prev.rawPrompt || '');
+      const prevMatchesExact = Boolean(prevNorm && (prevNorm === promptNorm || prevNorm.startsWith(promptNorm + ' [Attached file:')));
+      if (prevMatchesExact) {
+        const parseTime = (ts) => {
+          if (!ts) return NaN;
+          const t = (typeof ts === 'number') ? ts : new Date(ts).getTime();
+          return isNaN(t) ? NaN : t;
+        };
+        const msgTime = parseTime(last.timestamp) || parseTime(prev.timestamp);
+        if (promptTimestamp && !isNaN(msgTime)) {
+          return msgTime >= (promptTimestamp - 5000);
+        }
+        if (tabObj) {
+          return !tabObj.sending && !isSessionWorking(tabObj.session);
+        }
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
 // Load past conversation messages from daemon transcript (latest first, paginated upward)
 async function loadChatTranscript(tabObj) {
   if (!tabObj || !tabObj.chatMessagesEl || !tabObj.session) return;
@@ -2467,6 +2508,15 @@ async function loadChatTranscript(tabObj) {
         if (!inFlightPrompt && !liveTurnMsgEl && !liveActivityEl && !container.querySelector('.chat-msg')) {
           container.innerHTML = '';
         }
+        if (inFlightPrompt && inFlightPrompt.el && !inFlightPrompt.el.isConnected) {
+          if (liveTurnMsgEl && liveTurnMsgEl.parentNode === container) {
+            container.insertBefore(inFlightPrompt.el, liveTurnMsgEl);
+          } else if (liveActivityEl && liveActivityEl.parentNode === container) {
+            container.insertBefore(inFlightPrompt.el, liveActivityEl);
+          } else {
+            container.appendChild(inFlightPrompt.el);
+          }
+        }
         if (!liveTurnMsgEl && !liveActivityEl && (tabObj.sending || isSessionWorking(tabObj.session))) {
           setChatSending(tabObj, true);
         }
@@ -2497,10 +2547,18 @@ async function loadChatTranscript(tabObj) {
 
       // Re-attach optimistic in-flight user prompt if not yet present in on-disk transcript
       if (inFlightPrompt && inFlightPrompt.el) {
-        const lastUserMsg = [...coalesced].reverse().find(m => m.role === 'user');
-        const lastUserNorm = lastUserMsg ? normalizePromptText(lastUserMsg.content || lastUserMsg.rawPrompt || '') : '';
-        if (lastUserNorm && (lastUserNorm === inFlightPrompt.text || lastUserNorm.startsWith(inFlightPrompt.text) || inFlightPrompt.text.startsWith(lastUserNorm))) {
-          tabObj.inFlightPrompt = null;
+        if (isPromptInTranscriptTail(coalesced, inFlightPrompt.text, inFlightPrompt.timestamp, tabObj)) {
+          if (tabObj.sending || isSessionWorking(tabObj.session)) {
+            const userBubbles = container.querySelectorAll('.chat-msg.user-msg');
+            if (userBubbles.length > 0) {
+              const lastUserEl = userBubbles[userBubbles.length - 1];
+              if (!inFlightPrompt.el.querySelector('.chat-msg-attachments') || lastUserEl.querySelector('.chat-msg-attachments')) {
+                tabObj.inFlightPrompt.el = lastUserEl;
+              }
+            }
+          } else {
+            tabObj.inFlightPrompt = null;
+          }
         } else {
           container.appendChild(inFlightPrompt.el);
         }
@@ -2523,9 +2581,7 @@ async function loadChatTranscript(tabObj) {
         // Preserve just-completed turn bubbles if on-disk transcript hasn't flushed the final turn yet
         let missingUser = false;
         if (recentTurn.userEl && recentTurn.userText) {
-          const lastUserMsg = [...coalesced].reverse().find(m => m.role === 'user');
-          const lastUserNorm = lastUserMsg ? normalizePromptText(lastUserMsg.content || lastUserMsg.rawPrompt || '') : '';
-          if (!lastUserNorm || (lastUserNorm !== recentTurn.userText && !lastUserNorm.startsWith(recentTurn.userText) && !recentTurn.userText.startsWith(lastUserNorm))) {
+          if (!isPromptInTranscriptTail(coalesced, recentTurn.userText, recentTurn.timestamp - 60000, tabObj)) {
             missingUser = true;
           }
         }
@@ -4498,7 +4554,9 @@ async function sendChatPrompt(tabObj, forcedPromptText, schedulingOptions) {
     setTimeout(() => {
       if (tabObj.inFlightPrompt && tabObj.inFlightPrompt.el === optimisticMsgEl) {
         if (optimisticMsgEl) delete optimisticMsgEl.dataset.inFlight;
-        tabObj.inFlightPrompt = null;
+        if (!tabObj.sending && !isSessionWorking(tabObj.session)) {
+          tabObj.inFlightPrompt = null;
+        }
       }
     }, 15000);
   } catch (err) {
@@ -4731,7 +4789,7 @@ function handleChatStreamEvent(tabObj, evt) {
             if (tabObj.inFlightPrompt.el) {
               delete tabObj.inFlightPrompt.el.dataset.inFlight;
             }
-            tabObj.inFlightPrompt = null;
+            tabObj.inFlightPrompt.text = evtNorm;
           }
         }
 
@@ -4745,21 +4803,37 @@ function handleChatStreamEvent(tabObj, evt) {
             const uBody = lastMsg.querySelector('.chat-msg-body');
             const bodyText = normalizePromptText(uBody ? uBody.textContent : '');
 
+            let hasCompletedAssistantAfter = false;
+            let sib = lastMsg.nextElementSibling;
+            while (sib) {
+              if (sib.classList.contains('assistant-msg') && !sib.classList.contains('in-flight')) {
+                hasCompletedAssistantAfter = true;
+                break;
+              }
+              sib = sib.nextElementSibling;
+            }
+
+            const textMatches = (raw && (raw === evtNorm || evtNorm.startsWith(raw) || raw.startsWith(evtNorm))) ||
+                               (bodyText && (bodyText === evtNorm || evtNorm.startsWith(bodyText) || bodyText.startsWith(evtNorm)));
+
             if (isUnconfirmed) {
-              // Unconfirmed in-flight optimistic message allows prefix match if daemon truncated
-              if ((raw && (raw === evtNorm || evtNorm.startsWith(raw) || raw.startsWith(evtNorm))) ||
-                  (bodyText && (bodyText === evtNorm || evtNorm.startsWith(bodyText) || bodyText.startsWith(evtNorm)))) {
+              if (textMatches) {
                 isAlreadyRendered = true;
                 delete lastMsg.dataset.inFlight;
+                tabObj.inFlightPrompt = {
+                  text: evtNorm,
+                  el: lastMsg,
+                  timestamp: tabObj.inFlightPrompt ? tabObj.inFlightPrompt.timestamp : Date.now()
+                };
               }
             } else {
-              // For confirmed messages, require strict exact equality and recent creation (< 5s)
-              // to prevent dropping legitimate identical or short user prompts
-              if ((raw && raw === evtNorm) || (bodyText && bodyText === evtNorm)) {
-                const msgTime = lastMsg.dataset.timestamp ? new Date(lastMsg.dataset.timestamp).getTime() : 0;
-                if (!msgTime || (Date.now() - msgTime) < 5000) {
-                  isAlreadyRendered = true;
-                }
+              if (textMatches && !hasCompletedAssistantAfter) {
+                isAlreadyRendered = true;
+                tabObj.inFlightPrompt = {
+                  text: evtNorm,
+                  el: lastMsg,
+                  timestamp: tabObj.inFlightPrompt ? tabObj.inFlightPrompt.timestamp : Date.now()
+                };
               }
             }
           }
@@ -4777,6 +4851,11 @@ function handleChatStreamEvent(tabObj, evt) {
           } else if (tabObj.activeTurnMsgEl && tabObj.activeTurnMsgEl.parentNode === tabObj.chatMessagesEl) {
             tabObj.chatMessagesEl.insertBefore(newMsgEl, tabObj.activeTurnMsgEl);
           }
+          tabObj.inFlightPrompt = {
+            text: evtNorm,
+            el: newMsgEl,
+            timestamp: evt.timestamp ? (new Date(evt.timestamp).getTime() || Date.now()) : Date.now()
+          };
         }
       }
       setChatSending(tabObj, true);
@@ -5052,6 +5131,7 @@ function handleChatStreamEvent(tabObj, evt) {
         assistantText: normalizePromptText(tabObj.activeTurnBuffer || evt.text || '') || (prevCompleted && prevCompleted.assistantText) || '',
         timestamp: Date.now()
       };
+      tabObj.inFlightPrompt = null;
       setChatSending(tabObj, false);
       // Asynchronously fetch the authoritative on-disk transcript so any missed SSE chunks or tool outputs are reconciled
       loadChatTranscript(tabObj);
@@ -5084,6 +5164,7 @@ function handleChatStreamEvent(tabObj, evt) {
         attachChatMessageListeners(activeMsg, tabObj.activeTurnBuffer, tabObj);
         linkifyChatFiles(activeMsg, tabObj.session);
       }
+      tabObj.inFlightPrompt = null;
       setChatSending(tabObj, false);
       if (tabObj.promptQueue && tabObj.promptQueue.length > 0) {
         tabObj.isQueuePaused = true;
@@ -5113,6 +5194,7 @@ function handleChatStreamEvent(tabObj, evt) {
         attachChatMessageListeners(activeMsg, tabObj.activeTurnBuffer, tabObj);
         linkifyChatFiles(activeMsg, tabObj.session);
       }
+      tabObj.inFlightPrompt = null;
       setChatSending(tabObj, false);
       if (tabObj.promptQueue && tabObj.promptQueue.length > 0) {
         tabObj.isQueuePaused = true;
@@ -5125,6 +5207,7 @@ function handleChatStreamEvent(tabObj, evt) {
 
 function resetChatComposer(tabObj) {
   if (!tabObj) return;
+  tabObj.inFlightPrompt = null;
   if (tabObj._streamRenderRafId) {
     if (typeof window !== 'undefined' && typeof window.cancelAnimationFrame === 'function') {
       window.cancelAnimationFrame(tabObj._streamRenderRafId);
@@ -5327,6 +5410,7 @@ export {
   renderLoadMoreBanner,
   loadOlderTranscriptMessages,
   normalizePromptText,
+  isPromptInTranscriptTail,
   coalesceTranscriptMessages,
   loadChatTranscript,
   copyTextToClipboard,
