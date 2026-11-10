@@ -655,7 +655,6 @@ func (h *HeadlessRunner) EnqueuePrompt(sessionID string, text string) *PromptQue
 }
 
 // EnqueueDelayedPrompt adds a prompt to the session's FIFO queue with optional scheduled delivery time.
-// If deliverAt is non-nil, the prompt is persisted to SQLite.
 func (h *HeadlessRunner) EnqueueDelayedPrompt(sessionID string, text string, deliverAt *time.Time) *PromptQueueItem {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -982,7 +981,7 @@ func hasAntigravityConversation(home, nativeID string) bool {
 }
 
 func hasConversationOnDisk(sess *Session, home string, db *DB) bool {
-	if sess == nil {
+	if sess == nil || sess.NativeID == "" {
 		return false
 	}
 	if sess.Agent == "antigravity" {
@@ -1209,18 +1208,26 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 	// Process output stream asynchronously
 	origSessionID := sess.ID
 	go func() {
+		cleanupTurn := func() {
+			for _, id := range []string{origSessionID, sess.ID} {
+				if id == "" {
+					continue
+				}
+				if currentCmd, exists := h.processes[id]; !exists || currentCmd == nil || currentCmd == cmd {
+					delete(h.processes, id)
+					delete(h.activeSessions, id)
+					delete(h.activeTurns, id)
+					delete(h.activePrompts, id)
+				}
+			}
+		}
+
 		defer func() {
 			var drainFn func()
 			h.mu.Lock()
-			delete(h.processes, origSessionID)
-			delete(h.processes, sess.ID)
-			delete(h.activeSessions, origSessionID)
-			delete(h.activeSessions, sess.ID)
-			delete(h.activeTurns, origSessionID)
-			delete(h.activeTurns, sess.ID)
-			delete(h.activePrompts, origSessionID)
-			delete(h.activePrompts, sess.ID)
-			if h.pendingRestart && h.activeTurnCountLocked() == 0 {
+			cleanupTurn()
+			hasReplacedTurn := h.processes[sess.ID] != nil && h.processes[sess.ID] != cmd
+			if !hasReplacedTurn && h.pendingRestart && h.activeTurnCountLocked() == 0 {
 				h.pendingRestart = false
 				drainFn = h.onAllTurnsDrained
 				h.onAllTurnsDrained = nil
@@ -1371,14 +1378,7 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 		}
 
 		h.mu.Lock()
-		delete(h.processes, origSessionID)
-		delete(h.processes, sess.ID)
-		delete(h.activeSessions, origSessionID)
-		delete(h.activeSessions, sess.ID)
-		delete(h.activeTurns, origSessionID)
-		delete(h.activeTurns, sess.ID)
-		delete(h.activePrompts, origSessionID)
-		delete(h.activePrompts, sess.ID)
+		cleanupTurn()
 		h.mu.Unlock()
 
 		if h.db != nil {
@@ -1408,7 +1408,8 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 
 		var drainRestartFn func()
 		h.mu.Lock()
-		if h.pendingRestart && h.activeTurnCountLocked() == 0 {
+		hasReplacedTurn := h.processes[sess.ID] != nil && h.processes[sess.ID] != cmd
+		if !hasReplacedTurn && h.pendingRestart && h.activeTurnCountLocked() == 0 {
 			h.pendingRestart = false
 			drainRestartFn = h.onAllTurnsDrained
 			h.onAllTurnsDrained = nil

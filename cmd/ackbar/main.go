@@ -975,32 +975,40 @@ func runUpdateCmd(args []string) {
 			sReq.Header.Set("Authorization", "Bearer "+token)
 		}
 		shutdownResp, sErr := httpClient.Do(sReq)
-		restartDeferred := false
 		if sErr == nil && shutdownResp != nil {
-			var sData struct {
-				RestartDeferred bool `json:"restart_deferred"`
+			if shutdownResp.StatusCode == http.StatusUnauthorized || shutdownResp.StatusCode == http.StatusForbidden {
+				_ = shutdownResp.Body.Close()
+				fmt.Printf("⚠️ Local ackbard requires ACKBAR_TOKEN to restart automatically; restart ackbard manually.\n")
+				return
 			}
-			if err := json.NewDecoder(shutdownResp.Body).Decode(&sData); err == nil {
-				restartDeferred = sData.RestartDeferred
+			restartDeferred := false
+			if shutdownResp.StatusCode == http.StatusOK {
+				var sData struct {
+					RestartDeferred bool `json:"restart_deferred"`
+				}
+				if err := json.NewDecoder(shutdownResp.Body).Decode(&sData); err == nil {
+					restartDeferred = sData.RestartDeferred
+				}
 			}
 			_ = shutdownResp.Body.Close()
+
+			if restartDeferred {
+				fmt.Printf("⏳ Active headless session turn(s) in progress — ackbard will restart automatically once the current turn finishes.\n")
+				return
+			}
 		}
 
-		if restartDeferred {
-			fmt.Printf("⏳ Active headless session turn(s) in progress — ackbard will restart automatically once the current turn finishes.\n")
-		} else {
-			time.Sleep(400 * time.Millisecond)
-			ackbardBin := ""
-			if res != nil && res.TargetDir != "" {
-				ackbardBin = filepath.Join(res.TargetDir, "ackbard")
-			}
-			if ackbardBin == "" {
-				ackbardBin = "ackbard"
-			} else if _, err := os.Stat(ackbardBin); err != nil {
-				ackbardBin = "ackbard"
-			}
-			_ = exec.Command(ackbardBin).Start()
+		time.Sleep(400 * time.Millisecond)
+		ackbardBin := ""
+		if res != nil && res.TargetDir != "" {
+			ackbardBin = filepath.Join(res.TargetDir, "ackbard")
 		}
+		if ackbardBin == "" {
+			ackbardBin = "ackbard"
+		} else if _, err := os.Stat(ackbardBin); err != nil {
+			ackbardBin = "ackbard"
+		}
+		_ = exec.Command(ackbardBin).Start()
 	}
 
 	fmt.Printf("🎉 Successfully upgraded Ackbar to v%s!\n", info.Version)

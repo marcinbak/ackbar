@@ -346,7 +346,6 @@ echo '{"type":"result","result":"resumed","is_error":false}'
 	}
 	_ = db1.Close()
 
-	// Reboot daemon
 	db2, err := InitDB(dbPath)
 	if err != nil {
 		t.Fatalf("InitDB 2 failed: %v", err)
@@ -354,12 +353,10 @@ echo '{"type":"result","result":"resumed","is_error":false}'
 	defer db2.Close()
 
 	server := NewServer(db2)
-	// Enqueue a queued prompt for this session
 	server.headless.EnqueuePrompt(sess.ID, "Queued next step")
 
 	server.resumeInterruptedHeadlessSessions(context.Background())
 
-	// Give the async turn 500ms to start and complete
 	time.Sleep(500 * time.Millisecond)
 
 	loaded, err := db2.GetSession(sess.ID)
