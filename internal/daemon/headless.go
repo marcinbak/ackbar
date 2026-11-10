@@ -44,10 +44,11 @@ type ChatStreamEvent struct {
 
 // PromptQueueItem represents a queued prompt held in daemon memory
 type PromptQueueItem struct {
-	ID        string    `json:"id"`
-	SessionID string    `json:"session_id"`
-	Text      string    `json:"text"`
-	CreatedAt time.Time `json:"created_at"`
+	ID        string     `json:"id"`
+	SessionID string     `json:"session_id"`
+	Text      string     `json:"text"`
+	DeliverAt *time.Time `json:"deliver_at,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
 }
 
 // StripBilledCredentials removes API keys and billed auth tokens from the environment,
@@ -444,6 +445,12 @@ func (h *HeadlessRunner) resolveQueueKey(sessionID string) string {
 
 // EnqueuePrompt adds a prompt to the session's in-memory FIFO queue
 func (h *HeadlessRunner) EnqueuePrompt(sessionID string, text string) *PromptQueueItem {
+	return h.EnqueueDelayedPrompt(sessionID, text, nil)
+}
+
+// EnqueueDelayedPrompt adds a prompt to the session's FIFO queue with optional scheduled delivery time.
+// If deliverAt is non-nil, the prompt is persisted to SQLite.
+func (h *HeadlessRunner) EnqueueDelayedPrompt(sessionID string, text string, deliverAt *time.Time) *PromptQueueItem {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -452,10 +459,40 @@ func (h *HeadlessRunner) EnqueuePrompt(sessionID string, text string) *PromptQue
 		ID:        fmt.Sprintf("q_%d_%s", time.Now().UnixNano(), generateUUID()[:6]),
 		SessionID: key,
 		Text:      text,
+		DeliverAt: deliverAt,
 		CreatedAt: time.Now(),
 	}
 	h.queues[key] = append(h.queues[key], item)
+	if h.db != nil && deliverAt != nil {
+		_ = h.db.SaveScheduledPrompt(item)
+	}
 	return item
+}
+
+// LoadScheduledPrompts loads persisted scheduled prompts from SQLite into the runner queue.
+func (h *HeadlessRunner) LoadScheduledPrompts() {
+	if h.db == nil {
+		return
+	}
+	items, err := h.db.ListScheduledPrompts()
+	if err != nil || len(items) == 0 {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, item := range items {
+		key := h.resolveQueueKey(item.SessionID)
+		exists := false
+		for _, existing := range h.queues[key] {
+			if existing.ID == item.ID {
+				exists = true
+				break
+			}
+		}
+		if !exists {
+			h.queues[key] = append(h.queues[key], item)
+		}
+	}
 }
 
 // GetPromptQueue returns a snapshot of queued prompts and pause state for a session
@@ -472,7 +509,7 @@ func (h *HeadlessRunner) GetPromptQueue(sessionID string) ([]*PromptQueueItem, b
 	return res, paused
 }
 
-// DequeuePrompt pops the next prompt from the session queue, or nil if empty
+// DequeuePrompt pops the next prompt from the session queue, or nil if empty or head item is scheduled in the future.
 func (h *HeadlessRunner) DequeuePrompt(sessionID string) *PromptQueueItem {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -482,9 +519,15 @@ func (h *HeadlessRunner) DequeuePrompt(sessionID string) *PromptQueueItem {
 	if len(items) == 0 {
 		return nil
 	}
-	next := items[0]
+	head := items[0]
+	if head.DeliverAt != nil && head.DeliverAt.After(time.Now()) {
+		return nil
+	}
 	h.queues[key] = items[1:]
-	return next
+	if head.DeliverAt != nil && h.db != nil {
+		_ = h.db.DeleteScheduledPrompt(head.ID)
+	}
+	return head
 }
 
 // DeletePromptQueueItem removes a specific prompt from the queue by ID
@@ -505,6 +548,9 @@ func (h *HeadlessRunner) DeletePromptQueueItem(sessionID string, itemID string) 
 	}
 	if found {
 		h.queues[key] = updated
+		if h.db != nil {
+			_ = h.db.DeleteScheduledPrompt(itemID)
+		}
 	}
 	return found
 }
@@ -517,6 +563,31 @@ func (h *HeadlessRunner) ClearPromptQueue(sessionID string) {
 	key := h.resolveQueueKey(sessionID)
 	delete(h.queues, key)
 	delete(h.paused, key)
+	if h.db != nil {
+		_ = h.db.DeleteScheduledPromptsBySession(key)
+		if key != sessionID {
+			_ = h.db.DeleteScheduledPromptsBySession(sessionID)
+		}
+	}
+}
+
+// TriggerPromptQueueItemNow clears the scheduled deliver_at on an item so it can be dispatched immediately.
+func (h *HeadlessRunner) TriggerPromptQueueItemNow(sessionID string, itemID string) *PromptQueueItem {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	key := h.resolveQueueKey(sessionID)
+	items := h.queues[key]
+	for _, it := range items {
+		if it.ID == itemID {
+			it.DeliverAt = nil
+			if h.db != nil {
+				_ = h.db.DeleteScheduledPrompt(itemID)
+			}
+			return it
+		}
+	}
+	return nil
 }
 
 // SetQueuePaused updates the pause state of a session's prompt queue
@@ -916,7 +987,7 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 			h.mu.Unlock()
 		}()
 
-		h.processStreamWithPrompt(origSessionID, stdoutPipe, prompt, sess)
+		lastTurnText := h.processStreamWithPrompt(origSessionID, stdoutPipe, prompt, sess)
 
 		waitErr := cmd.Wait()
 
@@ -950,11 +1021,48 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 			interactiveBlock = h.takeInteractiveBlock(origSessionID)
 		}
 
+		if interactiveBlock == nil {
+			errDetail := strings.TrimSpace(stderrBuf.String())
+			combinedText := lastTurnText
+			if errDetail != "" {
+				if combinedText != "" {
+					combinedText += "\n" + errDetail
+				} else {
+					combinedText = errDetail
+				}
+			}
+			adapter := getDefaultAgentAdapter(sess.Agent)
+			if limited, resetAt, reason := adapter.DetectRateLimit(combinedText, time.Now()); limited {
+				interactiveBlock = &Blocked{
+					Kind:     BlockRateLimit,
+					Reason:   reason,
+					Question: reason,
+					ResetAt:  &resetAt,
+					Options:  []string{fmt.Sprintf("Resume at %s", resetAt.Local().Format("15:04")), "Resume in 1h"},
+					Since:    time.Now(),
+				}
+				h.SetQueuePaused(sess.ID, true)
+				rateEvt := ChatStreamEvent{
+					SessionID: sess.ID,
+					Type:      "interactive_block",
+					Blocked:   interactiveBlock,
+					Timestamp: time.Now(),
+				}
+				h.Emit(sess.ID, rateEvt)
+				if origSessionID != sess.ID {
+					h.Emit(origSessionID, rateEvt)
+				}
+				h.EmitQueueUpdate(sess.ID)
+			}
+		}
+
 		if interactiveBlock != nil {
 			sess.State = StateBlocked
 			sess.Blocked = interactiveBlock
 			if interactiveBlock.Kind == BlockApproval {
 				sess.Activity = "Waiting for plan approval"
+			} else if interactiveBlock.Kind == BlockRateLimit {
+				sess.Activity = "Rate limit: " + interactiveBlock.Reason
 			} else {
 				sess.Activity = "Waiting for user response"
 			}
@@ -1072,7 +1180,7 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 }
 
 func (h *HeadlessRunner) processStream(sessionID string, r io.Reader, optionalSess ...*Session) {
-	h.processStreamWithPrompt(sessionID, r, "", optionalSess...)
+	_ = h.processStreamWithPrompt(sessionID, r, "", optionalSess...)
 }
 
 func (h *HeadlessRunner) handleAntigravityInit(sess *Session, convID, prompt string) {
@@ -1148,7 +1256,7 @@ func (h *HeadlessRunner) handleAntigravityInit(sess *Session, convID, prompt str
 	}
 }
 
-func (h *HeadlessRunner) processStreamWithPrompt(sessionID string, r io.Reader, prompt string, optionalSess ...*Session) {
+func (h *HeadlessRunner) processStreamWithPrompt(sessionID string, r io.Reader, prompt string, optionalSess ...*Session) string {
 	var sess *Session
 	if len(optionalSess) > 0 {
 		sess = optionalSess[0]
@@ -1158,6 +1266,7 @@ func (h *HeadlessRunner) processStreamWithPrompt(sessionID string, r io.Reader, 
 	buf := make([]byte, 1024*1024)
 	scanner.Buffer(buf, 10*1024*1024)
 
+	var lastTextBuilder strings.Builder
 	toolUses := make(map[string]string)
 	emittedToolStart := make(map[string]bool)
 	hasEmittedAssistantText := false
@@ -1198,6 +1307,7 @@ func (h *HeadlessRunner) processStreamWithPrompt(sessionID string, r io.Reader, 
 					switch stepType {
 					case "agent_response":
 						if textDelta, ok := su["text_delta"].(string); ok && textDelta != "" {
+							lastTextBuilder.WriteString(textDelta)
 							emitStreamEvt(ChatStreamEvent{
 								SessionID: sessionID,
 								Type:      "text_delta",
@@ -1283,6 +1393,7 @@ func (h *HeadlessRunner) processStreamWithPrompt(sessionID string, r io.Reader, 
 
 					case "error_message":
 						if errMsg, ok := su["error"].(string); ok && errMsg != "" {
+							lastTextBuilder.WriteString("\n" + errMsg)
 							emitStreamEvt(ChatStreamEvent{
 								SessionID: sessionID,
 								Type:      "error",
@@ -1302,6 +1413,7 @@ func (h *HeadlessRunner) processStreamWithPrompt(sessionID string, r io.Reader, 
 						if errText == "" {
 							errText = respText
 						}
+						lastTextBuilder.WriteString("\n" + errText)
 						emitStreamEvt(ChatStreamEvent{
 							SessionID: sessionID,
 							Type:      "error",
@@ -1309,6 +1421,7 @@ func (h *HeadlessRunner) processStreamWithPrompt(sessionID string, r io.Reader, 
 							IsError:   true,
 						})
 					} else {
+						lastTextBuilder.WriteString("\n" + respText)
 						emitStreamEvt(ChatStreamEvent{
 							SessionID: sessionID,
 							Type:      "turn_complete",
@@ -1353,6 +1466,7 @@ func (h *HeadlessRunner) processStreamWithPrompt(sessionID string, r io.Reader, 
 				deltaType, _ := delta["type"].(string)
 				if deltaType == "text_delta" {
 					text, _ := delta["text"].(string)
+					lastTextBuilder.WriteString(text)
 					if needsSeparation && hasEmittedAssistantText {
 						if !strings.HasPrefix(text, "\n") {
 							text = "\n\n" + text
@@ -1492,6 +1606,7 @@ func (h *HeadlessRunner) processStreamWithPrompt(sessionID string, r io.Reader, 
 						}
 						hasEmittedAssistantText = true
 						needsSeparation = false
+						lastTextBuilder.WriteString("\n" + joined)
 						emitStreamEvt(ChatStreamEvent{
 							SessionID: sessionID,
 							Type:      "text_delta",
@@ -1553,6 +1668,9 @@ func (h *HeadlessRunner) processStreamWithPrompt(sessionID string, r io.Reader, 
 		case "result":
 			resText, _ := raw["result"].(string)
 			isErr, _ := raw["is_error"].(bool)
+			if resText != "" {
+				lastTextBuilder.WriteString("\n" + resText)
+			}
 			if isErr && resText != "" {
 				emitStreamEvt(ChatStreamEvent{
 					SessionID: sessionID,
@@ -1569,4 +1687,5 @@ func (h *HeadlessRunner) processStreamWithPrompt(sessionID string, r io.Reader, 
 			}
 		}
 	}
+	return lastTextBuilder.String()
 }

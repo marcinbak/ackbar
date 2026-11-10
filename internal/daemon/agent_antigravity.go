@@ -1249,3 +1249,28 @@ func isAntigravitySubagent(home, convID string, precomputedSubagents ...map[stri
 	// 6. Default to false: A conversation is a primary/user conversation unless proven to be a subagent!
 	return false
 }
+
+func (a AntigravityAgentAdapter) DetectRateLimit(text string, now time.Time) (bool, time.Time, string) {
+	if text == "" {
+		return false, time.Time{}, ""
+	}
+	lower := strings.ToLower(text)
+
+	var prefix string
+	switch {
+	case strings.Contains(lower, "quota exceeded") || strings.Contains(lower, "exhausted your capacity"):
+		prefix = "Quota exceeded"
+	case strings.Contains(lower, "resourceexhausted") || strings.Contains(lower, "resource_exhausted"):
+		prefix = "Resource exhausted"
+	case strings.Contains(lower, "rate limit exceeded") || strings.Contains(lower, "rate limit reached") || strings.Contains(lower, "429 too many requests"):
+		prefix = "Rate limit exceeded"
+	case strings.Contains(lower, "usage limit reached") || strings.Contains(lower, "usage limit"):
+		prefix = "Usage limit reached"
+	default:
+		return false, time.Time{}, ""
+	}
+
+	resetAt := ParseRateLimitResetTime(text, now)
+	reason := fmt.Sprintf("%s · resets %s", prefix, resetAt.Local().Format("15:04"))
+	return true, resetAt, reason
+}

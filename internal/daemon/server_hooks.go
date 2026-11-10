@@ -570,6 +570,21 @@ func (s *Server) applyHookStateTransition(sess *Session, event *Event, sessionID
 					}
 				}
 			}
+			if sess.TmuxName != "" && event.State != StateBlocked {
+				switch event.Agent {
+				case "claude-code":
+					InspectClaudeStatus(context.Background(), sess)
+				case "antigravity":
+					InspectAntigravityStatus(context.Background(), sess)
+				case "codex":
+					InspectCodexStatus(context.Background(), sess)
+				}
+				if sess.State == StateBlocked && sess.Blocked != nil {
+					event.State = sess.State
+					event.Blocked = sess.Blocked
+					event.Activity = sess.Activity
+				}
+			}
 		}
 	}
 

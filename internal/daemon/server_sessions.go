@@ -757,6 +757,32 @@ func (s *Server) handleSessionControl(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) applyInteractiveResponse(ctx context.Context, sess *Session, actionLower, value string, sendToTmux, strictAction, clearIsDone bool) error {
+	if sess.Blocked != nil && sess.Blocked.Kind == BlockRateLimit {
+		valLower := strings.ToLower(value)
+		var deliverAt time.Time
+		if strings.Contains(valLower, "1h") || strings.Contains(valLower, "1 hour") || strings.Contains(actionLower, "1h") {
+			deliverAt = time.Now().Add(1 * time.Hour)
+		} else if sess.Blocked.ResetAt != nil && !sess.Blocked.ResetAt.IsZero() {
+			deliverAt = *sess.Blocked.ResetAt
+		} else {
+			deliverAt = time.Now().Add(1 * time.Hour)
+		}
+
+		sess.Blocked = nil
+		sess.State = StateIdle
+		sess.Activity = fmt.Sprintf("Scheduled resume at %s", deliverAt.Local().Format("15:04"))
+		sess.LastEventAt = time.Now()
+		if clearIsDone {
+			sess.IsDone = false
+		}
+		if s.headless != nil {
+			s.headless.EnqueueDelayedPrompt(sess.ID, "Continue", &deliverAt)
+			s.headless.SetQueuePaused(sess.ID, false)
+			s.headless.EmitQueueUpdate(sess.ID)
+		}
+		return nil
+	}
+
 	if sendToTmux && sess.TmuxName != "" {
 		adapter := s.agentAdapter(sess.Agent)
 		switch actionLower {
@@ -885,6 +911,45 @@ func (s *Server) handleRespond(w http.ResponseWriter, r *http.Request) {
 	}
 
 	actionLower := strings.ToLower(action)
+
+	if sess.Blocked != nil && sess.Blocked.Kind == BlockRateLimit {
+		valLower := strings.ToLower(value)
+		var deliverAt time.Time
+		if strings.Contains(valLower, "1h") || strings.Contains(valLower, "1 hour") || strings.Contains(actionLower, "1h") {
+			deliverAt = time.Now().Add(1 * time.Hour)
+		} else if sess.Blocked.ResetAt != nil && !sess.Blocked.ResetAt.IsZero() {
+			deliverAt = *sess.Blocked.ResetAt
+		} else {
+			deliverAt = time.Now().Add(1 * time.Hour)
+		}
+
+		sess.Blocked = nil
+		sess.State = StateIdle
+		sess.Activity = fmt.Sprintf("Scheduled resume at %s", deliverAt.Local().Format("15:04"))
+		sess.LastEventAt = time.Now()
+		sess.IsDone = false
+		if s.headless != nil {
+			s.headless.EnqueueDelayedPrompt(sess.ID, "Continue", &deliverAt)
+			s.headless.SetQueuePaused(sess.ID, false)
+			s.headless.EmitQueueUpdate(sess.ID)
+		}
+		if err := s.db.SaveSession(sess); err != nil {
+			http.Error(w, fmt.Sprintf("Failed to save session: %v", err), http.StatusInternalServerError)
+			return
+		}
+		s.broadcast(sess)
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"status":     "scheduled",
+			"id":         sess.ID,
+			"action":     actionLower,
+			"deliver_at": deliverAt.Format(time.RFC3339),
+			"state":      sess.State.String(),
+			"session":    sess,
+		})
+		return
+	}
 
 	isHeadless := sess.EngineType == EngineHeadless || (sess.Managed && sess.TmuxName == "")
 	if isHeadless {

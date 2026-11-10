@@ -117,6 +117,11 @@ type UserEntryFilter interface {
 	FilterUserEntry(raw map[string]interface{}, content string) (clean string, keep bool)
 }
 
+// RateLimitDetector detects agent-specific rate, usage, or quota limit errors.
+type RateLimitDetector interface {
+	DetectRateLimit(text string, now time.Time) (limited bool, resetAt time.Time, reason string)
+}
+
 // AgentAdapter combines all agent-specific operational capabilities used by the daemon server and session scanner.
 type AgentAdapter interface {
 	InteractiveController
@@ -124,6 +129,7 @@ type AgentAdapter interface {
 	ProcessInspector
 	DiskSessionDiscoverer
 	UserEntryFilter
+	RateLimitDetector
 }
 
 // Provider defines the core contract required for an AI agent integration in Ackbar.

@@ -1141,6 +1141,86 @@ function setupChatConfigPopover(tabObj) {
   });
 }
 
+function setupChatSchedulePopover(tabObj) {
+  document.addEventListener('click', (e) => {
+    if (!tabObj || !tabObj.chatSchedulePopover) return;
+    if (tabObj.chatSchedulePopover.style.display === 'none') return;
+    if (tabObj.chatSchedulePopover.contains(e.target)) return;
+    if (tabObj.chatScheduleBtn && tabObj.chatScheduleBtn.contains(e.target)) return;
+    tabObj.chatSchedulePopover.style.display = 'none';
+  });
+}
+
+function toggleSchedulePopover(tabObj) {
+  if (!tabObj || !tabObj.chatSchedulePopover) return;
+  const popover = tabObj.chatSchedulePopover;
+  if (popover.style.display !== 'none') {
+    popover.style.display = 'none';
+    return;
+  }
+
+  popover.innerHTML = '';
+  const title = document.createElement('div');
+  title.className = 'schedule-popover-title';
+  title.textContent = '⏱️ Schedule Prompt';
+  popover.appendChild(title);
+
+  const blocked = tabObj.session && tabObj.session.blocked;
+  const isRateLimit = blocked && blocked.kind === 'rate_limit';
+  const resetAt = isRateLimit && blocked.reset_at ? new Date(blocked.reset_at) : null;
+  const resetStr = resetAt && !isNaN(resetAt.getTime()) ? resetAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+
+  const options = [];
+  if (resetStr) {
+    options.push({
+      label: `⚡ At limit reset (${resetStr})`,
+      deliverAt: resetAt.toISOString(),
+      className: 'rate-limit-reset'
+    });
+  }
+  options.push(
+    { label: '⏱️ In 15 minutes', delaySeconds: 900 },
+    { label: '⏱️ In 30 minutes', delaySeconds: 1800 },
+    { label: '⏱️ In 1 hour', delaySeconds: 3600 },
+    { label: '⏱️ In 2 hours', delaySeconds: 7200 },
+    { label: '⏱️ Custom delay (minutes)...', custom: true }
+  );
+
+  options.forEach(opt => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = `schedule-popover-item ${opt.className || ''}`.trim();
+    btn.textContent = opt.label;
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      popover.style.display = 'none';
+
+      let promptVal = (tabObj.chatInputEl && tabObj.chatInputEl.value ? tabObj.chatInputEl.value.trim() : '');
+      if (!promptVal) {
+        promptVal = 'Continue';
+      }
+
+      if (opt.custom) {
+        const input = typeof window !== 'undefined' && typeof window.prompt === 'function' ? window.prompt('Enter delay in minutes:', '45') : null;
+        if (!input) return;
+        const mins = parseInt(input.trim(), 10);
+        if (isNaN(mins) || mins <= 0) return;
+        sendChatPrompt(tabObj, promptVal, { delay_seconds: mins * 60 });
+        return;
+      }
+
+      if (opt.deliverAt) {
+        sendChatPrompt(tabObj, promptVal, { deliver_at: opt.deliverAt });
+      } else if (opt.delaySeconds) {
+        sendChatPrompt(tabObj, promptVal, { delay_seconds: opt.delaySeconds });
+      }
+    });
+    popover.appendChild(btn);
+  });
+
+  popover.style.display = 'flex';
+}
+
 function togglePlanMode(tabObj) {
   if (!tabObj || !tabObj.session) return;
   const current = tabObj.session.permission_mode || 'bypassPermissions';
@@ -1411,6 +1491,54 @@ function renderInteractiveBlockCard(tabObj, blocked, toolName) {
   const existing = tabObj.chatMessagesEl.querySelector('.chat-interactive-card:not(.answered)');
   if (existing) {
     existing.remove();
+  }
+
+  const isRateLimit = blocked.kind === 'rate_limit';
+  if (isRateLimit) {
+    const resetTime = blocked.reset_at ? new Date(blocked.reset_at) : null;
+    const resetStr = resetTime && !isNaN(resetTime.getTime()) ? resetTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+    const card = document.createElement('div');
+    card.className = 'chat-interactive-card card-rate-limit';
+    card.innerHTML = `
+      <div class="interactive-card-header">
+        <span class="interactive-card-badge">⏳ Rate Limit Reached</span>
+        <span class="interactive-card-title">${escapeHtml(blocked.reason || 'Agent reached provider rate limit')}</span>
+      </div>
+      <div class="interactive-card-body">
+        <p class="rate-limit-desc">Execution is paused. Ackbar can automatically resume your conversation once the quota bucket resets.</p>
+      </div>
+      <div class="interactive-card-actions">
+        ${resetStr ? `<button type="button" class="btn btn-primary btn-sm btn-rate-limit-resume-reset">⏱️ Auto-Resume at ${escapeHtml(resetStr)}</button>` : ''}
+        <button type="button" class="btn btn-secondary btn-sm btn-rate-limit-resume-1h">⏱️ Resume in 1h</button>
+      </div>
+    `;
+
+    const btnReset = card.querySelector('.btn-rate-limit-resume-reset');
+    const btn1h = card.querySelector('.btn-rate-limit-resume-1h');
+
+    if (btnReset) {
+      btnReset.addEventListener('click', async () => {
+        btnReset.disabled = true;
+        if (btn1h) btn1h.disabled = true;
+        card.classList.add('answered');
+        card.querySelector('.interactive-card-actions').innerHTML = `<span class="interactive-answered-badge">⏳ Auto-Resume Scheduled for ${escapeHtml(resetStr)}</span>`;
+        await submitSessionResponse(tabObj, 'resume', `Resume at ${resetStr}`);
+      });
+    }
+
+    if (btn1h) {
+      btn1h.addEventListener('click', async () => {
+        btn1h.disabled = true;
+        if (btnReset) btnReset.disabled = true;
+        card.classList.add('answered');
+        card.querySelector('.interactive-card-actions').innerHTML = `<span class="interactive-answered-badge">⏳ Auto-Resume Scheduled in 1h</span>`;
+        await submitSessionResponse(tabObj, 'resume', 'Resume in 1h');
+      });
+    }
+
+    tabObj.chatMessagesEl.appendChild(card);
+    tabObj.chatMessagesEl.scrollTop = tabObj.chatMessagesEl.scrollHeight;
+    return;
   }
 
   const isApproval = blocked.kind === 'approval' ||
@@ -1731,6 +1859,7 @@ function setupChatInterface(tabObj, chatViewEl, session) {
       </div>
       <div class="chat-autocomplete-menu" style="display: none;"></div>
       <div class="chat-config-popover" style="display: none;"></div>
+      <div class="chat-schedule-popover" style="display: none;"></div>
       <div class="chat-composer-box">
         <button class="btn-composer-attach" type="button" title="Attach file or image">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -1741,6 +1870,7 @@ function setupChatInterface(tabObj, chatViewEl, session) {
         <textarea class="chat-composer-textarea" rows="1" placeholder="Ask ${escapeHtml(formatAgentChatName(session.agent))} anything... (Enter to send, Shift+Enter for newline)"></textarea>
         <div class="chat-composer-actions">
           <button class="btn-composer-cancel" style="display: none;" title="Cancel turn (SIGINT)">🛑 Stop</button>
+          <button class="btn-composer-schedule" type="button" title="Schedule delayed prompt">⏱️</button>
           <button class="btn-composer-send" title="Send Prompt (Enter)">➤</button>
         </div>
       </div>
@@ -1775,11 +1905,13 @@ function setupChatInterface(tabObj, chatViewEl, session) {
   tabObj.chatPillConfig = chatViewEl.querySelector('.chat-pill-config');
   tabObj.chatAutocompleteMenu = chatViewEl.querySelector('.chat-autocomplete-menu');
   tabObj.chatConfigPopover = chatViewEl.querySelector('.chat-config-popover');
+  tabObj.chatSchedulePopover = chatViewEl.querySelector('.chat-schedule-popover');
   tabObj.chatComposerBox = chatViewEl.querySelector('.chat-composer-box');
   tabObj.chatAttachBtn = chatViewEl.querySelector('.btn-composer-attach');
   tabObj.chatFileInput = chatViewEl.querySelector('.chat-file-input');
   tabObj.chatInputEl = chatViewEl.querySelector('.chat-composer-textarea');
   tabObj.chatSendBtn = chatViewEl.querySelector('.btn-composer-send');
+  tabObj.chatScheduleBtn = chatViewEl.querySelector('.btn-composer-schedule');
   tabObj.chatCancelBtn = chatViewEl.querySelector('.btn-composer-cancel');
   tabObj.chatStatusBadge = chatViewEl.querySelector('.chat-status-badge');
   tabObj.chatEngineBadge = chatViewEl.querySelector('.chat-engine-badge');
@@ -1993,6 +2125,14 @@ function setupChatInterface(tabObj, chatViewEl, session) {
   if (tabObj.chatSendBtn) {
     tabObj.chatSendBtn.addEventListener('click', () => sendChatPrompt(tabObj));
   }
+
+  if (tabObj.chatScheduleBtn) {
+    tabObj.chatScheduleBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleSchedulePopover(tabObj);
+    });
+  }
+  setupChatSchedulePopover(tabObj);
 
   if (tabObj.chatInputEl) {
     tabObj.chatInputEl.addEventListener('dragover', (e) => {
@@ -3646,11 +3786,32 @@ function renderChatQueue(tabObj) {
   const q = tabObj.promptQueue || [];
 
   if (q.length === 0) {
+    if (tabObj.scheduledQueueTimer) {
+      clearInterval(tabObj.scheduledQueueTimer);
+      tabObj.scheduledQueueTimer = null;
+    }
     tabObj.chatQueueContainer.style.display = 'none';
     tabObj.isQueueExpanded = false;
     tabObj.isQueuePaused = false;
     updateComposerButtonState(tabObj);
     return;
+  }
+
+  const hasScheduled = q.some(item => item.deliver_at && !isNaN(new Date(item.deliver_at).getTime()));
+  if (hasScheduled) {
+    if (!tabObj.scheduledQueueTimer) {
+      tabObj.scheduledQueueTimer = setInterval(() => {
+        if (!tabObj.promptQueue || tabObj.promptQueue.length === 0) {
+          clearInterval(tabObj.scheduledQueueTimer);
+          tabObj.scheduledQueueTimer = null;
+          return;
+        }
+        renderChatQueue(tabObj);
+      }, 15000);
+    }
+  } else if (tabObj.scheduledQueueTimer) {
+    clearInterval(tabObj.scheduledQueueTimer);
+    tabObj.scheduledQueueTimer = null;
   }
 
   tabObj.chatQueueContainer.style.display = 'flex';
@@ -3683,13 +3844,37 @@ function renderChatQueue(tabObj) {
         itemEl.className = `chat-queue-item ${item.expanded ? 'expanded' : ''}`;
         itemEl.dataset.id = item.id;
 
+        let scheduledBadgeHtml = '';
+        let isFutureScheduled = false;
+        if (item.deliver_at) {
+          const deliverDate = new Date(item.deliver_at);
+          if (!isNaN(deliverDate.getTime())) {
+            const now = Date.now();
+            const diffMs = deliverDate.getTime() - now;
+            const diffMinutes = Math.max(1, Math.round(diffMs / 60000));
+            const timeStr = deliverDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            if (diffMs > 0) {
+              isFutureScheduled = true;
+              scheduledBadgeHtml = `<span class="chat-queue-badge-scheduled" title="Scheduled to deliver at ${escapeHtml(deliverDate.toLocaleString())}">⏳ Sends at ${escapeHtml(timeStr)} (in ${diffMinutes}m)</span>`;
+            } else {
+              scheduledBadgeHtml = `<span class="chat-queue-badge-scheduled" title="Ready to send">⏳ Sending now...</span>`;
+            }
+          }
+        }
+
         itemEl.innerHTML = `
           <div class="chat-queue-item-header">
             <span class="chat-queue-item-index">#${idx + 1}</span>
+            ${scheduledBadgeHtml}
             <div class="chat-queue-item-preview" title="Click to ${item.expanded ? 'collapse' : 'expand full message'}">
               ${escapeHtml(item.text)}
             </div>
             <div class="chat-queue-item-actions">
+              ${isFutureScheduled ? `
+                <button class="btn-queue-item-send-now" type="button" title="Send now" aria-label="Send now">
+                  ▶ Send Now
+                </button>
+              ` : ''}
               <button class="btn-queue-item-toggle" type="button" title="${item.expanded ? 'Collapse' : 'Expand'}">
                 ${item.expanded ? '▴' : '▾'}
               </button>
@@ -3719,6 +3904,29 @@ function renderChatQueue(tabObj) {
         };
         if (previewEl) previewEl.addEventListener('click', toggleFn);
         if (toggleBtn) toggleBtn.addEventListener('click', toggleFn);
+
+        const sendNowBtn = itemEl.querySelector('.btn-queue-item-send-now');
+        if (sendNowBtn) {
+          sendNowBtn.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            sendNowBtn.disabled = true;
+            const baseUrl = getSessionBaseUrl(tabObj.session.id, tabObj.session);
+            try {
+              await fetch(`${baseUrl}/v1/sessions/prompt/queue`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  session_id: tabObj.session.id,
+                  item_id: item.id,
+                  action: 'send_now'
+                })
+              });
+              loadChatQueue(tabObj);
+            } catch (err) {
+              console.error('Failed to trigger send_now for queue item:', err);
+            }
+          });
+        }
 
         const trashBtn = itemEl.querySelector('.btn-queue-item-trash');
         if (trashBtn) {
@@ -4099,7 +4307,7 @@ function ensureActiveAssistantMessage(tabObj) {
 }
 
 // Send Prompt to daemon (/v1/sessions/prompt) or queue if turn is in progress
-async function sendChatPrompt(tabObj, forcedPromptText) {
+async function sendChatPrompt(tabObj, forcedPromptText, schedulingOptions) {
   if (!tabObj || !tabObj.chatInputEl) return;
   stopActiveSpeech();
   if (tabObj.chatSuggestedChipsEl) {
@@ -4221,13 +4429,22 @@ async function sendChatPrompt(tabObj, forcedPromptText) {
   const baseUrl = getSessionBaseUrl(tabObj.session.id, tabObj.session);
   tabObj.dispatchingPrompt = true;
   try {
+    const payload = {
+      session_id: tabObj.session.id,
+      prompt: daemonPrompt
+    };
+    if (schedulingOptions && typeof schedulingOptions === 'object') {
+      if (typeof schedulingOptions.delay_seconds === 'number') {
+        payload.delay_seconds = schedulingOptions.delay_seconds;
+      }
+      if (typeof schedulingOptions.deliver_at === 'string') {
+        payload.deliver_at = schedulingOptions.deliver_at;
+      }
+    }
     const res = await fetch(`${baseUrl}/v1/sessions/prompt`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        session_id: tabObj.session.id,
-        prompt: daemonPrompt
-      })
+      body: JSON.stringify(payload)
     });
     tabObj.dispatchingPrompt = false;
 
@@ -4243,8 +4460,8 @@ async function sendChatPrompt(tabObj, forcedPromptText) {
     }
 
     const data = await res.json().catch(() => ({}));
-    if (data && data.status === 'queued') {
-      // Prompt queued on daemon - remove optimistic bubble from active chat and update queue box.
+    if (data && (data.status === 'queued' || data.status === 'scheduled')) {
+      // Prompt queued or scheduled on daemon - remove optimistic bubble from active chat and update queue box.
       // Do not touch active turn buffers or stream activity so ongoing assistant streams continue undisturbed.
       if (optimisticMsgEl && optimisticMsgEl.parentNode) {
         optimisticMsgEl.parentNode.removeChild(optimisticMsgEl);
@@ -5147,6 +5364,7 @@ export {
   isChatAutoReadEnabled,
   updateStatusPills,
   toggleChatConfigPopover,
+  toggleSchedulePopover,
   renderConfigPopoverContent,
   togglePlanMode,
   renderInteractiveBlockCard,
