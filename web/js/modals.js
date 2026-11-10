@@ -28,6 +28,7 @@ import {
 import { renderTree } from './tree.js';
 import { openSessionInTab, setTabViewMode } from './tabs.js';
 import { openDocViewerTab } from './details.js';
+import { showUploadToast } from './terminal.js';
 
 
 function showSettingsModal() {
@@ -1812,11 +1813,33 @@ function showUpdateModal(data = {}) {
       if (res.ok) {
         const hostResults = Array.isArray(resData.host_results) ? resData.host_results : [];
         const failedHosts = hostResults.filter(h => h && h.status === 'error');
+        const anyHostDeferred = hostResults.some(h => h && h.status === 'restart_deferred');
+        const localDeferred = Boolean(resData.restart_deferred);
+
+        const dismissBtn = document.getElementById('btnDismissUpdate');
+        if (dismissBtn) {
+          dismissBtn.textContent = 'Close';
+          dismissBtn.disabled = false;
+        }
+
         if (out) out.textContent = resData.message || 'Fleet update completed!';
         if (failedHosts.length > 0) {
           if (btn) {
             btn.disabled = false;
             btn.textContent = '⚠️ Retry Failed Hosts';
+          }
+        } else if (localDeferred) {
+          if (btn) {
+            btn.disabled = true;
+            btn.textContent = '⏳ Restart Scheduled After Active Turn';
+          }
+          if (typeof showUploadToast === 'function') {
+            showUploadToast('Update installed — daemon will restart when active turn finishes', 'info', 4000);
+          }
+        } else if (resData.restarting_local === false) {
+          if (btn) {
+            btn.disabled = true;
+            btn.textContent = anyHostDeferred ? '⏳ Remote Daemon(s) Draining' : '✅ Fleet Updated!';
           }
         } else {
           if (btn) btn.textContent = '✅ All Hosts Updated! Reloading...';

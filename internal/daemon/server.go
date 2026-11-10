@@ -84,6 +84,8 @@ type Server struct {
 	ntfyHook             func(payload NtfyPayload)
 	voiceBridgeMu        sync.Mutex
 	voiceBridge          *MicServeBridge
+	shutdownExitFn       func(int)
+	restartDaemonFn      func()
 }
 
 func NewServer(db *DB) *Server {
@@ -96,6 +98,7 @@ func NewServer(db *DB) *Server {
 		activeSubagents: make(map[string][]*SubagentInfo),
 		speechCache:     make(map[string]*SpeechSummary),
 		ntfyClient:      &http.Client{Timeout: 5 * time.Second},
+		restartDaemonFn: restartLocalDaemonAsync,
 	}
 	s.headless = NewHeadlessRunner(db, s.broadcast)
 	s.headless.SetOnTurnComplete(s.clearSubagents)
@@ -668,19 +671,35 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 			res.Message = strings.Join(msgLines, "\n")
 		}
 
+		var deferred bool
+		var activeCount int
+		restartFn := s.restartDaemonFn
+		if restartFn == nil {
+			restartFn = restartLocalDaemonAsync
+		}
+		if localRestartNeeded {
+			if s.headless != nil {
+				deferred, activeCount = s.headless.RequestRestartAfterDrain(restartFn)
+			} else {
+				restartFn()
+			}
+		}
+
+		if deferred {
+			res.Message = strings.TrimSpace(res.Message + fmt.Sprintf("\n⏳ Local daemon restart deferred until %d active headless turn(s) complete.", activeCount))
+		}
+
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"previous_version": res.PreviousVersion,
-			"new_version":      targetVer,
-			"method":           res.Method,
-			"message":          res.Message,
-			"host_results":     hostSummaries,
-			"restarting_local": localRestartNeeded,
+			"previous_version":      res.PreviousVersion,
+			"new_version":           targetVer,
+			"method":                res.Method,
+			"message":               res.Message,
+			"host_results":          hostSummaries,
+			"restarting_local":      localRestartNeeded && !deferred,
+			"restart_deferred":      deferred,
+			"active_headless_turns": activeCount,
 		})
-
-		if localRestartNeeded {
-			restartLocalDaemonAsync()
-		}
 
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -782,10 +801,31 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+	if r.URL.Query().Get("drain") == "true" && s.headless != nil && s.headless.ActiveTurnCount() > 0 {
+		restartFn := s.restartDaemonFn
+		if restartFn == nil {
+			restartFn = restartLocalDaemonAsync
+		}
+		deferred, activeCount := s.headless.RequestRestartAfterDrain(restartFn)
+		if deferred {
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"status":                "draining",
+				"restart_deferred":      true,
+				"active_headless_turns": activeCount,
+			})
+			return
+		}
+	}
+
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"status":"shutting_down"}`))
 	go func() {
 		time.Sleep(100 * time.Millisecond)
+		if s.shutdownExitFn != nil {
+			s.shutdownExitFn(0)
+			return
+		}
 		os.Exit(0)
 	}()
 }
@@ -798,6 +838,7 @@ func (s *Server) StartBackgroundLoop(ctx context.Context) {
 		go func() { _ = s.IngestDevWorkflowRuns() }()
 		go s.maybeAutoSyncSkillsRepo(ctx)
 		go s.PullFromPeers(ctx)
+		go s.resumeInterruptedHeadlessSessions(ctx)
 
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
@@ -832,8 +873,49 @@ func (s *Server) StartBackgroundLoop(ctx context.Context) {
 	}()
 }
 
+func (s *Server) resumeInterruptedHeadlessSessions(ctx context.Context) {
+	if s.db == nil || s.headless == nil {
+		return
+	}
+	ids := s.db.PopInterruptedHeadlessSessionIDs()
+	if len(ids) == 0 {
+		return
+	}
+
+	home, _ := os.UserHomeDir()
+	time.Sleep(200 * time.Millisecond)
+
+	for _, id := range ids {
+		if ctx.Err() != nil {
+			return
+		}
+		sess, err := s.db.GetSession(id)
+		if err != nil || sess == nil || sess.EngineType != EngineHeadless || sess.TmuxName != "" || s.headless.IsRunning(sess.ID) {
+			continue
+		}
+
+		resumePrompt := ""
+		if queued := s.headless.DequeuePrompt(sess.ID); queued != nil {
+			resumePrompt = queued.Text
+			s.headless.EmitQueueUpdate(sess.ID)
+		} else if hasConversationOnDisk(sess, home, s.db) {
+			resumePrompt = "Continue from where you left off."
+		} else if sess.LastPrompt != "" {
+			resumePrompt = sess.LastPrompt
+		} else if sess.FirstPrompt != "" {
+			resumePrompt = sess.FirstPrompt
+		}
+
+		if resumePrompt == "" {
+			continue
+		}
+
+		_ = s.headless.RunTurn(ctx, sess, resumePrompt)
+	}
+}
+
 func (s *Server) processDueScheduledPrompts(ctx context.Context) {
-	if s.headless == nil || s.db == nil {
+	if s.headless == nil || s.db == nil || s.headless.IsRestartPending() {
 		return
 	}
 

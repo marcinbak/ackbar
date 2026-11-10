@@ -960,22 +960,37 @@ func runUpdateCmd(args []string) {
 	}
 
 	// If local ackbard is currently running, restart it with the newly installed binary
-	httpClient := &http.Client{Timeout: 500 * time.Millisecond}
+	httpClient := &http.Client{Timeout: 5 * time.Second}
 	if resp, err := httpClient.Get("http://127.0.0.1:7777/v1/version"); err == nil {
 		_ = resp.Body.Close()
 		fmt.Printf("🔄 Restarting local ackbard daemon...\n")
-		_, _ = httpClient.Post("http://127.0.0.1:7777/v1/shutdown", "application/json", nil)
-		time.Sleep(400 * time.Millisecond)
-		ackbardBin := ""
-		if res != nil && res.TargetDir != "" {
-			ackbardBin = filepath.Join(res.TargetDir, "ackbard")
+		shutdownResp, sErr := httpClient.Post("http://127.0.0.1:7777/v1/shutdown?drain=true", "application/json", nil)
+		restartDeferred := false
+		if sErr == nil && shutdownResp != nil {
+			var sData struct {
+				RestartDeferred bool `json:"restart_deferred"`
+			}
+			if err := json.NewDecoder(shutdownResp.Body).Decode(&sData); err == nil {
+				restartDeferred = sData.RestartDeferred
+			}
+			_ = shutdownResp.Body.Close()
 		}
-		if ackbardBin == "" {
-			ackbardBin = "ackbard"
-		} else if _, err := os.Stat(ackbardBin); err != nil {
-			ackbardBin = "ackbard"
+
+		if restartDeferred {
+			fmt.Printf("⏳ Active headless session turn(s) in progress — ackbard will restart automatically once the current turn finishes.\n")
+		} else {
+			time.Sleep(400 * time.Millisecond)
+			ackbardBin := ""
+			if res != nil && res.TargetDir != "" {
+				ackbardBin = filepath.Join(res.TargetDir, "ackbard")
+			}
+			if ackbardBin == "" {
+				ackbardBin = "ackbard"
+			} else if _, err := os.Stat(ackbardBin); err != nil {
+				ackbardBin = "ackbard"
+			}
+			_ = exec.Command(ackbardBin).Start()
 		}
-		_ = exec.Command(ackbardBin).Start()
 	}
 
 	fmt.Printf("🎉 Successfully upgraded Ackbar to v%s!\n", info.Version)
