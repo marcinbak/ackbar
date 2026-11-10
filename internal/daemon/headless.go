@@ -75,6 +75,7 @@ func StripBilledCredentials(env []string) []string {
 type HeadlessRunner struct {
 	mu                     sync.RWMutex
 	processes              map[string]*exec.Cmd
+	activeTurns            map[string]bool
 	activePrompts          map[string]TranscriptMessage
 	subs                   map[string][]chan ChatStreamEvent
 	queues                 map[string][]*PromptQueueItem // sessionID -> queued prompts
@@ -89,6 +90,7 @@ type HeadlessRunner struct {
 func NewHeadlessRunner(db *DB, broadcast func(s *Session)) *HeadlessRunner {
 	return &HeadlessRunner{
 		processes:              make(map[string]*exec.Cmd),
+		activeTurns:            make(map[string]bool),
 		activePrompts:          make(map[string]TranscriptMessage),
 		subs:                   make(map[string][]chan ChatStreamEvent),
 		queues:                 make(map[string][]*PromptQueueItem),
@@ -211,12 +213,14 @@ func (h *HeadlessRunner) ClearInteractiveBlockAndWait(sessionID string, timeout 
 	h.mu.Lock()
 	delete(h.interactiveBlocks, sessionID)
 	delete(h.activePrompts, sessionID)
+	delete(h.activeTurns, sessionID)
 	h.respondedWhileStopping[sessionID] = true
 	parts := strings.Split(sessionID, ":")
 	if len(parts) == 3 {
 		nativeID := parts[2]
 		delete(h.interactiveBlocks, nativeID)
 		delete(h.activePrompts, nativeID)
+		delete(h.activeTurns, nativeID)
 		h.respondedWhileStopping[nativeID] = true
 	}
 
@@ -358,8 +362,9 @@ func (h *HeadlessRunner) Subscribe(sessionID string) (chan ChatStreamEvent, func
 	return ch, cleanup
 }
 
-// Emit broadcasts an event to all active listeners for sessionID
-func (h *HeadlessRunner) Emit(sessionID string, evt ChatStreamEvent) {
+// Emit broadcasts an event to all active listeners for sessionID and any alias IDs,
+// deduplicating subscriber channels so no listener receives the same event twice.
+func (h *HeadlessRunner) Emit(sessionID string, evt ChatStreamEvent, extraIDs ...string) {
 	if evt.Timestamp.IsZero() {
 		evt.Timestamp = time.Now()
 	}
@@ -370,8 +375,16 @@ func (h *HeadlessRunner) Emit(sessionID string, evt ChatStreamEvent) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
+	seen := make(map[chan ChatStreamEvent]struct{})
 	broadcastTo := func(targetID string) {
+		if targetID == "" {
+			return
+		}
 		for _, ch := range h.subs[targetID] {
+			if _, alreadySent := seen[ch]; alreadySent {
+				continue
+			}
+			seen[ch] = struct{}{}
 			select {
 			case ch <- evt:
 			default:
@@ -380,29 +393,43 @@ func (h *HeadlessRunner) Emit(sessionID string, evt ChatStreamEvent) {
 		}
 	}
 
-	broadcastTo(sessionID)
-
-	// Also broadcast to any listeners subscribed by native UUID or alternate host prefix
-	parts := strings.Split(sessionID, ":")
-	if len(parts) == 3 {
-		nativeID := parts[2]
-		if nativeID != sessionID {
-			broadcastTo(nativeID)
+	broadcastWithAliases := func(id string) {
+		if id == "" {
+			return
 		}
-		localID := fmt.Sprintf("%s:local:%s", parts[0], parts[2])
-		if localID != sessionID {
-			broadcastTo(localID)
+		broadcastTo(id)
+		parts := strings.Split(id, ":")
+		if len(parts) == 3 {
+			nativeID := parts[2]
+			if nativeID != id {
+				broadcastTo(nativeID)
+			}
+			localID := fmt.Sprintf("%s:local:%s", parts[0], parts[2])
+			if localID != id {
+				broadcastTo(localID)
+			}
+		}
+	}
+
+	broadcastWithAliases(sessionID)
+	for _, extraID := range extraIDs {
+		if extraID != "" && extraID != sessionID {
+			broadcastWithAliases(extraID)
 		}
 	}
 }
 
 // IsRunning reports whether sessionID currently has an active turn running.
-// It verifies that tracked OS processes are genuinely alive, cleaning up dead processes.
+// It verifies that tracked OS processes are genuinely alive, cleaning up dead processes
+// only when no active RunTurn goroutine is still draining output or persisting state.
 func (h *HeadlessRunner) IsRunning(sessionID string) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
 	checkProcess := func(key string, cmd *exec.Cmd) bool {
+		if h.activeTurns[key] {
+			return true
+		}
 		if cmd != nil && cmd.Process != nil && cmd.Process.Pid > 0 {
 			if !isProcessAlive(cmd.Process.Pid) {
 				delete(h.processes, key)
@@ -1008,6 +1035,7 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 	}
 
 	h.processes[sess.ID] = cmd
+	h.activeTurns[sess.ID] = true
 	h.activePrompts[sess.ID] = TranscriptMessage{
 		Role:      "user",
 		Content:   prompt,
@@ -1047,20 +1075,18 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 			h.mu.Lock()
 			delete(h.processes, origSessionID)
 			delete(h.processes, sess.ID)
+			delete(h.activeTurns, origSessionID)
+			delete(h.activeTurns, sess.ID)
 			delete(h.activePrompts, origSessionID)
 			delete(h.activePrompts, sess.ID)
 			h.mu.Unlock()
 		}()
 
-		lastTurnText, streamHadError := h.processStreamWithPrompt(origSessionID, stdoutPipe, prompt, sess)
+		lastTurnText, resultText, streamHadError := h.processStreamCore(origSessionID, stdoutPipe, prompt, false, sess)
 
 		waitErr := cmd.Wait()
 
 		h.mu.Lock()
-		delete(h.processes, origSessionID)
-		delete(h.processes, sess.ID)
-		delete(h.activePrompts, origSessionID)
-		delete(h.activePrompts, sess.ID)
 		responded := h.respondedWhileStopping[sess.ID] || h.respondedWhileStopping[origSessionID]
 		delete(h.respondedWhileStopping, sess.ID)
 		delete(h.respondedWhileStopping, origSessionID)
@@ -1116,10 +1142,7 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 					Blocked:   interactiveBlock,
 					Timestamp: time.Now(),
 				}
-				h.Emit(sess.ID, rateEvt)
-				if origSessionID != sess.ID {
-					h.Emit(origSessionID, rateEvt)
-				}
+				h.Emit(sess.ID, rateEvt, origSessionID)
 				h.EmitQueueUpdate(sess.ID)
 			}
 		}
@@ -1163,10 +1186,7 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 						Text:      errDetail,
 						IsError:   true,
 					}
-					h.Emit(sess.ID, errEvt)
-					if origSessionID != sess.ID {
-						h.Emit(origSessionID, errEvt)
-					}
+					h.Emit(sess.ID, errEvt, origSessionID)
 				} else {
 					sess.Activity = "Turn completed with status: " + waitErr.Error()
 				}
@@ -1201,21 +1221,31 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 			}
 		}
 
+		h.mu.Lock()
+		delete(h.processes, origSessionID)
+		delete(h.processes, sess.ID)
+		delete(h.activeTurns, origSessionID)
+		delete(h.activeTurns, sess.ID)
+		delete(h.activePrompts, origSessionID)
+		delete(h.activePrompts, sess.ID)
+		h.mu.Unlock()
+
 		if h.db != nil {
 			_ = h.db.SaveSession(sess)
 		}
-		if h.broadcast != nil {
-			h.broadcast(sess)
+
+		if interactiveBlock == nil {
+			completeEvt := ChatStreamEvent{
+				SessionID: sess.ID,
+				Type:      "turn_complete",
+				Text:      resultText,
+				Timestamp: time.Now(),
+			}
+			h.Emit(sess.ID, completeEvt, origSessionID)
 		}
 
-		completeEvt := ChatStreamEvent{
-			SessionID: sess.ID,
-			Type:      "turn_complete",
-			Timestamp: time.Now(),
-		}
-		h.Emit(sess.ID, completeEvt)
-		if origSessionID != sess.ID {
-			h.Emit(origSessionID, completeEvt)
+		if h.broadcast != nil {
+			h.broadcast(sess)
 		}
 
 		h.mu.RLock()
@@ -1291,6 +1321,12 @@ func (h *HeadlessRunner) handleAntigravityInit(sess *Session, convID, prompt str
 					delete(h.processes, oldID)
 					h.processes[newID] = cmd
 				}
+				if active, exists := h.activeTurns[oldID]; exists {
+					delete(h.activeTurns, oldID)
+					if active {
+						h.activeTurns[newID] = true
+					}
+				}
 				if promptMsg, exists := h.activePrompts[oldID]; exists {
 					delete(h.activePrompts, oldID)
 					h.activePrompts[newID] = promptMsg
@@ -1311,7 +1347,16 @@ func (h *HeadlessRunner) handleAntigravityInit(sess *Session, convID, prompt str
 					delete(h.paused, oldID)
 				}
 				if oldSubs, exists := h.subs[oldID]; exists {
-					h.subs[newID] = append(h.subs[newID], oldSubs...)
+					existing := make(map[chan ChatStreamEvent]struct{}, len(h.subs[newID]))
+					for _, ch := range h.subs[newID] {
+						existing[ch] = struct{}{}
+					}
+					for _, ch := range oldSubs {
+						if _, dup := existing[ch]; !dup {
+							h.subs[newID] = append(h.subs[newID], ch)
+							existing[ch] = struct{}{}
+						}
+					}
 					delete(h.subs, oldID)
 				}
 				h.mu.Unlock()
@@ -1329,6 +1374,11 @@ func (h *HeadlessRunner) handleAntigravityInit(sess *Session, convID, prompt str
 }
 
 func (h *HeadlessRunner) processStreamWithPrompt(sessionID string, r io.Reader, prompt string, optionalSess ...*Session) (string, bool) {
+	lastTurnText, _, streamHadError := h.processStreamCore(sessionID, r, prompt, true, optionalSess...)
+	return lastTurnText, streamHadError
+}
+
+func (h *HeadlessRunner) processStreamCore(sessionID string, r io.Reader, prompt string, emitTurnComplete bool, optionalSess ...*Session) (string, string, bool) {
 	var sess *Session
 	if len(optionalSess) > 0 {
 		sess = optionalSess[0]
@@ -1339,19 +1389,23 @@ func (h *HeadlessRunner) processStreamWithPrompt(sessionID string, r io.Reader, 
 	scanner.Buffer(buf, 10*1024*1024)
 
 	var lastTextBuilder strings.Builder
+	var resultText string
 	streamHadError := false
 	toolUses := make(map[string]string)
 	emittedToolStart := make(map[string]bool)
+	emittedTextBlocks := make(map[string]bool)
+	emittedThinkingBlocks := make(map[string]bool)
+	agStepText := make(map[int]string)
 	hasEmittedAssistantText := false
 	hasEmittedDeltaInTurn := false
 	needsSeparation := false
 	emitStreamEvt := func(evt ChatStreamEvent) {
-		h.Emit(sessionID, evt)
+		var extraID string
 		if sess != nil && sess.ID != "" && sess.ID != sessionID {
-			evtCopy := evt
-			evtCopy.SessionID = sess.ID
-			h.Emit(sess.ID, evtCopy)
+			extraID = sess.ID
+			evt.SessionID = sess.ID
 		}
+		h.Emit(sessionID, evt, extraID)
 	}
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -1386,16 +1440,26 @@ func (h *HeadlessRunner) processStreamWithPrompt(sessionID string, r io.Reader, 
 				if su, ok := raw["step_update"].(map[string]interface{}); ok {
 					stepType, _ := su["step_type"].(string)
 					state, _ := su["state"].(string)
+					stepIdx := -1
+					if idxFloat, ok := su["step_index"].(float64); ok {
+						stepIdx = int(idxFloat)
+					}
 
 					switch stepType {
 					case "agent_response":
 						if textDelta, ok := su["text_delta"].(string); ok && textDelta != "" {
-							lastTextBuilder.WriteString(textDelta)
-							emitStreamEvt(ChatStreamEvent{
-								SessionID: sessionID,
-								Type:      "text_delta",
-								Text:      textDelta,
-							})
+							isDuplicateDone := stepIdx >= 0 && state == "DONE" && agStepText[stepIdx] != "" && strings.Contains(agStepText[stepIdx], textDelta)
+							if !isDuplicateDone {
+								if stepIdx >= 0 {
+									agStepText[stepIdx] += textDelta
+								}
+								lastTextBuilder.WriteString(textDelta)
+								emitStreamEvt(ChatStreamEvent{
+									SessionID: sessionID,
+									Type:      "text_delta",
+									Text:      textDelta,
+								})
+							}
 						}
 						if thoughtDelta, ok := su["thought_delta"].(string); ok && thoughtDelta != "" {
 							emitStreamEvt(ChatStreamEvent{
@@ -1504,12 +1568,15 @@ func (h *HeadlessRunner) processStreamWithPrompt(sessionID string, r io.Reader, 
 							IsError:   true,
 						})
 					} else {
+						resultText = respText
 						lastTextBuilder.WriteString("\n" + respText)
-						emitStreamEvt(ChatStreamEvent{
-							SessionID: sessionID,
-							Type:      "turn_complete",
-							Text:      respText,
-						})
+						if emitTurnComplete {
+							emitStreamEvt(ChatStreamEvent{
+								SessionID: sessionID,
+								Type:      "turn_complete",
+								Text:      respText,
+							})
+						}
 					}
 				}
 			}
@@ -1609,6 +1676,8 @@ func (h *HeadlessRunner) processStreamWithPrompt(sessionID string, r io.Reader, 
 		case "tool_result":
 			needsSeparation = true
 			hasEmittedDeltaInTurn = false
+			clear(emittedTextBlocks)
+			clear(emittedThinkingBlocks)
 			outputStr := ""
 			toolID, _ := raw["tool_use_id"].(string)
 			toolName := ""
@@ -1637,6 +1706,8 @@ func (h *HeadlessRunner) processStreamWithPrompt(sessionID string, r io.Reader, 
 
 		case "user":
 			hasEmittedDeltaInTurn = false
+			clear(emittedTextBlocks)
+			clear(emittedThinkingBlocks)
 			if msg, ok := raw["message"].(map[string]interface{}); ok {
 				if contentArr, ok := msg["content"].([]interface{}); ok {
 					for _, item := range contentArr {
@@ -1699,14 +1770,18 @@ func (h *HeadlessRunner) processStreamWithPrompt(sessionID string, r io.Reader, 
 					textBlocks = nil
 				}
 				if contentStr, ok := msg["content"].(string); ok && contentStr != "" {
-					textBlocks = append(textBlocks, contentStr)
+					if !emittedTextBlocks[contentStr] {
+						emittedTextBlocks[contentStr] = true
+						textBlocks = append(textBlocks, contentStr)
+					}
 				} else if contentArr, ok := msg["content"].([]interface{}); ok {
 					for _, item := range contentArr {
 						if itemMap, ok := item.(map[string]interface{}); ok {
 							switch itemMap["type"] {
 							case "thinking":
 								if !hasEmittedDeltaInTurn {
-									if thinking, ok := itemMap["thinking"].(string); ok && thinking != "" {
+									if thinking, ok := itemMap["thinking"].(string); ok && thinking != "" && !emittedThinkingBlocks[thinking] {
+										emittedThinkingBlocks[thinking] = true
 										emitStreamEvt(ChatStreamEvent{
 											SessionID: sessionID,
 											Type:      "thought_delta",
@@ -1716,7 +1791,10 @@ func (h *HeadlessRunner) processStreamWithPrompt(sessionID string, r io.Reader, 
 								}
 							case "text":
 								if txt, ok := itemMap["text"].(string); ok && txt != "" {
-									textBlocks = append(textBlocks, txt)
+									if !emittedTextBlocks[txt] {
+										emittedTextBlocks[txt] = true
+										textBlocks = append(textBlocks, txt)
+									}
 								}
 							case "tool_use":
 								flushTextBlocks()
@@ -1765,13 +1843,16 @@ func (h *HeadlessRunner) processStreamWithPrompt(sessionID string, r io.Reader, 
 					IsError:   true,
 				})
 			} else {
-				emitStreamEvt(ChatStreamEvent{
-					SessionID: sessionID,
-					Type:      "turn_complete",
-					Text:      resText,
-				})
+				resultText = resText
+				if emitTurnComplete {
+					emitStreamEvt(ChatStreamEvent{
+						SessionID: sessionID,
+						Type:      "turn_complete",
+						Text:      resText,
+					})
+				}
 			}
 		}
 	}
-	return lastTextBuilder.String(), streamHadError
+	return lastTextBuilder.String(), resultText, streamHadError
 }

@@ -447,7 +447,9 @@ function setTabViewMode(tabId, mode) {
     if (tab.session && tab.session.engine_type === 'headless') {
       connectChatStream(tab);
     }
-    loadChatTranscript(tab);
+    if ((Date.now() - (tab._lastTranscriptLoadAt || 0)) > 200) {
+      loadChatTranscript(tab);
+    }
     if (tab.chatInputEl) {
       tab.chatInputEl.focus();
       setTimeout(() => {
@@ -1034,7 +1036,11 @@ function migrateTabId(oldId, newId, session) {
       if (tab.containerEl) tab.containerEl.classList.add('active');
     }
     if (tab.chatEventSource) {
-      connectChatStream(tab);
+      if (tab.chatStreamSessionId === oldId && tab.chatEventSource.readyState !== 2) {
+        tab.chatStreamSessionId = newId;
+      } else {
+        connectChatStream(tab);
+      }
     }
   }
 

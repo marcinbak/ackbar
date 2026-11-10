@@ -2370,9 +2370,56 @@ function loadOlderTranscriptMessages(tabObj) {
   tabObj.isLoadingOlderTranscript = false;
 }
 
-// Normalize prompt text by stripping CRLF to LF and trimming whitespace
 function normalizePromptText(text) {
   return (text || '').replace(/\r\n/g, '\n').trim();
+}
+
+function normalizeComparisonText(text) {
+  if (!text || typeof text !== 'string') return '';
+  return text
+    .replace(/!\[Attachment\]\([^)]+\)/g, '')
+    .replace(/\[Attached file:\s*"[^"]+"\](?:\s*Please inspect the attached file\.)?/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function assistantTextsOverlap(a, b) {
+  const normA = normalizeComparisonText(a);
+  const normB = normalizeComparisonText(b);
+  if (!normA || !normB) return false;
+  return normA === normB || normA.includes(normB) || normB.includes(normA);
+}
+
+function domMessageMatchesTranscript(el, msg) {
+  if (!el || !msg) return false;
+  if (msg.role === 'user') {
+    if (!el.classList.contains('user-msg')) return false;
+    const domText = normalizeComparisonText(
+      el.dataset.rawPrompt ||
+      (el.querySelector('.chat-msg-body') && el.querySelector('.chat-msg-body').textContent) ||
+      ''
+    );
+    const msgText = normalizeComparisonText(msg.content || msg.rawPrompt || '');
+    return Boolean(domText && msgText && (domText === msgText || domText.startsWith(msgText) || msgText.startsWith(domText)));
+  }
+  if (msg.role === 'assistant') {
+    if (!el.classList.contains('assistant-msg') || el.classList.contains('in-flight')) return false;
+    const domText = normalizeComparisonText(
+      el.dataset.rawContent ||
+      (el.querySelector('.chat-msg-body') && el.querySelector('.chat-msg-body').textContent) ||
+      ''
+    );
+    const msgText = normalizeComparisonText(msg.content || '');
+    if (domText !== msgText) return false;
+    const hasMsgAttachment = /!\[Attachment\]\([^)]+\)/.test(msg.content || '');
+    const hasDomAttachment = /!\[Attachment\]\([^)]+\)/.test(el.dataset.rawContent || '');
+    if (hasMsgAttachment !== hasDomAttachment) return false;
+    const msgToolCount = Array.isArray(msg.tool_calls) ? msg.tool_calls.length : 0;
+    const domToolCount = el.querySelectorAll('.chat-tool-call-item').length;
+    if (msgToolCount !== domToolCount) return false;
+    return true;
+  }
+  return el.classList.contains('system-msg');
 }
 
 // Coalesce consecutive assistant transcript messages into single turns and deduplicate consecutive identical user turns
@@ -2384,8 +2431,14 @@ function coalesceTranscriptMessages(messages) {
     if (last && last.role === 'assistant' && msg.role === 'assistant') {
       if (msg.content) {
         if (last.content) {
-          if (!last.content.includes(msg.content)) {
-            last.content += '\n\n' + msg.content;
+          const lastComp = normalizeComparisonText(last.content);
+          const msgComp = normalizeComparisonText(msg.content);
+          if (msgComp && !lastComp.includes(msgComp)) {
+            if (lastComp && msgComp.includes(lastComp)) {
+              last.content = msg.content;
+            } else {
+              last.content += '\n\n' + msg.content;
+            }
           }
         } else {
           last.content = msg.content;
@@ -2529,86 +2582,135 @@ async function loadChatTranscript(tabObj) {
         return;
       }
 
-      container.innerHTML = '';
+      const startIndex = total <= CHAT_PAGE_SIZE ? 0 : (total - CHAT_PAGE_SIZE);
+      const visibleMessages = total <= CHAT_PAGE_SIZE ? coalesced : coalesced.slice(startIndex);
+      const inFlightOnDisk = !inFlightPrompt || isPromptInTranscriptTail(coalesced, inFlightPrompt.text, inFlightPrompt.timestamp, tabObj);
 
-      if (total <= CHAT_PAGE_SIZE) {
-        tabObj.loadedTranscriptStartIndex = 0;
-        for (const msg of coalesced) {
-          appendChatMessage(tabObj, msg);
-        }
-      } else {
-        tabObj.loadedTranscriptStartIndex = total - CHAT_PAGE_SIZE;
-        renderLoadMoreBanner(tabObj);
-        const initialMessages = coalesced.slice(tabObj.loadedTranscriptStartIndex);
-        for (const msg of initialMessages) {
-          appendChatMessage(tabObj, msg);
-        }
-      }
-
-      // Re-attach optimistic in-flight user prompt if not yet present in on-disk transcript
-      if (inFlightPrompt && inFlightPrompt.el) {
-        if (isPromptInTranscriptTail(coalesced, inFlightPrompt.text, inFlightPrompt.timestamp, tabObj)) {
-          if (tabObj.sending || isSessionWorking(tabObj.session)) {
-            const userBubbles = container.querySelectorAll('.chat-msg.user-msg');
-            if (userBubbles.length > 0) {
-              const lastUserEl = userBubbles[userBubbles.length - 1];
-              if (!inFlightPrompt.el.querySelector('.chat-msg-attachments') || lastUserEl.querySelector('.chat-msg-attachments')) {
-                tabObj.inFlightPrompt.el = lastUserEl;
+      let reusedDom = false;
+      if (!liveTurnMsgEl && inFlightOnDisk) {
+        const domMsgs = container.querySelectorAll('.chat-msg');
+        if (domMsgs.length === visibleMessages.length && domMsgs.length > 0) {
+          let prefixMatches = true;
+          for (let i = 0; i < visibleMessages.length - 1; i++) {
+            if (!domMessageMatchesTranscript(domMsgs[i], visibleMessages[i])) {
+              prefixMatches = false;
+              break;
+            }
+          }
+          if (prefixMatches) {
+            const lastIdx = visibleMessages.length - 1;
+            const lastDomEl = domMsgs[lastIdx];
+            const lastVisibleMsg = visibleMessages[lastIdx];
+            if (domMessageMatchesTranscript(lastDomEl, lastVisibleMsg)) {
+              reusedDom = true;
+              tabObj.loadedTranscriptStartIndex = startIndex;
+              for (let i = 0; i < visibleMessages.length; i++) {
+                if (typeof visibleMessages[i].index === 'number') {
+                  domMsgs[i].dataset.msgIndex = String(visibleMessages[i].index);
+                }
+              }
+              if (inFlightPrompt && !tabObj.sending && !isSessionWorking(tabObj.session)) {
+                tabObj.inFlightPrompt = null;
+              }
+              tabObj.lastCompletedTurn = null;
+            } else if (lastVisibleMsg.role === 'assistant' && lastDomEl.classList.contains('assistant-msg')) {
+              const recentPending = recentTurn && recentTurn.assistantText && !assistantTextsOverlap(lastVisibleMsg.content || '', recentTurn.assistantText);
+              if (!recentPending) {
+                const replacementEl = createChatMessageElement(tabObj, lastVisibleMsg);
+                if (replacementEl) {
+                  container.insertBefore(replacementEl, lastDomEl);
+                  lastDomEl.remove();
+                  reusedDom = true;
+                  tabObj.loadedTranscriptStartIndex = startIndex;
+                  if (inFlightPrompt && !tabObj.sending && !isSessionWorking(tabObj.session)) {
+                    tabObj.inFlightPrompt = null;
+                  }
+                  tabObj.lastCompletedTurn = null;
+                }
               }
             }
-          } else {
-            tabObj.inFlightPrompt = null;
           }
-        } else {
-          container.appendChild(inFlightPrompt.el);
         }
       }
 
-      // Re-attach live streaming assistant bubble and activity indicator if a turn is currently in flight
-      if (liveTurnMsgEl) {
-        const lastMsg = coalesced[coalesced.length - 1];
-        const activeNorm = normalizePromptText(tabObj.activeTurnBuffer || '');
-        const lastAssistantNorm = (lastMsg && lastMsg.role === 'assistant') ? normalizePromptText(lastMsg.content || '') : '';
-        if (lastMsg && lastMsg.role === 'assistant' && activeNorm && lastAssistantNorm &&
-            (lastAssistantNorm.includes(activeNorm) || activeNorm.includes(lastAssistantNorm))) {
-          if (container.lastElementChild && container.lastElementChild.classList.contains('assistant-msg')) {
-            container.lastElementChild.remove();
+      if (!reusedDom) {
+        container.innerHTML = '';
+
+        tabObj.loadedTranscriptStartIndex = startIndex;
+        if (total > CHAT_PAGE_SIZE) {
+          renderLoadMoreBanner(tabObj);
+        }
+        for (const msg of visibleMessages) {
+          appendChatMessage(tabObj, msg);
+        }
+
+        // Re-attach optimistic in-flight user prompt if not yet present in on-disk transcript
+        if (inFlightPrompt && inFlightPrompt.el) {
+          if (inFlightOnDisk) {
+            if (tabObj.sending || isSessionWorking(tabObj.session)) {
+              const userBubbles = container.querySelectorAll('.chat-msg.user-msg');
+              if (userBubbles.length > 0) {
+                const lastUserEl = userBubbles[userBubbles.length - 1];
+                if (!inFlightPrompt.el.querySelector('.chat-msg-attachments') || lastUserEl.querySelector('.chat-msg-attachments')) {
+                  tabObj.inFlightPrompt.el = lastUserEl;
+                }
+              }
+            } else {
+              tabObj.inFlightPrompt = null;
+            }
+          } else {
+            container.appendChild(inFlightPrompt.el);
           }
         }
-        container.appendChild(liveTurnMsgEl);
-        tabObj.activeTurnMsgEl = liveTurnMsgEl;
-      } else if (recentTurn) {
-        // Preserve just-completed turn bubbles if on-disk transcript hasn't flushed the final turn yet
-        let missingUser = false;
-        if (recentTurn.userEl && recentTurn.userText) {
-          if (!isPromptInTranscriptTail(coalesced, recentTurn.userText, recentTurn.timestamp - 60000, tabObj)) {
-            missingUser = true;
-          }
-        }
-        let missingAssistant = false;
-        if (recentTurn.assistantEl) {
+
+        // Re-attach live streaming assistant bubble and activity indicator if a turn is currently in flight
+        if (liveTurnMsgEl) {
           const lastMsg = coalesced[coalesced.length - 1];
-          const lastAssistantNorm = (lastMsg && lastMsg.role === 'assistant') ? normalizePromptText(lastMsg.content || '') : '';
-          if (!lastMsg || lastMsg.role !== 'assistant' ||
-              (recentTurn.assistantText && (!lastAssistantNorm || (!lastAssistantNorm.includes(recentTurn.assistantText) && !recentTurn.assistantText.includes(lastAssistantNorm))))) {
-            missingAssistant = true;
+          if (lastMsg && lastMsg.role === 'assistant' &&
+              (inFlightOnDisk || assistantTextsOverlap(tabObj.activeTurnBuffer || '', lastMsg.content || ''))) {
+            if (container.lastElementChild && container.lastElementChild.classList.contains('assistant-msg')) {
+              container.lastElementChild.remove();
+            }
           }
-        }
-        if (missingUser && recentTurn.userEl) {
-          container.appendChild(recentTurn.userEl);
-        }
-        if (missingAssistant && recentTurn.assistantEl) {
-          container.appendChild(recentTurn.assistantEl);
-        }
-        if (missingUser || missingAssistant) {
-          if (!tabObj._pendingTranscriptFollowup) {
-            tabObj._pendingTranscriptFollowup = setTimeout(() => {
-              tabObj._pendingTranscriptFollowup = null;
-              loadChatTranscript(tabObj);
-            }, 600);
+          container.appendChild(liveTurnMsgEl);
+          tabObj.activeTurnMsgEl = liveTurnMsgEl;
+        } else if (recentTurn) {
+          // Preserve just-completed turn bubbles if on-disk transcript hasn't flushed the final turn yet
+          let missingUser = false;
+          if (recentTurn.userEl && recentTurn.userText) {
+            if (!isPromptInTranscriptTail(coalesced, recentTurn.userText, recentTurn.timestamp - 60000, tabObj)) {
+              missingUser = true;
+            }
           }
-        } else {
-          tabObj.lastCompletedTurn = null;
+          let missingAssistant = false;
+          if (recentTurn.assistantEl) {
+            const lastMsg = coalesced[coalesced.length - 1];
+            if (!lastMsg || lastMsg.role !== 'assistant' ||
+                (recentTurn.assistantText && !assistantTextsOverlap(lastMsg.content || '', recentTurn.assistantText))) {
+              missingAssistant = true;
+            }
+          }
+          if (missingUser && recentTurn.userEl) {
+            container.appendChild(recentTurn.userEl);
+          }
+          if (missingAssistant && recentTurn.assistantEl) {
+            if (!missingUser && container.lastElementChild && container.lastElementChild.classList.contains('assistant-msg')) {
+              container.lastElementChild.remove();
+            }
+            container.appendChild(recentTurn.assistantEl);
+          }
+          if (missingUser || missingAssistant) {
+            const retries = (recentTurn.followupRetries || 0) + 1;
+            recentTurn.followupRetries = retries;
+            if (retries <= 3 && !tabObj._pendingTranscriptFollowup) {
+              tabObj._pendingTranscriptFollowup = setTimeout(() => {
+                tabObj._pendingTranscriptFollowup = null;
+                loadChatTranscript(tabObj);
+              }, 600);
+            }
+          } else {
+            tabObj.lastCompletedTurn = null;
+          }
         }
       }
       if (liveActivityEl && hasActiveTurnUI(tabObj)) {
@@ -4493,6 +4595,15 @@ async function sendChatPrompt(tabObj, forcedPromptText, schedulingOptions) {
     tabObj.chatInputEl.focus();
   }
 
+  const hadActiveTurnBeforeDispatch = hasActiveTurnUI(tabObj);
+  if (!hadActiveTurnBeforeDispatch) {
+    tabObj.activeTurnMsgEl = null;
+    tabObj.activeTurnBuffer = '';
+    tabObj.activeTurnHadTool = false;
+    tabObj.activeTurnTools = [];
+    tabObj.activeTurnThinking = '';
+  }
+
   connectChatStream(tabObj);
   const baseUrl = getSessionBaseUrl(tabObj.session.id, tabObj.session);
   tabObj.dispatchingPrompt = true;
@@ -4541,12 +4652,14 @@ async function sendChatPrompt(tabObj, forcedPromptText, schedulingOptions) {
     }
 
     // Prompt accepted for immediate execution (running/sent):
-    // Now (and only now) reset active turn state and display stream activity
-    tabObj.activeTurnMsgEl = null;
-    tabObj.activeTurnBuffer = '';
-    tabObj.activeTurnHadTool = false;
-    tabObj.activeTurnTools = [];
-    tabObj.activeTurnThinking = '';
+    // Only reset turn buffers if a previous turn was active when dispatch began and no new stream events arrived yet
+    if (hadActiveTurnBeforeDispatch && !tabObj.activeTurnMsgEl && !tabObj.activeTurnBuffer) {
+      tabObj.activeTurnMsgEl = null;
+      tabObj.activeTurnBuffer = '';
+      tabObj.activeTurnHadTool = false;
+      tabObj.activeTurnTools = [];
+      tabObj.activeTurnThinking = '';
+    }
     setChatSending(tabObj, true);
 
     // Retain tabObj.inFlightPrompt so turn_start can claim it.
@@ -4585,7 +4698,6 @@ async function sendChatPrompt(tabObj, forcedPromptText, schedulingOptions) {
   }
 }
 
-// Disconnect SSE for chat turn events
 function disconnectChatStream(tabObj) {
   if (!tabObj) return;
   if (tabObj.chatReconnectTimer) {
@@ -4595,6 +4707,10 @@ function disconnectChatStream(tabObj) {
   if (tabObj._pendingTranscriptFollowup) {
     clearTimeout(tabObj._pendingTranscriptFollowup);
     tabObj._pendingTranscriptFollowup = null;
+  }
+  if (tabObj._idleReconcileTimer) {
+    clearTimeout(tabObj._idleReconcileTimer);
+    tabObj._idleReconcileTimer = null;
   }
   if (tabObj.chatEventSource) {
     try {
@@ -4704,6 +4820,7 @@ function flushActiveTurnStreamRender(tabObj) {
   }
   const currentMsgEl = tabObj.activeTurnMsgEl || (tabObj.chatMessagesEl ? tabObj.chatMessagesEl.querySelector('.chat-msg.assistant-msg.in-flight') : null);
   if (!currentMsgEl) return;
+  currentMsgEl.dataset.rawContent = tabObj.activeTurnBuffer || '';
   const bodyEl = currentMsgEl.querySelector('.chat-msg-body');
   if (bodyEl && tabObj.activeTurnBuffer !== undefined) {
     const html = renderMarkdown(tabObj.activeTurnBuffer);
@@ -5070,10 +5187,34 @@ function handleChatStreamEvent(tabObj, evt) {
 
     case 'done':
     case 'turn_complete': {
+      if (tabObj._idleReconcileTimer) {
+        clearTimeout(tabObj._idleReconcileTimer);
+        tabObj._idleReconcileTimer = null;
+      }
       flushActiveTurnStreamRender(tabObj);
       tabObj.runningSubagents = [];
       renderSubagentsBar(tabObj);
       hideInStreamActivity(tabObj);
+
+      const hasTurnContext = Boolean(
+        tabObj.sending ||
+        tabObj.inFlightPrompt ||
+        tabObj.activeTurnMsgEl ||
+        tabObj.activeTurnBuffer ||
+        (tabObj.activeTurnTools && tabObj.activeTurnTools.length > 0)
+      );
+      if (!hasTurnContext) {
+        const domAssistants = tabObj.chatMessagesEl.querySelectorAll('.chat-msg.assistant-msg');
+        const lastDomAssistant = domAssistants.length > 0 ? domAssistants[domAssistants.length - 1] : null;
+        const lastDomText = lastDomAssistant
+          ? (lastDomAssistant.dataset.rawContent || (lastDomAssistant.querySelector('.chat-msg-body') && lastDomAssistant.querySelector('.chat-msg-body').textContent) || '')
+          : '';
+        if (!evt.text || (lastDomText && assistantTextsOverlap(lastDomText, evt.text)) ||
+            (tabObj.lastCompletedTurn && assistantTextsOverlap(tabObj.lastCompletedTurn.assistantText || '', evt.text))) {
+          setChatSending(tabObj, false);
+          break;
+        }
+      }
 
       if (!tabObj.activeTurnBuffer && evt.text) {
         tabObj.activeTurnBuffer = evt.text;
@@ -5099,6 +5240,7 @@ function handleChatStreamEvent(tabObj, evt) {
         }
 
         if (tabObj.activeTurnBuffer) {
+          activeMsg.dataset.rawContent = tabObj.activeTurnBuffer;
           const bodyEl = activeMsg.querySelector('.chat-msg-body');
           if (bodyEl) {
             const html = renderMarkdown(tabObj.activeTurnBuffer);
@@ -5262,7 +5404,12 @@ function onSessionUpdated(updatedSess) {
     }
 
     if (tabObj.chatStreamSessionId && tabObj.chatStreamSessionId !== updatedSess.id) {
-      connectChatStream(tabObj);
+      if (updatedSess.old_id && tabObj.chatStreamSessionId === updatedSess.old_id &&
+          tabObj.chatEventSource && tabObj.chatEventSource.readyState !== 2) {
+        tabObj.chatStreamSessionId = updatedSess.id;
+      } else {
+        connectChatStream(tabObj);
+      }
     }
 
     if (typeof updatedSess.running_subagents === 'number') {
@@ -5278,10 +5425,29 @@ function onSessionUpdated(updatedSess) {
     const activeTurnUI = hasActiveTurnUI(tabObj);
 
     if (!working && activeTurnUI && !tabObj.dispatchingPrompt) {
-      setChatSending(tabObj, false);
-      loadChatTranscript(tabObj);
-      loadChatQueue(tabObj);
+      const hasOpenStream = tabObj.session.engine_type === 'headless' &&
+        tabObj.chatEventSource && tabObj.chatEventSource.readyState !== 2;
+      if (hasOpenStream) {
+        if (!tabObj._idleReconcileTimer) {
+          tabObj._idleReconcileTimer = setTimeout(() => {
+            tabObj._idleReconcileTimer = null;
+            if (!isSessionWorking(tabObj.session) && hasActiveTurnUI(tabObj) && !tabObj.dispatchingPrompt) {
+              setChatSending(tabObj, false);
+              loadChatTranscript(tabObj);
+              loadChatQueue(tabObj);
+            }
+          }, 350);
+        }
+      } else {
+        setChatSending(tabObj, false);
+        loadChatTranscript(tabObj);
+        loadChatQueue(tabObj);
+      }
     } else if (working) {
+      if (tabObj._idleReconcileTimer) {
+        clearTimeout(tabObj._idleReconcileTimer);
+        tabObj._idleReconcileTimer = null;
+      }
       if (tabObj.session.engine_type === 'headless' || tabObj.viewMode === 'chat') {
         setChatSending(tabObj, true);
         if (tabObj.session.engine_type === 'headless' && tabObj.viewMode === 'chat') {
