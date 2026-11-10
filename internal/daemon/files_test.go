@@ -493,7 +493,7 @@ globalThis.document = {
   querySelectorAll: () => [],
   addEventListener: () => {}
 };
-const { preprocessCarouselBlocks, preprocessLatexMath, convertLatexToHtml, processMarkdownAlerts, preprocessMarkdownExtensions } = await import('./web/js/utils.js');
+const { preprocessCarouselBlocks, preprocessLatexMath, convertLatexToHtml, processMarkdownAlerts, preprocessMarkdownExtensions, renderSlideContent } = await import('./web/js/utils.js');
 
 const t1 = preprocessCarouselBlocks('` + "````carousel\\n![A](a.png)\\n<!-- slide -->\\n![B](b.png)\\n````" + `');
 if (!t1.includes('class="chat-carousel"')) throw new Error('t1 missing chat-carousel');
@@ -542,6 +542,28 @@ if (m4.includes('math-inline') || !m4.includes('$50 USD and $100')) throw new Er
 const m5 = preprocessMarkdownExtensions('` + "```js\\nconst x = \"$foo\";\\n```" + `\\nHere is $\\rightarrow$');
 if (!m5.includes('const x = "$foo";') || !m5.includes('<span class="math-inline">→</span>')) throw new Error('m5 code block was modified or math was not processed: ' + m5);
 
+// Regression tests for inline code and LaTeX math interaction
+const m6 = preprocessMarkdownExtensions('Cost is $10 for \x60item_a\x60 and $20 for \x60item_b\x60');
+if (!m6.includes('\x60item_a\x60') || !m6.includes('\x60item_b\x60') || m6.includes('math-inline') || m6.includes('<sub>') || m6.includes('MDCODE') || m6.includes('MD_CODE_TOKEN')) {
+  throw new Error('m6 inline code was corrupted or placeholder leaked: ' + m6);
+}
+
+const manySpans = Array.from({length: 60}, (_, i) => '\x60code_' + i + '\x60').join(' ') + ' costs $50 and $100';
+const m7 = preprocessMarkdownExtensions(manySpans);
+if (!m7.includes('\x60code_55\x60') || m7.includes('MDCODE') || m7.includes('MD_CODE_TOKEN') || m7.includes('math-inline') || m7.includes('<sub>')) {
+  throw new Error('m7 multi-span unmasking failed or placeholder leaked: ' + m7);
+}
+
+const s1 = renderSlideContent('$10 and \x60slide_code\x60 and $20');
+if (s1.includes('SLIDECODE') || s1.includes('SLIDE_CODE_TOKEN') || s1.includes('math-inline') || s1.includes('<sub>') || !s1.includes('\x60slide_code\x60')) {
+  throw new Error('s1 renderSlideContent corrupted code or leaked placeholder: ' + s1);
+}
+
+const t7 = preprocessCarouselBlocks('` + "````carousel\\n$10 and `slide_code` and $20\\n<!-- slide -->\\nSlide 2\\n````" + `');
+if (t7.includes('SLIDECODE') || t7.includes('SLIDE_CODE_TOKEN') || t7.includes('math-inline') || t7.includes('<sub>') || !t7.includes('\x60slide_code\x60')) {
+  throw new Error('t7 carousel slide corrupted code or leaked placeholder: ' + t7);
+}
+
 // GFM Alerts Unit Tests
 const a1 = processMarkdownAlerts('<blockquote><p>[!NOTE]<br>Useful information here.</p></blockquote>');
 if (!a1.includes('markdown-alert-note') || !a1.includes('ℹ️') || !a1.includes('Useful information here.')) throw new Error('a1 alert NOTE failed: ' + a1);
@@ -561,6 +583,10 @@ console.log('NODE_CAROUSEL_TESTS_PASS');
 			t.Errorf("Expected node output to contain NODE_CAROUSEL_TESTS_PASS, got: %s", string(out))
 		}
 	}
+}
+
+func TestEmbeddedWebStaticFiles_ContainCarouselSupport(t *testing.T) {
+	TestChatCarousel(t)
 }
 
 func TestSplitFilePathAndLine(t *testing.T) {
