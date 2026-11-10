@@ -75,6 +75,7 @@ func StripBilledCredentials(env []string) []string {
 type HeadlessRunner struct {
 	mu                     sync.RWMutex
 	processes              map[string]*exec.Cmd
+	activeSessions         map[string]*Session
 	activeTurns            map[string]bool
 	activePrompts          map[string]TranscriptMessage
 	subs                   map[string][]chan ChatStreamEvent
@@ -90,6 +91,7 @@ type HeadlessRunner struct {
 func NewHeadlessRunner(db *DB, broadcast func(s *Session)) *HeadlessRunner {
 	return &HeadlessRunner{
 		processes:              make(map[string]*exec.Cmd),
+		activeSessions:         make(map[string]*Session),
 		activeTurns:            make(map[string]bool),
 		activePrompts:          make(map[string]TranscriptMessage),
 		subs:                   make(map[string][]chan ChatStreamEvent),
@@ -499,6 +501,73 @@ func (h *HeadlessRunner) GetActiveTurnPrompt(sessionID string) (TranscriptMessag
 	}
 
 	return TranscriptMessage{}, false
+}
+
+// MigrateSession rebinds in-memory process, turn, prompt, queue, and subscriber state from oldID to newID.
+func (h *HeadlessRunner) MigrateSession(oldID, newID string) {
+	if oldID == "" || newID == "" || oldID == newID {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if cmd, exists := h.processes[oldID]; exists {
+		delete(h.processes, oldID)
+		h.processes[newID] = cmd
+	}
+	if activeSess, exists := h.activeSessions[oldID]; exists {
+		delete(h.activeSessions, oldID)
+		h.activeSessions[newID] = activeSess
+		if activeSess != nil {
+			activeSess.OldID = oldID
+			activeSess.ID = newID
+			if parts := strings.Split(newID, ":"); len(parts) == 3 {
+				activeSess.NativeID = parts[2]
+			}
+		}
+	}
+	if active, exists := h.activeTurns[oldID]; exists {
+		delete(h.activeTurns, oldID)
+		if active {
+			h.activeTurns[newID] = true
+		}
+	}
+	if promptMsg, exists := h.activePrompts[oldID]; exists {
+		delete(h.activePrompts, oldID)
+		h.activePrompts[newID] = promptMsg
+	}
+	if block, exists := h.interactiveBlocks[oldID]; exists {
+		delete(h.interactiveBlocks, oldID)
+		h.interactiveBlocks[newID] = block
+	}
+	if oldQueue, exists := h.queues[oldID]; exists {
+		for _, item := range oldQueue {
+			if item != nil {
+				item.SessionID = newID
+			}
+		}
+		h.queues[newID] = append(oldQueue, h.queues[newID]...)
+		delete(h.queues, oldID)
+	}
+	if oldPaused, exists := h.paused[oldID]; exists {
+		if oldPaused {
+			h.paused[newID] = true
+		}
+		delete(h.paused, oldID)
+	}
+	if oldSubs, exists := h.subs[oldID]; exists {
+		existing := make(map[chan ChatStreamEvent]struct{}, len(h.subs[newID]))
+		for _, ch := range h.subs[newID] {
+			existing[ch] = struct{}{}
+		}
+		for _, ch := range oldSubs {
+			if _, dup := existing[ch]; !dup {
+				h.subs[newID] = append(h.subs[newID], ch)
+				existing[ch] = struct{}{}
+			}
+		}
+		delete(h.subs, oldID)
+	}
 }
 
 func (h *HeadlessRunner) resolveQueueKey(sessionID string) string {
@@ -1023,6 +1092,7 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 		return fmt.Errorf("failed to pipe stdout: %w", err)
 	}
 
+	turnStart := time.Now()
 	if err := cmd.Start(); err != nil {
 		if devNull != nil {
 			_ = devNull.Close()
@@ -1035,11 +1105,12 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 	}
 
 	h.processes[sess.ID] = cmd
+	h.activeSessions[sess.ID] = sess
 	h.activeTurns[sess.ID] = true
 	h.activePrompts[sess.ID] = TranscriptMessage{
 		Role:      "user",
 		Content:   prompt,
-		Timestamp: time.Now(),
+		Timestamp: turnStart,
 	}
 	h.mu.Unlock()
 
@@ -1047,7 +1118,7 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 	sess.State = StateWorking
 	sess.Blocked = nil
 	sess.Activity = "Thinking..."
-	sess.LastEventAt = time.Now()
+	sess.LastEventAt = turnStart
 	sess.PID = cmd.Process.Pid
 	if sess.FirstPrompt == "" {
 		sess.FirstPrompt = prompt
@@ -1065,7 +1136,7 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 		SessionID: sess.ID,
 		Type:      "turn_start",
 		Text:      prompt,
-		Timestamp: time.Now(),
+		Timestamp: turnStart,
 	})
 
 	// Process output stream asynchronously
@@ -1075,6 +1146,8 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 			h.mu.Lock()
 			delete(h.processes, origSessionID)
 			delete(h.processes, sess.ID)
+			delete(h.activeSessions, origSessionID)
+			delete(h.activeSessions, sess.ID)
 			delete(h.activeTurns, origSessionID)
 			delete(h.activeTurns, sess.ID)
 			delete(h.activePrompts, origSessionID)
@@ -1316,50 +1389,7 @@ func (h *HeadlessRunner) handleAntigravityInit(sess *Session, convID, prompt str
 				if h.db != nil {
 					_ = h.db.DeleteSession(oldID)
 				}
-				h.mu.Lock()
-				if cmd, exists := h.processes[oldID]; exists {
-					delete(h.processes, oldID)
-					h.processes[newID] = cmd
-				}
-				if active, exists := h.activeTurns[oldID]; exists {
-					delete(h.activeTurns, oldID)
-					if active {
-						h.activeTurns[newID] = true
-					}
-				}
-				if promptMsg, exists := h.activePrompts[oldID]; exists {
-					delete(h.activePrompts, oldID)
-					h.activePrompts[newID] = promptMsg
-				}
-				if oldQueue, exists := h.queues[oldID]; exists {
-					for _, item := range oldQueue {
-						if item != nil {
-							item.SessionID = newID
-						}
-					}
-					h.queues[newID] = append(oldQueue, h.queues[newID]...)
-					delete(h.queues, oldID)
-				}
-				if oldPaused, exists := h.paused[oldID]; exists {
-					if oldPaused {
-						h.paused[newID] = true
-					}
-					delete(h.paused, oldID)
-				}
-				if oldSubs, exists := h.subs[oldID]; exists {
-					existing := make(map[chan ChatStreamEvent]struct{}, len(h.subs[newID]))
-					for _, ch := range h.subs[newID] {
-						existing[ch] = struct{}{}
-					}
-					for _, ch := range oldSubs {
-						if _, dup := existing[ch]; !dup {
-							h.subs[newID] = append(h.subs[newID], ch)
-							existing[ch] = struct{}{}
-						}
-					}
-					delete(h.subs, oldID)
-				}
-				h.mu.Unlock()
+				h.MigrateSession(oldID, newID)
 			}
 		}
 	}

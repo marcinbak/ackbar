@@ -2383,6 +2383,16 @@ function normalizeComparisonText(text) {
     .trim();
 }
 
+function promptsMatchForTurn(a, b) {
+  const normA = normalizeComparisonText(a);
+  const normB = normalizeComparisonText(b);
+  if (!normA || !normB) return false;
+  if (normA === normB) return true;
+  const shorter = normA.length <= normB.length ? normA : normB;
+  const longer = normA.length <= normB.length ? normB : normA;
+  return longer.startsWith(shorter) && (shorter.startsWith('/') || shorter.length >= 64);
+}
+
 function assistantTextsOverlap(a, b) {
   const normA = normalizeComparisonText(a);
   const normB = normalizeComparisonText(b);
@@ -2454,8 +2464,8 @@ function coalesceTranscriptMessages(messages) {
         last.timestamp = msg.timestamp;
       }
     } else if (last && last.role === 'user' && msg.role === 'user') {
-      const lastText = normalizePromptText(last.content || last.rawPrompt || '');
-      const currText = normalizePromptText(msg.content || msg.rawPrompt || '');
+      const lastText = normalizeComparisonText(last.content || last.rawPrompt || '');
+      const currText = normalizeComparisonText(msg.content || msg.rawPrompt || '');
       if (lastText && currText && lastText === currText) {
         if (Array.isArray(msg.attachments) && msg.attachments.length > 0) {
           last.attachments = [...(last.attachments || []), ...msg.attachments];
@@ -2483,41 +2493,44 @@ function isPromptInTranscriptTail(coalesced, promptNorm, promptTimestamp, tabObj
   if (!Array.isArray(coalesced) || coalesced.length === 0 || !promptNorm) {
     return false;
   }
-  const matchesText = (msg) => {
-    if (!msg || msg.role !== 'user') return false;
-    const norm = normalizePromptText(msg.content || msg.rawPrompt || '');
-    return Boolean(norm && (norm === promptNorm || norm.startsWith(promptNorm) || promptNorm.startsWith(norm)));
-  };
 
-  const last = coalesced[coalesced.length - 1];
-  if (last && last.role === 'user') {
-    return matchesText(last);
-  }
-
-  if (last && last.role === 'assistant' && coalesced.length >= 2) {
-    const prev = coalesced[coalesced.length - 2];
-    if (prev && prev.role === 'user') {
-      const prevNorm = normalizePromptText(prev.content || prev.rawPrompt || '');
-      const prevMatchesExact = Boolean(prevNorm && (prevNorm === promptNorm || prevNorm.startsWith(promptNorm + ' [Attached file:')));
-      if (prevMatchesExact) {
-        const parseTime = (ts) => {
-          if (!ts) return NaN;
-          const t = (typeof ts === 'number') ? ts : new Date(ts).getTime();
-          return isNaN(t) ? NaN : t;
-        };
-        const msgTime = parseTime(last.timestamp) || parseTime(prev.timestamp);
-        if (promptTimestamp && !isNaN(msgTime)) {
-          return msgTime >= (promptTimestamp - 5000);
-        }
-        if (tabObj) {
-          return !tabObj.sending && !isSessionWorking(tabObj.session);
-        }
-        return true;
-      }
+  let userIdx = -1;
+  for (let i = coalesced.length - 1; i >= 0; i--) {
+    if (coalesced[i] && coalesced[i].role === 'user') {
+      userIdx = i;
+      break;
     }
   }
+  if (userIdx < 0) return false;
 
-  return false;
+  const userMsg = coalesced[userIdx];
+  if (!promptsMatchForTurn(userMsg.content || userMsg.rawPrompt || '', promptNorm)) {
+    return false;
+  }
+
+  if (userIdx === coalesced.length - 1) {
+    return true;
+  }
+
+  const parseTime = (ts) => {
+    if (!ts) return NaN;
+    const t = (typeof ts === 'number') ? ts : new Date(ts).getTime();
+    return isNaN(t) ? NaN : t;
+  };
+  const last = coalesced[coalesced.length - 1];
+  const lastTime = parseTime(last && last.timestamp);
+  const userTime = parseTime(userMsg.timestamp);
+  const msgTime = (!isNaN(lastTime) && !isNaN(userTime))
+    ? Math.max(lastTime, userTime)
+    : (!isNaN(lastTime) ? lastTime : userTime);
+
+  if (promptTimestamp && !isNaN(msgTime)) {
+    return msgTime >= (promptTimestamp - 5000);
+  }
+  if (tabObj) {
+    return !tabObj.sending && !isSessionWorking(tabObj.session);
+  }
+  return true;
 }
 
 // Load past conversation messages from daemon transcript (latest first, paginated upward)
@@ -2545,6 +2558,19 @@ async function loadChatTranscript(tabObj) {
       const coalesced = coalesceTranscriptMessages(data.messages);
       tabObj.allTranscriptMessages = coalesced;
       tabObj.isLoadingOlderTranscript = false;
+
+      const activePromptFromDaemon = (data.active_prompt && data.active_prompt.text)
+        ? data.active_prompt
+        : null;
+      const daemonActiveTs = (activePromptFromDaemon && activePromptFromDaemon.timestamp)
+        ? new Date(activePromptFromDaemon.timestamp).getTime()
+        : NaN;
+
+      if (tabObj.inFlightPrompt && activePromptFromDaemon &&
+          promptsMatchForTurn(tabObj.inFlightPrompt.text, activePromptFromDaemon.text) &&
+          !isNaN(daemonActiveTs)) {
+        tabObj.inFlightPrompt.timestamp = daemonActiveTs;
+      }
 
       const liveTurnMsgEl = (tabObj.activeTurnMsgEl && tabObj.activeTurnMsgEl.classList.contains('in-flight'))
         ? tabObj.activeTurnMsgEl
@@ -2585,6 +2611,7 @@ async function loadChatTranscript(tabObj) {
       const startIndex = total <= CHAT_PAGE_SIZE ? 0 : (total - CHAT_PAGE_SIZE);
       const visibleMessages = total <= CHAT_PAGE_SIZE ? coalesced : coalesced.slice(startIndex);
       const inFlightOnDisk = !inFlightPrompt || isPromptInTranscriptTail(coalesced, inFlightPrompt.text, inFlightPrompt.timestamp, tabObj);
+      const isTurnActive = Boolean(tabObj.sending || isSessionWorking(tabObj.session) || activePromptFromDaemon);
 
       let reusedDom = false;
       if (!liveTurnMsgEl && inFlightOnDisk) {
@@ -2609,7 +2636,7 @@ async function loadChatTranscript(tabObj) {
                   domMsgs[i].dataset.msgIndex = String(visibleMessages[i].index);
                 }
               }
-              if (inFlightPrompt && !tabObj.sending && !isSessionWorking(tabObj.session)) {
+              if (inFlightPrompt && !isTurnActive) {
                 tabObj.inFlightPrompt = null;
               }
               tabObj.lastCompletedTurn = null;
@@ -2622,7 +2649,7 @@ async function loadChatTranscript(tabObj) {
                   lastDomEl.remove();
                   reusedDom = true;
                   tabObj.loadedTranscriptStartIndex = startIndex;
-                  if (inFlightPrompt && !tabObj.sending && !isSessionWorking(tabObj.session)) {
+                  if (inFlightPrompt && !isTurnActive) {
                     tabObj.inFlightPrompt = null;
                   }
                   tabObj.lastCompletedTurn = null;
@@ -2647,7 +2674,7 @@ async function loadChatTranscript(tabObj) {
         // Re-attach optimistic in-flight user prompt if not yet present in on-disk transcript
         if (inFlightPrompt && inFlightPrompt.el) {
           if (inFlightOnDisk) {
-            if (tabObj.sending || isSessionWorking(tabObj.session)) {
+            if (isTurnActive) {
               const userBubbles = container.querySelectorAll('.chat-msg.user-msg');
               if (userBubbles.length > 0) {
                 const lastUserEl = userBubbles[userBubbles.length - 1];
@@ -2713,6 +2740,23 @@ async function loadChatTranscript(tabObj) {
           }
         }
       }
+
+      if (isTurnActive && !tabObj.inFlightPrompt && activePromptFromDaemon) {
+        const userBubbles = container.querySelectorAll('.chat-msg.user-msg');
+        if (userBubbles.length > 0) {
+          const lastUserEl = userBubbles[userBubbles.length - 1];
+          const uBody = lastUserEl.querySelector('.chat-msg-body');
+          const domUserText = lastUserEl.dataset.rawPrompt || (uBody ? uBody.textContent : '') || '';
+          if (promptsMatchForTurn(domUserText, activePromptFromDaemon.text)) {
+            tabObj.inFlightPrompt = {
+              text: normalizePromptText(activePromptFromDaemon.text),
+              el: lastUserEl,
+              timestamp: !isNaN(daemonActiveTs) ? daemonActiveTs : Date.now()
+            };
+          }
+        }
+      }
+
       if (liveActivityEl && hasActiveTurnUI(tabObj)) {
         container.appendChild(liveActivityEl);
         tabObj.activeInStreamActivityEl = liveActivityEl;
@@ -3645,6 +3689,9 @@ function createChatMessageElement(tabObj, msg) {
   if (!tabObj || !msg) return null;
   const msgEl = document.createElement('div');
   const timeStr = msg.timestamp ? new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+  if (msg.timestamp) {
+    msgEl.dataset.timestamp = msg.timestamp;
+  }
 
   if (msg.role === 'user') {
     msgEl.className = 'chat-msg user-msg';
@@ -3654,9 +3701,6 @@ function createChatMessageElement(tabObj, msg) {
     const rawVal = msg.rawPrompt || msg.content || '';
     if (rawVal) {
       msgEl.dataset.rawPrompt = normalizePromptText(rawVal);
-    }
-    if (msg.timestamp) {
-      msgEl.dataset.timestamp = msg.timestamp;
     }
 
     let displayContent = msg.content || '';
@@ -4571,6 +4615,15 @@ async function sendChatPrompt(tabObj, forcedPromptText, schedulingOptions) {
   tabObj.pendingAttachments = [];
   renderPendingAttachments(tabObj);
 
+  if (tabObj._pendingTranscriptFollowup) {
+    clearTimeout(tabObj._pendingTranscriptFollowup);
+    tabObj._pendingTranscriptFollowup = null;
+  }
+  if (tabObj._idleReconcileTimer) {
+    clearTimeout(tabObj._idleReconcileTimer);
+    tabObj._idleReconcileTimer = null;
+  }
+
   // Optimistically append user message immediately to give instant UI feedback
   const optimisticMsgEl = appendChatMessage(tabObj, {
     role: 'user',
@@ -4896,17 +4949,19 @@ function handleChatStreamEvent(tabObj, evt) {
       tabObj.lastCompletedTurn = null;
       if (evt.text) {
         const evtNorm = normalizePromptText(evt.text);
+        const evtTime = evt.timestamp ? new Date(evt.timestamp).getTime() : NaN;
         let isAlreadyRendered = false;
 
         // 1. Match against currently in-flight client prompt
-        if (tabObj.inFlightPrompt) {
+        if (tabObj.inFlightPrompt && tabObj.inFlightPrompt.el && tabObj.inFlightPrompt.el.parentNode === tabObj.chatMessagesEl) {
           const inFlightNorm = tabObj.inFlightPrompt.text;
-          if (inFlightNorm && (inFlightNorm === evtNorm || evtNorm.startsWith(inFlightNorm) || inFlightNorm.startsWith(evtNorm))) {
+          if (promptsMatchForTurn(inFlightNorm, evtNorm)) {
             isAlreadyRendered = true;
-            if (tabObj.inFlightPrompt.el) {
-              delete tabObj.inFlightPrompt.el.dataset.inFlight;
-            }
+            delete tabObj.inFlightPrompt.el.dataset.inFlight;
             tabObj.inFlightPrompt.text = evtNorm;
+            if (!isNaN(evtTime)) {
+              tabObj.inFlightPrompt.timestamp = evtTime;
+            }
           }
         }
 
@@ -4919,19 +4974,29 @@ function handleChatStreamEvent(tabObj, evt) {
             const raw = normalizePromptText(lastMsg.dataset.rawPrompt || '');
             const uBody = lastMsg.querySelector('.chat-msg-body');
             const bodyText = normalizePromptText(uBody ? uBody.textContent : '');
+            const lastMsgTime = lastMsg.dataset.timestamp ? new Date(lastMsg.dataset.timestamp).getTime() : NaN;
 
             let hasCompletedAssistantAfter = false;
             let sib = lastMsg.nextElementSibling;
             while (sib) {
               if (sib.classList.contains('assistant-msg') && !sib.classList.contains('in-flight')) {
-                hasCompletedAssistantAfter = true;
-                break;
+                const sibTime = sib.dataset.timestamp ? new Date(sib.dataset.timestamp).getTime() : NaN;
+                const belongsToActiveTurn = !isNaN(evtTime) && (
+                  (!isNaN(sibTime) && sibTime >= (evtTime - 5000)) ||
+                  (!isNaN(lastMsgTime) && lastMsgTime >= (evtTime - 5000))
+                );
+                if (!belongsToActiveTurn) {
+                  hasCompletedAssistantAfter = true;
+                  break;
+                }
               }
               sib = sib.nextElementSibling;
             }
 
-            const textMatches = (raw && (raw === evtNorm || evtNorm.startsWith(raw) || raw.startsWith(evtNorm))) ||
-                               (bodyText && (bodyText === evtNorm || evtNorm.startsWith(bodyText) || bodyText.startsWith(evtNorm)));
+            const textMatches = promptsMatchForTurn(raw, evtNorm) || promptsMatchForTurn(bodyText, evtNorm);
+            const resolvedTs = !isNaN(evtTime)
+              ? evtTime
+              : (!isNaN(lastMsgTime) ? lastMsgTime : (tabObj.inFlightPrompt ? tabObj.inFlightPrompt.timestamp : Date.now()));
 
             if (isUnconfirmed) {
               if (textMatches) {
@@ -4940,7 +5005,7 @@ function handleChatStreamEvent(tabObj, evt) {
                 tabObj.inFlightPrompt = {
                   text: evtNorm,
                   el: lastMsg,
-                  timestamp: tabObj.inFlightPrompt ? tabObj.inFlightPrompt.timestamp : Date.now()
+                  timestamp: resolvedTs
                 };
               }
             } else {
@@ -4949,7 +5014,7 @@ function handleChatStreamEvent(tabObj, evt) {
                 tabObj.inFlightPrompt = {
                   text: evtNorm,
                   el: lastMsg,
-                  timestamp: tabObj.inFlightPrompt ? tabObj.inFlightPrompt.timestamp : Date.now()
+                  timestamp: resolvedTs
                 };
               }
             }
@@ -4971,7 +5036,7 @@ function handleChatStreamEvent(tabObj, evt) {
           tabObj.inFlightPrompt = {
             text: evtNorm,
             el: newMsgEl,
-            timestamp: evt.timestamp ? (new Date(evt.timestamp).getTime() || Date.now()) : Date.now()
+            timestamp: !isNaN(evtTime) ? evtTime : Date.now()
           };
         }
       }

@@ -9,11 +9,52 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
 	"ackbar/internal/tmux"
 )
+
+var (
+	chatAttachmentMarkdownRegex = regexp.MustCompile(`!\[Attachment\]\([^)]+\)`)
+	chatAttachedFileNoticeRegex = regexp.MustCompile(`\[Attached file:\s*"[^"]+"\](?:\s*Please inspect the attached file\.)?`)
+)
+
+func cleanActivePromptForAgent(agent, raw string) string {
+	var cleaned string
+	if agent == "antigravity" {
+		cleaned = CleanAntigravityPrompt(raw)
+	} else {
+		cleaned = CleanClaudePrompt(raw)
+	}
+	if strings.TrimSpace(cleaned) == "" {
+		cleaned = strings.TrimSpace(raw)
+	}
+	return cleaned
+}
+
+func normalizePromptComparisonText(raw string) string {
+	s := chatAttachmentMarkdownRegex.ReplaceAllString(raw, "")
+	s = chatAttachedFileNoticeRegex.ReplaceAllString(s, "")
+	return strings.Join(strings.Fields(s), " ")
+}
+
+func promptsMatchActiveTurn(msgContent, activeContent string) bool {
+	normMsg := normalizePromptComparisonText(msgContent)
+	normActive := normalizePromptComparisonText(activeContent)
+	if normMsg == "" || normActive == "" {
+		return false
+	}
+	if normMsg == normActive {
+		return true
+	}
+	shorter, longer := normMsg, normActive
+	if len(shorter) > len(longer) {
+		shorter, longer = normActive, normMsg
+	}
+	return strings.HasPrefix(longer, shorter) && (strings.HasPrefix(shorter, "/") || len(shorter) >= 64)
+}
 
 func (s *Server) handlePrompt(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -389,8 +430,14 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	targetID := sessionID
+	streamAgent := "claude-code"
 	if sess := s.resolveSession(sessionID); sess != nil {
 		targetID = sess.ID
+		if sess.Agent != "" {
+			streamAgent = sess.Agent
+		}
+	} else if parts := strings.Split(sessionID, ":"); len(parts) >= 1 && parts[0] != "" {
+		streamAgent = parts[0]
 	}
 
 	ch, cleanup := s.headless.Subscribe(targetID)
@@ -410,7 +457,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		turnEvt, _ := json.Marshal(ChatStreamEvent{
 			SessionID: targetID,
 			Type:      "turn_start",
-			Text:      activeMsg.Content,
+			Text:      cleanActivePromptForAgent(streamAgent, activeMsg.Content),
 			Timestamp: activeMsg.Timestamp,
 		})
 		_, _ = fmt.Fprintf(w, "data: %s\n\n", turnEvt)
@@ -870,8 +917,7 @@ func (s *Server) handleSessionTranscript(w http.ResponseWriter, r *http.Request)
 		_, _ = w.Write([]byte(FormatTranscriptMarkdown(transcript)))
 	default:
 		runningSubs := s.getRunningSubagents(sessionID, nativeID, agent, cwd)
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		payload := map[string]interface{}{
 			"session_id":        sessionID,
 			"native_id":         nativeID,
 			"agent":             agent,
@@ -882,15 +928,22 @@ func (s *Server) handleSessionTranscript(w http.ResponseWriter, r *http.Request)
 			"subagents":         runningSubs,
 			"ansi":              FormatTranscriptANSI(transcript),
 			"markdown":          FormatTranscriptMarkdown(transcript),
-		})
+		}
+		if activeMsg, ok := s.resolveActiveHeadlessPrompt(sess, sessionID, nativeID, agent); ok {
+			payload["active_prompt"] = map[string]interface{}{
+				"text":      activeMsg.Content,
+				"timestamp": activeMsg.Timestamp,
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(payload)
 	}
 }
 
-func (s *Server) appendActiveHeadlessPrompt(transcript *Transcript, sess *Session, sessionID, nativeID, agent, cwd string) *Transcript {
+func (s *Server) resolveActiveHeadlessPrompt(sess *Session, sessionID, nativeID, agent string) (TranscriptMessage, bool) {
 	if s.headless == nil {
-		return transcript
+		return TranscriptMessage{}, false
 	}
-
 	var activeMsg TranscriptMessage
 	found := false
 	if msg, ok := s.headless.GetActiveTurnPrompt(sessionID); ok {
@@ -908,6 +961,19 @@ func (s *Server) appendActiveHeadlessPrompt(transcript *Transcript, sess *Sessio
 			found = true
 		}
 	}
+	if !found || strings.TrimSpace(activeMsg.Content) == "" {
+		return TranscriptMessage{}, false
+	}
+	activeMsg.Content = cleanActivePromptForAgent(agent, activeMsg.Content)
+	return activeMsg, true
+}
+
+func (s *Server) appendActiveHeadlessPrompt(transcript *Transcript, sess *Session, sessionID, nativeID, agent, cwd string) *Transcript {
+	if s.headless == nil {
+		return transcript
+	}
+
+	activeMsg, found := s.resolveActiveHeadlessPrompt(sess, sessionID, nativeID, agent)
 
 	if transcript == nil {
 		if found || (sess != nil && sess.EngineType == EngineHeadless) {
@@ -924,38 +990,26 @@ func (s *Server) appendActiveHeadlessPrompt(transcript *Transcript, sess *Sessio
 	}
 
 	if found && strings.TrimSpace(activeMsg.Content) != "" {
-		var cleanedPrompt string
-		if agent == "antigravity" {
-			cleanedPrompt = CleanAntigravityPrompt(activeMsg.Content)
-		} else {
-			cleanedPrompt = CleanClaudePrompt(activeMsg.Content)
-		}
-		if strings.TrimSpace(cleanedPrompt) == "" {
-			cleanedPrompt = strings.TrimSpace(activeMsg.Content)
-		}
-
-		normActive := strings.Join(strings.Fields(cleanedPrompt), " ")
 		alreadyPresent := false
 		msgs := transcript.Messages
 		n := len(msgs)
+		threshold := activeMsg.Timestamp.Add(-5 * time.Second)
 
-		matchesNorm := func(content string) bool {
-			normMsg := strings.Join(strings.Fields(content), " ")
-			return normMsg != "" && normMsg == normActive
-		}
-
-		if n >= 1 && msgs[n-1].Role == "user" && matchesNorm(msgs[n-1].Content) {
-			alreadyPresent = true
-		} else if n >= 2 && msgs[n-2].Role == "user" && matchesNorm(msgs[n-2].Content) && msgs[n-1].Role == "assistant" {
-			if !msgs[n-1].Timestamp.Before(activeMsg.Timestamp.Add(-5 * time.Second)) {
-				alreadyPresent = true
+		for i := n - 1; i >= 0; i-- {
+			if msgs[i].Role == "user" {
+				if promptsMatchActiveTurn(msgs[i].Content, activeMsg.Content) {
+					if i == n-1 || !msgs[i].Timestamp.Before(threshold) || !msgs[n-1].Timestamp.Before(threshold) {
+						alreadyPresent = true
+					}
+				}
+				break
 			}
 		}
 
 		if !alreadyPresent {
 			transcript.Messages = append(transcript.Messages, TranscriptMessage{
 				Role:      "user",
-				Content:   cleanedPrompt,
+				Content:   activeMsg.Content,
 				Timestamp: activeMsg.Timestamp,
 			})
 		}

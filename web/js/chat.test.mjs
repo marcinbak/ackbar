@@ -151,6 +151,18 @@ class MockElement {
     return child;
   }
 
+  replaceChild(newChild, oldChild) {
+    const idx = this.children.indexOf(oldChild);
+    if (idx === -1) return oldChild;
+    if (newChild.parentNode) {
+      newChild.parentNode.removeChild(newChild);
+    }
+    newChild.parentNode = this;
+    oldChild.parentNode = null;
+    this.children.splice(idx, 1, newChild);
+    return oldChild;
+  }
+
   remove() {
     if (this.parentNode) {
       this.parentNode.removeChild(this);
@@ -604,4 +616,109 @@ test('avoids duplicate assistant bubbles and DOM wipe when reconciling multi-blo
   assert.equal(assistantBubbles[0], existingAssistantEl, 'Should reuse existing assistant DOM node without wiping innerHTML');
   assert.ok(!tabObj._pendingTranscriptFollowup, 'Should not schedule 600ms follow-up reload loop when text matches');
 });
+
+test('does not duplicate in-flight user prompt when transcript has partial assistant output before turn_start SSE or with attachments after >5s', async () => {
+  const container = new MockElement('div');
+  container.className = 'chat-messages-container';
+
+  const inputEl = new MockElement('textarea');
+  const sendBtn = new MockElement('button');
+  const cancelBtn = new MockElement('button');
+  cancelBtn.style.display = 'none';
+  const statusBadge = new MockElement('span');
+
+  const turnStartIso = new Date(Date.now() - 25000).toISOString();
+  const partialAssistantIso = new Date(Date.now() - 20000).toISOString();
+
+  // Part A: Newly opened / switched tab loads transcript with [user, assistant(partial)] and active_prompt BEFORE turn_start SSE arrives
+  const tabObj = {
+    id: 'tab-test-partial-assistant-switch',
+    viewMode: 'chat',
+    chatMessagesEl: container,
+    chatInputEl: inputEl,
+    chatSendBtn: sendBtn,
+    chatCancelBtn: cancelBtn,
+    chatStatusBadge: statusBadge,
+    pendingAttachments: [],
+    session: {
+      id: 'antigravity:local:sess-partial-switch',
+      agent: 'antigravity',
+      engine_type: 'headless',
+      state: 1
+    }
+  };
+
+  let mockTranscriptMessages = [
+    { role: 'user', content: 'Fix duplicate prompt', rawPrompt: 'Fix duplicate prompt', timestamp: turnStartIso },
+    { role: 'assistant', content: '', thinking: 'Analyzing...', tool_calls: ['Read (web/js/chat.js)'], timestamp: partialAssistantIso }
+  ];
+  let mockActivePrompt = {
+    text: 'Fix duplicate prompt',
+    timestamp: turnStartIso
+  };
+
+  globalThis.fetch = async (url) => {
+    const urlStr = String(url);
+    if (urlStr.includes('/v1/sessions/transcript')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          messages: mockTranscriptMessages,
+          active_prompt: mockActivePrompt
+        })
+      };
+    }
+    if (urlStr.includes('/v1/sessions/queue')) {
+      return { ok: true, status: 200, json: async () => ({ items: [], paused: false }) };
+    }
+    return { ok: true, status: 200, json: async () => ({}) };
+  };
+
+  await loadChatTranscript(tabObj);
+  assert.equal(container.querySelectorAll('.chat-msg.user-msg').length, 1, 'Should render 1 user bubble from transcript');
+  assert.ok(tabObj.inFlightPrompt, 'Should bind tabObj.inFlightPrompt from active_prompt metadata');
+
+  // Initial turn_start SSE arrives after loadChatTranscript already rendered the partial assistant message
+  handleChatStreamEvent(tabObj, {
+    type: 'turn_start',
+    text: 'Fix duplicate prompt',
+    timestamp: turnStartIso
+  });
+
+  assert.equal(
+    container.querySelectorAll('.chat-msg.user-msg').length,
+    1,
+    'Must not append a second user bubble when turn_start arrives after partial assistant output is on disk'
+  );
+
+  // Subsequent loadChatTranscript >25s into the turn with attachment prompt must also not duplicate the user prompt
+  const attachPromptDaemon = 'Inspect screenshot\n\n[Attached file: "/tmp/screen.png"]\nPlease inspect the attached file.';
+  const attachPromptDisk = 'Inspect screenshot\n\n[Attached file: "/tmp/screen.png"]';
+  tabObj.inFlightPrompt = null;
+  mockActivePrompt = {
+    text: attachPromptDaemon,
+    timestamp: turnStartIso
+  };
+  mockTranscriptMessages = [
+    { role: 'user', content: attachPromptDisk, rawPrompt: attachPromptDisk, timestamp: turnStartIso },
+    { role: 'assistant', content: '', thinking: 'Checking screenshot...', tool_calls: ['Read (/tmp/screen.png)'], timestamp: partialAssistantIso }
+  ];
+
+  // Simulate turn_start arriving BEFORE loadChatTranscript with Date.now() vs turnStartIso
+  handleChatStreamEvent(tabObj, {
+    type: 'turn_start',
+    text: attachPromptDaemon,
+    timestamp: turnStartIso
+  });
+
+  await loadChatTranscript(tabObj);
+
+  assert.equal(
+    container.querySelectorAll('.chat-msg.user-msg').length,
+    1,
+    'Must not duplicate attachment user prompt when reloading transcript mid-turn after >20s tool execution'
+  );
+});
+
 

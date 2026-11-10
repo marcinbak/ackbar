@@ -785,4 +785,123 @@ func TestServer_HeadlessInFlightPrompt(t *testing.T) {
 	if tailMsg["content"] != "run all benchmarks" {
 		t.Errorf("Expected 'run all benchmarks', got %v", tailMsg["content"])
 	}
+	if activePrompt, ok := respC["active_prompt"].(map[string]interface{}); !ok || activePrompt["text"] != "run all benchmarks" {
+		t.Errorf("Expected active_prompt metadata in transcript response, got %+v", respC["active_prompt"])
+	}
+
+	// 5. Verify that an in-flight prompt with attachment notice and partial assistant + system messages on disk is NOT duplicated
+	turnStart := time.Now().Add(-20 * time.Second)
+	srv.headless.mu.Lock()
+	srv.headless.activePrompts[sess.ID] = TranscriptMessage{
+		Role:      "user",
+		Content:   "Fix layout\n\n[Attached file: \"/tmp/mock.png\"]\nPlease inspect the attached file.",
+		Timestamp: turnStart,
+	}
+	srv.headless.mu.Unlock()
+
+	attachmentProvider := &mockInFlightTranscriptProvider{
+		agent: "claude-code",
+		messages: []TranscriptMessage{
+			{Role: "user", Content: "Fix layout\n\n[Attached file: \"/tmp/mock.png\"]", Timestamp: turnStart},
+			{Role: "assistant", Content: "", Thinking: "Inspecting image...", ToolCalls: []string{"Read (/tmp/mock.png)"}, Timestamp: turnStart.Add(2 * time.Second)},
+			{Role: "system", Content: "CHECKPOINT", Timestamp: turnStart.Add(3 * time.Second)},
+		},
+	}
+	srv.RegisterProvider(attachmentProvider)
+
+	wD := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(wD, req)
+	if wD.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK, got %d", wD.Code)
+	}
+	var respD map[string]interface{}
+	if err := json.Unmarshal(wD.Body.Bytes(), &respD); err != nil {
+		t.Fatalf("Failed to parse json: %v", err)
+	}
+	msgsD, _ := respD["messages"].([]interface{})
+	if len(msgsD) != 3 {
+		t.Fatalf("Expected 3 messages without duplicating attachment prompt, got %d: %+v", len(msgsD), msgsD)
+	}
+}
+
+func TestAntigravityInitMigratesHeadlessActiveTurnAndPreservesWorkingOnHook(t *testing.T) {
+	srv, db := setupTestServer(t)
+	cwd := t.TempDir()
+	host := srv.HostName()
+	spawningID := "mock-agent:" + host + ":pending-12345"
+	sess := &Session{
+		ID:          spawningID,
+		Agent:       "mock-agent",
+		Host:        host,
+		NativeID:    "pending-12345",
+		Cwd:         cwd,
+		Managed:     true,
+		EngineType:  EngineHeadless,
+		State:       StateWorking,
+		StartedAt:   time.Now(),
+		LastEventAt: time.Now(),
+	}
+	if err := db.SaveSession(sess); err != nil {
+		t.Fatalf("Failed to save spawning session: %v", err)
+	}
+
+	fakeCmd := exec.Command("sleep", "5")
+	if err := fakeCmd.Start(); err != nil {
+		t.Fatalf("Failed to start fake process: %v", err)
+	}
+	defer func() {
+		_ = fakeCmd.Process.Kill()
+		_ = fakeCmd.Wait()
+	}()
+
+	turnStart := time.Now()
+	srv.headless.mu.Lock()
+	srv.headless.processes[spawningID] = fakeCmd
+	srv.headless.activeSessions[spawningID] = sess
+	srv.headless.activeTurns[spawningID] = true
+	srv.headless.activePrompts[spawningID] = TranscriptMessage{
+		Role:      "user",
+		Content:   "Investigate duplicate prompt",
+		Timestamp: turnStart,
+	}
+	srv.headless.mu.Unlock()
+
+	realConvID := "real-conv-uuid-999"
+	adoptedID := "mock-agent:" + host + ":" + realConvID
+	defer func() {
+		srv.headless.mu.Lock()
+		delete(srv.headless.processes, spawningID)
+		delete(srv.headless.processes, adoptedID)
+		delete(srv.headless.activeSessions, spawningID)
+		delete(srv.headless.activeSessions, adoptedID)
+		delete(srv.headless.activeTurns, spawningID)
+		delete(srv.headless.activeTurns, adoptedID)
+		delete(srv.headless.activePrompts, spawningID)
+		delete(srv.headless.activePrompts, adoptedID)
+		srv.headless.mu.Unlock()
+	}()
+
+	srv.headless.handleAntigravityInit(sess, realConvID, "Investigate duplicate prompt")
+
+	srv.processParsedHookEvent(&Event{
+		Agent:     "mock-agent",
+		NativeID:  realConvID,
+		Cwd:       cwd,
+		State:     StateIdle,
+		EventName: "SessionStart",
+	}, "SessionStart", host, "", false)
+
+	adoptedSess, err := db.GetSession(adoptedID)
+	if err != nil || adoptedSess == nil {
+		t.Fatalf("Expected adopted session %s in DB, got %+v (err=%v)", adoptedID, adoptedSess, err)
+	}
+	if adoptedSess.State != StateWorking {
+		t.Errorf("Expected adopted session to remain StateWorking while headless process is running, got %v", adoptedSess.State)
+	}
+	if !srv.headless.IsRunning(adoptedID) {
+		t.Errorf("Expected headless.IsRunning(%s) to be true after hook adoption", adoptedID)
+	}
+	if promptMsg, ok := srv.headless.GetActiveTurnPrompt(adoptedID); !ok || promptMsg.Content != "Investigate duplicate prompt" {
+		t.Errorf("Expected active prompt to be migrated to %s, got %+v (ok=%v)", adoptedID, promptMsg, ok)
+	}
 }
