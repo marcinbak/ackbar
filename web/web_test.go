@@ -704,3 +704,38 @@ func TestWebChatDraftPersistence(t *testing.T) {
 		"saveChatDraft",
 	})
 }
+
+func TestMarkdownTableResponsiveCSS(t *testing.T) {
+	embeddedFS := web.GetFS()
+	f, err := embeddedFS.Open("style.css")
+	if err != nil {
+		t.Fatalf("failed to open style.css: %v", err)
+	}
+	defer f.Close()
+
+	b, err := io.ReadAll(f)
+	if err != nil {
+		t.Fatalf("failed to read style.css: %v", err)
+	}
+	css := string(b)
+
+	expectedRules := []string{
+		"min-width: 8ch",
+		"word-break: normal",
+		"overflow-wrap: break-word",
+	}
+	for _, rule := range expectedRules {
+		if !strings.Contains(css, rule) {
+			t.Errorf("expected style.css to contain %q", rule)
+		}
+	}
+
+	disallowedRules := []string{
+		"max-width: 850px",
+	}
+	for _, rule := range disallowedRules {
+		if strings.Contains(css, rule) {
+			t.Errorf("expected style.css not to contain %q", rule)
+		}
+	}
+}
