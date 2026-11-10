@@ -51,22 +51,13 @@ func (s *Server) handlePrompt(w http.ResponseWriter, r *http.Request) {
 
 	promptText := req.Prompt
 	var targetDeliverAt *time.Time
-	if strings.HasPrefix(strings.TrimSpace(promptText), "/delay ") {
-		rest := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(promptText), "/delay "))
-		parts := strings.SplitN(rest, " ", 2)
-		durStr := parts[0]
-		remainingPrompt := ""
-		if len(parts) > 1 {
-			remainingPrompt = strings.TrimSpace(parts[1])
-		}
+	if dur, remainingPrompt, ok := ParseSlashDelayCommand(promptText); ok {
 		if remainingPrompt == "" {
 			remainingPrompt = "Continue"
 		}
-		if d, err := ParseDelayDuration(durStr); err == nil && d > 0 {
-			t := time.Now().Add(d)
-			targetDeliverAt = &t
-			promptText = remainingPrompt
-		}
+		t := time.Now().Add(dur)
+		targetDeliverAt = &t
+		promptText = remainingPrompt
 	} else if req.DelaySeconds > 0 {
 		t := time.Now().Add(time.Duration(req.DelaySeconds) * time.Second)
 		targetDeliverAt = &t
@@ -243,15 +234,22 @@ func (s *Server) handlePromptQueue(w http.ResponseWriter, r *http.Request) {
 		if postReq.Action == "send_now" && postReq.ItemID != "" {
 			item := s.headless.TriggerPromptQueueItemNow(sess.ID, postReq.ItemID)
 			if item != nil {
-				if sess.EngineType == EngineHeadless {
-					if !s.headless.IsRunning(sess.ID) && !s.headless.IsQueuePaused(sess.ID) {
-						popped := s.headless.DequeuePrompt(sess.ID)
-						if popped != nil {
-							go s.headless.RunTurn(context.Background(), sess, popped.Text)
+				if sess.State == StateBlocked && sess.Blocked != nil && sess.Blocked.Kind == BlockRateLimit {
+					sess.Blocked = nil
+					sess.State = StateIdle
+					s.headless.SetQueuePaused(sess.ID, false)
+					_ = s.db.SaveSession(sess)
+					s.broadcast(sess)
+				}
+				if sess.State == StateIdle {
+					if sess.EngineType == EngineHeadless {
+						if !s.headless.IsRunning(sess.ID) && !s.headless.IsQueuePaused(sess.ID) {
+							popped := s.headless.DequeuePrompt(sess.ID)
+							if popped != nil {
+								go s.headless.RunTurn(context.Background(), sess, popped.Text)
+							}
 						}
-					}
-				} else if sess.EngineType == EngineTmux || sess.TmuxName != "" {
-					if sess.State != StateWorking {
+					} else if sess.EngineType == EngineTmux || sess.TmuxName != "" {
 						popped := s.headless.DequeuePrompt(sess.ID)
 						if popped != nil && sess.TmuxName != "" {
 							_ = tmux.SendInput(r.Context(), sess.TmuxName, popped.Text, true)

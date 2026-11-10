@@ -509,7 +509,7 @@ func (h *HeadlessRunner) GetPromptQueue(sessionID string) ([]*PromptQueueItem, b
 	return res, paused
 }
 
-// DequeuePrompt pops the next prompt from the session queue, or nil if empty or head item is scheduled in the future.
+// DequeuePrompt pops the first ready prompt from the session queue (skipping items scheduled in the future).
 func (h *HeadlessRunner) DequeuePrompt(sessionID string) *PromptQueueItem {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -519,15 +519,17 @@ func (h *HeadlessRunner) DequeuePrompt(sessionID string) *PromptQueueItem {
 	if len(items) == 0 {
 		return nil
 	}
-	head := items[0]
-	if head.DeliverAt != nil && head.DeliverAt.After(time.Now()) {
-		return nil
+	now := time.Now()
+	for idx, it := range items {
+		if it.DeliverAt == nil || !it.DeliverAt.After(now) {
+			h.queues[key] = append(items[:idx], items[idx+1:]...)
+			if it.DeliverAt != nil && h.db != nil {
+				_ = h.db.DeleteScheduledPrompt(it.ID)
+			}
+			return it
+		}
 	}
-	h.queues[key] = items[1:]
-	if head.DeliverAt != nil && h.db != nil {
-		_ = h.db.DeleteScheduledPrompt(head.ID)
-	}
-	return head
+	return nil
 }
 
 // DeletePromptQueueItem removes a specific prompt from the queue by ID
@@ -571,18 +573,22 @@ func (h *HeadlessRunner) ClearPromptQueue(sessionID string) {
 	}
 }
 
-// TriggerPromptQueueItemNow clears the scheduled deliver_at on an item so it can be dispatched immediately.
+// TriggerPromptQueueItemNow clears the scheduled deliver_at on an item, deletes it from SQLite scheduled_prompts, and moves it to the front of the queue so it can be dispatched immediately.
 func (h *HeadlessRunner) TriggerPromptQueueItemNow(sessionID string, itemID string) *PromptQueueItem {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
 	key := h.resolveQueueKey(sessionID)
 	items := h.queues[key]
-	for _, it := range items {
+	for idx, it := range items {
 		if it.ID == itemID {
 			it.DeliverAt = nil
 			if h.db != nil {
 				_ = h.db.DeleteScheduledPrompt(itemID)
+			}
+			if idx > 0 {
+				rest := append(items[:idx], items[idx+1:]...)
+				h.queues[key] = append([]*PromptQueueItem{it}, rest...)
 			}
 			return it
 		}
@@ -987,7 +993,7 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 			h.mu.Unlock()
 		}()
 
-		lastTurnText := h.processStreamWithPrompt(origSessionID, stdoutPipe, prompt, sess)
+		lastTurnText, streamHadError := h.processStreamWithPrompt(origSessionID, stdoutPipe, prompt, sess)
 
 		waitErr := cmd.Wait()
 
@@ -1021,7 +1027,8 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 			interactiveBlock = h.takeInteractiveBlock(origSessionID)
 		}
 
-		if interactiveBlock == nil {
+		hasError := waitErr != nil || streamHadError
+		if interactiveBlock == nil && hasError {
 			errDetail := strings.TrimSpace(stderrBuf.String())
 			combinedText := lastTurnText
 			if errDetail != "" {
@@ -1180,7 +1187,7 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 }
 
 func (h *HeadlessRunner) processStream(sessionID string, r io.Reader, optionalSess ...*Session) {
-	_ = h.processStreamWithPrompt(sessionID, r, "", optionalSess...)
+	_, _ = h.processStreamWithPrompt(sessionID, r, "", optionalSess...)
 }
 
 func (h *HeadlessRunner) handleAntigravityInit(sess *Session, convID, prompt string) {
@@ -1256,7 +1263,7 @@ func (h *HeadlessRunner) handleAntigravityInit(sess *Session, convID, prompt str
 	}
 }
 
-func (h *HeadlessRunner) processStreamWithPrompt(sessionID string, r io.Reader, prompt string, optionalSess ...*Session) string {
+func (h *HeadlessRunner) processStreamWithPrompt(sessionID string, r io.Reader, prompt string, optionalSess ...*Session) (string, bool) {
 	var sess *Session
 	if len(optionalSess) > 0 {
 		sess = optionalSess[0]
@@ -1267,6 +1274,7 @@ func (h *HeadlessRunner) processStreamWithPrompt(sessionID string, r io.Reader, 
 	scanner.Buffer(buf, 10*1024*1024)
 
 	var lastTextBuilder strings.Builder
+	streamHadError := false
 	toolUses := make(map[string]string)
 	emittedToolStart := make(map[string]bool)
 	hasEmittedAssistantText := false
@@ -1289,6 +1297,16 @@ func (h *HeadlessRunner) processStreamWithPrompt(sessionID string, r io.Reader, 
 		var raw map[string]interface{}
 		if err := json.Unmarshal([]byte(line), &raw); err != nil {
 			continue
+		}
+
+		if isErr, ok := raw["is_error"].(bool); ok && isErr {
+			streamHadError = true
+		}
+		if raw["error"] != nil {
+			streamHadError = true
+		}
+		if rawType, ok := raw["type"].(string); ok && rawType == "error" {
+			streamHadError = true
 		}
 
 		// Check for Antigravity stream format: top-level "event" field
@@ -1668,6 +1686,9 @@ func (h *HeadlessRunner) processStreamWithPrompt(sessionID string, r io.Reader, 
 		case "result":
 			resText, _ := raw["result"].(string)
 			isErr, _ := raw["is_error"].(bool)
+			if isErr {
+				streamHadError = true
+			}
 			if resText != "" {
 				lastTextBuilder.WriteString("\n" + resText)
 			}
@@ -1687,5 +1708,5 @@ func (h *HeadlessRunner) processStreamWithPrompt(sessionID string, r io.Reader, 
 			}
 		}
 	}
-	return lastTextBuilder.String()
+	return lastTextBuilder.String(), streamHadError
 }

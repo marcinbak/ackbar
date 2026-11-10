@@ -852,8 +852,15 @@ func (s *Server) processDueScheduledPrompts(ctx context.Context) {
 		if len(items) == 0 {
 			continue
 		}
-		head := items[0]
-		if head.DeliverAt == nil || head.DeliverAt.After(now) {
+
+		hasDueScheduled := false
+		for _, it := range items {
+			if it != nil && it.DeliverAt != nil && !it.DeliverAt.After(now) {
+				hasDueScheduled = true
+				break
+			}
+		}
+		if !hasDueScheduled {
 			continue
 		}
 
@@ -865,6 +872,11 @@ func (s *Server) processDueScheduledPrompts(ctx context.Context) {
 			s.broadcast(sess)
 		}
 
+		// Only dispatch when session is in StateIdle (never when blocked on permissions/questions or working)
+		if sess.State != StateIdle {
+			continue
+		}
+
 		if sess.EngineType == EngineHeadless {
 			if !s.headless.IsRunning(sess.ID) && !s.headless.IsQueuePaused(sess.ID) {
 				popped := s.headless.DequeuePrompt(sess.ID)
@@ -874,18 +886,16 @@ func (s *Server) processDueScheduledPrompts(ctx context.Context) {
 				}
 			}
 		} else if sess.EngineType == EngineTmux || sess.TmuxName != "" {
-			if sess.State != StateWorking {
-				popped := s.headless.DequeuePrompt(sess.ID)
-				if popped != nil {
-					s.headless.EmitQueueUpdate(sess.ID)
-					if sess.TmuxName != "" {
-						_ = tmux.SendInput(ctx, sess.TmuxName, popped.Text, true)
-						sess.State = StateWorking
-						sess.Activity = "Processing scheduled prompt"
-						sess.LastEventAt = time.Now()
-						_ = s.db.SaveSession(sess)
-						s.broadcast(sess)
-					}
+			popped := s.headless.DequeuePrompt(sess.ID)
+			if popped != nil {
+				s.headless.EmitQueueUpdate(sess.ID)
+				if sess.TmuxName != "" {
+					_ = tmux.SendInput(ctx, sess.TmuxName, popped.Text, true)
+					sess.State = StateWorking
+					sess.Activity = "Processing scheduled prompt"
+					sess.LastEventAt = time.Now()
+					_ = s.db.SaveSession(sess)
+					s.broadcast(sess)
 				}
 			}
 		}

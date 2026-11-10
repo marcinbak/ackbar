@@ -1200,6 +1200,14 @@ function toggleSchedulePopover(tabObj) {
         promptVal = 'Continue';
       }
 
+      if (tabObj.chatInputEl) {
+        tabObj.chatInputEl.value = '';
+        tabObj.chatInputEl.style.height = 'auto';
+      }
+      if (tabObj.session && tabObj.session.id) {
+        clearChatDraft(tabObj.session.id);
+      }
+
       if (opt.custom) {
         const input = typeof window !== 'undefined' && typeof window.prompt === 'function' ? window.prompt('Enter delay in minutes:', '45') : null;
         if (!input) return;

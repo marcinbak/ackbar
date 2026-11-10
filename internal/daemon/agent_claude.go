@@ -955,13 +955,13 @@ func (a ClaudeAgentAdapter) DetectRateLimit(text string, now time.Time) (bool, t
 	switch {
 	case strings.Contains(lower, "5-hour limit") || strings.Contains(lower, "5h limit"):
 		prefix = "5-hour limit reached"
-	case strings.Contains(lower, "weekly limit reached") || strings.Contains(lower, "weekly limit"):
+	case strings.Contains(lower, "weekly limit reached"):
 		prefix = "Weekly limit reached"
-	case strings.Contains(lower, "session limit reached") || strings.Contains(lower, "session limit"):
+	case strings.Contains(lower, "session limit reached"):
 		prefix = "Session limit reached"
-	case strings.Contains(lower, "claude ai usage limit") || strings.Contains(lower, "usage limit reached") || strings.Contains(lower, "usage limit"):
+	case strings.Contains(lower, "claude ai usage limit") || strings.Contains(lower, "usage limit reached"):
 		prefix = "Usage limit reached"
-	case strings.Contains(lower, "rate limit reached") || strings.Contains(lower, "rate limit"):
+	case strings.Contains(lower, "rate limit reached") || strings.Contains(lower, "rate limit exceeded"):
 		prefix = "Rate limit reached"
 	case strings.Contains(lower, "limit reached") && (strings.Contains(lower, "resets") || strings.Contains(lower, "retry")):
 		prefix = "Limit reached"

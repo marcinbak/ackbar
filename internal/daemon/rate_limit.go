@@ -63,7 +63,12 @@ func ParseRateLimitResetTime(text string, now time.Time) time.Time {
 		minStr := m[4]
 		ampm := strings.ToLower(m[5])
 
-		if tMonth, err := time.Parse("Jan", monthStr[:3]); err == nil {
+		monthPrefix := monthStr
+		if len(monthPrefix) > 3 {
+			monthPrefix = monthPrefix[:3]
+		}
+		normalizedMonth := strings.ToUpper(monthPrefix[:1]) + strings.ToLower(monthPrefix[1:])
+		if tMonth, err := time.Parse("Jan", normalizedMonth); err == nil {
 			day, _ := strconv.Atoi(dayStr)
 			hour, _ := strconv.Atoi(hourStr)
 			min := 0
@@ -152,9 +157,46 @@ func ParseDelayDuration(input string) (time.Duration, error) {
 		}
 	}
 
+	checkRemainder := trimmed
+	checkRemainder = relHourRegex.ReplaceAllString(checkRemainder, "")
+	checkRemainder = relMinRegex.ReplaceAllString(checkRemainder, "")
+	checkRemainder = relSecRegex.ReplaceAllString(checkRemainder, "")
+	if strings.TrimSpace(checkRemainder) != "" {
+		return 0, fmt.Errorf("invalid duration format: %s", input)
+	}
+
 	if d > 0 {
 		return d, nil
 	}
 
 	return 0, fmt.Errorf("invalid duration format: %s", input)
+}
+
+// ParseSlashDelayCommand parses inline slash command /delay <duration> [prompt].
+// Supports single-token (/delay 1h Continue) and multi-token durations (/delay 2 hours run tests, /delay 1h 30m check status).
+func ParseSlashDelayCommand(input string) (time.Duration, string, bool) {
+	trimmed := strings.TrimSpace(input)
+	if !strings.HasPrefix(trimmed, "/delay") {
+		return 0, "", false
+	}
+	rest := strings.TrimSpace(strings.TrimPrefix(trimmed, "/delay"))
+	if rest == "" {
+		return 0, "", false
+	}
+
+	fields := strings.Fields(rest)
+	maxTokens := len(fields)
+	if maxTokens > 4 {
+		maxTokens = 4
+	}
+
+	for i := maxTokens; i >= 1; i-- {
+		candidate := strings.Join(fields[:i], " ")
+		if d, err := ParseDelayDuration(candidate); err == nil && d > 0 {
+			prompt := strings.TrimSpace(strings.Join(fields[i:], " "))
+			return d, prompt, true
+		}
+	}
+
+	return 0, "", false
 }

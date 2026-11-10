@@ -1262,9 +1262,9 @@ func (a AntigravityAgentAdapter) DetectRateLimit(text string, now time.Time) (bo
 		prefix = "Quota exceeded"
 	case strings.Contains(lower, "resourceexhausted") || strings.Contains(lower, "resource_exhausted"):
 		prefix = "Resource exhausted"
-	case strings.Contains(lower, "rate limit exceeded") || strings.Contains(lower, "rate limit reached") || strings.Contains(lower, "429 too many requests"):
+	case strings.Contains(lower, "rate limit exceeded") || strings.Contains(lower, "rate limit reached") || strings.Contains(lower, "rate_limit_exceeded") || strings.Contains(lower, "429 too many requests"):
 		prefix = "Rate limit exceeded"
-	case strings.Contains(lower, "usage limit reached") || strings.Contains(lower, "usage limit"):
+	case strings.Contains(lower, "usage limit reached"):
 		prefix = "Usage limit reached"
 	default:
 		return false, time.Time{}, ""

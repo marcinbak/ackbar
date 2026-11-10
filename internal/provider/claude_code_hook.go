@@ -203,9 +203,6 @@ func (c *ClaudeProvider) ParseHook(eventName string, payload []byte) (*daemon.Ev
 
 	case "sessionend", "stop":
 		textToCheck := p.LastAssistantMessage
-		if textToCheck == "" {
-			textToCheck = p.Prompt
-		}
 		if textToCheck != "" {
 			if limited, resetAt, reason := (daemon.ClaudeAgentAdapter{}).DetectRateLimit(textToCheck, time.Now()); limited {
 				event.State = daemon.StateBlocked
@@ -306,10 +303,7 @@ func (c *ClaudeProvider) ParseHook(eventName string, payload []byte) (*daemon.Ev
 		event.Activity = "Tool execution completed"
 
 	case "notification":
-		textToCheck := p.Prompt
-		if textToCheck == "" {
-			textToCheck = p.LastAssistantMessage
-		}
+		textToCheck := p.LastAssistantMessage
 		if textToCheck != "" {
 			if limited, resetAt, reason := (daemon.ClaudeAgentAdapter{}).DetectRateLimit(textToCheck, time.Now()); limited {
 				event.State = daemon.StateBlocked

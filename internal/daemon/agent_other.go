@@ -121,7 +121,7 @@ func (a defaultAgentAdapter) DetectRateLimit(text string, now time.Time) (bool, 
 
 	var prefix string
 	switch {
-	case strings.Contains(lower, "you've hit your usage limit") || strings.Contains(lower, "hit your usage limit") || strings.Contains(lower, "usage limit reached") || strings.Contains(lower, "usage limit"):
+	case strings.Contains(lower, "you've hit your usage limit") || strings.Contains(lower, "hit your usage limit") || strings.Contains(lower, "usage limit reached"):
 		prefix = "Usage limit reached"
 	case strings.Contains(lower, "rate limit reached") || strings.Contains(lower, "rate_limit_exceeded") || strings.Contains(lower, "rate limit exceeded"):
 		prefix = "Rate limit reached"

@@ -768,8 +768,9 @@ func (s *Server) applyInteractiveResponse(ctx context.Context, sess *Session, ac
 			deliverAt = time.Now().Add(1 * time.Hour)
 		}
 
-		sess.Blocked = nil
-		sess.State = StateIdle
+		sess.State = StateBlocked
+		sess.Blocked.ResetAt = &deliverAt
+		sess.Blocked.Options = nil
 		sess.Activity = fmt.Sprintf("Scheduled resume at %s", deliverAt.Local().Format("15:04"))
 		sess.LastEventAt = time.Now()
 		if clearIsDone {
@@ -923,8 +924,9 @@ func (s *Server) handleRespond(w http.ResponseWriter, r *http.Request) {
 			deliverAt = time.Now().Add(1 * time.Hour)
 		}
 
-		sess.Blocked = nil
-		sess.State = StateIdle
+		sess.State = StateBlocked
+		sess.Blocked.ResetAt = &deliverAt
+		sess.Blocked.Options = nil
 		sess.Activity = fmt.Sprintf("Scheduled resume at %s", deliverAt.Local().Format("15:04"))
 		sess.LastEventAt = time.Now()
 		sess.IsDone = false

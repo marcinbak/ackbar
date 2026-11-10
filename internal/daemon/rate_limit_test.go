@@ -49,6 +49,13 @@ func TestParseRateLimitResetTime(t *testing.T) {
 		t.Errorf("month clock expected %v, got %v", expectedMonth, gotMonth)
 	}
 
+	// Lowercase month
+	monthLowerText := "resets oct 10 at 2:00pm"
+	gotMonthLower := ParseRateLimitResetTime(monthLowerText, now)
+	if !gotMonthLower.Equal(expectedMonth) {
+		t.Errorf("lowercase month clock expected %v, got %v", expectedMonth, gotMonthLower)
+	}
+
 	// 4. Clock time (12h): future today (14:30 is 2:30pm, after 10:00)
 	clock12Text := "resets at 2:30 PM"
 	got12 := ParseRateLimitResetTime(clock12Text, now)
@@ -117,6 +124,38 @@ func TestParseDelayDuration(t *testing.T) {
 	}
 }
 
+func TestParseSlashDelayCommand(t *testing.T) {
+	cases := []struct {
+		input       string
+		expectedDur time.Duration
+		expectedTxt string
+		expectedOk  bool
+	}{
+		{"/delay 1h Continue", 1 * time.Hour, "Continue", true},
+		{"/delay 30m", 30 * time.Minute, "", true},
+		{"/delay 2 hours run tests", 2 * time.Hour, "run tests", true},
+		{"/delay 1h 30m check status", 90 * time.Minute, "check status", true},
+		{"/delay 45s", 45 * time.Second, "", true},
+		{"regular prompt without delay", 0, "", false},
+		{"/delay", 0, "", false},
+		{"/delay invalid", 0, "", false},
+	}
+	for _, tc := range cases {
+		dur, txt, ok := ParseSlashDelayCommand(tc.input)
+		if ok != tc.expectedOk {
+			t.Errorf("input %q expected ok %v, got %v", tc.input, tc.expectedOk, ok)
+		}
+		if ok {
+			if dur != tc.expectedDur {
+				t.Errorf("input %q expected dur %v, got %v", tc.input, tc.expectedDur, dur)
+			}
+			if txt != tc.expectedTxt {
+				t.Errorf("input %q expected txt %q, got %q", tc.input, tc.expectedTxt, txt)
+			}
+		}
+	}
+}
+
 func TestDetectRateLimit_Adapters(t *testing.T) {
 	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
 
@@ -162,6 +201,25 @@ func TestDetectRateLimit_Adapters(t *testing.T) {
 	nonDef, _, _ := def.DetectRateLimit("Code compiled without errors", now)
 	if nonDef {
 		t.Errorf("Normal text should not match default rate limit")
+	}
+
+	// Verify that conversational prose with bare phrases does not false positive
+	proseCases := []string{
+		"We should investigate the rate limit settings in our router.",
+		"What is our API usage limit for this customer?",
+		"The weekly limit calculation should be based on calendar days.",
+		"Check the session limit in postgresql.conf",
+	}
+	for _, text := range proseCases {
+		if matched, _, _ := claude.DetectRateLimit(text, now); matched {
+			t.Errorf("Claude adapter false-positive on prose: %q", text)
+		}
+		if matched, _, _ := anti.DetectRateLimit(text, now); matched {
+			t.Errorf("Antigravity adapter false-positive on prose: %q", text)
+		}
+		if matched, _, _ := def.DetectRateLimit(text, now); matched {
+			t.Errorf("Default adapter false-positive on prose: %q", text)
+		}
 	}
 }
 
@@ -448,5 +506,110 @@ func TestProcessDueScheduledPrompts(t *testing.T) {
 	}
 	if updatedSess.Blocked != nil {
 		t.Errorf("expected Blocked to be cleared, got %+v", updatedSess.Blocked)
+	}
+}
+
+func TestHeadlessRunner_DelayedQueue_OutOfOrder(t *testing.T) {
+	dbFile := filepath.Join(t.TempDir(), "test_runner_ooo.sqlite")
+	db, err := InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	runner := NewHeadlessRunner(db, nil)
+	sessionID := "test:sess:ooo"
+
+	// 1. Enqueue item 1 with future DeliverAt (+1 hour)
+	future := time.Now().Add(1 * time.Hour)
+	delayedItem1 := runner.EnqueueDelayedPrompt(sessionID, "Delayed 1h", &future)
+	if delayedItem1 == nil {
+		t.Fatalf("failed to enqueue delayedItem1")
+	}
+
+	// 2. Enqueue item 2 immediate (DeliverAt == nil)
+	runner.EnqueuePrompt(sessionID, "Immediate prompt")
+
+	// 3. Enqueue item 3 with future DeliverAt (+2 hours)
+	future2 := time.Now().Add(2 * time.Hour)
+	delayedItem2 := runner.EnqueueDelayedPrompt(sessionID, "Delayed 2h", &future2)
+	if delayedItem2 == nil {
+		t.Fatalf("failed to enqueue delayedItem2")
+	}
+
+	// DequeuePrompt must pop item 2 (Immediate prompt) without being blocked by delayedItem1!
+	popped := runner.DequeuePrompt(sessionID)
+	if popped == nil || popped.Text != "Immediate prompt" {
+		t.Fatalf("expected immediate prompt to dequeue first, got %v", popped)
+	}
+
+	// Next DequeuePrompt returns nil because both remaining items are in the future
+	if next := runner.DequeuePrompt(sessionID); next != nil {
+		t.Fatalf("expected nil when all remaining items are in the future, got %v", next)
+	}
+
+	// 4. Trigger delayedItem2 (which is currently second in queue behind delayedItem1)
+	triggered := runner.TriggerPromptQueueItemNow(sessionID, delayedItem2.ID)
+	if triggered == nil {
+		t.Fatalf("failed to trigger delayedItem2")
+	}
+
+	// TriggerPromptQueueItemNow must have moved delayedItem2 to front of queue and cleared DeliverAt
+	popped2 := runner.DequeuePrompt(sessionID)
+	if popped2 == nil || popped2.ID != delayedItem2.ID {
+		t.Fatalf("expected triggered delayedItem2 to dequeue next, got %v", popped2)
+	}
+}
+
+func TestProcessDueScheduledPrompts_DoesNotDispatchBlockedPermission(t *testing.T) {
+	dbFile := filepath.Join(t.TempDir(), "test_perm_block.sqlite")
+	db, err := InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	sess := &Session{
+		ID:         "sess_perm_1",
+		EngineType: EngineHeadless,
+		Agent:      "claude",
+		Cwd:        "/tmp",
+		State:      StateBlocked,
+		Activity:   "Waiting for permission",
+		StartedAt:  time.Now(),
+		Blocked: &Blocked{
+			Kind:     BlockPermission,
+			Reason:   "Tool permission requested",
+			Question: "Permission required",
+			Options:  []string{"Allow", "Deny"},
+			Since:    time.Now().Add(-5 * time.Minute),
+		},
+	}
+	if err := db.SaveSession(sess); err != nil {
+		t.Fatalf("SaveSession failed: %v", err)
+	}
+
+	server := NewServer(db)
+
+	// Enqueue prompt with DeliverAt in the past
+	past := time.Now().Add(-1 * time.Minute)
+	server.headless.EnqueueDelayedPrompt(sess.ID, "Prompt waiting for dispatch", &past)
+
+	ctx := context.Background()
+	server.processDueScheduledPrompts(ctx)
+
+	// Session must REMAIN in StateBlocked with BlockPermission
+	updatedSess, err := db.GetSession(sess.ID)
+	if err != nil {
+		t.Fatalf("GetSession failed: %v", err)
+	}
+	if updatedSess.State != StateBlocked || updatedSess.Blocked == nil || updatedSess.Blocked.Kind != BlockPermission {
+		t.Errorf("session state must remain StateBlocked with BlockPermission, got state=%s, blocked=%+v", updatedSess.State, updatedSess.Blocked)
+	}
+
+	// Queue must still contain the prompt (not dispatched while permission is pending)
+	items, _ := server.headless.GetPromptQueue(sess.ID)
+	if len(items) != 1 {
+		t.Errorf("prompt must remain in queue while session is blocked on permission, got %d items", len(items))
 	}
 }
