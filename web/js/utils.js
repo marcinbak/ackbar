@@ -108,12 +108,12 @@ function renderSlideContent(slideMd) {
     let masked = slideMd.replace(/(^|\r?\n)(`{3,}|~{3,})(?![`~])[^\n]*\r?\n[\s\S]*?\r?\n\2(?=\r?\n|$)/gi, (m, prefix) => {
       const idx = slideTokens.length;
       slideTokens.push(m.slice(prefix.length));
-      return prefix + `%%SLIDE_CODE_TOKEN_${idx}%%`;
+      return prefix + `\x00SLIDECODE${idx}\x00`;
     });
     masked = masked.replace(/(`+)(?:[^\r\n`]|(?!\1)`)+\1/g, (m) => {
       const idx = slideTokens.length;
       slideTokens.push(m);
-      return `%%SLIDE_CODE_TOKEN_${idx}%%`;
+      return `\x00SLIDECODE${idx}\x00`;
     });
 
     if (masked.includes('$')) {
@@ -122,7 +122,7 @@ function renderSlideContent(slideMd) {
 
     // Unmask code blocks before feeding into marked.parse
     if (slideTokens.length > 0) {
-      masked = masked.replace(/%%SLIDE_CODE_TOKEN_(\d+)%%/g, (m, id) => {
+      masked = masked.replace(/\x00SLIDECODE(\d+)\x00/g, (m, id) => {
         const val = slideTokens[parseInt(id, 10)];
         return val !== undefined ? val : m;
       });
@@ -225,13 +225,13 @@ function preprocessCarouselBlocks(content, unmaskFn = (s) => s) {
     const masked = result.replace(/(^|\r?\n)(`{3,}|~{3,})[^\n]*\r?\n[\s\S]*?\r?\n\2(?=\r?\n|$)/g, (m) => {
       const idx = codeBlocks.length;
       codeBlocks.push(m);
-      return `\n%%CAROUSEL_CODE_BLOCK_${idx}%%\n`;
+      return `\n\x00CAROUSELCODE${idx}\x00\n`;
     });
 
     if (/<!--\s*slide\s*-->/i.test(masked)) {
       const combinedUnmask = (str) => {
         if (!str || typeof str !== 'string') return str || '';
-        let unmasked = str.replace(/%%CAROUSEL_CODE_BLOCK_(\d+)%%/g, (m, id) => codeBlocks[parseInt(id, 10)] || m);
+        let unmasked = str.replace(/\x00CAROUSELCODE(\d+)\x00/g, (m, id) => codeBlocks[parseInt(id, 10)] || m);
         if (typeof unmaskFn === 'function') {
           unmasked = unmaskFn(unmasked);
         }
@@ -434,12 +434,12 @@ function preprocessLatexMath(text) {
   if (!text || typeof text !== 'string' || !text.includes('$')) return text || '';
 
   // 1. Convert display math blocks: $$([\s\S]+?)$$
-  let result = text.replace(/\$\$([\s\S]+?)\$\$/g, (match, inner) => {
+  let result = text.replace(/\$\$([^\x00]+?)\$\$/g, (match, inner) => {
     return `<div class="math-block">${convertLatexToHtml(inner)}</div>`;
   });
 
   // 2. Convert inline math spans: $((?:\\\$|[^$\r\n])+?)$
-  result = result.replace(/(^|[^\\])\$((?:\\\$|[^$\r\n])+?)\$/g, (match, prefix, inner) => {
+  result = result.replace(/(^|[^\\])\$((?:\\\$|[^$\r\n\x00])+?)\$/g, (match, prefix, inner) => {
     if (isLikelyLatexMath(inner)) {
       return `${prefix}<span class="math-inline">${convertLatexToHtml(inner)}</span>`;
     }
@@ -493,14 +493,14 @@ function preprocessMarkdownExtensions(content) {
   let masked = content.replace(/(^|\r?\n)(`{3,}|~{3,})(?![`~]|carousel\b)[^\n]*\r?\n[\s\S]*?\r?\n\2(?=\r?\n|$)/gi, (m, prefix) => {
     const idx = codeTokens.length;
     codeTokens.push(m.slice(prefix.length));
-    return prefix + `%%MD_CODE_TOKEN_${idx}%%`;
+    return prefix + `\x00MDCODE${idx}\x00`;
   });
 
   // 2. Mask inline code spans `...`
   masked = masked.replace(/(`+)(?:[^\r\n`]|(?!\1)`)+\1/g, (m) => {
     const idx = codeTokens.length;
     codeTokens.push(m);
-    return `%%MD_CODE_TOKEN_${idx}%%`;
+    return `\x00MDCODE${idx}\x00`;
   });
 
   // 1. Process LaTeX Math
@@ -512,7 +512,7 @@ function preprocessMarkdownExtensions(content) {
   if (/`{3,4}carousel|<!--\s*slide/i.test(masked)) {
     const unmaskFn = (str) => {
       if (!str || typeof str !== 'string' || codeTokens.length === 0) return str || '';
-      return str.replace(/%%MD_CODE_TOKEN_(\d+)%%/g, (m, id) => {
+      return str.replace(/\x00MDCODE(\d+)\x00/g, (m, id) => {
         const val = codeTokens[parseInt(id, 10)];
         return val !== undefined ? val : m;
       });
@@ -522,7 +522,7 @@ function preprocessMarkdownExtensions(content) {
 
   // Unmask remaining code tokens
   if (codeTokens.length > 0) {
-    masked = masked.replace(/%%MD_CODE_TOKEN_(\d+)%%/g, (m, id) => {
+    masked = masked.replace(/\x00MDCODE(\d+)\x00/g, (m, id) => {
       const val = codeTokens[parseInt(id, 10)];
       return val !== undefined ? val : m;
     });
@@ -1058,6 +1058,7 @@ export {
   markedConfigured,
   openInVSCode,
   configureMarked,
+  renderSlideContent,
   ensureExternalLinksTargetBlank,
   sanitizeRenderedMarkdownHtml,
   preprocessCarouselBlocks,
