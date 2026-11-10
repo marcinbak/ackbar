@@ -113,6 +113,29 @@ func (a defaultAgentAdapter) FilterUserEntry(raw map[string]interface{}, content
 	return clean, true
 }
 
+func (a defaultAgentAdapter) DetectRateLimit(text string, now time.Time) (bool, time.Time, string) {
+	if text == "" {
+		return false, time.Time{}, ""
+	}
+	lower := strings.ToLower(text)
+
+	var prefix string
+	switch {
+	case strings.Contains(lower, "you've hit your usage limit") || strings.Contains(lower, "hit your usage limit") || strings.Contains(lower, "usage limit reached"):
+		prefix = "Usage limit reached"
+	case strings.Contains(lower, "rate limit reached") || strings.Contains(lower, "rate_limit_exceeded") || strings.Contains(lower, "rate limit exceeded"):
+		prefix = "Rate limit reached"
+	case strings.Contains(lower, "quota exceeded"):
+		prefix = "Quota exceeded"
+	default:
+		return false, time.Time{}, ""
+	}
+
+	resetAt := ParseRateLimitResetTime(text, now)
+	reason := fmt.Sprintf("%s · resets %s", prefix, resetAt.Local().Format("15:04"))
+	return true, resetAt, reason
+}
+
 func cleanCLIEnvironmentTags(text string) string {
 	trimmed := strings.TrimSpace(text)
 	if trimmed == "" {

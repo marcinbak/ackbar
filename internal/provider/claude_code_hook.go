@@ -202,6 +202,22 @@ func (c *ClaudeProvider) ParseHook(eventName string, payload []byte) (*daemon.Ev
 		}
 
 	case "sessionend", "stop":
+		textToCheck := p.LastAssistantMessage
+		if textToCheck != "" {
+			if limited, resetAt, reason := (daemon.ClaudeAgentAdapter{}).DetectRateLimit(textToCheck, time.Now()); limited {
+				event.State = daemon.StateBlocked
+				event.Blocked = &daemon.Blocked{
+					Kind:     daemon.BlockRateLimit,
+					Reason:   reason,
+					Question: reason,
+					ResetAt:  &resetAt,
+					Options:  []string{fmt.Sprintf("Resume at %s", resetAt.Local().Format("15:04")), "Resume in 1h"},
+					Since:    time.Now(),
+				}
+				event.Activity = "Rate limit: " + reason
+				break
+			}
+		}
 		event.State = daemon.StateIdle
 		event.Activity = "Awaiting user prompt"
 
@@ -287,6 +303,22 @@ func (c *ClaudeProvider) ParseHook(eventName string, payload []byte) (*daemon.Ev
 		event.Activity = "Tool execution completed"
 
 	case "notification":
+		textToCheck := p.LastAssistantMessage
+		if textToCheck != "" {
+			if limited, resetAt, reason := (daemon.ClaudeAgentAdapter{}).DetectRateLimit(textToCheck, time.Now()); limited {
+				event.State = daemon.StateBlocked
+				event.Blocked = &daemon.Blocked{
+					Kind:     daemon.BlockRateLimit,
+					Reason:   reason,
+					Question: reason,
+					ResetAt:  &resetAt,
+					Options:  []string{fmt.Sprintf("Resume at %s", resetAt.Local().Format("15:04")), "Resume in 1h"},
+					Since:    time.Now(),
+				}
+				event.Activity = "Rate limit: " + reason
+				break
+			}
+		}
 		notifLower := strings.ToLower(p.NotificationType)
 		if strings.Contains(notifLower, "input") || strings.Contains(notifLower, "question") {
 			event.State = daemon.StateBlocked

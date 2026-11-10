@@ -40,6 +40,7 @@ const (
 	BlockPermission BlockKind = "permission"
 	BlockQuestion   BlockKind = "question"
 	BlockApproval   BlockKind = "approval"
+	BlockRateLimit  BlockKind = "rate_limit"
 )
 
 type BlockedQuestion struct {
@@ -56,6 +57,7 @@ type Blocked struct {
 	Question  string            `json:"question,omitempty"`
 	Options   []string          `json:"options,omitempty"`
 	Questions []BlockedQuestion `json:"questions,omitempty"`
+	ResetAt   *time.Time        `json:"reset_at,omitempty"`
 }
 
 type Session struct {

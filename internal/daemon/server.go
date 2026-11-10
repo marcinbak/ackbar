@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"ackbar/internal/relay"
+	"ackbar/internal/tmux"
 	"ackbar/internal/version"
 )
 
@@ -98,6 +99,7 @@ func NewServer(db *DB) *Server {
 	}
 	s.headless = NewHeadlessRunner(db, s.broadcast)
 	s.headless.SetOnTurnComplete(s.clearSubagents)
+	s.headless.LoadScheduledPrompts()
 	if host := s.HostName(); host != "local" && db != nil {
 		_ = db.MigrateLocalSessions(host)
 		s.pruneForeignSessions()
@@ -799,6 +801,8 @@ func (s *Server) StartBackgroundLoop(ctx context.Context) {
 
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
+		schedTicker := time.NewTicker(5 * time.Second)
+		defer schedTicker.Stop()
 		hourlyTicker := time.NewTicker(1 * time.Hour)
 		defer hourlyTicker.Stop()
 
@@ -806,6 +810,8 @@ func (s *Server) StartBackgroundLoop(ctx context.Context) {
 			select {
 			case <-ctx.Done():
 				return
+			case <-schedTicker.C:
+				s.processDueScheduledPrompts(ctx)
 			case <-hourlyTicker.C:
 				go s.maybeAutoSyncSkillsRepo(ctx)
 				if s.db != nil {
@@ -824,6 +830,76 @@ func (s *Server) StartBackgroundLoop(ctx context.Context) {
 			}
 		}
 	}()
+}
+
+func (s *Server) processDueScheduledPrompts(ctx context.Context) {
+	if s.headless == nil || s.db == nil {
+		return
+	}
+
+	sessions, err := s.db.ListActiveSessions()
+	if err != nil || len(sessions) == 0 {
+		return
+	}
+
+	now := time.Now()
+	for _, sess := range sessions {
+		if !s.isLocalHost(sess.Host) {
+			continue
+		}
+
+		items, _ := s.headless.GetPromptQueue(sess.ID)
+		if len(items) == 0 {
+			continue
+		}
+
+		hasDueScheduled := false
+		for _, it := range items {
+			if it != nil && it.DeliverAt != nil && !it.DeliverAt.After(now) {
+				hasDueScheduled = true
+				break
+			}
+		}
+		if !hasDueScheduled {
+			continue
+		}
+
+		if sess.State == StateBlocked && sess.Blocked != nil && sess.Blocked.Kind == BlockRateLimit {
+			sess.Blocked = nil
+			sess.State = StateIdle
+			s.headless.SetQueuePaused(sess.ID, false)
+			_ = s.db.SaveSession(sess)
+			s.broadcast(sess)
+		}
+
+		// Only dispatch when session is in StateIdle (never when blocked on permissions/questions or working)
+		if sess.State != StateIdle {
+			continue
+		}
+
+		if sess.EngineType == EngineHeadless {
+			if !s.headless.IsRunning(sess.ID) && !s.headless.IsQueuePaused(sess.ID) {
+				popped := s.headless.DequeuePrompt(sess.ID)
+				if popped != nil {
+					s.headless.EmitQueueUpdate(sess.ID)
+					go s.headless.RunTurn(context.Background(), sess, popped.Text)
+				}
+			}
+		} else if sess.EngineType == EngineTmux || sess.TmuxName != "" {
+			popped := s.headless.DequeuePrompt(sess.ID)
+			if popped != nil {
+				s.headless.EmitQueueUpdate(sess.ID)
+				if sess.TmuxName != "" {
+					_ = tmux.SendInput(ctx, sess.TmuxName, popped.Text, true)
+					sess.State = StateWorking
+					sess.Activity = "Processing scheduled prompt"
+					sess.LastEventAt = time.Now()
+					_ = s.db.SaveSession(sess)
+					s.broadcast(sess)
+				}
+			}
+		}
+	}
 }
 
 func (s *Server) maybeAutoSyncSkillsRepo(ctx context.Context) {

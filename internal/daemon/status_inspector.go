@@ -313,6 +313,33 @@ func InspectAntigravityStatus(ctx context.Context, sess *Session) bool {
 			}
 			return changed
 		}
+
+		// 2B. Rate limit check in live tmux pane
+		if sess.State == StateBlocked && sess.Blocked != nil && sess.Blocked.Kind == BlockRateLimit {
+			if sess.Blocked.ResetAt == nil || sess.Blocked.ResetAt.After(time.Now()) {
+				return changed
+			}
+			// Reset time has passed; do not re-detect old static rate-limit in pane, fall through to unblock
+		} else if !hasSpinner && !hasCancel {
+			adapter := AntigravityAgentAdapter{}
+			bottom6Text := strings.Join(extractTailLines(nonEmpty, 6), "\n")
+			if limited, resetAt, reason := adapter.DetectRateLimit(bottom6Text, time.Now()); limited {
+				if sess.State != StateBlocked || sess.Blocked == nil || sess.Blocked.Kind != BlockRateLimit || sess.Blocked.Reason != reason {
+					sess.State = StateBlocked
+					sess.Blocked = &Blocked{
+						Kind:     BlockRateLimit,
+						Reason:   reason,
+						Question: reason,
+						ResetAt:  &resetAt,
+						Options:  []string{fmt.Sprintf("Resume at %s", resetAt.Local().Format("15:04")), "Resume in 1h"},
+						Since:    time.Now(),
+					}
+					sess.Activity = "Rate limit: " + reason
+					changed = true
+				}
+				return changed
+			}
+		}
 	}
 
 	// 3. Structured Transcript Inspection (tail up to 256KB)
@@ -512,6 +539,9 @@ func InspectAntigravityStatus(ctx context.Context, sess *Session) bool {
 
 	// 6. If it was blocked, but unblocked and alive
 	if sess.State == StateBlocked {
+		if sess.Blocked != nil && sess.Blocked.Kind == BlockRateLimit && sess.Blocked.ResetAt != nil && sess.Blocked.ResetAt.After(time.Now()) {
+			return changed
+		}
 		if sess.TmuxName != "" || isProcessAlive(sess.PID) {
 			if isWithinBlockedGraceWindow(sess) && !hasSpinner && !transcriptTurnCompletedAfterBlock {
 				return changed
@@ -1281,6 +1311,32 @@ func InspectClaudeStatus(ctx context.Context, sess *Session) bool {
 
 		hasPrompt = lastPromptIdx != -1 && lastPromptIdx > lastSpinnerIdx && lastPromptIdx > lastPermIdx && lastPromptIdx > lastQuestionIdx
 		hasSpinner = lastSpinnerIdx != -1 && lastSpinnerIdx > lastPromptIdx && hasClaudeSpinner(bottom6Text)
+
+		// 1C. Rate limit detection in live pane text (when not actively spinning)
+		if sess.State == StateBlocked && sess.Blocked != nil && sess.Blocked.Kind == BlockRateLimit {
+			if sess.Blocked.ResetAt == nil || sess.Blocked.ResetAt.After(time.Now()) {
+				return changed
+			}
+			// Reset time has passed; do not re-detect old static rate-limit in pane, fall through to unblock
+		} else if !hasSpinner {
+			adapter := ClaudeAgentAdapter{}
+			if limited, resetAt, reason := adapter.DetectRateLimit(bottom6Text, time.Now()); limited {
+				if sess.State != StateBlocked || sess.Blocked == nil || sess.Blocked.Kind != BlockRateLimit || sess.Blocked.Reason != reason {
+					sess.State = StateBlocked
+					sess.Blocked = &Blocked{
+						Kind:     BlockRateLimit,
+						Reason:   reason,
+						Question: reason,
+						ResetAt:  &resetAt,
+						Options:  []string{fmt.Sprintf("Resume at %s", resetAt.Local().Format("15:04")), "Resume in 1h"},
+						Since:    time.Now(),
+					}
+					sess.Activity = "Rate limit: " + reason
+					changed = true
+				}
+				return changed
+			}
+		}
 	}
 
 	// Inspect Claude .jsonl transcript for blocked tool_use (AskUserQuestion / ExitPlanMode) or completed turn (end_turn / stop_sequence)
@@ -1494,6 +1550,9 @@ func InspectClaudeStatus(ctx context.Context, sess *Session) bool {
 
 	// 8. If it was blocked, but tmux pane is unblocked and alive
 	if sess.TmuxName != "" && sess.State == StateBlocked {
+		if sess.Blocked != nil && sess.Blocked.Kind == BlockRateLimit && sess.Blocked.ResetAt != nil && sess.Blocked.ResetAt.After(time.Now()) {
+			return changed
+		}
 		if isWithinBlockedGraceWindow(sess) && !hasSpinner && !transcriptTurnCompletedAfterBlock {
 			return changed
 		}
@@ -1767,8 +1826,38 @@ func InspectCodexStatus(ctx context.Context, sess *Session) bool {
 			return changed
 		}
 
-		// 3. If it was blocked, but live tmux pane is now unblocked and alive
+		// 3. Rate limit / usage limit
+		if sess.State == StateBlocked && sess.Blocked != nil && sess.Blocked.Kind == BlockRateLimit {
+			if sess.Blocked.ResetAt == nil || sess.Blocked.ResetAt.After(time.Now()) {
+				return changed
+			}
+			// Reset time has passed; do not re-detect old static rate-limit in pane, fall through to unblock
+		} else {
+			adapter := CodexAgentAdapter{}
+			bottom6Text := extractTailText(lines, 6)
+			if limited, resetAt, reason := adapter.DetectRateLimit(bottom6Text, time.Now()); limited {
+				if sess.State != StateBlocked || sess.Blocked == nil || sess.Blocked.Kind != BlockRateLimit || sess.Blocked.Reason != reason {
+					sess.State = StateBlocked
+					sess.Blocked = &Blocked{
+						Kind:     BlockRateLimit,
+						Reason:   reason,
+						Question: reason,
+						ResetAt:  &resetAt,
+						Options:  []string{fmt.Sprintf("Resume at %s", resetAt.Local().Format("15:04")), "Resume in 1h"},
+						Since:    time.Now(),
+					}
+					sess.Activity = "Rate limit: " + reason
+					changed = true
+				}
+				return changed
+			}
+		}
+
+		// 4. If it was blocked, but live tmux pane is now unblocked and alive
 		if sess.State == StateBlocked {
+			if sess.Blocked != nil && sess.Blocked.Kind == BlockRateLimit && sess.Blocked.ResetAt != nil && sess.Blocked.ResetAt.After(time.Now()) {
+				return changed
+			}
 			sess.State = StateIdle
 			sess.Blocked = nil
 			sess.Activity = "Awaiting user prompt"

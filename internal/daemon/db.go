@@ -53,8 +53,19 @@ CREATE TABLE IF NOT EXISTS sessions (
 	effort TEXT DEFAULT '',
 	permission_mode TEXT DEFAULT 'bypassPermissions',
 	blocked_questions TEXT DEFAULT '',
+	blocked_reset_at TIMESTAMP,
 	metadata_updated_at TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS scheduled_prompts (
+	id TEXT PRIMARY KEY,
+	session_id TEXT NOT NULL,
+	prompt TEXT NOT NULL,
+	deliver_at TIMESTAMP,
+	created_at TIMESTAMP NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_scheduled_prompts_session ON scheduled_prompts(session_id);
 
 CREATE TABLE IF NOT EXISTS settings (
 	key TEXT PRIMARY KEY,
@@ -262,7 +273,16 @@ func InitDB(dbPath string) (*DB, error) {
 	_, _ = db.Exec("ALTER TABLE sessions ADD COLUMN effort TEXT DEFAULT '';")
 	_, _ = db.Exec("ALTER TABLE sessions ADD COLUMN permission_mode TEXT DEFAULT 'bypassPermissions';")
 	_, _ = db.Exec("ALTER TABLE sessions ADD COLUMN blocked_questions TEXT DEFAULT '';")
+	_, _ = db.Exec("ALTER TABLE sessions ADD COLUMN blocked_reset_at TIMESTAMP;")
 	_, _ = db.Exec("ALTER TABLE sessions ADD COLUMN metadata_updated_at TIMESTAMP;")
+	_, _ = db.Exec(`CREATE TABLE IF NOT EXISTS scheduled_prompts (
+		id TEXT PRIMARY KEY,
+		session_id TEXT NOT NULL,
+		prompt TEXT NOT NULL,
+		deliver_at TIMESTAMP,
+		created_at TIMESTAMP NOT NULL
+	);`)
+	_, _ = db.Exec("CREATE INDEX IF NOT EXISTS idx_scheduled_prompts_session ON scheduled_prompts(session_id);")
 	_, _ = db.Exec("ALTER TABLE tree_nodes ADD COLUMN updated_at TIMESTAMP;")
 	_, _ = db.Exec("ALTER TABLE tree_nodes ADD COLUMN deleted_at TIMESTAMP;")
 	_, _ = db.Exec("ALTER TABLE tasks ADD COLUMN deleted_at TIMESTAMP;")
@@ -413,12 +433,15 @@ func (d *DB) SaveSession(s *Session) error {
 	}
 
 	var blockedKind, blockedReason, blockedQuestion, blockedOptions, blockedQuestions sql.NullString
-	var blockedSince sql.NullTime
+	var blockedSince, blockedResetAt sql.NullTime
 
 	if s.Blocked != nil {
 		blockedKind = sql.NullString{String: string(s.Blocked.Kind), Valid: true}
 		blockedReason = sql.NullString{String: s.Blocked.Reason, Valid: true}
 		blockedSince = sql.NullTime{Time: s.Blocked.Since, Valid: true}
+		if s.Blocked.ResetAt != nil {
+			blockedResetAt = sql.NullTime{Time: *s.Blocked.ResetAt, Valid: true}
+		}
 		if s.Blocked.Question != "" {
 			blockedQuestion = sql.NullString{String: s.Blocked.Question, Valid: true}
 		}
@@ -462,10 +485,10 @@ func (d *DB) SaveSession(s *Session) error {
 	query := `
 	INSERT INTO sessions (
 		id, agent, host, native_id, cwd, roots, project_key, state, 
-		blocked_kind, blocked_reason, blocked_since, blocked_question, blocked_options, blocked_questions, activity, 
+		blocked_kind, blocked_reason, blocked_since, blocked_question, blocked_options, blocked_questions, blocked_reset_at, activity, 
 		started_at, last_event_at, managed, tmux_name, pid, archived, node_path, name, entrypoint, kind, version, context_pct, git_branch,
 		custom_title, ai_title, ai_description, first_prompt, last_prompt, is_unread, last_state_change_at, is_done, is_later, account_id, engine_type, old_id, metadata_updated_at, is_supervisor, current_task_id, model, effort, permission_mode
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(id) DO UPDATE SET
 		cwd=excluded.cwd,
 		roots=excluded.roots,
@@ -477,6 +500,7 @@ func (d *DB) SaveSession(s *Session) error {
 		blocked_question=excluded.blocked_question,
 		blocked_options=excluded.blocked_options,
 		blocked_questions=excluded.blocked_questions,
+		blocked_reset_at=excluded.blocked_reset_at,
 		activity=excluded.activity,
 		last_event_at=excluded.last_event_at,
 		managed=excluded.managed,
@@ -552,7 +576,7 @@ func (d *DB) SaveSession(s *Session) error {
 
 	_, err = d.db.Exec(query,
 		s.ID, s.Agent, s.Host, s.NativeID, s.Cwd, string(rootsJSON), s.ProjectKey, int(s.State),
-		blockedKind, blockedReason, blockedSince, blockedQuestion, blockedOptions, blockedQuestions, s.Activity,
+		blockedKind, blockedReason, blockedSince, blockedQuestion, blockedOptions, blockedQuestions, blockedResetAt, s.Activity,
 		s.StartedAt, s.LastEventAt, managedInt, s.TmuxName, s.PID, archivedInt, nodePath, sessName, entrypointVal, kindVal, versionVal, s.ContextPct, gitBranchVal,
 		customTitleVal, aiTitleVal, aiDescVal, firstPromptVal, lastPromptVal, isUnreadInt, lastStateChangeAt, isDoneInt, isLaterInt, accountIDVal, engineType, oldIDVal, s.MetadataUpdatedAt, isSupervisorInt, currentTaskIDVal,
 		modelVal, effortVal, permModeVal,
@@ -567,7 +591,7 @@ func (d *DB) SaveSession(s *Session) error {
 func (d *DB) GetSession(id string) (*Session, error) {
 	query := `
 	SELECT id, agent, host, native_id, cwd, roots, project_key, state,
-	       blocked_kind, blocked_reason, blocked_since, blocked_question, blocked_options, blocked_questions, activity,
+	       blocked_kind, blocked_reason, blocked_since, blocked_question, blocked_options, blocked_questions, blocked_reset_at, activity,
 	       started_at, last_event_at, managed, tmux_name, pid, archived, node_path, name, entrypoint, kind, version, context_pct, git_branch,
 	       custom_title, ai_title, ai_description, first_prompt, last_prompt, is_unread, last_state_change_at, is_done, is_later, account_id, engine_type, old_id, metadata_updated_at, is_supervisor, current_task_id,
 	       model, effort, permission_mode
@@ -578,7 +602,7 @@ func (d *DB) GetSession(id string) (*Session, error) {
 	var rootsStr, blockedKind, blockedReason, blockedQuestion, blockedOptions, blockedQuestions, nodePath, sessName, entrypointVal, kindVal, versionVal, gitBranchVal sql.NullString
 	var customTitleVal, aiTitleVal, aiDescVal, firstPromptVal, lastPromptVal, accountIDVal, engineTypeVal, oldIDVal, currentTaskIDVal, modelVal, effortVal, permModeVal sql.NullString
 	var ctxPct, isSupervisorVal sql.NullInt64
-	var blockedSince, lastStateChangeAt, metadataUpdatedAt sql.NullTime
+	var blockedSince, blockedResetAt, lastStateChangeAt, metadataUpdatedAt sql.NullTime
 	var managedInt, archivedInt, isUnreadInt, isDoneInt, isLaterInt int
 
 	nativeCandidate := id
@@ -589,7 +613,7 @@ func (d *DB) GetSession(id string) (*Session, error) {
 	row := d.db.QueryRow(query, id, id, nativeCandidate)
 	err := row.Scan(
 		&s.ID, &s.Agent, &s.Host, &s.NativeID, &s.Cwd, &rootsStr, &s.ProjectKey, (*int)(&s.State),
-		&blockedKind, &blockedReason, &blockedSince, &blockedQuestion, &blockedOptions, &blockedQuestions, &s.Activity,
+		&blockedKind, &blockedReason, &blockedSince, &blockedQuestion, &blockedOptions, &blockedQuestions, &blockedResetAt, &s.Activity,
 		&s.StartedAt, &s.LastEventAt, &managedInt, &s.TmuxName, &s.PID, &archivedInt, &nodePath, &sessName, &entrypointVal, &kindVal, &versionVal, &ctxPct, &gitBranchVal,
 		&customTitleVal, &aiTitleVal, &aiDescVal, &firstPromptVal, &lastPromptVal, &isUnreadInt, &lastStateChangeAt, &isDoneInt, &isLaterInt, &accountIDVal, &engineTypeVal, &oldIDVal, &metadataUpdatedAt, &isSupervisorVal, &currentTaskIDVal,
 		&modelVal, &effortVal, &permModeVal,
@@ -684,6 +708,9 @@ func (d *DB) GetSession(id string) (*Session, error) {
 			Since:    blockedSince.Time,
 			Question: blockedQuestion.String,
 		}
+		if blockedResetAt.Valid {
+			s.Blocked.ResetAt = &blockedResetAt.Time
+		}
 		if blockedOptions.Valid && blockedOptions.String != "" {
 			_ = json.Unmarshal([]byte(blockedOptions.String), &s.Blocked.Options)
 		}
@@ -710,7 +737,7 @@ func (d *DB) GetSession(id string) (*Session, error) {
 func (d *DB) ListSessions() ([]*Session, error) {
 	query := `
 	SELECT id, agent, host, native_id, cwd, roots, project_key, state,
-	       blocked_kind, blocked_reason, blocked_since, blocked_question, blocked_options, blocked_questions, activity,
+	       blocked_kind, blocked_reason, blocked_since, blocked_question, blocked_options, blocked_questions, blocked_reset_at, activity,
 	       started_at, last_event_at, managed, tmux_name, pid, archived, node_path, name, entrypoint, kind, version, context_pct, git_branch,
 	       custom_title, ai_title, ai_description, first_prompt, last_prompt, is_unread, last_state_change_at, is_done, is_later, account_id, engine_type, old_id, metadata_updated_at, is_supervisor, current_task_id,
 	       model, effort, permission_mode
@@ -730,12 +757,12 @@ func (d *DB) ListSessions() ([]*Session, error) {
 		var rootsStr, blockedKind, blockedReason, blockedQuestion, blockedOptions, blockedQuestions, nodePath, sessName, entrypointVal, kindVal, versionVal, gitBranchVal sql.NullString
 		var customTitleVal, aiTitleVal, aiDescVal, firstPromptVal, lastPromptVal, accountIDVal, engineTypeVal, oldIDVal, currentTaskIDVal, modelVal, effortVal, permModeVal sql.NullString
 		var ctxPct, isSupervisorVal sql.NullInt64
-		var blockedSince, lastStateChangeAt, metadataUpdatedAt sql.NullTime
+		var blockedSince, blockedResetAt, lastStateChangeAt, metadataUpdatedAt sql.NullTime
 		var managedInt, archivedInt, isUnreadInt, isDoneInt, isLaterInt int
 
 		err := rows.Scan(
 			&s.ID, &s.Agent, &s.Host, &s.NativeID, &s.Cwd, &rootsStr, &s.ProjectKey, (*int)(&s.State),
-			&blockedKind, &blockedReason, &blockedSince, &blockedQuestion, &blockedOptions, &blockedQuestions, &s.Activity,
+			&blockedKind, &blockedReason, &blockedSince, &blockedQuestion, &blockedOptions, &blockedQuestions, &blockedResetAt, &s.Activity,
 			&s.StartedAt, &s.LastEventAt, &managedInt, &s.TmuxName, &s.PID, &archivedInt, &nodePath, &sessName, &entrypointVal, &kindVal, &versionVal, &ctxPct, &gitBranchVal,
 			&customTitleVal, &aiTitleVal, &aiDescVal, &firstPromptVal, &lastPromptVal, &isUnreadInt, &lastStateChangeAt, &isDoneInt, &isLaterInt, &accountIDVal, &engineTypeVal, &oldIDVal, &metadataUpdatedAt, &isSupervisorVal, &currentTaskIDVal,
 			&modelVal, &effortVal, &permModeVal,
@@ -825,6 +852,9 @@ func (d *DB) ListSessions() ([]*Session, error) {
 				Reason:   blockedReason.String,
 				Since:    blockedSince.Time,
 				Question: blockedQuestion.String,
+			}
+			if blockedResetAt.Valid {
+				s.Blocked.ResetAt = &blockedResetAt.Time
 			}
 			if blockedOptions.Valid && blockedOptions.String != "" {
 				_ = json.Unmarshal([]byte(blockedOptions.String), &s.Blocked.Options)
@@ -941,7 +971,7 @@ func (d *DB) SetSettings(settings map[string]string) error {
 func (d *DB) ListActiveSessions() ([]*Session, error) {
 	query := `
 	SELECT id, agent, host, native_id, cwd, roots, project_key, state,
-	       blocked_kind, blocked_reason, blocked_since, blocked_question, blocked_options, blocked_questions, activity,
+	       blocked_kind, blocked_reason, blocked_since, blocked_question, blocked_options, blocked_questions, blocked_reset_at, activity,
 	       started_at, last_event_at, managed, tmux_name, pid, archived, node_path, name, entrypoint, kind, version, context_pct, git_branch,
 	       custom_title, ai_title, ai_description, first_prompt, last_prompt, is_unread, last_state_change_at, is_done, is_later, account_id, engine_type, old_id, metadata_updated_at, is_supervisor, current_task_id,
 	       model, effort, permission_mode
@@ -962,12 +992,12 @@ func (d *DB) ListActiveSessions() ([]*Session, error) {
 		var rootsStr, blockedKind, blockedReason, blockedQuestion, blockedOptions, blockedQuestions, nodePath, sessName, entrypointVal, kindVal, versionVal, gitBranchVal sql.NullString
 		var customTitleVal, aiTitleVal, aiDescVal, firstPromptVal, lastPromptVal, accountIDVal, engineTypeVal, oldIDVal, currentTaskIDVal, modelVal, effortVal, permModeVal sql.NullString
 		var ctxPct, isSupervisorVal sql.NullInt64
-		var blockedSince, lastStateChangeAt, metadataUpdatedAt sql.NullTime
+		var blockedSince, blockedResetAt, lastStateChangeAt, metadataUpdatedAt sql.NullTime
 		var managedInt, archivedInt, isUnreadInt, isDoneInt, isLaterInt int
 
 		err := rows.Scan(
 			&s.ID, &s.Agent, &s.Host, &s.NativeID, &s.Cwd, &rootsStr, &s.ProjectKey, (*int)(&s.State),
-			&blockedKind, &blockedReason, &blockedSince, &blockedQuestion, &blockedOptions, &blockedQuestions, &s.Activity,
+			&blockedKind, &blockedReason, &blockedSince, &blockedQuestion, &blockedOptions, &blockedQuestions, &blockedResetAt, &s.Activity,
 			&s.StartedAt, &s.LastEventAt, &managedInt, &s.TmuxName, &s.PID, &archivedInt, &nodePath, &sessName, &entrypointVal, &kindVal, &versionVal, &ctxPct, &gitBranchVal,
 			&customTitleVal, &aiTitleVal, &aiDescVal, &firstPromptVal, &lastPromptVal, &isUnreadInt, &lastStateChangeAt, &isDoneInt, &isLaterInt, &accountIDVal, &engineTypeVal, &oldIDVal, &metadataUpdatedAt, &isSupervisorVal, &currentTaskIDVal,
 			&modelVal, &effortVal, &permModeVal,
@@ -1057,6 +1087,9 @@ func (d *DB) ListActiveSessions() ([]*Session, error) {
 				Reason:   blockedReason.String,
 				Since:    blockedSince.Time,
 				Question: blockedQuestion.String,
+			}
+			if blockedResetAt.Valid {
+				s.Blocked.ResetAt = &blockedResetAt.Time
 			}
 			if blockedOptions.Valid && blockedOptions.String != "" {
 				_ = json.Unmarshal([]byte(blockedOptions.String), &s.Blocked.Options)
@@ -3687,4 +3720,62 @@ func (d *DB) SaveSpeechSummary(summary *SpeechSummary) error {
 		return fmt.Errorf("failed to save speech summary: %w", err)
 	}
 	return nil
+}
+
+// SaveScheduledPrompt inserts or updates a scheduled prompt item in SQLite.
+func (d *DB) SaveScheduledPrompt(item *PromptQueueItem) error {
+	if item == nil {
+		return nil
+	}
+	query := `
+	INSERT INTO scheduled_prompts (id, session_id, prompt, deliver_at, created_at)
+	VALUES (?, ?, ?, ?, ?)
+	ON CONFLICT(id) DO UPDATE SET session_id=excluded.session_id, prompt=excluded.prompt, deliver_at=excluded.deliver_at;
+	`
+	var deliverAt sql.NullTime
+	if item.DeliverAt != nil {
+		deliverAt = sql.NullTime{Time: *item.DeliverAt, Valid: true}
+	}
+	createdAt := item.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = time.Now().UTC()
+	}
+	_, err := d.db.Exec(query, item.ID, item.SessionID, item.Text, deliverAt, createdAt)
+	return err
+}
+
+// DeleteScheduledPrompt removes a scheduled prompt by item ID.
+func (d *DB) DeleteScheduledPrompt(id string) error {
+	_, err := d.db.Exec("DELETE FROM scheduled_prompts WHERE id = ?", id)
+	return err
+}
+
+// DeleteScheduledPromptsBySession removes all scheduled prompts for a session.
+func (d *DB) DeleteScheduledPromptsBySession(sessionID string) error {
+	_, err := d.db.Exec("DELETE FROM scheduled_prompts WHERE session_id = ?", sessionID)
+	return err
+}
+
+// ListScheduledPrompts returns all scheduled prompts ordered by creation time.
+func (d *DB) ListScheduledPrompts() ([]*PromptQueueItem, error) {
+	rows, err := d.db.Query("SELECT id, session_id, prompt, deliver_at, created_at FROM scheduled_prompts ORDER BY created_at ASC")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var items []*PromptQueueItem
+	for rows.Next() {
+		var item PromptQueueItem
+		var deliverAt sql.NullTime
+		if err := rows.Scan(&item.ID, &item.SessionID, &item.Text, &deliverAt, &item.CreatedAt); err != nil {
+			return nil, err
+		}
+		if deliverAt.Valid {
+			t := deliverAt.Time
+			item.DeliverAt = &t
+		}
+		items = append(items, &item)
+	}
+	return items, nil
 }

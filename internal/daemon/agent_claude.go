@@ -944,3 +944,32 @@ func ReadClaudeSessionTitle(cwd, sessionID string) string {
 
 	return title
 }
+
+func (a ClaudeAgentAdapter) DetectRateLimit(text string, now time.Time) (bool, time.Time, string) {
+	if text == "" {
+		return false, time.Time{}, ""
+	}
+	lower := strings.ToLower(text)
+
+	var prefix string
+	switch {
+	case strings.Contains(lower, "5-hour limit") || strings.Contains(lower, "5h limit"):
+		prefix = "5-hour limit reached"
+	case strings.Contains(lower, "weekly limit reached"):
+		prefix = "Weekly limit reached"
+	case strings.Contains(lower, "session limit reached"):
+		prefix = "Session limit reached"
+	case strings.Contains(lower, "claude ai usage limit") || strings.Contains(lower, "usage limit reached"):
+		prefix = "Usage limit reached"
+	case strings.Contains(lower, "rate limit reached") || strings.Contains(lower, "rate limit exceeded"):
+		prefix = "Rate limit reached"
+	case strings.Contains(lower, "limit reached") && (strings.Contains(lower, "resets") || strings.Contains(lower, "retry")):
+		prefix = "Limit reached"
+	default:
+		return false, time.Time{}, ""
+	}
+
+	resetAt := ParseRateLimitResetTime(text, now)
+	reason := fmt.Sprintf("%s · resets %s", prefix, resetAt.Local().Format("15:04"))
+	return true, resetAt, reason
+}

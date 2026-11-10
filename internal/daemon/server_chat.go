@@ -22,8 +22,10 @@ func (s *Server) handlePrompt(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		SessionID string `json:"session_id"`
-		Prompt    string `json:"prompt"`
+		SessionID    string `json:"session_id"`
+		Prompt       string `json:"prompt"`
+		DelaySeconds int    `json:"delay_seconds,omitempty"`
+		DeliverAt    string `json:"deliver_at,omitempty"`
 	}
 	bodyBytes, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -47,9 +49,46 @@ func (s *Server) handlePrompt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	promptText := req.Prompt
+	var targetDeliverAt *time.Time
+	if dur, remainingPrompt, ok := ParseSlashDelayCommand(promptText); ok {
+		if remainingPrompt == "" {
+			remainingPrompt = "Continue"
+		}
+		t := time.Now().Add(dur)
+		targetDeliverAt = &t
+		promptText = remainingPrompt
+	} else if req.DelaySeconds > 0 {
+		t := time.Now().Add(time.Duration(req.DelaySeconds) * time.Second)
+		targetDeliverAt = &t
+	} else if req.DeliverAt != "" {
+		if t, err := time.Parse(time.RFC3339, req.DeliverAt); err == nil && t.After(time.Now()) {
+			targetDeliverAt = &t
+		}
+	}
+
+	if targetDeliverAt != nil {
+		if s.headless != nil {
+			item := s.headless.EnqueueDelayedPrompt(sess.ID, promptText, targetDeliverAt)
+			if sess.State == StateBlocked && sess.Blocked != nil && sess.Blocked.Kind == BlockRateLimit {
+				sess.Activity = fmt.Sprintf("Scheduled resume at %s", targetDeliverAt.Local().Format("15:04"))
+				_ = s.db.SaveSession(sess)
+				s.broadcast(sess)
+			}
+			s.headless.EmitQueueUpdate(sess.ID)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"status":     "scheduled",
+				"id":         item.ID,
+				"deliver_at": targetDeliverAt.Format(time.RFC3339),
+			})
+			return
+		}
+	}
+
 	if sess.EngineType == EngineHeadless {
 		if s.headless != nil && s.headless.IsRunning(sess.ID) {
-			item := s.headless.EnqueuePrompt(sess.ID, req.Prompt)
+			item := s.headless.EnqueuePrompt(sess.ID, promptText)
 			s.headless.EmitQueueUpdate(sess.ID)
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -60,7 +99,7 @@ func (s *Server) handlePrompt(w http.ResponseWriter, r *http.Request) {
 		}
 		if s.headless != nil {
 			go func() {
-				_ = s.headless.RunTurn(context.Background(), sess, req.Prompt)
+				_ = s.headless.RunTurn(context.Background(), sess, promptText)
 			}()
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -76,7 +115,7 @@ func (s *Server) handlePrompt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := tmux.SendInput(r.Context(), sess.TmuxName, req.Prompt, true); err != nil {
+	if err := tmux.SendInput(r.Context(), sess.TmuxName, promptText, true); err != nil {
 		http.Error(w, fmt.Sprintf("Failed to send prompt to tmux: %v", err), http.StatusInternalServerError)
 		return
 	}
@@ -92,8 +131,23 @@ func (s *Server) handlePromptQueue(w http.ResponseWriter, r *http.Request) {
 	if sessionID == "" {
 		sessionID = r.URL.Query().Get("id")
 	}
+
+	var bodyBytes []byte
+	if r.Body != nil {
+		bodyBytes, _ = io.ReadAll(r.Body)
+		r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+	}
+
+	if sessionID == "" && len(bodyBytes) > 0 {
+		var postReq struct {
+			SessionID string `json:"session_id"`
+		}
+		_ = json.Unmarshal(bodyBytes, &postReq)
+		sessionID = postReq.SessionID
+	}
+
 	if sessionID == "" {
-		http.Error(w, "Missing session_id query parameter", http.StatusBadRequest)
+		http.Error(w, "Missing session_id parameter", http.StatusBadRequest)
 		return
 	}
 
@@ -159,6 +213,66 @@ func (s *Server) handlePromptQueue(w http.ResponseWriter, r *http.Request) {
 		s.headless.EmitQueueUpdate(sess.ID)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+
+	case http.MethodPost:
+		var postReq struct {
+			SessionID string `json:"session_id"`
+			ItemID    string `json:"item_id"`
+			Action    string `json:"action"`
+		}
+		if len(bodyBytes) > 0 {
+			_ = json.Unmarshal(bodyBytes, &postReq)
+		} else if r.Body != nil {
+			_ = json.NewDecoder(r.Body).Decode(&postReq)
+		}
+		if postReq.ItemID == "" {
+			postReq.ItemID = r.URL.Query().Get("item_id")
+		}
+		if postReq.Action == "" {
+			postReq.Action = r.URL.Query().Get("action")
+		}
+		if postReq.Action == "send_now" && postReq.ItemID != "" {
+			item := s.headless.TriggerPromptQueueItemNow(sess.ID, postReq.ItemID)
+			if item != nil {
+				if sess.State == StateBlocked && sess.Blocked != nil && sess.Blocked.Kind == BlockRateLimit {
+					sess.Blocked = nil
+					sess.State = StateIdle
+					s.headless.SetQueuePaused(sess.ID, false)
+					_ = s.db.SaveSession(sess)
+					s.broadcast(sess)
+				}
+				if sess.State == StateIdle {
+					if sess.EngineType == EngineHeadless {
+						if !s.headless.IsRunning(sess.ID) && !s.headless.IsQueuePaused(sess.ID) {
+							popped := s.headless.DequeuePrompt(sess.ID)
+							if popped != nil {
+								go s.headless.RunTurn(context.Background(), sess, popped.Text)
+							}
+						}
+					} else if sess.EngineType == EngineTmux || sess.TmuxName != "" {
+						popped := s.headless.DequeuePrompt(sess.ID)
+						if popped != nil && sess.TmuxName != "" {
+							_ = tmux.SendInput(r.Context(), sess.TmuxName, popped.Text, true)
+							sess.State = StateWorking
+							sess.Activity = "Processing prompt"
+							sess.LastEventAt = time.Now()
+							_ = s.db.SaveSession(sess)
+							s.broadcast(sess)
+						}
+					}
+				}
+				s.headless.EmitQueueUpdate(sess.ID)
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"status": "triggered",
+					"id":     item.ID,
+				})
+				return
+			}
+			http.Error(w, "Queue item not found", http.StatusNotFound)
+			return
+		}
+		http.Error(w, "Unsupported queue action", http.StatusBadRequest)
 
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
