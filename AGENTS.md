@@ -33,6 +33,7 @@ Detailed architectural and technical domain documentation is organized in the `d
 *   **Distribution & Upgrades:** See [docs/distribution.md](file:///Users/dev4u/Work/Ackbar/docs/distribution.md) for Homebrew Tap setup, GoReleaser automation, and service management.
 *   **Voice Companion & Supervisor Control Layer:** See [docs/voice-companion.md](docs/voice-companion.md) for hands-free/commuter voice & text-to-audio modes, Supervisor MCP session tools, progressive plan drill-downs, and the 2-tier lazy speech pipeline.
 *   **Work & Fleet Overview Dashboard:** See [docs/work-overview/README.md](docs/work-overview/README.md) for the 4-pillar Work Board lifecycle, `dev-workflow` state synchronization, host capabilities & 75/25 weighted routing, and `ackbar mcp` tools.
+*   **Architecture Audit (2026-11):** See [docs/audit/README.md](docs/audit/README.md) for hotspot rankings, boundary/cycle diagnostics, cross-client parity gaps, and prioritized remediation waves.
 *   **Backlog & Roadmap:** See [docs/backlog.md](file:///Users/dev4u/Work/Ackbar/docs/backlog.md) for the master feature roadmap and completed milestones.
 
 ---
