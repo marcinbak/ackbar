@@ -1200,23 +1200,27 @@ function toggleSchedulePopover(tabObj) {
         promptVal = 'Continue';
       }
 
-      if (tabObj.chatInputEl) {
-        tabObj.chatInputEl.value = '';
-        tabObj.chatInputEl.style.height = 'auto';
-      }
-      if (tabObj.session && tabObj.session.id) {
-        clearChatDraft(tabObj.session.id);
-      }
+      const clearComposer = () => {
+        if (tabObj.chatInputEl) {
+          tabObj.chatInputEl.value = '';
+          tabObj.chatInputEl.style.height = 'auto';
+        }
+        if (tabObj.session && tabObj.session.id) {
+          clearChatDraft(tabObj.session.id);
+        }
+      };
 
       if (opt.custom) {
         const input = typeof window !== 'undefined' && typeof window.prompt === 'function' ? window.prompt('Enter delay in minutes:', '45') : null;
         if (!input) return;
         const mins = parseInt(input.trim(), 10);
         if (isNaN(mins) || mins <= 0) return;
+        clearComposer();
         sendChatPrompt(tabObj, promptVal, { delay_seconds: mins * 60 });
         return;
       }
 
+      clearComposer();
       if (opt.deliverAt) {
         sendChatPrompt(tabObj, promptVal, { deliver_at: opt.deliverAt });
       } else if (opt.delaySeconds) {
