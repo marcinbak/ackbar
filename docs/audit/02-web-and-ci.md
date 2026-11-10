@@ -37,35 +37,26 @@ Decomposing `chat.js` into focused modules requires updating `//go:embed` in [we
 ## 2. Module Coupling & Circular Import Graph
 
 12 of the 17 JavaScript files in `web/js/` form a single Strongly Connected Component (SCC) containing 16 direct two-way circular import cycles:
-* `api.js` ↔ `modals.js`
-* `api.js` ↔ `statusbar.js`
-* `chat.js` ↔ `tabs.js`
-* `chat.js` ↔ `tree.js`
-* `chat.js` ↔ `utils.js`
-* `context-menu.js` ↔ `tree.js`
-* `details.js` ↔ `tree.js`
-* `modals.js` ↔ `tabs.js`
-* `palette.js` ↔ `tabs.js`
-* `palette.js` ↔ `tree.js`
-* `tabs.js` ↔ `terminal.js`
-* `tabs.js` ↔ `tree.js`
-* `tabs.js` ↔ `utils.js`
-* `terminal.js` ↔ `utils.js`
-* `tree.js` ↔ `utils.js`
-* `details.js` ↔ `tabs.js`
+* `api.js` ↔ `modals.js`, `api.js` ↔ `tabs.js`, `api.js` ↔ `tree.js`
+* `chat.js` ↔ `context-menu.js`, `chat.js` ↔ `details.js`, `chat.js` ↔ `tabs.js`
+* `context-menu.js` ↔ `tabs.js`, `context-menu.js` ↔ `tree.js`
+* `details.js` ↔ `modals.js`, `details.js` ↔ `tabs.js`
+* `modals.js` ↔ `tree.js`, `palette.js` ↔ `tabs.js`
+* `tabs.js` ↔ `terminal.js`, `tabs.js` ↔ `tree.js`
+* `terminal.js` ↔ `utils.js`, `tree.js` ↔ `utils.js`
 
-In addition, [auth.js](../../web/js/auth.js#L21-L49) monkey-patches `window.fetch` globally to inject `Authorization` headers, and several modules leak mutable state through `window.*` globals (`window.activeSessionId`, `window.allSessions`). Replacing direct cross-module imports with an acyclic event bus and unified state store removes the SCC.
+In addition, [auth.js](../../web/js/auth.js#L21-L49) monkey-patches `window.fetch` globally to inject `Authorization` headers, and several modules leak mutable state through `window.*` globals (`window.state`, `window.openSessionInTab`, `window.AckbarChat`, `window.speakText`). Replacing direct cross-module imports with an acyclic event bus and unified state store removes the SCC.
 
 ## 3. Security & Frontend Risks
 
 | Location | Severity | Vulnerability Description | Remediation |
 | :--- | :--- | :--- | :--- |
 | [palette.js](../../web/js/palette.js#L251-L281) | **P0** | Untrusted `sess.name`, `sess.git_branch`, and `sess.cwd` interpolate into `innerHTML` | Use `textContent` or `escapeHtml()` helper |
-| [tabs.js](../../web/js/tabs.js#L1343-L1344) | **P0** | Session names and project labels render directly into tab `innerHTML` | Escape tab title labels before DOM injection |
+| [tabs.js](../../web/js/tabs.js#L1343-L1344) | **P0** | `renderOverflowMenu` injects `tab.session.name` and `tab.session.agent` into `innerHTML` | Escape session name and agent before DOM injection |
 | [modals.js](../../web/js/modals.js#L65-L1709) | **P0** | Account IDs, host hostnames, and API error strings interpolate into modal HTML | Sanitize all interpolated modal variables |
-| [utils.js](../../web/js/utils.js#L780-L797) | **P0** | Project paths and filenames format directly into navigation breadcrumbs | Use document element text node creation |
-| [details.js](../../web/js/details.js#L509-L513) | **P0** | Host metadata and agent status strings format directly into detail panel DOM | Escape metadata fields prior to assignment |
-| [utils.js](../../web/js/utils.js#L75-L99) | **P0** | `sanitizeRenderedMarkdownHtml` uses regex blacklist; allows `<style>`, `<base>`, `<meta>`, `<svg>` | Replace regex blacklist with strict DOMParser tag allowlist |
+| [utils.js](../../web/js/utils.js#L780-L797) | **P0** | `getAgentBadgeHtml` injects `p.icon_svg`, `p.display_name`, and fallback `agent` into HTML | Sanitize SVG markup and escape agent display names |
+| [details.js](../../web/js/details.js#L509-L513) | **P0** | `openTranscriptViewerTab` injects `errorMsg` into `<p>${errorMsg}</p>` | Use text node assignment instead of template literal interpolation |
+| [utils.js](../../web/js/utils.js#L75-L99) | **P0** | `sanitizeRenderedMarkdownHtml` uses a 4-tag blacklist (`script, iframe, object, embed`) with regex fallback; allows `<style>`, `<base>`, `<meta>`, `<svg>` | Replace blacklist with strict DOMParser tag and attribute allowlist |
 | [tasks.js](../../web/js/tasks.js#L1304-L1321) | **P0** | Duplicates incomplete markdown sanitizer with similar blacklist bypasses | Consolidate into single allowlist sanitizer module |
 | [index.html](../../web/index.html#L459-L463) | **P0** | Loads `marked` parser from unversioned/unpinned CDN without Subresource Integrity (SRI) | Vendor library into `web/vendor/marked.min.js` or add SRI hash |
 | [server.go](../../internal/daemon/server.go#L352) | **P0** | `authMiddleware` allowlists `/app.js` but omits `/js/*`, returning 401 on scripts | Add `/js/*` prefix to unauthenticated static asset route table |

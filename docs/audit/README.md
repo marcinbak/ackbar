@@ -46,16 +46,16 @@ flowchart TD
 
 | Priority | Subsystem | Vulnerability / Defect | Reference |
 | :--- | :--- | :--- | :--- |
-| **P0** | Daemon Bind & WS | Default `0.0.0.0` bind, wildcard CORS, disabled WS Origin check, unknown tmux spawn | [01-go-backend-and-cli.md](01-go-backend-and-cli.md#security-sqlite--reliability-defects) |
-| **P0** | Remote Execution | Remote SSH commands use Go `%q` formatting and omit `--` before targets | [01-go-backend-and-cli.md](01-go-backend-and-cli.md#security-sqlite--reliability-defects) |
-| **P0** | Auth Middleware | Allowlist omits `/js/*` (assets return 401); `ackbar-hook` omits `ACKBAR_TOKEN` | [01-go-backend-and-cli.md](01-go-backend-and-cli.md#security-sqlite--reliability-defects) |
-| **P0** | Web Security | Stored/DOM XSS via unescaped session/host fields; regex Markdown sanitizer bypass | [02-web-and-ci.md](02-web-and-ci.md#security--frontend-risks) |
-| **P1** | File Exposure | `/v1/files/content` allows reading sensitive `$HOME` credentials and databases | [01-go-backend-and-cli.md](01-go-backend-and-cli.md#security-sqlite--reliability-defects) |
-| **P1** | Relay Transport | `httptest.NewRecorder` in relay client drops WebSocket PTY hijacking | [01-go-backend-and-cli.md](01-go-backend-and-cli.md#security-sqlite--reliability-defects) |
-| **P1** | SQLite Engine | Missing `SetMaxOpenConns`; `DEFERRED` lock upgrades trigger `SQLITE_BUSY`; slow queries | [01-go-backend-and-cli.md](01-go-backend-and-cli.md#security-sqlite--reliability-defects) |
-| **P1** | Agent Transcripts | `ExtractTranscript` ignores Codex, Grok, and OpenCode transcripts | [01-go-backend-and-cli.md](01-go-backend-and-cli.md#boundary-inversion--provider-drift) |
-| **P1** | Mobile Network | `SSEClient.subscribeHost` leaks reconnect loop; Attention mic hardcodes mock | [03-mobile-and-parity.md](03-mobile-and-parity.md#mobile-hotspots--defects) |
-| **P1** | Fleet Purge | `handlePurge` invokes unauthenticated peer fan-out with no hop guard | [01-go-backend-and-cli.md](01-go-backend-and-cli.md#security-sqlite--reliability-defects) |
+| **P0** | Daemon Bind & WS | Default `0.0.0.0` bind, wildcard CORS, disabled WS Origin check, unknown tmux spawn | [01-go-backend-and-cli.md](01-go-backend-and-cli.md#3-security-sqlite--reliability-defects) |
+| **P0** | Remote Execution | Remote SSH commands use Go `%q` formatting and omit `--` before targets | [01-go-backend-and-cli.md](01-go-backend-and-cli.md#3-security-sqlite--reliability-defects) |
+| **P0** | Auth Middleware | Allowlist omits `/js/*` (assets return 401); `ackbar-hook` omits `ACKBAR_TOKEN` | [01-go-backend-and-cli.md](01-go-backend-and-cli.md#3-security-sqlite--reliability-defects) |
+| **P0** | Web Security | Stored/DOM XSS via unescaped session/host fields; regex Markdown sanitizer bypass | [02-web-and-ci.md](02-web-and-ci.md#3-security--frontend-risks) |
+| **P1** | File Exposure | `/v1/files/content` allows reading sensitive `$HOME` credentials and databases | [01-go-backend-and-cli.md](01-go-backend-and-cli.md#3-security-sqlite--reliability-defects) |
+| **P1** | Relay Transport | `httptest.NewRecorder` in relay client drops WebSocket PTY hijacking | [01-go-backend-and-cli.md](01-go-backend-and-cli.md#3-security-sqlite--reliability-defects) |
+| **P1** | SQLite Engine | Missing `SetMaxOpenConns`; `DEFERRED` lock upgrades trigger `SQLITE_BUSY`; slow queries | [01-go-backend-and-cli.md](01-go-backend-and-cli.md#3-security-sqlite--reliability-defects) |
+| **P1** | Agent Transcripts | `ExtractTranscript` ignores Codex, Grok, and OpenCode transcripts | [01-go-backend-and-cli.md](01-go-backend-and-cli.md#2-boundary-inversion--provider-drift) |
+| **P1** | Mobile Network | `SSEClient.subscribeHost` leaks reconnect loop; Attention mic hardcodes mock | [03-mobile-and-parity.md](03-mobile-and-parity.md#2-mobile-hotspots--defects) |
+| **P1** | Fleet Purge | `handlePurge` invokes unauthenticated peer fan-out with no hop guard | [01-go-backend-and-cli.md](01-go-backend-and-cli.md#3-security-sqlite--reliability-defects) |
 
 ## Prioritized Remediation Roadmap
 

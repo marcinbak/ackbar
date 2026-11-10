@@ -34,15 +34,15 @@ The daemon imports provider types indirectly, while [internal/provider](../../in
 ### The 9 OCP Switch Sites Required to Add an Agent
 
 Adding support for any new agent runtime requires modifying switch statements across 9 distinct locations:
-1. `internal/daemon/agent_*.go`: capability adapter registration
-2. `internal/daemon/status_inspector.go`: terminal status scraper
-3. `internal/daemon/transcript.go`: transcript extractor switch
-4. `internal/daemon/headless.go`: stream NDJSON parser dispatch
-5. `internal/daemon/server_sessions.go`: spawn routing switch
-6. `internal/daemon/server_projects.go`: hook directory configuration
-7. `cmd/ackbar/main.go`: CLI hook installation dispatch
-8. `internal/provider/`: provider adapter registration
-9. `internal/mcp/tools.go`: supervisor session spawn validator
+1. [provider.go](../../internal/daemon/provider.go#L163-L182): `getDefaultAgentAdapter`
+2. [agent_other.go](../../internal/daemon/agent_other.go#L519-L536): `IsRawSessionName`
+3. [status_inspector.go](../../internal/daemon/status_inspector.go#L1719-L1726): `isIntermediateRunner`
+4. [transcript.go](../../internal/daemon/transcript.go#L57-L73): `ExtractTranscript`
+5. [transcript.go](../../internal/daemon/transcript.go#L899-L910): `ExtractSubagents`
+6. [headless.go](../../internal/daemon/headless.go#L1020-L1090): `HeadlessRunner.buildArgs` & `processStreamCore`
+7. [server_sessions.go](../../internal/daemon/server_sessions.go#L1260): `handleSwitchHeadless` & `appendCLIInitPrompt`
+8. [server_chat.go](../../internal/daemon/server_chat.go#L24-L35): `cleanActivePromptForAgent`
+9. [main.go](../../cmd/ackbar/main.go#L220-L380): `runSetupHooks`
 
 Extracting an `internal/agent` package with a unified `agent.Provider` interface resolves this boundary inversion and collapses these 9 switch points into single registrations.
 
@@ -60,10 +60,10 @@ Extracting an `internal/agent` package with a unified `agent.Provider` interface
 | [client.go](../../internal/relay/client.go#L275-L284) | **P1** | Passes `httptest.NewRecorder()` to PTY WebSocket handler | `ResponseRecorder` lacks `http.Hijacker` interface; drops `TypeData` WebSocket frames over reverse tunnel relay |
 | [server_sessions.go](../../internal/daemon/server_sessions.go#L226-L236) | **P1** | `handlePurge` fans out `POST /v1/maintenance/purge` without hop count or auth | Mutual peer hosts cause infinite HTTP request amplification loops |
 | [db.go](../../internal/daemon/db.go#L234-L239) | **P1** | Omits `sql.DB.SetMaxOpenConns`; defaults SQLite pool to unlimited connections | Triggers frequent `SQLITE_BUSY` errors under concurrent HTTP and hook writes |
-| [db.go](../../internal/daemon/db.go#L615-L907) | **P1** | Uses `DEFERRED` transactions with `db.Begin()` then upgrades locks | Concurrent write transactions fail with busy timeout during lock upgrade |
-| [db.go](../../internal/daemon/db.go) | **P1** | Executes external `git` subprocesses inside active `sql.Rows` iteration loops | Extends SQLite read locks, blocking daemon writers while git process runs |
+| [db.go](../../internal/daemon/db.go#L974) | **P1** | Uses `DEFERRED` `db.Begin()` lock upgrades (`SetSettings`, `RollupAndPruneHostLoadMetrics`, `UpdateTask`, `upsertTaskSync`) | Concurrent write transactions fail with busy timeout during lock upgrade |
+| [db.go](../../internal/daemon/db.go#L615-L907) | **P1** | Executes external `git` subprocesses inside active `sql.Rows` scans (`GetSession`, `ListSessions`, `ListActiveSessions`) | Extends SQLite read locks, blocking daemon writers while git process runs |
 | [db.go](../../internal/daemon/db.go#L3413-L3425) | **P1** | Runs 4 independent `SELECT count(*)` database queries inside `sort.SliceStable` | O(N log N) database queries executed during session list sorting |
-| [server.go](../../internal/daemon/server.go) | **P1** | Unlocked access to `Server.activeWatchers`; un-cancelled ticker in `StartUploadCleaner` | Race condition under concurrent session closures; background goroutine leak |
+| [server.go](../../internal/daemon/server.go#L65-L82), [upload.go](../../internal/daemon/upload.go#L239-L247) | **P1** | Unlocked mutable `Server` fields (`displayName`, `ntfyServer`, `ntfyTopic`, `cachedCapabilities`, `capabilitiesCachedAt`); un-cancelled ticker in `StartUploadCleaner` (invoked from `NewServer` at [server.go](../../internal/daemon/server.go#L110)) | Race conditions under concurrent configuration/hook reads; background goroutine leak |
 
 ## 4. Healthy Go Patterns to Preserve
 
