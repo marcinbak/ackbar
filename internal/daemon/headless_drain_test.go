@@ -370,3 +370,104 @@ echo '{"type":"result","result":"resumed","is_error":false}'
 		t.Errorf("Expected resumed turn to use queued prompt %q, got %q", "Queued next step", loaded.LastPrompt)
 	}
 }
+
+func TestServer_ResumeIdleSessionQueuedPromptAfterDrain(t *testing.T) {
+	tmpDir := t.TempDir()
+	binDir := filepath.Join(tmpDir, "bin")
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+	mockClaude := filepath.Join(binDir, "claude")
+	script := `#!/bin/sh
+sleep 0.1
+echo '{"type":"result","result":"done","is_error":false}'
+`
+	if err := os.WriteFile(mockClaude, []byte(script), 0755); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+
+	dbPath := filepath.Join(tmpDir, "drain_queue.db")
+	db1, err := InitDB(dbPath)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+
+	server1 := NewServer(db1)
+	server1.restartDaemonFn = func() {}
+	server1.shutdownExitFn = func(int) {}
+
+	sess := &Session{
+		ID:         "claude-code:local:uuid-drain-idle-1",
+		Agent:      "claude-code",
+		Host:       "local",
+		NativeID:   "uuid-drain-idle-1",
+		Cwd:        tmpDir,
+		EngineType: EngineHeadless,
+		Managed:    true,
+		State:      StateIdle,
+		StartedAt:  time.Now(),
+		UpdatedAt:  time.Now(),
+	}
+	if err := db1.SaveSession(sess); err != nil {
+		t.Fatalf("SaveSession failed: %v", err)
+	}
+
+	if err := server1.headless.RunTurn(context.Background(), sess, "Turn 1"); err != nil {
+		t.Fatalf("RunTurn failed: %v", err)
+	}
+
+	server1.headless.EnqueuePrompt(sess.ID, "Turn 2 immediate queued")
+
+	drainFinished := make(chan bool, 1)
+	deferred, activeCount := server1.headless.RequestRestartAfterDrain(func() {
+		drainFinished <- true
+	})
+	if !deferred || activeCount != 1 {
+		t.Fatalf("Expected deferred=true, activeCount=1, got deferred=%v, activeCount=%d", deferred, activeCount)
+	}
+
+	select {
+	case <-drainFinished:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("Timed out waiting for turn 1 to drain")
+	}
+
+	sessAfterDrain, err := db1.GetSession(sess.ID)
+	if err != nil || sessAfterDrain == nil {
+		t.Fatalf("GetSession failed: %v", err)
+	}
+	if sessAfterDrain.State != StateIdle {
+		t.Errorf("Expected sessAfterDrain.State=StateIdle, got %v", sessAfterDrain.State)
+	}
+
+	_ = db1.Close()
+
+	db2, err := InitDB(dbPath)
+	if err != nil {
+		t.Fatalf("InitDB 2 failed: %v", err)
+	}
+	defer db2.Close()
+
+	server2 := NewServer(db2)
+	server2.restartDaemonFn = func() {}
+	server2.shutdownExitFn = func(int) {}
+	server2.headless.LoadScheduledPrompts()
+
+	q, _ := server2.headless.GetPromptQueue(sess.ID)
+	if len(q) != 1 || q[0].Text != "Turn 2 immediate queued" {
+		t.Fatalf("Expected queued prompt preserved in DB, got %+v", q)
+	}
+
+	server2.resumeInterruptedHeadlessSessions(context.Background())
+
+	time.Sleep(500 * time.Millisecond)
+
+	sessAfterReboot, err := db2.GetSession(sess.ID)
+	if err != nil || sessAfterReboot == nil {
+		t.Fatalf("GetSession failed: %v", err)
+	}
+	if sessAfterReboot.LastPrompt != "Turn 2 immediate queued" {
+		t.Errorf("Expected resumed session LastPrompt to be %q, got %q", "Turn 2 immediate queued", sessAfterReboot.LastPrompt)
+	}
+}

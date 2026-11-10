@@ -801,13 +801,12 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	if r.URL.Query().Get("drain") == "true" && s.headless != nil && s.headless.ActiveTurnCount() > 0 {
+	if r.URL.Query().Get("drain") == "true" && s.headless != nil {
 		restartFn := s.restartDaemonFn
 		if restartFn == nil {
 			restartFn = restartLocalDaemonAsync
 		}
-		deferred, activeCount := s.headless.RequestRestartAfterDrain(restartFn)
-		if deferred {
+		if deferred, activeCount := s.headless.DeferRestartIfActive(restartFn); deferred {
 			w.WriteHeader(http.StatusOK)
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"status":                "draining",
@@ -878,9 +877,6 @@ func (s *Server) resumeInterruptedHeadlessSessions(ctx context.Context) {
 		return
 	}
 	ids := s.db.PopInterruptedHeadlessSessionIDs()
-	if len(ids) == 0 {
-		return
-	}
 
 	home, _ := os.UserHomeDir()
 	time.Sleep(200 * time.Millisecond)
@@ -912,6 +908,23 @@ func (s *Server) resumeInterruptedHeadlessSessions(ctx context.Context) {
 
 		_ = s.headless.RunTurn(ctx, sess, resumePrompt)
 	}
+
+	if activeSessions, err := s.db.ListActiveSessions(); err == nil {
+		for _, sess := range activeSessions {
+			if ctx.Err() != nil {
+				return
+			}
+			if !s.isLocalHost(sess.Host) || sess.EngineType != EngineHeadless || sess.TmuxName != "" {
+				continue
+			}
+			if sess.State == StateIdle && !s.headless.IsRunning(sess.ID) && !s.headless.IsQueuePaused(sess.ID) {
+				if queued := s.headless.DequeuePrompt(sess.ID); queued != nil {
+					s.headless.EmitQueueUpdate(sess.ID)
+					_ = s.headless.RunTurn(ctx, sess, queued.Text)
+				}
+			}
+		}
+	}
 }
 
 func (s *Server) processDueScheduledPrompts(ctx context.Context) {
@@ -936,17 +949,24 @@ func (s *Server) processDueScheduledPrompts(ctx context.Context) {
 		}
 
 		hasDueScheduled := false
+		hasReadyImmediate := false
 		for _, it := range items {
-			if it != nil && it.DeliverAt != nil && !it.DeliverAt.After(now) {
+			if it == nil {
+				continue
+			}
+			if it.DeliverAt != nil && !it.DeliverAt.After(now) {
 				hasDueScheduled = true
-				break
+			} else if it.DeliverAt == nil {
+				hasReadyImmediate = true
 			}
 		}
-		if !hasDueScheduled {
+
+		shouldDispatch := hasDueScheduled || (hasReadyImmediate && sess.State == StateIdle && !s.headless.IsRunning(sess.ID) && !s.headless.IsQueuePaused(sess.ID))
+		if !shouldDispatch {
 			continue
 		}
 
-		if sess.State == StateBlocked && sess.Blocked != nil && sess.Blocked.Kind == BlockRateLimit {
+		if hasDueScheduled && sess.State == StateBlocked && sess.Blocked != nil && sess.Blocked.Kind == BlockRateLimit {
 			sess.Blocked = nil
 			sess.State = StateIdle
 			s.headless.SetQueuePaused(sess.ID, false)

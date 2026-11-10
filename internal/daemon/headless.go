@@ -472,28 +472,28 @@ func (h *HeadlessRunner) IsRunning(sessionID string) bool {
 }
 
 func (h *HeadlessRunner) activeTurnCountLocked() int {
-	seenPids := make(map[int]bool)
 	seenProcs := make(map[*exec.Cmd]bool)
+	seenKeys := make(map[string]bool)
 	count := 0
 	for key, active := range h.activeTurns {
 		if !active {
 			continue
 		}
+		dedupKey := key
+		if parts := strings.Split(key, ":"); len(parts) == 3 && parts[2] != "" {
+			dedupKey = parts[2]
+		}
+		if seenKeys[dedupKey] {
+			continue
+		}
+		seenKeys[dedupKey] = true
+
 		cmd := h.processes[key]
 		if cmd != nil {
 			if seenProcs[cmd] {
 				continue
 			}
 			seenProcs[cmd] = true
-			if cmd.Process != nil && cmd.Process.Pid > 0 {
-				if seenPids[cmd.Process.Pid] {
-					continue
-				}
-				seenPids[cmd.Process.Pid] = true
-				if !isProcessAlive(cmd.Process.Pid) {
-					continue
-				}
-			}
 		}
 		count++
 	}
@@ -506,22 +506,24 @@ func (h *HeadlessRunner) ActiveTurnCount() int {
 	return h.activeTurnCountLocked()
 }
 
-func (h *HeadlessRunner) RequestRestartAfterDrain(restartFn func()) (bool, int) {
+func (h *HeadlessRunner) DeferRestartIfActive(restartFn func()) (bool, int) {
 	h.mu.Lock()
+	defer h.mu.Unlock()
 	count := h.activeTurnCountLocked()
 	if count == 0 {
-		h.pendingRestart = false
-		h.onAllTurnsDrained = nil
-		h.mu.Unlock()
-		if restartFn != nil {
-			restartFn()
-		}
 		return false, 0
 	}
 	h.pendingRestart = true
 	h.onAllTurnsDrained = restartFn
-	h.mu.Unlock()
 	return true, count
+}
+
+func (h *HeadlessRunner) RequestRestartAfterDrain(restartFn func()) (bool, int) {
+	deferred, count := h.DeferRestartIfActive(restartFn)
+	if !deferred && restartFn != nil {
+		restartFn()
+	}
+	return deferred, count
 }
 
 func (h *HeadlessRunner) IsRestartPending() bool {

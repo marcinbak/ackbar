@@ -960,11 +960,21 @@ func runUpdateCmd(args []string) {
 	}
 
 	// If local ackbard is currently running, restart it with the newly installed binary
+	token := os.Getenv("ACKBAR_TOKEN")
 	httpClient := &http.Client{Timeout: 5 * time.Second}
-	if resp, err := httpClient.Get("http://127.0.0.1:7777/v1/version"); err == nil {
+	vReq, _ := http.NewRequest(http.MethodGet, "http://127.0.0.1:7777/v1/version", nil)
+	if token != "" {
+		vReq.Header.Set("Authorization", "Bearer "+token)
+	}
+	if resp, err := httpClient.Do(vReq); err == nil {
 		_ = resp.Body.Close()
 		fmt.Printf("🔄 Restarting local ackbard daemon...\n")
-		shutdownResp, sErr := httpClient.Post("http://127.0.0.1:7777/v1/shutdown?drain=true", "application/json", nil)
+		sReq, _ := http.NewRequest(http.MethodPost, "http://127.0.0.1:7777/v1/shutdown?drain=true", nil)
+		sReq.Header.Set("Content-Type", "application/json")
+		if token != "" {
+			sReq.Header.Set("Authorization", "Bearer "+token)
+		}
+		shutdownResp, sErr := httpClient.Do(sReq)
 		restartDeferred := false
 		if sErr == nil && shutdownResp != nil {
 			var sData struct {
