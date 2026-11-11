@@ -10,6 +10,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -304,23 +306,27 @@ while [ ! -f %q ]; do sleep 0.02; done
 }
 
 func TestSleepInhibitor_LifecycleAndCrossOSCommands(t *testing.T) {
+	if defaultSleepInhibitorCmd("linux", 1) != nil || defaultSleepInhibitorCmd("darwin", 0) != nil {
+		t.Fatalf("expected parentPID <= 1 to return nil inhibitor cmd")
+	}
 	darwinCmd := defaultSleepInhibitorCmd("darwin", 4242)
-	if darwinCmd == nil || filepath.Base(darwinCmd.Path) != "caffeinate" || strings.Join(darwinCmd.Args, " ") != "caffeinate -i -w 4242" {
+	if darwinCmd == nil || filepath.Base(darwinCmd.Path) != "caffeinate" || strings.Join(darwinCmd.Args, " ") != "caffeinate -i -w 4242" || darwinCmd.SysProcAttr == nil || !darwinCmd.SysProcAttr.Setpgid {
 		t.Fatalf("unexpected darwin inhibitor cmd: %+v", darwinCmd)
 	}
 
 	linuxCmd := defaultSleepInhibitorCmd("linux", 4242)
-	if linuxCmd == nil || filepath.Base(linuxCmd.Path) != "systemd-inhibit" || !strings.Contains(strings.Join(linuxCmd.Args, " "), "kill -0 4242") {
+	if linuxCmd == nil || filepath.Base(linuxCmd.Path) != "systemd-inhibit" || !strings.Contains(strings.Join(linuxCmd.Args, " "), "kill -0 4242") || linuxCmd.SysProcAttr == nil || !linuxCmd.SysProcAttr.Setpgid {
 		t.Fatalf("unexpected linux inhibitor cmd: %+v", linuxCmd)
 	}
 
+	childPIDFile := filepath.Join(t.TempDir(), "subshell.pid")
 	var starts atomic.Int32
 	inh := &SleepInhibitor{
 		goos:      "linux",
 		parentPID: os.Getpid(),
 		cmdFactory: func(_ string, _ int) *exec.Cmd {
 			starts.Add(1)
-			return exec.Command("sh", "-c", "sleep 30")
+			return exec.Command("sh", "-c", fmt.Sprintf("sh -c 'echo $$ > %q; exec sleep 30' & wait", childPIDFile))
 		},
 	}
 	defer inh.Release()
@@ -338,16 +344,110 @@ func TestSleepInhibitor_LifecycleAndCrossOSCommands(t *testing.T) {
 	pid := inh.cmd.Process.Pid
 	inh.mu.Unlock()
 
+	var subshellPID int
+	waitForWorkerCond(t, 2*time.Second, "inhibitor child subshell started", func() bool {
+		b, err := os.ReadFile(childPIDFile)
+		if err != nil {
+			return false
+		}
+		p, pErr := strconv.Atoi(strings.TrimSpace(string(b)))
+		if pErr == nil && p > 1 && isProcessAlive(p) {
+			subshellPID = p
+			return true
+		}
+		return false
+	})
+
 	inh.SyncActiveTurns(2)
 	if starts.Load() != 1 {
 		t.Fatalf("expected single shared inhibitor process on 1->2 transition, got %d", starts.Load())
 	}
 
 	inh.SyncActiveTurns(0)
-	waitForWorkerCond(t, 2*time.Second, "inhibitor process terminated on 2->0", func() bool {
+	waitForWorkerCond(t, 2*time.Second, "inhibitor process group and child subshell terminated on 2->0", func() bool {
 		inh.mu.Lock()
 		cleared := inh.cmd == nil
 		inh.mu.Unlock()
-		return cleared && !isProcessAlive(pid)
+		return cleared && !isProcessAlive(pid) && !isProcessAlive(subshellPID)
 	})
+}
+
+func TestHeadlessWorker_RecycledPIDStaleMetaNotTrustedOrKilled(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	dbPath := filepath.Join(t.TempDir(), "ackbard.db")
+
+	db1, err := InitDB(dbPath)
+	if err != nil {
+		t.Fatalf("InitDB 1: %v", err)
+	}
+	sessReattach := newTestHeadlessSession("claude-code:local:recycled-reattach", "recycled-reattach", tmpHome, StateWorking)
+	sessCleanup := newTestHeadlessSession("claude-code:local:recycled-cleanup", "recycled-cleanup", tmpHome, StateIdle)
+	_ = db1.SaveSession(sessReattach)
+	_ = db1.SaveSession(sessCleanup)
+	_ = db1.Close()
+
+	runDir := DefaultHeadlessRunDir(dbPath)
+	_ = os.MkdirAll(runDir, 0700)
+	selfPID := os.Getpid()
+
+	reattachMetaPath := filepath.Join(runDir, "turn_recycled_reattach.meta.json")
+	reattachSpoolPath := filepath.Join(runDir, "turn_recycled_reattach.ndjson")
+	_ = os.WriteFile(reattachSpoolPath, []byte(`{"seq":1,"type":"turn_start","text":"stale"}`+"\n"), 0600)
+	_ = WriteTurnSpoolMeta(reattachMetaPath, &TurnSpoolMeta{
+		TurnID:        "turn_recycled_reattach",
+		SessionID:     sessReattach.ID,
+		OrigSessionID: sessReattach.ID,
+		NativeID:      sessReattach.NativeID,
+		Agent:         "claude-code",
+		Cwd:           tmpHome,
+		Prompt:        "stale",
+		SocketPath:    filepath.Join(runDir, "missing_reattach.sock"),
+		SpoolPath:     reattachSpoolPath,
+		MetaPath:      reattachMetaPath,
+		WorkerPID:     selfPID,
+		ChildPID:      selfPID,
+		StartedAt:     time.Now().Add(-time.Minute).UTC(),
+		Status:        "running",
+	})
+
+	db2, err := InitDB(dbPath)
+	if err != nil {
+		t.Fatalf("InitDB 2: %v", err)
+	}
+	defer db2.Close()
+	srv2 := NewServer(db2)
+	defer srv2.headless.ReleaseSleepInhibitor()
+	srv2.headless.ReattachLiveWorkers()
+
+	if srv2.headless.IsRunning(sessReattach.ID) {
+		t.Fatalf("expected stale meta with recycled WorkerPID=os.Getpid() NOT to be treated as running")
+	}
+	if fileExists(reattachMetaPath) || fileExists(reattachSpoolPath) {
+		t.Fatalf("expected stale reattach spool files removed on disk")
+	}
+	if !slices.Contains(db2.PopInterruptedHeadlessSessionIDs(), sessReattach.ID) {
+		t.Fatalf("expected stale recycled-PID session routed to interruptedHeadlessIDs")
+	}
+
+	cleanupMetaPath := filepath.Join(runDir, "turn_recycled_cleanup.meta.json")
+	cleanupSpoolPath := filepath.Join(runDir, "turn_recycled_cleanup.ndjson")
+	_ = os.WriteFile(cleanupSpoolPath, []byte(`{"seq":1,"type":"turn_start","text":"stale2"}`+"\n"), 0600)
+	_ = WriteTurnSpoolMeta(cleanupMetaPath, &TurnSpoolMeta{
+		TurnID:     "turn_recycled_cleanup",
+		SessionID:  sessCleanup.ID,
+		NativeID:   sessCleanup.NativeID,
+		Agent:      "claude-code",
+		SocketPath: filepath.Join(runDir, "missing_cleanup.sock"),
+		SpoolPath:  cleanupSpoolPath,
+		MetaPath:   cleanupMetaPath,
+		WorkerPID:  selfPID,
+		ChildPID:   selfPID,
+		StartedAt:  time.Now().Add(-time.Minute).UTC(),
+		Status:     "running",
+	})
+	srv2.headless.CleanupSessionRuntime(sessCleanup.ID, sessCleanup.NativeID)
+	if fileExists(cleanupMetaPath) || fileExists(cleanupSpoolPath) {
+		t.Fatalf("expected CleanupSessionRuntime to remove stale spool files without killing recycled os.Getpid()")
+	}
 }

@@ -49,7 +49,7 @@ func (h *HeadlessRunner) SubscribeWithReplay(sessionID, reqTurnID string, afterS
 	var maxReplayedSeq int64
 
 	if meta != nil {
-		isActive := (meta.Status == "starting" || meta.Status == "running") || h.IsRunning(sessionID)
+		isActive := ((meta.Status == "starting" || meta.Status == "running") && h.isSpoolWorkerLive(meta)) || h.IsRunning(sessionID)
 		shouldReplay := false
 		readAfter := afterSeq
 		if reqTurnID != "" {

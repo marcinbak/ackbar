@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"ackbar/internal/tmux"
@@ -26,7 +27,7 @@ func (h *HeadlessRunner) pruneCompletedSpoolsForSession(runDir, sessionID, nativ
 		if err != nil || meta == nil || meta.TurnID == keepTurnID {
 			continue
 		}
-		if (meta.Status == "starting" || meta.Status == "running") && isProcessAlive(meta.WorkerPID) {
+		if (meta.Status == "starting" || meta.Status == "running") && h.isSpoolWorkerLiveLocked(meta) {
 			continue
 		}
 		if metaMatchesSession(meta, sessionID, nativeID) {
@@ -51,7 +52,7 @@ func (h *HeadlessRunner) PruneStaleSpools(maxAge time.Duration) {
 		}
 		mp := filepath.Join(runDir, e.Name())
 		meta, err := ReadTurnSpoolMeta(mp)
-		if err != nil || meta == nil || ((meta.Status == "starting" || meta.Status == "running") && isProcessAlive(meta.WorkerPID)) {
+		if err != nil || meta == nil || ((meta.Status == "starting" || meta.Status == "running") && h.isSpoolWorkerLive(meta)) {
 			continue
 		}
 		ref := meta.FinishedAt
@@ -102,7 +103,7 @@ func (h *HeadlessRunner) CleanupSessionRuntime(sessionID, nativeID string) {
 	h.mu.Lock()
 	for k, cmd := range h.processes {
 		if matchesKey(k) {
-			if cmd != nil && cmd.Process != nil {
+			if h.isOwnedProcessLocked(cmd) {
 				_ = cmd.Process.Kill()
 			}
 			delete(h.processes, k)
@@ -140,7 +141,8 @@ func (h *HeadlessRunner) CleanupSessionRuntime(sessionID, nativeID string) {
 	h.syncSleepInhibitor()
 
 	for _, m := range toKill {
-		killWorkerAndChildGroup(m)
+		_ = sendWorkerCancel(m)
+		h.terminateVerifiedWorker(m, syscall.SIGKILL)
 		removeTurnSpoolFiles(m.MetaPath, m)
 	}
 
@@ -158,7 +160,7 @@ func (h *HeadlessRunner) CleanupSessionRuntime(sessionID, nativeID string) {
 		if err == nil && metaMatchesSession(meta, sessionID, nativeID) {
 			if meta.Status == "starting" || meta.Status == "running" {
 				_ = sendWorkerCancel(meta)
-				killWorkerAndChildGroup(meta)
+				h.terminateVerifiedWorker(meta, syscall.SIGKILL)
 			}
 			removeTurnSpoolFiles(mp, meta)
 		}

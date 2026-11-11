@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strconv"
 	"sync"
+	"syscall"
 )
 
 // SleepInhibitor holds an OS idle-sleep lock only while one or more headless turns are active.
@@ -30,13 +31,17 @@ func NewSleepInhibitor() *SleepInhibitor {
 }
 
 func defaultSleepInhibitorCmd(goos string, parentPID int) *exec.Cmd {
+	if parentPID <= 1 {
+		return nil
+	}
+	var cmd *exec.Cmd
 	switch goos {
 	case "darwin":
-		return exec.Command("caffeinate", "-i", "-w", strconv.Itoa(parentPID))
+		cmd = exec.Command("caffeinate", "-i", "-w", strconv.Itoa(parentPID))
 	case "linux":
 		// Poll parent liveness via POSIX kill -0 rather than Linux-only Pdeathsig so builds remain cross-OS.
 		watchScript := fmt.Sprintf("while kill -0 %d 2>/dev/null; do sleep 2; done", parentPID)
-		return exec.Command(
+		cmd = exec.Command(
 			"systemd-inhibit",
 			"--what=idle:sleep",
 			"--who=ackbard",
@@ -47,6 +52,9 @@ func defaultSleepInhibitorCmd(goos string, parentPID int) *exec.Cmd {
 	default:
 		return nil
 	}
+	// Run inhibitor in its own process group so releasing the lock kills child sh/sleep sub-processes too.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	return cmd
 }
 
 func (s *SleepInhibitor) SyncActiveTurns(count int) {
@@ -58,6 +66,9 @@ func (s *SleepInhibitor) SyncActiveTurns(count int) {
 
 	if count <= 0 {
 		if s.cmd != nil && s.cmd.Process != nil {
+			if pid := s.cmd.Process.Pid; pid > 1 {
+				_ = syscall.Kill(-pid, syscall.SIGKILL)
+			}
 			_ = s.cmd.Process.Kill()
 		}
 		s.cmd = nil
@@ -77,13 +88,18 @@ func (s *SleepInhibitor) SyncActiveTurns(count int) {
 		goos = runtime.GOOS
 	}
 	pid := s.parentPID
-	if pid <= 0 {
+	if pid <= 1 {
 		pid = os.Getpid()
 	}
 
 	cmd := factory(goos, pid)
 	if cmd == nil {
 		return
+	}
+	if cmd.SysProcAttr == nil {
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	} else {
+		cmd.SysProcAttr.Setpgid = true
 	}
 	if err := cmd.Start(); err != nil {
 		if !s.warnedOnce {

@@ -455,8 +455,8 @@ func (h *HeadlessRunner) GetInFlightTurnSnapshot(sess *Session, sessionID, nativ
 		if snap, err := SynthesizeInFlightTurn(meta, streamAgent); err == nil && snap != nil {
 			if h.IsRunning(sessionID) || (sess != nil && sess.ID != "" && h.IsRunning(sess.ID)) {
 				snap.IsActive = true
-			} else if meta.Status != "starting" && meta.Status != "running" {
-				snap.IsActive = false
+			} else {
+				snap.IsActive = (meta.Status == "starting" || meta.Status == "running") && h.isSpoolWorkerLive(meta)
 			}
 			return snap
 		}

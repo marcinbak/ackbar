@@ -76,6 +76,7 @@ func StripBilledCredentials(env []string) []string {
 type HeadlessRunner struct {
 	mu                     sync.RWMutex
 	processes              map[string]*exec.Cmd
+	ownedWorkers           map[string]*exec.Cmd
 	activeSessions         map[string]*Session
 	activeTurns            map[string]bool
 	activePrompts          map[string]TranscriptMessage
@@ -97,6 +98,7 @@ type HeadlessRunner struct {
 func NewHeadlessRunner(db *DB, broadcast func(s *Session)) *HeadlessRunner {
 	return &HeadlessRunner{
 		processes:              make(map[string]*exec.Cmd),
+		ownedWorkers:           make(map[string]*exec.Cmd),
 		activeSessions:         make(map[string]*Session),
 		activeTurns:            make(map[string]bool),
 		activePrompts:          make(map[string]TranscriptMessage),
@@ -184,14 +186,14 @@ func (h *HeadlessRunner) stopProcessGraceful(sessionID string) {
 	}
 	h.mu.RUnlock()
 
-	if cmd != nil && cmd.Process != nil {
+	if h.isOwnedProcess(cmd) {
 		_ = cmd.Process.Signal(os.Interrupt)
-		go func(p *os.Process) {
+		go func(c *exec.Cmd) {
 			time.Sleep(500 * time.Millisecond)
-			if p != nil && isProcessAlive(p.Pid) {
-				_ = p.Kill()
+			if h.isOwnedProcess(c) {
+				_ = c.Process.Kill()
 			}
-		}(cmd.Process)
+		}(cmd)
 	}
 }
 
@@ -273,11 +275,11 @@ func (h *HeadlessRunner) ClearInteractiveBlockAndWait(sessionID string, timeout 
 			break
 		}
 		if !sigkillSent && time.Now().After(killAfter) {
-			if cmd != nil && cmd.Process != nil {
+			if h.isOwnedProcess(cmd) {
 				_ = cmd.Process.Kill()
 			}
 			if meta != nil {
-				killWorkerAndChildGroup(meta)
+				h.terminateVerifiedWorker(meta, syscall.SIGKILL)
 			}
 			sigkillSent = true
 		}
@@ -465,7 +467,7 @@ func (h *HeadlessRunner) IsRunning(sessionID string) bool {
 		if h.activeTurns[key] {
 			return true
 		}
-		if cmd != nil && cmd.Process != nil && cmd.Process.Pid > 0 {
+		if cmd != nil && cmd.Process != nil && cmd.Process.Pid > 1 {
 			if !isProcessAlive(cmd.Process.Pid) {
 				delete(h.processes, key)
 				delete(h.activePrompts, key)
@@ -921,11 +923,11 @@ func (h *HeadlessRunner) CancelTurn(sessionID string) error {
 		return nil
 	}
 
-	if cmd != nil && cmd.Process != nil {
+	if h.isOwnedProcess(cmd) {
 		_ = cmd.Process.Signal(syscall.SIGINT)
 	}
-	if meta != nil && meta.ChildPID > 0 {
-		_ = syscall.Kill(-meta.ChildPID, syscall.SIGINT)
+	if meta != nil {
+		h.terminateVerifiedWorker(meta, syscall.SIGINT)
 	}
 
 	go func() {
@@ -934,11 +936,11 @@ func (h *HeadlessRunner) CancelTurn(sessionID string) error {
 		activeCmd := h.processes[activeKey]
 		curMeta := h.findSpoolForSessionLocked(sessionID, "")
 		h.mu.RUnlock()
-		if activeCmd == cmd && cmd != nil && cmd.Process != nil {
+		if activeCmd == cmd && h.isOwnedProcess(cmd) {
 			_ = cmd.Process.Kill()
 		}
 		if meta != nil && curMeta != nil && curMeta.TurnID == meta.TurnID {
-			killWorkerAndChildGroup(curMeta)
+			h.terminateVerifiedWorker(curMeta, syscall.SIGKILL)
 		}
 	}()
 
@@ -1292,6 +1294,7 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 	meta.WorkerPID = workerCmd.Process.Pid
 	_ = WriteTurnSpoolMeta(metaPath, meta)
 
+	h.ownedWorkers[turnID] = workerCmd
 	h.processes[sess.ID] = workerCmd
 	h.activeSessions[sess.ID] = sess
 	h.activeTurns[sess.ID] = true
@@ -1306,9 +1309,14 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 	h.mu.Unlock()
 	h.syncSleepInhibitor()
 
-	go func() {
-		_ = workerCmd.Wait()
-	}()
+	go func(tid string, c *exec.Cmd) {
+		_ = c.Wait()
+		h.mu.Lock()
+		if h.ownedWorkers[tid] == c {
+			delete(h.ownedWorkers, tid)
+		}
+		h.mu.Unlock()
+	}(turnID, workerCmd)
 
 	sess.State = StateWorking
 	sess.Blocked = nil

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -94,8 +95,9 @@ func (h *HeadlessRunner) monitorWorkerTurn(sess *Session, origSessionID string, 
 				curMeta = dm
 			}
 		}
+		_, liveOnSocket := probeLiveWorker(curMeta, 0)
 		stillRunning := (curMeta.Status == "starting" || curMeta.Status == "running") &&
-			((curMeta.WorkerPID > 0 && isProcessAlive(curMeta.WorkerPID)) || (curMeta.Status == "starting" && time.Now().Before(dialDeadline)))
+			(liveOnSocket || (time.Now().Before(dialDeadline) && h.isTurnWorkerOwnedAlive(curMeta.TurnID)))
 		if !stillRunning {
 			events, _, _ := ReadTurnSpoolAfter(curMeta.SpoolPath, lastSeq)
 			for _, evt := range events {
@@ -320,17 +322,25 @@ func (h *HeadlessRunner) ReattachLiveWorkers() {
 
 	for _, meta := range metas {
 		isActiveStatus := meta.Status == "starting" || meta.Status == "running"
-		alive := isActiveStatus && (pingWorkerSocket(meta) || (meta.WorkerPID > 0 && isProcessAlive(meta.WorkerPID)))
+		var pingResp *workerIPCResp
+		alive := false
+		if isActiveStatus {
+			pingResp, alive = probeLiveWorker(meta, 250*time.Millisecond)
+		}
 		sess := h.resolveSessionForSpool(meta)
 		if alive {
 			if sess == nil || sess.Deleted || sess.IsDone {
 				_ = sendWorkerCancel(meta)
-				killWorkerAndChildGroup(meta)
+				h.terminateVerifiedWorker(meta, syscall.SIGKILL)
 				removeTurnSpoolFiles(meta.MetaPath, meta)
 				continue
 			}
 			clearInterrupted(sess, meta)
-			sess.State, sess.Blocked, sess.PID = StateWorking, nil, meta.WorkerPID
+			livePID := meta.WorkerPID
+			if pingResp != nil && pingResp.WorkerPID > 1 {
+				livePID = pingResp.WorkerPID
+			}
+			sess.State, sess.Blocked, sess.PID = StateWorking, nil, livePID
 			if sess.Activity == "" {
 				sess.Activity = "Thinking..."
 			}
@@ -338,7 +348,7 @@ func (h *HeadlessRunner) ReattachLiveWorkers() {
 			if h.broadcast != nil {
 				h.broadcast(sess)
 			}
-			trackedCmd := &exec.Cmd{Process: &os.Process{Pid: meta.WorkerPID}}
+			trackedCmd := &exec.Cmd{}
 			h.mu.Lock()
 			h.processes[sess.ID] = trackedCmd
 			h.activeSessions[sess.ID] = sess

@@ -38,6 +38,7 @@ func (b *boundedTailBuffer) String() string {
 
 type workerIPCReq struct {
 	Op       string `json:"op"`
+	TurnID   string `json:"turn_id,omitempty"`
 	AfterSeq int64  `json:"after_seq,omitempty"`
 }
 
@@ -98,7 +99,7 @@ func RunHeadlessWorker(args []string) int {
 			proc = childCmd.Process
 		}
 		stateMu.Unlock()
-		if pgid > 0 {
+		if pgid > 1 {
 			_ = syscall.Kill(-pgid, syscall.SIGINT)
 		}
 		if proc != nil {
@@ -108,7 +109,7 @@ func RunHeadlessWorker(args []string) int {
 			select {
 			case <-childDone:
 			case <-time.After(grace):
-				if pgid > 0 {
+				if pgid > 1 {
 					_ = syscall.Kill(-pgid, syscall.SIGKILL)
 				}
 				if proc != nil {
@@ -131,6 +132,9 @@ func RunHeadlessWorker(args []string) int {
 				if (err != nil && len(line) == 0) || json.Unmarshal(line, &req) != nil {
 					return
 				}
+				if req.TurnID != "" && req.TurnID != meta.TurnID {
+					return
+				}
 				switch req.Op {
 				case "ping":
 					stateMu.Lock()
@@ -141,8 +145,9 @@ func RunHeadlessWorker(args []string) int {
 				case "cancel":
 					stateMu.Lock()
 					cancelled = true
+					cpid := childPGID
 					stateMu.Unlock()
-					b, _ := json.Marshal(workerIPCResp{OK: true})
+					b, _ := json.Marshal(workerIPCResp{OK: true, WorkerPID: os.Getpid(), ChildPID: cpid, TurnID: meta.TurnID})
 					_, _ = c.Write(append(b, '\n'))
 					signalChildStop(2 * time.Second)
 				case "subscribe":
@@ -337,48 +342,142 @@ func callWorkerSocket(sockPath string, req workerIPCReq, timeout time.Duration) 
 	return &resp, nil
 }
 
-func pingWorkerSocket(meta *TurnSpoolMeta) bool {
-	if meta == nil || meta.SocketPath == "" {
-		return false
+// probeLiveWorker verifies worker identity over its Unix socket so recycled OS PIDs in stale .meta.json files are never trusted or signaled.
+func probeLiveWorker(meta *TurnSpoolMeta, waitIfStarting time.Duration) (*workerIPCResp, bool) {
+	if meta == nil || meta.TurnID == "" {
+		return nil, false
 	}
-	resp, err := callWorkerSocket(meta.SocketPath, workerIPCReq{Op: "ping"}, 250*time.Millisecond)
-	return err == nil && resp != nil && resp.OK
+	canWait := waitIfStarting > 0 && meta.Status == "starting" && !meta.StartedAt.IsZero() && time.Since(meta.StartedAt) < 3*time.Second
+	deadline := time.Now().Add(waitIfStarting)
+	for {
+		cur := meta
+		if meta.MetaPath != "" {
+			if dm, err := ReadTurnSpoolMeta(meta.MetaPath); err == nil && dm != nil && dm.TurnID == meta.TurnID {
+				cur = dm
+			}
+		}
+		if cur.SocketPath != "" {
+			resp, err := callWorkerSocket(cur.SocketPath, workerIPCReq{Op: "ping", TurnID: meta.TurnID}, 250*time.Millisecond)
+			if err == nil && resp != nil && resp.OK && resp.TurnID == meta.TurnID {
+				return resp, true
+			}
+		}
+		if !canWait || time.Now().After(deadline) || (cur.Status != "starting" && cur.Status != "running") {
+			return nil, false
+		}
+		time.Sleep(15 * time.Millisecond)
+	}
+}
+
+func pingWorkerSocket(meta *TurnSpoolMeta) bool {
+	_, ok := probeLiveWorker(meta, 0)
+	return ok
 }
 
 func sendWorkerCancel(meta *TurnSpoolMeta) error {
-	if meta == nil {
+	if meta == nil || meta.TurnID == "" {
 		return errors.New("nil meta")
 	}
-	for deadline := time.Now().Add(350 * time.Millisecond); ; time.Sleep(15 * time.Millisecond) {
-		sock := meta.SocketPath
+	canWait := meta.Status == "starting" && !meta.StartedAt.IsZero() && time.Since(meta.StartedAt) < 3*time.Second
+	deadline := time.Now().Add(350 * time.Millisecond)
+	for {
+		cur := meta
 		if meta.MetaPath != "" {
-			if dm, err := ReadTurnSpoolMeta(meta.MetaPath); err == nil && dm != nil && dm.SocketPath != "" {
-				sock = dm.SocketPath
+			if dm, err := ReadTurnSpoolMeta(meta.MetaPath); err == nil && dm != nil && dm.TurnID == meta.TurnID {
+				cur = dm
 			}
 		}
-		if resp, err := callWorkerSocket(sock, workerIPCReq{Op: "cancel"}, 250*time.Millisecond); err == nil && resp != nil && resp.OK {
+		if resp, err := callWorkerSocket(cur.SocketPath, workerIPCReq{Op: "cancel", TurnID: meta.TurnID}, 250*time.Millisecond); err == nil && resp != nil && resp.OK && resp.TurnID == meta.TurnID {
 			return nil
 		}
-		if time.Now().After(deadline) {
+		if !canWait || time.Now().After(deadline) || (cur.Status != "starting" && cur.Status != "running") {
 			return errors.New("worker socket unreachable")
 		}
+		time.Sleep(15 * time.Millisecond)
 	}
 }
 
-func killWorkerAndChildGroup(meta *TurnSpoolMeta) {
-	if meta == nil {
-		return
+func (h *HeadlessRunner) isOwnedProcessLocked(cmd *exec.Cmd) bool {
+	if h == nil || cmd == nil || cmd.Process == nil || cmd.Process.Pid <= 1 {
+		return false
 	}
-	if meta.MetaPath != "" {
-		if dm, err := ReadTurnSpoolMeta(meta.MetaPath); err == nil && dm != nil {
-			meta = dm
+	for _, oc := range h.ownedWorkers {
+		if oc == cmd {
+			return true
 		}
 	}
-	if meta.ChildPID > 0 {
-		_ = syscall.Kill(-meta.ChildPID, syscall.SIGKILL)
-		_ = syscall.Kill(meta.ChildPID, syscall.SIGKILL)
+	return false
+}
+
+func (h *HeadlessRunner) isOwnedProcess(cmd *exec.Cmd) bool {
+	if h == nil || cmd == nil {
+		return false
 	}
-	if meta.WorkerPID > 0 {
-		_ = syscall.Kill(meta.WorkerPID, syscall.SIGKILL)
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.isOwnedProcessLocked(cmd)
+}
+
+func (h *HeadlessRunner) isTurnWorkerOwnedAlive(turnID string) bool {
+	if h == nil || turnID == "" {
+		return false
+	}
+	h.mu.RLock()
+	oc := h.ownedWorkers[turnID]
+	h.mu.RUnlock()
+	return oc != nil && oc.Process != nil && oc.Process.Pid > 1
+}
+
+func (h *HeadlessRunner) isSpoolWorkerLiveLocked(meta *TurnSpoolMeta) bool {
+	if meta == nil || meta.TurnID == "" {
+		return false
+	}
+	if h != nil {
+		if oc := h.ownedWorkers[meta.TurnID]; oc != nil && oc.Process != nil && oc.Process.Pid > 1 {
+			return true
+		}
+	}
+	_, ok := probeLiveWorker(meta, 150*time.Millisecond)
+	return ok
+}
+
+func (h *HeadlessRunner) isSpoolWorkerLive(meta *TurnSpoolMeta) bool {
+	if meta == nil || meta.TurnID == "" {
+		return false
+	}
+	if h.isTurnWorkerOwnedAlive(meta.TurnID) {
+		return true
+	}
+	_, ok := probeLiveWorker(meta, 150*time.Millisecond)
+	return ok
+}
+
+// terminateVerifiedWorker signals a worker/child group ONLY when verified via live socket TurnID or while un-reaped in ownedWorkers.
+func (h *HeadlessRunner) terminateVerifiedWorker(meta *TurnSpoolMeta, sig syscall.Signal) {
+	if meta == nil || meta.TurnID == "" {
+		return
+	}
+	if resp, ok := probeLiveWorker(meta, 150*time.Millisecond); ok {
+		if resp.ChildPID > 1 {
+			_ = syscall.Kill(-resp.ChildPID, sig)
+			_ = syscall.Kill(resp.ChildPID, sig)
+		}
+		if resp.WorkerPID > 1 {
+			_ = syscall.Kill(resp.WorkerPID, sig)
+		}
+		return
+	}
+	if h == nil {
+		return
+	}
+	h.mu.RLock()
+	ownedCmd := h.ownedWorkers[meta.TurnID]
+	h.mu.RUnlock()
+	if ownedCmd != nil && ownedCmd.Process != nil && ownedCmd.Process.Pid > 1 {
+		if sig == syscall.SIGKILL {
+			_ = ownedCmd.Process.Kill()
+		} else {
+			_ = ownedCmd.Process.Signal(sig)
+		}
 	}
 }
