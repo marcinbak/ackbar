@@ -200,6 +200,64 @@ void main() {
     expect(fakeApi.promptCalls, 2); // 1 initial + 1 retry
   });
 
+  test(
+      'HeadlessChatStreamController preserves earlier historical message turnId when submitting repeated prompt',
+      () async {
+    final fakeApi = _FakeApiClient();
+    fakeApi.structuredResponse = TranscriptData(
+      sessionId: 'claude-code:local:sess-1',
+      nativeId: 'sess-1',
+      agent: 'claude-code',
+      title: 'Session 1',
+      cwd: '/workspace',
+      messages: [
+        TranscriptMessage(
+          role: 'user',
+          content: 'continue',
+          turnId: 'turn-historical-1',
+          timestamp: DateTime.utc(2026, 11, 1),
+        ),
+        TranscriptMessage(
+          role: 'assistant',
+          content: 'Working on it',
+          turnId: 'turn-historical-1',
+          timestamp: DateTime.utc(2026, 11, 1),
+        ),
+      ],
+      rawMarkdown: '',
+    );
+    final fakeStream = _FakeChatStreamClient();
+
+    final controller = HeadlessChatStreamController(
+      session: _testSession(),
+      host: _testHost(),
+      apiClient: fakeApi,
+      chatStreamClient: fakeStream,
+    );
+    addTearDown(() => controller.dispose());
+
+    controller.init();
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+
+    await controller.submitPrompt('continue');
+
+    fakeStream.streamCtrl.add(ChatStreamEvent.fromJson({
+      'session_id': 'claude-code:local:sess-1',
+      'seq': 1,
+      'turn_id': 'turn-new-2',
+      'type': 'turn_start',
+    }));
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+
+    final msgs = controller.transcriptData!.messages;
+    expect(msgs.first.turnId, 'turn-historical-1');
+    expect(msgs.first.content, 'continue');
+    final userMsgs = msgs.where((m) => m.isUser).toList();
+    expect(userMsgs, hasLength(2));
+    expect(userMsgs[0].turnId, 'turn-historical-1');
+    expect(userMsgs[1].turnId, 'turn-new-2');
+  });
+
   test('HeadlessChatStreamController isolates state across session rotations',
       () async {
     final fakeApi = _FakeApiClient();

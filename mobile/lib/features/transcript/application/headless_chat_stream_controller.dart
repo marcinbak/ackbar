@@ -16,15 +16,13 @@ class HeadlessChatStreamController extends ChangeNotifier {
 
   Session _session;
   HostRecord _host;
-  int _sessionEpoch = 0;
-  int _assistantCountAtSend = 0;
-  int _messageCountAtSend = 0;
+  int _sessionEpoch = 0, _assistantCountAtSend = 0, _messageCountAtSend = 0;
 
   TranscriptData? _transcriptData;
-  bool _isLoading = false;
-  bool _isRefreshing = false;
-  bool _isSending = false;
-  bool _awaitingTurnCompletion = false;
+  bool _isLoading = false,
+      _isRefreshing = false,
+      _isSending = false,
+      _awaitingTurnCompletion = false;
   String? _errorMessage;
   TranscriptMessage? _pendingUserMessage;
   List<PromptQueueItemModel> _queueItems = const [];
@@ -164,10 +162,13 @@ class HeadlessChatStreamController extends ChangeNotifier {
 
         if (_pendingUserMessage != null &&
             _pendingUserMessage!.turnId != evt.turnId) {
+          final prevTurnId = _pendingUserMessage!.turnId;
           _pendingUserMessage =
               _pendingUserMessage!.copyWith(turnId: evt.turnId);
-          final userIdx = msgs.indexWhere(
-              (m) => m.isUser && m.content == _pendingUserMessage!.content);
+          final userIdx = msgs.lastIndexWhere((m) =>
+              m.isUser &&
+              (m.turnId == prevTurnId ||
+                  (m.inFlight && m.content == _pendingUserMessage!.content)));
           if (userIdx >= 0) {
             msgs[userIdx] = msgs[userIdx].copyWith(turnId: evt.turnId);
           }
@@ -246,9 +247,9 @@ class HeadlessChatStreamController extends ChangeNotifier {
         _pendingUserMessage = null;
         _lastEventWasTool = false;
         if (_transcriptData != null) {
-          final msgs = _transcriptData!.messages.map((m) {
-            return m.inFlight ? m.copyWith(inFlight: false) : m;
-          }).toList();
+          final msgs = _transcriptData!.messages
+              .map((m) => m.inFlight ? m.copyWith(inFlight: false) : m)
+              .toList();
           _updateMessages(msgs);
         }
         refreshTranscriptSilently();
@@ -381,8 +382,7 @@ class HeadlessChatStreamController extends ChangeNotifier {
     }
     if (structured == null && rawMd == null) {
       throw Exception(
-        'Unable to load transcript from host. Tap Retry to try again.',
-      );
+          'Unable to load transcript from host. Tap Retry to try again.');
     }
     return structured ??
         TranscriptData(

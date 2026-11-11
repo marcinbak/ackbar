@@ -214,6 +214,16 @@ void main() {
     await tester.pump();
 
     expect(channelCount, 2);
+
+    // First frame arrives on reconnected channel: verifies force resize sent and banner cleared
+    lastChannel!.serverToClient.add('welcome back\r\n');
+    await tester.pump();
+    expect(
+      lastChannel!.sentMessages
+          .any((m) => m is String && m.contains('"type":"resize"')),
+      isTrue,
+    );
+    expect(find.textContaining('Reconnecting'), findsNothing);
   });
 
   testWidgets(

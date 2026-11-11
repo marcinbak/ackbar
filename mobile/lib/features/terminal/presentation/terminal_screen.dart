@@ -173,6 +173,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   void _connectWebSocket() {
+    _connecting = true;
     _pingTimer?.cancel();
     _pingTimer = null;
     _sub?.cancel();
@@ -222,7 +223,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           if (!identical(_channel, channel)) return;
           _reconnectController.onFrameReceived();
           if (_connecting) {
-            setState(() => _connecting = false);
+            setState(() {
+              _connecting = false;
+              _errorMessage = null;
+            });
             _sendResize(_currentCols, _currentRows, force: true);
           }
           final text = message is String
@@ -687,14 +691,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             ),
             tooltip: 'Reconnect PTY',
             onPressed: () {
-              _sub?.cancel();
-              _channel?.sink.close();
               _terminal.buffer.clear();
-              setState(() {
-                _connecting = true;
-                _errorMessage = null;
-              });
-              _connectWebSocket();
+              _reconnectController.retryNow();
             },
           ),
         ],
