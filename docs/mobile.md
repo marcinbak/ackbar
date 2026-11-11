@@ -68,6 +68,7 @@ The **Attention** tab provides a zero-latency inbox for agent sessions waiting o
 * **🔍 Fullscreen Mode (`⤢`):** Tap the expand icon on any pending card to enter an edge-to-edge fullscreen card view with the top app bar and bottom navigation hidden, giving maximum vertical real estate to long prompts, choices, and rationale.
 * **In-Progress Stream:** Live monitoring cards for agents actively executing commands.
 * **Decision Audit Log:** Timestamped history of all approvals, answers, and decisions made on mobile.
+* **OAuth Sign-In Cards (`HeadlessAuthCard`):** Renders for `BlockKind.auth` sessions with native HTTPS browser launcher, clipboard fallback, remote `callback_url` paste, retry, and dismiss.
 
 ---
 
@@ -81,6 +82,11 @@ Tap **Transcript** on any session to open a dedicated agentic chat stream:
 * **Live Turn Synchronization & Auto-Refresh:** Tracks real-time session state via `fleetSessionsProvider` alongside optimistic send tracking (`_awaitingTurnCompletion`) so the `Working...` indicator and Stop button stay active for the full duration of a headless turn while allowing follow-up prompts to be queued. Silently polls transcript updates every 3 seconds while a turn is working, immediately reloads when transitioning out of `working`, and refreshes automatically on `AppLifecycleState.resumed`.
 * **Resilient Host & Transcript Resolution:** Preserves existing session and transcript state across transient network/timeout failures, avoids SSE connection churn during background host health polls, forwards per-host `authToken` across all transcript/subagent/prompt endpoints, and surfaces retryable error banners when transcript endpoints are unreachable.
 * **Quick Navigation:** Floating **`[↓ Latest]`** button to glide directly to the latest turn, plus one-tap jump to the interactive terminal.
+* **Headless Runtime Configuration (`HeadlessConfigPillBar` & `HeadlessConfigSheet`):** Header pill bar displays active model, effort, execution mode (`AUTO`/`PLAN`), directories, and `Context %`. Tapping opens a sheet with model suggestions, effort picker (hidden on `antigravity`), directory manager, and live `HeadlessMcpSection` status.
+* **Composer Autocomplete & Shell Mode (`HeadlessAutocompleteStrip`):** Detects leading `/` for command suggestions, `@` for file suggestions, and `!` for shell mode.
+* **Inline Slash & Shell Dispatcher (`HeadlessCommandDispatcher`):** Intercepts `! <cmd>` and 20 standalone commands. Emits inline dark `HeadlessCommandCardView` cards with `[+ Attach to Prompt]`.
+* **In-Place Turn Rotation (`Conv N+1`):** `/clear`, `/reset`, `/rewind`, and `/handover` rotate sessions in-place using epoch guards while clearing ephemeral cards.
+* **Inline OAuth Sign-In (`HeadlessAuthCard`):** Renders interactive cards for `BlockKind.auth` with native browser launcher, remote redirect paste, retry, and dismiss.
 
 ---
 
@@ -130,7 +136,7 @@ flutter run
 cd mobile
 flutter test
 ```
-*Executes all 202 unit and widget tests covering models, theme extensions, Riverpod providers, session spawning, transcript live turn synchronization, terminal touch scrolling, node path resolution, speech sanitizer, hierarchical fleet tree, work board, voice companion, and core UI components.*
+*Executes all 245 unit and widget tests covering models, theme extensions, Riverpod providers, session spawning, transcript live turn synchronization, terminal touch scrolling, node path resolution, speech sanitizer, hierarchical fleet tree, work board, voice companion, headless OAuth cards, config sheets, and command dispatcher.*
 
 ### Installing to iOS Device
 ```bash
@@ -178,3 +184,8 @@ In **Phase 5**, the Flutter Mobile App (`mobile/lib/`) was upgraded to complete 
 4. **Two-Tier Voice & Audio Companion (`audio_companion_service.dart` & `transcript_screen.dart`):**
    * **Two-Tier Pipeline:** `AudioCompanionService` integrates Tier 1 client-side Markdown speech sanitization (`speech_sanitizer.dart`) and Tier 2 remote Haiku summarization (`POST /v1/sessions/summarize-speech`) with client caching.
    * **UI Controls:** `transcript_screen.dart` features header toggles (**`[🔊 Auto-Read]`**, **`[🎤 Mic]`**), per-message bubble actions (**`[🔊 Read]`**, **`[⏹️ Stop]`**, **`[↺ Read Again]`**), and the persistent **`SpeechCompanionBar`** with commuter quick-reply drill-down chips.
+
+5. **Headless Session & Command Parity (`features/headless/` & `features/transcript/`):**
+   * **`HeadlessAuthCard`:** Renders on `BlockKind.auth` in `AttentionScreen` and `TranscriptScreen`. Launches external browser via native `dev.ackbar.app/launcher` HTTPS channel (`MainActivity.kt`, `AppDelegate.swift`) with clipboard fallback. Supports collapsible remote `callback_url` paste, retry, terminal attach, and dismiss.
+   * **`HeadlessConfigPillBar` & `HeadlessConfigSheet`:** Displays model, effort (hidden for Antigravity), `AUTO`/`PLAN` mode, `extra_dirs`, and `Context %`. Embeds `HeadlessMcpSection` with live MCP/plugin pills and 1-tap sign-in.
+   * **Composer Autocomplete & Command Dispatcher:** `HeadlessAutocompleteStrip` handles `/` commands, `@` files, and `!` shell indicator. `HeadlessCommandDispatcher` executes `! <cmd>` and 20 standalone slash commands, passing prompt skills through. Renders inline dark `HeadlessCommandCardView` cards (`+ Attach to Prompt`, inspect, `/rewind`) and handles epoch-guarded `Conv N+1` rotation.

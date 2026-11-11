@@ -33,6 +33,12 @@
 
 ## ✅ Completed Milestones
 
+* [x] **Mobile Headless Parity (`feat/mobile-headless-parity`):**
+  * `HeadlessAuthCard` renders OAuth sign-in cards for `BlockKind.auth` in Attention and Transcript screens.
+  * Native `dev.ackbar.app/launcher` HTTPS browser channel (`MainActivity.kt`, `AppDelegate.swift`) with clipboard fallback and remote `callback_url` paste.
+  * `HeadlessConfigPillBar` and `HeadlessConfigSheet` for runtime model, effort, execution mode, `extra_dirs`, and `HeadlessMcpSection` health.
+  * `HeadlessAutocompleteStrip` for `/`, `@`, and `!` shell indicator with prompt-skill passthrough.
+  * `HeadlessCommandDispatcher` executes `! <cmd>` and 20 standalone commands with dark `HeadlessCommandCardView` cards and epoch-guarded `Conv N+1` rotation.
 * [x] **Headless Standalone Slash & Inline Shell Command Parity (`feat/headless-command-parity`):**
   * Executes inline shell commands (`! <cmd>`) via `POST /v1/sessions/{id}/shell` (`30s` timeout, `128 KB` cap, `-pgid` kill) with `.chat-bash-card` and `[+ Attach to Prompt]`.
   * Standalone `/` commands for runtime config (`/model`, `/effort`, `/permissions`, `/auto`, `/add-dir`) and SQLite `extra_dirs` persistence.
