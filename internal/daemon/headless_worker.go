@@ -140,14 +140,30 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string) int {
 		return 2
 	}
 	childPGID := cmd.Process.Pid
-	workerMeta.WorkerPID, workerMeta.ChildPID, workerMeta.State = os.Getpid(), childPGID, "idle_warm"
-	saveWorkerMeta()
-	state = "idle_warm"
+	workerMeta.WorkerPID, workerMeta.ChildPID = os.Getpid(), childPGID
+
+	var (
+		stdinMu     sync.Mutex
+		stdinClosed bool
+	)
+	writeStdinLine := func(sLine string) {
+		if sLine == "" || stdinPipe == nil {
+			return
+		}
+		stdinMu.Lock()
+		if !stdinClosed {
+			_, _ = stdinPipe.Write([]byte(strings.TrimSpace(sLine) + "\n"))
+		}
+		stdinMu.Unlock()
+	}
 
 	shutdownChildGroup := func(grace time.Duration) {
-		if stdinPipe != nil {
+		stdinMu.Lock()
+		if !stdinClosed && stdinPipe != nil {
+			stdinClosed = true
 			_ = stdinPipe.Close()
 		}
+		stdinMu.Unlock()
 		if childPGID > 1 {
 			_ = syscall.Kill(-childPGID, syscall.SIGTERM)
 		}
@@ -279,7 +295,7 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string) int {
 		stateMu.Unlock()
 	}
 
-	startTurnLocked := func(tMetaPath, stdinLine string) error {
+	startTurnLocked := func(tMetaPath string) error {
 		tMeta, err := ReadTurnSpoolMeta(tMetaPath)
 		if err != nil || tMeta == nil {
 			return fmt.Errorf("failed to read turn meta: %w", err)
@@ -307,10 +323,32 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string) int {
 		_ = WriteTurnSpoolMeta(tMetaPath, tMeta)
 
 		activeTurn = &activeTurnState{turnID: tMeta.TurnID, metaPath: tMetaPath, meta: tMeta, spool: spool}
-		if stdinLine != "" && stdinPipe != nil {
-			_, _ = stdinPipe.Write([]byte(strings.TrimSpace(stdinLine) + "\n"))
-		}
 		return nil
+	}
+
+	var initialStdinLine string
+	if specPath != "" {
+		if tMeta, rErr := ReadTurnSpoolMeta(specPath); rErr == nil && tMeta != nil {
+			if workerMetaPath != "" {
+				isNewConv := !slices.Contains(workerMeta.Args, "--conversation")
+				initialStdinLine, _ = formatPersistentStdinTurn(workerMeta.Agent, workerMeta.SessionID, workerMeta.IsSupervisor, isNewConv, tMeta.Prompt)
+			}
+			stateMu.Lock()
+			_ = startTurnLocked(specPath)
+			stateMu.Unlock()
+		}
+	} else {
+		stateMu.Lock()
+		state, workerMeta.State = "idle_warm", "idle_warm"
+		saveWorkerMeta()
+		if idleTTL > 0 {
+			if idleTimer == nil {
+				idleTimer = time.AfterFunc(idleTTL, onIdleTTLExpired)
+			} else {
+				idleTimer.Reset(idleTTL)
+			}
+		}
+		stateMu.Unlock()
 	}
 
 	stdoutDone := make(chan struct{})
@@ -418,17 +456,8 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string) int {
 		exitCleanly(0)
 	}()
 
-	if specPath != "" {
-		if tMeta, rErr := ReadTurnSpoolMeta(specPath); rErr == nil && tMeta != nil {
-			var sLine string
-			if workerMetaPath != "" {
-				isNewConv := !slices.Contains(workerMeta.Args, "--conversation")
-				sLine, _ = formatPersistentStdinTurn(workerMeta.Agent, workerMeta.SessionID, workerMeta.IsSupervisor, isNewConv, tMeta.Prompt)
-			}
-			stateMu.Lock()
-			_ = startTurnLocked(specPath, sLine)
-			stateMu.Unlock()
-		}
+	if initialStdinLine != "" {
+		writeStdinLine(initialStdinLine)
 	}
 
 	for {
@@ -436,6 +465,6 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string) int {
 		if aErr != nil {
 			return 0
 		}
-		go handleWorkerIPC(conn, &stateMu, &state, workerMeta, childPGID, &activeTurn, completedTurns, &subWG, shutdownChildGroup, exitCleanly, startTurnLocked)
+		go handleWorkerIPC(conn, &stateMu, &state, workerMeta, childPGID, &activeTurn, completedTurns, &subWG, shutdownChildGroup, exitCleanly, startTurnLocked, writeStdinLine)
 	}
 }

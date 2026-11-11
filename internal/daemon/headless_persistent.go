@@ -153,7 +153,6 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 				}, 500*time.Millisecond)
 				if cErr == nil && resp != nil && resp.OK {
 					meta.WorkerPID, meta.ChildPID, meta.Status = resp.WorkerPID, resp.ChildPID, "running"
-					_ = WriteTurnSpoolMeta(meta.MetaPath, meta)
 					h.recordTurnActive(sess, prompt, turnID, turnStart, meta, resp.ChildPID, startEvt, nil)
 					return nil
 				}
@@ -227,7 +226,6 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 	}
 
 	meta.WorkerPID = workerCmd.Process.Pid
-	_ = WriteTurnSpoolMeta(meta.MetaPath, meta)
 
 	h.mu.Lock()
 	h.warmWorkers[sess.ID] = &warmWorkerHandle{

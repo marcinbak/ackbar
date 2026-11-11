@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -300,6 +301,8 @@ done
 	db, _ := InitDB(filepath.Join(tmpDir, "test.db"))
 	h := NewHeadlessRunner(db, nil)
 	defer h.ShutdownAllWorkers(time.Second)
+	defer h.ReleaseSleepInhibitor()
+	h.sleepInhibitor.cmdFactory = func(_ string, _ int) *exec.Cmd { return exec.Command("sleep", "30") }
 
 	sess := &Session{ID: "claude-code:local:sleep1", Agent: "claude-code", NativeID: "sleep1", Cwd: tmpDir, EngineType: EngineHeadless}
 	_ = db.SaveSession(sess)
@@ -317,5 +320,19 @@ done
 	}
 	if h.IsSleepInhibitorActive() {
 		t.Errorf("sleep inhibitor must be released when turn ends and worker is idle_warm")
+	}
+
+	if err := h.RunTurn(context.Background(), sess, "turn 2"); err != nil {
+		t.Fatalf("RunTurn 2: %v", err)
+	}
+	if !h.IsSleepInhibitorActive() {
+		t.Errorf("sleep inhibitor should be active during turn 2 execution")
+	}
+	deadline2 := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline2) && h.IsRunning(sess.ID) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if h.IsSleepInhibitorActive() {
+		t.Errorf("sleep inhibitor must be released when turn 2 ends and worker is idle_warm")
 	}
 }

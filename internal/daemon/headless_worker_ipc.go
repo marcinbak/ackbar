@@ -201,7 +201,7 @@ func streamSpoolToConn(c net.Conn, spool *TurnSpoolWriter, compPath string, afte
 	}
 }
 
-func handleWorkerIPC(c net.Conn, stateMu *sync.Mutex, state *string, workerMeta *SessionWorkerMeta, childPGID int, activeTurn **activeTurnState, completedTurns map[string]string, subWG *sync.WaitGroup, shutdownChildGroup func(time.Duration), exitCleanly func(int), startTurnLocked func(string, string) error) {
+func handleWorkerIPC(c net.Conn, stateMu *sync.Mutex, state *string, workerMeta *SessionWorkerMeta, childPGID int, activeTurn **activeTurnState, completedTurns map[string]string, subWG *sync.WaitGroup, shutdownChildGroup func(time.Duration), exitCleanly func(int), startTurnLocked func(string) error, writeStdinLine func(string)) {
 	defer c.Close()
 	line, err := bufio.NewReader(c).ReadBytes('\n')
 	var req workerIPCReq
@@ -240,7 +240,7 @@ func handleWorkerIPC(c net.Conn, stateMu *sync.Mutex, state *string, workerMeta 
 		if req.NativeID != "" {
 			workerMeta.NativeID = req.NativeID
 		}
-		startErr := startTurnLocked(req.MetaPath, req.StdinLine)
+		startErr := startTurnLocked(req.MetaPath)
 		curTurnID := ""
 		if *activeTurn != nil {
 			curTurnID = (*activeTurn).turnID
@@ -250,6 +250,7 @@ func handleWorkerIPC(c net.Conn, stateMu *sync.Mutex, state *string, workerMeta 
 			reply(workerIPCResp{OK: false, ErrCode: startErr.Error()})
 			return
 		}
+		writeStdinLine(req.StdinLine)
 		reply(workerIPCResp{OK: true, WorkerPID: os.Getpid(), ChildPID: childPGID, TurnID: curTurnID, State: "running_turn"})
 
 	case "subscribe":

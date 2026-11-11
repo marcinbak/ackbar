@@ -134,6 +134,9 @@ func (h *HeadlessRunner) finalizeTurnFromSpool(sess *Session, origSessionID stri
 
 	markFinalized := func() {
 		if meta != nil && meta.MetaPath != "" && fileExists(meta.MetaPath) {
+			if dm, err := ReadTurnSpoolMeta(meta.MetaPath); err == nil && dm != nil {
+				*meta = *dm
+			}
 			meta.FinalizedByDaemon = true
 			_ = WriteTurnSpoolMeta(meta.MetaPath, meta)
 		}
