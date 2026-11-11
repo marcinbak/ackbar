@@ -79,7 +79,7 @@ Tap **Transcript** on any session to open a dedicated agentic chat stream:
 * **Left-Aligned Agent Cards:** High-width terminal surface cards (`#161922`) with full GitHub Flavored Markdown, syntax highlighting, and copy buttons.
 * **⚡ Collapsible Tool Invocations:** Visual badges showing executed tools (`🛠️ Bash`, `🛠️ Read`, `🛠️ Edit`) without cluttering the chat.
 * **💭 Thought Process Accordions:** Expandable chain-of-thought dropdowns for reasoning analysis.
-* **Live Turn Synchronization & Auto-Refresh:** Tracks real-time session state via `fleetSessionsProvider` alongside optimistic send tracking (`_awaitingTurnCompletion`) so the `Working...` indicator and Stop button stay active for the full duration of a headless turn while allowing follow-up prompts to be queued. Silently polls transcript updates every 3 seconds while a turn is working, immediately reloads when transitioning out of `working`, and refreshes automatically on `AppLifecycleState.resumed`.
+* **Live SSE Streaming & Spool Catch-Up:** `HeadlessChatStreamController` connects to `/v1/sessions/chat/stream` for real-time text, thinking, and tool deltas. Resumes cleanly across reconnections via `turn_id` and `after_seq` cursors with a 40s read watchdog and idempotent `client_turn_id` prompt retries.
 * **Resilient Host & Transcript Resolution:** Preserves existing session and transcript state across transient network/timeout failures, avoids SSE connection churn during background host health polls, forwards per-host `authToken` across all transcript/subagent/prompt endpoints, and surfaces retryable error banners when transcript endpoints are unreachable.
 * **Quick Navigation:** Floating **`[↓ Latest]`** button to glide directly to the latest turn, plus one-tap jump to the interactive terminal.
 * **Headless Runtime Configuration (`HeadlessConfigPillBar` & `HeadlessConfigSheet`):** Header pill bar displays active model, effort, execution mode (`AUTO`/`PLAN`), directories, and `Context %`. Tapping opens a sheet with model suggestions, effort picker (hidden on `antigravity`), directory manager, and live `HeadlessMcpSection` status.
@@ -98,6 +98,7 @@ Tap **Live Terminal** on any session to attach to the live `tmux` terminal:
 * **Display Modes:** Toggle between responsive auto-fit mode and standard `80 COL` fixed layout.
 * **Tmux Touch Scrollback & Floating Bottom Pill:** Vertical touch dragging and fling gestures on the terminal canvas dispatch structured `scroll` control messages (`up`, `down`, `page_up`, `page_down`, `bottom`) over the PTY WebSocket so `tmux` copy-mode scrolls smoothly even while `tmux` is in the alternate screen buffer (`smcup`), displaying a floating **`[↓ Bottom]`** pill while scrolled up in history.
 * **Touch Accessory Bar:** Dedicated on-screen touch keys for `[Esc]`, `[Tab]`, `[Shift+Tab]`, `[Ctrl+C]`, `[↑]`, `[↓]`, `[PgUp]`, `[PgDn]`, and `[Enter]`.
+* **PTY WebSocket Auto-Reconnect:** `TerminalReconnectController` executes 5 automatic reconnect attempts (`1s -> 2s -> 5s`) with forced resize synchronization, `[Tap to Reconnect]` manual banner fallback, and reconnection on `AppLifecycleState.resumed`.
 
 ---
 
@@ -136,7 +137,7 @@ flutter run
 cd mobile
 flutter test
 ```
-*Executes all 245 unit and widget tests covering models, theme extensions, Riverpod providers, session spawning, transcript live turn synchronization, terminal touch scrolling, node path resolution, speech sanitizer, hierarchical fleet tree, work board, voice companion, headless OAuth cards, config sheets, and command dispatcher.*
+*Executes all 280 unit and widget tests covering models, Riverpod providers, SSE lifecycle, live chat streaming, terminal reconnect, lifecycle sync, optimistic rollback, session spawning, node path resolution, hierarchical fleet tree, work board, and headless cards.*
 
 ### Installing to iOS Device
 ```bash
@@ -189,3 +190,17 @@ In **Phase 5**, the Flutter Mobile App (`mobile/lib/`) was upgraded to complete 
    * **`HeadlessAuthCard`:** Renders on `BlockKind.auth` in `AttentionScreen` and `TranscriptScreen`. Launches external browser via native `dev.ackbar.app/launcher` HTTPS channel (`MainActivity.kt`, `AppDelegate.swift`) with clipboard fallback. Supports collapsible remote `callback_url` paste, retry, terminal attach, and dismiss.
    * **`HeadlessConfigPillBar` & `HeadlessConfigSheet`:** Displays model, effort (hidden for Antigravity), `AUTO`/`PLAN` mode, `extra_dirs`, and `Context %`. Embeds `HeadlessMcpSection` with live MCP/plugin pills and 1-tap sign-in.
    * **Composer Autocomplete & Command Dispatcher:** `HeadlessAutocompleteStrip` handles `/` commands, `@` files, and `!` shell indicator. `HeadlessCommandDispatcher` executes `! <cmd>` and 20 standalone slash commands, passing prompt skills through. Renders inline dark `HeadlessCommandCardView` cards (`+ Attach to Prompt`, inspect, `/rewind`) and handles epoch-guarded `Conv N+1` rotation.
+
+---
+
+## 6. Implemented Phase 6: Mobile Stream & Connection Reliability
+
+Phase 6 implements persistent connection reliability, socket lifecycle management, and optimistic mutation rollback:
+
+| Subsystem | File Reference | Architecture & Reliability Behavior |
+| :--- | :--- | :--- |
+| **Fleet SSE Client** | [`sse_client.dart`](../mobile/lib/core/network/sse_client.dart) | Explicit per-attempt `http.Client` socket teardown on cancellation. 45s keepalive inactivity watchdog, frame-guarded jittered backoff (`1s -> 2s -> 5s -> 10s`), and `onHostReconnected` session refresh callback. |
+| **Headless Chat Streaming** | [`chat_stream_client.dart`](../mobile/lib/core/network/chat_stream_client.dart) & [`headless_chat_stream_controller.dart`](../mobile/lib/features/transcript/application/headless_chat_stream_controller.dart) | Connects to `/v1/sessions/chat/stream` for live SSE deltas (`text_delta`, `thought_delta`, `tool_start`). Supports `turn_id` + `after_seq` spool catch-up, 40s read watchdog, `in_flight_turn` hydration, and idempotent `client_turn_id` prompt retries. |
+| **Terminal Reconnect** | [`terminal_reconnect_controller.dart`](../mobile/lib/features/terminal/application/terminal_reconnect_controller.dart) & [`terminal_screen.dart`](../mobile/lib/features/terminal/presentation/terminal_screen.dart) | 5-attempt PTY WebSocket auto-reconnect (`1s -> 2s -> 5s`) with forced resize synchronization, scrollback preservation, `[Tap to Reconnect]` manual banner, and reconnection on `AppLifecycleState.resumed`. |
+| **Lifecycle Foreground Sync** | [`app_lifecycle_sync_observer.dart`](../mobile/lib/core/services/app_lifecycle_sync_observer.dart) | Debounced (`>= 2s`) foreground sync (`refreshHosts`, `refreshSessions`, `refreshNodes`) on `AppLifecycleState.resumed`. Runs a 30s background health probe when any host is offline. |
+| **Optimistic Rollback** | [`fleet_providers.dart`](../mobile/lib/core/providers/fleet_providers.dart) | Concurrent-SSE-safe optimistic rollback returning `Future<bool>` across session mutation actions (`respondToSession`, `terminateSession`, `deleteSession`, `archiveSession`, `resumeSession`, `restartSession`, `handoverSession`). Surfaces error feedback on failure without false positive toasts. |
