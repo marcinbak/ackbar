@@ -33,6 +33,12 @@
 
 ## ✅ Completed Milestones
 
+* [x] **Detached Headless Worker Spool, Replay & Runtime Lifecycle:**
+  * Detached `--headless-worker` sidecar process (`Setsid: true`) with Unix domain socket IPC and `/dev/null` stdio isolation.
+  * Monotonic NDJSON turn spooling (`<turn_id>.ndjson`), cursor-based SSE replay (`?after_seq`, `Last-Event-ID`), and transcript synthesis (`in_flight_turn`).
+  * Startup re-attachment of live workers on daemon reboot without duplicate `--resume`.
+  * Comprehensive runtime cleanup on manual `Done` and periodic background `auto_done` sweep.
+  * Cross-OS idle-sleep inhibitor (`caffeinate` / `systemd-inhibit`) and systemd `KillMode=process` support.
 * [x] **Unified Supervisor Control Layer, Task Orchestrator & Voice Companion (Ackbar 2.0):**
   * **4-Pillar Work Board & Multi-Repo Workstreams (`docs/work-overview/`):** Full `NEW` $\rightarrow$ `IN_PROGRESS` $\rightarrow$ `REVIEW` $\rightarrow$ `DONE` Kanban lifecycle with per-repository `task_workstreams`, single active worker enforcement per `(task_id, repo_node_path)`, canonical substatus normalization, and 1-click GitHub PR squash & merge (`POST /v1/tasks/merge-pr`).
   * **Zero-Input `⚓ Supervisor` Dispatchers & Dedicated `📋 Task` Sessions:** 1-tap `[+ ⚓ New Supervisor]` opens a session in `~/.ackbar/supervisor/`, auto-binds via `bind_supervisor_session`, and dispatches dedicated `📋 Task` sessions with direct CLI prompt arguments and automatic `IN_PROGRESS` activation.

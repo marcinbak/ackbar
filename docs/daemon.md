@@ -20,6 +20,10 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 * **`server_sessions.go`:** Session listing, maintenance purge, remote-host proxy resolution (`resolveSessionOrProxy`), lifecycle control actions (`/v1/sessions/control`), session configuration (`PATCH /v1/sessions/{id}/config`), interactive response dispatch (`applyInteractiveResponse`, `/v1/sessions/respond`), mode switching between headless and tmux (`/v1/sessions/take-wheel` and `/v1/sessions/switch-headless`), session spawn (`/v1/sessions/spawn`), and meta-routing (`/v1/meta/resolve`).
 * **`server_suggestions.go`:** Slash command (`/`), workspace file (`@`), and agent-aware model suggestions endpoint (`GET /v1/sessions/{id}/suggestions?kind=commands|files|models&q=...`) with 10-second directory caching, 5-minute Antigravity model discovery caching, and bounded `git ls-files` / `filepath.WalkDir` traversal.
 * **`server_chat.go`:** Headless/tmux prompt submission (`/v1/sessions/prompt` with `delay_seconds`, `deliver_at`, and inline `/delay <duration> <prompt>` scheduling), prompt queue management (`GET`/`DELETE`/`POST` `/v1/sessions/prompt/queue` with `action: send_now`), `scheduled_prompts` SQLite persistence, SSE chat streaming (`/v1/sessions/chat/stream`), turn cancellation, automated session handover (`/v1/sessions/handover`), and transcript endpoints.
+* **`headless.go`, `headless_worker.go`, `headless_spool.go`:** Headless execution coordinator, detached worker entrypoint (`ackbard --headless-worker`), and monotonic NDJSON turn spooling.
+* **`headless_reattach.go` & `headless_stream_replay.go`:** Daemon reboot worker recovery, socket re-attachment, and gapless SSE replay (`?after_seq`, `Last-Event-ID`).
+* **`session_done.go`:** Manual `Done` runtime cleanup, process teardown, spool pruning, and periodic `auto_done` sweep.
+* **`sleep_inhibitor.go`:** Cross-OS POSIX idle-sleep inhibitor (`caffeinate` / `systemd-inhibit`) active during running headless turns.
 * **`rate_limit.go`:** Rate-limit reset timestamp parsers (pipe-delimited epoch, relative durations, 12h/24h/month clock times with past rollover and +1m safety buffer) and `/delay` duration/slash-command parsers.
 * **`server_subagents.go`:** Subagent discovery endpoint (`/v1/sessions/subagents`) and in-memory/disk subagent lifecycle reconciliation.
 * **`server_accounts.go`:** Multi-account profile management (`/v1/accounts`), agent discovery (`/v1/agents/discovery`), provider catalog (`/v1/providers`), and fleet propagation.
@@ -40,7 +44,7 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 | `GET` | `/v1/version` | Returns current daemon version, canonical host name, and display name. |
 | `GET` | `/v1/sessions` | Returns all active, managed, and historic sessions with unread state (supports `?federated=true` for cross-host session aggregation). |
 | `GET` | `/v1/events` | SSE stream broadcasting real-time session mutations and state changes. |
-| `GET` | `/v1/sessions/chat/stream` | SSE stream for real-time turn text, thoughts, subagents, and keepalive heartbeats. |
+| `GET` | `/v1/sessions/chat/stream` | SSE stream for real-time turn text, thoughts, subagents, and keepalive heartbeats (supports `?after_seq=<n>`, `?turn_id=<id>`, and `Last-Event-ID`). |
 | `GET` | `/v1/sessions/pty` | WebSocket endpoint streaming interactive PTY data to `xterm.js`. |
 | `POST` | `/v1/sessions/spawn` | Spawns a new agent process in a supervised tmux session using RFC 4122 UUIDv4 (supports prompt injection and zero-input `is_supervisor: true`). |
 | `POST` | `/v1/sessions/bind-supervisor` | Auto-binds a Supervisor session (`is_supervisor = true`) to a logical project `node_path` and `title` on Turn 1, broadcasting SSE and LWW sync. |
@@ -51,7 +55,7 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 | `GET` | `/v1/sessions/{id}/suggestions` | Returns `/` command/skill suggestions (`kind=commands`), `@` relative file path suggestions (`kind=files&q=...`), or agent-aware model options (`kind=models&q=...`). |
 | `POST` | `/v1/sessions/handover`| Initiates automated session handover, briefing extraction, and context rotation. |
 | `POST` | `/v1/sessions/mark-read` | Marks a session as read (`is_unread = false`), clearing visual unread cues. |
-| `GET` | `/v1/sessions/transcript`| Retrieves extracted conversation transcript (JSON or formatted Markdown). |
+| `GET` | `/v1/sessions/transcript`| Retrieves conversation transcript with active turn spool synthesis (JSON or Markdown). |
 | `POST` | `/v1/sessions/upload` | Uploads clipboard images or drag-and-dropped PDFs to `/tmp/ackbar-uploads/`. |
 | `GET` | `/v1/settings` | Returns daemon settings including `host_name`, `display_name`, auto-done thresholds, `later_collapsed_by_default`, `hide_session_tabs`, handover suggestions, and `ntfy_topic` / `ntfy_server`. |
 | `POST` | `/v1/settings` | Updates and persists daemon settings in SQLite (supports `propagate_ntfy: "true"` to push `ntfy_topic` and `ntfy_server` to all connected fleet hosts). |
@@ -102,9 +106,17 @@ When several clients with different sizes are attached to one session (web, mobi
 
 ### Headless Execution Engine (`internal/daemon/headless.go`)
 
-Headless sessions (`engine_type = "headless"`, `tmux_name = ""`) execute turns directly as child processes of `ackbard` without allocating a `tmux` session:
+Headless sessions (`engine_type = "headless"`, `tmux_name = ""`) execute turns through detached worker processes (`ackbard --headless-worker`) without allocating a `tmux` session:
 
-* **State Authority (`s.headless.IsRunning`):** For pure headless sessions (`engine_type == "headless" && tmux_name == ""`), `HeadlessRunner.IsRunning(sess.ID)` is the single source of truth for whether a turn is active, retaining `activeTurns` registration until stream drain and DB persistence complete so exit hooks (`Stop`, `SessionEnd`) never flip a turn to `StateIdle` prematurely. Background scanners (`verifySessionLiveness`, `scanObservedSessions`) and asynchronous hook handlers (`processHookEventWithAccount`) never flip an idle headless session to `StateWorking` or `StateEnded`, and keep `StateWorking` when a `SessionStart` hook (`StateIdle`) fires at the start of a headless turn.
+* **Detached Turn Worker (`Setsid: true`):** Spawns `--headless-worker` sidecars in independent sessions (`Setsid: true`) with `/dev/null` stdio, isolating active turns from daemon crashes.
+* **Unix Domain Socket IPC:** Communicates over `0600` sockets in `0700` runtime paths (`~/.config/ackbar/run`), falling back to `os.MkdirTemp("", "akw-*")` when paths exceed 96 bytes.
+* **Monotonic Turn Spool (`<turn_id>.ndjson`):** Sequenced events stream to disk atomically with `0600` permissions. Pre-writes `seq: 1` (`turn_start`) before provider CLI disk flush.
+* **Gapless SSE Replay & Synthesis:** `/v1/sessions/chat/stream` supports `?after_seq`, `?turn_id`, and `Last-Event-ID`. `/v1/sessions/transcript` synthesizes active turns (`in_flight_turn`) from the spool.
+* **Startup Re-Attachment & Recovery (`InitDB`):** Discovers running workers on daemon boot via `.meta.json` and socket ping. Re-attaches live turns, finalizes completed spools, or resumes dead turns.
+* **State Authority (`s.headless.IsRunning`):** `HeadlessRunner.IsRunning(sess.ID)` provides the source of truth for turn status. Exit hooks do not flip active turns to `StateIdle`.
+* **Runtime Cleanup & Server-Side `auto_done`:** Marking `Done` or `auto_done` sweep stops active workers, kills tmux sessions, prunes `.sock`/`.ndjson`/`.meta.json` spools, and resets runtime state.
+* **OS Idle-Sleep Protection (`sleep_inhibitor.go`):** Blocks system idle-sleep (`caffeinate` on macOS, `systemd-inhibit` on Linux) while active turns run. Releases lock on turn completion or daemon shutdown.
+* **Process Teardown & Cross-OS Safety:** Verifies socket `TurnID` before signaling `.meta.json` PIDs. Child process-group teardown uses `Setpgid: true` and `> 1` PID/PGID guards without Linux-only `Pdeathsig`.
 * **Daemon Restart Resilience (`InitDB` & Drain Mode):** Updates and shutdowns with `drain=true` defer daemon restart (`RequestRestartAfterDrain` / `DeferRestartIfActive`) until active headless turns complete (`restart_deferred: true`). If `ackbard` terminates mid-turn, `InitDB` records interrupted `StateWorking` headless sessions (`PopInterruptedHeadlessSessionIDs`) so `resumeInterruptedHeadlessSessions` automatically resumes them on daemon boot. Startup SQLite migrations preserve `tmux_name = ''` on headless sessions, repair legacy rows, and reset interrupted headless sessions to `StateIdle` (`pid = 0, activity = ''`).
 * **Per-Turn Invocation & Conversation Continuity:**
   * **Claude Code:** Runs `claude -p <prompt> --output-format stream-json --verbose --dangerously-skip-permissions` with `--session-id <native_id>` on the first turn and `--resume <native_id>` on subsequent turns. `processStreamCore` deduplicates repeated `assistant` snapshot blocks, emits `thought_delta`, `text_delta`, `tool_start`, and `tool_result`, and `RunTurn` emits a single `turn_complete` after persisting `StateIdle` to SQLite.
@@ -149,6 +161,8 @@ When long-running autonomous sessions consume significant token context (`contex
 4. **Reseeding:** Re-injects the generated briefing and custom instructions into the fresh turn, achieving 0% token context with uninterrupted productivity.
 
 ### Handover & Workspace Settings (`/v1/settings`):
+* `auto_done_enabled`: `"true"` | `"false"` (default: `"false"`) — toggle background sweep marking inactive sessions `Done`.
+* `auto_done_hours`: Integer (default: `24`) — inactivity hours before eligible non-working sessions become `Done`.
 * `handover_suggestion_enabled`: `"true"` | `"false"` (default: `"true"`) — toggle automated UI suggestions.
 * `handover_threshold_pct`: Integer between `10` and `95` (default: `"60"`) — context window threshold for triggering warnings and quick-action chips.
 * `later_collapsed_by_default`: `"true"` | `"false"` (default: `"false"`) — whether the ⏳ Later subsections start collapsed by default.
@@ -191,6 +205,7 @@ Type=simple
 ExecStart=%h/.local/bin/ackbard
 Restart=always
 RestartSec=3s
+KillMode=process
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 StandardOutput=journal
 StandardError=journal
@@ -198,6 +213,8 @@ StandardError=journal
 [Install]
 WantedBy=default.target
 ```
+
+> **Process Isolation:** `KillMode=process` ensures `systemctl --user restart ackbard` terminates only the daemon process. Detached headless workers continue running and re-attach upon daemon restart.
 
 ### Commands:
 ```bash
@@ -214,7 +231,7 @@ systemctl --user restart ackbard
 
 ---
 
-## 6. Host Identity & Display Name Configuration
+## 7. Host Identity & Display Name Configuration
 
 Each `ackbard` instance identifies itself across the multi-machine fleet using a canonical host name and an optional human-friendly display name:
 
@@ -232,7 +249,7 @@ When a daemon's host name is configured away from `"local"`, `ackbard` automatic
 
 ---
 
-## 7. Shared Skills Repository Synchronization
+## 8. Shared Skills Repository Synchronization
 
 Ackbar provides automated synchronization of external git repositories containing skills, tools, and extensions across all agents on local and remote fleet hosts.
 
@@ -262,7 +279,7 @@ If `skills_repo_path` is not explicitly set in the database, `ackbard` inspects 
 
 ---
 
-## 8. Supervisor MCP & Voice Companion Engine
+## 9. Supervisor MCP & Voice Companion Engine
 
 ### Streamable HTTP MCP Endpoint (`POST /v1/mcp`)
 Exposes JSON-RPC 2.0 MCP capabilities over HTTP for supervisor sessions and external connectors (e.g. Claude Desktop, mobile companions).
