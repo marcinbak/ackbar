@@ -304,6 +304,7 @@ func TestAuthBroker_RespondRetryAndDismiss(t *testing.T) {
 	if err := db.SaveSession(sess); err != nil {
 		t.Fatal(err)
 	}
+	s.headless.SetQueuePaused(sess.ID, true)
 
 	// 1. Dismiss
 	dismissBody, _ := json.Marshal(map[string]string{
@@ -320,6 +321,9 @@ func TestAuthBroker_RespondRetryAndDismiss(t *testing.T) {
 	cur, _ := db.GetSession(sess.ID)
 	if cur.Blocked != nil || cur.State != StateIdle {
 		t.Errorf("expected unblocked idle after dismiss, got: %+v", cur)
+	}
+	if s.headless.IsQueuePaused(sess.ID) {
+		t.Errorf("expected session queue to be unpaused after dismiss")
 	}
 
 	// 2. Retry
@@ -343,4 +347,55 @@ func TestAuthBroker_RespondRetryAndDismiss(t *testing.T) {
 		t.Errorf("expected Blocked cleared after retry, got: %+v", cur2.Blocked)
 	}
 	time.Sleep(150 * time.Millisecond)
+}
+
+func TestAuthBroker_CrossSessionCompletedFlowAndDeadFlowNoSSRF(t *testing.T) {
+	db, err := InitDB(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := NewServer(db)
+
+	sess1 := &Session{ID: "antigravity:local:sess1", Agent: "antigravity", Host: s.HostName(), StartedAt: time.Now()}
+	sess2 := &Session{ID: "antigravity:local:sess2", Agent: "antigravity", Host: s.HostName(), StartedAt: time.Now()}
+	_ = db.SaveSession(sess1)
+	_ = db.SaveSession(sess2)
+
+	doneCh := make(chan struct{})
+	close(doneCh)
+	deadFlow := &AuthFlow{
+		ID:           "flow-dead-1",
+		SessionID:    sess1.ID,
+		RecordedPort: 9999,
+		exitCode:     1,
+		doneCh:       doneCh,
+		startedAt:    time.Now(),
+	}
+	s.authBroker.completedFlows["flow-dead-1"] = deadFlow
+
+	// 1. Cross-session lookup from sess2 must return 404
+	cbCrossBody, _ := json.Marshal(map[string]string{
+		"session_id":   sess2.ID,
+		"flow_id":      "flow-dead-1",
+		"callback_url": "http://127.0.0.1:9999/?code=abc",
+	})
+	reqCross := httptest.NewRequest(http.MethodPost, "/v1/sessions/auth-callback", bytes.NewReader(cbCrossBody))
+	wCross := httptest.NewRecorder()
+	s.handleSessionAuthCallback(wCross, reqCross)
+	if wCross.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for cross-session flow lookup, got %d", wCross.Code)
+	}
+
+	// 2. Dead flow with non-zero exit code on owning session must return 400 without dialing RecordedPort
+	cbDeadBody, _ := json.Marshal(map[string]string{
+		"session_id":   sess1.ID,
+		"flow_id":      "flow-dead-1",
+		"callback_url": "http://127.0.0.1:9999/?code=abc",
+	})
+	reqDead := httptest.NewRequest(http.MethodPost, "/v1/sessions/auth-callback", bytes.NewReader(cbDeadBody))
+	wDead := httptest.NewRecorder()
+	s.handleSessionAuthCallback(wDead, reqDead)
+	if wDead.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for dead flow, got %d: %s", wDead.Code, wDead.Body.String())
+	}
 }

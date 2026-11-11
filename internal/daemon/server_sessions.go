@@ -875,7 +875,13 @@ func (s *Server) handleRespond(w http.ResponseWriter, r *http.Request) {
 
 	var bodyBytes []byte
 	if r.Body != nil {
-		bodyBytes, _ = io.ReadAll(r.Body)
+		r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+		var err error
+		bodyBytes, err = io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "Request body too large or read failure", http.StatusBadRequest)
+			return
+		}
 		_ = json.Unmarshal(bodyBytes, &req)
 	}
 
@@ -940,6 +946,11 @@ func (s *Server) handleRespond(w http.ResponseWriter, r *http.Request) {
 
 	if sess.Blocked != nil && sess.Blocked.Kind == BlockAuth {
 		if actionLower == "dismiss" {
+			if s.headless != nil {
+				s.headless.ClearInteractiveBlockAndWait(sess.ID, 3*time.Second)
+				s.headless.SetQueuePaused(sess.ID, false)
+				s.headless.EmitQueueUpdate(sess.ID)
+			}
 			sess.Blocked = nil
 			sess.State = StateIdle
 			sess.Activity = "Authentication dismissed"

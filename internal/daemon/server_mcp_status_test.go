@@ -154,3 +154,52 @@ func TestServerMCPStatus_EndpointAndCache(t *testing.T) {
 		t.Fatalf("cache entry not invalidated")
 	}
 }
+
+func TestServerMCPStatus_ProbeRefreshTokenAndNoNetworkFallback(t *testing.T) {
+	tmpDir := t.TempDir()
+	home := filepath.Join(tmpDir, "home")
+	tool := "gslides"
+
+	launcherDir := filepath.Join(home, ".gemini", "config", "plugins", tool, "skills", tool, "scripts")
+	if err := os.MkdirAll(launcherDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	launcherPath := filepath.Join(launcherDir, tool)
+	if err := os.WriteFile(launcherPath, []byte("#!/bin/sh\nexit 0\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	tokenDir := filepath.Join(home, ".gemini", "antigravity", "plugin_data", tool)
+	if err := os.MkdirAll(tokenDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tokenDir, "token.json"), []byte("{}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	healthNoBin := probeSinglePlugin(tool, home, nil, nil)
+	if healthNoBin.Authenticated {
+		t.Errorf("expected Authenticated: false when compiledBin is missing")
+	}
+	if !healthNoBin.Installed {
+		t.Errorf("expected Installed: true when launcherScript exists")
+	}
+
+	binDir := filepath.Join(home, ".gemini", "antigravity", "plugin_data", tool, "bin")
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	binPath := filepath.Join(binDir, tool+"-linux-amd64")
+	mockScript := `#!/bin/sh
+echo '{"authenticated": true, "is_expired": true, "has_refresh_token": true}'
+exit 0
+`
+	if err := os.WriteFile(binPath, []byte(mockScript), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	healthWithRefresh := probeSinglePlugin(tool, home, nil, nil)
+	if !healthWithRefresh.Authenticated {
+		t.Errorf("expected Authenticated: true when has_refresh_token: true, got %+v", healthWithRefresh)
+	}
+}

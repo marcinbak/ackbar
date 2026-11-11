@@ -149,3 +149,20 @@ func TestDetectTurnFailureBlock(t *testing.T) {
 		t.Errorf("expected nil for normal turn text, got: %+v", bNil)
 	}
 }
+
+func TestDetectToolResultAuthBlock_LeadingHyphenRejected(t *testing.T) {
+	b := DetectToolResultAuthBlock("claude-code", "mcp__--browser__tool", nil, "401 Unauthorized", true)
+	if b != nil {
+		t.Errorf("expected nil for leading-hyphen server name, got: %+v", b)
+	}
+
+	bTurn := DetectTurnAuthBlock("claude-code", "MCP server '--browser' requires authentication")
+	if bTurn != nil {
+		t.Errorf("expected nil for leading-hyphen turn error, got: %+v", bTurn)
+	}
+
+	_, _, _, err := resolveAllowlistedAuthCommand(nil, "mcp:--browser", nil, "/tmp")
+	if err == nil {
+		t.Errorf("expected error from resolveAllowlistedAuthCommand for leading-hyphen mcp target")
+	}
+}

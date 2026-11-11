@@ -193,6 +193,13 @@ export function renderAuthCard(tabObj, blocked, toolName) {
         });
 
         if (!res.ok) {
+          if (res.status === 404) {
+            activeFlowId = '';
+            activeAuthUrl = '';
+            if (btnLaunch) {
+              btnLaunch.textContent = '🔑 Start New Sign-In';
+            }
+          }
           const errText = await res.text();
           throw new Error(errText || 'Verification failed');
         }

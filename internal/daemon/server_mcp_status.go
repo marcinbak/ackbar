@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -66,11 +67,12 @@ func (s *Server) handleSessionMCPStatus(w http.ResponseWriter, r *http.Request, 
 		http.Error(w, "Session not found", http.StatusNotFound)
 		return
 	}
+	canonicalID := sess.ID
 
 	bypassCache := r.URL.Query().Get("refresh") == "1"
 	if !bypassCache {
 		mcpStatusCacheMu.RLock()
-		entry, found := mcpStatusCache[sessionID]
+		entry, found := mcpStatusCache[canonicalID]
 		if found && entry != nil && time.Since(entry.cachedAt) < 10*time.Second {
 			data := entry.data
 			mcpStatusCacheMu.RUnlock()
@@ -91,7 +93,7 @@ func (s *Server) handleSessionMCPStatus(w http.ResponseWriter, r *http.Request, 
 	}
 
 	mcpStatusCacheMu.Lock()
-	mcpStatusCache[sessionID] = &mcpStatusCacheEntry{
+	mcpStatusCache[canonicalID] = &mcpStatusCacheEntry{
 		cachedAt: time.Now(),
 		data:     resp,
 	}
@@ -120,13 +122,34 @@ type rawMCPServer struct {
 	Disabled  bool   `json:"disabled"`
 }
 
+func readBoundedJSONFile(path string, forbidSymlink bool) ([]byte, error) {
+	statFn := os.Stat
+	if forbidSymlink {
+		statFn = os.Lstat
+	}
+	info, err := statFn(path)
+	if err != nil || !info.Mode().IsRegular() || info.Size() > 1<<20 {
+		return nil, os.ErrInvalid
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, (1<<20)+1))
+	if err != nil || len(data) > 1<<20 {
+		return nil, os.ErrInvalid
+	}
+	return data, nil
+}
+
 func discoverConfiguredMCPServers(sess *Session, db *DB, home string) ([]MCPServerHealth, error) {
 	var results []MCPServerHealth
 	seen := make(map[string]bool)
 
 	addServer := func(name string, raw rawMCPServer, scope string) {
 		name = strings.TrimSpace(name)
-		if name == "" || raw.Disabled || seen[name] {
+		if name == "" || strings.HasPrefix(name, "-") || !validServerNameRegex.MatchString(name) || raw.Disabled || seen[name] {
 			return
 		}
 		seen[name] = true
@@ -163,8 +186,8 @@ func discoverConfiguredMCPServers(sess *Session, db *DB, home string) ([]MCPServ
 		})
 	}
 
-	loadConfigFile := func(path, defaultScope string, isClaude bool) {
-		data, err := os.ReadFile(path)
+	loadConfigFile := func(path, defaultScope string, forbidSymlink bool) {
+		data, err := readBoundedJSONFile(path, forbidSymlink)
 		if err != nil {
 			return
 		}
@@ -196,7 +219,7 @@ func discoverConfiguredMCPServers(sess *Session, db *DB, home string) ([]MCPServ
 	}
 
 	if sess != nil && sess.Cwd != "" {
-		loadConfigFile(filepath.Join(sess.Cwd, ".mcp.json"), "project", false)
+		loadConfigFile(filepath.Join(sess.Cwd, ".mcp.json"), "project", true)
 	}
 
 	var claudeConfigDir string
@@ -209,10 +232,10 @@ func discoverConfiguredMCPServers(sess *Session, db *DB, home string) ([]MCPServ
 		}
 	}
 	if claudeConfigDir != "" {
-		loadConfigFile(filepath.Join(claudeConfigDir, ".claude.json"), "profile", true)
+		loadConfigFile(filepath.Join(claudeConfigDir, ".claude.json"), "profile", false)
 	}
 	if home != "" {
-		loadConfigFile(filepath.Join(home, ".claude.json"), "user", true)
+		loadConfigFile(filepath.Join(home, ".claude.json"), "user", false)
 		loadConfigFile(filepath.Join(home, ".claude", "mcp_config.json"), "user", false)
 		loadConfigFile(filepath.Join(home, ".gemini", "antigravity-cli", "mcp_config.json"), "user", false)
 		loadConfigFile(filepath.Join(home, ".gemini", "antigravity", "mcp_config.json"), "user", false)
@@ -240,47 +263,53 @@ func probeWorkspacePlugins(home string, sess *Session, db *DB) []WorkspacePlugin
 }
 
 func probeSinglePlugin(tool, home string, sess *Session, db *DB) WorkspacePluginHealth {
+	failHealth := WorkspacePluginHealth{Name: tool, Installed: true, Authenticated: false, AuthSupported: true, Target: "plugin:" + tool}
+	if home == "" || !filepath.IsAbs(home) {
+		failHealth.Installed = false
+		return failHealth
+	}
 	launcherScript := filepath.Join(home, ".gemini", "config", "plugins", tool, "skills", tool, "scripts", tool)
 	if _, err := os.Stat(launcherScript); err != nil {
-		return WorkspacePluginHealth{
-			Name:          tool,
-			Installed:     false,
-			Authenticated: false,
-			AuthSupported: true,
-			Target:        "plugin:" + tool,
-		}
+		failHealth.Installed = false
+		return failHealth
 	}
 
 	compiledBin := findCompiledPluginBinary(tool, home)
 	if compiledBin == "" {
-		tokenPath := filepath.Join(home, ".gemini", "antigravity", "plugin_data", tool, "token.json")
-		if _, err := os.Stat(tokenPath); err != nil {
-			return WorkspacePluginHealth{
-				Name:          tool,
-				Installed:     true,
-				Authenticated: false,
-				AuthSupported: true,
-				Target:        "plugin:" + tool,
+		return failHealth
+	}
+
+	realBin, err := filepath.EvalSymlinks(compiledBin)
+	if err != nil {
+		return failHealth
+	}
+	allowedPrefixes := []string{filepath.Join(home, ".gemini")}
+	if gh := os.Getenv("GEMINI_CLI_HOME"); gh != "" {
+		allowedPrefixes = append(allowedPrefixes, gh)
+	}
+	contained := false
+	for _, p := range allowedPrefixes {
+		if realPrefix, err := filepath.EvalSymlinks(p); err == nil {
+			if rel, err := filepath.Rel(realPrefix, realBin); err == nil && !strings.HasPrefix(rel, "..") && !filepath.IsAbs(rel) {
+				contained = true
+				break
 			}
 		}
-		compiledBin = launcherScript
+	}
+	if !contained {
+		return failHealth
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, compiledBin, "auth", "status", "--json")
+	cmd.WaitDelay = 500 * time.Millisecond
 	cmd.Env = append(buildWorkerEnv(sess, db, home), "DISPLAY=")
 
 	out, err := cmd.Output()
 	if err != nil {
-		return WorkspacePluginHealth{
-			Name:          tool,
-			Installed:     true,
-			Authenticated: false,
-			AuthSupported: true,
-			Target:        "plugin:" + tool,
-		}
+		return failHealth
 	}
 
 	var status struct {
@@ -289,29 +318,25 @@ func probeSinglePlugin(tool, home string, sess *Session, db *DB) WorkspacePlugin
 		HasRefreshToken bool `json:"has_refresh_token"`
 	}
 	if err := json.Unmarshal(out, &status); err != nil {
-		return WorkspacePluginHealth{
-			Name:          tool,
-			Installed:     true,
-			Authenticated: false,
-			AuthSupported: true,
-			Target:        "plugin:" + tool,
-		}
+		return failHealth
 	}
 
-	authenticated := status.Authenticated && !status.IsExpired
-	return WorkspacePluginHealth{
-		Name:          tool,
-		Installed:     true,
-		Authenticated: authenticated,
-		AuthSupported: true,
-		Target:        "plugin:" + tool,
-	}
+	failHealth.Authenticated = status.Authenticated && (!status.IsExpired || status.HasRefreshToken)
+	return failHealth
 }
 
 func findCompiledPluginBinary(tool, home string) string {
 	candidates := []string{
 		filepath.Join(home, ".gemini", "antigravity-cli", "plugin_data", tool, "bin", tool+"-*"),
 		filepath.Join(home, ".gemini", "antigravity", "plugin_data", tool, "bin", tool+"-*"),
+	}
+	if geminiHome := os.Getenv("GEMINI_CLI_HOME"); geminiHome != "" {
+		candidates = append([]string{
+			filepath.Join(geminiHome, "antigravity-cli", "plugin_data", tool, "bin", tool+"-*"),
+			filepath.Join(geminiHome, ".gemini", "antigravity-cli", "plugin_data", tool, "bin", tool+"-*"),
+			filepath.Join(geminiHome, "antigravity", "plugin_data", tool, "bin", tool+"-*"),
+			filepath.Join(geminiHome, ".gemini", "antigravity", "plugin_data", tool, "bin", tool+"-*"),
+		}, candidates...)
 	}
 	for _, pattern := range candidates {
 		matches, err := filepath.Glob(pattern)

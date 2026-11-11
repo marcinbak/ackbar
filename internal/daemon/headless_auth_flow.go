@@ -99,6 +99,9 @@ func validateAuthURL(raw string) (*url.URL, error) {
 }
 
 func resolveAllowlistedAuthCommand(sess *Session, target string, db *DB, home string) ([]string, string, bool, error) {
+	if home == "" || !filepath.IsAbs(home) {
+		return nil, "", false, fmt.Errorf("invalid home directory")
+	}
 	if strings.HasPrefix(target, "plugin:") {
 		name := strings.TrimPrefix(target, "plugin:")
 		if name != "gslides" && name != "gdocs" && name != "gdrive" && name != "gsheets" {
@@ -134,7 +137,7 @@ func resolveAllowlistedAuthCommand(sess *Session, target string, db *DB, home st
 
 	if strings.HasPrefix(target, "mcp:") {
 		name := strings.TrimPrefix(target, "mcp:")
-		if !validServerNameRegex.MatchString(name) {
+		if strings.HasPrefix(name, "-") || !validServerNameRegex.MatchString(name) {
 			return nil, "", false, fmt.Errorf("invalid mcp server name: %s", name)
 		}
 		if sess == nil || sess.Agent != "claude-code" {
@@ -235,6 +238,19 @@ func (b *AuthBroker) watchAuthFlow(flow *AuthFlow) {
 	if cur := b.activeFlows[flow.SessionID]; cur == flow {
 		delete(b.activeFlows, flow.SessionID)
 	}
+	if len(b.completedFlows) >= 64 {
+		var oldestID string
+		var oldestTime time.Time
+		for id, f := range b.completedFlows {
+			if oldestID == "" || f.startedAt.Before(oldestTime) {
+				oldestID = id
+				oldestTime = f.startedAt
+			}
+		}
+		if oldestID != "" {
+			delete(b.completedFlows, oldestID)
+		}
+	}
 	b.completedFlows[flow.ID] = flow
 	b.mu.Unlock()
 
@@ -294,14 +310,9 @@ func (b *AuthBroker) watchAuthFlow(flow *AuthFlow) {
 		if s.headless != nil {
 			sessCopy := *sess
 			go func() {
-				if next := s.headless.DequeuePrompt(flow.SessionID); next != nil {
-					s.headless.EmitQueueUpdate(flow.SessionID)
-					_ = s.headless.RunTurn(context.Background(), &sessCopy, next.Text)
-				} else {
-					home, _ := os.UserHomeDir()
-					prompt := resumePromptForAuth(&sessCopy, prevBlocked, home, s.db)
-					_ = s.headless.RunTurn(context.Background(), &sessCopy, prompt)
-				}
+				home, _ := os.UserHomeDir()
+				prompt := resumePromptForAuth(&sessCopy, prevBlocked, home, s.db)
+				_ = s.headless.RunTurn(context.Background(), &sessCopy, prompt)
 			}()
 		}
 	}

@@ -67,6 +67,11 @@ func (s *Server) handleSessionAuthTool(w http.ResponseWriter, r *http.Request) {
 	if handled {
 		return
 	}
+	if sess == nil {
+		http.Error(w, "Session not found", http.StatusNotFound)
+		return
+	}
+	canonicalID := sess.ID
 
 	b := s.authBroker
 	if b == nil {
@@ -74,7 +79,7 @@ func (s *Server) handleSessionAuthTool(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	b.CancelSession(req.SessionID)
+	b.CancelSession(canonicalID)
 
 	b.mu.Lock()
 	if len(b.activeFlows) >= 16 {
@@ -126,7 +131,7 @@ func (s *Server) handleSessionAuthTool(w http.ResponseWriter, r *http.Request) {
 
 	flow := &AuthFlow{
 		ID:           flowID,
-		SessionID:    req.SessionID,
+		SessionID:    canonicalID,
 		Target:       req.Target,
 		AcceptsStdin: acceptsStdin,
 		stdin:        stdinPipe,
@@ -138,7 +143,7 @@ func (s *Server) handleSessionAuthTool(w http.ResponseWriter, r *http.Request) {
 	}
 
 	b.mu.Lock()
-	b.activeFlows[req.SessionID] = flow
+	b.activeFlows[canonicalID] = flow
 	b.mu.Unlock()
 
 	go b.watchAuthFlow(flow)
@@ -147,10 +152,11 @@ func (s *Server) handleSessionAuthTool(w http.ResponseWriter, r *http.Request) {
 	var parsedURL *url.URL
 	var rawURL string
 
+pollLoop:
 	for time.Now().Before(deadline) {
 		select {
 		case <-flow.doneCh:
-			break
+			break pollLoop
 		default:
 		}
 		text := ringBuf.String()
@@ -158,26 +164,44 @@ func (s *Server) handleSessionAuthTool(w http.ResponseWriter, r *http.Request) {
 			if u, err := validateAuthURL(m); err == nil {
 				parsedURL = u
 				rawURL = m
-				break
+				break pollLoop
 			}
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
 
+	time.Sleep(100 * time.Millisecond)
+
+	select {
+	case <-flow.doneCh:
+		flow.mu.Lock()
+		code := flow.exitCode
+		flow.mu.Unlock()
+		if code != 0 {
+			parsedURL = nil
+		}
+	default:
+	}
+
 	if parsedURL == nil {
-		b.CancelSession(req.SessionID)
+		b.CancelSession(canonicalID)
 		http.Error(w, "Failed to capture auth url within timeout", http.StatusGatewayTimeout)
 		return
 	}
 
-	time.Sleep(100 * time.Millisecond)
+	if len(parsedURL.Query()["redirect_uri"]) > 1 {
+		b.CancelSession(canonicalID)
+		http.Error(w, "Multiple redirect_uri parameters in auth url", http.StatusBadRequest)
+		return
+	}
+
 	postURLText := ringBuf.String()
 
 	recordedPort := 0
 	if redirectParam := parsedURL.Query().Get("redirect_uri"); redirectParam != "" {
 		if ru, err := url.Parse(redirectParam); err == nil {
 			if ru.Hostname() == "127.0.0.1" || ru.Hostname() == "localhost" {
-				if p, _ := strconv.Atoi(ru.Port()); p >= 1024 && p <= 65535 {
+				if p, _ := strconv.Atoi(ru.Port()); p >= 1024 && p <= 65535 && p != 7777 {
 					recordedPort = p
 				}
 			}
@@ -185,12 +209,14 @@ func (s *Server) handleSessionAuthTool(w http.ResponseWriter, r *http.Request) {
 	}
 	if recordedPort == 0 {
 		if pm := oauthPortRegex.FindStringSubmatch(postURLText); len(pm) > 1 {
-			if p, _ := strconv.Atoi(pm[1]); p >= 1024 && p <= 65535 {
+			if p, _ := strconv.Atoi(pm[1]); p >= 1024 && p <= 65535 && p != 7777 {
 				recordedPort = p
 			}
 		}
 	}
+	flow.mu.Lock()
 	flow.RecordedPort = recordedPort
+	flow.mu.Unlock()
 
 	if sess != nil && sess.Blocked != nil && sess.Blocked.Kind == BlockAuth {
 		sess.Blocked.AuthURL = rawURL
@@ -237,12 +263,17 @@ func (s *Server) handleSessionAuthCallback(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	_, handled := s.resolveSessionOrProxy(w, http.MethodPost, req.SessionID, "application/json", bytes.NewReader(bodyBytes), func(_ *Session) string {
+	sess, handled := s.resolveSessionOrProxy(w, http.MethodPost, req.SessionID, "application/json", bytes.NewReader(bodyBytes), func(_ *Session) string {
 		return "/v1/sessions/auth-callback"
 	})
 	if handled {
 		return
 	}
+	if sess == nil {
+		http.Error(w, "Session not found", http.StatusNotFound)
+		return
+	}
+	canonicalID := sess.ID
 
 	b := s.authBroker
 	if b == nil {
@@ -251,9 +282,14 @@ func (s *Server) handleSessionAuthCallback(w http.ResponseWriter, r *http.Reques
 	}
 
 	b.mu.Lock()
-	flow := b.activeFlows[req.SessionID]
+	flow := b.activeFlows[canonicalID]
 	if flow == nil || flow.ID != req.FlowID {
-		flow = b.completedFlows[req.FlowID]
+		cf := b.completedFlows[req.FlowID]
+		if cf != nil && cf.SessionID == canonicalID {
+			flow = cf
+		} else {
+			flow = nil
+		}
 	}
 	b.mu.Unlock()
 
@@ -264,11 +300,16 @@ func (s *Server) handleSessionAuthCallback(w http.ResponseWriter, r *http.Reques
 
 	select {
 	case <-flow.doneCh:
-		if flow.exitCode == 0 {
+		flow.mu.Lock()
+		code := flow.exitCode
+		flow.mu.Unlock()
+		if code == 0 {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{"status": "authenticated", "completed": true})
 			return
 		}
+		http.Error(w, "Authentication subprocess already exited", http.StatusBadRequest)
+		return
 	default:
 	}
 
@@ -281,14 +322,18 @@ func (s *Server) handleSessionAuthCallback(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	isLoopbackHTTP := flow.RecordedPort >= 1024 && flow.RecordedPort <= 65535 &&
+	flow.mu.Lock()
+	recPort := flow.RecordedPort
+	flow.mu.Unlock()
+
+	isLoopbackHTTP := recPort >= 1024 && recPort <= 65535 &&
 		(strings.HasPrefix(val, "http://") || strings.HasPrefix(val, "https://") || strings.HasPrefix(val, "/"))
 
 	dialSuccess := false
 	if isLoopbackHTTP {
 		u, err := url.Parse(val)
 		if err == nil {
-			if u.Port() != "" && u.Port() != strconv.Itoa(flow.RecordedPort) {
+			if u.Port() != "" && u.Port() != strconv.Itoa(recPort) {
 				http.Error(w, "Port mismatch", http.StatusBadRequest)
 				return
 			}
@@ -296,7 +341,7 @@ func (s *Server) handleSessionAuthCallback(w http.ResponseWriter, r *http.Reques
 				http.Error(w, "Missing code or error query parameter", http.StatusBadRequest)
 				return
 			}
-			targetLoopbackURL := fmt.Sprintf("http://127.0.0.1:%d%s", flow.RecordedPort, u.RequestURI())
+			targetLoopbackURL := fmt.Sprintf("http://127.0.0.1:%d%s", recPort, u.RequestURI())
 			client := &http.Client{
 				Timeout: 5 * time.Second,
 				CheckRedirect: func(*http.Request, []*http.Request) error {
@@ -305,7 +350,9 @@ func (s *Server) handleSessionAuthCallback(w http.ResponseWriter, r *http.Reques
 			}
 			resp, dialErr := client.Get(targetLoopbackURL)
 			if dialErr == nil {
-				dialSuccess = true
+				if resp.StatusCode >= 200 && resp.StatusCode < 400 {
+					dialSuccess = true
+				}
 				_, _ = io.CopyN(io.Discard, resp.Body, 64<<10)
 				_ = resp.Body.Close()
 			}

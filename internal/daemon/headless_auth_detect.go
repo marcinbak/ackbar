@@ -26,12 +26,12 @@ var (
 	exitNonZeroRegex     = regexp.MustCompile(`(?m)^Command exited with code [1-9]\d*\.`)
 	scope403Regex        = regexp.MustCompile(`(?i)(insufficientPermissions|PERMISSION_DENIED|insufficient authentication scopes|missing permission)`)
 	authLoginPromptRegex = regexp.MustCompile(`(?i)\bauth\s+login\b`)
-	validServerNameRegex = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
+	validServerNameRegex = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$`)
 	mcpAuthErrorRegex    = regexp.MustCompile(`(?i)(\b401\b|unauthorized|unauthenticated|invalid_token|token\s+expired|authentication\s+required|requires\s+authentication|needs\s+authentication|not\s+authenticated|not\s+logged\s+in|oauth[^\n]*login)`)
 
 	agyLoginRegex     = regexp.MustCompile(`(?i)(agy\s+acp\s+--login|open this link in a browser to log in with google|antigravity.*not logged in|please log in to antigravity)`)
 	claudeLoginRegex  = regexp.MustCompile(`(?i)(not logged in.*(?:\/login|please run \/login)|please run \/login|oauth token has expired.*login)`)
-	mcpTurnErrorRegex = regexp.MustCompile(`(?i)mcp\s+server\s+['"‘“]?([a-zA-Z0-9_-]{1,64})['"’”]?\s+(?:requires\s+authentication|is\s+not\s+authenticated|needs\s+authentication|unauthorized|\b401\b)`)
+	mcpTurnErrorRegex = regexp.MustCompile(`(?i)mcp\s+server\s+['"‘“]?([a-zA-Z0-9][a-zA-Z0-9_-]{0,63})['"’”]?\s+(?:requires\s+authentication|is\s+not\s+authenticated|needs\s+authentication|unauthorized|\b401\b)`)
 )
 
 func isShellTool(name string) bool {
