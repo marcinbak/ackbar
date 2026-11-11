@@ -21,7 +21,7 @@ Ackbar is a lightweight, cross-machine control plane and session manager designe
 Detailed architectural and technical domain documentation is organized in the `docs/` directory:
 
 *   **User Interface Clients:**
-    *   **Mobile App (iOS & Android):** See [docs/mobile.md](file:///Users/dev4u/Work/Ackbar/docs/mobile.md) for Flutter architecture, Attention queue, fullscreen mode, chat transcripts, live terminal, and new session creation.
+    *   **Mobile App (iOS & Android):** See [docs/mobile.md](file:///Users/dev4u/Work/Ackbar/docs/mobile.md) for Flutter architecture, Attention queue, chat transcripts, live terminal, headless parity, and new session creation.
     *   **Web Dashboard & PWA:** See [docs/web.md](file:///Users/dev4u/Work/Ackbar/docs/web.md) for browser multiplexing, xterm.js tabs, and command palette.
 *   **Networking & Remote Access:** See [docs/networking-and-remote-access.md](file:///Users/dev4u/Work/Ackbar/docs/networking-and-remote-access.md) for Cloudflare Tunnels, Ackbar Relay, Caddy reverse proxy, and token authentication.
 *   **Architecture & Networking:** See [docs/architecture.md](file:///Users/dev4u/Work/Ackbar/docs/architecture.md) for cross-machine design, control plane topology, and SSH tunneling.

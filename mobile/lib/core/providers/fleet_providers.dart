@@ -356,6 +356,10 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
     }
   }
 
+  void upsertSession(Session s) {
+    _upsertSession(s);
+  }
+
   @visibleForTesting
   void upsertSessionForTesting(Session s) {
     _upsertSession(s);
@@ -363,46 +367,54 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
 
   /// Real-time response action to unblock a session
   Future<bool> respondToSession({
-    required String sessionId,
+    String? sessionId,
+    Session? session,
     required String action,
-    required String value,
+    String value = '',
     String? answerSummary,
   }) async {
-    final session = state.firstWhere(
-      (s) => s.id == sessionId || s.nativeId == sessionId,
-      orElse: () => state.first,
-    );
+    final targetId = sessionId ?? session?.id ?? '';
+    final targetSession = session ??
+        state.firstWhere(
+          (s) => s.id == targetId || s.nativeId == targetId,
+          orElse: () => state.first,
+        );
 
-    // Optimistically update local session state to Working
-    final updatedSession = session.copyWith(
-      state: SessionState.working,
+    final isDismiss = action == 'dismiss';
+    final updatedSession = targetSession.copyWith(
+      state: isDismiss ? SessionState.idle : SessionState.working,
       clearBlocked: true,
-      activity: action == 'allow'
-          ? 'Permission allowed: $value'
-          : (action == 'deny'
-              ? 'Permission denied'
-              : 'Answer submitted: $value'),
+      activity: isDismiss
+          ? 'Dismissed block'
+          : (action == 'allow'
+              ? 'Permission allowed: $value'
+              : (action == 'deny'
+                  ? 'Permission denied'
+                  : (action == 'retry'
+                      ? 'Retrying turn'
+                      : 'Answer submitted: $value'))),
       lastEventAt: DateTime.now(),
     );
     _upsertSession(updatedSession);
 
     // Record in decision audit log
     _ref.read(decisionAuditProvider.notifier).recordDecision(
-          sessionId: session.id,
-          sessionTitle: session.displayTitle,
-          agent: session.agentDisplayName,
-          host: session.host,
+          sessionId: targetSession.id,
+          sessionTitle: targetSession.displayTitle,
+          agent: targetSession.agentDisplayName,
+          host: targetSession.host,
           actionType: action,
-          summary: answerSummary ?? '$action: $value',
+          summary: answerSummary ??
+              (isDismiss ? 'Dismissed block' : '$action: $value'),
         );
 
-    final host = _getHostRecord(session.host);
+    final host = _getHostRecord(targetSession.host);
     final hostUrl = host?.url ?? 'http://127.0.0.1:7777';
 
     // Dispatch HTTP POST /v1/sessions/respond
     final ok = await _apiClient.respondToSession(
       hostUrl,
-      id: session.id,
+      id: targetSession.id,
       action: action,
       value: value,
       authToken: host?.authToken,

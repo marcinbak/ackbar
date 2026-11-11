@@ -8,6 +8,7 @@ import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.AudioTrack
 import android.media.MediaRecorder
+import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -27,7 +28,9 @@ import kotlin.concurrent.thread
 
 class MainActivity : FlutterActivity(), TextToSpeech.OnInitListener {
     private val channelName = "dev.ackbar.app/speech"
+    private val launcherChannelName = "dev.ackbar.app/launcher"
     private var speechChannel: MethodChannel? = null
+    private var launcherChannel: MethodChannel? = null
     private var tts: TextToSpeech? = null
     private var ttsReady = false
     private var speechRecognizer: SpeechRecognizer? = null
@@ -83,6 +86,35 @@ class MainActivity : FlutterActivity(), TextToSpeech.OnInitListener {
                         audioTrack?.play()
                     } catch (_: Exception) {}
                     result.success(true)
+                }
+                else -> result.notImplemented()
+            }
+        }
+
+        val launcher = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, launcherChannelName)
+        launcherChannel = launcher
+        launcher.setMethodCallHandler { call, result ->
+            when (call.method) {
+                "openExternalUrl" -> {
+                    val url = call.argument<String>("url")?.trim()
+                    if (url.isNullOrEmpty() || url.length > 4096 || url.any { it.isWhitespace() || it.isISOControl() }) {
+                        result.success(false)
+                        return@setMethodCallHandler
+                    }
+                    val uri = Uri.parse(url)
+                    if (uri.scheme?.lowercase(Locale.ROOT) != "https" || uri.host.isNullOrBlank() || !uri.userInfo.isNullOrEmpty()) {
+                        result.success(false)
+                        return@setMethodCallHandler
+                    }
+                    try {
+                        val intent = Intent(Intent.ACTION_VIEW, uri)
+                            .addCategory(Intent.CATEGORY_BROWSABLE)
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        startActivity(intent)
+                        result.success(true)
+                    } catch (_: Exception) {
+                        result.success(false)
+                    }
                 }
                 else -> result.notImplemented()
             }

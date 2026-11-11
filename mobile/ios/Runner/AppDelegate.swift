@@ -6,6 +6,7 @@ import UIKit
 @main
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate, AVSpeechSynthesizerDelegate {
   private var speechChannel: FlutterMethodChannel?
+  private var launcherChannel: FlutterMethodChannel?
   private let synthesizer = AVSpeechSynthesizer()
   private let speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
   private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
@@ -22,6 +23,7 @@ import UIKit
     synthesizer.delegate = self
     if let controller = window?.rootViewController as? FlutterViewController {
       setupSpeechChannel(messenger: controller.binaryMessenger)
+      setupLauncherChannel(messenger: controller.binaryMessenger)
     }
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
   }
@@ -29,6 +31,44 @@ import UIKit
   func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
     setupSpeechChannel(messenger: engineBridge.applicationRegistrar.messenger())
+    setupLauncherChannel(messenger: engineBridge.applicationRegistrar.messenger())
+  }
+
+  private func setupLauncherChannel(messenger: FlutterBinaryMessenger) {
+    guard launcherChannel == nil else { return }
+    let channel = FlutterMethodChannel(name: "dev.ackbar.app/launcher", binaryMessenger: messenger)
+    launcherChannel = channel
+    channel.setMethodCallHandler { call, result in
+      switch call.method {
+      case "openExternalUrl":
+        let args = call.arguments as? [String: Any]
+        guard let raw = args?["url"] as? String else {
+          result(false)
+          return
+        }
+        let urlStr = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if urlStr.isEmpty || urlStr.count > 4096 || urlStr.unicodeScalars.contains(where: {
+          CharacterSet.whitespacesAndNewlines.contains($0) || CharacterSet.controlCharacters.contains($0)
+        }) {
+          result(false)
+          return
+        }
+        guard let url = URL(string: urlStr),
+              url.scheme?.lowercased() == "https",
+              let host = url.host,
+              !host.isEmpty,
+              url.user == nil,
+              url.password == nil else {
+          result(false)
+          return
+        }
+        UIApplication.shared.open(url, options: [:]) { ok in
+          result(ok)
+        }
+      default:
+        result(FlutterMethodNotImplemented)
+      }
+    }
   }
 
   private func setupSpeechChannel(messenger: FlutterBinaryMessenger) {

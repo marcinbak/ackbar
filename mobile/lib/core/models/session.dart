@@ -77,6 +77,9 @@ enum SessionState {
 enum BlockKind {
   permission,
   question,
+  approval,
+  rateLimit,
+  auth,
   unknown;
 
   static BlockKind fromString(String? val) {
@@ -86,6 +89,13 @@ enum BlockKind {
         return BlockKind.permission;
       case 'question':
         return BlockKind.question;
+      case 'approval':
+        return BlockKind.approval;
+      case 'rate_limit':
+      case 'ratelimit':
+        return BlockKind.rateLimit;
+      case 'auth':
+        return BlockKind.auth;
       default:
         return BlockKind.unknown;
     }
@@ -97,6 +107,12 @@ enum BlockKind {
         return 'PERMISSION';
       case BlockKind.question:
         return 'QUESTION';
+      case BlockKind.approval:
+        return 'APPROVAL';
+      case BlockKind.rateLimit:
+        return 'RATE LIMIT';
+      case BlockKind.auth:
+        return 'AUTH';
       case BlockKind.unknown:
         return 'BLOCKED';
     }
@@ -111,6 +127,13 @@ class Blocked {
   final String? question;
   final List<String> options;
   final String? command;
+  final DateTime? resetAt;
+  final String? authTarget;
+  final String? authKind;
+  final String? authServer;
+  final String? authUrl;
+  final String? authHint;
+  final String? flowId;
 
   const Blocked({
     required this.kind,
@@ -119,12 +142,20 @@ class Blocked {
     this.question,
     this.options = const [],
     this.command,
+    this.resetAt,
+    this.authTarget,
+    this.authKind,
+    this.authServer,
+    this.authUrl,
+    this.authHint,
+    this.flowId,
   });
 
   bool get isQuestion =>
       kind == BlockKind.question || (question != null && question!.isNotEmpty);
   bool get isPermission =>
       kind == BlockKind.permission || (command != null && command!.isNotEmpty);
+  bool get isAuth => kind == BlockKind.auth;
 
   factory Blocked.fromJson(Map<String, dynamic> json) {
     DateTime sinceDate;
@@ -132,6 +163,11 @@ class Blocked {
       sinceDate = DateTime.tryParse(json['since'].toString()) ?? DateTime.now();
     } else {
       sinceDate = DateTime.now();
+    }
+
+    DateTime? resetDate;
+    if (json['reset_at'] != null) {
+      resetDate = DateTime.tryParse(json['reset_at'].toString());
     }
 
     List<String> parsedOptions = [];
@@ -147,17 +183,31 @@ class Blocked {
       question: json['question']?.toString(),
       options: parsedOptions,
       command: json['command']?.toString(),
+      resetAt: resetDate,
+      authTarget: json['auth_target']?.toString(),
+      authKind: json['auth_kind']?.toString(),
+      authServer: json['auth_server']?.toString(),
+      authUrl: json['auth_url']?.toString(),
+      authHint: json['auth_hint']?.toString(),
+      flowId: json['flow_id']?.toString(),
     );
   }
 
   Map<String, dynamic> toJson() {
     return {
-      'kind': kind.name,
+      'kind': kind == BlockKind.rateLimit ? 'rate_limit' : kind.name,
       'reason': reason,
       'since': since.toIso8601String(),
       if (question != null) 'question': question,
       if (options.isNotEmpty) 'options': options,
       if (command != null) 'command': command,
+      if (resetAt != null) 'reset_at': resetAt!.toIso8601String(),
+      if (authTarget != null) 'auth_target': authTarget,
+      if (authKind != null) 'auth_kind': authKind,
+      if (authServer != null) 'auth_server': authServer,
+      if (authUrl != null) 'auth_url': authUrl,
+      if (authHint != null) 'auth_hint': authHint,
+      if (flowId != null) 'flow_id': flowId,
     };
   }
 
@@ -168,6 +218,13 @@ class Blocked {
     String? question,
     List<String>? options,
     String? command,
+    DateTime? resetAt,
+    String? authTarget,
+    String? authKind,
+    String? authServer,
+    String? authUrl,
+    String? authHint,
+    String? flowId,
   }) {
     return Blocked(
       kind: kind ?? this.kind,
@@ -176,6 +233,13 @@ class Blocked {
       question: question ?? this.question,
       options: options ?? this.options,
       command: command ?? this.command,
+      resetAt: resetAt ?? this.resetAt,
+      authTarget: authTarget ?? this.authTarget,
+      authKind: authKind ?? this.authKind,
+      authServer: authServer ?? this.authServer,
+      authUrl: authUrl ?? this.authUrl,
+      authHint: authHint ?? this.authHint,
+      flowId: flowId ?? this.flowId,
     );
   }
 }
@@ -221,6 +285,10 @@ class Session {
   final bool isDone;
   final bool isLater;
   final String gitRemote;
+  final String model;
+  final String effort;
+  final String permissionMode;
+  final List<String> extraDirs;
 
   const Session({
     required this.id,
@@ -262,6 +330,10 @@ class Session {
     this.isDone = false,
     this.isLater = false,
     this.gitRemote = '',
+    this.model = '',
+    this.effort = '',
+    this.permissionMode = '',
+    this.extraDirs = const [],
   });
 
   bool get isBlocked => state == SessionState.blocked || blocked != null;
@@ -444,6 +516,10 @@ class Session {
       isDone: json['is_done'] == true || json['is_done'] == 1,
       isLater: json['is_later'] == true || json['is_later'] == 1,
       gitRemote: json['git_remote']?.toString() ?? '',
+      model: json['model']?.toString() ?? '',
+      effort: json['effort']?.toString() ?? '',
+      permissionMode: json['permission_mode']?.toString() ?? '',
+      extraDirs: parseStringList(json['extra_dirs']),
     );
   }
 
@@ -489,6 +565,10 @@ class Session {
       'is_done': isDone,
       'is_later': isLater,
       if (gitRemote.isNotEmpty) 'git_remote': gitRemote,
+      if (model.isNotEmpty) 'model': model,
+      if (effort.isNotEmpty) 'effort': effort,
+      if (permissionMode.isNotEmpty) 'permission_mode': permissionMode,
+      if (extraDirs.isNotEmpty) 'extra_dirs': extraDirs,
     };
   }
 
@@ -533,6 +613,10 @@ class Session {
     bool? isDone,
     bool? isLater,
     String? gitRemote,
+    String? model,
+    String? effort,
+    String? permissionMode,
+    List<String>? extraDirs,
   }) {
     return Session(
       id: id ?? this.id,
@@ -574,6 +658,10 @@ class Session {
       isDone: isDone ?? this.isDone,
       isLater: isLater ?? this.isLater,
       gitRemote: gitRemote ?? this.gitRemote,
+      model: model ?? this.model,
+      effort: effort ?? this.effort,
+      permissionMode: permissionMode ?? this.permissionMode,
+      extraDirs: extraDirs ?? this.extraDirs,
     );
   }
 }

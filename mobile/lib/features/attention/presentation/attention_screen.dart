@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../headless/presentation/headless_auth_card.dart';
 import '../../../core/models/session.dart';
 import '../../../core/providers/fleet_providers.dart';
 import '../../../core/theme/app_colors.dart';
@@ -330,6 +331,15 @@ class _AttentionScreenState extends ConsumerState<AttentionScreen> {
   }
 
   Widget _buildPendingCard(Session session, {bool isFullscreen = false}) {
+    if (session.blocked?.kind == BlockKind.auth) {
+      return SingleChildScrollView(
+        child: HeadlessAuthCard(
+          session: session,
+          surfacePrefix: 'attention',
+        ),
+      );
+    }
+
     final blocked = session.blocked;
     final options = blocked?.options ?? [];
     final selectedOptionIndex = _selectedOptionIndices[session.id] ?? 0;
