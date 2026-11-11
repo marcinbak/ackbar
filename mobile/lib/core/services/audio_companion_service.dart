@@ -19,8 +19,7 @@ abstract class SpeechEngine {
   Future<bool> startListening({
     void Function(String text, bool isFinal)? onResult,
     VoidCallback? onError,
-  }) async =>
-      true;
+  }) async => true;
 
   Future<void> stopListening() async {}
 
@@ -308,8 +307,9 @@ class SpeechSummaryData {
   factory SpeechSummaryData.fromJson(Map<String, dynamic> json) {
     List<String> chips = [];
     if (json['suggested_chips'] is List) {
-      chips =
-          (json['suggested_chips'] as List).map((e) => e.toString()).toList();
+      chips = (json['suggested_chips'] as List)
+          .map((e) => e.toString())
+          .toList();
     }
     return SpeechSummaryData(
       spokenText: json['spoken_text']?.toString() ?? '',
@@ -404,8 +404,8 @@ class AudioCompanionService extends StateNotifier<AudioCompanionState> {
   int _liveSampleRate = 24000;
 
   AudioCompanionService(this._apiClient, {SpeechEngine? engine})
-      : _engine = engine ?? PlatformSpeechEngine(),
-        super(const AudioCompanionState());
+    : _engine = engine ?? PlatformSpeechEngine(),
+      super(const AudioCompanionState());
 
   SpeechEngine get engine => _engine;
 
@@ -482,8 +482,9 @@ class AudioCompanionService extends StateNotifier<AudioCompanionState> {
 
     final parsed = Uri.parse(hostUrl);
     final wsScheme = parsed.scheme == 'https' ? 'wss' : 'ws';
-    final authority =
-        parsed.authority.isNotEmpty ? parsed.authority : '127.0.0.1:7777';
+    final authority = parsed.authority.isNotEmpty
+        ? parsed.authority
+        : '127.0.0.1:7777';
     final queryParams = <String, String>{
       'session_id': session.id,
       if (authToken != null && authToken.isNotEmpty) 'token': authToken,

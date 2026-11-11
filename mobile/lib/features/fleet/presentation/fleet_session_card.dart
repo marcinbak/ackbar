@@ -221,7 +221,7 @@ class FleetSessionCard extends StatelessWidget {
                   const SizedBox(width: 4),
                   IconButton(
                     key: Key('session_more_${session.id}'),
-                    icon: const Icon(Icons.more_vert_rounded,
+                    icon: const Icon(Icons.more_horiz_rounded,
                         size: 16, color: AppColors.textSecondary),
                     tooltip: 'Session Actions',
                     padding: EdgeInsets.zero,

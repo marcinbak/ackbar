@@ -49,8 +49,7 @@ class PlansScreen extends ConsumerWidget {
         title: 'PLANS & PROPOSALS',
       ),
       body: CustomScrollView(
-        physics: const BouncingScrollPhysics(
-            parent: AlwaysScrollableScrollPhysics()),
+        physics: const BouncingScrollPhysics(parent: AlwaysScrollableScrollPhysics()),
         slivers: [
           // Filter Tabs Header
           SliverToBoxAdapter(
@@ -72,12 +71,10 @@ class PlansScreen extends ConsumerWidget {
             if (pendingPlans.isNotEmpty) ...[
               SliverToBoxAdapter(
                 child: Padding(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: AppSpacing.lg, vertical: AppSpacing.xs),
+                  padding: const EdgeInsets.symmetric(horizontal: AppSpacing.lg, vertical: AppSpacing.xs),
                   child: Row(
                     children: [
-                      const Icon(Icons.rate_review_outlined,
-                          size: 14, color: AppColors.statusAmber),
+                      const Icon(Icons.rate_review_outlined, size: 14, color: AppColors.statusAmber),
                       const SizedBox(width: 6),
                       Text(
                         'PENDING REVIEW (${pendingPlans.length})',
@@ -92,8 +89,7 @@ class PlansScreen extends ConsumerWidget {
                 ),
               ),
               SliverPadding(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: AppSpacing.lg, vertical: AppSpacing.xs),
+                padding: const EdgeInsets.symmetric(horizontal: AppSpacing.lg, vertical: AppSpacing.xs),
                 sliver: SliverList(
                   delegate: SliverChildBuilderDelegate(
                     (context, index) {
@@ -121,8 +117,7 @@ class PlansScreen extends ConsumerWidget {
                   ),
                   child: Row(
                     children: [
-                      const Icon(Icons.bolt_rounded,
-                          size: 14, color: AppColors.infoCyan),
+                      const Icon(Icons.bolt_rounded, size: 14, color: AppColors.infoCyan),
                       const SizedBox(width: 6),
                       Text(
                         'IN PROGRESS (${inProgressPlans.length})',
@@ -137,8 +132,7 @@ class PlansScreen extends ConsumerWidget {
                 ),
               ),
               SliverPadding(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: AppSpacing.lg, vertical: AppSpacing.xs),
+                padding: const EdgeInsets.symmetric(horizontal: AppSpacing.lg, vertical: AppSpacing.xs),
                 sliver: SliverList(
                   delegate: SliverChildBuilderDelegate(
                     (context, index) {
@@ -166,8 +160,7 @@ class PlansScreen extends ConsumerWidget {
                   ),
                   child: Row(
                     children: [
-                      const Icon(Icons.check_circle_outline_rounded,
-                          size: 14, color: AppColors.statusEmerald),
+                      const Icon(Icons.check_circle_outline_rounded, size: 14, color: AppColors.statusEmerald),
                       const SizedBox(width: 6),
                       Text(
                         'RECENTLY COMPLETED (${completedPlans.length})',
@@ -182,8 +175,7 @@ class PlansScreen extends ConsumerWidget {
                 ),
               ),
               SliverPadding(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: AppSpacing.lg, vertical: AppSpacing.xs),
+                padding: const EdgeInsets.symmetric(horizontal: AppSpacing.lg, vertical: AppSpacing.xs),
                 sliver: SliverList(
                   delegate: SliverChildBuilderDelegate(
                     (context, index) {
@@ -208,15 +200,13 @@ class PlansScreen extends ConsumerWidget {
                 child: Center(
                   child: Text(
                     'No currently approved plans waiting execution.',
-                    style: AppTypography.bodyMedium
-                        .copyWith(color: AppColors.textMuted),
+                    style: AppTypography.bodyMedium.copyWith(color: AppColors.textMuted),
                   ),
                 ),
               )
             else
               SliverPadding(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: AppSpacing.lg, vertical: AppSpacing.sm),
+                padding: const EdgeInsets.symmetric(horizontal: AppSpacing.lg, vertical: AppSpacing.sm),
                 sliver: SliverList(
                   delegate: SliverChildBuilderDelegate(
                     (context, index) {
@@ -240,15 +230,13 @@ class PlansScreen extends ConsumerWidget {
                 child: Center(
                   child: Text(
                     'No completed plan proposals in history.',
-                    style: AppTypography.bodyMedium
-                        .copyWith(color: AppColors.textMuted),
+                    style: AppTypography.bodyMedium.copyWith(color: AppColors.textMuted),
                   ),
                 ),
               )
             else
               SliverPadding(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: AppSpacing.lg, vertical: AppSpacing.sm),
+                padding: const EdgeInsets.symmetric(horizontal: AppSpacing.lg, vertical: AppSpacing.sm),
                 sliver: SliverList(
                   delegate: SliverChildBuilderDelegate(
                     (context, index) {
@@ -272,8 +260,7 @@ class PlansScreen extends ConsumerWidget {
     );
   }
 
-  Widget _buildPendingReviewCard(
-      BuildContext context, WidgetRef ref, PlanDocument plan) {
+  Widget _buildPendingReviewCard(BuildContext context, WidgetRef ref, PlanDocument plan) {
     return GlassCard(
       accentColor: AppColors.statusAmber,
       onTap: () => PlanDiffViewerModal.show(context, plan),
@@ -287,8 +274,7 @@ class PlansScreen extends ConsumerWidget {
                 decoration: BoxDecoration(
                   color: AppColors.surfaceHighlight,
                   borderRadius: AppSpacing.roundedSm,
-                  border: Border.all(
-                      color: AppColors.infoCyan.withOpacity(0.4), width: 0.5),
+                  border: Border.all(color: AppColors.infoCyan.withOpacity(0.4), width: 0.5),
                 ),
                 child: Text(
                   plan.id,
@@ -301,8 +287,7 @@ class PlansScreen extends ConsumerWidget {
               const SizedBox(width: 8),
               Text(
                 '${plan.agentDisplayName} @${plan.host}',
-                style: AppTypography.codeXs
-                    .copyWith(color: AppColors.textSecondary),
+                style: AppTypography.codeXs.copyWith(color: AppColors.textSecondary),
               ),
               const Spacer(),
               const StatusBadge(
@@ -313,28 +298,28 @@ class PlansScreen extends ConsumerWidget {
             ],
           ),
           AppSpacing.gapH8,
+
           Text(
             plan.title,
-            style:
-                AppTypography.titleMedium.copyWith(fontWeight: FontWeight.w700),
+            style: AppTypography.titleMedium.copyWith(fontWeight: FontWeight.w700),
           ),
           AppSpacing.gapH6,
+
           Text(
             plan.goal,
-            style: AppTypography.bodySmall
-                .copyWith(color: AppColors.textSecondary),
+            style: AppTypography.bodySmall.copyWith(color: AppColors.textSecondary),
             maxLines: 2,
             overflow: TextOverflow.ellipsis,
           ),
           AppSpacing.gapH8,
+
           if (plan.userReviewCallout.isNotEmpty) ...[
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
               decoration: BoxDecoration(
                 color: AppColors.statusAmber.withOpacity(0.12),
                 borderRadius: AppSpacing.roundedSm,
-                border: Border.all(
-                    color: AppColors.statusAmber.withOpacity(0.3), width: 0.5),
+                border: Border.all(color: AppColors.statusAmber.withOpacity(0.3), width: 0.5),
               ),
               child: Text(
                 plan.userReviewCallout,
@@ -348,10 +333,10 @@ class PlansScreen extends ConsumerWidget {
             ),
             AppSpacing.gapH8,
           ],
+
           Row(
             children: [
-              const Icon(Icons.edit_document,
-                  size: 12, color: AppColors.textMuted),
+              const Icon(Icons.edit_document, size: 12, color: AppColors.textMuted),
               const SizedBox(width: 4),
               Text('${plan.filesChanged} files', style: AppTypography.codeXs),
               const SizedBox(width: 8),
@@ -365,6 +350,7 @@ class PlansScreen extends ConsumerWidget {
             ],
           ),
           AppSpacing.gapH12,
+
           Row(
             children: [
               Expanded(
@@ -382,9 +368,7 @@ class PlansScreen extends ConsumerWidget {
               Expanded(
                 child: ElevatedButton.icon(
                   onPressed: () {
-                    ref
-                        .read(plansListProvider.notifier)
-                        .quickApprovePlan(plan.id);
+                    ref.read(plansListProvider.notifier).quickApprovePlan(plan.id);
                     ScaffoldMessenger.of(context).showSnackBar(
                       SnackBar(
                         content: Text('Approved ${plan.id}'),
@@ -407,8 +391,7 @@ class PlansScreen extends ConsumerWidget {
     );
   }
 
-  Widget _buildInProgressPlanCard(
-      BuildContext context, WidgetRef ref, PlanDocument plan) {
+  Widget _buildInProgressPlanCard(BuildContext context, WidgetRef ref, PlanDocument plan) {
     final pctInt = (plan.progressPct * 100).toInt();
 
     return GlassCard(
@@ -427,8 +410,7 @@ class PlansScreen extends ConsumerWidget {
                 ),
               ),
               const SizedBox(width: 8),
-              Text('${plan.agentDisplayName} @${plan.host}',
-                  style: AppTypography.codeXs),
+              Text('${plan.agentDisplayName} @${plan.host}', style: AppTypography.codeXs),
               const Spacer(),
               const StatusBadge(
                 status: AckbarSessionStatus.working,
@@ -441,16 +423,14 @@ class PlansScreen extends ConsumerWidget {
 
           Text(
             plan.title,
-            style:
-                AppTypography.titleMedium.copyWith(fontWeight: FontWeight.w700),
+            style: AppTypography.titleMedium.copyWith(fontWeight: FontWeight.w700),
           ),
           AppSpacing.gapH6,
 
           if (plan.currentStep.isNotEmpty) ...[
             Text(
               plan.currentStep,
-              style: AppTypography.codeXs
-                  .copyWith(color: AppColors.statusAmberLight),
+              style: AppTypography.codeXs.copyWith(color: AppColors.statusAmberLight),
             ),
             AppSpacing.gapH8,
           ],
@@ -461,8 +441,7 @@ class PlansScreen extends ConsumerWidget {
             children: [
               Text(
                 'PROGRESS',
-                style:
-                    AppTypography.codeXs.copyWith(color: AppColors.textMuted),
+                style: AppTypography.codeXs.copyWith(color: AppColors.textMuted),
               ),
               Text(
                 '$pctInt% Completed',
@@ -479,8 +458,7 @@ class PlansScreen extends ConsumerWidget {
             child: LinearProgressIndicator(
               value: plan.progressPct,
               backgroundColor: AppColors.surfaceHighlight,
-              valueColor:
-                  const AlwaysStoppedAnimation<Color>(AppColors.infoCyan),
+              valueColor: const AlwaysStoppedAnimation<Color>(AppColors.infoCyan),
               minHeight: 6,
             ),
           ),
@@ -506,8 +484,7 @@ class PlansScreen extends ConsumerWidget {
                 ),
               ),
               const SizedBox(width: 8),
-              Text('${plan.agentDisplayName} @${plan.host}',
-                  style: AppTypography.codeXs),
+              Text('${plan.agentDisplayName} @${plan.host}', style: AppTypography.codeXs),
               const Spacer(),
               const StatusBadge(
                 status: AckbarSessionStatus.active,
@@ -519,14 +496,12 @@ class PlansScreen extends ConsumerWidget {
           AppSpacing.gapH8,
           Text(
             plan.title,
-            style:
-                AppTypography.titleMedium.copyWith(fontWeight: FontWeight.w700),
+            style: AppTypography.titleMedium.copyWith(fontWeight: FontWeight.w700),
           ),
           AppSpacing.gapH4,
           Text(
             plan.goal,
-            style: AppTypography.bodySmall
-                .copyWith(color: AppColors.textSecondary),
+            style: AppTypography.bodySmall.copyWith(color: AppColors.textSecondary),
             maxLines: 2,
             overflow: TextOverflow.ellipsis,
           ),
@@ -552,8 +527,7 @@ class PlansScreen extends ConsumerWidget {
                 ),
               ),
               const SizedBox(width: 8),
-              Text('${plan.agentDisplayName} @${plan.host}',
-                  style: AppTypography.codeXs),
+              Text('${plan.agentDisplayName} @${plan.host}', style: AppTypography.codeXs),
               const Spacer(),
               const StatusBadge(
                 status: AckbarSessionStatus.idle,
@@ -565,22 +539,19 @@ class PlansScreen extends ConsumerWidget {
           AppSpacing.gapH8,
           Text(
             plan.title,
-            style:
-                AppTypography.titleMedium.copyWith(fontWeight: FontWeight.w700),
+            style: AppTypography.titleMedium.copyWith(fontWeight: FontWeight.w700),
           ),
           AppSpacing.gapH4,
           if (plan.testSummary.isNotEmpty) ...[
             Text(
               plan.testSummary,
-              style:
-                  AppTypography.codeXs.copyWith(color: AppColors.statusEmerald),
+              style: AppTypography.codeXs.copyWith(color: AppColors.statusEmerald),
             ),
             AppSpacing.gapH4,
           ],
           Text(
             plan.goal,
-            style: AppTypography.bodySmall
-                .copyWith(color: AppColors.textSecondary),
+            style: AppTypography.bodySmall.copyWith(color: AppColors.textSecondary),
             maxLines: 2,
             overflow: TextOverflow.ellipsis,
           ),

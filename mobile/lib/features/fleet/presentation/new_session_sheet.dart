@@ -184,9 +184,14 @@ class _NewSessionSheetState extends ConsumerState<NewSessionSheet> {
       final nav = Navigator.of(context);
       final canPopSheet = nav.canPop();
       final navContext = nav.context;
+      if (spawnedSession.isUnread) {
+        ref
+            .read(fleetSessionsProvider.notifier)
+            .markSessionRead(spawnedSession.id, spawnedSession.host);
+      }
       nav.pop(spawnedSession);
-      if (canPopSheet && mounted) {
-        SessionNavigator.openSession(navContext, ref, spawnedSession);
+      if (canPopSheet && navContext.mounted) {
+        SessionNavigator.openSession(navContext, null, spawnedSession);
       }
     } else {
       setState(() {

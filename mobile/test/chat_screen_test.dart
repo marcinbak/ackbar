@@ -354,5 +354,51 @@ void main() {
       expect(find.byKey(const Key('transcript_open_session_button')),
           findsNothing);
     });
+
+    testWidgets(
+        'restores prompt text and shows error SnackBar when prompt dispatch fails with 500',
+        (tester) async {
+      final mockClient = MockClient((request) async {
+        if (request.url.path == '/v1/sessions/transcript') {
+          return http.Response(
+            jsonEncode({
+              'session_id': 'claude-code:local:sess-headless-1',
+              'native_id': 'sess-headless-1',
+              'agent': 'claude-code',
+              'title': 'Headless Test Session',
+              'cwd': '/workspace/ackbar',
+              'messages': [],
+              'markdown': '',
+            }),
+            200,
+          );
+        }
+        if (request.url.path == '/v1/sessions/subagents') {
+          return http.Response(jsonEncode({'subagents': []}), 200);
+        }
+        if (request.url.path == '/v1/sessions/prompt') {
+          return http.Response('Server Error', 500);
+        }
+        return http.Response('[]', 200);
+      });
+
+      final api = ApiClient(client: mockClient);
+      final sse = MockSSEClient();
+      final session = _makeHeadlessSession(state: SessionState.idle);
+
+      await tester.pumpWidget(_wrapChatScreen(session, api: api, sse: sse));
+      await tester.pump(const Duration(milliseconds: 600));
+      await tester.pump();
+
+      await tester.enterText(find.byType(TextField), 'Failed command prompt');
+      await tester.pump();
+      await tester.tap(find.byIcon(Icons.arrow_upward_rounded));
+      await tester.pump(const Duration(milliseconds: 600));
+      await tester.pump();
+
+      expect(find.text('Failed to dispatch prompt to agent'), findsOneWidget);
+      final textField = tester.widget<TextField>(find.byType(TextField));
+      expect(textField.controller?.text, equals('Failed command prompt'));
+    });
   });
 }

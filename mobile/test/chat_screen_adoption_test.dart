@@ -14,32 +14,29 @@ import 'package:ackbar_mobile/core/providers/fleet_providers.dart';
 import 'package:ackbar_mobile/core/theme/app_theme.dart';
 import 'package:ackbar_mobile/features/chat/presentation/chat_screen.dart';
 
-HostRecord dynamicHostRecord() => HostRecord(
-      name: 'Legion',
-      url: 'http://100.64.0.1:7777',
-      authToken: 'secret-host-token',
-      online: false,
-      createdAt: DateTime.utc(2026, 10, 31),
-    );
-
 Session _makeHeadlessSession({
   String id = 'claude-code:local:sess-headless-1',
   String nativeId = 'sess-headless-1',
   SessionState state = SessionState.idle,
+  String agent = 'claude-code',
+  String host = 'local',
+  String oldId = '',
+  String name = 'Headless Test Session',
 }) {
   final now = DateTime.utc(2026, 3, 28, 12, 0, 0);
   return Session(
     id: id,
-    agent: 'claude-code',
-    host: 'local',
+    agent: agent,
+    host: host,
     nativeId: nativeId,
+    oldId: oldId,
     cwd: '/workspace/ackbar',
     state: state,
     startedAt: now,
     lastEventAt: now,
     managed: true,
     engineType: 'headless',
-    name: 'Headless Test Session',
+    name: name,
   );
 }
 
@@ -374,17 +371,11 @@ void main() {
 
       final api = ApiClient(client: mockClient);
       final sse = MockSSEClient();
-      final initialSession = Session(
+      final initialSession = _makeHeadlessSession(
         id: 'antigravity:legion:temp-uuid-111',
+        nativeId: 'temp-uuid-111',
         agent: 'antigravity',
         host: 'legion',
-        nativeId: 'temp-uuid-111',
-        cwd: '/workspace/ackbar',
-        state: SessionState.idle,
-        startedAt: DateTime.utc(2026, 3, 28, 12, 0, 0),
-        lastEventAt: DateTime.utc(2026, 3, 28, 12, 0, 0),
-        managed: true,
-        engineType: 'headless',
         name: 'Spawning Antigravity',
       );
 
@@ -439,6 +430,62 @@ void main() {
         lastPromptSessionId,
         equals('antigravity:legion:real-conv-999'),
       );
+    });
+
+    testWidgets(
+        'mounting already-adopted Antigravity session with oldId sends zero prompt requests until user submits',
+        (tester) async {
+      var promptRequestsCount = 0;
+      final mockClient = MockClient((request) async {
+        if (request.url.path == '/v1/sessions/transcript') {
+          return http.Response(
+            jsonEncode({
+              'session_id': 'antigravity:legion:real-conv-999',
+              'native_id': 'real-conv-999',
+              'agent': 'antigravity',
+              'title': 'Adopted Antigravity Session',
+              'cwd': '/workspace/ackbar',
+              'messages': [],
+              'markdown': '',
+            }),
+            200,
+          );
+        }
+        if (request.url.path == '/v1/sessions/subagents') {
+          return http.Response(jsonEncode({'subagents': []}), 200);
+        }
+        if (request.url.path == '/v1/sessions/prompt') {
+          promptRequestsCount++;
+          return http.Response(jsonEncode({'status': 'running'}), 200);
+        }
+        return http.Response('[]', 200);
+      });
+
+      final api = ApiClient(client: mockClient);
+      final sse = MockSSEClient();
+      final adoptedSession = _makeHeadlessSession(
+        id: 'antigravity:legion:real-conv-999',
+        agent: 'antigravity',
+        host: 'legion',
+        nativeId: 'real-conv-999',
+        oldId: 'antigravity:legion:temp-uuid-111',
+        name: 'Adopted Antigravity',
+      );
+
+      await tester
+          .pumpWidget(_wrapChatScreen(adoptedSession, api: api, sse: sse));
+      await tester.pump(const Duration(milliseconds: 600));
+      await tester.pump();
+
+      expect(promptRequestsCount, equals(0));
+
+      await tester.enterText(find.byType(TextField), 'User prompt after mount');
+      await tester.pump();
+      await tester.tap(find.byIcon(Icons.arrow_upward_rounded));
+      await tester.pump(const Duration(milliseconds: 600));
+      await tester.pump();
+
+      expect(promptRequestsCount, equals(1));
     });
   });
 }

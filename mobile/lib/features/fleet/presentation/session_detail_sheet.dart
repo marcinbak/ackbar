@@ -222,18 +222,19 @@ class SessionDetailSheet extends ConsumerWidget {
               onPressed: () async {
                 final messenger = ScaffoldMessenger.of(context);
                 final navContext = Navigator.of(context).context;
+                final notifier = ref.read(fleetSessionsProvider.notifier);
+                if (session.isUnread) {
+                  notifier.markSessionRead(session.id, session.host);
+                }
                 Navigator.of(context).pop();
-                final ok = await ref
-                    .read(fleetSessionsProvider.notifier)
-                    .resumeSession(session.id);
-                if (ok) {
-                  final live = ref
-                          .read(fleetSessionsProvider)
-                          .where((s) => s.id == session.id)
-                          .firstOrNull ??
-                      session;
-                  SessionNavigator.openSession(navContext, ref, live);
-                } else {
+                final ok = await notifier.resumeSession(session.id);
+                if (ok && navContext.mounted) {
+                  final live = session.copyWith(
+                    state: SessionState.working,
+                    activity: 'Resumed',
+                  );
+                  SessionNavigator.openSession(navContext, null, live);
+                } else if (!ok) {
                   messenger.showSnackBar(
                     SnackBar(
                       content: Text('Failed to resume ${session.displayTitle}'),
@@ -321,9 +322,14 @@ class SessionDetailSheet extends ConsumerWidget {
                           (!session.isEnded && session.tmuxName != '(deleted)'))
                       ? () {
                           final navContext = Navigator.of(context).context;
+                          if (session.isUnread) {
+                            ref
+                                .read(fleetSessionsProvider.notifier)
+                                .markSessionRead(session.id, session.host);
+                          }
                           Navigator.of(context).pop();
                           SessionNavigator.openSession(
-                              navContext, ref, session);
+                              navContext, null, session);
                         }
                       : null,
                   icon: Icon(
@@ -348,9 +354,13 @@ class SessionDetailSheet extends ConsumerWidget {
                   key: const Key('sheet_open_transcript_button'),
                   onPressed: () {
                     final navContext = Navigator.of(context).context;
+                    if (session.isUnread) {
+                      ref
+                          .read(fleetSessionsProvider.notifier)
+                          .markSessionRead(session.id, session.host);
+                    }
                     Navigator.of(context).pop();
-                    SessionNavigator.openTranscript(navContext, session,
-                        ref: ref);
+                    SessionNavigator.openTranscript(navContext, session);
                   },
                   icon: const Icon(Icons.article_outlined, size: 16),
                   label: const Text('Transcript'),

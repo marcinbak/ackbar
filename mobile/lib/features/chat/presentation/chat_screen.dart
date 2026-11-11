@@ -62,20 +62,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     );
     _streamController.addListener(_onStreamUpdated);
     _streamController.init();
-
-    if (_activeSession.agent == 'antigravity' &&
-        _activeSession.oldId.isNotEmpty &&
-        _activeSession.oldId != _activeSession.id) {
-      WidgetsBinding.instance.addPostFrameCallback((_) => _streamController
-          .submitPrompt('[Adopt session ${_activeSession.oldId}]'));
-    }
   }
 
   void _onStreamUpdated() {
-    if (mounted) {
-      setState(() {});
-      _scrollToBottom();
-    }
+    if (!mounted) return;
+    setState(() {});
+    if (!_showJumpToBottom) _scrollToBottom();
   }
 
   void _handleSessionRotated(Session nextSession, String? notice) {
@@ -157,8 +149,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
 
   Future<void> _sendPrompt() async {
     final text = _promptController.text.trim();
-    if (text.isEmpty) return;
-    _promptController.clear();
+    if (text.isEmpty || _streamController.isSending) return;
     final currentSession = _resolveLiveSession();
     final host = SessionHostResolver.resolveHostRecord(
         ref.read(hostsListProvider), currentSession.host);
@@ -185,7 +176,16 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     }
     _promptController.clear();
     _streamController.updateSession(currentSession);
-    _streamController.submitPrompt(text);
+    final submitRes = await _streamController.submitPrompt(text);
+    if (!submitRes.ok && mounted) {
+      _promptController.text = text;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Failed to dispatch prompt to agent'),
+          backgroundColor: AppColors.statusCoral,
+        ),
+      );
+    }
     _scrollToBottom();
   }
 
