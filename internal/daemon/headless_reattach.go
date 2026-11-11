@@ -75,8 +75,9 @@ func (h *HeadlessRunner) monitorWorkerTurn(sess *Session, origSessionID string, 
 				curMeta = dm
 			}
 		}
-		if conn, err := net.DialTimeout("unix", curMeta.SocketPath, 250*time.Millisecond); err == nil {
-			b, _ := json.Marshal(workerIPCReq{Op: "subscribe", AfterSeq: lastSeq})
+		conn, err := net.DialTimeout("unix", curMeta.SocketPath, 250*time.Millisecond)
+		if err == nil {
+			b, _ := json.Marshal(workerIPCReq{Op: "subscribe", AfterSeq: lastSeq, TurnID: curMeta.TurnID})
 			if _, wErr := conn.Write(append(b, '\n')); wErr == nil {
 				sc := bufio.NewScanner(conn)
 				sc.Buffer(make([]byte, 64*1024), 10*1024*1024)
@@ -133,10 +134,14 @@ func (h *HeadlessRunner) finalizeTurnFromSpool(sess *Session, origSessionID stri
 
 	markFinalized := func() {
 		if meta != nil && meta.MetaPath != "" && fileExists(meta.MetaPath) {
+			if dm, err := ReadTurnSpoolMeta(meta.MetaPath); err == nil && dm != nil {
+				*meta = *dm
+			}
 			meta.FinalizedByDaemon = true
 			_ = WriteTurnSpoolMeta(meta.MetaPath, meta)
 		}
 	}
+	markFinalized()
 	checkDrain := func() bool {
 		var drainFn func()
 		h.mu.Lock()
@@ -238,6 +243,23 @@ func (h *HeadlessRunner) finalizeTurnFromSpool(sess *Session, origSessionID stri
 	}
 
 	markFinalized()
+	var rotateWorker bool
+	h.mu.Lock()
+	if handle, ok := h.warmWorkers[sess.ID]; ok && handle != nil {
+		if (interactiveBlock != nil || wasCancelled) && !h.activeTurns[sess.ID] {
+			delete(h.warmWorkers, sess.ID)
+			if sess.NativeID != "" {
+				delete(h.warmWorkers, sess.NativeID)
+			}
+		} else if handle.rotateAfterTurn && !h.activeTurns[sess.ID] {
+			rotateWorker = true
+		}
+	}
+	h.mu.Unlock()
+	if rotateWorker {
+		go h.ShutdownSessionWorker(sess.ID, sess.NativeID, 2*time.Second)
+	}
+
 	if h.db != nil {
 		_ = h.db.SaveSession(sess)
 	}
@@ -270,27 +292,34 @@ func (h *HeadlessRunner) finalizeTurnFromSpool(sess *Session, origSessionID stri
 	}
 }
 
-func (h *HeadlessRunner) resolveSessionForSpool(meta *TurnSpoolMeta) *Session {
-	if h.db == nil || meta == nil {
+func (h *HeadlessRunner) resolveSession(id, origID, nativeID string) *Session {
+	if h == nil || h.db == nil {
 		return nil
 	}
-	for _, id := range []string{meta.SessionID, meta.OrigSessionID} {
-		if id != "" {
-			if s, err := h.db.GetSession(id); err == nil && s != nil {
+	for _, sid := range []string{id, origID} {
+		if sid != "" {
+			if s, err := h.db.GetSession(sid); err == nil && s != nil {
 				return s
 			}
 		}
 	}
-	if meta.NativeID != "" {
+	if nativeID != "" {
 		if list, err := h.db.ListSessions(); err == nil {
 			for _, s := range list {
-				if s != nil && s.NativeID == meta.NativeID && s.EngineType == EngineHeadless {
+				if s != nil && s.NativeID == nativeID && s.EngineType == EngineHeadless {
 					return s
 				}
 			}
 		}
 	}
 	return nil
+}
+
+func (h *HeadlessRunner) resolveSessionForSpool(meta *TurnSpoolMeta) *Session {
+	if meta == nil {
+		return nil
+	}
+	return h.resolveSession(meta.SessionID, meta.OrigSessionID, meta.NativeID)
 }
 
 func (h *HeadlessRunner) ReattachLiveWorkers() {
@@ -302,6 +331,51 @@ func (h *HeadlessRunner) ReattachLiveWorkers() {
 	if runDir == "" || err != nil {
 		return
 	}
+
+	adoptedTurns := make(map[string]bool)
+	adoptedIdle := make(map[string]bool)
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".worker.json") {
+			wp := filepath.Join(runDir, e.Name())
+			wm, err := ReadSessionWorkerMeta(wp)
+			if err != nil || wm == nil {
+				continue
+			}
+			resp, err := callWorkerSocket(wm.SocketPath, workerIPCReq{Op: "status"}, 250*time.Millisecond)
+			alive := err == nil && resp != nil && resp.OK
+			sess := h.resolveSession(wm.SessionID, wm.OrigSessionID, wm.NativeID)
+			if !alive || sess == nil || sess.Deleted || sess.IsDone || sess.TmuxName != "" || wm.ConfigFingerprint != ConfigFingerprint(sess) {
+				if alive {
+					h.killWorkerMeta(wm, 300*time.Millisecond)
+				} else {
+					cleanupWorkerArtifacts(wm)
+				}
+				continue
+			}
+			h.mu.Lock()
+			h.warmWorkers[sess.ID] = &warmWorkerHandle{
+				WorkerID: wm.WorkerID, SessionID: sess.ID, NativeID: sess.NativeID,
+				SocketPath: wm.SocketPath, WorkerMetaPath: wm.WorkerMetaPath,
+				ConfigFingerprint: wm.ConfigFingerprint, Bin: wm.Bin, Args: wm.Args,
+				WorkerPID: resp.WorkerPID, ChildPID: resp.ChildPID,
+			}
+			h.mu.Unlock()
+
+			if resp.State == "running_turn" && wm.ActiveTurnID != "" {
+				adoptedTurns[wm.ActiveTurnID] = true
+			} else {
+				adoptedIdle[sess.ID] = true
+				sess.State, sess.Blocked, sess.PID = StateIdle, nil, 0
+				if h.db != nil {
+					_ = h.db.SaveSession(sess)
+				}
+				if h.broadcast != nil {
+					h.broadcast(sess)
+				}
+			}
+		}
+	}
+
 	var metas []*TurnSpoolMeta
 	for _, e := range entries {
 		if !e.IsDir() && strings.HasSuffix(e.Name(), ".meta.json") {
@@ -380,7 +454,20 @@ func (h *HeadlessRunner) ReattachLiveWorkers() {
 				h.applyWorkerEvent(sess, meta.OrigSessionID, meta, evt, false)
 			}
 			h.finalizeTurnFromSpool(sess, meta.OrigSessionID, meta, nil)
+			if adoptedIdle[sess.ID] {
+				sess.State = StateIdle
+				if h.db != nil {
+					_ = h.db.SaveSession(sess)
+				}
+			}
 		} else if sess != nil && !sess.Deleted && !sess.IsDone {
+			clearInterrupted(sess, meta)
+			if sess.State == StateWorking {
+				sess.State, sess.Blocked, sess.PID = StateIdle, nil, 0
+				if h.db != nil {
+					_ = h.db.SaveSession(sess)
+				}
+			}
 			h.mu.Lock()
 			h.sessionSpools[sess.ID] = meta
 			h.mu.Unlock()

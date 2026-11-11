@@ -746,6 +746,9 @@ func (s *Server) executeSessionHandover(ctx context.Context, sess *Session, stra
 	}
 
 	if strategy == "new_session" {
+		if s.headless != nil {
+			s.headless.ShutdownSessionWorker(sess.ID, sess.NativeID, 3*time.Second)
+		}
 		sess.Managed = false
 		sess.State = StateEnded
 		sess.Activity = "Handover complete (rotated to new session)"

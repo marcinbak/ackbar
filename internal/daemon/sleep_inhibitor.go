@@ -123,3 +123,12 @@ func (s *SleepInhibitor) SyncActiveTurns(count int) {
 func (s *SleepInhibitor) Release() {
 	s.SyncActiveTurns(0)
 }
+
+func (s *SleepInhibitor) IsActive() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cmd != nil && s.cmd.Process != nil && s.cmd.Process.Pid > 1
+}

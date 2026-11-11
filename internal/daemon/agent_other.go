@@ -354,7 +354,7 @@ func checkIgnoredCLIArgs(fullCmd string, matchBin func(field, base string) bool,
 		arg := args[i]
 		a := strings.ToLower(strings.TrimSpace(arg))
 		if strings.HasPrefix(a, "-") {
-			if a == "-v" || a == "--version" || a == "-h" || a == "--help" || a == "-p" || a == "--print" {
+			if a == "-v" || a == "--version" || a == "-h" || a == "--help" || a == "-p" || a == "--print" || a == "--input-format" || a == "--output-format" {
 				return true
 			}
 			if extraFlags != nil && extraFlags[a] {

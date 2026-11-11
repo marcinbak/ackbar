@@ -93,6 +93,9 @@ type HeadlessRunner struct {
 	db                     *DB
 	broadcast              func(s *Session)
 	onTurnComplete         func(sessionID, nativeID string)
+	warmWorkers            map[string]*warmWorkerHandle
+	sessionTurnMu          map[string]*sync.Mutex
+	idleTTL                time.Duration
 }
 
 func NewHeadlessRunner(db *DB, broadcast func(s *Session)) *HeadlessRunner {
@@ -109,6 +112,9 @@ func NewHeadlessRunner(db *DB, broadcast func(s *Session)) *HeadlessRunner {
 		paused:                 make(map[string]bool),
 		interactiveBlocks:      make(map[string]*Blocked),
 		respondedWhileStopping: make(map[string]bool),
+		warmWorkers:            make(map[string]*warmWorkerHandle),
+		sessionTurnMu:          make(map[string]*sync.Mutex),
+		idleTTL:                ResolveHeadlessIdleTTL(0),
 		db:                     db,
 		broadcast:              broadcast,
 	}
@@ -126,6 +132,13 @@ func (h *HeadlessRunner) ReleaseSleepInhibitor() {
 		return
 	}
 	h.sleepInhibitor.Release()
+}
+
+func (h *HeadlessRunner) IsSleepInhibitorActive() bool {
+	if h == nil || h.sleepInhibitor == nil {
+		return false
+	}
+	return h.sleepInhibitor.IsActive()
 }
 
 func (h *HeadlessRunner) setInteractiveBlock(sessionID string, b *Blocked) {
@@ -236,14 +249,23 @@ func (h *HeadlessRunner) triggerInteractiveBlock(sessionID string, sess *Session
 // ClearInteractiveBlockAndWait clears interactive blocks for a session and waits for any stopping
 // headless turn to finish so that a newly launched turn does not collide with the previous process.
 func (h *HeadlessRunner) ClearInteractiveBlockAndWait(sessionID string, timeout time.Duration) {
+	nativeID := ""
+	parts := strings.Split(sessionID, ":")
+	if len(parts) == 3 {
+		nativeID = parts[2]
+	}
+	h.ShutdownSessionWorker(sessionID, nativeID, timeout)
+
 	h.mu.Lock()
+	delete(h.warmWorkers, sessionID)
+	if nativeID != "" {
+		delete(h.warmWorkers, nativeID)
+	}
 	delete(h.interactiveBlocks, sessionID)
 	delete(h.activePrompts, sessionID)
 	delete(h.activeTurns, sessionID)
 	h.respondedWhileStopping[sessionID] = true
-	parts := strings.Split(sessionID, ":")
-	if len(parts) == 3 {
-		nativeID := parts[2]
+	if nativeID != "" {
 		delete(h.interactiveBlocks, nativeID)
 		delete(h.activePrompts, nativeID)
 		delete(h.activeTurns, nativeID)
@@ -251,8 +273,8 @@ func (h *HeadlessRunner) ClearInteractiveBlockAndWait(sessionID string, timeout 
 	}
 
 	cmd := h.processes[sessionID]
-	if cmd == nil && len(parts) == 3 {
-		cmd = h.processes[parts[2]]
+	if cmd == nil && nativeID != "" {
+		cmd = h.processes[nativeID]
 	}
 	meta := h.findSpoolForSessionLocked(sessionID, "")
 	h.mu.Unlock()
@@ -463,6 +485,28 @@ func (h *HeadlessRunner) IsRunning(sessionID string) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
+	if h.activeTurns[sessionID] {
+		return true
+	}
+	parts := strings.Split(sessionID, ":")
+	if len(parts) == 3 {
+		nativeID := parts[2]
+		if h.activeTurns[nativeID] {
+			return true
+		}
+		for turnKey, active := range h.activeTurns {
+			if active && strings.HasSuffix(turnKey, ":"+nativeID) {
+				return true
+			}
+		}
+	} else if len(parts) == 1 && sessionID != "" {
+		for turnKey, active := range h.activeTurns {
+			if active && strings.HasSuffix(turnKey, ":"+sessionID) {
+				return true
+			}
+		}
+	}
+
 	checkProcess := func(key string, cmd *exec.Cmd) bool {
 		if h.activeTurns[key] {
 			return true
@@ -482,7 +526,6 @@ func (h *HeadlessRunner) IsRunning(sessionID string) bool {
 			return true
 		}
 	}
-	parts := strings.Split(sessionID, ":")
 	if len(parts) == 3 {
 		nativeID := parts[2]
 		for procKey, cmd := range h.processes {
@@ -673,6 +716,20 @@ func (h *HeadlessRunner) MigrateSession(oldID, newID string) {
 			}
 		}
 		delete(h.subs, oldID)
+	}
+	if worker, exists := h.warmWorkers[oldID]; exists {
+		delete(h.warmWorkers, oldID)
+		if worker != nil {
+			worker.SessionID = newID
+			if parts := strings.Split(newID, ":"); len(parts) == 3 && parts[2] != "" {
+				worker.NativeID = parts[2]
+			}
+		}
+		h.warmWorkers[newID] = worker
+	}
+	if mu, exists := h.sessionTurnMu[oldID]; exists {
+		delete(h.sessionTurnMu, oldID)
+		h.sessionTurnMu[newID] = mu
 	}
 }
 
@@ -886,11 +943,11 @@ func (h *HeadlessRunner) EmitSubagentsUpdate(sessionID string, subagents []*Suba
 
 // CancelTurn sends SIGINT (and SIGKILL if needed) to interrupt the active turn process
 func (h *HeadlessRunner) CancelTurn(sessionID string) error {
+	parts := strings.Split(sessionID, ":")
 	h.mu.Lock()
 	cmd, ok := h.processes[sessionID]
 	activeKey := sessionID
 	if !ok {
-		parts := strings.Split(sessionID, ":")
 		if len(parts) == 3 {
 			nativeID := parts[2]
 			for procKey, procCmd := range h.processes {
@@ -917,11 +974,22 @@ func (h *HeadlessRunner) CancelTurn(sessionID string) error {
 		return nil
 	}
 
+	deleteWarmHandle := func() {
+		h.mu.Lock()
+		delete(h.warmWorkers, sessionID)
+		if len(parts) == 3 && parts[2] != "" {
+			delete(h.warmWorkers, parts[2])
+		}
+		h.mu.Unlock()
+	}
+
 	if workerActive && sendWorkerCancel(meta) == nil {
 		h.SetQueuePaused(sessionID, true)
 		h.EmitQueueUpdate(sessionID)
+		deleteWarmHandle()
 		return nil
 	}
+	deleteWarmHandle()
 
 	if h.isOwnedProcess(cmd) {
 		_ = cmd.Process.Signal(syscall.SIGINT)
@@ -1143,203 +1211,6 @@ func (h *HeadlessRunner) buildArgs(sess *Session, prompt, home string) (string, 
 	return bin, args, nil
 }
 
-// RunTurn launches an asynchronous detached headless worker for the session.
-func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt string) error {
-	_ = ctx
-	if sess.Agent != "claude-code" && sess.Agent != "antigravity" {
-		return ErrAgentUnsupported
-	}
-
-	runDir, err := h.resolveRunDir(true)
-	if err != nil {
-		return fmt.Errorf("failed to resolve headless run dir: %w", err)
-	}
-	exePath, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("failed to resolve executable path: %w", err)
-	}
-
-	h.mu.Lock()
-	if _, running := h.processes[sess.ID]; running || h.activeTurns[sess.ID] {
-		h.mu.Unlock()
-		return ErrTurnInProgress
-	}
-
-	if sess.NativeID == "" {
-		sess.NativeID = generateUUID()
-	}
-	sess.IsDone = false
-
-	home, _ := os.UserHomeDir()
-	bin, args, err := h.buildArgs(sess, prompt, home)
-	if err != nil {
-		h.mu.Unlock()
-		return err
-	}
-
-	cleanEnv := StripBilledCredentials(os.Environ())
-	if sess.ID != "" {
-		cleanEnv = append(cleanEnv, "ACKBAR_SESSION_ID="+sess.ID)
-	}
-	if sess.IsSupervisor {
-		cleanEnv = append(cleanEnv, "ACKBAR_IS_SUPERVISOR=1")
-	}
-	if sess.AccountID != "" && h.db != nil {
-		if acc, _ := h.db.GetAccount(sess.AccountID); acc != nil {
-			cfgDir := acc.ConfigDir
-			if cfgDir != "" {
-				if strings.HasPrefix(cfgDir, "~/") && home != "" {
-					cfgDir = filepath.Join(home, cfgDir[2:])
-				}
-				if sess.Agent == "claude-code" {
-					cleanEnv = append(cleanEnv, "CLAUDE_CONFIG_DIR="+cfgDir)
-				} else if sess.Agent == "antigravity" {
-					cleanEnv = append(cleanEnv, "GEMINI_CLI_HOME="+cfgDir)
-				}
-			}
-			for k, v := range acc.Env {
-				cleanEnv = append(cleanEnv, fmt.Sprintf("%s=%s", k, v))
-			}
-		}
-	}
-
-	turnStart := time.Now().UTC()
-	turnID := fmt.Sprintf("turn_%d_%s", turnStart.UnixNano(), generateUUID()[:8])
-	h.pruneCompletedSpoolsForSession(runDir, sess.ID, sess.NativeID, turnID)
-
-	sockPath, sockTempDir, err := allocateWorkerSocketPath(runDir, turnID)
-	if err != nil {
-		h.mu.Unlock()
-		return fmt.Errorf("failed to allocate worker socket: %w", err)
-	}
-	spoolPath := filepath.Join(runDir, turnID+".ndjson")
-	metaPath := filepath.Join(runDir, turnID+".meta.json")
-	origSessionID := sess.ID
-
-	meta := &TurnSpoolMeta{
-		TurnID:        turnID,
-		SessionID:     sess.ID,
-		OrigSessionID: origSessionID,
-		NativeID:      sess.NativeID,
-		Agent:         sess.Agent,
-		Cwd:           sess.Cwd,
-		Prompt:        prompt,
-		Bin:           bin,
-		Args:          args,
-		SocketPath:    sockPath,
-		SocketTempDir: sockTempDir,
-		SpoolPath:     spoolPath,
-		MetaPath:      metaPath,
-		StartedAt:     turnStart,
-		Status:        "starting",
-	}
-
-	// Pre-populate Seq: 1 before spawning the worker so SSE/transcript callers never race worker startup.
-	initSpool, err := OpenTurnSpoolWriter(spoolPath, turnID)
-	if err != nil {
-		cleanupTurnSocketArtifacts(meta)
-		h.mu.Unlock()
-		return fmt.Errorf("failed to open turn spool: %w", err)
-	}
-	startEvt, err := initSpool.Append(ChatStreamEvent{
-		SessionID: sess.ID,
-		TurnID:    turnID,
-		Type:      "turn_start",
-		Text:      prompt,
-		Timestamp: turnStart,
-	})
-	_ = initSpool.Close()
-	if err != nil {
-		removeTurnSpoolFiles(metaPath, meta)
-		h.mu.Unlock()
-		return fmt.Errorf("failed to write turn_start spool event: %w", err)
-	}
-
-	if err := WriteTurnSpoolMeta(metaPath, meta); err != nil {
-		removeTurnSpoolFiles(metaPath, meta)
-		h.mu.Unlock()
-		return fmt.Errorf("failed to write turn metadata: %w", err)
-	}
-
-	// Detach worker in a new session with /dev/null stdio so ackbard restarts never trigger SIGPIPE or SIGHUP.
-	workerCmd := exec.Command(exePath, "--headless-worker", "--spec", metaPath)
-	workerCmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	workerCmd.Env = cleanEnv
-	if sess.Cwd != "" {
-		workerCmd.Dir = sess.Cwd
-	}
-	devNullR, rErr := os.Open(os.DevNull)
-	devNullW, wErr := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
-	if rErr == nil {
-		workerCmd.Stdin = devNullR
-	}
-	if wErr == nil {
-		workerCmd.Stdout = devNullW
-		workerCmd.Stderr = devNullW
-	}
-
-	startErr := workerCmd.Start()
-	if devNullR != nil {
-		_ = devNullR.Close()
-	}
-	if devNullW != nil {
-		_ = devNullW.Close()
-	}
-	if startErr != nil {
-		removeTurnSpoolFiles(metaPath, meta)
-		h.mu.Unlock()
-		return fmt.Errorf("failed to start headless worker: %w", startErr)
-	}
-
-	meta.WorkerPID = workerCmd.Process.Pid
-	_ = WriteTurnSpoolMeta(metaPath, meta)
-
-	h.ownedWorkers[turnID] = workerCmd
-	h.processes[sess.ID] = workerCmd
-	h.activeSessions[sess.ID] = sess
-	h.activeTurns[sess.ID] = true
-	h.activePrompts[sess.ID] = TranscriptMessage{
-		Role:      "user",
-		Content:   prompt,
-		Timestamp: turnStart,
-		TurnID:    turnID,
-		InFlight:  true,
-	}
-	h.sessionSpools[sess.ID] = meta
-	h.mu.Unlock()
-	h.syncSleepInhibitor()
-
-	go func(tid string, c *exec.Cmd) {
-		_ = c.Wait()
-		h.mu.Lock()
-		if h.ownedWorkers[tid] == c {
-			delete(h.ownedWorkers, tid)
-		}
-		h.mu.Unlock()
-	}(turnID, workerCmd)
-
-	sess.State = StateWorking
-	sess.Blocked = nil
-	sess.Activity = "Thinking..."
-	sess.LastEventAt = turnStart
-	sess.PID = workerCmd.Process.Pid
-	if sess.FirstPrompt == "" {
-		sess.FirstPrompt = prompt
-	}
-	sess.LastPrompt = prompt
-	if h.db != nil {
-		_ = h.db.SaveSession(sess)
-	}
-	if h.broadcast != nil {
-		h.broadcast(sess)
-	}
-
-	h.Emit(sess.ID, startEvt)
-
-	go h.monitorWorkerTurn(sess, origSessionID, meta, workerCmd, startEvt.Seq)
-	return nil
-}
-
 func (h *HeadlessRunner) processStream(sessionID string, r io.Reader, optionalSess ...*Session) {
 	_, _ = h.processStreamWithPrompt(sessionID, r, "", optionalSess...)
 }
@@ -1404,6 +1275,7 @@ type streamParseHooks struct {
 	onAntigravityInit  func(convID string)
 	onSystemInit       func()
 	onInteractiveBlock func(toolName string, toolInput any, blocked *Blocked)
+	onTurnResult       func(lastTurnText, resultText string, streamHadError bool)
 }
 
 func (h *HeadlessRunner) processStreamCore(sessionID string, r io.Reader, prompt string, emitTurnComplete bool, optionalSess ...*Session) (string, string, bool) {
@@ -1449,6 +1321,8 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 
 	var lastTextBuilder strings.Builder
 	var resultText string
+	var finalLastTurnText, finalResultText string
+	var finalStreamHadError bool
 	streamHadError := false
 	toolUses := make(map[string]string)
 	emittedToolStart := make(map[string]bool)
@@ -1611,8 +1485,10 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 				if res, ok := raw["result"].(map[string]interface{}); ok {
 					status, _ := res["status"].(string)
 					respText, _ := res["response"].(string)
-					if status == "ERROR" {
-						errText, _ := res["error"].(string)
+					errVal, _ := res["error"].(string)
+					if strings.EqualFold(status, "ERROR") || errVal != "" {
+						streamHadError = true
+						errText := errVal
 						if errText == "" {
 							errText = respText
 						}
@@ -1635,6 +1511,22 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 						}
 					}
 				}
+				finalLastTurnText = lastTextBuilder.String()
+				finalResultText = resultText
+				finalStreamHadError = streamHadError
+				if hooks.onTurnResult != nil {
+					hooks.onTurnResult(finalLastTurnText, finalResultText, finalStreamHadError)
+				}
+				lastTextBuilder.Reset()
+				resultText = ""
+				streamHadError = false
+				clear(emittedToolStart)
+				clear(emittedTextBlocks)
+				clear(emittedThinkingBlocks)
+				clear(agStepText)
+				hasEmittedAssistantText = false
+				hasEmittedDeltaInTurn = false
+				needsSeparation = false
 			}
 			continue
 		}
@@ -1896,7 +1788,26 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 					})
 				}
 			}
+			finalLastTurnText = lastTextBuilder.String()
+			finalResultText = resultText
+			finalStreamHadError = streamHadError
+			if hooks.onTurnResult != nil {
+				hooks.onTurnResult(finalLastTurnText, finalResultText, finalStreamHadError)
+			}
+			lastTextBuilder.Reset()
+			resultText = ""
+			streamHadError = false
+			clear(emittedToolStart)
+			clear(emittedTextBlocks)
+			clear(emittedThinkingBlocks)
+			clear(agStepText)
+			hasEmittedAssistantText = false
+			hasEmittedDeltaInTurn = false
+			needsSeparation = false
 		}
+	}
+	if finalLastTurnText != "" || finalResultText != "" || finalStreamHadError {
+		return finalLastTurnText, finalResultText, finalStreamHadError
 	}
 	return lastTextBuilder.String(), resultText, streamHadError
 }

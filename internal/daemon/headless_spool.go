@@ -28,6 +28,8 @@ type TurnSpoolMeta struct {
 	SocketTempDir     string    `json:"socket_temp_dir,omitempty"`
 	SpoolPath         string    `json:"spool_path"`
 	MetaPath          string    `json:"meta_path,omitempty"`
+	WorkerID          string    `json:"worker_id,omitempty"`
+	WorkerMetaPath    string    `json:"worker_meta_path,omitempty"`
 	WorkerPID         int       `json:"worker_pid,omitempty"`
 	ChildPID          int       `json:"child_pid,omitempty"`
 	StartedAt         time.Time `json:"started_at"`
@@ -111,23 +113,6 @@ func (h *HeadlessRunner) resolveRunDir(create bool) (string, error) {
 	return runDir, nil
 }
 
-// allocateWorkerSocketPath falls back to an unpredictable 0700 temp directory when sun_path would exceed 96 bytes.
-func allocateWorkerSocketPath(runDir, turnID string) (string, string, error) {
-	cand := filepath.Join(runDir, turnID+".sock")
-	if len(cand) <= 96 {
-		return cand, "", nil
-	}
-	td, err := os.MkdirTemp("", "akw-*")
-	if err != nil {
-		return "", "", err
-	}
-	if err := os.Chmod(td, 0700); err != nil {
-		_ = os.RemoveAll(td)
-		return "", "", err
-	}
-	return filepath.Join(td, "w.sock"), td, nil
-}
-
 func cleanupTurnSocketArtifacts(meta *TurnSpoolMeta) {
 	if meta == nil {
 		return
@@ -141,7 +126,9 @@ func cleanupTurnSocketArtifacts(meta *TurnSpoolMeta) {
 }
 
 func removeTurnSpoolFiles(metaPath string, meta *TurnSpoolMeta) {
-	cleanupTurnSocketArtifacts(meta)
+	if meta == nil || meta.WorkerMetaPath == "" || !fileExists(meta.WorkerMetaPath) {
+		cleanupTurnSocketArtifacts(meta)
+	}
 	if meta != nil {
 		if meta.SpoolPath != "" {
 			_ = os.Remove(meta.SpoolPath)
