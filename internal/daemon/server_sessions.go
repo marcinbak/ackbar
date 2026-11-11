@@ -427,14 +427,10 @@ func (s *Server) handleSessionControl(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"status":"unarchived"}`))
 
 	case "done", "mark_done":
-		sess.IsDone = true
-		sess.IsLater = false
-		sess.MetadataUpdatedAt = time.Now().UTC()
-		if err := s.db.SaveSession(sess); err != nil {
+		if err := s.markSessionDoneAndCleanup(r.Context(), sess, ""); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		s.broadcast(sess)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"done"}`))
 
@@ -527,6 +523,9 @@ func (s *Server) handleSessionControl(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"status":"killed"}`))
 
 	case "delete":
+		if s.headless != nil {
+			s.headless.CleanupSessionRuntime(sess.ID, sess.NativeID)
+		}
 		if sess.Managed && sess.TmuxName != "" {
 			_ = tmux.Kill(r.Context(), sess.TmuxName)
 		}
@@ -593,6 +592,7 @@ func (s *Server) handleSessionControl(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Update state to working/restarting
+		sess.IsDone = false
 		sess.Managed = true
 		sess.TmuxName = tmuxName
 		sess.State = StateWorking
@@ -642,6 +642,7 @@ func (s *Server) handleSessionControl(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		sess.IsDone = false
 		sess.Managed = true
 		sess.TmuxName = tmuxName
 		sess.State = StateWorking
@@ -1171,6 +1172,7 @@ func (s *Server) handleTakeWheel(w http.ResponseWriter, r *http.Request) {
 			hasActiveAgent = len(activeChildren) > 0
 		}
 		if hasActiveAgent {
+			sess.IsDone = false
 			sess.TmuxName = tmuxName
 			sess.EngineType = EngineTmux
 			sess.Managed = true
@@ -1203,6 +1205,7 @@ func (s *Server) handleTakeWheel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	sess.IsDone = false
 	sess.TmuxName = tmuxName
 	sess.EngineType = EngineTmux
 	sess.Managed = true
@@ -1273,6 +1276,7 @@ func (s *Server) handleSwitchHeadless(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	sess.IsDone = false
 	sess.TmuxName = ""
 	sess.EngineType = EngineHeadless
 	sess.Managed = true

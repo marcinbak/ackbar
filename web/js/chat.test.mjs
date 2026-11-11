@@ -340,6 +340,7 @@ const {
   isPromptInTranscriptTail,
   loadChatTranscript,
   sendChatPrompt,
+  connectChatStream,
   handleChatStreamEvent
 } = chat;
 
@@ -720,5 +721,272 @@ test('does not duplicate in-flight user prompt when transcript has partial assis
     'Must not duplicate attachment user prompt when reloading transcript mid-turn after >20s tool execution'
   );
 });
+
+test('restores in_flight_turn from spool on tab switch and continues streaming from last_seq without gaps or duplicates', async () => {
+  const container = new MockElement('div');
+  container.className = 'chat-messages-container';
+
+  const tabEl = new MockElement('div');
+  tabEl.className = 'tab active';
+  const sendBtn = new MockElement('button');
+  const cancelBtn = new MockElement('button');
+  cancelBtn.style.display = 'none';
+  const statusBadge = new MockElement('span');
+
+  const openedUrls = [];
+  class MockEventSource {
+    static OPEN = 1;
+    static CLOSED = 2;
+    constructor(url) {
+      this.url = url;
+      this.readyState = MockEventSource.OPEN;
+      openedUrls.push(url);
+    }
+    close() {
+      this.readyState = MockEventSource.CLOSED;
+    }
+  }
+  const prevEventSource = globalThis.EventSource;
+  globalThis.EventSource = MockEventSource;
+
+  try {
+    const turnStartIso = new Date().toISOString();
+    const tabObj = {
+      id: 'tab-spool-restore',
+      viewMode: 'chat',
+      tabEl,
+      chatMessagesEl: container,
+      chatSendBtn: sendBtn,
+      chatCancelBtn: cancelBtn,
+      chatStatusBadge: statusBadge,
+      session: {
+        id: 'claude-code:local:sess-spool-restore',
+        agent: 'claude-code',
+        engine_type: 'headless',
+        state: 1
+      }
+    };
+
+    globalThis.fetch = async (url) => {
+      const urlStr = String(url);
+      if (urlStr.includes('/v1/sessions/transcript')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            messages: [
+              {
+                role: 'user',
+                content: 'Explain worker reattachment',
+                timestamp: turnStartIso,
+                turn_id: 'turn-42',
+                in_flight: true
+              },
+              {
+                role: 'assistant',
+                content: 'First chunk. ',
+                thinking: 'Checking spool...',
+                tool_calls: ['Read: internal/daemon/headless_worker.go'],
+                timestamp: turnStartIso,
+                turn_id: 'turn-42',
+                in_flight: true
+              }
+            ],
+            in_flight_turn: {
+              turn_id: 'turn-42',
+              last_seq: 4,
+              active: true,
+              prompt: 'Explain worker reattachment',
+              assistant_text: 'First chunk. ',
+              thinking: 'Checking spool...',
+              tool_calls: ['Read: internal/daemon/headless_worker.go'],
+              timestamp: turnStartIso
+            },
+            active_prompt: {
+              text: 'Explain worker reattachment',
+              timestamp: turnStartIso,
+              turn_id: 'turn-42'
+            }
+          })
+        };
+      }
+      return { ok: true, status: 200, json: async () => ({ items: [], paused: false }) };
+    };
+
+    await loadChatTranscript(tabObj);
+    assert.equal(tabObj.activeTurnId, 'turn-42');
+    assert.equal(tabObj.lastStreamSeq, 4);
+    assert.equal(tabObj.sending, true);
+    assert.equal(container.querySelectorAll('.chat-msg.user-msg').length, 1);
+    assert.equal(container.querySelectorAll('.chat-msg.assistant-msg.in-flight').length, 1);
+
+    connectChatStream(tabObj);
+    assert.equal(openedUrls.length, 1);
+    assert.ok(openedUrls[0].includes('turn_id=turn-42'), 'SSE URL must carry turn_id');
+    assert.ok(openedUrls[0].includes('after_seq=4'), 'SSE URL must carry after_seq=4');
+
+    handleChatStreamEvent(tabObj, {
+      turn_id: 'turn-42',
+      seq: 4,
+      type: 'text_delta',
+      text: 'First chunk. '
+    });
+    assert.equal(tabObj.activeTurnBuffer, 'First chunk. ');
+
+    handleChatStreamEvent(tabObj, {
+      turn_id: 'turn-42',
+      seq: 5,
+      type: 'text_delta',
+      text: 'Second chunk.'
+    });
+    await new Promise((r) => setTimeout(r, 15));
+
+    assert.equal(tabObj.lastStreamSeq, 5);
+    assert.equal(tabObj.activeTurnBuffer, 'First chunk. Second chunk.');
+    assert.equal(container.querySelectorAll('.chat-msg.assistant-msg').length, 1);
+    assert.ok(container.querySelectorAll('.chat-msg.assistant-msg')[0].textContent.includes('First chunk. Second chunk.'));
+  } finally {
+    globalThis.EventSource = prevEventSource;
+  }
+});
+
+test('connectChatStream reconnects with updated after_seq and deduplicates mid-turn and post-turn jsonl flushes by turn_id', async () => {
+  const container = new MockElement('div');
+  container.className = 'chat-messages-container';
+
+  const tabEl = new MockElement('div');
+  tabEl.className = 'tab active';
+  const inputEl = new MockElement('textarea');
+  inputEl.value = 'Run diagnostics';
+  const sendBtn = new MockElement('button');
+  const cancelBtn = new MockElement('button');
+  cancelBtn.style.display = 'none';
+  const statusBadge = new MockElement('span');
+
+  const openedSources = [];
+  class MockEventSource {
+    static OPEN = 1;
+    static CLOSED = 2;
+    constructor(url) {
+      this.url = url;
+      this.readyState = MockEventSource.OPEN;
+      openedSources.push(this);
+    }
+    close() {
+      this.readyState = MockEventSource.CLOSED;
+    }
+  }
+  const prevEventSource = globalThis.EventSource;
+  globalThis.EventSource = MockEventSource;
+
+  try {
+    const turnIso = new Date().toISOString();
+    const tabObj = {
+      id: 'tab-sse-reconnect-dedup',
+      viewMode: 'chat',
+      tabEl,
+      chatMessagesEl: container,
+      chatInputEl: inputEl,
+      chatSendBtn: sendBtn,
+      chatCancelBtn: cancelBtn,
+      chatStatusBadge: statusBadge,
+      pendingAttachments: [],
+      session: {
+        id: 'claude-code:local:sess-reconnect-dedup',
+        agent: 'claude-code',
+        engine_type: 'headless',
+        state: 0
+      }
+    };
+
+    let transcriptPayload = { messages: [] };
+    globalThis.fetch = async (url) => {
+      const urlStr = String(url);
+      if (urlStr.includes('/v1/sessions/prompt')) {
+        return { ok: true, status: 200, json: async () => ({ status: 'running' }) };
+      }
+      if (urlStr.includes('/v1/sessions/transcript')) {
+        return { ok: true, status: 200, json: async () => transcriptPayload };
+      }
+      if (urlStr.includes('/v1/sessions/queue')) {
+        return { ok: true, status: 200, json: async () => ({ items: [], paused: false }) };
+      }
+      if (urlStr.includes('/v1/sessions')) {
+        return { ok: true, status: 200, json: async () => [] };
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    };
+
+    await sendChatPrompt(tabObj);
+    assert.equal(openedSources.length, 1);
+
+    handleChatStreamEvent(tabObj, {
+      turn_id: 'turn-99',
+      seq: 1,
+      type: 'turn_start',
+      text: 'Run diagnostics',
+      timestamp: turnIso
+    });
+    handleChatStreamEvent(tabObj, {
+      turn_id: 'turn-99',
+      seq: 2,
+      type: 'text_delta',
+      text: 'Diagnostics: '
+    });
+    await new Promise((r) => setTimeout(r, 15));
+
+    openedSources[0].close();
+    connectChatStream(tabObj);
+    assert.equal(openedSources.length, 2);
+    assert.ok(openedSources[1].url.includes('turn_id=turn-99'));
+    assert.ok(openedSources[1].url.includes('after_seq=2'));
+
+    transcriptPayload = {
+      messages: [
+        { role: 'user', content: 'Run diagnostics', timestamp: turnIso, turn_id: 'turn-99', in_flight: true },
+        { role: 'assistant', content: 'Diagnostics: ', timestamp: turnIso, turn_id: 'turn-99', in_flight: true }
+      ],
+      in_flight_turn: {
+        turn_id: 'turn-99',
+        last_seq: 2,
+        active: true,
+        prompt: 'Run diagnostics',
+        assistant_text: 'Diagnostics: ',
+        timestamp: turnIso
+      }
+    };
+    await loadChatTranscript(tabObj);
+    assert.equal(container.querySelectorAll('.chat-msg.user-msg').length, 1, 'Zero duplicate user bubbles on mid-turn flush');
+    assert.equal(container.querySelectorAll('.chat-msg.assistant-msg').length, 1, 'Zero duplicate assistant bubbles on mid-turn flush');
+
+    handleChatStreamEvent(tabObj, {
+      turn_id: 'turn-99',
+      seq: 3,
+      type: 'text_delta',
+      text: 'all green.'
+    });
+    transcriptPayload = {
+      messages: [
+        { role: 'user', content: 'Run diagnostics', timestamp: turnIso, turn_id: 'turn-99' },
+        { role: 'assistant', content: 'Diagnostics: all green.', timestamp: turnIso, turn_id: 'turn-99' }
+      ]
+    };
+    handleChatStreamEvent(tabObj, {
+      turn_id: 'turn-99',
+      seq: 4,
+      type: 'turn_complete',
+      text: 'Diagnostics: all green.',
+      timestamp: turnIso
+    });
+    await loadChatTranscript(tabObj);
+
+    assert.equal(container.querySelectorAll('.chat-msg.user-msg').length, 1, 'Zero duplicate user bubbles after post-turn flush');
+    assert.equal(container.querySelectorAll('.chat-msg.assistant-msg').length, 1, 'Zero duplicate assistant bubbles after post-turn flush');
+    assert.equal(tabObj.lastStreamSeq, 4);
+  } finally {
+    globalThis.EventSource = prevEventSource;
+  }
+});
+
 
 

@@ -2404,6 +2404,9 @@ function domMessageMatchesTranscript(el, msg) {
   if (!el || !msg) return false;
   if (msg.role === 'user') {
     if (!el.classList.contains('user-msg')) return false;
+    if (el.dataset.turnId && msg.turn_id && el.dataset.turnId === msg.turn_id) {
+      return true;
+    }
     const domText = normalizeComparisonText(
       el.dataset.rawPrompt ||
       (el.querySelector('.chat-msg-body') && el.querySelector('.chat-msg-body').textContent) ||
@@ -2413,7 +2416,8 @@ function domMessageMatchesTranscript(el, msg) {
     return Boolean(domText && msgText && (domText === msgText || domText.startsWith(msgText) || msgText.startsWith(domText)));
   }
   if (msg.role === 'assistant') {
-    if (!el.classList.contains('assistant-msg') || el.classList.contains('in-flight')) return false;
+    if (!el.classList.contains('assistant-msg')) return false;
+    if (Boolean(msg.in_flight) !== el.classList.contains('in-flight')) return false;
     const domText = normalizeComparisonText(
       el.dataset.rawContent ||
       (el.querySelector('.chat-msg-body') && el.querySelector('.chat-msg-body').textContent) ||
@@ -2463,12 +2467,25 @@ function coalesceTranscriptMessages(messages) {
       if (msg.timestamp) {
         last.timestamp = msg.timestamp;
       }
+      if (msg.turn_id && !last.turn_id) {
+        last.turn_id = msg.turn_id;
+      }
+      if (msg.in_flight) {
+        last.in_flight = true;
+      }
     } else if (last && last.role === 'user' && msg.role === 'user') {
+      const sameTurnId = Boolean(last.turn_id && msg.turn_id && last.turn_id === msg.turn_id);
       const lastText = normalizeComparisonText(last.content || last.rawPrompt || '');
       const currText = normalizeComparisonText(msg.content || msg.rawPrompt || '');
-      if (lastText && currText && lastText === currText) {
+      if (sameTurnId || (lastText && currText && lastText === currText)) {
         if (Array.isArray(msg.attachments) && msg.attachments.length > 0) {
           last.attachments = [...(last.attachments || []), ...msg.attachments];
+        }
+        if (msg.turn_id && !last.turn_id) {
+          last.turn_id = msg.turn_id;
+        }
+        if (msg.in_flight) {
+          last.in_flight = true;
         }
         continue;
       }
@@ -2489,9 +2506,44 @@ function coalesceTranscriptMessages(messages) {
   return coalesced;
 }
 
+function deduplicateTurnDomBubbles(container) {
+  if (!container) return;
+  for (const selector of ['.chat-msg.user-msg', '.chat-msg.assistant-msg']) {
+    const seen = new Map();
+    const els = container.querySelectorAll(selector);
+    for (const el of els) {
+      const turnId = el.dataset && el.dataset.turnId;
+      if (!turnId) continue;
+      const prev = seen.get(turnId);
+      if (!prev) {
+        seen.set(turnId, el);
+        continue;
+      }
+      if (selector.includes('assistant-msg') && el.classList.contains('in-flight') && !prev.classList.contains('in-flight')) {
+        prev.remove();
+        seen.set(turnId, el);
+      } else if (selector.includes('user-msg') && el.querySelector('.chat-msg-attachments') && !prev.querySelector('.chat-msg-attachments')) {
+        prev.remove();
+        seen.set(turnId, el);
+      } else {
+        el.remove();
+      }
+    }
+  }
+}
+
 function isPromptInTranscriptTail(coalesced, promptNorm, promptTimestamp, tabObj) {
   if (!Array.isArray(coalesced) || coalesced.length === 0 || !promptNorm) {
     return false;
+  }
+
+  const targetTurnId = tabObj && tabObj.inFlightPrompt && tabObj.inFlightPrompt.turnId;
+  if (targetTurnId) {
+    for (let i = coalesced.length - 1; i >= 0; i--) {
+      if (coalesced[i] && coalesced[i].role === 'user' && coalesced[i].turn_id === targetTurnId) {
+        return true;
+      }
+    }
   }
 
   let userIdx = -1;
@@ -2559,17 +2611,47 @@ async function loadChatTranscript(tabObj) {
       tabObj.allTranscriptMessages = coalesced;
       tabObj.isLoadingOlderTranscript = false;
 
+      const inFlightTurn = (data.in_flight_turn && typeof data.in_flight_turn === 'object' && data.in_flight_turn.turn_id)
+        ? data.in_flight_turn
+        : null;
+      if (inFlightTurn) {
+        const turnSeq = typeof inFlightTurn.last_seq === 'number' ? inFlightTurn.last_seq : 0;
+        if (inFlightTurn.active) {
+          if (tabObj.activeTurnId !== inFlightTurn.turn_id) {
+            tabObj.activeTurnId = inFlightTurn.turn_id;
+            tabObj.lastStreamSeq = turnSeq;
+          } else if (turnSeq > (tabObj.lastStreamSeq || 0)) {
+            tabObj.lastStreamSeq = turnSeq;
+          }
+        } else if (!tabObj.activeTurnId || tabObj.activeTurnId === inFlightTurn.turn_id) {
+          tabObj.activeTurnId = inFlightTurn.turn_id;
+          if (turnSeq > (tabObj.lastStreamSeq || 0)) {
+            tabObj.lastStreamSeq = turnSeq;
+          }
+        }
+      }
+
       const activePromptFromDaemon = (data.active_prompt && data.active_prompt.text)
         ? data.active_prompt
-        : null;
+        : (inFlightTurn && inFlightTurn.active && inFlightTurn.prompt
+          ? { text: inFlightTurn.prompt, timestamp: inFlightTurn.timestamp, turn_id: inFlightTurn.turn_id }
+          : null);
       const daemonActiveTs = (activePromptFromDaemon && activePromptFromDaemon.timestamp)
         ? new Date(activePromptFromDaemon.timestamp).getTime()
         : NaN;
 
       if (tabObj.inFlightPrompt && activePromptFromDaemon &&
-          promptsMatchForTurn(tabObj.inFlightPrompt.text, activePromptFromDaemon.text) &&
-          !isNaN(daemonActiveTs)) {
-        tabObj.inFlightPrompt.timestamp = daemonActiveTs;
+          ((activePromptFromDaemon.turn_id && tabObj.inFlightPrompt.turnId === activePromptFromDaemon.turn_id) ||
+           promptsMatchForTurn(tabObj.inFlightPrompt.text, activePromptFromDaemon.text))) {
+        if (!isNaN(daemonActiveTs)) {
+          tabObj.inFlightPrompt.timestamp = daemonActiveTs;
+        }
+        if (activePromptFromDaemon.turn_id) {
+          tabObj.inFlightPrompt.turnId = activePromptFromDaemon.turn_id;
+          if (tabObj.inFlightPrompt.el) {
+            tabObj.inFlightPrompt.el.dataset.turnId = activePromptFromDaemon.turn_id;
+          }
+        }
       }
 
       const liveTurnMsgEl = (tabObj.activeTurnMsgEl && tabObj.activeTurnMsgEl.classList.contains('in-flight'))
@@ -2611,7 +2693,7 @@ async function loadChatTranscript(tabObj) {
       const startIndex = total <= CHAT_PAGE_SIZE ? 0 : (total - CHAT_PAGE_SIZE);
       const visibleMessages = total <= CHAT_PAGE_SIZE ? coalesced : coalesced.slice(startIndex);
       const inFlightOnDisk = !inFlightPrompt || isPromptInTranscriptTail(coalesced, inFlightPrompt.text, inFlightPrompt.timestamp, tabObj);
-      const isTurnActive = Boolean(tabObj.sending || isSessionWorking(tabObj.session) || activePromptFromDaemon);
+      const isTurnActive = Boolean(tabObj.sending || isSessionWorking(tabObj.session) || activePromptFromDaemon || (inFlightTurn && inFlightTurn.active));
 
       let reusedDom = false;
       if (!liveTurnMsgEl && inFlightOnDisk) {
@@ -2635,6 +2717,9 @@ async function loadChatTranscript(tabObj) {
                 if (typeof visibleMessages[i].index === 'number') {
                   domMsgs[i].dataset.msgIndex = String(visibleMessages[i].index);
                 }
+                if (visibleMessages[i].turn_id) {
+                  domMsgs[i].dataset.turnId = visibleMessages[i].turn_id;
+                }
               }
               if (inFlightPrompt && !isTurnActive) {
                 tabObj.inFlightPrompt = null;
@@ -2649,6 +2734,11 @@ async function loadChatTranscript(tabObj) {
                   lastDomEl.remove();
                   reusedDom = true;
                   tabObj.loadedTranscriptStartIndex = startIndex;
+                  for (let i = 0; i < visibleMessages.length - 1; i++) {
+                    if (visibleMessages[i].turn_id) {
+                      domMsgs[i].dataset.turnId = visibleMessages[i].turn_id;
+                    }
+                  }
                   if (inFlightPrompt && !isTurnActive) {
                     tabObj.inFlightPrompt = null;
                   }
@@ -2694,7 +2784,7 @@ async function loadChatTranscript(tabObj) {
         if (liveTurnMsgEl) {
           const lastMsg = coalesced[coalesced.length - 1];
           if (lastMsg && lastMsg.role === 'assistant' &&
-              (inFlightOnDisk || assistantTextsOverlap(tabObj.activeTurnBuffer || '', lastMsg.content || ''))) {
+              (inFlightOnDisk || lastMsg.in_flight || (lastMsg.turn_id && liveTurnMsgEl.dataset.turnId === lastMsg.turn_id) || assistantTextsOverlap(tabObj.activeTurnBuffer || '', lastMsg.content || ''))) {
             if (container.lastElementChild && container.lastElementChild.classList.contains('assistant-msg')) {
               container.lastElementChild.remove();
             }
@@ -2741,16 +2831,43 @@ async function loadChatTranscript(tabObj) {
         }
       }
 
+      deduplicateTurnDomBubbles(container);
+
+      if (inFlightTurn && inFlightTurn.active && !liveTurnMsgEl) {
+        const restoredInFlight = container.querySelector('.chat-msg.assistant-msg.in-flight');
+        if (restoredInFlight) {
+          tabObj.activeTurnMsgEl = restoredInFlight;
+          if (!tabObj.activeTurnBuffer) {
+            tabObj.activeTurnBuffer = inFlightTurn.assistant_text || restoredInFlight.dataset.rawContent || '';
+          }
+          if (!tabObj.activeTurnThinking && inFlightTurn.thinking) {
+            tabObj.activeTurnThinking = inFlightTurn.thinking;
+          }
+          if ((!tabObj.activeTurnTools || tabObj.activeTurnTools.length === 0) && Array.isArray(inFlightTurn.tool_calls) && inFlightTurn.tool_calls.length > 0) {
+            tabObj.activeTurnTools = inFlightTurn.tool_calls.map(tc => {
+              const parsed = parseToolCall(tc);
+              return { name: parsed.name, detail: parsed.detail, status: 'done', output: '' };
+            });
+          }
+        }
+        setChatSending(tabObj, true);
+      }
+
       if (isTurnActive && !tabObj.inFlightPrompt && activePromptFromDaemon) {
         const userBubbles = container.querySelectorAll('.chat-msg.user-msg');
         if (userBubbles.length > 0) {
           const lastUserEl = userBubbles[userBubbles.length - 1];
           const uBody = lastUserEl.querySelector('.chat-msg-body');
           const domUserText = lastUserEl.dataset.rawPrompt || (uBody ? uBody.textContent : '') || '';
-          if (promptsMatchForTurn(domUserText, activePromptFromDaemon.text)) {
+          const turnIdMatches = Boolean(activePromptFromDaemon.turn_id && lastUserEl.dataset.turnId === activePromptFromDaemon.turn_id);
+          if (turnIdMatches || promptsMatchForTurn(domUserText, activePromptFromDaemon.text)) {
+            if (activePromptFromDaemon.turn_id) {
+              lastUserEl.dataset.turnId = activePromptFromDaemon.turn_id;
+            }
             tabObj.inFlightPrompt = {
               text: normalizePromptText(activePromptFromDaemon.text),
               el: lastUserEl,
+              turnId: activePromptFromDaemon.turn_id || null,
               timestamp: !isNaN(daemonActiveTs) ? daemonActiveTs : Date.now()
             };
           }
@@ -3692,6 +3809,9 @@ function createChatMessageElement(tabObj, msg) {
   if (msg.timestamp) {
     msgEl.dataset.timestamp = msg.timestamp;
   }
+  if (msg.turn_id) {
+    msgEl.dataset.turnId = msg.turn_id;
+  }
 
   if (msg.role === 'user') {
     msgEl.className = 'chat-msg user-msg';
@@ -3795,7 +3915,8 @@ function createChatMessageElement(tabObj, msg) {
       });
     });
   } else if (msg.role === 'assistant') {
-    msgEl.className = 'chat-msg assistant-msg';
+    const isInFlightAssistant = Boolean(msg.in_flight);
+    msgEl.className = isInFlightAssistant ? 'chat-msg assistant-msg in-flight' : 'chat-msg assistant-msg';
     if (typeof msg.index === 'number') {
       msgEl.dataset.msgIndex = String(msg.index);
     }
@@ -3813,8 +3934,11 @@ function createChatMessageElement(tabObj, msg) {
     if (msg.tool_calls && msg.tool_calls.length > 0) {
       toolsHtml = renderToolGroupHtml(msg.tool_calls);
     }
-    const bodyHtml = renderMarkdown(msg.content || '');
+    const bodyHtml = renderMarkdown(msg.content || '') + (isInFlightAssistant ? '<span class="chat-streaming-cursor"></span>' : '');
     const agentName = formatAgentChatName(tabObj.session ? tabObj.session.agent : null);
+    const slotsHtml = isInFlightAssistant
+      ? `<div class="chat-thinking-slot">${thinkingHtml}</div><div class="chat-tools-slot">${toolsHtml}</div>`
+      : `${thinkingHtml}${toolsHtml ? `<div class="chat-tools">${toolsHtml}</div>` : ''}`;
     msgEl.innerHTML = `
       <div class="chat-msg-header">
         <span class="chat-msg-role">🤖 ${escapeHtml(agentName)}</span>
@@ -3851,10 +3975,16 @@ function createChatMessageElement(tabObj, msg) {
           </button>
         </div>
       </div>
-      ${thinkingHtml}
-      ${toolsHtml ? `<div class="chat-tools">${toolsHtml}</div>` : ''}
+      ${slotsHtml}
       <div class="chat-msg-body markdown-body">${bodyHtml}</div>
     `;
+    if (isInFlightAssistant && msg.tool_calls && msg.tool_calls.length > 0) {
+      const groupCard = msgEl.querySelector('.chat-tool-group');
+      if (groupCard) {
+        groupCard.open = true;
+        groupCard.dataset.toolCalls = JSON.stringify(msg.tool_calls.map(tc => parseToolCall(tc)));
+      }
+    }
 
     const allTools = (msg.tool_calls && msg.tool_calls.length > 0) ? msg.tool_calls : (msg.tool_uses || []);
     if (Array.isArray(allTools)) {
@@ -4444,13 +4574,30 @@ function ensureActiveAssistantMessage(tabObj) {
   if (tabObj.activeInStreamActivityEl) {
     hideInStreamActivity(tabObj);
   }
-  if (tabObj.activeTurnMsgEl && tabObj.activeTurnMsgEl.isConnected) return tabObj.activeTurnMsgEl;
+  if (tabObj.activeTurnMsgEl && tabObj.activeTurnMsgEl.isConnected) {
+    if (tabObj.activeTurnId && !tabObj.activeTurnMsgEl.dataset.turnId) {
+      tabObj.activeTurnMsgEl.dataset.turnId = tabObj.activeTurnId;
+    }
+    return tabObj.activeTurnMsgEl;
+  }
+  if (tabObj.activeTurnId) {
+    const inFlightAssistants = tabObj.chatMessagesEl.querySelectorAll('.chat-msg.assistant-msg.in-flight');
+    for (let i = inFlightAssistants.length - 1; i >= 0; i--) {
+      if (inFlightAssistants[i].dataset.turnId === tabObj.activeTurnId) {
+        tabObj.activeTurnMsgEl = inFlightAssistants[i];
+        return inFlightAssistants[i];
+      }
+    }
+  }
   tabObj.activeTurnMsgEl = null;
 
   const assistantMsgEl = document.createElement('div');
   assistantMsgEl.className = 'chat-msg assistant-msg in-flight';
   const msgIdx = tabObj.chatMessagesEl ? tabObj.chatMessagesEl.querySelectorAll('.chat-msg').length : 0;
   assistantMsgEl.dataset.msgIndex = String(msgIdx);
+  if (tabObj.activeTurnId) {
+    assistantMsgEl.dataset.turnId = tabObj.activeTurnId;
+  }
   assistantMsgEl.dataset.rawContent = tabObj.activeTurnBuffer || '';
   assistantMsgEl.innerHTML = `
     <div class="chat-msg-header">
@@ -4812,6 +4959,9 @@ function connectChatStream(tabObj) {
   if (token) {
     sseUrl += `&token=${encodeURIComponent(token)}`;
   }
+  if (tabObj.activeTurnId && typeof tabObj.lastStreamSeq === 'number' && tabObj.lastStreamSeq > 0) {
+    sseUrl += `&turn_id=${encodeURIComponent(tabObj.activeTurnId)}&after_seq=${encodeURIComponent(tabObj.lastStreamSeq)}`;
+  }
 
   try {
     const es = new EventSource(sseUrl);
@@ -4908,7 +5058,33 @@ function scheduleActiveTurnStreamRender(tabObj) {
 
 // Handle stream event from SSE
 function handleChatStreamEvent(tabObj, evt) {
-  if (!tabObj || !tabObj.chatMessagesEl) return;
+  if (!tabObj || !tabObj.chatMessagesEl || !evt) return;
+  if (evt.type === 'session_init') return;
+
+  if (evt.turn_id) {
+    const evtSeq = (typeof evt.seq === 'number' && evt.seq > 0) ? evt.seq : 0;
+    if (tabObj.activeTurnId === evt.turn_id) {
+      if (evtSeq > 0 && evtSeq <= (tabObj.lastStreamSeq || 0)) {
+        return;
+      }
+      if (evtSeq > (tabObj.lastStreamSeq || 0)) {
+        tabObj.lastStreamSeq = evtSeq;
+      }
+    } else {
+      if (tabObj.activeTurnMsgEl && tabObj.activeTurnMsgEl.dataset.turnId && tabObj.activeTurnMsgEl.dataset.turnId !== evt.turn_id) {
+        tabObj.activeTurnMsgEl.classList.remove('in-flight');
+        const staleCursor = tabObj.activeTurnMsgEl.querySelector('.chat-streaming-cursor');
+        if (staleCursor) staleCursor.remove();
+        tabObj.activeTurnMsgEl = null;
+        tabObj.activeTurnBuffer = '';
+        tabObj.activeTurnHadTool = false;
+        tabObj.activeTurnTools = [];
+        tabObj.activeTurnThinking = '';
+      }
+      tabObj.activeTurnId = evt.turn_id;
+      tabObj.lastStreamSeq = evtSeq;
+    }
+  }
 
   if (!tabObj.activeTurnMsgEl || !tabObj.activeTurnMsgEl.isConnected) {
     const existingInFlight = tabObj.chatMessagesEl.querySelector('.chat-msg.assistant-msg.in-flight');
@@ -4952,12 +5128,33 @@ function handleChatStreamEvent(tabObj, evt) {
         const evtTime = evt.timestamp ? new Date(evt.timestamp).getTime() : NaN;
         let isAlreadyRendered = false;
 
+        if (evt.turn_id) {
+          const userMsgsByTurn = tabObj.chatMessagesEl.querySelectorAll('.chat-msg.user-msg');
+          for (let i = userMsgsByTurn.length - 1; i >= 0; i--) {
+            if (userMsgsByTurn[i].dataset.turnId === evt.turn_id) {
+              isAlreadyRendered = true;
+              delete userMsgsByTurn[i].dataset.inFlight;
+              tabObj.inFlightPrompt = {
+                text: evtNorm,
+                el: userMsgsByTurn[i],
+                turnId: evt.turn_id,
+                timestamp: !isNaN(evtTime) ? evtTime : Date.now()
+              };
+              break;
+            }
+          }
+        }
+
         // 1. Match against currently in-flight client prompt
-        if (tabObj.inFlightPrompt && tabObj.inFlightPrompt.el && tabObj.inFlightPrompt.el.parentNode === tabObj.chatMessagesEl) {
+        if (!isAlreadyRendered && tabObj.inFlightPrompt && tabObj.inFlightPrompt.el && tabObj.inFlightPrompt.el.parentNode === tabObj.chatMessagesEl) {
           const inFlightNorm = tabObj.inFlightPrompt.text;
           if (promptsMatchForTurn(inFlightNorm, evtNorm)) {
             isAlreadyRendered = true;
             delete tabObj.inFlightPrompt.el.dataset.inFlight;
+            if (evt.turn_id) {
+              tabObj.inFlightPrompt.turnId = evt.turn_id;
+              tabObj.inFlightPrompt.el.dataset.turnId = evt.turn_id;
+            }
             tabObj.inFlightPrompt.text = evtNorm;
             if (!isNaN(evtTime)) {
               tabObj.inFlightPrompt.timestamp = evtTime;
@@ -5002,18 +5199,22 @@ function handleChatStreamEvent(tabObj, evt) {
               if (textMatches) {
                 isAlreadyRendered = true;
                 delete lastMsg.dataset.inFlight;
+                if (evt.turn_id) lastMsg.dataset.turnId = evt.turn_id;
                 tabObj.inFlightPrompt = {
                   text: evtNorm,
                   el: lastMsg,
+                  turnId: evt.turn_id || null,
                   timestamp: resolvedTs
                 };
               }
             } else {
               if (textMatches && !hasCompletedAssistantAfter) {
                 isAlreadyRendered = true;
+                if (evt.turn_id) lastMsg.dataset.turnId = evt.turn_id;
                 tabObj.inFlightPrompt = {
                   text: evtNorm,
                   el: lastMsg,
+                  turnId: evt.turn_id || null,
                   timestamp: resolvedTs
                 };
               }
@@ -5026,6 +5227,7 @@ function handleChatStreamEvent(tabObj, evt) {
             role: 'user',
             content: evt.text,
             rawPrompt: evt.text,
+            turn_id: evt.turn_id || undefined,
             timestamp: evt.timestamp || new Date().toISOString()
           });
           if (tabObj.activeInStreamActivityEl && tabObj.activeInStreamActivityEl.parentNode === tabObj.chatMessagesEl) {
@@ -5036,6 +5238,7 @@ function handleChatStreamEvent(tabObj, evt) {
           tabObj.inFlightPrompt = {
             text: evtNorm,
             el: newMsgEl,
+            turnId: evt.turn_id || null,
             timestamp: !isNaN(evtTime) ? evtTime : Date.now()
           };
         }

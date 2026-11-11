@@ -16,6 +16,8 @@ type TranscriptMessage struct {
 	Content   string    `json:"content"`
 	Thinking  string    `json:"thinking,omitempty"`
 	ToolCalls []string  `json:"tool_calls,omitempty"`
+	TurnID    string    `json:"turn_id,omitempty"`
+	InFlight  bool      `json:"in_flight,omitempty"`
 	Timestamp time.Time `json:"timestamp"`
 }
 

@@ -9,8 +9,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"ackbar/internal/tmux"
 )
 
 var (
@@ -404,33 +402,13 @@ func (s *Server) completeAndCloseTaskSession(task *Task, sess *Session) {
 		return
 	}
 
-	now := time.Now().UTC()
-
-	// If a specific session was provided:
 	if sess != nil {
-		if sess.TmuxName != "" {
-			_ = tmux.Kill(context.Background(), sess.TmuxName)
-		}
-		sess.IsDone = true
-		sess.State = StateEnded
-		sess.Activity = "Completed (N15)"
-		sess.MetadataUpdatedAt = now
-		_ = s.db.SaveSession(sess)
-		s.broadcast(sess)
+		_ = s.markSessionDoneAndCleanup(context.Background(), sess, "Completed (N15)")
 	} else {
-		// Close all active worker sessions for this task
 		for _, w := range task.Workers {
 			if w.SessionID != "" && w.IsActive {
 				if sSess, _ := s.db.GetSession(w.SessionID); sSess != nil && sSess.State != StateEnded {
-					if sSess.TmuxName != "" {
-						_ = tmux.Kill(context.Background(), sSess.TmuxName)
-					}
-					sSess.IsDone = true
-					sSess.State = StateEnded
-					sSess.Activity = "Completed (N15)"
-					sSess.MetadataUpdatedAt = now
-					_ = s.db.SaveSession(sSess)
-					s.broadcast(sSess)
+					_ = s.markSessionDoneAndCleanup(context.Background(), sSess, "Completed (N15)")
 				}
 			}
 		}
