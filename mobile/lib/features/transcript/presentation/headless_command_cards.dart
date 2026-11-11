@@ -1,10 +1,14 @@
 import 'package:flutter/material.dart';
 import '../../../../core/models/headless_models.dart';
+import '../../../../core/models/session.dart';
 import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/app_typography.dart';
+import '../../headless/presentation/headless_mcp_section.dart';
 
 class HeadlessCommandCardView extends StatelessWidget {
   final HeadlessEphemeralCardEntry entry;
+  final Session? session;
+  final Future<({String url, String? authToken})> Function()? resolveHost;
   final VoidCallback onDismiss;
   final void Function(String text)? onAttachToPrompt;
   final void Function(int turn)? onRewindToTurn;
@@ -12,6 +16,8 @@ class HeadlessCommandCardView extends StatelessWidget {
   const HeadlessCommandCardView({
     super.key,
     required this.entry,
+    this.session,
+    this.resolveHost,
     required this.onDismiss,
     this.onAttachToPrompt,
     this.onRewindToTurn,
@@ -99,33 +105,61 @@ class HeadlessCommandCardView extends StatelessWidget {
 
   Widget _buildShell(BuildContext context, ShellExecResult s) {
     final ok = s.exitCode == 0;
-    final out = s.stdout.trim().isNotEmpty ? s.stdout : s.stderr;
+    final hasStdout = s.stdout.trim().isNotEmpty;
+    final hasStderr = s.stderr.trim().isNotEmpty;
+    final out = (hasStdout && hasStderr)
+        ? '${s.stdout.trimRight()}\n[stderr]\n${s.stderr.trimRight()}'
+        : (hasStdout ? s.stdout : s.stderr);
+
+    final tags = <String>[
+      'exit ${s.exitCode}',
+      '${s.durationMs}ms',
+      if (s.timedOut) 'TIMED OUT',
+      if (s.truncated) 'TRUNCATED',
+    ];
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Expanded(
-              child: Text('\$ ${s.command}',
-                  style: AppTypography.codeSm.copyWith(
-                      color: AppColors.textPrimary,
-                      fontWeight: FontWeight.w600)),
-            ),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-              decoration: BoxDecoration(
-                color: ok
-                    ? AppColors.statusEmerald.withValues(alpha: 0.15)
-                    : AppColors.statusCoral.withValues(alpha: 0.15),
-                borderRadius: BorderRadius.circular(4),
-              ),
               child: Text(
-                'exit ${s.exitCode}',
-                style: AppTypography.codeXs.copyWith(
-                    color:
-                        ok ? AppColors.statusEmerald : AppColors.statusCoral),
+                '\$ ${s.command}',
+                style: AppTypography.codeSm.copyWith(
+                  color: AppColors.textPrimary,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
+            ),
+            const SizedBox(width: 8),
+            Wrap(
+              spacing: 4,
+              children: tags
+                  .map(
+                    (t) => Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 6,
+                        vertical: 2,
+                      ),
+                      decoration: BoxDecoration(
+                        color: ok
+                            ? AppColors.statusEmerald.withValues(alpha: 0.15)
+                            : AppColors.statusCoral.withValues(alpha: 0.15),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Text(
+                        t,
+                        style: AppTypography.codeXs.copyWith(
+                          color: ok
+                              ? AppColors.statusEmerald
+                              : AppColors.statusCoral,
+                        ),
+                      ),
+                    ),
+                  )
+                  .toList(),
             ),
           ],
         ),
@@ -296,7 +330,7 @@ class HeadlessCommandCardView extends StatelessWidget {
   }
 
   Widget _buildInspect(BuildContext context, HeadlessInspectData d) {
-    final rep = d.report.isNotEmpty ? d.report : d.raw.toString();
+    final rep = _formatInspect(d);
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(8),
@@ -305,7 +339,7 @@ class HeadlessCommandCardView extends StatelessWidget {
         borderRadius: BorderRadius.circular(4),
         border: Border.all(color: AppColors.outlineSubtle),
       ),
-      constraints: const BoxConstraints(maxHeight: 180),
+      constraints: const BoxConstraints(maxHeight: 220),
       child: SingleChildScrollView(
         child: Text(
           rep,
@@ -315,7 +349,89 @@ class HeadlessCommandCardView extends StatelessWidget {
     );
   }
 
+  String _formatInspect(HeadlessInspectData d) {
+    if (d.report.isNotEmpty) return d.report;
+    final k = d.kind.toLowerCase();
+    if (k == 'context' || k == 'cost') {
+      final b = StringBuffer();
+      final model = d.raw['model']?.toString() ?? '';
+      if (model.isNotEmpty) b.writeln('Model: $model');
+      b.writeln('Turns: ${d.raw['turn_count'] ?? 0}');
+      final used = d.raw['context_used_tokens'] ?? 0;
+      final limit = d.raw['context_limit_tokens'] ?? 0;
+      final pct = d.raw['context_pct'] ?? 0;
+      b.writeln('Context: $used / $limit ($pct%)');
+      final inT = d.raw['input_tokens'] ?? 0;
+      final outT = d.raw['output_tokens'] ?? 0;
+      final crT = d.raw['cache_read_tokens'] ?? 0;
+      final thT = d.raw['thinking_tokens'] ?? 0;
+      b.writeln('Tokens: in: $inT · out: $outT · cache_r: $crT · think: $thT');
+      final est = d.raw['estimated_usd'];
+      if (est != null && est is num) {
+        final note = d.raw['billing_note']?.toString() ?? '';
+        final noteStr = note.isNotEmpty ? ' ($note)' : '';
+        b.writeln('Est. API: \$${est.toStringAsFixed(4)}$noteStr');
+      }
+      return b.toString().trimRight();
+    }
+    if (k == 'agents') {
+      final b = StringBuffer();
+      final builtins = d.raw['builtins'];
+      if (builtins is List && builtins.isNotEmpty) {
+        b.writeln('Builtin Agents:');
+        for (final item in builtins) {
+          final n = item is Map ? item['name'] ?? '' : item.toString();
+          b.writeln('  • $n');
+        }
+      }
+      final locals = d.raw['local_roles'];
+      if (locals is List && locals.isNotEmpty) {
+        if (b.isNotEmpty) b.writeln();
+        b.writeln('Local Roles:');
+        for (final item in locals) {
+          if (item is Map) {
+            b.writeln('  • ${item['name'] ?? ''} (${item['source'] ?? ''})');
+          } else {
+            b.writeln('  • $item');
+          }
+        }
+      }
+      if (b.isNotEmpty) return b.toString().trimRight();
+    }
+    if (k == 'plugins') {
+      final b = StringBuffer();
+      void addList(String title, dynamic list) {
+        if (list is List && list.isNotEmpty) {
+          if (b.isNotEmpty) b.writeln();
+          b.writeln('$title:');
+          for (final item in list) {
+            if (item is Map) {
+              final n = item['name'] ?? '';
+              final st = item['installed'] == true
+                  ? 'installed'
+                  : (item['status'] ?? 'available');
+              b.writeln('  • $n ($st)');
+            } else {
+              b.writeln('  • $item');
+            }
+          }
+        }
+      }
+
+      addList('Workspace Plugins', d.raw['workspace_plugins']);
+      addList('Installed Plugins', d.raw['installed_plugins']);
+      if (b.isNotEmpty) return b.toString().trimRight();
+    }
+    return d.raw.toString();
+  }
+
   Widget _buildMcp(BuildContext context, SessionMcpStatus m) {
+    if (session != null) {
+      return HeadlessMcpSection(
+        session: session!,
+        resolveHost: resolveHost,
+      );
+    }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [

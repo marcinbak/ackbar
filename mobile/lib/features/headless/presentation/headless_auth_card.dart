@@ -247,9 +247,11 @@ class _HeadlessAuthCardState extends ConsumerState<HeadlessAuthCard>
       if (!mounted) return;
       setState(() => _isBusy = false);
       if (res != null) {
+        final tmuxName = res['tmux_name']?.toString() ?? '';
         final updated = widget.session.copyWith(
           engineType: 'tmux',
           managed: true,
+          tmuxName: tmuxName.isNotEmpty ? tmuxName : widget.session.tmuxName,
           state: SessionState.working,
           clearBlocked: true,
         );

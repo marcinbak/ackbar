@@ -425,7 +425,16 @@ class _HeadlessConfigSheetState extends ConsumerState<HeadlessConfigSheet> {
               _buildContextBar(),
               const SizedBox(height: 12),
               HeadlessMcpSection(
-                  key: const ValueKey('config_mcp_section'), session: _session),
+                key: const ValueKey('config_mcp_section'),
+                session: _session,
+                resolveHost: () async {
+                  final h = _resolveHost();
+                  return (
+                    url: h.url,
+                    authToken: h.authToken.isNotEmpty ? h.authToken : null,
+                  );
+                },
+              ),
             ],
           ),
         ),

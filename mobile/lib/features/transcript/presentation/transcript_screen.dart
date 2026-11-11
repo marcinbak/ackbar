@@ -10,6 +10,7 @@ import '../../../core/models/host.dart';
 import '../../../core/models/session.dart';
 import '../../../core/models/subagent.dart';
 import '../../../core/models/transcript.dart';
+import '../../../core/network/api_client.dart';
 import '../../../core/network/headless_api_client.dart';
 import '../../../core/providers/fleet_providers.dart';
 import '../../../core/services/audio_companion_service.dart';
@@ -791,7 +792,7 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
   @override
   Widget build(BuildContext context) {
     ref.listen<List<Session>>(fleetSessionsProvider, (previous, next) {
-      final prevSession = _findMatchingSession(previous) ?? widget.session;
+      final prevSession = _findMatchingSession(previous) ?? _activeSession;
       final nextSession = _findMatchingSession(next);
       if (nextSession == null) return;
 
@@ -820,7 +821,7 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
     final liveSession = ref.watch(
       fleetSessionsProvider.select(_findMatchingSession),
     );
-    final currentSession = liveSession ?? widget.session;
+    final currentSession = liveSession ?? _activeSession;
     final isWorking = _isSending ||
         _awaitingTurnCompletion ||
         currentSession.state == SessionState.working;
@@ -1090,9 +1091,13 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
                         final cardEntry = _ephemeralCards[cardIndex];
                         return HeadlessCommandCardView(
                           entry: cardEntry,
+                          session: _resolveLiveSession(),
+                          resolveHost: _resolveHost,
                           onDismiss: () {
                             setState(() {
-                              _ephemeralCards.removeAt(cardIndex);
+                              _ephemeralCards.removeWhere(
+                                (c) => c.id == cardEntry.id,
+                              );
                             });
                           },
                           onAttachToPrompt: (fenced) {
@@ -1103,15 +1108,31 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
                           onRewindToTurn: (turn) async {
                             final host = await _resolveHost();
                             final api = ref.read(apiClientProvider);
-                            final res = await api.rewindSession(
-                              host.url,
-                              _resolveLiveSession().id,
-                              turn,
-                              authToken: host.authToken,
-                            );
-                            if (res.session != null) {
-                              _rotateToSession(res.session!,
-                                  notice: 'Rewound to Turn $turn');
+                            try {
+                              final res = await api.rewindSession(
+                                host.url,
+                                _resolveLiveSession().id,
+                                turn,
+                                authToken: host.authToken,
+                              );
+                              if (!mounted) return;
+                              if (res.session != null) {
+                                _rotateToSession(
+                                  res.session!,
+                                  notice: 'Rewound to Turn $turn',
+                                );
+                              }
+                            } catch (e) {
+                              if (!mounted) return;
+                              final msg = e is ApiHttpException
+                                  ? e.message
+                                  : e.toString();
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text('Rewind failed: $msg'),
+                                  backgroundColor: AppColors.statusCoral,
+                                ),
+                              );
                             }
                           },
                         );
@@ -1395,7 +1416,8 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
     final audioCompanion = ref.watch(audioCompanionServiceProvider);
     final isSpeakingThis =
         audioCompanion.isSpeaking && audioCompanion.activeMessageIndex == index;
-    final isCached = audioCompanion.isCached(widget.session.id, index);
+    final session = _resolveLiveSession();
+    final isCached = audioCompanion.isCached(session.id, index);
 
     return Align(
       alignment: Alignment.centerLeft,
@@ -1429,10 +1451,10 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
                     vertical: 2,
                   ),
                   decoration: BoxDecoration(
-                    color: widget.session.agentColor.withOpacity(0.15),
+                    color: session.agentColor.withOpacity(0.15),
                     borderRadius: AppSpacing.roundedSm,
                     border: Border.all(
-                      color: widget.session.agentColor.withOpacity(0.4),
+                      color: session.agentColor.withOpacity(0.4),
                       width: 0.8,
                     ),
                   ),
@@ -1440,15 +1462,15 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       AgentLogo(
-                        agent: widget.session.agent,
+                        agent: session.agent,
                         size: 11,
-                        color: widget.session.agentColor,
+                        color: session.agentColor,
                       ),
                       const SizedBox(width: 4),
                       Text(
-                        widget.session.agentDisplayName,
+                        session.agentDisplayName,
                         style: AppTypography.codeXs.copyWith(
-                          color: widget.session.agentColor,
+                          color: session.agentColor,
                           fontWeight: FontWeight.w700,
                           fontSize: 11,
                         ),

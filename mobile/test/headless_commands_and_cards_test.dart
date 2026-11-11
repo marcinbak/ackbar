@@ -64,6 +64,16 @@ void main() {
       expect(t3, isNull);
     });
 
+    test(
+        'detects @ file mention token before newline without skipping into next line',
+        () {
+      final t = detectComposerTrigger('Review @file\nand test', 12);
+      expect(t?.kind, ComposerTriggerKind.file);
+      expect(t?.query, 'file');
+      expect(t?.replaceStart, 7);
+      expect(t?.replaceEnd, 12);
+    });
+
     test('returns null for standard messages', () {
       expect(detectComposerTrigger('Hello world', 5), isNull);
       expect(detectComposerTrigger('', 0), isNull);
@@ -180,6 +190,7 @@ void main() {
 
       expect(find.text('\$ ls'), findsOneWidget);
       expect(find.text('exit 0'), findsOneWidget);
+      expect(find.text('8ms'), findsOneWidget);
       expect(find.text('file1.dart\nfile2.dart'), findsOneWidget);
 
       await tester
@@ -231,6 +242,49 @@ void main() {
       await tester.pump();
 
       expect(selectedTurn, 2);
+    });
+
+    testWidgets('Inspect card formats context and cost structured output',
+        (tester) async {
+      final card = HeadlessEphemeralCardEntry(
+        id: 'inspect-1',
+        kind: 'inspect',
+        createdAt: DateTime.now(),
+        inspect: HeadlessInspectData(
+          kind: 'context',
+          raw: {
+            'model': 'claude-3-7-sonnet',
+            'turn_count': 5,
+            'context_limit_tokens': 200000,
+            'context_used_tokens': 12000,
+            'context_pct': 6.0,
+            'input_tokens': 8000,
+            'output_tokens': 1500,
+            'cache_read_tokens': 2000,
+            'thinking_tokens': 500,
+            'estimated_usd': 0.035,
+            'billing_note': 'Claude token rates',
+          },
+        ),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: HeadlessCommandCardView(
+              entry: card,
+              onDismiss: () {},
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      expect(find.textContaining('Model: claude-3-7-sonnet'), findsOneWidget);
+      expect(find.textContaining('Context: 12000 / 200000 (6.0%)'),
+          findsOneWidget);
+      expect(find.textContaining('Est. API: \$0.0350 (Claude token rates)'),
+          findsOneWidget);
     });
   });
 }

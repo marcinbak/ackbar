@@ -125,6 +125,7 @@ class _HeadlessMcpSectionState extends ConsumerState<HeadlessMcpSection>
       _activeAuthUrl = res.authUrl;
       final launcher = ref.read(externalUrlLauncherProvider);
       await launcher.launchHttpsUrl(res.authUrl);
+      if (!mounted) return;
       setState(() {});
     } catch (e) {
       if (!mounted) return;

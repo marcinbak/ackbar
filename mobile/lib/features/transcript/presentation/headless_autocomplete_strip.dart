@@ -78,8 +78,9 @@ ComposerTrigger? detectComposerTrigger(String text, int cursorOffset) {
         (atIdx == 0 || text[atIdx - 1] == ' ' || text[atIdx - 1] == '\n')) {
       final segment = text.substring(atIdx + 1, safeOffset);
       if (!segment.contains(' ') && !segment.contains('\n')) {
-        var end = text.indexOf(' ', atIdx);
-        if (end == -1) end = text.indexOf('\n', atIdx);
+        final sp = text.indexOf(' ', atIdx);
+        final nl = text.indexOf('\n', atIdx);
+        var end = (sp != -1 && (nl == -1 || sp < nl)) ? sp : nl;
         if (end == -1) end = text.length;
         final query = text.substring(atIdx + 1, end);
         return ComposerTrigger.file(query, atIdx, end);
@@ -218,7 +219,8 @@ class _HeadlessAutocompleteStripState
     final prefix = text.substring(0, trig.replaceStart);
     final suffix =
         trig.replaceEnd <= text.length ? text.substring(trig.replaceEnd) : '';
-    final newText = '$prefix$replacement $suffix';
+    final trailing = suffix.startsWith(' ') ? '' : ' ';
+    final newText = '$prefix$replacement$trailing$suffix';
 
     widget.controller.value = TextEditingValue(
       text: newText,
