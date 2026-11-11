@@ -22,6 +22,8 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 * **`server_chat.go`:** Headless/tmux prompt submission (`/v1/sessions/prompt` with `delay_seconds`, `deliver_at`, and inline `/delay <duration> <prompt>` scheduling), prompt queue management (`GET`/`DELETE`/`POST` `/v1/sessions/prompt/queue` with `action: send_now`), `scheduled_prompts` SQLite persistence, SSE chat streaming (`/v1/sessions/chat/stream`), turn cancellation, automated session handover (`/v1/sessions/handover`), and transcript endpoints.
 * **`headless.go`, `headless_persistent.go`, `headless_spool.go`:** Headless coordinator, warm worker lifecycle management, turn dispatch/reuse, and monotonic NDJSON turn spooling.
 * **`headless_worker.go`, `headless_config.go`, `headless_worker_ipc.go`:** Detached `--headless-worker` process, persistent stdio stream loop, configuration fingerprinting, and Unix socket RPC.
+* **`headless_auth_detect.go`, `headless_auth_broker.go`, `headless_auth_flow.go`:** Detects OAuth authentication blocks (`BlockAuth`), manages allowlisted auth processes, relays loopback/stdin callbacks, and auto-resumes sessions.
+* **`server_mcp_status.go`:** Inspects configured MCP servers, probes compiled plugin authentication status, and caches status responses with 10s TTL.
 * **`headless_reattach.go` & `headless_stream_replay.go`:** Daemon reboot worker recovery, socket re-attachment, and gapless SSE replay (`?after_seq`, `Last-Event-ID`).
 * **`session_done.go`:** Manual `Done` runtime cleanup, process teardown, spool pruning, and periodic `auto_done` sweep.
 * **`sleep_inhibitor.go`:** Cross-OS POSIX idle-sleep inhibitor (`caffeinate` / `systemd-inhibit`) active during running headless turns.
@@ -136,6 +138,7 @@ Headless sessions (`engine_type = "headless"`, `tmux_name = ""`) execute turns t
   * **Initial Prompt on Spawn:** Passing non-empty `prompt` to `POST /v1/sessions/spawn` triggers Turn 1 immediately in background.
   * **Session Configuration:** Passes `--model`, `--effort` (Claude Code only), and permission flags (`--permission-mode plan` or `--dangerously-skip-permissions`).
   * **Interactive Tool Interception:** Blocks on `AskUserQuestion`, `ask_question`, or `ExitPlanMode`. Approval synchronously reaps worker and resumes with updated permissions.
+  * **OAuth Authentication Interception (`BlockAuth`):** Pauses queue on OAuth failure, persists `blocked_meta`, emits `interactive_block`, and auto-resumes on successful callback.
   * **Prompt Queue & Auto-Dispatch:** Persists queued prompts in SQLite (`scheduled_prompts`). Dispatches due prompts via 5-second background loop or manual trigger.
 
 ---
@@ -198,6 +201,7 @@ The SQLite database (`~/.config/ackbar/ackbard.db`) uses CGO-free pure Go SQLite
 * `old_id`: Pre-adoption temporary session ID preserved when an Antigravity session adopts its canonical conversation UUID, enabling seamless fallback resolution across `/v1/sessions/*` and `/v1/sessions/pty`.
 * `is_supervisor`: Tracks whether the session is a zero-input `⚓ Supervisor` session (`1` = supervisor, `0` = normal).
 * `current_task_id`: Tracks the active Ackbar task ID bound to the session (if any), categorizing the session under the `📋 Tasks` subsection. Each host strictly stores only its own local sessions in the `sessions` table (no cross-host session replicas).
+* `blocked_meta`: Persists structured JSON metadata (`auth_target`, `auth_kind`, `auth_server`, `auth_url`, `auth_hint`, `flow_id`) for sessions in `BlockAuth` state.
 
 ---
 

@@ -124,6 +124,7 @@ It is embedded directly into the `ackbard` Go binary and served on `http://127.0
 * **Composer Status Pill Bar & `/config` Popover (`.chat-composer-bar`, `.chat-config-popover`):**
   * Displays interactive pills above the chat input for **Model**, **Reasoning Effort** (`low`, `medium`, `high`, `max`, hidden for Antigravity sessions), **Execution Mode** (`⚡ Auto Mode` vs `📝 Plan Mode`), and **Context Usage** (`% Context` gauge derived from `session.context_pct` with agent-aware fallback limits: 1M tokens for Antigravity, 200k tokens for Claude Code).
   * Clicking `⚙️ /config` (or typing `/config`) opens the Session Configuration popover to adjust model, effort, and execution mode (`PATCH /v1/sessions/{id}/config`) and inspect context window usage.
+  * Displays **MCP & Plugins** health pills in the `/config` popover with 1-click **`[Sign in]`** actions.
   * Dynamically queries `GET /v1/sessions/{id}/suggestions?kind=models` to populate agent-specific model catalogs (e.g. Gemini 4 Argon, Gemini 3.8 Flash, GPT-OSS for Antigravity; Claude Fable 5.1, Claude Opus/Sonnet for Claude Code).
 * **`/` Command, `@` File, and Model Autocomplete (`.chat-autocomplete-menu`):**
   * Typing `/` at the start of input queries `GET /v1/sessions/{id}/suggestions?kind=commands`, surfacing built-in client actions (`/config`, `/plan`, `/clear`, `/compact`, `/handover`, `/terminal`) alongside discovered workspace workflows (`.claude/commands/*.md`, `.agents/workflows/*.md`) and skills (`SKILL.md`).
@@ -133,6 +134,7 @@ It is embedded directly into the `ackbard` Go binary and served on `http://127.0
   * **`AskUserQuestion` / `ask_question` (`.chat-interactive-card`):** Renders single- and multi-question forms supporting radio buttons, `multi_select` checkboxes, and custom `"Other"` text answers, submitting directly to `POST /v1/sessions/respond`.
   * **`ExitPlanMode` (`.card-approval`):** Renders the markdown plan preview with **`✓ Approve & Execute`** (auto-switching the session from `Plan Mode` to `Auto Mode`) and **`Request Changes`** feedback input.
   * **`TodoWrite` / `todo_write` (`.chat-todo-card`):** Renders a read-only live Task Progress checklist (`completed`, `in_progress`, `pending`) both during live SSE streaming and in historical transcripts.
+  * **OAuth Authentication (`.card-auth`, `web/js/chat-auth.js`):** Renders interactive cards with **`[Sign in]`**, remote callback paste, **`[↻ Retry]`**, **`[🏎️ Authenticate in Terminal]`**, and **`[Dismiss]`**.
 * **Markdown Image Cards, Captions & Interactive Carousels (`chat.js`, `utils.js`):**
   * **Inline Image Cards & Captions (`.chat-file-preview-card`, `.chat-file-preview-caption`):** Automatically rewrites local Markdown image links (`![Alt](path/to/img.png)`) into interactive preview cards with Open in Preview action and subtle captions whenever alt text provides non-filename context.
   * **Interactive Carousels (`.chat-carousel`):** Preprocesses 3- and 4-backtick ````carousel blocks and unfenced `<!-- slide -->` separators into tabbed / step carousels featuring slide counters (`1 / N`), `‹ Prev` / `Next ›` navigation controls, and a `Grid` / `Slide` view switcher for side-by-side multi-column comparison.
@@ -188,6 +190,7 @@ The web frontend is organized as zero-build native ECMAScript modules (`<script 
 * **`tabs.js`**: Terminal and chat tab strip lifecycle, overflow menu, and persistence.
 * **`terminal.js`**: `xterm.js` terminal tabs, WebSocket PTY streams, resizing, and attachment uploads.
 * **`chat.js`**: Interactive chat interface, streaming transcript, tool call formatters, and composer queue.
+* **`chat-auth.js`**: Headless OAuth login flows, `.card-auth` cards, callback relay, and `/config` popover MCP and plugin health pills.
 * **`mermaid.js`**: Mermaid flowchart and diagram parser, dark-theme renderer, zero-flicker SVG cache, and interactive Diagram/Code view switcher.
 * **`details.js`**: Right Inspector Pane (`#inspectorPanel`) controller (`openInspectorPane`, `closeInspectorPane`, `refitActiveTerminal`), session details view (`openSessionDetailsTab`), markdown plan/doc viewer (`openDocViewerTab`), and rich transcript viewer (`openTranscriptViewerTab`).
 * **`palette.js`**: Command palette fuzzy search (`Cmd+K` / `Ctrl+K`) and dispatcher launcher.

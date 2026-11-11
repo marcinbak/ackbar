@@ -27,6 +27,8 @@ Ackbar supports the major agent ecosystems:
 * **Headless Persistent Stdio Execution:** Runs `agy --input-format stream-json --output-format stream-json` (omits `-p`). Dispatches turns via stdin NDJSON `{"event":"user"}` discriminator.
 * **Startup Init Race & Process Scanning:** Buffers pre-turn `{"event":"init"}` event until Turn 1. Background scanner ignores `--input-format` to avoid misclassifying warm workers.
 * **Session File Cleanup (`CleanSessionFiles`):** Removes `brain/<session-id>/`, `conversations/<session-id>.*`, `annotations/<session-id>.*`, `presence/<session-id>.*`, and prunes `<session-id>` from `cache/conversation_metadata.json` across default (`~/.gemini/antigravity`, `~/.gemini/antigravity-cli`, `~/.antigravity`) and `~/.gemini-profiles/*` directories.
+* **Headless Worker Plugin Environment (`buildWorkerEnv`):** Prepends `~/.gemini/antigravity-cli/bin` and `~/.gemini/antigravity/bin` to `PATH` and exports `ANTIGRAVITY_APP_DATA_DIR` so shims resolve cached binaries.
+* **Plugin Status Probing (`probeWorkspacePlugins`):** Probes compiled `plugin_data/<tool>/bin/<tool>-*` binaries with `auth status --json` to prevent network downloads during status checks.
 
 ### OpenAI Codex
 * **Session Index:** `~/.codex/session_index.jsonl` contains thread titles (`thread_name`), native IDs (`id`), and update timestamps.
