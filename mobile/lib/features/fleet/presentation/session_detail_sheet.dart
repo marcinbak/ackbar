@@ -1,8 +1,7 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/models/session.dart';
+import '../../../core/navigation/session_navigator.dart';
 import '../../../core/providers/fleet_providers.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
@@ -11,8 +10,6 @@ import '../../../core/widgets/agent_logo.dart';
 import '../../../core/widgets/glass_card.dart';
 import '../../../core/widgets/status_badge.dart';
 import '../../../core/widgets/token_gauge_bar.dart';
-import '../../terminal/presentation/terminal_screen.dart';
-import '../../transcript/presentation/transcript_screen.dart';
 
 /// Modal bottom sheet providing deep inspection and lifecycle control for an agent session.
 class SessionDetailSheet extends ConsumerWidget {
@@ -224,12 +221,18 @@ class SessionDetailSheet extends ConsumerWidget {
             ElevatedButton.icon(
               onPressed: () async {
                 final messenger = ScaffoldMessenger.of(context);
+                final navContext = Navigator.of(context).context;
                 Navigator.of(context).pop();
                 final ok = await ref
                     .read(fleetSessionsProvider.notifier)
                     .resumeSession(session.id);
                 if (ok) {
-                  TerminalScreen.open(context, session);
+                  final live = ref
+                          .read(fleetSessionsProvider)
+                          .where((s) => s.id == session.id)
+                          .firstOrNull ??
+                      session;
+                  SessionNavigator.openSession(navContext, ref, live);
                 } else {
                   messenger.showSnackBar(
                     SnackBar(
@@ -313,12 +316,24 @@ class SessionDetailSheet extends ConsumerWidget {
             children: [
               Expanded(
                 child: ElevatedButton.icon(
-                  onPressed: () {
-                    Navigator.of(context).pop();
-                    TerminalScreen.open(context, session);
-                  },
-                  icon: const Icon(Icons.terminal_rounded, size: 16),
-                  label: const Text('Terminal'),
+                  key: const Key('sheet_open_session_button'),
+                  onPressed: (session.isHeadless ||
+                          (!session.isEnded && session.tmuxName != '(deleted)'))
+                      ? () {
+                          final navContext = Navigator.of(context).context;
+                          Navigator.of(context).pop();
+                          SessionNavigator.openSession(
+                              navContext, ref, session);
+                        }
+                      : null,
+                  icon: Icon(
+                    session.isHeadless
+                        ? Icons.chat_bubble_outline_rounded
+                        : Icons.terminal_rounded,
+                    size: 16,
+                  ),
+                  label:
+                      Text(session.isHeadless ? 'Open Chat' : 'Open Terminal'),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: AppColors.statusEmerald.withOpacity(0.15),
                     foregroundColor: AppColors.statusEmerald,
@@ -330,11 +345,14 @@ class SessionDetailSheet extends ConsumerWidget {
               const SizedBox(width: 8),
               Expanded(
                 child: ElevatedButton.icon(
+                  key: const Key('sheet_open_transcript_button'),
                   onPressed: () {
+                    final navContext = Navigator.of(context).context;
                     Navigator.of(context).pop();
-                    TranscriptScreen.open(context, session);
+                    SessionNavigator.openTranscript(navContext, session,
+                        ref: ref);
                   },
-                  icon: const Icon(Icons.forum_outlined, size: 16),
+                  icon: const Icon(Icons.article_outlined, size: 16),
                   label: const Text('Transcript'),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: AppColors.surfaceHighlight,
@@ -431,189 +449,6 @@ class SessionDetailSheet extends ConsumerWidget {
           ),
         ),
       ],
-    );
-  }
-
-  void _showTranscriptModal(
-      BuildContext context, WidgetRef ref, Session session) {
-    final hosts = ref.read(hostsListProvider);
-    final sessionHost = session.host.toLowerCase();
-    final match = hosts.where((h) =>
-        h.name.toLowerCase() == sessionHost ||
-        h.url.toLowerCase().contains(sessionHost));
-    final host = match.isNotEmpty
-        ? match.first
-        : (hosts.where((h) => h.online).firstOrNull ?? hosts.firstOrNull);
-    final hostUrl = host?.url ?? 'http://127.0.0.1:7777';
-
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: AppColors.surface,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-      ),
-      builder: (ctx) => DraggableScrollableSheet(
-        initialChildSize: 0.75,
-        minChildSize: 0.4,
-        maxChildSize: 0.95,
-        expand: false,
-        builder: (context, scrollController) {
-          return FutureBuilder<String>(
-            future: ref.read(apiClientProvider).getTranscript(
-                  hostUrl,
-                  session.id,
-                  authToken: host?.authToken,
-                ),
-            builder: (context, snapshot) {
-              return Padding(
-                padding: AppSpacing.paddingScreen,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    // Handle & Header
-                    Center(
-                      child: Container(
-                        width: 36,
-                        height: 4,
-                        decoration: BoxDecoration(
-                          color: AppColors.outlineSubtle,
-                          borderRadius: BorderRadius.circular(2),
-                        ),
-                      ),
-                    ),
-                    AppSpacing.gapH12,
-                    Row(
-                      children: [
-                        const Icon(Icons.article_outlined,
-                            size: 20, color: AppColors.infoCyan),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                'SESSION TRANSCRIPT',
-                                style: AppTypography.codeSm.copyWith(
-                                  color: AppColors.textPrimary,
-                                  fontWeight: FontWeight.w700,
-                                ),
-                              ),
-                              Text(
-                                '${session.agentDisplayName} • ${session.displayTitle}',
-                                style: AppTypography.codeXs
-                                    .copyWith(color: AppColors.textSecondary),
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ],
-                          ),
-                        ),
-                        if (snapshot.hasData && snapshot.data!.isNotEmpty)
-                          IconButton(
-                            icon: const Icon(Icons.copy_rounded,
-                                size: 18, color: AppColors.textMuted),
-                            tooltip: 'Copy transcript',
-                            onPressed: () {
-                              Clipboard.setData(
-                                  ClipboardData(text: snapshot.data!));
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(
-                                  content:
-                                      Text('Transcript copied to clipboard'),
-                                  backgroundColor: AppColors.surfaceHighlight,
-                                ),
-                              );
-                            },
-                          ),
-                        IconButton(
-                          icon: const Icon(Icons.close_rounded,
-                              size: 20, color: AppColors.textMuted),
-                          onPressed: () => Navigator.of(ctx).pop(),
-                        ),
-                      ],
-                    ),
-                    const Divider(color: AppColors.outlineSubtle, height: 20),
-                    Expanded(
-                      child: snapshot.connectionState == ConnectionState.waiting
-                          ? const Center(
-                              child: CircularProgressIndicator(
-                                  color: AppColors.infoCyan))
-                          : (snapshot.data == null ||
-                                  snapshot.data!.trim().isEmpty
-                              ? Center(
-                                  child: Column(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      const Icon(Icons.receipt_long_outlined,
-                                          size: 36, color: AppColors.textMuted),
-                                      AppSpacing.gapH8,
-                                      Text(
-                                        'No transcript available yet',
-                                        style: AppTypography.bodySmall.copyWith(
-                                            color: AppColors.textMuted),
-                                      ),
-                                    ],
-                                  ),
-                                )
-                              : Container(
-                                  padding: AppSpacing.paddingCardDense,
-                                  decoration: BoxDecoration(
-                                    color: AppColors.terminalBlack,
-                                    borderRadius: AppSpacing.roundedSm,
-                                    border: Border.all(
-                                        color: AppColors.outlineSubtle,
-                                        width: 0.5),
-                                  ),
-                                  child: Builder(
-                                    builder: (context) {
-                                      WidgetsBinding.instance
-                                          .addPostFrameCallback((_) {
-                                        if (scrollController.hasClients) {
-                                          scrollController.jumpTo(
-                                              scrollController
-                                                  .position.maxScrollExtent);
-                                        }
-                                      });
-                                      return SingleChildScrollView(
-                                        controller: scrollController,
-                                        child: MarkdownBody(
-                                          data: snapshot.data!,
-                                          styleSheet: MarkdownStyleSheet(
-                                            p: AppTypography.codeXs.copyWith(
-                                                color: AppColors.textSecondary,
-                                                fontSize: 11),
-                                            code: AppTypography.codeXs.copyWith(
-                                                color: AppColors.infoCyan,
-                                                backgroundColor:
-                                                    Colors.transparent),
-                                            h1: AppTypography.titleMedium
-                                                .copyWith(
-                                                    color:
-                                                        AppColors.textPrimary),
-                                            h2: AppTypography.titleSmall
-                                                .copyWith(
-                                                    color:
-                                                        AppColors.textPrimary),
-                                            h3: AppTypography.bodyMedium
-                                                .copyWith(
-                                                    color:
-                                                        AppColors.textPrimary,
-                                                    fontWeight:
-                                                        FontWeight.bold),
-                                          ),
-                                        ),
-                                      );
-                                    },
-                                  ),
-                                )),
-                    ),
-                  ],
-                ),
-              );
-            },
-          );
-        },
-      ),
     );
   }
 }

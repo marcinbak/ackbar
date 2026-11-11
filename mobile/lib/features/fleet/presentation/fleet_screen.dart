@@ -7,7 +7,7 @@ import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_typography.dart';
 import '../../../core/widgets/ackbar_app_bar.dart';
 import '../../../core/widgets/segmented_filter_tabs.dart';
-import '../../transcript/presentation/transcript_screen.dart';
+import '../../../core/navigation/session_navigator.dart';
 import 'fleet_tree_view.dart';
 import 'new_session_sheet.dart';
 import 'session_detail_sheet.dart';
@@ -52,7 +52,7 @@ class _FleetScreenState extends ConsumerState<FleetScreen> {
         .read(fleetSessionsProvider.notifier)
         .spawnZeroInputSupervisor();
     if (spawned != null && mounted) {
-      await TranscriptScreen.open(context, spawned);
+      await SessionNavigator.openSession(context, ref, spawned);
     }
   }
 
@@ -358,6 +358,8 @@ class _FleetScreenState extends ConsumerState<FleetScreen> {
                     rootFolders: fleetTree,
                     hosts: hosts,
                     onSessionTap: (session) =>
+                        SessionNavigator.openSession(context, ref, session),
+                    onSessionActions: (session) =>
                         SessionDetailSheet.show(context, session),
                     onAddSession: (folderPath) {
                       final matchingSession = allSessions

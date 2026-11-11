@@ -7,8 +7,7 @@ import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_typography.dart';
 import '../../../core/widgets/agent_logo.dart';
-import '../../terminal/presentation/terminal_screen.dart';
-import '../../transcript/presentation/transcript_screen.dart';
+import '../../../core/navigation/session_navigator.dart';
 
 /// Modal bottom sheet for configuring and spawning a new agent session on a supervised host.
 class NewSessionSheet extends ConsumerStatefulWidget {
@@ -184,13 +183,10 @@ class _NewSessionSheetState extends ConsumerState<NewSessionSheet> {
 
       final nav = Navigator.of(context);
       final canPopSheet = nav.canPop();
+      final navContext = nav.context;
       nav.pop(spawnedSession);
       if (canPopSheet && mounted) {
-        if (spawnedSession.isHeadless) {
-          TranscriptScreen.open(context, spawnedSession);
-        } else {
-          TerminalScreen.open(context, spawnedSession);
-        }
+        SessionNavigator.openSession(navContext, ref, spawnedSession);
       }
     } else {
       setState(() {

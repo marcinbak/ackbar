@@ -8,37 +8,47 @@ abstract final class AppSpacing {
   // Discrete Scale
   static const double xxs = 2.0;
   static const double xs = 4.0;
-  static const double sm = 8.0;          // stackGap
-  static const double md = 12.0;         // gutter
-  static const double lg = 16.0;         // standard padding
+  static const double sm = 8.0; // stackGap
+  static const double md = 12.0; // gutter
+  static const double lg = 16.0; // standard padding
   static const double xl = 20.0;
-  static const double xxl = 24.0;        // sectionGap
+  static const double xxl = 24.0; // sectionGap
   static const double xxxl = 32.0;
   static const double huge = 48.0;
 
   // Corner Radii
   static const double radiusXs = 2.0;
-  static const double radiusSm = 4.0;    // Tag / Badge / Button small
-  static const double radiusMd = 8.0;    // Filter pill / Input / Key
-  static const double radiusLg = 12.0;   // Card / Modal / Container
-  static const double radiusXl = 16.0;   // Sheet / Large modal
-  static const double radiusFull = 999.0;// Circle / Full pill
+  static const double radiusSm = 4.0; // Tag / Badge / Button small
+  static const double radiusMd = 8.0; // Filter pill / Input / Key
+  static const double radiusLg = 12.0; // Card / Modal / Container
+  static const double radiusXl = 16.0; // Sheet / Large modal
+  static const double radiusFull = 999.0; // Circle / Full pill
 
   // BorderRadius instances
-  static const BorderRadius roundedSm = BorderRadius.all(Radius.circular(radiusSm));
-  static const BorderRadius roundedMd = BorderRadius.all(Radius.circular(radiusMd));
-  static const BorderRadius roundedLg = BorderRadius.all(Radius.circular(radiusLg));
-  static const BorderRadius roundedXl = BorderRadius.all(Radius.circular(radiusXl));
-  static const BorderRadius roundedFull = BorderRadius.all(Radius.circular(radiusFull));
+  static const BorderRadius roundedSm =
+      BorderRadius.all(Radius.circular(radiusSm));
+  static const BorderRadius roundedMd =
+      BorderRadius.all(Radius.circular(radiusMd));
+  static const BorderRadius roundedLg =
+      BorderRadius.all(Radius.circular(radiusLg));
+  static const BorderRadius roundedXl =
+      BorderRadius.all(Radius.circular(radiusXl));
+  static const BorderRadius roundedFull =
+      BorderRadius.all(Radius.circular(radiusFull));
 
   // Common Edge Insets
-  static const EdgeInsets paddingScreen = EdgeInsets.symmetric(horizontal: lg, vertical: lg);
-  static const EdgeInsets paddingScreenHorizontal = EdgeInsets.symmetric(horizontal: lg);
+  static const EdgeInsets paddingScreen =
+      EdgeInsets.symmetric(horizontal: lg, vertical: lg);
+  static const EdgeInsets paddingScreenHorizontal =
+      EdgeInsets.symmetric(horizontal: lg);
   static const EdgeInsets paddingCard = EdgeInsets.all(lg);
   static const EdgeInsets paddingCardDense = EdgeInsets.all(md);
-  static const EdgeInsets paddingPill = EdgeInsets.symmetric(horizontal: 10, vertical: 4);
-  static const EdgeInsets paddingBadge = EdgeInsets.symmetric(horizontal: 8, vertical: 3);
-  static const EdgeInsets paddingInput = EdgeInsets.symmetric(horizontal: md, vertical: sm);
+  static const EdgeInsets paddingPill =
+      EdgeInsets.symmetric(horizontal: 10, vertical: 4);
+  static const EdgeInsets paddingBadge =
+      EdgeInsets.symmetric(horizontal: 8, vertical: 3);
+  static const EdgeInsets paddingInput =
+      EdgeInsets.symmetric(horizontal: md, vertical: sm);
 
   // Horizontal Sized Box Spacers
   static const SizedBox gapW2 = SizedBox(width: xxs);

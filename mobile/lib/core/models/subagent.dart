@@ -49,7 +49,9 @@ class SubagentInfo {
     DateTime started;
     try {
       final sStr = json['started_at']?.toString();
-      started = sStr != null && sStr.isNotEmpty ? DateTime.parse(sStr) : DateTime.now();
+      started = sStr != null && sStr.isNotEmpty
+          ? DateTime.parse(sStr)
+          : DateTime.now();
     } catch (_) {
       started = DateTime.now();
     }

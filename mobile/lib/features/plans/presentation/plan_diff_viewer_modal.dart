@@ -30,7 +30,8 @@ class PlanDiffViewerModal extends ConsumerWidget {
       height: MediaQuery.of(context).size.height * 0.90,
       decoration: const BoxDecoration(
         color: AppColors.background,
-        borderRadius: BorderRadius.vertical(top: Radius.circular(AppSpacing.radiusXl)),
+        borderRadius:
+            BorderRadius.vertical(top: Radius.circular(AppSpacing.radiusXl)),
         border: Border(
           top: BorderSide(color: AppColors.outline, width: 1.5),
         ),
@@ -39,7 +40,8 @@ class PlanDiffViewerModal extends ConsumerWidget {
         children: [
           // Header Bar with Drag Handle
           Padding(
-            padding: const EdgeInsets.only(top: 10, left: AppSpacing.lg, right: AppSpacing.lg, bottom: 8),
+            padding: const EdgeInsets.only(
+                top: 10, left: AppSpacing.lg, right: AppSpacing.lg, bottom: 8),
             child: Column(
               children: [
                 Center(
@@ -64,14 +66,16 @@ class PlanDiffViewerModal extends ConsumerWidget {
                     ),
                     const SizedBox(width: 8),
                     Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 6, vertical: 2),
                       decoration: BoxDecoration(
                         color: AppColors.surfaceHighlight,
                         borderRadius: AppSpacing.roundedSm,
                       ),
                       child: Text(
                         '${plan.agentDisplayName} @${plan.host}',
-                        style: AppTypography.codeXs.copyWith(color: AppColors.textSecondary),
+                        style: AppTypography.codeXs
+                            .copyWith(color: AppColors.textSecondary),
                       ),
                     ),
                     const Spacer(),
@@ -141,7 +145,9 @@ class PlanDiffViewerModal extends ConsumerWidget {
                     decoration: BoxDecoration(
                       color: AppColors.statusAmber.withOpacity(0.12),
                       borderRadius: AppSpacing.roundedMd,
-                      border: Border.all(color: AppColors.statusAmber.withOpacity(0.4), width: 1),
+                      border: Border.all(
+                          color: AppColors.statusAmber.withOpacity(0.4),
+                          width: 1),
                     ),
                     child: Text(
                       plan.userReviewCallout,
@@ -159,16 +165,19 @@ class PlanDiffViewerModal extends ConsumerWidget {
                 Row(
                   children: [
                     Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 4),
                       decoration: BoxDecoration(
                         color: AppColors.surface,
                         borderRadius: AppSpacing.roundedSm,
-                        border: Border.all(color: AppColors.outlineSubtle, width: 0.5),
+                        border: Border.all(
+                            color: AppColors.outlineSubtle, width: 0.5),
                       ),
                       child: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          const Icon(Icons.edit_document, size: 13, color: AppColors.textMuted),
+                          const Icon(Icons.edit_document,
+                              size: 13, color: AppColors.textMuted),
                           const SizedBox(width: 5),
                           Text(
                             '${plan.filesChanged} Files Changed',
@@ -182,7 +191,8 @@ class PlanDiffViewerModal extends ConsumerWidget {
                     ),
                     const SizedBox(width: 8),
                     Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 4),
                       decoration: BoxDecoration(
                         color: AppColors.statusEmerald.withOpacity(0.1),
                         borderRadius: AppSpacing.roundedSm,
@@ -197,7 +207,8 @@ class PlanDiffViewerModal extends ConsumerWidget {
                     ),
                     const SizedBox(width: 6),
                     Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 4),
                       decoration: BoxDecoration(
                         color: AppColors.statusCoral.withOpacity(0.1),
                         borderRadius: AppSpacing.roundedSm,
@@ -277,10 +288,12 @@ class PlanDiffViewerModal extends ConsumerWidget {
 
           // Floating Bottom Approval Bar
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: AppSpacing.lg, vertical: AppSpacing.md),
+            padding: const EdgeInsets.symmetric(
+                horizontal: AppSpacing.lg, vertical: AppSpacing.md),
             decoration: const BoxDecoration(
               color: AppColors.surface,
-              border: Border(top: BorderSide(color: AppColors.outlineSubtle, width: 1)),
+              border: Border(
+                  top: BorderSide(color: AppColors.outlineSubtle, width: 1)),
             ),
             child: SafeArea(
               top: false,
@@ -301,7 +314,9 @@ class PlanDiffViewerModal extends ConsumerWidget {
                     flex: 2,
                     child: ElevatedButton.icon(
                       onPressed: () {
-                        ref.read(plansListProvider.notifier).quickApprovePlan(plan.id);
+                        ref
+                            .read(plansListProvider.notifier)
+                            .quickApprovePlan(plan.id);
                         Navigator.of(context).pop();
                         ScaffoldMessenger.of(context).showSnackBar(
                           SnackBar(
@@ -370,7 +385,8 @@ class PlanDiffViewerModal extends ConsumerWidget {
             bgColor = AppColors.infoCyan.withOpacity(0.08);
             textColor = AppColors.infoCyan;
             fontWeight = FontWeight.w600;
-          } else if (line.startsWith('diff --git') || line.startsWith('index ')) {
+          } else if (line.startsWith('diff --git') ||
+              line.startsWith('index ')) {
             textColor = AppColors.textMuted;
             fontWeight = FontWeight.w700;
           }

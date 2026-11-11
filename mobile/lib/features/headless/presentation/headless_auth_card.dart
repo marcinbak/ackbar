@@ -264,7 +264,11 @@ class _HeadlessAuthCardState extends ConsumerState<HeadlessAuthCard>
           clearBlocked: true,
         );
         ref.read(fleetSessionsProvider.notifier).upsertSession(updated);
-        TerminalScreen.open(context, updated);
+        if (widget.surfacePrefix == 'attention') {
+          TerminalScreen.open(context, updated);
+        } else {
+          TerminalScreen.openReplacement(context, updated);
+        }
       }
     } catch (e) {
       if (!mounted) return;

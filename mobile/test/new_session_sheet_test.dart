@@ -16,12 +16,7 @@ import 'package:ackbar_mobile/features/fleet/presentation/new_session_sheet.dart
 Widget _wrapWithScope(Widget child, {List<Override> overrides = const []}) {
   return ProviderScope(
     overrides: overrides,
-    child: MaterialApp(
-      theme: AppTheme.darkTheme,
-      home: Scaffold(
-        body: child,
-      ),
-    ),
+    child: MaterialApp(theme: AppTheme.darkTheme, home: Scaffold(body: child)),
   );
 }
 
@@ -32,11 +27,7 @@ void main() {
   group('NewSessionSheet Widget Tests', () {
     testWidgets('renders all core fields, agent choices, and launch button',
         (tester) async {
-      await tester.pumpWidget(
-        _wrapWithScope(
-          const NewSessionSheet(),
-        ),
-      );
+      await tester.pumpWidget(_wrapWithScope(const NewSessionSheet()));
       await tester.pumpAndSettle();
 
       expect(find.text('LAUNCH AGENT SESSION'), findsOneWidget);
@@ -51,11 +42,7 @@ void main() {
 
     testWidgets('validates empty working directory on submission',
         (tester) async {
-      await tester.pumpWidget(
-        _wrapWithScope(
-          const NewSessionSheet(),
-        ),
-      );
+      await tester.pumpWidget(_wrapWithScope(const NewSessionSheet()));
       await tester.pumpAndSettle();
 
       // Tap Launch without entering cwd
@@ -68,15 +55,11 @@ void main() {
     });
 
     testWidgets('honors prefilled cwd and folder parameters', (tester) async {
-      await tester.pumpWidget(
-        _wrapWithScope(
-          const NewSessionSheet(
-            prefillCwd: '~/Work/Ackbar/mobile',
-            prefillFolder: 'Ackbar Mobile',
-            prefillHost: 'gpu-box',
-          ),
-        ),
-      );
+      await tester.pumpWidget(_wrapWithScope(const NewSessionSheet(
+        prefillCwd: '~/Work/Ackbar/mobile',
+        prefillFolder: 'Ackbar Mobile',
+        prefillHost: 'gpu-box',
+      )));
       await tester.pumpAndSettle();
 
       expect(find.text('~/Work/Ackbar/mobile'), findsOneWidget);
@@ -91,11 +74,7 @@ void main() {
 
     testWidgets('allows toggling execution engine between tmux and headless',
         (tester) async {
-      await tester.pumpWidget(
-        _wrapWithScope(
-          const NewSessionSheet(),
-        ),
-      );
+      await tester.pumpWidget(_wrapWithScope(const NewSessionSheet()));
       await tester.pumpAndSettle();
 
       final headlessToggle = find.text('HEADLESS (Chat)');

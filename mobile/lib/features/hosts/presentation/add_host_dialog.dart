@@ -62,9 +62,11 @@ class _AddHostDialogState extends ConsumerState<AddHostDialog> {
     setState(() => _isTesting = true);
 
     final api = ref.read(apiClientProvider);
-    final health = await api.checkHostHealth(normalizedUrl, authToken: tokenInput);
+    final health =
+        await api.checkHostHealth(normalizedUrl, authToken: tokenInput);
 
-    final isTailscale = rawHost.startsWith('100.') || rawHost.contains('.ts.net');
+    final isTailscale =
+        rawHost.startsWith('100.') || rawHost.contains('.ts.net');
     final tailscaleIp = isTailscale ? rawHost.split(':').first : '';
 
     final newHost = HostRecord(
@@ -88,8 +90,10 @@ class _AddHostDialogState extends ConsumerState<AddHostDialog> {
       Navigator.of(context).pop();
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Host "$displayName" connected (${newHost.online ? "Online 🟢" : "Unreachable 🔴"})'),
-          backgroundColor: newHost.online ? AppColors.statusEmerald : AppColors.statusCoral,
+          content: Text(
+              'Host "$displayName" connected (${newHost.online ? "Online 🟢" : "Unreachable 🔴"})'),
+          backgroundColor:
+              newHost.online ? AppColors.statusEmerald : AppColors.statusCoral,
         ),
       );
     }
@@ -123,14 +127,16 @@ class _AddHostDialogState extends ConsumerState<AddHostDialog> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('Host or IP Address (Required):', style: AppTypography.codeXs),
+              Text('Host or IP Address (Required):',
+                  style: AppTypography.codeXs),
               const SizedBox(height: 4),
               TextFormField(
                 controller: _hostController,
                 style: AppTypography.bodySmall,
                 autofocus: true,
                 validator: (val) {
-                  if (val == null || val.trim().isEmpty) return 'Host or IP is required';
+                  if (val == null || val.trim().isEmpty)
+                    return 'Host or IP is required';
                   return null;
                 },
                 decoration: const InputDecoration(
@@ -141,10 +147,10 @@ class _AddHostDialogState extends ConsumerState<AddHostDialog> {
               const SizedBox(height: 4),
               Text(
                 'Default port :7777 and http:// protocol are added automatically.',
-                style: AppTypography.codeXs.copyWith(color: AppColors.textMuted, fontSize: 10),
+                style: AppTypography.codeXs
+                    .copyWith(color: AppColors.textMuted, fontSize: 10),
               ),
               AppSpacing.gapH16,
-
               Text('Alias / Name (Optional):', style: AppTypography.codeXs),
               const SizedBox(height: 4),
               TextFormField(
@@ -156,8 +162,8 @@ class _AddHostDialogState extends ConsumerState<AddHostDialog> {
                 ),
               ),
               AppSpacing.gapH16,
-
-              Text('Auth Token / API Key (Optional):', style: AppTypography.codeXs),
+              Text('Auth Token / API Key (Optional):',
+                  style: AppTypography.codeXs),
               const SizedBox(height: 4),
               TextFormField(
                 controller: _tokenController,
@@ -175,7 +181,9 @@ class _AddHostDialogState extends ConsumerState<AddHostDialog> {
       actions: [
         TextButton(
           onPressed: () => Navigator.of(context).pop(),
-          child: Text('Cancel', style: AppTypography.titleSmall.copyWith(color: AppColors.textMuted)),
+          child: Text('Cancel',
+              style: AppTypography.titleSmall
+                  .copyWith(color: AppColors.textMuted)),
         ),
         ElevatedButton(
           onPressed: _isTesting ? null : _onSave,
@@ -187,7 +195,8 @@ class _AddHostDialogState extends ConsumerState<AddHostDialog> {
               ? const SizedBox(
                   width: 16,
                   height: 16,
-                  child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                  child: CircularProgressIndicator(
+                      strokeWidth: 2, color: Colors.white),
                 )
               : const Text('Connect & Add'),
         ),

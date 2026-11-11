@@ -35,7 +35,9 @@ class AgentLogo extends StatelessWidget {
   static Color _defaultColor(String agent) {
     if (agent.contains('claude')) {
       return const Color(0xFFD97757); // Claude Code Terracotta / Orange
-    } else if (agent.contains('antigravity') || agent.contains('gemini') || agent.contains('agy')) {
+    } else if (agent.contains('antigravity') ||
+        agent.contains('gemini') ||
+        agent.contains('agy')) {
       return const Color(0xFF4285F4); // Google Blue / Multicolored
     } else if (agent.contains('codex') || agent.contains('openai')) {
       return const Color(0xFF10A37F); // OpenAI Emerald Green
@@ -46,7 +48,9 @@ class AgentLogo extends StatelessWidget {
   static _AgentType _resolveType(String agent) {
     if (agent.contains('claude')) {
       return _AgentType.claude;
-    } else if (agent.contains('antigravity') || agent.contains('gemini') || agent.contains('agy')) {
+    } else if (agent.contains('antigravity') ||
+        agent.contains('gemini') ||
+        agent.contains('agy')) {
       return _AgentType.antigravity;
     } else if (agent.contains('codex') || agent.contains('openai')) {
       return _AgentType.codex;
@@ -117,10 +121,13 @@ class _AgentLogoPainter extends CustomPainter {
           ..addRect(Rect.fromLTWH(6 * sx, 8.102 * sy, 1.488 * sx, 2.847 * sy));
         // Right eye cutout
         final rightEye = Path()
-          ..addRect(Rect.fromLTWH(16.51 * sx, 8.102 * sy, 1.49 * sx, 2.847 * sy));
+          ..addRect(
+              Rect.fromLTWH(16.51 * sx, 8.102 * sy, 1.49 * sx, 2.847 * sy));
 
-        final bodyWithoutLeftEye = Path.combine(PathOperation.difference, path, leftEye);
-        final finalCharPath = Path.combine(PathOperation.difference, bodyWithoutLeftEye, rightEye);
+        final bodyWithoutLeftEye =
+            Path.combine(PathOperation.difference, path, leftEye);
+        final finalCharPath = Path.combine(
+            PathOperation.difference, bodyWithoutLeftEye, rightEye);
 
         final fillPaint = Paint()
           ..color = color
@@ -137,14 +144,22 @@ class _AgentLogoPainter extends CustomPainter {
 
         final path = Path();
         path.moveTo(12 * sx, 0.8 * sy);
-        path.cubicTo(8.2 * sx, 0.8 * sy, 5.6 * sx, 3.2 * sy, 4.1 * sx, 7.8 * sy);
-        path.cubicTo(2.6 * sx, 12.5 * sy, 1.2 * sx, 18.2 * sy, 0.3 * sx, 22.4 * sy);
-        path.cubicTo(-0.1 * sx, 23.6 * sy, 0.8 * sx, 24.2 * sy, 1.6 * sx, 23.6 * sy);
-        path.cubicTo(4.8 * sx, 21.2 * sy, 7.8 * sx, 14.2 * sy, 12 * sx, 12.4 * sy);
-        path.cubicTo(16.2 * sx, 14.2 * sy, 19.2 * sx, 21.2 * sy, 22.4 * sx, 23.6 * sy);
-        path.cubicTo(23.2 * sx, 24.2 * sy, 24.1 * sx, 23.6 * sy, 23.7 * sx, 22.4 * sy);
-        path.cubicTo(22.8 * sx, 18.2 * sy, 21.4 * sx, 12.5 * sy, 19.9 * sx, 7.8 * sy);
-        path.cubicTo(18.4 * sx, 3.2 * sy, 15.8 * sx, 0.8 * sy, 12 * sx, 0.8 * sy);
+        path.cubicTo(
+            8.2 * sx, 0.8 * sy, 5.6 * sx, 3.2 * sy, 4.1 * sx, 7.8 * sy);
+        path.cubicTo(
+            2.6 * sx, 12.5 * sy, 1.2 * sx, 18.2 * sy, 0.3 * sx, 22.4 * sy);
+        path.cubicTo(
+            -0.1 * sx, 23.6 * sy, 0.8 * sx, 24.2 * sy, 1.6 * sx, 23.6 * sy);
+        path.cubicTo(
+            4.8 * sx, 21.2 * sy, 7.8 * sx, 14.2 * sy, 12 * sx, 12.4 * sy);
+        path.cubicTo(
+            16.2 * sx, 14.2 * sy, 19.2 * sx, 21.2 * sy, 22.4 * sx, 23.6 * sy);
+        path.cubicTo(
+            23.2 * sx, 24.2 * sy, 24.1 * sx, 23.6 * sy, 23.7 * sx, 22.4 * sy);
+        path.cubicTo(
+            22.8 * sx, 18.2 * sy, 21.4 * sx, 12.5 * sy, 19.9 * sx, 7.8 * sy);
+        path.cubicTo(
+            18.4 * sx, 3.2 * sy, 15.8 * sx, 0.8 * sy, 12 * sx, 0.8 * sy);
         path.close();
 
         final paint = Paint()..isAntiAlias = true;
@@ -233,7 +248,8 @@ class _AgentLogoPainter extends CustomPainter {
           ..isAntiAlias = true;
 
         final rect = RRect.fromRectAndRadius(
-          Rect.fromCenter(center: Offset(cx, cy), width: w * 0.8, height: h * 0.8),
+          Rect.fromCenter(
+              center: Offset(cx, cy), width: w * 0.8, height: h * 0.8),
           Radius.circular(w * 0.2),
         );
         canvas.drawRRect(rect, strokeP);

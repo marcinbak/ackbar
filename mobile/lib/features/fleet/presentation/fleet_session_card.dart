@@ -142,20 +142,54 @@ class FleetSessionCard extends StatelessWidget {
                     ],
                   ),
                 ),
+                const SizedBox(width: 6),
+                Container(
+                  key: Key('session_mode_badge_${session.id}'),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: (session.isHeadless
+                            ? AppColors.infoCyan
+                            : AppColors.statusEmerald)
+                        .withOpacity(0.12),
+                    borderRadius: AppSpacing.roundedSm,
+                    border: Border.all(
+                      color: (session.isHeadless
+                              ? AppColors.infoCyan
+                              : AppColors.statusEmerald)
+                          .withOpacity(0.3),
+                      width: 0.8,
+                    ),
+                  ),
+                  child: Text(
+                    session.isHeadless ? 'CHAT' : 'PTY',
+                    style: AppTypography.codeXs.copyWith(
+                      color: session.isHeadless
+                          ? AppColors.infoCyan
+                          : AppColors.statusEmerald,
+                      fontWeight: FontWeight.w700,
+                      fontSize: 9.5,
+                    ),
+                  ),
+                ),
                 if (session.gitBranch.isNotEmpty) ...[
                   const SizedBox(width: 6),
-                  Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
-                    decoration: BoxDecoration(
-                      color: AppColors.surfaceHighlight,
-                      borderRadius: AppSpacing.roundedSm,
-                    ),
-                    child: Text(
-                      session.gitBranch,
-                      style: AppTypography.codeXs.copyWith(
-                        color: AppColors.textSecondary,
-                        fontSize: 10,
+                  Flexible(
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 5, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: AppColors.surfaceHighlight,
+                        borderRadius: AppSpacing.roundedSm,
+                      ),
+                      child: Text(
+                        session.gitBranch,
+                        style: AppTypography.codeXs.copyWith(
+                          color: AppColors.textSecondary,
+                          fontSize: 10,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                       ),
                     ),
                   ),
@@ -183,6 +217,19 @@ class FleetSessionCard extends StatelessWidget {
                   status: session.state.toBadgeStatus(),
                   isCompact: true,
                 ),
+                if (onActions != null) ...[
+                  const SizedBox(width: 4),
+                  IconButton(
+                    key: Key('session_more_${session.id}'),
+                    icon: const Icon(Icons.more_vert_rounded,
+                        size: 16, color: AppColors.textSecondary),
+                    tooltip: 'Session Actions',
+                    padding: EdgeInsets.zero,
+                    constraints:
+                        const BoxConstraints(minWidth: 24, minHeight: 24),
+                    onPressed: () => onActions!(session),
+                  ),
+                ],
               ],
             ),
             AppSpacing.gapH8,

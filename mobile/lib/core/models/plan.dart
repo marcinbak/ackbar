@@ -122,10 +122,13 @@ class PlanDocument {
     PlanStatus parseStatus(dynamic val) {
       if (val == null) return PlanStatus.pendingReview;
       final s = val.toString().toLowerCase();
-      if (s.contains('pending') || s.contains('review')) return PlanStatus.pendingReview;
-      if (s.contains('progress') || s.contains('working')) return PlanStatus.inProgress;
+      if (s.contains('pending') || s.contains('review'))
+        return PlanStatus.pendingReview;
+      if (s.contains('progress') || s.contains('working'))
+        return PlanStatus.inProgress;
       if (s.contains('approved')) return PlanStatus.approved;
-      if (s.contains('completed') || s.contains('done')) return PlanStatus.completed;
+      if (s.contains('completed') || s.contains('done'))
+        return PlanStatus.completed;
       if (s.contains('rejected')) return PlanStatus.rejected;
       return PlanStatus.pendingReview;
     }

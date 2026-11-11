@@ -79,11 +79,11 @@ class TranscriptToolCallsGroup extends StatelessWidget {
     final parsed = toolCalls.map(ParsedToolCall.parse).toList();
     final total = toolCalls.length;
 
-    return Container(
-      decoration: BoxDecoration(
-        color: AppColors.terminalBlack.withOpacity(0.6),
+    return Material(
+      color: AppColors.terminalBlack.withOpacity(0.6),
+      shape: RoundedRectangleBorder(
         borderRadius: AppSpacing.roundedSm,
-        border: Border.all(
+        side: BorderSide(
           color: AppColors.outlineSubtle.withOpacity(0.7),
           width: 0.6,
         ),
@@ -271,11 +271,11 @@ class TranscriptThinkingAccordion extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      decoration: BoxDecoration(
-        color: AppColors.surfaceHighlight.withOpacity(0.4),
+    return Material(
+      color: AppColors.surfaceHighlight.withOpacity(0.4),
+      shape: RoundedRectangleBorder(
         borderRadius: AppSpacing.roundedSm,
-        border: Border.all(
+        side: BorderSide(
           color: AppColors.outlineSubtle.withOpacity(0.6),
           width: 0.6,
         ),

@@ -10,6 +10,7 @@ import 'package:xterm/xterm.dart';
 
 import '../../../core/models/host.dart';
 import '../../../core/models/session.dart';
+import '../../../core/navigation/session_navigator.dart';
 import '../../../core/providers/fleet_providers.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
@@ -33,6 +34,12 @@ class TerminalScreen extends ConsumerStatefulWidget {
 
   static Future<void> open(BuildContext context, Session session) {
     return Navigator.of(context).push(
+      MaterialPageRoute(builder: (context) => TerminalScreen(session: session)),
+    );
+  }
+
+  static Future<void> openReplacement(BuildContext context, Session session) {
+    return Navigator.of(context).pushReplacement(
       MaterialPageRoute(builder: (context) => TerminalScreen(session: session)),
     );
   }
@@ -602,6 +609,23 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             ),
 
           IconButton(
+            key: const Key('terminal_open_transcript_button'),
+            visualDensity: VisualDensity.compact,
+            icon: const Icon(
+              Icons.article_outlined,
+              size: 20,
+              color: AppColors.infoCyan,
+            ),
+            tooltip: 'View Transcript',
+            onPressed: () => SessionNavigator.openTranscript(
+              context,
+              liveSession,
+              showOpenSessionAction: false,
+            ),
+          ),
+
+          IconButton(
+            visualDensity: VisualDensity.compact,
             icon: Icon(
               keyboardOpen
                   ? Icons.keyboard_hide_rounded
