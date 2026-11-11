@@ -223,11 +223,21 @@ class SessionDetailSheet extends ConsumerWidget {
           if (session.state == SessionState.ended) ...[
             ElevatedButton.icon(
               onPressed: () async {
+                final messenger = ScaffoldMessenger.of(context);
                 Navigator.of(context).pop();
-                await ref
+                final ok = await ref
                     .read(fleetSessionsProvider.notifier)
                     .resumeSession(session.id);
-                TerminalScreen.open(context, session);
+                if (ok) {
+                  TerminalScreen.open(context, session);
+                } else {
+                  messenger.showSnackBar(
+                    SnackBar(
+                      content: Text('Failed to resume ${session.displayTitle}'),
+                      backgroundColor: AppColors.statusCoral,
+                    ),
+                  );
+                }
               },
               icon: const Icon(Icons.play_arrow_rounded, size: 18),
               label: const Text('Resume Conversation'),
@@ -271,19 +281,21 @@ class SessionDetailSheet extends ConsumerWidget {
                   ),
                 );
                 if (confirm == true) {
+                  final messenger = ScaffoldMessenger.of(context);
                   Navigator.of(context).pop();
-                  await ref
+                  final ok = await ref
                       .read(fleetSessionsProvider.notifier)
                       .handoverSession(session.id);
-                  if (context.mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: Text(
-                            'Handover initiated for ${session.displayTitle}'),
-                        backgroundColor: AppColors.statusAmber.withOpacity(0.8),
-                      ),
-                    );
-                  }
+                  messenger.showSnackBar(
+                    SnackBar(
+                      content: Text(ok
+                          ? 'Handover initiated for ${session.displayTitle}'
+                          : 'Failed to initiate handover for ${session.displayTitle}'),
+                      backgroundColor: ok
+                          ? AppColors.statusAmber.withOpacity(0.8)
+                          : AppColors.statusCoral,
+                    ),
+                  );
                 }
               },
               icon: const Icon(Icons.sync_rounded, size: 16),
@@ -339,13 +351,16 @@ class SessionDetailSheet extends ConsumerWidget {
               Expanded(
                 child: OutlinedButton.icon(
                   onPressed: () async {
+                    final messenger = ScaffoldMessenger.of(context);
                     Navigator.of(context).pop();
-                    await ref
+                    final ok = await ref
                         .read(fleetSessionsProvider.notifier)
                         .terminateSession(session.id);
-                    ScaffoldMessenger.of(context).showSnackBar(
+                    messenger.showSnackBar(
                       SnackBar(
-                        content: Text('Terminated ${session.displayTitle}'),
+                        content: Text(ok
+                            ? 'Terminated ${session.displayTitle}'
+                            : 'Failed to terminate ${session.displayTitle}'),
                         backgroundColor: AppColors.statusCoral.withOpacity(0.8),
                       ),
                     );
@@ -363,14 +378,19 @@ class SessionDetailSheet extends ConsumerWidget {
               Expanded(
                 child: OutlinedButton.icon(
                   onPressed: () async {
+                    final messenger = ScaffoldMessenger.of(context);
                     Navigator.of(context).pop();
-                    await ref
+                    final ok = await ref
                         .read(fleetSessionsProvider.notifier)
                         .deleteSession(session.id);
-                    ScaffoldMessenger.of(context).showSnackBar(
+                    messenger.showSnackBar(
                       SnackBar(
-                        content: Text('Deleted ${session.displayTitle}'),
-                        backgroundColor: AppColors.surfaceHighlight,
+                        content: Text(ok
+                            ? 'Deleted ${session.displayTitle}'
+                            : 'Failed to delete ${session.displayTitle}'),
+                        backgroundColor: ok
+                            ? AppColors.surfaceHighlight
+                            : AppColors.statusCoral,
                       ),
                     );
                   },

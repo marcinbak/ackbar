@@ -19,7 +19,6 @@
 * **Status:** Planned
 * **Scope:**
   * **Automated Signing & Builds:** Fastlane / GitHub Actions pipeline for iOS IPA (TestFlight / ad-hoc) and Android APK / AAB.
-  * **Background SSE Keep-Alive:** Enhanced reconnection resilience when the mobile client is minimized during active streaming sessions.
 
 ---
 
@@ -33,6 +32,14 @@
 
 ## ✅ Completed Milestones
 
+* [x] **Mobile Stream & Connection Reliability (`feat/mobile-stream-reliability`):**
+  * Daemon `/v1/events` keepalive heartbeats (`: keepalive\n\n`, default `20s`) with unconditional initial response header flush.
+  * Daemon `POST /v1/sessions/prompt` idempotency contract via optional `client_turn_id` (10m TTL, 512-entry bounded LRU cache).
+  * Mobile `SSEClient` socket lifecycle teardown, 45s inactivity watchdog, frame-guarded jittered backoff (`1s -> 2s -> 5s -> 10s`), and auto-reconnect session refresh.
+  * Headless live SSE streaming (`ChatStreamClient`, `HeadlessChatStreamController`) with `turn_id` + `after_seq` spool catch-up, 40s read watchdog, and idempotent prompt retries.
+  * PTY WebSocket auto-reconnect (`TerminalReconnectController`) with 5-attempt backoff, forced resize sync, and resume recovery.
+  * App lifecycle foreground sync (`AppLifecycleSyncObserver`) with 2s debounced refresh and 30s offline-host health probe.
+  * Concurrent-SSE-safe optimistic rollback across all session mutation actions in `FleetSessionsNotifier`.
 * [x] **Mobile Headless Parity (`feat/mobile-headless-parity`):**
   * `HeadlessAuthCard` renders OAuth sign-in cards for `BlockKind.auth` in Attention and Transcript screens.
   * Native `dev.ackbar.app/launcher` HTTPS browser channel (`MainActivity.kt`, `AppDelegate.swift`) with clipboard fallback and remote `callback_url` paste.

@@ -631,7 +631,9 @@ class _AttentionScreenState extends ConsumerState<AttentionScreen> {
                   answerValue = 'y';
                 }
 
-                await ref.read(fleetSessionsProvider.notifier).respondToSession(
+                final ok = await ref
+                    .read(fleetSessionsProvider.notifier)
+                    .respondToSession(
                       sessionId: session.id,
                       action: 'answer',
                       value: answerValue,
@@ -639,12 +641,22 @@ class _AttentionScreenState extends ConsumerState<AttentionScreen> {
                     );
 
                 if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text('Unblocked session: $answerValue'),
-                      backgroundColor: AppColors.statusEmerald,
-                    ),
-                  );
+                  if (ok) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text('Unblocked session: $answerValue'),
+                        backgroundColor: AppColors.statusEmerald,
+                      ),
+                    );
+                  } else {
+                    _customInputController.text = answerValue;
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('Failed to unblock session'),
+                        backgroundColor: AppColors.statusCoral,
+                      ),
+                    );
+                  }
                 }
               },
               icon: const Icon(Icons.check_circle_rounded, size: 16),
@@ -722,15 +734,18 @@ class _AttentionScreenState extends ConsumerState<AttentionScreen> {
                     ),
                   );
                   if (confirm == true) {
-                    await ref
+                    final ok = await ref
                         .read(fleetSessionsProvider.notifier)
                         .handoverSession(session.id);
                     if (context.mounted) {
                       ScaffoldMessenger.of(context).showSnackBar(
                         SnackBar(
-                          content: Text(
-                              'Handover initiated for ${session.displayTitle}'),
-                          backgroundColor: AppColors.statusAmber,
+                          content: Text(ok
+                              ? 'Handover initiated for ${session.displayTitle}'
+                              : 'Failed to initiate handover for ${session.displayTitle}'),
+                          backgroundColor: ok
+                              ? AppColors.statusAmber
+                              : AppColors.statusCoral,
                         ),
                       );
                     }

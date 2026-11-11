@@ -32,6 +32,27 @@ bool isSessionHostOffline(Session session, List<HostRecord> hosts) {
   return false;
 }
 
+/// Checks if host connection parameters (name, url, authToken, online) changed.
+/// Ignores volatile telemetry (latency, uptime, sessionsCount) to prevent reference-equality churn.
+bool didHostsConnectionChange(
+  List<HostRecord>? previous,
+  List<HostRecord> next,
+) {
+  if (previous == null) return true;
+  if (previous.length != next.length) return true;
+  for (var i = 0; i < previous.length; i++) {
+    final a = previous[i];
+    final b = next[i];
+    if (a.name != b.name ||
+        a.url != b.url ||
+        a.authToken != b.authToken ||
+        a.online != b.online) {
+      return true;
+    }
+  }
+  return false;
+}
+
 // --- Client Providers ---
 
 final apiClientProvider = Provider<ApiClient>((ref) {
@@ -137,6 +158,8 @@ class HostsNotifier extends StateNotifier<List<HostRecord>> {
     } catch (_) {}
   }
 
+  Future<void>? _inFlightRefresh;
+
   Future<void> _savePersistedHosts() async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -145,7 +168,17 @@ class HostsNotifier extends StateNotifier<List<HostRecord>> {
     } catch (_) {}
   }
 
-  Future<void> refreshHosts() async {
+  Future<void> refreshHosts() {
+    final active = _inFlightRefresh;
+    if (active != null) return active;
+    final future = _doRefreshHosts();
+    _inFlightRefresh = future;
+    return future.whenComplete(() {
+      _inFlightRefresh = null;
+    });
+  }
+
+  Future<void> _doRefreshHosts() async {
     final updated = <HostRecord>[];
     for (final h in state) {
       final health =
@@ -170,7 +203,14 @@ class HostsNotifier extends StateNotifier<List<HostRecord>> {
       }
     }
     if (mounted) {
-      state = updated;
+      final result = <HostRecord>[];
+      for (final h in state) {
+        final refreshed = updated
+            .where((u) => u.name == h.name && u.url == h.url)
+            .firstOrNull;
+        result.add(refreshed ?? h);
+      }
+      state = result;
     }
   }
 
@@ -242,34 +282,16 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
   final Ref _ref;
   StreamSubscription<Session>? _sseSub;
   ProviderSubscription<List<HostRecord>>? _hostsSub;
+  Future<void>? _inFlightRefresh;
 
   FleetSessionsNotifier(this._apiClient, this._ref) : super(const []) {
     _initLiveSync();
     _hostsSub =
         _ref.listen<List<HostRecord>>(hostsListProvider, (previous, next) {
-      if (_didHostsConnectionChange(previous, next)) {
+      if (didHostsConnectionChange(previous, next)) {
         _syncWithHosts(next);
       }
     });
-  }
-
-  static bool _didHostsConnectionChange(
-    List<HostRecord>? previous,
-    List<HostRecord> next,
-  ) {
-    if (previous == null) return true;
-    if (previous.length != next.length) return true;
-    for (var i = 0; i < previous.length; i++) {
-      final a = previous[i];
-      final b = next[i];
-      if (a.name != b.name ||
-          a.url != b.url ||
-          a.authToken != b.authToken ||
-          a.online != b.online) {
-        return true;
-      }
-    }
-    return false;
   }
 
   @override
@@ -292,7 +314,12 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
     _sseSub?.cancel();
     if (hosts.isNotEmpty) {
       final sse = _ref.read(sseClientProvider);
-      _sseSub = sse.subscribeMultipleHosts(hosts).listen((liveSess) {
+      _sseSub = sse
+          .subscribeMultipleHosts(
+        hosts,
+        onHostReconnected: (_) => refreshSessions(),
+      )
+          .listen((liveSess) {
         if (mounted) {
           _upsertSession(liveSess);
         }
@@ -310,7 +337,17 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
     return sh == hn || hu.contains(sh) || (sh == 'local' && host.isLocal);
   }
 
-  Future<void> refreshSessions() async {
+  Future<void> refreshSessions() {
+    final active = _inFlightRefresh;
+    if (active != null) return active;
+    final future = _doRefreshSessions();
+    _inFlightRefresh = future;
+    return future.whenComplete(() {
+      _inFlightRefresh = null;
+    });
+  }
+
+  Future<void> _doRefreshSessions() async {
     final hosts = _ref.read(hostsListProvider);
     if (hosts.isEmpty) {
       if (mounted) state = const [];
@@ -338,6 +375,17 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
     if (mounted) {
       state = allFetched;
     }
+  }
+
+  Session? _findSession(String targetId) {
+    if (targetId.isEmpty) return null;
+    for (final s in state) {
+      if (s.id == targetId ||
+          (s.nativeId.isNotEmpty && s.nativeId == targetId)) {
+        return s;
+      }
+    }
+    return null;
   }
 
   void _upsertSession(Session s) {
@@ -374,14 +422,12 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
     String? answerSummary,
   }) async {
     final targetId = sessionId ?? session?.id ?? '';
-    final targetSession = session ??
-        state.firstWhere(
-          (s) => s.id == targetId || s.nativeId == targetId,
-          orElse: () => state.first,
-        );
+    final targetSession = session ?? _findSession(targetId);
+    if (targetSession == null) return false;
 
     final isDismiss = action == 'dismiss';
-    final updatedSession = targetSession.copyWith(
+    final original = targetSession;
+    final optimistic = targetSession.copyWith(
       state: isDismiss ? SessionState.idle : SessionState.working,
       clearBlocked: true,
       activity: isDismiss
@@ -395,9 +441,37 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
                       : 'Answer submitted: $value'))),
       lastEventAt: DateTime.now(),
     );
-    _upsertSession(updatedSession);
+    _upsertSession(optimistic);
 
-    // Record in decision audit log
+    final host = _getHostRecord(targetSession.host);
+    final hostUrl = host?.url ?? 'http://127.0.0.1:7777';
+
+    bool ok = false;
+    try {
+      ok = await _apiClient.respondToSession(
+        hostUrl,
+        id: targetSession.id,
+        action: action,
+        value: value,
+        authToken: host?.authToken,
+      );
+    } catch (_) {
+      ok = false;
+    }
+
+    if (!ok) {
+      if (mounted) {
+        final current = _findSession(original.id);
+        if (identical(current, optimistic) ||
+            (current != null &&
+                current.lastEventAt == optimistic.lastEventAt)) {
+          _upsertSession(original);
+        }
+      }
+      return false;
+    }
+
+    // Record in decision audit log only after success
     _ref.read(decisionAuditProvider.notifier).recordDecision(
           sessionId: targetSession.id,
           sessionTitle: targetSession.displayTitle,
@@ -407,19 +481,7 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
           summary: answerSummary ??
               (isDismiss ? 'Dismissed block' : '$action: $value'),
         );
-
-    final host = _getHostRecord(targetSession.host);
-    final hostUrl = host?.url ?? 'http://127.0.0.1:7777';
-
-    // Dispatch HTTP POST /v1/sessions/respond
-    final ok = await _apiClient.respondToSession(
-      hostUrl,
-      id: targetSession.id,
-      action: action,
-      value: value,
-      authToken: host?.authToken,
-    );
-    return ok;
+    return true;
   }
 
   /// Mark unread session state as read
@@ -455,35 +517,64 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
     return h?.url ?? 'http://127.0.0.1:7777';
   }
 
-  Future<void> resumeSession(String sessionId) async {
-    final session =
-        state.firstWhere((s) => s.id == sessionId || s.nativeId == sessionId);
+  Future<bool> resumeSession(String sessionId) async {
+    final session = _findSession(sessionId);
+    if (session == null) return false;
     final host = _getHostRecord(session.host);
     final hostUrl = host?.url ?? 'http://127.0.0.1:7777';
 
-    _upsertSession(session.copyWith(
+    final optimistic = session.copyWith(
       state: SessionState.working,
       activity: 'Resuming session in tmux...',
       lastEventAt: DateTime.now(),
-    ));
+    );
+    _upsertSession(optimistic);
 
-    await _apiClient.controlSession(hostUrl, session.id, 'resume',
-        authToken: host?.authToken);
+    bool ok = false;
+    try {
+      ok = await _apiClient.controlSession(hostUrl, session.id, 'resume',
+          authToken: host?.authToken);
+    } catch (_) {
+      ok = false;
+    }
+    if (!ok && mounted) {
+      final current = _findSession(session.id);
+      if (identical(current, optimistic) ||
+          (current != null && current.lastEventAt == optimistic.lastEventAt)) {
+        _upsertSession(session);
+      }
+    }
+    return ok;
   }
 
-  Future<void> restartSession(String sessionId) async {
-    final session = state.firstWhere((s) => s.id == sessionId);
+  Future<bool> restartSession(String sessionId) async {
+    final session = _findSession(sessionId);
+    if (session == null) return false;
     final host = _getHostRecord(session.host);
     final hostUrl = host?.url ?? 'http://127.0.0.1:7777';
 
-    _upsertSession(session.copyWith(
+    final optimistic = session.copyWith(
       state: SessionState.working,
       activity: 'Restarting session in tmux...',
       lastEventAt: DateTime.now(),
-    ));
+    );
+    _upsertSession(optimistic);
 
-    await _apiClient.controlSession(hostUrl, session.id, 'restart',
-        authToken: host?.authToken);
+    bool ok = false;
+    try {
+      ok = await _apiClient.controlSession(hostUrl, session.id, 'restart',
+          authToken: host?.authToken);
+    } catch (_) {
+      ok = false;
+    }
+    if (!ok && mounted) {
+      final current = _findSession(session.id);
+      if (identical(current, optimistic) ||
+          (current != null && current.lastEventAt == optimistic.lastEventAt)) {
+        _upsertSession(session);
+      }
+    }
+    return ok;
   }
 
   Future<bool> handoverSession(
@@ -491,51 +582,122 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
     String strategy = 'in_place',
     String? customInstruction,
   }) async {
-    final session = state.firstWhere(
-      (s) => s.id == sessionId || s.nativeId == sessionId,
-      orElse: () => state.first,
-    );
+    final session = _findSession(sessionId);
+    if (session == null) return false;
     final host = _getHostRecord(session.host);
     final hostUrl = host?.url ?? 'http://127.0.0.1:7777';
 
-    _upsertSession(session.copyWith(
+    final optimistic = session.copyWith(
       state: SessionState.working,
       activity: 'Handover: Generating briefing...',
       lastEventAt: DateTime.now(),
-    ));
-
-    return await _apiClient.handoverSession(
-      hostUrl,
-      session.id,
-      strategy: strategy,
-      customInstruction: customInstruction,
-      authToken: host?.authToken,
     );
+    _upsertSession(optimistic);
+
+    bool ok = false;
+    try {
+      ok = await _apiClient.handoverSession(
+        hostUrl,
+        session.id,
+        strategy: strategy,
+        customInstruction: customInstruction,
+        authToken: host?.authToken,
+      );
+    } catch (_) {
+      ok = false;
+    }
+    if (!ok && mounted) {
+      final current = _findSession(session.id);
+      if (identical(current, optimistic) ||
+          (current != null && current.lastEventAt == optimistic.lastEventAt)) {
+        _upsertSession(session);
+      }
+    }
+    return ok;
   }
 
-  Future<void> terminateSession(String sessionId) async {
-    final session = state.firstWhere((s) => s.id == sessionId);
+  Future<bool> terminateSession(String sessionId) async {
+    final session = _findSession(sessionId);
+    if (session == null) return false;
     final host = _getHostRecord(session.host);
     final hostUrl = host?.url ?? 'http://127.0.0.1:7777';
 
-    _upsertSession(session.copyWith(
+    final optimistic = session.copyWith(
       state: SessionState.ended,
       activity: 'Terminated by user',
       lastEventAt: DateTime.now(),
-    ));
+    );
+    _upsertSession(optimistic);
 
-    await _apiClient.controlSession(hostUrl, session.id, 'kill',
-        authToken: host?.authToken);
+    bool ok = false;
+    try {
+      ok = await _apiClient.controlSession(hostUrl, session.id, 'kill',
+          authToken: host?.authToken);
+    } catch (_) {
+      ok = false;
+    }
+    if (!ok && mounted) {
+      final current = _findSession(session.id);
+      if (identical(current, optimistic) ||
+          (current != null && current.lastEventAt == optimistic.lastEventAt)) {
+        _upsertSession(session);
+      }
+    }
+    return ok;
   }
 
-  Future<void> deleteSession(String sessionId) async {
-    final session = state.firstWhere((s) => s.id == sessionId);
+  Future<bool> deleteSession(String sessionId) async {
+    final session = _findSession(sessionId);
+    if (session == null) return false;
     final host = _getHostRecord(session.host);
     final hostUrl = host?.url ?? 'http://127.0.0.1:7777';
 
-    state = state.where((s) => s.id != sessionId).toList();
-    await _apiClient.controlSession(hostUrl, session.id, 'delete',
-        authToken: host?.authToken);
+    state = state
+        .where((s) => s.id != sessionId && s.nativeId != sessionId)
+        .toList();
+
+    bool ok = false;
+    try {
+      ok = await _apiClient.controlSession(hostUrl, session.id, 'delete',
+          authToken: host?.authToken);
+    } catch (_) {
+      ok = false;
+    }
+    if (!ok && mounted) {
+      if (_findSession(session.id) == null) {
+        _upsertSession(session);
+      }
+    }
+    return ok;
+  }
+
+  Future<bool> archiveSession(String sessionId) async {
+    final session = _findSession(sessionId);
+    if (session == null) return false;
+    final host = _getHostRecord(session.host);
+    final hostUrl = host?.url ?? 'http://127.0.0.1:7777';
+
+    final optimistic = session.copyWith(
+      archived: true,
+      lastEventAt: DateTime.now(),
+    );
+    _upsertSession(optimistic);
+
+    bool ok = false;
+    try {
+      ok = await _apiClient.controlSession(hostUrl, session.id, 'archive',
+          authToken: host?.authToken);
+    } catch (_) {
+      ok = false;
+    }
+    if (!ok && mounted) {
+      final current = _findSession(session.id);
+      if (identical(current, optimistic) ||
+          (current != null && current.lastEventAt == optimistic.lastEventAt)) {
+        _upsertSession(session);
+      }
+    }
+    return ok;
   }
 
   /// Spawn a new agent session on a specified host
@@ -740,13 +902,12 @@ class FleetNodesNotifier extends StateNotifier<List<TreeNode>> {
   final ApiClient _apiClient;
   final Ref _ref;
   ProviderSubscription<List<HostRecord>>? _hostsSub;
+  Future<void>? _inFlightRefresh;
 
   FleetNodesNotifier(this._apiClient, this._ref) : super(const []) {
     _initNodes();
     _hostsSub = _ref.listen<List<HostRecord>>(hostsListProvider, (prev, next) {
-      if (prev == null ||
-          prev.length != next.length ||
-          prev.any((h) => !next.contains(h))) {
+      if (didHostsConnectionChange(prev, next)) {
         refreshNodes();
       }
     });
@@ -766,7 +927,17 @@ class FleetNodesNotifier extends StateNotifier<List<TreeNode>> {
     refreshNodes();
   }
 
-  Future<void> refreshNodes() async {
+  Future<void> refreshNodes() {
+    final active = _inFlightRefresh;
+    if (active != null) return active;
+    final future = _doRefreshNodes();
+    _inFlightRefresh = future;
+    return future.whenComplete(() {
+      _inFlightRefresh = null;
+    });
+  }
+
+  Future<void> _doRefreshNodes() async {
     final hosts = _ref.read(hostsListProvider);
     if (hosts.isEmpty) {
       if (mounted) state = const [];
@@ -1085,9 +1256,7 @@ class TasksNotifier extends StateNotifier<List<WorkTask>> {
   TasksNotifier(this._apiClient, this._ref) : super(const []) {
     _initTasks();
     _hostsSub = _ref.listen<List<HostRecord>>(hostsListProvider, (prev, next) {
-      if (prev == null ||
-          prev.length != next.length ||
-          prev.any((h) => !next.contains(h))) {
+      if (didHostsConnectionChange(prev, next)) {
         refreshTasks();
       }
     });

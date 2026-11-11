@@ -17,10 +17,18 @@ import 'package:ackbar_mobile/features/fleet/presentation/fleet_tree_view.dart';
 
 class MockSSEClient extends SSEClient {
   @override
-  Stream<Session> subscribeHost(HostRecord host) => const Stream.empty();
+  Stream<Session> subscribeHost(
+    HostRecord host, {
+    void Function(HostRecord host)? onHostReconnected,
+  }) =>
+      const Stream.empty();
 
   @override
-  Stream<Session> subscribeMultipleHosts(List<HostRecord> hosts) =>
+  Stream<Session> subscribeMultipleHosts(
+    List<HostRecord> hosts, {
+    bool includeOffline = false,
+    void Function(HostRecord host)? onHostReconnected,
+  }) =>
       const Stream.empty();
 }
 

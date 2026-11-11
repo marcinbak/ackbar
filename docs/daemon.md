@@ -9,17 +9,18 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 2. **Web Dashboard & PWA Frontend:** Serves an embedded desktop/mobile Web GUI with tabs, real-time live terminal emulation (`xterm.js`), and collapsible project trees.
 3. **PTY WebSocket Multiplexer (`/v1/sessions/pty`):** Attaches in-place to running tmux panes using binary WebSocket frames and bidirectional keepalive heartbeats. Resizing is deduplicated so the agent only gets `SIGWINCH` on real size changes (see [PTY Terminal Sizing](#pty-terminal-sizing-v1sessionspty)).
 4. **Hook Ingestion Engine:** Ingests live telemetry hooks from agents (`/v1/hooks/<agent>`). Responses are sent immediately (`200 OK`) after synchronously reserving a slot in a per-session FIFO queue (`reserveSessionHook` keyed by `agent:nativeID`), ensuring asynchronous processing strictly preserves arrival order and prevents out-of-order `PostToolUse` or `PreToolUse` hooks from clobbering `Stop` (`StateIdle`) or `PermissionRequest` (`StateBlocked`) transitions.
-5. **SSE Broadcaster:** Streams real-time updates to all connected Web and Mobile clients over `/v1/events`.
+5. **SSE Broadcaster (`/v1/events`):** Streams real-time updates to connected Web and Mobile clients over `/v1/events`. Flushes HTTP response headers immediately upon connection and emits periodic `: keepalive\n\n` comments (`20s` default, configurable via `Server.SetEventsKeepaliveInterval` in [`server.go`](../internal/daemon/server.go)) to keep client connections alive.
 6. **SQLite Persistence:** Stores session state, activity history, and logical tree hierarchies in `~/.config/ackbar/ackbard.db` (CGO-free pure Go SQLite).
 7. **Built-in Self-Rotating Logger:** Automatically writes, caps (10MB), and daily-rotates daemon logs in `~/.config/ackbar/logs/` with 7-day automatic retention pruning.
 8. **Background Session Scanner:** Periodically inspects `tmux list-panes` and on-disk conversation directories (`session_scanner.go`) to reconcile and supervise Ackbar-managed agent sessions (external unmanaged sessions created outside Ackbar are ignored and pruned on startup).
 
 ### Modular Daemon File Layout (`internal/daemon/`)
-* **`server.go`:** Core `Server` struct, HTTP `Mux()` route registration, token `authMiddleware`, CORS wrapper, SSE `/v1/events` broadcaster, background loop, version/update/settings/shutdown handlers, and normalized OS hostname fallback (`DefaultSystemHostName`).
+* **`server.go`:** Core `Server` struct, HTTP `Mux()` route registration, token `authMiddleware`, CORS wrapper, SSE `/v1/events` broadcaster with immediate header flush and `: keepalive\n\n` heartbeat (20s default), background loop, version/update/settings/shutdown handlers, and normalized OS hostname fallback (`DefaultSystemHostName`).
 * **`server_hooks.go`:** Hook ingestion (`/v1/hooks/<agent>`), per-session FIFO serialization (`reserveSessionHook`), managed-only session resolution, spawning session adoption, in-place `/clear` / `/reset` turn rotation, and hook-driven subagent tracking.
 * **`server_sessions.go`:** Session listing, maintenance purge, remote-host proxy resolution (`resolveSessionOrProxy`), lifecycle control actions (`/v1/sessions/control`), session configuration (`PATCH /v1/sessions/{id}/config`), interactive response dispatch (`applyInteractiveResponse`, `/v1/sessions/respond`), mode switching between headless and tmux (`/v1/sessions/take-wheel` and `/v1/sessions/switch-headless`), session spawn (`/v1/sessions/spawn`), and meta-routing (`/v1/meta/resolve`).
 * **`server_suggestions.go`:** Slash command (`/`), workspace file (`@`), and agent-aware model suggestions endpoint (`GET /v1/sessions/{id}/suggestions?kind=commands|files|models&q=...`) with 10-second directory caching, 5-minute Antigravity model discovery caching, and bounded `git ls-files` / `filepath.WalkDir` traversal.
-* **`server_chat.go`:** Headless/tmux prompt submission (`/v1/sessions/prompt` with `delay_seconds`, `deliver_at`, and inline `/delay <duration> <prompt>` scheduling), prompt queue management (`GET`/`DELETE`/`POST` `/v1/sessions/prompt/queue` with `action: send_now`), `scheduled_prompts` SQLite persistence, SSE chat streaming (`/v1/sessions/chat/stream`), turn cancellation, automated session handover (`/v1/sessions/handover`), and transcript endpoints.
+* **`server_chat.go`:** Headless/tmux prompt submission (`/v1/sessions/prompt` with `delay_seconds`, `deliver_at`, inline `/delay <duration> <prompt>` scheduling, and `client_turn_id` deduplication), prompt queue management (`GET`/`DELETE`/`POST` `/v1/sessions/prompt/queue` with `action: send_now`), `scheduled_prompts` SQLite persistence, SSE chat streaming (`/v1/sessions/chat/stream`), turn cancellation, automated session handover (`/v1/sessions/handover`), and transcript endpoints.
+* **`prompt_dedup.go`:** Bounded in-memory LRU prompt deduplication cache (512 entries, 10m TTL) tracking in-flight reservations and committed status for idempotent `client_turn_id` submissions.
 * **`headless.go`, `headless_persistent.go`, `headless_spool.go`:** Headless coordinator, warm worker lifecycle management, turn dispatch/reuse, and monotonic NDJSON turn spooling.
 * **`headless_worker.go`, `headless_config.go`, `headless_worker_ipc.go`:** Detached `--headless-worker` process, persistent stdio stream loop, configuration fingerprinting, and Unix socket RPC.
 * **`headless_commands.go`:** Inline shell execution (`POST /v1/sessions/{id}/shell`), directory validation (`/add-dir`), in-place conversation rotation, `/clear`, `/reset`, and `/compact`.
@@ -50,7 +51,8 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 | :--- | :--- | :--- |
 | `GET` | `/v1/version` | Returns current daemon version, canonical host name, and display name. |
 | `GET` | `/v1/sessions` | Returns all active, managed, and historic sessions with unread state (supports `?federated=true` for cross-host session aggregation). |
-| `GET` | `/v1/events` | SSE stream broadcasting real-time session mutations and state changes. |
+| `GET` | `/v1/events` | SSE stream broadcasting real-time session mutations with immediate header flush and periodic keepalive heartbeats (`: keepalive\n\n`, 20s default). |
+| `POST` | `/v1/sessions/prompt` | Submits prompt to headless or tmux session (supports `delay_seconds`, `deliver_at`, and idempotent `client_turn_id` deduplication). |
 | `GET` | `/v1/sessions/chat/stream` | SSE stream for real-time turn text, thoughts, subagents, and keepalive heartbeats (supports `?after_seq=<n>`, `?turn_id=<id>`, and `Last-Event-ID`). |
 | `GET` | `/v1/sessions/pty` | WebSocket endpoint streaming interactive PTY data to `xterm.js`. |
 | `POST` | `/v1/sessions/spawn` | Spawns a new agent process in a supervised tmux session using RFC 4122 UUIDv4 (supports prompt injection and zero-input `is_supervisor: true`). |
@@ -151,6 +153,14 @@ Headless sessions (`engine_type = "headless"`, `tmux_name = ""`) execute turns t
   * **Interactive Tool Interception:** Blocks on `AskUserQuestion`, `ask_question`, or `ExitPlanMode`. Approval synchronously reaps worker and resumes with updated permissions.
   * **OAuth Authentication Interception (`BlockAuth`):** Pauses queue on OAuth failure, persists `blocked_meta`, emits `interactive_block`, and auto-resumes on successful callback.
   * **Prompt Queue & Auto-Dispatch:** Persists queued prompts in SQLite (`scheduled_prompts`). Dispatches due prompts via 5-second background loop or manual trigger.
+
+### SSE Event Stream Keepalive & Prompt Idempotency
+
+* **`/v1/events` Keepalive Heartbeats:** The `/v1/events` endpoint in [`server.go`](../internal/daemon/server.go) flushes HTTP headers immediately upon connection, even with an empty session list. It emits periodic `: keepalive\n\n` comments on a configurable atomic interval (`20s` default, configured via `Server.SetEventsKeepaliveInterval`).
+* **`POST /v1/sessions/prompt` Idempotency:** Accepts an optional `client_turn_id` string (maximum 128 characters; values exceeding 128 return `400 Bad Request`).
+  * **Bounded LRU Cache:** Uses [`prompt_dedup.go`](../internal/daemon/prompt_dedup.go) with a 10-minute TTL and 512 entries keyed by `sessionID + "\x00" + clientTurnID`.
+  * **Coalescing & Replay:** In-flight duplicate requests await the initial reservation. Committed duplicates return `200 OK` with `{"status": "running", "deduplicated": true}` (and `queue_depth` when queued) without duplicate execution.
+  * **Failure Safety:** Non-200 dispatch errors (`400`/`500`) abort the reservation, enabling clients to retry immediately.
 
 ---
 

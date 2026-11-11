@@ -18,10 +18,18 @@ import 'package:ackbar_mobile/features/transcript/presentation/transcript_screen
 
 class MockSSEClient extends SSEClient {
   @override
-  Stream<Session> subscribeHost(HostRecord host) => const Stream.empty();
+  Stream<Session> subscribeHost(
+    HostRecord host, {
+    void Function(HostRecord host)? onHostReconnected,
+  }) =>
+      const Stream.empty();
 
   @override
-  Stream<Session> subscribeMultipleHosts(List<HostRecord> hosts) =>
+  Stream<Session> subscribeMultipleHosts(
+    List<HostRecord> hosts, {
+    bool includeOffline = false,
+    void Function(HostRecord host)? onHostReconnected,
+  }) =>
       const Stream.empty();
 }
 
@@ -216,15 +224,14 @@ void main() {
         ]);
 
         // Seed active suggested chips
-        container.read(audioCompanionServiceProvider.notifier).state = container
-            .read(audioCompanionServiceProvider)
-            .copyWith(
-              activeSuggestedChips: [
-                'Proceed with deployment',
-                'Review diffs',
-                'Cancel',
-              ],
-            );
+        container.read(audioCompanionServiceProvider.notifier).state =
+            container.read(audioCompanionServiceProvider).copyWith(
+          activeSuggestedChips: [
+            'Proceed with deployment',
+            'Review diffs',
+            'Cancel',
+          ],
+        );
 
         await tester.pumpWidget(
           _wrapScreen(TranscriptScreen(session: testSession), container),

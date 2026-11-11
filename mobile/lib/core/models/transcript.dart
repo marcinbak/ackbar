@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'chat_stream_event.dart';
 
 /// A single conversational step / turn within an agent session transcript.
 class TranscriptMessage {
@@ -7,6 +8,8 @@ class TranscriptMessage {
   final String? thinking;
   final List<String> toolCalls;
   final DateTime timestamp;
+  final String? turnId;
+  final bool inFlight;
 
   const TranscriptMessage({
     required this.role,
@@ -14,6 +17,8 @@ class TranscriptMessage {
     this.thinking,
     this.toolCalls = const [],
     required this.timestamp,
+    this.turnId,
+    this.inFlight = false,
   });
 
   bool get isUser => role == 'user';
@@ -43,6 +48,9 @@ class TranscriptMessage {
     final role = (json['role']?.toString() ?? 'assistant').toLowerCase();
     final content = json['content']?.toString() ?? '';
     final thinking = json['thinking']?.toString();
+    final turnId = json['turn_id']?.toString() ?? json['turnId']?.toString();
+    final inFlight =
+        json['in_flight'] as bool? ?? json['inFlight'] as bool? ?? false;
 
     return TranscriptMessage(
       role: role,
@@ -51,6 +59,28 @@ class TranscriptMessage {
           (thinking != null && thinking.trim().isNotEmpty) ? thinking : null,
       toolCalls: tools,
       timestamp: ts,
+      turnId: turnId,
+      inFlight: inFlight,
+    );
+  }
+
+  TranscriptMessage copyWith({
+    String? role,
+    String? content,
+    String? thinking,
+    List<String>? toolCalls,
+    DateTime? timestamp,
+    String? turnId,
+    bool? inFlight,
+  }) {
+    return TranscriptMessage(
+      role: role ?? this.role,
+      content: content ?? this.content,
+      thinking: thinking ?? this.thinking,
+      toolCalls: toolCalls ?? this.toolCalls,
+      timestamp: timestamp ?? this.timestamp,
+      turnId: turnId ?? this.turnId,
+      inFlight: inFlight ?? this.inFlight,
     );
   }
 
@@ -60,6 +90,8 @@ class TranscriptMessage {
         if (thinking != null) 'thinking': thinking,
         if (toolCalls.isNotEmpty) 'tool_calls': toolCalls,
         'timestamp': timestamp.toIso8601String(),
+        if (turnId != null) 'turn_id': turnId,
+        if (inFlight) 'in_flight': true,
       };
 }
 
@@ -72,6 +104,8 @@ class TranscriptData {
   final String cwd;
   final List<TranscriptMessage> messages;
   final String rawMarkdown;
+  final InFlightTurnMeta? inFlightTurn;
+  final List<Map<String, dynamic>> runningSubagents;
 
   const TranscriptData({
     required this.sessionId,
@@ -81,6 +115,8 @@ class TranscriptData {
     required this.cwd,
     required this.messages,
     required this.rawMarkdown,
+    this.inFlightTurn,
+    this.runningSubagents = const [],
   });
 
   factory TranscriptData.fromJson(Map<String, dynamic> json) {
@@ -107,6 +143,27 @@ class TranscriptData {
       }
     }
 
+    InFlightTurnMeta? inFlight;
+    if (json['in_flight_turn'] is Map) {
+      inFlight = InFlightTurnMeta.fromJson(
+        Map<String, dynamic>.from(json['in_flight_turn']),
+      );
+    } else if (json['inFlightTurn'] is Map) {
+      inFlight = InFlightTurnMeta.fromJson(
+        Map<String, dynamic>.from(json['inFlightTurn']),
+      );
+    }
+
+    final subagents = <Map<String, dynamic>>[];
+    final rawSubs = json['running_subagents'] ?? json['subagents'];
+    if (rawSubs is List) {
+      for (final s in rawSubs) {
+        if (s is Map) {
+          subagents.add(Map<String, dynamic>.from(s));
+        }
+      }
+    }
+
     return TranscriptData(
       sessionId: json['session_id']?.toString() ?? '',
       nativeId: json['native_id']?.toString() ?? '',
@@ -115,6 +172,8 @@ class TranscriptData {
       cwd: json['cwd']?.toString() ?? '',
       messages: msgs,
       rawMarkdown: json['markdown']?.toString() ?? '',
+      inFlightTurn: inFlight,
+      runningSubagents: subagents,
     );
   }
 
@@ -183,6 +242,8 @@ class TranscriptData {
     String? cwd,
     List<TranscriptMessage>? messages,
     String? rawMarkdown,
+    InFlightTurnMeta? inFlightTurn,
+    List<Map<String, dynamic>>? runningSubagents,
   }) {
     return TranscriptData(
       sessionId: sessionId ?? this.sessionId,
@@ -192,6 +253,8 @@ class TranscriptData {
       cwd: cwd ?? this.cwd,
       messages: messages ?? this.messages,
       rawMarkdown: rawMarkdown ?? this.rawMarkdown,
+      inFlightTurn: inFlightTurn ?? this.inFlightTurn,
+      runningSubagents: runningSubagents ?? this.runningSubagents,
     );
   }
 }

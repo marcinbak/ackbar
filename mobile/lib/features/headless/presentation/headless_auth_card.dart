@@ -225,12 +225,20 @@ class _HeadlessAuthCardState extends ConsumerState<HeadlessAuthCard>
   }
 
   Future<void> _handleRetry() async {
-    setState(() => _isBusy = true);
-    await ref.read(fleetSessionsProvider.notifier).respondToSession(
+    setState(() {
+      _isBusy = true;
+      _errorMessage = null;
+    });
+    final ok = await ref.read(fleetSessionsProvider.notifier).respondToSession(
           sessionId: widget.session.id,
           action: 'retry',
         );
-    if (mounted) setState(() => _isBusy = false);
+    if (mounted) {
+      setState(() {
+        _isBusy = false;
+        if (!ok) _errorMessage = 'Failed to retry turn';
+      });
+    }
   }
 
   Future<void> _handleTerminal() async {
@@ -268,12 +276,20 @@ class _HeadlessAuthCardState extends ConsumerState<HeadlessAuthCard>
   }
 
   Future<void> _handleDismiss() async {
-    setState(() => _isBusy = true);
-    await ref.read(fleetSessionsProvider.notifier).respondToSession(
+    setState(() {
+      _isBusy = true;
+      _errorMessage = null;
+    });
+    final ok = await ref.read(fleetSessionsProvider.notifier).respondToSession(
           sessionId: widget.session.id,
           action: 'dismiss',
         );
-    if (mounted) setState(() => _isBusy = false);
+    if (mounted) {
+      setState(() {
+        _isBusy = false;
+        if (!ok) _errorMessage = 'Failed to dismiss block';
+      });
+    }
   }
 
   @override

@@ -8,6 +8,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:xterm/xterm.dart';
 import 'package:ackbar_mobile/core/models/session.dart';
 import 'package:ackbar_mobile/core/theme/app_theme.dart';
+import 'package:ackbar_mobile/features/terminal/application/terminal_reconnect_controller.dart';
 import 'package:ackbar_mobile/features/terminal/presentation/terminal_screen.dart';
 
 class _FakeWebSocketSink implements WebSocketSink {
@@ -68,6 +69,23 @@ class _FakeWebSocketChannel implements WebSocketChannel {
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
+Session _buildSession({SessionState state = SessionState.working}) {
+  final now = DateTime.utc(2026, 10, 31, 12, 0, 0);
+  return Session(
+    id: 'claude-code:local:sess-term-1',
+    agent: 'claude-code',
+    host: 'local',
+    nativeId: 'sess-term-1',
+    cwd: '/workspace/ackbar',
+    state: state,
+    startedAt: now,
+    lastEventAt: now,
+    managed: true,
+    tmuxName: 'ackbar-claude-sess-term-1',
+    name: 'Terminal Scroll Test',
+  );
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   GoogleFonts.config.allowRuntimeFetching = false;
@@ -78,20 +96,7 @@ void main() {
     final fakeChannel = _FakeWebSocketChannel();
     addTearDown(() => fakeChannel.serverToClient.close());
 
-    final now = DateTime.utc(2026, 10, 31, 12, 0, 0);
-    final session = Session(
-      id: 'claude-code:local:sess-term-1',
-      agent: 'claude-code',
-      host: 'local',
-      nativeId: 'sess-term-1',
-      cwd: '/workspace/ackbar',
-      state: SessionState.working,
-      startedAt: now,
-      lastEventAt: now,
-      managed: true,
-      tmuxName: 'ackbar-claude-sess-term-1',
-      name: 'Terminal Scroll Test',
-    );
+    final session = _buildSession();
 
     await tester.pumpWidget(
       ProviderScope(
@@ -166,5 +171,135 @@ void main() {
     await tester.tap(find.text('↑'));
     await tester.pump();
     expect(fakeChannel.sentMessages, equals(['\x1b[A']));
+  });
+
+  testWidgets(
+      'TerminalScreen displays reconnecting banner on websocket error and reconnects automatically',
+      (tester) async {
+    var channelCount = 0;
+    _FakeWebSocketChannel? lastChannel;
+
+    WebSocketChannel channelBuilder(Uri uri) {
+      channelCount++;
+      final ch = _FakeWebSocketChannel();
+      lastChannel = ch;
+      return ch;
+    }
+
+    final session = _buildSession();
+
+    await tester.pumpWidget(
+      ProviderScope(
+        child: MaterialApp(
+          theme: AppTheme.darkTheme,
+          home: TerminalScreen(
+            session: session,
+            channelBuilder: channelBuilder,
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    expect(channelCount, 1);
+
+    // Simulate websocket disconnect/error
+    lastChannel!.serverToClient.addError('Connection dropped');
+    await tester.pump();
+
+    expect(
+        find.textContaining('Reconnecting (attempt 1/5)...'), findsOneWidget);
+
+    // Advance 1s to allow backoff timer to fire
+    await tester.pump(const Duration(seconds: 2));
+    await tester.pump();
+
+    expect(channelCount, 2);
+
+    // First frame arrives on reconnected channel: verifies force resize sent and banner cleared
+    lastChannel!.serverToClient.add('welcome back\r\n');
+    await tester.pump();
+    expect(
+      lastChannel!.sentMessages
+          .any((m) => m is String && m.contains('"type":"resize"')),
+      isTrue,
+    );
+    expect(find.textContaining('Reconnecting'), findsNothing);
+  });
+
+  testWidgets(
+      'TerminalScreen displays [Tap to Reconnect] when max attempts reached, and tapping it reconnects',
+      (tester) async {
+    var channelCount = 0;
+    _FakeWebSocketChannel? currentChannel;
+    WebSocketChannel channelBuilder(Uri uri) {
+      channelCount++;
+      final ch = _FakeWebSocketChannel();
+      currentChannel = ch;
+      return ch;
+    }
+
+    final session = _buildSession();
+
+    await tester.pumpWidget(
+      ProviderScope(
+        child: MaterialApp(
+          theme: AppTheme.darkTheme,
+          home: TerminalScreen(
+            session: session,
+            channelBuilder: channelBuilder,
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    // Trigger disconnects until max attempts exhausted
+    for (var i = 1; i <= 6; i++) {
+      currentChannel?.serverToClient.addError('Drop $i');
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 6));
+    }
+
+    expect(find.text('[Tap to Reconnect]'), findsOneWidget);
+
+    // Tap to reconnect
+    await tester.tap(find.text('[Tap to Reconnect]'));
+    await tester.pump();
+
+    expect(channelCount, greaterThan(5));
+  });
+
+  testWidgets('TerminalScreen suppresses auto-reconnect when session is ended',
+      (tester) async {
+    var channelCount = 0;
+    _FakeWebSocketChannel? currentChannel;
+    WebSocketChannel channelBuilder(Uri uri) {
+      channelCount++;
+      final ch = _FakeWebSocketChannel();
+      currentChannel = ch;
+      return ch;
+    }
+
+    final endedSession = _buildSession(state: SessionState.ended);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        child: MaterialApp(
+          theme: AppTheme.darkTheme,
+          home: TerminalScreen(
+            session: endedSession,
+            channelBuilder: channelBuilder,
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    currentChannel!.serverToClient.addError('Ended socket drop');
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 3));
+
+    expect(channelCount, 1);
+    expect(find.textContaining('Reconnecting'), findsNothing);
   });
 }
