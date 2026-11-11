@@ -15,8 +15,7 @@ class TerminalAccessoryBar extends StatelessWidget {
     super.key,
     required this.onKeyPressed,
     this.customKeys,
-    this.padding =
-        const EdgeInsets.symmetric(horizontal: AppSpacing.md, vertical: 6),
+    this.padding = const EdgeInsets.symmetric(horizontal: AppSpacing.md, vertical: 6),
     this.enableHaptics = true,
   });
 
@@ -72,11 +71,7 @@ class TerminalAccessoryBar extends StatelessWidget {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: keys.map((key) {
-            final isHighlight = key == 'Ctrl+C' ||
-                key == 'Esc' ||
-                key == 'Enter' ||
-                key == '⌫' ||
-                key == '⌨️';
+            final isHighlight = key == 'Ctrl+C' || key == 'Esc' || key == 'Enter' || key == '⌫' || key == '⌨️';
 
             return Padding(
               padding: const EdgeInsets.symmetric(horizontal: 3.0),
@@ -114,8 +109,7 @@ class TerminalAccessoryBar extends StatelessWidget {
                   onTap: () => _handleKeyTap(key),
                   splashColor: AppColors.infoCyan.withOpacity(0.2),
                   child: Padding(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
                     child: Text(
                       key,
                       style: AppTypography.touchKeyText.copyWith(
@@ -127,8 +121,7 @@ class TerminalAccessoryBar extends StatelessWidget {
                                     ? AppColors.statusAmber
                                     : AppColors.textPrimary)),
                         fontSize: 12,
-                        fontWeight:
-                            isHighlight ? FontWeight.w600 : FontWeight.normal,
+                        fontWeight: isHighlight ? FontWeight.w600 : FontWeight.normal,
                       ),
                     ),
                   ),

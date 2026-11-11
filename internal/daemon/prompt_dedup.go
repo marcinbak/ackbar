@@ -113,7 +113,8 @@ func (p *PromptDedup) evictOldestIfFullLocked() {
 	if len(p.entries) < p.maxEntries {
 		return
 	}
-	for elem := p.lru.Back(); elem != nil; elem = elem.Prev() {
+	for elem := p.lru.Back(); elem != nil; {
+		prev := elem.Prev()
 		entry := elem.Value.(*promptDedupEntry)
 		if !entry.inFlight {
 			p.removeEntryLocked(entry)
@@ -121,6 +122,7 @@ func (p *PromptDedup) evictOldestIfFullLocked() {
 				return
 			}
 		}
+		elem = prev
 	}
 }
 

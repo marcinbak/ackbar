@@ -62,7 +62,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   final ScrollController _verticalScrollController = ScrollController();
   bool _showScrollToBottom = false;
 
-  // Touch drag gesture scroll accumulator
   double _dragScrollAccumulator = 0.0;
   double _lastBottomInset = 0.0;
   int? _activePointerId;
@@ -93,7 +92,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
     if (state == AppLifecycleState.resumed && mounted) {
-      _reconnectController.onAppResumed();
+      (_channel == null || _channel!.closeCode != null)
+          ? _reconnectController.retryNow()
+          : _reconnectController.onAppResumed();
     }
   }
 
@@ -172,6 +173,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   void _connectWebSocket() {
+    _pingTimer?.cancel();
+    _pingTimer = null;
+    _sub?.cancel();
+    _sub = null;
+    try {
+      _channel?.sink.close();
+    } catch (_) {}
+    _channel = null;
+
     final liveSession = _resolveLiveSession();
     final host = _resolveHostRecord(liveSession);
     final hostUrl = host?.url ?? 'http://127.0.0.1:7777';
@@ -197,9 +207,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           : WebSocketChannel.connect(uri);
       _channel = channel;
 
-      _terminal.onOutput = (data) {
-        _channel?.sink.add(data);
-      };
+      _terminal.onOutput = (data) => _channel?.sink.add(data);
 
       _pingTimer?.cancel();
       _pingTimer = Timer.periodic(const Duration(seconds: 15), (_) {
@@ -211,12 +219,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _reconnectController.onConnecting();
       _sub = channel.stream.listen(
         (message) {
+          if (!identical(_channel, channel)) return;
           _reconnectController.onFrameReceived();
           if (_connecting) {
-            setState(() {
-              _connecting = false;
-            });
-            _sendResize(_currentCols, _currentRows);
+            setState(() => _connecting = false);
+            _sendResize(_currentCols, _currentRows, force: true);
           }
           final text = message is String
               ? message
@@ -231,8 +238,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           }
           if (text.isNotEmpty) _terminal.write(text);
         },
-        onError: (err) => _handleDisconnect(err: err),
-        onDone: () => _handleDisconnect(isDone: true),
+        onError: (err) =>
+            identical(_channel, channel) ? _handleDisconnect(err: err) : null,
+        onDone: () => identical(_channel, channel)
+            ? _handleDisconnect(isDone: true)
+            : null,
+        cancelOnError: true,
       );
     } catch (e) {
       _handleDisconnect(err: e);
@@ -258,8 +269,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     });
   }
 
-  void _sendResize(int cols, int rows) {
-    if (cols == _currentCols && rows == _currentRows) return;
+  void _sendResize(int cols, int rows, {bool force = false}) {
+    if (!force && cols == _currentCols && rows == _currentRows) return;
     _currentCols = cols;
     _currentRows = rows;
     _terminal.resize(cols, rows);
@@ -403,19 +414,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   void _applyVerticalScrollDelta(double dy) {
     _dragScrollAccumulator += dy;
-
-    // Approximately ~14px per terminal row scroll
     const lineDelta = 14.0;
     if (_dragScrollAccumulator.abs() >= lineDelta) {
       final rows = (_dragScrollAccumulator / lineDelta).truncate();
       _dragScrollAccumulator -= rows * lineDelta;
-
       if (rows > 0) {
-        // Swiping finger DOWN -> Scroll UP in tmux history
         _sendScroll('up', lines: rows);
         if (!_showScrollToBottom) setState(() => _showScrollToBottom = true);
       } else if (rows < 0) {
-        // Swiping finger UP -> Scroll DOWN towards live prompt
         _sendScroll('down', lines: -rows);
       }
     }
@@ -509,6 +515,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       final s = _resolveLiveSession();
       if (s.state == SessionState.ended || s.archived) {
         _reconnectController.markEnded();
+        try {
+          _channel?.sink.close();
+        } catch (_) {}
       }
     });
     ref.watch(fleetSessionsProvider);
@@ -522,11 +531,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         backgroundColor: AppColors.surface,
         elevation: 0,
         leading: IconButton(
-          icon: const Icon(
-            Icons.arrow_back_ios_new_rounded,
-            size: 18,
-            color: AppColors.textPrimary,
-          ),
+          icon: const Icon(Icons.arrow_back_ios_new_rounded,
+              size: 18, color: AppColors.textPrimary),
           onPressed: () => Navigator.of(context).pop(),
         ),
         title: Column(
@@ -534,11 +540,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           children: [
             Row(
               children: [
-                const Icon(
-                  Icons.terminal_rounded,
-                  size: 16,
-                  color: AppColors.infoCyan,
-                ),
+                const Icon(Icons.terminal_rounded,
+                    size: 16, color: AppColors.infoCyan),
                 const SizedBox(width: 6),
                 Expanded(
                   child: Text(
@@ -594,7 +597,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
               },
             ),
 
-          // Keyboard toggle button (shows/hides on-screen keyboard)
           IconButton(
             icon: Icon(
               keyboardOpen
@@ -608,7 +610,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             onPressed: () => _toggleKeyboard(keyboardOpen),
           ),
 
-          // Fit mode toggle
           IconButton(
             icon: Container(
               padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
@@ -638,7 +639,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             onPressed: _toggleAutoFit,
           ),
 
-          // Tmux scroll mode helper
           IconButton(
             icon: const Icon(
               Icons.history_rounded,
@@ -659,7 +659,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             },
           ),
 
-          // Zoom Out
           IconButton(
             icon: const Icon(
               Icons.remove_rounded,
@@ -670,7 +669,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             onPressed: _zoomOut,
           ),
 
-          // Zoom In
           IconButton(
             icon: const Icon(
               Icons.add_rounded,
@@ -681,7 +679,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             onPressed: _zoomIn,
           ),
 
-          // Reconnect
           IconButton(
             icon: const Icon(
               Icons.refresh_rounded,

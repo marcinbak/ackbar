@@ -136,7 +136,7 @@ flutter run
 cd mobile
 flutter test
 ```
-*Executes all 276 unit and widget tests covering models, SSE streams, headless live controllers, terminal reconnect backoff, Riverpod providers, work board, and offline health recovery.*
+*Executes all 245 unit and widget tests covering models, theme extensions, Riverpod providers, session spawning, transcript live turn synchronization, terminal touch scrolling, node path resolution, speech sanitizer, hierarchical fleet tree, work board, voice companion, headless OAuth cards, config sheets, and command dispatcher.*
 
 ### Installing to iOS Device
 ```bash
@@ -189,24 +189,3 @@ In **Phase 5**, the Flutter Mobile App (`mobile/lib/`) was upgraded to complete 
    * **`HeadlessAuthCard`:** Renders on `BlockKind.auth` in `AttentionScreen` and `TranscriptScreen`. Launches external browser via native `dev.ackbar.app/launcher` HTTPS channel (`MainActivity.kt`, `AppDelegate.swift`) with clipboard fallback. Supports collapsible remote `callback_url` paste, retry, terminal attach, and dismiss.
    * **`HeadlessConfigPillBar` & `HeadlessConfigSheet`:** Displays model, effort (hidden for Antigravity), `AUTO`/`PLAN` mode, `extra_dirs`, and `Context %`. Embeds `HeadlessMcpSection` with live MCP/plugin pills and 1-tap sign-in.
    * **Composer Autocomplete & Command Dispatcher:** `HeadlessAutocompleteStrip` handles `/` commands, `@` files, and `!` shell indicator. `HeadlessCommandDispatcher` executes `! <cmd>` and 20 standalone slash commands, passing prompt skills through. Renders inline dark `HeadlessCommandCardView` cards (`+ Attach to Prompt`, inspect, `/rewind`) and handles epoch-guarded `Conv N+1` rotation.
-
----
-
-## 6. Implemented Phase 6: Mobile Stream Reliability & Reconnect Resilience
-
-In **Phase 6**, mobile streaming architecture was hardened with resilient connection lifecycles:
-
-1. **Keepalive & Owned Client Lifecycle (`server.go`, `sse_client.dart`):**
-   * Backend emits `: keepalive\n\n` comments every 20s with immediate initial flush.
-   * `SSEClient` manages per-attempt HTTP client lifecycle, aborting sockets cleanly on disconnect.
-   * Jittered backoff resets only on valid SSE frames; reconnected hosts trigger session refresh.
-
-2. **Headless Live SSE Streaming (`prompt_dedup.go`, `chat_stream_client.dart`, `headless_chat_stream_controller.dart`):**
-   * Server validates `client_turn_id` (<=128 chars) and deduplicates prompts across in-flight turns.
-   * `ChatStreamClient` tracks monotonic `(turnId, seq)` cursors and handles `: keepalive` frames.
-   * Controller manages optimistic user bubbles without dropping pending prompts on timeout.
-
-3. **Terminal Reconnect & Resilient Mutations (`terminal_reconnect_controller.dart`, `fleet_providers.dart`):**
-   * Terminal controller enforces bounded exponential backoff with manual tap-to-reconnect fallback.
-   * State mutators return `Future<bool>` with safe rollback preserving newer authoritative state.
-   * `AppLifecycleSyncObserver` debounces foreground sync and probes offline hosts every 30s.

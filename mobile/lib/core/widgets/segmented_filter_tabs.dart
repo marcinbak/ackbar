@@ -46,8 +46,7 @@ class SegmentedFilterTabs extends StatelessWidget {
           final isSelected = index == selectedIndex;
 
           return Padding(
-            padding: EdgeInsets.only(
-                right: index == tabs.length - 1 ? 0 : AppSpacing.sm),
+            padding: EdgeInsets.only(right: index == tabs.length - 1 ? 0 : AppSpacing.sm),
             child: _FilterPill(
               tab: tab,
               isSelected: isSelected,
@@ -74,11 +73,8 @@ class _FilterPill extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final bgColor = isSelected ? AppColors.surfaceHighlight : AppColors.surface;
-    final borderColor = isSelected
-        ? AppColors.infoCyan.withOpacity(0.6)
-        : AppColors.outlineSubtle;
-    final textColor =
-        isSelected ? AppColors.textPrimary : AppColors.textSecondary;
+    final borderColor = isSelected ? AppColors.infoCyan.withOpacity(0.6) : AppColors.outlineSubtle;
+    final textColor = isSelected ? AppColors.textPrimary : AppColors.textSecondary;
 
     return Material(
       color: bgColor,
@@ -107,8 +103,7 @@ class _FilterPill extends StatelessWidget {
               if (tab.count != null) ...[
                 const SizedBox(width: 6),
                 Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
                   decoration: BoxDecoration(
                     color: tab.countBadgeColor ??
                         (isSelected
@@ -116,18 +111,14 @@ class _FilterPill extends StatelessWidget {
                             : AppColors.surfaceContainerHigh),
                     borderRadius: BorderRadius.circular(10),
                     border: isSelected
-                        ? Border.all(
-                            color: AppColors.infoCyan.withOpacity(0.4),
-                            width: 0.5)
+                        ? Border.all(color: AppColors.infoCyan.withOpacity(0.4), width: 0.5)
                         : null,
                   ),
                   child: Text(
                     '${tab.count}',
                     style: AppTypography.codeXs.copyWith(
                       color: tab.countTextColor ??
-                          (isSelected
-                              ? AppColors.infoCyan
-                              : AppColors.textMuted),
+                          (isSelected ? AppColors.infoCyan : AppColors.textMuted),
                       fontWeight: FontWeight.w700,
                       fontSize: 10,
                     ),

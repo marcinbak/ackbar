@@ -55,6 +55,7 @@ void main() {
     expect(capturedUri?.queryParameters['after_seq'], '5');
     expect(capturedHeaders?['authorization'], 'Bearer secret-token');
     expect(capturedHeaders?['last-event-id'], 'turn-99:5');
+    expect(capturedUri?.queryParameters.containsKey('token'), isFalse);
   });
 
   test('ChatStreamClient parses event frames and handles keepalives', () async {
@@ -206,5 +207,53 @@ void main() {
     await Future<void>.delayed(const Duration(milliseconds: 10));
     await sub.cancel();
     streamClient.dispose();
+  });
+
+  test(
+      'ChatStreamClient watchdog aborts hung 200 stream and reconnects with updated turn_id and after_seq',
+      () async {
+    int attempts = 0;
+    final capturedUrls = <Uri>[];
+    final unclosedStreamCtrl1 = StreamController<List<int>>();
+    final streamCtrl2 = StreamController<List<int>>();
+
+    final streamClient = ChatStreamClient(
+      clientFactory: () {
+        attempts++;
+        if (attempts == 1) {
+          return MockClient.streaming((req, _) async {
+            capturedUrls.add(req.url);
+            unclosedStreamCtrl1.add(utf8.encode('id: turn-watchdog:10\n'
+                'event: text_delta\n'
+                'data: {"turn_id":"turn-watchdog","seq":10,"type":"text_delta","text":"hello"}\n\n'));
+            return http.StreamedResponse(unclosedStreamCtrl1.stream, 200);
+          });
+        }
+        return MockClient.streaming((req, _) async {
+          capturedUrls.add(req.url);
+          streamCtrl2.add(utf8.encode(': keepalive\n\n'));
+          return http.StreamedResponse(streamCtrl2.stream, 200);
+        });
+      },
+      readTimeout: const Duration(milliseconds: 50),
+      backoffSchedule: const [Duration(milliseconds: 10)],
+      random: Random(1),
+    );
+    addTearDown(() {
+      unclosedStreamCtrl1.close();
+      streamCtrl2.close();
+      streamClient.dispose();
+    });
+
+    final sub =
+        streamClient.connect(_createHost(), 'sess-watchdog').listen((_) {});
+    addTearDown(() => sub.cancel());
+
+    await Future<void>.delayed(const Duration(milliseconds: 130));
+
+    expect(attempts, greaterThanOrEqualTo(2));
+    expect(capturedUrls.length, greaterThanOrEqualTo(2));
+    expect(capturedUrls[1].queryParameters['turn_id'], 'turn-watchdog');
+    expect(capturedUrls[1].queryParameters['after_seq'], '10');
   });
 }

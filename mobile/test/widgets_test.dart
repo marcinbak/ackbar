@@ -24,8 +24,7 @@ void main() {
   GoogleFonts.config.allowRuntimeFetching = false;
 
   group('TokenGaugeBar Widget Tests', () {
-    testWidgets('renders correctly with direct percentage value',
-        (tester) async {
+    testWidgets('renders correctly with direct percentage value', (tester) async {
       await tester.pumpWidget(
         _wrapWithTheme(
           const TokenGaugeBar(
@@ -39,8 +38,7 @@ void main() {
       expect(find.text('45%'), findsOneWidget);
     });
 
-    testWidgets('renders calculated percentage from usedTokens and maxTokens',
-        (tester) async {
+    testWidgets('renders calculated percentage from usedTokens and maxTokens', (tester) async {
       await tester.pumpWidget(
         _wrapWithTheme(
           const TokenGaugeBar(
@@ -110,8 +108,7 @@ void main() {
       expect(find.text('30%'), findsOneWidget);
     });
 
-    testWidgets('renders compact bar height when isCompact is true',
-        (tester) async {
+    testWidgets('renders compact bar height when isCompact is true', (tester) async {
       await tester.pumpWidget(
         _wrapWithTheme(
           const TokenGaugeBar(
@@ -126,8 +123,7 @@ void main() {
   });
 
   group('StatusBadge Widget Tests', () {
-    testWidgets('renders working status with default symbol and label',
-        (tester) async {
+    testWidgets('renders working status with default symbol and label', (tester) async {
       await tester.pumpWidget(
         _wrapWithTheme(const StatusBadge.working()),
       );
@@ -136,8 +132,7 @@ void main() {
       expect(find.text('WORKING'), findsOneWidget);
     });
 
-    testWidgets('renders blocked status with default symbol and label',
-        (tester) async {
+    testWidgets('renders blocked status with default symbol and label', (tester) async {
       await tester.pumpWidget(
         _wrapWithTheme(const StatusBadge.blocked()),
       );
@@ -146,8 +141,7 @@ void main() {
       expect(find.text('BLOCKED'), findsOneWidget);
     });
 
-    testWidgets('renders idle status with default symbol and label',
-        (tester) async {
+    testWidgets('renders idle status with default symbol and label', (tester) async {
       await tester.pumpWidget(
         _wrapWithTheme(const StatusBadge.idle()),
       );
@@ -156,8 +150,7 @@ void main() {
       expect(find.text('IDLE'), findsOneWidget);
     });
 
-    testWidgets('renders offline status with default symbol and label',
-        (tester) async {
+    testWidgets('renders offline status with default symbol and label', (tester) async {
       await tester.pumpWidget(
         _wrapWithTheme(const StatusBadge.offline()),
       );
@@ -166,8 +159,7 @@ void main() {
       expect(find.text('OFFLINE'), findsOneWidget);
     });
 
-    testWidgets('renders active status with default symbol and label',
-        (tester) async {
+    testWidgets('renders active status with default symbol and label', (tester) async {
       await tester.pumpWidget(
         _wrapWithTheme(const StatusBadge.active()),
       );
@@ -176,8 +168,7 @@ void main() {
       expect(find.text('ACTIVE'), findsOneWidget);
     });
 
-    testWidgets('renders custom label and custom symbol when supplied',
-        (tester) async {
+    testWidgets('renders custom label and custom symbol when supplied', (tester) async {
       await tester.pumpWidget(
         _wrapWithTheme(
           const StatusBadge(
@@ -193,8 +184,7 @@ void main() {
       expect(find.text('BLOCKED'), findsNothing);
     });
 
-    testWidgets('renders showDotOnly circular indicator without text',
-        (tester) async {
+    testWidgets('renders showDotOnly circular indicator without text', (tester) async {
       await tester.pumpWidget(
         _wrapWithTheme(
           const StatusBadge(
@@ -235,8 +225,7 @@ void main() {
   });
 
   group('GlassCard Widget Tests', () {
-    testWidgets('renders child content inside styled container',
-        (tester) async {
+    testWidgets('renders child content inside styled container', (tester) async {
       await tester.pumpWidget(
         _wrapWithTheme(
           const GlassCard(
@@ -248,9 +237,7 @@ void main() {
       expect(find.text('Card Content Inside'), findsOneWidget);
     });
 
-    testWidgets(
-        'renders left accent color indicator bar when accentColor is provided',
-        (tester) async {
+    testWidgets('renders left accent color indicator bar when accentColor is provided', (tester) async {
       await tester.pumpWidget(
         _wrapWithTheme(
           const GlassCard(
@@ -262,10 +249,7 @@ void main() {
       );
 
       expect(find.text('Card with Accent Bar'), findsOneWidget);
-      expect(
-          find.descendant(
-              of: find.byType(GlassCard), matching: find.byType(Stack)),
-          findsOneWidget);
+      expect(find.descendant(of: find.byType(GlassCard), matching: find.byType(Stack)), findsOneWidget);
     });
 
     testWidgets('invokes onTap callback when tapped', (tester) async {
@@ -289,8 +273,7 @@ void main() {
       expect(wasTapped, isTrue);
     });
 
-    testWidgets('does not wrap in InkWell when isInteractive is false',
-        (tester) async {
+    testWidgets('does not wrap in InkWell when isInteractive is false', (tester) async {
       await tester.pumpWidget(
         _wrapWithTheme(
           GlassCard(
@@ -305,8 +288,7 @@ void main() {
       expect(find.text('Non-interactive Card'), findsOneWidget);
     });
 
-    testWidgets('applies custom padding, margin, and border radius',
-        (tester) async {
+    testWidgets('applies custom padding, margin, and border radius', (tester) async {
       await tester.pumpWidget(
         _wrapWithTheme(
           GlassCard(
@@ -325,8 +307,7 @@ void main() {
   });
 
   group('SegmentedFilterTabs Widget Tests', () {
-    testWidgets('renders all tab items with labels and optional badge counts',
-        (tester) async {
+    testWidgets('renders all tab items with labels and optional badge counts', (tester) async {
       final tabs = [
         const FilterTabItem(label: 'All', count: 5),
         const FilterTabItem(label: 'Working', count: 2),
@@ -353,8 +334,7 @@ void main() {
       expect(find.text('Idle'), findsOneWidget);
     });
 
-    testWidgets('triggers onTabSelected with correct index on tap',
-        (tester) async {
+    testWidgets('triggers onTabSelected with correct index on tap', (tester) async {
       int? selectedIndex;
       final tabs = [
         const FilterTabItem(label: 'All'),
@@ -416,8 +396,7 @@ void main() {
       expect(find.text('Esc'), findsNothing);
     });
 
-    testWidgets('tapping touch key triggers onKeyPressed callback',
-        (tester) async {
+    testWidgets('tapping touch key triggers onKeyPressed callback', (tester) async {
       String? pressedKey;
 
       await tester.pumpWidget(

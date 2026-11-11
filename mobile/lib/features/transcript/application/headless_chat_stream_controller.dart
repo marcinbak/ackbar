@@ -34,6 +34,7 @@ class HeadlessChatStreamController extends ChangeNotifier {
   StreamSubscription<ChatStreamEvent>? _streamSub;
   Timer? _pollingTimer;
   bool _hasStreamConnected = false;
+  bool _disposed = false;
   String _currentTurnId = '';
   bool _lastEventWasTool = false;
 
@@ -46,8 +47,10 @@ class HeadlessChatStreamController extends ChangeNotifier {
   })  : _session = session,
         _host = host,
         _apiClient = apiClient,
-        _chatStreamClient =
-            chatStreamClient ?? ChatStreamClient(client: apiClient.client),
+        _chatStreamClient = chatStreamClient ??
+            (apiClient.hasInjectedClient
+                ? ChatStreamClient(client: apiClient.client)
+                : ChatStreamClient()),
         _random = random ?? Random();
 
   Session get session => _session;
@@ -66,12 +69,11 @@ class HeadlessChatStreamController extends ChangeNotifier {
   void init() {
     _loadInitialTranscript();
     _startPolling();
-    if (_session.isHeadless) _connectStream();
   }
 
-  void updateSession(Session updated) {
+  void updateSession(Session updated, {bool notify = true}) {
     _session = updated;
-    notifyListeners();
+    if (notify) notifyListeners();
   }
 
   void rotateToSession(Session nextSession, HostRecord host) {
@@ -91,7 +93,6 @@ class HeadlessChatStreamController extends ChangeNotifier {
 
     notifyListeners();
     _loadInitialTranscript();
-    if (_session.isHeadless) _connectStream();
   }
 
   void _startPolling() {
@@ -160,6 +161,28 @@ class HeadlessChatStreamController extends ChangeNotifier {
         _lastEventWasTool = false;
         final msgs =
             List<TranscriptMessage>.from(_transcriptData?.messages ?? []);
+
+        if (_pendingUserMessage != null &&
+            _pendingUserMessage!.turnId != evt.turnId) {
+          _pendingUserMessage =
+              _pendingUserMessage!.copyWith(turnId: evt.turnId);
+          final userIdx = msgs.indexWhere(
+              (m) => m.isUser && m.content == _pendingUserMessage!.content);
+          if (userIdx >= 0) {
+            msgs[userIdx] = msgs[userIdx].copyWith(turnId: evt.turnId);
+          }
+        } else if (_pendingUserMessage == null &&
+            evt.text.trim().isNotEmpty &&
+            !msgs.any((m) => m.isUser && m.turnId == evt.turnId)) {
+          msgs.add(TranscriptMessage(
+            role: 'user',
+            content: evt.text,
+            turnId: evt.turnId,
+            inFlight: true,
+            timestamp: evt.timestamp,
+          ));
+        }
+
         final idx =
             msgs.indexWhere((m) => m.isAssistant && m.turnId == evt.turnId);
         if (idx >= 0) {
@@ -289,6 +312,7 @@ class HeadlessChatStreamController extends ChangeNotifier {
       _errorMessage =
           'Unable to load transcript from host. Tap Retry to try again.';
       notifyListeners();
+      if (_session.isHeadless && _streamSub == null) _connectStream();
     }
   }
 
@@ -457,7 +481,13 @@ class HeadlessChatStreamController extends ChangeNotifier {
   }
 
   @override
+  void notifyListeners() {
+    if (!_disposed) super.notifyListeners();
+  }
+
+  @override
   void dispose() {
+    _disposed = true;
     _streamSub?.cancel();
     _pollingTimer?.cancel();
     _chatStreamClient.dispose();

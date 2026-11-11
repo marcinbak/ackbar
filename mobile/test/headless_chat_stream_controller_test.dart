@@ -1,5 +1,7 @@
 import 'dart:async';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
 import 'package:ackbar_mobile/core/models/chat_stream_event.dart';
 import 'package:ackbar_mobile/core/models/host.dart';
 import 'package:ackbar_mobile/core/models/session.dart';
@@ -228,8 +230,40 @@ void main() {
     );
 
     controller.rotateToSession(sess2, _testHost());
+    await Future<void>.delayed(const Duration(milliseconds: 20));
     expect(controller.session.id, 'claude-code:local:sess-2');
     expect(controller.transcriptData?.messages ?? [], isEmpty);
     expect(controller.awaitingTurnCompletion, isFalse);
+  });
+
+  test(
+      'disposing controller does not close shared ApiClient client and default ApiClient creates owned ChatStreamClient',
+      () async {
+    final mockHttpClient =
+        MockClient((req) async => http.Response('{"ok":true}', 200));
+    final sharedApiClient = ApiClient(client: mockHttpClient);
+    expect(sharedApiClient.hasInjectedClient, isTrue);
+
+    final controller = HeadlessChatStreamController(
+      session: _testSession(),
+      host: _testHost(),
+      apiClient: sharedApiClient,
+    );
+
+    controller.init();
+    controller.dispose();
+
+    final res = await sharedApiClient.client
+        .get(Uri.parse('http://127.0.0.1:7777/health'));
+    expect(res.statusCode, 200);
+
+    final defaultApiClient = ApiClient();
+    expect(defaultApiClient.hasInjectedClient, isFalse);
+    final defaultController = HeadlessChatStreamController(
+      session: _testSession(),
+      host: _testHost(),
+      apiClient: defaultApiClient,
+    );
+    defaultController.dispose();
   });
 }

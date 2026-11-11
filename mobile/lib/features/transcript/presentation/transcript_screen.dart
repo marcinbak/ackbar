@@ -483,9 +483,7 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
       final nextSession = _findMatchingSession(next);
       if (nextSession == null) return;
 
-      if (nextSession.id != _streamController.session.id) {
-        _streamController.updateSession(nextSession);
-      }
+      _streamController.updateSession(nextSession);
 
       if (prevSession.state == SessionState.working &&
           nextSession.state != SessionState.working) {
@@ -504,7 +502,7 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
     );
     final currentSession = liveSession ?? _activeSession;
     if (currentSession.id != _streamController.session.id) {
-      _streamController.updateSession(currentSession);
+      _streamController.updateSession(currentSession, notify: false);
     }
     final isWorking = _isSending ||
         _awaitingTurnCompletion ||

@@ -326,3 +326,45 @@ func TestHandlePrompt_ClientTurnID(t *testing.T) {
 		t.Fatalf("expected 400 again on retry, got %d", tmuxRec2.Code)
 	}
 }
+
+func TestPromptDedup_MultiEntryEviction(t *testing.T) {
+	dedup := newPromptDedup()
+	dedup.maxEntries = 3
+	ctx := context.Background()
+
+	r1, _, err := dedup.Reserve(ctx, "k1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r1.Commit("s1")
+
+	r2, _, err := dedup.Reserve(ctx, "k2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r2.Commit("s2")
+
+	r3, _, err := dedup.Reserve(ctx, "k3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r3.Commit("s3")
+
+	if count := len(dedup.entries); count != 3 {
+		t.Fatalf("expected 3 entries, got %d", count)
+	}
+
+	dedup.maxEntries = 1
+	r4, _, err := dedup.Reserve(ctx, "k4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r4.Commit("s4")
+
+	if count := len(dedup.entries); count != 1 {
+		t.Fatalf("expected 1 entry after multi-entry eviction, got %d", count)
+	}
+	if _, ok := dedup.entries["k4"]; !ok {
+		t.Fatalf("expected k4 to remain in dedup cache")
+	}
+}

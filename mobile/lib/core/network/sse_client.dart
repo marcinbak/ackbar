@@ -47,6 +47,7 @@ class SSEClient {
     Timer? watchdogTimer;
     Timer? backoffTimer;
     Completer<void>? sleepCompleter;
+    Completer<void>? activeStreamCompleter;
 
     void cancelSubscription() {
       if (cancelled) return;
@@ -59,6 +60,11 @@ class SSEClient {
       if (sleepCompleter != null && !sleepCompleter!.isCompleted) {
         sleepCompleter!.complete();
         sleepCompleter = null;
+      }
+      if (activeStreamCompleter != null &&
+          !activeStreamCompleter!.isCompleted) {
+        activeStreamCompleter!.complete();
+        activeStreamCompleter = null;
       }
       currentStreamSub?.cancel();
       currentStreamSub = null;
@@ -86,6 +92,7 @@ class SSEClient {
           getWatchdog: () => watchdogTimer,
           setBackoffTimer: (t) => backoffTimer = t,
           setSleepCompleter: (c) => sleepCompleter = c,
+          setActiveStreamCompleter: (c) => activeStreamCompleter = c,
           getAttempt: () => attempt,
           setAttempt: (a) => attempt = a,
           getHasExperiencedFailure: () => hasExperiencedFailure,
@@ -109,6 +116,7 @@ class SSEClient {
     required Timer? Function() getWatchdog,
     required void Function(Timer?) setBackoffTimer,
     required void Function(Completer<void>?) setSleepCompleter,
+    required void Function(Completer<void>?) setActiveStreamCompleter,
     required int Function() getAttempt,
     required void Function(int) setAttempt,
     required bool Function() getHasExperiencedFailure,
@@ -128,6 +136,7 @@ class SSEClient {
 
     while (!isCancelled()) {
       http.Client? attemptClient;
+      StreamSubscription<String>? sub;
       try {
         if (_ownsPerAttemptClient) {
           attemptClient = _effectiveClientFactory();
@@ -153,15 +162,23 @@ class SSEClient {
         }
 
         bool receivedValidFrame = false;
+        final streamCompleter = Completer<void>();
+        setActiveStreamCompleter(streamCompleter);
 
         void resetWatchdog() {
           getWatchdog()?.cancel();
           if (isCancelled()) return;
           setWatchdog(
             Timer(inactivityTimeout, () {
+              if (!streamCompleter.isCompleted) {
+                streamCompleter.completeError(
+                  TimeoutException('SSE inactivity timeout'),
+                );
+              }
               if (_ownsPerAttemptClient) {
                 attemptClient?.close();
               }
+              sub?.cancel();
               setStreamSub(null);
             }),
           );
@@ -182,8 +199,7 @@ class SSEClient {
           } catch (_) {}
         }
 
-        final streamCompleter = Completer<void>();
-        final sub = streamedResponse.stream
+        sub = streamedResponse.stream
             .transform(utf8.decoder)
             .transform(const LineSplitter())
             .listen(
@@ -231,8 +247,10 @@ class SSEClient {
         await streamCompleter.future;
       } catch (_) {
       } finally {
+        setActiveStreamCompleter(null);
         getWatchdog()?.cancel();
         setWatchdog(null);
+        sub?.cancel();
         setStreamSub(null);
         if (_ownsPerAttemptClient) {
           attemptClient?.close();
@@ -302,6 +320,5 @@ class SSEClient {
       cancel();
     }
     _activeCancels.clear();
-    _sharedClient?.close();
   }
 }

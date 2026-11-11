@@ -51,6 +51,7 @@ class ChatStreamClient {
     Timer? watchdogTimer;
     Timer? backoffTimer;
     Completer<void>? sleepCompleter;
+    Completer<void>? activeStreamCompleter;
 
     void cancelStream() {
       if (cancelled) return;
@@ -63,6 +64,11 @@ class ChatStreamClient {
       if (sleepCompleter != null && !sleepCompleter!.isCompleted) {
         sleepCompleter!.complete();
         sleepCompleter = null;
+      }
+      if (activeStreamCompleter != null &&
+          !activeStreamCompleter!.isCompleted) {
+        activeStreamCompleter!.complete();
+        activeStreamCompleter = null;
       }
       currentStreamSub?.cancel();
       currentStreamSub = null;
@@ -106,9 +112,6 @@ class ChatStreamClient {
               if (lastSeq > 0 || currentTurnId.isNotEmpty) {
                 queryParams['after_seq'] = lastSeq.toString();
               }
-              if (host.authToken.isNotEmpty) {
-                queryParams['token'] = host.authToken;
-              }
 
               final uri = Uri.parse('$cleanUrl/v1/sessions/chat/stream')
                   .replace(queryParameters: queryParams);
@@ -136,11 +139,18 @@ class ChatStreamClient {
               }
 
               bool receivedValidFrame = false;
+              final streamCompleter = Completer<void>();
+              activeStreamCompleter = streamCompleter;
 
               void resetWatchdog() {
                 watchdogTimer?.cancel();
                 if (cancelled || controller.isClosed) return;
                 watchdogTimer = Timer(readTimeout, () {
+                  if (!streamCompleter.isCompleted) {
+                    streamCompleter.completeError(
+                      TimeoutException('SSE read timeout'),
+                    );
+                  }
                   if (_ownsPerAttemptClient) {
                     attemptClient?.close();
                   }
@@ -188,7 +198,6 @@ class ChatStreamClient {
                 } catch (_) {}
               }
 
-              final streamCompleter = Completer<void>();
               currentStreamSub = streamedResponse.stream
                   .transform(utf8.decoder)
                   .transform(const LineSplitter())
@@ -234,6 +243,7 @@ class ChatStreamClient {
               await streamCompleter.future;
             } catch (_) {
             } finally {
+              activeStreamCompleter = null;
               watchdogTimer?.cancel();
               watchdogTimer = null;
               currentStreamSub?.cancel();
@@ -279,6 +289,5 @@ class ChatStreamClient {
       cancel();
     }
     _activeCancels.clear();
-    _sharedClient?.close();
   }
 }

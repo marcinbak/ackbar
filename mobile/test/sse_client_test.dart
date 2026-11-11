@@ -206,4 +206,40 @@ void main() {
     await Future<void>.delayed(const Duration(milliseconds: 10));
     sse.dispose();
   });
+
+  test('SSEClient inactivity watchdog aborts hung 200 stream and reconnects',
+      () async {
+    int attempts = 0;
+    final unclosedStreamCtrl1 = StreamController<List<int>>();
+    final streamCtrl2 = StreamController<List<int>>();
+
+    final sse = SSEClient(
+      clientFactory: () {
+        attempts++;
+        if (attempts == 1) {
+          return MockClient.streaming((req, _) async {
+            return http.StreamedResponse(unclosedStreamCtrl1.stream, 200);
+          });
+        }
+        return MockClient.streaming((req, _) async {
+          streamCtrl2.add(utf8.encode(': keepalive\n\n'));
+          return http.StreamedResponse(streamCtrl2.stream, 200);
+        });
+      },
+      inactivityTimeout: const Duration(milliseconds: 50),
+      backoffSchedule: const [Duration(milliseconds: 10)],
+      random: Random(1),
+    );
+    addTearDown(() {
+      unclosedStreamCtrl1.close();
+      streamCtrl2.close();
+      sse.dispose();
+    });
+
+    final sub = sse.subscribeHost(_createHost('local')).listen((_) {});
+    addTearDown(() => sub.cancel());
+
+    await Future<void>.delayed(const Duration(milliseconds: 130));
+    expect(attempts, greaterThanOrEqualTo(2));
+  });
 }

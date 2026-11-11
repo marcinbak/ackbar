@@ -118,7 +118,8 @@ class TerminalReconnectController extends ChangeNotifier {
         _phase == TerminalReconnectPhase.ended) {
       return;
     }
-    if (_phase != TerminalReconnectPhase.connected) {
+    if (_phase != TerminalReconnectPhase.connected &&
+        _phase != TerminalReconnectPhase.connecting) {
       retryNow();
     }
   }

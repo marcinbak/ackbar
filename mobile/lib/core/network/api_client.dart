@@ -21,10 +21,13 @@ class ApiHttpException implements Exception {
 /// HTTP Client communicating with ackbard daemon control plane endpoints.
 class ApiClient {
   final http.Client _client;
+  final bool hasInjectedClient;
 
   http.Client get client => _client;
 
-  ApiClient({http.Client? client}) : _client = client ?? http.Client();
+  ApiClient({http.Client? client})
+      : hasInjectedClient = client != null,
+        _client = client ?? http.Client();
 
   http.Client get rawClient => _client;
 

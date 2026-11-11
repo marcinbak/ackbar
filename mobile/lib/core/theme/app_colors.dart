@@ -16,15 +16,12 @@ abstract final class AppColors {
   static const Color outlineFocused = Color(0xFF06B6D4);
 
   // Status & Semantic Accent Colors
-  static const Color statusEmerald =
-      Color(0xFF10B981); // Active / Idle / Success
-  static const Color statusAmber = Color(0xFFF59E0B); // Working / In-Progress
+  static const Color statusEmerald = Color(0xFF10B981); // Active / Idle / Success
+  static const Color statusAmber = Color(0xFFF59E0B);   // Working / In-Progress
   static const Color statusAmberLight = Color(0xFFFFB95F);
-  static const Color statusCoral =
-      Color(0xFFEF4444); // Blocked / Error / Attention
-  static const Color infoCyan = Color(0xFF06B6D4); // Telemetry / Primary Accent
-  static const Color statusOffline =
-      Color(0xFF64748B); // Disconnected / Inactive
+  static const Color statusCoral = Color(0xFFEF4444);   // Blocked / Error / Attention
+  static const Color infoCyan = Color(0xFF06B6D4);      // Telemetry / Primary Accent
+  static const Color statusOffline = Color(0xFF64748B); // Disconnected / Inactive
 
   // Text & Content Colors
   static const Color textPrimary = Color(0xFFF8FAFC);
@@ -150,23 +147,19 @@ class AckbarColorsExtension extends ThemeExtension<AckbarColorsExtension> {
   }
 
   @override
-  AckbarColorsExtension lerp(
-      ThemeExtension<AckbarColorsExtension>? other, double t) {
+  AckbarColorsExtension lerp(ThemeExtension<AckbarColorsExtension>? other, double t) {
     if (other is! AckbarColorsExtension) return this;
     return AckbarColorsExtension(
       background: Color.lerp(background, other.background, t)!,
       surface: Color.lerp(surface, other.surface, t)!,
-      surfaceHighlight:
-          Color.lerp(surfaceHighlight, other.surfaceHighlight, t)!,
-      surfaceContainerHigh:
-          Color.lerp(surfaceContainerHigh, other.surfaceContainerHigh, t)!,
+      surfaceHighlight: Color.lerp(surfaceHighlight, other.surfaceHighlight, t)!,
+      surfaceContainerHigh: Color.lerp(surfaceContainerHigh, other.surfaceContainerHigh, t)!,
       terminalBlack: Color.lerp(terminalBlack, other.terminalBlack, t)!,
       outline: Color.lerp(outline, other.outline, t)!,
       outlineSubtle: Color.lerp(outlineSubtle, other.outlineSubtle, t)!,
       statusEmerald: Color.lerp(statusEmerald, other.statusEmerald, t)!,
       statusAmber: Color.lerp(statusAmber, other.statusAmber, t)!,
-      statusAmberLight:
-          Color.lerp(statusAmberLight, other.statusAmberLight, t)!,
+      statusAmberLight: Color.lerp(statusAmberLight, other.statusAmberLight, t)!,
       statusCoral: Color.lerp(statusCoral, other.statusCoral, t)!,
       infoCyan: Color.lerp(infoCyan, other.infoCyan, t)!,
       statusOffline: Color.lerp(statusOffline, other.statusOffline, t)!,
