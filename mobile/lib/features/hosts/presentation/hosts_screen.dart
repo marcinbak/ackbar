@@ -48,10 +48,12 @@ class HostsScreen extends ConsumerWidget {
                 onTap: () => AddHostDialog.show(context),
                 borderRadius: AppSpacing.roundedSm,
                 child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
                   child: Row(
                     children: [
-                      const Icon(Icons.add_rounded, size: 14, color: AppColors.infoCyan),
+                      const Icon(Icons.add_rounded,
+                          size: 14, color: AppColors.infoCyan),
                       const SizedBox(width: 4),
                       Text(
                         'ADD HOST',
@@ -74,7 +76,8 @@ class HostsScreen extends ConsumerWidget {
             decoration: BoxDecoration(
               color: AppColors.infoCyan.withOpacity(0.08),
               borderRadius: AppSpacing.roundedLg,
-              border: Border.all(color: AppColors.infoCyan.withOpacity(0.3), width: 1),
+              border: Border.all(
+                  color: AppColors.infoCyan.withOpacity(0.3), width: 1),
             ),
             child: Row(
               children: [
@@ -138,7 +141,8 @@ class HostsScreen extends ConsumerWidget {
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        const Icon(Icons.dns_rounded, size: 44, color: AppColors.infoCyan),
+                        const Icon(Icons.dns_rounded,
+                            size: 44, color: AppColors.infoCyan),
                         AppSpacing.gapH12,
                         Text(
                           'NO SUPERVISED HOSTS',
@@ -151,7 +155,8 @@ class HostsScreen extends ConsumerWidget {
                         Text(
                           'Connect to an ackbard daemon running on your Mac or Tailscale node to supervise sessions in real-time.',
                           textAlign: TextAlign.center,
-                          style: AppTypography.bodySmall.copyWith(color: AppColors.textSecondary),
+                          style: AppTypography.bodySmall
+                              .copyWith(color: AppColors.textSecondary),
                         ),
                         AppSpacing.gapH16,
                         ElevatedButton.icon(
@@ -171,7 +176,9 @@ class HostsScreen extends ConsumerWidget {
             )
           else
             ...hosts.map((host) {
-              final activeSessionsCount = sessions.where((s) => s.host == host.name && !s.archived).length;
+              final activeSessionsCount = sessions
+                  .where((s) => s.host == host.name && !s.archived)
+                  .length;
               return Padding(
                 padding: const EdgeInsets.only(bottom: AppSpacing.md),
                 child: _buildHostCard(context, ref, host, activeSessionsCount),
@@ -182,7 +189,8 @@ class HostsScreen extends ConsumerWidget {
     );
   }
 
-  Widget _buildHostCard(BuildContext context, WidgetRef ref, HostRecord host, int activeSessionsCount) {
+  Widget _buildHostCard(BuildContext context, WidgetRef ref, HostRecord host,
+      int activeSessionsCount) {
     return GlassCard(
       accentColor: host.statusColor,
       child: Column(
@@ -211,7 +219,8 @@ class HostsScreen extends ConsumerWidget {
                     ),
                     Text(
                       host.endpointDisplay,
-                      style: AppTypography.codeXs.copyWith(color: AppColors.textSecondary, fontSize: 11),
+                      style: AppTypography.codeXs.copyWith(
+                          color: AppColors.textSecondary, fontSize: 11),
                       overflow: TextOverflow.ellipsis,
                     ),
                   ],
@@ -225,7 +234,8 @@ class HostsScreen extends ConsumerWidget {
               ),
               const SizedBox(width: 4),
               IconButton(
-                icon: const Icon(Icons.delete_outline_rounded, size: 18, color: AppColors.textMuted),
+                icon: const Icon(Icons.delete_outline_rounded,
+                    size: 18, color: AppColors.textMuted),
                 tooltip: 'Delete host',
                 visualDensity: VisualDensity.compact,
                 onPressed: () => _confirmDeleteHost(context, ref, host),
@@ -239,20 +249,24 @@ class HostsScreen extends ConsumerWidget {
             Row(
               children: [
                 if (host.tailscaleIp.isNotEmpty) ...[
-                  const Icon(Icons.shield_outlined, size: 12, color: AppColors.textMuted),
+                  const Icon(Icons.shield_outlined,
+                      size: 12, color: AppColors.textMuted),
                   const SizedBox(width: 4),
                   Text(
                     'Tailscale: ${host.tailscaleIp}',
-                    style: AppTypography.codeXs.copyWith(color: AppColors.textMuted),
+                    style: AppTypography.codeXs
+                        .copyWith(color: AppColors.textMuted),
                   ),
                   const SizedBox(width: 12),
                 ],
                 if (host.hasAuth) ...[
-                  const Icon(Icons.key_rounded, size: 12, color: AppColors.infoCyan),
+                  const Icon(Icons.key_rounded,
+                      size: 12, color: AppColors.infoCyan),
                   const SizedBox(width: 4),
                   Text(
                     'Token Auth Active',
-                    style: AppTypography.codeXs.copyWith(color: AppColors.infoCyan, fontWeight: FontWeight.w600),
+                    style: AppTypography.codeXs.copyWith(
+                        color: AppColors.infoCyan, fontWeight: FontWeight.w600),
                   ),
                 ],
               ],
@@ -271,8 +285,13 @@ class HostsScreen extends ConsumerWidget {
             child: Row(
               children: [
                 _buildMetric('Active Sessions', '$activeSessionsCount'),
-                _buildMetric('Latency', host.online ? host.latencyDisplay : '—'),
-                _buildMetric('Daemon Ver', host.version.isNotEmpty ? host.version : (host.online ? 'Active' : '—')),
+                _buildMetric(
+                    'Latency', host.online ? host.latencyDisplay : '—'),
+                _buildMetric(
+                    'Daemon Ver',
+                    host.version.isNotEmpty
+                        ? host.version
+                        : (host.online ? 'Active' : '—')),
                 _buildMetric('Uptime', host.uptime),
               ],
             ),
@@ -287,7 +306,9 @@ class HostsScreen extends ConsumerWidget {
                 icon: Icons.refresh_rounded,
                 label: 'Rescan',
                 onTap: () async {
-                  await ref.read(apiClientProvider).purgeSessions(host.url, authToken: host.authToken);
+                  await ref
+                      .read(apiClientProvider)
+                      .purgeSessions(host.url, authToken: host.authToken);
                   ref.read(hostsListProvider.notifier).refreshHosts();
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
@@ -325,7 +346,8 @@ class HostsScreen extends ConsumerWidget {
         children: [
           Text(
             label,
-            style: AppTypography.codeXs.copyWith(color: AppColors.textMuted, fontSize: 9.5),
+            style: AppTypography.codeXs
+                .copyWith(color: AppColors.textMuted, fontSize: 9.5),
           ),
           const SizedBox(height: 2),
           Text(
@@ -383,7 +405,8 @@ class HostsScreen extends ConsumerWidget {
     );
   }
 
-  void _confirmDeleteHost(BuildContext context, WidgetRef ref, HostRecord host) {
+  void _confirmDeleteHost(
+      BuildContext context, WidgetRef ref, HostRecord host) {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -394,7 +417,8 @@ class HostsScreen extends ConsumerWidget {
         ),
         title: Row(
           children: [
-            const Icon(Icons.delete_outline_rounded, size: 20, color: AppColors.statusCoral),
+            const Icon(Icons.delete_outline_rounded,
+                size: 20, color: AppColors.statusCoral),
             const SizedBox(width: 8),
             Text(
               'DELETE HOST',
@@ -407,12 +431,15 @@ class HostsScreen extends ConsumerWidget {
         ),
         content: Text(
           'Are you sure you want to disconnect and delete host "${host.name}" (${host.endpointDisplay})?',
-          style: AppTypography.bodyMedium.copyWith(color: AppColors.textPrimary),
+          style:
+              AppTypography.bodyMedium.copyWith(color: AppColors.textPrimary),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(),
-            child: Text('Cancel', style: AppTypography.titleSmall.copyWith(color: AppColors.textMuted)),
+            child: Text('Cancel',
+                style: AppTypography.titleSmall
+                    .copyWith(color: AppColors.textMuted)),
           ),
           ElevatedButton(
             onPressed: () {
@@ -436,7 +463,8 @@ class HostsScreen extends ConsumerWidget {
     );
   }
 
-  void _showHostSettingsModal(BuildContext context, WidgetRef ref, HostRecord host) {
+  void _showHostSettingsModal(
+      BuildContext context, WidgetRef ref, HostRecord host) {
     final nameCtrl = TextEditingController(text: host.name);
     final urlCtrl = TextEditingController(text: host.url);
     final tokenCtrl = TextEditingController(text: host.authToken);
@@ -451,7 +479,8 @@ class HostsScreen extends ConsumerWidget {
         ),
         title: Row(
           children: [
-            const Icon(Icons.settings_outlined, size: 20, color: AppColors.infoCyan),
+            const Icon(Icons.settings_outlined,
+                size: 20, color: AppColors.infoCyan),
             const SizedBox(width: 8),
             Text(
               'HOST SETTINGS',
@@ -483,7 +512,8 @@ class HostsScreen extends ConsumerWidget {
                 decoration: const InputDecoration(isDense: true),
               ),
               AppSpacing.gapH12,
-              Text('Auth Token / API Key (Optional):', style: AppTypography.codeXs),
+              Text('Auth Token / API Key (Optional):',
+                  style: AppTypography.codeXs),
               const SizedBox(height: 4),
               TextField(
                 controller: tokenCtrl,
@@ -500,16 +530,22 @@ class HostsScreen extends ConsumerWidget {
                 decoration: BoxDecoration(
                   color: AppColors.terminalBlack,
                   borderRadius: AppSpacing.roundedSm,
-                  border: Border.all(color: AppColors.outlineSubtle, width: 0.5),
+                  border:
+                      Border.all(color: AppColors.outlineSubtle, width: 0.5),
                 ),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text('Status: ${host.online ? "Online 🟢" : "Unreachable 🔴"}', style: AppTypography.codeXs),
+                    Text(
+                        'Status: ${host.online ? "Online 🟢" : "Unreachable 🔴"}',
+                        style: AppTypography.codeXs),
                     const SizedBox(height: 4),
-                    Text('Latency: ${host.online ? host.latencyDisplay : "—"}', style: AppTypography.codeXs),
+                    Text('Latency: ${host.online ? host.latencyDisplay : "—"}',
+                        style: AppTypography.codeXs),
                     const SizedBox(height: 4),
-                    Text('Daemon Version: ${host.version.isNotEmpty ? host.version : (host.online ? "Active" : "—")}', style: AppTypography.codeXs),
+                    Text(
+                        'Daemon Version: ${host.version.isNotEmpty ? host.version : (host.online ? "Active" : "—")}',
+                        style: AppTypography.codeXs),
                   ],
                 ),
               ),
@@ -522,13 +558,19 @@ class HostsScreen extends ConsumerWidget {
               Navigator.of(ctx).pop();
               _confirmDeleteHost(context, ref, host);
             },
-            child: Text('Delete Host', style: AppTypography.titleSmall.copyWith(color: AppColors.statusCoral)),
+            child: Text('Delete Host',
+                style: AppTypography.titleSmall
+                    .copyWith(color: AppColors.statusCoral)),
           ),
           ElevatedButton(
             onPressed: () {
               final updated = host.copyWith(
-                name: nameCtrl.text.trim().isNotEmpty ? nameCtrl.text.trim() : host.name,
-                url: urlCtrl.text.trim().isNotEmpty ? urlCtrl.text.trim() : host.url,
+                name: nameCtrl.text.trim().isNotEmpty
+                    ? nameCtrl.text.trim()
+                    : host.name,
+                url: urlCtrl.text.trim().isNotEmpty
+                    ? urlCtrl.text.trim()
+                    : host.url,
                 authToken: tokenCtrl.text.trim(),
               );
               ref.read(hostsListProvider.notifier).updateHost(updated);
@@ -562,7 +604,8 @@ class HostsScreen extends ConsumerWidget {
         ),
         title: Row(
           children: [
-            const Icon(Icons.article_outlined, size: 18, color: AppColors.infoCyan),
+            const Icon(Icons.article_outlined,
+                size: 18, color: AppColors.infoCyan),
             const SizedBox(width: 8),
             Text(
               'DAEMON LOGS: ${host.name}',
@@ -600,7 +643,9 @@ class HostsScreen extends ConsumerWidget {
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(),
-            child: Text('Close', style: AppTypography.titleSmall.copyWith(color: AppColors.infoCyan)),
+            child: Text('Close',
+                style: AppTypography.titleSmall
+                    .copyWith(color: AppColors.infoCyan)),
           ),
         ],
       ),

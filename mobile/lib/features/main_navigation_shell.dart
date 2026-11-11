@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../core/models/host.dart';
 import '../core/models/plan.dart';
 import '../core/models/session.dart';
 import '../core/models/work_task.dart';
 import '../core/providers/fleet_providers.dart';
+import '../core/services/app_lifecycle_sync_observer.dart';
 import '../core/theme/app_colors.dart';
 import '../core/widgets/ackbar_bottom_nav.dart';
 import 'attention/presentation/attention_screen.dart';
@@ -38,11 +40,20 @@ class _MainNavigationShellState extends ConsumerState<MainNavigationShell>
 
   String? _pendingSessionId;
   String? _pendingTaskId;
+  AppLifecycleSyncObserver? _lifecycleObserver;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _lifecycleObserver = AppLifecycleSyncObserver(
+      refreshHosts: () => ref.read(hostsListProvider.notifier).refreshHosts(),
+      refreshSessions: () =>
+          ref.read(fleetSessionsProvider.notifier).refreshSessions(),
+      refreshNodes: () => ref.read(fleetNodesProvider.notifier).refreshNodes(),
+      getHosts: () => ref.read(hostsListProvider),
+    );
+    _lifecycleObserver!.start();
     if (widget.initialRoute != null &&
         widget.initialRoute!.isNotEmpty &&
         widget.initialRoute != '/') {
@@ -55,6 +66,7 @@ class _MainNavigationShellState extends ConsumerState<MainNavigationShell>
 
   @override
   void dispose() {
+    _lifecycleObserver?.dispose();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -205,6 +217,9 @@ class _MainNavigationShellState extends ConsumerState<MainNavigationShell>
 
   @override
   Widget build(BuildContext context) {
+    ref.listen<List<HostRecord>>(hostsListProvider, (_, __) {
+      _lifecycleObserver?.checkProbeTimer();
+    });
     final sessions = ref.watch(fleetSessionsProvider);
     final plans = ref.watch(plansListProvider);
     final tasks = ref.watch(tasksProvider);

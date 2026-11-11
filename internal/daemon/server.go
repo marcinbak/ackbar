@@ -85,8 +85,24 @@ type Server struct {
 	voiceBridgeMu        sync.Mutex
 	voiceBridge          *MicServeBridge
 	authBroker           *AuthBroker
+	promptDedup          *PromptDedup
+	eventsKeepaliveNs    atomic.Int64
 	shutdownExitFn       func(int)
 	restartDaemonFn      func()
+}
+
+const defaultEventsKeepaliveInterval = 20 * time.Second
+
+func (s *Server) SetEventsKeepaliveInterval(d time.Duration) {
+	s.eventsKeepaliveNs.Store(int64(d))
+}
+
+func (s *Server) eventsKeepaliveInterval() time.Duration {
+	ns := s.eventsKeepaliveNs.Load()
+	if ns <= 0 {
+		return defaultEventsKeepaliveInterval
+	}
+	return time.Duration(ns)
 }
 
 func NewServer(db *DB) *Server {
@@ -98,6 +114,7 @@ func NewServer(db *DB) *Server {
 		hostHealthMap:   make(map[string]*HostHealth),
 		activeSubagents: make(map[string][]*SubagentInfo),
 		speechCache:     make(map[string]*SpeechSummary),
+		promptDedup:     newPromptDedup(),
 		ntfyClient:      &http.Client{Timeout: 5 * time.Second},
 		restartDaemonFn: restartLocalDaemonAsync,
 	}
@@ -581,14 +598,20 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 				_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
 			}
 		}
-		flusher.Flush()
 	}
+	flusher.Flush()
+
+	heartbeat := time.NewTicker(s.eventsKeepaliveInterval())
+	defer heartbeat.Stop()
 
 	ctx := r.Context()
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-heartbeat.C:
+			_, _ = fmt.Fprintf(w, ": keepalive\n\n")
+			flusher.Flush()
 		case sess := <-ch:
 			data, err := json.Marshal(sess)
 			if err != nil {

@@ -8,11 +8,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:xterm/xterm.dart';
 
+import '../../../core/models/host.dart';
 import '../../../core/models/session.dart';
 import '../../../core/providers/fleet_providers.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_typography.dart';
+import '../application/terminal_reconnect_controller.dart';
 import '../../../core/widgets/terminal_accessory_bar.dart';
 
 /// Fullscreen interactive PTY Terminal screen streaming live tmux session I/O
@@ -20,8 +22,14 @@ import '../../../core/widgets/terminal_accessory_bar.dart';
 class TerminalScreen extends ConsumerStatefulWidget {
   final Session session;
   final WebSocketChannel Function(Uri uri)? channelBuilder;
+  final TerminalReconnectController? reconnectController;
 
-  const TerminalScreen({super.key, required this.session, this.channelBuilder});
+  const TerminalScreen({
+    super.key,
+    required this.session,
+    this.channelBuilder,
+    this.reconnectController,
+  });
 
   static Future<void> open(BuildContext context, Session session) {
     return Navigator.of(context).push(
@@ -62,6 +70,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   Duration? _lastPointerTimeStamp;
   double _lastPointerVelocityY = 0.0;
   bool _isPointerVerticalScroll = false;
+  late final TerminalReconnectController _reconnectController;
 
   @override
   void initState() {
@@ -70,7 +79,22 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _terminal = Terminal(maxLines: 10000);
     _terminalController = TerminalController();
     _verticalScrollController.addListener(_onVerticalScroll);
+    _reconnectController = (widget.reconnectController ??
+        TerminalReconnectController(onReconnect: _connectWebSocket))
+      ..addListener(_onReconnectStateChanged);
     _connectWebSocket();
+  }
+
+  void _onReconnectStateChanged() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    if (state == AppLifecycleState.resumed && mounted) {
+      _reconnectController.onAppResumed();
+    }
   }
 
   @override
@@ -127,38 +151,34 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   Session _resolveLiveSession() {
     final sessions = ref.read(fleetSessionsProvider);
-    for (final s in sessions) {
-      if (s.id == widget.session.id ||
-          (s.oldId.isNotEmpty && s.oldId == widget.session.id) ||
-          (widget.session.nativeId.isNotEmpty &&
-              s.nativeId == widget.session.nativeId)) {
-        return s;
-      }
-    }
-    return widget.session;
+    return sessions
+            .where((s) =>
+                s.id == widget.session.id ||
+                (s.oldId.isNotEmpty && s.oldId == widget.session.id) ||
+                (widget.session.nativeId.isNotEmpty &&
+                    s.nativeId == widget.session.nativeId))
+            .firstOrNull ??
+        widget.session;
+  }
+
+  HostRecord? _resolveHostRecord(Session s) {
+    final hosts = ref.read(hostsListProvider);
+    final sh = s.host.toLowerCase();
+    return hosts
+            .where((h) =>
+                h.name.toLowerCase() == sh || h.url.toLowerCase().contains(sh))
+            .firstOrNull ??
+        (hosts.isNotEmpty ? hosts.first : null);
   }
 
   void _connectWebSocket() {
     final liveSession = _resolveLiveSession();
-    final hosts = ref.read(hostsListProvider);
-    final sessionHost = liveSession.host.toLowerCase();
-    final match = hosts.where(
-      (h) =>
-          h.name.toLowerCase() == sessionHost ||
-          h.url.toLowerCase().contains(sessionHost),
-    );
-    final hostUrl = match.isNotEmpty
-        ? match.first.url
-        : (hosts.isNotEmpty ? hosts.first.url : 'http://127.0.0.1:7777');
+    final host = _resolveHostRecord(liveSession);
+    final hostUrl = host?.url ?? 'http://127.0.0.1:7777';
     final parsed = Uri.parse(hostUrl);
     final wsScheme = parsed.scheme == 'https' ? 'wss' : 'ws';
-    final hostAddress = parsed.authority.isNotEmpty
-        ? parsed.authority
-        : '127.0.0.1:7777';
-
-    final host = match.isNotEmpty
-        ? match.first
-        : (hosts.isNotEmpty ? hosts.first : null);
+    final hostAddress =
+        parsed.authority.isNotEmpty ? parsed.authority : '127.0.0.1:7777';
 
     final queryParams = {
       'id': liveSession.id,
@@ -188,42 +208,54 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         } catch (_) {}
       });
 
+      _reconnectController.onConnecting();
       _sub = channel.stream.listen(
         (message) {
+          _reconnectController.onFrameReceived();
           if (_connecting) {
             setState(() {
               _connecting = false;
             });
+            _sendResize(_currentCols, _currentRows);
           }
-          if (message is String) {
-            _terminal.write(message);
-          } else if (message is List<int>) {
-            _terminal.write(utf8.decode(message, allowMalformed: true));
+          final text = message is String
+              ? message
+              : (message is List<int>
+                  ? utf8.decode(message, allowMalformed: true)
+                  : '');
+          if (text.contains('[Session was deleted]')) {
+            _reconnectController.onDisconnected(
+              reason: '[Session was deleted]',
+              isEnded: true,
+            );
           }
+          if (text.isNotEmpty) _terminal.write(text);
         },
-        onError: (err) {
-          setState(() {
-            _connecting = false;
-            _errorMessage = 'WebSocket Error: $err';
-          });
-        },
-        onDone: () {
-          setState(() {
-            _connecting = false;
-            if (_errorMessage == null) {
-              _terminal.write(
-                '\r\n\x1b[90m[Disconnected from session]\x1b[0m\r\n',
-              );
-            }
-          });
-        },
+        onError: (err) => _handleDisconnect(err: err),
+        onDone: () => _handleDisconnect(isDone: true),
       );
     } catch (e) {
-      setState(() {
-        _connecting = false;
-        _errorMessage = 'Connection failed: $e';
-      });
+      _handleDisconnect(err: e);
     }
+  }
+
+  void _handleDisconnect({Object? err, bool isDone = false}) {
+    _pingTimer?.cancel();
+    final live = _resolveLiveSession();
+    final isEnded = live.state == SessionState.ended || live.archived;
+    _reconnectController.onDisconnected(
+      reason: err?.toString(),
+      isEnded: isEnded,
+    );
+    if (!mounted) return;
+    setState(() {
+      _connecting = false;
+      if (err != null) {
+        _errorMessage = 'WebSocket Error: $err';
+      } else if (isDone && _errorMessage == null) {
+        _terminal.write('\r\n\x1b[90m[Disconnected from session]\x1b[0m\r\n');
+      }
+    });
   }
 
   void _sendResize(int cols, int rows) {
@@ -246,16 +278,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   void _updateDimensions(BoxConstraints constraints) {
     final charWidth = _fontSize * 0.60;
     final charHeight = _fontSize * 1.30;
-
-    if (_autoFit) {
-      final fitCols = max(20, (constraints.maxWidth / charWidth).floor());
-      final fitRows = max(10, (constraints.maxHeight / charHeight).floor());
-      _sendResize(fitCols, fitRows);
-    } else {
-      final fixedCols = 80;
-      final fitRows = max(10, (constraints.maxHeight / charHeight).floor());
-      _sendResize(fixedCols, fitRows);
-    }
+    final fitRows = max(10, (constraints.maxHeight / charHeight).floor());
+    final cols =
+        _autoFit ? max(20, (constraints.maxWidth / charWidth).floor()) : 80;
+    _sendResize(cols, fitRows);
 
     if (_verticalScrollController.hasClients &&
         _verticalScrollController.offset != 0.0) {
@@ -263,84 +289,60 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
   }
 
+  void _toggleKeyboard(bool open) {
+    if (open) {
+      _terminalFocusNode.unfocus();
+      FocusScope.of(context).unfocus();
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (_verticalScrollController.hasClients) {
+          _verticalScrollController.jumpTo(0.0);
+        }
+      });
+    } else {
+      _terminalFocusNode.requestFocus();
+    }
+  }
+
   void _handleAccessoryKey(String key) {
     if (key == '⌨️' || key == 'Hide ⌨️' || key == 'Dismiss') {
-      if (_terminalFocusNode.hasFocus ||
-          MediaQuery.of(context).viewInsets.bottom > 0) {
-        _terminalFocusNode.unfocus();
-        FocusScope.of(context).unfocus();
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (_verticalScrollController.hasClients) {
-            _verticalScrollController.jumpTo(0.0);
-          }
-        });
-      } else {
-        _terminalFocusNode.requestFocus();
-      }
+      _toggleKeyboard(
+        _terminalFocusNode.hasFocus ||
+            MediaQuery.of(context).viewInsets.bottom > 0,
+      );
       return;
     }
 
     if (_channel == null) return;
 
-    switch (key) {
-      case 'Esc':
-        _channel!.sink.add('\x1b');
-        break;
-      case 'Tab':
-        _channel!.sink.add('\t');
-        break;
-      case 'Shift+Tab':
-        _channel!.sink.add('\x1b[Z');
-        break;
-      case '⌫':
-      case 'Del':
-      case 'Backspace':
-        _channel!.sink.add('\x7f');
-        break;
-      case 'Ctrl+C':
-        _channel!.sink.add('\x03');
-        break;
-      case 'Ctrl+D':
-        _channel!.sink.add('\x04');
-        break;
-      case 'Ctrl+B':
-        _channel!.sink.add('\x02');
-        break;
-      case '↑':
-        _channel!.sink.add('\x1b[A');
-        break;
-      case '↓':
-        _channel!.sink.add('\x1b[B');
-        break;
-      case '←':
-        _channel!.sink.add('\x1b[D');
-        break;
-      case '→':
-        _channel!.sink.add('\x1b[C');
-        break;
-      case 'PgUp':
-        _sendScroll('page_up');
-        if (!_showScrollToBottom) {
-          setState(() {
-            _showScrollToBottom = true;
-          });
-        }
-        break;
-      case 'PgDn':
-        _sendScroll('page_down');
-        break;
-      case 'Home':
-        _channel!.sink.add('\x1b[H');
-        break;
-      case 'End':
-        _channel!.sink.add('\x1b[F');
-        break;
-      case 'Enter':
-        _channel!.sink.add('\r');
-        break;
-      default:
-        _channel!.sink.add(key);
+    if (key == 'PgUp') {
+      _sendScroll('page_up');
+      if (!_showScrollToBottom) setState(() => _showScrollToBottom = true);
+      return;
     }
+    if (key == 'PgDn') {
+      _sendScroll('page_down');
+      return;
+    }
+
+    const keyMap = {
+      'Esc': '\x1b',
+      'Tab': '\t',
+      'Shift+Tab': '\x1b[Z',
+      '⌫': '\x7f',
+      'Del': '\x7f',
+      'Backspace': '\x7f',
+      'Ctrl+C': '\x03',
+      'Ctrl+D': '\x04',
+      'Ctrl+B': '\x02',
+      '↑': '\x1b[A',
+      '↓': '\x1b[B',
+      '←': '\x1b[D',
+      '→': '\x1b[C',
+      'Home': '\x1b[H',
+      'End': '\x1b[F',
+      'Enter': '\r',
+    };
+    _channel!.sink.add(keyMap[key] ?? key);
   }
 
   void _handlePointerDown(PointerDownEvent event) {
@@ -386,11 +388,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (_isPointerVerticalScroll && _lastPointerVelocityY.abs() > 800.0) {
       if (_lastPointerVelocityY > 0) {
         _sendScroll('page_up');
-        if (!_showScrollToBottom) {
-          setState(() {
-            _showScrollToBottom = true;
-          });
-        }
+        if (!_showScrollToBottom) setState(() => _showScrollToBottom = true);
       } else {
         _sendScroll('page_down');
       }
@@ -415,11 +413,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       if (rows > 0) {
         // Swiping finger DOWN -> Scroll UP in tmux history
         _sendScroll('up', lines: rows);
-        if (!_showScrollToBottom) {
-          setState(() {
-            _showScrollToBottom = true;
-          });
-        }
+        if (!_showScrollToBottom) setState(() => _showScrollToBottom = true);
       } else if (rows < 0) {
         // Swiping finger UP -> Scroll DOWN towards live prompt
         _sendScroll('down', lines: -rows);
@@ -429,28 +423,24 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   void _zoomIn() {
     HapticFeedback.selectionClick();
-    setState(() {
-      _fontSize = min(18.0, _fontSize + 1.0);
-    });
+    setState(() => _fontSize = min(18.0, _fontSize + 1.0));
   }
 
   void _zoomOut() {
     HapticFeedback.selectionClick();
-    setState(() {
-      _fontSize = max(8.0, _fontSize - 1.0);
-    });
+    setState(() => _fontSize = max(8.0, _fontSize - 1.0));
   }
 
   void _toggleAutoFit() {
     HapticFeedback.selectionClick();
-    setState(() {
-      _autoFit = !_autoFit;
-    });
+    setState(() => _autoFit = !_autoFit);
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _reconnectController.removeListener(_onReconnectStateChanged);
+    _reconnectController.dispose();
     _verticalScrollController.removeListener(_onVerticalScroll);
     _verticalScrollController.dispose();
     _horizontalScrollController.dispose();
@@ -462,12 +452,68 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     super.dispose();
   }
 
+  Widget? _buildStatusBanner() {
+    if (_reconnectController.isReconnecting || _connecting) {
+      final msg = _reconnectController.isReconnecting
+          ? 'Reconnecting (attempt ${_reconnectController.attempt}/${_reconnectController.maxAutoAttempts})...'
+          : 'Connecting to tmux session...';
+      return Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        color: AppColors.surfaceHighlight,
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.sync_rounded, size: 14, color: AppColors.infoCyan),
+            const SizedBox(width: 8),
+            Text(msg,
+                style:
+                    AppTypography.codeXs.copyWith(color: AppColors.infoCyan)),
+          ],
+        ),
+      );
+    }
+    if (_reconnectController.isExhausted) {
+      return Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 12),
+        color: AppColors.statusCoral.withOpacity(0.15),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Text('Connection lost.',
+                style: AppTypography.codeXs
+                    .copyWith(color: AppColors.statusCoral)),
+            const SizedBox(width: 8),
+            GestureDetector(
+              onTap: _reconnectController.retryNow,
+              child: Text(
+                '[Tap to Reconnect]',
+                style: AppTypography.codeXs.copyWith(
+                  color: AppColors.infoCyan,
+                  fontWeight: FontWeight.bold,
+                  decoration: TextDecoration.underline,
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+    return null;
+  }
+
   @override
   Widget build(BuildContext context) {
+    ref.listen<List<Session>>(fleetSessionsProvider, (_, __) {
+      final s = _resolveLiveSession();
+      if (s.state == SessionState.ended || s.archived) {
+        _reconnectController.markEnded();
+      }
+    });
     ref.watch(fleetSessionsProvider);
     final liveSession = _resolveLiveSession();
-    final keyboardOpen =
-        MediaQuery.of(context).viewInsets.bottom > 0 ||
+    final keyboardOpen = MediaQuery.of(context).viewInsets.bottom > 0 ||
         _terminalFocusNode.hasFocus;
 
     return Scaffold(
@@ -535,16 +581,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                       ? 'Live Voice: On'
                       : 'Live Voice: Off',
                   onPressed: () {
-                    final hosts = ref.read(hostsListProvider);
-                    final sHost = liveSession.host.toLowerCase();
-                    final match = hosts.where(
-                      (h) =>
-                          h.name.toLowerCase() == sHost ||
-                          h.url.toLowerCase().contains(sHost),
-                    );
-                    final host = match.isNotEmpty
-                        ? match.first
-                        : (hosts.isNotEmpty ? hosts.first : null);
+                    final host = _resolveHostRecord(liveSession);
                     ref
                         .read(audioCompanionServiceProvider.notifier)
                         .toggleAntigravityLiveVoice(
@@ -564,58 +601,41 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                   ? Icons.keyboard_hide_rounded
                   : Icons.keyboard_rounded,
               size: 20,
-              color: keyboardOpen
-                  ? AppColors.infoCyan
-                  : AppColors.textSecondary,
+              color:
+                  keyboardOpen ? AppColors.infoCyan : AppColors.textSecondary,
             ),
             tooltip: keyboardOpen ? 'Hide Keyboard' : 'Show Keyboard',
-            onPressed: () {
-              if (keyboardOpen) {
-                _terminalFocusNode.unfocus();
-                FocusScope.of(context).unfocus();
-                WidgetsBinding.instance.addPostFrameCallback((_) {
-                  if (_verticalScrollController.hasClients) {
-                    _verticalScrollController.jumpTo(0.0);
-                  }
-                });
-              } else {
-                _terminalFocusNode.requestFocus();
-              }
-            },
+            onPressed: () => _toggleKeyboard(keyboardOpen),
           ),
 
           // Fit mode toggle
-          TextButton(
-            onPressed: _toggleAutoFit,
-            style: TextButton.styleFrom(
-              padding: const EdgeInsets.symmetric(horizontal: 8),
-              minimumSize: const Size(40, 32),
-            ),
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+          IconButton(
+            icon: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
               decoration: BoxDecoration(
                 color: _autoFit
                     ? AppColors.infoCyan.withOpacity(0.15)
                     : AppColors.surfaceHighlight,
                 borderRadius: BorderRadius.circular(4),
                 border: Border.all(
-                  color: _autoFit
-                      ? AppColors.infoCyan
-                      : AppColors.outlineSubtle,
+                  color:
+                      _autoFit ? AppColors.infoCyan : AppColors.outlineSubtle,
                   width: 0.8,
                 ),
               ),
               child: Text(
                 _autoFit ? 'FIT' : '80 COL',
                 style: AppTypography.codeXs.copyWith(
-                  color: _autoFit
-                      ? AppColors.infoCyan
-                      : AppColors.textSecondary,
+                  color:
+                      _autoFit ? AppColors.infoCyan : AppColors.textSecondary,
                   fontWeight: FontWeight.w700,
                   fontSize: 10,
                 ),
               ),
             ),
+            tooltip:
+                _autoFit ? 'Fixed 80-col layout' : 'Auto-fit terminal width',
+            onPressed: _toggleAutoFit,
           ),
 
           // Tmux scroll mode helper
@@ -685,29 +705,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       body: SafeArea(
         child: Column(
           children: [
-            if (_connecting)
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.symmetric(vertical: 4),
-                color: AppColors.surfaceHighlight,
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    const Icon(
-                      Icons.sync_rounded,
-                      size: 14,
-                      color: AppColors.infoCyan,
-                    ),
-                    const SizedBox(width: 8),
-                    Text(
-                      'Connecting to tmux session...',
-                      style: AppTypography.codeXs.copyWith(
-                        color: AppColors.infoCyan,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
+            if (_buildStatusBanner() != null) _buildStatusBanner()!,
             if (_errorMessage != null)
               Container(
                 width: double.infinity,
@@ -778,7 +776,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                                       scrollController:
                                           _verticalScrollController,
                                       focusNode: _terminalFocusNode,
-                                      autofocus: false, // Clean startup: keyboard hidden by default
+                                      autofocus:
+                                          false, // Clean startup: keyboard hidden by default
                                       autoResize: false,
                                       deleteDetection:
                                           true, // Fix for iOS backspace/delete
@@ -823,12 +822,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                                           const SizedBox(width: 4),
                                           Text(
                                             'Bottom',
-                                            style: AppTypography.codeXs
-                                                .copyWith(
-                                                  color: AppColors.infoCyan,
-                                                  fontWeight: FontWeight.w600,
-                                                  fontSize: 11,
-                                                ),
+                                            style:
+                                                AppTypography.codeXs.copyWith(
+                                              color: AppColors.infoCyan,
+                                              fontWeight: FontWeight.w600,
+                                              fontSize: 11,
+                                            ),
                                           ),
                                         ],
                                       ),

@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import '../models/chat_stream_event.dart';
 import '../models/host.dart';
 import '../models/session.dart';
 import '../models/subagent.dart';
@@ -20,6 +21,8 @@ class ApiHttpException implements Exception {
 /// HTTP Client communicating with ackbard daemon control plane endpoints.
 class ApiClient {
   final http.Client _client;
+
+  http.Client get client => _client;
 
   ApiClient({http.Client? client}) : _client = client ?? http.Client();
 
@@ -372,21 +375,70 @@ class ApiClient {
   }
 
   /// POST /v1/sessions/prompt: Dispatch a user prompt to a headless or tmux session
-  Future<bool> sendPrompt(String hostUrl, String sessionId, String prompt,
-      {String? authToken}) async {
+  Future<bool> sendPrompt(
+    String hostUrl,
+    String sessionId,
+    String prompt, {
+    String? authToken,
+    String? clientTurnId,
+  }) async {
+    final result = await sendPromptDetailed(
+      hostUrl,
+      sessionId,
+      prompt,
+      authToken: authToken,
+      clientTurnId: clientTurnId,
+    );
+    return result.ok;
+  }
+
+  /// POST /v1/sessions/prompt: Detailed prompt submission returning status and deduplication metadata
+  Future<PromptDispatchResult> sendPromptDetailed(
+    String hostUrl,
+    String sessionId,
+    String prompt, {
+    String? authToken,
+    String? clientTurnId,
+  }) async {
     final clean = _cleanUrl(hostUrl);
     final uri = Uri.parse('$clean/v1/sessions/prompt');
+    final payload = <String, dynamic>{
+      'session_id': sessionId,
+      'prompt': prompt,
+      if (clientTurnId != null && clientTurnId.trim().isNotEmpty)
+        'client_turn_id': clientTurnId.trim(),
+    };
     try {
       final response = await _client
           .post(
             uri,
             headers: _headers(authToken, {'Content-Type': 'application/json'}),
-            body: jsonEncode({'session_id': sessionId, 'prompt': prompt}),
+            body: jsonEncode(payload),
           )
           .timeout(const Duration(seconds: 10));
-      return response.statusCode == 200;
-    } catch (_) {
-      return false;
+
+      if (response.statusCode == 200) {
+        try {
+          final Map<String, dynamic> json = jsonDecode(response.body);
+          final status = json['status']?.toString() ?? 'ok';
+          final id = json['id']?.toString();
+          final deduplicated = json['deduplicated'] as bool? ?? false;
+          final queueDepth = (json['queue_depth'] as num?)?.toInt();
+          return PromptDispatchResult.success(
+            status: status,
+            id: id,
+            deduplicated: deduplicated,
+            queueDepth: queueDepth,
+          );
+        } catch (_) {
+          return PromptDispatchResult.success(status: 'ok');
+        }
+      }
+      return PromptDispatchResult.failure(
+        'HTTP ${response.statusCode}: ${response.body}',
+      );
+    } catch (e) {
+      return PromptDispatchResult.failure(e.toString());
     }
   }
 

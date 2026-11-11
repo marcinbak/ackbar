@@ -67,6 +67,7 @@ func (s *Server) handlePrompt(w http.ResponseWriter, r *http.Request) {
 		Prompt       string `json:"prompt"`
 		DelaySeconds int    `json:"delay_seconds,omitempty"`
 		DeliverAt    string `json:"deliver_at,omitempty"`
+		ClientTurnID string `json:"client_turn_id,omitempty"`
 	}
 	bodyBytes, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -75,6 +76,12 @@ func (s *Server) handlePrompt(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := json.Unmarshal(bodyBytes, &req); err != nil {
 		http.Error(w, "Invalid payload", http.StatusBadRequest)
+		return
+	}
+
+	req.ClientTurnID = strings.TrimSpace(req.ClientTurnID)
+	if len(req.ClientTurnID) > 128 {
+		http.Error(w, "client_turn_id exceeds 128 characters", http.StatusBadRequest)
 		return
 	}
 
@@ -88,6 +95,35 @@ func (s *Server) handlePrompt(w http.ResponseWriter, r *http.Request) {
 	})
 	if handled {
 		return
+	}
+
+	var reservation *DedupReservation
+	if req.ClientTurnID != "" {
+		if s.promptDedup == nil {
+			s.promptDedup = newPromptDedup()
+		}
+		key := sess.ID + "\x00" + req.ClientTurnID
+		res, dup, err := s.promptDedup.Reserve(r.Context(), key)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusRequestTimeout)
+			return
+		}
+		if dup != nil {
+			resp := map[string]interface{}{
+				"status":       "running",
+				"deduplicated": true,
+			}
+			if s.headless != nil {
+				if q, _ := s.headless.GetPromptQueue(sess.ID); len(q) > 0 {
+					resp["queue_depth"] = len(q)
+				}
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
+			return
+		}
+		reservation = res
+		defer reservation.Abort()
 	}
 
 	promptText := req.Prompt
@@ -117,6 +153,9 @@ func (s *Server) handlePrompt(w http.ResponseWriter, r *http.Request) {
 				s.broadcast(sess)
 			}
 			s.headless.EmitQueueUpdate(sess.ID)
+			if reservation != nil {
+				reservation.Commit("scheduled")
+			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"status":     "scheduled",
@@ -131,6 +170,9 @@ func (s *Server) handlePrompt(w http.ResponseWriter, r *http.Request) {
 		if s.headless != nil && s.headless.IsRunning(sess.ID) {
 			item := s.headless.EnqueuePrompt(sess.ID, promptText)
 			s.headless.EmitQueueUpdate(sess.ID)
+			if reservation != nil {
+				reservation.Commit("queued")
+			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"status": "queued",
@@ -142,6 +184,9 @@ func (s *Server) handlePrompt(w http.ResponseWriter, r *http.Request) {
 			go func() {
 				_ = s.headless.RunTurn(context.Background(), sess, promptText)
 			}()
+		}
+		if reservation != nil {
+			reservation.Commit("running")
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{
@@ -161,6 +206,9 @@ func (s *Server) handlePrompt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if reservation != nil {
+		reservation.Commit("sent")
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{
 		"status": "sent",

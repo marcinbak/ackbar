@@ -1,7 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
 import 'package:ackbar_mobile/core/models/session.dart';
+import 'package:ackbar_mobile/core/network/api_client.dart';
 import 'package:ackbar_mobile/core/providers/fleet_providers.dart';
 import 'package:ackbar_mobile/core/services/external_url_launcher.dart';
 import 'package:ackbar_mobile/features/headless/presentation/headless_auth_card.dart';
@@ -156,7 +159,17 @@ void main() {
 
     testWidgets('tapping dismiss sets optimistic state to idle',
         (tester) async {
-      final container = ProviderContainer();
+      final container = ProviderContainer(
+        overrides: [
+          apiClientProvider.overrideWithValue(
+            ApiClient(
+              client:
+                  MockClient((req) async => http.Response('{"ok":true}', 200)),
+            ),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
       final session = Session(
         id: 's-auth-4',
         agent: 'claude-code',

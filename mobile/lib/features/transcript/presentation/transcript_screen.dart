@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/models/headless_models.dart';
 import '../../../core/models/host.dart';
+import '../application/headless_chat_stream_controller.dart';
 import '../../../core/models/session.dart';
 import '../../../core/models/subagent.dart';
 import '../../../core/models/transcript.dart';
@@ -68,67 +69,51 @@ class TranscriptScreen extends ConsumerStatefulWidget {
 class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
     with WidgetsBindingObserver {
   late Session _activeSession = widget.session;
-  int _sessionEpoch = 0;
   final List<HeadlessEphemeralCardEntry> _ephemeralCards = [];
 
   final ScrollController _scrollController = ScrollController();
   final TextEditingController _promptController = TextEditingController();
   final FocusNode _promptFocusNode = FocusNode();
   bool _showJumpToBottom = false;
-  bool _isLoading = true;
-  bool _isSending = false;
-  bool _awaitingTurnCompletion = false;
-  bool _sawWorkingState = false;
-  bool _isRefreshingTranscript = false;
   bool _hasPromptText = false;
-  int _assistantCountAtSend = 0;
-  int _messageCountAtSend = 0;
-  DateTime? _awaitingTurnStartedAt;
-  TranscriptMessage? _pendingUserMessage;
-  String? _errorMessage;
-  TranscriptData? _transcriptData;
-  List<SubagentInfo> _runningSubagents = [];
   bool _isSubagentsExpanded = false;
-  Timer? _subagentPollingTimer;
+  late final HeadlessChatStreamController _streamController;
+
+  TranscriptData? get _transcriptData => _streamController.transcriptData;
+  bool get _isLoading => _streamController.isLoading;
+  bool get _isSending => _streamController.isSending;
+  bool get _awaitingTurnCompletion => _streamController.awaitingTurnCompletion;
+  String? get _errorMessage => _streamController.errorMessage;
+  TranscriptMessage? get _pendingUserMessage =>
+      _streamController.pendingUserMessage;
+  List<SubagentInfo> get _runningSubagents =>
+      _streamController.runningSubagents;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _sawWorkingState = _activeSession.state == SessionState.working;
     _promptController.addListener(_onPromptChanged);
-    _loadTranscript();
-    _loadSubagents();
     _scrollController.addListener(_onScroll);
-    _subagentPollingTimer = Timer.periodic(const Duration(seconds: 3), (_) {
-      if (!mounted) return;
-      _loadSubagents();
-      if (_isSessionWorking) {
-        if (_awaitingTurnCompletion &&
-            !_sawWorkingState &&
-            _awaitingTurnStartedAt != null &&
-            DateTime.now().difference(_awaitingTurnStartedAt!) >
-                const Duration(seconds: 45) &&
-            _resolveLiveSession().state != SessionState.working) {
-          setState(() {
-            _awaitingTurnCompletion = false;
-            _awaitingTurnStartedAt = null;
-            _pendingUserMessage = null;
-          });
-        }
-        _refreshTranscriptSilently();
-      }
-    });
+
+    final host = _resolveHostRecord(_activeSession.host);
+    _streamController = HeadlessChatStreamController(
+      session: _activeSession,
+      host: host,
+      apiClient: ref.read(apiClientProvider),
+    );
+    _streamController.addListener(_onStreamControllerUpdated);
+    _streamController.init();
+  }
+
+  void _onStreamControllerUpdated() {
+    if (!mounted) return;
+    setState(() {});
   }
 
   void _rotateToSession(Session nextSession, {String? notice}) {
     setState(() {
-      _sessionEpoch++;
       _activeSession = nextSession;
-      _awaitingTurnCompletion = false;
-      _pendingUserMessage = null;
-      _transcriptData = null;
-      _runningSubagents = [];
       _ephemeralCards.clear();
       _ephemeralCards.add(
         HeadlessEphemeralCardEntry(
@@ -142,8 +127,10 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
       );
     });
     ref.read(fleetSessionsProvider.notifier).upsertSession(nextSession);
-    _loadTranscript();
-    _loadSubagents();
+    _streamController.rotateToSession(
+      nextSession,
+      _resolveHostRecord(nextSession.host),
+    );
   }
 
   HostRecord _resolveHostRecord(String hostName) {
@@ -166,7 +153,8 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _subagentPollingTimer?.cancel();
+    _streamController.removeListener(_onStreamControllerUpdated);
+    _streamController.dispose();
     _promptController.removeListener(_onPromptChanged);
     _scrollController.removeListener(_onScroll);
     _scrollController.dispose();
@@ -179,8 +167,7 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
     if (state == AppLifecycleState.resumed && mounted) {
-      _refreshTranscriptSilently();
-      _loadSubagents();
+      _streamController.onAppResumed();
       if (ref.read(hostsListProvider).isNotEmpty) {
         ref.read(fleetSessionsProvider.notifier).refreshSessions();
       }
@@ -272,242 +259,10 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
     return (url: 'http://127.0.0.1:7777', authToken: null);
   }
 
-  List<TranscriptMessage> _deduplicateMessages(List<TranscriptMessage> msgs) {
-    if (msgs.length <= 1) return msgs;
-    final result = <TranscriptMessage>[];
-    for (final m in msgs) {
-      if (result.isNotEmpty &&
-          result.last.role == 'user' &&
-          m.role == 'user' &&
-          result.last.content.trim() == m.content.trim() &&
-          m.timestamp.difference(result.last.timestamp).inSeconds.abs() <= 5) {
-        continue;
-      }
-      result.add(m);
-    }
-    return result;
-  }
-
-  Future<TranscriptData> _fetchTranscriptData(
-    ({String url, String? authToken}) host,
-  ) async {
-    final api = ref.read(apiClientProvider);
-    final session = _resolveLiveSession();
-    final activeSessionId = session.id;
-    final structured = await api.getStructuredTranscript(
-      host.url,
-      activeSessionId,
-      authToken: host.authToken,
-    );
-
-    if (structured != null && structured.messages.isNotEmpty) {
-      return structured.copyWith(
-        messages: _deduplicateMessages(structured.messages),
-      );
-    }
-
-    // Fallback to markdown parser
-    final rawMd = await api.getTranscriptOrNull(
-      host.url,
-      activeSessionId,
-      authToken: host.authToken,
-    );
-    if (rawMd != null && rawMd.trim().isNotEmpty) {
-      final parsed = TranscriptData.fromRawMarkdown(
-        sessionId: activeSessionId,
-        agent: session.agent,
-        title: session.displayTitle,
-        markdown: rawMd,
-      );
-      if (parsed.messages.isNotEmpty || structured == null) {
-        return parsed.copyWith(messages: _deduplicateMessages(parsed.messages));
-      }
-    }
-
-    if (structured == null && rawMd == null) {
-      throw Exception(
-        'Unable to load transcript from host. Tap Retry to try again.',
-      );
-    }
-
-    return structured ??
-        TranscriptData(
-          sessionId: activeSessionId,
-          nativeId: session.nativeId,
-          agent: session.agent,
-          title: session.displayTitle,
-          cwd: session.cwd,
-          messages: const [],
-          rawMarkdown: '',
-        );
-  }
-
-  bool _hasTranscriptChanged(TranscriptData? prev, TranscriptData next) {
-    if (prev == null) return true;
-    if (prev.rawMarkdown != next.rawMarkdown && next.rawMarkdown.isNotEmpty) {
-      return true;
-    }
-    final a = prev.messages;
-    final b = next.messages;
-    if (a.length != b.length) return true;
-    for (var i = 0; i < a.length; i++) {
-      if (a[i].role != b[i].role ||
-          a[i].content != b[i].content ||
-          a[i].thinking != b[i].thinking ||
-          a[i].toolCalls.length != b[i].toolCalls.length) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  Future<void> _loadTranscript() async {
-    final epoch = _sessionEpoch;
-    if (!mounted) return;
-    setState(() {
-      if (_transcriptData == null || _transcriptData!.messages.isEmpty) {
-        _isLoading = true;
-      }
-      _errorMessage = null;
-    });
-
-    try {
-      final host = await _resolveHost();
-      if (!mounted || epoch != _sessionEpoch) return;
-      final fetched = await _fetchTranscriptData(host);
-      if (!mounted || epoch != _sessionEpoch) return;
-
-      setState(() {
-        if (fetched.messages.isNotEmpty ||
-            _transcriptData == null ||
-            _transcriptData!.messages.isEmpty) {
-          _transcriptData = fetched;
-        }
-        _isLoading = false;
-      });
-
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        _scrollToBottom(animate: false);
-      });
-      _loadSubagents();
-    } catch (e) {
-      if (mounted && epoch == _sessionEpoch) {
-        setState(() {
-          if (_transcriptData == null || _transcriptData!.messages.isEmpty) {
-            _errorMessage =
-                'Unable to load transcript from host. Tap Retry to try again.';
-          }
-          _isLoading = false;
-        });
-      }
-    }
-  }
-
-  Future<void> _refreshTranscriptSilently() async {
-    final epoch = _sessionEpoch;
-    if (!mounted || _isRefreshingTranscript) return;
-    _isRefreshingTranscript = true;
-
-    try {
-      final host = await _resolveHost();
-      if (!mounted || epoch != _sessionEpoch) return;
-      final fetched = await _fetchTranscriptData(host);
-      if (!mounted || epoch != _sessionEpoch) return;
-
-      var mergedMessages = fetched.messages;
-      if (mergedMessages.isEmpty &&
-          _transcriptData != null &&
-          _transcriptData!.messages.isNotEmpty) {
-        return;
-      }
-      final assistantCount = mergedMessages.where((m) => m.isAssistant).length;
-
-      if (_pendingUserMessage != null) {
-        final hasPendingUser = mergedMessages.skip(_messageCountAtSend).any(
-              (m) =>
-                  m.isUser &&
-                  m.content.trim() == _pendingUserMessage!.content.trim(),
-            );
-        if (hasPendingUser || assistantCount > _assistantCountAtSend) {
-          _pendingUserMessage = null;
-        } else {
-          mergedMessages = _deduplicateMessages([
-            ...mergedMessages,
-            _pendingUserMessage!,
-          ]);
-        }
-      }
-
-      final liveSession = _resolveLiveSession();
-      final turnCompletedByReply = _awaitingTurnCompletion &&
-          assistantCount > _assistantCountAtSend &&
-          liveSession.state != SessionState.working;
-
-      final updatedData = fetched.copyWith(messages: mergedMessages);
-      final hadChanges = _hasTranscriptChanged(_transcriptData, updatedData);
-
-      if (hadChanges || turnCompletedByReply || _isLoading) {
-        final shouldAutoScroll = !_showJumpToBottom && hadChanges;
-        setState(() {
-          if (hadChanges || _transcriptData == null) {
-            _transcriptData = updatedData;
-          }
-          _isLoading = false;
-          _errorMessage = null;
-          if (turnCompletedByReply) {
-            _awaitingTurnCompletion = false;
-            _awaitingTurnStartedAt = null;
-            _pendingUserMessage = null;
-          }
-        });
-
-        if (shouldAutoScroll) {
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (mounted) {
-              _scrollToBottom(animate: true);
-            }
-          });
-        }
-      }
-    } catch (_) {
-      // Ignore transient errors during silent background polling
-    } finally {
-      _isRefreshingTranscript = false;
-    }
-  }
-
-  Future<void> _loadSubagents() async {
-    final epoch = _sessionEpoch;
-    try {
-      final host = await _resolveHost();
-      if (!mounted || epoch != _sessionEpoch) return;
-      final activeSessionId = _resolveLiveSession().id;
-      final list = await ref
-          .read(apiClientProvider)
-          .getSubagents(host.url, activeSessionId, authToken: host.authToken);
-      if (mounted && epoch == _sessionEpoch) {
-        final running = list.where((s) => s.isRunning).toList();
-        if (!_areSubagentListsEqual(running, _runningSubagents)) {
-          setState(() {
-            _runningSubagents = running;
-          });
-        }
-      }
-    } catch (_) {}
-  }
-
-  bool _areSubagentListsEqual(List<SubagentInfo> a, List<SubagentInfo> b) {
-    if (a.length != b.length) return false;
-    for (var i = 0; i < a.length; i++) {
-      if (a[i].id != b[i].id ||
-          a[i].state != b[i].state ||
-          a[i].name != b[i].name ||
-          a[i].prompt != b[i].prompt) {
-        return false;
-      }
-    }
-    return true;
-  }
+  Future<void> _loadTranscript() => _streamController.loadTranscript();
+  Future<void> _refreshTranscriptSilently() =>
+      _streamController.refreshTranscriptSilently();
+  Future<void> _loadSubagents() => _streamController.loadSubagents();
 
   void _scrollToBottom({bool animate = true}) {
     if (!_scrollController.hasClients) return;
@@ -528,6 +283,7 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
     if (text.isEmpty || _isSending) return;
 
     final currentSession = _resolveLiveSession();
+    _streamController.updateSession(currentSession);
     if (currentSession.isHeadless) {
       final hostRec = _resolveHostRecord(currentSession.host);
       final dispatcher = HeadlessCommandDispatcher(
@@ -557,81 +313,17 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
 
     _promptController.clear();
     HapticFeedback.lightImpact();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
 
-    final userMsg = TranscriptMessage(
-      role: 'user',
-      content: text,
-      timestamp: DateTime.now(),
-    );
-
-    final currentAssistantCount =
-        _transcriptData?.messages.where((m) => m.isAssistant).length ?? 0;
-    final currentMessageCount = _transcriptData?.messages.length ?? 0;
-
-    setState(() {
-      _isSending = true;
-      _awaitingTurnCompletion = true;
-      _sawWorkingState = _resolveLiveSession().state == SessionState.working;
-      _awaitingTurnStartedAt = DateTime.now();
-      _assistantCountAtSend = currentAssistantCount;
-      _messageCountAtSend = currentMessageCount;
-      _pendingUserMessage = userMsg;
-      if (_transcriptData != null) {
-        _transcriptData = _transcriptData!.copyWith(
-          messages: _deduplicateMessages([
-            ..._transcriptData!.messages,
-            userMsg,
-          ]),
-        );
-      }
-    });
-
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _scrollToBottom();
-    });
-
-    try {
-      final host = await _resolveHost();
-      final activeSessionId = _resolveLiveSession().id;
-      final success = await ref.read(apiClientProvider).sendPrompt(
-            host.url,
-            activeSessionId,
-            text,
-            authToken: host.authToken,
-          );
-      if (!success && mounted) {
-        setState(() {
-          _awaitingTurnCompletion = false;
-          _awaitingTurnStartedAt = null;
-          _pendingUserMessage = null;
-        });
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Failed to dispatch prompt to agent'),
-            backgroundColor: AppColors.statusCoral,
-          ),
-        );
-      }
-    } catch (e) {
-      if (mounted) {
-        setState(() {
-          _awaitingTurnCompletion = false;
-          _awaitingTurnStartedAt = null;
-          _pendingUserMessage = null;
-        });
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error sending prompt: $e'),
-            backgroundColor: AppColors.statusCoral,
-          ),
-        );
-      }
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isSending = false;
-        });
-      }
+    final res = await _streamController.submitPrompt(text);
+    if (!res.ok && mounted) {
+      _promptController.text = text;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Failed to dispatch prompt to agent'),
+          backgroundColor: AppColors.statusCoral,
+        ),
+      );
     }
   }
 
@@ -690,13 +382,8 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
           .read(apiClientProvider)
           .cancelTurn(host.url, activeSessionId, authToken: host.authToken);
       if (mounted) {
-        setState(() {
-          _isSending = false;
-          _awaitingTurnCompletion = false;
-          _sawWorkingState = false;
-          _awaitingTurnStartedAt = null;
-          _pendingUserMessage = null;
-        });
+        _streamController.cancelTurnLocally();
+        _streamController.refreshTranscriptSilently();
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('Turn cancelled'),
@@ -796,18 +483,12 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
       final nextSession = _findMatchingSession(next);
       if (nextSession == null) return;
 
-      if (nextSession.state == SessionState.working) {
-        _sawWorkingState = true;
-      } else if (prevSession.state == SessionState.working ||
-          _sawWorkingState) {
-        _sawWorkingState = false;
-        if (_awaitingTurnCompletion && mounted) {
-          setState(() {
-            _awaitingTurnCompletion = false;
-            _awaitingTurnStartedAt = null;
-            _pendingUserMessage = null;
-          });
-        }
+      if (nextSession.id != _streamController.session.id) {
+        _streamController.updateSession(nextSession);
+      }
+
+      if (prevSession.state == SessionState.working &&
+          nextSession.state != SessionState.working) {
         _refreshTranscriptSilently().then((_) {
           if (mounted &&
               ref.read(audioCompanionServiceProvider).autoReadEnabled) {
@@ -822,6 +503,9 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
       fleetSessionsProvider.select(_findMatchingSession),
     );
     final currentSession = liveSession ?? _activeSession;
+    if (currentSession.id != _streamController.session.id) {
+      _streamController.updateSession(currentSession);
+    }
     final isWorking = _isSending ||
         _awaitingTurnCompletion ||
         currentSession.state == SessionState.working;
