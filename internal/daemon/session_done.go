@@ -27,7 +27,7 @@ func (h *HeadlessRunner) pruneCompletedSpoolsForSession(runDir, sessionID, nativ
 		if err != nil || meta == nil || meta.TurnID == keepTurnID {
 			continue
 		}
-		if (meta.Status == "starting" || meta.Status == "running") && h.isSpoolWorkerLiveLocked(meta) {
+		if (meta.Status == "starting" || meta.Status == "running") && h.isSpoolWorkerLive(meta) {
 			continue
 		}
 		if metaMatchesSession(meta, sessionID, nativeID) {
@@ -47,27 +47,53 @@ func (h *HeadlessRunner) PruneStaleSpools(maxAge time.Duration) {
 	}
 	cutoff := time.Now().Add(-maxAge)
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".meta.json") {
+		if e.IsDir() {
 			continue
 		}
-		mp := filepath.Join(runDir, e.Name())
-		meta, err := ReadTurnSpoolMeta(mp)
-		if err != nil || meta == nil || ((meta.Status == "starting" || meta.Status == "running") && h.isSpoolWorkerLive(meta)) {
-			continue
-		}
-		ref := meta.FinishedAt
-		if ref.IsZero() {
-			ref = meta.StartedAt
-		}
-		if !ref.IsZero() && ref.Before(cutoff) {
-			h.mu.Lock()
-			for k, cur := range h.sessionSpools {
-				if cur != nil && cur.TurnID == meta.TurnID {
-					delete(h.sessionSpools, k)
+		name := e.Name()
+		if strings.HasSuffix(name, ".meta.json") {
+			mp := filepath.Join(runDir, name)
+			meta, err := ReadTurnSpoolMeta(mp)
+			if err != nil || meta == nil || ((meta.Status == "starting" || meta.Status == "running") && h.isSpoolWorkerLive(meta)) {
+				continue
+			}
+			ref := meta.FinishedAt
+			if ref.IsZero() {
+				ref = meta.StartedAt
+			}
+			if !ref.IsZero() && ref.Before(cutoff) {
+				h.mu.Lock()
+				for k, cur := range h.sessionSpools {
+					if cur != nil && cur.TurnID == meta.TurnID {
+						delete(h.sessionSpools, k)
+					}
+				}
+				h.mu.Unlock()
+				removeTurnSpoolFiles(mp, meta)
+			}
+		} else if strings.HasSuffix(name, ".worker.json") {
+			wp := filepath.Join(runDir, name)
+			wm, err := ReadSessionWorkerMeta(wp)
+			if err == nil && wm != nil {
+				ref := wm.LastTurnEndedAt
+				if ref.IsZero() {
+					ref = wm.StartedAt
+				}
+				if !ref.IsZero() && ref.Before(cutoff) {
+					h.mu.RLock()
+					isWarm := false
+					for _, handle := range h.warmWorkers {
+						if handle != nil && handle.WorkerID == wm.WorkerID {
+							isWarm = true
+							break
+						}
+					}
+					h.mu.RUnlock()
+					if !isWarm {
+						cleanupWorkerArtifacts(wm)
+					}
 				}
 			}
-			h.mu.Unlock()
-			removeTurnSpoolFiles(mp, meta)
 		}
 	}
 }
@@ -77,6 +103,7 @@ func (h *HeadlessRunner) CleanupSessionRuntime(sessionID, nativeID string) {
 	if h == nil {
 		return
 	}
+	h.ShutdownSessionWorker(sessionID, nativeID, 3*time.Second)
 	if sessionID != "" {
 		_ = h.CancelTurn(sessionID)
 		h.ClearInteractiveBlockAndWait(sessionID, 500*time.Millisecond)
@@ -103,7 +130,7 @@ func (h *HeadlessRunner) CleanupSessionRuntime(sessionID, nativeID string) {
 	h.mu.Lock()
 	for k, cmd := range h.processes {
 		if matchesKey(k) {
-			if h.isOwnedProcessLocked(cmd) {
+			if h.isOwnedProcess(cmd) {
 				_ = cmd.Process.Kill()
 			}
 			delete(h.processes, k)
@@ -152,17 +179,25 @@ func (h *HeadlessRunner) CleanupSessionRuntime(sessionID, nativeID string) {
 		return
 	}
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".meta.json") {
+		if e.IsDir() {
 			continue
 		}
-		mp := filepath.Join(runDir, e.Name())
-		meta, err := ReadTurnSpoolMeta(mp)
-		if err == nil && metaMatchesSession(meta, sessionID, nativeID) {
-			if meta.Status == "starting" || meta.Status == "running" {
-				_ = sendWorkerCancel(meta)
-				h.terminateVerifiedWorker(meta, syscall.SIGKILL)
+		if strings.HasSuffix(e.Name(), ".meta.json") {
+			mp := filepath.Join(runDir, e.Name())
+			meta, err := ReadTurnSpoolMeta(mp)
+			if err == nil && metaMatchesSession(meta, sessionID, nativeID) {
+				if meta.Status == "starting" || meta.Status == "running" {
+					_ = sendWorkerCancel(meta)
+					h.terminateVerifiedWorker(meta, syscall.SIGKILL)
+				}
+				removeTurnSpoolFiles(mp, meta)
 			}
-			removeTurnSpoolFiles(mp, meta)
+		} else if strings.HasSuffix(e.Name(), ".worker.json") {
+			wp := filepath.Join(runDir, e.Name())
+			wm, err := ReadSessionWorkerMeta(wp)
+			if err == nil && wm != nil && (wm.SessionID == sessionID || wm.OrigSessionID == sessionID || (nativeID != "" && wm.NativeID == nativeID)) {
+				cleanupWorkerArtifacts(wm)
+			}
 		}
 	}
 }

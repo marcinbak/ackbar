@@ -501,6 +501,9 @@ func (s *Server) handleSessionControl(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(docs)
 
 	case "kill":
+		if s.headless != nil {
+			s.headless.ShutdownSessionWorker(sess.ID, sess.NativeID, 3*time.Second)
+		}
 		if sess.Managed && sess.TmuxName != "" {
 			_ = tmux.Kill(r.Context(), sess.TmuxName)
 		}
@@ -554,6 +557,9 @@ func (s *Server) handleSessionControl(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "deleted", "id": sess.ID})
 
 	case "restart":
+		if s.headless != nil {
+			s.headless.ShutdownSessionWorker(sess.ID, sess.NativeID, 3*time.Second)
+		}
 		if sess.Cwd == "" && sess.NodePath != "" {
 			if node, err := s.db.GetNode(sess.NodePath); err == nil && node != nil && node.ProjectDir != "" {
 				sess.Cwd = node.ProjectDir
@@ -614,6 +620,9 @@ func (s *Server) handleSessionControl(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"status":"restarted"}`))
 
 	case "resume":
+		if s.headless != nil {
+			s.headless.ShutdownSessionWorker(sess.ID, sess.NativeID, 3*time.Second)
+		}
 		if sess.Cwd == "" && sess.NodePath != "" {
 			if node, err := s.db.GetNode(sess.NodePath); err == nil && node != nil && node.ProjectDir != "" {
 				sess.Cwd = node.ProjectDir
@@ -1108,6 +1117,10 @@ func (s *Server) handleSessionConfig(w http.ResponseWriter, r *http.Request, ses
 		return
 	}
 
+	if s.headless != nil {
+		s.headless.NotifyConfigChanged(sess)
+	}
+
 	s.broadcast(sess)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -1145,7 +1158,8 @@ func (s *Server) handleTakeWheel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if sess.EngineType == EngineHeadless && s.headless != nil && s.headless.IsRunning(sess.ID) {
+	if sess.EngineType == EngineHeadless && s.headless != nil {
+		s.headless.ShutdownSessionWorker(sess.ID, sess.NativeID, 3*time.Second)
 		_ = s.headless.CancelTurn(sess.ID)
 		s.headless.ClearInteractiveBlockAndWait(sess.ID, 1500*time.Millisecond)
 		s.clearSubagents(sess.ID, sess.NativeID)
@@ -1274,6 +1288,10 @@ func (s *Server) handleSwitchHeadless(w http.ResponseWriter, r *http.Request) {
 		if defaultTmuxName != tmuxName {
 			_ = tmux.Kill(r.Context(), defaultTmuxName)
 		}
+	}
+
+	if s.headless != nil {
+		s.headless.ShutdownSessionWorker(sess.ID, sess.NativeID, 3*time.Second)
 	}
 
 	sess.IsDone = false
@@ -1841,6 +1859,10 @@ func (s *Server) handleBindSupervisor(w http.ResponseWriter, r *http.Request) {
 	if err := s.db.SaveSession(sess); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+
+	if s.headless != nil {
+		s.headless.NotifyConfigChanged(sess)
 	}
 
 	s.broadcast(sess)

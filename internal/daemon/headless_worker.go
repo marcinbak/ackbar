@@ -1,188 +1,165 @@
 package daemon
 
 import (
-	"bufio"
-	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 )
 
-type boundedTailBuffer struct {
-	mu  sync.Mutex
-	buf []byte
-	max int
-}
-
-func (b *boundedTailBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.buf = append(b.buf, p...)
-	if b.max > 0 && len(b.buf) > b.max {
-		b.buf = append([]byte(nil), b.buf[len(b.buf)-b.max:]...)
-	}
-	return len(p), nil
-}
-
-func (b *boundedTailBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return string(b.buf)
-}
-
-type workerIPCReq struct {
-	Op       string `json:"op"`
-	TurnID   string `json:"turn_id,omitempty"`
-	AfterSeq int64  `json:"after_seq,omitempty"`
-}
-
-type workerIPCResp struct {
-	OK        bool   `json:"ok"`
-	WorkerPID int    `json:"worker_pid,omitempty"`
-	ChildPID  int    `json:"child_pid,omitempty"`
-	TurnID    string `json:"turn_id,omitempty"`
-}
-
 func RunHeadlessWorker(args []string) int {
-	var metaPath string
+	var workerMetaPath, specPath, idleTTLStr string
 	for i := 0; i < len(args); i++ {
-		if args[i] == "--spec" && i+1 < len(args) {
-			metaPath = args[i+1]
-			i++
-		} else if strings.HasPrefix(args[i], "--spec=") {
-			metaPath = strings.TrimPrefix(args[i], "--spec=")
+		a := args[i]
+		if a == "--worker-spec" && i+1 < len(args) {
+			workerMetaPath, i = args[i+1], i+1
+		} else if strings.HasPrefix(a, "--worker-spec=") {
+			workerMetaPath = strings.TrimPrefix(a, "--worker-spec=")
+		} else if a == "--spec" && i+1 < len(args) {
+			specPath, i = args[i+1], i+1
+		} else if strings.HasPrefix(a, "--spec=") {
+			specPath = strings.TrimPrefix(a, "--spec=")
+		} else if a == "--idle-ttl" && i+1 < len(args) {
+			idleTTLStr, i = args[i+1], i+1
+		} else if strings.HasPrefix(a, "--idle-ttl=") {
+			idleTTLStr = strings.TrimPrefix(a, "--idle-ttl=")
 		}
 	}
-	meta, err := ReadTurnSpoolMeta(metaPath)
-	if metaPath == "" || err != nil || meta == nil {
+	if workerMetaPath == "" && specPath == "" {
 		return 2
 	}
-	spool, err := OpenTurnSpoolWriter(meta.SpoolPath, meta.TurnID)
+	return runWorkerLoop(workerMetaPath, specPath, idleTTLStr)
+}
+
+type activeTurnState struct {
+	turnID    string
+	metaPath  string
+	meta      *TurnSpoolMeta
+	spool     *TurnSpoolWriter
+	cancelled bool
+	hadBlock  bool
+}
+
+func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string) int {
+	var workerMeta *SessionWorkerMeta
+	var initialTMeta *TurnSpoolMeta
+	var err error
+
+	if workerMetaPath != "" {
+		if workerMeta, err = ReadSessionWorkerMeta(workerMetaPath); err != nil || workerMeta == nil {
+			return 2
+		}
+	} else {
+		if initialTMeta, err = ReadTurnSpoolMeta(specPath); err != nil || initialTMeta == nil {
+			return 2
+		}
+		workerMeta = &SessionWorkerMeta{
+			WorkerID: initialTMeta.TurnID, SessionID: initialTMeta.SessionID, OrigSessionID: initialTMeta.OrigSessionID,
+			NativeID: initialTMeta.NativeID, Agent: initialTMeta.Agent, Cwd: initialTMeta.Cwd, Bin: initialTMeta.Bin,
+			Args: initialTMeta.Args, SocketPath: initialTMeta.SocketPath, SocketTempDir: initialTMeta.SocketTempDir,
+			ActiveTurnID: initialTMeta.TurnID, ActiveMetaPath: specPath, StartedAt: initialTMeta.StartedAt,
+		}
+	}
+
+	idleTTL := time.Duration(0)
+	if workerMetaPath != "" {
+		idleTTL = ResolveHeadlessIdleTTL(0)
+		if idleTTLStr != "" {
+			if d, pErr := time.ParseDuration(idleTTLStr); pErr == nil && d > 0 {
+				idleTTL = d
+			}
+		} else if workerMeta.IdleTTLNs > 0 {
+			idleTTL = workerMeta.IdleTTLNs
+		}
+	}
+
+	saveWorkerMeta := func() {
+		if workerMetaPath != "" {
+			_ = WriteSessionWorkerMeta(workerMetaPath, workerMeta)
+		}
+	}
+	cleanupArtifacts := func() {
+		if workerMetaPath != "" {
+			cleanupWorkerArtifacts(workerMeta)
+		} else if initialTMeta != nil {
+			cleanupTurnSocketArtifacts(initialTMeta)
+		}
+	}
+
+	_ = os.Remove(workerMeta.SocketPath)
+	ln, err := net.Listen("unix", workerMeta.SocketPath)
 	if err != nil {
 		return 2
 	}
-	if spool.seq == 0 {
-		_, _ = spool.Append(ChatStreamEvent{
-			SessionID: meta.SessionID,
-			TurnID:    meta.TurnID,
-			Type:      "turn_start",
-			Text:      meta.Prompt,
-			Timestamp: meta.StartedAt,
-		})
-	}
-	_ = os.Remove(meta.SocketPath)
-	ln, err := net.Listen("unix", meta.SocketPath)
-	if err != nil {
-		_ = spool.Close()
-		return 2
-	}
-	_ = os.Chmod(meta.SocketPath, 0600)
+	_ = os.Chmod(workerMeta.SocketPath, 0600)
 
 	var stateMu sync.Mutex
-	var childCmd *exec.Cmd
-	childPGID := 0
-	cancelled, hasInteractiveBlock := false, false
+	state := "starting"
+	var activeTurn *activeTurnState
+	var pendingInitConvID string
+	completedTurns := make(map[string]string)
 	childDone := make(chan struct{})
 	var subWG sync.WaitGroup
+	var idleTimer *time.Timer
 
-	signalChildStop := func(grace time.Duration) {
-		stateMu.Lock()
-		pgid := childPGID
-		var proc *os.Process
-		if childCmd != nil {
-			proc = childCmd.Process
-		}
-		stateMu.Unlock()
-		if pgid > 1 {
-			_ = syscall.Kill(-pgid, syscall.SIGINT)
-		}
-		if proc != nil {
-			_ = proc.Signal(syscall.SIGINT)
-		}
-		go func() {
-			select {
-			case <-childDone:
-			case <-time.After(grace):
-				if pgid > 1 {
-					_ = syscall.Kill(-pgid, syscall.SIGKILL)
-				}
-				if proc != nil {
-					_ = proc.Kill()
-				}
-			}
-		}()
+	cmd := exec.Command(workerMeta.Bin, workerMeta.Args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Env = os.Environ()
+	cmd.Dir = workerMeta.Cwd
+	cmd.WaitDelay = 4 * time.Second
+	stderrTailBuf := &boundedTailBuffer{max: 16384}
+	cmd.Stderr = stderrTailBuf
+
+	var stdinPipe io.WriteCloser
+	if workerMetaPath != "" {
+		stdinPipe, _ = cmd.StdinPipe()
+	} else if devNull, dErr := os.Open(os.DevNull); dErr == nil {
+		cmd.Stdin = devNull
+		defer devNull.Close()
+	} else {
+		cmd.Stdin = strings.NewReader("")
 	}
 
-	go func() {
-		for {
-			conn, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			go func(c net.Conn) {
-				defer c.Close()
-				line, err := bufio.NewReader(c).ReadBytes('\n')
-				var req workerIPCReq
-				if (err != nil && len(line) == 0) || json.Unmarshal(line, &req) != nil {
-					return
-				}
-				if req.TurnID != "" && req.TurnID != meta.TurnID {
-					return
-				}
-				switch req.Op {
-				case "ping":
-					stateMu.Lock()
-					cpid := childPGID
-					stateMu.Unlock()
-					b, _ := json.Marshal(workerIPCResp{OK: true, WorkerPID: os.Getpid(), ChildPID: cpid, TurnID: meta.TurnID})
-					_, _ = c.Write(append(b, '\n'))
-				case "cancel":
-					stateMu.Lock()
-					cancelled = true
-					cpid := childPGID
-					stateMu.Unlock()
-					b, _ := json.Marshal(workerIPCResp{OK: true, WorkerPID: os.Getpid(), ChildPID: cpid, TurnID: meta.TurnID})
-					_, _ = c.Write(append(b, '\n'))
-					signalChildStop(2 * time.Second)
-				case "subscribe":
-					subWG.Add(1)
-					defer subWG.Done()
-					replay, ch, unsub, err := spool.SubscribeFrom(req.AfterSeq)
-					if err != nil {
-						return
-					}
-					defer unsub()
-					writeEvt := func(evt ChatStreamEvent) bool {
-						b, mErr := json.Marshal(evt)
-						if mErr != nil {
-							return true
-						}
-						_, wErr := c.Write(append(b, '\n'))
-						return wErr == nil
-					}
-					for _, evt := range replay {
-						if !writeEvt(evt) {
-							return
-						}
-					}
-					for evt := range ch {
-						if !writeEvt(evt) {
-							return
-						}
-					}
-				}
-			}(conn)
-		}
-	}()
+	stdoutPipe, outPipeErr := cmd.StdoutPipe()
+	if outPipeErr != nil {
+		_ = ln.Close()
+		cleanupArtifacts()
+		return 2
+	}
+	if err := cmd.Start(); err != nil {
+		_ = ln.Close()
+		cleanupArtifacts()
+		return 2
+	}
+	childPGID := cmd.Process.Pid
+	workerMeta.WorkerPID, workerMeta.ChildPID, workerMeta.State = os.Getpid(), childPGID, "idle_warm"
+	saveWorkerMeta()
+	state = "idle_warm"
 
-	finishWorker := func() int {
-		_ = spool.Close()
+	shutdownChildGroup := func(grace time.Duration) {
+		if stdinPipe != nil {
+			_ = stdinPipe.Close()
+		}
+		if childPGID > 1 {
+			_ = syscall.Kill(-childPGID, syscall.SIGTERM)
+		}
+		select {
+		case <-childDone:
+		case <-time.After(grace):
+			if childPGID > 1 {
+				_ = syscall.Kill(-childPGID, syscall.SIGKILL)
+			}
+		}
+	}
+
+	exitCleanly := func(code int) {
 		waitCh := make(chan struct{})
 		go func() { subWG.Wait(); close(waitCh) }()
 		select {
@@ -190,294 +167,270 @@ func RunHeadlessWorker(args []string) int {
 		case <-time.After(time.Second):
 		}
 		_ = ln.Close()
-		cleanupTurnSocketArtifacts(meta)
-		return 0
+		cleanupArtifacts()
+		os.Exit(code)
 	}
 
-	cmd := exec.Command(meta.Bin, meta.Args...)
-	// Put child CLI in its own process group so cancel kills sub-processes cleanly on both Linux and Darwin.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Env = os.Environ()
-	cmd.WaitDelay = 4 * time.Second
-	cmd.Dir = meta.Cwd
-	if devNull, err := os.Open(os.DevNull); err == nil {
-		cmd.Stdin = devNull
-		defer devNull.Close()
-	} else {
-		cmd.Stdin = strings.NewReader("")
-	}
-	stderrTailBuf := &boundedTailBuffer{max: 16384}
-	cmd.Stderr = stderrTailBuf
-	stdoutPipe, pipeErr := cmd.StdoutPipe()
-	if pipeErr != nil {
-		close(childDone)
-		_, _ = spool.Append(ChatStreamEvent{SessionID: meta.SessionID, TurnID: meta.TurnID, Type: "error", Text: pipeErr.Error(), IsError: true})
-		_, _ = spool.Append(ChatStreamEvent{SessionID: meta.SessionID, TurnID: meta.TurnID, Type: "turn_complete"})
-		meta.Status, meta.ExitCode, meta.StderrTail, meta.FinishedAt = "failed", 1, pipeErr.Error(), time.Now().UTC()
-		_ = WriteTurnSpoolMeta(metaPath, meta)
-		return finishWorker()
-	}
-
-	stateMu.Lock()
-	startErr := cmd.Start()
-	if startErr == nil {
-		childCmd, childPGID = cmd, cmd.Process.Pid
-		meta.WorkerPID, meta.ChildPID, meta.Status = os.Getpid(), childPGID, "running"
-		_ = WriteTurnSpoolMeta(metaPath, meta)
-	}
-	alreadyCancelled := cancelled
-	stateMu.Unlock()
-	if startErr != nil {
-		close(childDone)
-		_, _ = spool.Append(ChatStreamEvent{SessionID: meta.SessionID, TurnID: meta.TurnID, Type: "error", Text: startErr.Error(), IsError: true})
-		_, _ = spool.Append(ChatStreamEvent{SessionID: meta.SessionID, TurnID: meta.TurnID, Type: "turn_complete"})
-		meta.Status, meta.ExitCode, meta.StderrTail, meta.FinishedAt = "failed", 127, startErr.Error(), time.Now().UTC()
-		_ = WriteTurnSpoolMeta(metaPath, meta)
-		return finishWorker()
-	}
-	if alreadyCancelled {
-		signalChildStop(2 * time.Second)
-	}
-
-	lastTurnText, resultText, streamHadError := parseHeadlessStream(meta.SessionID, stdoutPipe, streamParseHooks{
-		emitTurnComplete: false,
-		emit:             func(evt ChatStreamEvent) { _, _ = spool.Append(evt) },
-		onAntigravityInit: func(convID string) {
-			stateMu.Lock()
-			meta.NativeID = convID
-			_ = WriteTurnSpoolMeta(metaPath, meta)
-			stateMu.Unlock()
-			_, _ = spool.Append(ChatStreamEvent{SessionID: meta.SessionID, TurnID: meta.TurnID, Type: "session_init", NativeID: convID})
-		},
-		onInteractiveBlock: func(toolName string, toolInput any, blocked *Blocked) {
-			stateMu.Lock()
-			hasInteractiveBlock = true
-			stateMu.Unlock()
-			_, _ = spool.Append(ChatStreamEvent{
-				SessionID: meta.SessionID,
-				TurnID:    meta.TurnID,
-				Type:      "interactive_block",
-				ToolName:  toolName,
-				ToolInput: toolInput,
-				Blocked:   blocked,
-			})
-			signalChildStop(500 * time.Millisecond)
-		},
-	})
-
-	waitErr := cmd.Wait()
-	close(childDone)
-	exitCode := 0
-	if waitErr != nil {
-		var exitErr *exec.ExitError
-		if errors.As(waitErr, &exitErr) {
-			exitCode = exitErr.ExitCode()
-		} else {
-			exitCode = 1
+	if suitePIDStr := os.Getenv("ACKBAR_TEST_SUITE_PID"); suitePIDStr != "" {
+		if suitePID, sErr := strconv.Atoi(suitePIDStr); sErr == nil && suitePID > 0 {
+			go func() {
+				ticker := time.NewTicker(500 * time.Millisecond)
+				defer ticker.Stop()
+				for range ticker.C {
+					if !isProcessAlive(suitePID) {
+						shutdownChildGroup(300 * time.Millisecond)
+						exitCleanly(0)
+					}
+				}
+			}()
 		}
 	}
-	stderrTail := strings.TrimSpace(stderrTailBuf.String())
 
-	stateMu.Lock()
-	wasCancelled, hadBlock := cancelled, hasInteractiveBlock
-	stateMu.Unlock()
-
-	status := "completed"
-	if wasCancelled {
-		_, _ = spool.Append(ChatStreamEvent{SessionID: meta.SessionID, TurnID: meta.TurnID, Type: "turn_cancelled", Text: "Turn was cancelled by user."})
-		status = "cancelled"
-	} else if !hadBlock {
-		if waitErr != nil || streamHadError {
-			combined := strings.TrimSpace(lastTurnText + "\n" + stderrTail)
-			if limited, resetAt, reason := getDefaultAgentAdapter(meta.Agent).DetectRateLimit(combined, time.Now()); limited {
-				rateBlock := &Blocked{
-					Kind:     BlockRateLimit,
-					Reason:   reason,
-					Question: reason,
-					ResetAt:  &resetAt,
-					Options:  []string{fmt.Sprintf("Resume at %s", resetAt.Local().Format("15:04")), "Resume in 1h"},
-					Since:    time.Now(),
-				}
-				_, _ = spool.Append(ChatStreamEvent{SessionID: meta.SessionID, TurnID: meta.TurnID, Type: "interactive_block", Blocked: rateBlock})
-				hadBlock = true
+	detectRate := func(text string) *Blocked {
+		if limited, resetAt, reason := getDefaultAgentAdapter(workerMeta.Agent).DetectRateLimit(text, time.Now()); limited {
+			return &Blocked{
+				Kind: BlockRateLimit, Reason: reason, Question: reason, ResetAt: &resetAt,
+				Options: []string{fmt.Sprintf("Resume at %s", resetAt.Local().Format("15:04")), "Resume in 1h"}, Since: time.Now(),
 			}
 		}
-		if !hadBlock {
+		return nil
+	}
+
+	finalizeTurnMeta := func(turn *activeTurnState, status string, exitCode int, resText string) {
+		turn.meta.Status, turn.meta.ExitCode = status, exitCode
+		turn.meta.StderrTail = strings.TrimSpace(stderrTailBuf.String())
+		turn.meta.FinishedAt = time.Now().UTC()
+		_ = WriteTurnSpoolMeta(turn.metaPath, turn.meta)
+		_ = turn.spool.Close()
+		completedTurns[turn.meta.TurnID] = turn.meta.SpoolPath
+	}
+
+	var onIdleTTLExpired func()
+	onIdleTTLExpired = func() {
+		stateMu.Lock()
+		if state != "idle_warm" {
+			stateMu.Unlock()
+			return
+		}
+		state, workerMeta.State = "shutting_down", "shutting_down"
+		saveWorkerMeta()
+		stateMu.Unlock()
+		shutdownChildGroup(300 * time.Millisecond)
+		exitCleanly(0)
+	}
+
+	onTurnResult := func(lastTurnText, resultText string, streamHadError bool) {
+		stateMu.Lock()
+		turn := activeTurn
+		if turn == nil {
+			stateMu.Unlock()
+			return
+		}
+		wasCancelled, hadBlock := turn.cancelled, turn.hadBlock
+		stateMu.Unlock()
+
+		status := "completed"
+		if wasCancelled {
+			_, _ = turn.spool.Append(ChatStreamEvent{SessionID: turn.meta.SessionID, TurnID: turn.meta.TurnID, Type: "turn_cancelled", Text: "Turn was cancelled by user."})
+			status = "cancelled"
+		} else if !hadBlock {
+			if streamHadError {
+				if rateBlock := detectRate(strings.TrimSpace(lastTurnText + "\n" + stderrTailBuf.String())); rateBlock != nil {
+					_, _ = turn.spool.Append(ChatStreamEvent{SessionID: turn.meta.SessionID, TurnID: turn.meta.TurnID, Type: "interactive_block", Blocked: rateBlock})
+					hadBlock, turn.hadBlock = true, true
+				}
+			}
+			if !hadBlock {
+				if streamHadError {
+					status = "failed"
+				}
+				_, _ = turn.spool.Append(ChatStreamEvent{SessionID: turn.meta.SessionID, TurnID: turn.meta.TurnID, Type: "turn_complete", Text: resultText})
+			}
+		}
+
+		stateMu.Lock()
+		finalizeTurnMeta(turn, status, 0, resultText)
+		if hadBlock {
+			state, workerMeta.State = "shutting_down", "shutting_down"
+			saveWorkerMeta()
+			stateMu.Unlock()
+			go func() { shutdownChildGroup(500 * time.Millisecond); exitCleanly(0) }()
+			return
+		}
+		if workerMetaPath == "" || idleTTL <= 0 {
+			stateMu.Unlock()
+			exitCleanly(0)
+			return
+		}
+
+		stderrTailBuf.Reset()
+		state, workerMeta.State = "idle_warm", "idle_warm"
+		workerMeta.ActiveTurnID, workerMeta.ActiveMetaPath = "", ""
+		workerMeta.LastTurnEndedAt, workerMeta.UpdatedAt = time.Now().UTC(), time.Now().UTC()
+		saveWorkerMeta()
+		activeTurn = nil
+
+		if idleTimer == nil {
+			idleTimer = time.AfterFunc(idleTTL, onIdleTTLExpired)
+		} else {
+			idleTimer.Reset(idleTTL)
+		}
+		stateMu.Unlock()
+	}
+
+	startTurnLocked := func(tMetaPath, stdinLine string) error {
+		tMeta, err := ReadTurnSpoolMeta(tMetaPath)
+		if err != nil || tMeta == nil {
+			return fmt.Errorf("failed to read turn meta: %w", err)
+		}
+		spool, err := OpenTurnSpoolWriter(tMeta.SpoolPath, tMeta.TurnID)
+		if err != nil {
+			return fmt.Errorf("failed to open spool writer: %w", err)
+		}
+		if spool.seq == 0 {
+			_, _ = spool.Append(ChatStreamEvent{SessionID: tMeta.SessionID, TurnID: tMeta.TurnID, Type: "turn_start", Text: tMeta.Prompt, Timestamp: tMeta.StartedAt})
+		}
+		if pendingInitConvID != "" {
+			workerMeta.NativeID, tMeta.NativeID = pendingInitConvID, pendingInitConvID
+			_, _ = spool.Append(ChatStreamEvent{SessionID: tMeta.SessionID, TurnID: tMeta.TurnID, Type: "session_init", NativeID: pendingInitConvID})
+			pendingInitConvID = ""
+		}
+		if idleTimer != nil {
+			idleTimer.Stop()
+		}
+		state, workerMeta.State = "running_turn", "running_turn"
+		workerMeta.ActiveTurnID, workerMeta.ActiveMetaPath, workerMeta.UpdatedAt = tMeta.TurnID, tMetaPath, time.Now().UTC()
+		saveWorkerMeta()
+
+		tMeta.WorkerPID, tMeta.ChildPID, tMeta.Status = os.Getpid(), childPGID, "running"
+		_ = WriteTurnSpoolMeta(tMetaPath, tMeta)
+
+		activeTurn = &activeTurnState{turnID: tMeta.TurnID, metaPath: tMetaPath, meta: tMeta, spool: spool}
+		if stdinLine != "" && stdinPipe != nil {
+			_, _ = stdinPipe.Write([]byte(strings.TrimSpace(stdinLine) + "\n"))
+		}
+		return nil
+	}
+
+	stdoutDone := make(chan struct{})
+	go func() {
+		defer close(stdoutDone)
+		parseHeadlessStream(workerMeta.SessionID, stdoutPipe, streamParseHooks{
+			emitTurnComplete: false,
+			emit: func(evt ChatStreamEvent) {
+				stateMu.Lock()
+				if activeTurn != nil && activeTurn.spool != nil {
+					_, _ = activeTurn.spool.Append(evt)
+				}
+				stateMu.Unlock()
+			},
+			onAntigravityInit: func(convID string) {
+				stateMu.Lock()
+				workerMeta.NativeID = convID
+				saveWorkerMeta()
+				if activeTurn != nil {
+					activeTurn.meta.NativeID = convID
+					_ = WriteTurnSpoolMeta(activeTurn.metaPath, activeTurn.meta)
+					_, _ = activeTurn.spool.Append(ChatStreamEvent{SessionID: workerMeta.SessionID, TurnID: activeTurn.turnID, Type: "session_init", NativeID: convID})
+				} else {
+					pendingInitConvID = convID
+				}
+				stateMu.Unlock()
+			},
+			onInteractiveBlock: func(toolName string, toolInput any, blocked *Blocked) {
+				stateMu.Lock()
+				turn := activeTurn
+				if turn != nil {
+					turn.hadBlock = true
+					_, _ = turn.spool.Append(ChatStreamEvent{SessionID: workerMeta.SessionID, TurnID: turn.turnID, Type: "interactive_block", ToolName: toolName, ToolInput: toolInput, Blocked: blocked})
+				}
+				state, workerMeta.State = "shutting_down", "shutting_down"
+				saveWorkerMeta()
+				stateMu.Unlock()
+
+				go func() {
+					shutdownChildGroup(500 * time.Millisecond)
+					if turn != nil {
+						finalizeTurnMeta(turn, "completed", 0, "")
+					}
+					exitCleanly(0)
+				}()
+			},
+			onTurnResult: onTurnResult,
+		})
+	}()
+
+	go func() {
+		<-stdoutDone
+		waitErr := cmd.Wait()
+		close(childDone)
+
+		stateMu.Lock()
+		curState, turn := state, activeTurn
+		if curState == "shutting_down" || curState == "exited" {
+			stateMu.Unlock()
+			return
+		}
+		if curState == "idle_warm" || turn == nil {
+			state, workerMeta.State = "exited", "exited"
+			saveWorkerMeta()
+			stateMu.Unlock()
+			exitCleanly(0)
+			return
+		}
+		status, code := "completed", 0
+		if turn.cancelled {
+			status = "cancelled"
+			_, _ = turn.spool.Append(ChatStreamEvent{SessionID: turn.meta.SessionID, TurnID: turn.meta.TurnID, Type: "turn_cancelled", Text: "Turn was cancelled by user."})
+		} else if !turn.hadBlock {
 			if waitErr != nil {
-				status = "failed"
-				if stderrTail != "" {
-					_, _ = spool.Append(ChatStreamEvent{SessionID: meta.SessionID, TurnID: meta.TurnID, Type: "error", Text: stderrTail, IsError: true})
+				tail := strings.TrimSpace(stderrTailBuf.String())
+				if rateBlock := detectRate(tail); rateBlock != nil {
+					_, _ = turn.spool.Append(ChatStreamEvent{SessionID: turn.meta.SessionID, TurnID: turn.meta.TurnID, Type: "interactive_block", Blocked: rateBlock})
+					turn.hadBlock = true
+				} else {
+					status = "failed"
+					if tail != "" {
+						_, _ = turn.spool.Append(ChatStreamEvent{SessionID: turn.meta.SessionID, TurnID: turn.meta.TurnID, Type: "error", Text: tail, IsError: true})
+					}
 				}
 			}
-			_, _ = spool.Append(ChatStreamEvent{SessionID: meta.SessionID, TurnID: meta.TurnID, Type: "turn_complete", Text: resultText})
+			if !turn.hadBlock {
+				_, _ = turn.spool.Append(ChatStreamEvent{SessionID: turn.meta.SessionID, TurnID: turn.meta.TurnID, Type: "turn_complete"})
+			}
+		}
+		if waitErr != nil {
+			var exitErr *exec.ExitError
+			if errors.As(waitErr, &exitErr) {
+				code = exitErr.ExitCode()
+			} else {
+				code = 1
+			}
+		}
+		finalizeTurnMeta(turn, status, code, "")
+		state, workerMeta.State = "exited", "exited"
+		saveWorkerMeta()
+		stateMu.Unlock()
+		exitCleanly(0)
+	}()
+
+	if specPath != "" {
+		if tMeta, rErr := ReadTurnSpoolMeta(specPath); rErr == nil && tMeta != nil {
+			var sLine string
+			if workerMetaPath != "" {
+				sLine, _ = formatPersistentStdinTurn(workerMeta.Agent, workerMeta.SessionID, workerMeta.IsSupervisor, true, tMeta.Prompt)
+			}
+			stateMu.Lock()
+			_ = startTurnLocked(specPath, sLine)
+			stateMu.Unlock()
 		}
 	}
 
-	stateMu.Lock()
-	meta.Status, meta.ExitCode, meta.StderrTail, meta.FinishedAt = status, exitCode, stderrTail, time.Now().UTC()
-	_ = WriteTurnSpoolMeta(metaPath, meta)
-	stateMu.Unlock()
-	return finishWorker()
-}
-
-func callWorkerSocket(sockPath string, req workerIPCReq, timeout time.Duration) (*workerIPCResp, error) {
-	if sockPath == "" {
-		return nil, errors.New("empty socket path")
-	}
-	conn, err := net.DialTimeout("unix", sockPath, timeout)
-	if err != nil {
-		return nil, err
-	}
-	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(timeout))
-	b, _ := json.Marshal(req)
-	if _, err := conn.Write(append(b, '\n')); err != nil {
-		return nil, err
-	}
-	line, err := bufio.NewReader(conn).ReadBytes('\n')
-	var resp workerIPCResp
-	if (err != nil && len(line) == 0) || json.Unmarshal(line, &resp) != nil {
-		return nil, errors.New("invalid worker response")
-	}
-	return &resp, nil
-}
-
-// probeLiveWorker verifies worker identity over its Unix socket so recycled OS PIDs in stale .meta.json files are never trusted or signaled.
-func probeLiveWorker(meta *TurnSpoolMeta, waitIfStarting time.Duration) (*workerIPCResp, bool) {
-	if meta == nil || meta.TurnID == "" {
-		return nil, false
-	}
-	canWait := waitIfStarting > 0 && meta.Status == "starting" && !meta.StartedAt.IsZero() && time.Since(meta.StartedAt) < 3*time.Second
-	deadline := time.Now().Add(waitIfStarting)
 	for {
-		cur := meta
-		if meta.MetaPath != "" {
-			if dm, err := ReadTurnSpoolMeta(meta.MetaPath); err == nil && dm != nil && dm.TurnID == meta.TurnID {
-				cur = dm
-			}
+		conn, aErr := ln.Accept()
+		if aErr != nil {
+			return 0
 		}
-		if cur.SocketPath != "" {
-			resp, err := callWorkerSocket(cur.SocketPath, workerIPCReq{Op: "ping", TurnID: meta.TurnID}, 250*time.Millisecond)
-			if err == nil && resp != nil && resp.OK && resp.TurnID == meta.TurnID {
-				return resp, true
-			}
-		}
-		if !canWait || time.Now().After(deadline) || (cur.Status != "starting" && cur.Status != "running") {
-			return nil, false
-		}
-		time.Sleep(15 * time.Millisecond)
-	}
-}
-
-func pingWorkerSocket(meta *TurnSpoolMeta) bool {
-	_, ok := probeLiveWorker(meta, 0)
-	return ok
-}
-
-func sendWorkerCancel(meta *TurnSpoolMeta) error {
-	if meta == nil || meta.TurnID == "" {
-		return errors.New("nil meta")
-	}
-	canWait := meta.Status == "starting" && !meta.StartedAt.IsZero() && time.Since(meta.StartedAt) < 3*time.Second
-	deadline := time.Now().Add(350 * time.Millisecond)
-	for {
-		cur := meta
-		if meta.MetaPath != "" {
-			if dm, err := ReadTurnSpoolMeta(meta.MetaPath); err == nil && dm != nil && dm.TurnID == meta.TurnID {
-				cur = dm
-			}
-		}
-		if resp, err := callWorkerSocket(cur.SocketPath, workerIPCReq{Op: "cancel", TurnID: meta.TurnID}, 250*time.Millisecond); err == nil && resp != nil && resp.OK && resp.TurnID == meta.TurnID {
-			return nil
-		}
-		if !canWait || time.Now().After(deadline) || (cur.Status != "starting" && cur.Status != "running") {
-			return errors.New("worker socket unreachable")
-		}
-		time.Sleep(15 * time.Millisecond)
-	}
-}
-
-func (h *HeadlessRunner) isOwnedProcessLocked(cmd *exec.Cmd) bool {
-	if h == nil || cmd == nil || cmd.Process == nil || cmd.Process.Pid <= 1 {
-		return false
-	}
-	for _, oc := range h.ownedWorkers {
-		if oc == cmd {
-			return true
-		}
-	}
-	return false
-}
-
-func (h *HeadlessRunner) isOwnedProcess(cmd *exec.Cmd) bool {
-	if h == nil || cmd == nil {
-		return false
-	}
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	return h.isOwnedProcessLocked(cmd)
-}
-
-func (h *HeadlessRunner) isTurnWorkerOwnedAlive(turnID string) bool {
-	if h == nil || turnID == "" {
-		return false
-	}
-	h.mu.RLock()
-	oc := h.ownedWorkers[turnID]
-	h.mu.RUnlock()
-	return oc != nil && oc.Process != nil && oc.Process.Pid > 1
-}
-
-func (h *HeadlessRunner) isSpoolWorkerLiveLocked(meta *TurnSpoolMeta) bool {
-	if meta == nil || meta.TurnID == "" {
-		return false
-	}
-	if h != nil {
-		if oc := h.ownedWorkers[meta.TurnID]; oc != nil && oc.Process != nil && oc.Process.Pid > 1 {
-			return true
-		}
-	}
-	_, ok := probeLiveWorker(meta, 150*time.Millisecond)
-	return ok
-}
-
-func (h *HeadlessRunner) isSpoolWorkerLive(meta *TurnSpoolMeta) bool {
-	if meta == nil || meta.TurnID == "" {
-		return false
-	}
-	if h.isTurnWorkerOwnedAlive(meta.TurnID) {
-		return true
-	}
-	_, ok := probeLiveWorker(meta, 150*time.Millisecond)
-	return ok
-}
-
-// terminateVerifiedWorker signals a worker/child group ONLY when verified via live socket TurnID or while un-reaped in ownedWorkers.
-func (h *HeadlessRunner) terminateVerifiedWorker(meta *TurnSpoolMeta, sig syscall.Signal) {
-	if meta == nil || meta.TurnID == "" {
-		return
-	}
-	if resp, ok := probeLiveWorker(meta, 150*time.Millisecond); ok {
-		if resp.ChildPID > 1 {
-			_ = syscall.Kill(-resp.ChildPID, sig)
-			_ = syscall.Kill(resp.ChildPID, sig)
-		}
-		if resp.WorkerPID > 1 {
-			_ = syscall.Kill(resp.WorkerPID, sig)
-		}
-		return
-	}
-	if h == nil {
-		return
-	}
-	h.mu.RLock()
-	ownedCmd := h.ownedWorkers[meta.TurnID]
-	h.mu.RUnlock()
-	if ownedCmd != nil && ownedCmd.Process != nil && ownedCmd.Process.Pid > 1 {
-		if sig == syscall.SIGKILL {
-			_ = ownedCmd.Process.Kill()
-		} else {
-			_ = ownedCmd.Process.Signal(sig)
-		}
+		go handleWorkerIPC(conn, &stateMu, &state, workerMeta, childPGID, &activeTurn, completedTurns, &subWG, shutdownChildGroup, exitCleanly, startTurnLocked)
 	}
 }

@@ -398,6 +398,10 @@ func (s *Server) resolveOrAdoptHookSession(event *Event, host, sessionID, accoun
 		return nil, false
 	}
 
+	if sess != nil && sess.Deleted {
+		return nil, false
+	}
+
 	if sess != nil && !sess.Managed && sess.State == StateEnded && sess.Activity == "Cleared (context reset)" {
 		return nil, false
 	}
@@ -557,6 +561,10 @@ func (s *Server) updateHookSessionMetadataAndTitle(sess *Session, event *Event) 
 
 func (s *Server) applyHookStateTransition(sess *Session, event *Event, sessionID string, isPureHeadless, headlessRunning bool) {
 	evtLower := strings.ToLower(event.EventName)
+
+	if (sess.IsDone || sess.State == StateEnded) && (strings.EqualFold(event.EventName, "stop") || strings.EqualFold(event.EventName, "sessionend")) {
+		event.State = StateEnded
+	}
 
 	if !strings.EqualFold(event.EventName, "SubagentStop") && (strings.EqualFold(event.EventName, "stop") || strings.EqualFold(event.EventName, "sessionend")) {
 		s.clearInMemorySubagents(sessionID, event.NativeID)

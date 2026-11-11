@@ -28,6 +28,11 @@ func setupTestServer(t *testing.T) (*Server, *DB) {
 	srv.restartDaemonFn = func() {}
 	srv.shutdownExitFn = func(int) {}
 	srv.RegisterProvider(&MockProvider{})
+	t.Cleanup(func() {
+		if srv.headless != nil {
+			srv.headless.ShutdownAllWorkers(2 * time.Second)
+		}
+	})
 	return srv, db
 }
 
