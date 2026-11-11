@@ -5,16 +5,24 @@ import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/models/headless_models.dart';
+import '../../../core/models/host.dart';
 import '../../../core/models/session.dart';
 import '../../../core/models/subagent.dart';
 import '../../../core/models/transcript.dart';
+import '../../../core/network/headless_api_client.dart';
 import '../../../core/providers/fleet_providers.dart';
 import '../../../core/services/audio_companion_service.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_typography.dart';
 import '../../../core/widgets/agent_logo.dart';
+import '../../headless/presentation/headless_auth_card.dart';
+import '../../headless/presentation/headless_config_sheet.dart';
 import '../../terminal/presentation/terminal_screen.dart';
+import 'headless_autocomplete_strip.dart';
+import 'headless_command_cards.dart';
+import 'headless_command_dispatcher.dart';
 import 'speech_companion_bar.dart';
 
 /// Fullscreen interactive Chat-Style Transcript Screen displaying user and agent turns
@@ -58,6 +66,10 @@ class TranscriptScreen extends ConsumerStatefulWidget {
 
 class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
     with WidgetsBindingObserver {
+  late Session _activeSession = widget.session;
+  int _sessionEpoch = 0;
+  final List<HeadlessEphemeralCardEntry> _ephemeralCards = [];
+
   final ScrollController _scrollController = ScrollController();
   final TextEditingController _promptController = TextEditingController();
   final FocusNode _promptFocusNode = FocusNode();
@@ -82,7 +94,7 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _sawWorkingState = widget.session.state == SessionState.working;
+    _sawWorkingState = _activeSession.state == SessionState.working;
     _promptController.addListener(_onPromptChanged);
     _loadTranscript();
     _loadSubagents();
@@ -106,6 +118,48 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
         _refreshTranscriptSilently();
       }
     });
+  }
+
+  void _rotateToSession(Session nextSession, {String? notice}) {
+    setState(() {
+      _sessionEpoch++;
+      _activeSession = nextSession;
+      _awaitingTurnCompletion = false;
+      _pendingUserMessage = null;
+      _transcriptData = null;
+      _runningSubagents = [];
+      _ephemeralCards.clear();
+      _ephemeralCards.add(
+        HeadlessEphemeralCardEntry(
+          id: 'card_rot_${DateTime.now().millisecondsSinceEpoch}',
+          kind: 'status',
+          createdAt: DateTime.now(),
+          statusTitle: 'Conversation Rotated',
+          statusBody: notice ??
+              'Rotated to new conversation (${nextSession.displayTitle})',
+        ),
+      );
+    });
+    ref.read(fleetSessionsProvider.notifier).upsertSession(nextSession);
+    _loadTranscript();
+    _loadSubagents();
+  }
+
+  HostRecord _resolveHostRecord(String hostName) {
+    final hosts = ref.read(hostsListProvider);
+    for (final h in hosts) {
+      if (h.name.toLowerCase() == hostName.toLowerCase() ||
+          h.url.toLowerCase() == hostName.toLowerCase()) {
+        return h;
+      }
+    }
+    return hosts.isNotEmpty
+        ? hosts.first
+        : HostRecord(
+            name: hostName.isNotEmpty ? hostName : 'local',
+            url: 'http://127.0.0.1:7777',
+            createdAt: DateTime.now(),
+          );
   }
 
   @override
@@ -144,10 +198,10 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
   Session? _findMatchingSession(List<Session>? sessions) {
     if (sessions == null) return null;
     for (final s in sessions) {
-      if (s.id == widget.session.id ||
-          (s.oldId.isNotEmpty && s.oldId == widget.session.id) ||
-          (widget.session.nativeId.isNotEmpty &&
-              s.nativeId == widget.session.nativeId)) {
+      if (s.id == _activeSession.id ||
+          (s.oldId.isNotEmpty && s.oldId == _activeSession.id) ||
+          (_activeSession.nativeId.isNotEmpty &&
+              s.nativeId == _activeSession.nativeId)) {
         return s;
       }
     }
@@ -156,7 +210,7 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
 
   Session _resolveLiveSession([List<Session>? sessions]) {
     final list = sessions ?? ref.read(fleetSessionsProvider);
-    return _findMatchingSession(list) ?? widget.session;
+    return _findMatchingSession(list) ?? _activeSession;
   }
 
   bool get _isSessionWorking {
@@ -307,6 +361,7 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
   }
 
   Future<void> _loadTranscript() async {
+    final epoch = _sessionEpoch;
     if (!mounted) return;
     setState(() {
       if (_transcriptData == null || _transcriptData!.messages.isEmpty) {
@@ -317,9 +372,9 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
 
     try {
       final host = await _resolveHost();
-      if (!mounted) return;
+      if (!mounted || epoch != _sessionEpoch) return;
       final fetched = await _fetchTranscriptData(host);
-      if (!mounted) return;
+      if (!mounted || epoch != _sessionEpoch) return;
 
       setState(() {
         if (fetched.messages.isNotEmpty ||
@@ -335,7 +390,7 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
       });
       _loadSubagents();
     } catch (e) {
-      if (mounted) {
+      if (mounted && epoch == _sessionEpoch) {
         setState(() {
           if (_transcriptData == null || _transcriptData!.messages.isEmpty) {
             _errorMessage =
@@ -348,14 +403,15 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
   }
 
   Future<void> _refreshTranscriptSilently() async {
+    final epoch = _sessionEpoch;
     if (!mounted || _isRefreshingTranscript) return;
     _isRefreshingTranscript = true;
 
     try {
       final host = await _resolveHost();
-      if (!mounted) return;
+      if (!mounted || epoch != _sessionEpoch) return;
       final fetched = await _fetchTranscriptData(host);
-      if (!mounted) return;
+      if (!mounted || epoch != _sessionEpoch) return;
 
       var mergedMessages = fetched.messages;
       if (mergedMessages.isEmpty &&
@@ -366,9 +422,7 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
       final assistantCount = mergedMessages.where((m) => m.isAssistant).length;
 
       if (_pendingUserMessage != null) {
-        final hasPendingUser = mergedMessages
-            .skip(_messageCountAtSend)
-            .any(
+        final hasPendingUser = mergedMessages.skip(_messageCountAtSend).any(
               (m) =>
                   m.isUser &&
                   m.content.trim() == _pendingUserMessage!.content.trim(),
@@ -384,8 +438,7 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
       }
 
       final liveSession = _resolveLiveSession();
-      final turnCompletedByReply =
-          _awaitingTurnCompletion &&
+      final turnCompletedByReply = _awaitingTurnCompletion &&
           assistantCount > _assistantCountAtSend &&
           liveSession.state != SessionState.working;
 
@@ -423,13 +476,15 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
   }
 
   Future<void> _loadSubagents() async {
+    final epoch = _sessionEpoch;
     try {
       final host = await _resolveHost();
+      if (!mounted || epoch != _sessionEpoch) return;
       final activeSessionId = _resolveLiveSession().id;
       final list = await ref
           .read(apiClientProvider)
           .getSubagents(host.url, activeSessionId, authToken: host.authToken);
-      if (mounted) {
+      if (mounted && epoch == _sessionEpoch) {
         final running = list.where((s) => s.isRunning).toList();
         if (!_areSubagentListsEqual(running, _runningSubagents)) {
           setState(() {
@@ -471,6 +526,34 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
     final text = _promptController.text.trim();
     if (text.isEmpty || _isSending) return;
 
+    final currentSession = _resolveLiveSession();
+    if (currentSession.isHeadless) {
+      final hostRec = _resolveHostRecord(currentSession.host);
+      final dispatcher = HeadlessCommandDispatcher(
+        apiClient: ref.read(apiClientProvider),
+        host: hostRec,
+        onOpenConfig: () => HeadlessConfigSheet.show(context, currentSession),
+        onTakeWheel: _takeWheel,
+        onRotateSession: (newSession, {notice}) =>
+            _rotateToSession(newSession, notice: notice),
+        onSessionUpdated: (updated) =>
+            ref.read(fleetSessionsProvider.notifier).upsertSession(updated),
+      );
+
+      final result = await dispatcher.dispatch(currentSession, text);
+      if (result.intercepted) {
+        _promptController.clear();
+        if (result.card != null && mounted) {
+          setState(() {
+            _ephemeralCards.add(result.card!);
+          });
+          WidgetsBinding.instance
+              .addPostFrameCallback((_) => _scrollToBottom());
+        }
+        return;
+      }
+    }
+
     _promptController.clear();
     HapticFeedback.lightImpact();
 
@@ -509,9 +592,7 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
     try {
       final host = await _resolveHost();
       final activeSessionId = _resolveLiveSession().id;
-      final success = await ref
-          .read(apiClientProvider)
-          .sendPrompt(
+      final success = await ref.read(apiClientProvider).sendPrompt(
             host.url,
             activeSessionId,
             text,
@@ -633,9 +714,7 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
   }) async {
     final host = await _resolveHost();
     final liveSession = _resolveLiveSession();
-    await ref
-        .read(audioCompanionServiceProvider.notifier)
-        .speakMessage(
+    await ref.read(audioCompanionServiceProvider.notifier).speakMessage(
           liveSession,
           index,
           content,
@@ -669,10 +748,8 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
       return;
     }
 
-    final normalized = trimmed
-        .toLowerCase()
-        .replaceAll(RegExp(r'[.,!?;:]+$'), '')
-        .trim();
+    final normalized =
+        trimmed.toLowerCase().replaceAll(RegExp(r'[.,!?;:]+$'), '').trim();
     if (normalized == 'repeat that' ||
         normalized == 'read that again' ||
         normalized == 'repeat' ||
@@ -744,8 +821,7 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
       fleetSessionsProvider.select(_findMatchingSession),
     );
     final currentSession = liveSession ?? widget.session;
-    final isWorking =
-        _isSending ||
+    final isWorking = _isSending ||
         _awaitingTurnCompletion ||
         currentSession.state == SessionState.working;
     final messages = _transcriptData?.messages ?? [];
@@ -918,6 +994,8 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
         top: false,
         child: Column(
           children: [
+            if (currentSession.isHeadless)
+              HeadlessConfigPillBar(session: currentSession),
             Expanded(
               child: Stack(
                 children: [
@@ -972,7 +1050,7 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
                         ),
                       ),
                     )
-                  else if (messages.isEmpty)
+                  else if (messages.isEmpty && _ephemeralCards.isEmpty)
                     Center(
                       child: Column(
                         mainAxisSize: MainAxisSize.min,
@@ -1002,10 +1080,41 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
                         20,
                       ),
                       physics: const BouncingScrollPhysics(),
-                      itemCount: messages.length,
+                      itemCount: messages.length + _ephemeralCards.length,
                       itemBuilder: (context, index) {
-                        final message = messages[index];
-                        return _buildMessageTurn(message, index);
+                        if (index < messages.length) {
+                          final message = messages[index];
+                          return _buildMessageTurn(message, index);
+                        }
+                        final cardIndex = index - messages.length;
+                        final cardEntry = _ephemeralCards[cardIndex];
+                        return HeadlessCommandCardView(
+                          entry: cardEntry,
+                          onDismiss: () {
+                            setState(() {
+                              _ephemeralCards.removeAt(cardIndex);
+                            });
+                          },
+                          onAttachToPrompt: (fenced) {
+                            _promptController.text =
+                                '${_promptController.text}$fenced';
+                            _promptFocusNode.requestFocus();
+                          },
+                          onRewindToTurn: (turn) async {
+                            final host = await _resolveHost();
+                            final api = ref.read(apiClientProvider);
+                            final res = await api.rewindSession(
+                              host.url,
+                              _resolveLiveSession().id,
+                              turn,
+                              authToken: host.authToken,
+                            );
+                            if (res.session != null) {
+                              _rotateToSession(res.session!,
+                                  notice: 'Rewound to Turn $turn');
+                            }
+                          },
+                        );
                       },
                     ),
 
@@ -1038,6 +1147,18 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
               ),
             ),
             _buildSubagentsDock(),
+            if (currentSession.blocked?.kind == BlockKind.auth)
+              HeadlessAuthCard(
+                session: currentSession,
+                surfacePrefix: 'transcript',
+                onResolved: () => _loadTranscript(),
+              ),
+            if (currentSession.isHeadless)
+              HeadlessAutocompleteStrip(
+                controller: _promptController,
+                session: currentSession,
+                resolveHost: _resolveHost,
+              ),
             _buildBottomComposer(currentSession, isWorking),
           ],
         ),
@@ -1290,9 +1411,8 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
             bottomRight: Radius.circular(16),
           ),
           border: Border.all(
-            color: isSpeakingThis
-                ? AppColors.infoCyan
-                : AppColors.outlineSubtle,
+            color:
+                isSpeakingThis ? AppColors.infoCyan : AppColors.outlineSubtle,
             width: isSpeakingThis ? 1.5 : 0.8,
           ),
         ),
@@ -1539,9 +1659,8 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
     }
 
     // Multiple unique tools
-    final breakdown = uniqueTools
-        .map((name) => '$name x${counts[name]}')
-        .join(', ');
+    final breakdown =
+        uniqueTools.map((name) => '$name x${counts[name]}').join(', ');
     return '⚡ $total tools ($breakdown)';
   }
 
@@ -1739,9 +1858,8 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
     }
 
     final count = _runningSubagents.length;
-    final countText = count == 1
-        ? '1 subagent running...'
-        : '$count subagents running...';
+    final countText =
+        count == 1 ? '1 subagent running...' : '$count subagents running...';
 
     return Container(
       decoration: const BoxDecoration(

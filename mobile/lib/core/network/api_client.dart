@@ -7,11 +7,23 @@ import '../models/transcript.dart';
 import '../models/tree_node.dart';
 import '../models/work_task.dart';
 
+class ApiHttpException implements Exception {
+  final int statusCode;
+  final String message;
+
+  const ApiHttpException(this.statusCode, this.message);
+
+  @override
+  String toString() => 'ApiHttpException($statusCode): $message';
+}
+
 /// HTTP Client communicating with ackbard daemon control plane endpoints.
 class ApiClient {
   final http.Client _client;
 
   ApiClient({http.Client? client}) : _client = client ?? http.Client();
+
+  http.Client get rawClient => _client;
 
   String _cleanUrl(String base) {
     var u = base.trim();
@@ -19,6 +31,30 @@ class ApiClient {
       u = 'http://$u';
     }
     return u.endsWith('/') ? u.substring(0, u.length - 1) : u;
+  }
+
+  Uri buildEndpointUri(
+    String baseUrl,
+    String path, [
+    Map<String, String>? queryParameters,
+  ]) {
+    final clean = _cleanUrl(baseUrl);
+    final p = path.startsWith('/') ? path : '/$path';
+    final uri = Uri.parse('$clean$p');
+    if (queryParameters != null && queryParameters.isNotEmpty) {
+      return uri.replace(queryParameters: queryParameters);
+    }
+    return uri;
+  }
+
+  Map<String, String> buildAuthHeaders(
+    String? authToken, {
+    bool jsonContent = false,
+  }) {
+    return _headers(
+      authToken,
+      jsonContent ? const {'Content-Type': 'application/json'} : null,
+    );
   }
 
   Map<String, String> _headers(
