@@ -11,12 +11,15 @@ import (
 	"time"
 )
 
-func waitTurnDone(sub chan ChatStreamEvent) chan struct{} {
+func waitTurnDone(h *HeadlessRunner, sessID string, sub chan ChatStreamEvent) chan struct{} {
 	ch := make(chan struct{})
 	go func() {
 		defer close(ch)
 		for e := range sub {
 			if e.Type == "turn_complete" {
+				for d := time.Now().Add(3 * time.Second); time.Now().Before(d) && h.IsRunning(sessID); {
+					time.Sleep(5 * time.Millisecond)
+				}
 				return
 			}
 		}
@@ -46,7 +49,7 @@ done
 	_ = db.SaveSession(sess)
 
 	sub, unsub := h.Subscribe(sess.ID)
-	done := waitTurnDone(sub)
+	done := waitTurnDone(h, sess.ID, sub)
 
 	if err := h.RunTurn(context.Background(), sess, "turn 1"); err != nil {
 		t.Fatalf("RunTurn: %v", err)
@@ -79,7 +82,7 @@ done
 	}
 
 	sub2, unsub2 := h.Subscribe(sess.ID)
-	done2 := waitTurnDone(sub2)
+	done2 := waitTurnDone(h, sess.ID, sub2)
 
 	if err := h.RunTurn(context.Background(), sess, "turn 2 after reap"); err != nil {
 		t.Fatalf("RunTurn after reap failed: %v", err)
@@ -113,7 +116,7 @@ done
 	_ = db.SaveSession(sess)
 
 	sub, unsub := h.Subscribe(sess.ID)
-	done := waitTurnDone(sub)
+	done := waitTurnDone(h, sess.ID, sub)
 
 	if err := h.RunTurn(context.Background(), sess, "prompt 1"); err != nil {
 		t.Fatalf("RunTurn 1: %v", err)
@@ -144,7 +147,7 @@ done
 	}
 
 	sub2, unsub2 := h.Subscribe(sess.ID)
-	done2 := waitTurnDone(sub2)
+	done2 := waitTurnDone(h, sess.ID, sub2)
 
 	if err := h.RunTurn(context.Background(), sess, "prompt 2 with opus"); err != nil {
 		t.Fatalf("RunTurn 2: %v", err)

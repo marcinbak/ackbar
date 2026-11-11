@@ -86,11 +86,6 @@ func (h *HeadlessRunner) monitorWorkerTurn(sess *Session, origSessionID string, 
 					if json.Unmarshal(sc.Bytes(), &evt) == nil && evt.Seq > lastSeq {
 						lastSeq = evt.Seq
 						h.applyWorkerEvent(sess, origSessionID, curMeta, evt, true)
-						if evt.Type == "turn_complete" || evt.Type == "turn_cancelled" {
-							_ = conn.Close()
-							h.finalizeTurnFromSpool(sess, origSessionID, curMeta, trackedCmd)
-							return
-						}
 					}
 				}
 			}
@@ -143,6 +138,7 @@ func (h *HeadlessRunner) finalizeTurnFromSpool(sess *Session, origSessionID stri
 			_ = WriteTurnSpoolMeta(meta.MetaPath, meta)
 		}
 	}
+	markFinalized()
 	checkDrain := func() bool {
 		var drainFn func()
 		h.mu.Lock()
@@ -462,6 +458,13 @@ func (h *HeadlessRunner) ReattachLiveWorkers() {
 				}
 			}
 		} else if sess != nil && !sess.Deleted && !sess.IsDone {
+			clearInterrupted(sess, meta)
+			if sess.State == StateWorking {
+				sess.State, sess.Blocked, sess.PID = StateIdle, nil, 0
+				if h.db != nil {
+					_ = h.db.SaveSession(sess)
+				}
+			}
 			h.mu.Lock()
 			h.sessionSpools[sess.ID] = meta
 			h.mu.Unlock()

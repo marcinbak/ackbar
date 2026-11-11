@@ -77,22 +77,19 @@ func (b *boundedTailBuffer) String() string {
 	defer b.mu.Unlock()
 	return string(b.buf)
 }
-func (b *boundedTailBuffer) Reset() {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.buf = nil
-}
+func (b *boundedTailBuffer) Reset() { b.mu.Lock(); defer b.mu.Unlock(); b.buf = nil }
 
 func allocateWorkerSocketPath(runDir, id string) (string, string, error) {
 	if cand := filepath.Join(runDir, id+".sock"); len(cand) <= 96 {
 		return cand, "", nil
 	}
 	td, err := os.MkdirTemp("", "akw-*")
-	if err != nil || os.Chmod(td, 0700) != nil {
-		if td != "" {
-			_ = os.RemoveAll(td)
-		}
+	if err != nil {
 		return "", "", err
+	}
+	if chErr := os.Chmod(td, 0700); chErr != nil {
+		_ = os.RemoveAll(td)
+		return "", "", chErr
 	}
 	return filepath.Join(td, "w.sock"), td, nil
 }
@@ -121,12 +118,13 @@ func WriteSessionWorkerMeta(path string, meta *SessionWorkerMeta) error {
 	_ = tmp.Chmod(0600)
 	_, wErr := tmp.Write(data)
 	_ = tmp.Close()
-	if wErr != nil || os.Rename(tmpName, path) != nil {
+	if wErr != nil {
 		_ = os.Remove(tmpName)
-		if wErr != nil {
-			return wErr
-		}
-		return errors.New("failed to rename temp meta")
+		return wErr
+	}
+	if rErr := os.Rename(tmpName, path); rErr != nil {
+		_ = os.Remove(tmpName)
+		return rErr
 	}
 	return os.Chmod(path, 0600)
 }

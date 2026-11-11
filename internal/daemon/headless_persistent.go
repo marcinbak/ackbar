@@ -175,11 +175,18 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 	}
 	workerMetaPath := filepath.Join(runDir, workerID+".worker.json")
 	bin, args, bErr := buildPersistentArgs(sess, isExisting)
-	meta, startEvt, sErr := h.initTurnSpool(runDir, turnID, sess.ID, sess.NativeID, sess.Agent, sess.Cwd, prompt, bin, args, sockPath, sockTempDir, workerID, workerMetaPath, turnStart)
-	if bErr != nil || sErr != nil {
+	if bErr != nil {
 		_ = os.Remove(sockPath)
-		if bErr != nil {
-			return bErr
+		if sockTempDir != "" {
+			_ = os.RemoveAll(sockTempDir)
+		}
+		return bErr
+	}
+	meta, startEvt, sErr := h.initTurnSpool(runDir, turnID, sess.ID, sess.NativeID, sess.Agent, sess.Cwd, prompt, bin, args, sockPath, sockTempDir, workerID, workerMetaPath, turnStart)
+	if sErr != nil {
+		_ = os.Remove(sockPath)
+		if sockTempDir != "" {
+			_ = os.RemoveAll(sockTempDir)
 		}
 		return sErr
 	}
@@ -270,6 +277,9 @@ func (h *HeadlessRunner) killWorkerMeta(m *SessionWorkerMeta, timeout time.Durat
 		}
 		if worker > 1 && isProcessAlive(worker) {
 			_ = syscall.Kill(worker, syscall.SIGKILL)
+			for d := time.Now().Add(250 * time.Millisecond); time.Now().Before(d) && isProcessAlive(worker); {
+				time.Sleep(5 * time.Millisecond)
+			}
 		}
 	}
 	if verifiedResp != nil {

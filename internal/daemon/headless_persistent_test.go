@@ -118,6 +118,11 @@ done
 	}
 	unsub1()
 
+	waitDeadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(waitDeadline) && h.IsRunning(sess.ID) {
+		time.Sleep(10 * time.Millisecond)
+	}
+
 	h.mu.RLock()
 	handle1 := h.warmWorkers[sess.ID]
 	h.mu.RUnlock()
@@ -155,6 +160,11 @@ done
 	}
 	unsub2()
 
+	waitDeadline2 := time.Now().Add(3 * time.Second)
+	for time.Now().Before(waitDeadline2) && h.IsRunning(sess.ID) {
+		time.Sleep(10 * time.Millisecond)
+	}
+
 	h.mu.RLock()
 	handle2 := h.warmWorkers[sess.ID]
 	h.mu.RUnlock()
@@ -171,6 +181,42 @@ done
 	}
 	if !foundRepeated {
 		t.Errorf("Turn 2 dropped repeated text; evts: %+v", evtsTurn2)
+	}
+
+	runDir, _ := h.resolveRunDir(false)
+	var turnMetas []*TurnSpoolMeta
+	checkDeadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(checkDeadline) {
+		turnMetas = nil
+		entries, _ := os.ReadDir(runDir)
+		for _, e := range entries {
+			if strings.HasPrefix(e.Name(), "turn_") && strings.HasSuffix(e.Name(), ".meta.json") {
+				if m, err := ReadTurnSpoolMeta(filepath.Join(runDir, e.Name())); err == nil && m != nil {
+					turnMetas = append(turnMetas, m)
+				}
+			}
+		}
+		if len(turnMetas) >= 2 {
+			allDone := true
+			for _, m := range turnMetas {
+				if m.Status != "completed" || !m.FinalizedByDaemon {
+					allDone = false
+					break
+				}
+			}
+			if allDone {
+				break
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(turnMetas) < 2 {
+		t.Fatalf("expected at least 2 turn metas, got %d", len(turnMetas))
+	}
+	for _, m := range turnMetas {
+		if m.Status != "completed" || !m.FinalizedByDaemon {
+			t.Errorf("expected Status == completed and FinalizedByDaemon == true for %s, got Status=%q FinalizedByDaemon=%v", m.TurnID, m.Status, m.FinalizedByDaemon)
+		}
 	}
 }
 
