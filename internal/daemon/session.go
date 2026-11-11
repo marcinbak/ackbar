@@ -41,6 +41,7 @@ const (
 	BlockQuestion   BlockKind = "question"
 	BlockApproval   BlockKind = "approval"
 	BlockRateLimit  BlockKind = "rate_limit"
+	BlockAuth       BlockKind = "auth"
 )
 
 type BlockedQuestion struct {
@@ -51,13 +52,66 @@ type BlockedQuestion struct {
 }
 
 type Blocked struct {
-	Kind      BlockKind         `json:"kind"`
-	Reason    string            `json:"reason"`
-	Since     time.Time         `json:"since"`
-	Question  string            `json:"question,omitempty"`
-	Options   []string          `json:"options,omitempty"`
-	Questions []BlockedQuestion `json:"questions,omitempty"`
-	ResetAt   *time.Time        `json:"reset_at,omitempty"`
+	Kind       BlockKind         `json:"kind"`
+	Reason     string            `json:"reason"`
+	Since      time.Time         `json:"since"`
+	Question   string            `json:"question,omitempty"`
+	Options    []string          `json:"options,omitempty"`
+	Questions  []BlockedQuestion `json:"questions,omitempty"`
+	ResetAt    *time.Time        `json:"reset_at,omitempty"`
+	AuthTarget string            `json:"auth_target,omitempty"`
+	AuthKind   string            `json:"auth_kind,omitempty"`
+	AuthServer string            `json:"auth_server,omitempty"`
+	AuthURL    string            `json:"auth_url,omitempty"`
+	AuthHint   string            `json:"auth_hint,omitempty"`
+	FlowID     string            `json:"flow_id,omitempty"`
+}
+
+type blockedMetaJSON struct {
+	AuthTarget string `json:"auth_target,omitempty"`
+	AuthKind   string `json:"auth_kind,omitempty"`
+	AuthServer string `json:"auth_server,omitempty"`
+	AuthURL    string `json:"auth_url,omitempty"`
+	AuthHint   string `json:"auth_hint,omitempty"`
+	FlowID     string `json:"flow_id,omitempty"`
+}
+
+func MarshalBlockedMeta(b *Blocked) string {
+	if b == nil {
+		return ""
+	}
+	if b.AuthTarget == "" && b.AuthKind == "" && b.AuthServer == "" && b.AuthURL == "" && b.AuthHint == "" && b.FlowID == "" {
+		return ""
+	}
+	meta := blockedMetaJSON{
+		AuthTarget: b.AuthTarget,
+		AuthKind:   b.AuthKind,
+		AuthServer: b.AuthServer,
+		AuthURL:    b.AuthURL,
+		AuthHint:   b.AuthHint,
+		FlowID:     b.FlowID,
+	}
+	raw, err := json.Marshal(meta)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
+}
+
+func ApplyBlockedMeta(b *Blocked, raw string) {
+	if b == nil || strings.TrimSpace(raw) == "" {
+		return
+	}
+	var meta blockedMetaJSON
+	if err := json.Unmarshal([]byte(raw), &meta); err != nil {
+		return
+	}
+	b.AuthTarget = meta.AuthTarget
+	b.AuthKind = meta.AuthKind
+	b.AuthServer = meta.AuthServer
+	b.AuthURL = meta.AuthURL
+	b.AuthHint = meta.AuthHint
+	b.FlowID = meta.FlowID
 }
 
 type Session struct {

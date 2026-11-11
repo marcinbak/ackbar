@@ -188,6 +188,40 @@ class MockElement {
   blur() {}
   scrollIntoView() {}
 
+  after(...nodes) {
+    if (!this.parentNode) return;
+    const siblings = this.parentNode.children;
+    const idx = siblings.indexOf(this);
+    if (idx === -1) return;
+    let nextIdx = idx + 1;
+    for (const node of nodes) {
+      if (!node) continue;
+      if (node.parentNode) node.parentNode.removeChild(node);
+      node.parentNode = this.parentNode;
+      siblings.splice(nextIdx, 0, node);
+      nextIdx++;
+    }
+  }
+
+  click() {
+    const list = this.listeners.get('click');
+    if (list) {
+      for (const fn of [...list]) {
+        fn({ target: this, preventDefault() {}, stopPropagation() {} });
+      }
+    }
+  }
+
+  dispatchEvent(evt) {
+    const type = evt?.type || 'click';
+    const list = this.listeners.get(type);
+    if (list) {
+      for (const fn of [...list]) {
+        fn(evt);
+      }
+    }
+  }
+
   closest(sel) {
     let cur = this;
     while (cur) {
@@ -233,6 +267,9 @@ class MockElement {
 function matchesSelector(el, sel) {
   if (!el || !sel) return false;
   if (sel === '*') return true;
+  if (sel.includes(',')) {
+    return sel.split(',').some((sub) => matchesSelector(el, sub.trim()));
+  }
   const notRegex = /:not\(([^)]+)\)/g;
   let notParts = [];
   let notMatch;
@@ -262,13 +299,34 @@ function matchesSelector(el, sel) {
 
 function parseHtmlFragment(html, parent) {
   const elements = [];
-  const tagRegex = /<([a-zA-Z0-9-]+)([^>]*)>([\s\S]*?)<\/\1>|<([a-zA-Z0-9-]+)([^>]*)\/>/g;
-  let match;
-  let lastIdx = 0;
-  while ((match = tagRegex.exec(html)) !== null) {
-    const tagName = match[1] || match[4];
-    const attrs = match[2] || match[5] || '';
-    const inner = match[3] || '';
+  let i = 0;
+  while (i < html.length) {
+    const openIdx = html.indexOf('<', i);
+    if (openIdx === -1) {
+      const text = html.slice(i).trim();
+      if (text && elements.length === 0) {
+        const textNode = new MockElement('span');
+        textNode.parentNode = parent;
+        textNode._textContent = text;
+        elements.push(textNode);
+      }
+      break;
+    }
+    const closeAngle = html.indexOf('>', openIdx);
+    if (closeAngle === -1) break;
+    const tagContent = html.slice(openIdx + 1, closeAngle).trim();
+    if (tagContent.startsWith('/') || tagContent.startsWith('!')) {
+      i = closeAngle + 1;
+      continue;
+    }
+
+    const isSelfClosing = tagContent.endsWith('/') || /^(input|img|br|hr)\b/i.test(tagContent);
+    const spaceIdx = tagContent.search(/\s/);
+    const tagName = (spaceIdx === -1
+      ? (isSelfClosing && tagContent.endsWith('/') ? tagContent.slice(0, -1) : tagContent)
+      : tagContent.slice(0, spaceIdx)).toLowerCase();
+    const attrs = spaceIdx === -1 ? '' : tagContent.slice(spaceIdx, isSelfClosing && tagContent.endsWith('/') ? -1 : undefined);
+
     const el = new MockElement(tagName);
     el.parentNode = parent;
 
@@ -281,19 +339,60 @@ function parseHtmlFragment(html, parent) {
       const camelKey = dm[1].replace(/-([a-z])/g, (_, l) => l.toUpperCase());
       el.dataset[camelKey] = dm[2];
     }
+    const styleMatch = attrs.match(/style=["']([^"']+)["']/);
+    if (styleMatch) {
+      for (const part of styleMatch[1].split(';')) {
+        const colon = part.indexOf(':');
+        if (colon !== -1) {
+          const k = part.slice(0, colon).trim().replace(/-([a-z])/g, (_, l) => l.toUpperCase());
+          const v = part.slice(colon + 1).trim();
+          if (k && v) el.style[k] = v;
+        }
+      }
+    }
+
+    if (isSelfClosing) {
+      elements.push(el);
+      i = closeAngle + 1;
+      continue;
+    }
+
+    let depth = 1;
+    let searchPos = closeAngle + 1;
+    let endTagPos = -1;
+    const openRegex = new RegExp('<' + tagName + '(\\s[^>]*)?>', 'gi');
+    const closeRegex = new RegExp('</' + tagName + '\\s*>', 'gi');
+
+    while (depth > 0) {
+      openRegex.lastIndex = searchPos;
+      closeRegex.lastIndex = searchPos;
+      const nextOpen = openRegex.exec(html);
+      const nextClose = closeRegex.exec(html);
+      if (!nextClose) {
+        endTagPos = html.length;
+        break;
+      }
+      if (nextOpen && nextOpen.index < nextClose.index) {
+        depth++;
+        searchPos = openRegex.lastIndex;
+      } else {
+        depth--;
+        if (depth === 0) {
+          endTagPos = nextClose.index;
+          searchPos = closeRegex.lastIndex;
+        } else {
+          searchPos = closeRegex.lastIndex;
+        }
+      }
+    }
+    const inner = html.slice(closeAngle + 1, endTagPos);
     if (inner && inner.includes('<')) {
       el.children = parseHtmlFragment(inner, el);
     } else if (inner) {
       el._textContent = inner.trim();
     }
     elements.push(el);
-    lastIdx = tagRegex.lastIndex;
-  }
-  if (elements.length === 0 && html.trim() && !html.includes('<')) {
-    const textNode = new MockElement('span');
-    textNode.parentNode = parent;
-    textNode._textContent = html.trim();
-    elements.push(textNode);
+    i = searchPos;
   }
   return elements;
 }
@@ -323,6 +422,7 @@ globalThis.window.addEventListener = () => {};
 globalThis.window.removeEventListener = () => {};
 globalThis.window.requestAnimationFrame = (fn) => setTimeout(fn, 0);
 globalThis.window.cancelAnimationFrame = (id) => clearTimeout(id);
+globalThis.window.open = () => null;
 globalThis.localStorage = { getItem: () => null, setItem: () => {}, removeItem: () => {} };
 globalThis.document = {
   body: new MockElement('body'),
@@ -341,8 +441,18 @@ const {
   loadChatTranscript,
   sendChatPrompt,
   connectChatStream,
-  handleChatStreamEvent
+  handleChatStreamEvent,
+  renderInteractiveBlockCard,
+  renderConfigPopoverContent
 } = chat;
+
+const chatAuth = await import('./chat-auth.js');
+const {
+  isSafeHTTPSUrl,
+  renderAuthCard,
+  mountMCPStatus,
+  invalidateMCPStatusCache
+} = chatAuth;
 
 test('isPromptInTranscriptTail validates tail message matching and timestamp sanity', () => {
   assert.equal(isPromptInTranscriptTail([], 'fix login', Date.now()), false);
@@ -987,6 +1097,378 @@ test('connectChatStream reconnects with updated after_seq and deduplicates mid-t
     globalThis.EventSource = prevEventSource;
   }
 });
+
+test('isSafeHTTPSUrl blocks insecure schemes, credentials, whitespace, and control chars', () => {
+  assert.equal(isSafeHTTPSUrl('https://accounts.google.com/o/oauth2/v2/auth?client_id=123'), true);
+  assert.equal(isSafeHTTPSUrl('https://claude.ai/login?code=abc'), true);
+
+  // Insecure schemes
+  assert.equal(isSafeHTTPSUrl('http://localhost:8080/oauth'), false);
+  assert.equal(isSafeHTTPSUrl('javascript:alert(1)'), false);
+  assert.equal(isSafeHTTPSUrl('file:///etc/passwd'), false);
+  assert.equal(isSafeHTTPSUrl('data:text/html,<script>alert(1)</script>'), false);
+
+  // Credentials embedded in URL
+  assert.equal(isSafeHTTPSUrl('https://user:pass@accounts.google.com/oauth'), false);
+  assert.equal(isSafeHTTPSUrl('https://user@accounts.google.com/oauth'), false);
+
+  // Whitespace and control characters
+  assert.equal(isSafeHTTPSUrl('https://accounts.google.com/oauth\n'), false);
+  assert.equal(isSafeHTTPSUrl('https://accounts.google.com/oauth\t'), false);
+  assert.equal(isSafeHTTPSUrl('https://accounts.google.com/oauth\x00'), false);
+  assert.equal(isSafeHTTPSUrl('https://accounts.google.com/oauth?q=foo bar'), false);
+
+  // Non-string, empty, overly long
+  assert.equal(isSafeHTTPSUrl(''), false);
+  assert.equal(isSafeHTTPSUrl(null), false);
+  assert.equal(isSafeHTTPSUrl(undefined), false);
+  assert.equal(isSafeHTTPSUrl(12345), false);
+  assert.equal(isSafeHTTPSUrl('https://example.com/' + 'a'.repeat(4100)), false);
+});
+
+test('handleChatStreamEvent renders live .card-auth on interactive_block event', () => {
+  const container = new MockElement('div');
+  container.className = 'chat-messages-container';
+
+  const tabObj = {
+    id: 'tab-auth-block',
+    viewMode: 'chat',
+    chatMessagesEl: container,
+    session: {
+      id: 'claude-code:local:sess-auth',
+      agent: 'claude-code',
+      state: 1
+    }
+  };
+
+  handleChatStreamEvent(tabObj, {
+    type: 'interactive_block',
+    tool_name: 'run_command',
+    blocked: {
+      kind: 'auth',
+      auth_kind: 'plugin',
+      auth_target: 'plugin:gslides',
+      auth_server: 'gslides',
+      reason: "Google Workspace plugin 'gslides' requires sign-in.",
+      question: 'Sign in to gslides to continue?',
+      options: ['Sign in', 'Retry', 'Dismiss']
+    }
+  });
+
+  const authCard = container.querySelector('.chat-interactive-card.card-auth');
+  assert.ok(authCard, 'Must render .chat-interactive-card.card-auth');
+  assert.equal(tabObj.session.state, 2, 'Session state must become Blocked (2)');
+  assert.equal(tabObj.session.blocked?.auth_server, 'gslides');
+
+  const serverBadge = authCard.querySelector('.interactive-card-badge-server');
+  assert.ok(serverBadge);
+  assert.equal(serverBadge.textContent, 'gslides');
+
+  const title = authCard.querySelector('.interactive-card-title');
+  assert.ok(title);
+  assert.equal(title.textContent, 'Sign in to gslides to continue?');
+
+  const btnLaunch = authCard.querySelector('.btn-auth-launch');
+  assert.ok(btnLaunch, 'Must render launch button');
+  assert.ok(btnLaunch.textContent.includes('Sign in to gslides'));
+
+  const btnRetry = authCard.querySelector('.btn-auth-retry');
+  assert.ok(btnRetry, 'Must render retry button');
+
+  const btnTerminal = authCard.querySelector('.btn-auth-terminal');
+  assert.ok(btnTerminal, 'Must render terminal button');
+
+  const btnDismiss = authCard.querySelector('.btn-auth-dismiss');
+  assert.ok(btnDismiss, 'Must render dismiss button');
+});
+
+test('renderInteractiveBlockCard renders pre-expanded auth card when flow_id and auth_url exist on session reload', () => {
+  const container = new MockElement('div');
+  container.className = 'chat-messages-container';
+
+  const tabObj = {
+    id: 'tab-auth-reload',
+    viewMode: 'chat',
+    chatMessagesEl: container,
+    session: {
+      id: 'antigravity:local:sess-auth-reload',
+      agent: 'antigravity',
+      state: 2,
+      blocked: {
+        kind: 'auth',
+        auth_kind: 'plugin',
+        auth_target: 'plugin:gdrive',
+        auth_server: 'gdrive',
+        auth_url: 'https://accounts.google.com/o/oauth2/v2/auth?flow_id=123',
+        flow_id: 'flow-auth-456',
+        reason: 'Google Workspace plugin gdrive requires authentication.',
+        question: 'Sign in to gdrive to continue?'
+      }
+    }
+  };
+
+  renderInteractiveBlockCard(tabObj, tabObj.session.blocked);
+
+  const authCard = container.querySelector('.chat-interactive-card.card-auth');
+  assert.ok(authCard, 'Must render card-auth on reload');
+
+  const btnLaunch = authCard.querySelector('.btn-auth-launch');
+  assert.ok(btnLaunch.textContent.includes('Open Sign-In Link Again'), 'Launch button indicates existing flow');
+
+  const callbackContainer = authCard.querySelector('.auth-callback-container');
+  assert.ok(callbackContainer, 'Callback container must exist');
+  assert.notEqual(callbackContainer.style.display, 'none', 'Callback container must be pre-expanded when flow exists');
+
+  const callbackInput = authCard.querySelector('.auth-callback-input');
+  assert.ok(callbackInput, 'Must have callback input for pasting redirect URL or code');
+});
+
+test('remote callback submission posts to /v1/sessions/auth-callback and marks card answered', async () => {
+  const container = new MockElement('div');
+  container.className = 'chat-messages-container';
+
+  const tabObj = {
+    id: 'tab-auth-cb',
+    viewMode: 'chat',
+    chatMessagesEl: container,
+    session: {
+      id: 'antigravity:local:sess-cb',
+      agent: 'antigravity',
+      state: 2,
+      blocked: {
+        kind: 'auth',
+        auth_kind: 'plugin',
+        auth_target: 'plugin:gsheets',
+        auth_server: 'gsheets',
+        auth_url: 'https://accounts.google.com/o/oauth2/v2/auth?client_id=gsheets',
+        flow_id: 'flow-sheets-789'
+      }
+    }
+  };
+
+  renderInteractiveBlockCard(tabObj, tabObj.session.blocked);
+  const authCard = container.querySelector('.card-auth');
+
+  const callbackInput = authCard.querySelector('.auth-callback-input');
+  callbackInput.value = 'http://127.0.0.1:8085/?code=4/0Abc123&state=xyz';
+
+  let postedUrl = '';
+  let postedBody = null;
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = async (url, opts = {}) => {
+    postedUrl = String(url);
+    postedBody = opts.body ? JSON.parse(opts.body) : null;
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ completed: true, message: 'Authentication successful' })
+    };
+  };
+
+  try {
+    const btnComplete = authCard.querySelector('.btn-auth-complete');
+    btnComplete.click();
+    await new Promise((r) => setTimeout(r, 10));
+
+    assert.ok(postedUrl.includes('/v1/sessions/auth-callback'), 'Must fetch /v1/sessions/auth-callback');
+    assert.equal(postedBody?.session_id, 'antigravity:local:sess-cb');
+    assert.equal(postedBody?.flow_id, 'flow-sheets-789');
+    assert.equal(postedBody?.callback_url, 'http://127.0.0.1:8085/?code=4/0Abc123&state=xyz');
+
+    assert.ok(authCard.classList.contains('answered'), 'Card must be marked answered upon completion');
+    const actionsEl = authCard.querySelector('.interactive-card-actions');
+    assert.ok(actionsEl.textContent.includes('Authentication Complete'));
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});
+
+test('auth card terminal, retry, and dismiss action triggers execute appropriate flows', async () => {
+  const container = new MockElement('div');
+  container.className = 'chat-messages-container';
+
+  let respondCalls = [];
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = async (url, opts = {}) => {
+    const urlStr = String(url);
+    if (urlStr.includes('/v1/sessions/respond')) {
+      respondCalls.push(opts.body ? JSON.parse(opts.body) : {});
+      return { ok: true, status: 200, json: async () => ({ status: 'resumed' }) };
+    }
+    if (urlStr.includes('/v1/sessions/take-wheel')) {
+      respondCalls.push({ action: 'take-wheel' });
+      return { ok: true, status: 200, json: async () => ({ status: 'detached' }) };
+    }
+    return { ok: true, status: 200, json: async () => ({}) };
+  };
+
+  try {
+    // 1. Dismiss action
+    const tabDismiss = {
+      id: 'tab-dismiss',
+      chatMessagesEl: container,
+      session: { id: 'claude-code:local:sess-dismiss', agent: 'claude-code', state: 2 }
+    };
+    renderInteractiveBlockCard(tabDismiss, {
+      kind: 'auth',
+      auth_target: 'plugin:gslides',
+      auth_server: 'gslides'
+    });
+    let card = container.querySelector('.card-auth');
+    const btnDismiss = card.querySelector('.btn-auth-dismiss');
+    btnDismiss.click();
+    await new Promise((r) => setTimeout(r, 10));
+
+    assert.equal(respondCalls.length, 1);
+    assert.equal(respondCalls[0].action, 'dismiss');
+    assert.equal(tabDismiss.session.state, 3, 'Dismiss updates session state to Running/Detached (3)');
+    assert.equal(tabDismiss.session.blocked, null);
+    assert.ok(card.classList.contains('answered'));
+
+    // 2. Retry action
+    respondCalls = [];
+    const tabRetry = {
+      id: 'tab-retry',
+      chatMessagesEl: container,
+      session: { id: 'claude-code:local:sess-retry', agent: 'claude-code', state: 2 }
+    };
+    renderInteractiveBlockCard(tabRetry, {
+      kind: 'auth',
+      auth_target: 'plugin:gdocs',
+      auth_server: 'gdocs'
+    });
+    card = container.querySelector('.card-auth:not(.answered)');
+    const btnRetry = card.querySelector('.btn-auth-retry');
+    btnRetry.click();
+    await new Promise((r) => setTimeout(r, 10));
+
+    assert.equal(respondCalls.length, 1);
+    assert.equal(respondCalls[0].action, 'retry');
+    assert.equal(tabRetry.session.state, 1, 'Retry updates session state to Active (1)');
+    assert.equal(tabRetry.session.blocked, null);
+    assert.ok(card.classList.contains('answered'));
+
+    // 3. Terminal action
+    respondCalls = [];
+    const tabTerminal = {
+      id: 'tab-terminal',
+      chatMessagesEl: container,
+      session: { id: 'claude-code:local:sess-terminal', agent: 'claude-code', state: 2 }
+    };
+    renderInteractiveBlockCard(tabTerminal, {
+      kind: 'auth',
+      auth_target: 'agent:agy',
+      auth_server: 'antigravity'
+    });
+    card = container.querySelector('.card-auth:not(.answered)');
+    const btnTerminal = card.querySelector('.btn-auth-terminal');
+    btnTerminal.click();
+    await new Promise((r) => setTimeout(r, 10));
+
+    assert.equal(respondCalls.length, 1);
+    assert.equal(respondCalls[0].action, 'take-wheel');
+    assert.equal(container.querySelector('.card-auth:not(.answered)'), null, 'Card removed when taking terminal wheel');
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});
+
+test('mountMCPStatus renders server and plugin health pills with sign-in and inline callback flow', async () => {
+  const container = new MockElement('div');
+  const sessionId = 'antigravity:local:sess-popover';
+  const tabObj = {
+    id: 'tab-mcp-status',
+    session: { id: sessionId, agent: 'antigravity' }
+  };
+
+  let fetchedUrls = [];
+  let postCalls = [];
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = async (url, opts = {}) => {
+    const urlStr = String(url);
+    fetchedUrls.push(urlStr);
+    if (urlStr.includes('/mcp-status')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          servers: [
+            { name: 'stripe', target: 'mcp:stripe', transport: 'stdio', status: 'needs_auth', auth_supported: true }
+          ],
+          plugins: [
+            { name: 'gslides', target: 'plugin:gslides', installed: true, authenticated: false },
+            { name: 'gdocs', target: 'plugin:gdocs', installed: true, authenticated: true }
+          ]
+        })
+      };
+    }
+    if (urlStr.includes('/auth-tool')) {
+      postCalls.push({ url: urlStr, body: JSON.parse(opts.body) });
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          flow_id: 'flow-slides-999',
+          auth_url: 'https://accounts.google.com/o/oauth2/v2/auth?scope=slides'
+        })
+      };
+    }
+    if (urlStr.includes('/auth-callback')) {
+      postCalls.push({ url: urlStr, body: JSON.parse(opts.body) });
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ completed: true })
+      };
+    }
+    return { ok: true, status: 200, json: async () => ({}) };
+  };
+
+  try {
+    await mountMCPStatus(container, sessionId, tabObj);
+
+    assert.ok(fetchedUrls.some((u) => u.includes('/mcp-status')));
+    const rows = container.querySelectorAll('.mcp-pill-row');
+    assert.equal(rows.length, 3, 'Must render 1 MCP server + 2 plugin rows');
+
+    const gdocsRow = rows.find((r) => r.dataset.target === 'plugin:gdocs');
+    assert.ok(gdocsRow);
+    const docsStatus = gdocsRow.querySelector('.status-ok');
+    assert.ok(docsStatus);
+    assert.ok(docsStatus.textContent.includes('Signed in'));
+
+    const gslidesRow = rows.find((r) => r.dataset.target === 'plugin:gslides');
+    assert.ok(gslidesRow);
+    const slidesStatus = gslidesRow.querySelector('.status-warn');
+    assert.ok(slidesStatus);
+    assert.ok(slidesStatus.textContent.includes('Needs auth'));
+
+    const btnPluginSignin = gslidesRow.querySelector('.btn-plugin-signin');
+    assert.ok(btnPluginSignin, 'Unauthenticated plugin has sign in button');
+
+    btnPluginSignin.click();
+    await new Promise((r) => setTimeout(r, 10));
+
+    assert.equal(postCalls.length, 1);
+    assert.equal(postCalls[0].body.target, 'plugin:gslides');
+
+    const inlineRow = container.querySelector('.mcp-inline-callback-row');
+    assert.ok(inlineRow, 'Must inject inline callback row upon starting auth flow');
+
+    const inInput = inlineRow.querySelector('.mcp-inline-input');
+    inInput.value = 'http://127.0.0.1:8085/?code=4/authcode123';
+    const subBtn = inlineRow.querySelector('.btn-mcp-submit-cb');
+    subBtn.click();
+    await new Promise((r) => setTimeout(r, 10));
+
+    assert.equal(postCalls.length, 2);
+    assert.equal(postCalls[1].body.flow_id, 'flow-slides-999');
+    assert.equal(postCalls[1].body.callback_url, 'http://127.0.0.1:8085/?code=4/authcode123');
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});
+
 
 
 

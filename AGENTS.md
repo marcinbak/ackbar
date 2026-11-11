@@ -48,7 +48,7 @@ Detailed architectural and technical domain documentation is organized in the `d
 │   ├── ackbar-hook/    # Shared stdin hook shim CLI main entrypoint
 │   └── ackbar-relay/   # Outbound reverse WebSocket tunnel relay server entrypoint
 ├── internal/
-│   ├── daemon/         # SQLite DB, modular HTTP server handlers (server_*.go), session_scanner.go, SSE streaming, and agent capability adapters (agent_*.go)
+│   ├── daemon/         # SQLite DB, modular HTTP server handlers (server_*.go), session_scanner.go, SSE streaming, OAuth broker, and agent capability adapters (agent_*.go)
 │   ├── provider/       # Agent adapters (Claude Code, Codex, Antigravity, Grok, OpenCode)
 │   ├── relay/          # Outbound reverse tunnel server and daemon client
 │   ├── tmux/           # Tmux process supervision wrapper (Spawn, Kill, GetPID)

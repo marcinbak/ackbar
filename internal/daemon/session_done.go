@@ -213,6 +213,9 @@ func (s *Server) markSessionDoneAndCleanup(ctx context.Context, sess *Session, a
 		if s.headless != nil {
 			s.headless.CleanupSessionRuntime(sess.ID, sess.NativeID)
 		}
+		if s.authBroker != nil {
+			s.authBroker.CancelSession(sess.ID)
+		}
 		s.clearSubagents(sess.ID, sess.NativeID)
 		if hadTmux {
 			_ = tmux.Kill(ctx, sess.TmuxName)

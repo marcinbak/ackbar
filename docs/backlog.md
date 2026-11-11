@@ -33,6 +33,12 @@
 
 ## ✅ Completed Milestones
 
+* [x] **Headless MCP & Plugin Authentication Broker (`feat/headless-mcp-auth`):**
+  * Intercepts tool and turn OAuth failures (`BlockAuth`) for Google Workspace plugins, Antigravity, and Claude MCP servers.
+  * Spawns allowlisted OAuth processes (`POST /v1/sessions/auth-tool`) with 5m TTL and 64KB bounded output buffers.
+  * Relays callbacks (`POST /v1/sessions/auth-callback`) to loopback listener (`127.0.0.1:<port>`) or subprocess stdin without SSRF.
+  * Inspects configured MCP and plugin health (`GET /v1/sessions/{id}/mcp-status`) using parallel cached binary probes.
+  * Renders `.card-auth` interactive cards and `/config` popover status pills in Web UI (`chat-auth.js`).
 * [x] **Detached Headless Worker Spool, Replay & Warm Persistent Supervision:**
   * Detached `--headless-worker` sidecar (`Setsid: true`) with warm persistent multi-turn `stream-json` execution and Unix domain socket IPC.
   * Idle-TTL auto-reap (`ACKBAR_HEADLESS_IDLE_TTL`, default `20m`), config rotation, and transparent race respawn.

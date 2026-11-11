@@ -203,16 +203,6 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string) int {
 		}
 	}
 
-	detectRate := func(text string) *Blocked {
-		if limited, resetAt, reason := getDefaultAgentAdapter(workerMeta.Agent).DetectRateLimit(text, time.Now()); limited {
-			return &Blocked{
-				Kind: BlockRateLimit, Reason: reason, Question: reason, ResetAt: &resetAt,
-				Options: []string{fmt.Sprintf("Resume at %s", resetAt.Local().Format("15:04")), "Resume in 1h"}, Since: time.Now(),
-			}
-		}
-		return nil
-	}
-
 	finalizeTurnMeta := func(turn *activeTurnState, status string, exitCode int, resText string) {
 		turn.meta.Status, turn.meta.ExitCode = status, exitCode
 		turn.meta.StderrTail = strings.TrimSpace(stderrTailBuf.String())
@@ -252,8 +242,8 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string) int {
 			status = "cancelled"
 		} else if !hadBlock {
 			if streamHadError {
-				if rateBlock := detectRate(strings.TrimSpace(lastTurnText + "\n" + stderrTailBuf.String())); rateBlock != nil {
-					_, _ = turn.spool.Append(ChatStreamEvent{SessionID: turn.meta.SessionID, TurnID: turn.meta.TurnID, Type: "interactive_block", Blocked: rateBlock})
+				if failBlock := detectTurnFailureBlock(workerMeta.Agent, strings.TrimSpace(lastTurnText+"\n"+stderrTailBuf.String())); failBlock != nil {
+					_, _ = turn.spool.Append(ChatStreamEvent{SessionID: turn.meta.SessionID, TurnID: turn.meta.TurnID, Type: "interactive_block", Blocked: failBlock})
 					hadBlock, turn.hadBlock = true, true
 				}
 			}
@@ -427,8 +417,8 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string) int {
 		} else if !turn.hadBlock {
 			if waitErr != nil {
 				tail := strings.TrimSpace(stderrTailBuf.String())
-				if rateBlock := detectRate(tail); rateBlock != nil {
-					_, _ = turn.spool.Append(ChatStreamEvent{SessionID: turn.meta.SessionID, TurnID: turn.meta.TurnID, Type: "interactive_block", Blocked: rateBlock})
+				if failBlock := detectTurnFailureBlock(workerMeta.Agent, tail); failBlock != nil {
+					_, _ = turn.spool.Append(ChatStreamEvent{SessionID: turn.meta.SessionID, TurnID: turn.meta.TurnID, Type: "interactive_block", Blocked: failBlock})
 					turn.hadBlock = true
 				} else {
 					status = "failed"

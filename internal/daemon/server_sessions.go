@@ -536,6 +536,10 @@ func (s *Server) handleSessionControl(w http.ResponseWriter, r *http.Request) {
 			_ = exec.Command("kill", "-9", strconv.Itoa(sess.PID)).Run()
 		}
 
+		if s.authBroker != nil {
+			s.authBroker.CancelSession(sess.ID)
+		}
+
 		s.deleteSessionFilesOnDisk(sess)
 
 		_ = s.db.MarkSessionDeleted(sess.ID)
@@ -869,8 +873,16 @@ func (s *Server) handleRespond(w http.ResponseWriter, r *http.Request) {
 		Answer    string `json:"answer"`
 	}
 
+	var bodyBytes []byte
 	if r.Body != nil {
-		_ = json.NewDecoder(r.Body).Decode(&req)
+		r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+		var err error
+		bodyBytes, err = io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "Request body too large or read failure", http.StatusBadRequest)
+			return
+		}
+		_ = json.Unmarshal(bodyBytes, &req)
 	}
 
 	targetID := req.ID
@@ -915,13 +927,90 @@ func (s *Server) handleRespond(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sess := s.resolveSession(targetID)
+	sess, proxied := s.resolveSessionOrProxy(w, r.Method, targetID, "application/json", bytes.NewReader(bodyBytes), func(_ *Session) string {
+		return "/v1/sessions/respond"
+	})
+	if proxied {
+		return
+	}
 	if sess == nil {
 		http.Error(w, "Session not found", http.StatusNotFound)
 		return
 	}
 
+	if s.authBroker != nil {
+		s.authBroker.CancelSession(sess.ID)
+	}
+
 	actionLower := strings.ToLower(action)
+
+	if sess.Blocked != nil && sess.Blocked.Kind == BlockAuth {
+		if actionLower == "dismiss" {
+			if s.headless != nil {
+				s.headless.ClearInteractiveBlockAndWait(sess.ID, 3*time.Second)
+				s.headless.SetQueuePaused(sess.ID, false)
+				s.headless.EmitQueueUpdate(sess.ID)
+			}
+			sess.Blocked = nil
+			sess.State = StateIdle
+			sess.Activity = "Authentication dismissed"
+			sess.LastEventAt = time.Now()
+			sess.IsUnread = false
+			if err := s.db.SaveSession(sess); err != nil {
+				http.Error(w, fmt.Sprintf("Failed to save session: %v", err), http.StatusInternalServerError)
+				return
+			}
+			s.broadcast(sess)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"status":  "dismissed",
+				"id":      sess.ID,
+				"action":  actionLower,
+				"state":   sess.State.String(),
+				"session": sess,
+			})
+			return
+		}
+		if actionLower == "retry" || actionLower == "approve" || actionLower == "answer" {
+			prevBlocked := sess.Blocked
+			sess.Blocked = nil
+			sess.State = StateWorking
+			sess.Activity = "Retrying after authentication"
+			sess.LastEventAt = time.Now()
+			sess.IsUnread = false
+
+			if s.headless != nil {
+				s.headless.ClearInteractiveBlockAndWait(sess.ID, 3*time.Second)
+				s.headless.SetQueuePaused(sess.ID, false)
+				s.headless.EmitQueueUpdate(sess.ID)
+			}
+			if err := s.db.SaveSession(sess); err != nil {
+				http.Error(w, fmt.Sprintf("Failed to save session: %v", err), http.StatusInternalServerError)
+				return
+			}
+			s.broadcast(sess)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"status":  "responded",
+				"id":      sess.ID,
+				"action":  actionLower,
+				"state":   sess.State.String(),
+				"session": sess,
+			})
+			if s.headless != nil {
+				sessCopy := *sess
+				go func() {
+					home, _ := os.UserHomeDir()
+					prompt := resumePromptForAuth(&sessCopy, prevBlocked, home, s.db)
+					if value != "" && value != "retry" && value != "approve" {
+						prompt = value
+					}
+					_ = s.headless.RunTurn(context.Background(), &sessCopy, prompt)
+				}()
+			}
+			return
+		}
+	}
 
 	if sess.Blocked != nil && sess.Blocked.Kind == BlockRateLimit {
 		valLower := strings.ToLower(value)
@@ -1156,6 +1245,10 @@ func (s *Server) handleTakeWheel(w http.ResponseWriter, r *http.Request) {
 	})
 	if proxied {
 		return
+	}
+
+	if s.authBroker != nil {
+		s.authBroker.CancelSession(sess.ID)
 	}
 
 	if sess.EngineType == EngineHeadless && s.headless != nil {
