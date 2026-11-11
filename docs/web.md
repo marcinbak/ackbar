@@ -130,6 +130,22 @@ It is embedded directly into the `ackbard` Go binary and served on `http://127.0
   * Typing `/` at the start of input queries `GET /v1/sessions/{id}/suggestions?kind=commands`, surfacing built-in client actions (`/config`, `/plan`, `/clear`, `/compact`, `/handover`, `/terminal`) alongside discovered workspace workflows (`.claude/commands/*.md`, `.agents/workflows/*.md`) and skills (`SKILL.md`).
   * Typing `@<query>` after start-of-input or whitespace queries `GET /v1/sessions/{id}/suggestions?kind=files` to fuzzy-match relative workspace files.
   * Queries `GET /v1/sessions/{id}/suggestions?kind=models` for agent-scoped model suggestion catalogs.
+* **Inline Shell Execution (`! <cmd>`, `web/js/chat-commands.js`):**
+  * Prefixing prompt input with `!` switches the composer to shell mode with visual `!` indicator.
+  * Executes shell commands in session working directory via `POST /v1/sessions/{id}/shell` (0 LLM tokens).
+  * Renders collapsible `.chat-bash-card` with exit code, execution duration, stdout/stderr, and `[+ Attach to Prompt]` button.
+* **Standalone Slash Commands (`web/js/chat-commands.js`, `web/js/chat-command-cards.js`):**
+  * Direct client interception routes built-in commands to daemon REST endpoints without LLM token cost:
+    * `/model [name]`, `/effort [tier]`, `/permissions [mode]`, `/auto`: Configure runtime session options in-place; `/effort` is omitted on Antigravity.
+    * `/add-dir [path|--remove <path>|--clear]`: Manages allowed extra directory paths (`extra_dirs`) for agent file access.
+    * `/clear`, `/reset`: Closes current turn and migrates active tab to fresh `Conv N+1` in-place.
+    * `/compact [instructions]`: Summarizes context via native provider compaction or daemon rotation.
+    * `/handover [instructions]`: Extracts 4-point briefing and rotates session into fresh turn.
+    * `/mcp`: Displays interactive MCP and plugin status card with 1-click sign-in actions.
+    * `/plugins`, `/agents`, `/doctor`: Displays non-interactive agent diagnostics and installed tool status cards.
+    * `/context`, `/cost`: Displays token usage breakdown (input, output, cache) and estimated API costs.
+    * `/diff`: Displays Git working copy status, diffstat, and unified diff preview card.
+    * `/rewind`: Lists prior human turns and rolls back conversation transcript to chosen checkpoint.
 * **Interactive Question, Plan Approval & Task Cards:**
   * **`AskUserQuestion` / `ask_question` (`.chat-interactive-card`):** Renders single- and multi-question forms supporting radio buttons, `multi_select` checkboxes, and custom `"Other"` text answers, submitting directly to `POST /v1/sessions/respond`.
   * **`ExitPlanMode` (`.card-approval`):** Renders the markdown plan preview with **`✓ Approve & Execute`** (auto-switching the session from `Plan Mode` to `Auto Mode`) and **`Request Changes`** feedback input.
@@ -190,6 +206,8 @@ The web frontend is organized as zero-build native ECMAScript modules (`<script 
 * **`tabs.js`**: Terminal and chat tab strip lifecycle, overflow menu, and persistence.
 * **`terminal.js`**: `xterm.js` terminal tabs, WebSocket PTY streams, resizing, and attachment uploads.
 * **`chat.js`**: Interactive chat interface, streaming transcript, tool call formatters, and composer queue.
+* **`chat-commands.js`**: Command router for inline shell (`! <cmd>`) and standalone slash commands, composer indicator, and tab migration.
+* **`chat-command-cards.js`**: DOM card renderers for `.chat-bash-card` shell output, inspection reports, git diffs, and rewind turn picker.
 * **`chat-auth.js`**: Headless OAuth login flows, `.card-auth` cards, callback relay, and `/config` popover MCP and plugin health pills.
 * **`mermaid.js`**: Mermaid flowchart and diagram parser, dark-theme renderer, zero-flicker SVG cache, and interactive Diagram/Code view switcher.
 * **`details.js`**: Right Inspector Pane (`#inspectorPanel`) controller (`openInspectorPane`, `closeInspectorPane`, `refitActiveTerminal`), session details view (`openSessionDetailsTab`), markdown plan/doc viewer (`openDocViewerTab`), and rich transcript viewer (`openTranscriptViewerTab`).
