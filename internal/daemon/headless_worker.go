@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -350,9 +351,12 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string) int {
 
 				go func() {
 					shutdownChildGroup(500 * time.Millisecond)
+					stateMu.Lock()
 					if turn != nil {
 						finalizeTurnMeta(turn, "completed", 0, "")
+						activeTurn = nil
 					}
+					stateMu.Unlock()
 					exitCleanly(0)
 				}()
 			},
@@ -418,7 +422,8 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string) int {
 		if tMeta, rErr := ReadTurnSpoolMeta(specPath); rErr == nil && tMeta != nil {
 			var sLine string
 			if workerMetaPath != "" {
-				sLine, _ = formatPersistentStdinTurn(workerMeta.Agent, workerMeta.SessionID, workerMeta.IsSupervisor, true, tMeta.Prompt)
+				isNewConv := !slices.Contains(workerMeta.Args, "--conversation")
+				sLine, _ = formatPersistentStdinTurn(workerMeta.Agent, workerMeta.SessionID, workerMeta.IsSupervisor, isNewConv, tMeta.Prompt)
 			}
 			stateMu.Lock()
 			_ = startTurnLocked(specPath, sLine)

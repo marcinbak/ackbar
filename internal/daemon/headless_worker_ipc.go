@@ -77,7 +77,6 @@ func (b *boundedTailBuffer) String() string {
 	defer b.mu.Unlock()
 	return string(b.buf)
 }
-
 func (b *boundedTailBuffer) Reset() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -89,11 +88,10 @@ func allocateWorkerSocketPath(runDir, id string) (string, string, error) {
 		return cand, "", nil
 	}
 	td, err := os.MkdirTemp("", "akw-*")
-	if err != nil {
-		return "", "", err
-	}
-	if err := os.Chmod(td, 0700); err != nil {
-		_ = os.RemoveAll(td)
+	if err != nil || os.Chmod(td, 0700) != nil {
+		if td != "" {
+			_ = os.RemoveAll(td)
+		}
 		return "", "", err
 	}
 	return filepath.Join(td, "w.sock"), td, nil
@@ -121,18 +119,14 @@ func WriteSessionWorkerMeta(path string, meta *SessionWorkerMeta) error {
 	}
 	tmpName := tmp.Name()
 	_ = tmp.Chmod(0600)
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
+	_, wErr := tmp.Write(data)
+	_ = tmp.Close()
+	if wErr != nil || os.Rename(tmpName, path) != nil {
 		_ = os.Remove(tmpName)
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpName)
-		return err
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		_ = os.Remove(tmpName)
-		return err
+		if wErr != nil {
+			return wErr
+		}
+		return errors.New("failed to rename temp meta")
 	}
 	return os.Chmod(path, 0600)
 }
@@ -184,8 +178,7 @@ func streamSpoolToConn(c net.Conn, spool *TurnSpoolWriter, compPath string, afte
 		return err == nil
 	}
 	if spool != nil {
-		replay, ch, unsub, err := spool.SubscribeFrom(afterSeq)
-		if err == nil {
+		if replay, ch, unsub, err := spool.SubscribeFrom(afterSeq); err == nil {
 			defer unsub()
 			for _, evt := range replay {
 				if !writeEvt(evt) {
@@ -281,18 +274,26 @@ func handleWorkerIPC(c net.Conn, stateMu *sync.Mutex, state *string, workerMeta 
 		if workerMeta.WorkerMetaPath != "" {
 			_ = WriteSessionWorkerMeta(workerMeta.WorkerMetaPath, workerMeta)
 		}
-		isCancel := req.Op == "cancel"
-		if isCancel && *activeTurn != nil {
-			(*activeTurn).cancelled = true
+		isCancel, cancelledTID := req.Op == "cancel", ""
+		if *activeTurn != nil {
+			cancelledTID = (*activeTurn).turnID
+			if isCancel {
+				if req.TurnID != "" && cancelledTID != req.TurnID {
+					stateMu.Unlock()
+					reply(workerIPCResp{OK: false, ErrCode: "turn_mismatch"})
+					return
+				}
+				(*activeTurn).cancelled = true
+			}
 		}
 		stateMu.Unlock()
 		if isCancel {
-			reply(workerIPCResp{OK: true, WorkerPID: os.Getpid(), ChildPID: childPGID})
+			reply(workerIPCResp{OK: true, WorkerPID: os.Getpid(), ChildPID: childPGID, TurnID: cancelledTID})
 			go func() { shutdownChildGroup(500 * time.Millisecond); exitCleanly(0) }()
-		} else {
-			shutdownChildGroup(500 * time.Millisecond)
-			reply(workerIPCResp{OK: true, WorkerPID: os.Getpid(), ChildPID: childPGID})
-			exitCleanly(0)
+			return
 		}
+		shutdownChildGroup(500 * time.Millisecond)
+		reply(workerIPCResp{OK: true, WorkerPID: os.Getpid(), ChildPID: childPGID})
+		exitCleanly(0)
 	}
 }

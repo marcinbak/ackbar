@@ -11,6 +11,19 @@ import (
 	"time"
 )
 
+func waitTurnDone(sub chan ChatStreamEvent) chan struct{} {
+	ch := make(chan struct{})
+	go func() {
+		defer close(ch)
+		for e := range sub {
+			if e.Type == "turn_complete" {
+				return
+			}
+		}
+	}()
+	return ch
+}
+
 func TestWarmWorker_IdleTTLReaperAndSendTurnRace(t *testing.T) {
 	tmpDir := t.TempDir()
 	binDir := filepath.Join(tmpDir, "bin")
@@ -33,15 +46,7 @@ done
 	_ = db.SaveSession(sess)
 
 	sub, unsub := h.Subscribe(sess.ID)
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		for e := range sub {
-			if e.Type == "turn_complete" {
-				return
-			}
-		}
-	}()
+	done := waitTurnDone(sub)
 
 	if err := h.RunTurn(context.Background(), sess, "turn 1"); err != nil {
 		t.Fatalf("RunTurn: %v", err)
@@ -74,15 +79,7 @@ done
 	}
 
 	sub2, unsub2 := h.Subscribe(sess.ID)
-	done2 := make(chan struct{})
-	go func() {
-		defer close(done2)
-		for e := range sub2 {
-			if e.Type == "turn_complete" {
-				return
-			}
-		}
-	}()
+	done2 := waitTurnDone(sub2)
 
 	if err := h.RunTurn(context.Background(), sess, "turn 2 after reap"); err != nil {
 		t.Fatalf("RunTurn after reap failed: %v", err)
@@ -116,15 +113,7 @@ done
 	_ = db.SaveSession(sess)
 
 	sub, unsub := h.Subscribe(sess.ID)
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		for e := range sub {
-			if e.Type == "turn_complete" {
-				return
-			}
-		}
-	}()
+	done := waitTurnDone(sub)
 
 	if err := h.RunTurn(context.Background(), sess, "prompt 1"); err != nil {
 		t.Fatalf("RunTurn 1: %v", err)
@@ -155,15 +144,7 @@ done
 	}
 
 	sub2, unsub2 := h.Subscribe(sess.ID)
-	done2 := make(chan struct{})
-	go func() {
-		defer close(done2)
-		for e := range sub2 {
-			if e.Type == "turn_complete" {
-				return
-			}
-		}
-	}()
+	done2 := waitTurnDone(sub2)
 
 	if err := h.RunTurn(context.Background(), sess, "prompt 2 with opus"); err != nil {
 		t.Fatalf("RunTurn 2: %v", err)
@@ -180,6 +161,51 @@ done
 	h.mu.RUnlock()
 	if handle2 == nil || handle2.WorkerPID == handle1.WorkerPID {
 		t.Errorf("expected rotated worker for opus, got same PID: %+v vs %+v", handle1, handle2)
+	}
+
+	sub3, unsub3 := h.Subscribe(sess.ID)
+	done3 := make(chan struct{})
+	go func() {
+		defer close(done3)
+		for e := range sub3 {
+			if e.Type == "turn_complete" {
+				return
+			}
+		}
+	}()
+	if err := h.RunTurn(context.Background(), sess, "turn 3 mid-turn config"); err != nil {
+		t.Fatalf("RunTurn 3: %v", err)
+	}
+	sess.Model = "haiku"
+	h.NotifyConfigChanged(sess)
+
+	h.mu.RLock()
+	midTurnHandle := h.warmWorkers[sess.ID]
+	h.mu.RUnlock()
+	if midTurnHandle == nil || !midTurnHandle.rotateAfterTurn {
+		t.Errorf("mid-turn config change should set rotateAfterTurn: %+v", midTurnHandle)
+	}
+
+	select {
+	case <-done3:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timeout waiting for turn 3")
+	}
+	unsub3()
+
+	for d := time.Now().Add(2 * time.Second); time.Now().Before(d); time.Sleep(20 * time.Millisecond) {
+		h.mu.RLock()
+		cur := h.warmWorkers[sess.ID]
+		h.mu.RUnlock()
+		if cur == nil {
+			break
+		}
+	}
+	h.mu.RLock()
+	reapedHandle := h.warmWorkers[sess.ID]
+	h.mu.RUnlock()
+	if reapedHandle != nil {
+		t.Errorf("expected worker to be reaped post-turn, got %+v", reapedHandle)
 	}
 }
 
@@ -298,5 +324,19 @@ done
 		if strings.HasSuffix(e.Name(), ".worker.json") || strings.HasSuffix(e.Name(), ".sock") {
 			t.Errorf("leaked worker artifact after CleanupSessionRuntime: %s", e.Name())
 		}
+	}
+
+	sess2 := &Session{ID: "claude-code:local:tw2", Agent: "claude-code", NativeID: "tw2", Cwd: tmpDir, EngineType: EngineHeadless}
+	_ = db.SaveSession(sess2)
+	_ = srv.headless.RunTurn(context.Background(), sess2, "deadlock check")
+	doneCleanup := make(chan struct{})
+	go func() {
+		defer close(doneCleanup)
+		srv.headless.CleanupSessionRuntime(sess2.ID, sess2.NativeID)
+	}()
+	select {
+	case <-doneCleanup:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("deadlock in CleanupSessionRuntime while turn in-flight")
 	}
 }

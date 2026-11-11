@@ -76,14 +76,18 @@ func (h *HeadlessRunner) initTurnSpool(runDir, turnID, sessID, nativeID, agent, 
 }
 
 func (h *HeadlessRunner) recordTurnActive(sess *Session, prompt, turnID string, turnStart time.Time, meta *TurnSpoolMeta, pid int, startEvt ChatStreamEvent, cmd *exec.Cmd) {
+	trackedCmd := cmd
+	if trackedCmd == nil {
+		trackedCmd = &exec.Cmd{}
+	}
 	h.mu.Lock()
 	h.activeTurns[sess.ID] = true
 	h.activeSessions[sess.ID] = sess
 	h.sessionSpools[sess.ID] = meta
 	h.activePrompts[sess.ID] = TranscriptMessage{Role: "user", Content: prompt, Timestamp: turnStart, TurnID: turnID, InFlight: true}
+	h.processes[sess.ID] = trackedCmd
 	if cmd != nil {
 		h.ownedWorkers[turnID] = cmd
-		h.processes[sess.ID] = cmd
 	}
 	h.mu.Unlock()
 	h.syncSleepInhibitor()
@@ -100,7 +104,7 @@ func (h *HeadlessRunner) recordTurnActive(sess *Session, prompt, turnID string, 
 		h.broadcast(sess)
 	}
 	h.Emit(sess.ID, startEvt)
-	go h.monitorWorkerTurn(sess, sess.ID, meta, cmd, startEvt.Seq)
+	go h.monitorWorkerTurn(sess, sess.ID, meta, trackedCmd, startEvt.Seq)
 }
 
 func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt string) error {
@@ -113,12 +117,9 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 	defer sessionMu.Unlock()
 
 	runDir, err := h.resolveRunDir(true)
-	if err != nil {
-		return fmt.Errorf("failed to resolve headless run dir: %w", err)
-	}
-	exePath, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("failed to resolve executable path: %w", err)
+	exePath, eErr := os.Executable()
+	if err != nil || eErr != nil {
+		return fmt.Errorf("init error: %v %v", err, eErr)
 	}
 
 	h.mu.Lock()
@@ -173,16 +174,14 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 		return fmt.Errorf("failed to allocate worker socket: %w", err)
 	}
 	workerMetaPath := filepath.Join(runDir, workerID+".worker.json")
-	bin, args, err := buildPersistentArgs(sess, isExisting)
-	if err != nil {
+	bin, args, bErr := buildPersistentArgs(sess, isExisting)
+	meta, startEvt, sErr := h.initTurnSpool(runDir, turnID, sess.ID, sess.NativeID, sess.Agent, sess.Cwd, prompt, bin, args, sockPath, sockTempDir, workerID, workerMetaPath, turnStart)
+	if bErr != nil || sErr != nil {
 		_ = os.Remove(sockPath)
-		return err
-	}
-
-	meta, startEvt, err := h.initTurnSpool(runDir, turnID, sess.ID, sess.NativeID, sess.Agent, sess.Cwd, prompt, bin, args, sockPath, sockTempDir, workerID, workerMetaPath, turnStart)
-	if err != nil {
-		_ = os.Remove(sockPath)
-		return err
+		if bErr != nil {
+			return bErr
+		}
+		return sErr
 	}
 
 	dur := h.getIdleTTL()
@@ -210,8 +209,7 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 		defer devNullR.Close()
 	}
 	if devNullW != nil {
-		workerCmd.Stdout = devNullW
-		workerCmd.Stderr = devNullW
+		workerCmd.Stdout, workerCmd.Stderr = devNullW, devNullW
 		defer devNullW.Close()
 	}
 	startErr := workerCmd.Start()
@@ -248,15 +246,36 @@ func (h *HeadlessRunner) killWorkerMeta(m *SessionWorkerMeta, timeout time.Durat
 	if m == nil {
 		return
 	}
+	var verifiedResp *workerIPCResp
 	if m.SocketPath != "" {
-		_, _ = callWorkerSocket(m.SocketPath, workerIPCReq{Op: "shutdown"}, timeout)
+		if resp, err := callWorkerSocket(m.SocketPath, workerIPCReq{Op: "shutdown"}, timeout); err == nil && resp != nil {
+			verifiedResp = resp
+		}
 	}
-	if m.ChildPID > 1 {
-		_ = syscall.Kill(-m.ChildPID, syscall.SIGKILL)
-		_ = syscall.Kill(m.ChildPID, syscall.SIGKILL)
-	}
+	isOwned := false
 	if m.WorkerPID > 1 {
-		_ = syscall.Kill(m.WorkerPID, syscall.SIGKILL)
+		h.mu.RLock()
+		for _, cmd := range h.ownedWorkers {
+			if cmd != nil && cmd.Process != nil && cmd.Process.Pid == m.WorkerPID {
+				isOwned = true
+				break
+			}
+		}
+		h.mu.RUnlock()
+	}
+	killPIDs := func(child, worker int) {
+		if child > 1 && isProcessAlive(child) {
+			_ = syscall.Kill(-child, syscall.SIGKILL)
+			_ = syscall.Kill(child, syscall.SIGKILL)
+		}
+		if worker > 1 && isProcessAlive(worker) {
+			_ = syscall.Kill(worker, syscall.SIGKILL)
+		}
+	}
+	if verifiedResp != nil {
+		killPIDs(verifiedResp.ChildPID, verifiedResp.WorkerPID)
+	} else if isOwned {
+		killPIDs(m.ChildPID, m.WorkerPID)
 	}
 	cleanupWorkerArtifacts(m)
 }
@@ -311,11 +330,7 @@ func (h *HeadlessRunner) NotifyConfigChanged(sess *Session) {
 	}
 	h.mu.Lock()
 	handle := h.warmWorkers[sess.ID]
-	if handle == nil {
-		h.mu.Unlock()
-		return
-	}
-	if handle.ConfigFingerprint == ConfigFingerprint(sess) {
+	if handle == nil || handle.ConfigFingerprint == ConfigFingerprint(sess) {
 		h.mu.Unlock()
 		return
 	}
@@ -328,11 +343,11 @@ func (h *HeadlessRunner) NotifyConfigChanged(sess *Session) {
 	h.ShutdownSessionWorker(sess.ID, sess.NativeID, 3*time.Second)
 }
 
-func probeLiveWorker(meta *TurnSpoolMeta, waitIfStarting time.Duration) (*workerIPCResp, bool) {
+func callWorkerTurnSocket(meta *TurnSpoolMeta, op string, timeout time.Duration) (*workerIPCResp, error) {
 	if meta == nil || meta.TurnID == "" {
-		return nil, false
+		return nil, errors.New("nil meta")
 	}
-	canWait, deadline := waitIfStarting > 0 && meta.Status == "starting" && !meta.StartedAt.IsZero() && time.Since(meta.StartedAt) < 3*time.Second, time.Now().Add(waitIfStarting)
+	canWait, deadline := timeout > 0 && meta.Status == "starting" && !meta.StartedAt.IsZero() && time.Since(meta.StartedAt) < 3*time.Second, time.Now().Add(timeout)
 	for {
 		cur := meta
 		if meta.MetaPath != "" {
@@ -341,15 +356,20 @@ func probeLiveWorker(meta *TurnSpoolMeta, waitIfStarting time.Duration) (*worker
 			}
 		}
 		if cur.SocketPath != "" {
-			if resp, err := callWorkerSocket(cur.SocketPath, workerIPCReq{Op: "ping", TurnID: meta.TurnID}, 250*time.Millisecond); err == nil && resp != nil && resp.OK && resp.TurnID == meta.TurnID {
-				return resp, true
+			if resp, err := callWorkerSocket(cur.SocketPath, workerIPCReq{Op: op, TurnID: meta.TurnID}, 250*time.Millisecond); err == nil && resp != nil && resp.OK && resp.TurnID == meta.TurnID {
+				return resp, nil
 			}
 		}
 		if !canWait || time.Now().After(deadline) || (cur.Status != "starting" && cur.Status != "running") {
-			return nil, false
+			return nil, errors.New("worker socket unreachable")
 		}
 		time.Sleep(15 * time.Millisecond)
 	}
+}
+
+func probeLiveWorker(meta *TurnSpoolMeta, waitIfStarting time.Duration) (*workerIPCResp, bool) {
+	resp, err := callWorkerTurnSocket(meta, "ping", waitIfStarting)
+	return resp, err == nil
 }
 
 func pingWorkerSocket(meta *TurnSpoolMeta) bool {
@@ -358,25 +378,20 @@ func pingWorkerSocket(meta *TurnSpoolMeta) bool {
 }
 
 func sendWorkerCancel(meta *TurnSpoolMeta) error {
-	if meta == nil || meta.TurnID == "" {
-		return errors.New("nil meta")
+	_, err := callWorkerTurnSocket(meta, "cancel", 350*time.Millisecond)
+	return err
+}
+
+func (h *HeadlessRunner) isOwnedProcessLocked(cmd *exec.Cmd) bool {
+	if h == nil || cmd == nil || cmd.Process == nil || cmd.Process.Pid <= 1 {
+		return false
 	}
-	canWait, deadline := meta.Status == "starting" && !meta.StartedAt.IsZero() && time.Since(meta.StartedAt) < 3*time.Second, time.Now().Add(350*time.Millisecond)
-	for {
-		cur := meta
-		if meta.MetaPath != "" {
-			if dm, err := ReadTurnSpoolMeta(meta.MetaPath); err == nil && dm != nil && dm.TurnID == meta.TurnID {
-				cur = dm
-			}
+	for _, oc := range h.ownedWorkers {
+		if oc == cmd {
+			return true
 		}
-		if resp, err := callWorkerSocket(cur.SocketPath, workerIPCReq{Op: "cancel", TurnID: meta.TurnID}, 250*time.Millisecond); err == nil && resp != nil && resp.OK && resp.TurnID == meta.TurnID {
-			return nil
-		}
-		if !canWait || time.Now().After(deadline) || (cur.Status != "starting" && cur.Status != "running") {
-			return errors.New("worker socket unreachable")
-		}
-		time.Sleep(15 * time.Millisecond)
 	}
+	return false
 }
 
 func (h *HeadlessRunner) isOwnedProcess(cmd *exec.Cmd) bool {
@@ -385,12 +400,7 @@ func (h *HeadlessRunner) isOwnedProcess(cmd *exec.Cmd) bool {
 	}
 	h.mu.RLock()
 	defer h.mu.RUnlock()
-	for _, oc := range h.ownedWorkers {
-		if oc == cmd {
-			return true
-		}
-	}
-	return false
+	return h.isOwnedProcessLocked(cmd)
 }
 
 func (h *HeadlessRunner) isTurnWorkerOwnedAlive(turnID string) bool {
@@ -428,16 +438,11 @@ func (h *HeadlessRunner) terminateVerifiedWorker(meta *TurnSpoolMeta, sig syscal
 		}
 		return
 	}
-	if h == nil {
-		return
-	}
-	h.mu.RLock()
-	ownedCmd := h.ownedWorkers[meta.TurnID]
-	h.mu.RUnlock()
-	if ownedCmd != nil && ownedCmd.Process != nil && ownedCmd.Process.Pid > 1 {
-		if sig == syscall.SIGKILL {
-			_ = ownedCmd.Process.Kill()
-		} else {
+	if h != nil {
+		h.mu.RLock()
+		ownedCmd := h.ownedWorkers[meta.TurnID]
+		h.mu.RUnlock()
+		if ownedCmd != nil && ownedCmd.Process != nil && ownedCmd.Process.Pid > 1 {
 			_ = ownedCmd.Process.Signal(sig)
 		}
 	}

@@ -130,7 +130,7 @@ func (h *HeadlessRunner) CleanupSessionRuntime(sessionID, nativeID string) {
 	h.mu.Lock()
 	for k, cmd := range h.processes {
 		if matchesKey(k) {
-			if h.isOwnedProcess(cmd) {
+			if h.isOwnedProcessLocked(cmd) {
 				_ = cmd.Process.Kill()
 			}
 			delete(h.processes, k)

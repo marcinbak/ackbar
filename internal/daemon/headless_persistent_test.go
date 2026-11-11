@@ -141,6 +141,12 @@ done
 	if err := h.RunTurn(context.Background(), sess, "prompt 2"); err != nil {
 		t.Fatalf("RunTurn 2: %v", err)
 	}
+	if !h.IsRunning(sess.ID) {
+		t.Errorf("expected IsRunning true during turn 2")
+	}
+	if _, ok := h.GetActiveTurnPrompt(sess.ID); !ok {
+		t.Errorf("expected GetActiveTurnPrompt true during turn 2")
+	}
 
 	select {
 	case <-doneSub2:

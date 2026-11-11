@@ -75,8 +75,9 @@ func (h *HeadlessRunner) monitorWorkerTurn(sess *Session, origSessionID string, 
 				curMeta = dm
 			}
 		}
-		if conn, err := net.DialTimeout("unix", curMeta.SocketPath, 250*time.Millisecond); err == nil {
-			b, _ := json.Marshal(workerIPCReq{Op: "subscribe", AfterSeq: lastSeq})
+		conn, err := net.DialTimeout("unix", curMeta.SocketPath, 250*time.Millisecond)
+		if err == nil {
+			b, _ := json.Marshal(workerIPCReq{Op: "subscribe", AfterSeq: lastSeq, TurnID: curMeta.TurnID})
 			if _, wErr := conn.Write(append(b, '\n')); wErr == nil {
 				sc := bufio.NewScanner(conn)
 				sc.Buffer(make([]byte, 64*1024), 10*1024*1024)
@@ -85,6 +86,11 @@ func (h *HeadlessRunner) monitorWorkerTurn(sess *Session, origSessionID string, 
 					if json.Unmarshal(sc.Bytes(), &evt) == nil && evt.Seq > lastSeq {
 						lastSeq = evt.Seq
 						h.applyWorkerEvent(sess, origSessionID, curMeta, evt, true)
+						if evt.Type == "turn_complete" || evt.Type == "turn_cancelled" {
+							_ = conn.Close()
+							h.finalizeTurnFromSpool(sess, origSessionID, curMeta, trackedCmd)
+							return
+						}
 					}
 				}
 			}
@@ -238,6 +244,23 @@ func (h *HeadlessRunner) finalizeTurnFromSpool(sess *Session, origSessionID stri
 	}
 
 	markFinalized()
+	var rotateWorker bool
+	h.mu.Lock()
+	if handle, ok := h.warmWorkers[sess.ID]; ok && handle != nil {
+		if (interactiveBlock != nil || wasCancelled) && !h.activeTurns[sess.ID] {
+			delete(h.warmWorkers, sess.ID)
+			if sess.NativeID != "" {
+				delete(h.warmWorkers, sess.NativeID)
+			}
+		} else if handle.rotateAfterTurn && !h.activeTurns[sess.ID] {
+			rotateWorker = true
+		}
+	}
+	h.mu.Unlock()
+	if rotateWorker {
+		go h.ShutdownSessionWorker(sess.ID, sess.NativeID, 2*time.Second)
+	}
+
 	if h.db != nil {
 		_ = h.db.SaveSession(sess)
 	}
@@ -322,7 +345,7 @@ func (h *HeadlessRunner) ReattachLiveWorkers() {
 			resp, err := callWorkerSocket(wm.SocketPath, workerIPCReq{Op: "status"}, 250*time.Millisecond)
 			alive := err == nil && resp != nil && resp.OK
 			sess := h.resolveSession(wm.SessionID, wm.OrigSessionID, wm.NativeID)
-			if !alive || sess == nil || sess.Deleted || sess.IsDone {
+			if !alive || sess == nil || sess.Deleted || sess.IsDone || sess.TmuxName != "" || wm.ConfigFingerprint != ConfigFingerprint(sess) {
 				if alive {
 					h.killWorkerMeta(wm, 300*time.Millisecond)
 				} else {
@@ -343,7 +366,7 @@ func (h *HeadlessRunner) ReattachLiveWorkers() {
 				adoptedTurns[wm.ActiveTurnID] = true
 			} else {
 				adoptedIdle[sess.ID] = true
-				sess.State, sess.Blocked, sess.PID = StateIdle, nil, resp.ChildPID
+				sess.State, sess.Blocked, sess.PID = StateIdle, nil, 0
 				if h.db != nil {
 					_ = h.db.SaveSession(sess)
 				}

@@ -485,6 +485,28 @@ func (h *HeadlessRunner) IsRunning(sessionID string) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
+	if h.activeTurns[sessionID] {
+		return true
+	}
+	parts := strings.Split(sessionID, ":")
+	if len(parts) == 3 {
+		nativeID := parts[2]
+		if h.activeTurns[nativeID] {
+			return true
+		}
+		for turnKey, active := range h.activeTurns {
+			if active && strings.HasSuffix(turnKey, ":"+nativeID) {
+				return true
+			}
+		}
+	} else if len(parts) == 1 && sessionID != "" {
+		for turnKey, active := range h.activeTurns {
+			if active && strings.HasSuffix(turnKey, ":"+sessionID) {
+				return true
+			}
+		}
+	}
+
 	checkProcess := func(key string, cmd *exec.Cmd) bool {
 		if h.activeTurns[key] {
 			return true
@@ -504,7 +526,6 @@ func (h *HeadlessRunner) IsRunning(sessionID string) bool {
 			return true
 		}
 	}
-	parts := strings.Split(sessionID, ":")
 	if len(parts) == 3 {
 		nativeID := parts[2]
 		for procKey, cmd := range h.processes {
@@ -922,11 +943,11 @@ func (h *HeadlessRunner) EmitSubagentsUpdate(sessionID string, subagents []*Suba
 
 // CancelTurn sends SIGINT (and SIGKILL if needed) to interrupt the active turn process
 func (h *HeadlessRunner) CancelTurn(sessionID string) error {
+	parts := strings.Split(sessionID, ":")
 	h.mu.Lock()
 	cmd, ok := h.processes[sessionID]
 	activeKey := sessionID
 	if !ok {
-		parts := strings.Split(sessionID, ":")
 		if len(parts) == 3 {
 			nativeID := parts[2]
 			for procKey, procCmd := range h.processes {
@@ -953,11 +974,22 @@ func (h *HeadlessRunner) CancelTurn(sessionID string) error {
 		return nil
 	}
 
+	deleteWarmHandle := func() {
+		h.mu.Lock()
+		delete(h.warmWorkers, sessionID)
+		if len(parts) == 3 && parts[2] != "" {
+			delete(h.warmWorkers, parts[2])
+		}
+		h.mu.Unlock()
+	}
+
 	if workerActive && sendWorkerCancel(meta) == nil {
 		h.SetQueuePaused(sessionID, true)
 		h.EmitQueueUpdate(sessionID)
+		deleteWarmHandle()
 		return nil
 	}
+	deleteWarmHandle()
 
 	if h.isOwnedProcess(cmd) {
 		_ = cmd.Process.Signal(syscall.SIGINT)
