@@ -33,6 +33,13 @@
 
 ## ✅ Completed Milestones
 
+* [x] **Headless Standalone Slash & Inline Shell Command Parity (`feat/headless-command-parity`):**
+  * Executes inline shell commands (`! <cmd>`) via `POST /v1/sessions/{id}/shell` (`30s` timeout, `128 KB` cap, `-pgid` kill) with `.chat-bash-card` and `[+ Attach to Prompt]`.
+  * Standalone `/` commands for runtime config (`/model`, `/effort`, `/permissions`, `/auto`, `/add-dir`) and SQLite `extra_dirs` persistence.
+  * Headless context lifecycle parity (`/clear`, `/reset`, `/compact`, `/handover`) with in-place tab migration and provider-tailored compaction.
+  * Inspection, diff, and rewind commands (`/mcp`, `/plugins`, `/agents`, `/doctor`, `/context`, `/cost`, `/diff`, `/rewind`) with allowlisted CLI execution and transcript rollback.
+  * Modular daemon files (`headless_commands.go`, `headless_commands_inspect.go`, `headless_rewind.go`, `headless_handover.go`) and frontend modules (`web/js/chat-commands.js`, `web/js/chat-command-cards.js`).
+  * Hardened tokenless local security with origin validation (`isTrustedLocalOrigin`) blocking cross-origin mutations.
 * [x] **Headless MCP & Plugin Authentication Broker (`feat/headless-mcp-auth`):**
   * Intercepts tool and turn OAuth failures (`BlockAuth`) for Google Workspace plugins, Antigravity, and Claude MCP servers.
   * Spawns allowlisted OAuth processes (`POST /v1/sessions/auth-tool`) with 5m TTL and 64KB bounded output buffers.

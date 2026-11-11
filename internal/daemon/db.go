@@ -56,6 +56,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 	model TEXT DEFAULT '',
 	effort TEXT DEFAULT '',
 	permission_mode TEXT DEFAULT 'bypassPermissions',
+	extra_dirs TEXT DEFAULT '',
 	blocked_questions TEXT DEFAULT '',
 	blocked_reset_at TIMESTAMP,
 	blocked_meta TEXT DEFAULT '',
@@ -281,6 +282,7 @@ func InitDB(dbPath string) (*DB, error) {
 	_, _ = db.Exec("ALTER TABLE sessions ADD COLUMN blocked_reset_at TIMESTAMP;")
 	_, _ = db.Exec("ALTER TABLE sessions ADD COLUMN blocked_meta TEXT DEFAULT '';")
 	_, _ = db.Exec("ALTER TABLE sessions ADD COLUMN metadata_updated_at TIMESTAMP;")
+	_, _ = db.Exec("ALTER TABLE sessions ADD COLUMN extra_dirs TEXT DEFAULT '';")
 	_, _ = db.Exec(`CREATE TABLE IF NOT EXISTS scheduled_prompts (
 		id TEXT PRIMARY KEY,
 		session_id TEXT NOT NULL,
@@ -539,8 +541,8 @@ func (d *DB) SaveSession(s *Session) error {
 		id, agent, host, native_id, cwd, roots, project_key, state, 
 		blocked_kind, blocked_reason, blocked_since, blocked_question, blocked_options, blocked_questions, blocked_reset_at, blocked_meta, activity, 
 		started_at, last_event_at, managed, tmux_name, pid, archived, node_path, name, entrypoint, kind, version, context_pct, git_branch,
-		custom_title, ai_title, ai_description, first_prompt, last_prompt, is_unread, last_state_change_at, is_done, is_later, account_id, engine_type, old_id, metadata_updated_at, is_supervisor, current_task_id, model, effort, permission_mode
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		custom_title, ai_title, ai_description, first_prompt, last_prompt, is_unread, last_state_change_at, is_done, is_later, account_id, engine_type, old_id, metadata_updated_at, is_supervisor, current_task_id, model, effort, permission_mode, extra_dirs
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(id) DO UPDATE SET
 		cwd=excluded.cwd,
 		roots=excluded.roots,
@@ -584,7 +586,8 @@ func (d *DB) SaveSession(s *Session) error {
 		current_task_id=excluded.current_task_id,
 		model=excluded.model,
 		effort=excluded.effort,
-		permission_mode=excluded.permission_mode;
+		permission_mode=excluded.permission_mode,
+		extra_dirs=excluded.extra_dirs;
 	`
 
 	managedInt := 0
@@ -618,6 +621,12 @@ func (d *DB) SaveSession(s *Session) error {
 		permMode = "bypassPermissions"
 	}
 	permModeVal := sql.NullString{String: permMode, Valid: true}
+	var extraDirsVal sql.NullString
+	if len(s.ExtraDirs) > 0 {
+		if raw, err := json.Marshal(s.ExtraDirs); err == nil {
+			extraDirsVal = sql.NullString{String: string(raw), Valid: true}
+		}
+	}
 	engineType := s.EngineType
 	if engineType == "" {
 		engineType = EngineTmux
@@ -632,7 +641,7 @@ func (d *DB) SaveSession(s *Session) error {
 		blockedKind, blockedReason, blockedSince, blockedQuestion, blockedOptions, blockedQuestions, blockedResetAt, blockedMeta, s.Activity,
 		s.StartedAt, s.LastEventAt, managedInt, s.TmuxName, s.PID, archivedInt, nodePath, sessName, entrypointVal, kindVal, versionVal, s.ContextPct, gitBranchVal,
 		customTitleVal, aiTitleVal, aiDescVal, firstPromptVal, lastPromptVal, isUnreadInt, lastStateChangeAt, isDoneInt, isLaterInt, accountIDVal, engineType, oldIDVal, s.MetadataUpdatedAt, isSupervisorInt, currentTaskIDVal,
-		modelVal, effortVal, permModeVal,
+		modelVal, effortVal, permModeVal, extraDirsVal,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to save session: %w", err)
@@ -647,13 +656,13 @@ func (d *DB) GetSession(id string) (*Session, error) {
 	       blocked_kind, blocked_reason, blocked_since, blocked_question, blocked_options, blocked_questions, blocked_reset_at, blocked_meta, activity,
 	       started_at, last_event_at, managed, tmux_name, pid, archived, node_path, name, entrypoint, kind, version, context_pct, git_branch,
 	       custom_title, ai_title, ai_description, first_prompt, last_prompt, is_unread, last_state_change_at, is_done, is_later, account_id, engine_type, old_id, metadata_updated_at, is_supervisor, current_task_id,
-	       model, effort, permission_mode
+	       model, effort, permission_mode, extra_dirs
 	FROM sessions WHERE id = ? OR native_id = ? OR native_id = ?;
 	`
 
 	var s Session
 	var rootsStr, blockedKind, blockedReason, blockedQuestion, blockedOptions, blockedQuestions, blockedMetaVal, nodePath, sessName, entrypointVal, kindVal, versionVal, gitBranchVal sql.NullString
-	var customTitleVal, aiTitleVal, aiDescVal, firstPromptVal, lastPromptVal, accountIDVal, engineTypeVal, oldIDVal, currentTaskIDVal, modelVal, effortVal, permModeVal sql.NullString
+	var customTitleVal, aiTitleVal, aiDescVal, firstPromptVal, lastPromptVal, accountIDVal, engineTypeVal, oldIDVal, currentTaskIDVal, modelVal, effortVal, permModeVal, extraDirsVal sql.NullString
 	var ctxPct, isSupervisorVal sql.NullInt64
 	var blockedSince, blockedResetAt, lastStateChangeAt, metadataUpdatedAt sql.NullTime
 	var managedInt, archivedInt, isUnreadInt, isDoneInt, isLaterInt int
@@ -669,7 +678,7 @@ func (d *DB) GetSession(id string) (*Session, error) {
 		&blockedKind, &blockedReason, &blockedSince, &blockedQuestion, &blockedOptions, &blockedQuestions, &blockedResetAt, &blockedMetaVal, &s.Activity,
 		&s.StartedAt, &s.LastEventAt, &managedInt, &s.TmuxName, &s.PID, &archivedInt, &nodePath, &sessName, &entrypointVal, &kindVal, &versionVal, &ctxPct, &gitBranchVal,
 		&customTitleVal, &aiTitleVal, &aiDescVal, &firstPromptVal, &lastPromptVal, &isUnreadInt, &lastStateChangeAt, &isDoneInt, &isLaterInt, &accountIDVal, &engineTypeVal, &oldIDVal, &metadataUpdatedAt, &isSupervisorVal, &currentTaskIDVal,
-		&modelVal, &effortVal, &permModeVal,
+		&modelVal, &effortVal, &permModeVal, &extraDirsVal,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -787,6 +796,14 @@ func (d *DB) GetSession(id string) (*Session, error) {
 		s.PermissionMode = "bypassPermissions"
 	}
 
+	if extraDirsVal.Valid && extraDirsVal.String != "" {
+		if err := json.Unmarshal([]byte(extraDirsVal.String), &s.ExtraDirs); err != nil {
+			s.ExtraDirs = []string{}
+		}
+	} else {
+		s.ExtraDirs = []string{}
+	}
+
 	return &s, nil
 }
 
@@ -796,7 +813,7 @@ func (d *DB) ListSessions() ([]*Session, error) {
 	       blocked_kind, blocked_reason, blocked_since, blocked_question, blocked_options, blocked_questions, blocked_reset_at, blocked_meta, activity,
 	       started_at, last_event_at, managed, tmux_name, pid, archived, node_path, name, entrypoint, kind, version, context_pct, git_branch,
 	       custom_title, ai_title, ai_description, first_prompt, last_prompt, is_unread, last_state_change_at, is_done, is_later, account_id, engine_type, old_id, metadata_updated_at, is_supervisor, current_task_id,
-	       model, effort, permission_mode
+	       model, effort, permission_mode, extra_dirs
 	FROM sessions
 	ORDER BY last_event_at DESC;
 	`
@@ -811,7 +828,7 @@ func (d *DB) ListSessions() ([]*Session, error) {
 	for rows.Next() {
 		var s Session
 		var rootsStr, blockedKind, blockedReason, blockedQuestion, blockedOptions, blockedQuestions, blockedMetaVal, nodePath, sessName, entrypointVal, kindVal, versionVal, gitBranchVal sql.NullString
-		var customTitleVal, aiTitleVal, aiDescVal, firstPromptVal, lastPromptVal, accountIDVal, engineTypeVal, oldIDVal, currentTaskIDVal, modelVal, effortVal, permModeVal sql.NullString
+		var customTitleVal, aiTitleVal, aiDescVal, firstPromptVal, lastPromptVal, accountIDVal, engineTypeVal, oldIDVal, currentTaskIDVal, modelVal, effortVal, permModeVal, extraDirsVal sql.NullString
 		var ctxPct, isSupervisorVal sql.NullInt64
 		var blockedSince, blockedResetAt, lastStateChangeAt, metadataUpdatedAt sql.NullTime
 		var managedInt, archivedInt, isUnreadInt, isDoneInt, isLaterInt int
@@ -821,7 +838,7 @@ func (d *DB) ListSessions() ([]*Session, error) {
 			&blockedKind, &blockedReason, &blockedSince, &blockedQuestion, &blockedOptions, &blockedQuestions, &blockedResetAt, &blockedMetaVal, &s.Activity,
 			&s.StartedAt, &s.LastEventAt, &managedInt, &s.TmuxName, &s.PID, &archivedInt, &nodePath, &sessName, &entrypointVal, &kindVal, &versionVal, &ctxPct, &gitBranchVal,
 			&customTitleVal, &aiTitleVal, &aiDescVal, &firstPromptVal, &lastPromptVal, &isUnreadInt, &lastStateChangeAt, &isDoneInt, &isLaterInt, &accountIDVal, &engineTypeVal, &oldIDVal, &metadataUpdatedAt, &isSupervisorVal, &currentTaskIDVal,
-			&modelVal, &effortVal, &permModeVal,
+			&modelVal, &effortVal, &permModeVal, &extraDirsVal,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan session in list: %w", err)
@@ -935,6 +952,14 @@ func (d *DB) ListSessions() ([]*Session, error) {
 			s.PermissionMode = "bypassPermissions"
 		}
 
+		if extraDirsVal.Valid && extraDirsVal.String != "" {
+			if err := json.Unmarshal([]byte(extraDirsVal.String), &s.ExtraDirs); err != nil {
+				s.ExtraDirs = []string{}
+			}
+		} else {
+			s.ExtraDirs = []string{}
+		}
+
 		sessions = append(sessions, &s)
 	}
 
@@ -1033,7 +1058,7 @@ func (d *DB) ListActiveSessions() ([]*Session, error) {
 	       blocked_kind, blocked_reason, blocked_since, blocked_question, blocked_options, blocked_questions, blocked_reset_at, blocked_meta, activity,
 	       started_at, last_event_at, managed, tmux_name, pid, archived, node_path, name, entrypoint, kind, version, context_pct, git_branch,
 	       custom_title, ai_title, ai_description, first_prompt, last_prompt, is_unread, last_state_change_at, is_done, is_later, account_id, engine_type, old_id, metadata_updated_at, is_supervisor, current_task_id,
-	       model, effort, permission_mode
+	       model, effort, permission_mode, extra_dirs
 	FROM sessions
 	WHERE state != ?
 	ORDER BY last_event_at DESC;
@@ -1049,7 +1074,7 @@ func (d *DB) ListActiveSessions() ([]*Session, error) {
 	for rows.Next() {
 		var s Session
 		var rootsStr, blockedKind, blockedReason, blockedQuestion, blockedOptions, blockedQuestions, blockedMetaVal, nodePath, sessName, entrypointVal, kindVal, versionVal, gitBranchVal sql.NullString
-		var customTitleVal, aiTitleVal, aiDescVal, firstPromptVal, lastPromptVal, accountIDVal, engineTypeVal, oldIDVal, currentTaskIDVal, modelVal, effortVal, permModeVal sql.NullString
+		var customTitleVal, aiTitleVal, aiDescVal, firstPromptVal, lastPromptVal, accountIDVal, engineTypeVal, oldIDVal, currentTaskIDVal, modelVal, effortVal, permModeVal, extraDirsVal sql.NullString
 		var ctxPct, isSupervisorVal sql.NullInt64
 		var blockedSince, blockedResetAt, lastStateChangeAt, metadataUpdatedAt sql.NullTime
 		var managedInt, archivedInt, isUnreadInt, isDoneInt, isLaterInt int
@@ -1059,7 +1084,7 @@ func (d *DB) ListActiveSessions() ([]*Session, error) {
 			&blockedKind, &blockedReason, &blockedSince, &blockedQuestion, &blockedOptions, &blockedQuestions, &blockedResetAt, &blockedMetaVal, &s.Activity,
 			&s.StartedAt, &s.LastEventAt, &managedInt, &s.TmuxName, &s.PID, &archivedInt, &nodePath, &sessName, &entrypointVal, &kindVal, &versionVal, &ctxPct, &gitBranchVal,
 			&customTitleVal, &aiTitleVal, &aiDescVal, &firstPromptVal, &lastPromptVal, &isUnreadInt, &lastStateChangeAt, &isDoneInt, &isLaterInt, &accountIDVal, &engineTypeVal, &oldIDVal, &metadataUpdatedAt, &isSupervisorVal, &currentTaskIDVal,
-			&modelVal, &effortVal, &permModeVal,
+			&modelVal, &effortVal, &permModeVal, &extraDirsVal,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan active session in list: %w", err)
@@ -1171,6 +1196,14 @@ func (d *DB) ListActiveSessions() ([]*Session, error) {
 			s.PermissionMode = permModeVal.String
 		} else {
 			s.PermissionMode = "bypassPermissions"
+		}
+
+		if extraDirsVal.Valid && extraDirsVal.String != "" {
+			if err := json.Unmarshal([]byte(extraDirsVal.String), &s.ExtraDirs); err != nil {
+				s.ExtraDirs = []string{}
+			}
+		} else {
+			s.ExtraDirs = []string{}
 		}
 
 		sessions = append(sessions, &s)

@@ -174,7 +174,7 @@ func getBuiltinCommands() []CommandSuggestion {
 		{
 			Name:          "config",
 			Trigger:       "/config",
-			Description:   "Configure model, reasoning effort, plan mode, and view context usage",
+			Description:   "Configure model, reasoning effort, plan mode, extra directories, and view context usage",
 			Category:      "Session Control",
 			ExecutionMode: "client_action",
 		},
@@ -188,7 +188,14 @@ func getBuiltinCommands() []CommandSuggestion {
 		{
 			Name:          "clear",
 			Trigger:       "/clear",
-			Description:   "Start a fresh conversation in this directory",
+			Description:   "Start a fresh conversation in this directory (rotates session)",
+			Category:      "Session Control",
+			ExecutionMode: "client_action",
+		},
+		{
+			Name:          "reset",
+			Trigger:       "/reset",
+			Description:   "Reset conversation state and start fresh (alias for /clear)",
 			Category:      "Session Control",
 			ExecutionMode: "client_action",
 		},
@@ -217,6 +224,97 @@ func getBuiltinCommands() []CommandSuggestion {
 			Name:          "voice_live",
 			Trigger:       "/voice live",
 			Description:   "Toggle two-way Live Voice Mode via Ackbar Audio Bridge",
+			Category:      "Session Control",
+			ExecutionMode: "client_action",
+		},
+		{
+			Name:          "model",
+			Trigger:       "/model",
+			Description:   "Set or switch LLM model",
+			Category:      "Session Control",
+			ExecutionMode: "client_action",
+		},
+		{
+			Name:          "effort",
+			Trigger:       "/effort",
+			Description:   "Set reasoning effort (low, medium, high, xhigh, max)",
+			Category:      "Session Control",
+			ExecutionMode: "client_action",
+		},
+		{
+			Name:          "permissions",
+			Trigger:       "/permissions",
+			Description:   "Set permission mode (bypassPermissions, auto, acceptEdits, dontAsk, plan)",
+			Category:      "Session Control",
+			ExecutionMode: "client_action",
+		},
+		{
+			Name:          "auto",
+			Trigger:       "/auto",
+			Description:   "Switch permission mode to auto (execute without permission prompts)",
+			Category:      "Session Control",
+			ExecutionMode: "client_action",
+		},
+		{
+			Name:          "add_dir",
+			Trigger:       "/add-dir",
+			Description:   "Add or remove allowed directories for tools (--add-dir)",
+			Category:      "Session Control",
+			ExecutionMode: "client_action",
+		},
+		{
+			Name:          "mcp",
+			Trigger:       "/mcp",
+			Description:   "Inspect Model Context Protocol servers and authentication status",
+			Category:      "Session Control",
+			ExecutionMode: "client_action",
+		},
+		{
+			Name:          "plugins",
+			Trigger:       "/plugins",
+			Description:   "List installed agent plugins",
+			Category:      "Session Control",
+			ExecutionMode: "client_action",
+		},
+		{
+			Name:          "agents",
+			Trigger:       "/agents",
+			Description:   "List available and active agent definitions",
+			Category:      "Session Control",
+			ExecutionMode: "client_action",
+		},
+		{
+			Name:          "doctor",
+			Trigger:       "/doctor",
+			Description:   "Run agent diagnostic checks and environment report",
+			Category:      "Session Control",
+			ExecutionMode: "client_action",
+		},
+		{
+			Name:          "context",
+			Trigger:       "/context",
+			Description:   "Inspect token usage and context window limits",
+			Category:      "Session Control",
+			ExecutionMode: "client_action",
+		},
+		{
+			Name:          "cost",
+			Trigger:       "/cost",
+			Description:   "View estimated API-equivalent turn and session cost",
+			Category:      "Session Control",
+			ExecutionMode: "client_action",
+		},
+		{
+			Name:          "diff",
+			Trigger:       "/diff",
+			Description:   "View git status and diff for current working directory",
+			Category:      "Session Control",
+			ExecutionMode: "client_action",
+		},
+		{
+			Name:          "rewind",
+			Trigger:       "/rewind",
+			Description:   "Rewind conversation to a previous turn",
 			Category:      "Session Control",
 			ExecutionMode: "client_action",
 		},
@@ -349,12 +447,19 @@ func scanSkillsInDir(parentDir string) []CommandSuggestion {
 	return results
 }
 
-func (s *Server) collectCommands(cwd string) []CommandSuggestion {
+func (s *Server) collectCommands(cwd string, agentOpt ...string) []CommandSuggestion {
 	var cmds []CommandSuggestion
 	seen := make(map[string]bool)
+	agent := ""
+	if len(agentOpt) > 0 {
+		agent = strings.ToLower(strings.TrimSpace(agentOpt[0]))
+	}
 
 	// 1. Builtins
 	for _, b := range getBuiltinCommands() {
+		if agent == "antigravity" && b.Name == "effort" {
+			continue
+		}
 		cmds = append(cmds, b)
 		seen[b.Name] = true
 	}
@@ -636,7 +741,7 @@ func (s *Server) handleSessionSuggestions(w http.ResponseWriter, r *http.Request
 	case "commands":
 		fallthrough
 	default:
-		allCmds := s.collectCommands(sess.Cwd)
+		allCmds := s.collectCommands(sess.Cwd, sess.Agent)
 		// Clean query of leading slash if present
 		cleanQ := strings.TrimPrefix(qLower, "/")
 

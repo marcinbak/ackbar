@@ -1160,10 +1160,20 @@ func (h *HeadlessRunner) buildArgs(sess *Session, prompt, home string) (string, 
 		}
 
 		args := []string{"-p", effectivePrompt, "--output-format", "stream-json"}
-		if strings.EqualFold(sess.PermissionMode, "plan") {
+		switch strings.ToLower(strings.TrimSpace(sess.PermissionMode)) {
+		case "plan":
 			args = append(args, "--mode", "plan")
-		} else {
+		case "auto":
+			args = append(args, "--mode", "auto")
+		case "acceptedits":
+			args = append(args, "--mode", "accept-edits")
+		default:
 			args = append(args, "--dangerously-skip-permissions")
+		}
+		for _, d := range sess.ExtraDirs {
+			if cleaned := filepath.Clean(strings.TrimSpace(d)); cleaned != "" && cleaned != "." {
+				args = append(args, "--add-dir", cleaned)
+			}
 		}
 		if hasAntigravityConversation(home, sess.NativeID) || sess.FirstPrompt != "" || sess.LastPrompt != "" {
 			args = append(args, "--conversation", sess.NativeID)
@@ -1182,10 +1192,24 @@ func (h *HeadlessRunner) buildArgs(sess *Session, prompt, home string) (string, 
 	hasTranscript := hasConversationOnDisk(sess, home, h.db)
 
 	var permFlags []string
-	if strings.EqualFold(sess.PermissionMode, "plan") {
+	switch strings.ToLower(strings.TrimSpace(sess.PermissionMode)) {
+	case "plan":
 		permFlags = []string{"--permission-mode", "plan"}
-	} else {
+	case "auto":
+		permFlags = []string{"--permission-mode", "auto"}
+	case "acceptedits":
+		permFlags = []string{"--permission-mode", "acceptEdits"}
+	case "dontask":
+		permFlags = []string{"--permission-mode", "dontAsk"}
+	default:
 		permFlags = []string{"--dangerously-skip-permissions"}
+	}
+
+	var extraFlags []string
+	for _, d := range sess.ExtraDirs {
+		if cleaned := filepath.Clean(strings.TrimSpace(d)); cleaned != "" && cleaned != "." {
+			extraFlags = append(extraFlags, "--add-dir", cleaned)
+		}
 	}
 
 	// If transcript or session-env exists, or if a previous turn ran in this session, resume conversation
@@ -1193,10 +1217,12 @@ func (h *HeadlessRunner) buildArgs(sess *Session, prompt, home string) (string, 
 	if hasTranscript || sess.FirstPrompt != "" || sess.LastPrompt != "" {
 		args = []string{"-p", prompt, "--output-format", "stream-json", "--verbose"}
 		args = append(args, permFlags...)
+		args = append(args, extraFlags...)
 		args = append(args, "--resume", sess.NativeID)
 	} else {
 		args = []string{"-p", prompt, "--output-format", "stream-json", "--verbose"}
 		args = append(args, permFlags...)
+		args = append(args, extraFlags...)
 		args = append(args, "--session-id", sess.NativeID)
 	}
 
@@ -1211,6 +1237,16 @@ func (h *HeadlessRunner) buildArgs(sess *Session, prompt, home string) (string, 
 		args = append(args, "--append-system-prompt", BuildSupervisorSystemPrompt(sess.ID))
 	}
 	return bin, args, nil
+}
+
+func (h *HeadlessRunner) buildCommandEnv(sess *Session) []string {
+	home, _ := os.UserHomeDir()
+	env := buildWorkerEnv(sess, h.db, home)
+	env = append(env, "GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0", "TERM=dumb")
+	if sess != nil && sess.NodePath != "" {
+		env = append(env, "ACKBAR_NODE_PATH="+sess.NodePath)
+	}
+	return env
 }
 
 func (h *HeadlessRunner) processStream(sessionID string, r io.Reader, optionalSess ...*Session) {
@@ -1672,9 +1708,43 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 			clear(emittedTextBlocks)
 			clear(emittedThinkingBlocks)
 			if msg, ok := raw["message"].(map[string]interface{}); ok {
-				if contentArr, ok := msg["content"].([]interface{}); ok {
+				if contentStr, ok := msg["content"].(string); ok && contentStr != "" {
+					if extracted := extractLocalCommandOutput(contentStr); extracted != "" {
+						lastTextBuilder.WriteString(extracted)
+						hasEmittedAssistantText = true
+						hasEmittedDeltaInTurn = true
+						emitStreamEvt(ChatStreamEvent{
+							SessionID: sessionID,
+							Type:      "text_delta",
+							Text:      extracted,
+						})
+					}
+				} else if contentArr, ok := msg["content"].([]interface{}); ok {
 					for _, item := range contentArr {
-						if itemMap, ok := item.(map[string]interface{}); ok {
+						if itemStr, ok := item.(string); ok && itemStr != "" {
+							if extracted := extractLocalCommandOutput(itemStr); extracted != "" {
+								lastTextBuilder.WriteString(extracted)
+								hasEmittedAssistantText = true
+								hasEmittedDeltaInTurn = true
+								emitStreamEvt(ChatStreamEvent{
+									SessionID: sessionID,
+									Type:      "text_delta",
+									Text:      extracted,
+								})
+							}
+						} else if itemMap, ok := item.(map[string]interface{}); ok {
+							if txt, ok := itemMap["text"].(string); ok && txt != "" {
+								if extracted := extractLocalCommandOutput(txt); extracted != "" {
+									lastTextBuilder.WriteString(extracted)
+									hasEmittedAssistantText = true
+									hasEmittedDeltaInTurn = true
+									emitStreamEvt(ChatStreamEvent{
+										SessionID: sessionID,
+										Type:      "text_delta",
+										Text:      extracted,
+									})
+								}
+							}
 							if itemMap["type"] == "tool_result" {
 								needsSeparation = true
 								toolID, _ := itemMap["tool_use_id"].(string)
@@ -1844,4 +1914,31 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 		return finalLastTurnText, finalResultText, finalStreamHadError
 	}
 	return lastTextBuilder.String(), resultText, streamHadError
+}
+
+func extractLocalCommandOutput(content string) string {
+	var out strings.Builder
+	extractTag := func(open, close string) {
+		start := 0
+		for {
+			i := strings.Index(content[start:], open)
+			if i == -1 {
+				break
+			}
+			i += start + len(open)
+			j := strings.Index(content[i:], close)
+			if j == -1 {
+				out.WriteString(content[i:])
+				break
+			}
+			if out.Len() > 0 {
+				out.WriteString("\n")
+			}
+			out.WriteString(content[i : i+j])
+			start = i + j + len(close)
+		}
+	}
+	extractTag("<local-command-stdout>", "</local-command-stdout>")
+	extractTag("<local-command-stderr>", "</local-command-stderr>")
+	return out.String()
 }

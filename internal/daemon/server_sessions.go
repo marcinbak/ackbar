@@ -1145,9 +1145,15 @@ func (s *Server) handleSessionConfig(w http.ResponseWriter, r *http.Request, ses
 		}
 	}
 
+	bodyReader := http.MaxBytesReader(w, r.Body, 32<<10)
 	var bodyBytes []byte
+	var readErr error
 	if r.Body != nil {
-		bodyBytes, _ = io.ReadAll(r.Body)
+		bodyBytes, readErr = io.ReadAll(bodyReader)
+		if readErr != nil {
+			http.Error(w, "Request body exceeds 32 KB limit or is invalid", http.StatusBadRequest)
+			return
+		}
 	}
 
 	sess, proxied := s.resolveSessionOrProxy(w, r.Method, sessionID, "application/json", bytes.NewReader(bodyBytes), func(target *Session) string {
@@ -1161,13 +1167,19 @@ func (s *Server) handleSessionConfig(w http.ResponseWriter, r *http.Request, ses
 	}
 
 	var req struct {
-		Model          *string `json:"model"`
-		Effort         *string `json:"effort"`
-		PermissionMode *string `json:"permission_mode"`
+		Model          *string   `json:"model"`
+		Effort         *string   `json:"effort"`
+		PermissionMode *string   `json:"permission_mode"`
+		ExtraDirs      *[]string `json:"extra_dirs"`
+		AddDirs        []string  `json:"add_dirs"`
+		RemoveDirs     []string  `json:"remove_dirs"`
 	}
 
 	if len(bodyBytes) > 0 {
-		_ = json.Unmarshal(bodyBytes, &req)
+		if err := json.Unmarshal(bodyBytes, &req); err != nil {
+			http.Error(w, "Invalid JSON payload", http.StatusBadRequest)
+			return
+		}
 	}
 
 	if req.Model != nil {
@@ -1175,29 +1187,56 @@ func (s *Server) handleSessionConfig(w http.ResponseWriter, r *http.Request, ses
 		if strings.EqualFold(m, "default") {
 			sess.Model = ""
 		} else {
+			if strings.HasPrefix(m, "-") || strings.ContainsAny(m, "\x00\r\n \t") {
+				http.Error(w, "Invalid model name", http.StatusBadRequest)
+				return
+			}
 			sess.Model = m
 		}
 	}
 
 	if req.Effort != nil {
-		eff := strings.TrimSpace(*req.Effort)
-		if strings.EqualFold(eff, "default") {
+		eff := strings.ToLower(strings.TrimSpace(*req.Effort))
+		if eff == "" || eff == "default" {
 			sess.Effort = ""
-		} else {
+		} else if eff == "low" || eff == "medium" || eff == "high" || eff == "xhigh" || eff == "max" {
 			sess.Effort = eff
+		} else {
+			http.Error(w, "Invalid effort: must be 'low', 'medium', 'high', 'xhigh', or 'max'", http.StatusBadRequest)
+			return
 		}
 	}
 
 	if req.PermissionMode != nil {
-		pm := strings.TrimSpace(*req.PermissionMode)
-		if pm != "" && pm != "bypassPermissions" && pm != "plan" {
-			http.Error(w, "Invalid permission_mode: must be 'bypassPermissions' or 'plan'", http.StatusBadRequest)
+		rawPm := strings.TrimSpace(*req.PermissionMode)
+		pmLower := strings.ToLower(rawPm)
+		if pmLower == "" || pmLower == "default" || pmLower == "bypasspermissions" {
+			sess.PermissionMode = "bypassPermissions"
+		} else if pmLower == "plan" {
+			sess.PermissionMode = "plan"
+		} else if pmLower == "auto" {
+			sess.PermissionMode = "auto"
+		} else if pmLower == "acceptedits" {
+			sess.PermissionMode = "acceptEdits"
+		} else if pmLower == "dontask" {
+			if strings.EqualFold(sess.Agent, "antigravity") {
+				http.Error(w, "permission_mode 'dontAsk' is not supported for antigravity", http.StatusBadRequest)
+				return
+			}
+			sess.PermissionMode = "dontAsk"
+		} else {
+			http.Error(w, "Invalid permission_mode: must be 'bypassPermissions', 'auto', 'acceptEdits', 'dontAsk', or 'plan'", http.StatusBadRequest)
 			return
 		}
-		if pm == "" {
-			pm = "bypassPermissions"
+	}
+
+	if req.ExtraDirs != nil || len(req.AddDirs) > 0 || len(req.RemoveDirs) > 0 {
+		newDirs, err := normalizeAndValidateExtraDirs(sess.Cwd, sess.ExtraDirs, req.ExtraDirs, req.AddDirs, req.RemoveDirs, s.effectiveHomeDir())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
 		}
-		sess.PermissionMode = pm
+		sess.ExtraDirs = newDirs
 	}
 
 	sess.MetadataUpdatedAt = time.Now().UTC()
@@ -1461,6 +1500,7 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		CurrentTaskID        string   `json:"current_task_id"`
 		TaskKind             string   `json:"task_kind"`
 		RepoNodePath         string   `json:"repo_node_path"`
+		ExtraDirs            []string `json:"extra_dirs"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -1565,6 +1605,7 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 				"task_id":        req.TaskID,
 				"task_kind":      req.TaskKind,
 				"repo_node_path": req.RepoNodePath,
+				"extra_dirs":     req.ExtraDirs,
 			})
 			fwdReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, targetURL, bytes.NewBuffer(payload))
 			if err != nil {
@@ -1712,6 +1753,15 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 	envVars["ACKBAR_TASK_KIND"] = taskKind
 
 	if req.EngineType == EngineHeadless {
+		var initialExtraDirs []string
+		if len(req.ExtraDirs) > 0 {
+			cleanDirs, err := normalizeAndValidateExtraDirs(req.Cwd, nil, &req.ExtraDirs, nil, nil, s.effectiveHomeDir())
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			initialExtraDirs = cleanDirs
+		}
 		now := time.Now().UTC()
 		sess := &Session{
 			ID:                fmt.Sprintf("%s:%s:%s", req.Agent, effectiveHost, tempUUID),
@@ -1727,6 +1777,7 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 			Managed:           true,
 			TmuxName:          "",
 			EngineType:        EngineHeadless,
+			ExtraDirs:         initialExtraDirs,
 			State:             StateIdle,
 			Activity:          "Headless chat session ready",
 			StartedAt:         now,

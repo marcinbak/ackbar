@@ -5,7 +5,7 @@
 The `ackbard` daemon is the central backend running on every monitored machine (local workstation and remote compute servers).
 
 ### Key Subsystems:
-1. **HTTP Control Plane:** Exposes REST endpoints for session listing, lifecycle controls (`kill`, `restart`, `move`, `rename`, `delete`), host management, and project node creation.
+1. **HTTP Control Plane:** Exposes REST endpoints for session listing, lifecycle controls (`kill`, `restart`, `move`, `rename`, `delete`), host management, project node creation, and standalone commands (`shell`, `config`, `clear`, `compact`, `inspect`, `diff`, `rewind`). Hardened with local origin validation (`isTrustedLocalOrigin`) blocking cross-origin mutating requests with `403 Forbidden`.
 2. **Web Dashboard & PWA Frontend:** Serves an embedded desktop/mobile Web GUI with tabs, real-time live terminal emulation (`xterm.js`), and collapsible project trees.
 3. **PTY WebSocket Multiplexer (`/v1/sessions/pty`):** Attaches in-place to running tmux panes using binary WebSocket frames and bidirectional keepalive heartbeats. Resizing is deduplicated so the agent only gets `SIGWINCH` on real size changes (see [PTY Terminal Sizing](#pty-terminal-sizing-v1sessionspty)).
 4. **Hook Ingestion Engine:** Ingests live telemetry hooks from agents (`/v1/hooks/<agent>`). Responses are sent immediately (`200 OK`) after synchronously reserving a slot in a per-session FIFO queue (`reserveSessionHook` keyed by `agent:nativeID`), ensuring asynchronous processing strictly preserves arrival order and prevents out-of-order `PostToolUse` or `PreToolUse` hooks from clobbering `Stop` (`StateIdle`) or `PermissionRequest` (`StateBlocked`) transitions.
@@ -22,6 +22,10 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 * **`server_chat.go`:** Headless/tmux prompt submission (`/v1/sessions/prompt` with `delay_seconds`, `deliver_at`, and inline `/delay <duration> <prompt>` scheduling), prompt queue management (`GET`/`DELETE`/`POST` `/v1/sessions/prompt/queue` with `action: send_now`), `scheduled_prompts` SQLite persistence, SSE chat streaming (`/v1/sessions/chat/stream`), turn cancellation, automated session handover (`/v1/sessions/handover`), and transcript endpoints.
 * **`headless.go`, `headless_persistent.go`, `headless_spool.go`:** Headless coordinator, warm worker lifecycle management, turn dispatch/reuse, and monotonic NDJSON turn spooling.
 * **`headless_worker.go`, `headless_config.go`, `headless_worker_ipc.go`:** Detached `--headless-worker` process, persistent stdio stream loop, configuration fingerprinting, and Unix socket RPC.
+* **`headless_commands.go`:** Inline shell execution (`POST /v1/sessions/{id}/shell`), directory validation (`/add-dir`), in-place conversation rotation, `/clear`, `/reset`, and `/compact`.
+* **`headless_commands_inspect.go`:** Allowlisted CLI inspection (`/v1/sessions/{id}/inspect`), git diff inspection (`/v1/sessions/{id}/diff`), and transcript token/cost metrics.
+* **`headless_rewind.go`:** Human turn rewind listing and execution (`/v1/sessions/{id}/rewind`), transcript cloning, and history seeding.
+* **`headless_handover.go`:** Deterministic 4-point handover briefing synthesis and headless context compaction.
 * **`headless_auth_detect.go`, `headless_auth_broker.go`, `headless_auth_flow.go`:** Detects OAuth authentication blocks (`BlockAuth`), manages allowlisted auth processes, relays loopback/stdin callbacks, and auto-resumes sessions.
 * **`server_mcp_status.go`:** Inspects configured MCP servers, probes compiled plugin authentication status, and caches status responses with 10s TTL.
 * **`headless_reattach.go` & `headless_stream_replay.go`:** Daemon reboot worker recovery, socket re-attachment, and gapless SSE replay (`?after_seq`, `Last-Event-ID`).
@@ -54,7 +58,14 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 | `POST` | `/v1/meta/resolve` | Derives host, agent, group, and existing session match from prompt via Jev AI / heuristics. |
 | `POST` | `/v1/hooks/{agent}` | Ingests agent lifecycle and tool hook events with in-place `/clear` rotation detection. |
 | `POST` | `/v1/sessions/control` | Executes control actions: `resume`, `restart`, `kill`, `move`, `rename`, `delete`, `handover`, `later`, `unlater`, `done`, `active`, `update_config`, `respond`. |
-| `PATCH` | `/v1/sessions/{id}/config` | Updates persisted session configuration (`model`, `effort`, `permission_mode`: `bypassPermissions` or `plan`). |
+| `PATCH` | `/v1/sessions/{id}/config` | Updates session configuration (`model`, `effort`, `permission_mode`, `extra_dirs`). |
+| `POST` | `/v1/sessions/{id}/shell` | Executes shell command in session CWD via `/bin/sh -c` (30s timeout, 128KB cap, `-pgid` kill). |
+| `POST` | `/v1/sessions/{id}/clear` | Rotates conversation context in-place to `Conv N+1` while preserving session configuration. |
+| `POST` | `/v1/sessions/{id}/compact` | Triggers context compaction (native stream-json turn for Claude, daemon rotation for Antigravity). |
+| `GET` | `/v1/sessions/{id}/inspect` | Runs allowlisted CLI inspection (`kind=plugins|agents|doctor|context|cost`) and computes token metrics. |
+| `GET` | `/v1/sessions/{id}/diff` | Returns working directory Git status, diffstat, and unified diff (`GIT_OPTIONAL_LOCKS=0`). |
+| `GET` | `/v1/sessions/{id}/rewind` | Lists human turn checkpoints available for conversation rollback. |
+| `POST` | `/v1/sessions/{id}/rewind` | Rolls back session to target turn checkpoint via transcript clone or bounded history seed. |
 | `GET` | `/v1/sessions/{id}/suggestions` | Returns `/` command/skill suggestions (`kind=commands`), `@` relative file path suggestions (`kind=files&q=...`), or agent-aware model options (`kind=models&q=...`). |
 | `POST` | `/v1/sessions/handover`| Initiates automated session handover, briefing extraction, and context rotation. |
 | `POST` | `/v1/sessions/mark-read` | Marks a session as read (`is_unread = false`), clearing visual unread cues. |
@@ -202,6 +213,7 @@ The SQLite database (`~/.config/ackbar/ackbard.db`) uses CGO-free pure Go SQLite
 * `is_supervisor`: Tracks whether the session is a zero-input `⚓ Supervisor` session (`1` = supervisor, `0` = normal).
 * `current_task_id`: Tracks the active Ackbar task ID bound to the session (if any), categorizing the session under the `📋 Tasks` subsection. Each host strictly stores only its own local sessions in the `sessions` table (no cross-host session replicas).
 * `blocked_meta`: Persists structured JSON metadata (`auth_target`, `auth_kind`, `auth_server`, `auth_url`, `auth_hint`, `flow_id`) for sessions in `BlockAuth` state.
+* `extra_dirs`: Persists JSON array of additional allowed directory paths (`--add-dir`) for agent workspace access.
 
 ---
 

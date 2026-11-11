@@ -6171,3 +6171,154 @@ body, html {
   transform: translateY(0);
 }
 
+/* Chat Shell & Ephemeral Command Cards */
+.chat-input-shell-mode {
+  display: inline-flex;
+  align-items: center;
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: rgba(59, 130, 246, 0.18);
+  color: #60a5fa;
+  border: 1px solid rgba(59, 130, 246, 0.35);
+  margin-bottom: 4px;
+  user-select: none;
+}
+
+.chat-card {
+  margin: 12px 0;
+  padding: 12px 14px;
+  background: #11131a;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-main);
+}
+
+.chat-bash-card .bash-card-header,
+.chat-diff-card .diff-card-header,
+.chat-rewind-card .rewind-header,
+.chat-inspect-card .inspect-header,
+.chat-config-notice .config-notice-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+
+.bash-card-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+}
+
+.bash-cmd {
+  font-family: var(--font-mono, monospace);
+  color: #93c5fd;
+  font-size: 12px;
+}
+
+.bash-badge {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
+.bash-badge.success {
+  background: rgba(34, 197, 94, 0.2);
+  color: #4ade80;
+  border: 1px solid rgba(34, 197, 94, 0.3);
+}
+
+.bash-badge.fail {
+  background: rgba(239, 68, 68, 0.2);
+  color: #f87171;
+  border: 1px solid rgba(239, 68, 68, 0.3);
+}
+
+.bash-output,
+.diff-code,
+.diff-stat,
+.doctor-report {
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  background: #090a0f;
+  padding: 8px 10px;
+  border-radius: 6px;
+  overflow-x: auto;
+  max-height: 260px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.btn-bash-attach,
+.btn-diff-attach,
+.btn-rewind-trigger {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 500;
+  border-radius: 4px;
+  background: rgba(59, 130, 246, 0.15);
+  border: 1px solid rgba(59, 130, 246, 0.3);
+  color: #93c5fd;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.btn-bash-attach:hover,
+.btn-diff-attach:hover,
+.btn-rewind-trigger:hover {
+  background: rgba(59, 130, 246, 0.3);
+  border-color: #60a5fa;
+}
+
+.rewind-turn-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  gap: 12px;
+}
+
+.rewind-turn-num {
+  font-weight: 600;
+  color: #60a5fa;
+  margin-right: 8px;
+  font-size: 12px;
+}
+
+.rewind-turn-preview {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.btn-card-collapse {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0 4px;
+  font-size: 11px;
+  line-height: 1;
+}
+
+.btn-card-collapse:hover {
+  color: var(--text-main, #fff);
+}
+
+.chat-card.is-collapsed .bash-card-body,
+.chat-card.is-collapsed .diff-card-body,
+.chat-card.is-collapsed .bash-card-actions,
+.chat-card.is-collapsed .diff-card-actions {
+  display: none !important;
+}
+

@@ -1469,6 +1469,172 @@ test('mountMCPStatus renders server and plugin health pills with sign-in and inl
   }
 });
 
+test('updateShellModeHint toggles .chat-input-shell-mode badge when input begins with !', async () => {
+  const { updateShellModeHint } = await import('./chat-commands.js');
+
+  const composerBox = document.createElement('div');
+  composerBox.className = 'chat-composer-box';
+  const textarea = document.createElement('textarea');
+  textarea.className = 'chat-composer-textarea';
+  composerBox.appendChild(textarea);
+
+  const tabObj = {
+    chatComposerBox: composerBox,
+    chatInputEl: textarea
+  };
+
+  // 1. Initial state: normal input -> no badge
+  textarea.value = 'hello world';
+  updateShellModeHint(tabObj);
+  let badge = composerBox.querySelector('.chat-input-shell-mode');
+  assert.ok(!badge || badge.style.display === 'none');
+
+  // 2. Typing !ls -la -> shows shell mode badge
+  textarea.value = '!ls -la';
+  updateShellModeHint(tabObj);
+  badge = composerBox.querySelector('.chat-input-shell-mode');
+  assert.ok(badge, 'Badge element should be created');
+  assert.equal(badge.style.display, 'inline-flex');
+  assert.ok(badge.textContent.includes('SHELL'));
+
+  // 3. Clear ! -> hides badge
+  textarea.value = 'ls -la';
+  updateShellModeHint(tabObj);
+  assert.equal(badge.style.display, 'none');
+});
+
+test('interceptChatInput executes shell command and renders .chat-bash-card with attach action', async () => {
+  const { interceptChatInput } = await import('./chat-commands.js');
+
+  const container = document.createElement('div');
+  const inputEl = document.createElement('textarea');
+  const tabObj = {
+    id: 'claude-code:local:shell-test-1',
+    session: { id: 'claude-code:local:shell-test-1', agent: 'claude-code' },
+    chatMessagesEl: container,
+    chatInputEl: inputEl,
+    ephemeralCards: []
+  };
+
+  const prevFetch = globalThis.fetch;
+  let shellCalled = false;
+  globalThis.fetch = async (url, opts) => {
+    if (String(url).includes('/shell')) {
+      shellCalled = true;
+      const body = JSON.parse(opts.body);
+      assert.equal(body.command, 'git status -s');
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          command: 'git status -s',
+          cwd: '/repo',
+          stdout: 'M web/js/chat.js',
+          stderr: '',
+          exit_code: 0,
+          duration_ms: 12,
+          timed_out: false,
+          truncated: false
+        })
+      };
+    }
+    return { ok: true, json: async () => ({}) };
+  };
+
+  try {
+    inputEl.value = '! git status -s';
+    const intercepted = await interceptChatInput(tabObj, '! git status -s');
+    assert.equal(intercepted, true, 'Shell command should be intercepted');
+    assert.equal(shellCalled, true, 'Shell API must be invoked');
+    assert.equal(inputEl.value, '', 'Input should be cleared');
+
+    const bashCard = container.querySelector('.chat-bash-card');
+    assert.ok(bashCard, 'Should render .chat-bash-card');
+    assert.ok(bashCard.textContent.includes('M web/js/chat.js'));
+
+    const attachBtn = bashCard.querySelector('.btn-bash-attach');
+    assert.ok(attachBtn, 'Must render [+ Attach to Prompt] button');
+    attachBtn.click();
+
+    assert.ok(inputEl.value.includes('```sh\n$ git status -s\nM web/js/chat.js\n```'));
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});
+
+test('interceptChatInput handles /effort on antigravity without PATCHing config', async () => {
+  const { interceptChatInput } = await import('./chat-commands.js');
+
+  const container = document.createElement('div');
+  const inputEl = document.createElement('textarea');
+  const tabObj = {
+    id: 'antigravity:local:agy-1',
+    session: { id: 'antigravity:local:agy-1', agent: 'antigravity' },
+    chatMessagesEl: container,
+    chatInputEl: inputEl,
+    ephemeralCards: []
+  };
+
+  let configPatchCalled = false;
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    if (String(url).includes('/config')) {
+      configPatchCalled = true;
+    }
+    return { ok: true, json: async () => ({}) };
+  };
+
+  try {
+    inputEl.value = '/effort high';
+    const intercepted = await interceptChatInput(tabObj, '/effort high');
+    assert.equal(intercepted, true);
+    assert.equal(configPatchCalled, false, 'Must not patch config on antigravity for effort');
+    const notice = container.querySelector('.chat-config-notice');
+    assert.ok(notice);
+    assert.ok(notice.textContent.includes('Antigravity models encode reasoning effort in model tiers'));
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});
+
+test('interceptChatInput handles /mcp mounting status card', async () => {
+  const { interceptChatInput } = await import('./chat-commands.js');
+
+  const container = document.createElement('div');
+  const inputEl = document.createElement('textarea');
+  const tabObj = {
+    id: 'claude-code:local:mcp-test-1',
+    session: { id: 'claude-code:local:mcp-test-1', agent: 'claude-code' },
+    chatMessagesEl: container,
+    chatInputEl: inputEl,
+    ephemeralCards: []
+  };
+
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    return {
+      ok: true,
+      json: async () => ({
+        configured_count: 1,
+        active_count: 1,
+        servers: [
+          { name: 'sqlite', status: 'connected', scope: 'project', transport: 'stdio' }
+        ]
+      })
+    };
+  };
+
+  try {
+    inputEl.value = '/mcp';
+    const intercepted = await interceptChatInput(tabObj, '/mcp');
+    assert.equal(intercepted, true);
+    const mcpCard = container.querySelector('.chat-inspect-mcp');
+    assert.ok(mcpCard, 'Must append .chat-inspect-mcp ephemeral card');
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});
+
 
 
 
