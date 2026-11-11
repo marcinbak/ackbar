@@ -23,13 +23,38 @@ export function insertSnippetIntoComposer(tabObj, snippet) {
   input.focus();
 }
 
+function wireCollapsibleCard(card, headerEl) {
+  const toggleBtn = card.querySelector('.btn-card-collapse');
+  const toggle = () => {
+    const isCollapsed = card.classList.toggle('is-collapsed');
+    if (toggleBtn) {
+      toggleBtn.setAttribute('aria-expanded', !isCollapsed);
+      toggleBtn.textContent = isCollapsed ? '▸' : '▾';
+    }
+  };
+  if (toggleBtn) {
+    toggleBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggle();
+    });
+  }
+  if (headerEl) {
+    headerEl.addEventListener('click', (e) => {
+      if (e.target.closest('button, a, input, code')) return;
+      toggle();
+    });
+  }
+}
+
 export function renderBashCard(tabObj, data) {
   const card = document.createElement('div');
   card.className = 'chat-card chat-bash-card';
 
-  const isSuccess = data.exit_code === 0 && !data.timed_out;
+  const exitCode = Number(data.exit_code) || 0;
+  const durationMs = Number(data.duration_ms) || 0;
+  const isSuccess = exitCode === 0 && !data.timed_out;
   const statusBadge = isSuccess ? '<span class="bash-badge success">exit 0</span>' :
-    `<span class="bash-badge fail">${data.timed_out ? 'timed out (30s)' : `exit ${data.exit_code}`}</span>`;
+    `<span class="bash-badge fail">${data.timed_out ? 'timed out (30s)' : `exit ${exitCode}`}</span>`;
   const truncBadge = data.truncated ? '<span class="bash-badge trunc">truncated (128 KB)</span>' : '';
 
   const outputText = [data.stdout || '', data.stderr || ''].filter(Boolean).join('\n').trim();
@@ -37,11 +62,12 @@ export function renderBashCard(tabObj, data) {
   card.innerHTML = `
     <div class="bash-card-header">
       <div class="bash-card-title">
+        <button type="button" class="btn-card-collapse" aria-expanded="true" title="Toggle output">▾</button>
         <span class="bash-icon">⚡</span>
         <code class="bash-cmd">${escapeHtml(data.command || '')}</code>
       </div>
       <div class="bash-card-meta">
-        <span class="bash-duration">${data.duration_ms || 0}ms</span>
+        <span class="bash-duration">${durationMs}ms</span>
         ${statusBadge}
         ${truncBadge}
       </div>
@@ -53,6 +79,9 @@ export function renderBashCard(tabObj, data) {
       <button type="button" class="btn-bash-attach" title="Attach output to prompt composer">+ Attach to Prompt</button>
     </div>
   `;
+
+  const headerEl = card.querySelector('.bash-card-header');
+  wireCollapsibleCard(card, headerEl);
 
   const attachBtn = card.querySelector('.btn-bash-attach');
   if (attachBtn) {
@@ -88,6 +117,7 @@ export function renderDiffCard(tabObj, data) {
   card.innerHTML = `
     <div class="diff-card-header">
       <div class="diff-title-wrap">
+        <button type="button" class="btn-card-collapse" aria-expanded="true" title="Toggle diff">▾</button>
         <span class="diff-icon">📊</span>
         <span class="diff-title">Git Diff & Status</span>
         ${branchLabel}
@@ -107,6 +137,9 @@ export function renderDiffCard(tabObj, data) {
       </div>
     ` : ''}
   `;
+
+  const headerEl = card.querySelector('.diff-card-header');
+  wireCollapsibleCard(card, headerEl);
 
   const attachBtn = card.querySelector('.btn-diff-attach');
   if (attachBtn && data.diff) {
@@ -136,13 +169,14 @@ export function renderRewindCard(tabObj, rewindData, onSelectTurn) {
 
   let turnItemsHtml = '';
   for (const t of turns) {
+    const turnNum = Number(t.turn) || 0;
     turnItemsHtml += `
       <div class="rewind-turn-item">
         <div class="rewind-turn-info">
-          <span class="rewind-turn-num">Turn ${t.turn}</span>
+          <span class="rewind-turn-num">Turn ${turnNum}</span>
           <span class="rewind-turn-preview">${escapeHtml(t.preview || '')}</span>
         </div>
-        <button type="button" class="btn-rewind-trigger" data-turn="${t.turn}">Rewind Before Turn ${t.turn}</button>
+        <button type="button" class="btn-rewind-trigger" data-turn="${turnNum}">Rewind Before Turn ${turnNum}</button>
       </div>
     `;
   }
@@ -183,19 +217,29 @@ export function renderConfigNoticeCard(tabObj, title, message) {
 }
 
 export function renderInspectCard(tabObj, kind, data) {
+  const safeKind = String(kind || '').replace(/[^a-z0-9_-]/gi, '');
   const card = document.createElement('div');
-  card.className = `chat-card chat-inspect-card chat-inspect-${kind}`;
+  card.className = `chat-card chat-inspect-card chat-inspect-${safeKind}`;
 
-  if (kind === 'context' || kind === 'cost') {
+  if (safeKind === 'context' || safeKind === 'cost') {
+    const turnCount = Number(data.turn_count) || 0;
+    const contextUsed = Number(data.context_used_tokens) || 0;
+    const contextLimit = Number(data.context_limit_tokens) || 0;
+    const contextPct = Number(data.context_pct) || 0;
+    const inputTokens = Number(data.input_tokens) || 0;
+    const outputTokens = Number(data.output_tokens) || 0;
+    const cacheRead = Number(data.cache_read_tokens) || 0;
+    const cacheWrite = Number(data.cache_write_tokens) || 0;
+
     card.innerHTML = `
       <div class="inspect-header"><span>📊</span> <strong>Context & Cost Breakdown (${escapeHtml(data.agent || '')})</strong></div>
       <div class="inspect-grid">
         <div><strong>Model:</strong> ${escapeHtml(data.model || 'Default')}</div>
-        <div><strong>Turns:</strong> ${data.turn_count || 0}</div>
-        <div><strong>Context Window:</strong> ${data.context_used_tokens || 0} / ${data.context_limit_tokens || 0} tokens (${data.context_pct || 0}%)</div>
-        <div><strong>Input Tokens:</strong> ${data.input_tokens || 0}</div>
-        <div><strong>Output Tokens:</strong> ${data.output_tokens || 0}</div>
-        <div><strong>Cache Read / Write:</strong> ${data.cache_read_tokens || 0} / ${data.cache_write_tokens || 0}</div>
+        <div><strong>Turns:</strong> ${turnCount}</div>
+        <div><strong>Context Window:</strong> ${contextUsed} / ${contextLimit} tokens (${contextPct}%)</div>
+        <div><strong>Input Tokens:</strong> ${inputTokens}</div>
+        <div><strong>Output Tokens:</strong> ${outputTokens}</div>
+        <div><strong>Cache Read / Write:</strong> ${cacheRead} / ${cacheWrite}</div>
         <div><strong>Est. API Cost:</strong> <span class="cost-val">${escapeHtml(data.estimated_usd || '$0.00')}</span></div>
       </div>
       <div class="inspect-note">${escapeHtml(data.billing_note || '')}</div>

@@ -1474,10 +1474,7 @@ function executeClientAction(tabObj, actionName) {
       togglePlanMode(tabObj);
       break;
     case 'clear':
-      if (tabObj.chatMessagesEl) {
-        tabObj.chatMessagesEl.innerHTML = '';
-      }
-      loadChatTranscript(tabObj);
+      interceptChatInput(tabObj, '/clear');
       break;
     case 'terminal':
       if (tabObj.session) {
@@ -1490,7 +1487,7 @@ function executeClientAction(tabObj, actionName) {
       }
       break;
     case 'compact':
-      sendChatPrompt(tabObj, '/compact');
+      interceptChatInput(tabObj, '/compact');
       break;
     case 'voice_live':
       toggleAntigravityLiveVoice(tabObj, 'start_live');
@@ -1502,7 +1499,8 @@ function executeClientAction(tabObj, actionName) {
       stopAntigravityLiveVoice(true);
       break;
     default:
-      console.warn('Unknown client action:', actionName);
+      interceptChatInput(tabObj, '/' + actionName.replace(/_/g, '-'));
+      break;
   }
 }
 

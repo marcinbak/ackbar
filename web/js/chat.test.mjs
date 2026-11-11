@@ -1597,6 +1597,44 @@ test('interceptChatInput handles /effort on antigravity without PATCHing config'
   }
 });
 
+test('interceptChatInput handles /mcp mounting status card', async () => {
+  const { interceptChatInput } = await import('./chat-commands.js');
+
+  const container = document.createElement('div');
+  const inputEl = document.createElement('textarea');
+  const tabObj = {
+    id: 'claude-code:local:mcp-test-1',
+    session: { id: 'claude-code:local:mcp-test-1', agent: 'claude-code' },
+    chatMessagesEl: container,
+    chatInputEl: inputEl,
+    ephemeralCards: []
+  };
+
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    return {
+      ok: true,
+      json: async () => ({
+        configured_count: 1,
+        active_count: 1,
+        servers: [
+          { name: 'sqlite', status: 'connected', scope: 'project', transport: 'stdio' }
+        ]
+      })
+    };
+  };
+
+  try {
+    inputEl.value = '/mcp';
+    const intercepted = await interceptChatInput(tabObj, '/mcp');
+    assert.equal(intercepted, true);
+    const mcpCard = container.querySelector('.chat-inspect-mcp');
+    assert.ok(mcpCard, 'Must append .chat-inspect-mcp ephemeral card');
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});
+
 
 
 

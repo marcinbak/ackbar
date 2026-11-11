@@ -1219,6 +1219,10 @@ func (s *Server) handleSessionConfig(w http.ResponseWriter, r *http.Request, ses
 		} else if pmLower == "acceptedits" {
 			sess.PermissionMode = "acceptEdits"
 		} else if pmLower == "dontask" {
+			if strings.EqualFold(sess.Agent, "antigravity") {
+				http.Error(w, "permission_mode 'dontAsk' is not supported for antigravity", http.StatusBadRequest)
+				return
+			}
 			sess.PermissionMode = "dontAsk"
 		} else {
 			http.Error(w, "Invalid permission_mode: must be 'bypassPermissions', 'auto', 'acceptEdits', 'dontAsk', or 'plan'", http.StatusBadRequest)
@@ -1601,6 +1605,7 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 				"task_id":        req.TaskID,
 				"task_kind":      req.TaskKind,
 				"repo_node_path": req.RepoNodePath,
+				"extra_dirs":     req.ExtraDirs,
 			})
 			fwdReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, targetURL, bytes.NewBuffer(payload))
 			if err != nil {

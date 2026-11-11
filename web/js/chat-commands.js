@@ -1,16 +1,32 @@
 import { state, clearChatDraft } from './state.js';
+import { getAuthToken } from './auth.js';
 import { getSessionBaseUrl } from './utils.js';
 import { migrateTabId } from './tabs.js';
 import { renderTree } from './tree.js';
 import { connectChatStream, disconnectChatStream, loadChatTranscript } from './chat.js';
 import { mountMCPStatus } from './chat-auth.js';
 import {
+  appendEphemeralCard,
   renderBashCard,
   renderDiffCard,
   renderRewindCard,
   renderConfigNoticeCard,
   renderInspectCard
 } from './chat-command-cards.js';
+
+async function fetchSessionJSON(url, options = {}) {
+  const token = getAuthToken();
+  const headers = Object.assign({}, options.headers || {});
+  if (token && !headers['Authorization']) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+  const res = await fetch(url, Object.assign({}, options, { headers }));
+  if (!res.ok) {
+    const errText = (await res.text()).trim();
+    throw new Error(errText || `HTTP ${res.status}`);
+  }
+  return await res.json();
+}
 
 export function updateShellModeHint(tabObj) {
   if (!tabObj || !tabObj.chatComposerBox) return;
@@ -99,12 +115,11 @@ export async function interceptChatInput(tabObj, rawText) {
     updateShellModeHint(tabObj);
 
     try {
-      const res = await fetch(`${baseUrl}/v1/sessions/${encodeURIComponent(sessionId)}/shell`, {
+      const data = await fetchSessionJSON(`${baseUrl}/v1/sessions/${encodeURIComponent(sessionId)}/shell`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ command: cmd })
       });
-      const data = await res.json();
       renderBashCard(tabObj, data);
     } catch (err) {
       renderConfigNoticeCard(tabObj, 'Shell Execution Failed', err.message);
@@ -135,11 +150,10 @@ export async function interceptChatInput(tabObj, rawText) {
       case 'clear':
       case 'reset':
         try {
-          const res = await fetch(`${baseUrl}/v1/sessions/${encodeURIComponent(sessionId)}/clear`, {
+          const data = await fetchSessionJSON(`${baseUrl}/v1/sessions/${encodeURIComponent(sessionId)}/clear`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' }
           });
-          const data = await res.json();
           if (data && data.session) {
             await rotateSessionTabInPlace(tabObj, sessionId, data.session, 'Cleared conversation context into fresh turn.');
           }
@@ -150,12 +164,11 @@ export async function interceptChatInput(tabObj, rawText) {
 
       case 'compact':
         try {
-          const res = await fetch(`${baseUrl}/v1/sessions/${encodeURIComponent(sessionId)}/compact`, {
+          const data = await fetchSessionJSON(`${baseUrl}/v1/sessions/${encodeURIComponent(sessionId)}/compact`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ instructions: args })
           });
-          const data = await res.json();
           if (data && data.mode === 'rotated_session' && data.session) {
             await rotateSessionTabInPlace(tabObj, sessionId, data.session, 'Compacted context into fresh conversation.');
           } else if (data && data.mode === 'native_stream') {
@@ -168,12 +181,11 @@ export async function interceptChatInput(tabObj, rawText) {
 
       case 'handover':
         try {
-          const res = await fetch(`${baseUrl}/v1/sessions/handover`, {
+          const data = await fetchSessionJSON(`${baseUrl}/v1/sessions/handover`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ id: sessionId, strategy: 'in_place', custom_instruction: args })
           });
-          const data = await res.json();
           if (data && data.session) {
             await rotateSessionTabInPlace(tabObj, sessionId, data.session, 'Handover briefing seeded into fresh conversation.');
           }
@@ -188,12 +200,11 @@ export async function interceptChatInput(tabObj, rawText) {
           return true;
         }
         try {
-          const res = await fetch(`${baseUrl}/v1/sessions/${encodeURIComponent(sessionId)}/config`, {
+          const updated = await fetchSessionJSON(`${baseUrl}/v1/sessions/${encodeURIComponent(sessionId)}/config`, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ model: args })
           });
-          const updated = await res.json();
           tabObj.session.model = updated.model;
           renderConfigNoticeCard(tabObj, 'Model Updated', `Model set to: ${updated.model || 'Default'}`);
         } catch (err) {
@@ -211,12 +222,11 @@ export async function interceptChatInput(tabObj, rawText) {
           return true;
         }
         try {
-          const res = await fetch(`${baseUrl}/v1/sessions/${encodeURIComponent(sessionId)}/config`, {
+          const updated = await fetchSessionJSON(`${baseUrl}/v1/sessions/${encodeURIComponent(sessionId)}/config`, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ effort: args })
           });
-          const updated = await res.json();
           tabObj.session.effort = updated.effort;
           renderConfigNoticeCard(tabObj, 'Effort Updated', `Reasoning effort set to: ${updated.effort || 'Default'}`);
         } catch (err) {
@@ -233,12 +243,11 @@ export async function interceptChatInput(tabObj, rawText) {
             return true;
           }
           try {
-            const res = await fetch(`${baseUrl}/v1/sessions/${encodeURIComponent(sessionId)}/config`, {
+            const updated = await fetchSessionJSON(`${baseUrl}/v1/sessions/${encodeURIComponent(sessionId)}/config`, {
               method: 'PATCH',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ permission_mode: mode })
             });
-            const updated = await res.json();
             tabObj.session.permission_mode = updated.permission_mode;
             renderConfigNoticeCard(tabObj, 'Permission Mode Updated', `Permission mode set to: ${updated.permission_mode}`);
           } catch (err) {
@@ -262,12 +271,11 @@ export async function interceptChatInput(tabObj, rawText) {
           } else {
             payload = { add_dirs: [args] };
           }
-          const res = await fetch(`${baseUrl}/v1/sessions/${encodeURIComponent(sessionId)}/config`, {
+          const updated = await fetchSessionJSON(`${baseUrl}/v1/sessions/${encodeURIComponent(sessionId)}/config`, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
           });
-          const updated = await res.json();
           tabObj.session.extra_dirs = updated.extra_dirs;
           const currentDirs = Array.isArray(updated.extra_dirs) ? updated.extra_dirs : [];
           renderConfigNoticeCard(tabObj, 'Extra Directories Updated', currentDirs.length > 0 ? currentDirs.join('\n') : 'Extra directories cleared.');
@@ -276,9 +284,13 @@ export async function interceptChatInput(tabObj, rawText) {
         }
         return true;
 
-      case 'mcp':
-        mountMCPStatus(tabObj, true);
+      case 'mcp': {
+        const card = document.createElement('div');
+        card.className = 'chat-card chat-inspect-card chat-inspect-mcp';
+        appendEphemeralCard(tabObj, card);
+        await mountMCPStatus(card, sessionId, tabObj);
         return true;
+      }
 
       case 'plugins':
       case 'agents':
@@ -286,8 +298,7 @@ export async function interceptChatInput(tabObj, rawText) {
       case 'context':
       case 'cost':
         try {
-          const res = await fetch(`${baseUrl}/v1/sessions/${encodeURIComponent(sessionId)}/inspect?kind=${encodeURIComponent(cmdName)}`);
-          const data = await res.json();
+          const data = await fetchSessionJSON(`${baseUrl}/v1/sessions/${encodeURIComponent(sessionId)}/inspect?kind=${encodeURIComponent(cmdName)}`);
           renderInspectCard(tabObj, cmdName, data);
         } catch (err) {
           renderConfigNoticeCard(tabObj, `${cmdName} Failed`, err.message);
@@ -296,8 +307,7 @@ export async function interceptChatInput(tabObj, rawText) {
 
       case 'diff':
         try {
-          const res = await fetch(`${baseUrl}/v1/sessions/${encodeURIComponent(sessionId)}/diff`);
-          const data = await res.json();
+          const data = await fetchSessionJSON(`${baseUrl}/v1/sessions/${encodeURIComponent(sessionId)}/diff`);
           renderDiffCard(tabObj, data);
         } catch (err) {
           renderConfigNoticeCard(tabObj, 'Diff Failed', err.message);
@@ -308,12 +318,11 @@ export async function interceptChatInput(tabObj, rawText) {
         if (args && /^\d+$/.test(args)) {
           const turnNum = parseInt(args, 10);
           try {
-            const res = await fetch(`${baseUrl}/v1/sessions/${encodeURIComponent(sessionId)}/rewind`, {
+            const data = await fetchSessionJSON(`${baseUrl}/v1/sessions/${encodeURIComponent(sessionId)}/rewind`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ before_turn: turnNum })
             });
-            const data = await res.json();
             if (data && data.session) {
               await rotateSessionTabInPlace(tabObj, sessionId, data.session, `Rewound conversation before Turn ${turnNum}.`);
             }
@@ -324,16 +333,14 @@ export async function interceptChatInput(tabObj, rawText) {
         }
 
         try {
-          const res = await fetch(`${baseUrl}/v1/sessions/${encodeURIComponent(sessionId)}/rewind`);
-          const data = await res.json();
+          const data = await fetchSessionJSON(`${baseUrl}/v1/sessions/${encodeURIComponent(sessionId)}/rewind`);
           renderRewindCard(tabObj, data, async (selectedTurn) => {
             try {
-              const postRes = await fetch(`${baseUrl}/v1/sessions/${encodeURIComponent(sessionId)}/rewind`, {
+              const postData = await fetchSessionJSON(`${baseUrl}/v1/sessions/${encodeURIComponent(sessionId)}/rewind`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ before_turn: selectedTurn })
               });
-              const postData = await postRes.json();
               if (postData && postData.session) {
                 await rotateSessionTabInPlace(tabObj, sessionId, postData.session, `Rewound conversation before Turn ${selectedTurn}.`);
               }

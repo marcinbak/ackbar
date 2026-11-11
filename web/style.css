@@ -6301,3 +6301,24 @@ body, html {
   font-size: 12px;
 }
 
+.btn-card-collapse {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0 4px;
+  font-size: 11px;
+  line-height: 1;
+}
+
+.btn-card-collapse:hover {
+  color: var(--text-main, #fff);
+}
+
+.chat-card.is-collapsed .bash-card-body,
+.chat-card.is-collapsed .diff-card-body,
+.chat-card.is-collapsed .bash-card-actions,
+.chat-card.is-collapsed .diff-card-actions {
+  display: none !important;
+}
+

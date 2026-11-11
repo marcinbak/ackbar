@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os/exec"
 	"strings"
 )
 
@@ -43,9 +42,7 @@ func (s *Server) buildDeterministicHandoverBriefing(sess *Session, customInstruc
 
 	gitStatus := "Clean / No git repo"
 	if sess.Cwd != "" && dirExists(sess.Cwd) {
-		cmd := exec.Command("git", "-C", sess.Cwd, "status", "-sb", "--no-color")
-		cmd.Env = append(StripBilledCredentials(cmd.Environ()), "GIT_OPTIONAL_LOCKS=0", "GIT_TERMINAL_PROMPT=0", "TERM=dumb")
-		if out, err := cmd.Output(); err == nil && len(out) > 0 {
+		if out, err := s.runAllowlistedInspectCmd(context.Background(), sess, "git", "-C", sess.Cwd, "status", "-sb", "--no-color"); err == nil && len(out) > 0 {
 			gitStatus = strings.TrimSpace(string(out))
 		}
 	}

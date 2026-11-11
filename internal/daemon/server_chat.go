@@ -582,6 +582,12 @@ func (s *Server) handleSessionHandover(w http.ResponseWriter, r *http.Request) {
 			req.ID = r.URL.Query().Get("session_id")
 		}
 	}
+	if req.ID == "" {
+		parts := strings.Split(r.URL.Path, "/")
+		if len(parts) >= 5 && strings.EqualFold(parts[4], "handover") {
+			req.ID = parts[3]
+		}
+	}
 	if req.Strategy == "" {
 		req.Strategy = r.URL.Query().Get("strategy")
 	}

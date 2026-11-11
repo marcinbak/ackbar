@@ -464,13 +464,48 @@ func (s *Server) Mux() http.Handler {
 		mux.Handle("/", fileServer)
 	}
 
-	return withCORS(s.authMiddleware(mux))
+	return s.withCORS(s.authMiddleware(mux))
 }
 
-func withCORS(next http.Handler) http.Handler {
+func isTrustedLocalOrigin(rawOrigin string) bool {
+	if rawOrigin == "" {
+		return false
+	}
+	u, err := url.Parse(rawOrigin)
+	if err != nil {
+		return false
+	}
+	scheme := strings.ToLower(u.Scheme)
+	hostname := strings.ToLower(u.Hostname())
+	if scheme == "http" || scheme == "https" {
+		return hostname == "localhost" || hostname == "127.0.0.1" || hostname == "::1" || hostname == "[::1]"
+	}
+	if scheme == "capacitor" || scheme == "ionic" {
+		return hostname == "localhost" || hostname == ""
+	}
+	return false
+}
+
+func (s *Server) withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		token := os.Getenv("ACKBAR_TOKEN")
+		if token == "" {
+			token = s.configuredToken
+		}
+		origin := r.Header.Get("Origin")
+		secFetchSite := r.Header.Get("Sec-Fetch-Site")
+
+		if origin != "" {
+			if token != "" {
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+			} else if isTrustedLocalOrigin(origin) {
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+			}
+		} else {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+		}
+
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Ackbar-Host, X-Ackbar-Token")
 		if strings.HasSuffix(r.URL.Path, ".js") || strings.HasSuffix(r.URL.Path, ".css") || r.URL.Path == "/" || r.URL.Path == "/index.html" {
 			w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
@@ -481,6 +516,16 @@ func withCORS(next http.Handler) http.Handler {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
+
+		if token == "" && (r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodPatch || r.Method == http.MethodDelete) {
+			if !strings.HasPrefix(r.URL.Path, "/v1/hooks/") {
+				if (origin != "" && !isTrustedLocalOrigin(origin)) || (secFetchSite == "cross-site" && !isTrustedLocalOrigin(origin)) {
+					http.Error(w, "Cross-origin request rejected in tokenless mode", http.StatusForbidden)
+					return
+				}
+			}
+		}
+
 		next.ServeHTTP(w, r)
 	})
 }

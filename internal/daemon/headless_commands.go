@@ -45,13 +45,6 @@ func (c *shellCappedBuffer) String() string {
 }
 
 func normalizeAndValidateExtraDirs(cwd string, existing []string, reqExtra *[]string, addDirs []string, removeDirs []string, homeDir string) ([]string, error) {
-	var base []string
-	if reqExtra != nil {
-		base = append([]string(nil), *reqExtra...)
-	} else {
-		base = append([]string(nil), existing...)
-	}
-
 	cleanPath := func(p string) (string, error) {
 		p = strings.TrimSpace(p)
 		if p == "" {
@@ -97,16 +90,49 @@ func normalizeAndValidateExtraDirs(cwd string, existing []string, reqExtra *[]st
 	}
 
 	var candidateList []string
-	for _, b := range base {
-		b = strings.TrimSpace(b)
-		if b == "" || removeSet[b] {
-			continue
+	if reqExtra != nil {
+		for _, e := range *reqExtra {
+			e = strings.TrimSpace(e)
+			if e == "" || removeSet[e] {
+				continue
+			}
+			cleaned, err := cleanPath(e)
+			if err != nil {
+				return nil, err
+			}
+			if removeSet[cleaned] {
+				continue
+			}
+			canonical := cleaned
+			if sym, err := filepath.EvalSymlinks(cleaned); err == nil {
+				canonical = sym
+			}
+			info, err := os.Stat(canonical)
+			if err != nil || !info.IsDir() {
+				return nil, fmt.Errorf("directory does not exist or is not a directory: %s", e)
+			}
+			candidateList = append(candidateList, canonical)
 		}
-		cleaned, err := cleanPath(b)
-		if err != nil || removeSet[cleaned] {
-			continue
+	} else {
+		for _, b := range existing {
+			b = strings.TrimSpace(b)
+			if b == "" || removeSet[b] {
+				continue
+			}
+			cleaned, err := cleanPath(b)
+			if err != nil || removeSet[cleaned] {
+				continue
+			}
+			canonical := cleaned
+			if sym, err := filepath.EvalSymlinks(cleaned); err == nil {
+				canonical = sym
+			}
+			info, err := os.Stat(canonical)
+			if err != nil || !info.IsDir() {
+				continue
+			}
+			candidateList = append(candidateList, canonical)
 		}
-		candidateList = append(candidateList, cleaned)
 	}
 
 	for _, a := range addDirs {
@@ -118,22 +144,23 @@ func normalizeAndValidateExtraDirs(cwd string, existing []string, reqExtra *[]st
 		if err != nil {
 			return nil, err
 		}
-		if !removeSet[cleaned] {
-			candidateList = append(candidateList, cleaned)
+		if removeSet[cleaned] {
+			continue
 		}
-	}
-
-	seen := make(map[string]bool)
-	var result []string
-	for _, p := range candidateList {
-		canonical := p
-		if sym, err := filepath.EvalSymlinks(p); err == nil {
+		canonical := cleaned
+		if sym, err := filepath.EvalSymlinks(cleaned); err == nil {
 			canonical = sym
 		}
 		info, err := os.Stat(canonical)
 		if err != nil || !info.IsDir() {
-			continue
+			return nil, fmt.Errorf("directory does not exist or is not a directory: %s", a)
 		}
+		candidateList = append(candidateList, canonical)
+	}
+
+	seen := make(map[string]bool)
+	var result []string
+	for _, canonical := range candidateList {
 		if canonical == "/" || filepath.Clean(canonical) == "/" {
 			return nil, errors.New("filesystem root cannot be added as extra directory")
 		}
@@ -156,7 +183,7 @@ func normalizeAndValidateExtraDirs(cwd string, existing []string, reqExtra *[]st
 	return result, nil
 }
 
-func (s *Server) rotateHeadlessConversation(ctx context.Context, sess *Session, doneActivity, customNewTitle string, markDone bool) (*Session, error) {
+func (s *Server) rotateHeadlessConversation(ctx context.Context, sess *Session, doneActivity, customNewTitle string, markDone bool, overrideUUID ...string) (*Session, error) {
 	if sess == nil {
 		return nil, errors.New("nil session")
 	}
@@ -189,6 +216,9 @@ func (s *Server) rotateHeadlessConversation(ctx context.Context, sess *Session, 
 	}
 
 	newUUID := generateUUID()
+	if len(overrideUUID) > 0 && strings.TrimSpace(overrideUUID[0]) != "" {
+		newUUID = strings.TrimSpace(overrideUUID[0])
+	}
 	newSessID := fmt.Sprintf("%s:%s:%s", sess.Agent, sess.Host, newUUID)
 	now := time.Now().UTC()
 
@@ -244,6 +274,12 @@ func (s *Server) rotateHeadlessConversation(ctx context.Context, sess *Session, 
 func (s *Server) handleSessionShell(w http.ResponseWriter, r *http.Request, sessionID string) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	ct := r.Header.Get("Content-Type")
+	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(ct)), "application/json") {
+		http.Error(w, "Content-Type must be application/json", http.StatusUnsupportedMediaType)
 		return
 	}
 
@@ -322,7 +358,7 @@ func (s *Server) handleSessionShell(w http.ResponseWriter, r *http.Request, sess
 	}
 
 	timedOut := errors.Is(ctx.Err(), context.DeadlineExceeded)
-	if timedOut && exitCode == 0 {
+	if timedOut {
 		exitCode = 124
 	}
 

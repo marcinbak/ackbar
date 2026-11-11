@@ -257,15 +257,8 @@ func (s *Server) handleSessionRewind(w http.ResponseWriter, r *http.Request, ses
 			_ = writer.Flush()
 			_ = destFile.Close()
 
-			newSess, rotErr := s.rotateHeadlessConversation(r.Context(), sess, fmt.Sprintf("Rewound before Turn %d", targetTurn), "", true)
+			newSess, rotErr := s.rotateHeadlessConversation(r.Context(), sess, fmt.Sprintf("Rewound before Turn %d", targetTurn), "", true, newUUID)
 			if rotErr == nil {
-				newSess.NativeID = newUUID
-				newSess.ID = fmt.Sprintf("%s:%s:%s", sess.Agent, sess.Host, newUUID)
-				if s.db != nil {
-					_ = s.db.SaveSession(newSess)
-				}
-				s.broadcast(newSess)
-
 				w.Header().Set("Content-Type", "application/json")
 				_ = json.NewEncoder(w).Encode(map[string]interface{}{
 					"status":         "ok",

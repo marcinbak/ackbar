@@ -1242,7 +1242,7 @@ func (h *HeadlessRunner) buildArgs(sess *Session, prompt, home string) (string, 
 func (h *HeadlessRunner) buildCommandEnv(sess *Session) []string {
 	home, _ := os.UserHomeDir()
 	env := buildWorkerEnv(sess, h.db, home)
-	env = append(env, "GIT_TERMINAL_PROMPT=0", "TERM=dumb")
+	env = append(env, "GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0", "TERM=dumb")
 	if sess != nil && sess.NodePath != "" {
 		env = append(env, "ACKBAR_NODE_PATH="+sess.NodePath)
 	}

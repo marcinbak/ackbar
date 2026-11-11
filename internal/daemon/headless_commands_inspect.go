@@ -107,12 +107,13 @@ func (s *Server) computeTranscriptContextAndCost(home string, sess *Session) map
 		limitTokens = 1000000
 	}
 
-	inputTokens := 0
+	sumInputTokens := 0
 	outputTokens := 0
 	cacheRead := 0
 	cacheWrite := 0
 	thinkingTokens := 0
 	turnCount := 0
+	lastTurnContextTokens := 0
 
 	if sess.Agent == "antigravity" {
 		logFile := filepath.Join(home, ".gemini", "antigravity-cli", "brain", sess.NativeID, ".system_generated", "logs", "transcript.jsonl")
@@ -126,14 +127,20 @@ func (s *Server) computeTranscriptContextAndCost(home string, sess *Session) map
 				for sc.Scan() {
 					var raw map[string]interface{}
 					if err := json.Unmarshal([]byte(sc.Text()), &raw); err == nil {
-						if inT, ok := raw["input_tokens"].(float64); ok {
-							inputTokens += int(inT)
-						}
-						if outT, ok := raw["output_tokens"].(float64); ok {
-							outputTokens += int(outT)
-						}
-						if crT, ok := raw["cache_read_tokens"].(float64); ok {
+						msgType, _ := raw["type"].(string)
+						if inT, ok := raw["input_tokens"].(float64); ok && inT > 0 {
+							if msgType == "PLANNER_RESPONSE" {
+								lastTurnContextTokens = int(inT)
+							}
+							crT, _ := raw["cache_read_tokens"].(float64)
+							uncached := int(inT) - int(crT)
+							if uncached > 0 {
+								sumInputTokens += uncached
+							}
 							cacheRead += int(crT)
+						}
+						if outT, ok := raw["output_tokens"].(float64); ok && outT > 0 {
+							outputTokens += int(outT)
 						}
 						if raw["source"] == "USER" || raw["type"] == "USER_INPUT" {
 							turnCount++
@@ -148,27 +155,46 @@ func (s *Server) computeTranscriptContextAndCost(home string, sess *Session) map
 			if f, err := os.Open(targetFile); err == nil {
 				defer f.Close()
 				sc := bufio.NewScanner(f)
+				adapter := ClaudeAgentAdapter{}
 				for sc.Scan() {
 					var raw map[string]interface{}
 					if err := json.Unmarshal([]byte(sc.Text()), &raw); err == nil {
 						if raw["type"] == "user" {
-							turnCount++
+							var fullText string
+							if msgObj, ok := raw["message"].(map[string]interface{}); ok {
+								if contentStr, ok := msgObj["content"].(string); ok {
+									fullText = contentStr
+								} else if contentArr, ok := msgObj["content"].([]interface{}); ok {
+									for _, cItem := range contentArr {
+										if cMap, ok := cItem.(map[string]interface{}); ok {
+											if cType, ok := cMap["type"].(string); ok && cType == "text" {
+												if txt, ok := cMap["text"].(string); ok {
+													fullText += txt
+												}
+											}
+										}
+									}
+								}
+							}
+							cleanPrompt, keep := adapter.FilterUserEntry(raw, fullText)
+							if keep && strings.TrimSpace(cleanPrompt) != "" {
+								turnCount++
+							}
 						}
 						if raw["type"] == "assistant" {
 							if msg, ok := raw["message"].(map[string]interface{}); ok {
 								if usage, ok := msg["usage"].(map[string]interface{}); ok {
-									if inT, ok := usage["input_tokens"].(float64); ok {
-										inputTokens = int(inT)
-									}
-									if outT, ok := usage["output_tokens"].(float64); ok {
-										outputTokens += int(outT)
-									}
-									if cIn, ok := usage["cache_creation_input_tokens"].(float64); ok {
-										cacheWrite += int(cIn)
-									}
-									if cRd, ok := usage["cache_read_input_tokens"].(float64); ok {
-										cacheRead += int(cRd)
-									}
+									inT, _ := usage["input_tokens"].(float64)
+									outT, _ := usage["output_tokens"].(float64)
+									cIn, _ := usage["cache_creation_input_tokens"].(float64)
+									cRd, _ := usage["cache_read_input_tokens"].(float64)
+
+									sumInputTokens += int(inT)
+									outputTokens += int(outT)
+									cacheWrite += int(cIn)
+									cacheRead += int(cRd)
+
+									lastTurnContextTokens = int(inT) + int(cIn) + int(cRd)
 								}
 								if outDet, ok := msg["output_tokens_details"].(map[string]interface{}); ok {
 									if thT, ok := outDet["thinking_tokens"].(float64); ok {
@@ -183,7 +209,7 @@ func (s *Server) computeTranscriptContextAndCost(home string, sess *Session) map
 		}
 	}
 
-	usedTokens := inputTokens + outputTokens + cacheRead
+	usedTokens := lastTurnContextTokens
 	if usedTokens == 0 && sess.ContextPct > 0 {
 		usedTokens = (sess.ContextPct * limitTokens) / 100
 	}
@@ -196,7 +222,7 @@ func (s *Server) computeTranscriptContextAndCost(home string, sess *Session) map
 	}
 
 	// Sonnet 3.5 API rates: $3/M in, $15/M out, $0.30/M cache read, $3.75/M cache write
-	costUSD := (float64(inputTokens)*3.0 + float64(outputTokens)*15.0 + float64(cacheRead)*0.30 + float64(cacheWrite)*3.75) / 1000000.0
+	costUSD := (float64(sumInputTokens)*3.0 + float64(outputTokens)*15.0 + float64(cacheRead)*0.30 + float64(cacheWrite)*3.75) / 1000000.0
 
 	extraDirs := sess.ExtraDirs
 	if extraDirs == nil {
@@ -212,7 +238,7 @@ func (s *Server) computeTranscriptContextAndCost(home string, sess *Session) map
 		"context_used_tokens":  usedTokens,
 		"context_limit_tokens": limitTokens,
 		"context_pct":          pct,
-		"input_tokens":         inputTokens,
+		"input_tokens":         sumInputTokens,
 		"output_tokens":        outputTokens,
 		"cache_read_tokens":    cacheRead,
 		"cache_write_tokens":   cacheWrite,
@@ -381,10 +407,11 @@ func (s *Server) handleSessionDiff(w http.ResponseWriter, r *http.Request, sessi
 			}
 			return nil
 		}
+		cmd.WaitDelay = 2 * time.Second
 		cmd.Env = append(StripBilledCredentials(os.Environ()), "GIT_OPTIONAL_LOCKS=0", "GIT_TERMINAL_PROMPT=0", "TERM=dumb")
 		capBuf := &inspectCappedBuffer{limit: 64 << 10}
 		cmd.Stdout = capBuf
-		cmd.Stderr = capBuf
+		cmd.Stderr = nil
 		err := cmd.Run()
 		return capBuf.String(), err
 	}
@@ -411,13 +438,13 @@ func (s *Server) handleSessionDiff(w http.ResponseWriter, r *http.Request, sessi
 		}
 	}
 
-	statOut, _ := runGit("diff", "HEAD", "--stat", "--no-color")
-	if strings.TrimSpace(statOut) == "" {
+	statOut, err := runGit("diff", "HEAD", "--stat", "--no-color")
+	if err != nil || strings.TrimSpace(statOut) == "" {
 		statOut, _ = runGit("diff", "--stat", "--no-color")
 	}
 
-	diffOut, _ := runGit("diff", "HEAD", "--no-ext-diff", "--no-color")
-	if strings.TrimSpace(diffOut) == "" {
+	diffOut, err := runGit("diff", "HEAD", "--no-ext-diff", "--no-color")
+	if err != nil || strings.TrimSpace(diffOut) == "" {
 		diffOut, _ = runGit("diff", "--no-ext-diff", "--no-color")
 	}
 

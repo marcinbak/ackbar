@@ -76,6 +76,12 @@ func TestNormalizeAndValidateExtraDirs(t *testing.T) {
 	if len(dirs) != 1 || dirs[0] != dirB {
 		t.Fatalf("expected [dirB], got %v", dirs)
 	}
+
+	// 7. Non-existent addDirs returns error
+	_, err = normalizeAndValidateExtraDirs(cwd, nil, nil, []string{"non_existent_dir_123"}, nil, tmpDir)
+	if err == nil {
+		t.Fatalf("expected error for non-existent directory")
+	}
 }
 
 func TestHandleSessionShell(t *testing.T) {
@@ -97,16 +103,26 @@ func TestHandleSessionShell(t *testing.T) {
 	}
 	_ = db.SaveSession(sess)
 
-	// 1. Missing / empty command -> 400
-	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/"+sess.ID+"/shell", bytes.NewReader([]byte(`{"command": "  "}`)))
+	// 1. Missing Content-Type -> 415
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/"+sess.ID+"/shell", bytes.NewReader([]byte(`{"command": "echo hi"}`)))
 	w := httptest.NewRecorder()
+	srv.handleSessionShell(w, req, sess.ID)
+	if w.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("expected 415 for missing Content-Type, got %d", w.Code)
+	}
+
+	// 2. Missing / empty command -> 400
+	req = httptest.NewRequest(http.MethodPost, "/v1/sessions/"+sess.ID+"/shell", bytes.NewReader([]byte(`{"command": "  "}`)))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
 	srv.handleSessionShell(w, req, sess.ID)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for empty command, got %d", w.Code)
 	}
 
-	// 2. Successful shell command
+	// 3. Successful shell command
 	req = httptest.NewRequest(http.MethodPost, "/v1/sessions/"+sess.ID+"/shell", bytes.NewReader([]byte(`{"command": "echo 'hello from shell'"}`)))
+	req.Header.Set("Content-Type", "application/json")
 	w = httptest.NewRecorder()
 	srv.handleSessionShell(w, req, sess.ID)
 	if w.Code != http.StatusOK {
@@ -124,7 +140,7 @@ func TestHandleSessionShell(t *testing.T) {
 		t.Fatalf("expected exit_code 0, got %v", code)
 	}
 
-	// 3. Invalid cwd -> 400
+	// 4. Invalid cwd -> 400
 	sessBadCwd := &Session{
 		ID:         "claude-code:local:shell-test-bad",
 		Agent:      "claude-code",
@@ -137,10 +153,21 @@ func TestHandleSessionShell(t *testing.T) {
 	}
 	_ = db.SaveSession(sessBadCwd)
 	req = httptest.NewRequest(http.MethodPost, "/v1/sessions/"+sessBadCwd.ID+"/shell", bytes.NewReader([]byte(`{"command": "echo hi"}`)))
+	req.Header.Set("Content-Type", "application/json")
 	w = httptest.NewRecorder()
 	srv.handleSessionShell(w, req, sessBadCwd.ID)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for bad cwd, got %d", w.Code)
+	}
+
+	// 5. CSRF protection in tokenless mode: Origin: https://evil.example -> 403 Forbidden
+	req = httptest.NewRequest(http.MethodPost, "/v1/sessions/"+sess.ID+"/shell", bytes.NewReader([]byte(`{"command": "echo pwn"}`)))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "https://evil.example")
+	w = httptest.NewRecorder()
+	srv.Mux().ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 Forbidden for untrusted origin, got %d", w.Code)
 	}
 }
 
@@ -269,6 +296,35 @@ func TestHandleSessionConfigExtended(t *testing.T) {
 	updated, _ = db.GetSession(sess.ID)
 	if len(updated.ExtraDirs) != 1 || updated.ExtraDirs[0] != subDir {
 		t.Fatalf("expected ExtraDirs to contain %s, got %v", subDir, updated.ExtraDirs)
+	}
+
+	// 6. Non-existent add_dirs via config -> 400
+	badDirPayload := `{"add_dirs": ["non_existent_folder_xyz"]}`
+	req = httptest.NewRequest(http.MethodPost, "/v1/sessions/"+sess.ID+"/config", bytes.NewReader([]byte(badDirPayload)))
+	w = httptest.NewRecorder()
+	srv.handleSessionConfig(w, req, sess.ID)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for non-existent add_dirs, got %d", w.Code)
+	}
+
+	// 7. dontAsk on antigravity -> 400 Bad Request
+	sessAgy := &Session{
+		ID:         "antigravity:local:cfg-agy-1",
+		Agent:      "antigravity",
+		Host:       "local",
+		NativeID:   "cfg-agy-1",
+		Cwd:        tmpDir,
+		EngineType: EngineHeadless,
+		Managed:    true,
+		State:      StateIdle,
+	}
+	_ = db.SaveSession(sessAgy)
+	dontAskPayload := `{"permission_mode": "dontAsk"}`
+	req = httptest.NewRequest(http.MethodPost, "/v1/sessions/"+sessAgy.ID+"/config", bytes.NewReader([]byte(dontAskPayload)))
+	w = httptest.NewRecorder()
+	srv.handleSessionConfig(w, req, sessAgy.ID)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for dontAsk on antigravity, got %d", w.Code)
 	}
 }
 

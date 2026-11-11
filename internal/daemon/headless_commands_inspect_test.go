@@ -160,4 +160,34 @@ func TestHandleSessionDiff(t *testing.T) {
 	if clean, _ := resGit["clean"].(bool); clean {
 		t.Fatalf("expected clean to be false with modifications")
 	}
+
+	// 3. Unborn HEAD (fresh git init with modified file before first commit)
+	unbornDir := filepath.Join(tmpDir, "git_unborn")
+	_ = os.MkdirAll(unbornDir, 0755)
+	_ = exec.Command("git", "-C", unbornDir, "init").Run()
+	_ = os.WriteFile(filepath.Join(unbornDir, "unborn.txt"), []byte("fresh unborn content\n"), 0644)
+
+	sessUnborn := &Session{
+		ID:         "claude-code:local:diff-test-unborn",
+		Agent:      "claude-code",
+		Host:       "local",
+		NativeID:   "diff-test-unborn",
+		Cwd:        unbornDir,
+		EngineType: EngineHeadless,
+		Managed:    true,
+		State:      StateIdle,
+	}
+	_ = db.SaveSession(sessUnborn)
+
+	req = httptest.NewRequest(http.MethodGet, "/v1/sessions/"+sessUnborn.ID+"/diff", nil)
+	w = httptest.NewRecorder()
+	srv.handleSessionDiff(w, req, sessUnborn.ID)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for unborn repo, got %d: %s", w.Code, w.Body.String())
+	}
+	var resUnborn map[string]interface{}
+	_ = json.Unmarshal(w.Body.Bytes(), &resUnborn)
+	if isGit, _ := resUnborn["is_git_repo"].(bool); !isGit {
+		t.Fatalf("expected is_git_repo true for unborn repo")
+	}
 }
