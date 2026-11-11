@@ -156,6 +156,7 @@ type Session struct {
 	Model             string    `json:"model,omitempty"`
 	Effort            string    `json:"effort,omitempty"`
 	PermissionMode    string    `json:"permission_mode,omitempty"`
+	ExtraDirs         []string  `json:"extra_dirs,omitempty"`
 	RunningSubagents  int       `json:"running_subagents,omitempty"`
 	HostOffline       bool      `json:"host_offline,omitempty"`
 	MetadataUpdatedAt time.Time `json:"metadata_updated_at,omitempty"`

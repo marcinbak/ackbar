@@ -28,6 +28,7 @@ import {
 import { fetchSessions } from './api.js';
 import { renderMermaidDiagrams } from './mermaid.js';
 import { renderAuthCard, mountMCPStatus } from './chat-auth.js';
+import { interceptChatInput, updateShellModeHint } from './chat-commands.js';
 
 
 function extractPastedAttachmentFiles(clipboardData) {
@@ -1048,6 +1049,7 @@ function renderConfigPopoverContent(tabObj) {
         <option value="low" ${effort === 'low' ? 'selected' : ''}>Low</option>
         <option value="medium" ${effort === 'medium' ? 'selected' : ''}>Medium</option>
         <option value="high" ${effort === 'high' ? 'selected' : ''}>High</option>
+        <option value="xhigh" ${effort === 'xhigh' ? 'selected' : ''}>X-High</option>
         <option value="max" ${effort === 'max' ? 'selected' : ''}>Max</option>
       </select>
     </div>
@@ -2206,6 +2208,7 @@ function setupChatInterface(tabObj, chatViewEl, session) {
       tabObj.chatInputEl.style.height = 'auto';
       tabObj.chatInputEl.style.height = Math.min(tabObj.chatInputEl.scrollHeight, 180) + 'px';
       saveChatDraft(tabObj.id || (tabObj.session && tabObj.session.id), tabObj.chatInputEl.value, tabObj.pendingAttachments);
+      updateShellModeHint(tabObj);
     });
 
     tabObj.chatInputEl.addEventListener('keydown', (e) => {
@@ -2771,6 +2774,14 @@ async function loadChatTranscript(tabObj) {
         }
         for (const msg of visibleMessages) {
           appendChatMessage(tabObj, msg);
+        }
+
+        if (Array.isArray(tabObj.ephemeralCards)) {
+          for (const card of tabObj.ephemeralCards) {
+            if (card && !card.isConnected) {
+              container.appendChild(card);
+            }
+          }
         }
 
         // Re-attach optimistic in-flight user prompt if not yet present in on-disk transcript
@@ -4750,6 +4761,13 @@ async function sendChatPrompt(tabObj, forcedPromptText, schedulingOptions) {
   const readyAttachments = pending.filter(a => a.status === 'ready' && a.path);
 
   if (!promptText && readyAttachments.length === 0) return;
+
+  if (readyAttachments.length === 0 && (promptText.startsWith('!') || promptText.startsWith('/'))) {
+    const intercepted = await interceptChatInput(tabObj, promptText);
+    if (intercepted) {
+      return;
+    }
+  }
 
   if (typeof forcedPromptText !== 'string') {
     tabObj.chatInputEl.value = '';

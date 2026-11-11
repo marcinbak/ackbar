@@ -27,6 +27,7 @@ import {
 } from './api.js';
 import { renderTree } from './tree.js';
 import { openSessionInTab, setTabViewMode } from './tabs.js';
+import { rotateSessionTabInPlace } from './chat-commands.js';
 import { openDocViewerTab } from './details.js';
 import { showUploadToast } from './terminal.js';
 
@@ -1172,7 +1173,16 @@ async function submitHandover() {
       throw new Error(errText || `HTTP ${res.status}`);
     }
 
+    const data = await res.json().catch(() => null);
     closeHandoverModal();
+    if (data && data.session && session.engine_type === 'headless') {
+      const activeTab = state.openTabs.get(session.id);
+      if (strategy === 'in_place' && activeTab) {
+        await rotateSessionTabInPlace(activeTab, session.id, data.session, 'Handover briefing seeded in fresh conversation');
+      } else if (strategy === 'new_session') {
+        openSessionInTab(data.session);
+      }
+    }
     await fetchSessions();
   } catch (err) {
     alert(`Handover failed: ${err.message}`);

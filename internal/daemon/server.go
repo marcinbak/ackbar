@@ -1036,6 +1036,14 @@ func (s *Server) maybeAutoSyncSkillsRepo(ctx context.Context) {
 	MaybeAutoSyncSkillsRepo(ctx, home, s.db)
 }
 
+func (s *Server) effectiveHomeDir() string {
+	if s != nil && s.homeDir != "" {
+		return s.homeDir
+	}
+	h, _ := os.UserHomeDir()
+	return h
+}
+
 func (s *Server) handleSessionDispatcher(w http.ResponseWriter, r *http.Request) {
 	parts := stringsSplit(r.URL.Path, "/")
 	if len(parts) >= 5 {
@@ -1053,6 +1061,27 @@ func (s *Server) handleSessionDispatcher(w http.ResponseWriter, r *http.Request)
 			return
 		case "respond":
 			s.handleRespond(w, r)
+			return
+		case "shell":
+			s.handleSessionShell(w, r, sessionID)
+			return
+		case "clear":
+			s.handleSessionClear(w, r, sessionID)
+			return
+		case "compact":
+			s.handleSessionCompact(w, r, sessionID)
+			return
+		case "inspect":
+			s.handleSessionInspect(w, r, sessionID)
+			return
+		case "diff":
+			s.handleSessionDiff(w, r, sessionID)
+			return
+		case "rewind":
+			s.handleSessionRewind(w, r, sessionID)
+			return
+		case "handover":
+			s.handleSessionHandover(w, r)
 			return
 		}
 	}

@@ -12,6 +12,21 @@ import (
 	"time"
 )
 
+func normalizePermissionMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "plan":
+		return "plan"
+	case "auto":
+		return "auto"
+	case "acceptedits":
+		return "acceptEdits"
+	case "dontask":
+		return "dontAsk"
+	default:
+		return "bypassPermissions"
+	}
+}
+
 func ConfigFingerprint(sess *Session) string {
 	if sess == nil {
 		return ""
@@ -25,16 +40,18 @@ func ConfigFingerprint(sess *Session) string {
 	if ag != "claude-code" || strings.EqualFold(e, "default") {
 		e = ""
 	}
-	pm := "bypassPermissions"
-	if strings.EqualFold(sess.PermissionMode, "plan") {
-		pm = "plan"
-	}
+	pm := normalizePermissionMode(sess.PermissionMode)
 	acc := strings.TrimSpace(sess.AccountID)
 	cwd := filepath.Clean(strings.TrimSpace(sess.Cwd))
 	sup := strconv.FormatBool(sess.IsSupervisor)
 
 	h := sha256.New()
 	parts := []string{ag, m, e, pm, acc, cwd, sup}
+	for _, d := range sess.ExtraDirs {
+		if cleaned := filepath.Clean(strings.TrimSpace(d)); cleaned != "" && cleaned != "." {
+			parts = append(parts, "extra:"+cleaned)
+		}
+	}
 	for i, p := range parts {
 		if i > 0 {
 			h.Write([]byte{0})
@@ -68,10 +85,20 @@ func buildPersistentArgs(sess *Session, isExistingConversation bool) (string, []
 		}
 		// Antigravity's -p requires an immediate value and consumes --input-format if bare.
 		args := []string{"--input-format", "stream-json", "--output-format", "stream-json"}
-		if strings.EqualFold(sess.PermissionMode, "plan") {
+		switch strings.ToLower(strings.TrimSpace(sess.PermissionMode)) {
+		case "plan":
 			args = append(args, "--mode", "plan")
-		} else {
+		case "auto":
+			args = append(args, "--mode", "auto")
+		case "acceptedits":
+			args = append(args, "--mode", "accept-edits")
+		default:
 			args = append(args, "--dangerously-skip-permissions")
+		}
+		for _, d := range sess.ExtraDirs {
+			if cleaned := filepath.Clean(strings.TrimSpace(d)); cleaned != "" && cleaned != "." {
+				args = append(args, "--add-dir", cleaned)
+			}
 		}
 		if isExistingConversation && sess.NativeID != "" {
 			args = append(args, "--conversation", sess.NativeID)
@@ -88,10 +115,22 @@ func buildPersistentArgs(sess *Session, isExistingConversation bool) (string, []
 			return "", nil, fmt.Errorf("failed to locate claude binary: %w", err)
 		}
 		args := []string{"-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"}
-		if strings.EqualFold(sess.PermissionMode, "plan") {
+		switch strings.ToLower(strings.TrimSpace(sess.PermissionMode)) {
+		case "plan":
 			args = append(args, "--permission-mode", "plan")
-		} else {
+		case "auto":
+			args = append(args, "--permission-mode", "auto")
+		case "acceptedits":
+			args = append(args, "--permission-mode", "acceptEdits")
+		case "dontask":
+			args = append(args, "--permission-mode", "dontAsk")
+		default:
 			args = append(args, "--dangerously-skip-permissions")
+		}
+		for _, d := range sess.ExtraDirs {
+			if cleaned := filepath.Clean(strings.TrimSpace(d)); cleaned != "" && cleaned != "." {
+				args = append(args, "--add-dir", cleaned)
+			}
 		}
 		if isExistingConversation {
 			args = append(args, "--resume", sess.NativeID)

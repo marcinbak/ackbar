@@ -560,12 +560,17 @@ func (s *Server) handleSessionHandover(w http.ResponseWriter, r *http.Request) {
 		SessionID         string `json:"session_id"`
 		Strategy          string `json:"strategy"` // "in_place" (default) or "new_session"
 		CustomInstruction string `json:"custom_instruction"`
+		Instructions      string `json:"instructions"`
 		Sync              bool   `json:"sync"`
 	}
 
 	bodyBytes, err := io.ReadAll(r.Body)
 	if err == nil && len(bodyBytes) > 0 {
 		_ = json.Unmarshal(bodyBytes, &req)
+	}
+
+	if req.CustomInstruction == "" && req.Instructions != "" {
+		req.CustomInstruction = req.Instructions
 	}
 
 	if req.ID == "" {
@@ -600,6 +605,11 @@ func (s *Server) handleSessionHandover(w http.ResponseWriter, r *http.Request) {
 		return "/v1/sessions/handover"
 	})
 	if handled {
+		return
+	}
+
+	if sess.EngineType == EngineHeadless {
+		s.executeHeadlessHandover(w, r, sess, req.Strategy, req.CustomInstruction)
 		return
 	}
 
