@@ -166,6 +166,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       },
     );
     final res = await dispatcher.dispatch(currentSession, text);
+    if (!mounted) return;
     if (res.intercepted) {
       if (res.card != null) {
         setState(() => _ephemeralCards.add(res.card!));
@@ -177,7 +178,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     _promptController.clear();
     _streamController.updateSession(currentSession);
     final submitRes = await _streamController.submitPrompt(text);
-    if (!submitRes.ok && mounted) {
+    if (!mounted) return;
+    if (!submitRes.ok) {
       _promptController.text = text;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -193,6 +195,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     HapticFeedback.mediumImpact();
     try {
       final host = await _resolveHost();
+      if (!mounted) return;
       await ref.read(apiClientProvider).cancelTurn(
           host.url, _resolveLiveSession().id,
           authToken: host.authToken);
@@ -209,6 +212,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   Future<void> _takeTheWheel(Session s) async {
     HapticFeedback.mediumImpact();
     final host = await _resolveHost();
+    if (!mounted) return;
     try {
       final res = await ref
           .read(apiClientProvider)
@@ -235,6 +239,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   Future<void> _speakMessage(int index, String content,
       {bool forceRefresh = false, bool forceFull = false}) async {
     final host = await _resolveHost();
+    if (!mounted) return;
     await ref.read(audioCompanionServiceProvider.notifier).speakMessage(
         _resolveLiveSession(), index, content,
         forceRefresh: forceRefresh,
