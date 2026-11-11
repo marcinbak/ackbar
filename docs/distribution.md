@@ -149,6 +149,7 @@ Type=simple
 ExecStart=%h/.local/bin/ackbard
 Restart=always
 RestartSec=3s
+KillMode=process
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 StandardOutput=journal
 StandardError=journal

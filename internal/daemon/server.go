@@ -107,6 +107,7 @@ func NewServer(db *DB) *Server {
 		_ = db.MigrateLocalSessions(host)
 		s.pruneForeignSessions()
 	}
+	s.headless.ReattachLiveWorkers()
 	return s
 }
 
@@ -820,6 +821,9 @@ func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"status":"shutting_down"}`))
 	go func() {
+		if s.headless != nil {
+			s.headless.ReleaseSleepInhibitor()
+		}
 		time.Sleep(100 * time.Millisecond)
 		if s.shutdownExitFn != nil {
 			s.shutdownExitFn(0)
@@ -849,16 +853,23 @@ func (s *Server) StartBackgroundLoop(ctx context.Context) {
 		for {
 			select {
 			case <-ctx.Done():
+				if s.headless != nil {
+					s.headless.ReleaseSleepInhibitor()
+				}
 				return
 			case <-schedTicker.C:
 				s.processDueScheduledPrompts(ctx)
 			case <-hourlyTicker.C:
 				go s.maybeAutoSyncSkillsRepo(ctx)
+				if s.headless != nil {
+					s.headless.PruneStaleSpools(24 * time.Hour)
+				}
 				if s.db != nil {
 					_ = s.db.RollupAndPruneHostLoadMetrics(time.Now().UTC())
 				}
 			case <-ticker.C:
 				s.scanObservedSessions(ctx)
+				s.sweepAutoDoneSessions(ctx)
 				go s.ensureHostTunnels(ctx)
 				go func() { _ = s.IngestDevWorkflowRuns() }()
 				go s.PullFromPeers(ctx)

@@ -17,6 +17,7 @@ import (
 
 type DB struct {
 	db                     *sql.DB
+	path                   string
 	mu                     sync.Mutex
 	interruptedHeadlessIDs []string
 }
@@ -338,9 +339,9 @@ func InitDB(dbPath string) (*DB, error) {
 	);`)
 	_, _ = db.Exec("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);")
 	_, _ = db.Exec("DELETE FROM settings WHERE (key = 'host_name' OR key = 'display_name') AND LOWER(value) = 'local';")
-	_, _ = db.Exec("DELETE FROM sessions WHERE (COALESCE(managed, 0) = 0 AND COALESCE(activity, '') != 'Cleared (context reset)') OR id LIKE '%:observed:%' OR native_id LIKE 'proc-%';")
+	_, _ = db.Exec("DELETE FROM sessions WHERE (COALESCE(managed, 0) = 0 AND COALESCE(activity, '') != 'Cleared (context reset)' AND COALESCE(is_done, 0) = 0 AND COALESCE(is_later, 0) = 0) OR id LIKE '%:observed:%' OR native_id LIKE 'proc-%';")
 	_, _ = db.Exec("DELETE FROM tree_nodes WHERE path LIKE 'Project Y%' OR path LIKE 'ProjectY%' OR path LIKE '%Project Y%';")
-	_, _ = db.Exec("UPDATE sessions SET tmux_name = 'ackbar-' || agent || '-' || native_id WHERE (tmux_name = '(deleted)' OR tmux_name = '') AND COALESCE(engine_type, 'tmux') != 'headless';")
+	_, _ = db.Exec("UPDATE sessions SET tmux_name = 'ackbar-' || agent || '-' || native_id WHERE (tmux_name = '(deleted)' OR tmux_name = '') AND COALESCE(engine_type, 'tmux') != 'headless' AND COALESCE(is_done, 0) = 0;")
 	_, _ = db.Exec("UPDATE sessions SET tmux_name = '' WHERE engine_type = 'headless' AND tmux_name = 'ackbar-' || agent || '-' || native_id;")
 	var interruptedIDs []string
 	if rows, err := db.Query("SELECT id FROM sessions WHERE engine_type = 'headless' AND (state = ? OR state = 'working');", int(StateWorking)); err == nil {
@@ -388,13 +389,35 @@ func InitDB(dbPath string) (*DB, error) {
 		PRIMARY KEY (host, bucket_start, bucket_sec)
 	);`)
 	_, _ = db.Exec("CREATE INDEX IF NOT EXISTS idx_host_load_metrics_bucket ON host_load_metrics(bucket_start);")
-	d := &DB{db: db, interruptedHeadlessIDs: interruptedIDs}
+	d := &DB{db: db, path: dbPath, interruptedHeadlessIDs: interruptedIDs}
 	if _, err := d.PruneAllLegacyTasksOnce(); err != nil {
 		log.Printf("[InitDB] Warning: PruneAllLegacyTasksOnce failed: %v", err)
 	}
 	_, _ = d.DeduplicateTasks()
 	_, _ = db.Exec(`UPDATE tasks SET status = 'DONE', substatus = 'completed' WHERE deleted_at IS NULL AND UPPER(status) IN ('DONE', 'COMPLETED') AND LOWER(COALESCE(substatus, '')) NOT IN ('completed', 'rejected', 'abandoned');`)
 	return d, nil
+}
+
+func (d *DB) Path() string {
+	if d == nil {
+		return ""
+	}
+	return d.path
+}
+
+func (d *DB) RemoveInterruptedHeadlessSessionID(id string) {
+	if d == nil || id == "" {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	filtered := d.interruptedHeadlessIDs[:0]
+	for _, existing := range d.interruptedHeadlessIDs {
+		if existing != id {
+			filtered = append(filtered, existing)
+		}
+	}
+	d.interruptedHeadlessIDs = filtered
 }
 
 func (d *DB) PopInterruptedHeadlessSessionIDs() []string {

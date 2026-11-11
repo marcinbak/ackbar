@@ -17,6 +17,9 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "--headless-worker" {
+		os.Exit(daemon.RunHeadlessWorker(os.Args[2:]))
+	}
 	if len(os.Args) > 1 && (os.Args[1] == "version" || os.Args[1] == "--version" || os.Args[1] == "-v") {
 		fmt.Printf("ackbard version %s\n", version.Version)
 		os.Exit(0)

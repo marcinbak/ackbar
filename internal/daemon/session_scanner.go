@@ -637,6 +637,9 @@ func (s *Server) reconcileAntigravityTmuxSession(ctx context.Context, state *Sca
 }
 
 func (s *Server) adoptExistingTmuxSession(ctx context.Context, state *ScanState, existing *Session, agent, tmuxName, cwd string, pid, panePID int) {
+	if existing == nil || existing.IsDone {
+		return
+	}
 	existing.Managed = true
 	existing.PID = pid
 	if tmuxName != "" && tmuxName != "(deleted)" {

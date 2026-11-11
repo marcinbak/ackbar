@@ -440,10 +440,10 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		streamAgent = parts[0]
 	}
 
-	ch, cleanup := s.headless.Subscribe(targetID)
+	reqTurnID, afterSeq := parseChatStreamReplayCursor(r)
+	ch, cleanup := s.headless.SubscribeWithReplay(targetID, reqTurnID, afterSeq, streamAgent)
 	defer cleanup()
 
-	// Initial connected heartbeat
 	initEvt, _ := json.Marshal(ChatStreamEvent{
 		SessionID: targetID,
 		Type:      "status",
@@ -453,18 +453,6 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	_, _ = fmt.Fprintf(w, "data: %s\n\n", initEvt)
 	flusher.Flush()
 
-	if activeMsg, ok := s.headless.GetActiveTurnPrompt(targetID); ok && strings.TrimSpace(activeMsg.Content) != "" {
-		turnEvt, _ := json.Marshal(ChatStreamEvent{
-			SessionID: targetID,
-			Type:      "turn_start",
-			Text:      cleanActivePromptForAgent(streamAgent, activeMsg.Content),
-			Timestamp: activeMsg.Timestamp,
-		})
-		_, _ = fmt.Fprintf(w, "data: %s\n\n", turnEvt)
-		flusher.Flush()
-	}
-
-	// Initial prompt queue state snapshot
 	items, paused := s.headless.GetPromptQueue(targetID)
 	if len(items) > 0 || paused {
 		qEvt, _ := json.Marshal(ChatStreamEvent{
@@ -487,7 +475,6 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		case <-notify:
 			return
 		case <-heartbeat.C:
-			// Standard SSE comment keepalive to prevent NAT / proxy / client timeout
 			_, _ = fmt.Fprintf(w, ": keepalive\n\n")
 			flusher.Flush()
 		case evt, ok := <-ch:
@@ -498,7 +485,13 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				continue
 			}
-			_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
+			if evt.Seq > 0 && evt.TurnID != "" {
+				_, _ = fmt.Fprintf(w, "id: %s:%d\ndata: %s\n\n", evt.TurnID, evt.Seq, data)
+			} else if evt.Seq > 0 {
+				_, _ = fmt.Fprintf(w, "id: %d\ndata: %s\n\n", evt.Seq, data)
+			} else {
+				_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
+			}
 			flusher.Flush()
 		}
 	}
@@ -892,15 +885,16 @@ func (s *Server) handleSessionTranscript(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
+	var inFlightPayload map[string]interface{}
 	transcript, err := s.ExtractTranscript(agent, nativeID, cwd)
 	if err != nil {
-		transcript = s.appendActiveHeadlessPrompt(nil, sess, sessionID, nativeID, agent, cwd)
+		transcript, inFlightPayload = s.mergeInFlightSpoolIntoTranscript(nil, sess, sessionID, nativeID, agent, cwd)
 		if transcript == nil {
 			http.Error(w, fmt.Sprintf("Failed to extract transcript: %v", err), http.StatusNotFound)
 			return
 		}
 	} else {
-		transcript = s.appendActiveHeadlessPrompt(transcript, sess, sessionID, nativeID, agent, cwd)
+		transcript, inFlightPayload = s.mergeInFlightSpoolIntoTranscript(transcript, sess, sessionID, nativeID, agent, cwd)
 	}
 	if title != "" {
 		transcript.Title = title
@@ -929,93 +923,21 @@ func (s *Server) handleSessionTranscript(w http.ResponseWriter, r *http.Request)
 			"ansi":              FormatTranscriptANSI(transcript),
 			"markdown":          FormatTranscriptMarkdown(transcript),
 		}
-		if activeMsg, ok := s.resolveActiveHeadlessPrompt(sess, sessionID, nativeID, agent); ok {
-			payload["active_prompt"] = map[string]interface{}{
-				"text":      activeMsg.Content,
-				"timestamp": activeMsg.Timestamp,
+		if inFlightPayload != nil {
+			payload["in_flight_turn"] = inFlightPayload
+			if active, _ := inFlightPayload["active"].(bool); active {
+				if promptText, _ := inFlightPayload["prompt"].(string); strings.TrimSpace(promptText) != "" {
+					payload["active_prompt"] = map[string]interface{}{
+						"text":      promptText,
+						"timestamp": inFlightPayload["timestamp"],
+						"turn_id":   inFlightPayload["turn_id"],
+					}
+				}
 			}
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(payload)
 	}
-}
-
-func (s *Server) resolveActiveHeadlessPrompt(sess *Session, sessionID, nativeID, agent string) (TranscriptMessage, bool) {
-	if s.headless == nil {
-		return TranscriptMessage{}, false
-	}
-	var activeMsg TranscriptMessage
-	found := false
-	if msg, ok := s.headless.GetActiveTurnPrompt(sessionID); ok {
-		activeMsg = msg
-		found = true
-	} else if sess != nil && sess.ID != "" {
-		if msg, ok := s.headless.GetActiveTurnPrompt(sess.ID); ok {
-			activeMsg = msg
-			found = true
-		}
-	}
-	if !found && nativeID != "" {
-		if msg, ok := s.headless.GetActiveTurnPrompt(nativeID); ok {
-			activeMsg = msg
-			found = true
-		}
-	}
-	if !found || strings.TrimSpace(activeMsg.Content) == "" {
-		return TranscriptMessage{}, false
-	}
-	activeMsg.Content = cleanActivePromptForAgent(agent, activeMsg.Content)
-	return activeMsg, true
-}
-
-func (s *Server) appendActiveHeadlessPrompt(transcript *Transcript, sess *Session, sessionID, nativeID, agent, cwd string) *Transcript {
-	if s.headless == nil {
-		return transcript
-	}
-
-	activeMsg, found := s.resolveActiveHeadlessPrompt(sess, sessionID, nativeID, agent)
-
-	if transcript == nil {
-		if found || (sess != nil && sess.EngineType == EngineHeadless) {
-			transcript = &Transcript{
-				SessionID: sessionID,
-				NativeID:  nativeID,
-				Agent:     agent,
-				Cwd:       cwd,
-				Messages:  make([]TranscriptMessage, 0),
-			}
-		} else {
-			return nil
-		}
-	}
-
-	if found && strings.TrimSpace(activeMsg.Content) != "" {
-		alreadyPresent := false
-		msgs := transcript.Messages
-		n := len(msgs)
-		threshold := activeMsg.Timestamp.Add(-5 * time.Second)
-
-		for i := n - 1; i >= 0; i-- {
-			if msgs[i].Role == "user" {
-				if promptsMatchActiveTurn(msgs[i].Content, activeMsg.Content) {
-					if i == n-1 || !msgs[i].Timestamp.Before(threshold) || !msgs[n-1].Timestamp.Before(threshold) {
-						alreadyPresent = true
-					}
-				}
-				break
-			}
-		}
-
-		if !alreadyPresent {
-			transcript.Messages = append(transcript.Messages, TranscriptMessage{
-				Role:      "user",
-				Content:   activeMsg.Content,
-				Timestamp: activeMsg.Timestamp,
-			})
-		}
-	}
-
-	return transcript
 }
 
 func (s *Server) ExtractTranscript(agent, nativeID, cwd string) (*Transcript, error) {
