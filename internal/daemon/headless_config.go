@@ -194,5 +194,83 @@ func buildWorkerEnv(sess *Session, db *DB, home string) []string {
 			}
 		}
 	}
+	return augmentWorkerPluginEnv(env, home)
+}
+
+func augmentWorkerPluginEnv(env []string, home string) []string {
+	geminiHome := ""
+	for i := len(env) - 1; i >= 0; i-- {
+		if strings.HasPrefix(env[i], "GEMINI_CLI_HOME=") {
+			geminiHome = strings.TrimPrefix(env[i], "GEMINI_CLI_HOME=")
+			break
+		}
+	}
+
+	var candidates []string
+	if geminiHome != "" {
+		candidates = append(candidates,
+			filepath.Join(geminiHome, "antigravity-cli", "bin"),
+			filepath.Join(geminiHome, ".gemini", "antigravity-cli", "bin"),
+			filepath.Join(geminiHome, "antigravity", "bin"),
+			filepath.Join(geminiHome, ".gemini", "antigravity", "bin"),
+		)
+	}
+	if home != "" {
+		candidates = append(candidates,
+			filepath.Join(home, ".gemini", "antigravity-cli", "bin"),
+			filepath.Join(home, ".gemini", "antigravity", "bin"),
+		)
+	}
+
+	var validDirs []string
+	seenDirs := make(map[string]bool)
+	for _, dir := range candidates {
+		if dir != "" && !seenDirs[dir] {
+			seenDirs[dir] = true
+			if info, err := os.Stat(dir); err == nil && info.IsDir() {
+				validDirs = append(validDirs, dir)
+			}
+		}
+	}
+
+	pathIdx, hasAppDataDir := -1, false
+	var existingParts []string
+	existingSet := make(map[string]bool)
+	for i, entry := range env {
+		if strings.HasPrefix(entry, "PATH=") {
+			pathIdx = i
+			for _, part := range strings.Split(strings.TrimPrefix(entry, "PATH="), string(os.PathListSeparator)) {
+				if part != "" {
+					existingParts, existingSet[part] = append(existingParts, part), true
+				}
+			}
+		} else if strings.HasPrefix(entry, "ANTIGRAVITY_APP_DATA_DIR=") {
+			hasAppDataDir = true
+		}
+	}
+
+	var toPrepend []string
+	for _, dir := range validDirs {
+		if !existingSet[dir] {
+			toPrepend, existingSet[dir] = append(toPrepend, dir), true
+		}
+	}
+	if len(toPrepend) > 0 {
+		newPath := strings.Join(append(toPrepend, existingParts...), string(os.PathListSeparator))
+		if pathIdx >= 0 {
+			env[pathIdx] = "PATH=" + newPath
+		} else {
+			env = append(env, "PATH="+newPath)
+		}
+	}
+
+	if !hasAppDataDir && home != "" {
+		_, errAntigravity := os.Stat(filepath.Join(home, ".gemini", "antigravity", "plugin_data"))
+		statCliPlugin, errCliPlugin := os.Stat(filepath.Join(home, ".gemini", "antigravity-cli", "plugin_data"))
+		statCliBin, errCliBin := os.Stat(filepath.Join(home, ".gemini", "antigravity-cli", "bin"))
+		if os.IsNotExist(errAntigravity) && ((errCliPlugin == nil && statCliPlugin.IsDir()) || (errCliBin == nil && statCliBin.IsDir())) {
+			env = append(env, "ANTIGRAVITY_APP_DATA_DIR="+filepath.Join(home, ".gemini", "antigravity-cli"))
+		}
+	}
 	return env
 }

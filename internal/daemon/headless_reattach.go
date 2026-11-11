@@ -22,6 +22,9 @@ func blockActivityText(b *Blocked) string {
 	if b.Kind == BlockRateLimit {
 		return "Rate limit: " + b.Reason
 	}
+	if b.Kind == BlockAuth {
+		return "Authentication required: " + b.AuthServer
+	}
 	return "Waiting for user response"
 }
 
@@ -51,7 +54,7 @@ func (h *HeadlessRunner) applyWorkerEvent(sess *Session, origSessionID string, m
 			}
 			evt.SessionID = sess.ID
 			h.Emit(sess.ID, evt, origSessionID)
-			if evt.Blocked.Kind == BlockRateLimit {
+			if evt.Blocked.Kind == BlockRateLimit || evt.Blocked.Kind == BlockAuth {
 				h.EmitQueueUpdate(sess.ID)
 			}
 		}

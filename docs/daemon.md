@@ -88,6 +88,9 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 | `POST` | `/v1/mcp` | Streamable HTTP JSON-RPC 2.0 MCP endpoint (`initialize`, `tools/list`, `tools/call`). Resolves local loopback listener to prevent SSRF and hairpinning. |
 | `POST` | `/v1/sessions/take-wheel` | Stops any active headless turn and resumes the session in an interactive `tmux` terminal (`engine_type = "tmux"`). |
 | `POST` | `/v1/sessions/switch-headless` | Stops the running `tmux` session and switches the session to turn-by-turn headless mode (`engine_type = "headless"`, `tmux_name = ""`). |
+| `POST` | `/v1/sessions/auth-tool` | Spawns allowlisted OAuth login process (`plugin:*`, `agent:agy`, or `mcp:*`) for a session with 5m TTL and extracts browser authorization URL. |
+| `POST` | `/v1/sessions/auth-callback` | Completes active OAuth flow by relaying callback URL/code to loopback listener (`127.0.0.1:<port>`) or subprocess stdin. |
+| `GET` | `/v1/sessions/{id}/mcp-status` | Returns sanitized configured MCP servers and Google Workspace plugin authentication statuses (`10s` TTL cache, `?refresh=1` bypass). |
 | `POST` | `/v1/sessions/summarize-speech` | On-demand speech summarizer with 2-level caching (in-memory + SQLite `speech_summaries`), headless Haiku synthesis ($0 flat OAuth), optional cloud API, and pure-Go structural AST fallback. |
 | `POST` | `/v1/update` | Updates daemon executable; if headless turns are active, daemon restart is deferred (`restart_deferred: true`) until active turns drain. |
 | `POST` | `/v1/shutdown` | Gracefully shuts down daemon (supports `?drain=true` to defer restart until active headless turns complete). |

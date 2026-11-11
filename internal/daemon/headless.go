@@ -222,6 +222,8 @@ func (h *HeadlessRunner) triggerInteractiveBlock(sessionID string, sess *Session
 		sess.Blocked = blocked
 		if blocked.Kind == BlockApproval {
 			sess.Activity = "Waiting for plan approval"
+		} else if blocked.Kind == BlockAuth {
+			sess.Activity = "Authentication required: " + blocked.AuthServer
 		} else {
 			sess.Activity = "Waiting for user response"
 		}
@@ -1325,6 +1327,8 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 	var finalStreamHadError bool
 	streamHadError := false
 	toolUses := make(map[string]string)
+	toolInputs := make(map[string]map[string]any)
+	emittedAuthBlock := false
 	emittedToolStart := make(map[string]bool)
 	emittedTextBlocks := make(map[string]bool)
 	emittedThinkingBlocks := make(map[string]bool)
@@ -1413,6 +1417,9 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 							var toolInput any
 							if toolInfo != nil {
 								toolInput = toolInfo["parameters"]
+								if params, ok := toolInfo["parameters"].(map[string]any); ok {
+									toolInputs[fmt.Sprintf("ag_%d", stepIdx)] = params
+								}
 							}
 							emitStreamEvt(ChatStreamEvent{
 								SessionID: sessionID,
@@ -1438,6 +1445,13 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 								ToolOutput: toolOutput,
 								IsError:    state == "ERROR",
 							})
+							curInput := toolInputs[fmt.Sprintf("ag_%d", stepIdx)]
+							if !emittedAuthBlock {
+								if authBlock := DetectToolResultAuthBlock("", toolName, curInput, toolOutput, state == "ERROR"); authBlock != nil && hooks.onInteractiveBlock != nil {
+									emittedAuthBlock = true
+									hooks.onInteractiveBlock(toolName, curInput, authBlock)
+								}
+							}
 						}
 
 					case "subagent":
@@ -1520,6 +1534,7 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 				lastTextBuilder.Reset()
 				resultText = ""
 				streamHadError = false
+				emittedAuthBlock = false
 				clear(emittedToolStart)
 				clear(emittedTextBlocks)
 				clear(emittedThinkingBlocks)
@@ -1593,6 +1608,11 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 						}
 					}
 					toolInput := cb["input"]
+					if toolID != "" {
+						if inp, ok := toolInput.(map[string]any); ok {
+							toolInputs[toolID] = inp
+						}
+					}
 					emitStreamEvt(ChatStreamEvent{
 						SessionID: sessionID,
 						Type:      "tool_start",
@@ -1639,6 +1659,13 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 				ToolOutput: outputStr,
 				IsError:    isErr,
 			})
+			if !emittedAuthBlock {
+				curInput := toolInputs[toolID]
+				if authBlock := DetectToolResultAuthBlock("", toolName, curInput, outputStr, isErr); authBlock != nil && hooks.onInteractiveBlock != nil {
+					emittedAuthBlock = true
+					hooks.onInteractiveBlock(toolName, curInput, authBlock)
+				}
+			}
 
 		case "user":
 			hasEmittedDeltaInTurn = false
@@ -1675,6 +1702,13 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 									ToolOutput: outputStr,
 									IsError:    isErr,
 								})
+								if !emittedAuthBlock {
+									curInput := toolInputs[toolID]
+									if authBlock := DetectToolResultAuthBlock("", toolName, curInput, outputStr, isErr); authBlock != nil && hooks.onInteractiveBlock != nil {
+										emittedAuthBlock = true
+										hooks.onInteractiveBlock(toolName, curInput, authBlock)
+									}
+								}
 							}
 						}
 					}

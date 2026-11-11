@@ -84,6 +84,7 @@ type Server struct {
 	ntfyHook             func(payload NtfyPayload)
 	voiceBridgeMu        sync.Mutex
 	voiceBridge          *MicServeBridge
+	authBroker           *AuthBroker
 	shutdownExitFn       func(int)
 	restartDaemonFn      func()
 }
@@ -103,6 +104,7 @@ func NewServer(db *DB) *Server {
 	s.headless = NewHeadlessRunner(db, s.broadcast)
 	s.headless.SetOnTurnComplete(s.clearSubagents)
 	s.headless.LoadScheduledPrompts()
+	s.authBroker = newAuthBroker(s)
 	if host := s.HostName(); host != "local" && db != nil {
 		_ = db.MigrateLocalSessions(host)
 		s.pruneForeignSessions()
@@ -414,6 +416,8 @@ func (s *Server) Mux() http.Handler {
 	mux.HandleFunc("/v1/sessions/cancel", s.handleCancelTurn)
 	mux.HandleFunc("/v1/sessions/take-wheel", s.handleTakeWheel)
 	mux.HandleFunc("/v1/sessions/switch-headless", s.handleSwitchHeadless)
+	mux.HandleFunc("/v1/sessions/auth-tool", s.handleSessionAuthTool)
+	mux.HandleFunc("/v1/sessions/auth-callback", s.handleSessionAuthCallback)
 	mux.HandleFunc("/v1/accounts", s.handleAccounts)
 	mux.HandleFunc("/v1/accounts/", s.handleAccountOps)
 	mux.HandleFunc("/v1/agents/discovery", s.handleAgentDiscovery)
@@ -562,6 +566,10 @@ func (s *Server) broadcast(sess *Session) {
 			// slow consumer, drop event
 		}
 	}
+}
+
+func (s *Server) BroadcastSession(sess *Session) {
+	s.broadcast(sess)
 }
 
 // Simple helper to split strings without importing strings package everywhere
@@ -856,6 +864,9 @@ func (s *Server) StartBackgroundLoop(ctx context.Context) {
 				if s.headless != nil {
 					s.headless.ReleaseSleepInhibitor()
 				}
+				if s.authBroker != nil {
+					s.authBroker.CloseAll()
+				}
 				return
 			case <-schedTicker.C:
 				s.processDueScheduledPrompts(ctx)
@@ -1036,6 +1047,9 @@ func (s *Server) handleSessionDispatcher(w http.ResponseWriter, r *http.Request)
 			return
 		case "config":
 			s.handleSessionConfig(w, r, sessionID)
+			return
+		case "mcp-status":
+			s.handleSessionMCPStatus(w, r, sessionID)
 			return
 		case "respond":
 			s.handleRespond(w, r)

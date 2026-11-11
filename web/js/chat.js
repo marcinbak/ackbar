@@ -27,6 +27,7 @@ import {
 } from './terminal.js';
 import { fetchSessions } from './api.js';
 import { renderMermaidDiagrams } from './mermaid.js';
+import { renderAuthCard, mountMCPStatus } from './chat-auth.js';
 
 
 function extractPastedAttachmentFiles(clipboardData) {
@@ -1093,6 +1094,7 @@ function renderConfigPopoverContent(tabObj) {
         </div>
       </div>
     </div>
+    <div class="config-mcp-status-section"></div>
   `;
 
   const btnClose = popover.querySelector('.btn-close-popover');
@@ -1128,6 +1130,11 @@ function renderConfigPopoverContent(tabObj) {
     btnPlan.addEventListener('click', () => {
       updateSessionConfig(tabObj, { permission_mode: 'plan' });
     });
+  }
+
+  const mcpSection = popover.querySelector('.config-mcp-status-section');
+  if (mcpSection && sess.id) {
+    mountMCPStatus(mcpSection, sess.id, tabObj);
   }
 }
 
@@ -1503,6 +1510,11 @@ function renderInteractiveBlockCard(tabObj, blocked, toolName) {
   const existing = tabObj.chatMessagesEl.querySelector('.chat-interactive-card:not(.answered)');
   if (existing) {
     existing.remove();
+  }
+
+  if (blocked.kind === 'auth') {
+    renderAuthCard(tabObj, blocked, toolName);
+    return;
   }
 
   const isRateLimit = blocked.kind === 'rate_limit';
@@ -5101,6 +5113,20 @@ function handleChatStreamEvent(tabObj, evt) {
         tabObj.session.blocked = evt.blocked;
         tabObj.session.state = 2;
         renderInteractiveBlockCard(tabObj, evt.blocked, evt.tool_name);
+      }
+      break;
+    }
+
+    case 'auth_complete': {
+      const existingAuthCard = tabObj.chatMessagesEl?.querySelector('.card-auth');
+      if (existingAuthCard) existingAuthCard.remove();
+      if (tabObj.session) {
+        tabObj.session.blocked = null;
+        if (tabObj.session.state === 2) tabObj.session.state = 3;
+      }
+      const mcpSec = tabObj.chatConfigPopover?.querySelector('.config-mcp-status-section');
+      if (mcpSec && tabObj.chatConfigPopover?.style.display !== 'none') {
+        mountMCPStatus(mcpSec, tabObj.session?.id, tabObj);
       }
       break;
     }
