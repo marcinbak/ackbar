@@ -399,15 +399,8 @@ func (s *Server) handlePromptQueueResume(w http.ResponseWriter, r *http.Request)
 		if len(parts) >= 2 {
 			if hostRec := s.resolveHost(parts[1]); hostRec != nil && hostRec.URL != "" {
 				targetURL := fmt.Sprintf("%s/v1/sessions/prompt/queue/resume?session_id=%s", strings.TrimSuffix(hostRec.URL, "/"), url.QueryEscape(sessionID))
-				fwdReq, err := http.NewRequest(r.Method, targetURL, nil)
-				if err == nil {
-					if resp, err := http.DefaultClient.Do(fwdReq); err == nil {
-						defer resp.Body.Close()
-						w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
-						w.WriteHeader(resp.StatusCode)
-						_, _ = io.Copy(w, resp.Body)
-						return
-					}
+				if s.proxyToRemoteHost(w, r.Method, targetURL, "", nil) {
+					return
 				}
 			}
 		}
@@ -417,15 +410,8 @@ func (s *Server) handlePromptQueueResume(w http.ResponseWriter, r *http.Request)
 
 	if hostRec := s.resolveHost(sess.Host); hostRec != nil && hostRec.URL != "" {
 		targetURL := fmt.Sprintf("%s/v1/sessions/prompt/queue/resume?session_id=%s", strings.TrimSuffix(hostRec.URL, "/"), url.QueryEscape(sess.ID))
-		fwdReq, err := http.NewRequest(r.Method, targetURL, nil)
-		if err == nil {
-			if resp, err := http.DefaultClient.Do(fwdReq); err == nil {
-				defer resp.Body.Close()
-				w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
-				w.WriteHeader(resp.StatusCode)
-				_, _ = io.Copy(w, resp.Body)
-				return
-			}
+		if s.proxyToRemoteHost(w, r.Method, targetURL, "", nil) {
+			return
 		}
 	}
 
@@ -911,6 +897,82 @@ func proxyGETWithAuth(w http.ResponseWriter, r *http.Request, targetURL string) 
 	return true
 }
 
+func CoalesceTranscriptMessagesForWire(msgs []TranscriptMessage) []TranscriptMessage {
+	if len(msgs) == 0 {
+		return nil
+	}
+	normComp := func(s string) string {
+		return strings.TrimSpace(strings.Join(strings.Fields(s), " "))
+	}
+	coalesced := make([]TranscriptMessage, 0, len(msgs))
+	for _, msg := range msgs {
+		if len(coalesced) > 0 {
+			last := &coalesced[len(coalesced)-1]
+			if last.Role == "assistant" && msg.Role == "assistant" {
+				if msg.Content != "" {
+					if last.Content != "" {
+						lastComp := normComp(last.Content)
+						msgComp := normComp(msg.Content)
+						if msgComp != "" && !strings.Contains(lastComp, msgComp) {
+							if strings.Contains(msgComp, lastComp) {
+								last.Content = msg.Content
+							} else {
+								last.Content += "\n\n" + msg.Content
+							}
+						}
+					} else {
+						last.Content = msg.Content
+					}
+				}
+				if msg.Thinking != "" && last.Thinking == "" {
+					last.Thinking = msg.Thinking
+				}
+				if len(msg.ToolCalls) > 0 {
+					last.ToolCalls = append(last.ToolCalls, msg.ToolCalls...)
+				}
+				if !msg.Timestamp.IsZero() {
+					last.Timestamp = msg.Timestamp
+				}
+				if msg.TurnID != "" && last.TurnID == "" {
+					last.TurnID = msg.TurnID
+				}
+				if msg.InFlight {
+					last.InFlight = true
+				}
+				continue
+			} else if last.Role == "user" && msg.Role == "user" {
+				sameTurn := last.TurnID != "" && msg.TurnID != "" && last.TurnID == msg.TurnID
+				lastText := normComp(last.Content)
+				currText := normComp(msg.Content)
+				if sameTurn || (lastText != "" && currText != "" && lastText == currText) {
+					if msg.TurnID != "" && last.TurnID == "" {
+						last.TurnID = msg.TurnID
+					}
+					if msg.InFlight {
+						last.InFlight = true
+					}
+					continue
+				}
+			}
+		}
+		var tcCopy []string
+		if len(msg.ToolCalls) > 0 {
+			tcCopy = make([]string, len(msg.ToolCalls))
+			copy(tcCopy, msg.ToolCalls)
+		}
+		coalesced = append(coalesced, TranscriptMessage{
+			Role:      msg.Role,
+			Content:   msg.Content,
+			Thinking:  msg.Thinking,
+			ToolCalls: tcCopy,
+			TurnID:    msg.TurnID,
+			InFlight:  msg.InFlight,
+			Timestamp: msg.Timestamp,
+		})
+	}
+	return coalesced
+}
+
 func (s *Server) handleSessionTranscript(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -1000,6 +1062,9 @@ func (s *Server) handleSessionTranscript(w http.ResponseWriter, r *http.Request)
 
 		flusher, canFlush := w.(http.Flusher)
 
+		msgs := CoalesceTranscriptMessagesForWire(transcript.Messages)
+		totalMsgs := len(msgs)
+
 		meta := map[string]interface{}{
 			"type":              "meta",
 			"session_id":        sessionID,
@@ -1007,7 +1072,7 @@ func (s *Server) handleSessionTranscript(w http.ResponseWriter, r *http.Request)
 			"agent":             agent,
 			"title":             transcript.Title,
 			"cwd":               transcript.Cwd,
-			"total":             len(transcript.Messages),
+			"total":             totalMsgs,
 			"running_subagents": runningSubs,
 			"subagents":         runningSubs,
 		}
@@ -1029,8 +1094,6 @@ func (s *Server) handleSessionTranscript(w http.ResponseWriter, r *http.Request)
 			flusher.Flush()
 		}
 
-		msgs := transcript.Messages
-		totalMsgs := len(msgs)
 		for sentIdx := 0; sentIdx < totalMsgs; sentIdx++ {
 			msgIdx := totalMsgs - 1 - sentIdx
 			item := map[string]interface{}{

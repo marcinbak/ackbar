@@ -847,7 +847,7 @@ func (d *DB) GetSessionByAlias(sessionID string) (*Session, error) {
 
 	if len(sessionID) >= 36 {
 		candidate := sessionID[len(sessionID)-36:]
-		if strings.Count(candidate, "-") == 4 {
+		if IsUUID(candidate) {
 			q := `
 			SELECT id, agent, host, native_id, cwd, roots, project_key, state,
 			       blocked_kind, blocked_reason, blocked_since, blocked_question, blocked_options, blocked_questions, blocked_reset_at, blocked_meta, activity,

@@ -2,11 +2,13 @@ package daemon
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -142,6 +144,34 @@ func TestTranscriptCache_IncrementalClaudeAppend(t *testing.T) {
 	}
 	if t2.Messages[2].Content != "Second question" || t2.Messages[3].Content != "Second answer" {
 		t.Fatalf("unexpected appended messages: %+v", t2.Messages[2:])
+	}
+
+	// Sleep briefly so file modtime strictly advances
+	time.Sleep(20 * time.Millisecond)
+
+	// Append a synthetic meta line and a valid third exchange; the meta line must be filtered out
+	appendSynthetic := `{"type":"user","isMeta":true,"message":{"role":"user","content":"<task-notification>synthetic</task-notification>"}}
+{"type":"user","message":{"role":"user","content":"Third question"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Third answer"}]}}
+`
+	f2, err := os.OpenFile(logPath, os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		t.Fatalf("OpenFile append 2 failed: %v", err)
+	}
+	if _, err := f2.WriteString(appendSynthetic); err != nil {
+		t.Fatalf("WriteString failed: %v", err)
+	}
+	_ = f2.Close()
+
+	t3, err := server.ExtractTranscript("claude-code", nativeID, cwd)
+	if err != nil {
+		t.Fatalf("ExtractTranscript incremental 2 failed: %v", err)
+	}
+	if len(t3.Messages) != 6 {
+		t.Fatalf("expected 6 messages after filtering synthetic meta line, got %d", len(t3.Messages))
+	}
+	if t3.Messages[4].Content != "Third question" || t3.Messages[5].Content != "Third answer" {
+		t.Fatalf("unexpected appended messages: %+v", t3.Messages[4:])
 	}
 }
 
@@ -378,4 +408,137 @@ func TestGetSessionByAlias(t *testing.T) {
 	if err != nil || s4 == nil || s4.ID != fullID {
 		t.Fatalf("lookup by UUID suffix failed: %v, %+v", err, s4)
 	}
+}
+
+func TestRemoteHostProxy_SuggestionsAndConfig_NoPanic(t *testing.T) {
+	db, err := InitDB(filepath.Join(t.TempDir(), "proxy-test.db"))
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	peerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/config") {
+			_, _ = w.Write([]byte(`{"agent":"claude-code","model":"claude-3-5-sonnet"}`))
+		} else if strings.HasSuffix(r.URL.Path, "/suggestions") {
+			_, _ = w.Write([]byte(`{"suggestions":["deploy","test"]}`))
+		} else {
+			http.NotFound(w, r)
+		}
+	}))
+	defer peerServer.Close()
+
+	if err := db.SaveHost(&HostRecord{
+		Name: "remote-box",
+		URL:  peerServer.URL,
+	}); err != nil {
+		t.Fatalf("SaveHost failed: %v", err)
+	}
+
+	server := NewServer(db)
+
+	remoteSessionID := "claude-code:remote-box:11111111-1111-1111-1111-111111111111"
+
+	reqConfig := httptest.NewRequest(http.MethodPost, "/v1/sessions/"+remoteSessionID+"/config", strings.NewReader(`{"model":"claude-3-5-sonnet"}`))
+	wConfig := httptest.NewRecorder()
+	server.Mux().ServeHTTP(wConfig, reqConfig)
+	if wConfig.Code != http.StatusOK {
+		t.Fatalf("config proxy expected 200, got %d: %s", wConfig.Code, wConfig.Body.String())
+	}
+	if !strings.Contains(wConfig.Body.String(), "claude-3-5-sonnet") {
+		t.Fatalf("config proxy unexpected body: %s", wConfig.Body.String())
+	}
+
+	reqSug := httptest.NewRequest(http.MethodGet, "/v1/sessions/"+remoteSessionID+"/suggestions?kind=prompt", nil)
+	wSug := httptest.NewRecorder()
+	server.Mux().ServeHTTP(wSug, reqSug)
+	if wSug.Code != http.StatusOK {
+		t.Fatalf("suggestions proxy expected 200, got %d: %s", wSug.Code, wSug.Body.String())
+	}
+	if !strings.Contains(wSug.Body.String(), "deploy") {
+		t.Fatalf("suggestions proxy unexpected body: %s", wSug.Body.String())
+	}
+}
+
+func TestTranscriptCache_ConcurrentExtractTranscript_Race(t *testing.T) {
+	db, err := InitDB(filepath.Join(t.TempDir(), "race-test.db"))
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := NewServer(db)
+	tempHome := t.TempDir()
+	server.homeDir = tempHome
+
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempHome)
+	defer os.Setenv("HOME", origHome)
+
+	nativeID := "claude-race-sess-1"
+	cwd := "/Users/test/race-project"
+	sanitizedDir := "-Users-test-race-project"
+	logDir := filepath.Join(tempHome, ".claude", "projects", sanitizedDir)
+	if err := os.MkdirAll(logDir, 0755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+	logPath := filepath.Join(logDir, nativeID+".jsonl")
+
+	initial := `{"type":"user","message":{"role":"user","content":"Initial prompt"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Initial response"}]}}
+`
+	if err := os.WriteFile(logPath, []byte(initial), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	const numReaders = 8
+	var wg sync.WaitGroup
+	stopCh := make(chan struct{})
+
+	for i := 0; i < numReaders; i++ {
+		wg.Add(1)
+		go func(readerID int) {
+			defer wg.Done()
+			for {
+				select {
+				case <-stopCh:
+					return
+				default:
+					res, err := server.ExtractTranscript("claude-code", nativeID, cwd)
+					if err != nil {
+						t.Errorf("reader %d: ExtractTranscript failed: %v", readerID, err)
+						return
+					}
+					if len(res.Messages) < 2 {
+						t.Errorf("reader %d: expected >= 2 messages, got %d", readerID, len(res.Messages))
+						return
+					}
+					for _, m := range res.Messages {
+						_ = m.Role
+						_ = m.Content
+						for _, tc := range m.ToolCalls {
+							_ = tc
+						}
+					}
+					time.Sleep(1 * time.Millisecond)
+				}
+			}
+		}(i)
+	}
+
+	for round := 0; round < 10; round++ {
+		time.Sleep(10 * time.Millisecond)
+		appendData := fmt.Sprintf(`{"type":"user","message":{"role":"user","content":"User prompt %d"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Assistant reply %d"}]}}
+`, round, round)
+		f, err := os.OpenFile(logPath, os.O_APPEND|os.O_WRONLY, 0644)
+		if err == nil {
+			_, _ = f.WriteString(appendData)
+			_ = f.Close()
+		}
+	}
+
+	close(stopCh)
+	wg.Wait()
 }

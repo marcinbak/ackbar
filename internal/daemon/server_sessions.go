@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -303,16 +304,22 @@ func (s *Server) remoteHostForSession(sessionID string, sess *Session) *HostReco
 }
 
 var peerProxyHTTPClient = &http.Client{
-	Timeout: 15 * time.Second,
 	Transport: &http.Transport{
-		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 20,
-		IdleConnTimeout:     90 * time.Second,
+		DialContext: (&net.Dialer{
+			Timeout:   5 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ResponseHeaderTimeout: 10 * time.Second,
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   20,
+		IdleConnTimeout:       90 * time.Second,
 	},
 }
 
 func (s *Server) proxyToRemoteHost(w http.ResponseWriter, method, targetURL, contentType string, body io.Reader) bool {
-	fwdReq, err := http.NewRequest(method, targetURL, body)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	fwdReq, err := http.NewRequestWithContext(ctx, method, targetURL, body)
 	if err != nil {
 		return false
 	}
@@ -340,7 +347,7 @@ func (s *Server) proxyToRemoteHost(w http.ResponseWriter, method, targetURL, con
 
 func (s *Server) resolveSessionOrProxy(w http.ResponseWriter, method, sessionID, contentType string, body io.Reader, buildPath func(sess *Session) string) (*Session, bool) {
 	if hostRec := s.remoteHostForSession(sessionID, nil); hostRec != nil && hostRec.URL != "" {
-		targetURL := strings.TrimSuffix(hostRec.URL, "/") + buildPath(nil)
+		targetURL := strings.TrimSuffix(hostRec.URL, "/") + buildPath(&Session{ID: sessionID})
 		if s.proxyToRemoteHost(w, method, targetURL, contentType, body) {
 			return nil, true
 		}
@@ -1162,7 +1169,11 @@ func (s *Server) handleSessionConfig(w http.ResponseWriter, r *http.Request, ses
 	}
 
 	sess, proxied := s.resolveSessionOrProxy(w, r.Method, sessionID, "application/json", bytes.NewReader(bodyBytes), func(target *Session) string {
-		return "/v1/sessions/" + url.PathEscape(target.ID) + "/config"
+		targetID := sessionID
+		if target != nil && target.ID != "" {
+			targetID = target.ID
+		}
+		return "/v1/sessions/" + url.PathEscape(targetID) + "/config"
 	})
 	if proxied {
 		return

@@ -2358,7 +2358,7 @@ function loadOlderTranscriptMessages(tabObj) {
   tabObj.loadedTranscriptStartIndex = nextStartIndex;
 
   const bannerEl = container.querySelector('.chat-load-more-container');
-  const insertReference = bannerEl ? bannerEl.nextSibling : container.firstChild;
+  const insertReference = bannerEl ? (bannerEl.nextSibling || bannerEl.nextElementSibling) : (container.firstChild || container.firstElementChild);
 
   const fragment = document.createDocumentFragment();
   for (const msg of olderBatch) {
@@ -2602,6 +2602,10 @@ function isPromptInTranscriptTail(coalesced, promptNorm, promptTimestamp, tabObj
 async function loadChatTranscript(tabObj) {
   if (!tabObj || !tabObj.chatMessagesEl || !tabObj.session) return;
   if (tabObj._inFlightTranscriptPromise) {
+    if ((Date.now() - (tabObj._lastTranscriptLoadAt || 0)) < 50) {
+      return tabObj._inFlightTranscriptPromise;
+    }
+    tabObj._pendingTranscriptReload = true;
     return tabObj._inFlightTranscriptPromise;
   }
 
@@ -2647,6 +2651,10 @@ async function loadChatTranscript(tabObj) {
     if (tabObj._inFlightTranscriptPromise === inFlightPromise) {
       tabObj._inFlightTranscriptPromise = null;
     }
+    if (tabObj._pendingTranscriptReload) {
+      tabObj._pendingTranscriptReload = false;
+      return await loadChatTranscript(tabObj);
+    }
   }
 }
 
@@ -2672,7 +2680,7 @@ async function processNDJSONTranscript(tabObj, res, reqId, container, shouldStic
   const decoder = new TextDecoder();
   let buffer = '';
 
-  const processLine = (line) => {
+  const processLine = async (line) => {
     if (!line) return;
     let item;
     try {
@@ -2750,16 +2758,18 @@ async function processNDJSONTranscript(tabObj, res, reqId, container, shouldStic
       startIndex = total <= CHAT_PAGE_SIZE ? 0 : (total - CHAT_PAGE_SIZE);
       visibleCount = total - startIndex;
       firstBatchStart = Math.max(startIndex, total - 5);
-      tabObj.loadedTranscriptStartIndex = startIndex;
 
       const domMsgs = container.querySelectorAll('.chat-msg');
       canReuseDom = !liveTurnMsgEl && domMsgs.length >= visibleCount && domMsgs.length > 0;
+      if (!canReuseDom) {
+        tabObj.loadedTranscriptStartIndex = startIndex;
+      }
       return;
     }
 
     if (item.type === 'msg' && typeof item.index === 'number' && item.message) {
       const msgIdx = item.index;
-      const msg = item.message;
+      const msg = { ...item.message, index: msgIdx };
       if (tabObj.allTranscriptMessages) {
         tabObj.allTranscriptMessages[msgIdx] = msg;
       }
@@ -2779,6 +2789,10 @@ async function processNDJSONTranscript(tabObj, res, reqId, container, shouldStic
         }
 
         if (renderedFirstBatch && startIndex < firstBatchStart && msgIdx === startIndex) {
+          if (typeof requestAnimationFrame === 'function') {
+            await new Promise(resolve => requestAnimationFrame(resolve));
+            if (tabObj._transcriptReqId !== reqId) return;
+          }
           const fragment = (typeof document !== 'undefined' && typeof document.createDocumentFragment === 'function')
             ? document.createDocumentFragment()
             : null;
@@ -2832,18 +2846,18 @@ async function processNDJSONTranscript(tabObj, res, reqId, container, shouldStic
       const lines = buffer.split('\n');
       buffer = lines.pop();
       for (const line of lines) {
-        processLine(line.trim());
+        await processLine(line.trim());
       }
     }
     buffer += decoder.decode();
     if (buffer.trim()) {
-      processLine(buffer.trim());
+      await processLine(buffer.trim());
     }
   } else if (typeof res.text === 'function') {
     const text = await res.text();
     if (tabObj._transcriptReqId !== reqId) return;
     for (const line of text.split('\n')) {
-      processLine(line.trim());
+      await processLine(line.trim());
     }
   }
 
@@ -2872,11 +2886,12 @@ async function processNDJSONTranscript(tabObj, res, reqId, container, shouldStic
         const lastVisibleMsg = visibleMessages[lastIdx];
         if (domMessageMatchesTranscript(lastDomEl, lastVisibleMsg)) {
           reusedDom = true;
-          tabObj.loadedTranscriptStartIndex = startIndex;
+          tabObj.loadedTranscriptStartIndex = Math.max(0, startIndex - offset);
+          const startMsgIdx = Math.max(0, total - domMsgs.length);
+          for (let j = 0; j < domMsgs.length; j++) {
+            domMsgs[j].dataset.msgIndex = String(startMsgIdx + j);
+          }
           for (let i = 0; i < visibleMessages.length; i++) {
-            if (typeof visibleMessages[i]?.index === 'number') {
-              domMsgs[offset + i].dataset.msgIndex = String(visibleMessages[i].index);
-            }
             if (visibleMessages[i]?.turn_id) {
               domMsgs[offset + i].dataset.turnId = visibleMessages[i].turn_id;
             }
@@ -2893,10 +2908,15 @@ async function processNDJSONTranscript(tabObj, res, reqId, container, shouldStic
               container.insertBefore(replacementEl, lastDomEl);
               lastDomEl.remove();
               reusedDom = true;
-              tabObj.loadedTranscriptStartIndex = startIndex;
+              tabObj.loadedTranscriptStartIndex = Math.max(0, startIndex - offset);
+              const remainingDomMsgs = container.querySelectorAll('.chat-msg');
+              const startMsgIdx = Math.max(0, total - remainingDomMsgs.length);
+              for (let j = 0; j < remainingDomMsgs.length; j++) {
+                remainingDomMsgs[j].dataset.msgIndex = String(startMsgIdx + j);
+              }
               for (let i = 0; i < visibleMessages.length - 1; i++) {
                 if (visibleMessages[i]?.turn_id) {
-                  domMsgs[offset + i].dataset.turnId = visibleMessages[i].turn_id;
+                  remainingDomMsgs[offset + i].dataset.turnId = visibleMessages[i].turn_id;
                 }
               }
               if (inFlightPrompt && !isTurnActive) {
@@ -3020,11 +3040,12 @@ function processJSONTranscript(tabObj, data, container, shouldStickToBottom, pre
         const lastVisibleMsg = visibleMessages[lastIdx];
         if (domMessageMatchesTranscript(lastDomEl, lastVisibleMsg)) {
           reusedDom = true;
-          tabObj.loadedTranscriptStartIndex = startIndex;
+          tabObj.loadedTranscriptStartIndex = Math.max(0, startIndex - offset);
+          const startMsgIdx = Math.max(0, total - domMsgs.length);
+          for (let j = 0; j < domMsgs.length; j++) {
+            domMsgs[j].dataset.msgIndex = String(startMsgIdx + j);
+          }
           for (let i = 0; i < visibleMessages.length; i++) {
-            if (typeof visibleMessages[i].index === 'number') {
-              domMsgs[offset + i].dataset.msgIndex = String(visibleMessages[i].index);
-            }
             if (visibleMessages[i].turn_id) {
               domMsgs[offset + i].dataset.turnId = visibleMessages[i].turn_id;
             }
@@ -3041,10 +3062,15 @@ function processJSONTranscript(tabObj, data, container, shouldStickToBottom, pre
               container.insertBefore(replacementEl, lastDomEl);
               lastDomEl.remove();
               reusedDom = true;
-              tabObj.loadedTranscriptStartIndex = startIndex;
+              tabObj.loadedTranscriptStartIndex = Math.max(0, startIndex - offset);
+              const remainingDomMsgs = container.querySelectorAll('.chat-msg');
+              const startMsgIdx = Math.max(0, total - remainingDomMsgs.length);
+              for (let j = 0; j < remainingDomMsgs.length; j++) {
+                remainingDomMsgs[j].dataset.msgIndex = String(startMsgIdx + j);
+              }
               for (let i = 0; i < visibleMessages.length - 1; i++) {
                 if (visibleMessages[i].turn_id) {
-                  domMsgs[offset + i].dataset.turnId = visibleMessages[i].turn_id;
+                  remainingDomMsgs[offset + i].dataset.turnId = visibleMessages[i].turn_id;
                 }
               }
               if (inFlightPrompt && !isTurnActive) {
