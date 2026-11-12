@@ -129,10 +129,10 @@ It is embedded directly into the `ackbard` Go binary and served on `http://127.0
 * **Composer Status Pill Bar & `/config` Popover (`.chat-composer-bar`, `.chat-config-popover`):**
   * Displays interactive pills above the chat input for **Model**, **Reasoning Effort** (`low`, `medium`, `high`, `max`, hidden for Antigravity sessions), **Execution Mode** (`⚡ Auto Mode` vs `📝 Plan Mode`), and **Context Usage** (`% Context` gauge derived from `session.context_pct` with agent-aware fallback limits: 1M tokens for Antigravity, 200k tokens for Claude Code).
   * Clicking `⚙️ /config` (or typing `/config`) opens the Session Configuration popover to adjust model, effort, and execution mode (`PATCH /v1/sessions/{id}/config`) and inspect context window usage.
-  * Displays **MCP & Plugins** health pills in the `/config` popover with 1-click **`[Sign in]`** actions.
+  * Displays **MCP & Plugins** health pills in the `/config` popover with 1-click **`[Sign in]`** and **`[↻ Restart CLI]`** actions.
   * Dynamically queries `GET /v1/sessions/{id}/suggestions?kind=models` to populate agent-specific model catalogs (e.g. Gemini 4 Argon, Gemini 3.8 Flash, GPT-OSS for Antigravity; Claude Fable 5.1, Claude Opus/Sonnet for Claude Code).
 * **`/` Command, `@` File, and Model Autocomplete (`.chat-autocomplete-menu`):**
-  * Typing `/` at the start of input queries `GET /v1/sessions/{id}/suggestions?kind=commands`, surfacing built-in client actions (`/config`, `/plan`, `/clear`, `/compact`, `/handover`, `/terminal`) alongside discovered workspace workflows (`.claude/commands/*.md`, `.agents/workflows/*.md`) and skills (`SKILL.md`).
+  * Typing `/` at the start of input queries `GET /v1/sessions/{id}/suggestions?kind=commands`, surfacing built-in client actions (`/config`, `/plan`, `/clear`, `/restart`, `/compact`, `/handover`, `/terminal`) alongside discovered workspace workflows (`.claude/commands/*.md`, `.agents/workflows/*.md`) and skills (`SKILL.md`).
   * Typing `@<query>` after start-of-input or whitespace queries `GET /v1/sessions/{id}/suggestions?kind=files` to fuzzy-match relative workspace files.
   * Queries `GET /v1/sessions/{id}/suggestions?kind=models` for agent-scoped model suggestion catalogs.
 * **Inline Shell Execution (`! <cmd>`, `web/js/chat-commands.js`):**
@@ -144,6 +144,7 @@ It is embedded directly into the `ackbard` Go binary and served on `http://127.0
     * `/model [name]`, `/effort [tier]`, `/permissions [mode]`, `/auto`: Configure runtime session options in-place; `/effort` is omitted on Antigravity.
     * `/add-dir [path|--remove <path>|--clear]`: Manages allowed extra directory paths (`extra_dirs`) for agent file access.
     * `/clear`, `/reset`: Closes current turn and migrates active tab to fresh `Conv N+1` in-place.
+    * `/restart`: Restarts the CLI process in-place (`action=restart`) to reload MCP connectors and configuration.
     * `/compact [instructions]`: Summarizes context via native provider compaction or daemon rotation.
     * `/handover [instructions]`: Extracts 4-point briefing and rotates session into fresh turn.
     * `/mcp`: Displays interactive MCP and plugin status card with 1-click sign-in actions.
