@@ -2,61 +2,41 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../../core/models/headless_models.dart';
-import '../../../core/models/host.dart';
-import '../application/headless_chat_stream_controller.dart';
 import '../../../core/models/session.dart';
-import '../../../core/models/subagent.dart';
 import '../../../core/models/transcript.dart';
+import '../../../core/navigation/session_navigator.dart';
 import '../../../core/network/api_client.dart';
-import '../../../core/network/headless_api_client.dart';
 import '../../../core/providers/fleet_providers.dart';
 import '../../../core/services/audio_companion_service.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_typography.dart';
-import '../../../core/widgets/agent_logo.dart';
-import '../../headless/presentation/headless_auth_card.dart';
-import '../../headless/presentation/headless_config_sheet.dart';
-import '../../terminal/presentation/terminal_screen.dart';
-import 'headless_autocomplete_strip.dart';
-import 'headless_command_cards.dart';
-import 'headless_command_dispatcher.dart';
-import 'speech_companion_bar.dart';
+import '../../../core/utils/session_host_resolver.dart';
+import 'transcript_tool_widgets.dart';
+import 'transcript_turn_bubble.dart';
 
-/// Fullscreen interactive Chat-Style Transcript Screen displaying user and agent turns
-/// with right-aligned user bubbles, left-aligned agent responses, collapsible tool calls,
-/// thinking accordions, and jump-to-bottom controls.
 class TranscriptScreen extends ConsumerStatefulWidget {
   final Session session;
+  final bool showOpenSessionAction;
 
-  const TranscriptScreen({super.key, required this.session});
+  const TranscriptScreen({
+    super.key,
+    required this.session,
+    this.showOpenSessionAction = true,
+  });
 
-  static Future<void> open(BuildContext context, Session session) {
+  static Future<void> open(
+    BuildContext context,
+    Session session, {
+    bool showOpenSessionAction = true,
+  }) {
     return Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (context) => TranscriptScreen(session: session),
-      ),
-    );
-  }
-
-  static Future<void> showModal(
-    BuildContext context,
-    WidgetRef ref,
-    Session session,
-  ) {
-    return showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (context) => SizedBox(
-        height: MediaQuery.of(context).size.height * 0.90,
-        child: ClipRRect(
-          borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
-          child: TranscriptScreen(session: session),
+        builder: (_) => TranscriptScreen(
+          session: session,
+          showOpenSessionAction: showOpenSessionAction,
         ),
       ),
     );
@@ -68,98 +48,30 @@ class TranscriptScreen extends ConsumerStatefulWidget {
 
 class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
     with WidgetsBindingObserver {
-  late Session _activeSession = widget.session;
-  final List<HeadlessEphemeralCardEntry> _ephemeralCards = [];
-
-  final ScrollController _scrollController = ScrollController();
-  final TextEditingController _promptController = TextEditingController();
-  final FocusNode _promptFocusNode = FocusNode();
+  late final Session _activeSession = widget.session;
+  TranscriptData? _transcriptData;
+  bool _isLoading = false;
+  String? _errorMessage;
+  bool _isSearchOpen = false;
   bool _showJumpToBottom = false;
-  bool _hasPromptText = false;
-  bool _isSubagentsExpanded = false;
-  late final HeadlessChatStreamController _streamController;
 
-  TranscriptData? get _transcriptData => _streamController.transcriptData;
-  bool get _isLoading => _streamController.isLoading;
-  bool get _isSending => _streamController.isSending;
-  bool get _awaitingTurnCompletion => _streamController.awaitingTurnCompletion;
-  String? get _errorMessage => _streamController.errorMessage;
-  TranscriptMessage? get _pendingUserMessage =>
-      _streamController.pendingUserMessage;
-  List<SubagentInfo> get _runningSubagents =>
-      _streamController.runningSubagents;
+  final TextEditingController _searchController = TextEditingController();
+  final ScrollController _scrollController = ScrollController();
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _promptController.addListener(_onPromptChanged);
     _scrollController.addListener(_onScroll);
-
-    final host = _resolveHostRecord(_activeSession.host);
-    _streamController = HeadlessChatStreamController(
-      session: _activeSession,
-      host: host,
-      apiClient: ref.read(apiClientProvider),
-    );
-    _streamController.addListener(_onStreamControllerUpdated);
-    _streamController.init();
-  }
-
-  void _onStreamControllerUpdated() {
-    if (!mounted) return;
-    setState(() {});
-  }
-
-  void _rotateToSession(Session nextSession, {String? notice}) {
-    setState(() {
-      _activeSession = nextSession;
-      _ephemeralCards.clear();
-      _ephemeralCards.add(
-        HeadlessEphemeralCardEntry(
-          id: 'card_rot_${DateTime.now().millisecondsSinceEpoch}',
-          kind: 'status',
-          createdAt: DateTime.now(),
-          statusTitle: 'Conversation Rotated',
-          statusBody: notice ??
-              'Rotated to new conversation (${nextSession.displayTitle})',
-        ),
-      );
-    });
-    ref.read(fleetSessionsProvider.notifier).upsertSession(nextSession);
-    _streamController.rotateToSession(
-      nextSession,
-      _resolveHostRecord(nextSession.host),
-    );
-  }
-
-  HostRecord _resolveHostRecord(String hostName) {
-    final hosts = ref.read(hostsListProvider);
-    for (final h in hosts) {
-      if (h.name.toLowerCase() == hostName.toLowerCase() ||
-          h.url.toLowerCase() == hostName.toLowerCase()) {
-        return h;
-      }
-    }
-    return hosts.isNotEmpty
-        ? hosts.first
-        : HostRecord(
-            name: hostName.isNotEmpty ? hostName : 'local',
-            url: 'http://127.0.0.1:7777',
-            createdAt: DateTime.now(),
-          );
+    _searchController.addListener(_onSearchChanged);
+    _loadTranscript();
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _streamController.removeListener(_onStreamControllerUpdated);
-    _streamController.dispose();
-    _promptController.removeListener(_onPromptChanged);
-    _scrollController.removeListener(_onScroll);
     _scrollController.dispose();
-    _promptController.dispose();
-    _promptFocusNode.dispose();
+    _searchController.dispose();
     super.dispose();
   }
 
@@ -167,1738 +79,387 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
     if (state == AppLifecycleState.resumed && mounted) {
-      _streamController.onAppResumed();
-      if (ref.read(hostsListProvider).isNotEmpty) {
-        ref.read(fleetSessionsProvider.notifier).refreshSessions();
-      }
+      _loadTranscript();
     }
   }
 
-  void _onPromptChanged() {
-    final hasText = _promptController.text.trim().isNotEmpty;
-    if (hasText != _hasPromptText && mounted) {
-      setState(() {
-        _hasPromptText = hasText;
-      });
-    }
-  }
-
-  Session? _findMatchingSession(List<Session>? sessions) {
-    if (sessions == null) return null;
-    for (final s in sessions) {
-      if (s.id == _activeSession.id ||
-          (s.oldId.isNotEmpty && s.oldId == _activeSession.id) ||
-          (_activeSession.nativeId.isNotEmpty &&
-              s.nativeId == _activeSession.nativeId)) {
-        return s;
-      }
-    }
-    return null;
-  }
-
-  Session _resolveLiveSession([List<Session>? sessions]) {
-    final list = sessions ?? ref.read(fleetSessionsProvider);
-    return _findMatchingSession(list) ?? _activeSession;
-  }
-
-  bool get _isSessionWorking {
-    final liveSession = _resolveLiveSession();
-    return _isSending ||
-        _awaitingTurnCompletion ||
-        liveSession.state == SessionState.working;
-  }
+  Session _resolveLiveSession([List<Session>? sessions]) =>
+      SessionHostResolver.resolveLiveSession(
+          sessions ?? ref.read(fleetSessionsProvider), _activeSession);
 
   void _onScroll() {
     if (!_scrollController.hasClients) return;
-    final maxScroll = _scrollController.position.maxScrollExtent;
-    final currentScroll = _scrollController.position.pixels;
-    final isAwayFromBottom = (maxScroll - currentScroll) > 300;
-
-    if (isAwayFromBottom != _showJumpToBottom) {
-      setState(() {
-        _showJumpToBottom = isAwayFromBottom;
-      });
-    }
+    final pos = _scrollController.position;
+    final away = (pos.maxScrollExtent - pos.pixels) > 300;
+    if (away != _showJumpToBottom) setState(() => _showJumpToBottom = away);
   }
 
-  Future<({String url, String? authToken})> _resolveHost() async {
-    var hosts = ref.read(hostsListProvider);
-    if (hosts.isEmpty) {
-      for (var i = 0; i < 6 && hosts.isEmpty; i++) {
-        await Future.delayed(const Duration(milliseconds: 80));
-        if (!mounted) return (url: 'http://127.0.0.1:7777', authToken: null);
-        hosts = ref.read(hostsListProvider);
+  void _onSearchChanged() {
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _loadTranscript() async {
+    if (!mounted) return;
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+    });
+
+    final current = _resolveLiveSession();
+    final host = await SessionHostResolver.resolveSessionEndpoint(
+      getHosts: () => ref.read(hostsListProvider),
+      session: current,
+      isMounted: () => mounted,
+    );
+
+    try {
+      final structured = await ref
+          .read(apiClientProvider)
+          .getStructuredTranscript(host.url, current.id,
+              authToken: host.authToken);
+      if (structured != null) {
+        if (mounted) {
+          setState(() {
+            _transcriptData = structured;
+            _isLoading = false;
+          });
+        }
+        return;
+      }
+      final raw = await ref
+          .read(apiClientProvider)
+          .getTranscriptOrNull(host.url, current.id, authToken: host.authToken);
+      if (structured == null && raw == null) {
+        throw Exception('Unable to load transcript');
+      }
+      if (mounted) {
+        setState(() {
+          _transcriptData = TranscriptData.fromRawMarkdown(
+            sessionId: current.id,
+            agent: current.agent,
+            title: current.displayTitle,
+            markdown: raw ?? '',
+          );
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _errorMessage = e.toString();
+          _isLoading = false;
+        });
       }
     }
-
-    // 1. Direct name or URL match (case-insensitive)
-    final sessionHost = _resolveLiveSession().host.toLowerCase();
-    final match = hosts.where(
-      (h) =>
-          h.name.toLowerCase() == sessionHost ||
-          h.url.toLowerCase().contains(sessionHost),
-    );
-    if (match.isNotEmpty) {
-      final h = match.first;
-      return (url: h.url, authToken: h.authToken);
-    }
-
-    // 2. Any online host
-    final online = hosts.where((h) => h.online);
-    if (online.isNotEmpty) {
-      final h = online.first;
-      return (url: h.url, authToken: h.authToken);
-    }
-
-    // 3. Any configured host
-    if (hosts.isNotEmpty) {
-      final h = hosts.first;
-      return (url: h.url, authToken: h.authToken);
-    }
-
-    return (url: 'http://127.0.0.1:7777', authToken: null);
   }
-
-  Future<void> _loadTranscript() => _streamController.loadTranscript();
-  Future<void> _refreshTranscriptSilently() =>
-      _streamController.refreshTranscriptSilently();
-  Future<void> _loadSubagents() => _streamController.loadSubagents();
 
   void _scrollToBottom({bool animate = true}) {
     if (!_scrollController.hasClients) return;
     final target = _scrollController.position.maxScrollExtent;
-    if (animate) {
-      _scrollController.animateTo(
-        target,
-        duration: const Duration(milliseconds: 300),
-        curve: Curves.easeOutCubic,
-      );
-    } else {
-      _scrollController.jumpTo(target);
-    }
+    animate
+        ? _scrollController.animateTo(target,
+            duration: const Duration(milliseconds: 250), curve: Curves.easeOut)
+        : _scrollController.jumpTo(target);
   }
 
-  Future<void> _sendPrompt() async {
-    final text = _promptController.text.trim();
-    if (text.isEmpty || _isSending) return;
-
-    final currentSession = _resolveLiveSession();
-    _streamController.updateSession(currentSession);
-    if (currentSession.isHeadless) {
-      final hostRec = _resolveHostRecord(currentSession.host);
-      final dispatcher = HeadlessCommandDispatcher(
-        apiClient: ref.read(apiClientProvider),
-        host: hostRec,
-        onOpenConfig: () => HeadlessConfigSheet.show(context, currentSession),
-        onTakeWheel: _takeWheel,
-        onRotateSession: (newSession, {notice}) =>
-            _rotateToSession(newSession, notice: notice),
-        onSessionUpdated: (updated) =>
-            ref.read(fleetSessionsProvider.notifier).upsertSession(updated),
-      );
-
-      final result = await dispatcher.dispatch(currentSession, text);
-      if (result.intercepted) {
-        _promptController.clear();
-        if (result.card != null && mounted) {
-          setState(() {
-            _ephemeralCards.add(result.card!);
-          });
-          WidgetsBinding.instance
-              .addPostFrameCallback((_) => _scrollToBottom());
-        }
-        return;
-      }
-    }
-
-    _promptController.clear();
-    HapticFeedback.lightImpact();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
-
-    final res = await _streamController.submitPrompt(text);
-    if (!res.ok && mounted) {
-      _promptController.text = text;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Failed to dispatch prompt to agent'),
-          backgroundColor: AppColors.statusCoral,
-        ),
-      );
-    }
-  }
-
-  Future<void> _takeWheel() async {
-    HapticFeedback.mediumImpact();
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Taking the wheel: spawning live tmux session...'),
-        backgroundColor: AppColors.infoCyan,
-        duration: Duration(seconds: 2),
-      ),
-    );
-
+  Future<void> _copyFullTranscript() async {
+    final raw = _transcriptData?.rawMarkdown;
+    final text = (raw != null && raw.trim().isNotEmpty)
+        ? raw
+        : (_transcriptData?.messages ?? [])
+            .map((m) => '### ${m.role.toUpperCase()}\n${m.content}')
+            .join('\n\n');
     try {
-      final host = await _resolveHost();
-      final activeSessionId = _resolveLiveSession().id;
-      final res = await ref
-          .read(apiClientProvider)
-          .takeWheel(host.url, activeSessionId, authToken: host.authToken);
-      if (res != null && mounted) {
-        final tmuxName = res['tmux_name']?.toString() ?? '';
-        final updatedSession = _resolveLiveSession().copyWith(
-          tmuxName: tmuxName,
-          engineType: 'tmux',
-          managed: true,
-        );
-        TerminalScreen.open(context, updatedSession);
-      } else if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text(
-              'Failed to take wheel. Ensure no headless turn is in progress.',
-            ),
-            backgroundColor: AppColors.statusCoral,
-          ),
-        );
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error taking wheel: $e'),
-            backgroundColor: AppColors.statusCoral,
-          ),
-        );
-      }
-    }
-  }
-
-  Future<void> _cancelTurn() async {
-    HapticFeedback.mediumImpact();
-    try {
-      final host = await _resolveHost();
-      final activeSessionId = _resolveLiveSession().id;
-      await ref
-          .read(apiClientProvider)
-          .cancelTurn(host.url, activeSessionId, authToken: host.authToken);
-      if (mounted) {
-        _streamController.cancelTurnLocally();
-        _streamController.refreshTranscriptSilently();
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Turn cancelled'),
-            backgroundColor: AppColors.surfaceHighlight,
-          ),
-        );
-      }
+      await Clipboard.setData(ClipboardData(text: text));
     } catch (_) {}
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Transcript copied to clipboard')),
+      );
+    }
   }
 
-  Future<void> _speakMessage(
-    int index,
-    String content, {
-    bool forceRefresh = false,
-    bool forceFull = false,
-  }) async {
-    final host = await _resolveHost();
-    final liveSession = _resolveLiveSession();
+  Future<void> _speakMessage(int index, String content,
+      {bool forceRefresh = false, bool forceFull = false}) async {
+    final current = _resolveLiveSession();
+    final host = await SessionHostResolver.resolveSessionEndpoint(
+      getHosts: () => ref.read(hostsListProvider),
+      session: current,
+      isMounted: () => mounted,
+    );
     await ref.read(audioCompanionServiceProvider.notifier).speakMessage(
-          liveSession,
-          index,
-          content,
-          forceRefresh: forceRefresh,
-          forceFull: forceFull,
-          hostUrl: host.url,
-          authToken: host.authToken,
-        );
+        current, index, content,
+        forceRefresh: forceRefresh,
+        forceFull: forceFull,
+        hostUrl: host.url,
+        authToken: host.authToken);
   }
 
   void _autoReadLatestAssistantMessage() {
     final msgs = _transcriptData?.messages ?? [];
-    for (var i = msgs.length - 1; i >= 0; i--) {
-      if (msgs[i].isAssistant && msgs[i].content.trim().isNotEmpty) {
-        _speakMessage(i, msgs[i].content);
-        break;
+    final last = msgs
+        .lastIndexWhere((m) => m.isAssistant && m.content.trim().isNotEmpty);
+    if (last != -1) _speakMessage(last, msgs[last].content);
+  }
+
+  List<({TranscriptMessage message, int originalIndex})>
+      _getFilteredMessages() {
+    final msgs = _transcriptData?.messages ?? [];
+    final q = _searchController.text.trim().toLowerCase();
+    if (!_isSearchOpen || q.isEmpty) {
+      return [
+        for (var i = 0; i < msgs.length; i++)
+          (message: msgs[i], originalIndex: i)
+      ];
+    }
+    final result = <({TranscriptMessage message, int originalIndex})>[];
+    for (var i = 0; i < msgs.length; i++) {
+      final m = msgs[i];
+      final matchContent = m.content.toLowerCase().contains(q);
+      final matchThinking = (m.thinking ?? '').toLowerCase().contains(q);
+      final matchTools = m.toolCalls.any((tc) {
+        final p = ParsedToolCall.parse(tc);
+        return p.name.toLowerCase().contains(q) ||
+            p.detail.toLowerCase().contains(q);
+      });
+      if (matchContent || matchThinking || matchTools) {
+        result.add((message: m, originalIndex: i));
       }
     }
+    return result;
   }
 
-  void _handleRecognizedSpeech(String text, bool isFinal) {
-    if (!mounted) return;
-    final trimmed = text.trim();
-    if (trimmed.isEmpty) return;
+  IconButton _action(IconData icon, String tip, VoidCallback press,
+          [Color? color, Key? key]) =>
+      IconButton(
+          key: key,
+          icon: Icon(icon, size: 20, color: color ?? AppColors.textPrimary),
+          tooltip: tip,
+          onPressed: press);
 
-    if (!isFinal) {
-      _promptController.text = trimmed;
-      _promptController.selection = TextSelection.fromPosition(
-        TextPosition(offset: _promptController.text.length),
-      );
-      return;
-    }
-
-    final normalized =
-        trimmed.toLowerCase().replaceAll(RegExp(r'[.,!?;:]+$'), '').trim();
-    if (normalized == 'repeat that' ||
-        normalized == 'read that again' ||
-        normalized == 'repeat' ||
-        normalized == 'replay') {
-      _promptController.clear();
-      _autoReadLatestAssistantMessage();
-      return;
-    }
-
-    var finalPrompt = trimmed;
-    final autoRead = ref.read(audioCompanionServiceProvider).autoReadEnabled;
-    if (autoRead && !finalPrompt.contains('[Reply concisely')) {
-      finalPrompt += ' [Reply concisely in 2–3 spoken sentences]';
-    }
-    _promptController.text = finalPrompt;
-    _sendPrompt();
-  }
-
-  Future<void> _toggleAntigravityLiveVoice(Session currentSession) async {
-    HapticFeedback.mediumImpact();
-    final host = await _resolveHost();
-    if (!mounted) return;
-
+  List<Widget> _buildAppBarActions(
+      Session s, AudioCompanionState audio, bool showSessionAction) {
     final notifier = ref.read(audioCompanionServiceProvider.notifier);
-    if (!ref.read(audioCompanionServiceProvider).liveVoiceConnected &&
-        currentSession.isHeadless) {
-      await ref
-          .read(apiClientProvider)
-          .takeWheel(host.url, currentSession.id, authToken: host.authToken);
-    }
-    if (!mounted) return;
-    await notifier.toggleAntigravityLiveVoice(
-      currentSession,
-      hostUrl: host.url,
-      authToken: host.authToken,
+    final auto = audio.autoReadEnabled;
+    return [
+      _action(
+        _isSearchOpen ? Icons.search_off_rounded : Icons.search_rounded,
+        'Search Transcript',
+        () {
+          setState(() {
+            _isSearchOpen = !_isSearchOpen;
+            if (!_isSearchOpen) _searchController.clear();
+          });
+        },
+        _isSearchOpen ? AppColors.infoCyan : AppColors.textPrimary,
+        const Key('transcript_search_toggle'),
+      ),
+      _action(
+        auto ? Icons.volume_up_rounded : Icons.volume_off_rounded,
+        auto ? 'Auto-read enabled' : 'Auto-read disabled',
+        notifier.toggleAutoRead,
+        auto ? AppColors.infoCyan : AppColors.textMuted,
+        const Key('transcript_tts_toggle'),
+      ),
+      _action(Icons.copy_all_rounded, 'Copy Full Transcript',
+          _copyFullTranscript, null, const Key('transcript_copy_button')),
+      if (showSessionAction)
+        _action(
+          s.isHeadless
+              ? Icons.chat_bubble_outline_rounded
+              : Icons.terminal_rounded,
+          s.isHeadless ? 'Open Chat' : 'Open Terminal',
+          () => SessionNavigator.openSession(context, ref, s),
+          AppColors.infoCyan,
+          const Key('transcript_open_session_button'),
+        ),
+      _action(Icons.refresh_rounded, 'Refresh', _loadTranscript, null,
+          const Key('transcript_refresh_button')),
+    ];
+  }
+
+  Widget _buildSearchBar(int matchCount) {
+    return Container(
+      padding:
+          const EdgeInsets.symmetric(horizontal: AppSpacing.md, vertical: 8),
+      decoration: const BoxDecoration(
+        color: AppColors.surface,
+        border: Border(
+            bottom: BorderSide(color: AppColors.outlineSubtle, width: 1)),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.search_rounded,
+              size: 18, color: AppColors.textSecondary),
+          const SizedBox(width: 8),
+          Expanded(
+            child: TextField(
+              key: const Key('transcript_search_input'),
+              controller: _searchController,
+              autofocus: true,
+              style: AppTypography.bodySmall
+                  .copyWith(color: AppColors.textPrimary),
+              decoration: InputDecoration(
+                isDense: true,
+                border: InputBorder.none,
+                hintText: 'Filter turns, thoughts, or tool calls...',
+                hintStyle: AppTypography.bodySmall
+                    .copyWith(color: AppColors.textMuted),
+              ),
+            ),
+          ),
+          Text(
+            '$matchCount ${matchCount == 1 ? 'match' : 'matches'}',
+            key: const Key('transcript_search_count'),
+            style: AppTypography.codeXs.copyWith(color: AppColors.infoCyan),
+          ),
+          if (_searchController.text.isNotEmpty)
+            IconButton(
+              key: const Key('transcript_search_clear'),
+              icon: const Icon(Icons.clear_rounded,
+                  size: 18, color: AppColors.textMuted),
+              onPressed: () => _searchController.clear(),
+            ),
+        ],
+      ),
     );
   }
 
   @override
   Widget build(BuildContext context) {
-    ref.listen<List<Session>>(fleetSessionsProvider, (previous, next) {
-      final prevSession = _findMatchingSession(previous) ?? _activeSession;
-      final nextSession = _findMatchingSession(next);
-      if (nextSession == null) return;
-
-      _streamController.updateSession(nextSession);
-
-      if (prevSession.state == SessionState.working &&
-          nextSession.state != SessionState.working) {
-        _refreshTranscriptSilently().then((_) {
+    ref.listen<List<Session>>(fleetSessionsProvider, (prev, next) {
+      final s = SessionHostResolver.findMatchingSession(next, _activeSession);
+      if (s == null) return;
+      final p = SessionHostResolver.findMatchingSession(prev, _activeSession) ??
+          _activeSession;
+      if (p.state == SessionState.working && s.state != SessionState.working) {
+        _loadTranscript().then((_) {
           if (mounted &&
               ref.read(audioCompanionServiceProvider).autoReadEnabled) {
             _autoReadLatestAssistantMessage();
           }
         });
-        _loadSubagents();
       }
     });
 
-    final liveSession = ref.watch(
-      fleetSessionsProvider.select(_findMatchingSession),
-    );
-    final currentSession = liveSession ?? _activeSession;
-    if (currentSession.id != _streamController.session.id) {
-      _streamController.updateSession(currentSession, notify: false);
+    final currentSession = _resolveLiveSession();
+    final allMessages = _transcriptData?.messages ?? [];
+    final filtered = _getFilteredMessages();
+    final audio = ref.watch(audioCompanionServiceProvider);
+    final canOpenSession = widget.showOpenSessionAction &&
+        (currentSession.isHeadless ||
+            (!currentSession.isEnded &&
+                currentSession.tmuxName != '(deleted)'));
+
+    Widget body;
+    if (_isLoading && allMessages.isEmpty) {
+      body = const Center(
+          child: CircularProgressIndicator(color: AppColors.infoCyan));
+    } else if (_errorMessage != null && allMessages.isEmpty) {
+      body = Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(_errorMessage!,
+                textAlign: TextAlign.center,
+                style: AppTypography.bodySmall
+                    .copyWith(color: AppColors.statusCoral)),
+            AppSpacing.gapH12,
+            ElevatedButton(
+                onPressed: _loadTranscript, child: const Text('Retry')),
+          ],
+        ),
+      );
+    } else if (allMessages.isEmpty) {
+      body = Center(
+        child: Text('No transcript available yet',
+            style:
+                AppTypography.bodySmall.copyWith(color: AppColors.textMuted)),
+      );
+    } else if (_isSearchOpen && filtered.isEmpty) {
+      body = Center(
+        child: Text('No matching turns found',
+            style:
+                AppTypography.bodySmall.copyWith(color: AppColors.textMuted)),
+      );
+    } else {
+      body = ListView.builder(
+        controller: _scrollController,
+        padding:
+            const EdgeInsets.symmetric(horizontal: AppSpacing.md, vertical: 12),
+        itemCount: filtered.length,
+        itemBuilder: (context, idx) {
+          final item = filtered[idx];
+          return TranscriptTurnBubble(
+            message: item.message,
+            index: item.originalIndex,
+            session: currentSession,
+            onSpeak: _speakMessage,
+          );
+        },
+      );
     }
-    final isWorking = _isSending ||
-        _awaitingTurnCompletion ||
-        currentSession.state == SessionState.working;
-    final messages = _transcriptData?.messages ?? [];
-    final audioCompanion = ref.watch(audioCompanionServiceProvider);
 
     return Scaffold(
-      backgroundColor: AppColors.terminalBlack,
+      backgroundColor: AppColors.surface,
       appBar: AppBar(
         backgroundColor: AppColors.surface,
         elevation: 0,
         leading: IconButton(
-          icon: const Icon(
-            Icons.arrow_back_ios_new_rounded,
-            size: 18,
-            color: AppColors.textPrimary,
-          ),
+          icon: const Icon(Icons.arrow_back_rounded,
+              color: AppColors.textPrimary),
           onPressed: () => Navigator.of(context).pop(),
         ),
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
-              children: [
-                const Icon(
-                  Icons.forum_outlined,
-                  size: 16,
-                  color: AppColors.infoCyan,
-                ),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: Text(
-                    currentSession.displayTitle,
-                    style: AppTypography.codeSm.copyWith(
-                      color: AppColors.textPrimary,
-                      fontWeight: FontWeight.w700,
-                    ),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-              ],
-            ),
-            Text(
-              '${currentSession.agentDisplayName} @ ${currentSession.hostTag} • ${messages.length} messages',
-              style: AppTypography.codeXs.copyWith(
-                color: AppColors.textSecondary,
+            Row(children: [
+              const Icon(Icons.article_outlined,
+                  size: 16, color: AppColors.infoCyan),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(currentSession.displayTitle,
+                    style: AppTypography.titleMedium.copyWith(
+                        color: AppColors.textPrimary,
+                        fontWeight: FontWeight.w700),
+                    overflow: TextOverflow.ellipsis),
               ),
-              maxLines: 1,
+            ]),
+            Text(
+              'TRANSCRIPT • ${currentSession.agentDisplayName} @ ${currentSession.hostTag} • ${allMessages.length} messages',
+              style: AppTypography.codeXs
+                  .copyWith(color: AppColors.textSecondary, fontSize: 10),
               overflow: TextOverflow.ellipsis,
             ),
           ],
         ),
-        actions: [
-          // Antigravity Native Gemini Live Voice Toggle (JETSKI-AUDIO/1 Bridge)
-          if (currentSession.agent.toLowerCase() == 'antigravity')
-            IconButton(
-              icon: Icon(
-                Icons.record_voice_over_rounded,
-                size: 20,
-                color: audioCompanion.liveVoiceConnected
-                    ? AppColors.statusCoral
-                    : AppColors.textMuted,
-              ),
-              tooltip: audioCompanion.liveVoiceConnected
-                  ? 'Live Voice: On'
-                  : 'Live Voice: Off',
-              onPressed: () => _toggleAntigravityLiveVoice(currentSession),
-            ),
-
-          // Auto-Read Audio Companion Toggle
-          IconButton(
-            icon: Icon(
-              audioCompanion.autoReadEnabled
-                  ? Icons.volume_up_rounded
-                  : Icons.volume_off_rounded,
-              size: 20,
-              color: audioCompanion.autoReadEnabled
-                  ? AppColors.infoCyan
-                  : AppColors.textMuted,
-            ),
-            tooltip: audioCompanion.autoReadEnabled
-                ? 'Auto-Read: On'
-                : 'Auto-Read: Off',
-            onPressed: () {
-              ref.read(audioCompanionServiceProvider.notifier).toggleAutoRead();
-            },
-          ),
-
-          // Voice / Mic Companion Toggle
-          IconButton(
-            icon: Icon(
-              audioCompanion.micEnabled
-                  ? Icons.mic_rounded
-                  : Icons.mic_off_rounded,
-              size: 20,
-              color: audioCompanion.micEnabled
-                  ? AppColors.statusCoral
-                  : AppColors.textMuted,
-            ),
-            tooltip: audioCompanion.micEnabled ? 'Mic Active' : 'Mic Off',
-            onPressed: () {
-              ref
-                  .read(audioCompanionServiceProvider.notifier)
-                  .toggleMic(onResult: _handleRecognizedSpeech);
-            },
-          ),
-
-          // Take the Wheel in Terminal (Headless sessions)
-          if (currentSession.isHeadless)
-            IconButton(
-              icon: const Icon(
-                Icons.sports_motorsports_rounded,
-                size: 20,
-                color: AppColors.infoCyan,
-              ),
-              tooltip: 'Take the Wheel (Interactive Terminal)',
-              onPressed: _takeWheel,
-            ),
-
-          // Live Terminal Quick Jump
-          IconButton(
-            icon: const Icon(
-              Icons.terminal_rounded,
-              size: 20,
-              color: AppColors.statusEmerald,
-            ),
-            tooltip: 'Open Live Terminal',
-            onPressed: () => TerminalScreen.open(context, currentSession),
-          ),
-
-          // Copy Full Transcript
-          if (_transcriptData != null &&
-              _transcriptData!.rawMarkdown.isNotEmpty)
-            IconButton(
-              icon: const Icon(
-                Icons.copy_all_rounded,
-                size: 20,
-                color: AppColors.textMuted,
-              ),
-              tooltip: 'Copy Full Transcript',
-              onPressed: () {
-                Clipboard.setData(
-                  ClipboardData(text: _transcriptData!.rawMarkdown),
-                );
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text('Full transcript copied to clipboard'),
-                    backgroundColor: AppColors.surfaceHighlight,
-                  ),
-                );
-              },
-            ),
-
-          // Refresh
-          IconButton(
-            icon: const Icon(
-              Icons.refresh_rounded,
-              size: 20,
-              color: AppColors.textMuted,
-            ),
-            tooltip: 'Reload Conversation',
-            onPressed: () {
-              _loadTranscript();
-              _loadSubagents();
-            },
-          ),
-        ],
+        actions: _buildAppBarActions(currentSession, audio, canOpenSession),
       ),
       body: SafeArea(
-        top: false,
         child: Column(
           children: [
-            if (currentSession.isHeadless)
-              HeadlessConfigPillBar(session: currentSession),
+            if (_isSearchOpen) _buildSearchBar(filtered.length),
             Expanded(
               child: Stack(
                 children: [
-                  if (_isLoading)
-                    Center(
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const CircularProgressIndicator(
-                            color: AppColors.infoCyan,
-                          ),
-                          AppSpacing.gapH12,
-                          Text(
-                            'Loading conversation stream...',
-                            style: AppTypography.bodySmall.copyWith(
-                              color: AppColors.textSecondary,
-                            ),
-                          ),
-                        ],
-                      ),
-                    )
-                  else if (_errorMessage != null)
-                    Center(
-                      child: Padding(
-                        padding: AppSpacing.paddingScreen,
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            const Icon(
-                              Icons.error_outline_rounded,
-                              size: 36,
-                              color: AppColors.statusCoral,
-                            ),
-                            AppSpacing.gapH12,
-                            Text(
-                              _errorMessage!,
-                              textAlign: TextAlign.center,
-                              style: AppTypography.bodyMedium.copyWith(
-                                color: AppColors.statusCoral,
-                              ),
-                            ),
-                            AppSpacing.gapH16,
-                            ElevatedButton.icon(
-                              onPressed: () {
-                                _loadTranscript();
-                                _loadSubagents();
-                              },
-                              icon: const Icon(Icons.refresh_rounded, size: 16),
-                              label: const Text('Retry'),
-                            ),
-                          ],
-                        ),
-                      ),
-                    )
-                  else if (messages.isEmpty && _ephemeralCards.isEmpty)
-                    Center(
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const Icon(
-                            Icons.chat_bubble_outline_rounded,
-                            size: 40,
-                            color: AppColors.textMuted,
-                          ),
-                          AppSpacing.gapH12,
-                          Text(
-                            'No conversation messages recorded yet',
-                            style: AppTypography.bodyMedium.copyWith(
-                              color: AppColors.textMuted,
-                            ),
-                          ),
-                        ],
-                      ),
-                    )
-                  else
-                    ListView.builder(
-                      controller: _scrollController,
-                      padding: const EdgeInsets.fromLTRB(
-                        AppSpacing.md,
-                        AppSpacing.md,
-                        AppSpacing.md,
-                        20,
-                      ),
-                      physics: const BouncingScrollPhysics(),
-                      itemCount: messages.length + _ephemeralCards.length,
-                      itemBuilder: (context, index) {
-                        if (index < messages.length) {
-                          final message = messages[index];
-                          return _buildMessageTurn(message, index);
-                        }
-                        final cardIndex = index - messages.length;
-                        final cardEntry = _ephemeralCards[cardIndex];
-                        return HeadlessCommandCardView(
-                          entry: cardEntry,
-                          session: _resolveLiveSession(),
-                          resolveHost: _resolveHost,
-                          onDismiss: () {
-                            setState(() {
-                              _ephemeralCards.removeWhere(
-                                (c) => c.id == cardEntry.id,
-                              );
-                            });
-                          },
-                          onAttachToPrompt: (fenced) {
-                            _promptController.text =
-                                '${_promptController.text}$fenced';
-                            _promptFocusNode.requestFocus();
-                          },
-                          onRewindToTurn: (turn) async {
-                            final host = await _resolveHost();
-                            final api = ref.read(apiClientProvider);
-                            try {
-                              final res = await api.rewindSession(
-                                host.url,
-                                _resolveLiveSession().id,
-                                turn,
-                                authToken: host.authToken,
-                              );
-                              if (!mounted) return;
-                              if (res.session != null) {
-                                _rotateToSession(
-                                  res.session!,
-                                  notice: 'Rewound to Turn $turn',
-                                );
-                              }
-                            } catch (e) {
-                              if (!mounted) return;
-                              final msg = e is ApiHttpException
-                                  ? e.message
-                                  : e.toString();
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(
-                                  content: Text('Rewind failed: $msg'),
-                                  backgroundColor: AppColors.statusCoral,
-                                ),
-                              );
-                            }
-                          },
-                        );
-                      },
-                    ),
-
-                  // Floating "Jump to Latest" Button
+                  body,
                   if (_showJumpToBottom)
                     Positioned(
-                      bottom: 12,
                       right: 16,
-                      child: FloatingActionButton.extended(
-                        onPressed: () {
-                          HapticFeedback.selectionClick();
-                          _scrollToBottom();
-                        },
+                      bottom: 16,
+                      child: FloatingActionButton.small(
                         backgroundColor: AppColors.surfaceHighlight,
-                        foregroundColor: AppColors.infoCyan,
-                        icon: const Icon(
-                          Icons.arrow_downward_rounded,
-                          size: 16,
-                        ),
-                        label: Text(
-                          'Latest',
-                          style: AppTypography.codeXs.copyWith(
-                            fontWeight: FontWeight.w700,
-                            color: AppColors.infoCyan,
-                          ),
-                        ),
+                        onPressed: _scrollToBottom,
+                        child: const Icon(Icons.keyboard_arrow_down_rounded,
+                            color: AppColors.infoCyan),
                       ),
                     ),
                 ],
               ),
             ),
-            _buildSubagentsDock(),
-            if (currentSession.blocked?.kind == BlockKind.auth)
-              HeadlessAuthCard(
-                session: currentSession,
-                surfacePrefix: 'transcript',
-                onResolved: () => _loadTranscript(),
-              ),
-            if (currentSession.isHeadless)
-              HeadlessAutocompleteStrip(
-                controller: _promptController,
-                session: currentSession,
-                resolveHost: _resolveHost,
-              ),
-            _buildBottomComposer(currentSession, isWorking),
           ],
         ),
       ),
     );
-  }
-
-  Widget _buildBottomComposer(Session currentSession, bool isWorking) {
-    final audioCompanion = ref.watch(audioCompanionServiceProvider);
-    return Container(
-      decoration: const BoxDecoration(
-        color: AppColors.surface,
-        border: Border(
-          top: BorderSide(color: AppColors.outlineSubtle, width: 1),
-        ),
-      ),
-      padding: const EdgeInsets.symmetric(
-        horizontal: AppSpacing.md,
-        vertical: 8,
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (audioCompanion.activeSuggestedChips.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 8),
-              child: SpeechCompanionBar(
-                chips: audioCompanion.activeSuggestedChips,
-                onChipSelected: (chip) {
-                  _promptController.text = chip;
-                  _sendPrompt();
-                },
-                onClear: () {
-                  ref.read(audioCompanionServiceProvider.notifier).clearChips();
-                },
-              ),
-            ),
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              Expanded(
-                child: Container(
-                  decoration: BoxDecoration(
-                    color: AppColors.terminalBlack,
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(
-                      color: isWorking
-                          ? AppColors.infoCyan
-                          : AppColors.outlineSubtle,
-                      width: 1,
-                    ),
-                  ),
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 6,
-                  ),
-                  child: TextField(
-                    controller: _promptController,
-                    focusNode: _promptFocusNode,
-                    minLines: 1,
-                    maxLines: 5,
-                    style: AppTypography.bodySmall.copyWith(
-                      color: AppColors.textPrimary,
-                    ),
-                    textInputAction: TextInputAction.send,
-                    onSubmitted: (_) => _sendPrompt(),
-                    decoration: InputDecoration(
-                      isDense: true,
-                      contentPadding: EdgeInsets.zero,
-                      border: InputBorder.none,
-                      hintText: 'Ask ${currentSession.agentDisplayName}...',
-                      hintStyle: AppTypography.bodySmall.copyWith(
-                        color: AppColors.textMuted,
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              if (isWorking)
-                IconButton(
-                  icon: const Icon(
-                    Icons.stop_circle_rounded,
-                    size: 28,
-                    color: AppColors.statusCoral,
-                  ),
-                  tooltip: 'Cancel turn',
-                  onPressed: _cancelTurn,
-                ),
-              if (!isWorking || _hasPromptText)
-                IconButton(
-                  icon: const Icon(
-                    Icons.arrow_upward_rounded,
-                    size: 22,
-                    color: AppColors.infoCyan,
-                  ),
-                  style: IconButton.styleFrom(
-                    backgroundColor: AppColors.surfaceHighlight,
-                    shape: const CircleBorder(),
-                  ),
-                  tooltip: 'Send prompt',
-                  onPressed: _sendPrompt,
-                ),
-            ],
-          ),
-          Padding(
-            padding: const EdgeInsets.only(top: 4, left: 2, right: 2),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text(
-                  currentSession.isHeadless
-                      ? '💬 Headless turn-by-turn • OAuth Flat-rate'
-                      : '🖥️ Tmux process • Interactive shell',
-                  style: AppTypography.codeXs.copyWith(
-                    color: AppColors.textMuted,
-                    fontSize: 10,
-                  ),
-                ),
-                if (isWorking)
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const SizedBox(
-                        width: 10,
-                        height: 10,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 1.5,
-                          color: AppColors.infoCyan,
-                        ),
-                      ),
-                      const SizedBox(width: 4),
-                      Text(
-                        'Working...',
-                        style: AppTypography.codeXs.copyWith(
-                          color: AppColors.infoCyan,
-                          fontSize: 10,
-                        ),
-                      ),
-                    ],
-                  ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildMessageTurn(TranscriptMessage message, int index) {
-    if (message.isSystem) {
-      return _buildSystemEventBubble(message);
-    } else if (message.isUser) {
-      return _buildUserMessageBubble(message);
-    } else {
-      return _buildAssistantMessageBubble(message, index);
-    }
-  }
-
-  // --- 1. Right-Aligned User Message Bubble ---
-
-  Widget _buildUserMessageBubble(TranscriptMessage message) {
-    final timeStr = _formatTimestamp(message.timestamp);
-
-    return Align(
-      alignment: Alignment.centerRight,
-      child: Container(
-        margin: const EdgeInsets.only(bottom: 14, left: 40),
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-        decoration: BoxDecoration(
-          color: const Color(0xFF1E2638), // Elevated Slate/Indigo user bubble
-          borderRadius: const BorderRadius.only(
-            topLeft: Radius.circular(16),
-            topRight: Radius.circular(16),
-            bottomLeft: Radius.circular(16),
-            bottomRight: Radius.circular(3),
-          ),
-          border: Border.all(color: const Color(0xFF2C374E), width: 1),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withOpacity(0.2),
-              blurRadius: 4,
-              offset: const Offset(0, 2),
-            ),
-          ],
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.end,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // User Header Row
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  timeStr,
-                  style: AppTypography.codeXs.copyWith(
-                    color: AppColors.textMuted,
-                    fontSize: 10,
-                  ),
-                ),
-                const SizedBox(width: 6),
-                Text(
-                  '👤 You',
-                  style: AppTypography.codeXs.copyWith(
-                    color: AppColors.infoCyan,
-                    fontWeight: FontWeight.w700,
-                    fontSize: 11,
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 6),
-
-            // User Prompt Text
-            SelectableText(
-              message.content,
-              style: AppTypography.bodyMedium.copyWith(
-                color: AppColors.textPrimary,
-                height: 1.35,
-                fontSize: 13.5,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  // --- 2. Left-Aligned Agent Response Card ---
-
-  Widget _buildAssistantMessageBubble(TranscriptMessage message, int index) {
-    final timeStr = _formatTimestamp(message.timestamp);
-    final audioCompanion = ref.watch(audioCompanionServiceProvider);
-    final isSpeakingThis =
-        audioCompanion.isSpeaking && audioCompanion.activeMessageIndex == index;
-    final session = _resolveLiveSession();
-    final isCached = audioCompanion.isCached(session.id, index);
-
-    return Align(
-      alignment: Alignment.centerLeft,
-      child: Container(
-        margin: const EdgeInsets.only(bottom: 16, right: 16),
-        padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(
-          color: AppColors.surface, // Dark terminal surface
-          borderRadius: const BorderRadius.only(
-            topLeft: Radius.circular(16),
-            topRight: Radius.circular(16),
-            bottomLeft: Radius.circular(3),
-            bottomRight: Radius.circular(16),
-          ),
-          border: Border.all(
-            color:
-                isSpeakingThis ? AppColors.infoCyan : AppColors.outlineSubtle,
-            width: isSpeakingThis ? 1.5 : 0.8,
-          ),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // Agent Header Row
-            Row(
-              children: [
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 6,
-                    vertical: 2,
-                  ),
-                  decoration: BoxDecoration(
-                    color: session.agentColor.withOpacity(0.15),
-                    borderRadius: AppSpacing.roundedSm,
-                    border: Border.all(
-                      color: session.agentColor.withOpacity(0.4),
-                      width: 0.8,
-                    ),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      AgentLogo(
-                        agent: session.agent,
-                        size: 11,
-                        color: session.agentColor,
-                      ),
-                      const SizedBox(width: 4),
-                      Text(
-                        session.agentDisplayName,
-                        style: AppTypography.codeXs.copyWith(
-                          color: session.agentColor,
-                          fontWeight: FontWeight.w700,
-                          fontSize: 11,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const Spacer(),
-                Text(
-                  timeStr,
-                  style: AppTypography.codeXs.copyWith(
-                    color: AppColors.textMuted,
-                    fontSize: 10,
-                  ),
-                ),
-                const SizedBox(width: 4),
-                if (isSpeakingThis)
-                  IconButton(
-                    icon: const Icon(
-                      Icons.stop_circle_rounded,
-                      size: 16,
-                      color: AppColors.statusCoral,
-                    ),
-                    padding: EdgeInsets.zero,
-                    constraints: const BoxConstraints(
-                      minWidth: 24,
-                      minHeight: 24,
-                    ),
-                    tooltip: 'Stop speaking',
-                    onPressed: () {
-                      ref
-                          .read(audioCompanionServiceProvider.notifier)
-                          .stopSpeech();
-                    },
-                  )
-                else ...[
-                  IconButton(
-                    icon: const Icon(
-                      Icons.volume_up_rounded,
-                      size: 15,
-                      color: AppColors.textMuted,
-                    ),
-                    padding: EdgeInsets.zero,
-                    constraints: const BoxConstraints(
-                      minWidth: 24,
-                      minHeight: 24,
-                    ),
-                    tooltip: 'Read aloud',
-                    onPressed: () => _speakMessage(index, message.content),
-                  ),
-                  if (isCached) ...[
-                    IconButton(
-                      icon: const Icon(
-                        Icons.replay_rounded,
-                        size: 14,
-                        color: AppColors.infoCyan,
-                      ),
-                      padding: EdgeInsets.zero,
-                      constraints: const BoxConstraints(
-                        minWidth: 24,
-                        minHeight: 24,
-                      ),
-                      tooltip: 'Read again',
-                      onPressed: () => _speakMessage(
-                        index,
-                        message.content,
-                        forceRefresh: true,
-                      ),
-                    ),
-                    IconButton(
-                      icon: const Icon(
-                        Icons.article_outlined,
-                        size: 14,
-                        color: AppColors.infoCyan,
-                      ),
-                      padding: EdgeInsets.zero,
-                      constraints: const BoxConstraints(
-                        minWidth: 24,
-                        minHeight: 24,
-                      ),
-                      tooltip: 'Read unabridged full text',
-                      onPressed: () => _speakMessage(
-                        index,
-                        message.content,
-                        forceFull: true,
-                      ),
-                    ),
-                  ],
-                ],
-                const SizedBox(width: 2),
-                IconButton(
-                  icon: const Icon(
-                    Icons.copy_rounded,
-                    size: 14,
-                    color: AppColors.textMuted,
-                  ),
-                  padding: EdgeInsets.zero,
-                  constraints: const BoxConstraints(
-                    minWidth: 24,
-                    minHeight: 24,
-                  ),
-                  tooltip: 'Copy message',
-                  onPressed: () {
-                    Clipboard.setData(ClipboardData(text: message.content));
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text('Message copied to clipboard'),
-                        backgroundColor: AppColors.surfaceHighlight,
-                      ),
-                    );
-                  },
-                ),
-              ],
-            ),
-
-            // Tool Invocations Group Accordion
-            if (message.toolCalls.isNotEmpty) ...[
-              const SizedBox(height: 8),
-              _buildToolCallsGroup(message.toolCalls),
-            ],
-
-            // Thought Process Accordion
-            if (message.thinking != null &&
-                message.thinking!.trim().isNotEmpty) ...[
-              const SizedBox(height: 8),
-              _buildThinkingAccordion(message.thinking!),
-            ],
-
-            // Main Markdown Response Body
-            if (message.content.trim().isNotEmpty) ...[
-              const SizedBox(height: 10),
-              MarkdownBody(
-                data: message.content,
-                selectable: true,
-                styleSheet: MarkdownStyleSheet(
-                  p: AppTypography.bodyMedium.copyWith(
-                    color: AppColors.textPrimary,
-                    fontSize: 13.5,
-                    height: 1.4,
-                  ),
-                  code: AppTypography.codeXs.copyWith(
-                    color: AppColors.infoCyan,
-                    backgroundColor: AppColors.terminalBlack,
-                    fontSize: 12,
-                  ),
-                  codeblockDecoration: BoxDecoration(
-                    color: AppColors.terminalBlack,
-                    borderRadius: AppSpacing.roundedSm,
-                    border: Border.all(
-                      color: AppColors.outlineSubtle,
-                      width: 0.8,
-                    ),
-                  ),
-                  h1: AppTypography.titleLarge.copyWith(
-                    color: AppColors.textPrimary,
-                  ),
-                  h2: AppTypography.titleMedium.copyWith(
-                    color: AppColors.textPrimary,
-                  ),
-                  h3: AppTypography.titleSmall.copyWith(
-                    color: AppColors.textPrimary,
-                  ),
-                  blockquote: AppTypography.bodySmall.copyWith(
-                    color: AppColors.textSecondary,
-                  ),
-                  blockquoteDecoration: BoxDecoration(
-                    border: const Border(
-                      left: BorderSide(color: AppColors.infoCyan, width: 3),
-                    ),
-                    color: AppColors.surfaceHighlight.withOpacity(0.3),
-                  ),
-                  listBullet: AppTypography.bodyMedium.copyWith(
-                    color: AppColors.infoCyan,
-                  ),
-                ),
-              ),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-
-  // --- 3. Collapsible Tool Invocations Group Accordion ---
-
-  String _getToolGroupSummaryLabel(List<String> toolCalls) {
-    if (toolCalls.isEmpty) return '⚡ Tools';
-    final parsed = toolCalls.map(_ParsedToolCall.parse).toList();
-    final counts = <String, int>{};
-    for (final p in parsed) {
-      counts[p.name] = (counts[p.name] ?? 0) + 1;
-    }
-    final uniqueTools = counts.keys.toList();
-    final total = toolCalls.length;
-
-    if (uniqueTools.length == 1) {
-      final name = uniqueTools[0];
-      if (total > 1) {
-        return '⚡ $name x$total';
-      }
-      if (parsed[0].detail.isNotEmpty) {
-        final shortDetail = parsed[0].detail.length > 35
-            ? '${parsed[0].detail.substring(0, 32)}...'
-            : parsed[0].detail;
-        return '⚡ $name: $shortDetail';
-      }
-      return '⚡ $name';
-    }
-
-    // Multiple unique tools
-    final breakdown =
-        uniqueTools.map((name) => '$name x${counts[name]}').join(', ');
-    return '⚡ $total tools ($breakdown)';
-  }
-
-  Widget _buildToolCallsGroup(List<String> tools) {
-    final summaryLabel = _getToolGroupSummaryLabel(tools);
-    final parsed = tools.map(_ParsedToolCall.parse).toList();
-    final total = tools.length;
-
-    return Container(
-      decoration: BoxDecoration(
-        color: AppColors.terminalBlack.withOpacity(0.6),
-        borderRadius: AppSpacing.roundedSm,
-        border: Border.all(
-          color: AppColors.outlineSubtle.withOpacity(0.7),
-          width: 0.6,
-        ),
-      ),
-      child: Theme(
-        data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
-        child: ExpansionTile(
-          tilePadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 0),
-          childrenPadding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
-          dense: true,
-          leading: const Icon(
-            Icons.bolt_rounded,
-            size: 16,
-            color: AppColors.statusAmberLight,
-          ),
-          title: Row(
-            children: [
-              Expanded(
-                child: Text(
-                  summaryLabel,
-                  style: AppTypography.codeXs.copyWith(
-                    color: AppColors.statusAmberLight,
-                    fontWeight: FontWeight.w700,
-                    fontSize: 11,
-                  ),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-              const SizedBox(width: 6),
-              Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 6,
-                  vertical: 1.5,
-                ),
-                decoration: BoxDecoration(
-                  color: AppColors.surfaceHighlight,
-                  borderRadius: BorderRadius.circular(4),
-                  border: Border.all(
-                    color: AppColors.outlineSubtle,
-                    width: 0.5,
-                  ),
-                ),
-                child: Text(
-                  '$total ${total == 1 ? 'action' : 'actions'}',
-                  style: AppTypography.codeXs.copyWith(
-                    color: AppColors.textMuted,
-                    fontSize: 9.5,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ),
-            ],
-          ),
-          children: [
-            ListView.separated(
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              itemCount: parsed.length,
-              separatorBuilder: (_, __) => const SizedBox(height: 6),
-              itemBuilder: (context, idx) {
-                final item = parsed[idx];
-                return Container(
-                  padding: const EdgeInsets.all(8),
-                  decoration: BoxDecoration(
-                    color: AppColors.surfaceHighlight.withOpacity(0.5),
-                    borderRadius: BorderRadius.circular(6),
-                    border: Border.all(
-                      color: AppColors.outlineSubtle.withOpacity(0.5),
-                      width: 0.5,
-                    ),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          Text(
-                            '#${idx + 1}',
-                            style: AppTypography.codeXs.copyWith(
-                              color: AppColors.textMuted,
-                              fontSize: 10,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                          const SizedBox(width: 6),
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 6,
-                              vertical: 1,
-                            ),
-                            decoration: BoxDecoration(
-                              color: AppColors.surface,
-                              borderRadius: BorderRadius.circular(4),
-                              border: Border.all(
-                                color: AppColors.statusAmberLight.withOpacity(
-                                  0.3,
-                                ),
-                                width: 0.5,
-                              ),
-                            ),
-                            child: Text(
-                              item.name,
-                              style: AppTypography.codeXs.copyWith(
-                                color: AppColors.statusAmberLight,
-                                fontSize: 10.5,
-                                fontWeight: FontWeight.w700,
-                              ),
-                            ),
-                          ),
-                          const Spacer(),
-                          if (item.detail.isNotEmpty)
-                            InkWell(
-                              onTap: () {
-                                Clipboard.setData(
-                                  ClipboardData(text: item.detail),
-                                );
-                                HapticFeedback.lightImpact();
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  const SnackBar(
-                                    content: Text(
-                                      'Command copied to clipboard',
-                                    ),
-                                    duration: Duration(seconds: 1),
-                                    backgroundColor: AppColors.surfaceHighlight,
-                                  ),
-                                );
-                              },
-                              child: const Padding(
-                                padding: EdgeInsets.all(2),
-                                child: Icon(
-                                  Icons.copy_rounded,
-                                  size: 13,
-                                  color: AppColors.textMuted,
-                                ),
-                              ),
-                            ),
-                        ],
-                      ),
-                      if (item.detail.isNotEmpty) ...[
-                        const SizedBox(height: 4),
-                        Container(
-                          width: double.infinity,
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 6,
-                            vertical: 4,
-                          ),
-                          decoration: BoxDecoration(
-                            color: AppColors.terminalBlack,
-                            borderRadius: BorderRadius.circular(4),
-                            border: Border.all(
-                              color: AppColors.outlineSubtle.withOpacity(0.4),
-                              width: 0.5,
-                            ),
-                          ),
-                          child: SelectableText(
-                            item.detail,
-                            style: AppTypography.codeXs.copyWith(
-                              color: AppColors.infoCyan,
-                              fontSize: 10.5,
-                              height: 1.3,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ],
-                  ),
-                );
-              },
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  // --- Subagents Running Dock ---
-
-  Widget _buildSubagentsDock() {
-    if (_runningSubagents.isEmpty) {
-      return const SizedBox.shrink();
-    }
-
-    final count = _runningSubagents.length;
-    final countText =
-        count == 1 ? '1 subagent running...' : '$count subagents running...';
-
-    return Container(
-      decoration: const BoxDecoration(
-        color: Color(0xFF141720),
-        border: Border(
-          top: BorderSide(color: Color(0xFF2C3245), width: 1),
-          bottom: BorderSide(color: AppColors.outlineSubtle, width: 0.5),
-        ),
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          // Collapsible Header Bar
-          InkWell(
-            onTap: () {
-              HapticFeedback.selectionClick();
-              setState(() {
-                _isSubagentsExpanded = !_isSubagentsExpanded;
-              });
-            },
-            child: Padding(
-              padding: const EdgeInsets.symmetric(
-                horizontal: AppSpacing.md,
-                vertical: 7,
-              ),
-              child: Row(
-                children: [
-                  // Pulsing Amber Dot
-                  Container(
-                    width: 7,
-                    height: 7,
-                    decoration: const BoxDecoration(
-                      color: AppColors.statusAmber,
-                      shape: BoxShape.circle,
-                      boxShadow: [
-                        BoxShadow(
-                          color: AppColors.statusAmber,
-                          blurRadius: 4,
-                          spreadRadius: 1,
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  const Text('⚡', style: TextStyle(fontSize: 11)),
-                  const SizedBox(width: 4),
-                  Expanded(
-                    child: Text(
-                      countText,
-                      style: AppTypography.codeXs.copyWith(
-                        color: AppColors.statusAmberLight,
-                        fontWeight: FontWeight.w700,
-                        fontSize: 11,
-                      ),
-                    ),
-                  ),
-                  Icon(
-                    _isSubagentsExpanded
-                        ? Icons.keyboard_arrow_up_rounded
-                        : Icons.keyboard_arrow_down_rounded,
-                    size: 18,
-                    color: AppColors.textMuted,
-                  ),
-                ],
-              ),
-            ),
-          ),
-
-          // Expanded Subagent Cards List
-          if (_isSubagentsExpanded)
-            Container(
-              constraints: const BoxConstraints(maxHeight: 200),
-              padding: const EdgeInsets.fromLTRB(
-                AppSpacing.md,
-                0,
-                AppSpacing.md,
-                8,
-              ),
-              child: ListView.separated(
-                shrinkWrap: true,
-                itemCount: _runningSubagents.length,
-                separatorBuilder: (_, __) => const SizedBox(height: 6),
-                itemBuilder: (context, idx) {
-                  final sub = _runningSubagents[idx];
-                  final prompt = sub.prompt.trim();
-
-                  return Container(
-                    padding: const EdgeInsets.all(8),
-                    decoration: BoxDecoration(
-                      color: AppColors.surfaceHighlight.withOpacity(0.6),
-                      borderRadius: BorderRadius.circular(6),
-                      border: Border.all(
-                        color: AppColors.outlineSubtle.withOpacity(0.6),
-                        width: 0.6,
-                      ),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          children: [
-                            Container(
-                              width: 6,
-                              height: 6,
-                              decoration: const BoxDecoration(
-                                color: AppColors.statusAmber,
-                                shape: BoxShape.circle,
-                              ),
-                            ),
-                            const SizedBox(width: 6),
-                            Expanded(
-                              child: Text(
-                                sub.displayName,
-                                style: AppTypography.codeXs.copyWith(
-                                  color: AppColors.textPrimary,
-                                  fontWeight: FontWeight.w700,
-                                  fontSize: 11,
-                                ),
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ),
-                            if (sub.displayRole != null) ...[
-                              const SizedBox(width: 6),
-                              Container(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 5,
-                                  vertical: 1,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: AppColors.surface,
-                                  borderRadius: BorderRadius.circular(4),
-                                  border: Border.all(
-                                    color: AppColors.infoCyan.withOpacity(0.4),
-                                    width: 0.5,
-                                  ),
-                                ),
-                                child: Text(
-                                  sub.displayRole!,
-                                  style: AppTypography.codeXs.copyWith(
-                                    color: AppColors.infoCyan,
-                                    fontSize: 9.5,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
-                              ),
-                            ],
-                            if (prompt.isNotEmpty) ...[
-                              const SizedBox(width: 6),
-                              InkWell(
-                                onTap: () {
-                                  Clipboard.setData(
-                                    ClipboardData(text: prompt),
-                                  );
-                                  HapticFeedback.lightImpact();
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    const SnackBar(
-                                      content: Text('Subagent prompt copied'),
-                                      duration: Duration(seconds: 1),
-                                      backgroundColor:
-                                          AppColors.surfaceHighlight,
-                                    ),
-                                  );
-                                },
-                                child: const Padding(
-                                  padding: EdgeInsets.all(2),
-                                  child: Icon(
-                                    Icons.copy_rounded,
-                                    size: 13,
-                                    color: AppColors.textMuted,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ],
-                        ),
-                        if (prompt.isNotEmpty) ...[
-                          const SizedBox(height: 5),
-                          Container(
-                            width: double.infinity,
-                            padding: const EdgeInsets.all(6),
-                            decoration: BoxDecoration(
-                              color: AppColors.terminalBlack,
-                              borderRadius: BorderRadius.circular(4),
-                              border: Border.all(
-                                color: AppColors.outlineSubtle.withOpacity(0.4),
-                                width: 0.5,
-                              ),
-                            ),
-                            child: Text(
-                              prompt,
-                              style: AppTypography.codeXs.copyWith(
-                                color: AppColors.textSecondary,
-                                fontSize: 10,
-                                height: 1.3,
-                              ),
-                              maxLines: 4,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                        ],
-                      ],
-                    ),
-                  );
-                },
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-
-  // --- 4. Collapsible Thought Process ---
-
-  Widget _buildThinkingAccordion(String thinking) {
-    return Container(
-      decoration: BoxDecoration(
-        color: AppColors.surfaceHighlight.withOpacity(0.4),
-        borderRadius: AppSpacing.roundedSm,
-        border: Border.all(
-          color: AppColors.outlineSubtle.withOpacity(0.6),
-          width: 0.6,
-        ),
-      ),
-      child: Theme(
-        data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
-        child: ExpansionTile(
-          tilePadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 0),
-          childrenPadding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
-          dense: true,
-          leading: const Icon(
-            Icons.psychology_outlined,
-            size: 16,
-            color: AppColors.textMuted,
-          ),
-          title: Text(
-            '💭 Thought Process',
-            style: AppTypography.codeXs.copyWith(
-              color: AppColors.textSecondary,
-              fontWeight: FontWeight.w600,
-              fontSize: 11,
-            ),
-          ),
-          children: [
-            SelectableText(
-              thinking.trim(),
-              style: AppTypography.codeXs.copyWith(
-                color: AppColors.textMuted,
-                fontSize: 11,
-                height: 1.35,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  // --- 5. Center-Aligned System Checkpoint ---
-
-  Widget _buildSystemEventBubble(TranscriptMessage message) {
-    return Center(
-      child: Container(
-        margin: const EdgeInsets.symmetric(vertical: 12),
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-        decoration: BoxDecoration(
-          color: AppColors.surfaceHighlight.withOpacity(0.5),
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: AppColors.outlineSubtle, width: 0.5),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(
-              Icons.info_outline_rounded,
-              size: 12,
-              color: AppColors.textMuted,
-            ),
-            const SizedBox(width: 6),
-            Flexible(
-              child: Text(
-                message.content.length > 80
-                    ? '${message.content.substring(0, 80)}...'
-                    : message.content,
-                style: AppTypography.codeXs.copyWith(
-                  color: AppColors.textMuted,
-                  fontSize: 10.5,
-                ),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  String _formatTimestamp(DateTime dt) {
-    final hour = dt.hour.toString().padLeft(2, '0');
-    final min = dt.minute.toString().padLeft(2, '0');
-    final sec = dt.second.toString().padLeft(2, '0');
-    return '$hour:$min:$sec';
-  }
-}
-
-class _ParsedToolCall {
-  final String name;
-  final String detail;
-
-  const _ParsedToolCall({required this.name, required this.detail});
-
-  factory _ParsedToolCall.parse(String raw) {
-    final trimmed = raw.trim();
-    if (trimmed.isEmpty) return const _ParsedToolCall(name: 'tool', detail: '');
-
-    // Pattern 1: "tool_name: detail/command"
-    final colonIdx = trimmed.indexOf(':');
-    if (colonIdx > 0 && colonIdx < 30) {
-      final n = trimmed.substring(0, colonIdx).trim();
-      final d = trimmed.substring(colonIdx + 1).trim();
-      if (!n.contains(' ') || n.length < 20) {
-        return _ParsedToolCall(name: n, detail: d);
-      }
-    }
-
-    // Pattern 2: "tool_name (description)"
-    final match = RegExp(r'^([a-zA-Z0-9_\-]+)\s*\((.+)\)$').firstMatch(trimmed);
-    if (match != null) {
-      return _ParsedToolCall(
-        name: match.group(1)!.trim(),
-        detail: match.group(2)!.trim(),
-      );
-    }
-
-    return _ParsedToolCall(name: trimmed, detail: '');
   }
 }

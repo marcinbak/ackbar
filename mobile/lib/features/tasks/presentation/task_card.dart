@@ -7,7 +7,7 @@ import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_typography.dart';
 import '../../../core/widgets/glass_card.dart';
-import '../../transcript/presentation/transcript_screen.dart';
+import '../../../core/navigation/session_navigator.dart';
 import 'deliverable_markdown_modal.dart';
 
 /// Card rendering an individual work task with status, workers, deliverables, and PR actions
@@ -50,6 +50,11 @@ class _TaskCardState extends ConsumerState<TaskCard> {
             (worker.sessionId.isNotEmpty && s.nativeId == worker.sessionId))
         .firstOrNull;
 
+    if (match != null && !match.isEnded) {
+      SessionNavigator.openSession(context, ref, match);
+      return;
+    }
+
     final targetSession = match ??
         Session(
           id: worker.sessionId.isNotEmpty ? worker.sessionId : 'worker-session',
@@ -64,7 +69,8 @@ class _TaskCardState extends ConsumerState<TaskCard> {
           name: '${worker.agent} @ ${worker.host}',
         );
 
-    TranscriptScreen.open(context, targetSession);
+    SessionNavigator.openTranscript(context, targetSession,
+        ref: ref, showOpenSessionAction: false);
   }
 
   void _onDeliverableTap(TaskDeliverable deliv) {

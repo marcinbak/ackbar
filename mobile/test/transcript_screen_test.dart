@@ -1,5 +1,7 @@
 import 'dart:convert';
+
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -8,53 +10,76 @@ import 'package:http/testing.dart';
 import 'package:ackbar_mobile/core/models/host.dart';
 import 'package:ackbar_mobile/core/models/session.dart';
 import 'package:ackbar_mobile/core/network/api_client.dart';
-import 'package:ackbar_mobile/core/network/sse_client.dart';
 import 'package:ackbar_mobile/core/providers/fleet_providers.dart';
+import 'package:ackbar_mobile/core/services/audio_companion_service.dart';
 import 'package:ackbar_mobile/core/theme/app_theme.dart';
+import 'package:ackbar_mobile/features/chat/presentation/chat_screen.dart';
+import 'package:ackbar_mobile/features/terminal/presentation/terminal_screen.dart';
 import 'package:ackbar_mobile/features/transcript/presentation/transcript_screen.dart';
 
-HostRecord dynamicHostRecord() => HostRecord(
-      name: 'Legion',
-      url: 'http://100.64.0.1:7777',
-      authToken: 'secret-host-token',
-      online: false,
-      createdAt: DateTime.utc(2026, 10, 31),
-    );
-
-Session _makeHeadlessSession({
-  String id = 'claude-code:local:sess-headless-1',
-  String nativeId = 'sess-headless-1',
+Session _makeSession({
+  String id = 'claude-code:local:sess-ro-1',
+  String engineType = 'headless',
   SessionState state = SessionState.idle,
+  String tmuxName = '',
 }) {
   final now = DateTime.utc(2026, 3, 28, 12, 0, 0);
   return Session(
     id: id,
     agent: 'claude-code',
     host: 'local',
-    nativeId: nativeId,
+    nativeId: 'sess-ro-1',
     cwd: '/workspace/ackbar',
     state: state,
     startedAt: now,
     lastEventAt: now,
     managed: true,
-    engineType: 'headless',
-    name: 'Headless Test Session',
+    engineType: engineType,
+    tmuxName: tmuxName,
+    name: 'Read-Only Test Session',
   );
+}
+
+class FakeHostsNotifier extends StateNotifier<List<HostRecord>>
+    implements HostsNotifier {
+  FakeHostsNotifier([List<HostRecord> initial = const []]) : super(initial);
+  @override
+  void setHosts(List<HostRecord> hosts) => state = hosts;
+  @override
+  void addHost(HostRecord host) => state = [...state, host];
+  @override
+  void updateHost(HostRecord updatedHost) => state =
+      state.map((h) => h.name == updatedHost.name ? updatedHost : h).toList();
+  @override
+  void removeHost(String name) =>
+      state = state.where((h) => h.name != name).toList();
+  @override
+  Future<void> refreshHosts() async {}
 }
 
 Widget _wrapTranscriptScreen(
   Session session, {
   required ApiClient api,
-  required SSEClient sse,
+  bool showOpenSessionAction = true,
 }) {
   return ProviderScope(
     overrides: [
       apiClientProvider.overrideWithValue(api),
-      sseClientProvider.overrideWithValue(sse),
+      hostsListProvider.overrideWith((_) => FakeHostsNotifier([
+            HostRecord(
+              name: 'local',
+              url: 'http://127.0.0.1:7777',
+              online: true,
+              createdAt: DateTime.utc(2026, 1, 1),
+            ),
+          ])),
     ],
     child: MaterialApp(
       theme: AppTheme.darkTheme,
-      home: TranscriptScreen(session: session),
+      home: TranscriptScreen(
+        session: session,
+        showOpenSessionAction: showOpenSessionAction,
+      ),
     ),
   );
 }
@@ -63,578 +88,319 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   GoogleFonts.config.allowRuntimeFetching = false;
 
-  group('TranscriptScreen Headless Turn & Auto-Refresh Tests', () {
+  group('TranscriptScreen Read-Only Tests', () {
     testWidgets(
-        'keeps Working indicator and Stop button visible after POST /v1/sessions/prompt returns 200 OK, and allows queuing follow-up prompts',
+        'renders turns, tool calls, and thinking accordions in read-only mode',
         (tester) async {
-      var promptSentCount = 0;
-      var cancelCalled = false;
-
       final mockClient = MockClient((request) async {
         if (request.url.path == '/v1/sessions/transcript') {
           return http.Response(
             jsonEncode({
-              'session_id': 'claude-code:local:sess-headless-1',
-              'native_id': 'sess-headless-1',
+              'session_id': 'claude-code:local:sess-ro-1',
               'agent': 'claude-code',
-              'title': 'Headless Test Session',
-              'cwd': '/workspace/ackbar',
               'messages': [
                 {
                   'role': 'user',
-                  'content': 'Initial prompt',
+                  'content': 'Check the logs',
                   'timestamp': '2026-03-28T12:00:00Z',
                 },
                 {
                   'role': 'assistant',
-                  'content': 'Initial reply',
-                  'timestamp': '2026-03-28T12:00:02Z',
-                },
-              ],
-              'markdown': '',
-            }),
-            200,
-          );
-        }
-        if (request.url.path == '/v1/sessions/subagents') {
-          return http.Response(jsonEncode({'subagents': []}), 200);
-        }
-        if (request.url.path == '/v1/sessions/prompt') {
-          promptSentCount++;
-          return http.Response(jsonEncode({'status': 'running'}), 200);
-        }
-        if (request.url.path == '/v1/sessions/cancel') {
-          cancelCalled = true;
-          return http.Response(jsonEncode({'status': 'cancelled'}), 200);
-        }
-        return http.Response('[]', 200);
-      });
-
-      final api = ApiClient(client: mockClient);
-      final sse = SSEClient(client: mockClient);
-      final session = _makeHeadlessSession(state: SessionState.idle);
-
-      await tester.pumpWidget(
-        _wrapTranscriptScreen(session, api: api, sse: sse),
-      );
-      // Wait for _resolveHostUrl retries + initial transcript load
-      await tester.pump(const Duration(milliseconds: 600));
-      await tester.pump();
-
-      expect(find.text('Initial reply'), findsOneWidget);
-      expect(find.text('Working...'), findsNothing);
-      expect(find.byIcon(Icons.arrow_upward_rounded), findsOneWidget);
-      expect(find.byIcon(Icons.stop_circle_rounded), findsNothing);
-
-      // Type and send a prompt
-      await tester.enterText(find.byType(TextField), 'Analyze the codebase');
-      await tester.pump();
-      await tester.tap(find.byIcon(Icons.arrow_upward_rounded));
-      await tester.pump(const Duration(milliseconds: 600));
-      await tester.pump();
-
-      // Even after sendPrompt HTTP POST has completed, Working... and Stop button stay visible!
-      expect(promptSentCount, equals(1));
-      expect(find.text('Analyze the codebase'), findsOneWidget);
-      expect(find.text('Working...'), findsOneWidget);
-      expect(find.byIcon(Icons.stop_circle_rounded), findsOneWidget);
-      expect(find.byIcon(Icons.arrow_upward_rounded), findsNothing);
-
-      // Typing a follow-up while working shows BOTH Stop and Send buttons
-      await tester.enterText(find.byType(TextField), 'Also check tests');
-      await tester.pump();
-      expect(find.byIcon(Icons.stop_circle_rounded), findsOneWidget);
-      expect(find.byIcon(Icons.arrow_upward_rounded), findsOneWidget);
-
-      // Clear text and tap Stop to cancel the turn
-      await tester.enterText(find.byType(TextField), '');
-      await tester.pump();
-      await tester.tap(find.byIcon(Icons.stop_circle_rounded));
-      await tester.pump(const Duration(milliseconds: 600));
-      await tester.pump();
-
-      expect(cancelCalled, isTrue);
-      expect(find.text('Working...'), findsNothing);
-      expect(find.byIcon(Icons.arrow_upward_rounded), findsOneWidget);
-    });
-
-    testWidgets(
-        'periodic polling silently refreshes transcript while working and clears working state when reply arrives',
-        (tester) async {
-      var includeSecondReply = false;
-
-      final mockClient = MockClient((request) async {
-        if (request.url.path == '/v1/sessions/transcript') {
-          final messages = <Map<String, dynamic>>[
-            {
-              'role': 'user',
-              'content': 'First question',
-              'timestamp': '2026-03-28T12:00:00Z',
-            },
-            if (includeSecondReply)
-              {
-                'role': 'assistant',
-                'content': 'Automated streamed answer from headless turn',
-                'timestamp': '2026-03-28T12:00:05Z',
-              },
-          ];
-          return http.Response(
-            jsonEncode({
-              'session_id': 'claude-code:local:sess-headless-1',
-              'native_id': 'sess-headless-1',
-              'agent': 'claude-code',
-              'title': 'Headless Test Session',
-              'cwd': '/workspace/ackbar',
-              'messages': messages,
-              'markdown': '',
-            }),
-            200,
-          );
-        }
-        if (request.url.path == '/v1/sessions/subagents') {
-          return http.Response(jsonEncode({'subagents': []}), 200);
-        }
-        if (request.url.path == '/v1/sessions/prompt') {
-          return http.Response(jsonEncode({'status': 'running'}), 200);
-        }
-        return http.Response('[]', 200);
-      });
-
-      final api = ApiClient(client: mockClient);
-      final sse = SSEClient(client: mockClient);
-      final session = _makeHeadlessSession(state: SessionState.idle);
-
-      await tester.pumpWidget(
-        _wrapTranscriptScreen(session, api: api, sse: sse),
-      );
-      await tester.pump(const Duration(milliseconds: 600));
-      await tester.pump();
-
-      // Send a prompt to enter awaitingTurnCompletion state
-      await tester.enterText(find.byType(TextField), 'Second question');
-      await tester.pump();
-      await tester.tap(find.byIcon(Icons.arrow_upward_rounded));
-      await tester.pump(const Duration(milliseconds: 600));
-      await tester.pump();
-
-      expect(find.text('Working...'), findsOneWidget);
-      expect(
-        find.text('Automated streamed answer from headless turn'),
-        findsNothing,
-      );
-
-      // Now backend finishes writing the reply; advance 3s periodic timer
-      includeSecondReply = true;
-      await tester.pump(const Duration(seconds: 3));
-      await tester.pump(const Duration(milliseconds: 600));
-      await tester.pump();
-
-      expect(
-        find.text('Automated streamed answer from headless turn'),
-        findsOneWidget,
-      );
-      expect(find.text('Working...'), findsNothing);
-    });
-
-    testWidgets(
-        'reacts to live fleetSessionsProvider working -> idle transition and refreshes transcript immediately',
-        (tester) async {
-      var sessionFinished = false;
-
-      final mockClient = MockClient((request) async {
-        if (request.url.path == '/v1/sessions/transcript') {
-          return http.Response(
-            jsonEncode({
-              'session_id': 'claude-code:local:sess-headless-1',
-              'native_id': 'sess-headless-1',
-              'agent': 'claude-code',
-              'title': 'Headless Test Session',
-              'cwd': '/workspace/ackbar',
-              'messages': [
-                {
-                  'role': 'user',
-                  'content': 'Run task',
-                  'timestamp': '2026-03-28T12:00:00Z',
-                },
-                if (sessionFinished)
-                  {
-                    'role': 'assistant',
-                    'content': 'Task completed on transition to idle',
-                    'timestamp': '2026-03-28T12:00:10Z',
-                  },
-              ],
-              'markdown': '',
-            }),
-            200,
-          );
-        }
-        if (request.url.path == '/v1/sessions/subagents') {
-          return http.Response(jsonEncode({'subagents': []}), 200);
-        }
-        return http.Response('[]', 200);
-      });
-
-      final api = ApiClient(client: mockClient);
-      final sse = SSEClient(client: mockClient);
-      final initialSession = _makeHeadlessSession(state: SessionState.working);
-
-      late WidgetRef capturedRef;
-      await tester.pumpWidget(
-        ProviderScope(
-          overrides: [
-            apiClientProvider.overrideWithValue(api),
-            sseClientProvider.overrideWithValue(sse),
-          ],
-          child: MaterialApp(
-            theme: AppTheme.darkTheme,
-            home: Consumer(
-              builder: (context, ref, _) {
-                capturedRef = ref;
-                return TranscriptScreen(session: initialSession);
-              },
-            ),
-          ),
-        ),
-      );
-      await tester.pump(const Duration(milliseconds: 600));
-      await tester.pump();
-
-      // Initially working
-      expect(find.text('Working...'), findsOneWidget);
-      expect(find.byIcon(Icons.stop_circle_rounded), findsOneWidget);
-
-      // Simulate SSE updating fleetSessionsProvider from working -> idle
-      sessionFinished = true;
-      capturedRef.read(fleetSessionsProvider.notifier).setSessions([
-        initialSession.copyWith(state: SessionState.idle),
-      ]);
-      await tester.pump(const Duration(milliseconds: 600));
-      await tester.pump();
-
-      expect(find.text('Working...'), findsNothing);
-      expect(
-        find.text('Task completed on transition to idle'),
-        findsOneWidget,
-      );
-    });
-
-    testWidgets(
-        'refreshes transcript silently when app resumes from background (AppLifecycleState.resumed)',
-        (tester) async {
-      var backgroundReplyReady = false;
-
-      final mockClient = MockClient((request) async {
-        if (request.url.path == '/v1/sessions/transcript') {
-          return http.Response(
-            jsonEncode({
-              'session_id': 'claude-code:local:sess-headless-1',
-              'native_id': 'sess-headless-1',
-              'agent': 'claude-code',
-              'title': 'Headless Test Session',
-              'cwd': '/workspace/ackbar',
-              'messages': [
-                {
-                  'role': 'user',
-                  'content': 'Before lock screen',
-                  'timestamp': '2026-03-28T12:00:00Z',
-                },
-                if (backgroundReplyReady)
-                  {
-                    'role': 'assistant',
-                    'content': 'Reply generated while phone was locked',
-                    'timestamp': '2026-03-28T12:01:00Z',
-                  },
-              ],
-              'markdown': '',
-            }),
-            200,
-          );
-        }
-        if (request.url.path == '/v1/sessions/subagents') {
-          return http.Response(jsonEncode({'subagents': []}), 200);
-        }
-        return http.Response('[]', 200);
-      });
-
-      final api = ApiClient(client: mockClient);
-      final sse = SSEClient(client: mockClient);
-      final session = _makeHeadlessSession(state: SessionState.idle);
-
-      await tester.pumpWidget(
-        _wrapTranscriptScreen(session, api: api, sse: sse),
-      );
-      await tester.pump(const Duration(milliseconds: 600));
-      await tester.pump();
-
-      expect(find.text('Before lock screen'), findsOneWidget);
-      expect(
-        find.text('Reply generated while phone was locked'),
-        findsNothing,
-      );
-
-      // Simulate reply arriving while app is inactive/backgrounded, then resuming app
-      backgroundReplyReady = true;
-      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
-      await tester.pump();
-      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
-      await tester.pump(const Duration(milliseconds: 600));
-      await tester.pump();
-
-      expect(
-        find.text('Reply generated while phone was locked'),
-        findsOneWidget,
-      );
-    });
-
-    testWidgets(
-        'preserves optimistic user bubble on silent poll when repeated prompt matches earlier historical message',
-        (tester) async {
-      final mockClient = MockClient((request) async {
-        if (request.url.path == '/v1/sessions/transcript') {
-          return http.Response(
-            jsonEncode({
-              'session_id': 'claude-code:local:sess-headless-1',
-              'native_id': 'sess-headless-1',
-              'agent': 'claude-code',
-              'title': 'Headless Test Session',
-              'cwd': '/workspace/ackbar',
-              'messages': [
-                {
-                  'role': 'user',
-                  'content': 'continue',
-                  'timestamp': '2026-03-28T12:00:00Z',
-                },
-                {
-                  'role': 'assistant',
-                  'content': 'Step 1 finished.',
+                  'content': 'Here are the findings from the log file.',
+                  'thinking': 'Analyzing error trace in stdout...',
+                  'tool_calls': [
+                    {
+                      'name': 'run_command',
+                      'input': {'command': 'cat /tmp/server.log'},
+                      'output': '2026-03-28 ERROR: port 7777 busy',
+                    }
+                  ],
                   'timestamp': '2026-03-28T12:00:05Z',
                 },
               ],
-              'markdown': '',
+              'markdown':
+                  '### USER\nCheck the logs\n\n### ASSISTANT\nHere are the findings',
             }),
             200,
           );
-        }
-        if (request.url.path == '/v1/sessions/subagents') {
-          return http.Response(jsonEncode({'subagents': []}), 200);
-        }
-        if (request.url.path == '/v1/sessions/prompt') {
-          return http.Response(jsonEncode({'status': 'running'}), 200);
         }
         return http.Response('[]', 200);
       });
 
       final api = ApiClient(client: mockClient);
-      final sse = SSEClient(client: mockClient);
-      final session = _makeHeadlessSession(state: SessionState.idle);
+      final session = _makeSession();
 
-      await tester.pumpWidget(
-        _wrapTranscriptScreen(session, api: api, sse: sse),
-      );
+      await tester.pumpWidget(_wrapTranscriptScreen(session, api: api));
       await tester.pump(const Duration(milliseconds: 600));
       await tester.pump();
 
-      expect(find.text('continue'), findsOneWidget);
-      expect(find.text('Step 1 finished.'), findsOneWidget);
-
-      // Send "continue" again (matching the earlier user message)
-      await tester.enterText(find.byType(TextField), 'continue');
-      await tester.pump();
-      await tester.tap(find.byIcon(Icons.arrow_upward_rounded));
-      await tester.pump(const Duration(milliseconds: 600));
-      await tester.pump();
-
-      // Both the historical and optimistic "continue" bubbles should be visible
-      expect(find.text('continue'), findsNWidgets(2));
-
-      // Advance 3s periodic poll before backend writes the new turn to disk
-      await tester.pump(const Duration(seconds: 3));
-      await tester.pump(const Duration(milliseconds: 600));
-      await tester.pump();
-
-      // Optimistic second "continue" bubble must still be preserved
-      expect(find.text('continue'), findsNWidgets(2));
-      expect(find.text('Working...'), findsOneWidget);
+      expect(find.text('Check the logs'), findsOneWidget);
+      expect(find.text('Here are the findings from the log file.'),
+          findsOneWidget);
+      expect(find.text('💭 Thought Process'), findsOneWidget);
+      expect(find.textContaining('run_command'), findsWidgets);
+      expect(find.byType(TextField), findsNothing);
     });
 
     testWidgets(
-        'stays bound to adopted Antigravity session via oldId and sends subsequent prompts with adopted session ID',
+        'search toggle filters turns by content, thinking, or tool calls and counts matches',
         (tester) async {
-      String? lastPromptSessionId;
       final mockClient = MockClient((request) async {
         if (request.url.path == '/v1/sessions/transcript') {
           return http.Response(
             jsonEncode({
-              'session_id': request.url.queryParameters['id'] ?? '',
-              'native_id': 'real-conv-999',
-              'agent': 'antigravity',
-              'title': 'Adopted Antigravity Session',
-              'cwd': '/workspace/ackbar',
-              'messages': [],
-              'markdown': '',
-            }),
-            200,
-          );
-        }
-        if (request.url.path == '/v1/sessions/subagents') {
-          return http.Response(jsonEncode({'subagents': []}), 200);
-        }
-        if (request.url.path == '/v1/sessions/prompt') {
-          final body = jsonDecode(request.body) as Map<String, dynamic>;
-          lastPromptSessionId = body['session_id'] as String?;
-          return http.Response(jsonEncode({'status': 'running'}), 200);
-        }
-        return http.Response('[]', 200);
-      });
-
-      final api = ApiClient(client: mockClient);
-      final sse = SSEClient(client: mockClient);
-      final initialSession = Session(
-        id: 'antigravity:legion:temp-uuid-111',
-        agent: 'antigravity',
-        host: 'legion',
-        nativeId: 'temp-uuid-111',
-        cwd: '/workspace/ackbar',
-        state: SessionState.idle,
-        startedAt: DateTime.utc(2026, 3, 28, 12, 0, 0),
-        lastEventAt: DateTime.utc(2026, 3, 28, 12, 0, 0),
-        managed: true,
-        engineType: 'headless',
-        name: 'Spawning Antigravity',
-      );
-
-      final container = ProviderContainer(
-        overrides: [
-          apiClientProvider.overrideWithValue(api),
-          sseClientProvider.overrideWithValue(sse),
-        ],
-      );
-      addTearDown(container.dispose);
-
-      // Simulate adoption in fleetSessionsProvider where id and nativeId changed, and oldId matches initialSession.id
-      final adoptedSession = initialSession.copyWith(
-        id: 'antigravity:legion:real-conv-999',
-        nativeId: 'real-conv-999',
-        oldId: 'antigravity:legion:temp-uuid-111',
-        customTitle: 'Adopted Antigravity Session',
-      );
-      container
-          .read(fleetSessionsProvider.notifier)
-          .setSessions([adoptedSession]);
-
-      await tester.pumpWidget(
-        UncontrolledProviderScope(
-          container: container,
-          child: MaterialApp(
-            theme: AppTheme.darkTheme,
-            home: TranscriptScreen(session: initialSession),
-          ),
-        ),
-      );
-      await tester.pump(const Duration(milliseconds: 600));
-      await tester.pump();
-
-      expect(find.text('Adopted Antigravity Session'), findsOneWidget);
-
-      await tester.enterText(
-          find.byType(TextField), 'Follow up after adoption');
-      await tester.pump();
-      await tester.tap(find.byIcon(Icons.arrow_upward_rounded));
-      await tester.pump(const Duration(milliseconds: 600));
-      await tester.pump();
-
-      expect(
-        lastPromptSessionId,
-        equals('antigravity:legion:real-conv-999'),
-      );
-    });
-
-    testWidgets(
-        'propagates host authToken to transcript and subagent endpoints and shows Retry on fetch failure',
-        (tester) async {
-      var failRequests = true;
-      final capturedAuthHeaders = <String?>[];
-
-      final mockClient = MockClient((request) async {
-        capturedAuthHeaders.add(request.headers['Authorization']);
-        if (failRequests) {
-          return http.Response('Unauthorized or Offline', 502);
-        }
-        if (request.url.path == '/v1/sessions/transcript') {
-          return http.Response(
-            jsonEncode({
-              'session_id': 'antigravity:legion:conv-auth-1',
-              'native_id': 'conv-auth-1',
-              'agent': 'antigravity',
-              'title': 'Auth Test Session',
-              'cwd': '/workspace/ackbar',
+              'session_id': 'claude-code:local:sess-ro-1',
+              'agent': 'claude-code',
               'messages': [
                 {
                   'role': 'user',
-                  'content': 'Authenticated hello',
-                  'timestamp': '2026-10-31T12:00:00Z',
+                  'content': 'Deploy to staging',
+                  'timestamp': '2026-03-28T12:00:00Z',
+                },
+                {
+                  'role': 'assistant',
+                  'content': 'Deployment completed successfully.',
+                  'thinking': 'Verifying docker swarm status...',
+                  'timestamp': '2026-03-28T12:00:05Z',
+                },
+                {
+                  'role': 'user',
+                  'content': 'Run database migrations',
+                  'timestamp': '2026-03-28T12:01:00Z',
                 },
               ],
-              'markdown': '',
             }),
             200,
           );
-        }
-        if (request.url.path == '/v1/sessions/subagents') {
-          return http.Response(jsonEncode({'subagents': []}), 200);
         }
         return http.Response('[]', 200);
       });
 
       final api = ApiClient(client: mockClient);
-      final sse = SSEClient(client: mockClient);
-      final session = _makeHeadlessSession(
-        id: 'antigravity:legion:conv-auth-1',
-        nativeId: 'conv-auth-1',
-      ).copyWith(host: 'Legion');
+      final session = _makeSession();
 
-      final container = ProviderContainer(
-        overrides: [
-          apiClientProvider.overrideWithValue(api),
-          sseClientProvider.overrideWithValue(sse),
-        ],
-      );
-      addTearDown(container.dispose);
-
-      container.read(hostsListProvider.notifier).state = [
-        container.read(hostsListProvider.notifier).state.firstOrNull ??
-            // Seed host with authToken
-            // ignore: prefer_const_constructors
-            dynamicHostRecord(),
-      ];
-
-      await tester.pumpWidget(
-        UncontrolledProviderScope(
-          container: container,
-          child: MaterialApp(
-            theme: AppTheme.darkTheme,
-            home: TranscriptScreen(session: session),
-          ),
-        ),
-      );
+      await tester.pumpWidget(_wrapTranscriptScreen(session, api: api));
       await tester.pump(const Duration(milliseconds: 600));
       await tester.pump();
 
-      // Should show Retry error rather than fake "No conversation messages recorded yet"
-      expect(find.textContaining('Unable to load transcript'), findsOneWidget);
-      expect(find.text('Retry'), findsOneWidget);
-      expect(
-        capturedAuthHeaders.any((h) => h == 'Bearer secret-host-token'),
-        isTrue,
+      expect(find.text('Deploy to staging'), findsOneWidget);
+      expect(find.text('Run database migrations'), findsOneWidget);
+
+      final searchToggle = find.byKey(const Key('transcript_search_toggle'));
+      expect(searchToggle, findsOneWidget);
+      await tester.tap(searchToggle);
+      await tester.pumpAndSettle();
+
+      final searchInput = find.byKey(const Key('transcript_search_input'));
+      expect(searchInput, findsOneWidget);
+
+      await tester.enterText(searchInput, 'migrations');
+      await tester.pump();
+
+      expect(find.text('Run database migrations'), findsOneWidget);
+      expect(find.text('Deploy to staging'), findsNothing);
+      expect(find.byKey(const Key('transcript_search_count')), findsOneWidget);
+      expect(find.text('1 match'), findsOneWidget);
+
+      await tester.enterText(searchInput, 'swarm');
+      await tester.pump();
+      expect(find.text('Deployment completed successfully.'), findsOneWidget);
+      expect(find.text('Run database migrations'), findsNothing);
+
+      await tester.tap(find.byKey(const Key('transcript_search_clear')));
+      await tester.pump();
+
+      expect(find.text('Deploy to staging'), findsOneWidget);
+      expect(find.text('Run database migrations'), findsOneWidget);
+    });
+
+    testWidgets('copy transcript button copies full markdown to clipboard',
+        (tester) async {
+      final mockClient = MockClient((request) async {
+        if (request.url.path == '/v1/sessions/transcript') {
+          return http.Response(
+            jsonEncode({
+              'session_id': 'claude-code:local:sess-ro-1',
+              'agent': 'claude-code',
+              'messages': [
+                {
+                  'role': 'user',
+                  'content': 'Hello',
+                  'timestamp': '2026-03-28T12:00:00Z',
+                },
+              ],
+              'markdown': '### USER\nHello',
+            }),
+            200,
+          );
+        }
+        return http.Response('[]', 200);
+      });
+
+      final api = ApiClient(client: mockClient);
+      final session = _makeSession();
+
+      await tester.pumpWidget(_wrapTranscriptScreen(session, api: api));
+      await tester.pump(const Duration(milliseconds: 600));
+      await tester.pump();
+
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(
+        SystemChannels.platform,
+        (message) async => null,
       );
 
-      // Now recover and tap Retry
-      failRequests = false;
+      final copyBtn = find.byKey(const Key('transcript_copy_button'));
+      expect(copyBtn, findsOneWidget);
+      await tester.tap(copyBtn);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(find.text('Transcript copied to clipboard'), findsOneWidget);
+    });
+
+    testWidgets('open session action routes to ChatScreen for headless session',
+        (tester) async {
+      final mockClient = MockClient((request) async {
+        if (request.url.path == '/v1/sessions/transcript') {
+          return http.Response(
+            jsonEncode({
+              'session_id': 'claude-code:local:sess-ro-1',
+              'agent': 'claude-code',
+              'messages': [],
+            }),
+            200,
+          );
+        }
+        return http.Response('[]', 200);
+      });
+
+      final api = ApiClient(client: mockClient);
+      final headless = _makeSession(engineType: 'headless');
+
+      await tester.pumpWidget(_wrapTranscriptScreen(headless, api: api));
+      await tester.pump(const Duration(milliseconds: 600));
+      await tester.pump();
+
+      final openBtn = find.byKey(const Key('transcript_open_session_button'));
+      expect(openBtn, findsOneWidget);
+      await tester.tap(openBtn);
+      await tester.pump(const Duration(milliseconds: 600));
+      await tester.pump();
+
+      expect(find.byType(ChatScreen), findsOneWidget);
+    });
+
+    testWidgets('open session action routes to TerminalScreen for tmux session',
+        (tester) async {
+      final mockClient = MockClient((request) async {
+        if (request.url.path == '/v1/sessions/transcript') {
+          return http.Response(
+            jsonEncode({
+              'session_id': 'claude-code:local:sess-ro-2',
+              'agent': 'claude-code',
+              'messages': [],
+            }),
+            200,
+          );
+        }
+        return http.Response('[]', 200);
+      });
+
+      final api = ApiClient(client: mockClient);
+      final tmux = _makeSession(
+          id: 'claude-code:local:sess-ro-2',
+          engineType: 'tmux',
+          tmuxName: 'ackbar-tmux-1',
+          state: SessionState.working);
+
+      await tester.pumpWidget(_wrapTranscriptScreen(tmux, api: api));
+      await tester.pump(const Duration(milliseconds: 600));
+      await tester.pump();
+
+      final openTmuxBtn =
+          find.byKey(const Key('transcript_open_session_button'));
+      expect(openTmuxBtn, findsOneWidget);
+      await tester.tap(openTmuxBtn);
+      await tester.pump(const Duration(milliseconds: 600));
+      await tester.pump();
+
+      expect(find.byType(TerminalScreen), findsOneWidget);
+    });
+
+    testWidgets(
+        'open session button is hidden when showOpenSessionAction is false',
+        (tester) async {
+      final mockClient = MockClient((request) async {
+        if (request.url.path == '/v1/sessions/transcript') {
+          return http.Response(
+            jsonEncode({
+              'session_id': 'claude-code:local:sess-ro-1',
+              'agent': 'claude-code',
+              'messages': [],
+            }),
+            200,
+          );
+        }
+        return http.Response('[]', 200);
+      });
+
+      final api = ApiClient(client: mockClient);
+      final session = _makeSession();
+
+      await tester.pumpWidget(_wrapTranscriptScreen(session,
+          api: api, showOpenSessionAction: false));
+      await tester.pump(const Duration(milliseconds: 600));
+      await tester.pump();
+
+      expect(find.byKey(const Key('transcript_open_session_button')),
+          findsNothing);
+    });
+
+    testWidgets('shows retry on load error and auto-read toggle updates state',
+        (tester) async {
+      var shouldFail = true;
+
+      final mockClient = MockClient((request) async {
+        if (shouldFail) {
+          return http.Response('Internal Error', 500);
+        }
+        return http.Response(
+          jsonEncode({
+            'session_id': 'claude-code:local:sess-ro-1',
+            'agent': 'claude-code',
+            'messages': [
+              {
+                'role': 'user',
+                'content': 'Recovered',
+                'timestamp': '2026-03-28T12:00:00Z',
+              }
+            ],
+          }),
+          200,
+        );
+      });
+
+      final api = ApiClient(client: mockClient);
+      final session = _makeSession();
+
+      await tester.pumpWidget(_wrapTranscriptScreen(session, api: api));
+      await tester.pump(const Duration(milliseconds: 600));
+      await tester.pump();
+
+      expect(find.text('Retry'), findsOneWidget);
+
+      shouldFail = false;
       await tester.tap(find.text('Retry'));
       await tester.pump(const Duration(milliseconds: 600));
       await tester.pump();
 
-      expect(find.text('Authenticated hello'), findsOneWidget);
+      expect(find.text('Recovered'), findsOneWidget);
+
+      final ttsToggle = find.byKey(const Key('transcript_tts_toggle'));
+      expect(ttsToggle, findsOneWidget);
+      await tester.tap(ttsToggle);
+      await tester.pump();
     });
   });
 }

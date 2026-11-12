@@ -6,10 +6,13 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:xterm/xterm.dart';
+import 'package:ackbar_mobile/core/models/host.dart';
 import 'package:ackbar_mobile/core/models/session.dart';
+import 'package:ackbar_mobile/core/providers/fleet_providers.dart';
 import 'package:ackbar_mobile/core/theme/app_theme.dart';
 import 'package:ackbar_mobile/features/terminal/application/terminal_reconnect_controller.dart';
 import 'package:ackbar_mobile/features/terminal/presentation/terminal_screen.dart';
+import 'package:ackbar_mobile/features/transcript/presentation/transcript_screen.dart';
 
 class _FakeWebSocketSink implements WebSocketSink {
   final List<dynamic> sentMessages;
@@ -84,6 +87,23 @@ Session _buildSession({SessionState state = SessionState.working}) {
     tmuxName: 'ackbar-claude-sess-term-1',
     name: 'Terminal Scroll Test',
   );
+}
+
+class FakeHostsNotifier extends StateNotifier<List<HostRecord>>
+    implements HostsNotifier {
+  FakeHostsNotifier([List<HostRecord> initial = const []]) : super(initial);
+  @override
+  void setHosts(List<HostRecord> hosts) => state = hosts;
+  @override
+  void addHost(HostRecord host) => state = [...state, host];
+  @override
+  void updateHost(HostRecord updatedHost) => state =
+      state.map((h) => h.name == updatedHost.name ? updatedHost : h).toList();
+  @override
+  void removeHost(String name) =>
+      state = state.where((h) => h.name != name).toList();
+  @override
+  Future<void> refreshHosts() async {}
 }
 
 void main() {
@@ -301,5 +321,47 @@ void main() {
 
     expect(channelCount, 1);
     expect(find.textContaining('Reconnecting'), findsNothing);
+  });
+
+  testWidgets(
+      'TerminalScreen renders terminal_open_transcript_button and tapping opens TranscriptScreen',
+      (tester) async {
+    final fakeChannel = _FakeWebSocketChannel();
+    addTearDown(() => fakeChannel.serverToClient.close());
+
+    final session = _buildSession();
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          hostsListProvider.overrideWith((_) => FakeHostsNotifier([
+                HostRecord(
+                  name: 'local',
+                  url: 'http://127.0.0.1:7777',
+                  online: true,
+                  createdAt: DateTime.utc(2026, 1, 1),
+                ),
+              ])),
+        ],
+        child: MaterialApp(
+          theme: AppTheme.darkTheme,
+          home: TerminalScreen(
+            session: session,
+            channelBuilder: (_) => fakeChannel,
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    final transcriptBtn =
+        find.byKey(const Key('terminal_open_transcript_button'));
+    expect(transcriptBtn, findsOneWidget);
+
+    await tester.tap(transcriptBtn);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 600));
+
+    expect(find.byType(TranscriptScreen), findsOneWidget);
   });
 }
