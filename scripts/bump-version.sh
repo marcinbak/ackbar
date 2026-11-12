@@ -4,6 +4,8 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
+APP_VERSION_FILE="mobile/lib/core/constants/app_version.dart"
+
 CHECK_MODE=false
 FORCE=false
 BASE_REF="origin/main"
@@ -37,6 +39,45 @@ while [ $# -gt 0 ]; do
             ;;
     esac
 done
+
+read_mobile_app_version() {
+    if [ ! -f "$APP_VERSION_FILE" ]; then
+        return 0
+    fi
+    sed -n "s/.*static const String version = '\([^']*\)'.*/\1/p" "$APP_VERSION_FILE" | head -n 1
+}
+
+sync_mobile_app_version() {
+    local target_ver="$1"
+    if [ ! -f "$APP_VERSION_FILE" ]; then
+        return 0
+    fi
+
+    local current_mobile_ver
+    current_mobile_ver="$(read_mobile_app_version)"
+    if [ "$current_mobile_ver" = "$target_ver" ]; then
+        return 0
+    fi
+
+    local tmp_file
+    tmp_file="$(mktemp "${APP_VERSION_FILE}.tmp.XXXXXX")"
+    if ! sed "s/static const String version = '[^']*';/static const String version = '${target_ver}';/" "$APP_VERSION_FILE" > "$tmp_file"; then
+        rm -f "$tmp_file"
+        echo "ERROR: Failed to write to temporary file: $tmp_file" >&2
+        return 1
+    fi
+
+    mv "$tmp_file" "$APP_VERSION_FILE"
+
+    local verified_ver
+    verified_ver="$(read_mobile_app_version)"
+    if [ "$verified_ver" != "$target_ver" ]; then
+        echo "ERROR: Failed to update $APP_VERSION_FILE to $target_ver (found $verified_ver)" >&2
+        exit 1
+    fi
+
+    echo "Synced mobile AppVersion: $current_mobile_ver -> $target_ver"
+}
 
 # Compare two versions: returns 0 if vA > vB, 1 otherwise.
 version_gt() {
@@ -155,6 +196,14 @@ if [ "$CHECK_MODE" = true ]; then
         fi
     fi
 
+    if [ -f "$APP_VERSION_FILE" ]; then
+        MOBILE_VER="$(read_mobile_app_version)"
+        if [ "$MOBILE_VER" != "$CURRENT_VER" ]; then
+            echo "ERROR: $APP_VERSION_FILE ($MOBILE_VER) does not match internal/version/VERSION ($CURRENT_VER). Run './scripts/bump-version.sh' to sync." >&2
+            exit 1
+        fi
+    fi
+
     echo "Version check passed: $CURRENT_VER (> $BASE_REF $BASE_VER)"
     exit 0
 fi
@@ -175,6 +224,7 @@ if [ -z "$BASE_VER" ]; then
 fi
 
 if [ "$FORCE" = false ] && [ -n "$CURRENT_VER" ] && [[ "$CURRENT_VER" =~ ^[0-9]{8}\.[0-9]{2,}$ ]] && version_gt "$CURRENT_VER" "$BASE_VER" && ! git rev-parse -q --verify "refs/tags/v${CURRENT_VER}" >/dev/null 2>&1; then
+    sync_mobile_app_version "$CURRENT_VER"
     echo "Version already bumped to $CURRENT_VER (> $BASE_VER)"
     exit 0
 fi
@@ -183,4 +233,5 @@ NEXT_VER="$(compute_next_version "$BASE_VER" "$CURRENT_VER")"
 mkdir -p internal/version
 printf "%s\n" "$NEXT_VER" > internal/version/VERSION
 echo "Bumped version: $CURRENT_VER -> $NEXT_VER"
+sync_mobile_app_version "$NEXT_VER"
 exit 0

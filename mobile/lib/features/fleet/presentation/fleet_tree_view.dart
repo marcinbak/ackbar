@@ -5,9 +5,7 @@ import '../../../core/providers/fleet_providers.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_typography.dart';
-import '../../../core/widgets/agent_logo.dart';
-import '../../../core/widgets/glass_card.dart';
-import '../../../core/widgets/status_badge.dart';
+import 'fleet_session_card.dart';
 
 /// Callback when a session card is tapped
 typedef SessionTapCallback = void Function(Session session);
@@ -26,6 +24,7 @@ class FleetTreeView extends StatefulWidget {
   final List<FleetTreeFolderNode> rootFolders;
   final List<HostRecord> hosts;
   final SessionTapCallback onSessionTap;
+  final SessionTapCallback? onSessionActions;
   final FolderAddCallback onAddSession;
 
   const FleetTreeView({
@@ -33,6 +32,7 @@ class FleetTreeView extends StatefulWidget {
     required this.rootFolders,
     required this.hosts,
     required this.onSessionTap,
+    this.onSessionActions,
     required this.onAddSession,
   });
 
@@ -310,217 +310,11 @@ class _FleetTreeViewState extends State<FleetTreeView> {
   }
 
   Widget _buildSessionCard(Session session) {
-    final statusColor = session.state.toBadgeStatus().color;
-    final isOffline = isSessionHostOffline(session, widget.hosts);
-
-    return Padding(
-      padding: const EdgeInsets.only(bottom: AppSpacing.sm),
-      child: GlassCard(
-        accentColor: statusColor,
-        onTap: () => widget.onSessionTap(session),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // Top Tags Row
-            Row(
-              children: [
-                // Host Tag
-                Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                  decoration: BoxDecoration(
-                    color: AppColors.surfaceHighlight,
-                    borderRadius: AppSpacing.roundedSm,
-                    border:
-                        Border.all(color: AppColors.outlineSubtle, width: 0.5),
-                  ),
-                  child: Text(
-                    session.hostTag,
-                    style: AppTypography.codeXs.copyWith(
-                      color: AppColors.infoCyan,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                ),
-
-                // Offline badge if host is offline
-                if (isOffline) ...[
-                  const SizedBox(width: 6),
-                  Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
-                    decoration: BoxDecoration(
-                      color: AppColors.statusCoral.withOpacity(0.15),
-                      borderRadius: AppSpacing.roundedSm,
-                      border: Border.all(
-                        color: AppColors.statusCoral.withOpacity(0.4),
-                        width: 0.8,
-                      ),
-                    ),
-                    child: Text(
-                      'offline',
-                      style: AppTypography.codeXs.copyWith(
-                        color: AppColors.statusCoral,
-                        fontWeight: FontWeight.w700,
-                        fontSize: 9.5,
-                      ),
-                    ),
-                  ),
-                ],
-
-                // Supervisor Tag if session is supervisor
-                if (session.isSupervisor) ...[
-                  const SizedBox(width: 6),
-                  Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
-                    decoration: BoxDecoration(
-                      color: AppColors.infoCyan.withOpacity(0.15),
-                      borderRadius: AppSpacing.roundedSm,
-                      border: Border.all(
-                        color: AppColors.infoCyan.withOpacity(0.4),
-                        width: 0.8,
-                      ),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const Text('⚓', style: TextStyle(fontSize: 10)),
-                        const SizedBox(width: 3),
-                        Text(
-                          'SUPERVISOR',
-                          style: AppTypography.codeXs.copyWith(
-                            color: AppColors.infoCyan,
-                            fontWeight: FontWeight.w700,
-                            fontSize: 9.5,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-
-                const SizedBox(width: 6),
-
-                // Agent Badge
-                Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                  decoration: BoxDecoration(
-                    color: session.agentColor.withOpacity(0.12),
-                    borderRadius: AppSpacing.roundedSm,
-                    border: Border.all(
-                      color: session.agentColor.withOpacity(0.3),
-                      width: 0.8,
-                    ),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      AgentLogo(
-                        agent: session.agent,
-                        size: 10,
-                        color: session.agentColor,
-                      ),
-                      const SizedBox(width: 4),
-                      Text(
-                        session.agentDisplayName,
-                        style: AppTypography.codeXs.copyWith(
-                          color: session.agentColor,
-                          fontWeight: FontWeight.w600,
-                          fontSize: 10,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-
-                if (session.gitBranch.isNotEmpty) ...[
-                  const SizedBox(width: 6),
-                  Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
-                    decoration: BoxDecoration(
-                      color: AppColors.surfaceHighlight,
-                      borderRadius: AppSpacing.roundedSm,
-                    ),
-                    child: Text(
-                      session.gitBranch,
-                      style: AppTypography.codeXs.copyWith(
-                        color: AppColors.textSecondary,
-                        fontSize: 10,
-                      ),
-                    ),
-                  ),
-                ],
-
-                const Spacer(),
-                if (session.isUnread) ...[
-                  Container(
-                    width: 8,
-                    height: 8,
-                    margin: const EdgeInsets.only(right: 6),
-                    decoration: const BoxDecoration(
-                      color: AppColors.infoCyan,
-                      shape: BoxShape.circle,
-                      boxShadow: [
-                        BoxShadow(
-                          color: Color(0x9906B6D4),
-                          blurRadius: 6,
-                          spreadRadius: 1,
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-                StatusBadge(
-                    status: session.state.toBadgeStatus(), isCompact: true),
-              ],
-            ),
-            AppSpacing.gapH8,
-
-            // Session Title
-            Text(
-              session.displayTitle,
-              style: AppTypography.titleMedium.copyWith(
-                color: AppColors.textPrimary,
-                fontWeight: FontWeight.w600,
-              ),
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-            ),
-            AppSpacing.gapH6,
-
-            // Activity Line
-            if (session.activity.isNotEmpty)
-              Row(
-                children: [
-                  Icon(
-                    session.isBlocked
-                        ? Icons.help_outline_rounded
-                        : Icons.bolt_rounded,
-                    size: 13,
-                    color: statusColor,
-                  ),
-                  const SizedBox(width: 4),
-                  Expanded(
-                    child: Text(
-                      session.activity,
-                      style: AppTypography.codeXs.copyWith(
-                        color: session.isBlocked
-                            ? AppColors.statusCoral
-                            : AppColors.textSecondary,
-                        fontSize: 11,
-                      ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                ],
-              ),
-          ],
-        ),
-      ),
+    return FleetSessionCard(
+      session: session,
+      hosts: widget.hosts,
+      onTap: widget.onSessionTap,
+      onActions: widget.onSessionActions,
     );
   }
 }

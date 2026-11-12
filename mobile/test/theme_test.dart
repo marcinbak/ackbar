@@ -11,7 +11,8 @@ void main() {
   GoogleFonts.config.allowRuntimeFetching = false;
 
   group('AppColors Stitch "Terminal Velocity" Design Tokens', () {
-    test('Base Surface & Canvas Color tokens match Stitch design specification', () {
+    test('Base Surface & Canvas Color tokens match Stitch design specification',
+        () {
       expect(AppColors.background, equals(const Color(0xFF0E1015)));
       expect(AppColors.surface, equals(const Color(0xFF161922)));
       expect(AppColors.surfaceHighlight, equals(const Color(0xFF1E293B)));
@@ -42,12 +43,15 @@ void main() {
     });
 
     test('Linear gradients have correct colors and alignments', () {
-      expect(AppColors.cyanEmeraldGradient.colors, equals([AppColors.infoCyan, AppColors.statusEmerald]));
+      expect(AppColors.cyanEmeraldGradient.colors,
+          equals([AppColors.infoCyan, AppColors.statusEmerald]));
       expect(AppColors.cyanEmeraldGradient.begin, equals(Alignment.centerLeft));
       expect(AppColors.cyanEmeraldGradient.end, equals(Alignment.centerRight));
 
-      expect(AppColors.amberCoralGradient.colors, equals([AppColors.statusAmber, AppColors.statusCoral]));
-      expect(AppColors.terminalHeaderGradient.colors, equals([const Color(0xFF161922), const Color(0xFF0E1015)]));
+      expect(AppColors.amberCoralGradient.colors,
+          equals([AppColors.statusAmber, AppColors.statusCoral]));
+      expect(AppColors.terminalHeaderGradient.colors,
+          equals([const Color(0xFF161922), const Color(0xFF0E1015)]));
     });
   });
 
@@ -90,7 +94,8 @@ void main() {
       final extB = extA.copyWith(background: const Color(0xFF000000));
 
       final lerpedHalf = extA.lerp(extB, 0.5);
-      expect(lerpedHalf.background, equals(Color.lerp(extA.background, const Color(0xFF000000), 0.5)));
+      expect(lerpedHalf.background,
+          equals(Color.lerp(extA.background, const Color(0xFF000000), 0.5)));
 
       final lerpedNone = extA.lerp(null, 0.5);
       expect(lerpedNone, equals(extA));
@@ -127,13 +132,18 @@ void main() {
     });
 
     test('Common EdgeInsets instances', () {
-      expect(AppSpacing.paddingScreen, equals(const EdgeInsets.symmetric(horizontal: 16.0, vertical: 16.0)));
-      expect(AppSpacing.paddingScreenHorizontal, equals(const EdgeInsets.symmetric(horizontal: 16.0)));
+      expect(AppSpacing.paddingScreen,
+          equals(const EdgeInsets.symmetric(horizontal: 16.0, vertical: 16.0)));
+      expect(AppSpacing.paddingScreenHorizontal,
+          equals(const EdgeInsets.symmetric(horizontal: 16.0)));
       expect(AppSpacing.paddingCard, equals(const EdgeInsets.all(16.0)));
       expect(AppSpacing.paddingCardDense, equals(const EdgeInsets.all(12.0)));
-      expect(AppSpacing.paddingPill, equals(const EdgeInsets.symmetric(horizontal: 10, vertical: 4)));
-      expect(AppSpacing.paddingBadge, equals(const EdgeInsets.symmetric(horizontal: 8, vertical: 3)));
-      expect(AppSpacing.paddingInput, equals(const EdgeInsets.symmetric(horizontal: 12.0, vertical: 8.0)));
+      expect(AppSpacing.paddingPill,
+          equals(const EdgeInsets.symmetric(horizontal: 10, vertical: 4)));
+      expect(AppSpacing.paddingBadge,
+          equals(const EdgeInsets.symmetric(horizontal: 8, vertical: 3)));
+      expect(AppSpacing.paddingInput,
+          equals(const EdgeInsets.symmetric(horizontal: 12.0, vertical: 8.0)));
     });
 
     test('Gap sized box instances have exact dimensions', () {
@@ -161,7 +171,9 @@ void main() {
       expect(AppTypography.monoFontFamily, isNotEmpty);
     });
 
-    test('Headings and Body text styles configure expected font sizes and weights', () {
+    test(
+        'Headings and Body text styles configure expected font sizes and weights',
+        () {
       expect(AppTypography.displayLarge.fontSize, equals(32));
       expect(AppTypography.displayLarge.fontWeight, equals(FontWeight.w700));
       expect(AppTypography.displayMedium.fontSize, equals(26));
@@ -243,7 +255,9 @@ void main() {
       expect(appBarTheme.centerTitle, isFalse);
     });
 
-    test('CardTheme is configured with surface background and 12px rounded borders', () {
+    test(
+        'CardTheme is configured with surface background and 12px rounded borders',
+        () {
       final cardTheme = theme.cardTheme;
       expect(cardTheme.color, equals(AppColors.surface));
       expect(cardTheme.elevation, equals(0));
@@ -254,14 +268,17 @@ void main() {
       expect(shape.side.color, equals(AppColors.outlineSubtle));
     });
 
-    test('NavigationBarTheme is configured with surface background and pill indicator', () {
+    test(
+        'NavigationBarTheme is configured with surface background and pill indicator',
+        () {
       final navBarTheme = theme.navigationBarTheme;
       expect(navBarTheme.backgroundColor, equals(AppColors.surface));
       expect(navBarTheme.indicatorColor, equals(AppColors.surfaceHighlight));
       expect(navBarTheme.labelTextStyle, isNotNull);
 
       // Verify selected vs unselected text style resolution
-      final selectedStyle = navBarTheme.labelTextStyle!.resolve({WidgetState.selected});
+      final selectedStyle =
+          navBarTheme.labelTextStyle!.resolve({WidgetState.selected});
       expect(selectedStyle?.color, equals(AppColors.infoCyan));
       expect(selectedStyle?.fontWeight, equals(FontWeight.w600));
 
@@ -269,7 +286,9 @@ void main() {
       expect(unselectedStyle?.color, equals(AppColors.textMuted));
     });
 
-    test('BottomNavigationBarTheme is configured with fixed type and surface background', () {
+    test(
+        'BottomNavigationBarTheme is configured with fixed type and surface background',
+        () {
       final btmTheme = theme.bottomNavigationBarTheme;
       expect(btmTheme.backgroundColor, equals(AppColors.surface));
       expect(btmTheme.selectedItemColor, equals(AppColors.infoCyan));
@@ -278,7 +297,9 @@ void main() {
       expect(btmTheme.elevation, equals(0));
     });
 
-    test('InputDecorationTheme is configured with filled highlight surface and rounded border', () {
+    test(
+        'InputDecorationTheme is configured with filled highlight surface and rounded border',
+        () {
       final inputTheme = theme.inputDecorationTheme;
       expect(inputTheme.filled, isTrue);
       expect(inputTheme.fillColor, equals(AppColors.surfaceHighlight));
@@ -297,7 +318,9 @@ void main() {
       expect(ext?.infoCyan, equals(AppColors.infoCyan));
     });
 
-    testWidgets('AckbarThemeContextX extension provides convenient access in BuildContext', (tester) async {
+    testWidgets(
+        'AckbarThemeContextX extension provides convenient access in BuildContext',
+        (tester) async {
       late BuildContext testContext;
 
       await tester.pumpWidget(
@@ -313,10 +336,12 @@ void main() {
       );
 
       expect(testContext.theme.brightness, equals(Brightness.dark));
-      expect(testContext.theme.scaffoldBackgroundColor, equals(AppColors.background));
+      expect(testContext.theme.scaffoldBackgroundColor,
+          equals(AppColors.background));
       expect(testContext.colors.primary, equals(AppColors.infoCyan));
       expect(testContext.textTheme.displayLarge, isNotNull);
-      expect(testContext.ackbarColors.statusAmber, equals(AppColors.statusAmber));
+      expect(
+          testContext.ackbarColors.statusAmber, equals(AppColors.statusAmber));
     });
   });
 }

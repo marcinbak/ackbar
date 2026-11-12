@@ -16,7 +16,7 @@ import 'plans/presentation/plan_diff_viewer_modal.dart';
 import 'plans/presentation/plans_screen.dart';
 import 'tasks/presentation/deliverable_markdown_modal.dart';
 import 'tasks/presentation/work_board_screen.dart';
-import 'transcript/presentation/transcript_screen.dart';
+import '../core/navigation/session_navigator.dart';
 
 /// Root navigation shell managing bottom navigation state and preserved screens via IndexedStack.
 class MainNavigationShell extends ConsumerStatefulWidget {
@@ -195,6 +195,10 @@ class _MainNavigationShellState extends ConsumerState<MainNavigationShell>
               s.id == worker.sessionId ||
               (worker.sessionId.isNotEmpty && s.nativeId == worker.sessionId))
           .firstOrNull;
+      if (match != null && !match.isEnded) {
+        SessionNavigator.openSession(context, ref, match);
+        return;
+      }
       final targetSession = match ??
           Session(
             id: worker.sessionId.isNotEmpty
@@ -210,7 +214,8 @@ class _MainNavigationShellState extends ConsumerState<MainNavigationShell>
             managed: true,
             name: '${worker.agent} @ ${worker.host}',
           );
-      TranscriptScreen.open(context, targetSession);
+      SessionNavigator.openTranscript(context, targetSession,
+          ref: ref, showOpenSessionAction: false);
       return;
     }
   }

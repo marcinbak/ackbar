@@ -12,8 +12,11 @@ import 'package:ackbar_mobile/core/network/api_client.dart';
 import 'package:ackbar_mobile/core/network/sse_client.dart';
 import 'package:ackbar_mobile/core/providers/fleet_providers.dart';
 import 'package:ackbar_mobile/core/theme/app_theme.dart';
+import 'package:ackbar_mobile/features/chat/presentation/chat_screen.dart';
 import 'package:ackbar_mobile/features/fleet/presentation/fleet_screen.dart';
 import 'package:ackbar_mobile/features/fleet/presentation/fleet_tree_view.dart';
+import 'package:ackbar_mobile/features/fleet/presentation/session_detail_sheet.dart';
+import 'package:ackbar_mobile/features/terminal/presentation/terminal_screen.dart';
 
 class MockSSEClient extends SSEClient {
   @override
@@ -304,6 +307,47 @@ void main() {
           sessions
               .any((s) => s.id == 'sess-linux-1' && s.host == 'linux.local'),
           isTrue);
+    });
+
+    testWidgets(
+        'renders CHAT and PTY badges and tapping session actions opens SessionDetailSheet',
+        (tester) async {
+      final container = ProviderContainer(
+        overrides: [
+          apiClientProvider.overrideWithValue(mockApiClient),
+          sseClientProvider.overrideWithValue(mockSseClient),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      container.read(hostsListProvider.notifier).setHosts(testHosts);
+      container.read(fleetNodesProvider.notifier).setNodes(testNodes);
+      container.read(fleetSessionsProvider.notifier).setSessions(testSessions);
+
+      await tester.pumpWidget(
+        _wrapScreen(
+          const FleetScreen(),
+          container,
+        ),
+      );
+      await tester.pump(const Duration(seconds: 1));
+
+      expect(find.byKey(const Key('session_mode_badge_sess-task')),
+          findsOneWidget);
+      expect(find.text('CHAT'), findsWidgets);
+      expect(find.byKey(const Key('session_mode_badge_sess-manual')),
+          findsOneWidget);
+      expect(find.text('PTY'), findsWidgets);
+
+      final moreBtn = find.byKey(const Key('session_more_sess-task'));
+      expect(moreBtn, findsOneWidget);
+      await tester.drag(find.byType(FleetTreeView), const Offset(0, -300));
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.tap(moreBtn);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 500));
+
+      expect(find.byType(SessionDetailSheet), findsOneWidget);
     });
   });
 }
