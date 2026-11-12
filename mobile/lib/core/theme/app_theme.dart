@@ -91,7 +91,8 @@ abstract final class AppTheme {
           backgroundColor: AppColors.surfaceHighlight,
           foregroundColor: AppColors.textPrimary,
           elevation: 0,
-          padding: const EdgeInsets.symmetric(horizontal: AppSpacing.lg, vertical: AppSpacing.md),
+          padding: const EdgeInsets.symmetric(
+              horizontal: AppSpacing.lg, vertical: AppSpacing.md),
           shape: RoundedRectangleBorder(
             borderRadius: AppSpacing.roundedMd,
             side: const BorderSide(color: AppColors.outline, width: 1),
@@ -103,7 +104,8 @@ abstract final class AppTheme {
         style: OutlinedButton.styleFrom(
           foregroundColor: AppColors.infoCyan,
           side: const BorderSide(color: AppColors.outline, width: 1),
-          padding: const EdgeInsets.symmetric(horizontal: AppSpacing.lg, vertical: AppSpacing.md),
+          padding: const EdgeInsets.symmetric(
+              horizontal: AppSpacing.lg, vertical: AppSpacing.md),
           shape: RoundedRectangleBorder(
             borderRadius: AppSpacing.roundedMd,
           ),
@@ -116,17 +118,20 @@ abstract final class AppTheme {
         contentPadding: AppSpacing.paddingInput,
         border: OutlineInputBorder(
           borderRadius: AppSpacing.roundedMd,
-          borderSide: const BorderSide(color: AppColors.outlineSubtle, width: 1),
+          borderSide:
+              const BorderSide(color: AppColors.outlineSubtle, width: 1),
         ),
         enabledBorder: OutlineInputBorder(
           borderRadius: AppSpacing.roundedMd,
-          borderSide: const BorderSide(color: AppColors.outlineSubtle, width: 1),
+          borderSide:
+              const BorderSide(color: AppColors.outlineSubtle, width: 1),
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: AppSpacing.roundedMd,
           borderSide: const BorderSide(color: AppColors.infoCyan, width: 1.5),
         ),
-        hintStyle: AppTypography.bodyMedium.copyWith(color: AppColors.textMuted),
+        hintStyle:
+            AppTypography.bodyMedium.copyWith(color: AppColors.textMuted),
       ),
     );
   }
@@ -145,5 +150,6 @@ extension AckbarThemeContextX on BuildContext {
 
   /// Decoupled semantic Ackbar color tokens
   AckbarColorsExtension get ackbarColors =>
-      Theme.of(this).extension<AckbarColorsExtension>() ?? AckbarColorsExtension.dark;
+      Theme.of(this).extension<AckbarColorsExtension>() ??
+      AckbarColorsExtension.dark;
 }

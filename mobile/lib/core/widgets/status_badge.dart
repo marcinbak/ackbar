@@ -83,7 +83,8 @@ class _WorkingSpinner extends StatefulWidget {
   State<_WorkingSpinner> createState() => _WorkingSpinnerState();
 }
 
-class _WorkingSpinnerState extends State<_WorkingSpinner> with SingleTickerProviderStateMixin {
+class _WorkingSpinnerState extends State<_WorkingSpinner>
+    with SingleTickerProviderStateMixin {
   late final AnimationController _controller;
 
   @override
@@ -136,13 +137,15 @@ class StatusBadge extends StatelessWidget {
   });
 
   // Named convenience constructors
-  const StatusBadge.working({super.key, this.customLabel, this.isCompact = false})
+  const StatusBadge.working(
+      {super.key, this.customLabel, this.isCompact = false})
       : status = AckbarSessionStatus.working,
         customSymbol = null,
         showDotOnly = false,
         overrideColor = null;
 
-  const StatusBadge.blocked({super.key, this.customLabel, this.isCompact = false})
+  const StatusBadge.blocked(
+      {super.key, this.customLabel, this.isCompact = false})
       : status = AckbarSessionStatus.blocked,
         customSymbol = null,
         showDotOnly = false,
@@ -160,25 +163,29 @@ class StatusBadge extends StatelessWidget {
         showDotOnly = false,
         overrideColor = null;
 
-  const StatusBadge.failed({super.key, this.customLabel, this.isCompact = false})
+  const StatusBadge.failed(
+      {super.key, this.customLabel, this.isCompact = false})
       : status = AckbarSessionStatus.failed,
         customSymbol = null,
         showDotOnly = false,
         overrideColor = null;
 
-  const StatusBadge.unknown({super.key, this.customLabel, this.isCompact = false})
+  const StatusBadge.unknown(
+      {super.key, this.customLabel, this.isCompact = false})
       : status = AckbarSessionStatus.unknown,
         customSymbol = null,
         showDotOnly = false,
         overrideColor = null;
 
-  const StatusBadge.offline({super.key, this.customLabel, this.isCompact = false})
+  const StatusBadge.offline(
+      {super.key, this.customLabel, this.isCompact = false})
       : status = AckbarSessionStatus.offline,
         customSymbol = null,
         showDotOnly = false,
         overrideColor = null;
 
-  const StatusBadge.active({super.key, this.customLabel, this.isCompact = false})
+  const StatusBadge.active(
+      {super.key, this.customLabel, this.isCompact = false})
       : status = AckbarSessionStatus.active,
         customSymbol = null,
         showDotOnly = false,
