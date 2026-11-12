@@ -66,6 +66,10 @@ jobs:
         working-directory: mobile
         run: flutter pub get
 
+      - name: Verify Dart Formatting
+        working-directory: mobile
+        run: dart format --output=none --set-exit-if-changed .
+
       - name: Run Flutter Analyzer
         working-directory: mobile
         run: flutter analyze --no-fatal-infos
