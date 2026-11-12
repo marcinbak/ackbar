@@ -133,7 +133,7 @@ export async function interceptChatInput(tabObj, rawText) {
     const args = text.slice(parts[0].length).trim();
 
     const recognizedCommands = new Set([
-      'clear', 'reset', 'compact', 'handover', 'model', 'effort',
+      'clear', 'reset', 'restart', 'compact', 'handover', 'model', 'effort',
       'permissions', 'auto', 'add-dir', 'mcp', 'plugins', 'agents',
       'doctor', 'context', 'cost', 'diff', 'rewind'
     ]);
@@ -159,6 +159,34 @@ export async function interceptChatInput(tabObj, rawText) {
           }
         } catch (err) {
           renderConfigNoticeCard(tabObj, 'Clear Failed', err.message);
+        }
+        return true;
+
+      case 'restart':
+        try {
+          const data = await fetchSessionJSON(`${baseUrl}/v1/sessions/control?id=${encodeURIComponent(sessionId)}&action=restart`, {
+            method: 'POST'
+          });
+          if (data && data.session) {
+            if (tabObj.session && tabObj.session.hostUrl && !data.session.hostUrl) {
+              data.session.hostUrl = tabObj.session.hostUrl;
+            }
+            tabObj.session = Object.assign(tabObj.session || {}, data.session);
+            if (Array.isArray(state.sessions)) {
+              const idx = state.sessions.findIndex(s => s.id === sessionId);
+              if (idx !== -1) {
+                state.sessions[idx] = Object.assign(state.sessions[idx], data.session);
+              }
+            }
+            try { renderTree(); } catch (_) {}
+          }
+          renderConfigNoticeCard(
+            tabObj,
+            'Session Restarted',
+            'CLI session restarted in-place; MCP connectors and configuration reloaded.'
+          );
+        } catch (err) {
+          renderConfigNoticeCard(tabObj, 'Restart Failed', err.message);
         }
         return true;
 

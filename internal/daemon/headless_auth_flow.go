@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"ackbar/internal/tmux"
 )
 
 var (
@@ -275,11 +277,14 @@ func (b *AuthBroker) watchAuthFlow(flow *AuthFlow) {
 	if s.db != nil {
 		sess, _ = s.db.GetSession(flow.SessionID)
 	}
+	isPureHeadless := sess != nil && sess.EngineType == EngineHeadless && sess.TmuxName == ""
 	if s.headless != nil && sess != nil {
-		if s.headless.IsRunning(flow.SessionID) {
-			s.headless.NotifyConfigChanged(sess)
-		} else {
-			s.headless.ShutdownSessionWorker(flow.SessionID, sess.NativeID, 2*time.Second)
+		if isPureHeadless {
+			if s.headless.IsRunning(flow.SessionID) {
+				s.headless.ScheduleChildRestartAfterTurn(flow.SessionID)
+			} else {
+				s.headless.RestartSessionChild(sess, 3*time.Second)
+			}
 		}
 		s.headless.Emit(flow.SessionID, ChatStreamEvent{
 			SessionID: flow.SessionID,
@@ -302,12 +307,26 @@ func (b *AuthBroker) watchAuthFlow(flow *AuthFlow) {
 			s.headless.SetQueuePaused(flow.SessionID, false)
 			s.headless.EmitQueueUpdate(flow.SessionID)
 		}
+		if !isPureHeadless && sess.TmuxName != "" && sess.Cwd != "" {
+			home := s.effectiveHomeDir()
+			if launchCmd, _ := s.getRestartOrResumeCmd(sess, home); launchCmd != "" {
+				envVars := s.buildTmuxSessionEnv(sess, home)
+				s.recentTmuxRestarts.Store(sess.ID, time.Now())
+				if err := tmux.RespawnWithEnv(context.Background(), sess.TmuxName, sess.Cwd, launchCmd, envVars); err == nil {
+					sess.State = StateWorking
+					sess.Activity = "Restarted after authentication"
+					if pid, perr := tmux.GetPID(context.Background(), sess.TmuxName); perr == nil {
+						sess.PID = pid
+					}
+				}
+			}
+		}
 		if s.db != nil {
 			_ = s.db.SaveSession(sess)
 		}
 		s.broadcast(sess)
 
-		if s.headless != nil {
+		if isPureHeadless && s.headless != nil {
 			sessCopy := *sess
 			go func() {
 				home, _ := os.UserHomeDir()

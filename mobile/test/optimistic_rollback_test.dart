@@ -1,4 +1,5 @@
 import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -48,127 +49,143 @@ HostRecord _createLocalHost() {
 
 void main() {
   group('Optimistic Mutation Rollback Tests', () {
-    test('respondToSession succeeds and records decision audit entry',
-        () async {
-      final mockClient = MockClient((req) async {
-        if (req.url.path == '/v1/sessions/respond') {
-          return http.Response('{"ok":true}', 200);
-        }
-        return http.Response('Not found', 404);
-      });
+    test(
+      'respondToSession succeeds and records decision audit entry',
+      () async {
+        final mockClient = MockClient((req) async {
+          if (req.url.path == '/v1/sessions/respond') {
+            return http.Response('{"ok":true}', 200);
+          }
+          return http.Response('Not found', 404);
+        });
 
-      final container = ProviderContainer(
-        overrides: [
-          apiClientProvider.overrideWithValue(ApiClient(client: mockClient)),
-        ],
-      );
-      addTearDown(container.dispose);
+        final container = ProviderContainer(
+          overrides: [
+            apiClientProvider.overrideWithValue(ApiClient(client: mockClient)),
+          ],
+        );
+        addTearDown(container.dispose);
 
-      container.read(hostsListProvider.notifier).setHosts([_createLocalHost()]);
-      final initialSession =
-          _createSession(state: SessionState.idle, blocked: true);
-      container
-          .read(fleetSessionsProvider.notifier)
-          .setSessions([initialSession]);
+        container.read(hostsListProvider.notifier).setHosts([
+          _createLocalHost(),
+        ]);
+        final initialSession = _createSession(
+          state: SessionState.idle,
+          blocked: true,
+        );
+        container.read(fleetSessionsProvider.notifier).setSessions([
+          initialSession,
+        ]);
 
-      final ok = await container
-          .read(fleetSessionsProvider.notifier)
-          .respondToSession(sessionId: initialSession.id, action: 'allow');
+        final ok = await container
+            .read(fleetSessionsProvider.notifier)
+            .respondToSession(sessionId: initialSession.id, action: 'allow');
 
-      expect(ok, isTrue);
+        expect(ok, isTrue);
 
-      final current = container
-          .read(fleetSessionsProvider)
-          .firstWhere((s) => s.id == initialSession.id);
-      expect(current.isBlocked, isFalse);
-      expect(current.state, SessionState.working);
+        final current = container
+            .read(fleetSessionsProvider)
+            .firstWhere((s) => s.id == initialSession.id);
+        expect(current.isBlocked, isFalse);
+        expect(current.state, SessionState.working);
 
-      final audit = container.read(decisionAuditProvider);
-      expect(audit, hasLength(1));
-      expect(audit.first.sessionId, initialSession.id);
-      expect(audit.first.actionType, 'allow');
-    });
+        final audit = container.read(decisionAuditProvider);
+        expect(audit, hasLength(1));
+        expect(audit.first.sessionId, initialSession.id);
+        expect(audit.first.actionType, 'allow');
+      },
+    );
 
-    test('respondToSession rolls back on network failure without audit entry',
-        () async {
-      final mockClient = MockClient((req) async {
-        return http.Response('Internal Error', 500);
-      });
+    test(
+      'respondToSession rolls back on network failure without audit entry',
+      () async {
+        final mockClient = MockClient((req) async {
+          return http.Response('Internal Error', 500);
+        });
 
-      final container = ProviderContainer(
-        overrides: [
-          apiClientProvider.overrideWithValue(ApiClient(client: mockClient)),
-        ],
-      );
-      addTearDown(container.dispose);
+        final container = ProviderContainer(
+          overrides: [
+            apiClientProvider.overrideWithValue(ApiClient(client: mockClient)),
+          ],
+        );
+        addTearDown(container.dispose);
 
-      container.read(hostsListProvider.notifier).setHosts([_createLocalHost()]);
-      final initialSession =
-          _createSession(state: SessionState.idle, blocked: true);
-      container
-          .read(fleetSessionsProvider.notifier)
-          .setSessions([initialSession]);
+        container.read(hostsListProvider.notifier).setHosts([
+          _createLocalHost(),
+        ]);
+        final initialSession = _createSession(
+          state: SessionState.idle,
+          blocked: true,
+        );
+        container.read(fleetSessionsProvider.notifier).setSessions([
+          initialSession,
+        ]);
 
-      final ok = await container
-          .read(fleetSessionsProvider.notifier)
-          .respondToSession(sessionId: initialSession.id, action: 'allow');
+        final ok = await container
+            .read(fleetSessionsProvider.notifier)
+            .respondToSession(sessionId: initialSession.id, action: 'allow');
 
-      expect(ok, isFalse);
+        expect(ok, isFalse);
 
-      final rolledBack = container
-          .read(fleetSessionsProvider)
-          .firstWhere((s) => s.id == initialSession.id);
-      expect(rolledBack.isBlocked, isTrue);
-      expect(rolledBack.state, SessionState.idle);
+        final rolledBack = container
+            .read(fleetSessionsProvider)
+            .firstWhere((s) => s.id == initialSession.id);
+        expect(rolledBack.isBlocked, isTrue);
+        expect(rolledBack.state, SessionState.idle);
 
-      final audit = container.read(decisionAuditProvider);
-      expect(audit, isEmpty);
-    });
+        final audit = container.read(decisionAuditProvider);
+        expect(audit, isEmpty);
+      },
+    );
 
-    test('respondToSession failure preserves newer authoritative SSE instance',
-        () async {
-      final completer = Completer<http.Response>();
-      final mockClient = MockClient((req) async => completer.future);
+    test(
+      'respondToSession failure preserves newer authoritative SSE instance',
+      () async {
+        final completer = Completer<http.Response>();
+        final mockClient = MockClient((req) async => completer.future);
 
-      final container = ProviderContainer(
-        overrides: [
-          apiClientProvider.overrideWithValue(ApiClient(client: mockClient)),
-        ],
-      );
-      addTearDown(container.dispose);
+        final container = ProviderContainer(
+          overrides: [
+            apiClientProvider.overrideWithValue(ApiClient(client: mockClient)),
+          ],
+        );
+        addTearDown(container.dispose);
 
-      container.read(hostsListProvider.notifier).setHosts([_createLocalHost()]);
-      final initial = _createSession(state: SessionState.idle, blocked: true);
-      container.read(fleetSessionsProvider.notifier).setSessions([initial]);
+        container.read(hostsListProvider.notifier).setHosts([
+          _createLocalHost(),
+        ]);
+        final initial = _createSession(state: SessionState.idle, blocked: true);
+        container.read(fleetSessionsProvider.notifier).setSessions([initial]);
 
-      // Start mutation in-flight
-      final future = container
-          .read(fleetSessionsProvider.notifier)
-          .respondToSession(sessionId: initial.id, action: 'allow');
+        // Start mutation in-flight
+        final future = container
+            .read(fleetSessionsProvider.notifier)
+            .respondToSession(sessionId: initial.id, action: 'allow');
 
-      // Newer authoritative SSE arrives mid-request
-      final newerSseSession = initial.copyWith(
-        state: SessionState.working,
-        clearBlocked: true,
-        activity: 'Updated via SSE event',
-        lastEventAt: DateTime.utc(2026, 11, 1, 10, 5, 0),
-      );
-      container
-          .read(fleetSessionsProvider.notifier)
-          .upsertSession(newerSseSession);
+        // Newer authoritative SSE arrives mid-request
+        final newerSseSession = initial.copyWith(
+          state: SessionState.working,
+          clearBlocked: true,
+          activity: 'Updated via SSE event',
+          lastEventAt: DateTime.utc(2026, 11, 1, 10, 5, 0),
+        );
+        container
+            .read(fleetSessionsProvider.notifier)
+            .upsertSession(newerSseSession);
 
-      // Now network request fails
-      completer.complete(http.Response('500 Error', 500));
-      final ok = await future;
-      expect(ok, isFalse);
+        // Now network request fails
+        completer.complete(http.Response('500 Error', 500));
+        final ok = await future;
+        expect(ok, isFalse);
 
-      // Verify newer SSE state was NOT overwritten by rollback
-      final sessionAfter = container
-          .read(fleetSessionsProvider)
-          .firstWhere((s) => s.id == initial.id);
-      expect(sessionAfter.activity, 'Updated via SSE event');
-      expect(sessionAfter.lastEventAt, newerSseSession.lastEventAt);
-    });
+        // Verify newer SSE state was NOT overwritten by rollback
+        final sessionAfter = container
+            .read(fleetSessionsProvider)
+            .firstWhere((s) => s.id == initial.id);
+        expect(sessionAfter.activity, 'Updated via SSE event');
+        expect(sessionAfter.lastEventAt, newerSseSession.lastEventAt);
+      },
+    );
 
     test('terminateSession rolls back state on network failure', () async {
       final mockClient = MockClient((req) async => http.Response('Error', 500));
@@ -216,9 +233,82 @@ void main() {
       expect(sessions.any((s) => s.id == initial.id), isTrue);
     });
 
-    test('archiveSession rolls back archived status on network failure',
+    test(
+      'archiveSession rolls back archived status on network failure',
+      () async {
+        final mockClient = MockClient(
+          (req) async => http.Response('Error', 500),
+        );
+        final container = ProviderContainer(
+          overrides: [
+            apiClientProvider.overrideWithValue(ApiClient(client: mockClient)),
+          ],
+        );
+        addTearDown(container.dispose);
+
+        container.read(hostsListProvider.notifier).setHosts([
+          _createLocalHost(),
+        ]);
+        final initial = _createSession(archived: false);
+        container.read(fleetSessionsProvider.notifier).setSessions([initial]);
+
+        final ok = await container
+            .read(fleetSessionsProvider.notifier)
+            .archiveSession(initial.id);
+        expect(ok, isFalse);
+
+        final current = container
+            .read(fleetSessionsProvider)
+            .firstWhere((s) => s.id == initial.id);
+        expect(current.archived, isFalse);
+      },
+    );
+
+    test(
+      'resumeSession rolls back to ended state on network failure',
+      () async {
+        final mockClient = MockClient(
+          (req) async => http.Response('Error', 500),
+        );
+        final container = ProviderContainer(
+          overrides: [
+            apiClientProvider.overrideWithValue(ApiClient(client: mockClient)),
+          ],
+        );
+        addTearDown(container.dispose);
+
+        container.read(hostsListProvider.notifier).setHosts([
+          _createLocalHost(),
+        ]);
+        final initial = _createSession(state: SessionState.ended);
+        container.read(fleetSessionsProvider.notifier).setSessions([initial]);
+
+        final ok = await container
+            .read(fleetSessionsProvider.notifier)
+            .resumeSession(initial.id);
+        expect(ok, isFalse);
+
+        final current = container
+            .read(fleetSessionsProvider)
+            .firstWhere((s) => s.id == initial.id);
+        expect(current.state, SessionState.ended);
+      },
+    );
+
+    test(
+        'restartSession sets idle for headless, working for tmux, and rolls back on failure',
         () async {
-      final mockClient = MockClient((req) async => http.Response('Error', 500));
+      var shouldFail = false;
+      final mockClient = MockClient((req) async {
+        if (shouldFail) {
+          return http.Response('Error', 500);
+        }
+        if (req.url.path == '/v1/sessions/control' &&
+            req.url.queryParameters['action'] == 'restart') {
+          return http.Response('{"status":"restarted"}', 200);
+        }
+        return http.Response('Not found', 404);
+      });
       final container = ProviderContainer(
         overrides: [
           apiClientProvider.overrideWithValue(ApiClient(client: mockClient)),
@@ -227,43 +317,59 @@ void main() {
       addTearDown(container.dispose);
 
       container.read(hostsListProvider.notifier).setHosts([_createLocalHost()]);
-      final initial = _createSession(archived: false);
-      container.read(fleetSessionsProvider.notifier).setSessions([initial]);
+      final headlessBlocked = _createSession(
+        id: 'claude-code:local:hl-1',
+        state: SessionState.blocked,
+        blocked: true,
+      ).copyWith(engineType: 'headless', tmuxName: '');
+      final tmuxBlocked = _createSession(
+        id: 'claude-code:local:tm-1',
+        state: SessionState.blocked,
+        blocked: true,
+      ).copyWith(engineType: 'tmux', tmuxName: 'ackbar-claude-code-tm-1');
 
-      final ok = await container
+      container.read(fleetSessionsProvider.notifier).setSessions([
+        headlessBlocked,
+        tmuxBlocked,
+      ]);
+
+      final okHeadless = await container
           .read(fleetSessionsProvider.notifier)
-          .archiveSession(initial.id);
-      expect(ok, isFalse);
-
-      final current = container
+          .restartSession(headlessBlocked.id);
+      expect(okHeadless, isTrue);
+      final afterHeadless = container
           .read(fleetSessionsProvider)
-          .firstWhere((s) => s.id == initial.id);
-      expect(current.archived, isFalse);
-    });
+          .firstWhere((s) => s.id == headlessBlocked.id);
+      expect(afterHeadless.state, SessionState.idle);
+      expect(afterHeadless.isBlocked, isFalse);
 
-    test('resumeSession rolls back to ended state on network failure',
-        () async {
-      final mockClient = MockClient((req) async => http.Response('Error', 500));
-      final container = ProviderContainer(
-        overrides: [
-          apiClientProvider.overrideWithValue(ApiClient(client: mockClient)),
-        ],
-      );
-      addTearDown(container.dispose);
-
-      container.read(hostsListProvider.notifier).setHosts([_createLocalHost()]);
-      final initial = _createSession(state: SessionState.ended);
-      container.read(fleetSessionsProvider.notifier).setSessions([initial]);
-
-      final ok = await container
+      final okTmux = await container
           .read(fleetSessionsProvider.notifier)
-          .resumeSession(initial.id);
-      expect(ok, isFalse);
-
-      final current = container
+          .restartSession(tmuxBlocked.id);
+      expect(okTmux, isTrue);
+      final afterTmux = container
           .read(fleetSessionsProvider)
-          .firstWhere((s) => s.id == initial.id);
-      expect(current.state, SessionState.ended);
+          .firstWhere((s) => s.id == tmuxBlocked.id);
+      expect(afterTmux.state, SessionState.working);
+      expect(afterTmux.isBlocked, isFalse);
+
+      shouldFail = true;
+      final failSess = _createSession(
+        id: 'claude-code:local:fail-1',
+        state: SessionState.blocked,
+        blocked: true,
+      ).copyWith(engineType: 'headless', tmuxName: '');
+      container.read(fleetSessionsProvider.notifier).upsertSession(failSess);
+
+      final okFail = await container
+          .read(fleetSessionsProvider.notifier)
+          .restartSession(failSess.id);
+      expect(okFail, isFalse);
+      final rolledBack = container
+          .read(fleetSessionsProvider)
+          .firstWhere((s) => s.id == failSess.id);
+      expect(rolledBack.state, SessionState.blocked);
+      expect(rolledBack.isBlocked, isTrue);
     });
   });
 }

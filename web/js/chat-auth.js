@@ -271,7 +271,10 @@ export async function mountMCPStatus(container, sessionId, tabObj) {
   container.innerHTML = `
     <div class="mcp-status-header">
       <span class="mcp-status-title">🔌 MCP & Plugins</span>
-      <button type="button" class="btn-refresh-mcp-status" title="Refresh">↻</button>
+      <div class="mcp-status-header-actions" style="display:inline-flex;align-items:center;gap:4px;">
+        <button type="button" class="btn btn-xs btn-restart-mcp-session" title="Restart CLI session to reload MCP connectors">↻ Restart CLI</button>
+        <button type="button" class="btn-refresh-mcp-status" title="Refresh">↻</button>
+      </div>
     </div>
     <div class="mcp-status-body">
       <div class="mcp-status-loading">Loading status...</div>
@@ -280,6 +283,7 @@ export async function mountMCPStatus(container, sessionId, tabObj) {
 
   const bodyEl = container.querySelector('.mcp-status-body');
   const btnRefresh = container.querySelector('.btn-refresh-mcp-status');
+  const btnRestart = container.querySelector('.btn-restart-mcp-session');
 
   const loadStatus = async (bypassCache = false) => {
     try {
@@ -301,6 +305,40 @@ export async function mountMCPStatus(container, sessionId, tabObj) {
 
   if (btnRefresh) {
     btnRefresh.addEventListener('click', () => loadStatus(true));
+  }
+  if (btnRestart) {
+    btnRestart.addEventListener('click', async () => {
+      btnRestart.disabled = true;
+      const origText = btnRestart.textContent;
+      btnRestart.textContent = 'Restarting...';
+      try {
+        const baseUrl = getSessionBaseUrl(sessionId, tabObj?.session);
+        const token = getAuthToken ? getAuthToken() : '';
+        const headers = {};
+        if (token) headers['Authorization'] = `Bearer ${token}`;
+        const res = await fetch(`${baseUrl}/v1/sessions/control?id=${encodeURIComponent(sessionId)}&action=restart`, {
+          method: 'POST',
+          headers
+        });
+        if (!res.ok) throw new Error(await res.text());
+        const data = await res.json().catch(() => null);
+        if (data?.session && tabObj?.session) {
+          Object.assign(tabObj.session, data.session);
+        }
+        btnRestart.textContent = '✓ Restarted';
+        await loadStatus(true);
+        setTimeout(() => {
+          btnRestart.textContent = origText;
+          btnRestart.disabled = false;
+        }, 1500);
+      } catch {
+        btnRestart.textContent = 'Failed';
+        setTimeout(() => {
+          btnRestart.textContent = origText;
+          btnRestart.disabled = false;
+        }, 1500);
+      }
+    });
   }
   return loadStatus(false);
 }

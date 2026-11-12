@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"ackbar/internal/router"
@@ -573,9 +574,6 @@ func (s *Server) handleSessionControl(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "deleted", "id": sess.ID})
 
 	case "restart":
-		if s.headless != nil {
-			s.headless.ShutdownSessionWorker(sess.ID, sess.NativeID, 3*time.Second)
-		}
 		if sess.Cwd == "" && sess.NodePath != "" {
 			if node, err := s.db.GetNode(sess.NodePath); err == nil && node != nil && node.ProjectDir != "" {
 				sess.Cwd = node.ProjectDir
@@ -585,43 +583,99 @@ func (s *Server) handleSessionControl(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Session working directory is empty", http.StatusBadRequest)
 			return
 		}
-
-		// Kill existing process/tmux if running
-		if sess.Managed && sess.TmuxName != "" {
-			_ = tmux.Kill(r.Context(), sess.TmuxName)
+		if s.authBroker != nil {
+			s.authBroker.CancelSession(sess.ID)
 		}
-		if !sess.Managed && sess.PID > 0 {
-			_ = exec.Command("kill", "-9", strconv.Itoa(sess.PID)).Run()
+		s.invalidateMCPStatusCache(sess.ID)
+		s.blockedBySubagent.Delete(sess.ID)
+
+		if sess.EngineType == EngineHeadless && sess.TmuxName == "" {
+			restartedInPlace := false
+			if s.headless != nil {
+				restartedInPlace = s.headless.RestartSessionChild(sess, 3*time.Second)
+				if !restartedInPlace {
+					if s.headless.IsRunning(sess.ID) {
+						s.headless.CancelTurn(sess.ID)
+					}
+					s.headless.ClearInteractiveBlockAndWait(sess.ID, 2*time.Second)
+				}
+			}
+			s.clearSubagents(sess.ID, sess.NativeID)
+
+			now := time.Now()
+			sess.IsDone = false
+			sess.Blocked = nil
+			sess.IsUnread = false
+			sess.TmuxName = ""
+			sess.PID = 0
+			sess.RunningSubagents = 0
+			sess.State = StateIdle
+			if restartedInPlace {
+				sess.Activity = "Session restarted (MCP reloaded)"
+			} else {
+				sess.Activity = "Session restarted"
+			}
+			sess.LastStateChangeAt = now
+			sess.LastEventAt = now
+
+			if err := s.db.SaveSession(sess); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			s.SyncSessionTaskWorker(sess)
+			s.broadcast(sess)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"status":             "restarted",
+				"id":                 sess.ID,
+				"engine_type":        EngineHeadless,
+				"restarted_in_place": restartedInPlace,
+				"session":            sess,
+			})
+			return
 		}
 
-		// Generate new tmux name if it didn't have one
+		if s.headless != nil {
+			s.headless.ShutdownSessionWorker(sess.ID, sess.NativeID, 3*time.Second)
+		}
+		if !sess.Managed && sess.PID > 1 {
+			terminateExternalPID(sess.PID, 300*time.Millisecond)
+		}
+
+		home := s.effectiveHomeDir()
+		launchCmd, isExisting := s.getRestartOrResumeCmd(sess, home)
+		if launchCmd == "" {
+			http.Error(w, "Cannot restart session: missing or invalid session ID", http.StatusBadRequest)
+			return
+		}
+
 		tmuxName := sess.TmuxName
 		if tmuxName == "" {
 			tmuxName = fmt.Sprintf("ackbar-%s-%s", sess.Agent, sess.NativeID)
 		}
-		_ = tmux.Kill(r.Context(), tmuxName)
-
-		// Spawn new tmux session
-		resumeCmd := s.getResumeCmd(sess.Agent, sess.NativeID)
-		if resumeCmd == "" {
-			http.Error(w, "Cannot restart session: missing or invalid session ID", http.StatusBadRequest)
-			return
-		}
-		err := tmux.Spawn(r.Context(), tmuxName, sess.Cwd, resumeCmd)
-		if err != nil {
-			http.Error(w, fmt.Sprintf("Failed to spawn tmux: %v", err), http.StatusInternalServerError)
+		envVars := s.buildTmuxSessionEnv(sess, home)
+		s.recentTmuxRestarts.Store(sess.ID, time.Now())
+		if err := tmux.RespawnWithEnv(r.Context(), tmuxName, sess.Cwd, launchCmd, envVars); err != nil {
+			s.recentTmuxRestarts.Delete(sess.ID)
+			http.Error(w, fmt.Sprintf("Failed to restart tmux session: %v", err), http.StatusInternalServerError)
 			return
 		}
 
-		// Update state to working/restarting
+		wasUnadoptedSpawning := !isExisting && sess.Managed && sess.State == StateUnknown && sess.OldID == ""
 		sess.IsDone = false
+		sess.Blocked = nil
+		sess.IsUnread = false
 		sess.Managed = true
+		sess.EngineType = EngineTmux
 		sess.TmuxName = tmuxName
-		sess.State = StateWorking
+		if wasUnadoptedSpawning {
+			sess.State = StateUnknown
+		} else {
+			sess.State = StateWorking
+		}
 		sess.Activity = "Restarting session..."
 		sess.LastEventAt = time.Now()
 
-		// Get and update PID
 		if pid, err := tmux.GetPID(r.Context(), tmuxName); err == nil {
 			sess.PID = pid
 		}
@@ -630,15 +684,18 @@ func (s *Server) handleSessionControl(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-
+		s.SyncSessionTaskWorker(sess)
 		s.broadcast(sess)
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"status":"restarted"}`))
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"status":      "restarted",
+			"id":          sess.ID,
+			"tmux_name":   tmuxName,
+			"engine_type": EngineTmux,
+			"session":     sess,
+		})
 
 	case "resume":
-		if s.headless != nil {
-			s.headless.ShutdownSessionWorker(sess.ID, sess.NativeID, 3*time.Second)
-		}
 		if sess.Cwd == "" && sess.NodePath != "" {
 			if node, err := s.db.GetNode(sess.NodePath); err == nil && node != nil && node.ProjectDir != "" {
 				sess.Cwd = node.ProjectDir
@@ -648,9 +705,50 @@ func (s *Server) handleSessionControl(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Session working directory is empty", http.StatusBadRequest)
 			return
 		}
+		if s.authBroker != nil {
+			s.authBroker.CancelSession(sess.ID)
+		}
+		s.invalidateMCPStatusCache(sess.ID)
+		s.blockedBySubagent.Delete(sess.ID)
 
-		resumeCmd := s.getResumeCmd(sess.Agent, sess.NativeID)
-		if resumeCmd == "" {
+		if sess.EngineType == EngineHeadless && sess.TmuxName == "" {
+			if s.headless != nil {
+				s.headless.RestartSessionChild(sess, 3*time.Second)
+			}
+			now := time.Now()
+			sess.IsDone = false
+			sess.Blocked = nil
+			sess.IsUnread = false
+			sess.TmuxName = ""
+			sess.PID = 0
+			sess.State = StateIdle
+			sess.Activity = "Resumed session"
+			sess.LastStateChangeAt = now
+			sess.LastEventAt = now
+
+			if err := s.db.SaveSession(sess); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			s.SyncSessionTaskWorker(sess)
+			s.broadcast(sess)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"status":      "resumed",
+				"id":          sess.ID,
+				"engine_type": EngineHeadless,
+				"session":     sess,
+			})
+			return
+		}
+
+		if s.headless != nil {
+			s.headless.ShutdownSessionWorker(sess.ID, sess.NativeID, 3*time.Second)
+		}
+
+		home := s.effectiveHomeDir()
+		launchCmd, _ := s.getRestartOrResumeCmd(sess, home)
+		if launchCmd == "" {
 			http.Error(w, "Cannot resume session: missing or invalid session ID", http.StatusBadRequest)
 			return
 		}
@@ -659,16 +757,18 @@ func (s *Server) handleSessionControl(w http.ResponseWriter, r *http.Request) {
 		if tmuxName == "" {
 			tmuxName = fmt.Sprintf("ackbar-%s-%s", sess.Agent, sess.NativeID)
 		}
-		_ = tmux.Kill(r.Context(), tmuxName)
-
-		err := tmux.Spawn(r.Context(), tmuxName, sess.Cwd, resumeCmd)
-		if err != nil {
+		envVars := s.buildTmuxSessionEnv(sess, home)
+		s.recentTmuxRestarts.Store(sess.ID, time.Now())
+		if err := tmux.RespawnWithEnv(r.Context(), tmuxName, sess.Cwd, launchCmd, envVars); err != nil {
+			s.recentTmuxRestarts.Delete(sess.ID)
 			http.Error(w, fmt.Sprintf("Failed to spawn tmux session: %v", err), http.StatusInternalServerError)
 			return
 		}
 
 		sess.IsDone = false
+		sess.Blocked = nil
 		sess.Managed = true
+		sess.EngineType = EngineTmux
 		sess.TmuxName = tmuxName
 		sess.State = StateWorking
 		sess.Activity = "Resumed session"
@@ -682,14 +782,15 @@ func (s *Server) handleSessionControl(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-
+		s.SyncSessionTaskWorker(sess)
 		s.broadcast(sess)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"status":    "resumed",
-			"id":        sess.ID,
-			"tmux_name": tmuxName,
-			"session":   sess,
+			"status":      "resumed",
+			"id":          sess.ID,
+			"tmux_name":   tmuxName,
+			"engine_type": EngineTmux,
+			"session":     sess,
 		})
 
 	case "move":
@@ -1314,16 +1415,12 @@ func (s *Server) handleTakeWheel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tmuxName := fmt.Sprintf("ackbar-%s-%s", sess.Agent, sess.NativeID)
-	var resumeCmd string
-	if p, ok := s.providers[sess.Agent]; ok {
-		resumeCmd = p.GetResumeCommand(sess.NativeID)
-	}
+	home := s.effectiveHomeDir()
+	resumeCmd, _ := s.getRestartOrResumeCmd(sess, home)
 	if resumeCmd == "" {
 		resumeCmd = fmt.Sprintf("claude --resume %s", sess.NativeID)
 	}
-
-	home, _ := os.UserHomeDir()
-	_, envVars := s.resolveAccountEnv(sess.Agent, sess.AccountID, home, false)
+	envVars := s.buildTmuxSessionEnv(sess, home)
 
 	// If tmux session already exists, check whether an active agent child process is running in the pane
 	if tmux.HasSession(r.Context(), tmuxName) {
@@ -1351,18 +1448,9 @@ func (s *Server) handleTakeWheel(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-		// Stale / zombie tmux session with no active agent child processes (e.g. dead bash shell).
-		// Kill dead session so a fresh one can be spawned with resumeCmd.
-		_ = tmux.Kill(r.Context(), tmuxName)
 	}
 
-	var spawnErr error
-	if len(envVars) > 0 {
-		spawnErr = tmux.SpawnWithEnv(r.Context(), tmuxName, sess.Cwd, resumeCmd, envVars)
-	} else {
-		spawnErr = tmux.Spawn(r.Context(), tmuxName, sess.Cwd, resumeCmd)
-	}
-	if spawnErr != nil {
+	if spawnErr := tmux.RespawnWithEnv(r.Context(), tmuxName, sess.Cwd, resumeCmd, envVars); spawnErr != nil {
 		http.Error(w, fmt.Sprintf("Failed to spawn tmux session: %v", spawnErr), http.StatusInternalServerError)
 		return
 	}
@@ -2240,5 +2328,80 @@ func (s *Server) activateTaskForSpawnedWorker(taskID, sessionID, agent, host, re
 			Tasks:       []Task{*task},
 			Workstreams: task.Workstreams,
 		})
+	}
+}
+
+func (s *Server) buildTmuxSessionEnv(sess *Session, home string) map[string]string {
+	if sess == nil {
+		return nil
+	}
+	if home == "" {
+		home = s.effectiveHomeDir()
+	}
+	_, envVars := s.resolveAccountEnv(sess.Agent, sess.AccountID, home, false)
+	if envVars == nil {
+		envVars = make(map[string]string)
+	}
+	if sess.ID != "" {
+		envVars["ACKBAR_SESSION_ID"] = sess.ID
+	}
+	if sess.IsSupervisor {
+		envVars["ACKBAR_IS_SUPERVISOR"] = "1"
+	}
+	taskKind := "code"
+	if sess.CurrentTaskID != "" {
+		envVars["ACKBAR_TASK_ID"] = sess.CurrentTaskID
+		if s.db != nil {
+			if t, _ := s.db.GetTaskByID(sess.CurrentTaskID); t != nil && t.TaskKind != "" {
+				cand := strings.ToLower(strings.TrimSpace(t.TaskKind))
+				if cand == "design" || cand == "code" {
+					taskKind = cand
+				}
+			}
+		}
+	}
+	envVars["ACKBAR_TASK_KIND"] = taskKind
+	return envVars
+}
+
+func (s *Server) getRestartOrResumeCmd(sess *Session, home string) (string, bool) {
+	if sess == nil || sess.Agent == "" {
+		return "", false
+	}
+	if home == "" {
+		home = s.effectiveHomeDir()
+	}
+	hasDisk := hasConversationOnDisk(sess, home, s.db)
+	var isExisting bool
+	if sess.Agent == "claude-code" {
+		isExisting = hasDisk
+	} else {
+		isExisting = hasDisk || sess.FirstPrompt != "" || sess.LastPrompt != "" || sess.OldID != "" || !sess.Managed
+	}
+	if isExisting {
+		if cmd := s.getResumeCmd(sess.Agent, sess.NativeID); cmd != "" {
+			return cmd, true
+		}
+	}
+	if cmd := s.getSpawnCmd(sess.Agent, sess.NativeID); cmd != "" {
+		return cmd, false
+	}
+	return s.getResumeCmd(sess.Agent, sess.NativeID), isExisting
+}
+
+func terminateExternalPID(pid int, grace time.Duration) {
+	if pid <= 1 {
+		return
+	}
+	_ = syscall.Kill(pid, syscall.SIGTERM)
+	deadline := time.Now().Add(grace)
+	for time.Now().Before(deadline) {
+		if !isProcessAlive(pid) {
+			return
+		}
+		time.Sleep(15 * time.Millisecond)
+	}
+	if isProcessAlive(pid) {
+		_ = syscall.Kill(pid, syscall.SIGKILL)
 	}
 }

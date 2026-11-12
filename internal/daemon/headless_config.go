@@ -62,6 +62,44 @@ func ConfigFingerprint(sess *Session) string {
 	return hex.EncodeToString(sum[:16])
 }
 
+func MCPFingerprint(sess *Session, db *DB, home string) string {
+	if sess == nil {
+		return ""
+	}
+	var candidates []string
+	if sess.Cwd != "" {
+		candidates = append(candidates, filepath.Join(sess.Cwd, ".mcp.json"))
+	}
+	if accDir := resolveSessionAccountConfigDir(sess, home, db); accDir != "" {
+		candidates = append(candidates,
+			filepath.Join(accDir, ".claude.json"),
+			filepath.Join(accDir, ".credentials.json"),
+			filepath.Join(accDir, "mcp_config.json"),
+			filepath.Join(accDir, "mcp-needs-auth-cache.json"),
+		)
+	}
+	if home != "" {
+		candidates = append(candidates,
+			filepath.Join(home, ".claude.json"),
+			filepath.Join(home, ".claude", ".credentials.json"),
+			filepath.Join(home, ".claude", "mcp_config.json"),
+			filepath.Join(home, ".claude", "mcp-needs-auth-cache.json"),
+			filepath.Join(home, ".gemini", "antigravity-cli", "mcp_config.json"),
+			filepath.Join(home, ".gemini", "antigravity", "mcp_config.json"),
+			filepath.Join(home, ".gemini", "config", "mcp_config.json"),
+			filepath.Join(home, ".codex", "config.json"),
+		)
+	}
+	h := sha256.New()
+	for _, p := range candidates {
+		if st, err := os.Stat(p); err == nil && !st.IsDir() {
+			_, _ = fmt.Fprintf(h, "%s:%d:%d\n", p, st.Size(), st.ModTime().UnixNano())
+		}
+	}
+	sum := h.Sum(nil)
+	return hex.EncodeToString(sum[:16])
+}
+
 func ResolveHeadlessIdleTTL(override time.Duration) time.Duration {
 	if override > 0 {
 		return override

@@ -1110,22 +1110,47 @@ func hasAntigravityConversation(home, nativeID string) bool {
 	return false
 }
 
+func resolveSessionAccountConfigDir(sess *Session, home string, db *DB) string {
+	if sess == nil || sess.AccountID == "" || db == nil {
+		return ""
+	}
+	acc, _ := db.GetAccount(sess.AccountID)
+	if acc == nil || acc.ConfigDir == "" {
+		return ""
+	}
+	cfgDir := acc.ConfigDir
+	if strings.HasPrefix(cfgDir, "~/") && home != "" {
+		cfgDir = filepath.Join(home, cfgDir[2:])
+	}
+	return cfgDir
+}
+
 func hasConversationOnDisk(sess *Session, home string, db *DB) bool {
 	if sess == nil || sess.NativeID == "" {
 		return false
 	}
-	if sess.Agent == "antigravity" {
+	accCfgDir := resolveSessionAccountConfigDir(sess, home, db)
+	switch sess.Agent {
+	case "antigravity":
+		if accCfgDir != "" {
+			if hasAntigravityConversation(accCfgDir, sess.NativeID) ||
+				hasAntigravityConversation(filepath.Dir(accCfgDir), sess.NativeID) {
+				return true
+			}
+		}
 		return hasAntigravityConversation(home, sess.NativeID)
+	case "codex":
+		if accCfgDir != "" {
+			if (CodexAgentAdapter{}).HasConversationArtifacts(accCfgDir, sess.NativeID) ||
+				(CodexAgentAdapter{}).HasConversationArtifacts(filepath.Dir(accCfgDir), sess.NativeID) {
+				return true
+			}
+		}
+		return (CodexAgentAdapter{}).HasConversationArtifacts(home, sess.NativeID)
 	}
 	claudeDir := filepath.Join(home, ".claude")
-	if sess.AccountID != "" && db != nil {
-		if acc, _ := db.GetAccount(sess.AccountID); acc != nil && acc.ConfigDir != "" {
-			cfgDir := acc.ConfigDir
-			if strings.HasPrefix(cfgDir, "~/") && home != "" {
-				cfgDir = filepath.Join(home, cfgDir[2:])
-			}
-			claudeDir = cfgDir
-		}
+	if accCfgDir != "" {
+		claudeDir = accCfgDir
 	}
 	encodedCwd := encodeClaudeProjectDir(sess.Cwd)
 	transcriptFile := filepath.Join(claudeDir, "projects", encodedCwd, sess.NativeID+".jsonl")

@@ -359,7 +359,8 @@ func (h *HeadlessRunner) ReattachLiveWorkers() {
 			h.warmWorkers[sess.ID] = &warmWorkerHandle{
 				WorkerID: wm.WorkerID, SessionID: sess.ID, NativeID: sess.NativeID,
 				SocketPath: wm.SocketPath, WorkerMetaPath: wm.WorkerMetaPath,
-				ConfigFingerprint: wm.ConfigFingerprint, Bin: wm.Bin, Args: wm.Args,
+				ConfigFingerprint: wm.ConfigFingerprint, MCPFingerprint: wm.MCPFingerprint,
+				Bin: wm.Bin, Args: wm.Args,
 				WorkerPID: resp.WorkerPID, ChildPID: resp.ChildPID,
 			}
 			h.mu.Unlock()

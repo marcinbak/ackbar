@@ -215,6 +215,19 @@ func (a CodexAgentAdapter) FilterUserEntry(raw map[string]interface{}, content s
 	return filterCLIUserEntry(content)
 }
 
+func (a CodexAgentAdapter) HasConversationArtifacts(home, nativeID string) bool {
+	if home == "" || nativeID == "" || strings.ContainsAny(nativeID, "*?[/\\") {
+		return false
+	}
+	if matches, _ := filepath.Glob(filepath.Join(home, ".codex", "sessions", "*", "*", "*", "*"+nativeID+"*.jsonl")); len(matches) > 0 {
+		return true
+	}
+	if matches, _ := filepath.Glob(filepath.Join(home, ".codex", "archived_sessions", "*"+nativeID+"*.jsonl")); len(matches) > 0 {
+		return true
+	}
+	return false
+}
+
 // GrokAgentAdapter implements AgentAdapter for xAI Grok.
 type GrokAgentAdapter struct {
 	defaultAgentAdapter

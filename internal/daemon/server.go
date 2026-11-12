@@ -72,6 +72,7 @@ type Server struct {
 	subagentsMu          sync.RWMutex
 	sessionHookLocks     sync.Map
 	blockedBySubagent    sync.Map
+	recentTmuxRestarts   sync.Map
 	homeDir              string
 	livenessRunning      atomic.Bool
 	lastLivenessAt       atomic.Int64

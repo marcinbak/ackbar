@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+
 import '../../../../core/models/headless_models.dart';
 import '../../../../core/models/host.dart';
 import '../../../../core/models/session.dart';
@@ -34,6 +35,7 @@ class _HeadlessMcpSectionState extends ConsumerState<HeadlessMcpSection>
   String? _activeAuthUrl;
   final _callbackController = TextEditingController();
   bool _isSubmittingCallback = false;
+  bool _isRestarting = false;
 
   @override
   void initState() {
@@ -102,6 +104,24 @@ class _HeadlessMcpSectionState extends ConsumerState<HeadlessMcpSection>
         _isLoading = false;
         _errorMessage = e is ApiHttpException ? e.message : e.toString();
       });
+    }
+  }
+
+  Future<void> _handleRestartSession() async {
+    if (_isRestarting) return;
+    setState(() {
+      _isRestarting = true;
+      _errorMessage = null;
+    });
+    final ok = await ref
+        .read(fleetSessionsProvider.notifier)
+        .restartSession(widget.session.id);
+    if (!mounted) return;
+    setState(() => _isRestarting = false);
+    if (ok) {
+      await _loadStatus(refresh: true);
+    } else {
+      setState(() => _errorMessage = 'Failed to restart session');
     }
   }
 
@@ -200,11 +220,28 @@ class _HeadlessMcpSectionState extends ConsumerState<HeadlessMcpSection>
                 fontWeight: FontWeight.w600,
               ),
             ),
-            IconButton(
-              icon: const Icon(Icons.refresh_rounded, size: 14),
-              color: AppColors.textSecondary,
-              visualDensity: VisualDensity.compact,
-              onPressed: () => _loadStatus(refresh: true),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextButton.icon(
+                  key: const Key('mcp_restart_session_button'),
+                  onPressed: _isRestarting ? null : _handleRestartSession,
+                  icon: const Icon(Icons.restart_alt_rounded, size: 13),
+                  label: Text(_isRestarting ? 'Restarting...' : 'Restart CLI'),
+                  style: TextButton.styleFrom(
+                    foregroundColor: AppColors.infoCyan,
+                    visualDensity: VisualDensity.compact,
+                    padding: const EdgeInsets.symmetric(horizontal: 6),
+                    textStyle: AppTypography.codeXs,
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.refresh_rounded, size: 14),
+                  color: AppColors.textSecondary,
+                  visualDensity: VisualDensity.compact,
+                  onPressed: () => _loadStatus(refresh: true),
+                ),
+              ],
             ),
           ],
         ),
@@ -213,8 +250,9 @@ class _HeadlessMcpSectionState extends ConsumerState<HeadlessMcpSection>
             padding: const EdgeInsets.only(bottom: 6),
             child: Text(
               _errorMessage!,
-              style:
-                  AppTypography.codeXs.copyWith(color: AppColors.statusCoral),
+              style: AppTypography.codeXs.copyWith(
+                color: AppColors.statusCoral,
+              ),
             ),
           ),
         if (servers.isEmpty && plugins.isEmpty)
@@ -229,8 +267,9 @@ class _HeadlessMcpSectionState extends ConsumerState<HeadlessMcpSection>
           const SizedBox(height: 4),
           Text(
             'Servers',
-            style:
-                AppTypography.codeXs.copyWith(color: AppColors.textSecondary),
+            style: AppTypography.codeXs.copyWith(
+              color: AppColors.textSecondary,
+            ),
           ),
           const SizedBox(height: 4),
           ...servers.map((s) => _buildServerRow(s)),
@@ -239,8 +278,9 @@ class _HeadlessMcpSectionState extends ConsumerState<HeadlessMcpSection>
           const SizedBox(height: 8),
           Text(
             'Workspace Plugins',
-            style:
-                AppTypography.codeXs.copyWith(color: AppColors.textSecondary),
+            style: AppTypography.codeXs.copyWith(
+              color: AppColors.textSecondary,
+            ),
           ),
           const SizedBox(height: 4),
           ...plugins.map((p) => _buildPluginRow(p)),
@@ -367,17 +407,21 @@ class _HeadlessMcpSectionState extends ConsumerState<HeadlessMcpSection>
             children: [
               Text(
                 'Paste Callback for $_activeTarget',
-                style: AppTypography.codeXs
-                    .copyWith(color: AppColors.textSecondary),
+                style: AppTypography.codeXs.copyWith(
+                  color: AppColors.textSecondary,
+                ),
               ),
               if (_activeAuthUrl != null && isSafeHttpsUrl(_activeAuthUrl))
                 InkWell(
                   onTap: () => ref
                       .read(externalUrlLauncherProvider)
                       .copyToClipboard(_activeAuthUrl!),
-                  child: Text('Copy Link',
-                      style: AppTypography.codeXs
-                          .copyWith(color: AppColors.infoCyan)),
+                  child: Text(
+                    'Copy Link',
+                    style: AppTypography.codeXs.copyWith(
+                      color: AppColors.infoCyan,
+                    ),
+                  ),
                 ),
             ],
           ),
@@ -387,12 +431,14 @@ class _HeadlessMcpSectionState extends ConsumerState<HeadlessMcpSection>
               Expanded(
                 child: TextField(
                   controller: _callbackController,
-                  style: AppTypography.codeXs
-                      .copyWith(color: AppColors.textPrimary),
+                  style: AppTypography.codeXs.copyWith(
+                    color: AppColors.textPrimary,
+                  ),
                   decoration: InputDecoration(
                     hintText: 'Paste callback URL or code',
-                    hintStyle: AppTypography.codeXs
-                        .copyWith(color: AppColors.textMuted),
+                    hintStyle: AppTypography.codeXs.copyWith(
+                      color: AppColors.textMuted,
+                    ),
                     isDense: true,
                     contentPadding: const EdgeInsets.all(6),
                     filled: true,
@@ -408,8 +454,10 @@ class _HeadlessMcpSectionState extends ConsumerState<HeadlessMcpSection>
                 onPressed: _isSubmittingCallback ? null : _handleSubmitCallback,
                 style: FilledButton.styleFrom(
                   backgroundColor: AppColors.statusEmerald,
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 6,
+                  ),
                   visualDensity: VisualDensity.compact,
                 ),
                 child: const Text('Submit', style: TextStyle(fontSize: 11)),

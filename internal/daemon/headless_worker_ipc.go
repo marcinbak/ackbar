@@ -20,6 +20,7 @@ type SessionWorkerMeta struct {
 	Cwd               string        `json:"cwd,omitempty"`
 	IsSupervisor      bool          `json:"is_supervisor,omitempty"`
 	ConfigFingerprint string        `json:"config_fingerprint"`
+	MCPFingerprint    string        `json:"mcp_fingerprint,omitempty"`
 	Bin               string        `json:"bin"`
 	Args              []string      `json:"args,omitempty"`
 	SocketPath        string        `json:"socket_path"`
@@ -37,13 +38,18 @@ type SessionWorkerMeta struct {
 }
 
 type workerIPCReq struct {
-	Op        string `json:"op"`
-	TurnID    string `json:"turn_id,omitempty"`
-	AfterSeq  int64  `json:"after_seq,omitempty"`
-	MetaPath  string `json:"meta_path,omitempty"`
-	StdinLine string `json:"stdin_line,omitempty"`
-	SessionID string `json:"session_id,omitempty"`
-	NativeID  string `json:"native_id,omitempty"`
+	Op                string   `json:"op"`
+	TurnID            string   `json:"turn_id,omitempty"`
+	AfterSeq          int64    `json:"after_seq,omitempty"`
+	MetaPath          string   `json:"meta_path,omitempty"`
+	StdinLine         string   `json:"stdin_line,omitempty"`
+	SessionID         string   `json:"session_id,omitempty"`
+	NativeID          string   `json:"native_id,omitempty"`
+	Bin               string   `json:"bin,omitempty"`
+	Args              []string `json:"args,omitempty"`
+	Env               []string `json:"env,omitempty"`
+	ConfigFingerprint string   `json:"config_fingerprint,omitempty"`
+	MCPFingerprint    string   `json:"mcp_fingerprint,omitempty"`
 }
 
 type workerIPCResp struct {
@@ -54,6 +60,7 @@ type workerIPCResp struct {
 	TurnID            string `json:"turn_id,omitempty"`
 	State             string `json:"state,omitempty"`
 	ConfigFingerprint string `json:"config_fingerprint,omitempty"`
+	MCPFingerprint    string `json:"mcp_fingerprint,omitempty"`
 }
 
 type boundedTailBuffer struct {
@@ -201,7 +208,7 @@ func streamSpoolToConn(c net.Conn, spool *TurnSpoolWriter, compPath string, afte
 	}
 }
 
-func handleWorkerIPC(c net.Conn, stateMu *sync.Mutex, state *string, workerMeta *SessionWorkerMeta, childPGID int, activeTurn **activeTurnState, completedTurns map[string]string, subWG *sync.WaitGroup, shutdownChildGroup func(time.Duration), exitCleanly func(int), startTurnLocked func(string) error, writeStdinLine func(string)) {
+func handleWorkerIPC(c net.Conn, stateMu *sync.Mutex, state *string, workerMeta *SessionWorkerMeta, getChildPGID func() int, activeTurn **activeTurnState, completedTurns map[string]string, subWG *sync.WaitGroup, shutdownChildGroup func(time.Duration), exitCleanly func(int), startTurnLocked func(string) error, writeStdinLine func(string), restartChild func(workerIPCReq) (int, error)) {
 	defer c.Close()
 	line, err := bufio.NewReader(c).ReadBytes('\n')
 	var req workerIPCReq
@@ -219,18 +226,21 @@ func handleWorkerIPC(c net.Conn, stateMu *sync.Mutex, state *string, workerMeta 
 		if *activeTurn != nil {
 			activeTID = (*activeTurn).turnID
 		}
+		curChildPID := getChildPGID()
+		cfgFP, mcpFP := workerMeta.ConfigFingerprint, workerMeta.MCPFingerprint
 		stateMu.Unlock()
-		reply(workerIPCResp{OK: ok, WorkerPID: os.Getpid(), ChildPID: childPGID, TurnID: activeTID, State: curState, ConfigFingerprint: workerMeta.ConfigFingerprint})
+		reply(workerIPCResp{OK: ok, WorkerPID: os.Getpid(), ChildPID: curChildPID, TurnID: activeTID, State: curState, ConfigFingerprint: cfgFP, MCPFingerprint: mcpFP})
 
 	case "send_turn":
 		stateMu.Lock()
-		if *state == "shutting_down" || *state == "exited" {
-			reply(workerIPCResp{OK: false, ErrCode: *state, WorkerPID: os.Getpid(), ChildPID: childPGID})
+		curChildPID := getChildPGID()
+		if *state == "shutting_down" || *state == "exited" || *state == "restarting_child" {
+			reply(workerIPCResp{OK: false, ErrCode: *state, WorkerPID: os.Getpid(), ChildPID: curChildPID})
 			stateMu.Unlock()
 			return
 		}
 		if *state == "running_turn" || *activeTurn != nil {
-			reply(workerIPCResp{OK: false, ErrCode: "busy", WorkerPID: os.Getpid(), ChildPID: childPGID})
+			reply(workerIPCResp{OK: false, ErrCode: "busy", WorkerPID: os.Getpid(), ChildPID: curChildPID})
 			stateMu.Unlock()
 			return
 		}
@@ -251,7 +261,29 @@ func handleWorkerIPC(c net.Conn, stateMu *sync.Mutex, state *string, workerMeta 
 			return
 		}
 		writeStdinLine(req.StdinLine)
-		reply(workerIPCResp{OK: true, WorkerPID: os.Getpid(), ChildPID: childPGID, TurnID: curTurnID, State: "running_turn"})
+		reply(workerIPCResp{OK: true, WorkerPID: os.Getpid(), ChildPID: curChildPID, TurnID: curTurnID, State: "running_turn"})
+
+	case "restart_child":
+		if restartChild == nil {
+			reply(workerIPCResp{OK: false, ErrCode: "unsupported", WorkerPID: os.Getpid()})
+			return
+		}
+		newPID, rErr := restartChild(req)
+		if rErr != nil {
+			reply(workerIPCResp{OK: false, ErrCode: rErr.Error(), WorkerPID: os.Getpid()})
+			return
+		}
+		stateMu.Lock()
+		cfgFP, mcpFP := workerMeta.ConfigFingerprint, workerMeta.MCPFingerprint
+		stateMu.Unlock()
+		reply(workerIPCResp{
+			OK:                true,
+			WorkerPID:         os.Getpid(),
+			ChildPID:          newPID,
+			State:             "idle_warm",
+			ConfigFingerprint: cfgFP,
+			MCPFingerprint:    mcpFP,
+		})
 
 	case "subscribe":
 		subWG.Add(1)
@@ -269,6 +301,7 @@ func handleWorkerIPC(c net.Conn, stateMu *sync.Mutex, state *string, workerMeta 
 
 	case "cancel", "shutdown":
 		stateMu.Lock()
+		curChildPID := getChildPGID()
 		*state, workerMeta.State = "shutting_down", "shutting_down"
 		if workerMeta.WorkerMetaPath != "" {
 			_ = WriteSessionWorkerMeta(workerMeta.WorkerMetaPath, workerMeta)
@@ -287,12 +320,12 @@ func handleWorkerIPC(c net.Conn, stateMu *sync.Mutex, state *string, workerMeta 
 		}
 		stateMu.Unlock()
 		if isCancel {
-			reply(workerIPCResp{OK: true, WorkerPID: os.Getpid(), ChildPID: childPGID, TurnID: cancelledTID})
+			reply(workerIPCResp{OK: true, WorkerPID: os.Getpid(), ChildPID: curChildPID, TurnID: cancelledTID})
 			go func() { shutdownChildGroup(500 * time.Millisecond); exitCleanly(0) }()
 			return
 		}
 		shutdownChildGroup(500 * time.Millisecond)
-		reply(workerIPCResp{OK: true, WorkerPID: os.Getpid(), ChildPID: childPGID})
+		reply(workerIPCResp{OK: true, WorkerPID: os.Getpid(), ChildPID: curChildPID})
 		exitCleanly(0)
 	}
 }

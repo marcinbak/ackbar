@@ -48,6 +48,53 @@ type activeTurnState struct {
 	hadBlock  bool
 }
 
+type workerChildGen struct {
+	pgid        int
+	stdinPipe   io.WriteCloser
+	stdinMu     sync.Mutex
+	stdinClosed bool
+	done        chan struct{}
+	stderrTail  *boundedTailBuffer
+	replaced    bool
+}
+
+func (g *workerChildGen) writeLine(sLine string) {
+	if g == nil || sLine == "" || g.stdinPipe == nil {
+		return
+	}
+	g.stdinMu.Lock()
+	if !g.stdinClosed {
+		_, _ = g.stdinPipe.Write([]byte(strings.TrimSpace(sLine) + "\n"))
+	}
+	g.stdinMu.Unlock()
+}
+
+func (g *workerChildGen) shutdown(grace time.Duration) {
+	if g == nil {
+		return
+	}
+	g.stdinMu.Lock()
+	if !g.stdinClosed && g.stdinPipe != nil {
+		g.stdinClosed = true
+		_ = g.stdinPipe.Close()
+	}
+	g.stdinMu.Unlock()
+	if g.pgid > 1 {
+		_ = syscall.Kill(-g.pgid, syscall.SIGTERM)
+	}
+	select {
+	case <-g.done:
+	case <-time.After(grace):
+		if g.pgid > 1 {
+			_ = syscall.Kill(-g.pgid, syscall.SIGKILL)
+		}
+		select {
+		case <-g.done:
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+}
+
 func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string) int {
 	var workerMeta *SessionWorkerMeta
 	var initialTMeta *TurnSpoolMeta
@@ -102,78 +149,34 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string) int {
 	_ = os.Chmod(workerMeta.SocketPath, 0600)
 
 	var stateMu sync.Mutex
+	var restartMu sync.Mutex
 	state := "starting"
 	var activeTurn *activeTurnState
+	var curChild *workerChildGen
 	var pendingInitConvID string
 	completedTurns := make(map[string]string)
-	childDone := make(chan struct{})
 	var subWG sync.WaitGroup
 	var idleTimer *time.Timer
 
-	cmd := exec.Command(workerMeta.Bin, workerMeta.Args...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Env = os.Environ()
-	cmd.Dir = workerMeta.Cwd
-	cmd.WaitDelay = 4 * time.Second
-	stderrTailBuf := &boundedTailBuffer{max: 16384}
-	cmd.Stderr = stderrTailBuf
-
-	var stdinPipe io.WriteCloser
-	if workerMetaPath != "" {
-		stdinPipe, _ = cmd.StdinPipe()
-	} else if devNull, dErr := os.Open(os.DevNull); dErr == nil {
-		cmd.Stdin = devNull
-		defer devNull.Close()
-	} else {
-		cmd.Stdin = strings.NewReader("")
+	getChildPGIDLocked := func() int {
+		if curChild != nil {
+			return curChild.pgid
+		}
+		return 0
 	}
 
-	stdoutPipe, outPipeErr := cmd.StdoutPipe()
-	if outPipeErr != nil {
-		_ = ln.Close()
-		cleanupArtifacts()
-		return 2
-	}
-	if err := cmd.Start(); err != nil {
-		_ = ln.Close()
-		cleanupArtifacts()
-		return 2
-	}
-	childPGID := cmd.Process.Pid
-	workerMeta.WorkerPID, workerMeta.ChildPID = os.Getpid(), childPGID
-
-	var (
-		stdinMu     sync.Mutex
-		stdinClosed bool
-	)
 	writeStdinLine := func(sLine string) {
-		if sLine == "" || stdinPipe == nil {
-			return
-		}
-		stdinMu.Lock()
-		if !stdinClosed {
-			_, _ = stdinPipe.Write([]byte(strings.TrimSpace(sLine) + "\n"))
-		}
-		stdinMu.Unlock()
+		stateMu.Lock()
+		g := curChild
+		stateMu.Unlock()
+		g.writeLine(sLine)
 	}
 
 	shutdownChildGroup := func(grace time.Duration) {
-		stdinMu.Lock()
-		if !stdinClosed && stdinPipe != nil {
-			stdinClosed = true
-			_ = stdinPipe.Close()
-		}
-		stdinMu.Unlock()
-		if childPGID > 1 {
-			_ = syscall.Kill(-childPGID, syscall.SIGTERM)
-		}
-		select {
-		case <-childDone:
-		case <-time.After(grace):
-			if childPGID > 1 {
-				_ = syscall.Kill(-childPGID, syscall.SIGKILL)
-			}
-		}
+		stateMu.Lock()
+		g := curChild
+		stateMu.Unlock()
+		g.shutdown(grace)
 	}
 
 	exitCleanly := func(code int) {
@@ -188,24 +191,12 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string) int {
 		os.Exit(code)
 	}
 
-	if suitePIDStr := os.Getenv("ACKBAR_TEST_SUITE_PID"); suitePIDStr != "" {
-		if suitePID, sErr := strconv.Atoi(suitePIDStr); sErr == nil && suitePID > 0 {
-			go func() {
-				ticker := time.NewTicker(500 * time.Millisecond)
-				defer ticker.Stop()
-				for range ticker.C {
-					if !isProcessAlive(suitePID) {
-						shutdownChildGroup(300 * time.Millisecond)
-						exitCleanly(0)
-					}
-				}
-			}()
-		}
-	}
-
-	finalizeTurnMeta := func(turn *activeTurnState, status string, exitCode int, resText string) {
+	finalizeTurnMeta := func(turn *activeTurnState, tail *boundedTailBuffer, status string, exitCode int, resText string) {
+		_ = resText
 		turn.meta.Status, turn.meta.ExitCode = status, exitCode
-		turn.meta.StderrTail = strings.TrimSpace(stderrTailBuf.String())
+		if tail != nil {
+			turn.meta.StderrTail = strings.TrimSpace(tail.String())
+		}
 		turn.meta.FinishedAt = time.Now().UTC()
 		_ = WriteTurnSpoolMeta(turn.metaPath, turn.meta)
 		_ = turn.spool.Close()
@@ -226,63 +217,353 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string) int {
 		exitCleanly(0)
 	}
 
-	onTurnResult := func(lastTurnText, resultText string, streamHadError bool) {
-		stateMu.Lock()
-		turn := activeTurn
-		if turn == nil {
+	spawnChildGen := func(bin string, args []string, env []string) (*workerChildGen, error) {
+		cmd := exec.Command(bin, args...)
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		if len(env) > 0 {
+			cmd.Env = env
+		} else {
+			cmd.Env = os.Environ()
+		}
+		cmd.Dir = workerMeta.Cwd
+		cmd.WaitDelay = 4 * time.Second
+		stderrTailBuf := &boundedTailBuffer{max: 16384}
+		cmd.Stderr = stderrTailBuf
+
+		var stdinPipe io.WriteCloser
+		var devNull *os.File
+		if workerMetaPath != "" {
+			stdinPipe, _ = cmd.StdinPipe()
+		} else if dn, dErr := os.Open(os.DevNull); dErr == nil {
+			devNull = dn
+			cmd.Stdin = dn
+		} else {
+			cmd.Stdin = strings.NewReader("")
+		}
+
+		stdoutPipe, outPipeErr := cmd.StdoutPipe()
+		if outPipeErr != nil {
+			if devNull != nil {
+				_ = devNull.Close()
+			}
+			return nil, outPipeErr
+		}
+		if err := cmd.Start(); err != nil {
+			if devNull != nil {
+				_ = devNull.Close()
+			}
+			return nil, err
+		}
+		if devNull != nil {
+			_ = devNull.Close()
+		}
+
+		gen := &workerChildGen{
+			pgid:       cmd.Process.Pid,
+			stdinPipe:  stdinPipe,
+			done:       make(chan struct{}),
+			stderrTail: stderrTailBuf,
+		}
+
+		onGenTurnResult := func(lastTurnText, resultText string, streamHadError bool) {
+			stateMu.Lock()
+			if curChild != gen || gen.replaced {
+				stateMu.Unlock()
+				return
+			}
+			turn := activeTurn
+			if turn == nil {
+				stateMu.Unlock()
+				return
+			}
+			wasCancelled, hadBlock := turn.cancelled, turn.hadBlock
 			stateMu.Unlock()
-			return
-		}
-		wasCancelled, hadBlock := turn.cancelled, turn.hadBlock
-		stateMu.Unlock()
 
-		status := "completed"
-		if wasCancelled {
-			_, _ = turn.spool.Append(ChatStreamEvent{SessionID: turn.meta.SessionID, TurnID: turn.meta.TurnID, Type: "turn_cancelled", Text: "Turn was cancelled by user."})
-			status = "cancelled"
-		} else if !hadBlock {
-			if streamHadError {
-				if failBlock := detectTurnFailureBlock(workerMeta.Agent, strings.TrimSpace(lastTurnText+"\n"+stderrTailBuf.String())); failBlock != nil {
-					_, _ = turn.spool.Append(ChatStreamEvent{SessionID: turn.meta.SessionID, TurnID: turn.meta.TurnID, Type: "interactive_block", Blocked: failBlock})
-					hadBlock, turn.hadBlock = true, true
-				}
-			}
-			if !hadBlock {
+			status := "completed"
+			if wasCancelled {
+				_, _ = turn.spool.Append(ChatStreamEvent{SessionID: turn.meta.SessionID, TurnID: turn.meta.TurnID, Type: "turn_cancelled", Text: "Turn was cancelled by user."})
+				status = "cancelled"
+			} else if !hadBlock {
 				if streamHadError {
-					status = "failed"
+					if failBlock := detectTurnFailureBlock(workerMeta.Agent, strings.TrimSpace(lastTurnText+"\n"+stderrTailBuf.String())); failBlock != nil {
+						_, _ = turn.spool.Append(ChatStreamEvent{SessionID: turn.meta.SessionID, TurnID: turn.meta.TurnID, Type: "interactive_block", Blocked: failBlock})
+						hadBlock, turn.hadBlock = true, true
+					}
 				}
-				_, _ = turn.spool.Append(ChatStreamEvent{SessionID: turn.meta.SessionID, TurnID: turn.meta.TurnID, Type: "turn_complete", Text: resultText})
+				if !hadBlock {
+					if streamHadError {
+						status = "failed"
+					}
+					_, _ = turn.spool.Append(ChatStreamEvent{SessionID: turn.meta.SessionID, TurnID: turn.meta.TurnID, Type: "turn_complete", Text: resultText})
+				}
 			}
+
+			stateMu.Lock()
+			if curChild != gen || gen.replaced {
+				stateMu.Unlock()
+				return
+			}
+			finalizeTurnMeta(turn, stderrTailBuf, status, 0, resultText)
+			if hadBlock {
+				state, workerMeta.State = "shutting_down", "shutting_down"
+				saveWorkerMeta()
+				stateMu.Unlock()
+				go func() { gen.shutdown(500 * time.Millisecond); exitCleanly(0) }()
+				return
+			}
+			if workerMetaPath == "" || idleTTL <= 0 {
+				stateMu.Unlock()
+				exitCleanly(0)
+				return
+			}
+
+			stderrTailBuf.Reset()
+			state, workerMeta.State = "idle_warm", "idle_warm"
+			workerMeta.ActiveTurnID, workerMeta.ActiveMetaPath = "", ""
+			workerMeta.LastTurnEndedAt, workerMeta.UpdatedAt = time.Now().UTC(), time.Now().UTC()
+			saveWorkerMeta()
+			activeTurn = nil
+
+			if idleTimer == nil {
+				idleTimer = time.AfterFunc(idleTTL, onIdleTTLExpired)
+			} else {
+				idleTimer.Reset(idleTTL)
+			}
+			stateMu.Unlock()
 		}
 
-		stateMu.Lock()
-		finalizeTurnMeta(turn, status, 0, resultText)
-		if hadBlock {
-			state, workerMeta.State = "shutting_down", "shutting_down"
+		stdoutDone := make(chan struct{})
+		go func() {
+			defer close(stdoutDone)
+			parseHeadlessStream(workerMeta.SessionID, stdoutPipe, streamParseHooks{
+				emitTurnComplete: false,
+				emit: func(evt ChatStreamEvent) {
+					stateMu.Lock()
+					if curChild == gen && !gen.replaced && activeTurn != nil && activeTurn.spool != nil {
+						_, _ = activeTurn.spool.Append(evt)
+					}
+					stateMu.Unlock()
+				},
+				onAntigravityInit: func(convID string) {
+					stateMu.Lock()
+					if curChild == gen && !gen.replaced {
+						workerMeta.NativeID = convID
+						saveWorkerMeta()
+						if activeTurn != nil {
+							activeTurn.meta.NativeID = convID
+							_ = WriteTurnSpoolMeta(activeTurn.metaPath, activeTurn.meta)
+							_, _ = activeTurn.spool.Append(ChatStreamEvent{SessionID: workerMeta.SessionID, TurnID: activeTurn.turnID, Type: "session_init", NativeID: convID})
+						} else {
+							pendingInitConvID = convID
+						}
+					}
+					stateMu.Unlock()
+				},
+				onInteractiveBlock: func(toolName string, toolInput any, blocked *Blocked) {
+					stateMu.Lock()
+					if curChild != gen || gen.replaced {
+						stateMu.Unlock()
+						return
+					}
+					turn := activeTurn
+					if turn != nil {
+						turn.hadBlock = true
+						_, _ = turn.spool.Append(ChatStreamEvent{SessionID: workerMeta.SessionID, TurnID: turn.turnID, Type: "interactive_block", ToolName: toolName, ToolInput: toolInput, Blocked: blocked})
+					}
+					state, workerMeta.State = "shutting_down", "shutting_down"
+					saveWorkerMeta()
+					stateMu.Unlock()
+
+					go func() {
+						gen.shutdown(500 * time.Millisecond)
+						stateMu.Lock()
+						if turn != nil {
+							finalizeTurnMeta(turn, stderrTailBuf, "completed", 0, "")
+							activeTurn = nil
+						}
+						stateMu.Unlock()
+						exitCleanly(0)
+					}()
+				},
+				onTurnResult: onGenTurnResult,
+			})
+		}()
+
+		go func() {
+			<-stdoutDone
+			waitErr := cmd.Wait()
+			close(gen.done)
+
+			stateMu.Lock()
+			if gen.replaced || curChild != gen {
+				stateMu.Unlock()
+				return
+			}
+			curState, turn := state, activeTurn
+			if curState == "shutting_down" || curState == "exited" {
+				stateMu.Unlock()
+				return
+			}
+			if curState == "idle_warm" || turn == nil {
+				state, workerMeta.State = "exited", "exited"
+				saveWorkerMeta()
+				stateMu.Unlock()
+				exitCleanly(0)
+				return
+			}
+			status, code := "completed", 0
+			if turn.cancelled {
+				status = "cancelled"
+				_, _ = turn.spool.Append(ChatStreamEvent{SessionID: turn.meta.SessionID, TurnID: turn.meta.TurnID, Type: "turn_cancelled", Text: "Turn was cancelled by user."})
+			} else if !turn.hadBlock {
+				if waitErr != nil {
+					tail := strings.TrimSpace(stderrTailBuf.String())
+					if failBlock := detectTurnFailureBlock(workerMeta.Agent, tail); failBlock != nil {
+						_, _ = turn.spool.Append(ChatStreamEvent{SessionID: turn.meta.SessionID, TurnID: turn.meta.TurnID, Type: "interactive_block", Blocked: failBlock})
+						turn.hadBlock = true
+					} else {
+						status = "failed"
+						if tail != "" {
+							_, _ = turn.spool.Append(ChatStreamEvent{SessionID: turn.meta.SessionID, TurnID: turn.meta.TurnID, Type: "error", Text: tail, IsError: true})
+						}
+					}
+				}
+				if !turn.hadBlock {
+					_, _ = turn.spool.Append(ChatStreamEvent{SessionID: turn.meta.SessionID, TurnID: turn.meta.TurnID, Type: "turn_complete"})
+				}
+			}
+			if waitErr != nil {
+				var exitErr *exec.ExitError
+				if errors.As(waitErr, &exitErr) {
+					code = exitErr.ExitCode()
+				} else {
+					code = 1
+				}
+			}
+			finalizeTurnMeta(turn, stderrTailBuf, status, code, "")
+			state, workerMeta.State = "exited", "exited"
 			saveWorkerMeta()
 			stateMu.Unlock()
-			go func() { shutdownChildGroup(500 * time.Millisecond); exitCleanly(0) }()
-			return
-		}
-		if workerMetaPath == "" || idleTTL <= 0 {
-			stateMu.Unlock()
 			exitCleanly(0)
-			return
+		}()
+
+		return gen, nil
+	}
+
+	firstGen, err := spawnChildGen(workerMeta.Bin, workerMeta.Args, nil)
+	if err != nil {
+		_ = ln.Close()
+		cleanupArtifacts()
+		return 2
+	}
+	curChild = firstGen
+	workerMeta.WorkerPID, workerMeta.ChildPID = os.Getpid(), firstGen.pgid
+
+	if suitePIDStr := os.Getenv("ACKBAR_TEST_SUITE_PID"); suitePIDStr != "" {
+		if suitePID, sErr := strconv.Atoi(suitePIDStr); sErr == nil && suitePID > 0 {
+			go func() {
+				ticker := time.NewTicker(500 * time.Millisecond)
+				defer ticker.Stop()
+				for range ticker.C {
+					if !isProcessAlive(suitePID) {
+						shutdownChildGroup(300 * time.Millisecond)
+						exitCleanly(0)
+					}
+				}
+			}()
 		}
+	}
 
-		stderrTailBuf.Reset()
-		state, workerMeta.State = "idle_warm", "idle_warm"
-		workerMeta.ActiveTurnID, workerMeta.ActiveMetaPath = "", ""
-		workerMeta.LastTurnEndedAt, workerMeta.UpdatedAt = time.Now().UTC(), time.Now().UTC()
-		saveWorkerMeta()
+	restartChild := func(req workerIPCReq) (int, error) {
+		restartMu.Lock()
+		defer restartMu.Unlock()
+
+		stateMu.Lock()
+		if state == "shutting_down" || state == "exited" {
+			cur := state
+			stateMu.Unlock()
+			return 0, fmt.Errorf("worker_%s", cur)
+		}
+		if idleTimer != nil {
+			idleTimer.Stop()
+		}
+		oldGen := curChild
+		oldTurn := activeTurn
+		if oldGen != nil {
+			oldGen.replaced = true
+		}
+		if oldTurn != nil {
+			oldTurn.cancelled = true
+		}
 		activeTurn = nil
-
-		if idleTimer == nil {
-			idleTimer = time.AfterFunc(idleTTL, onIdleTTLExpired)
-		} else {
-			idleTimer.Reset(idleTTL)
+		state, workerMeta.State = "restarting_child", "restarting_child"
+		if req.SessionID != "" {
+			workerMeta.SessionID = req.SessionID
+		}
+		if req.NativeID != "" {
+			workerMeta.NativeID = req.NativeID
+		}
+		nextBin := workerMeta.Bin
+		if req.Bin != "" {
+			nextBin = req.Bin
+		}
+		nextArgs := workerMeta.Args
+		if len(req.Args) > 0 {
+			nextArgs = req.Args
 		}
 		stateMu.Unlock()
+
+		oldGen.shutdown(500 * time.Millisecond)
+		if oldTurn != nil {
+			_, _ = oldTurn.spool.Append(ChatStreamEvent{
+				SessionID: oldTurn.meta.SessionID,
+				TurnID:    oldTurn.turnID,
+				Type:      "turn_cancelled",
+				Text:      "Turn was cancelled by session restart.",
+			})
+			stateMu.Lock()
+			var tail *boundedTailBuffer
+			if oldGen != nil {
+				tail = oldGen.stderrTail
+			}
+			finalizeTurnMeta(oldTurn, tail, "cancelled", 0, "")
+			stateMu.Unlock()
+		}
+
+		newGen, sErr := spawnChildGen(nextBin, nextArgs, req.Env)
+		if sErr != nil {
+			stateMu.Lock()
+			state, workerMeta.State = "exited", "exited"
+			saveWorkerMeta()
+			stateMu.Unlock()
+			go exitCleanly(1)
+			return 0, sErr
+		}
+
+		stateMu.Lock()
+		curChild = newGen
+		pendingInitConvID = ""
+		workerMeta.Bin, workerMeta.Args = nextBin, nextArgs
+		if req.ConfigFingerprint != "" {
+			workerMeta.ConfigFingerprint = req.ConfigFingerprint
+		}
+		if req.MCPFingerprint != "" {
+			workerMeta.MCPFingerprint = req.MCPFingerprint
+		}
+		workerMeta.ChildPID = newGen.pgid
+		workerMeta.ActiveTurnID, workerMeta.ActiveMetaPath = "", ""
+		workerMeta.UpdatedAt = time.Now().UTC()
+		state, workerMeta.State = "idle_warm", "idle_warm"
+		saveWorkerMeta()
+		if idleTTL > 0 {
+			if idleTimer == nil {
+				idleTimer = time.AfterFunc(idleTTL, onIdleTTLExpired)
+			} else {
+				idleTimer.Reset(idleTTL)
+			}
+		}
+		stateMu.Unlock()
+		return newGen.pgid, nil
 	}
 
 	startTurnLocked := func(tMetaPath string) error {
@@ -309,7 +590,7 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string) int {
 		workerMeta.ActiveTurnID, workerMeta.ActiveMetaPath, workerMeta.UpdatedAt = tMeta.TurnID, tMetaPath, time.Now().UTC()
 		saveWorkerMeta()
 
-		tMeta.WorkerPID, tMeta.ChildPID, tMeta.Status = os.Getpid(), childPGID, "running"
+		tMeta.WorkerPID, tMeta.ChildPID, tMeta.Status = os.Getpid(), getChildPGIDLocked(), "running"
 		_ = WriteTurnSpoolMeta(tMetaPath, tMeta)
 
 		activeTurn = &activeTurnState{turnID: tMeta.TurnID, metaPath: tMetaPath, meta: tMeta, spool: spool}
@@ -341,111 +622,6 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string) int {
 		stateMu.Unlock()
 	}
 
-	stdoutDone := make(chan struct{})
-	go func() {
-		defer close(stdoutDone)
-		parseHeadlessStream(workerMeta.SessionID, stdoutPipe, streamParseHooks{
-			emitTurnComplete: false,
-			emit: func(evt ChatStreamEvent) {
-				stateMu.Lock()
-				if activeTurn != nil && activeTurn.spool != nil {
-					_, _ = activeTurn.spool.Append(evt)
-				}
-				stateMu.Unlock()
-			},
-			onAntigravityInit: func(convID string) {
-				stateMu.Lock()
-				workerMeta.NativeID = convID
-				saveWorkerMeta()
-				if activeTurn != nil {
-					activeTurn.meta.NativeID = convID
-					_ = WriteTurnSpoolMeta(activeTurn.metaPath, activeTurn.meta)
-					_, _ = activeTurn.spool.Append(ChatStreamEvent{SessionID: workerMeta.SessionID, TurnID: activeTurn.turnID, Type: "session_init", NativeID: convID})
-				} else {
-					pendingInitConvID = convID
-				}
-				stateMu.Unlock()
-			},
-			onInteractiveBlock: func(toolName string, toolInput any, blocked *Blocked) {
-				stateMu.Lock()
-				turn := activeTurn
-				if turn != nil {
-					turn.hadBlock = true
-					_, _ = turn.spool.Append(ChatStreamEvent{SessionID: workerMeta.SessionID, TurnID: turn.turnID, Type: "interactive_block", ToolName: toolName, ToolInput: toolInput, Blocked: blocked})
-				}
-				state, workerMeta.State = "shutting_down", "shutting_down"
-				saveWorkerMeta()
-				stateMu.Unlock()
-
-				go func() {
-					shutdownChildGroup(500 * time.Millisecond)
-					stateMu.Lock()
-					if turn != nil {
-						finalizeTurnMeta(turn, "completed", 0, "")
-						activeTurn = nil
-					}
-					stateMu.Unlock()
-					exitCleanly(0)
-				}()
-			},
-			onTurnResult: onTurnResult,
-		})
-	}()
-
-	go func() {
-		<-stdoutDone
-		waitErr := cmd.Wait()
-		close(childDone)
-
-		stateMu.Lock()
-		curState, turn := state, activeTurn
-		if curState == "shutting_down" || curState == "exited" {
-			stateMu.Unlock()
-			return
-		}
-		if curState == "idle_warm" || turn == nil {
-			state, workerMeta.State = "exited", "exited"
-			saveWorkerMeta()
-			stateMu.Unlock()
-			exitCleanly(0)
-			return
-		}
-		status, code := "completed", 0
-		if turn.cancelled {
-			status = "cancelled"
-			_, _ = turn.spool.Append(ChatStreamEvent{SessionID: turn.meta.SessionID, TurnID: turn.meta.TurnID, Type: "turn_cancelled", Text: "Turn was cancelled by user."})
-		} else if !turn.hadBlock {
-			if waitErr != nil {
-				tail := strings.TrimSpace(stderrTailBuf.String())
-				if failBlock := detectTurnFailureBlock(workerMeta.Agent, tail); failBlock != nil {
-					_, _ = turn.spool.Append(ChatStreamEvent{SessionID: turn.meta.SessionID, TurnID: turn.meta.TurnID, Type: "interactive_block", Blocked: failBlock})
-					turn.hadBlock = true
-				} else {
-					status = "failed"
-					if tail != "" {
-						_, _ = turn.spool.Append(ChatStreamEvent{SessionID: turn.meta.SessionID, TurnID: turn.meta.TurnID, Type: "error", Text: tail, IsError: true})
-					}
-				}
-			}
-			if !turn.hadBlock {
-				_, _ = turn.spool.Append(ChatStreamEvent{SessionID: turn.meta.SessionID, TurnID: turn.meta.TurnID, Type: "turn_complete"})
-			}
-		}
-		if waitErr != nil {
-			var exitErr *exec.ExitError
-			if errors.As(waitErr, &exitErr) {
-				code = exitErr.ExitCode()
-			} else {
-				code = 1
-			}
-		}
-		finalizeTurnMeta(turn, status, code, "")
-		state, workerMeta.State = "exited", "exited"
-		saveWorkerMeta()
-		stateMu.Unlock()
-		exitCleanly(0)
-	}()
-
 	if initialStdinLine != "" {
 		writeStdinLine(initialStdinLine)
 	}
@@ -455,6 +631,6 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string) int {
 		if aErr != nil {
 			return 0
 		}
-		go handleWorkerIPC(conn, &stateMu, &state, workerMeta, childPGID, &activeTurn, completedTurns, &subWG, shutdownChildGroup, exitCleanly, startTurnLocked, writeStdinLine)
+		go handleWorkerIPC(conn, &stateMu, &state, workerMeta, getChildPGIDLocked, &activeTurn, completedTurns, &subWG, shutdownChildGroup, exitCleanly, startTurnLocked, writeStdinLine, restartChild)
 	}
 }

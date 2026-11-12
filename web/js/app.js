@@ -9,7 +9,8 @@ import {
   openInVSCode,
   isLocalHost,
   getSelfHostName,
-  formatHostLabel
+  formatHostLabel,
+  getSessionBaseUrl
 } from './utils.js';
 import {
   fetchVersion,
@@ -439,9 +440,15 @@ function setupEventListeners() {
     el.cmItemRestart.addEventListener('click', async () => {
       if (state.contextMenuSession) {
         const sess = state.contextMenuSession;
-        const baseUrl = sess.hostUrl ? sess.hostUrl.replace(/\/$/, '') : '';
-        await fetch(`${baseUrl}/v1/sessions/control?id=${encodeURIComponent(sess.id)}&action=restart`, { method: 'POST' });
+        const baseUrl = getSessionBaseUrl(sess.id, sess);
+        const res = await fetch(`${baseUrl}/v1/sessions/control?id=${encodeURIComponent(sess.id)}&action=restart`, { method: 'POST' });
+        const data = res.ok ? await res.json().catch(() => null) : null;
+        if (data?.session) {
+          if (sess.hostUrl && !data.session.hostUrl) data.session.hostUrl = sess.hostUrl;
+          Object.assign(sess, data.session);
+        }
         openSessionInTab(sess);
+        await fetchSessions();
       }
     });
   }

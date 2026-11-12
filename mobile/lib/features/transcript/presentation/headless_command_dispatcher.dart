@@ -1,4 +1,5 @@
 import 'package:flutter/foundation.dart';
+
 import '../../../../core/models/headless_models.dart';
 import '../../../../core/models/host.dart';
 import '../../../../core/models/session.dart';
@@ -77,8 +78,11 @@ class HeadlessCommandDispatcher {
       final cmd = trimmed.substring(1).trim();
       if (cmd.isEmpty) {
         return CommandDispatchResult.handled(
-          card:
-              _statusCard('Shell Command', 'Usage: ! <command>', isError: true),
+          card: _statusCard(
+            'Shell Command',
+            'Usage: ! <command>',
+            isError: true,
+          ),
         );
       }
       try {
@@ -125,6 +129,38 @@ class HeadlessCommandDispatcher {
           onTakeWheel?.call();
           return CommandDispatchResult.handled();
 
+        case 'restart':
+          final ok = await apiClient.controlSession(
+            host.url,
+            session.id,
+            'restart',
+            authToken: host.authToken.isNotEmpty ? host.authToken : null,
+          );
+          if (!ok) {
+            return CommandDispatchResult.handled(
+              card: _statusCard(
+                'Restart Failed',
+                'Failed to restart session.',
+                isError: true,
+              ),
+            );
+          }
+          onSessionUpdated?.call(
+            session.copyWith(
+              state: SessionState.idle,
+              clearBlocked: true,
+              isDone: false,
+              activity: 'Session restarted (MCP reloaded)',
+              lastEventAt: DateTime.now(),
+            ),
+          );
+          return CommandDispatchResult.handled(
+            card: _statusCard(
+              'Session Restarted',
+              'CLI session restarted in-place; MCP connectors and configuration reloaded.',
+            ),
+          );
+
         case 'plan':
           final updated = await apiClient.updateSessionConfig(
             host.url,
@@ -135,7 +171,9 @@ class HeadlessCommandDispatcher {
           onSessionUpdated?.call(updated);
           return CommandDispatchResult.handled(
             card: _statusCard(
-                'Configuration', 'Execution mode set to PLAN (Read Only)'),
+              'Configuration',
+              'Execution mode set to PLAN (Read Only)',
+            ),
           );
 
         case 'auto':
@@ -147,8 +185,10 @@ class HeadlessCommandDispatcher {
           );
           onSessionUpdated?.call(updated);
           return CommandDispatchResult.handled(
-            card: _statusCard('Configuration',
-                'Execution mode set to AUTO (Bypass Permissions)'),
+            card: _statusCard(
+              'Configuration',
+              'Execution mode set to AUTO (Bypass Permissions)',
+            ),
           );
 
         case 'permissions':
@@ -248,8 +288,10 @@ class HeadlessCommandDispatcher {
           }
           onSessionUpdated?.call(updated);
           return CommandDispatchResult.handled(
-            card: _statusCard('Directories',
-                'Directories updated: ${updated.extraDirs.join(", ")}'),
+            card: _statusCard(
+              'Directories',
+              'Directories updated: ${updated.extraDirs.join(", ")}',
+            ),
           );
 
         case 'mcp':
@@ -322,8 +364,11 @@ class HeadlessCommandDispatcher {
           final turn = int.tryParse(argText);
           if (turn == null) {
             return CommandDispatchResult.handled(
-              card: _statusCard('Rewind Error', 'Usage: /rewind [turn_number]',
-                  isError: true),
+              card: _statusCard(
+                'Rewind Error',
+                'Usage: /rewind [turn_number]',
+                isError: true,
+              ),
             );
           }
           final res = await apiClient.rewindSession(
@@ -333,10 +378,14 @@ class HeadlessCommandDispatcher {
             authToken: host.authToken,
           );
           if (res.session != null) {
-            onRotateSession?.call(res.session!,
-                notice: 'Rewound to Turn $turn');
-            return CommandDispatchResult.rotated(res.session!,
-                notice: 'Rewound to Turn $turn');
+            onRotateSession?.call(
+              res.session!,
+              notice: 'Rewound to Turn $turn',
+            );
+            return CommandDispatchResult.rotated(
+              res.session!,
+              notice: 'Rewound to Turn $turn',
+            );
           }
           return CommandDispatchResult.handled(
             card: _statusCard('Rewind', 'Rewind completed'),
@@ -350,10 +399,14 @@ class HeadlessCommandDispatcher {
             authToken: host.authToken,
           );
           if (res.session != null) {
-            onRotateSession?.call(res.session!,
-                notice: 'Context cleared (reset to Turn 1)');
-            return CommandDispatchResult.rotated(res.session!,
-                notice: 'Context cleared (reset to Turn 1)');
+            onRotateSession?.call(
+              res.session!,
+              notice: 'Context cleared (reset to Turn 1)',
+            );
+            return CommandDispatchResult.rotated(
+              res.session!,
+              notice: 'Context cleared (reset to Turn 1)',
+            );
           }
           return CommandDispatchResult.handled(
             card: _statusCard('Session Reset', 'Session context cleared'),
@@ -367,14 +420,20 @@ class HeadlessCommandDispatcher {
             authToken: host.authToken,
           );
           if (res.mode == 'rotated_session' && res.session != null) {
-            onRotateSession?.call(res.session!,
-                notice: 'Compacted conversation into new session');
-            return CommandDispatchResult.rotated(res.session!,
-                notice: 'Compacted conversation into new session');
+            onRotateSession?.call(
+              res.session!,
+              notice: 'Compacted conversation into new session',
+            );
+            return CommandDispatchResult.rotated(
+              res.session!,
+              notice: 'Compacted conversation into new session',
+            );
           }
           return CommandDispatchResult.handled(
             card: _statusCard(
-                'Compaction', 'Compaction turn dispatched via native stream'),
+              'Compaction',
+              'Compaction turn dispatched via native stream',
+            ),
           );
 
         case 'handover':
@@ -386,10 +445,14 @@ class HeadlessCommandDispatcher {
             authToken: host.authToken,
           );
           if (res.session != null) {
-            onRotateSession?.call(res.session!,
-                notice: 'Handover complete: context rotated in-place');
-            return CommandDispatchResult.rotated(res.session!,
-                notice: 'Handover complete: context rotated in-place');
+            onRotateSession?.call(
+              res.session!,
+              notice: 'Handover complete: context rotated in-place',
+            );
+            return CommandDispatchResult.rotated(
+              res.session!,
+              notice: 'Handover complete: context rotated in-place',
+            );
           }
           return CommandDispatchResult.handled(
             card: _statusCard('Handover', 'Handover turn dispatched'),

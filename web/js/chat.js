@@ -1476,6 +1476,9 @@ function executeClientAction(tabObj, actionName) {
     case 'clear':
       interceptChatInput(tabObj, '/clear');
       break;
+    case 'restart':
+      interceptChatInput(tabObj, '/restart');
+      break;
     case 'terminal':
       if (tabObj.session) {
         handleTakeWheel(tabObj.session.id);

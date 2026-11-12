@@ -16,6 +16,34 @@ func Spawn(ctx context.Context, sessionName, cwd, command string) error {
 	return SpawnWithEnv(ctx, sessionName, cwd, command, nil)
 }
 
+func buildPaneShellArgs(cwd, command string, env map[string]string) []string {
+	if command == "" {
+		return nil
+	}
+	cdPrefix := ""
+	if cwd != "" {
+		cdPrefix = fmt.Sprintf("cd %s 2>/dev/null || true; ", shellSingleQuote(cwd))
+	}
+	envExports := ""
+	if len(env) > 0 {
+		keys := make([]string, 0, len(env))
+		for k := range env {
+			if isValidEnvKey(k) {
+				keys = append(keys, k)
+			}
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			v := env[k]
+			envExports += fmt.Sprintf("export %s=%s; ", k, shellSingleQuote(v))
+		}
+	}
+	return []string{
+		"bash", "-l", "-c",
+		fmt.Sprintf("%sexport PATH=\"/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/.npm-global/bin:$PATH\"; %s%s; exec bash -l", cdPrefix, envExports, command),
+	}
+}
+
 // SpawnWithEnv creates a new detached tmux session with custom environment variables injected before command execution.
 func SpawnWithEnv(ctx context.Context, sessionName, cwd, command string, env map[string]string) error {
 	// check if session already exists to avoid duplicate spawning
@@ -27,27 +55,7 @@ func SpawnWithEnv(ctx context.Context, sessionName, cwd, command string, env map
 	if cwd != "" {
 		args = append(args, "-c", cwd)
 	}
-	if command != "" {
-		cdPrefix := ""
-		if cwd != "" {
-			cdPrefix = fmt.Sprintf("cd %s 2>/dev/null || true; ", shellSingleQuote(cwd))
-		}
-		envExports := ""
-		if len(env) > 0 {
-			keys := make([]string, 0, len(env))
-			for k := range env {
-				if isValidEnvKey(k) {
-					keys = append(keys, k)
-				}
-			}
-			sort.Strings(keys)
-			for _, k := range keys {
-				v := env[k]
-				envExports += fmt.Sprintf("export %s=%s; ", k, shellSingleQuote(v))
-			}
-		}
-		args = append(args, "bash", "-l", "-c", fmt.Sprintf("%sexport PATH=\"/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/.npm-global/bin:$PATH\"; %s%s; exec bash -l", cdPrefix, envExports, command))
-	}
+	args = append(args, buildPaneShellArgs(cwd, command, env)...)
 
 	cmd := exec.CommandContext(ctx, "tmux", args...)
 	var stderr bytes.Buffer
@@ -60,6 +68,34 @@ func SpawnWithEnv(ctx context.Context, sessionName, cwd, command string, env map
 	// Configure window-size latest so new sessions adapt dynamically to client geometries
 	_ = exec.CommandContext(ctx, "tmux", "set-option", "-t", sessionName, "window-size", "latest").Run()
 	_ = exec.CommandContext(ctx, "tmux", "set-window-option", "-t", sessionName, "window-size", "latest").Run()
+
+	return nil
+}
+
+// RespawnWithEnv restarts the active pane process in-place inside an existing tmux session,
+// preserving attached PTY clients and scrollback. Falls back to SpawnWithEnv if the session does not exist.
+func RespawnWithEnv(ctx context.Context, sessionName, cwd, command string, env map[string]string) error {
+	if !HasSession(ctx, sessionName) {
+		return SpawnWithEnv(ctx, sessionName, cwd, command, env)
+	}
+
+	paneTarget := exactSessionTarget(sessionName) + ":"
+	args := []string{"respawn-pane", "-k", "-t", paneTarget}
+	if cwd != "" {
+		args = append(args, "-c", cwd)
+	}
+	args = append(args, buildPaneShellArgs(cwd, command, env)...)
+
+	cmd := exec.CommandContext(ctx, "tmux", args...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to respawn tmux pane: %w (stderr: %s)", err, stderr.String())
+	}
+
+	_ = exec.CommandContext(ctx, "tmux", "set-option", "-t", exactSessionTarget(sessionName), "window-size", "latest").Run()
+	_ = exec.CommandContext(ctx, "tmux", "set-window-option", "-t", paneTarget, "window-size", "latest").Run()
 
 	return nil
 }

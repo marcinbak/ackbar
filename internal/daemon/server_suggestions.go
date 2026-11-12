@@ -200,6 +200,13 @@ func getBuiltinCommands() []CommandSuggestion {
 			ExecutionMode: "client_action",
 		},
 		{
+			Name:          "restart",
+			Trigger:       "/restart",
+			Description:   "Restart CLI session in-place to reload MCP connectors and config",
+			Category:      "Session Control",
+			ExecutionMode: "client_action",
+		},
+		{
 			Name:          "compact",
 			Trigger:       "/compact",
 			Description:   "Summarize and compact conversation context",
