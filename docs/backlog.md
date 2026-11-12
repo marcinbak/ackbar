@@ -32,6 +32,13 @@
 
 ## ✅ Completed Milestones
 
+* [x] **Mobile Native Session Views & Read-Only Transcript (`feat/mobile-native-session-views`):**
+  * Central `SessionNavigator` routes headless sessions to `ChatScreen` and tmux sessions to `TerminalScreen`, clearing unread badges.
+  * `FleetSessionCard` renders `CHAT`/`PTY` badges, direct native tap, and `⋯` / long-press `SessionDetailSheet` with mode-matched actions.
+  * Attention pending cards feature mode-aware actions (`Open Chat` / `Live Terminal` + `Transcript`); in-progress cards route natively.
+  * Dedicated interactive `ChatScreen` with `ChatComposerBar`, live stream controller, Take-the-Wheel promotion, and `View Transcript` action.
+  * Pure read-only `TranscriptScreen` with inline search filter, match counter, Copy Markdown, and per-turn speech playback.
+  * Modular presentation extraction maintains all touched mobile `.dart` files strictly under 500 lines.
 * [x] **Mobile Stream & Connection Reliability (`feat/mobile-stream-reliability`):**
   * Daemon `/v1/events` keepalive heartbeats (`: keepalive\n\n`, default `20s`) with unconditional initial response header flush.
   * Daemon `POST /v1/sessions/prompt` idempotency contract via optional `client_turn_id` (10m TTL, 512-entry bounded LRU cache).
