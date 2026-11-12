@@ -35,7 +35,8 @@ class HostRecord {
 
   bool get hasAuth => authToken.isNotEmpty;
 
-  bool get isLocal => name.toLowerCase() == 'local' || url.contains('127.0.0.1:7777');
+  bool get isLocal =>
+      name.toLowerCase() == 'local' || url.contains('127.0.0.1:7777');
 
   String get displayName => name;
 
@@ -47,9 +48,11 @@ class HostRecord {
 
   String get latencyDisplay => '${latencyMs}ms';
 
-  Color get statusColor => online ? AppColors.statusEmerald : AppColors.statusCoral;
+  Color get statusColor =>
+      online ? AppColors.statusEmerald : AppColors.statusCoral;
 
-  AckbarSessionStatus get badgeStatus => online ? AckbarSessionStatus.active : AckbarSessionStatus.offline;
+  AckbarSessionStatus get badgeStatus =>
+      online ? AckbarSessionStatus.active : AckbarSessionStatus.offline;
 
   HostStatusIndicator toIndicator() {
     return HostStatusIndicator(
@@ -69,7 +72,9 @@ class HostRecord {
       name: json['name']?.toString() ?? 'unknown',
       url: json['url']?.toString() ?? 'http://127.0.0.1:7777',
       sshTarget: json['ssh_target']?.toString() ?? '',
-      remoteCwd: json['remote_cwd']?.toString() ?? json['projects_dir']?.toString() ?? '~/Work',
+      remoteCwd: json['remote_cwd']?.toString() ??
+          json['projects_dir']?.toString() ??
+          '~/Work',
       online: json['online'] != false,
       latencyMs: json['latency_ms'] is int
           ? json['latency_ms'] as int
@@ -80,7 +85,8 @@ class HostRecord {
           ? json['sessions_count'] as int
           : int.tryParse(json['sessions_count']?.toString() ?? '') ?? 0,
       tailscaleIp: json['tailscale_ip']?.toString() ?? '',
-      authToken: json['auth_token']?.toString() ?? json['token']?.toString() ?? '',
+      authToken:
+          json['auth_token']?.toString() ?? json['token']?.toString() ?? '',
       createdAt: parseDate(json['created_at']),
     );
   }

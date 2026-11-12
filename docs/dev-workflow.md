@@ -38,8 +38,8 @@ fail the job), `❌ not gated`, or `—` (not run in CI).
 |---|---|---|---|---|
 | install | `go mod tidy && (cd mobile && flutter pub get)` | | ✅ CI | Installs Go module dependencies and Flutter packages. |
 | format | `gofmt -w . && (cd mobile && dart format .)` | | ✅ CI | Formats all Go files and Dart mobile code. |
-| lint | `if [ -n "$(gofmt -l .)" ]; then echo "Unformatted Go code:"; gofmt -l .; exit 1; fi && [ "$(wc -l < AGENTS.md)" -le 160 ] && (cd mobile && flutter analyze --no-fatal-infos)` | ✅ | ✅ CI | Verified in CI via Go Test Suite and Flutter Analyzer. |
-| version check | `./scripts/bump-version.sh --check` | ✅ | ✅ CI | Enforces that `internal/version/VERSION` is bumped above `origin/main` on every PR. Bump via `./scripts/bump-version.sh`. |
+| lint | `if [ -n "$(gofmt -l .)" ]; then echo "Unformatted Go code:"; gofmt -l .; exit 1; fi && [ "$(wc -l < AGENTS.md)" -le 160 ] && (cd mobile && dart format --output=none --set-exit-if-changed . && flutter analyze --no-fatal-infos)` | ✅ | ✅ CI | Verified in CI via Go Test Suite, Dart format check, and Flutter Analyzer. |
+| version check | `./scripts/bump-version.sh --check` | ✅ | ✅ CI | Enforces version bump above `origin/main` and syncs mobile `AppVersion`. |
 | typecheck | `go vet ./... && (cd mobile && flutter analyze --no-fatal-infos)` | ✅ | ✅ CI | Catches type, formatting, and static analysis defects across backend and mobile. |
 | unit test | `go test -v ./... && (cd mobile && flutter test)` | ✅ | ✅ CI | Runs complete Go test suite (daemon, provider, relay, router, tmux) and Flutter unit/widget tests. |
 | compile/bundle gate | `CGO_ENABLED=0 go build -o /dev/null ./cmd/ackbard ./cmd/ackbar ./cmd/ackbar-hook ./cmd/ackbar-relay` | ✅ | ✅ CI | **Catches broken imports, package syntax errors, and missing symbols across all four binaries.** |
@@ -50,7 +50,7 @@ fail the job), `❌ not gated`, or `—` (not run in CI).
 **T0 set:** lint, version check, typecheck, unit test, compile/bundle gate.
 
 ### PR Version Bumping
-Every pull request MUST increment `internal/version/VERSION` above `origin/main`. Run `./scripts/bump-version.sh` before committing and creating a PR. The version bump is strictly verified locally via `T0` (`./scripts/bump-version.sh --check`) and in GitHub Actions CI (`Verify Version Bump`).
+Every pull request MUST increment `internal/version/VERSION` above `origin/main`. Run `./scripts/bump-version.sh` before committing and creating a PR. The script also syncs mobile `AppVersion` in `mobile/lib/core/constants/app_version.dart`. The version bump and mobile parity are verified via `T0` (`./scripts/bump-version.sh --check`) and in GitHub Actions CI (`Verify Version Bump`).
 
 ---
 
@@ -60,10 +60,10 @@ Every pull request MUST increment `internal/version/VERSION` above `origin/main`
 |---|---|
 | worktree_location | `.worktrees/<branch-name>` (gitignored), branched from `origin/main` |
 | dependency_install_rule | Run `go mod tidy` in the worktree root. Run `flutter pub get` in `mobile/` if mobile files are touched. |
-| device_acquisition | Desktop daemon / Web GUI runs locally on macOS (`127.0.0.1:7777`). Mobile companion app runs on booted iOS Simulator (`xcrun simctl boot <udid>`) or Android Emulator. |
+| device_acquisition | Desktop daemon / Web GUI runs locally on macOS (`127.0.0.1:7777`). Mobile companion app runs on booted iOS Simulator (`xcrun simctl boot <udid>`) or Android Emulator. For isolated mobile N9 verification, use `./scripts/verify-mobile-daemon.sh start|status|stop --device <emulator-udid>` (`127.0.0.1:<port>` + `adb reverse`, leaving `:7777` and user DB untouched). |
 | build_flags | Always compile pure Go with `CGO_ENABLED=0` to ensure compatibility with pure Go SQLite (`modernc.org/sqlite`). |
 | install_caveats | The daemon `ackbard` is managed locally via `launchctl` (`com.marcinbak.ackbard`). Restart after local installation with `launchctl kickstart -k gui/$(id -u)/com.marcinbak.ackbard`. |
-| device_automation | Use the `agent-device`, `ios-simulator`, or `android-emulator` skills for companion app automation. |
+| device_automation | Use the `agent-device`, `ios-simulator`, or `android-emulator` skills for companion app automation. Use `./scripts/verify-mobile-daemon.sh start|status|stop --device <emulator-udid>` for isolated daemon verification. |
 | design_tool | none — desktop web UI and mobile companion app follow the cyberpunk/glassmorphic terminal design system documented in `docs/web.md` and `docs/mobile.md`. |
 | design_link_location | none |
 
