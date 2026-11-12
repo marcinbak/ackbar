@@ -63,7 +63,8 @@ func TestNormalizeAndValidateExtraDirs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(dirs) != 1 || dirs[0] != homeSubdir {
+	canonicalHomeSubdir, _ := filepath.EvalSymlinks(homeSubdir)
+	if len(dirs) != 1 || (dirs[0] != homeSubdir && dirs[0] != canonicalHomeSubdir) {
 		t.Fatalf("expected %s, got %v", homeSubdir, dirs)
 	}
 
@@ -73,7 +74,8 @@ func TestNormalizeAndValidateExtraDirs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(dirs) != 1 || dirs[0] != dirB {
+	canonicalDirB, _ := filepath.EvalSymlinks(dirB)
+	if len(dirs) != 1 || (dirs[0] != dirB && dirs[0] != canonicalDirB) {
 		t.Fatalf("expected [dirB], got %v", dirs)
 	}
 
@@ -294,7 +296,8 @@ func TestHandleSessionConfigExtended(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 	updated, _ = db.GetSession(sess.ID)
-	if len(updated.ExtraDirs) != 1 || updated.ExtraDirs[0] != subDir {
+	canonicalSubDir, _ := filepath.EvalSymlinks(subDir)
+	if len(updated.ExtraDirs) != 1 || (updated.ExtraDirs[0] != subDir && updated.ExtraDirs[0] != canonicalSubDir) {
 		t.Fatalf("expected ExtraDirs to contain %s, got %v", subDir, updated.ExtraDirs)
 	}
 

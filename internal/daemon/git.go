@@ -19,6 +19,45 @@ type gitBranchCacheEntry struct {
 	checkedAt time.Time
 }
 
+func inspectGitDir(gitDirOrFile, baseDir string) (branch string, gitFound bool) {
+	stat, err := os.Stat(gitDirOrFile)
+	if err != nil {
+		return "", false
+	}
+	if stat.IsDir() {
+		headFile := filepath.Join(gitDirOrFile, "HEAD")
+		content, rerr := os.ReadFile(headFile)
+		if rerr != nil {
+			return "", true
+		}
+		headLine := strings.TrimSpace(string(content))
+		if strings.HasPrefix(headLine, "ref: refs/heads/") {
+			return strings.TrimPrefix(headLine, "ref: refs/heads/"), true
+		}
+		return "", true
+	}
+
+	content, rerr := os.ReadFile(gitDirOrFile)
+	if rerr != nil {
+		return "", true
+	}
+	line := strings.TrimSpace(string(content))
+	if strings.HasPrefix(line, "gitdir:") {
+		gitDir := strings.TrimSpace(strings.TrimPrefix(line, "gitdir:"))
+		if !filepath.IsAbs(gitDir) {
+			gitDir = filepath.Join(baseDir, gitDir)
+		}
+		if headContent, herr := os.ReadFile(filepath.Join(gitDir, "HEAD")); herr == nil {
+			headLine := strings.TrimSpace(string(headContent))
+			if strings.HasPrefix(headLine, "ref: refs/heads/") {
+				return strings.TrimPrefix(headLine, "ref: refs/heads/"), true
+			}
+		}
+		return filepath.Base(gitDir), true
+	}
+	return "", true
+}
+
 // ResolveGitBranch resolves the active Git branch or worktree for a working directory.
 func ResolveGitBranch(cwd string) string {
 	if cwd == "" {
@@ -27,7 +66,7 @@ func ResolveGitBranch(cwd string) string {
 
 	gitBranchCacheMu.Lock()
 	if entry, ok := gitBranchCache[cwd]; ok {
-		if time.Since(entry.checkedAt) < 10*time.Second {
+		if time.Since(entry.checkedAt) < 60*time.Second {
 			branch := entry.branch
 			gitBranchCacheMu.Unlock()
 			return branch
@@ -35,40 +74,44 @@ func ResolveGitBranch(cwd string) string {
 	}
 	gitBranchCacheMu.Unlock()
 
-	branch := ""
-
-	// 1. Check if cwd is a git worktree directly (via git file or path indicator)
-	gitFilePath := filepath.Join(cwd, ".git")
-	if stat, err := os.Stat(gitFilePath); err == nil && !stat.IsDir() {
-		// .git is a worktree pointer file (e.g. "gitdir: /path/to/.git/worktrees/<name>")
-		if content, rerr := os.ReadFile(gitFilePath); rerr == nil {
-			line := strings.TrimSpace(string(content))
-			if strings.HasPrefix(line, "gitdir:") {
-				gitDir := strings.TrimSpace(strings.TrimPrefix(line, "gitdir:"))
-				if !filepath.IsAbs(gitDir) {
-					gitDir = filepath.Join(cwd, gitDir)
-				}
-				// Read HEAD from worktree gitdir
-				if headContent, herr := os.ReadFile(filepath.Join(gitDir, "HEAD")); herr == nil {
-					headLine := strings.TrimSpace(string(headContent))
-					if strings.HasPrefix(headLine, "ref: refs/heads/") {
-						branch = strings.TrimPrefix(headLine, "ref: refs/heads/")
-					}
-				}
-				if branch == "" {
-					branch = filepath.Base(gitDir)
-				}
-			}
+	stat, err := os.Stat(cwd)
+	if err != nil || !stat.IsDir() {
+		gitBranchCacheMu.Lock()
+		gitBranchCache[cwd] = gitBranchCacheEntry{
+			branch:    "",
+			checkedAt: time.Now(),
 		}
+		gitBranchCacheMu.Unlock()
+		return ""
 	}
 
-	// 2. Extract worktree name from known worktree folder patterns
-	if branch == "" {
+	branch := ""
+	var foundGitDir string
+
+	cur := filepath.Clean(cwd)
+	for i := 0; i < 20; i++ {
+		gitPath := filepath.Join(cur, ".git")
+		b, found := inspectGitDir(gitPath, cur)
+		if found {
+			foundGitDir = cur
+			if b != "" {
+				branch = b
+				break
+			}
+			break
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur || parent == "" {
+			break
+		}
+		cur = parent
+	}
+
+	if branch == "" && foundGitDir == "" {
 		indicators := []string{"worktrees/", "worktree-dir/", ".worktrees/", "-worktrees/", "_worktrees/"}
 		for _, ind := range indicators {
 			if idx := strings.Index(cwd, ind); idx != -1 {
 				wtName := strings.Trim(cwd[idx+len(ind):], "/")
-				// Extract the immediate child directory name if nested
 				parts := strings.Split(wtName, "/")
 				if len(parts) > 0 && parts[0] != "" {
 					branch = parts[0]
@@ -78,53 +121,25 @@ func ResolveGitBranch(cwd string) string {
 		}
 	}
 
-	// 3. Try git rev-parse --abbrev-ref HEAD in cwd
-	if branch == "" {
-		cmd := exec.Command("git", "-C", cwd, "rev-parse", "--abbrev-ref", "HEAD")
-		if out, err := cmd.Output(); err == nil {
-			b := strings.TrimSpace(string(out))
-			if b != "" && b != "HEAD" {
-				branch = b
-			}
-		}
-	}
-
-	// 4. Try git branch --show-current in cwd
-	if branch == "" {
-		cmd := exec.Command("git", "-C", cwd, "branch", "--show-current")
-		if out, err := cmd.Output(); err == nil {
-			b := strings.TrimSpace(string(out))
-			if b != "" {
-				branch = b
-			}
-		}
-	}
-
-	// 5. If cwd is a parent directory containing child git repos or worktrees, find first active repo/worktree
-	if branch == "" {
-		if entries, err := os.ReadDir(cwd); err == nil {
+	if branch == "" && foundGitDir == "" {
+		if entries, rerr := os.ReadDir(cwd); rerr == nil {
 			for _, e := range entries {
 				if e.IsDir() {
-					sub := filepath.Join(cwd, e.Name())
-					if _, statErr := os.Stat(filepath.Join(sub, ".git")); statErr == nil {
-						cmd := exec.Command("git", "-C", sub, "rev-parse", "--abbrev-ref", "HEAD")
-						if out, err := cmd.Output(); err == nil {
-							b := strings.TrimSpace(string(out))
-							if b != "" && b != "HEAD" {
-								branch = b
-								break
-							}
-						}
+					subBase := filepath.Join(cwd, e.Name())
+					subGit := filepath.Join(subBase, ".git")
+					b, found := inspectGitDir(subGit, subBase)
+					if found && b != "" {
+						branch = b
+						break
 					}
 				}
 			}
 		}
 	}
 
-	// 6. If still detached, check if on a git tag
-	if branch == "" {
-		cmd := exec.Command("git", "-C", cwd, "describe", "--tags", "--exact-match")
-		if out, err := cmd.Output(); err == nil {
+	if branch == "" && foundGitDir != "" {
+		cmd := exec.Command("git", "-C", foundGitDir, "describe", "--tags", "--exact-match")
+		if out, oerr := cmd.Output(); oerr == nil {
 			tag := strings.TrimSpace(string(out))
 			if tag != "" {
 				branch = "tag:" + tag

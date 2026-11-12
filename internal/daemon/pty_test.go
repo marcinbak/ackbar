@@ -209,3 +209,44 @@ func TestPerformTmuxScroll_RemoteSSHAndControlJSON(t *testing.T) {
 		t.Fatalf("Expected 0 calls for unsafe tmuxName, got %v", calls)
 	}
 }
+
+func TestBuildRemotePTYAttachArgs(t *testing.T) {
+	sshTarget := "user@remote.host"
+	tmuxName := "ackbar-session-1"
+	cwd := "/home/dev/my project"
+	resumeCmd := "claude --resume"
+
+	args := buildRemotePTYAttachArgs(sshTarget, tmuxName, cwd, resumeCmd)
+	if len(args) != 4 {
+		t.Fatalf("buildRemotePTYAttachArgs returned %d args, want 4", len(args))
+	}
+	if args[0] != "-t" {
+		t.Errorf("args[0] = %q, want %q", args[0], "-t")
+	}
+	if args[1] != "--" {
+		t.Errorf("args[1] = %q, want %q", args[1], "--")
+	}
+	if args[2] != sshTarget {
+		t.Errorf("args[2] = %q, want %q", args[2], sshTarget)
+	}
+
+	remoteScript := args[3]
+	if !strings.Contains(remoteScript, "exec tmux attach-session -t 'ackbar-session-1'") {
+		t.Errorf("remoteScript missing combined exec tmux attach-session: %q", remoteScript)
+	}
+	if !strings.Contains(remoteScript, "tmux has-session -t 'ackbar-session-1'") {
+		t.Errorf("remoteScript missing has-session check: %q", remoteScript)
+	}
+
+	// Metacharacters must be safely single-quoted to prevent $(...) expansion
+	maliciousCwd := "/path/with/$(whoami)/and'quotes"
+	maliciousName := "sess-$(id)"
+	safeArgs := buildRemotePTYAttachArgs(sshTarget, maliciousName, maliciousCwd, "")
+	safeScript := safeArgs[3]
+	if strings.Contains(safeScript, `"$(whoami)"`) || strings.Contains(safeScript, `"$(id)"`) {
+		t.Errorf("safeScript allowed unquoted command substitution: %q", safeScript)
+	}
+	if !strings.Contains(safeScript, `'sess-$(id)'`) {
+		t.Errorf("safeScript did not single-quote tmuxName: %q", safeScript)
+	}
+}

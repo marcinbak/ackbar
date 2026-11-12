@@ -10,7 +10,7 @@ import {
 } from './utils.js';
 import { fetchSessions } from './api.js';
 import { closeTab } from './tabs.js';
-import { renderTree } from './tree.js';
+import { renderTree, updateTreeSessionUnread, scheduleRenderTree } from './tree.js';
 
 
 function connectTerminalWebSocket(tab, tabId, term, fitAddon, session) {
@@ -432,12 +432,14 @@ async function markSessionAsRead(session) {
   session.is_unread = false;
   const targetInState = (state.sessions || []).find(s => s.id === session.id);
   if (targetInState) targetInState.is_unread = false;
-  renderTree();
+  updateTreeSessionUnread(session.id, false);
 
   try {
     const hostRec = (state.hosts || []).find(h => h.name === session.host);
     const baseUrl = hostRec && hostRec.url && !isLocalHost(session.host) ? hostRec.url.replace(/\/$/, '') : '';
-    await fetch(`${baseUrl}/v1/sessions/control?id=${encodeURIComponent(session.id)}&action=read`, { method: 'POST' });
+    fetch(`${baseUrl}/v1/sessions/control?id=${encodeURIComponent(session.id)}&action=read`, { method: 'POST' }).catch((e) => {
+      console.warn('Failed to mark session as read on daemon:', e);
+    });
   } catch (e) {
     console.warn('Failed to mark session as read on daemon:', e);
   }

@@ -89,6 +89,10 @@ type Server struct {
 	eventsKeepaliveNs    atomic.Int64
 	shutdownExitFn       func(int)
 	restartDaemonFn      func()
+	transcriptCacheMu    sync.RWMutex
+	transcriptCache      map[string]*transcriptCacheEntry
+	subagentDiskMu       sync.RWMutex
+	subagentDiskCache    map[string]*subagentDiskCacheEntry
 }
 
 const defaultEventsKeepaliveInterval = 20 * time.Second
@@ -108,15 +112,17 @@ func (s *Server) eventsKeepaliveInterval() time.Duration {
 func NewServer(db *DB) *Server {
 	StartUploadCleaner(defaultUploadDir, 6*time.Hour)
 	s := &Server{
-		db:              db,
-		providers:       make(map[string]Provider),
-		subscribers:     make(map[chan *Session]bool),
-		hostHealthMap:   make(map[string]*HostHealth),
-		activeSubagents: make(map[string][]*SubagentInfo),
-		speechCache:     make(map[string]*SpeechSummary),
-		promptDedup:     newPromptDedup(),
-		ntfyClient:      &http.Client{Timeout: 5 * time.Second},
-		restartDaemonFn: restartLocalDaemonAsync,
+		db:                db,
+		providers:         make(map[string]Provider),
+		subscribers:       make(map[chan *Session]bool),
+		hostHealthMap:     make(map[string]*HostHealth),
+		activeSubagents:   make(map[string][]*SubagentInfo),
+		speechCache:       make(map[string]*SpeechSummary),
+		promptDedup:       newPromptDedup(),
+		ntfyClient:        &http.Client{Timeout: 5 * time.Second},
+		restartDaemonFn:   restartLocalDaemonAsync,
+		transcriptCache:   make(map[string]*transcriptCacheEntry),
+		subagentDiskCache: make(map[string]*subagentDiskCacheEntry),
 	}
 	s.headless = NewHeadlessRunner(db, s.broadcast)
 	s.headless.SetOnTurnComplete(s.clearSubagents)

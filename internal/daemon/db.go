@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 	blocked_questions TEXT DEFAULT '',
 	blocked_reset_at TIMESTAMP,
 	blocked_meta TEXT DEFAULT '',
+	old_id TEXT DEFAULT '',
 	metadata_updated_at TIMESTAMP
 );
 
@@ -225,6 +226,7 @@ CREATE INDEX IF NOT EXISTS idx_task_workers_active ON task_workers(is_active);
 CREATE INDEX IF NOT EXISTS idx_task_workstreams_task ON task_workstreams(task_id);
 CREATE INDEX IF NOT EXISTS idx_task_deliverables_task_id ON task_deliverables(task_id);
 CREATE INDEX IF NOT EXISTS idx_node_host_paths_node_path ON node_host_paths(node_path);
+CREATE INDEX IF NOT EXISTS idx_sessions_native_id ON sessions(native_id);
 `
 
 func InitDB(dbPath string) (*DB, error) {
@@ -234,7 +236,7 @@ func InitDB(dbPath string) (*DB, error) {
 		return nil, fmt.Errorf("failed to create db directory: %w", err)
 	}
 
-	dsn := dbPath + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(1)"
+	dsn := dbPath + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(1)&_txlock=immediate"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open sqlite database: %w", err)
@@ -275,6 +277,7 @@ func InitDB(dbPath string) (*DB, error) {
 	_, _ = db.Exec("ALTER TABLE sessions ADD COLUMN account_id TEXT;")
 	_, _ = db.Exec("ALTER TABLE sessions ADD COLUMN engine_type TEXT DEFAULT 'tmux';")
 	_, _ = db.Exec("ALTER TABLE sessions ADD COLUMN old_id TEXT;")
+	_, _ = db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_old_id ON sessions(old_id);")
 	_, _ = db.Exec("ALTER TABLE sessions ADD COLUMN model TEXT DEFAULT '';")
 	_, _ = db.Exec("ALTER TABLE sessions ADD COLUMN effort TEXT DEFAULT '';")
 	_, _ = db.Exec("ALTER TABLE sessions ADD COLUMN permission_mode TEXT DEFAULT 'bypassPermissions';")
@@ -650,16 +653,11 @@ func (d *DB) SaveSession(s *Session) error {
 	return nil
 }
 
-func (d *DB) GetSession(id string) (*Session, error) {
-	query := `
-	SELECT id, agent, host, native_id, cwd, roots, project_key, state,
-	       blocked_kind, blocked_reason, blocked_since, blocked_question, blocked_options, blocked_questions, blocked_reset_at, blocked_meta, activity,
-	       started_at, last_event_at, managed, tmux_name, pid, archived, node_path, name, entrypoint, kind, version, context_pct, git_branch,
-	       custom_title, ai_title, ai_description, first_prompt, last_prompt, is_unread, last_state_change_at, is_done, is_later, account_id, engine_type, old_id, metadata_updated_at, is_supervisor, current_task_id,
-	       model, effort, permission_mode, extra_dirs
-	FROM sessions WHERE id = ? OR native_id = ? OR native_id = ?;
-	`
+type sessionRowScanner interface {
+	Scan(dest ...any) error
+}
 
+func scanSingleSessionRow(row sessionRowScanner) (*Session, error) {
 	var s Session
 	var rootsStr, blockedKind, blockedReason, blockedQuestion, blockedOptions, blockedQuestions, blockedMetaVal, nodePath, sessName, entrypointVal, kindVal, versionVal, gitBranchVal sql.NullString
 	var customTitleVal, aiTitleVal, aiDescVal, firstPromptVal, lastPromptVal, accountIDVal, engineTypeVal, oldIDVal, currentTaskIDVal, modelVal, effortVal, permModeVal, extraDirsVal sql.NullString
@@ -667,12 +665,6 @@ func (d *DB) GetSession(id string) (*Session, error) {
 	var blockedSince, blockedResetAt, lastStateChangeAt, metadataUpdatedAt sql.NullTime
 	var managedInt, archivedInt, isUnreadInt, isDoneInt, isLaterInt int
 
-	nativeCandidate := id
-	if idx := strings.LastIndex(id, ":"); idx != -1 {
-		nativeCandidate = id[idx+1:]
-	}
-
-	row := d.db.QueryRow(query, id, id, nativeCandidate)
 	err := row.Scan(
 		&s.ID, &s.Agent, &s.Host, &s.NativeID, &s.Cwd, &rootsStr, &s.ProjectKey, (*int)(&s.State),
 		&blockedKind, &blockedReason, &blockedSince, &blockedQuestion, &blockedOptions, &blockedQuestions, &blockedResetAt, &blockedMetaVal, &s.Activity,
@@ -736,8 +728,6 @@ func (d *DB) GetSession(id string) (*Session, error) {
 	}
 	if gitBranchVal.Valid {
 		s.GitBranch = gitBranchVal.String
-	} else if s.Cwd != "" {
-		s.GitBranch = ResolveGitBranch(s.Cwd)
 	}
 	if customTitleVal.Valid {
 		s.CustomTitle = customTitleVal.String
@@ -805,6 +795,75 @@ func (d *DB) GetSession(id string) (*Session, error) {
 	}
 
 	return &s, nil
+}
+
+func (d *DB) GetSession(id string) (*Session, error) {
+	if d == nil || d.db == nil {
+		return nil, nil
+	}
+
+	query := `
+	SELECT id, agent, host, native_id, cwd, roots, project_key, state,
+	       blocked_kind, blocked_reason, blocked_since, blocked_question, blocked_options, blocked_questions, blocked_reset_at, blocked_meta, activity,
+	       started_at, last_event_at, managed, tmux_name, pid, archived, node_path, name, entrypoint, kind, version, context_pct, git_branch,
+	       custom_title, ai_title, ai_description, first_prompt, last_prompt, is_unread, last_state_change_at, is_done, is_later, account_id, engine_type, old_id, metadata_updated_at, is_supervisor, current_task_id,
+	       model, effort, permission_mode, extra_dirs
+	FROM sessions WHERE id = ? OR native_id = ? OR native_id = ?;
+	`
+
+	nativeCandidate := id
+	if idx := strings.LastIndex(id, ":"); idx != -1 {
+		nativeCandidate = id[idx+1:]
+	}
+
+	return scanSingleSessionRow(d.db.QueryRow(query, id, id, nativeCandidate))
+}
+
+func (d *DB) GetSessionByAlias(sessionID string) (*Session, error) {
+	if d == nil || d.db == nil || sessionID == "" {
+		return nil, sql.ErrNoRows
+	}
+
+	query := `
+	SELECT id, agent, host, native_id, cwd, roots, project_key, state,
+	       blocked_kind, blocked_reason, blocked_since, blocked_question, blocked_options, blocked_questions, blocked_reset_at, blocked_meta, activity,
+	       started_at, last_event_at, managed, tmux_name, pid, archived, node_path, name, entrypoint, kind, version, context_pct, git_branch,
+	       custom_title, ai_title, ai_description, first_prompt, last_prompt, is_unread, last_state_change_at, is_done, is_later, account_id, engine_type, old_id, metadata_updated_at, is_supervisor, current_task_id,
+	       model, effort, permission_mode, extra_dirs
+	FROM sessions WHERE old_id = ? COLLATE NOCASE OR native_id = ? OR id = ? COLLATE NOCASE LIMIT 1;
+	`
+	sess, err := scanSingleSessionRow(d.db.QueryRow(query, sessionID, sessionID, sessionID))
+	if err == nil && sess != nil {
+		return sess, nil
+	}
+
+	if idx := strings.LastIndex(sessionID, ":"); idx != -1 && idx+1 < len(sessionID) {
+		candidate := sessionID[idx+1:]
+		sess, err = scanSingleSessionRow(d.db.QueryRow(query, candidate, candidate, candidate))
+		if err == nil && sess != nil {
+			return sess, nil
+		}
+	}
+
+	if len(sessionID) >= 36 {
+		candidate := sessionID[len(sessionID)-36:]
+		if strings.Count(candidate, "-") == 4 {
+			q := `
+			SELECT id, agent, host, native_id, cwd, roots, project_key, state,
+			       blocked_kind, blocked_reason, blocked_since, blocked_question, blocked_options, blocked_questions, blocked_reset_at, blocked_meta, activity,
+			       started_at, last_event_at, managed, tmux_name, pid, archived, node_path, name, entrypoint, kind, version, context_pct, git_branch,
+			       custom_title, ai_title, ai_description, first_prompt, last_prompt, is_unread, last_state_change_at, is_done, is_later, account_id, engine_type, old_id, metadata_updated_at, is_supervisor, current_task_id,
+			       model, effort, permission_mode, extra_dirs
+			FROM sessions WHERE native_id = ? OR native_id LIKE ? OR id LIKE ? LIMIT 1;
+			`
+			sess, err = scanSingleSessionRow(d.db.QueryRow(q, candidate, "%"+candidate, "%"+candidate))
+			if err == nil && sess != nil {
+				return sess, nil
+			}
+		}
+	}
+
+	return nil, sql.ErrNoRows
 }
 
 func (d *DB) ListSessions() ([]*Session, error) {
@@ -894,8 +953,6 @@ func (d *DB) ListSessions() ([]*Session, error) {
 		}
 		if gitBranchVal.Valid {
 			s.GitBranch = gitBranchVal.String
-		} else if s.Cwd != "" {
-			s.GitBranch = ResolveGitBranch(s.Cwd)
 		}
 		if customTitleVal.Valid {
 			s.CustomTitle = customTitleVal.String
@@ -1140,8 +1197,6 @@ func (d *DB) ListActiveSessions() ([]*Session, error) {
 		}
 		if gitBranchVal.Valid {
 			s.GitBranch = gitBranchVal.String
-		} else if s.Cwd != "" {
-			s.GitBranch = ResolveGitBranch(s.Cwd)
 		}
 		if customTitleVal.Valid {
 			s.CustomTitle = customTitleVal.String

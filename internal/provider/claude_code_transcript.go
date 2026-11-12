@@ -1,13 +1,11 @@
 package provider
 
 import (
-	"bufio"
-	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"ackbar/internal/daemon"
 )
@@ -35,7 +33,8 @@ func (c *ClaudeProvider) ResolveSessionTitle(cwd, nativeID string) string {
 	return ""
 }
 
-func (c *ClaudeProvider) ExtractTranscript(home, cwd, nativeID string) ([]daemon.TranscriptMessage, error) {
+// FindClaudeTranscriptPath resolves the on-disk JSONL log path for a Claude Code session.
+func FindClaudeTranscriptPath(home, cwd, nativeID string) string {
 	var targetFile string
 	projectsDir := filepath.Join(home, ".claude", "projects")
 
@@ -92,7 +91,16 @@ func (c *ClaudeProvider) ExtractTranscript(home, cwd, nativeID string) ([]daemon
 			}
 		}
 	}
+	return targetFile
+}
 
+// ParseClaudeCodeJSONL parses lines from an io.Reader into TranscriptMessages, coalescing onto base.
+func ParseClaudeCodeJSONL(r io.Reader, filterUser func(raw map[string]interface{}, text string) (string, bool), base []daemon.TranscriptMessage) ([]daemon.TranscriptMessage, error) {
+	return daemon.ParseClaudeCodeJSONL(r, filterUser, base)
+}
+
+func (c *ClaudeProvider) ExtractTranscript(home, cwd, nativeID string) ([]daemon.TranscriptMessage, error) {
+	targetFile := FindClaudeTranscriptPath(home, cwd, nativeID)
 	if targetFile == "" {
 		return nil, fmt.Errorf("claude log not found for session %s", nativeID)
 	}
@@ -103,153 +111,7 @@ func (c *ClaudeProvider) ExtractTranscript(home, cwd, nativeID string) ([]daemon
 	}
 	defer file.Close()
 
-	var messages []daemon.TranscriptMessage
-	scanner := bufio.NewScanner(file)
-	buf := make([]byte, 1024*1024)
-	scanner.Buffer(buf, 10*1024*1024)
-
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
-
-		var raw map[string]interface{}
-		if err := json.Unmarshal([]byte(line), &raw); err != nil {
-			continue
-		}
-
-		msgType, _ := raw["type"].(string)
-		tsStr, _ := raw["timestamp"].(string)
-		ts, _ := time.Parse(time.RFC3339, tsStr)
-		if ts.IsZero() {
-			ts = time.Now()
-		}
-
-		if msgType == "user" {
-			var fullText string
-			if msgObj, ok := raw["message"].(map[string]interface{}); ok {
-				if contentStr, ok := msgObj["content"].(string); ok {
-					fullText = contentStr
-				} else if contentArr, ok := msgObj["content"].([]interface{}); ok {
-					var textParts []string
-					for _, cItem := range contentArr {
-						if cMap, ok := cItem.(map[string]interface{}); ok {
-							if cType, ok := cMap["type"].(string); ok && cType == "text" {
-								if txt, ok := cMap["text"].(string); ok && txt != "" {
-									textParts = append(textParts, txt)
-								}
-							}
-						} else if cStr, ok := cItem.(string); ok && cStr != "" {
-							textParts = append(textParts, cStr)
-						}
-					}
-					fullText = strings.Join(textParts, "\n")
-				}
-			} else if contentStr, ok := raw["content"].(string); ok {
-				fullText = contentStr
-			} else if textStr, ok := raw["text"].(string); ok {
-				fullText = textStr
-			}
-
-			if clean, keep := c.FilterUserEntry(raw, fullText); keep {
-				messages = append(messages, daemon.TranscriptMessage{
-					Role:      "user",
-					Content:   clean,
-					Timestamp: ts,
-				})
-			}
-		} else if msgType == "assistant" {
-			if msgObj, ok := raw["message"].(map[string]interface{}); ok {
-				if contentStr, ok := msgObj["content"].(string); ok && contentStr != "" {
-					if len(messages) > 0 && messages[len(messages)-1].Role == "assistant" {
-						last := &messages[len(messages)-1]
-						if last.Content != "" {
-							if !strings.Contains(last.Content, contentStr) {
-								last.Content += "\n\n" + contentStr
-							}
-						} else {
-							last.Content = contentStr
-						}
-						last.Timestamp = ts
-					} else {
-						messages = append(messages, daemon.TranscriptMessage{
-							Role:      "assistant",
-							Content:   contentStr,
-							Timestamp: ts,
-						})
-					}
-				} else if contentArr, ok := msgObj["content"].([]interface{}); ok {
-					var textParts []string
-					var tools []string
-					for _, cItem := range contentArr {
-						if cMap, ok := cItem.(map[string]interface{}); ok {
-							if cType, ok := cMap["type"].(string); ok {
-								if cType == "text" {
-									if txt, ok := cMap["text"].(string); ok && txt != "" {
-										textParts = append(textParts, txt)
-									}
-								} else if cType == "tool_use" {
-									tName, _ := cMap["name"].(string)
-									if tName != "" {
-										detail := ""
-										if inputMap, ok := cMap["input"].(map[string]interface{}); ok {
-											if cmd, ok := inputMap["command"].(string); ok && cmd != "" {
-												detail = strings.TrimSpace(cmd)
-											} else if desc, ok := inputMap["description"].(string); ok && desc != "" {
-												detail = strings.TrimSpace(desc)
-											} else if fp, ok := inputMap["file_path"].(string); ok && fp != "" {
-												detail = strings.TrimSpace(fp)
-											} else if p, ok := inputMap["path"].(string); ok && p != "" {
-												detail = strings.TrimSpace(p)
-											} else if pat, ok := inputMap["pattern"].(string); ok && pat != "" {
-												detail = strings.TrimSpace(pat)
-											} else if q, ok := inputMap["query"].(string); ok && q != "" {
-												detail = strings.TrimSpace(q)
-											}
-										}
-										if detail != "" {
-											tools = append(tools, fmt.Sprintf("%s: %s", tName, detail))
-										} else {
-											tools = append(tools, tName)
-										}
-									}
-								}
-							}
-						}
-					}
-					fullText := strings.Join(textParts, "\n\n")
-					if fullText != "" || len(tools) > 0 {
-						if len(messages) > 0 && messages[len(messages)-1].Role == "assistant" {
-							last := &messages[len(messages)-1]
-							if fullText != "" {
-								if last.Content != "" {
-									if !strings.Contains(last.Content, fullText) {
-										last.Content += "\n\n" + fullText
-									}
-								} else {
-									last.Content = fullText
-								}
-							}
-							if len(tools) > 0 {
-								last.ToolCalls = append(last.ToolCalls, tools...)
-							}
-							last.Timestamp = ts
-						} else {
-							messages = append(messages, daemon.TranscriptMessage{
-								Role:      "assistant",
-								Content:   fullText,
-								ToolCalls: tools,
-								Timestamp: ts,
-							})
-						}
-					}
-				}
-			}
-		}
-	}
-
-	return messages, nil
+	return ParseClaudeCodeJSONL(file, c.FilterUserEntry, nil)
 }
 
 func (c *ClaudeProvider) CleanSessionFiles(home, cwd, nativeID string) error {

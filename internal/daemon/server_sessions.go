@@ -277,18 +277,8 @@ func (s *Server) resolveSession(sessionID string) *Session {
 	}
 
 	// Fallback 2: Check by OldID or NativeID match
-	if all, err := s.db.ListSessions(); err == nil {
-		for _, sRecord := range all {
-			if sRecord.OldID != "" && (sRecord.OldID == sessionID || strings.EqualFold(sRecord.OldID, sessionID)) {
-				return sRecord
-			}
-			if sRecord.NativeID != "" && (sRecord.NativeID == sessionID || strings.HasSuffix(sessionID, ":"+sRecord.NativeID) || strings.HasSuffix(sessionID, "-"+sRecord.NativeID)) {
-				return sRecord
-			}
-			if strings.EqualFold(sRecord.ID, sessionID) {
-				return sRecord
-			}
-		}
+	if found, _ := s.db.GetSessionByAlias(sessionID); found != nil {
+		return found
 	}
 
 	return nil
@@ -312,6 +302,15 @@ func (s *Server) remoteHostForSession(sessionID string, sess *Session) *HostReco
 	return nil
 }
 
+var peerProxyHTTPClient = &http.Client{
+	Timeout: 15 * time.Second,
+	Transport: &http.Transport{
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 20,
+		IdleConnTimeout:     90 * time.Second,
+	},
+}
+
 func (s *Server) proxyToRemoteHost(w http.ResponseWriter, method, targetURL, contentType string, body io.Reader) bool {
 	fwdReq, err := http.NewRequest(method, targetURL, body)
 	if err != nil {
@@ -328,7 +327,7 @@ func (s *Server) proxyToRemoteHost(w http.ResponseWriter, method, targetURL, con
 		fwdReq.Header.Set("Authorization", "Bearer "+token)
 		fwdReq.Header.Set("X-Ackbar-Token", token)
 	}
-	resp, err := http.DefaultClient.Do(fwdReq)
+	resp, err := peerProxyHTTPClient.Do(fwdReq)
 	if err != nil {
 		return false
 	}
@@ -340,6 +339,12 @@ func (s *Server) proxyToRemoteHost(w http.ResponseWriter, method, targetURL, con
 }
 
 func (s *Server) resolveSessionOrProxy(w http.ResponseWriter, method, sessionID, contentType string, body io.Reader, buildPath func(sess *Session) string) (*Session, bool) {
+	if hostRec := s.remoteHostForSession(sessionID, nil); hostRec != nil && hostRec.URL != "" {
+		targetURL := strings.TrimSuffix(hostRec.URL, "/") + buildPath(nil)
+		if s.proxyToRemoteHost(w, method, targetURL, contentType, body) {
+			return nil, true
+		}
+	}
 	sess := s.resolveSession(sessionID)
 	if hostRec := s.remoteHostForSession(sessionID, sess); hostRec != nil && hostRec.URL != "" {
 		targetURL := strings.TrimSuffix(hostRec.URL, "/") + buildPath(sess)
