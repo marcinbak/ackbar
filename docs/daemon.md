@@ -130,20 +130,20 @@ When several clients with different sizes are attached to one session (web, mobi
 Headless sessions (`engine_type = "headless"`, `tmux_name = ""`) execute turns through detached worker processes (`ackbard --headless-worker`) without allocating a `tmux` session:
 
 * **Warm Persistent Worker (`Setsid: true`):** Spawns detached `ackbard --headless-worker --worker-spec <path> --idle-ttl <dur>`. Keeps child CLI and MCP servers alive across turns.
-* **Unix Domain Socket RPC:** Communicates over `0600` sockets in `~/.config/ackbar/run` (or short temp directory). Supports `status`, `send_turn`, `subscribe`, `cancel`, and `shutdown`.
+* **Unix Domain Socket RPC:** Communicates over `0600` sockets in `~/.config/ackbar/run` (or short temp directory). Supports `status`, `send_turn`, `restart_child`, `subscribe`, `cancel`, and `shutdown`.
 * **Worker Sidecar Isolation:** Persists worker metadata to `w_<workerID>.worker.json` (`0600`). Retains per-turn metadata in `turn_<id>.meta.json`.
 * **Monotonic Turn Spool (`turn_<id>.ndjson`):** Sequenced events stream to disk atomically with `0600` permissions. Pre-writes `seq: 1` (`turn_start`) before provider output arrives.
 * **Idle-Warm Lifetime & Auto-Reap:** Idle workers wait in `idle_warm` state. Worker exits after idle timeout (`ACKBAR_HEADLESS_IDLE_TTL`, default `20m`).
 * **Idle-TTL Race Recovery:** If `send_turn` races with idle timeout reap, `HeadlessRunner.RunTurn` automatically respawns a warm worker.
-* **Configuration Fingerprint (`ConfigFingerprint`):** Tracks agent, model, effort, permissions, account, directory, and supervisor status. Reaps idle workers immediately on configuration change.
-* **Active Turn Configuration Rotation:** If configuration changes during an active turn, runner flags worker for rotation on turn completion.
+* **Configuration & MCP Fingerprints (`ConfigFingerprint`, `MCPFingerprint`):** `ConfigFingerprint` rotates full workers on model/effort/permission changes; `MCPFingerprint` swaps only the inner CLI child (`restart_child`) on MCP/credential updates.
+* **Active Turn Configuration Rotation:** If configuration or MCP auth changes mid-turn, runner flags the worker or child for post-turn rotation.
 * **Gapless SSE Replay & Synthesis:** `/v1/sessions/chat/stream` supports `?after_seq`, `?turn_id`, and `Last-Event-ID`. `/v1/sessions/transcript` synthesizes active turns (`in_flight_turn`) from the spool.
 * **Startup Re-Attachment & Recovery (`InitDB`):** Discovers `w_<workerID>.worker.json` files on boot. Re-attaches `running_turn` workers and registers `idle_warm` workers for zero-cold-start reuse.
 * **State Authority (`s.headless.IsRunning`):** `HeadlessRunner.IsRunning(sess.ID)` provides the source of truth for turn status. Exit hooks do not flip active turns to `StateIdle`.
 * **Runtime Cleanup & Server-Side `auto_done`:** Marking `Done` or `auto_done` sweep stops active workers, kills tmux sessions, prunes spools, and resets runtime state.
 * **OS Idle-Sleep Protection (`sleep_inhibitor.go`):** Holds sleep inhibitor strictly while `ActiveTurnCount() > 0`. Releases lock immediately when worker enters `idle_warm`.
 * **Process Teardown & Cross-OS Safety:** Verifies socket `TurnID` before signaling PIDs. Child process-group teardown uses `Setpgid: true` and `> 1` PID/PGID guards.
-* **Synchronous Worker Teardown:** Actions `take-wheel`, `done`, `kill`, `restart`, and interactive approvals synchronously reap warm workers before acquiring locks.
+* **In-Place Restart & Worker Teardown:** `restart` swaps the headless CLI child (`RestartSessionChild`) or respawns the tmux pane (`tmux.RespawnWithEnv`); `take-wheel`, `done`, and `kill` reap warm workers.
 * **Daemon Restart Resilience (`InitDB` & Drain Mode):** Updates and shutdowns with `drain=true` defer restart until active turns finish. Interrupted sessions reset to `StateIdle` on boot.
 * **Per-Turn Invocation & Conversation Continuity:**
   * **Claude Code:** Runs `claude -p --input-format stream-json --output-format stream-json --verbose`. Dispatches turns via stdin NDJSON `{"type":"user","message":{"role":"user","content":"<prompt>"}}`.

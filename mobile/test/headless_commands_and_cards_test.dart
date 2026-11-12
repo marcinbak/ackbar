@@ -1,4 +1,5 @@
 import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -18,11 +19,16 @@ class FakeCommandHttpClient extends http.BaseClient {
   Future<http.StreamedResponse> send(http.BaseRequest request) async {
     final response = handler != null
         ? handler!(request)
-        : http.Response(jsonEncode({'status': 'ok'}), 200,
-            headers: {'content-type': 'application/json'});
+        : http.Response(
+            jsonEncode({'status': 'ok'}),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
     return http.StreamedResponse(
-        Stream.value(response.bodyBytes), response.statusCode,
-        headers: response.headers);
+      Stream.value(response.bodyBytes),
+      response.statusCode,
+      headers: response.headers,
+    );
   }
 }
 
@@ -82,7 +88,10 @@ void main() {
 
   group('HeadlessCommandDispatcher Tests', () {
     final host = HostRecord(
-        name: 'local', url: 'http://127.0.0.1:7777', createdAt: DateTime.now());
+      name: 'local',
+      url: 'http://127.0.0.1:7777',
+      createdAt: DateTime.now(),
+    );
     final session = Session(
       id: 's-cmd-1',
       agent: 'claude-code',
@@ -123,25 +132,27 @@ void main() {
       expect(res.card?.shell?.stdout, 'On branch main');
     });
 
-    test('/effort on antigravity returns info card without network call',
-        () async {
-      var callMade = false;
-      final client = FakeCommandHttpClient((req) {
-        callMade = true;
-        return http.Response(jsonEncode({}), 200);
-      });
+    test(
+      '/effort on antigravity returns info card without network call',
+      () async {
+        var callMade = false;
+        final client = FakeCommandHttpClient((req) {
+          callMade = true;
+          return http.Response(jsonEncode({}), 200);
+        });
 
-      final agySession = session.copyWith(agent: 'antigravity');
-      final dispatcher = HeadlessCommandDispatcher(
-        apiClient: ApiClient(client: client),
-        host: host,
-      );
+        final agySession = session.copyWith(agent: 'antigravity');
+        final dispatcher = HeadlessCommandDispatcher(
+          apiClient: ApiClient(client: client),
+          host: host,
+        );
 
-      final res = await dispatcher.dispatch(agySession, '/effort high');
-      expect(res.intercepted, isTrue);
-      expect(callMade, isFalse);
-      expect(res.card?.statusBody, contains('Antigravity model IDs'));
-    });
+        final res = await dispatcher.dispatch(agySession, '/effort high');
+        expect(res.intercepted, isTrue);
+        expect(callMade, isFalse);
+        expect(res.card?.statusBody, contains('Antigravity model IDs'));
+      },
+    );
 
     test('/commit passes through to normal prompt dispatch', () async {
       final dispatcher = HeadlessCommandDispatcher(
@@ -149,15 +160,54 @@ void main() {
         host: host,
       );
 
-      final res =
-          await dispatcher.dispatch(session, '/commit feat: new feature');
+      final res = await dispatcher.dispatch(
+        session,
+        '/commit feat: new feature',
+      );
       expect(res.intercepted, isFalse);
     });
+
+    test(
+      '/restart invokes session control restart and updates session state',
+      () async {
+        Uri? capturedUri;
+        Session? updatedSession;
+        final client = FakeCommandHttpClient((req) {
+          capturedUri = req.url;
+          return http.Response(jsonEncode({'status': 'restarted'}), 200);
+        });
+
+        final blockedSess = session.copyWith(
+          state: SessionState.blocked,
+          blocked: Blocked(
+            kind: BlockKind.auth,
+            reason: 'MCP needs auth',
+            options: const [],
+            since: DateTime.now(),
+          ),
+        );
+        final dispatcher = HeadlessCommandDispatcher(
+          apiClient: ApiClient(client: client),
+          host: host,
+          onSessionUpdated: (s) => updatedSession = s,
+        );
+
+        final res = await dispatcher.dispatch(blockedSess, '/restart');
+        expect(res.intercepted, isTrue);
+        expect(capturedUri?.path, '/v1/sessions/control');
+        expect(capturedUri?.queryParameters['action'], 'restart');
+        expect(capturedUri?.queryParameters['id'], blockedSess.id);
+        expect(updatedSession?.state, SessionState.idle);
+        expect(updatedSession?.isBlocked, isFalse);
+        expect(res.card?.statusTitle, 'Session Restarted');
+      },
+    );
   });
 
   group('HeadlessCommandCardView Tests', () {
-    testWidgets('Shell card renders stdout and triggers attach to prompt',
-        (tester) async {
+    testWidgets('Shell card renders stdout and triggers attach to prompt', (
+      tester,
+    ) async {
       String? attachedText;
       final card = HeadlessEphemeralCardEntry(
         id: 'shell-1',
@@ -193,12 +243,15 @@ void main() {
       expect(find.text('8ms'), findsOneWidget);
       expect(find.text('file1.dart\nfile2.dart'), findsOneWidget);
 
-      await tester
-          .tap(find.byKey(const ValueKey('headless_attach_to_prompt_shell-1')));
+      await tester.tap(
+        find.byKey(const ValueKey('headless_attach_to_prompt_shell-1')),
+      );
       await tester.pump();
 
-      expect(attachedText,
-          contains('```shell\n\$ ls\nfile1.dart\nfile2.dart\n```'));
+      expect(
+        attachedText,
+        contains('```shell\n\$ ls\nfile1.dart\nfile2.dart\n```'),
+      );
     });
 
     testWidgets('Rewind card renders interactive turn buttons', (tester) async {
@@ -213,9 +266,15 @@ void main() {
           totalTurns: 2,
           turns: [
             RewindTurnItem(
-                turn: 1, timestamp: DateTime.now(), preview: 'Initial setup'),
+              turn: 1,
+              timestamp: DateTime.now(),
+              preview: 'Initial setup',
+            ),
             RewindTurnItem(
-                turn: 2, timestamp: DateTime.now(), preview: 'Add models'),
+              turn: 2,
+              timestamp: DateTime.now(),
+              preview: 'Add models',
+            ),
           ],
         ),
       );
@@ -234,9 +293,13 @@ void main() {
       await tester.pump();
 
       expect(
-          find.byKey(const ValueKey('headless_rewind_turn_1')), findsOneWidget);
+        find.byKey(const ValueKey('headless_rewind_turn_1')),
+        findsOneWidget,
+      );
       expect(
-          find.byKey(const ValueKey('headless_rewind_turn_2')), findsOneWidget);
+        find.byKey(const ValueKey('headless_rewind_turn_2')),
+        findsOneWidget,
+      );
 
       await tester.tap(find.byKey(const ValueKey('headless_rewind_turn_2')));
       await tester.pump();
@@ -244,8 +307,9 @@ void main() {
       expect(selectedTurn, 2);
     });
 
-    testWidgets('Inspect card formats context and cost structured output',
-        (tester) async {
+    testWidgets('Inspect card formats context and cost structured output', (
+      tester,
+    ) async {
       final card = HeadlessEphemeralCardEntry(
         id: 'inspect-1',
         kind: 'inspect',
@@ -271,20 +335,21 @@ void main() {
       await tester.pumpWidget(
         MaterialApp(
           home: Scaffold(
-            body: HeadlessCommandCardView(
-              entry: card,
-              onDismiss: () {},
-            ),
+            body: HeadlessCommandCardView(entry: card, onDismiss: () {}),
           ),
         ),
       );
       await tester.pump();
 
       expect(find.textContaining('Model: claude-3-7-sonnet'), findsOneWidget);
-      expect(find.textContaining('Context: 12000 / 200000 (6.0%)'),
-          findsOneWidget);
-      expect(find.textContaining('Est. API: \$0.0350 (Claude token rates)'),
-          findsOneWidget);
+      expect(
+        find.textContaining('Context: 12000 / 200000 (6.0%)'),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining('Est. API: \$0.0350 (Claude token rates)'),
+        findsOneWidget,
+      );
     });
   });
 }

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+
 import '../../../core/models/session.dart';
 import '../../../core/navigation/session_navigator.dart';
 import '../../../core/providers/fleet_providers.dart';
@@ -41,11 +42,10 @@ class SessionDetailSheet extends ConsumerWidget {
     return Container(
       decoration: const BoxDecoration(
         color: AppColors.background,
-        borderRadius:
-            BorderRadius.vertical(top: Radius.circular(AppSpacing.radiusXl)),
-        border: Border(
-          top: BorderSide(color: AppColors.outline, width: 1.5),
+        borderRadius: BorderRadius.vertical(
+          top: Radius.circular(AppSpacing.radiusXl),
         ),
+        border: Border(top: BorderSide(color: AppColors.outline, width: 1.5)),
       ),
       padding: EdgeInsets.only(
         left: AppSpacing.lg,
@@ -79,15 +79,18 @@ class SessionDetailSheet extends ConsumerWidget {
                   color: session.agentColor.withOpacity(0.15),
                   borderRadius: AppSpacing.roundedSm,
                   border: Border.all(
-                      color: session.agentColor.withOpacity(0.4), width: 1),
+                    color: session.agentColor.withOpacity(0.4),
+                    width: 1,
+                  ),
                 ),
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     AgentLogo(
-                        agent: session.agent,
-                        size: 12,
-                        color: session.agentColor),
+                      agent: session.agent,
+                      size: 12,
+                      color: session.agentColor,
+                    ),
                     const SizedBox(width: 5),
                     Text(
                       session.agentDisplayName,
@@ -105,8 +108,10 @@ class SessionDetailSheet extends ConsumerWidget {
                 decoration: BoxDecoration(
                   color: AppColors.surfaceHighlight,
                   borderRadius: AppSpacing.roundedSm,
-                  border:
-                      Border.all(color: AppColors.outlineSubtle, width: 0.5),
+                  border: Border.all(
+                    color: AppColors.outlineSubtle,
+                    width: 0.5,
+                  ),
                 ),
                 child: Text(
                   session.hostTag,
@@ -119,8 +124,10 @@ class SessionDetailSheet extends ConsumerWidget {
               if (session.gitBranch.isNotEmpty) ...[
                 const SizedBox(width: 8),
                 Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 6,
+                    vertical: 3,
+                  ),
                   decoration: BoxDecoration(
                     color: AppColors.surfaceHighlight,
                     borderRadius: AppSpacing.roundedSm,
@@ -128,13 +135,17 @@ class SessionDetailSheet extends ConsumerWidget {
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      const Icon(Icons.fork_right_rounded,
-                          size: 11, color: AppColors.textMuted),
+                      const Icon(
+                        Icons.fork_right_rounded,
+                        size: 11,
+                        color: AppColors.textMuted,
+                      ),
                       const SizedBox(width: 3),
                       Text(
                         session.gitBranch,
-                        style: AppTypography.codeXs
-                            .copyWith(color: AppColors.textSecondary),
+                        style: AppTypography.codeXs.copyWith(
+                          color: AppColors.textSecondary,
+                        ),
                       ),
                     ],
                   ),
@@ -142,7 +153,9 @@ class SessionDetailSheet extends ConsumerWidget {
               ],
               const Spacer(),
               StatusBadge(
-                  status: session.state.toBadgeStatus(), isCompact: true),
+                status: session.state.toBadgeStatus(),
+                isCompact: true,
+              ),
             ],
           ),
           AppSpacing.gapH16,
@@ -249,7 +262,9 @@ class SessionDetailSheet extends ConsumerWidget {
                 backgroundColor: AppColors.statusEmerald.withOpacity(0.2),
                 foregroundColor: AppColors.statusEmerald,
                 side: const BorderSide(
-                    color: AppColors.statusEmerald, width: 1.5),
+                  color: AppColors.statusEmerald,
+                  width: 1.5,
+                ),
                 padding: const EdgeInsets.symmetric(vertical: 12),
               ),
             ),
@@ -292,9 +307,11 @@ class SessionDetailSheet extends ConsumerWidget {
                       .handoverSession(session.id);
                   messenger.showSnackBar(
                     SnackBar(
-                      content: Text(ok
-                          ? 'Handover initiated for ${session.displayTitle}'
-                          : 'Failed to initiate handover for ${session.displayTitle}'),
+                      content: Text(
+                        ok
+                            ? 'Handover initiated for ${session.displayTitle}'
+                            : 'Failed to initiate handover for ${session.displayTitle}',
+                      ),
                       backgroundColor: ok
                           ? AppColors.statusAmber.withOpacity(0.8)
                           : AppColors.statusCoral,
@@ -307,8 +324,10 @@ class SessionDetailSheet extends ConsumerWidget {
               style: ElevatedButton.styleFrom(
                 backgroundColor: AppColors.statusAmber.withOpacity(0.18),
                 foregroundColor: AppColors.statusAmber,
-                side:
-                    const BorderSide(color: AppColors.statusAmber, width: 1.5),
+                side: const BorderSide(
+                  color: AppColors.statusAmber,
+                  width: 1.5,
+                ),
               ),
             ),
             AppSpacing.gapH8,
@@ -329,7 +348,10 @@ class SessionDetailSheet extends ConsumerWidget {
                           }
                           Navigator.of(context).pop();
                           SessionNavigator.openSession(
-                              navContext, null, session);
+                            navContext,
+                            null,
+                            session,
+                          );
                         }
                       : null,
                   icon: Icon(
@@ -338,13 +360,16 @@ class SessionDetailSheet extends ConsumerWidget {
                         : Icons.terminal_rounded,
                     size: 16,
                   ),
-                  label:
-                      Text(session.isHeadless ? 'Open Chat' : 'Open Terminal'),
+                  label: Text(
+                    session.isHeadless ? 'Open Chat' : 'Open Terminal',
+                  ),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: AppColors.statusEmerald.withOpacity(0.15),
                     foregroundColor: AppColors.statusEmerald,
                     side: const BorderSide(
-                        color: AppColors.statusEmerald, width: 1),
+                      color: AppColors.statusEmerald,
+                      width: 1,
+                    ),
                   ),
                 ),
               ),
@@ -378,6 +403,39 @@ class SessionDetailSheet extends ConsumerWidget {
             children: [
               Expanded(
                 child: OutlinedButton.icon(
+                  key: const Key('sheet_restart_session_button'),
+                  onPressed: () async {
+                    final messenger = ScaffoldMessenger.of(context);
+                    Navigator.of(context).pop();
+                    final ok = await ref
+                        .read(fleetSessionsProvider.notifier)
+                        .restartSession(session.id);
+                    messenger.showSnackBar(
+                      SnackBar(
+                        content: Text(
+                          ok
+                              ? 'Restarted ${session.displayTitle}'
+                              : 'Failed to restart ${session.displayTitle}',
+                        ),
+                        backgroundColor: ok
+                            ? AppColors.surfaceHighlight
+                            : AppColors.statusCoral,
+                      ),
+                    );
+                  },
+                  icon: const Icon(Icons.restart_alt_rounded, size: 16),
+                  label: const Text('Restart'),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: AppColors.infoCyan,
+                    side: BorderSide(
+                      color: AppColors.infoCyan.withOpacity(0.4),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: OutlinedButton.icon(
                   onPressed: () async {
                     final messenger = ScaffoldMessenger.of(context);
                     Navigator.of(context).pop();
@@ -386,9 +444,11 @@ class SessionDetailSheet extends ConsumerWidget {
                         .terminateSession(session.id);
                     messenger.showSnackBar(
                       SnackBar(
-                        content: Text(ok
-                            ? 'Terminated ${session.displayTitle}'
-                            : 'Failed to terminate ${session.displayTitle}'),
+                        content: Text(
+                          ok
+                              ? 'Terminated ${session.displayTitle}'
+                              : 'Failed to terminate ${session.displayTitle}',
+                        ),
                         backgroundColor: AppColors.statusCoral.withOpacity(0.8),
                       ),
                     );
@@ -398,7 +458,8 @@ class SessionDetailSheet extends ConsumerWidget {
                   style: OutlinedButton.styleFrom(
                     foregroundColor: AppColors.statusCoral,
                     side: BorderSide(
-                        color: AppColors.statusCoral.withOpacity(0.4)),
+                      color: AppColors.statusCoral.withOpacity(0.4),
+                    ),
                   ),
                 ),
               ),
@@ -413,9 +474,11 @@ class SessionDetailSheet extends ConsumerWidget {
                         .deleteSession(session.id);
                     messenger.showSnackBar(
                       SnackBar(
-                        content: Text(ok
-                            ? 'Deleted ${session.displayTitle}'
-                            : 'Failed to delete ${session.displayTitle}'),
+                        content: Text(
+                          ok
+                              ? 'Deleted ${session.displayTitle}'
+                              : 'Failed to delete ${session.displayTitle}',
+                        ),
                         backgroundColor: ok
                             ? AppColors.surfaceHighlight
                             : AppColors.statusCoral,

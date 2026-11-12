@@ -1,8 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
 import '../models/host.dart';
 import '../models/plan.dart';
 import '../models/session.dart';
@@ -17,8 +19,9 @@ import '../utils/node_path_resolver.dart';
 
 enum FleetViewMode { all, supervisors }
 
-final fleetViewModeProvider =
-    StateProvider<FleetViewMode>((ref) => FleetViewMode.all);
+final fleetViewModeProvider = StateProvider<FleetViewMode>(
+  (ref) => FleetViewMode.all,
+);
 
 /// Checks if a session host matches a configured host that is currently offline
 bool isSessionHostOffline(Session session, List<HostRecord> hosts) {
@@ -126,8 +129,9 @@ class DecisionAuditNotifier extends StateNotifier<List<DecisionAuditEntry>> {
 }
 
 final decisionAuditProvider =
-    StateNotifierProvider<DecisionAuditNotifier, List<DecisionAuditEntry>>(
-        (ref) {
+    StateNotifierProvider<DecisionAuditNotifier, List<DecisionAuditEntry>>((
+  ref,
+) {
   return DecisionAuditNotifier();
 });
 
@@ -181,8 +185,10 @@ class HostsNotifier extends StateNotifier<List<HostRecord>> {
   Future<void> _doRefreshHosts() async {
     final updated = <HostRecord>[];
     for (final h in state) {
-      final health =
-          await _apiClient.checkHostHealth(h.url, authToken: h.authToken);
+      final health = await _apiClient.checkHostHealth(
+        h.url,
+        authToken: h.authToken,
+      );
       if (!mounted) return;
       if (health != null) {
         final sessions = await _apiClient.getSessionsOrNull(
@@ -191,13 +197,15 @@ class HostsNotifier extends StateNotifier<List<HostRecord>> {
           hostName: h.name,
         );
         if (!mounted) return;
-        updated.add(h.copyWith(
-          online: true,
-          latencyMs: health['latency_ms'] as int? ?? 1,
-          version: health['version'] as String? ?? '',
-          uptime: health['uptime'] as String? ?? 'Active',
-          sessionsCount: sessions != null ? sessions.length : h.sessionsCount,
-        ));
+        updated.add(
+          h.copyWith(
+            online: true,
+            latencyMs: health['latency_ms'] as int? ?? 1,
+            version: health['version'] as String? ?? '',
+            uptime: health['uptime'] as String? ?? 'Active',
+            sessionsCount: sessions != null ? sessions.length : h.sessionsCount,
+          ),
+        );
       } else {
         updated.add(h.copyWith(online: false));
       }
@@ -226,9 +234,11 @@ class HostsNotifier extends StateNotifier<List<HostRecord>> {
 
   void updateHost(HostRecord updatedHost) {
     state = state
-        .map((h) => h.name == updatedHost.name || h.url == updatedHost.url
-            ? updatedHost
-            : h)
+        .map(
+          (h) => h.name == updatedHost.name || h.url == updatedHost.url
+              ? updatedHost
+              : h,
+        )
         .toList();
     _savePersistedHosts();
     refreshHosts();
@@ -286,8 +296,10 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
 
   FleetSessionsNotifier(this._apiClient, this._ref) : super(const []) {
     _initLiveSync();
-    _hostsSub =
-        _ref.listen<List<HostRecord>>(hostsListProvider, (previous, next) {
+    _hostsSub = _ref.listen<List<HostRecord>>(hostsListProvider, (
+      previous,
+      next,
+    ) {
       if (didHostsConnectionChange(previous, next)) {
         _syncWithHosts(next);
       }
@@ -389,12 +401,14 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
   }
 
   void _upsertSession(Session s) {
-    final index = state.indexWhere((item) =>
-        item.id == s.id ||
-        (s.nativeId.isNotEmpty &&
-            item.nativeId == s.nativeId &&
-            item.host.toLowerCase() == s.host.toLowerCase()) ||
-        (s.oldId.isNotEmpty && item.id == s.oldId));
+    final index = state.indexWhere(
+      (item) =>
+          item.id == s.id ||
+          (s.nativeId.isNotEmpty &&
+              item.nativeId == s.nativeId &&
+              item.host.toLowerCase() == s.host.toLowerCase()) ||
+          (s.oldId.isNotEmpty && item.id == s.oldId),
+    );
     if (index != -1) {
       final updated = List<Session>.from(state);
       updated[index] = s;
@@ -486,8 +500,9 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
 
   /// Mark unread session state as read
   Future<void> markSessionRead(String sessionId, String hostName) async {
-    final index =
-        state.indexWhere((s) => s.id == sessionId || s.nativeId == sessionId);
+    final index = state.indexWhere(
+      (s) => s.id == sessionId || s.nativeId == sessionId,
+    );
     if (index != -1 && state[index].isUnread) {
       final updated = List<Session>.from(state);
       updated[index] = updated[index].copyWith(isUnread: false);
@@ -496,15 +511,21 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
 
     final host = _getHostRecord(hostName);
     final hostUrl = host?.url ?? 'http://127.0.0.1:7777';
-    await _apiClient.markSessionRead(hostUrl, sessionId,
-        authToken: host?.authToken);
+    await _apiClient.markSessionRead(
+      hostUrl,
+      sessionId,
+      authToken: host?.authToken,
+    );
   }
 
   HostRecord? _getHostRecord(String hostName) {
     final hosts = _ref.read(hostsListProvider);
     final target = hostName.toLowerCase();
-    final match = hosts.where((h) =>
-        h.name.toLowerCase() == target || h.url.toLowerCase().contains(target));
+    final match = hosts.where(
+      (h) =>
+          h.name.toLowerCase() == target ||
+          h.url.toLowerCase().contains(target),
+    );
     if (match.isNotEmpty) return match.first;
     final online = hosts.where((h) => h.online);
     if (online.isNotEmpty) return online.first;
@@ -523,17 +544,25 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
     final host = _getHostRecord(session.host);
     final hostUrl = host?.url ?? 'http://127.0.0.1:7777';
 
+    final isPureHeadless = session.isHeadless && session.tmuxName.isEmpty;
     final optimistic = session.copyWith(
-      state: SessionState.working,
-      activity: 'Resuming session in tmux...',
+      state: isPureHeadless ? SessionState.idle : SessionState.working,
+      clearBlocked: true,
+      isDone: false,
+      activity:
+          isPureHeadless ? 'Session resumed' : 'Resuming session in tmux...',
       lastEventAt: DateTime.now(),
     );
     _upsertSession(optimistic);
 
     bool ok = false;
     try {
-      ok = await _apiClient.controlSession(hostUrl, session.id, 'resume',
-          authToken: host?.authToken);
+      ok = await _apiClient.controlSession(
+        hostUrl,
+        session.id,
+        'resume',
+        authToken: host?.authToken,
+      );
     } catch (_) {
       ok = false;
     }
@@ -553,17 +582,26 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
     final host = _getHostRecord(session.host);
     final hostUrl = host?.url ?? 'http://127.0.0.1:7777';
 
+    final isPureHeadless = session.isHeadless && session.tmuxName.isEmpty;
     final optimistic = session.copyWith(
-      state: SessionState.working,
-      activity: 'Restarting session in tmux...',
+      state: isPureHeadless ? SessionState.idle : SessionState.working,
+      clearBlocked: true,
+      isDone: false,
+      activity: isPureHeadless
+          ? 'Session restarted (MCP reloaded)'
+          : 'Restarting session...',
       lastEventAt: DateTime.now(),
     );
     _upsertSession(optimistic);
 
     bool ok = false;
     try {
-      ok = await _apiClient.controlSession(hostUrl, session.id, 'restart',
-          authToken: host?.authToken);
+      ok = await _apiClient.controlSession(
+        hostUrl,
+        session.id,
+        'restart',
+        authToken: host?.authToken,
+      );
     } catch (_) {
       ok = false;
     }
@@ -631,8 +669,12 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
 
     bool ok = false;
     try {
-      ok = await _apiClient.controlSession(hostUrl, session.id, 'kill',
-          authToken: host?.authToken);
+      ok = await _apiClient.controlSession(
+        hostUrl,
+        session.id,
+        'kill',
+        authToken: host?.authToken,
+      );
     } catch (_) {
       ok = false;
     }
@@ -658,8 +700,12 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
 
     bool ok = false;
     try {
-      ok = await _apiClient.controlSession(hostUrl, session.id, 'delete',
-          authToken: host?.authToken);
+      ok = await _apiClient.controlSession(
+        hostUrl,
+        session.id,
+        'delete',
+        authToken: host?.authToken,
+      );
     } catch (_) {
       ok = false;
     }
@@ -685,8 +731,12 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
 
     bool ok = false;
     try {
-      ok = await _apiClient.controlSession(hostUrl, session.id, 'archive',
-          authToken: host?.authToken);
+      ok = await _apiClient.controlSession(
+        hostUrl,
+        session.id,
+        'archive',
+        authToken: host?.authToken,
+      );
     } catch (_) {
       ok = false;
     }
@@ -732,8 +782,9 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
     if (result != null) {
       Session spawnedSession;
       if (result['session'] is Map<String, dynamic>) {
-        final parsed =
-            Session.fromJson(result['session'] as Map<String, dynamic>);
+        final parsed = Session.fromJson(
+          result['session'] as Map<String, dynamic>,
+        );
         spawnedSession = (parsed.host.isEmpty || parsed.host == 'local') &&
                 resolvedHostName != 'local'
             ? parsed.copyWith(host: resolvedHostName)
@@ -774,11 +825,13 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
       }
       await refreshSessions();
       if (mounted &&
-          !state.any((s) =>
-              s.id == spawnedSession.id ||
-              (spawnedSession.nativeId.isNotEmpty &&
-                  s.nativeId == spawnedSession.nativeId &&
-                  s.host.toLowerCase() == spawnedSession.host.toLowerCase()))) {
+          !state.any(
+            (s) =>
+                s.id == spawnedSession.id ||
+                (spawnedSession.nativeId.isNotEmpty &&
+                    s.nativeId == spawnedSession.nativeId &&
+                    s.host.toLowerCase() == spawnedSession.host.toLowerCase()),
+          )) {
         _upsertSession(spawnedSession);
       }
     }
@@ -817,8 +870,9 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
     if (result != null) {
       Session spawned;
       if (result['session'] is Map<String, dynamic>) {
-        final parsed =
-            Session.fromJson(result['session'] as Map<String, dynamic>);
+        final parsed = Session.fromJson(
+          result['session'] as Map<String, dynamic>,
+        );
         spawned = (parsed.host.isEmpty || parsed.host == 'local') &&
                 resolvedHostName != 'local'
             ? parsed.copyWith(host: resolvedHostName)
@@ -875,22 +929,26 @@ final knownProjectPathsProvider = Provider<List<String>>((ref) {
 /// Fetches and caches supported agent discovery for a given host
 final hostAgentDiscoveryProvider = FutureProvider.autoDispose
     .family<List<Map<String, dynamic>>, String>((ref, hostName) async {
-  final hostConfig = ref.watch(hostsListProvider.select((hosts) {
-    HostRecord? host;
-    final target = hostName.toLowerCase();
-    final exactName = hosts.where((h) => h.name.toLowerCase() == target);
-    if (exactName.isNotEmpty) {
-      host = exactName.first;
-    } else {
-      final urlMatch = hosts.where((h) =>
-          h.url.toLowerCase() == target ||
-          h.url.toLowerCase().contains(target));
-      if (urlMatch.isNotEmpty) {
-        host = urlMatch.first;
+  final hostConfig = ref.watch(
+    hostsListProvider.select((hosts) {
+      HostRecord? host;
+      final target = hostName.toLowerCase();
+      final exactName = hosts.where((h) => h.name.toLowerCase() == target);
+      if (exactName.isNotEmpty) {
+        host = exactName.first;
+      } else {
+        final urlMatch = hosts.where(
+          (h) =>
+              h.url.toLowerCase() == target ||
+              h.url.toLowerCase().contains(target),
+        );
+        if (urlMatch.isNotEmpty) {
+          host = urlMatch.first;
+        }
       }
-    }
-    return (host?.url ?? 'http://127.0.0.1:7777', host?.authToken);
-  }));
+      return (host?.url ?? 'http://127.0.0.1:7777', host?.authToken);
+    }),
+  );
 
   final api = ref.watch(apiClientProvider);
   return api.getAgentsDiscovery(hostConfig.$1, authToken: hostConfig.$2);
@@ -959,11 +1017,13 @@ class FleetNodesNotifier extends StateNotifier<List<TreeNode>> {
             merged[node.path] = node;
           } else {
             final existing = merged[node.path]!;
-            final combinedHostPaths =
-                List<NodeHostPath>.from(existing.hostPaths);
+            final combinedHostPaths = List<NodeHostPath>.from(
+              existing.hostPaths,
+            );
             for (final hp in node.hostPaths) {
               if (!combinedHostPaths.any(
-                  (p) => p.host == hp.host && p.projectDir == hp.projectDir)) {
+                (p) => p.host == hp.host && p.projectDir == hp.projectDir,
+              )) {
                 combinedHostPaths.add(hp);
               }
             }
@@ -1168,8 +1228,9 @@ final fleetTreeProvider = Provider<List<FleetTreeFolderNode>>((ref) {
         }
       }
     }
-    directChildren
-        .sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+    directChildren.sort(
+      (a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()),
+    );
 
     final leafName = path.split('/').last;
     return FleetTreeFolderNode(
@@ -1209,17 +1270,19 @@ final fleetTreeProvider = Provider<List<FleetTreeFolderNode>>((ref) {
   // Unassigned folder if any unassigned sessions
   if (unassigned.isNotEmpty) {
     final (sups, tsks, manuals, laters, dones) = partitionSessions(unassigned);
-    rootFolders.add(FleetTreeFolderNode(
-      path: 'Unassigned',
-      name: 'Unassigned',
-      depth: 0,
-      supervisors: sups,
-      tasks: tsks,
-      manualSessions: manuals,
-      laterSessions: laters,
-      doneSessions: dones,
-      children: const [],
-    ));
+    rootFolders.add(
+      FleetTreeFolderNode(
+        path: 'Unassigned',
+        name: 'Unassigned',
+        depth: 0,
+        supervisors: sups,
+        tasks: tsks,
+        manualSessions: manuals,
+        laterSessions: laters,
+        doneSessions: dones,
+        children: const [],
+      ),
+    );
   }
 
   return rootFolders;
@@ -1378,8 +1441,9 @@ class TasksNotifier extends StateNotifier<List<WorkTask>> {
   }
 }
 
-final tasksProvider =
-    StateNotifierProvider<TasksNotifier, List<WorkTask>>((ref) {
+final tasksProvider = StateNotifierProvider<TasksNotifier, List<WorkTask>>((
+  ref,
+) {
   final api = ref.watch(apiClientProvider);
   return TasksNotifier(api, ref);
 });

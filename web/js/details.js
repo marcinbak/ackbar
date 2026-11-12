@@ -241,8 +241,13 @@ ${escapeHtml(session.last_prompt)}
   });
 
   detailsContainer.querySelector('#detBtnRestart').addEventListener('click', async () => {
-    const baseUrl = session.hostUrl ? session.hostUrl.replace(/\/$/, '') : '';
-    await fetch(`${baseUrl}/v1/sessions/control?id=${encodeURIComponent(session.id)}&action=restart`, { method: 'POST' });
+    const baseUrl = getSessionBaseUrl(session.id, session);
+    const res = await fetch(`${baseUrl}/v1/sessions/control?id=${encodeURIComponent(session.id)}&action=restart`, { method: 'POST' });
+    const data = res.ok ? await res.json().catch(() => null) : null;
+    if (data?.session) {
+      if (session.hostUrl && !data.session.hostUrl) data.session.hostUrl = session.hostUrl;
+      Object.assign(session, data.session);
+    }
     openSessionInTab(session);
     await fetchSessions();
   });

@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"ackbar/internal/tmux"
 	"github.com/creack/pty"
 	"golang.org/x/net/websocket"
 )
@@ -279,11 +280,14 @@ func (s *Server) servePTYWS(ws *websocket.Conn) {
 	var cmd *exec.Cmd
 	cwd := ""
 	resumeCmd := ""
+	home := s.effectiveHomeDir()
+	var sessEnv map[string]string
 	if sess != nil {
 		cwd = sess.Cwd
 		if sess.NativeID != "" && sess.Agent != "" {
-			resumeCmd = s.getResumeCmd(sess.Agent, sess.NativeID)
+			resumeCmd, _ = s.getRestartOrResumeCmd(sess, home)
 		}
+		sessEnv = s.buildTmuxSessionEnv(sess, home)
 	}
 	if cwd == "" {
 		cwd = os.Getenv("HOME")
@@ -293,7 +297,7 @@ func (s *Server) servePTYWS(ws *websocket.Conn) {
 	sshTarget := ""
 	if isLocal {
 		// Ensure local tmux session exists before attaching
-		if err := exec.Command("tmux", "has-session", "-t", tmuxName).Run(); err != nil {
+		if !tmux.HasSession(req.Context(), tmuxName) {
 			if resumeCmd != "" {
 				replaySetting := ""
 				if s.db != nil {
@@ -308,28 +312,15 @@ func (s *Server) servePTYWS(ws *websocket.Conn) {
 					}
 				}
 
-				micExport := ""
-				if sess != nil && strings.EqualFold(sess.Agent, "antigravity") {
-					if addr := s.VoiceBridgeAddr(); addr != "" {
-						micExport = fmt.Sprintf("export ANTIGRAVITY_MIC=%q; ", addr)
-					}
-				}
-
+				launchCmd := resumeCmd
 				if transcriptText != "" {
-					tmpFile, ferr := os.CreateTemp("", "ackbar-transcript-*.txt")
-					if ferr == nil {
+					if tmpFile, ferr := os.CreateTemp("", "ackbar-transcript-*.txt"); ferr == nil {
 						_, _ = tmpFile.WriteString(transcriptText)
 						_ = tmpFile.Close()
-						shellCmd := fmt.Sprintf("cat %q 2>/dev/null; rm -f %q; cd %q 2>/dev/null || true; %sexport PATH=\"/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/.npm-global/bin:$PATH\"; %s; exec bash -l", tmpFile.Name(), tmpFile.Name(), cwd, micExport, resumeCmd)
-						_ = exec.Command("tmux", "new-session", "-d", "-s", tmuxName, "-c", cwd, "bash", "-l", "-c", shellCmd).Run()
-					} else {
-						shellCmd := fmt.Sprintf("cd %q 2>/dev/null || true; %sexport PATH=\"/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/.npm-global/bin:$PATH\"; %s; exec bash -l", cwd, micExport, resumeCmd)
-						_ = exec.Command("tmux", "new-session", "-d", "-s", tmuxName, "-c", cwd, "bash", "-l", "-c", shellCmd).Run()
+						launchCmd = fmt.Sprintf("cat %q 2>/dev/null; rm -f %q; %s", tmpFile.Name(), tmpFile.Name(), resumeCmd)
 					}
-				} else {
-					shellCmd := fmt.Sprintf("cd %q 2>/dev/null || true; %sexport PATH=\"/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/.npm-global/bin:$PATH\"; %s; exec bash -l", cwd, micExport, resumeCmd)
-					_ = exec.Command("tmux", "new-session", "-d", "-s", tmuxName, "-c", cwd, "bash", "-l", "-c", shellCmd).Run()
 				}
+				_ = tmux.SpawnWithEnv(req.Context(), tmuxName, cwd, launchCmd, sessEnv)
 			} else {
 				_ = exec.Command("tmux", "new-session", "-d", "-s", tmuxName, "-c", cwd).Run()
 			}

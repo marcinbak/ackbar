@@ -14,10 +14,12 @@ import (
 )
 
 type warmWorkerHandle struct {
-	WorkerID, SessionID, NativeID, SocketPath, WorkerMetaPath, ConfigFingerprint, Bin string
-	Args                                                                              []string
-	WorkerPID, ChildPID                                                               int
-	rotateAfterTurn                                                                   bool
+	WorkerID, SessionID, NativeID, SocketPath, WorkerMetaPath string
+	ConfigFingerprint, MCPFingerprint, Bin                    string
+	Args                                                      []string
+	WorkerPID, ChildPID                                       int
+	rotateAfterTurn                                           bool
+	restartChildAfterTurn                                     bool
 }
 
 func (h *HeadlessRunner) SetIdleTTL(d time.Duration) {
@@ -137,29 +139,43 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 	home, _ := os.UserHomeDir()
 	isExisting := sess.FirstPrompt != "" || sess.LastPrompt != "" || hasConversationOnDisk(sess, home, h.db)
 	fp := ConfigFingerprint(sess)
+	mcpFP := MCPFingerprint(sess, h.db, home)
 
 	if handle != nil {
 		if handle.ConfigFingerprint != fp || handle.rotateAfterTurn {
 			h.ShutdownSessionWorker(sess.ID, sess.NativeID, 3*time.Second)
 			handle, isExisting = nil, true
-		} else if stdinLine, fErr := formatPersistentStdinTurn(sess.Agent, sess.ID, sess.IsSupervisor, false, prompt); fErr == nil {
-			turnStart := time.Now().UTC()
-			turnID := fmt.Sprintf("turn_%d_%s", turnStart.UnixNano(), generateUUID()[:8])
-			meta, startEvt, sErr := h.initTurnSpool(runDir, turnID, sess.ID, sess.NativeID, sess.Agent, sess.Cwd, prompt, handle.Bin, handle.Args, handle.SocketPath, "", handle.WorkerID, handle.WorkerMetaPath, turnStart)
-			if sErr == nil {
-				resp, cErr := callWorkerSocket(handle.SocketPath, workerIPCReq{
-					Op: "send_turn", MetaPath: meta.MetaPath, TurnID: turnID, StdinLine: stdinLine,
-					SessionID: sess.ID, NativeID: sess.NativeID,
-				}, 500*time.Millisecond)
-				if cErr == nil && resp != nil && resp.OK {
-					meta.WorkerPID, meta.ChildPID, meta.Status = resp.WorkerPID, resp.ChildPID, "running"
-					h.recordTurnActive(sess, prompt, turnID, turnStart, meta, resp.ChildPID, startEvt, nil)
-					return nil
+		} else {
+			if (handle.MCPFingerprint != "" && handle.MCPFingerprint != mcpFP) || handle.restartChildAfterTurn {
+				if ok := h.restartHandleChild(sess, handle, isExisting, fp, mcpFP, home, 3*time.Second); !ok {
+					h.ShutdownSessionWorker(sess.ID, sess.NativeID, 500*time.Millisecond)
+					handle, isExisting = nil, true
 				}
-				removeTurnSpoolFiles(meta.MetaPath, meta)
 			}
-			h.ShutdownSessionWorker(sess.ID, sess.NativeID, 300*time.Millisecond)
-			handle, isExisting = nil, true
+			if handle != nil {
+				if stdinLine, fErr := formatPersistentStdinTurn(sess.Agent, sess.ID, sess.IsSupervisor, false, prompt); fErr == nil {
+					turnStart := time.Now().UTC()
+					turnID := fmt.Sprintf("turn_%d_%s", turnStart.UnixNano(), generateUUID()[:8])
+					meta, startEvt, sErr := h.initTurnSpool(runDir, turnID, sess.ID, sess.NativeID, sess.Agent, sess.Cwd, prompt, handle.Bin, handle.Args, handle.SocketPath, "", handle.WorkerID, handle.WorkerMetaPath, turnStart)
+					if sErr == nil {
+						resp, cErr := callWorkerSocket(handle.SocketPath, workerIPCReq{
+							Op: "send_turn", MetaPath: meta.MetaPath, TurnID: turnID, StdinLine: stdinLine,
+							SessionID: sess.ID, NativeID: sess.NativeID,
+						}, 500*time.Millisecond)
+						if cErr == nil && resp != nil && resp.OK {
+							h.mu.Lock()
+							handle.ChildPID = resp.ChildPID
+							h.mu.Unlock()
+							meta.WorkerPID, meta.ChildPID, meta.Status = resp.WorkerPID, resp.ChildPID, "running"
+							h.recordTurnActive(sess, prompt, turnID, turnStart, meta, resp.ChildPID, startEvt, nil)
+							return nil
+						}
+						removeTurnSpoolFiles(meta.MetaPath, meta)
+					}
+					h.ShutdownSessionWorker(sess.ID, sess.NativeID, 300*time.Millisecond)
+					handle, isExisting = nil, true
+				}
+			}
 		}
 	}
 
@@ -193,7 +209,7 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 	dur := h.getIdleTTL()
 	workerMeta := &SessionWorkerMeta{
 		WorkerID: workerID, SessionID: sess.ID, OrigSessionID: sess.ID, NativeID: sess.NativeID,
-		Agent: sess.Agent, Cwd: sess.Cwd, IsSupervisor: sess.IsSupervisor, ConfigFingerprint: fp,
+		Agent: sess.Agent, Cwd: sess.Cwd, IsSupervisor: sess.IsSupervisor, ConfigFingerprint: fp, MCPFingerprint: mcpFP,
 		Bin: bin, Args: args, SocketPath: sockPath, SocketTempDir: sockTempDir, WorkerMetaPath: workerMetaPath,
 		State: "starting", ActiveTurnID: turnID, ActiveMetaPath: meta.MetaPath, IdleTTLNs: dur, StartedAt: turnStart, UpdatedAt: turnStart,
 	}
@@ -230,7 +246,7 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 	h.mu.Lock()
 	h.warmWorkers[sess.ID] = &warmWorkerHandle{
 		WorkerID: workerID, SessionID: sess.ID, NativeID: sess.NativeID, SocketPath: sockPath,
-		WorkerMetaPath: workerMetaPath, ConfigFingerprint: fp, Bin: bin, Args: args, WorkerPID: workerCmd.Process.Pid,
+		WorkerMetaPath: workerMetaPath, ConfigFingerprint: fp, MCPFingerprint: mcpFP, Bin: bin, Args: args, WorkerPID: workerCmd.Process.Pid,
 	}
 	h.mu.Unlock()
 
@@ -328,8 +344,23 @@ func (h *HeadlessRunner) ShutdownAllWorkers(timeout time.Duration) {
 	}
 	h.mu.Lock()
 	clear(h.warmWorkers)
+	var owned []*exec.Cmd
+	for _, cmd := range h.ownedWorkers {
+		if cmd != nil && cmd.Process != nil && cmd.Process.Pid > 1 {
+			owned = append(owned, cmd)
+		}
+	}
 	h.mu.Unlock()
 	h.forEachWorkerMeta("", "", func(m *SessionWorkerMeta) { h.killWorkerMeta(m, timeout) })
+	for _, cmd := range owned {
+		pid := cmd.Process.Pid
+		if isProcessAlive(pid) {
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+			for d := time.Now().Add(250 * time.Millisecond); time.Now().Before(d) && isProcessAlive(pid); {
+				time.Sleep(5 * time.Millisecond)
+			}
+		}
+	}
 }
 
 func (h *HeadlessRunner) NotifyConfigChanged(sess *Session) {
@@ -349,6 +380,112 @@ func (h *HeadlessRunner) NotifyConfigChanged(sess *Session) {
 	}
 	h.mu.Unlock()
 	h.ShutdownSessionWorker(sess.ID, sess.NativeID, 3*time.Second)
+}
+
+func (h *HeadlessRunner) ScheduleChildRestartAfterTurn(sessionID string) {
+	if h == nil || sessionID == "" {
+		return
+	}
+	h.mu.Lock()
+	if handle := h.warmWorkers[sessionID]; handle != nil {
+		handle.restartChildAfterTurn = true
+	}
+	h.mu.Unlock()
+}
+
+func (h *HeadlessRunner) restartHandleChild(sess *Session, handle *warmWorkerHandle, isExisting bool, fp, mcpFP, home string, timeout time.Duration) bool {
+	if h == nil || sess == nil || handle == nil || handle.SocketPath == "" {
+		return false
+	}
+	bin, args, err := buildPersistentArgs(sess, isExisting)
+	if err != nil {
+		return false
+	}
+	cleanEnv := buildWorkerEnv(sess, h.db, home)
+	resp, cErr := callWorkerSocket(handle.SocketPath, workerIPCReq{
+		Op:                "restart_child",
+		SessionID:         sess.ID,
+		NativeID:          sess.NativeID,
+		Bin:               bin,
+		Args:              args,
+		Env:               cleanEnv,
+		ConfigFingerprint: fp,
+		MCPFingerprint:    mcpFP,
+	}, timeout)
+	if cErr != nil || resp == nil || !resp.OK {
+		return false
+	}
+	h.mu.Lock()
+	handle.Bin = bin
+	handle.Args = args
+	handle.ChildPID = resp.ChildPID
+	handle.ConfigFingerprint = fp
+	handle.MCPFingerprint = mcpFP
+	handle.restartChildAfterTurn = false
+	h.mu.Unlock()
+	return true
+}
+
+func (h *HeadlessRunner) RestartSessionChild(sess *Session, timeout time.Duration) bool {
+	if h == nil || sess == nil {
+		return false
+	}
+	home, _ := os.UserHomeDir()
+	isExisting := sess.FirstPrompt != "" || sess.LastPrompt != "" || hasConversationOnDisk(sess, home, h.db)
+	fp := ConfigFingerprint(sess)
+	mcpFP := MCPFingerprint(sess, h.db, home)
+
+	h.mu.Lock()
+	delete(h.interactiveBlocks, sess.ID)
+	if sess.NativeID != "" {
+		delete(h.interactiveBlocks, sess.NativeID)
+	}
+	if h.activeTurns[sess.ID] || h.processes[sess.ID] != nil {
+		h.respondedWhileStopping[sess.ID] = true
+		delete(h.activeTurns, sess.ID)
+		delete(h.activePrompts, sess.ID)
+		delete(h.processes, sess.ID)
+	}
+	handle := h.warmWorkers[sess.ID]
+	if handle == nil && sess.NativeID != "" {
+		for k, cand := range h.warmWorkers {
+			if k == sess.NativeID || strings.HasSuffix(k, ":"+sess.NativeID) {
+				handle = cand
+				break
+			}
+		}
+	}
+	h.mu.Unlock()
+	h.SetQueuePaused(sess.ID, false)
+	h.syncSleepInhibitor()
+
+	if handle != nil {
+		if h.restartHandleChild(sess, handle, isExisting, fp, mcpFP, home, timeout) {
+			return true
+		}
+		h.ShutdownSessionWorker(sess.ID, sess.NativeID, 500*time.Millisecond)
+		return false
+	}
+
+	var restarted bool
+	h.forEachWorkerMeta(sess.ID, sess.NativeID, func(m *SessionWorkerMeta) {
+		if m == nil || m.SocketPath == "" {
+			return
+		}
+		tmpHandle := &warmWorkerHandle{
+			WorkerID: m.WorkerID, SessionID: sess.ID, NativeID: sess.NativeID,
+			SocketPath: m.SocketPath, WorkerMetaPath: m.WorkerMetaPath, WorkerPID: m.WorkerPID,
+		}
+		if h.restartHandleChild(sess, tmpHandle, isExisting, fp, mcpFP, home, timeout) {
+			h.mu.Lock()
+			h.warmWorkers[sess.ID] = tmpHandle
+			h.mu.Unlock()
+			restarted = true
+		} else {
+			h.killWorkerMeta(m, 500*time.Millisecond)
+		}
+	})
+	return restarted
 }
 
 func callWorkerTurnSocket(meta *TurnSpoolMeta, op string, timeout time.Duration) (*workerIPCResp, error) {

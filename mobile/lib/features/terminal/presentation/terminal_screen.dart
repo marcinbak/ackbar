@@ -160,11 +160,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   Session _resolveLiveSession() {
     final sessions = ref.read(fleetSessionsProvider);
     return sessions
-            .where((s) =>
-                s.id == widget.session.id ||
-                (s.oldId.isNotEmpty && s.oldId == widget.session.id) ||
-                (widget.session.nativeId.isNotEmpty &&
-                    s.nativeId == widget.session.nativeId))
+            .where(
+              (s) =>
+                  s.id == widget.session.id ||
+                  (s.oldId.isNotEmpty && s.oldId == widget.session.id) ||
+                  (widget.session.nativeId.isNotEmpty &&
+                      s.nativeId == widget.session.nativeId),
+            )
             .firstOrNull ??
         widget.session;
   }
@@ -173,8 +175,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final hosts = ref.read(hostsListProvider);
     final sh = s.host.toLowerCase();
     return hosts
-            .where((h) =>
-                h.name.toLowerCase() == sh || h.url.toLowerCase().contains(sh))
+            .where(
+              (h) =>
+                  h.name.toLowerCase() == sh ||
+                  h.url.toLowerCase().contains(sh),
+            )
             .firstOrNull ??
         (hosts.isNotEmpty ? hosts.first : null);
   }
@@ -483,9 +488,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           children: [
             const Icon(Icons.sync_rounded, size: 14, color: AppColors.infoCyan),
             const SizedBox(width: 8),
-            Text(msg,
-                style:
-                    AppTypography.codeXs.copyWith(color: AppColors.infoCyan)),
+            Text(
+              msg,
+              style: AppTypography.codeXs.copyWith(color: AppColors.infoCyan),
+            ),
           ],
         ),
       );
@@ -498,9 +504,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         child: Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Text('Connection lost.',
-                style: AppTypography.codeXs
-                    .copyWith(color: AppColors.statusCoral)),
+            Text(
+              'Connection lost.',
+              style: AppTypography.codeXs.copyWith(
+                color: AppColors.statusCoral,
+              ),
+            ),
             const SizedBox(width: 8),
             GestureDetector(
               onTap: _reconnectController.retryNow,
@@ -542,8 +551,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         backgroundColor: AppColors.surface,
         elevation: 0,
         leading: IconButton(
-          icon: const Icon(Icons.arrow_back_ios_new_rounded,
-              size: 18, color: AppColors.textPrimary),
+          icon: const Icon(
+            Icons.arrow_back_ios_new_rounded,
+            size: 18,
+            color: AppColors.textPrimary,
+          ),
           onPressed: () => Navigator.of(context).pop(),
         ),
         title: Column(
@@ -551,8 +563,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           children: [
             Row(
               children: [
-                const Icon(Icons.terminal_rounded,
-                    size: 16, color: AppColors.infoCyan),
+                const Icon(
+                  Icons.terminal_rounded,
+                  size: 16,
+                  color: AppColors.infoCyan,
+                ),
                 const SizedBox(width: 6),
                 Expanded(
                   child: Text(
@@ -705,6 +720,32 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             ),
             tooltip: 'Increase font size',
             onPressed: _zoomIn,
+          ),
+
+          IconButton(
+            key: const Key('terminal_restart_session_button'),
+            icon: const Icon(
+              Icons.restart_alt_rounded,
+              size: 20,
+              color: AppColors.infoCyan,
+            ),
+            tooltip: 'Restart CLI Session',
+            onPressed: () async {
+              final messenger = ScaffoldMessenger.of(context);
+              final ok = await ref
+                  .read(fleetSessionsProvider.notifier)
+                  .restartSession(liveSession.id);
+              messenger.showSnackBar(
+                SnackBar(
+                  content: Text(
+                    ok
+                        ? 'Restarted CLI in ${liveSession.displayTitle}'
+                        : 'Failed to restart CLI session',
+                  ),
+                  duration: const Duration(seconds: 2),
+                ),
+              );
+            },
           ),
 
           IconButton(

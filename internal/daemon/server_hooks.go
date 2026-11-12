@@ -621,6 +621,22 @@ func (s *Server) applyHookStateTransition(sess *Session, event *Event, sessionID
 	}
 
 	prevState := sess.State
+	// Suppress late SessionEnd emitted by the exiting CLI process during an in-place tmux pane restart.
+	if !isPureHeadless && sess.TmuxName != "" && (evtLower == "sessionend" || event.State == StateEnded) {
+		if tsVal, ok := s.recentTmuxRestarts.Load(sessionID); ok {
+			if ts, valid := tsVal.(time.Time); valid && time.Since(ts) < 4*time.Second && tmux.HasSession(context.Background(), sess.TmuxName) {
+				event.State = prevState
+				event.Blocked = sess.Blocked
+				if sess.Activity != "" {
+					event.Activity = sess.Activity
+				}
+			} else {
+				s.recentTmuxRestarts.Delete(sessionID)
+			}
+		}
+	} else if evtLower == "sessionstart" || event.State == StateWorking {
+		s.recentTmuxRestarts.Delete(sessionID)
+	}
 	// Guard against out-of-order PostToolUse overwriting a session that just transitioned to StateIdle via Stop/SessionEnd
 	if prevState == StateIdle && !sess.LastStateChangeAt.IsZero() && time.Since(sess.LastStateChangeAt) < 2*time.Second &&
 		(evtLower == "posttooluse" || evtLower == "post_tool_use") {

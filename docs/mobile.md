@@ -61,7 +61,7 @@ It communicates with local and remote `ackbard` daemons over standard HTTP/REST,
   * `🛑` **FAILED:** Process crashed or error.
   * `◌` **STANDBY:** Unmanaged or disconnected.
 * **Native Mode Badges & Direct Launch:** Displays `CHAT` or `PTY` badge. Card tap opens native mode, clearing unread state.
-* **Session Controls Sheet (`SessionDetailSheet`):** Compact `⋯` or long-press opens actions. Primary button matches mode (**`Open Chat`** / **`Open Terminal`**).
+* **Session Controls Sheet (`SessionDetailSheet`):** Compact `⋯` or long-press opens mode-matched launch (**`Open Chat`** / **`Open Terminal`**), **`Transcript`**, **`Restart`**, and **`Terminate`**.
 * **Unread State Indicator:** A glowing pulse indicator highlights `BLOCKED` or `IDLE` sessions. Card tap clears unread state via `POST /v1/sessions/mark-read`.
 * **Live Search & Filter:** Real-time fuzzy filtering by session title, agent, or group.
 * **New Agent Session Creation (`NewSessionSheet`):** Spawns agent sessions across hosts. Routes immediately into `ChatScreen` or `TerminalScreen` via `SessionNavigator.openSession`.
@@ -90,9 +90,9 @@ Tap any headless session card or **Open Chat** to enter the dedicated interactiv
 * **Shared Message Bubbles (`TranscriptTurnBubble`):** Elevated user bubbles and agent cards with Markdown and copy actions ([`transcript_turn_bubble.dart`](../mobile/lib/features/transcript/presentation/transcript_turn_bubble.dart)).
 * **Tool & Chain-of-Thought Badges (`TranscriptToolWidgets`):** Collapsible tool invocation cards and reasoning accordions ([`transcript_tool_widgets.dart`](../mobile/lib/features/transcript/presentation/transcript_tool_widgets.dart)).
 * **Subagents Dock (`SubagentsDock`):** Collapsible child agent dock tracking delegated subagent status, progress, and turn counts ([`subagents_dock.dart`](../mobile/lib/features/transcript/presentation/subagents_dock.dart)).
-* **Runtime Configuration:** Pill bar displays model, effort, auto/plan mode, directories, and context. Sheet manages models, directories, and MCP status.
+* **Runtime Configuration:** Pill bar displays model, effort, auto/plan mode, directories, and context. Sheet manages models, directories, MCP status, and **`Restart CLI`**.
 * **Composer Autocomplete (`HeadlessAutocompleteStrip`):** Detects `/` for commands, `@` for files, and `!` for shell mode.
-* **Command Dispatcher (`HeadlessCommandDispatcher`):** Runs `! <cmd>` and 20 standalone commands with inline cards.
+* **Command Dispatcher (`HeadlessCommandDispatcher`):** Runs `! <cmd>` and 21 standalone commands (including `/restart`) with inline cards.
 * **In-Place Turn Rotation (`Conv N+1`):** `/clear`, `/reset`, `/rewind`, and `/handover` rotate sessions in-place using epoch guards while clearing ephemeral cards.
 * **Inline OAuth Sign-In (`HeadlessAuthCard`):** Renders interactive cards for `BlockKind.auth` with native browser launcher, remote redirect paste, retry, and dismiss.
 
@@ -102,7 +102,7 @@ Tap any headless session card or **Open Chat** to enter the dedicated interactiv
 Tap any tmux session card or **Open Terminal** to attach to the live `tmux` terminal ([`terminal_screen.dart`](../mobile/lib/features/terminal/presentation/terminal_screen.dart)):
 
 * **WebSocket PTY Stream:** Full-duplex interactive terminal powered by `flutter_pty` / xterm over `ws://<host>:7777/v1/sessions/pty`.
-* **1-Tap View Transcript:** AppBar action button opens pure read-only `TranscriptScreen` with loop-safe `showOpenSessionAction: false`.
+* **1-Tap Transcript & CLI Restart:** AppBar buttons open read-only `TranscriptScreen` (`showOpenSessionAction: false`) or restart the CLI pane in-place (`Restart CLI Session`).
 * **Dynamic Auto-Fit & Horizontal Scroll:** Automatically calculates terminal columns and rows on viewport resize, with horizontal scrolling and zoom controls (`-` / `+`).
 * **Display Modes:** Toggle between responsive auto-fit mode and standard `80 COL` fixed layout.
 * **Tmux Touch Scrollback & Floating Bottom Pill:** Vertical touch dragging dispatches structured scroll commands (`up`, `down`, `page_up`, `page_down`, `bottom`) over WebSocket with floating bottom pill.
@@ -158,7 +158,7 @@ flutter run
 cd mobile
 flutter test
 ```
-*Executes all 298 unit and widget tests covering models, providers, `SessionNavigator`, `ChatScreen`, `TranscriptScreen`, streaming, and fleet cards.*
+*Executes all 300 unit and widget tests covering models, providers, `SessionNavigator`, `ChatScreen`, `TranscriptScreen`, streaming, and fleet cards.*
 
 ### Installing to iOS Device
 ```bash
@@ -209,8 +209,8 @@ In **Phase 5**, the Flutter Mobile App (`mobile/lib/`) was upgraded to complete 
 
 5. **Headless Session & Command Parity (`features/headless/`, `features/chat/` & `features/transcript/`):**
    * **`HeadlessAuthCard`:** Renders on `BlockKind.auth` in `AttentionScreen`, `ChatScreen`, and `TranscriptScreen`. Launches external browser via native `dev.ackbar.app/launcher` HTTPS channel (`MainActivity.kt`, `AppDelegate.swift`) with clipboard fallback. Supports collapsible remote `callback_url` paste, retry, terminal attach, and dismiss.
-   * **`HeadlessConfigPillBar` & `HeadlessConfigSheet`:** Displays model, effort (hidden for Antigravity), `AUTO`/`PLAN` mode, `extra_dirs`, and `Context %`. Embeds `HeadlessMcpSection` with live MCP/plugin pills and 1-tap sign-in.
-   * **Composer Autocomplete & Command Dispatcher:** `HeadlessAutocompleteStrip` handles `/` commands, `@` files, and `!` shell indicator. `HeadlessCommandDispatcher` executes `! <cmd>` and 20 standalone slash commands, passing prompt skills through. Renders inline dark `HeadlessCommandCardView` cards (`+ Attach to Prompt`, inspect, `/rewind`) and handles epoch-guarded `Conv N+1` rotation.
+   * **`HeadlessConfigPillBar` & `HeadlessConfigSheet`:** Displays model, effort (hidden for Antigravity), `AUTO`/`PLAN` mode, `extra_dirs`, and `Context %`. Embeds `HeadlessMcpSection` with live MCP/plugin pills, 1-tap sign-in, and **`Restart CLI`**.
+   * **Composer Autocomplete & Command Dispatcher:** `HeadlessAutocompleteStrip` handles `/` commands, `@` files, and `!` shell indicator. `HeadlessCommandDispatcher` executes `! <cmd>` and 21 standalone slash commands (including `/restart`), passing prompt skills through. Renders inline dark `HeadlessCommandCardView` cards (`+ Attach to Prompt`, inspect, `/rewind`) and handles epoch-guarded `Conv N+1` rotation.
 
 ---
 

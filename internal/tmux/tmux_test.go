@@ -111,3 +111,63 @@ func TestTmuxRename_EdgeCases(t *testing.T) {
 		t.Errorf("Expected error when renaming non-existent session, got nil")
 	}
 }
+
+func TestTmuxRespawnWithEnv_InPlacePreservesSessionAndInjectsEnv(t *testing.T) {
+	if !IsTmuxInstalled() {
+		t.Skip("tmux not installed on host, skipping test")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	sessionName := "ackbar-test-respawn-inplace"
+	_ = Kill(ctx, sessionName)
+	defer Kill(ctx, sessionName)
+
+	tmpDir := t.TempDir()
+	envOutFile := tmpDir + "/env.txt"
+
+	if err := SpawnWithEnv(ctx, sessionName, tmpDir, "sleep 30", map[string]string{"ACKBAR_GEN": "1"}); err != nil {
+		if strings.Contains(err.Error(), "Operation not permitted") {
+			t.Skip("tmux socket creation blocked by sandbox environment, skipping test")
+		}
+		t.Fatalf("SpawnWithEnv failed: %v", err)
+	}
+
+	pid1, err := GetPID(ctx, sessionName)
+	if err != nil || pid1 <= 0 {
+		t.Fatalf("GetPID initial failed: pid=%d err=%v", pid1, err)
+	}
+
+	respawnCmd := "printf '%s|%s' \"$ACKBAR_GEN\" \"$CLAUDE_CONFIG_DIR\" > " + shellSingleQuote(envOutFile) + "; sleep 30"
+	if err := RespawnWithEnv(ctx, sessionName, tmpDir, respawnCmd, map[string]string{
+		"ACKBAR_GEN":        "2",
+		"CLAUDE_CONFIG_DIR": "/custom/claude-profile",
+	}); err != nil {
+		t.Fatalf("RespawnWithEnv failed: %v", err)
+	}
+
+	if !HasSession(ctx, sessionName) {
+		t.Fatalf("expected tmux session %s to stay alive across RespawnWithEnv", sessionName)
+	}
+
+	pid2, err := GetPID(ctx, sessionName)
+	if err != nil || pid2 <= 0 {
+		t.Fatalf("GetPID after respawn failed: pid=%d err=%v", pid2, err)
+	}
+	if pid2 == pid1 {
+		t.Errorf("expected pane PID to change after RespawnWithEnv, got same PID %d", pid2)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	var got string
+	for time.Now().Before(deadline) {
+		if data, rErr := os.ReadFile(envOutFile); rErr == nil && len(data) > 0 {
+			got = string(data)
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if got != "2|/custom/claude-profile" {
+		t.Fatalf("expected respawned pane env '2|/custom/claude-profile', got %q", got)
+	}
+}
