@@ -69,7 +69,6 @@ Comparison between claimed gates in [docs/dev-workflow.md](../dev-workflow.md#L3
 | :--- | :--- | :--- | :--- |
 | `go vet ./...` | `✅ CI` | Absent in CI workflow | Add `go vet ./...` to GitHub Actions `test` job |
 | `AGENTS.md <= 160` | `✅ CI` | Absent in CI workflow | Add line count assertion to CI preflight step |
-| `dart format` | `✅ CI` | Absent in CI workflow | Add `dart format --output=none --set-exit-if-changed .` |
 | `go mod tidy` clean diff | `✅ CI` | Runs `go mod tidy` without `git diff --exit-code` | Add `git diff --exit-code go.mod go.sum` after tidy |
 | `web/js/chat.test.mjs` | Not Listed | Test file exists ([chat.test.mjs](../../web/js/chat.test.mjs)) but never runs in CI | Add `node --test web/js/*.test.mjs` to T0 and CI |
 | Module cycle detection | Not Listed | Absent in T0 and CI | Add `madge --circular web/js/` check to CI |
