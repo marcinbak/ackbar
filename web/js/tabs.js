@@ -34,7 +34,7 @@ import { updateStatusbar, resetStatusbar } from './statusbar.js';
 import { showTabContextMenu } from './context-menu.js';
 import { fetchSessions } from './api.js';
 import { toggleCommandPalette } from './palette.js';
-import { renderTree } from './tree.js';
+import { renderTree, scheduleRenderTree, updateTreeActiveSelection } from './tree.js';
 
 
 function isAuxiliaryInputFocused(chatInputEl) {
@@ -672,7 +672,7 @@ function openSessionInTab(session, preferredViewMode = null) {
   if (isHideTabsEnabled()) {
     for (const id of Array.from(state.openTabs.keys())) {
       if (id !== tabId) {
-        closeTab(id);
+        closeTab(id, { skipActivate: true, skipPersist: true, skipRender: true });
       }
     }
   }
@@ -861,7 +861,6 @@ function openSessionInTab(session, preferredViewMode = null) {
 
   activateTab(tabId);
   handleTabOverflow();
-  savePersistedTabs();
 }
 
 // Open Rich Session Details Tab (For Observed & Ended Sessions)
@@ -947,11 +946,12 @@ function activateTab(tabId) {
   });
 
   savePersistedTabs();
-  renderTree();
+  updateTreeActiveSelection(tabId);
 }
 
 // Close Tab
-function closeTab(tabId) {
+function closeTab(tabId, options = {}) {
+  const { skipActivate = false, skipPersist = false, skipRender = false } = (typeof options === 'object' && options !== null) ? options : {};
   if (!tabId) return;
   if (tabId.startsWith('details_')) {
     const rawId = tabId.slice('details_'.length);
@@ -985,7 +985,7 @@ function closeTab(tabId) {
     }
   }
 
-  if (state.activeTabId === tabId || (state.activeTabId && !state.openTabs.has(state.activeTabId))) {
+  if (!skipActivate && (state.activeTabId === tabId || (state.activeTabId && !state.openTabs.has(state.activeTabId)))) {
     const remainingTabIds = Array.from(state.openTabs.keys());
     if (remainingTabIds.length > 0) {
       activateTab(remainingTabIds[remainingTabIds.length - 1]);
@@ -996,9 +996,13 @@ function closeTab(tabId) {
     }
   }
 
-  savePersistedTabs();
+  if (!skipPersist) {
+    savePersistedTabs();
+  }
   handleTabOverflow();
-  renderTree();
+  if (!skipRender) {
+    renderTree();
+  }
 }
 
 // Migrate tab ID smoothly when a placeholder session adopts its real native conversation ID

@@ -1052,6 +1052,18 @@ function getFoldersForHost(targetHost) {
   return Array.from(hostCwds).sort();
 }
 
+function normalizeGitURL(url) {
+  if (!url || typeof url !== 'string') return '';
+  let u = url.trim().toLowerCase();
+  u = u.replace(/\.git\/?$/, '');
+  u = u.replace(/\/+$/, '');
+  u = u.replace(/^https?:\/\//, '');
+  u = u.replace(/^ssh:\/\/git@/, '');
+  u = u.replace(/^ssh:\/\//, '');
+  u = u.replace(/^git@([^:]+):/, '$1/');
+  return u;
+}
+
 // New Session Modal Launcher
 
 export {
@@ -1090,5 +1102,6 @@ export {
   saveStoredGroupPreferences,
   recordGroupSpawn,
   getGroupPreferences,
-  getFoldersForHost
+  getFoldersForHost,
+  normalizeGitURL
 };

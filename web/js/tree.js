@@ -16,7 +16,8 @@ import {
   getAgentBadgeHtml,
   findHostRecord,
   isLocalHost,
-  getSelfHostName
+  getSelfHostName,
+  normalizeGitURL
 } from './utils.js';
 import {
   fetchSessions,
@@ -341,7 +342,102 @@ function appendCategorizedActiveSessions(containerEl, groupKey, activeSessions) 
 
 // Settings Modal Dialog
 
+let renderTreeRafId = null;
+let renderTreeTimerId = null;
+
+function scheduleRenderTree(delayMs = 0) {
+  if (delayMs > 0) {
+    if (renderTreeTimerId !== null) return;
+    renderTreeTimerId = setTimeout(() => {
+      renderTreeTimerId = null;
+      renderTree();
+    }, delayMs);
+    return;
+  }
+  if (renderTreeRafId !== null) return;
+  const runner = () => {
+    renderTreeRafId = null;
+    renderTree();
+  };
+  if (typeof requestAnimationFrame === 'function') {
+    renderTreeRafId = requestAnimationFrame(runner);
+  } else {
+    renderTreeRafId = setTimeout(runner, 0);
+  }
+}
+
+function updateTreeActiveSelection(activeTabId) {
+  if (!el.treeContainer) return;
+  const currentActive = el.treeContainer.querySelectorAll('.session-item.active-tab');
+  currentActive.forEach(node => {
+    if (node.dataset.sessionId !== activeTabId) {
+      node.classList.remove('active-tab');
+    }
+  });
+  if (!activeTabId) return;
+  try {
+    const escaped = (typeof CSS !== 'undefined' && CSS.escape) ? CSS.escape(activeTabId) : activeTabId.replace(/["\\]/g, '\\$&');
+    const target = el.treeContainer.querySelector(`.session-item[data-session-id="${escaped}"]`);
+    if (target) {
+      target.classList.add('active-tab');
+      return;
+    }
+  } catch (_) {}
+  const all = el.treeContainer.querySelectorAll('.session-item');
+  for (const node of all) {
+    if (node.dataset.sessionId === activeTabId) {
+      node.classList.add('active-tab');
+      break;
+    }
+  }
+}
+
+function updateTreeSessionUnread(sessionId, isUnread) {
+  if (!el.treeContainer || !sessionId) return;
+  let target = null;
+  try {
+    const escaped = (typeof CSS !== 'undefined' && CSS.escape) ? CSS.escape(sessionId) : sessionId.replace(/["\\]/g, '\\$&');
+    target = el.treeContainer.querySelector(`.session-item[data-session-id="${escaped}"]`);
+  } catch (_) {}
+  if (!target) {
+    const all = el.treeContainer.querySelectorAll('.session-item');
+    for (const node of all) {
+      if (node.dataset.sessionId === sessionId) {
+        target = node;
+        break;
+      }
+    }
+  }
+  if (!target) return;
+  if (isUnread) {
+    target.classList.add('session-unread');
+    const left = target.querySelector('.session-item-left');
+    if (left && !left.querySelector('.unread-dot')) {
+      const unreadDot = document.createElement('span');
+      unreadDot.className = 'unread-dot';
+      unreadDot.title = 'Unread state update (click to view)';
+      left.insertBefore(unreadDot, left.firstChild);
+    }
+  } else {
+    target.classList.remove('session-unread');
+    const dot = target.querySelector('.unread-dot');
+    if (dot) dot.remove();
+  }
+}
+
 function renderTree() {
+  if (renderTreeTimerId !== null) {
+    clearTimeout(renderTreeTimerId);
+    renderTreeTimerId = null;
+  }
+  if (renderTreeRafId !== null) {
+    if (typeof cancelAnimationFrame === 'function') {
+      cancelAnimationFrame(renderTreeRafId);
+    } else {
+      clearTimeout(renderTreeRafId);
+    }
+    renderTreeRafId = null;
+  }
   if (!el.treeContainer) return;
   el.treeContainer.innerHTML = '';
 
@@ -660,6 +756,7 @@ function createSessionRowElement(session) {
   const row = document.createElement('div');
   row.className = 'session-item';
   row.draggable = true;
+  row.dataset.sessionId = session.id;
   if (state.activeTabId === session.id) {
     row.classList.add('active-tab');
   }
@@ -878,5 +975,8 @@ export {
   toggleDoneSection,
   renderDoneSection,
   renderTree,
+  scheduleRenderTree,
+  updateTreeActiveSelection,
+  updateTreeSessionUnread,
   createSessionRowElement
 };

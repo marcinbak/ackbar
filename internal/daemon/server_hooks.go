@@ -190,6 +190,7 @@ func (s *Server) processParsedHookEvent(event *Event, urlEventName string, heade
 					parentSess, _ = s.db.GetSession(parentSessID)
 				}
 				if parentSess != nil {
+					s.clearSubagentDiskCache(parentSess.ID, parentSess.NativeID)
 					runningSubs := s.getRunningSubagents(parentSess.ID, parentSess.NativeID, "antigravity", parentSess.Cwd)
 					hasDiskRunningSubs := len(runningSubs) > 0
 					if len(runningSubs) == 0 && (event.State == StateWorking || event.State == StateBlocked) {
@@ -369,9 +370,10 @@ func (s *Server) processParsedHookEvent(event *Event, urlEventName string, heade
 
 	// Update running subagents count on session
 	if isPureHeadless && !headlessRunning {
-		s.clearInMemorySubagents(sessionID, event.NativeID)
+		s.clearSubagents(sessionID, event.NativeID)
 		sess.RunningSubagents = 0
 	} else {
+		s.clearSubagentDiskCache(sessionID, event.NativeID)
 		sess.RunningSubagents = len(s.getRunningSubagents(sessionID, event.NativeID, event.Agent, sess.Cwd))
 	}
 	sess.UpdatedAt = time.Now()

@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -398,15 +399,8 @@ func (s *Server) handlePromptQueueResume(w http.ResponseWriter, r *http.Request)
 		if len(parts) >= 2 {
 			if hostRec := s.resolveHost(parts[1]); hostRec != nil && hostRec.URL != "" {
 				targetURL := fmt.Sprintf("%s/v1/sessions/prompt/queue/resume?session_id=%s", strings.TrimSuffix(hostRec.URL, "/"), url.QueryEscape(sessionID))
-				fwdReq, err := http.NewRequest(r.Method, targetURL, nil)
-				if err == nil {
-					if resp, err := http.DefaultClient.Do(fwdReq); err == nil {
-						defer resp.Body.Close()
-						w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
-						w.WriteHeader(resp.StatusCode)
-						_, _ = io.Copy(w, resp.Body)
-						return
-					}
+				if s.proxyToRemoteHost(w, r.Method, targetURL, "", nil) {
+					return
 				}
 			}
 		}
@@ -416,15 +410,8 @@ func (s *Server) handlePromptQueueResume(w http.ResponseWriter, r *http.Request)
 
 	if hostRec := s.resolveHost(sess.Host); hostRec != nil && hostRec.URL != "" {
 		targetURL := fmt.Sprintf("%s/v1/sessions/prompt/queue/resume?session_id=%s", strings.TrimSuffix(hostRec.URL, "/"), url.QueryEscape(sess.ID))
-		fwdReq, err := http.NewRequest(r.Method, targetURL, nil)
-		if err == nil {
-			if resp, err := http.DefaultClient.Do(fwdReq); err == nil {
-				defer resp.Body.Close()
-				w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
-				w.WriteHeader(resp.StatusCode)
-				_, _ = io.Copy(w, resp.Body)
-				return
-			}
+		if s.proxyToRemoteHost(w, r.Method, targetURL, "", nil) {
+			return
 		}
 	}
 
@@ -885,15 +872,105 @@ func proxyGETWithAuth(w http.ResponseWriter, r *http.Request, targetURL string) 
 	if tok := r.Header.Get("X-Ackbar-Token"); tok != "" {
 		fwdReq.Header.Set("X-Ackbar-Token", tok)
 	}
-	resp, err := http.DefaultClient.Do(fwdReq)
+	resp, err := peerProxyHTTPClient.Do(fwdReq)
 	if err != nil {
 		return false
 	}
 	defer resp.Body.Close()
 	w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
 	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(w, resp.Body)
+
+	flusher, canFlush := w.(http.Flusher)
+	buf := make([]byte, 4096)
+	for {
+		n, rerr := resp.Body.Read(buf)
+		if n > 0 {
+			_, _ = w.Write(buf[:n])
+			if canFlush {
+				flusher.Flush()
+			}
+		}
+		if rerr != nil {
+			break
+		}
+	}
 	return true
+}
+
+func CoalesceTranscriptMessagesForWire(msgs []TranscriptMessage) []TranscriptMessage {
+	if len(msgs) == 0 {
+		return nil
+	}
+	normComp := func(s string) string {
+		return strings.TrimSpace(strings.Join(strings.Fields(s), " "))
+	}
+	coalesced := make([]TranscriptMessage, 0, len(msgs))
+	for _, msg := range msgs {
+		if len(coalesced) > 0 {
+			last := &coalesced[len(coalesced)-1]
+			if last.Role == "assistant" && msg.Role == "assistant" {
+				if msg.Content != "" {
+					if last.Content != "" {
+						lastComp := normComp(last.Content)
+						msgComp := normComp(msg.Content)
+						if msgComp != "" && !strings.Contains(lastComp, msgComp) {
+							if strings.Contains(msgComp, lastComp) {
+								last.Content = msg.Content
+							} else {
+								last.Content += "\n\n" + msg.Content
+							}
+						}
+					} else {
+						last.Content = msg.Content
+					}
+				}
+				if msg.Thinking != "" && last.Thinking == "" {
+					last.Thinking = msg.Thinking
+				}
+				if len(msg.ToolCalls) > 0 {
+					last.ToolCalls = append(last.ToolCalls, msg.ToolCalls...)
+				}
+				if !msg.Timestamp.IsZero() {
+					last.Timestamp = msg.Timestamp
+				}
+				if msg.TurnID != "" && last.TurnID == "" {
+					last.TurnID = msg.TurnID
+				}
+				if msg.InFlight {
+					last.InFlight = true
+				}
+				continue
+			} else if last.Role == "user" && msg.Role == "user" {
+				sameTurn := last.TurnID != "" && msg.TurnID != "" && last.TurnID == msg.TurnID
+				lastText := normComp(last.Content)
+				currText := normComp(msg.Content)
+				if sameTurn || (lastText != "" && currText != "" && lastText == currText) {
+					if msg.TurnID != "" && last.TurnID == "" {
+						last.TurnID = msg.TurnID
+					}
+					if msg.InFlight {
+						last.InFlight = true
+					}
+					continue
+				}
+			}
+		}
+		var tcCopy []string
+		if len(msg.ToolCalls) > 0 {
+			tcCopy = make([]string, len(msg.ToolCalls))
+			copy(tcCopy, msg.ToolCalls)
+		}
+		coalesced = append(coalesced, TranscriptMessage{
+			Role:      msg.Role,
+			Content:   msg.Content,
+			Thinking:  msg.Thinking,
+			ToolCalls: tcCopy,
+			TurnID:    msg.TurnID,
+			InFlight:  msg.InFlight,
+			Timestamp: msg.Timestamp,
+		})
+	}
+	return coalesced
 }
 
 func (s *Server) handleSessionTranscript(w http.ResponseWriter, r *http.Request) {
@@ -911,9 +988,16 @@ func (s *Server) handleSessionTranscript(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	format := strings.ToLower(r.URL.Query().Get("format")) // "json", "ansi", "markdown"
+	format := strings.ToLower(r.URL.Query().Get("format")) // "json", "ndjson", "ansi", "markdown"
 	if format == "" {
 		format = "json"
+	}
+
+	if hostRec := s.remoteHostForSession(sessionID, nil); hostRec != nil && hostRec.URL != "" {
+		targetURL := fmt.Sprintf("%s/v1/sessions/transcript?%s", strings.TrimSuffix(hostRec.URL, "/"), r.URL.RawQuery)
+		if proxyGETWithAuth(w, r, targetURL) {
+			return
+		}
 	}
 
 	sess := s.resolveSession(sessionID)
@@ -970,6 +1054,61 @@ func (s *Server) handleSessionTranscript(w http.ResponseWriter, r *http.Request)
 	}
 
 	switch format {
+	case "ndjson", "x-ndjson":
+		runningSubs := s.getRunningSubagents(sessionID, nativeID, agent, cwd)
+		w.Header().Set("Content-Type", "application/x-ndjson; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+
+		flusher, canFlush := w.(http.Flusher)
+
+		msgs := CoalesceTranscriptMessagesForWire(transcript.Messages)
+		totalMsgs := len(msgs)
+
+		meta := map[string]interface{}{
+			"type":              "meta",
+			"session_id":        sessionID,
+			"native_id":         nativeID,
+			"agent":             agent,
+			"title":             transcript.Title,
+			"cwd":               transcript.Cwd,
+			"total":             totalMsgs,
+			"running_subagents": runningSubs,
+			"subagents":         runningSubs,
+		}
+		if inFlightPayload != nil {
+			meta["in_flight_turn"] = inFlightPayload
+			if active, _ := inFlightPayload["active"].(bool); active {
+				if promptText, _ := inFlightPayload["prompt"].(string); strings.TrimSpace(promptText) != "" {
+					meta["active_prompt"] = map[string]interface{}{
+						"text":      promptText,
+						"timestamp": inFlightPayload["timestamp"],
+						"turn_id":   inFlightPayload["turn_id"],
+					}
+				}
+			}
+		}
+		metaBytes, _ := json.Marshal(meta)
+		_, _ = w.Write(append(metaBytes, '\n'))
+		if canFlush {
+			flusher.Flush()
+		}
+
+		for sentIdx := 0; sentIdx < totalMsgs; sentIdx++ {
+			msgIdx := totalMsgs - 1 - sentIdx
+			item := map[string]interface{}{
+				"type":    "msg",
+				"index":   msgIdx,
+				"message": msgs[msgIdx],
+			}
+			itemBytes, _ := json.Marshal(item)
+			_, _ = w.Write(append(itemBytes, '\n'))
+
+			if canFlush && (sentIdx == 0 || sentIdx == 5 || sentIdx == 24 || sentIdx == totalMsgs-1) {
+				flusher.Flush()
+			}
+		}
+
 	case "ansi":
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, _ = w.Write([]byte(FormatTranscriptANSI(transcript)))
@@ -978,6 +1117,12 @@ func (s *Server) handleSessionTranscript(w http.ResponseWriter, r *http.Request)
 		_, _ = w.Write([]byte(FormatTranscriptMarkdown(transcript)))
 	default:
 		runningSubs := s.getRunningSubagents(sessionID, nativeID, agent, cwd)
+		includeFormats := strings.ToLower(r.URL.Query().Get("include_formats")) != "false"
+		var ansiStr, mdStr string
+		if includeFormats {
+			ansiStr = FormatTranscriptANSI(transcript)
+			mdStr = FormatTranscriptMarkdown(transcript)
+		}
 		payload := map[string]interface{}{
 			"session_id":        sessionID,
 			"native_id":         nativeID,
@@ -987,8 +1132,8 @@ func (s *Server) handleSessionTranscript(w http.ResponseWriter, r *http.Request)
 			"messages":          transcript.Messages,
 			"running_subagents": runningSubs,
 			"subagents":         runningSubs,
-			"ansi":              FormatTranscriptANSI(transcript),
-			"markdown":          FormatTranscriptMarkdown(transcript),
+			"ansi":              ansiStr,
+			"markdown":          mdStr,
 		}
 		if inFlightPayload != nil {
 			payload["in_flight_turn"] = inFlightPayload
@@ -1003,11 +1148,30 @@ func (s *Server) handleSessionTranscript(w http.ResponseWriter, r *http.Request)
 			}
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(payload)
+		payloadBytes, _ := json.Marshal(payload)
+		if len(payloadBytes) > 2048 && strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+			w.Header().Set("Content-Encoding", "gzip")
+			gz := gzip.NewWriter(w)
+			_, _ = gz.Write(payloadBytes)
+			_ = gz.Close()
+		} else {
+			_, _ = w.Write(payloadBytes)
+		}
 	}
 }
 
 func (s *Server) ExtractTranscript(agent, nativeID, cwd string) (*Transcript, error) {
+	if s != nil {
+		if cachedMsgs, ok := s.getCachedTranscript(agent, nativeID, cwd); ok {
+			return &Transcript{
+				NativeID: nativeID,
+				Agent:    agent,
+				Cwd:      cwd,
+				Messages: cachedMsgs,
+			}, nil
+		}
+	}
+
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get home dir: %w", err)
@@ -1020,23 +1184,37 @@ func (s *Server) ExtractTranscript(agent, nativeID, cwd string) (*Transcript, er
 		Messages: make([]TranscriptMessage, 0),
 	}
 
-	if p, ok := s.providers[agent]; ok {
-		msgs, err := p.ExtractTranscript(home, cwd, nativeID)
-		if err == nil && len(msgs) > 0 {
-			t.Messages = msgs
-			return t, nil
+	if s != nil {
+		if p, ok := s.providers[agent]; ok {
+			msgs, perr := p.ExtractTranscript(home, cwd, nativeID)
+			if perr == nil && len(msgs) > 0 {
+				t.Messages = msgs
+				if path, size, modTime, serr := resolveTranscriptFileStat(home, agent, nativeID, cwd); serr == nil {
+					s.setCachedTranscript(agent, nativeID, cwd, path, size, modTime, msgs)
+				}
+				return t, nil
+			}
 		}
-	}
 
-	for _, p := range s.providers {
-		msgs, err := p.ExtractTranscript(home, cwd, nativeID)
-		if err == nil && len(msgs) > 0 {
-			t.Messages = msgs
-			t.Agent = p.Agent()
-			return t, nil
+		for _, p := range s.providers {
+			msgs, perr := p.ExtractTranscript(home, cwd, nativeID)
+			if perr == nil && len(msgs) > 0 {
+				t.Messages = msgs
+				t.Agent = p.Agent()
+				if path, size, modTime, serr := resolveTranscriptFileStat(home, t.Agent, nativeID, cwd); serr == nil {
+					s.setCachedTranscript(t.Agent, nativeID, cwd, path, size, modTime, msgs)
+				}
+				return t, nil
+			}
 		}
 	}
 
 	// Legacy fallback
-	return ExtractTranscript(agent, nativeID, cwd)
+	legacyT, lerr := ExtractTranscript(agent, nativeID, cwd)
+	if lerr == nil && legacyT != nil && len(legacyT.Messages) > 0 && s != nil {
+		if path, size, modTime, serr := resolveTranscriptFileStat(home, agent, nativeID, cwd); serr == nil {
+			s.setCachedTranscript(agent, nativeID, cwd, path, size, modTime, legacyT.Messages)
+		}
+	}
+	return legacyT, lerr
 }

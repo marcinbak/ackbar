@@ -335,7 +335,7 @@ func ExtractAntigravityTranscriptMessages(home, convID string) ([]TranscriptMess
 				fScanner.Buffer(fBuf, 20*1024*1024)
 				for fScanner.Scan() {
 					fLine := strings.TrimSpace(fScanner.Text())
-					if fLine == "" {
+					if fLine == "" || !strings.Contains(fLine, `"step_index"`) {
 						continue
 					}
 					var idxOnly struct {
@@ -359,6 +359,9 @@ func ExtractAntigravityTranscriptMessages(home, convID string) ([]TranscriptMess
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
+			continue
+		}
+		if !strings.Contains(line, `"USER_INPUT"`) && !strings.Contains(line, `"PLANNER_RESPONSE"`) && !strings.Contains(line, `"CHECKPOINT"`) {
 			continue
 		}
 
@@ -549,6 +552,9 @@ func loadClaudeTranscript(t *Transcript, home, sessionID, cwd string) error {
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
+			continue
+		}
+		if !strings.Contains(line, `"user"`) && !strings.Contains(line, `"assistant"`) {
 			continue
 		}
 
@@ -1489,6 +1495,9 @@ func loadClaudeSubagents(home, sessionID, cwd string) ([]SubagentInfo, error) {
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
+			continue
+		}
+		if !strings.Contains(line, `"user"`) && !strings.Contains(line, `"assistant"`) {
 			continue
 		}
 

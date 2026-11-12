@@ -86,12 +86,26 @@ class MockElement {
     const idx = siblings.indexOf(this);
     return (idx >= 0 && idx < siblings.length - 1) ? siblings[idx + 1] : null;
   }
+  get nextSibling() {
+    return this.nextElementSibling;
+  }
 
   get previousElementSibling() {
     if (!this.parentNode) return null;
     const siblings = this.parentNode.children;
     const idx = siblings.indexOf(this);
     return idx > 0 ? siblings[idx - 1] : null;
+  }
+  get previousSibling() {
+    return this.previousElementSibling;
+  }
+
+  get firstChild() {
+    return this.firstElementChild;
+  }
+
+  get lastChild() {
+    return this.lastElementChild;
   }
 
   get innerHTML() {
@@ -121,6 +135,13 @@ class MockElement {
 
   appendChild(child) {
     if (!child) return child;
+    if (child.isFragment) {
+      const fragmentChildren = [...child.children];
+      for (const fc of fragmentChildren) {
+        this.appendChild(fc);
+      }
+      return child;
+    }
     if (child.parentNode) {
       child.parentNode.removeChild(child);
     }
@@ -131,6 +152,13 @@ class MockElement {
 
   insertBefore(newChild, refChild) {
     if (!newChild) return newChild;
+    if (newChild.isFragment) {
+      const fragmentChildren = [...newChild.children];
+      for (const fc of fragmentChildren) {
+        this.insertBefore(fc, refChild);
+      }
+      return newChild;
+    }
     if (!refChild) return this.appendChild(newChild);
     if (newChild.parentNode) {
       newChild.parentNode.removeChild(newChild);
@@ -427,6 +455,11 @@ globalThis.localStorage = { getItem: () => null, setItem: () => {}, removeItem: 
 globalThis.document = {
   body: new MockElement('body'),
   createElement: (tag) => new MockElement(tag),
+  createDocumentFragment: () => {
+    const f = new MockElement('#document-fragment');
+    f.isFragment = true;
+    return f;
+  },
   getElementById: () => null,
   querySelector: () => null,
   querySelectorAll: () => [],
@@ -439,6 +472,7 @@ const chat = await import('./chat.js');
 const {
   isPromptInTranscriptTail,
   loadChatTranscript,
+  loadOlderTranscriptMessages,
   sendChatPrompt,
   connectChatStream,
   handleChatStreamEvent,
@@ -1634,6 +1668,166 @@ test('interceptChatInput handles /mcp mounting status card', async () => {
     globalThis.fetch = prevFetch;
   }
 });
+
+test('loadChatTranscript renders reverse-streamed NDJSON progressively with bottom-up order and load-more banner', async () => {
+  const container = document.createElement('div');
+  const tabObj = {
+    id: 'claude-code:local:ndjson-sess',
+    session: { id: 'claude-code:local:ndjson-sess', agent: 'claude-code' },
+    chatMessagesEl: container,
+    ephemeralCards: []
+  };
+
+  const total = 30;
+  const encoder = new TextEncoder();
+  const chunks = [];
+
+  // Line 1: meta
+  chunks.push(`{"type":"meta","total":${total},"session_id":"claude-code:local:ndjson-sess"}\n`);
+
+  // Lines in reverse order from 29 down to 0
+  for (let i = total - 1; i >= 0; i--) {
+    const role = (i % 2 === 0) ? 'user' : 'assistant';
+    const msg = { role, content: `Message ${i}` };
+    chunks.push(`{"type":"msg","index":${i},"message":${JSON.stringify(msg)}}\n`);
+  }
+
+  const stream = new ReadableStream({
+    start(controller) {
+      for (const c of chunks) {
+        controller.enqueue(encoder.encode(c));
+      }
+      controller.close();
+    }
+  });
+
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    if (String(url).includes('/v1/sessions/transcript')) {
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'content-type': 'application/x-ndjson; charset=utf-8' }),
+        body: stream
+      };
+    }
+    return { ok: true, status: 200, json: async () => ({}) };
+  };
+
+  try {
+    await loadChatTranscript(tabObj);
+
+    assert.equal(tabObj.allTranscriptMessages.length, 30, 'All 30 messages must be stored in tabObj.allTranscriptMessages');
+    assert.equal(tabObj.loadedTranscriptStartIndex, 5, 'loadedTranscriptStartIndex must be 5 (30 - 25)');
+
+    const domMsgs = container.querySelectorAll('.chat-msg');
+    assert.equal(domMsgs.length, 25, 'Container must render exactly CHAT_PAGE_SIZE (25) visible messages');
+
+    // First visible message in DOM must be message 5
+    assert.equal(domMsgs[0].dataset.msgIndex, '5', 'First visible DOM node dataset.msgIndex must be 5');
+    assert.equal(domMsgs[0].dataset.rawContent, 'Message 5', 'First visible DOM node dataset.rawContent must be Message 5');
+
+    // Message 6 (user message) text content contains Message 6
+    assert.ok(domMsgs[1].textContent.includes('Message 6'), 'Second visible message in DOM must be Message 6');
+    assert.equal(domMsgs[1].dataset.msgIndex, '6');
+
+    // Last visible message in DOM must be message 29
+    assert.equal(domMsgs[domMsgs.length - 1].dataset.msgIndex, '29', 'Last visible DOM node dataset.msgIndex must be 29');
+    assert.equal(domMsgs[domMsgs.length - 1].dataset.rawContent, 'Message 29', 'Last visible DOM node dataset.rawContent must be Message 29');
+
+    // Load-more banner must be present with remaining count
+    const banner = container.querySelector('.chat-load-more-container');
+    assert.ok(banner, 'Must render .chat-load-more-container when total > CHAT_PAGE_SIZE');
+    assert.ok(banner.textContent.includes('5 remaining'), 'Banner must indicate 5 remaining older messages');
+
+    // Older messages 0-4 are stored in tabObj.allTranscriptMessages
+    assert.equal(tabObj.allTranscriptMessages[0].content, 'Message 0');
+    assert.equal(tabObj.allTranscriptMessages[4].content, 'Message 4');
+
+    // Call loadOlderTranscriptMessages to page in messages 0-4
+    loadOlderTranscriptMessages(tabObj);
+    assert.equal(tabObj.loadedTranscriptStartIndex, 0, 'loadedTranscriptStartIndex must be 0 after loading older batch');
+    assert.equal(container.querySelectorAll('.chat-msg').length, 30, 'Container must now have all 30 messages rendered');
+    assert.equal(container.querySelector('.chat-load-more-container'), null, 'Load more banner must be removed when all messages are visible');
+
+    // Subsequent loadChatTranscript call should reuse DOM and preserve loadedTranscriptStartIndex === 0
+    const stream2 = new ReadableStream({
+      start(controller) {
+        for (const c of chunks) {
+          controller.enqueue(encoder.encode(c));
+        }
+        controller.close();
+      }
+    });
+    globalThis.fetch = async (url) => {
+      if (String(url).includes('/v1/sessions/transcript')) {
+        return {
+          ok: true,
+          status: 200,
+          headers: new Headers({ 'content-type': 'application/x-ndjson; charset=utf-8' }),
+          body: stream2
+        };
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    };
+
+    await loadChatTranscript(tabObj);
+    assert.equal(tabObj.loadedTranscriptStartIndex, 0, 'Calling loadChatTranscript again must preserve loadedTranscriptStartIndex = 0 on DOM reuse');
+    assert.equal(container.querySelectorAll('.chat-msg').length, 30, 'Container must still have exactly 30 messages without duplication');
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});
+
+test('loadChatTranscript coalesces in-flight requests (<50ms coalesces; >50ms schedules reload)', async () => {
+  const container = document.createElement('div');
+  const tabObj = {
+    id: 'claude-code:local:coalesce-sess',
+    session: { id: 'claude-code:local:coalesce-sess', agent: 'claude-code' },
+    chatMessagesEl: container,
+    ephemeralCards: []
+  };
+
+  let fetchCount = 0;
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    if (String(url).includes('/v1/sessions/transcript')) {
+      fetchCount++;
+      // Simulate network latency (e.g., 80ms)
+      await new Promise(r => setTimeout(r, 80));
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'content-type': 'application/json' }),
+        json: async () => ({ messages: [], total: 0 })
+      };
+    }
+    return { ok: true, status: 200, json: async () => ({}) };
+  };
+
+  try {
+    const p1 = loadChatTranscript(tabObj);
+    assert.equal(fetchCount, 1, 'First call should immediately trigger fetch');
+
+    // Call <50ms should coalesce into p1 without extra fetch
+    const p2 = loadChatTranscript(tabObj);
+    assert.equal(fetchCount, 1, 'Call <50ms should coalesce into same in-flight fetch');
+
+    // Wait 60ms (>50ms after first call, but before p1 finishes at 80ms)
+    await new Promise(r => setTimeout(r, 60));
+    assert.equal(fetchCount, 1, 'Fetch should still be in flight at 60ms');
+    const p3 = loadChatTranscript(tabObj);
+    assert.equal(tabObj._pendingTranscriptReload, true, 'Call >50ms while fetch is pending should mark _pendingTranscriptReload');
+
+    // Await all
+    await Promise.all([p1, p2, p3]);
+
+    assert.equal(fetchCount, 2, 'Follow-up fetch should have executed after first completed');
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});
+
 
 
 

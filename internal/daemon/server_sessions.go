@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -277,18 +278,8 @@ func (s *Server) resolveSession(sessionID string) *Session {
 	}
 
 	// Fallback 2: Check by OldID or NativeID match
-	if all, err := s.db.ListSessions(); err == nil {
-		for _, sRecord := range all {
-			if sRecord.OldID != "" && (sRecord.OldID == sessionID || strings.EqualFold(sRecord.OldID, sessionID)) {
-				return sRecord
-			}
-			if sRecord.NativeID != "" && (sRecord.NativeID == sessionID || strings.HasSuffix(sessionID, ":"+sRecord.NativeID) || strings.HasSuffix(sessionID, "-"+sRecord.NativeID)) {
-				return sRecord
-			}
-			if strings.EqualFold(sRecord.ID, sessionID) {
-				return sRecord
-			}
-		}
+	if found, _ := s.db.GetSessionByAlias(sessionID); found != nil {
+		return found
 	}
 
 	return nil
@@ -312,8 +303,23 @@ func (s *Server) remoteHostForSession(sessionID string, sess *Session) *HostReco
 	return nil
 }
 
+var peerProxyHTTPClient = &http.Client{
+	Transport: &http.Transport{
+		DialContext: (&net.Dialer{
+			Timeout:   5 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ResponseHeaderTimeout: 10 * time.Second,
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   20,
+		IdleConnTimeout:       90 * time.Second,
+	},
+}
+
 func (s *Server) proxyToRemoteHost(w http.ResponseWriter, method, targetURL, contentType string, body io.Reader) bool {
-	fwdReq, err := http.NewRequest(method, targetURL, body)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	fwdReq, err := http.NewRequestWithContext(ctx, method, targetURL, body)
 	if err != nil {
 		return false
 	}
@@ -328,7 +334,7 @@ func (s *Server) proxyToRemoteHost(w http.ResponseWriter, method, targetURL, con
 		fwdReq.Header.Set("Authorization", "Bearer "+token)
 		fwdReq.Header.Set("X-Ackbar-Token", token)
 	}
-	resp, err := http.DefaultClient.Do(fwdReq)
+	resp, err := peerProxyHTTPClient.Do(fwdReq)
 	if err != nil {
 		return false
 	}
@@ -340,6 +346,12 @@ func (s *Server) proxyToRemoteHost(w http.ResponseWriter, method, targetURL, con
 }
 
 func (s *Server) resolveSessionOrProxy(w http.ResponseWriter, method, sessionID, contentType string, body io.Reader, buildPath func(sess *Session) string) (*Session, bool) {
+	if hostRec := s.remoteHostForSession(sessionID, nil); hostRec != nil && hostRec.URL != "" {
+		targetURL := strings.TrimSuffix(hostRec.URL, "/") + buildPath(&Session{ID: sessionID})
+		if s.proxyToRemoteHost(w, method, targetURL, contentType, body) {
+			return nil, true
+		}
+	}
 	sess := s.resolveSession(sessionID)
 	if hostRec := s.remoteHostForSession(sessionID, sess); hostRec != nil && hostRec.URL != "" {
 		targetURL := strings.TrimSuffix(hostRec.URL, "/") + buildPath(sess)
@@ -1157,7 +1169,11 @@ func (s *Server) handleSessionConfig(w http.ResponseWriter, r *http.Request, ses
 	}
 
 	sess, proxied := s.resolveSessionOrProxy(w, r.Method, sessionID, "application/json", bytes.NewReader(bodyBytes), func(target *Session) string {
-		return "/v1/sessions/" + url.PathEscape(target.ID) + "/config"
+		targetID := sessionID
+		if target != nil && target.ID != "" {
+			targetID = target.ID
+		}
+		return "/v1/sessions/" + url.PathEscape(targetID) + "/config"
 	})
 	if proxied {
 		return

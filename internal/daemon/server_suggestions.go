@@ -652,7 +652,11 @@ func (s *Server) handleSessionSuggestions(w http.ResponseWriter, r *http.Request
 	}
 
 	sess, proxied := s.resolveSessionOrProxy(w, r.Method, sessionID, "", nil, func(target *Session) string {
-		return "/v1/sessions/" + url.PathEscape(target.ID) + "/suggestions?" + r.URL.RawQuery
+		targetID := sessionID
+		if target != nil && target.ID != "" {
+			targetID = target.ID
+		}
+		return "/v1/sessions/" + url.PathEscape(targetID) + "/suggestions?" + r.URL.RawQuery
 	})
 	if proxied {
 		return

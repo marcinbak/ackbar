@@ -44,6 +44,8 @@ It is embedded directly into the `ackbard` Go binary and served on `http://127.0
 * **Headless Chat Focus & Voice Dictation Support:** Headless tabs do not instantiate `xterm.js` or `.xterm-helper-textarea`, eliminating hidden textarea focus competition. `.chat-composer-textarea` deterministically handles `text/plain` clipboard pastes in JavaScript (both when focused and at the document capture level), includes a `Cmd+V` / `Ctrl+V` `keydown` clipboard fallback for macOS dictation overlays (such as Wispr Flow), re-asserts native responder focus on window focus return, and guards composer DOM attributes (`placeholder`, `innerHTML`) against unnecessary mutations during live SSE updates.
 * **⏱️ Delayed & Rate-Limit Auto-Resume Prompts:** The composer includes a `⏱️` Schedule popover (`.btn-composer-schedule`) offering standard delays (+15m, +30m, +1h, +2h), custom delay prompts, and 1-click limit reset resume. Prompts can also be scheduled via `/delay <duration> <prompt>`. Queued delayed items display relative countdown badges (`⏳ Sends at HH:MM (in Xm)`) with a `[▶ Send Now]` trigger, and `card-rate-limit` cards render 1-click `[⏱️ Auto-Resume at HH:MM]` buttons.
 * **Auto-Healing Turn Recovery & Stream Reconnection (`chat.js`):** `chat.js` tracks `activeTurnId` and `lastStreamSeq`, reconnects `/v1/sessions/chat/stream` with cursor parameters (`?after_seq`, `?turn_id`), deduplicates events, and reconciles message bubbles by `dataset.turnId` without duplicate prompts or layout flashes.
+* **Progressive Reverse-NDJSON Transcript Streaming ([`chat.js`](file:///Users/dev4u/Work/Ackbar/web/js/chat.js)):** Streams `format=ndjson` newest-first, rendering visible tail messages immediately, prepending messages 6–25 across RAF frames, and caching remaining messages in memory.
+* **Chat DOM Preservation Across Tab Switches ([`tabs.js`](file:///Users/dev4u/Work/Ackbar/web/js/tabs.js), [`chat.js`](file:///Users/dev4u/Work/Ackbar/web/js/chat.js)):** Re-activating an open chat tab preserves existing rendered `.chat-msg` elements and reconciles new turns without DOM teardown.
 * **Collision-Safe Tab Identity Migration:** When a spawned session rotates from its temporary placeholder ID to its native agent conversation UUID (`old_id` $\rightarrow$ `id`), `tabs.js` and `chat.js` deduplicate open tabs by `id`, `old_id`, `tmux_name`, and `host + agent + native_id`, migrating the live tab and `chatStreamSessionId` in place without closing active `EventSource` streams or creating orphan DOM tabs.
 * **Tab Right-Click Context Menu:** Right-click any tab for quick lifecycle actions:
   * **✕ Close Tab:** Closes the target tab.
@@ -62,6 +64,9 @@ It is embedded directly into the `ackbard` Go binary and served on `http://127.0
   * `🛑` **FAILED:** Process crashed or error.
   * `◌` **STANDBY:** Unmanaged session or host disconnected.
 * **Unread vs. Read State Cue:** A pulsing dot indicates unread transitions to `BLOCKED` or `IDLE`. Focusing or clicking the session automatically marks it as read.
+* **O(1) Active Tab & Unread Selection ([`tree.js`](file:///Users/dev4u/Work/Ackbar/web/js/tree.js)):** Clicking a session updates `.active-tab` and `.session-unread` through dataset queries instead of wiping sidebar innerHTML.
+* **Coalesced Tree Rendering ([`tree.js`](file:///Users/dev4u/Work/Ackbar/web/js/tree.js)):** Coalesces high-frequency SSE and click tree rebuilds via RAF/100ms scheduler while preserving immediate synchronous renders for search and toggles.
+* **Batched Single-View Tab Swapping ([`tabs.js`](file:///Users/dev4u/Work/Ackbar/web/js/tabs.js)):** Single-view mode closes previous tabs in a single batch to prevent intermediate tab activations and layout thrash.
 * **⏳ Later Section & Collapsible Parking:** Each project group and Unassigned folder contains a collapsible `⏳ Later` section for parked sessions. Sessions in Later are immune to auto-completion (`auto_done`) and auto-archival, and remain in Later during prompt interaction until explicitly moved to Active or Done.
 * **1-Click Conversation Resumption:** Ended turns can be resumed directly into a new tmux tab via right-click **`▶ Resume in Tmux`** or the details view button.
 * Context token usage meter (adapting dynamically to 200k, 1M, and 128k token limits).
@@ -198,14 +203,14 @@ The web frontend is organized as zero-build native ECMAScript modules (`<script 
 
 * **`state.js`**: Central application state (`sessions`, `hosts`, `openTabs`, `treeNodes`), element cache `el`, and localStorage persistence.
 * **`auth.js`**: Token management and `window.fetch` interceptor with automatic 401 token authentication prompt.
-* **`utils.js`**: Markdown setup and rendering (`marked.js`), formatting helpers, host utilities, and path translation.
+* **`utils.js`**: Markdown setup and rendering (`marked.js`), Git URL normalization, formatting helpers, host utilities, and path translation.
 * **`api.js`**: REST client endpoints (`/v1/sessions`, `/v1/hosts`, `/v1/nodes`, `/v1/settings`, etc.).
 * **`sse.js`**: Server-Sent Events multi-host subscriber and real-time state synchronization.
-* **`tree.js`**: Sidebar tree hierarchy, drag-and-drop reordering, and done / auto-archived sections.
+* **`tree.js`**: Sidebar tree hierarchy, drag-and-drop reordering, O(1) tab selection, and coalesced RAF rendering.
 * **`tasks.js`**: Work & Fleet Overview Kanban board, 4-pillar task lifecycle, organization/project filters, and zero context-switch workspace tab navigation.
-* **`tabs.js`**: Terminal and chat tab strip lifecycle, overflow menu, and persistence.
+* **`tabs.js`**: Terminal and chat tab strip lifecycle, batched single-view closing, overflow menu, and persistence.
 * **`terminal.js`**: `xterm.js` terminal tabs, WebSocket PTY streams, resizing, and attachment uploads.
-* **`chat.js`**: Interactive chat interface, streaming transcript, tool call formatters, and composer queue.
+* **`chat.js`**: Interactive chat interface, progressive reverse-NDJSON streaming, tool call formatters, and composer queue.
 * **`chat-commands.js`**: Command router for inline shell (`! <cmd>`) and standalone slash commands, composer indicator, and tab migration.
 * **`chat-command-cards.js`**: DOM card renderers for `.chat-bash-card` shell output, inspection reports, git diffs, and rewind turn picker.
 * **`chat-auth.js`**: Headless OAuth login flows, `.card-auth` cards, callback relay, and `/config` popover MCP and plugin health pills.

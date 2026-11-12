@@ -386,7 +386,7 @@ func (s *Server) updateRemoteHost(host *HostRecord) (map[string]interface{}, int
 }
 
 func shellSingleQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 func (s *Server) updateRemoteHostToVersion(host *HostRecord, targetVersion string) (map[string]interface{}, int, error) {

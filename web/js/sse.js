@@ -13,7 +13,7 @@ import {
   deduplicateSessions,
   isRawSessionName
 } from './api.js';
-import { renderTree } from './tree.js';
+import { renderTree, scheduleRenderTree } from './tree.js';
 import { closeTab, updateOpenTabsState, checkAndReconnectActiveTabs, migrateTabId } from './tabs.js';
 import { renderSubagentsBar, fetchRunningSubagents, loadChatTranscript, resetChatComposer, hideInStreamActivity, onSessionUpdated } from './chat.js';
 import { getAppMode, refreshWorkBoard } from './tasks.js';
@@ -89,7 +89,7 @@ function connectSSE() {
                 closeTab(tId);
               }
             }
-            renderTree();
+            scheduleRenderTree(100);
             return;
           }
 
@@ -103,7 +103,7 @@ function connectSSE() {
           }
 
           state.sessions = deduplicateSessions(state.sessions);
-          renderTree();
+          scheduleRenderTree(100);
           updateOpenTabsState();
           triggerTaskBoardRefresh();
 

@@ -67,6 +67,20 @@ func (s *Server) getRunningSubagents(sessionID, nativeID, agent, cwd string) []S
 	// 1. Query Provider interface abstraction (source of truth on disk)
 	var diskSubs []SubagentInfo
 	var hasDiscoverer bool
+
+	cacheKey := agent + ":" + nativeID + ":" + cwd
+	s.subagentDiskMu.RLock()
+	if s.subagentDiskCache != nil {
+		if entry, ok := s.subagentDiskCache[cacheKey]; ok && time.Since(entry.cachedAt) < 3*time.Second {
+			diskSubs = make([]SubagentInfo, len(entry.subagents))
+			copy(diskSubs, entry.subagents)
+			hasDiscoverer = true
+			s.subagentDiskMu.RUnlock()
+			goto reconcile
+		}
+	}
+	s.subagentDiskMu.RUnlock()
+
 	if p, ok := s.providers[agent]; ok {
 		if discoverer, ok := p.(SubagentDiscoverer); ok {
 			hasDiscoverer = true
@@ -87,6 +101,20 @@ func (s *Server) getRunningSubagents(sessionID, nativeID, agent, cwd string) []S
 			}
 		}
 	}
+
+	if hasDiscoverer {
+		s.subagentDiskMu.Lock()
+		if s.subagentDiskCache == nil {
+			s.subagentDiskCache = make(map[string]*subagentDiskCacheEntry)
+		}
+		s.subagentDiskCache[cacheKey] = &subagentDiskCacheEntry{
+			subagents: diskSubs,
+			cachedAt:  time.Now(),
+		}
+		s.subagentDiskMu.Unlock()
+	}
+
+reconcile:
 
 	// 2. Query and reconcile in-memory subagents
 	s.subagentsMu.Lock()
@@ -287,7 +315,20 @@ func (s *Server) clearInMemorySubagents(sessionID, nativeID string) {
 	}
 }
 
+func (s *Server) clearSubagentDiskCache(sessionID, nativeID string) {
+	s.subagentDiskMu.Lock()
+	if s.subagentDiskCache != nil {
+		for k := range s.subagentDiskCache {
+			if strings.Contains(k, sessionID) || (nativeID != "" && strings.Contains(k, nativeID)) {
+				delete(s.subagentDiskCache, k)
+			}
+		}
+	}
+	s.subagentDiskMu.Unlock()
+}
+
 func (s *Server) clearSubagents(sessionID, nativeID string) {
+	s.clearSubagentDiskCache(sessionID, nativeID)
 	s.clearInMemorySubagents(sessionID, nativeID)
 
 	if sess := s.resolveSession(sessionID); sess != nil {

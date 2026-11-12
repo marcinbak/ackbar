@@ -185,6 +185,30 @@ func (s *Server) handlePTY(w http.ResponseWriter, r *http.Request) {
 	server.ServeHTTP(w, r)
 }
 
+func buildRemotePTYAttachArgs(sshTarget, tmuxName, cwd, resumeCmd string) []string {
+	var newSessCmd string
+	if resumeCmd != "" {
+		innerBash := fmt.Sprintf("cd %s 2>/dev/null || true; export PATH=\"/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/.npm-global/bin:$PATH\"; %s; exec bash -l",
+			shellSingleQuote(cwd), resumeCmd)
+		newSessCmd = fmt.Sprintf("tmux new-session -d -s %s -c %s bash -l -c %s",
+			shellSingleQuote(tmuxName), shellSingleQuote(cwd), shellSingleQuote(innerBash))
+	} else {
+		newSessCmd = fmt.Sprintf("tmux new-session -d -s %s -c %s",
+			shellSingleQuote(tmuxName), shellSingleQuote(cwd))
+	}
+
+	remoteScript := fmt.Sprintf("tmux has-session -t %s 2>/dev/null || %s; tmux set-option -t %s mouse on 2>/dev/null || true; tmux set-option -t %s window-size latest 2>/dev/null || true; tmux set-window-option -t %s window-size latest 2>/dev/null || true; exec tmux attach-session -t %s",
+		shellSingleQuote(tmuxName),
+		newSessCmd,
+		shellSingleQuote(tmuxName),
+		shellSingleQuote(tmuxName),
+		shellSingleQuote(tmuxName),
+		shellSingleQuote(tmuxName),
+	)
+
+	return []string{"-t", "--", sshTarget, remoteScript}
+}
+
 func (s *Server) servePTYWS(ws *websocket.Conn) {
 	defer ws.Close()
 
@@ -320,17 +344,9 @@ func (s *Server) servePTYWS(ws *websocket.Conn) {
 		_ = exec.Command("tmux", "set-window-option", "-t", tmuxName, "window-size", "latest").Run()
 		cmd = exec.Command("tmux", "attach-session", "-t", tmuxName)
 	} else {
-		// Ensure remote tmux session exists before attaching
-		remoteShellCmd := ""
-		if resumeCmd != "" {
-			remoteShellCmd = fmt.Sprintf(" bash -l -c %q", fmt.Sprintf("cd %q 2>/dev/null || true; export PATH=\"/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/.npm-global/bin:$PATH\"; %s; exec bash -l", cwd, resumeCmd))
-		}
-		// Same window sizing policy as the local branch: no resize-window, the
-		// `ssh -t` client PTY carries the size and `window-size latest` follows it.
-		ensureRemoteCmd := fmt.Sprintf("tmux has-session -t %q 2>/dev/null || tmux new-session -d -s %q -c %q%s; tmux set-option -t %q mouse on 2>/dev/null || true; tmux set-option -t %q window-size latest 2>/dev/null || true; tmux set-window-option -t %q window-size latest 2>/dev/null || true", tmuxName, tmuxName, cwd, remoteShellCmd, tmuxName, tmuxName, tmuxName)
 		sshTarget = s.resolveSSHTarget(sessHost)
-		_ = exec.Command("ssh", sshTarget, ensureRemoteCmd).Run()
-		cmd = exec.Command("ssh", "-t", sshTarget, fmt.Sprintf("tmux attach-session -t %q", tmuxName))
+		args := buildRemotePTYAttachArgs(sshTarget, tmuxName, cwd, resumeCmd)
+		cmd = exec.Command("ssh", args...)
 	}
 
 	var cleanEnv []string
