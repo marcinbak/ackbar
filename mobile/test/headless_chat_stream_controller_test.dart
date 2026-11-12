@@ -5,6 +5,7 @@ import 'package:http/testing.dart';
 import 'package:ackbar_mobile/core/models/chat_stream_event.dart';
 import 'package:ackbar_mobile/core/models/host.dart';
 import 'package:ackbar_mobile/core/models/session.dart';
+import 'package:ackbar_mobile/core/models/subagent.dart';
 import 'package:ackbar_mobile/core/models/transcript.dart';
 import 'package:ackbar_mobile/core/network/api_client.dart';
 import 'package:ackbar_mobile/core/network/chat_stream_client.dart';
@@ -26,6 +27,25 @@ class _FakeApiClient extends ApiClient {
     String? authToken,
   }) async {
     return structuredResponse;
+  }
+
+  @override
+  Future<String?> getTranscriptOrNull(
+    String hostUrl,
+    String sessionID, {
+    String format = 'markdown',
+    String? authToken,
+  }) async {
+    return null;
+  }
+
+  @override
+  Future<List<SubagentInfo>> getSubagents(
+    String hostUrl,
+    String sessionID, {
+    String? authToken,
+  }) async {
+    return const [];
   }
 
   @override
