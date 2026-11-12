@@ -16,7 +16,7 @@ The audit analyzed 204 source files across Go, JavaScript, and Flutter/Dart code
 | :--- | :--- | :--- |
 | [01-go-backend-and-cli.md](01-go-backend-and-cli.md) | Daemon, CLI, Relay, SQLite | `server.go`, `db.go`, `headless.go`, `server_sessions.go`, `status_inspector.go`, `transcript.go`, `tools.go`, `cmd/ackbar` |
 | [02-web-and-ci.md](02-web-and-ci.md) | Web GUI, ES Modules, CI/CD | `chat.js`, `tasks.js`, `modals.js`, `tabs.js`, `utils.js`, `api.js`, 12-module cyclic SCC, `.github/workflows/ci.yml` |
-| [03-mobile-and-parity.md](03-mobile-and-parity.md) | Flutter Companion, Cross-Client Parity | `fleet_providers.dart`, `transcript_screen.dart`, `attention_screen.dart`, 3-way client logic drift, analyzer gates |
+| [03-mobile-and-parity.md](03-mobile-and-parity.md) | Flutter Companion, Cross-Client Parity | `fleet_providers.dart`, `attention_screen.dart`, 3-way client logic drift, analyzer gates |
 
 ## Current vs Target Subsystem Architecture
 
@@ -54,12 +54,12 @@ flowchart TD
 | **P1** | Relay Transport | `httptest.NewRecorder` in relay client drops WebSocket PTY hijacking | [01-go-backend-and-cli.md](01-go-backend-and-cli.md#3-security-sqlite--reliability-defects) |
 | **P1** | SQLite Engine | Missing `SetMaxOpenConns`; `DEFERRED` lock upgrades trigger `SQLITE_BUSY`; slow queries | [01-go-backend-and-cli.md](01-go-backend-and-cli.md#3-security-sqlite--reliability-defects) |
 | **P1** | Agent Transcripts | `ExtractTranscript` ignores Codex, Grok, and OpenCode transcripts | [01-go-backend-and-cli.md](01-go-backend-and-cli.md#2-boundary-inversion--provider-drift) |
-| **P1** | Mobile Network | `SSEClient.subscribeHost` leaks reconnect loop; Attention mic hardcodes mock | [03-mobile-and-parity.md](03-mobile-and-parity.md#2-mobile-hotspots--defects) |
+| **P1** | Mobile Network | Attention mic hardcodes mock; shared input controller & action bug | [03-mobile-and-parity.md](03-mobile-and-parity.md#2-mobile-hotspots--defects) |
 | **P1** | Fleet Purge | `handlePurge` invokes unauthenticated peer fan-out with no hop guard | [01-go-backend-and-cli.md](01-go-backend-and-cli.md#3-security-sqlite--reliability-defects) |
 
 ## Prioritized Remediation Roadmap
 
-Remediation follows three sequential waves to isolate behavioral bug fixes from behavior-neutral refactoring.
+See [completed remediations in the tasks archive](../archive/completed-tasks.md#2-architecture-audit-remediations-2026-11) for completed audit tasks. Remediation follows three sequential waves to isolate behavioral bug fixes from behavior-neutral refactoring.
 
 ### Wave 1: P0 Security & Correctness Fixes (Bug PRs)
 * Bind `ackbard` strictly to `127.0.0.1` by default; enforce WebSocket `Origin` checks and origin-matched CORS.
@@ -67,12 +67,12 @@ Remediation follows three sequential waves to isolate behavioral bug fixes from 
 * Add `/js/*` to `authMiddleware` allowlist; inject `ACKBAR_TOKEN` in `cmd/ackbar-hook`.
 * Replace `innerHTML` interpolations with `escapeHtml` / `textContent` in Web UI (`palette.js`, `tabs.js`, `modals.js`).
 * Replace blacklist Markdown sanitizer in `web/js/utils.js` with strict allowlist sanitizer; pin `marked` CDN with SRI.
-* Add `onCancel` handler to `SSEClient.subscribeHost`; fix AttentionScreen controller sharing and action routing.
+* Fix AttentionScreen controller sharing, mock mic stub, and action routing.
 * Register Codex, Grok, and OpenCode transcript parsers in `internal/daemon/transcript.go`.
 
 ### Wave 2: Architecture Contract & Baseline CI Gates (Setup Mode)
 * Rewrite [docs/architecture.md](../architecture.md) defining strict module boundaries, dependency hierarchy, and size limits.
-* Add static gates to T0 and `.github/workflows/ci.yml`: `go vet ./...`, `dart format`, `AGENTS.md <= 160`, `chat.test.mjs`.
+* Add static gates to T0 and `.github/workflows/ci.yml`: `go vet ./...`, `AGENTS.md <= 160`, `chat.test.mjs`.
 * Integrate `hotspots.py --check` with explicit file exemptions listed in `docs/architecture.md`.
 * Restore suppressed rules in `mobile/analysis_options.yaml` (`unused_element`, `use_build_context_synchronously`).
 
@@ -83,4 +83,4 @@ Remediation follows three sequential waves to isolate behavioral bug fixes from 
 4. Split `web/js/chat.js` (`5,197` lines code, `23` churn) into 9 focused ES modules under `web/js/chat/`.
 5. Break 12-module Web circular import SCC via unidirectional state event bus.
 6. Decompose `internal/daemon/headless.go` (`1,819` lines) and `internal/daemon/server_sessions.go` (`1,848` lines).
-7. Decompose Flutter `fleet_providers.dart` (`1,145` lines) and `transcript_screen.dart` (`1,974` lines).
+7. Decompose Flutter `fleet_providers.dart` (`1,145` lines) and `attention_screen.dart` (`980` lines).

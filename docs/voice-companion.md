@@ -138,21 +138,6 @@ When a message contains a **large implementation plan (>150 words)**, **large ta
 
 ---
 
-## 6. Phased Implementation Roadmap
+## 6. Implementation Roadmap Archive
 
-1. **Phase 1 — Supervisor MCP & Multi-Host Transcript Proxy (`internal/mcp`, `internal/daemon`) — [DONE]:**
-   * Add `list_sessions`, `get_session_output`, `send_session_input`, `spawn_session`, and `control_session` to `internal/mcp/tools.go`.
-   * Add remote host proxy fallback to `GET /v1/sessions/transcript` and `GET /v1/sessions?federated=true` in `internal/daemon/server.go`.
-   * Add Claude Desktop (`claude_desktop_config.json`) to `internal/daemon/provisioner.go`.
-2. **Phase 2 — On-Demand Speech Summarizer & Chat Audio Controls (`internal/daemon`, `web/`) — [DONE on Daemon & Web; Mobile in Phase 5]:**
-   * Implement `POST /v1/sessions/summarize-speech` on `ackbard` with `(session_id, message_index)` caching, headless Haiku integration, direct Cloud API support, and pure-Go structural fallback.
-   * Add the Tier 1 Markdown Speech Sanitizer, header toggles (`[🔊 Auto-Read]`, `[🎤 Mic]`), and per-message bubble buttons (`[🔊 Read]`, `[⏹️ Stop]`, `[↺ Read Again]`, `[📖 Read Full]`) to `web/js/chat.js` (mobile alignment in Phase 5).
-3. **Phase 3 — Remote HTTP MCP & Commuter Quick-Chips (`internal/daemon`, `web/`) — [DONE on Daemon & Web; Mobile in Phase 5]:**
-   * Expose Streamable HTTP MCP (`POST /v1/mcp`) on `ackbard` with JSON-RPC 2.0 and loopback listener resolution.
-   * Render interactive `suggested_chips` in `web/js/chat.js` for 1-tap exploration of implementation plans (mobile alignment in Phase 5).
-4. **Phase 4 — Native Mobile TTS/STT & Antigravity `JETSKI-AUDIO/1` Live Voice Bridge (`internal/daemon`, `web/`, `mobile/`) — [DONE]:**
-   * **Part B (Mobile Native TTS/STT for Work Claude Code Supervisor & All Agents):**
-     * Implemented `PlatformSpeechEngine` over `MethodChannel('dev.ackbar.app/speech')` in `mobile/lib/core/services/audio_companion_service.dart` backed by native iOS (`AVSpeechSynthesizer` + `SFSpeechRecognizer`) and Android (`TextToSpeech` + `SpeechRecognizer`), with automatic `InMemorySpeechEngine` fallback in headless tests.
-   * **Part A (Antigravity CLI Native `/voice live` `JETSKI-AUDIO/1` Audio Bridge):**
-     * Implemented `MicServeBridge` in `internal/daemon/micserve_bridge.go` listening on `127.0.0.1:4713` (or fallback loopback port), automatically injecting `ANTIGRAVITY_MIC=<bridgeAddr>` into spawned/attached `antigravity` sessions.
-     * Exposed `GET /v1/sessions/voice-bridge` (bidirectional WebSocket) and `GET /v1/sessions/voice-bridge/status` on `ackbard` to stream 16 kHz mono `S16_LE` mic PCM from Web/Mobile to `agy` and 24 kHz mono `S16_LE` speaker PCM (`'A'` frames) + instant barge-in buffer flushes (`'C'` frames) from `agy` back to Web Audio API (`web/js/chat.js`) and Mobile (`AudioCompanionService`).
+All 4 implementation phases are complete. See [docs/archive/completed-tasks.md](archive/completed-tasks.md#4-voice-companion--live-audio-bridge-4-phase-roadmap) for the historical roadmap.
