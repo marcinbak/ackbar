@@ -20,6 +20,7 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 * **`server_sessions.go`:** Session listing, maintenance purge, remote-host proxy resolution (`resolveSessionOrProxy`), lifecycle control actions (`/v1/sessions/control`), session configuration (`PATCH /v1/sessions/{id}/config`), interactive response dispatch (`applyInteractiveResponse`, `/v1/sessions/respond`), mode switching between headless and tmux (`/v1/sessions/take-wheel` and `/v1/sessions/switch-headless`), session spawn (`/v1/sessions/spawn`), and meta-routing (`/v1/meta/resolve`).
 * **`server_suggestions.go`:** Slash command (`/`), workspace file (`@`), and agent-aware model suggestions endpoint (`GET /v1/sessions/{id}/suggestions?kind=commands|files|models&q=...`) with 10-second directory caching, 5-minute Antigravity model discovery caching, and bounded `git ls-files` / `filepath.WalkDir` traversal.
 * **`server_chat.go`:** Headless/tmux prompt submission (`/v1/sessions/prompt` with `delay_seconds`, `deliver_at`, inline `/delay <duration> <prompt>` scheduling, and `client_turn_id` deduplication), prompt queue management (`GET`/`DELETE`/`POST` `/v1/sessions/prompt/queue` with `action: send_now`), `scheduled_prompts` SQLite persistence, SSE chat streaming (`/v1/sessions/chat/stream`), turn cancellation, automated session handover (`/v1/sessions/handover`), and transcript endpoints.
+* **`transcript_cache.go`:** Bounded in-memory transcript cache (128 entries) with `(size, mtimeNano)` validation, incremental Claude `.jsonl` seek-append parsing, and 3-second subagent discovery caching.
 * **`prompt_dedup.go`:** Bounded in-memory LRU prompt deduplication cache (512 entries, 10m TTL) tracking in-flight reservations and committed status for idempotent `client_turn_id` submissions.
 * **`headless.go`, `headless_persistent.go`, `headless_spool.go`:** Headless coordinator, warm worker lifecycle management, turn dispatch/reuse, and monotonic NDJSON turn spooling.
 * **`headless_worker.go`, `headless_config.go`, `headless_worker_ipc.go`:** Detached `--headless-worker` process, persistent stdio stream loop, configuration fingerprinting, and Unix socket RPC.
@@ -71,7 +72,7 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 | `GET` | `/v1/sessions/{id}/suggestions` | Returns `/` command/skill suggestions (`kind=commands`), `@` relative file path suggestions (`kind=files&q=...`), or agent-aware model options (`kind=models&q=...`). |
 | `POST` | `/v1/sessions/handover`| Initiates automated session handover, briefing extraction, and context rotation. |
 | `POST` | `/v1/sessions/mark-read` | Marks a session as read (`is_unread = false`), clearing visual unread cues. |
-| `GET` | `/v1/sessions/transcript`| Retrieves conversation transcript with active turn spool synthesis (JSON or Markdown). |
+| `GET` | `/v1/sessions/transcript`| Retrieves conversation transcript with active turn spool synthesis (supports `format=ndjson` reverse streaming, `include_formats=false`, and gzip). |
 | `POST` | `/v1/sessions/upload` | Uploads clipboard images or drag-and-dropped PDFs to `/tmp/ackbar-uploads/`. |
 | `GET` | `/v1/settings` | Returns daemon settings including `host_name`, `display_name`, auto-done thresholds, `later_collapsed_by_default`, `hide_session_tabs`, handover suggestions, and `ntfy_topic` / `ntfy_server`. |
 | `POST` | `/v1/settings` | Updates and persists daemon settings in SQLite (supports `propagate_ntfy: "true"` to push `ntfy_topic` and `ntfy_server` to all connected fleet hosts). |
@@ -112,8 +113,9 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 
 ### PTY Terminal Sizing (`/v1/sessions/pty`)
 
-Each WebSocket gets its own attach PTY running `tmux attach-session` (local) or `ssh -t <host> tmux attach-session` (remote), started at the client's `cols`/`rows` query parameters.
+Each WebSocket gets its own attach PTY running `tmux attach-session` (local) or single-invocation `ssh -t -- <target> <script>` (remote), started at client `cols`/`rows` query parameters.
 
+* **Single-SSH Remote Attach:** Remote PTY attach combines session validation, creation, and `exec tmux attach-session` in one SSH command, eliminating redundant handshake round-trips.
 * **Pre-attach:** the daemon sets `mouse on` and `window-size latest` (both the session option and the window option). It never calls `resize-window`: that silently switches the window to `window-size manual` and sizes it to the full client height, hiding the bottom row behind the status line. Re-asserting `latest` on every attach also heals sessions left in `manual` mode by older builds.
 * **Resize messages** (`{"type":"resize","cols":C,"rows":R}`) only call `TIOCSWINSZ` on the attach PTY. The tmux client forwards the new size and `window-size latest` makes the window follow it. No `tmux` or `ssh` subprocess runs per resize.
 * **Deduplication:** a resize whose size matches the last applied size (seeded with the start size), or that is below 10×4, is dropped (`ptyResizeTracker` in `internal/daemon/pty.go`). Resize messages are always consumed and never written to the terminal.
@@ -161,6 +163,24 @@ Headless sessions (`engine_type = "headless"`, `tmux_name = ""`) execute turns t
   * **Bounded LRU Cache:** Uses [`prompt_dedup.go`](../internal/daemon/prompt_dedup.go) with a 10-minute TTL and 512 entries keyed by `sessionID + "\x00" + clientTurnID`.
   * **Coalescing & Replay:** In-flight duplicate requests await the initial reservation. Committed duplicates return `200 OK` with `{"status": "running", "deduplicated": true}` (and `queue_depth` when queued) without duplicate execution.
   * **Failure Safety:** Non-200 dispatch errors (`400`/`500`) abort the reservation, enabling clients to retry immediately.
+
+### Transcript Caching & Reverse-NDJSON Streaming (`/v1/sessions/transcript`)
+
+* **Progressive Reverse-NDJSON (`format=ndjson`):** Emits line 1 `meta` header followed by newest-to-oldest `msg` lines formatted via [`CoalesceTranscriptMessagesForWire`](file:///Users/dev4u/Work/Ackbar/internal/daemon/server_chat.go).
+* **Early Flush Intervals:** HTTP flusher flushes chunk immediately after `meta` and message indices 0, 5, 24, and total-1.
+* **Payload Trimming (`include_formats=false`):** Skips generating heavy ANSI and Markdown strings during JSON serialization to reduce payload size and CPU usage.
+* **Response Compression:** Automatically compresses JSON responses larger than 2KB with `gzip` when requested via `Accept-Encoding: gzip`.
+* **Bounded In-Memory Cache ([`transcript_cache.go`](file:///Users/dev4u/Work/Ackbar/internal/daemon/transcript_cache.go)):** Caches up to 128 parsed transcripts by `(agent, nativeID, cwd)` with file size, modification timestamp, and 128-byte header validation.
+* **Incremental Seek-Append:** Performs fast `Seek` append parsing on Claude `.jsonl` files when file size grows and header matches.
+* **Pre-Filtered JSONL Parsing:** Skips non-message lines (tool progress, file snapshots) before JSON unmarshaling to prevent memory thrash.
+* **Subagent Discovery Cache:** Caches disk-discovered subagents for 3 seconds to avoid repetitive directory scans during active polling.
+* **Streaming Proxy Timeout Safety:** Proxied remote transcripts use `ResponseHeaderTimeout: 10s` so streaming NDJSON responses do not terminate prematurely.
+
+### Pure-Go Git Branch Resolution & Fast Session Queries
+
+* **Zero-Subprocess Branch Resolution ([`git.go`](file:///Users/dev4u/Work/Ackbar/internal/daemon/git.go)):** Resolves `.git/HEAD` and `.git` worktree pointer files in pure Go with a 60-second positive and negative cache.
+* **Scan Loop Subprocess Elimination:** Database session scan loops (`GetSession`, `ListSessions`) read pre-persisted `git_branch` columns without invoking subprocesses.
+* **Fast Alias Lookup:** SQLite indexes on `sessions(native_id)` and `sessions(old_id)` enable direct O(1) alias resolution via [`GetSessionByAlias`](file:///Users/dev4u/Work/Ackbar/internal/daemon/db.go).
 
 ---
 
