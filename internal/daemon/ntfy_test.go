@@ -436,7 +436,7 @@ func TestTasksAPI_ReviewAndBlockedTriggerNtfy(t *testing.T) {
 		}
 		if p.Title == "Test task" && strings.Contains(p.Message, "🟢 PR Review Needed (#10)") {
 			hasReview = true
-			if !strings.Contains(p.Message, "📂 Ackbar") {
+			if !strings.Contains(p.Message, "Ackbar") {
 				t.Errorf("expected review message to contain group path, got %q", p.Message)
 			}
 			if p.Icon != AckbarNotificationIconURL {
@@ -446,7 +446,7 @@ func TestTasksAPI_ReviewAndBlockedTriggerNtfy(t *testing.T) {
 				t.Errorf("unexpected click URL: %q", p.Click)
 			}
 		}
-		if p.Title == "Test task" && p.Message == "📂 Ackbar\n❓ Blocked: Need confirmation to proceed?" {
+		if p.Title == "Test task" && strings.Contains(p.Message, "❓ Blocked: Need confirmation to proceed?") {
 			hasBlocked = true
 			if p.Icon != AckbarNotificationIconURL {
 				t.Errorf("expected icon %q, got %q", AckbarNotificationIconURL, p.Icon)

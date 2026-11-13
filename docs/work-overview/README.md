@@ -57,7 +57,7 @@ Task and tree persistence is managed in `ackbard.db` using CGO-free pure Go SQLi
 ## 4. REST API Endpoints
 
 * **`GET /v1/tasks`**: Returns all tasks with joined workers, external references, and deliverable metadata (`has_content_md`, omitting inline `content_md`). Supports optional query filters: `?group=`, `?project=`, `?status=`, `?federated=true`, and `?reconcile_prs=true` (on-demand GitHub PR state check via `gh pr view`).
-* **`POST /v1/tasks`**: Explicitly creates or updates a task (supports client-generated IDs and preserves lazy deliverable `content_md` on partial updates).
+* **`POST /v1/tasks`**: Explicitly creates or updates a task (supports client-generated IDs, `project_node_path` moves, and subproject clearing).
 * **`POST /v1/tasks/event`**: Ingests structured task lifecycle events (`task_id`, `event_type`, `payload`).
 * **`POST /v1/tasks/propose`**: Records explicit agent-discovered work proposals (`propose_task`) with title deduplication into `NEW`.
 * **`GET /v1/tasks/deliverable?id=<id>`**: Lazily fetches full deliverable details including `content_md` on demand.
@@ -70,19 +70,20 @@ Task and tree persistence is managed in `ackbard.db` using CGO-free pure Go SQLi
 
 ---
 
-## 5. Web UI Features (`web/js/tasks.js`, `web/js/tasks-dnd.js`)
+## 5. Web UI Features (`web/js/tasks.js`, `web/js/tasks-project.js`, `web/js/tasks-dnd.js`)
 
 1. **Header Mode Switcher:**
    * Toggle between **`[💻 Workspace]`** (multi-terminal tabs, chat transcript, session tree) and **`[📋 Work Board]`** (Kanban board).
    * Restoring Workspace view triggers synthetic window resize events to ensure `xterm.js` terminals re-fit without distortion.
 2. **Canonical `tree_nodes` Scoping & Filtering:**
    * Organization/Group pills (`All`, `Modemobile`, `Personal`, `EnuiaLabs`) derived from `tree_nodes`.
-   * Dynamic Project dropdown populated from canonical `tree_nodes` subpaths.
+   * Dynamic Project dropdown populated from canonical `tree_nodes` subpaths with parent-prefix hierarchical filtering.
    * Instant search input filtering across task titles, notes, Git branches, and issue tracker keys.
 3. **Zero Context-Switch Navigation:**
    * Clicking any worker badge on a task card instantly switches to Workspace mode and focuses the agent's live terminal/chat tab via `openSessionInTab(session)` / `activateTab(sessionId)`.
 4. **Contextual Action Controls:**
-   * **Backlog Task Creator (`+ New Task`):** Clean backlog creator (`tree_nodes` path selector, Title, Kind Code/Design, Tracker Ref, Notes) saving directly to `NEW` (`ready`).
+   * **Backlog Task Creator (`+ New Task`):** Clean backlog creator with unified `tree_nodes` selector, Title, Kind, Tracker Ref, and Notes.
+   * **Project Node Move (`.task-project-tag`):** Clickable project badge opens modal to move task across project nodes.
    * **1-Click Start Task (`[▶ Start]`):** Opens a lightweight Start modal pre-filled from `node_host_paths`, spawns a dedicated `📋 Task` session bound to `task.id`, transitions the task to `IN_PROGRESS` (`active`), and switches to the live session tab.
    * **Drag-and-Drop Pillar Transitions:** Drag cards between columns (`NEW`, `IN_PROGRESS`, `REVIEW`, `DONE`) with optimistic rendering, substatus normalization, and rollback on error.
    * **Stalled Task Triage:** When all worker sessions for an `IN_PROGRESS` task end without reaching `REVIEW` or `DONE`, the task is marked `stalled` with 1-click `[▶ Resume]`, `[✓ Done]`, and `[🗑️ Delete]` buttons.

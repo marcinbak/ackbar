@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os/exec"
@@ -121,19 +122,111 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 
 	if r.Method == http.MethodPost {
 		r.Body = http.MaxBytesReader(w, r.Body, 1048576) // 1MB limit
+		bodyBytes, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "Failed to read request body: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		var rawMap map[string]any
+		_ = json.Unmarshal(bodyBytes, &rawMap)
+		hasExplicitSubprj := false
+		if _, ok := rawMap["subproject_name"]; ok {
+			hasExplicitSubprj = true
+		}
+		if !hasExplicitSubprj {
+			if tm, ok := rawMap["task"].(map[string]any); ok {
+				if _, ok := tm["subproject_name"]; ok {
+					hasExplicitSubprj = true
+				}
+			}
+		}
+
 		var req struct {
 			Task
+			NestedTask           *Task    `json:"task,omitempty"`
+			ProjectNodePath      string   `json:"project_node_path,omitempty"`
+			NodePath             string   `json:"node_path,omitempty"`
 			WorkflowNode         string   `json:"workflow_node,omitempty"`
 			RepoNodePath         string   `json:"repo_node_path,omitempty"`
 			TargetHost           string   `json:"target_host,omitempty"`
 			RequiredCapabilities []string `json:"required_capabilities,omitempty"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := json.Unmarshal(bodyBytes, &req); err != nil {
 			http.Error(w, "Invalid JSON: "+err.Error(), http.StatusBadRequest)
 			return
 		}
 
+		reqNodePath := strings.TrimSpace(req.ProjectNodePath)
+		if reqNodePath == "" {
+			reqNodePath = strings.TrimSpace(req.NodePath)
+		}
+
 		t := req.Task
+		if req.NestedTask != nil {
+			if t.ID == "" && req.NestedTask.ID != "" {
+				t.ID = req.NestedTask.ID
+			}
+			if t.Title == "" && req.NestedTask.Title != "" {
+				t.Title = req.NestedTask.Title
+			}
+			if t.GroupName == "" && req.NestedTask.GroupName != "" {
+				t.GroupName = req.NestedTask.GroupName
+			}
+			if t.ProjectName == "" && req.NestedTask.ProjectName != "" {
+				t.ProjectName = req.NestedTask.ProjectName
+			}
+			if t.SubprojectName == "" && req.NestedTask.SubprojectName != "" {
+				t.SubprojectName = req.NestedTask.SubprojectName
+			}
+			if len(t.Workstreams) == 0 && len(req.NestedTask.Workstreams) > 0 {
+				t.Workstreams = req.NestedTask.Workstreams
+			}
+			if len(t.Workers) == 0 && len(req.NestedTask.Workers) > 0 {
+				t.Workers = req.NestedTask.Workers
+			}
+			if t.TaskKind == "" && req.NestedTask.TaskKind != "" {
+				t.TaskKind = req.NestedTask.TaskKind
+			}
+			if t.Status == "" && req.NestedTask.Status != "" {
+				t.Status = req.NestedTask.Status
+			}
+			if t.Substatus == "" && req.NestedTask.Substatus != "" {
+				t.Substatus = req.NestedTask.Substatus
+			}
+			if t.Notes == "" && req.NestedTask.Notes != "" {
+				t.Notes = req.NestedTask.Notes
+			}
+			if t.WorktreePath == "" && req.NestedTask.WorktreePath != "" {
+				t.WorktreePath = req.NestedTask.WorktreePath
+			}
+			if t.Branch == "" && req.NestedTask.Branch != "" {
+				t.Branch = req.NestedTask.Branch
+			}
+			if t.PRURL == "" && req.NestedTask.PRURL != "" {
+				t.PRURL = req.NestedTask.PRURL
+			}
+			if t.PRNumber == 0 && req.NestedTask.PRNumber != 0 {
+				t.PRNumber = req.NestedTask.PRNumber
+			}
+			if t.PRState == "" && req.NestedTask.PRState != "" {
+				t.PRState = req.NestedTask.PRState
+			}
+			if t.CIStatus == "" && req.NestedTask.CIStatus != "" {
+				t.CIStatus = req.NestedTask.CIStatus
+			}
+			if t.BlockerQuestion == "" && req.NestedTask.BlockerQuestion != "" {
+				t.BlockerQuestion = req.NestedTask.BlockerQuestion
+			}
+			if t.CompletedAt == nil && req.NestedTask.CompletedAt != nil {
+				t.CompletedAt = req.NestedTask.CompletedAt
+			}
+			if len(t.ExternalRefs) == 0 && len(req.NestedTask.ExternalRefs) > 0 {
+				t.ExternalRefs = req.NestedTask.ExternalRefs
+			}
+			if len(t.Deliverables) == 0 && len(req.NestedTask.Deliverables) > 0 {
+				t.Deliverables = req.NestedTask.Deliverables
+			}
+		}
 		w.Header().Set("Content-Type", "application/json")
 		sessionID := ""
 		for _, w := range t.Workers {
@@ -141,6 +234,19 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 				sessionID = w.SessionID
 				break
 			}
+		}
+		if sessionID == "" {
+			sessionID = strings.TrimSpace(r.Header.Get("X-Ackbar-Session-ID"))
+		}
+
+		var repoNodePaths []string
+		for _, ws := range t.Workstreams {
+			if trimmed := strings.TrimSpace(ws.RepoNodePath); trimmed != "" {
+				repoNodePaths = append(repoNodePaths, trimmed)
+			}
+		}
+		if trimmed := strings.TrimSpace(req.RepoNodePath); trimmed != "" {
+			repoNodePaths = append(repoNodePaths, trimmed)
 		}
 
 		var existing *Task
@@ -157,7 +263,17 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 			if t.ID == "" {
 				t.ID = fmt.Sprintf("task_%d", time.Now().UnixNano())
 			}
-			t.GroupName, t.ProjectName = s.normalizeTaskNodeScope(t.GroupName, t.ProjectName, t.WorktreePath, sessionID)
+			t.GroupName, t.ProjectName, t.SubprojectName = s.resolveTaskNodeScope(TaskScopeInput{
+				ProjectNodePath:   reqNodePath,
+				GroupName:         t.GroupName,
+				ProjectName:       t.ProjectName,
+				SubprojectName:    t.SubprojectName,
+				HasExplicitSubprj: hasExplicitSubprj,
+				RepoNodePaths:     repoNodePaths,
+				Cwd:               t.WorktreePath,
+				SessionID:         sessionID,
+				IsExplicitMove:    false,
+			})
 			t.Status, t.Substatus = normalizeTaskStatusAndSubstatus(t.Status, t.Substatus, t.Substatus != "")
 			if strings.EqualFold(t.Status, "DONE") && t.CompletedAt == nil {
 				now := time.Now().UTC()
@@ -243,21 +359,33 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 			if t.Title != "" {
 				existing.Title = t.Title
 			}
-			if t.GroupName != "" || t.ProjectName != "" {
+			if reqNodePath != "" || t.GroupName != "" || t.ProjectName != "" || hasExplicitSubprj {
 				gn := t.GroupName
-				if gn == "" {
-					gn = existing.GroupName
-				}
 				pn := t.ProjectName
-				if pn == "" {
-					pn = existing.ProjectName
+				if reqNodePath == "" {
+					hasGroupInPN := strings.Contains(strings.Trim(pn, "/"), "/")
+					if gn == "" && !hasGroupInPN {
+						gn = existing.GroupName
+					}
+					if pn == "" {
+						pn = existing.ProjectName
+					}
 				}
-				g, p := s.normalizeTaskNodeScope(gn, pn, t.WorktreePath, sessionID)
+				subInput := t.SubprojectName
+				if !hasExplicitSubprj {
+					subInput = existing.SubprojectName
+				}
+				g, p, sub := s.resolveTaskNodeScope(TaskScopeInput{
+					ProjectNodePath:   reqNodePath,
+					GroupName:         gn,
+					ProjectName:       pn,
+					SubprojectName:    subInput,
+					HasExplicitSubprj: hasExplicitSubprj,
+					IsExplicitMove:    true,
+				})
 				existing.GroupName = g
 				existing.ProjectName = p
-			}
-			if t.SubprojectName != "" {
-				existing.SubprojectName = t.SubprojectName
+				existing.SubprojectName = sub
 			}
 			if t.TaskKind != "" {
 				existing.TaskKind = t.TaskKind
@@ -618,7 +746,10 @@ func (s *Server) handleTaskPropose(w http.ResponseWriter, r *http.Request) {
 		fileRef = fileRef[:1024]
 	}
 
-	groupName, projectName := s.normalizeTaskNodeScope(p.GroupName, p.ProjectName, "", "")
+	groupName, projectName, _ := s.resolveTaskNodeScope(TaskScopeInput{
+		GroupName:   p.GroupName,
+		ProjectName: p.ProjectName,
+	})
 
 	// Deduplicate proposed tasks: if an active/new task with identical title already exists for this project, return it
 	existingTasks, err := s.db.GetTasks()
@@ -841,141 +972,6 @@ func (s *Server) handleTaskSyncWorkflow(w http.ResponseWriter, r *http.Request) 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(`{"status":"ok"}`))
-}
-
-func (s *Server) normalizeTaskNodeScope(groupName, projectName, cwd, sessionID string) (normGroup, normProject string) {
-	groupName = strings.TrimSpace(groupName)
-	projectName = strings.TrimSpace(projectName)
-	cwd = strings.TrimSpace(cwd)
-	sessionID = strings.TrimSpace(sessionID)
-
-	// 1. If sessionID != "" and groupName == "" / projectName == "", look up session
-	if sessionID != "" && (groupName == "" || projectName == "") {
-		if sess, err := s.db.GetSession(sessionID); err == nil && sess != nil {
-			if sess.NodePath != "" && !strings.EqualFold(sess.NodePath, "unassigned") {
-				parts := strings.Split(sess.NodePath, "/")
-				if len(parts) > 1 {
-					if groupName == "" {
-						groupName = parts[0]
-					}
-					if projectName == "" {
-						projectName = strings.Join(parts[1:], "/")
-					}
-				} else if len(parts) == 1 && projectName == "" {
-					projectName = parts[0]
-				}
-			}
-			if cwd == "" && sess.Cwd != "" {
-				cwd = sess.Cwd
-			}
-		}
-	}
-
-	// 2. If projectName is already a full tree_nodes path (e.g. "Modemobile/NGL/ngl-ios" or "Personal/Ackbar"),
-	// split on first / so GroupName = "Modemobile", ProjectName = "NGL/ngl-ios"
-	// (or if GroupName is already "Modemobile" and ProjectName starts with "Modemobile/", strip duplicate prefix!).
-	if groupName != "" && strings.HasPrefix(strings.ToLower(projectName), strings.ToLower(groupName)+"/") {
-		projectName = projectName[len(groupName)+1:]
-	}
-
-	if strings.Contains(projectName, "/") {
-		parts := strings.Split(projectName, "/")
-		nodes, _ := s.db.ListNodes()
-		isKnownGroup := false
-		for _, n := range nodes {
-			nP := strings.Split(n.Path, "/")
-			if len(nP) > 0 && strings.EqualFold(nP[0], parts[0]) {
-				isKnownGroup = true
-				break
-			}
-		}
-		if isKnownGroup || strings.EqualFold(parts[0], "Modemobile") || strings.EqualFold(parts[0], "Personal") {
-			if groupName == "" {
-				groupName = parts[0]
-			}
-			projectName = strings.Join(parts[1:], "/")
-		}
-	}
-
-	// 3. Match against registered tree_nodes
-	nodes, _ := s.db.ListNodes()
-	matchNode := func(query string) (string, string, bool) {
-		if query == "" {
-			return "", "", false
-		}
-		qLower := strings.ToLower(strings.TrimSuffix(strings.TrimSuffix(query, ".git"), "/"))
-		// Match exact node path
-		for _, n := range nodes {
-			if strings.EqualFold(n.Path, query) {
-				parts := strings.Split(n.Path, "/")
-				if len(parts) > 1 {
-					return parts[0], strings.Join(parts[1:], "/"), true
-				}
-				return "Personal", parts[0], true
-			}
-		}
-		// Match GitURL, ProjectDir, or Path slug
-		for _, n := range nodes {
-			gitLower := strings.ToLower(strings.TrimSuffix(strings.TrimSuffix(n.GitURL, ".git"), "/"))
-			projLower := strings.ToLower(strings.TrimSuffix(n.ProjectDir, "/"))
-			pathParts := strings.Split(n.Path, "/")
-			slug := ""
-			if len(pathParts) > 0 {
-				slug = strings.ToLower(pathParts[len(pathParts)-1])
-			}
-
-			if (gitLower != "" && strings.HasSuffix(gitLower, qLower)) ||
-				(projLower != "" && strings.HasSuffix(projLower, qLower)) ||
-				(slug != "" && slug == qLower) {
-				if len(pathParts) > 1 {
-					return pathParts[0], strings.Join(pathParts[1:], "/"), true
-				}
-				return "Personal", pathParts[0], true
-			}
-		}
-
-		// Match node_host_paths
-		if s.db != nil {
-			hostPaths, err := s.db.ListNodeHostPaths("")
-			if err == nil {
-				for _, hp := range hostPaths {
-					pDir := strings.ToLower(strings.TrimSuffix(hp.ProjectDir, "/"))
-					gitR := strings.ToLower(strings.TrimSuffix(strings.TrimSuffix(hp.GitRemote, ".git"), "/"))
-					if (pDir != "" && strings.HasSuffix(pDir, qLower)) || (gitR != "" && strings.HasSuffix(gitR, qLower)) {
-						parts := strings.Split(hp.NodePath, "/")
-						if len(parts) > 1 {
-							return parts[0], strings.Join(parts[1:], "/"), true
-						}
-						return "Personal", parts[0], true
-					}
-				}
-			}
-		}
-
-		return "", "", false
-	}
-
-	if g, p, ok := matchNode(projectName); ok {
-		if groupName == "" {
-			groupName = g
-		}
-		projectName = p
-	} else if cwd != "" {
-		if g, p, ok := matchNode(cwd); ok {
-			if groupName == "" {
-				groupName = g
-			}
-			if projectName == "" || projectName == "General" {
-				projectName = p
-			}
-		}
-	}
-
-	if projectName == "" {
-		projectName = "General"
-	}
-
-	return groupName, projectName
 }
 
 func (s *Server) handleTaskDeduplicate(w http.ResponseWriter, r *http.Request) {

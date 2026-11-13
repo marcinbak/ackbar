@@ -4,7 +4,7 @@ let activeDragState = null;
 
 export function isInteractiveCardElement(target) {
   if (!target || typeof target.closest !== 'function') return false;
-  return Boolean(target.closest('button, a, input, select, textarea, [role="button"]'));
+  return Boolean(target.closest('button, a, input, select, textarea, [role="button"], [data-move-task-id]'));
 }
 
 export function computeStatusTransitionPatch(task, targetStatus, nowIso = new Date().toISOString()) {
