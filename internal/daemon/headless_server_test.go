@@ -912,3 +912,145 @@ func TestAntigravityInitMigratesHeadlessActiveTurnAndPreservesWorkingOnHook(t *t
 		t.Errorf("Expected active prompt to be migrated to %s, got %+v (ok=%v)", adoptedID, promptMsg, ok)
 	}
 }
+
+func TestHeadlessInFlightTurn_ActivityStartedAtAndKind(t *testing.T) {
+	tempDir := t.TempDir()
+	spoolPath := filepath.Join(tempDir, "turn_test.ndjson")
+
+	baseTime := time.Date(2026, 11, 12, 12, 0, 0, 0, time.UTC)
+	t0 := baseTime
+	t1 := baseTime.Add(2 * time.Second)
+	t2 := baseTime.Add(4 * time.Second)
+	t3 := baseTime.Add(6 * time.Second)
+	t4 := baseTime.Add(8 * time.Second)
+	t5 := baseTime.Add(10 * time.Second)
+
+	events := []ChatStreamEvent{
+		{Seq: 1, Type: "turn_start", Text: "Hello assistant", Timestamp: t0},
+		{Seq: 2, Type: "thought_delta", Thinking: "Thinking step 1...", Timestamp: t1},
+		{Seq: 3, Type: "thought_delta", Thinking: "Thinking step 2...", Timestamp: t2},
+	}
+
+	writeSpool := func(evts []ChatStreamEvent) {
+		f, err := os.OpenFile(spoolPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
+		if err != nil {
+			t.Fatalf("failed to open spool file: %v", err)
+		}
+		defer f.Close()
+		for _, e := range evts {
+			data, err := json.Marshal(e)
+			if err != nil {
+				t.Fatalf("failed to marshal event: %v", err)
+			}
+			if _, err := f.Write(append(data, '\n')); err != nil {
+				t.Fatalf("failed to write event: %v", err)
+			}
+		}
+	}
+
+	meta := &TurnSpoolMeta{
+		TurnID:    "turn-123",
+		SessionID: "claude-code:local:uuid-activity-test",
+		NativeID:  "uuid-activity-test",
+		Agent:     "claude-code",
+		Prompt:    "Hello assistant",
+		SpoolPath: spoolPath,
+		StartedAt: t0,
+		Status:    "running",
+	}
+
+	writeSpool(events)
+
+	snap, err := SynthesizeInFlightTurn(meta, "claude-code")
+	if err != nil {
+		t.Fatalf("SynthesizeInFlightTurn failed: %v", err)
+	}
+	if snap.ActivityKind != "thinking" {
+		t.Fatalf("expected activity kind 'thinking', got %q", snap.ActivityKind)
+	}
+	if !snap.ActivityStartedAt.Equal(t0) {
+		t.Fatalf("expected ActivityStartedAt anchored to %v, got %v", t0, snap.ActivityStartedAt)
+	}
+
+	// Tool execution advances phase and timestamp
+	events = append(events, ChatStreamEvent{
+		Seq:       4,
+		Type:      "tool_start",
+		ToolName:  "view_file",
+		ToolInput: `{"path": "main.go"}`,
+		Timestamp: t3,
+	})
+	writeSpool(events)
+
+	snap, err = SynthesizeInFlightTurn(meta, "claude-code")
+	if err != nil {
+		t.Fatalf("SynthesizeInFlightTurn failed: %v", err)
+	}
+	if snap.ActivityKind != "tool" {
+		t.Fatalf("expected activity kind 'tool', got %q", snap.ActivityKind)
+	}
+	if !snap.ActivityStartedAt.Equal(t3) {
+		t.Fatalf("expected ActivityStartedAt %v, got %v", t3, snap.ActivityStartedAt)
+	}
+
+	// Tool completion sets processing phase
+	events = append(events, ChatStreamEvent{
+		Seq:       5,
+		Type:      "tool_result",
+		ToolName:  "view_file",
+		Timestamp: t4,
+	})
+	writeSpool(events)
+
+	snap, err = SynthesizeInFlightTurn(meta, "claude-code")
+	if err != nil {
+		t.Fatalf("SynthesizeInFlightTurn failed: %v", err)
+	}
+	if snap.ActivityKind != "processing" {
+		t.Fatalf("expected activity kind 'processing', got %q", snap.ActivityKind)
+	}
+	if !snap.ActivityStartedAt.Equal(t4) {
+		t.Fatalf("expected ActivityStartedAt %v, got %v", t4, snap.ActivityStartedAt)
+	}
+
+	// Subsequent thought chunk after tool resets thinking start timestamp
+	events = append(events, ChatStreamEvent{
+		Seq:       6,
+		Type:      "thought_delta",
+		Thinking:  "Thinking step 3...",
+		Timestamp: t5,
+	})
+	writeSpool(events)
+
+	snap, err = SynthesizeInFlightTurn(meta, "claude-code")
+	if err != nil {
+		t.Fatalf("SynthesizeInFlightTurn failed: %v", err)
+	}
+	if snap.ActivityKind != "thinking" {
+		t.Fatalf("expected activity kind 'thinking', got %q", snap.ActivityKind)
+	}
+	if !snap.ActivityStartedAt.Equal(t5) {
+		t.Fatalf("expected ActivityStartedAt %v, got %v", t5, snap.ActivityStartedAt)
+	}
+
+	srv, _ := setupTestServer(t)
+	srv.headless.sessionSpools[meta.SessionID] = meta
+
+	tr, inFlightMap := srv.mergeInFlightSpoolIntoTranscript(nil, &Session{
+		ID:         meta.SessionID,
+		NativeID:   meta.NativeID,
+		Agent:      meta.Agent,
+		EngineType: EngineHeadless,
+	}, meta.SessionID, meta.NativeID, meta.Agent, "")
+
+	if tr == nil || inFlightMap == nil {
+		t.Fatalf("expected transcript and in_flight_turn map, got tr=%v map=%v", tr, inFlightMap)
+	}
+	if inFlightMap["activity_kind"] != "thinking" {
+		t.Fatalf("expected in_flight_turn.activity_kind 'thinking', got %v", inFlightMap["activity_kind"])
+	}
+	startedAt, ok := inFlightMap["activity_started_at"].(time.Time)
+	if !ok || !startedAt.Equal(t5) {
+		t.Fatalf("expected in_flight_turn.activity_started_at %v, got %v", t5, inFlightMap["activity_started_at"])
+	}
+}

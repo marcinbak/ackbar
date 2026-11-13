@@ -475,9 +475,14 @@ const {
   loadOlderTranscriptMessages,
   sendChatPrompt,
   connectChatStream,
+  disconnectChatStream,
   handleChatStreamEvent,
   renderInteractiveBlockCard,
-  renderConfigPopoverContent
+  renderConfigPopoverContent,
+  setChatSending,
+  hideInStreamActivity,
+  pauseInStreamActivity,
+  resumeInStreamActivity
 } = chat;
 
 const chatAuth = await import('./chat-auth.js');
@@ -1826,6 +1831,301 @@ test('loadChatTranscript coalesces in-flight requests (<50ms coalesces; >50ms sc
   } finally {
     globalThis.fetch = prevFetch;
   }
+});
+
+test('async NDJSON stream race yields mid-load while SSE events trigger activity; strictly 1 activity bubble remains', async () => {
+  const container = new MockElement('div');
+  container.className = 'chat-messages-container';
+  const tabEl = new MockElement('div');
+  tabEl.className = 'tab active';
+  const sendBtn = new MockElement('button');
+  const cancelBtn = new MockElement('button');
+  cancelBtn.style.display = 'none';
+  const statusBadge = new MockElement('span');
+
+  const tabObj = {
+    id: 'tab-ndjson-race',
+    viewMode: 'chat',
+    tabEl,
+    chatMessagesEl: container,
+    chatSendBtn: sendBtn,
+    chatCancelBtn: cancelBtn,
+    chatStatusBadge: statusBadge,
+    session: {
+      id: 'claude-code:local:sess-race',
+      agent: 'claude-code',
+      engine_type: 'headless',
+      state: 1
+    }
+  };
+
+  const metaLine = JSON.stringify({
+    type: 'meta',
+    total: 1,
+    session_id: 'claude-code:local:sess-race',
+    in_flight_turn: {
+      turn_id: 'turn-race',
+      active: true,
+      prompt: 'Refactor auth',
+      timestamp: new Date().toISOString()
+    }
+  }) + '\n';
+
+  const msgLine = JSON.stringify({
+    type: 'msg',
+    index: 0,
+    message: {
+      role: 'user',
+      content: 'Refactor auth',
+      turn_id: 'turn-race',
+      timestamp: new Date().toISOString()
+    }
+  }) + '\n';
+
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream({
+    async start(controller) {
+      controller.enqueue(encoder.encode(metaLine));
+      // Simulate mid-stream asynchronous delay
+      await new Promise(r => setTimeout(r, 20));
+      controller.enqueue(encoder.encode(msgLine));
+      controller.close();
+    }
+  });
+
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    if (String(url).includes('/v1/sessions/transcript')) {
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'content-type': 'application/x-ndjson; charset=utf-8' }),
+        body: stream
+      };
+    }
+    return { ok: true, status: 200, json: async () => ({ items: [], paused: false }) };
+  };
+
+  try {
+    const transcriptPromise = loadChatTranscript(tabObj);
+
+    // During the mid-stream delay, SSE turn_start and thought_delta arrive
+    await new Promise(r => setTimeout(r, 5));
+    handleChatStreamEvent(tabObj, {
+      type: 'turn_start',
+      turn_id: 'turn-race',
+      text: 'Refactor auth',
+      seq: 1
+    });
+    handleChatStreamEvent(tabObj, {
+      type: 'thought_delta',
+      turn_id: 'turn-race',
+      thinking: 'Analyzing module boundaries...',
+      seq: 2
+    });
+
+    await transcriptPromise;
+
+    const activityEls = container.querySelectorAll('.chat-instream-activity');
+    assert.equal(activityEls.length, 1, 'Container must have strictly 1 .chat-instream-activity after NDJSON stream race');
+    assert.ok(tabObj.activeInStreamActivityEl && tabObj.activeInStreamActivityEl.isConnected, 'Active activity element must remain connected');
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});
+
+test('no dual Thinking bubbles: in_flight_turn + setChatSending + thought_delta preserves only thinking details and zero instream activity', async () => {
+  const container = new MockElement('div');
+  container.className = 'chat-messages-container';
+  const tabEl = new MockElement('div');
+  tabEl.className = 'tab active';
+  const sendBtn = new MockElement('button');
+  const cancelBtn = new MockElement('button');
+  cancelBtn.style.display = 'none';
+  const statusBadge = new MockElement('span');
+
+  const tabObj = {
+    id: 'tab-no-dual-thinking',
+    viewMode: 'chat',
+    tabEl,
+    chatMessagesEl: container,
+    chatSendBtn: sendBtn,
+    chatCancelBtn: cancelBtn,
+    chatStatusBadge: statusBadge,
+    session: {
+      id: 'claude-code:local:sess-no-dual',
+      agent: 'claude-code',
+      engine_type: 'headless',
+      state: 1
+    }
+  };
+
+  const prevFetch = globalThis.fetch;
+  const turnTs = new Date().toISOString();
+  globalThis.fetch = async (url) => {
+    if (String(url).includes('/v1/sessions/transcript')) {
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'content-type': 'application/json' }),
+        json: async () => ({
+          messages: [
+            {
+              role: 'user',
+              content: 'Check system health',
+              timestamp: turnTs,
+              turn_id: 'turn-health',
+              in_flight: true
+            },
+            {
+              role: 'assistant',
+              content: '',
+              thinking: 'Checking spool...',
+              timestamp: turnTs,
+              turn_id: 'turn-health',
+              in_flight: true
+            }
+          ],
+          in_flight_turn: {
+            turn_id: 'turn-health',
+            last_seq: 2,
+            active: true,
+            prompt: 'Check system health',
+            assistant_text: '',
+            thinking: 'Checking spool...',
+            timestamp: turnTs
+          }
+        })
+      };
+    }
+    return { ok: true, status: 200, json: async () => ({ items: [], paused: false }) };
+  };
+
+  try {
+    // 1. Initial prompt submission puts UI in sending mode (shows initial thinking bubble)
+    setChatSending(tabObj, true);
+    assert.equal(container.querySelectorAll('.chat-instream-activity').length, 1, 'Initial setChatSending creates thinking bubble');
+
+    // 2. Transcript reloads and restores in_flight_turn with thinking details
+    await loadChatTranscript(tabObj);
+
+    // 3. Subsequent thought_delta arrives
+    handleChatStreamEvent(tabObj, {
+      type: 'thought_delta',
+      turn_id: 'turn-health',
+      thinking: 'Spool verified healthy.',
+      seq: 3
+    });
+
+    const thinkingDetails = container.querySelectorAll('.chat-thinking');
+    assert.equal(thinkingDetails.length, 1, 'Must have strictly 1 .chat-thinking details element');
+    const activityEls = container.querySelectorAll('.chat-instream-activity');
+    assert.equal(activityEls.length, 0, 'Must have 0 .chat-instream-activity bubbles when assistant thinking details exist');
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});
+
+test('activity timer preservation across tab switches and thought_delta chunks', async () => {
+  const container = new MockElement('div');
+  container.className = 'chat-messages-container';
+  const tabEl = new MockElement('div');
+  tabEl.className = 'tab active';
+  const sendBtn = new MockElement('button');
+  const cancelBtn = new MockElement('button');
+  cancelBtn.style.display = 'none';
+  const statusBadge = new MockElement('span');
+
+  const tabObj = {
+    id: 'tab-timer-preserve',
+    viewMode: 'chat',
+    tabEl,
+    chatMessagesEl: container,
+    chatSendBtn: sendBtn,
+    chatCancelBtn: cancelBtn,
+    chatStatusBadge: statusBadge,
+    session: {
+      id: 'claude-code:local:sess-timer',
+      agent: 'claude-code',
+      engine_type: 'headless',
+      state: 1
+    }
+  };
+
+  const started45sAgo = new Date(Date.now() - 45000).toISOString();
+
+  // 1. Turn starts with a 45s-old timestamp
+  handleChatStreamEvent(tabObj, {
+    type: 'turn_start',
+    turn_id: 'turn-timer',
+    text: 'Long running task',
+    timestamp: started45sAgo,
+    seq: 1
+  });
+
+  assert.ok(tabObj.activeInStreamActivityEl, 'Activity element must be present');
+  let timerEl = tabObj.activeInStreamActivityEl.querySelector('.chat-activity-timer');
+  assert.ok(timerEl, 'Timer element must exist');
+  let match = timerEl.textContent.match(/\((\d+)s\)/);
+  assert.ok(match, 'Timer format must match (Ns)');
+  assert.ok(parseInt(match[1], 10) >= 45, `Timer must display >= 45s, got: ${timerEl.textContent}`);
+
+  // 2. Multiple thought_delta chunks arrive; timer must NOT reset to (0s)
+  handleChatStreamEvent(tabObj, {
+    type: 'thought_delta',
+    turn_id: 'turn-timer',
+    thinking: 'Step 1...',
+    timestamp: new Date(Date.now() - 43000).toISOString(),
+    seq: 2
+  });
+  handleChatStreamEvent(tabObj, {
+    type: 'thought_delta',
+    turn_id: 'turn-timer',
+    thinking: 'Step 2...',
+    timestamp: new Date(Date.now() - 40000).toISOString(),
+    seq: 3
+  });
+
+  timerEl = tabObj.activeInStreamActivityEl.querySelector('.chat-activity-timer');
+  match = timerEl.textContent.match(/\((\d+)s\)/);
+  assert.ok(match && parseInt(match[1], 10) >= 45, `Timer must remain >= 45s after thought deltas, got: ${timerEl.textContent}`);
+
+  // 3. Tab switch away: disconnectChatStream pauses the timer without wiping start time
+  disconnectChatStream(tabObj);
+  assert.equal(tabObj.activeActivityTimer, null, 'Timer interval must be cleared on disconnect');
+
+  // 4. Tab switch back: setChatSending and resumeInStreamActivity resume the timer
+  setChatSending(tabObj, true);
+  resumeInStreamActivity(tabObj);
+
+  timerEl = tabObj.activeInStreamActivityEl.querySelector('.chat-activity-timer');
+  match = timerEl.textContent.match(/\((\d+)s\)/);
+  assert.ok(match && parseInt(match[1], 10) >= 45, `Timer must resume with >= 45s, got: ${timerEl.textContent}`);
+
+  // 5. Fresh tab object simulation (opening session with daemonActivityStartedAt)
+  const container2 = new MockElement('div');
+  container2.className = 'chat-messages-container';
+  const tabObj2 = {
+    id: 'tab-timer-fresh',
+    viewMode: 'chat',
+    chatMessagesEl: container2,
+    chatSendBtn: new MockElement('button'),
+    chatCancelBtn: new MockElement('button'),
+    chatStatusBadge: new MockElement('span'),
+    daemonActivityStartedAt: started45sAgo,
+    session: {
+      id: 'claude-code:local:sess-timer',
+      agent: 'claude-code',
+      engine_type: 'headless',
+      state: 1
+    }
+  };
+
+  setChatSending(tabObj2, true);
+  assert.ok(tabObj2.activeInStreamActivityEl, 'Fresh tab activity element must be created');
+  const timerEl2 = tabObj2.activeInStreamActivityEl.querySelector('.chat-activity-timer');
+  const match2 = timerEl2.textContent.match(/\((\d+)s\)/);
+  assert.ok(match2 && parseInt(match2[1], 10) >= 45, `Fresh tab timer must display >= 45s from daemon timestamp, got: ${timerEl2.textContent}`);
 });
 
 

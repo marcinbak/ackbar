@@ -29,6 +29,15 @@ import { fetchSessions } from './api.js';
 import { renderMermaidDiagrams } from './mermaid.js';
 import { renderAuthCard, mountMCPStatus } from './chat-auth.js';
 import { interceptChatInput, updateShellModeHint } from './chat-commands.js';
+import {
+  formatToolActivity,
+  showInStreamActivity as showActivityIndicator,
+  pauseInStreamActivity,
+  resumeInStreamActivity,
+  hideInStreamActivity as hideActivityIndicator,
+  deduplicateInStreamActivities,
+  resolveFallbackActivityStartTime
+} from './chat-activity.js';
 
 
 function extractPastedAttachmentFiles(clipboardData) {
@@ -2702,6 +2711,13 @@ async function processNDJSONTranscript(tabObj, res, reqId, container, shouldStic
         ? item.in_flight_turn
         : null;
       if (inFlightTurn) {
+        if (inFlightTurn.active) {
+          tabObj.daemonActivityStartedAt = inFlightTurn.activity_started_at || inFlightTurn.timestamp || null;
+          tabObj.daemonActivityKind = inFlightTurn.activity_kind || null;
+        } else if (!isSessionWorking(tabObj.session)) {
+          tabObj.daemonActivityStartedAt = null;
+          tabObj.daemonActivityKind = null;
+        }
         const turnSeq = typeof inFlightTurn.last_seq === 'number' ? inFlightTurn.last_seq : 0;
         if (inFlightTurn.active) {
           if (tabObj.activeTurnId !== inFlightTurn.turn_id) {
@@ -2723,6 +2739,9 @@ async function processNDJSONTranscript(tabObj, res, reqId, container, shouldStic
         : (inFlightTurn && inFlightTurn.active && inFlightTurn.prompt
           ? { text: inFlightTurn.prompt, timestamp: inFlightTurn.timestamp, turn_id: inFlightTurn.turn_id }
           : null);
+      if (!tabObj.daemonActivityStartedAt && activePromptFromDaemon && activePromptFromDaemon.timestamp) {
+        tabObj.daemonActivityStartedAt = activePromptFromDaemon.timestamp;
+      }
       daemonActiveTs = (activePromptFromDaemon && activePromptFromDaemon.timestamp)
         ? new Date(activePromptFromDaemon.timestamp).getTime()
         : NaN;
@@ -2966,6 +2985,13 @@ function processJSONTranscript(tabObj, data, container, shouldStickToBottom, pre
     ? data.in_flight_turn
     : null;
   if (inFlightTurn) {
+    if (inFlightTurn.active) {
+      tabObj.daemonActivityStartedAt = inFlightTurn.activity_started_at || inFlightTurn.timestamp || null;
+      tabObj.daemonActivityKind = inFlightTurn.activity_kind || null;
+    } else if (!isSessionWorking(tabObj.session)) {
+      tabObj.daemonActivityStartedAt = null;
+      tabObj.daemonActivityKind = null;
+    }
     const turnSeq = typeof inFlightTurn.last_seq === 'number' ? inFlightTurn.last_seq : 0;
     if (inFlightTurn.active) {
       if (tabObj.activeTurnId !== inFlightTurn.turn_id) {
@@ -2987,6 +3013,9 @@ function processJSONTranscript(tabObj, data, container, shouldStickToBottom, pre
     : (inFlightTurn && inFlightTurn.active && inFlightTurn.prompt
       ? { text: inFlightTurn.prompt, timestamp: inFlightTurn.timestamp, turn_id: inFlightTurn.turn_id }
       : null);
+  if (!tabObj.daemonActivityStartedAt && activePromptFromDaemon && activePromptFromDaemon.timestamp) {
+    tabObj.daemonActivityStartedAt = activePromptFromDaemon.timestamp;
+  }
   const daemonActiveTs = (activePromptFromDaemon && activePromptFromDaemon.timestamp)
     ? new Date(activePromptFromDaemon.timestamp).getTime()
     : NaN;
@@ -3118,6 +3147,16 @@ function finalizeTranscriptLoad(tabObj, container, total, coalesced, inFlightPro
     }
     if (!liveTurnMsgEl && !liveActivityEl && (tabObj.sending || isSessionWorking(tabObj.session))) {
       setChatSending(tabObj, true);
+    } else {
+      const actEl = (tabObj.activeInStreamActivityEl && tabObj.activeInStreamActivityEl.isConnected) ? tabObj.activeInStreamActivityEl : liveActivityEl;
+      if (actEl && hasActiveTurnUI(tabObj)) {
+        if (!actEl.isConnected) {
+          container.appendChild(actEl);
+        }
+        tabObj.activeInStreamActivityEl = actEl;
+        deduplicateInStreamActivities(tabObj);
+        resumeInStreamActivity(tabObj);
+      }
     }
     if (recentTurn && !tabObj._pendingTranscriptFollowup) {
       tabObj._pendingTranscriptFollowup = setTimeout(() => {
@@ -3248,9 +3287,17 @@ function finalizeTranscriptLoad(tabObj, container, total, coalesced, inFlightPro
     }
   }
 
-  if (liveActivityEl && hasActiveTurnUI(tabObj)) {
-    container.appendChild(liveActivityEl);
-    tabObj.activeInStreamActivityEl = liveActivityEl;
+  const currentActivityEl = (tabObj.activeInStreamActivityEl && tabObj.activeInStreamActivityEl.isConnected) ? tabObj.activeInStreamActivityEl : liveActivityEl;
+  const suppressThinkingBubble = hasActiveTurnAssistantThinkingOrBody(tabObj) && !hasRunningActiveTurnTool(tabObj, inFlightTurn);
+  if (suppressThinkingBubble) {
+    hideInStreamActivity(tabObj, { preserveTimerState: true });
+  } else if (currentActivityEl && hasActiveTurnUI(tabObj)) {
+    if (!currentActivityEl.isConnected) {
+      container.appendChild(currentActivityEl);
+    }
+    tabObj.activeInStreamActivityEl = currentActivityEl;
+    deduplicateInStreamActivities(tabObj);
+    resumeInStreamActivity(tabObj);
   } else if (!liveTurnMsgEl && (tabObj.sending || isSessionWorking(tabObj.session))) {
     setChatSending(tabObj, true);
   }
@@ -4420,6 +4467,48 @@ function hasActiveTurnUI(tabObj) {
   );
 }
 
+function hasActiveTurnAssistantThinkingOrBody(tabObj) {
+  if (!tabObj) return false;
+  if (tabObj.activeTurnMsgEl && tabObj.activeTurnMsgEl.isConnected) return true;
+  if ((tabObj.sending || isSessionWorking(tabObj.session)) && tabObj.chatMessagesEl) {
+    const msgEls = tabObj.chatMessagesEl.querySelectorAll('.chat-msg');
+    if (msgEls.length > 0) {
+      const lastMsg = msgEls[msgEls.length - 1];
+      if (lastMsg && lastMsg.classList.contains('assistant-msg')) {
+        if (lastMsg.classList.contains('in-flight')) return true;
+        const hasThinking = Boolean(lastMsg.querySelector('.chat-thinking'));
+        if (hasThinking) {
+          if (tabObj.inFlightPrompt && tabObj.inFlightPrompt.el && tabObj.inFlightPrompt.el.parentNode === tabObj.chatMessagesEl) {
+            let isAfter = false;
+            let node = tabObj.inFlightPrompt.el.nextElementSibling;
+            while (node) {
+              if (node === lastMsg) {
+                isAfter = true;
+                break;
+              }
+              node = node.nextElementSibling;
+            }
+            if (isAfter) return true;
+          } else {
+            return true;
+          }
+        }
+      }
+    }
+  }
+  return false;
+}
+
+function hasRunningActiveTurnTool(tabObj, inFlightTurn) {
+  if (tabObj && Array.isArray(tabObj.activeTurnTools) && tabObj.activeTurnTools.some(t => t && t.status === 'running')) {
+    return true;
+  }
+  if (inFlightTurn && inFlightTurn.active && (inFlightTurn.activity_kind === 'tool' || inFlightTurn.activity_kind === 'processing')) {
+    return true;
+  }
+  return false;
+}
+
 // Toggle sending/working UI state on a chat tab
 function setChatSending(tabObj, isSending) {
   if (!tabObj) return;
@@ -4437,11 +4526,19 @@ function setChatSending(tabObj, isSending) {
     const hasLiveTurnMsg = Boolean(tabObj.activeTurnMsgEl && tabObj.activeTurnMsgEl.isConnected);
     const hasLiveActivity = Boolean(tabObj.activeInStreamActivityEl && tabObj.activeInStreamActivityEl.isConnected);
     if (!hasLiveTurnMsg && !hasLiveActivity) {
-      showInStreamActivity(tabObj, {
-        icon: '💭',
-        text: 'Thinking...',
-        badge: null
-      });
+      if (!hasActiveTurnAssistantThinkingOrBody(tabObj)) {
+        showInStreamActivity(tabObj, {
+          icon: '💭',
+          text: 'Thinking...',
+          badge: null,
+          phaseKey: 'thinking',
+          startedAt: resolveFallbackActivityStartTime(tabObj)
+        });
+      }
+    } else if (hasLiveTurnMsg && hasLiveActivity && tabObj.activeActivityPhaseKey === 'thinking' && !hasRunningActiveTurnTool(tabObj, null)) {
+      hideInStreamActivity(tabObj, { preserveTimerState: true });
+    } else if (hasLiveActivity) {
+      resumeInStreamActivity(tabObj);
     }
     updateComposerButtonState(tabObj);
   } else {
@@ -4767,138 +4864,12 @@ async function dispatchNextQueuedPrompt(tabObj) {
   }
 }
 
-// Parse tool action and parameters into human-friendly in-stream status
-function formatToolActivity(toolName, toolInput) {
-  let params = toolInput;
-  if (typeof params === 'string') {
-    try {
-      params = JSON.parse(params);
-    } catch (_) {}
-  }
-  params = (params && typeof params === 'object') ? params : {};
-
-  const tName = (toolName || '').toLowerCase();
-  let icon = '⚙️';
-  let text = `Running ${toolName || 'tool'}...`;
-  let badge = toolName || null;
-
-  // File reading
-  if (tName === 'view_file' || tName === 'view' || tName === 'read_file') {
-    icon = '📖';
-    const p = params.AbsolutePath || params.file_path || params.path || params.TargetFile || '';
-    const filename = p ? p.split('/').pop() : '';
-    text = filename ? `Reading ${filename}` : 'Reading file...';
-  }
-  // File writing/editing
-  else if (tName === 'replace_file_content' || tName === 'write_to_file' || tName === 'edit') {
-    icon = '✏️';
-    const p = params.TargetFile || params.file_path || params.path || '';
-    const filename = p ? p.split('/').pop() : '';
-    text = filename ? `Editing ${filename}` : 'Editing file...';
-  }
-  // Shell commands
-  else if (tName === 'run_command' || tName === 'bash') {
-    icon = '⚡';
-    const cmd = (params.CommandLine || params.command || '').trim();
-    if (cmd) {
-      const firstLine = cmd.split('\n')[0];
-      text = `Running: ${firstLine.length > 50 ? firstLine.slice(0, 47) + '...' : firstLine}`;
-    } else {
-      text = 'Running command...';
-    }
-  }
-  // Searching / Grepping
-  else if (tName === 'grep_search' || tName === 'grep') {
-    icon = '🔍';
-    const q = params.Query || params.pattern || '';
-    text = q ? `Searching for "${q}"` : 'Searching codebase...';
-  }
-  // Finding by name / glob
-  else if (tName === 'find_by_name' || tName === 'glob') {
-    icon = '🔍';
-    const pat = params.Pattern || params.pattern || '';
-    text = pat ? `Finding "${pat}"` : 'Finding files...';
-  }
-  // Subagents
-  else if (tName === 'invoke_subagent' || tName === 'agent' || tName === 'task') {
-    icon = '🤖';
-    text = 'Delegating to subagent...';
-  }
-  // Web fetching
-  else if (tName === 'read_url_content' || tName === 'search_web') {
-    icon = '🌐';
-    const u = params.Url || params.query || '';
-    text = u ? `Fetching ${u}` : 'Searching web...';
-  }
-
-  return { icon, text, badge };
+function showInStreamActivity(tabObj, opts) {
+  showActivityIndicator(tabObj, opts, updateComposerButtonState);
 }
 
-// Show or update in-stream ephemeral activity indicator
-function showInStreamActivity(tabObj, { icon, text, badge }) {
-  if (!tabObj || !tabObj.chatMessagesEl) return;
-
-  tabObj.activeActivityStartTime = Date.now();
-
-  if (!tabObj.activeInStreamActivityEl || !tabObj.activeInStreamActivityEl.isConnected) {
-    const el = document.createElement('div');
-    el.className = 'chat-instream-activity';
-    el.innerHTML = `
-      <span class="chat-activity-spinner"></span>
-      <span class="chat-activity-icon">${escapeHtml(icon || '⚡')}</span>
-      <span class="chat-activity-text">${escapeHtml(text || 'Working...')}</span>
-      <span class="chat-activity-badge" style="${badge ? '' : 'display: none;'}">${escapeHtml(badge || '')}</span>
-      <span class="chat-activity-timer">(0s)</span>
-    `;
-    tabObj.chatMessagesEl.appendChild(el);
-    tabObj.activeInStreamActivityEl = el;
-
-    if (tabObj.activeActivityTimer) {
-      clearInterval(tabObj.activeActivityTimer);
-    }
-    tabObj.activeActivityTimer = setInterval(() => {
-      if (!tabObj.activeInStreamActivityEl || !tabObj.activeInStreamActivityEl.isConnected) {
-        clearInterval(tabObj.activeActivityTimer);
-        tabObj.activeActivityTimer = null;
-        return;
-      }
-      const sec = Math.floor((Date.now() - tabObj.activeActivityStartTime) / 1000);
-      const timerEl = tabObj.activeInStreamActivityEl.querySelector('.chat-activity-timer');
-      if (timerEl) {
-        timerEl.textContent = `(${sec}s)`;
-      }
-    }, 1000);
-  } else {
-    const iconEl = tabObj.activeInStreamActivityEl.querySelector('.chat-activity-icon');
-    const textEl = tabObj.activeInStreamActivityEl.querySelector('.chat-activity-text');
-    const badgeEl = tabObj.activeInStreamActivityEl.querySelector('.chat-activity-badge');
-    const timerEl = tabObj.activeInStreamActivityEl.querySelector('.chat-activity-timer');
-
-    if (iconEl) iconEl.textContent = icon || '⚡';
-    if (textEl) textEl.textContent = text || 'Working...';
-    if (badgeEl) {
-      badgeEl.textContent = badge || '';
-      badgeEl.style.display = badge ? 'inline-block' : 'none';
-    }
-    if (timerEl) timerEl.textContent = '(0s)';
-  }
-
-  updateComposerButtonState(tabObj);
-  tabObj.chatMessagesEl.scrollTop = tabObj.chatMessagesEl.scrollHeight;
-}
-
-// Remove in-stream ephemeral activity indicator
-function hideInStreamActivity(tabObj) {
-  if (!tabObj) return;
-  if (tabObj.activeActivityTimer) {
-    clearInterval(tabObj.activeActivityTimer);
-    tabObj.activeActivityTimer = null;
-  }
-  if (tabObj.activeInStreamActivityEl) {
-    tabObj.activeInStreamActivityEl.remove();
-    tabObj.activeInStreamActivityEl = null;
-  }
-  updateComposerButtonState(tabObj);
+function hideInStreamActivity(tabObj, opts) {
+  hideActivityIndicator(tabObj, updateComposerButtonState, opts);
 }
 
 // Render buffered tool calls into the message tool slot
@@ -5294,7 +5265,7 @@ function disconnectChatStream(tabObj) {
     tabObj.chatEventSource = null;
   }
   tabObj.chatStreamSessionId = null;
-  hideInStreamActivity(tabObj);
+  pauseInStreamActivity(tabObj);
 }
 
 // Connect SSE for active session turn events (headless sessions only)
@@ -5456,6 +5427,10 @@ function handleChatStreamEvent(tabObj, evt) {
         tabObj.activeTurnTools = [];
         tabObj.activeTurnThinking = '';
       }
+      tabObj.activeActivityPhaseKey = null;
+      tabObj.activeActivityStartTime = 0;
+      tabObj.activeActivityStartTimeSource = null;
+      tabObj.daemonActivityStartedAt = null;
       tabObj.activeTurnId = evt.turn_id;
       tabObj.lastStreamSeq = evtSeq;
     }
@@ -5632,6 +5607,7 @@ function handleChatStreamEvent(tabObj, evt) {
           };
         }
       }
+      if (evt.timestamp) tabObj.daemonActivityStartedAt = evt.timestamp;
       setChatSending(tabObj, true);
       break;
 
@@ -5662,6 +5638,9 @@ function handleChatStreamEvent(tabObj, evt) {
         if (tabObj.chatStatusBadge) tabObj.chatStatusBadge.textContent = '⚡ Working...';
         tabObj.activeTurnThinking = (tabObj.activeTurnThinking || '') + evt.thinking;
         if (tabObj.activeTurnMsgEl) {
+          if (tabObj.activeInStreamActivityEl && tabObj.activeActivityPhaseKey === 'thinking') {
+            hideInStreamActivity(tabObj, { preserveTimerState: true });
+          }
           const slot = tabObj.activeTurnMsgEl.querySelector('.chat-thinking-slot');
           if (slot) {
             let thinkBlock = slot.querySelector('.chat-thinking');
@@ -5682,7 +5661,9 @@ function handleChatStreamEvent(tabObj, evt) {
           showInStreamActivity(tabObj, {
             icon: '💭',
             text: 'Thinking...',
-            badge: null
+            badge: null,
+            phaseKey: 'thinking',
+            startedAt: evt.timestamp || resolveFallbackActivityStartTime(tabObj)
           });
         }
       }
@@ -5770,7 +5751,11 @@ function handleChatStreamEvent(tabObj, evt) {
 
       // Always show/update in-stream activity for the active tool
       const activity = formatToolActivity(evt.tool_name, evt.tool_input);
-      showInStreamActivity(tabObj, activity);
+      showInStreamActivity(tabObj, {
+        ...activity,
+        phaseKey: `tool:${evt.seq || evt.tool_name || Date.now()}`,
+        startedAt: evt.timestamp
+      });
 
       if (evt.tool_name === 'Agent' || evt.tool_name === 'Task') {
         let promptText = '';
@@ -5837,7 +5822,9 @@ function handleChatStreamEvent(tabObj, evt) {
       showInStreamActivity(tabObj, {
         icon: '✓',
         text: `Completed ${toolName || 'tool'} • Processing next step...`,
-        badge: toolName || null
+        badge: toolName || null,
+        phaseKey: `tool_done:${evt.seq || toolName || Date.now()}`,
+        startedAt: evt.timestamp
       });
       break;
     }
@@ -6007,6 +5994,8 @@ function handleChatStreamEvent(tabObj, evt) {
 function resetChatComposer(tabObj) {
   if (!tabObj) return;
   tabObj.inFlightPrompt = null;
+  tabObj.daemonActivityStartedAt = null;
+  tabObj.daemonActivityKind = null;
   if (tabObj._streamRenderRafId) {
     if (typeof window !== 'undefined' && typeof window.cancelAnimationFrame === 'function') {
       window.cancelAnimationFrame(tabObj._streamRenderRafId);
@@ -6268,6 +6257,8 @@ export {
   connectChatStream,
   handleChatStreamEvent,
   hideInStreamActivity,
+  pauseInStreamActivity,
+  resumeInStreamActivity,
   resetChatComposer,
   onSessionUpdated,
   cancelChatTurn,

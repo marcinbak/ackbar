@@ -261,13 +261,15 @@ func (s *Server) mergeInFlightSpoolIntoTranscript(transcript *Transcript, sess *
 	transcript.Messages = msgs
 
 	return transcript, map[string]interface{}{
-		"turn_id":        snap.TurnID,
-		"last_seq":       snap.LastSeq,
-		"active":         snap.IsActive,
-		"prompt":         snap.UserPrompt,
-		"assistant_text": snap.AssistantText,
-		"thinking":       snap.ThinkingText,
-		"tool_calls":     snap.ToolCalls,
-		"timestamp":      snap.UserTimestamp,
+		"turn_id":             snap.TurnID,
+		"last_seq":            snap.LastSeq,
+		"active":              snap.IsActive,
+		"prompt":              snap.UserPrompt,
+		"assistant_text":      snap.AssistantText,
+		"thinking":            snap.ThinkingText,
+		"tool_calls":          snap.ToolCalls,
+		"timestamp":           snap.UserTimestamp,
+		"activity_started_at": snap.ActivityStartedAt,
+		"activity_kind":       snap.ActivityKind,
 	}
 }

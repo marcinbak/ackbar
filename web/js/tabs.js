@@ -24,6 +24,7 @@ import {
   connectChatStream,
   loadChatTranscript,
   hideInStreamActivity,
+  resumeInStreamActivity,
   resetChatComposer,
   setChatSending,
   isSessionWorking,
@@ -101,6 +102,7 @@ function teardownChatInTab(tab) {
     saveChatDraft(sessionId, tab.chatInputEl ? tab.chatInputEl.value : undefined, tab.pendingAttachments);
   }
   disconnectChatStream(tab);
+  hideInStreamActivity(tab);
   if (tab.chatReconnectTimer) {
     clearTimeout(tab.chatReconnectTimer);
     tab.chatReconnectTimer = null;
@@ -932,6 +934,9 @@ function activateTab(tabId) {
         }
         if (isSessionWorking(currentSess) || (tab.sending && !currentSess)) {
           setChatSending(tab, true);
+        }
+        if (tab.activeInStreamActivityEl && tab.activeInStreamActivityEl.isConnected) {
+          resumeInStreamActivity(tab);
         }
         if ((tab._transcriptReqId || 0) === prevReqId && (Date.now() - (tab._lastTranscriptLoadAt || 0)) > 200) {
           loadChatTranscript(tab);
