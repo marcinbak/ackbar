@@ -55,17 +55,17 @@ For prioritized remediations, see [2026-11-13-workflow-action-items.md](2026-11-
 ### 3.2 Code Review Calibration (`N6`/`N8`/`N12`)
 
 * The N6 three-way review caught 774 confirmed code defects across all active repositories.
-* Caught defects include cloud metadata/MCP SSRF, loopback SSRF, path traversal, tokenless CORS/CSRF, OAuth hijack, deadlocks, and panics.
+* Caught defects include cloud metadata/MCP/loopback SSRF, `cwdParam` path traversal, tokenless CORS/CSRF, OAuth/tenant hijack, `RWMutex` deadlocks, Hibernate proxy crashes, and Wasm `clamp` panics.
 * Reviewing diffs under 10 LOC consumes 148k to 800k weighted tokens without generating actionable findings.
 * `clean-reviewer` caused 65% of dropped findings by flagging approved N2 non-goals or uncommitted N10 doc updates.
-* `review_budget_left <= 0` starvation caused unreviewed state edits during N12 and introduced regressions (`NGL-1174`).
+* `review_budget_left == 0` starvation caused unreviewed state edits during N12 and introduced regressions (`NGL-1174`).
 * Reviewers accepted speculative sub-second UI timing race findings that failed physical reproducibility (`NGL-1168`).
 
 ### 3.3 Token & Context Hygiene
 
 | Profile / Metric | Empirical Range | Waste Source |
 | :--- | :--- | :--- |
-| Claude Code Weighted Tokens (31 measured runs) | 4.85M – 7.4M median, 42.8M main max, 50.4M subagent max | Unbounded multi-round subagent reuse (551 turns = 27.6M wt). |
+| Claude Code Weighted Tokens (31 measured runs) | 4.85M – 7.4M median, 42.8M main max, 50.4M subagent max | Multi-round subagent reuse (551 turns = 27.6M wt in `NGL-1174`). |
 | Peak Context Window | 512k – 600.6k tokens | Unsplit post-PR N12 review sessions. |
 | Prompt Cache-Write Ratio | 41% – 47.6% cache-write share | Redundant context re-ingestion across multi-turn sessions. |
 | Antigravity Telemetry Coverage | 0 of 128 runs measured (80.5% blind) | `scripts/token-report.py` lacks `transcript.jsonl` parser. |
@@ -77,9 +77,9 @@ For prioritized remediations, see [2026-11-13-workflow-action-items.md](2026-11-
 ### 3.4 On-Device Verification (`N9`) Efficacy & Friction Modes
 
 * On-device verification caught 15+ production blockers missed by static analysis and unit tests.
-* Caught blockers include cold-start push token races, stale Gradle JS bundles, 24 missing dSYMs, German locale clipping, and SW redirects.
-* Friction Mode 1: Silent background execution hangs (`5h44m` Maestro `flutter --version` hang, `3h` Gradle lock stall).
+* Caught blockers include cold-start auth/push races, stale Gradle `UP-TO-DATE` JS bundles, 24 missing framework dSYMs, German/locale clipping, Xiaomi `1/100` Fabric crash, and SW `307` redirect error.
+* Friction Mode 1: Silent unbounded background hangs (`5h44m` Maestro `flutter --version` init in `NGL-1155`; `3h` Gradle stalls in `NGL-1121`).
 * Friction Mode 2: Verification subagents hit the 80-turn conversation limit across 10+ runs.
-* Friction Mode 3: Hardware emulator `-gpu host` crashes and subagent-blind `ListAgents` contention across 10 runs.
+* Friction Mode 3: Emulator `-gpu host` wedges and subagent-blind `ListAgents` Xiaomi contention across 10 runs.
 * Friction Mode 4: False-positive test passes caused by overlay modal occlusion (`NGL-1054`) and un-scrolled sheet clipping (`NGL-1172`).
 * Friction Mode 5: CPU starvation caused by concurrent Gradle and Jest test execution on `legion`.
