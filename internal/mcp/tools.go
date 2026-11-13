@@ -491,7 +491,23 @@ func GetRegisteredTools() []Tool {
 					},
 					"recent_count": {
 						Type:        "integer",
-						Description: "Number of recent assistant messages to return (default 3).",
+						Description: "Messages per page (tail count when offset omitted; page count from offset when offset provided, default 3).",
+					},
+					"offset": {
+						Type:        "integer",
+						Description: "0-based message cursor (0 .. total_messages-1).",
+					},
+					"char_offset": {
+						Type:        "integer",
+						Description: "0-based character (rune) offset within the first returned message for paginating >50 KB messages.",
+					},
+					"max_chars": {
+						Type:        "integer",
+						Description: "Maximum output characters ([500, 50000], default 10000).",
+					},
+					"include_all_roles": {
+						Type:        "boolean",
+						Description: "Include user + assistant messages instead of assistant-only.",
 					},
 				},
 				Required: []string{"session_id"},
@@ -1690,71 +1706,6 @@ func executeListSessions(ctx context.Context, client *DaemonClient, args map[str
 	}, nil
 }
 
-func executeGetSessionOutput(ctx context.Context, client *DaemonClient, args map[string]any) (*CallToolResult, error) {
-	sessionID := getString(args, "session_id")
-	if sessionID == "" {
-		return formatError("session_id is required"), nil
-	}
-	recentCount := getInt(args, "recent_count", 3)
-	if recentCount <= 0 {
-		recentCount = 3
-	}
-
-	endpoint := fmt.Sprintf("/v1/sessions/transcript?id=%s&format=json", url.QueryEscape(sessionID))
-	var data map[string]any
-	if err := client.doRequest(ctx, http.MethodGet, endpoint, nil, &data); err != nil {
-		return formatError(fmt.Sprintf("Failed to fetch session transcript: %v", err)), nil
-	}
-
-	title := getString(data, "title")
-	agent := getString(data, "agent")
-	messagesRaw, _ := data["messages"].([]any)
-
-	var assistantMsgs []map[string]any
-	for _, mRaw := range messagesRaw {
-		if m, ok := mRaw.(map[string]any); ok {
-			role := getString(m, "role")
-			if role == "assistant" {
-				assistantMsgs = append(assistantMsgs, m)
-			}
-		}
-	}
-	// Fallback to all messages if no assistant messages explicitly identified
-	if len(assistantMsgs) == 0 {
-		for _, mRaw := range messagesRaw {
-			if m, ok := mRaw.(map[string]any); ok {
-				assistantMsgs = append(assistantMsgs, m)
-			}
-		}
-	}
-
-	startIdx := 0
-	if len(assistantMsgs) > recentCount {
-		startIdx = len(assistantMsgs) - recentCount
-	}
-	recent := assistantMsgs[startIdx:]
-
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("### Output for Session `%s`\n", sessionID))
-	if title != "" {
-		sb.WriteString(fmt.Sprintf("**Title:** %s | **Agent:** %s\n\n", title, agent))
-	}
-
-	if len(recent) == 0 {
-		sb.WriteString("*(No messages found in transcript)*\n")
-	} else {
-		for i, m := range recent {
-			role := getString(m, "role")
-			content := getString(m, "content")
-			sb.WriteString(fmt.Sprintf("#### Message %d (%s):\n%s\n\n", i+1, role, content))
-		}
-	}
-
-	return &CallToolResult{
-		Content: []ToolContent{{Type: "text", Text: strings.TrimSpace(sb.String())}},
-	}, nil
-}
-
 func executeSendSessionInput(ctx context.Context, client *DaemonClient, args map[string]any) (*CallToolResult, error) {
 	sessionID := getString(args, "session_id")
 	if sessionID == "" {
@@ -1814,7 +1765,10 @@ func executeSendSessionInput(ctx context.Context, client *DaemonClient, args map
 	var sessions []map[string]any
 	if err := client.doRequest(ctx, http.MethodGet, "/v1/sessions?federated=true", nil, &sessions); err == nil {
 		for _, s := range sessions {
-			if getString(s, "id") == sessionID || getString(s, "native_id") == sessionID {
+			if matchesSessionAlias(s, sessionID) {
+				if id := getString(s, "id"); id != "" {
+					sessionID = id
+				}
 				st := strings.ToLower(getString(s, "state"))
 				if st == "2" || st == "blocked" || s["blocked"] != nil {
 					isBlocked = true

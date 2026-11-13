@@ -1,8 +1,12 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -247,6 +251,91 @@ func (s *Server) markSessionDoneAndCleanup(ctx context.Context, sess *Session, a
 	}
 	s.broadcast(sess)
 	return nil
+}
+
+func (s *Server) completeTaskWorkerSessions(task *Task, triggerSess *Session, activity string) {
+	if task == nil || s == nil || s.db == nil {
+		return
+	}
+
+	seen := make(map[string]bool)
+	var candidateIDs []string
+	addCandidate := func(id string) {
+		id = strings.TrimSpace(id)
+		if id != "" && !seen[id] {
+			seen[id] = true
+			candidateIDs = append(candidateIDs, id)
+		}
+	}
+
+	if triggerSess != nil {
+		addCandidate(triggerSess.ID)
+	}
+	for _, w := range task.Workers {
+		addCandidate(w.SessionID)
+	}
+	if taskIDs, err := s.db.GetSessionIDsByTaskID(task.ID); err == nil {
+		for _, id := range taskIDs {
+			addCandidate(id)
+		}
+	}
+
+	processedSessIDs := make(map[string]bool)
+	for _, id := range candidateIDs {
+		sess := s.resolveSession(id)
+		if sess == nil || processedSessIDs[sess.ID] {
+			continue
+		}
+		processedSessIDs[sess.ID] = true
+
+		if sess.IsSupervisor {
+			continue
+		}
+
+		if !s.isLocalHost(sess.Host) {
+			sess.IsDone = true
+			sess.IsLater = false
+			sess.State = StateEnded
+			sess.MetadataUpdatedAt = time.Now().UTC()
+			_ = s.db.SaveSession(sess)
+			s.broadcast(sess)
+
+			if hostRec := s.resolveHost(sess.Host); hostRec != nil && hostRec.URL != "" {
+				targetURL := fmt.Sprintf("%s/v1/sessions/control", strings.TrimSuffix(hostRec.URL, "/"))
+				payload, _ := json.Marshal(map[string]string{
+					"id":     sess.ID,
+					"action": "done",
+				})
+				go func(u string, b []byte) {
+					client := &http.Client{Timeout: 3 * time.Second}
+					req, err := http.NewRequest(http.MethodPost, u, bytes.NewReader(b))
+					if err == nil {
+						req.Header.Set("Content-Type", "application/json")
+						resp, err := client.Do(req)
+						if err == nil {
+							_ = resp.Body.Close()
+						}
+					}
+				}(targetURL, payload)
+			}
+			continue
+		}
+
+		isActivelyMidTurn := (s.headless != nil && s.headless.IsRunning(sess.ID)) || sess.State == StateWorking
+		if isActivelyMidTurn && activity != "Completed (N15)" {
+			sess.IsDone = true
+			sess.IsLater = false
+			sess.MetadataUpdatedAt = time.Now().UTC()
+			_ = s.db.SaveSession(sess)
+			s.broadcast(sess)
+		} else {
+			_ = s.markSessionDoneAndCleanup(context.Background(), sess, activity)
+		}
+	}
+
+	for i := range task.Workers {
+		task.Workers[i].IsActive = false
+	}
 }
 
 func sessionLastActivityAt(sess *Session) time.Time {

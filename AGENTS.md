@@ -98,7 +98,7 @@ All development on Project Ackbar is governed by the **`dev-workflow`** skill an
    ```bash
    git worktree add -b feat/<name> .worktrees/<name> origin/main
    ```
-3. **Static Verification (N5):** Verify against the T0 gate set defined in [docs/dev-workflow.md](file:///Users/dev4u/Work/Ackbar/docs/dev-workflow.md) (`./scripts/bump-version.sh --check`, `gofmt -l .`, `go test -v ./...`, and `flutter test` if mobile was touched). Every PR must bump `internal/version/VERSION` using `./scripts/bump-version.sh` before committing.
+3. **Static Verification (N5):** Verify against the canonical T0 verification script `./scripts/verify-t0.sh` as defined in [docs/dev-workflow.md](file:///Users/dev4u/Work/Ackbar/docs/dev-workflow.md). Every PR must bump `internal/version/VERSION` using `./scripts/bump-version.sh` before committing.
 4. **Three-Way Review Fan-Out (N6–N8):** Automated reviews run across `context-reviewer`, `clean-reviewer`, and `security-reviewer` before creating a PR.
 5. **Project State & Documentation Sync (N10):** After review/verification fixes settle and before opening the PR, audit the branch diff against `doc_update_targets` (`AGENTS.md`, `docs/*.md`), commit any needed doc updates, and verify accuracy (or record an explicit 1-line skip justification).
 6. **PR Submission & Automatic Merge (`merge_policy: auto`, N11–N14):** Push branch and create PR using `gh pr create`. Direct pushes to `main` are strictly blocked. Per `merge_policy: auto` in [docs/dev-workflow.md](file:///Users/dev4u/Work/Ackbar/docs/dev-workflow.md), once T0 verification, N6–N8 reviews, N10 doc sync, and CI checks pass, merge the PR automatically using `gh pr merge --squash --delete-branch`.

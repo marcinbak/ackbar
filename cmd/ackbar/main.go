@@ -205,20 +205,27 @@ func runSetupHooks() error {
 	localBin := filepath.Join(home, ".local", "bin")
 	_ = os.MkdirAll(localBin, 0755)
 
-	hookBinTarget := filepath.Join(localBin, "ackbar-hook")
-	cmd := exec.Command("go", "build", "-o", hookBinTarget, "./cmd/ackbar-hook")
-	if err := cmd.Run(); err != nil {
-		cmd2 := exec.Command("go", "install", "ackbar/cmd/ackbar-hook@latest")
-		_ = cmd2.Run()
+	installBinary := func(pkg, target string) {
+		tmpTarget := target + ".new"
+		_ = os.Remove(tmpTarget)
+		cmd := exec.Command("go", "build", "-o", tmpTarget, pkg)
+		if err := cmd.Run(); err != nil {
+			_ = os.Remove(tmpTarget)
+			cmd2 := exec.Command("go", "install", "ackbar/"+pkg+"@latest")
+			_ = cmd2.Run()
+			return
+		}
+		if err := os.Rename(tmpTarget, target); err != nil {
+			_ = os.Remove(tmpTarget)
+		}
 	}
+
+	hookBinTarget := filepath.Join(localBin, "ackbar-hook")
+	installBinary("./cmd/ackbar-hook", hookBinTarget)
 	fmt.Printf("✅ Installed ackbar-hook (v%s) to %s\n", version.Version, hookBinTarget)
 
 	ackbardBinTarget := filepath.Join(localBin, "ackbard")
-	cmdBard := exec.Command("go", "build", "-o", ackbardBinTarget, "./cmd/ackbard")
-	if err := cmdBard.Run(); err != nil {
-		cmdBard2 := exec.Command("go", "install", "ackbar/cmd/ackbard@latest")
-		_ = cmdBard2.Run()
-	}
+	installBinary("./cmd/ackbard", ackbardBinTarget)
 	fmt.Printf("✅ Installed ackbard daemon (v%s) to %s\n", version.Version, ackbardBinTarget)
 
 	// 2. Configure Claude Code settings (~/.claude/settings.json)

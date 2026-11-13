@@ -249,6 +249,13 @@ func (s *Server) resolveSession(sessionID string) *Session {
 	if err == nil && sess != nil {
 		return sess
 	}
+	if sess, err := s.db.GetSessionByOldID(sessionID); err == nil && sess != nil {
+		return sess
+	}
+
+	if found, _ := s.db.GetSessionByAlias(sessionID); found != nil {
+		return found
+	}
 
 	// Fallback 1: Try with local host alias if sessionID had a remote alias or vice-versa
 	parts := strings.Split(sessionID, ":")
@@ -257,8 +264,20 @@ func (s *Server) resolveSession(sessionID string) *Session {
 		if found, _ := s.db.GetSession(localID); found != nil {
 			return found
 		}
+		if found, _ := s.db.GetSessionByOldID(localID); found != nil {
+			return found
+		}
+		if found, _ := s.db.GetSessionByAlias(localID); found != nil {
+			return found
+		}
 		localID = fmt.Sprintf("%s:local:%s", parts[0], parts[2])
 		if found, _ := s.db.GetSession(localID); found != nil {
+			return found
+		}
+		if found, _ := s.db.GetSessionByOldID(localID); found != nil {
+			return found
+		}
+		if found, _ := s.db.GetSessionByAlias(localID); found != nil {
 			return found
 		}
 	} else if strings.HasPrefix(sessionID, "antigravity-") {
@@ -274,13 +293,14 @@ func (s *Server) resolveSession(sessionID string) *Session {
 				if found, _ := s.db.GetSession(candidate); found != nil {
 					return found
 				}
+				if found, _ := s.db.GetSessionByOldID(candidate); found != nil {
+					return found
+				}
+				if found, _ := s.db.GetSessionByAlias(candidate); found != nil {
+					return found
+				}
 			}
 		}
-	}
-
-	// Fallback 2: Check by OldID or NativeID match
-	if found, _ := s.db.GetSessionByAlias(sessionID); found != nil {
-		return found
 	}
 
 	return nil
@@ -979,11 +999,12 @@ func (s *Server) handleRespond(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		ID        string `json:"id"`
-		SessionID string `json:"sessionId"`
-		Action    string `json:"action"` // "answer" | "allow" | "deny" | "input"
-		Value     string `json:"value"`
-		Answer    string `json:"answer"`
+		ID          string `json:"id"`
+		SessionID   string `json:"sessionId"`
+		SessionIDSC string `json:"session_id"`
+		Action      string `json:"action"` // "answer" | "allow" | "deny" | "input"
+		Value       string `json:"value"`
+		Answer      string `json:"answer"`
 	}
 
 	var bodyBytes []byte
@@ -1003,10 +1024,16 @@ func (s *Server) handleRespond(w http.ResponseWriter, r *http.Request) {
 		targetID = req.SessionID
 	}
 	if targetID == "" {
+		targetID = req.SessionIDSC
+	}
+	if targetID == "" {
 		targetID = r.URL.Query().Get("id")
 	}
 	if targetID == "" {
 		targetID = r.URL.Query().Get("sessionId")
+	}
+	if targetID == "" {
+		targetID = r.URL.Query().Get("session_id")
 	}
 	if targetID == "" {
 		parts := stringsSplit(r.URL.Path, "/")
