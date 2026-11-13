@@ -5,6 +5,7 @@ import { attachCodeBlockCopyButtons } from './chat.js';
 import { activateTab, openSessionInTab } from './tabs.js';
 import { showModal, hideModal } from './modals.js';
 import { renderTree } from './tree.js';
+import { computeStatusTransitionPatch, initKanbanDragAndDrop, isTaskDragging } from './tasks-dnd.js';
 
 let boardTasks = [];
 let currentGroupFilter = 'all';
@@ -12,6 +13,7 @@ let currentProjectFilter = 'all';
 let currentSearchQuery = '';
 let currentMode = 'workspace';
 let showAllDoneTasks = false;
+let pendingRefreshAfterDrag = false;
 
 export function getGroupIcon(groupName) {
   if (!groupName) return '📁';
@@ -109,6 +111,10 @@ export function switchAppMode(mode) {
 }
 
 export async function refreshWorkBoard() {
+  if (isTaskDragging()) {
+    pendingRefreshAfterDrag = true;
+    return;
+  }
   try {
     const tasks = await fetchTasks({ reconcilePRs: true });
     if (Array.isArray(tasks)) {
@@ -340,10 +346,11 @@ function renderTaskCards(tasks) {
   }
 
   return tasks.map(task => {
+    const cardStatus = (task.status || 'NEW').toUpperCase();
     const trackerBadges = (task.external_refs || []).map(ref => {
       const icon = ref.tracker === 'jira' ? '🔷' : ref.tracker === 'linear' ? '📐' : '🔗';
       const cleanUrl = safeUrl(ref.url);
-      return `<a href="${escapeHtml(cleanUrl)}" target="_blank" rel="noopener noreferrer" class="task-tracker-badge" title="${escapeHtml(ref.tracker)}: ${escapeHtml(ref.ref_key)}">${icon} ${escapeHtml(ref.ref_key)}</a>`;
+      return `<a draggable="false" href="${escapeHtml(cleanUrl)}" target="_blank" rel="noopener noreferrer" class="task-tracker-badge" title="${escapeHtml(ref.tracker)}: ${escapeHtml(ref.ref_key)}">${icon} ${escapeHtml(ref.ref_key)}</a>`;
     }).join(' ');
 
     const projectTag = task.project_name ? `<span class="task-project-tag">${escapeHtml(task.project_name)}</span>` : '';
@@ -401,7 +408,7 @@ function renderTaskCards(tasks) {
         </button>`;
       }
       const targetUrl = safeUrl(d.url || (d.file_path ? `/v1/files/content?path=${encodeURIComponent(d.file_path)}` : '#'));
-      return `<a href="${escapeHtml(targetUrl)}" target="_blank" rel="noopener noreferrer" class="task-deliverable-chip" title="${escapeHtml(d.title)} (${escapeHtml(d.provider || d.kind)})">
+      return `<a draggable="false" href="${escapeHtml(targetUrl)}" target="_blank" rel="noopener noreferrer" class="task-deliverable-chip" title="${escapeHtml(d.title)} (${escapeHtml(d.provider || d.kind)})">
         ${kindIcon} ${escapeHtml(d.title)}
       </a>`;
     }).join('');
@@ -445,7 +452,7 @@ function renderTaskCards(tasks) {
       const cleanPrUrl = safeUrl(task.pr_url);
       const canMerge = task.status !== 'DONE' && (task.status === 'REVIEW' || task.substatus === 'approved' || task.substatus === 'pr_review') && task.pr_state !== 'MERGED';
       actionButtons += `<div class="task-pr-bar">
-        <a href="${escapeHtml(cleanPrUrl)}" target="_blank" rel="noopener noreferrer" class="task-pr-link">
+        <a draggable="false" href="${escapeHtml(cleanPrUrl)}" target="_blank" rel="noopener noreferrer" class="task-pr-link">
           🐙 PR #${escapeHtml(String(task.pr_number || ''))} (${escapeHtml(task.pr_state || 'OPEN')})
         </a>
         ${canMerge ? `<button class="btn btn-success btn-xs btn-merge-pr" data-task-id="${escapeHtml(task.id)}" data-pr-url="${escapeHtml(cleanPrUrl)}" title="Squash and merge pull request">⚡ Merge PR</button>` : ''}
@@ -455,7 +462,7 @@ function renderTaskCards(tasks) {
     const updatedAtStr = task.updated_at ? formatRelativeTime(task.updated_at) : '';
 
     return `
-      <div class="task-card" data-task-id="${escapeHtml(task.id)}">
+      <div class="task-card" draggable="true" data-task-id="${escapeHtml(task.id)}" data-task-status="${escapeHtml(cardStatus)}">
         <div class="task-card-header">
           <div class="task-card-tags">
             ${kindBadge}
@@ -1910,6 +1917,44 @@ export async function showAgentSetupModal() {
   loadStatuses();
 }
 
+async function moveTaskToStatus(taskId, targetStatus) {
+  const idx = boardTasks.findIndex((t) => t.id === taskId);
+  if (idx === -1) return;
+
+  const transition = computeStatusTransitionPatch(boardTasks[idx], targetStatus);
+  if (!transition) return;
+
+  const previousTask = boardTasks[idx];
+  boardTasks[idx] = transition.optimisticTask;
+  state.tasks = boardTasks;
+  renderWorkBoard();
+  try { renderTree(); } catch (_) {}
+
+  try {
+    const saved = await updateTask(transition.patch);
+    if (saved && saved.id) {
+      const currentIdx = boardTasks.findIndex((t) => t.id === saved.id);
+      if (currentIdx !== -1) {
+        boardTasks[currentIdx] = saved;
+        state.tasks = boardTasks;
+        renderWorkBoard();
+        try { renderTree(); } catch (_) {}
+      }
+    }
+  } catch (err) {
+    const currentIdx = boardTasks.findIndex((t) => t.id === taskId);
+    if (currentIdx !== -1) {
+      boardTasks[currentIdx] = previousTask;
+    } else {
+      boardTasks.push(previousTask);
+    }
+    state.tasks = boardTasks;
+    renderWorkBoard();
+    try { renderTree(); } catch (_) {}
+    alert('Failed to move task: ' + err.message);
+  }
+}
+
 export function initWorkBoard() {
   // Mode switcher listeners
   document.getElementById('btnModeWorkspace')?.addEventListener('click', () => switchAppMode('workspace'));
@@ -1934,4 +1979,18 @@ export function initWorkBoard() {
   document.getElementById('btnDailyStandup')?.addEventListener('click', showStandupModal);
   document.getElementById('btnRefreshWorkBoard')?.addEventListener('click', refreshWorkBoard);
   document.getElementById('btnNewTask')?.addEventListener('click', showNewTaskModal);
+
+  const kanbanGrid = document.querySelector('#workBoardView .kanban-grid') || document.querySelector('.kanban-grid');
+  initKanbanDragAndDrop(kanbanGrid, {
+    onDropTask: (taskId, targetStatus) => {
+      pendingRefreshAfterDrag = false;
+      moveTaskToStatus(taskId, targetStatus);
+    },
+    onDragEnd: () => {
+      if (pendingRefreshAfterDrag) {
+        pendingRefreshAfterDrag = false;
+        refreshWorkBoard();
+      }
+    },
+  });
 }
