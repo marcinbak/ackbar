@@ -871,12 +871,15 @@ func executeCreateTask(ctx context.Context, client *DaemonClient, args map[strin
 		}
 	}
 
-	if idx := strings.Index(projectName, "/"); idx != -1 && strings.EqualFold(projectName[:idx], groupName) {
+	groupName = strings.Trim(strings.TrimSpace(groupName), "/")
+	projectName = strings.Trim(strings.TrimSpace(projectName), "/")
+	if groupName != "" {
+		if idx := strings.Index(projectName, "/"); idx != -1 && strings.EqualFold(projectName[:idx], groupName) {
+			projectName = strings.TrimSpace(projectName[idx+1:])
+		}
+	} else if idx := strings.Index(projectName, "/"); idx > 0 {
+		groupName = strings.TrimSpace(projectName[:idx])
 		projectName = strings.TrimSpace(projectName[idx+1:])
-	} else if groupName == "" && strings.Contains(projectName, "/") {
-		parts := strings.Split(projectName, "/")
-		groupName = parts[0]
-		projectName = strings.Join(parts[1:], "/")
 	}
 
 	if projectName == "" {
@@ -1325,12 +1328,15 @@ func executeProposeTask(ctx context.Context, client *DaemonClient, args map[stri
 	if projectName == "" {
 		projectName = getString(args, "project")
 	}
-	if idx := strings.Index(projectName, "/"); idx != -1 && strings.EqualFold(projectName[:idx], groupName) {
+	groupName = strings.Trim(strings.TrimSpace(groupName), "/")
+	projectName = strings.Trim(strings.TrimSpace(projectName), "/")
+	if groupName != "" {
+		if idx := strings.Index(projectName, "/"); idx != -1 && strings.EqualFold(projectName[:idx], groupName) {
+			projectName = strings.TrimSpace(projectName[idx+1:])
+		}
+	} else if idx := strings.Index(projectName, "/"); idx > 0 {
+		groupName = strings.TrimSpace(projectName[:idx])
 		projectName = strings.TrimSpace(projectName[idx+1:])
-	} else if groupName == "" && strings.Contains(projectName, "/") {
-		parts := strings.Split(projectName, "/")
-		groupName = parts[0]
-		projectName = strings.Join(parts[1:], "/")
 	}
 
 	payload := map[string]any{

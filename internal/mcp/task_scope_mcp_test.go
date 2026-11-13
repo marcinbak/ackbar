@@ -192,3 +192,62 @@ func TestTaskScopeMCP_CreateTask_UTF8Prefix_NoPanic(t *testing.T) {
 		t.Fatalf("create_task with UTF-8 prefix failed: %v, res: %+v", err, res)
 	}
 }
+
+func TestTaskScopeMCP_LeadingSlashSplit(t *testing.T) {
+	ctx := context.Background()
+
+	var lastCreatePayload map[string]any
+	var lastProposePayload map[string]any
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/v1/tasks" && r.Method == http.MethodPost {
+			_ = json.NewDecoder(r.Body).Decode(&lastCreatePayload)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":           "task_slash_123",
+				"group_name":   lastCreatePayload["group_name"],
+				"project_name": lastCreatePayload["project_name"],
+			})
+			return
+		}
+		if r.URL.Path == "/v1/tasks/propose" && r.Method == http.MethodPost {
+			_ = json.NewDecoder(r.Body).Decode(&lastProposePayload)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":           "task_prop_123",
+				"group_name":   lastProposePayload["group_name"],
+				"project_name": lastProposePayload["project_name"],
+			})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer ts.Close()
+
+	client := NewDaemonClient(ts.URL, "claude-code:local:test")
+
+	// 1. Test create_task
+	resCreate, err := ExecuteTool(ctx, client, "create_task", map[string]any{
+		"title":        "Task with leading slash",
+		"project_name": "/Modemobile/NGL/ngl-android",
+	})
+	if err != nil || resCreate.IsError {
+		t.Fatalf("create_task failed: %v, res: %+v", err, resCreate)
+	}
+	if lastCreatePayload["group_name"] != "Modemobile" || lastCreatePayload["project_name"] != "NGL/ngl-android" {
+		t.Errorf("create_task got group_name=%q, project_name=%q; want group_name=%q, project_name=%q",
+			lastCreatePayload["group_name"], lastCreatePayload["project_name"], "Modemobile", "NGL/ngl-android")
+	}
+
+	// 2. Test propose_task
+	resPropose, err := ExecuteTool(ctx, client, "propose_task", map[string]any{
+		"title":        "Proposal with leading slash",
+		"project_name": "/Modemobile/NGL/ngl-android",
+	})
+	if err != nil || resPropose.IsError {
+		t.Fatalf("propose_task failed: %v, res: %+v", err, resPropose)
+	}
+	if lastProposePayload["group_name"] != "Modemobile" || lastProposePayload["project_name"] != "NGL/ngl-android" {
+		t.Errorf("propose_task got group_name=%q, project_name=%q; want group_name=%q, project_name=%q",
+			lastProposePayload["group_name"], lastProposePayload["project_name"], "Modemobile", "NGL/ngl-android")
+	}
+}
