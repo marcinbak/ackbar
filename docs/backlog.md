@@ -30,6 +30,13 @@
 
 ---
 
+### 4. 📊 Cross-Host Retrospective Remediation (2026-11-13)
+* **Status:** Planned
+* **Scope:**
+  * **Remediation Action Items & Fleet Metrics:** See [docs/retros/2026-11-13-workflow-action-items.md](retros/2026-11-13-workflow-action-items.md) for prioritized remediations and [docs/retros/2026-11-13-cross-host-retro-synthesis.md](retros/2026-11-13-cross-host-retro-synthesis.md) for empirical fleet metrics and diagnostic conclusions.
+
+---
+
 ## ✅ Completed Milestones
 
 See [docs/archive/completed-tasks.md](archive/completed-tasks.md) for the historical log of completed milestones.

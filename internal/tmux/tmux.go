@@ -17,7 +17,9 @@ func Spawn(ctx context.Context, sessionName, cwd, command string) error {
 }
 
 func buildPaneShellArgs(cwd, command string, env map[string]string) []string {
-	if command == "" {
+	// Trim trailing newlines and semicolons so "; exec bash -l" never forms an invalid "\n;" token.
+	trimmedCmd := strings.TrimRight(command, " \t\r\n;")
+	if trimmedCmd == "" {
 		return nil
 	}
 	cdPrefix := ""
@@ -40,7 +42,7 @@ func buildPaneShellArgs(cwd, command string, env map[string]string) []string {
 	}
 	return []string{
 		"bash", "-l", "-c",
-		fmt.Sprintf("%sexport PATH=\"/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/.npm-global/bin:$PATH\"; %s%s; exec bash -l", cdPrefix, envExports, command),
+		fmt.Sprintf("%sexport PATH=\"/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/.npm-global/bin:$PATH\"; %s%s; exec bash -l", cdPrefix, envExports, trimmedCmd),
 	}
 }
 

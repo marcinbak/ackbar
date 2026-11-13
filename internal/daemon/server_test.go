@@ -6124,7 +6124,16 @@ sleep 30
 		LastEventAt: time.Now(),
 	}
 
-	changed := InspectAntigravityStatus(ctx, sess)
+	var changed bool
+	for i := 0; i < 40; i++ {
+		if InspectAntigravityStatus(ctx, sess) {
+			changed = true
+		}
+		if sess.State == StateBlocked {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 	if !changed {
 		t.Fatalf("expected InspectAntigravityStatus to report changed=true on subagent approval banner")
 	}

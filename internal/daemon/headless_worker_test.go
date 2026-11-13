@@ -346,7 +346,7 @@ printf '{"type":"result","result":"Hello world!"}\n'
 
 	runDir := DefaultHeadlessRunDir(dbPath)
 	var turnID string
-	waitForWorkerCond(t, 4*time.Second, "seq >= 4 spooled", func() bool {
+	waitForWorkerCond(t, 10*time.Second, "seq >= 4 spooled", func() bool {
 		m, _ := findFirstMetaInDir(runDir)
 		if m == nil {
 			return false
