@@ -137,7 +137,7 @@ Headless sessions (`engine_type = "headless"`, `tmux_name = ""`) execute turns t
 * **Idle-TTL Race Recovery:** If `send_turn` races with idle timeout reap, `HeadlessRunner.RunTurn` automatically respawns a warm worker.
 * **Configuration & MCP Fingerprints (`ConfigFingerprint`, `MCPFingerprint`):** `ConfigFingerprint` rotates full workers on model/effort/permission changes; `MCPFingerprint` swaps only the inner CLI child (`restart_child`) on MCP/credential updates.
 * **Active Turn Configuration Rotation:** If configuration or MCP auth changes mid-turn, runner flags the worker or child for post-turn rotation.
-* **Gapless SSE Replay & Synthesis:** `/v1/sessions/chat/stream` supports resumption cursors; `/v1/sessions/transcript` synthesizes active turns (`in_flight_turn` with `activity_started_at` and `activity_kind`) from spool.
+* **Gapless SSE Replay & Synthesis:** `/v1/sessions/chat/stream` supports `?after_seq`, `?turn_id`, `Last-Event-ID`; `/v1/sessions/transcript` synthesizes `in_flight_turn` (`activity_started_at`, `activity_kind`).
 * **Startup Re-Attachment & Recovery (`InitDB`):** Discovers `w_<workerID>.worker.json` files on boot. Re-attaches `running_turn` workers and registers `idle_warm` workers for zero-cold-start reuse.
 * **State Authority (`s.headless.IsRunning`):** `HeadlessRunner.IsRunning(sess.ID)` provides the source of truth for turn status. Exit hooks do not flip active turns to `StateIdle`.
 * **Runtime Cleanup & Server-Side `auto_done`:** Marking `Done` or `auto_done` sweep stops active workers, kills tmux sessions, prunes spools, and resets runtime state.
