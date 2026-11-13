@@ -25,6 +25,7 @@ func TestGetFS(t *testing.T) {
 		"js/api.js",
 		"js/app.js",
 		"js/auth.js",
+		"js/chat-activity.js",
 		"js/chat-auth.js",
 		"js/chat-commands.js",
 		"js/chat-command-cards.js",
@@ -247,6 +248,8 @@ func TestHeadlessThinkingBubblePersistence_JS(t *testing.T) {
 		"tabObj._lastTranscriptLoadAt = Date.now();",
 		"if (!liveTurnMsgEl && !liveActivityEl && (tabObj.sending || isSessionWorking(tabObj.session))) {",
 		"} else if (!liveTurnMsgEl && (tabObj.sending || isSessionWorking(tabObj.session))) {",
+		"pauseInStreamActivity,",
+		"deduplicateInStreamActivities,",
 	} {
 		if !strings.Contains(chatContent, expected) {
 			t.Errorf("expected js/chat.js to contain %q", expected)

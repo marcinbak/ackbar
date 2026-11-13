@@ -41,23 +41,25 @@ type TurnSpoolMeta struct {
 }
 
 type InFlightTurnSnapshot struct {
-	TurnID         string
-	SessionID      string
-	NativeID       string
-	UserPrompt     string
-	UserTimestamp  time.Time
-	AssistantText  string
-	ThinkingText   string
-	ToolCalls      []string
-	ResultText     string
-	LastTurnText   string
-	Blocked        *Blocked
-	StreamHadError bool
-	WasCancelled   bool
-	LastSeq        int64
-	IsActive       bool
-	FinishedAt     time.Time
-	UpdatedAt      time.Time
+	TurnID            string
+	SessionID         string
+	NativeID          string
+	UserPrompt        string
+	UserTimestamp     time.Time
+	AssistantText     string
+	ThinkingText      string
+	ToolCalls         []string
+	ResultText        string
+	LastTurnText      string
+	Blocked           *Blocked
+	StreamHadError    bool
+	WasCancelled      bool
+	LastSeq           int64
+	IsActive          bool
+	FinishedAt        time.Time
+	UpdatedAt         time.Time
+	ActivityStartedAt time.Time
+	ActivityKind      string
 }
 
 func DefaultHeadlessRunDir(dbPath string) string {
@@ -329,6 +331,8 @@ func SynthesizeInFlightTurn(meta *TurnSpoolMeta, streamAgent string) (*InFlightT
 		TurnID: meta.TurnID, SessionID: meta.SessionID, NativeID: meta.NativeID,
 		UserPrompt: cleanActivePromptForAgent(agent, meta.Prompt), UserTimestamp: meta.StartedAt,
 		IsActive: meta.Status == "starting" || meta.Status == "running", FinishedAt: meta.FinishedAt, UpdatedAt: meta.StartedAt,
+		ActivityStartedAt: meta.StartedAt,
+		ActivityKind:      "thinking",
 	}
 	events, maxSeq, err := ReadTurnSpoolAfter(meta.SpoolPath, 0)
 	if err != nil {
@@ -345,18 +349,31 @@ func SynthesizeInFlightTurn(meta *TurnSpoolMeta, streamAgent string) (*InFlightT
 				snap.NativeID = evt.NativeID
 			}
 		case "turn_start":
+			snap.ActivityKind = "thinking"
 			if evt.Text != "" {
 				snap.UserPrompt = cleanActivePromptForAgent(agent, evt.Text)
 			}
 			if !evt.Timestamp.IsZero() {
 				snap.UserTimestamp = evt.Timestamp
+				snap.ActivityStartedAt = evt.Timestamp
 			}
 		case "text_delta":
+			snap.ActivityKind = "streaming"
 			snap.AssistantText += evt.Text
 			snap.LastTurnText += evt.Text
 		case "thought_delta":
+			if snap.ActivityKind != "thinking" {
+				snap.ActivityKind = "thinking"
+				if !evt.Timestamp.IsZero() {
+					snap.ActivityStartedAt = evt.Timestamp
+				}
+			}
 			snap.ThinkingText += evt.Thinking
 		case "tool_start":
+			snap.ActivityKind = "tool"
+			if !evt.Timestamp.IsZero() {
+				snap.ActivityStartedAt = evt.Timestamp
+			}
 			name := strings.TrimSpace(evt.ToolName)
 			if name == "" {
 				name = "tool"
@@ -372,6 +389,11 @@ func SynthesizeInFlightTurn(meta *TurnSpoolMeta, streamAgent string) (*InFlightT
 				name += ": " + detail
 			}
 			snap.ToolCalls = append(snap.ToolCalls, name)
+		case "tool_result":
+			snap.ActivityKind = "processing"
+			if !evt.Timestamp.IsZero() {
+				snap.ActivityStartedAt = evt.Timestamp
+			}
 		case "interactive_block":
 			snap.Blocked, snap.IsActive = evt.Blocked, false
 		case "error":
@@ -458,13 +480,15 @@ func (h *HeadlessRunner) GetInFlightTurnSnapshot(sess *Session, sessionID, nativ
 		if candidate != "" {
 			if msg, ok := h.GetActiveTurnPrompt(candidate); ok && strings.TrimSpace(msg.Content) != "" {
 				return &InFlightTurnSnapshot{
-					TurnID:        msg.TurnID,
-					SessionID:     sessionID,
-					NativeID:      nativeID,
-					UserPrompt:    cleanActivePromptForAgent(streamAgent, msg.Content),
-					UserTimestamp: msg.Timestamp,
-					IsActive:      true,
-					UpdatedAt:     msg.Timestamp,
+					TurnID:            msg.TurnID,
+					SessionID:         sessionID,
+					NativeID:          nativeID,
+					UserPrompt:        cleanActivePromptForAgent(streamAgent, msg.Content),
+					UserTimestamp:     msg.Timestamp,
+					IsActive:          true,
+					UpdatedAt:         msg.Timestamp,
+					ActivityStartedAt: msg.Timestamp,
+					ActivityKind:      "thinking",
 				}
 			}
 		}
