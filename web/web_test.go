@@ -39,6 +39,7 @@ func TestGetFS(t *testing.T) {
 		"js/statusbar.js",
 		"js/tabs.js",
 		"js/tasks.js",
+		"js/tasks-dnd.js",
 		"js/terminal.js",
 		"js/tree.js",
 		"js/utils.js",
@@ -739,6 +740,74 @@ func TestMarkdownTableResponsiveCSS(t *testing.T) {
 	for _, rule := range disallowedRules {
 		if strings.Contains(css, rule) {
 			t.Errorf("expected style.css not to contain %q", rule)
+		}
+	}
+}
+
+func TestWorkBoardKanbanDragAndDrop_Integration(t *testing.T) {
+	embeddedFS := web.GetFS()
+
+	fDnd, err := embeddedFS.Open("js/tasks-dnd.js")
+	if err != nil {
+		t.Fatalf("failed to open embedded js/tasks-dnd.js: %v", err)
+	}
+	defer fDnd.Close()
+	dndBytes, err := io.ReadAll(fDnd)
+	if err != nil {
+		t.Fatalf("failed to read js/tasks-dnd.js: %v", err)
+	}
+	dndContent := string(dndBytes)
+	for _, expectedExport := range []string{
+		"VALID_TASK_STATUSES",
+		"computeStatusTransitionPatch",
+		"initKanbanDragAndDrop",
+		"isTaskDragging",
+		"isInteractiveCardElement",
+	} {
+		if !strings.Contains(dndContent, expectedExport) {
+			t.Errorf("expected js/tasks-dnd.js to export %q", expectedExport)
+		}
+	}
+
+	fIndex, err := embeddedFS.Open("index.html")
+	if err != nil {
+		t.Fatalf("failed to open embedded index.html: %v", err)
+	}
+	defer fIndex.Close()
+	indexBytes, err := io.ReadAll(fIndex)
+	if err != nil {
+		t.Fatalf("failed to read index.html: %v", err)
+	}
+	indexContent := string(indexBytes)
+	for _, expectedStatusAttr := range []string{
+		`id="colNew" data-status="NEW"`,
+		`id="colInProgress" data-status="IN_PROGRESS"`,
+		`id="colReview" data-status="REVIEW"`,
+		`id="colDone" data-status="DONE"`,
+	} {
+		if !strings.Contains(indexContent, expectedStatusAttr) {
+			t.Errorf("expected index.html to contain %q", expectedStatusAttr)
+		}
+	}
+
+	fTasks, err := embeddedFS.Open("js/tasks.js")
+	if err != nil {
+		t.Fatalf("failed to open embedded js/tasks.js: %v", err)
+	}
+	defer fTasks.Close()
+	tasksBytes, err := io.ReadAll(fTasks)
+	if err != nil {
+		t.Fatalf("failed to read js/tasks.js: %v", err)
+	}
+	tasksContent := string(tasksBytes)
+	for _, expectedWiring := range []string{
+		`draggable="true"`,
+		`initKanbanDragAndDrop`,
+		`computeStatusTransitionPatch`,
+		`isTaskDragging`,
+	} {
+		if !strings.Contains(tasksContent, expectedWiring) {
+			t.Errorf("expected js/tasks.js to contain %q", expectedWiring)
 		}
 	}
 }

@@ -2021,6 +2021,136 @@ func TestHandleTasks_StatusNormalizationClearsStaleSubstatus(t *testing.T) {
 	}
 }
 
+func TestTasks_PillarTransitionsAndReopening(t *testing.T) {
+	dbFile := filepath.Join(t.TempDir(), "test_pillar_transitions.db")
+	db, err := InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := &Server{db: db}
+	now := time.Now().UTC()
+
+	task := &Task{
+		ID:          "task_dnd_test",
+		Title:       "Test DND transitions",
+		GroupName:   "Personal",
+		ProjectName: "Ackbar",
+		Status:      "NEW",
+		Substatus:   "ready",
+		Workers: []TaskWorker{
+			{
+				TaskID:     "task_dnd_test",
+				SessionID:  "sess_dnd",
+				Agent:      "claude-code",
+				Host:       "local",
+				IsActive:   true,
+				AssignedAt: now,
+			},
+		},
+		Workstreams: []TaskWorkstream{
+			{
+				TaskID:       "task_dnd_test",
+				RepoNodePath: "Personal/Ackbar",
+				Status:       "NEW",
+				UpdatedAt:    now,
+			},
+		},
+	}
+	if err := db.CreateTask(task); err != nil {
+		t.Fatalf("CreateTask failed: %v", err)
+	}
+
+	postTask := func(payload map[string]any) *Task {
+		body, _ := json.Marshal(payload)
+		req := httptest.NewRequest(http.MethodPost, "/v1/tasks", bytes.NewReader(body))
+		rec := httptest.NewRecorder()
+		server.handleTasks(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("Expected 200 OK, got %d", rec.Code)
+		}
+		var resp Task
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("Unmarshal failed: %v", err)
+		}
+		return &resp
+	}
+
+	t1 := postTask(map[string]any{
+		"id":        "task_dnd_test",
+		"status":    "IN_PROGRESS",
+		"substatus": "ready",
+	})
+	if t1.Status != "IN_PROGRESS" || t1.Substatus != "active" {
+		t.Errorf("Expected IN_PROGRESS/active after stale substatus normalization, got %s/%s", t1.Status, t1.Substatus)
+	}
+	if t1.CompletedAt != nil {
+		t.Errorf("Expected CompletedAt nil, got %+v", t1.CompletedAt)
+	}
+
+	t2 := postTask(map[string]any{
+		"id":     "task_dnd_test",
+		"status": "REVIEW",
+	})
+	if t2.Status != "REVIEW" || t2.Substatus != "pr_review" {
+		t.Errorf("Expected REVIEW/pr_review, got %s/%s", t2.Status, t2.Substatus)
+	}
+	if t2.CompletedAt != nil {
+		t.Errorf("Expected CompletedAt nil on REVIEW, got %+v", t2.CompletedAt)
+	}
+
+	t3 := postTask(map[string]any{
+		"id":     "task_dnd_test",
+		"status": "DONE",
+	})
+	if t3.Status != "DONE" || t3.Substatus != "completed" {
+		t.Errorf("Expected DONE/completed, got %s/%s", t3.Status, t3.Substatus)
+	}
+	if t3.CompletedAt == nil {
+		t.Errorf("Expected CompletedAt set on DONE")
+	}
+	if len(t3.Workers) != 1 || t3.Workers[0].IsActive {
+		t.Errorf("Expected workers deactivated on DONE, got %+v", t3.Workers)
+	}
+	if len(t3.Workstreams) != 1 || t3.Workstreams[0].Status != "DONE" {
+		t.Errorf("Expected workstreams transitioned to DONE, got %+v", t3.Workstreams)
+	}
+
+	t4 := postTask(map[string]any{
+		"id":        "task_dnd_test",
+		"status":    "IN_PROGRESS",
+		"substatus": "completed",
+	})
+	if t4.Status != "IN_PROGRESS" || t4.Substatus != "active" {
+		t.Errorf("Expected IN_PROGRESS/active on reopen, got %s/%s", t4.Status, t4.Substatus)
+	}
+	if t4.CompletedAt != nil {
+		t.Errorf("Expected CompletedAt cleared on reopening from DONE, got %+v", t4.CompletedAt)
+	}
+	if len(t4.Workstreams) != 1 || t4.Workstreams[0].Status != "IN_PROGRESS" {
+		t.Errorf("Expected workstreams reopened to IN_PROGRESS, got %+v", t4.Workstreams)
+	}
+
+	postTask(map[string]any{
+		"id":     "task_dnd_test",
+		"status": "DONE",
+	})
+	t5 := postTask(map[string]any{
+		"id":     "task_dnd_test",
+		"status": "NEW",
+	})
+	if t5.Status != "NEW" || t5.Substatus != "ready" {
+		t.Errorf("Expected NEW/ready on reopen to NEW, got %s/%s", t5.Status, t5.Substatus)
+	}
+	if t5.CompletedAt != nil {
+		t.Errorf("Expected CompletedAt cleared on reopening to NEW, got %+v", t5.CompletedAt)
+	}
+	if len(t5.Workstreams) != 1 || t5.Workstreams[0].Status != "NEW" {
+		t.Errorf("Expected workstreams reopened to NEW, got %+v", t5.Workstreams)
+	}
+}
+
 func TestApplyHookStateTransition_PreservesActivityOnMidSessionStart(t *testing.T) {
 	dbFile := filepath.Join(t.TempDir(), "test_hook_activity.db")
 	db, err := InitDB(dbFile)

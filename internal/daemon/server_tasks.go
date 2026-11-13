@@ -262,17 +262,21 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 			if t.TaskKind != "" {
 				existing.TaskKind = t.TaskKind
 			}
+			statusChanged := false
+			explicitSubstatus := false
 			if t.Status != "" {
+				statusChanged = !strings.EqualFold(oldStatus, t.Status)
 				existing.Status = t.Status
 			}
 			if t.Substatus != "" {
+				explicitSubstatus = t.Substatus != "" && (!statusChanged || !strings.EqualFold(t.Substatus, oldSubstatus))
 				existing.Substatus = t.Substatus
 				if t.Substatus == "active" {
 					existing.BlockerQuestion = ""
 				}
 			}
 			if t.Status != "" {
-				existing.Status, existing.Substatus = normalizeTaskStatusAndSubstatus(existing.Status, existing.Substatus, t.Substatus != "")
+				existing.Status, existing.Substatus = normalizeTaskStatusAndSubstatus(existing.Status, existing.Substatus, explicitSubstatus)
 				if strings.EqualFold(existing.Status, "DONE") {
 					existing.Status = "DONE"
 					existing.BlockerQuestion = ""
@@ -283,13 +287,17 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 					for i := range existing.Workers {
 						existing.Workers[i].IsActive = false
 					}
+				} else if strings.EqualFold(oldStatus, "DONE") {
+					existing.CompletedAt = nil
 				}
 				if req.WorkflowNode == "" {
+					reopeningFromDone := strings.EqualFold(oldStatus, "DONE") && !strings.EqualFold(existing.Status, "DONE")
 					for i := range existing.Workstreams {
 						ws := &existing.Workstreams[i]
-						if req.RepoNodePath == "" && len(existing.Workstreams) == 1 ||
+						if (req.RepoNodePath == "" && len(existing.Workstreams) == 1) ||
 							(req.RepoNodePath != "" && strings.EqualFold(ws.RepoNodePath, req.RepoNodePath)) ||
-							existing.Status == "DONE" {
+							existing.Status == "DONE" ||
+							(reopeningFromDone && strings.EqualFold(ws.Status, "DONE")) {
 							ws.Status = existing.Status
 							ws.UpdatedAt = time.Now().UTC()
 						}
@@ -326,7 +334,9 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 			if t.CIStatus != "" {
 				existing.CIStatus = t.CIStatus
 			}
-			if t.CompletedAt != nil {
+			if !strings.EqualFold(existing.Status, "DONE") {
+				existing.CompletedAt = nil
+			} else if t.CompletedAt != nil {
 				existing.CompletedAt = t.CompletedAt
 			}
 			if t.Workers != nil {
