@@ -171,3 +171,35 @@ func TestTmuxRespawnWithEnv_InPlacePreservesSessionAndInjectsEnv(t *testing.T) {
 		t.Fatalf("expected respawned pane env '2|/custom/claude-profile', got %q", got)
 	}
 }
+
+func TestBuildPaneShellArgs_MultilineCommand(t *testing.T) {
+	script := `
+echo "hello"
+sleep 30
+`
+	args := buildPaneShellArgs("/tmp/work", script, map[string]string{"FOO": "bar"})
+	if len(args) != 4 {
+		t.Fatalf("expected 4 args, got %d: %v", len(args), args)
+	}
+	if strings.Contains(args[3], "\n;") {
+		t.Fatalf("expected no '\\n;' sequence in shell command, got %q", args[3])
+	}
+	if !strings.HasSuffix(args[3], "sleep 30; exec bash -l") {
+		t.Fatalf("expected shell command suffix 'sleep 30; exec bash -l', got %q", args[3])
+	}
+
+	semiArgs := buildPaneShellArgs("", "echo ok;\n\t;", nil)
+	if len(semiArgs) != 4 {
+		t.Fatalf("expected 4 args for trailing semicolon command, got %d", len(semiArgs))
+	}
+	if strings.Contains(semiArgs[3], "\n;") || strings.Contains(semiArgs[3], ";;") {
+		t.Fatalf("unexpected trailing delimiter in shell command: %q", semiArgs[3])
+	}
+	if !strings.HasSuffix(semiArgs[3], "echo ok; exec bash -l") {
+		t.Fatalf("expected shell command suffix 'echo ok; exec bash -l', got %q", semiArgs[3])
+	}
+
+	if emptyArgs := buildPaneShellArgs("/tmp", " \t\r\n; ", nil); emptyArgs != nil {
+		t.Fatalf("expected nil args for whitespace/semicolon-only command, got %v", emptyArgs)
+	}
+}
