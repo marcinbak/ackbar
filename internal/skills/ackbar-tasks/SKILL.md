@@ -118,6 +118,12 @@ mcp__ackbar__update_task({
   "workflow_node": "N2"
 })
 
+// Move task to another project node (e.g. from Due-Dilligence to NGL/ngl-android):
+mcp__ackbar__update_task({
+  "task_id": "task_123",
+  "project_node_path": "Modemobile/NGL/ngl-android"
+})
+
 // When your pull request is opened:
 mcp__ackbar__update_task({
   "task_id": "task_123",

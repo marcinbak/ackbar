@@ -1257,19 +1257,19 @@ func TestServer_NormalizeTaskNodeScope(t *testing.T) {
 	}
 
 	// Case 1: Full path passed in projectName
-	g, p := server.normalizeTaskNodeScope("", "Modemobile/NGL/ngl-ios", "", "")
+	g, p, _ := server.resolveTaskNodeScope(TaskScopeInput{ProjectName: "Modemobile/NGL/ngl-ios"})
 	if g != "Modemobile" || p != "NGL/ngl-ios" {
 		t.Errorf("Case 1: got (%q, %q), want (Modemobile, NGL/ngl-ios)", g, p)
 	}
 
 	// Case 2: Group duplicate prefix in projectName
-	g, p = server.normalizeTaskNodeScope("Modemobile", "Modemobile/NGL/ngl-ios", "", "")
+	g, p, _ = server.resolveTaskNodeScope(TaskScopeInput{GroupName: "Modemobile", ProjectName: "Modemobile/NGL/ngl-ios"})
 	if g != "Modemobile" || p != "NGL/ngl-ios" {
 		t.Errorf("Case 2: got (%q, %q), want (Modemobile, NGL/ngl-ios)", g, p)
 	}
 
 	// Case 3: Matched against registered node GitURL / leaf name
-	g, p = server.normalizeTaskNodeScope("", "ngl-ios", "", "")
+	g, p, _ = server.resolveTaskNodeScope(TaskScopeInput{ProjectName: "ngl-ios"})
 	if g != "Modemobile" || p != "NGL/ngl-ios" {
 		t.Errorf("Case 3: got (%q, %q), want (Modemobile, NGL/ngl-ios)", g, p)
 	}
@@ -1281,7 +1281,7 @@ func TestServer_NormalizeTaskNodeScope(t *testing.T) {
 	}
 	_ = db.SaveSession(sess)
 
-	g, p = server.normalizeTaskNodeScope("", "", "", sess.ID)
+	g, p, _ = server.resolveTaskNodeScope(TaskScopeInput{SessionID: sess.ID})
 	if g != "Personal" || p != "Ackbar" {
 		t.Errorf("Case 4: got (%q, %q), want (Personal, Ackbar)", g, p)
 	}

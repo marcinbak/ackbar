@@ -472,11 +472,11 @@ func TestPhase4_SupervisorSessionTools(t *testing.T) {
 		if lastTasksPayload["group_name"] != "Modemobile" {
 			t.Errorf("expected group_name 'Modemobile', got %v", lastTasksPayload["group_name"])
 		}
-		if lastTasksPayload["project_name"] != "NGL" {
-			t.Errorf("expected project_name 'NGL', got %v", lastTasksPayload["project_name"])
+		if lastTasksPayload["project_name"] != "NGL/ngl-android" {
+			t.Errorf("expected project_name 'NGL/ngl-android', got %v", lastTasksPayload["project_name"])
 		}
-		if lastTasksPayload["subproject_name"] != "ngl-android" {
-			t.Errorf("expected subproject_name 'ngl-android', got %v", lastTasksPayload["subproject_name"])
+		if lastTasksPayload["subproject_name"] != nil && lastTasksPayload["subproject_name"] != "" {
+			t.Errorf("expected cleared subproject_name, got %v", lastTasksPayload["subproject_name"])
 		}
 
 		if lastBoundPayload == nil {
@@ -485,8 +485,8 @@ func TestPhase4_SupervisorSessionTools(t *testing.T) {
 		if lastBoundPayload["node_path"] != "Modemobile/NGL" {
 			t.Errorf("expected bound node_path 'Modemobile/NGL', got %v", lastBoundPayload["node_path"])
 		}
-		if lastBoundPayload["title"] != "⚓ NGL: Fix crash in rapid scroll" {
-			t.Errorf("expected bound title '⚓ NGL: Fix crash in rapid scroll', got %v", lastBoundPayload["title"])
+		if lastBoundPayload["title"] != "⚓ NGL/ngl-android: Fix crash in rapid scroll" {
+			t.Errorf("expected bound title '⚓ NGL/ngl-android: Fix crash in rapid scroll', got %v", lastBoundPayload["title"])
 		}
 	})
 

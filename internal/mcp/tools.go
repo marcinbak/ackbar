@@ -147,6 +147,10 @@ func GetRegisteredTools() []Tool {
 						Type:        "array",
 						Description: "Optional list of multi-repo workstreams as string paths (e.g. ['Modemobile/NGL/ngl-ios']) or objects with repo_node_path, target_host, and depends_on.",
 					},
+					"repo_node_path": {
+						Type:        "string",
+						Description: "Optional single repo node path shortcut (e.g. 'Modemobile/NGL/ngl-ios'). Treated as a single-entry workstream if repos is omitted.",
+					},
 					"target_host": {
 						Type:        "string",
 						Description: "Optional target host ('auto', 'legion', 'macmini', 'local'). Defaults to 'auto' (75/25 weighted deficit routing across capable 24/7 hosts).",
@@ -253,6 +257,30 @@ func GetRegisteredTools() []Tool {
 					"repo_node_path": {
 						Type:        "string",
 						Description: "Optional repo node path of the active workstream being updated.",
+					},
+					"title": {
+						Type:        "string",
+						Description: "Optional updated task title.",
+					},
+					"project_node_path": {
+						Type:        "string",
+						Description: "Target project tree node path to move this task to (e.g. 'Modemobile/NGL/ngl-android' or 'Modemobile/NGL').",
+					},
+					"node_path": {
+						Type:        "string",
+						Description: "Optional alias for project_node_path.",
+					},
+					"group_name": {
+						Type:        "string",
+						Description: "Optional group name when reassigning task scope (alias: group).",
+					},
+					"project_name": {
+						Type:        "string",
+						Description: "Optional project name when reassigning task scope (alias: project).",
+					},
+					"subproject_name": {
+						Type:        "string",
+						Description: "Optional subproject label (pass empty string to clear).",
 					},
 				},
 				Required: []string{"task_id"},
@@ -808,9 +836,14 @@ func executeCreateTask(ctx context.Context, client *DaemonClient, args map[strin
 		subprojectName = pSubproject
 	}
 
+	repoNodePath := getString(args, "repo_node_path")
+	if reposRaw, ok := args["repos"].([]any); (!ok || len(reposRaw) == 0) && repoNodePath != "" {
+		args["repos"] = []any{repoNodePath}
+	}
+
 	// If project_node_path, group_name, and project_name were not explicitly provided,
 	// derive pGroup, pProject, and pSubproject from the first entry in repos/workstreams:
-	if projectNodePath == "" && projectName == "" && groupName == "" {
+	if projectNodePath == "" && (projectName == "" || strings.EqualFold(projectName, "General")) {
 		firstRepo := ""
 		if reposRaw, ok := args["repos"].([]any); ok && len(reposRaw) > 0 {
 			if rStr, ok := reposRaw[0].(string); ok {
@@ -826,16 +859,14 @@ func executeCreateTask(ctx context.Context, client *DaemonClient, args map[strin
 			parts := strings.Split(strings.Trim(firstRepo, "/"), "/")
 			if len(parts) >= 1 && parts[0] != "" {
 				pGroup = parts[0]
-				groupName = parts[0]
+				if groupName == "" {
+					groupName = parts[0]
+				}
 			}
-			if len(parts) == 2 {
-				pProject = parts[1]
-				projectName = parts[1]
-			} else if len(parts) >= 3 {
-				pProject = parts[1]
-				projectName = parts[1]
-				pSubproject = strings.Join(parts[2:], "/")
-				subprojectName = pSubproject
+			if len(parts) >= 2 {
+				pProject = strings.Join(parts[1:], "/")
+				projectName = pProject
+				subprojectName = ""
 			}
 		}
 	}
@@ -878,6 +909,9 @@ func executeCreateTask(ctx context.Context, client *DaemonClient, args map[strin
 		"substatus":    initialSubstatus,
 		"task_kind":    taskKind,
 		"notes":        getString(args, "notes"),
+	}
+	if projectNodePath != "" {
+		payload["project_node_path"] = projectNodePath
 	}
 	if subprojectName != "" {
 		payload["subproject_name"] = subprojectName
@@ -1146,6 +1180,9 @@ func executeUpdateTask(ctx context.Context, client *DaemonClient, args map[strin
 	payload := map[string]any{
 		"id": taskID,
 	}
+	if t := getString(args, "title"); t != "" {
+		payload["title"] = t
+	}
 	if s := getString(args, "status"); s != "" {
 		payload["status"] = s
 	}
@@ -1168,9 +1205,45 @@ func executeUpdateTask(ctx context.Context, client *DaemonClient, args map[strin
 		payload["repo_node_path"] = rnp
 	}
 
+	pnp := getString(args, "project_node_path")
+	if pnp == "" {
+		pnp = getString(args, "node_path")
+	}
+	if pnp != "" {
+		payload["project_node_path"] = pnp
+	}
+
+	gn := getString(args, "group_name")
+	if gn == "" {
+		gn = getString(args, "group")
+	}
+	if gn != "" {
+		payload["group_name"] = gn
+	}
+
+	pn := getString(args, "project_name")
+	if pn == "" {
+		pn = getString(args, "project")
+	}
+	if pn != "" {
+		payload["project_name"] = pn
+	}
+
+	if _, hasSub := args["subproject_name"]; hasSub {
+		payload["subproject_name"] = getString(args, "subproject_name")
+	} else if pnp != "" {
+		payload["subproject_name"] = ""
+	}
+
 	var res map[string]any
 	if err := client.doRequest(ctx, http.MethodPost, "/v1/tasks", payload, &res); err != nil {
 		return formatError(fmt.Sprintf("Failed to update task: %v", err)), nil
+	}
+
+	if resGroup, ok := res["group_name"].(string); ok && resGroup != "" {
+		if resProj, ok := res["project_name"].(string); ok && resProj != "" {
+			return formatSuccess(fmt.Sprintf("Task %s updated successfully (%s/%s)", taskID, resGroup, resProj)), nil
+		}
 	}
 
 	return formatSuccess(fmt.Sprintf("Task %s updated successfully", taskID)), nil

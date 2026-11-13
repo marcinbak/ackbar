@@ -6,6 +6,17 @@ import { activateTab, openSessionInTab } from './tabs.js';
 import { showModal, hideModal } from './modals.js';
 import { renderTree } from './tree.js';
 import { computeStatusTransitionPatch, initKanbanDragAndDrop, isTaskDragging } from './tasks-dnd.js';
+import {
+  getCanonicalTaskProject,
+  getCanonicalTaskNodePath,
+  matchesTaskProjectFilter,
+  collectSelectableNodePaths,
+  computeDefaultNewTaskNodePath,
+  buildProjectNodeSelectorHtml,
+  wireProjectNodeSelector,
+  readSelectedNodePath,
+  showMoveTaskModal,
+} from './tasks-project.js';
 
 let boardTasks = [];
 let currentGroupFilter = 'all';
@@ -158,9 +169,10 @@ function updateProjectFilterDropdown() {
 
   // 2. Projects from current tasks on board
   boardTasks.forEach(t => {
-    if (t.project_name) {
-      if (currentGroupFilter === 'all' || (t.group_name && t.group_name.toLowerCase() === currentGroupFilter.toLowerCase())) {
-        projects.add(t.project_name);
+    const cp = getCanonicalTaskProject(t);
+    if (cp) {
+      if (currentGroupFilter === 'all' || ((t.group_name || 'Personal').toLowerCase() === currentGroupFilter.toLowerCase())) {
+        projects.add(cp);
       }
     }
   });
@@ -193,20 +205,11 @@ export function renderWorkBoard() {
 
   // Filter tasks
   const filtered = boardTasks.filter(t => {
-    // 1. Group Filter (strict match by group, not by path)
-    if (currentGroupFilter !== 'all') {
-      const g = (t.group_name || '').toLowerCase();
-      if (g !== currentGroupFilter.toLowerCase()) {
-        return false;
-      }
-    }
-
-    // 2. Project Filter
-    if (currentProjectFilter !== 'all' && t.project_name !== currentProjectFilter) {
+    if (!matchesTaskProjectFilter(t, currentGroupFilter, currentProjectFilter)) {
       return false;
     }
 
-    // 3. Search Query
+    // Search Query
     if (currentSearchQuery.trim()) {
       const q = currentSearchQuery.toLowerCase();
       const matchTitle = (t.title || '').toLowerCase().includes(q);
@@ -353,7 +356,10 @@ function renderTaskCards(tasks) {
       return `<a draggable="false" href="${escapeHtml(cleanUrl)}" target="_blank" rel="noopener noreferrer" class="task-tracker-badge" title="${escapeHtml(ref.tracker)}: ${escapeHtml(ref.ref_key)}">${icon} ${escapeHtml(ref.ref_key)}</a>`;
     }).join(' ');
 
-    const projectTag = task.project_name ? `<span class="task-project-tag">${escapeHtml(task.project_name)}</span>` : '';
+    const projectLabel = getCanonicalTaskProject(task);
+    const projectTag = projectLabel
+      ? `<button type="button" class="task-project-tag" data-move-task-id="${escapeHtml(task.id)}" title="Click to move task to another project node">${escapeHtml(projectLabel)}</button>`
+      : '';
     const kindBadge = task.task_kind === 'design'
       ? `<span class="task-kind-badge" title="Design Task">🎨 Design</span>`
       : `<span class="task-kind-badge" title="Code Task">⚙️ Code</span>`;
@@ -555,6 +561,27 @@ function formatRelativeTime(isoStr) {
 }
 
 function attachCardEventListeners() {
+  // Move task to project node
+  document.querySelectorAll('[data-move-task-id]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const taskId = btn.getAttribute('data-move-task-id');
+      const task = boardTasks.find(t => t.id === taskId);
+      if (task) {
+        showMoveTaskModal({
+          task,
+          treeNodes: state.treeNodes || [],
+          boardTasks,
+          showModal,
+          hideModal,
+          escapeHtml,
+          updateTask,
+          onMoved: refreshWorkBoard,
+        });
+      }
+    });
+  });
+
   // 1. Worker pill clicks -> switch to workspace and activate tab
   document.querySelectorAll('.task-worker-pill').forEach(btn => {
     btn.addEventListener('click', (e) => {
@@ -797,41 +824,23 @@ async function sendSessionRespondSafe(sessionId, action, value) {
 
 export function showNewTaskModal() {
   const treeNodes = (state.treeNodes && Array.isArray(state.treeNodes)) ? state.treeNodes : [];
-  const nodePaths = [];
-  treeNodes.forEach(n => {
-    if (n.path && n.path.trim() && n.path.toLowerCase() !== 'unassigned') {
-      nodePaths.push(n.path.trim());
-    }
+  const nodePaths = collectSelectableNodePaths(treeNodes, boardTasks);
+  const defaultPath = computeDefaultNewTaskNodePath(nodePaths, currentGroupFilter, currentProjectFilter);
+
+  const selectorHtml = buildProjectNodeSelectorHtml({
+    selectId: 'mTaskNodePath',
+    customInputId: 'mTaskCustomPath',
+    nodePaths,
+    currentPath: defaultPath,
+    requireExplicitChoice: defaultPath === '',
+    escapeHtml,
   });
-
-  // Sort paths cleanly
-  nodePaths.sort((a, b) => a.localeCompare(b));
-
-  // Default selection matching current filters
-  let defaultPath = '';
-  if (currentGroupFilter !== 'all' && currentProjectFilter !== 'all') {
-    defaultPath = nodePaths.find(p => p.toLowerCase() === `${currentGroupFilter}/${currentProjectFilter}`.toLowerCase() || p.toLowerCase() === currentProjectFilter.toLowerCase()) || '';
-  } else if (currentGroupFilter !== 'all') {
-    defaultPath = nodePaths.find(p => p.toLowerCase().startsWith(currentGroupFilter.toLowerCase() + '/')) || '';
-  }
-  if (!defaultPath && nodePaths.length > 0) {
-    defaultPath = nodePaths[0];
-  }
-
-  const optionsHtml = nodePaths.map(p => {
-    const isSelected = p === defaultPath ? 'selected' : '';
-    return `<option value="${escapeHtml(p)}" ${isSelected}>${escapeHtml(p)}</option>`;
-  }).join('');
 
   showModal('Create New Task', `
     <div style="display: flex; flex-direction: column; gap: 12px; padding: 4px;">
       <div>
         <label style="font-size: 11px; font-weight: 600; color: var(--text-muted); display: block; margin-bottom: 4px;">PROJECT / TREE NODE</label>
-        <select id="mTaskNodePath" style="width: 100%; background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px; padding: 7px 10px; font-size: 12px;">
-          ${optionsHtml}
-          <option value="__custom__">＋ Custom path...</option>
-        </select>
-        <input type="text" id="mTaskCustomPath" placeholder="e.g. Modemobile/NGL/ngl-ios or Personal/Ackbar" style="display: none; width: 100%; margin-top: 6px; background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px; padding: 7px 10px; font-size: 12px;" />
+        ${selectorHtml}
       </div>
 
       <div>
@@ -863,15 +872,7 @@ export function showNewTaskModal() {
     <button class="btn btn-primary" id="mBtnSaveTask">Create Task</button>
   `);
 
-  const pathSelect = document.getElementById('mTaskNodePath');
-  const customInput = document.getElementById('mTaskCustomPath');
-  pathSelect?.addEventListener('change', () => {
-    if (pathSelect.value === '__custom__') {
-      if (customInput) customInput.style.display = 'block';
-    } else {
-      if (customInput) customInput.style.display = 'none';
-    }
-  });
+  wireProjectNodeSelector(document, 'mTaskNodePath', 'mTaskCustomPath');
 
   document.getElementById('mBtnCancelTask')?.addEventListener('click', hideModal);
   document.getElementById('mBtnSaveTask')?.addEventListener('click', async () => {
@@ -881,21 +882,20 @@ export function showNewTaskModal() {
       return;
     }
 
-    let nodePath = pathSelect?.value || '';
-    if (nodePath === '__custom__') {
-      nodePath = customInput?.value?.trim() || '';
+    const nodePath = readSelectedNodePath(document, 'mTaskNodePath', 'mTaskCustomPath');
+    if (!nodePath) {
+      alert('Please select a project node');
+      return;
     }
 
     let groupName = 'Personal';
     let projectName = 'General';
-    if (nodePath) {
-      const parts = nodePath.split('/');
-      if (parts.length > 1) {
-        groupName = parts[0].trim();
-        projectName = parts.slice(1).join('/').trim();
-      } else {
-        projectName = parts[0].trim();
-      }
+    const parts = nodePath.split('/');
+    if (parts.length > 1) {
+      groupName = parts[0].trim();
+      projectName = parts.slice(1).join('/').trim();
+    } else {
+      projectName = parts[0].trim();
     }
 
     const taskKind = document.getElementById('mTaskKind')?.value || 'code';
@@ -904,8 +904,10 @@ export function showNewTaskModal() {
 
     const newTask = {
       title,
+      project_node_path: nodePath,
       group_name: groupName,
       project_name: projectName,
+      subproject_name: '',
       task_kind: taskKind,
       status: 'NEW',
       substatus: 'ready',
@@ -1100,18 +1102,30 @@ export function showStartTaskModal(task) {
 }
 
 export function showEditTaskModal(task) {
-  const topGroups = getDiscoveredTopGroups();
-  const currentGroup = task.group_name || 'Personal';
-  if (!topGroups.some(g => g.toLowerCase() === currentGroup.toLowerCase())) {
-    topGroups.push(currentGroup);
+  const currentPath = getCanonicalTaskNodePath(task);
+  const nodePaths = collectSelectableNodePaths(state.treeNodes || [], boardTasks);
+  if (currentPath && !nodePaths.some(p => p.toLowerCase() === currentPath.toLowerCase())) {
+    nodePaths.push(currentPath);
+    nodePaths.sort((a, b) => a.localeCompare(b));
   }
-  const groupOptionsHtml = topGroups.map(g => `<option value="${escapeHtml(g)}" ${g.toLowerCase() === currentGroup.toLowerCase() ? 'selected' : ''}>${escapeHtml(g)}</option>`).join('');
+  const projectSelectorHtml = buildProjectNodeSelectorHtml({
+    selectId: 'mEditNodePath',
+    customInputId: 'mEditCustomPath',
+    nodePaths,
+    currentPath,
+    requireExplicitChoice: false,
+    escapeHtml,
+  });
 
   showModal(`Edit Task: ${task.title}`, `
     <div style="display: flex; flex-direction: column; gap: 12px; padding: 4px;">
       <div>
         <label style="font-size: 11px; font-weight: 600; color: var(--text-muted); display: block; margin-bottom: 4px;">TASK TITLE</label>
         <input type="text" id="mEditTitle" value="${escapeHtml(task.title)}" style="width: 100%; background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px; padding: 8px 10px; font-size: 13px;" />
+      </div>
+      <div>
+        <label style="font-size: 11px; font-weight: 600; color: var(--text-muted); display: block; margin-bottom: 4px;">PROJECT / TREE NODE</label>
+        ${projectSelectorHtml}
       </div>
       <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
         <div>
@@ -1124,18 +1138,6 @@ export function showEditTaskModal(task) {
         <div>
           <label style="font-size: 11px; font-weight: 600; color: var(--text-muted); display: block; margin-bottom: 4px;">DEV-WORKFLOW NODE</label>
           <input type="text" id="mEditWorkflowNode" value="${escapeHtml(task.workflow_node || (task.workers && task.workers[0] && task.workers[0].workflow_node) || '')}" placeholder="e.g. N0, N2, N11" style="width: 100%; background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px; padding: 7px 10px; font-size: 12px;" />
-        </div>
-      </div>
-      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
-        <div>
-          <label style="font-size: 11px; font-weight: 600; color: var(--text-muted); display: block; margin-bottom: 4px;">GROUP / ORGANIZATION</label>
-          <select id="mEditGroup" style="width: 100%; background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px; padding: 7px 10px; font-size: 12px;">
-            ${groupOptionsHtml}
-          </select>
-        </div>
-        <div>
-          <label style="font-size: 11px; font-weight: 600; color: var(--text-muted); display: block; margin-bottom: 4px;">PROJECT NAME</label>
-          <input type="text" id="mEditProject" value="${escapeHtml(task.project_name || '')}" placeholder="e.g. Ackbar" style="width: 100%; background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px; padding: 7px 10px; font-size: 12px;" />
         </div>
       </div>
       <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
@@ -1178,6 +1180,8 @@ export function showEditTaskModal(task) {
     </div>
   `);
 
+  wireProjectNodeSelector(document, 'mEditNodePath', 'mEditCustomPath');
+
   document.getElementById('mBtnCancelEdit')?.addEventListener('click', hideModal);
 
   document.getElementById('mBtnDeleteTask')?.addEventListener('click', async () => {
@@ -1199,12 +1203,28 @@ export function showEditTaskModal(task) {
       alert('Task title is required');
       return;
     }
+
+    const nodePath = readSelectedNodePath(document, 'mEditNodePath', 'mEditCustomPath');
+    let groupName = task.group_name || 'Personal';
+    let projectName = task.project_name || 'General';
+    if (nodePath) {
+      const parts = nodePath.split('/');
+      if (parts.length > 1) {
+        groupName = parts[0].trim();
+        projectName = parts.slice(1).join('/').trim();
+      } else {
+        projectName = parts[0].trim();
+      }
+    }
+
     const substatusInput = document.getElementById('mEditSubstatus');
     const updated = {
       ...task,
       title: titleVal,
-      group_name: document.getElementById('mEditGroup')?.value?.trim() || task.group_name || 'Personal',
-      project_name: document.getElementById('mEditProject')?.value?.trim() || task.project_name || 'General',
+      project_node_path: nodePath,
+      group_name: groupName,
+      project_name: projectName,
+      subproject_name: '',
       task_kind: document.getElementById('mEditKind')?.value || task.task_kind || 'code',
       workflow_node: document.getElementById('mEditWorkflowNode')?.value?.trim() || '',
       status: document.getElementById('mEditStatus')?.value || task.status,
