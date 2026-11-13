@@ -1205,6 +1205,10 @@ export function showEditTaskModal(task) {
     }
 
     const nodePath = readSelectedNodePath(document, 'mEditNodePath', 'mEditCustomPath');
+    if (!nodePath) {
+      alert('Please select a project node');
+      return;
+    }
     let groupName = task.group_name || 'Personal';
     let projectName = task.project_name || 'General';
     if (nodePath) {

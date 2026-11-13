@@ -196,6 +196,36 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 			if t.Notes == "" && req.NestedTask.Notes != "" {
 				t.Notes = req.NestedTask.Notes
 			}
+			if t.WorktreePath == "" && req.NestedTask.WorktreePath != "" {
+				t.WorktreePath = req.NestedTask.WorktreePath
+			}
+			if t.Branch == "" && req.NestedTask.Branch != "" {
+				t.Branch = req.NestedTask.Branch
+			}
+			if t.PRURL == "" && req.NestedTask.PRURL != "" {
+				t.PRURL = req.NestedTask.PRURL
+			}
+			if t.PRNumber == 0 && req.NestedTask.PRNumber != 0 {
+				t.PRNumber = req.NestedTask.PRNumber
+			}
+			if t.PRState == "" && req.NestedTask.PRState != "" {
+				t.PRState = req.NestedTask.PRState
+			}
+			if t.CIStatus == "" && req.NestedTask.CIStatus != "" {
+				t.CIStatus = req.NestedTask.CIStatus
+			}
+			if t.BlockerQuestion == "" && req.NestedTask.BlockerQuestion != "" {
+				t.BlockerQuestion = req.NestedTask.BlockerQuestion
+			}
+			if t.CompletedAt == nil && req.NestedTask.CompletedAt != nil {
+				t.CompletedAt = req.NestedTask.CompletedAt
+			}
+			if len(t.ExternalRefs) == 0 && len(req.NestedTask.ExternalRefs) > 0 {
+				t.ExternalRefs = req.NestedTask.ExternalRefs
+			}
+			if len(t.Deliverables) == 0 && len(req.NestedTask.Deliverables) > 0 {
+				t.Deliverables = req.NestedTask.Deliverables
+			}
 		}
 		w.Header().Set("Content-Type", "application/json")
 		sessionID := ""

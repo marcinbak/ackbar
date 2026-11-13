@@ -161,3 +161,34 @@ func TestTaskScopeMCP_UpdateTask_SchemaAndExecution(t *testing.T) {
 		t.Errorf("expected success message containing resolved node path, got %v", res.Content)
 	}
 }
+
+func TestTaskScopeMCP_CreateTask_UTF8Prefix_NoPanic(t *testing.T) {
+	ctx := context.Background()
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/v1/tasks" && r.Method == http.MethodPost {
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":           "task_utf8_123",
+				"group_name":   body["group_name"],
+				"project_name": body["project_name"],
+			})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer ts.Close()
+
+	client := NewDaemonClient(ts.URL, "claude-code:local:test")
+
+	res, err := ExecuteTool(ctx, client, "create_task", map[string]any{
+		"title":        "Test UTF8",
+		"group_name":   "\u212a",
+		"project_name": "k/",
+	})
+	if err != nil || res.IsError {
+		t.Fatalf("create_task with UTF-8 prefix failed: %v, res: %+v", err, res)
+	}
+}

@@ -283,3 +283,103 @@ func TestTaskScope_ExplicitMove_ClearsSubproject(t *testing.T) {
 		t.Errorf("got (%q, %q, %q), want (Modemobile, NGL, \"\")", updated.GroupName, updated.ProjectName, updated.SubprojectName)
 	}
 }
+
+func TestTaskScope_UTF8Prefix_NoPanic(t *testing.T) {
+	dbFile := filepath.Join(t.TempDir(), "test_utf8.db")
+	db, err := InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := &Server{db: db}
+
+	cases := []struct {
+		group   string
+		project string
+	}{
+		{group: "\u212a", project: "k/ sub"},
+		{group: "\u212a", project: "k/"},
+		{group: "Modemobile", project: "Modemobile/"},
+	}
+
+	for _, c := range cases {
+		g, p, _ := server.resolveTaskNodeScope(TaskScopeInput{
+			GroupName:   c.group,
+			ProjectName: c.project,
+		})
+		if g == "" || p == "" {
+			t.Errorf("expected non-empty resolved scope, got (%q, %q)", g, p)
+		}
+	}
+}
+
+func TestTaskScope_ExplicitMove_SubprojectCollapse(t *testing.T) {
+	dbFile := filepath.Join(t.TempDir(), "test_collapse.db")
+	db, err := InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	server := &Server{db: db}
+
+	_ = db.SaveNode(&TreeNode{
+		Path:      "Modemobile/NGL",
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	})
+	_ = db.SaveNode(&TreeNode{
+		Path:      "Modemobile/NGL/ngl-android",
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	})
+
+	taskID := "task_collapse_1"
+	task := &Task{
+		ID:          taskID,
+		Title:       "Task to collapse",
+		GroupName:   "Modemobile",
+		ProjectName: "Due-Dilligence",
+		Status:      "NEW",
+	}
+	if err := db.CreateTask(task); err != nil {
+		t.Fatalf("CreateTask failed: %v", err)
+	}
+
+	// 1. Move to registered tree_node with explicit subproject_name -> collapses into ProjectName, SubprojectName is empty
+	payload := []byte(`{
+		"id": "task_collapse_1",
+		"group_name": "Modemobile",
+		"project_name": "NGL",
+		"subproject_name": "ngl-android"
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/tasks", bytes.NewReader(payload))
+	w := httptest.NewRecorder()
+	server.handleTasks(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("POST /v1/tasks returned %d: %s", w.Code, w.Body.String())
+	}
+	updated, _ := db.GetTaskByID(taskID)
+	if updated.ProjectName != "NGL/ngl-android" || updated.SubprojectName != "" {
+		t.Errorf("registered collapse got (%q, %q), want (NGL/ngl-android, \"\")", updated.ProjectName, updated.SubprojectName)
+	}
+
+	// 2. Move with unregistered explicit subproject -> preserved
+	payloadUnreg := []byte(`{
+		"id": "task_collapse_1",
+		"group_name": "Modemobile",
+		"project_name": "NGL",
+		"subproject_name": "custom-unregistered"
+	}`)
+	reqUnreg := httptest.NewRequest(http.MethodPost, "/v1/tasks", bytes.NewReader(payloadUnreg))
+	wUnreg := httptest.NewRecorder()
+	server.handleTasks(wUnreg, reqUnreg)
+	if wUnreg.Code != http.StatusOK {
+		t.Fatalf("POST /v1/tasks returned %d: %s", wUnreg.Code, wUnreg.Body.String())
+	}
+	updatedUnreg, _ := db.GetTaskByID(taskID)
+	if updatedUnreg.ProjectName != "NGL" || updatedUnreg.SubprojectName != "custom-unregistered" {
+		t.Errorf("unregistered explicit subproject got (%q, %q), want (NGL, custom-unregistered)", updatedUnreg.ProjectName, updatedUnreg.SubprojectName)
+	}
+}

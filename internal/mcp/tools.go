@@ -871,8 +871,8 @@ func executeCreateTask(ctx context.Context, client *DaemonClient, args map[strin
 		}
 	}
 
-	if groupName != "" && strings.HasPrefix(strings.ToLower(projectName), strings.ToLower(groupName)+"/") {
-		projectName = projectName[len(groupName)+1:]
+	if idx := strings.Index(projectName, "/"); idx != -1 && strings.EqualFold(projectName[:idx], groupName) {
+		projectName = strings.TrimSpace(projectName[idx+1:])
 	} else if groupName == "" && strings.Contains(projectName, "/") {
 		parts := strings.Split(projectName, "/")
 		groupName = parts[0]
@@ -1325,8 +1325,8 @@ func executeProposeTask(ctx context.Context, client *DaemonClient, args map[stri
 	if projectName == "" {
 		projectName = getString(args, "project")
 	}
-	if groupName != "" && strings.HasPrefix(strings.ToLower(projectName), strings.ToLower(groupName)+"/") {
-		projectName = projectName[len(groupName)+1:]
+	if idx := strings.Index(projectName, "/"); idx != -1 && strings.EqualFold(projectName[:idx], groupName) {
+		projectName = strings.TrimSpace(projectName[idx+1:])
 	} else if groupName == "" && strings.Contains(projectName, "/") {
 		parts := strings.Split(projectName, "/")
 		groupName = parts[0]

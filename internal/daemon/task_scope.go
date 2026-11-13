@@ -159,8 +159,10 @@ func (s *Server) resolveTaskNodeScope(in TaskScopeInput) (string, string, string
 	projectName := strings.TrimSpace(in.ProjectName)
 	subprojectName := strings.TrimSpace(in.SubprojectName)
 
-	if groupName != "" && strings.HasPrefix(strings.ToLower(projectName), strings.ToLower(groupName)+"/") {
-		projectName = strings.TrimSpace(projectName[len(groupName)+1:])
+	if groupName != "" {
+		if idx := strings.Index(projectName, "/"); idx != -1 && strings.EqualFold(projectName[:idx], groupName) {
+			projectName = strings.TrimSpace(projectName[idx+1:])
+		}
 	}
 
 	if groupName == "" && strings.Contains(projectName, "/") {
@@ -317,12 +319,8 @@ func (s *Server) resolveTaskNodeScope(in TaskScopeInput) (string, string, string
 		projectName = "General"
 	}
 
-	if in.IsExplicitMove {
-		if in.HasExplicitSubprj {
-			subprojectName = strings.TrimSpace(in.SubprojectName)
-		} else {
-			subprojectName = ""
-		}
+	if in.IsExplicitMove && !in.HasExplicitSubprj {
+		subprojectName = ""
 	}
 
 	return groupName, projectName, subprojectName
