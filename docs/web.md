@@ -212,6 +212,7 @@ The web frontend is organized as zero-build native ECMAScript modules (`<script 
 * **`tabs.js`**: Terminal and chat tab strip lifecycle, batched single-view closing, overflow menu, and persistence.
 * **`terminal.js`**: `xterm.js` terminal tabs, WebSocket PTY streams, resizing, and attachment uploads.
 * **`chat.js`**: Interactive chat interface, progressive reverse-NDJSON streaming, tool call formatters, and composer queue.
+* **`chat-activity.js`**: Ephemeral in-stream activity indicator lifecycle, tool activity formatting, phase-anchored timers, and DOM deduplication.
 * **`chat-commands.js`**: Command router for inline shell (`! <cmd>`) and standalone slash commands, composer indicator, and tab migration.
 * **`chat-command-cards.js`**: DOM card renderers for `.chat-bash-card` shell output, inspection reports, git diffs, and rewind turn picker.
 * **`chat-auth.js`**: Headless OAuth login flows, `.card-auth` cards, callback relay, and `/config` popover MCP and plugin health pills.
