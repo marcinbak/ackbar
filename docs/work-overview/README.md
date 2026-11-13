@@ -70,7 +70,7 @@ Task and tree persistence is managed in `ackbard.db` using CGO-free pure Go SQLi
 
 ---
 
-## 5. Web UI Features (`web/js/tasks.js`)
+## 5. Web UI Features (`web/js/tasks.js`, `web/js/tasks-dnd.js`)
 
 1. **Header Mode Switcher:**
    * Toggle between **`[💻 Workspace]`** (multi-terminal tabs, chat transcript, session tree) and **`[📋 Work Board]`** (Kanban board).
@@ -84,6 +84,7 @@ Task and tree persistence is managed in `ackbard.db` using CGO-free pure Go SQLi
 4. **Contextual Action Controls:**
    * **Backlog Task Creator (`+ New Task`):** Clean backlog creator (`tree_nodes` path selector, Title, Kind Code/Design, Tracker Ref, Notes) saving directly to `NEW` (`ready`).
    * **1-Click Start Task (`[▶ Start]`):** Opens a lightweight Start modal pre-filled from `node_host_paths`, spawns a dedicated `📋 Task` session bound to `task.id`, transitions the task to `IN_PROGRESS` (`active`), and switches to the live session tab.
+   * **Drag-and-Drop Pillar Transitions:** Drag cards between columns (`NEW`, `IN_PROGRESS`, `REVIEW`, `DONE`) with optimistic rendering, substatus normalization, and rollback on error.
    * **Stalled Task Triage:** When all worker sessions for an `IN_PROGRESS` task end without reaching `REVIEW` or `DONE`, the task is marked `stalled` with 1-click `[▶ Resume]`, `[✓ Done]`, and `[🗑️ Delete]` buttons.
    * **1-Click Merge PR:** Directly executes `gh pr merge --squash` on GitHub with loading cues and instant state transition to `DONE`.
    * **7-Day Done Cap:** `DONE` column displays tasks completed in the last 7 days by default, with a `[Show older (N)]` toggle at the bottom of the column.
