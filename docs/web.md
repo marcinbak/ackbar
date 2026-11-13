@@ -104,7 +104,8 @@ It is embedded directly into the `ackbard` Go binary and served on `http://127.0
 ### 📋 8. Work & Fleet Overview Kanban Board
 * **Dual View Modes:** Seamlessly switch between **`[💻 Workspace]`** (multi-tab terminals & agent chats) and **`[📋 Work Board]`** (cross-host agent Kanban dashboard).
 * **Strict Explicit Task Creation & Pure MCP Telemetry:** Tasks are created exclusively via `ackbar mcp` (`create_task`, `propose_task`) or the Work Board **`[+ New Task]`** modal (`POST /v1/tasks`), eliminating ambient background scrapers.
-* **Canonical `tree_nodes` Scoping:** Tasks bind directly to canonical `tree_nodes` paths (e.g. `Modemobile/NGL/ngl-ios`, `Personal/Ackbar`), deriving `group_name` (top segment) and `project_name` (remaining sub-path) consistently across Group pills and the Project filter dropdown.
+* **Canonical `tree_nodes` Scoping & Moves (`web/js/tasks-project.js`):** Tasks bind to canonical `tree_nodes` paths. Project filters match descendants. Clicking `.task-project-tag` opens `showMoveTaskModal` to move tasks.
+* **Unified Project Node Selector:** Modal pickers in New Task, Edit Task, and Move Task share canonical `tree_nodes` options (`buildProjectNodeSelectorHtml`).
 * **4-Pillar Lifecycle Columns:**
   * `NEW`: Backlog & proposed items (`ready` / `discovered`) with a 1-click **`[▶ Start]`** button that opens a lightweight Start modal pre-filled from `node_host_paths`, spawns a dedicated `📋 Task` session bound to `task.id`, transitions the task to `IN_PROGRESS`, and opens the session tab.
   * `IN_PROGRESS`: Active agent execution (`active`, `blocked`, `question`, `stalled`). If all worker sessions for an `IN_PROGRESS` task end without reaching `REVIEW` or `DONE`, the card is marked `stalled` with 1-click **`[▶ Resume]`**, **`[✓ Done]`**, and **`[🗑️ Delete]`** actions.
