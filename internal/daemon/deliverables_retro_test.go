@@ -838,6 +838,180 @@ func TestDeliverables_ExistenceOracleAndHostIsolation(t *testing.T) {
 	if respForeign.ContentMD != "" {
 		t.Errorf("Expected ContentMD to remain empty for foreign host deliverable, got %q", respForeign.ContentMD)
 	}
+
+	// 3. Same-OS foreign user path is rejected unconditionally (403 Forbidden, no existence oracle)
+	sameOSPaths := []string{
+		"/home/otheruser/.worktrees/secret.md",
+		"/home/otheruser/some/path/does_not_exist.retro.md",
+	}
+	for _, p := range sameOSPaths {
+		pBad := map[string]any{
+			"task_id":   task.ID,
+			"kind":      "plan",
+			"file_path": p,
+		}
+		b, _ := json.Marshal(pBad)
+		req := httptest.NewRequest(http.MethodPost, "/v1/tasks/deliverable", bytes.NewReader(b))
+		rec := httptest.NewRecorder()
+		srv.handleTaskDeliverable(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("Expected 403 Forbidden for same-OS foreign user path %s, got %d: %s", p, rec.Code, rec.Body.String())
+		}
+	}
+
+	// 4. Cross-OS rewrite test: e.g. /Users/<user>/... path against a Linux server
+	// (or /home/<user>/... against a macOS server)
+	var crossServerHome, foreignInputPath string
+	userHome := os.Getenv("HOME")
+	if userHome != "" && (strings.HasPrefix(userHome, "/home/") || strings.HasPrefix(userHome, "/Users/")) {
+		if testHome, err := os.MkdirTemp(userHome, "test_cross_os_*"); err == nil {
+			defer os.RemoveAll(testHome)
+			crossServerHome = testHome
+			if strings.HasPrefix(userHome, "/home/") {
+				foreignInputPath = "/Users/otheruser/.claude/dev-workflow-runs/cross.retro.md"
+			} else {
+				foreignInputPath = "/home/otheruser/.claude/dev-workflow-runs/cross.retro.md"
+			}
+		}
+	}
+	if crossServerHome != "" {
+		crossRunsDir := filepath.Join(crossServerHome, ".claude", "dev-workflow-runs")
+		_ = os.MkdirAll(crossRunsDir, 0755)
+		crossTargetFile := filepath.Join(crossRunsDir, "cross.retro.md")
+		crossExpectedMD := "# Cross OS Ingested Retro"
+		_ = os.WriteFile(crossTargetFile, []byte(crossExpectedMD), 0644)
+
+		crossSrv := &Server{db: db, homeDir: crossServerHome}
+		crossTask := &Task{ID: "task_cross", Title: "Cross OS Task", WorktreePath: filepath.Join(crossServerHome, "wt")}
+		_ = db.CreateTask(crossTask)
+
+		pCross := map[string]any{
+			"task_id":   crossTask.ID,
+			"kind":      "retro",
+			"file_path": foreignInputPath,
+		}
+		bCross, _ := json.Marshal(pCross)
+		reqCross := httptest.NewRequest(http.MethodPost, "/v1/tasks/deliverable", bytes.NewReader(bCross))
+		recCross := httptest.NewRecorder()
+		crossSrv.handleTaskDeliverable(recCross, reqCross)
+		if recCross.Code != http.StatusCreated {
+			t.Errorf("Expected 201 Created for cross-OS rewritten path, got %d: %s", recCross.Code, recCross.Body.String())
+		} else {
+			var d TaskDeliverable
+			_ = json.Unmarshal(recCross.Body.Bytes(), &d)
+			if d.ContentMD != crossExpectedMD {
+				t.Errorf("Expected rewritten deliverable content %q, got %q", crossExpectedMD, d.ContentMD)
+			}
+		}
+	}
+
+	// 5. Node host paths test (n1): local host ProjectDir allows read, foreign host ProjectDir rejected
+	localProjectDir := filepath.Join(tempHome, "local_node_project")
+	_ = os.MkdirAll(localProjectDir, 0755)
+	localPlanFile := filepath.Join(localProjectDir, "node_plan.md")
+	localContent := "# Local Node Plan"
+	_ = os.WriteFile(localPlanFile, []byte(localContent), 0644)
+	if err := db.SaveNodeHostPath(&NodeHostPath{
+		NodePath:   "org/repo-local",
+		Host:       srv.HostName(),
+		ProjectDir: localProjectDir,
+	}); err != nil {
+		t.Fatalf("SaveNodeHostPath local failed: %v", err)
+	}
+
+	foreignProjectDir := filepath.Join(tempHome, "foreign_node_project")
+	_ = os.MkdirAll(foreignProjectDir, 0755)
+	foreignPlanFile := filepath.Join(foreignProjectDir, "foreign_plan.md")
+	_ = os.WriteFile(foreignPlanFile, []byte("# Foreign Node Plan"), 0644)
+	if err := db.SaveNodeHostPath(&NodeHostPath{
+		NodePath:   "org/repo-foreign",
+		Host:       "foreign-worker-box",
+		ProjectDir: foreignProjectDir,
+	}); err != nil {
+		t.Fatalf("SaveNodeHostPath foreign failed: %v", err)
+	}
+
+	pLocal := map[string]any{
+		"task_id":   task.ID,
+		"kind":      "plan",
+		"file_path": localPlanFile,
+	}
+	bLoc, _ := json.Marshal(pLocal)
+	reqLoc := httptest.NewRequest(http.MethodPost, "/v1/tasks/deliverable", bytes.NewReader(bLoc))
+	recLoc := httptest.NewRecorder()
+	srv.handleTaskDeliverable(recLoc, reqLoc)
+	if recLoc.Code != http.StatusCreated {
+		t.Errorf("Expected 201 Created for local node_host_path, got %d: %s", recLoc.Code, recLoc.Body.String())
+	} else {
+		var d TaskDeliverable
+		_ = json.Unmarshal(recLoc.Body.Bytes(), &d)
+		if d.ContentMD != localContent {
+			t.Errorf("Expected local node deliverable content %q, got %q", localContent, d.ContentMD)
+		}
+	}
+
+	pFor := map[string]any{
+		"task_id":   task.ID,
+		"kind":      "plan",
+		"file_path": foreignPlanFile,
+	}
+	bFor, _ := json.Marshal(pFor)
+	reqFor := httptest.NewRequest(http.MethodPost, "/v1/tasks/deliverable", bytes.NewReader(bFor))
+	recFor := httptest.NewRecorder()
+	srv.handleTaskDeliverable(recFor, reqFor)
+	if recFor.Code != http.StatusForbidden {
+		t.Errorf("Expected 403 Forbidden for foreign node_host_path, got %d: %s", recFor.Code, recFor.Body.String())
+	}
+
+	// 6. Binary deliverable test (n2): attaching binary file (.png or NUL bytes) under kind: "plan" succeeds with 201 Created and empty ContentMD
+	pngFile := filepath.Join(tempWorktree, "mockup.png")
+	pngBytes := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4")
+	_ = os.WriteFile(pngFile, pngBytes, 0644)
+
+	pPng := map[string]any{
+		"task_id":   task.ID,
+		"kind":      "plan",
+		"title":     "UI Mockup",
+		"file_path": pngFile,
+	}
+	bPng, _ := json.Marshal(pPng)
+	reqPng := httptest.NewRequest(http.MethodPost, "/v1/tasks/deliverable", bytes.NewReader(bPng))
+	recPng := httptest.NewRecorder()
+	srv.handleTaskDeliverable(recPng, reqPng)
+	if recPng.Code != http.StatusCreated {
+		t.Errorf("Expected 201 Created for binary PNG deliverable under kind 'plan', got %d: %s", recPng.Code, recPng.Body.String())
+	} else {
+		var d TaskDeliverable
+		_ = json.Unmarshal(recPng.Body.Bytes(), &d)
+		if d.ContentMD != "" {
+			t.Errorf("Expected empty ContentMD for binary PNG deliverable, got %q", d.ContentMD)
+		}
+		if d.HasContentMD {
+			t.Errorf("Expected HasContentMD false for binary PNG deliverable, got true")
+		}
+	}
+
+	nulFile := filepath.Join(tempWorktree, "binary.data")
+	_ = os.WriteFile(nulFile, []byte("plain text\x00with null bytes"), 0644)
+	pNul := map[string]any{
+		"task_id":   task.ID,
+		"kind":      "plan",
+		"title":     "Binary Data",
+		"file_path": nulFile,
+	}
+	bNul, _ := json.Marshal(pNul)
+	reqNul := httptest.NewRequest(http.MethodPost, "/v1/tasks/deliverable", bytes.NewReader(bNul))
+	recNul := httptest.NewRecorder()
+	srv.handleTaskDeliverable(recNul, reqNul)
+	if recNul.Code != http.StatusCreated {
+		t.Errorf("Expected 201 Created for file with NUL byte under kind 'plan', got %d: %s", recNul.Code, recNul.Body.String())
+	} else {
+		var d TaskDeliverable
+		_ = json.Unmarshal(recNul.Body.Bytes(), &d)
+		if d.ContentMD != "" {
+			t.Errorf("Expected empty ContentMD for NUL-byte deliverable, got %q", d.ContentMD)
+		}
+	}
 }
 
 func TestDeliverables_LazyGETReadLocalAndPushSync(t *testing.T) {

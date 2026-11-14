@@ -41,12 +41,16 @@ func parseFilterTime(val string, isUntil bool) (time.Time, error) {
 }
 
 func isReadableTextDeliverable(kind, filePath string) bool {
-	if isRetroKind(kind) || kind == "plan" || kind == "prd" || kind == "learnings" || kind == "doc" {
-		return true
+	ext := strings.ToLower(filepath.Ext(filePath))
+	if ext != "" {
+		switch ext {
+		case ".md", ".markdown", ".txt", ".json", ".yaml", ".yml", ".html", ".htm", ".csv", ".log", ".rst":
+			return true
+		default:
+			return false
+		}
 	}
-	lower := strings.ToLower(filePath)
-	return strings.HasSuffix(lower, ".md") || strings.HasSuffix(lower, ".markdown") ||
-		strings.HasSuffix(lower, ".txt") || strings.HasSuffix(lower, ".json")
+	return isRetroKind(kind) || kind == "plan" || kind == "prd" || kind == "learnings" || kind == "doc"
 }
 
 func (s *Server) handleTaskDeliverable(w http.ResponseWriter, r *http.Request) {
@@ -212,7 +216,7 @@ func (s *Server) handleTaskDeliverable(w http.ResponseWriter, r *http.Request) {
 			}
 			if readErr == nil {
 				contentMD = readContent
-			} else if !os.IsNotExist(readErr) {
+			} else if !os.IsNotExist(readErr) && !errors.Is(readErr, ErrBinaryDeliverable) {
 				http.Error(w, "Failed to read deliverable file: "+readErr.Error(), http.StatusBadRequest)
 				return
 			}

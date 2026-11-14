@@ -19,6 +19,7 @@ import (
 var (
 	ErrPathNotConfined     = errors.New("deliverable file path is not confined to allowed roots")
 	ErrDeliverableTooLarge = errors.New("deliverable file exceeds 2MB limit")
+	ErrBinaryDeliverable   = errors.New("deliverable file is binary")
 )
 
 const maxDeliverableFileBytes = 2 * 1024 * 1024
@@ -149,13 +150,9 @@ func (s *Server) getAllowedDeliverableRoots(task *Task) []string {
 				}
 			}
 		}
-		hostName := ""
-		if s != nil {
-			hostName = s.HostName()
-		}
-		if hostPaths, err := s.db.ListNodeHostPaths(hostName); err == nil {
+		if hostPaths, err := s.db.ListNodeHostPaths(""); err == nil {
 			for _, hp := range hostPaths {
-				if hp.ProjectDir != "" {
+				if hp.ProjectDir != "" && s.isLocalHost(hp.Host) {
 					roots = append(roots, hp.ProjectDir)
 				}
 			}
@@ -250,14 +247,13 @@ func (s *Server) confineAndReadDeliverableFile(task *Task, rawPath string) (stri
 	}
 
 	targetPath := clean
-	if _, err := os.Lstat(targetPath); os.IsNotExist(err) && home != "" {
-		if strings.HasPrefix(clean, "/Users/") || strings.HasPrefix(clean, "/home/") {
+	if home != "" {
+		slashHome := filepath.ToSlash(filepath.Clean(home))
+		if (strings.HasPrefix(slashHome, "/home/") && strings.HasPrefix(clean, "/Users/")) ||
+			(strings.HasPrefix(slashHome, "/Users/") && strings.HasPrefix(clean, "/home/")) {
 			parts := strings.Split(clean, "/")
 			if len(parts) >= 3 {
-				alt := filepath.Join(home, filepath.Join(parts[3:]...))
-				if _, altErr := os.Lstat(alt); altErr == nil {
-					targetPath = alt
-				}
+				targetPath = filepath.Join(home, filepath.Join(parts[3:]...))
 			}
 		}
 	}
@@ -324,12 +320,7 @@ func (s *Server) confineAndReadDeliverableFile(task *Task, rawPath string) (stri
 			}
 
 			if !inAllowed {
-				isRemoteSyncSuffix := strings.Contains(rawPath, "dev-workflow-runs") ||
-					strings.Contains(rawPath, ".worktrees") ||
-					strings.Contains(rawPath, "/brain/") || strings.HasSuffix(rawPath, "/brain")
-				if !isRemoteSyncSuffix {
-					return "", ErrPathNotConfined
-				}
+				return "", ErrPathNotConfined
 			}
 			return "", os.ErrNotExist
 		}
@@ -404,7 +395,7 @@ func (s *Server) confineAndReadDeliverableFile(task *Task, rawPath string) (stri
 		return "", ErrDeliverableTooLarge
 	}
 	if bytes.IndexByte(buf, 0) >= 0 {
-		return "", ErrPathNotConfined
+		return "", ErrBinaryDeliverable
 	}
 
 	return strings.ToValidUTF8(string(buf), ""), nil
