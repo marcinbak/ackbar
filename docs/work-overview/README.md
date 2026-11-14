@@ -36,7 +36,7 @@ Tasks progress through 4 macro pillars (`NEW` $\rightarrow$ `IN_PROGRESS` $\righ
 | **1. NEW** | `NEW` | `backlog`, `ready`, `discovered` | Feature, design, or bug queued via **`⚓ Supervisor`** or Work Board. |
 | **2. IN_PROGRESS** | `IN_PROGRESS` | `active`, `question` (`N1`), `stalled` (`N3–N10`) | Dedicated **`📋 Task`** session executing Product/Design work or repo `dev-workflow` in Tmux (`@macmini` / `@legion`). Stopping at `N1` flags `question`; stopping in `N3–N10` without `report_blocker` flags `stalled`. |
 | **3. REVIEW** | `REVIEW` | `design_review`, `plan_review` (`N2`), `pr_review` (`N11`), `approved` | **Human Checkpoint:** Hosted deliverable (Claude Published Artifact or Google Doc/Slides/Drive via `gdrive`/`gdocs`/`gslides`) or GitHub PR (`N11`) awaits approval. |
-| **4. DONE** | `DONE` | `completed` (`N14–N15`), `rejected`, `abandoned` | Design approved or PR merged (`N14`), `.worktrees/<branch>` removed, retro published (`N15`), Tmux window auto-closed, and session moved to `✅ Done`. |
+| **4. DONE** | `DONE` | `completed` (`N14–N15`), `rejected`, `abandoned` | Design approved or PR merged (`N14`), `.worktrees/<branch>` removed, retro published (`N15`), bound worker sessions auto-marked done, and task moved to `✅ Done`. |
 
 ---
 
@@ -57,7 +57,7 @@ Task and tree persistence is managed in `ackbard.db` using CGO-free pure Go SQLi
 ## 4. REST API Endpoints
 
 * **`GET /v1/tasks`**: Returns all tasks with joined workers, external references, and deliverable metadata (`has_content_md`, omitting inline `content_md`). Supports optional query filters: `?group=`, `?project=`, `?status=`, `?federated=true`, and `?reconcile_prs=true` (on-demand GitHub PR state check via `gh pr view`).
-* **`POST /v1/tasks`**: Explicitly creates or updates a task (supports client-generated IDs, `project_node_path` moves, and subproject clearing).
+* **`POST /v1/tasks`**: Explicitly creates or updates a task (supports client-generated IDs, `project_node_path` moves, subproject clearing, and auto-marking bound worker sessions `Done` on `DONE`).
 * **`POST /v1/tasks/event`**: Ingests structured task lifecycle events (`task_id`, `event_type`, `payload`).
 * **`POST /v1/tasks/propose`**: Records explicit agent-discovered work proposals (`propose_task`) with title deduplication into `NEW`.
 * **`GET /v1/tasks/deliverable?id=<id>`**: Lazily fetches full deliverable details including `content_md` on demand.

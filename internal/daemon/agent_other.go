@@ -539,6 +539,16 @@ func IsRawSessionName(n string) bool {
 	if strings.HasPrefix(n, "ackbar-") || strings.HasPrefix(n, "proc-") || IsUUID(n) {
 		return true
 	}
+	if len(n) >= 36 && IsUUID(n[:36]) {
+		return true
+	}
+	if (strings.HasPrefix(n, "<") && strings.HasSuffix(n, ">")) ||
+		(strings.HasPrefix(n, "(") && strings.HasSuffix(n, ")")) {
+		inner := strings.TrimSpace(n[1 : len(n)-1])
+		if IsUUID(inner) || (len(inner) >= 36 && IsUUID(inner[:36])) {
+			return true
+		}
+	}
 	if strings.HasPrefix(n, "antigravity (") || strings.HasPrefix(n, "claude-code (") || strings.HasPrefix(n, "codex (") || strings.HasPrefix(n, "grok (") || strings.HasPrefix(n, "opencode (") || strings.HasPrefix(n, "Claude Code (") || strings.HasPrefix(n, "Antigravity (") || strings.HasPrefix(n, "xAI Grok (") || strings.HasPrefix(n, "OpenCode (") {
 		return true
 	}

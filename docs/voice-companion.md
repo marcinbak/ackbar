@@ -50,7 +50,7 @@ Currently, `internal/mcp/tools.go` only exposes basic Task Board status tools (`
 | MCP Tool | Backing `ackbard` Endpoint | Supervisor Use Case |
 | :--- | :--- | :--- |
 | **`list_sessions`** | `GET /v1/sessions?federated=true` | List active, blocked, or idle sessions across all hosts with current activity, context %, and blocker questions. |
-| **`get_session_output`** | `GET /v1/sessions/transcript` | Fetch the latest 1–3 assistant messages, active implementation plan, or current blocker options for a session. |
+| **`get_session_output`** | `GET /v1/sessions/transcript` | Fetch paginated output (`max_chars` 500–50000, `offset`, `char_offset`, `include_all_roles`), returning messages and `truncated` pagination metadata. |
 | **`send_session_input`** | `POST /v1/sessions/respond` / PTY | Answer a blocked question (e.g. `"Option 1"`), approve a plan, or send a follow-up prompt to an idle/working session. |
 | **`spawn_session`** | `POST /v1/meta/resolve` + `/v1/sessions/spawn` | Start a new coding session on a target host and project directory with an initial prompt (injected at CLI launch via `$ACKBAR_INIT_PROMPT` for `claude-code` and `antigravity`, with automatic capability routing for `-ios`/`-android` repo paths). |
 | **`control_session`** | `POST /v1/sessions/control` & `/handover` | Execute lifecycle actions (`resume`, `restart`, `kill`, `handover`, `done`, `later`). |

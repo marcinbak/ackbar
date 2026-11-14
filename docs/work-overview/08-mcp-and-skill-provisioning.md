@@ -23,7 +23,7 @@ Ackbar's Work & Fleet Overview Dashboard manages the lifecycle of tasks across f
 | :--- | :--- | :--- | :--- |
 | **`list_hosts`** | Supervisor Fleet | `include_metrics?` | Lists all registered hosts with online status, `detected_capabilities` (`ios`, `android`, `agent:*`, `mcp:*`), `policy_tags` (`24/7`, `drain`), `routing_weight` (`75`/`25`), and live `load` (`working_sessions`, `cpu_load_pct`, `ram_free_gb`, `overloaded`). |
 | **`list_sessions`** | Supervisor Session | `host?`, `state?` | Lists active, blocked, or idle sessions across all federated hosts (`GET /v1/sessions?federated=true`). |
-| **`get_session_output`** | Supervisor Session | `session_id!`, `limit?` | Fetches the latest assistant messages, implementation plan, or blocker options (`GET /v1/sessions/transcript`). |
+| **`get_session_output`** | Supervisor Session | `session_id!`, `recent_count?`, `offset?`, `char_offset?`, `max_chars?`, `include_all_roles?` | Fetches paginated assistant or all-role output with `truncated` metadata (`GET /v1/sessions/transcript`). |
 | **`send_session_input`** | Supervisor Session | `session_id!`, `input!` | Answers a blocked question, approves a plan, or sends a follow-up prompt (`POST /v1/sessions/respond`). |
 | **`spawn_session`** | Supervisor Session | `host?` (`"auto"`), `dir!`, `agent!`, `required_capabilities?`, `prompt?` | Spawns a new interactive Tmux or headless coding session on the target host (or `"auto"` via capability + 75/25 weighted deficit routing, returning `load_warning` if overloaded). |
 | **`control_session`** | Supervisor Session | `session_id!`, `action!` | Executes session lifecycle actions (`resume`, `restart`, `kill`, `handover`, `done`, `later`). |

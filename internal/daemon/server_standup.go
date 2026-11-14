@@ -264,6 +264,7 @@ func (s *Server) handleTaskMergePR(w http.ResponseWriter, r *http.Request) {
 		repoPath = task.ProjectName
 	}
 	s.unlockSequentialWorkstreams(task, repoPath)
+	s.completeTaskWorkerSessions(task, nil, "PR merged (task DONE)")
 
 	if err := s.db.UpdateTask(task); err != nil {
 		w.Header().Set("Content-Type", "application/json")

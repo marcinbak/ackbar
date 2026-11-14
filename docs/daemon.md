@@ -73,7 +73,7 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 | `GET` | `/v1/sessions/{id}/suggestions` | Returns `/` command/skill suggestions (`kind=commands`), `@` relative file path suggestions (`kind=files&q=...`), or agent-aware model options (`kind=models&q=...`). |
 | `POST` | `/v1/sessions/handover`| Initiates automated session handover, briefing extraction, and context rotation. |
 | `POST` | `/v1/sessions/mark-read` | Marks a session as read (`is_unread = false`), clearing visual unread cues. |
-| `GET` | `/v1/sessions/transcript`| Retrieves conversation transcript with active turn spool synthesis (supports `format=ndjson` reverse streaming, `include_formats=false`, and gzip). |
+| `GET` | `/v1/sessions/transcript`| Retrieves conversation transcript with turn spool synthesis (supports pagination `max_chars`, `offset`, `char_offset`, `role`, `format=ndjson`, gzip, and tmux fallback). |
 | `POST` | `/v1/sessions/upload` | Uploads clipboard images or drag-and-dropped PDFs to `/tmp/ackbar-uploads/`. |
 | `GET` | `/v1/settings` | Returns daemon settings including `host_name`, `display_name`, auto-done thresholds, `later_collapsed_by_default`, `hide_session_tabs`, handover suggestions, and `ntfy_topic` / `ntfy_server`. |
 | `POST` | `/v1/settings` | Updates and persists daemon settings in SQLite (supports `propagate_ntfy: "true"` to push `ntfy_topic` and `ntfy_server` to all connected fleet hosts). |
@@ -87,7 +87,7 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 | `GET` | `/v1/hosts` | Returns registered local and remote compute hosts. |
 | `POST` | `/v1/hosts/update` | Upgrades and restarts `ackbard` on a remote target host. |
 | `GET` | `/v1/tasks` | Returns tasks across all projects with associated workers, external refs, and deliverable headers (`has_content_md: true`, omitting inline `content_md`). Supports `?federated=true` and `?reconcile_prs=true` (on-demand GitHub PR state check via `gh pr view`). |
-| `POST` | `/v1/tasks` | Creates or updates a task. Accepts `project_node_path` (`node_path` alias), resolves canonical tree scope, and clears subprojects on moves. |
+| `POST` | `/v1/tasks` | Creates or updates a task; resolves canonical tree scope, clears subprojects on move, and auto-marks bound worker sessions `Done` on `DONE`. |
 | `DELETE` | `/v1/tasks` | Soft-deletes a task (`deleted_at = now`) and cascades cleanup across workers, workstreams, external refs, and deliverables for LWW peer sync. |
 | `POST` | `/v1/tasks/event` | Ingests structured lifecycle events (`agent_blocked`, `agent_unblocked`, etc.) for explicitly bound tasks. |
 | `POST` | `/v1/tasks/propose` | Records explicit agent-discovered work proposals (`propose_task`) into the `NEW` inbox column with duplicate detection and canonical `tree_nodes` scoping. |
@@ -176,12 +176,15 @@ Headless sessions (`engine_type = "headless"`, `tmux_name = ""`) execute turns t
 * **Pre-Filtered JSONL Parsing:** Skips non-message lines (tool progress, file snapshots) before JSON unmarshaling to prevent memory thrash.
 * **Subagent Discovery Cache:** Caches disk-discovered subagents for 3 seconds to avoid repetitive directory scans during active polling.
 * **Streaming Proxy Timeout Safety:** Proxied remote transcripts use `ResponseHeaderTimeout: 10s` so streaming NDJSON responses do not terminate prematurely.
+* **Pagination & Output Controls ([`transcript_pagination.go`](file:///Users/dev4u/Work/Ackbar/internal/daemon/transcript_pagination.go)):** Supports `max_chars` (500–50000, default 10000), `offset`, `char_offset`, and `role=assistant|all`; returns `truncated` and `pagination` metadata.
+* **Tmux Capture Pane Fallback:** Captures active pane buffer (up to 500 lines) via `tmux.CapturePane` when transcripts are empty or unwritten.
 
 ### Pure-Go Git Branch Resolution & Fast Session Queries
 
 * **Zero-Subprocess Branch Resolution ([`git.go`](file:///Users/dev4u/Work/Ackbar/internal/daemon/git.go)):** Resolves `.git/HEAD` and `.git` worktree pointer files in pure Go with a 60-second positive and negative cache.
 * **Scan Loop Subprocess Elimination:** Database session scan loops (`GetSession`, `ListSessions`) read pre-persisted `git_branch` columns without invoking subprocesses.
-* **Fast Alias Lookup:** SQLite indexes on `sessions(native_id)` and `sessions(old_id)` enable direct O(1) alias resolution via [`GetSessionByAlias`](file:///Users/dev4u/Work/Ackbar/internal/daemon/db.go).
+* **Fast Alias Lookup:** SQLite indexes on `native_id` and `old_id` resolve headless Antigravity IDs via [`GetSessionByOldID`](file:///Users/dev4u/Work/Ackbar/internal/daemon/db.go) and [`GetSessionByAlias`](file:///Users/dev4u/Work/Ackbar/internal/daemon/db.go).
+* **Title Lock & Sanitization:** Explicit `CustomTitle` values persist across scans; background loops reject raw `<uuid>(` OSC window titles.
 
 ---
 
@@ -219,6 +222,7 @@ When long-running autonomous sessions consume significant token context (`contex
 ### Handover & Workspace Settings (`/v1/settings`):
 * `auto_done_enabled`: `"true"` | `"false"` (default: `"false"`) — toggle background sweep marking inactive sessions `Done`.
 * `auto_done_hours`: Integer (default: `24`) — inactivity hours before eligible non-working sessions become `Done`.
+* **Task Completion Auto-Done:** Transitioning a task to `DONE` automatically marks bound non-supervisor worker sessions as `is_done = true` and `StateEnded`.
 * `handover_suggestion_enabled`: `"true"` | `"false"` (default: `"true"`) — toggle automated UI suggestions.
 * `handover_threshold_pct`: Integer between `10` and `95` (default: `"60"`) — context window threshold for triggering warnings and quick-action chips.
 * `later_collapsed_by_default`: `"true"` | `"false"` (default: `"false"`) — whether the ⏳ Later subsections start collapsed by default.
@@ -343,7 +347,7 @@ If `skills_repo_path` is not explicitly set in the database, `ackbard` inspects 
 Exposes JSON-RPC 2.0 MCP capabilities over HTTP for supervisor sessions and external connectors (e.g. Claude Desktop, mobile companions).
 * **Protocol Methods:** `initialize` (returns protocol `2024-11-05` and server info `ackbar-mcp`), `ping`, `tools/list`, and `tools/call`.
 * **Security & SSRF Mitigation:** Loopback listener address is extracted directly from the request context (`http.LocalAddrContextKey`) rather than the unvalidated client `Host` header, preventing internal loopback SSRF, reverse-proxy hairpinning, and token leakage. Request bodies are constrained with `http.MaxBytesReader(w, r.Body, 2<<20)`.
-* **Exposed Supervisor Tools:** `list_sessions`, `get_session_output`, `send_session_input` (with automatic `select_option -> answer` routing and blocked-state detection), `spawn_session`, `control_session`, and `bind_supervisor_session` (with `client.SessionID` fallback and automatic fallback binding via `create_task`).
+* **Exposed Supervisor Tools:** `list_sessions`, `get_session_output` (paginated via `max_chars`, `offset`, `char_offset`, `include_all_roles`), `send_session_input` (with automatic `select_option -> answer` routing and blocked-state detection), `spawn_session`, `control_session`, and `bind_supervisor_session` (with `client.SessionID` fallback and automatic fallback binding via `create_task`).
 * **Dedicated Supervisor Dispatcher Workspace (`~/.ackbar/supervisor/`):** Zero-input supervisor sessions default to `~/.ackbar/supervisor/` with generated `CLAUDE.md` and `AGENTS.md` containing dispatcher rules and dynamic project tree nodes catalog. Spawns inject `BuildSupervisorSystemPrompt` and `ACKBAR_IS_SUPERVISOR=1`.
 * **Task Worker Auto-Dispatch:** `create_task` supports optional `agent` (`claude-code`, `antigravity`, `codex`) and `prompt` forwarding, auto-binding supervisor sessions to project groups. Conversation rotation (`/clear`) strictly preserves `IsSupervisor` and `CurrentTaskID`.
 

@@ -450,12 +450,12 @@ func (d *DB) SaveSession(s *Session) error {
 
 	// Preserve user-assigned group (NodePath), CustomTitle, IsSupervisor, CurrentTaskID, and GitBranch if existing and empty in s
 	if existing, _ := d.GetSession(s.ID); existing != nil {
+		if s.CustomTitle == "" && existing.CustomTitle != "" {
+			s.CustomTitle = existing.CustomTitle
+		}
 		if s.MetadataUpdatedAt.IsZero() {
 			if s.NodePath == "" && existing.NodePath != "" {
 				s.NodePath = existing.NodePath
-			}
-			if s.CustomTitle == "" && existing.CustomTitle != "" {
-				s.CustomTitle = existing.CustomTitle
 			}
 			if !s.IsSupervisor && existing.IsSupervisor {
 				s.IsSupervisor = existing.IsSupervisor
@@ -478,6 +478,10 @@ func (d *DB) SaveSession(s *Session) error {
 		if s.OldID == "" && existing.OldID != "" {
 			s.OldID = existing.OldID
 		}
+	}
+
+	if s.CustomTitle != "" {
+		s.Name = s.CustomTitle
 	}
 
 	if s.GitBranch == "" && s.Cwd != "" {
@@ -854,9 +858,9 @@ func (d *DB) GetSessionByAlias(sessionID string) (*Session, error) {
 			       started_at, last_event_at, managed, tmux_name, pid, archived, node_path, name, entrypoint, kind, version, context_pct, git_branch,
 			       custom_title, ai_title, ai_description, first_prompt, last_prompt, is_unread, last_state_change_at, is_done, is_later, account_id, engine_type, old_id, metadata_updated_at, is_supervisor, current_task_id,
 			       model, effort, permission_mode, extra_dirs
-			FROM sessions WHERE native_id = ? OR native_id LIKE ? OR id LIKE ? LIMIT 1;
+			FROM sessions WHERE native_id = ? OR native_id LIKE ? OR id LIKE ? OR old_id = ? COLLATE NOCASE OR old_id LIKE ? OR old_id LIKE ? LIMIT 1;
 			`
-			sess, err = scanSingleSessionRow(d.db.QueryRow(q, candidate, "%"+candidate, "%"+candidate))
+			sess, err = scanSingleSessionRow(d.db.QueryRow(q, candidate, "%"+candidate, "%"+candidate, candidate, "%:"+candidate, "%-"+candidate))
 			if err == nil && sess != nil {
 				return sess, nil
 			}
@@ -864,6 +868,41 @@ func (d *DB) GetSessionByAlias(sessionID string) (*Session, error) {
 	}
 
 	return nil, sql.ErrNoRows
+}
+
+func (d *DB) GetSessionByOldID(oldID string) (*Session, error) {
+	if d == nil || d.db == nil || oldID == "" {
+		return nil, sql.ErrNoRows
+	}
+	query := `
+	SELECT id, agent, host, native_id, cwd, roots, project_key, state,
+	       blocked_kind, blocked_reason, blocked_since, blocked_question, blocked_options, blocked_questions, blocked_reset_at, blocked_meta, activity,
+	       started_at, last_event_at, managed, tmux_name, pid, archived, node_path, name, entrypoint, kind, version, context_pct, git_branch,
+	       custom_title, ai_title, ai_description, first_prompt, last_prompt, is_unread, last_state_change_at, is_done, is_later, account_id, engine_type, old_id, metadata_updated_at, is_supervisor, current_task_id,
+	       model, effort, permission_mode, extra_dirs
+	FROM sessions WHERE old_id = ? COLLATE NOCASE LIMIT 1;
+	`
+	return scanSingleSessionRow(d.db.QueryRow(query, oldID))
+}
+
+func (d *DB) GetSessionIDsByTaskID(taskID string) ([]string, error) {
+	if d == nil || d.db == nil || taskID == "" {
+		return nil, nil
+	}
+	rows, err := d.db.Query("SELECT id FROM sessions WHERE current_task_id = ? AND id NOT IN (SELECT id FROM deleted_sessions)", taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err == nil && id != "" {
+			ids = append(ids, id)
+		}
+	}
+	return ids, rows.Err()
 }
 
 func (d *DB) ListSessions() ([]*Session, error) {

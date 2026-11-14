@@ -4,7 +4,10 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-APP_VERSION_FILE="mobile/lib/core/constants/app_version.dart"
+APP_VERSION_FILES=(
+    "mobile/lib/core/constants/app_version.dart"
+    "mobile/lib/core/app_version.dart"
+)
 
 CHECK_MODE=false
 FORCE=false
@@ -41,42 +44,51 @@ while [ $# -gt 0 ]; do
 done
 
 read_mobile_app_version() {
-    if [ ! -f "$APP_VERSION_FILE" ]; then
+    local file="$1"
+    if [ ! -f "$file" ]; then
         return 0
     fi
-    sed -n "s/.*static const String version = '\([^']*\)'.*/\1/p" "$APP_VERSION_FILE" | head -n 1
+    sed -n "s/.*static const String version = '\([^']*\)'.*/\1/p" "$file" | head -n 1
 }
 
-sync_mobile_app_version() {
-    local target_ver="$1"
-    if [ ! -f "$APP_VERSION_FILE" ]; then
+sync_mobile_app_version_file() {
+    local file="$1"
+    local target_ver="$2"
+    if [ ! -f "$file" ]; then
         return 0
     fi
 
     local current_mobile_ver
-    current_mobile_ver="$(read_mobile_app_version)"
+    current_mobile_ver="$(read_mobile_app_version "$file")"
     if [ "$current_mobile_ver" = "$target_ver" ]; then
         return 0
     fi
 
     local tmp_file
-    tmp_file="$(mktemp "${APP_VERSION_FILE}.tmp.XXXXXX")"
-    if ! sed "s/static const String version = '[^']*';/static const String version = '${target_ver}';/" "$APP_VERSION_FILE" > "$tmp_file"; then
+    tmp_file="$(mktemp "${file}.tmp.XXXXXX")"
+    if ! sed "s/static const String version = '[^']*';/static const String version = '${target_ver}';/" "$file" > "$tmp_file"; then
         rm -f "$tmp_file"
         echo "ERROR: Failed to write to temporary file: $tmp_file" >&2
         return 1
     fi
 
-    mv "$tmp_file" "$APP_VERSION_FILE"
+    mv "$tmp_file" "$file"
 
     local verified_ver
-    verified_ver="$(read_mobile_app_version)"
+    verified_ver="$(read_mobile_app_version "$file")"
     if [ "$verified_ver" != "$target_ver" ]; then
-        echo "ERROR: Failed to update $APP_VERSION_FILE to $target_ver (found $verified_ver)" >&2
+        echo "ERROR: Failed to update $file to $target_ver (found $verified_ver)" >&2
         exit 1
     fi
 
-    echo "Synced mobile AppVersion: $current_mobile_ver -> $target_ver"
+    echo "Synced mobile AppVersion ($file): $current_mobile_ver -> $target_ver"
+}
+
+sync_mobile_app_version() {
+    local target_ver="$1"
+    for file in "${APP_VERSION_FILES[@]}"; do
+        sync_mobile_app_version_file "$file" "$target_ver"
+    done
 }
 
 # Compare two versions: returns 0 if vA > vB, 1 otherwise.
@@ -196,13 +208,15 @@ if [ "$CHECK_MODE" = true ]; then
         fi
     fi
 
-    if [ -f "$APP_VERSION_FILE" ]; then
-        MOBILE_VER="$(read_mobile_app_version)"
-        if [ "$MOBILE_VER" != "$CURRENT_VER" ]; then
-            echo "ERROR: $APP_VERSION_FILE ($MOBILE_VER) does not match internal/version/VERSION ($CURRENT_VER). Run './scripts/bump-version.sh' to sync." >&2
-            exit 1
+    for file in "${APP_VERSION_FILES[@]}"; do
+        if [ -f "$file" ]; then
+            MOBILE_VER="$(read_mobile_app_version "$file")"
+            if [ "$MOBILE_VER" != "$CURRENT_VER" ]; then
+                echo "ERROR: $file ($MOBILE_VER) does not match internal/version/VERSION ($CURRENT_VER). Run './scripts/bump-version.sh' to sync." >&2
+                exit 1
+            fi
         fi
-    fi
+    done
 
     echo "Version check passed: $CURRENT_VER (> $BASE_REF $BASE_VER)"
     exit 0

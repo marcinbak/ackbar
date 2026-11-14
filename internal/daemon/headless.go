@@ -1308,9 +1308,12 @@ func (h *HeadlessRunner) handleAntigravityInit(sess *Session, convID, prompt str
 		if sess.Agent != "" && sess.Host != "" {
 			newID := fmt.Sprintf("%s:%s:%s", sess.Agent, sess.Host, convID)
 			if oldID != "" && oldID != newID {
-				sess.OldID = oldID
+				if sess.OldID == "" {
+					sess.OldID = oldID
+				}
 				sess.ID = newID
 				if h.db != nil {
+					_ = h.db.ReassignWorkerSessionID(oldID, newID)
 					_ = h.db.DeleteSession(oldID)
 				}
 				h.MigrateSession(oldID, newID)

@@ -249,3 +249,22 @@ func SendInput(ctx context.Context, sessionName string, text string, pressEnter 
 	}
 	return nil
 }
+
+func CapturePane(ctx context.Context, sessionName string, scrollbackLines int) (string, error) {
+	if sessionName == "" {
+		return "", fmt.Errorf("session name cannot be empty")
+	}
+	if scrollbackLines <= 0 {
+		scrollbackLines = 500
+	}
+	target := exactSessionTarget(sessionName)
+	if !strings.Contains(target, ":") {
+		target += ":"
+	}
+	cmd := exec.CommandContext(ctx, "tmux", "capture-pane", "-p", "-t", target, "-S", fmt.Sprintf("-%d", scrollbackLines))
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("failed to capture tmux pane %s: %w", sessionName, err)
+	}
+	return string(out), nil
+}

@@ -273,7 +273,12 @@ func (s *Server) refreshExistingSessions(ctx context.Context, state *ScanState) 
 		changed := false
 		if p, ok := s.providers[sess.Agent]; ok && sess.NativeID != "" {
 			if meta := p.ReadSessionMetadata(sess.Cwd, sess.NativeID); meta != nil {
-				if meta.Title != "" && meta.Title != sess.Name && !strings.HasPrefix(meta.Title, "<") {
+				if sess.CustomTitle != "" {
+					if sess.Name != sess.CustomTitle {
+						sess.Name = sess.CustomTitle
+						changed = true
+					}
+				} else if meta.Title != "" && meta.Title != sess.Name && !strings.HasPrefix(meta.Title, "<") && !isRawSessionName(meta.Title) {
 					sess.Name = meta.Title
 					changed = true
 				}

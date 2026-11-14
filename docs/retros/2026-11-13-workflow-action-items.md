@@ -13,22 +13,22 @@ For empirical metrics and diagnostic conclusions, see [2026-11-13-cross-host-ret
   * **Evidence:** 59 of 181 missing retrospectives, 9 of 26 tasks with deliverables, 27 unindexed Atria retrospectives.
   * **Acceptance Criteria:** Auto-ingest N15 `.retro.md` (`content_md` populated) and structured run metrics into Ackbar deliverables; replicate deliverables across the LWW peer mesh (`legion` <-> `macmini` <-> `macbook`); expose `list_retros` and `get_deliverable` MCP tools.
 
-- [ ] **[P0] Daemon `get_session_output` Pagination & Cursor Controls**
+- [x] **[P0] Daemon `get_session_output` Pagination & Cursor Controls**
   * **Owner:** `Personal/Ackbar` (`get_session_output`)
   * **Evidence:** Cross-host Map-Reduce truncation requiring an 8.5 KB shard workaround.
   * **Acceptance Criteria:** Add `max_chars` parameter (up to 50,000), `offset`/`cursor` pagination, and `"truncated": true` response metadata to the `get_session_output` endpoint.
 
-- [ ] **[P0] Headless Antigravity Session Re-keying & Title Lock**
+- [x] **[P0] Headless Antigravity Session Re-keying & Title Lock**
   * **Owner:** `Personal/Ackbar` (headless `antigravity` & session titles)
   * **Evidence:** Headless boot `old_id -> id` re-key drops and macOS `<uuid>(` OSC title overwrites.
   * **Acceptance Criteria:** Resolve `old_id -> id` transparently across `get_session_output`, `send_session_input`, and `control_session`; lock explicit `custom_title` against macOS `<uuid>(` OSC title escapes.
 
-- [ ] **[P0] Standardize `verify-t0.sh` Harness & Manifest Alignments**
+- [x] **[P0] Standardize `verify-t0.sh` Harness & Manifest Alignments**
   * **Owner:** `Personal/Ackbar` (`scripts/verify-t0.sh` & [docs/dev-workflow.md](../dev-workflow.md))
   * **Evidence:** Host environment bleed (`ACKBAR_HOST`/`$HOME`), `rm ackbar-hook` binary breaks, and false `✅ CI` manifest tags.
   * **Acceptance Criteria:** Ship `scripts/verify-t0.sh` (`HOME=$(mktemp -d)` + unset `ACKBAR_HOST` `go test -race ./...`, `GOOS=darwin GOARCH=arm64 go build ./...`, `node --test web/js/*.test.mjs`, conditional `flutter analyze --no-pub` + diff-scoped `dart format` only on non-whitespace `mobile/` diffs); update [docs/dev-workflow.md](../dev-workflow.md) to remove false `✅ CI` tags, add Linux `systemctl --user restart ackbard`, document `:7778` mobile N9 daemon isolation, enforce atomic `mv` binary install instead of `rm ackbar-hook`, and retain `app_version.dart` sync in [scripts/bump-version.sh](../../scripts/bump-version.sh).
 
-- [ ] **[P1] Automatic Session Archival on Work Board Task Completion**
+- [x] **[P1] Automatic Session Archival on Work Board Task Completion**
   * **Owner:** `Personal/Ackbar` (Work Board lifecycle)
   * **Evidence:** 165+ stale sessions degrading Web UI performance.
   * **Acceptance Criteria:** Automatically archive bound worker sessions when their associated Ackbar task transitions to `DONE`.

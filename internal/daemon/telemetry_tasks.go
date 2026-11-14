@@ -396,28 +396,12 @@ func (s *Server) unlockSequentialWorkstreams(task *Task, completedRepoPath strin
 	return changed || unlockedAny
 }
 
-// completeAndCloseTaskSession terminates Tmux sessions and updates metadata when task reaches N15
+// completeAndCloseTaskSession terminates worker sessions and updates metadata when task reaches N15
 func (s *Server) completeAndCloseTaskSession(task *Task, sess *Session) {
 	if task == nil {
 		return
 	}
-
-	if sess != nil {
-		_ = s.markSessionDoneAndCleanup(context.Background(), sess, "Completed (N15)")
-	} else {
-		for _, w := range task.Workers {
-			if w.SessionID != "" && w.IsActive {
-				if sSess, _ := s.db.GetSession(w.SessionID); sSess != nil && sSess.State != StateEnded {
-					_ = s.markSessionDoneAndCleanup(context.Background(), sSess, "Completed (N15)")
-				}
-			}
-		}
-	}
-
-	// Deactivate workers in task
-	for i := range task.Workers {
-		task.Workers[i].IsActive = false
-	}
+	s.completeTaskWorkerSessions(task, sess, "Completed (N15)")
 	_ = s.db.UpdateTask(task)
 }
 

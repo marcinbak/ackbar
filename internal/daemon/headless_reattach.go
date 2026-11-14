@@ -171,7 +171,21 @@ func (h *HeadlessRunner) finalizeTurnFromSpool(sess *Session, origSessionID stri
 			checkDrain()
 			return
 		}
-		if currentSess.Deleted || currentSess.IsDone {
+		if currentSess.Deleted {
+			removeTurnSpoolFiles(meta.MetaPath, meta)
+			checkDrain()
+			return
+		}
+		if currentSess.IsDone {
+			currentSess.State = StateEnded
+			currentSess.PID = 0
+			currentSess.Blocked = nil
+			currentSess.Activity = ""
+			currentSess.MetadataUpdatedAt = time.Now().UTC()
+			_ = h.db.SaveSession(currentSess)
+			if h.broadcast != nil {
+				h.broadcast(currentSess)
+			}
 			removeTurnSpoolFiles(meta.MetaPath, meta)
 			checkDrain()
 			return
@@ -232,16 +246,14 @@ func (h *HeadlessRunner) finalizeTurnFromSpool(sess *Session, origSessionID stri
 	} else if home != "" {
 		if cm := ReadClaudeSessionMeta(sess.Cwd, sess.NativeID); cm != nil {
 			sess.ContextPct = cm.ContextPct
-			if cm.CustomTitle != "" {
+			if cm.CustomTitle != "" && sess.CustomTitle == "" {
 				sess.CustomTitle = cm.CustomTitle
 			}
 		}
-		if sess.Name == "" || isRawSessionName(sess.Name) {
-			if sess.CustomTitle != "" {
-				sess.Name = sess.CustomTitle
-			} else {
-				sess.Name = TruncateTitle(prompt)
-			}
+		if sess.CustomTitle != "" {
+			sess.Name = sess.CustomTitle
+		} else if sess.Name == "" || isRawSessionName(sess.Name) {
+			sess.Name = TruncateTitle(prompt)
 		}
 	}
 

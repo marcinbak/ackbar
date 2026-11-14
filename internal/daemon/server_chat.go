@@ -1022,8 +1022,9 @@ func (s *Server) handleSessionTranscript(w http.ResponseWriter, r *http.Request)
 	nativeID := sessionID
 	cwd := ""
 	title := ""
-
+	effectiveSessionID := sessionID
 	if sess != nil {
+		effectiveSessionID = sess.ID
 		agent = sess.Agent
 		nativeID = sess.NativeID
 		cwd = sess.Cwd
@@ -1039,23 +1040,56 @@ func (s *Server) handleSessionTranscript(w http.ResponseWriter, r *http.Request)
 	var inFlightPayload map[string]interface{}
 	transcript, err := s.ExtractTranscript(agent, nativeID, cwd)
 	if err != nil {
-		transcript, inFlightPayload = s.mergeInFlightSpoolIntoTranscript(nil, sess, sessionID, nativeID, agent, cwd)
-		if transcript == nil {
-			http.Error(w, fmt.Sprintf("Failed to extract transcript: %v", err), http.StatusNotFound)
-			return
-		}
+		transcript, inFlightPayload = s.mergeInFlightSpoolIntoTranscript(nil, sess, effectiveSessionID, nativeID, agent, cwd)
 	} else {
-		transcript, inFlightPayload = s.mergeInFlightSpoolIntoTranscript(transcript, sess, sessionID, nativeID, agent, cwd)
+		transcript, inFlightPayload = s.mergeInFlightSpoolIntoTranscript(transcript, sess, effectiveSessionID, nativeID, agent, cwd)
 	}
+
+	transcriptSource := ""
+	if transcript == nil || len(transcript.Messages) == 0 {
+		if sess != nil && sess.TmuxName != "" && sess.TmuxName != "(deleted)" && s.isLocalHost(sess.Host) {
+			if captured, err := tmux.CapturePane(r.Context(), sess.TmuxName, 500); err == nil {
+				if trimmed := strings.TrimSpace(captured); trimmed != "" {
+					if transcript == nil {
+						transcript = &Transcript{
+							NativeID: nativeID,
+							Agent:    agent,
+							Cwd:      cwd,
+						}
+					}
+					transcript.Messages = []TranscriptMessage{
+						{
+							Role:      "assistant",
+							Content:   trimmed,
+							Timestamp: sess.LastEventAt,
+						},
+					}
+					transcriptSource = "tmux_capture"
+				}
+			}
+		}
+	}
+
+	if transcript == nil {
+		http.Error(w, fmt.Sprintf("Failed to extract transcript: %v", err), http.StatusNotFound)
+		return
+	}
+
 	if title != "" {
 		transcript.Title = title
 	} else if sess != nil {
 		transcript.Title = sess.Name
 	}
 
+	opts := ParseTranscriptPaginationOptions(r.URL.Query())
+	var pagination *TranscriptPagination
+	if opts.HasPagination {
+		transcript.Messages, pagination = PaginateTranscriptMessages(transcript.Messages, opts)
+	}
+
 	switch format {
 	case "ndjson", "x-ndjson":
-		runningSubs := s.getRunningSubagents(sessionID, nativeID, agent, cwd)
+		runningSubs := s.getRunningSubagents(effectiveSessionID, nativeID, agent, cwd)
 		w.Header().Set("Content-Type", "application/x-ndjson; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -1067,7 +1101,7 @@ func (s *Server) handleSessionTranscript(w http.ResponseWriter, r *http.Request)
 
 		meta := map[string]interface{}{
 			"type":              "meta",
-			"session_id":        sessionID,
+			"session_id":        effectiveSessionID,
 			"native_id":         nativeID,
 			"agent":             agent,
 			"title":             transcript.Title,
@@ -1075,6 +1109,12 @@ func (s *Server) handleSessionTranscript(w http.ResponseWriter, r *http.Request)
 			"total":             totalMsgs,
 			"running_subagents": runningSubs,
 			"subagents":         runningSubs,
+		}
+		if sess != nil && sess.OldID != "" {
+			meta["old_id"] = sess.OldID
+		}
+		if transcriptSource != "" {
+			meta["source"] = transcriptSource
 		}
 		if inFlightPayload != nil {
 			meta["in_flight_turn"] = inFlightPayload
@@ -1116,7 +1156,7 @@ func (s *Server) handleSessionTranscript(w http.ResponseWriter, r *http.Request)
 		w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
 		_, _ = w.Write([]byte(FormatTranscriptMarkdown(transcript)))
 	default:
-		runningSubs := s.getRunningSubagents(sessionID, nativeID, agent, cwd)
+		runningSubs := s.getRunningSubagents(effectiveSessionID, nativeID, agent, cwd)
 		includeFormats := strings.ToLower(r.URL.Query().Get("include_formats")) != "false"
 		var ansiStr, mdStr string
 		if includeFormats {
@@ -1124,7 +1164,7 @@ func (s *Server) handleSessionTranscript(w http.ResponseWriter, r *http.Request)
 			mdStr = FormatTranscriptMarkdown(transcript)
 		}
 		payload := map[string]interface{}{
-			"session_id":        sessionID,
+			"session_id":        effectiveSessionID,
 			"native_id":         nativeID,
 			"agent":             agent,
 			"title":             transcript.Title,
@@ -1134,6 +1174,16 @@ func (s *Server) handleSessionTranscript(w http.ResponseWriter, r *http.Request)
 			"subagents":         runningSubs,
 			"ansi":              ansiStr,
 			"markdown":          mdStr,
+		}
+		if sess != nil && sess.OldID != "" {
+			payload["old_id"] = sess.OldID
+		}
+		if transcriptSource != "" {
+			payload["source"] = transcriptSource
+		}
+		if opts.HasPagination && pagination != nil {
+			payload["truncated"] = pagination.Truncated
+			payload["pagination"] = pagination
 		}
 		if inFlightPayload != nil {
 			payload["in_flight_turn"] = inFlightPayload

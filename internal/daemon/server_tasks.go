@@ -323,6 +323,9 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 					t.CompletedAt = &now
 				}
 			}
+			if strings.EqualFold(t.Status, "DONE") {
+				s.completeTaskWorkerSessions(&t, nil, "Task created as DONE")
+			}
 			if err := s.db.CreateTask(&t); err != nil {
 				http.Error(w, "Failed to create task: "+err.Error(), http.StatusInternalServerError)
 				return
@@ -411,6 +414,9 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 					if existing.CompletedAt == nil {
 						now := time.Now().UTC()
 						existing.CompletedAt = &now
+					}
+					if !strings.EqualFold(oldStatus, "DONE") && normalizeWorkflowNode(req.WorkflowNode) != "N15" {
+						s.completeTaskWorkerSessions(existing, nil, "Task marked DONE")
 					}
 					for i := range existing.Workers {
 						existing.Workers[i].IsActive = false
@@ -551,9 +557,14 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 						ws.UpdatedAt = time.Now().UTC()
 					}
 				}
-				if existing.Status == "DONE" && existing.CompletedAt == nil {
-					now := time.Now().UTC()
-					existing.CompletedAt = &now
+				if existing.Status == "DONE" {
+					if existing.CompletedAt == nil {
+						now := time.Now().UTC()
+						existing.CompletedAt = &now
+					}
+					if !strings.EqualFold(oldStatus, "DONE") && canonicalNode != "N15" {
+						s.completeTaskWorkerSessions(existing, nil, "Task marked DONE")
+					}
 				}
 				if canonicalNode == "N14" || canonicalNode == "N15" {
 					s.unlockSequentialWorkstreams(existing, targetRepoPath)
