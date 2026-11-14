@@ -49,7 +49,7 @@ Task and tree persistence is managed in `ackbard.db` using CGO-free pure Go SQLi
 * **`task_workstreams`**: Per-repository workstream state (`task_id`, `repo_node_path`, `target_host`, `depends_on`, `workflow_node`, `status`, `branch`, `worktree_path`, `pr_url`) supporting both parallel and `N14`-merge-triggered sequential execution (e.g. `ngl-ios` `@macmini` $\rightarrow$ `ngl-android` `@legion`).
 * **`task_workers`**: Associates dedicated Tmux worker sessions to a task/workstream (`task_id`, `repo_node_path`, `workflow_node`, `session_id`, `host`, `assigned_at`).
 * **`task_external_refs`**: Links to external ticket systems (`task_id`, `tracker`, `ref_key`, `url`).
-* **`task_deliverables`**: Cloud-hosted deliverables (`task_id`, `kind`, `provider`, `title`, `url`, `content_md`) linking **Claude Published Artifacts** and **Google Workspace / Drive** (`gdrive`, `gdocs`, `gslides`, `gsheets`) plus synced `content_md` for cross-host agent handoff.
+* **`task_deliverables`**: Deliverables (`task_id`, `kind`, `provider`, `title`, `url`, `content_md`, `deleted_at`, `metadata_json`, `dedup_key`) linking Claude Artifacts, Google Drive, and local `.retro.md` + `run-state.json` with LWW peer sync.
 * **`task_events`**: Immutable audit log of lifecycle mutations (`task_id`, `event_type`, `payload`, `created_at`).
 
 ---
@@ -61,7 +61,9 @@ Task and tree persistence is managed in `ackbard.db` using CGO-free pure Go SQLi
 * **`POST /v1/tasks/event`**: Ingests structured task lifecycle events (`task_id`, `event_type`, `payload`).
 * **`POST /v1/tasks/propose`**: Records explicit agent-discovered work proposals (`propose_task`) with title deduplication into `NEW`.
 * **`GET /v1/tasks/deliverable?id=<id>`**: Lazily fetches full deliverable details including `content_md` on demand.
-* **`POST /v1/tasks/deliverable`**: Attaches design mockups, change briefs, retrospectives, or external artifacts.
+* **`POST /v1/tasks/deliverable`**: Attaches design mockups, change briefs, retrospectives, or external artifacts (supports `type` alias, auto-title, and confined local file auto-reading).
+* **`GET /v1/deliverables`**: Fetches deliverable metadata and rune-safe cursor-paginated `content_md` (`/v1/deliverables/{id}` or `?id=...`, `?task_id=...&kind=...`, `max_chars`, `char_offset`).
+* **`GET /v1/retros`**: Returns compact retrospective summaries and structured `RetroMetrics` without raw `content_md` (`since`, `until`, `node_path`, `repo`, `host`, `agent`, `task_id`, `limit`).
 * **`POST /v1/tasks/sync-workflow`**: Reconciles active worker session state (`SyncSessionTaskWorker`) for explicitly bound tasks.
 * **`POST /v1/tasks/merge-pr`**: Executes 1-click `gh pr merge --squash` directly from the dashboard.
 * **`GET /v1/standup`**: Generates instant, deterministic daily standups or retrospectives in Markdown or JSON.
@@ -95,6 +97,6 @@ Task and tree persistence is managed in `ackbard.db` using CGO-free pure Go SQLi
    * 1-click **"📋 Copy to Clipboard"** and **"🎙️ Audio Briefing"** playback.
 6. **Agent Tool & Skill Setup (`ackbar mcp`):**
    * Accessible from the global **`⚙️ Settings`** modal (`[⚙️ Agent Tool & Skill Setup]`).
-   * Native pure Go stdio/HTTP MCP server (`ackbar mcp`) providing explicit task lifecycle, blocker callouts, deliverables, and discovered work triage.
+   * Native pure Go stdio/HTTP MCP server (`ackbar mcp`) providing explicit task lifecycle, blocker callouts, deliverables (`attach_deliverable`, `get_deliverable`), retrospectives (`list_retros`), and discovered work triage.
 7. **Real-time SSE Sync:**
    * Daemon broadcasts trigger debounced task board reloads when the Work Board view is active.

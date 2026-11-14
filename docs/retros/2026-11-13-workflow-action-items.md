@@ -8,7 +8,7 @@ For empirical metrics and diagnostic conclusions, see [2026-11-13-cross-host-ret
 
 ## 1. Ackbar Platform, LWW Retro Sync & Fleet Supervision (`Personal/Ackbar`)
 
-- [ ] **[P0] Auto-ingest Retrospectives into Ackbar Deliverables & LWW Replication**
+- [x] **[P0] Auto-ingest Retrospectives into Ackbar Deliverables & LWW Replication**
   * **Owner:** `Personal/Ackbar` (`N15` / LWW mesh)
   * **Evidence:** 59 of 181 missing retrospectives, 9 of 26 tasks with deliverables, 27 unindexed Atria retrospectives.
   * **Acceptance Criteria:** Auto-ingest N15 `.retro.md` (`content_md` populated) and structured run metrics into Ackbar deliverables; replicate deliverables across the LWW peer mesh (`legion` <-> `macmini` <-> `macbook`); expose `list_retros` and `get_deliverable` MCP tools.
