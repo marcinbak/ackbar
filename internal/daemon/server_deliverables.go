@@ -40,6 +40,15 @@ func parseFilterTime(val string, isUntil bool) (time.Time, error) {
 	return time.Time{}, errors.New("must be RFC3339 or YYYY-MM-DD")
 }
 
+func isReadableTextDeliverable(kind, filePath string) bool {
+	if isRetroKind(kind) || kind == "plan" || kind == "prd" || kind == "learnings" || kind == "doc" {
+		return true
+	}
+	lower := strings.ToLower(filePath)
+	return strings.HasSuffix(lower, ".md") || strings.HasSuffix(lower, ".markdown") ||
+		strings.HasSuffix(lower, ".txt") || strings.HasSuffix(lower, ".json")
+}
+
 func (s *Server) handleTaskDeliverable(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
 		delID := strings.TrimSpace(r.URL.Query().Get("id"))
@@ -67,15 +76,19 @@ func (s *Server) handleTaskDeliverable(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		if strings.TrimSpace(del.ContentMD) == "" && del.FilePath != "" {
-			content, err := s.confineAndReadDeliverableFile(nil, del.FilePath)
-			if err == nil && content != "" {
-				del.ContentMD = content
-				if isRetroKind(del.Kind) {
-					task, _ := s.db.GetTaskByID(del.TaskID)
-					s.extractRetroMetrics(task, del)
+		if strings.TrimSpace(del.ContentMD) == "" && del.FilePath != "" && isReadableTextDeliverable(del.Kind, del.FilePath) {
+			if del.Host == "" || s.isLocalHost(del.Host) {
+				task, _ := s.db.GetTaskByID(del.TaskID)
+				content, err := s.confineAndReadDeliverableFile(task, del.FilePath)
+				if err == nil && content != "" {
+					del.ContentMD = content
+					if isRetroKind(del.Kind) {
+						s.extractRetroMetrics(task, del)
+					}
+					if changed, err := s.db.UpsertTaskDeliverableLWW(del, false); err == nil && changed {
+						s.pushSyncPayload(&SyncStatePayload{Deliverables: []TaskDeliverable{*del}})
+					}
 				}
-				_, _ = s.db.UpsertTaskDeliverableLWW(del, false)
 			}
 		}
 
@@ -135,12 +148,18 @@ func (s *Server) handleTaskDeliverable(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if filePath != "" {
-		clean := filepath.Clean(filePath)
-		if strings.Contains(clean, "..") {
-			http.Error(w, "path traversal detected in file_path", http.StatusBadRequest)
+		filePath = strings.TrimPrefix(filePath, "file://")
+		for _, seg := range strings.Split(filepath.ToSlash(filePath), "/") {
+			if seg == ".." {
+				http.Error(w, "path traversal detected in file_path", http.StatusBadRequest)
+				return
+			}
+		}
+		filePath = filepath.Clean(filePath)
+		if isSensitivePath(filePath, s.effectiveHomeDir()) || isSystemDirectory(filePath) {
+			http.Error(w, "deliverable file path is not confined to allowed roots", http.StatusForbidden)
 			return
 		}
-		filePath = clean
 	}
 
 	if urlStr != "" {
@@ -180,21 +199,23 @@ func (s *Server) handleTaskDeliverable(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if contentMD == "" && filePath != "" {
-		readContent, readErr := s.confineAndReadDeliverableFile(task, filePath)
-		if errors.Is(readErr, ErrPathNotConfined) {
-			http.Error(w, "deliverable file path is not confined to allowed roots", http.StatusForbidden)
-			return
-		}
-		if errors.Is(readErr, ErrDeliverableTooLarge) {
-			http.Error(w, "deliverable file exceeds 2MB limit", http.StatusRequestEntityTooLarge)
-			return
-		}
-		if readErr == nil {
-			contentMD = readContent
-		} else if !os.IsNotExist(readErr) {
-			http.Error(w, "Failed to read deliverable file: "+readErr.Error(), http.StatusBadRequest)
-			return
+	if contentMD == "" && filePath != "" && isReadableTextDeliverable(kind, filePath) {
+		if p.Host == "" || s.isLocalHost(p.Host) {
+			readContent, readErr := s.confineAndReadDeliverableFile(task, filePath)
+			if errors.Is(readErr, ErrPathNotConfined) {
+				http.Error(w, "deliverable file path is not confined to allowed roots", http.StatusForbidden)
+				return
+			}
+			if errors.Is(readErr, ErrDeliverableTooLarge) {
+				http.Error(w, "deliverable file exceeds 2MB limit", http.StatusRequestEntityTooLarge)
+				return
+			}
+			if readErr == nil {
+				contentMD = readContent
+			} else if !os.IsNotExist(readErr) {
+				http.Error(w, "Failed to read deliverable file: "+readErr.Error(), http.StatusBadRequest)
+				return
+			}
 		}
 	}
 
@@ -299,8 +320,8 @@ func (s *Server) handleDeliverables(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id := strings.TrimSpace(strings.TrimPrefix(r.URL.Path, "/v1/deliverables/"))
-	if id == "" || id == "/v1/deliverables" {
+	id := strings.Trim(strings.TrimSpace(strings.TrimPrefix(r.URL.Path, "/v1/deliverables/")), "/")
+	if id == "" || id == "v1/deliverables" {
 		id = strings.TrimSpace(r.URL.Query().Get("id"))
 		if id == "" {
 			id = strings.TrimSpace(r.URL.Query().Get("deliverable_id"))
@@ -328,15 +349,19 @@ func (s *Server) handleDeliverables(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if strings.TrimSpace(del.ContentMD) == "" && del.FilePath != "" {
-		content, err := s.confineAndReadDeliverableFile(nil, del.FilePath)
-		if err == nil && content != "" {
-			del.ContentMD = content
-			if isRetroKind(del.Kind) {
-				task, _ := s.db.GetTaskByID(del.TaskID)
-				s.extractRetroMetrics(task, del)
+	if strings.TrimSpace(del.ContentMD) == "" && del.FilePath != "" && isReadableTextDeliverable(del.Kind, del.FilePath) {
+		if del.Host == "" || s.isLocalHost(del.Host) {
+			task, _ := s.db.GetTaskByID(del.TaskID)
+			content, err := s.confineAndReadDeliverableFile(task, del.FilePath)
+			if err == nil && content != "" {
+				del.ContentMD = content
+				if isRetroKind(del.Kind) {
+					s.extractRetroMetrics(task, del)
+				}
+				if changed, err := s.db.UpsertTaskDeliverableLWW(del, false); err == nil && changed {
+					s.pushSyncPayload(&SyncStatePayload{Deliverables: []TaskDeliverable{*del}})
+				}
 			}
-			_, _ = s.db.UpsertTaskDeliverableLWW(del, false)
 		}
 	}
 

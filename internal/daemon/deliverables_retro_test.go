@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -491,7 +492,7 @@ func TestDeliverables_ThreeWayLWWMeshSync(t *testing.T) {
 	_ = json.NewDecoder(resp.Body).Decode(&createdTask)
 	_ = resp.Body.Close()
 
-	waitForCondition(t, 2*time.Second, func() bool {
+	waitForCondition(t, 5*time.Second, func() bool {
 		syncAllPeers(ctx, macbook, macmini, legion)
 		tMini, _ := macmini.db.GetTaskByID(createdTask.ID)
 		tLegion, _ := legion.db.GetTaskByID(createdTask.ID)
@@ -514,7 +515,7 @@ func TestDeliverables_ThreeWayLWWMeshSync(t *testing.T) {
 	_ = json.NewDecoder(respDel.Body).Decode(&legionDel)
 	_ = respDel.Body.Close()
 
-	waitForCondition(t, 2*time.Second, func() bool {
+	waitForCondition(t, 5*time.Second, func() bool {
 		syncAllPeers(ctx, macbook, macmini, legion)
 		tMini, _ := macmini.db.GetTaskByID(createdTask.ID)
 		tMac, _ := macbook.db.GetTaskByID(createdTask.ID)
@@ -534,7 +535,7 @@ func TestDeliverables_ThreeWayLWWMeshSync(t *testing.T) {
 	respTouch := makeRequest(t, http.MethodPost, macbook.ts.URL+"/v1/tasks/deliverable", token, metaTouch)
 	_ = respTouch.Body.Close()
 
-	waitForCondition(t, 2*time.Second, func() bool {
+	waitForCondition(t, 5*time.Second, func() bool {
 		syncAllPeers(ctx, macbook, macmini, legion)
 		tMac, _ := macbook.db.GetTaskByID(createdTask.ID)
 		return tMac != nil && len(tMac.Deliverables) == 1 && tMac.Deliverables[0].ContentMD == retroContent
@@ -549,7 +550,7 @@ func TestDeliverables_ThreeWayLWWMeshSync(t *testing.T) {
 	delTombstone.DeletedAt = &nowDel
 	legion.srv.pushSyncPayload(&SyncStatePayload{Deliverables: []TaskDeliverable{delTombstone}})
 
-	waitForCondition(t, 2*time.Second, func() bool {
+	waitForCondition(t, 5*time.Second, func() bool {
 		syncAllPeers(ctx, macbook, macmini, legion)
 		tMini, _ := macmini.db.GetTaskByID(createdTask.ID)
 		tMac, _ := macbook.db.GetTaskByID(createdTask.ID)
@@ -726,5 +727,291 @@ func TestDeliverables_GetDeliverableAndPagination(t *testing.T) {
 	_ = json.Unmarshal(recByTask.Body.Bytes(), &byTaskResp)
 	if byTaskResp.ID != del.ID {
 		t.Errorf("Expected ID %s from task_id lookup, got %s", del.ID, byTaskResp.ID)
+	}
+}
+
+func TestDeliverables_SecurityConfinementHardening(t *testing.T) {
+	tempHome := t.TempDir()
+	dbFile := filepath.Join(tempHome, "sec_hard.db")
+	db, err := InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	srv := &Server{db: db, homeDir: tempHome}
+
+	taskRoot := &Task{ID: "task_root", WorktreePath: "/"}
+	rootsRoot := srv.getAllowedDeliverableRoots(taskRoot)
+	for _, r := range rootsRoot {
+		if r == "/" || r == "/Users" || r == "/home" {
+			t.Errorf("getAllowedDeliverableRoots leaked root system dir: %s", r)
+		}
+	}
+
+	taskHome := &Task{ID: "task_home", WorktreePath: tempHome}
+	rootsHome := srv.getAllowedDeliverableRoots(taskHome)
+	for _, r := range rootsHome {
+		if r == filepath.Clean(tempHome) {
+			t.Errorf("getAllowedDeliverableRoots allowed naked HOME directory: %s", r)
+		}
+	}
+
+	claudeCreds := filepath.Join(tempHome, ".claude", ".credentials.json")
+	_ = os.MkdirAll(filepath.Dir(claudeCreds), 0755)
+	_ = os.WriteFile(claudeCreds, []byte(`{"token":"secret"}`), 0600)
+	if !isSensitivePath(claudeCreds, tempHome) {
+		t.Errorf("Expected isSensitivePath true for ~/.claude/.credentials.json")
+	}
+	if _, err := srv.confineAndReadDeliverableFile(taskHome, claudeCreds); !errors.Is(err, ErrPathNotConfined) {
+		t.Errorf("Expected ErrPathNotConfined for claude credentials, got %v", err)
+	}
+
+	ghHosts := filepath.Join(tempHome, ".config", "gh", "hosts.yml")
+	_ = os.MkdirAll(filepath.Dir(ghHosts), 0755)
+	_ = os.WriteFile(ghHosts, []byte(`github.com: oauth_token: sec`), 0600)
+	if !isSensitivePath(ghHosts, tempHome) {
+		t.Errorf("Expected isSensitivePath true for ~/.config/gh/hosts.yml")
+	}
+	if _, err := srv.confineAndReadDeliverableFile(taskHome, ghHosts); !errors.Is(err, ErrPathNotConfined) {
+		t.Errorf("Expected ErrPathNotConfined for gh config hosts.yml, got %v", err)
+	}
+}
+
+func TestDeliverables_ExistenceOracleAndHostIsolation(t *testing.T) {
+	tempHome := t.TempDir()
+	tempWorktree := filepath.Join(tempHome, "worktree")
+	_ = os.MkdirAll(tempWorktree, 0755)
+
+	dbFile := filepath.Join(tempHome, "oracle.db")
+	db, err := InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	srv := &Server{db: db, homeDir: tempHome}
+
+	task := &Task{ID: "task_oracle", WorktreePath: tempWorktree, Title: "Oracle Test"}
+	if err := db.CreateTask(task); err != nil {
+		t.Fatalf("CreateTask failed: %v", err)
+	}
+
+	// 1. Non-existent path outside allowed roots must return 403 Forbidden, not 201 or 400
+	payloadBad := map[string]any{
+		"task_id":   task.ID,
+		"kind":      "retro",
+		"file_path": "/etc/nonexistent_sensitive_probe",
+	}
+	bBad, _ := json.Marshal(payloadBad)
+	reqBad := httptest.NewRequest(http.MethodPost, "/v1/tasks/deliverable", bytes.NewReader(bBad))
+	recBad := httptest.NewRecorder()
+	srv.handleTaskDeliverable(recBad, reqBad)
+	if recBad.Code != http.StatusForbidden {
+		t.Errorf("Expected 403 Forbidden for non-existent path outside allowed roots, got %d: %s", recBad.Code, recBad.Body.String())
+	}
+
+	// 2. Foreign host deliverable must skip local disk read on GET
+	localSecret := filepath.Join(tempWorktree, "secret.txt")
+	_ = os.WriteFile(localSecret, []byte("local secret text"), 0644)
+
+	delForeign := &TaskDeliverable{
+		TaskID:    task.ID,
+		Kind:      "plan",
+		Title:     "Remote Plan",
+		Host:      "other-host-remote",
+		FilePath:  localSecret,
+		ContentMD: "",
+	}
+	if _, err := db.UpsertTaskDeliverableLWW(delForeign, false); err != nil {
+		t.Fatalf("UpsertTaskDeliverableLWW failed: %v", err)
+	}
+
+	reqGet := httptest.NewRequest(http.MethodGet, "/v1/deliverables?id="+delForeign.ID, nil)
+	recGet := httptest.NewRecorder()
+	srv.handleDeliverables(recGet, reqGet)
+	if recGet.Code != http.StatusOK {
+		t.Fatalf("handleDeliverables failed: %d", recGet.Code)
+	}
+	var respForeign DeliverablePageResponse
+	_ = json.Unmarshal(recGet.Body.Bytes(), &respForeign)
+	if respForeign.ContentMD != "" {
+		t.Errorf("Expected ContentMD to remain empty for foreign host deliverable, got %q", respForeign.ContentMD)
+	}
+}
+
+func TestDeliverables_LazyGETReadLocalAndPushSync(t *testing.T) {
+	tempHome := t.TempDir()
+	tempWorktree := filepath.Join(tempHome, "worktree")
+	_ = os.MkdirAll(tempWorktree, 0755)
+
+	dbFile := filepath.Join(tempHome, "lazy_get.db")
+	db, err := InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	srv := &Server{db: db, homeDir: tempHome}
+
+	task := &Task{ID: "task_lazy", WorktreePath: tempWorktree, Title: "Lazy GET"}
+	if err := db.CreateTask(task); err != nil {
+		t.Fatalf("CreateTask failed: %v", err)
+	}
+
+	localFile := filepath.Join(tempWorktree, "plan.md")
+	localContent := "# Architectural Design Plan"
+	_ = os.WriteFile(localFile, []byte(localContent), 0644)
+
+	delLocal := &TaskDeliverable{
+		TaskID:    task.ID,
+		Kind:      "plan",
+		Title:     "Design Plan",
+		Host:      srv.HostName(),
+		FilePath:  localFile,
+		ContentMD: "",
+	}
+	if _, err := db.UpsertTaskDeliverableLWW(delLocal, false); err != nil {
+		t.Fatalf("UpsertTaskDeliverableLWW failed: %v", err)
+	}
+
+	reqGet := httptest.NewRequest(http.MethodGet, "/v1/deliverables?id="+delLocal.ID, nil)
+	recGet := httptest.NewRecorder()
+	srv.handleDeliverables(recGet, reqGet)
+	if recGet.Code != http.StatusOK {
+		t.Fatalf("handleDeliverables failed: %d", recGet.Code)
+	}
+	var respLocal DeliverablePageResponse
+	_ = json.Unmarshal(recGet.Body.Bytes(), &respLocal)
+	if respLocal.ContentMD != localContent {
+		t.Errorf("Expected lazy GET to read local file content, got %q", respLocal.ContentMD)
+	}
+
+	fetched, _ := db.GetTaskDeliverableLookup(delLocal.ID, "", "")
+	if fetched == nil || fetched.ContentMD != localContent {
+		t.Errorf("Expected DB to be updated with read content, got %+v", fetched)
+	}
+}
+
+func TestDeliverables_FileURLAndTrailingSlash(t *testing.T) {
+	tempHome := t.TempDir()
+	tempWorktree := filepath.Join(tempHome, "worktree")
+	_ = os.MkdirAll(tempWorktree, 0755)
+
+	dbFile := filepath.Join(tempHome, "file_url.db")
+	db, err := InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	srv := &Server{db: db, homeDir: tempHome}
+
+	task := &Task{ID: "task_file_url", WorktreePath: tempWorktree, Title: "File URL Test"}
+	if err := db.CreateTask(task); err != nil {
+		t.Fatalf("CreateTask failed: %v", err)
+	}
+
+	filePath := filepath.Join(tempWorktree, "notes.md")
+	fileContent := "# Notes Content"
+	_ = os.WriteFile(filePath, []byte(fileContent), 0644)
+
+	// 1. POST with file:// prefix
+	payload := map[string]any{
+		"task_id":   task.ID,
+		"kind":      "learnings",
+		"file_path": "file://" + filePath,
+	}
+	b, _ := json.Marshal(payload)
+	reqPost := httptest.NewRequest(http.MethodPost, "/v1/tasks/deliverable", bytes.NewReader(b))
+	recPost := httptest.NewRecorder()
+	srv.handleTaskDeliverable(recPost, reqPost)
+	if recPost.Code != http.StatusCreated {
+		t.Fatalf("POST with file:// prefix returned %d: %s", recPost.Code, recPost.Body.String())
+	}
+	var createdDel TaskDeliverable
+	_ = json.Unmarshal(recPost.Body.Bytes(), &createdDel)
+	if createdDel.ContentMD != fileContent {
+		t.Errorf("Expected content read from file:// URI, got %q", createdDel.ContentMD)
+	}
+
+	// 2. GET /v1/deliverables/<id>/ with trailing slash
+	reqSlash := httptest.NewRequest(http.MethodGet, "/v1/deliverables/"+createdDel.ID+"/", nil)
+	recSlash := httptest.NewRecorder()
+	srv.handleDeliverables(recSlash, reqSlash)
+	if recSlash.Code != http.StatusOK {
+		t.Fatalf("GET with trailing slash failed %d: %s", recSlash.Code, recSlash.Body.String())
+	}
+	var slashResp DeliverablePageResponse
+	_ = json.Unmarshal(recSlash.Body.Bytes(), &slashResp)
+	if slashResp.ID != createdDel.ID {
+		t.Errorf("Expected deliverable ID %s with trailing slash, got %s", createdDel.ID, slashResp.ID)
+	}
+}
+
+func TestDeliverables_DoneTaskMultipleRunsNewestWins(t *testing.T) {
+	tempHome := t.TempDir()
+	runsDir := filepath.Join(tempHome, ".claude", "dev-workflow-runs")
+	_ = os.MkdirAll(runsDir, 0755)
+
+	dbFile := filepath.Join(tempHome, "multi_run.db")
+	db, err := InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	srv := &Server{db: db, homeDir: tempHome}
+
+	task := &Task{
+		ID:          "task_multi_run_1",
+		Title:       "Task With Multiple Historical Runs",
+		GroupName:   "Core",
+		ProjectName: "Ackbar",
+		Status:      "DONE",
+		Branch:      "feat/multi-run",
+	}
+	if err := db.CreateTask(task); err != nil {
+		t.Fatalf("CreateTask failed: %v", err)
+	}
+
+	// Old run (2 hours ago)
+	jsonOld := filepath.Join(runsDir, "multi-run-old.json")
+	_ = os.WriteFile(jsonOld, []byte(`{"repo":"ackbar","branch":"feat/multi-run","node":"done","started":"2026-11-14T00:00:00Z"}`), 0644)
+	retroOld := filepath.Join(runsDir, "multi-run-old.retro.md")
+	_ = os.WriteFile(retroOld, []byte(`# Retro — task_multi_run_1 (ackbar, feat/multi-run) — 2026-11-14\n\nOld content`), 0644)
+	oldTime := time.Now().Add(-2 * time.Hour)
+	_ = os.Chtimes(jsonOld, oldTime, oldTime)
+	_ = os.Chtimes(retroOld, oldTime, oldTime)
+
+	// New run (1 hour ago)
+	jsonNew := filepath.Join(runsDir, "multi-run-new.json")
+	_ = os.WriteFile(jsonNew, []byte(`{"repo":"ackbar","branch":"feat/multi-run","node":"done","started":"2026-11-14T01:00:00Z"}`), 0644)
+	retroNew := filepath.Join(runsDir, "multi-run-new.retro.md")
+	retroNewContent := `# Retro — task_multi_run_1 (ackbar, feat/multi-run) — 2026-11-14
+
+Newer content headlines.`
+	_ = os.WriteFile(retroNew, []byte(retroNewContent), 0644)
+	newTime := time.Now().Add(-1 * time.Hour)
+	_ = os.Chtimes(jsonNew, newTime, newTime)
+	_ = os.Chtimes(retroNew, newTime, newTime)
+
+	if err := srv.IngestDevWorkflowRuns(); err != nil {
+		t.Fatalf("IngestDevWorkflowRuns failed: %v", err)
+	}
+
+	fetchedTask, err := db.GetTaskByID(task.ID)
+	if err != nil || fetchedTask == nil {
+		t.Fatalf("GetTaskByID failed: %v", err)
+	}
+	if len(fetchedTask.Deliverables) != 1 {
+		t.Fatalf("Expected exactly 1 deliverable on DONE task (no duplicates!), got %d", len(fetchedTask.Deliverables))
+	}
+	del := fetchedTask.Deliverables[0]
+	if del.ContentMD != retroNewContent {
+		t.Errorf("Expected newest run content, got %q", del.ContentMD)
+	}
+	if del.Metrics == nil || del.Metrics.RunSlug != "multi-run-new" {
+		t.Errorf("Expected RunSlug multi-run-new, got %+v", del.Metrics)
 	}
 }

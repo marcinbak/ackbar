@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -206,33 +207,38 @@ func (s *Server) IngestDevWorkflowRuns() error {
 		}
 	}
 
-	if len(activeTasks) > 0 {
-		for _, entry := range entries {
-			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
-				continue
-			}
+	type entryWithTime struct {
+		entry   os.DirEntry
+		modTime time.Time
+	}
+	var sortedEntries []entryWithTime
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		var modTime time.Time
+		if info, infoErr := entry.Info(); infoErr == nil && info != nil {
+			modTime = info.ModTime()
+		}
+		sortedEntries = append(sortedEntries, entryWithTime{entry: entry, modTime: modTime})
+	}
+	sort.Slice(sortedEntries, func(i, j int) bool {
+		return sortedEntries[i].modTime.After(sortedEntries[j].modTime)
+	})
 
-			filePath := filepath.Join(runsDir, entry.Name())
-			var modTime time.Time
-			if info, infoErr := entry.Info(); infoErr == nil && info != nil {
-				modTime = info.ModTime()
-			}
-			if err := s.ingestSingleWorkflowRun(filePath, modTime, activeTasks); err != nil {
-				log.Printf("[DevWorkflowWatcher] Error ingesting %s: %v", entry.Name(), err)
+	if len(activeTasks) > 0 {
+		for _, item := range sortedEntries {
+			filePath := filepath.Join(runsDir, item.entry.Name())
+			if err := s.ingestSingleWorkflowRun(filePath, item.modTime, activeTasks); err != nil {
+				log.Printf("[DevWorkflowWatcher] Error ingesting %s: %v", item.entry.Name(), err)
 			}
 		}
 	}
 
 	if len(doneTasks) > 0 {
-		for _, entry := range entries {
-			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
-				continue
-			}
-			jsonPath := filepath.Join(runsDir, entry.Name())
-			var modTime time.Time
-			if info, infoErr := entry.Info(); infoErr == nil && info != nil {
-				modTime = info.ModTime()
-			}
+		backfilledTaskIDs := make(map[string]bool)
+		for _, item := range sortedEntries {
+			jsonPath := filepath.Join(runsDir, item.entry.Name())
 			data, err := readWorkflowFileBounded(jsonPath, 512*1024)
 			if err != nil {
 				continue
@@ -241,8 +247,8 @@ func (s *Server) IngestDevWorkflowRuns() error {
 			if err := json.Unmarshal(data, &run); err != nil {
 				continue
 			}
-			matchedTask := s.matchWorkflowRunToTask(&run, modTime, doneTasks)
-			if matchedTask == nil {
+			matchedTask := s.matchWorkflowRunToTask(&run, item.modTime, doneTasks)
+			if matchedTask == nil || backfilledTaskIDs[matchedTask.ID] {
 				continue
 			}
 			retroPath := strings.TrimSuffix(jsonPath, ".json") + ".retro.md"
@@ -263,6 +269,7 @@ func (s *Server) IngestDevWorkflowRuns() error {
 			if err == nil && changed {
 				s.pushSyncPayload(&SyncStatePayload{Deliverables: []TaskDeliverable{del}})
 			}
+			backfilledTaskIDs[matchedTask.ID] = true
 		}
 	}
 

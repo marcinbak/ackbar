@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -51,19 +52,40 @@ func isSystemDirectory(p string) bool {
 func isSensitivePath(p, home string) bool {
 	clean := filepath.Clean(p)
 	if home != "" {
-		confDir := filepath.Join(home, ".config", "ackbar")
+		cleanHome := filepath.Clean(home)
+		confDir := filepath.Join(cleanHome, ".config")
 		if clean == confDir || strings.HasPrefix(clean, confDir+string(filepath.Separator)) {
 			return true
+		}
+		codexDir := filepath.Join(cleanHome, ".codex")
+		if clean == codexDir || strings.HasPrefix(clean, codexDir+string(filepath.Separator)) {
+			return true
+		}
+		claudeDir := filepath.Join(cleanHome, ".claude")
+		if clean == claudeDir || strings.HasPrefix(clean, claudeDir+string(filepath.Separator)) {
+			runsDir := filepath.Join(claudeDir, "dev-workflow-runs")
+			if clean != runsDir && !strings.HasPrefix(clean, runsDir+string(filepath.Separator)) {
+				return true
+			}
 		}
 	}
 	parts := strings.Split(filepath.ToSlash(clean), "/")
 	for _, part := range parts {
 		lower := strings.ToLower(part)
+		if lower == ".claude" {
+			slashClean := filepath.ToSlash(clean)
+			if !strings.Contains(slashClean, "/.claude/dev-workflow-runs/") && !strings.HasSuffix(slashClean, "/.claude/dev-workflow-runs") {
+				return true
+			}
+		}
 		if lower == ".ssh" || lower == ".gnupg" || lower == ".aws" || lower == ".kube" || lower == ".docker" ||
 			lower == ".netrc" || lower == ".npmrc" || lower == ".pypirc" ||
 			lower == "ackbard.db" || lower == "ackbard.db-wal" || lower == "ackbard.db-shm" ||
 			lower == ".env" || strings.HasPrefix(lower, ".env.") ||
-			lower == "credentials.json" || lower == "id_rsa" || lower == "id_ed25519" ||
+			lower == "credentials.json" || lower == ".credentials.json" ||
+			lower == "auth.json" || lower == "token.json" || lower == "hosts.yml" ||
+			lower == ".git-credentials" || lower == "mcp_config.json" ||
+			lower == "id_rsa" || lower == "id_ed25519" ||
 			strings.HasSuffix(lower, ".pem") || strings.HasSuffix(lower, ".key") {
 			return true
 		}
@@ -97,7 +119,6 @@ func (s *Server) getAllowedDeliverableRoots(task *Task) []string {
 			filepath.Join(home, ".claude", "dev-workflow-runs"),
 			filepath.Join(home, ".gemini", "antigravity-cli", "brain"),
 			filepath.Join(home, ".gemini", "antigravity", "brain"),
-			filepath.Join(home, ".gemini", "config"),
 		)
 	}
 	if task != nil {
@@ -128,7 +149,11 @@ func (s *Server) getAllowedDeliverableRoots(task *Task) []string {
 				}
 			}
 		}
-		if hostPaths, err := s.db.ListNodeHostPaths(""); err == nil {
+		hostName := ""
+		if s != nil {
+			hostName = s.HostName()
+		}
+		if hostPaths, err := s.db.ListNodeHostPaths(hostName); err == nil {
 			for _, hp := range hostPaths {
 				if hp.ProjectDir != "" {
 					roots = append(roots, hp.ProjectDir)
@@ -137,14 +162,75 @@ func (s *Server) getAllowedDeliverableRoots(task *Task) []string {
 		}
 	}
 
-	var canonical []string
-	for _, r := range roots {
-		if clean := filepath.Clean(r); clean != "" && clean != "." {
-			if realRoot, err := filepath.EvalSymlinks(clean); err == nil {
-				canonical = append(canonical, realRoot)
-			} else {
-				canonical = append(canonical, clean)
+	cleanHome := ""
+	realHome := ""
+	if home != "" {
+		cleanHome = filepath.Clean(home)
+		if rh, err := filepath.EvalSymlinks(cleanHome); err == nil {
+			realHome = rh
+		}
+	}
+
+	isDeniedPath := func(p string) bool {
+		clean := filepath.Clean(p)
+		if clean == "" || clean == "." {
+			return true
+		}
+		for _, sys := range []string{"/", "/Users", "/home", "/tmp", "/private/tmp", "/var", "/private/var", "/etc", "/proc", "/sys", "/dev", "/root"} {
+			if clean == sys {
+				return true
 			}
+		}
+		if cleanHome != "" && clean == cleanHome {
+			return true
+		}
+		if realHome != "" && clean == realHome {
+			return true
+		}
+		parts := strings.Split(strings.Trim(filepath.ToSlash(clean), "/"), "/")
+		if len(parts) < 2 {
+			return true
+		}
+		if cleanHome != "" {
+			supDir := filepath.Join(cleanHome, ".ackbar", "supervisor")
+			if clean == supDir || strings.HasPrefix(clean, supDir+string(filepath.Separator)) {
+				return true
+			}
+		}
+		if realHome != "" {
+			supDir := filepath.Join(realHome, ".ackbar", "supervisor")
+			if clean == supDir || strings.HasPrefix(clean, supDir+string(filepath.Separator)) {
+				return true
+			}
+		}
+		slashClean := filepath.ToSlash(clean)
+		if cleanHome != "" && (strings.HasPrefix(slashClean, "/Users/") || strings.HasPrefix(slashClean, "/home/")) {
+			if clean != cleanHome && !strings.HasPrefix(clean, cleanHome+string(filepath.Separator)) {
+				if realHome == "" || (clean != realHome && !strings.HasPrefix(clean, realHome+string(filepath.Separator))) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+
+	var canonical []string
+	seen := make(map[string]bool)
+	for _, r := range roots {
+		clean := filepath.Clean(r)
+		if isDeniedPath(clean) {
+			continue
+		}
+		realRoot, err := filepath.EvalSymlinks(clean)
+		if err != nil {
+			realRoot = clean
+		}
+		if isDeniedPath(realRoot) {
+			continue
+		}
+		if !seen[realRoot] {
+			seen[realRoot] = true
+			canonical = append(canonical, realRoot)
 		}
 	}
 	return canonical
@@ -164,19 +250,11 @@ func (s *Server) confineAndReadDeliverableFile(task *Task, rawPath string) (stri
 	}
 
 	targetPath := clean
-	if _, err := os.Lstat(targetPath); os.IsNotExist(err) {
-		if strings.HasPrefix(clean, "/Users/") {
+	if _, err := os.Lstat(targetPath); os.IsNotExist(err) && home != "" {
+		if strings.HasPrefix(clean, "/Users/") || strings.HasPrefix(clean, "/home/") {
 			parts := strings.Split(clean, "/")
 			if len(parts) >= 3 {
-				alt := filepath.Join("/home", parts[2], filepath.Join(parts[3:]...))
-				if _, altErr := os.Lstat(alt); altErr == nil {
-					targetPath = alt
-				}
-			}
-		} else if strings.HasPrefix(clean, "/home/") {
-			parts := strings.Split(clean, "/")
-			if len(parts) >= 3 {
-				alt := filepath.Join("/Users", parts[2], filepath.Join(parts[3:]...))
+				alt := filepath.Join(home, filepath.Join(parts[3:]...))
 				if _, altErr := os.Lstat(alt); altErr == nil {
 					targetPath = alt
 				}
@@ -212,6 +290,47 @@ func (s *Server) confineAndReadDeliverableFile(task *Task, rawPath string) (stri
 
 	if _, err := os.Lstat(targetPath); err != nil {
 		if os.IsNotExist(err) {
+			curr := filepath.Dir(targetPath)
+			for {
+				if curr == "" || curr == "." || curr == "/" {
+					break
+				}
+				if _, statErr := os.Lstat(curr); statErr == nil {
+					break
+				}
+				parent := filepath.Dir(curr)
+				if parent == curr {
+					break
+				}
+				curr = parent
+			}
+
+			inAllowed := isWithinAllowedRoots(targetPath, allowedRoots)
+			if !inAllowed && curr != "" && curr != "." && curr != "/" {
+				if isSensitivePath(curr, home) || isSystemDirectory(curr) {
+					return "", ErrPathNotConfined
+				}
+				if realAncestor, realErr := filepath.EvalSymlinks(curr); realErr == nil {
+					if isSensitivePath(realAncestor, home) || isSystemDirectory(realAncestor) {
+						return "", ErrPathNotConfined
+					}
+					if rel, relErr := filepath.Rel(curr, targetPath); relErr == nil {
+						resolvedPath := filepath.Join(realAncestor, rel)
+						if isWithinAllowedRoots(resolvedPath, allowedRoots) {
+							inAllowed = true
+						}
+					}
+				}
+			}
+
+			if !inAllowed {
+				isRemoteSyncSuffix := strings.Contains(rawPath, "dev-workflow-runs") ||
+					strings.Contains(rawPath, ".worktrees") ||
+					strings.Contains(rawPath, "/brain/") || strings.HasSuffix(rawPath, "/brain")
+				if !isRemoteSyncSuffix {
+					return "", ErrPathNotConfined
+				}
+			}
 			return "", os.ErrNotExist
 		}
 		return "", err
@@ -226,11 +345,47 @@ func (s *Server) confineAndReadDeliverableFile(task *Task, rawPath string) (stri
 		return "", ErrPathNotConfined
 	}
 
-	if !isWithinAllowedRoots(realPath, allowedRoots) {
+	var matchedRoot string
+	for _, root := range allowedRoots {
+		if root == "" {
+			continue
+		}
+		cleanRoot := filepath.Clean(root)
+		if realPath == cleanRoot {
+			matchedRoot = cleanRoot
+			break
+		}
+		rel, err := filepath.Rel(cleanRoot, realPath)
+		if err == nil && !strings.HasPrefix(rel, "..") && !strings.HasPrefix(rel, "/") && !strings.HasPrefix(rel, "\\") {
+			matchedRoot = cleanRoot
+			break
+		}
+	}
+	if matchedRoot == "" {
 		return "", ErrPathNotConfined
 	}
 
-	fi, err := os.Stat(realPath)
+	root, err := os.OpenRoot(matchedRoot)
+	if err != nil {
+		return "", ErrPathNotConfined
+	}
+	defer root.Close()
+
+	rel, err := filepath.Rel(matchedRoot, realPath)
+	if err != nil || rel == "." || rel == "" || strings.HasPrefix(rel, "..") {
+		return "", ErrPathNotConfined
+	}
+
+	f, err := root.Open(rel)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", os.ErrNotExist
+		}
+		return "", ErrPathNotConfined
+	}
+	defer f.Close()
+
+	fi, err := f.Stat()
 	if err != nil {
 		return "", err
 	}
@@ -240,12 +395,6 @@ func (s *Server) confineAndReadDeliverableFile(task *Task, rawPath string) (stri
 	if fi.Size() > maxDeliverableFileBytes {
 		return "", ErrDeliverableTooLarge
 	}
-
-	f, err := os.Open(realPath)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
 
 	buf, err := io.ReadAll(io.LimitReader(f, maxDeliverableFileBytes+1))
 	if err != nil {
@@ -450,7 +599,11 @@ func (s *Server) extractRetroMetrics(task *Task, del *TaskDeliverable) *RetroMet
 			metrics.Branch = run.Branch
 		}
 		if run.ImplementerAgent != nil {
-			metrics.Agent = fmt.Sprint(run.ImplementerAgent)
+			agStr := fmt.Sprint(run.ImplementerAgent)
+			isUUID := len(agStr) == 36 && strings.Count(agStr, "-") == 4
+			if agStr != "" && !isUUID {
+				metrics.Agent = agStr
+			}
 		}
 		if run.Tier != "" {
 			metrics.Tier = run.Tier
@@ -545,6 +698,9 @@ func (s *Server) extractRetroMetrics(task *Task, del *TaskDeliverable) *RetroMet
 					break
 				}
 			}
+			if metrics.Agent == "" && del.Provider != "" && del.Provider != "local" {
+				metrics.Agent = del.Provider
+			}
 		}
 		if metrics.Outcome == "" {
 			if strings.EqualFold(task.Status, "DONE") {
@@ -589,15 +745,29 @@ func (s *Server) autoIngestTaskRetro(task *Task) {
 		return
 	}
 
+	type entryWithTime struct {
+		entry   os.DirEntry
+		modTime time.Time
+	}
+	var jsonEntries []entryWithTime
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
 		}
-		jsonPath := filepath.Join(runsDir, entry.Name())
 		var modTime time.Time
 		if info, infoErr := entry.Info(); infoErr == nil && info != nil {
 			modTime = info.ModTime()
 		}
+		jsonEntries = append(jsonEntries, entryWithTime{entry: entry, modTime: modTime})
+	}
+	sort.Slice(jsonEntries, func(i, j int) bool {
+		return jsonEntries[i].modTime.After(jsonEntries[j].modTime)
+	})
+
+	for _, item := range jsonEntries {
+		entry := item.entry
+		modTime := item.modTime
+		jsonPath := filepath.Join(runsDir, entry.Name())
 		data, err := readWorkflowFileBounded(jsonPath, 512*1024)
 		if err != nil {
 			continue

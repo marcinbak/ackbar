@@ -256,7 +256,7 @@ func upsertTaskDeliverableTx(tx *sql.Tx, td *TaskDeliverable, isPeerSync bool) (
 		sameKind := (isRetroKind(td.Kind) && isRetroKind(existing.Kind)) || strings.EqualFold(td.Kind, existing.Kind)
 		sameTitle := td.Title == "" || td.Title == existing.Title
 		sameContent := (td.ContentMD != "" && td.ContentMD == existing.ContentMD) || (td.ContentMD == "" && existing.ContentMD != "") || (td.ContentMD == "" && existing.ContentMD == "")
-		sameURL := td.URL == existing.URL
+		sameURL := td.URL == existing.URL || (td.URL == "" && existing.URL != "")
 		sameFP := td.FilePath == existing.FilePath || (td.FilePath == "" && existing.FilePath != "")
 		sameProv := td.Provider == "" || td.Provider == existing.Provider
 		sameHost := td.Host == "" || td.Host == existing.Host
@@ -427,6 +427,12 @@ type RetroFilter struct {
 type RetroSummary struct {
 	ID           string        `json:"id"`
 	TaskID       string        `json:"task_id"`
+	TaskTitle    string        `json:"task_title,omitempty"`
+	NodePath     string        `json:"node_path,omitempty"`
+	Repo         string        `json:"repo,omitempty"`
+	Agent        string        `json:"agent,omitempty"`
+	Branch       string        `json:"branch,omitempty"`
+	Outcome      string        `json:"outcome,omitempty"`
 	Kind         string        `json:"kind"`
 	Title        string        `json:"title"`
 	Host         string        `json:"host"`
@@ -615,9 +621,69 @@ func (d *DB) ListRetros(filter RetroFilter) ([]RetroSummary, error) {
 			}
 		}
 
+		taskTitle := ""
+		if task != nil && task.Title != "" {
+			taskTitle = task.Title
+		} else {
+			taskTitle = del.Title
+		}
+
+		nodePath := ""
+		if metrics != nil && metrics.NodePath != "" {
+			nodePath = metrics.NodePath
+		} else if task != nil {
+			nodePath = TaskNodePath(task)
+		}
+
+		repo := ""
+		if metrics != nil && metrics.Repo != "" {
+			repo = metrics.Repo
+		} else if task != nil {
+			repo = task.ProjectName
+		}
+
+		agent := ""
+		if metrics != nil && metrics.Agent != "" {
+			agent = metrics.Agent
+		} else if task != nil {
+			for _, w := range task.Workers {
+				if w.Agent != "" {
+					agent = w.Agent
+					break
+				}
+			}
+		}
+		if agent == "" && del.Provider != "" && del.Provider != "local" {
+			agent = del.Provider
+		}
+
+		branch := ""
+		if metrics != nil && metrics.Branch != "" {
+			branch = metrics.Branch
+		} else if task != nil {
+			branch = task.Branch
+		}
+
+		outcome := ""
+		if metrics != nil && metrics.Outcome != "" {
+			outcome = metrics.Outcome
+		} else if task != nil {
+			if strings.EqualFold(task.Status, "DONE") {
+				outcome = "completed"
+			} else {
+				outcome = strings.ToLower(task.Status)
+			}
+		}
+
 		s := RetroSummary{
 			ID:           del.ID,
 			TaskID:       del.TaskID,
+			TaskTitle:    taskTitle,
+			NodePath:     nodePath,
+			Repo:         repo,
+			Agent:        agent,
+			Branch:       branch,
+			Outcome:      outcome,
 			Kind:         del.Kind,
 			Title:        del.Title,
 			Host:         del.Host,
