@@ -62,6 +62,8 @@ Each agent has its own dedicated title resolver function and metadata extractor 
    * Strips XML wrapper tags (`<USER_REQUEST>`, `<system_instructions>`) and truncates multi-line prompts cleanly.
 4. **Tier 4: Fallback ID**
    * `Antigravity (<conversationId[:8]>)`
+5. **Headless ID Re-keying:**
+   * Resolves initial transient session UUIDs (`old_id`) to persistent conversation IDs via [`GetSessionByOldID`](file:///Users/dev4u/Work/Ackbar/internal/daemon/db.go).
 
 ---
 
@@ -88,9 +90,11 @@ type TitleCacheEntry struct {
 ```
 
 ### Cache Upgrades & Invalidation Rules:
+* **CustomTitle Persistence Lock:** Setting an explicit `CustomTitle` locks `session.Name` permanently against provider metadata rewrites, tmux title changes, and metadata refreshes.
+* **Raw Title Rejection:** Background scans reject raw `<uuid>(` OSC window titles and unparsed process slugs (`isRawSessionName`), preserving existing human-readable titles.
 * **No Downgrades:** A cache entry with `Source == "custom"` will never be overwritten by lower-priority AI titles or prompt snippets.
-* **Dynamic Upgrades:** If a session was previously cached as `Source == "ai"` or `"prompt"`, and a subsequent scan discovers a user custom name (e.g. user renamed the session or metadata was written), the cache is upgraded immediately to `"custom"`.
-* **Instant Rename Invalidation:** Triggering the `rename` control action updates both the SQLite persistence layer and the in-memory `titleCache` instantly without requiring a daemon restart.
+* **Dynamic Upgrades:** Discovered user custom names immediately upgrade existing `"ai"` or `"prompt"` cached titles to `"custom"`.
+* **Instant Rename Invalidation:** Triggering the `rename` control action updates SQLite persistence and in-memory `titleCache` instantly without restarting the daemon.
 
 ---
 
