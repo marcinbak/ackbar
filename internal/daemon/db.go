@@ -201,6 +201,9 @@ CREATE TABLE IF NOT EXISTS task_deliverables (
 	content_md TEXT,
 	created_at TIMESTAMP NOT NULL,
 	updated_at TIMESTAMP NOT NULL,
+	deleted_at TIMESTAMP,
+	metadata_json TEXT DEFAULT '{}',
+	dedup_key TEXT DEFAULT '',
 	FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
 );
 
@@ -318,6 +321,12 @@ func InitDB(dbPath string) (*DB, error) {
 	_, _ = db.Exec("ALTER TABLE task_deliverables ADD COLUMN updated_at TIMESTAMP;")
 	_, _ = db.Exec("ALTER TABLE task_deliverables ADD COLUMN provider TEXT;")
 	_, _ = db.Exec("ALTER TABLE task_deliverables ADD COLUMN content_md TEXT;")
+	_, _ = db.Exec("ALTER TABLE task_deliverables ADD COLUMN deleted_at TIMESTAMP;")
+	_, _ = db.Exec("ALTER TABLE task_deliverables ADD COLUMN metadata_json TEXT DEFAULT '{}';")
+	_, _ = db.Exec("ALTER TABLE task_deliverables ADD COLUMN dedup_key TEXT DEFAULT '';")
+	_, _ = db.Exec("CREATE INDEX IF NOT EXISTS idx_task_deliverables_updated_at ON task_deliverables(updated_at);")
+	_, _ = db.Exec("CREATE INDEX IF NOT EXISTS idx_task_deliverables_kind_updated ON task_deliverables(kind, updated_at DESC);")
+	_, _ = db.Exec("CREATE INDEX IF NOT EXISTS idx_task_deliverables_task_dedup ON task_deliverables(task_id, dedup_key);")
 	_, _ = db.Exec(`CREATE TABLE IF NOT EXISTS node_host_paths (
 		node_path TEXT NOT NULL,
 		host TEXT NOT NULL,
@@ -2228,18 +2237,24 @@ type TaskWorkstream struct {
 }
 
 type TaskDeliverable struct {
-	ID           string    `json:"id"`
-	TaskID       string    `json:"task_id"`
-	Kind         string    `json:"kind"`
-	Title        string    `json:"title"`
-	Host         string    `json:"host"`
-	FilePath     string    `json:"file_path,omitempty"`
-	URL          string    `json:"url,omitempty"`
-	Provider     string    `json:"provider,omitempty"`
-	ContentMD    string    `json:"content_md,omitempty"`
-	HasContentMD bool      `json:"has_content_md,omitempty"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at,omitempty"`
+	ID           string        `json:"id"`
+	TaskID       string        `json:"task_id"`
+	Kind         string        `json:"kind"`
+	Title        string        `json:"title"`
+	Host         string        `json:"host"`
+	FilePath     string        `json:"file_path,omitempty"`
+	URL          string        `json:"url,omitempty"`
+	Provider     string        `json:"provider,omitempty"`
+	ContentMD    string        `json:"content_md,omitempty"`
+	HasContentMD bool          `json:"has_content_md,omitempty"`
+	ContentBytes int           `json:"content_bytes,omitempty"`
+	ContentChars int           `json:"content_chars,omitempty"`
+	DedupKey     string        `json:"dedup_key,omitempty"`
+	MetadataJSON string        `json:"metadata_json,omitempty"`
+	Metrics      *RetroMetrics `json:"metrics,omitempty"`
+	CreatedAt    time.Time     `json:"created_at"`
+	UpdatedAt    time.Time     `json:"updated_at,omitempty"`
+	DeletedAt    *time.Time    `json:"deleted_at,omitempty"`
 }
 
 func (d *DB) GetTasks() ([]Task, error) {
@@ -2704,16 +2719,16 @@ func (d *DB) getDeliverablesForTasks(taskIDs []string) (map[string][]TaskDeliver
 			placeholders[i] = "?"
 			args[i] = id
 		}
-		query := fmt.Sprintf(`SELECT id, task_id, kind, title, host, file_path, url, provider, content_md, created_at, updated_at FROM task_deliverables WHERE task_id IN (%s)`, strings.Join(placeholders, ","))
+		query := fmt.Sprintf(`SELECT id, task_id, kind, title, host, file_path, url, provider, content_md, dedup_key, metadata_json, created_at, updated_at FROM task_deliverables WHERE task_id IN (%s) AND deleted_at IS NULL`, strings.Join(placeholders, ","))
 		rows, err := d.db.Query(query, args...)
 		if err != nil {
 			return nil, err
 		}
 		for rows.Next() {
 			var del TaskDeliverable
-			var fp, u, prov, cMD sql.NullString
+			var fp, u, prov, cMD, dedup, meta sql.NullString
 			var updAt sql.NullTime
-			if err := rows.Scan(&del.ID, &del.TaskID, &del.Kind, &del.Title, &del.Host, &fp, &u, &prov, &cMD, &del.CreatedAt, &updAt); err != nil {
+			if err := rows.Scan(&del.ID, &del.TaskID, &del.Kind, &del.Title, &del.Host, &fp, &u, &prov, &cMD, &dedup, &meta, &del.CreatedAt, &updAt); err != nil {
 				rows.Close()
 				return nil, err
 			}
@@ -2721,8 +2736,19 @@ func (d *DB) getDeliverablesForTasks(taskIDs []string) (map[string][]TaskDeliver
 			del.URL = u.String
 			del.Provider = prov.String
 			del.ContentMD = cMD.String
+			del.DedupKey = dedup.String
+			del.MetadataJSON = meta.String
 			if updAt.Valid {
 				del.UpdatedAt = updAt.Time
+			}
+			del.HasContentMD = strings.TrimSpace(del.ContentMD) != ""
+			del.ContentBytes = len(del.ContentMD)
+			del.ContentChars = len([]rune(del.ContentMD))
+			if del.MetadataJSON != "" && del.MetadataJSON != "{}" {
+				var m RetroMetrics
+				if err := json.Unmarshal([]byte(del.MetadataJSON), &m); err == nil {
+					del.Metrics = &m
+				}
 			}
 			res[del.TaskID] = append(res[del.TaskID], del)
 		}
@@ -2799,10 +2825,7 @@ func (d *DB) CreateTask(t *Task) error {
 	for i := range t.Deliverables {
 		del := &t.Deliverables[i]
 		del.TaskID = t.ID
-		if del.ID == "" {
-			del.ID = fmt.Sprintf("del_%d_%d", time.Now().UnixNano(), i)
-		}
-		if err := insertTaskDeliverableTx(tx, del); err != nil {
+		if _, err := upsertTaskDeliverableTx(tx, del, false); err != nil {
 			return err
 		}
 	}
@@ -2895,42 +2918,11 @@ func (d *DB) UpdateTask(t *Task) error {
 		}
 	}
 
-	// Only update Deliverables if explicitly provided (non-nil)
 	if t.Deliverables != nil {
-		// Preserve existing content_md if incoming deliverable has empty ContentMD
-		existingMDByID := make(map[string]string)
-		existingMDByTitleKind := make(map[string]string)
-		rows, err := tx.Query(`SELECT id, title, kind, content_md FROM task_deliverables WHERE task_id = ?`, t.ID)
-		if err == nil {
-			for rows.Next() {
-				var eID, eTitle, eKind string
-				var eMD sql.NullString
-				if err := rows.Scan(&eID, &eTitle, &eKind, &eMD); err == nil && eMD.Valid {
-					existingMDByID[eID] = eMD.String
-					existingMDByTitleKind[eTitle+"::"+eKind] = eMD.String
-				}
-			}
-			rows.Close()
-		}
-
-		_, err = tx.Exec(`DELETE FROM task_deliverables WHERE task_id = ?`, t.ID)
-		if err != nil {
-			return err
-		}
 		for i := range t.Deliverables {
 			del := &t.Deliverables[i]
 			del.TaskID = t.ID
-			if del.ID == "" {
-				del.ID = fmt.Sprintf("del_%d_%d", time.Now().UnixNano(), i)
-			}
-			if strings.TrimSpace(del.ContentMD) == "" {
-				if md, ok := existingMDByID[del.ID]; ok && md != "" {
-					del.ContentMD = md
-				} else if md, ok := existingMDByTitleKind[del.Title+"::"+del.Kind]; ok && md != "" {
-					del.ContentMD = md
-				}
-			}
-			if err := insertTaskDeliverableTx(tx, del); err != nil {
+			if _, err := upsertTaskDeliverableTx(tx, del, false); err != nil {
 				return err
 			}
 		}
@@ -3028,10 +3020,7 @@ func (d *DB) upsertTaskSync(t *Task) error {
 		for i := range t.Deliverables {
 			del := &t.Deliverables[i]
 			del.TaskID = t.ID
-			if del.ID == "" {
-				del.ID = fmt.Sprintf("del_%d_%d", time.Now().UnixNano(), i)
-			}
-			if err := insertTaskDeliverableTx(tx, del); err != nil {
+			if _, err := upsertTaskDeliverableTx(tx, del, true); err != nil {
 				return err
 			}
 		}
@@ -3061,7 +3050,7 @@ func (d *DB) DeleteTask(taskID string) error {
 	_, _ = d.db.Exec(`DELETE FROM task_workers WHERE task_id = ?;`, taskID)
 	_, _ = d.db.Exec(`DELETE FROM task_workstreams WHERE task_id = ?;`, taskID)
 	_, _ = d.db.Exec(`DELETE FROM task_external_refs WHERE task_id = ?;`, taskID)
-	_, _ = d.db.Exec(`DELETE FROM task_deliverables WHERE task_id = ?;`, taskID)
+	_, _ = d.db.Exec(`UPDATE task_deliverables SET deleted_at = ?, updated_at = ?, content_md = '' WHERE task_id = ? AND deleted_at IS NULL;`, now, now, taskID)
 	_, _ = d.db.Exec(`UPDATE sessions SET current_task_id = '', metadata_updated_at = ? WHERE current_task_id = ?;`, now, taskID)
 	return nil
 }
@@ -3103,59 +3092,6 @@ func insertTaskExternalRefTx(tx *sql.Tx, r *TaskExternalRef) error {
 	return err
 }
 
-func insertTaskDeliverableTx(tx *sql.Tx, td *TaskDeliverable) error {
-	if td.ID == "" {
-		td.ID = fmt.Sprintf("del_%d", time.Now().UnixNano())
-	}
-	if td.CreatedAt.IsZero() {
-		td.CreatedAt = time.Now().UTC()
-	}
-	if td.UpdatedAt.IsZero() {
-		td.UpdatedAt = time.Now().UTC()
-	}
-
-	// Deduplicate deliverable for same task and file path or url or (kind, title)
-	if td.FilePath != "" {
-		var existingID string
-		err := tx.QueryRow(`SELECT id FROM task_deliverables WHERE task_id = ? AND file_path = ?`, td.TaskID, td.FilePath).Scan(&existingID)
-		if err == nil && existingID != "" {
-			td.ID = existingID
-			_, err = tx.Exec(`UPDATE task_deliverables SET kind = ?, title = ?, host = ?, provider = ?, content_md = ?, updated_at = ? WHERE id = ?`, td.Kind, td.Title, td.Host, td.Provider, td.ContentMD, td.UpdatedAt, existingID)
-			return err
-		}
-	} else if td.URL != "" {
-		var existingID string
-		err := tx.QueryRow(`SELECT id FROM task_deliverables WHERE task_id = ? AND url = ?`, td.TaskID, td.URL).Scan(&existingID)
-		if err == nil && existingID != "" {
-			td.ID = existingID
-			_, err = tx.Exec(`UPDATE task_deliverables SET kind = ?, title = ?, host = ?, provider = ?, content_md = ?, updated_at = ? WHERE id = ?`, td.Kind, td.Title, td.Host, td.Provider, td.ContentMD, td.UpdatedAt, existingID)
-			return err
-		}
-	} else {
-		var existingID string
-		err := tx.QueryRow(`SELECT id FROM task_deliverables WHERE task_id = ? AND kind = ? AND title = ?`, td.TaskID, td.Kind, td.Title).Scan(&existingID)
-		if err == nil && existingID != "" {
-			td.ID = existingID
-			_, err = tx.Exec(`UPDATE task_deliverables SET host = ?, provider = ?, content_md = ?, updated_at = ? WHERE id = ?`, td.Host, td.Provider, td.ContentMD, td.UpdatedAt, existingID)
-			return err
-		}
-	}
-
-	query := `INSERT INTO task_deliverables (id, task_id, kind, title, host, file_path, url, provider, content_md, created_at, updated_at)
-			  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-			  ON CONFLICT(id) DO UPDATE SET
-			  	kind = excluded.kind,
-			  	title = excluded.title,
-			  	host = excluded.host,
-			  	file_path = excluded.file_path,
-			  	url = excluded.url,
-			  	provider = excluded.provider,
-			  	content_md = excluded.content_md,
-			  	updated_at = excluded.updated_at;`
-	_, err := tx.Exec(query, td.ID, td.TaskID, td.Kind, td.Title, td.Host, td.FilePath, td.URL, td.Provider, td.ContentMD, td.CreatedAt, td.UpdatedAt)
-	return err
-}
-
 func (d *DB) InsertTaskWorker(w *TaskWorker) error {
 	tx, err := d.db.Begin()
 	if err != nil {
@@ -3186,50 +3122,12 @@ func (d *DB) InsertTaskExternalRef(r *TaskExternalRef) error {
 }
 
 func (d *DB) InsertTaskDeliverable(td *TaskDeliverable) error {
-	tx, err := d.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if err := insertTaskDeliverableTx(tx, td); err != nil {
-		return err
-	}
-	return tx.Commit()
+	_, err := d.UpsertTaskDeliverableLWW(td, false)
+	return err
 }
 
 func (d *DB) GetTaskDeliverableByID(id string) (*TaskDeliverable, error) {
-	if id == "" {
-		return nil, nil
-	}
-	query := `SELECT id, task_id, kind, title, host, file_path, url, provider, content_md, created_at, updated_at
-			  FROM task_deliverables WHERE id = ?;`
-	row := d.db.QueryRow(query, id)
-	var del TaskDeliverable
-	var filePath, urlVal, provider, contentMD sql.NullString
-	var updAt sql.NullTime
-	if err := row.Scan(&del.ID, &del.TaskID, &del.Kind, &del.Title, &del.Host, &filePath, &urlVal, &provider, &contentMD, &del.CreatedAt, &updAt); err != nil {
-		if err == sql.ErrNoRows {
-			return nil, nil
-		}
-		return nil, err
-	}
-	if filePath.Valid {
-		del.FilePath = filePath.String
-	}
-	if urlVal.Valid {
-		del.URL = urlVal.String
-	}
-	if provider.Valid {
-		del.Provider = provider.String
-	}
-	if contentMD.Valid {
-		del.ContentMD = contentMD.String
-		del.HasContentMD = strings.TrimSpace(del.ContentMD) != ""
-	}
-	if updAt.Valid {
-		del.UpdatedAt = updAt.Time
-	}
-	return &del, nil
+	return d.GetTaskDeliverableLookup(id, "", "")
 }
 
 // PruneAllLegacyTasksOnce executes a one-time soft-delete migration for legacy ambient tasks.
@@ -3698,27 +3596,33 @@ func (d *DB) GetSyncStateSince(since time.Time, sourceHost string) (*SyncStatePa
 	}
 
 	// 4. TaskDeliverables
-	delRows, err := d.db.Query("SELECT id, task_id, kind, title, host, file_path, url, provider, content_md, created_at, updated_at FROM task_deliverables;")
+	delRows, err := d.db.Query("SELECT id, task_id, kind, title, host, file_path, url, provider, content_md, dedup_key, metadata_json, created_at, updated_at, deleted_at FROM task_deliverables;")
 	if err == nil {
 		for delRows.Next() {
 			var del TaskDeliverable
-			var fp, u, prov, cMD sql.NullString
-			var updAt sql.NullTime
-			if err := delRows.Scan(&del.ID, &del.TaskID, &del.Kind, &del.Title, &del.Host, &fp, &u, &prov, &cMD, &del.CreatedAt, &updAt); err == nil {
-				if fp.Valid {
-					del.FilePath = fp.String
-				}
-				if u.Valid {
-					del.URL = u.String
-				}
-				if prov.Valid {
-					del.Provider = prov.String
-				}
-				if cMD.Valid {
-					del.ContentMD = cMD.String
-				}
+			var fp, u, prov, cMD, dedup, meta sql.NullString
+			var updAt, delAt sql.NullTime
+			if err := delRows.Scan(&del.ID, &del.TaskID, &del.Kind, &del.Title, &del.Host, &fp, &u, &prov, &cMD, &dedup, &meta, &del.CreatedAt, &updAt, &delAt); err == nil {
+				del.FilePath = fp.String
+				del.URL = u.String
+				del.Provider = prov.String
+				del.ContentMD = cMD.String
+				del.DedupKey = dedup.String
+				del.MetadataJSON = meta.String
 				if updAt.Valid {
 					del.UpdatedAt = updAt.Time
+				}
+				if delAt.Valid {
+					del.DeletedAt = &delAt.Time
+				}
+				del.HasContentMD = strings.TrimSpace(del.ContentMD) != ""
+				del.ContentBytes = len(del.ContentMD)
+				del.ContentChars = len([]rune(del.ContentMD))
+				if del.MetadataJSON != "" && del.MetadataJSON != "{}" {
+					var m RetroMetrics
+					if err := json.Unmarshal([]byte(del.MetadataJSON), &m); err == nil {
+						del.Metrics = &m
+					}
 				}
 				if since.IsZero() || del.UpdatedAt.After(since) {
 					payload.Deliverables = append(payload.Deliverables, del)
@@ -3812,7 +3716,7 @@ func (d *DB) ApplySyncState(payload *SyncStatePayload) ([]*Session, error) {
 			_, _ = d.db.Exec(`DELETE FROM task_workers WHERE task_id = ?;`, incoming.ID)
 			_, _ = d.db.Exec(`DELETE FROM task_workstreams WHERE task_id = ?;`, incoming.ID)
 			_, _ = d.db.Exec(`DELETE FROM task_external_refs WHERE task_id = ?;`, incoming.ID)
-			_, _ = d.db.Exec(`DELETE FROM task_deliverables WHERE task_id = ?;`, incoming.ID)
+			_, _ = d.db.Exec(`UPDATE task_deliverables SET deleted_at = ?, updated_at = ?, content_md = '' WHERE task_id = ? AND deleted_at IS NULL;`, incoming.DeletedAt, incoming.UpdatedAt, incoming.ID)
 		} else {
 			_ = d.upsertTaskSync(&incoming)
 		}
@@ -3834,16 +3738,14 @@ func (d *DB) ApplySyncState(payload *SyncStatePayload) ([]*Session, error) {
 
 	// 5. Reconcile Deliverables via LWW
 	for _, incoming := range payload.Deliverables {
-		var existingUpdAt sql.NullTime
-		err := d.db.QueryRow("SELECT updated_at FROM task_deliverables WHERE id = ?;", incoming.ID).Scan(&existingUpdAt)
-		if err == nil && existingUpdAt.Valid && !incoming.UpdatedAt.After(existingUpdAt.Time) {
-			continue
-		}
-		// Check parent task exists
 		var taskCount int
 		_ = d.db.QueryRow("SELECT COUNT(*) FROM tasks WHERE id = ?;", incoming.TaskID).Scan(&taskCount)
 		if taskCount > 0 {
-			_ = d.InsertTaskDeliverable(&incoming)
+			tx, err := d.db.Begin()
+			if err == nil {
+				_, _ = upsertTaskDeliverableTx(tx, &incoming, true)
+				_ = tx.Commit()
+			}
 		}
 	}
 

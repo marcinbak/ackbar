@@ -632,6 +632,9 @@ func (s *Server) SyncSessionTaskWorker(sess *Session) {
 
 	if taskNeedsUpdate {
 		if err := s.db.UpdateTask(task); err == nil {
+			if strings.EqualFold(task.Status, "DONE") || workflowNode == "N14" || workflowNode == "N15" {
+				s.autoIngestTaskRetro(task)
+			}
 			s.pushSyncPayload(&SyncStatePayload{
 				Tasks:       []Task{*task},
 				Workstreams: task.Workstreams,

@@ -8,7 +8,6 @@ import (
 	"log"
 	"net/http"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -54,6 +53,7 @@ func (s *Server) reconcileOpenPRTasks(ctx context.Context, tasks []Task) {
 				t.CompletedAt = &now
 				s.completeAndCloseTaskSession(t, nil)
 				_ = s.db.UpdateTask(t)
+				s.autoIngestTaskRetro(t)
 				s.pushSyncPayload(&SyncStatePayload{Tasks: []Task{*t}, Workstreams: t.Workstreams})
 			} else if state == "CLOSED" {
 				t.PRState = "CLOSED"
@@ -351,6 +351,9 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 			if canonicalReqNode == "N15" {
 				s.completeAndCloseTaskSession(&t, nil)
 			}
+			if strings.EqualFold(t.Status, "DONE") || canonicalReqNode == "N14" || canonicalReqNode == "N15" {
+				s.autoIngestTaskRetro(&t)
+			}
 			s.pushSyncPayload(&SyncStatePayload{Tasks: []Task{t}, Workstreams: t.Workstreams})
 			w.WriteHeader(http.StatusCreated)
 		} else {
@@ -580,6 +583,9 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 			}
 			s.maybeNotifyTaskReview(oldStatus, existing)
 			s.maybeNotifyTaskBlocked(oldSubstatus, oldQuestion, existing)
+			if strings.EqualFold(existing.Status, "DONE") || normalizeWorkflowNode(req.WorkflowNode) == "N14" || normalizeWorkflowNode(req.WorkflowNode) == "N15" {
+				s.autoIngestTaskRetro(existing)
+			}
 			s.pushSyncPayload(&SyncStatePayload{Tasks: []Task{*existing}, Workstreams: existing.Workstreams})
 			w.WriteHeader(http.StatusOK)
 			t = *existing
@@ -814,172 +820,13 @@ func (s *Server) handleTaskPropose(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(task)
 }
 
-type TaskDeliverablePayload struct {
-	TaskID    string `json:"task_id"`
-	Kind      string `json:"kind"` // mockup | plan | retrospective | doc
-	Title     string `json:"title"`
-	Host      string `json:"host"`
-	FilePath  string `json:"file_path"`
-	URL       string `json:"url"`
-	Provider  string `json:"provider,omitempty"`
-	ContentMD string `json:"content_md,omitempty"`
-}
-
-func (s *Server) handleTaskDeliverable(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodGet {
-		delID := strings.TrimSpace(r.URL.Query().Get("id"))
-		if delID == "" {
-			http.Error(w, "deliverable id is required", http.StatusBadRequest)
-			return
-		}
-		del, err := s.db.GetTaskDeliverableByID(delID)
-		if err != nil {
-			http.Error(w, "Failed to get deliverable: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-		if del == nil {
-			http.Error(w, "Deliverable not found", http.StatusNotFound)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(del)
-		return
-	}
-
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	r.Body = http.MaxBytesReader(w, r.Body, 1048576) // 1MB limit
-	var p TaskDeliverablePayload
-	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
-		http.Error(w, "Invalid JSON: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	if p.TaskID == "" {
-		http.Error(w, "task_id is required", http.StatusBadRequest)
-		return
-	}
-	title := strings.TrimSpace(p.Title)
-	if title == "" {
-		http.Error(w, "title is required", http.StatusBadRequest)
-		return
-	}
-
-	filePath := strings.TrimSpace(p.FilePath)
-	urlStr := strings.TrimSpace(p.URL)
-	contentMD := strings.TrimSpace(p.ContentMD)
-
-	if filePath == "" && urlStr == "" && contentMD == "" {
-		http.Error(w, "either file_path, url, or content_md is required", http.StatusBadRequest)
-		return
-	}
-
-	if filePath != "" {
-		clean := filepath.Clean(filePath)
-		if strings.Contains(clean, "..") {
-			http.Error(w, "path traversal detected in file_path", http.StatusBadRequest)
-			return
-		}
-		filePath = clean
-	}
-
-	if urlStr != "" {
-		lowerURL := strings.ToLower(urlStr)
-		if !strings.HasPrefix(lowerURL, "http://") && !strings.HasPrefix(lowerURL, "https://") {
-			http.Error(w, "url must begin with http:// or https://", http.StatusBadRequest)
-			return
-		}
-	}
-
-	kind := strings.ToLower(strings.TrimSpace(p.Kind))
-	if kind == "" {
-		kind = "doc"
-	}
-	validKinds := map[string]bool{
-		"prd":           true,
-		"html_ui":       true,
-		"slides":        true,
-		"plan":          true,
-		"learnings":     true,
-		"pr":            true,
-		"retro":         true,
-		"retrospective": true,
-		"video":         true,
-		"screenshot":    true,
-		"mockup":        true,
-		"doc":           true,
-		"other":         true,
-	}
-	if !validKinds[kind] {
-		http.Error(w, "invalid kind: must be one of prd, html_ui, slides, plan, learnings, pr, retro, retrospective, video, screenshot, mockup, doc, other", http.StatusBadRequest)
-		return
-	}
-
-	provider := strings.TrimSpace(p.Provider)
-	if provider == "" {
-		if strings.Contains(urlStr, "docs.google.com/document") {
-			provider = "gdocs"
-		} else if strings.Contains(urlStr, "docs.google.com/presentation") {
-			provider = "gslides"
-		} else if strings.Contains(urlStr, "docs.google.com/spreadsheets") {
-			provider = "gsheets"
-		} else if strings.Contains(urlStr, "drive.google.com") {
-			provider = "gdrive"
-		} else if strings.Contains(urlStr, "claude.ai") || strings.Contains(urlStr, "claude.site") {
-			provider = "claude_artifact"
-		} else if strings.Contains(urlStr, "github.com") {
-			provider = "github"
-		} else if filePath != "" {
-			provider = "local"
-		}
-	}
-
-	task, err := s.db.GetTaskByID(p.TaskID)
-	if err != nil {
-		http.Error(w, "Database error: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if task == nil {
-		http.Error(w, "Task not found", http.StatusNotFound)
-		return
-	}
-
-	hostName := p.Host
-	if hostName == "" {
-		hostName = s.HostName()
-	}
-
-	del := &TaskDeliverable{
-		TaskID:    p.TaskID,
-		Kind:      kind,
-		Title:     title,
-		Host:      hostName,
-		FilePath:  filePath,
-		URL:       urlStr,
-		Provider:  provider,
-		ContentMD: p.ContentMD,
-	}
-
-	if err := s.db.InsertTaskDeliverable(del); err != nil {
-		http.Error(w, "Failed to insert deliverable: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	s.pushSyncPayload(&SyncStatePayload{Deliverables: []TaskDeliverable{*del}})
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(del)
-}
-
 func (s *Server) handleTaskSyncWorkflow(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost && r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
+	_ = s.IngestDevWorkflowRuns()
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(`{"status":"ok"}`))
