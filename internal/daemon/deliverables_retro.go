@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -42,7 +43,21 @@ var (
 
 func isSystemDirectory(p string) bool {
 	clean := filepath.ToSlash(filepath.Clean(p))
-	for _, sys := range []string{"/etc", "/proc", "/sys", "/dev", "/root", "/var"} {
+	if strings.HasPrefix(clean, "/var/folders/") || strings.HasPrefix(clean, "/private/var/folders/") {
+		return false
+	}
+	if clean == "/var" || clean == "/private/var" {
+		return true
+	}
+	systemPrefixes := []string{
+		"/etc", "/private/etc",
+		"/proc", "/sys", "/dev",
+		"/root", "/var/root", "/private/var/root",
+		"/var/log", "/private/var/log",
+		"/var/db", "/private/var/db",
+		"/var/run", "/private/var/run",
+	}
+	for _, sys := range systemPrefixes {
 		if clean == sys || strings.HasPrefix(clean, sys+"/") {
 			return true
 		}
@@ -249,8 +264,14 @@ func (s *Server) confineAndReadDeliverableFile(task *Task, rawPath string) (stri
 	targetPath := clean
 	if home != "" {
 		slashHome := filepath.ToSlash(filepath.Clean(home))
-		if (strings.HasPrefix(slashHome, "/home/") && strings.HasPrefix(clean, "/Users/")) ||
-			(strings.HasPrefix(slashHome, "/Users/") && strings.HasPrefix(clean, "/home/")) {
+		isDarwinHost := strings.HasPrefix(slashHome, "/Users/") || (!strings.HasPrefix(slashHome, "/home/") && runtime.GOOS == "darwin")
+		var foreignPrefix string
+		if isDarwinHost {
+			foreignPrefix = "/home/"
+		} else {
+			foreignPrefix = "/Users/"
+		}
+		if strings.HasPrefix(clean, foreignPrefix) {
 			parts := strings.Split(clean, "/")
 			if len(parts) >= 3 {
 				targetPath = filepath.Join(home, filepath.Join(parts[3:]...))

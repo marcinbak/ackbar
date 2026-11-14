@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -840,9 +841,17 @@ func TestDeliverables_ExistenceOracleAndHostIsolation(t *testing.T) {
 	}
 
 	// 3. Same-OS foreign user path is rejected unconditionally (403 Forbidden, no existence oracle)
-	sameOSPaths := []string{
-		"/home/otheruser/.worktrees/secret.md",
-		"/home/otheruser/some/path/does_not_exist.retro.md",
+	var sameOSPaths []string
+	if runtime.GOOS == "darwin" {
+		sameOSPaths = []string{
+			"/Users/otheruser/.worktrees/secret.md",
+			"/Users/otheruser/some/path/does_not_exist.retro.md",
+		}
+	} else {
+		sameOSPaths = []string{
+			"/home/otheruser/.worktrees/secret.md",
+			"/home/otheruser/some/path/does_not_exist.retro.md",
+		}
 	}
 	for _, p := range sameOSPaths {
 		pBad := map[string]any{
@@ -859,49 +868,42 @@ func TestDeliverables_ExistenceOracleAndHostIsolation(t *testing.T) {
 		}
 	}
 
-	// 4. Cross-OS rewrite test: e.g. /Users/<user>/... path against a Linux server
-	// (or /home/<user>/... against a macOS server)
-	var crossServerHome, foreignInputPath string
-	userHome := os.Getenv("HOME")
-	if userHome != "" && (strings.HasPrefix(userHome, "/home/") || strings.HasPrefix(userHome, "/Users/")) {
-		if testHome, err := os.MkdirTemp(userHome, "test_cross_os_*"); err == nil {
-			defer os.RemoveAll(testHome)
-			crossServerHome = testHome
-			if strings.HasPrefix(userHome, "/home/") {
-				foreignInputPath = "/Users/otheruser/.claude/dev-workflow-runs/cross.retro.md"
-			} else {
-				foreignInputPath = "/home/otheruser/.claude/dev-workflow-runs/cross.retro.md"
-			}
-		}
+	// 4. Cross-OS rewrite test: e.g. /home/<user>/... path against a Darwin server,
+	// or /Users/<user>/... path against a Linux server. Uses t.TempDir() hermetically.
+	crossServerHome := t.TempDir()
+	var foreignInputPath string
+	if runtime.GOOS == "darwin" {
+		foreignInputPath = "/home/otheruser/.claude/dev-workflow-runs/cross.retro.md"
+	} else {
+		foreignInputPath = "/Users/otheruser/.claude/dev-workflow-runs/cross.retro.md"
 	}
-	if crossServerHome != "" {
-		crossRunsDir := filepath.Join(crossServerHome, ".claude", "dev-workflow-runs")
-		_ = os.MkdirAll(crossRunsDir, 0755)
-		crossTargetFile := filepath.Join(crossRunsDir, "cross.retro.md")
-		crossExpectedMD := "# Cross OS Ingested Retro"
-		_ = os.WriteFile(crossTargetFile, []byte(crossExpectedMD), 0644)
 
-		crossSrv := &Server{db: db, homeDir: crossServerHome}
-		crossTask := &Task{ID: "task_cross", Title: "Cross OS Task", WorktreePath: filepath.Join(crossServerHome, "wt")}
-		_ = db.CreateTask(crossTask)
+	crossRunsDir := filepath.Join(crossServerHome, ".claude", "dev-workflow-runs")
+	_ = os.MkdirAll(crossRunsDir, 0755)
+	crossTargetFile := filepath.Join(crossRunsDir, "cross.retro.md")
+	crossExpectedMD := "# Cross OS Ingested Retro"
+	_ = os.WriteFile(crossTargetFile, []byte(crossExpectedMD), 0644)
 
-		pCross := map[string]any{
-			"task_id":   crossTask.ID,
-			"kind":      "retro",
-			"file_path": foreignInputPath,
-		}
-		bCross, _ := json.Marshal(pCross)
-		reqCross := httptest.NewRequest(http.MethodPost, "/v1/tasks/deliverable", bytes.NewReader(bCross))
-		recCross := httptest.NewRecorder()
-		crossSrv.handleTaskDeliverable(recCross, reqCross)
-		if recCross.Code != http.StatusCreated {
-			t.Errorf("Expected 201 Created for cross-OS rewritten path, got %d: %s", recCross.Code, recCross.Body.String())
-		} else {
-			var d TaskDeliverable
-			_ = json.Unmarshal(recCross.Body.Bytes(), &d)
-			if d.ContentMD != crossExpectedMD {
-				t.Errorf("Expected rewritten deliverable content %q, got %q", crossExpectedMD, d.ContentMD)
-			}
+	crossSrv := &Server{db: db, homeDir: crossServerHome}
+	crossTask := &Task{ID: "task_cross", Title: "Cross OS Task", WorktreePath: filepath.Join(crossServerHome, "wt")}
+	_ = db.CreateTask(crossTask)
+
+	pCross := map[string]any{
+		"task_id":   crossTask.ID,
+		"kind":      "retro",
+		"file_path": foreignInputPath,
+	}
+	bCross, _ := json.Marshal(pCross)
+	reqCross := httptest.NewRequest(http.MethodPost, "/v1/tasks/deliverable", bytes.NewReader(bCross))
+	recCross := httptest.NewRecorder()
+	crossSrv.handleTaskDeliverable(recCross, reqCross)
+	if recCross.Code != http.StatusCreated {
+		t.Errorf("Expected 201 Created for cross-OS rewritten path, got %d: %s", recCross.Code, recCross.Body.String())
+	} else {
+		var d TaskDeliverable
+		_ = json.Unmarshal(recCross.Body.Bytes(), &d)
+		if d.ContentMD != crossExpectedMD {
+			t.Errorf("Expected rewritten deliverable content %q, got %q", crossExpectedMD, d.ContentMD)
 		}
 	}
 
@@ -1187,5 +1189,42 @@ Newer content headlines.`
 	}
 	if del.Metrics == nil || del.Metrics.RunSlug != "multi-run-new" {
 		t.Errorf("Expected RunSlug multi-run-new, got %+v", del.Metrics)
+	}
+}
+
+func TestDeliverables_IsSystemDirectory(t *testing.T) {
+	cases := []struct {
+		path     string
+		isSystem bool
+	}{
+		{"/etc", true},
+		{"/etc/passwd", true},
+		{"/private/etc", true},
+		{"/private/etc/hosts", true},
+		{"/proc", true},
+		{"/proc/cpuinfo", true},
+		{"/sys", true},
+		{"/dev", true},
+		{"/dev/null", true},
+		{"/root", true},
+		{"/var", true},
+		{"/private/var", true},
+		{"/var/log", true},
+		{"/var/log/system.log", true},
+		{"/var/db", true},
+		{"/var/run", true},
+		{"/var/root", true},
+		{"/private/var/root", true},
+		{"/var/folders/xx/yy/T/123/file.md", false},
+		{"/private/var/folders/xx/yy/T/123/file.md", false},
+		{"/home/user/project/file.md", false},
+		{"/Users/user/project/file.md", false},
+		{"/tmp/test/file.md", false},
+	}
+	for _, tc := range cases {
+		got := isSystemDirectory(tc.path)
+		if got != tc.isSystem {
+			t.Errorf("isSystemDirectory(%q) = %v; want %v", tc.path, got, tc.isSystem)
+		}
 	}
 }
