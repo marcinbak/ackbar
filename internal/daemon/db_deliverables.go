@@ -596,20 +596,23 @@ func (d *DB) ListRetros(filter RetroFilter) ([]RetroSummary, error) {
 			}
 		}
 		if filter.Repo != "" {
-			rClean := strings.ToLower(strings.TrimSpace(filter.Repo))
+			rClean := strings.Trim(strings.ToLower(strings.TrimSpace(filter.Repo)), "/")
 			match := false
-			if metrics != nil && strings.EqualFold(strings.ToLower(metrics.Repo), rClean) {
+			if metrics != nil && (strings.EqualFold(metrics.Repo, rClean) || strings.Trim(strings.ToLower(metrics.NodePath), "/") == rClean) {
 				match = true
 			}
 			if !match && task != nil {
-				if strings.EqualFold(strings.ToLower(filepath.Base(TaskNodePath(task))), rClean) ||
-					strings.EqualFold(strings.ToLower(task.ProjectName), rClean) ||
-					strings.EqualFold(strings.ToLower(task.SubprojectName), rClean) {
+				taskNP := strings.Trim(strings.ToLower(TaskNodePath(task)), "/")
+				if taskNP == rClean ||
+					strings.EqualFold(filepath.Base(taskNP), rClean) ||
+					strings.EqualFold(task.ProjectName, rClean) ||
+					strings.EqualFold(task.SubprojectName, rClean) {
 					match = true
 				}
 				if !match {
 					for _, ws := range task.Workstreams {
-						if strings.EqualFold(strings.ToLower(filepath.Base(ws.RepoNodePath)), rClean) {
+						wsNP := strings.Trim(strings.ToLower(ws.RepoNodePath), "/")
+						if wsNP == rClean || strings.EqualFold(filepath.Base(wsNP), rClean) {
 							match = true
 							break
 						}

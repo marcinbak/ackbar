@@ -104,7 +104,7 @@ mcp__ackbar__get_deliverable({
 
 // Query compact retrospective summaries and structured RetroMetrics without full markdown
 mcp__ackbar__list_retros({
-  "repo": "Personal/Ackbar",
+  "node_path": "Personal/Ackbar",
   "since": "2026-11-01",
   "limit": 20
 })
