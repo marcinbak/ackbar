@@ -364,12 +364,16 @@ func GetRegisteredTools() []Tool {
 					},
 					"title": {
 						Type:        "string",
-						Description: "Human-readable deliverable title (e.g. 'Change Brief', 'Generative UI Prototype').",
+						Description: "Human-readable deliverable title (e.g. 'Change Brief', 'Generative UI Prototype'). Auto-inferred if omitted.",
 					},
 					"kind": {
 						Type:        "string",
 						Description: "Artifact kind: prd, html_ui, slides, plan, learnings, pr, retro, retrospective, video, screenshot, mockup, doc, other.",
 						Enum:        []string{"prd", "html_ui", "slides", "plan", "learnings", "pr", "retro", "retrospective", "video", "screenshot", "mockup", "doc", "other"},
+					},
+					"type": {
+						Type:        "string",
+						Description: "Alias for kind.",
 					},
 					"provider": {
 						Type:        "string",
@@ -389,7 +393,85 @@ func GetRegisteredTools() []Tool {
 						Description: "Raw markdown content for brief, retrospective, architecture plan, or learnings deliverable.",
 					},
 				},
-				Required: []string{"task_id", "title"},
+				Required: []string{"task_id"},
+			},
+		},
+		{
+			Name:        "list_retros",
+			Description: "Lists past task retrospectives across the Ackbar fleet with filtering by project node, repo, host, agent, or date range.",
+			InputSchema: ToolInputSchema{
+				Type: "object",
+				Properties: map[string]PropertyDef{
+					"since": {
+						Type:        "string",
+						Description: "Filter retros completed or updated on or after this timestamp (RFC3339 or YYYY-MM-DD).",
+					},
+					"until": {
+						Type:        "string",
+						Description: "Filter retros completed or updated on or before this timestamp (RFC3339 or YYYY-MM-DD).",
+					},
+					"node_path": {
+						Type:        "string",
+						Description: "Filter by project node path (e.g. 'work/project' or prefix).",
+					},
+					"repo": {
+						Type:        "string",
+						Description: "Filter by repository name.",
+					},
+					"host": {
+						Type:        "string",
+						Description: "Filter by host name (e.g. 'legion', 'macmini').",
+					},
+					"agent": {
+						Type:        "string",
+						Description: "Filter by agent identifier or provider.",
+					},
+					"task_id": {
+						Type:        "string",
+						Description: "Filter by exact task ID.",
+					},
+					"limit": {
+						Type:        "integer",
+						Description: "Maximum number of retros to return (default 50, max 200).",
+					},
+				},
+			},
+		},
+		{
+			Name:        "get_deliverable",
+			Description: "Retrieves a deliverable artifact with rune-safe cursor pagination for large markdown content.",
+			InputSchema: ToolInputSchema{
+				Type: "object",
+				Properties: map[string]PropertyDef{
+					"deliverable_id": {
+						Type:        "string",
+						Description: "Deliverable unique ID.",
+					},
+					"id": {
+						Type:        "string",
+						Description: "Alias for deliverable_id.",
+					},
+					"task_id": {
+						Type:        "string",
+						Description: "Task ID (used when deliverable_id is omitted).",
+					},
+					"kind": {
+						Type:        "string",
+						Description: "Deliverable kind (e.g. 'retro', 'plan', 'prd'). Used with task_id.",
+					},
+					"type": {
+						Type:        "string",
+						Description: "Alias for kind.",
+					},
+					"max_chars": {
+						Type:        "integer",
+						Description: "Maximum characters to return in this page (default 20000, max 50000).",
+					},
+					"char_offset": {
+						Type:        "integer",
+						Description: "Character offset for pagination (default 0).",
+					},
+				},
 			},
 		},
 		{
@@ -663,6 +745,10 @@ func ExecuteTool(ctx context.Context, client *DaemonClient, name string, args ma
 		return executeProposeTask(ctx, client, args)
 	case "attach_deliverable":
 		return executeAttachDeliverable(ctx, client, args)
+	case "list_retros":
+		return executeListRetros(ctx, client, args)
+	case "get_deliverable":
+		return executeGetDeliverable(ctx, client, args)
 	case "merge_pull_request":
 		return executeMergePR(ctx, client, args)
 	case "get_standup_report":
@@ -1376,32 +1462,52 @@ func executeProposeTask(ctx context.Context, client *DaemonClient, args map[stri
 
 func executeAttachDeliverable(ctx context.Context, client *DaemonClient, args map[string]any) (*CallToolResult, error) {
 	taskID := getString(args, "task_id")
-	title := getString(args, "title")
+	if taskID == "" {
+		return formatError("task_id is required"), nil
+	}
+
 	kind := getString(args, "kind")
+	typ := getString(args, "type")
+	if kind == "" {
+		kind = typ
+	}
 	if kind == "" {
 		kind = "doc"
-	}
-	if taskID == "" || title == "" {
-		return formatError("task_id and title are required"), nil
 	}
 
 	filePath := getString(args, "file_path")
 	urlStr := getString(args, "url")
 	contentMD := getString(args, "content_md")
 	provider := getString(args, "provider")
+	host := getString(args, "host")
 
 	if filePath == "" && urlStr == "" && contentMD == "" {
 		return formatError("either file_path, url, or content_md is required"), nil
+	}
+
+	title := getString(args, "title")
+	if title == "" {
+		if strings.EqualFold(kind, "retro") || strings.EqualFold(kind, "retrospective") {
+			title = "Retrospective"
+		} else if strings.HasSuffix(strings.ToLower(filePath), ".brief.md") {
+			title = "Change Brief"
+		} else if filePath != "" {
+			title = filepath.Base(filePath)
+		} else {
+			title = "Deliverable"
+		}
 	}
 
 	payload := map[string]any{
 		"task_id":    taskID,
 		"title":      title,
 		"kind":       kind,
+		"type":       typ,
 		"file_path":  filePath,
 		"url":        urlStr,
 		"provider":   provider,
 		"content_md": contentMD,
+		"host":       host,
 	}
 
 	var res map[string]any
@@ -1409,6 +1515,10 @@ func executeAttachDeliverable(ctx context.Context, client *DaemonClient, args ma
 		return formatError(fmt.Sprintf("Failed to attach deliverable: %v", err)), nil
 	}
 
+	delID, _ := res["id"].(string)
+	if delID != "" {
+		return formatSuccess(fmt.Sprintf("Deliverable '%s' [%s] (%s) attached to task %s successfully.", title, kind, delID, taskID)), nil
+	}
 	return formatSuccess(fmt.Sprintf("Deliverable '%s' [%s] attached to task %s successfully.", title, kind, taskID)), nil
 }
 

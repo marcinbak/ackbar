@@ -67,10 +67,10 @@ mcp__ackbar__clear_blocker({
 })
 ```
 
-### C. Attaching Deliverables & Native Cloud Artifacts
+### C. Attaching & Inspecting Deliverables / Retrospectives
 When creating plans, design prototypes, retrospectives, architecture briefs, or linking Google Docs / Claude Artifacts:
 ```json
-// Local file deliverable
+// Local file deliverable (auto-reads content_md if omitted; 'type' accepted as alias for 'kind')
 mcp__ackbar__attach_deliverable({
   "task_id": "task_123",
   "title": "Interactive Generative UI Mockup",
@@ -93,9 +93,25 @@ mcp__ackbar__attach_deliverable({
   "kind": "learnings",
   "content_md": "## Key Learnings\n- Pure Go SQLite outperforms CGO wrapper in daemon throughput."
 })
+
+// Fetch deliverable markdown with rune-safe cursor pagination (max_chars up to 50000)
+mcp__ackbar__get_deliverable({
+  "task_id": "task_123",
+  "kind": "retro",
+  "max_chars": 20000,
+  "char_offset": 0
+})
+
+// Query compact retrospective summaries and structured RetroMetrics without full markdown
+mcp__ackbar__list_retros({
+  "node_path": "Personal/Ackbar",
+  "since": "2026-11-01",
+  "limit": 20
+})
 ```
-Supported kinds: `prd`, `html_ui`, `slides`, `plan`, `learnings`, `pr`, `retro`, `retrospective`, `video`, `screenshot`, `mockup`, `doc`, `other`.
+Supported kinds: `prd`, `html_ui`, `slides`, `plan`, `learnings`, `pr`, `retro`, `retrospective`, `video`, `screenshot`, `mockup`, `doc`, `other` (accepts `type` as alias; auto-infers title).
 Supported providers (auto-inferred if omitted): `claude_artifact`, `gdocs`, `gslides`, `gsheets`, `gdrive`, `github`, `local`.
+Note: Local `.retro.md` deliverables auto-ingest canonical `run-state.json` metrics (`RetroMetrics`) and replicate across peer daemons via LWW mesh sync.
 
 ### D. Proposing Discovered Tasks
 When spotting an unexpected bug or future optimization:

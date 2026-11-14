@@ -277,6 +277,8 @@ func (s *Server) handleTaskMergePR(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.autoIngestTaskRetro(task)
+
 	// Broadcast update to all connected clients
 	if len(task.Workers) > 0 {
 		if sess, _ := s.db.GetSession(task.Workers[0].SessionID); sess != nil {

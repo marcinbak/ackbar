@@ -35,7 +35,9 @@ Ackbar's Work & Fleet Overview Dashboard manages the lifecycle of tasks across f
 | **`report_blocker`** | Task Worker | `task_id!`, `question!` | Flags task as `blocked` and records the blocker question. Surfaces immediate red warning alert on board & Voice Companion. |
 | **`clear_blocker`** | Task Worker | `task_id!`, `resolution_notes?` | Clears blocker and resumes task to `active`. |
 | **`propose_task`** | Task Worker | `title!`, `group?`, `project?`, `notes?`, `rationale?` | Logs discovered bugs or tech debt into the `NEW` inbox column with title deduplication. |
-| **`attach_deliverable`** | Task Worker | `task_id!`, `title!`, `kind!`, `provider?`, `url?`, `content_md?` | Attaches **Claude Published Artifacts** (`url`) or **Google Workspace / Drive** files (`gdrive`/`gdocs`/`gslides`/`gsheets` under `Ackbar/projects/<project>/tasks/<task>/`) + synced `content_md` for cross-host handoff. |
+| **`attach_deliverable`** | Task Worker | `task_id!`, `title?`, `kind?`/`type?`, `file_path?`, `url?`, `content_md?`, `provider?` | Attaches artifacts (`url`, `file_path`, `content_md`); supports `type` alias, auto-title, and confined local file auto-reading. |
+| **`get_deliverable`** | Task Worker / Supervisor | `id?`, `task_id?`, `kind?`/`type?`, `max_chars?`, `char_offset?` | Fetches deliverable metadata and rune-safe cursor-paginated `content_md` (default 20,000, max 50,000 chars). |
+| **`list_retros`** | Supervisor / Reporting / Worker | `since?`, `until?`, `node_path?`, `repo?`, `host?`, `agent?`, `task_id?`, `limit?` | Queries compact retrospective summaries and structured `RetroMetrics` without raw `content_md` payload. |
 | **`merge_pull_request`** | Task Worker | `task_id!`, `method?` | Executes 1-click squash & merge via daemon (`N14`) and unlocks any dependent sequential repo workstreams. |
 | **`get_standup_report`** | Supervisor / Reporting | `group?`, `days?` | Generates project-grouped Markdown and conversational audio briefing text. |
 

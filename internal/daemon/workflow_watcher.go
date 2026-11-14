@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -33,6 +34,32 @@ func readWorkflowFileBounded(path string, maxBytes int64) ([]byte, error) {
 	return io.ReadAll(io.LimitReader(f, maxBytes))
 }
 
+type FlexibleNotes string
+
+func (n *FlexibleNotes) UnmarshalJSON(data []byte) error {
+	str := strings.TrimSpace(string(data))
+	if str == "" || str == "null" {
+		*n = ""
+		return nil
+	}
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		*n = FlexibleNotes(s)
+		return nil
+	}
+	var arr []string
+	if err := json.Unmarshal(data, &arr); err == nil {
+		*n = FlexibleNotes(strings.Join(arr, "\n"))
+		return nil
+	}
+	*n = FlexibleNotes(str)
+	return nil
+}
+
+func (n FlexibleNotes) String() string {
+	return string(n)
+}
+
 type DevWorkflowRun struct {
 	Ticket             *string          `json:"ticket"`
 	Repo               string           `json:"repo"`
@@ -40,18 +67,48 @@ type DevWorkflowRun struct {
 	Worktree           string           `json:"worktree"`
 	Node               string           `json:"node"`
 	Started            string           `json:"started"`
+	Updated            string           `json:"updated"`
 	Completed          []string         `json:"completed"`
 	Lite               bool             `json:"lite"`
 	ImplAttempts       int              `json:"impl_attempts"`
 	PlanRevisions      int              `json:"plan_revisions"`
 	ReviewBudgetLeft   int              `json:"review_budget_left"`
 	ReviewRounds       int              `json:"review_rounds"`
+	ReReviews          int              `json:"re_reviews"`
+	Interventions      []map[string]any `json:"interventions"`
 	HumanInterventions []map[string]any `json:"human_interventions"`
 	ImplementerAgent   any              `json:"implementer_agent"`
 	Tier               string           `json:"tier"`
 	Artifacts          []string         `json:"artifacts"`
 	PR                 *DevWorkflowPR   `json:"pr"`
-	Notes              string           `json:"notes"`
+	Notes              FlexibleNotes    `json:"notes"`
+	RawTokens          int              `json:"raw_tokens,omitempty"`
+	WeightedTokens     int              `json:"weighted_tokens,omitempty"`
+	CacheHitPct        float64          `json:"cache_hit_pct,omitempty"`
+	PeakContext        int              `json:"peak_context,omitempty"`
+	SubagentShare      float64          `json:"subagent_share,omitempty"`
+	Headlines          []string         `json:"headlines,omitempty"`
+}
+
+func (r *DevWorkflowRun) AllInterventions() []map[string]any {
+	var res []map[string]any
+	seen := make(map[string]bool)
+	add := func(list []map[string]any) {
+		for _, item := range list {
+			if item == nil {
+				continue
+			}
+			b, _ := json.Marshal(item)
+			k := string(b)
+			if !seen[k] {
+				seen[k] = true
+				res = append(res, item)
+			}
+		}
+	}
+	add(r.Interventions)
+	add(r.HumanInterventions)
+	return res
 }
 
 type DevWorkflowPR struct {
@@ -123,27 +180,96 @@ func (s *Server) IngestDevWorkflowRuns() error {
 	}
 
 	var activeTasks []*Task
+	var doneTasks []*Task
+	now := time.Now().UTC()
+
 	for i := range tasks {
-		if !strings.EqualFold(tasks[i].Status, "DONE") {
-			activeTasks = append(activeTasks, &tasks[i])
+		t := &tasks[i]
+		if !strings.EqualFold(t.Status, "DONE") {
+			activeTasks = append(activeTasks, t)
+		} else {
+			upd := t.UpdatedAt
+			if upd.IsZero() && t.CompletedAt != nil {
+				upd = *t.CompletedAt
+			}
+			if !upd.IsZero() && now.Sub(upd) <= 30*24*time.Hour {
+				hasRichRetro := false
+				for _, d := range t.Deliverables {
+					if isRetroKind(d.Kind) && d.HasContentMD && d.Metrics != nil {
+						hasRichRetro = true
+						break
+					}
+				}
+				if !hasRichRetro {
+					doneTasks = append(doneTasks, t)
+				}
+			}
 		}
 	}
-	if len(activeTasks) == 0 {
-		return nil
-	}
 
+	type entryWithTime struct {
+		entry   os.DirEntry
+		modTime time.Time
+	}
+	var sortedEntries []entryWithTime
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
 		}
-
-		filePath := filepath.Join(runsDir, entry.Name())
 		var modTime time.Time
 		if info, infoErr := entry.Info(); infoErr == nil && info != nil {
 			modTime = info.ModTime()
 		}
-		if err := s.ingestSingleWorkflowRun(filePath, modTime, activeTasks); err != nil {
-			log.Printf("[DevWorkflowWatcher] Error ingesting %s: %v", entry.Name(), err)
+		sortedEntries = append(sortedEntries, entryWithTime{entry: entry, modTime: modTime})
+	}
+	sort.Slice(sortedEntries, func(i, j int) bool {
+		return sortedEntries[i].modTime.After(sortedEntries[j].modTime)
+	})
+
+	if len(activeTasks) > 0 {
+		for _, item := range sortedEntries {
+			filePath := filepath.Join(runsDir, item.entry.Name())
+			if err := s.ingestSingleWorkflowRun(filePath, item.modTime, activeTasks); err != nil {
+				log.Printf("[DevWorkflowWatcher] Error ingesting %s: %v", item.entry.Name(), err)
+			}
+		}
+	}
+
+	if len(doneTasks) > 0 {
+		backfilledTaskIDs := make(map[string]bool)
+		for _, item := range sortedEntries {
+			jsonPath := filepath.Join(runsDir, item.entry.Name())
+			data, err := readWorkflowFileBounded(jsonPath, 512*1024)
+			if err != nil {
+				continue
+			}
+			var run DevWorkflowRun
+			if err := json.Unmarshal(data, &run); err != nil {
+				continue
+			}
+			matchedTask := s.matchWorkflowRunToTask(&run, item.modTime, doneTasks)
+			if matchedTask == nil || backfilledTaskIDs[matchedTask.ID] {
+				continue
+			}
+			retroPath := strings.TrimSuffix(jsonPath, ".json") + ".retro.md"
+			retroData, err := readWorkflowFileBounded(retroPath, 1*1024*1024)
+			if err != nil {
+				continue
+			}
+			del := TaskDeliverable{
+				TaskID:    matchedTask.ID,
+				Kind:      "retro",
+				Title:     "Retrospective",
+				FilePath:  retroPath,
+				Provider:  "local",
+				ContentMD: string(retroData),
+			}
+			s.extractRetroMetrics(matchedTask, &del)
+			changed, err := s.db.UpsertTaskDeliverableLWW(&del, false)
+			if err == nil && changed {
+				s.pushSyncPayload(&SyncStatePayload{Deliverables: []TaskDeliverable{del}})
+			}
+			backfilledTaskIDs[matchedTask.ID] = true
 		}
 	}
 
@@ -180,6 +306,15 @@ func (s *Server) matchWorkflowRunToTask(run *DevWorkflowRun, modTime time.Time, 
 		return nil
 	}
 
+	if run.Ticket != nil && *run.Ticket != "" {
+		ticketRaw := strings.TrimSpace(*run.Ticket)
+		for _, t := range activeTasks {
+			if strings.EqualFold(ticketRaw, t.ID) {
+				return t
+			}
+		}
+	}
+
 	ticketStr := ""
 	if run.Ticket != nil && *run.Ticket != "" {
 		ticketStr = strings.ToUpper(strings.TrimSpace(*run.Ticket))
@@ -207,7 +342,7 @@ func (s *Server) matchWorkflowRunToTask(run *DevWorkflowRun, modTime time.Time, 
 		return true
 	}
 
-	// 1. Exact worktree or branch match against task or its bound worker sessions
+	// 1. Exact worktree or branch match against task, its workstreams, or its bound worker sessions
 	for _, t := range activeTasks {
 		if !isFreshForTask(t) {
 			continue
@@ -217,6 +352,14 @@ func (s *Server) matchWorkflowRunToTask(run *DevWorkflowRun, modTime time.Time, 
 		}
 		if cleanRunBranch != "" && t.Branch != "" && strings.EqualFold(t.Branch, cleanRunBranch) {
 			return t
+		}
+		for _, ws := range t.Workstreams {
+			if cleanRunWorktree != "" && ws.WorktreePath != "" && filepath.Clean(ws.WorktreePath) == cleanRunWorktree {
+				return t
+			}
+			if cleanRunBranch != "" && ws.Branch != "" && strings.EqualFold(ws.Branch, cleanRunBranch) {
+				return t
+			}
 		}
 		for _, w := range t.Workers {
 			if w.SessionID == "" {
@@ -495,7 +638,7 @@ func (s *Server) ingestSingleWorkflowRun(jsonPath string, modTime time.Time, act
 
 	if task.Notes == "" && (run.Notes != "" || briefNotes != "") {
 		if run.Notes != "" {
-			task.Notes = run.Notes
+			task.Notes = string(run.Notes)
 		} else {
 			task.Notes = briefNotes
 		}
@@ -516,7 +659,7 @@ func (s *Server) ingestSingleWorkflowRun(jsonPath string, modTime time.Time, act
 	if run.Ticket != nil && *run.Ticket != "" {
 		ticketStr = strings.ToUpper(strings.TrimSpace(*run.Ticket))
 	}
-	if len(task.ExternalRefs) == 0 && ticketStr != "" {
+	if len(task.ExternalRefs) == 0 && ticketStr != "" && !strings.HasPrefix(strings.ToLower(ticketStr), "task_") {
 		ref := TaskExternalRef{
 			TaskID:  task.ID,
 			Tracker: "jira",
@@ -527,46 +670,34 @@ func (s *Server) ingestSingleWorkflowRun(jsonPath string, modTime time.Time, act
 		taskUpdated = true
 	}
 
-	// Attach companion deliverables onto the matched task only when missing or modified
-	hasDeliverableContent := func(filePath, content string) bool {
-		for _, d := range task.Deliverables {
-			if d.FilePath == filePath && d.ContentMD == content {
-				return true
-			}
-		}
-		return false
-	}
 	deliverableAdded := false
 	if briefData, err := readWorkflowFileBounded(briefPath, 1*1024*1024); err == nil {
 		content := string(briefData)
-		if !hasDeliverableContent(briefPath, content) {
-			del := TaskDeliverable{
-				TaskID:    task.ID,
-				Kind:      "plan",
-				Title:     "Change Brief",
-				FilePath:  briefPath,
-				Provider:  "local",
-				ContentMD: content,
-			}
-			if err := s.db.InsertTaskDeliverable(&del); err == nil {
-				deliverableAdded = true
-			}
+		del := TaskDeliverable{
+			TaskID:    task.ID,
+			Kind:      "plan",
+			Title:     "Change Brief",
+			FilePath:  briefPath,
+			Provider:  "local",
+			ContentMD: content,
+		}
+		if changed, err := s.db.UpsertTaskDeliverableLWW(&del, false); err == nil && changed {
+			deliverableAdded = true
 		}
 	}
 	if retroData, err := readWorkflowFileBounded(retroPath, 1*1024*1024); err == nil {
 		content := string(retroData)
-		if !hasDeliverableContent(retroPath, content) {
-			del := TaskDeliverable{
-				TaskID:    task.ID,
-				Kind:      "retrospective",
-				Title:     "Retrospective",
-				FilePath:  retroPath,
-				Provider:  "local",
-				ContentMD: content,
-			}
-			if err := s.db.InsertTaskDeliverable(&del); err == nil {
-				deliverableAdded = true
-			}
+		del := TaskDeliverable{
+			TaskID:    task.ID,
+			Kind:      "retrospective",
+			Title:     "Retrospective",
+			FilePath:  retroPath,
+			Provider:  "local",
+			ContentMD: content,
+		}
+		s.extractRetroMetrics(task, &del)
+		if changed, err := s.db.UpsertTaskDeliverableLWW(&del, false); err == nil && changed {
+			deliverableAdded = true
 		}
 	}
 

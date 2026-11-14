@@ -637,7 +637,7 @@ func TestTasks_DeleteAndDeduplication(t *testing.T) {
 	var workerCount, refCount, delCount int
 	_ = db.db.QueryRow("SELECT COUNT(*) FROM task_workers WHERE task_id = 'task_to_del'").Scan(&workerCount)
 	_ = db.db.QueryRow("SELECT COUNT(*) FROM task_external_refs WHERE task_id = 'task_to_del'").Scan(&refCount)
-	_ = db.db.QueryRow("SELECT COUNT(*) FROM task_deliverables WHERE task_id = 'task_to_del'").Scan(&delCount)
+	_ = db.db.QueryRow("SELECT COUNT(*) FROM task_deliverables WHERE task_id = 'task_to_del' AND deleted_at IS NULL").Scan(&delCount)
 	if workerCount != 0 || refCount != 0 || delCount != 0 {
 		t.Errorf("Expected 0 cascaded rows, got workers=%d, refs=%d, dels=%d", workerCount, refCount, delCount)
 	}

@@ -39,6 +39,7 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 * **`server_hosts.go`:** Remote host health tracking, SSH target resolution, host CRUD (`/v1/hosts`), cross-compiled remote upgrades (`/v1/hosts/update`), and resilient SSH tunnel management (`/v1/hosts/reconnect`, `ensureHostTunnels`).
 * **`server_projects.go`:** Workspace document discovery (`/v1/documents`), tree node CRUD and move (`/v1/nodes`), project creation (`/v1/projects/create`), worktree/path normalization, and VS Code URI launching (`/v1/editor/open`).
 * **`server_tasks.go` & `task_scope.go`:** Task CRUD (`/v1/tasks`), canonical project node scope resolution (`resolveTaskNodeScope`), task moves, and subproject normalization.
+* **`server_deliverables.go`, `db_deliverables.go`, `deliverables_retro.go`:** Task deliverable endpoints (`/v1/deliverables`, `/v1/retros`, `/v1/tasks/deliverable`), rune-safe cursor pagination, auto-ingested `.retro.md` & `run-state.json` parsing, and LWW deliverable replication.
 * **`server_sync.go`:** Uniform 3-way Last-Write-Wins (LWW) peer-to-peer sync engine (`/v1/sync/state`, `/v1/sync/push`, `/v1/nodes/paths`) and background delta reconciliation.
 * **`session_scanner.go`:** Liveness verification (`verifySessionLiveness`) and background session scanner (`scanObservedSessions` decomposed into `refreshExistingSessions`, `scanTmuxPanes`, and `scanDiskSessions` for managed sessions).
 * **`telemetry_tasks.go` & `workflow_watcher.go`:** Monotonic workflow node (`N0`–`N15`) and task/workstream status synchronization (`SyncSessionTaskWorker`, `IngestBoundTaskTelemetry`), canonical pillar substatus normalization (`normalizeTaskStatusAndSubstatus`), single active worker enforcement per `(task_id, repo_node_path)`, and update-only `dev-workflow` run watcher (`IngestDevWorkflowRuns` scanning `~/.claude/dev-workflow-runs/*.json` strictly for existing non-`DONE` tasks and auto-attaching `.brief.md`, `.impl-notes.md`, and `.retro.md` deliverables without auto-creating ambient tasks).
@@ -91,8 +92,10 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 | `DELETE` | `/v1/tasks` | Soft-deletes a task (`deleted_at = now`) and cascades cleanup across workers, workstreams, external refs, and deliverables for LWW peer sync. |
 | `POST` | `/v1/tasks/event` | Ingests structured lifecycle events (`agent_blocked`, `agent_unblocked`, etc.) for explicitly bound tasks. |
 | `POST` | `/v1/tasks/propose` | Records explicit agent-discovered work proposals (`propose_task`) into the `NEW` inbox column with duplicate detection and canonical `tree_nodes` scoping. |
-| `GET` | `/v1/tasks/deliverable` | Lazily fetches a single deliverable (`?id=<id>`) including its full `content_md` payload on demand. |
-| `POST` | `/v1/tasks/deliverable` | Attaches design mockups, change briefs, retrospectives, or cloud artifacts to a task. |
+| `GET` | `/v1/tasks/deliverable` | Lazily fetches a single deliverable (`?id=<id>` or `?deliverable_id=<id>`) including its full `content_md` payload on demand. |
+| `POST` | `/v1/tasks/deliverable` | Attaches design mockups, change briefs, retrospectives, or cloud artifacts to a task (supports `type` alias, auto-title, and confined local file auto-reading). |
+| `GET` | `/v1/deliverables` | Fetches deliverable metadata and full or rune-safe cursor-paginated `content_md` (`/v1/deliverables/{id}` or `?id=...`, `?task_id=...&kind=...`, `max_chars`, `char_offset`). |
+| `GET` | `/v1/retros` | Returns compact retrospective summaries and structured `RetroMetrics` without raw `content_md` (`since`, `until`, `node_path`, `repo`, `host`, `agent`, `task_id`, `limit`). |
 | `POST` | `/v1/tasks/sync-workflow` | Triggers immediate reconciliation of active worker liveness (`SyncSessionTaskWorker`) for explicitly bound tasks. |
 | `POST` | `/v1/tasks/merge-pr` | Executes 1-click `gh pr merge --squash` for a task with an open PR and transitions state to `DONE`. |
 | `GET` | `/v1/sync/state` | Returns delta sync state payload (nodes, host paths, tasks, workstreams, deliverables) since `?since=<timestamp>`. |
@@ -249,6 +252,7 @@ The SQLite database (`~/.config/ackbar/ackbard.db`) uses CGO-free pure Go SQLite
 * `current_task_id`: Tracks the active Ackbar task ID bound to the session (if any), categorizing the session under the `📋 Tasks` subsection. Each host strictly stores only its own local sessions in the `sessions` table (no cross-host session replicas).
 * `blocked_meta`: Persists structured JSON metadata (`auth_target`, `auth_kind`, `auth_server`, `auth_url`, `auth_hint`, `flow_id`) for sessions in `BlockAuth` state.
 * `extra_dirs`: Persists JSON array of additional allowed directory paths (`--add-dir`) for agent workspace access.
+* `task_deliverables` LWW columns: Adds `updated_at`, `provider`, `content_md`, `deleted_at` (tombstone for LWW sync), `metadata_json` (structured `RetroMetrics`), and `dedup_key` with indexes for peer replication.
 
 ---
 
