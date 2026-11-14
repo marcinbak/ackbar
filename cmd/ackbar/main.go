@@ -211,7 +211,7 @@ func runSetupHooks() error {
 		cmd := exec.Command("go", "build", "-o", tmpTarget, pkg)
 		if err := cmd.Run(); err != nil {
 			_ = os.Remove(tmpTarget)
-			cmd2 := exec.Command("go", "install", "ackbar/"+pkg+"@latest")
+			cmd2 := exec.Command("go", "install", "ackbar/"+strings.TrimPrefix(pkg, "./")+"@latest")
 			_ = cmd2.Run()
 			return
 		}

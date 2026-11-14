@@ -889,7 +889,7 @@ func (d *DB) GetSessionIDsByTaskID(taskID string) ([]string, error) {
 	if d == nil || d.db == nil || taskID == "" {
 		return nil, nil
 	}
-	rows, err := d.db.Query("SELECT id FROM sessions WHERE current_task_id = ? AND deleted = 0", taskID)
+	rows, err := d.db.Query("SELECT id FROM sessions WHERE current_task_id = ? AND id NOT IN (SELECT id FROM deleted_sessions)", taskID)
 	if err != nil {
 		return nil, err
 	}

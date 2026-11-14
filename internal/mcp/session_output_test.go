@@ -5,9 +5,23 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 )
+
+func extractAssistantMessage(output string) string {
+	marker := "#### Message 1 (assistant):\n"
+	idx := strings.Index(output, marker)
+	if idx == -1 {
+		return ""
+	}
+	content := output[idx+len(marker):]
+	if truncIdx := strings.Index(content, "\n\n[Output truncated."); truncIdx != -1 {
+		return content[:truncIdx]
+	}
+	return strings.TrimRight(content, "\n")
+}
 
 func TestSessionOutput_PaginationAndTruncation(t *testing.T) {
 	longMsg := strings.Repeat("A", 12000)
@@ -85,19 +99,58 @@ func TestSessionOutput_PaginationAndTruncation(t *testing.T) {
 	}
 }
 
-func TestSessionOutput_CursorPagination25KB(t *testing.T) {
-	// 25 KB single message
-	content25k := strings.Repeat("X", 25000)
+func TestSessionOutput_SequentialPaginationWithDaemonPagination(t *testing.T) {
+	var builder strings.Builder
+	for i := 0; i < 25000; i++ {
+		builder.WriteByte(byte('a' + (i % 26)))
+	}
+	content25k := builder.String()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/v1/sessions/transcript") {
+			q := r.URL.Query()
+			charOffset := 0
+			if v, err := strconv.Atoi(q.Get("char_offset")); err == nil {
+				charOffset = v
+			}
+			maxChars := 10000
+			if v, err := strconv.Atoi(q.Get("max_chars")); err == nil {
+				maxChars = v
+			}
+
+			runes := []rune(content25k)
+			avail := runes[charOffset:]
+			budget := maxChars
+			if budget > len(avail) {
+				budget = len(avail)
+			}
+			chunk := string(avail[:budget])
+			truncated := (charOffset + budget) < len(runes)
+			nextCharOffset := 0
+			if truncated {
+				nextCharOffset = charOffset + budget
+			}
+
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"session_id": "sess-25k",
-				"title":      "Large Payload",
+				"session_id": "sess-25k-daemon",
+				"title":      "25k Runes Daemon Pagination",
 				"agent":      "claude-code",
 				"messages": []any{
-					map[string]any{"role": "assistant", "content": content25k},
+					map[string]any{"role": "assistant", "content": chunk},
+				},
+				"pagination": map[string]any{
+					"total_messages":   1,
+					"returned_count":   1,
+					"range_start":      1,
+					"range_end":        1,
+					"offset":           0,
+					"next_offset":      0,
+					"char_offset":      charOffset,
+					"next_char_offset": nextCharOffset,
+					"max_chars":        maxChars,
+					"returned_chars":   len(chunk),
+					"truncated":        truncated,
 				},
 			})
 			return
@@ -109,49 +162,64 @@ func TestSessionOutput_CursorPagination25KB(t *testing.T) {
 	client := NewDaemonClient(server.URL, "test-token")
 	ctx := context.Background()
 
-	// Chunk 1: offset=0, char_offset=0
+	// Call 1: char_offset=0, max_chars=10000
 	r1, err := executeGetSessionOutput(ctx, client, map[string]any{
-		"session_id":  "sess-25k",
-		"offset":      0,
+		"session_id":  "sess-25k-daemon",
 		"char_offset": 0,
 		"max_chars":   10000,
 	})
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("call 1 failed: %v", err)
 	}
-	t1 := r1.Content[0].Text
-	if !strings.Contains(t1, "**Truncated:** true") || !strings.Contains(t1, "offset=0, char_offset=10000") {
-		t.Errorf("expected next chunk cursor offset=0, char_offset=10000, got: %s", t1)
+	c1 := extractAssistantMessage(r1.Content[0].Text)
+	if len(c1) != 10000 {
+		t.Fatalf("call 1 expected 10000 chars, got: %d", len(c1))
+	}
+	if !strings.Contains(r1.Content[0].Text, "**Truncated:** true") || !strings.Contains(r1.Content[0].Text, "char_offset=10000") {
+		t.Errorf("call 1 expected continuation notice for char_offset=10000")
 	}
 
-	// Chunk 2: offset=0, char_offset=10000
+	// Call 2: char_offset=10000, max_chars=10000
 	r2, err := executeGetSessionOutput(ctx, client, map[string]any{
-		"session_id":  "sess-25k",
-		"offset":      0,
+		"session_id":  "sess-25k-daemon",
 		"char_offset": 10000,
 		"max_chars":   10000,
 	})
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("call 2 failed: %v", err)
 	}
-	t2 := r2.Content[0].Text
-	if !strings.Contains(t2, "**Truncated:** true") || !strings.Contains(t2, "offset=0, char_offset=20000") {
-		t.Errorf("expected next chunk cursor offset=0, char_offset=20000, got: %s", t2)
+	c2 := extractAssistantMessage(r2.Content[0].Text)
+	if len(c2) != 10000 {
+		t.Fatalf("call 2 expected 10000 chars, got: %d", len(c2))
+	}
+	if !strings.Contains(r2.Content[0].Text, "**Truncated:** true") || !strings.Contains(r2.Content[0].Text, "char_offset=20000") {
+		t.Errorf("call 2 expected continuation notice for char_offset=20000")
 	}
 
-	// Chunk 3: offset=0, char_offset=20000 (remaining 5000 runes fit completely)
+	// Call 3: char_offset=20000, max_chars=10000
 	r3, err := executeGetSessionOutput(ctx, client, map[string]any{
-		"session_id":  "sess-25k",
-		"offset":      0,
+		"session_id":  "sess-25k-daemon",
 		"char_offset": 20000,
 		"max_chars":   10000,
 	})
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("call 3 failed: %v", err)
 	}
-	t3 := r3.Content[0].Text
-	if !strings.Contains(t3, "**Truncated:** false") {
-		t.Errorf("expected final chunk truncated: false, got: %s", t3)
+	c3 := extractAssistantMessage(r3.Content[0].Text)
+	if len(c3) != 5000 {
+		t.Fatalf("call 3 expected 5000 chars, got: %d", len(c3))
+	}
+	if !strings.Contains(r3.Content[0].Text, "**Truncated:** false") {
+		t.Errorf("call 3 expected truncated: false")
+	}
+
+	// Assert concatenated 3 chunks equal the exact original 25,000-rune message
+	concatenated := c1 + c2 + c3
+	if len(concatenated) != len(content25k) {
+		t.Fatalf("concatenated length mismatch: got %d, expected %d", len(concatenated), len(content25k))
+	}
+	if concatenated != content25k {
+		t.Fatalf("concatenated 3 chunks do not match original 25k content!")
 	}
 }
 

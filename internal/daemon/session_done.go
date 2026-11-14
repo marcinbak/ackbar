@@ -306,17 +306,25 @@ func (s *Server) completeTaskWorkerSessions(task *Task, triggerSess *Session, ac
 					"id":     sess.ID,
 					"action": "done",
 				})
-				go func(u string, b []byte) {
+				token := s.configuredToken
+				if token == "" {
+					token = os.Getenv("ACKBAR_TOKEN")
+				}
+				go func(u string, b []byte, tok string) {
 					client := &http.Client{Timeout: 3 * time.Second}
 					req, err := http.NewRequest(http.MethodPost, u, bytes.NewReader(b))
 					if err == nil {
 						req.Header.Set("Content-Type", "application/json")
+						if tok != "" {
+							req.Header.Set("Authorization", "Bearer "+tok)
+							req.Header.Set("X-Ackbar-Token", tok)
+						}
 						resp, err := client.Do(req)
 						if err == nil {
 							_ = resp.Body.Close()
 						}
 					}
-				}(targetURL, payload)
+				}(targetURL, payload, token)
 			}
 			continue
 		}

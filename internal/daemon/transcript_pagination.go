@@ -122,9 +122,10 @@ func PaginateTranscriptMessages(allMsgs []TranscriptMessage, opts TranscriptPagi
 			if startIdx > totalMessages {
 				startIdx = totalMessages
 			}
-			endIdx = startIdx + opts.Limit
-			if endIdx > totalMessages {
+			if opts.Limit > totalMessages-startIdx {
 				endIdx = totalMessages
+			} else {
+				endIdx = startIdx + opts.Limit
 			}
 		} else {
 			startIdx = totalMessages - opts.Limit

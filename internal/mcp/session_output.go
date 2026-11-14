@@ -8,43 +8,6 @@ import (
 	"strings"
 )
 
-func matchesSessionAlias(s map[string]any, candidate string) bool {
-	if candidate == "" || s == nil {
-		return false
-	}
-	id := getString(s, "id")
-	oldID := getString(s, "old_id")
-	nativeID := getString(s, "native_id")
-
-	if strings.EqualFold(id, candidate) || strings.EqualFold(oldID, candidate) || strings.EqualFold(nativeID, candidate) {
-		return true
-	}
-
-	if strings.HasSuffix(strings.ToLower(id), ":"+strings.ToLower(candidate)) ||
-		strings.HasSuffix(strings.ToLower(oldID), ":"+strings.ToLower(candidate)) {
-		return true
-	}
-
-	candSuffix := candidate
-	if idx := strings.LastIndex(candidate, ":"); idx != -1 && idx+1 < len(candidate) {
-		candSuffix = candidate[idx+1:]
-	} else if idx := strings.LastIndex(candidate, "-"); idx != -1 && idx+1 < len(candidate) {
-		candSuffix = candidate[idx+1:]
-	}
-
-	if candSuffix != "" && candSuffix != candidate {
-		if strings.EqualFold(nativeID, candSuffix) {
-			return true
-		}
-		if strings.HasSuffix(strings.ToLower(id), ":"+strings.ToLower(candSuffix)) ||
-			strings.HasSuffix(strings.ToLower(oldID), ":"+strings.ToLower(candSuffix)) {
-			return true
-		}
-	}
-
-	return false
-}
-
 func executeGetSessionOutput(ctx context.Context, client *DaemonClient, args map[string]any) (*CallToolResult, error) {
 	sessionID := getString(args, "session_id")
 	if sessionID == "" {
@@ -82,12 +45,9 @@ func executeGetSessionOutput(ctx context.Context, client *DaemonClient, args map
 
 	var sessions []map[string]any
 	if err := client.doRequest(ctx, http.MethodGet, "/v1/sessions?federated=true", nil, &sessions); err == nil {
-		for _, s := range sessions {
-			if matchesSessionAlias(s, sessionID) {
-				if id := getString(s, "id"); id != "" {
-					sessionID = id
-				}
-				break
+		if match := resolveSessionFromList(sessions, sessionID); match != nil {
+			if id := getString(match, "id"); id != "" {
+				sessionID = id
 			}
 		}
 	}
@@ -112,47 +72,97 @@ func executeGetSessionOutput(ctx context.Context, client *DaemonClient, args map
 	agent := getString(data, "agent")
 	messagesRaw, _ := data["messages"].([]any)
 
-	var candidateMsgs []map[string]any
-	for _, mRaw := range messagesRaw {
-		if m, ok := mRaw.(map[string]any); ok {
-			role := strings.ToLower(getString(m, "role"))
-			if includeAllRoles || role == "assistant" {
-				candidateMsgs = append(candidateMsgs, m)
-			}
-		}
-	}
-	if !includeAllRoles && len(candidateMsgs) == 0 {
-		for _, mRaw := range messagesRaw {
-			if m, ok := mRaw.(map[string]any); ok {
-				candidateMsgs = append(candidateMsgs, m)
-			}
-		}
-	}
-
-	totalMessages := len(candidateMsgs)
+	var displayedMsgs []map[string]any
+	truncated := false
+	nextOffset := 0
+	nextCharOffset := 0
 	startIdx := 0
-	endIdx := totalMessages
+	rangeStart := 0
+	rangeEnd := 0
+	totalMessages := 0
 
 	if pag, ok := data["pagination"].(map[string]any); ok && pag != nil {
-		if tot := getInt(pag, "total_messages", 0); tot > 0 {
-			totalMessages = tot
-		}
-		if rStart := getInt(pag, "range_start", 0); rStart > 0 {
-			startIdx = rStart - 1
+		totalMessages = getInt(pag, "total_messages", 0)
+		rangeStart = getInt(pag, "range_start", 0)
+		rangeEnd = getInt(pag, "range_end", 0)
+		if rangeStart > 0 {
+			startIdx = rangeStart - 1
 		} else if off := getInt(pag, "offset", 0); off > 0 {
 			startIdx = off
 		}
-		endIdx = startIdx + len(candidateMsgs)
+		truncated, _ = pag["truncated"].(bool)
+		nextOffset = getInt(pag, "next_offset", 0)
+		nextCharOffset = getInt(pag, "next_char_offset", 0)
+
+		budgetRemaining := maxChars
+		for _, mRaw := range messagesRaw {
+			m, ok := mRaw.(map[string]any)
+			if !ok {
+				continue
+			}
+			content := getString(m, "content")
+			runes := []rune(content)
+			if len(runes) <= budgetRemaining {
+				copyM := make(map[string]any, len(m))
+				for k, v := range m {
+					copyM[k] = v
+				}
+				displayedMsgs = append(displayedMsgs, copyM)
+				budgetRemaining -= len(runes)
+				if budgetRemaining == 0 {
+					break
+				}
+			} else {
+				copyM := make(map[string]any, len(m))
+				for k, v := range m {
+					copyM[k] = v
+				}
+				copyM["content"] = string(runes[:budgetRemaining])
+				displayedMsgs = append(displayedMsgs, copyM)
+				truncated = true
+				if nextCharOffset == 0 {
+					nextCharOffset = budgetRemaining
+				}
+				budgetRemaining = 0
+				break
+			}
+		}
+		if rangeStart == 0 && len(displayedMsgs) > 0 {
+			rangeStart = startIdx + 1
+			rangeEnd = startIdx + len(displayedMsgs)
+		}
 	} else {
+		var candidateMsgs []map[string]any
+		for _, mRaw := range messagesRaw {
+			if m, ok := mRaw.(map[string]any); ok {
+				role := strings.ToLower(getString(m, "role"))
+				if includeAllRoles || role == "assistant" {
+					candidateMsgs = append(candidateMsgs, m)
+				}
+			}
+		}
+		if !includeAllRoles && len(candidateMsgs) == 0 {
+			for _, mRaw := range messagesRaw {
+				if m, ok := mRaw.(map[string]any); ok {
+					candidateMsgs = append(candidateMsgs, m)
+				}
+			}
+		}
+
+		totalMessages = len(candidateMsgs)
+		startIdx = 0
+		endIdx := totalMessages
+
 		if recentCount > 0 {
 			if hasOffset {
 				startIdx = offset
 				if startIdx > totalMessages {
 					startIdx = totalMessages
 				}
-				endIdx = startIdx + recentCount
-				if endIdx > totalMessages {
+				if recentCount > totalMessages-startIdx {
 					endIdx = totalMessages
+				} else {
+					endIdx = startIdx + recentCount
 				}
 			} else {
 				startIdx = totalMessages - recentCount
@@ -169,83 +179,64 @@ func executeGetSessionOutput(ctx context.Context, client *DaemonClient, args map
 			endIdx = totalMessages
 		}
 		candidateMsgs = candidateMsgs[startIdx:endIdx]
-	}
 
-	var displayedMsgs []map[string]any
-	budgetRemaining := maxChars
-	truncated := false
-	nextOffset := 0
-	nextCharOffset := 0
+		budgetRemaining := maxChars
+		for i, m := range candidateMsgs {
+			msgIdx := startIdx + i
+			content := getString(m, "content")
+			runes := []rune(content)
 
-	for i, m := range candidateMsgs {
-		msgIdx := startIdx + i
-		content := getString(m, "content")
-		runes := []rune(content)
-
-		charOffsetForMsg := 0
-		if i == 0 && charOffset > 0 {
-			charOffsetForMsg = charOffset
-		}
-		if charOffsetForMsg > len(runes) {
-			charOffsetForMsg = len(runes)
-		}
-		availRunes := runes[charOffsetForMsg:]
-
-		if len(availRunes) <= budgetRemaining {
-			copyM := make(map[string]any, len(m))
-			for k, v := range m {
-				copyM[k] = v
+			charOffsetForMsg := 0
+			if i == 0 && charOffset > 0 {
+				charOffsetForMsg = charOffset
 			}
-			copyM["content"] = string(availRunes)
-			displayedMsgs = append(displayedMsgs, copyM)
-			budgetRemaining -= len(availRunes)
+			if charOffsetForMsg > len(runes) {
+				charOffsetForMsg = len(runes)
+			}
+			availRunes := runes[charOffsetForMsg:]
 
-			if budgetRemaining == 0 {
-				if msgIdx+1 < totalMessages {
-					truncated = true
-					nextOffset = msgIdx + 1
-					nextCharOffset = 0
+			if len(availRunes) <= budgetRemaining {
+				copyM := make(map[string]any, len(m))
+				for k, v := range m {
+					copyM[k] = v
 				}
+				copyM["content"] = string(availRunes)
+				displayedMsgs = append(displayedMsgs, copyM)
+				budgetRemaining -= len(availRunes)
+
+				if budgetRemaining == 0 {
+					if msgIdx+1 < totalMessages {
+						truncated = true
+						nextOffset = msgIdx + 1
+						nextCharOffset = 0
+					}
+					break
+				}
+			} else {
+				copyM := make(map[string]any, len(m))
+				for k, v := range m {
+					copyM[k] = v
+				}
+				copyM["content"] = string(availRunes[:budgetRemaining])
+				displayedMsgs = append(displayedMsgs, copyM)
+				truncated = true
+				nextOffset = msgIdx
+				nextCharOffset = charOffsetForMsg + budgetRemaining
+				budgetRemaining = 0
 				break
 			}
-		} else {
-			copyM := make(map[string]any, len(m))
-			for k, v := range m {
-				copyM[k] = v
-			}
-			copyM["content"] = string(availRunes[:budgetRemaining])
-			displayedMsgs = append(displayedMsgs, copyM)
+		}
+
+		if !truncated && hasOffset && endIdx < totalMessages {
 			truncated = true
-			nextOffset = msgIdx
-			nextCharOffset = charOffsetForMsg + budgetRemaining
-			budgetRemaining = 0
-			break
+			nextOffset = endIdx
+			nextCharOffset = 0
 		}
-	}
 
-	if !truncated && hasOffset && endIdx < totalMessages {
-		truncated = true
-		nextOffset = endIdx
-		nextCharOffset = 0
-	}
-
-	if pag, ok := data["pagination"].(map[string]any); ok && pag != nil {
-		if t, _ := pag["truncated"].(bool); t {
-			truncated = true
+		if len(displayedMsgs) > 0 {
+			rangeStart = startIdx + 1
+			rangeEnd = startIdx + len(displayedMsgs)
 		}
-		if no := getInt(pag, "next_offset", 0); no > 0 {
-			nextOffset = no
-		}
-		if nco := getInt(pag, "next_char_offset", 0); nco > 0 {
-			nextCharOffset = nco
-		}
-	}
-
-	rangeStart := 0
-	rangeEnd := 0
-	if len(displayedMsgs) > 0 {
-		rangeStart = startIdx + 1
-		rangeEnd = startIdx + len(displayedMsgs)
 	}
 
 	var sb strings.Builder

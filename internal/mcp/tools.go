@@ -1764,16 +1764,13 @@ func executeSendSessionInput(ctx context.Context, client *DaemonClient, args map
 	isBlocked := false
 	var sessions []map[string]any
 	if err := client.doRequest(ctx, http.MethodGet, "/v1/sessions?federated=true", nil, &sessions); err == nil {
-		for _, s := range sessions {
-			if matchesSessionAlias(s, sessionID) {
-				if id := getString(s, "id"); id != "" {
-					sessionID = id
-				}
-				st := strings.ToLower(getString(s, "state"))
-				if st == "2" || st == "blocked" || s["blocked"] != nil {
-					isBlocked = true
-				}
-				break
+		if match := resolveSessionFromList(sessions, sessionID); match != nil {
+			if id := getString(match, "id"); id != "" {
+				sessionID = id
+			}
+			st := strings.ToLower(getString(match, "state"))
+			if st == "2" || st == "blocked" || match["blocked"] != nil {
+				isBlocked = true
 			}
 		}
 	}

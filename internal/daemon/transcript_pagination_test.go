@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -238,5 +239,25 @@ func TestTranscriptPagination_TmuxFallback(t *testing.T) {
 	content := msgs[0].(map[string]any)["content"].(string)
 	if !strings.Contains(content, "Hello from tmux scrollback") {
 		t.Errorf("expected tmux output in synthesized message, got: %s", content)
+	}
+}
+
+func TestTranscriptPagination_IntegerOverflowProtection(t *testing.T) {
+	msgs := []TranscriptMessage{
+		{Role: "assistant", Content: "Msg 0"},
+		{Role: "assistant", Content: "Msg 1"},
+	}
+	opts := TranscriptPaginationOptions{
+		HasPagination: true,
+		HasOffset:     true,
+		Offset:        1,
+		Limit:         math.MaxInt,
+	}
+	res, pag := PaginateTranscriptMessages(msgs, opts)
+	if len(res) != 1 || res[0].Content != "Msg 1" {
+		t.Fatalf("expected 1 message (Msg 1), got: %v", res)
+	}
+	if pag.Offset != 1 || pag.ReturnedCount != 1 {
+		t.Fatalf("unexpected pagination: %+v", pag)
 	}
 }
