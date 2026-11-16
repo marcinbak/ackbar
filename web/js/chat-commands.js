@@ -3,7 +3,13 @@ import { getAuthToken } from './auth.js';
 import { getSessionBaseUrl } from './utils.js';
 import { migrateTabId } from './tabs.js';
 import { renderTree } from './tree.js';
-import { connectChatStream, disconnectChatStream, loadChatTranscript } from './chat.js';
+import {
+  connectChatStream,
+  disconnectChatStream,
+  loadChatTranscript,
+  updateStatusPills,
+  formatModelLabel
+} from './chat.js';
 import { mountMCPStatus } from './chat-auth.js';
 import {
   appendEphemeralCard,
@@ -224,7 +230,12 @@ export async function interceptChatInput(tabObj, rawText) {
 
       case 'model':
         if (!args) {
-          renderConfigNoticeCard(tabObj, 'Current Model', tabObj.session.model || 'Default');
+          const curLabel = tabObj.session.model
+            ? `${formatModelLabel(tabObj.session.model, tabObj.session.agent, tabObj.agentModels)} (${tabObj.session.model})`
+            : (tabObj.session.resolved_model
+                ? `Default (${formatModelLabel(tabObj.session.resolved_model, tabObj.session.agent, tabObj.agentModels)})`
+                : 'Default');
+          renderConfigNoticeCard(tabObj, 'Current Model', curLabel);
           return true;
         }
         try {
@@ -233,8 +244,20 @@ export async function interceptChatInput(tabObj, rawText) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ model: args })
           });
-          tabObj.session.model = updated.model;
-          renderConfigNoticeCard(tabObj, 'Model Updated', `Model set to: ${updated.model || 'Default'}`);
+          tabObj.session = {
+            ...tabObj.session,
+            ...updated,
+            model: updated.model || '',
+            effort: updated.effort || '',
+            resolved_model: updated.resolved_model || ''
+          };
+          updateStatusPills(tabObj);
+          const reportModel = updated.model
+            ? updated.model
+            : (updated.resolved_model
+                ? `Default (${formatModelLabel(updated.resolved_model, tabObj.session.agent, tabObj.agentModels)})`
+                : 'Default');
+          renderConfigNoticeCard(tabObj, 'Model Updated', `Model set to: ${reportModel}`);
         } catch (err) {
           renderConfigNoticeCard(tabObj, 'Model Update Failed', err.message);
         }

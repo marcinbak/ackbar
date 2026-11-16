@@ -286,6 +286,7 @@ class Session {
   final bool isLater;
   final String gitRemote;
   final String model;
+  final String resolvedModel;
   final String effort;
   final String permissionMode;
   final List<String> extraDirs;
@@ -331,6 +332,7 @@ class Session {
     this.isLater = false,
     this.gitRemote = '',
     this.model = '',
+    this.resolvedModel = '',
     this.effort = '',
     this.permissionMode = '',
     this.extraDirs = const [],
@@ -517,6 +519,7 @@ class Session {
       isLater: json['is_later'] == true || json['is_later'] == 1,
       gitRemote: json['git_remote']?.toString() ?? '',
       model: json['model']?.toString() ?? '',
+      resolvedModel: json['resolved_model']?.toString() ?? '',
       effort: json['effort']?.toString() ?? '',
       permissionMode: json['permission_mode']?.toString() ?? '',
       extraDirs: parseStringList(json['extra_dirs']),
@@ -566,6 +569,7 @@ class Session {
       'is_later': isLater,
       if (gitRemote.isNotEmpty) 'git_remote': gitRemote,
       if (model.isNotEmpty) 'model': model,
+      if (resolvedModel.isNotEmpty) 'resolved_model': resolvedModel,
       if (effort.isNotEmpty) 'effort': effort,
       if (permissionMode.isNotEmpty) 'permission_mode': permissionMode,
       if (extraDirs.isNotEmpty) 'extra_dirs': extraDirs,
@@ -614,6 +618,7 @@ class Session {
     bool? isLater,
     String? gitRemote,
     String? model,
+    String? resolvedModel,
     String? effort,
     String? permissionMode,
     List<String>? extraDirs,
@@ -659,9 +664,117 @@ class Session {
       isLater: isLater ?? this.isLater,
       gitRemote: gitRemote ?? this.gitRemote,
       model: model ?? this.model,
+      resolvedModel: resolvedModel ?? this.resolvedModel,
       effort: effort ?? this.effort,
       permissionMode: permissionMode ?? this.permissionMode,
       extraDirs: extraDirs ?? this.extraDirs,
     );
+  }
+
+  static String formatModelLabel(
+    String rawModel,
+    String agent, [
+    dynamic suggestions = const [],
+  ]) {
+    final rawClean = rawModel.trim();
+    if (rawClean.isEmpty) return 'Default Model';
+
+    final clean =
+        rawClean.contains('[') ? rawClean.split('[').first.trim() : rawClean;
+    final lower = clean.toLowerCase();
+
+    if (lower == 'opus') return 'Claude Opus';
+    if (lower == 'sonnet') return 'Claude Sonnet';
+    if (lower == 'haiku') return 'Claude Haiku';
+    if (lower == 'opusplan') return 'Claude Opus (Plan)';
+
+    if (suggestions is Iterable) {
+      for (final s in suggestions) {
+        String sId = '';
+        String sLabel = '';
+        if (s is Map) {
+          sId = s['id']?.toString() ?? '';
+          sLabel = s['label']?.toString() ?? '';
+        } else {
+          try {
+            sId = (s as dynamic).id?.toString() ?? '';
+            sLabel = (s as dynamic).label?.toString() ?? '';
+          } catch (_) {}
+        }
+        if (sId.isNotEmpty && (sId == clean || clean.contains(sId))) {
+          if (sLabel.isNotEmpty) return sLabel;
+        }
+        if (sLabel.isNotEmpty && sLabel.toLowerCase() == lower) {
+          return sLabel;
+        }
+      }
+    }
+
+    const staticCatalog = <String, String>{
+      'claude-fable-5-1': 'Claude Fable 5.1',
+      'claude-opus-5-5': 'Claude Opus 5.5',
+      'claude-sonnet-5-5': 'Claude Sonnet 5.5',
+      'claude-opus-4-6': 'Claude Opus 4.6',
+      'claude-sonnet-4-6': 'Claude Sonnet 4.6',
+      'claude-haiku-4-5': 'Claude Haiku 4.5',
+      'claude-3-7-sonnet-20250219': 'Claude 3.7 Sonnet',
+      'claude-3-5-sonnet-20241022': 'Claude 3.5 Sonnet',
+      'claude-3-5-haiku': 'Claude 3.5 Haiku',
+      'claude-3-opus': 'Claude 3 Opus',
+      'gemini-4-carbon-high': 'Gemini 4 Carbon (High)',
+      'gemini-4-carbon-medium': 'Gemini 4 Carbon (Medium)',
+      'gemini-4-carbon-low': 'Gemini 4 Carbon (Low)',
+      'gemini-4-hydrogen-xhigh': 'Gemini 4 Hydrogen (XHigh)',
+      'gemini-4-hydrogen-high': 'Gemini 4 Hydrogen (High)',
+      'gemini-4-hydrogen-medium': 'Gemini 4 Hydrogen (Medium)',
+      'gemini-4-hydrogen-low': 'Gemini 4 Hydrogen (Low)',
+      'gemini-pro-orchestrator-argon': 'Orchestrator (Argon)',
+      'gemini-pro-orchestrator': 'Orchestrator (Carbon)',
+      'gemini-4-argon-high': 'Gemini 4 Argon (High)',
+      'gemini-4-argon-medium': 'Gemini 4 Argon (Medium)',
+      'gemini-4-argon-low': 'Gemini 4 Argon (Low)',
+      'gemini-3.8-flash-high': 'Gemini 3.8 Flash (High)',
+      'gemini-3.8-flash-medium': 'Gemini 3.8 Flash (Medium)',
+      'gemini-3.8-flash-low': 'Gemini 3.8 Flash (Low)',
+      'claude-opus-5-5-high': 'Claude Opus 5.5 (High)',
+      'claude-opus-5-5-medium': 'Claude Opus 5.5 (Medium)',
+      'claude-opus-5-5-low': 'Claude Opus 5.5 (Low)',
+      'claude-sonnet-5-5-high': 'Claude Sonnet 5.5 (High)',
+      'claude-sonnet-5-5-medium': 'Claude Sonnet 5.5 (Medium)',
+      'claude-sonnet-5-5-low': 'Claude Sonnet 5.5 (Low)',
+      'gpt-oss-120b-medium': 'GPT-OSS 120B (Medium)',
+    };
+
+    for (final entry in staticCatalog.entries) {
+      if (clean == entry.key || clean.contains(entry.key)) {
+        return entry.value;
+      }
+    }
+
+    if (clean.startsWith('claude-') || clean.startsWith('gemini-')) {
+      var humanized = clean;
+      if (humanized.endsWith('-xhigh')) {
+        humanized = '${humanized.substring(0, humanized.length - 6)} (XHigh)';
+      } else if (humanized.endsWith('-high')) {
+        humanized = '${humanized.substring(0, humanized.length - 5)} (High)';
+      } else if (humanized.endsWith('-medium')) {
+        humanized = '${humanized.substring(0, humanized.length - 7)} (Medium)';
+      } else if (humanized.endsWith('-low')) {
+        humanized = '${humanized.substring(0, humanized.length - 4)} (Low)';
+      }
+      final parts = humanized.split(' ');
+      final mainPart = parts.first;
+      final words = mainPart
+          .split('-')
+          .map((w) =>
+              w.isNotEmpty ? '${w[0].toUpperCase()}${w.substring(1)}' : '')
+          .join(' ');
+      if (parts.length > 1) {
+        return '$words ${parts.sublist(1).join(' ')}';
+      }
+      return words;
+    }
+
+    return clean;
   }
 }

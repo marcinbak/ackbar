@@ -65,6 +65,12 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		sessions = s.getFederatedSessions(r.Context(), sessions)
 	}
 
+	for _, sess := range sessions {
+		if sess != nil && s.isLocalHost(sess.Host) {
+			s.populateResolvedModel(sess)
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(sessions)
 }
@@ -1393,6 +1399,7 @@ func (s *Server) handleSessionConfig(w http.ResponseWriter, r *http.Request, ses
 		s.headless.NotifyConfigChanged(sess)
 	}
 
+	s.populateResolvedModel(sess)
 	s.broadcast(sess)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -1950,6 +1957,7 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		if routingDecision.LoadWarning != "" {
 			respPayload["load_warning"] = routingDecision.LoadWarning
 		}
+		s.populateResolvedModel(sess)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(respPayload)
 		return
@@ -2042,6 +2050,7 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 	if routingDecision.LoadWarning != "" {
 		respPayload["load_warning"] = routingDecision.LoadWarning
 	}
+	s.populateResolvedModel(sess)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(respPayload)
 }

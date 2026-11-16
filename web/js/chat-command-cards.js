@@ -1,4 +1,5 @@
 import { escapeHtml } from './utils.js';
+import { formatModelLabel } from './chat.js';
 
 export function appendEphemeralCard(tabObj, cardEl) {
   if (!tabObj || !tabObj.chatMessagesEl || !cardEl) return;
@@ -230,11 +231,12 @@ export function renderInspectCard(tabObj, kind, data) {
     const outputTokens = Number(data.output_tokens) || 0;
     const cacheRead = Number(data.cache_read_tokens) || 0;
     const cacheWrite = Number(data.cache_write_tokens) || 0;
+    const modelLabel = data.model || (data.resolved_model ? `Default (${formatModelLabel(data.resolved_model, data.agent)})` : 'Default');
 
     card.innerHTML = `
       <div class="inspect-header"><span>📊</span> <strong>Context & Cost Breakdown (${escapeHtml(data.agent || '')})</strong></div>
       <div class="inspect-grid">
-        <div><strong>Model:</strong> ${escapeHtml(data.model || 'Default')}</div>
+        <div><strong>Model:</strong> ${escapeHtml(modelLabel)}</div>
         <div><strong>Turns:</strong> ${turnCount}</div>
         <div><strong>Context Window:</strong> ${contextUsed} / ${contextLimit} tokens (${contextPct}%)</div>
         <div><strong>Input Tokens:</strong> ${inputTokens}</div>

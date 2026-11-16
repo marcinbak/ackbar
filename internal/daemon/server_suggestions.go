@@ -58,6 +58,15 @@ var (
 
 func getAntigravityDefaultModels() []ModelSuggestion {
 	return []ModelSuggestion{
+		{ID: "gemini-4-carbon-high", Label: "Gemini 4 Carbon (High)"},
+		{ID: "gemini-4-carbon-medium", Label: "Gemini 4 Carbon (Medium)"},
+		{ID: "gemini-4-carbon-low", Label: "Gemini 4 Carbon (Low)"},
+		{ID: "gemini-4-hydrogen-xhigh", Label: "Gemini 4 Hydrogen (XHigh)"},
+		{ID: "gemini-4-hydrogen-high", Label: "Gemini 4 Hydrogen (High)"},
+		{ID: "gemini-4-hydrogen-medium", Label: "Gemini 4 Hydrogen (Medium)"},
+		{ID: "gemini-4-hydrogen-low", Label: "Gemini 4 Hydrogen (Low)"},
+		{ID: "gemini-pro-orchestrator", Label: "Orchestrator (Carbon)"},
+		{ID: "gemini-pro-orchestrator-argon", Label: "Orchestrator (Argon)"},
 		{ID: "gemini-4-argon-high", Label: "Gemini 4 Argon (High)"},
 		{ID: "gemini-4-argon-medium", Label: "Gemini 4 Argon (Medium)"},
 		{ID: "gemini-4-argon-low", Label: "Gemini 4 Argon (Low)"},

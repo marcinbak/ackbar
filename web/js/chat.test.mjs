@@ -482,7 +482,9 @@ const {
   setChatSending,
   hideInStreamActivity,
   pauseInStreamActivity,
-  resumeInStreamActivity
+  resumeInStreamActivity,
+  formatModelLabel,
+  updateStatusPills
 } = chat;
 
 const chatAuth = await import('./chat-auth.js');
@@ -2127,6 +2129,119 @@ test('activity timer preservation across tab switches and thought_delta chunks',
   const match2 = timerEl2.textContent.match(/\((\d+)s\)/);
   assert.ok(match2 && parseInt(match2[1], 10) >= 45, `Fresh tab timer must display >= 45s from daemon timestamp, got: ${timerEl2.textContent}`);
 });
+
+test('formatModelLabel resolves Carbon, Hydrogen XHigh, [1m], and Claude aliases', () => {
+  assert.equal(formatModelLabel('gemini-4-carbon-medium', 'antigravity'), 'Gemini 4 Carbon (Medium)');
+  assert.equal(formatModelLabel('gemini-4-hydrogen-xhigh', 'antigravity'), 'Gemini 4 Hydrogen (XHigh)');
+  assert.equal(formatModelLabel('gemini-pro-orchestrator', 'antigravity'), 'Orchestrator (Carbon)');
+  assert.equal(formatModelLabel('claude-fable-5-1[1m]', 'claude-code'), 'Claude Fable 5.1');
+  assert.equal(formatModelLabel('opus', 'claude-code'), 'Claude Opus');
+  assert.equal(formatModelLabel('sonnet', 'claude-code'), 'Claude Sonnet');
+  assert.equal(formatModelLabel('haiku', 'claude-code'), 'Claude Haiku');
+  assert.equal(formatModelLabel('opusplan', 'claude-code'), 'Claude Opus (Plan)');
+  assert.equal(formatModelLabel('', 'claude-code'), 'Default Model');
+});
+
+test('updateStatusPills displays resolved_model when model is empty and caches default', () => {
+  const pillEl = document.createElement('span');
+  const tabObj = {
+    session: {
+      model: '',
+      resolved_model: 'claude-fable-5-1',
+      agent: 'claude-code'
+    },
+    chatPillModel: pillEl
+  };
+
+  updateStatusPills(tabObj);
+  assert.equal(tabObj.chatPillModel.textContent, 'Claude Fable 5.1');
+  assert.equal(tabObj.lastDefaultModel, 'claude-fable-5-1');
+
+  tabObj.session.model = 'claude-opus-5-5';
+  updateStatusPills(tabObj);
+  assert.equal(tabObj.chatPillModel.textContent, 'Claude Opus 5.5');
+  assert.equal(tabObj.lastDefaultModel, 'claude-fable-5-1');
+});
+
+test('renderConfigPopoverContent renders Default (<Model>) and handles model reset with omitempty merge', () => {
+  const popover = document.createElement('div');
+  const tabObj = {
+    session: {
+      id: 'sess-cfg-1',
+      agent: 'claude-code',
+      model: '',
+      resolved_model: 'claude-fable-5-1'
+    },
+    chatConfigPopover: popover
+  };
+
+  renderConfigPopoverContent(tabObj);
+  const selectModel = popover.querySelector('.config-select-model');
+  assert.ok(selectModel);
+  const defaultOption = selectModel.children[0];
+  assert.equal(defaultOption.value, '');
+  assert.equal(defaultOption.textContent, 'Default (Claude Fable 5.1)');
+
+  tabObj.session.model = 'claude-opus-5-5';
+  tabObj.lastDefaultModel = 'claude-fable-5-1';
+  renderConfigPopoverContent(tabObj);
+  const selectModel2 = popover.querySelector('.config-select-model');
+  const defaultOption2 = selectModel2.children[0];
+  assert.equal(defaultOption2.textContent, 'Default (Claude Fable 5.1)');
+});
+
+test('interceptChatInput handles /model status and reset to default', async () => {
+  const { interceptChatInput } = await import('./chat-commands.js');
+  const container = document.createElement('div');
+  const inputEl = document.createElement('textarea');
+  const pillEl = document.createElement('span');
+  const tabObj = {
+    id: 'claude-code:local:model-cmd-1',
+    session: {
+      id: 'claude-code:local:model-cmd-1',
+      agent: 'claude-code',
+      model: '',
+      resolved_model: 'claude-fable-5-1'
+    },
+    chatMessagesEl: container,
+    chatInputEl: inputEl,
+    chatPillModel: pillEl,
+    ephemeralCards: []
+  };
+
+  updateStatusPills(tabObj);
+  assert.equal(pillEl.textContent, 'Claude Fable 5.1');
+
+  inputEl.value = '/model';
+  const interceptedStatus = await interceptChatInput(tabObj, '/model');
+  assert.equal(interceptedStatus, true);
+  const notice = container.querySelector('.chat-config-notice');
+  assert.ok(notice);
+  assert.ok(notice.textContent.includes('Default (Claude Fable 5.1)'));
+
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    return {
+      ok: true,
+      json: async () => ({
+        id: tabObj.session.id,
+        agent: 'claude-code',
+        resolved_model: 'claude-fable-5-1'
+      })
+    };
+  };
+
+  try {
+    inputEl.value = '/model default';
+    const interceptedReset = await interceptChatInput(tabObj, '/model default');
+    assert.equal(interceptedReset, true);
+    assert.equal(tabObj.session.model, '');
+    assert.equal(pillEl.textContent, 'Claude Fable 5.1');
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});
+
 
 
 

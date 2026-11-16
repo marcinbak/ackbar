@@ -97,7 +97,14 @@ function connectSSE() {
           if (idx !== -1) {
             const existing = state.sessions[idx];
             const mergedName = (!isRawSessionName(updatedSess.name) || isRawSessionName(existing.name)) ? (updatedSess.name || existing.name) : existing.name;
-            state.sessions[idx] = { ...existing, ...updatedSess, name: mergedName };
+            state.sessions[idx] = {
+              ...existing,
+              ...updatedSess,
+              name: mergedName,
+              model: updatedSess.model || '',
+              effort: updatedSess.effort || '',
+              resolved_model: updatedSess.resolved_model || ''
+            };
           } else {
             state.sessions.push(updatedSess);
           }

@@ -223,8 +223,13 @@ class HeadlessCommandDispatcher {
             authToken: host.authToken,
           );
           onSessionUpdated?.call(updated);
+          final statusMsg = updated.model.isNotEmpty
+              ? updated.model
+              : (updated.resolvedModel.isNotEmpty
+                  ? 'Default (${Session.formatModelLabel(updated.resolvedModel, updated.agent)})'
+                  : 'Default');
           return CommandDispatchResult.handled(
-            card: _statusCard('Configuration', 'Model set to $argText'),
+            card: _statusCard('Configuration', 'Model set to $statusMsg'),
           );
 
         case 'effort':

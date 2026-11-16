@@ -102,8 +102,13 @@ func scanAgentMarkdownFiles(dirs ...string) []map[string]string {
 }
 
 func (s *Server) computeTranscriptContextAndCost(home string, sess *Session) map[string]interface{} {
-	limitTokens := 200000
-	if sess.Agent == "antigravity" {
+	resolvedModel := s.resolveSessionModel(sess)
+	effectiveModel := sess.Model
+	if effectiveModel == "" {
+		effectiveModel = resolvedModel
+	}
+	limitTokens := getModelContextLimit(effectiveModel)
+	if sess.Agent == "antigravity" && limitTokens < 1000000 {
 		limitTokens = 1000000
 	}
 
@@ -232,6 +237,7 @@ func (s *Server) computeTranscriptContextAndCost(home string, sess *Session) map
 	return map[string]interface{}{
 		"agent":                sess.Agent,
 		"model":                sess.Model,
+		"resolved_model":       resolvedModel,
 		"effort":               sess.Effort,
 		"permission_mode":      sess.PermissionMode,
 		"turn_count":           turnCount,

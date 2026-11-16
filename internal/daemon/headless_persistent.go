@@ -328,6 +328,7 @@ func (h *HeadlessRunner) ShutdownSessionWorker(sessionID, nativeID string, timeo
 	if h == nil {
 		return
 	}
+	h.ClearRuntimeModel(sessionID)
 	h.mu.Lock()
 	for k := range h.warmWorkers {
 		if k == sessionID || (nativeID != "" && (k == nativeID || strings.HasSuffix(k, ":"+nativeID))) {
@@ -367,6 +368,7 @@ func (h *HeadlessRunner) NotifyConfigChanged(sess *Session) {
 	if h == nil || sess == nil {
 		return
 	}
+	h.ClearRuntimeModel(sess.ID)
 	h.mu.Lock()
 	handle := h.warmWorkers[sess.ID]
 	if handle == nil || handle.ConfigFingerprint == ConfigFingerprint(sess) {

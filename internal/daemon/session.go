@@ -154,6 +154,7 @@ type Session struct {
 	AccountID         string    `json:"account_id,omitempty"`  // profile/account identifier (e.g. "work", "personal", "default")
 	EngineType        string    `json:"engine_type,omitempty"` // "tmux" (default) or "headless"
 	Model             string    `json:"model,omitempty"`
+	ResolvedModel     string    `json:"resolved_model,omitempty"`
 	Effort            string    `json:"effort,omitempty"`
 	PermissionMode    string    `json:"permission_mode,omitempty"`
 	ExtraDirs         []string  `json:"extra_dirs,omitempty"`
