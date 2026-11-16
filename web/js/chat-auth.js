@@ -288,7 +288,7 @@ export async function mountMCPStatus(container, sessionId, tabObj, options = {})
     submenuView = popover?.querySelector('.config-mcp-submenu-view') || null;
     headerTitleEl = popover?.querySelector('.config-popover-title') || null;
 
-    container.innerHTML = `<button type="button" class="config-mcp-submenu-btn"><span class="config-mcp-submenu-label">🔌 MCP &amp; Plugins (…)</span><span class="config-mcp-submenu-right"><span class="config-mcp-submenu-alert" style="display: none;"></span><span class="config-mcp-chevron">▸</span></span></button>`;
+    container.innerHTML = `<button type="button" class="config-mcp-submenu-btn"><span class="config-mcp-submenu-label">🔌 MCP (…)</span><span class="config-mcp-submenu-right"><span class="config-mcp-submenu-alert" style="display: none;"></span><span class="config-mcp-chevron">▸</span></span></button>`;
     if (submenuView) {
       submenuView.innerHTML = mcpControlsHtml;
       bodyContainer = submenuView;

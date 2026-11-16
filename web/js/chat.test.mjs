@@ -2290,6 +2290,10 @@ test('renderConfigPopoverContent renders compact MCP submenu button with count a
 
   try {
     renderConfigPopoverContent(tabObj);
+    const initialLabelEl = popover.querySelector('.config-mcp-submenu-label');
+    assert.ok(initialLabelEl);
+    assert.equal(initialLabelEl.textContent, '🔌 MCP (…)', 'Initial label must show loading state without text shift');
+
     await new Promise((r) => setTimeout(r, 10));
 
     const mainView = popover.querySelector('.config-main-view');
