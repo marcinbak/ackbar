@@ -389,6 +389,17 @@ func shellSingleQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
+func shellQuoteArgs(args []string) string {
+	if len(args) == 0 {
+		return ""
+	}
+	quoted := make([]string, len(args))
+	for i, a := range args {
+		quoted[i] = shellSingleQuote(a)
+	}
+	return strings.Join(quoted, " ")
+}
+
 func (s *Server) updateRemoteHostToVersion(host *HostRecord, targetVersion string) (map[string]interface{}, int, error) {
 	hostName := host.Name
 	sshTarget := host.SSHTarget
@@ -808,7 +819,7 @@ func resolveRestartExecutable() string {
 
 func restartLocalDaemonAsync() {
 	exe := resolveRestartExecutable()
-	args := strings.Join(os.Args[1:], " ")
+	args := shellQuoteArgs(os.Args[1:])
 	pid := os.Getpid()
 	script := fmt.Sprintf(`sleep 0.5
 if command -v systemctl >/dev/null 2>&1 && systemctl --user is-enabled ackbard.service >/dev/null 2>&1; then

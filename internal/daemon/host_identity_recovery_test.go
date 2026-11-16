@@ -262,3 +262,16 @@ func TestReconstructManagedTmuxSession(t *testing.T) {
 		t.Fatalf("expected CurrentTaskID 'TASK-FALLBACK' from pane command line, got %q", orphanSess.CurrentTaskID)
 	}
 }
+
+func TestShellQuoteArgs(t *testing.T) {
+	input := []string{"--display-name", "MacBook Air", "--token", "abc'def;rm -rf /", "--flag=value with spaces"}
+	quoted := shellQuoteArgs(input)
+	expected := `'--display-name' 'MacBook Air' '--token' 'abc'\''def;rm -rf /' '--flag=value with spaces'`
+	if quoted != expected {
+		t.Fatalf("expected:\n%s\ngot:\n%s", expected, quoted)
+	}
+
+	if empty := shellQuoteArgs(nil); empty != "" {
+		t.Fatalf("expected empty string for nil args, got %q", empty)
+	}
+}

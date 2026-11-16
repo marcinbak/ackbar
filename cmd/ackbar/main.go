@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"syscall"
@@ -123,9 +124,92 @@ Flags:
   --no-tui          Headless mode (ensure daemon is running without opening browser)`)
 }
 
+var validHostNameRegex = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$`)
+
+func isValidDisplayName(d string) bool {
+	if d == "" {
+		return false
+	}
+	for _, r := range d {
+		if r < 0x20 || r == 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
+func hasPersistedHostIdentity(home string) bool {
+	if home == "" {
+		return false
+	}
+	dbPath := filepath.Join(home, ".config", "ackbar", "ackbard.db")
+	if _, err := os.Stat(dbPath); err != nil {
+		return false
+	}
+	db, err := daemon.InitDB(dbPath)
+	if err != nil {
+		return false
+	}
+	defer db.Close()
+	val, err := db.GetSetting("host_name")
+	return err == nil && val != "" && !strings.EqualFold(val, "local")
+}
+
+func buildDaemonRestartArgs(home, runningHost, runningDisplayName string) []string {
+	if hasPersistedHostIdentity(home) {
+		return nil
+	}
+	var args []string
+	if runningHost != "" && !strings.EqualFold(runningHost, "local") && validHostNameRegex.MatchString(runningHost) {
+		args = append(args, "--host-name", runningHost)
+	}
+	if runningDisplayName != "" && !strings.EqualFold(runningDisplayName, "local") && isValidDisplayName(runningDisplayName) {
+		args = append(args, "--display-name", runningDisplayName)
+	}
+	return args
+}
+
+func tryRestartDarwinLaunchdService() bool {
+	if runtime.GOOS != "darwin" {
+		return false
+	}
+	out, err := exec.Command("launchctl", "list").Output()
+	if err != nil {
+		return false
+	}
+	outStr := string(out)
+	var started bool
+	if strings.Contains(outStr, "com.marcinbak.ackbard") {
+		_ = exec.Command("launchctl", "kickstart", "-k", fmt.Sprintf("gui/%d/com.marcinbak.ackbard", os.Getuid())).Run()
+		started = true
+	} else if strings.Contains(outStr, "homebrew.mxcl.ackbar") {
+		cmd := exec.Command("brew", "services", "restart", "ackbar")
+		cmd.Env = append(os.Environ(), "PATH=/opt/homebrew/bin:/usr/local/bin:"+os.Getenv("PATH"))
+		_ = cmd.Run()
+		started = true
+	}
+	if !started {
+		return false
+	}
+	deadline := time.Now().Add(800 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		time.Sleep(100 * time.Millisecond)
+		if conn, err := net.DialTimeout("tcp", "127.0.0.1:7777", 100*time.Millisecond); err == nil {
+			_ = conn.Close()
+			return true
+		}
+	}
+	return false
+}
+
 func ensureDaemonRunning() {
+	token := os.Getenv("ACKBAR_TOKEN")
 	httpClient := &http.Client{Timeout: 500 * time.Millisecond}
-	resp, err := httpClient.Get("http://127.0.0.1:7777/v1/version")
+	vReq, _ := http.NewRequest(http.MethodGet, "http://127.0.0.1:7777/v1/version", nil)
+	if token != "" {
+		vReq.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := httpClient.Do(vReq)
 	var runningHost string
 	var runningDisplayName string
 	if err == nil {
@@ -133,17 +217,22 @@ func ensureDaemonRunning() {
 		if err := json.NewDecoder(resp.Body).Decode(&verRes); err == nil {
 			resp.Body.Close()
 			runningVer, _ := verRes["version"].(string)
-			if h, ok := verRes["host"].(string); ok {
+			if h, ok := verRes["host"].(string); ok && validHostNameRegex.MatchString(h) {
 				runningHost = h
 			}
-			if d, ok := verRes["display_name"].(string); ok {
+			if d, ok := verRes["display_name"].(string); ok && isValidDisplayName(d) {
 				runningDisplayName = d
 			}
 			if runningVer == version.Version {
 				return
 			}
 			fmt.Printf("🔄 Outdated daemon detected (running v%s, client v%s). Restarting daemon...\n", runningVer, version.Version)
-			_, _ = httpClient.Post("http://127.0.0.1:7777/v1/shutdown", "application/json", nil)
+			sReq, _ := http.NewRequest(http.MethodPost, "http://127.0.0.1:7777/v1/shutdown", nil)
+			sReq.Header.Set("Content-Type", "application/json")
+			if token != "" {
+				sReq.Header.Set("Authorization", "Bearer "+token)
+			}
+			_, _ = httpClient.Do(sReq)
 			time.Sleep(300 * time.Millisecond)
 		} else {
 			resp.Body.Close()
@@ -152,19 +241,7 @@ func ensureDaemonRunning() {
 
 	fmt.Println("🚀 Local ackbard daemon starting in background...")
 
-	restartedViaLaunchctl := false
-	if runtime.GOOS == "darwin" {
-		if out, err := exec.Command("launchctl", "list").Output(); err == nil && strings.Contains(string(out), "com.marcinbak.ackbard") {
-			_ = exec.Command("launchctl", "kickstart", "-k", fmt.Sprintf("gui/%d/com.marcinbak.ackbard", os.Getuid())).Run()
-			time.Sleep(600 * time.Millisecond)
-			if conn, err := net.DialTimeout("tcp", "127.0.0.1:7777", 200*time.Millisecond); err == nil {
-				_ = conn.Close()
-				restartedViaLaunchctl = true
-			}
-		}
-	}
-
-	if !restartedViaLaunchctl {
+	if !tryRestartDarwinLaunchdService() {
 		home, _ := os.UserHomeDir()
 		ackbardBin := "ackbard"
 		if home != "" {
@@ -174,14 +251,7 @@ func ensureDaemonRunning() {
 			}
 		}
 
-		var args []string
-		if runningHost != "" && !strings.EqualFold(runningHost, "local") {
-			args = append(args, "--host-name", runningHost)
-		}
-		if runningDisplayName != "" && !strings.EqualFold(runningDisplayName, "local") {
-			args = append(args, "--display-name", runningDisplayName)
-		}
-
+		args := buildDaemonRestartArgs(home, runningHost, runningDisplayName)
 		cmd := exec.Command(ackbardBin, args...)
 		if err := cmd.Start(); err != nil {
 			goArgs := append([]string{"run", "./cmd/ackbard"}, args...)
@@ -1010,10 +1080,10 @@ func runUpdateCmd(args []string) {
 	if resp, err := httpClient.Do(vReq); err == nil {
 		var verRes map[string]interface{}
 		if err := json.NewDecoder(resp.Body).Decode(&verRes); err == nil {
-			if h, ok := verRes["host"].(string); ok {
+			if h, ok := verRes["host"].(string); ok && validHostNameRegex.MatchString(h) {
 				runningHost = h
 			}
-			if d, ok := verRes["display_name"].(string); ok {
+			if d, ok := verRes["display_name"].(string); ok && isValidDisplayName(d) {
 				runningDisplayName = d
 			}
 		}
@@ -1049,18 +1119,8 @@ func runUpdateCmd(args []string) {
 		}
 
 		time.Sleep(400 * time.Millisecond)
-		restartedViaLaunchctl := false
-		if runtime.GOOS == "darwin" {
-			if out, err := exec.Command("launchctl", "list").Output(); err == nil && strings.Contains(string(out), "com.marcinbak.ackbard") {
-				_ = exec.Command("launchctl", "kickstart", "-k", fmt.Sprintf("gui/%d/com.marcinbak.ackbard", os.Getuid())).Run()
-				time.Sleep(600 * time.Millisecond)
-				if conn, err := net.DialTimeout("tcp", "127.0.0.1:7777", 200*time.Millisecond); err == nil {
-					_ = conn.Close()
-					restartedViaLaunchctl = true
-				}
-			}
-		}
-		if !restartedViaLaunchctl {
+		if !tryRestartDarwinLaunchdService() {
+			home, _ := os.UserHomeDir()
 			ackbardBin := ""
 			if res != nil && res.TargetDir != "" {
 				ackbardBin = filepath.Join(res.TargetDir, "ackbard")
@@ -1070,13 +1130,7 @@ func runUpdateCmd(args []string) {
 			} else if _, err := os.Stat(ackbardBin); err != nil {
 				ackbardBin = "ackbard"
 			}
-			var args []string
-			if runningHost != "" && !strings.EqualFold(runningHost, "local") {
-				args = append(args, "--host-name", runningHost)
-			}
-			if runningDisplayName != "" && !strings.EqualFold(runningDisplayName, "local") {
-				args = append(args, "--display-name", runningDisplayName)
-			}
+			args := buildDaemonRestartArgs(home, runningHost, runningDisplayName)
 			_ = exec.Command(ackbardBin, args...).Start()
 		}
 	}
