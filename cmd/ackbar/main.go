@@ -489,7 +489,25 @@ func runSetupHooks() error {
 		fmt.Printf("✅ Configured Antigravity lifecycle hooks in %s\n", geminiHooksFile)
 	}
 
-	// 4. Provision agent MCP servers and ackbar-tasks skills
+	// 4. Configure Grok hooks (~/.grok/hooks/ackbar.json) if grok is installed or ~/.grok exists
+	grokDir := filepath.Join(home, ".grok")
+	grokInstalled := false
+	if _, err := os.Stat(grokDir); err == nil {
+		grokInstalled = true
+	} else if _, err := exec.LookPath("grok"); err == nil {
+		grokInstalled = true
+	} else if _, err := exec.LookPath("grok-cli"); err == nil {
+		grokInstalled = true
+	}
+	if grokInstalled {
+		if err := daemon.WriteGrokHooksFile(grokDir, ""); err == nil {
+			fmt.Printf("✅ Configured Grok lifecycle hooks in %s/hooks/ackbar.json\n", grokDir)
+		} else {
+			fmt.Printf("⚠️ Warning: Failed to configure Grok hooks: %v\n", err)
+		}
+	}
+
+	// 5. Provision agent MCP servers and ackbar-tasks skills
 	fmt.Printf("⚡ Configuring agent MCP servers and ackbar-tasks skills...\n")
 	if _, err := daemon.ProvisionAgents(home, []string{"all"}); err != nil {
 		fmt.Printf("⚠️ Warning: Agent provisioning encountered an error: %v\n", err)
@@ -677,10 +695,10 @@ func runAccountCmd(args []string) {
 		tail := fs.Args()
 		if len(tail) < 2 {
 			fmt.Println("Usage: ackbar account add <agent> <name> [flags]")
-			fmt.Println("  Agents: claude-code, antigravity")
+			fmt.Println("  Agents: claude-code, antigravity, grok")
 			fmt.Println("  Flags:")
 			fmt.Println("    --display-name <name>  Human-readable name (e.g. \"Work Anthropic\")")
-			fmt.Println("    --api-key <key>        API key (e.g. ANTHROPIC_API_KEY)")
+			fmt.Println("    --api-key <key>        API key (e.g. ANTHROPIC_API_KEY, XAI_API_KEY)")
 			fmt.Println("    --config-dir <path>    Custom config directory")
 			fmt.Println("    --default              Set as default profile")
 			fmt.Println("    --all-hosts            Propagate to connected fleet hosts")
@@ -696,6 +714,8 @@ func runAccountCmd(args []string) {
 				envMap["ANTHROPIC_API_KEY"] = *apiKey
 			} else if agent == "antigravity" {
 				envMap["GEMINI_API_KEY"] = *apiKey
+			} else if agent == "grok" {
+				envMap["XAI_API_KEY"] = *apiKey
 			}
 		}
 
@@ -884,7 +904,7 @@ func runAgentCmd(args []string) {
 	switch subcmd {
 	case "setup", "configure", "install", "sync":
 		fs := flag.NewFlagSet("agent "+subcmd, flag.ExitOnError)
-		agentFlag := fs.String("agent", "all", "Target agent (claude-code, antigravity, codex, or all)")
+		agentFlag := fs.String("agent", "all", "Target agent (claude-code, antigravity, codex, grok, or all)")
 		repoURLFlag := fs.String("skills-repo-url", "", "Git repository URL for shared skills")
 		repoPathFlag := fs.String("skills-repo-path", "", "Local destination directory for skills repo")
 		cloneFlag := fs.Bool("clone", false, "Automatically clone without confirmation prompt if missing")

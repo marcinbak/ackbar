@@ -65,7 +65,8 @@ func validateRepoPath(home, p string) (string, error) {
 	}
 
 	topComponent := strings.Split(filepath.ToSlash(rel), "/")[0]
-	if topComponent == ".ssh" || topComponent == ".gnupg" || topComponent == ".claude" || topComponent == ".gemini" || topComponent == ".codex" {
+	if topComponent == ".ssh" || topComponent == ".gnupg" || topComponent == ".claude" || topComponent == ".gemini" || topComponent == ".codex" || topComponent == ".grok" ||
+		(strings.HasPrefix(topComponent, ".") && strings.HasSuffix(topComponent, "-profiles")) {
 		return "", fmt.Errorf("repository path cannot be inside reserved or sensitive directory: %s", topComponent)
 	}
 
@@ -147,6 +148,8 @@ func DiscoverSkillsRepo(home string, db *DB) (repoPath, repoURL string) {
 		filepath.Join(home, ".gemini", "config", "skills"),
 		filepath.Join(home, ".gemini", "antigravity-cli", "skills"),
 		filepath.Join(home, ".claude", "skills"),
+		filepath.Join(home, ".codex", "skills"),
+		filepath.Join(home, ".grok", "skills"),
 	}
 
 	for _, sDir := range scanDirs {
@@ -236,28 +239,21 @@ func DiscoverSkillsRepo(home string, db *DB) (repoPath, repoURL string) {
 				}
 				candidateRoot = filepath.Clean(candidateRoot)
 
-				// Verify candidate root is inside home and not in .claude, .gemini, or .codex
-				rel, err := filepath.Rel(filepath.Clean(home), candidateRoot)
-				if err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-					slashRel := filepath.ToSlash(rel)
-					if !strings.HasPrefix(slashRel, ".claude") &&
-						!strings.HasPrefix(slashRel, ".gemini") &&
-						!strings.HasPrefix(slashRel, ".codex") {
-						repoPath = candidateRoot
-						if repoURL == "" {
-							cmd := exec.Command("git", "-C", repoPath, "remote", "get-url", "origin")
-							if out, err := cmd.Output(); err == nil {
-								repoURL = strings.TrimSpace(string(out))
-							}
+				if validPath, err := validateRepoPath(home, candidateRoot); err == nil {
+					repoPath = validPath
+					if repoURL == "" {
+						cmd := exec.Command("git", "-C", repoPath, "remote", "get-url", "origin")
+						if out, err := cmd.Output(); err == nil {
+							repoURL = strings.TrimSpace(string(out))
 						}
-						if db != nil {
-							_ = db.SetSettings(map[string]string{
-								"skills_repo_path": repoPath,
-								"skills_repo_url":  repoURL,
-							})
-						}
-						return repoPath, repoURL
 					}
+					if db != nil {
+						_ = db.SetSettings(map[string]string{
+							"skills_repo_path": repoPath,
+							"skills_repo_url":  repoURL,
+						})
+					}
+					return repoPath, repoURL
 				}
 			}
 		}
@@ -593,6 +589,7 @@ func fallbackInstallSkills(home, repoPath string) error {
 		filepath.Join(home, ".gemini", "config", "skills"),
 		filepath.Join(home, ".gemini", "antigravity-cli", "skills"),
 		filepath.Join(home, ".codex", "skills"),
+		filepath.Join(home, ".grok", "skills"),
 	}
 
 	type skillCandidate struct {

@@ -867,6 +867,9 @@ function getAgentBadgeHtml(agent, iconOnly = false) {
   } else if (a.includes('codex') || a.includes('openai')) {
     const svg = `<svg class="agent-logo-svg codex-logo" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a4.5 4.5 0 0 1 4.2 2.9l.4.9a4.5 4.5 0 0 1 1.8 4.7l-.2 1a4.5 4.5 0 0 1-2.4 4.1l-.8.5a4.5 4.5 0 0 1-4.7 1.8l-1-.2a4.5 4.5 0 0 1-4.1-2.4l-.5-.8a4.5 4.5 0 0 1-1.8-4.7l.2-1a4.5 4.5 0 0 1 2.4-4.1l.8-.5A4.5 4.5 0 0 1 12 2z"/><path d="M12 6.5l3.5 2v4l-3.5 2l-3.5-2v-4z"/><path d="M8.5 8.5L5 10.5M15.5 8.5L19 10.5M12 14.5V18.5"/></svg>`;
     return `<span class="agent-icon-badge codex" title="OpenAI Codex">${svg}${iconOnly ? '' : ' codex'}</span>`;
+  } else if (a.includes('grok')) {
+    const svg = `<svg class="agent-logo-svg grok-logo" viewBox="0 0 24 24" width="12" height="12" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>`;
+    return `<span class="agent-icon-badge grok" title="xAI Grok">${svg}${iconOnly ? '' : ' grok'}</span>`;
   }
   const svg = `<svg class="agent-logo-svg generic-logo" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><line x1="7" y1="8" x2="10" y2="8"/><line x1="7" y1="12" x2="17" y2="12"/></svg>`;
   return `<span class="agent-icon-badge" title="Agent: ${agent}">${svg}${iconOnly ? '' : ' ' + agent}</span>`;
@@ -877,6 +880,7 @@ function formatAgentChatName(agent) {
   if (a.includes('claude')) return 'Claude Code';
   if (a.includes('antigravity') || a.includes('agy') || a.includes('gemini')) return 'Google Antigravity';
   if (a.includes('codex') || a.includes('openai')) return 'OpenAI Codex';
+  if (a.includes('grok')) return 'xAI Grok';
   return agent || 'Claude Code';
 }
 

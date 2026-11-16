@@ -204,7 +204,7 @@ func (s *Server) handleAccounts(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Ensure default account exists for agents
-		agentsToCheck := []string{"claude-code", "antigravity", "codex"}
+		agentsToCheck := []string{"claude-code", "antigravity", "codex", "grok"}
 		if agentFilter != "" {
 			agentsToCheck = []string{agentFilter}
 		}

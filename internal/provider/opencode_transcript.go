@@ -447,3 +447,28 @@ func findOpenCodeSessionLog(home, nativeID string) string {
 
 	return ""
 }
+
+func parseContentText(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var str string
+	if err := json.Unmarshal(raw, &str); err == nil {
+		return strings.TrimSpace(str)
+	}
+
+	var parts []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &parts); err == nil {
+		var collected []string
+		for _, p := range parts {
+			if p.Text != "" {
+				collected = append(collected, p.Text)
+			}
+		}
+		return strings.TrimSpace(strings.Join(collected, " "))
+	}
+	return ""
+}

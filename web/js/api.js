@@ -485,9 +485,9 @@ function isRawSessionName(n) {
   let s = String(n).trim();
   if (s.endsWith(':')) s = s.slice(0, -1).trim();
   const lower = s.toLowerCase();
-  if (lower === 'antigravity' || lower === 'claude-code' || lower === 'codex' || lower === 'cli' || lower === 'mock-agent') return true;
+  if (lower === 'antigravity' || lower === 'claude-code' || lower === 'codex' || lower === 'grok' || lower === 'cli' || lower === 'mock-agent') return true;
   if (lower.startsWith('ackbar-') || lower.startsWith('proc-')) return true;
-  if (lower.startsWith('antigravity (') || lower.startsWith('claude-code (') || lower.startsWith('codex (') || lower.startsWith('claude code (')) return true;
+  if (lower.startsWith('antigravity (') || lower.startsWith('claude-code (') || lower.startsWith('codex (') || lower.startsWith('grok (') || lower.startsWith('claude code (')) return true;
   if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s)) return true;
   return false;
 }
@@ -988,7 +988,7 @@ async function deduplicateTasks() {
 async function spawnZeroInputSupervisor(agent = 'claude-code', hostName = '') {
   let chosenAgent = 'claude-code';
   let chosenHost = hostName;
-  if (agent === 'claude-code' || agent === 'antigravity' || agent === 'codex') {
+  if (agent === 'claude-code' || agent === 'antigravity' || agent === 'codex' || agent === 'grok') {
     chosenAgent = agent;
   } else if (agent && !hostName) {
     chosenHost = agent;

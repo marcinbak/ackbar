@@ -169,7 +169,7 @@ func GetRegisteredTools() []Tool {
 					},
 					"agent": {
 						Type:        "string",
-						Description: "Optional agent runtime for spawned task worker ('claude-code', 'antigravity', 'codex'). Defaults to caller's agent or 'claude-code'.",
+						Description: "Optional agent runtime for spawned task worker ('claude-code', 'antigravity', 'codex', 'grok'). Defaults to caller's agent or 'claude-code'.",
 					},
 					"prompt": {
 						Type:        "string",
@@ -667,7 +667,7 @@ func GetRegisteredTools() []Tool {
 					},
 					"agent": {
 						Type:        "string",
-						Description: "Agent runtime ('claude-code', 'codex', 'antigravity'). Defaults to 'claude-code'.",
+						Description: "Agent runtime ('claude-code', 'codex', 'antigravity', 'grok'). Defaults to 'claude-code'.",
 					},
 					"prompt": {
 						Type:        "string",

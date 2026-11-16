@@ -2,7 +2,7 @@
 
 ## 1. System Overview
 
-Ackbar is a cross-machine control plane and session manager designed to monitor, supervise, and organize agentic programming sessions (`Claude Code`, `OpenAI Codex`, `Google Antigravity`).
+Ackbar is a cross-machine control plane and session manager designed to monitor, supervise, and organize agentic programming sessions (`Claude Code`, `OpenAI Codex`, `Google Antigravity`, `xAI Grok`).
 
 ```
 +-------------------------------------------------------------------------+
@@ -35,7 +35,7 @@ SQLite DB     SSE Events      Hook API  SQLite DB     SSE Events      Hook API
    * Background process scanner combining `tmux list-panes` and OS process table (`ps`).
 2. **`ackbar` (CLI & Setup Utility):**
    * Launches the browser-based Web GUI (`http://127.0.0.1:7777`).
-   * Configures lifecycle hooks for agent platforms (Claude Code, Antigravity).
+   * Configures lifecycle hooks for agent platforms (Claude Code, Antigravity, Grok).
    * Runs the Ackbar MCP stdio server and manages agent authentication accounts.
    * Supervised and monitored via Web Dashboard and Flutter Mobile clients.
 3. **`ackbar-hook` (Hook Shim CLI):**

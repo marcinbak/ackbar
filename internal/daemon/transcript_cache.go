@@ -247,6 +247,28 @@ func resolveTranscriptFileStat(home, agent, nativeID, cwd string) (string, int64
 		} else if matches, _ := filepath.Glob(filepath.Join(home, ".codex", "archived_sessions", "*"+nativeID+"*.jsonl")); len(matches) > 0 {
 			filePath = matches[0]
 		}
+
+	case agent == "grok":
+		if sessDir := FindGrokSessionDirForHome(home, cwd, nativeID); sessDir != "" {
+			candHistory := filepath.Join(sessDir, "chat_history.jsonl")
+			candUpdates := filepath.Join(sessDir, "updates.jsonl")
+			if stat, err := os.Stat(candHistory); err == nil && !stat.IsDir() {
+				filePath = candHistory
+			} else if stat, err := os.Stat(candUpdates); err == nil && !stat.IsDir() {
+				filePath = candUpdates
+			}
+		}
+		if filePath == "" {
+			candFlat := filepath.Join(GrokHomeDir(home), "sessions", nativeID+".jsonl")
+			if stat, err := os.Stat(candFlat); err == nil && !stat.IsDir() {
+				filePath = candFlat
+			} else {
+				candDir := filepath.Join(GrokHomeDir(home), "sessions", nativeID, "transcript.jsonl")
+				if stat, err := os.Stat(candDir); err == nil && !stat.IsDir() {
+					filePath = candDir
+				}
+			}
+		}
 	}
 
 	if filePath == "" {
@@ -274,6 +296,15 @@ func statTranscriptFile(agent, filePath string) (int64, int64, error) {
 			size += fullStat.Size()
 			if fullMod := fullStat.ModTime().UnixNano(); fullMod > modTimeNano {
 				modTimeNano = fullMod
+			}
+		}
+	}
+	if (agent == "grok" || strings.HasPrefix(agent, "grok")) && filepath.Base(filePath) == "chat_history.jsonl" {
+		siblingUpdates := filepath.Join(filepath.Dir(filePath), "updates.jsonl")
+		if updStat, err := os.Stat(siblingUpdates); err == nil && !updStat.IsDir() {
+			size += updStat.Size()
+			if updMod := updStat.ModTime().UnixNano(); updMod > modTimeNano {
+				modTimeNano = updMod
 			}
 		}
 	}

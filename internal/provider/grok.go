@@ -40,74 +40,73 @@ func (g *GrokProvider) ProcessNames() []string {
 }
 
 func (g *GrokProvider) GetSpawnCommand(tempUUID string) string {
+	if tempUUID != "" && daemon.IsUUID(tempUUID) {
+		return "grok -s " + tempUUID
+	}
 	return "grok"
 }
 
 func (g *GrokProvider) GetResumeCommand(nativeID string) string {
-	if nativeID != "" && isSafeSessionID(nativeID) {
-		return "grok resume " + nativeID
+	if nativeID != "" && daemon.IsSafeGrokSessionID(nativeID) {
+		return "grok -r " + nativeID
 	}
-	return "grok"
+	return ""
 }
 
 func (g *GrokProvider) IsInstalled() bool {
 	if lookPathInStandardDirs("grok") || lookPathInStandardDirs("grok-cli") {
 		return true
 	}
-	home, err := os.UserHomeDir()
-	if err == nil {
-		if _, err := os.Stat(filepath.Join(home, ".grok")); err == nil {
-			return true
-		}
+	home, _ := os.UserHomeDir()
+	grokHome := daemon.GrokHomeDir(home)
+	if _, err := os.Stat(grokHome); err == nil {
+		return true
 	}
 	return false
 }
 
 func (g *GrokProvider) CheckHookConfig() (bool, string, error) {
 	setupCmd := "ackbar-hook --agent=grok"
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return false, setupCmd, nil
+	home, _ := os.UserHomeDir()
+	grokHome := daemon.GrokHomeDir(home)
+
+	checkContent := func(p string) bool {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			return false
+		}
+		c := string(data)
+		return strings.Contains(c, "127.0.0.1:7777") || strings.Contains(c, "localhost:7777") || strings.Contains(c, "ackbar-hook")
 	}
 
-	// 1. Check ~/.grok/hooks.json
-	hooksPath := filepath.Join(home, ".grok", "hooks.json")
-	if data, err := os.ReadFile(hooksPath); err == nil {
-		content := string(data)
-		if strings.Contains(content, "127.0.0.1:7777") || strings.Contains(content, "localhost:7777") || strings.Contains(content, "ackbar-hook") {
-			return true, setupCmd, nil
+	if checkContent(filepath.Join(grokHome, "hooks", "ackbar.json")) {
+		return true, setupCmd, nil
+	}
+	if matches, err := filepath.Glob(filepath.Join(grokHome, "hooks", "*.json")); err == nil {
+		for _, m := range matches {
+			if checkContent(m) {
+				return true, setupCmd, nil
+			}
 		}
 	}
-
-	// 2. Check ~/.grok/config.toml
-	configToml := filepath.Join(home, ".grok", "config.toml")
-	if data, err := os.ReadFile(configToml); err == nil {
-		content := string(data)
-		if strings.Contains(content, "127.0.0.1:7777") || strings.Contains(content, "localhost:7777") || strings.Contains(content, "ackbar-hook") {
-			return true, setupCmd, nil
-		}
+	if checkContent(filepath.Join(grokHome, "hooks.json")) ||
+		checkContent(filepath.Join(grokHome, "config.toml")) ||
+		checkContent(filepath.Join(grokHome, "config.json")) {
+		return true, setupCmd, nil
 	}
-
-	// 3. Check ~/.grok/config.json
-	configJson := filepath.Join(home, ".grok", "config.json")
-	if data, err := os.ReadFile(configJson); err == nil {
-		content := string(data)
-		if strings.Contains(content, "127.0.0.1:7777") || strings.Contains(content, "localhost:7777") || strings.Contains(content, "ackbar-hook") {
-			return true, setupCmd, nil
-		}
-	}
-
 	return false, setupCmd, nil
 }
 
 func (g *GrokProvider) CleanSessionFiles(home, cwd, nativeID string) error {
-	if home == "" || nativeID == "" || !isSafeSessionID(nativeID) {
+	if nativeID == "" || !daemon.IsSafeGrokSessionID(nativeID) {
 		return nil
 	}
-	_ = os.RemoveAll(filepath.Join(home, ".grok", "sessions", nativeID))
-	if logFile := findGrokSessionLog(home, nativeID); logFile != "" {
-		_ = os.Remove(logFile)
+	if sessDir := daemon.FindGrokSessionDirForHome(home, cwd, nativeID); sessDir != "" {
+		_ = os.RemoveAll(sessDir)
 	}
+	grokHome := daemon.GrokHomeDir(home)
+	_ = os.RemoveAll(filepath.Join(grokHome, "sessions", nativeID))
+	_ = os.Remove(filepath.Join(grokHome, "sessions", nativeID+".jsonl"))
 	return nil
 }
 

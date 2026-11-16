@@ -65,6 +65,12 @@ func ExtractTranscript(agent, nativeID, cwd string) (*Transcript, error) {
 		if err := loadClaudeTranscript(t, home, nativeID, cwd); err != nil {
 			return nil, err
 		}
+	case "grok":
+		msgs, err := ExtractGrokTranscriptMessages(home, cwd, nativeID)
+		if err != nil {
+			return nil, err
+		}
+		t.Messages = append(t.Messages, msgs...)
 	default:
 		// Attempt Antigravity then Claude
 		if err := loadAntigravityTranscript(t, home, nativeID); err != nil {

@@ -228,37 +228,6 @@ func (a CodexAgentAdapter) HasConversationArtifacts(home, nativeID string) bool 
 	return false
 }
 
-// GrokAgentAdapter implements AgentAdapter for xAI Grok.
-type GrokAgentAdapter struct {
-	defaultAgentAdapter
-}
-
-var grokIgnoredSubcommands = map[string]bool{
-	"login": true, "logout": true, "auth": true, "update": true, "upgrade": true, "models": true,
-}
-
-func (a GrokAgentAdapter) SetupProfileDir(home, name, configDir string) (string, error) {
-	return (defaultAgentAdapter{agent: "grok"}).SetupProfileDir(home, name, configDir)
-}
-
-func (a GrokAgentAdapter) GetLoginCommand() string {
-	return "grok login"
-}
-
-func (a GrokAgentAdapter) IsIgnoredCommand(fullCmd string) bool {
-	return checkIgnoredCLIArgs(fullCmd, func(field, base string) bool {
-		return base == "grok" || base == "grok-cli"
-	}, grokIgnoredSubcommands, nil)
-}
-
-func (a GrokAgentAdapter) MatchProcessCommand(binLower, cmdLower string) bool {
-	return (binLower == "grok" || binLower == "grok-cli") && !isAckbarInternalProcess(binLower, cmdLower)
-}
-
-func (a GrokAgentAdapter) FilterUserEntry(raw map[string]interface{}, content string) (string, bool) {
-	return filterCLIUserEntry(content)
-}
-
 // OpenCodeAgentAdapter implements AgentAdapter for OpenCode.
 type OpenCodeAgentAdapter struct {
 	defaultAgentAdapter
