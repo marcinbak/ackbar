@@ -493,7 +493,12 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string) int {
 
 	stateMu.Lock()
 	if specPath != "" {
-		_ = startTurnLocked(specPath)
+		if err := startTurnLocked(specPath); err != nil {
+			stateMu.Unlock()
+			_ = ln.Close()
+			cleanupArtifacts()
+			return 2
+		}
 	} else {
 		state, workerMeta.State = "idle_warm", "idle_warm"
 		saveWorkerMeta()
@@ -508,8 +513,18 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string) int {
 
 	firstGen, err := spawnChildGen(workerMeta.Bin, workerMeta.Args, nil)
 	if err != nil {
-		if activeTurn != nil && activeTurn.spool != nil {
-			_ = activeTurn.spool.Close()
+		if activeTurn != nil {
+			if activeTurn.spool != nil {
+				_, _ = activeTurn.spool.Append(ChatStreamEvent{
+					SessionID: activeTurn.meta.SessionID,
+					TurnID:    activeTurn.turnID,
+					Type:      "error",
+					Text:      err.Error(),
+					IsError:   true,
+				})
+			}
+			finalizeTurnMeta(activeTurn, nil, "failed", 2, "")
+			activeTurn = nil
 		}
 		stateMu.Unlock()
 		_ = ln.Close()
@@ -518,6 +533,7 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string) int {
 	}
 	curChild = firstGen
 	workerMeta.WorkerPID, workerMeta.ChildPID = os.Getpid(), firstGen.pgid
+	saveWorkerMeta()
 	if activeTurn != nil {
 		activeTurn.meta.ChildPID = firstGen.pgid
 		_ = WriteTurnSpoolMeta(activeTurn.metaPath, activeTurn.meta)
