@@ -823,7 +823,6 @@ function openSessionInTab(session, preferredViewMode = null) {
     chatStatusBadge: null,
     chatEngineBadge: null,
     activeTurnBuffer: '',
-    activeTurnHadTool: false,
     activeTurnMsgEl: null,
     promptQueue: [],
     isQueueExpanded: false,

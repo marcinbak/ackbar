@@ -414,6 +414,7 @@ function parseHtmlFragment(html, parent) {
       }
     }
     const inner = html.slice(closeAngle + 1, endTagPos);
+    el._innerHTML = inner;
     if (inner && inner.includes('<')) {
       el.children = parseHtmlFragment(inner, el);
     } else if (inner) {
@@ -451,6 +452,16 @@ globalThis.window.removeEventListener = () => {};
 globalThis.window.requestAnimationFrame = (fn) => setTimeout(fn, 0);
 globalThis.window.cancelAnimationFrame = (id) => clearTimeout(id);
 globalThis.window.open = () => null;
+globalThis.window.marked = {
+  use() {},
+  setOptions() {},
+  parse(md) {
+    const parsed = (md || '')
+      .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+      .replace(/__(.*?)__/g, '<strong>$1</strong>');
+    return `<p>${parsed}</p>`;
+  }
+};
 globalThis.localStorage = { getItem: () => null, setItem: () => {}, removeItem: () => {} };
 globalThis.document = {
   body: new MockElement('body'),
@@ -484,7 +495,8 @@ const {
   pauseInStreamActivity,
   resumeInStreamActivity,
   formatModelLabel,
-  updateStatusPills
+  updateStatusPills,
+  createChatMessageElement
 } = chat;
 
 const chatAuth = await import('./chat-auth.js');
@@ -2242,6 +2254,95 @@ test('interceptChatInput handles /model status and reset to default', async () =
   } finally {
     globalThis.fetch = prevFetch;
   }
+});
+
+test('handleChatStreamEvent keeps stream buffer intact across interleaved tool events and renders bold HTML', async () => {
+  const container = new MockElement('div');
+  container.className = 'chat-messages-container';
+
+  const tabObj = {
+    id: 'tab-test-interleaved-tool',
+    viewMode: 'chat',
+    chatMessagesEl: container,
+    session: { id: 'claude-code:local:sess-tool-bold', agent: 'claude-code', state: 0 },
+    activeTurnBuffer: '',
+    activeTurnTools: []
+  };
+
+  handleChatStreamEvent(tabObj, {
+    type: 'turn_start',
+    turn_id: 'turn-1',
+    text: 'do task'
+  });
+
+  handleChatStreamEvent(tabObj, {
+    type: 'text_delta',
+    turn_id: 'turn-1',
+    seq: 1,
+    text: 'Point 3 controls **what shopping, pricing, and t'
+  });
+
+  handleChatStreamEvent(tabObj, {
+    type: 'tool_start',
+    turn_id: 'turn-1',
+    seq: 2,
+    tool_name: 'inspect'
+  });
+
+  handleChatStreamEvent(tabObj, {
+    type: 'tool_result',
+    turn_id: 'turn-1',
+    seq: 3,
+    tool_name: 'inspect',
+    tool_output: 'ok'
+  });
+
+  handleChatStreamEvent(tabObj, {
+    type: 'text_delta',
+    turn_id: 'turn-1',
+    seq: 4,
+    text: 'echnical build data**'
+  });
+  await new Promise((r) => setTimeout(r, 15));
+
+  assert.equal(
+    tabObj.activeTurnBuffer,
+    'Point 3 controls **what shopping, pricing, and technical build data**',
+    'Active turn buffer must not have double-newlines injected mid-word'
+  );
+
+  const assistantMsg = container.querySelector('.chat-msg.assistant-msg');
+  assert.ok(assistantMsg, 'Assistant message element must exist');
+  const bodyEl = assistantMsg.querySelector('.chat-msg-body');
+  assert.ok(bodyEl, 'Assistant body element must exist');
+  assert.ok(
+    bodyEl.innerHTML.includes('<strong>what shopping, pricing, and technical build data</strong>'),
+    `Rendered HTML must contain strong tag, got: ${bodyEl.innerHTML}`
+  );
+});
+
+test('createChatMessageElement renders markdown-body with strong tag for bold user message', () => {
+  const tabObj = {
+    id: 'tab-test-user-bold',
+    session: { id: 'claude-code:local:sess-user-bold', agent: 'claude-code', state: 0 }
+  };
+
+  const userMsgEl = createChatMessageElement(tabObj, {
+    role: 'user',
+    content: 'Here is a **bold item** to inspect'
+  });
+
+  assert.ok(userMsgEl, 'User message element must be created');
+  const bodyEl = userMsgEl.querySelector('.chat-msg-body.markdown-body');
+  assert.ok(bodyEl, 'User message body must have .chat-msg-body.markdown-body class');
+  assert.ok(
+    bodyEl.innerHTML.includes('<strong>bold item</strong>'),
+    `Body innerHTML must contain strong tag, got: ${bodyEl.innerHTML}`
+  );
+  assert.ok(
+    !bodyEl.innerHTML.includes('**bold item**'),
+    `Body innerHTML must not contain literal markdown asterisks, got: ${bodyEl.innerHTML}`
+  );
 });
 
 

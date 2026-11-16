@@ -39,6 +39,74 @@ class TranscriptTurnBubble extends ConsumerWidget {
     return '$hour:$min:$sec';
   }
 
+  MarkdownStyleSheet _buildMarkdownStyleSheet(BuildContext context) {
+    return MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
+      p: AppTypography.bodyMedium.copyWith(
+        color: AppColors.textPrimary,
+        fontSize: 13.5,
+        height: 1.4,
+      ),
+      strong: AppTypography.bodyMedium.copyWith(
+        color: Colors.white,
+        fontSize: 13.5,
+        height: 1.4,
+        fontWeight: FontWeight.w700,
+      ),
+      em: AppTypography.bodyMedium.copyWith(
+        color: AppColors.textPrimary,
+        fontSize: 13.5,
+        height: 1.4,
+        fontStyle: FontStyle.italic,
+      ),
+      del: AppTypography.bodyMedium.copyWith(
+        color: AppColors.textSecondary,
+        fontSize: 13.5,
+        height: 1.4,
+        decoration: TextDecoration.lineThrough,
+      ),
+      a: AppTypography.bodyMedium.copyWith(
+        color: AppColors.infoCyan,
+        fontSize: 13.5,
+        height: 1.4,
+        decoration: TextDecoration.underline,
+      ),
+      code: AppTypography.codeXs.copyWith(
+        color: AppColors.infoCyan,
+        backgroundColor: AppColors.terminalBlack,
+        fontSize: 12,
+      ),
+      codeblockDecoration: BoxDecoration(
+        color: AppColors.terminalBlack,
+        borderRadius: AppSpacing.roundedSm,
+        border: Border.all(
+          color: AppColors.outlineSubtle,
+          width: 0.8,
+        ),
+      ),
+      h1: AppTypography.titleLarge.copyWith(
+        color: AppColors.textPrimary,
+      ),
+      h2: AppTypography.titleMedium.copyWith(
+        color: AppColors.textPrimary,
+      ),
+      h3: AppTypography.titleSmall.copyWith(
+        color: AppColors.textPrimary,
+      ),
+      blockquote: AppTypography.bodySmall.copyWith(
+        color: AppColors.textSecondary,
+      ),
+      blockquoteDecoration: BoxDecoration(
+        border: const Border(
+          left: BorderSide(color: AppColors.infoCyan, width: 3),
+        ),
+        color: AppColors.surfaceHighlight.withOpacity(0.3),
+      ),
+      listBullet: AppTypography.bodyMedium.copyWith(
+        color: AppColors.infoCyan,
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     if (message.isSystem) {
@@ -101,14 +169,13 @@ class TranscriptTurnBubble extends ConsumerWidget {
               ],
             ),
             const SizedBox(height: 6),
-            SelectableText(
-              message.content,
-              style: AppTypography.bodyMedium.copyWith(
-                color: AppColors.textPrimary,
-                height: 1.35,
-                fontSize: 13.5,
+            if (message.content.trim().isNotEmpty)
+              MarkdownBody(
+                data: message.content,
+                selectable: true,
+                softLineBreak: true,
+                styleSheet: _buildMarkdownStyleSheet(context),
               ),
-            ),
           ],
         ),
       ),
@@ -301,47 +368,8 @@ class TranscriptTurnBubble extends ConsumerWidget {
               MarkdownBody(
                 data: message.content,
                 selectable: true,
-                styleSheet: MarkdownStyleSheet(
-                  p: AppTypography.bodyMedium.copyWith(
-                    color: AppColors.textPrimary,
-                    fontSize: 13.5,
-                    height: 1.4,
-                  ),
-                  code: AppTypography.codeXs.copyWith(
-                    color: AppColors.infoCyan,
-                    backgroundColor: AppColors.terminalBlack,
-                    fontSize: 12,
-                  ),
-                  codeblockDecoration: BoxDecoration(
-                    color: AppColors.terminalBlack,
-                    borderRadius: AppSpacing.roundedSm,
-                    border: Border.all(
-                      color: AppColors.outlineSubtle,
-                      width: 0.8,
-                    ),
-                  ),
-                  h1: AppTypography.titleLarge.copyWith(
-                    color: AppColors.textPrimary,
-                  ),
-                  h2: AppTypography.titleMedium.copyWith(
-                    color: AppColors.textPrimary,
-                  ),
-                  h3: AppTypography.titleSmall.copyWith(
-                    color: AppColors.textPrimary,
-                  ),
-                  blockquote: AppTypography.bodySmall.copyWith(
-                    color: AppColors.textSecondary,
-                  ),
-                  blockquoteDecoration: BoxDecoration(
-                    border: const Border(
-                      left: BorderSide(color: AppColors.infoCyan, width: 3),
-                    ),
-                    color: AppColors.surfaceHighlight.withOpacity(0.3),
-                  ),
-                  listBullet: AppTypography.bodyMedium.copyWith(
-                    color: AppColors.infoCyan,
-                  ),
-                ),
+                softLineBreak: true,
+                styleSheet: _buildMarkdownStyleSheet(context),
               ),
             ],
           ],

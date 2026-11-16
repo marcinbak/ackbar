@@ -559,6 +559,24 @@ function ensureDoubleNewlineSeparation(prev, next) {
   return prev + '\n\n' + next;
 }
 
+function hasMarkdownSyntax(content) {
+  if (!content || typeof content !== 'string') return false;
+  if (/(\*\*|__)(?=\S)[\s\S]*?\S\1/.test(content)) return true;
+  if (/(\*|_)(?=\S)[^\r\n*]+?\S\1/.test(content)) return true;
+  if (/~~(?=\S)[\s\S]*?\S~~/.test(content)) return true;
+  if (/`[^`\r\n]+`|`{3,}|~{3,}/.test(content)) return true;
+  if (/^\s*(?:#{1,6}\s+|[-*+]\s+|\d+\.\s+|>\s+|\|.+\|)/m.test(content)) return true;
+  if (/!?\[[^\]]*\]\([^)]+\)/.test(content)) return true;
+  if (/`{3,4}carousel/i.test(content)) return true;
+  if (/<!--\s*slide\s*-->/i.test(content)) return true;
+  if (/\$\\[a-zA-Z]+/.test(content)) return true;
+  if (/\$\$[\s\S]+?\$\$/.test(content)) return true;
+  if (/^\s*>\s*\[!(?:NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]/im.test(content)) return true;
+  if (/file:\/\//i.test(content)) return true;
+  if (/conversation:\/\//i.test(content)) return true;
+  return false;
+}
+
 function isLocalHost(hostName) {
   if (!hostName || hostName === 'local') return true;
   if (state.selfHost && (hostName === state.selfHost.name || hostName === state.selfHost.displayName)) return true;
@@ -1079,6 +1097,7 @@ export {
   preprocessMarkdownExtensions,
   processMarkdownAlerts,
   renderMarkdown,
+  hasMarkdownSyntax,
   ensureDoubleNewlineSeparation,
   isLocalHost,
   findHostRecord,
