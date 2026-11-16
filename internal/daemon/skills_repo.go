@@ -65,7 +65,7 @@ func validateRepoPath(home, p string) (string, error) {
 	}
 
 	topComponent := strings.Split(filepath.ToSlash(rel), "/")[0]
-	if topComponent == ".ssh" || topComponent == ".gnupg" || topComponent == ".claude" || topComponent == ".gemini" || topComponent == ".codex" {
+	if topComponent == ".ssh" || topComponent == ".gnupg" || topComponent == ".claude" || topComponent == ".gemini" || topComponent == ".codex" || topComponent == ".grok" {
 		return "", fmt.Errorf("repository path cannot be inside reserved or sensitive directory: %s", topComponent)
 	}
 
@@ -147,6 +147,8 @@ func DiscoverSkillsRepo(home string, db *DB) (repoPath, repoURL string) {
 		filepath.Join(home, ".gemini", "config", "skills"),
 		filepath.Join(home, ".gemini", "antigravity-cli", "skills"),
 		filepath.Join(home, ".claude", "skills"),
+		filepath.Join(home, ".codex", "skills"),
+		filepath.Join(home, ".grok", "skills"),
 	}
 
 	for _, sDir := range scanDirs {
@@ -593,6 +595,7 @@ func fallbackInstallSkills(home, repoPath string) error {
 		filepath.Join(home, ".gemini", "config", "skills"),
 		filepath.Join(home, ".gemini", "antigravity-cli", "skills"),
 		filepath.Join(home, ".codex", "skills"),
+		filepath.Join(home, ".grok", "skills"),
 	}
 
 	type skillCandidate struct {

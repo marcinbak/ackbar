@@ -959,7 +959,55 @@ func TestGrokProvider_ParseHook(t *testing.T) {
 		t.Errorf("Unexpected stop event: %+v", evStop)
 	}
 
-	// 5. Corrupt JSON payload returns error
+	// 5. CamelCase sessionId & Grok 1.0.77 fields
+	camelPayload := `{"sessionId": "grok-sess-camel", "event": "user_prompt_submit", "prompt": "CamelCase test"}`
+	evCamel, err := p.ParseHook("", []byte(camelPayload))
+	if err != nil || evCamel == nil || evCamel.NativeID != "grok-sess-camel" {
+		t.Fatalf("ParseHook camelCase failed: %v", err)
+	}
+
+	// 6. Subagent filtering
+	subagentPayload := `{"sessionId": "grok-sess-sub", "subagentType": "explore", "event": "user_prompt_submit"}`
+	evSub, err := p.ParseHook("", []byte(subagentPayload))
+	if err != nil || evSub != nil {
+		t.Errorf("Expected nil event for subagent, got %+v", evSub)
+	}
+
+	// 7. Notification -> BlockPermission
+	notifPayload := `{"sessionId": "grok-sess-1", "event": "notification", "notification_type": "permission_prompt", "message": "Permission needed to write file"}`
+	evNotif, err := p.ParseHook("", []byte(notifPayload))
+	if err != nil || evNotif == nil || evNotif.State != daemon.StateBlocked || evNotif.Blocked == nil || evNotif.Blocked.Kind != daemon.BlockPermission {
+		t.Errorf("Unexpected notification event: %+v", evNotif)
+	}
+
+	// 8. Stop channel_closed -> StateEnded
+	stopClosedPayload := `{"sessionId": "grok-sess-1", "event": "stop", "stop_reason": "channel_closed"}`
+	evClosed, err := p.ParseHook("", []byte(stopClosedPayload))
+	if err != nil || evClosed == nil || evClosed.State != daemon.StateEnded {
+		t.Errorf("Unexpected stop closed event: %+v", evClosed)
+	}
+
+	// 9. StopFailure rate_limit & auth
+	rateLimitPayload := `{"sessionId": "grok-sess-1", "event": "stop_failure", "error_type": "rate_limit_exceeded"}`
+	evRL, err := p.ParseHook("", []byte(rateLimitPayload))
+	if err != nil || evRL == nil || evRL.State != daemon.StateBlocked || evRL.Blocked == nil || evRL.Blocked.Kind != daemon.BlockRateLimit {
+		t.Errorf("Unexpected rate limit event: %+v", evRL)
+	}
+
+	authPayload := `{"sessionId": "grok-sess-1", "event": "stop_failure", "error_type": "auth_failure"}`
+	evAuth, err := p.ParseHook("", []byte(authPayload))
+	if err != nil || evAuth == nil || evAuth.State != daemon.StateBlocked || evAuth.Blocked == nil || evAuth.Blocked.Kind != daemon.BlockAuth {
+		t.Errorf("Unexpected auth event: %+v", evAuth)
+	}
+
+	// 10. AskUserQuestion -> BlockQuestion
+	askPayload := `{"sessionId": "grok-sess-1", "event": "pre_tool_use", "name": "AskUserQuestion", "input": {"question": "Should I proceed?"}}`
+	evAsk, err := p.ParseHook("", []byte(askPayload))
+	if err != nil || evAsk == nil || evAsk.State != daemon.StateBlocked || evAsk.Blocked == nil || evAsk.Blocked.Kind != daemon.BlockQuestion {
+		t.Errorf("Unexpected ask question event: %+v", evAsk)
+	}
+
+	// 11. Corrupt JSON payload returns error
 	if _, err := p.ParseHook("", []byte("{corrupt json")); err == nil {
 		t.Errorf("Expected error on corrupt JSON payload")
 	}
@@ -968,20 +1016,34 @@ func TestGrokProvider_ParseHook(t *testing.T) {
 func TestGrokProvider_GetResumeCommand(t *testing.T) {
 	p := NewGrokProvider()
 
-	if cmd := p.GetResumeCommand(""); cmd != "grok" {
+	if cmd := p.GetResumeCommand(""); cmd != "" {
+		t.Errorf("Expected '' for empty id, got %q", cmd)
+	}
+	if cmd := p.GetResumeCommand("valid-session-123"); cmd != "grok -r valid-session-123" {
+		t.Errorf("Expected 'grok -r valid-session-123', got %q", cmd)
+	}
+	if cmd := p.GetResumeCommand("../unsafe/path"); cmd != "" {
+		t.Errorf("Expected '' for path traversal id, got %q", cmd)
+	}
+	if cmd := p.GetResumeCommand("session\nrm -rf /"); cmd != "" {
+		t.Errorf("Expected '' for newline injection id, got %q", cmd)
+	}
+	if cmd := p.GetResumeCommand("session with spaces"); cmd != "" {
+		t.Errorf("Expected '' for space-containing id, got %q", cmd)
+	}
+}
+
+func TestGrokProvider_GetSpawnCommand(t *testing.T) {
+	p := NewGrokProvider()
+	if cmd := p.GetSpawnCommand(""); cmd != "grok" {
 		t.Errorf("Expected 'grok' for empty id, got %q", cmd)
 	}
-	if cmd := p.GetResumeCommand("valid-session-123"); cmd != "grok resume valid-session-123" {
-		t.Errorf("Expected 'grok resume valid-session-123', got %q", cmd)
+	validUUID := "12345678-1234-1234-1234-123456789abc"
+	if cmd := p.GetSpawnCommand(validUUID); cmd != "grok -s "+validUUID {
+		t.Errorf("Expected 'grok -s %s', got %q", validUUID, cmd)
 	}
-	if cmd := p.GetResumeCommand("../unsafe/path"); cmd != "grok" {
-		t.Errorf("Expected fallback 'grok' for path traversal id, got %q", cmd)
-	}
-	if cmd := p.GetResumeCommand("session\nrm -rf /"); cmd != "grok" {
-		t.Errorf("Expected fallback 'grok' for newline injection id, got %q", cmd)
-	}
-	if cmd := p.GetResumeCommand("session with spaces"); cmd != "grok" {
-		t.Errorf("Expected fallback 'grok' for space-containing id, got %q", cmd)
+	if cmd := p.GetSpawnCommand("invalid-uuid"); cmd != "grok" {
+		t.Errorf("Expected 'grok' for non-uuid, got %q", cmd)
 	}
 }
 
@@ -1151,6 +1213,92 @@ func TestGrokExtractTranscriptAndMetadata(t *testing.T) {
 	}
 	if meta.LastUserMessageAt.IsZero() {
 		t.Errorf("Expected non-zero LastUserMessageAt")
+	}
+}
+
+func TestGrok1077TranscriptAndMetadata(t *testing.T) {
+	tmpHome, err := os.MkdirTemp("", "test-grok-1077-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpHome)
+
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpHome)
+	defer os.Setenv("HOME", origHome)
+
+	cwd := "/work/project"
+	nativeID := "grok-sess-v1077"
+	encodedCwd := daemon.EncodeGrokCwd(cwd)
+	sessDir := filepath.Join(tmpHome, ".grok", "sessions", encodedCwd, nativeID)
+	if err := os.MkdirAll(sessDir, 0755); err != nil {
+		t.Fatalf("Failed to create sessDir: %v", err)
+	}
+
+	summaryJSON := `{
+		"custom_title": "Fix memory leak",
+		"last_turn_summary": "Fixed leak by closing channels",
+		"head_branch": "feat/fix-leak",
+		"updated_at": "2026-11-16T15:04:05Z"
+	}`
+	_ = os.WriteFile(filepath.Join(sessDir, "summary.json"), []byte(summaryJSON), 0644)
+
+	signalsJSON := `{
+		"contextTokensUsed": 45000,
+		"contextWindowTokens": 100000
+	}`
+	_ = os.WriteFile(filepath.Join(sessDir, "signals.json"), []byte(signalsJSON), 0644)
+
+	chatHistoryLines := []string{
+		`{"type": "system", "content": "You are Grok."}`,
+		`{"type": "user", "synthetic_reason": "init", "content": "system context"}`,
+		`{"type": "user", "content": "<user_query>Investigate high memory usage</user_query>", "timestamp": "2026-11-16T15:00:00Z"}`,
+		`{"type": "reasoning", "summary": [{"type": "summary_text", "text": "Analyzing heap dump..."}]}`,
+		`{"type": "tool_call", "name": "bash", "arguments": {"command": "go tool pprof"}}`,
+		`{"type": "assistant", "content": "Found unclosed goroutines in event loop."}`,
+	}
+	_ = os.WriteFile(filepath.Join(sessDir, "chat_history.jsonl"), []byte(strings.Join(chatHistoryLines, "\n")), 0644)
+
+	p := NewGrokProvider()
+
+	msgs, err := p.ExtractTranscript(tmpHome, cwd, nativeID)
+	if err != nil {
+		t.Fatalf("ExtractTranscript failed: %v", err)
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("Expected 2 messages, got %d: %+v", len(msgs), msgs)
+	}
+	if msgs[0].Role != "user" || msgs[0].Content != "Investigate high memory usage" {
+		t.Errorf("Unexpected user turn: %+v", msgs[0])
+	}
+	if msgs[1].Role != "assistant" || !strings.Contains(msgs[1].Content, "Found unclosed goroutines") {
+		t.Errorf("Unexpected assistant turn: %+v", msgs[1])
+	}
+	if msgs[1].Thinking != "Analyzing heap dump..." {
+		t.Errorf("Expected thinking 'Analyzing heap dump...', got %q", msgs[1].Thinking)
+	}
+	if len(msgs[1].ToolCalls) == 0 || !strings.Contains(msgs[1].ToolCalls[0], "pprof") {
+		t.Errorf("Expected tool call with pprof, got %+v", msgs[1].ToolCalls)
+	}
+
+	meta := p.ReadSessionMetadata(cwd, nativeID)
+	if meta == nil {
+		t.Fatalf("Expected non-nil SessionMeta")
+	}
+	if meta.Title != "Fix memory leak" {
+		t.Errorf("Expected Title 'Fix memory leak', got %q", meta.Title)
+	}
+	if meta.GitBranch != "feat/fix-leak" {
+		t.Errorf("Expected GitBranch 'feat/fix-leak', got %q", meta.GitBranch)
+	}
+	if meta.AIDescription != "Fixed leak by closing channels" {
+		t.Errorf("Expected AIDescription 'Fixed leak by closing channels', got %q", meta.AIDescription)
+	}
+	if meta.ContextPct != 45 {
+		t.Errorf("Expected ContextPct 45, got %d", meta.ContextPct)
+	}
+	if meta.FirstPrompt != "Investigate high memory usage" {
+		t.Errorf("Expected FirstPrompt 'Investigate high memory usage', got %q", meta.FirstPrompt)
 	}
 }
 

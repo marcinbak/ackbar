@@ -999,6 +999,7 @@ export function showStartTaskModal(task) {
             <option value="claude-code" selected>Claude Code</option>
             <option value="antigravity">Antigravity</option>
             <option value="codex">OpenAI Codex</option>
+            <option value="grok">xAI Grok</option>
           </select>
         </div>
       </div>

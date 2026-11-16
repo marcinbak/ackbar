@@ -184,6 +184,21 @@ func defaultDetectHostCapabilities(home string) []string {
 				}
 			}
 		}
+		// Check Grok config.toml ([mcp_servers.<name>])
+		grokCfgPath := filepath.Join(home, ".grok", "config.toml")
+		if data, err := os.ReadFile(grokCfgPath); err == nil {
+			for _, line := range strings.Split(string(data), "\n") {
+				line = strings.TrimSpace(line)
+				if strings.HasPrefix(line, "[mcp_servers.") && strings.HasSuffix(line, "]") {
+					srvName := strings.TrimSuffix(strings.TrimPrefix(line, "[mcp_servers."), "]")
+					srvName = strings.Trim(srvName, "\"'")
+					norm := normalizeMCPCapabilityName(srvName)
+					if norm != "" && norm != "ackbar" {
+						addCap("mcp:" + norm)
+					}
+				}
+			}
+		}
 		// Check Antigravity plugins directory (~/.gemini/config/plugins/<plugin>)
 		pluginsDir := filepath.Join(home, ".gemini", "config", "plugins")
 		if entries, err := os.ReadDir(pluginsDir); err == nil {

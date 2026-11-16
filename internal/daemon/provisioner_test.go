@@ -436,3 +436,106 @@ func TestProvisioner_RulesNonDestructiveUpsertAndUpgrade(t *testing.T) {
 		t.Errorf("Expected exactly 1 closing marker block, found %d", strings.Count(upgradedContent, "<!-- /ackbar-rules -->"))
 	}
 }
+
+func TestGrokProvisioner(t *testing.T) {
+	tempHome, err := os.MkdirTemp("", "test-grok-provision-*")
+	if err != nil {
+		t.Fatalf("failed to create temp home: %v", err)
+	}
+	defer os.RemoveAll(tempHome)
+
+	grokDir := filepath.Join(tempHome, ".grok")
+	if err := os.MkdirAll(grokDir, 0700); err != nil {
+		t.Fatalf("failed to create .grok: %v", err)
+	}
+
+	configTOMLPath := filepath.Join(grokDir, "config.toml")
+	initialTOML := `# Grok User Config
+[user_settings]
+theme = "dark"
+`
+	if err := os.WriteFile(configTOMLPath, []byte(initialTOML), 0600); err != nil {
+		t.Fatalf("failed to write initial config.toml: %v", err)
+	}
+
+	// 1. Test UpsertGrokTOMLConfig non-destructive merge
+	if err := UpsertGrokTOMLConfig(configTOMLPath, "ackbar"); err != nil {
+		t.Fatalf("UpsertGrokTOMLConfig failed: %v", err)
+	}
+
+	contentBytes, err := os.ReadFile(configTOMLPath)
+	if err != nil {
+		t.Fatalf("failed to read updated config.toml: %v", err)
+	}
+	content := string(contentBytes)
+	if !strings.Contains(content, `theme = "dark"`) {
+		t.Errorf("Expected initial user settings preserved in config.toml")
+	}
+	if !strings.Contains(content, "[compat.claude]") || !strings.Contains(content, "hooks = false") {
+		t.Errorf("Expected [compat.claude] hooks = false in config.toml, got:\n%s", content)
+	}
+	if !strings.Contains(content, "[mcp_servers.ackbar]") || !strings.Contains(content, `command = "ackbar"`) {
+		t.Errorf("Expected [mcp_servers.ackbar] in config.toml, got:\n%s", content)
+	}
+
+	// 2. Test WriteGrokHooksFile without matcher field
+	if err := WriteGrokHooksFile(grokDir, ""); err != nil {
+		t.Fatalf("WriteGrokHooksFile failed: %v", err)
+	}
+	hooksPath := filepath.Join(grokDir, "hooks", "ackbar.json")
+	hooksBytes, err := os.ReadFile(hooksPath)
+	if err != nil {
+		t.Fatalf("failed to read hooks/ackbar.json: %v", err)
+	}
+	var hooksConfig map[string]interface{}
+	if err := json.Unmarshal(hooksBytes, &hooksConfig); err != nil {
+		t.Fatalf("failed to parse hooks/ackbar.json: %v", err)
+	}
+	if len(hooksConfig) == 0 {
+		t.Fatalf("Expected non-empty hooks map in hooks/ackbar.json")
+	}
+	for evtName, entries := range hooksConfig {
+		list, ok := entries.([]interface{})
+		if !ok || len(list) == 0 {
+			t.Errorf("Expected list of hooks for event %s", evtName)
+			continue
+		}
+		for _, rawItem := range list {
+			item, ok := rawItem.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if _, hasMatcher := item["matcher"]; hasMatcher {
+				t.Errorf("Event %s contains forbidden 'matcher' key: %+v", evtName, item)
+			}
+			innerList, _ := item["hooks"].([]interface{})
+			for _, inner := range innerList {
+				hMap, _ := inner.(map[string]interface{})
+				if urlVal, _ := hMap["url"].(string); !strings.Contains(urlVal, "127.0.0.1:7777/v1/hooks/grok") {
+					t.Errorf("Event %s has incorrect url: %s", evtName, urlVal)
+				}
+			}
+		}
+	}
+
+	// 3. Test ProvisionAgents and zero drift
+	statuses, err := ProvisionAgents(tempHome, []string{"grok"})
+	if err != nil {
+		t.Fatalf("ProvisionAgents for grok failed: %v", err)
+	}
+	var grokStatus *AgentStatus
+	for i := range statuses {
+		if statuses[i].Key == "grok" {
+			grokStatus = &statuses[i]
+		}
+	}
+	if grokStatus == nil {
+		t.Fatalf("Expected grok in provision statuses")
+	}
+	if !grokStatus.MCPInstalled {
+		t.Errorf("Expected MCPInstalled == true for grok")
+	}
+	if grokStatus.DriftDetected {
+		t.Errorf("Expected DriftDetected == false after provisioning")
+	}
+}

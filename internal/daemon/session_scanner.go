@@ -298,6 +298,18 @@ func (s *Server) refreshExistingSessions(ctx context.Context, state *ScanState) 
 					sess.ContextPct = meta.ContextPct
 					changed = true
 				}
+				if meta.GitBranch != "" && meta.GitBranch != sess.GitBranch {
+					sess.GitBranch = meta.GitBranch
+					changed = true
+				}
+				if meta.FirstPrompt != "" && meta.FirstPrompt != sess.FirstPrompt {
+					sess.FirstPrompt = meta.FirstPrompt
+					changed = true
+				}
+				if meta.LastPrompt != "" && meta.LastPrompt != sess.LastPrompt {
+					sess.LastPrompt = meta.LastPrompt
+					changed = true
+				}
 				if !meta.LastUserMessageAt.IsZero() && meta.LastUserMessageAt.After(sess.LastEventAt) {
 					sess.LastEventAt = meta.LastUserMessageAt
 					changed = true

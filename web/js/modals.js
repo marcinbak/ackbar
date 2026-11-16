@@ -325,6 +325,7 @@ function showSettingsModal() {
       if (apiKey) {
         if (agent === 'claude-code') env['ANTHROPIC_API_KEY'] = apiKey;
         else if (agent === 'antigravity') env['GEMINI_API_KEY'] = apiKey;
+        else if (agent === 'grok') env['XAI_API_KEY'] = apiKey;
       }
 
       btnAddAcc.disabled = true;
@@ -603,6 +604,19 @@ async function showNewSessionModal(prefillGroup = '') {
     prefillGroup = state.lastActiveGroup;
   }
 
+  function updateEngineOptions(selectedAgent) {
+    const engineSelect = document.getElementById('newSessionEngine');
+    if (!engineSelect) return;
+    const headlessOpt = engineSelect.querySelector('option[value="headless"]');
+    const supportsHeadless = (selectedAgent === 'claude-code' || selectedAgent === 'antigravity');
+    if (headlessOpt) {
+      headlessOpt.disabled = !supportsHeadless;
+    }
+    if (!supportsHeadless && engineSelect.value === 'headless') {
+      engineSelect.value = 'tmux';
+    }
+  }
+
   // Helper: Dynamically fetch & populate available agents for the chosen host
   async function updateAgentOptions(targetHost, preferredAgent = null) {
     if (!agentSelect) return;
@@ -672,6 +686,7 @@ async function showNewSessionModal(prefillGroup = '') {
       if (selectedAgent) {
         agentSelect.value = selectedAgent;
       }
+      updateEngineOptions(agentSelect ? agentSelect.value : '');
     } catch (err) {
       console.warn('Agent discovery fallback for host:', targetHost, err);
       agentSelect.innerHTML = `
@@ -682,6 +697,7 @@ async function showNewSessionModal(prefillGroup = '') {
         <option value="opencode">OpenCode</option>
       `;
       agentSelect.value = preferredAgent || 'claude-code';
+      updateEngineOptions(agentSelect.value);
     }
   }
 
@@ -844,6 +860,7 @@ async function showNewSessionModal(prefillGroup = '') {
       const curGroup = groupSelect ? groupSelect.value : '';
       const prefs = getGroupPreferences(curGroup, currentSelectedHost);
       updateAccountOptions(currentSelectedHost, selAgent, prefs.preferredAccount);
+      updateEngineOptions(selAgent);
     };
   }
 
@@ -954,6 +971,7 @@ async function showNewSessionModal(prefillGroup = '') {
   // Initial agent discovery & account options for selected host
   await updateAgentOptions(currentSelectedHost, initialGroupPrefs.preferredAgent);
   await updateAccountOptions(currentSelectedHost, agentSelect ? agentSelect.value : 'claude-code', initialGroupPrefs.preferredAccount);
+  updateEngineOptions(agentSelect ? agentSelect.value : '');
 }
 
 function hideNewSessionModal() {

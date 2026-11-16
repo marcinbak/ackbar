@@ -1638,6 +1638,9 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		CurrentTaskID        string   `json:"current_task_id"`
 		TaskKind             string   `json:"task_kind"`
 		RepoNodePath         string   `json:"repo_node_path"`
+		Model                string   `json:"model"`
+		Effort               string   `json:"effort"`
+		PermissionMode       string   `json:"permission_mode"`
 		ExtraDirs            []string `json:"extra_dirs"`
 	}
 
@@ -1692,6 +1695,9 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 	if req.EngineType == "" {
 		req.EngineType = EngineTmux
 	}
+	if req.EngineType == EngineHeadless && req.Agent != "claude-code" && req.Agent != "antigravity" {
+		req.EngineType = EngineTmux
+	}
 
 	hasRoutingHint := len(req.RequiredCapabilities) > 0 ||
 		len(inferCapabilitiesFromRepoPath(req.RepoNodePath)) > 0 ||
@@ -1732,18 +1738,21 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		if hostRec != nil && hostRec.URL != "" && !s.isLocalHost(hostRec.Name) && hostRec.URL != "http://127.0.0.1:7777" {
 			targetURL := strings.TrimSuffix(hostRec.URL, "/") + "/v1/sessions/spawn"
 			payload, _ := json.Marshal(map[string]interface{}{
-				"agent":          req.Agent,
-				"cwd":            req.Cwd,
-				"node_path":      req.NodePath,
-				"name":           req.Name,
-				"account_id":     req.AccountID,
-				"engine_type":    req.EngineType,
-				"prompt":         req.Prompt,
-				"is_supervisor":  req.IsSupervisor,
-				"task_id":        req.TaskID,
-				"task_kind":      req.TaskKind,
-				"repo_node_path": req.RepoNodePath,
-				"extra_dirs":     req.ExtraDirs,
+				"agent":           req.Agent,
+				"cwd":             req.Cwd,
+				"node_path":       req.NodePath,
+				"name":            req.Name,
+				"account_id":      req.AccountID,
+				"engine_type":     req.EngineType,
+				"prompt":          req.Prompt,
+				"is_supervisor":   req.IsSupervisor,
+				"task_id":         req.TaskID,
+				"task_kind":       req.TaskKind,
+				"repo_node_path":  req.RepoNodePath,
+				"model":           req.Model,
+				"effort":          req.Effort,
+				"permission_mode": req.PermissionMode,
+				"extra_dirs":      req.ExtraDirs,
 			})
 			fwdReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, targetURL, bytes.NewBuffer(payload))
 			if err != nil {
@@ -1890,16 +1899,17 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 	}
 	envVars["ACKBAR_TASK_KIND"] = taskKind
 
-	if req.EngineType == EngineHeadless {
-		var initialExtraDirs []string
-		if len(req.ExtraDirs) > 0 {
-			cleanDirs, err := normalizeAndValidateExtraDirs(req.Cwd, nil, &req.ExtraDirs, nil, nil, s.effectiveHomeDir())
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
-			}
-			initialExtraDirs = cleanDirs
+	var initialExtraDirs []string
+	if len(req.ExtraDirs) > 0 {
+		cleanDirs, err := normalizeAndValidateExtraDirs(req.Cwd, nil, &req.ExtraDirs, nil, nil, s.effectiveHomeDir())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
 		}
+		initialExtraDirs = cleanDirs
+	}
+
+	if req.EngineType == EngineHeadless {
 		now := time.Now().UTC()
 		sess := &Session{
 			ID:                fmt.Sprintf("%s:%s:%s", req.Agent, effectiveHost, tempUUID),
@@ -1915,6 +1925,9 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 			Managed:           true,
 			TmuxName:          "",
 			EngineType:        EngineHeadless,
+			Model:             req.Model,
+			Effort:            req.Effort,
+			PermissionMode:    req.PermissionMode,
 			ExtraDirs:         initialExtraDirs,
 			State:             StateIdle,
 			Activity:          "Headless chat session ready",
@@ -1965,6 +1978,9 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 
 	tmuxName := fmt.Sprintf("ackbar-%s-%s", req.Agent, tempUUID)
 	launchCmd := s.getSpawnCmd(req.Agent, tempUUID)
+	if req.Agent == "grok" {
+		launchCmd = appendGrokCLIArgs(launchCmd, req.Model, req.Effort, req.PermissionMode, initialExtraDirs)
+	}
 	useCLIInitPrompt := false
 	if strings.TrimSpace(req.Prompt) != "" && req.EngineType == EngineTmux {
 		if initCmd := appendCLIInitPrompt(req.Agent, launchCmd); initCmd != "" {
@@ -2005,6 +2021,10 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		Managed:           true,
 		TmuxName:          tmuxName,
 		EngineType:        EngineTmux,
+		Model:             req.Model,
+		Effort:            req.Effort,
+		PermissionMode:    req.PermissionMode,
+		ExtraDirs:         initialExtraDirs,
 		State:             StateUnknown,
 		Activity:          "Spawning session...",
 		StartedAt:         now,
@@ -2317,9 +2337,35 @@ func appendCLIInitPrompt(agent, baseCmd string) string {
 		return baseCmd + ` "$ACKBAR_INIT_PROMPT"`
 	case "antigravity", "agy":
 		return baseCmd + ` -i "$ACKBAR_INIT_PROMPT"`
+	case "grok", "grok-cli":
+		return baseCmd + ` "$ACKBAR_INIT_PROMPT"`
 	default:
 		return ""
 	}
+}
+
+var safeCLIArgRegex = regexp.MustCompile(`^[a-zA-Z0-9_\-\.:/]+$`)
+
+func appendGrokCLIArgs(baseCmd, model, effort, permissionMode string, extraDirs []string) string {
+	cmd := baseCmd
+	if m := strings.TrimSpace(model); m != "" && safeCLIArgRegex.MatchString(m) {
+		cmd += " -m " + m
+	}
+	if e := strings.TrimSpace(effort); e != "" && safeCLIArgRegex.MatchString(e) {
+		cmd += " --effort " + e
+	}
+	if p := strings.TrimSpace(permissionMode); p != "" && safeCLIArgRegex.MatchString(p) {
+		cmd += " --permission-mode " + p
+	}
+	for _, dir := range extraDirs {
+		dir = strings.TrimSpace(dir)
+		if dir == "" || strings.ContainsAny(dir, "\x00\r\n") {
+			continue
+		}
+		escaped := strings.ReplaceAll(dir, "'", `'\''`)
+		cmd += " --add-dir '" + escaped + "'"
+	}
+	return cmd
 }
 
 func (s *Server) activateTaskForSpawnedWorker(taskID, sessionID, agent, host, repoNodePath string, now time.Time) {
@@ -2414,15 +2460,24 @@ func (s *Server) getRestartOrResumeCmd(sess *Session, home string) (string, bool
 	} else {
 		isExisting = hasDisk || sess.FirstPrompt != "" || sess.LastPrompt != "" || sess.OldID != "" || !sess.Managed
 	}
+	var cmd string
 	if isExisting {
-		if cmd := s.getResumeCmd(sess.Agent, sess.NativeID); cmd != "" {
-			return cmd, true
+		if c := s.getResumeCmd(sess.Agent, sess.NativeID); c != "" {
+			cmd = c
 		}
 	}
-	if cmd := s.getSpawnCmd(sess.Agent, sess.NativeID); cmd != "" {
-		return cmd, false
+	if cmd == "" {
+		if c := s.getSpawnCmd(sess.Agent, sess.NativeID); c != "" {
+			cmd = c
+			isExisting = false
+		} else {
+			cmd = s.getResumeCmd(sess.Agent, sess.NativeID)
+		}
 	}
-	return s.getResumeCmd(sess.Agent, sess.NativeID), isExisting
+	if sess.Agent == "grok" && cmd != "" {
+		cmd = appendGrokCLIArgs(cmd, sess.Model, sess.Effort, sess.PermissionMode, sess.ExtraDirs)
+	}
+	return cmd, isExisting
 }
 
 func terminateExternalPID(pid int, grace time.Duration) {
