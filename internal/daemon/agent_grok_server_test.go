@@ -152,3 +152,52 @@ func TestGrokModelResolution_SummaryAndConfig(t *testing.T) {
 		t.Errorf("Expected model 'grok-3' from config.toml, got %q", sess.ResolvedModel)
 	}
 }
+
+func TestGrokSpawnValidation(t *testing.T) {
+	srv, _ := setupTestServer(t)
+	cwd := t.TempDir()
+
+	payload := map[string]interface{}{
+		"agent": "grok",
+		"cwd":   cwd,
+		"model": "--yolo",
+	}
+	body, _ := json.Marshal(payload)
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/spawn", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	srv.handleSpawn(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("Expected 400 for model with leading hyphen, got %d", w.Code)
+	}
+
+	payload["model"] = "grok-2"
+	payload["effort"] = "--invalid"
+	body, _ = json.Marshal(payload)
+	req = httptest.NewRequest(http.MethodPost, "/v1/sessions/spawn", bytes.NewReader(body))
+	w = httptest.NewRecorder()
+	srv.handleSpawn(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("Expected 400 for invalid effort, got %d", w.Code)
+	}
+
+	delete(payload, "effort")
+	payload["permission_mode"] = "invalid_mode"
+	body, _ = json.Marshal(payload)
+	req = httptest.NewRequest(http.MethodPost, "/v1/sessions/spawn", bytes.NewReader(body))
+	w = httptest.NewRecorder()
+	srv.handleSpawn(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("Expected 400 for invalid permission_mode, got %d", w.Code)
+	}
+
+	base := "grok -s 1234"
+	if res := appendGrokCLIArgs(base, "-flag", "--effort", "-p", nil); res != base {
+		t.Errorf("appendGrokCLIArgs should reject leading hyphen flags, got %q", res)
+	}
+
+	initCmd := appendCLIInitPrompt("grok", base)
+	expectedInit := base + ` -- "$ACKBAR_INIT_PROMPT"`
+	if initCmd != expectedInit {
+		t.Errorf("appendCLIInitPrompt(grok) = %q, want %q", initCmd, expectedInit)
+	}
+}

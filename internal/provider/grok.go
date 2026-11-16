@@ -47,7 +47,7 @@ func (g *GrokProvider) GetSpawnCommand(tempUUID string) string {
 }
 
 func (g *GrokProvider) GetResumeCommand(nativeID string) string {
-	if nativeID != "" && isSafeSessionID(nativeID) {
+	if nativeID != "" && daemon.IsSafeGrokSessionID(nativeID) {
 		return "grok -r " + nativeID
 	}
 	return ""
@@ -98,7 +98,7 @@ func (g *GrokProvider) CheckHookConfig() (bool, string, error) {
 }
 
 func (g *GrokProvider) CleanSessionFiles(home, cwd, nativeID string) error {
-	if nativeID == "" || !isSafeSessionID(nativeID) {
+	if nativeID == "" || !daemon.IsSafeGrokSessionID(nativeID) {
 		return nil
 	}
 	if sessDir := daemon.FindGrokSessionDirForHome(home, cwd, nativeID); sessDir != "" {

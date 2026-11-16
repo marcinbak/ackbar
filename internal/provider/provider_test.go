@@ -1022,6 +1022,15 @@ func TestGrokProvider_GetResumeCommand(t *testing.T) {
 	if cmd := p.GetResumeCommand("valid-session-123"); cmd != "grok -r valid-session-123" {
 		t.Errorf("Expected 'grok -r valid-session-123', got %q", cmd)
 	}
+	if cmd := p.GetResumeCommand("-flag"); cmd != "" {
+		t.Errorf("Expected '' for leading hyphen id, got %q", cmd)
+	}
+	if cmd := p.GetResumeCommand("."); cmd != "" {
+		t.Errorf("Expected '' for '.' id, got %q", cmd)
+	}
+	if cmd := p.GetResumeCommand(".."); cmd != "" {
+		t.Errorf("Expected '' for '..' id, got %q", cmd)
+	}
 	if cmd := p.GetResumeCommand("../unsafe/path"); cmd != "" {
 		t.Errorf("Expected '' for path traversal id, got %q", cmd)
 	}
@@ -1030,6 +1039,26 @@ func TestGrokProvider_GetResumeCommand(t *testing.T) {
 	}
 	if cmd := p.GetResumeCommand("session with spaces"); cmd != "" {
 		t.Errorf("Expected '' for space-containing id, got %q", cmd)
+	}
+}
+
+func TestGrokProvider_CleanSessionFilesSafety(t *testing.T) {
+	tmpHome := t.TempDir()
+	grokHome := filepath.Join(tmpHome, ".grok")
+	_ = os.MkdirAll(grokHome, 0700)
+	authFile := filepath.Join(grokHome, "auth.json")
+	_ = os.WriteFile(authFile, []byte(`{"token": "secret"}`), 0600)
+
+	p := NewGrokProvider()
+
+	for _, unsafeID := range []string{"..", ".", "-flag", "../unsafe"} {
+		if err := p.CleanSessionFiles(tmpHome, "/work", unsafeID); err != nil {
+			t.Errorf("Expected clean error-free no-op for %q, got %v", unsafeID, err)
+		}
+	}
+
+	if _, err := os.Stat(authFile); err != nil {
+		t.Errorf("CleanSessionFiles wiped auth.json: %v", err)
 	}
 }
 
@@ -1299,6 +1328,59 @@ func TestGrok1077TranscriptAndMetadata(t *testing.T) {
 	}
 	if meta.FirstPrompt != "Investigate high memory usage" {
 		t.Errorf("Expected FirstPrompt 'Investigate high memory usage', got %q", meta.FirstPrompt)
+	}
+}
+
+func TestGrokUpdatesACPEnvelope(t *testing.T) {
+	tmpHome := t.TempDir()
+	cwd := "/work/project"
+	nativeID := "grok-sess-acp"
+	encodedCwd := daemon.EncodeGrokCwd(cwd)
+	sessDir := filepath.Join(tmpHome, ".grok", "sessions", encodedCwd, nativeID)
+	if err := os.MkdirAll(sessDir, 0700); err != nil {
+		t.Fatalf("Failed to create sessDir: %v", err)
+	}
+
+	acpLines := []string{
+		`{"timestamp": 1794835355, "method": "session/update", "params": {"sessionId": "grok-sess-acp", "update": {"sessionUpdate": "user_message_chunk", "content": {"type": "text", "text": "Fix "}}, "_meta": {"agentTimestampMs": 1794835355100}}}`,
+		`{"timestamp": 1794835355, "method": "session/update", "params": {"sessionId": "grok-sess-acp", "update": {"sessionUpdate": "user_message_chunk", "content": {"type": "text", "text": "streaming tests"}}, "_meta": {"agentTimestampMs": 1794835355200}}}`,
+		`{"timestamp": 1794835356, "method": "session/update", "params": {"sessionId": "grok-sess-acp", "update": {"sessionUpdate": "agent_thought_chunk", "thought": "Analyzing failures... "}, "_meta": {"agentTimestampMs": 1794835356000}}}`,
+		`{"timestamp": 1794835357, "method": "session/update", "params": {"sessionId": "grok-sess-acp", "update": {"sessionUpdate": "tool_call", "title": "bash", "rawInput": {"command": "go test ./..."}}, "_meta": {"agentTimestampMs": 1794835357000}}}`,
+		`{"timestamp": 1794835358, "method": "session/update", "params": {"sessionId": "grok-sess-acp", "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "All tests "}}, "_meta": {"agentTimestampMs": 1794835358000}}}`,
+		`{"timestamp": 1794835358, "method": "session/update", "params": {"sessionId": "grok-sess-acp", "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "passed successfully."}}, "_meta": {"agentTimestampMs": 1794835358500}}}`,
+		`{"timestamp": 1794835359, "method": "session/update", "params": {"sessionId": "grok-sess-acp", "update": {"sessionUpdate": "turn_completed"}, "_meta": {"agentTimestampMs": 1794835359000}}}`,
+	}
+	_ = os.WriteFile(filepath.Join(sessDir, "updates.jsonl"), []byte(strings.Join(acpLines, "\n")), 0600)
+
+	p := NewGrokProvider()
+	msgs, err := p.ExtractTranscript(tmpHome, cwd, nativeID)
+	if err != nil {
+		t.Fatalf("ExtractTranscript failed: %v", err)
+	}
+
+	if len(msgs) != 2 {
+		t.Fatalf("Expected 2 messages (user, assistant), got %d: %+v", len(msgs), msgs)
+	}
+
+	if msgs[0].Role != "user" || msgs[0].Content != "Fix streaming tests" {
+		t.Errorf("Unexpected user message: %+v", msgs[0])
+	}
+	expectedUserTS := time.UnixMilli(1794835355100)
+	if !msgs[0].Timestamp.Equal(expectedUserTS) {
+		t.Errorf("Expected user timestamp %v, got %v", expectedUserTS, msgs[0].Timestamp)
+	}
+
+	if msgs[1].Role != "assistant" {
+		t.Errorf("Expected role assistant, got %s", msgs[1].Role)
+	}
+	if msgs[1].Thinking != "Analyzing failures... " {
+		t.Errorf("Unexpected thinking: %q", msgs[1].Thinking)
+	}
+	if len(msgs[1].ToolCalls) != 1 || !strings.Contains(msgs[1].ToolCalls[0], "go test") {
+		t.Errorf("Expected tool call with 'go test', got %+v", msgs[1].ToolCalls)
+	}
+	if msgs[1].Content != "All tests passed successfully." {
+		t.Errorf("Expected content 'All tests passed successfully.', got %q", msgs[1].Content)
 	}
 }
 

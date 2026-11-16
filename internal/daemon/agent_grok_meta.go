@@ -37,6 +37,13 @@ func parseGrokContentText(content interface{}) string {
 	if s, ok := content.(string); ok {
 		return strings.TrimSpace(s)
 	}
+	if m, ok := content.(map[string]interface{}); ok {
+		if t, ok := m["text"].(string); ok && t != "" {
+			return strings.TrimSpace(t)
+		} else if c, ok := m["content"].(string); ok && c != "" {
+			return strings.TrimSpace(c)
+		}
+	}
 	if parts, ok := content.([]interface{}); ok {
 		var texts []string
 		for _, p := range parts {

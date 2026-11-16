@@ -321,10 +321,38 @@ func hasGrokAckbarHook(grokDir string) bool {
 	if err != nil {
 		return false
 	}
-	content := string(data)
-	return strings.Contains(content, "127.0.0.1:7777/v1/hooks/grok") ||
-		strings.Contains(content, "localhost:7777/v1/hooks/grok") ||
-		strings.Contains(content, "ackbar-hook")
+	var root map[string]interface{}
+	if err := json.Unmarshal(data, &root); err != nil {
+		return false
+	}
+	hooksMap, ok := root["hooks"].(map[string]interface{})
+	if !ok || len(hooksMap) == 0 {
+		return false
+	}
+	for _, entries := range hooksMap {
+		list, ok := entries.([]interface{})
+		if !ok {
+			continue
+		}
+		for _, rawItem := range list {
+			item, ok := rawItem.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			innerList, _ := item["hooks"].([]interface{})
+			for _, inner := range innerList {
+				hMap, _ := inner.(map[string]interface{})
+				u, _ := hMap["url"].(string)
+				c, _ := hMap["command"].(string)
+				if strings.Contains(u, "127.0.0.1:7777/v1/hooks/grok") ||
+					strings.Contains(u, "localhost:7777/v1/hooks/grok") ||
+					strings.Contains(c, "ackbar-hook") {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 func configureAgentMCP(home string, def AgentDefinition) error {

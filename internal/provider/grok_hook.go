@@ -52,7 +52,7 @@ func (g *GrokProvider) ParseHook(eventName string, payload []byte) (*daemon.Even
 			break
 		}
 	}
-	if sid == "" || !isSafeSessionID(sid) {
+	if sid == "" || !daemon.IsSafeGrokSessionID(sid) {
 		return nil, nil
 	}
 

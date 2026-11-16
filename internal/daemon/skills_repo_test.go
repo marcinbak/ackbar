@@ -116,6 +116,15 @@ func TestSkillsRepo_Validation(t *testing.T) {
 	if _, err := validateRepoPath(tempHome, "~/.claude/something"); err == nil {
 		t.Errorf("expected error for path inside ~/.claude")
 	}
+	if _, err := validateRepoPath(tempHome, "~/.grok/something"); err == nil {
+		t.Errorf("expected error for path inside ~/.grok")
+	}
+	if _, err := validateRepoPath(tempHome, "~/.grok-profiles/custom"); err == nil {
+		t.Errorf("expected error for path inside ~/.grok-profiles")
+	}
+	if _, err := validateRepoPath(tempHome, "~/.claude-profiles/work"); err == nil {
+		t.Errorf("expected error for path inside ~/.claude-profiles")
+	}
 
 	// validateGitURL tests
 	if err := validateGitURL("https://github.com/org/repo.git"); err != nil {

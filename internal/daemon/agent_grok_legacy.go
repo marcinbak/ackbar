@@ -26,13 +26,17 @@ func extractGrokUpdatesMessages(updatesFile string) ([]TranscriptMessage, error)
 		if len(currentPromptChunks) > 0 {
 			fullPrompt := strings.Join(currentPromptChunks, "")
 			currentPromptChunks = nil
+			ts := currentPromptTS
+			currentPromptTS = time.Time{}
 			if cleaned, keep := adapter.FilterUserEntry(nil, fullPrompt); keep {
 				messages = append(messages, TranscriptMessage{
 					Role:      "user",
 					Content:   cleaned,
-					Timestamp: currentPromptTS,
+					Timestamp: ts,
 				})
 			}
+		} else {
+			currentPromptTS = time.Time{}
 		}
 	}
 
@@ -43,6 +47,25 @@ func extractGrokUpdatesMessages(updatesFile string) ([]TranscriptMessage, error)
 			}
 			pendingAssistant = nil
 		}
+	}
+
+	extractChunk := func(obj map[string]interface{}, primaryKey string) string {
+		val := obj[primaryKey]
+		if val == nil {
+			val = obj["text"]
+		}
+		if s, ok := val.(string); ok {
+			return s
+		}
+		if m, ok := val.(map[string]interface{}); ok {
+			if t, ok := m["text"].(string); ok {
+				return t
+			}
+			if t, ok := m["content"].(string); ok {
+				return t
+			}
+		}
+		return ""
 	}
 
 	scanner := bufio.NewScanner(f)
@@ -58,36 +81,47 @@ func extractGrokUpdatesMessages(updatesFile string) ([]TranscriptMessage, error)
 		if err := json.Unmarshal([]byte(line), &raw); err != nil {
 			continue
 		}
-		uType, _ := raw["sessionUpdate"].(string)
+		params, _ := raw["params"].(map[string]interface{})
+		upd, _ := params["update"].(map[string]interface{})
+		target := upd
+		if target == nil {
+			target = raw
+		}
+
+		uType, _ := target["sessionUpdate"].(string)
 		if uType == "" {
-			uType, _ = raw["update_type"].(string)
+			uType, _ = target["update_type"].(string)
 		}
 		if uType == "" {
-			uType, _ = raw["type"].(string)
+			uType, _ = target["type"].(string)
 		}
-		ts := parseGrokTime(raw["timestamp"])
+
+		var ts time.Time
+		if metaMap, ok := params["_meta"].(map[string]interface{}); ok {
+			ts = parseGrokTime(metaMap["agentTimestampMs"])
+		}
 		if ts.IsZero() {
 			if metaMap, ok := raw["_meta"].(map[string]interface{}); ok {
 				ts = parseGrokTime(metaMap["agentTimestampMs"])
 			}
 		}
+		if ts.IsZero() {
+			ts = parseGrokTime(raw["timestamp"])
+		}
 
 		switch uType {
 		case "user_message_chunk":
 			flushAssistant()
-			chunk, _ := raw["content"].(string)
-			if chunk == "" {
-				chunk, _ = raw["text"].(string)
-			}
+			chunk := extractChunk(target, "content")
 			currentPromptChunks = append(currentPromptChunks, chunk)
 			if currentPromptTS.IsZero() {
 				currentPromptTS = ts
 			}
 		case "agent_thought_chunk":
 			flushUser()
-			thought, _ := raw["thought"].(string)
+			thought := extractChunk(target, "thought")
 			if thought == "" {
-				thought, _ = raw["content"].(string)
+				thought = extractChunk(target, "content")
 			}
 			if thought != "" {
 				if pendingAssistant == nil {
@@ -97,18 +131,26 @@ func extractGrokUpdatesMessages(updatesFile string) ([]TranscriptMessage, error)
 			}
 		case "tool_call":
 			flushUser()
-			toolName, _ := raw["name"].(string)
-			toolInput := parseGrokToolInput(raw)
+			toolName := ""
+			for _, k := range []string{"title", "name", "toolName"} {
+				if s, ok := target[k].(string); ok && s != "" {
+					toolName = s
+					break
+				}
+			}
+			var toolInput interface{}
+			if rawIn, exists := target["rawInput"]; exists && rawIn != nil {
+				toolInput = rawIn
+			} else {
+				toolInput = parseGrokToolInput(target)
+			}
 			if pendingAssistant == nil {
 				pendingAssistant = &TranscriptMessage{Role: "assistant", Timestamp: ts}
 			}
 			pendingAssistant.ToolCalls = append(pendingAssistant.ToolCalls, FormatToolDisplay(toolName, toolInput))
 		case "agent_message_chunk":
 			flushUser()
-			chunk, _ := raw["content"].(string)
-			if chunk == "" {
-				chunk, _ = raw["text"].(string)
-			}
+			chunk := extractChunk(target, "content")
 			if chunk != "" {
 				if pendingAssistant == nil {
 					pendingAssistant = &TranscriptMessage{Role: "assistant", Timestamp: ts}
@@ -127,6 +169,9 @@ func extractGrokUpdatesMessages(updatesFile string) ([]TranscriptMessage, error)
 }
 
 func findGrokLegacyLog(home, nativeID string) string {
+	if !IsSafeGrokSessionID(nativeID) {
+		return ""
+	}
 	if home == "" {
 		home = realOSUserHome()
 	}
@@ -139,11 +184,14 @@ func findGrokLegacyLog(home, nativeID string) string {
 		if stat, err := os.Stat(cand2); err == nil && !stat.IsDir() {
 			return cand2
 		}
-		if matches, err := filepath.Glob(filepath.Join(baseDir, "sessions", "*"+nativeID+"*.jsonl")); err == nil && len(matches) > 0 {
-			return matches[0]
-		}
-		if matches, err := filepath.Glob(filepath.Join(baseDir, "sessions", "*", "*", "*", "*"+nativeID+"*.jsonl")); err == nil && len(matches) > 0 {
-			return matches[0]
+		sessRoot := filepath.Join(baseDir, "sessions")
+		if entries, err := os.ReadDir(sessRoot); err == nil {
+			for _, e := range entries {
+				name := e.Name()
+				if !e.IsDir() && strings.Contains(name, nativeID) && strings.HasSuffix(name, ".jsonl") {
+					return filepath.Join(sessRoot, name)
+				}
+			}
 		}
 	}
 	return ""

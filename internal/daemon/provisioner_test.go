@@ -487,12 +487,13 @@ theme = "dark"
 	if err != nil {
 		t.Fatalf("failed to read hooks/ackbar.json: %v", err)
 	}
-	var hooksConfig map[string]interface{}
-	if err := json.Unmarshal(hooksBytes, &hooksConfig); err != nil {
+	var rootConfig map[string]interface{}
+	if err := json.Unmarshal(hooksBytes, &rootConfig); err != nil {
 		t.Fatalf("failed to parse hooks/ackbar.json: %v", err)
 	}
-	if len(hooksConfig) == 0 {
-		t.Fatalf("Expected non-empty hooks map in hooks/ackbar.json")
+	hooksConfig, ok := rootConfig["hooks"].(map[string]interface{})
+	if !ok || len(hooksConfig) == 0 {
+		t.Fatalf("Expected top-level 'hooks' map in hooks/ackbar.json")
 	}
 	for evtName, entries := range hooksConfig {
 		list, ok := entries.([]interface{})

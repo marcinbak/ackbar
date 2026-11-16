@@ -1664,6 +1664,56 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if req.Model != "" {
+		m := strings.TrimSpace(req.Model)
+		if strings.EqualFold(m, "default") {
+			req.Model = ""
+		} else {
+			if strings.HasPrefix(m, "-") || strings.ContainsAny(m, "\x00\r\n \t") || len(m) > 128 {
+				http.Error(w, "Invalid model name", http.StatusBadRequest)
+				return
+			}
+			req.Model = m
+		}
+	}
+
+	if req.Effort != "" {
+		eff := strings.ToLower(strings.TrimSpace(req.Effort))
+		if eff == "" || eff == "default" {
+			req.Effort = ""
+		} else if eff == "none" || eff == "minimal" || eff == "low" || eff == "medium" || eff == "high" || eff == "xhigh" || eff == "max" {
+			req.Effort = eff
+		} else {
+			http.Error(w, "Invalid effort: must be 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', or 'max'", http.StatusBadRequest)
+			return
+		}
+	}
+
+	if req.PermissionMode != "" {
+		rawPm := strings.TrimSpace(req.PermissionMode)
+		pmLower := strings.ToLower(rawPm)
+		if pmLower == "" || pmLower == "default" {
+			req.PermissionMode = ""
+		} else if pmLower == "bypasspermissions" {
+			req.PermissionMode = "bypassPermissions"
+		} else if pmLower == "plan" {
+			req.PermissionMode = "plan"
+		} else if pmLower == "auto" {
+			req.PermissionMode = "auto"
+		} else if pmLower == "acceptedits" {
+			req.PermissionMode = "acceptEdits"
+		} else if pmLower == "dontask" {
+			if strings.EqualFold(req.Agent, "antigravity") {
+				http.Error(w, "permission_mode 'dontAsk' is not supported for antigravity", http.StatusBadRequest)
+				return
+			}
+			req.PermissionMode = "dontAsk"
+		} else {
+			http.Error(w, "Invalid permission_mode: must be 'bypassPermissions', 'auto', 'acceptEdits', 'dontAsk', or 'plan'", http.StatusBadRequest)
+			return
+		}
+	}
+
 	if req.NodePath == "" && req.RepoNodePath != "" {
 		req.NodePath = req.RepoNodePath
 	} else if req.RepoNodePath == "" && req.NodePath != "" && !req.IsSupervisor {
@@ -2338,13 +2388,13 @@ func appendCLIInitPrompt(agent, baseCmd string) string {
 	case "antigravity", "agy":
 		return baseCmd + ` -i "$ACKBAR_INIT_PROMPT"`
 	case "grok", "grok-cli":
-		return baseCmd + ` "$ACKBAR_INIT_PROMPT"`
+		return baseCmd + ` -- "$ACKBAR_INIT_PROMPT"`
 	default:
 		return ""
 	}
 }
 
-var safeCLIArgRegex = regexp.MustCompile(`^[a-zA-Z0-9_\-\.:/]+$`)
+var safeCLIArgRegex = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_\-\.:/]{0,127}$`)
 
 func appendGrokCLIArgs(baseCmd, model, effort, permissionMode string, extraDirs []string) string {
 	cmd := baseCmd

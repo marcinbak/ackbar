@@ -47,9 +47,10 @@ func FormatToolDisplay(name string, input interface{}) string {
 
 func WriteGrokHooksFile(grokDir, accountName string) error {
 	hooksDir := filepath.Join(grokDir, "hooks")
-	if err := os.MkdirAll(hooksDir, 0755); err != nil {
+	if err := os.MkdirAll(hooksDir, 0700); err != nil {
 		return fmt.Errorf("failed to create hooks directory: %w", err)
 	}
+	_ = os.Chmod(grokDir, 0700)
 	targetFile := filepath.Join(hooksDir, "ackbar.json")
 	hookURL := "http://127.0.0.1:7777/v1/hooks/grok"
 	if accountName != "" && accountName != "default" {
@@ -61,6 +62,11 @@ func WriteGrokHooksFile(grokDir, accountName string) error {
 		_ = json.Unmarshal(data, &root)
 	}
 
+	hooksMap, _ := root["hooks"].(map[string]interface{})
+	if hooksMap == nil {
+		hooksMap = make(map[string]interface{})
+	}
+
 	events := []string{
 		"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse",
 		"PostToolUseFailure", "PermissionDenied", "Notification",
@@ -70,7 +76,7 @@ func WriteGrokHooksFile(grokDir, accountName string) error {
 
 	for _, evt := range events {
 		var filteredEntries []interface{}
-		if existing, ok := root[evt].([]interface{}); ok {
+		if existing, ok := hooksMap[evt].([]interface{}); ok {
 			for _, entry := range existing {
 				entryMap, ok := entry.(map[string]interface{})
 				if !ok {
@@ -113,8 +119,9 @@ func WriteGrokHooksFile(grokDir, accountName string) error {
 			},
 		}
 		filteredEntries = append(filteredEntries, ackEntry)
-		root[evt] = filteredEntries
+		hooksMap[evt] = filteredEntries
 	}
+	root["hooks"] = hooksMap
 
 	data, err := json.MarshalIndent(root, "", "  ")
 	if err != nil {

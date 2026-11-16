@@ -37,6 +37,10 @@ func IsSafeGrokSessionID(id string) bool {
 	if id == "" || len(id) > 128 || id == "." || strings.Contains(id, "..") {
 		return false
 	}
+	first := id[0]
+	if !((first >= 'a' && first <= 'z') || (first >= 'A' && first <= 'Z') || (first >= '0' && first <= '9')) {
+		return false
+	}
 	for i := 0; i < len(id); i++ {
 		c := id[i]
 		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.' || c == ':') {
