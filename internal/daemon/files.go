@@ -10,253 +10,47 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"runtime"
-	"strconv"
 	"strings"
 	"unicode"
 )
 
-var (
-	hashLineRegex  = regexp.MustCompile(`(?i)#L(\d+)(?:-L?(\d+))?$`)
-	colonLineRegex = regexp.MustCompile(`:(\d+)(?:[-:](\d+))?$`)
-)
-
-// splitFilePathAndLine extracts clean file path, line number, and column number
-// from paths containing line anchors:
-// Supports /path/to/file.go#L75-L176, /path/to/file.go#L75, /path/to/file.go:75:10, /path/to/file.go:75-176, and /path/to/file.go:75.
-func splitFilePathAndLine(rawPath string) (cleanPath string, line int, col int) {
-	rawPath = strings.TrimSpace(rawPath)
-	if rawPath == "" {
-		return "", 0, 0
-	}
-
-	// 1. Check for #L(\d+)(?:-L?(\d+))?
-	if loc := hashLineRegex.FindStringSubmatchIndex(rawPath); loc != nil {
-		clean := rawPath[:loc[0]]
-		startStr := rawPath[loc[2]:loc[3]]
-		startL, _ := strconv.Atoi(startStr)
-		return clean, startL, 0
-	}
-
-	// 2. Check for :(\d+)(?:[-:](\d+))?
-	if loc := colonLineRegex.FindStringSubmatchIndex(rawPath); loc != nil {
-		clean := rawPath[:loc[0]]
-		startStr := rawPath[loc[2]:loc[3]]
-		startL, _ := strconv.Atoi(startStr)
-		colNum := 0
-		if loc[4] >= 0 && loc[5] >= 0 {
-			// Only treat group 2 as col when the preceding separator is ':' (not '-')
-			sepIdx := loc[4] - 1
-			if sepIdx >= 0 && rawPath[sepIdx] == ':' {
-				colStr := rawPath[loc[4]:loc[5]]
-				colNum, _ = strconv.Atoi(colStr)
-			}
-		}
-		return clean, startL, colNum
-	}
-
-	return rawPath, 0, 0
+var mimeTypes = map[string]string{
+	".png": "image/png", ".avif": "image/avif", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+	".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml", ".ico": "image/x-icon",
+	".bmp": "image/bmp", ".html": "text/html; charset=utf-8", ".htm": "text/html; charset=utf-8",
+	".pdf": "application/pdf", ".json": "application/json", ".txt": "text/plain; charset=utf-8",
+	".log": "text/plain; charset=utf-8", ".md": "text/markdown; charset=utf-8",
+	".markdown": "text/markdown; charset=utf-8", ".csv": "text/csv; charset=utf-8",
+	".js": "application/javascript; charset=utf-8", ".mjs": "application/javascript; charset=utf-8",
+	".css": "text/css; charset=utf-8", ".mp4": "video/mp4", ".webm": "video/webm",
+	".mp3": "audio/mpeg", ".wav": "audio/wav", ".zip": "application/zip",
+	".tar": "application/x-tar", ".gz": "application/gzip",
 }
 
-// detectMIMEType returns an appropriate Content-Type header value for a given file extension
 func detectMIMEType(ext string) string {
-	switch strings.ToLower(ext) {
-	case ".png":
-		return "image/png"
-	case ".jpg", ".jpeg":
-		return "image/jpeg"
-	case ".gif":
-		return "image/gif"
-	case ".webp":
-		return "image/webp"
-	case ".svg":
-		return "image/svg+xml"
-	case ".ico":
-		return "image/x-icon"
-	case ".bmp":
-		return "image/bmp"
-	case ".html", ".htm":
-		return "text/html; charset=utf-8"
-	case ".pdf":
-		return "application/pdf"
-	case ".json":
-		return "application/json"
-	case ".txt", ".log":
-		return "text/plain; charset=utf-8"
-	case ".md", ".markdown":
-		return "text/markdown; charset=utf-8"
-	case ".csv":
-		return "text/csv; charset=utf-8"
-	case ".js", ".mjs":
-		return "application/javascript; charset=utf-8"
-	case ".css":
-		return "text/css; charset=utf-8"
-	case ".mp4":
-		return "video/mp4"
-	case ".webm":
-		return "video/webm"
-	case ".mp3":
-		return "audio/mpeg"
-	case ".wav":
-		return "audio/wav"
-	case ".zip":
-		return "application/zip"
-	case ".tar":
-		return "application/x-tar"
-	case ".gz":
-		return "application/gzip"
-	default:
-		if t := mime.TypeByExtension(ext); t != "" {
-			return t
-		}
-		return "application/octet-stream"
+	if t, ok := mimeTypes[strings.ToLower(ext)]; ok {
+		return t
 	}
-}
-
-// resolveFilePath resolves a user or agent requested file path against a session's CWD
-// and ensures security restrictions (no traversal into sensitive credentials or system files).
-func (s *Server) resolveFilePath(sess *Session, reqPath string) (string, error) {
-	reqPath = strings.TrimSpace(reqPath)
-	if reqPath == "" {
-		return "", fmt.Errorf("empty file path")
+	if t := mime.TypeByExtension(ext); t != "" {
+		return t
 	}
-
-	// Strip file:// prefix if present
-	if strings.HasPrefix(reqPath, "file://") {
-		reqPath = strings.TrimPrefix(reqPath, "file://")
-	}
-
-	// Strip line range anchors (#L... or :line) so /v1/files/content and /v1/files/open resolve real file on disk
-	cleanReqPath, _, _ := splitFilePathAndLine(reqPath)
-	if cleanReqPath != "" {
-		reqPath = cleanReqPath
-	}
-
-	homeDir, _ := os.UserHomeDir()
-
-	// Expand home directory ~ prefix
-	if reqPath == "~" || strings.HasPrefix(reqPath, "~/") {
-		if homeDir == "" {
-			return "", fmt.Errorf("user home directory not found")
-		}
-		reqPath = filepath.Join(homeDir, strings.TrimPrefix(reqPath, "~"))
-	}
-
-	var targetPath string
-	if filepath.IsAbs(reqPath) {
-		targetPath = filepath.Clean(reqPath)
-	} else {
-		// Relative path: resolve against session cwd if available
-		cwd := ""
-		if sess != nil && sess.Cwd != "" {
-			cwd = sess.Cwd
-		}
-		if cwd == "" {
-			var err error
-			cwd, err = os.Getwd()
-			if err != nil {
-				return "", fmt.Errorf("cannot resolve relative path without session working directory")
-			}
-		}
-		targetPath = filepath.Clean(filepath.Join(cwd, reqPath))
-	}
-
-	cleanPath := filepath.Clean(targetPath)
-
-	// Cross-OS Home Directory Path Fallback (/Users/<user> <-> /home/<user>)
-	if homeDir != "" && filepath.IsAbs(cleanPath) {
-		cleanHome := filepath.Clean(homeDir)
-		currentUser := filepath.Base(cleanHome)
-		if currentUser != "" && currentUser != "/" && currentUser != "." {
-			hasHomePrefix := cleanPath == cleanHome || strings.HasPrefix(cleanPath, cleanHome+string(filepath.Separator))
-			if !hasHomePrefix {
-				var rewritten string
-				macPrefix := "/Users/" + currentUser
-				linuxPrefix := "/home/" + currentUser
-				if cleanPath == macPrefix || strings.HasPrefix(cleanPath, macPrefix+"/") {
-					rewritten = filepath.Join(cleanHome, strings.TrimPrefix(strings.TrimPrefix(cleanPath, macPrefix), "/"))
-				} else if cleanPath == linuxPrefix || strings.HasPrefix(cleanPath, linuxPrefix+"/") {
-					rewritten = filepath.Join(cleanHome, strings.TrimPrefix(strings.TrimPrefix(cleanPath, linuxPrefix), "/"))
-				}
-				if rewritten != "" {
-					if _, err := os.Stat(cleanPath); err != nil {
-						cleanPath = filepath.Clean(rewritten)
-					}
-				}
-			}
-		}
-	}
-
-	// Block explicitly sensitive paths and credentials
-	sensitiveSubstrings := []string{
-		"/.ssh/",
-		"/.ssh",
-		"/.gnupg/",
-		"/.gnupg",
-		"/.aws/",
-		"/.aws",
-		"/etc/shadow",
-		"/etc/sudoers",
-		"/etc/master.passwd",
-		"/.config/gcloud/",
-	}
-	for _, sub := range sensitiveSubstrings {
-		if strings.Contains(cleanPath, sub) || strings.HasSuffix(cleanPath, strings.TrimSuffix(sub, "/")) {
-			return "", fmt.Errorf("access denied: forbidden sensitive file path")
-		}
-	}
-
-	// Permitted directory roots check:
-	// 1. Session CWD (if provided)
-	// 2. User Home Directory
-	// 3. System Temporary Directory (os.TempDir(), /tmp, /private/tmp, /var/tmp)
-	allowed := false
-
-	if sess != nil && sess.Cwd != "" {
-		cleanCwd := filepath.Clean(sess.Cwd)
-		if cleanPath == cleanCwd || strings.HasPrefix(cleanPath, cleanCwd+string(filepath.Separator)) {
-			allowed = true
-		}
-	}
-
-	if !allowed && homeDir != "" {
-		cleanHome := filepath.Clean(homeDir)
-		if cleanPath == cleanHome || strings.HasPrefix(cleanPath, cleanHome+string(filepath.Separator)) {
-			allowed = true
-		}
-	}
-
-	if !allowed {
-		allowedTmpDirs := []string{
-			filepath.Clean(os.TempDir()),
-			"/tmp",
-			"/private/tmp",
-			"/var/tmp",
-		}
-		for _, tmp := range allowedTmpDirs {
-			if cleanPath == tmp || strings.HasPrefix(cleanPath, tmp+string(filepath.Separator)) {
-				allowed = true
-				break
-			}
-		}
-	}
-
-	if !allowed {
-		return "", fmt.Errorf("access denied: path outside permitted directories")
-	}
-
-	return cleanPath, nil
+	return "application/octet-stream"
 }
 
 // sanitizeHostCacheSubdir converts a host name to a safe directory name
 func sanitizeHostCacheSubdir(host string) string {
-	return strings.Map(func(r rune) rune {
+	res := strings.Map(func(r rune) rune {
 		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '-' || r == '_' || r == '.' {
 			return r
 		}
 		return '_'
 	}, host)
+	res = strings.TrimSpace(res)
+	if res == "" || res == "." || res == ".." {
+		return "remote_host"
+	}
+	return res
 }
 
 // OpenFileLocallyFunc allows mocking or overriding local file opening in tests.
@@ -268,20 +62,15 @@ func openFileLocally(filePath string, app string) error {
 }
 
 func defaultOpenFileLocally(filePath string, app string) error {
-	// Under automated tests (e.g. go test), do not launch real external GUI processes
 	if isTestEnv() {
 		return nil
 	}
-
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":
-		switch strings.ToLower(app) {
-		case "preview":
+		if strings.ToLower(app) == "preview" {
 			cmd = exec.Command("open", "-a", "Preview", filePath)
-		case "browser":
-			cmd = exec.Command("open", filePath)
-		default:
+		} else {
 			cmd = exec.Command("open", filePath)
 		}
 	case "linux":
@@ -291,7 +80,6 @@ func defaultOpenFileLocally(filePath string, app string) error {
 	default:
 		return fmt.Errorf("unsupported operating system: %s", runtime.GOOS)
 	}
-
 	return cmd.Start()
 }
 
@@ -314,11 +102,12 @@ func (s *Server) handleFileContent(w http.ResponseWriter, r *http.Request) {
 		sessionID = r.URL.Query().Get("id")
 	}
 	hostParam := r.URL.Query().Get("host")
+	cwdParam := r.URL.Query().Get("cwd")
 
 	// Determine session and host
 	var sess *Session
 	if sessionID != "" {
-		sess = s.resolveSession(sessionID)
+		sess = s.resolveSessionForFile(sessionID)
 	}
 
 	targetHost := hostParam
@@ -336,7 +125,9 @@ func (s *Server) handleFileContent(w http.ResponseWriter, r *http.Request) {
 	if targetHost != "" && !s.isLocalHost(targetHost) {
 		hostRec := s.resolveHost(targetHost)
 		if hostRec != nil && hostRec.URL != "" {
-			targetURL := fmt.Sprintf("%s/v1/files/content?%s", strings.TrimSuffix(hostRec.URL, "/"), r.URL.RawQuery)
+			q := r.URL.Query()
+			q.Del("host")
+			targetURL := fmt.Sprintf("%s/v1/files/content?%s", strings.TrimSuffix(hostRec.URL, "/"), q.Encode())
 			fwdReq, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL, nil)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -359,6 +150,10 @@ func (s *Server) handleFileContent(w http.ResponseWriter, r *http.Request) {
 					w.Header().Add(k, v)
 				}
 			}
+			if strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "svg") {
+				w.Header().Set("Content-Security-Policy", "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; sandbox")
+				w.Header().Set("X-Content-Type-Options", "nosniff")
+			}
 			w.WriteHeader(resp.StatusCode)
 			_, _ = io.Copy(w, resp.Body)
 			return
@@ -368,7 +163,13 @@ func (s *Server) handleFileContent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Local file resolution
-	filePath, err := s.resolveFilePath(sess, reqPath)
+	effectiveSess, origCwd, err := s.applyEffectiveCwd(sess, cwdParam, targetHost)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusForbidden)
+		return
+	}
+
+	filePath, err := s.resolveFilePathWithOrigCwd(effectiveSess, reqPath, origCwd)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusForbidden)
 		return
@@ -392,6 +193,10 @@ func (s *Server) handleFileContent(w http.ResponseWriter, r *http.Request) {
 	ext := strings.ToLower(filepath.Ext(filePath))
 	if ctype := detectMIMEType(ext); ctype != "" {
 		w.Header().Set("Content-Type", ctype)
+		if strings.Contains(strings.ToLower(ctype), "svg") {
+			w.Header().Set("Content-Security-Policy", "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; sandbox")
+			w.Header().Set("X-Content-Type-Options", "nosniff")
+		}
 	}
 
 	if r.URL.Query().Get("download") == "1" || r.URL.Query().Get("download") == "true" {
@@ -415,6 +220,7 @@ func (s *Server) handleFileOpen(w http.ResponseWriter, r *http.Request) {
 		SessionID string `json:"session_id"`
 		Host      string `json:"host"`
 		App       string `json:"app"` // "preview", "vscode", "browser", "default"
+		Cwd       string `json:"cwd"`
 	}
 
 	if r.Method == http.MethodPost {
@@ -424,13 +230,21 @@ func (s *Server) handleFileOpen(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Query params fallback
 	if req.Path == "" {
 		req.Path = r.URL.Query().Get("path")
+		if req.Path == "" {
+			http.Error(w, "Missing path parameter", http.StatusBadRequest)
+			return
+		}
+	}
+	cleanCheck, _, _ := splitFilePathAndLine(stripFileScheme(req.Path))
+	cleanCheck = filepath.Clean(cleanCheck)
+	if strings.HasPrefix(cleanCheck, "-") || strings.HasPrefix(filepath.Base(cleanCheck), "-") || strings.HasPrefix(strings.TrimSpace(req.Path), "-") {
+		http.Error(w, "Invalid path: leading dash rejected", http.StatusBadRequest)
+		return
 	}
 	if req.SessionID == "" {
-		req.SessionID = r.URL.Query().Get("session_id")
-		if req.SessionID == "" {
+		if req.SessionID = r.URL.Query().Get("session_id"); req.SessionID == "" {
 			req.SessionID = r.URL.Query().Get("id")
 		}
 	}
@@ -443,16 +257,13 @@ func (s *Server) handleFileOpen(w http.ResponseWriter, r *http.Request) {
 	if req.App == "" {
 		req.App = "default"
 	}
-
-	if req.Path == "" {
-		http.Error(w, "Missing path parameter", http.StatusBadRequest)
-		return
+	if req.Cwd == "" {
+		req.Cwd = r.URL.Query().Get("cwd")
 	}
 
-	// Resolve session and host
 	var sess *Session
 	if req.SessionID != "" {
-		sess = s.resolveSession(req.SessionID)
+		sess = s.resolveSessionForFile(req.SessionID)
 	}
 
 	targetHost := req.Host
@@ -466,36 +277,56 @@ func (s *Server) handleFileOpen(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// If app is VS Code, delegate to LaunchVSCode
 	if strings.ToLower(req.App) == "vscode" {
-		targetPath := req.Path
+		targetPath := stripFileScheme(req.Path)
 		cleanTarget, line, col := splitFilePathAndLine(targetPath)
 		var baseResolved string
-		if sess != nil && !filepath.IsAbs(cleanTarget) {
-			if resolved, err := s.resolveFilePath(sess, cleanTarget); err == nil {
-				baseResolved = resolved
-			} else {
-				baseResolved = cleanTarget
+		if targetHost == "" || s.isLocalHost(targetHost) {
+			effectiveSess, origCwd, err := s.applyEffectiveCwd(sess, req.Cwd, targetHost)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusForbidden)
+				return
+			}
+			resolved, err := s.resolveFilePathWithOrigCwd(effectiveSess, cleanTarget, origCwd)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusForbidden)
+				return
+			}
+			baseResolved = resolved
+			if _, err := os.Stat(baseResolved); err != nil {
+				if os.IsNotExist(err) {
+					http.Error(w, fmt.Sprintf("File not found: %s", req.Path), http.StatusNotFound)
+					return
+				}
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
 			}
 		} else {
+			if unescaped, err := url.PathUnescape(cleanTarget); err == nil {
+				cleanTarget = unescaped
+			}
 			baseResolved = cleanTarget
-		}
-
-		// Verify local file exists before opening to prevent VS Code "file does not exist" modals
-		if (targetHost == "" || s.isLocalHost(targetHost)) && filepath.IsAbs(baseResolved) {
-			if _, err := os.Stat(baseResolved); err != nil && os.IsNotExist(err) {
-				http.Error(w, fmt.Sprintf("File not found: %s", req.Path), http.StatusNotFound)
+			if !filepath.IsAbs(cleanTarget) {
+				remoteCwd := stripFileScheme(req.Cwd)
+				if remoteCwd == "" && sess != nil {
+					remoteCwd = sess.Cwd
+				}
+				if remoteCwd != "" {
+					baseResolved = filepath.Join(remoteCwd, cleanTarget)
+				}
+			}
+			baseResolved = filepath.Clean(baseResolved)
+			if err := checkSensitivePath(baseResolved); err != nil {
+				http.Error(w, err.Error(), http.StatusForbidden)
 				return
 			}
 		}
 
 		pathForVSCode := baseResolved
-		if line > 0 {
-			if col > 0 {
-				pathForVSCode = fmt.Sprintf("%s:%d:%d", baseResolved, line, col)
-			} else {
-				pathForVSCode = fmt.Sprintf("%s:%d", baseResolved, line)
-			}
+		if line > 0 && col > 0 {
+			pathForVSCode = fmt.Sprintf("%s:%d:%d", baseResolved, line, col)
+		} else if line > 0 {
+			pathForVSCode = fmt.Sprintf("%s:%d", baseResolved, line)
 		}
 
 		uri, err := LaunchVSCode(pathForVSCode, targetHost)
@@ -529,6 +360,9 @@ func (s *Server) handleFileOpen(w http.ResponseWriter, r *http.Request) {
 		if req.SessionID != "" {
 			contentURL += fmt.Sprintf("&session_id=%s", url.QueryEscape(req.SessionID))
 		}
+		if req.Cwd != "" {
+			contentURL += fmt.Sprintf("&cwd=%s", url.QueryEscape(req.Cwd))
+		}
 
 		fwdReq, err := http.NewRequestWithContext(r.Context(), http.MethodGet, contentURL, nil)
 		if err != nil {
@@ -560,14 +394,37 @@ func (s *Server) handleFileOpen(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		cleanRemotePath := strings.TrimPrefix(filepath.Clean(req.Path), "/")
-		cachedDir := filepath.Join(homeDir, ".cache", "ackbar", "remote", sanitizeHostCacheSubdir(targetHost), filepath.Dir(cleanRemotePath))
-		if err := os.MkdirAll(cachedDir, 0755); err != nil {
+		hostCacheRoot := filepath.Join(homeDir, ".cache", "ackbar", "remote", sanitizeHostCacheSubdir(hostRec.Name))
+		cleanRemotePath, _, _ := splitFilePathAndLine(stripFileScheme(req.Path))
+		if unescaped, err := url.PathUnescape(cleanRemotePath); err == nil {
+			cleanRemotePath = unescaped
+		}
+		cleanRemotePath = filepath.Clean(cleanRemotePath)
+		cleanRemotePath = strings.TrimPrefix(cleanRemotePath, filepath.VolumeName(cleanRemotePath))
+		cleanRemotePath = strings.TrimLeft(cleanRemotePath, "/\\")
+
+		parts := strings.Split(cleanRemotePath, string(filepath.Separator))
+		var safeParts []string
+		for _, p := range parts {
+			if p == ".." || p == "." || p == "" {
+				continue
+			}
+			safeParts = append(safeParts, p)
+		}
+		if len(safeParts) == 0 {
+			safeParts = []string{"staged_file"}
+		}
+		cachedFilePath := filepath.Join(hostCacheRoot, filepath.Join(safeParts...))
+		if !strings.HasPrefix(cachedFilePath, hostCacheRoot+string(filepath.Separator)) {
+			http.Error(w, "Invalid remote path for caching", http.StatusBadRequest)
+			return
+		}
+
+		if err := os.MkdirAll(filepath.Dir(cachedFilePath), 0755); err != nil {
 			http.Error(w, fmt.Sprintf("Failed to create cache dir: %v", err), http.StatusInternalServerError)
 			return
 		}
 
-		cachedFilePath := filepath.Join(cachedDir, filepath.Base(cleanRemotePath))
 		outFile, err := os.Create(cachedFilePath)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("Failed to write cached file: %v", err), http.StatusInternalServerError)
@@ -599,7 +456,13 @@ func (s *Server) handleFileOpen(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Local file handling
-	filePath, err := s.resolveFilePath(sess, req.Path)
+	effectiveSess, origCwd, err := s.applyEffectiveCwd(sess, req.Cwd, targetHost)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusForbidden)
+		return
+	}
+
+	filePath, err := s.resolveFilePathWithOrigCwd(effectiveSess, req.Path, origCwd)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusForbidden)
 		return

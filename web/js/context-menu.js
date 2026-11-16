@@ -37,7 +37,8 @@ import {
   openChatFileInApp,
   CHAT_IMAGE_EXTS,
   getChatFileContentUrl,
-  APP_ICONS
+  APP_ICONS,
+  parseLineRange
 } from './chat.js';
 
 
@@ -74,7 +75,7 @@ function showChatFileContextMenu(pill, cleanPath, session, clickX, clickY) {
   activeFileMenuPill = pill;
   pill.classList.add('menu-active');
 
-  const baseFilePath = cleanPath.split('?')[0].replace(/#L\d+(?:-L?\d+)?$/i, '').replace(/:\d+(?:[-:]\d+)?$/, '');
+  const { baseFilePath } = parseLineRange(cleanPath);
   const ext = baseFilePath.split('.').pop().toLowerCase();
   const isMarkdown = (ext === 'md' || ext === 'markdown');
   const isImg = CHAT_IMAGE_EXTS.has(ext);

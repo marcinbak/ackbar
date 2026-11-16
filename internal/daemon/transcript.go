@@ -352,6 +352,7 @@ func ExtractAntigravityTranscriptMessages(home, convID string) ([]TranscriptMess
 	}
 
 	messages := make([]TranscriptMessage, 0)
+	lastPlannerHadImageGenTool := false
 	scanner := bufio.NewScanner(file)
 	buf := make([]byte, 1024*1024) // 1MB buffer for large entries
 	scanner.Buffer(buf, 10*1024*1024)
@@ -361,7 +362,8 @@ func ExtractAntigravityTranscriptMessages(home, convID string) ([]TranscriptMess
 		if line == "" {
 			continue
 		}
-		if !strings.Contains(line, `"USER_INPUT"`) && !strings.Contains(line, `"PLANNER_RESPONSE"`) && !strings.Contains(line, `"CHECKPOINT"`) {
+		isGenericMedia := strings.Contains(line, `"GENERIC"`) && strings.Contains(line, `"media"`)
+		if !strings.Contains(line, `"USER_INPUT"`) && !strings.Contains(line, `"PLANNER_RESPONSE"`) && !strings.Contains(line, `"CHECKPOINT"`) && !isGenericMedia {
 			continue
 		}
 
@@ -389,6 +391,7 @@ func ExtractAntigravityTranscriptMessages(home, convID string) ([]TranscriptMess
 
 		switch entry.Type {
 		case "USER_INPUT":
+			lastPlannerHadImageGenTool = false
 			if entry.Source != "" && !strings.EqualFold(entry.Source, "USER_EXPLICIT") && !strings.EqualFold(entry.Source, "USER") {
 				continue
 			}
@@ -413,6 +416,20 @@ func ExtractAntigravityTranscriptMessages(home, convID string) ([]TranscriptMess
 			}
 
 		case "PLANNER_RESPONSE":
+			hadImageGen := false
+			for _, tc := range entry.ToolCalls {
+				lowerName := strings.ToLower(tc.Name)
+				if strings.Contains(lowerName, "generate_image") ||
+					strings.Contains(lowerName, "image_generator") ||
+					strings.Contains(lowerName, "image-generator") ||
+					strings.Contains(lowerName, "edit_image") ||
+					strings.Contains(lowerName, "generate_screen") {
+					hadImageGen = true
+					break
+				}
+			}
+			lastPlannerHadImageGenTool = hadImageGen
+
 			var toolSummaries []string
 			for _, tc := range entry.ToolCalls {
 				if mcpName, mcpDetail, isMCP := FormatMCPToolDisplay(tc.Name, tc.Args); isMCP {
@@ -492,6 +509,36 @@ func ExtractAntigravityTranscriptMessages(home, convID string) ([]TranscriptMess
 					Content:   strings.TrimSpace(entry.Content),
 					Timestamp: ts,
 				})
+			}
+
+		case "GENERIC":
+			if !lastPlannerHadImageGenTool {
+				continue
+			}
+			if strings.Contains(entry.Content, "Showing binary file of type ") || strings.Contains(entry.Content, "The following is the entire, complete content of the requested file.") {
+				continue
+			}
+			if len(messages) == 0 || messages[len(messages)-1].Role != "assistant" {
+				continue
+			}
+			last := &messages[len(messages)-1]
+			for _, m := range entry.Media {
+				if m.URI == "" {
+					continue
+				}
+				if strings.Contains(m.URI, "/.system_generated/logs/media/") || strings.Contains(m.URI, "/.tempmediaStorage/") {
+					continue
+				}
+				cleanURI := strings.TrimPrefix(m.URI, "file://")
+				if strings.Contains(last.Content, m.URI) || (cleanURI != "" && strings.Contains(last.Content, cleanURI)) {
+					continue
+				}
+				attachmentMarkdown := fmt.Sprintf("![Attachment](%s)", m.URI)
+				if last.Content != "" {
+					last.Content += "\n\n" + attachmentMarkdown
+				} else {
+					last.Content = attachmentMarkdown
+				}
 			}
 		}
 	}
