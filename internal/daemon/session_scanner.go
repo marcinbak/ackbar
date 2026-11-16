@@ -397,7 +397,7 @@ func (s *Server) scanTmuxPanes(ctx context.Context, state *ScanState) {
 		cwd = strings.TrimSuffix(cwd, " (deleted)")
 		cmdLower := strings.ToLower(cmdName)
 
-		if tmuxName == "(deleted)" || tmuxName == "" || strings.HasPrefix(tmuxName, "ackbar-mock-agent-") {
+		if tmuxName == "(deleted)" || tmuxName == "" || strings.HasPrefix(tmuxName, "ackbar-mock-agent-") || strings.HasPrefix(tmuxName, "ackbar-test-") {
 			continue
 		}
 
