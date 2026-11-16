@@ -1914,9 +1914,16 @@ body, html {
   font-size: 13.5px;
   max-width: 100%;
   width: 100%;
+  word-break: normal;
+  overflow-wrap: break-word;
   user-select: text !important;
   -webkit-user-select: text !important;
   cursor: text;
+}
+
+.markdown-body strong, .markdown-body b {
+  font-weight: 700;
+  color: var(--text-bright);
 }
 
 .markdown-body * {
@@ -2965,7 +2972,8 @@ body, html {
   flex-direction: column;
   max-width: 88%;
   position: relative;
-  word-break: break-word;
+  word-break: normal;
+  overflow-wrap: break-word;
   animation: fadeInMsg 0.18s ease-out;
   user-select: text;
   -webkit-user-select: text;
@@ -2985,8 +2993,16 @@ body, html {
 }
 
 .chat-msg.user-msg .chat-msg-body {
+  word-break: normal;
+  overflow-wrap: break-word;
+}
+
+.chat-msg.user-msg .chat-msg-body:not(.markdown-body) {
   white-space: pre-wrap;
-  word-break: break-word;
+}
+
+.chat-msg.user-msg .chat-msg-body.markdown-body {
+  white-space: normal;
 }
 
 .chat-msg.assistant-msg {

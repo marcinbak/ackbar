@@ -34,7 +34,6 @@ class HeadlessChatStreamController extends ChangeNotifier {
   bool _hasStreamConnected = false;
   bool _disposed = false;
   String _currentTurnId = '';
-  bool _lastEventWasTool = false;
 
   HeadlessChatStreamController({
     required Session session,
@@ -80,7 +79,6 @@ class HeadlessChatStreamController extends ChangeNotifier {
     _streamSub = null;
     _hasStreamConnected = false;
     _currentTurnId = '';
-    _lastEventWasTool = false;
     _pendingUserMessage = null;
     _awaitingTurnCompletion = false;
     _transcriptData = null;
@@ -156,7 +154,6 @@ class HeadlessChatStreamController extends ChangeNotifier {
       case ChatStreamEventType.turnStart:
         _currentTurnId = evt.turnId;
         _awaitingTurnCompletion = true;
-        _lastEventWasTool = false;
         final msgs =
             List<TranscriptMessage>.from(_transcriptData?.messages ?? []);
 
@@ -205,12 +202,10 @@ class HeadlessChatStreamController extends ChangeNotifier {
             List<TranscriptMessage>.from(_transcriptData?.messages ?? []);
         final idx = _findOrCreateAssistant(msgs, evt.turnId, evt.timestamp);
         final existing = msgs[idx];
-        var text = existing.content;
-        if (_lastEventWasTool && text.isNotEmpty && !text.endsWith('\n')) {
-          text += '\n\n';
-        }
-        msgs[idx] = existing.copyWith(content: text + evt.text, inFlight: true);
-        _lastEventWasTool = false;
+        msgs[idx] = existing.copyWith(
+          content: existing.content + evt.text,
+          inFlight: true,
+        );
         _updateMessages(msgs);
         break;
       case ChatStreamEventType.thoughtDelta:
@@ -226,7 +221,6 @@ class HeadlessChatStreamController extends ChangeNotifier {
         _updateMessages(msgs);
         break;
       case ChatStreamEventType.toolStart:
-        _lastEventWasTool = true;
         final msgs =
             List<TranscriptMessage>.from(_transcriptData?.messages ?? []);
         final idx = _findOrCreateAssistant(msgs, evt.turnId, evt.timestamp);
@@ -237,7 +231,6 @@ class HeadlessChatStreamController extends ChangeNotifier {
         _updateMessages(msgs);
         break;
       case ChatStreamEventType.toolResult:
-        _lastEventWasTool = true;
         break;
       case ChatStreamEventType.turnComplete:
       case ChatStreamEventType.done:
@@ -245,7 +238,6 @@ class HeadlessChatStreamController extends ChangeNotifier {
       case ChatStreamEventType.error:
         _awaitingTurnCompletion = false;
         _pendingUserMessage = null;
-        _lastEventWasTool = false;
         if (_transcriptData != null) {
           final msgs = _transcriptData!.messages
               .map((m) => m.inFlight ? m.copyWith(inFlight: false) : m)

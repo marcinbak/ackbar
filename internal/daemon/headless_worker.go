@@ -450,14 +450,99 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string) int {
 		return gen, nil
 	}
 
+	startTurnLocked := func(tMetaPath string) error {
+		tMeta, err := ReadTurnSpoolMeta(tMetaPath)
+		if err != nil || tMeta == nil {
+			return fmt.Errorf("failed to read turn meta: %w", err)
+		}
+		spool, err := OpenTurnSpoolWriter(tMeta.SpoolPath, tMeta.TurnID)
+		if err != nil {
+			return fmt.Errorf("failed to open spool writer: %w", err)
+		}
+		if spool.seq == 0 {
+			_, _ = spool.Append(ChatStreamEvent{SessionID: tMeta.SessionID, TurnID: tMeta.TurnID, Type: "turn_start", Text: tMeta.Prompt, Timestamp: tMeta.StartedAt})
+		}
+		if pendingInitConvID != "" {
+			workerMeta.NativeID, tMeta.NativeID = pendingInitConvID, pendingInitConvID
+			_, _ = spool.Append(ChatStreamEvent{SessionID: tMeta.SessionID, TurnID: tMeta.TurnID, Type: "session_init", NativeID: pendingInitConvID})
+			pendingInitConvID = ""
+		}
+		if idleTimer != nil {
+			idleTimer.Stop()
+		}
+		state, workerMeta.State = "running_turn", "running_turn"
+		workerMeta.ActiveTurnID, workerMeta.ActiveMetaPath, workerMeta.UpdatedAt = tMeta.TurnID, tMetaPath, time.Now().UTC()
+		saveWorkerMeta()
+
+		tMeta.WorkerPID, tMeta.ChildPID, tMeta.Status = os.Getpid(), getChildPGIDLocked(), "running"
+		_ = WriteTurnSpoolMeta(tMetaPath, tMeta)
+
+		activeTurn = &activeTurnState{turnID: tMeta.TurnID, metaPath: tMetaPath, meta: tMeta, spool: spool}
+		return nil
+	}
+
+	var initialStdinLine string
+	if specPath != "" {
+		if tMeta, rErr := ReadTurnSpoolMeta(specPath); rErr == nil && tMeta != nil {
+			if workerMetaPath != "" {
+				isNewConv := !slices.Contains(workerMeta.Args, "--conversation")
+				initialStdinLine, _ = formatPersistentStdinTurn(workerMeta.Agent, workerMeta.SessionID, workerMeta.IsSupervisor, isNewConv, tMeta.Prompt)
+			}
+		}
+	}
+
+	stateMu.Lock()
+	if specPath != "" {
+		if err := startTurnLocked(specPath); err != nil {
+			stateMu.Unlock()
+			_ = ln.Close()
+			cleanupArtifacts()
+			return 2
+		}
+	} else {
+		state, workerMeta.State = "idle_warm", "idle_warm"
+		saveWorkerMeta()
+		if idleTTL > 0 {
+			if idleTimer == nil {
+				idleTimer = time.AfterFunc(idleTTL, onIdleTTLExpired)
+			} else {
+				idleTimer.Reset(idleTTL)
+			}
+		}
+	}
+
 	firstGen, err := spawnChildGen(workerMeta.Bin, workerMeta.Args, nil)
 	if err != nil {
+		if activeTurn != nil {
+			if activeTurn.spool != nil {
+				_, _ = activeTurn.spool.Append(ChatStreamEvent{
+					SessionID: activeTurn.meta.SessionID,
+					TurnID:    activeTurn.turnID,
+					Type:      "error",
+					Text:      err.Error(),
+					IsError:   true,
+				})
+			}
+			finalizeTurnMeta(activeTurn, nil, "failed", 2, "")
+			activeTurn = nil
+		}
+		stateMu.Unlock()
 		_ = ln.Close()
 		cleanupArtifacts()
 		return 2
 	}
 	curChild = firstGen
 	workerMeta.WorkerPID, workerMeta.ChildPID = os.Getpid(), firstGen.pgid
+	saveWorkerMeta()
+	if activeTurn != nil {
+		activeTurn.meta.ChildPID = firstGen.pgid
+		_ = WriteTurnSpoolMeta(activeTurn.metaPath, activeTurn.meta)
+	}
+	stateMu.Unlock()
+
+	if initialStdinLine != "" {
+		writeStdinLine(initialStdinLine)
+	}
 
 	if suitePIDStr := os.Getenv("ACKBAR_TEST_SUITE_PID"); suitePIDStr != "" {
 		if suitePID, sErr := strconv.Atoi(suitePIDStr); sErr == nil && suitePID > 0 {
@@ -564,66 +649,6 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string) int {
 		}
 		stateMu.Unlock()
 		return newGen.pgid, nil
-	}
-
-	startTurnLocked := func(tMetaPath string) error {
-		tMeta, err := ReadTurnSpoolMeta(tMetaPath)
-		if err != nil || tMeta == nil {
-			return fmt.Errorf("failed to read turn meta: %w", err)
-		}
-		spool, err := OpenTurnSpoolWriter(tMeta.SpoolPath, tMeta.TurnID)
-		if err != nil {
-			return fmt.Errorf("failed to open spool writer: %w", err)
-		}
-		if spool.seq == 0 {
-			_, _ = spool.Append(ChatStreamEvent{SessionID: tMeta.SessionID, TurnID: tMeta.TurnID, Type: "turn_start", Text: tMeta.Prompt, Timestamp: tMeta.StartedAt})
-		}
-		if pendingInitConvID != "" {
-			workerMeta.NativeID, tMeta.NativeID = pendingInitConvID, pendingInitConvID
-			_, _ = spool.Append(ChatStreamEvent{SessionID: tMeta.SessionID, TurnID: tMeta.TurnID, Type: "session_init", NativeID: pendingInitConvID})
-			pendingInitConvID = ""
-		}
-		if idleTimer != nil {
-			idleTimer.Stop()
-		}
-		state, workerMeta.State = "running_turn", "running_turn"
-		workerMeta.ActiveTurnID, workerMeta.ActiveMetaPath, workerMeta.UpdatedAt = tMeta.TurnID, tMetaPath, time.Now().UTC()
-		saveWorkerMeta()
-
-		tMeta.WorkerPID, tMeta.ChildPID, tMeta.Status = os.Getpid(), getChildPGIDLocked(), "running"
-		_ = WriteTurnSpoolMeta(tMetaPath, tMeta)
-
-		activeTurn = &activeTurnState{turnID: tMeta.TurnID, metaPath: tMetaPath, meta: tMeta, spool: spool}
-		return nil
-	}
-
-	var initialStdinLine string
-	if specPath != "" {
-		if tMeta, rErr := ReadTurnSpoolMeta(specPath); rErr == nil && tMeta != nil {
-			if workerMetaPath != "" {
-				isNewConv := !slices.Contains(workerMeta.Args, "--conversation")
-				initialStdinLine, _ = formatPersistentStdinTurn(workerMeta.Agent, workerMeta.SessionID, workerMeta.IsSupervisor, isNewConv, tMeta.Prompt)
-			}
-			stateMu.Lock()
-			_ = startTurnLocked(specPath)
-			stateMu.Unlock()
-		}
-	} else {
-		stateMu.Lock()
-		state, workerMeta.State = "idle_warm", "idle_warm"
-		saveWorkerMeta()
-		if idleTTL > 0 {
-			if idleTimer == nil {
-				idleTimer = time.AfterFunc(idleTTL, onIdleTTLExpired)
-			} else {
-				idleTimer.Reset(idleTTL)
-			}
-		}
-		stateMu.Unlock()
-	}
-
-	if initialStdinLine != "" {
-		writeStdinLine(initialStdinLine)
 	}
 
 	for {

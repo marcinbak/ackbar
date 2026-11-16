@@ -20,6 +20,11 @@ function configureMarked() {
       linkHref = linkHref || '';
       linkText = linkText || linkHref;
 
+      const normalizedHref = linkHref.replace(/[\x00-\x20\s]+/g, '');
+      if (/^(?:javascript|vbscript|data):/i.test(normalizedHref)) {
+        linkHref = '#';
+      }
+
       const isAnchor = linkHref.startsWith('#');
       const isFile = linkHref.startsWith('file://');
       const targetAttr = (!isAnchor && !isFile) ? ' target="_blank" rel="noopener noreferrer"' : '';
@@ -54,7 +59,8 @@ function ensureExternalLinksTargetBlank(html) {
   return html.replace(/<a\b([^>]*)>/gi, (match, attrs) => {
     const hrefMatch = attrs.match(/href\s*=\s*["']([^"']*)["']/i);
     const href = hrefMatch ? hrefMatch[1] : '';
-    if (!href || href.startsWith('#') || href.startsWith('file://') || href.startsWith('javascript:')) {
+    const normalizedHref = href.replace(/[\x00-\x20\s]+/g, '');
+    if (!href || href.startsWith('#') || href.startsWith('file://') || /^(?:javascript|vbscript|data):/i.test(normalizedHref)) {
       return match;
     }
     let newAttrs = attrs;
@@ -74,28 +80,78 @@ function ensureExternalLinksTargetBlank(html) {
 
 function sanitizeRenderedMarkdownHtml(html) {
   if (!html || typeof html !== 'string') return '';
+  const dangerousTags = 'script, iframe, object, embed, base, meta, link, style, form, animate, set, animatemotion, animatetransform';
   if (typeof document !== 'undefined' && typeof document.createElement === 'function') {
     const tpl = document.createElement('template');
     if (tpl && tpl.content && typeof tpl.content.querySelectorAll === 'function') {
       tpl.innerHTML = html;
-      tpl.content.querySelectorAll('script, iframe, object, embed').forEach(node => node.remove());
+      tpl.content.querySelectorAll(dangerousTags).forEach(node => node.remove());
       tpl.content.querySelectorAll('*').forEach(node => {
+        if (!node.attributes) return;
         for (const attr of Array.from(node.attributes)) {
           const name = attr.name.toLowerCase();
           const val = (attr.value || '').trim();
-          if (name.startsWith('on')) {
+          const normalizedVal = val.replace(/[\x00-\x20\s]+/g, '');
+          if (name.startsWith('on') || name === 'srcdoc') {
             node.removeAttribute(attr.name);
-          } else if ((name === 'href' || name === 'src' || name === 'xlink:href' || name === 'action' || name === 'formaction') && /^javascript:/i.test(val)) {
-            node.setAttribute(attr.name, '#');
+          } else if (name === 'href' || name === 'xlink:href' || name === 'action' || name === 'formaction') {
+            if (/^(?:javascript|vbscript|data):/i.test(normalizedVal)) {
+              node.setAttribute(attr.name, '#');
+            }
+          } else if (name === 'src') {
+            if (/^(?:javascript|vbscript):/i.test(normalizedVal) || /^data:(?!image\/(?:png|jpeg|jpg|gif|webp|avif);)/i.test(normalizedVal)) {
+              node.removeAttribute(attr.name);
+            }
+          } else if (name === 'from' || name === 'to' || name === 'values') {
+            const segments = val.split(';');
+            const isDangerous = segments.some(s => /^(?:javascript|vbscript|data):/i.test(s.replace(/[\x00-\x20\s]+/g, '')));
+            if (isDangerous) {
+              node.removeAttribute(attr.name);
+            }
           }
         }
       });
       return tpl.innerHTML;
     }
   }
-  return html
-    .replace(/<(script|iframe|object)\b[\s\S]*?<\/\1>/gi, '')
-    .replace(/<(script|iframe|object|embed)\b[^>]*\/?>/gi, '');
+  const dangerousTagList = 'script|iframe|object|embed|base|meta|link|style|form|animate|set|animatemotion|animatetransform';
+  const tagBlockRegex = new RegExp(`<(?:${dangerousTagList})\\b[\\s\\S]*?<\\/(?:${dangerousTagList})>`, 'gi');
+  const tagSelfRegex = new RegExp(`<(?:${dangerousTagList})\\b[^>]*\\/?>`, 'gi');
+  let sanitized = html
+    .replace(/\s+srcdoc\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+    .replace(/\s+on[a-z0-9_-]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '');
+  let prev;
+  do {
+    prev = sanitized;
+    sanitized = sanitized.replace(tagBlockRegex, '').replace(tagSelfRegex, '');
+  } while (sanitized !== prev);
+
+  sanitized = sanitized.replace(/\s+(href|xlink:href|action|formaction)\s*=\s*(?:(["'])([\s\S]*?)\2|([^\s>]+))/gi, (match, attrName, quote, quotedVal, unquotedVal) => {
+    const rawVal = quote ? quotedVal : unquotedVal;
+    const normalized = rawVal.replace(/[\x00-\x20\s]+/g, '');
+    if (/^(?:javascript|vbscript|data):/i.test(normalized)) {
+      return ` ${attrName}="#"`;
+    }
+    return match;
+  });
+  sanitized = sanitized.replace(/\s+src\s*=\s*(?:(["'])([\s\S]*?)\1|([^\s>]+))/gi, (match, quote, quotedVal, unquotedVal) => {
+    const rawVal = quote ? quotedVal : unquotedVal;
+    const normalized = rawVal.replace(/[\x00-\x20\s]+/g, '');
+    if (/^(?:javascript|vbscript):/i.test(normalized) || /^data:(?!image\/(?:png|jpeg|jpg|gif|webp|avif);)/i.test(normalized)) {
+      return '';
+    }
+    return match;
+  });
+  sanitized = sanitized.replace(/\s+(from|to|values)\s*=\s*(?:(["'])([\s\S]*?)\2|([^\s>]+))/gi, (match, attrName, quote, quotedVal, unquotedVal) => {
+    const rawVal = quote ? quotedVal : unquotedVal;
+    const segments = rawVal.split(';');
+    const isDangerous = segments.some(s => /^(?:javascript|vbscript|data):/i.test(s.replace(/[\x00-\x20\s]+/g, '')));
+    if (isDangerous) {
+      return '';
+    }
+    return match;
+  });
+  return sanitized;
 }
 
 function renderSlideContent(slideMd) {
@@ -557,6 +613,25 @@ function ensureDoubleNewlineSeparation(prev, next) {
     return prev + '\n' + next;
   }
   return prev + '\n\n' + next;
+}
+
+function hasMarkdownSyntax(content) {
+  if (!content || typeof content !== 'string') return false;
+  if (/(\*\*|__)(?:\S|\S[\s\S]{0,2000}?\S)\1/.test(content)) return true;
+  if (/\*(?:\S|\S[^\r\n*]{0,2000}?\S)\*/.test(content)) return true;
+  if (/(?:^|[^\w])_(?:\S|\S[^\r\n_]{0,2000}?\S)_(?=$|[^\w])/.test(content)) return true;
+  if (/~~(?:\S|\S[\s\S]{0,2000}?\S)~~/.test(content)) return true;
+  if (/`[^`\r\n]+`|`{3,}|~{3,}/.test(content)) return true;
+  if (/^\s*(?:#{1,6}\s+|[-*+]\s+|\d+\.\s+|>\s+|\|.+\|)/m.test(content)) return true;
+  if (/!?\[[^\]]*\]\([^)]+\)/.test(content)) return true;
+  if (/`{3,4}carousel/i.test(content)) return true;
+  if (/<!--\s*slide\s*-->/i.test(content)) return true;
+  if (/\$\\[a-zA-Z]+/.test(content)) return true;
+  if (/\$\$[\s\S]{1,5000}?\$\$/.test(content)) return true;
+  if (/^\s*>\s*\[!(?:NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]/im.test(content)) return true;
+  if (/file:\/\//i.test(content)) return true;
+  if (/conversation:\/\//i.test(content)) return true;
+  return false;
 }
 
 function isLocalHost(hostName) {
@@ -1079,6 +1154,7 @@ export {
   preprocessMarkdownExtensions,
   processMarkdownAlerts,
   renderMarkdown,
+  hasMarkdownSyntax,
   ensureDoubleNewlineSeparation,
   isLocalHost,
   findHostRecord,

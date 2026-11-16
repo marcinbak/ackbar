@@ -475,7 +475,7 @@ done:
 			if evt.Text == "Let me check." {
 				hasText1 = true
 			}
-			if evt.Text == "Command returned hello." {
+			if evt.Text == "\n\nCommand returned hello." {
 				hasText2 = true
 			}
 		case "tool_start":
@@ -1230,5 +1230,111 @@ loop:
 	}
 	if textDeltas[1] != "\n\nFinal answer" {
 		t.Errorf("Unexpected second text delta: %q", textDeltas[1])
+	}
+}
+
+func TestHeadlessStreamParser_AntigravityBPESplitInterleavedTool(t *testing.T) {
+	runner := NewHeadlessRunner(nil, nil)
+	sessionID := "antigravity:local:test-bpe-split"
+
+	ch, cleanup := runner.Subscribe(sessionID)
+	defer cleanup()
+
+	sampleOutput := `
+{"event":"init","conversation_id":"conv-bpe-1"}
+{"event":"step_update","step_update":{"conversation_id":"conv-bpe-1","step_index":0,"state":"DONE","step_type":"user_input"}}
+{"event":"step_update","step_update":{"conversation_id":"conv-bpe-1","step_index":1,"state":"ACTIVE","step_type":"agent_response","text_delta":"Point 3 controls **what shopping, pricing, and t"}}
+{"event":"step_update","step_update":{"conversation_id":"conv-bpe-1","step_index":2,"state":"ACTIVE","step_type":"tool","tool_name":"inspect","tool_info":{"parameters":{}}}}
+{"event":"step_update","step_update":{"conversation_id":"conv-bpe-1","step_index":2,"state":"DONE","step_type":"tool","tool_name":"inspect","tool_info":{"output":"ok"}}}
+{"event":"step_update","step_update":{"conversation_id":"conv-bpe-1","step_index":1,"state":"ACTIVE","step_type":"agent_response","text_delta":"echnical build data**"}}
+{"event":"step_update","step_update":{"conversation_id":"conv-bpe-1","step_index":1,"state":"DONE","step_type":"agent_response","text_delta":"Point 3 controls **what shopping, pricing, and technical build data**"}}
+{"event":"step_update","step_update":{"conversation_id":"conv-bpe-1","step_index":3,"state":"ACTIVE","step_type":"agent_response","text_delta":"Next paragraph."}}
+{"event":"result","result":{"conversation_id":"conv-bpe-1","status":"SUCCESS","response":"Done"}}
+`
+
+	go func() {
+		runner.processStream(sessionID, strings.NewReader(sampleOutput))
+	}()
+
+	var textDeltas []string
+	timeout := time.After(2 * time.Second)
+	for {
+		select {
+		case evt := <-ch:
+			if evt.Type == "text_delta" {
+				textDeltas = append(textDeltas, evt.Text)
+			} else if evt.Type == "turn_complete" {
+				goto done
+			}
+		case <-timeout:
+			t.Fatalf("Timeout waiting for events, got %d deltas: %v", len(textDeltas), textDeltas)
+		}
+	}
+done:
+	expected := []string{
+		"Point 3 controls **what shopping, pricing, and t",
+		"echnical build data**",
+		"\n\nNext paragraph.",
+	}
+	if len(textDeltas) != len(expected) {
+		t.Fatalf("Expected %d text deltas, got %d: %v", len(expected), len(textDeltas), textDeltas)
+	}
+	for i, exp := range expected {
+		if textDeltas[i] != exp {
+			t.Errorf("Delta[%d]: expected %q, got %q", i, exp, textDeltas[i])
+		}
+	}
+}
+
+func TestHeadlessStreamParser_ClaudeMidBlockInterleavedToolResult(t *testing.T) {
+	runner := NewHeadlessRunner(nil, nil)
+	sessionID := "claude-code:local:test-claude-midblock"
+
+	ch, cleanup := runner.Subscribe(sessionID)
+	defer cleanup()
+
+	sampleOutput := `
+{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"and t"}}
+{"type":"tool_result","content":"async result"}
+{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"echnical"}}
+{"type":"content_block_stop","index":0}
+{"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}
+{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"After tool."}}
+{"type":"content_block_stop","index":1}
+{"type":"result","result":"Done","is_error":false}
+`
+
+	go func() {
+		runner.processStream(sessionID, strings.NewReader(sampleOutput))
+	}()
+
+	var textDeltas []string
+	timeout := time.After(2 * time.Second)
+	for {
+		select {
+		case evt := <-ch:
+			if evt.Type == "text_delta" {
+				textDeltas = append(textDeltas, evt.Text)
+			} else if evt.Type == "turn_complete" {
+				goto done
+			}
+		case <-timeout:
+			t.Fatalf("Timeout waiting for events, got %d deltas: %v", len(textDeltas), textDeltas)
+		}
+	}
+done:
+	expected := []string{
+		"and t",
+		"echnical",
+		"\n\nAfter tool.",
+	}
+	if len(textDeltas) != len(expected) {
+		t.Fatalf("Expected %d text deltas, got %d: %v", len(expected), len(textDeltas), textDeltas)
+	}
+	for i, exp := range expected {
+		if textDeltas[i] != exp {
+			t.Errorf("Delta[%d]: expected %q, got %q", i, exp, textDeltas[i])
+		}
 	}
 }

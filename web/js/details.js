@@ -3,6 +3,7 @@ import { state, el } from './state.js';
 import {
   escapeHtml,
   renderMarkdown,
+  hasMarkdownSyntax,
   formatBytes,
   formatRelativeTime,
   formatFullDateTime,
@@ -467,7 +468,9 @@ async function openTranscriptViewerTab(session) {
                 </button>
               </div>
             </div>
-            <div class="msg-body">${escapeHtml(m.content || '')}</div>
+            ${hasMarkdownSyntax(m.content || '')
+              ? `<div class="msg-body markdown-body">${renderMarkdown(m.content || '')}</div>`
+              : `<div class="msg-body">${escapeHtml(m.content || '')}</div>`}
           </div>
         `;
       } else if (m.role === 'assistant') {
