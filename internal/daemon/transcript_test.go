@@ -624,3 +624,47 @@ func TestAgentAdapter_FilterUserEntry_AgentSpecificIsolation(t *testing.T) {
 		t.Errorf("default adapter should only trim whitespace, got keep=%v, clean=%q", keep, clean)
 	}
 }
+
+func TestExtractAntigravityTranscriptMessages_ImageGenMediaVsReadFile(t *testing.T) {
+	tmpHome, err := os.MkdirTemp("", "test-agy-media-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpHome)
+
+	convID := "test-conv-media-1234"
+	logDir := filepath.Join(tmpHome, ".gemini", "antigravity", "brain", convID, ".system_generated", "logs")
+	if err := os.MkdirAll(logDir, 0755); err != nil {
+		t.Fatalf("Failed to create log dir: %v", err)
+	}
+
+	lines := []string{
+		`{"type":"USER_INPUT","source":"USER_EXPLICIT","content":"Please generate an image","created_at":"2026-11-16T12:00:00Z"}`,
+		`{"type":"PLANNER_RESPONSE","content":"I will generate an image","tool_calls":[{"name":"generate_image","args":{"prompt":"cat"}}],"created_at":"2026-11-16T12:00:01Z"}`,
+		`{"type":"GENERIC","content":"Generated image ready","media":[{"uri":"file:///path/to/generated_cat.png"}],"created_at":"2026-11-16T12:00:02Z"}`,
+		`{"type":"USER_INPUT","source":"USER_EXPLICIT","content":"Now read the image binary","created_at":"2026-11-16T12:01:00Z"}`,
+		`{"type":"PLANNER_RESPONSE","content":"Reading image","tool_calls":[{"name":"read_file","args":{"path":"cat.png"}}],"created_at":"2026-11-16T12:01:01Z"}`,
+		`{"type":"GENERIC","content":"Showing binary file of type image/png","media":[{"uri":"file:///path/to/viewed_cat.png"}],"created_at":"2026-11-16T12:01:02Z"}`,
+	}
+	content := strings.Join(lines, "\n")
+	if err := os.WriteFile(filepath.Join(logDir, "transcript.jsonl"), []byte(content), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	msgs, err := ExtractAntigravityTranscriptMessages(tmpHome, convID)
+	if err != nil {
+		t.Fatalf("ExtractAntigravityTranscriptMessages failed: %v", err)
+	}
+
+	if len(msgs) != 4 {
+		t.Fatalf("Expected 4 messages, got %d", len(msgs))
+	}
+
+	if !strings.Contains(msgs[1].Content, "![Attachment](file:///path/to/generated_cat.png)") {
+		t.Errorf("Expected assistant message 1 to have attached image markdown, got: %s", msgs[1].Content)
+	}
+
+	if strings.Contains(msgs[3].Content, "![Attachment](file:///path/to/viewed_cat.png)") {
+		t.Errorf("Expected assistant message 2 NOT to have attached image markdown, got: %s", msgs[3].Content)
+	}
+}
