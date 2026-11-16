@@ -506,6 +506,7 @@ const {
   resumeInStreamActivity,
   formatModelLabel,
   updateStatusPills,
+  toggleChatConfigPopover,
   createChatMessageElement
 } = chat;
 
@@ -2272,6 +2273,136 @@ test('interceptChatInput handles /model status and reset to default', async () =
   }
 });
 
+test('renderConfigPopoverContent renders compact MCP submenu button with count and toggles submenu view', async () => {
+  const popover = document.createElement('div');
+  popover.className = 'chat-config-popover';
+  const tabObj = {
+    id: 'tab-cfg-submenu',
+    session: {
+      id: 'sess-popover-mcp',
+      agent: 'claude-code',
+      model: 'claude-sonnet-4-5',
+      resolved_model: 'claude-sonnet-4-5',
+      permission_mode: 'bypassPermissions'
+    },
+    chatConfigPopover: popover
+  };
+
+  const mcpData = {
+    servers: Array.from({ length: 12 }, (_, i) => ({
+      name: `srv-${i + 1}`,
+      target: `mcp:srv-${i + 1}`,
+      transport: 'stdio',
+      status: i < 2 ? 'needs_auth' : 'connected',
+      auth_supported: i < 2
+    })),
+    plugins: [
+      { name: 'plugin-auth', target: 'plugin:plugin-auth', installed: true, authenticated: true },
+      { name: 'plugin-unauth', target: 'plugin:plugin-unauth', installed: true, authenticated: false },
+      { name: 'plugin-uninstalled', target: 'plugin:plugin-uninstalled', installed: false, authenticated: false }
+    ]
+  };
+
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const urlStr = String(url);
+    if (urlStr.includes('/mcp-status')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => mcpData
+      };
+    }
+    return { ok: true, status: 200, json: async () => ({}) };
+  };
+
+  try {
+    renderConfigPopoverContent(tabObj);
+    const initialLabelEl = popover.querySelector('.config-mcp-submenu-label');
+    assert.ok(initialLabelEl);
+    assert.equal(initialLabelEl.textContent, '🔌 MCP (…)', 'Initial label must show loading state without text shift');
+
+    await new Promise((r) => setTimeout(r, 10));
+
+    const mainView = popover.querySelector('.config-main-view');
+    const submenuView = popover.querySelector('.config-mcp-submenu-view');
+    assert.ok(mainView, 'Main view container must exist');
+    assert.ok(submenuView, 'Submenu view container must exist');
+
+    assert.notEqual(mainView.style.display, 'none', 'Main view should be visible initially');
+    assert.equal(submenuView.style.display, 'none', 'Submenu view should be hidden initially');
+    assert.equal(tabObj.configSubmenuView, null, 'tabObj.configSubmenuView should be null initially');
+
+    const submenuBtn = popover.querySelector('.config-mcp-submenu-btn');
+    assert.ok(submenuBtn, 'Submenu button should be rendered');
+    const labelEl = submenuBtn.querySelector('.config-mcp-submenu-label');
+    assert.ok(labelEl);
+    assert.equal(labelEl.textContent, '🔌 MCP (14)', 'Label must display total count (12 servers + 2 installed plugins)');
+
+    const alertEl = submenuBtn.querySelector('.config-mcp-submenu-alert');
+    assert.ok(alertEl);
+    assert.equal(alertEl.style.display, '', 'Alert badge must be visible when auth is needed');
+    assert.equal(alertEl.textContent, '3 need auth', 'Alert badge must count items needing auth (2 servers + 1 plugin)');
+
+    submenuBtn.click();
+
+    assert.equal(tabObj.configSubmenuView, 'mcp', 'tabObj.configSubmenuView must be "mcp" after clicking submenu button');
+    assert.equal(mainView.style.display, 'none', 'Main view must be hidden in submenu view');
+    assert.equal(submenuView.style.display, '', 'Submenu view must be visible');
+
+    const headerTitleEl = popover.querySelector('.config-popover-title');
+    assert.ok(headerTitleEl);
+    const btnBack = headerTitleEl.querySelector('.btn-back-popover');
+    assert.ok(btnBack, 'Back button must be rendered in header title');
+    const headerCount = headerTitleEl.querySelector('.config-mcp-header-count');
+    assert.ok(headerCount);
+    assert.equal(headerCount.textContent, '14', 'Header title must show 14');
+
+    const pillRows = submenuView.querySelectorAll('.mcp-pill-row');
+    assert.equal(pillRows.length, 14, 'Submenu view must render all 14 rows');
+
+    renderConfigPopoverContent(tabObj);
+    await new Promise((r) => setTimeout(r, 10));
+
+    const mainViewRe = popover.querySelector('.config-main-view');
+    const submenuViewRe = popover.querySelector('.config-mcp-submenu-view');
+    assert.equal(mainViewRe.style.display, 'none', 'Main view must stay hidden on re-render');
+    assert.equal(submenuViewRe.style.display, '', 'Submenu view must stay visible on re-render');
+    assert.equal(tabObj.configSubmenuView, 'mcp', 'tabObj.configSubmenuView must remain "mcp" on re-render');
+
+    const btnBackRe = popover.querySelector('.btn-back-popover');
+    assert.ok(btnBackRe, 'Back button must exist in re-rendered view');
+    btnBackRe.click();
+
+    assert.equal(tabObj.configSubmenuView, null, 'tabObj.configSubmenuView must be null after clicking back');
+    assert.notEqual(mainViewRe.style.display, 'none', 'Main view must be visible after back');
+    assert.equal(submenuViewRe.style.display, 'none', 'Submenu view must be hidden after back');
+
+    const selectModel = mainViewRe.querySelector('.config-select-model');
+    assert.ok(selectModel, 'Model selection in main view must be accessible');
+
+    submenuBtn.click();
+    assert.equal(tabObj.configSubmenuView, 'mcp');
+    const btnClose = popover.querySelector('.btn-close-popover');
+    btnClose.click();
+    assert.equal(tabObj.configSubmenuView, null, 'Closing via close button must reset configSubmenuView');
+    assert.equal(popover.style.display, 'none');
+
+    tabObj.configSubmenuView = 'mcp';
+    popover.style.display = 'none';
+    toggleChatConfigPopover(tabObj);
+    assert.equal(tabObj.configSubmenuView, null, 'toggleChatConfigPopover must reset configSubmenuView on open');
+    assert.equal(popover.style.display, 'flex');
+
+    tabObj.configSubmenuView = 'mcp';
+    toggleChatConfigPopover(tabObj);
+    assert.equal(tabObj.configSubmenuView, null, 'toggleChatConfigPopover must reset configSubmenuView on close');
+    assert.equal(popover.style.display, 'none');
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});
+
 test('handleChatStreamEvent keeps stream buffer intact across interleaved tool events and renders bold HTML', async () => {
   const container = new MockElement('div');
   container.className = 'chat-messages-container';
@@ -2522,7 +2653,6 @@ test('hasMarkdownSyntax supports single-character emphasis and ignores snake_cas
   const elapsed = Date.now() - start;
   assert.ok(elapsed < 100, `Bounded scan took ${elapsed}ms; must be under 100ms`);
 });
-
 
 
 
