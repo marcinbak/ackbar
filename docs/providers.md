@@ -44,9 +44,9 @@ Ackbar supports the major agent ecosystems:
 * **Hook Configuration:** `~/.codex/hooks.json` pipes event payloads to `ackbar-hook --agent=codex`.
 
 ### xAI Grok
-* **Session Index:** `~/.grok/session_index.jsonl` contains session IDs, titles, and update timestamps.
-* **Transcripts:** `~/.grok/sessions/<id>.jsonl` and `~/.grok/sessions/<id>/transcript.jsonl` record user prompts, assistant outputs, tool invocations, and token usage blocks.
-* **Hook Configuration:** `~/.grok/hooks.json` (or `~/.grok/config.toml`) pipes event payloads to `ackbar-hook --agent=grok`.
+* **Session Storage:** `$GROK_HOME/sessions/<url-encoded-cwd>/<session-id>/` stores `summary.json`, `signals.json` (`contextTokensUsed`, `contextWindowTokens`), `chat_history.jsonl` (`<user_query>` extraction, `synthetic_reason` filtering), and `updates.jsonl` (ACP fallback).
+* **CLI Lifecycle & Turn Rotation:** Spawns `grok -s <uuid>` with `-- "$ACKBAR_INIT_PROMPT"`, resumes `grok -r <id>`, forwards `-m`, `--effort`, `--permission-mode`, and `--add-dir`, and resolves `/clear` rotation ownership via `$GROK_HOME/active_sessions.json` (`ResolveSessionOwner`).
+* **Hook Configuration:** `~/.grok/hooks/ackbar.json` (`{"hooks": {...}}` native HTTP hooks to `http://127.0.0.1:7777/v1/hooks/grok`, `matcher` omitted) and `[compat.claude] hooks = false` in `~/.grok/config.toml`.
 
 ### OpenCode
 * **Session Index:** `~/.opencode/sessions/` directory contains active and completed sessions in JSONL format (`<id>.jsonl` or `<id>/transcript.jsonl`).
@@ -89,11 +89,12 @@ Child subagents (e.g. Claude Code Explore/Task teammates or Antigravity subtraje
 
 ## 5. Multi-Account Profile Management
 
-Ackbar supports running separate account profiles (e.g. Work, Personal, Client) for Claude Code and Google Antigravity across local and remote fleet hosts.
+Ackbar supports running separate account profiles (e.g. Work, Personal, Client) for Claude Code, Google Antigravity, and xAI Grok across local and remote fleet hosts.
 
 ### Isolation Architecture
 * **Claude Code (`claude-code`):** Each non-default profile maps to `~/.claude-profiles/<name>/` and is launched with `CLAUDE_CONFIG_DIR=~/.claude-profiles/<name>`. Pre-configured HTTP hooks automatically route to `http://127.0.0.1:7777/v1/hooks/claude-code?account=<name>`.
 * **Google Antigravity (`antigravity`):** Profiles isolate configurations under `~/.gemini-profiles/<name>/` via `GEMINI_CLI_HOME=~/.gemini-profiles/<name>`.
+* **xAI Grok (`grok`):** Profiles isolate configurations under `~/.grok-profiles/<name>/` via `GROK_HOME` and `XAI_API_KEY`. Login verification checks `auth.json` or `XAI_API_KEY`.
 * **Single-Profile Presentation:** If an agent only has the default profile configured, the account selector is hidden in the UI and account badges are omitted, keeping single-profile workspaces clean.
 * **Fleet Propagation:** When adding an account (`--all-hosts` or via the Settings modal), Ackbar automatically checks agent discovery (`/v1/agents/discovery`) on each host and registers the profile only on hosts where the agent is installed.
 * **Group Memory:** Ackbar remembers the preferred account for each group/subgroup on each host (`by_host[host].account`), pre-selecting it when spawning subsequent sessions.
@@ -129,7 +130,7 @@ Optional capabilities are probed dynamically at runtime using Go type assertions
 3. **`InteractiveController`:** Provides agent-specific interactive terminal commands (`GetResetCommand`) and permission prompt keystrokes (`GetApprovalKeys`).
 4. **`AccountConfigurator`:** Provides multi-account profile environment injection (`AccountEnvVars`), login verification (`IsAccountLoggedIn`), profile directory & hook initialization (`SetupProfileDir`), and CLI login commands (`GetLoginCommand`).
 5. **`ProcessInspector`:** Provides native session ID validation (`IsValidNativeID`), non-interactive CLI subcommand filtering (`IsIgnoredCommand`), OS process matching (`MatchProcessCommand`), and PID-to-session resolution (`ResolveSessionForPID`, `ResolveSessionOwner`).
-6. **`DiskSessionDiscoverer`:** Provides conversation artifact detection (`HasConversationArtifacts`), subagent session filtering (`IsSubagentSession`), workspace/brain document scanning (`ListWorkspaceDocuments`), and historic disk session restoration (`ScanDiskSessions`).
+6. **`DiskSessionDiscoverer`:** Provides conversation artifact detection (`HasConversationArtifacts`), subagent session filtering (`IsSubagentSession`), workspace/brain document scanning (`ListWorkspaceDocuments`), and managed-session disk reconciliation (`ScanDiskSessions`).
 7. **`UserEntryFilter`:** Provides agent-specific user transcript entry filtering and prompt normalization (`FilterUserEntry(raw map[string]interface{}, content string) (clean string, keep bool)`), ensuring each agent adapter (`ClaudeAgentAdapter`, `AntigravityAgentAdapter`, `CodexAgentAdapter`, `GrokAgentAdapter`, `OpenCodeAgentAdapter`) runs only its own synthetic-entry and XML-envelope sanitization rules.
 8. **`RateLimitDetector`:** Optional agent-specific rate-limit error pattern and reset time detection (`DetectRateLimit(text string, now time.Time) (limited bool, resetAt time.Time, reason string)`).
 9. **`AgentAdapter`:** Composite operational adapter interface combining `InteractiveController`, `AccountConfigurator`, `ProcessInspector`, `DiskSessionDiscoverer`, `UserEntryFilter`, and `RateLimitDetector` (implemented by `ClaudeAgentAdapter`, `AntigravityAgentAdapter`, `CodexAgentAdapter`, `GrokAgentAdapter`, and `OpenCodeAgentAdapter` in `internal/daemon/agent_*.go` and embedded on each provider in `internal/provider/`).
@@ -151,6 +152,7 @@ Ackbar provisions the `ackbar-tasks` MCP server and task management skills acros
 * **Claude Code (`claude-code`):** Configures `mcpServers.ackbar` in `~/.claude.json` (or profile config directory) and deploys `SKILL.md` to `~/.claude/skills/ackbar-tasks/`.
 * **Google Antigravity (`antigravity`):** Configures `mcpServers.ackbar` in `~/.gemini/antigravity/mcp_config.json` and deploys `SKILL.md` to both `~/.gemini/config/skills/ackbar-tasks/` (for IDE / shared agent environments) and `~/.gemini/antigravity-cli/skills/ackbar-tasks/` (for CLI environments).
 * **OpenAI Codex (`codex`):** Configures `mcpServers.ackbar` in `~/.codex/config.json` and deploys `SKILL.md` to `~/.codex/skills/ackbar-tasks/`.
+* **xAI Grok (`grok`):** Configures `[mcp_servers.ackbar]` in `~/.grok/config.toml`, deploys `SKILL.md` to `~/.grok/skills/ackbar-tasks/`, and writes global rules to `~/.grok/rules/ackbar.md`.
 
 When an external skills repository is configured (via `ackbar agent setup --skills-repo-url=...`, `POST /v1/agents/skills-repo/sync`, or Web UI modal), custom skills from the external repository are automatically synchronized and installed across all supported agents.
 

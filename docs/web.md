@@ -99,7 +99,7 @@ It is embedded directly into the `ackbard` Go binary and served on `http://127.0
   1. *Project Matching:* Existing sessions sharing the same Git project key or directory basename.
   2. *Configured Remote Roots:* Target host configured `remote_cwd` (e.g. `/home/dev4u/Work`).
   3. *Home Prefix Mapping:* Automatic `/Users/<user>/...` $\longleftrightarrow$ `/home/<user>/...` translation.
-* **Auto-Discovery of Installed Agents:** Dynamically detects and updates installed agent options (`Claude Code`, `Google Antigravity`, `OpenAI Codex`) whenever the host dropdown changes.
+* **Auto-Discovery of Installed Agents:** Dynamically detects and updates installed agent options (`Claude Code`, `Google Antigravity`, `OpenAI Codex`, `xAI Grok`) whenever the host dropdown changes.
 
 ### 📋 8. Work & Fleet Overview Kanban Board
 * **Dual View Modes:** Seamlessly switch between **`[💻 Workspace]`** (multi-tab terminals & agent chats) and **`[📋 Work Board]`** (cross-host agent Kanban dashboard).

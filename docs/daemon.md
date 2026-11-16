@@ -45,7 +45,8 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 * **`session_scanner.go`:** Liveness verification (`verifySessionLiveness`) and background session scanner (`scanObservedSessions` decomposed into `refreshExistingSessions`, `scanTmuxPanes`, and `scanDiskSessions` for managed sessions).
 * **`telemetry_tasks.go` & `workflow_watcher.go`:** Monotonic workflow node (`N0`–`N15`) and task/workstream status synchronization (`SyncSessionTaskWorker`, `IngestBoundTaskTelemetry`), canonical pillar substatus normalization (`normalizeTaskStatusAndSubstatus`), single active worker enforcement per `(task_id, repo_node_path)`, and update-only `dev-workflow` run watcher (`IngestDevWorkflowRuns` scanning `~/.claude/dev-workflow-runs/*.json` strictly for existing non-`DONE` tasks and auto-attaching `.brief.md`, `.impl-notes.md`, and `.retro.md` deliverables without auto-creating ambient tasks).
 * **`ntfy.go`:** `ntfy.sh` push notification dispatcher for PR/Plan Review transitions (`REVIEW`) and Task/Session blockers (`StateBlocked` / `substatus == "blocked"`), emitting `ackbar://` mobile deep-links, Ackbar notification icons, session-title + group-path subtitles, test notification dispatch (`POST /v1/notifications/test`), and fleet-wide `ntfy` settings propagation.
-* **`agent_claude.go`, `agent_antigravity.go`, `agent_other.go`:** Per-agent `AgentAdapter` implementations (`ClaudeAgentAdapter`, `AntigravityAgentAdapter`, `CodexAgentAdapter`, `GrokAgentAdapter`, `OpenCodeAgentAdapter`) encapsulating agent-specific CLI flags, approval keys, account profile setup, PID-to-session resolution, and disk session discovery.
+* **`provisioner.go` & `provisioner_toml.go`:** Agent configuration provisioners injecting MCP servers, skills, and rules into agent configs (JSON and TOML formats).
+* **`agent_claude.go`, `agent_antigravity.go`, `agent_grok*.go`, `agent_other.go`:** Per-agent `AgentAdapter` implementations (`ClaudeAgentAdapter`, `AntigravityAgentAdapter`, `GrokAgentAdapter`, `CodexAgentAdapter`, `OpenCodeAgentAdapter`) encapsulating agent-specific CLI flags, approval keys, account profile setup, PID-to-session resolution, and disk session discovery.
 
 ---
 
@@ -103,7 +104,7 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 | `POST` | `/v1/sync/push` | Ingests and reconciles peer sync payload via 3-way Last-Write-Wins (LWW). |
 | `GET` | `/v1/standup` | Deterministic daily standup and weekly retro report generation (grouped by project in Markdown or JSON). |
 | `POST` | `/v1/briefings/synthesize` | Generates speech-optimized conversational text briefing (<45s) for voice synthesis. |
-| `GET` | `/v1/agents/status` | Returns detected agent runtimes (Claude, Antigravity, Codex, Claude Desktop) with MCP, skill, rules (`rules_installed`, `rules_version`), and skills repo status. |
+| `GET` | `/v1/agents/status` | Returns detected agent runtimes (Claude, Antigravity, Codex, Grok, Claude Desktop) with MCP, skill, rules (`rules_installed`, `rules_version`), and skills repo status. |
 | `POST` | `/v1/agents/provision` | Provisions or upgrades Ackbar Tasks MCP, Skill, and global rules into connected agent configs, and optionally syncs skills repo. |
 | `POST` | `/v1/agents/skills-repo/sync` | Clones or fast-forward pulls the shared skills repository and runs `./install.sh` (or fallback copy). |
 | `POST` | `/v1/mcp` | Streamable HTTP JSON-RPC 2.0 MCP endpoint (`initialize`, `tools/list`, `tools/call`). Resolves local loopback listener to prevent SSRF and hairpinning. |
@@ -342,7 +343,7 @@ If `skills_repo_path` is not explicitly set in the database, `ackbard` inspects 
 ### Execution & Fallback Contract
 1. **Clean Fast-Forward Pull:** Runs `git fetch origin` followed by `git pull --ff-only` if `git status --porcelain` is clean. If uncommitted local changes exist, the pull is safely skipped to avoid clobbering work.
 2. **Installer Execution:** If `install.sh` exists at the root of the repository, executes `/bin/bash ./install.sh` with `HOME` and `ACKBAR_CLAUDE_DIRS` (colon-delimited list of custom account config directories from `accounts`).
-3. **Fallback Directory Copy:** If no `install.sh` is present, recursively mirrors any skills in `skills/*/SKILL.md` or `plugins/*/skills/*/SKILL.md` to `~/.claude/skills/`, `~/.gemini/config/skills/`, `~/.gemini/antigravity-cli/skills/`, and `~/.codex/skills/`.
+3. **Fallback Directory Copy:** If no `install.sh` is present, recursively mirrors any skills in `skills/*/SKILL.md` or `plugins/*/skills/*/SKILL.md` to `~/.claude/skills/`, `~/.gemini/config/skills/`, `~/.gemini/antigravity-cli/skills/`, `~/.codex/skills/`, and `~/.grok/skills/`.
 4. **Periodic Auto-Sync:** The background loop checks `skills_repo_last_check` on startup and hourly. If more than 24 hours have elapsed since the last check, an automated background sync is triggered.
 
 ---
