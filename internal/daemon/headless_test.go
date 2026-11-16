@@ -1338,3 +1338,240 @@ done:
 		}
 	}
 }
+
+func TestHeadlessStreamParser_AntigravityRecoverableMidTurnError(t *testing.T) {
+	input := `{"event":"step_update","step_update":{"step_type":"error_message","error":"Transient network glitch"}}
+{"event":"step_update","step_update":{"step_type":"agent_response","text_delta":"Retrying request... recovered"}}
+{"event":"result","result":{"status":"SUCCESS","response":"All tasks complete."}}
+`
+	var events []ChatStreamEvent
+	_, resText, streamHadError := parseHeadlessStream("sess1", strings.NewReader(input), streamParseHooks{
+		emitTurnComplete: true,
+		emit: func(evt ChatStreamEvent) {
+			events = append(events, evt)
+		},
+	})
+
+	if streamHadError {
+		t.Fatalf("expected streamHadError to be false after recovery, got true")
+	}
+	if resText != "All tasks complete." {
+		t.Fatalf("expected resText 'All tasks complete.', got %q", resText)
+	}
+	for _, e := range events {
+		if e.Type == "error" || e.IsError {
+			t.Fatalf("unexpected error event emitted: %+v", e)
+		}
+	}
+	hasComplete := false
+	for _, e := range events {
+		if e.Type == "turn_complete" {
+			hasComplete = true
+			break
+		}
+	}
+	if !hasComplete {
+		t.Fatalf("expected turn_complete event, got events: %+v", events)
+	}
+}
+
+func TestHeadlessStreamParser_AntigravityFatalErrorDeduplication(t *testing.T) {
+	t.Run("result.ERROR with identical message", func(t *testing.T) {
+		input := `{"event":"step_update","step_update":{"step_type":"error_message","error":"API error (attempt 5): read: connection reset by peer"}}
+{"event":"result","result":{"status":"ERROR","error":"API error (attempt 5): read: connection reset by peer"}}
+`
+		var events []ChatStreamEvent
+		_, _, streamHadError := parseHeadlessStream("sess-err-1", strings.NewReader(input), streamParseHooks{
+			emitTurnComplete: true,
+			emit: func(evt ChatStreamEvent) {
+				events = append(events, evt)
+			},
+		})
+		if !streamHadError {
+			t.Fatalf("expected streamHadError=true")
+		}
+		var errEvents []ChatStreamEvent
+		for _, e := range events {
+			if e.Type == "error" {
+				errEvents = append(errEvents, e)
+			}
+		}
+		if len(errEvents) != 1 {
+			t.Fatalf("expected exactly 1 error event, got %d: %+v", len(errEvents), errEvents)
+		}
+		if !strings.Contains(errEvents[0].Text, "connection reset by peer") {
+			t.Fatalf("unexpected error text: %q", errEvents[0].Text)
+		}
+	})
+
+	t.Run("result.OK with empty recovery", func(t *testing.T) {
+		input := `{"event":"step_update","step_update":{"step_type":"error_message","error":"Fatal unhandled failure"}}
+{"event":"result","result":{"status":"SUCCESS","response":""}}
+`
+		var events []ChatStreamEvent
+		_, _, streamHadError := parseHeadlessStream("sess-err-2", strings.NewReader(input), streamParseHooks{
+			emitTurnComplete: true,
+			emit: func(evt ChatStreamEvent) {
+				events = append(events, evt)
+			},
+		})
+		if !streamHadError {
+			t.Fatalf("expected streamHadError=true for unrecovered error")
+		}
+		var errEvents []ChatStreamEvent
+		for _, e := range events {
+			if e.Type == "error" {
+				errEvents = append(errEvents, e)
+			}
+		}
+		if len(errEvents) != 1 {
+			t.Fatalf("expected exactly 1 error event, got %d: %+v", len(errEvents), errEvents)
+		}
+		if !strings.Contains(errEvents[0].Text, "Fatal unhandled failure") {
+			t.Fatalf("unexpected error text: %q", errEvents[0].Text)
+		}
+	})
+
+	t.Run("stream EOF without result", func(t *testing.T) {
+		input := `{"event":"step_update","step_update":{"step_type":"error_message","error":"Connection abruptly dropped"}}
+`
+		var events []ChatStreamEvent
+		_, _, streamHadError := parseHeadlessStream("sess-err-3", strings.NewReader(input), streamParseHooks{
+			emitTurnComplete: true,
+			emit: func(evt ChatStreamEvent) {
+				events = append(events, evt)
+			},
+		})
+		if !streamHadError {
+			t.Fatalf("expected streamHadError=true at EOF")
+		}
+		var errEvents []ChatStreamEvent
+		for _, e := range events {
+			if e.Type == "error" {
+				errEvents = append(errEvents, e)
+			}
+		}
+		if len(errEvents) != 1 {
+			t.Fatalf("expected exactly 1 error event at EOF, got %d: %+v", len(errEvents), errEvents)
+		}
+		if !strings.Contains(errEvents[0].Text, "Connection abruptly dropped") {
+			t.Fatalf("unexpected error text: %q", errEvents[0].Text)
+		}
+	})
+}
+
+func TestHeadlessStreamParser_ClaudeToolResultAndStreamError(t *testing.T) {
+	t.Run("tool_result is_error does not trip turn failure", func(t *testing.T) {
+		input := `{"type":"tool_result","tool_use_id":"tool_1","content":"command failed with exit code 1","is_error":true}
+{"type":"result","result":"Finished handling error gracefully","is_error":false}
+`
+		var events []ChatStreamEvent
+		_, resText, streamHadError := parseHeadlessStream("sess-claude-tool", strings.NewReader(input), streamParseHooks{
+			emitTurnComplete: true,
+			emit: func(evt ChatStreamEvent) {
+				events = append(events, evt)
+			},
+		})
+		if streamHadError {
+			t.Fatalf("expected streamHadError=false, got true")
+		}
+		if resText != "Finished handling error gracefully" {
+			t.Fatalf("unexpected resText: %q", resText)
+		}
+		for _, e := range events {
+			if e.Type == "error" {
+				t.Fatalf("unexpected error event emitted: %+v", e)
+			}
+		}
+	})
+
+	t.Run("type error and result is_error deduplicated", func(t *testing.T) {
+		input := `{"type":"error","error":{"type":"rate_limit_error","message":"Rate limit exceeded"}}
+{"type":"result","result":"Rate limit exceeded","is_error":true}
+`
+		var events []ChatStreamEvent
+		_, _, streamHadError := parseHeadlessStream("sess-claude-err", strings.NewReader(input), streamParseHooks{
+			emitTurnComplete: true,
+			emit: func(evt ChatStreamEvent) {
+				events = append(events, evt)
+			},
+		})
+		if !streamHadError {
+			t.Fatalf("expected streamHadError=true")
+		}
+		var errEvents []ChatStreamEvent
+		for _, e := range events {
+			if e.Type == "error" {
+				errEvents = append(errEvents, e)
+			}
+		}
+		if len(errEvents) != 1 {
+			t.Fatalf("expected exactly 1 deduplicated error event, got %d: %+v", len(errEvents), errEvents)
+		}
+		if errEvents[0].Text != "Rate limit exceeded" {
+			t.Fatalf("expected 'Rate limit exceeded', got %q", errEvents[0].Text)
+		}
+	})
+}
+
+func TestHeadless_SynthesizeInFlightTurnAndFormatActivity(t *testing.T) {
+	tmpDir := t.TempDir()
+	metaPath := filepath.Join(tmpDir, "turn.meta.json")
+	spoolPath := filepath.Join(tmpDir, "turn.spool.jsonl")
+
+	meta := &TurnSpoolMeta{
+		TurnID:    "t1",
+		SessionID: "s1",
+		Agent:     "antigravity",
+		SpoolPath: spoolPath,
+		MetaPath:  metaPath,
+		StartedAt: time.Now().UTC(),
+		Status:    "failed",
+		ExitCode:  0,
+	}
+
+	spoolWriter, err := OpenTurnSpoolWriter(spoolPath, "t1")
+	if err != nil {
+		t.Fatalf("OpenTurnSpoolWriter: %v", err)
+	}
+	_, _ = spoolWriter.Append(ChatStreamEvent{
+		SessionID: "s1",
+		TurnID:    "t1",
+		Type:      "error",
+		Text:      "API error (attempt 5): daily-cloudcode-pa.googleapis.com RST: connection reset by peer",
+	})
+	_ = spoolWriter.Close()
+
+	snap, err := SynthesizeInFlightTurn(meta, "antigravity")
+	if err != nil {
+		t.Fatalf("SynthesizeInFlightTurn: %v", err)
+	}
+	if snap == nil || !strings.Contains(snap.LastErrorText, "connection reset by peer") {
+		t.Fatalf("expected LastErrorText to be captured on snapshot, got %+v", snap)
+	}
+
+	act := formatFailedTurnActivity(meta, snap)
+	if !strings.HasPrefix(act, "Turn error: API error (attempt 5):") {
+		t.Fatalf("expected activity to format from LastErrorText, got %q", act)
+	}
+
+	snap.LastErrorText = ""
+	meta.StderrTail = "panic: out of memory"
+	act = formatFailedTurnActivity(meta, snap)
+	if act != "Turn error: panic: out of memory" {
+		t.Fatalf("expected activity to fallback to StderrTail, got %q", act)
+	}
+
+	meta.StderrTail = ""
+	meta.ExitCode = 137
+	act = formatFailedTurnActivity(meta, snap)
+	if act != "Turn failed (exit status 137)" {
+		t.Fatalf("expected exit status 137, got %q", act)
+	}
+
+	meta.ExitCode = 0
+	act = formatFailedTurnActivity(meta, snap)
+	if act != "Turn failed" {
+		t.Fatalf("expected 'Turn failed' (never exit status 0), got %q", act)
+	}
+}
