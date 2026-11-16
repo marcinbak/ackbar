@@ -22,7 +22,7 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 * **`server_chat.go`:** Headless/tmux prompt submission (`/v1/sessions/prompt` with `delay_seconds`, `deliver_at`, inline `/delay <duration> <prompt>` scheduling, and `client_turn_id` deduplication), prompt queue management (`GET`/`DELETE`/`POST` `/v1/sessions/prompt/queue` with `action: send_now`), `scheduled_prompts` SQLite persistence, SSE chat streaming (`/v1/sessions/chat/stream`), turn cancellation, automated session handover (`/v1/sessions/handover`), and transcript endpoints.
 * **`transcript_cache.go`:** Bounded in-memory transcript cache (128 entries) with `(size, mtimeNano)` validation, incremental Claude `.jsonl` seek-append parsing, and 3-second subagent discovery caching.
 * **`prompt_dedup.go`:** Bounded in-memory LRU prompt deduplication cache (512 entries, 10m TTL) tracking in-flight reservations and committed status for idempotent `client_turn_id` submissions.
-* **`headless.go`, `headless_persistent.go`, `headless_spool.go`:** Headless coordinator, warm worker lifecycle management, turn dispatch/reuse, and monotonic NDJSON turn spooling.
+* **`headless.go`, `headless_persistent.go`, `headless_spool.go`, `headless_errors.go`:** Headless coordinator, warm worker lifecycle management, turn dispatch/reuse, stream error tracking, and monotonic NDJSON turn spooling.
 * **`headless_worker.go`, `headless_config.go`, `headless_worker_ipc.go`:** Detached `--headless-worker` process, persistent stdio stream loop, configuration fingerprinting, and Unix socket RPC.
 * **`headless_commands.go`:** Inline shell execution (`POST /v1/sessions/{id}/shell`), directory validation (`/add-dir`), in-place conversation rotation, `/clear`, `/reset`, and `/compact`.
 * **`headless_commands_inspect.go`:** Allowlisted CLI inspection (`/v1/sessions/{id}/inspect`), git diff inspection (`/v1/sessions/{id}/diff`), and transcript token/cost metrics.
@@ -142,7 +142,7 @@ Headless sessions (`engine_type = "headless"`, `tmux_name = ""`) execute turns t
 * **Unix Domain Socket RPC:** Communicates over `0600` sockets in `~/.config/ackbar/run` (or short temp directory). Supports `status`, `send_turn`, `restart_child`, `subscribe`, `cancel`, and `shutdown`.
 * **Worker Sidecar Isolation:** Persists worker metadata to `w_<workerID>.worker.json` (`0600`). Retains per-turn metadata in `turn_<id>.meta.json`.
 * **Monotonic Turn Spool (`turn_<id>.ndjson`):** Sequenced events stream to disk atomically with `0600` permissions. Pre-writes `seq: 1` (`turn_start`) before provider output arrives.
-* **Idle-Warm Lifetime & Auto-Reap:** Idle workers wait in `idle_warm` state. Worker exits after idle timeout (`ACKBAR_HEADLESS_IDLE_TTL`, default `20m`).
+* **Idle-Warm Lifetime & Auto-Reap ([`headless_worker.go`](file:///Users/dev4u/Work/Ackbar/internal/daemon/headless_worker.go)):** Workers wait in `idle_warm` until timeout (`20m`). Interactive blocks, cancellations, and failed turns evict handles and exit workers.
 * **Idle-TTL Race Recovery:** If `send_turn` races with idle timeout reap, `HeadlessRunner.RunTurn` automatically respawns a warm worker.
 * **Configuration & MCP Fingerprints (`ConfigFingerprint`, `MCPFingerprint`):** `ConfigFingerprint` rotates full workers on model/effort/permission changes; `MCPFingerprint` swaps only the inner CLI child (`restart_child`) on MCP/credential updates.
 * **Active Turn Configuration Rotation:** If configuration or MCP auth changes mid-turn, runner flags the worker or child for post-turn rotation.

@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
-	"fmt"
 	"net"
 	"os"
 	"os/exec"
@@ -69,6 +68,7 @@ func (h *HeadlessRunner) applyWorkerEvent(sess *Session, origSessionID string, m
 }
 
 func (h *HeadlessRunner) monitorWorkerTurn(sess *Session, origSessionID string, meta *TurnSpoolMeta, trackedCmd *exec.Cmd, afterSeq int64) {
+	defer func() { h.mu.Lock(); h.activeMonitors--; h.mu.Unlock() }()
 	lastSeq := afterSeq
 	dialDeadline := time.Now().Add(3 * time.Second)
 	for {
@@ -205,6 +205,7 @@ func (h *HeadlessRunner) finalizeTurnFromSpool(sess *Session, origSessionID stri
 		interactiveBlock = snap.Blocked
 	}
 	wasCancelled := (meta != nil && meta.Status == "cancelled") || (snap != nil && snap.WasCancelled)
+	wasFailed := (meta != nil && (meta.ExitCode != 0 || meta.Status == "failed")) || (snap != nil && snap.StreamHadError)
 	prompt := meta.Prompt
 
 	if interactiveBlock != nil {
@@ -219,17 +220,13 @@ func (h *HeadlessRunner) finalizeTurnFromSpool(sess *Session, origSessionID stri
 		h.SetQueuePaused(sess.ID, true)
 	} else {
 		sess.State, sess.Blocked, sess.Activity, sess.PID, sess.LastEventAt = StateIdle, nil, "", 0, time.Now()
-		if meta.ExitCode == 0 && meta.Status != "failed" {
+		if !wasFailed {
 			if sess.FirstPrompt == "" {
 				sess.FirstPrompt = prompt
 			}
 			sess.LastPrompt = prompt
 		} else {
-			if meta.StderrTail != "" {
-				sess.Activity = "Turn error: " + meta.StderrTail
-			} else {
-				sess.Activity = fmt.Sprintf("Turn completed with status: exit status %d", meta.ExitCode)
-			}
+			sess.Activity = formatFailedTurnActivity(meta, snap)
 			h.SetQueuePaused(sess.ID, true)
 			h.EmitQueueUpdate(sess.ID)
 		}
@@ -260,17 +257,20 @@ func (h *HeadlessRunner) finalizeTurnFromSpool(sess *Session, origSessionID stri
 	markFinalized()
 	var rotateWorker bool
 	h.mu.Lock()
-	if handle, ok := h.warmWorkers[sess.ID]; ok && handle != nil {
-		if (interactiveBlock != nil || wasCancelled) && !h.activeTurns[sess.ID] {
-			delete(h.warmWorkers, sess.ID)
-			if sess.NativeID != "" {
-				delete(h.warmWorkers, sess.NativeID)
-			}
-		} else if handle.rotateAfterTurn && !h.activeTurns[sess.ID] {
-			rotateWorker = true
+	if (interactiveBlock != nil || wasCancelled || wasFailed) && !h.activeTurns[sess.ID] {
+		delete(h.warmWorkers, sess.ID)
+		if sess.NativeID != "" {
+			delete(h.warmWorkers, sess.NativeID)
 		}
+	} else if handle, ok := h.warmWorkers[sess.ID]; ok && handle != nil && handle.rotateAfterTurn && !h.activeTurns[sess.ID] {
+		rotateWorker = true
 	}
 	h.mu.Unlock()
+	if wasFailed && meta != nil && meta.WorkerMetaPath != "" {
+		if wm, err := ReadSessionWorkerMeta(meta.WorkerMetaPath); err == nil && wm != nil && wm.State == "idle_warm" {
+			h.killWorkerMeta(wm, 300*time.Millisecond)
+		}
+	}
 	if rotateWorker {
 		go h.ShutdownSessionWorker(sess.ID, sess.NativeID, 2*time.Second)
 	}
@@ -359,7 +359,7 @@ func (h *HeadlessRunner) ReattachLiveWorkers() {
 			resp, err := callWorkerSocket(wm.SocketPath, workerIPCReq{Op: "status"}, 250*time.Millisecond)
 			alive := err == nil && resp != nil && resp.OK
 			sess := h.resolveSession(wm.SessionID, wm.OrigSessionID, wm.NativeID)
-			if !alive || sess == nil || sess.Deleted || sess.IsDone || sess.TmuxName != "" || wm.ConfigFingerprint != ConfigFingerprint(sess) {
+			if !alive || resp.State == "shutting_down" || resp.State == "exited" || sess == nil || sess.Deleted || sess.IsDone || sess.TmuxName != "" || wm.ConfigFingerprint != ConfigFingerprint(sess) {
 				if alive {
 					h.killWorkerMeta(wm, 300*time.Millisecond)
 				} else {
@@ -451,6 +451,7 @@ func (h *HeadlessRunner) ReattachLiveWorkers() {
 				InFlight:  true,
 			}
 			h.sessionSpools[sess.ID] = meta
+			h.activeMonitors++
 			h.mu.Unlock()
 			h.syncSleepInhibitor()
 			go h.monitorWorkerTurn(sess, meta.OrigSessionID, meta, trackedCmd, 0)

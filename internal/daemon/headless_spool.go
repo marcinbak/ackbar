@@ -51,6 +51,7 @@ type InFlightTurnSnapshot struct {
 	ToolCalls         []string
 	ResultText        string
 	LastTurnText      string
+	LastErrorText     string
 	Blocked           *Blocked
 	StreamHadError    bool
 	WasCancelled      bool
@@ -386,7 +387,10 @@ func SynthesizeInFlightTurn(meta *TurnSpoolMeta, streamAgent string) (*InFlightT
 		case "interactive_block":
 			snap.Blocked, snap.IsActive = evt.Blocked, false
 		case "error":
-			snap.StreamHadError = true
+			snap.StreamHadError, snap.IsActive = true, false
+			if t := strings.TrimSpace(evt.Text); t != "" {
+				snap.LastErrorText = t
+			}
 			if evt.Text != "" {
 				snap.LastTurnText += "\n" + evt.Text
 			}

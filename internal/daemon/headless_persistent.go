@@ -91,6 +91,7 @@ func (h *HeadlessRunner) recordTurnActive(sess *Session, prompt, turnID string, 
 	if cmd != nil {
 		h.ownedWorkers[turnID] = cmd
 	}
+	h.activeMonitors++
 	h.mu.Unlock()
 	h.syncSleepInhibitor()
 
@@ -343,6 +344,10 @@ func (h *HeadlessRunner) ShutdownAllWorkers(timeout time.Duration) {
 	if h == nil {
 		return
 	}
+	waitDur := timeout
+	if waitDur < time.Second {
+		waitDur = time.Second
+	}
 	h.mu.Lock()
 	clear(h.warmWorkers)
 	var owned []*exec.Cmd
@@ -353,14 +358,28 @@ func (h *HeadlessRunner) ShutdownAllWorkers(timeout time.Duration) {
 	}
 	h.mu.Unlock()
 	h.forEachWorkerMeta("", "", func(m *SessionWorkerMeta) { h.killWorkerMeta(m, timeout) })
+	deadline := time.Now().Add(waitDur)
 	for _, cmd := range owned {
 		pid := cmd.Process.Pid
 		if isProcessAlive(pid) {
 			_ = syscall.Kill(pid, syscall.SIGKILL)
-			for d := time.Now().Add(250 * time.Millisecond); time.Now().Before(d) && isProcessAlive(pid); {
-				time.Sleep(5 * time.Millisecond)
+		}
+	}
+	for time.Now().Before(deadline) {
+		allDead := true
+		for _, cmd := range owned {
+			if isProcessAlive(cmd.Process.Pid) {
+				allDead = false
+				break
 			}
 		}
+		h.mu.RLock()
+		monitors := h.activeMonitors
+		h.mu.RUnlock()
+		if allDead && monitors == 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 

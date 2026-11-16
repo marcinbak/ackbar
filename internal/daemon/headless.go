@@ -97,6 +97,7 @@ type HeadlessRunner struct {
 	sessionTurnMu          map[string]*sync.Mutex
 	runtimeModels          map[string]string
 	idleTTL                time.Duration
+	activeMonitors         int
 }
 
 func NewHeadlessRunner(db *DB, broadcast func(s *Session)) *HeadlessRunner {
@@ -1463,6 +1464,7 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 	var resultText string
 	var finalLastTurnText, finalResultText string
 	var finalStreamHadError bool
+	var errTracker turnErrorTracker
 	streamHadError := false
 	toolUses := make(map[string]string)
 	toolInputs := make(map[string]map[string]any)
@@ -1493,16 +1495,6 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 			continue
 		}
 
-		if isErr, ok := raw["is_error"].(bool); ok && isErr {
-			streamHadError = true
-		}
-		if raw["error"] != nil {
-			streamHadError = true
-		}
-		if rawType, ok := raw["type"].(string); ok && rawType == "error" {
-			streamHadError = true
-		}
-
 		// Check for Antigravity stream format: top-level "event" field
 		if agyEvt, ok := raw["event"].(string); ok && agyEvt != "" {
 			switch agyEvt {
@@ -1528,9 +1520,11 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 
 					switch stepType {
 					case "agent_response":
+						hasProgress := false
 						if textDelta, ok := su["text_delta"].(string); ok && textDelta != "" {
 							isDuplicateDone := stepIdx >= 0 && state == "DONE" && agStepText[stepIdx] != "" && strings.Contains(agStepText[stepIdx], textDelta)
 							if !isDuplicateDone {
+								hasProgress = true
 								isContinuationOfSameStep := stepIdx >= 0 && agStepText[stepIdx] != ""
 								isNewStep := (stepIdx >= 0 && agStepText[stepIdx] == "") || (stepIdx < 0 && agHadToolSinceLastText)
 								if stepIdx >= 0 {
@@ -1553,20 +1547,28 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 							}
 						}
 						if thoughtDelta, ok := su["thought_delta"].(string); ok && thoughtDelta != "" {
+							hasProgress = true
 							emitStreamEvt(ChatStreamEvent{
 								SessionID: sessionID,
 								Type:      "thought_delta",
 								Thinking:  thoughtDelta,
 							})
 						} else if thinking, ok := su["thinking"].(string); ok && thinking != "" {
+							hasProgress = true
 							emitStreamEvt(ChatStreamEvent{
 								SessionID: sessionID,
 								Type:      "thought_delta",
 								Thinking:  thinking,
 							})
 						}
+						if hasProgress {
+							errTracker.clear()
+						}
 
 					case "tool":
+						if state == "ACTIVE" {
+							errTracker.clear()
+						}
 						agHadToolSinceLastText = true
 						toolName, _ := su["tool_name"].(string)
 						toolInfo, _ := su["tool_info"].(map[string]interface{})
@@ -1624,6 +1626,9 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 						}
 
 					case "subagent":
+						if state == "ACTIVE" {
+							errTracker.clear()
+						}
 						agHadToolSinceLastText = true
 						role, _ := su["role"].(string)
 						taskName, _ := su["task_name"].(string)
@@ -1654,13 +1659,7 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 
 					case "error_message":
 						if errMsg, ok := su["error"].(string); ok && errMsg != "" {
-							lastTextBuilder.WriteString("\n" + errMsg)
-							emitStreamEvt(ChatStreamEvent{
-								SessionID: sessionID,
-								Type:      "error",
-								Text:      errMsg,
-								IsError:   true,
-							})
+							errTracker.add(errMsg)
 						}
 					}
 				}
@@ -1670,12 +1669,13 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 					status, _ := res["status"].(string)
 					respText, _ := res["response"].(string)
 					errVal, _ := res["error"].(string)
-					if strings.EqualFold(status, "ERROR") || errVal != "" {
+					if strings.EqualFold(status, "ERROR") || strings.TrimSpace(errVal) != "" || errTracker.hasPending() {
 						streamHadError = true
-						errText := errVal
-						if errText == "" {
-							errText = respText
+						rawErr := strings.TrimSpace(errVal)
+						if rawErr == "" && strings.EqualFold(status, "ERROR") {
+							rawErr = strings.TrimSpace(respText)
 						}
+						errText := errTracker.resolveFinal(rawErr)
 						lastTextBuilder.WriteString("\n" + errText)
 						emitStreamEvt(ChatStreamEvent{
 							SessionID: sessionID,
@@ -1684,6 +1684,7 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 							IsError:   true,
 						})
 					} else {
+						errTracker.clear()
 						resultText = respText
 						lastTextBuilder.WriteString("\n" + respText)
 						if hooks.emitTurnComplete {
@@ -1704,6 +1705,7 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 				lastTextBuilder.Reset()
 				resultText = ""
 				streamHadError = false
+				errTracker.clear()
 				emittedAuthBlock = false
 				clear(emittedToolStart)
 				clear(emittedTextBlocks)
@@ -1721,6 +1723,13 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 
 		evtType, _ := raw["type"].(string)
 		switch evtType {
+		case "error":
+			errMsg := extractClaudeStreamError(raw)
+			if errMsg == "" {
+				errMsg = "Stream error"
+			}
+			errTracker.add(errMsg)
+
 		case "init":
 			if convID, ok := raw["conversation_id"].(string); ok && convID != "" {
 				if hooks.onAntigravityInit != nil {
@@ -1756,6 +1765,9 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 				deltaType, _ := delta["type"].(string)
 				if deltaType == "text_delta" {
 					text, _ := delta["text"].(string)
+					if text != "" {
+						errTracker.clear()
+					}
 					blockIdx := -1
 					if idxF, ok := raw["index"].(float64); ok {
 						blockIdx = int(idxF)
@@ -1785,6 +1797,9 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 					})
 				} else if deltaType == "thinking_delta" {
 					thinking, _ := delta["thinking"].(string)
+					if thinking != "" {
+						errTracker.clear()
+					}
 					hasEmittedDeltaInTurn = true
 					emitStreamEvt(ChatStreamEvent{
 						SessionID: sessionID,
@@ -1805,6 +1820,7 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 			if cb, ok := raw["content_block"].(map[string]interface{}); ok {
 				cbType, _ := cb["type"].(string)
 				if cbType == "tool_use" {
+					errTracker.clear()
 					needsSeparation = true
 					toolName, _ := cb["name"].(string)
 					toolID, _ := cb["id"].(string)
@@ -1957,6 +1973,9 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 			}
 
 		case "assistant":
+			if errMsg := extractClaudeStreamError(raw); errMsg != "" {
+				errTracker.add(errMsg)
+			}
 			if msg, ok := raw["message"].(map[string]interface{}); ok {
 				if m, ok := msg["model"].(string); ok && m != "" && hooks.onModelDetected != nil {
 					hooks.onModelDetected(m)
@@ -1979,7 +1998,9 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 					}
 					textBlocks = nil
 				}
+				hasContentOrTool := false
 				if contentStr, ok := msg["content"].(string); ok && contentStr != "" {
+					hasContentOrTool = true
 					if !emittedTextBlocks[contentStr] {
 						emittedTextBlocks[contentStr] = true
 						textBlocks = append(textBlocks, contentStr)
@@ -1989,6 +2010,7 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 						if itemMap, ok := item.(map[string]interface{}); ok {
 							switch itemMap["type"] {
 							case "thinking":
+								hasContentOrTool = true
 								if !hasEmittedDeltaInTurn {
 									if thinking, ok := itemMap["thinking"].(string); ok && thinking != "" && !emittedThinkingBlocks[thinking] {
 										emittedThinkingBlocks[thinking] = true
@@ -2001,12 +2023,14 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 								}
 							case "text":
 								if txt, ok := itemMap["text"].(string); ok && txt != "" {
+									hasContentOrTool = true
 									if !emittedTextBlocks[txt] {
 										emittedTextBlocks[txt] = true
 										textBlocks = append(textBlocks, txt)
 									}
 								}
 							case "tool_use":
+								hasContentOrTool = true
 								flushTextBlocks()
 								needsSeparation = true
 								toolName, _ := itemMap["name"].(string)
@@ -2034,26 +2058,34 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 					}
 				}
 				flushTextBlocks()
+				if raw["error"] == nil && hasContentOrTool {
+					errTracker.clear()
+				}
 			}
 
 		case "result":
 			resText, _ := raw["result"].(string)
 			isErr, _ := raw["is_error"].(bool)
-			if isErr {
+			if isErr || errTracker.hasPending() {
 				streamHadError = true
-			}
-			if resText != "" {
-				lastTextBuilder.WriteString("\n" + resText)
-			}
-			if isErr && resText != "" {
+				rawErr := ""
+				if isErr {
+					rawErr = strings.TrimSpace(resText)
+				}
+				errText := errTracker.resolveFinal(rawErr)
+				lastTextBuilder.WriteString("\n" + errText)
 				emitStreamEvt(ChatStreamEvent{
 					SessionID: sessionID,
 					Type:      "error",
-					Text:      resText,
+					Text:      errText,
 					IsError:   true,
 				})
 			} else {
+				errTracker.clear()
 				resultText = resText
+				if resText != "" {
+					lastTextBuilder.WriteString("\n" + resText)
+				}
 				if hooks.emitTurnComplete {
 					emitStreamEvt(ChatStreamEvent{
 						SessionID: sessionID,
@@ -2071,6 +2103,7 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 			lastTextBuilder.Reset()
 			resultText = ""
 			streamHadError = false
+			errTracker.clear()
 			clear(emittedToolStart)
 			clear(emittedTextBlocks)
 			clear(emittedThinkingBlocks)
@@ -2082,6 +2115,19 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 			hasEmittedDeltaInTurn = false
 			needsSeparation = false
 		}
+	}
+	if pendingErr, ok := errTracker.flushRemaining(); ok {
+		streamHadError = true
+		lastTextBuilder.WriteString("\n" + pendingErr)
+		emitStreamEvt(ChatStreamEvent{
+			SessionID: sessionID,
+			Type:      "error",
+			Text:      pendingErr,
+			IsError:   true,
+		})
+	}
+	if lastTextBuilder.Len() > 0 || streamHadError {
+		return lastTextBuilder.String(), resultText, streamHadError
 	}
 	if finalLastTurnText != "" || finalResultText != "" || finalStreamHadError {
 		return finalLastTurnText, finalResultText, finalStreamHadError

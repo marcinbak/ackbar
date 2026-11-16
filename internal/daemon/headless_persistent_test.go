@@ -2,11 +2,13 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -334,5 +336,160 @@ done
 	}
 	if h.IsSleepInhibitorActive() {
 		t.Errorf("sleep inhibitor must be released when turn 2 ends and worker is idle_warm")
+	}
+}
+
+func TestWarmWorker_RecyclesProcessOnFailedTurnAndSetsErrorActivity(t *testing.T) {
+	tmpDir := t.TempDir()
+	binDir := filepath.Join(tmpDir, "bin")
+	_ = os.MkdirAll(binDir, 0755)
+	mockAgy := filepath.Join(binDir, "agy")
+	countFile := filepath.Join(tmpDir, "turn_count")
+
+	script := fmt.Sprintf(`#!/bin/sh
+echo '{"event":"init","conversation_id":"migrated-uuid-err-1"}'
+count_file="%s"
+turn=1
+if [ -f "$count_file" ]; then
+  turn=$(cat "$count_file")
+fi
+while IFS= read -r line; do
+  if [ "$turn" -eq 1 ]; then
+    echo 2 > "$count_file"
+    echo '{"event":"step_update","step_update":{"step_type":"error_message","error":"API error (attempt 5): daily-cloudcode-pa.googleapis.com RST: connection reset by peer"}}'
+    echo '{"event":"result","result":{"status":"ERROR","error":"API error (attempt 5): daily-cloudcode-pa.googleapis.com RST: connection reset by peer"}}'
+  else
+    echo '{"event":"step_update","step_update":{"step_type":"agent_response","text_delta":"Recovered on turn 2"}}'
+    echo '{"event":"result","result":{"status":"SUCCESS","response":"Recovered on turn 2"}}'
+  fi
+done
+`, countFile)
+	if err := os.WriteFile(mockAgy, []byte(script), 0755); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+
+	db, err := InitDB(filepath.Join(tmpDir, "test.db"))
+	if err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+	h := NewHeadlessRunner(db, nil)
+	t.Cleanup(func() {
+		h.ShutdownAllWorkers(time.Second)
+	})
+
+	sess := &Session{ID: "antigravity:local:fail-test-1", Agent: "antigravity", NativeID: "fail-test-1", Cwd: tmpDir, EngineType: EngineHeadless}
+	_ = db.SaveSession(sess)
+
+	streamCh, cancelSub := h.Subscribe(sess.ID)
+	var turn1Events []ChatStreamEvent
+	collectDone := make(chan struct{})
+	go func() {
+		defer close(collectDone)
+		for evt := range streamCh {
+			turn1Events = append(turn1Events, evt)
+		}
+	}()
+
+	if err := h.RunTurn(context.Background(), sess, "prompt 1"); err != nil {
+		t.Fatalf("RunTurn 1: %v", err)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && h.IsRunning(sess.ID) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	cancelSub()
+	<-collectDone
+
+	var hasErrorEvt, hasTurnCompleteEvt bool
+	for _, evt := range turn1Events {
+		if evt.Type == "error" {
+			hasErrorEvt = true
+		}
+		if evt.Type == "turn_complete" {
+			hasTurnCompleteEvt = true
+		}
+	}
+	if !hasErrorEvt {
+		t.Errorf("expected Turn 1 to emit error event, got events: %+v", turn1Events)
+	}
+	if hasTurnCompleteEvt {
+		t.Errorf("expected Turn 1 to NOT emit turn_complete event, got events: %+v", turn1Events)
+	}
+
+	var updatedSess *Session
+	waitDbDeadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(waitDbDeadline) {
+		if s, err := db.GetSession(sess.ID); err == nil && s != nil {
+			if strings.HasPrefix(s.Activity, "Turn error:") {
+				updatedSess = s
+				break
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if updatedSess == nil {
+		var err error
+		updatedSess, err = db.GetSession(sess.ID)
+		if err != nil || updatedSess == nil {
+			t.Fatalf("GetSession failed: %v", err)
+		}
+	}
+	if !strings.HasPrefix(updatedSess.Activity, "Turn error: API error (attempt 5):") {
+		t.Errorf("expected activity to start with 'Turn error: API error (attempt 5):', got %q", updatedSess.Activity)
+	}
+	if !h.IsQueuePaused(sess.ID) {
+		t.Errorf("expected queue to be paused after failed turn")
+	}
+
+	h.mu.RLock()
+	handle1 := h.warmWorkers[sess.ID]
+	h.mu.RUnlock()
+	if handle1 != nil {
+		t.Errorf("expected warmWorkers handle to be evicted after failed turn, got %+v", handle1)
+	}
+
+	runDir := filepath.Join(tmpDir, "run")
+	entries, _ := os.ReadDir(runDir)
+	var turn1WorkerPID int
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".meta.json") {
+			if m, err := ReadTurnSpoolMeta(filepath.Join(runDir, e.Name())); err == nil && m != nil && m.WorkerPID > 0 {
+				turn1WorkerPID = m.WorkerPID
+			}
+		}
+	}
+	if turn1WorkerPID > 0 {
+		exitDeadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(exitDeadline) {
+			if err := syscall.Kill(turn1WorkerPID, 0); err != nil {
+				break
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		if err := syscall.Kill(turn1WorkerPID, 0); err == nil {
+			t.Errorf("expected worker PID %d to have exited after failure", turn1WorkerPID)
+		}
+	}
+
+	h.SetQueuePaused(sess.ID, false)
+	if err := h.RunTurn(context.Background(), updatedSess, "prompt 2"); err != nil {
+		t.Fatalf("RunTurn 2 failed: %v", err)
+	}
+
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && h.IsRunning(sess.ID) {
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	h.mu.RLock()
+	handle2 := h.warmWorkers[sess.ID]
+	h.mu.RUnlock()
+	if handle2 == nil {
+		t.Fatalf("expected warm worker after successful turn 2")
+	}
+	if turn1WorkerPID > 0 && handle2.WorkerPID == turn1WorkerPID {
+		t.Errorf("expected new worker process on turn 2, got same PID %d", handle2.WorkerPID)
 	}
 }

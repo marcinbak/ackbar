@@ -2780,6 +2780,100 @@ test('style.css resets white-space to normal on tool group content and items', a
   assert.match(css, /\.chat-tool-call-item\s*\{[^}]*white-space:\s*normal;/s);
 });
 
+test('tool_start followed by duplicate error and turn_complete collapses tool group, renders single error, and refreshes', async () => {
+  const container = new MockElement('div');
+  container.className = 'chat-messages-container';
+
+  const fetchedUrls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    fetchedUrls.push(String(url));
+    if (String(url).includes('/queue')) {
+      return { ok: true, json: async () => ({ queue: [] }) };
+    }
+    if (String(url).includes('/sessions')) {
+      return { ok: true, json: async () => [] };
+    }
+    return { ok: true, json: async () => ({}) };
+  };
+
+  try {
+    const tabObj = {
+      id: 'tab-test-error-resilience',
+      viewMode: 'chat',
+      chatMessagesEl: container,
+      session: { id: 'antigravity:local:sess-err-test', agent: 'antigravity', state: 0 },
+      activeTurnBuffer: '',
+      activeTurnTools: [],
+      inFlightPrompt: 'test prompt',
+      promptQueue: [{ id: 'q1', text: 'queued item' }]
+    };
+
+    handleChatStreamEvent(tabObj, {
+      type: 'turn_start',
+      turn_id: 'turn-err-test',
+      text: 'test prompt'
+    });
+
+    handleChatStreamEvent(tabObj, {
+      type: 'text_delta',
+      turn_id: 'turn-err-test',
+      text: 'Starting computation...'
+    });
+
+    handleChatStreamEvent(tabObj, {
+      type: 'tool_start',
+      turn_id: 'turn-err-test',
+      tool_name: 'test_tool',
+      tool_input: {}
+    });
+
+    const toolGroup = container.querySelector('.chat-tool-group');
+    assert.ok(toolGroup, 'Tool group must be rendered on tool_start');
+
+    handleChatStreamEvent(tabObj, {
+      type: 'error',
+      turn_id: 'turn-err-test',
+      text: 'Connection reset by peer'
+    });
+
+    handleChatStreamEvent(tabObj, {
+      type: 'error',
+      turn_id: 'turn-err-test',
+      text: 'Connection reset by peer'
+    });
+
+    handleChatStreamEvent(tabObj, {
+      type: 'turn_complete',
+      turn_id: 'turn-err-test',
+      text: 'Completed with partial findings'
+    });
+
+    assert.equal(toolGroup.open, false, 'Tool group must be collapsed on error');
+    assert.equal(toolGroup.classList.contains('open'), false, 'open class must be removed');
+    const inProgressItems = toolGroup.querySelectorAll('.chat-tool-call-item.in-progress');
+    assert.equal(inProgressItems.length, 0, 'No tool item should remain in-progress');
+
+    const assistantMsgs = container.querySelectorAll('.chat-msg.assistant-msg');
+    assert.equal(assistantMsgs.length, 1, 'Exactly one assistant bubble should exist');
+    const errorBanners = container.querySelectorAll('.chat-turn-error');
+    assert.equal(errorBanners.length, 1, 'Error banner must be deduplicated to exactly 1');
+    assert.ok(errorBanners[0].textContent.includes('Connection reset by peer'));
+
+    const bodyEl = assistantMsgs[0].querySelector('.chat-msg-body');
+    assert.ok(bodyEl, 'Message body must exist');
+    assert.ok(bodyEl.textContent.includes('Starting computation'), 'Streamed markdown text must remain rendered');
+    assert.ok(bodyEl.querySelector('.chat-turn-error'), 'chat-turn-error banner must remain inside bodyEl');
+
+    assert.equal(tabObj.inFlightPrompt, null, 'inFlightPrompt must be cleared');
+    assert.equal(tabObj.isQueuePaused, true, 'Queue must be paused on error');
+    assert.ok(fetchedUrls.some(u => u.includes('/sessions')), 'fetchSessions must be called');
+    assert.ok(fetchedUrls.some(u => u.includes('/queue')), 'loadChatQueue must be called');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('parseLineRange decodes file:// schemes, query params, line ranges, and percent-encoding', () => {
   const res1 = chat.parseLineRange('file:///Users/dev/Project/My%20Hero.png#L10');
   assert.equal(res1.baseFilePath, '/Users/dev/Project/My Hero.png');
