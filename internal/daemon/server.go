@@ -208,10 +208,83 @@ func (s *Server) SetHostIdentity(hostName, displayName string) {
 	if displayName != "" && !strings.EqualFold(displayName, "local") {
 		s.displayName = displayName
 	}
-	if s.db != nil && s.HostName() != "local" {
-		_ = s.db.MigrateLocalSessions(s.HostName())
-		s.pruneForeignSessions()
+	if s.db != nil {
+		if hostName != "" && !strings.EqualFold(hostName, "local") {
+			if current, _ := s.db.GetSetting("host_name"); current != hostName {
+				_ = s.db.SetSetting("host_name", hostName)
+			}
+		}
+		if displayName != "" && !strings.EqualFold(displayName, "local") {
+			if current, _ := s.db.GetSetting("display_name"); current != displayName {
+				_ = s.db.SetSetting("display_name", displayName)
+			}
+		}
+		if s.HostName() != "local" {
+			_ = s.db.MigrateLocalSessions(s.HostName())
+			s.pruneForeignSessions()
+		}
 	}
+}
+
+// InferExistingLocalHostName resolves the host identifier from local sessions
+// when settings.host_name is unconfigured, preventing misclassification as foreign.
+func InferExistingLocalHostName(db *DB) string {
+	if db == nil {
+		return ""
+	}
+	remotePeers := make(map[string]bool)
+	if hosts, err := db.ListHosts(); err == nil {
+		for _, h := range hosts {
+			if h == nil {
+				continue
+			}
+			u := strings.TrimSpace(strings.ToLower(h.URL))
+			if u != "" && u != "http://127.0.0.1:7777" && u != "http://localhost:7777" {
+				remotePeers[strings.ToLower(strings.TrimSpace(h.Name))] = true
+			}
+		}
+	}
+
+	sessions, err := db.ListSessions()
+	if err != nil || len(sessions) == 0 {
+		return ""
+	}
+
+	var managedHosts []string
+	var nonForeignHosts []string
+	for _, sess := range sessions {
+		if sess == nil {
+			continue
+		}
+		host := strings.TrimSpace(sess.Host)
+		if host == "" || strings.EqualFold(host, "local") || strings.EqualFold(host, "localhost") {
+			continue
+		}
+		if remotePeers[strings.ToLower(host)] {
+			continue
+		}
+		if sess.Managed {
+			managedHosts = append(managedHosts, host)
+		} else {
+			nonForeignHosts = append(nonForeignHosts, host)
+		}
+	}
+
+	candidates := managedHosts
+	if len(candidates) == 0 {
+		candidates = nonForeignHosts
+	}
+	if len(candidates) == 0 {
+		return ""
+	}
+
+	canonical := candidates[0]
+	for _, h := range candidates[1:] {
+		if !strings.EqualFold(h, canonical) {
+			return ""
+		}
+	}
+	return canonical
 }
 
 func (s *Server) HostName() string {

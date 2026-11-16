@@ -1,10 +1,15 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
+
+	"ackbar/internal/daemon"
 )
 
 func TestLoginAccount_TmuxName(t *testing.T) {
@@ -66,4 +71,86 @@ func TestLoginAccount_EmptySessionReturnsError(t *testing.T) {
 	if err.Error() != "daemon returned empty tmux session name" {
 		t.Errorf("unexpected error message: %v", err)
 	}
+}
+
+func TestDaemonRestartValidationAndArgs(t *testing.T) {
+	if !isValidDisplayName("MacBook Air") {
+		t.Error("expected 'MacBook Air' to be valid display name")
+	}
+	if isValidDisplayName("") || isValidDisplayName("Mac\nAir") || isValidDisplayName("Mac\x00Air") || isValidDisplayName("Mac\x7f") {
+		t.Error("expected control characters and empty string to be invalid display names")
+	}
+
+	if !validHostNameRegex.MatchString("macmini") || !validHostNameRegex.MatchString("mac-mini.local") {
+		t.Error("expected valid host names to match regex")
+	}
+	if validHostNameRegex.MatchString("") || validHostNameRegex.MatchString("-mac") || validHostNameRegex.MatchString("mac mini") {
+		t.Error("expected invalid host names to fail regex match")
+	}
+
+	tempHome := t.TempDir()
+	// No DB exists: args should be constructed from valid values
+	args := buildDaemonRestartArgs(tempHome, "macmini", "MacBook Air")
+	expected := []string{"--host-name", "macmini", "--display-name", "MacBook Air"}
+	if len(args) != len(expected) || args[0] != expected[0] || args[1] != expected[1] || args[2] != expected[2] || args[3] != expected[3] {
+		t.Fatalf("expected args %v, got %v", expected, args)
+	}
+
+	// Invalid host and invalid display name are omitted
+	badArgs := buildDaemonRestartArgs(tempHome, "bad host!", "bad\nname")
+	if len(badArgs) != 0 {
+		t.Fatalf("expected empty args for invalid host and display name, got %v", badArgs)
+	}
+
+	// Persisted DB setting prevents overriding with command line flags
+	cfgDir := filepath.Join(tempHome, ".config", "ackbar")
+	if err := os.MkdirAll(cfgDir, 0755); err != nil {
+		t.Fatalf("failed to create config dir: %v", err)
+	}
+	dbFile := filepath.Join(cfgDir, "ackbard.db")
+	db, err := daemon.InitDB(dbFile)
+	if err != nil {
+		t.Fatalf("failed to init db: %v", err)
+	}
+	_ = db.SetSetting("host_name", "persisted-host")
+	workingSess := &daemon.Session{
+		ID:         "antigravity:persisted-host:headless-123",
+		NativeID:   "headless-123",
+		Agent:      "antigravity",
+		Host:       "persisted-host",
+		EngineType: "headless",
+		State:      daemon.StateWorking,
+	}
+	if err := db.SaveSession(workingSess); err != nil {
+		t.Fatalf("failed to save working session: %v", err)
+	}
+	_ = db.Close()
+
+	if !hasPersistedHostIdentity(tempHome) {
+		t.Fatal("expected hasPersistedHostIdentity to return true")
+	}
+	persistedArgs := buildDaemonRestartArgs(tempHome, "spoofed-host", "Spoofed")
+	if len(persistedArgs) != 0 {
+		t.Fatalf("expected nil/empty args when host identity is already persisted, got %v", persistedArgs)
+	}
+
+	// ReadPersistedHostName must not run InitDB mutations on active sessions
+	readHost := daemon.ReadPersistedHostName(dbFile)
+	if readHost != "persisted-host" {
+		t.Fatalf("expected ReadPersistedHostName 'persisted-host', got %q", readHost)
+	}
+
+	verifyRaw, err := sql.Open("sqlite", dbFile)
+	if err != nil {
+		t.Fatalf("failed to open raw sqlite: %v", err)
+	}
+	defer verifyRaw.Close()
+	var rawState int
+	if err := verifyRaw.QueryRow("SELECT state FROM sessions WHERE id = ?", workingSess.ID).Scan(&rawState); err != nil {
+		t.Fatalf("failed to query raw session state: %v", err)
+	}
+	if daemon.State(rawState) != daemon.StateWorking {
+		t.Fatalf("expected state %v to remain unaltered, got %v", daemon.StateWorking, rawState)
+	}
+
 }

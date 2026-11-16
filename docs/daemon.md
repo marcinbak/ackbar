@@ -12,7 +12,7 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 5. **SSE Broadcaster (`/v1/events`):** Streams real-time updates to connected Web and Mobile clients over `/v1/events`. Flushes HTTP response headers immediately upon connection and emits periodic `: keepalive\n\n` comments (`20s` default, configurable via `Server.SetEventsKeepaliveInterval` in [`server.go`](../internal/daemon/server.go)) to keep client connections alive.
 6. **SQLite Persistence:** Stores session state, activity history, and logical tree hierarchies in `~/.config/ackbar/ackbard.db` (CGO-free pure Go SQLite).
 7. **Built-in Self-Rotating Logger:** Automatically writes, caps (10MB), and daily-rotates daemon logs in `~/.config/ackbar/logs/` with 7-day automatic retention pruning.
-8. **Background Session Scanner:** Periodically inspects `tmux list-panes` and on-disk conversation directories (`session_scanner.go`) to reconcile and supervise Ackbar-managed agent sessions (external unmanaged sessions created outside Ackbar are ignored and pruned on startup).
+8. **Background Session Scanner:** Periodically inspects `tmux list-panes` and on-disk conversation directories ([`session_scanner.go`](../internal/daemon/session_scanner.go)) to reconcile sessions, reconstruct orphaned managed tmux sessions, and supervise Ackbar-managed agent sessions.
 
 ### Modular Daemon File Layout (`internal/daemon/`)
 * **`server.go`:** Core `Server` struct, HTTP `Mux()` route registration, token `authMiddleware`, CORS wrapper, SSE `/v1/events` broadcaster with immediate header flush and `: keepalive\n\n` heartbeat (20s default), background loop, version/update/settings/shutdown handlers, and normalized OS hostname fallback (`DefaultSystemHostName`).
@@ -39,10 +39,11 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 * **`server_accounts.go`:** Multi-account profile management (`/v1/accounts`), agent discovery (`/v1/agents/discovery`), provider catalog (`/v1/providers`), and fleet propagation.
 * **`server_hosts.go`:** Remote host health tracking, SSH target resolution, host CRUD (`/v1/hosts`), cross-compiled remote upgrades (`/v1/hosts/update`), and resilient SSH tunnel management (`/v1/hosts/reconnect`, `ensureHostTunnels`).
 * **`server_projects.go`:** Workspace document discovery (`/v1/documents`), tree node CRUD and move (`/v1/nodes`), project creation (`/v1/projects/create`), worktree/path normalization, and VS Code URI launching (`/v1/editor/open`).
+* **`files.go` & `files_resolve.go`:** Workspace file serving (`GET /v1/files/content`), external launching (`POST /v1/files/open`), sandbox CSP headers, and path resolution (worktrees, brain, subagents, cross-OS homes).
 * **`server_tasks.go` & `task_scope.go`:** Task CRUD (`/v1/tasks`), canonical project node scope resolution (`resolveTaskNodeScope`), task moves, and subproject normalization.
 * **`server_deliverables.go`, `db_deliverables.go`, `deliverables_retro.go`:** Task deliverable endpoints (`/v1/deliverables`, `/v1/retros`, `/v1/tasks/deliverable`), rune-safe cursor pagination, auto-ingested `.retro.md` & `run-state.json` parsing, and LWW deliverable replication.
 * **`server_sync.go`:** Uniform 3-way Last-Write-Wins (LWW) peer-to-peer sync engine (`/v1/sync/state`, `/v1/sync/push`, `/v1/nodes/paths`) and background delta reconciliation.
-* **`session_scanner.go`:** Liveness verification (`verifySessionLiveness`) and background session scanner (`scanObservedSessions` decomposed into `refreshExistingSessions`, `scanTmuxPanes`, and `scanDiskSessions` for managed sessions).
+* **`session_scanner.go`:** Liveness verification (`verifySessionLiveness`) and background session scanner (`scanObservedSessions` decomposed into `refreshExistingSessions`, `scanTmuxPanes` with orphaned managed session reconstruction, and `scanDiskSessions` for managed sessions).
 * **`telemetry_tasks.go` & `workflow_watcher.go`:** Monotonic workflow node (`N0`–`N15`) and task/workstream status synchronization (`SyncSessionTaskWorker`, `IngestBoundTaskTelemetry`), canonical pillar substatus normalization (`normalizeTaskStatusAndSubstatus`), single active worker enforcement per `(task_id, repo_node_path)`, and update-only `dev-workflow` run watcher (`IngestDevWorkflowRuns` scanning `~/.claude/dev-workflow-runs/*.json` strictly for existing non-`DONE` tasks and auto-attaching `.brief.md`, `.impl-notes.md`, and `.retro.md` deliverables without auto-creating ambient tasks).
 * **`ntfy.go`:** `ntfy.sh` push notification dispatcher for PR/Plan Review transitions (`REVIEW`) and Task/Session blockers (`StateBlocked` / `substatus == "blocked"`), emitting `ackbar://` mobile deep-links, Ackbar notification icons, session-title + group-path subtitles, test notification dispatch (`POST /v1/notifications/test`), and fleet-wide `ntfy` settings propagation.
 * **`provisioner.go` & `provisioner_toml.go`:** Agent configuration provisioners injecting MCP servers, skills, and rules into agent configs (JSON and TOML formats).
@@ -116,6 +117,8 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 | `POST` | `/v1/sessions/summarize-speech` | On-demand speech summarizer with 2-level caching (in-memory + SQLite `speech_summaries`), headless Haiku synthesis ($0 flat OAuth), optional cloud API, and pure-Go structural AST fallback. |
 | `POST` | `/v1/update` | Updates daemon executable; if headless turns are active, daemon restart is deferred (`restart_deferred: true`) until active turns drain. |
 | `POST` | `/v1/shutdown` | Gracefully shuts down daemon (supports `?drain=true` to defer restart until active headless turns complete). |
+| `GET` | `/v1/files/content` | Streams workspace or artifact file content (supports `path`, `session_id`, `cwd`, `download`, SVG sandbox CSP). |
+| `POST` | `/v1/files/open` | Launches local or staged remote file in default application or VS Code (supports `path`, `session_id`, `cwd`, `app`). |
 
 ### PTY Terminal Sizing (`/v1/sessions/pty`)
 
@@ -304,17 +307,18 @@ systemctl --user restart ackbard
 
 Each `ackbard` instance identifies itself across the multi-machine fleet using a canonical host name and an optional human-friendly display name:
 
-* **Canonical Host Name (`host_name`):** Alphanumeric machine identifier used in session IDs (`claude-code:<host>:<uuid>`), API routing, and SSH targeting. Defaults to `"local"` if unspecified.
+* **Canonical Host Name (`host_name`):** Alphanumeric machine identifier used in session IDs (`claude-code:<host>:<uuid>`), API routing, and SSH targeting. Persists to SQLite settings; falls back to inferred local host or system hostname.
 * **Display Name (`display_name`):** User-facing label displayed in Web UI badges (`@MacBook`), header host status pills, tabs, and inspector modals. Defaults to the canonical host name if unspecified.
 
 ### Configuration Hierarchy:
 1. **CLI Flags:** `ackbard --host-name macbook --display-name "MacBook Air"`
 2. **Environment Variables:** `ACKBAR_HOST=macbook` and `ACKBAR_DISPLAY_NAME="MacBook Air"` (ideal for LaunchAgents and systemd units).
-3. **Persistent SQLite Settings:** Configured via the Web UI **⚙️ Settings** modal or `POST /v1/settings` with JSON `{"host_name":"macbook","display_name":"MacBook Air"}`.
-4. **Fallback:** Defaults to `"local"`.
+3. **Persistent SQLite Settings:** Stored in `settings` table (`host_name`, `display_name`); explicit startup values persist automatically.
+4. **Local Session Inference:** [`InferExistingLocalHostName`](../internal/daemon/server.go) resolves host identity from existing local database sessions when unconfigured.
+5. **System Hostname Fallback:** [`DefaultSystemHostName`](../internal/daemon/server.go) derives normalized OS hostname before falling back to `"local"`.
 
 ### Non-Destructive Database Migration:
-When a daemon's host name is configured away from `"local"`, `ackbard` automatically migrates existing database records (`sessions` and `deleted_sessions`) to use the new host identifier. Lookups using legacy session IDs remain fully backward-compatible.
+When a daemon's host name changes away from `"local"`, `ackbard` automatically migrates existing database records (`sessions` and `deleted_sessions`) to the new host identifier. Non-`"local"` identities persist to `settings` on startup to prevent foreign session pruning on unconfigured restarts.
 
 ---
 

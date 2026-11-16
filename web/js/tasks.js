@@ -1,7 +1,7 @@
 import { state } from './state.js';
 import { fetchTasks, createTask, updateTask, deleteTask, fetchStandup, mergeTaskPR, fetchAgentStatuses, provisionAgents, fetchAllAgentStatuses, provisionAllHosts, syncSkillsRepo, fetchTaskDeliverable, fetchSessions } from './api.js';
 import { escapeHtml, getSelfHostName, renderMarkdown } from './utils.js';
-import { attachCodeBlockCopyButtons } from './chat.js';
+import { attachCodeBlockCopyButtons, getChatFileContentUrl, linkifyChatFiles } from './chat.js';
 import { activateTab, openSessionInTab } from './tabs.js';
 import { showModal, hideModal } from './modals.js';
 import { renderTree } from './tree.js';
@@ -325,7 +325,7 @@ export function showDeliverableContentModal(deliverable) {
   const content = deliverable.content_md || '';
   let externalLinkBtn = '';
   if (deliverable.url || deliverable.file_path) {
-    const targetUrl = safeUrl(deliverable.url || `/v1/files/content?path=${encodeURIComponent(deliverable.file_path)}`);
+    const targetUrl = deliverable.url ? safeUrl(deliverable.url) : getChatFileContentUrl(deliverable.file_path, { host: deliverable.host || '' });
     externalLinkBtn = `<a href="${escapeHtml(targetUrl)}" target="_blank" rel="noopener noreferrer" class="btn btn-primary">↗ Open External Link</a>`;
   }
   showModal(deliverable.title || 'Deliverable Content', `
@@ -339,6 +339,7 @@ export function showDeliverableContentModal(deliverable) {
   const bodyEl = document.getElementById('mDeliverableMarkdownBody');
   if (bodyEl) {
     attachCodeBlockCopyButtons(bodyEl);
+    linkifyChatFiles(bodyEl, { host: deliverable.host || '' });
   }
   document.getElementById('mBtnCloseDeliverableModal')?.addEventListener('click', hideModal);
 }
@@ -413,7 +414,7 @@ function renderTaskCards(tasks) {
           ${kindIcon} ${escapeHtml(d.title)}
         </button>`;
       }
-      const targetUrl = safeUrl(d.url || (d.file_path ? `/v1/files/content?path=${encodeURIComponent(d.file_path)}` : '#'));
+      const targetUrl = d.url ? safeUrl(d.url) : (d.file_path ? getChatFileContentUrl(d.file_path, { host: d.host || '' }) : '#');
       return `<a draggable="false" href="${escapeHtml(targetUrl)}" target="_blank" rel="noopener noreferrer" class="task-deliverable-chip" title="${escapeHtml(d.title)} (${escapeHtml(d.provider || d.kind)})">
         ${kindIcon} ${escapeHtml(d.title)}
       </a>`;

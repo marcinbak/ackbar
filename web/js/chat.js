@@ -3485,13 +3485,13 @@ function attachCodeBlockCopyButtons(container) {
 
 // Known file extensions for linkification & action pills
 const KNOWN_CHAT_FILE_EXTS = new Set([
-  'png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico',
+  'png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'avif', 'bmp', 'ico',
   'html', 'htm', 'pdf', 'md', 'markdown', 'txt', 'csv', 'json', 'yaml', 'yml', 'xml', 'log',
   'js', 'jsx', 'ts', 'tsx', 'go', 'py', 'rs', 'sh', 'bash', 'zsh', 'css', 'scss',
   'sql', 'java', 'c', 'cpp', 'h', 'swift', 'kt', 'dart', 'zip', 'tar', 'gz', 'mp4', 'webm', 'mp3', 'wav'
 ]);
 
-const CHAT_IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico']);
+const CHAT_IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'avif', 'bmp', 'ico']);
 const CHAT_VIDEO_EXTS = new Set(['mp4', 'webm']);
 const CHAT_AUDIO_EXTS = new Set(['mp3', 'wav']);
 
@@ -3499,7 +3499,12 @@ const CHAT_AUDIO_EXTS = new Set(['mp3', 'wav']);
 // e.g. /path/to/file.go#L75-L176, /path/to/file.go#L75, /path/to/file.go:75:10, /path/to/file.go:75-176, /path/to/file.go:75
 function parseLineRange(filePath) {
   let clean = (filePath || '').trim();
-  if (clean.startsWith('file://')) {
+  if (clean.startsWith('file://localhost/')) {
+    clean = '/' + clean.slice('file://localhost/'.length);
+  } else if (clean.startsWith('file:///')) {
+    const after = clean.slice('file:///'.length);
+    clean = /^[a-zA-Z]:[\\/]/.test(after) ? after : '/' + after;
+  } else if (clean.startsWith('file://')) {
     clean = clean.replace(/^file:\/\//, '');
   }
   let baseFilePath = clean;
@@ -3508,16 +3513,21 @@ function parseLineRange(filePath) {
   let endLine = null;
   let isColonCol = false;
 
-  const hashMatch = clean.match(/#L(\d+)(?:-L?(\d+))?$/i);
-  const colonMatch = clean.match(/:(\d+)(?:([-:])(\d+))?$/);
+  const qIdx = baseFilePath.indexOf('?');
+  if (qIdx !== -1) {
+    baseFilePath = baseFilePath.slice(0, qIdx);
+  }
+
+  const hashMatch = baseFilePath.match(/#L(\d+)(?:-L?(\d+))?$/i);
+  const colonMatch = baseFilePath.match(/:(\d+)(?:([-:])(\d+))?$/);
 
   if (hashMatch) {
-    baseFilePath = clean.slice(0, hashMatch.index);
+    baseFilePath = baseFilePath.slice(0, hashMatch.index);
     startLine = hashMatch[1];
     endLine = hashMatch[2];
     lineSuffix = endLine ? `:${startLine}-${endLine}` : `:${startLine}`;
   } else if (colonMatch) {
-    baseFilePath = clean.slice(0, colonMatch.index);
+    baseFilePath = baseFilePath.slice(0, colonMatch.index);
     startLine = colonMatch[1];
     const sep = colonMatch[2];
     endLine = colonMatch[3];
@@ -3533,7 +3543,11 @@ function parseLineRange(filePath) {
     }
   }
 
-  baseFilePath = baseFilePath.split('?')[0];
+  if (baseFilePath.includes('%')) {
+    try {
+      baseFilePath = decodeURIComponent(baseFilePath);
+    } catch (_) {}
+  }
 
   const vscodePath = startLine
     ? (isColonCol && endLine ? `${baseFilePath}:${startLine}:${endLine}` : `${baseFilePath}:${startLine}`)
@@ -3552,14 +3566,11 @@ function parseLineRange(filePath) {
 // Construct URL to stream/view file content through the daemon
 function getChatFileContentUrl(filePath, session, download = false) {
   const { baseFilePath } = parseLineRange(filePath);
-  let effectivePath = baseFilePath;
-  if (!baseFilePath.startsWith('/') && !baseFilePath.startsWith('~') && !/^[a-zA-Z]:[\\/]/.test(baseFilePath) && session && session.cwd) {
-    effectivePath = `${session.cwd.replace(/[\\/]+$/, '')}/${baseFilePath}`;
-  }
-  let url = `/v1/files/content?path=${encodeURIComponent(effectivePath)}`;
+  let url = `/v1/files/content?path=${encodeURIComponent(baseFilePath)}`;
   if (session) {
     if (session.id) url += `&session_id=${encodeURIComponent(session.id)}`;
     if (session.host) url += `&host=${encodeURIComponent(session.host)}`;
+    if (session.cwd) url += `&cwd=${encodeURIComponent(session.cwd)}`;
   }
   if (download) url += '&download=1';
   const token = getAuthToken();
@@ -3571,10 +3582,11 @@ function getChatFileContentUrl(filePath, session, download = false) {
 async function openChatFileInApp(filePath, session, app = 'default') {
   const host = session ? session.host : null;
   const sessionId = session ? session.id : null;
+  const cwd = session && session.cwd ? session.cwd : '';
   const { baseFilePath, vscodePath } = parseLineRange(filePath);
   if (app === 'vscode') {
-    const targetPath = (!vscodePath.startsWith('/') && session && session.cwd)
-      ? `${session.cwd.replace(/\/$/, '')}/${vscodePath}`
+    const targetPath = (!vscodePath.startsWith('/') && cwd)
+      ? `${cwd.replace(/\/$/, '')}/${vscodePath}`
       : vscodePath;
     return openInVSCode(targetPath, host);
   }
@@ -3586,7 +3598,8 @@ async function openChatFileInApp(filePath, session, app = 'default') {
         path: baseFilePath,
         session_id: sessionId,
         host: host,
-        app: app
+        app: app,
+        cwd: cwd
       })
     });
     const filename = baseFilePath.split('/').pop();
@@ -3607,16 +3620,42 @@ async function openChatFileInApp(filePath, session, app = 'default') {
 function isChatFilePath(str) {
   if (!str || typeof str !== 'string') return false;
   const trimmed = str.trim();
-  if (trimmed.length < 3 || trimmed.length > 250) return false;
+  if (trimmed.length < 3 || trimmed.length > 1024) return false;
   if (trimmed.includes('\n') || trimmed.includes('\r')) return false;
-  if (trimmed.startsWith('http://') || trimmed.startsWith('https://') || trimmed.startsWith('conversation://') || trimmed.includes('@')) return false;
-  if (trimmed.includes(' ') && !trimmed.startsWith('/')) return false;
 
-  let pathWithoutQuery = trimmed.split('?')[0];
-  if (pathWithoutQuery.startsWith('file://')) {
-    pathWithoutQuery = pathWithoutQuery.replace(/^file:\/\//, '');
+  const lower = trimmed.toLowerCase();
+  if (lower.startsWith('http://') || lower.startsWith('https://') || lower.startsWith('conversation://') || lower.startsWith('mailto:') || lower.startsWith('javascript:') || lower.startsWith('data:') || lower.startsWith('blob:')) {
+    return false;
   }
-  // Strip line range anchors before evaluating file extension
+
+  let pathStr = trimmed;
+  if (pathStr.startsWith('file://localhost/')) {
+    pathStr = '/' + pathStr.slice('file://localhost/'.length);
+  } else if (pathStr.startsWith('file:///')) {
+    const after = pathStr.slice('file:///'.length);
+    pathStr = /^[a-zA-Z]:[\\/]/.test(after) ? after : '/' + after;
+  } else if (pathStr.startsWith('file://')) {
+    pathStr = pathStr.slice('file://'.length);
+  }
+
+  if (pathStr.includes('%')) {
+    try {
+      pathStr = decodeURIComponent(pathStr);
+    } catch (_) {}
+  }
+
+  if (/^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+:/.test(pathStr)) return false;
+  if (/^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(pathStr) && !/@\d+x\.[a-z0-9]+$/i.test(pathStr)) return false;
+  if (pathStr.includes('@') && !pathStr.includes('/') && !pathStr.startsWith('~') && !/@\d+x\.[a-z0-9]+$/i.test(pathStr)) return false;
+
+  if (pathStr.includes(' ')) {
+    const isPrefixed = pathStr.startsWith('/') || pathStr.startsWith('~/') || pathStr.startsWith('./') || pathStr.startsWith('../') || /^[a-zA-Z]:[\\/]/.test(pathStr);
+    const isRelWithSlash = pathStr.includes('/') && !/\s{2,}/.test(pathStr) && pathStr.split(/\s+/).length <= 6;
+    if (!isPrefixed && !isRelWithSlash) return false;
+    if (/[!?]/.test(pathStr)) return false;
+  }
+
+  let pathWithoutQuery = pathStr.split('?')[0];
   pathWithoutQuery = pathWithoutQuery.replace(/#L\d+(?:-L?\d+)?$/i, '').replace(/:\d+(?:[-:]\d+)?$/, '');
   pathWithoutQuery = pathWithoutQuery.split('#')[0];
 
@@ -3625,8 +3664,7 @@ function isChatFilePath(str) {
   const ext = parts.pop().toLowerCase();
   if (!KNOWN_CHAT_FILE_EXTS.has(ext)) return false;
 
-  // Filter out common code expressions like obj.property if not common file extension
-  if (/^[a-zA-Z0-9_]+\.[a-zA-Z0-9_]+$/.test(pathWithoutQuery) && !['html', 'htm', 'png', 'jpg', 'jpeg', 'gif', 'svg', 'pdf', 'md', 'txt', 'csv', 'json', 'yaml', 'yml', 'css', 'js', 'ts', 'go', 'py', 'mp4', 'webm', 'mp3', 'wav'].includes(ext)) {
+  if (/^[a-zA-Z0-9_]+\.[a-zA-Z0-9_]+$/.test(pathWithoutQuery) && !['html', 'htm', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'avif', 'pdf', 'md', 'txt', 'csv', 'json', 'yaml', 'yml', 'css', 'js', 'ts', 'go', 'py', 'mp4', 'webm', 'mp3', 'wav'].includes(ext)) {
     return false;
   }
 
@@ -3909,18 +3947,30 @@ function linkifyChatFiles(containerEl, session) {
 
     let cleanPath = '';
     if (href.startsWith('file://')) {
-      cleanPath = href.replace(/^file:\/\//, '');
+      const { baseFilePath } = parseLineRange(href);
+      cleanPath = baseFilePath;
     } else if (!href.startsWith('http://') && !href.startsWith('https://') && !href.startsWith('#') && !href.startsWith('mailto:')) {
       const { baseFilePath } = parseLineRange(href);
       const ext = baseFilePath.split('?')[0].split('.').pop().toLowerCase();
       if (KNOWN_CHAT_FILE_EXTS.has(ext)) {
-        cleanPath = href;
+        cleanPath = baseFilePath;
       }
     }
     if (cleanPath && isChatFilePath(cleanPath)) {
       a.dataset.fileLinkified = 'true';
       const pill = createChatFilePill(cleanPath, session, customLabel);
+      const ext = parseLineRange(cleanPath).baseFilePath.split('.').pop().toLowerCase();
+      const inTable = !!a.closest('table');
       a.replaceWith(pill);
+      if (!inTable && !pill.nextElementSibling?.classList?.contains('chat-file-preview-card')) {
+        if (CHAT_IMAGE_EXTS.has(ext)) {
+          const preview = createChatImagePreviewCard(cleanPath, session, customLabel);
+          pill.parentNode?.insertBefore(preview, pill.nextSibling);
+        } else if (CHAT_VIDEO_EXTS.has(ext) || CHAT_AUDIO_EXTS.has(ext)) {
+          const preview = createChatMediaPreviewCard(cleanPath, session, customLabel);
+          pill.parentNode?.insertBefore(preview, pill.nextSibling);
+        }
+      }
     } else if (!href.startsWith('#') && !href.startsWith('javascript:')) {
       a.setAttribute('target', '_blank');
       a.setAttribute('rel', 'noopener noreferrer');

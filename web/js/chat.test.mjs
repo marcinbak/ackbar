@@ -191,6 +191,14 @@ class MockElement {
     return oldChild;
   }
 
+  replaceWith(...nodes) {
+    if (!this.parentNode) return;
+    for (const node of nodes) {
+      this.parentNode.insertBefore(node, this);
+    }
+    this.remove();
+  }
+
   remove() {
     if (this.parentNode) {
       this.parentNode.removeChild(this);
@@ -2770,6 +2778,87 @@ test('style.css resets white-space to normal on tool group content and items', a
 
   assert.match(css, /\.chat-tool-group-content\s*\{[^}]*white-space:\s*normal;/s);
   assert.match(css, /\.chat-tool-call-item\s*\{[^}]*white-space:\s*normal;/s);
+});
+
+test('parseLineRange decodes file:// schemes, query params, line ranges, and percent-encoding', () => {
+  const res1 = chat.parseLineRange('file:///Users/dev/Project/My%20Hero.png#L10');
+  assert.equal(res1.baseFilePath, '/Users/dev/Project/My Hero.png');
+  assert.equal(res1.startLine, '10');
+  assert.equal(res1.vscodePath, '/Users/dev/Project/My Hero.png:10');
+
+  const res2 = chat.parseLineRange('file://localhost/home/dev4u/image.avif?token=abc');
+  assert.equal(res2.baseFilePath, '/home/dev4u/image.avif');
+
+  const res3 = chat.parseLineRange('file:///C:/Projects/chart.png:42:5');
+  assert.equal(res3.baseFilePath, 'C:/Projects/chart.png');
+  assert.equal(res3.startLine, '42');
+  assert.equal(res3.vscodePath, 'C:/Projects/chart.png:42:5');
+});
+
+test('isChatFilePath validates extensions, lengths, @ handles, spaces, and schemes', () => {
+  assert.equal(chat.isChatFilePath('icon@2x.png'), true);
+  assert.equal(chat.isChatFilePath('/Users/dev/@scope/img.png'), true);
+  assert.equal(chat.isChatFilePath('image.avif'), true);
+  assert.equal(chat.isChatFilePath('~/My Image.png'), true);
+  assert.equal(chat.isChatFilePath('./out/my chart.png'), true);
+
+  // Long paths > 250 chars up to 1024
+  const longPath = '/home/user/' + 'a/'.repeat(150) + 'test.png';
+  assert.ok(longPath.length > 250 && longPath.length < 1024);
+  assert.equal(chat.isChatFilePath(longPath), true);
+
+  // Rejections
+  assert.equal(chat.isChatFilePath('user@example.com'), false);
+  assert.equal(chat.isChatFilePath('git@github.com:org/repo.git'), false);
+  assert.equal(chat.isChatFilePath('http://example.com/test.png'), false);
+  assert.equal(chat.isChatFilePath('https://example.com/test.png'), false);
+  assert.equal(chat.isChatFilePath('mailto:user@domain.com'), false);
+  assert.equal(chat.isChatFilePath('Just a regular sentence with text.'), false);
+});
+
+test('getChatFileContentUrl and openChatFileInApp pass cwd parameter without pre-resolving base path', async () => {
+  const url = chat.getChatFileContentUrl('assets/hero.png', { id: 'sess-1', host: 'remote-1', cwd: '/var/repo' });
+  assert.ok(url.includes('path=assets%2Fhero.png'));
+  assert.ok(url.includes('cwd=%2Fvar%2Frepo'));
+  assert.ok(url.includes('session_id=sess-1'));
+  assert.ok(url.includes('host=remote-1'));
+
+  let postedBody = null;
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (endpoint, opts) => {
+    if (endpoint === '/v1/files/open') {
+      postedBody = JSON.parse(opts.body);
+      return { ok: true, json: async () => ({ status: 'opened' }) };
+    }
+    return origFetch(endpoint, opts);
+  };
+  try {
+    await chat.openChatFileInApp('assets/chart.png', { id: 'sess-1', host: 'devbox', cwd: '/home/repo' }, 'preview');
+    assert.ok(postedBody);
+    assert.equal(postedBody.path, 'assets/chart.png');
+    assert.equal(postedBody.cwd, '/home/repo');
+    assert.equal(postedBody.app, 'preview');
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test('linkifyChatFiles renders .chat-file-preview-card for image links', () => {
+  const container = new MockElement('div');
+  const p = new MockElement('p');
+  const a = new MockElement('a');
+  a.setAttribute('href', 'file:///workspace/assets/My%20Hero.png');
+  a.textContent = 'hero.png';
+  p.appendChild(a);
+  container.appendChild(p);
+
+  chat.linkifyChatFiles(container, { id: 'sess-test', cwd: '/workspace' });
+
+  const pill = container.querySelector('.chat-file-pill');
+  assert.ok(pill, 'Expected .chat-file-pill to be rendered');
+
+  const previewCard = container.querySelector('.chat-file-preview-card');
+  assert.ok(previewCard, 'Expected .chat-file-preview-card to be rendered next to pill');
 });
 
 

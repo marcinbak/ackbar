@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -109,6 +110,14 @@ func main() {
 		log.Printf("API Token authentication disabled (open local/mesh mode)")
 	}
 
+	// Bind TCP listener before opening DB to fail fast on port collision
+	addr := fmt.Sprintf("%s:%d", *hostFlag, *portFlag)
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		log.Fatalf("Server exited with error: %v", err)
+	}
+	defer ln.Close()
+
 	// Initialize SQLite Database
 	db, err := daemon.InitDB(dbPath)
 	if err != nil {
@@ -121,6 +130,8 @@ func main() {
 	if hostName == "" || strings.EqualFold(hostName, "local") {
 		if dbHost, err := db.GetSetting("host_name"); err == nil && dbHost != "" && !strings.EqualFold(dbHost, "local") {
 			hostName = dbHost
+		} else if inferred := daemon.InferExistingLocalHostName(db); inferred != "" {
+			hostName = inferred
 		} else if sysHost := daemon.DefaultSystemHostName(); sysHost != "" {
 			hostName = sysHost
 		}
@@ -159,11 +170,9 @@ func main() {
 		server.StartRelayClient(context.Background(), relayURL, relaySecret)
 	}
 
-	// Listen on configured host address (default 127.0.0.1 loopback)
-	addr := fmt.Sprintf("%s:%d", *hostFlag, *portFlag)
 	log.Printf("Listening on http://%s", addr)
 
-	if err := http.ListenAndServe(addr, server.Mux()); err != nil {
+	if err := http.Serve(ln, server.Mux()); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("Server exited with error: %v", err)
 	}
 }
