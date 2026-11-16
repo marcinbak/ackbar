@@ -68,6 +68,7 @@ func (h *HeadlessRunner) applyWorkerEvent(sess *Session, origSessionID string, m
 }
 
 func (h *HeadlessRunner) monitorWorkerTurn(sess *Session, origSessionID string, meta *TurnSpoolMeta, trackedCmd *exec.Cmd, afterSeq int64) {
+	defer h.monitorWG.Done()
 	lastSeq := afterSeq
 	dialDeadline := time.Now().Add(3 * time.Second)
 	for {
@@ -439,6 +440,10 @@ func (h *HeadlessRunner) ReattachLiveWorkers() {
 			}
 			trackedCmd := &exec.Cmd{}
 			h.mu.Lock()
+			if h.shuttingDown {
+				h.mu.Unlock()
+				continue
+			}
 			h.processes[sess.ID] = trackedCmd
 			h.activeSessions[sess.ID] = sess
 			h.activeTurns[sess.ID] = true
@@ -450,6 +455,7 @@ func (h *HeadlessRunner) ReattachLiveWorkers() {
 				InFlight:  true,
 			}
 			h.sessionSpools[sess.ID] = meta
+			h.monitorWG.Add(1)
 			h.mu.Unlock()
 			h.syncSleepInhibitor()
 			go h.monitorWorkerTurn(sess, meta.OrigSessionID, meta, trackedCmd, 0)

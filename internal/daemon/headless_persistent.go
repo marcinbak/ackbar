@@ -83,6 +83,13 @@ func (h *HeadlessRunner) recordTurnActive(sess *Session, prompt, turnID string, 
 		trackedCmd = &exec.Cmd{}
 	}
 	h.mu.Lock()
+	if h.shuttingDown {
+		h.mu.Unlock()
+		if cmd != nil && cmd.Process != nil && cmd.Process.Pid > 1 {
+			_ = syscall.Kill(cmd.Process.Pid, syscall.SIGKILL)
+		}
+		return
+	}
 	h.activeTurns[sess.ID] = true
 	h.activeSessions[sess.ID] = sess
 	h.sessionSpools[sess.ID] = meta
@@ -91,6 +98,7 @@ func (h *HeadlessRunner) recordTurnActive(sess *Session, prompt, turnID string, 
 	if cmd != nil {
 		h.ownedWorkers[turnID] = cmd
 	}
+	h.monitorWG.Add(1)
 	h.mu.Unlock()
 	h.syncSleepInhibitor()
 
@@ -343,7 +351,12 @@ func (h *HeadlessRunner) ShutdownAllWorkers(timeout time.Duration) {
 	if h == nil {
 		return
 	}
+	waitDur := timeout
+	if waitDur < time.Second {
+		waitDur = time.Second
+	}
 	h.mu.Lock()
+	h.shuttingDown = true
 	clear(h.warmWorkers)
 	var owned []*exec.Cmd
 	for _, cmd := range h.ownedWorkers {
@@ -357,10 +370,19 @@ func (h *HeadlessRunner) ShutdownAllWorkers(timeout time.Duration) {
 		pid := cmd.Process.Pid
 		if isProcessAlive(pid) {
 			_ = syscall.Kill(pid, syscall.SIGKILL)
-			for d := time.Now().Add(250 * time.Millisecond); time.Now().Before(d) && isProcessAlive(pid); {
+			for d := time.Now().Add(waitDur); time.Now().Before(d) && isProcessAlive(pid); {
 				time.Sleep(5 * time.Millisecond)
 			}
 		}
+	}
+	doneCh := make(chan struct{})
+	go func() {
+		h.monitorWG.Wait()
+		close(doneCh)
+	}()
+	select {
+	case <-doneCh:
+	case <-time.After(waitDur):
 	}
 }
 
