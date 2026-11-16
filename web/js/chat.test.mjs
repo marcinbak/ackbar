@@ -513,6 +513,8 @@ const {
   pauseInStreamActivity,
   resumeInStreamActivity,
   formatModelLabel,
+  getAgentModelOptions,
+  GROK_DEFAULT_MODELS,
   updateStatusPills,
   toggleChatConfigPopover,
   createChatMessageElement
@@ -2178,6 +2180,10 @@ test('formatModelLabel resolves Carbon, Hydrogen XHigh, [1m], and Claude aliases
   assert.equal(formatModelLabel('sonnet', 'claude-code'), 'Claude Sonnet');
   assert.equal(formatModelLabel('haiku', 'claude-code'), 'Claude Haiku');
   assert.equal(formatModelLabel('opusplan', 'claude-code'), 'Claude Opus (Plan)');
+  assert.equal(formatModelLabel('grok-4.7', 'grok'), 'Grok 4.7');
+  assert.equal(formatModelLabel('grok-4.6', 'grok'), 'Grok 4.6');
+  assert.equal(formatModelLabel('grok-build', 'grok'), 'Grok Build');
+  assert.deepEqual(getAgentModelOptions('grok'), GROK_DEFAULT_MODELS);
   assert.equal(formatModelLabel('', 'claude-code'), 'Default Model');
 });
 

@@ -884,12 +884,20 @@ const CLAUDE_DEFAULT_MODELS = [
   { id: 'claude-3-5-sonnet-20241022', label: 'Claude 3.5 Sonnet' }
 ];
 
+const GROK_DEFAULT_MODELS = [
+  { id: 'grok-4.7', label: 'Grok 4.7' },
+  { id: 'grok-4.6', label: 'Grok 4.6' },
+  { id: 'grok-build', label: 'Grok Build' }
+];
+
 function getAgentModelOptions(agent, dynamicModels) {
   if (Array.isArray(dynamicModels) && dynamicModels.length > 0) {
     return dynamicModels;
   }
-  const isAntigravity = (agent || '').toLowerCase() === 'antigravity';
-  return isAntigravity ? ANTIGRAVITY_DEFAULT_MODELS : CLAUDE_DEFAULT_MODELS;
+  const ag = (agent || '').toLowerCase();
+  if (ag === 'antigravity') return ANTIGRAVITY_DEFAULT_MODELS;
+  if (ag === 'grok') return GROK_DEFAULT_MODELS;
+  return CLAUDE_DEFAULT_MODELS;
 }
 
 function formatModelLabel(model, agent, dynamicModels) {
@@ -907,7 +915,7 @@ function formatModelLabel(model, agent, dynamicModels) {
   if (lower === 'opusplan') return 'Claude Opus (Plan)';
 
   const options = getAgentModelOptions(agent, dynamicModels);
-  const allDefaults = [...ANTIGRAVITY_DEFAULT_MODELS, ...CLAUDE_DEFAULT_MODELS];
+  const allDefaults = [...ANTIGRAVITY_DEFAULT_MODELS, ...CLAUDE_DEFAULT_MODELS, ...GROK_DEFAULT_MODELS];
 
   // Pass 1: exact match on id or label
   const exactMatch = options.find(m => m && (m.id === clean || (m.label && m.label.toLowerCase() === lower)))
@@ -1104,6 +1112,8 @@ function renderConfigPopoverContent(tabObj) {
       <label class="config-label">Reasoning Effort</label>
       <select class="config-select config-select-effort">
         <option value="" ${!effort ? 'selected' : ''}>Default</option>
+        <option value="none" ${effort === 'none' ? 'selected' : ''}>None</option>
+        <option value="minimal" ${effort === 'minimal' ? 'selected' : ''}>Minimal</option>
         <option value="low" ${effort === 'low' ? 'selected' : ''}>Low</option>
         <option value="medium" ${effort === 'medium' ? 'selected' : ''}>Medium</option>
         <option value="high" ${effort === 'high' ? 'selected' : ''}>High</option>
@@ -6486,6 +6496,7 @@ export {
   executeClientAction,
   ANTIGRAVITY_DEFAULT_MODELS,
   CLAUDE_DEFAULT_MODELS,
+  GROK_DEFAULT_MODELS,
   getAgentModelOptions,
   formatModelLabel,
   fetchSessionAgentModels

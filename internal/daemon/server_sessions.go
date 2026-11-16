@@ -1349,10 +1349,10 @@ func (s *Server) handleSessionConfig(w http.ResponseWriter, r *http.Request, ses
 		eff := strings.ToLower(strings.TrimSpace(*req.Effort))
 		if eff == "" || eff == "default" {
 			sess.Effort = ""
-		} else if eff == "low" || eff == "medium" || eff == "high" || eff == "xhigh" || eff == "max" {
+		} else if eff == "none" || eff == "minimal" || eff == "low" || eff == "medium" || eff == "high" || eff == "xhigh" || eff == "max" {
 			sess.Effort = eff
 		} else {
-			http.Error(w, "Invalid effort: must be 'low', 'medium', 'high', 'xhigh', or 'max'", http.StatusBadRequest)
+			http.Error(w, "Invalid effort: must be 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', or 'max'", http.StatusBadRequest)
 			return
 		}
 	}
@@ -1381,6 +1381,10 @@ func (s *Server) handleSessionConfig(w http.ResponseWriter, r *http.Request, ses
 	}
 
 	if req.ExtraDirs != nil || len(req.AddDirs) > 0 || len(req.RemoveDirs) > 0 {
+		if sess.Agent == "grok" && (sess.FirstPrompt != "" || sess.LastPrompt != "" || hasConversationOnDisk(sess, s.effectiveHomeDir(), s.db)) {
+			http.Error(w, "Grok resumed sessions cannot modify extra_dirs (dirs are locked after session creation)", http.StatusBadRequest)
+			return
+		}
 		newDirs, err := normalizeAndValidateExtraDirs(sess.Cwd, sess.ExtraDirs, req.ExtraDirs, req.AddDirs, req.RemoveDirs, s.effectiveHomeDir())
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -1544,7 +1548,7 @@ func (s *Server) handleSwitchHeadless(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if sess.Agent != "claude-code" && sess.Agent != "antigravity" {
+	if sess.Agent != "claude-code" && sess.Agent != "antigravity" && sess.Agent != "grok" {
 		http.Error(w, ErrAgentUnsupported.Error(), http.StatusBadRequest)
 		return
 	}
@@ -1745,7 +1749,7 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 	if req.EngineType == "" {
 		req.EngineType = EngineTmux
 	}
-	if req.EngineType == EngineHeadless && req.Agent != "claude-code" && req.Agent != "antigravity" {
+	if req.EngineType == EngineHeadless && req.Agent != "claude-code" && req.Agent != "antigravity" && req.Agent != "grok" {
 		req.EngineType = EngineTmux
 	}
 
@@ -2525,7 +2529,11 @@ func (s *Server) getRestartOrResumeCmd(sess *Session, home string) (string, bool
 		}
 	}
 	if sess.Agent == "grok" && cmd != "" {
-		cmd = appendGrokCLIArgs(cmd, sess.Model, sess.Effort, sess.PermissionMode, sess.ExtraDirs)
+		extraDirs := sess.ExtraDirs
+		if isExisting {
+			extraDirs = nil
+		}
+		cmd = appendGrokCLIArgs(cmd, sess.Model, sess.Effort, sess.PermissionMode, extraDirs)
 	}
 	return cmd, isExisting
 }

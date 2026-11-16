@@ -608,7 +608,7 @@ async function showNewSessionModal(prefillGroup = '') {
     const engineSelect = document.getElementById('newSessionEngine');
     if (!engineSelect) return;
     const headlessOpt = engineSelect.querySelector('option[value="headless"]');
-    const supportsHeadless = (selectedAgent === 'claude-code' || selectedAgent === 'antigravity');
+    const supportsHeadless = (selectedAgent === 'claude-code' || selectedAgent === 'antigravity' || selectedAgent === 'grok');
     if (headlessOpt) {
       headlessOpt.disabled = !supportsHeadless;
     }

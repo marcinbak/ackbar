@@ -31,6 +31,7 @@ var (
 
 	agyLoginRegex     = regexp.MustCompile(`(?i)(agy\s+acp\s+--login|open this link in a browser to log in with google|antigravity.*not logged in|please log in to antigravity)`)
 	claudeLoginRegex  = regexp.MustCompile(`(?i)(not logged in.*(?:\/login|please run \/login)|please run \/login|oauth token has expired.*login)`)
+	grokLoginRegex    = regexp.MustCompile(`(?i)(grok\s+login|XAI_API_KEY|authentication_failed|not\s+logged\s+in)`)
 	mcpTurnErrorRegex = regexp.MustCompile(`(?i)mcp\s+server\s+['"‘“]?([a-zA-Z0-9][a-zA-Z0-9_-]{0,63})['"’”]?\s+(?:requires\s+authentication|is\s+not\s+authenticated|needs\s+authentication|unauthorized|\b401\b)`)
 )
 
@@ -153,6 +154,20 @@ func DetectTurnAuthBlock(agent, text string) *Blocked {
 			AuthHint:   "Claude CLI requires interactive terminal sign-in.",
 			Reason:     "Claude CLI requires interactive sign-in.",
 			Question:   "Authenticate Claude CLI in terminal?",
+			Options:    []string{"Take Wheel", "Retry", "Dismiss"},
+			Since:      time.Now(),
+		}
+	}
+
+	if (agent == "grok" || strings.Contains(agent, "grok")) && grokLoginRegex.MatchString(text) {
+		return &Blocked{
+			Kind:       BlockAuth,
+			AuthKind:   "agent",
+			AuthTarget: "agent:grok",
+			AuthServer: "grok",
+			AuthHint:   "Grok CLI requires sign-in via 'grok login' or XAI_API_KEY.",
+			Reason:     "Grok CLI requires sign-in.",
+			Question:   "Authenticate Grok CLI in terminal?",
 			Options:    []string{"Take Wheel", "Retry", "Dismiss"},
 			Since:      time.Now(),
 		}

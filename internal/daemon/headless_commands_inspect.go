@@ -119,6 +119,8 @@ func (s *Server) computeTranscriptContextAndCost(home string, sess *Session) map
 	thinkingTokens := 0
 	turnCount := 0
 	lastTurnContextTokens := 0
+	customCostUSD := 0.0
+	hasCustomCost := false
 
 	if sess.Agent == "antigravity" {
 		logFile := filepath.Join(home, ".gemini", "antigravity-cli", "brain", sess.NativeID, ".system_generated", "logs", "transcript.jsonl")
@@ -154,6 +156,9 @@ func (s *Server) computeTranscriptContextAndCost(home string, sess *Session) map
 				}
 			}
 		}
+	} else if sess.Agent == "grok" {
+		sumInputTokens, outputTokens, cacheRead, lastTurnContextTokens, limitTokens, turnCount, customCostUSD = computeGrokTranscriptUsage(home, sess, limitTokens)
+		hasCustomCost = true
 	} else {
 		targetFile := findClaudeTranscriptPath(home, sess.NativeID, sess.Cwd)
 		if targetFile != "" && fileExists(targetFile) {
@@ -228,6 +233,9 @@ func (s *Server) computeTranscriptContextAndCost(home string, sess *Session) map
 
 	// Sonnet 3.5 API rates: $3/M in, $15/M out, $0.30/M cache read, $3.75/M cache write
 	costUSD := (float64(sumInputTokens)*3.0 + float64(outputTokens)*15.0 + float64(cacheRead)*0.30 + float64(cacheWrite)*3.75) / 1000000.0
+	if hasCustomCost {
+		costUSD = customCostUSD
+	}
 
 	extraDirs := sess.ExtraDirs
 	if extraDirs == nil {
@@ -285,6 +293,9 @@ func (s *Server) handleSessionInspect(w http.ResponseWriter, r *http.Request, se
 			if err == nil {
 				out, _ = s.runAllowlistedInspectCmd(r.Context(), sess, bin, "plugin", "list", "--json")
 			}
+		} else if sess.Agent == "grok" {
+			bin := resolveGrokBinary()
+			out, _ = s.runAllowlistedInspectCmd(r.Context(), sess, bin, "plugin", "list", "--json")
 		}
 		if home != "" && out != "" {
 			out = strings.ReplaceAll(out, home, "~")
@@ -316,6 +327,11 @@ func (s *Server) handleSessionInspect(w http.ResponseWriter, r *http.Request, se
 					cliAgents = strings.TrimSpace(out)
 				}
 			}
+		} else if sess.Agent == "grok" {
+			bin := resolveGrokBinary()
+			if out, err := s.runAllowlistedInspectCmd(r.Context(), sess, bin, "inspect"); err == nil {
+				_ = json.Unmarshal([]byte(strings.TrimSpace(out)), &cliAgents)
+			}
 		}
 		localAgents := scanAgentMarkdownFiles(
 			filepath.Join(sess.Cwd, ".claude", "agents"),
@@ -323,6 +339,8 @@ func (s *Server) handleSessionInspect(w http.ResponseWriter, r *http.Request, se
 			filepath.Join(sess.Cwd, ".agents", "agents"),
 			filepath.Join(home, ".gemini", "config", "agents"),
 			filepath.Join(home, ".gemini", "antigravity-cli", "agents"),
+			filepath.Join(home, ".grok", "agents"),
+			filepath.Join(sess.Cwd, ".grok", "agents"),
 		)
 		builtins := []map[string]string{
 			{"name": "Explore", "description": "Fast exploratory code indexing and architectural discovery"},
@@ -347,6 +365,10 @@ func (s *Server) handleSessionInspect(w http.ResponseWriter, r *http.Request, se
 				report, _ = s.runAllowlistedInspectCmd(r.Context(), sess, bin, "doctor")
 				rawVersion, _ = s.runAllowlistedInspectCmd(r.Context(), sess, bin, "--version")
 			}
+		} else if sess.Agent == "grok" {
+			bin := resolveGrokBinary()
+			report, _ = s.runAllowlistedInspectCmd(r.Context(), sess, bin, "doctor")
+			rawVersion, _ = s.runAllowlistedInspectCmd(r.Context(), sess, bin, "--version")
 		} else {
 			if bin, err := resolveAntigravityBinary(); err == nil {
 				rawVersion, _ = s.runAllowlistedInspectCmd(r.Context(), sess, bin, "--version")

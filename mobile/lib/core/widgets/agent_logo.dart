@@ -41,6 +41,8 @@ class AgentLogo extends StatelessWidget {
       return const Color(0xFF4285F4); // Google Blue / Multicolored
     } else if (agent.contains('codex') || agent.contains('openai')) {
       return const Color(0xFF10A37F); // OpenAI Emerald Green
+    } else if (agent.contains('grok') || agent.contains('xai')) {
+      return const Color(0xFFE5E7EB); // xAI Grok Silver / Off-White
     }
     return AppColors.textSecondary;
   }
@@ -54,12 +56,14 @@ class AgentLogo extends StatelessWidget {
       return _AgentType.antigravity;
     } else if (agent.contains('codex') || agent.contains('openai')) {
       return _AgentType.codex;
+    } else if (agent.contains('grok') || agent.contains('xai')) {
+      return _AgentType.grok;
     }
     return _AgentType.generic;
   }
 }
 
-enum _AgentType { claude, antigravity, codex, generic }
+enum _AgentType { claude, antigravity, codex, grok, generic }
 
 class _AgentLogoPainter extends CustomPainter {
   final _AgentType agentType;
@@ -231,6 +235,32 @@ class _AgentLogoPainter extends CustomPainter {
         }
         hex.close();
         canvas.drawPath(hex, strokeP);
+        break;
+
+      case _AgentType.grok:
+        final sx = w / 24.0;
+        final sy = h / 24.0;
+        final fillP = Paint()
+          ..color = color
+          ..style = PaintingStyle.fill
+          ..isAntiAlias = true;
+
+        final path = Path();
+        path.moveTo(18.244 * sx, 2.25 * sy);
+        path.lineTo(21.552 * sx, 2.25 * sy);
+        path.lineTo(14.325 * sx, 10.51 * sy);
+        path.lineTo(22.827 * sx, 21.75 * sy);
+        path.lineTo(16.171 * sx, 21.75 * sy);
+        path.lineTo(10.956 * sx, 14.933 * sy);
+        path.lineTo(4.99 * sx, 21.75 * sy);
+        path.lineTo(1.68 * sx, 21.75 * sy);
+        path.lineTo(9.41 * sx, 12.915 * sy);
+        path.lineTo(1.254 * sx, 2.25 * sy);
+        path.lineTo(8.078 * sx, 2.25 * sy);
+        path.lineTo(12.793 * sx, 8.481 * sy);
+        path.close();
+
+        canvas.drawPath(path, fillP);
         break;
 
       case _AgentType.generic:

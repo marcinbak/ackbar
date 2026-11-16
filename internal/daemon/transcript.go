@@ -978,6 +978,8 @@ func ExtractSubagents(agent, nativeID, cwd string) ([]SubagentInfo, error) {
 		return loadAntigravitySubagents(home, nativeID)
 	case "claude-code":
 		return loadClaudeSubagents(home, nativeID, cwd)
+	case "grok":
+		return LoadGrokSubagents(home, cwd, nativeID)
 	default:
 		subs, err := loadAntigravitySubagents(home, nativeID)
 		if err == nil && len(subs) > 0 {
