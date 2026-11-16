@@ -2134,6 +2134,8 @@ test('formatModelLabel resolves Carbon, Hydrogen XHigh, [1m], and Claude aliases
   assert.equal(formatModelLabel('gemini-4-carbon-medium', 'antigravity'), 'Gemini 4 Carbon (Medium)');
   assert.equal(formatModelLabel('gemini-4-hydrogen-xhigh', 'antigravity'), 'Gemini 4 Hydrogen (XHigh)');
   assert.equal(formatModelLabel('gemini-pro-orchestrator', 'antigravity'), 'Orchestrator (Carbon)');
+  assert.equal(formatModelLabel('gemini-pro-orchestrator-argon', 'antigravity'), 'Orchestrator (Argon)');
+  assert.equal(formatModelLabel('claude-opus-5-5-high', 'antigravity'), 'Claude Opus 5.5 (High)');
   assert.equal(formatModelLabel('claude-fable-5-1[1m]', 'claude-code'), 'Claude Fable 5.1');
   assert.equal(formatModelLabel('opus', 'claude-code'), 'Claude Opus');
   assert.equal(formatModelLabel('sonnet', 'claude-code'), 'Claude Sonnet');

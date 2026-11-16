@@ -1703,6 +1703,12 @@ Understood.
           equals('Gemini 4 Hydrogen (XHigh)'));
       expect(Session.formatModelLabel('gemini-pro-orchestrator', 'antigravity'),
           equals('Orchestrator (Carbon)'));
+      expect(
+          Session.formatModelLabel(
+              'gemini-pro-orchestrator-argon', 'antigravity'),
+          equals('Orchestrator (Argon)'));
+      expect(Session.formatModelLabel('claude-opus-5-5-high', 'antigravity'),
+          equals('Claude Opus 5.5 (High)'));
       expect(Session.formatModelLabel('claude-fable-5-1[1m]', 'claude-code'),
           equals('Claude Fable 5.1'));
       expect(Session.formatModelLabel('opus', 'claude-code'),

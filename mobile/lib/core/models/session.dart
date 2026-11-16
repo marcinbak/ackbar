@@ -688,6 +688,7 @@ class Session {
     if (lower == 'haiku') return 'Claude Haiku';
     if (lower == 'opusplan') return 'Claude Opus (Plan)';
 
+    // Pass 1: exact match in suggestions
     if (suggestions is Iterable) {
       for (final s in suggestions) {
         String sId = '';
@@ -701,7 +702,7 @@ class Session {
             sLabel = (s as dynamic).label?.toString() ?? '';
           } catch (_) {}
         }
-        if (sId.isNotEmpty && (sId == clean || clean.contains(sId))) {
+        if (sId.isNotEmpty && sId == clean) {
           if (sLabel.isNotEmpty) return sLabel;
         }
         if (sLabel.isNotEmpty && sLabel.toLowerCase() == lower) {
@@ -712,7 +713,13 @@ class Session {
 
     const staticCatalog = <String, String>{
       'claude-fable-5-1': 'Claude Fable 5.1',
+      'claude-opus-5-5-high': 'Claude Opus 5.5 (High)',
+      'claude-opus-5-5-medium': 'Claude Opus 5.5 (Medium)',
+      'claude-opus-5-5-low': 'Claude Opus 5.5 (Low)',
       'claude-opus-5-5': 'Claude Opus 5.5',
+      'claude-sonnet-5-5-high': 'Claude Sonnet 5.5 (High)',
+      'claude-sonnet-5-5-medium': 'Claude Sonnet 5.5 (Medium)',
+      'claude-sonnet-5-5-low': 'Claude Sonnet 5.5 (Low)',
       'claude-sonnet-5-5': 'Claude Sonnet 5.5',
       'claude-opus-4-6': 'Claude Opus 4.6',
       'claude-sonnet-4-6': 'Claude Sonnet 4.6',
@@ -736,19 +743,55 @@ class Session {
       'gemini-3.8-flash-high': 'Gemini 3.8 Flash (High)',
       'gemini-3.8-flash-medium': 'Gemini 3.8 Flash (Medium)',
       'gemini-3.8-flash-low': 'Gemini 3.8 Flash (Low)',
-      'claude-opus-5-5-high': 'Claude Opus 5.5 (High)',
-      'claude-opus-5-5-medium': 'Claude Opus 5.5 (Medium)',
-      'claude-opus-5-5-low': 'Claude Opus 5.5 (Low)',
-      'claude-sonnet-5-5-high': 'Claude Sonnet 5.5 (High)',
-      'claude-sonnet-5-5-medium': 'Claude Sonnet 5.5 (Medium)',
-      'claude-sonnet-5-5-low': 'Claude Sonnet 5.5 (Low)',
       'gpt-oss-120b-medium': 'GPT-OSS 120B (Medium)',
     };
 
-    for (final entry in staticCatalog.entries) {
-      if (clean == entry.key || clean.contains(entry.key)) {
-        return entry.value;
+    // Pass 1: exact match in static catalog
+    if (staticCatalog.containsKey(clean)) {
+      return staticCatalog[clean]!;
+    }
+
+    // Pass 2: substring match in suggestions picking longest matching id
+    if (suggestions is Iterable) {
+      String bestSuggestionId = '';
+      String bestSuggestionLabel = '';
+      for (final s in suggestions) {
+        String sId = '';
+        String sLabel = '';
+        if (s is Map) {
+          sId = s['id']?.toString() ?? '';
+          sLabel = s['label']?.toString() ?? '';
+        } else {
+          try {
+            sId = (s as dynamic).id?.toString() ?? '';
+            sLabel = (s as dynamic).label?.toString() ?? '';
+          } catch (_) {}
+        }
+        if (sId.isNotEmpty && clean.contains(sId)) {
+          if (sId.length > bestSuggestionId.length) {
+            bestSuggestionId = sId;
+            bestSuggestionLabel = sLabel;
+          }
+        }
       }
+      if (bestSuggestionLabel.isNotEmpty) {
+        return bestSuggestionLabel;
+      }
+    }
+
+    // Pass 2: substring match in static catalog picking longest matching key
+    String bestCatalogKey = '';
+    String bestCatalogVal = '';
+    for (final entry in staticCatalog.entries) {
+      if (clean.contains(entry.key)) {
+        if (entry.key.length > bestCatalogKey.length) {
+          bestCatalogKey = entry.key;
+          bestCatalogVal = entry.value;
+        }
+      }
+    }
+    if (bestCatalogVal.isNotEmpty) {
+      return bestCatalogVal;
     }
 
     if (clean.startsWith('claude-') || clean.startsWith('gemini-')) {

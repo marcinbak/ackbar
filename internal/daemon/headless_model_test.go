@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -285,4 +286,69 @@ func TestConcurrentBroadcastAndListSessionsRace(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+func TestResolveSessionModel_NonRegularFileAndFIFO(t *testing.T) {
+	srv, _ := setupTestServer(t)
+	srv.homeDir = t.TempDir()
+
+	// Test 1: directory at .claude/settings.json
+	tmpDir := t.TempDir()
+	claudeDir := filepath.Join(tmpDir, ".claude")
+	_ = os.MkdirAll(filepath.Join(claudeDir, "settings.json"), 0755)
+
+	sess := &Session{
+		ID:         "claude:local:dir-sess",
+		Agent:      "claude-code",
+		Host:       "local",
+		EngineType: EngineHeadless,
+		Cwd:        tmpDir,
+	}
+
+	done := make(chan string, 1)
+	go func() {
+		done <- srv.resolveSessionModel(sess)
+	}()
+
+	select {
+	case res := <-done:
+		if res != "" {
+			t.Fatalf("expected empty model for directory settings, got %q", res)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("resolveSessionModel hung on directory settings file")
+	}
+
+	// Test 2: FIFO / named pipe at .claude/settings.local.json with fallback to settings.json
+	fifoDir := t.TempDir()
+	fifoClaudeDir := filepath.Join(fifoDir, ".claude")
+	_ = os.MkdirAll(fifoClaudeDir, 0755)
+	fifoPath := filepath.Join(fifoClaudeDir, "settings.local.json")
+	_ = os.WriteFile(filepath.Join(fifoClaudeDir, "settings.json"), []byte(`{"model":"claude-sonnet-4-6"}`), 0644)
+
+	if err := syscall.Mkfifo(fifoPath, 0600); err != nil {
+		t.Skipf("skipping FIFO test: mkfifo not supported: %v", err)
+	}
+
+	fifoSess := &Session{
+		ID:         "claude:local:fifo-sess",
+		Agent:      "claude-code",
+		Host:       "local",
+		EngineType: EngineHeadless,
+		Cwd:        fifoDir,
+	}
+
+	fifoDone := make(chan string, 1)
+	go func() {
+		fifoDone <- srv.resolveSessionModel(fifoSess)
+	}()
+
+	select {
+	case res := <-fifoDone:
+		if res != "claude-sonnet-4-6" {
+			t.Fatalf("expected fallback to settings.json 'claude-sonnet-4-6' when local is FIFO, got %q", res)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("resolveSessionModel hung on FIFO settings file")
+	}
 }

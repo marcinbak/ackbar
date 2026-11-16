@@ -906,15 +906,21 @@ function formatModelLabel(model, agent, dynamicModels) {
   if (lower === 'opusplan') return 'Claude Opus (Plan)';
 
   const options = getAgentModelOptions(agent, dynamicModels);
-  const match = options.find(m => m.id === clean || clean === m.id || clean.includes(m.id) || (m.label && m.label.toLowerCase() === lower));
-  if (match && match.label) {
-    return match.label;
+  const allDefaults = [...ANTIGRAVITY_DEFAULT_MODELS, ...CLAUDE_DEFAULT_MODELS];
+
+  // Pass 1: exact match on id or label
+  const exactMatch = options.find(m => m && (m.id === clean || (m.label && m.label.toLowerCase() === lower)))
+    || allDefaults.find(m => m && (m.id === clean || (m.label && m.label.toLowerCase() === lower)));
+  if (exactMatch && exactMatch.label) {
+    return exactMatch.label;
   }
 
-  const allDefaults = [...ANTIGRAVITY_DEFAULT_MODELS, ...CLAUDE_DEFAULT_MODELS];
-  const defaultMatch = allDefaults.find(m => m.id === clean || clean === m.id || clean.includes(m.id) || (m.label && m.label.toLowerCase() === lower));
-  if (defaultMatch && defaultMatch.label) {
-    return defaultMatch.label;
+  // Pass 2: substring match picking longest matching m.id
+  const matchingCandidates = [...options, ...allDefaults]
+    .filter(m => m && m.id && clean.includes(m.id))
+    .sort((a, b) => (b.id ? b.id.length : 0) - (a.id ? a.id.length : 0));
+  if (matchingCandidates.length > 0 && matchingCandidates[0].label) {
+    return matchingCandidates[0].label;
   }
 
   if (clean.includes('gemini-pro-orchestrator-argon')) return 'Orchestrator (Argon)';

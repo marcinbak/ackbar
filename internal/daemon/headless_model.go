@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -27,10 +28,31 @@ var globalModelFileCache = &modelFileCache{
 	cache: make(map[string]cachedModelEntry),
 }
 
+func openRegularFile(path string) (*os.File, error) {
+	// Open with O_NONBLOCK so opening a FIFO or special file never blocks on a writer
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, err
+	}
+	info, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		_ = f.Close()
+		return nil, os.ErrInvalid
+	}
+	return f, nil
+}
+
 func readCachedModelFile(filePath string, parser func(f *os.File) (string, error)) (string, time.Time, error) {
 	stat, err := os.Stat(filePath)
 	if err != nil {
 		return "", time.Time{}, err
+	}
+	if !stat.Mode().IsRegular() {
+		return "", time.Time{}, os.ErrInvalid
 	}
 
 	globalModelFileCache.mu.RLock()
@@ -41,7 +63,7 @@ func readCachedModelFile(filePath string, parser func(f *os.File) (string, error
 		return entry.model, entry.modTime, nil
 	}
 
-	f, err := os.Open(filePath)
+	f, err := openRegularFile(filePath)
 	if err != nil {
 		return "", time.Time{}, err
 	}
