@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func TestFormatMCPToolDisplayAndSpoolSummary(t *testing.T) {
@@ -94,6 +95,24 @@ func TestFormatMCPToolDisplayAndSpoolSummary(t *testing.T) {
 	summary = FormatSpoolToolSummary("Bash", map[string]any{"command": "echo 'hello world'"})
 	if summary != "Bash: echo 'hello world'" {
 		t.Fatalf("expected Bash summary, got %q", summary)
+	}
+
+	// Multi-byte UTF-8 rune boundary truncation
+	unicodeDetail := strings.Repeat("🚀", 105)
+	_, detail, _ = FormatMCPToolDisplay("call_mcp_tool", map[string]any{
+		"ServerName": "ackbar",
+		"ToolName":   "deploy",
+		"Arguments":  unicodeDetail,
+	})
+	if !utf8.ValidString(detail) {
+		t.Fatalf("expected valid UTF-8 string, got invalid")
+	}
+	expectedTruncated := strings.Repeat("🚀", 100) + "..."
+	if detail != expectedTruncated {
+		t.Fatalf("expected %q, got %q", expectedTruncated, detail)
+	}
+	if utf8.RuneCountInString(detail) != 103 {
+		t.Fatalf("expected 103 runes, got %d", utf8.RuneCountInString(detail))
 	}
 }
 

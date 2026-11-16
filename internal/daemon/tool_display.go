@@ -6,8 +6,9 @@ import (
 )
 
 func compactDetail(s string) string {
-	if s = strings.Join(strings.Fields(s), " "); len(s) > 100 {
-		return s[:100] + "..."
+	s = strings.Join(strings.Fields(s), " ")
+	if runes := []rune(s); len(runes) > 100 {
+		return string(runes[:100]) + "..."
 	}
 	return s
 }
