@@ -4544,11 +4544,14 @@ body, html {
   bottom: calc(100% + 2px);
   right: 16px;
   width: 350px;
+  max-height: 60vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   background: #0f131c;
   border: 1px solid var(--border-color);
   border-radius: 10px;
   box-shadow: 0 -8px 30px rgba(0, 0, 0, 0.7);
-  padding: 16px;
+  padding: 0 16px 16px 16px;
   z-index: 1001;
   display: flex;
   flex-direction: column;
@@ -4558,10 +4561,14 @@ body, html {
 }
 
 .config-popover-header {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: #0f131c;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding-bottom: 10px;
+  padding: 16px 0 10px 0;
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
 
@@ -4584,6 +4591,66 @@ body, html {
 }
 
 .btn-close-popover:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+}
+
+.config-main-view,
+.config-mcp-submenu-view {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.config-mcp-submenu-btn {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  padding: 8px 10px;
+  color: var(--text-main);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.config-mcp-submenu-btn:hover {
+  background: rgba(255, 255, 255, 0.07);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.config-mcp-submenu-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.config-mcp-chevron {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.btn-back-popover {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.btn-back-popover:hover {
   background: rgba(255, 255, 255, 0.08);
   color: #fff;
 }

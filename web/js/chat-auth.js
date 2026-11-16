@@ -266,9 +266,13 @@ export function renderAuthCard(tabObj, blocked, toolName) {
   tabObj.chatMessagesEl.scrollTop = tabObj.chatMessagesEl.scrollHeight;
 }
 
-export async function mountMCPStatus(container, sessionId, tabObj) {
+export async function mountMCPStatus(container, sessionId, tabObj, options = {}) {
   if (!container || !sessionId) return;
-  container.innerHTML = `
+  const isSubmenu = Boolean(options?.submenu);
+  let popover = null, mainView = null, submenuView = null, headerTitleEl = null;
+  let currentCountLabel = '…', bodyContainer = container;
+
+  const mcpControlsHtml = `
     <div class="mcp-status-header">
       <span class="mcp-status-title">🔌 MCP & Plugins</span>
       <div class="mcp-status-header-actions" style="display:inline-flex;align-items:center;gap:4px;">
@@ -276,70 +280,122 @@ export async function mountMCPStatus(container, sessionId, tabObj) {
         <button type="button" class="btn-refresh-mcp-status" title="Refresh">↻</button>
       </div>
     </div>
-    <div class="mcp-status-body">
-      <div class="mcp-status-loading">Loading status...</div>
-    </div>
-  `;
+    <div class="mcp-status-body"><div class="mcp-status-loading">Loading status...</div></div>`;
 
-  const bodyEl = container.querySelector('.mcp-status-body');
-  const btnRefresh = container.querySelector('.btn-refresh-mcp-status');
-  const btnRestart = container.querySelector('.btn-restart-mcp-session');
+  if (isSubmenu) {
+    popover = container.closest?.('.chat-config-popover') || tabObj?.chatConfigPopover || null;
+    mainView = popover?.querySelector('.config-main-view') || null;
+    submenuView = popover?.querySelector('.config-mcp-submenu-view') || null;
+    headerTitleEl = popover?.querySelector('.config-popover-title') || null;
+
+    container.innerHTML = `<button type="button" class="config-mcp-submenu-btn"><span class="config-mcp-submenu-label">🔌 MCP (…)</span><span class="config-mcp-submenu-right"><span class="config-mcp-submenu-alert" style="display: none;"></span><span class="config-mcp-chevron">▸</span></span></button>`;
+    if (submenuView) {
+      submenuView.innerHTML = mcpControlsHtml;
+      bodyContainer = submenuView;
+    }
+  } else {
+    container.innerHTML = mcpControlsHtml;
+  }
+
+  const applySubmenuVisibility = (isOpen) => {
+    if (tabObj) tabObj.configSubmenuView = isOpen ? 'mcp' : null;
+    if (mainView) mainView.style.display = isOpen ? 'none' : '';
+    if (submenuView) submenuView.style.display = isOpen ? '' : 'none';
+    if (headerTitleEl) {
+      if (isOpen) {
+        headerTitleEl.innerHTML = `<button type="button" class="btn-back-popover" title="Back to Session Configuration">← Back</button><span class="config-submenu-heading">🔌 MCP (<span class="config-mcp-header-count">${escapeHtml(currentCountLabel)}</span>)</span>`;
+        headerTitleEl.querySelector('.btn-back-popover')?.addEventListener('click', (e) => {
+          e.stopPropagation();
+          applySubmenuVisibility(false);
+          if (popover) popover.scrollTop = 0;
+        });
+      } else {
+        headerTitleEl.innerHTML = `<span>⚙️</span><span>Session Configuration</span>`;
+      }
+    }
+  };
+
+  if (isSubmenu) {
+    container.querySelector('.config-mcp-submenu-btn')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      applySubmenuVisibility(true);
+      if (popover) popover.scrollTop = 0;
+    });
+    applySubmenuVisibility(Boolean(tabObj?.configSubmenuView === 'mcp'));
+  }
+
+  const bodyEl = bodyContainer.querySelector('.mcp-status-body');
+  const btnRefresh = bodyContainer.querySelector('.btn-refresh-mcp-status');
+  const btnRestart = bodyContainer.querySelector('.btn-restart-mcp-session');
 
   const loadStatus = async (bypassCache = false) => {
     try {
       const baseUrl = getSessionBaseUrl(sessionId, tabObj?.session);
       const token = getAuthToken ? getAuthToken() : '';
-      const headers = {};
-      if (token) headers['Authorization'] = `Bearer ${token}`;
+      const headers = token ? { Authorization: `Bearer ${token}` } : {};
       const url = `${baseUrl}/v1/sessions/${encodeURIComponent(sessionId)}/mcp-status${bypassCache ? '?refresh=1' : ''}`;
       const res = await fetch(url, { headers });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
+      if (isSubmenu) {
+        const servers = Array.isArray(data?.servers) ? data.servers : [];
+        const installedPlugins = (Array.isArray(data?.plugins) ? data.plugins : []).filter(p => p.installed);
+        const totalCount = servers.length + installedPlugins.length;
+        const needsAuthCount = servers.filter(s => s.status === 'needs_auth').length + installedPlugins.filter(p => !p.authenticated).length;
+        currentCountLabel = String(totalCount);
+
+        const lblEl = container.querySelector('.config-mcp-submenu-label');
+        if (lblEl) lblEl.textContent = `🔌 MCP (${totalCount})`;
+        const headerCountEl = headerTitleEl?.querySelector('.config-mcp-header-count');
+        if (headerCountEl) headerCountEl.textContent = currentCountLabel;
+
+        const alertEl = container.querySelector('.config-mcp-submenu-alert');
+        if (alertEl) {
+          if (needsAuthCount > 0) {
+            alertEl.className = 'config-mcp-submenu-alert mcp-pill-status status-warn';
+            alertEl.textContent = `${needsAuthCount} need auth`;
+            alertEl.style.display = '';
+          } else {
+            alertEl.style.display = 'none';
+          }
+        }
+      }
       renderMCPStatusContent(bodyEl, data, sessionId, tabObj, loadStatus);
     } catch (err) {
+      if (isSubmenu) {
+        currentCountLabel = '!';
+        const lblEl = container.querySelector('.config-mcp-submenu-label');
+        if (lblEl) lblEl.textContent = '🔌 MCP (!)';
+        const headerCountEl = headerTitleEl?.querySelector('.config-mcp-header-count');
+        if (headerCountEl) headerCountEl.textContent = '!';
+      }
       if (bodyEl) {
         bodyEl.innerHTML = `<div class="mcp-status-error">Failed to load MCP status: ${escapeHtml(err.message)}</div>`;
       }
     }
   };
 
-  if (btnRefresh) {
-    btnRefresh.addEventListener('click', () => loadStatus(true));
-  }
-  if (btnRestart) {
-    btnRestart.addEventListener('click', async () => {
-      btnRestart.disabled = true;
-      const origText = btnRestart.textContent;
-      btnRestart.textContent = 'Restarting...';
-      try {
-        const baseUrl = getSessionBaseUrl(sessionId, tabObj?.session);
-        const token = getAuthToken ? getAuthToken() : '';
-        const headers = {};
-        if (token) headers['Authorization'] = `Bearer ${token}`;
-        const res = await fetch(`${baseUrl}/v1/sessions/control?id=${encodeURIComponent(sessionId)}&action=restart`, {
-          method: 'POST',
-          headers
-        });
-        if (!res.ok) throw new Error(await res.text());
-        const data = await res.json().catch(() => null);
-        if (data?.session && tabObj?.session) {
-          Object.assign(tabObj.session, data.session);
-        }
-        btnRestart.textContent = '✓ Restarted';
-        await loadStatus(true);
-        setTimeout(() => {
-          btnRestart.textContent = origText;
-          btnRestart.disabled = false;
-        }, 1500);
-      } catch {
-        btnRestart.textContent = 'Failed';
-        setTimeout(() => {
-          btnRestart.textContent = origText;
-          btnRestart.disabled = false;
-        }, 1500);
-      }
-    });
-  }
+  btnRefresh?.addEventListener('click', () => loadStatus(true));
+  btnRestart?.addEventListener('click', async () => {
+    btnRestart.disabled = true;
+    const origText = btnRestart.textContent;
+    btnRestart.textContent = 'Restarting...';
+    try {
+      const baseUrl = getSessionBaseUrl(sessionId, tabObj?.session);
+      const token = getAuthToken ? getAuthToken() : '';
+      const headers = token ? { Authorization: `Bearer ${token}` } : {};
+      const res = await fetch(`${baseUrl}/v1/sessions/control?id=${encodeURIComponent(sessionId)}&action=restart`, { method: 'POST', headers });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json().catch(() => null);
+      if (data?.session && tabObj?.session) Object.assign(tabObj.session, data.session);
+      btnRestart.textContent = '✓ Restarted';
+      await loadStatus(true);
+      setTimeout(() => { btnRestart.textContent = origText; btnRestart.disabled = false; }, 1500);
+    } catch {
+      btnRestart.textContent = 'Failed';
+      setTimeout(() => { btnRestart.textContent = origText; btnRestart.disabled = false; }, 1500);
+    }
+  });
   return loadStatus(false);
 }
 
