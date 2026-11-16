@@ -374,25 +374,14 @@ func SynthesizeInFlightTurn(meta *TurnSpoolMeta, streamAgent string) (*InFlightT
 			if !evt.Timestamp.IsZero() {
 				snap.ActivityStartedAt = evt.Timestamp
 			}
-			name := strings.TrimSpace(evt.ToolName)
-			if name == "" {
-				name = "tool"
-			}
-			detail := extractFilePathFromToolInput(evt.ToolInput)
-			if detail == "" {
-				detail = extractCommandFromToolInput(evt.ToolInput)
-			}
-			if detail = strings.Join(strings.Fields(detail), " "); detail != "" {
-				if len(detail) > 100 {
-					detail = detail[:100] + "..."
-				}
-				name += ": " + detail
-			}
-			snap.ToolCalls = append(snap.ToolCalls, name)
+			snap.ToolCalls = append(snap.ToolCalls, FormatSpoolToolSummary(evt.ToolName, evt.ToolInput))
 		case "tool_result":
 			snap.ActivityKind = "processing"
 			if !evt.Timestamp.IsZero() {
 				snap.ActivityStartedAt = evt.Timestamp
+			}
+			if evt.ToolInput != nil && len(snap.ToolCalls) > 0 && snap.ToolCalls[len(snap.ToolCalls)-1] == "call_mcp_tool" {
+				snap.ToolCalls[len(snap.ToolCalls)-1] = FormatSpoolToolSummary(evt.ToolName, evt.ToolInput)
 			}
 		case "interactive_block":
 			snap.Blocked, snap.IsActive = evt.Blocked, false

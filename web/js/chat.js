@@ -31,6 +31,7 @@ import { renderAuthCard, mountMCPStatus } from './chat-auth.js';
 import { interceptChatInput, updateShellModeHint } from './chat-commands.js';
 import {
   formatToolActivity,
+  resolveToolDisplay,
   showInStreamActivity as showActivityIndicator,
   pauseInStreamActivity,
   resumeInStreamActivity,
@@ -4188,14 +4189,14 @@ function parseToolCall(tc) {
   const trimmed = tc.trim();
   // Pattern 1: "ToolName: detail"
   const colonIdx = trimmed.indexOf(': ');
-  if (colonIdx > 0 && colonIdx < 40) {
+  if (colonIdx > 0 && colonIdx < 80) {
     return {
       name: trimmed.substring(0, colonIdx).trim(),
       detail: trimmed.substring(colonIdx + 2).trim()
     };
   }
   // Pattern 2: "tool_name (action description)"
-  const parenMatch = trimmed.match(/^([a-zA-Z0-9_\-]+)\s*\((.+)\)$/);
+  const parenMatch = trimmed.match(/^([a-zA-Z0-9_.\-/]+)\s*\((.+)\)$/);
   if (parenMatch) {
     return {
       name: parenMatch[1].trim(),
@@ -5732,29 +5733,30 @@ function handleChatStreamEvent(tabObj, evt) {
       if (tabObj.chatCancelBtn) tabObj.chatCancelBtn.style.display = 'inline-flex';
       if (tabObj.chatStatusBadge) tabObj.chatStatusBadge.textContent = '⚡ Working...';
       tabObj.activeTurnHadTool = true;
+
+      const activeMsg = tabObj.activeTurnMsgEl || ensureActiveAssistantMessage(tabObj);
       tabObj.activeTurnTools = tabObj.activeTurnTools || [];
 
-      const inputStr = typeof evt.tool_input === 'string'
-        ? evt.tool_input
-        : (evt.tool_input ? JSON.stringify(evt.tool_input, null, 2) : '');
+      const resolvedTool = resolveToolDisplay(evt.tool_name, evt.tool_input);
 
       tabObj.activeTurnTools.push({
-        name: evt.tool_name || 'tool',
-        detail: inputStr,
+        name: resolvedTool.name,
+        rawName: evt.tool_name || 'tool',
+        detail: resolvedTool.detail,
         status: 'running',
         output: ''
       });
 
       if (evt.tool_name === 'TodoWrite' || evt.tool_name === 'todo_write') {
         const todoCard = renderTodoWriteCard(tabObj, evt.tool_input);
-        if (todoCard && tabObj.activeTurnMsgEl) {
-          const slot = tabObj.activeTurnMsgEl.querySelector('.chat-tools-slot');
+        if (todoCard && activeMsg) {
+          const slot = activeMsg.querySelector('.chat-tools-slot');
           if (slot) slot.appendChild(todoCard);
         }
       }
 
-      if (tabObj.activeTurnMsgEl && evt.tool_name) {
-        const slot = tabObj.activeTurnMsgEl.querySelector('.chat-tools-slot');
+      if (activeMsg && evt.tool_name) {
+        const slot = activeMsg.querySelector('.chat-tools-slot');
         if (slot) {
           let groupCard = slot.querySelector('.chat-tool-group');
           if (!groupCard) {
@@ -5764,7 +5766,7 @@ function handleChatStreamEvent(tabObj, evt) {
             groupCard.dataset.toolCalls = JSON.stringify([]);
             groupCard.innerHTML = `
               <summary>
-                <span class="tool-group-title">⚡ ${escapeHtml(evt.tool_name)}: running...</span>
+                <span class="tool-group-title">⚡ ${escapeHtml(resolvedTool.name)}: running...</span>
                 <span class="tool-group-pill">1 action</span>
               </summary>
               <div class="chat-tool-content chat-tool-group-content">
@@ -5779,7 +5781,7 @@ function handleChatStreamEvent(tabObj, evt) {
             toolList = JSON.parse(groupCard.dataset.toolCalls || '[]');
           } catch (_) {}
 
-          toolList.push({ name: evt.tool_name, detail: inputStr });
+          toolList.push({ name: resolvedTool.name, detail: resolvedTool.detail });
           groupCard.dataset.toolCalls = JSON.stringify(toolList);
 
           const summaryTitle = groupCard.querySelector('.tool-group-title');
@@ -5795,10 +5797,10 @@ function handleChatStreamEvent(tabObj, evt) {
             itemEl.innerHTML = `
               <div class="chat-tool-call-header">
                 <span class="chat-tool-call-idx">#${toolList.length}</span>
-                <span class="chat-tool-call-badge">${escapeHtml(evt.tool_name)}</span>
+                <span class="chat-tool-call-badge">${escapeHtml(resolvedTool.name)}</span>
                 <span class="chat-tool-status">running...</span>
               </div>
-              ${inputStr ? `<div class="chat-tool-call-detail"><code>${escapeHtml(inputStr)}</code></div>` : ''}
+              ${resolvedTool.detail ? `<div class="chat-tool-call-detail"><code>${escapeHtml(resolvedTool.detail)}</code></div>` : ''}
             `;
             listEl.appendChild(itemEl);
           }
@@ -5846,10 +5848,20 @@ function handleChatStreamEvent(tabObj, evt) {
         lastTool.output = evt.tool_output || '';
       }
 
-      const toolName = evt.tool_name || (lastTool ? lastTool.name : '');
-      if (toolName === 'Agent' || toolName === 'Task') {
-        tabObj.runningSubagents = (tabObj.runningSubagents || []).filter(s => s.name !== toolName && s.role !== toolName);
+      const rawToolName = evt.tool_name || (lastTool ? (lastTool.rawName || lastTool.name) : '');
+      const resolvedResult = resolveToolDisplay(rawToolName, evt.tool_input);
+
+      if (rawToolName === 'Agent' || rawToolName === 'Task') {
+        tabObj.runningSubagents = (tabObj.runningSubagents || []).filter(s => s.name !== rawToolName && s.role !== rawToolName);
         renderSubagentsBar(tabObj);
+      }
+
+      const upgraded = lastTool && lastTool.name === 'call_mcp_tool' && resolvedResult.name !== 'call_mcp_tool';
+      if (upgraded) {
+        lastTool.name = resolvedResult.name;
+        if (!lastTool.detail && resolvedResult.detail) {
+          lastTool.detail = resolvedResult.detail;
+        }
       }
 
       if (tabObj.activeTurnMsgEl) {
@@ -5857,12 +5869,49 @@ function handleChatStreamEvent(tabObj, evt) {
         if (slot) {
           const groupCard = slot.querySelector('.chat-tool-group');
           if (groupCard) {
+            if (upgraded) {
+              let toolList = [];
+              try {
+                toolList = JSON.parse(groupCard.dataset.toolCalls || '[]');
+              } catch (_) {}
+              if (toolList.length > 0) {
+                const lastItemData = toolList[toolList.length - 1];
+                lastItemData.name = resolvedResult.name;
+                if (!lastItemData.detail && resolvedResult.detail) {
+                  lastItemData.detail = resolvedResult.detail;
+                }
+                groupCard.dataset.toolCalls = JSON.stringify(toolList);
+                const summaryTitle = groupCard.querySelector('.tool-group-title');
+                if (summaryTitle) {
+                  const label = getToolGroupSummaryLabel(toolList.map(t => t.detail ? `${t.name}: ${t.detail}` : t.name));
+                  summaryTitle.textContent = `${label} (running...)`;
+                }
+              }
+            }
+
             const listEl = groupCard.querySelector('.chat-tool-call-list');
             const lastItem = listEl ? (listEl.querySelector('.chat-tool-call-item.in-progress:last-child') || listEl.lastElementChild) : null;
             if (lastItem) {
               lastItem.classList.remove('in-progress');
               const statusEl = lastItem.querySelector('.chat-tool-status');
-              if (statusEl) statusEl.textContent = 'done';
+              if (statusEl) statusEl.textContent = evt.is_error ? 'error' : 'done';
+
+              if (upgraded) {
+                const badgeEl = lastItem.querySelector('.chat-tool-call-badge');
+                if (badgeEl) badgeEl.textContent = resolvedResult.name;
+                if (resolvedResult.detail && !lastItem.querySelector('.chat-tool-call-detail')) {
+                  const detailEl = document.createElement('div');
+                  detailEl.className = 'chat-tool-call-detail';
+                  detailEl.innerHTML = `<code>${escapeHtml(resolvedResult.detail)}</code>`;
+                  const headerEl = lastItem.querySelector('.chat-tool-call-header');
+                  if (headerEl && headerEl.nextSibling) {
+                    lastItem.insertBefore(detailEl, headerEl.nextSibling);
+                  } else {
+                    lastItem.appendChild(detailEl);
+                  }
+                }
+              }
+
               if (evt.tool_output) {
                 const outEl = document.createElement('div');
                 outEl.className = 'chat-tool-output';
@@ -5876,11 +5925,12 @@ function handleChatStreamEvent(tabObj, evt) {
         tabObj.chatMessagesEl.scrollTop = tabObj.chatMessagesEl.scrollHeight;
       }
 
+      const displayToolName = (lastTool && lastTool.name && lastTool.name !== 'call_mcp_tool') ? lastTool.name : (resolvedResult.name || rawToolName);
       showInStreamActivity(tabObj, {
         icon: '✓',
-        text: `Completed ${toolName || 'tool'} • Processing next step...`,
-        badge: toolName || null,
-        phaseKey: `tool_done:${evt.seq || toolName || Date.now()}`,
+        text: `Completed ${displayToolName || 'tool'} • Processing next step...`,
+        badge: displayToolName || null,
+        phaseKey: `tool_done:${evt.seq || displayToolName || Date.now()}`,
         startedAt: evt.timestamp
       });
       break;

@@ -1548,14 +1548,12 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 					case "tool":
 						toolName, _ := su["tool_name"].(string)
 						toolInfo, _ := su["tool_info"].(map[string]interface{})
+						key := fmt.Sprintf("ag_%d", stepIdx)
 
 						if state == "ACTIVE" {
-							var toolInput any
-							if toolInfo != nil {
-								toolInput = toolInfo["parameters"]
-								if params, ok := toolInfo["parameters"].(map[string]any); ok {
-									toolInputs[fmt.Sprintf("ag_%d", stepIdx)] = params
-								}
+							toolInput := extractToolInfoInput(toolInfo)
+							if params, ok := toolInput.(map[string]any); ok {
+								toolInputs[key] = params
 							}
 							emitStreamEvt(ChatStreamEvent{
 								SessionID: sessionID,
@@ -1574,14 +1572,27 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 									toolOutput = out
 								}
 							}
+							curInput := toolInputs[key]
+							if curInput == nil {
+								if inp := extractToolInfoInput(toolInfo); inp != nil {
+									if params, ok := inp.(map[string]any); ok {
+										curInput = params
+										toolInputs[key] = params
+									}
+								}
+							}
+							var resInput any
+							if curInput != nil {
+								resInput = curInput
+							}
 							emitStreamEvt(ChatStreamEvent{
 								SessionID:  sessionID,
 								Type:       "tool_result",
 								ToolName:   toolName,
+								ToolInput:  resInput,
 								ToolOutput: toolOutput,
 								IsError:    state == "ERROR",
 							})
-							curInput := toolInputs[fmt.Sprintf("ag_%d", stepIdx)]
 							if !emittedAuthBlock {
 								if authBlock := DetectToolResultAuthBlock("", toolName, curInput, toolOutput, state == "ERROR"); authBlock != nil && hooks.onInteractiveBlock != nil {
 									emittedAuthBlock = true

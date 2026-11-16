@@ -3347,7 +3347,7 @@ body, html {
   background: #08090d;
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 6px;
-  margin-bottom: 8px;
+  margin-bottom: 6px;
   overflow: hidden;
   font-size: 11px;
   font-family: var(--font-mono);
@@ -3355,7 +3355,7 @@ body, html {
 
 .chat-tool-card summary {
   background: rgba(255, 255, 255, 0.04);
-  padding: 6px 10px;
+  padding: 4px 8px;
   cursor: pointer;
   font-weight: 600;
   display: flex;
@@ -3384,9 +3384,14 @@ body, html {
   cursor: text;
 }
 
+.chat-tool-group-content {
+  padding: 4px 6px;
+  white-space: normal;
+}
+
 /* Tool Group Styles */
 .chat-tool-group {
-  margin-bottom: 8px;
+  margin-bottom: 6px;
 }
 
 .chat-tool-group summary {
@@ -3417,14 +3422,15 @@ body, html {
 .chat-tool-call-list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 3px;
 }
 
 .chat-tool-call-item {
   background: rgba(255, 255, 255, 0.03);
   border: 1px solid rgba(255, 255, 255, 0.06);
   border-radius: 4px;
-  padding: 6px 8px;
+  padding: 3px 6px;
+  white-space: normal;
 }
 
 .chat-tool-call-item.in-progress {
@@ -3437,6 +3443,7 @@ body, html {
   align-items: center;
   gap: 6px;
   font-size: 10.5px;
+  line-height: 1.25;
 }
 
 .chat-tool-call-idx {
@@ -3461,7 +3468,7 @@ body, html {
 }
 
 .chat-tool-call-detail {
-  margin-top: 4px;
+  margin-top: 2px;
   font-size: 10.5px;
   color: #e2e8f0;
   word-break: break-all;
@@ -3470,12 +3477,27 @@ body, html {
 .chat-tool-call-detail code {
   background: rgba(0, 0, 0, 0.4);
   border: 1px solid rgba(255, 255, 255, 0.06);
-  padding: 3px 6px;
+  padding: 2px 5px;
+  line-height: 1.3;
   border-radius: 3px;
   display: block;
   white-space: pre-wrap;
   user-select: text !important;
   -webkit-user-select: text !important;
+}
+
+.chat-tool-output {
+  margin-top: 3px;
+  padding: 3px 6px;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 3px;
+  font-size: 10px;
+  line-height: 1.3;
+  color: #94a3b8;
+  max-height: 120px;
+  overflow-y: auto;
+  white-space: pre-wrap;
 }
 
 .chat-streaming-cursor {

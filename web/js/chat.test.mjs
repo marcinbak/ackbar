@@ -2244,6 +2244,119 @@ test('interceptChatInput handles /model status and reset to default', async () =
   }
 });
 
+test('live tool_start for call_mcp_tool renders badge and updates instream activity', () => {
+  const container = new MockElement('div');
+  container.className = 'chat-messages-container';
+
+  const tabObj = {
+    id: 'tab-mcp-test-1',
+    viewMode: 'chat',
+    chatMessagesEl: container,
+    session: { id: 'antigravity:local:sess-1', agent: 'antigravity', state: 1 }
+  };
+
+  handleChatStreamEvent(tabObj, {
+    type: 'tool_start',
+    tool_name: 'call_mcp_tool',
+    tool_input: { ServerName: 'ackbar', ToolName: 'get_current_task', Arguments: {} },
+    timestamp: new Date().toISOString()
+  });
+
+  const groupCard = container.querySelector('.chat-tool-card.chat-tool-group');
+  assert.ok(groupCard, 'Must render .chat-tool-group');
+  const badgeEl = groupCard.querySelector('.chat-tool-call-badge');
+  assert.ok(badgeEl);
+  assert.equal(badgeEl.textContent, 'mcp/ackbar/get_current_task');
+
+  const detailEl = groupCard.querySelector('.chat-tool-call-detail');
+  assert.equal(detailEl, null, 'Must omit .chat-tool-call-detail when detail is empty');
+
+  const titleEl = groupCard.querySelector('.tool-group-title');
+  assert.ok(titleEl);
+  assert.ok(titleEl.textContent.includes('mcp/ackbar/get_current_task'), 'Title must contain mcp tool name');
+
+  const activityEl = container.querySelector('.chat-instream-activity');
+  assert.ok(activityEl, 'Must render .chat-instream-activity');
+  const activityText = activityEl.querySelector('.chat-activity-text');
+  assert.ok(activityText);
+  assert.equal(activityText.textContent, 'Calling MCP get_current_task (ackbar)...');
+});
+
+test('call_mcp_tool upgrades badge and attaches detail when tool_result supplies input', () => {
+  const container = new MockElement('div');
+  container.className = 'chat-messages-container';
+
+  const tabObj = {
+    id: 'tab-mcp-test-2',
+    viewMode: 'chat',
+    chatMessagesEl: container,
+    session: { id: 'antigravity:local:sess-2', agent: 'antigravity', state: 1 }
+  };
+
+  handleChatStreamEvent(tabObj, {
+    type: 'tool_start',
+    tool_name: 'call_mcp_tool',
+    tool_input: null,
+    timestamp: new Date().toISOString()
+  });
+
+  const groupCard = container.querySelector('.chat-tool-card.chat-tool-group');
+  assert.ok(groupCard);
+  let badgeEl = groupCard.querySelector('.chat-tool-call-badge');
+  assert.equal(badgeEl.textContent, 'call_mcp_tool');
+  assert.equal(groupCard.querySelector('.chat-tool-call-detail'), null);
+
+  handleChatStreamEvent(tabObj, {
+    type: 'tool_result',
+    tool_name: 'call_mcp_tool',
+    tool_input: { ServerName: 'ackbar', ToolName: 'list_tasks', Arguments: { status: 'IN_PROGRESS' } },
+    tool_output: 'ok',
+    timestamp: new Date().toISOString()
+  });
+
+  badgeEl = groupCard.querySelector('.chat-tool-call-badge');
+  assert.equal(badgeEl.textContent, 'mcp/ackbar/list_tasks');
+
+  const detailEl = groupCard.querySelector('.chat-tool-call-detail');
+  assert.ok(detailEl, 'Must attach .chat-tool-call-detail on upgrade');
+  assert.ok(detailEl.textContent.includes('IN_PROGRESS'));
+});
+
+test('mcp__linear__list_issues with empty input suppresses detail and renders badge', () => {
+  const container = new MockElement('div');
+  container.className = 'chat-messages-container';
+
+  const tabObj = {
+    id: 'tab-mcp-test-3',
+    viewMode: 'chat',
+    chatMessagesEl: container,
+    session: { id: 'claude-code:local:sess-3', agent: 'claude-code', state: 1 }
+  };
+
+  handleChatStreamEvent(tabObj, {
+    type: 'tool_start',
+    tool_name: 'mcp__linear__list_issues',
+    tool_input: {},
+    timestamp: new Date().toISOString()
+  });
+
+  const groupCard = container.querySelector('.chat-tool-card.chat-tool-group');
+  assert.ok(groupCard);
+  const badgeEl = groupCard.querySelector('.chat-tool-call-badge');
+  assert.ok(badgeEl);
+  assert.equal(badgeEl.textContent, 'mcp/linear/list_issues');
+  assert.equal(groupCard.querySelector('.chat-tool-call-detail'), null);
+});
+
+test('style.css resets white-space to normal on tool group content and items', async () => {
+  const fs = await import('node:fs/promises');
+  const cssPath = new URL('../style.css', import.meta.url);
+  const css = await fs.readFile(cssPath, 'utf8');
+
+  assert.match(css, /\.chat-tool-group-content\s*\{[^}]*white-space:\s*normal;/s);
+  assert.match(css, /\.chat-tool-call-item\s*\{[^}]*white-space:\s*normal;/s);
+});
+
 
 
 
