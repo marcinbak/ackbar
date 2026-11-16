@@ -6,7 +6,7 @@ Welcome to Project Ackbar! This document provides an architectural overview and 
 
 ## 1. Project Overview
 
-Ackbar is a lightweight, cross-machine control plane and session manager designed to monitor, supervise, and organize agentic programming sessions (Claude Code, OpenAI Codex, Google Antigravity).
+Ackbar is a lightweight, cross-machine control plane and session manager designed to monitor, supervise, and organize agentic programming sessions (Claude Code, OpenAI Codex, Google Antigravity, xAI Grok).
 
 ### Key Components
 
@@ -72,6 +72,7 @@ Detailed architectural and technical domain documentation is organized in the `d
 5.  **Enforced PR Version Bump:** Every pull request MUST bump `internal/version/VERSION` above `origin/main` via `./scripts/bump-version.sh`. The bump is strictly gated by `./scripts/bump-version.sh --check` in T0 and GitHub Actions CI.
 6.  **Zero Redundant Comments:** Code comments may only state non-obvious invariants or *why* a workaround exists. Comments restating *what* the code does are a `minor` defect.
 7.  **Doc & File Budgets:** `AGENTS.md` must stay under 160 lines. `docs/*.md` updates must edit tables/bullets in-place without duplicating other docs.
+8.  **Managed-Only Session Rule:** `ackbard` manages Ackbar-created sessions only; unmanaged external CLI sessions are ignored.
 
 ---
 

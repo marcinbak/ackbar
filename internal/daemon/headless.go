@@ -1206,6 +1206,14 @@ func hasConversationOnDisk(sess *Session, home string, db *DB) bool {
 			}
 		}
 		return (CodexAgentAdapter{}).HasConversationArtifacts(home, sess.NativeID)
+	case "grok":
+		if accCfgDir != "" {
+			if (GrokAgentAdapter{}).HasConversationArtifacts(accCfgDir, sess.NativeID) ||
+				(GrokAgentAdapter{}).HasConversationArtifacts(filepath.Dir(accCfgDir), sess.NativeID) {
+				return true
+			}
+		}
+		return (GrokAgentAdapter{}).HasConversationArtifacts(home, sess.NativeID)
 	}
 	claudeDir := filepath.Join(home, ".claude")
 	if accCfgDir != "" {

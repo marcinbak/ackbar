@@ -553,6 +553,20 @@ func (s *Server) updateHookSessionMetadataAndTitle(sess *Session, event *Event) 
 					sess.AITitle = meta.AITitle
 				}
 			}
+		} else if sess.Agent == "grok" {
+			home, _ := os.UserHomeDir()
+			if meta := ReadGrokSessionMeta(home, sess.Cwd, sess.NativeID); meta != nil && meta.Title != "" {
+				sess.Name = meta.Title
+				if meta.CustomTitle != "" {
+					sess.CustomTitle = meta.CustomTitle
+				}
+				if meta.AITitle != "" {
+					sess.AITitle = meta.AITitle
+				}
+				if meta.GitBranch != "" && sess.GitBranch == "" {
+					sess.GitBranch = meta.GitBranch
+				}
+			}
 		}
 	} else if sess.Agent == "antigravity" && sess.CustomTitle == "" {
 		if anno := ReadAntigravityAnnotationTitle(sess.NativeID); anno != "" && anno != sess.Name {
@@ -588,6 +602,8 @@ func (s *Server) applyHookStateTransition(sess *Session, event *Event, sessionID
 					InspectAntigravityStatus(context.Background(), sess)
 				case "codex":
 					InspectCodexStatus(context.Background(), sess)
+				case "grok":
+					InspectGrokStatus(context.Background(), sess)
 				}
 				if sess.State == StateBlocked && sess.Blocked != nil {
 					event.State = sess.State
@@ -686,7 +702,7 @@ func (s *Server) applyHookStateTransition(sess *Session, event *Event, sessionID
 
 	if sess.LastEventAt.IsZero() {
 		shouldUpdateLastEvent = true
-	} else if evtLower == "userpromptsubmit" || evtLower == "usersubmit" || evtLower == "user_prompt" {
+	} else if evtLower == "userpromptsubmit" || evtLower == "usersubmit" || evtLower == "user_prompt" || evtLower == "user_prompt_submit" {
 		shouldUpdateLastEvent = true
 	}
 
@@ -731,7 +747,7 @@ func (s *Server) trackHookSubagentEvent(sessionID string, event *Event) {
 			}
 		}
 		s.removeSubagent(sessionID, event.NativeID, targetSub)
-	} else if evtNameLower == "userpromptsubmit" || evtNameLower == "sessionend" || evtNameLower == "stop" {
+	} else if evtNameLower == "userpromptsubmit" || evtNameLower == "user_prompt_submit" || evtNameLower == "sessionend" || evtNameLower == "stop" {
 		s.clearInMemorySubagents(sessionID, event.NativeID)
 	} else if (evtNameLower == "pretooluse" || evtNameLower == "pre_tool_use") && isSubagentTool {
 		var prompt, desc, subType string

@@ -298,6 +298,18 @@ func (s *Server) refreshExistingSessions(ctx context.Context, state *ScanState) 
 					sess.ContextPct = meta.ContextPct
 					changed = true
 				}
+				if meta.GitBranch != "" && meta.GitBranch != sess.GitBranch {
+					sess.GitBranch = meta.GitBranch
+					changed = true
+				}
+				if meta.FirstPrompt != "" && meta.FirstPrompt != sess.FirstPrompt {
+					sess.FirstPrompt = meta.FirstPrompt
+					changed = true
+				}
+				if meta.LastPrompt != "" && meta.LastPrompt != sess.LastPrompt {
+					sess.LastPrompt = meta.LastPrompt
+					changed = true
+				}
 				if !meta.LastUserMessageAt.IsZero() && meta.LastUserMessageAt.After(sess.LastEventAt) {
 					sess.LastEventAt = meta.LastUserMessageAt
 					changed = true
@@ -349,10 +361,24 @@ func (s *Server) refreshExistingSessions(ctx context.Context, state *ScanState) 
 	}
 }
 
+// parseTmuxPaneLine parses a tmux list-panes row delimited by |||.
+func parseTmuxPaneLine(line string) (pidStr, cwd, tmuxName, cmdName string, ok bool) {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return "", "", "", "", false
+	}
+	parts := strings.SplitN(line, "|||", 4)
+	if len(parts) < 4 {
+		return "", "", "", "", false
+	}
+	return strings.TrimSpace(parts[0]), strings.TrimSpace(parts[3]), strings.TrimSpace(parts[1]), strings.TrimSpace(parts[2]), true
+}
+
 // scanTmuxPanes scans local tmux panes for running agent CLIs and reconciles managed sessions.
 func (s *Server) scanTmuxPanes(ctx context.Context, state *ScanState) {
 	hostName := state.hostName
-	out, err := exec.CommandContext(ctx, "tmux", "list-panes", "-a", "-F", "#{pane_pid}\t#{pane_current_path}\t#{session_name}\t#{pane_current_command}").Output()
+	// Printable delimiter ||| prevents tmux from sanitizing \t control characters to _ when LANG/LC_CTYPE is unset under launchd or minimal environments.
+	out, err := exec.CommandContext(ctx, "tmux", "list-panes", "-a", "-F", "#{pane_pid}|||#{session_name}|||#{pane_current_command}|||#{pane_current_path}").Output()
 	if err != nil {
 		return
 	}
@@ -362,6 +388,7 @@ func (s *Server) scanTmuxPanes(ctx context.Context, state *ScanState) {
 		cmd string
 	}
 	childrenByPPID := make(map[int][]procEntry)
+	rawCmdByPID := make(map[int]string)
 	if psOut, psErr := exec.CommandContext(ctx, "ps", "-eo", "ppid,pid,command").Output(); psErr == nil {
 		for _, pline := range strings.Split(string(psOut), "\n") {
 			pline = strings.TrimSpace(pline)
@@ -373,7 +400,9 @@ func (s *Server) scanTmuxPanes(ctx context.Context, state *ScanState) {
 				ppidVal, err1 := strconv.Atoi(fields[0])
 				cPid, err2 := strconv.Atoi(fields[1])
 				if err1 == nil && err2 == nil && ppidVal > 0 && cPid > 0 {
-					cCmd := strings.ToLower(strings.Join(fields[2:], " "))
+					rawCmd := strings.Join(fields[2:], " ")
+					rawCmdByPID[cPid] = rawCmd
+					cCmd := strings.ToLower(rawCmd)
 					childrenByPPID[ppidVal] = append(childrenByPPID[ppidVal], procEntry{pid: cPid, cmd: cCmd})
 				}
 			}
@@ -382,19 +411,14 @@ func (s *Server) scanTmuxPanes(ctx context.Context, state *ScanState) {
 
 	lines := strings.Split(string(out), "\n")
 	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
+		pidStr, cwd, tmuxName, cmdName, ok := parseTmuxPaneLine(line)
+		if !ok {
 			continue
 		}
-		parts := strings.SplitN(line, "\t", 4)
-		if len(parts) < 4 {
-			continue
-		}
-		pidStr, cwd, tmuxName, cmdName := strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]), strings.TrimSpace(parts[2]), strings.TrimSpace(parts[3])
 		cwd = strings.TrimSuffix(cwd, " (deleted)")
 		cmdLower := strings.ToLower(cmdName)
 
-		if tmuxName == "(deleted)" || tmuxName == "" || strings.HasPrefix(tmuxName, "ackbar-mock-agent-") {
+		if tmuxName == "(deleted)" || tmuxName == "" || strings.HasPrefix(tmuxName, "ackbar-mock-agent-") || strings.HasPrefix(tmuxName, "ackbar-test-") {
 			continue
 		}
 
@@ -527,6 +551,11 @@ func (s *Server) scanTmuxPanes(ctx context.Context, state *ScanState) {
 		}
 		if existing == nil && tmuxName != "" {
 			existing = state.knownByTmux[tmuxName]
+		}
+		if existing == nil {
+			if strings.HasPrefix(tmuxName, fmt.Sprintf("ackbar-%s-", agent)) && targetNativeID != "" && adapter.IsValidNativeID(targetNativeID) {
+				existing = s.reconstructManagedTmuxSession(hostName, agent, targetNativeID, tmuxName, cwd, pid, rawCmdByPID[panePID])
+			}
 		}
 
 		if existing != nil {
@@ -717,4 +746,118 @@ func (s *Server) scanDiskSessions(ctx context.Context, state *ScanState) {
 	}
 	s.agentAdapter("claude-code").ScanDiskSessions(ctx, s, home, state)
 	s.agentAdapter("antigravity").ScanDiskSessions(ctx, s, home, state)
+}
+
+func (d *DB) GetSessionTaskBinding(sessionID string) (taskID string, nodePath string) {
+	if d == nil || d.db == nil || sessionID == "" {
+		return "", ""
+	}
+	query := `SELECT task_id, COALESCE(repo_node_path, '') FROM task_workers WHERE session_id = ? ORDER BY is_active DESC, assigned_at DESC LIMIT 1;`
+	_ = d.db.QueryRow(query, sessionID).Scan(&taskID, &nodePath)
+	return taskID, nodePath
+}
+
+func extractTaskIDFromCmd(cmd string) string {
+	idx := strings.Index(cmd, "ACKBAR_TASK_ID=")
+	if idx == -1 {
+		return ""
+	}
+	val := cmd[idx+len("ACKBAR_TASK_ID="):]
+	if len(val) == 0 {
+		return ""
+	}
+	quote := byte(0)
+	if val[0] == '"' || val[0] == '\'' {
+		quote = val[0]
+		val = val[1:]
+	}
+	var res strings.Builder
+	for i := 0; i < len(val); i++ {
+		b := val[i]
+		if quote != 0 {
+			if b == quote {
+				break
+			}
+			res.WriteByte(b)
+		} else {
+			if b == ' ' || b == ';' || b == '&' || b == '|' || b == '\t' || b == '\n' {
+				break
+			}
+			res.WriteByte(b)
+		}
+	}
+	extracted := res.String()
+	if validTaskIDRegex.MatchString(extracted) {
+		return extracted
+	}
+	return ""
+}
+
+func (s *Server) reconstructManagedTmuxSession(hostName, agent, targetNativeID, tmuxName, cwd string, pid int, paneCmd string) *Session {
+	sessID := fmt.Sprintf("%s:%s:%s", agent, hostName, targetNativeID)
+	name := targetNativeID
+	if len(name) >= 8 {
+		name = name[:8]
+	}
+	sess := &Session{
+		ID:          sessID,
+		NativeID:    targetNativeID,
+		Name:        name,
+		Agent:       agent,
+		Host:        hostName,
+		Cwd:         cwd,
+		ProjectKey:  GetProjectKey(cwd),
+		EngineType:  EngineTmux,
+		Managed:     true,
+		TmuxName:    tmuxName,
+		PID:         pid,
+		State:       StateIdle,
+		Activity:    "Awaiting user prompt",
+		StartedAt:   time.Now(),
+		LastEventAt: time.Now(),
+	}
+
+	if p, ok := s.providers[agent]; ok {
+		meta := p.ReadSessionMetadata(cwd, targetNativeID)
+		if meta != nil {
+			if meta.Title != "" && !strings.HasPrefix(meta.Title, "<") && !isRawSessionName(meta.Title) {
+				sess.Name = meta.Title
+			}
+			if meta.Entrypoint != "" {
+				sess.Entrypoint = meta.Entrypoint
+			}
+			if meta.Kind != "" {
+				sess.Kind = meta.Kind
+			}
+			if meta.Version != "" {
+				sess.Version = meta.Version
+			}
+			if meta.ContextPct > 0 {
+				sess.ContextPct = meta.ContextPct
+			}
+			if !meta.LastUserMessageAt.IsZero() {
+				sess.LastEventAt = meta.LastUserMessageAt
+			} else if !meta.LastMessageAt.IsZero() {
+				sess.LastEventAt = meta.LastMessageAt
+			}
+		}
+	}
+
+	if s.db != nil {
+		taskID, nodePath := s.db.GetSessionTaskBinding(sess.ID)
+		if taskID != "" {
+			sess.CurrentTaskID = taskID
+		}
+		if nodePath != "" {
+			sess.NodePath = nodePath
+		}
+	}
+
+	if sess.CurrentTaskID == "" && paneCmd != "" {
+		if taskID := extractTaskIDFromCmd(paneCmd); taskID != "" {
+			sess.CurrentTaskID = taskID
+		}
+	}
+
+	return sess
 }

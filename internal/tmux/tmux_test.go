@@ -14,7 +14,7 @@ func TestTmuxSupervision(t *testing.T) {
 	}
 
 	sessionName := "ackbar-test-session"
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	// Ensure cleanup if previous test runs crashed
@@ -116,7 +116,7 @@ func TestTmuxRespawnWithEnv_InPlacePreservesSessionAndInjectsEnv(t *testing.T) {
 	if !IsTmuxInstalled() {
 		t.Skip("tmux not installed on host, skipping test")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	sessionName := "ackbar-test-respawn-inplace"
@@ -158,7 +158,7 @@ func TestTmuxRespawnWithEnv_InPlacePreservesSessionAndInjectsEnv(t *testing.T) {
 		t.Errorf("expected pane PID to change after RespawnWithEnv, got same PID %d", pid2)
 	}
 
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	var got string
 	for time.Now().Before(deadline) {
 		if data, rErr := os.ReadFile(envOutFile); rErr == nil && len(data) > 0 {

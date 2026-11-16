@@ -12,7 +12,7 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 5. **SSE Broadcaster (`/v1/events`):** Streams real-time updates to connected Web and Mobile clients over `/v1/events`. Flushes HTTP response headers immediately upon connection and emits periodic `: keepalive\n\n` comments (`20s` default, configurable via `Server.SetEventsKeepaliveInterval` in [`server.go`](../internal/daemon/server.go)) to keep client connections alive.
 6. **SQLite Persistence:** Stores session state, activity history, and logical tree hierarchies in `~/.config/ackbar/ackbard.db` (CGO-free pure Go SQLite).
 7. **Built-in Self-Rotating Logger:** Automatically writes, caps (10MB), and daily-rotates daemon logs in `~/.config/ackbar/logs/` with 7-day automatic retention pruning.
-8. **Background Session Scanner:** Periodically inspects `tmux list-panes` and on-disk conversation directories (`session_scanner.go`) to reconcile and supervise Ackbar-managed agent sessions (external unmanaged sessions created outside Ackbar are ignored and pruned on startup).
+8. **Background Session Scanner:** Periodically inspects `tmux list-panes` and on-disk conversation directories ([`session_scanner.go`](../internal/daemon/session_scanner.go)) to reconcile sessions, reconstruct orphaned managed tmux sessions, and supervise Ackbar-managed agent sessions.
 
 ### Modular Daemon File Layout (`internal/daemon/`)
 * **`server.go`:** Core `Server` struct, HTTP `Mux()` route registration, token `authMiddleware`, CORS wrapper, SSE `/v1/events` broadcaster with immediate header flush and `: keepalive\n\n` heartbeat (20s default), background loop, version/update/settings/shutdown handlers, and normalized OS hostname fallback (`DefaultSystemHostName`).
@@ -43,10 +43,11 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 * **`server_tasks.go` & `task_scope.go`:** Task CRUD (`/v1/tasks`), canonical project node scope resolution (`resolveTaskNodeScope`), task moves, and subproject normalization.
 * **`server_deliverables.go`, `db_deliverables.go`, `deliverables_retro.go`:** Task deliverable endpoints (`/v1/deliverables`, `/v1/retros`, `/v1/tasks/deliverable`), rune-safe cursor pagination, auto-ingested `.retro.md` & `run-state.json` parsing, and LWW deliverable replication.
 * **`server_sync.go`:** Uniform 3-way Last-Write-Wins (LWW) peer-to-peer sync engine (`/v1/sync/state`, `/v1/sync/push`, `/v1/nodes/paths`) and background delta reconciliation.
-* **`session_scanner.go`:** Liveness verification (`verifySessionLiveness`) and background session scanner (`scanObservedSessions` decomposed into `refreshExistingSessions`, `scanTmuxPanes`, and `scanDiskSessions` for managed sessions).
+* **`session_scanner.go`:** Liveness verification (`verifySessionLiveness`) and background session scanner (`scanObservedSessions` decomposed into `refreshExistingSessions`, `scanTmuxPanes` with orphaned managed session reconstruction, and `scanDiskSessions` for managed sessions).
 * **`telemetry_tasks.go` & `workflow_watcher.go`:** Monotonic workflow node (`N0`–`N15`) and task/workstream status synchronization (`SyncSessionTaskWorker`, `IngestBoundTaskTelemetry`), canonical pillar substatus normalization (`normalizeTaskStatusAndSubstatus`), single active worker enforcement per `(task_id, repo_node_path)`, and update-only `dev-workflow` run watcher (`IngestDevWorkflowRuns` scanning `~/.claude/dev-workflow-runs/*.json` strictly for existing non-`DONE` tasks and auto-attaching `.brief.md`, `.impl-notes.md`, and `.retro.md` deliverables without auto-creating ambient tasks).
 * **`ntfy.go`:** `ntfy.sh` push notification dispatcher for PR/Plan Review transitions (`REVIEW`) and Task/Session blockers (`StateBlocked` / `substatus == "blocked"`), emitting `ackbar://` mobile deep-links, Ackbar notification icons, session-title + group-path subtitles, test notification dispatch (`POST /v1/notifications/test`), and fleet-wide `ntfy` settings propagation.
-* **`agent_claude.go`, `agent_antigravity.go`, `agent_other.go`:** Per-agent `AgentAdapter` implementations (`ClaudeAgentAdapter`, `AntigravityAgentAdapter`, `CodexAgentAdapter`, `GrokAgentAdapter`, `OpenCodeAgentAdapter`) encapsulating agent-specific CLI flags, approval keys, account profile setup, PID-to-session resolution, and disk session discovery.
+* **`provisioner.go` & `provisioner_toml.go`:** Agent configuration provisioners injecting MCP servers, skills, and rules into agent configs (JSON and TOML formats).
+* **`agent_claude.go`, `agent_antigravity.go`, `agent_grok*.go`, `agent_other.go`:** Per-agent `AgentAdapter` implementations (`ClaudeAgentAdapter`, `AntigravityAgentAdapter`, `GrokAgentAdapter`, `CodexAgentAdapter`, `OpenCodeAgentAdapter`) encapsulating agent-specific CLI flags, approval keys, account profile setup, PID-to-session resolution, and disk session discovery.
 
 ---
 
@@ -104,7 +105,7 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 | `POST` | `/v1/sync/push` | Ingests and reconciles peer sync payload via 3-way Last-Write-Wins (LWW). |
 | `GET` | `/v1/standup` | Deterministic daily standup and weekly retro report generation (grouped by project in Markdown or JSON). |
 | `POST` | `/v1/briefings/synthesize` | Generates speech-optimized conversational text briefing (<45s) for voice synthesis. |
-| `GET` | `/v1/agents/status` | Returns detected agent runtimes (Claude, Antigravity, Codex, Claude Desktop) with MCP, skill, rules (`rules_installed`, `rules_version`), and skills repo status. |
+| `GET` | `/v1/agents/status` | Returns detected agent runtimes (Claude, Antigravity, Codex, Grok, Claude Desktop) with MCP, skill, rules (`rules_installed`, `rules_version`), and skills repo status. |
 | `POST` | `/v1/agents/provision` | Provisions or upgrades Ackbar Tasks MCP, Skill, and global rules into connected agent configs, and optionally syncs skills repo. |
 | `POST` | `/v1/agents/skills-repo/sync` | Clones or fast-forward pulls the shared skills repository and runs `./install.sh` (or fallback copy). |
 | `POST` | `/v1/mcp` | Streamable HTTP JSON-RPC 2.0 MCP endpoint (`initialize`, `tools/list`, `tools/call`). Resolves local loopback listener to prevent SSRF and hairpinning. |
@@ -306,17 +307,18 @@ systemctl --user restart ackbard
 
 Each `ackbard` instance identifies itself across the multi-machine fleet using a canonical host name and an optional human-friendly display name:
 
-* **Canonical Host Name (`host_name`):** Alphanumeric machine identifier used in session IDs (`claude-code:<host>:<uuid>`), API routing, and SSH targeting. Defaults to `"local"` if unspecified.
+* **Canonical Host Name (`host_name`):** Alphanumeric machine identifier used in session IDs (`claude-code:<host>:<uuid>`), API routing, and SSH targeting. Persists to SQLite settings; falls back to inferred local host or system hostname.
 * **Display Name (`display_name`):** User-facing label displayed in Web UI badges (`@MacBook`), header host status pills, tabs, and inspector modals. Defaults to the canonical host name if unspecified.
 
 ### Configuration Hierarchy:
 1. **CLI Flags:** `ackbard --host-name macbook --display-name "MacBook Air"`
 2. **Environment Variables:** `ACKBAR_HOST=macbook` and `ACKBAR_DISPLAY_NAME="MacBook Air"` (ideal for LaunchAgents and systemd units).
-3. **Persistent SQLite Settings:** Configured via the Web UI **⚙️ Settings** modal or `POST /v1/settings` with JSON `{"host_name":"macbook","display_name":"MacBook Air"}`.
-4. **Fallback:** Defaults to `"local"`.
+3. **Persistent SQLite Settings:** Stored in `settings` table (`host_name`, `display_name`); explicit startup values persist automatically.
+4. **Local Session Inference:** [`InferExistingLocalHostName`](../internal/daemon/server.go) resolves host identity from existing local database sessions when unconfigured.
+5. **System Hostname Fallback:** [`DefaultSystemHostName`](../internal/daemon/server.go) derives normalized OS hostname before falling back to `"local"`.
 
 ### Non-Destructive Database Migration:
-When a daemon's host name is configured away from `"local"`, `ackbard` automatically migrates existing database records (`sessions` and `deleted_sessions`) to use the new host identifier. Lookups using legacy session IDs remain fully backward-compatible.
+When a daemon's host name changes away from `"local"`, `ackbard` automatically migrates existing database records (`sessions` and `deleted_sessions`) to the new host identifier. Non-`"local"` identities persist to `settings` on startup to prevent foreign session pruning on unconfigured restarts.
 
 ---
 
@@ -345,7 +347,7 @@ If `skills_repo_path` is not explicitly set in the database, `ackbard` inspects 
 ### Execution & Fallback Contract
 1. **Clean Fast-Forward Pull:** Runs `git fetch origin` followed by `git pull --ff-only` if `git status --porcelain` is clean. If uncommitted local changes exist, the pull is safely skipped to avoid clobbering work.
 2. **Installer Execution:** If `install.sh` exists at the root of the repository, executes `/bin/bash ./install.sh` with `HOME` and `ACKBAR_CLAUDE_DIRS` (colon-delimited list of custom account config directories from `accounts`).
-3. **Fallback Directory Copy:** If no `install.sh` is present, recursively mirrors any skills in `skills/*/SKILL.md` or `plugins/*/skills/*/SKILL.md` to `~/.claude/skills/`, `~/.gemini/config/skills/`, `~/.gemini/antigravity-cli/skills/`, and `~/.codex/skills/`.
+3. **Fallback Directory Copy:** If no `install.sh` is present, recursively mirrors any skills in `skills/*/SKILL.md` or `plugins/*/skills/*/SKILL.md` to `~/.claude/skills/`, `~/.gemini/config/skills/`, `~/.gemini/antigravity-cli/skills/`, `~/.codex/skills/`, and `~/.grok/skills/`.
 4. **Periodic Auto-Sync:** The background loop checks `skills_repo_last_check` on startup and hourly. If more than 24 hours have elapsed since the last check, an automated background sync is triggered.
 
 ---

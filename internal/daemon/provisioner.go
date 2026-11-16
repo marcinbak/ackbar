@@ -80,6 +80,15 @@ var supportedAgents = []AgentDefinition{
 		SkillsRel:   filepath.Join(".codex", "skills"),
 		RulesRel:    filepath.Join(".codex", "AGENTS.md"),
 	},
+	{
+		Key:         "grok",
+		DisplayName: "xAI Grok",
+		CLICommand:  "grok",
+		HomeSubdir:  ".grok",
+		ConfigRel:   filepath.Join(".grok", "config.toml"),
+		SkillsRel:   filepath.Join(".grok", "skills"),
+		RulesRel:    filepath.Join(".grok", "rules", "ackbar.md"),
+	},
 }
 
 // getClaudeDesktopConfigPath resolves the OS-specific path for Claude Desktop config
@@ -174,7 +183,14 @@ func inspectAgent(home string, def AgentDefinition) AgentStatus {
 	}
 
 	// 1. Inspect MCP config
-	if cfgData, err := os.ReadFile(configPath); err == nil {
+	claudeHooksDisabled := false
+	hasHooks := false
+	if def.Key == "grok" {
+		if cfgData, err := os.ReadFile(configPath); err == nil {
+			status.MCPInstalled, status.MCPCommand, claudeHooksDisabled = inspectGrokTOMLConfig(cfgData)
+		}
+		hasHooks = hasGrokAckbarHook(filepath.Join(home, ".grok"))
+	} else if cfgData, err := os.ReadFile(configPath); err == nil {
 		var root map[string]any
 		if err := json.Unmarshal(cfgData, &root); err == nil {
 			if mcpServers, ok := root["mcpServers"].(map[string]any); ok {
@@ -234,7 +250,13 @@ func inspectAgent(home string, def AgentDefinition) AgentStatus {
 	// 4. Evaluate Drift
 	// Drift occurs if detected but MCP, Skill, or Rules is missing, or versions are out of date
 	if detected {
-		if !status.MCPInstalled || !status.SkillInstalled || status.SkillVersion != version.Version ||
+		if def.Key == "grok" {
+			if !status.MCPInstalled || !claudeHooksDisabled || !hasHooks ||
+				!status.SkillInstalled || status.SkillVersion != version.Version ||
+				!status.RulesInstalled || status.RulesVersion != version.Version {
+				status.DriftDetected = true
+			}
+		} else if !status.MCPInstalled || !status.SkillInstalled || status.SkillVersion != version.Version ||
 			!status.RulesInstalled || status.RulesVersion != version.Version {
 			status.DriftDetected = true
 		}
@@ -293,8 +315,54 @@ func ProvisionAgents(customHome string, targetAgentKeys []string) ([]AgentStatus
 	return GetAgentStatuses(home)
 }
 
+func hasGrokAckbarHook(grokDir string) bool {
+	hookFile := filepath.Join(grokDir, "hooks", "ackbar.json")
+	data, err := os.ReadFile(hookFile)
+	if err != nil {
+		return false
+	}
+	var root map[string]interface{}
+	if err := json.Unmarshal(data, &root); err != nil {
+		return false
+	}
+	hooksMap, ok := root["hooks"].(map[string]interface{})
+	if !ok || len(hooksMap) == 0 {
+		return false
+	}
+	for _, entries := range hooksMap {
+		list, ok := entries.([]interface{})
+		if !ok {
+			continue
+		}
+		for _, rawItem := range list {
+			item, ok := rawItem.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			innerList, _ := item["hooks"].([]interface{})
+			for _, inner := range innerList {
+				hMap, _ := inner.(map[string]interface{})
+				u, _ := hMap["url"].(string)
+				c, _ := hMap["command"].(string)
+				if strings.Contains(u, "127.0.0.1:7777/v1/hooks/grok") ||
+					strings.Contains(u, "localhost:7777/v1/hooks/grok") ||
+					strings.Contains(c, "ackbar-hook") {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 func configureAgentMCP(home string, def AgentDefinition) error {
 	configPath := getAgentConfigPath(home, def)
+	if def.Key == "grok" {
+		if err := UpsertGrokTOMLConfig(configPath, "ackbar"); err != nil {
+			return err
+		}
+		return WriteGrokHooksFile(filepath.Join(home, ".grok"), "")
+	}
 	return upsertJSONMCPServer(configPath, "ackbar", map[string]any{
 		"command": "ackbar",
 		"args":    []string{"mcp"},

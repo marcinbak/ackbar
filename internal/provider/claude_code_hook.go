@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -127,6 +128,10 @@ func (c *ClaudeProvider) ParseHook(eventName string, payload []byte) (*daemon.Ev
 	var p claudePayload
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal Claude Code hook payload: %w", err)
+	}
+
+	if p.SessionID == "" && bytes.Contains(payload, []byte(`"sessionId"`)) {
+		return nil, nil
 	}
 
 	// Allow SubagentStart and SubagentStop through so daemon can track active subagents

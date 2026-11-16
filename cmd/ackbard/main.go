@@ -5,9 +5,11 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"ackbar/internal/daemon"
@@ -84,6 +86,15 @@ func main() {
 		ntfyServer = os.Getenv("ACKBAR_NTFY_SERVER")
 	}
 
+	// launchd and minimal service environments omit LANG, degrading tmux and child PTYs to ASCII _ sanitization.
+	if os.Getenv("LANG") == "" && os.Getenv("LC_ALL") == "" && os.Getenv("LC_CTYPE") == "" {
+		if runtime.GOOS == "darwin" {
+			_ = os.Setenv("LANG", "en_US.UTF-8")
+		} else {
+			_ = os.Setenv("LANG", "C.UTF-8")
+		}
+	}
+
 	// Initialize Self-Rotating Logger
 	logCloser, logErr := daemon.SetupDaemonLogger(*logDirFlag)
 	if logErr != nil {
@@ -109,6 +120,14 @@ func main() {
 		log.Printf("API Token authentication disabled (open local/mesh mode)")
 	}
 
+	// Bind TCP listener before opening DB to fail fast on port collision
+	addr := fmt.Sprintf("%s:%d", *hostFlag, *portFlag)
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		log.Fatalf("Server exited with error: %v", err)
+	}
+	defer ln.Close()
+
 	// Initialize SQLite Database
 	db, err := daemon.InitDB(dbPath)
 	if err != nil {
@@ -121,6 +140,8 @@ func main() {
 	if hostName == "" || strings.EqualFold(hostName, "local") {
 		if dbHost, err := db.GetSetting("host_name"); err == nil && dbHost != "" && !strings.EqualFold(dbHost, "local") {
 			hostName = dbHost
+		} else if inferred := daemon.InferExistingLocalHostName(db); inferred != "" {
+			hostName = inferred
 		} else if sysHost := daemon.DefaultSystemHostName(); sysHost != "" {
 			hostName = sysHost
 		}
@@ -159,11 +180,9 @@ func main() {
 		server.StartRelayClient(context.Background(), relayURL, relaySecret)
 	}
 
-	// Listen on configured host address (default 127.0.0.1 loopback)
-	addr := fmt.Sprintf("%s:%d", *hostFlag, *portFlag)
 	log.Printf("Listening on http://%s", addr)
 
-	if err := http.ListenAndServe(addr, server.Mux()); err != nil {
+	if err := http.Serve(ln, server.Mux()); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("Server exited with error: %v", err)
 	}
 }

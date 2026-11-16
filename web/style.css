@@ -1423,6 +1423,12 @@ body, html {
   border: 1px solid rgba(16, 185, 129, 0.3);
 }
 
+.agent-icon-badge.grok {
+  background: rgba(229, 231, 235, 0.15);
+  color: #f3f4f6;
+  border: 1px solid rgba(229, 231, 235, 0.3);
+}
+
 /* Context Menu */
 .context-menu {
   position: fixed;
