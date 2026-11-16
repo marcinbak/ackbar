@@ -114,7 +114,7 @@ ackbar update --force
 
 ### How Updates Work Under the Hood
 * **Homebrew Users:** `ackbar update` detects the Homebrew installation and automatically executes `brew upgrade ackbar && brew services restart ackbar`, ensuring the Cellar and background services stay cleanly synchronized.
-* **Standalone / Local Bin Users (`~/.local/bin`):** `ackbar update` downloads the platform-specific release archive (`.tar.gz`) directly from GitHub Releases, verifies binaries, stages them atomically, replaces `ackbar`, `ackbard`, `ackbar-hook`, and `ackbar-relay`, and gracefully restarts the daemon.
+* **Standalone / Local Bin Users (`~/.local/bin`):** `ackbar update` downloads GitHub release archives, stages binaries atomically, and restarts `ackbard` via `launchctl` (`com.marcinbak.ackbard`), `systemd`, or direct execution while preserving running host identity.
 * **In-App Web Discovery:**
   * **Web GUI:** Displays an update pill in the top header and provides a 1-click update modal.
   * **Fleet Peers:** Cross-compares daemon versions in multi-machine setups; remote hosts ahead of the local client are tagged `[AHEAD]` while preventing accidental downgrades.
