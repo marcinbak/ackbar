@@ -1048,8 +1048,10 @@ function toggleChatConfigPopover(tabObj) {
   if (!tabObj || !tabObj.chatConfigPopover) return;
   const popover = tabObj.chatConfigPopover;
   if (popover.style.display !== 'none') {
+    tabObj.configSubmenuView = null;
     popover.style.display = 'none';
   } else {
+    tabObj.configSubmenuView = null;
     fetchSessionAgentModels(tabObj);
     renderConfigPopoverContent(tabObj);
     popover.style.display = 'flex';
@@ -1123,45 +1125,49 @@ function renderConfigPopoverContent(tabObj) {
       </div>
       <button type="button" class="btn-close-popover" title="Close">✕</button>
     </div>
-    <div class="config-row">
-      <label class="config-label">Model</label>
-      <select class="config-select config-select-model">
-        <option value="" ${!model ? 'selected' : ''}>${escapeHtml(defaultOptionLabel)}</option>
-        ${customOptionHtml}
-        ${modelOptionsHtml}
-      </select>
-    </div>
-    ${effortRowHtml}
-    <div class="config-row">
-      <label class="config-label">Execution Mode</label>
-      <div class="config-toggle-group">
-        <button type="button" class="config-toggle-btn config-btn-auto ${!isPlan ? 'active' : ''}">⚡ Auto Execution</button>
-        <button type="button" class="config-toggle-btn config-btn-plan ${isPlan ? 'active' : ''}">📝 Plan Mode</button>
+    <div class="config-main-view">
+      <div class="config-row">
+        <label class="config-label">Model</label>
+        <select class="config-select config-select-model">
+          <option value="" ${!model ? 'selected' : ''}>${escapeHtml(defaultOptionLabel)}</option>
+          ${customOptionHtml}
+          ${modelOptionsHtml}
+        </select>
       </div>
-    </div>
-    <div class="config-row">
-      <label class="config-label">Context Usage</label>
-      <div class="config-usage-card">
-        <div style="display: flex; justify-content: space-between; font-weight: 500;">
-          <span>Context Window</span>
-          <span class="config-usage-pct">${pct}%</span>
-        </div>
-        <div class="config-usage-bar">
-          <div class="config-usage-fill" style="width: ${pct}%;"></div>
-        </div>
-        <div class="config-meta-details">
-          <span>Input Tokens: ${inputTokens.toLocaleString()}</span>
-          <span>Output Tokens: ${outputTokens.toLocaleString()}</span>
-          <span>Estimated Context: ${totalTokens.toLocaleString()} / ${maxTokens.toLocaleString()}</span>
+      ${effortRowHtml}
+      <div class="config-row">
+        <label class="config-label">Execution Mode</label>
+        <div class="config-toggle-group">
+          <button type="button" class="config-toggle-btn config-btn-auto ${!isPlan ? 'active' : ''}">⚡ Auto Execution</button>
+          <button type="button" class="config-toggle-btn config-btn-plan ${isPlan ? 'active' : ''}">📝 Plan Mode</button>
         </div>
       </div>
+      <div class="config-row">
+        <label class="config-label">Context Usage</label>
+        <div class="config-usage-card">
+          <div style="display: flex; justify-content: space-between; font-weight: 500;">
+            <span>Context Window</span>
+            <span class="config-usage-pct">${pct}%</span>
+          </div>
+          <div class="config-usage-bar">
+            <div class="config-usage-fill" style="width: ${pct}%;"></div>
+          </div>
+          <div class="config-meta-details">
+            <span>Input Tokens: ${inputTokens.toLocaleString()}</span>
+            <span>Output Tokens: ${outputTokens.toLocaleString()}</span>
+            <span>Estimated Context: ${totalTokens.toLocaleString()} / ${maxTokens.toLocaleString()}</span>
+          </div>
+        </div>
+      </div>
+      <div class="config-mcp-status-section"></div>
     </div>
-    <div class="config-mcp-status-section"></div>
+    <div class="config-mcp-submenu-view" style="display: none;"></div>
   `;
 
   const btnClose = popover.querySelector('.btn-close-popover');
   if (btnClose) {
     btnClose.addEventListener('click', () => {
+      tabObj.configSubmenuView = null;
       popover.style.display = 'none';
     });
   }
@@ -1196,7 +1202,7 @@ function renderConfigPopoverContent(tabObj) {
 
   const mcpSection = popover.querySelector('.config-mcp-status-section');
   if (mcpSection && sess.id) {
-    mountMCPStatus(mcpSection, sess.id, tabObj);
+    mountMCPStatus(mcpSection, sess.id, tabObj, { submenu: true });
   }
 }
 
@@ -1206,6 +1212,7 @@ function setupChatConfigPopover(tabObj) {
     if (tabObj.chatConfigPopover.style.display === 'none') return;
     if (tabObj.chatConfigPopover.contains(e.target)) return;
     if (tabObj.chatComposerBar && tabObj.chatComposerBar.contains(e.target)) return;
+    tabObj.configSubmenuView = null;
     tabObj.chatConfigPopover.style.display = 'none';
   });
 }
@@ -5521,7 +5528,7 @@ function handleChatStreamEvent(tabObj, evt) {
       }
       const mcpSec = tabObj.chatConfigPopover?.querySelector('.config-mcp-status-section');
       if (mcpSec && tabObj.chatConfigPopover?.style.display !== 'none') {
-        mountMCPStatus(mcpSec, tabObj.session?.id, tabObj);
+        mountMCPStatus(mcpSec, tabObj.session?.id, tabObj, { submenu: true });
       }
       break;
     }
