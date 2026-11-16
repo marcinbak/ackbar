@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -106,11 +107,23 @@ func TestDaemonRestartValidationAndArgs(t *testing.T) {
 	if err := os.MkdirAll(cfgDir, 0755); err != nil {
 		t.Fatalf("failed to create config dir: %v", err)
 	}
-	db, err := daemon.InitDB(filepath.Join(cfgDir, "ackbard.db"))
+	dbFile := filepath.Join(cfgDir, "ackbard.db")
+	db, err := daemon.InitDB(dbFile)
 	if err != nil {
 		t.Fatalf("failed to init db: %v", err)
 	}
 	_ = db.SetSetting("host_name", "persisted-host")
+	workingSess := &daemon.Session{
+		ID:         "antigravity:persisted-host:headless-123",
+		NativeID:   "headless-123",
+		Agent:      "antigravity",
+		Host:       "persisted-host",
+		EngineType: "headless",
+		State:      daemon.StateWorking,
+	}
+	if err := db.SaveSession(workingSess); err != nil {
+		t.Fatalf("failed to save working session: %v", err)
+	}
 	_ = db.Close()
 
 	if !hasPersistedHostIdentity(tempHome) {
@@ -120,4 +133,24 @@ func TestDaemonRestartValidationAndArgs(t *testing.T) {
 	if len(persistedArgs) != 0 {
 		t.Fatalf("expected nil/empty args when host identity is already persisted, got %v", persistedArgs)
 	}
+
+	// ReadPersistedHostName must not run InitDB mutations on active sessions
+	readHost := daemon.ReadPersistedHostName(dbFile)
+	if readHost != "persisted-host" {
+		t.Fatalf("expected ReadPersistedHostName 'persisted-host', got %q", readHost)
+	}
+
+	verifyRaw, err := sql.Open("sqlite", dbFile)
+	if err != nil {
+		t.Fatalf("failed to open raw sqlite: %v", err)
+	}
+	defer verifyRaw.Close()
+	var rawState int
+	if err := verifyRaw.QueryRow("SELECT state FROM sessions WHERE id = ?", workingSess.ID).Scan(&rawState); err != nil {
+		t.Fatalf("failed to query raw session state: %v", err)
+	}
+	if daemon.State(rawState) != daemon.StateWorking {
+		t.Fatalf("expected state %v to remain unaltered, got %v", daemon.StateWorking, rawState)
+	}
+
 }

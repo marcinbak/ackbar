@@ -1160,6 +1160,25 @@ func (d *DB) SetSetting(key, value string) error {
 	return d.SetSettings(map[string]string{key: value})
 }
 
+// ReadPersistedHostName opens dbPath in read-only mode to retrieve settings.host_name
+// without executing schema creation, migrations, or session mutations.
+func ReadPersistedHostName(dbPath string) string {
+	if dbPath == "" {
+		return ""
+	}
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		return ""
+	}
+	defer db.Close()
+
+	var val string
+	if err := db.QueryRow("SELECT value FROM settings WHERE key = 'host_name';").Scan(&val); err != nil {
+		return ""
+	}
+	return val
+}
+
 // ListActiveSessions queries only active, non-ended sessions (state != StateEnded)
 func (d *DB) ListActiveSessions() ([]*Session, error) {
 	query := `

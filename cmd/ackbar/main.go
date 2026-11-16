@@ -146,13 +146,8 @@ func hasPersistedHostIdentity(home string) bool {
 	if _, err := os.Stat(dbPath); err != nil {
 		return false
 	}
-	db, err := daemon.InitDB(dbPath)
-	if err != nil {
-		return false
-	}
-	defer db.Close()
-	val, err := db.GetSetting("host_name")
-	return err == nil && val != "" && !strings.EqualFold(val, "local")
+	val := daemon.ReadPersistedHostName(dbPath)
+	return val != "" && !strings.EqualFold(val, "local")
 }
 
 func buildDaemonRestartArgs(home, runningHost, runningDisplayName string) []string {
@@ -169,6 +164,21 @@ func buildDaemonRestartArgs(home, runningHost, runningDisplayName string) []stri
 	return args
 }
 
+func resolveBrewExecutable() string {
+	for _, candidate := range []string{
+		"/opt/homebrew/bin/brew",
+		"/usr/local/bin/brew",
+	} {
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+	}
+	if p, err := exec.LookPath("brew"); err == nil {
+		return p
+	}
+	return ""
+}
+
 func tryRestartDarwinLaunchdService() bool {
 	if runtime.GOOS != "darwin" {
 		return false
@@ -180,13 +190,17 @@ func tryRestartDarwinLaunchdService() bool {
 	outStr := string(out)
 	var started bool
 	if strings.Contains(outStr, "com.marcinbak.ackbard") {
-		_ = exec.Command("launchctl", "kickstart", "-k", fmt.Sprintf("gui/%d/com.marcinbak.ackbard", os.Getuid())).Run()
-		started = true
+		err := exec.Command("launchctl", "kickstart", "-k", fmt.Sprintf("gui/%d/com.marcinbak.ackbard", os.Getuid())).Run()
+		started = err == nil
 	} else if strings.Contains(outStr, "homebrew.mxcl.ackbar") {
-		cmd := exec.Command("brew", "services", "restart", "ackbar")
+		brewBin := resolveBrewExecutable()
+		if brewBin == "" {
+			return false
+		}
+		cmd := exec.Command(brewBin, "services", "restart", "ackbar")
 		cmd.Env = append(os.Environ(), "PATH=/opt/homebrew/bin:/usr/local/bin:"+os.Getenv("PATH"))
-		_ = cmd.Run()
-		started = true
+		err := cmd.Run()
+		started = err == nil
 	}
 	if !started {
 		return false
