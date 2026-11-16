@@ -316,6 +316,10 @@ func (s *Server) handleFileOpen(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			baseResolved = filepath.Clean(baseResolved)
+			if err := checkSensitivePath(baseResolved); err != nil {
+				http.Error(w, err.Error(), http.StatusForbidden)
+				return
+			}
 		}
 
 		pathForVSCode := baseResolved

@@ -970,6 +970,9 @@ func TestResolveHost_DisplayName_And_SSHTarget(t *testing.T) {
 }
 
 func TestResolveFilePath_FallbacksAndSecurity(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
 	tmpDir, err := os.MkdirTemp("", "ackbar-resolve-fallbacks-*")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
@@ -1059,8 +1062,6 @@ func TestResolveFilePath_FallbacksAndSecurity(t *testing.T) {
 
 		subImg := filepath.Join(subDir, "gen_diagram.png")
 		_ = os.WriteFile(subImg, []byte("diagram"), 0644)
-		defer os.RemoveAll(filepath.Join(bDir, parentUUID))
-		defer os.RemoveAll(filepath.Join(bDir, subUUID))
 
 		subDescriptor := fmt.Sprintf(`{"role":"subagent","typeName":"coder"}`)
 		_ = os.WriteFile(filepath.Join(parentLogDir, subUUID+".json"), []byte(subDescriptor), 0644)
@@ -1090,7 +1091,6 @@ func TestResolveFilePath_FallbacksAndSecurity(t *testing.T) {
 	if homeDir != "" {
 		sshDir := filepath.Join(homeDir, ".ssh")
 		_ = os.MkdirAll(sshDir, 0700)
-		defer os.RemoveAll(sshDir)
 		_ = os.WriteFile(filepath.Join(sshDir, "id_rsa"), []byte("secret"), 0600)
 
 		_ = os.Symlink(filepath.Join(sshDir, "id_rsa"), symlinkPath)
@@ -1140,6 +1140,7 @@ func TestHandleFileContent_SVG_SecurityHeaders(t *testing.T) {
 }
 
 func TestHandleFileOpen_CwdOverrideAndRemotePathSanitization(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	tmpDir, err := os.MkdirTemp("", "ackbar-fileopen-test-*")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
@@ -1269,14 +1270,10 @@ func TestResolveFilePath_GlobWildcardRejection(t *testing.T) {
 }
 
 func TestHandleFileOpen_VSCode_SecurityAndRemote(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "ackbar-vscode-test-*")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
 
 	server := &Server{}
-	homeDir, _ := os.UserHomeDir()
 
 	// 1. Leading dash rejected with 400
 	dashBody, _ := json.Marshal(map[string]interface{}{
@@ -1292,24 +1289,21 @@ func TestHandleFileOpen_VSCode_SecurityAndRemote(t *testing.T) {
 	}
 
 	// 2. Local app=vscode with sensitive path ~/.ssh/id_rsa returns 403 Forbidden
-	if homeDir != "" {
-		sshDir := filepath.Join(homeDir, ".ssh")
-		_ = os.MkdirAll(sshDir, 0700)
-		defer os.RemoveAll(sshDir)
-		idRsa := filepath.Join(sshDir, "id_rsa")
-		_ = os.WriteFile(idRsa, []byte("key"), 0600)
+	sshDir := filepath.Join(homeDir, ".ssh")
+	_ = os.MkdirAll(sshDir, 0700)
+	idRsa := filepath.Join(sshDir, "id_rsa")
+	_ = os.WriteFile(idRsa, []byte("key"), 0600)
 
-		sshBody, _ := json.Marshal(map[string]interface{}{
-			"path": idRsa,
-			"app":  "vscode",
-		})
-		reqSSH := httptest.NewRequest("POST", "/v1/files/open", strings.NewReader(string(sshBody)))
-		reqSSH.Header.Set("Content-Type", "application/json")
-		recSSH := httptest.NewRecorder()
-		server.handleFileOpen(recSSH, reqSSH)
-		if recSSH.Code != http.StatusForbidden {
-			t.Errorf("Expected 403 Forbidden for ~/.ssh/id_rsa in vscode, got %d: %s", recSSH.Code, recSSH.Body.String())
-		}
+	sshBody, _ := json.Marshal(map[string]interface{}{
+		"path": idRsa,
+		"app":  "vscode",
+	})
+	reqSSH := httptest.NewRequest("POST", "/v1/files/open", strings.NewReader(string(sshBody)))
+	reqSSH.Header.Set("Content-Type", "application/json")
+	recSSH := httptest.NewRecorder()
+	server.handleFileOpen(recSSH, reqSSH)
+	if recSSH.Code != http.StatusForbidden {
+		t.Errorf("Expected 403 Forbidden for ~/.ssh/id_rsa in vscode, got %d: %s", recSSH.Code, recSSH.Body.String())
 	}
 
 	// 3. Remote app=vscode with remote-only cwd does not fail local root validation
@@ -1334,6 +1328,20 @@ func TestHandleFileOpen_VSCode_SecurityAndRemote(t *testing.T) {
 	}
 	if uri, ok := respRemote["uri"].(string); !ok || !strings.Contains(uri, "ssh-remote+remote-devbox") {
 		t.Errorf("Expected remote vscode URI with ssh-remote, got %q", uri)
+	}
+
+	// 4. Remote app=vscode with sensitive path /etc/shadow returns 403 Forbidden
+	shadowBody, _ := json.Marshal(map[string]interface{}{
+		"path": "/etc/shadow",
+		"host": "remote-devbox",
+		"app":  "vscode",
+	})
+	reqShadow := httptest.NewRequest("POST", "/v1/files/open", strings.NewReader(string(shadowBody)))
+	reqShadow.Header.Set("Content-Type", "application/json")
+	recShadow := httptest.NewRecorder()
+	server.handleFileOpen(recShadow, reqShadow)
+	if recShadow.Code != http.StatusForbidden {
+		t.Errorf("Expected 403 Forbidden for remote /etc/shadow in vscode, got %d: %s", recShadow.Code, recShadow.Body.String())
 	}
 }
 
