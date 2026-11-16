@@ -147,8 +147,39 @@ func (s *Server) resolveHost(hostName string) *HostRecord {
 		return hostRec
 	}
 	if allHosts, err := s.db.ListHosts(); err == nil {
+		s.hostHealthMu.RLock()
+		healthMap := make(map[string]string)
+		for k, v := range s.hostHealthMap {
+			if v != nil {
+				healthMap[k] = v.DisplayName
+			}
+		}
+		s.hostHealthMu.RUnlock()
+
+		targetExtracted := extractHostname(hostName)
+
 		for _, h := range allHosts {
-			if h.Name == hostName || strings.EqualFold(h.Name, hostName) || strings.HasSuffix(h.Name, "@"+hostName) || strings.Contains(h.Name, hostName) {
+			if h.Name == hostName || strings.EqualFold(h.Name, hostName) {
+				return h
+			}
+			if h.DisplayName != "" && strings.EqualFold(h.DisplayName, hostName) {
+				return h
+			}
+			if healthDN, ok := healthMap[h.Name]; ok && healthDN != "" && strings.EqualFold(healthDN, hostName) {
+				return h
+			}
+			if h.SSHTarget != "" {
+				if strings.EqualFold(h.SSHTarget, hostName) || strings.HasSuffix(h.SSHTarget, "@"+hostName) {
+					return h
+				}
+				if targetExtracted != "" && extractHostname(h.SSHTarget) == targetExtracted {
+					return h
+				}
+			}
+		}
+
+		for _, h := range allHosts {
+			if strings.HasSuffix(h.Name, "@"+hostName) || strings.Contains(h.Name, hostName) {
 				return h
 			}
 		}

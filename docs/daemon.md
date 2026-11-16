@@ -39,6 +39,7 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 * **`server_accounts.go`:** Multi-account profile management (`/v1/accounts`), agent discovery (`/v1/agents/discovery`), provider catalog (`/v1/providers`), and fleet propagation.
 * **`server_hosts.go`:** Remote host health tracking, SSH target resolution, host CRUD (`/v1/hosts`), cross-compiled remote upgrades (`/v1/hosts/update`), and resilient SSH tunnel management (`/v1/hosts/reconnect`, `ensureHostTunnels`).
 * **`server_projects.go`:** Workspace document discovery (`/v1/documents`), tree node CRUD and move (`/v1/nodes`), project creation (`/v1/projects/create`), worktree/path normalization, and VS Code URI launching (`/v1/editor/open`).
+* **`files.go` & `files_resolve.go`:** Workspace file serving (`GET /v1/files/content`), external launching (`POST /v1/files/open`), sandbox CSP headers, and path resolution (worktrees, brain, subagents, cross-OS homes).
 * **`server_tasks.go` & `task_scope.go`:** Task CRUD (`/v1/tasks`), canonical project node scope resolution (`resolveTaskNodeScope`), task moves, and subproject normalization.
 * **`server_deliverables.go`, `db_deliverables.go`, `deliverables_retro.go`:** Task deliverable endpoints (`/v1/deliverables`, `/v1/retros`, `/v1/tasks/deliverable`), rune-safe cursor pagination, auto-ingested `.retro.md` & `run-state.json` parsing, and LWW deliverable replication.
 * **`server_sync.go`:** Uniform 3-way Last-Write-Wins (LWW) peer-to-peer sync engine (`/v1/sync/state`, `/v1/sync/push`, `/v1/nodes/paths`) and background delta reconciliation.
@@ -115,6 +116,8 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 | `POST` | `/v1/sessions/summarize-speech` | On-demand speech summarizer with 2-level caching (in-memory + SQLite `speech_summaries`), headless Haiku synthesis ($0 flat OAuth), optional cloud API, and pure-Go structural AST fallback. |
 | `POST` | `/v1/update` | Updates daemon executable; if headless turns are active, daemon restart is deferred (`restart_deferred: true`) until active turns drain. |
 | `POST` | `/v1/shutdown` | Gracefully shuts down daemon (supports `?drain=true` to defer restart until active headless turns complete). |
+| `GET` | `/v1/files/content` | Streams workspace or artifact file content (supports `path`, `session_id`, `cwd`, `download`, SVG sandbox CSP). |
+| `POST` | `/v1/files/open` | Launches local or staged remote file in default application or VS Code (supports `path`, `session_id`, `cwd`, `app`). |
 
 ### PTY Terminal Sizing (`/v1/sessions/pty`)
 
