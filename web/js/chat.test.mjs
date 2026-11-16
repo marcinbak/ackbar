@@ -414,6 +414,7 @@ function parseHtmlFragment(html, parent) {
       }
     }
     const inner = html.slice(closeAngle + 1, endTagPos);
+    el._innerHTML = inner;
     if (inner && inner.includes('<')) {
       el.children = parseHtmlFragment(inner, el);
     } else if (inner) {
@@ -451,6 +452,26 @@ globalThis.window.removeEventListener = () => {};
 globalThis.window.requestAnimationFrame = (fn) => setTimeout(fn, 0);
 globalThis.window.cancelAnimationFrame = (id) => clearTimeout(id);
 globalThis.window.open = () => null;
+globalThis.window.marked = {
+  use(ext) {
+    if (ext && ext.renderer) this._renderer = ext.renderer;
+  },
+  setOptions(opts) {
+    if (opts && opts.renderer) this._renderer = opts.renderer;
+  },
+  parse(md) {
+    let parsed = (md || '')
+      .replace(/\[(.*?)\]\((.*?)\)/g, (_, text, href) => {
+        if (this._renderer && typeof this._renderer.link === 'function') {
+          return this._renderer.link(href, '', text);
+        }
+        return `<a href="${href}">${text}</a>`;
+      })
+      .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+      .replace(/__(.*?)__/g, '<strong>$1</strong>');
+    return `<p>${parsed}</p>`;
+  }
+};
 globalThis.localStorage = { getItem: () => null, setItem: () => {}, removeItem: () => {} };
 globalThis.document = {
   body: new MockElement('body'),
@@ -484,7 +505,8 @@ const {
   pauseInStreamActivity,
   resumeInStreamActivity,
   formatModelLabel,
-  updateStatusPills
+  updateStatusPills,
+  createChatMessageElement
 } = chat;
 
 const chatAuth = await import('./chat-auth.js');
@@ -494,6 +516,12 @@ const {
   mountMCPStatus,
   invalidateMCPStatusCache
 } = chatAuth;
+
+const {
+  hasMarkdownSyntax,
+  sanitizeRenderedMarkdownHtml,
+  renderMarkdown
+} = await import('./utils.js');
 
 test('isPromptInTranscriptTail validates tail message matching and timestamp sanity', () => {
   assert.equal(isPromptInTranscriptTail([], 'fix login', Date.now()), false);

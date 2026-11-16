@@ -344,4 +344,64 @@ void main() {
     );
     defaultController.dispose();
   });
+
+  test(
+      'interleaved tool events do not inject double newlines into streaming assistant text',
+      () async {
+    final fakeApi = _FakeApiClient();
+    final fakeStream = _FakeChatStreamClient();
+
+    final controller = HeadlessChatStreamController(
+      session: _testSession(),
+      host: _testHost(),
+      apiClient: fakeApi,
+      chatStreamClient: fakeStream,
+    );
+    addTearDown(() => controller.dispose());
+
+    controller.init();
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+
+    fakeStream.streamCtrl.add(ChatStreamEvent.fromJson({
+      'session_id': 'claude-code:local:sess-1',
+      'seq': 1,
+      'turn_id': 'turn-tool-test',
+      'type': 'turn_start',
+    }));
+    fakeStream.streamCtrl.add(ChatStreamEvent.fromJson({
+      'session_id': 'claude-code:local:sess-1',
+      'seq': 2,
+      'turn_id': 'turn-tool-test',
+      'type': 'text_delta',
+      'text': 'Point 3 controls **what shopping, pricing, and t',
+    }));
+    fakeStream.streamCtrl.add(ChatStreamEvent.fromJson({
+      'session_id': 'claude-code:local:sess-1',
+      'seq': 3,
+      'turn_id': 'turn-tool-test',
+      'type': 'tool_start',
+      'tool_name': 'inspect',
+    }));
+    fakeStream.streamCtrl.add(ChatStreamEvent.fromJson({
+      'session_id': 'claude-code:local:sess-1',
+      'seq': 4,
+      'turn_id': 'turn-tool-test',
+      'type': 'tool_result',
+      'tool_name': 'inspect',
+      'tool_output': 'ok',
+    }));
+    fakeStream.streamCtrl.add(ChatStreamEvent.fromJson({
+      'session_id': 'claude-code:local:sess-1',
+      'seq': 5,
+      'turn_id': 'turn-tool-test',
+      'type': 'text_delta',
+      'text': 'echnical build data**',
+    }));
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+
+    final msgs = controller.transcriptData!.messages;
+    final assistantMsg = msgs.firstWhere((m) => m.isAssistant);
+    expect(assistantMsg.content,
+        'Point 3 controls **what shopping, pricing, and technical build data**');
+  });
 }

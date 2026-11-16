@@ -4,8 +4,8 @@ import { getAuthToken } from './auth.js';
 import {
   escapeHtml,
   renderMarkdown,
+  hasMarkdownSyntax,
   formatRelativeTime,
-  ensureDoubleNewlineSeparation,
   getSessionBaseUrl,
   openInVSCode,
   formatAgentChatName
@@ -4343,14 +4343,7 @@ function createChatMessageElement(tabObj, msg) {
     let bodyHtml = '';
     let hasMarkdownVisuals = false;
     if (displayContent) {
-      hasMarkdownVisuals = /!\[[^\]]*\]\([^)]+\)/.test(displayContent) ||
-                           /`{3,4}carousel/i.test(displayContent) ||
-                           /<!--\s*slide\s*-->/i.test(displayContent) ||
-                           /\$\\[a-zA-Z]+/.test(displayContent) ||
-                           /\$\$[\s\S]+?\$\$/.test(displayContent) ||
-                           /^\s*>\s*\[!(?:NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]/im.test(displayContent) ||
-                           /file:\/\//i.test(displayContent) ||
-                           /conversation:\/\//i.test(displayContent);
+      hasMarkdownVisuals = hasMarkdownSyntax(displayContent);
       if (hasMarkdownVisuals) {
         bodyHtml = `<div class="chat-msg-body markdown-body">${renderMarkdown(displayContent)}</div>`;
       } else {
@@ -4374,10 +4367,6 @@ function createChatMessageElement(tabObj, msg) {
       ${attachmentsHtml}
       ${bodyHtml}
     `;
-
-    if (hasMarkdownVisuals) {
-      linkifyChatFiles(msgEl, tabObj ? tabObj.session : null);
-    }
 
     msgEl.querySelectorAll('.chat-msg-attachments .chat-attachment-chip').forEach(chip => {
       chip.addEventListener('click', (e) => {
@@ -5203,7 +5192,6 @@ async function sendChatPrompt(tabObj, forcedPromptText, schedulingOptions) {
   if (!hadActiveTurnBeforeDispatch) {
     tabObj.activeTurnMsgEl = null;
     tabObj.activeTurnBuffer = '';
-    tabObj.activeTurnHadTool = false;
     tabObj.activeTurnTools = [];
     tabObj.activeTurnThinking = '';
   }
@@ -5260,7 +5248,6 @@ async function sendChatPrompt(tabObj, forcedPromptText, schedulingOptions) {
     if (hadActiveTurnBeforeDispatch && !tabObj.activeTurnMsgEl && !tabObj.activeTurnBuffer) {
       tabObj.activeTurnMsgEl = null;
       tabObj.activeTurnBuffer = '';
-      tabObj.activeTurnHadTool = false;
       tabObj.activeTurnTools = [];
       tabObj.activeTurnThinking = '';
     }
@@ -5481,7 +5468,6 @@ function handleChatStreamEvent(tabObj, evt) {
         if (staleCursor) staleCursor.remove();
         tabObj.activeTurnMsgEl = null;
         tabObj.activeTurnBuffer = '';
-        tabObj.activeTurnHadTool = false;
         tabObj.activeTurnTools = [];
         tabObj.activeTurnThinking = '';
       }
@@ -5543,7 +5529,6 @@ function handleChatStreamEvent(tabObj, evt) {
       break;
 
     case 'turn_start':
-      tabObj.activeTurnHadTool = false;
       tabObj.lastCompletedTurn = null;
       if (evt.text) {
         const evtNorm = normalizePromptText(evt.text);
@@ -5677,12 +5662,7 @@ function handleChatStreamEvent(tabObj, evt) {
         if (tabObj.chatStatusBadge) tabObj.chatStatusBadge.textContent = '⚡ Working...';
         const currentMsgEl = ensureActiveAssistantMessage(tabObj);
         if (currentMsgEl) {
-          if (tabObj.activeTurnHadTool && tabObj.activeTurnBuffer) {
-            tabObj.activeTurnBuffer = ensureDoubleNewlineSeparation(tabObj.activeTurnBuffer, incoming);
-            tabObj.activeTurnHadTool = false;
-          } else {
-            tabObj.activeTurnBuffer = (tabObj.activeTurnBuffer || '') + incoming;
-          }
+          tabObj.activeTurnBuffer = (tabObj.activeTurnBuffer || '') + incoming;
           scheduleActiveTurnStreamRender(tabObj);
         }
       }
@@ -5840,7 +5820,6 @@ function handleChatStreamEvent(tabObj, evt) {
       tabObj.sending = true;
       if (tabObj.chatCancelBtn) tabObj.chatCancelBtn.style.display = 'inline-flex';
       if (tabObj.chatStatusBadge) tabObj.chatStatusBadge.textContent = '⚡ Working...';
-      tabObj.activeTurnHadTool = true;
       tabObj.activeTurnTools = tabObj.activeTurnTools || [];
       const lastTool = tabObj.activeTurnTools.length > 0 ? tabObj.activeTurnTools[tabObj.activeTurnTools.length - 1] : null;
       if (lastTool) {
@@ -6121,7 +6100,6 @@ function resetChatComposer(tabObj) {
   hideInStreamActivity(tabObj);
   tabObj.activeTurnMsgEl = null;
   tabObj.activeTurnBuffer = '';
-  tabObj.activeTurnHadTool = false;
   tabObj.activeTurnTools = [];
   tabObj.activeTurnThinking = '';
   if (tabObj.chatCancelBtn) tabObj.chatCancelBtn.style.display = 'none';
