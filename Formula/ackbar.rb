@@ -5,15 +5,15 @@
 class Ackbar < Formula
   desc "Lightweight, cross-machine control plane and session manager for autonomous AI coding agents"
   homepage "https://github.com/marcinbak/ackbar"
-  version "20261116.06"
+  version "20261116.07"
   license "MIT"
 
   depends_on "tmux"
 
   on_macos do
     if Hardware::CPU.intel?
-      url "https://github.com/marcinbak/ackbar/releases/download/v20261116.06/ackbar_20261116.06_darwin_amd64.tar.gz"
-      sha256 "6f55e11a0755132d4c52a7ec3f7d49e9c8471f07340e5bfa3dd9b0e9128ec390"
+      url "https://github.com/marcinbak/ackbar/releases/download/v20261116.07/ackbar_20261116.07_darwin_amd64.tar.gz"
+      sha256 "5699eec478e7ddc595e179df0a41c5f771d746e837f9908b0ae6c598ef872a2c"
 
       define_method(:install) do
         bin.install "ackbar"
@@ -23,8 +23,8 @@ class Ackbar < Formula
       end
     end
     if Hardware::CPU.arm?
-      url "https://github.com/marcinbak/ackbar/releases/download/v20261116.06/ackbar_20261116.06_darwin_arm64.tar.gz"
-      sha256 "7443dd81b97ffa3e55fcfdde79be9b810084b939d0082e22ff1ef676d0abf16b"
+      url "https://github.com/marcinbak/ackbar/releases/download/v20261116.07/ackbar_20261116.07_darwin_arm64.tar.gz"
+      sha256 "a3c944236d1a6bd394692bf2769758e4284596761b51c76135e01539ee7db7c9"
 
       define_method(:install) do
         bin.install "ackbar"
@@ -37,8 +37,8 @@ class Ackbar < Formula
 
   on_linux do
     if Hardware::CPU.intel? && Hardware::CPU.is_64_bit?
-      url "https://github.com/marcinbak/ackbar/releases/download/v20261116.06/ackbar_20261116.06_linux_amd64.tar.gz"
-      sha256 "05d6c24b174e20c8fa70ff13edae80f40a3763ae58f6cc4dc2350d8bbe727dea"
+      url "https://github.com/marcinbak/ackbar/releases/download/v20261116.07/ackbar_20261116.07_linux_amd64.tar.gz"
+      sha256 "2307d19ee14cd69e33654098aed5ec50e55996946f8a1b05e6e9db748a472995"
       define_method(:install) do
         bin.install "ackbar"
         bin.install "ackbar-hook"
@@ -47,8 +47,8 @@ class Ackbar < Formula
       end
     end
     if Hardware::CPU.arm? && Hardware::CPU.is_64_bit?
-      url "https://github.com/marcinbak/ackbar/releases/download/v20261116.06/ackbar_20261116.06_linux_arm64.tar.gz"
-      sha256 "3b0274332cfc6010d5c9b71a71daf460227d70670729b6a6d7d050acd25fe53b"
+      url "https://github.com/marcinbak/ackbar/releases/download/v20261116.07/ackbar_20261116.07_linux_arm64.tar.gz"
+      sha256 "a9fb623f466010f7c6546cc291e90c0b48893590fbabecae35cc80f459fd0680"
       define_method(:install) do
         bin.install "ackbar"
         bin.install "ackbar-hook"
