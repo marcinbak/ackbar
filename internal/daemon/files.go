@@ -20,6 +20,8 @@ func detectMIMEType(ext string) string {
 	switch strings.ToLower(ext) {
 	case ".png":
 		return "image/png"
+	case ".avif":
+		return "image/avif"
 	case ".jpg", ".jpeg":
 		return "image/jpeg"
 	case ".gif":
@@ -89,20 +91,15 @@ func openFileLocally(filePath string, app string) error {
 }
 
 func defaultOpenFileLocally(filePath string, app string) error {
-	// Under automated tests (e.g. go test), do not launch real external GUI processes
 	if isTestEnv() {
 		return nil
 	}
-
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":
-		switch strings.ToLower(app) {
-		case "preview":
+		if strings.ToLower(app) == "preview" {
 			cmd = exec.Command("open", "-a", "Preview", filePath)
-		case "browser":
-			cmd = exec.Command("open", filePath)
-		default:
+		} else {
 			cmd = exec.Command("open", filePath)
 		}
 	case "linux":
@@ -112,7 +109,6 @@ func defaultOpenFileLocally(filePath string, app string) error {
 	default:
 		return fmt.Errorf("unsupported operating system: %s", runtime.GOOS)
 	}
-
 	return cmd.Start()
 }
 
@@ -135,11 +131,12 @@ func (s *Server) handleFileContent(w http.ResponseWriter, r *http.Request) {
 		sessionID = r.URL.Query().Get("id")
 	}
 	hostParam := r.URL.Query().Get("host")
+	cwdParam := r.URL.Query().Get("cwd")
 
 	// Determine session and host
 	var sess *Session
 	if sessionID != "" {
-		sess = s.resolveSession(sessionID)
+		sess = s.resolveSessionForFile(sessionID)
 	}
 
 	targetHost := hostParam
@@ -157,7 +154,9 @@ func (s *Server) handleFileContent(w http.ResponseWriter, r *http.Request) {
 	if targetHost != "" && !s.isLocalHost(targetHost) {
 		hostRec := s.resolveHost(targetHost)
 		if hostRec != nil && hostRec.URL != "" {
-			targetURL := fmt.Sprintf("%s/v1/files/content?%s", strings.TrimSuffix(hostRec.URL, "/"), r.URL.RawQuery)
+			q := r.URL.Query()
+			q.Del("host")
+			targetURL := fmt.Sprintf("%s/v1/files/content?%s", strings.TrimSuffix(hostRec.URL, "/"), q.Encode())
 			fwdReq, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL, nil)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -189,7 +188,13 @@ func (s *Server) handleFileContent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Local file resolution
-	filePath, err := s.resolveFilePath(sess, reqPath)
+	effectiveSess, origCwd, err := s.applyEffectiveCwd(sess, cwdParam, targetHost)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusForbidden)
+		return
+	}
+
+	filePath, err := s.resolveFilePathWithOrigCwd(effectiveSess, reqPath, origCwd)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusForbidden)
 		return
@@ -213,6 +218,10 @@ func (s *Server) handleFileContent(w http.ResponseWriter, r *http.Request) {
 	ext := strings.ToLower(filepath.Ext(filePath))
 	if ctype := detectMIMEType(ext); ctype != "" {
 		w.Header().Set("Content-Type", ctype)
+		if ext == ".svg" {
+			w.Header().Set("Content-Security-Policy", "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; sandbox")
+			w.Header().Set("X-Content-Type-Options", "nosniff")
+		}
 	}
 
 	if r.URL.Query().Get("download") == "1" || r.URL.Query().Get("download") == "true" {
@@ -236,6 +245,7 @@ func (s *Server) handleFileOpen(w http.ResponseWriter, r *http.Request) {
 		SessionID string `json:"session_id"`
 		Host      string `json:"host"`
 		App       string `json:"app"` // "preview", "vscode", "browser", "default"
+		Cwd       string `json:"cwd"`
 	}
 
 	if r.Method == http.MethodPost {
@@ -245,13 +255,15 @@ func (s *Server) handleFileOpen(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Query params fallback
 	if req.Path == "" {
 		req.Path = r.URL.Query().Get("path")
+		if req.Path == "" {
+			http.Error(w, "Missing path parameter", http.StatusBadRequest)
+			return
+		}
 	}
 	if req.SessionID == "" {
-		req.SessionID = r.URL.Query().Get("session_id")
-		if req.SessionID == "" {
+		if req.SessionID = r.URL.Query().Get("session_id"); req.SessionID == "" {
 			req.SessionID = r.URL.Query().Get("id")
 		}
 	}
@@ -264,16 +276,14 @@ func (s *Server) handleFileOpen(w http.ResponseWriter, r *http.Request) {
 	if req.App == "" {
 		req.App = "default"
 	}
-
-	if req.Path == "" {
-		http.Error(w, "Missing path parameter", http.StatusBadRequest)
-		return
+	if req.Cwd == "" {
+		req.Cwd = r.URL.Query().Get("cwd")
 	}
 
 	// Resolve session and host
 	var sess *Session
 	if req.SessionID != "" {
-		sess = s.resolveSession(req.SessionID)
+		sess = s.resolveSessionForFile(req.SessionID)
 	}
 
 	targetHost := req.Host
@@ -289,17 +299,18 @@ func (s *Server) handleFileOpen(w http.ResponseWriter, r *http.Request) {
 
 	// If app is VS Code, delegate to LaunchVSCode
 	if strings.ToLower(req.App) == "vscode" {
-		targetPath := req.Path
+		targetPath := stripFileScheme(req.Path)
 		cleanTarget, line, col := splitFilePathAndLine(targetPath)
-		var baseResolved string
-		if sess != nil && !filepath.IsAbs(cleanTarget) {
-			if resolved, err := s.resolveFilePath(sess, cleanTarget); err == nil {
+		effectiveSess, origCwd, err := s.applyEffectiveCwd(sess, req.Cwd, targetHost)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusForbidden)
+			return
+		}
+		baseResolved := cleanTarget
+		if (targetHost == "" || s.isLocalHost(targetHost)) || effectiveSess != nil {
+			if resolved, err := s.resolveFilePathWithOrigCwd(effectiveSess, cleanTarget, origCwd); err == nil {
 				baseResolved = resolved
-			} else {
-				baseResolved = cleanTarget
 			}
-		} else {
-			baseResolved = cleanTarget
 		}
 
 		// Verify local file exists before opening to prevent VS Code "file does not exist" modals
@@ -311,12 +322,10 @@ func (s *Server) handleFileOpen(w http.ResponseWriter, r *http.Request) {
 		}
 
 		pathForVSCode := baseResolved
-		if line > 0 {
-			if col > 0 {
-				pathForVSCode = fmt.Sprintf("%s:%d:%d", baseResolved, line, col)
-			} else {
-				pathForVSCode = fmt.Sprintf("%s:%d", baseResolved, line)
-			}
+		if line > 0 && col > 0 {
+			pathForVSCode = fmt.Sprintf("%s:%d:%d", baseResolved, line, col)
+		} else if line > 0 {
+			pathForVSCode = fmt.Sprintf("%s:%d", baseResolved, line)
 		}
 
 		uri, err := LaunchVSCode(pathForVSCode, targetHost)
@@ -350,6 +359,9 @@ func (s *Server) handleFileOpen(w http.ResponseWriter, r *http.Request) {
 		if req.SessionID != "" {
 			contentURL += fmt.Sprintf("&session_id=%s", url.QueryEscape(req.SessionID))
 		}
+		if req.Cwd != "" {
+			contentURL += fmt.Sprintf("&cwd=%s", url.QueryEscape(req.Cwd))
+		}
 
 		fwdReq, err := http.NewRequestWithContext(r.Context(), http.MethodGet, contentURL, nil)
 		if err != nil {
@@ -381,14 +393,37 @@ func (s *Server) handleFileOpen(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		cleanRemotePath := strings.TrimPrefix(filepath.Clean(req.Path), "/")
-		cachedDir := filepath.Join(homeDir, ".cache", "ackbar", "remote", sanitizeHostCacheSubdir(targetHost), filepath.Dir(cleanRemotePath))
-		if err := os.MkdirAll(cachedDir, 0755); err != nil {
+		hostCacheRoot := filepath.Join(homeDir, ".cache", "ackbar", "remote", sanitizeHostCacheSubdir(targetHost))
+		cleanRemotePath, _, _ := splitFilePathAndLine(stripFileScheme(req.Path))
+		if unescaped, err := url.PathUnescape(cleanRemotePath); err == nil {
+			cleanRemotePath = unescaped
+		}
+		cleanRemotePath = filepath.Clean(cleanRemotePath)
+		cleanRemotePath = strings.TrimPrefix(cleanRemotePath, filepath.VolumeName(cleanRemotePath))
+		cleanRemotePath = strings.TrimLeft(cleanRemotePath, "/\\")
+
+		parts := strings.Split(cleanRemotePath, string(filepath.Separator))
+		var safeParts []string
+		for _, p := range parts {
+			if p == ".." || p == "." || p == "" {
+				continue
+			}
+			safeParts = append(safeParts, p)
+		}
+		if len(safeParts) == 0 {
+			safeParts = []string{"staged_file"}
+		}
+		cachedFilePath := filepath.Join(hostCacheRoot, filepath.Join(safeParts...))
+		if !strings.HasPrefix(cachedFilePath, hostCacheRoot+string(filepath.Separator)) {
+			http.Error(w, "Invalid remote path for caching", http.StatusBadRequest)
+			return
+		}
+
+		if err := os.MkdirAll(filepath.Dir(cachedFilePath), 0755); err != nil {
 			http.Error(w, fmt.Sprintf("Failed to create cache dir: %v", err), http.StatusInternalServerError)
 			return
 		}
 
-		cachedFilePath := filepath.Join(cachedDir, filepath.Base(cleanRemotePath))
 		outFile, err := os.Create(cachedFilePath)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("Failed to write cached file: %v", err), http.StatusInternalServerError)
@@ -420,7 +455,13 @@ func (s *Server) handleFileOpen(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Local file handling
-	filePath, err := s.resolveFilePath(sess, req.Path)
+	effectiveSess, origCwd, err := s.applyEffectiveCwd(sess, req.Cwd, targetHost)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusForbidden)
+		return
+	}
+
+	filePath, err := s.resolveFilePathWithOrigCwd(effectiveSess, req.Path, origCwd)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusForbidden)
 		return

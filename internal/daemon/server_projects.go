@@ -213,7 +213,9 @@ func (s *Server) handleDocumentContent(w http.ResponseWriter, r *http.Request) {
 	if targetHost != "" && !s.isLocalHost(targetHost) {
 		hostRec := s.resolveHost(targetHost)
 		if hostRec != nil && hostRec.URL != "" {
-			targetURL := fmt.Sprintf("%s/v1/documents/content?%s", strings.TrimSuffix(hostRec.URL, "/"), r.URL.RawQuery)
+			q := r.URL.Query()
+			q.Del("host")
+			targetURL := fmt.Sprintf("%s/v1/documents/content?%s", strings.TrimSuffix(hostRec.URL, "/"), q.Encode())
 			fwdReq, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL, nil)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)

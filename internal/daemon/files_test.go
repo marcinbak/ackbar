@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestDetectMIMEType(t *testing.T) {
@@ -833,5 +834,392 @@ func TestHandleDocumentContent_ResolutionAndSecurity(t *testing.T) {
 		if rec.Code != http.StatusBadRequest {
 			t.Fatalf("Expected 400 Bad Request for directory path, got %d: %s", rec.Code, rec.Body.String())
 		}
+	}
+}
+
+func TestDetectMIMEType_AVIF(t *testing.T) {
+	if got := detectMIMEType(".avif"); got != "image/avif" {
+		t.Fatalf("Expected image/avif, got %s", got)
+	}
+}
+
+func TestHandleFileAndDocumentContent_RemoteProxyStripsHost(t *testing.T) {
+	var forwardedFileQuery, forwardedDocQuery string
+	remoteServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/files/content" {
+			forwardedFileQuery = r.URL.RawQuery
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("file-content"))
+			return
+		}
+		if r.URL.Path == "/v1/documents/content" {
+			forwardedDocQuery = r.URL.RawQuery
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]string{"content": "doc-content"})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer remoteServer.Close()
+
+	tmpDir, err := os.MkdirTemp("", "ackbar-remote-proxy-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	db, err := InitDB(filepath.Join(tmpDir, "test.db"))
+	if err != nil {
+		t.Fatalf("Failed to init DB: %v", err)
+	}
+	defer db.Close()
+
+	_ = db.SaveHost(&HostRecord{
+		Name: "worker-1",
+		URL:  remoteServer.URL,
+	})
+
+	server := NewServer(db)
+
+	// 1. /v1/files/content proxy
+	{
+		req := httptest.NewRequest("GET", "/v1/files/content?path=chart.png&host=worker-1&session_id=sess-123", nil)
+		rec := httptest.NewRecorder()
+		server.Mux().ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("Expected 200 OK, got %d", rec.Code)
+		}
+		if strings.Contains(forwardedFileQuery, "host=") {
+			t.Fatalf("Expected forwarded query not to contain host=, got %q", forwardedFileQuery)
+		}
+		if !strings.Contains(forwardedFileQuery, "path=chart.png") {
+			t.Fatalf("Expected forwarded query to contain path=chart.png, got %q", forwardedFileQuery)
+		}
+	}
+
+	// 2. /v1/documents/content proxy
+	{
+		req := httptest.NewRequest("GET", "/v1/documents/content?path=notes.md&host=worker-1&session_id=sess-123", nil)
+		rec := httptest.NewRecorder()
+		server.Mux().ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("Expected 200 OK, got %d", rec.Code)
+		}
+		if strings.Contains(forwardedDocQuery, "host=") {
+			t.Fatalf("Expected forwarded query not to contain host=, got %q", forwardedDocQuery)
+		}
+		if !strings.Contains(forwardedDocQuery, "path=notes.md") {
+			t.Fatalf("Expected forwarded query to contain path=notes.md, got %q", forwardedDocQuery)
+		}
+	}
+}
+
+func TestResolveHost_DisplayName_And_SSHTarget(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "ackbar-resolvehost-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	db, err := InitDB(filepath.Join(tmpDir, "test.db"))
+	if err != nil {
+		t.Fatalf("Failed to init DB: %v", err)
+	}
+	defer db.Close()
+
+	_ = db.SaveHost(&HostRecord{
+		Name:      "macmini-1",
+		SSHTarget: "dev@192.168.1.50",
+		URL:       "http://192.168.1.50:7777",
+	})
+	_ = db.SaveHost(&HostRecord{
+		Name:      "cloud-server",
+		SSHTarget: "admin@remote.infra.example.com",
+		URL:       "http://remote.infra.example.com:7777",
+	})
+
+	server := NewServer(db)
+	server.hostHealthMu.Lock()
+	server.hostHealthMap["macmini-1"] = &HostHealth{
+		DisplayName: "Living Room Mac Health",
+	}
+	server.hostHealthMap["cloud-server"] = &HostHealth{
+		DisplayName: "Production Cloud",
+	}
+	server.hostHealthMu.Unlock()
+
+	// Dynamic Health DisplayName match
+	if h := server.resolveHost("Living Room Mac Health"); h == nil || h.Name != "macmini-1" {
+		t.Fatalf("Expected macmini-1 by Health DisplayName, got %+v", h)
+	}
+	if h := server.resolveHost("Production Cloud"); h == nil || h.Name != "cloud-server" {
+		t.Fatalf("Expected cloud-server by Health DisplayName, got %+v", h)
+	}
+
+	// SSHTarget extracted hostname match
+	if h := server.resolveHost("192.168.1.50"); h == nil || h.Name != "macmini-1" {
+		t.Fatalf("Expected macmini-1 by SSHTarget hostname, got %+v", h)
+	}
+	if h := server.resolveHost("dev@192.168.1.50"); h == nil || h.Name != "macmini-1" {
+		t.Fatalf("Expected macmini-1 by full SSHTarget, got %+v", h)
+	}
+	if h := server.resolveHost("remote.infra.example.com"); h == nil || h.Name != "cloud-server" {
+		t.Fatalf("Expected cloud-server by SSHTarget host, got %+v", h)
+	}
+}
+
+func TestResolveFilePath_FallbacksAndSecurity(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "ackbar-resolve-fallbacks-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	repoDir := filepath.Join(tmpDir, "myrepo")
+	if err := os.MkdirAll(repoDir, 0755); err != nil {
+		t.Fatalf("Failed to create repo dir: %v", err)
+	}
+
+	server := &Server{}
+	sess := &Session{
+		ID:  "sess-fallback-1",
+		Cwd: repoDir,
+	}
+
+	// 1. %20 unescape vs literal % precedence
+	spaceFile := filepath.Join(repoDir, "My Chart.png")
+	_ = os.WriteFile(spaceFile, []byte("space"), 0644)
+
+	percentLiteralFile := filepath.Join(repoDir, "My%20Chart.png")
+	_ = os.WriteFile(percentLiteralFile, []byte("literal"), 0644)
+
+	// Literal % exists, so requesting literal My%20Chart.png returns literal
+	resolvedLiteral, err := server.resolveFilePath(sess, "My%20Chart.png")
+	if err != nil {
+		t.Fatalf("Failed to resolve literal %%: %v", err)
+	}
+	if resolvedLiteral != percentLiteralFile {
+		t.Errorf("Expected literal %q, got %q", percentLiteralFile, resolvedLiteral)
+	}
+
+	// When literal % does NOT exist, percent-decoded variant resolves
+	_ = os.Remove(percentLiteralFile)
+	resolvedDecoded, err := server.resolveFilePath(sess, "My%20Chart.png")
+	if err != nil {
+		t.Fatalf("Failed to resolve decoded %%: %v", err)
+	}
+	if resolvedDecoded != spaceFile {
+		t.Errorf("Expected decoded space file %q, got %q", spaceFile, resolvedDecoded)
+	}
+
+	// 2. Deleted worktree -> repo root fallback
+	repoHeroFile := filepath.Join(repoDir, "hero.png")
+	_ = os.WriteFile(repoHeroFile, []byte("hero"), 0644)
+
+	deletedWorktreeReq := filepath.Join(repoDir, ".worktrees", "deleted-branch", "hero.png")
+	resolvedFromDeleted, err := server.resolveFilePath(sess, deletedWorktreeReq)
+	if err != nil {
+		t.Fatalf("Failed to resolve from deleted worktree: %v", err)
+	}
+	if resolvedFromDeleted != repoHeroFile {
+		t.Errorf("Expected repo root %q, got %q", repoHeroFile, resolvedFromDeleted)
+	}
+
+	// 3. Active worktree discovery from repo sess.Cwd (newest ModTime wins)
+	wt1Dir := filepath.Join(repoDir, ".worktrees", "branch-old")
+	wt2Dir := filepath.Join(repoDir, ".worktrees", "branch-new")
+	_ = os.MkdirAll(wt1Dir, 0755)
+	_ = os.MkdirAll(wt2Dir, 0755)
+
+	wt1File := filepath.Join(wt1Dir, "widget.png")
+	wt2File := filepath.Join(wt2Dir, "widget.png")
+	_ = os.WriteFile(wt1File, []byte("old"), 0644)
+	time.Sleep(10 * time.Millisecond)
+	_ = os.WriteFile(wt2File, []byte("new"), 0644)
+
+	resolvedActiveWt, err := server.resolveFilePath(sess, "widget.png")
+	if err != nil {
+		t.Fatalf("Failed to resolve active worktree file: %v", err)
+	}
+	if resolvedActiveWt != wt2File {
+		t.Errorf("Expected newest worktree %q, got %q", wt2File, resolvedActiveWt)
+	}
+
+	// 4. Antigravity brain and subagent fallback
+	homeDir, _ := os.UserHomeDir()
+	if homeDir != "" {
+		parentUUID := "11111111-2222-3333-4444-555555555555"
+		subUUID := "66666666-7777-8888-9999-000000000000"
+		bDir := filepath.Join(homeDir, ".gemini", "antigravity", "brain")
+		parentLogDir := filepath.Join(bDir, parentUUID, ".system_generated", "subagents")
+		_ = os.MkdirAll(parentLogDir, 0755)
+		subDir := filepath.Join(bDir, subUUID)
+		_ = os.MkdirAll(subDir, 0755)
+
+		subImg := filepath.Join(subDir, "gen_diagram.png")
+		_ = os.WriteFile(subImg, []byte("diagram"), 0644)
+		defer os.RemoveAll(filepath.Join(bDir, parentUUID))
+		defer os.RemoveAll(filepath.Join(bDir, subUUID))
+
+		subDescriptor := fmt.Sprintf(`{"role":"subagent","typeName":"coder"}`)
+		_ = os.WriteFile(filepath.Join(parentLogDir, subUUID+".json"), []byte(subDescriptor), 0644)
+
+		parentSess := &Session{
+			ID:       "sess-agy-parent",
+			NativeID: parentUUID,
+			Cwd:      repoDir,
+		}
+		resolvedSubImg, err := server.resolveFilePath(parentSess, "gen_diagram.png")
+		if err != nil {
+			t.Fatalf("Failed to resolve subagent image from parent session: %v", err)
+		}
+		if resolvedSubImg != subImg {
+			t.Errorf("Expected subagent image %q, got %q", subImg, resolvedSubImg)
+		}
+
+		// Subagent session resolution inheriting parent Cwd
+		subSessResolved := server.resolveSessionForFile(subUUID)
+		if subSessResolved == nil || subSessResolved.NativeID != subUUID {
+			t.Fatalf("Expected subagent session resolved, got %+v", subSessResolved)
+		}
+	}
+
+	// 5. Symlink escape blocked (symlink pointing to sensitive path ~/.ssh or outside permitted)
+	symlinkPath := filepath.Join(repoDir, "evil_link.png")
+	if homeDir != "" {
+		sshDir := filepath.Join(homeDir, ".ssh")
+		_ = os.MkdirAll(sshDir, 0700)
+		defer os.RemoveAll(sshDir)
+		_ = os.WriteFile(filepath.Join(sshDir, "id_rsa"), []byte("secret"), 0600)
+
+		_ = os.Symlink(filepath.Join(sshDir, "id_rsa"), symlinkPath)
+		defer os.Remove(symlinkPath)
+		_, err = server.resolveFilePath(sess, "evil_link.png")
+		if err == nil {
+			t.Fatalf("Expected symlink to ~/.ssh to be blocked with error, got nil")
+		}
+	}
+}
+
+func TestHandleFileContent_SVG_SecurityHeaders(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "ackbar-svg-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	svgPath := filepath.Join(tmpDir, "icon.svg")
+	_ = os.WriteFile(svgPath, []byte("<svg></svg>"), 0644)
+
+	server := &Server{}
+	sess := &Session{ID: "sess-svg", Cwd: tmpDir}
+
+	req := httptest.NewRequest("GET", "/v1/files/content?path=icon.svg", nil)
+	rec := httptest.NewRecorder()
+	server.handleFileContent(rec, req)
+
+	// Since sess is nil from query, provide cwd query param
+	req = httptest.NewRequest("GET", fmt.Sprintf("/v1/files/content?path=icon.svg&cwd=%s", url.QueryEscape(tmpDir)), nil)
+	rec = httptest.NewRecorder()
+	server.handleFileContent(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "image/svg+xml") {
+		t.Errorf("Expected image/svg+xml, got %q", ct)
+	}
+	if csp := rec.Header().Get("Content-Security-Policy"); !strings.Contains(csp, "default-src 'none'") {
+		t.Errorf("Expected CSP default-src 'none', got %q", csp)
+	}
+	if nosniff := rec.Header().Get("X-Content-Type-Options"); nosniff != "nosniff" {
+		t.Errorf("Expected X-Content-Type-Options: nosniff, got %q", nosniff)
+	}
+	_ = sess
+}
+
+func TestHandleFileOpen_CwdOverrideAndRemotePathSanitization(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "ackbar-fileopen-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	repoDir := filepath.Join(tmpDir, "myrepo")
+	subDir := filepath.Join(repoDir, "assets")
+	_ = os.MkdirAll(subDir, 0755)
+
+	shotFile := filepath.Join(subDir, "My Shot.png")
+	_ = os.WriteFile(shotFile, []byte("shot"), 0644)
+
+	server := &Server{}
+
+	// 1. Local open with cwd override and file://%20 URL
+	bodyData, _ := json.Marshal(map[string]interface{}{
+		"path": "file://assets/My%20Shot.png",
+		"cwd":  repoDir,
+		"app":  "preview",
+	})
+	req := httptest.NewRequest("POST", "/v1/files/open", strings.NewReader(string(bodyData)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.handleFileOpen(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK for local open with cwd override, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]interface{}
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp["path"] != shotFile {
+		t.Errorf("Expected path %q, got %q", shotFile, resp["path"])
+	}
+
+	// 2. Remote staging with directory traversal attempt in path
+	remoteServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("fake-file-content"))
+	}))
+	defer remoteServer.Close()
+
+	db, err := InitDB(filepath.Join(tmpDir, "test.db"))
+	if err != nil {
+		t.Fatalf("Failed to init DB: %v", err)
+	}
+	defer db.Close()
+
+	_ = db.SaveHost(&HostRecord{
+		Name: "remote-box",
+		URL:  remoteServer.URL,
+	})
+
+	serverWithDB := NewServer(db)
+
+	traversalBody, _ := json.Marshal(map[string]interface{}{
+		"path": "../../../../etc/shadow",
+		"host": "remote-box",
+		"app":  "preview",
+	})
+	req2 := httptest.NewRequest("POST", "/v1/files/open", strings.NewReader(string(traversalBody)))
+	req2.Header.Set("Content-Type", "application/json")
+	rec2 := httptest.NewRecorder()
+	serverWithDB.handleFileOpen(rec2, req2)
+
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK with sanitized staging, got %d: %s", rec2.Code, rec2.Body.String())
+	}
+
+	var resp2 map[string]interface{}
+	_ = json.Unmarshal(rec2.Body.Bytes(), &resp2)
+	cachedPath, ok := resp2["cached_path"].(string)
+	if !ok || cachedPath == "" {
+		t.Fatalf("Expected cached_path in response, got %+v", resp2)
+	}
+	homeDir, _ := os.UserHomeDir()
+	expectedPrefix := filepath.Join(homeDir, ".cache", "ackbar", "remote", "remote-box")
+	if !strings.HasPrefix(cachedPath, expectedPrefix) {
+		t.Errorf("Expected cachedPath %q to stay within %q", cachedPath, expectedPrefix)
+	}
+	if strings.Contains(cachedPath, "..") {
+		t.Errorf("Expected cachedPath %q not to contain ..", cachedPath)
 	}
 }
