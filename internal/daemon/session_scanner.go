@@ -361,10 +361,24 @@ func (s *Server) refreshExistingSessions(ctx context.Context, state *ScanState) 
 	}
 }
 
+// parseTmuxPaneLine parses a tmux list-panes row delimited by |||.
+func parseTmuxPaneLine(line string) (pidStr, cwd, tmuxName, cmdName string, ok bool) {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return "", "", "", "", false
+	}
+	parts := strings.SplitN(line, "|||", 4)
+	if len(parts) < 4 {
+		return "", "", "", "", false
+	}
+	return strings.TrimSpace(parts[0]), strings.TrimSpace(parts[3]), strings.TrimSpace(parts[1]), strings.TrimSpace(parts[2]), true
+}
+
 // scanTmuxPanes scans local tmux panes for running agent CLIs and reconciles managed sessions.
 func (s *Server) scanTmuxPanes(ctx context.Context, state *ScanState) {
 	hostName := state.hostName
-	out, err := exec.CommandContext(ctx, "tmux", "list-panes", "-a", "-F", "#{pane_pid}\t#{pane_current_path}\t#{session_name}\t#{pane_current_command}").Output()
+	// Printable delimiter ||| prevents tmux from sanitizing \t control characters to _ when LANG/LC_CTYPE is unset under launchd or minimal environments.
+	out, err := exec.CommandContext(ctx, "tmux", "list-panes", "-a", "-F", "#{pane_pid}|||#{session_name}|||#{pane_current_command}|||#{pane_current_path}").Output()
 	if err != nil {
 		return
 	}
@@ -397,15 +411,10 @@ func (s *Server) scanTmuxPanes(ctx context.Context, state *ScanState) {
 
 	lines := strings.Split(string(out), "\n")
 	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
+		pidStr, cwd, tmuxName, cmdName, ok := parseTmuxPaneLine(line)
+		if !ok {
 			continue
 		}
-		parts := strings.SplitN(line, "\t", 4)
-		if len(parts) < 4 {
-			continue
-		}
-		pidStr, cwd, tmuxName, cmdName := strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]), strings.TrimSpace(parts[2]), strings.TrimSpace(parts[3])
 		cwd = strings.TrimSuffix(cwd, " (deleted)")
 		cmdLower := strings.ToLower(cmdName)
 
