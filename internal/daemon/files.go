@@ -15,71 +15,42 @@ import (
 	"unicode"
 )
 
-// detectMIMEType returns an appropriate Content-Type header value for a given file extension
+var mimeTypes = map[string]string{
+	".png": "image/png", ".avif": "image/avif", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+	".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml", ".ico": "image/x-icon",
+	".bmp": "image/bmp", ".html": "text/html; charset=utf-8", ".htm": "text/html; charset=utf-8",
+	".pdf": "application/pdf", ".json": "application/json", ".txt": "text/plain; charset=utf-8",
+	".log": "text/plain; charset=utf-8", ".md": "text/markdown; charset=utf-8",
+	".markdown": "text/markdown; charset=utf-8", ".csv": "text/csv; charset=utf-8",
+	".js": "application/javascript; charset=utf-8", ".mjs": "application/javascript; charset=utf-8",
+	".css": "text/css; charset=utf-8", ".mp4": "video/mp4", ".webm": "video/webm",
+	".mp3": "audio/mpeg", ".wav": "audio/wav", ".zip": "application/zip",
+	".tar": "application/x-tar", ".gz": "application/gzip",
+}
+
 func detectMIMEType(ext string) string {
-	switch strings.ToLower(ext) {
-	case ".png":
-		return "image/png"
-	case ".avif":
-		return "image/avif"
-	case ".jpg", ".jpeg":
-		return "image/jpeg"
-	case ".gif":
-		return "image/gif"
-	case ".webp":
-		return "image/webp"
-	case ".svg":
-		return "image/svg+xml"
-	case ".ico":
-		return "image/x-icon"
-	case ".bmp":
-		return "image/bmp"
-	case ".html", ".htm":
-		return "text/html; charset=utf-8"
-	case ".pdf":
-		return "application/pdf"
-	case ".json":
-		return "application/json"
-	case ".txt", ".log":
-		return "text/plain; charset=utf-8"
-	case ".md", ".markdown":
-		return "text/markdown; charset=utf-8"
-	case ".csv":
-		return "text/csv; charset=utf-8"
-	case ".js", ".mjs":
-		return "application/javascript; charset=utf-8"
-	case ".css":
-		return "text/css; charset=utf-8"
-	case ".mp4":
-		return "video/mp4"
-	case ".webm":
-		return "video/webm"
-	case ".mp3":
-		return "audio/mpeg"
-	case ".wav":
-		return "audio/wav"
-	case ".zip":
-		return "application/zip"
-	case ".tar":
-		return "application/x-tar"
-	case ".gz":
-		return "application/gzip"
-	default:
-		if t := mime.TypeByExtension(ext); t != "" {
-			return t
-		}
-		return "application/octet-stream"
+	if t, ok := mimeTypes[strings.ToLower(ext)]; ok {
+		return t
 	}
+	if t := mime.TypeByExtension(ext); t != "" {
+		return t
+	}
+	return "application/octet-stream"
 }
 
 // sanitizeHostCacheSubdir converts a host name to a safe directory name
 func sanitizeHostCacheSubdir(host string) string {
-	return strings.Map(func(r rune) rune {
+	res := strings.Map(func(r rune) rune {
 		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '-' || r == '_' || r == '.' {
 			return r
 		}
 		return '_'
 	}, host)
+	res = strings.TrimSpace(res)
+	if res == "" || res == "." || res == ".." {
+		return "remote_host"
+	}
+	return res
 }
 
 // OpenFileLocallyFunc allows mocking or overriding local file opening in tests.
@@ -179,6 +150,10 @@ func (s *Server) handleFileContent(w http.ResponseWriter, r *http.Request) {
 					w.Header().Add(k, v)
 				}
 			}
+			if strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "svg") {
+				w.Header().Set("Content-Security-Policy", "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; sandbox")
+				w.Header().Set("X-Content-Type-Options", "nosniff")
+			}
 			w.WriteHeader(resp.StatusCode)
 			_, _ = io.Copy(w, resp.Body)
 			return
@@ -218,7 +193,7 @@ func (s *Server) handleFileContent(w http.ResponseWriter, r *http.Request) {
 	ext := strings.ToLower(filepath.Ext(filePath))
 	if ctype := detectMIMEType(ext); ctype != "" {
 		w.Header().Set("Content-Type", ctype)
-		if ext == ".svg" {
+		if strings.Contains(strings.ToLower(ctype), "svg") {
 			w.Header().Set("Content-Security-Policy", "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; sandbox")
 			w.Header().Set("X-Content-Type-Options", "nosniff")
 		}
@@ -262,6 +237,12 @@ func (s *Server) handleFileOpen(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	cleanCheck, _, _ := splitFilePathAndLine(stripFileScheme(req.Path))
+	cleanCheck = filepath.Clean(cleanCheck)
+	if strings.HasPrefix(cleanCheck, "-") || strings.HasPrefix(filepath.Base(cleanCheck), "-") || strings.HasPrefix(strings.TrimSpace(req.Path), "-") {
+		http.Error(w, "Invalid path: leading dash rejected", http.StatusBadRequest)
+		return
+	}
 	if req.SessionID == "" {
 		if req.SessionID = r.URL.Query().Get("session_id"); req.SessionID == "" {
 			req.SessionID = r.URL.Query().Get("id")
@@ -280,7 +261,6 @@ func (s *Server) handleFileOpen(w http.ResponseWriter, r *http.Request) {
 		req.Cwd = r.URL.Query().Get("cwd")
 	}
 
-	// Resolve session and host
 	var sess *Session
 	if req.SessionID != "" {
 		sess = s.resolveSessionForFile(req.SessionID)
@@ -297,28 +277,45 @@ func (s *Server) handleFileOpen(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// If app is VS Code, delegate to LaunchVSCode
 	if strings.ToLower(req.App) == "vscode" {
 		targetPath := stripFileScheme(req.Path)
 		cleanTarget, line, col := splitFilePathAndLine(targetPath)
-		effectiveSess, origCwd, err := s.applyEffectiveCwd(sess, req.Cwd, targetHost)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusForbidden)
-			return
-		}
-		baseResolved := cleanTarget
-		if (targetHost == "" || s.isLocalHost(targetHost)) || effectiveSess != nil {
-			if resolved, err := s.resolveFilePathWithOrigCwd(effectiveSess, cleanTarget, origCwd); err == nil {
-				baseResolved = resolved
-			}
-		}
-
-		// Verify local file exists before opening to prevent VS Code "file does not exist" modals
-		if (targetHost == "" || s.isLocalHost(targetHost)) && filepath.IsAbs(baseResolved) {
-			if _, err := os.Stat(baseResolved); err != nil && os.IsNotExist(err) {
-				http.Error(w, fmt.Sprintf("File not found: %s", req.Path), http.StatusNotFound)
+		var baseResolved string
+		if targetHost == "" || s.isLocalHost(targetHost) {
+			effectiveSess, origCwd, err := s.applyEffectiveCwd(sess, req.Cwd, targetHost)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusForbidden)
 				return
 			}
+			resolved, err := s.resolveFilePathWithOrigCwd(effectiveSess, cleanTarget, origCwd)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusForbidden)
+				return
+			}
+			baseResolved = resolved
+			if _, err := os.Stat(baseResolved); err != nil {
+				if os.IsNotExist(err) {
+					http.Error(w, fmt.Sprintf("File not found: %s", req.Path), http.StatusNotFound)
+					return
+				}
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		} else {
+			if unescaped, err := url.PathUnescape(cleanTarget); err == nil {
+				cleanTarget = unescaped
+			}
+			baseResolved = cleanTarget
+			if !filepath.IsAbs(cleanTarget) {
+				remoteCwd := stripFileScheme(req.Cwd)
+				if remoteCwd == "" && sess != nil {
+					remoteCwd = sess.Cwd
+				}
+				if remoteCwd != "" {
+					baseResolved = filepath.Join(remoteCwd, cleanTarget)
+				}
+			}
+			baseResolved = filepath.Clean(baseResolved)
 		}
 
 		pathForVSCode := baseResolved
@@ -393,7 +390,7 @@ func (s *Server) handleFileOpen(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		hostCacheRoot := filepath.Join(homeDir, ".cache", "ackbar", "remote", sanitizeHostCacheSubdir(targetHost))
+		hostCacheRoot := filepath.Join(homeDir, ".cache", "ackbar", "remote", sanitizeHostCacheSubdir(hostRec.Name))
 		cleanRemotePath, _, _ := splitFilePathAndLine(stripFileScheme(req.Path))
 		if unescaped, err := url.PathUnescape(cleanRemotePath); err == nil {
 			cleanRemotePath = unescaped

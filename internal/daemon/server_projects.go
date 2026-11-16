@@ -841,6 +841,9 @@ func defaultLaunchVSCode(path, host string) (string, error) {
 	}
 
 	cleanPath, line, col := splitFilePathAndLine(path)
+	if strings.HasPrefix(filepath.Clean(cleanPath), "-") || strings.HasPrefix(filepath.Base(cleanPath), "-") {
+		return "", fmt.Errorf("invalid path: leading dash rejected")
+	}
 	formattedPath := cleanPath
 	if !strings.HasPrefix(formattedPath, "/") {
 		formattedPath = "/" + formattedPath

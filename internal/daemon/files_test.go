@@ -265,7 +265,8 @@ func TestHandleFileOpen_VSCode(t *testing.T) {
 	}
 
 	// 2. Non-existent local file returns 404
-	bodyMissing := strings.NewReader(`{"path":"/nonexistent/path/file.go","app":"vscode"}`)
+	testMissingFile := filepath.Join(tmpDir, "missing.go")
+	bodyMissing := strings.NewReader(fmt.Sprintf(`{"path":%q,"app":"vscode"}`, testMissingFile))
 	reqMissing := httptest.NewRequest("POST", "/v1/files/open", bodyMissing)
 	reqMissing.Header.Set("Content-Type", "application/json")
 	recMissing := httptest.NewRecorder()
@@ -1221,5 +1222,162 @@ func TestHandleFileOpen_CwdOverrideAndRemotePathSanitization(t *testing.T) {
 	}
 	if strings.Contains(cachedPath, "..") {
 		t.Errorf("Expected cachedPath %q not to contain ..", cachedPath)
+	}
+}
+
+func TestIsPathWithinOrEqual_Root(t *testing.T) {
+	if !isPathWithinOrEqual("/app/hero.png", "/") {
+		t.Errorf("Expected /app/hero.png to be within /")
+	}
+	if !isPathWithinOrEqual("/", "/") {
+		t.Errorf("Expected / to be within /")
+	}
+	if isPathWithinOrEqual("/other", "/app") {
+		t.Errorf("Expected /other not to be within /app")
+	}
+}
+
+func TestResolveFilePath_GlobWildcardRejection(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "ackbar-glob-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	repoDir := filepath.Join(tmpDir, "repo")
+	wtDir := filepath.Join(repoDir, ".worktrees", "wt1")
+	_ = os.MkdirAll(wtDir, 0755)
+	secretFile := filepath.Join(wtDir, "secret.png")
+	_ = os.WriteFile(secretFile, []byte("secret"), 0644)
+
+	server := &Server{}
+	sess := &Session{ID: "sess-glob", Cwd: repoDir}
+
+	// 1. Wildcard in path must NOT match files inside .worktrees via glob expansion
+	resolved, err := server.resolveFilePath(sess, "*.png")
+	if err == nil && resolved == secretFile {
+		t.Fatalf("Expected *.png not to match inside worktree via glob fallback, got %q", resolved)
+	}
+
+	// 2. Traversal with wildcard (e.g. ../../../tmp/*) must not match via worktree/brain fallbacks
+	req := httptest.NewRequest("GET", fmt.Sprintf("/v1/files/content?path=%s&cwd=%s", url.QueryEscape("../../../tmp/*"), url.QueryEscape(repoDir)), nil)
+	rec := httptest.NewRecorder()
+	server.handleFileContent(rec, req)
+	if rec.Code != http.StatusNotFound && rec.Code != http.StatusForbidden {
+		t.Errorf("Expected 404 or 403 for wildcard traversal path, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleFileOpen_VSCode_SecurityAndRemote(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "ackbar-vscode-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	server := &Server{}
+	homeDir, _ := os.UserHomeDir()
+
+	// 1. Leading dash rejected with 400
+	dashBody, _ := json.Marshal(map[string]interface{}{
+		"path": "--diff file1 file2",
+		"app":  "vscode",
+	})
+	req := httptest.NewRequest("POST", "/v1/files/open", strings.NewReader(string(dashBody)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.handleFileOpen(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("Expected 400 Bad Request for leading dash path, got %d", rec.Code)
+	}
+
+	// 2. Local app=vscode with sensitive path ~/.ssh/id_rsa returns 403 Forbidden
+	if homeDir != "" {
+		sshDir := filepath.Join(homeDir, ".ssh")
+		_ = os.MkdirAll(sshDir, 0700)
+		defer os.RemoveAll(sshDir)
+		idRsa := filepath.Join(sshDir, "id_rsa")
+		_ = os.WriteFile(idRsa, []byte("key"), 0600)
+
+		sshBody, _ := json.Marshal(map[string]interface{}{
+			"path": idRsa,
+			"app":  "vscode",
+		})
+		reqSSH := httptest.NewRequest("POST", "/v1/files/open", strings.NewReader(string(sshBody)))
+		reqSSH.Header.Set("Content-Type", "application/json")
+		recSSH := httptest.NewRecorder()
+		server.handleFileOpen(recSSH, reqSSH)
+		if recSSH.Code != http.StatusForbidden {
+			t.Errorf("Expected 403 Forbidden for ~/.ssh/id_rsa in vscode, got %d: %s", recSSH.Code, recSSH.Body.String())
+		}
+	}
+
+	// 3. Remote app=vscode with remote-only cwd does not fail local root validation
+	remoteBody, _ := json.Marshal(map[string]interface{}{
+		"path": "src/main.rs:42:5",
+		"cwd":  "/remote/only/unique/directory",
+		"host": "remote-devbox",
+		"app":  "vscode",
+	})
+	reqRemote := httptest.NewRequest("POST", "/v1/files/open", strings.NewReader(string(remoteBody)))
+	reqRemote.Header.Set("Content-Type", "application/json")
+	recRemote := httptest.NewRecorder()
+	server.handleFileOpen(recRemote, reqRemote)
+	if recRemote.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK for remote vscode open, got %d: %s", recRemote.Code, recRemote.Body.String())
+	}
+	var respRemote map[string]interface{}
+	_ = json.Unmarshal(recRemote.Body.Bytes(), &respRemote)
+	expectedPath := "/remote/only/unique/directory/src/main.rs:42:5"
+	if respRemote["path"] != expectedPath {
+		t.Errorf("Expected path %q, got %q", expectedPath, respRemote["path"])
+	}
+	if uri, ok := respRemote["uri"].(string); !ok || !strings.Contains(uri, "ssh-remote+remote-devbox") {
+		t.Errorf("Expected remote vscode URI with ssh-remote, got %q", uri)
+	}
+}
+
+func TestHandleFileContent_ProxiedSVG_SecurityHeaders(t *testing.T) {
+	remoteServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/svg+xml")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("<svg></svg>"))
+	}))
+	defer remoteServer.Close()
+
+	tmpDir, err := os.MkdirTemp("", "ackbar-svg-proxy-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	db, err := InitDB(filepath.Join(tmpDir, "test.db"))
+	if err != nil {
+		t.Fatalf("Failed to init DB: %v", err)
+	}
+	defer db.Close()
+
+	_ = db.SaveHost(&HostRecord{
+		Name: "svg-host",
+		URL:  remoteServer.URL,
+	})
+
+	server := NewServer(db)
+
+	req := httptest.NewRequest("GET", "/v1/files/content?path=logo.svg&host=svg-host", nil)
+	rec := httptest.NewRecorder()
+	server.handleFileContent(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK for proxied SVG, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "image/svg+xml") {
+		t.Errorf("Expected Content-Type image/svg+xml, got %q", ct)
+	}
+	if csp := rec.Header().Get("Content-Security-Policy"); !strings.Contains(csp, "default-src 'none'") {
+		t.Errorf("Expected CSP default-src 'none', got %q", csp)
+	}
+	if nosniff := rec.Header().Get("X-Content-Type-Options"); nosniff != "nosniff" {
+		t.Errorf("Expected X-Content-Type-Options: nosniff, got %q", nosniff)
 	}
 }

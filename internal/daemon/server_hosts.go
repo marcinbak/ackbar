@@ -150,7 +150,9 @@ func (s *Server) resolveHost(hostName string) *HostRecord {
 		s.hostHealthMu.RLock()
 		healthMap := make(map[string]string)
 		for k, v := range s.hostHealthMap {
-			healthMap[k] = v.DisplayName
+			if v != nil {
+				healthMap[k] = v.DisplayName
+			}
 		}
 		s.hostHealthMu.RUnlock()
 

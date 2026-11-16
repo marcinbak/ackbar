@@ -17,17 +17,8 @@ var (
 	colonLineRegex = regexp.MustCompile(`:(\d+)(?:[-:](\d+))?$`)
 
 	sensitiveSubstrings = []string{
-		"/.ssh/",
-		"/.ssh",
-		"/.gnupg/",
-		"/.gnupg",
-		"/.aws/",
-		"/.aws",
-		"/etc/shadow",
-		"/etc/sudoers",
-		"/etc/master.passwd",
-		"/.config/gcloud/",
-		"/.config/gcloud",
+		"/.ssh/", "/.ssh", "/.gnupg/", "/.gnupg", "/.aws/", "/.aws",
+		"/etc/shadow", "/etc/sudoers", "/etc/master.passwd", "/.config/gcloud/", "/.config/gcloud",
 	}
 )
 
@@ -77,7 +68,11 @@ func isPathWithinOrEqual(target, parent string) bool {
 	if cleanTarget == cleanParent {
 		return true
 	}
-	return strings.HasPrefix(cleanTarget, cleanParent+string(filepath.Separator))
+	prefix := cleanParent
+	if !strings.HasSuffix(prefix, string(filepath.Separator)) {
+		prefix += string(filepath.Separator)
+	}
+	return strings.HasPrefix(cleanTarget, prefix)
 }
 
 func checkSensitivePath(p string) error {
@@ -148,11 +143,8 @@ func extractUUIDCandidate(sessionID string) string {
 	if len(parts) > 1 && IsUUID(parts[len(parts)-1]) {
 		return parts[len(parts)-1]
 	}
-	if len(s) >= 36 {
-		tail := s[len(s)-36:]
-		if IsUUID(tail) {
-			return tail
-		}
+	if len(s) >= 36 && IsUUID(s[len(s)-36:]) {
+		return s[len(s)-36:]
 	}
 	return ""
 }
@@ -169,23 +161,19 @@ func (s *Server) resolveSessionForFile(sessionID string) *Session {
 		return nil
 	}
 	homeDir, _ := os.UserHomeDir()
-	if homeDir != "" {
-		parentID, _, _ := ResolveAntigravitySubagentParent(homeDir, uuidCandidate)
-		if parentID != "" {
-			if parentSess := s.resolveSession(parentID); parentSess != nil {
-				sessCopy := *parentSess
-				sessCopy.NativeID = uuidCandidate
-				return &sessCopy
-			}
+	if homeDir == "" {
+		return nil
+	}
+	if parentID, _, _ := ResolveAntigravitySubagentParent(homeDir, uuidCandidate); parentID != "" {
+		if parentSess := s.resolveSession(parentID); parentSess != nil {
+			sessCopy := *parentSess
+			sessCopy.NativeID = uuidCandidate
+			return &sessCopy
 		}
-		for _, bDir := range antigravityBrainDirs(homeDir) {
-			if fi, err := os.Stat(filepath.Join(bDir, uuidCandidate)); err == nil && fi.IsDir() {
-				return &Session{
-					ID:       sessionID,
-					Agent:    "antigravity",
-					NativeID: uuidCandidate,
-				}
-			}
+	}
+	for _, bDir := range antigravityBrainDirs(homeDir) {
+		if fi, err := os.Stat(filepath.Join(bDir, uuidCandidate)); err == nil && fi.IsDir() {
+			return &Session{ID: sessionID, Agent: "antigravity", NativeID: uuidCandidate}
 		}
 	}
 	return nil
@@ -395,9 +383,15 @@ func (s *Server) resolveFilePathWithOrigCwd(sess *Session, reqPath, origCwd stri
 		if unescapedRel, err := url.PathUnescape(rel); err == nil && unescapedRel != rel {
 			rel = unescapedRel
 		}
-		if origCwd != "" && (sess == nil || origCwd != sess.Cwd) {
-			candidatePaths = append(candidatePaths, filepath.Join(origCwd, rel))
-		}
+		rel = filepath.Clean(rel)
+	}
+
+	isSafeRel := rel != "" && rel != "." && rel != ".." && !filepath.IsAbs(rel) &&
+		!strings.HasPrefix(rel, ".."+string(filepath.Separator)) &&
+		!strings.ContainsAny(rel, "*?[")
+
+	if isSafeRel && origCwd != "" && (sess == nil || origCwd != sess.Cwd) {
+		candidatePaths = append(candidatePaths, filepath.Join(origCwd, rel))
 	}
 
 	// Probe candidate list
@@ -411,7 +405,7 @@ func (s *Server) resolveFilePathWithOrigCwd(sess *Session, reqPath, origCwd stri
 	}
 
 	// Worktree discovery in repo roots
-	if rel != "" {
+	if isSafeRel {
 		var roots []string
 		if sess != nil && sess.Cwd != "" {
 			roots = append(roots, sess.Cwd)
@@ -422,19 +416,25 @@ func (s *Server) resolveFilePathWithOrigCwd(sess *Session, reqPath, origCwd stri
 		var bestMatch string
 		var bestModTime time.Time
 		for _, root := range roots {
-			patterns := []string{
-				filepath.Join(root, ".worktrees", "*", rel),
-				filepath.Join(root, ".claude", "worktrees", "*", rel),
+			subdirs := []string{
+				filepath.Join(root, ".worktrees"),
+				filepath.Join(root, ".claude", "worktrees"),
 			}
-			for _, pat := range patterns {
-				if matches, err := filepath.Glob(pat); err == nil {
-					for _, m := range matches {
-						if fi, err := os.Stat(m); err == nil && !fi.IsDir() {
-							if validatePermittedFilePath(m, sess, origCwd, homeDir) == nil {
-								if bestMatch == "" || fi.ModTime().After(bestModTime) {
-									bestMatch = m
-									bestModTime = fi.ModTime()
-								}
+			for _, wtBase := range subdirs {
+				entries, err := os.ReadDir(wtBase)
+				if err != nil {
+					continue
+				}
+				for _, entry := range entries {
+					if !entry.IsDir() {
+						continue
+					}
+					cand := filepath.Join(wtBase, entry.Name(), rel)
+					if fi, err := os.Stat(cand); err == nil && !fi.IsDir() {
+						if validatePermittedFilePath(cand, sess, origCwd, homeDir) == nil {
+							if bestMatch == "" || fi.ModTime().After(bestModTime) {
+								bestMatch = cand
+								bestModTime = fi.ModTime()
 							}
 						}
 					}
@@ -461,10 +461,13 @@ func (s *Server) resolveFilePathWithOrigCwd(sess *Session, reqPath, origCwd stri
 						return cand, nil
 					}
 				}
-				subGlob := filepath.Join(bDir, nativeID, ".system_generated", "subagents", "*.json")
-				if subs, err := filepath.Glob(subGlob); err == nil {
-					for _, subFile := range subs {
-						subUUID := strings.TrimSuffix(filepath.Base(subFile), ".json")
+				subagentsDir := filepath.Join(bDir, nativeID, ".system_generated", "subagents")
+				if entries, err := os.ReadDir(subagentsDir); err == nil {
+					for _, entry := range entries {
+						if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+							continue
+						}
+						subUUID := strings.TrimSuffix(entry.Name(), ".json")
 						if subUUID != "" {
 							subCand := filepath.Join(bDir, subUUID, rel)
 							if fi, err := os.Stat(subCand); err == nil && !fi.IsDir() {
