@@ -848,6 +848,15 @@ if (typeof window !== 'undefined') {
 // --- Headless UX Controls: Pills, Config Popover, Autocomplete & Interactive Cards ---
 
 const ANTIGRAVITY_DEFAULT_MODELS = [
+  { id: 'gemini-4-carbon-high', label: 'Gemini 4 Carbon (High)' },
+  { id: 'gemini-4-carbon-medium', label: 'Gemini 4 Carbon (Medium)' },
+  { id: 'gemini-4-carbon-low', label: 'Gemini 4 Carbon (Low)' },
+  { id: 'gemini-4-hydrogen-xhigh', label: 'Gemini 4 Hydrogen (XHigh)' },
+  { id: 'gemini-4-hydrogen-high', label: 'Gemini 4 Hydrogen (High)' },
+  { id: 'gemini-4-hydrogen-medium', label: 'Gemini 4 Hydrogen (Medium)' },
+  { id: 'gemini-4-hydrogen-low', label: 'Gemini 4 Hydrogen (Low)' },
+  { id: 'gemini-pro-orchestrator', label: 'Orchestrator (Carbon)' },
+  { id: 'gemini-pro-orchestrator-argon', label: 'Orchestrator (Argon)' },
   { id: 'gemini-4-argon-high', label: 'Gemini 4 Argon (High)' },
   { id: 'gemini-4-argon-medium', label: 'Gemini 4 Argon (Medium)' },
   { id: 'gemini-4-argon-low', label: 'Gemini 4 Argon (Low)' },
@@ -887,34 +896,67 @@ function formatModelLabel(model, agent, dynamicModels) {
     return 'Default Model';
   }
 
+  const rawClean = String(model).trim();
+  const clean = rawClean.includes('[') ? rawClean.split('[')[0].trim() : rawClean;
+  const lower = clean.toLowerCase();
+
+  if (lower === 'opus') return 'Claude Opus';
+  if (lower === 'sonnet') return 'Claude Sonnet';
+  if (lower === 'haiku') return 'Claude Haiku';
+  if (lower === 'opusplan') return 'Claude Opus (Plan)';
+
   const options = getAgentModelOptions(agent, dynamicModels);
-  const match = options.find(m => m.id === model || model.includes(m.id));
-  if (match && match.label) {
-    return match.label;
-  }
-
   const allDefaults = [...ANTIGRAVITY_DEFAULT_MODELS, ...CLAUDE_DEFAULT_MODELS];
-  const defaultMatch = allDefaults.find(m => m.id === model || model.includes(m.id));
-  if (defaultMatch && defaultMatch.label) {
-    return defaultMatch.label;
+
+  // Pass 1: exact match on id or label
+  const exactMatch = options.find(m => m && (m.id === clean || (m.label && m.label.toLowerCase() === lower)))
+    || allDefaults.find(m => m && (m.id === clean || (m.label && m.label.toLowerCase() === lower)));
+  if (exactMatch && exactMatch.label) {
+    return exactMatch.label;
   }
 
-  if (model.includes('claude-fable-5-1') || model === 'claude-fable-5-1') return 'Claude Fable 5.1';
-  if (model.includes('claude-opus-5-5') || model === 'claude-opus-5-5') return 'Claude Opus 5.5';
-  if (model.includes('claude-sonnet-5-5') || model === 'claude-sonnet-5-5') return 'Claude Sonnet 5.5';
-  if (model.includes('claude-opus-4-6') || model === 'claude-opus-4-6') return 'Claude Opus 4.6';
-  if (model.includes('claude-sonnet-4-6') || model === 'claude-sonnet-4-6') return 'Claude Sonnet 4.6';
-  if (model.includes('claude-haiku-4-5') || model === 'claude-haiku-4-5') return 'Claude Haiku 4.5';
-  if (model.includes('claude-3-7-sonnet')) return 'Claude 3.7 Sonnet';
-  if (model.includes('claude-3-5-sonnet')) return 'Claude 3.5 Sonnet';
-  if (model.includes('claude-3-5-haiku')) return 'Claude 3.5 Haiku';
-  if (model.includes('claude-3-opus')) return 'Claude 3 Opus';
-  if (model.includes('gemini-4-argon')) return 'Gemini 4 Argon';
-  if (model.includes('gemini-3.8-flash')) return 'Gemini 3.8 Flash';
-  if (model.includes('gemini-2.5-pro')) return 'Gemini 2.5 Pro';
-  if (model.includes('gemini-2.5-flash')) return 'Gemini 2.5 Flash';
+  // Pass 2: substring match picking longest matching m.id
+  const matchingCandidates = [...options, ...allDefaults]
+    .filter(m => m && m.id && clean.includes(m.id))
+    .sort((a, b) => (b.id ? b.id.length : 0) - (a.id ? a.id.length : 0));
+  if (matchingCandidates.length > 0 && matchingCandidates[0].label) {
+    return matchingCandidates[0].label;
+  }
 
-  return model;
+  if (clean.includes('gemini-pro-orchestrator-argon')) return 'Orchestrator (Argon)';
+  if (clean.includes('gemini-pro-orchestrator')) return 'Orchestrator (Carbon)';
+  if (clean.includes('gemini-4-carbon')) {
+    if (clean.includes('-high')) return 'Gemini 4 Carbon (High)';
+    if (clean.includes('-low')) return 'Gemini 4 Carbon (Low)';
+    return 'Gemini 4 Carbon (Medium)';
+  }
+  if (clean.includes('gemini-4-hydrogen')) {
+    if (clean.includes('-xhigh')) return 'Gemini 4 Hydrogen (XHigh)';
+    if (clean.includes('-high')) return 'Gemini 4 Hydrogen (High)';
+    if (clean.includes('-low')) return 'Gemini 4 Hydrogen (Low)';
+    return 'Gemini 4 Hydrogen (Medium)';
+  }
+  if (clean.includes('gemini-4-argon')) {
+    if (clean.includes('-high')) return 'Gemini 4 Argon (High)';
+    if (clean.includes('-low')) return 'Gemini 4 Argon (Low)';
+    return 'Gemini 4 Argon (Medium)';
+  }
+
+  if (clean.includes('claude-fable-5-1') || clean === 'claude-fable-5-1') return 'Claude Fable 5.1';
+  if (clean.includes('claude-opus-5-5') || clean === 'claude-opus-5-5') return 'Claude Opus 5.5';
+  if (clean.includes('claude-sonnet-5-5') || clean === 'claude-sonnet-5-5') return 'Claude Sonnet 5.5';
+  if (clean.includes('claude-opus-4-6') || clean === 'claude-opus-4-6') return 'Claude Opus 4.6';
+  if (clean.includes('claude-sonnet-4-6') || clean === 'claude-sonnet-4-6') return 'Claude Sonnet 4.6';
+  if (clean.includes('claude-haiku-4-5') || clean === 'claude-haiku-4-5') return 'Claude Haiku 4.5';
+  if (clean.includes('claude-3-7-sonnet')) return 'Claude 3.7 Sonnet';
+  if (clean.includes('claude-3-5-sonnet')) return 'Claude 3.5 Sonnet';
+  if (clean.includes('claude-3-5-haiku')) return 'Claude 3.5 Haiku';
+  if (clean.includes('claude-3-opus')) return 'Claude 3 Opus';
+  if (clean.includes('gemini-3.8-flash')) return 'Gemini 3.8 Flash';
+  if (clean.includes('gemini-2.5-pro')) return 'Gemini 2.5 Pro';
+  if (clean.includes('gemini-2.5-flash')) return 'Gemini 2.5 Flash';
+
+  return clean;
 }
 
 async function fetchSessionAgentModels(tabObj) {
@@ -953,8 +995,12 @@ function updateStatusPills(tabObj) {
   const session = tabObj.session;
   const isAntigravity = (session.agent || '').toLowerCase() === 'antigravity';
 
+  if (!session.model && session.resolved_model) {
+    tabObj.lastDefaultModel = session.resolved_model;
+  }
+
   if (tabObj.chatPillModel) {
-    tabObj.chatPillModel.textContent = formatModelLabel(session.model, session.agent, tabObj.agentModels);
+    tabObj.chatPillModel.textContent = formatModelLabel(session.model || session.resolved_model, session.agent, tabObj.agentModels);
   }
 
   if (tabObj.chatPillEffort) {
@@ -1064,6 +1110,11 @@ function renderConfigPopoverContent(tabObj) {
     </div>
   ` : '';
 
+  const defaultId = !model ? (sess.resolved_model || '') : (tabObj.lastDefaultModel || '');
+  const defaultOptionLabel = defaultId
+    ? `Default (${formatModelLabel(defaultId, sess.agent, tabObj.agentModels)})`
+    : 'Default (Agent Default)';
+
   popover.innerHTML = `
     <div class="config-popover-header">
       <div class="config-popover-title">
@@ -1075,7 +1126,7 @@ function renderConfigPopoverContent(tabObj) {
     <div class="config-row">
       <label class="config-label">Model</label>
       <select class="config-select config-select-model">
-        <option value="" ${!model ? 'selected' : ''}>Default (Agent Default)</option>
+        <option value="" ${!model ? 'selected' : ''}>${escapeHtml(defaultOptionLabel)}</option>
         ${customOptionHtml}
         ${modelOptionsHtml}
       </select>
@@ -1279,7 +1330,13 @@ async function updateSessionConfig(tabObj, configUpdate) {
       const data = await res.json();
       const s = data && data.session ? data.session : data;
       if (s && s.id) {
-        tabObj.session = { ...tabObj.session, ...s };
+        tabObj.session = {
+          ...tabObj.session,
+          ...s,
+          model: s.model || '',
+          effort: s.effort || '',
+          resolved_model: s.resolved_model || ''
+        };
         updateStatusPills(tabObj);
         renderConfigPopoverContent(tabObj);
       }
@@ -6041,7 +6098,10 @@ function onSessionUpdated(updatedSess) {
       ...updatedSess,
       id: updatedSess.id,
       native_id: updatedSess.native_id || tabObj.session.native_id,
-      name: updatedSess.name || tabObj.session.name
+      name: updatedSess.name || tabObj.session.name,
+      model: updatedSess.model || '',
+      effort: updatedSess.effort || '',
+      resolved_model: updatedSess.resolved_model || ''
     };
 
     updateStatusPills(tabObj);

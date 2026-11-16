@@ -154,6 +154,39 @@ void main() {
       },
     );
 
+    test(
+      '/model default updates config and displays Default (<Model>) in notice card',
+      () async {
+        final client = FakeCommandHttpClient((req) {
+          if (req.url.path.endsWith('/config')) {
+            return http.Response(
+              jsonEncode({
+                'id': session.id,
+                'agent': session.agent,
+                'model': '',
+                'resolved_model': 'claude-fable-5-1',
+              }),
+              200,
+              headers: {'content-type': 'application/json'},
+            );
+          }
+          return http.Response(jsonEncode({}), 200);
+        });
+
+        final dispatcher = HeadlessCommandDispatcher(
+          apiClient: ApiClient(client: client),
+          host: host,
+        );
+
+        final res = await dispatcher.dispatch(session, '/model default');
+        expect(res.intercepted, isTrue);
+        expect(
+          res.card?.statusBody,
+          equals('Model set to Default (Claude Fable 5.1)'),
+        );
+      },
+    );
+
     test('/commit passes through to normal prompt dispatch', () async {
       final dispatcher = HeadlessCommandDispatcher(
         apiClient: ApiClient(client: FakeCommandHttpClient()),
@@ -348,6 +381,42 @@ void main() {
       );
       expect(
         find.textContaining('Est. API: \$0.0350 (Claude token rates)'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('Inspect card formats resolved_model when model is empty', (
+      tester,
+    ) async {
+      final card = HeadlessEphemeralCardEntry(
+        id: 'inspect-res',
+        kind: 'inspect',
+        createdAt: DateTime.now(),
+        inspect: HeadlessInspectData(
+          kind: 'context',
+          raw: {
+            'agent': 'claude-code',
+            'model': '',
+            'resolved_model': 'claude-fable-5-1',
+            'turn_count': 1,
+            'context_limit_tokens': 1000000,
+            'context_used_tokens': 5000,
+            'context_pct': 0.5,
+          },
+        ),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: HeadlessCommandCardView(entry: card, onDismiss: () {}),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      expect(
+        find.textContaining('Model: Default (Claude Fable 5.1)'),
         findsOneWidget,
       );
     });

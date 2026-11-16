@@ -128,10 +128,13 @@ It is embedded directly into the `ackbard` Go binary and served on `http://127.0
 
 ### 🎛️ 10. Headless UX Controls, Interactive Tool Cards & Autocomplete (`chat.js`)
 * **Composer Status Pill Bar & `/config` Popover (`.chat-composer-bar`, `.chat-config-popover`):**
-  * Displays interactive pills above the chat input for **Model**, **Reasoning Effort** (`low`, `medium`, `high`, `max`, hidden for Antigravity sessions), **Execution Mode** (`⚡ Auto Mode` vs `📝 Plan Mode`), and **Context Usage** (`% Context` gauge derived from `session.context_pct` with agent-aware fallback limits: 1M tokens for Antigravity, 200k tokens for Claude Code).
-  * Clicking `⚙️ /config` (or typing `/config`) opens the Session Configuration popover to adjust model, effort, and execution mode (`PATCH /v1/sessions/{id}/config`) and inspect context window usage.
-  * Displays **MCP & Plugins** health pills in the `/config` popover with 1-click **`[Sign in]`** and **`[↻ Restart CLI]`** actions.
-  * Dynamically queries `GET /v1/sessions/{id}/suggestions?kind=models` to populate agent-specific model catalogs (e.g. Gemini 4 Argon, Gemini 3.8 Flash, GPT-OSS for Antigravity; Claude Fable 5.1, Claude Opus/Sonnet for Claude Code).
+  * Model pill displays formatted explicit override (`session.model`) or dynamically resolved default model name (`session.resolved_model`).
+  * Displays interactive pills for **Model**, **Reasoning Effort** (`low|medium|high|max`), **Execution Mode** (`Auto` vs `Plan`), and **Context Usage**.
+  * Opening `⚙️ /config` popover allows editing model, effort, and execution mode via `PATCH /v1/sessions/{id}/config`.
+  * Model selector Option 0 shows `Default (<Formatted Model>)`; selecting it resets explicit model override to empty (`""`).
+  * Inspection cards (`/model`, `/context`, `/cost`) render `Default (<Formatted Model>)` when running without an override.
+  * Displays **MCP & Plugins** health pills in `/config` popover with 1-click sign-in and restart actions.
+  * Dynamically queries `GET /v1/sessions/{id}/suggestions?kind=models` to populate agent-specific model catalogs.
 * **`/` Command, `@` File, and Model Autocomplete (`.chat-autocomplete-menu`):**
   * Typing `/` at the start of input queries `GET /v1/sessions/{id}/suggestions?kind=commands`, surfacing built-in client actions (`/config`, `/plan`, `/clear`, `/restart`, `/compact`, `/handover`, `/terminal`) alongside discovered workspace workflows (`.claude/commands/*.md`, `.agents/workflows/*.md`) and skills (`SKILL.md`).
   * Typing `@<query>` after start-of-input or whitespace queries `GET /v1/sessions/{id}/suggestions?kind=files` to fuzzy-match relative workspace files.

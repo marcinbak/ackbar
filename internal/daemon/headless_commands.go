@@ -267,6 +267,12 @@ func (s *Server) rotateHeadlessConversation(ctx context.Context, sess *Session, 
 		}
 	}
 
+	if s.headless != nil {
+		s.headless.ClearRuntimeModel(sess.ID)
+		s.headless.ClearRuntimeModel(newSess.ID)
+	}
+
+	s.populateResolvedModel(newSess)
 	s.broadcast(newSess)
 	return newSess, nil
 }

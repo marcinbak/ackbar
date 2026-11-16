@@ -355,7 +355,16 @@ class HeadlessCommandCardView extends StatelessWidget {
     if (k == 'context' || k == 'cost') {
       final b = StringBuffer();
       final model = d.raw['model']?.toString() ?? '';
-      if (model.isNotEmpty) b.writeln('Model: $model');
+      if (model.isNotEmpty) {
+        b.writeln('Model: $model');
+      } else {
+        final agent = d.raw['agent']?.toString() ?? '';
+        final resolvedModel = d.raw['resolved_model']?.toString() ?? '';
+        if (resolvedModel.isNotEmpty) {
+          b.writeln(
+              'Model: Default (${Session.formatModelLabel(resolvedModel, agent)})');
+        }
+      }
       b.writeln('Turns: ${d.raw['turn_count'] ?? 0}');
       final used = d.raw['context_used_tokens'] ?? 0;
       final limit = d.raw['context_limit_tokens'] ?? 0;

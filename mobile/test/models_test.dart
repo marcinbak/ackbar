@@ -1671,5 +1671,66 @@ Understood.
       expect(copied.isLater, isTrue);
       expect(copied.isDone, isTrue);
     });
+
+    test('Session resolved_model serialization and copyWith', () {
+      final json = {
+        'id': 'sess-res-1',
+        'agent': 'claude-code',
+        'host': 'local',
+        'native_id': 'uuid-res-1',
+        'cwd': '/work',
+        'state': 1,
+        'started_at': '2026-11-15T00:00:00Z',
+        'last_event_at': '2026-11-15T00:00:00Z',
+        'engine_type': 'headless',
+        'resolved_model': 'claude-fable-5-1',
+      };
+
+      final session = Session.fromJson(json);
+      expect(session.resolvedModel, equals('claude-fable-5-1'));
+      expect(session.toJson()['resolved_model'], equals('claude-fable-5-1'));
+
+      final updated = session.copyWith(resolvedModel: 'claude-opus-5-5');
+      expect(updated.resolvedModel, equals('claude-opus-5-5'));
+    });
+
+    test(
+        'Session.formatModelLabel formats catalogs, aliases, and strips bracket suffix',
+        () {
+      expect(Session.formatModelLabel('gemini-4-carbon-medium', 'antigravity'),
+          equals('Gemini 4 Carbon (Medium)'));
+      expect(Session.formatModelLabel('gemini-4-hydrogen-xhigh', 'antigravity'),
+          equals('Gemini 4 Hydrogen (XHigh)'));
+      expect(Session.formatModelLabel('gemini-pro-orchestrator', 'antigravity'),
+          equals('Orchestrator (Carbon)'));
+      expect(
+          Session.formatModelLabel(
+              'gemini-pro-orchestrator-argon', 'antigravity'),
+          equals('Orchestrator (Argon)'));
+      expect(Session.formatModelLabel('claude-opus-5-5-high', 'antigravity'),
+          equals('Claude Opus 5.5 (High)'));
+      expect(Session.formatModelLabel('claude-fable-5-1[1m]', 'claude-code'),
+          equals('Claude Fable 5.1'));
+      expect(Session.formatModelLabel('opus', 'claude-code'),
+          equals('Claude Opus'));
+      expect(Session.formatModelLabel('sonnet', 'claude-code'),
+          equals('Claude Sonnet'));
+      expect(Session.formatModelLabel('haiku', 'claude-code'),
+          equals('Claude Haiku'));
+      expect(Session.formatModelLabel('opusplan', 'claude-code'),
+          equals('Claude Opus (Plan)'));
+      expect(Session.formatModelLabel('sonnet-3-7', 'claude-code'),
+          equals('sonnet-3-7'));
+      expect(
+          Session.formatModelLabel('', 'claude-code'), equals('Default Model'));
+
+      final dynamicSuggestions = [
+        {'id': 'custom-id', 'label': 'Custom Model Label'}
+      ];
+      expect(
+          Session.formatModelLabel(
+              'custom-id', 'claude-code', dynamicSuggestions),
+          equals('Custom Model Label'));
+    });
   });
 }

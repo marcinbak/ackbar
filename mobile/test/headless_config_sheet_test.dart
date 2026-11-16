@@ -9,6 +9,8 @@ import 'package:ackbar_mobile/core/providers/fleet_providers.dart';
 import 'package:ackbar_mobile/features/headless/presentation/headless_config_sheet.dart';
 
 class FakeConfigHttpClient extends http.BaseClient {
+  String? lastPatchBody;
+
   @override
   Future<http.StreamedResponse> send(http.BaseRequest request) async {
     final path = request.url.path;
@@ -49,6 +51,9 @@ class FakeConfigHttpClient extends http.BaseClient {
         ],
       };
     } else if (path.endsWith('/config')) {
+      if (request is http.Request) {
+        lastPatchBody = request.body;
+      }
       body = {
         'id': 's-cfg-1',
         'agent': 'claude-code',
@@ -59,6 +64,7 @@ class FakeConfigHttpClient extends http.BaseClient {
         'started_at': '2026-11-11T10:00:00Z',
         'last_event_at': '2026-11-11T10:00:00Z',
         'model': 'claude-3-7-sonnet',
+        'resolved_model': 'claude-fable-5-1',
         'effort': 'high',
         'permission_mode': 'plan',
         'extra_dirs': ['/tmp/shared'],
@@ -124,9 +130,32 @@ void main() {
       await tester.pumpWidget(buildApp(HeadlessConfigPillBar(session: agy)));
       await tester.pump();
 
-      expect(find.text('gemini-4-argon'), findsOneWidget);
+      expect(find.text('Gemini 4 Argon'), findsOneWidget);
       expect(find.text('xhigh'), findsNothing);
       expect(find.text('PLAN'), findsOneWidget);
+    });
+
+    testWidgets('renders formatted resolvedModel when model is empty',
+        (tester) async {
+      final sess = Session(
+        id: 's-res-pill',
+        agent: 'claude-code',
+        host: 'local',
+        nativeId: 'n1',
+        cwd: '/work',
+        state: SessionState.working,
+        startedAt: DateTime.now(),
+        lastEventAt: DateTime.now(),
+        engineType: 'headless',
+        model: '',
+        resolvedModel: 'claude-fable-5-1',
+      );
+
+      await tester.pumpWidget(buildApp(HeadlessConfigPillBar(session: sess)));
+      await tester.pump();
+
+      expect(find.byKey(const ValueKey('headless_pill_model')), findsOneWidget);
+      expect(find.text('Claude Fable 5.1'), findsOneWidget);
     });
   });
 
@@ -200,6 +229,56 @@ void main() {
       expect(
           find.byKey(const ValueKey('headless_config_sheet')), findsOneWidget);
       expect(find.byKey(const ValueKey('config_effort_section')), findsNothing);
+    });
+
+    testWidgets(
+        'shows Default (Claude Fable 5.1) and resetting override sends model: ""',
+        (tester) async {
+      final fakeClient = FakeConfigHttpClient();
+      final api = ApiClient(client: fakeClient);
+      final session = Session(
+        id: 's-cfg-default',
+        agent: 'claude-code',
+        host: 'local',
+        nativeId: 'n1',
+        cwd: '/work',
+        state: SessionState.working,
+        startedAt: DateTime.now(),
+        lastEventAt: DateTime.now(),
+        engineType: 'headless',
+        model: '',
+        resolvedModel: 'claude-fable-5-1',
+      );
+
+      await tester.pumpWidget(
+          buildApp(HeadlessConfigSheet(session: session), api: api));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Default (Claude Fable 5.1)'), findsOneWidget);
+
+      await tester.tap(find.byKey(const ValueKey('config_model_selector')));
+      await tester.pumpAndSettle();
+
+      final option = find.text('Claude 3.7 Sonnet').last;
+      await tester.tap(option);
+      await tester.pumpAndSettle();
+
+      expect(fakeClient.lastPatchBody, isNotNull);
+      var decoded =
+          jsonDecode(fakeClient.lastPatchBody!) as Map<String, dynamic>;
+      expect(decoded['model'], equals('claude-3-7-sonnet'));
+
+      // Now reset back to default
+      await tester.tap(find.byKey(const ValueKey('config_model_selector')));
+      await tester.pumpAndSettle();
+
+      final defaultOption = find.text('Default (Claude Fable 5.1)').last;
+      expect(defaultOption, findsOneWidget);
+      await tester.tap(defaultOption);
+      await tester.pumpAndSettle();
+
+      decoded = jsonDecode(fakeClient.lastPatchBody!) as Map<String, dynamic>;
+      expect(decoded['model'], equals(''));
     });
   });
 }

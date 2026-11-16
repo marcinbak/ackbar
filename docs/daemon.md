@@ -26,6 +26,7 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 * **`headless_worker.go`, `headless_config.go`, `headless_worker_ipc.go`:** Detached `--headless-worker` process, persistent stdio stream loop, configuration fingerprinting, and Unix socket RPC.
 * **`headless_commands.go`:** Inline shell execution (`POST /v1/sessions/{id}/shell`), directory validation (`/add-dir`), in-place conversation rotation, `/clear`, `/reset`, and `/compact`.
 * **`headless_commands_inspect.go`:** Allowlisted CLI inspection (`/v1/sessions/{id}/inspect`), git diff inspection (`/v1/sessions/{id}/diff`), and transcript token/cost metrics.
+* **`headless_model.go`:** Resolves active default model name (`populateResolvedModel`) via 3-tier precedence and caches config file timestamps.
 * **`headless_rewind.go`:** Human turn rewind listing and execution (`/v1/sessions/{id}/rewind`), transcript cloning, and history seeding.
 * **`headless_handover.go`:** Deterministic 4-point handover briefing synthesis and headless context compaction.
 * **`headless_auth_detect.go`, `headless_auth_broker.go`, `headless_auth_flow.go`:** Detects OAuth authentication blocks (`BlockAuth`), manages allowlisted auth processes, relays loopback/stdin callbacks, and auto-resumes sessions.
@@ -53,7 +54,7 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 | Method | Endpoint | Description |
 | :--- | :--- | :--- |
 | `GET` | `/v1/version` | Returns current daemon version, canonical host name, and display name. |
-| `GET` | `/v1/sessions` | Returns all active, managed, and historic sessions with unread state (supports `?federated=true` for cross-host session aggregation). |
+| `GET` | `/v1/sessions` | Returns active, managed, and historic sessions with unread state and dynamically resolved `resolved_model` (`?federated=true` supported). |
 | `GET` | `/v1/events` | SSE stream broadcasting real-time session mutations with immediate header flush and periodic keepalive heartbeats (`: keepalive\n\n`, 20s default). |
 | `POST` | `/v1/sessions/prompt` | Submits prompt to headless or tmux session (supports `delay_seconds`, `deliver_at`, and idempotent `client_turn_id` deduplication). |
 | `GET` | `/v1/sessions/chat/stream` | SSE stream for real-time turn text, thoughts, subagents, and keepalive heartbeats (supports `?after_seq=<n>`, `?turn_id=<id>`, and `Last-Event-ID`). |
@@ -63,11 +64,11 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 | `POST` | `/v1/meta/resolve` | Derives host, agent, group, and existing session match from prompt via Jev AI / heuristics. |
 | `POST` | `/v1/hooks/{agent}` | Ingests agent lifecycle and tool hook events with in-place `/clear` rotation detection. |
 | `POST` | `/v1/sessions/control` | Executes control actions: `resume`, `restart`, `kill`, `move`, `rename`, `delete`, `handover`, `later`, `unlater`, `done`, `active`, `update_config`, `respond`. |
-| `PATCH` | `/v1/sessions/{id}/config` | Updates session configuration (`model`, `effort`, `permission_mode`, `extra_dirs`). |
+| `PATCH` | `/v1/sessions/{id}/config` | Updates session configuration (`model`, `effort`, `permission_mode`, `extra_dirs`). Setting empty `model` resets to default. |
 | `POST` | `/v1/sessions/{id}/shell` | Executes shell command in session CWD via `/bin/sh -c` (30s timeout, 128KB cap, `-pgid` kill). |
 | `POST` | `/v1/sessions/{id}/clear` | Rotates conversation context in-place to `Conv N+1` while preserving session configuration. |
 | `POST` | `/v1/sessions/{id}/compact` | Triggers context compaction (native stream-json turn for Claude, daemon rotation for Antigravity). |
-| `GET` | `/v1/sessions/{id}/inspect` | Runs allowlisted CLI inspection (`kind=plugins|agents|doctor|context|cost`) and computes token metrics. |
+| `GET` | `/v1/sessions/{id}/inspect` | Runs allowlisted CLI inspection (`kind=plugins|agents|doctor|context|cost`), computes token metrics, and populates `resolved_model`. |
 | `GET` | `/v1/sessions/{id}/diff` | Returns working directory Git status, diffstat, and unified diff (`GIT_OPTIONAL_LOCKS=0`). |
 | `GET` | `/v1/sessions/{id}/rewind` | Lists human turn checkpoints available for conversation rollback. |
 | `POST` | `/v1/sessions/{id}/rewind` | Rolls back session to target turn checkpoint via transcript clone or bounded history seed. |
@@ -252,6 +253,7 @@ The SQLite database (`~/.config/ackbar/ackbard.db`) uses CGO-free pure Go SQLite
 * `current_task_id`: Tracks the active Ackbar task ID bound to the session (if any), categorizing the session under the `📋 Tasks` subsection. Each host strictly stores only its own local sessions in the `sessions` table (no cross-host session replicas).
 * `blocked_meta`: Persists structured JSON metadata (`auth_target`, `auth_kind`, `auth_server`, `auth_url`, `auth_hint`, `flow_id`) for sessions in `BlockAuth` state.
 * `extra_dirs`: Persists JSON array of additional allowed directory paths (`--add-dir`) for agent workspace access.
+* `model`: Stores explicit model override. Empty string tracks agent default; `resolved_model` dynamically exposes active model without database migration.
 * `task_deliverables` LWW columns: Adds `updated_at`, `provider`, `content_md`, `deleted_at` (tombstone for LWW sync), `metadata_json` (structured `RetroMetrics`), and `dedup_key` with indexes for peer replication.
 
 ---

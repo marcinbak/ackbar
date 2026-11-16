@@ -20,7 +20,11 @@ class HeadlessConfigPillBar extends StatelessWidget {
   Widget build(BuildContext context) {
     final isAgy = session.agent.toLowerCase() == 'antigravity';
     final isPlan = session.permissionMode.toLowerCase() == 'plan';
-    final model = session.model.isNotEmpty ? session.model : 'model';
+    final effectiveModel =
+        session.model.isNotEmpty ? session.model : session.resolvedModel;
+    final modelLabel = effectiveModel.isNotEmpty
+        ? Session.formatModelLabel(effectiveModel, session.agent)
+        : 'Default Model';
 
     return InkWell(
       key: const ValueKey('headless_config_pill_bar'),
@@ -36,7 +40,8 @@ class HeadlessConfigPillBar extends StatelessWidget {
           scrollDirection: Axis.horizontal,
           child: Row(
             children: [
-              _pill(Icons.tune_rounded, model, AppColors.textSecondary),
+              _pill(Icons.tune_rounded, modelLabel, AppColors.textSecondary,
+                  const ValueKey('headless_pill_model')),
               if (!isAgy && session.effort.isNotEmpty) ...[
                 const SizedBox(width: 6),
                 _pill(
@@ -68,8 +73,9 @@ class HeadlessConfigPillBar extends StatelessWidget {
     );
   }
 
-  Widget _pill(IconData icon, String label, Color color) {
+  Widget _pill(IconData icon, String label, Color color, [Key? key]) {
     return Container(
+      key: key,
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
       decoration: BoxDecoration(
         color: AppColors.surfaceHighlight,
@@ -112,6 +118,7 @@ class HeadlessConfigSheet extends ConsumerStatefulWidget {
 class _HeadlessConfigSheetState extends ConsumerState<HeadlessConfigSheet> {
   late Session _session;
   List<ModelSuggestion> _models = const [];
+  String _lastDefaultModel = '';
   bool _isBusy = false;
   String? _errorMessage;
   final _dirController = TextEditingController();
@@ -129,6 +136,9 @@ class _HeadlessConfigSheetState extends ConsumerState<HeadlessConfigSheet> {
   void initState() {
     super.initState();
     _session = widget.session;
+    if (_session.model.isEmpty && _session.resolvedModel.isNotEmpty) {
+      _lastDefaultModel = _session.resolvedModel;
+    }
     _loadModels();
   }
 
@@ -191,6 +201,9 @@ class _HeadlessConfigSheetState extends ConsumerState<HeadlessConfigSheet> {
       if (!mounted) return;
       setState(() {
         _session = updated;
+        if (_session.model.isEmpty && _session.resolvedModel.isNotEmpty) {
+          _lastDefaultModel = _session.resolvedModel;
+        }
         _isBusy = false;
       });
       ref.read(fleetSessionsProvider.notifier).upsertSession(updated);
@@ -248,40 +261,56 @@ class _HeadlessConfigSheetState extends ConsumerState<HeadlessConfigSheet> {
                   style: AppTypography.codeXs
                       .copyWith(color: AppColors.textSecondary)),
               const SizedBox(height: 4),
-              DropdownButtonFormField<String>(
-                key: const ValueKey('config_model_selector'),
-                value: _session.model.isNotEmpty ? _session.model : null,
-                hint: Text('Select model',
+              Builder(
+                builder: (context) {
+                  final defaultId = _session.model.isEmpty
+                      ? _session.resolvedModel
+                      : _lastDefaultModel;
+                  final defaultLabel = defaultId.isNotEmpty
+                      ? 'Default (${Session.formatModelLabel(defaultId, _session.agent, _models)})'
+                      : 'Default (Agent Default)';
+
+                  return DropdownButtonFormField<String>(
+                    key: const ValueKey('config_model_selector'),
+                    value: _session.model,
+                    hint: Text('Select model',
+                        style: AppTypography.codeXs
+                            .copyWith(color: AppColors.textMuted)),
+                    dropdownColor: AppColors.surfaceHighlight,
                     style: AppTypography.codeXs
-                        .copyWith(color: AppColors.textMuted)),
-                dropdownColor: AppColors.surfaceHighlight,
-                style:
-                    AppTypography.codeXs.copyWith(color: AppColors.textPrimary),
-                isDense: true,
-                decoration: InputDecoration(
-                  filled: true,
-                  fillColor: AppColors.background,
-                  contentPadding:
-                      const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                  border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(6),
-                      borderSide:
-                          const BorderSide(color: AppColors.outlineSubtle)),
-                ),
-                items: [
-                  if (_session.model.isNotEmpty &&
-                      !_models.any((m) => m.id == _session.model))
-                    DropdownMenuItem(
-                        value: _session.model,
-                        child: Text('${_session.model} (current)')),
-                  ..._models.map((m) =>
-                      DropdownMenuItem(value: m.id, child: Text(m.label))),
-                ],
-                onChanged: _isBusy
-                    ? null
-                    : (v) => v != null && v != _session.model
-                        ? _updateConfig(model: v)
-                        : null,
+                        .copyWith(color: AppColors.textPrimary),
+                    isDense: true,
+                    decoration: InputDecoration(
+                      filled: true,
+                      fillColor: AppColors.background,
+                      contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 8),
+                      border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(6),
+                          borderSide:
+                              const BorderSide(color: AppColors.outlineSubtle)),
+                    ),
+                    items: [
+                      DropdownMenuItem<String>(
+                        value: '',
+                        child: Text(defaultLabel),
+                      ),
+                      if (_session.model.isNotEmpty &&
+                          !_models.any((m) => m.id == _session.model))
+                        DropdownMenuItem(
+                            value: _session.model,
+                            child: Text(
+                                '${Session.formatModelLabel(_session.model, _session.agent, _models)} (current)')),
+                      ..._models.where((m) => m.id.isNotEmpty).map((m) =>
+                          DropdownMenuItem(value: m.id, child: Text(m.label))),
+                    ],
+                    onChanged: _isBusy
+                        ? null
+                        : (v) => v != null && v != _session.model
+                            ? _updateConfig(model: v)
+                            : null,
+                  );
+                },
               ),
               if (!isAgy) ...[
                 const SizedBox(height: 12),

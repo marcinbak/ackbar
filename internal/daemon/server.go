@@ -603,7 +603,9 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			s.triggerAsyncLiveness()
 		}
 		for _, sess := range localSessions {
-			data, err := json.Marshal(sess)
+			sessCopy := *sess
+			s.populateResolvedModel(&sessCopy)
+			data, err := json.Marshal(&sessCopy)
 			if err == nil {
 				_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
 			}
@@ -634,12 +636,19 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) broadcast(sess *Session) {
+	if sess == nil {
+		return
+	}
+	// Invariant: broadcast clones sess to populate resolved_model without racing concurrent callers or DB saves
+	sessCopy := *sess
+	s.populateResolvedModel(&sessCopy)
+
 	s.subMutex.Lock()
 	defer s.subMutex.Unlock()
 
 	for ch := range s.subscribers {
 		select {
-		case ch <- sess:
+		case ch <- &sessCopy:
 		default:
 			// slow consumer, drop event
 		}

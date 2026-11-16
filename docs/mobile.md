@@ -90,7 +90,7 @@ Tap any headless session card or **Open Chat** to enter the dedicated interactiv
 * **Shared Message Bubbles (`TranscriptTurnBubble`):** Elevated user bubbles and agent cards with Markdown and copy actions ([`transcript_turn_bubble.dart`](../mobile/lib/features/transcript/presentation/transcript_turn_bubble.dart)).
 * **Tool & Chain-of-Thought Badges (`TranscriptToolWidgets`):** Collapsible tool invocation cards and reasoning accordions ([`transcript_tool_widgets.dart`](../mobile/lib/features/transcript/presentation/transcript_tool_widgets.dart)).
 * **Subagents Dock (`SubagentsDock`):** Collapsible child agent dock tracking delegated subagent status, progress, and turn counts ([`subagents_dock.dart`](../mobile/lib/features/transcript/presentation/subagents_dock.dart)).
-* **Runtime Configuration:** Pill bar displays model, effort, auto/plan mode, directories, and context. Sheet manages models, directories, MCP status, and **`Restart CLI`**.
+* **Runtime Configuration:** Pill bar displays resolved default model or override, effort, mode, directories, context, and configuration sheet.
 * **Composer Autocomplete (`HeadlessAutocompleteStrip`):** Detects `/` for commands, `@` for files, and `!` for shell mode.
 * **Command Dispatcher (`HeadlessCommandDispatcher`):** Runs `! <cmd>` and 21 standalone commands (including `/restart`) with inline cards.
 * **In-Place Turn Rotation (`Conv N+1`):** `/clear`, `/reset`, `/rewind`, and `/handover` rotate sessions in-place using epoch guards while clearing ephemeral cards.
@@ -209,8 +209,8 @@ In **Phase 5**, the Flutter Mobile App (`mobile/lib/`) was upgraded to complete 
 
 5. **Headless Session & Command Parity (`features/headless/`, `features/chat/` & `features/transcript/`):**
    * **`HeadlessAuthCard`:** Renders on `BlockKind.auth` in `AttentionScreen`, `ChatScreen`, and `TranscriptScreen`. Launches external browser via native `dev.ackbar.app/launcher` HTTPS channel (`MainActivity.kt`, `AppDelegate.swift`) with clipboard fallback. Supports collapsible remote `callback_url` paste, retry, terminal attach, and dismiss.
-   * **`HeadlessConfigPillBar` & `HeadlessConfigSheet`:** Displays model, effort (hidden for Antigravity), `AUTO`/`PLAN` mode, `extra_dirs`, and `Context %`. Embeds `HeadlessMcpSection` with live MCP/plugin pills, 1-tap sign-in, and **`Restart CLI`**.
-   * **Composer Autocomplete & Command Dispatcher:** `HeadlessAutocompleteStrip` handles `/` commands, `@` files, and `!` shell indicator. `HeadlessCommandDispatcher` executes `! <cmd>` and 21 standalone slash commands (including `/restart`), passing prompt skills through. Renders inline dark `HeadlessCommandCardView` cards (`+ Attach to Prompt`, inspect, `/rewind`) and handles epoch-guarded `Conv N+1` rotation.
+   * **`HeadlessConfigPillBar` & `HeadlessConfigSheet`:** Displays model override or resolved default (`resolvedModel`), effort, mode, and context. Model selector shows `Default (<Model>)` and resets override.
+   * **Composer Autocomplete & Command Dispatcher:** `HeadlessAutocompleteStrip` handles autocomplete. `HeadlessCommandDispatcher` executes slash commands; `/model` and `/context` cards render `Default (<Model>)` for empty overrides.
 
 ---
 

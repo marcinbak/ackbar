@@ -21,6 +21,7 @@ Ackbar supports the major agent ecosystems:
 * **CLI Flags & Directory Access:** Passes `--add-dir <dir>` for extra workspace access. Supports `--effort` (`low|medium|high|max`) and maps `permission_mode: "dontAsk"` to `--dangerously-skip-permissions`.
 * **Non-Interactive Inspection & Compaction:** Uses `claude plugin list --json`, `claude agents --json`, and `claude doctor` to prevent interactive TUI hangs. Executes native `/compact` turns in-session.
 * **Transcript Rewind:** Clones `.jsonl` transcript up to chosen turn boundary, updates `"sessionId"`, and sets `0600` file permissions.
+* **Default Model Resolution:** Resolves active model via 3 tiers: explicit override, runtime stream or transcript, or CLI settings/env fallback.
 
 ### Antigravity
 * **Session Annotations:** `~/.gemini/antigravity/annotations/<session-id>.pbtxt` contains custom user-assigned titles (`title: "..."`).
@@ -31,6 +32,7 @@ Ackbar supports the major agent ecosystems:
 * **CLI Flags & Directory Access:** Passes `--add-dir <dir>` for extra workspace access. Omits `--effort` flag (encoded in model IDs). Rejects `permission_mode: "dontAsk"` with `400 Bad Request`.
 * **Non-Interactive Inspection & Compaction:** Avoids `agy mcp list` to protect header credentials, using `mcp-status` instead. Uses `agy plugin list --json` and `agy agents`. Compaction triggers daemon rotation to `Conv N+1`.
 * **Transcript Rewind:** Rewinds by seeding bounded historical steps into a fresh conversation turn.
+* **Default Model Resolution:** Resolves active model via 3 tiers: explicit override, runtime stream or transcript, or CLI settings/env fallback.
 * **Startup Init Race & Process Scanning:** Buffers pre-turn `{"event":"init"}` event until Turn 1. Background scanner ignores `--input-format` to avoid misclassifying warm workers.
 * **Session File Cleanup (`CleanSessionFiles`):** Removes `brain/<session-id>/`, `conversations/<session-id>.*`, `annotations/<session-id>.*`, `presence/<session-id>.*`, and prunes `<session-id>` from `cache/conversation_metadata.json` across default (`~/.gemini/antigravity`, `~/.gemini/antigravity-cli`, `~/.antigravity`) and `~/.gemini-profiles/*` directories.
 * **Headless Worker Plugin Environment (`buildWorkerEnv`):** Prepends `~/.gemini/antigravity-cli/bin` and `~/.gemini/antigravity/bin` to `PATH` and exports `ANTIGRAVITY_APP_DATA_DIR` so shims resolve cached binaries.
@@ -59,7 +61,7 @@ Token usage percentage calculation dynamically adapts to model families:
 
 | Model Family / Patterns | Context Limit | Example Models |
 | :--- | :--- | :--- |
-| `fable`, `opus`, `sonnet-4/5`, `claude-4/5`, `1m`, `gemini` | **1,000,000 tokens (1M)** | `claude-fable-5`, `claude-opus-5`, `gemini-1.5-pro` |
+| `fable`, `opus`, `sonnet-4/5`, `claude-4/5`, `1m`, `gemini` | **1,000,000 tokens (1M)** | `claude-fable-5`, `claude-opus-5`, `gemini-1.5-pro`, `gemini-4-carbon-high` |
 | `gpt-4`, `codex` | **128,000 tokens (128k)** | `gpt-4o`, `codex-exec` |
 | Standard / Legacy (`claude-3-5-*`, `claude-3-7-*`) | **200,000 tokens (200k)** | `claude-3-5-sonnet`, `claude-3-7-sonnet` |
 

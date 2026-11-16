@@ -95,6 +95,7 @@ type HeadlessRunner struct {
 	onTurnComplete         func(sessionID, nativeID string)
 	warmWorkers            map[string]*warmWorkerHandle
 	sessionTurnMu          map[string]*sync.Mutex
+	runtimeModels          map[string]string
 	idleTTL                time.Duration
 }
 
@@ -114,6 +115,7 @@ func NewHeadlessRunner(db *DB, broadcast func(s *Session)) *HeadlessRunner {
 		respondedWhileStopping: make(map[string]bool),
 		warmWorkers:            make(map[string]*warmWorkerHandle),
 		sessionTurnMu:          make(map[string]*sync.Mutex),
+		runtimeModels:          make(map[string]string),
 		idleTTL:                ResolveHeadlessIdleTTL(0),
 		db:                     db,
 		broadcast:              broadcast,
@@ -733,6 +735,62 @@ func (h *HeadlessRunner) MigrateSession(oldID, newID string) {
 		delete(h.sessionTurnMu, oldID)
 		h.sessionTurnMu[newID] = mu
 	}
+	if m, exists := h.runtimeModels[oldID]; exists {
+		delete(h.runtimeModels, oldID)
+		h.runtimeModels[newID] = m
+	}
+}
+
+func (h *HeadlessRunner) SetRuntimeModel(sessionID, agent, model string) {
+	if h == nil || sessionID == "" {
+		return
+	}
+	norm := normalizeModelIdentifier(agent, model)
+	if norm == "" {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.runtimeModels[sessionID] = norm
+}
+
+func (h *HeadlessRunner) GetRuntimeModel(sessionID string) string {
+	if h == nil || sessionID == "" {
+		return ""
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if m, ok := h.runtimeModels[sessionID]; ok {
+		return m
+	}
+	parts := strings.Split(sessionID, ":")
+	if len(parts) == 3 && parts[2] != "" {
+		nativeID := parts[2]
+		for k, v := range h.runtimeModels {
+			if strings.HasSuffix(k, ":"+nativeID) || k == nativeID {
+				return v
+			}
+		}
+	}
+	return ""
+}
+
+func (h *HeadlessRunner) ClearRuntimeModel(sessionID string) {
+	if h == nil || sessionID == "" {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	delete(h.runtimeModels, sessionID)
+	parts := strings.Split(sessionID, ":")
+	if len(parts) == 3 && parts[2] != "" {
+		nativeID := parts[2]
+		for k := range h.runtimeModels {
+			if strings.HasSuffix(k, ":"+nativeID) || k == nativeID {
+				delete(h.runtimeModels, k)
+			}
+		}
+	}
 }
 
 func (h *HeadlessRunner) resolveQueueKey(sessionID string) string {
@@ -1342,6 +1400,7 @@ type streamParseHooks struct {
 	onSystemInit       func()
 	onInteractiveBlock func(toolName string, toolInput any, blocked *Blocked)
 	onTurnResult       func(lastTurnText, resultText string, streamHadError bool)
+	onModelDetected    func(model string)
 }
 
 func (h *HeadlessRunner) processStreamCore(sessionID string, r io.Reader, prompt string, emitTurnComplete bool, optionalSess ...*Session) (string, string, bool) {
@@ -1362,6 +1421,13 @@ func (h *HeadlessRunner) processStreamCore(sessionID string, r io.Reader, prompt
 		emit:             emitStreamEvt,
 		onAntigravityInit: func(convID string) {
 			h.handleAntigravityInit(sess, convID, prompt)
+		},
+		onModelDetected: func(m string) {
+			agent := ""
+			if sess != nil {
+				agent = sess.Agent
+			}
+			h.SetRuntimeModel(sessionID, agent, m)
 		},
 		onSystemInit: func() {
 			if sess != nil && prompt != "" {
@@ -1430,12 +1496,18 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 		if agyEvt, ok := raw["event"].(string); ok && agyEvt != "" {
 			switch agyEvt {
 			case "init":
+				if m, ok := raw["model"].(string); ok && m != "" && hooks.onModelDetected != nil {
+					hooks.onModelDetected(m)
+				}
 				if convID, ok := raw["conversation_id"].(string); ok && convID != "" && hooks.onAntigravityInit != nil {
 					hooks.onAntigravityInit(convID)
 				}
 
 			case "step_update":
 				if su, ok := raw["step_update"].(map[string]interface{}); ok {
+					if m, ok := su["model"].(string); ok && m != "" && hooks.onModelDetected != nil {
+						hooks.onModelDetected(m)
+					}
 					stepType, _ := su["step_type"].(string)
 					state, _ := su["state"].(string)
 					stepIdx := -1
@@ -1622,8 +1694,13 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 			}
 
 		case "system":
-			if subtype, _ := raw["subtype"].(string); subtype == "init" && hooks.onSystemInit != nil {
-				hooks.onSystemInit()
+			if subtype, _ := raw["subtype"].(string); subtype == "init" {
+				if m, ok := raw["model"].(string); ok && m != "" && hooks.onModelDetected != nil {
+					hooks.onModelDetected(m)
+				}
+				if hooks.onSystemInit != nil {
+					hooks.onSystemInit()
+				}
 			}
 
 		case "content_block_delta":
@@ -1815,6 +1892,9 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 
 		case "assistant":
 			if msg, ok := raw["message"].(map[string]interface{}); ok {
+				if m, ok := msg["model"].(string); ok && m != "" && hooks.onModelDetected != nil {
+					hooks.onModelDetected(m)
+				}
 				var textBlocks []string
 				flushTextBlocks := func() {
 					if len(textBlocks) > 0 && !hasEmittedDeltaInTurn {
