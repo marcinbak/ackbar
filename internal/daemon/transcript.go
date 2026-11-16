@@ -415,6 +415,14 @@ func ExtractAntigravityTranscriptMessages(home, convID string) ([]TranscriptMess
 		case "PLANNER_RESPONSE":
 			var toolSummaries []string
 			for _, tc := range entry.ToolCalls {
+				if mcpName, mcpDetail, isMCP := FormatMCPToolDisplay(tc.Name, tc.Args); isMCP {
+					if mcpDetail != "" {
+						toolSummaries = append(toolSummaries, fmt.Sprintf("%s: %s", mcpName, mcpDetail))
+					} else {
+						toolSummaries = append(toolSummaries, mcpName)
+					}
+					continue
+				}
 				action := ""
 				if tc.Args != nil {
 					if act, ok := tc.Args["toolAction"].(string); ok && act != "" {
@@ -636,26 +644,34 @@ func loadClaudeTranscript(t *Transcript, home, sessionID, cwd string) error {
 								} else if cType == "tool_use" {
 									tName, _ := cMap["name"].(string)
 									if tName != "" {
-										detail := ""
-										if inputMap, ok := cMap["input"].(map[string]interface{}); ok {
-											if cmd, ok := inputMap["command"].(string); ok && cmd != "" {
-												detail = strings.TrimSpace(cmd)
-											} else if desc, ok := inputMap["description"].(string); ok && desc != "" {
-												detail = strings.TrimSpace(desc)
-											} else if fp, ok := inputMap["file_path"].(string); ok && fp != "" {
-												detail = strings.TrimSpace(fp)
-											} else if p, ok := inputMap["path"].(string); ok && p != "" {
-												detail = strings.TrimSpace(p)
-											} else if pat, ok := inputMap["pattern"].(string); ok && pat != "" {
-												detail = strings.TrimSpace(pat)
-											} else if q, ok := inputMap["query"].(string); ok && q != "" {
-												detail = strings.TrimSpace(q)
+										if mcpName, mcpDetail, isMCP := FormatMCPToolDisplay(tName, cMap["input"]); isMCP {
+											if mcpDetail != "" {
+												tools = append(tools, fmt.Sprintf("%s: %s", mcpName, mcpDetail))
+											} else {
+												tools = append(tools, mcpName)
 											}
-										}
-										if detail != "" {
-											tools = append(tools, fmt.Sprintf("%s: %s", tName, detail))
 										} else {
-											tools = append(tools, tName)
+											detail := ""
+											if inputMap, ok := cMap["input"].(map[string]interface{}); ok {
+												if cmd, ok := inputMap["command"].(string); ok && cmd != "" {
+													detail = strings.TrimSpace(cmd)
+												} else if desc, ok := inputMap["description"].(string); ok && desc != "" {
+													detail = strings.TrimSpace(desc)
+												} else if fp, ok := inputMap["file_path"].(string); ok && fp != "" {
+													detail = strings.TrimSpace(fp)
+												} else if p, ok := inputMap["path"].(string); ok && p != "" {
+													detail = strings.TrimSpace(p)
+												} else if pat, ok := inputMap["pattern"].(string); ok && pat != "" {
+													detail = strings.TrimSpace(pat)
+												} else if q, ok := inputMap["query"].(string); ok && q != "" {
+													detail = strings.TrimSpace(q)
+												}
+											}
+											if detail != "" {
+												tools = append(tools, fmt.Sprintf("%s: %s", tName, detail))
+											} else {
+												tools = append(tools, tName)
+											}
 										}
 									}
 								}

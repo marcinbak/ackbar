@@ -1,7 +1,95 @@
 // Ephemeral In-Stream Activity Indicator Lifecycle & Timers
 import { escapeHtml } from './utils.js';
 
+export function resolveToolDisplay(toolName, toolInput) {
+  const rawName = String(toolName || '').trim();
+  let params = toolInput;
+  if (typeof params === 'string') {
+    const trimmed = params.trim();
+    if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
+      try {
+        params = JSON.parse(trimmed);
+      } catch (_) {}
+    }
+  }
+  const isObject = params !== null && typeof params === 'object' && !Array.isArray(params);
+  const inputMap = isObject ? params : {};
+
+  if (rawName.toLowerCase() === 'call_mcp_tool') {
+    const server = String(inputMap.ServerName || inputMap.server_name || inputMap.server || '').trim();
+    const tool = String(inputMap.ToolName || inputMap.tool_name || inputMap.tool || '').trim();
+    let name = 'call_mcp_tool';
+    if (server && tool) {
+      name = `mcp/${server}/${tool}`;
+    } else if (tool) {
+      name = `mcp/${tool}`;
+    } else if (server) {
+      name = `mcp/${server}`;
+    }
+
+    const rawArgs = inputMap.Arguments !== undefined
+      ? inputMap.Arguments
+      : (inputMap.arguments !== undefined ? inputMap.arguments : inputMap.args);
+
+    let detail = '';
+    if (rawArgs !== null && rawArgs !== undefined) {
+      if (typeof rawArgs === 'object' && !Array.isArray(rawArgs)) {
+        if (Object.keys(rawArgs).length > 0) {
+          detail = JSON.stringify(rawArgs);
+        }
+      } else if (typeof rawArgs === 'string') {
+        const trimmedArgs = rawArgs.trim();
+        if (trimmedArgs && trimmedArgs !== '{}') {
+          detail = trimmedArgs;
+        }
+      } else {
+        detail = String(rawArgs);
+      }
+    }
+    return { name, detail, isMcp: true, mcpServer: server, mcpTool: tool };
+  }
+
+  if (rawName.startsWith('mcp__')) {
+    const parts = rawName.split('__');
+    if (parts.length >= 3 && parts[1] && parts[2]) {
+      const server = parts[1];
+      const tool = parts.slice(2).join('__');
+      const name = `mcp/${server}/${tool}`;
+      const detail = (isObject && Object.keys(inputMap).length > 0) ? JSON.stringify(inputMap) : '';
+      return { name, detail, isMcp: true, mcpServer: server, mcpTool: tool };
+    }
+  }
+
+  if (rawName.startsWith('mcp_')) {
+    const parts = rawName.split('_');
+    if (parts.length >= 3 && parts[1] && parts[2]) {
+      const server = parts[1];
+      const tool = parts.slice(2).join('_');
+      const name = `mcp/${server}/${tool}`;
+      const detail = (isObject && Object.keys(inputMap).length > 0) ? JSON.stringify(inputMap) : '';
+      return { name, detail, isMcp: true, mcpServer: server, mcpTool: tool };
+    }
+  }
+
+  const name = rawName || 'tool';
+  let detail = '';
+  if (typeof toolInput === 'string') {
+    detail = toolInput.trim();
+  } else if (isObject && Object.keys(inputMap).length > 0) {
+    detail = JSON.stringify(inputMap, null, 2);
+  }
+  return { name, detail, isMcp: false, mcpServer: '', mcpTool: '' };
+}
+
 export function formatToolActivity(toolName, toolInput) {
+  const resolved = resolveToolDisplay(toolName, toolInput);
+  if (resolved.isMcp) {
+    const text = resolved.mcpTool
+      ? (resolved.mcpServer ? `Calling MCP ${resolved.mcpTool} (${resolved.mcpServer})...` : `Calling MCP ${resolved.mcpTool}...`)
+      : `Running ${resolved.name}...`;
+    return { icon: '🔌', text, badge: resolved.name };
+  }
+
   let params = toolInput;
   if (typeof params === 'string') {
     try {
