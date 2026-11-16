@@ -97,8 +97,7 @@ type HeadlessRunner struct {
 	sessionTurnMu          map[string]*sync.Mutex
 	runtimeModels          map[string]string
 	idleTTL                time.Duration
-	shuttingDown           bool
-	monitorWG              sync.WaitGroup
+	activeMonitors         int
 }
 
 func NewHeadlessRunner(db *DB, broadcast func(s *Session)) *HeadlessRunner {
