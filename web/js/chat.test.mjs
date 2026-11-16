@@ -414,6 +414,7 @@ function parseHtmlFragment(html, parent) {
       }
     }
     const inner = html.slice(closeAngle + 1, endTagPos);
+    el._innerHTML = inner;
     if (inner && inner.includes('<')) {
       el.children = parseHtmlFragment(inner, el);
     } else if (inner) {
@@ -451,6 +452,26 @@ globalThis.window.removeEventListener = () => {};
 globalThis.window.requestAnimationFrame = (fn) => setTimeout(fn, 0);
 globalThis.window.cancelAnimationFrame = (id) => clearTimeout(id);
 globalThis.window.open = () => null;
+globalThis.window.marked = {
+  use(ext) {
+    if (ext && ext.renderer) this._renderer = ext.renderer;
+  },
+  setOptions(opts) {
+    if (opts && opts.renderer) this._renderer = opts.renderer;
+  },
+  parse(md) {
+    let parsed = (md || '')
+      .replace(/\[(.*?)\]\((.*?)\)/g, (_, text, href) => {
+        if (this._renderer && typeof this._renderer.link === 'function') {
+          return this._renderer.link(href, '', text);
+        }
+        return `<a href="${href}">${text}</a>`;
+      })
+      .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+      .replace(/__(.*?)__/g, '<strong>$1</strong>');
+    return `<p>${parsed}</p>`;
+  }
+};
 globalThis.localStorage = { getItem: () => null, setItem: () => {}, removeItem: () => {} };
 globalThis.document = {
   body: new MockElement('body'),
@@ -484,7 +505,8 @@ const {
   pauseInStreamActivity,
   resumeInStreamActivity,
   formatModelLabel,
-  updateStatusPills
+  updateStatusPills,
+  createChatMessageElement
 } = chat;
 
 const chatAuth = await import('./chat-auth.js');
@@ -494,6 +516,12 @@ const {
   mountMCPStatus,
   invalidateMCPStatusCache
 } = chatAuth;
+
+const {
+  hasMarkdownSyntax,
+  sanitizeRenderedMarkdownHtml,
+  renderMarkdown
+} = await import('./utils.js');
 
 test('isPromptInTranscriptTail validates tail message matching and timestamp sanity', () => {
   assert.equal(isPromptInTranscriptTail([], 'fix login', Date.now()), false);
@@ -2242,6 +2270,257 @@ test('interceptChatInput handles /model status and reset to default', async () =
   } finally {
     globalThis.fetch = prevFetch;
   }
+});
+
+test('handleChatStreamEvent keeps stream buffer intact across interleaved tool events and renders bold HTML', async () => {
+  const container = new MockElement('div');
+  container.className = 'chat-messages-container';
+
+  const tabObj = {
+    id: 'tab-test-interleaved-tool',
+    viewMode: 'chat',
+    chatMessagesEl: container,
+    session: { id: 'claude-code:local:sess-tool-bold', agent: 'claude-code', state: 0 },
+    activeTurnBuffer: '',
+    activeTurnTools: []
+  };
+
+  handleChatStreamEvent(tabObj, {
+    type: 'turn_start',
+    turn_id: 'turn-1',
+    text: 'do task'
+  });
+
+  handleChatStreamEvent(tabObj, {
+    type: 'text_delta',
+    turn_id: 'turn-1',
+    seq: 1,
+    text: 'Point 3 controls **what shopping, pricing, and t'
+  });
+
+  handleChatStreamEvent(tabObj, {
+    type: 'tool_start',
+    turn_id: 'turn-1',
+    seq: 2,
+    tool_name: 'inspect'
+  });
+
+  handleChatStreamEvent(tabObj, {
+    type: 'tool_result',
+    turn_id: 'turn-1',
+    seq: 3,
+    tool_name: 'inspect',
+    tool_output: 'ok'
+  });
+
+  handleChatStreamEvent(tabObj, {
+    type: 'text_delta',
+    turn_id: 'turn-1',
+    seq: 4,
+    text: 'echnical build data**'
+  });
+  await new Promise((r) => setTimeout(r, 15));
+
+  assert.equal(
+    tabObj.activeTurnBuffer,
+    'Point 3 controls **what shopping, pricing, and technical build data**',
+    'Active turn buffer must not have double-newlines injected mid-word'
+  );
+
+  const assistantMsg = container.querySelector('.chat-msg.assistant-msg');
+  assert.ok(assistantMsg, 'Assistant message element must exist');
+  const bodyEl = assistantMsg.querySelector('.chat-msg-body');
+  assert.ok(bodyEl, 'Assistant body element must exist');
+  assert.ok(
+    bodyEl.innerHTML.includes('<strong>what shopping, pricing, and technical build data</strong>'),
+    `Rendered HTML must contain strong tag, got: ${bodyEl.innerHTML}`
+  );
+});
+
+test('createChatMessageElement renders markdown-body with strong tag for bold user message', () => {
+  const tabObj = {
+    id: 'tab-test-user-bold',
+    session: { id: 'claude-code:local:sess-user-bold', agent: 'claude-code', state: 0 }
+  };
+
+  const userMsgEl = createChatMessageElement(tabObj, {
+    role: 'user',
+    content: 'Here is a **bold item** to inspect'
+  });
+
+  assert.ok(userMsgEl, 'User message element must be created');
+  const bodyEl = userMsgEl.querySelector('.chat-msg-body.markdown-body');
+  assert.ok(bodyEl, 'User message body must have .chat-msg-body.markdown-body class');
+  assert.ok(
+    bodyEl.innerHTML.includes('<strong>bold item</strong>'),
+    `Body innerHTML must contain strong tag, got: ${bodyEl.innerHTML}`
+  );
+  assert.ok(
+    !bodyEl.innerHTML.includes('**bold item**'),
+    `Body innerHTML must not contain literal markdown asterisks, got: ${bodyEl.innerHTML}`
+  );
+});
+
+test('createChatMessageElement and renderMarkdown neutralize dangerous URI schemes with control characters to href="#"', () => {
+  const tabObj = {
+    id: 'tab-test-dangerous-link',
+    session: { id: 'claude-code:local:sess-danger-link', agent: 'claude-code', state: 0 }
+  };
+
+  const dangerousPrompts = [
+    '[Click](jav\tascript:alert(1))',
+    '[Click](jav\x00ascript:alert(2))',
+    '[Click](vbscript:msgbox(1))',
+    '[Click](data:text/html,<script>alert(1)</script>)'
+  ];
+
+  for (const prompt of dangerousPrompts) {
+    const userMsgEl = createChatMessageElement(tabObj, {
+      role: 'user',
+      content: prompt
+    });
+    assert.ok(userMsgEl, 'User message element must be created');
+    const bodyEl = userMsgEl.querySelector('.chat-msg-body.markdown-body');
+    assert.ok(bodyEl, 'User message body must have .chat-msg-body.markdown-body class');
+    assert.ok(
+      bodyEl.innerHTML.includes('href="#"'),
+      `Dangerous link must be sanitized to href="#", got: ${bodyEl.innerHTML}`
+    );
+    assert.ok(
+      !bodyEl.innerHTML.includes('javascript:') && !bodyEl.innerHTML.includes('vbscript:') && !bodyEl.innerHTML.includes('data:text/html'),
+      `Executable scheme must not be present, got: ${bodyEl.innerHTML}`
+    );
+    assert.ok(
+      !bodyEl.innerHTML.includes('target="_blank"'),
+      `Sanitized anchor must not have target="_blank", got: ${bodyEl.innerHTML}`
+    );
+  }
+});
+
+test('sanitizeRenderedMarkdownHtml strips dangerous HTML tags and SVG SMIL animation vectors', () => {
+  const xssPayloads = [
+    '*notice* <base href="https://attacker.com/">',
+    '*notice* <style>body{display:none}</style>',
+    '*notice* <form action="javascript:evil()"><input type="submit"></form>',
+    '*notice* <meta http-equiv="refresh" content="0;url=http://attacker.com">',
+    '*notice* <link rel="stylesheet" href="http://attacker.com/evil.css">',
+    '*svg* <svg><a id="x"><animate attributeName="href" values="javascript:alert(1)" /></a></svg>',
+    '*svg* <svg><a id="y"><set attributeName="href" to="jav\tascript:alert(2)" /></a></svg>',
+    '*iframe* <iframe srcdoc="<script>alert(1)</script>"></iframe>',
+    '<img src="javascript:alert(1)">',
+    '<img src="data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==">',
+    '<div onclick="alert(1)">click</div>'
+  ];
+
+  for (const payload of xssPayloads) {
+    const clean = sanitizeRenderedMarkdownHtml(payload);
+    assert.ok(!clean.includes('<base'), `Payload must not contain <base: ${clean}`);
+    assert.ok(!clean.includes('<style'), `Payload must not contain <style: ${clean}`);
+    assert.ok(!clean.includes('<form'), `Payload must not contain <form: ${clean}`);
+    assert.ok(!clean.includes('<meta'), `Payload must not contain <meta: ${clean}`);
+    assert.ok(!clean.includes('<link'), `Payload must not contain <link: ${clean}`);
+    assert.ok(!clean.includes('<animate'), `Payload must not contain <animate: ${clean}`);
+    assert.ok(!clean.includes('<set'), `Payload must not contain <set: ${clean}`);
+    assert.ok(!clean.includes('<iframe'), `Payload must not contain <iframe: ${clean}`);
+    assert.ok(!clean.includes('srcdoc'), `Payload must not contain srcdoc: ${clean}`);
+    assert.ok(!clean.includes('onclick'), `Payload must not contain onclick: ${clean}`);
+    assert.ok(!clean.includes('javascript:'), `Payload must not contain javascript:: ${clean}`);
+  }
+
+  // Safe raster data URI on img src must be preserved
+  const safeRaster = '<img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==" alt="dot">';
+  const cleanedRaster = sanitizeRenderedMarkdownHtml(safeRaster);
+  assert.ok(cleanedRaster.includes('data:image/png;base64,'), `Safe raster preview must be preserved: ${cleanedRaster}`);
+
+  // Dangerous SVG data URI on img src must be stripped
+  const dangerousSvg = '<img src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciPjxzY3JpcHQ+YWxlcnQoMSk8L3NjcmlwdD48L3N2Zz4=" alt="svg">';
+  const cleanedSvg = sanitizeRenderedMarkdownHtml(dangerousSvg);
+  assert.ok(!cleanedSvg.includes('data:image/svg+xml'), `Dangerous SVG data URI on src must be stripped: ${cleanedSvg}`);
+});
+
+test('sanitizeRenderedMarkdownHtml DOM template branch strips dangerous tags and neutralizes attributes', () => {
+  const origCreateElement = globalThis.document.createElement;
+  try {
+    let removedTags = [];
+    let setAttributes = [];
+    let removedAttributes = [];
+
+    globalThis.document.createElement = (tag) => {
+      if (tag === 'template') {
+        return {
+          content: {
+            querySelectorAll(sel) {
+              if (sel.includes('script')) {
+                return [
+                  { tagName: 'BASE', remove() { removedTags.push('base'); } },
+                  { tagName: 'STYLE', remove() { removedTags.push('style'); } },
+                  { tagName: 'ANIMATE', remove() { removedTags.push('animate'); } }
+                ];
+              }
+              return [
+                {
+                  attributes: [
+                    { name: 'href', value: 'jav\tascript:alert(1)' },
+                    { name: 'srcdoc', value: '<script>alert(1)</script>' },
+                    { name: 'onclick', value: 'alert(1)' },
+                    { name: 'src', value: 'data:text/html;base64,123' },
+                    { name: 'values', value: 'url1; jav\tascript:alert(2)' }
+                  ],
+                  setAttribute(name, val) { setAttributes.push({ name, val }); },
+                  removeAttribute(name) { removedAttributes.push(name); }
+                }
+              ];
+            }
+          },
+          get innerHTML() { return '<p>clean-dom</p>'; },
+          set innerHTML(_) {}
+        };
+      }
+      return origCreateElement(tag);
+    };
+
+    const result = sanitizeRenderedMarkdownHtml('<div>dirty</div>');
+    assert.equal(result, '<p>clean-dom</p>');
+    assert.deepEqual(removedTags, ['base', 'style', 'animate']);
+    assert.deepEqual(removedAttributes, ['srcdoc', 'onclick', 'src', 'values']);
+    assert.deepEqual(setAttributes, [{ name: 'href', val: '#' }]);
+  } finally {
+    globalThis.document.createElement = origCreateElement;
+  }
+});
+
+test('hasMarkdownSyntax supports single-character emphasis and ignores snake_case identifiers', () => {
+  // Single-character and bounded emphasis
+  assert.equal(hasMarkdownSyntax('*a*'), true, '*a* must be recognized as markdown');
+  assert.equal(hasMarkdownSyntax('**a**'), true, '**a** must be recognized as markdown');
+  assert.equal(hasMarkdownSyntax('_a_'), true, '_a_ must be recognized as markdown');
+  assert.equal(hasMarkdownSyntax('__a__'), true, '__a__ must be recognized as markdown');
+  assert.equal(hasMarkdownSyntax('~~a~~'), true, '~~a~~ must be recognized as markdown');
+
+  // Multi-word emphasis
+  assert.equal(hasMarkdownSyntax('*hello world*'), true);
+  assert.equal(hasMarkdownSyntax('**bold phrase**'), true);
+  assert.equal(hasMarkdownSyntax('_italic phrase_'), true);
+  assert.equal(hasMarkdownSyntax('__bold phrase__'), true);
+
+  // Snake_case identifiers in user prompt must NOT trigger markdown mode
+  assert.equal(hasMarkdownSyntax('foo_bar_baz'), false, 'foo_bar_baz must not be treated as italic');
+  assert.equal(hasMarkdownSyntax('inspect session_token_name here'), false, 'snake_case must not be treated as italic');
+  assert.equal(hasMarkdownSyntax('run test_headless_stream_parser now'), false, 'snake_case must not be treated as italic');
+
+  // Word-boundary underscores MUST trigger markdown mode
+  assert.equal(hasMarkdownSyntax('hello _italic_ world'), true);
+  assert.equal(hasMarkdownSyntax('(_italic_)'), true);
+
+  // Plain text without markdown
+  assert.equal(hasMarkdownSyntax('plain text prompt without markdown'), false);
+
+  // Bounded scan does not freeze or falsely match on large unclosed input
+  const largeUnclosed = 'plain text without closing markdown '.repeat(2000) + '** unclosed';
+  const start = Date.now();
+  assert.equal(hasMarkdownSyntax(largeUnclosed), false);
+  const elapsed = Date.now() - start;
+  assert.ok(elapsed < 100, `Bounded scan took ${elapsed}ms; must be under 100ms`);
 });
 
 

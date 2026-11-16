@@ -1463,6 +1463,9 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 	emittedTextBlocks := make(map[string]bool)
 	emittedThinkingBlocks := make(map[string]bool)
 	agStepText := make(map[int]string)
+	agHadToolSinceLastText := false
+	inActiveTextBlock := false
+	activeTextBlockIdx := -1
 	hasEmittedAssistantText := false
 	hasEmittedDeltaInTurn := false
 	needsSeparation := false
@@ -1520,15 +1523,25 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 						if textDelta, ok := su["text_delta"].(string); ok && textDelta != "" {
 							isDuplicateDone := stepIdx >= 0 && state == "DONE" && agStepText[stepIdx] != "" && strings.Contains(agStepText[stepIdx], textDelta)
 							if !isDuplicateDone {
+								isContinuationOfSameStep := stepIdx >= 0 && agStepText[stepIdx] != ""
+								isNewStep := (stepIdx >= 0 && agStepText[stepIdx] == "") || (stepIdx < 0 && agHadToolSinceLastText)
 								if stepIdx >= 0 {
 									agStepText[stepIdx] += textDelta
 								}
-								lastTextBuilder.WriteString(textDelta)
+								emittedText := textDelta
+								if !isContinuationOfSameStep && isNewStep && hasEmittedAssistantText {
+									emittedText = ensureDoubleNewlineSeparation(lastTextBuilder.String(), textDelta)
+								}
+								lastTextBuilder.WriteString(emittedText)
 								emitStreamEvt(ChatStreamEvent{
 									SessionID: sessionID,
 									Type:      "text_delta",
-									Text:      textDelta,
+									Text:      emittedText,
 								})
+								hasEmittedAssistantText = true
+								if !isContinuationOfSameStep {
+									agHadToolSinceLastText = false
+								}
 							}
 						}
 						if thoughtDelta, ok := su["thought_delta"].(string); ok && thoughtDelta != "" {
@@ -1546,6 +1559,7 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 						}
 
 					case "tool":
+						agHadToolSinceLastText = true
 						toolName, _ := su["tool_name"].(string)
 						toolInfo, _ := su["tool_info"].(map[string]interface{})
 
@@ -1591,6 +1605,7 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 						}
 
 					case "subagent":
+						agHadToolSinceLastText = true
 						role, _ := su["role"].(string)
 						taskName, _ := su["task_name"].(string)
 						subagentName := role
@@ -1675,6 +1690,9 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 				clear(emittedTextBlocks)
 				clear(emittedThinkingBlocks)
 				clear(agStepText)
+				agHadToolSinceLastText = false
+				inActiveTextBlock = false
+				activeTextBlockIdx = -1
 				hasEmittedAssistantText = false
 				hasEmittedDeltaInTurn = false
 				needsSeparation = false
@@ -1703,20 +1721,42 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 				}
 			}
 
+		case "message_start":
+			inActiveTextBlock = false
+			activeTextBlockIdx = -1
+			if hasEmittedAssistantText {
+				needsSeparation = true
+			}
+
+		case "message_stop", "content_block_stop":
+			inActiveTextBlock = false
+			activeTextBlockIdx = -1
+
 		case "content_block_delta":
 			if delta, ok := raw["delta"].(map[string]interface{}); ok {
 				deltaType, _ := delta["type"].(string)
 				if deltaType == "text_delta" {
 					text, _ := delta["text"].(string)
-					lastTextBuilder.WriteString(text)
-					if needsSeparation && hasEmittedAssistantText {
-						if !strings.HasPrefix(text, "\n") {
-							text = "\n\n" + text
-						} else if !strings.HasPrefix(text, "\n\n") {
-							text = "\n" + text
+					blockIdx := -1
+					if idxF, ok := raw["index"].(float64); ok {
+						blockIdx = int(idxF)
+					}
+					if blockIdx >= 0 && activeTextBlockIdx >= 0 && blockIdx != activeTextBlockIdx {
+						inActiveTextBlock = false
+						if hasEmittedAssistantText {
+							needsSeparation = true
 						}
+					}
+					isMidSameBlock := inActiveTextBlock && (blockIdx == activeTextBlockIdx || blockIdx < 0)
+					if needsSeparation && hasEmittedAssistantText && !isMidSameBlock {
+						text = ensureDoubleNewlineSeparation(lastTextBuilder.String(), text)
 						needsSeparation = false
 					}
+					inActiveTextBlock = true
+					if blockIdx >= 0 {
+						activeTextBlockIdx = blockIdx
+					}
+					lastTextBuilder.WriteString(text)
 					hasEmittedAssistantText = true
 					hasEmittedDeltaInTurn = true
 					emitStreamEvt(ChatStreamEvent{
@@ -1736,6 +1776,13 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 			}
 
 		case "content_block_start":
+			blockIdx := -1
+			if idxF, ok := raw["index"].(float64); ok {
+				blockIdx = int(idxF)
+			}
+			inActiveTextBlock = false
+			activeTextBlockIdx = -1
+			_ = blockIdx
 			if cb, ok := raw["content_block"].(map[string]interface{}); ok {
 				cbType, _ := cb["type"].(string)
 				if cbType == "tool_use" {
@@ -1900,15 +1947,11 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 					if len(textBlocks) > 0 && !hasEmittedDeltaInTurn {
 						joined := strings.Join(textBlocks, "\n\n")
 						if hasEmittedAssistantText || needsSeparation {
-							if !strings.HasPrefix(joined, "\n") {
-								joined = "\n\n" + joined
-							} else if !strings.HasPrefix(joined, "\n\n") {
-								joined = "\n" + joined
-							}
+							joined = ensureDoubleNewlineSeparation(lastTextBuilder.String(), joined)
 						}
 						hasEmittedAssistantText = true
 						needsSeparation = false
-						lastTextBuilder.WriteString("\n" + joined)
+						lastTextBuilder.WriteString(joined)
 						emitStreamEvt(ChatStreamEvent{
 							SessionID: sessionID,
 							Type:      "text_delta",
@@ -2013,6 +2056,9 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 			clear(emittedTextBlocks)
 			clear(emittedThinkingBlocks)
 			clear(agStepText)
+			agHadToolSinceLastText = false
+			inActiveTextBlock = false
+			activeTextBlockIdx = -1
 			hasEmittedAssistantText = false
 			hasEmittedDeltaInTurn = false
 			needsSeparation = false
@@ -2022,6 +2068,30 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 		return finalLastTurnText, finalResultText, finalStreamHadError
 	}
 	return lastTextBuilder.String(), resultText, streamHadError
+}
+
+func ensureDoubleNewlineSeparation(prev, next string) string {
+	trailing := 0
+	for i := len(prev) - 1; i >= 0; i-- {
+		if prev[i] == '\n' {
+			trailing++
+		} else if prev[i] != '\r' {
+			break
+		}
+	}
+	leading := 0
+	for i := 0; i < len(next); i++ {
+		if next[i] == '\n' {
+			leading++
+		} else if next[i] != '\r' {
+			break
+		}
+	}
+	needed := 2 - (trailing + leading)
+	if needed <= 0 {
+		return next
+	}
+	return strings.Repeat("\n", needed) + next
 }
 
 func extractLocalCommandOutput(content string) string {
