@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"ackbar/internal/daemon"
@@ -83,6 +84,15 @@ func main() {
 	ntfyServer := *ntfyServerFlag
 	if ntfyServer == "" {
 		ntfyServer = os.Getenv("ACKBAR_NTFY_SERVER")
+	}
+
+	// launchd and minimal service environments omit LANG, degrading tmux and child PTYs to ASCII _ sanitization.
+	if os.Getenv("LANG") == "" && os.Getenv("LC_ALL") == "" && os.Getenv("LC_CTYPE") == "" {
+		if runtime.GOOS == "darwin" {
+			_ = os.Setenv("LANG", "en_US.UTF-8")
+		} else {
+			_ = os.Setenv("LANG", "C.UTF-8")
+		}
 	}
 
 	// Initialize Self-Rotating Logger

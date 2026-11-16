@@ -2,9 +2,14 @@ package daemon
 
 import (
 	"context"
+	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"ackbar/internal/tmux"
 )
 
 func TestHostIdentity_PersistenceAndPreservation(t *testing.T) {
@@ -274,4 +279,98 @@ func TestShellQuoteArgs(t *testing.T) {
 	if empty := shellQuoteArgs(nil); empty != "" {
 		t.Fatalf("expected empty string for nil args, got %q", empty)
 	}
+}
+
+func TestScanTmuxPanes_UnsetLocaleDelimiter(t *testing.T) {
+	testLine := "27294|||ackbar-claude-code-02be576c-b331-4564-aae0-598e7f663b57|||bash|||/Users/dev4u/Work/proj"
+	pidStr, cwd, tmuxName, cmdName, ok := parseTmuxPaneLine(testLine)
+	if !ok {
+		t.Fatalf("expected parseTmuxPaneLine to succeed for %q", testLine)
+	}
+	if pidStr != "27294" {
+		t.Errorf("expected pidStr '27294', got %q", pidStr)
+	}
+	if cwd != "/Users/dev4u/Work/proj" {
+		t.Errorf("expected cwd '/Users/dev4u/Work/proj', got %q", cwd)
+	}
+	if tmuxName != "ackbar-claude-code-02be576c-b331-4564-aae0-598e7f663b57" {
+		t.Errorf("expected tmuxName 'ackbar-claude-code-02be576c-b331-4564-aae0-598e7f663b57', got %q", tmuxName)
+	}
+	if cmdName != "bash" {
+		t.Errorf("expected cmdName 'bash', got %q", cmdName)
+	}
+
+	if _, _, _, _, ok := parseTmuxPaneLine("27294|||not-enough-parts"); ok {
+		t.Errorf("expected parseTmuxPaneLine to fail for truncated line")
+	}
+	if _, _, _, _, ok := parseTmuxPaneLine(""); ok {
+		t.Errorf("expected parseTmuxPaneLine to fail for empty line")
+	}
+
+	if !tmux.IsTmuxInstalled() {
+		t.Skip("tmux not installed on host, skipping live tmux test")
+	}
+
+	if os.Getenv("TMUX_TMPDIR") == "" {
+		t.Setenv("TMUX_TMPDIR", "/tmp")
+	}
+
+	sessionName := "ackbar-claude-code-11111111-2222-3333-4444-555555555555"
+	_ = tmux.Kill(context.Background(), sessionName)
+	defer tmux.Kill(context.Background(), sessionName)
+
+	tmpDir := t.TempDir()
+	if err := tmux.SpawnWithEnv(context.Background(), sessionName, tmpDir, "sleep 30", map[string]string{"PATH": os.Getenv("PATH")}); err != nil {
+		if strings.Contains(err.Error(), "Operation not permitted") || strings.Contains(err.Error(), "error connecting") {
+			t.Skipf("tmux socket creation blocked by environment: %v", err)
+		}
+		t.Fatalf("tmux.SpawnWithEnv failed: %v", err)
+	}
+
+	t.Setenv("LANG", "")
+	t.Setenv("LC_ALL", "")
+	t.Setenv("LC_CTYPE", "")
+
+	outUnset, err := exec.Command("tmux", "list-panes", "-a", "-F", "#{pane_pid}|||#{session_name}|||#{pane_current_command}|||#{pane_current_path}").Output()
+	if err != nil {
+		t.Fatalf("tmux list-panes under unset locale failed: %v", err)
+	}
+
+	verifySessionInOutput := func(rawOut []byte, label string) {
+		found := false
+		for _, l := range strings.Split(string(rawOut), "\n") {
+			pStr, pCwd, sName, cName, parseOk := parseTmuxPaneLine(l)
+			if !parseOk {
+				continue
+			}
+			if sName == sessionName {
+				found = true
+				if pStr == "" {
+					t.Errorf("[%s] expected non-empty pidStr", label)
+				}
+				if pCwd == "" {
+					t.Errorf("[%s] expected non-empty cwd", label)
+				}
+				if cName == "" {
+					t.Errorf("[%s] expected non-empty cmdName", label)
+				}
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("[%s] session %q not found in tmux list-panes output: %s", label, sessionName, string(rawOut))
+		}
+	}
+
+	verifySessionInOutput(outUnset, "unset-locale")
+
+	t.Setenv("LANG", "C")
+	t.Setenv("LC_ALL", "C")
+	t.Setenv("LC_CTYPE", "C")
+
+	outC, err := exec.Command("tmux", "list-panes", "-a", "-F", "#{pane_pid}|||#{session_name}|||#{pane_current_command}|||#{pane_current_path}").Output()
+	if err != nil {
+		t.Fatalf("tmux list-panes under LANG=C failed: %v", err)
+	}
+	verifySessionInOutput(outC, "LANG=C")
 }
