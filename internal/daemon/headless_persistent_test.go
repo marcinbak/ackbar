@@ -381,6 +381,16 @@ done
 	sess := &Session{ID: "antigravity:local:fail-test-1", Agent: "antigravity", NativeID: "fail-test-1", Cwd: tmpDir, EngineType: EngineHeadless}
 	_ = db.SaveSession(sess)
 
+	streamCh, cancelSub := h.Subscribe(sess.ID)
+	var turn1Events []ChatStreamEvent
+	collectDone := make(chan struct{})
+	go func() {
+		defer close(collectDone)
+		for evt := range streamCh {
+			turn1Events = append(turn1Events, evt)
+		}
+	}()
+
 	if err := h.RunTurn(context.Background(), sess, "prompt 1"); err != nil {
 		t.Fatalf("RunTurn 1: %v", err)
 	}
@@ -389,10 +399,42 @@ done
 	for time.Now().Before(deadline) && h.IsRunning(sess.ID) {
 		time.Sleep(20 * time.Millisecond)
 	}
+	cancelSub()
+	<-collectDone
 
-	updatedSess, err := db.GetSession(sess.ID)
-	if err != nil || updatedSess == nil {
-		t.Fatalf("GetSession failed: %v", err)
+	var hasErrorEvt, hasTurnCompleteEvt bool
+	for _, evt := range turn1Events {
+		if evt.Type == "error" {
+			hasErrorEvt = true
+		}
+		if evt.Type == "turn_complete" {
+			hasTurnCompleteEvt = true
+		}
+	}
+	if !hasErrorEvt {
+		t.Errorf("expected Turn 1 to emit error event, got events: %+v", turn1Events)
+	}
+	if hasTurnCompleteEvt {
+		t.Errorf("expected Turn 1 to NOT emit turn_complete event, got events: %+v", turn1Events)
+	}
+
+	var updatedSess *Session
+	waitDbDeadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(waitDbDeadline) {
+		if s, err := db.GetSession(sess.ID); err == nil && s != nil {
+			if strings.HasPrefix(s.Activity, "Turn error:") {
+				updatedSess = s
+				break
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if updatedSess == nil {
+		var err error
+		updatedSess, err = db.GetSession(sess.ID)
+		if err != nil || updatedSess == nil {
+			t.Fatalf("GetSession failed: %v", err)
+		}
 	}
 	if !strings.HasPrefix(updatedSess.Activity, "Turn error: API error (attempt 5):") {
 		t.Errorf("expected activity to start with 'Turn error: API error (attempt 5):', got %q", updatedSess.Activity)

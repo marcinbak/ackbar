@@ -313,9 +313,6 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string) int {
 
 				go func() {
 					gen.shutdown(500 * time.Millisecond)
-					if !hadBlock {
-						_, _ = turn.spool.Append(ChatStreamEvent{SessionID: turn.meta.SessionID, TurnID: turn.meta.TurnID, Type: "turn_complete", Text: resultText})
-					}
 					stateMu.Lock()
 					turn.meta.Status = status
 					turn.meta.ExitCode = 0
@@ -440,6 +437,14 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string) int {
 				return
 			}
 			status, code := "completed", 0
+			if waitErr != nil {
+				var exitErr *exec.ExitError
+				if errors.As(waitErr, &exitErr) {
+					code = exitErr.ExitCode()
+				} else {
+					code = 1
+				}
+			}
 			if turn.cancelled {
 				status = "cancelled"
 				_, _ = turn.spool.Append(ChatStreamEvent{SessionID: turn.meta.SessionID, TurnID: turn.meta.TurnID, Type: "turn_cancelled", Text: "Turn was cancelled by user."})
@@ -453,19 +458,13 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string) int {
 						status = "failed"
 						if tail != "" && !strings.Contains(eofLastText, tail) {
 							_, _ = turn.spool.Append(ChatStreamEvent{SessionID: turn.meta.SessionID, TurnID: turn.meta.TurnID, Type: "error", Text: tail, IsError: true})
+						} else if !eofHadError {
+							_, _ = turn.spool.Append(ChatStreamEvent{SessionID: turn.meta.SessionID, TurnID: turn.meta.TurnID, Type: "error", Text: fmt.Sprintf("Process exited with status %d", code), IsError: true})
 						}
 					}
 				}
-				if !turn.hadBlock {
+				if !turn.hadBlock && status != "failed" {
 					_, _ = turn.spool.Append(ChatStreamEvent{SessionID: turn.meta.SessionID, TurnID: turn.meta.TurnID, Type: "turn_complete"})
-				}
-			}
-			if waitErr != nil {
-				var exitErr *exec.ExitError
-				if errors.As(waitErr, &exitErr) {
-					code = exitErr.ExitCode()
-				} else {
-					code = 1
 				}
 			}
 			finalizeTurnMeta(turn, stderrTailBuf, status, code, "")

@@ -2808,6 +2808,12 @@ test('tool_start followed by duplicate error and turn_complete collapses tool gr
     });
 
     handleChatStreamEvent(tabObj, {
+      type: 'text_delta',
+      turn_id: 'turn-err-test',
+      text: 'Starting computation...'
+    });
+
+    handleChatStreamEvent(tabObj, {
       type: 'tool_start',
       turn_id: 'turn-err-test',
       tool_name: 'test_tool',
@@ -2832,7 +2838,7 @@ test('tool_start followed by duplicate error and turn_complete collapses tool gr
     handleChatStreamEvent(tabObj, {
       type: 'turn_complete',
       turn_id: 'turn-err-test',
-      text: ''
+      text: 'Completed with partial findings'
     });
 
     assert.equal(toolGroup.open, false, 'Tool group must be collapsed on error');
@@ -2845,6 +2851,11 @@ test('tool_start followed by duplicate error and turn_complete collapses tool gr
     const errorBanners = container.querySelectorAll('.chat-turn-error');
     assert.equal(errorBanners.length, 1, 'Error banner must be deduplicated to exactly 1');
     assert.ok(errorBanners[0].textContent.includes('Connection reset by peer'));
+
+    const bodyEl = assistantMsgs[0].querySelector('.chat-msg-body');
+    assert.ok(bodyEl, 'Message body must exist');
+    assert.ok(bodyEl.textContent.includes('Starting computation'), 'Streamed markdown text must remain rendered');
+    assert.ok(bodyEl.querySelector('.chat-turn-error'), 'chat-turn-error banner must remain inside bodyEl');
 
     assert.equal(tabObj.inFlightPrompt, null, 'inFlightPrompt must be cleared');
     assert.equal(tabObj.isQueuePaused, true, 'Queue must be paused on error');

@@ -5952,6 +5952,19 @@ function handleChatStreamEvent(tabObj, evt) {
         }
       }
 
+      if (!tabObj.activeTurnMsgEl && evt.turn_id && tabObj.chatMessagesEl) {
+        const assistantMsgs = tabObj.chatMessagesEl.querySelectorAll('.chat-msg.assistant-msg');
+        if (assistantMsgs.length > 0) {
+          const lastAssistant = assistantMsgs[assistantMsgs.length - 1];
+          if (lastAssistant && lastAssistant.dataset.turnId === evt.turn_id) {
+            tabObj.activeTurnMsgEl = lastAssistant;
+            if (!tabObj.activeTurnBuffer && lastAssistant.dataset.rawContent) {
+              tabObj.activeTurnBuffer = lastAssistant.dataset.rawContent;
+            }
+          }
+        }
+      }
+
       if (!tabObj.activeTurnBuffer && evt.text) {
         tabObj.activeTurnBuffer = evt.text;
       }
@@ -5979,8 +5992,10 @@ function handleChatStreamEvent(tabObj, evt) {
           activeMsg.dataset.rawContent = tabObj.activeTurnBuffer;
           const bodyEl = activeMsg.querySelector('.chat-msg-body');
           if (bodyEl) {
+            const existingErrors = Array.from(bodyEl.querySelectorAll('.chat-turn-error'));
             const html = renderMarkdown(tabObj.activeTurnBuffer);
             bodyEl.innerHTML = html;
+            existingErrors.forEach(el => bodyEl.appendChild(el));
           }
         }
         activeMsg.classList.remove('in-flight');

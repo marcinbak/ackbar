@@ -387,7 +387,7 @@ func SynthesizeInFlightTurn(meta *TurnSpoolMeta, streamAgent string) (*InFlightT
 		case "interactive_block":
 			snap.Blocked, snap.IsActive = evt.Blocked, false
 		case "error":
-			snap.StreamHadError = true
+			snap.StreamHadError, snap.IsActive = true, false
 			if t := strings.TrimSpace(evt.Text); t != "" {
 				snap.LastErrorText = t
 			}
