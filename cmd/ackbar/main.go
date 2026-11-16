@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -125,11 +126,19 @@ Flags:
 func ensureDaemonRunning() {
 	httpClient := &http.Client{Timeout: 500 * time.Millisecond}
 	resp, err := httpClient.Get("http://127.0.0.1:7777/v1/version")
+	var runningHost string
+	var runningDisplayName string
 	if err == nil {
-		var verRes map[string]string
+		var verRes map[string]interface{}
 		if err := json.NewDecoder(resp.Body).Decode(&verRes); err == nil {
 			resp.Body.Close()
-			runningVer := verRes["version"]
+			runningVer, _ := verRes["version"].(string)
+			if h, ok := verRes["host"].(string); ok {
+				runningHost = h
+			}
+			if d, ok := verRes["display_name"].(string); ok {
+				runningDisplayName = d
+			}
 			if runningVer == version.Version {
 				return
 			}
@@ -143,19 +152,42 @@ func ensureDaemonRunning() {
 
 	fmt.Println("🚀 Local ackbard daemon starting in background...")
 
-	home, _ := os.UserHomeDir()
-	ackbardBin := "ackbard"
-	if home != "" {
-		localBin := filepath.Join(home, ".local", "bin", "ackbard")
-		if _, err := os.Stat(localBin); err == nil {
-			ackbardBin = localBin
+	restartedViaLaunchctl := false
+	if runtime.GOOS == "darwin" {
+		if out, err := exec.Command("launchctl", "list").Output(); err == nil && strings.Contains(string(out), "com.marcinbak.ackbard") {
+			_ = exec.Command("launchctl", "kickstart", "-k", fmt.Sprintf("gui/%d/com.marcinbak.ackbard", os.Getuid())).Run()
+			time.Sleep(600 * time.Millisecond)
+			if conn, err := net.DialTimeout("tcp", "127.0.0.1:7777", 200*time.Millisecond); err == nil {
+				_ = conn.Close()
+				restartedViaLaunchctl = true
+			}
 		}
 	}
 
-	cmd := exec.Command(ackbardBin)
-	if err := cmd.Start(); err != nil {
-		cmdRun := exec.Command("go", "run", "./cmd/ackbard")
-		_ = cmdRun.Start()
+	if !restartedViaLaunchctl {
+		home, _ := os.UserHomeDir()
+		ackbardBin := "ackbard"
+		if home != "" {
+			localBin := filepath.Join(home, ".local", "bin", "ackbard")
+			if _, err := os.Stat(localBin); err == nil {
+				ackbardBin = localBin
+			}
+		}
+
+		var args []string
+		if runningHost != "" && !strings.EqualFold(runningHost, "local") {
+			args = append(args, "--host-name", runningHost)
+		}
+		if runningDisplayName != "" && !strings.EqualFold(runningDisplayName, "local") {
+			args = append(args, "--display-name", runningDisplayName)
+		}
+
+		cmd := exec.Command(ackbardBin, args...)
+		if err := cmd.Start(); err != nil {
+			goArgs := append([]string{"run", "./cmd/ackbard"}, args...)
+			cmdRun := exec.Command("go", goArgs...)
+			_ = cmdRun.Start()
+		}
 	}
 
 	// Poll up to 3 seconds for daemon port 7777 to become ready
@@ -973,7 +1005,18 @@ func runUpdateCmd(args []string) {
 	if token != "" {
 		vReq.Header.Set("Authorization", "Bearer "+token)
 	}
+	var runningHost string
+	var runningDisplayName string
 	if resp, err := httpClient.Do(vReq); err == nil {
+		var verRes map[string]interface{}
+		if err := json.NewDecoder(resp.Body).Decode(&verRes); err == nil {
+			if h, ok := verRes["host"].(string); ok {
+				runningHost = h
+			}
+			if d, ok := verRes["display_name"].(string); ok {
+				runningDisplayName = d
+			}
+		}
 		_ = resp.Body.Close()
 		fmt.Printf("🔄 Restarting local ackbard daemon...\n")
 		sReq, _ := http.NewRequest(http.MethodPost, "http://127.0.0.1:7777/v1/shutdown?drain=true", nil)
@@ -1006,16 +1049,36 @@ func runUpdateCmd(args []string) {
 		}
 
 		time.Sleep(400 * time.Millisecond)
-		ackbardBin := ""
-		if res != nil && res.TargetDir != "" {
-			ackbardBin = filepath.Join(res.TargetDir, "ackbard")
+		restartedViaLaunchctl := false
+		if runtime.GOOS == "darwin" {
+			if out, err := exec.Command("launchctl", "list").Output(); err == nil && strings.Contains(string(out), "com.marcinbak.ackbard") {
+				_ = exec.Command("launchctl", "kickstart", "-k", fmt.Sprintf("gui/%d/com.marcinbak.ackbard", os.Getuid())).Run()
+				time.Sleep(600 * time.Millisecond)
+				if conn, err := net.DialTimeout("tcp", "127.0.0.1:7777", 200*time.Millisecond); err == nil {
+					_ = conn.Close()
+					restartedViaLaunchctl = true
+				}
+			}
 		}
-		if ackbardBin == "" {
-			ackbardBin = "ackbard"
-		} else if _, err := os.Stat(ackbardBin); err != nil {
-			ackbardBin = "ackbard"
+		if !restartedViaLaunchctl {
+			ackbardBin := ""
+			if res != nil && res.TargetDir != "" {
+				ackbardBin = filepath.Join(res.TargetDir, "ackbard")
+			}
+			if ackbardBin == "" {
+				ackbardBin = "ackbard"
+			} else if _, err := os.Stat(ackbardBin); err != nil {
+				ackbardBin = "ackbard"
+			}
+			var args []string
+			if runningHost != "" && !strings.EqualFold(runningHost, "local") {
+				args = append(args, "--host-name", runningHost)
+			}
+			if runningDisplayName != "" && !strings.EqualFold(runningDisplayName, "local") {
+				args = append(args, "--display-name", runningDisplayName)
+			}
+			_ = exec.Command(ackbardBin, args...).Start()
 		}
-		_ = exec.Command(ackbardBin).Start()
 	}
 
 	fmt.Printf("🎉 Successfully upgraded Ackbar to v%s!\n", info.Version)

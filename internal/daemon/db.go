@@ -1156,6 +1156,10 @@ func (d *DB) SetSettings(settings map[string]string) error {
 	return tx.Commit()
 }
 
+func (d *DB) SetSetting(key, value string) error {
+	return d.SetSettings(map[string]string{key: value})
+}
+
 // ListActiveSessions queries only active, non-ended sessions (state != StateEnded)
 func (d *DB) ListActiveSessions() ([]*Session, error) {
 	query := `

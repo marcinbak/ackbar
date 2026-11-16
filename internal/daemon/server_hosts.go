@@ -535,6 +535,13 @@ if command -v systemctl >/dev/null 2>&1 && systemctl --user is-enabled ackbard.s
   sleep 0.3
   pkill -9 -x ackbard 2>/dev/null || true
   systemctl --user restart ackbard.service || (nohup "$HOME/.local/bin/ackbard"%s >/dev/null 2>&1 < /dev/null &)
+elif command -v launchctl >/dev/null 2>&1 && launchctl list 2>/dev/null | grep -q com.marcinbak.ackbard; then
+  pkill -15 -x ackbard 2>/dev/null || true
+  sleep 0.3
+  pkill -9 -x ackbard 2>/dev/null || true
+  launchctl kickstart -k "gui/$(id -u)/com.marcinbak.ackbard" >/dev/null 2>&1 || true
+  sleep 0.6
+  pgrep -x ackbard >/dev/null 2>&1 || (nohup "$HOME/.local/bin/ackbard"%s >/dev/null 2>&1 < /dev/null &)
 elif command -v launchctl >/dev/null 2>&1 && launchctl list 2>/dev/null | grep -q homebrew.mxcl.ackbar; then
   pkill -15 -x ackbard 2>/dev/null || true
   sleep 0.3
@@ -549,7 +556,7 @@ else
   pkill -9 -x ackbard 2>/dev/null || true
   sleep 0.2
   nohup "$HOME/.local/bin/ackbard"%s >/dev/null 2>&1 < /dev/null &
-fi`, quotedAuthToken, hostFlagArg, hostFlagArg, hostFlagArg)
+fi`, quotedAuthToken, hostFlagArg, hostFlagArg, hostFlagArg, hostFlagArg)
 
 		restartCmd := exec.Command("ssh", "-o", "ConnectTimeout=15", "-o", "BatchMode=yes", sshTarget, remoteRestartScript)
 		rout, rerr := restartCmd.CombinedOutput()
@@ -576,6 +583,13 @@ echo "$UPD_OUT"
 if echo "$UPD_OUT" | grep -q "restart automatically once the current turn finishes"; then
   echo "RESTART_DEFERRED"
   exit 0
+fi
+if command -v launchctl >/dev/null 2>&1 && launchctl list 2>/dev/null | grep -q com.marcinbak.ackbard; then
+  launchctl kickstart -k "gui/$(id -u)/com.marcinbak.ackbard" >/dev/null 2>&1 || true
+  sleep 0.6
+elif command -v launchctl >/dev/null 2>&1 && launchctl list 2>/dev/null | grep -q homebrew.mxcl.ackbar; then
+  brew services restart ackbar >/dev/null 2>&1 || true
+  sleep 0.6
 fi
 pgrep -x ackbard >/dev/null 2>&1 || (nohup ~/.local/bin/ackbard%s >/dev/null 2>&1 < /dev/null &)`, quotedAuthToken, hostFlagArg)
 		updCmd := exec.Command("ssh", "-o", "ConnectTimeout=30", "-o", "BatchMode=yes", sshTarget, remoteUpdateScript)
@@ -802,6 +816,13 @@ if command -v systemctl >/dev/null 2>&1 && systemctl --user is-enabled ackbard.s
   sleep 0.3
   kill -9 %d 2>/dev/null || true
   systemctl --user restart ackbard.service || (nohup %q %s >/dev/null 2>&1 < /dev/null &)
+elif command -v launchctl >/dev/null 2>&1 && launchctl list 2>/dev/null | grep -q com.marcinbak.ackbard; then
+  kill -15 %d 2>/dev/null || true
+  sleep 0.3
+  kill -9 %d 2>/dev/null || true
+  launchctl kickstart -k "gui/$(id -u)/com.marcinbak.ackbard" >/dev/null 2>&1 || true
+  sleep 0.6
+  pgrep -x ackbard >/dev/null 2>&1 || (nohup %q %s >/dev/null 2>&1 < /dev/null &)
 elif command -v launchctl >/dev/null 2>&1 && launchctl list 2>/dev/null | grep -q homebrew.mxcl.ackbar; then
   kill -15 %d 2>/dev/null || true
   sleep 0.3
@@ -816,7 +837,7 @@ else
   kill -9 %d 2>/dev/null || true
   sleep 0.2
   nohup %q %s >/dev/null 2>&1 < /dev/null &
-fi`, pid, pid, exe, args, pid, pid, exe, args, pid, pid, exe, args)
+fi`, pid, pid, exe, args, pid, pid, exe, args, pid, pid, exe, args, pid, pid, exe, args)
 	cmd := exec.Command("sh", "-c", script)
 	_ = cmd.Start()
 }
