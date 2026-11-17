@@ -233,7 +233,13 @@ func (s *Server) addSubagent(sessionID, nativeID string, info *SubagentInfo) {
 	}
 
 	if sess := s.resolveSession(sessionID); sess != nil {
-		sess.RunningSubagents = len(running)
+		count := len(running)
+		if s.headless != nil {
+			if bg := s.headless.GetBgTaskCount(sess.ID); bg > count {
+				count = bg
+			}
+		}
+		sess.RunningSubagents = count
 		_ = s.db.SaveSession(sess)
 		s.broadcast(sess)
 	}
@@ -243,6 +249,14 @@ func (s *Server) addSubagent(sessionID, nativeID string, info *SubagentInfo) {
 }
 
 func (s *Server) removeSubagent(sessionID, nativeID, subagentID string) {
+	s.removeSubagentWithMode(sessionID, nativeID, subagentID, false)
+}
+
+func (s *Server) removeHookSubagent(sessionID, nativeID, subagentID string) {
+	s.removeSubagentWithMode(sessionID, nativeID, subagentID, true)
+}
+
+func (s *Server) removeSubagentWithMode(sessionID, nativeID, subagentID string, popFallback bool) {
 	s.subagentsMu.Lock()
 	updateList := func(key string) []*SubagentInfo {
 		list := s.activeSubagents[key]
@@ -271,6 +285,9 @@ func (s *Server) removeSubagent(sessionID, nativeID, subagentID string) {
 					afterFallback = append(afterFallback, sub)
 				}
 				updated = afterFallback
+				if !found && popFallback && len(updated) > 0 {
+					updated = updated[1:]
+				}
 			}
 		}
 		s.activeSubagents[key] = updated
@@ -294,7 +311,13 @@ func (s *Server) removeSubagent(sessionID, nativeID, subagentID string) {
 	}
 
 	if sess := s.resolveSession(sessionID); sess != nil {
-		sess.RunningSubagents = len(running)
+		count := len(running)
+		if s.headless != nil {
+			if bg := s.headless.GetBgTaskCount(sess.ID); bg > count {
+				count = bg
+			}
+		}
+		sess.RunningSubagents = count
 		_ = s.db.SaveSession(sess)
 		s.broadcast(sess)
 	}
@@ -333,7 +356,113 @@ func (s *Server) clearSubagents(sessionID, nativeID string) {
 
 	if sess := s.resolveSession(sessionID); sess != nil {
 		sess.RunningSubagents = 0
-		_ = s.db.SaveSession(sess)
 		s.broadcast(sess)
 	}
+}
+
+func (s *Server) pruneSyntheticSubagents(sessionID, nativeID string) {
+	s.subagentsMu.Lock()
+	filterKey := func(key string) []*SubagentInfo {
+		if key == "" {
+			return nil
+		}
+		var kept []*SubagentInfo
+		for _, sub := range s.activeSubagents[key] {
+			if sub != nil && !sub.Synthetic {
+				kept = append(kept, sub)
+			}
+		}
+		if len(kept) == 0 {
+			delete(s.activeSubagents, key)
+		} else {
+			s.activeSubagents[key] = kept
+		}
+		return kept
+	}
+	kept := filterKey(sessionID)
+	if nativeID != "" && nativeID != sessionID {
+		filterKey(nativeID)
+	}
+	s.subagentsMu.Unlock()
+	if s.headless != nil {
+		if kept == nil {
+			kept = []*SubagentInfo{}
+		}
+		s.headless.EmitSubagentsUpdate(sessionID, kept)
+	}
+}
+
+func (s *Server) countInMemoryRunningSubagents(sessionID, nativeID string) int {
+	s.subagentsMu.Lock()
+	defer s.subagentsMu.Unlock()
+	list := s.activeSubagents[sessionID]
+	if len(list) == 0 && nativeID != "" {
+		list = s.activeSubagents[nativeID]
+	}
+	count := 0
+	for _, sub := range list {
+		if sub != nil && sub.State == "running" {
+			count++
+		}
+	}
+	return count
+}
+
+func (s *Server) hasActiveSubagentStartSubs(sessionID, nativeID string) bool {
+	s.subagentsMu.Lock()
+	defer s.subagentsMu.Unlock()
+	check := func(key string) bool {
+		for _, sub := range s.activeSubagents[key] {
+			if sub != nil && sub.State == "running" && !sub.Synthetic {
+				return true
+			}
+		}
+		return false
+	}
+	return check(sessionID) || (nativeID != "" && check(nativeID))
+}
+
+func (s *Server) onBgTaskCountChanged(sessionID, nativeID string, bgCount int) {
+	sess := s.resolveSession(sessionID)
+	if sess == nil && nativeID != "" {
+		sess = s.resolveSession(nativeID)
+	}
+	if sess == nil {
+		return
+	}
+	target := s.countInMemoryRunningSubagents(sess.ID, sess.NativeID)
+	if bgCount > target {
+		target = bgCount
+	}
+	if sess.RunningSubagents != target {
+		sess.RunningSubagents = target
+		s.broadcast(sess)
+	}
+}
+
+func (s *Server) onHeadlessTurnComplete(sessionID, nativeID string) {
+	s.pruneSyntheticSubagents(sessionID, nativeID)
+	hasWarm := s.headless != nil && s.headless.HasWarmWorker(sessionID)
+	if !hasWarm {
+		s.clearSubagents(sessionID, nativeID)
+		return
+	}
+	bgCount := s.headless.GetBgTaskCount(sessionID)
+	hookCount := s.countInMemoryRunningSubagents(sessionID, nativeID)
+	target := hookCount
+	if bgCount > target {
+		target = bgCount
+	}
+	if target == 0 {
+		s.clearSubagents(sessionID, nativeID)
+		return
+	}
+	if sess := s.resolveSession(sessionID); sess != nil && sess.RunningSubagents != target {
+		sess.RunningSubagents = target
+		s.broadcast(sess)
+	}
+}
+
+func (s *Server) onHeadlessWorkerExited(sessionID, nativeID string) {
+	s.clearSubagents(sessionID, nativeID)
 }

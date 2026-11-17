@@ -279,7 +279,8 @@ func IsSyntheticClaudeUserEntry(raw map[string]interface{}, content string) bool
 		strings.HasPrefix(trimmed, "Another Claude session sent a message:") ||
 		strings.HasPrefix(trimmed, "[Image: original ") ||
 		strings.HasPrefix(trimmed, "[Cross-session ") ||
-		strings.HasPrefix(trimmed, "[Request interrupted by user") {
+		strings.HasPrefix(trimmed, "[Request interrupted by user") ||
+		strings.HasPrefix(trimmed, "Background task notification received.") {
 		return true
 	}
 	return false

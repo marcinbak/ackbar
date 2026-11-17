@@ -49,7 +49,9 @@ func (h *HeadlessRunner) monitorWorkerTurn(sess *Session, origSessionID string, 
 					var evt ChatStreamEvent
 					if json.Unmarshal(sc.Bytes(), &evt) == nil && evt.Seq > lastSeq {
 						lastSeq = evt.Seq
-						h.applyWorkerEvent(sess, origSessionID, curMeta, evt, true)
+						if !h.isTurnSuperseded(curMeta.TurnID) {
+							h.applyWorkerEvent(sess, origSessionID, curMeta, evt, true)
+						}
 					}
 				}
 			}
@@ -71,14 +73,17 @@ func (h *HeadlessRunner) monitorWorkerTurn(sess *Session, origSessionID string, 
 			}
 			syncChildPID(wid, probeResp.ChildPID)
 		}
-		stillRunning := (curMeta.Status == "starting" || curMeta.Status == "running") &&
+		stillRunning := isActiveTurnStatus(curMeta.Status) &&
 			(liveOnSocket || (time.Now().Before(dialDeadline) && h.isTurnWorkerOwnedAlive(curMeta.TurnID)))
 		if !stillRunning {
 			events, _, _ := ReadTurnSpoolAfter(curMeta.SpoolPath, lastSeq)
+			superseded := h.isTurnSuperseded(curMeta.TurnID)
 			for _, evt := range events {
 				if evt.Seq > lastSeq {
 					lastSeq = evt.Seq
-					h.applyWorkerEvent(sess, origSessionID, curMeta, evt, true)
+					if !superseded {
+						h.applyWorkerEvent(sess, origSessionID, curMeta, evt, true)
+					}
 				}
 			}
 			h.finalizeTurnFromSpool(sess, origSessionID, curMeta, trackedCmd)
@@ -86,6 +91,16 @@ func (h *HeadlessRunner) monitorWorkerTurn(sess *Session, origSessionID string, 
 		}
 		time.Sleep(15 * time.Millisecond)
 	}
+}
+
+func (h *HeadlessRunner) isTurnSuperseded(turnID string) bool {
+	if h == nil || turnID == "" {
+		return false
+	}
+	h.mu.RLock()
+	superseded := h.supersededTurns[turnID]
+	h.mu.RUnlock()
+	return superseded
 }
 
 func (h *HeadlessRunner) finalizeTurnFromSpool(sess *Session, origSessionID string, meta *TurnSpoolMeta, trackedCmd *exec.Cmd) {
@@ -164,8 +179,12 @@ func (h *HeadlessRunner) finalizeTurnFromSpool(sess *Session, origSessionID stri
 					delete(h.activeSessions, id)
 					delete(h.activeTurns, id)
 					delete(h.activePrompts, id)
+					delete(h.blockedControlTurns, id)
 				}
 			}
+		}
+		if turnID != "" {
+			delete(h.monitoredTurns, turnID)
 		}
 		h.mu.Unlock()
 		h.syncSleepInhibitor()
@@ -247,27 +266,34 @@ func (h *HeadlessRunner) finalizeTurnFromSpool(sess *Session, origSessionID stri
 	}
 	wasCancelled := (meta != nil && meta.Status == "cancelled") || (snap != nil && snap.WasCancelled)
 	wasFailed := (meta != nil && (meta.ExitCode != 0 || meta.Status == "failed")) || (snap != nil && snap.StreamHadError)
+	if wasCancelled || (meta != nil && meta.Status == "failed") || (interactiveBlock != nil && interactiveBlock.RequestID != "" && wasFailed) {
+		interactiveBlock = nil
+	}
 	prompt := ""
-	if meta != nil {
+	if meta != nil && !meta.IsSynthetic {
 		prompt = meta.Prompt
 	}
 
 	if interactiveBlock != nil {
 		sess.State, sess.Blocked, sess.Activity = StateBlocked, interactiveBlock, blockActivityText(interactiveBlock)
 		sess.PID, sess.IsUnread, sess.LastStateChangeAt, sess.LastEventAt = 0, true, time.Now(), time.Now()
-		if sess.FirstPrompt == "" {
-			sess.FirstPrompt = prompt
+		if prompt != "" {
+			if sess.FirstPrompt == "" {
+				sess.FirstPrompt = prompt
+			}
+			sess.LastPrompt = prompt
 		}
-		sess.LastPrompt = prompt
 	} else if wasCancelled {
 		sess.State, sess.Blocked, sess.Activity, sess.PID, sess.LastEventAt = StateIdle, nil, "Turn cancelled", 0, time.Now()
 	} else {
 		sess.State, sess.Blocked, sess.Activity, sess.PID, sess.LastEventAt = StateIdle, nil, "", 0, time.Now()
 		if !wasFailed {
-			if sess.FirstPrompt == "" {
-				sess.FirstPrompt = prompt
+			if prompt != "" {
+				if sess.FirstPrompt == "" {
+					sess.FirstPrompt = prompt
+				}
+				sess.LastPrompt = prompt
 			}
-			sess.LastPrompt = prompt
 		} else {
 			sess.Activity = formatFailedTurnActivity(meta, snap)
 		}
@@ -278,7 +304,7 @@ func (h *HeadlessRunner) finalizeTurnFromSpool(sess *Session, origSessionID stri
 			sess.Name = sess.CustomTitle
 		} else if title := ReadAntigravitySessionTitle(sess.Cwd, sess.NativeID); title != "" && !isRawSessionName(title) {
 			sess.Name = title
-		} else if sess.Name == "" || isRawSessionName(sess.Name) {
+		} else if (sess.Name == "" || isRawSessionName(sess.Name)) && prompt != "" {
 			sess.Name = TruncateTitle(prompt)
 		}
 	} else if sess.Agent == "grok" {
@@ -303,7 +329,7 @@ func (h *HeadlessRunner) finalizeTurnFromSpool(sess *Session, origSessionID stri
 				sess.Name = gm.Title
 			}
 		}
-		if sess.Name == "" || isRawSessionName(sess.Name) {
+		if (sess.Name == "" || isRawSessionName(sess.Name)) && prompt != "" {
 			sess.Name = TruncateTitle(prompt)
 		}
 	} else if home != "" {
@@ -315,7 +341,7 @@ func (h *HeadlessRunner) finalizeTurnFromSpool(sess *Session, origSessionID stri
 		}
 		if sess.CustomTitle != "" {
 			sess.Name = sess.CustomTitle
-		} else if sess.Name == "" || isRawSessionName(sess.Name) {
+		} else if (sess.Name == "" || isRawSessionName(sess.Name)) && prompt != "" {
 			sess.Name = TruncateTitle(prompt)
 		}
 	}

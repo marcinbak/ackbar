@@ -88,21 +88,35 @@ func (a ClaudeAgentAdapter) IsAccountLoggedIn(home string, acc *AgentAccount) bo
 	return false
 }
 
-func (a ClaudeAgentAdapter) SetupProfileDir(home, name, configDir string) (string, error) {
-	if configDir == "" {
-		configDir = filepath.Join(home, ".claude-profiles", name)
-	} else if strings.HasPrefix(configDir, "~/") && home != "" {
-		configDir = filepath.Join(home, configDir[2:])
-	}
+var ClaudeHookEventKeys = []string{
+	"SessionStart",
+	"UserPromptSubmit",
+	"PreToolUse",
+	"PostToolUse",
+	"PermissionRequest",
+	"Notification",
+	"SubagentStart",
+	"SubagentStop",
+	"Stop",
+}
 
-	if err := os.MkdirAll(configDir, 0755); err != nil {
-		return configDir, fmt.Errorf("failed to create profile directory: %w", err)
-	}
-
-	settingsPath := filepath.Join(configDir, "settings.json")
+func ConfigureClaudeHookSettings(settingsPath, hookURL, rawOverride string, createIfMissing bool) error {
 	var settings map[string]interface{}
-	if data, err := os.ReadFile(settingsPath); err == nil {
-		_ = json.Unmarshal(data, &settings)
+	raw := rawOverride
+	if raw == "" {
+		data, err := os.ReadFile(settingsPath)
+		if err != nil {
+			if !createIfMissing || !os.IsNotExist(err) {
+				return err
+			}
+		} else {
+			raw = string(data)
+		}
+	}
+	if strings.TrimSpace(raw) != "" {
+		if err := json.Unmarshal([]byte(raw), &settings); err != nil {
+			return err
+		}
 	}
 	if settings == nil {
 		settings = make(map[string]interface{})
@@ -111,7 +125,6 @@ func (a ClaudeAgentAdapter) SetupProfileDir(home, name, configDir string) (strin
 	if hooks == nil {
 		hooks = make(map[string]interface{})
 	}
-	hookURL := fmt.Sprintf("http://127.0.0.1:7777/v1/hooks/claude-code?account=%s", name)
 	correctHookEntry := map[string]interface{}{
 		"matcher": "",
 		"hooks": []map[string]string{
@@ -121,8 +134,7 @@ func (a ClaudeAgentAdapter) SetupProfileDir(home, name, configDir string) (strin
 			},
 		},
 	}
-	eventKeys := []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PermissionRequest", "Notification", "Stop"}
-	for _, evtKey := range eventKeys {
+	for _, evtKey := range ClaudeHookEventKeys {
 		existingList, _ := hooks[evtKey].([]interface{})
 		var validList []interface{}
 		hasHook := false
@@ -155,9 +167,27 @@ func (a ClaudeAgentAdapter) SetupProfileDir(home, name, configDir string) (strin
 		hooks[evtKey] = validList
 	}
 	settings["hooks"] = hooks
-	if out, err := json.MarshalIndent(settings, "", "  "); err == nil {
-		_ = os.WriteFile(settingsPath, out, 0644)
+	out, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return err
 	}
+	return os.WriteFile(settingsPath, out, 0644)
+}
+
+func (a ClaudeAgentAdapter) SetupProfileDir(home, name, configDir string) (string, error) {
+	if configDir == "" {
+		configDir = filepath.Join(home, ".claude-profiles", name)
+	} else if strings.HasPrefix(configDir, "~/") && home != "" {
+		configDir = filepath.Join(home, configDir[2:])
+	}
+
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		return configDir, fmt.Errorf("failed to create profile directory: %w", err)
+	}
+
+	settingsPath := filepath.Join(configDir, "settings.json")
+	hookURL := fmt.Sprintf("http://127.0.0.1:7777/v1/hooks/claude-code?account=%s", name)
+	_ = ConfigureClaudeHookSettings(settingsPath, hookURL, "", true)
 	return configDir, nil
 }
 
