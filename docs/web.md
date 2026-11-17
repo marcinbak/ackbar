@@ -134,18 +134,18 @@ It is embedded directly into the `ackbard` Go binary and served on `http://127.0
   * Model selector Option 0 shows `Default (<Formatted Model>)`; selecting it resets explicit model override to empty (`""`).
   * Inspection cards (`/model`, `/context`, `/cost`) render `Default (<Formatted Model>)` when running without an override.
   * Displays **MCP & Plugins** health pills in `/config` popover with 1-click sign-in and restart actions.
-  * Dynamically queries `GET /v1/sessions/{id}/suggestions?kind=models` to populate agent-specific model catalogs (including Grok from `~/.grok/models_cache.json`).
+  * Queries `GET /v1/sessions/{id}/suggestions?kind=models` on headless mount; updates focused `<select>` options in-place without closing open menus.
 * **`/` Command, `@` File, and Model Autocomplete (`.chat-autocomplete-menu`):**
   * Typing `/` at the start of input queries `GET /v1/sessions/{id}/suggestions?kind=commands`, surfacing built-in client actions (`/config`, `/plan`, `/clear`, `/restart`, `/compact`, `/handover`, `/terminal`) alongside discovered workspace workflows (`.claude/commands/*.md`, `.agents/workflows/*.md`) and skills (`SKILL.md`).
   * Typing `@<query>` after start-of-input or whitespace queries `GET /v1/sessions/{id}/suggestions?kind=files` to fuzzy-match relative workspace files.
-  * Queries `GET /v1/sessions/{id}/suggestions?kind=models` for agent-scoped model suggestion catalogs.
+  * Typing `/model <query>` (or selecting `/model`) queries `kind=models`, includes `Default Model`, and applies selected model immediately.
 * **Inline Shell Execution (`! <cmd>`, `web/js/chat-commands.js`):**
   * Prefixing prompt input with `!` switches the composer to shell mode with visual `!` indicator.
   * Executes shell commands in session working directory via `POST /v1/sessions/{id}/shell` (0 LLM tokens).
   * Renders collapsible `.chat-bash-card` with exit code, execution duration, stdout/stderr, and `[+ Attach to Prompt]` button.
 * **Standalone Slash Commands (`web/js/chat-commands.js`, `web/js/chat-command-cards.js`):**
   * Direct client interception routes built-in commands to daemon REST endpoints without LLM token cost:
-    * `/model [name]`, `/effort [tier]`, `/permissions [mode]`, `/auto`: Configure runtime session options in-place; `/effort` is supported on Claude Code and Grok, omitted on Antigravity.
+    * `/model [name]`, `/effort [tier]`, `/permissions [mode]`, `/auto`: Configure session options in-place; bare `/model` renders an interactive `.chat-inline-model-select` card.
     * `/add-dir [path|--remove <path>|--clear]`: Manages allowed extra directory paths (`extra_dirs`) for agent file access. On Grok, `extra_dirs` is read-only because `grok -r` rejects `--add-dir`.
     * `/clear`, `/reset`: Closes current turn and migrates active tab to fresh `Conv N+1` in-place.
     * `/restart`: Restarts the CLI process in-place (`action=restart`) to reload MCP connectors and configuration.
