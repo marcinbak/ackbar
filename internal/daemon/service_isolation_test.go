@@ -233,3 +233,60 @@ func TestDaemonSafeShellHelpers_SkipsHeadlessWorkerPIDs(t *testing.T) {
 		t.Fatalf("expected has_non_worker_ackbard to return non-zero when only --headless-worker remains")
 	}
 }
+
+func TestServiceIsolation_PreservesRestrictive0600Mode(t *testing.T) {
+	home := t.TempDir()
+	unitDir := filepath.Join(home, ".config", "systemd", "user")
+	agentsDir := filepath.Join(home, "Library", "LaunchAgents")
+	_ = os.MkdirAll(unitDir, 0755)
+	_ = os.MkdirAll(agentsDir, 0755)
+
+	unitPath := filepath.Join(unitDir, "ackbard.service")
+	plistPath := filepath.Join(agentsDir, "com.marcinbak.ackbard.plist")
+
+	unitBody := "[Service]\nEnvironment=ACKBAR_TOKEN=secret\nExecStart=/usr/local/bin/ackbard\n"
+	plistBody := "<?xml version=\"1.0\"?>\n<plist version=\"1.0\">\n<dict>\n\t<key>Label</key>\n\t<string>com.marcinbak.ackbard</string>\n</dict>\n</plist>\n"
+	_ = os.WriteFile(unitPath, []byte(unitBody), 0600)
+	_ = os.Chmod(unitPath, 0600)
+	_ = os.WriteFile(plistPath, []byte(plistBody), 0600)
+	_ = os.Chmod(plistPath, 0600)
+
+	changed, err := EnsureServiceProcessIsolation(home)
+	if err != nil || !changed {
+		t.Fatalf("EnsureServiceProcessIsolation: changed=%v err=%v", changed, err)
+	}
+	if fi, err := os.Stat(unitPath); err != nil || fi.Mode().Perm() != 0600 {
+		t.Fatalf("expected systemd unit to retain 0600 mode, got %v (err=%v)", fi, err)
+	}
+	if fi, err := os.Stat(plistPath); err != nil || fi.Mode().Perm() != 0600 {
+		t.Fatalf("expected launchd plist to retain 0600 mode, got %v (err=%v)", fi, err)
+	}
+
+	// Verify shell self_heal_ackbard_service also preserves 0600 for both systemd and launchd (via mock plutil)
+	_ = os.WriteFile(unitPath, []byte(unitBody), 0600)
+	_ = os.Chmod(unitPath, 0600)
+	_ = os.WriteFile(plistPath, []byte(plistBody), 0600)
+	_ = os.Chmod(plistPath, 0600)
+
+	mockBin := t.TempDir()
+	mockPlutil := filepath.Join(mockBin, "plutil")
+	_ = os.WriteFile(mockPlutil, []byte("#!/bin/sh\nfor target in \"$@\"; do :; done\n[ -f \"$target\" ] || exit 1\nsed 's|</dict>|\\t<key>AbandonProcessGroup</key>\\n\\t<true/>\\n</dict>|' \"$target\" > \"$target.out\" && mv -f \"$target.out\" \"$target\"\n"), 0755)
+
+	cmd := exec.Command("sh", "-c", DaemonSafeShellHelpers()+"\nself_heal_ackbard_service")
+	cmd.Env = []string{"HOME=" + home, "PATH=" + mockBin + ":" + os.Getenv("PATH")}
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("self_heal_ackbard_service failed: %v (%s)", err, string(out))
+	}
+	if fi, err := os.Stat(unitPath); err != nil || fi.Mode().Perm() != 0600 {
+		t.Fatalf("expected shell self-heal systemd unit to retain 0600, got %v (err=%v)", fi, err)
+	}
+	if unitOut, _ := os.ReadFile(unitPath); !strings.Contains(string(unitOut), "KillMode=process") {
+		t.Fatalf("expected shell self-heal to add KillMode=process, got:\n%s", string(unitOut))
+	}
+	if fi, err := os.Stat(plistPath); err != nil || fi.Mode().Perm() != 0600 {
+		t.Fatalf("expected shell self-heal launchd plist to retain 0600, got %v (err=%v)", fi, err)
+	}
+	if plistOut, _ := os.ReadFile(plistPath); !plistAbandonTrueRegex.MatchString(string(plistOut)) {
+		t.Fatalf("expected shell self-heal to add AbandonProcessGroup true, got:\n%s", string(plistOut))
+	}
+}

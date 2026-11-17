@@ -1029,14 +1029,31 @@ func (h *HeadlessRunner) CommitPromptQueueItem(sessionID, itemID string) {
 	}
 	h.mu.Lock()
 	key := h.resolveQueueKey(sessionID)
-	items := h.queues[key]
-	updated := make([]*PromptQueueItem, 0, len(items))
-	for _, it := range items {
-		if it != nil && it.ID != itemID {
+	emitID := sessionID
+	removeFromKey := func(qKey string) bool {
+		items := h.queues[qKey]
+		found := false
+		updated := make([]*PromptQueueItem, 0, len(items))
+		for _, it := range items {
+			if it != nil && it.ID == itemID {
+				found = true
+				continue
+			}
 			updated = append(updated, it)
 		}
+		if found {
+			h.queues[qKey] = updated
+		}
+		return found
 	}
-	h.queues[key] = updated
+	if !removeFromKey(key) {
+		for k := range h.queues {
+			if k != key && removeFromKey(k) {
+				emitID = k
+				break
+			}
+		}
+	}
 	delete(h.inflightDispatches, itemID)
 	db := h.db
 	h.mu.Unlock()
@@ -1044,7 +1061,7 @@ func (h *HeadlessRunner) CommitPromptQueueItem(sessionID, itemID string) {
 	if db != nil {
 		_ = db.DeleteScheduledPrompt(itemID)
 	}
-	h.EmitQueueUpdate(sessionID)
+	h.EmitQueueUpdate(emitID)
 }
 
 // AbortPromptDispatch releases an in-flight claim so a failed dispatch remains queued and retryable.
@@ -1062,7 +1079,8 @@ func (h *HeadlessRunner) DispatchNextQueuedPrompt(ctx context.Context, sess *Ses
 	if h == nil || sess == nil || h.IsRestartPending() || h.IsRunning(sess.ID) {
 		return false, nil
 	}
-	item := h.ClaimReadyPrompt(sess.ID)
+	sessID := sess.ID
+	item := h.ClaimReadyPrompt(sessID)
 	if item == nil {
 		return false, nil
 	}
@@ -1070,7 +1088,7 @@ func (h *HeadlessRunner) DispatchNextQueuedPrompt(ctx context.Context, sess *Ses
 		h.AbortPromptDispatch(item.ID)
 		return false, err
 	}
-	h.CommitPromptQueueItem(sess.ID, item.ID)
+	h.CommitPromptQueueItem(sessID, item.ID)
 	return true, nil
 }
 

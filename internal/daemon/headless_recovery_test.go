@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -356,5 +357,134 @@ func TestReattachLiveWorkers_BlockedControlMismatchSetsRotateAfterTurn(t *testin
 	h.mu.RUnlock()
 	if handle == nil || !handle.rotateAfterTurn {
 		t.Fatalf("expected blocked_control worker with mismatched ConfigFingerprint adopted with rotateAfterTurn=true, got %+v", handle)
+	}
+}
+
+func TestCrashedSpool_MergeInFlightTranscriptSurfacesErrorOverPartialDiskPreamble(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	dbPath := filepath.Join(t.TempDir(), "ackbard.db")
+	db, _ := InitDB(dbPath)
+	defer db.Close()
+
+	srv := NewServer(db)
+	defer srv.headless.ReleaseSleepInhibitor()
+
+	sess := newTestHeadlessSession("claude-code:local:crash-preamble", "crash-preamble", tmpHome, StateWorking)
+	_ = db.SaveSession(sess)
+
+	// Write on-disk JSONL containing the user prompt + a long partial assistant preamble (longer than the error text)
+	projDir := filepath.Join(tmpHome, ".claude", "projects", encodeClaudeProjectDir(tmpHome))
+	_ = os.MkdirAll(projDir, 0755)
+	ts := time.Now().Add(-20 * time.Second).UTC().Format(time.RFC3339)
+	preamble := "Let me check the configuration files and repository structure carefully before modifying anything in the workspace."
+	jsonl := fmt.Sprintf(
+		"{\"type\":\"user\",\"timestamp\":%q,\"message\":{\"role\":\"user\",\"content\":\"Fix bug\"}}\n"+
+			"{\"type\":\"assistant\",\"timestamp\":%q,\"message\":{\"role\":\"assistant\",\"content\":%q}}\n",
+		ts, ts, preamble,
+	)
+	_ = os.WriteFile(filepath.Join(projDir, sess.NativeID+".jsonl"), []byte(jsonl), 0644)
+
+	runDir := DefaultHeadlessRunDir(dbPath)
+	_ = os.MkdirAll(runDir, 0700)
+	metaPath := filepath.Join(runDir, "turn_crash_preamble.meta.json")
+	spoolPath := filepath.Join(runDir, "turn_crash_preamble.ndjson")
+	w, _ := OpenTurnSpoolWriter(spoolPath, "turn_crash_preamble")
+	_, _ = w.Append(ChatStreamEvent{SessionID: sess.ID, TurnID: "turn_crash_preamble", Type: "turn_start", Text: "Fix bug", Timestamp: time.Now().Add(-20 * time.Second).UTC()})
+	_ = w.Close()
+	_ = WriteTurnSpoolMeta(metaPath, &TurnSpoolMeta{
+		TurnID: "turn_crash_preamble", SessionID: sess.ID, OrigSessionID: sess.ID, NativeID: sess.NativeID,
+		Agent: "claude-code", Cwd: tmpHome, Prompt: "Fix bug",
+		SocketPath: filepath.Join(runDir, "missing_preamble.sock"), SpoolPath: spoolPath, MetaPath: metaPath,
+		WorkerPID: 999995, StartedAt: time.Now().Add(-20 * time.Second).UTC(), Status: "running",
+	})
+
+	srv.headless.ReattachLiveWorkers()
+
+	rec := httptest.NewRecorder()
+	srv.handleSessionTranscript(rec, httptest.NewRequest(http.MethodGet, "/v1/sessions/transcript?id="+sess.ID+"&format=json", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("transcript GET returned %d: %s", rec.Code, rec.Body.String())
+	}
+	var trResp struct {
+		Messages []TranscriptMessage `json:"messages"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &trResp); err != nil {
+		t.Fatalf("decode transcript: %v", err)
+	}
+	if len(trResp.Messages) != 2 {
+		t.Fatalf("expected 2 transcript messages, got %+v", trResp.Messages)
+	}
+	content := trResp.Messages[1].Content
+	if !strings.Contains(content, preamble) || !strings.Contains(content, crashedWorkerErrorText) {
+		t.Fatalf("expected partial on-disk preamble AND crash error surfaced, got %q", content)
+	}
+}
+
+func TestFinalizeCrashedTurnSpool_PreservesLivePersistentWorkerSocket(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	dbPath := filepath.Join(t.TempDir(), "ackbard.db")
+	db, _ := InitDB(dbPath)
+	defer db.Close()
+
+	runDir := DefaultHeadlessRunDir(dbPath)
+	_ = os.MkdirAll(runDir, 0700)
+
+	sess := newTestHeadlessSession("claude-code:local:keep-sock", "keep-sock", tmpHome, StateIdle)
+	_ = db.SaveSession(sess)
+
+	sockPath, sockTempDir, err := allocateWorkerSocketPath(runDir, "w_live_keep")
+	if err != nil {
+		t.Fatalf("allocateWorkerSocketPath: %v", err)
+	}
+	if sockTempDir != "" {
+		defer os.RemoveAll(sockTempDir)
+	}
+	_ = os.Remove(sockPath)
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen unix: %v", err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(conn net.Conn) {
+				defer conn.Close()
+				var req workerIPCReq
+				_ = json.NewDecoder(conn).Decode(&req)
+				resp := workerIPCResp{OK: req.TurnID == "", WorkerPID: 999994, ChildPID: 999993, State: "idle_warm"}
+				_ = json.NewEncoder(conn).Encode(resp)
+			}(c)
+		}
+	}()
+
+	wmPath := filepath.Join(runDir, "w_live_keep.worker.json")
+	_ = WriteSessionWorkerMeta(wmPath, &SessionWorkerMeta{
+		WorkerID: "w_live_keep", SessionID: sess.ID, OrigSessionID: sess.ID, NativeID: sess.NativeID,
+		Agent: "claude-code", Cwd: tmpHome, ConfigFingerprint: ConfigFingerprint(sess),
+		SocketPath: sockPath, SocketTempDir: sockTempDir, WorkerMetaPath: wmPath,
+		WorkerPID: 999994, State: "idle_warm", StartedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+
+	metaPath := filepath.Join(runDir, "turn_stale_crash.meta.json")
+	spoolPath := filepath.Join(runDir, "turn_stale_crash.ndjson")
+	_ = os.WriteFile(spoolPath, []byte(`{"seq":1,"type":"turn_start","text":"old"}`+"\n"), 0600)
+	_ = WriteTurnSpoolMeta(metaPath, &TurnSpoolMeta{
+		TurnID: "turn_stale_crash", SessionID: sess.ID, OrigSessionID: sess.ID, NativeID: sess.NativeID,
+		Agent: "claude-code", Cwd: tmpHome, Prompt: "old",
+		SocketPath: sockPath, SocketTempDir: sockTempDir, SpoolPath: spoolPath, MetaPath: metaPath,
+		WorkerMetaPath: wmPath, WorkerPID: 999994, StartedAt: time.Now().UTC(), Status: "running",
+	})
+
+	h := NewHeadlessRunner(db, nil)
+	h.ReattachLiveWorkers()
+
+	if !fileExists(sockPath) {
+		t.Fatalf("expected active persistent worker socket %s NOT to be deleted by stale turn crash finalization", sockPath)
 	}
 }

@@ -339,28 +339,29 @@ func (s *Server) handlePromptQueue(w http.ResponseWriter, r *http.Request) {
 					_ = s.db.SaveSession(sess)
 					s.broadcast(sess)
 				}
+				sessID := sess.ID
 				if sess.State == StateIdle {
 					if sess.EngineType == EngineHeadless {
-						if !s.headless.IsRunning(sess.ID) && !s.headless.IsQueuePaused(sess.ID) {
-							if claimed := s.headless.ClaimPromptByID(sess.ID, item.ID); claimed != nil {
-								go func(targetSess *Session, qItem *PromptQueueItem) {
+						if !s.headless.IsRunning(sessID) && !s.headless.IsQueuePaused(sessID) {
+							if claimed := s.headless.ClaimPromptByID(sessID, item.ID); claimed != nil {
+								go func(targetSess *Session, targetSessID string, qItem *PromptQueueItem) {
 									if err := s.headless.RunTurn(context.Background(), targetSess, qItem.Text); err != nil {
 										s.headless.AbortPromptDispatch(qItem.ID)
 										return
 									}
-									s.headless.CommitPromptQueueItem(targetSess.ID, qItem.ID)
-								}(sess, claimed)
+									s.headless.CommitPromptQueueItem(targetSessID, qItem.ID)
+								}(sess, sessID, claimed)
 							}
 						}
 					} else if sess.EngineType == EngineTmux || sess.TmuxName != "" {
 						if sess.TmuxName != "" {
-							if claimed := s.headless.ClaimPromptByID(sess.ID, item.ID); claimed != nil {
+							if claimed := s.headless.ClaimPromptByID(sessID, item.ID); claimed != nil {
 								if err := tmux.SendInput(r.Context(), sess.TmuxName, claimed.Text, true); err != nil {
 									s.headless.AbortPromptDispatch(claimed.ID)
 									http.Error(w, fmt.Sprintf("Failed to send prompt to tmux: %v", err), http.StatusInternalServerError)
 									return
 								}
-								s.headless.CommitPromptQueueItem(sess.ID, claimed.ID)
+								s.headless.CommitPromptQueueItem(sessID, claimed.ID)
 								sess.State = StateWorking
 								sess.Activity = "Processing prompt"
 								sess.LastEventAt = time.Now()
@@ -370,7 +371,7 @@ func (s *Server) handlePromptQueue(w http.ResponseWriter, r *http.Request) {
 						}
 					}
 				}
-				s.headless.EmitQueueUpdate(sess.ID)
+				s.headless.EmitQueueUpdate(sessID)
 				w.Header().Set("Content-Type", "application/json")
 				_ = json.NewEncoder(w).Encode(map[string]interface{}{
 					"status": "triggered",
@@ -443,15 +444,16 @@ func (s *Server) handlePromptQueueResume(w http.ResponseWriter, r *http.Request)
 	s.headless.EmitQueueUpdate(sess.ID)
 
 	// If runner is not currently running, trigger next queued prompt
-	if !s.headless.IsRunning(sess.ID) {
-		if claimed := s.headless.ClaimReadyPrompt(sess.ID); claimed != nil {
-			go func(targetSess *Session, qItem *PromptQueueItem) {
+	sessID := sess.ID
+	if !s.headless.IsRunning(sessID) {
+		if claimed := s.headless.ClaimReadyPrompt(sessID); claimed != nil {
+			go func(targetSess *Session, targetSessID string, qItem *PromptQueueItem) {
 				if err := s.headless.RunTurn(context.Background(), targetSess, qItem.Text); err != nil {
 					s.headless.AbortPromptDispatch(qItem.ID)
 					return
 				}
-				s.headless.CommitPromptQueueItem(targetSess.ID, qItem.ID)
-			}(sess, claimed)
+				s.headless.CommitPromptQueueItem(targetSessID, qItem.ID)
+			}(sess, sessID, claimed)
 		}
 	}
 

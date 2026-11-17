@@ -112,7 +112,9 @@ func (h *HeadlessRunner) finalizeCrashedTurnSpool(sess *Session, meta *TurnSpool
 		clearInterrupted(sess, meta)
 		return
 	}
-	cleanupTurnSocketArtifacts(meta)
+	if meta.WorkerMetaPath == "" || !fileExists(meta.WorkerMetaPath) {
+		cleanupTurnSocketArtifacts(meta)
+	}
 	if meta.SpoolPath != "" {
 		if w, err := OpenTurnSpoolWriter(meta.SpoolPath, meta.TurnID); err == nil {
 			_, _ = w.Append(ChatStreamEvent{

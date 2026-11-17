@@ -1162,15 +1162,16 @@ func (s *Server) processDueScheduledPrompts(ctx context.Context) {
 		}
 
 		if sess.EngineType == EngineHeadless {
-			if !s.headless.IsRunning(sess.ID) && !s.headless.IsQueuePaused(sess.ID) {
-				if claimed := s.headless.ClaimReadyPrompt(sess.ID); claimed != nil {
-					go func(targetSess *Session, qItem *PromptQueueItem) {
+			sessID := sess.ID
+			if !s.headless.IsRunning(sessID) && !s.headless.IsQueuePaused(sessID) {
+				if claimed := s.headless.ClaimReadyPrompt(sessID); claimed != nil {
+					go func(targetSess *Session, targetSessID string, qItem *PromptQueueItem) {
 						if err := s.headless.RunTurn(context.Background(), targetSess, qItem.Text); err != nil {
 							s.headless.AbortPromptDispatch(qItem.ID)
 							return
 						}
-						s.headless.CommitPromptQueueItem(targetSess.ID, qItem.ID)
-					}(sess, claimed)
+						s.headless.CommitPromptQueueItem(targetSessID, qItem.ID)
+					}(sess, sessID, claimed)
 				}
 			}
 		} else if sess.EngineType == EngineTmux || sess.TmuxName != "" {

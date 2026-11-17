@@ -26,26 +26,33 @@ func EnsureServiceProcessIsolation(home string) (bool, error) {
 	return sysChanged || macChanged, errors.Join(sysErr, macErr)
 }
 
-func isRegularWritableFile(path string) bool {
+func isRegularWritableFile(path string) (os.FileMode, bool) {
 	info, err := os.Lstat(path)
 	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0200 == 0 {
-		return false
+		return 0, false
 	}
 	f, err := os.OpenFile(path, os.O_WRONLY, 0)
 	if err != nil {
-		return false
+		return 0, false
 	}
 	_ = f.Close()
-	return true
+	perm := info.Mode().Perm()
+	if perm == 0 {
+		perm = 0644
+	}
+	return perm, true
 }
 
-func writeFileAtomic0644(path string, data []byte) error {
+func writeFileAtomicWithMode(path string, data []byte, perm os.FileMode) error {
+	if perm == 0 {
+		perm = 0644
+	}
 	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
 	if err != nil {
 		return err
 	}
 	tmpName := tmp.Name()
-	if err := tmp.Chmod(0644); err != nil {
+	if err := tmp.Chmod(perm); err != nil {
 		_ = tmp.Close()
 		_ = os.Remove(tmpName)
 		return err
@@ -60,24 +67,30 @@ func writeFileAtomic0644(path string, data []byte) error {
 		_ = os.Remove(tmpName)
 		return err
 	}
-	return os.Chmod(path, 0644)
+	return os.Chmod(path, perm)
+}
+
+func rewriteRegularFile(path string, transform func(string) (string, bool)) (bool, error) {
+	perm, ok := isRegularWritableFile(path)
+	if !ok {
+		return false, nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false, err
+	}
+	updated, changed := transform(string(data))
+	if !changed {
+		return false, nil
+	}
+	return true, writeFileAtomicWithMode(path, []byte(updated), perm)
 }
 
 func ensureSystemdServiceIsolation(home string) (bool, error) {
 	unitPath := filepath.Join(home, ".config", "systemd", "user", "ackbard.service")
-	if !isRegularWritableFile(unitPath) {
-		return false, nil
-	}
-	data, err := os.ReadFile(unitPath)
-	if err != nil {
-		return false, err
-	}
-	updated, changed := ensureSystemdKillModeProcess(string(data))
-	if !changed {
-		return false, nil
-	}
-	if err := writeFileAtomic0644(unitPath, []byte(updated)); err != nil {
-		return false, err
+	changed, err := rewriteRegularFile(unitPath, ensureSystemdKillModeProcess)
+	if err != nil || !changed {
+		return changed, err
 	}
 	if runtime.GOOS == "linux" {
 		_ = exec.Command("systemctl", "--user", "daemon-reload").Run()
@@ -143,21 +156,10 @@ func ensureLaunchdIsolation(home string) (bool, error) {
 	anyChanged := false
 	var errs []error
 	for _, name := range []string{"com.marcinbak.ackbard.plist", "homebrew.mxcl.ackbar.plist"} {
-		p := filepath.Join(agentsDir, name)
-		if !isRegularWritableFile(p) {
-			continue
-		}
-		data, err := os.ReadFile(p)
+		changed, err := rewriteRegularFile(filepath.Join(agentsDir, name), ensurePlistAbandonProcessGroup)
+		anyChanged = anyChanged || changed
 		if err != nil {
 			errs = append(errs, err)
-			continue
-		}
-		if updated, changed := ensurePlistAbandonProcessGroup(string(data)); changed {
-			if err := writeFileAtomic0644(p, []byte(updated)); err != nil {
-				errs = append(errs, err)
-			} else {
-				anyChanged = true
-			}
 		}
 	}
 	return anyChanged, errors.Join(errs...)
@@ -228,14 +230,15 @@ self_heal_ackbard_service() {
   if [ -f "$UNIT_FILE" ] && [ ! -L "$UNIT_FILE" ] && [ -w "$UNIT_FILE" ]; then
     if grep -q '^\[Service\]' "$UNIT_FILE" && ! awk '/^\[Service\]/{s=1;next}/^\[/{s=0}s&&/^KillMode=process[[:space:]]*$/{f=1}END{exit !f}' "$UNIT_FILE"; then
       TMP_UNIT=$(mktemp "${UNIT_FILE}.tmp.XXXXXX")
-      awk '/^\[Service\]/{print;s=1;next}/^\[/{if(s&&!d){print "KillMode=process";d=1}s=0}s&&/^KillMode=/{if(!d){print "KillMode=process";d=1}next}{print}END{if(s&&!d)print "KillMode=process"}' "$UNIT_FILE" > "$TMP_UNIT" && chmod 644 "$TMP_UNIT" && mv -f "$TMP_UNIT" "$UNIT_FILE" || rm -f "$TMP_UNIT"
+      cp -pf "$UNIT_FILE" "$TMP_UNIT" && awk '/^\[Service\]/{print;s=1;next}/^\[/{if(s&&!d){print "KillMode=process";d=1}s=0}s&&/^KillMode=/{if(!d){print "KillMode=process";d=1}next}{print}END{if(s&&!d)print "KillMode=process"}' "$UNIT_FILE" > "$TMP_UNIT" && mv -f "$TMP_UNIT" "$UNIT_FILE" || rm -f "$TMP_UNIT"
     fi
   fi
   for PLIST in "$HOME/Library/LaunchAgents/com.marcinbak.ackbard.plist" "$HOME/Library/LaunchAgents/homebrew.mxcl.ackbar.plist"; do
     if [ -f "$PLIST" ] && [ ! -L "$PLIST" ] && [ -w "$PLIST" ] && ! tr '\n' ' ' < "$PLIST" | grep -qE '<key>[[:space:]]*AbandonProcessGroup[[:space:]]*</key>[[:space:]]*<true[[:space:]]*/>'; then
       if command -v plutil >/dev/null 2>&1; then
+        ORIG_MODE=$(if [ "$(uname -s)" = "Darwin" ]; then stat -f '%Lp' "$PLIST"; else stat -c '%a' "$PLIST"; fi 2>/dev/null || true)
         TMP_PLIST=$(mktemp "${PLIST}.tmp.XXXXXX")
-        cp -f "$PLIST" "$TMP_PLIST" && plutil -replace AbandonProcessGroup -bool true "$TMP_PLIST" >/dev/null 2>&1 && chmod 644 "$TMP_PLIST" && mv -f "$TMP_PLIST" "$PLIST" || rm -f "$TMP_PLIST"
+        cp -pf "$PLIST" "$TMP_PLIST" && plutil -replace AbandonProcessGroup -bool true "$TMP_PLIST" >/dev/null 2>&1 && { [ -z "$ORIG_MODE" ] || chmod "$ORIG_MODE" "$TMP_PLIST"; } && mv -f "$TMP_PLIST" "$PLIST" || rm -f "$TMP_PLIST"
       fi
     fi
   done

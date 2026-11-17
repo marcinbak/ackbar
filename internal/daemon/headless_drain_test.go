@@ -589,3 +589,55 @@ func TestTransactionalPromptQueue_PreservesOnFailureAndCommitsOnRetry(t *testing
 		t.Fatalf("expected paused session NOT to start turn on resumeInterruptedHeadlessSessions")
 	}
 }
+
+func TestTransactionalPromptQueue_CommitAfterSessionMigration(t *testing.T) {
+	tmpDir := t.TempDir()
+	db, err := InitDB(filepath.Join(tmpDir, "tx_migrate.db"))
+	if err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+	defer db.Close()
+
+	h := NewHeadlessRunner(db, nil)
+	oldID := "antigravity:local:temp-uuid-1"
+	newID := "antigravity:local:real-conv-99"
+
+	item := h.EnqueuePrompt(oldID, "Migrated prompt")
+	sub, unsub := h.Subscribe(oldID)
+	defer unsub()
+
+	claimed := h.ClaimReadyPrompt(oldID)
+	if claimed == nil || claimed.ID != item.ID {
+		t.Fatalf("expected ClaimReadyPrompt(%s) to return %s, got %+v", oldID, item.ID, claimed)
+	}
+
+	h.MigrateSession(oldID, newID)
+
+	// Commit with the pre-migration oldID must still clear h.queues[newID], SQLite, and emit queue_update on newID
+	h.CommitPromptQueueItem(oldID, claimed.ID)
+
+	qNew, _ := h.GetPromptQueue(newID)
+	if len(qNew) != 0 {
+		t.Fatalf("expected migrated queue h.queues[%s] empty after commit, got %+v", newID, qNew)
+	}
+	qOld, _ := h.GetPromptQueue(oldID)
+	if len(qOld) != 0 {
+		t.Fatalf("expected old queue empty after commit, got %+v", qOld)
+	}
+	persisted, _ := db.ListScheduledPrompts()
+	if len(persisted) != 0 {
+		t.Fatalf("expected SQLite scheduled_prompts empty after commit, got %+v", persisted)
+	}
+	if h.ClaimReadyPrompt(newID) != nil {
+		t.Fatalf("expected no remaining item to re-claim on %s", newID)
+	}
+
+	select {
+	case evt := <-sub:
+		if evt.Type != "queue_update" || evt.SessionID != newID || len(evt.QueueItems) != 0 {
+			t.Fatalf("expected queue_update for migrated session %s with 0 items, got %+v", newID, evt)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatalf("timed out waiting for migrated queue_update event")
+	}
+}
