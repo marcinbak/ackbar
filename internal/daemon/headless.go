@@ -20,7 +20,7 @@ import (
 
 var (
 	ErrTurnInProgress   = errors.New("a turn is already in progress for this session")
-	ErrAgentUnsupported = errors.New("headless engine is currently supported for claude-code and antigravity")
+	ErrAgentUnsupported = errors.New("headless engine is currently supported for claude-code, antigravity, and grok")
 )
 
 // ChatStreamEvent represents a real-time event pushed over SSE to chat clients
@@ -1240,6 +1240,16 @@ func hasConversationOnDisk(sess *Session, home string, db *DB) bool {
 
 // buildArgs constructs the binary path and CLI arguments for a headless turn.
 func (h *HeadlessRunner) buildArgs(sess *Session, prompt, home string) (string, []string, error) {
+	if sess.Agent == "grok" {
+		if !IsSafeGrokSessionID(sess.NativeID) {
+			return "", nil, fmt.Errorf("unsafe grok session ID: %q", sess.NativeID)
+		}
+		bin := resolveGrokBinary()
+		isExisting := sess.FirstPrompt != "" || sess.LastPrompt != "" || hasConversationOnDisk(sess, home, h.db)
+		args := buildGrokHeadlessArgs(sess, prompt, isExisting)
+		return bin, args, nil
+	}
+
 	if sess.Agent == "antigravity" {
 		bin, err := resolveAntigravityBinary()
 		if err != nil {
@@ -1479,6 +1489,7 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 	hasEmittedAssistantText := false
 	hasEmittedDeltaInTurn := false
 	needsSeparation := false
+	seenGrok := strings.HasPrefix(sessionID, "grok")
 	emitStreamEvt := func(evt ChatStreamEvent) {
 		if hooks.emit != nil {
 			hooks.emit(evt)
@@ -1718,6 +1729,10 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 				hasEmittedDeltaInTurn = false
 				needsSeparation = false
 			}
+			continue
+		}
+
+		if handled := handleGrokStreamEvent(raw, sessionID, &seenGrok, &lastTextBuilder, &resultText, &streamHadError, &needsSeparation, &hasEmittedAssistantText, toolUses, toolInputs, &emittedAuthBlock, emitStreamEvt, hooks); handled {
 			continue
 		}
 

@@ -131,6 +131,32 @@ func (s *Server) extractAntigravityRewindTurns(home string, sess *Session) []rew
 	return turns
 }
 
+func (s *Server) extractGrokRewindTurns(home string, sess *Session) []rewindHumanTurn {
+	if sess == nil {
+		return nil
+	}
+	msgs, err := ExtractGrokTranscriptMessages(home, sess.Cwd, sess.NativeID)
+	if err != nil || len(msgs) == 0 {
+		return nil
+	}
+	var turns []rewindHumanTurn
+	for _, m := range msgs {
+		if m.Role == "user" && strings.TrimSpace(m.Content) != "" {
+			preview := strings.TrimSpace(m.Content)
+			if len(preview) > 120 {
+				preview = preview[:120] + "..."
+			}
+			turns = append(turns, rewindHumanTurn{
+				Turn:      len(turns) + 1,
+				Timestamp: m.Timestamp,
+				Preview:   preview,
+				RawPrompt: m.Content,
+			})
+		}
+	}
+	return turns
+}
+
 func (s *Server) handleSessionRewind(w http.ResponseWriter, r *http.Request, sessionID string) {
 	if r.Method != http.MethodGet && r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -162,6 +188,8 @@ func (s *Server) handleSessionRewind(w http.ResponseWriter, r *http.Request, ses
 
 	if sess.Agent == "antigravity" {
 		turns = s.extractAntigravityRewindTurns(home, sess)
+	} else if sess.Agent == "grok" {
+		turns = s.extractGrokRewindTurns(home, sess)
 	} else {
 		turns, rawLines, targetFile = s.extractClaudeRewindTurns(home, sess)
 	}

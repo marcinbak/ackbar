@@ -37,7 +37,7 @@ func ConfigFingerprint(sess *Session) string {
 		m = ""
 	}
 	e := strings.TrimSpace(sess.Effort)
-	if ag != "claude-code" || strings.EqualFold(e, "default") {
+	if (ag != "claude-code" && ag != "grok") || strings.EqualFold(e, "default") {
 		e = ""
 	}
 	pm := normalizePermissionMode(sess.PermissionMode)
@@ -76,6 +76,7 @@ func MCPFingerprint(sess *Session, db *DB, home string) string {
 			filepath.Join(accDir, ".credentials.json"),
 			filepath.Join(accDir, "mcp_config.json"),
 			filepath.Join(accDir, "mcp-needs-auth-cache.json"),
+			filepath.Join(accDir, "config.toml"),
 		)
 	}
 	if home != "" {
@@ -88,6 +89,7 @@ func MCPFingerprint(sess *Session, db *DB, home string) string {
 			filepath.Join(home, ".gemini", "antigravity", "mcp_config.json"),
 			filepath.Join(home, ".gemini", "config", "mcp_config.json"),
 			filepath.Join(home, ".codex", "config.json"),
+			filepath.Join(home, ".grok", "config.toml"),
 		)
 	}
 	h := sha256.New()
@@ -264,6 +266,8 @@ func buildWorkerEnv(sess *Session, db *DB, home string) []string {
 					env = append(env, "CLAUDE_CONFIG_DIR="+cfgDir)
 				} else if sess.Agent == "antigravity" {
 					env = append(env, "GEMINI_CLI_HOME="+cfgDir)
+				} else if sess.Agent == "grok" {
+					env = append(env, "GROK_HOME="+cfgDir)
 				}
 			}
 			for k, v := range acc.Env {
@@ -294,6 +298,8 @@ func augmentWorkerPluginEnv(env []string, home string) []string {
 	}
 	if home != "" {
 		candidates = append(candidates,
+			filepath.Join(home, ".local", "bin"),
+			filepath.Join(home, ".grok", "bin"),
 			filepath.Join(home, ".gemini", "antigravity-cli", "bin"),
 			filepath.Join(home, ".gemini", "antigravity", "bin"),
 		)

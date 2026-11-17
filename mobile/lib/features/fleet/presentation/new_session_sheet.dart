@@ -58,6 +58,11 @@ class _NewSessionSheetState extends ConsumerState<NewSessionSheet> {
   bool _isLaunching = false;
   String? _errorMessage;
 
+  bool get _supportsHeadless =>
+      _selectedAgent == 'claude-code' ||
+      _selectedAgent == 'antigravity' ||
+      _selectedAgent == 'grok';
+
   static const List<Map<String, String>> _defaultAgents = [
     {
       'id': 'claude-code',
@@ -70,6 +75,7 @@ class _NewSessionSheetState extends ConsumerState<NewSessionSheet> {
       'desc': 'Google Gemini Coding Agent'
     },
     {'id': 'codex', 'name': 'Codex', 'desc': 'OpenAI Codex Engine'},
+    {'id': 'grok', 'name': 'Grok', 'desc': 'xAI Grok Build Engine'},
   ];
 
   @override
@@ -155,7 +161,7 @@ class _NewSessionSheetState extends ConsumerState<NewSessionSheet> {
 
       spawnedSession ??= Session(
         id: result['id']?.toString() ??
-            'antigravity-local-${result['session_id'] ?? ''}',
+            '$_selectedAgent-$_selectedHost-${result['session_id'] ?? ''}',
         nativeId: result['session_id']?.toString() ?? '',
         agent: _selectedAgent,
         cwd: cwd,
@@ -506,6 +512,75 @@ class _NewSessionSheetState extends ConsumerState<NewSessionSheet> {
                     ],
                   ),
                 )
+              else if (activeAgents.length > 3)
+                LayoutBuilder(
+                  builder: (context, constraints) {
+                    final itemWidth = (constraints.maxWidth - 8) / 2;
+                    return Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: activeAgents.map((ag) {
+                        final isSelected = _selectedAgent == ag['id'];
+                        return SizedBox(
+                          width: itemWidth,
+                          child: InkWell(
+                            onTap: () {
+                              setState(() {
+                                _selectedAgent = ag['id']!;
+                                if (!_supportsHeadless &&
+                                    _engineType == 'headless') {
+                                  _engineType = 'tmux';
+                                }
+                              });
+                            },
+                            borderRadius: AppSpacing.roundedMd,
+                            child: AnimatedContainer(
+                              duration: const Duration(milliseconds: 150),
+                              padding: const EdgeInsets.symmetric(
+                                  vertical: 10, horizontal: 8),
+                              decoration: BoxDecoration(
+                                color: isSelected
+                                    ? AppColors.infoCyan.withOpacity(0.12)
+                                    : AppColors.surface,
+                                borderRadius: AppSpacing.roundedMd,
+                                border: Border.all(
+                                  color: isSelected
+                                      ? AppColors.infoCyan
+                                      : AppColors.outlineSubtle,
+                                  width: isSelected ? 1.5 : 1,
+                                ),
+                              ),
+                              child: Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  AgentLogo(agent: ag['id']!, size: 18),
+                                  const SizedBox(width: 8),
+                                  Flexible(
+                                    child: Text(
+                                      ag['name']!,
+                                      style: AppTypography.codeXs.copyWith(
+                                        fontSize: 11,
+                                        color: isSelected
+                                            ? AppColors.infoCyan
+                                            : AppColors.textPrimary,
+                                        fontWeight: isSelected
+                                            ? FontWeight.w700
+                                            : FontWeight.w500,
+                                      ),
+                                      textAlign: TextAlign.center,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        );
+                      }).toList(),
+                    );
+                  },
+                )
               else
                 Row(
                   children: activeAgents.map((ag) {
@@ -514,8 +589,15 @@ class _NewSessionSheetState extends ConsumerState<NewSessionSheet> {
                       child: Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 3.0),
                         child: InkWell(
-                          onTap: () =>
-                              setState(() => _selectedAgent = ag['id']!),
+                          onTap: () {
+                            setState(() {
+                              _selectedAgent = ag['id']!;
+                              if (!_supportsHeadless &&
+                                  _engineType == 'headless') {
+                                _engineType = 'tmux';
+                              }
+                            });
+                          },
                           borderRadius: AppSpacing.roundedMd,
                           child: AnimatedContainer(
                             duration: const Duration(milliseconds: 150),
@@ -698,45 +780,50 @@ class _NewSessionSheetState extends ConsumerState<NewSessionSheet> {
                   ),
                   const SizedBox(width: 8),
                   Expanded(
-                    child: InkWell(
-                      onTap: () => setState(() => _engineType = 'headless'),
-                      borderRadius: AppSpacing.roundedMd,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                            vertical: 8, horizontal: 10),
-                        decoration: BoxDecoration(
-                          color: _engineType == 'headless'
-                              ? AppColors.infoCyan.withOpacity(0.12)
-                              : AppColors.surface,
-                          borderRadius: AppSpacing.roundedMd,
-                          border: Border.all(
+                    child: Opacity(
+                      opacity: _supportsHeadless ? 1.0 : 0.4,
+                      child: InkWell(
+                        onTap: _supportsHeadless
+                            ? () => setState(() => _engineType = 'headless')
+                            : null,
+                        borderRadius: AppSpacing.roundedMd,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              vertical: 8, horizontal: 10),
+                          decoration: BoxDecoration(
                             color: _engineType == 'headless'
-                                ? AppColors.infoCyan
-                                : AppColors.outlineSubtle,
-                            width: _engineType == 'headless' ? 1.5 : 1,
-                          ),
-                        ),
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Icon(Icons.chat_bubble_outline_rounded,
-                                size: 16,
-                                color: _engineType == 'headless'
-                                    ? AppColors.infoCyan
-                                    : AppColors.textMuted),
-                            const SizedBox(width: 6),
-                            Text(
-                              'HEADLESS (Chat)',
-                              style: AppTypography.codeXs.copyWith(
-                                color: _engineType == 'headless'
-                                    ? AppColors.infoCyan
-                                    : AppColors.textPrimary,
-                                fontWeight: _engineType == 'headless'
-                                    ? FontWeight.w700
-                                    : FontWeight.w500,
-                              ),
+                                ? AppColors.infoCyan.withOpacity(0.12)
+                                : AppColors.surface,
+                            borderRadius: AppSpacing.roundedMd,
+                            border: Border.all(
+                              color: _engineType == 'headless'
+                                  ? AppColors.infoCyan
+                                  : AppColors.outlineSubtle,
+                              width: _engineType == 'headless' ? 1.5 : 1,
                             ),
-                          ],
+                          ),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(Icons.chat_bubble_outline_rounded,
+                                  size: 16,
+                                  color: _engineType == 'headless'
+                                      ? AppColors.infoCyan
+                                      : AppColors.textMuted),
+                              const SizedBox(width: 6),
+                              Text(
+                                'HEADLESS (Chat)',
+                                style: AppTypography.codeXs.copyWith(
+                                  color: _engineType == 'headless'
+                                      ? AppColors.infoCyan
+                                      : AppColors.textPrimary,
+                                  fontWeight: _engineType == 'headless'
+                                      ? FontWeight.w700
+                                      : FontWeight.w500,
+                                ),
+                              ),
+                            ],
+                          ),
                         ),
                       ),
                     ),

@@ -22,6 +22,7 @@ func TestGrokSpawnCoercionAndFlags(t *testing.T) {
 	extraDir := filepath.Join(t.TempDir(), "grok-extra")
 	_ = os.MkdirAll(extraDir, 0755)
 
+	// 1. Grok preserves EngineHeadless
 	payload := map[string]interface{}{
 		"agent":           "grok",
 		"cwd":             cwd,
@@ -55,8 +56,8 @@ func TestGrokSpawnCoercionAndFlags(t *testing.T) {
 		t.Fatalf("Failed to decode response: %v", err)
 	}
 
-	if resp["engine_type"] != EngineTmux {
-		t.Errorf("Expected engine_type coerced to 'tmux', got %v", resp["engine_type"])
+	if resp["engine_type"] != EngineHeadless {
+		t.Errorf("Expected engine_type preserved as 'headless', got %v", resp["engine_type"])
 	}
 
 	sessID, ok := resp["id"].(string)
@@ -69,8 +70,8 @@ func TestGrokSpawnCoercionAndFlags(t *testing.T) {
 		t.Fatalf("Failed to fetch session from DB: %v", err)
 	}
 
-	if sess.EngineType != EngineTmux {
-		t.Errorf("Expected sess.EngineType == EngineTmux, got %s", sess.EngineType)
+	if sess.EngineType != EngineHeadless {
+		t.Errorf("Expected sess.EngineType == EngineHeadless, got %s", sess.EngineType)
 	}
 	if sess.Model != "grok-2" {
 		t.Errorf("Expected sess.Model == 'grok-2', got %q", sess.Model)
@@ -84,6 +85,28 @@ func TestGrokSpawnCoercionAndFlags(t *testing.T) {
 	canonicalExtra, _ := filepath.EvalSymlinks(extraDir)
 	if len(sess.ExtraDirs) != 1 || (sess.ExtraDirs[0] != extraDir && sess.ExtraDirs[0] != canonicalExtra) {
 		t.Errorf("Expected sess.ExtraDirs == [%s], got %+v", extraDir, sess.ExtraDirs)
+	}
+
+	// 2. Unsupported agent (codex) still coerces to EngineTmux
+	codexPayload := map[string]interface{}{
+		"agent":       "codex",
+		"cwd":         cwd,
+		"engine_type": EngineHeadless,
+	}
+	codexBody, _ := json.Marshal(codexPayload)
+	codexReq := httptest.NewRequest(http.MethodPost, "/v1/sessions/spawn", bytes.NewReader(codexBody))
+	codexW := httptest.NewRecorder()
+
+	srv.handleSpawn(codexW, codexReq)
+	if codexW.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK for codex spawn, got %d: %s", codexW.Code, codexW.Body.String())
+	}
+	var codexResp map[string]interface{}
+	if err := json.Unmarshal(codexW.Body.Bytes(), &codexResp); err != nil {
+		t.Fatalf("Failed to decode codex response: %v", err)
+	}
+	if codexResp["engine_type"] != EngineTmux {
+		t.Errorf("Expected codex engine_type coerced to 'tmux', got %v", codexResp["engine_type"])
 	}
 }
 

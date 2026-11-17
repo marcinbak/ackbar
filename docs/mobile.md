@@ -6,7 +6,7 @@
 
 ## 1. Overview & Architecture
 
-The **Ackbar Mobile App** is a native cross-platform companion client designed to monitor, supervise, and unblock autonomous AI coding sessions (Claude Code, Antigravity, Codex) on the go.
+The **Ackbar Mobile App** is a native cross-platform companion client designed to monitor, supervise, and unblock autonomous AI coding sessions (Claude Code, Antigravity, Codex, Grok) on the go.
 
 It communicates with local and remote `ackbard` daemons over standard HTTP/REST, Server-Sent Events (`SSE`), and WebSockets (`ws://`), with native support for **Tailscale** mesh networking.
 
@@ -64,7 +64,7 @@ It communicates with local and remote `ackbard` daemons over standard HTTP/REST,
 * **Session Controls Sheet (`SessionDetailSheet`):** Compact `⋯` or long-press opens mode-matched launch (**`Open Chat`** / **`Open Terminal`**), **`Transcript`**, **`Restart`**, and **`Terminate`**.
 * **Unread State Indicator:** A glowing pulse indicator highlights `BLOCKED` or `IDLE` sessions. Card tap clears unread state via `POST /v1/sessions/mark-read`.
 * **Live Search & Filter:** Real-time fuzzy filtering by session title, agent, or group.
-* **New Agent Session Creation (`NewSessionSheet`):** Spawns agent sessions across hosts. Routes immediately into `ChatScreen` or `TerminalScreen` via `SessionNavigator.openSession`.
+* **New Agent Session Creation (`NewSessionSheet`):** Spawns agent sessions across hosts with a 4-agent 2x2 grid selector (`Claude Code`, `Google Antigravity`, `OpenAI Codex`, `xAI Grok`) featuring custom `#E5E7EB` Grok vector path rendering in `agent_logo.dart`. Routes immediately into `ChatScreen` or `TerminalScreen` via `SessionNavigator.openSession`.
 
 ---
 
@@ -82,7 +82,7 @@ The **Attention** tab provides a zero-latency inbox for agent sessions waiting o
 ---
 
 ### 💬 3. Native Chat Mode (ChatScreen)
-Tap any headless session card or **Open Chat** to enter the dedicated interactive chat view ([`chat_screen.dart`](../mobile/lib/features/chat/presentation/chat_screen.dart)):
+Tap any headless session card or **Open Chat** to enter the dedicated interactive chat view ([`chat_screen.dart`](../mobile/lib/features/chat/presentation/chat_screen.dart)), providing full headless chat engine parity across `claude-code`, `antigravity`, and `grok`:
 
 * **Interactive Chat Composer (`ChatComposerBar`):** Dedicated prompt composer ([`chat_composer_bar.dart`](../mobile/lib/features/chat/presentation/chat_composer_bar.dart)) supporting multiline input, action buttons, prompt skills passthrough, and send trigger.
 * **Header Actions:** Controls Antigravity Live Voice, Auto-Read TTS, Mic STT, Take-the-Wheel PTY promotion, and View Transcript.
@@ -209,7 +209,7 @@ In **Phase 5**, the Flutter Mobile App (`mobile/lib/`) was upgraded to complete 
 
 5. **Headless Session & Command Parity (`features/headless/`, `features/chat/` & `features/transcript/`):**
    * **`HeadlessAuthCard`:** Renders on `BlockKind.auth` in `AttentionScreen`, `ChatScreen`, and `TranscriptScreen`. Launches external browser via native `dev.ackbar.app/launcher` HTTPS channel (`MainActivity.kt`, `AppDelegate.swift`) with clipboard fallback. Supports collapsible remote `callback_url` paste, retry, terminal attach, and dismiss.
-   * **`HeadlessConfigPillBar` & `HeadlessConfigSheet`:** Displays model override or resolved default (`resolvedModel`), effort, mode, and context. Model selector shows `Default (<Model>)` and resets override.
+   * **`HeadlessConfigPillBar` & `HeadlessConfigSheet`:** Displays model override or resolved default (`resolvedModel`), effort (Claude Code & Grok), mode, and context. Model selector shows `Default (<Model>)` and resets override. Additional directories (`extra_dirs`) are locked as read-only after session creation for Grok because `grok -r` rejects `--add-dir`.
    * **Composer Autocomplete & Command Dispatcher:** `HeadlessAutocompleteStrip` handles autocomplete. `HeadlessCommandDispatcher` executes slash commands; `/model` and `/context` cards render `Default (<Model>)` for empty overrides.
 
 ---

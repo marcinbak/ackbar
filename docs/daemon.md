@@ -157,10 +157,11 @@ Headless sessions (`engine_type = "headless"`, `tmux_name = ""`) execute turns t
 * **Per-Turn Invocation & Conversation Continuity:**
   * **Claude Code:** Runs `claude -p --input-format stream-json --output-format stream-json --verbose`. Dispatches turns via stdin NDJSON `{"type":"user","message":{"role":"user","content":"<prompt>"}}`.
   * **Google Antigravity:** Runs `agy --input-format stream-json --output-format stream-json` omitting `-p`. Dispatches turns via stdin NDJSON `{"event":"user","message":{"role":"user","content":"<prompt>"}}`.
+  * **xAI Grok:** Runs `grok --single=<prompt> [-s <uuid> | -r <uuid>] --output-format streaming-json`. Dispatches detached one-shot turns without persistent stdio child processes.
   * **Antigravity Boot Init Handling:** Buffers startup `{"event":"init"}` event until Turn 1 attaches. Migrates temporary spawn ID to canonical conversation ID atomically.
   * **Safe First-Turn Recovery:** Persists prompts only after initial event arrives or process succeeds. Prevents broken resume state on early startup failure.
   * **Initial Prompt on Spawn:** Passing non-empty `prompt` to `POST /v1/sessions/spawn` triggers Turn 1 immediately in background.
-  * **Session Configuration:** Passes `--model`, `--effort` (Claude Code only), and permission flags (`--permission-mode plan` or `--dangerously-skip-permissions`).
+  * **Session Configuration:** Passes `--model`, `--effort` (Claude Code and Grok), and permission flags (`--permission-mode plan` or `--dangerously-skip-permissions`). Passes `--add-dir` for `extra_dirs` on session creation; Grok rejects `--add-dir` on resume (`grok -r`), locking `extra_dirs` post-spawn.
   * **Interactive Tool Interception:** Blocks on `AskUserQuestion`, `ask_question`, or `ExitPlanMode`. Approval synchronously reaps worker and resumes with updated permissions.
   * **OAuth Authentication Interception (`BlockAuth`):** Pauses queue on OAuth failure, persists `blocked_meta`, emits `interactive_block`, and auto-resumes on successful callback.
   * **Prompt Queue & Auto-Dispatch:** Persists queued prompts in SQLite (`scheduled_prompts`). Dispatches due prompts via 5-second background loop or manual trigger.
@@ -256,7 +257,7 @@ The SQLite database (`~/.config/ackbar/ackbard.db`) uses CGO-free pure Go SQLite
 * `is_supervisor`: Tracks whether the session is a zero-input `⚓ Supervisor` session (`1` = supervisor, `0` = normal).
 * `current_task_id`: Tracks the active Ackbar task ID bound to the session (if any), categorizing the session under the `📋 Tasks` subsection. Each host strictly stores only its own local sessions in the `sessions` table (no cross-host session replicas).
 * `blocked_meta`: Persists structured JSON metadata (`auth_target`, `auth_kind`, `auth_server`, `auth_url`, `auth_hint`, `flow_id`) for sessions in `BlockAuth` state.
-* `extra_dirs`: Persists JSON array of additional allowed directory paths (`--add-dir`) for agent workspace access.
+* `extra_dirs`: Persists JSON array of additional allowed directory paths (`--add-dir`) for agent workspace access. On Grok, `extra_dirs` is immutable after creation because `grok -r` rejects `--add-dir`.
 * `model`: Stores explicit model override. Empty string tracks agent default; `resolved_model` dynamically exposes active model without database migration.
 * `task_deliverables` LWW columns: Adds `updated_at`, `provider`, `content_md`, `deleted_at` (tombstone for LWW sync), `metadata_json` (structured `RetroMetrics`), and `dedup_key` with indexes for peer replication.
 

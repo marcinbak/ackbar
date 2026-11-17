@@ -96,6 +96,7 @@ class _HeadlessAuthCardState extends ConsumerState<HeadlessAuthCard>
     final explicit = widget.session.blocked?.authTarget;
     if (explicit != null && explicit.trim().isNotEmpty) return explicit.trim();
     if (widget.session.agent.toLowerCase() == 'antigravity') return 'agent:agy';
+    if (widget.session.agent.toLowerCase() == 'grok') return 'agent:grok';
     return '';
   }
 
