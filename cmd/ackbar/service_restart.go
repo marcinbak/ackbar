@@ -31,7 +31,7 @@ func newDefaultDaemonServiceRestarter() *daemonServiceRestarter {
 			if len(env) > 0 {
 				cmd.Env = env
 			}
-			return cmd.Output()
+			return cmd.CombinedOutput()
 		},
 		probePort: func(addr string, timeout time.Duration) error {
 			conn, err := net.DialTimeout("tcp", addr, timeout)
@@ -84,26 +84,54 @@ func hasLaunchctlLabel(outStr, label string) bool {
 	return false
 }
 
+func isManagedSystemdEnabledState(out string) bool {
+	switch strings.TrimSpace(out) {
+	case "enabled", "enabled-runtime", "linked", "linked-runtime", "static":
+		return true
+	default:
+		return false
+	}
+}
+
+func isManagedSystemdActiveState(out string) bool {
+	switch strings.TrimSpace(out) {
+	case "active", "activating", "reloading":
+		return true
+	default:
+		return false
+	}
+}
+
+func (r *daemonServiceRestarter) isLinuxSystemdManaged() bool {
+	out, err := r.runCmd(nil, "systemctl", "--user", "is-enabled", "ackbard.service")
+	if err == nil || isManagedSystemdEnabledState(string(out)) {
+		return true
+	}
+	activeOut, _ := r.runCmd(nil, "systemctl", "--user", "is-active", "ackbard.service")
+	return isManagedSystemdActiveState(string(activeOut))
+}
+
 // tryRestartManagedDaemonService restarts ackbard via its OS supervisor if one owns the service.
 // When managed is true, callers must never spawn an unmanaged process because KeepAlive/Restart=always
 // will collide on 127.0.0.1:7777.
-func tryRestartManagedDaemonService() (managed bool, ready bool) {
+func tryRestartManagedDaemonService() (managed bool, ready bool, err error) {
 	return newDefaultDaemonServiceRestarter().restart()
 }
 
-func (r *daemonServiceRestarter) restart() (managed bool, ready bool) {
+func (r *daemonServiceRestarter) restart() (managed bool, ready bool, err error) {
+	var restartOut []byte
 	var restartErr error
 
 	switch r.goos {
 	case "darwin":
-		out, err := r.runCmd(nil, "launchctl", "list")
-		if err != nil {
-			return false, false
+		out, listErr := r.runCmd(nil, "launchctl", "list")
+		if listErr != nil {
+			return false, false, nil
 		}
 		outStr := string(out)
 		if hasLaunchctlLabel(outStr, "com.marcinbak.ackbard") {
 			managed = true
-			_, restartErr = r.runCmd(nil, "launchctl", "kickstart", "-k", fmt.Sprintf("gui/%d/com.marcinbak.ackbard", r.uid))
+			restartOut, restartErr = r.runCmd(nil, "launchctl", "kickstart", "-k", fmt.Sprintf("gui/%d/com.marcinbak.ackbard", r.uid))
 		} else if hasLaunchctlLabel(outStr, "homebrew.mxcl.ackbar") {
 			managed = true
 			brewBin := ""
@@ -111,25 +139,28 @@ func (r *daemonServiceRestarter) restart() (managed bool, ready bool) {
 				brewBin = r.resolveBrew()
 			}
 			if brewBin == "" {
-				return true, false
+				return true, false, fmt.Errorf("homebrew executable not found to restart homebrew.mxcl.ackbar")
 			}
 			env := append(os.Environ(), "PATH=/opt/homebrew/bin:/usr/local/bin:"+os.Getenv("PATH"))
-			_, restartErr = r.runCmd(env, brewBin, "services", "restart", "ackbar")
+			restartOut, restartErr = r.runCmd(env, brewBin, "services", "restart", "ackbar")
 		} else {
-			return false, false
+			return false, false, nil
 		}
 	case "linux":
-		if _, err := r.runCmd(nil, "systemctl", "--user", "is-enabled", "ackbard.service"); err != nil {
-			return false, false
+		if !r.isLinuxSystemdManaged() {
+			return false, false, nil
 		}
 		managed = true
-		_, restartErr = r.runCmd(nil, "systemctl", "--user", "restart", "ackbard.service")
+		restartOut, restartErr = r.runCmd(nil, "systemctl", "--user", "restart", "ackbard.service")
 	default:
-		return false, false
+		return false, false, nil
 	}
 
 	if restartErr != nil {
-		return true, false
+		if msg := strings.TrimSpace(string(restartOut)); msg != "" {
+			return true, false, fmt.Errorf("service restart failed: %w (%s)", restartErr, msg)
+		}
+		return true, false, fmt.Errorf("service restart failed: %w", restartErr)
 	}
 
 	timeout := r.readinessTimeout
@@ -143,12 +174,12 @@ func (r *daemonServiceRestarter) restart() (managed bool, ready bool) {
 
 	deadline := time.Now().Add(timeout)
 	for {
-		if err := r.probePort("127.0.0.1:7777", 100*time.Millisecond); err == nil {
-			return true, true
+		if probeErr := r.probePort("127.0.0.1:7777", 100*time.Millisecond); probeErr == nil {
+			return true, true, nil
 		}
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
-			return true, false
+			return true, false, nil
 		}
 		if remaining < interval {
 			time.Sleep(remaining)

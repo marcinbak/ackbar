@@ -8,6 +8,9 @@ import (
 	"strings"
 )
 
+// systemdManagedShellCond matches enabled, dotfile-linked, static, or currently active/activating user units.
+const systemdManagedShellCond = `command -v systemctl >/dev/null 2>&1 && (systemctl --user is-enabled ackbard.service >/dev/null 2>&1 || case "$(systemctl --user is-enabled ackbard.service 2>/dev/null)" in linked*|static) true ;; *) false ;; esac || case "$(systemctl --user is-active ackbard.service 2>/dev/null)" in active|activating|reloading) true ;; *) false ;; esac)`
+
 func resolveRestartExecutable() string {
 	exe, err := os.Executable()
 	if err == nil && exe != "" {
@@ -74,24 +77,24 @@ if echo "$DRAIN_RES" | grep -q '"restart_deferred":true'; then
   echo "RESTART_DEFERRED"
   exit 0
 fi
-if command -v systemctl >/dev/null 2>&1 && systemctl --user is-enabled ackbard.service >/dev/null 2>&1; then
+if %s; then
   pkill -15 -x ackbard 2>/dev/null || true
   sleep 0.3
   pkill -9 -x ackbard 2>/dev/null || true
-  systemctl --user restart ackbard.service >/dev/null 2>&1 || true
+  systemctl --user restart ackbard.service >/dev/null
   i=0; while [ "$i" -lt 25 ]; do pgrep -x ackbard >/dev/null 2>&1 && break; sleep 0.2; i=$((i + 1)); done
 elif command -v launchctl >/dev/null 2>&1 && launchctl list 2>/dev/null | grep -Eq '(^|[[:space:]])com\.marcinbak\.ackbard($|[[:space:]])'; then
   pkill -15 -x ackbard 2>/dev/null || true
   sleep 0.3
   pkill -9 -x ackbard 2>/dev/null || true
-  launchctl kickstart -k "gui/$(id -u)/com.marcinbak.ackbard" >/dev/null 2>&1 || true
+  (launchctl kickstart -k "gui/$(id -u)/com.marcinbak.ackbard" >/dev/null || launchctl kickstart -k "user/$(id -u)/com.marcinbak.ackbard" >/dev/null)
   i=0; while [ "$i" -lt 25 ]; do pgrep -x ackbard >/dev/null 2>&1 && break; sleep 0.2; i=$((i + 1)); done
 elif command -v launchctl >/dev/null 2>&1 && launchctl list 2>/dev/null | grep -Eq '(^|[[:space:]])homebrew\.mxcl\.ackbar($|[[:space:]])'; then
   pkill -15 -x ackbard 2>/dev/null || true
   sleep 0.3
   pkill -9 -x ackbard 2>/dev/null || true
   export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
-  brew services restart ackbar >/dev/null 2>&1 || true
+  brew services restart ackbar >/dev/null
   i=0; while [ "$i" -lt 25 ]; do pgrep -x ackbard >/dev/null 2>&1 && break; sleep 0.2; i=$((i + 1)); done
 else
   pkill -15 -x ackbard 2>/dev/null || true
@@ -99,7 +102,7 @@ else
   pkill -9 -x ackbard 2>/dev/null || true
   sleep 0.2
   nohup "$HOME/.local/bin/ackbard"%s >/dev/null 2>&1 < /dev/null &
-fi`, quotedAuthToken, hostFlagArg)
+fi`, quotedAuthToken, systemdManagedShellCond, hostFlagArg)
 }
 
 func buildRemoteSelfUpdateScript(quotedAuthToken, hostFlagArg string) string {
@@ -115,19 +118,19 @@ if echo "$UPD_OUT" | grep -q "restart automatically once the current turn finish
   echo "RESTART_DEFERRED"
   exit 0
 fi
-if command -v systemctl >/dev/null 2>&1 && systemctl --user is-enabled ackbard.service >/dev/null 2>&1; then
-  systemctl --user restart ackbard.service >/dev/null 2>&1 || true
+if %s; then
+  systemctl --user restart ackbard.service >/dev/null
   i=0; while [ "$i" -lt 25 ]; do pgrep -x ackbard >/dev/null 2>&1 && break; sleep 0.2; i=$((i + 1)); done
 elif command -v launchctl >/dev/null 2>&1 && launchctl list 2>/dev/null | grep -Eq '(^|[[:space:]])com\.marcinbak\.ackbard($|[[:space:]])'; then
-  launchctl kickstart -k "gui/$(id -u)/com.marcinbak.ackbard" >/dev/null 2>&1 || true
+  (launchctl kickstart -k "gui/$(id -u)/com.marcinbak.ackbard" >/dev/null || launchctl kickstart -k "user/$(id -u)/com.marcinbak.ackbard" >/dev/null)
   i=0; while [ "$i" -lt 25 ]; do pgrep -x ackbard >/dev/null 2>&1 && break; sleep 0.2; i=$((i + 1)); done
 elif command -v launchctl >/dev/null 2>&1 && launchctl list 2>/dev/null | grep -Eq '(^|[[:space:]])homebrew\.mxcl\.ackbar($|[[:space:]])'; then
   export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
-  brew services restart ackbar >/dev/null 2>&1 || true
+  brew services restart ackbar >/dev/null
   i=0; while [ "$i" -lt 25 ]; do pgrep -x ackbard >/dev/null 2>&1 && break; sleep 0.2; i=$((i + 1)); done
 else
   pgrep -x ackbard >/dev/null 2>&1 || (nohup "$HOME/.local/bin/ackbard"%s >/dev/null 2>&1 < /dev/null &)
-fi`, quotedAuthToken, hostFlagArg)
+fi`, quotedAuthToken, systemdManagedShellCond, hostFlagArg)
 }
 
 func buildLocalAsyncRestartScript(pid int, exe string, rawArgs []string) string {
@@ -136,7 +139,7 @@ func buildLocalAsyncRestartScript(pid int, exe string, rawArgs []string) string 
 		cmdLine += " " + quotedArgs
 	}
 	return fmt.Sprintf(`sleep 0.5
-if command -v systemctl >/dev/null 2>&1 && systemctl --user is-enabled ackbard.service >/dev/null 2>&1; then
+if %s; then
   kill -15 %d 2>/dev/null || true
   sleep 0.3
   kill -9 %d 2>/dev/null || true
@@ -146,7 +149,7 @@ elif command -v launchctl >/dev/null 2>&1 && launchctl list 2>/dev/null | grep -
   kill -15 %d 2>/dev/null || true
   sleep 0.3
   kill -9 %d 2>/dev/null || true
-  launchctl kickstart -k "gui/$(id -u)/com.marcinbak.ackbard" >/dev/null 2>&1 || true
+  launchctl kickstart -k "gui/$(id -u)/com.marcinbak.ackbard" >/dev/null 2>&1 || launchctl kickstart -k "user/$(id -u)/com.marcinbak.ackbard" >/dev/null 2>&1 || true
   i=0; while [ "$i" -lt 25 ]; do pgrep -x ackbard >/dev/null 2>&1 && break; sleep 0.2; i=$((i + 1)); done
 elif command -v launchctl >/dev/null 2>&1 && launchctl list 2>/dev/null | grep -Eq '(^|[[:space:]])homebrew\.mxcl\.ackbar($|[[:space:]])'; then
   kill -15 %d 2>/dev/null || true
@@ -161,5 +164,5 @@ else
   kill -9 %d 2>/dev/null || true
   sleep 0.2
   nohup %s >/dev/null 2>&1 < /dev/null &
-fi`, pid, pid, pid, pid, pid, pid, pid, pid, cmdLine)
+fi`, systemdManagedShellCond, pid, pid, pid, pid, pid, pid, pid, pid, cmdLine)
 }

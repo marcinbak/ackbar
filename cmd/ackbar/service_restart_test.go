@@ -35,7 +35,18 @@ func TestHasLaunchctlLabel(t *testing.T) {
 	}
 }
 
-func TestDaemonServiceRestarter_DarwinLaunchAgentFastAndSlow(t *testing.T) {
+func TestDefaultDaemonServiceRestarter_CapturesCombinedOutput(t *testing.T) {
+	def := newDefaultDaemonServiceRestarter()
+	out, err := def.runCmd(nil, "/bin/sh", "-c", "echo launchd-stderr-detail >&2; exit 2")
+	if err == nil {
+		t.Fatal("expected error from failing command")
+	}
+	if !strings.Contains(string(out), "launchd-stderr-detail") {
+		t.Fatalf("expected stderr to be captured via CombinedOutput, got %q", string(out))
+	}
+}
+
+func TestDaemonServiceRestarter_DarwinLaunchAgentFastSlowAndError(t *testing.T) {
 	var invoked [][]string
 	probes := 0
 	fast := &daemonServiceRestarter{
@@ -59,9 +70,9 @@ func TestDaemonServiceRestarter_DarwinLaunchAgentFastAndSlow(t *testing.T) {
 		},
 	}
 
-	managed, ready := fast.restart()
-	if !managed || !ready {
-		t.Fatalf("expected (true, true) for fast launchd restart, got (%v, %v)", managed, ready)
+	managed, ready, err := fast.restart()
+	if !managed || !ready || err != nil {
+		t.Fatalf("expected (true, true, nil) for fast launchd restart, got (%v, %v, %v)", managed, ready, err)
 	}
 	if len(invoked) != 2 || strings.Join(invoked[1], " ") != "launchctl kickstart -k gui/501/com.marcinbak.ackbard" {
 		t.Fatalf("unexpected commands invoked: %v", invoked)
@@ -83,9 +94,31 @@ func TestDaemonServiceRestarter_DarwinLaunchAgentFastAndSlow(t *testing.T) {
 		},
 	}
 
-	managed, ready = slow.restart()
-	if !managed || ready {
-		t.Fatalf("expected (true, false) for throttled launchd restart timeout, got (%v, %v)", managed, ready)
+	managed, ready, err = slow.restart()
+	if !managed || ready || err != nil {
+		t.Fatalf("expected (true, false, nil) for throttled launchd restart timeout, got (%v, %v, %v)", managed, ready, err)
+	}
+
+	failing := &daemonServiceRestarter{
+		goos: "darwin",
+		uid:  501,
+		runCmd: func(env []string, name string, args ...string) ([]byte, error) {
+			if name == "launchctl" && len(args) == 1 && args[0] == "list" {
+				return []byte("PID\tStatus\tLabel\n-\t0\tcom.marcinbak.ackbard\n"), nil
+			}
+			return []byte("Could not find service \"com.marcinbak.ackbard\" in domain\n"), errors.New("exit status 113")
+		},
+		probePort: func(addr string, timeout time.Duration) error {
+			return nil
+		},
+	}
+
+	managed, ready, err = failing.restart()
+	if !managed || ready || err == nil {
+		t.Fatalf("expected (true, false, non-nil err) when kickstart fails, got (%v, %v, %v)", managed, ready, err)
+	}
+	if !strings.Contains(err.Error(), "Could not find service") {
+		t.Fatalf("expected stderr detail in error, got: %v", err)
 	}
 }
 
@@ -113,9 +146,9 @@ func TestDaemonServiceRestarter_DarwinHomebrewAndUnmanaged(t *testing.T) {
 		},
 	}
 
-	managed, ready := brewRestarter.restart()
-	if !managed || !ready {
-		t.Fatalf("expected (true, true) for homebrew service restart, got (%v, %v)", managed, ready)
+	managed, ready, err := brewRestarter.restart()
+	if !managed || !ready || err != nil {
+		t.Fatalf("expected (true, true, nil) for homebrew service restart, got (%v, %v, %v)", managed, ready, err)
 	}
 	if strings.Join(capturedCmd, " ") != "/opt/homebrew/bin/brew services restart ackbar" {
 		t.Fatalf("unexpected brew command: %v", capturedCmd)
@@ -132,8 +165,8 @@ func TestDaemonServiceRestarter_DarwinHomebrewAndUnmanaged(t *testing.T) {
 
 	missingBrew := *brewRestarter
 	missingBrew.resolveBrew = func() string { return "" }
-	if m, r := missingBrew.restart(); !m || r {
-		t.Fatalf("expected (true, false) when homebrew.mxcl.ackbar is loaded but brew binary is missing, got (%v, %v)", m, r)
+	if m, r, bErr := missingBrew.restart(); !m || r || bErr == nil || !strings.Contains(bErr.Error(), "homebrew executable not found") {
+		t.Fatalf("expected (true, false, missing brew err) when brew binary is missing, got (%v, %v, %v)", m, r, bErr)
 	}
 
 	unmanaged := &daemonServiceRestarter{
@@ -146,8 +179,8 @@ func TestDaemonServiceRestarter_DarwinHomebrewAndUnmanaged(t *testing.T) {
 			return nil
 		},
 	}
-	if m, r := unmanaged.restart(); m || r {
-		t.Fatalf("expected (false, false) on unmanaged darwin host, got (%v, %v)", m, r)
+	if m, r, uErr := unmanaged.restart(); m || r || uErr != nil {
+		t.Fatalf("expected (false, false, nil) on unmanaged darwin host, got (%v, %v, %v)", m, r, uErr)
 	}
 }
 
@@ -166,24 +199,66 @@ func TestDaemonServiceRestarter_LinuxSystemd(t *testing.T) {
 		},
 	}
 
-	managed, ready := enabled.restart()
-	if !managed || !ready {
-		t.Fatalf("expected (true, true) for enabled systemd user service, got (%v, %v)", managed, ready)
+	managed, ready, err := enabled.restart()
+	if !managed || !ready || err != nil {
+		t.Fatalf("expected (true, true, nil) for enabled systemd user service, got (%v, %v, %v)", managed, ready, err)
 	}
 	if len(cmds) != 2 || cmds[0] != "systemctl --user is-enabled ackbard.service" || cmds[1] != "systemctl --user restart ackbard.service" {
 		t.Fatalf("unexpected systemd commands: %v", cmds)
 	}
 
-	disabled := &daemonServiceRestarter{
-		goos: "linux",
+	linked := &daemonServiceRestarter{
+		goos:             "linux",
+		readinessTimeout: 50 * time.Millisecond,
+		pollInterval:     5 * time.Millisecond,
 		runCmd: func(env []string, name string, args ...string) ([]byte, error) {
-			return nil, errors.New("disabled")
+			if len(args) >= 2 && args[1] == "is-enabled" {
+				return []byte("linked\n"), errors.New("exit status 1")
+			}
+			return nil, nil
 		},
 		probePort: func(addr string, timeout time.Duration) error {
 			return nil
 		},
 	}
-	if m, r := disabled.restart(); m || r {
-		t.Fatalf("expected (false, false) when systemd service is disabled, got (%v, %v)", m, r)
+	if m, r, lErr := linked.restart(); !m || !r || lErr != nil {
+		t.Fatalf("expected dotfile-linked systemd unit to be treated as managed, got (%v, %v, %v)", m, r, lErr)
+	}
+
+	activating := &daemonServiceRestarter{
+		goos:             "linux",
+		readinessTimeout: 50 * time.Millisecond,
+		pollInterval:     5 * time.Millisecond,
+		runCmd: func(env []string, name string, args ...string) ([]byte, error) {
+			if len(args) >= 2 && args[1] == "is-enabled" {
+				return []byte("disabled\n"), errors.New("exit status 1")
+			}
+			if len(args) >= 2 && args[1] == "is-active" {
+				return []byte("activating\n"), errors.New("exit status 3")
+			}
+			return nil, nil
+		},
+		probePort: func(addr string, timeout time.Duration) error {
+			return nil
+		},
+	}
+	if m, r, aErr := activating.restart(); !m || !r || aErr != nil {
+		t.Fatalf("expected activating systemd unit to be treated as managed, got (%v, %v, %v)", m, r, aErr)
+	}
+
+	disabled := &daemonServiceRestarter{
+		goos: "linux",
+		runCmd: func(env []string, name string, args ...string) ([]byte, error) {
+			if len(args) >= 2 && args[1] == "is-active" {
+				return []byte("inactive\n"), errors.New("exit status 3")
+			}
+			return []byte("disabled\n"), errors.New("exit status 1")
+		},
+		probePort: func(addr string, timeout time.Duration) error {
+			return nil
+		},
+	}
+	if m, r, dErr := disabled.restart(); m || r || dErr != nil {
+		t.Fatalf("expected (false, false, nil) when systemd service is disabled and inactive, got (%v, %v, %v)", m, r, dErr)
 	}
 }

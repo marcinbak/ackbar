@@ -202,7 +202,7 @@ func ensureDaemonRunning() {
 
 	fmt.Println("🚀 Local ackbard daemon starting in background...")
 
-	managed, ready := tryRestartManagedDaemonService()
+	managed, ready, restartErr := tryRestartManagedDaemonService()
 	if !managed {
 		home, _ := os.UserHomeDir()
 		ackbardBin := "ackbard"
@@ -220,6 +220,9 @@ func ensureDaemonRunning() {
 			cmdRun := exec.Command("go", goArgs...)
 			_ = cmdRun.Start()
 		}
+	} else if restartErr != nil {
+		fmt.Fprintf(os.Stderr, "⚠️ Managed ackbard service restart failed: %v\n", restartErr)
+		return
 	} else if !ready {
 		fmt.Println("⚠️ Managed ackbard service (launchd/systemd) is still starting on 127.0.0.1:7777...")
 	}
@@ -1103,7 +1106,7 @@ func runUpdateCmd(args []string) {
 		}
 
 		time.Sleep(400 * time.Millisecond)
-		managed, ready := tryRestartManagedDaemonService()
+		managed, ready, restartErr := tryRestartManagedDaemonService()
 		if !managed {
 			home, _ := os.UserHomeDir()
 			ackbardBin := ""
@@ -1117,6 +1120,9 @@ func runUpdateCmd(args []string) {
 			}
 			args := buildDaemonRestartArgs(home, runningHost, runningDisplayName)
 			_ = exec.Command(ackbardBin, args...).Start()
+		} else if restartErr != nil {
+			fmt.Fprintf(os.Stderr, "⚠️ Managed ackbard service restart failed: %v\n", restartErr)
+			os.Exit(1)
 		} else if !ready {
 			fmt.Println("⚠️ Managed ackbard service (launchd/systemd) is still starting on 127.0.0.1:7777...")
 		}
