@@ -266,9 +266,9 @@ The SQLite database (`~/.config/ackbar/ackbard.db`) uses CGO-free pure Go SQLite
 ## 6. Service Management (launchd & systemd)
 
 ### macOS (`launchd`)
-* **LaunchAgent (`com.marcinbak.ackbard`):** Restart in-place via `launchctl kickstart -k gui/$(id -u)/com.marcinbak.ackbard`.
+* **LaunchAgent (`com.marcinbak.ackbard`):** Restart via `launchctl kickstart -k gui/$(id -u)/com.marcinbak.ackbard` (falls back to `user/$(id -u)` over headless SSH).
 * **Homebrew (`homebrew.mxcl.ackbar`):** Restart managed formula service via `brew services restart ackbar`.
-* **Port `:7777` Ownership:** Never run `ackbard &` manually while `launchd` `KeepAlive` supervises `ackbard`.
+* **Port `:7777` Ownership:** [`service_restart.go`](../cmd/ackbar/service_restart.go) and [`daemon_restart.go`](../internal/daemon/daemon_restart.go) omit `nohup` fallbacks when managed; never run `ackbard &` under `launchd`/`systemd`.
 
 ### Linux (`systemd`)
 
@@ -295,6 +295,8 @@ WantedBy=default.target
 ```
 
 > **Process Isolation:** `KillMode=process` ensures `systemctl --user restart ackbard` terminates only the daemon process. Detached headless workers continue running and re-attach upon daemon restart.
+
+* **Unit Detection:** [`service_restart.go`](../cmd/ackbar/service_restart.go) and [`daemon_restart.go`](../internal/daemon/daemon_restart.go) treat `enabled*`, dotfile-`linked*`, `static`, and `active`/`activating`/`reloading` `ackbard.service` units as managed.
 
 ### Commands:
 ```bash
