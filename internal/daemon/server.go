@@ -1071,12 +1071,15 @@ func (s *Server) resumeInterruptedHeadlessSessions(ctx context.Context) {
 		if err != nil || sess == nil || sess.EngineType != EngineHeadless || sess.TmuxName != "" || s.headless.IsRunning(sess.ID) {
 			continue
 		}
+		if s.headless.IsQueuePaused(sess.ID) {
+			continue
+		}
+		if dispatched, dErr := s.headless.DispatchNextQueuedPrompt(ctx, sess); dispatched || dErr != nil {
+			continue
+		}
 
 		resumePrompt := ""
-		if queued := s.headless.DequeuePrompt(sess.ID); queued != nil {
-			resumePrompt = queued.Text
-			s.headless.EmitQueueUpdate(sess.ID)
-		} else if hasConversationOnDisk(sess, home, s.db) {
+		if hasConversationOnDisk(sess, home, s.db) {
 			resumePrompt = "Continue from where you left off."
 		} else if sess.LastPrompt != "" {
 			resumePrompt = sess.LastPrompt
@@ -1100,10 +1103,7 @@ func (s *Server) resumeInterruptedHeadlessSessions(ctx context.Context) {
 				continue
 			}
 			if sess.State == StateIdle && !s.headless.IsRunning(sess.ID) && !s.headless.IsQueuePaused(sess.ID) {
-				if queued := s.headless.DequeuePrompt(sess.ID); queued != nil {
-					s.headless.EmitQueueUpdate(sess.ID)
-					_ = s.headless.RunTurn(ctx, sess, queued.Text)
-				}
+				_, _ = s.headless.DispatchNextQueuedPrompt(ctx, sess)
 			}
 		}
 	}
@@ -1163,18 +1163,24 @@ func (s *Server) processDueScheduledPrompts(ctx context.Context) {
 
 		if sess.EngineType == EngineHeadless {
 			if !s.headless.IsRunning(sess.ID) && !s.headless.IsQueuePaused(sess.ID) {
-				popped := s.headless.DequeuePrompt(sess.ID)
-				if popped != nil {
-					s.headless.EmitQueueUpdate(sess.ID)
-					go s.headless.RunTurn(context.Background(), sess, popped.Text)
+				if claimed := s.headless.ClaimReadyPrompt(sess.ID); claimed != nil {
+					go func(targetSess *Session, qItem *PromptQueueItem) {
+						if err := s.headless.RunTurn(context.Background(), targetSess, qItem.Text); err != nil {
+							s.headless.AbortPromptDispatch(qItem.ID)
+							return
+						}
+						s.headless.CommitPromptQueueItem(targetSess.ID, qItem.ID)
+					}(sess, claimed)
 				}
 			}
 		} else if sess.EngineType == EngineTmux || sess.TmuxName != "" {
-			popped := s.headless.DequeuePrompt(sess.ID)
-			if popped != nil {
-				s.headless.EmitQueueUpdate(sess.ID)
-				if sess.TmuxName != "" {
-					_ = tmux.SendInput(ctx, sess.TmuxName, popped.Text, true)
+			if sess.TmuxName != "" {
+				if claimed := s.headless.ClaimReadyPrompt(sess.ID); claimed != nil {
+					if err := tmux.SendInput(ctx, sess.TmuxName, claimed.Text, true); err != nil {
+						s.headless.AbortPromptDispatch(claimed.ID)
+						continue
+					}
+					s.headless.CommitPromptQueueItem(sess.ID, claimed.ID)
 					sess.State = StateWorking
 					sess.Activity = "Processing scheduled prompt"
 					sess.LastEventAt = time.Now()

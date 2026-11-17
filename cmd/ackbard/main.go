@@ -103,13 +103,18 @@ func main() {
 		defer logCloser.Close()
 	}
 
+	homeDir, homeErr := os.UserHomeDir()
 	dbPath := *dbPathFlag
 	if dbPath == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			log.Fatalf("Failed to retrieve user home directory: %v", err)
+		if homeErr != nil {
+			log.Fatalf("Failed to retrieve user home directory: %v", homeErr)
 		}
-		dbPath = filepath.Join(home, ".config", "ackbar", "ackbard.db")
+		dbPath = filepath.Join(homeDir, ".config", "ackbar", "ackbard.db")
+	}
+	if homeErr == nil && homeDir != "" {
+		if _, isoErr := daemon.EnsureServiceProcessIsolation(homeDir); isoErr != nil {
+			log.Printf("Warning: service process isolation check failed: %v", isoErr)
+		}
 	}
 
 	log.Printf("Starting Ackbar Daemon (ackbard) v%s...", version.Version)

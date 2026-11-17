@@ -523,7 +523,11 @@ func (s *Server) resolveOrAdoptHookSession(event *Event, host, sessionID, accoun
 
 func (s *Server) updateHookSessionMetadataAndTitle(sess *Session, event *Event) {
 	if event.Cwd != "" {
-		if sess.Cwd == "" || !sameOrRelatedDir(sess.Cwd, event.Cwd) || len(event.Cwd) < len(sess.Cwd) {
+		if sess.EngineType == EngineHeadless && sess.TmuxName == "" {
+			if sess.Cwd == "" {
+				sess.Cwd = event.Cwd
+			}
+		} else if sess.Cwd == "" || !sameOrRelatedDir(sess.Cwd, event.Cwd) || len(event.Cwd) < len(sess.Cwd) {
 			sess.Cwd = event.Cwd
 		}
 	}

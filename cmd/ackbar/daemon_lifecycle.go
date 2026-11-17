@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -15,6 +14,12 @@ import (
 
 	"ackbar/internal/daemon"
 	"ackbar/internal/version"
+)
+
+const (
+	localDaemonBaseURL     = "http://127.0.0.1:7777"
+	daemonProbeTimeout     = 2 * time.Second
+	daemonReadyWaitTimeout = 5 * time.Second
 )
 
 var validHostNameRegex = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$`)
@@ -72,9 +77,93 @@ func resolveBrewExecutable() string {
 	return ""
 }
 
+func localDaemonAuthToken() string {
+	return strings.TrimSpace(os.Getenv("ACKBAR_TOKEN"))
+}
+
+func newDaemonRequest(method, urlStr, token string) (*http.Request, error) {
+	req, err := http.NewRequest(method, urlStr, nil)
+	if err != nil {
+		return nil, err
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	return req, nil
+}
+
+func probeDaemonVersion(client *http.Client, baseURL, token string) (ver, host, disp string, ok bool) {
+	req, err := newDaemonRequest(http.MethodGet, strings.TrimRight(baseURL, "/")+"/v1/version", token)
+	if err != nil {
+		return "", "", "", false
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", "", "", false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", "", "", false
+	}
+	var verRes map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&verRes); err != nil {
+		return "", "", "", false
+	}
+	runningVer, _ := verRes["version"].(string)
+	if h, ok := verRes["host"].(string); ok && validHostNameRegex.MatchString(h) {
+		host = h
+	}
+	if d, ok := verRes["display_name"].(string); ok && isValidDisplayName(d) {
+		disp = d
+	}
+	return runningVer, host, disp, runningVer != ""
+}
+
+func requestDaemonDrainShutdown(client *http.Client, baseURL, token string) (deferred bool, unauthorized bool, err error) {
+	req, err := newDaemonRequest(http.MethodPost, strings.TrimRight(baseURL, "/")+"/v1/shutdown?drain=true", token)
+	if err != nil {
+		return false, false, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return false, false, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return false, true, nil
+	}
+	if resp.StatusCode == http.StatusOK {
+		var sData struct {
+			RestartDeferred bool `json:"restart_deferred"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&sData); err == nil {
+			return sData.RestartDeferred, false, nil
+		}
+	}
+	return false, false, nil
+}
+
+func waitForDaemonReady(baseURL, token, expectedVersion string, timeout time.Duration) bool {
+	client := &http.Client{Timeout: daemonProbeTimeout}
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if ver, _, _, ok := probeDaemonVersion(client, baseURL, token); ok {
+			if expectedVersion == "" || ver == expectedVersion {
+				return true
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return false
+}
+
 func tryRestartDarwinLaunchdService() bool {
 	if runtime.GOOS != "darwin" {
 		return false
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		_, _ = daemon.EnsureServiceProcessIsolation(home)
 	}
 	out, err := exec.Command("launchctl", "list").Output()
 	if err != nil {
@@ -98,89 +187,97 @@ func tryRestartDarwinLaunchdService() bool {
 	if !started {
 		return false
 	}
-	deadline := time.Now().Add(800 * time.Millisecond)
-	for time.Now().Before(deadline) {
-		time.Sleep(100 * time.Millisecond)
-		if conn, err := net.DialTimeout("tcp", "127.0.0.1:7777", 100*time.Millisecond); err == nil {
-			_ = conn.Close()
-			return true
+	return waitForDaemonReady(localDaemonBaseURL, localDaemonAuthToken(), "", daemonReadyWaitTimeout)
+}
+
+func tryRestartLinuxSystemdService() bool {
+	if runtime.GOOS != "linux" {
+		return false
+	}
+	home, _ := os.UserHomeDir()
+	if home != "" {
+		_, _ = daemon.EnsureServiceProcessIsolation(home)
+	}
+	if _, err := exec.LookPath("systemctl"); err != nil {
+		return false
+	}
+	enabled := exec.Command("systemctl", "--user", "is-enabled", "ackbard.service").Run() == nil
+	active := exec.Command("systemctl", "--user", "is-active", "ackbard.service").Run() == nil
+	unitExists := false
+	if home != "" {
+		if _, err := os.Lstat(filepath.Join(home, ".config", "systemd", "user", "ackbard.service")); err == nil {
+			unitExists = true
 		}
 	}
-	return false
+	if !enabled && !active && !unitExists {
+		return false
+	}
+	if err := exec.Command("systemctl", "--user", "restart", "ackbard.service").Run(); err != nil {
+		return false
+	}
+	return waitForDaemonReady(localDaemonBaseURL, localDaemonAuthToken(), "", daemonReadyWaitTimeout)
+}
+
+func tryRestartManagedDaemonService() bool {
+	switch runtime.GOOS {
+	case "darwin":
+		return tryRestartDarwinLaunchdService()
+	case "linux":
+		return tryRestartLinuxSystemdService()
+	default:
+		return false
+	}
+}
+
+func spawnLocalAckbardDaemon(runningHost, runningDisplayName string) {
+	home, _ := os.UserHomeDir()
+	ackbardBin := "ackbard"
+	if home != "" {
+		localBin := filepath.Join(home, ".local", "bin", "ackbard")
+		if _, err := os.Stat(localBin); err == nil {
+			ackbardBin = localBin
+		}
+	}
+	args := buildDaemonRestartArgs(home, runningHost, runningDisplayName)
+	cmd := exec.Command(ackbardBin, args...)
+	if err := cmd.Start(); err != nil {
+		goArgs := append([]string{"run", "./cmd/ackbard"}, args...)
+		cmdRun := exec.Command("go", goArgs...)
+		_ = cmdRun.Start()
+	}
 }
 
 func ensureDaemonRunning() {
-	token := os.Getenv("ACKBAR_TOKEN")
-	httpClient := &http.Client{Timeout: 500 * time.Millisecond}
-	vReq, _ := http.NewRequest(http.MethodGet, "http://127.0.0.1:7777/v1/version", nil)
-	if token != "" {
-		vReq.Header.Set("Authorization", "Bearer "+token)
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		_, _ = daemon.EnsureServiceProcessIsolation(home)
 	}
-	resp, err := httpClient.Do(vReq)
-	var runningHost string
-	var runningDisplayName string
-	if err == nil {
-		var verRes map[string]interface{}
-		if err := json.NewDecoder(resp.Body).Decode(&verRes); err == nil {
-			resp.Body.Close()
-			runningVer, _ := verRes["version"].(string)
-			if h, ok := verRes["host"].(string); ok && validHostNameRegex.MatchString(h) {
-				runningHost = h
-			}
-			if d, ok := verRes["display_name"].(string); ok && isValidDisplayName(d) {
-				runningDisplayName = d
-			}
-			if runningVer == version.Version {
-				return
-			}
-			fmt.Printf("🔄 Outdated daemon detected (running v%s, client v%s). Restarting daemon...\n", runningVer, version.Version)
-			sReq, _ := http.NewRequest(http.MethodPost, "http://127.0.0.1:7777/v1/shutdown", nil)
-			sReq.Header.Set("Content-Type", "application/json")
-			if token != "" {
-				sReq.Header.Set("Authorization", "Bearer "+token)
-			}
-			_, _ = httpClient.Do(sReq)
-			time.Sleep(300 * time.Millisecond)
-		} else {
-			resp.Body.Close()
+	ensureDaemonRunningWith(localDaemonBaseURL, localDaemonAuthToken(), version.Version, tryRestartManagedDaemonService, spawnLocalAckbardDaemon)
+}
+
+func ensureDaemonRunningWith(baseURL, token, targetVersion string, restartManaged func() bool, spawnFn func(runningHost, runningDisplayName string)) {
+	httpClient := &http.Client{Timeout: daemonProbeTimeout}
+	runningVer, runningHost, runningDisplayName, ok := probeDaemonVersion(httpClient, baseURL, token)
+	if ok {
+		if runningVer == targetVersion {
+			return
 		}
+		fmt.Fprintf(os.Stderr, "🔄 Outdated daemon detected (running v%s, client v%s). Restarting daemon...\n", runningVer, targetVersion)
+		deferred, unauth, _ := requestDaemonDrainShutdown(httpClient, baseURL, token)
+		if unauth {
+			fmt.Fprintln(os.Stderr, "⚠️ Local ackbard requires ACKBAR_TOKEN to restart automatically; restart ackbard manually.")
+			return
+		}
+		if deferred {
+			fmt.Fprintln(os.Stderr, "⏳ Active headless session turn(s) in progress — ackbard will restart automatically once the current turn finishes.")
+			return
+		}
+		time.Sleep(300 * time.Millisecond)
 	}
 
-	fmt.Println("🚀 Local ackbard daemon starting in background...")
+	fmt.Fprintln(os.Stderr, "🚀 Local ackbard daemon starting in background...")
 
-	if !tryRestartDarwinLaunchdService() {
-		home, _ := os.UserHomeDir()
-		ackbardBin := "ackbard"
-		if home != "" {
-			localBin := filepath.Join(home, ".local", "bin", "ackbard")
-			if _, err := os.Stat(localBin); err == nil {
-				ackbardBin = localBin
-			}
-		}
-
-		args := buildDaemonRestartArgs(home, runningHost, runningDisplayName)
-		cmd := exec.Command(ackbardBin, args...)
-		if err := cmd.Start(); err != nil {
-			goArgs := append([]string{"run", "./cmd/ackbard"}, args...)
-			cmdRun := exec.Command("go", goArgs...)
-			_ = cmdRun.Start()
-		}
-	}
-
-	// Poll up to 3 seconds for daemon port 7777 to become ready
-	for i := 0; i < 30; i++ {
-		time.Sleep(100 * time.Millisecond)
-		resp, err := httpClient.Get("http://127.0.0.1:7777/v1/version")
-		if err == nil {
-			var verRes map[string]string
-			if err := json.NewDecoder(resp.Body).Decode(&verRes); err == nil {
-				resp.Body.Close()
-				if verRes["version"] == version.Version {
-					return
-				}
-			} else {
-				resp.Body.Close()
-			}
-		}
+	if !restartManaged() {
+		spawnFn(runningHost, runningDisplayName)
+		_ = waitForDaemonReady(baseURL, token, targetVersion, 3*time.Second)
 	}
 }

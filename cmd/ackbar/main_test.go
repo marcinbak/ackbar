@@ -7,7 +7,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"ackbar/internal/daemon"
 	"ackbar/internal/testutil"
@@ -158,4 +160,96 @@ func TestDaemonRestartValidationAndArgs(t *testing.T) {
 		t.Fatalf("expected state %v to remain unaltered, got %v", daemon.StateWorking, rawState)
 	}
 
+}
+
+func TestEnsureDaemonRunningWith_DrainDeferredAndAuthHeaders(t *testing.T) {
+	if daemonProbeTimeout != 2*time.Second {
+		t.Fatalf("expected daemonProbeTimeout == 2s, got %v", daemonProbeTimeout)
+	}
+	if daemonReadyWaitTimeout != 5*time.Second {
+		t.Fatalf("expected daemonReadyWaitTimeout == 5s, got %v", daemonReadyWaitTimeout)
+	}
+
+	var versionAuthOK atomic.Bool
+	var shutdownAuthOK atomic.Bool
+	var shutdownDrainOK atomic.Bool
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/version":
+			if r.Header.Get("Authorization") == "Bearer test-secret-tok" {
+				versionAuthOK.Store(true)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"version": "19990101.01",
+				"host":    "macmini",
+			})
+		case "/v1/shutdown":
+			if r.Header.Get("Authorization") == "Bearer test-secret-tok" {
+				shutdownAuthOK.Store(true)
+			}
+			if r.URL.Query().Get("drain") == "true" {
+				shutdownDrainOK.Store(true)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"status":           "draining",
+				"restart_deferred": true,
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+
+	managedCalled := false
+	spawnCalled := false
+	ensureDaemonRunningWith(ts.URL, "test-secret-tok", "20990101.01", func() bool {
+		managedCalled = true
+		return false
+	}, func(_, _ string) {
+		spawnCalled = true
+	})
+
+	if !versionAuthOK.Load() {
+		t.Errorf("expected Authorization: Bearer header on /v1/version probe")
+	}
+	if !shutdownAuthOK.Load() {
+		t.Errorf("expected Authorization: Bearer header on /v1/shutdown?drain=true")
+	}
+	if !shutdownDrainOK.Load() {
+		t.Errorf("expected /v1/shutdown?drain=true query parameter")
+	}
+	if managedCalled || spawnCalled {
+		t.Fatalf("expected restartManaged and spawnFn NOT called when restart_deferred=true (managed=%v spawn=%v)", managedCalled, spawnCalled)
+	}
+
+	// Also verify non-deferred mismatch proceeds to managed restart (and fallback spawn)
+	var versionCount atomic.Int32
+	ts2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/version":
+			if versionCount.Add(1) == 1 {
+				_ = json.NewEncoder(w).Encode(map[string]string{"version": "19990101.01", "host": "macmini"})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]string{"version": "20990101.01", "host": "macmini"})
+		case "/v1/shutdown":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"status": "shutting_down", "restart_deferred": false})
+		}
+	}))
+	defer ts2.Close()
+
+	managedCalled2 := false
+	spawnCalled2 := false
+	ensureDaemonRunningWith(ts2.URL, "test-secret-tok", "20990101.01", func() bool {
+		managedCalled2 = true
+		return false
+	}, func(host, _ string) {
+		spawnCalled2 = host == "macmini"
+	})
+	if !managedCalled2 || !spawnCalled2 {
+		t.Fatalf("expected managedCalled2=true and spawnCalled2=true on non-deferred restart, got managed=%v spawn=%v", managedCalled2, spawnCalled2)
+	}
 }

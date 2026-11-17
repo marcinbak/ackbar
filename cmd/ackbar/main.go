@@ -146,6 +146,9 @@ func runSetupHooks() error {
 	if err != nil {
 		return fmt.Errorf("failed to get user home: %w", err)
 	}
+	if _, isoErr := daemon.EnsureServiceProcessIsolation(home); isoErr != nil {
+		fmt.Fprintf(os.Stderr, "⚠️ Warning: service process isolation check failed: %v\n", isoErr)
+	}
 
 	// 1. Build & install ackbar-hook and ackbard binaries to ~/.local/bin
 	localBin := filepath.Join(home, ".local", "bin")
@@ -932,58 +935,27 @@ func runUpdateCmd(args []string) {
 		}
 	}
 
-	// If local ackbard is currently running, restart it with the newly installed binary
-	token := os.Getenv("ACKBAR_TOKEN")
-	httpClient := &http.Client{Timeout: 5 * time.Second}
-	vReq, _ := http.NewRequest(http.MethodGet, "http://127.0.0.1:7777/v1/version", nil)
-	if token != "" {
-		vReq.Header.Set("Authorization", "Bearer "+token)
+	if home, hErr := os.UserHomeDir(); hErr == nil && home != "" {
+		_, _ = daemon.EnsureServiceProcessIsolation(home)
 	}
-	var runningHost string
-	var runningDisplayName string
-	if resp, err := httpClient.Do(vReq); err == nil {
-		var verRes map[string]interface{}
-		if err := json.NewDecoder(resp.Body).Decode(&verRes); err == nil {
-			if h, ok := verRes["host"].(string); ok && validHostNameRegex.MatchString(h) {
-				runningHost = h
-			}
-			if d, ok := verRes["display_name"].(string); ok && isValidDisplayName(d) {
-				runningDisplayName = d
-			}
-		}
-		_ = resp.Body.Close()
-		fmt.Printf("🔄 Restarting local ackbard daemon...\n")
-		sReq, _ := http.NewRequest(http.MethodPost, "http://127.0.0.1:7777/v1/shutdown?drain=true", nil)
-		sReq.Header.Set("Content-Type", "application/json")
-		if token != "" {
-			sReq.Header.Set("Authorization", "Bearer "+token)
-		}
-		shutdownResp, sErr := httpClient.Do(sReq)
-		if sErr == nil && shutdownResp != nil {
-			if shutdownResp.StatusCode == http.StatusUnauthorized || shutdownResp.StatusCode == http.StatusForbidden {
-				_ = shutdownResp.Body.Close()
-				fmt.Printf("⚠️ Local ackbard requires ACKBAR_TOKEN to restart automatically; restart ackbard manually.\n")
-				return
-			}
-			restartDeferred := false
-			if shutdownResp.StatusCode == http.StatusOK {
-				var sData struct {
-					RestartDeferred bool `json:"restart_deferred"`
-				}
-				if err := json.NewDecoder(shutdownResp.Body).Decode(&sData); err == nil {
-					restartDeferred = sData.RestartDeferred
-				}
-			}
-			_ = shutdownResp.Body.Close()
 
-			if restartDeferred {
-				fmt.Printf("⏳ Active headless session turn(s) in progress — ackbard will restart automatically once the current turn finishes.\n")
-				return
-			}
+	// If local ackbard is currently running, restart it with the newly installed binary
+	token := localDaemonAuthToken()
+	httpClient := &http.Client{Timeout: 5 * time.Second}
+	if _, runningHost, runningDisplayName, ok := probeDaemonVersion(httpClient, localDaemonBaseURL, token); ok {
+		fmt.Printf("🔄 Restarting local ackbard daemon...\n")
+		deferred, unauth, _ := requestDaemonDrainShutdown(httpClient, localDaemonBaseURL, token)
+		if unauth {
+			fmt.Printf("⚠️ Local ackbard requires ACKBAR_TOKEN to restart automatically; restart ackbard manually.\n")
+			return
+		}
+		if deferred {
+			fmt.Printf("⏳ Active headless session turn(s) in progress — ackbard will restart automatically once the current turn finishes.\n")
+			return
 		}
 
 		time.Sleep(400 * time.Millisecond)
-		if !tryRestartDarwinLaunchdService() {
+		if !tryRestartManagedDaemonService() {
 			home, _ := os.UserHomeDir()
 			ackbardBin := ""
 			if res != nil && res.TargetDir != "" {

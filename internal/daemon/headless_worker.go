@@ -95,6 +95,29 @@ func (g *workerChildGen) shutdown(grace time.Duration) {
 	}
 }
 
+func computeRateLimitIdleHold(rateLimitedUntil, enteredAt, now time.Time) (time.Duration, bool) {
+	if rateLimitedUntil.IsZero() {
+		return 0, false
+	}
+	base := enteredAt
+	if base.IsZero() {
+		base = now
+	}
+	maxDeadline := base.Add(6 * time.Hour)
+	holdUntil := rateLimitedUntil.Add(5 * time.Minute)
+	if holdUntil.After(maxDeadline) {
+		holdUntil = maxDeadline
+	}
+	if now.Before(holdUntil) {
+		wait := holdUntil.Sub(now)
+		if wait < time.Millisecond {
+			wait = time.Millisecond
+		}
+		return wait, true
+	}
+	return 0, false
+}
+
 func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string) int {
 	var workerMeta *SessionWorkerMeta
 	var initialTMeta *TurnSpoolMeta
@@ -157,6 +180,8 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string) int {
 	completedTurns := make(map[string]string)
 	var subWG sync.WaitGroup
 	var idleTimer *time.Timer
+	var rateLimitedUntil time.Time
+	var rateLimitEnteredAt time.Time
 
 	getChildPGIDLocked := func() int {
 		if curChild != nil {
@@ -210,6 +235,16 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string) int {
 			stateMu.Unlock()
 			return
 		}
+		if wait, hold := computeRateLimitIdleHold(rateLimitedUntil, rateLimitEnteredAt, time.Now()); hold {
+			if idleTimer == nil {
+				idleTimer = time.AfterFunc(wait, onIdleTTLExpired)
+			} else {
+				idleTimer.Reset(wait)
+			}
+			stateMu.Unlock()
+			return
+		}
+		rateLimitedUntil, rateLimitEnteredAt = time.Time{}, time.Time{}
 		state, workerMeta.State = "shutting_down", "shutting_down"
 		saveWorkerMeta()
 		stateMu.Unlock()
@@ -280,6 +315,8 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string) int {
 			stateMu.Unlock()
 
 			status := "completed"
+			var blockKind BlockKind
+			var blockResetAt time.Time
 			if wasCancelled {
 				_, _ = turn.spool.Append(ChatStreamEvent{SessionID: turn.meta.SessionID, TurnID: turn.meta.TurnID, Type: "turn_cancelled", Text: "Turn was cancelled by user."})
 				status = "cancelled"
@@ -288,6 +325,10 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string) int {
 					if failBlock := detectTurnFailureBlock(workerMeta.Agent, strings.TrimSpace(lastTurnText+"\n"+stderrTailBuf.String())); failBlock != nil {
 						_, _ = turn.spool.Append(ChatStreamEvent{SessionID: turn.meta.SessionID, TurnID: turn.meta.TurnID, Type: "interactive_block", Blocked: failBlock})
 						hadBlock, turn.hadBlock = true, true
+						blockKind = failBlock.Kind
+						if failBlock.ResetAt != nil {
+							blockResetAt = *failBlock.ResetAt
+						}
 					}
 				}
 				if !hadBlock {
@@ -300,7 +341,8 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string) int {
 				}
 			}
 
-			if (hadBlock || status == "failed") && !wasCancelled {
+			keepWarmForRateLimit := hadBlock && blockKind == BlockRateLimit && !wasCancelled && workerMetaPath != "" && idleTTL > 0
+			if ((hadBlock && !keepWarmForRateLimit) || status == "failed") && !wasCancelled {
 				stateMu.Lock()
 				if curChild != gen || gen.replaced || state == "shutting_down" || state == "exited" {
 					stateMu.Unlock()
@@ -340,6 +382,16 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string) int {
 				return
 			}
 
+			if keepWarmForRateLimit {
+				rateLimitEnteredAt = time.Now()
+				if !blockResetAt.IsZero() {
+					rateLimitedUntil = blockResetAt
+				} else {
+					rateLimitedUntil = time.Time{}
+				}
+			} else {
+				rateLimitedUntil, rateLimitEnteredAt = time.Time{}, time.Time{}
+			}
 			stderrTailBuf.Reset()
 			state, workerMeta.State = "idle_warm", "idle_warm"
 			workerMeta.ActiveTurnID, workerMeta.ActiveMetaPath = "", ""
@@ -497,6 +549,7 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string) int {
 		if idleTimer != nil {
 			idleTimer.Stop()
 		}
+		rateLimitedUntil, rateLimitEnteredAt = time.Time{}, time.Time{}
 		state, workerMeta.State = "running_turn", "running_turn"
 		workerMeta.ActiveTurnID, workerMeta.ActiveMetaPath, workerMeta.UpdatedAt = tMeta.TurnID, tMetaPath, time.Now().UTC()
 		saveWorkerMeta()

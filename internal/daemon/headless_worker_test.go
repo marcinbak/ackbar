@@ -230,16 +230,38 @@ printf '{"type":"result","result":"offline finish"}\n'
 	if slices.Contains(interrupted, sessDoneOffline.ID) {
 		t.Fatalf("offline-completed session must NOT remain in interruptedHeadlessIDs: %v", interrupted)
 	}
-	if !slices.Contains(interrupted, sessDeadWorker.ID) {
-		t.Fatalf("dead-worker session MUST remain in interruptedHeadlessIDs for resume fallback: %v", interrupted)
+	if slices.Contains(interrupted, sessDeadWorker.ID) {
+		t.Fatalf("crashed dead-worker session must be finalized with preserved spool and cleared from interruptedHeadlessIDs: %v", interrupted)
 	}
 	sOffline, _ := db2.GetSession(sessDoneOffline.ID)
 	mOffline, _ := ReadTurnSpoolMeta(offlineMeta.MetaPath)
 	if sOffline == nil || sOffline.State != StateIdle || mOffline == nil || !mOffline.FinalizedByDaemon {
 		t.Fatalf("expected offline-completed session finalized to StateIdle, got sess=%+v meta=%+v", sOffline, mOffline)
 	}
-	if fileExists(deadMetaPath) || fileExists(deadSpoolPath) {
-		t.Fatalf("expected dead worker spool artifacts to be cleaned up")
+	if !fileExists(deadMetaPath) || !fileExists(deadSpoolPath) {
+		t.Fatalf("expected crashed worker spool artifacts to be preserved on disk")
+	}
+	deadMetaAfter, err := ReadTurnSpoolMeta(deadMetaPath)
+	if err != nil || deadMetaAfter == nil || deadMetaAfter.Status != "failed" || deadMetaAfter.ExitCode != -1 || !deadMetaAfter.FinalizedByDaemon {
+		t.Fatalf("expected crashed dead-turn meta finalized as failed/-1, got %+v (err=%v)", deadMetaAfter, err)
+	}
+	deadEvts, _, _ := ReadTurnSpoolAfter(deadSpoolPath, 0)
+	foundCrashErr := false
+	for _, ev := range deadEvts {
+		if ev.Type == "error" && ev.IsError && ev.Text == crashedWorkerErrorText {
+			foundCrashErr = true
+			break
+		}
+	}
+	if !foundCrashErr {
+		t.Fatalf("expected appended crashed-worker error event in spool, got %+v", deadEvts)
+	}
+	if !s2.headless.IsQueuePaused(sessDeadWorker.ID) {
+		t.Fatalf("expected queue paused on crashed dead-worker session")
+	}
+	sDead, _ := db2.GetSession(sessDeadWorker.ID)
+	if sDead == nil || sDead.State != StateIdle || sDead.PID != 0 || sDead.Blocked != nil || sDead.Activity != "Turn error: "+crashedWorkerErrorText {
+		t.Fatalf("unexpected crashed dead-worker session state: %+v", sDead)
 	}
 }
 

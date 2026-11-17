@@ -85,6 +85,7 @@ type HeadlessRunner struct {
 	sleepInhibitor         *SleepInhibitor
 	subs                   map[string][]chan ChatStreamEvent
 	queues                 map[string][]*PromptQueueItem // sessionID -> queued prompts
+	inflightDispatches     map[string]bool               // itemID -> claimed for in-flight dispatch
 	paused                 map[string]bool               // sessionID -> is queue paused
 	interactiveBlocks      map[string]*Blocked           // sessionID -> pending interactive Blocked struct
 	respondedWhileStopping map[string]bool               // sessionID -> response arrived while stopping
@@ -111,6 +112,7 @@ func NewHeadlessRunner(db *DB, broadcast func(s *Session)) *HeadlessRunner {
 		sleepInhibitor:         NewSleepInhibitor(),
 		subs:                   make(map[string][]chan ChatStreamEvent),
 		queues:                 make(map[string][]*PromptQueueItem),
+		inflightDispatches:     make(map[string]bool),
 		paused:                 make(map[string]bool),
 		interactiveBlocks:      make(map[string]*Blocked),
 		respondedWhileStopping: make(map[string]bool),
@@ -254,11 +256,62 @@ func (h *HeadlessRunner) triggerInteractiveBlock(sessionID string, sess *Session
 // ClearInteractiveBlockAndWait clears interactive blocks for a session and waits for any stopping
 // headless turn to finish so that a newly launched turn does not collide with the previous process.
 func (h *HeadlessRunner) ClearInteractiveBlockAndWait(sessionID string, timeout time.Duration) {
+	if h == nil || sessionID == "" {
+		return
+	}
 	nativeID := ""
 	parts := strings.Split(sessionID, ":")
 	if len(parts) == 3 {
 		nativeID = parts[2]
 	}
+
+	h.mu.RLock()
+	activeBlock := h.interactiveBlocks[sessionID]
+	if activeBlock == nil && nativeID != "" {
+		activeBlock = h.interactiveBlocks[nativeID]
+	}
+	hasActive := h.activeTurns[sessionID] || h.processes[sessionID] != nil
+	if !hasActive && nativeID != "" {
+		hasActive = h.activeTurns[nativeID] || h.processes[nativeID] != nil
+	}
+	metaProbe := h.findSpoolForSessionLocked(sessionID, nativeID)
+	hasWarm := h.warmWorkers[sessionID] != nil
+	if !hasWarm && nativeID != "" {
+		hasWarm = h.warmWorkers[nativeID] != nil
+	}
+	h.mu.RUnlock()
+
+	if !hasActive && metaProbe != nil {
+		if metaProbe.MetaPath != "" {
+			if dm, err := ReadTurnSpoolMeta(metaProbe.MetaPath); err == nil && dm != nil {
+				metaProbe = dm
+			}
+		}
+		if metaProbe.Status == "starting" || metaProbe.Status == "running" {
+			_, hasActive = probeLiveWorker(metaProbe, 0)
+		}
+	}
+	isRateLimit := activeBlock != nil && activeBlock.Kind == BlockRateLimit
+	if !isRateLimit && h.db != nil {
+		if dbSess, err := h.db.GetSession(sessionID); err == nil && dbSess != nil && dbSess.Blocked != nil && dbSess.Blocked.Kind == BlockRateLimit {
+			isRateLimit = true
+		}
+	}
+	if isRateLimit && !hasActive && hasWarm {
+		h.mu.Lock()
+		delete(h.interactiveBlocks, sessionID)
+		if nativeID != "" {
+			delete(h.interactiveBlocks, nativeID)
+			for k := range h.interactiveBlocks {
+				if strings.HasSuffix(k, ":"+nativeID) {
+					delete(h.interactiveBlocks, k)
+				}
+			}
+		}
+		h.mu.Unlock()
+		return
+	}
+
 	h.ShutdownSessionWorker(sessionID, nativeID, timeout)
 
 	h.mu.Lock()
@@ -887,6 +940,9 @@ func (h *HeadlessRunner) DequeuePrompt(sessionID string) *PromptQueueItem {
 	}
 	now := time.Now()
 	for idx, it := range items {
+		if it == nil || h.inflightDispatches[it.ID] {
+			continue
+		}
 		if it.DeliverAt == nil || !it.DeliverAt.After(now) {
 			h.queues[key] = append(items[:idx], items[idx+1:]...)
 			if h.db != nil {
@@ -896,6 +952,126 @@ func (h *HeadlessRunner) DequeuePrompt(sessionID string) *PromptQueueItem {
 		}
 	}
 	return nil
+}
+
+func (h *HeadlessRunner) HasReadyPrompt(sessionID string) bool {
+	if h == nil || sessionID == "" {
+		return false
+	}
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	key := h.resolveQueueKey(sessionID)
+	if h.paused[key] {
+		return false
+	}
+	now := time.Now()
+	for _, it := range h.queues[key] {
+		if it != nil && !h.inflightDispatches[it.ID] && (it.DeliverAt == nil || !it.DeliverAt.After(now)) {
+			return true
+		}
+	}
+	return false
+}
+
+// ClaimReadyPrompt marks the first ready unpaused prompt in-flight without deleting it from memory or SQLite.
+func (h *HeadlessRunner) ClaimReadyPrompt(sessionID string) *PromptQueueItem {
+	if h == nil || sessionID == "" {
+		return nil
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	key := h.resolveQueueKey(sessionID)
+	if h.paused[key] {
+		return nil
+	}
+	now := time.Now()
+	for _, it := range h.queues[key] {
+		if it == nil || h.inflightDispatches[it.ID] {
+			continue
+		}
+		if it.DeliverAt == nil || !it.DeliverAt.After(now) {
+			h.inflightDispatches[it.ID] = true
+			cp := *it
+			return &cp
+		}
+	}
+	return nil
+}
+
+// ClaimPromptByID marks a specific queued item in-flight without deleting it from memory or SQLite.
+func (h *HeadlessRunner) ClaimPromptByID(sessionID, itemID string) *PromptQueueItem {
+	if h == nil || sessionID == "" || itemID == "" {
+		return nil
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	key := h.resolveQueueKey(sessionID)
+	if h.inflightDispatches[itemID] {
+		return nil
+	}
+	for _, it := range h.queues[key] {
+		if it != nil && it.ID == itemID {
+			h.inflightDispatches[itemID] = true
+			cp := *it
+			return &cp
+		}
+	}
+	return nil
+}
+
+// CommitPromptQueueItem removes a previously claimed prompt from memory and SQLite after dispatch succeeds.
+func (h *HeadlessRunner) CommitPromptQueueItem(sessionID, itemID string) {
+	if h == nil || itemID == "" {
+		return
+	}
+	h.mu.Lock()
+	key := h.resolveQueueKey(sessionID)
+	items := h.queues[key]
+	updated := make([]*PromptQueueItem, 0, len(items))
+	for _, it := range items {
+		if it != nil && it.ID != itemID {
+			updated = append(updated, it)
+		}
+	}
+	h.queues[key] = updated
+	delete(h.inflightDispatches, itemID)
+	db := h.db
+	h.mu.Unlock()
+
+	if db != nil {
+		_ = db.DeleteScheduledPrompt(itemID)
+	}
+	h.EmitQueueUpdate(sessionID)
+}
+
+// AbortPromptDispatch releases an in-flight claim so a failed dispatch remains queued and retryable.
+func (h *HeadlessRunner) AbortPromptDispatch(itemID string) {
+	if h == nil || itemID == "" {
+		return
+	}
+	h.mu.Lock()
+	delete(h.inflightDispatches, itemID)
+	h.mu.Unlock()
+}
+
+// DispatchNextQueuedPrompt transactionally claims, starts, and commits the next ready prompt for sess.
+func (h *HeadlessRunner) DispatchNextQueuedPrompt(ctx context.Context, sess *Session) (bool, error) {
+	if h == nil || sess == nil || h.IsRestartPending() || h.IsRunning(sess.ID) {
+		return false, nil
+	}
+	item := h.ClaimReadyPrompt(sess.ID)
+	if item == nil {
+		return false, nil
+	}
+	if err := h.RunTurn(ctx, sess, item.Text); err != nil {
+		h.AbortPromptDispatch(item.ID)
+		return false, err
+	}
+	h.CommitPromptQueueItem(sess.ID, item.ID)
+	return true, nil
 }
 
 // DeletePromptQueueItem removes a specific prompt from the queue by ID
@@ -916,6 +1092,7 @@ func (h *HeadlessRunner) DeletePromptQueueItem(sessionID string, itemID string) 
 	}
 	if found {
 		h.queues[key] = updated
+		delete(h.inflightDispatches, itemID)
 		if h.db != nil {
 			_ = h.db.DeleteScheduledPrompt(itemID)
 		}
@@ -929,6 +1106,11 @@ func (h *HeadlessRunner) ClearPromptQueue(sessionID string) {
 	defer h.mu.Unlock()
 
 	key := h.resolveQueueKey(sessionID)
+	for _, it := range h.queues[key] {
+		if it != nil {
+			delete(h.inflightDispatches, it.ID)
+		}
+	}
 	delete(h.queues, key)
 	delete(h.paused, key)
 	if h.db != nil {
