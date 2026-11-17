@@ -38,7 +38,7 @@ fail the job), `❌ not gated`, or `—` (not run in CI).
 |---|---|---|---|---|
 | install | `go mod tidy && (cd mobile && flutter pub get)` | | ✅ CI | Installs Go module dependencies and Flutter packages. |
 | format | `gofmt -w . && (cd mobile && dart format .)` | | — | Formats all Go files and Dart mobile code. |
-| verify-t0 | `./scripts/verify-t0.sh` | ✅ | — | Canonical T0 gate: version check (✅ CI), gofmt (✅ CI), go vet (—), AGENTS.md <= 160 (—), race tests (✅ CI), native build (✅ CI), darwin/arm64 build (—), web JS tests (—), and conditional mobile gates. |
+| verify-t0 | `./scripts/verify-t0.sh` | ✅ | — | Canonical T0 gate: version check (✅ CI), gofmt (✅ CI), go vet (—), AGENTS.md <= 160 (—), TestMain isolation (—), race tests (✅ CI), native build (✅ CI), darwin/arm64 build (—), web JS tests (—), and conditional mobile gates. |
 | lint | `if [ -n "$(gofmt -l .)" ]; then echo "Unformatted Go code:"; gofmt -l .; exit 1; fi && [ "$(wc -l < AGENTS.md)" -le 160 ] && (cd mobile && dart format --output=none --set-exit-if-changed . && flutter analyze --no-fatal-infos)` | ✅ | — | Go formatting and mobile checks run in CI (✅ CI); AGENTS.md <= 160 is local-only (—). |
 | version check | `./scripts/bump-version.sh --check` | ✅ | ✅ CI | Enforces version bump above `origin/main` and syncs mobile `AppVersion`. |
 | typecheck | `go vet ./... && (cd mobile && flutter analyze --no-fatal-infos)` | ✅ | — | Flutter analyzer runs in CI (✅ CI); go vet is local-only (—). |

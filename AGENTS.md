@@ -52,6 +52,7 @@ Detailed architectural and technical domain documentation is organized in the `d
 │   ├── daemon/         # SQLite DB, modular HTTP server handlers (server_*.go), session_scanner.go, SSE streaming, OAuth broker, and agent capability adapters (agent_*.go)
 │   ├── provider/       # Agent adapters (Claude Code, Codex, Antigravity, Grok, OpenCode)
 │   ├── relay/          # Outbound reverse tunnel server and daemon client
+│   ├── testutil/       # Isolated TestMain HOME/env helper and repo-wide AST gate
 │   ├── tmux/           # Tmux process supervision wrapper (Spawn, Kill, GetPID)
 │   └── version/        # Version source of truth (VERSION file & go:embed)
 ├── web/                # Embedded Web GUI static assets, xterm multiplexer, and fs.FS
@@ -73,6 +74,7 @@ Detailed architectural and technical domain documentation is organized in the `d
 6.  **Zero Redundant Comments:** Code comments may only state non-obvious invariants or *why* a workaround exists. Comments restating *what* the code does are a `minor` defect.
 7.  **Doc & File Budgets:** `AGENTS.md` must stay under 160 lines. `docs/*.md` updates must edit tables/bullets in-place without duplicating other docs.
 8.  **Managed-Only Session Rule:** `ackbard` manages Ackbar-created sessions only; unmanaged external CLI sessions are ignored.
+9.  **Isolated TestMain Rule:** Every Go package with `*_test.go` must call `testutil.RunIsolatedTestMain(m)` in `TestMain` (enforced by AST test and `verify-t0.sh`).
 
 ---
 
