@@ -251,8 +251,8 @@ func (s *Server) mergeInFlightSpoolIntoTranscript(transcript *Transcript, sess *
 			if snap.IsActive {
 				msgs[asstIdx].InFlight = true
 			}
-			if len(assistantContent) > len(msgs[asstIdx].Content) {
-				msgs[asstIdx].Content = assistantContent
+			if len(snap.AssistantText) > len(msgs[asstIdx].Content) {
+				msgs[asstIdx].Content = snap.AssistantText
 			}
 			if errText != "" && !strings.Contains(msgs[asstIdx].Content, errText) {
 				trimmed := strings.TrimRight(msgs[asstIdx].Content, "\n")

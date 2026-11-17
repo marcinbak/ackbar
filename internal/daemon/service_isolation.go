@@ -83,7 +83,10 @@ func rewriteRegularFile(path string, transform func(string) (string, bool)) (boo
 	if !changed {
 		return false, nil
 	}
-	return true, writeFileAtomicWithMode(path, []byte(updated), perm)
+	if err := writeFileAtomicWithMode(path, []byte(updated), perm); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func ensureSystemdServiceIsolation(home string) (bool, error) {

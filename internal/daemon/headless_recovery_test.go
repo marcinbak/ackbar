@@ -419,6 +419,34 @@ func TestCrashedSpool_MergeInFlightTranscriptSurfacesErrorOverPartialDiskPreambl
 	if !strings.Contains(content, preamble) || !strings.Contains(content, crashedWorkerErrorText) {
 		t.Fatalf("expected partial on-disk preamble AND crash error surfaced, got %q", content)
 	}
+
+	// Short on-disk preamble (< len(errText)) must also be preserved alongside crash error
+	shortPreamble := "Checking."
+	shortJSONL := fmt.Sprintf(
+		"{\"type\":\"user\",\"timestamp\":%q,\"message\":{\"role\":\"user\",\"content\":\"Fix bug\"}}\n"+
+			"{\"type\":\"assistant\",\"timestamp\":%q,\"message\":{\"role\":\"assistant\",\"content\":%q}}\n",
+		ts, ts, shortPreamble,
+	)
+	_ = os.WriteFile(filepath.Join(projDir, sess.NativeID+".jsonl"), []byte(shortJSONL), 0644)
+
+	recShort := httptest.NewRecorder()
+	srv.handleSessionTranscript(recShort, httptest.NewRequest(http.MethodGet, "/v1/sessions/transcript?id="+sess.ID+"&format=json", nil))
+	if recShort.Code != http.StatusOK {
+		t.Fatalf("short preamble transcript GET returned %d: %s", recShort.Code, recShort.Body.String())
+	}
+	var trShort struct {
+		Messages []TranscriptMessage `json:"messages"`
+	}
+	if err := json.Unmarshal(recShort.Body.Bytes(), &trShort); err != nil {
+		t.Fatalf("decode short transcript: %v", err)
+	}
+	if len(trShort.Messages) != 2 {
+		t.Fatalf("expected 2 transcript messages for short preamble, got %+v", trShort.Messages)
+	}
+	shortContent := trShort.Messages[1].Content
+	if !strings.Contains(shortContent, shortPreamble) || !strings.Contains(shortContent, crashedWorkerErrorText) {
+		t.Fatalf("expected short on-disk preamble %q AND crash error surfaced, got %q", shortPreamble, shortContent)
+	}
 }
 
 func TestFinalizeCrashedTurnSpool_PreservesLivePersistentWorkerSocket(t *testing.T) {
