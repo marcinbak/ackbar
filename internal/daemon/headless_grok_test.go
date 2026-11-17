@@ -286,16 +286,18 @@ echo '{"type":"end","stopReason":"stop"}'
 	}
 
 	var logStr string
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if b, err := os.ReadFile(filepath.Join(tmpDir, "grok.log")); err == nil && len(b) > 0 {
-			logStr = string(b)
-			break
+			if !hr.IsRunning(sess.ID) {
+				logStr = string(b)
+				break
+			}
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
 	if logStr == "" {
-		t.Fatalf("timed out waiting for grok.log from Turn 1")
+		t.Fatalf("timed out waiting for Turn 1 completion and grok.log")
 	}
 	if !strings.Contains(logStr, "-s grok-e2e-1") {
 		t.Errorf("expected -s grok-e2e-1 in Turn 1 run, got: %s", logStr)
@@ -309,11 +311,11 @@ echo '{"type":"end","stopReason":"stop"}'
 	}
 
 	var logStr2 string
-	deadline2 := time.Now().Add(3 * time.Second)
+	deadline2 := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline2) {
 		if b, err := os.ReadFile(filepath.Join(tmpDir, "grok.log")); err == nil {
 			lines := strings.Split(strings.TrimSpace(string(b)), "\n")
-			if len(lines) >= 2 {
+			if len(lines) >= 2 && !hr.IsRunning(sess.ID) {
 				logStr2 = string(b)
 				break
 			}
@@ -321,7 +323,7 @@ echo '{"type":"end","stopReason":"stop"}'
 		time.Sleep(25 * time.Millisecond)
 	}
 	if logStr2 == "" {
-		t.Fatalf("timed out waiting for Turn 2 in grok.log")
+		t.Fatalf("timed out waiting for Turn 2 completion and grok.log")
 	}
 	lines := strings.Split(strings.TrimSpace(logStr2), "\n")
 	if !strings.Contains(lines[len(lines)-1], "-r grok-e2e-1") {
