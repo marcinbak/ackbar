@@ -157,15 +157,19 @@ func TestStateAndDTORoundTrips(t *testing.T) {
 
 	now := time.Now().UTC().Truncate(time.Second)
 	blk := &Blocked{
-		Kind:       BlockAuth,
-		Reason:     "sign in required",
-		Since:      now,
-		AuthTarget: "mcp:github",
-		AuthKind:   "mcp",
-		AuthServer: "github",
-		AuthURL:    "https://example.com/auth",
-		AuthHint:   "run auth",
-		FlowID:     "flow-1",
+		Kind:           BlockAuth,
+		Reason:         "sign in required",
+		Since:          now,
+		AuthTarget:     "mcp:github",
+		AuthKind:       "mcp",
+		AuthServer:     "github",
+		AuthURL:        "https://example.com/auth",
+		AuthHint:       "run auth",
+		FlowID:         "flow-1",
+		RequestID:      "req-42",
+		ToolName:       "Bash",
+		ToolUseID:      "toolu_123",
+		DecisionReason: "requires explicit approval",
 	}
 	metaRaw := MarshalBlockedMeta(blk)
 	if metaRaw == "" {
@@ -173,8 +177,17 @@ func TestStateAndDTORoundTrips(t *testing.T) {
 	}
 	restored := &Blocked{}
 	ApplyBlockedMeta(restored, metaRaw)
-	if restored.AuthTarget != blk.AuthTarget || restored.FlowID != blk.FlowID || restored.AuthURL != blk.AuthURL {
+	if restored.AuthTarget != blk.AuthTarget || restored.FlowID != blk.FlowID || restored.AuthURL != blk.AuthURL ||
+		restored.RequestID != blk.RequestID || restored.ToolName != blk.ToolName ||
+		restored.ToolUseID != blk.ToolUseID || restored.DecisionReason != blk.DecisionReason {
 		t.Fatalf("ApplyBlockedMeta mismatch: %+v", restored)
+	}
+	ctrlOnly := &Blocked{RequestID: "req-9", ToolName: "Edit", ToolUseID: "tu-9", DecisionReason: "ask"}
+	ctrlMeta := MarshalBlockedMeta(ctrlOnly)
+	ctrlRestored := &Blocked{}
+	ApplyBlockedMeta(ctrlRestored, ctrlMeta)
+	if ctrlRestored.RequestID != "req-9" || ctrlRestored.ToolName != "Edit" || ctrlRestored.ToolUseID != "tu-9" || ctrlRestored.DecisionReason != "ask" {
+		t.Fatalf("control-only ApplyBlockedMeta mismatch: %+v", ctrlRestored)
 	}
 
 	sess := Session{

@@ -127,16 +127,16 @@ func buildPersistentArgs(sess *Session, isExistingConversation bool) (string, []
 		if err != nil {
 			return "", nil, fmt.Errorf("failed to locate claude binary: %w", err)
 		}
-		args := []string{"-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"}
+		args := []string{"-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--permission-prompt-tool", "stdio"}
 		switch strings.ToLower(strings.TrimSpace(sess.PermissionMode)) {
 		case "plan":
-			args = append(args, "--permission-mode", "plan")
+			args = append(args, "--permission-mode", "plan", "--allow-dangerously-skip-permissions")
 		case "auto":
-			args = append(args, "--permission-mode", "auto")
+			args = append(args, "--permission-mode", "auto", "--allow-dangerously-skip-permissions")
 		case "acceptedits":
-			args = append(args, "--permission-mode", "acceptEdits")
+			args = append(args, "--permission-mode", "acceptEdits", "--allow-dangerously-skip-permissions")
 		case "dontask":
-			args = append(args, "--permission-mode", "dontAsk")
+			args = append(args, "--permission-mode", "dontAsk", "--allow-dangerously-skip-permissions")
 		default:
 			args = append(args, "--dangerously-skip-permissions")
 		}

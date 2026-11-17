@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -742,12 +743,14 @@ func (s *Server) handleSessionControl(w http.ResponseWriter, r *http.Request) {
 			if s.headless != nil {
 				s.headless.RestartSessionChild(sess, 3*time.Second)
 			}
+			s.clearSubagents(sess.ID, sess.NativeID)
 			now := time.Now()
 			sess.IsDone = false
 			sess.Blocked = nil
 			sess.IsUnread = false
 			sess.TmuxName = ""
 			sess.PID = 0
+			sess.RunningSubagents = 0
 			sess.State = StateIdle
 			sess.Activity = "Resumed session"
 			sess.LastStateChangeAt = now
@@ -1009,6 +1012,7 @@ func (s *Server) handleRespond(w http.ResponseWriter, r *http.Request) {
 		ID          string `json:"id"`
 		SessionID   string `json:"sessionId"`
 		SessionIDSC string `json:"session_id"`
+		RequestID   string `json:"request_id"`
 		Action      string `json:"action"` // "answer" | "allow" | "deny" | "input"
 		Value       string `json:"value"`
 		Answer      string `json:"answer"`
@@ -1199,13 +1203,47 @@ func (s *Server) handleRespond(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	reqRequestID := req.RequestID
+	if reqRequestID == "" {
+		reqRequestID = r.URL.Query().Get("request_id")
+	}
+
 	isHeadless := sess.EngineType == EngineHeadless || (sess.Managed && sess.TmuxName == "")
 	if isHeadless {
+		if s.headless != nil {
+			if handled, err := s.headless.TryAnswerControlAction(r.Context(), sess, actionLower, value, reqRequestID); handled {
+				if err != nil {
+					status := http.StatusInternalServerError
+					if errors.Is(err, ErrStaleControlRequest) {
+						status = http.StatusConflict
+					}
+					http.Error(w, err.Error(), status)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"status":  "ok",
+					"mode":    "stdio_control",
+					"id":      sess.ID,
+					"action":  actionLower,
+					"value":   value,
+					"state":   sess.State.String(),
+					"session": sess,
+				})
+				return
+			}
+		}
+		isBlocked := sess.State == StateBlocked || (s.headless != nil && (s.headless.IsBlockedControl(sess.ID) || s.headless.HasInteractiveBlock(sess.ID)))
+		if !isBlocked || (reqRequestID != "" && (sess.Blocked == nil || sess.Blocked.RequestID != reqRequestID)) {
+			http.Error(w, ErrStaleControlRequest.Error(), http.StatusConflict)
+			return
+		}
 		answerText := value
-		if answerText == "" && (actionLower == "allow" || actionLower == "yes" || actionLower == "1" || actionLower == "approve") {
+		isApprovalBlock := sess.Blocked != nil && sess.Blocked.Kind == BlockApproval
+		if answerText == "" && isApprovalBlock && (actionLower == "allow" || actionLower == "yes" || actionLower == "1" || actionLower == "approve") {
 			answerText = "Approve Plan"
 		}
-		if (answerText == "Approve Plan" || ((sess.Blocked == nil || sess.Blocked.Kind == BlockApproval) && strings.HasPrefix(strings.ToLower(answerText), "approve"))) && sess.PermissionMode == "plan" {
+		if isApprovalBlock && (answerText == "Approve Plan" || strings.HasPrefix(strings.ToLower(answerText), "approve")) && sess.PermissionMode == "plan" {
 			sess.PermissionMode = "bypassPermissions"
 		}
 

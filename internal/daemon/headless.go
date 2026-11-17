@@ -71,9 +71,16 @@ type HeadlessRunner struct {
 	db                     *DB
 	broadcast              func(s *Session)
 	onTurnComplete         func(sessionID, nativeID string)
+	onBgTaskCountChange    func(sessionID, nativeID string, count int)
+	onWorkerExit           func(sessionID, nativeID string)
 	warmWorkers            map[string]*warmWorkerHandle
 	sessionTurnMu          map[string]*sync.Mutex
 	runtimeModels          map[string]string
+	blockedControlTurns    map[string]bool
+	monitoredTurns         map[string]bool
+	bgTaskCounts           map[string]int
+	warmWatchCancels       map[string]context.CancelFunc
+	watchWG                sync.WaitGroup
 	idleTTL                time.Duration
 	activeMonitors         int
 }
@@ -97,6 +104,10 @@ func NewHeadlessRunner(db *DB, broadcast func(s *Session)) *HeadlessRunner {
 		warmWorkers:            make(map[string]*warmWorkerHandle),
 		sessionTurnMu:          make(map[string]*sync.Mutex),
 		runtimeModels:          make(map[string]string),
+		blockedControlTurns:    make(map[string]bool),
+		monitoredTurns:         make(map[string]bool),
+		bgTaskCounts:           make(map[string]int),
+		warmWatchCancels:       make(map[string]context.CancelFunc),
 		idleTTL:                ResolveHeadlessIdleTTL(0),
 		db:                     db,
 		broadcast:              broadcast,
@@ -107,7 +118,10 @@ func (h *HeadlessRunner) syncSleepInhibitor() {
 	if h == nil || h.sleepInhibitor == nil {
 		return
 	}
-	h.sleepInhibitor.SyncActiveTurns(h.ActiveTurnCount())
+	h.mu.RLock()
+	activeRunning := h.countActiveTurnsLocked(true)
+	h.mu.RUnlock()
+	h.sleepInhibitor.SyncActiveTurns(activeRunning)
 }
 
 func (h *HeadlessRunner) ReleaseSleepInhibitor() {
@@ -266,7 +280,7 @@ func (h *HeadlessRunner) ClearInteractiveBlockAndWait(sessionID string, timeout 
 				metaProbe = dm
 			}
 		}
-		if metaProbe.Status == "starting" || metaProbe.Status == "running" {
+		if isActiveTurnStatus(metaProbe.Status) {
 			_, hasActive = probeLiveWorker(metaProbe, 0)
 		}
 	}
@@ -299,11 +313,13 @@ func (h *HeadlessRunner) ClearInteractiveBlockAndWait(sessionID string, timeout 
 		delete(h.warmWorkers, nativeID)
 	}
 	delete(h.interactiveBlocks, sessionID)
+	delete(h.blockedControlTurns, sessionID)
 	delete(h.activePrompts, sessionID)
 	delete(h.activeTurns, sessionID)
 	h.respondedWhileStopping[sessionID] = true
 	if nativeID != "" {
 		delete(h.interactiveBlocks, nativeID)
+		delete(h.blockedControlTurns, nativeID)
 		delete(h.activePrompts, nativeID)
 		delete(h.activeTurns, nativeID)
 		h.respondedWhileStopping[nativeID] = true
@@ -324,7 +340,7 @@ func (h *HeadlessRunner) ClearInteractiveBlockAndWait(sessionID string, timeout 
 	h.mu.Unlock()
 	h.syncSleepInhibitor()
 
-	if meta != nil && (meta.Status == "starting" || meta.Status == "running") {
+	if meta != nil && isActiveTurnStatus(meta.Status) {
 		_ = sendWorkerCancel(meta)
 	}
 
@@ -520,7 +536,7 @@ func (h *HeadlessRunner) IsRunning(sessionID string) bool {
 	return false
 }
 
-func (h *HeadlessRunner) activeTurnCountLocked() int {
+func (h *HeadlessRunner) countActiveTurnsLocked(excludeBlockedControl bool) int {
 	seenProcs := make(map[*exec.Cmd]bool)
 	seenKeys := make(map[string]bool)
 	count := 0
@@ -531,6 +547,9 @@ func (h *HeadlessRunner) activeTurnCountLocked() int {
 		dedupKey := key
 		if parts := strings.Split(key, ":"); len(parts) == 3 && parts[2] != "" {
 			dedupKey = parts[2]
+		}
+		if excludeBlockedControl && (h.blockedControlTurns[key] || h.blockedControlTurns[dedupKey]) {
+			continue
 		}
 		if seenKeys[dedupKey] {
 			continue
@@ -547,6 +566,10 @@ func (h *HeadlessRunner) activeTurnCountLocked() int {
 		count++
 	}
 	return count
+}
+
+func (h *HeadlessRunner) activeTurnCountLocked() int {
+	return h.countActiveTurnsLocked(false)
 }
 
 func (h *HeadlessRunner) ActiveTurnCount() int {
@@ -707,6 +730,16 @@ func (h *HeadlessRunner) MigrateSession(oldID, newID string) {
 	if m, exists := h.runtimeModels[oldID]; exists {
 		delete(h.runtimeModels, oldID)
 		h.runtimeModels[newID] = m
+	}
+	if blocked, exists := h.blockedControlTurns[oldID]; exists {
+		delete(h.blockedControlTurns, oldID)
+		if blocked {
+			h.blockedControlTurns[newID] = true
+		}
+	}
+	if cnt, exists := h.bgTaskCounts[oldID]; exists {
+		delete(h.bgTaskCounts, oldID)
+		h.bgTaskCounts[newID] = cnt
 	}
 }
 
@@ -1148,11 +1181,11 @@ func (h *HeadlessRunner) CancelTurn(sessionID string) error {
 			meta = dm
 		}
 	}
-	if meta != nil && (meta.FinalizedByDaemon || (meta.WorkerID != "" && meta.Status != "starting" && meta.Status != "running")) {
+	if meta != nil && (meta.FinalizedByDaemon || (meta.WorkerID != "" && !isActiveTurnStatus(meta.Status))) {
 		return nil
 	}
 
-	workerActive := meta != nil && (meta.Status == "starting" || meta.Status == "running")
+	workerActive := meta != nil && isActiveTurnStatus(meta.Status)
 	if (!ok || cmd == nil || cmd.Process == nil) && !workerActive {
 		if ok {
 			h.mu.Lock()
@@ -1173,11 +1206,13 @@ func (h *HeadlessRunner) CancelTurn(sessionID string) error {
 	}
 
 	if workerActive && sendWorkerCancel(meta) == nil {
+		h.clearControlBlockState(sessionID)
 		h.SetQueuePaused(sessionID, true)
 		h.EmitQueueUpdate(sessionID)
 		deleteWarmHandle()
 		return nil
 	}
+	h.clearControlBlockState(sessionID)
 	deleteWarmHandle()
 
 	if h.isOwnedProcess(cmd) {
@@ -1547,12 +1582,24 @@ func (h *HeadlessRunner) processStreamWithPrompt(sessionID string, r io.Reader, 
 
 type streamParseHooks struct {
 	emitTurnComplete   bool
+	stdioControl       bool
 	emit               func(ChatStreamEvent)
 	onAntigravityInit  func(convID string)
 	onSystemInit       func()
+	onSystemEvent      func(raw map[string]interface{})
+	onTurnContent      func()
+	onControlRequest   func(ctrl *PendingControlRequest)
+	onControlCancel    func(requestID string)
 	onInteractiveBlock func(toolName string, toolInput any, blocked *Blocked)
 	onTurnResult       func(lastTurnText, resultText string, streamHadError bool)
 	onModelDetected    func(model string)
+}
+
+type pendingInteractiveToolBlock struct {
+	toolID    string
+	toolName  string
+	toolInput any
+	blocked   *Blocked
 }
 
 func (h *HeadlessRunner) processStreamCore(sessionID string, r io.Reader, prompt string, emitTurnComplete bool, optionalSess ...*Session) (string, string, bool) {
@@ -1623,6 +1670,7 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 	hasEmittedDeltaInTurn := false
 	needsSeparation := false
 	seenGrok := strings.HasPrefix(sessionID, "grok")
+	var pendingTool *pendingInteractiveToolBlock
 	emitStreamEvt := func(evt ChatStreamEvent) {
 		if hooks.emit != nil {
 			hooks.emit(evt)
@@ -1641,6 +1689,9 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 
 		// Check for Antigravity stream format: top-level "event" field
 		if agyEvt, ok := raw["event"].(string); ok && agyEvt != "" {
+			if (agyEvt == "step_update" || agyEvt == "result") && hooks.onTurnContent != nil {
+				hooks.onTurnContent()
+			}
 			switch agyEvt {
 			case "init":
 				if m, ok := raw["model"].(string); ok && m != "" && hooks.onModelDetected != nil {
@@ -1875,7 +1926,13 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 		}
 
 		evtType, _ := raw["type"].(string)
+		if evtType != "" && evtType != "system" && evtType != "keep_alive" && evtType != "control_response" && evtType != "control_cancel_request" && evtType != "init" && hooks.onTurnContent != nil {
+			hooks.onTurnContent()
+		}
 		switch evtType {
+		case "keep_alive":
+			continue
+
 		case "error":
 			errMsg := extractClaudeStreamError(raw)
 			if errMsg == "" {
@@ -1900,6 +1957,22 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 				if hooks.onSystemInit != nil {
 					hooks.onSystemInit()
 				}
+			}
+			if hooks.onSystemEvent != nil {
+				hooks.onSystemEvent(raw)
+			}
+
+		case "control_request":
+			if ctrl := parseStdioControlRequest(raw, lastTextBuilder.String()); ctrl != nil {
+				pendingTool = nil
+				if hooks.onControlRequest != nil {
+					hooks.onControlRequest(ctrl)
+				}
+			}
+
+		case "control_cancel_request":
+			if reqID, _ := raw["request_id"].(string); reqID != "" && hooks.onControlCancel != nil {
+				hooks.onControlCancel(reqID)
 			}
 
 		case "control_response":
@@ -2007,8 +2080,12 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 						ToolInput: toolInput,
 					})
 					if toolInput != nil {
-						if blocked := parseInteractiveToolBlock(toolName, toolInput); blocked != nil && hooks.onInteractiveBlock != nil {
-							hooks.onInteractiveBlock(toolName, toolInput, blocked)
+						if blocked := parseInteractiveToolBlock(toolName, toolInput); blocked != nil {
+							if hooks.stdioControl {
+								pendingTool = &pendingInteractiveToolBlock{toolID: toolID, toolName: toolName, toolInput: toolInput, blocked: blocked}
+							} else if hooks.onInteractiveBlock != nil {
+								hooks.onInteractiveBlock(toolName, toolInput, blocked)
+							}
 						}
 					}
 				} else if cbType == "text" && hasEmittedAssistantText {
@@ -2039,6 +2116,9 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 				}
 			}
 			isErr, _ := raw["is_error"].(bool)
+			if pendingTool != nil && !isErr && (pendingTool.toolID == "" || pendingTool.toolID == toolID) {
+				pendingTool = nil
+			}
 			emitStreamEvt(ChatStreamEvent{
 				SessionID:  sessionID,
 				Type:       "tool_result",
@@ -2116,6 +2196,9 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 									}
 								}
 								isErr, _ := itemMap["is_error"].(bool)
+								if pendingTool != nil && !isErr && (pendingTool.toolID == "" || pendingTool.toolID == toolID) {
+									pendingTool = nil
+								}
 								emitStreamEvt(ChatStreamEvent{
 									SessionID:  sessionID,
 									Type:       "tool_result",
@@ -2214,8 +2297,12 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 										ToolInput: toolInput,
 									})
 								}
-								if blocked := parseInteractiveToolBlock(toolName, toolInput); blocked != nil && hooks.onInteractiveBlock != nil {
-									hooks.onInteractiveBlock(toolName, toolInput, blocked)
+								if blocked := parseInteractiveToolBlock(toolName, toolInput); blocked != nil {
+									if hooks.stdioControl {
+										pendingTool = &pendingInteractiveToolBlock{toolID: toolID, toolName: toolName, toolInput: toolInput, blocked: blocked}
+									} else if hooks.onInteractiveBlock != nil {
+										hooks.onInteractiveBlock(toolName, toolInput, blocked)
+									}
 								}
 							}
 						}
@@ -2261,6 +2348,12 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 			finalLastTurnText = lastTextBuilder.String()
 			finalResultText = resultText
 			finalStreamHadError = streamHadError
+			if pendingTool != nil {
+				if hooks.onInteractiveBlock != nil {
+					hooks.onInteractiveBlock(pendingTool.toolName, pendingTool.toolInput, pendingTool.blocked)
+				}
+				pendingTool = nil
+			}
 			if hooks.onTurnResult != nil {
 				hooks.onTurnResult(finalLastTurnText, finalResultText, finalStreamHadError)
 			}
@@ -2279,6 +2372,12 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 			hasEmittedDeltaInTurn = false
 			needsSeparation = false
 		}
+	}
+	if pendingTool != nil {
+		if hooks.onInteractiveBlock != nil {
+			hooks.onInteractiveBlock(pendingTool.toolName, pendingTool.toolInput, pendingTool.blocked)
+		}
+		pendingTool = nil
 	}
 	if pendingErr, ok := errTracker.flushRemaining(); ok {
 		streamHadError = true

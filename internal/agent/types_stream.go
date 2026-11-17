@@ -2,6 +2,33 @@ package agent
 
 import "time"
 
+type ProviderDTO struct {
+	Agent          string   `json:"agent"`
+	DisplayName    string   `json:"display_name"`
+	BrandColor     string   `json:"brand_color"`
+	IconSVG        string   `json:"icon_svg"`
+	IsInstalled    bool     `json:"is_installed"`
+	HookConfigured bool     `json:"hook_configured"`
+	SetupCmd       string   `json:"setup_cmd"`
+	ProcessNames   []string `json:"process_names"`
+}
+
+type AgentStatus struct {
+	Key            string `json:"key"`
+	DisplayName    string `json:"display_name"`
+	Detected       bool   `json:"detected"`
+	ConfigFile     string `json:"config_file"`
+	SkillsDir      string `json:"skills_dir"`
+	RulesFile      string `json:"rules_file"`
+	MCPInstalled   bool   `json:"mcp_installed"`
+	MCPCommand     string `json:"mcp_command"`
+	SkillInstalled bool   `json:"skill_installed"`
+	SkillVersion   string `json:"skill_version"`
+	RulesInstalled bool   `json:"rules_installed"`
+	RulesVersion   string `json:"rules_version"`
+	DriftDetected  bool   `json:"drift_detected"`
+}
+
 type TranscriptMessage struct {
 	Role      string    `json:"role"`
 	Content   string    `json:"content"`

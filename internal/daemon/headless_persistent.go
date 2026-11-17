@@ -113,6 +113,9 @@ func (h *HeadlessRunner) recordTurnActive(sess *Session, prompt, turnID string, 
 	}
 	h.mu.Lock()
 	h.activeTurns[sess.ID] = true
+	if turnID != "" {
+		h.monitoredTurns[turnID] = true
+	}
 	h.activeSessions[sess.ID] = sess
 	if prev := h.sessionSpools[sess.ID]; prev != nil && prev.TurnID != "" && prev.TurnID != turnID && !prev.FinalizedByDaemon {
 		h.supersededTurns[prev.TurnID] = true
@@ -228,6 +231,9 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 					turnID := fmt.Sprintf("turn_%d_%s", turnStart.UnixNano(), generateUUID()[:8])
 					meta, startEvt, sErr := h.initTurnSpool(runDir, turnID, sess.ID, sess.NativeID, sess.Agent, sess.Cwd, prompt, hBin, hArgs, hSock, "", hWorkerID, hWorkerMetaPath, turnStart)
 					if sErr == nil {
+						h.mu.Lock()
+						h.monitoredTurns[turnID] = true
+						h.mu.Unlock()
 						resp, cErr := callWorkerSocket(hSock, workerIPCReq{
 							Op: "send_turn", MetaPath: meta.MetaPath, TurnID: turnID, StdinLine: stdinLine,
 							SessionID: sess.ID, NativeID: sess.NativeID,
@@ -240,7 +246,16 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 							h.recordTurnActive(sess, prompt, turnID, turnStart, meta, resp.ChildPID, startEvt, nil)
 							return nil
 						}
+						h.mu.Lock()
+						delete(h.monitoredTurns, turnID)
+						h.mu.Unlock()
 						removeTurnSpoolFiles(meta.MetaPath, meta)
+						if cErr == nil && resp != nil && !resp.OK && (resp.ErrCode == "busy" || resp.State == "running_turn" || resp.State == "blocked_control") {
+							if resp.TurnID != "" {
+								go h.maybeAttachObservedTurn(sess.ID, hWorkerMetaPath, *resp)
+							}
+							return ErrTurnInProgress
+						}
 					}
 					h.ShutdownSessionWorker(sess.ID, sess.NativeID, 300*time.Millisecond)
 					handle, isExisting = nil, true
@@ -304,8 +319,14 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 		workerCmd.Stdout, workerCmd.Stderr = devNullW, devNullW
 		defer devNullW.Close()
 	}
+	h.mu.Lock()
+	h.monitoredTurns[turnID] = true
+	h.mu.Unlock()
 	startErr := workerCmd.Start()
 	if startErr != nil {
+		h.mu.Lock()
+		delete(h.monitoredTurns, turnID)
+		h.mu.Unlock()
 		removeTurnSpoolFiles(meta.MetaPath, meta)
 		cleanupWorkerArtifacts(workerMeta)
 		return fmt.Errorf("failed to start headless worker: %w", startErr)
@@ -313,12 +334,14 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 
 	meta.WorkerPID = workerCmd.Process.Pid
 
-	h.mu.Lock()
-	h.warmWorkers[sess.ID] = &warmWorkerHandle{
+	handle = &warmWorkerHandle{
 		WorkerID: workerID, SessionID: sess.ID, NativeID: sess.NativeID, SocketPath: sockPath,
 		WorkerMetaPath: workerMetaPath, ConfigFingerprint: fp, ConfigFingerprintNoModel: fpNoModel, MCPFingerprint: mcpFP, Bin: bin, Args: args, WorkerPID: workerCmd.Process.Pid,
 	}
+	h.mu.Lock()
+	h.warmWorkers[sess.ID] = handle
 	h.mu.Unlock()
+	h.ensureWarmWatcher(handle)
 
 	go func(tid string, c *exec.Cmd) {
 		_ = c.Wait()
@@ -399,12 +422,14 @@ func (h *HeadlessRunner) ShutdownSessionWorker(sessionID, nativeID string, timeo
 		return
 	}
 	h.ClearRuntimeModel(sessionID)
+	h.stopWarmWatchersForSession(sessionID, nativeID)
 	h.mu.Lock()
 	for k := range h.warmWorkers {
 		if k == sessionID || (nativeID != "" && (k == nativeID || strings.HasSuffix(k, ":"+nativeID))) {
 			delete(h.warmWorkers, k)
 		}
 	}
+	delete(h.bgTaskCounts, sessionID)
 	h.mu.Unlock()
 	h.forEachWorkerMeta(sessionID, nativeID, func(m *SessionWorkerMeta) { h.killWorkerMeta(m, timeout) })
 }
@@ -414,9 +439,14 @@ func (h *HeadlessRunner) ShutdownSpecificWorker(workerID string, timeout time.Du
 		return
 	}
 	h.mu.Lock()
+	if c := h.warmWatchCancels[workerID]; c != nil {
+		delete(h.warmWatchCancels, workerID)
+		c()
+	}
 	for k, wh := range h.warmWorkers {
 		if wh != nil && wh.WorkerID == workerID {
 			delete(h.warmWorkers, k)
+			delete(h.bgTaskCounts, wh.SessionID)
 		}
 	}
 	h.mu.Unlock()
@@ -435,8 +465,10 @@ func (h *HeadlessRunner) ShutdownAllWorkers(timeout time.Duration) {
 	if waitDur < time.Second {
 		waitDur = time.Second
 	}
+	h.stopAllWarmWatchers()
 	h.mu.Lock()
 	clear(h.warmWorkers)
+	clear(h.bgTaskCounts)
 	var owned []*exec.Cmd
 	for _, cmd := range h.ownedWorkers {
 		if cmd != nil && cmd.Process != nil && cmd.Process.Pid > 1 {
@@ -452,6 +484,11 @@ func (h *HeadlessRunner) ShutdownAllWorkers(timeout time.Duration) {
 			_ = syscall.Kill(pid, syscall.SIGKILL)
 		}
 	}
+	watchDone := make(chan struct{})
+	go func() {
+		h.watchWG.Wait()
+		close(watchDone)
+	}()
 	for time.Now().Before(deadline) {
 		allDead := true
 		for _, cmd := range owned {
@@ -463,7 +500,13 @@ func (h *HeadlessRunner) ShutdownAllWorkers(timeout time.Duration) {
 		h.mu.RLock()
 		monitors := h.activeMonitors
 		h.mu.RUnlock()
-		if allDead && monitors == 0 {
+		watchExited := false
+		select {
+		case <-watchDone:
+			watchExited = true
+		default:
+		}
+		if allDead && monitors == 0 && watchExited {
 			break
 		}
 		time.Sleep(5 * time.Millisecond)
@@ -592,6 +635,7 @@ func (h *HeadlessRunner) NotifyConfigChanged(sess *Session) {
 					h.warmWorkers[sess.ID] = tmpHandle
 				}
 				h.mu.Unlock()
+				h.ensureWarmWatcher(tmpHandle)
 				return
 			}
 		}
@@ -602,6 +646,7 @@ func (h *HeadlessRunner) NotifyConfigChanged(sess *Session) {
 					h.warmWorkers[sess.ID] = tmpHandle
 				}
 				h.mu.Unlock()
+				h.ensureWarmWatcher(tmpHandle)
 				return
 			}
 			h.killWorkerMeta(wm, 3*time.Second)
@@ -706,6 +751,8 @@ func (h *HeadlessRunner) RestartSessionChild(sess *Session, timeout time.Duratio
 		}
 	}
 	h.mu.Unlock()
+	h.clearControlBlockState(sess.ID, sess.NativeID)
+	h.setBgTaskCount(sess.ID, sess.NativeID, 0)
 	h.SetQueuePaused(sess.ID, false)
 	h.syncSleepInhibitor()
 
@@ -730,6 +777,7 @@ func (h *HeadlessRunner) RestartSessionChild(sess *Session, timeout time.Duratio
 			h.mu.Lock()
 			h.warmWorkers[sess.ID] = tmpHandle
 			h.mu.Unlock()
+			h.ensureWarmWatcher(tmpHandle)
 			restarted = true
 		} else {
 			h.killWorkerMeta(m, 500*time.Millisecond)
@@ -755,7 +803,7 @@ func callWorkerTurnSocket(meta *TurnSpoolMeta, op string, timeout time.Duration)
 				return resp, nil
 			}
 		}
-		if !canWait || time.Now().After(deadline) || (cur.Status != "starting" && cur.Status != "running") {
+		if !canWait || time.Now().After(deadline) || !isActiveTurnStatus(cur.Status) {
 			return nil, errors.New("worker socket unreachable")
 		}
 		time.Sleep(15 * time.Millisecond)

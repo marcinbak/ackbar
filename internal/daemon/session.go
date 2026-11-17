@@ -120,3 +120,7 @@ func ExtractAntigravityQuestionAndOptions(args map[string]interface{}) (string, 
 func ExtractAntigravityQuestions(args map[string]interface{}) []BlockedQuestion {
 	return agentutil.ExtractQuestions(args)
 }
+
+func parseInterfaceSlice(raw interface{}) []interface{} {
+	return agentutil.ParseInterfaceSlice(raw)
+}

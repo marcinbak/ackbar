@@ -111,7 +111,9 @@ func NewServer(db *DB) *Server {
 		subagentDiskCache: make(map[string]*subagentDiskCacheEntry),
 	}
 	s.headless = NewHeadlessRunner(db, s.broadcast)
-	s.headless.SetOnTurnComplete(s.clearSubagents)
+	s.headless.SetOnTurnComplete(s.onHeadlessTurnComplete)
+	s.headless.SetOnBgTaskCountChange(s.onBgTaskCountChanged)
+	s.headless.SetOnWorkerExit(s.onHeadlessWorkerExited)
 	s.headless.LoadScheduledPrompts()
 	s.authBroker = newAuthBroker(s)
 	if host := s.HostName(); host != "local" && db != nil {

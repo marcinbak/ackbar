@@ -52,44 +52,57 @@ type BlockedQuestion struct {
 }
 
 type Blocked struct {
-	Kind       BlockKind         `json:"kind"`
-	Reason     string            `json:"reason"`
-	Since      time.Time         `json:"since"`
-	Question   string            `json:"question,omitempty"`
-	Options    []string          `json:"options,omitempty"`
-	Questions  []BlockedQuestion `json:"questions,omitempty"`
-	ResetAt    *time.Time        `json:"reset_at,omitempty"`
-	AuthTarget string            `json:"auth_target,omitempty"`
-	AuthKind   string            `json:"auth_kind,omitempty"`
-	AuthServer string            `json:"auth_server,omitempty"`
-	AuthURL    string            `json:"auth_url,omitempty"`
-	AuthHint   string            `json:"auth_hint,omitempty"`
-	FlowID     string            `json:"flow_id,omitempty"`
+	Kind           BlockKind         `json:"kind"`
+	Reason         string            `json:"reason"`
+	Since          time.Time         `json:"since"`
+	Question       string            `json:"question,omitempty"`
+	Options        []string          `json:"options,omitempty"`
+	Questions      []BlockedQuestion `json:"questions,omitempty"`
+	ResetAt        *time.Time        `json:"reset_at,omitempty"`
+	AuthTarget     string            `json:"auth_target,omitempty"`
+	AuthKind       string            `json:"auth_kind,omitempty"`
+	AuthServer     string            `json:"auth_server,omitempty"`
+	AuthURL        string            `json:"auth_url,omitempty"`
+	AuthHint       string            `json:"auth_hint,omitempty"`
+	FlowID         string            `json:"flow_id,omitempty"`
+	RequestID      string            `json:"request_id,omitempty"`
+	ToolName       string            `json:"tool_name,omitempty"`
+	ToolUseID      string            `json:"tool_use_id,omitempty"`
+	DecisionReason string            `json:"decision_reason,omitempty"`
 }
 
 type blockedMetaJSON struct {
-	AuthTarget string `json:"auth_target,omitempty"`
-	AuthKind   string `json:"auth_kind,omitempty"`
-	AuthServer string `json:"auth_server,omitempty"`
-	AuthURL    string `json:"auth_url,omitempty"`
-	AuthHint   string `json:"auth_hint,omitempty"`
-	FlowID     string `json:"flow_id,omitempty"`
+	AuthTarget     string `json:"auth_target,omitempty"`
+	AuthKind       string `json:"auth_kind,omitempty"`
+	AuthServer     string `json:"auth_server,omitempty"`
+	AuthURL        string `json:"auth_url,omitempty"`
+	AuthHint       string `json:"auth_hint,omitempty"`
+	FlowID         string `json:"flow_id,omitempty"`
+	RequestID      string `json:"request_id,omitempty"`
+	ToolName       string `json:"tool_name,omitempty"`
+	ToolUseID      string `json:"tool_use_id,omitempty"`
+	DecisionReason string `json:"decision_reason,omitempty"`
 }
 
 func MarshalBlockedMeta(b *Blocked) string {
 	if b == nil {
 		return ""
 	}
-	if b.AuthTarget == "" && b.AuthKind == "" && b.AuthServer == "" && b.AuthURL == "" && b.AuthHint == "" && b.FlowID == "" {
+	if b.AuthTarget == "" && b.AuthKind == "" && b.AuthServer == "" && b.AuthURL == "" && b.AuthHint == "" && b.FlowID == "" &&
+		b.RequestID == "" && b.ToolName == "" && b.ToolUseID == "" && b.DecisionReason == "" {
 		return ""
 	}
 	meta := blockedMetaJSON{
-		AuthTarget: b.AuthTarget,
-		AuthKind:   b.AuthKind,
-		AuthServer: b.AuthServer,
-		AuthURL:    b.AuthURL,
-		AuthHint:   b.AuthHint,
-		FlowID:     b.FlowID,
+		AuthTarget:     b.AuthTarget,
+		AuthKind:       b.AuthKind,
+		AuthServer:     b.AuthServer,
+		AuthURL:        b.AuthURL,
+		AuthHint:       b.AuthHint,
+		FlowID:         b.FlowID,
+		RequestID:      b.RequestID,
+		ToolName:       b.ToolName,
+		ToolUseID:      b.ToolUseID,
+		DecisionReason: b.DecisionReason,
 	}
 	raw, err := json.Marshal(meta)
 	if err != nil {
@@ -112,6 +125,10 @@ func ApplyBlockedMeta(b *Blocked, raw string) {
 	b.AuthURL = meta.AuthURL
 	b.AuthHint = meta.AuthHint
 	b.FlowID = meta.FlowID
+	b.RequestID = meta.RequestID
+	b.ToolName = meta.ToolName
+	b.ToolUseID = meta.ToolUseID
+	b.DecisionReason = meta.DecisionReason
 }
 
 const (
@@ -218,31 +235,4 @@ type SubagentInfo struct {
 	StartedAt time.Time `json:"started_at"`
 	ToolName  string    `json:"-"`
 	Synthetic bool      `json:"-"`
-}
-
-type ProviderDTO struct {
-	Agent          string   `json:"agent"`
-	DisplayName    string   `json:"display_name"`
-	BrandColor     string   `json:"brand_color"`
-	IconSVG        string   `json:"icon_svg"`
-	IsInstalled    bool     `json:"is_installed"`
-	HookConfigured bool     `json:"hook_configured"`
-	SetupCmd       string   `json:"setup_cmd"`
-	ProcessNames   []string `json:"process_names"`
-}
-
-type AgentStatus struct {
-	Key            string `json:"key"`
-	DisplayName    string `json:"display_name"`
-	Detected       bool   `json:"detected"`
-	ConfigFile     string `json:"config_file"`
-	SkillsDir      string `json:"skills_dir"`
-	RulesFile      string `json:"rules_file"`
-	MCPInstalled   bool   `json:"mcp_installed"`
-	MCPCommand     string `json:"mcp_command"`
-	SkillInstalled bool   `json:"skill_installed"`
-	SkillVersion   string `json:"skill_version"`
-	RulesInstalled bool   `json:"rules_installed"`
-	RulesVersion   string `json:"rules_version"`
-	DriftDetected  bool   `json:"drift_detected"`
 }

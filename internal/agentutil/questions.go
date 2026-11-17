@@ -8,7 +8,7 @@ import (
 	"ackbar/internal/agent"
 )
 
-func parseInterfaceSlice(raw interface{}) []interface{} {
+func ParseInterfaceSlice(raw interface{}) []interface{} {
 	switch v := raw.(type) {
 	case []interface{}:
 		return v
@@ -37,7 +37,7 @@ func parseInterfaceSlice(raw interface{}) []interface{} {
 
 func extractOptionStrings(raw interface{}) []string {
 	var options []string
-	for _, opt := range parseInterfaceSlice(raw) {
+	for _, opt := range ParseInterfaceSlice(raw) {
 		switch o := opt.(type) {
 		case string:
 			if o != "" {
@@ -82,7 +82,7 @@ func ExtractQuestionAndOptions(args map[string]interface{}) (string, []string) {
 	}
 	var questionText string
 	var optionsList []string
-	for _, qItem := range parseInterfaceSlice(args["questions"]) {
+	for _, qItem := range ParseInterfaceSlice(args["questions"]) {
 		if qMap, ok := qItem.(map[string]interface{}); ok {
 			if bq, ok := parseBlockedQuestion(qMap); ok {
 				if questionText == "" {
@@ -110,7 +110,7 @@ func ExtractQuestions(args map[string]interface{}) []agent.BlockedQuestion {
 		return nil
 	}
 	var questions []agent.BlockedQuestion
-	for _, qItem := range parseInterfaceSlice(args["questions"]) {
+	for _, qItem := range ParseInterfaceSlice(args["questions"]) {
 		if qMap, ok := qItem.(map[string]interface{}); ok {
 			if bq, ok := parseBlockedQuestion(qMap); ok {
 				questions = append(questions, bq)

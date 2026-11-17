@@ -58,7 +58,8 @@ func (s *Server) verifyHeadlessLiveness(sessions []*Session) {
 		}
 		if sess.EngineType == EngineHeadless && sess.TmuxName == "" {
 			isRunning := s.headless != nil && s.headless.IsRunning(sess.ID)
-			if isRunning {
+			isBlockedCtrl := s.headless != nil && s.headless.IsBlockedControl(sess.ID)
+			if isRunning && !isBlockedCtrl {
 				if sess.State != StateWorking {
 					sess.State = StateWorking
 					if sess.Activity == "" {
@@ -67,12 +68,14 @@ func (s *Server) verifyHeadlessLiveness(sessions []*Session) {
 					_ = s.db.SaveSession(sess)
 					s.broadcast(sess)
 				}
-			} else if sess.State == StateWorking {
+			} else if !isRunning && sess.State == StateWorking {
 				sess.State = StateIdle
 				sess.Activity = ""
 				sess.PID = 0
 				sess.Blocked = nil
-				sess.RunningSubagents = 0
+				if s.headless == nil || (!s.headless.HasWarmWorker(sess.ID) && s.headless.GetBgTaskCount(sess.ID) == 0 && !s.hasActiveSubagentStartSubs(sess.ID, sess.NativeID)) {
+					sess.RunningSubagents = 0
+				}
 				_ = s.db.SaveSession(sess)
 				s.broadcast(sess)
 			}
@@ -324,14 +327,17 @@ func (s *Server) refreshExistingSessions(ctx context.Context, state *ScanState) 
 			}
 			if sess.EngineType == EngineHeadless && sess.TmuxName == "" {
 				isRunning := s.headless != nil && s.headless.IsRunning(sess.ID)
+				isBlockedCtrl := s.headless != nil && s.headless.IsBlockedControl(sess.ID)
 				if !isRunning && sess.State == StateWorking {
 					sess.State = StateIdle
 					sess.Activity = ""
 					sess.PID = 0
 					sess.Blocked = nil
-					sess.RunningSubagents = 0
+					if s.headless == nil || (!s.headless.HasWarmWorker(sess.ID) && s.headless.GetBgTaskCount(sess.ID) == 0 && !s.hasActiveSubagentStartSubs(sess.ID, sess.NativeID)) {
+						sess.RunningSubagents = 0
+					}
 					changed = true
-				} else if isRunning && sess.State != StateWorking {
+				} else if isRunning && !isBlockedCtrl && sess.State != StateWorking {
 					sess.State = StateWorking
 					changed = true
 				}

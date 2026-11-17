@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -50,13 +51,22 @@ func (h *HeadlessRunner) applyWorkerEvent(sess *Session, origSessionID string, m
 		if origSessionID != "" && origSessionID != sess.ID {
 			h.setInteractiveBlock(origSessionID, evt.Blocked)
 		}
+		h.setControlBlockState(sess.ID, origSessionID)
 		h.SetQueuePaused(sess.ID, true)
 		if emitLive {
 			if h.db != nil && sess != nil {
+				var sessMu *sync.Mutex
+				if sess.ID != "" {
+					sessMu = h.getSessionTurnMu(sess.ID)
+					sessMu.Lock()
+				}
 				preserveLatestSessionConfigFromDB(h.db, sess, origSessionID)
 				sess.State, sess.Blocked, sess.Activity = StateBlocked, evt.Blocked, blockActivityText(evt.Blocked)
 				sess.IsUnread, sess.LastStateChangeAt, sess.LastEventAt = true, time.Now(), time.Now()
 				_ = h.db.SaveSession(sess)
+				if sessMu != nil {
+					sessMu.Unlock()
+				}
 				if h.broadcast != nil {
 					h.broadcast(sess)
 				}
@@ -66,6 +76,38 @@ func (h *HeadlessRunner) applyWorkerEvent(sess *Session, origSessionID string, m
 			if evt.Blocked.Kind == BlockRateLimit || evt.Blocked.Kind == BlockAuth {
 				h.EmitQueueUpdate(sess.ID)
 			}
+		}
+	case "control_resolved":
+		h.clearControlBlockState(sess.ID, origSessionID)
+		h.SetQueuePaused(sess.ID, false)
+		if emitLive {
+			if h.db != nil && sess != nil {
+				var sessMu *sync.Mutex
+				if sess.ID != "" {
+					sessMu = h.getSessionTurnMu(sess.ID)
+					sessMu.Lock()
+				}
+				preserveLatestSessionConfigFromDB(h.db, sess, origSessionID)
+				if sess.State == StateBlocked {
+					sess.State = StateWorking
+				}
+				sess.Blocked = nil
+				if sess.Activity == "" || strings.HasPrefix(sess.Activity, "Waiting") {
+					sess.Activity = "Thinking..."
+				}
+				sess.IsUnread, sess.LastStateChangeAt, sess.LastEventAt = false, time.Now(), time.Now()
+				_ = h.db.SaveSession(sess)
+				if sessMu != nil {
+					sessMu.Unlock()
+				}
+				if h.broadcast != nil {
+					h.broadcast(sess)
+				}
+			}
+			if sess != nil && sess.ID != "" {
+				evt.SessionID = sess.ID
+			}
+			h.Emit(sess.ID, evt, origSessionID)
 		}
 	default:
 		if emitLive {
@@ -153,7 +195,8 @@ func isInactiveOrNonHeadless(sess *Session) bool {
 	return sess == nil || sess.Deleted || sess.IsDone || sess.TmuxName != "" || sess.EngineType != EngineHeadless
 }
 
-func (h *HeadlessRunner) adoptLiveWorkers(runDir string, entries []os.DirEntry) {
+func (h *HeadlessRunner) adoptLiveWorkers(runDir string, entries []os.DirEntry) []*warmWorkerHandle {
+	var adopted []*warmWorkerHandle
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".worker.json") {
 			continue
@@ -176,8 +219,7 @@ func (h *HeadlessRunner) adoptLiveWorkers(runDir string, entries []os.DirEntry) 
 			}
 			continue
 		}
-		h.mu.Lock()
-		h.warmWorkers[sess.ID] = &warmWorkerHandle{
+		handle := &warmWorkerHandle{
 			WorkerID: wm.WorkerID, SessionID: sess.ID, NativeID: sess.NativeID,
 			SocketPath: wm.SocketPath, WorkerMetaPath: wm.WorkerMetaPath,
 			ConfigFingerprint: wm.ConfigFingerprint, ConfigFingerprintNoModel: wm.ConfigFingerprintNoModel,
@@ -185,7 +227,11 @@ func (h *HeadlessRunner) adoptLiveWorkers(runDir string, entries []os.DirEntry) 
 			WorkerPID: resp.WorkerPID, ChildPID: resp.ChildPID,
 			rotateAfterTurn: fpMismatch,
 		}
+		h.mu.Lock()
+		h.warmWorkers[sess.ID] = handle
 		h.mu.Unlock()
+		h.setBgTaskCount(sess.ID, sess.NativeID, resp.BgTaskCount)
+		adopted = append(adopted, handle)
 		if !inActiveTurn {
 			if !(sess.State == StateBlocked && sess.Blocked != nil && sess.Blocked.Kind == BlockRateLimit) {
 				sess.State, sess.Blocked, sess.PID = StateIdle, nil, 0
@@ -200,6 +246,7 @@ func (h *HeadlessRunner) adoptLiveWorkers(runDir string, entries []os.DirEntry) 
 			}
 		}
 	}
+	return adopted
 }
 
 func (h *HeadlessRunner) reattachLiveTurn(sess *Session, meta *TurnSpoolMeta, pingResp *workerIPCResp, clearInterrupted func(*Session, *TurnSpoolMeta)) {
@@ -219,9 +266,13 @@ func (h *HeadlessRunner) reattachLiveTurn(sess *Session, meta *TurnSpoolMeta, pi
 	if pingResp != nil && pingResp.WorkerPID > 1 {
 		livePID = pingResp.WorkerPID
 	}
-	sess.State, sess.Blocked, sess.PID = StateWorking, nil, livePID
-	if sess.Activity == "" {
-		sess.Activity = "Thinking..."
+	if !h.restoreBlockedControlOnReattach(sess, meta, pingResp) {
+		sess.State, sess.Blocked, sess.PID = StateWorking, nil, livePID
+		if sess.Activity == "" {
+			sess.Activity = "Thinking..."
+		}
+	} else {
+		sess.PID = livePID
 	}
 	_ = h.db.SaveSession(sess)
 	if h.broadcast != nil {
@@ -232,12 +283,17 @@ func (h *HeadlessRunner) reattachLiveTurn(sess *Session, meta *TurnSpoolMeta, pi
 	h.processes[sess.ID] = trackedCmd
 	h.activeSessions[sess.ID] = sess
 	h.activeTurns[sess.ID] = true
-	h.activePrompts[sess.ID] = TranscriptMessage{
-		Role:      "user",
-		Content:   meta.Prompt,
-		Timestamp: meta.StartedAt,
-		TurnID:    meta.TurnID,
-		InFlight:  true,
+	if meta.TurnID != "" {
+		h.monitoredTurns[meta.TurnID] = true
+	}
+	if !meta.IsSynthetic && strings.TrimSpace(meta.Prompt) != "" {
+		h.activePrompts[sess.ID] = TranscriptMessage{
+			Role:      "user",
+			Content:   meta.Prompt,
+			Timestamp: meta.StartedAt,
+			TurnID:    meta.TurnID,
+			InFlight:  true,
+		}
 	}
 	h.sessionSpools[sess.ID] = meta
 	h.activeMonitors++
@@ -312,7 +368,7 @@ func (h *HeadlessRunner) ReattachLiveWorkers() {
 		return
 	}
 
-	h.adoptLiveWorkers(runDir, entries)
+	adopted := h.adoptLiveWorkers(runDir, entries)
 
 	var metas []*TurnSpoolMeta
 	for _, e := range entries {
@@ -333,7 +389,7 @@ func (h *HeadlessRunner) ReattachLiveWorkers() {
 	}
 
 	for _, meta := range metas {
-		isActiveStatus := meta.Status == "starting" || meta.Status == "running"
+		isActiveStatus := isActiveTurnStatus(meta.Status)
 		var pingResp *workerIPCResp
 		alive := false
 		if isActiveStatus {
@@ -370,6 +426,9 @@ func (h *HeadlessRunner) ReattachLiveWorkers() {
 			h.sessionSpools[sess.ID] = meta
 			h.mu.Unlock()
 		}
+	}
+	for _, handle := range adopted {
+		h.ensureWarmWatcher(handle)
 	}
 	h.PruneStaleSpools(24 * time.Hour)
 }
