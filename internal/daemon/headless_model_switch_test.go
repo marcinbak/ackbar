@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -556,4 +557,111 @@ func TestServer_NormalizeModelLabelInConfigAndSpawn(t *testing.T) {
 	if spawnResp.Session == nil || spawnResp.Session.Model != "gemini-4-argon-medium" {
 		t.Errorf("expected spawn to normalize model to 'gemini-4-argon-medium', got %+v", spawnResp.Session)
 	}
+}
+
+func TestWarmWorker_ConcurrentRunTurnAndNotifyConfigChangedRace(t *testing.T) {
+	tmpDir := t.TempDir()
+	binDir := filepath.Join(tmpDir, "bin")
+	_ = os.MkdirAll(binDir, 0755)
+	mockClaude := filepath.Join(binDir, "claude")
+	script := `#!/bin/sh
+while IFS= read -r line; do
+  case "$line" in
+    *'"subtype":"set_model"'*)
+      model=$(printf '%s' "$line" | sed -n 's/.*"model":"\([^"]*\)".*/\1/p')
+      printf '{"type":"control_response","response":{"subtype":"success","response":{"model":"%s"}}}\n' "$model"
+      ;;
+    *)
+      echo '{"type":"result","result":"ok","is_error":false}'
+      ;;
+  esac
+done
+`
+	if err := os.WriteFile(mockClaude, []byte(script), 0755); err != nil {
+		t.Fatalf("write mock claude: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	db, err := InitDB(filepath.Join(tmpDir, "test.db"))
+	if err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+	h := NewHeadlessRunner(db, nil)
+	defer h.ShutdownAllWorkers(time.Second)
+
+	newSess := func(model, effort string) *Session {
+		return &Session{
+			ID:         "claude-code:local:race-conc-1",
+			Agent:      "claude-code",
+			Host:       "local",
+			NativeID:   "race-conc-1",
+			Cwd:        tmpDir,
+			EngineType: EngineHeadless,
+			Model:      model,
+			Effort:     effort,
+		}
+	}
+
+	initSess := newSess("", "")
+	_ = db.SaveSession(initSess)
+	sub0, unsub0 := h.Subscribe(initSess.ID)
+	done0 := waitTurnDone(h, initSess.ID, sub0)
+	if err := h.RunTurn(context.Background(), initSess, "warmup"); err != nil {
+		t.Fatalf("warmup RunTurn: %v", err)
+	}
+	select {
+	case <-done0:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for warmup turn")
+	}
+	unsub0()
+
+	var wg sync.WaitGroup
+	stopCh := make(chan struct{})
+	models := []string{"", "claude-sonnet-4-6", "claude-opus-4-6"}
+	efforts := []string{"", "high"}
+
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 8; i++ {
+			s := newSess(models[i%len(models)], efforts[i%len(efforts)])
+			s.FirstPrompt = "warmup"
+			for {
+				err := h.RunTurn(context.Background(), s, fmt.Sprintf("turn-%d", i))
+				if err == ErrTurnInProgress {
+					time.Sleep(5 * time.Millisecond)
+					continue
+				}
+				if err != nil {
+					t.Errorf("RunTurn(%d) failed: %v", i, err)
+				}
+				break
+			}
+			deadline := time.Now().Add(3 * time.Second)
+			for time.Now().Before(deadline) && h.IsRunning(s.ID) {
+				time.Sleep(5 * time.Millisecond)
+			}
+		}
+		close(stopCh)
+	}()
+
+	go func() {
+		defer wg.Done()
+		i := 0
+		for {
+			select {
+			case <-stopCh:
+				return
+			default:
+				s := newSess(models[i%len(models)], efforts[(i/3)%len(efforts)])
+				s.FirstPrompt = "warmup"
+				h.NotifyConfigChanged(s)
+				i++
+				time.Sleep(2 * time.Millisecond)
+			}
+		}
+	}()
+
+	wg.Wait()
 }

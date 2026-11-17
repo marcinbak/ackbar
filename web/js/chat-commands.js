@@ -248,8 +248,10 @@ export async function interceptChatInput(tabObj, rawText) {
           selectEl.className = 'config-select chat-inline-model-select';
           selectEl.style.marginTop = '8px';
           selectEl.style.width = '100%';
+          let hasPopulated = false;
           const populateModelSelect = (modelsList) => {
-            const curVal = selectEl.value || currentModel;
+            const curVal = hasPopulated ? selectEl.value : (tabObj.session.model || '');
+            hasPopulated = true;
             selectEl.innerHTML = '';
             const addOpt = (val, label, isSel) => {
               const opt = document.createElement('option');
@@ -274,7 +276,6 @@ export async function interceptChatInput(tabObj, rawText) {
             selectEl.value = curVal;
           };
           populateModelSelect(getAgentModelOptions(tabObj.session.agent, tabObj.agentModels));
-          selectEl.value = currentModel;
           const statusEl = document.createElement('div');
           statusEl.className = 'chat-inline-model-status';
           statusEl.style.fontSize = '11px';

@@ -162,6 +162,101 @@ void main() {
 
       expect(controller.text, '/model claude-sonnet-4-6');
     });
+
+    testWidgets(
+        'tapping /model command chip transitions to model suggestions and tapping model chip closes strip',
+        (tester) async {
+      final client = FakeCommandHttpClient((req) {
+        final kind = req.url.queryParameters['kind'];
+        if (kind == 'commands') {
+          return http.Response(
+            jsonEncode([
+              {
+                'name': 'model',
+                'trigger': '/model',
+                'description': 'Set or switch LLM model',
+                'category': 'Session Control',
+                'execution_mode': 'slash_arg',
+              },
+            ]),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }
+        return http.Response(
+          jsonEncode([
+            {'id': 'claude-sonnet-4-6', 'label': 'Claude Sonnet 4.6'},
+          ]),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      });
+
+      final controller = TextEditingController();
+      addTearDown(controller.dispose);
+      final sess = Session(
+        id: 's-ac-transition',
+        agent: 'claude-code',
+        host: 'local',
+        nativeId: 'n1',
+        cwd: '/work',
+        state: SessionState.idle,
+        startedAt: DateTime.now(),
+        lastEventAt: DateTime.now(),
+        engineType: 'headless',
+      );
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            apiClientProvider.overrideWithValue(ApiClient(client: client)),
+          ],
+          child: MaterialApp(
+            home: Scaffold(
+              body: HeadlessAutocompleteStrip(
+                controller: controller,
+                session: sess,
+                resolveHost: () async =>
+                    (url: 'http://127.0.0.1:7777', authToken: null),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      controller.value = const TextEditingValue(
+        text: '/mo',
+        selection: TextSelection.collapsed(offset: 3),
+      );
+      await tester.pump(const Duration(milliseconds: 180));
+      await tester.pump();
+
+      expect(find.text('/model'), findsOneWidget);
+      await tester.tap(find.text('/model'));
+      await tester.pump();
+      expect(controller.text, '/model ');
+
+      await tester.pump(const Duration(milliseconds: 180));
+      await tester.pump();
+
+      expect(find.text('Default Model'), findsOneWidget);
+      expect(find.text('Claude Sonnet 4.6'), findsOneWidget);
+
+      await tester.tap(find.text('Claude Sonnet 4.6'));
+      await tester.pump();
+      expect(controller.text, '/model claude-sonnet-4-6');
+      expect(
+        find.byKey(const ValueKey('headless_autocomplete_strip')),
+        findsNothing,
+      );
+
+      await tester.pump(const Duration(milliseconds: 180));
+      await tester.pump();
+      expect(
+        find.byKey(const ValueKey('headless_autocomplete_strip')),
+        findsNothing,
+      );
+    });
   });
 
   group('HeadlessCommandDispatcher Tests', () {

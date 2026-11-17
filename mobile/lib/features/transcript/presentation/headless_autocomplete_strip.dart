@@ -131,6 +131,7 @@ class _HeadlessAutocompleteStripState
     extends ConsumerState<HeadlessAutocompleteStrip> {
   Timer? _debounceTimer;
   ComposerTrigger? _currentTrigger;
+  bool _suppressNextCheck = false;
   List<CommandSuggestion> _commandSuggestions = const [];
   List<ModelSuggestion> _modelSuggestions = const [];
   List<FileSuggestion> _fileSuggestions = const [];
@@ -160,6 +161,7 @@ class _HeadlessAutocompleteStripState
   }
 
   void _onTextChanged() {
+    if (_suppressNextCheck) return;
     _checkTrigger();
   }
 
@@ -278,18 +280,31 @@ class _HeadlessAutocompleteStripState
             : ' ';
     final newText = '$prefix$replacement$trailing$suffix';
 
-    widget.controller.value = TextEditingValue(
-      text: newText,
-      selection: TextSelection.collapsed(
-        offset: prefix.length + replacement.length + trailing.length,
-      ),
-    );
+    final shouldTransitionToModel = trig.kind == ComposerTriggerKind.command &&
+        replacement.trim().toLowerCase() == '/model';
+
+    _debounceTimer?.cancel();
     setState(() {
       _currentTrigger = null;
       _commandSuggestions = const [];
       _modelSuggestions = const [];
       _fileSuggestions = const [];
     });
+
+    // Suppress synchronous _onTextChanged for completed chips so '/model <id>' does not reopen model autocomplete.
+    if (!shouldTransitionToModel) {
+      _suppressNextCheck = true;
+    }
+    try {
+      widget.controller.value = TextEditingValue(
+        text: newText,
+        selection: TextSelection.collapsed(
+          offset: prefix.length + replacement.length + trailing.length,
+        ),
+      );
+    } finally {
+      _suppressNextCheck = false;
+    }
   }
 
   @override

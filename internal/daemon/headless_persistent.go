@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -156,6 +157,11 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 		return fmt.Errorf("init error: %v %v", err, eErr)
 	}
 
+	var (
+		hCfgFP, hMCPFP, hBin, hSock, hWorkerID, hWorkerMetaPath string
+		hRotate, hRestartChild                                  bool
+		hArgs                                                   []string
+	)
 	h.mu.Lock()
 	if _, running := h.processes[sess.ID]; running || h.activeTurns[sess.ID] {
 		h.mu.Unlock()
@@ -166,13 +172,24 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 	}
 	sess.IsDone = false
 	handleKey, handle := h.findWarmHandleLocked(sess)
-	if handle != nil && handleKey != sess.ID && sess.ID != "" {
-		delete(h.warmWorkers, handleKey)
-		handle.SessionID = sess.ID
-		if sess.NativeID != "" {
-			handle.NativeID = sess.NativeID
+	if handle != nil {
+		if handleKey != sess.ID && sess.ID != "" {
+			delete(h.warmWorkers, handleKey)
+			handle.SessionID = sess.ID
+			if sess.NativeID != "" {
+				handle.NativeID = sess.NativeID
+			}
+			h.warmWorkers[sess.ID] = handle
 		}
-		h.warmWorkers[sess.ID] = handle
+		hCfgFP = handle.ConfigFingerprint
+		hRotate = handle.rotateAfterTurn
+		hMCPFP = handle.MCPFingerprint
+		hRestartChild = handle.restartChildAfterTurn
+		hBin = handle.Bin
+		hArgs = slices.Clone(handle.Args)
+		hSock = handle.SocketPath
+		hWorkerID = handle.WorkerID
+		hWorkerMetaPath = handle.WorkerMetaPath
 	}
 	h.mu.Unlock()
 
@@ -183,23 +200,28 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 	mcpFP := MCPFingerprint(sess, h.db, home)
 
 	if handle != nil {
-		if handle.ConfigFingerprint != fp || handle.rotateAfterTurn {
+		if hCfgFP != fp || hRotate {
 			h.ShutdownSessionWorker(sess.ID, sess.NativeID, 3*time.Second)
 			handle, isExisting = nil, true
 		} else {
-			if (handle.MCPFingerprint != "" && handle.MCPFingerprint != mcpFP) || handle.restartChildAfterTurn {
+			if (hMCPFP != "" && hMCPFP != mcpFP) || hRestartChild {
 				if ok := h.restartHandleChild(sess, handle, isExisting, fp, mcpFP, home, 3*time.Second); !ok {
 					h.ShutdownSessionWorker(sess.ID, sess.NativeID, 500*time.Millisecond)
 					handle, isExisting = nil, true
+				} else {
+					h.mu.RLock()
+					hBin = handle.Bin
+					hArgs = slices.Clone(handle.Args)
+					h.mu.RUnlock()
 				}
 			}
 			if handle != nil {
 				if stdinLine, fErr := formatPersistentStdinTurn(sess.Agent, sess.ID, sess.IsSupervisor, false, prompt); fErr == nil {
 					turnStart := time.Now().UTC()
 					turnID := fmt.Sprintf("turn_%d_%s", turnStart.UnixNano(), generateUUID()[:8])
-					meta, startEvt, sErr := h.initTurnSpool(runDir, turnID, sess.ID, sess.NativeID, sess.Agent, sess.Cwd, prompt, handle.Bin, handle.Args, handle.SocketPath, "", handle.WorkerID, handle.WorkerMetaPath, turnStart)
+					meta, startEvt, sErr := h.initTurnSpool(runDir, turnID, sess.ID, sess.NativeID, sess.Agent, sess.Cwd, prompt, hBin, hArgs, hSock, "", hWorkerID, hWorkerMetaPath, turnStart)
 					if sErr == nil {
-						resp, cErr := callWorkerSocket(handle.SocketPath, workerIPCReq{
+						resp, cErr := callWorkerSocket(hSock, workerIPCReq{
 							Op: "send_turn", MetaPath: meta.MetaPath, TurnID: turnID, StdinLine: stdinLine,
 							SessionID: sess.ID, NativeID: sess.NativeID,
 						}, 500*time.Millisecond)
@@ -442,7 +464,13 @@ func (h *HeadlessRunner) ShutdownAllWorkers(timeout time.Duration) {
 }
 
 func (h *HeadlessRunner) setHandleModelLive(sess *Session, handle *warmWorkerHandle, isExisting bool, fp, home string, timeout time.Duration) bool {
-	if h == nil || sess == nil || handle == nil || handle.SocketPath == "" || sess.Agent != "claude-code" {
+	if h == nil || sess == nil || handle == nil || sess.Agent != "claude-code" {
+		return false
+	}
+	h.mu.RLock()
+	sockPath := handle.SocketPath
+	h.mu.RUnlock()
+	if sockPath == "" {
 		return false
 	}
 	_ = home
@@ -451,7 +479,7 @@ func (h *HeadlessRunner) setHandleModelLive(sess *Session, handle *warmWorkerHan
 		return false
 	}
 	fpNoModel := ConfigFingerprintWithoutModel(sess)
-	resp, cErr := callWorkerSocket(handle.SocketPath, workerIPCReq{
+	resp, cErr := callWorkerSocket(sockPath, workerIPCReq{
 		Op:                       "set_model",
 		Model:                    sess.Model,
 		Args:                     nextArgs,
@@ -474,6 +502,12 @@ func (h *HeadlessRunner) setHandleModelLive(sess *Session, handle *warmWorkerHan
 func (h *HeadlessRunner) NotifyConfigChanged(sess *Session) {
 	if h == nil || sess == nil {
 		return
+	}
+	if sess.ID != "" {
+		// Match RunTurn's lock order (sessionMu -> h.mu) so config updates never race RunTurn's startup window.
+		sessionMu := h.getSessionTurnMu(sess.ID)
+		sessionMu.Lock()
+		defer sessionMu.Unlock()
 	}
 	h.ClearRuntimeModel(sess.ID)
 	if sess.OldID != "" {
@@ -584,7 +618,13 @@ func (h *HeadlessRunner) ScheduleChildRestartAfterTurn(sessionID string) {
 }
 
 func (h *HeadlessRunner) restartHandleChild(sess *Session, handle *warmWorkerHandle, isExisting bool, fp, mcpFP, home string, timeout time.Duration) bool {
-	if h == nil || sess == nil || handle == nil || handle.SocketPath == "" {
+	if h == nil || sess == nil || handle == nil {
+		return false
+	}
+	h.mu.RLock()
+	sockPath := handle.SocketPath
+	h.mu.RUnlock()
+	if sockPath == "" {
 		return false
 	}
 	bin, args, err := buildPersistentArgs(sess, isExisting)
@@ -593,7 +633,7 @@ func (h *HeadlessRunner) restartHandleChild(sess *Session, handle *warmWorkerHan
 	}
 	fpNoModel := ConfigFingerprintWithoutModel(sess)
 	cleanEnv := buildWorkerEnv(sess, h.db, home)
-	resp, cErr := callWorkerSocket(handle.SocketPath, workerIPCReq{
+	resp, cErr := callWorkerSocket(sockPath, workerIPCReq{
 		Op:                       "restart_child",
 		SessionID:                sess.ID,
 		NativeID:                 sess.NativeID,

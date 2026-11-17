@@ -3022,6 +3022,82 @@ test('/model interactive selector card switches model via PATCH and updates stat
   }
 });
 
+test('/model interactive selector preserves empty Default selection when async fetchSessionAgentModels resolves', async () => {
+  const { interceptChatInput } = await import('./chat-commands.js');
+  const container = document.createElement('div');
+  const inputEl = document.createElement('textarea');
+  const pillEl = document.createElement('span');
+  const tabObj = {
+    id: 'claude-code:local:default-race-1',
+    session: {
+      id: 'claude-code:local:default-race-1',
+      agent: 'claude-code',
+      model: 'claude-sonnet-4-6',
+      resolved_model: 'claude-sonnet-4-6'
+    },
+    lastDefaultModel: 'claude-fable-5-1',
+    chatMessagesEl: container,
+    chatInputEl: inputEl,
+    chatPillModel: pillEl,
+    ephemeralCards: []
+  };
+
+  let resolveModelsFetch;
+  const modelsFetchPromise = new Promise(resolve => {
+    resolveModelsFetch = resolve;
+  });
+
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = async (url, opts = {}) => {
+    const u = String(url);
+    if (u.includes('suggestions?kind=models')) {
+      return await modelsFetchPromise;
+    }
+    if (u.includes('/config') && opts.method === 'PATCH') {
+      const payload = JSON.parse(opts.body);
+      return {
+        ok: true,
+        json: async () => ({
+          id: tabObj.session.id,
+          agent: 'claude-code',
+          model: payload.model,
+          resolved_model: payload.model || 'claude-fable-5-1'
+        })
+      };
+    }
+    return { ok: true, json: async () => [] };
+  };
+
+  try {
+    const handled = await interceptChatInput(tabObj, '/model');
+    assert.equal(handled, true);
+
+    const selectEl = container.querySelector('.chat-inline-model-select');
+    assert.ok(selectEl);
+    assert.equal(selectEl.value, 'claude-sonnet-4-6');
+
+    selectEl.value = '';
+    selectEl.dispatchEvent({ type: 'change', target: selectEl });
+    await new Promise(r => setTimeout(r, 15));
+    assert.equal(selectEl.value, '');
+
+    resolveModelsFetch({
+      ok: true,
+      json: async () => [
+        { id: 'claude-fable-5-1', label: 'Claude Fable 5.1' },
+        { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' }
+      ]
+    });
+    await new Promise(r => setTimeout(r, 15));
+
+    assert.equal(selectEl.value, '', 'selecting Default ("") must not revert to initial model when models fetch resolves');
+    assert.equal(selectEl.children[0].value, '');
+    assert.equal(selectEl.children[0].selected, true);
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});
+
 test('/model <query> autocomplete fetches kind=models, prepends default, and selects via /model <id>', async () => {
   const inputEl = document.createElement('textarea');
   const menuEl = document.createElement('div');
