@@ -26,6 +26,44 @@ func runIsolatedTestMain(m *testing.M) int {
 func IsolateTestEnv() (string, func(), error) {
 	preserveGoEnv()
 
+	managedVars := []string{
+		"HOME",
+		"USERPROFILE",
+		"XDG_CONFIG_HOME",
+		"XDG_CACHE_HOME",
+		"XDG_DATA_HOME",
+		"XDG_STATE_HOME",
+		"APPDATA",
+		"LOCALAPPDATA",
+		"ACKBAR_HOST",
+		"ACKBAR_DISPLAY_NAME",
+		"ACKBAR_TOKEN",
+		"ACKBAR_DAEMON_URL",
+		"ACKBAR_SESSION_ID",
+		"ACKBAR_IS_SUPERVISOR",
+		"CLAUDE_SESSION_ID",
+		"CLAUDE_CONFIG_DIR",
+		"GEMINI_CLI_HOME",
+		"GROK_HOME",
+		"CODEX_HOME",
+		"ACKBAR_NTFY_TOPIC",
+		"ACKBAR_NTFY_SERVER",
+		"ACKBAR_NTFY_TOKEN",
+		"ACKBAR_RELAY_URL",
+		"ACKBAR_RELAY_SECRET",
+		"GIT_CONFIG_GLOBAL",
+	}
+
+	type envVal struct {
+		val string
+		set bool
+	}
+	snapshot := make(map[string]envVal, len(managedVars))
+	for _, k := range managedVars {
+		val, ok := os.LookupEnv(k)
+		snapshot[k] = envVal{val: val, set: ok}
+	}
+
 	tmpHome, err := os.MkdirTemp("", "ackbar-test-home-*")
 	if err != nil {
 		return "", nil, err
@@ -61,6 +99,10 @@ func IsolateTestEnv() (string, func(), error) {
 		"ACKBAR_SESSION_ID",
 		"ACKBAR_IS_SUPERVISOR",
 		"CLAUDE_SESSION_ID",
+		"CLAUDE_CONFIG_DIR",
+		"GEMINI_CLI_HOME",
+		"GROK_HOME",
+		"CODEX_HOME",
 		"ACKBAR_NTFY_TOPIC",
 		"ACKBAR_NTFY_SERVER",
 		"ACKBAR_NTFY_TOKEN",
@@ -94,6 +136,14 @@ func IsolateTestEnv() (string, func(), error) {
 			return nil
 		})
 		_ = os.RemoveAll(tmpHome)
+
+		for k, v := range snapshot {
+			if v.set {
+				_ = os.Setenv(k, v.val)
+			} else {
+				_ = os.Unsetenv(k)
+			}
+		}
 	}
 
 	return tmpHome, cleanup, nil

@@ -37,26 +37,29 @@ func TestPackageHomeIsIsolated(t *testing.T) {
 }
 
 func TestIsolateTestEnv_RestoresAndCleansReadOnlyFiles(t *testing.T) {
-	for _, k := range []string{"HOME", "USERPROFILE", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "APPDATA", "LOCALAPPDATA"} {
-		if v, ok := os.LookupEnv(k); ok {
-			t.Setenv(k, v)
-		}
-	}
+	origHome := os.Getenv("HOME")
 
 	t.Setenv("ACKBAR_HOST", "poison")
 	t.Setenv("ACKBAR_TOKEN", "poison")
 	t.Setenv("ACKBAR_SESSION_ID", "poison")
 	t.Setenv("GIT_CONFIG_GLOBAL", "/bad")
+	t.Setenv("CLAUDE_CONFIG_DIR", "/custom/claude")
+	t.Setenv("GEMINI_CLI_HOME", "/custom/gemini")
+	t.Setenv("GROK_HOME", "/custom/grok")
 
 	tmpHome, cleanup, err := IsolateTestEnv()
 	if err != nil {
 		t.Fatalf("IsolateTestEnv failed: %v", err)
 	}
 
-	for _, k := range []string{"ACKBAR_HOST", "ACKBAR_TOKEN", "ACKBAR_SESSION_ID", "GIT_CONFIG_GLOBAL"} {
+	for _, k := range []string{"ACKBAR_HOST", "ACKBAR_TOKEN", "ACKBAR_SESSION_ID", "GIT_CONFIG_GLOBAL", "CLAUDE_CONFIG_DIR", "GEMINI_CLI_HOME", "GROK_HOME"} {
 		if v, ok := os.LookupEnv(k); ok {
 			t.Errorf("expected %s unset, got %q", k, v)
 		}
+	}
+
+	if os.Getenv("HOME") != tmpHome {
+		t.Errorf("expected HOME %q, got %q", tmpHome, os.Getenv("HOME"))
 	}
 
 	if os.Getenv("GOCACHE") == "" {
@@ -83,6 +86,19 @@ func TestIsolateTestEnv_RestoresAndCleansReadOnlyFiles(t *testing.T) {
 
 	if _, err := os.Stat(tmpHome); !os.IsNotExist(err) {
 		t.Fatalf("expected tmpHome to be removed, got err: %v", err)
+	}
+
+	if got := os.Getenv("HOME"); got != origHome {
+		t.Errorf("expected HOME restored to %q, got %q", origHome, got)
+	}
+	if got := os.Getenv("CLAUDE_CONFIG_DIR"); got != "/custom/claude" {
+		t.Errorf("expected CLAUDE_CONFIG_DIR restored to /custom/claude, got %q", got)
+	}
+	if got := os.Getenv("GEMINI_CLI_HOME"); got != "/custom/gemini" {
+		t.Errorf("expected GEMINI_CLI_HOME restored to /custom/gemini, got %q", got)
+	}
+	if got := os.Getenv("GROK_HOME"); got != "/custom/grok" {
+		t.Errorf("expected GROK_HOME restored to /custom/grok, got %q", got)
 	}
 }
 
