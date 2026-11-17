@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -117,21 +118,34 @@ func TestIsolateTestEnv_StubsAgentCLIs(t *testing.T) {
 		}
 	}()
 
+	ext := ""
+	stubContent := "#!/bin/sh\nexit 0\n"
+	if runtime.GOOS == "windows" {
+		ext = ".bat"
+		stubContent = "@echo off\r\nexit /b 0\r\n"
+	}
+	samePath := func(a, b string) bool {
+		if runtime.GOOS == "windows" {
+			return strings.EqualFold(filepath.Clean(a), filepath.Clean(b))
+		}
+		return filepath.Clean(a) == filepath.Clean(b)
+	}
+
 	agentBins := []string{"claude", "agy", "antigravity", "codex", "grok", "grok-cli", "opencode"}
 	for _, name := range agentBins {
 		got, err := exec.LookPath(name)
 		if err != nil {
 			t.Fatalf("exec.LookPath(%q) failed: %v", name, err)
 		}
-		want := filepath.Join(tmpHome, ".test-bin", name)
-		if got != want {
+		want := filepath.Join(tmpHome, ".test-bin", name+ext)
+		if !samePath(got, want) {
 			t.Errorf("exec.LookPath(%q) = %q, want %q", name, got, want)
 		}
 	}
 
 	customDir := t.TempDir()
-	customClaude := filepath.Join(customDir, "claude")
-	if err := os.WriteFile(customClaude, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+	customClaude := filepath.Join(customDir, "claude"+ext)
+	if err := os.WriteFile(customClaude, []byte(stubContent), 0o755); err != nil {
 		t.Fatalf("write custom claude: %v", err)
 	}
 	if err := os.Setenv("PATH", customDir+string(os.PathListSeparator)+os.Getenv("PATH")); err != nil {
@@ -142,7 +156,7 @@ func TestIsolateTestEnv_StubsAgentCLIs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("exec.LookPath(custom claude) failed: %v", err)
 	}
-	if gotCustom != customClaude {
+	if !samePath(gotCustom, customClaude) {
 		t.Errorf("expected custom PATH dir to take precedence: got %q, want %q", gotCustom, customClaude)
 	}
 
