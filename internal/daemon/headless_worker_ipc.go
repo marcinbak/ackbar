@@ -58,6 +58,7 @@ type workerIPCReq struct {
 	ConfigFingerprintNoModel string   `json:"config_fingerprint_no_model,omitempty"`
 	MCPFingerprint           string   `json:"mcp_fingerprint,omitempty"`
 	RequestID                string   `json:"request_id,omitempty"`
+	Action                   string   `json:"action,omitempty"`
 	Approved                 bool     `json:"approved,omitempty"`
 	Answer                   string   `json:"answer,omitempty"`
 }
@@ -65,6 +66,7 @@ type workerIPCReq struct {
 type workerIPCResp struct {
 	OK                       bool     `json:"ok"`
 	ErrCode                  string   `json:"err_code,omitempty"`
+	Approved                 bool     `json:"approved,omitempty"`
 	WorkerPID                int      `json:"worker_pid,omitempty"`
 	ChildPID                 int      `json:"child_pid,omitempty"`
 	TurnID                   string   `json:"turn_id,omitempty"`
@@ -268,8 +270,12 @@ func handleWorkerIPC(c net.Conn, stateMu *sync.Mutex, state *string, workerMeta 
 			stateMu.Unlock()
 			return
 		}
-		if *state == "running_turn" || *activeTurn != nil {
-			reply(workerIPCResp{OK: false, ErrCode: "busy", WorkerPID: os.Getpid(), ChildPID: curChildPID})
+		if *state == "running_turn" || *state == "blocked_control" || *activeTurn != nil {
+			activeTID := ""
+			if *activeTurn != nil {
+				activeTID = (*activeTurn).turnID
+			}
+			reply(workerIPCResp{OK: false, ErrCode: "busy", State: *state, TurnID: activeTID, WorkerPID: os.Getpid(), ChildPID: curChildPID})
 			stateMu.Unlock()
 			return
 		}
@@ -403,7 +409,18 @@ func handleWorkerIPC(c net.Conn, stateMu *sync.Mutex, state *string, workerMeta 
 					reply(workerIPCResp{OK: false, ErrCode: "turn_mismatch"})
 					return
 				}
-				(*activeTurn).cancelled = true
+				turn := *activeTurn
+				turn.cancelled = true
+				_, _ = turn.spool.Append(ChatStreamEvent{SessionID: turn.meta.SessionID, TurnID: cancelledTID, Type: "turn_cancelled", Text: "Turn was cancelled by user."})
+				turn.meta.Status, turn.meta.PendingControl, turn.meta.FinishedAt = "cancelled", nil, time.Now().UTC()
+				_ = WriteTurnSpoolMeta(turn.metaPath, turn.meta)
+				_ = turn.spool.Close()
+				completedTurns[cancelledTID] = turn.meta.SpoolPath
+				*activeTurn = nil
+				workerMeta.ActiveTurnID, workerMeta.ActiveMetaPath, workerMeta.PendingControl = "", "", nil
+				if workerMeta.WorkerMetaPath != "" {
+					_ = WriteSessionWorkerMeta(workerMeta.WorkerMetaPath, workerMeta)
+				}
 			}
 		}
 		stateMu.Unlock()

@@ -243,24 +243,27 @@ func buildControlResponseJSON(ctrl *PendingControlRequest, approved bool, answer
 }
 
 func resolveRespondApproval(blocked *Blocked, actionLower, value string) bool {
-	switch actionLower {
+	switch strings.ToLower(strings.TrimSpace(actionLower)) {
 	case "allow", "yes", "proceed", "1", "approve":
 		return true
-	case "deny", "no", "4", "reject":
+	case "deny", "no", "4", "reject", "dismiss", "cancel", "2", "3":
+		return false
+	case "answer", "input", "option", "respond":
+		if blocked == nil {
+			return false
+		}
+		valTrim := strings.TrimSpace(value)
+		if blocked.Kind == BlockQuestion || isQuestionTool(blocked.ToolName) {
+			return valTrim != ""
+		}
+		if blocked.Kind == BlockApproval || isExitPlanTool(blocked.ToolName) {
+			return strings.EqualFold(valTrim, "Approve Plan") || strings.EqualFold(valTrim, "approve") || strings.EqualFold(valTrim, "yes") || strings.EqualFold(valTrim, "allow")
+		}
+		if blocked.Kind == BlockPermission {
+			return strings.EqualFold(valTrim, "Allow") || strings.EqualFold(valTrim, "Yes") || strings.EqualFold(valTrim, "Approve")
+		}
 		return false
 	default:
-		if blocked != nil {
-			valTrim := strings.TrimSpace(value)
-			switch blocked.Kind {
-			case BlockApproval:
-				return strings.EqualFold(valTrim, "Approve Plan") || strings.EqualFold(valTrim, "approve") || strings.EqualFold(valTrim, "yes") || strings.EqualFold(valTrim, "allow")
-			case BlockPermission:
-				if strings.EqualFold(valTrim, "Deny") || strings.EqualFold(valTrim, "No") || strings.EqualFold(valTrim, "Reject") {
-					return false
-				}
-				return strings.EqualFold(valTrim, "Allow") || strings.EqualFold(valTrim, "Yes") || strings.EqualFold(valTrim, "Approve") || valTrim == ""
-			}
-		}
-		return true
+		return false
 	}
 }

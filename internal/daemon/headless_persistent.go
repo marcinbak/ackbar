@@ -250,6 +250,12 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 						delete(h.monitoredTurns, turnID)
 						h.mu.Unlock()
 						removeTurnSpoolFiles(meta.MetaPath, meta)
+						if cErr == nil && resp != nil && !resp.OK && (resp.ErrCode == "busy" || resp.State == "running_turn" || resp.State == "blocked_control") {
+							if resp.TurnID != "" {
+								go h.maybeAttachObservedTurn(sess.ID, hWorkerMetaPath, *resp)
+							}
+							return ErrTurnInProgress
+						}
 					}
 					h.ShutdownSessionWorker(sess.ID, sess.NativeID, 300*time.Millisecond)
 					handle, isExisting = nil, true
@@ -745,6 +751,8 @@ func (h *HeadlessRunner) RestartSessionChild(sess *Session, timeout time.Duratio
 		}
 	}
 	h.mu.Unlock()
+	h.clearControlBlockState(sess.ID, sess.NativeID)
+	h.setBgTaskCount(sess.ID, sess.NativeID, 0)
 	h.SetQueuePaused(sess.ID, false)
 	h.syncSleepInhibitor()
 

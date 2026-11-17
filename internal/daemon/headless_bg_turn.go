@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -152,6 +153,12 @@ func (h *HeadlessRunner) maybeAttachObservedTurn(sessID, workerMetaPath string, 
 	h.mu.Unlock()
 	h.syncSleepInhibitor()
 
+	var sessMu *sync.Mutex
+	if sess.ID != "" {
+		sessMu = h.getSessionTurnMu(sess.ID)
+		sessMu.Lock()
+	}
+	preserveLatestSessionConfigFromDB(h.db, sess, meta.OrigSessionID)
 	if frame.State == "blocked_control" {
 		h.restoreBlockedControlOnReattach(sess, meta, &frame)
 	} else {
@@ -163,6 +170,9 @@ func (h *HeadlessRunner) maybeAttachObservedTurn(sessID, workerMetaPath string, 
 	}
 	if h.db != nil {
 		_ = h.db.SaveSession(sess)
+	}
+	if sessMu != nil {
+		sessMu.Unlock()
 	}
 	if h.broadcast != nil {
 		h.broadcast(sess)

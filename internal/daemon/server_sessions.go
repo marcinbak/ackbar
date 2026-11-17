@@ -1011,6 +1011,7 @@ func (s *Server) handleRespond(w http.ResponseWriter, r *http.Request) {
 		ID          string `json:"id"`
 		SessionID   string `json:"sessionId"`
 		SessionIDSC string `json:"session_id"`
+		RequestID   string `json:"request_id"`
 		Action      string `json:"action"` // "answer" | "allow" | "deny" | "input"
 		Value       string `json:"value"`
 		Answer      string `json:"answer"`
@@ -1201,11 +1202,15 @@ func (s *Server) handleRespond(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	reqRequestID := req.RequestID
+	if reqRequestID == "" {
+		reqRequestID = r.URL.Query().Get("request_id")
+	}
+
 	isHeadless := sess.EngineType == EngineHeadless || (sess.Managed && sess.TmuxName == "")
 	if isHeadless {
 		if s.headless != nil {
-			approved := resolveRespondApproval(sess.Blocked, actionLower, value)
-			if handled, err := s.headless.TryAnswerControlRequest(r.Context(), sess, approved, value); handled {
+			if handled, err := s.headless.TryAnswerControlAction(r.Context(), sess, actionLower, value, reqRequestID); handled {
 				if err != nil {
 					status := http.StatusInternalServerError
 					if errors.Is(err, ErrStaleControlRequest) {
@@ -1227,11 +1232,17 @@ func (s *Server) handleRespond(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		isBlocked := sess.State == StateBlocked || (s.headless != nil && (s.headless.IsBlockedControl(sess.ID) || s.headless.HasInteractiveBlock(sess.ID)))
+		if !isBlocked || (reqRequestID != "" && (sess.Blocked == nil || sess.Blocked.RequestID != reqRequestID)) {
+			http.Error(w, ErrStaleControlRequest.Error(), http.StatusConflict)
+			return
+		}
 		answerText := value
-		if answerText == "" && (actionLower == "allow" || actionLower == "yes" || actionLower == "1" || actionLower == "approve") {
+		isApprovalBlock := sess.Blocked != nil && sess.Blocked.Kind == BlockApproval
+		if answerText == "" && isApprovalBlock && (actionLower == "allow" || actionLower == "yes" || actionLower == "1" || actionLower == "approve") {
 			answerText = "Approve Plan"
 		}
-		if (answerText == "Approve Plan" || ((sess.Blocked == nil || sess.Blocked.Kind == BlockApproval) && strings.HasPrefix(strings.ToLower(answerText), "approve"))) && sess.PermissionMode == "plan" {
+		if isApprovalBlock && (answerText == "Approve Plan" || strings.HasPrefix(strings.ToLower(answerText), "approve")) && sess.PermissionMode == "plan" {
 			sess.PermissionMode = "bypassPermissions"
 		}
 

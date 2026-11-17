@@ -1302,11 +1302,13 @@ func (h *HeadlessRunner) CancelTurn(sessionID string) error {
 	}
 
 	if workerActive && sendWorkerCancel(meta) == nil {
+		h.clearControlBlockState(sessionID)
 		h.SetQueuePaused(sessionID, true)
 		h.EmitQueueUpdate(sessionID)
 		deleteWarmHandle()
 		return nil
 	}
+	h.clearControlBlockState(sessionID)
 	deleteWarmHandle()
 
 	if h.isOwnedProcess(cmd) {

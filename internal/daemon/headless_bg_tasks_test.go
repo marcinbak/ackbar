@@ -1,9 +1,12 @@
 package daemon
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -547,4 +550,177 @@ exit 0
 	if cnt := fetchSubagentCountViaHTTP(t, srv, sess.ID); cnt != 0 {
 		t.Fatalf("expected warm worker exit to clear running_count to 0, got %d", cnt)
 	}
+}
+
+func TestBgTasks_WatchWarmWorkerColdStartDialRetry(t *testing.T) {
+	runner := NewHeadlessRunner(nil, nil)
+	defer runner.ShutdownAllWorkers(time.Second)
+
+	sockPath := filepath.Join(t.TempDir(), "delayed.sock")
+	workerID := "w-cold-retry"
+	sessID := "claude-code:local:cold-retry"
+	wh := &warmWorkerHandle{
+		WorkerID:   workerID,
+		SessionID:  sessID,
+		NativeID:   "cold-retry",
+		SocketPath: sockPath,
+		WorkerPID:  os.Getpid(),
+	}
+	runner.mu.Lock()
+	runner.warmWorkers[sessID] = wh
+	runner.mu.Unlock()
+
+	lnReady := make(chan struct{})
+	doneServe := make(chan struct{})
+	go func() {
+		defer close(doneServe)
+		time.Sleep(160 * time.Millisecond)
+		ln, err := net.Listen("unix", sockPath)
+		if err != nil {
+			t.Errorf("listen delayed sock: %v", err)
+			return
+		}
+		defer ln.Close()
+		close(lnReady)
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		line, _ := bufio.NewReader(conn).ReadBytes('\n')
+		var req workerIPCReq
+		_ = json.Unmarshal(line, &req)
+		frame, _ := json.Marshal(workerIPCResp{OK: true, State: "idle_warm", BgTaskCount: 2})
+		_, _ = conn.Write(append(frame, '\n'))
+		time.Sleep(250 * time.Millisecond)
+	}()
+
+	runner.ensureWarmWatcher(wh)
+	<-lnReady
+	waitForWorkerCond(t, 3*time.Second, "watchWarmWorker attached after 160ms socket delay", func() bool {
+		return runner.GetBgTaskCount(sessID) == 2 && runner.HasWarmWorker(sessID)
+	})
+	runner.stopAllWarmWatchers()
+	<-doneServe
+}
+
+func TestBgTasks_TranscriptMergeAfterRecentTurnAndBusyRace(t *testing.T) {
+	t.Run("synthetic merge does not collide with Turn 1 within 2s", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		runner := NewHeadlessRunner(nil, nil)
+		srv := &Server{headless: runner}
+
+		now := time.Now().UTC()
+		turnID := "turn_bg_recent"
+		metaPath := filepath.Join(tmpDir, turnID+".meta.json")
+		spoolPath := filepath.Join(tmpDir, turnID+".ndjson")
+		w, err := OpenTurnSpoolWriter(spoolPath, turnID)
+		if err != nil {
+			t.Fatalf("OpenTurnSpoolWriter: %v", err)
+		}
+		_, _ = w.Append(ChatStreamEvent{SessionID: "s-merge", TurnID: turnID, Type: "turn_start", Timestamp: now})
+		_, _ = w.Append(ChatStreamEvent{SessionID: "s-merge", TurnID: turnID, Type: "text_delta", Text: "Background summary ready", Timestamp: now.Add(20 * time.Millisecond)})
+		_ = w.Close()
+
+		meta := &TurnSpoolMeta{
+			TurnID:      turnID,
+			SessionID:   "s-merge",
+			Agent:       "claude-code",
+			SpoolPath:   spoolPath,
+			MetaPath:    metaPath,
+			StartedAt:   now,
+			Status:      "running",
+			IsSynthetic: true,
+		}
+		_ = WriteTurnSpoolMeta(metaPath, meta)
+		runner.mu.Lock()
+		runner.sessionSpools["s-merge"] = meta
+		runner.mu.Unlock()
+
+		base := &Transcript{
+			SessionID: "s-merge",
+			Agent:     "claude-code",
+			Messages: []TranscriptMessage{
+				{Role: "user", Content: "Turn 1 prompt", Timestamp: now.Add(-1200 * time.Millisecond)},
+				{Role: "assistant", Content: "Turn 1 longer assistant message here", Timestamp: now.Add(-600 * time.Millisecond)},
+			},
+		}
+		mergedLive, inFlight := srv.mergeInFlightSpoolIntoTranscript(&Transcript{SessionID: base.SessionID, Agent: base.Agent, Messages: append([]TranscriptMessage(nil), base.Messages...)}, &Session{ID: "s-merge", Agent: "claude-code", EngineType: EngineHeadless}, "s-merge", "", "claude-code", tmpDir)
+		if inFlight == nil || len(mergedLive.Messages) != 3 || mergedLive.Messages[2].Content != "Background summary ready" || mergedLive.Messages[1].Content != "Turn 1 longer assistant message here" {
+			t.Fatalf("expected live synthetic merge to append 3rd message cleanly, got %+v", mergedLive.Messages)
+		}
+
+		meta.Status = "completed"
+		meta.FinishedAt = now.Add(40 * time.Millisecond)
+		_ = WriteTurnSpoolMeta(metaPath, meta)
+		mergedDone, _ := srv.mergeInFlightSpoolIntoTranscript(&Transcript{SessionID: base.SessionID, Agent: base.Agent, Messages: append([]TranscriptMessage(nil), base.Messages...)}, &Session{ID: "s-merge", Agent: "claude-code", EngineType: EngineHeadless}, "s-merge", "", "claude-code", tmpDir)
+		if len(mergedDone.Messages) != 3 || mergedDone.Messages[2].Content != "Background summary ready" {
+			t.Fatalf("expected finished synthetic merge before JSONL flush not to be suppressed by Turn 1, got %+v", mergedDone.Messages)
+		}
+	})
+
+	t.Run("RunTurn busy race returns ErrTurnInProgress and preserves warm worker", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		gate1 := filepath.Join(tmpDir, "busy1.gate")
+		gate2 := filepath.Join(tmpDir, "busy2.gate")
+		installScriptMockClaude(t, fmt.Sprintf(`
+read -r turn1
+echo '{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Turn 1"}}'
+echo '{"type":"result","result":"Turn 1","is_error":false}'
+while [ ! -f %q ]; do
+  sleep 0.02
+done
+echo '{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Busy bg running"}}'
+while [ ! -f %q ]; do
+  sleep 0.02
+done
+echo '{"type":"result","result":"Busy bg running","is_error":false}'
+read -r hold_line
+`, gate1, gate2))
+
+		db, _ := InitDB(filepath.Join(tmpDir, "test.db"))
+		defer db.Close()
+		srv := NewServer(db)
+		defer srv.headless.ShutdownAllWorkers(time.Second)
+
+		sess := newTestHeadlessSession("claude-code:local:busy-race", "busy-race", tmpDir, StateIdle)
+		_ = db.SaveSession(sess)
+
+		if err := srv.headless.RunTurn(context.Background(), sess, "Turn 1"); err != nil {
+			t.Fatalf("RunTurn 1: %v", err)
+		}
+		waitForWorkerCond(t, 5*time.Second, "Turn 1 idle_warm", func() bool {
+			cur, _ := db.GetSession(sess.ID)
+			return cur != nil && cur.State == StateIdle && srv.headless.HasWarmWorker(sess.ID)
+		})
+
+		srv.headless.stopAllWarmWatchers()
+		srv.headless.mu.RLock()
+		wh := srv.headless.warmWorkers[sess.ID]
+		srv.headless.mu.RUnlock()
+		origWorkerID := wh.WorkerID
+
+		_ = os.WriteFile(gate1, []byte("go"), 0600)
+		waitForWorkerCond(t, 5*time.Second, "worker entered running_turn for turn_bg_*", func() bool {
+			resp, err := callWorkerSocket(wh.SocketPath, workerIPCReq{Op: "ping"}, time.Second)
+			return err == nil && resp != nil && resp.State == "running_turn" && strings.HasPrefix(resp.TurnID, "turn_bg_")
+		})
+
+		err := srv.headless.RunTurn(context.Background(), sess, "Concurrent prompt")
+		if !errors.Is(err, ErrTurnInProgress) {
+			t.Fatalf("expected ErrTurnInProgress on busy warm worker, got %v", err)
+		}
+		srv.headless.mu.RLock()
+		curWH := srv.headless.warmWorkers[sess.ID]
+		srv.headless.mu.RUnlock()
+		if curWH == nil || curWH.WorkerID != origWorkerID {
+			t.Fatalf("expected original warm worker %s preserved on busy race, got %+v", origWorkerID, curWH)
+		}
+
+		_ = os.WriteFile(gate2, []byte("done"), 0600)
+		waitForWorkerCond(t, 5*time.Second, "observed bg turn finalized cleanly", func() bool {
+			cur, _ := db.GetSession(sess.ID)
+			return cur != nil && cur.State == StateIdle && !srv.headless.IsRunning(sess.ID)
+		})
+	})
 }

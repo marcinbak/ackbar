@@ -183,15 +183,18 @@ func (s *Server) mergeInFlightSpoolIntoTranscript(transcript *Transcript, sess *
 		if !hasStreamedAssistant {
 			return transcript, nil
 		}
+		sameSyntheticAssistant := n > 0 && msgs[n-1].Role == "assistant" &&
+			((snap.TurnID != "" && msgs[n-1].TurnID == snap.TurnID) ||
+				(msgs[n-1].TurnID == "" && !snap.UserTimestamp.IsZero() && !msgs[n-1].Timestamp.Before(snap.UserTimestamp)))
 		if !snap.IsActive {
 			if !snap.FinishedAt.IsZero() && time.Since(snap.FinishedAt) > 10*time.Second {
 				return transcript, nil
 			}
-			if n > 0 && msgs[n-1].Role == "assistant" && !msgs[n-1].Timestamp.Before(snap.UserTimestamp.Add(-2*time.Second)) {
+			if sameSyntheticAssistant {
 				return transcript, nil
 			}
 		}
-		if n > 0 && msgs[n-1].Role == "assistant" && !msgs[n-1].Timestamp.Before(snap.UserTimestamp.Add(-2*time.Second)) && len(msgs[n-1].Content) >= len(assistantContent) {
+		if sameSyntheticAssistant && len(msgs[n-1].Content) >= len(assistantContent) {
 			msgs[n-1].InFlight = snap.IsActive
 			if snap.TurnID != "" {
 				msgs[n-1].TurnID = snap.TurnID

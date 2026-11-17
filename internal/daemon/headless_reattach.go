@@ -251,6 +251,9 @@ func (h *HeadlessRunner) finalizeTurnFromSpool(sess *Session, origSessionID stri
 	}
 	wasCancelled := (meta != nil && meta.Status == "cancelled") || (snap != nil && snap.WasCancelled)
 	wasFailed := (meta != nil && (meta.ExitCode != 0 || meta.Status == "failed")) || (snap != nil && snap.StreamHadError)
+	if wasCancelled || (meta != nil && meta.Status == "failed") || (interactiveBlock != nil && interactiveBlock.RequestID != "" && wasFailed) {
+		interactiveBlock = nil
+	}
 	prompt := ""
 	if meta != nil && !meta.IsSynthetic {
 		prompt = meta.Prompt

@@ -202,9 +202,22 @@ func (h *HeadlessRunner) watchWarmWorker(ctx context.Context, workerID, sockPath
 		}
 	}
 
+	everConnected := false
+	startupDeadline := time.Now().Add(3 * time.Second)
 	for ctx.Err() == nil {
-		conn, err := net.DialTimeout("unix", sockPath, 250*time.Millisecond)
-		if err != nil {
+		var conn net.Conn
+		var err error
+		for {
+			conn, err = net.DialTimeout("unix", sockPath, 250*time.Millisecond)
+			if err == nil {
+				break
+			}
+			if !everConnected && time.Now().Before(startupDeadline) {
+				if !waitOrStop(40 * time.Millisecond) {
+					return
+				}
+				continue
+			}
 			if !waitOrStop(40 * time.Millisecond) {
 				return
 			}
@@ -214,7 +227,9 @@ func (h *HeadlessRunner) watchWarmWorker(ctx context.Context, workerID, sockPath
 				h.handleWarmWorkerExited(workerID, sid, nid)
 				return
 			}
+			break
 		}
+		everConnected = true
 
 		reqBytes, _ := json.Marshal(workerIPCReq{Op: "watch_worker"})
 		if _, wErr := conn.Write(append(reqBytes, '\n')); wErr != nil {

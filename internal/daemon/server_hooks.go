@@ -646,7 +646,17 @@ func (s *Server) applyHookStateTransition(sess *Session, event *Event, sessionID
 		}
 	}
 
-	if isPureHeadless {
+	if isPureHeadless && s.headless != nil && s.headless.IsBlockedControl(sess.ID) && evtLower != "sessionend" {
+		event.State = StateBlocked
+		if sess.Blocked != nil {
+			event.Blocked = sess.Blocked
+		} else if b := s.headless.GetInteractiveBlock(sess.ID); b != nil {
+			event.Blocked = b
+		}
+		if sess.Activity != "" {
+			event.Activity = sess.Activity
+		}
+	} else if isPureHeadless {
 		if !headlessRunning && (event.State == StateWorking || event.State == StateEnded) {
 			if sess.State == StateBlocked && sess.Blocked != nil {
 				event.State = StateBlocked

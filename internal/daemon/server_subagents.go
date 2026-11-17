@@ -356,7 +356,6 @@ func (s *Server) clearSubagents(sessionID, nativeID string) {
 
 	if sess := s.resolveSession(sessionID); sess != nil {
 		sess.RunningSubagents = 0
-		_ = s.db.SaveSession(sess)
 		s.broadcast(sess)
 	}
 }
@@ -437,9 +436,6 @@ func (s *Server) onBgTaskCountChanged(sessionID, nativeID string, bgCount int) {
 	}
 	if sess.RunningSubagents != target {
 		sess.RunningSubagents = target
-		if s.db != nil {
-			_ = s.db.SaveSession(sess)
-		}
 		s.broadcast(sess)
 	}
 }
@@ -463,7 +459,6 @@ func (s *Server) onHeadlessTurnComplete(sessionID, nativeID string) {
 	}
 	if sess := s.resolveSession(sessionID); sess != nil && sess.RunningSubagents != target {
 		sess.RunningSubagents = target
-		_ = s.db.SaveSession(sess)
 		s.broadcast(sess)
 	}
 }

@@ -55,6 +55,33 @@ func (h *HeadlessRunner) clearControlBlockState(ids ...string) {
 	h.syncSleepInhibitor()
 }
 
+func (h *HeadlessRunner) GetInteractiveBlock(sessionID string) *Blocked {
+	if h == nil || sessionID == "" {
+		return nil
+	}
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if b := h.interactiveBlocks[sessionID]; b != nil {
+		return b
+	}
+	if parts := strings.Split(sessionID, ":"); len(parts) == 3 && parts[2] != "" {
+		nativeID := parts[2]
+		if b := h.interactiveBlocks[nativeID]; b != nil {
+			return b
+		}
+		for k, b := range h.interactiveBlocks {
+			if b != nil && strings.HasSuffix(k, ":"+nativeID) {
+				return b
+			}
+		}
+	}
+	return nil
+}
+
+func (h *HeadlessRunner) HasInteractiveBlock(sessionID string) bool {
+	return h.GetInteractiveBlock(sessionID) != nil
+}
+
 func (h *HeadlessRunner) IsBlockedControl(sessionID string) bool {
 	if h == nil || sessionID == "" {
 		return false
@@ -113,6 +140,14 @@ func (h *HeadlessRunner) restoreBlockedControlOnReattach(sess *Session, meta *Tu
 }
 
 func (h *HeadlessRunner) TryAnswerControlRequest(ctx context.Context, sess *Session, approved bool, answerOrFeedback string) (bool, error) {
+	action := "deny"
+	if approved {
+		action = "allow"
+	}
+	return h.TryAnswerControlAction(ctx, sess, action, answerOrFeedback, "")
+}
+
+func (h *HeadlessRunner) TryAnswerControlAction(ctx context.Context, sess *Session, actionLower, answerOrFeedback, reqRequestID string) (bool, error) {
 	_ = ctx
 	if h == nil || sess == nil || !strings.EqualFold(sess.Agent, "claude-code") {
 		return false, nil
@@ -139,11 +174,13 @@ func (h *HeadlessRunner) TryAnswerControlRequest(ctx context.Context, sess *Sess
 	sockPath, workerID := handle.SocketPath, handle.WorkerID
 	h.mu.RUnlock()
 
-	req := workerIPCReq{Op: "answer_control", Approved: approved, Answer: answerOrFeedback}
-	if sess.Blocked != nil && sess.Blocked.RequestID != "" {
+	req := workerIPCReq{Op: "answer_control", Action: strings.ToLower(strings.TrimSpace(actionLower)), Answer: answerOrFeedback}
+	if reqRequestID != "" {
+		req.RequestID = reqRequestID
+	} else if sess.Blocked != nil && sess.Blocked.RequestID != "" {
 		req.RequestID = sess.Blocked.RequestID
 	}
-	if approved && (sess.Blocked == nil || sess.Blocked.Kind == BlockApproval || isExitPlanTool(sess.Blocked.ToolName)) {
+	if sess.PermissionMode != "bypassPermissions" {
 		bypassSess := *sess
 		bypassSess.PermissionMode = "bypassPermissions"
 		req.ConfigFingerprint = ConfigFingerprint(&bypassSess)
@@ -155,12 +192,13 @@ func (h *HeadlessRunner) TryAnswerControlRequest(ctx context.Context, sess *Sess
 		return false, nil
 	}
 	if !resp.OK {
-		if resp.ErrCode == "request_id_mismatch" || (resp.ErrCode == "not_blocked" && resp.State == "running_turn") {
+		if resp.ErrCode == "request_id_mismatch" || (resp.ErrCode == "not_blocked" && resp.State != "" && resp.State != "exited" && resp.State != "shutting_down") {
 			return true, ErrStaleControlRequest
 		}
 		return false, nil
 	}
 
+	approved := resp.Approved
 	h.mu.Lock()
 	if _, cur := h.findWarmHandleLocked(sess); cur != nil && cur.WorkerID == workerID {
 		if resp.ConfigFingerprint != "" {

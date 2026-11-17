@@ -563,3 +563,221 @@ func mustReadFile(t *testing.T, p string) string {
 	}
 	return string(b)
 }
+
+func TestStdioControl_FailClosedAndStaleRespondConflict(t *testing.T) {
+	t.Run("dismiss on BlockPermission sends deny", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		stdinLog := filepath.Join(tmpDir, "dismiss.log")
+		installScriptMockClaude(t, fmt.Sprintf(`
+read -r turn1
+echo "$turn1" >> %q
+echo '{"type":"control_request","request_id":"req_perm_dismiss","request":{"subtype":"can_use_tool","tool_name":"Bash","tool_use_id":"tu_bash_d","input":{"command":"rm -rf /tmp/x"}}}'
+read -r ctrl1
+echo "$ctrl1" >> %q
+echo '{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Skipped."}}'
+echo '{"type":"result","result":"Skipped.","is_error":false}'
+read -r hold_line
+`, stdinLog, stdinLog))
+
+		db, _ := InitDB(filepath.Join(tmpDir, "test.db"))
+		defer db.Close()
+		srv := NewServer(db)
+		defer srv.headless.ShutdownAllWorkers(time.Second)
+
+		sess := newTestHeadlessSession("claude-code:local:perm-dismiss", "perm-dismiss", tmpDir, StateIdle)
+		_ = db.SaveSession(sess)
+		if err := srv.headless.RunTurn(context.Background(), sess, "Run cmd"); err != nil {
+			t.Fatalf("RunTurn: %v", err)
+		}
+		waitForWorkerCond(t, 5*time.Second, "blocked on Bash permission", func() bool {
+			cur, _ := db.GetSession(sess.ID)
+			return cur != nil && cur.State == StateBlocked && cur.Blocked != nil && cur.Blocked.Kind == BlockPermission
+		})
+
+		rec := postSessionRespond(t, srv, map[string]string{"id": sess.ID, "action": "dismiss"})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("dismiss /respond status %d: %s", rec.Code, rec.Body.String())
+		}
+		waitForWorkerCond(t, 5*time.Second, "turn finalized", func() bool {
+			cur, _ := db.GetSession(sess.ID)
+			return cur != nil && cur.State == StateIdle && !srv.headless.IsRunning(sess.ID)
+		})
+		raw := mustReadFile(t, stdinLog)
+		if !strings.Contains(raw, `"request_id":"req_perm_dismiss"`) || !strings.Contains(raw, `"behavior":"deny"`) {
+			t.Fatalf("expected dismiss on BlockPermission to send deny, got %s", raw)
+		}
+	})
+
+	t.Run("ExitPlanMode with nil DB Blocked and rejection text stays plan and sends deny", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		stdinLog := filepath.Join(tmpDir, "plan-nil.log")
+		installScriptMockClaude(t, fmt.Sprintf(`
+read -r turn1
+echo "$turn1" >> %q
+echo '{"type":"control_request","request_id":"req_plan_nil","request":{"subtype":"can_use_tool","tool_name":"ExitPlanMode","tool_use_id":"tu_p_nil","input":{"plan":"Step 1"}}}'
+read -r ctrl1
+echo "$ctrl1" >> %q
+echo '{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Revised."}}'
+echo '{"type":"result","result":"Revised.","is_error":false}'
+read -r hold_line
+`, stdinLog, stdinLog))
+
+		db, _ := InitDB(filepath.Join(tmpDir, "test.db"))
+		defer db.Close()
+		srv := NewServer(db)
+		defer srv.headless.ShutdownAllWorkers(time.Second)
+
+		sess := newTestHeadlessSession("claude-code:local:plan-nil", "plan-nil", tmpDir, StateIdle)
+		sess.PermissionMode = "plan"
+		_ = db.SaveSession(sess)
+		if err := srv.headless.RunTurn(context.Background(), sess, "Plan"); err != nil {
+			t.Fatalf("RunTurn: %v", err)
+		}
+		waitForWorkerCond(t, 5*time.Second, "blocked on ExitPlanMode", func() bool {
+			cur, _ := db.GetSession(sess.ID)
+			return cur != nil && cur.State == StateBlocked
+		})
+
+		cur, _ := db.GetSession(sess.ID)
+		cur.Blocked = nil
+		_ = db.SaveSession(cur)
+
+		rec := postSessionRespond(t, srv, map[string]string{
+			"id":     sess.ID,
+			"action": "answer",
+			"value":  "No, revise step 2",
+		})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("/respond status %d: %s", rec.Code, rec.Body.String())
+		}
+		waitForWorkerCond(t, 5*time.Second, "turn finalized", func() bool {
+			c, _ := db.GetSession(sess.ID)
+			return c != nil && c.State == StateIdle && !srv.headless.IsRunning(sess.ID)
+		})
+		after, _ := db.GetSession(sess.ID)
+		if after.PermissionMode != "plan" {
+			t.Fatalf("expected PermissionMode to remain plan on rejection feedback, got %q", after.PermissionMode)
+		}
+		raw := mustReadFile(t, stdinLog)
+		if !strings.Contains(raw, `"behavior":"deny"`) || !strings.Contains(raw, "No, revise step 2") {
+			t.Fatalf("expected deny control_response with feedback, got %s", raw)
+		}
+
+		staleRec := postSessionRespond(t, srv, map[string]string{"id": sess.ID, "action": "allow"})
+		if staleRec.Code != http.StatusConflict {
+			t.Fatalf("expected 409 Conflict for stale /respond in idle_warm, got %d: %s", staleRec.Code, staleRec.Body.String())
+		}
+		if !srv.headless.HasWarmWorker(sess.ID) {
+			t.Fatalf("expected stale /respond not to kill warm worker")
+		}
+		if lines := strings.Split(strings.TrimSpace(mustReadFile(t, stdinLog)), "\n"); len(lines) != 2 {
+			t.Fatalf("expected zero extra stdin writes on stale 409 /respond, got %d", len(lines))
+		}
+
+		srv.headless.ShutdownAllWorkers(time.Second)
+		staleIdleRec := postSessionRespond(t, srv, map[string]string{"id": sess.ID, "action": "allow"})
+		if staleIdleRec.Code != http.StatusConflict {
+			t.Fatalf("expected 409 Conflict for /respond on idle session without worker, got %d: %s", staleIdleRec.Code, staleIdleRec.Body.String())
+		}
+	})
+}
+
+func TestStdioControl_HttpHooksPreserveBlockedControl(t *testing.T) {
+	tmpDir := t.TempDir()
+	stdinLog := filepath.Join(tmpDir, "hooks.log")
+	installScriptMockClaude(t, fmt.Sprintf(`
+read -r turn1
+echo "$turn1" >> %q
+echo '{"type":"control_request","request_id":"req_hook_keep","request":{"subtype":"can_use_tool","tool_name":"ExitPlanMode","tool_use_id":"tu_hk","input":{"plan":"Keep gate"}}}'
+read -r ctrl1
+echo "$ctrl1" >> %q
+echo '{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Done."}}'
+echo '{"type":"result","result":"Done.","is_error":false}'
+read -r hold_line
+`, stdinLog, stdinLog))
+
+	db, _ := InitDB(filepath.Join(tmpDir, "test.db"))
+	defer db.Close()
+	srv := NewServer(db)
+	defer srv.headless.ShutdownAllWorkers(time.Second)
+
+	nativeID := "33333333-3333-3333-3333-333333333333"
+	sess := newTestHeadlessSession("claude-code:"+srv.HostName()+":"+nativeID, nativeID, tmpDir, StateIdle)
+	sess.Host = srv.HostName()
+	sess.PermissionMode = "plan"
+	_ = db.SaveSession(sess)
+
+	if err := srv.headless.RunTurn(context.Background(), sess, "Plan with hooks"); err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	waitForWorkerCond(t, 5*time.Second, "blocked on ExitPlanMode", func() bool {
+		cur, _ := db.GetSession(sess.ID)
+		return cur != nil && cur.State == StateBlocked && cur.Blocked != nil && cur.Blocked.RequestID == "req_hook_keep"
+	})
+
+	for _, ev := range []*Event{
+		{Agent: "claude-code", NativeID: nativeID, Cwd: tmpDir, EventName: "PostToolUse", ToolName: "Read", State: StateWorking, LastEventAt: time.Now()},
+		{Agent: "claude-code", NativeID: nativeID, Cwd: tmpDir, EventName: "SubagentStart", ToolName: "Explore", State: StateWorking, LastEventAt: time.Now()},
+		{Agent: "claude-code", NativeID: nativeID, Cwd: tmpDir, EventName: "PermissionRequest", State: StateBlocked, Blocked: &Blocked{Kind: BlockPermission, Reason: "Bash"}, LastEventAt: time.Now()},
+		{Agent: "claude-code", NativeID: nativeID, Cwd: tmpDir, EventName: "Stop", State: StateIdle, LastEventAt: time.Now()},
+	} {
+		srv.processParsedHookEvent(ev, ev.EventName, sess.Host, "", false)
+	}
+
+	cur, _ := db.GetSession(sess.ID)
+	if cur.State != StateBlocked || cur.Blocked == nil || cur.Blocked.Kind != BlockApproval || cur.Blocked.RequestID != "req_hook_keep" {
+		t.Fatalf("expected HTTP hooks to preserve stdio blocked_control state, got state=%v blocked=%+v", cur.State, cur.Blocked)
+	}
+
+	rec := postSessionRespond(t, srv, map[string]string{"id": sess.ID, "action": "approve"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected /respond to succeed after hooks, got %d: %s", rec.Code, rec.Body.String())
+	}
+	waitForWorkerCond(t, 5*time.Second, "turn finalized", func() bool {
+		c, _ := db.GetSession(sess.ID)
+		return c != nil && c.State == StateIdle && !srv.headless.IsRunning(sess.ID)
+	})
+}
+
+func TestStdioControl_CancelTurnAndRestartChildClearBlockedControl(t *testing.T) {
+	tmpDir := t.TempDir()
+	installScriptMockClaude(t, `
+read -r turn1
+echo '{"type":"control_request","request_id":"req_cancel_1","request":{"subtype":"can_use_tool","tool_name":"Bash","tool_use_id":"tu_c1","input":{"command":"sleep 10"}}}'
+read -r hold_line
+`)
+
+	db, _ := InitDB(filepath.Join(tmpDir, "test.db"))
+	defer db.Close()
+	srv := NewServer(db)
+	defer srv.headless.ShutdownAllWorkers(time.Second)
+
+	sess := newTestHeadlessSession("claude-code:local:cancel-ctrl", "cancel-ctrl", tmpDir, StateIdle)
+	_ = db.SaveSession(sess)
+
+	if err := srv.headless.RunTurn(context.Background(), sess, "Do bash"); err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	waitForWorkerCond(t, 5*time.Second, "blocked_control active", func() bool {
+		cur, _ := db.GetSession(sess.ID)
+		return cur != nil && cur.State == StateBlocked && srv.headless.IsBlockedControl(sess.ID)
+	})
+
+	if err := srv.headless.CancelTurn(sess.ID); err != nil {
+		t.Fatalf("CancelTurn: %v", err)
+	}
+	waitForWorkerCond(t, 5*time.Second, "cancelled back to StateIdle", func() bool {
+		cur, _ := db.GetSession(sess.ID)
+		return cur != nil && cur.State == StateIdle && cur.Blocked == nil && !srv.headless.IsRunning(sess.ID) && !srv.headless.IsBlockedControl(sess.ID)
+	})
+
+	srv.headless.setControlBlockState(sess.ID)
+	srv.headless.setBgTaskCount(sess.ID, sess.NativeID, 3)
+	if !srv.headless.IsBlockedControl(sess.ID) || srv.headless.GetBgTaskCount(sess.ID) != 3 {
+		t.Fatalf("expected setup blockedControl and bgTaskCount=3")
+	}
+	srv.headless.RestartSessionChild(sess, time.Second)
+	if srv.headless.IsBlockedControl(sess.ID) || srv.headless.GetBgTaskCount(sess.ID) != 0 {
+		t.Fatalf("expected RestartSessionChild to clear blockedControl=%v and bgTaskCount=%d", srv.headless.IsBlockedControl(sess.ID), srv.headless.GetBgTaskCount(sess.ID))
+	}
+}

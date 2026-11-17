@@ -152,7 +152,19 @@ func (rt *workerRuntime) handleAnswerControlIPC(req workerIPCReq) workerIPCResp 
 		rt.mu.Unlock()
 		return workerIPCResp{OK: false, ErrCode: "request_id_mismatch", State: curState, WorkerPID: os.Getpid(), ChildPID: curChildPID}
 	}
-	ctrlLine, bErr := buildControlResponseJSON(ctrl, req.Approved, req.Answer)
+	approved := req.Approved
+	if req.Action != "" {
+		evalBlocked := ctrl.Blocked
+		if evalBlocked == nil && ctrl.ToolName != "" {
+			evalBlocked = &Blocked{ToolName: ctrl.ToolName}
+		} else if evalBlocked != nil && evalBlocked.ToolName == "" && ctrl.ToolName != "" {
+			cp := *evalBlocked
+			cp.ToolName = ctrl.ToolName
+			evalBlocked = &cp
+		}
+		approved = resolveRespondApproval(evalBlocked, req.Action, req.Answer)
+	}
+	ctrlLine, bErr := buildControlResponseJSON(ctrl, approved, req.Answer)
 	if bErr != nil {
 		curState := *rt.state
 		rt.mu.Unlock()
@@ -165,7 +177,7 @@ func (rt *workerRuntime) handleAnswerControlIPC(req workerIPCReq) workerIPCResp 
 		return workerIPCResp{OK: false, ErrCode: "inactive_child", State: curState, WorkerPID: os.Getpid(), ChildPID: curChildPID}
 	}
 	updatedPermMode := ""
-	if isExitPlanTool(ctrl.ToolName) && req.Approved {
+	if isExitPlanTool(ctrl.ToolName) && approved {
 		updatedPermMode = "bypassPermissions"
 		if req.ConfigFingerprint != "" {
 			rt.workerMeta.ConfigFingerprint = req.ConfigFingerprint
@@ -192,6 +204,7 @@ func (rt *workerRuntime) handleAnswerControlIPC(req workerIPCReq) workerIPCResp 
 	rt.notifyWatchersLocked()
 	resp := workerIPCResp{
 		OK:                       true,
+		Approved:                 approved,
 		WorkerPID:                os.Getpid(),
 		ChildPID:                 g.pgid,
 		TurnID:                   turn.turnID,
