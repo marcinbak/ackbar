@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"ackbar/internal/agent"
@@ -189,20 +190,36 @@ func applyDiskScanResult(s *Server, state *ScanState, res agent.DiskScanResult) 
 		}
 	}
 	for _, adopt := range res.AdoptUpdates {
+		newNativeID := strings.TrimSpace(adopt.NewNativeID)
+		if newNativeID == "" {
+			continue
+		}
+		if state.knownIDs == nil {
+			state.knownIDs = make(map[string]*Session)
+		}
+		if state.knownByNativeID == nil {
+			state.knownByNativeID = make(map[string]*Session)
+		}
 		oldSess := state.knownIDs[adopt.OldSessionID]
 		if oldSess == nil {
 			continue
 		}
+		newSessID := fmt.Sprintf("%s:%s:%s", oldSess.Agent, state.hostName, newNativeID)
+		if existingNew, exists := state.knownIDs[newSessID]; exists && existingNew != oldSess {
+			continue
+		}
 		if s != nil && s.db != nil {
 			_ = s.db.DeleteSession(adopt.OldSessionID)
+			_ = s.db.ReassignWorkerSessionID(adopt.OldSessionID, newSessID)
 		}
 		delete(state.knownIDs, adopt.OldSessionID)
-		delete(state.knownByNativeID, oldSess.NativeID)
+		if oldSess.NativeID != "" {
+			delete(state.knownByNativeID, oldSess.NativeID)
+		}
 
-		newSessID := fmt.Sprintf("%s:%s:%s", oldSess.Agent, state.hostName, adopt.NewNativeID)
 		oldSess.ID = newSessID
 		oldSess.OldID = adopt.OldSessionID
-		oldSess.NativeID = adopt.NewNativeID
+		oldSess.NativeID = newNativeID
 		if adopt.Cwd != "" && oldSess.Cwd == "" {
 			oldSess.Cwd = adopt.Cwd
 			oldSess.ProjectKey = GetProjectKey(adopt.Cwd)
@@ -214,7 +231,7 @@ func applyDiskScanResult(s *Server, state *ScanState, res agent.DiskScanResult) 
 			oldSess.LastEventAt = adopt.UpdatedAt
 		}
 		state.knownIDs[newSessID] = oldSess
-		state.knownByNativeID[adopt.NewNativeID] = oldSess
+		state.knownByNativeID[newNativeID] = oldSess
 		if s != nil {
 			if s.db != nil {
 				_ = s.db.SaveSession(oldSess)

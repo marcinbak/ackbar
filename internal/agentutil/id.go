@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-var safeSessionIDRegex = regexp.MustCompile(`^[a-zA-Z0-9_\-\.:]+$`)
+var safeSessionIDRegex = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_\-\.:]{0,255}$`)
 
 func IsUUID(s string) bool {
 	if len(s) != 36 {

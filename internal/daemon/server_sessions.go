@@ -1648,7 +1648,7 @@ func (s *Server) deleteSessionFilesOnDisk(sess *Session) {
 	}
 
 	// Fallback to all providers
-	for _, p := range s.providers {
+	for _, p := range s.snapshotProviders() {
 		_ = p.CleanSessionFiles(home, sess.Cwd, nativeID)
 	}
 }

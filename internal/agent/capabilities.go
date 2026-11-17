@@ -57,11 +57,6 @@ var validEfforts = map[string]bool{
 	"high": true, "xhigh": true, "max": true,
 }
 
-var standardPermissionModes = map[string]bool{
-	"bypasspermissions": true, "auto": true, "acceptedits": true,
-	"dontask": true, "plan": true,
-}
-
 func (c Capabilities) ValidateConfig(in ConfigValidationInput) error {
 	engine := strings.ToLower(strings.TrimSpace(in.EngineType))
 	switch engine {
@@ -108,19 +103,18 @@ func (c Capabilities) ValidateConfig(in ConfigValidationInput) error {
 		if pmLower == "bypasspermissions" && !c.SupportsYoloMode {
 			return fmt.Errorf("permission_mode %q is not supported by this agent", in.PermissionMode)
 		}
-		if len(c.SupportedPermissionModes) > 0 {
-			allowed := false
-			for _, candidate := range c.SupportedPermissionModes {
-				if strings.EqualFold(strings.TrimSpace(candidate), pm) {
-					allowed = true
-					break
-				}
+		if len(c.SupportedPermissionModes) == 0 {
+			return fmt.Errorf("permission_mode %q is not supported by this agent", in.PermissionMode)
+		}
+		allowed := false
+		for _, candidate := range c.SupportedPermissionModes {
+			if strings.EqualFold(strings.TrimSpace(candidate), pm) {
+				allowed = true
+				break
 			}
-			if !allowed {
-				return fmt.Errorf("permission_mode %q is not supported by this agent", in.PermissionMode)
-			}
-		} else if !standardPermissionModes[pmLower] {
-			return fmt.Errorf("invalid permission_mode %q", in.PermissionMode)
+		}
+		if !allowed {
+			return fmt.Errorf("permission_mode %q is not supported by this agent", in.PermissionMode)
 		}
 	}
 

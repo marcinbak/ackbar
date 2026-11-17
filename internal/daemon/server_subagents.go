@@ -83,19 +83,25 @@ func (s *Server) getRunningSubagents(sessionID, nativeID, agent, cwd string) []S
 
 	if p, ok := s.resolveProvider(agent); ok {
 		if discoverer, ok := p.(SubagentDiscoverer); ok {
-			hasDiscoverer = true
-			home, _ := os.UserHomeDir()
-			if activeSubs, err := discoverer.ListSubagents(home, cwd, nativeID); err == nil {
-				for _, sub := range activeSubs {
-					if sub != nil && sub.State == "running" {
-						diskSubs = append(diskSubs, SubagentInfo{
-							ID:        sub.ID,
-							Name:      sub.Name,
-							Role:      sub.Role,
-							Prompt:    sub.Prompt,
-							State:     sub.State,
-							StartedAt: sub.StartedAt,
-						})
+			supportsDisk := true
+			if gated, hasGate := p.(interface{ SupportsSubagentDiscovery() bool }); hasGate {
+				supportsDisk = gated.SupportsSubagentDiscovery()
+			}
+			if supportsDisk {
+				hasDiscoverer = true
+				home, _ := os.UserHomeDir()
+				if activeSubs, err := discoverer.ListSubagents(home, cwd, nativeID); err == nil {
+					for _, sub := range activeSubs {
+						if sub != nil && sub.State == "running" {
+							diskSubs = append(diskSubs, SubagentInfo{
+								ID:        sub.ID,
+								Name:      sub.Name,
+								Role:      sub.Role,
+								Prompt:    sub.Prompt,
+								State:     sub.State,
+								StartedAt: sub.StartedAt,
+							})
+						}
 					}
 				}
 			}

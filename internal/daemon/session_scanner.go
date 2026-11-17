@@ -403,6 +403,7 @@ func (s *Server) scanTmuxPanes(ctx context.Context, state *ScanState) {
 		}
 	}
 
+	providers := s.snapshotProviders()
 	lines := strings.Split(string(out), "\n")
 	for _, line := range lines {
 		pidStr, cwd, tmuxName, cmdName, ok := parseTmuxPaneLine(line)
@@ -424,7 +425,7 @@ func (s *Server) scanTmuxPanes(ctx context.Context, state *ScanState) {
 			actualPID = panePID
 		}
 
-		for _, p := range s.providers {
+		for _, p := range providers {
 			prefix := fmt.Sprintf("ackbar-%s-", p.Agent())
 			if strings.HasPrefix(tmuxName, prefix) {
 				agent = p.Agent()
@@ -435,7 +436,7 @@ func (s *Server) scanTmuxPanes(ctx context.Context, state *ScanState) {
 		if panePID > 0 {
 			for _, child := range childrenByPPID[panePID] {
 				matchedAgent := ""
-				for _, p := range s.providers {
+				for _, p := range providers {
 					for _, pName := range p.ProcessNames() {
 						if strings.Contains(child.cmd, pName) {
 							matchedAgent = p.Agent()
@@ -455,7 +456,7 @@ func (s *Server) scanTmuxPanes(ctx context.Context, state *ScanState) {
 		}
 
 		if agent == "" {
-			for _, p := range s.providers {
+			for _, p := range providers {
 				for _, pName := range p.ProcessNames() {
 					if strings.Contains(cmdLower, pName) {
 						agent = p.Agent()
@@ -740,6 +741,18 @@ func (s *Server) scanDiskSessions(ctx context.Context, state *ScanState) {
 	}
 	s.agentAdapter("claude-code").ScanDiskSessions(ctx, s, home, state)
 	s.agentAdapter("antigravity").ScanDiskSessions(ctx, s, home, state)
+
+	if reg := s.PluginRegistry(); reg != nil {
+		for _, p := range reg.List() {
+			key := strings.ToLower(strings.TrimSpace(p.Key()))
+			if key == "claude-code" || key == "antigravity" {
+				continue
+			}
+			if _, ok := reg.AsScanner(p.Key()); ok {
+				s.agentAdapter(p.Key()).ScanDiskSessions(ctx, s, home, state)
+			}
+		}
+	}
 }
 
 func (d *DB) GetSessionTaskBinding(sessionID string) (taskID string, nodePath string) {

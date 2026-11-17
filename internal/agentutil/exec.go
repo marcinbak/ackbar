@@ -48,6 +48,15 @@ func ResolveBinary(name string, extraDirs ...string) (string, error) {
 	if trimmed == "" {
 		return "", fmt.Errorf("empty binary name")
 	}
+	if filepath.IsAbs(trimmed) {
+		if isExecutableFile(trimmed) {
+			return trimmed, nil
+		}
+		return "", exec.ErrNotFound
+	}
+	if strings.ContainsAny(trimmed, "/\\") {
+		return "", exec.ErrNotFound
+	}
 	if p, err := exec.LookPath(trimmed); err == nil && p != "" {
 		return p, nil
 	}

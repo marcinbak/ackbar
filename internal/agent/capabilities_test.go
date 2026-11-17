@@ -104,6 +104,18 @@ func TestCapabilities_ValidateConfig(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name:    "permission mode fails closed when supported list empty",
+			caps:    Capabilities{SupportsTmux: true},
+			in:      ConfigValidationInput{PermissionMode: "plan"},
+			wantErr: true,
+		},
+		{
+			name:    "default permission mode allowed when supported list empty",
+			caps:    Capabilities{SupportsTmux: true},
+			in:      ConfigValidationInput{PermissionMode: "default"},
+			wantErr: false,
+		},
+		{
 			name:    "unsupported system prompt",
 			caps:    Capabilities{SupportsTmux: true},
 			in:      ConfigValidationInput{SystemPrompt: "override"},

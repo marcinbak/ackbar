@@ -152,6 +152,8 @@ func (s *Server) resolveProvider(agentName string) (Provider, bool) {
 	if s == nil {
 		return nil, false
 	}
+	s.registryMu.RLock()
+	defer s.registryMu.RUnlock()
 	if p, ok := s.providers[agentName]; ok {
 		return p, true
 	}

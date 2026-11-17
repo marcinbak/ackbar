@@ -82,6 +82,19 @@ func TestExec_IDsAndText(t *testing.T) {
 	if err != nil || got != binPath {
 		t.Errorf("ResolveBinary = (%q, %v), want %q", got, err, binPath)
 	}
+	if absGot, absErr := ResolveBinary(binPath); absErr != nil || absGot != binPath {
+		t.Errorf("ResolveBinary(abs) = (%q, %v), want %q", absGot, absErr, binPath)
+	}
+	cwdDir := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(cwdDir, "bin"), 0o755)
+	_ = os.WriteFile(filepath.Join(cwdDir, "bin", "agy"), []byte("#!/bin/sh\n"), 0o755)
+	t.Chdir(cwdDir)
+	if relGot, relErr := ResolveBinary("bin/agy"); relErr == nil {
+		t.Errorf("ResolveBinary('bin/agy') = %q, want error rejecting relative slash path", relGot)
+	}
+	if relGot2, relErr2 := ResolveBinary(`bin\agy`); relErr2 == nil {
+		t.Errorf("ResolveBinary('bin\\agy') = %q, want error rejecting relative backslash path", relGot2)
+	}
 	if _, err := LookPathInStandardDirs("definitely-missing-ackbar-bin-xyz"); err == nil {
 		t.Error("expected ErrNotFound for missing binary")
 	}
@@ -100,7 +113,7 @@ func TestExec_IDsAndText(t *testing.T) {
 	if !IsUUID(uuid) || IsUUID("not-a-uuid") {
 		t.Error("IsUUID mismatch")
 	}
-	if !IsSafeSessionID("sess_1:abc-2") || IsSafeSessionID("../etc") || IsSafeSessionID(".") {
+	if !IsSafeSessionID("sess_1:abc-2") || IsSafeSessionID("../etc") || IsSafeSessionID(".") || IsSafeSessionID("-flag") || IsSafeSessionID(".lock") || IsSafeSessionID("--resume") {
 		t.Error("IsSafeSessionID mismatch")
 	}
 	if !IsSafeGrokSessionID("grok-1.2:ok") || IsSafeGrokSessionID("-bad") || IsSafeGrokSessionID("a..b") {

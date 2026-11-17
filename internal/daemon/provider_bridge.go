@@ -188,6 +188,14 @@ func (b *PluginBridge) InspectStatus(ctx context.Context, sess *Session) bool {
 	return false
 }
 
+func (b *PluginBridge) SupportsSubagentDiscovery() bool {
+	if !b.plugin.Capabilities().SupportsSubagents {
+		return false
+	}
+	_, ok := b.transcripts()
+	return ok
+}
+
 func (b *PluginBridge) ListSubagents(home, cwd, nativeID string) ([]*ActiveSubagent, error) {
 	tr, ok := b.transcripts()
 	if !ok {

@@ -1269,7 +1269,7 @@ func (s *Server) ExtractTranscript(agent, nativeID, cwd string) (*Transcript, er
 			}
 		}
 
-		for _, p := range s.providers {
+		for _, p := range s.snapshotProviders() {
 			msgs, perr := p.ExtractTranscript(home, cwd, nativeID)
 			if perr == nil && len(msgs) > 0 {
 				t.Messages = msgs
