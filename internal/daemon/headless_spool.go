@@ -15,29 +15,31 @@ import (
 
 // TurnSpoolMeta persists worker sidecar metadata at 0600 without environment variables or secrets.
 type TurnSpoolMeta struct {
-	TurnID            string    `json:"turn_id"`
-	SessionID         string    `json:"session_id"`
-	OrigSessionID     string    `json:"orig_session_id,omitempty"`
-	NativeID          string    `json:"native_id"`
-	Agent             string    `json:"agent"`
-	Cwd               string    `json:"cwd,omitempty"`
-	Prompt            string    `json:"prompt"`
-	Bin               string    `json:"bin"`
-	Args              []string  `json:"args,omitempty"`
-	SocketPath        string    `json:"socket_path"`
-	SocketTempDir     string    `json:"socket_temp_dir,omitempty"`
-	SpoolPath         string    `json:"spool_path"`
-	MetaPath          string    `json:"meta_path,omitempty"`
-	WorkerID          string    `json:"worker_id,omitempty"`
-	WorkerMetaPath    string    `json:"worker_meta_path,omitempty"`
-	WorkerPID         int       `json:"worker_pid,omitempty"`
-	ChildPID          int       `json:"child_pid,omitempty"`
-	StartedAt         time.Time `json:"started_at"`
-	FinishedAt        time.Time `json:"finished_at,omitempty"`
-	Status            string    `json:"status"`
-	ExitCode          int       `json:"exit_code"`
-	StderrTail        string    `json:"stderr_tail,omitempty"`
-	FinalizedByDaemon bool      `json:"finalized_by_daemon,omitempty"`
+	TurnID            string                 `json:"turn_id"`
+	SessionID         string                 `json:"session_id"`
+	OrigSessionID     string                 `json:"orig_session_id,omitempty"`
+	NativeID          string                 `json:"native_id"`
+	Agent             string                 `json:"agent"`
+	Cwd               string                 `json:"cwd,omitempty"`
+	Prompt            string                 `json:"prompt"`
+	Bin               string                 `json:"bin"`
+	Args              []string               `json:"args,omitempty"`
+	SocketPath        string                 `json:"socket_path"`
+	SocketTempDir     string                 `json:"socket_temp_dir,omitempty"`
+	SpoolPath         string                 `json:"spool_path"`
+	MetaPath          string                 `json:"meta_path,omitempty"`
+	WorkerID          string                 `json:"worker_id,omitempty"`
+	WorkerMetaPath    string                 `json:"worker_meta_path,omitempty"`
+	WorkerPID         int                    `json:"worker_pid,omitempty"`
+	ChildPID          int                    `json:"child_pid,omitempty"`
+	StartedAt         time.Time              `json:"started_at"`
+	FinishedAt        time.Time              `json:"finished_at,omitempty"`
+	Status            string                 `json:"status"`
+	ExitCode          int                    `json:"exit_code"`
+	StderrTail        string                 `json:"stderr_tail,omitempty"`
+	FinalizedByDaemon bool                   `json:"finalized_by_daemon,omitempty"`
+	IsSynthetic       bool                   `json:"is_synthetic,omitempty"`
+	PendingControl    *PendingControlRequest `json:"pending_control,omitempty"`
 }
 
 type InFlightTurnSnapshot struct {
@@ -55,6 +57,7 @@ type InFlightTurnSnapshot struct {
 	Blocked           *Blocked
 	StreamHadError    bool
 	WasCancelled      bool
+	IsSynthetic       bool
 	LastSeq           int64
 	IsActive          bool
 	FinishedAt        time.Time
@@ -328,10 +331,14 @@ func SynthesizeInFlightTurn(meta *TurnSpoolMeta, streamAgent string) (*InFlightT
 	if agent == "" {
 		agent = meta.Agent
 	}
+	userPrompt := cleanActivePromptForAgent(agent, meta.Prompt)
+	if meta.IsSynthetic {
+		userPrompt = ""
+	}
 	snap := &InFlightTurnSnapshot{
 		TurnID: meta.TurnID, SessionID: meta.SessionID, NativeID: meta.NativeID,
-		UserPrompt: cleanActivePromptForAgent(agent, meta.Prompt), UserTimestamp: meta.StartedAt,
-		IsActive: meta.Status == "starting" || meta.Status == "running", FinishedAt: meta.FinishedAt, UpdatedAt: meta.StartedAt,
+		UserPrompt: userPrompt, UserTimestamp: meta.StartedAt, IsSynthetic: meta.IsSynthetic,
+		IsActive: isActiveTurnStatus(meta.Status), FinishedAt: meta.FinishedAt, UpdatedAt: meta.StartedAt,
 		ActivityStartedAt: meta.StartedAt,
 		ActivityKind:      "thinking",
 	}
@@ -386,6 +393,8 @@ func SynthesizeInFlightTurn(meta *TurnSpoolMeta, streamAgent string) (*InFlightT
 			}
 		case "interactive_block":
 			snap.Blocked, snap.IsActive = evt.Blocked, false
+		case "control_resolved":
+			snap.Blocked, snap.IsActive = nil, true
 		case "error":
 			snap.StreamHadError, snap.IsActive = true, false
 			if t := strings.TrimSpace(evt.Text); t != "" {
@@ -458,18 +467,17 @@ func (h *HeadlessRunner) GetInFlightTurnSnapshot(sess *Session, sessionID, nativ
 			if h.IsRunning(sessionID) || (sess != nil && sess.ID != "" && h.IsRunning(sess.ID)) {
 				snap.IsActive = true
 			} else {
-				snap.IsActive = (meta.Status == "starting" || meta.Status == "running") && h.isSpoolWorkerLive(meta)
+				snap.IsActive = isActiveTurnStatus(meta.Status) && h.isSpoolWorkerLive(meta)
 			}
 			return snap
 		}
 	}
 
-	for _, candidate := range []string{sessionID, func() string {
-		if sess != nil {
-			return sess.ID
-		}
-		return ""
-	}(), nativeID} {
+	sessID := ""
+	if sess != nil {
+		sessID = sess.ID
+	}
+	for _, candidate := range []string{sessionID, sessID, nativeID} {
 		if candidate != "" {
 			if msg, ok := h.GetActiveTurnPrompt(candidate); ok && strings.TrimSpace(msg.Content) != "" {
 				return &InFlightTurnSnapshot{

@@ -277,3 +277,51 @@ func TestEnsureDaemonRunningWith_DrainDeferredAndAuthHeaders(t *testing.T) {
 		t.Fatal("expected spawnFn NOT called when managed service is still starting")
 	}
 }
+
+func TestSetupClaudeHooksInHome_RegistersSubagentLifecycle(t *testing.T) {
+	home := t.TempDir()
+	claudeDir := filepath.Join(home, ".claude")
+	if err := os.MkdirAll(claudeDir, 0755); err != nil {
+		t.Fatalf("mkdir .claude: %v", err)
+	}
+	settingsPath := filepath.Join(claudeDir, "settings.json")
+	if err := os.WriteFile(settingsPath, []byte(`{"hooks":{"Stop":[{"hooks":[{"type":"http","url":"http://127.0.0.1:7777/v1/hooks/claude-code"}]}]}}`), 0644); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+
+	if err := setupClaudeHooksInHome(home); err != nil {
+		t.Fatalf("setupClaudeHooksInHome: %v", err)
+	}
+
+	raw, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("read updated settings: %v", err)
+	}
+	var parsed struct {
+		Hooks map[string][]struct {
+			Hooks []struct {
+				Type string `json:"type"`
+				URL  string `json:"url"`
+			} `json:"hooks"`
+		} `json:"hooks"`
+	}
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		t.Fatalf("unmarshal settings: %v", err)
+	}
+
+	for _, key := range daemon.ClaudeHookEventKeys {
+		entries := parsed.Hooks[key]
+		if len(entries) != 1 {
+			t.Fatalf("expected 1 hook entry for %s (idempotent, no duplicates), got %d: %+v", key, len(entries), entries)
+		}
+		if len(entries[0].Hooks) != 1 || entries[0].Hooks[0].URL != "http://127.0.0.1:7777/v1/hooks/claude-code" {
+			t.Fatalf("unexpected hook config for %s: %+v", key, entries[0])
+		}
+	}
+	if _, ok := parsed.Hooks["SubagentStart"]; !ok {
+		t.Fatalf("missing SubagentStart hook registration")
+	}
+	if _, ok := parsed.Hooks["SubagentStop"]; !ok {
+		t.Fatalf("missing SubagentStop hook registration")
+	}
+}

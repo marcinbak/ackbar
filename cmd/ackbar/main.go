@@ -141,6 +141,18 @@ func openLocalDaemonDB(home string) *daemon.DB {
 	return db
 }
 
+func setupClaudeHooksInHome(home string) error {
+	claudeSettingsPath := filepath.Join(home, ".claude", "settings.json")
+	data, err := os.ReadFile(claudeSettingsPath)
+	if err != nil {
+		return err
+	}
+	content := string(data)
+	content = strings.ReplaceAll(content, "Write(~/.memories/log/**)", "Edit(~/.memories/log/**)")
+	content = strings.ReplaceAll(content, fmt.Sprintf("Write(%s/.memories/log/**)", home), fmt.Sprintf("Edit(%s/.memories/log/**)", home))
+	return daemon.ConfigureClaudeHookSettings(claudeSettingsPath, "http://127.0.0.1:7777/v1/hooks/claude-code", content, false)
+}
+
 func runSetupHooks() error {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -178,70 +190,8 @@ func runSetupHooks() error {
 	fmt.Printf("✅ Installed ackbard daemon (v%s) to %s\n", version.Version, ackbardBinTarget)
 
 	// 2. Configure Claude Code settings (~/.claude/settings.json)
-	claudeSettingsPath := filepath.Join(home, ".claude", "settings.json")
-	if data, err := os.ReadFile(claudeSettingsPath); err == nil {
-		content := string(data)
-		content = strings.ReplaceAll(content, "Write(~/.memories/log/**)", "Edit(~/.memories/log/**)")
-		content = strings.ReplaceAll(content, fmt.Sprintf("Write(%s/.memories/log/**)", home), fmt.Sprintf("Edit(%s/.memories/log/**)", home))
-
-		var settings map[string]interface{}
-		if err := json.Unmarshal([]byte(content), &settings); err == nil {
-			hooks, _ := settings["hooks"].(map[string]interface{})
-			if hooks == nil {
-				hooks = make(map[string]interface{})
-			}
-			// Correct Claude Code schema: matcher + hooks array
-			correctHookEntry := map[string]interface{}{
-				"matcher": "",
-				"hooks": []map[string]string{
-					{
-						"type": "http",
-						"url":  "http://127.0.0.1:7777/v1/hooks/claude-code",
-					},
-				},
-			}
-
-			eventKeys := []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PermissionRequest", "Notification", "Stop"}
-			for _, evtKey := range eventKeys {
-				existingList, _ := hooks[evtKey].([]interface{})
-				var validList []interface{}
-				hasHook := false
-
-				for _, item := range existingList {
-					if m, ok := item.(map[string]interface{}); ok {
-						if innerHooks, ok := m["hooks"].([]interface{}); ok {
-							isAckbarHook := false
-							for _, h := range innerHooks {
-								if hm, ok := h.(map[string]interface{}); ok {
-									u, _ := hm["url"].(string)
-									cmdStr, _ := hm["command"].(string)
-									if strings.Contains(u, "/v1/hooks/claude-code") || strings.Contains(cmdStr, "ackbar-hook") {
-										isAckbarHook = true
-									}
-								}
-							}
-							if isAckbarHook {
-								if hasHook {
-									continue
-								}
-								hasHook = true
-							}
-							validList = append(validList, item)
-						}
-					}
-				}
-
-				if !hasHook {
-					validList = append(validList, correctHookEntry)
-				}
-				hooks[evtKey] = validList
-			}
-			settings["hooks"] = hooks
-
-			newData, _ := json.MarshalIndent(settings, "", "  ")
-			_ = os.WriteFile(claudeSettingsPath, newData, 0644)
-			fmt.Printf("✅ Configured Claude Code HTTP hook and fixed permission rules in %s\n", claudeSettingsPath)
-		}
+	if err := setupClaudeHooksInHome(home); err == nil {
+		fmt.Printf("✅ Configured Claude Code HTTP hook and fixed permission rules in %s\n", filepath.Join(home, ".claude", "settings.json"))
 	}
 
 	// Clean up legacy hooks in ~/.claude.json if present

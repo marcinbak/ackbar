@@ -183,6 +183,8 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string) int {
 	var idleTimer *time.Timer
 	var rateLimitedUntil time.Time
 	var rateLimitEnteredAt time.Time
+	var pendingControl *PendingControlRequest
+	watchHub := newWorkerWatchHub()
 
 	getChildPGIDLocked := func() int {
 		if curChild != nil {
@@ -198,6 +200,25 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string) int {
 		g.writeLine(sLine)
 	}
 
+	rt := &workerRuntime{
+		mu:                 &stateMu,
+		state:              &state,
+		workerMeta:         workerMeta,
+		workerMetaPath:     workerMetaPath,
+		activeTurn:         &activeTurn,
+		curChild:           &curChild,
+		idleTimer:          &idleTimer,
+		pendingControl:     &pendingControl,
+		idleTTL:            idleTTL,
+		isStdioControl:     workerMetaPath != "" && strings.EqualFold(workerMeta.Agent, "claude-code"),
+		saveMeta:           saveWorkerMeta,
+		getChildPGIDLocked: getChildPGIDLocked,
+		writeStdin:         writeStdinLine,
+		watchHub:           watchHub,
+	}
+	bgCtrl := newWorkerBgController(rt)
+	rt.bgCtrl = bgCtrl
+
 	shutdownChildGroup := func(grace time.Duration) {
 		stateMu.Lock()
 		g := curChild
@@ -206,6 +227,16 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string) int {
 	}
 
 	exitCleanly := func(code int) {
+		stateMu.Lock()
+		bgCtrl.resetOnChildChangeLocked()
+		pendingControl = nil
+		workerMeta.PendingControl = nil
+		if state != "shutting_down" && state != "exited" {
+			state, workerMeta.State = "exited", "exited"
+		}
+		rt.notifyWatchersLocked()
+		stateMu.Unlock()
+		watchHub.closeAll()
 		waitCh := make(chan struct{})
 		go func() { subWG.Wait(); close(waitCh) }()
 		select {
@@ -245,9 +276,19 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string) int {
 			stateMu.Unlock()
 			return
 		}
+		if wait, hold := computeBgTaskIdleHold(len(bgCtrl.tasks), idleTTL, bgCtrl.idleSince, time.Now()); hold {
+			if idleTimer == nil {
+				idleTimer = time.AfterFunc(wait, onIdleTTLExpired)
+			} else {
+				idleTimer.Reset(wait)
+			}
+			stateMu.Unlock()
+			return
+		}
 		rateLimitedUntil, rateLimitEnteredAt = time.Time{}, time.Time{}
 		state, workerMeta.State = "shutting_down", "shutting_down"
 		saveWorkerMeta()
+		rt.notifyWatchersLocked()
 		stateMu.Unlock()
 		shutdownChildGroup(300 * time.Millisecond)
 		exitCleanly(0)
@@ -394,11 +435,15 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string) int {
 				rateLimitedUntil, rateLimitEnteredAt = time.Time{}, time.Time{}
 			}
 			stderrTailBuf.Reset()
+			pendingControl = nil
+			workerMeta.PendingControl = nil
 			state, workerMeta.State = "idle_warm", "idle_warm"
 			workerMeta.ActiveTurnID, workerMeta.ActiveMetaPath = "", ""
 			workerMeta.LastTurnEndedAt, workerMeta.UpdatedAt = time.Now().UTC(), time.Now().UTC()
 			saveWorkerMeta()
 			activeTurn = nil
+			bgCtrl.markIdleLocked(time.Now())
+			rt.notifyWatchersLocked()
 
 			if idleTimer == nil {
 				idleTimer = time.AfterFunc(idleTTL, onIdleTTLExpired)
@@ -415,6 +460,19 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string) int {
 			defer close(stdoutDone)
 			eofLastText, _, eofHadError = parseHeadlessStream(workerMeta.SessionID, stdoutPipe, streamParseHooks{
 				emitTurnComplete: false,
+				stdioControl:     rt.isStdioControl,
+				onSystemEvent: func(raw map[string]interface{}) {
+					bgCtrl.handleSystemEvent(gen, raw)
+				},
+				onTurnContent: func() {
+					bgCtrl.handleTurnContent(gen)
+				},
+				onControlRequest: func(ctrl *PendingControlRequest) {
+					rt.handleControlRequest(gen, ctrl)
+				},
+				onControlCancel: func(reqID string) {
+					rt.handleControlCancel(gen, reqID)
+				},
 				emit: func(evt ChatStreamEvent) {
 					stateMu.Lock()
 					if curChild == gen && !gen.replaced && activeTurn != nil && activeTurn.spool != nil && state != "shutting_down" && state != "exited" {
@@ -454,7 +512,7 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string) int {
 				},
 				onInteractiveBlock: func(toolName string, toolInput any, blocked *Blocked) {
 					stateMu.Lock()
-					if curChild != gen || gen.replaced {
+					if curChild != gen || gen.replaced || (activeTurn != nil && activeTurn.cancelled) {
 						stateMu.Unlock()
 						return
 					}
@@ -463,8 +521,11 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string) int {
 						turn.hadBlock = true
 						_, _ = turn.spool.Append(ChatStreamEvent{SessionID: workerMeta.SessionID, TurnID: turn.turnID, Type: "interactive_block", ToolName: toolName, ToolInput: toolInput, Blocked: blocked})
 					}
+					pendingControl = nil
+					workerMeta.PendingControl = nil
 					state, workerMeta.State = "shutting_down", "shutting_down"
 					saveWorkerMeta()
+					rt.notifyWatchersLocked()
 					stateMu.Unlock()
 
 					go func() {
@@ -498,8 +559,12 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string) int {
 				return
 			}
 			if curState == "idle_warm" || turn == nil {
+				bgCtrl.resetOnChildChangeLocked()
+				pendingControl = nil
+				workerMeta.PendingControl = nil
 				state, workerMeta.State = "exited", "exited"
 				saveWorkerMeta()
+				rt.notifyWatchersLocked()
 				stateMu.Unlock()
 				exitCleanly(0)
 				return
@@ -536,8 +601,12 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string) int {
 				}
 			}
 			finalizeTurnMeta(turn, stderrTailBuf, status, code, "")
+			bgCtrl.resetOnChildChangeLocked()
+			pendingControl = nil
+			workerMeta.PendingControl = nil
 			state, workerMeta.State = "exited", "exited"
 			saveWorkerMeta()
+			rt.notifyWatchersLocked()
 			stateMu.Unlock()
 			exitCleanly(0)
 		}()
@@ -566,10 +635,13 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string) int {
 			_, _ = spool.Append(ChatStreamEvent{SessionID: tMeta.SessionID, TurnID: tMeta.TurnID, Type: "model_detected", Model: pendingDetectedModel})
 			pendingDetectedModel = ""
 		}
+		bgCtrl.cancelAutoPokeLocked()
 		if idleTimer != nil {
 			idleTimer.Stop()
 		}
 		rateLimitedUntil, rateLimitEnteredAt = time.Time{}, time.Time{}
+		pendingControl = nil
+		workerMeta.PendingControl = nil
 		state, workerMeta.State = "running_turn", "running_turn"
 		workerMeta.ActiveTurnID, workerMeta.ActiveMetaPath, workerMeta.UpdatedAt = tMeta.TurnID, tMetaPath, time.Now().UTC()
 		saveWorkerMeta()
@@ -578,6 +650,7 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string) int {
 		_ = WriteTurnSpoolMeta(tMetaPath, tMeta)
 
 		activeTurn = &activeTurnState{turnID: tMeta.TurnID, metaPath: tMetaPath, meta: tMeta, spool: spool}
+		rt.notifyWatchersLocked()
 		return nil
 	}
 
@@ -601,6 +674,7 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string) int {
 		}
 	} else {
 		state, workerMeta.State = "idle_warm", "idle_warm"
+		bgCtrl.markIdleLocked(time.Now())
 		saveWorkerMeta()
 		if idleTTL > 0 {
 			if idleTimer == nil {
@@ -681,7 +755,11 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string) int {
 			oldTurn.cancelled = true
 		}
 		activeTurn = nil
+		bgCtrl.resetOnChildChangeLocked()
+		pendingControl = nil
+		workerMeta.PendingControl = nil
 		state, workerMeta.State = "restarting_child", "restarting_child"
+		rt.notifyWatchersLocked()
 		if req.SessionID != "" {
 			workerMeta.SessionID = req.SessionID
 		}
@@ -743,7 +821,9 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string) int {
 		workerMeta.ActiveTurnID, workerMeta.ActiveMetaPath = "", ""
 		workerMeta.UpdatedAt = time.Now().UTC()
 		state, workerMeta.State = "idle_warm", "idle_warm"
+		bgCtrl.markIdleLocked(time.Now())
 		saveWorkerMeta()
+		rt.notifyWatchersLocked()
 		if idleTTL > 0 {
 			if idleTimer == nil {
 				idleTimer = time.AfterFunc(idleTTL, onIdleTTLExpired)
@@ -755,11 +835,22 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string) int {
 		return newGen.pgid, nil
 	}
 
+	ipcExt := workerIPCExtensions{
+		bgTaskCount: func() int { return len(bgCtrl.tasks) },
+		pendingBlocked: func() *Blocked {
+			if pendingControl != nil {
+				return pendingControl.Blocked
+			}
+			return nil
+		},
+		onAnswerControl: rt.handleAnswerControlIPC,
+		onWatchWorker:   func(c net.Conn) { watchHub.handleWatchIPC(c, rt) },
+	}
 	for {
 		conn, aErr := ln.Accept()
 		if aErr != nil {
 			return 0
 		}
-		go handleWorkerIPC(conn, &stateMu, &state, workerMeta, getChildPGIDLocked, &activeTurn, completedTurns, &subWG, shutdownChildGroup, exitCleanly, startTurnLocked, writeStdinLine, restartChild)
+		go handleWorkerIPC(conn, &stateMu, &state, workerMeta, getChildPGIDLocked, &activeTurn, completedTurns, &subWG, shutdownChildGroup, exitCleanly, startTurnLocked, writeStdinLine, restartChild, ipcExt)
 	}
 }

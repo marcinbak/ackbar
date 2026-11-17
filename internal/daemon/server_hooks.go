@@ -375,12 +375,20 @@ func (s *Server) processParsedHookEvent(event *Event, urlEventName string, heade
 	s.trackHookSubagentEvent(sessionID, event)
 
 	// Update running subagents count on session
-	if isPureHeadless && !headlessRunning {
+	hasWarmOrBg := s.headless != nil && (s.headless.HasWarmWorker(sess.ID) || s.headless.GetBgTaskCount(sess.ID) > 0)
+	hasLiveStartSubs := s.hasActiveSubagentStartSubs(sessionID, event.NativeID)
+	if isPureHeadless && !headlessRunning && !hasWarmOrBg && !hasLiveStartSubs {
 		s.clearSubagents(sessionID, event.NativeID)
 		sess.RunningSubagents = 0
 	} else {
 		s.clearSubagentDiskCache(sessionID, event.NativeID)
-		sess.RunningSubagents = len(s.getRunningSubagents(sessionID, event.NativeID, event.Agent, sess.Cwd))
+		count := len(s.getRunningSubagents(sessionID, event.NativeID, event.Agent, sess.Cwd))
+		if s.headless != nil {
+			if bg := s.headless.GetBgTaskCount(sess.ID); bg > count {
+				count = bg
+			}
+		}
+		sess.RunningSubagents = count
 	}
 	sess.UpdatedAt = time.Now()
 
@@ -603,7 +611,11 @@ func (s *Server) applyHookStateTransition(sess *Session, event *Event, sessionID
 	}
 
 	if !strings.EqualFold(event.EventName, "SubagentStop") && (strings.EqualFold(event.EventName, "stop") || strings.EqualFold(event.EventName, "sessionend")) {
-		s.clearInMemorySubagents(sessionID, event.NativeID)
+		if strings.EqualFold(event.EventName, "sessionend") {
+			s.clearInMemorySubagents(sessionID, event.NativeID)
+		} else {
+			s.pruneSyntheticSubagents(sessionID, event.NativeID)
+		}
 		if !isPureHeadless {
 			if diskSubs, err := ExtractSubagents(event.Agent, event.NativeID, sess.Cwd); err == nil {
 				for _, sub := range diskSubs {
@@ -754,7 +766,7 @@ func (s *Server) trackHookSubagentEvent(sessionID string, event *Event) {
 		})
 	} else if strings.EqualFold(event.EventName, "SubagentStop") {
 		s.markSessionSubagentLifecycleActive(sessionID, event.NativeID)
-		s.removeSubagent(sessionID, event.NativeID, event.ToolName)
+		s.removeHookSubagent(sessionID, event.NativeID, event.ToolName)
 	} else if (evtNameLower == "posttooluse" || evtNameLower == "post_tool_use") && isSubagentTool {
 		targetSub := event.ToolName
 		if event.ToolInput != nil {
@@ -767,8 +779,10 @@ func (s *Server) trackHookSubagentEvent(sessionID string, event *Event) {
 			}
 		}
 		s.removeSubagent(sessionID, event.NativeID, targetSub)
-	} else if evtNameLower == "userpromptsubmit" || evtNameLower == "user_prompt_submit" || evtNameLower == "sessionend" || evtNameLower == "stop" {
+	} else if evtNameLower == "sessionend" {
 		s.clearInMemorySubagents(sessionID, event.NativeID)
+	} else if evtNameLower == "userpromptsubmit" || evtNameLower == "user_prompt_submit" || evtNameLower == "stop" {
+		s.pruneSyntheticSubagents(sessionID, event.NativeID)
 	} else if (evtNameLower == "pretooluse" || evtNameLower == "pre_tool_use") && isSubagentTool {
 		var prompt, desc, subType string
 		if event.ToolInput != nil {

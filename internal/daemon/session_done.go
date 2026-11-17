@@ -31,7 +31,7 @@ func (h *HeadlessRunner) pruneCompletedSpoolsForSession(runDir, sessionID, nativ
 		if err != nil || meta == nil || meta.TurnID == keepTurnID {
 			continue
 		}
-		if (meta.Status == "starting" || meta.Status == "running") && h.isSpoolWorkerLive(meta) {
+		if isActiveTurnStatus(meta.Status) && h.isSpoolWorkerLive(meta) {
 			continue
 		}
 		if metaMatchesSession(meta, sessionID, nativeID) {
@@ -58,7 +58,7 @@ func (h *HeadlessRunner) PruneStaleSpools(maxAge time.Duration) {
 		if strings.HasSuffix(name, ".meta.json") {
 			mp := filepath.Join(runDir, name)
 			meta, err := ReadTurnSpoolMeta(mp)
-			if err != nil || meta == nil || ((meta.Status == "starting" || meta.Status == "running") && h.isSpoolWorkerLive(meta)) {
+			if err != nil || meta == nil || (isActiveTurnStatus(meta.Status) && h.isSpoolWorkerLive(meta)) {
 				continue
 			}
 			ref := meta.FinishedAt
@@ -160,6 +160,16 @@ func (h *HeadlessRunner) CleanupSessionRuntime(sessionID, nativeID string) {
 			delete(h.interactiveBlocks, k)
 		}
 	}
+	for k := range h.blockedControlTurns {
+		if matchesKey(k) {
+			delete(h.blockedControlTurns, k)
+		}
+	}
+	for k := range h.bgTaskCounts {
+		if matchesKey(k) {
+			delete(h.bgTaskCounts, k)
+		}
+	}
 	for k, m := range h.sessionSpools {
 		if matchesKey(k) || metaMatchesSession(m, sessionID, nativeID) {
 			if m != nil {
@@ -194,7 +204,7 @@ func (h *HeadlessRunner) CleanupSessionRuntime(sessionID, nativeID string) {
 			mp := filepath.Join(runDir, e.Name())
 			meta, err := ReadTurnSpoolMeta(mp)
 			if err == nil && metaMatchesSession(meta, sessionID, nativeID) {
-				if meta.Status == "starting" || meta.Status == "running" {
+				if isActiveTurnStatus(meta.Status) {
 					_ = sendWorkerCancel(meta)
 					h.terminateVerifiedWorker(meta, syscall.SIGKILL)
 				}

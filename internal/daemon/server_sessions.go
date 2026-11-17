@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -741,12 +742,14 @@ func (s *Server) handleSessionControl(w http.ResponseWriter, r *http.Request) {
 			if s.headless != nil {
 				s.headless.RestartSessionChild(sess, 3*time.Second)
 			}
+			s.clearSubagents(sess.ID, sess.NativeID)
 			now := time.Now()
 			sess.IsDone = false
 			sess.Blocked = nil
 			sess.IsUnread = false
 			sess.TmuxName = ""
 			sess.PID = 0
+			sess.RunningSubagents = 0
 			sess.State = StateIdle
 			sess.Activity = "Resumed session"
 			sess.LastStateChangeAt = now
@@ -1200,6 +1203,30 @@ func (s *Server) handleRespond(w http.ResponseWriter, r *http.Request) {
 
 	isHeadless := sess.EngineType == EngineHeadless || (sess.Managed && sess.TmuxName == "")
 	if isHeadless {
+		if s.headless != nil {
+			approved := resolveRespondApproval(sess.Blocked, actionLower, value)
+			if handled, err := s.headless.TryAnswerControlRequest(r.Context(), sess, approved, value); handled {
+				if err != nil {
+					status := http.StatusInternalServerError
+					if errors.Is(err, ErrStaleControlRequest) {
+						status = http.StatusConflict
+					}
+					http.Error(w, err.Error(), status)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"status":  "ok",
+					"mode":    "stdio_control",
+					"id":      sess.ID,
+					"action":  actionLower,
+					"value":   value,
+					"state":   sess.State.String(),
+					"session": sess,
+				})
+				return
+			}
+		}
 		answerText := value
 		if answerText == "" && (actionLower == "allow" || actionLower == "yes" || actionLower == "1" || actionLower == "approve") {
 			answerText = "Approve Plan"

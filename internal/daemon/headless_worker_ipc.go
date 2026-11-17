@@ -14,30 +14,32 @@ import (
 )
 
 type SessionWorkerMeta struct {
-	WorkerID                 string        `json:"worker_id"`
-	SessionID                string        `json:"session_id"`
-	OrigSessionID            string        `json:"orig_session_id,omitempty"`
-	NativeID                 string        `json:"native_id"`
-	Agent                    string        `json:"agent"`
-	Cwd                      string        `json:"cwd,omitempty"`
-	IsSupervisor             bool          `json:"is_supervisor,omitempty"`
-	ConfigFingerprint        string        `json:"config_fingerprint"`
-	ConfigFingerprintNoModel string        `json:"config_fingerprint_no_model,omitempty"`
-	MCPFingerprint           string        `json:"mcp_fingerprint,omitempty"`
-	Bin                      string        `json:"bin"`
-	Args                     []string      `json:"args,omitempty"`
-	SocketPath               string        `json:"socket_path"`
-	SocketTempDir            string        `json:"socket_temp_dir,omitempty"`
-	WorkerMetaPath           string        `json:"worker_meta_path,omitempty"`
-	WorkerPID                int           `json:"worker_pid,omitempty"`
-	ChildPID                 int           `json:"child_pid,omitempty"`
-	State                    string        `json:"state"`
-	ActiveTurnID             string        `json:"active_turn_id,omitempty"`
-	ActiveMetaPath           string        `json:"active_meta_path,omitempty"`
-	IdleTTLNs                time.Duration `json:"idle_ttl_ns,omitempty"`
-	StartedAt                time.Time     `json:"started_at"`
-	LastTurnEndedAt          time.Time     `json:"last_turn_ended_at,omitempty"`
-	UpdatedAt                time.Time     `json:"updated_at"`
+	WorkerID                 string                 `json:"worker_id"`
+	SessionID                string                 `json:"session_id"`
+	OrigSessionID            string                 `json:"orig_session_id,omitempty"`
+	NativeID                 string                 `json:"native_id"`
+	Agent                    string                 `json:"agent"`
+	Cwd                      string                 `json:"cwd,omitempty"`
+	IsSupervisor             bool                   `json:"is_supervisor,omitempty"`
+	ConfigFingerprint        string                 `json:"config_fingerprint"`
+	ConfigFingerprintNoModel string                 `json:"config_fingerprint_no_model,omitempty"`
+	MCPFingerprint           string                 `json:"mcp_fingerprint,omitempty"`
+	Bin                      string                 `json:"bin"`
+	Args                     []string               `json:"args,omitempty"`
+	SocketPath               string                 `json:"socket_path"`
+	SocketTempDir            string                 `json:"socket_temp_dir,omitempty"`
+	WorkerMetaPath           string                 `json:"worker_meta_path,omitempty"`
+	WorkerPID                int                    `json:"worker_pid,omitempty"`
+	ChildPID                 int                    `json:"child_pid,omitempty"`
+	State                    string                 `json:"state"`
+	ActiveTurnID             string                 `json:"active_turn_id,omitempty"`
+	ActiveMetaPath           string                 `json:"active_meta_path,omitempty"`
+	BgTaskCount              int                    `json:"bg_task_count,omitempty"`
+	PendingControl           *PendingControlRequest `json:"pending_control,omitempty"`
+	IdleTTLNs                time.Duration          `json:"idle_ttl_ns,omitempty"`
+	StartedAt                time.Time              `json:"started_at"`
+	LastTurnEndedAt          time.Time              `json:"last_turn_ended_at,omitempty"`
+	UpdatedAt                time.Time              `json:"updated_at"`
 }
 
 type workerIPCReq struct {
@@ -55,17 +57,31 @@ type workerIPCReq struct {
 	ConfigFingerprint        string   `json:"config_fingerprint,omitempty"`
 	ConfigFingerprintNoModel string   `json:"config_fingerprint_no_model,omitempty"`
 	MCPFingerprint           string   `json:"mcp_fingerprint,omitempty"`
+	RequestID                string   `json:"request_id,omitempty"`
+	Approved                 bool     `json:"approved,omitempty"`
+	Answer                   string   `json:"answer,omitempty"`
 }
 
 type workerIPCResp struct {
-	OK                bool   `json:"ok"`
-	ErrCode           string `json:"err_code,omitempty"`
-	WorkerPID         int    `json:"worker_pid,omitempty"`
-	ChildPID          int    `json:"child_pid,omitempty"`
-	TurnID            string `json:"turn_id,omitempty"`
-	State             string `json:"state,omitempty"`
-	ConfigFingerprint string `json:"config_fingerprint,omitempty"`
-	MCPFingerprint    string `json:"mcp_fingerprint,omitempty"`
+	OK                       bool     `json:"ok"`
+	ErrCode                  string   `json:"err_code,omitempty"`
+	WorkerPID                int      `json:"worker_pid,omitempty"`
+	ChildPID                 int      `json:"child_pid,omitempty"`
+	TurnID                   string   `json:"turn_id,omitempty"`
+	State                    string   `json:"state,omitempty"`
+	ConfigFingerprint        string   `json:"config_fingerprint,omitempty"`
+	ConfigFingerprintNoModel string   `json:"config_fingerprint_no_model,omitempty"`
+	MCPFingerprint           string   `json:"mcp_fingerprint,omitempty"`
+	PermissionMode           string   `json:"permission_mode,omitempty"`
+	BgTaskCount              int      `json:"bg_task_count,omitempty"`
+	Blocked                  *Blocked `json:"blocked,omitempty"`
+}
+
+type workerIPCExtensions struct {
+	bgTaskCount     func() int
+	pendingBlocked  func() *Blocked
+	onAnswerControl func(workerIPCReq) workerIPCResp
+	onWatchWorker   func(net.Conn)
 }
 
 type boundedTailBuffer struct {
@@ -213,7 +229,7 @@ func streamSpoolToConn(c net.Conn, spool *TurnSpoolWriter, compPath string, afte
 	}
 }
 
-func handleWorkerIPC(c net.Conn, stateMu *sync.Mutex, state *string, workerMeta *SessionWorkerMeta, getChildPGID func() int, activeTurn **activeTurnState, completedTurns map[string]string, subWG *sync.WaitGroup, shutdownChildGroup func(time.Duration), exitCleanly func(int), startTurnLocked func(string) error, writeStdinLine func(string), restartChild func(workerIPCReq) (int, error)) {
+func handleWorkerIPC(c net.Conn, stateMu *sync.Mutex, state *string, workerMeta *SessionWorkerMeta, getChildPGID func() int, activeTurn **activeTurnState, completedTurns map[string]string, subWG *sync.WaitGroup, shutdownChildGroup func(time.Duration), exitCleanly func(int), startTurnLocked func(string) error, writeStdinLine func(string), restartChild func(workerIPCReq) (int, error), ext workerIPCExtensions) {
 	defer c.Close()
 	line, err := bufio.NewReader(c).ReadBytes('\n')
 	var req workerIPCReq
@@ -233,8 +249,16 @@ func handleWorkerIPC(c net.Conn, stateMu *sync.Mutex, state *string, workerMeta 
 		}
 		curChildPID := getChildPGID()
 		cfgFP, mcpFP := workerMeta.ConfigFingerprint, workerMeta.MCPFingerprint
+		bgCount := workerMeta.BgTaskCount
+		if ext.bgTaskCount != nil {
+			bgCount = ext.bgTaskCount()
+		}
+		var blocked *Blocked
+		if ext.pendingBlocked != nil {
+			blocked = ext.pendingBlocked()
+		}
 		stateMu.Unlock()
-		reply(workerIPCResp{OK: ok, WorkerPID: os.Getpid(), ChildPID: curChildPID, TurnID: activeTID, State: curState, ConfigFingerprint: cfgFP, MCPFingerprint: mcpFP})
+		reply(workerIPCResp{OK: ok, WorkerPID: os.Getpid(), ChildPID: curChildPID, TurnID: activeTID, State: curState, ConfigFingerprint: cfgFP, MCPFingerprint: mcpFP, BgTaskCount: bgCount, Blocked: blocked})
 
 	case "send_turn":
 		stateMu.Lock()
@@ -336,6 +360,18 @@ func handleWorkerIPC(c net.Conn, stateMu *sync.Mutex, state *string, workerMeta 
 			ConfigFingerprint: cfgFP,
 			MCPFingerprint:    mcpFP,
 		})
+
+	case "answer_control":
+		if ext.onAnswerControl == nil {
+			reply(workerIPCResp{OK: false, ErrCode: "unsupported", WorkerPID: os.Getpid()})
+			return
+		}
+		reply(ext.onAnswerControl(req))
+
+	case "watch_worker":
+		if ext.onWatchWorker != nil {
+			ext.onWatchWorker(c)
+		}
 
 	case "subscribe":
 		subWG.Add(1)

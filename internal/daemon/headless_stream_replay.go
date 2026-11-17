@@ -49,7 +49,7 @@ func (h *HeadlessRunner) SubscribeWithReplay(sessionID, reqTurnID string, afterS
 	var maxReplayedSeq int64
 
 	if meta != nil {
-		isActive := ((meta.Status == "starting" || meta.Status == "running") && h.isSpoolWorkerLive(meta)) || h.IsRunning(sessionID)
+		isActive := (isActiveTurnStatus(meta.Status) && h.isSpoolWorkerLive(meta)) || h.IsRunning(sessionID)
 		shouldReplay := false
 		readAfter := afterSeq
 		if reqTurnID != "" {
@@ -161,12 +161,66 @@ func (s *Server) mergeInFlightSpoolIntoTranscript(transcript *Transcript, sess *
 			return nil, nil
 		}
 	}
-	if snap == nil || strings.TrimSpace(snap.UserPrompt) == "" {
+	if snap == nil || (!snap.IsSynthetic && strings.TrimSpace(snap.UserPrompt) == "") {
 		return transcript, nil
 	}
 
 	msgs := transcript.Messages
 	n := len(msgs)
+	hasError := snap.StreamHadError || strings.TrimSpace(snap.LastErrorText) != ""
+	errText := strings.TrimSpace(snap.LastErrorText)
+	hasStreamedAssistant := strings.TrimSpace(snap.AssistantText) != "" || strings.TrimSpace(snap.ThinkingText) != "" || len(snap.ToolCalls) > 0 || errText != ""
+	assistantContent := snap.AssistantText
+	if errText != "" {
+		if strings.TrimSpace(assistantContent) == "" {
+			assistantContent = errText
+		} else if !strings.Contains(assistantContent, errText) {
+			assistantContent = strings.TrimRight(assistantContent, "\n") + "\n\n" + errText
+		}
+	}
+
+	if snap.IsSynthetic && strings.TrimSpace(snap.UserPrompt) == "" {
+		if !hasStreamedAssistant {
+			return transcript, nil
+		}
+		if !snap.IsActive {
+			if !snap.FinishedAt.IsZero() && time.Since(snap.FinishedAt) > 10*time.Second {
+				return transcript, nil
+			}
+			if n > 0 && msgs[n-1].Role == "assistant" && !msgs[n-1].Timestamp.Before(snap.UserTimestamp.Add(-2*time.Second)) {
+				return transcript, nil
+			}
+		}
+		if n > 0 && msgs[n-1].Role == "assistant" && !msgs[n-1].Timestamp.Before(snap.UserTimestamp.Add(-2*time.Second)) && len(msgs[n-1].Content) >= len(assistantContent) {
+			msgs[n-1].InFlight = snap.IsActive
+			if snap.TurnID != "" {
+				msgs[n-1].TurnID = snap.TurnID
+			}
+		} else {
+			msgs = append(msgs, TranscriptMessage{
+				Role:      "assistant",
+				Content:   assistantContent,
+				Thinking:  snap.ThinkingText,
+				ToolCalls: snap.ToolCalls,
+				Timestamp: snap.UpdatedAt,
+				TurnID:    snap.TurnID,
+				InFlight:  snap.IsActive,
+			})
+		}
+		transcript.Messages = msgs
+		return transcript, map[string]interface{}{
+			"turn_id":             snap.TurnID,
+			"last_seq":            snap.LastSeq,
+			"active":              snap.IsActive,
+			"assistant_text":      assistantContent,
+			"thinking":            snap.ThinkingText,
+			"tool_calls":          snap.ToolCalls,
+			"timestamp":           snap.UserTimestamp,
+			"activity_started_at": snap.ActivityStartedAt,
+			"activity_kind":       snap.ActivityKind,
+		}
+	}
+
 	threshold := snap.UserTimestamp.Add(-5 * time.Second)
 	matchedUserIdx := -1
 	for i := n - 1; i >= 0; i-- {
@@ -179,17 +233,6 @@ func (s *Server) mergeInFlightSpoolIntoTranscript(transcript *Transcript, sess *
 		}
 	}
 
-	hasError := snap.StreamHadError || strings.TrimSpace(snap.LastErrorText) != ""
-	errText := strings.TrimSpace(snap.LastErrorText)
-	hasStreamedAssistant := strings.TrimSpace(snap.AssistantText) != "" || strings.TrimSpace(snap.ThinkingText) != "" || len(snap.ToolCalls) > 0 || errText != ""
-	assistantContent := snap.AssistantText
-	if errText != "" {
-		if strings.TrimSpace(assistantContent) == "" {
-			assistantContent = errText
-		} else if !strings.Contains(assistantContent, errText) {
-			assistantContent = strings.TrimRight(assistantContent, "\n") + "\n\n" + errText
-		}
-	}
 	asstIdx := -1
 	if matchedUserIdx >= 0 {
 		for i := n - 1; i > matchedUserIdx; i-- {
