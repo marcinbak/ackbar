@@ -477,15 +477,15 @@ func TestProviderCapabilityConformance(t *testing.T) {
 		t.Errorf("CodexProvider should not implement daemon.FullProvider")
 	}
 
-	// 4. Grok implements StatusInspector, but not SubagentDiscoverer
+	// 4. Grok implements StatusInspector, SubagentDiscoverer, and FullProvider
 	if _, ok := any(grok).(daemon.StatusInspector); !ok {
 		t.Errorf("GrokProvider should implement daemon.StatusInspector")
 	}
-	if _, ok := any(grok).(daemon.SubagentDiscoverer); ok {
-		t.Errorf("GrokProvider should not implement daemon.SubagentDiscoverer")
+	if _, ok := any(grok).(daemon.SubagentDiscoverer); !ok {
+		t.Errorf("GrokProvider should implement daemon.SubagentDiscoverer")
 	}
-	if _, ok := any(grok).(daemon.FullProvider); ok {
-		t.Errorf("GrokProvider should not implement daemon.FullProvider")
+	if _, ok := any(grok).(daemon.FullProvider); !ok {
+		t.Errorf("GrokProvider should implement daemon.FullProvider")
 	}
 
 	// 5. OpenCode implements StatusInspector, but not SubagentDiscoverer

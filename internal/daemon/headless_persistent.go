@@ -112,8 +112,11 @@ func (h *HeadlessRunner) recordTurnActive(sess *Session, prompt, turnID string, 
 
 func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt string) error {
 	_ = ctx
-	if sess.Agent != "claude-code" && sess.Agent != "antigravity" {
+	if sess.Agent != "claude-code" && sess.Agent != "antigravity" && sess.Agent != "grok" {
 		return ErrAgentUnsupported
+	}
+	if sess.Agent == "grok" {
+		return h.runGrokOneShotTurn(sess, prompt)
 	}
 	sessionMu := h.getSessionTurnMu(sess.ID)
 	sessionMu.Lock()

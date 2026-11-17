@@ -113,6 +113,9 @@ class PlanDocument {
       case 'codex':
       case 'openai-codex':
         return 'OpenAI Codex';
+      case 'grok':
+      case 'xai':
+        return 'xAI Grok';
       default:
         return agent.isNotEmpty ? agent : 'Agent';
     }

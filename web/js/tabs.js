@@ -72,7 +72,7 @@ function isHeadlessSession(session) {
 
 function isHeadlessSupportedAgent(session) {
   if (!session || !session.agent) return true;
-  return session.agent === 'claude-code' || session.agent === 'antigravity';
+  return session.agent === 'claude-code' || session.agent === 'antigravity' || session.agent === 'grok';
 }
 
 // Helper: Safely decode base64 UTF-8 text (handles multi-byte unicode such as box drawings, emoji, diacritics)

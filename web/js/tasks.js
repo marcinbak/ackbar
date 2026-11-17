@@ -388,7 +388,7 @@ function renderTaskCards(tasks) {
 
     const workerPills = (task.workers || []).map(w => {
       const activeClass = w.is_active ? 'active' : 'idle';
-      const icon = w.agent?.includes('claude') ? '🟠' : w.agent?.includes('antigravity') ? '🟣' : '🟢';
+      const icon = w.agent?.includes('claude') ? '🟠' : w.agent?.includes('antigravity') ? '🟣' : w.agent?.includes('grok') ? '⚪' : '🟢';
       const nodeText = w.workflow_node ? ` [${escapeHtml(w.workflow_node)}]` : '';
       return `<button class="task-worker-pill ${activeClass}" data-session-id="${escapeHtml(w.session_id)}" title="Focus session: ${escapeHtml(w.session_id)}">
         ${icon} ${escapeHtml(w.agent || 'agent')}${nodeText} @${escapeHtml(w.host || 'local')}
@@ -1497,7 +1497,7 @@ export async function showAgentSetupModal() {
   showModal('⚙️ Agent Tool & Skill Setup', bodyHtml, footerHtml);
 
   function renderAgentCard(a, hostVersion) {
-    const icon = a.key.includes('claude') ? '🟠' : a.key.includes('antigravity') ? '🟣' : '🟢';
+    const icon = a.key.includes('claude') ? '🟠' : a.key.includes('antigravity') ? '🟣' : a.key.includes('grok') ? '⚪' : '🟢';
     const detectedBadge = a.detected
       ? '<span style="background: rgba(34, 197, 94, 0.15); color: var(--accent-green); padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600;">Detected</span>'
       : '<span style="background: rgba(156, 163, 175, 0.15); color: var(--text-muted); padding: 2px 8px; border-radius: 10px; font-size: 11px;">Not Found</span>';

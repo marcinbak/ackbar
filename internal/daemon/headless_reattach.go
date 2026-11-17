@@ -240,6 +240,31 @@ func (h *HeadlessRunner) finalizeTurnFromSpool(sess *Session, origSessionID stri
 		} else if sess.Name == "" || isRawSessionName(sess.Name) {
 			sess.Name = TruncateTitle(prompt)
 		}
+	} else if sess.Agent == "grok" {
+		if gm := ReadGrokSessionMeta(home, sess.Cwd, sess.NativeID); gm != nil {
+			if gm.ContextPct > 0 {
+				sess.ContextPct = gm.ContextPct
+			}
+			if gm.CustomTitle != "" {
+				sess.CustomTitle = gm.CustomTitle
+			}
+			if gm.AITitle != "" {
+				sess.AITitle = gm.AITitle
+			}
+			if gm.GitBranch != "" {
+				sess.GitBranch = gm.GitBranch
+			}
+			if sess.CustomTitle != "" {
+				sess.Name = sess.CustomTitle
+			} else if sess.AITitle != "" {
+				sess.Name = sess.AITitle
+			} else if gm.Title != "" {
+				sess.Name = gm.Title
+			}
+		}
+		if sess.Name == "" || isRawSessionName(sess.Name) {
+			sess.Name = TruncateTitle(prompt)
+		}
 	} else if home != "" {
 		if cm := ReadClaudeSessionMeta(sess.Cwd, sess.NativeID); cm != nil {
 			sess.ContextPct = cm.ContextPct

@@ -166,7 +166,7 @@ func (s *Server) processParsedHookEvent(event *Event, urlEventName string, heade
 		defer unlock()
 	}
 
-	if event.Agent == "antigravity" {
+	if event.Agent == "antigravity" || event.Agent == "grok" {
 		home, _ := os.UserHomeDir()
 		if home != "" && s.agentAdapter(event.Agent).IsSubagentSession(home, event.NativeID, nil) {
 			if existing := s.resolveSession(sessionID); existing != nil {
@@ -180,18 +180,23 @@ func (s *Server) processParsedHookEvent(event *Event, urlEventName string, heade
 				s.broadcast(existing)
 			}
 
-			parentConvID, role, typeName := ResolveAntigravitySubagentParent(home, event.NativeID)
-			if parentConvID != "" {
-				unlockParent := s.lockSessionHook(hookLockKey("antigravity", parentConvID, "antigravity-"+parentConvID))
+			var parentConvID, role, typeName string
+			if event.Agent == "antigravity" {
+				parentConvID, role, typeName = ResolveAntigravitySubagentParent(home, event.NativeID)
+			} else {
+				parentConvID, role, typeName = ResolveGrokSubagentParent(home, event.NativeID)
+			}
+			if parentConvID != "" && parentConvID != event.NativeID {
+				unlockParent := s.lockSessionHook(hookLockKey(event.Agent, parentConvID, event.Agent+"-"+parentConvID))
 				defer unlockParent()
-				parentSessID := fmt.Sprintf("antigravity:%s:%s", host, parentConvID)
+				parentSessID := fmt.Sprintf("%s:%s:%s", event.Agent, host, parentConvID)
 				parentSess := s.resolveSession(parentSessID)
 				if parentSess == nil {
 					parentSess, _ = s.db.GetSession(parentSessID)
 				}
 				if parentSess != nil {
 					s.clearSubagentDiskCache(parentSess.ID, parentSess.NativeID)
-					runningSubs := s.getRunningSubagents(parentSess.ID, parentSess.NativeID, "antigravity", parentSess.Cwd)
+					runningSubs := s.getRunningSubagents(parentSess.ID, parentSess.NativeID, event.Agent, parentSess.Cwd)
 					hasDiskRunningSubs := len(runningSubs) > 0
 					if len(runningSubs) == 0 && (event.State == StateWorking || event.State == StateBlocked) {
 						subLabel := role

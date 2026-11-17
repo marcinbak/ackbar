@@ -373,6 +373,9 @@ class Session {
       case 'codex':
       case 'openai-codex':
         return 'OpenAI Codex';
+      case 'grok':
+      case 'xai':
+        return 'xAI Grok';
       default:
         return agent.isNotEmpty ? agent : 'Agent';
     }
@@ -390,6 +393,9 @@ class Session {
       case 'codex':
       case 'openai-codex':
         return '⚡';
+      case 'grok':
+      case 'xai':
+        return '𝕏';
       default:
         return '💻';
     }
@@ -407,6 +413,9 @@ class Session {
       case 'codex':
       case 'openai-codex':
         return AppColors.statusEmerald; // Emerald
+      case 'grok':
+      case 'xai':
+        return const Color(0xFFE5E7EB); // xAI Silver / Off-White
       default:
         return AppColors.textSecondary;
     }
@@ -744,6 +753,9 @@ class Session {
       'gemini-3.8-flash-medium': 'Gemini 3.8 Flash (Medium)',
       'gemini-3.8-flash-low': 'Gemini 3.8 Flash (Low)',
       'gpt-oss-120b-medium': 'GPT-OSS 120B (Medium)',
+      'grok-4.7': 'Grok 4.7',
+      'grok-4.6': 'Grok 4.6',
+      'grok-build': 'Grok Build',
     };
 
     // Pass 1: exact match in static catalog

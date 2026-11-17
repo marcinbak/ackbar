@@ -125,12 +125,17 @@ class _HeadlessConfigSheetState extends ConsumerState<HeadlessConfigSheet> {
 
   static const _effortTiers = [
     'default',
+    'minimal',
     'low',
     'medium',
     'high',
     'xhigh',
     'max'
   ];
+
+  bool get _isResumedGrok =>
+      _session.agent.toLowerCase() == 'grok' &&
+      (_session.firstPrompt.isNotEmpty || _session.lastPrompt.isNotEmpty);
 
   @override
   void initState() {
@@ -390,6 +395,17 @@ class _HeadlessConfigSheetState extends ConsumerState<HeadlessConfigSheet> {
                   style: AppTypography.codeXs
                       .copyWith(color: AppColors.textSecondary)),
               const SizedBox(height: 4),
+              if (_isResumedGrok)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 6.0),
+                  child: Text(
+                    'Extra directories locked for resumed Grok sessions',
+                    style: AppTypography.codeXs.copyWith(
+                      color: AppColors.textMuted,
+                      fontStyle: FontStyle.italic,
+                    ),
+                  ),
+                ),
               if (_session.extraDirs.isNotEmpty)
                 Wrap(
                   spacing: 6,
@@ -397,10 +413,12 @@ class _HeadlessConfigSheetState extends ConsumerState<HeadlessConfigSheet> {
                   children: _session.extraDirs.map((dir) {
                     return Chip(
                       label: Text(dir, style: AppTypography.codeXs),
-                      deleteIcon: const Icon(Icons.close_rounded, size: 12),
+                      deleteIcon: _isResumedGrok
+                          ? null
+                          : const Icon(Icons.close_rounded, size: 12),
                       visualDensity: VisualDensity.compact,
                       backgroundColor: AppColors.background,
-                      onDeleted: _isBusy
+                      onDeleted: (_isBusy || _isResumedGrok)
                           ? null
                           : () => _updateConfig(removeDirs: [dir]),
                     );
@@ -413,10 +431,13 @@ class _HeadlessConfigSheetState extends ConsumerState<HeadlessConfigSheet> {
                     child: TextField(
                       key: const ValueKey('config_extra_dir_input'),
                       controller: _dirController,
+                      enabled: !_isResumedGrok,
                       style: AppTypography.codeXs
                           .copyWith(color: AppColors.textPrimary),
                       decoration: InputDecoration(
-                        hintText: 'Add path (e.g. /tmp/shared)',
+                        hintText: _isResumedGrok
+                            ? 'Locked for resumed Grok sessions'
+                            : 'Add path (e.g. /tmp/shared)',
                         hintStyle: AppTypography.codeXs
                             .copyWith(color: AppColors.textMuted),
                         isDense: true,
@@ -433,7 +454,7 @@ class _HeadlessConfigSheetState extends ConsumerState<HeadlessConfigSheet> {
                   const SizedBox(width: 8),
                   FilledButton(
                     key: const ValueKey('config_extra_dir_add_btn'),
-                    onPressed: _isBusy
+                    onPressed: (_isBusy || _isResumedGrok)
                         ? null
                         : () {
                             final text = _dirController.text.trim();
