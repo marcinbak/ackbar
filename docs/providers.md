@@ -151,6 +151,12 @@ Concrete provider implementations are organized into focused, single-responsibil
 * `<agent>_transcript.go`: Session metadata, title resolution, transcript extraction, and file cleanup.
 * `<agent>_subagent.go`: Structured subagent discovery and metadata parsing.
 
+### Agent Contract & Registry (`internal/agent`, `internal/agentutil`)
+New and migrated adapters implement the leaf contract without importing `internal/daemon`:
+* **Contract & Registry ([facets.go](../internal/agent/facets.go)):** Canonical DTOs, fail-closed `Capabilities`, `Base*` embeds, typed plugin facets, and thread-safe [`Registry`](../internal/agent/registry.go).
+* **Shared Helpers ([fs.go](../internal/agentutil/fs.go)):** Leaf filesystem, CLI exec, ID validation, rate-limit, and prompt/auth/question parsing helpers.
+* **Daemon Bridge ([provider_bridge.go](../internal/daemon/provider_bridge.go)):** [`PluginBridge`](../internal/daemon/provider_bridge.go) and [`Server.RegisterPlugin`](../internal/daemon/server.go) adapt `agent.Plugin` instances to `daemon.Provider` interfaces.
+
 ---
 
 ## 7. Shared Skills & Tools Distribution
