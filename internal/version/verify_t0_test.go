@@ -137,4 +137,20 @@ func TestVerifyT0_ScriptCLI(t *testing.T) {
 	if !strings.Contains(string(outBudget), "exceeds 160 lines budget") {
 		t.Errorf("expected budget error message, got: %s", string(outBudget))
 	}
+
+	// 4. TestMain isolation check failure when test package lacks RunIsolatedTestMain
+	_ = os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte("# AGENTS.md\n"), 0644)
+	pkgDir := filepath.Join(dir, "pkg")
+	_ = os.MkdirAll(pkgDir, 0755)
+	_ = os.WriteFile(filepath.Join(pkgDir, "foo_test.go"), []byte("package pkg\n\nimport \"testing\"\n\nfunc TestFoo(t *testing.T) {}\n"), 0644)
+
+	cmdIso := exec.Command(filepath.Join(dir, "scripts", "verify-t0.sh"), "--skip-version-check")
+	cmdIso.Dir = dir
+	outIso, err := cmdIso.CombinedOutput()
+	if err == nil {
+		t.Errorf("expected script to fail when package lacks RunIsolatedTestMain")
+	}
+	if !strings.Contains(string(outIso), "RunIsolatedTestMain") {
+		t.Errorf("expected RunIsolatedTestMain error message, got: %s", string(outIso))
+	}
 }

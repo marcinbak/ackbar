@@ -91,7 +91,11 @@ func checkPermittedRoots(p string, sess *Session, extraAllowedRoot, homeDir stri
 		(homeDir != "" && isPathWithinOrEqual(p, homeDir)) {
 		return true
 	}
-	for _, tmp := range []string{filepath.Clean(os.TempDir()), "/tmp", "/private/tmp", "/var/tmp"} {
+	tmpRoots := []string{filepath.Clean(os.TempDir()), "/tmp", "/private/tmp", "/var/tmp"}
+	if evalTmp, err := filepath.EvalSymlinks(os.TempDir()); err == nil && evalTmp != "" {
+		tmpRoots = append(tmpRoots, filepath.Clean(evalTmp))
+	}
+	for _, tmp := range tmpRoots {
 		if isPathWithinOrEqual(p, tmp) {
 			return true
 		}

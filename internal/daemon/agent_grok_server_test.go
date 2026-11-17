@@ -82,7 +82,8 @@ func TestGrokSpawnCoercionAndFlags(t *testing.T) {
 	if sess.PermissionMode != "plan" {
 		t.Errorf("Expected sess.PermissionMode == 'plan', got %q", sess.PermissionMode)
 	}
-	if len(sess.ExtraDirs) != 1 || sess.ExtraDirs[0] != extraDir {
+	canonicalExtra, _ := filepath.EvalSymlinks(extraDir)
+	if len(sess.ExtraDirs) != 1 || (sess.ExtraDirs[0] != extraDir && sess.ExtraDirs[0] != canonicalExtra) {
 		t.Errorf("Expected sess.ExtraDirs == [%s], got %+v", extraDir, sess.ExtraDirs)
 	}
 

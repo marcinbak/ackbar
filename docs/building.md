@@ -54,6 +54,7 @@ go test ./...
 
 *   **`internal/daemon`**: Tests SQLite persistence, event ingestion, SSE broadcasting, and control routes.
 *   **`internal/provider`**: Tests hook payload parsing for Claude Code, Codex, and Antigravity.
+*   **`internal/testutil`**: Isolates `HOME`, XDG paths, and ambient env via [testmain.go](../internal/testutil/testmain.go); [testmain_test.go](../internal/testutil/testmain_test.go) enforces `TestMain` coverage.
 *   **`internal/tmux`**: Tests detached process spawning, PID tracking, and termination.
 
 ---
