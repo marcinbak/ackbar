@@ -154,12 +154,30 @@ func ensureSystemdKillModeProcess(content string) (string, bool) {
 	return strings.Join(out, "\n"), true
 }
 
+const launchAgentReloadMarkerRel = ".config/ackbar/.reload-launchagent"
+
+// LaunchAgentReloadMarkerPath returns the marker file written when com.marcinbak.ackbard.plist
+// is rewritten on disk so the next external service restart reloads the plist via bootout/bootstrap.
+func LaunchAgentReloadMarkerPath(home string) string {
+	if home == "" {
+		return ""
+	}
+	return filepath.Join(home, launchAgentReloadMarkerRel)
+}
+
 func ensureLaunchdIsolation(home string) (bool, error) {
 	agentsDir := filepath.Join(home, "Library", "LaunchAgents")
 	anyChanged := false
 	var errs []error
 	for _, name := range []string{"com.marcinbak.ackbard.plist", "homebrew.mxcl.ackbar.plist"} {
 		changed, err := rewriteRegularFile(filepath.Join(agentsDir, name), ensurePlistAbandonProcessGroup)
+		if changed && name == "com.marcinbak.ackbard.plist" {
+			marker := LaunchAgentReloadMarkerPath(home)
+			if marker != "" {
+				_ = os.MkdirAll(filepath.Dir(marker), 0755)
+				_ = os.WriteFile(marker, []byte("1\n"), 0600)
+			}
+		}
 		anyChanged = anyChanged || changed
 		if err != nil {
 			errs = append(errs, err)
@@ -205,7 +223,7 @@ func DaemonSafeShellHelpers() string {
 	return `ackbard_pid_cmdline() {
   p="$1"
   if [ -r "/proc/$p/cmdline" ]; then tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null || true
-  else ps -p "$p" -o args= 2>/dev/null || ps -p "$p" -o command= 2>/dev/null || true; fi
+  else ps -ww -p "$p" -o args= 2>/dev/null || ps -ww -p "$p" -o command= 2>/dev/null || true; fi
 }
 signal_non_worker_ackbard() {
   sig="$1"; proc_name="${ACKBAR_DAEMON_PROC_NAME:-ackbard}"
@@ -241,9 +259,28 @@ self_heal_ackbard_service() {
       if command -v plutil >/dev/null 2>&1; then
         ORIG_MODE=$(if [ "$(uname -s)" = "Darwin" ]; then stat -f '%Lp' "$PLIST"; else stat -c '%a' "$PLIST"; fi 2>/dev/null || true)
         TMP_PLIST=$(mktemp "${PLIST}.tmp.XXXXXX")
-        cp -pf "$PLIST" "$TMP_PLIST" && plutil -replace AbandonProcessGroup -bool true "$TMP_PLIST" >/dev/null 2>&1 && { [ -z "$ORIG_MODE" ] || chmod "$ORIG_MODE" "$TMP_PLIST"; } && mv -f "$TMP_PLIST" "$PLIST" || rm -f "$TMP_PLIST"
+        if cp -pf "$PLIST" "$TMP_PLIST" && plutil -replace AbandonProcessGroup -bool true "$TMP_PLIST" >/dev/null 2>&1 && { [ -z "$ORIG_MODE" ] || chmod "$ORIG_MODE" "$TMP_PLIST"; } && mv -f "$TMP_PLIST" "$PLIST"; then
+          case "$PLIST" in *com.marcinbak.ackbard.plist) mkdir -p "$HOME/.config/ackbar" && printf '1\n' > "$HOME/.config/ackbar/.reload-launchagent" && chmod 600 "$HOME/.config/ackbar/.reload-launchagent" || true ;; esac
+        else
+          rm -f "$TMP_PLIST"
+        fi
       fi
     fi
   done
+  return 0
+}
+reload_launchagent_if_changed() {
+  MARKER="$HOME/.config/ackbar/.reload-launchagent"
+  PLIST="$HOME/Library/LaunchAgents/com.marcinbak.ackbard.plist"
+  [ -f "$MARKER" ] && [ -f "$PLIST" ] || return 1
+  UID_NUM="$(id -u)"
+  launchctl bootout "gui/$UID_NUM" "$PLIST" >/dev/null 2>&1 || launchctl bootout "user/$UID_NUM" "$PLIST" >/dev/null 2>&1 || true
+  sleep 0.2
+  if launchctl bootstrap "gui/$UID_NUM" "$PLIST" >/dev/null 2>&1 || launchctl bootstrap "user/$UID_NUM" "$PLIST" >/dev/null 2>&1; then
+    rm -f "$MARKER"
+    (launchctl kickstart "gui/$UID_NUM/com.marcinbak.ackbard" >/dev/null || launchctl kickstart "user/$UID_NUM/com.marcinbak.ackbard" >/dev/null)
+    return 0
+  fi
+  return 1
 }`
 }

@@ -8,7 +8,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strings"
 	"time"
 
@@ -60,21 +59,6 @@ func buildDaemonRestartArgs(home, runningHost, runningDisplayName string) []stri
 		args = append(args, "--display-name", runningDisplayName)
 	}
 	return args
-}
-
-func resolveBrewExecutable() string {
-	for _, candidate := range []string{
-		"/opt/homebrew/bin/brew",
-		"/usr/local/bin/brew",
-	} {
-		if _, err := os.Stat(candidate); err == nil {
-			return candidate
-		}
-	}
-	if p, err := exec.LookPath("brew"); err == nil {
-		return p
-	}
-	return ""
 }
 
 func localDaemonAuthToken() string {
@@ -158,77 +142,6 @@ func waitForDaemonReady(baseURL, token, expectedVersion string, timeout time.Dur
 	return false
 }
 
-func tryRestartDarwinLaunchdService() bool {
-	if runtime.GOOS != "darwin" {
-		return false
-	}
-	if home, err := os.UserHomeDir(); err == nil && home != "" {
-		_, _ = daemon.EnsureServiceProcessIsolation(home)
-	}
-	out, err := exec.Command("launchctl", "list").Output()
-	if err != nil {
-		return false
-	}
-	outStr := string(out)
-	var started bool
-	if strings.Contains(outStr, "com.marcinbak.ackbard") {
-		err := exec.Command("launchctl", "kickstart", "-k", fmt.Sprintf("gui/%d/com.marcinbak.ackbard", os.Getuid())).Run()
-		started = err == nil
-	} else if strings.Contains(outStr, "homebrew.mxcl.ackbar") {
-		brewBin := resolveBrewExecutable()
-		if brewBin == "" {
-			return false
-		}
-		cmd := exec.Command(brewBin, "services", "restart", "ackbar")
-		cmd.Env = append(os.Environ(), "PATH=/opt/homebrew/bin:/usr/local/bin:"+os.Getenv("PATH"))
-		err := cmd.Run()
-		started = err == nil
-	}
-	if !started {
-		return false
-	}
-	return waitForDaemonReady(localDaemonBaseURL, localDaemonAuthToken(), "", daemonReadyWaitTimeout)
-}
-
-func tryRestartLinuxSystemdService() bool {
-	if runtime.GOOS != "linux" {
-		return false
-	}
-	home, _ := os.UserHomeDir()
-	if home != "" {
-		_, _ = daemon.EnsureServiceProcessIsolation(home)
-	}
-	if _, err := exec.LookPath("systemctl"); err != nil {
-		return false
-	}
-	enabled := exec.Command("systemctl", "--user", "is-enabled", "ackbard.service").Run() == nil
-	active := exec.Command("systemctl", "--user", "is-active", "ackbard.service").Run() == nil
-	unitExists := false
-	if home != "" {
-		if _, err := os.Lstat(filepath.Join(home, ".config", "systemd", "user", "ackbard.service")); err == nil {
-			unitExists = true
-		}
-	}
-	if !enabled && !active && !unitExists {
-		return false
-	}
-	if err := exec.Command("systemctl", "--user", "restart", "ackbard.service").Run(); err != nil {
-		return false
-	}
-	return waitForDaemonReady(localDaemonBaseURL, localDaemonAuthToken(), "", daemonReadyWaitTimeout)
-}
-
-func tryRestartManagedDaemonService() bool {
-	switch runtime.GOOS {
-	case "darwin":
-		return tryRestartDarwinLaunchdService()
-	case "linux":
-		return tryRestartLinuxSystemdService()
-	default:
-		return false
-	}
-}
-
 func spawnLocalAckbardDaemon(runningHost, runningDisplayName string) {
 	home, _ := os.UserHomeDir()
 	ackbardBin := "ackbard"
@@ -254,7 +167,7 @@ func ensureDaemonRunning() {
 	ensureDaemonRunningWith(localDaemonBaseURL, localDaemonAuthToken(), version.Version, tryRestartManagedDaemonService, spawnLocalAckbardDaemon)
 }
 
-func ensureDaemonRunningWith(baseURL, token, targetVersion string, restartManaged func() bool, spawnFn func(runningHost, runningDisplayName string)) {
+func ensureDaemonRunningWith(baseURL, token, targetVersion string, restartManaged func() (managed bool, ready bool, err error), spawnFn func(runningHost, runningDisplayName string)) {
 	httpClient := &http.Client{Timeout: daemonProbeTimeout}
 	runningVer, runningHost, runningDisplayName, ok := probeDaemonVersion(httpClient, baseURL, token)
 	if ok {
@@ -276,8 +189,18 @@ func ensureDaemonRunningWith(baseURL, token, targetVersion string, restartManage
 
 	fmt.Fprintln(os.Stderr, "🚀 Local ackbard daemon starting in background...")
 
-	if !restartManaged() {
+	managed, ready, restartErr := restartManaged()
+	if !managed {
 		spawnFn(runningHost, runningDisplayName)
+		_ = waitForDaemonReady(baseURL, token, targetVersion, 3*time.Second)
+		return
+	}
+	if restartErr != nil {
+		fmt.Fprintf(os.Stderr, "⚠️ Managed ackbard service restart failed: %v\n", restartErr)
+		return
+	}
+	if !ready {
+		fmt.Fprintln(os.Stderr, "⚠️ Managed ackbard service (launchd/systemd) is still starting on 127.0.0.1:7777...")
 		_ = waitForDaemonReady(baseURL, token, targetVersion, 3*time.Second)
 	}
 }

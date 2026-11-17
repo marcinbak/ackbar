@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -204,9 +205,9 @@ func TestEnsureDaemonRunningWith_DrainDeferredAndAuthHeaders(t *testing.T) {
 
 	managedCalled := false
 	spawnCalled := false
-	ensureDaemonRunningWith(ts.URL, "test-secret-tok", "20990101.01", func() bool {
+	ensureDaemonRunningWith(ts.URL, "test-secret-tok", "20990101.01", func() (bool, bool, error) {
 		managedCalled = true
-		return false
+		return false, false, nil
 	}, func(_, _ string) {
 		spawnCalled = true
 	})
@@ -224,7 +225,7 @@ func TestEnsureDaemonRunningWith_DrainDeferredAndAuthHeaders(t *testing.T) {
 		t.Fatalf("expected restartManaged and spawnFn NOT called when restart_deferred=true (managed=%v spawn=%v)", managedCalled, spawnCalled)
 	}
 
-	// Also verify non-deferred mismatch proceeds to managed restart (and fallback spawn)
+	// Non-deferred mismatch on unmanaged host falls back to spawnFn
 	var versionCount atomic.Int32
 	ts2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -243,13 +244,36 @@ func TestEnsureDaemonRunningWith_DrainDeferredAndAuthHeaders(t *testing.T) {
 
 	managedCalled2 := false
 	spawnCalled2 := false
-	ensureDaemonRunningWith(ts2.URL, "test-secret-tok", "20990101.01", func() bool {
+	ensureDaemonRunningWith(ts2.URL, "test-secret-tok", "20990101.01", func() (bool, bool, error) {
 		managedCalled2 = true
-		return false
+		return false, false, nil
 	}, func(host, _ string) {
 		spawnCalled2 = host == "macmini"
 	})
 	if !managedCalled2 || !spawnCalled2 {
-		t.Fatalf("expected managedCalled2=true and spawnCalled2=true on non-deferred restart, got managed=%v spawn=%v", managedCalled2, spawnCalled2)
+		t.Fatalf("expected managedCalled2=true and spawnCalled2=true on unmanaged non-deferred restart, got managed=%v spawn=%v", managedCalled2, spawnCalled2)
+	}
+
+	// Managed service restart error or slow readiness must NEVER spawn an unmanaged fallback process
+	versionCount.Store(0)
+	spawnOnErr := false
+	ensureDaemonRunningWith(ts2.URL, "test-secret-tok", "20990101.01", func() (bool, bool, error) {
+		return true, false, errors.New("kickstart failed")
+	}, func(_, _ string) {
+		spawnOnErr = true
+	})
+	if spawnOnErr {
+		t.Fatal("expected spawnFn NOT called when managed service restart returns an error")
+	}
+
+	versionCount.Store(0)
+	spawnOnSlow := false
+	ensureDaemonRunningWith(ts2.URL, "test-secret-tok", "20990101.01", func() (bool, bool, error) {
+		return true, false, nil
+	}, func(_, _ string) {
+		spawnOnSlow = true
+	})
+	if spawnOnSlow {
+		t.Fatal("expected spawnFn NOT called when managed service is still starting")
 	}
 }

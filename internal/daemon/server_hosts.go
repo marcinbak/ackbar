@@ -547,61 +547,7 @@ func (s *Server) updateRemoteHostToVersion(host *HostRecord, targetVersion strin
 		}
 
 		// 5a. Atomically replace binaries (in ~/.local/bin and Homebrew bin if present) and restart daemon cleanly
-		remoteRestartScript := fmt.Sprintf(`set -e
-export PATH="$HOME/.local/bin:$HOME/go/bin:/usr/local/go/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
-for b in ackbard ackbar ackbar-hook ackbar-relay; do
-  if [ -f "$HOME/.local/bin/$b.new" ]; then
-    chmod +x "$HOME/.local/bin/$b.new"
-    mv -f "$HOME/.local/bin/$b.new" "$HOME/.local/bin/$b"
-    for brewdir in /opt/homebrew/opt/ackbar/bin /usr/local/opt/ackbar/bin; do
-      if [ -d "$brewdir" ] && [ -w "$brewdir" ]; then
-        cp -f "$HOME/.local/bin/$b" "$brewdir/$b.tmp" && mv -f "$brewdir/$b.tmp" "$brewdir/$b" || true
-      fi
-    done
-  fi
-done
-AUTH_TOKEN=%s
-if [ -n "$AUTH_TOKEN" ]; then
-  DRAIN_RES=$(curl -fsS -H "Authorization: Bearer $AUTH_TOKEN" -X POST "http://127.0.0.1:7777/v1/shutdown?drain=true" 2>/dev/null || true)
-elif [ -n "$ACKBAR_TOKEN" ]; then
-  DRAIN_RES=$(curl -fsS -H "Authorization: Bearer $ACKBAR_TOKEN" -X POST "http://127.0.0.1:7777/v1/shutdown?drain=true" 2>/dev/null || true)
-else
-  DRAIN_RES=$(curl -fsS -X POST "http://127.0.0.1:7777/v1/shutdown?drain=true" 2>/dev/null || true)
-fi
-if echo "$DRAIN_RES" | grep -q '"restart_deferred":true'; then
-  echo "RESTART_DEFERRED"
-  exit 0
-fi
-%s
-self_heal_ackbard_service
-if command -v systemctl >/dev/null 2>&1 && systemctl --user is-enabled ackbard.service >/dev/null 2>&1; then
-  signal_non_worker_ackbard 15
-  sleep 0.3
-  signal_non_worker_ackbard 9
-  systemctl --user daemon-reload >/dev/null 2>&1 || true
-  systemctl --user restart ackbard.service || (nohup "$HOME/.local/bin/ackbard"%s >/dev/null 2>&1 < /dev/null &)
-elif command -v launchctl >/dev/null 2>&1 && launchctl list 2>/dev/null | grep -q com.marcinbak.ackbard; then
-  signal_non_worker_ackbard 15
-  sleep 0.3
-  signal_non_worker_ackbard 9
-  launchctl kickstart -k "gui/$(id -u)/com.marcinbak.ackbard" >/dev/null 2>&1 || true
-  sleep 0.6
-  has_non_worker_ackbard || (nohup "$HOME/.local/bin/ackbard"%s >/dev/null 2>&1 < /dev/null &)
-elif command -v launchctl >/dev/null 2>&1 && launchctl list 2>/dev/null | grep -q homebrew.mxcl.ackbar; then
-  signal_non_worker_ackbard 15
-  sleep 0.3
-  signal_non_worker_ackbard 9
-  export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
-  brew services restart ackbar >/dev/null 2>&1 || true
-  sleep 0.5
-  has_non_worker_ackbard || (nohup "$HOME/.local/bin/ackbard"%s >/dev/null 2>&1 < /dev/null &)
-else
-  signal_non_worker_ackbard 15
-  sleep 0.3
-  signal_non_worker_ackbard 9
-  sleep 0.2
-  nohup "$HOME/.local/bin/ackbard"%s >/dev/null 2>&1 < /dev/null &
-fi`, quotedAuthToken, DaemonSafeShellHelpers(), hostFlagArg, hostFlagArg, hostFlagArg, hostFlagArg)
+		remoteRestartScript := buildRemoteBinaryRestartScript(quotedAuthToken, hostFlagArg)
 
 		restartCmd := exec.Command("ssh", "-o", "ConnectTimeout=15", "-o", "BatchMode=yes", sshTarget, remoteRestartScript)
 		rout, rerr := restartCmd.CombinedOutput()
@@ -620,29 +566,7 @@ fi`, quotedAuthToken, DaemonSafeShellHelpers(), hostFlagArg, hostFlagArg, hostFl
 		}
 	} else {
 		// 3c. Fallback: run `ackbar update --force` directly on the remote host via SSH and restart ackbard
-		remoteUpdateScript := fmt.Sprintf(`set -e
-export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
-AUTH_TOKEN=%s
-UPD_OUT=$(if [ -n "$AUTH_TOKEN" ]; then ACKBAR_TOKEN="$AUTH_TOKEN" ackbar update --force 2>&1; else ackbar update --force 2>&1; fi)
-echo "$UPD_OUT"
-if echo "$UPD_OUT" | grep -q "restart automatically once the current turn finishes"; then
-  echo "RESTART_DEFERRED"
-  exit 0
-fi
-%s
-self_heal_ackbard_service
-if command -v systemctl >/dev/null 2>&1 && systemctl --user is-enabled ackbard.service >/dev/null 2>&1; then
-  systemctl --user daemon-reload >/dev/null 2>&1 || true
-  systemctl --user restart ackbard.service >/dev/null 2>&1 || true
-  sleep 0.6
-elif command -v launchctl >/dev/null 2>&1 && launchctl list 2>/dev/null | grep -q com.marcinbak.ackbard; then
-  launchctl kickstart -k "gui/$(id -u)/com.marcinbak.ackbard" >/dev/null 2>&1 || true
-  sleep 0.6
-elif command -v launchctl >/dev/null 2>&1 && launchctl list 2>/dev/null | grep -q homebrew.mxcl.ackbar; then
-  brew services restart ackbar >/dev/null 2>&1 || true
-  sleep 0.6
-fi
-has_non_worker_ackbard || (nohup ~/.local/bin/ackbard%s >/dev/null 2>&1 < /dev/null &)`, quotedAuthToken, DaemonSafeShellHelpers(), hostFlagArg)
+		remoteUpdateScript := buildRemoteSelfUpdateScript(quotedAuthToken, hostFlagArg)
 		updCmd := exec.Command("ssh", "-o", "ConnectTimeout=30", "-o", "BatchMode=yes", sshTarget, remoteUpdateScript)
 		uout, uerr := updCmd.CombinedOutput()
 		if uerr != nil {
@@ -828,76 +752,6 @@ func (s *Server) UpdateOutdatedRemoteHosts(targetVersion string) []HostUpdateSum
 		}
 	}
 	return filtered
-}
-
-func resolveRestartExecutable() string {
-	exe, err := os.Executable()
-	if err == nil && exe != "" {
-		// On macOS Homebrew, os.Executable() returns the resolved Cellar path of the old running version
-		// (e.g. /opt/homebrew/Cellar/ackbar/20261106.02/bin/ackbard). After an upgrade, we must launch the
-		// active symlink (/opt/homebrew/opt/ackbar/bin/ackbard or /opt/homebrew/bin/ackbard) so the new version starts.
-		if strings.Contains(exe, "/Cellar/ackbar/") {
-			for _, candidate := range []string{
-				"/opt/homebrew/opt/ackbar/bin/ackbard",
-				"/opt/homebrew/bin/ackbard",
-				"/usr/local/opt/ackbar/bin/ackbard",
-				"/usr/local/bin/ackbard",
-			} {
-				if _, serr := os.Stat(candidate); serr == nil {
-					return candidate
-				}
-			}
-		}
-		return exe
-	}
-	home, _ := os.UserHomeDir()
-	if home != "" {
-		return filepath.Join(home, ".local", "bin", "ackbard")
-	}
-	return "ackbard"
-}
-
-func restartLocalDaemonAsync() {
-	if home, err := os.UserHomeDir(); err == nil && home != "" {
-		_, _ = EnsureServiceProcessIsolation(home)
-	}
-	exe := resolveRestartExecutable()
-	args := shellQuoteArgs(os.Args[1:])
-	pid := os.Getpid()
-	helpers := DaemonSafeShellHelpers()
-	script := fmt.Sprintf(`sleep 0.5
-%s
-self_heal_ackbard_service
-if command -v systemctl >/dev/null 2>&1 && systemctl --user is-enabled ackbard.service >/dev/null 2>&1; then
-  kill -15 %d 2>/dev/null || true
-  sleep 0.3
-  kill -9 %d 2>/dev/null || true
-  systemctl --user daemon-reload >/dev/null 2>&1 || true
-  systemctl --user restart ackbard.service || (nohup %q %s >/dev/null 2>&1 < /dev/null &)
-elif command -v launchctl >/dev/null 2>&1 && launchctl list 2>/dev/null | grep -q com.marcinbak.ackbard; then
-  kill -15 %d 2>/dev/null || true
-  sleep 0.3
-  kill -9 %d 2>/dev/null || true
-  launchctl kickstart -k "gui/$(id -u)/com.marcinbak.ackbard" >/dev/null 2>&1 || true
-  sleep 0.6
-  has_non_worker_ackbard || (nohup %q %s >/dev/null 2>&1 < /dev/null &)
-elif command -v launchctl >/dev/null 2>&1 && launchctl list 2>/dev/null | grep -q homebrew.mxcl.ackbar; then
-  kill -15 %d 2>/dev/null || true
-  sleep 0.3
-  kill -9 %d 2>/dev/null || true
-  export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
-  brew services restart ackbar >/dev/null 2>&1 || true
-  sleep 0.6
-  has_non_worker_ackbard || (nohup %q %s >/dev/null 2>&1 < /dev/null &)
-else
-  kill -15 %d 2>/dev/null || true
-  sleep 0.3
-  kill -9 %d 2>/dev/null || true
-  sleep 0.2
-  nohup %q %s >/dev/null 2>&1 < /dev/null &
-fi`, helpers, pid, pid, exe, args, pid, pid, exe, args, pid, pid, exe, args, pid, pid, exe, args)
-	cmd := exec.Command("sh", "-c", script)
-	_ = cmd.Start()
 }
 
 var tunnelMu sync.Mutex

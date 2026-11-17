@@ -66,6 +66,7 @@ go test ./...
     go run ./cmd/ackbard
     ```
     *Listens on `127.0.0.1:7777` by default and initializes SQLite database at `~/.config/ackbar/ackbard.db`.*
+    *   Never run `ackbard &` or `go run ./cmd/ackbard` when `launchd`/`systemd` supervises `:7777`; see [docs/daemon.md](daemon.md#6-service-management-launchd--systemd).
 
 2.  **Launch Web GUI (`ackbar` or `http://127.0.0.1:7777`):**
     ```bash

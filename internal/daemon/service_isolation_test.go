@@ -289,4 +289,10 @@ func TestServiceIsolation_PreservesRestrictive0600Mode(t *testing.T) {
 	if plistOut, _ := os.ReadFile(plistPath); !plistAbandonTrueRegex.MatchString(string(plistOut)) {
 		t.Fatalf("expected shell self-heal to add AbandonProcessGroup true, got:\n%s", string(plistOut))
 	}
+	if !strings.Contains(DaemonSafeShellHelpers(), "ps -ww -p") {
+		t.Fatalf("expected ackbard_pid_cmdline to pass -ww to ps so macOS command lines do not truncate")
+	}
+	if _, err := os.Stat(LaunchAgentReloadMarkerPath(home)); err != nil {
+		t.Fatalf("expected reload marker written when com.marcinbak.ackbard.plist is updated: %v", err)
+	}
 }

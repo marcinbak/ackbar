@@ -114,7 +114,7 @@ ackbar update --force
 
 ### How Updates Work Under the Hood
 * **Homebrew Users:** `ackbar update` detects the Homebrew installation and automatically executes `brew upgrade ackbar && brew services restart ackbar`, ensuring the Cellar and background services stay cleanly synchronized.
-* **Standalone / Local Bin Users (`~/.local/bin`):** `ackbar update` and [`daemon_lifecycle.go`](../cmd/ackbar/daemon_lifecycle.go) probe `/v1/version` (`2s`), drain via `/v1/shutdown?drain=true`, and poll managed restarts (`5s`).
+* **Standalone / Local Bin Users (`~/.local/bin`):** `ackbar update`, [`daemon_lifecycle.go`](../cmd/ackbar/daemon_lifecycle.go), and [`service_restart.go`](../cmd/ackbar/service_restart.go) probe `/v1/version` (`2s`), drain via `/v1/shutdown?drain=true`, and poll managed restarts (`5s`) without unmanaged fallbacks.
 * **Service Process Isolation ([`service_isolation.go`](../internal/daemon/service_isolation.go)):** Daemon startup and updates set `KillMode=process` (systemd) and `AbandonProcessGroup` (launchd) on writable non-symlink unit files.
 * **Worker-Safe Daemon Restart (`DaemonSafeShellHelpers`):** Update scripts filter out `--headless-worker` PIDs; never run raw `pkill -x ackbard` or `pgrep -x ackbard`.
 * **In-App Web Discovery:**
