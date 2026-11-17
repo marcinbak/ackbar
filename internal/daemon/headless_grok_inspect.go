@@ -225,21 +225,39 @@ func (s *Server) collectGrokModels() []ModelSuggestion {
 	if data, err := os.ReadFile(cachePath); err == nil && len(data) > 0 {
 		var cache struct {
 			Models map[string]struct {
-				ID, Name, Description string
-				Hidden                bool
+				ID          string `json:"id"`
+				Name        string `json:"name"`
+				Description string `json:"description"`
+				Hidden      bool   `json:"hidden"`
+				Info        *struct {
+					ID          string `json:"id"`
+					Name        string `json:"name"`
+					Description string `json:"description"`
+					Hidden      bool   `json:"hidden"`
+				} `json:"info"`
 			} `json:"models"`
 		}
 		if err := json.Unmarshal(data, &cache); err == nil && len(cache.Models) > 0 {
 			var models []ModelSuggestion
 			for k, v := range cache.Models {
-				if v.Hidden {
+				hidden := v.Hidden
+				id := v.ID
+				label := v.Name
+				if v.Info != nil {
+					hidden = v.Info.Hidden
+					if v.Info.ID != "" {
+						id = v.Info.ID
+					}
+					if v.Info.Name != "" {
+						label = v.Info.Name
+					}
+				}
+				if hidden {
 					continue
 				}
-				id := v.ID
 				if id == "" {
 					id = k
 				}
-				label := v.Name
 				if label == "" {
 					label = id
 				}
@@ -275,13 +293,30 @@ func computeGrokTranscriptUsage(home string, sess *Session, defaultLimit int) (i
 
 		if usageData, err := os.ReadFile(filepath.Join(sessDir, "usage.json")); err == nil {
 			var usg struct {
-				CostUsdTicks                                float64 `json:"costUsdTicks"`
-				InputTokens, OutputTokens, CachedReadTokens int
+				CostUsdTicks     float64 `json:"costUsdTicks"`
+				InputTokens      int     `json:"inputTokens"`
+				OutputTokens     int     `json:"outputTokens"`
+				CachedReadTokens int     `json:"cachedReadTokens"`
+				Session          *struct {
+					InputTokens      int     `json:"inputTokens"`
+					OutputTokens     int     `json:"outputTokens"`
+					CachedReadTokens int     `json:"cachedReadTokens"`
+					CostUsdTicks     float64 `json:"costUsdTicks"`
+				} `json:"session"`
 			}
 			if json.Unmarshal(usageData, &usg) == nil {
-				sumIn, sumOut, cacheRead = usg.InputTokens, usg.OutputTokens, usg.CachedReadTokens
-				if usg.CostUsdTicks > 0 {
-					costUSD = usg.CostUsdTicks / 1e10
+				if usg.Session != nil && (usg.Session.InputTokens > 0 || usg.Session.OutputTokens > 0 || usg.Session.CachedReadTokens > 0 || usg.Session.CostUsdTicks > 0) {
+					sumIn = usg.Session.InputTokens
+					sumOut = usg.Session.OutputTokens
+					cacheRead = usg.Session.CachedReadTokens
+					if usg.Session.CostUsdTicks > 0 {
+						costUSD = usg.Session.CostUsdTicks / 1e10
+					}
+				} else {
+					sumIn, sumOut, cacheRead = usg.InputTokens, usg.OutputTokens, usg.CachedReadTokens
+					if usg.CostUsdTicks > 0 {
+						costUSD = usg.CostUsdTicks / 1e10
+					}
 				}
 			}
 		}

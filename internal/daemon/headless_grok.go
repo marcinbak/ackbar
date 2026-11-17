@@ -44,16 +44,19 @@ func buildGrokHeadlessArgs(sess *Session, prompt string, isExisting bool) []stri
 
 	var args []string
 	if !isExisting {
-		args = []string{"-p", effectivePrompt, "-s", sess.NativeID, "--output-format", "streaming-json"}
+		args = []string{"--single=" + effectivePrompt, "-s", sess.NativeID, "--output-format", "streaming-json"}
 		for _, dir := range sess.ExtraDirs {
 			dir = strings.TrimSpace(dir)
 			if dir != "" && !strings.ContainsAny(dir, "\x00\r\n") {
-				args = append(args, "--add-dir", filepath.Clean(dir))
+				cleaned := filepath.Clean(dir)
+				if !strings.HasPrefix(cleaned, "-") && filepath.IsAbs(cleaned) {
+					args = append(args, "--add-dir", cleaned)
+				}
 			}
 		}
 	} else {
 		// Resumed Grok sessions inherit workspace directories; passing --add-dir triggers an error.
-		args = []string{"-p", effectivePrompt, "-r", sess.NativeID, "--output-format", "streaming-json"}
+		args = []string{"--single=" + effectivePrompt, "-r", sess.NativeID, "--output-format", "streaming-json"}
 	}
 
 	switch strings.ToLower(strings.TrimSpace(sess.PermissionMode)) {
@@ -99,6 +102,10 @@ func (h *HeadlessRunner) runGrokOneShotTurn(sess *Session, prompt string) error 
 	}
 	if sess.NativeID == "" {
 		sess.NativeID = generateUUID()
+	}
+	if !IsSafeGrokSessionID(sess.NativeID) {
+		h.mu.Unlock()
+		return fmt.Errorf("unsafe grok session ID: %q", sess.NativeID)
 	}
 	sess.IsDone = false
 	h.mu.Unlock()

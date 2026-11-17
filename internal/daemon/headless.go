@@ -1241,6 +1241,9 @@ func hasConversationOnDisk(sess *Session, home string, db *DB) bool {
 // buildArgs constructs the binary path and CLI arguments for a headless turn.
 func (h *HeadlessRunner) buildArgs(sess *Session, prompt, home string) (string, []string, error) {
 	if sess.Agent == "grok" {
+		if !IsSafeGrokSessionID(sess.NativeID) {
+			return "", nil, fmt.Errorf("unsafe grok session ID: %q", sess.NativeID)
+		}
 		bin := resolveGrokBinary()
 		isExisting := sess.FirstPrompt != "" || sess.LastPrompt != "" || hasConversationOnDisk(sess, home, h.db)
 		args := buildGrokHeadlessArgs(sess, prompt, isExisting)

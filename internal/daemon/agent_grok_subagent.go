@@ -60,7 +60,20 @@ func LoadGrokSubagents(home, cwd, nativeID string) ([]SubagentInfo, error) {
 						for i := len(lines) - 1; i >= 0; i-- {
 							var ev map[string]interface{}
 							if json.Unmarshal([]byte(strings.TrimSpace(lines[i])), &ev) == nil {
-								t, sr := grokStr(ev, "type"), grokStr(ev, "stop_reason")
+								targetMap := ev
+								if params, ok := ev["params"].(map[string]interface{}); ok && params != nil {
+									if upd, ok := params["update"].(map[string]interface{}); ok && upd != nil {
+										targetMap = upd
+									}
+								}
+								t := grokStr(targetMap, "sessionUpdate", "type")
+								sr := grokStr(targetMap, "stop_reason", "stopReason")
+								if t == "" {
+									t = grokStr(ev, "type")
+								}
+								if sr == "" {
+									sr = grokStr(ev, "stop_reason")
+								}
 								if t == "turn_completed" || t == "completed" || sr == "end_turn" || sr == "cancelled" {
 									status = "completed"
 									break
@@ -180,7 +193,7 @@ func findGrokSubagentParentPattern(home, nativeID string) string {
 		if matches, err := filepath.Glob(p); err == nil {
 			for _, m := range matches {
 				parentNativeID := filepath.Base(filepath.Dir(filepath.Dir(m)))
-				if IsSafeGrokSessionID(parentNativeID) {
+				if IsSafeGrokSessionID(parentNativeID) && parentNativeID != nativeID {
 					return parentNativeID
 				}
 			}
@@ -197,7 +210,7 @@ func ResolveGrokSubagentParent(home, nativeID string) (parentID, role, typeName 
 		if data, err := os.ReadFile(filepath.Join(childDir, "summary.json")); err == nil {
 			var m map[string]interface{}
 			if json.Unmarshal(data, &m) == nil {
-				if pid := grokStr(m, "parent_session_id", "parentSessionId"); pid != "" {
+				if pid := grokStr(m, "parent_session_id", "parentSessionId"); pid != "" && IsSafeGrokSessionID(pid) && pid != nativeID {
 					return pid, grokStr(m, "role"), grokStr(m, "subagent_type")
 				}
 			}

@@ -186,7 +186,7 @@ func (s *Server) processParsedHookEvent(event *Event, urlEventName string, heade
 			} else {
 				parentConvID, role, typeName = ResolveGrokSubagentParent(home, event.NativeID)
 			}
-			if parentConvID != "" {
+			if parentConvID != "" && parentConvID != event.NativeID {
 				unlockParent := s.lockSessionHook(hookLockKey(event.Agent, parentConvID, event.Agent+"-"+parentConvID))
 				defer unlockParent()
 				parentSessID := fmt.Sprintf("%s:%s:%s", event.Agent, host, parentConvID)

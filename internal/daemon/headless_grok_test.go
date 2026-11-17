@@ -18,17 +18,23 @@ func TestBuildGrokHeadlessArgs_Turn1AndTurn2(t *testing.T) {
 		Model:          "grok-4.7",
 		Effort:         "high",
 		PermissionMode: "plan",
-		ExtraDirs:      []string{"/tmp/extra1", "/tmp/extra2"},
+		ExtraDirs:      []string{"/tmp/extra1", "/tmp/extra2", "-unsafe-flag", "relative/dir"},
 	}
 
-	// Turn 1: !isExisting -> expects -s, -m, --effort, --permission-mode, and --add-dir
+	// Turn 1: !isExisting -> expects --single=..., -s, -m, --effort, --permission-mode, and valid --add-dir
 	args1 := buildGrokHeadlessArgs(sess, "hello turn 1", false)
 	args1Str := strings.Join(args1, " ")
+	if !strings.Contains(args1Str, "--single=hello turn 1") {
+		t.Errorf("expected --single=hello turn 1 in Turn 1 args: %s", args1Str)
+	}
 	if !strings.Contains(args1Str, "-s sess-123") {
 		t.Errorf("expected -s sess-123 in Turn 1 args: %s", args1Str)
 	}
 	if !strings.Contains(args1Str, "--add-dir /tmp/extra1") || !strings.Contains(args1Str, "--add-dir /tmp/extra2") {
-		t.Errorf("expected --add-dir in Turn 1 args: %s", args1Str)
+		t.Errorf("expected valid --add-dir in Turn 1 args: %s", args1Str)
+	}
+	if strings.Contains(args1Str, "-unsafe-flag") || strings.Contains(args1Str, "relative/dir") {
+		t.Errorf("expected invalid ExtraDirs to be skipped: %s", args1Str)
 	}
 	if !strings.Contains(args1Str, "-m grok-4.7") {
 		t.Errorf("expected -m grok-4.7 in Turn 1 args: %s", args1Str)
@@ -46,11 +52,109 @@ func TestBuildGrokHeadlessArgs_Turn1AndTurn2(t *testing.T) {
 	// Turn 2+: isExisting -> expects -r, and CRITICAL: NEVER --add-dir
 	args2 := buildGrokHeadlessArgs(sess, "hello turn 2", true)
 	args2Str := strings.Join(args2, " ")
+	if !strings.Contains(args2Str, "--single=hello turn 2") {
+		t.Errorf("expected --single=hello turn 2 in Turn 2 args: %s", args2Str)
+	}
 	if !strings.Contains(args2Str, "-r sess-123") {
 		t.Errorf("expected -r sess-123 in Turn 2 args: %s", args2Str)
 	}
 	if strings.Contains(args2Str, "--add-dir") {
 		t.Errorf("CRITICAL INVARIANT VIOLATION: --add-dir must NOT appear in Turn 2 args: %s", args2Str)
+	}
+}
+
+func TestBuildGrokHeadlessArgs_HyphenPrefixedPrompt(t *testing.T) {
+	sess := &Session{
+		ID:             "grok:local:sess-hyphen",
+		Agent:          "grok",
+		NativeID:       "sess-hyphen",
+		PermissionMode: "plan",
+	}
+
+	args := buildGrokHeadlessArgs(sess, "--always-approve", false)
+	argsStr := strings.Join(args, " ")
+	if !strings.Contains(argsStr, "--single=--always-approve") {
+		t.Errorf("expected --single=--always-approve, got: %s", argsStr)
+	}
+	if !strings.Contains(argsStr, "--permission-mode plan") {
+		t.Errorf("expected --permission-mode plan, got: %s", argsStr)
+	}
+}
+
+func TestComputeGrokTranscriptUsage_NestedSession(t *testing.T) {
+	tmpHome := t.TempDir()
+	sessID := "sess-nested-usage"
+	cwd := filepath.Join(tmpHome, "proj")
+	_ = os.MkdirAll(cwd, 0755)
+
+	sessDir := filepath.Join(tmpHome, ".grok", "sessions", EncodeGrokCwd(cwd), sessID)
+	_ = os.MkdirAll(sessDir, 0755)
+
+	usageJSON := `{"sessionId":"` + sessID + `","session":{"inputTokens":22590,"outputTokens":716,"cachedReadTokens":1664,"costUsdTicks":469800000}}`
+	_ = os.WriteFile(filepath.Join(sessDir, "usage.json"), []byte(usageJSON), 0644)
+
+	signalsJSON := `{"contextTokensUsed":23306,"contextWindowTokens":131072}`
+	_ = os.WriteFile(filepath.Join(sessDir, "signals.json"), []byte(signalsJSON), 0644)
+
+	sess := &Session{NativeID: sessID, Cwd: cwd}
+	sumIn, sumOut, cacheRead, lastTurn, limitTokens, _, costUSD := computeGrokTranscriptUsage(tmpHome, sess, 128000)
+	if sumIn != 22590 || sumOut != 716 || cacheRead != 1664 {
+		t.Errorf("unexpected tokens: in=%d, out=%d, cache=%d", sumIn, sumOut, cacheRead)
+	}
+	if costUSD != 0.04698 {
+		t.Errorf("expected costUSD 0.04698, got %f", costUSD)
+	}
+	if lastTurn != 23306 || limitTokens != 131072 {
+		t.Errorf("unexpected context tokens: last=%d limit=%d", lastTurn, limitTokens)
+	}
+}
+
+func TestCollectGrokModels_NestedInfoAndHidden(t *testing.T) {
+	srv, _ := setupTestServer(t)
+	tmpHome := t.TempDir()
+	srv.homeDir = tmpHome
+
+	grokHome := filepath.Join(tmpHome, ".grok")
+	_ = os.MkdirAll(grokHome, 0755)
+
+	cacheJSON := `{
+		"models": {
+			"grok-4.7": {
+				"info": {
+					"id": "grok-4.7",
+					"name": "Grok 4.7",
+					"description": "Frontier flagship",
+					"hidden": false
+				}
+			},
+			"grok-internal": {
+				"info": {
+					"id": "grok-internal",
+					"name": "Internal Test Model",
+					"hidden": true
+				}
+			}
+		}
+	}`
+	_ = os.WriteFile(filepath.Join(grokHome, "models_cache.json"), []byte(cacheJSON), 0644)
+
+	models := srv.collectGrokModels()
+	for _, m := range models {
+		if m.ID == "grok-internal" {
+			t.Errorf("expected grok-internal to be excluded (hidden)")
+		}
+	}
+	found47 := false
+	for _, m := range models {
+		if m.ID == "grok-4.7" {
+			found47 = true
+			if m.Label != "Grok 4.7" {
+				t.Errorf("expected label 'Grok 4.7', got %q", m.Label)
+			}
+		}
+	}
+	if !found47 {
+		t.Errorf("expected grok-4.7 in collected models")
 	}
 }
 

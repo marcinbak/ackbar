@@ -245,7 +245,7 @@ class _AgentLogoPainter extends CustomPainter {
           ..style = PaintingStyle.fill
           ..isAntiAlias = true;
 
-        final path = Path();
+        final path = Path()..fillType = PathFillType.evenOdd;
         path.moveTo(18.244 * sx, 2.25 * sy);
         path.lineTo(21.552 * sx, 2.25 * sy);
         path.lineTo(14.325 * sx, 10.51 * sy);
@@ -258,6 +258,13 @@ class _AgentLogoPainter extends CustomPainter {
         path.lineTo(1.254 * sx, 2.25 * sy);
         path.lineTo(8.078 * sx, 2.25 * sy);
         path.lineTo(12.793 * sx, 8.481 * sy);
+        path.close();
+
+        // Inner hollow diagonal cutout from GrokProvider.IconSVG
+        path.moveTo(17.083 * sx, 19.77 * sy);
+        path.lineTo(18.916 * sx, 19.77 * sy);
+        path.lineTo(7.084 * sx, 4.126 * sy);
+        path.lineTo(5.117 * sx, 4.126 * sy);
         path.close();
 
         canvas.drawPath(path, fillP);
