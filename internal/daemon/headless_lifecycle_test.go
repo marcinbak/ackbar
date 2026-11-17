@@ -100,8 +100,14 @@ func TestWarmWorker_ConfigFingerprintRotationAndMidTurnDeferral(t *testing.T) {
 	binDir := filepath.Join(tmpDir, "bin")
 	_ = os.MkdirAll(binDir, 0755)
 	mockClaude := filepath.Join(binDir, "claude")
+	gateFile := filepath.Join(tmpDir, "gate")
 	script := `#!/bin/sh
 while IFS= read -r line; do
+  case "$line" in
+    *"turn 3 mid-turn config"*)
+      while [ ! -f "` + gateFile + `" ]; do sleep 0.02; done
+      ;;
+  esac
   echo '{"type":"result","result":"ok","is_error":false}'
 done
 `
@@ -126,30 +132,37 @@ done
 	case <-time.After(5 * time.Second):
 		t.Fatalf("timeout waiting for turn 1")
 	}
-	unsub1 := unsub
-	unsub1()
+	unsub()
 
 	h.mu.RLock()
 	handle1 := h.warmWorkers[sess.ID]
+	childPID1, fp1 := handle1.ChildPID, handle1.ConfigFingerprint
 	h.mu.RUnlock()
-	if handle1 == nil {
-		t.Fatalf("expected handle1")
+	if handle1 == nil || childPID1 <= 1 {
+		t.Fatalf("expected handle1 with valid ChildPID, got %+v", handle1)
 	}
 
-	sess.Model = "opus"
+	// Non-model idle config change restarts the child process in-place with updated fingerprint.
+	sess.Effort = "high"
+	sess.MetadataUpdatedAt = time.Now().UTC()
+	_ = db.SaveSession(sess)
 	h.NotifyConfigChanged(sess)
 
 	h.mu.RLock()
 	handleAfterNotify := h.warmWorkers[sess.ID]
-	h.mu.RUnlock()
+	childPIDAfterIdle, fpAfterIdle := 0, ""
 	if handleAfterNotify != nil {
-		t.Errorf("idle worker should be shut down immediately on config change, got %+v", handleAfterNotify)
+		childPIDAfterIdle, fpAfterIdle = handleAfterNotify.ChildPID, handleAfterNotify.ConfigFingerprint
+	}
+	h.mu.RUnlock()
+	if handleAfterNotify == nil || childPIDAfterIdle == childPID1 || fpAfterIdle == fp1 {
+		t.Errorf("idle non-model config change should restart child with new ChildPID/FP: before=(%d,%s) after=(%d,%s)", childPID1, fp1, childPIDAfterIdle, fpAfterIdle)
 	}
 
 	sub2, unsub2 := h.Subscribe(sess.ID)
 	done2 := waitTurnDone(h, sess.ID, sub2)
 
-	if err := h.RunTurn(context.Background(), sess, "prompt 2 with opus"); err != nil {
+	if err := h.RunTurn(context.Background(), sess, "prompt 2 with high effort"); err != nil {
 		t.Fatalf("RunTurn 2: %v", err)
 	}
 	select {
@@ -159,36 +172,25 @@ done
 	}
 	unsub2()
 
-	h.mu.RLock()
-	handle2 := h.warmWorkers[sess.ID]
-	h.mu.RUnlock()
-	if handle2 == nil || handle2.WorkerPID == handle1.WorkerPID {
-		t.Errorf("expected rotated worker for opus, got same PID: %+v vs %+v", handle1, handle2)
-	}
-
 	sub3, unsub3 := h.Subscribe(sess.ID)
-	done3 := make(chan struct{})
-	go func() {
-		defer close(done3)
-		for e := range sub3 {
-			if e.Type == "turn_complete" {
-				return
-			}
-		}
-	}()
+	done3 := waitTurnDone(h, sess.ID, sub3)
 	if err := h.RunTurn(context.Background(), sess, "turn 3 mid-turn config"); err != nil {
 		t.Fatalf("RunTurn 3: %v", err)
 	}
-	sess.Model = "haiku"
+	sess.PermissionMode = "plan"
+	sess.MetadataUpdatedAt = time.Now().UTC()
+	_ = db.SaveSession(sess)
 	h.NotifyConfigChanged(sess)
 
 	h.mu.RLock()
 	midTurnHandle := h.warmWorkers[sess.ID]
+	midTurnRotate := midTurnHandle != nil && midTurnHandle.rotateAfterTurn
 	h.mu.RUnlock()
-	if midTurnHandle == nil || !midTurnHandle.rotateAfterTurn {
-		t.Errorf("mid-turn config change should set rotateAfterTurn: %+v", midTurnHandle)
+	if !midTurnRotate {
+		t.Errorf("mid-turn non-model config change should set rotateAfterTurn: %+v", midTurnHandle)
 	}
 
+	_ = os.WriteFile(gateFile, []byte("go"), 0644)
 	select {
 	case <-done3:
 	case <-time.After(5 * time.Second):
@@ -196,19 +198,22 @@ done
 	}
 	unsub3()
 
-	for d := time.Now().Add(2 * time.Second); time.Now().Before(d); time.Sleep(20 * time.Millisecond) {
+	var postTurnChildPID int
+	var postTurnRotate bool
+	var postTurnFP string
+	for d := time.Now().Add(3 * time.Second); time.Now().Before(d); time.Sleep(20 * time.Millisecond) {
 		h.mu.RLock()
 		cur := h.warmWorkers[sess.ID]
+		if cur != nil {
+			postTurnChildPID, postTurnRotate, postTurnFP = cur.ChildPID, cur.rotateAfterTurn, cur.ConfigFingerprint
+		}
 		h.mu.RUnlock()
-		if cur == nil {
+		if !postTurnRotate && postTurnChildPID != childPIDAfterIdle && postTurnFP == ConfigFingerprint(sess) {
 			break
 		}
 	}
-	h.mu.RLock()
-	reapedHandle := h.warmWorkers[sess.ID]
-	h.mu.RUnlock()
-	if reapedHandle != nil {
-		t.Errorf("expected worker to be reaped post-turn, got %+v", reapedHandle)
+	if postTurnRotate || postTurnChildPID == childPIDAfterIdle || postTurnFP != ConfigFingerprint(sess) {
+		t.Errorf("expected child restart post-turn: childPID %d->%d rotate=%v fp=%s want=%s", childPIDAfterIdle, postTurnChildPID, postTurnRotate, postTurnFP, ConfigFingerprint(sess))
 	}
 }
 

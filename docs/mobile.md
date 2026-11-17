@@ -91,8 +91,8 @@ Tap any headless session card or **Open Chat** to enter the dedicated interactiv
 * **Tool & Chain-of-Thought Badges (`TranscriptToolWidgets`):** Collapsible tool invocation cards and reasoning accordions ([`transcript_tool_widgets.dart`](../mobile/lib/features/transcript/presentation/transcript_tool_widgets.dart)).
 * **Subagents Dock (`SubagentsDock`):** Collapsible child agent dock tracking delegated subagent status, progress, and turn counts ([`subagents_dock.dart`](../mobile/lib/features/transcript/presentation/subagents_dock.dart)).
 * **Runtime Configuration:** Pill bar displays resolved default model or override, effort, mode, directories, context, and configuration sheet.
-* **Composer Autocomplete (`HeadlessAutocompleteStrip`):** Detects `/` for commands, `@` for files, and `!` for shell mode.
-* **Command Dispatcher (`HeadlessCommandDispatcher`):** Runs `! <cmd>` and 21 standalone commands (including `/restart`) with inline cards.
+* **Composer Autocomplete (`HeadlessAutocompleteStrip`):** Detects `/` for commands, `/model <query>` for models, `@` for files, and `!` for shell.
+* **Command Dispatcher (`HeadlessCommandDispatcher`):** Runs `! <cmd>` and 21 standalone commands mid-turn (even while streaming) with inline cards.
 * **In-Place Turn Rotation (`Conv N+1`):** `/clear`, `/reset`, `/rewind`, and `/handover` rotate sessions in-place using epoch guards while clearing ephemeral cards.
 * **Inline OAuth Sign-In (`HeadlessAuthCard`):** Renders interactive cards for `BlockKind.auth` with native browser launcher, remote redirect paste, retry, and dismiss.
 
@@ -209,8 +209,8 @@ In **Phase 5**, the Flutter Mobile App (`mobile/lib/`) was upgraded to complete 
 
 5. **Headless Session & Command Parity (`features/headless/`, `features/chat/` & `features/transcript/`):**
    * **`HeadlessAuthCard`:** Renders on `BlockKind.auth` in `AttentionScreen`, `ChatScreen`, and `TranscriptScreen`. Launches external browser via native `dev.ackbar.app/launcher` HTTPS channel (`MainActivity.kt`, `AppDelegate.swift`) with clipboard fallback. Supports collapsible remote `callback_url` paste, retry, terminal attach, and dismiss.
-   * **`HeadlessConfigPillBar` & `HeadlessConfigSheet`:** Displays model override or resolved default (`resolvedModel`), effort (Claude Code & Grok), mode, and context. Model selector shows `Default (<Model>)` and resets override. Additional directories (`extra_dirs`) are locked as read-only after session creation for Grok because `grok -r` rejects `--add-dir`.
-   * **Composer Autocomplete & Command Dispatcher:** `HeadlessAutocompleteStrip` handles autocomplete. `HeadlessCommandDispatcher` executes slash commands; `/model` and `/context` cards render `Default (<Model>)` for empty overrides.
+   * **`HeadlessConfigPillBar` & `HeadlessConfigSheet`:** Displays model override or resolved default (`resolvedModel`), effort (Claude Code & Grok), mode, and context. Model selector shows `Default (<Model>)` and resets override; seeds defaults via `Session.defaultModelsForAgent` and resolves host via `SessionHostResolver.resolveHostRecord`. Additional directories (`extra_dirs`) are locked as read-only after session creation for Grok because `grok -r` rejects `--add-dir`.
+   * **Composer Autocomplete & Command Dispatcher:** `HeadlessAutocompleteStrip` completes `/`, `/model <query>`, and `@`. `HeadlessCommandDispatcher` runs slash/shell commands mid-turn; `/model` and `/context` render `Default (<Model>)`.
 
 ---
 

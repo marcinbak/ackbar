@@ -2,15 +2,15 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../../core/models/headless_models.dart';
-import '../../../../core/models/host.dart';
 import '../../../../core/models/session.dart';
 import '../../../../core/network/api_client.dart';
 import '../../../../core/network/headless_api_client.dart';
 import '../../../../core/providers/fleet_providers.dart';
 import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/app_typography.dart';
+import '../../../../core/utils/session_host_resolver.dart';
 
-enum ComposerTriggerKind { shell, command, file }
+enum ComposerTriggerKind { shell, command, model, file }
 
 class ComposerTrigger {
   final ComposerTriggerKind kind;
@@ -43,6 +43,15 @@ class ComposerTrigger {
     );
   }
 
+  factory ComposerTrigger.model(String query, int end) {
+    return ComposerTrigger._(
+      kind: ComposerTriggerKind.model,
+      query: query,
+      replaceStart: 0,
+      replaceEnd: end,
+    );
+  }
+
   factory ComposerTrigger.file(String query, int start, int end) {
     return ComposerTrigger._(
       kind: ComposerTriggerKind.file,
@@ -61,6 +70,16 @@ ComposerTrigger? detectComposerTrigger(String text, int cursorOffset) {
     final trimmed = text.trimLeft();
     final cmd = trimmed.length > 1 ? trimmed.substring(1).trimLeft() : '';
     return ComposerTrigger.shell(cmd);
+  }
+
+  final prefixToCursor = text.substring(0, safeOffset);
+  if (!prefixToCursor.contains('\n')) {
+    final modelMatch = RegExp(r'^\s*/model\s+(.*)$', caseSensitive: false)
+        .firstMatch(prefixToCursor);
+    if (modelMatch != null) {
+      final query = (modelMatch.group(1) ?? '').trim();
+      return ComposerTrigger.model(query, safeOffset);
+    }
   }
 
   if (text.startsWith('/')) {
@@ -112,7 +131,9 @@ class _HeadlessAutocompleteStripState
     extends ConsumerState<HeadlessAutocompleteStrip> {
   Timer? _debounceTimer;
   ComposerTrigger? _currentTrigger;
+  bool _suppressNextCheck = false;
   List<CommandSuggestion> _commandSuggestions = const [];
+  List<ModelSuggestion> _modelSuggestions = const [];
   List<FileSuggestion> _fileSuggestions = const [];
 
   @override
@@ -140,6 +161,7 @@ class _HeadlessAutocompleteStripState
   }
 
   void _onTextChanged() {
+    if (_suppressNextCheck) return;
     _checkTrigger();
   }
 
@@ -155,6 +177,7 @@ class _HeadlessAutocompleteStripState
       if (trig == null || trig.kind == ComposerTriggerKind.shell) {
         setState(() {
           _commandSuggestions = const [];
+          _modelSuggestions = const [];
           _fileSuggestions = const [];
         });
         return;
@@ -168,20 +191,28 @@ class _HeadlessAutocompleteStripState
 
   Future<({String url, String? authToken})> _getHost() async {
     if (widget.resolveHost != null) return await widget.resolveHost!();
-    final hosts = ref.read(hostsListProvider);
-    final h = hosts.firstWhere(
-      (item) =>
-          item.name.toLowerCase() == widget.session.host.toLowerCase() ||
-          item.url.toLowerCase() == widget.session.host.toLowerCase(),
-      orElse: () => hosts.isNotEmpty
-          ? hosts.first
-          : HostRecord(
-              name: 'local',
-              url: 'http://127.0.0.1:7777',
-              createdAt: DateTime.now(),
-            ),
+    final h = SessionHostResolver.resolveHostRecord(
+      ref.read(hostsListProvider),
+      widget.session.host,
     );
     return (url: h.url, authToken: h.authToken.isNotEmpty ? h.authToken : null);
+  }
+
+  List<ModelSuggestion> _withDefaultModelIfMatching(
+    List<ModelSuggestion> list,
+    String query,
+  ) {
+    final qLower = query.toLowerCase();
+    final matchesDefault = qLower.isEmpty ||
+        'default'.contains(qLower) ||
+        'default model'.contains(qLower);
+    if (matchesDefault && !list.any((m) => m.id == 'default')) {
+      return [
+        const ModelSuggestion(id: 'default', label: 'Default Model'),
+        ...list,
+      ];
+    }
+    return list;
   }
 
   Future<void> _fetchSuggestions(ComposerTrigger trigger) async {
@@ -198,6 +229,30 @@ class _HeadlessAutocompleteStripState
         );
         if (!mounted) return;
         setState(() => _commandSuggestions = res);
+      } else if (trigger.kind == ComposerTriggerKind.model) {
+        List<ModelSuggestion> res;
+        try {
+          res = await api.getModelSuggestions(
+            host.url,
+            widget.session.id,
+            query: trigger.query,
+            authToken: host.authToken,
+          );
+          if (res.isEmpty && trigger.query.isEmpty) {
+            res = Session.defaultModelsForAgent(widget.session.agent);
+          }
+        } catch (_) {
+          final qLower = trigger.query.toLowerCase();
+          res = Session.defaultModelsForAgent(widget.session.agent)
+              .where((m) =>
+                  qLower.isEmpty ||
+                  m.id.toLowerCase().contains(qLower) ||
+                  m.label.toLowerCase().contains(qLower))
+              .toList();
+        }
+        res = _withDefaultModelIfMatching(res, trigger.query);
+        if (!mounted) return;
+        setState(() => _modelSuggestions = res);
       } else if (trigger.kind == ComposerTriggerKind.file) {
         final res = await api.getFileSuggestions(
           host.url,
@@ -219,20 +274,37 @@ class _HeadlessAutocompleteStripState
     final prefix = text.substring(0, trig.replaceStart);
     final suffix =
         trig.replaceEnd <= text.length ? text.substring(trig.replaceEnd) : '';
-    final trailing = suffix.startsWith(' ') ? '' : ' ';
+    final trailing =
+        (trig.kind == ComposerTriggerKind.model || suffix.startsWith(' '))
+            ? ''
+            : ' ';
     final newText = '$prefix$replacement$trailing$suffix';
 
-    widget.controller.value = TextEditingValue(
-      text: newText,
-      selection: TextSelection.collapsed(
-        offset: prefix.length + replacement.length + 1,
-      ),
-    );
+    final shouldTransitionToModel = trig.kind == ComposerTriggerKind.command &&
+        replacement.trim().toLowerCase() == '/model';
+
+    _debounceTimer?.cancel();
     setState(() {
       _currentTrigger = null;
       _commandSuggestions = const [];
+      _modelSuggestions = const [];
       _fileSuggestions = const [];
     });
+
+    // Suppress synchronous _onTextChanged for completed chips so '/model <id>' does not reopen model autocomplete.
+    if (!shouldTransitionToModel) {
+      _suppressNextCheck = true;
+    }
+    try {
+      widget.controller.value = TextEditingValue(
+        text: newText,
+        selection: TextSelection.collapsed(
+          offset: prefix.length + replacement.length + trailing.length,
+        ),
+      );
+    } finally {
+      _suppressNextCheck = false;
+    }
   }
 
   @override
@@ -305,6 +377,57 @@ class _HeadlessAutocompleteStripState
                       const SizedBox(width: 4),
                       Text(
                         cmd.description,
+                        style: AppTypography.codeXs.copyWith(
+                          color: AppColors.textMuted,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            );
+          },
+        ),
+      );
+    }
+
+    if (trig.kind == ComposerTriggerKind.model &&
+        _modelSuggestions.isNotEmpty) {
+      return Container(
+        key: const ValueKey('headless_autocomplete_strip'),
+        height: 38,
+        color: AppColors.surface,
+        child: ListView.separated(
+          scrollDirection: Axis.horizontal,
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+          itemCount: _modelSuggestions.length,
+          separatorBuilder: (_, __) => const SizedBox(width: 8),
+          itemBuilder: (ctx, idx) {
+            final m = _modelSuggestions[idx];
+            return InkWell(
+              onTap: () => _applySuggestion('/model ${m.id}'),
+              borderRadius: BorderRadius.circular(4),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: AppColors.surfaceHighlight,
+                  borderRadius: BorderRadius.circular(4),
+                  border: Border.all(color: AppColors.outlineSubtle),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      m.label.isNotEmpty ? m.label : m.id,
+                      style: AppTypography.codeXs.copyWith(
+                        color: AppColors.infoCyan,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    if (m.label.isNotEmpty && m.label != m.id) ...[
+                      const SizedBox(width: 4),
+                      Text(
+                        m.id,
                         style: AppTypography.codeXs.copyWith(
                           color: AppColors.textMuted,
                         ),

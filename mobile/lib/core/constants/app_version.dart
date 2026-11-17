@@ -1,5 +1,5 @@
-/// Single source of truth for Ackbar Mobile application version.
-/// Synced with the root repository `VERSION` file.
+/// Centralised application version matching internal/version/VERSION.
+/// Updated automatically by `./scripts/bump-version.sh`.
 class AppVersion {
   AppVersion._();
 
