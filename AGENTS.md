@@ -26,7 +26,7 @@ Detailed architectural and technical domain documentation is organized in the `d
 *   **Networking & Remote Access:** See [docs/networking-and-remote-access.md](file:///Users/dev4u/Work/Ackbar/docs/networking-and-remote-access.md) for Cloudflare Tunnels, Ackbar Relay, Caddy reverse proxy, and token authentication.
 *   **Architecture & Networking:** See [docs/architecture.md](file:///Users/dev4u/Work/Ackbar/docs/architecture.md) for cross-machine design, control plane topology, and SSH tunneling.
 *   **Daemon Engine:** See [docs/daemon.md](file:///Users/dev4u/Work/Ackbar/docs/daemon.md) for API routes, SQLite migrations, SSE broadcasts, and process supervision.
-*   **Agent Providers & Token Limits:** See [docs/providers.md](file:///Users/dev4u/Work/Ackbar/docs/providers.md) for Claude Code, Antigravity, and Codex integrations, dynamic context window limits, and subagent filtering.
+*   **Agent Providers & Token Limits:** See [docs/providers.md](file:///Users/dev4u/Work/Ackbar/docs/providers.md) for Claude Code, Antigravity, Codex, and Grok integrations, dynamic context window limits, and subagent filtering.
 *   **Session Naming & Caching:** See [docs/session-naming.md](file:///Users/dev4u/Work/Ackbar/docs/session-naming.md) for title resolution hierarchy and tiered caching rules.
 *   **Building & Testing:** See [docs/building.md](file:///Users/dev4u/Work/Ackbar/docs/building.md) for prerequisite packages, compilation steps, test suite execution, and local dev mode setup.
 *   **Development Workflow Manifest:** See [docs/dev-workflow.md](file:///Users/dev4u/Work/Ackbar/docs/dev-workflow.md) for automated verification gates, test tiers (T0-T3), skip rules, and review policies governed by the `dev-workflow` skill.
