@@ -8,14 +8,54 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func setupTestCommandsServer(t *testing.T) (*Server, *DB, string) {
 	t.Helper()
-	srv, db := setupTestServer(t)
 	tmpDir := t.TempDir()
+	srv, db := setupTestServer(t)
 	srv.homeDir = tmpDir
+	// Shut down headless workers before closing SQLite or removing tmpDir.
+	t.Cleanup(func() {
+		if srv.headless != nil {
+			srv.headless.ShutdownAllWorkers(2 * time.Second)
+		}
+		_ = db.Close()
+	})
 	return srv, db, tmpDir
+}
+
+func waitForDetachedSessionTurn(t *testing.T, srv *Server, db *DB, sessID string, expectTurn bool) {
+	t.Helper()
+	if srv == nil || srv.headless == nil || sessID == "" {
+		return
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	if expectTurn {
+		started := false
+		for time.Now().Before(deadline) {
+			if srv.headless.IsRunning(sessID) {
+				started = true
+			} else if started {
+				break
+			} else if db != nil {
+				if s, err := db.GetSession(sessID); err == nil && s != nil && s.LastPrompt != "" {
+					break
+				}
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	if srv.headless.IsRunning(sessID) {
+		srv.headless.ShutdownSessionWorker(sessID, "", 500*time.Millisecond)
+	}
+	for time.Now().Before(deadline) && srv.headless.IsRunning(sessID) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if srv.headless.IsRunning(sessID) {
+		srv.headless.ShutdownAllWorkers(500 * time.Millisecond)
+	}
 }
 
 func TestNormalizeAndValidateExtraDirs(t *testing.T) {
@@ -88,7 +128,6 @@ func TestNormalizeAndValidateExtraDirs(t *testing.T) {
 
 func TestHandleSessionShell(t *testing.T) {
 	srv, db, tmpDir := setupTestCommandsServer(t)
-	defer db.Close()
 
 	cwd := filepath.Join(tmpDir, "shell_work")
 	_ = os.MkdirAll(cwd, 0755)
@@ -175,7 +214,6 @@ func TestHandleSessionShell(t *testing.T) {
 
 func TestHandleSessionClear(t *testing.T) {
 	srv, db, tmpDir := setupTestCommandsServer(t)
-	defer db.Close()
 
 	sess := &Session{
 		ID:            "claude-code:local:clear-test-1",
@@ -228,7 +266,6 @@ func TestHandleSessionClear(t *testing.T) {
 
 func TestHandleSessionConfigExtended(t *testing.T) {
 	srv, db, tmpDir := setupTestCommandsServer(t)
-	defer db.Close()
 
 	sess := &Session{
 		ID:         "claude-code:local:cfg-test-1",
@@ -333,7 +370,6 @@ func TestHandleSessionConfigExtended(t *testing.T) {
 
 func TestHandleSessionCompact(t *testing.T) {
 	srv, db, tmpDir := setupTestCommandsServer(t)
-	defer db.Close()
 
 	// 1. Antigravity delegates to executeHeadlessCompaction
 	sessAgy := &Session{
@@ -361,6 +397,8 @@ func TestHandleSessionCompact(t *testing.T) {
 	if res["mode"] != "rotated_session" {
 		t.Fatalf("expected rotated_session mode, got %v", res["mode"])
 	}
+	newAgySess, _ := res["session"].(map[string]interface{})
+	newAgyID, _ := newAgySess["id"].(string)
 
 	// 2. Claude Code native_stream
 	sessClaude := &Session{
@@ -386,4 +424,7 @@ func TestHandleSessionCompact(t *testing.T) {
 	if res2["mode"] != "native_stream" {
 		t.Fatalf("expected native_stream mode, got %v", res2["mode"])
 	}
+
+	waitForDetachedSessionTurn(t, srv, db, newAgyID, true)
+	waitForDetachedSessionTurn(t, srv, db, sessClaude.ID, true)
 }
