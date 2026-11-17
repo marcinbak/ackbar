@@ -157,6 +157,25 @@ exit 1`)
 	if _, statErr := os.Stat(marker); statErr != nil {
 		t.Fatalf("expected systemctl --user restart to be invoked for activating unit: %v", statErr)
 	}
+
+	// Case 3: buildRemoteSelfUpdateScript preserves ackbar update diagnostic output when ackbar exits non-zero under set -e.
+	writeHelper("ackbar", `
+echo "-e GitHub API rate limit exceeded while fetching release" >&2
+exit 42`)
+
+	selfUpdScript := buildRemoteSelfUpdateScript(shellSingleQuote("tok-123"), "")
+	cmd3 := exec.Command("sh", "-c", selfUpdScript)
+	cmd3.Env = []string{
+		"HOME=" + mockHome,
+		"PATH=" + mockBin + ":/usr/bin:/bin",
+	}
+	out3, err3 := cmd3.CombinedOutput()
+	if err3 == nil {
+		t.Fatalf("expected non-zero exit when ackbar update --force fails, got nil (output: %s)", string(out3))
+	}
+	if !strings.Contains(string(out3), "-e GitHub API rate limit exceeded while fetching release") {
+		t.Fatalf("expected diagnostic output from failing ackbar update to be preserved, got: %s", string(out3))
+	}
 }
 
 func TestBuildLocalAsyncRestartScript_SingleQuotesHazardousExePath(t *testing.T) {

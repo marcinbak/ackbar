@@ -99,6 +99,7 @@ func TestDaemonServiceRestarter_DarwinLaunchAgentFastSlowAndError(t *testing.T) 
 		t.Fatalf("expected (true, false, nil) for throttled launchd restart timeout, got (%v, %v, %v)", managed, ready, err)
 	}
 
+	var failCmds []string
 	failing := &daemonServiceRestarter{
 		goos: "darwin",
 		uid:  501,
@@ -106,6 +107,7 @@ func TestDaemonServiceRestarter_DarwinLaunchAgentFastSlowAndError(t *testing.T) 
 			if name == "launchctl" && len(args) == 1 && args[0] == "list" {
 				return []byte("PID\tStatus\tLabel\n-\t0\tcom.marcinbak.ackbard\n"), nil
 			}
+			failCmds = append(failCmds, name+" "+strings.Join(args, " "))
 			return []byte("Could not find service \"com.marcinbak.ackbard\" in domain\n"), errors.New("exit status 113")
 		},
 		probePort: func(addr string, timeout time.Duration) error {
@@ -115,10 +117,43 @@ func TestDaemonServiceRestarter_DarwinLaunchAgentFastSlowAndError(t *testing.T) 
 
 	managed, ready, err = failing.restart()
 	if !managed || ready || err == nil {
-		t.Fatalf("expected (true, false, non-nil err) when kickstart fails, got (%v, %v, %v)", managed, ready, err)
+		t.Fatalf("expected (true, false, non-nil err) when both gui and user kickstart fail, got (%v, %v, %v)", managed, ready, err)
+	}
+	if len(failCmds) != 2 || failCmds[0] != "launchctl kickstart -k gui/501/com.marcinbak.ackbard" || failCmds[1] != "launchctl kickstart -k user/501/com.marcinbak.ackbard" {
+		t.Fatalf("expected gui/ then user/ kickstart attempts, got %v", failCmds)
 	}
 	if !strings.Contains(err.Error(), "Could not find service") {
 		t.Fatalf("expected stderr detail in error, got: %v", err)
+	}
+
+	var fallbackCmds []string
+	headlessSSH := &daemonServiceRestarter{
+		goos:             "darwin",
+		uid:              501,
+		readinessTimeout: 50 * time.Millisecond,
+		pollInterval:     5 * time.Millisecond,
+		runCmd: func(env []string, name string, args ...string) ([]byte, error) {
+			if name == "launchctl" && len(args) == 1 && args[0] == "list" {
+				return []byte("PID\tStatus\tLabel\n-\t0\tcom.marcinbak.ackbard\n"), nil
+			}
+			cmdStr := name + " " + strings.Join(args, " ")
+			fallbackCmds = append(fallbackCmds, cmdStr)
+			if strings.Contains(cmdStr, "gui/501/") {
+				return []byte("Could not find domain for gui/501\n"), errors.New("exit status 113")
+			}
+			return nil, nil
+		},
+		probePort: func(addr string, timeout time.Duration) error {
+			return nil
+		},
+	}
+
+	managed, ready, err = headlessSSH.restart()
+	if !managed || !ready || err != nil {
+		t.Fatalf("expected (true, true, nil) when user/501 fallback succeeds after gui/501 fails, got (%v, %v, %v)", managed, ready, err)
+	}
+	if len(fallbackCmds) != 2 || fallbackCmds[1] != "launchctl kickstart -k user/501/com.marcinbak.ackbard" {
+		t.Fatalf("expected fallback to user/501 kickstart, got %v", fallbackCmds)
 	}
 }
 

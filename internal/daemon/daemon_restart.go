@@ -112,9 +112,15 @@ func buildRemoteSelfUpdateScript(quotedAuthToken, hostFlagArg string) string {
 	return fmt.Sprintf(`set -e
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 AUTH_TOKEN=%s
+set +e
 UPD_OUT=$(if [ -n "$AUTH_TOKEN" ]; then ACKBAR_TOKEN="$AUTH_TOKEN" ackbar update --force 2>&1; else ackbar update --force 2>&1; fi)
-echo "$UPD_OUT"
-if echo "$UPD_OUT" | grep -q "restart automatically once the current turn finishes"; then
+UPD_RC=$?
+set -e
+printf '%%s\n' "$UPD_OUT"
+if [ "$UPD_RC" -ne 0 ]; then
+  exit "$UPD_RC"
+fi
+if printf '%%s\n' "$UPD_OUT" | grep -q "restart automatically once the current turn finishes"; then
   echo "RESTART_DEFERRED"
   exit 0
 fi

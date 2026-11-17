@@ -88,18 +88,16 @@ func isManagedSystemdEnabledState(out string) bool {
 	switch strings.TrimSpace(out) {
 	case "enabled", "enabled-runtime", "linked", "linked-runtime", "static":
 		return true
-	default:
-		return false
 	}
+	return false
 }
 
 func isManagedSystemdActiveState(out string) bool {
 	switch strings.TrimSpace(out) {
 	case "active", "activating", "reloading":
 		return true
-	default:
-		return false
 	}
+	return false
 }
 
 func (r *daemonServiceRestarter) isLinuxSystemdManaged() bool {
@@ -132,6 +130,14 @@ func (r *daemonServiceRestarter) restart() (managed bool, ready bool, err error)
 		if hasLaunchctlLabel(outStr, "com.marcinbak.ackbard") {
 			managed = true
 			restartOut, restartErr = r.runCmd(nil, "launchctl", "kickstart", "-k", fmt.Sprintf("gui/%d/com.marcinbak.ackbard", r.uid))
+			if restartErr != nil {
+				if userOut, userErr := r.runCmd(nil, "launchctl", "kickstart", "-k", fmt.Sprintf("user/%d/com.marcinbak.ackbard", r.uid)); userErr == nil {
+					restartOut, restartErr = nil, nil
+				} else {
+					restartOut = []byte(strings.TrimSpace(strings.TrimSpace(string(restartOut)) + "; " + strings.TrimSpace(string(userOut))))
+					restartErr = userErr
+				}
+			}
 		} else if hasLaunchctlLabel(outStr, "homebrew.mxcl.ackbar") {
 			managed = true
 			brewBin := ""
@@ -157,7 +163,7 @@ func (r *daemonServiceRestarter) restart() (managed bool, ready bool, err error)
 	}
 
 	if restartErr != nil {
-		if msg := strings.TrimSpace(string(restartOut)); msg != "" {
+		if msg := strings.TrimSpace(string(restartOut)); msg != "" && msg != ";" {
 			return true, false, fmt.Errorf("service restart failed: %w (%s)", restartErr, msg)
 		}
 		return true, false, fmt.Errorf("service restart failed: %w", restartErr)
