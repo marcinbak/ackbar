@@ -8,6 +8,7 @@ import '../../../../core/network/headless_api_client.dart';
 import '../../../../core/providers/fleet_providers.dart';
 import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/app_typography.dart';
+import '../../../../core/utils/session_host_resolver.dart';
 import 'headless_mcp_section.dart';
 
 class HeadlessConfigPillBar extends StatelessWidget {
@@ -141,6 +142,7 @@ class _HeadlessConfigSheetState extends ConsumerState<HeadlessConfigSheet> {
   void initState() {
     super.initState();
     _session = widget.session;
+    _models = Session.defaultModelsForAgent(_session.agent);
     if (_session.model.isEmpty && _session.resolvedModel.isNotEmpty) {
       _lastDefaultModel = _session.resolvedModel;
     }
@@ -154,16 +156,9 @@ class _HeadlessConfigSheetState extends ConsumerState<HeadlessConfigSheet> {
   }
 
   HostRecord _resolveHost() {
-    final hosts = ref.read(hostsListProvider);
-    return hosts.firstWhere(
-      (h) =>
-          h.name.toLowerCase() == _session.host.toLowerCase() ||
-          h.url.toLowerCase() == _session.host.toLowerCase(),
-      orElse: () => HostRecord(
-        name: _session.host.isNotEmpty ? _session.host : 'local',
-        url: 'http://127.0.0.1:7777',
-        createdAt: DateTime.now(),
-      ),
+    return SessionHostResolver.resolveHostRecord(
+      ref.read(hostsListProvider),
+      _session.host,
     );
   }
 
@@ -175,7 +170,7 @@ class _HeadlessConfigSheetState extends ConsumerState<HeadlessConfigSheet> {
             _session.id,
             authToken: host.authToken,
           );
-      if (mounted) setState(() => _models = list);
+      if (mounted && list.isNotEmpty) setState(() => _models = list);
     } catch (_) {}
   }
 

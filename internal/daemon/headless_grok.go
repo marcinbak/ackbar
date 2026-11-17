@@ -100,6 +100,10 @@ func (h *HeadlessRunner) runGrokOneShotTurn(sess *Session, prompt string) error 
 		h.mu.Unlock()
 		return ErrTurnInProgress
 	}
+	delete(h.respondedWhileStopping, sess.ID)
+	if sess.OldID != "" {
+		delete(h.respondedWhileStopping, sess.OldID)
+	}
 	if sess.NativeID == "" {
 		sess.NativeID = generateUUID()
 	}

@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
+import 'package:ackbar_mobile/core/models/host.dart';
 import 'package:ackbar_mobile/core/models/session.dart';
 import 'package:ackbar_mobile/core/network/api_client.dart';
 import 'package:ackbar_mobile/core/providers/fleet_providers.dart';
@@ -79,11 +80,72 @@ class FakeConfigHttpClient extends http.BaseClient {
   }
 }
 
+class _FakeHostsNotifier extends StateNotifier<List<HostRecord>>
+    implements HostsNotifier {
+  _FakeHostsNotifier(super.state);
+  @override
+  void setHosts(List<HostRecord> hosts) => state = hosts;
+  @override
+  void addHost(HostRecord host) => state = [...state, host];
+  @override
+  void updateHost(HostRecord updatedHost) => state =
+      state.map((h) => h.name == updatedHost.name ? updatedHost : h).toList();
+  @override
+  void removeHost(String name) =>
+      state = state.where((h) => h.name != name).toList();
+  @override
+  Future<void> refreshHosts() async {}
+}
+
+class _GatewayFailingSuggestionsClient extends http.BaseClient {
+  final List<Uri> requestedUris = [];
+  String? lastPatchBody;
+
+  @override
+  Future<http.StreamedResponse> send(http.BaseRequest request) async {
+    requestedUris.add(request.url);
+    final path = request.url.path;
+    if (path.endsWith('/suggestions')) {
+      final resp = http.Response('{"error":"suggestions timeout"}', 500);
+      return http.StreamedResponse(Stream.value(resp.bodyBytes), 500);
+    }
+    if (path.endsWith('/config')) {
+      if (request is http.Request) {
+        lastPatchBody = request.body;
+      }
+      final resp = http.Response(
+        jsonEncode({
+          'id': 's-gw-1',
+          'agent': 'antigravity',
+          'host': 'federated-node',
+          'native_id': 'n-gw',
+          'cwd': '/work',
+          'state': 3,
+          'started_at': '2026-11-11T10:00:00Z',
+          'last_event_at': '2026-11-11T10:00:00Z',
+          'model': 'gemini-4-carbon-medium',
+        }),
+        200,
+        headers: {'content-type': 'application/json'},
+      );
+      return http.StreamedResponse(Stream.value(resp.bodyBytes), 200,
+          headers: resp.headers);
+    }
+    final resp = http.Response(
+        jsonEncode({'servers': const [], 'plugins': const []}), 200,
+        headers: {'content-type': 'application/json'});
+    return http.StreamedResponse(Stream.value(resp.bodyBytes), 200,
+        headers: resp.headers);
+  }
+}
+
 void main() {
-  Widget buildApp(Widget child, {ApiClient? api}) {
+  Widget buildApp(Widget child, {ApiClient? api, List<HostRecord>? hosts}) {
     return ProviderScope(
       overrides: [
         if (api != null) apiClientProvider.overrideWithValue(api),
+        if (hosts != null)
+          hostsListProvider.overrideWith((_) => _FakeHostsNotifier(hosts)),
       ],
       child: MaterialApp(home: Scaffold(body: child)),
     );
@@ -279,6 +341,62 @@ void main() {
 
       decoded = jsonDecode(fakeClient.lastPatchBody!) as Map<String, dynamic>;
       expect(decoded['model'], equals(''));
+    });
+
+    testWidgets(
+        'uses SessionHostResolver gateway host instead of 127.0.0.1 and renders default models when suggestions fail',
+        (tester) async {
+      final gwClient = _GatewayFailingSuggestionsClient();
+      final api = ApiClient(client: gwClient);
+      final gatewayHost = HostRecord(
+        name: 'gateway',
+        url: 'https://relay.example.com',
+        authToken: 'gw-token',
+        online: true,
+        createdAt: DateTime.utc(2026, 11, 1),
+      );
+      final agySession = Session(
+        id: 's-gw-1',
+        agent: 'antigravity',
+        host: 'federated-node',
+        nativeId: 'n-gw',
+        cwd: '/work',
+        state: SessionState.idle,
+        startedAt: DateTime.now(),
+        lastEventAt: DateTime.now(),
+        engineType: 'headless',
+      );
+
+      await tester.pumpWidget(buildApp(
+        HeadlessConfigSheet(session: agySession),
+        api: api,
+        hosts: [gatewayHost],
+      ));
+      await tester.pumpAndSettle();
+
+      expect(gwClient.requestedUris, isNotEmpty);
+      expect(
+        gwClient.requestedUris.every((u) => u.host == 'relay.example.com'),
+        isTrue,
+      );
+      expect(
+        gwClient.requestedUris.any((u) => u.host == '127.0.0.1'),
+        isFalse,
+      );
+
+      // Even though /suggestions returned 500, built-in Antigravity defaults are selectable
+      await tester.tap(find.byKey(const ValueKey('config_model_selector')));
+      await tester.pumpAndSettle();
+
+      final carbonOption = find.text('Gemini 4 Carbon (Medium)').last;
+      expect(carbonOption, findsOneWidget);
+      await tester.tap(carbonOption);
+      await tester.pumpAndSettle();
+
+      expect(gwClient.lastPatchBody, isNotNull);
+      final decoded =
+          jsonDecode(gwClient.lastPatchBody!) as Map<String, dynamic>;
+      expect(decoded['model'], equals('gemini-4-carbon-medium'));
     });
   });
 }

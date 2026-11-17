@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -399,6 +400,84 @@ void main() {
       expect(find.text('Failed to dispatch prompt to agent'), findsOneWidget);
       final textField = tester.widget<TextField>(find.byType(TextField));
       expect(textField.controller?.text, equals('Failed command prompt'));
+    });
+
+    testWidgets(
+        'mid-turn /model slash command dispatches config PATCH while isSending is true',
+        (tester) async {
+      final promptCompleter = Completer<http.Response>();
+      String? patchedModel;
+
+      final mockClient = MockClient((request) async {
+        if (request.url.path == '/v1/sessions/transcript') {
+          return http.Response(
+            jsonEncode({
+              'session_id': 'claude-code:local:sess-headless-1',
+              'native_id': 'sess-headless-1',
+              'agent': 'claude-code',
+              'title': 'Headless Test Session',
+              'cwd': '/workspace/ackbar',
+              'messages': [],
+              'markdown': '',
+            }),
+            200,
+          );
+        }
+        if (request.url.path == '/v1/sessions/subagents') {
+          return http.Response(jsonEncode({'subagents': []}), 200);
+        }
+        if (request.url.path == '/v1/sessions/prompt') {
+          return promptCompleter.future;
+        }
+        if (request.url.path.endsWith('/config')) {
+          final decoded = jsonDecode(request.body) as Map<String, dynamic>;
+          patchedModel = decoded['model']?.toString();
+          return http.Response(
+            jsonEncode({
+              'id': 'claude-code:local:sess-headless-1',
+              'agent': 'claude-code',
+              'host': 'local',
+              'native_id': 'sess-headless-1',
+              'cwd': '/workspace/ackbar',
+              'state': 1,
+              'started_at': '2026-03-28T12:00:00Z',
+              'last_event_at': '2026-03-28T12:00:00Z',
+              'engine_type': 'headless',
+              'model': patchedModel ?? '',
+              'resolved_model': patchedModel ?? '',
+            }),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }
+        return http.Response('[]', 200);
+      });
+
+      final api = ApiClient(client: mockClient);
+      final sse = MockSSEClient();
+      final session = _makeHeadlessSession(state: SessionState.idle);
+
+      await tester.pumpWidget(_wrapChatScreen(session, api: api, sse: sse));
+      await tester.pump(const Duration(milliseconds: 600));
+      await tester.pump();
+
+      await tester.enterText(find.byType(TextField), 'long running prompt');
+      await tester.pump();
+      await tester.tap(find.byIcon(Icons.arrow_upward_rounded));
+      await tester.pump();
+
+      await tester.enterText(
+          find.byType(TextField), '/model claude-sonnet-4-6');
+      await tester.pump();
+      await tester.tap(find.byIcon(Icons.arrow_upward_rounded));
+      await tester.pump(const Duration(milliseconds: 200));
+
+      expect(patchedModel, equals('claude-sonnet-4-6'));
+      expect(find.text('Model set to claude-sonnet-4-6'), findsOneWidget);
+
+      promptCompleter
+          .complete(http.Response(jsonEncode({'status': 'running'}), 200));
+      await tester.pump(const Duration(milliseconds: 200));
     });
   });
 }

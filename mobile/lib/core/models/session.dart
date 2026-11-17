@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'headless_models.dart';
 import '../theme/app_colors.dart';
 import '../widgets/status_badge.dart';
 
@@ -831,5 +832,78 @@ class Session {
     }
 
     return clean;
+  }
+
+  static List<ModelSuggestion> defaultModelsForAgent(String agent) {
+    final ag = agent.toLowerCase().trim();
+    if (ag == 'antigravity') {
+      return const [
+        ModelSuggestion(
+            id: 'gemini-4-carbon-high', label: 'Gemini 4 Carbon (High)'),
+        ModelSuggestion(
+            id: 'gemini-4-carbon-medium', label: 'Gemini 4 Carbon (Medium)'),
+        ModelSuggestion(
+            id: 'gemini-4-carbon-low', label: 'Gemini 4 Carbon (Low)'),
+        ModelSuggestion(
+            id: 'gemini-4-hydrogen-xhigh', label: 'Gemini 4 Hydrogen (XHigh)'),
+        ModelSuggestion(
+            id: 'gemini-4-hydrogen-high', label: 'Gemini 4 Hydrogen (High)'),
+        ModelSuggestion(
+            id: 'gemini-4-hydrogen-medium',
+            label: 'Gemini 4 Hydrogen (Medium)'),
+        ModelSuggestion(
+            id: 'gemini-4-hydrogen-low', label: 'Gemini 4 Hydrogen (Low)'),
+        ModelSuggestion(
+            id: 'gemini-pro-orchestrator', label: 'Orchestrator (Carbon)'),
+        ModelSuggestion(
+            id: 'gemini-pro-orchestrator-argon', label: 'Orchestrator (Argon)'),
+        ModelSuggestion(
+            id: 'gemini-4-argon-high', label: 'Gemini 4 Argon (High)'),
+        ModelSuggestion(
+            id: 'gemini-4-argon-medium', label: 'Gemini 4 Argon (Medium)'),
+        ModelSuggestion(
+            id: 'gemini-4-argon-low', label: 'Gemini 4 Argon (Low)'),
+        ModelSuggestion(
+            id: 'gemini-3.8-flash-high', label: 'Gemini 3.8 Flash (High)'),
+        ModelSuggestion(
+            id: 'gemini-3.8-flash-medium', label: 'Gemini 3.8 Flash (Medium)'),
+        ModelSuggestion(
+            id: 'gemini-3.8-flash-low', label: 'Gemini 3.8 Flash (Low)'),
+        ModelSuggestion(
+            id: 'claude-opus-5-5-high', label: 'Claude Opus 5.5 (High)'),
+        ModelSuggestion(
+            id: 'claude-opus-5-5-medium', label: 'Claude Opus 5.5 (Medium)'),
+        ModelSuggestion(
+            id: 'claude-opus-5-5-low', label: 'Claude Opus 5.5 (Low)'),
+        ModelSuggestion(
+            id: 'claude-sonnet-5-5-high', label: 'Claude Sonnet 5.5 (High)'),
+        ModelSuggestion(
+            id: 'claude-sonnet-5-5-medium',
+            label: 'Claude Sonnet 5.5 (Medium)'),
+        ModelSuggestion(
+            id: 'claude-sonnet-5-5-low', label: 'Claude Sonnet 5.5 (Low)'),
+        ModelSuggestion(
+            id: 'gpt-oss-120b-medium', label: 'GPT-OSS 120B (Medium)'),
+      ];
+    }
+    if (ag == 'grok' || ag == 'grok-cli') {
+      return const [
+        ModelSuggestion(id: 'grok-4.7', label: 'Grok 4.7'),
+        ModelSuggestion(id: 'grok-4.6', label: 'Grok 4.6'),
+        ModelSuggestion(id: 'grok-build', label: 'Grok Build'),
+      ];
+    }
+    return const [
+      ModelSuggestion(id: 'claude-fable-5-1', label: 'Claude Fable 5.1'),
+      ModelSuggestion(id: 'claude-opus-5-5', label: 'Claude Opus 5.5'),
+      ModelSuggestion(id: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5'),
+      ModelSuggestion(id: 'claude-opus-4-6', label: 'Claude Opus 4.6'),
+      ModelSuggestion(id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6'),
+      ModelSuggestion(id: 'claude-haiku-4-5', label: 'Claude Haiku 4.5'),
+      ModelSuggestion(
+          id: 'claude-3-7-sonnet-20250219', label: 'Claude 3.7 Sonnet'),
+      ModelSuggestion(
+          id: 'claude-3-5-sonnet-20241022', label: 'Claude 3.5 Sonnet'),
+    ];
   }
 }

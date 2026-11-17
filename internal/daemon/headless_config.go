@@ -27,14 +27,17 @@ func normalizePermissionMode(mode string) string {
 	}
 }
 
-func ConfigFingerprint(sess *Session) string {
+func computeConfigFingerprint(sess *Session, includeModel bool) string {
 	if sess == nil {
 		return ""
 	}
 	ag := strings.ToLower(strings.TrimSpace(sess.Agent))
-	m := strings.TrimSpace(sess.Model)
-	if strings.EqualFold(m, "default") {
-		m = ""
+	m := ""
+	if includeModel {
+		m = strings.TrimSpace(sess.Model)
+		if strings.EqualFold(m, "default") {
+			m = ""
+		}
 	}
 	e := strings.TrimSpace(sess.Effort)
 	if (ag != "claude-code" && ag != "grok") || strings.EqualFold(e, "default") {
@@ -60,6 +63,14 @@ func ConfigFingerprint(sess *Session) string {
 	}
 	sum := h.Sum(nil)
 	return hex.EncodeToString(sum[:16])
+}
+
+func ConfigFingerprint(sess *Session) string {
+	return computeConfigFingerprint(sess, true)
+}
+
+func ConfigFingerprintWithoutModel(sess *Session) string {
+	return computeConfigFingerprint(sess, false)
 }
 
 func MCPFingerprint(sess *Session, db *DB, home string) string {
@@ -179,6 +190,9 @@ func buildPersistentArgs(sess *Session, isExistingConversation bool) (string, []
 		}
 		if sess.Model != "" && !strings.EqualFold(sess.Model, "default") {
 			args = append(args, "--model", sess.Model)
+		} else if isExistingConversation {
+			// Pass --model default on resume so Claude does not remain pinned to the prior turn's transcript model.
+			args = append(args, "--model", "default")
 		}
 		if sess.Effort != "" && !strings.EqualFold(sess.Effort, "default") {
 			args = append(args, "--effort", sess.Effort)

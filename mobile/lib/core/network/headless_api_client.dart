@@ -363,13 +363,17 @@ extension HeadlessApiClient on ApiClient {
   Future<List<ModelSuggestion>> getModelSuggestions(
     String baseUrl,
     String sessionId, {
+    String query = '',
     String? authToken,
   }) async {
     final encId = Uri.encodeComponent(sessionId);
     final uri = buildEndpointUri(
       baseUrl,
       '/v1/sessions/$encId/suggestions',
-      {'kind': 'models'},
+      {
+        'kind': 'models',
+        if (query.isNotEmpty) 'q': query,
+      },
     );
     final res = await rawClient
         .get(uri, headers: buildAuthHeaders(authToken))

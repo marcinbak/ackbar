@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -432,24 +433,29 @@ func (s *Server) resolveOrAdoptHookSession(event *Event, host, sessionID, accoun
 			}
 
 			sess = &Session{
-				ID:            sessionID,
-				OldID:         spawningSess.ID,
-				Agent:         event.Agent,
-				Host:          host,
-				NativeID:      event.NativeID,
-				Managed:       true,
-				PID:           spawningSess.PID,
-				EngineType:    spawningSess.EngineType,
-				TmuxName:      tmuxName,
-				Cwd:           spawningSess.Cwd,
-				ProjectKey:    spawningSess.ProjectKey,
-				NodePath:      spawningSess.NodePath,
-				CustomTitle:   spawningSess.CustomTitle,
-				StartedAt:     spawningSess.StartedAt,
-				LastEventAt:   spawningSess.LastEventAt,
-				AccountID:     spawningSess.AccountID,
-				IsSupervisor:  spawningSess.IsSupervisor,
-				CurrentTaskID: spawningSess.CurrentTaskID,
+				ID:                sessionID,
+				OldID:             spawningSess.ID,
+				Agent:             event.Agent,
+				Host:              host,
+				NativeID:          event.NativeID,
+				Managed:           true,
+				PID:               spawningSess.PID,
+				EngineType:        spawningSess.EngineType,
+				TmuxName:          tmuxName,
+				Cwd:               spawningSess.Cwd,
+				ProjectKey:        spawningSess.ProjectKey,
+				NodePath:          spawningSess.NodePath,
+				CustomTitle:       spawningSess.CustomTitle,
+				StartedAt:         spawningSess.StartedAt,
+				LastEventAt:       spawningSess.LastEventAt,
+				AccountID:         spawningSess.AccountID,
+				IsSupervisor:      spawningSess.IsSupervisor,
+				CurrentTaskID:     spawningSess.CurrentTaskID,
+				Model:             spawningSess.Model,
+				Effort:            spawningSess.Effort,
+				PermissionMode:    spawningSess.PermissionMode,
+				ExtraDirs:         slices.Clone(spawningSess.ExtraDirs),
+				MetadataUpdatedAt: spawningSess.MetadataUpdatedAt,
 			}
 			if spawningSess.CustomTitle != "" {
 				sess.Name = spawningSess.CustomTitle
@@ -494,19 +500,24 @@ func (s *Server) resolveOrAdoptHookSession(event *Event, host, sessionID, accoun
 
 			// Adopt the live tmux supervisor for the new conversation turn
 			sess = &Session{
-				ID:            sessionID,
-				Agent:         event.Agent,
-				Host:          host,
-				NativeID:      event.NativeID,
-				Managed:       true,
-				TmuxName:      activeManaged.TmuxName,
-				NodePath:      activeManaged.NodePath,
-				ProjectKey:    activeManaged.ProjectKey,
-				Name:          newTurnName,
-				StartedAt:     time.Now(),
-				AccountID:     activeManaged.AccountID,
-				IsSupervisor:  activeManaged.IsSupervisor,
-				CurrentTaskID: activeManaged.CurrentTaskID,
+				ID:                sessionID,
+				Agent:             event.Agent,
+				Host:              host,
+				NativeID:          event.NativeID,
+				Managed:           true,
+				TmuxName:          activeManaged.TmuxName,
+				NodePath:          activeManaged.NodePath,
+				ProjectKey:        activeManaged.ProjectKey,
+				Name:              newTurnName,
+				StartedAt:         time.Now(),
+				AccountID:         activeManaged.AccountID,
+				IsSupervisor:      activeManaged.IsSupervisor,
+				CurrentTaskID:     activeManaged.CurrentTaskID,
+				Model:             activeManaged.Model,
+				Effort:            activeManaged.Effort,
+				PermissionMode:    activeManaged.PermissionMode,
+				ExtraDirs:         slices.Clone(activeManaged.ExtraDirs),
+				MetadataUpdatedAt: activeManaged.MetadataUpdatedAt,
 			}
 		} else {
 			// Ignore hooks from sessions created outside of Ackbar

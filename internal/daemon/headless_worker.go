@@ -154,6 +154,7 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string) int {
 	var activeTurn *activeTurnState
 	var curChild *workerChildGen
 	var pendingInitConvID string
+	var pendingDetectedModel string
 	completedTurns := make(map[string]string)
 	var subWG sync.WaitGroup
 	var idleTimer *time.Timer
@@ -377,9 +378,24 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string) int {
 						if activeTurn != nil {
 							activeTurn.meta.NativeID = convID
 							_ = WriteTurnSpoolMeta(activeTurn.metaPath, activeTurn.meta)
-							_, _ = activeTurn.spool.Append(ChatStreamEvent{SessionID: workerMeta.SessionID, TurnID: activeTurn.turnID, Type: "session_init", NativeID: convID})
+							_, _ = activeTurn.spool.Append(ChatStreamEvent{SessionID: workerMeta.SessionID, TurnID: activeTurn.turnID, Type: "session_init", NativeID: convID, Model: pendingDetectedModel})
+							pendingDetectedModel = ""
 						} else {
 							pendingInitConvID = convID
+						}
+					}
+					stateMu.Unlock()
+				},
+				onModelDetected: func(m string) {
+					if m == "" {
+						return
+					}
+					stateMu.Lock()
+					if curChild == gen && !gen.replaced {
+						if activeTurn != nil && activeTurn.spool != nil && state != "shutting_down" && state != "exited" {
+							_, _ = activeTurn.spool.Append(ChatStreamEvent{SessionID: workerMeta.SessionID, TurnID: activeTurn.turnID, Type: "model_detected", Model: m})
+						} else {
+							pendingDetectedModel = m
 						}
 					}
 					stateMu.Unlock()
@@ -491,8 +507,12 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string) int {
 		}
 		if pendingInitConvID != "" {
 			workerMeta.NativeID, tMeta.NativeID = pendingInitConvID, pendingInitConvID
-			_, _ = spool.Append(ChatStreamEvent{SessionID: tMeta.SessionID, TurnID: tMeta.TurnID, Type: "session_init", NativeID: pendingInitConvID})
+			_, _ = spool.Append(ChatStreamEvent{SessionID: tMeta.SessionID, TurnID: tMeta.TurnID, Type: "session_init", NativeID: pendingInitConvID, Model: pendingDetectedModel})
 			pendingInitConvID = ""
+			pendingDetectedModel = ""
+		} else if pendingDetectedModel != "" {
+			_, _ = spool.Append(ChatStreamEvent{SessionID: tMeta.SessionID, TurnID: tMeta.TurnID, Type: "model_detected", Model: pendingDetectedModel})
+			pendingDetectedModel = ""
 		}
 		if idleTimer != nil {
 			idleTimer.Stop()
@@ -655,9 +675,13 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string) int {
 		stateMu.Lock()
 		curChild = newGen
 		pendingInitConvID = ""
+		pendingDetectedModel = ""
 		workerMeta.Bin, workerMeta.Args = nextBin, nextArgs
 		if req.ConfigFingerprint != "" {
 			workerMeta.ConfigFingerprint = req.ConfigFingerprint
+		}
+		if req.ConfigFingerprintNoModel != "" {
+			workerMeta.ConfigFingerprintNoModel = req.ConfigFingerprintNoModel
 		}
 		if req.MCPFingerprint != "" {
 			workerMeta.MCPFingerprint = req.MCPFingerprint

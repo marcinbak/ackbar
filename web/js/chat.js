@@ -984,11 +984,44 @@ async function fetchSessionAgentModels(tabObj) {
     if (res.ok) {
       const data = await res.json();
       if (Array.isArray(data) && data.length > 0) {
+        const prevOptions = getAgentModelOptions(agent, tabObj.agentModels);
+        const optionsChanged = prevOptions.length !== data.length ||
+          data.some((m, idx) => !prevOptions[idx] || prevOptions[idx].id !== m.id || prevOptions[idx].label !== m.label);
+
         tabObj.agentModels = data;
         tabObj.agentModelsAgent = agent;
         updateStatusPills(tabObj);
-        if (tabObj.chatConfigPopover && tabObj.chatConfigPopover.style.display !== 'none') {
-          renderConfigPopoverContent(tabObj);
+        if (optionsChanged && tabObj.chatConfigPopover && tabObj.chatConfigPopover.style.display !== 'none') {
+          const selModel = tabObj.chatConfigPopover.querySelector('.config-select-model');
+          const selEffort = tabObj.chatConfigPopover.querySelector('.config-select-effort');
+          const activeEl = typeof document !== 'undefined' ? document.activeElement : null;
+          const isSelectFocused = activeEl && ((selModel && activeEl === selModel) || (selEffort && activeEl === selEffort));
+          if (isSelectFocused && selModel) {
+            const curVal = selModel.value;
+            const sess = tabObj.session;
+            const defaultId = !curVal ? (sess.resolved_model || '') : (tabObj.lastDefaultModel || '');
+            const defaultOptionLabel = defaultId
+              ? `Default (${formatModelLabel(defaultId, sess.agent, tabObj.agentModels)})`
+              : 'Default (Agent Default)';
+            selModel.innerHTML = '';
+            const addOpt = (val, label, isSel) => {
+              const opt = document.createElement('option');
+              opt.value = val;
+              opt.textContent = label;
+              opt.selected = Boolean(isSel);
+              selModel.appendChild(opt);
+            };
+            addOpt('', defaultOptionLabel, !curVal);
+            if (curVal && !data.some(m => m && m.id === curVal)) {
+              addOpt(curVal, formatModelLabel(curVal, sess.agent, tabObj.agentModels), true);
+            }
+            for (const m of data) {
+              if (m && m.id) addOpt(m.id, m.label || m.id, m.id === curVal);
+            }
+            selModel.value = curVal;
+          } else {
+            renderConfigPopoverContent(tabObj);
+          }
         }
       }
     }
@@ -1404,26 +1437,38 @@ function setupChatAutocomplete(tabObj) {
     let match = null;
     let kind = '';
     let triggerWord = '';
+    let query = '';
+    let matchStart = 0;
 
+    const modelArgMatch = beforeCaret.match(/^\s*\/model\s+([^\r\n]*)$/i);
     const cmdMatch = beforeCaret.match(/^\s*(\/[^\s]*)$/);
     const fileMatch = beforeCaret.match(/(?:^|\s)(@[^\s@]*)$/);
 
-    if (cmdMatch) {
+    if (modelArgMatch) {
+      match = modelArgMatch;
+      triggerWord = beforeCaret;
+      kind = 'models';
+      query = (modelArgMatch[1] || '').trim();
+      matchStart = 0;
+    } else if (cmdMatch) {
       match = cmdMatch;
       triggerWord = cmdMatch[1];
       kind = 'commands';
+      query = triggerWord.slice(1);
+      matchStart = pos - triggerWord.length;
     } else if (fileMatch) {
       match = fileMatch;
       triggerWord = fileMatch[1];
       kind = 'files';
+      query = triggerWord.slice(1);
+      matchStart = pos - triggerWord.length;
     } else {
       closeMenu();
       return;
     }
 
-    const query = triggerWord.slice(1);
     activeKind = kind;
-    activeMatch = { matchStart: pos - triggerWord.length, matchEnd: pos, triggerWord };
+    activeMatch = { matchStart, matchEnd: pos, triggerWord };
 
     debounceTimer = setTimeout(async () => {
       if (!tabObj.session) return;
@@ -1434,8 +1479,16 @@ function setupChatAutocomplete(tabObj) {
           closeMenu();
           return;
         }
-        const items = await res.json();
-        if (!Array.isArray(items) || items.length === 0) {
+        let items = await res.json();
+        if (!Array.isArray(items)) items = [];
+        if (kind === 'models') {
+          const qLower = query.toLowerCase();
+          const hasDefault = items.some(m => m && m.id === 'default');
+          if (!hasDefault && ('default'.includes(qLower) || 'default model'.includes(qLower))) {
+            items = [{ id: 'default', label: 'Default Model' }, ...items];
+          }
+        }
+        if (items.length === 0) {
           closeMenu();
           return;
         }
@@ -1455,6 +1508,14 @@ function setupChatAutocomplete(tabObj) {
                 <span class="autocomplete-desc">${escapeHtml(item.description || '')}</span>
               </div>
               <span class="autocomplete-category">${escapeHtml(item.category || '')}</span>
+            `;
+          } else if (kind === 'models') {
+            itemEl.innerHTML = `
+              <div class="autocomplete-item-left">
+                <span class="autocomplete-icon">🤖</span>
+                <span class="autocomplete-name">${escapeHtml(item.label || item.id)}</span>
+                <span class="autocomplete-desc">${escapeHtml(item.id)}</span>
+              </div>
             `;
           } else {
             itemEl.innerHTML = `
@@ -1538,13 +1599,31 @@ function selectAutocompleteItem(tabObj, item, kind, match) {
     inputEl.value = fullText.slice(0, start) + insertText + fullText.slice(end);
     const newPos = start + insertText.length;
     inputEl.focus();
-    inputEl.setSelectionRange(newPos, newPos);
+    inputEl.selectionStart = newPos;
+    inputEl.selectionEnd = newPos;
+    if (typeof inputEl.setSelectionRange === 'function') {
+      inputEl.setSelectionRange(newPos, newPos);
+    }
+    if ((item.name === 'model' || insertText.trim() === '/model') && typeof inputEl.dispatchEvent === 'function') {
+      const evt = typeof Event === 'function' ? new Event('input', { bubbles: true }) : { type: 'input' };
+      inputEl.dispatchEvent(evt);
+    }
+  } else if (kind === 'models') {
+    inputEl.value = '';
+    clearChatDraft(tabObj.id || (tabObj.session && tabObj.session.id));
+    inputEl.style.height = 'auto';
+    tabObj.autocompleteItems = [];
+    interceptChatInput(tabObj, `/model ${item.id}`);
   } else if (kind === 'files') {
     const insertText = '@' + item.path + ' ';
     inputEl.value = fullText.slice(0, start) + insertText + fullText.slice(end);
     const newPos = start + insertText.length;
     inputEl.focus();
-    inputEl.setSelectionRange(newPos, newPos);
+    inputEl.selectionStart = newPos;
+    inputEl.selectionEnd = newPos;
+    if (typeof inputEl.setSelectionRange === 'function') {
+      inputEl.setSelectionRange(newPos, newPos);
+    }
   }
 }
 
@@ -2363,6 +2442,9 @@ function setupChatInterface(tabObj, chatViewEl, session) {
   loadChatQueue(tabObj);
   if (tabObj.session && isSessionWorking(tabObj.session)) {
     setChatSending(tabObj, true);
+  }
+  if (tabObj.session && tabObj.session.engine_type === 'headless') {
+    fetchSessionAgentModels(tabObj);
   }
   if (tabObj.session && tabObj.session.engine_type === 'headless' && tabObj.viewMode === 'chat') {
     connectChatStream(tabObj);
@@ -6499,5 +6581,7 @@ export {
   GROK_DEFAULT_MODELS,
   getAgentModelOptions,
   formatModelLabel,
-  fetchSessionAgentModels
+  fetchSessionAgentModels,
+  setupChatAutocomplete,
+  selectAutocompleteItem
 };

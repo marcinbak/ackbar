@@ -29,7 +29,8 @@ type ChatStreamEvent struct {
 	SessionID   string             `json:"session_id"`
 	TurnID      string             `json:"turn_id,omitempty"`
 	NativeID    string             `json:"native_id,omitempty"`
-	Type        string             `json:"type"` // "turn_start", "text_delta", "thought_delta", "tool_start", "tool_result", "turn_complete", "turn_cancelled", "error", "queue_update", "interactive_block", "session_init"
+	Model       string             `json:"model,omitempty"`
+	Type        string             `json:"type"` // "turn_start", "text_delta", "thought_delta", "tool_start", "tool_result", "turn_complete", "turn_cancelled", "error", "queue_update", "interactive_block", "session_init", "model_detected"
 	Text        string             `json:"text,omitempty"`
 	Thinking    string             `json:"thinking,omitempty"`
 	ToolName    string             `json:"tool_name,omitempty"`
@@ -88,6 +89,7 @@ type HeadlessRunner struct {
 	paused                 map[string]bool               // sessionID -> is queue paused
 	interactiveBlocks      map[string]*Blocked           // sessionID -> pending interactive Blocked struct
 	respondedWhileStopping map[string]bool               // sessionID -> response arrived while stopping
+	supersededTurns        map[string]bool               // turnID -> turn interrupted or replaced before finalization
 	pendingRestart         bool
 	onAllTurnsDrained      func()
 	db                     *DB
@@ -114,6 +116,7 @@ func NewHeadlessRunner(db *DB, broadcast func(s *Session)) *HeadlessRunner {
 		paused:                 make(map[string]bool),
 		interactiveBlocks:      make(map[string]*Blocked),
 		respondedWhileStopping: make(map[string]bool),
+		supersededTurns:        make(map[string]bool),
 		warmWorkers:            make(map[string]*warmWorkerHandle),
 		sessionTurnMu:          make(map[string]*sync.Mutex),
 		runtimeModels:          make(map[string]string),
@@ -221,6 +224,7 @@ func (h *HeadlessRunner) triggerInteractiveBlock(sessionID string, sess *Session
 
 	// Immediately persist blocked state to DB and broadcast before process exits
 	if sess != nil && h.db != nil {
+		preserveLatestSessionConfigFromDB(h.db, sess, sessionID)
 		sess.State = StateBlocked
 		sess.Blocked = blocked
 		if blocked.Kind == BlockApproval {
@@ -281,7 +285,14 @@ func (h *HeadlessRunner) ClearInteractiveBlockAndWait(sessionID string, timeout 
 	if cmd == nil && nativeID != "" {
 		cmd = h.processes[nativeID]
 	}
-	meta := h.findSpoolForSessionLocked(sessionID, "")
+	meta := h.findSpoolForSessionLocked(sessionID, nativeID)
+	if meta != nil {
+		if meta.TurnID != "" && !meta.FinalizedByDaemon {
+			h.supersededTurns[meta.TurnID] = true
+		}
+		mCopy := *meta
+		meta = &mCopy
+	}
 	h.mu.Unlock()
 	h.syncSleepInhibitor()
 
@@ -1022,7 +1033,20 @@ func (h *HeadlessRunner) CancelTurn(sessionID string) error {
 		}
 	}
 	meta := h.findSpoolForSessionLocked(sessionID, "")
+	if meta != nil {
+		mCopy := *meta
+		meta = &mCopy
+	}
 	h.mu.Unlock()
+
+	if meta != nil && meta.MetaPath != "" && fileExists(meta.MetaPath) {
+		if dm, err := ReadTurnSpoolMeta(meta.MetaPath); err == nil && dm != nil {
+			meta = dm
+		}
+	}
+	if meta != nil && (meta.FinalizedByDaemon || (meta.WorkerID != "" && meta.Status != "starting" && meta.Status != "running")) {
+		return nil
+	}
 
 	workerActive := meta != nil && (meta.Status == "starting" || meta.Status == "running")
 	if (!ok || cmd == nil || cmd.Process == nil) && !workerActive {
@@ -1330,6 +1354,9 @@ func (h *HeadlessRunner) buildArgs(sess *Session, prompt, home string) (string, 
 
 	if sess.Model != "" && !strings.EqualFold(sess.Model, "default") {
 		args = append(args, "--model", sess.Model)
+	} else if hasTranscript || sess.FirstPrompt != "" || sess.LastPrompt != "" {
+		// Pass --model default on resume so Claude does not remain pinned to the prior turn's transcript model.
+		args = append(args, "--model", "default")
 	}
 	if sess.Effort != "" && !strings.EqualFold(sess.Effort, "default") && sess.Agent == "claude-code" {
 		args = append(args, "--effort", sess.Effort)
@@ -1389,6 +1416,7 @@ func (h *HeadlessRunner) handleAntigravityInit(sess *Session, convID, prompt str
 					sess.OldID = oldID
 				}
 				sess.ID = newID
+				preserveLatestSessionConfigFromDB(h.db, sess, oldID, newID)
 				if h.db != nil {
 					_ = h.db.ReassignWorkerSessionID(oldID, newID)
 					_ = h.db.DeleteSession(oldID)
@@ -1399,6 +1427,7 @@ func (h *HeadlessRunner) handleAntigravityInit(sess *Session, convID, prompt str
 	}
 	if changed {
 		if h.db != nil {
+			preserveLatestSessionConfigFromDB(h.db, sess)
 			_ = h.db.SaveSession(sess)
 		}
 		if h.broadcast != nil {
@@ -1512,6 +1541,11 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 			case "init":
 				if m, ok := raw["model"].(string); ok && m != "" && hooks.onModelDetected != nil {
 					hooks.onModelDetected(m)
+				}
+				if initObj, ok := raw["init"].(map[string]interface{}); ok {
+					if m, ok := initObj["model"].(string); ok && m != "" && hooks.onModelDetected != nil {
+						hooks.onModelDetected(m)
+					}
 				}
 				if convID, ok := raw["conversation_id"].(string); ok && convID != "" && hooks.onAntigravityInit != nil {
 					hooks.onAntigravityInit(convID)
@@ -1761,6 +1795,17 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 				}
 				if hooks.onSystemInit != nil {
 					hooks.onSystemInit()
+				}
+			}
+
+		case "control_response":
+			if respObj, ok := raw["response"].(map[string]interface{}); ok {
+				if subtype, _ := respObj["subtype"].(string); subtype == "success" {
+					if inner, ok := respObj["response"].(map[string]interface{}); ok {
+						if m, ok := inner["model"].(string); ok && m != "" && hooks.onModelDetected != nil {
+							hooks.onModelDetected(m)
+						}
+					}
 				}
 			}
 

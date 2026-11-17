@@ -252,21 +252,21 @@ func getBuiltinCommands() []CommandSuggestion {
 			Trigger:       "/model",
 			Description:   "Set or switch LLM model",
 			Category:      "Session Control",
-			ExecutionMode: "client_action",
+			ExecutionMode: "slash_arg",
 		},
 		{
 			Name:          "effort",
 			Trigger:       "/effort",
 			Description:   "Set reasoning effort (low, medium, high, xhigh, max)",
 			Category:      "Session Control",
-			ExecutionMode: "client_action",
+			ExecutionMode: "slash_arg",
 		},
 		{
 			Name:          "permissions",
 			Trigger:       "/permissions",
 			Description:   "Set permission mode (bypassPermissions, auto, acceptEdits, dontAsk, plan)",
 			Category:      "Session Control",
-			ExecutionMode: "client_action",
+			ExecutionMode: "slash_arg",
 		},
 		{
 			Name:          "auto",
@@ -280,7 +280,7 @@ func getBuiltinCommands() []CommandSuggestion {
 			Trigger:       "/add-dir",
 			Description:   "Add or remove allowed directories for tools (--add-dir)",
 			Category:      "Session Control",
-			ExecutionMode: "client_action",
+			ExecutionMode: "slash_arg",
 		},
 		{
 			Name:          "mcp",

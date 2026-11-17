@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -57,5 +58,29 @@ func TestRelay_EndToEnd(t *testing.T) {
 
 	if data["host"] != "legion" {
 		t.Fatalf("Expected host 'legion', got %q", data["host"])
+	}
+}
+
+func TestRelay_OptionsCORSIncludesPatch(t *testing.T) {
+	relayServer := NewServer("test-secret")
+	relayHTTP := httptest.NewServer(relayServer.Mux())
+	defer relayHTTP.Close()
+
+	req, err := http.NewRequest(http.MethodOptions, relayHTTP.URL+"/host/legion/v1/sessions/s1/config", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do OPTIONS: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 OK for OPTIONS preflight, got %d", resp.StatusCode)
+	}
+	allowMethods := resp.Header.Get("Access-Control-Allow-Methods")
+	if !strings.Contains(allowMethods, "PATCH") {
+		t.Fatalf("expected Access-Control-Allow-Methods to include PATCH, got %q", allowMethods)
 	}
 }
