@@ -24,6 +24,8 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 * **`prompt_dedup.go`:** Bounded in-memory LRU prompt deduplication cache (512 entries, 10m TTL) tracking in-flight reservations and committed status for idempotent `client_turn_id` submissions.
 * **`headless.go`, `headless_persistent.go`, `headless_spool.go`, `headless_errors.go`:** Headless coordinator, warm worker lifecycle management, turn dispatch/reuse, stream error tracking, and monotonic NDJSON turn spooling.
 * **`headless_worker.go`, `headless_config.go`, `headless_mcp_fingerprint.go`, `headless_worker_ipc.go`:** Detached `--headless-worker` process, persistent stdio stream loop, configuration and normalized MCP fingerprinting, and Unix socket RPC.
+* **`headless_control.go`, `headless_control_codec.go`, `headless_control_runner.go`:** Stdio control gate parsing, `blocked_control` state tracking, and in-place `control_response` dispatch.
+* **`headless_bg_tasks.go`, `headless_bg_turn.go`, `headless_bg_watch.go`:** Warm background task tracking, debounced `turn_bg_*` auto-poke synthesis, and `watch_worker` IPC streaming.
 * **`headless_commands.go`:** Inline shell execution (`POST /v1/sessions/{id}/shell`), directory validation (`/add-dir`), in-place conversation rotation, `/clear`, `/reset`, and `/compact`.
 * **`headless_commands_inspect.go`:** Allowlisted CLI inspection (`/v1/sessions/{id}/inspect`), git diff inspection (`/v1/sessions/{id}/diff`), and transcript token/cost metrics.
 * **`headless_model.go`:** Resolves active default model name (`populateResolvedModel`) via 3-tier precedence and caches config file timestamps.
@@ -67,6 +69,7 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 | `POST` | `/v1/meta/resolve` | Derives host, agent, group, and existing session match from prompt via Jev AI / heuristics. |
 | `POST` | `/v1/hooks/{agent}` | Ingests agent lifecycle and tool hook events with in-place `/clear` rotation detection. |
 | `POST` | `/v1/sessions/control` | Executes control actions: `resume`, `restart`, `kill`, `move`, `rename`, `delete`, `handover`, `later`, `unlater`, `done`, `active`, `update_config`, `respond`. |
+| `POST` | `/v1/sessions/respond` | Dispatches interactive answers or permission decisions (accepts optional `request_id`; returns `409 Conflict` on stale stdio control gates). |
 | `PATCH` | `/v1/sessions/{id}/config` | Updates session `model`, `effort`, `permission_mode`, and `extra_dirs`; normalizes model labels and resets on `""`/`"default"`. |
 | `POST` | `/v1/sessions/{id}/shell` | Executes shell command in session CWD via `/bin/sh -c` (30s timeout, 128KB cap, `-pgid` kill). |
 | `POST` | `/v1/sessions/{id}/clear` | Rotates conversation context in-place to `Conv N+1` while preserving session configuration. |
@@ -140,10 +143,12 @@ When several clients with different sizes are attached to one session (web, mobi
 Headless sessions (`engine_type = "headless"`, `tmux_name = ""`) execute turns through detached worker processes (`ackbard --headless-worker`) without allocating a `tmux` session:
 
 * **Warm Persistent Worker (`Setsid: true`):** Spawns detached `ackbard --headless-worker --worker-spec <path> --idle-ttl <dur>`. Keeps child CLI and MCP servers alive across turns.
-* **Unix Domain Socket RPC:** Communicates over `0600` sockets in `~/.config/ackbar/run` (or short temp directory). Supports `status`, `send_turn`, `set_model`, `restart_child`, `subscribe`, `cancel`, and `shutdown`.
-* **Worker Sidecar Isolation:** Persists worker metadata to `w_<workerID>.worker.json` (`0600`). Retains per-turn metadata in `turn_<id>.meta.json`.
+* **Unix Domain Socket RPC ([`headless_worker_ipc.go`](../internal/daemon/headless_worker_ipc.go)):** Communicates over `0600` sockets (`~/.config/ackbar/run`); supports `status`, `send_turn`, `set_model`, `restart_child`, `answer_control`, `watch_worker`, `subscribe`, `cancel`, `shutdown`.
+* **Worker Sidecar Isolation:** Persists `w_<workerID>.worker.json` (`bg_task_count`, `pending_control`) and `turn_<id>.meta.json` (`Status: "blocked"`, `pending_control`) with `0600` permissions.
 * **Monotonic Turn Spool (`turn_<id>.ndjson`):** Sequenced events stream to disk atomically with `0600` permissions. Pre-writes `seq: 1` (`turn_start`) before provider output arrives.
-* **Idle-Warm Lifetime & Auto-Reap ([`headless_worker.go`](../internal/daemon/headless_worker.go)):** Workers wait `65m` (`DefaultHeadlessIdleTTL`, `ACKBAR_HEADLESS_IDLE_TTL`); `BlockRateLimit` retains workers up to `ResetAt+5m` (max `6h`).
+* **Idle-Warm Lifetime & Holds ([`headless_worker.go`](../internal/daemon/headless_worker.go), [`headless_bg_tasks.go`](../internal/daemon/headless_bg_tasks.go)):** `65m` default TTL (`ACKBAR_HEADLESS_IDLE_TTL`); `BgTaskCount > 0` or `BlockRateLimit` extends hold up to `6h`.
+* **Warm Background Tracking ([`headless_bg_tasks.go`](../internal/daemon/headless_bg_tasks.go)):** Tracks `background_tasks_changed` (replace semantics, excluding `ambient`/`off_host`/terminal), `task_started`, and `task_notification` (`BgTaskCount`).
+* **Synthetic `turn_bg_*` Auto-Poke ([`headless_bg_turn.go`](../internal/daemon/headless_bg_turn.go), [`headless_bg_watch.go`](../internal/daemon/headless_bg_watch.go)):** Opens `turn_bg_*` spools on unsolicited output or debounced `task_notification` (`600ms`/`3s`, `ACKBAR_BG_POKE_*`); streams via `watch_worker`.
 * **Idle-TTL Race Recovery:** If `send_turn` races with idle timeout reap, `HeadlessRunner.RunTurn` automatically respawns a warm worker.
 * **Configuration & Model Switching (`ConfigFingerprint`, `ConfigFingerprintWithoutModel`, `MCPFingerprint`):** Live `set_model` IPC updates Claude Code models in-process; normalized `MCPFingerprint` JSON digests and non-live config changes swap the child via `restart_child`.
 * **Active Turn Config Safety:** Mid-turn non-live config changes and active-turn `ConfigFingerprint` mismatches on reattach set `rotateAfterTurn`; `preserveLatestSessionConfigFromDB` prevents stale saves.
@@ -151,19 +156,20 @@ Headless sessions (`engine_type = "headless"`, `tmux_name = ""`) execute turns t
 * **Startup Re-Attachment & Recovery ([`headless_recovery.go`](../internal/daemon/headless_recovery.go)):** Adopts live workers, silently replays active spools from `maxSeq`, and preserves crashed spools with paused queues.
 * **State Authority (`s.headless.IsRunning`):** `HeadlessRunner.IsRunning(sess.ID)` provides the source of truth for turn status. Exit hooks do not flip active turns to `StateIdle`.
 * **Runtime Cleanup & Server-Side `auto_done`:** Marking `Done` or `auto_done` sweep stops active workers, kills tmux sessions, prunes spools, and resets runtime state.
-* **OS Idle-Sleep Protection (`sleep_inhibitor.go`):** Holds sleep inhibitor strictly while `ActiveTurnCount() > 0`. Releases lock immediately when worker enters `idle_warm`.
+* **OS Idle-Sleep Protection (`sleep_inhibitor.go`):** Holds sleep lock only while non-blocked turns run; releases immediately on `idle_warm` or `blocked_control`.
 * **Process Teardown & Cross-OS Safety:** Verifies socket `TurnID` before signaling PIDs. Child process-group teardown uses `Setpgid: true` and `> 1` PID/PGID guards.
 * **In-Place Restart & Worker Teardown:** `restart` swaps the headless CLI child (`RestartSessionChild`) or respawns the tmux pane (`tmux.RespawnWithEnv`); `take-wheel`, `done`, and `kill` reap warm workers.
 * **Daemon Restart Resilience (`InitDB` & Drain Mode):** Updates and `drain=true` shutdowns defer restart until active turns finish; crashed spools stay visible past `10s` in transcripts.
 * **Per-Turn Invocation & Conversation Continuity:**
-  * **Claude Code:** Runs `claude -p --input-format stream-json --output-format stream-json --verbose`. Dispatches turns via stdin NDJSON `{"type":"user","message":{"role":"user","content":"<prompt>"}}`.
+  * **Claude Code:** Runs `claude -p --input-format stream-json --output-format stream-json --verbose --permission-prompt-tool stdio`; sends stdin NDJSON `{"type":"user"}`.
   * **Google Antigravity:** Runs `agy --input-format stream-json --output-format stream-json` omitting `-p`. Dispatches turns via stdin NDJSON `{"event":"user","message":{"role":"user","content":"<prompt>"}}`.
   * **xAI Grok:** Runs `grok --single=<prompt> [-s <uuid> | -r <uuid>] --output-format streaming-json`. Dispatches detached one-shot turns without persistent stdio child processes.
   * **Antigravity Boot Init Handling:** Buffers startup `{"event":"init"}` event until Turn 1 attaches. Migrates temporary spawn ID to canonical conversation ID atomically.
   * **Safe First-Turn Recovery:** Persists prompts only after initial event arrives or process succeeds. Prevents broken resume state on early startup failure.
   * **Initial Prompt on Spawn:** Passing non-empty `prompt` to `POST /v1/sessions/spawn` triggers Turn 1 immediately in background.
-  * **Session Configuration:** Passes `--model`, `--effort` (Claude Code and Grok), and permission flags (`--permission-mode plan` or `--dangerously-skip-permissions`). Passes `--add-dir` for `extra_dirs` on session creation; Grok rejects `--add-dir` on resume (`grok -r`), locking `extra_dirs` post-spawn.
-  * **Interactive Tool Interception:** Blocks on `AskUserQuestion`, `ask_question`, or `ExitPlanMode`. Approval synchronously reaps worker and resumes with updated permissions.
+  * **Session Configuration:** Passes `--model`, `--effort`, `--add-dir` (locked post-spawn on Grok), and permission flags (`--allow-dangerously-skip-permissions` alongside Claude non-bypass modes).
+  * **Interactive Tool Interception ([`headless_control.go`](../internal/daemon/headless_control.go)):** Claude `control_request` pauses in `blocked_control` and resumes in-place via `answer_control`; non-stdio agents reap and resume.
+  * **In-Place Control Gates ([`headless_control_codec.go`](../internal/daemon/headless_control_codec.go), [`headless_control_runner.go`](../internal/daemon/headless_control_runner.go)):** Handles `control_cancel_request` and `keep_alive`; `ExitPlanMode` approval updates `PermissionMode` (`bypassPermissions`) and `ConfigFingerprint` in-place, emitting `control_resolved`.
   * **OAuth Authentication Interception (`BlockAuth`):** Pauses queue on OAuth failure, persists `blocked_meta`, emits `interactive_block`, and auto-resumes on successful callback.
   * **Transactional Prompt Queue (`scheduled_prompts`):** Claims ready prompts (`ClaimReadyPrompt`) and deletes from memory and SQLite only after `RunTurn` or `tmux.SendInput` succeeds.
 
