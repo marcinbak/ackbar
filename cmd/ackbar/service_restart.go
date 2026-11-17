@@ -2,17 +2,21 @@ package main
 
 import (
 	"fmt"
-	"net"
+	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
+
+	"ackbar/internal/daemon"
 )
 
 type daemonServiceRestarter struct {
 	goos             string
 	uid              int
+	homeDir          string
 	readinessTimeout time.Duration
 	pollInterval     time.Duration
 	runCmd           func(env []string, name string, args ...string) ([]byte, error)
@@ -21,10 +25,12 @@ type daemonServiceRestarter struct {
 }
 
 func newDefaultDaemonServiceRestarter() *daemonServiceRestarter {
+	home, _ := os.UserHomeDir()
 	return &daemonServiceRestarter{
 		goos:             runtime.GOOS,
 		uid:              os.Getuid(),
-		readinessTimeout: 5 * time.Second,
+		homeDir:          home,
+		readinessTimeout: daemonReadyWaitTimeout,
 		pollInterval:     100 * time.Millisecond,
 		runCmd: func(env []string, name string, args ...string) ([]byte, error) {
 			cmd := exec.Command(name, args...)
@@ -34,12 +40,15 @@ func newDefaultDaemonServiceRestarter() *daemonServiceRestarter {
 			return cmd.CombinedOutput()
 		},
 		probePort: func(addr string, timeout time.Duration) error {
-			conn, err := net.DialTimeout("tcp", addr, timeout)
-			if err != nil {
-				return err
+			probeTimeout := timeout
+			if probeTimeout < daemonProbeTimeout {
+				probeTimeout = daemonProbeTimeout
 			}
-			_ = conn.Close()
-			return nil
+			client := &http.Client{Timeout: probeTimeout}
+			if _, _, _, ok := probeDaemonVersion(client, "http://"+addr, localDaemonAuthToken()); ok {
+				return nil
+			}
+			return fmt.Errorf("daemon version endpoint not ready on %s", addr)
 		},
 		resolveBrew: resolveBrewExecutable,
 	}
@@ -113,6 +122,9 @@ func (r *daemonServiceRestarter) isLinuxSystemdManaged() bool {
 // When managed is true, callers must never spawn an unmanaged process because KeepAlive/Restart=always
 // will collide on 127.0.0.1:7777.
 func tryRestartManagedDaemonService() (managed bool, ready bool, err error) {
+	if home, hErr := os.UserHomeDir(); hErr == nil && home != "" {
+		_, _ = daemon.EnsureServiceProcessIsolation(home)
+	}
 	return newDefaultDaemonServiceRestarter().restart()
 }
 
@@ -129,13 +141,17 @@ func (r *daemonServiceRestarter) restart() (managed bool, ready bool, err error)
 		outStr := string(out)
 		if hasLaunchctlLabel(outStr, "com.marcinbak.ackbard") {
 			managed = true
-			restartOut, restartErr = r.runCmd(nil, "launchctl", "kickstart", "-k", fmt.Sprintf("gui/%d/com.marcinbak.ackbard", r.uid))
-			if restartErr != nil {
-				if userOut, userErr := r.runCmd(nil, "launchctl", "kickstart", "-k", fmt.Sprintf("user/%d/com.marcinbak.ackbard", r.uid)); userErr == nil {
-					restartOut, restartErr = nil, nil
-				} else {
-					restartOut = []byte(strings.TrimSpace(strings.TrimSpace(string(restartOut)) + "; " + strings.TrimSpace(string(userOut))))
-					restartErr = userErr
+			if reloaded, relOut, relErr := r.tryReloadChangedDarwinLaunchAgent(); reloaded {
+				restartOut, restartErr = relOut, relErr
+			} else {
+				restartOut, restartErr = r.runCmd(nil, "launchctl", "kickstart", "-k", fmt.Sprintf("gui/%d/com.marcinbak.ackbard", r.uid))
+				if restartErr != nil {
+					if userOut, userErr := r.runCmd(nil, "launchctl", "kickstart", "-k", fmt.Sprintf("user/%d/com.marcinbak.ackbard", r.uid)); userErr == nil {
+						restartOut, restartErr = nil, nil
+					} else {
+						restartOut = []byte(strings.TrimSpace(strings.TrimSpace(string(restartOut)) + "; " + strings.TrimSpace(string(userOut))))
+						restartErr = userErr
+					}
 				}
 			}
 		} else if hasLaunchctlLabel(outStr, "homebrew.mxcl.ackbar") {
@@ -193,4 +209,44 @@ func (r *daemonServiceRestarter) restart() (managed bool, ready bool, err error)
 			time.Sleep(interval)
 		}
 	}
+}
+
+func (r *daemonServiceRestarter) tryReloadChangedDarwinLaunchAgent() (bool, []byte, error) {
+	if r.homeDir == "" {
+		return false, nil, nil
+	}
+	markerPath := daemon.LaunchAgentReloadMarkerPath(r.homeDir)
+	plistPath := filepath.Join(r.homeDir, "Library", "LaunchAgents", "com.marcinbak.ackbard.plist")
+	if _, err := os.Stat(markerPath); err != nil {
+		return false, nil, nil
+	}
+	if _, err := os.Stat(plistPath); err != nil {
+		return false, nil, nil
+	}
+	guiDomain := fmt.Sprintf("gui/%d", r.uid)
+	userDomain := fmt.Sprintf("user/%d", r.uid)
+	if _, err := r.runCmd(nil, "launchctl", "bootout", guiDomain, plistPath); err != nil {
+		_, _ = r.runCmd(nil, "launchctl", "bootout", userDomain, plistPath)
+	}
+	pause := 200 * time.Millisecond
+	if r.pollInterval > 0 && r.pollInterval < pause {
+		pause = r.pollInterval
+	}
+	time.Sleep(pause)
+	if _, err := r.runCmd(nil, "launchctl", "bootstrap", guiDomain, plistPath); err != nil {
+		if _, uErr := r.runCmd(nil, "launchctl", "bootstrap", userDomain, plistPath); uErr != nil {
+			return false, nil, nil
+		}
+	}
+	_ = os.Remove(markerPath)
+	out, err := r.runCmd(nil, "launchctl", "kickstart", guiDomain+"/com.marcinbak.ackbard")
+	if err != nil {
+		if userOut, userErr := r.runCmd(nil, "launchctl", "kickstart", userDomain+"/com.marcinbak.ackbard"); userErr == nil {
+			return true, nil, nil
+		} else {
+			combined := strings.TrimSpace(strings.TrimSpace(string(out)) + "; " + strings.TrimSpace(string(userOut)))
+			return true, []byte(combined), userErr
+		}
+	}
+	return true, nil, nil
 }

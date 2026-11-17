@@ -64,8 +64,17 @@ func TestDaemonRestartScripts_SyntaxAndManagedIsolation(t *testing.T) {
 				t.Fatalf("expected systemd check to cover linked/static and active/activating/reloading states:\n%s", managedSection)
 			}
 
-			if gotPolls := strings.Count(managedSection, `while [ "$i" -lt 25 ]; do pgrep -x ackbard >/dev/null 2>&1 && break; sleep 0.2; i=$((i + 1)); done`); gotPolls != 3 {
-				t.Fatalf("expected 3 POSIX 5s readiness poll loops in managed branches, got %d", gotPolls)
+			if gotPolls := strings.Count(managedSection, `while [ "$i" -lt 25 ]; do has_non_worker_ackbard && break; sleep 0.2; i=$((i + 1)); done`); gotPolls != 3 {
+				t.Fatalf("expected 3 worker-safe POSIX 5s readiness poll loops in managed branches, got %d", gotPolls)
+			}
+			if strings.Contains(tc.script, "pkill") {
+				t.Fatalf("restart script must never invoke indiscriminate pkill (would SIGKILL --headless-worker sidecars):\n%s", tc.script)
+			}
+			if strings.Contains(tc.script, "pgrep -x ackbard") {
+				t.Fatalf("restart script must use has_non_worker_ackbard rather than raw 'pgrep -x ackbard':\n%s", tc.script)
+			}
+			if !strings.Contains(managedSection, "\nself_heal_ackbard_service\n") || !strings.Contains(managedSection, "systemctl --user daemon-reload") {
+				t.Fatalf("expected self_heal_ackbard_service and systemctl --user daemon-reload before service restart:\n%s", managedSection)
 			}
 
 			if tc.isRemote {

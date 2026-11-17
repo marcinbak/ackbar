@@ -61,7 +61,7 @@ func (h *HeadlessRunner) SetIdleTTL(d time.Duration) {
 
 func (h *HeadlessRunner) getIdleTTL() time.Duration {
 	if h == nil {
-		return 20 * time.Minute
+		return DefaultHeadlessIdleTTL
 	}
 	h.mu.RLock()
 	defer h.mu.RUnlock()

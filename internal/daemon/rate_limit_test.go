@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -611,5 +613,133 @@ func TestProcessDueScheduledPrompts_DoesNotDispatchBlockedPermission(t *testing.
 	items, _ := server.headless.GetPromptQueue(sess.ID)
 	if len(items) != 1 {
 		t.Errorf("prompt must remain in queue while session is blocked on permission, got %d items", len(items))
+	}
+}
+
+func TestComputeRateLimitIdleHold_BufferAndCap(t *testing.T) {
+	now := time.Date(2026, 11, 17, 10, 0, 0, 0, time.UTC)
+
+	// Zero reset time -> no hold
+	if wait, hold := computeRateLimitIdleHold(time.Time{}, now, now); hold || wait != 0 {
+		t.Fatalf("expected no hold for zero reset time, got wait=%v hold=%v", wait, hold)
+	}
+
+	// Reset in 2h -> holds until ResetAt + 5m (2h5m)
+	wait, hold := computeRateLimitIdleHold(now.Add(2*time.Hour), now, now)
+	if !hold || wait != 2*time.Hour+5*time.Minute {
+		t.Fatalf("expected 2h5m hold, got wait=%v hold=%v", wait, hold)
+	}
+
+	// Reset in 10h -> capped at 6h from enteredAt
+	waitCap, holdCap := computeRateLimitIdleHold(now.Add(10*time.Hour), now, now)
+	if !holdCap || waitCap != 6*time.Hour {
+		t.Fatalf("expected 6h cap hold, got wait=%v hold=%v", waitCap, holdCap)
+	}
+
+	// Already past ResetAt + 5m -> no hold
+	if wPast, hPast := computeRateLimitIdleHold(now.Add(-10*time.Minute), now.Add(-1*time.Hour), now); hPast || wPast != 0 {
+		t.Fatalf("expected expired hold to return false, got wait=%v hold=%v", wPast, hPast)
+	}
+}
+
+func TestWarmWorker_RetainedAcrossBlockRateLimitAndReused(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	dbPath := filepath.Join(t.TempDir(), "ackbard.db")
+	flagFile := filepath.Join(tmpHome, "limit-cleared.flag")
+
+	installMockClaude(t, fmt.Sprintf(`
+while IFS= read -r line; do
+  if [ -f %q ]; then
+    echo '{"type":"result","result":"resumed ok","is_error":false}'
+  else
+    echo '{"type":"result","result":"Claude 5-hour limit reached · resets in 2 hours","is_error":true}'
+  fi
+done
+`, flagFile))
+
+	db, err := InitDB(dbPath)
+	if err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+	defer db.Close()
+
+	h := NewHeadlessRunner(db, nil)
+	h.SetIdleTTL(60 * time.Millisecond)
+	defer h.ShutdownAllWorkers(time.Second)
+
+	sess := newTestHeadlessSession("claude-code:local:rl-warm-1", "rl-warm-1", tmpHome, StateIdle)
+	_ = db.SaveSession(sess)
+
+	sub1, unsub1 := h.Subscribe(sess.ID)
+	gotBlock := make(chan struct{})
+	go func() {
+		defer close(gotBlock)
+		for evt := range sub1 {
+			if evt.Type == "interactive_block" {
+				return
+			}
+		}
+	}()
+
+	if err := h.RunTurn(context.Background(), sess, "turn hitting rate limit"); err != nil {
+		t.Fatalf("RunTurn 1: %v", err)
+	}
+	select {
+	case <-gotBlock:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for interactive_block")
+	}
+	unsub1()
+	waitForWorkerCond(t, 3*time.Second, "turn 1 finalized", func() bool { return !h.IsRunning(sess.ID) })
+
+	h.mu.RLock()
+	handle1 := h.warmWorkers[sess.ID]
+	h.mu.RUnlock()
+	if handle1 == nil || handle1.WorkerPID <= 1 {
+		t.Fatalf("expected warm worker retained across BlockRateLimit, got %+v", handle1)
+	}
+
+	sBlocked, _ := db.GetSession(sess.ID)
+	if sBlocked == nil || sBlocked.State != StateBlocked || sBlocked.Blocked == nil || sBlocked.Blocked.Kind != BlockRateLimit {
+		t.Fatalf("expected StateBlocked with BlockRateLimit, got %+v", sBlocked)
+	}
+
+	// Wait well past 60ms idleTTL to prove onIdleTTLExpired defers reaping during rate-limit hold
+	time.Sleep(220 * time.Millisecond)
+	resp, err := callWorkerSocket(handle1.SocketPath, workerIPCReq{Op: "status"}, 250*time.Millisecond)
+	if err != nil || resp == nil || !resp.OK || resp.State != "idle_warm" {
+		t.Fatalf("expected warm worker to remain idle_warm past idleTTL during rate-limit hold, got err=%v resp=%+v", err, resp)
+	}
+
+	// Clearing BlockRateLimit must NOT kill the healthy warm worker
+	h.ClearInteractiveBlockAndWait(sess.ID, 500*time.Millisecond)
+	h.mu.RLock()
+	handleAfterClear := h.warmWorkers[sess.ID]
+	h.mu.RUnlock()
+	if handleAfterClear == nil || handleAfterClear.WorkerPID != handle1.WorkerPID {
+		t.Fatalf("ClearInteractiveBlockAndWait must retain healthy warm worker for BlockRateLimit, got %+v", handleAfterClear)
+	}
+
+	// Subsequent turn reuses the exact same WorkerPID
+	_ = os.WriteFile(flagFile, []byte("ok"), 0600)
+	h.SetQueuePaused(sess.ID, false)
+	sub2, unsub2 := h.Subscribe(sess.ID)
+	done2 := waitTurnDone(h, sess.ID, sub2)
+	if err := h.RunTurn(context.Background(), sBlocked, "Continue"); err != nil {
+		t.Fatalf("RunTurn 2: %v", err)
+	}
+	select {
+	case <-done2:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for turn 2")
+	}
+	unsub2()
+
+	h.mu.RLock()
+	handle2 := h.warmWorkers[sess.ID]
+	h.mu.RUnlock()
+	if handle2 == nil || handle2.WorkerPID != handle1.WorkerPID {
+		t.Fatalf("expected turn 2 to reuse same WorkerPID %d, got %+v", handle1.WorkerPID, handle2)
 	}
 }

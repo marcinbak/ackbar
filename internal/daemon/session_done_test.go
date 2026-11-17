@@ -423,11 +423,32 @@ func TestHeadlessWorker_RecycledPIDStaleMetaNotTrustedOrKilled(t *testing.T) {
 	if srv2.headless.IsRunning(sessReattach.ID) {
 		t.Fatalf("expected stale meta with recycled WorkerPID=os.Getpid() NOT to be treated as running")
 	}
-	if fileExists(reattachMetaPath) || fileExists(reattachSpoolPath) {
-		t.Fatalf("expected stale reattach spool files removed on disk")
+	if !fileExists(reattachMetaPath) || !fileExists(reattachSpoolPath) {
+		t.Fatalf("expected crashed reattach spool files preserved on disk")
 	}
-	if !slices.Contains(db2.PopInterruptedHeadlessSessionIDs(), sessReattach.ID) {
-		t.Fatalf("expected stale recycled-PID session routed to interruptedHeadlessIDs")
+	reattachMetaAfter, err := ReadTurnSpoolMeta(reattachMetaPath)
+	if err != nil || reattachMetaAfter == nil || reattachMetaAfter.Status != "failed" || reattachMetaAfter.ExitCode != -1 || !reattachMetaAfter.FinalizedByDaemon {
+		t.Fatalf("expected reattach meta finalized as failed/-1, got %+v (err=%v)", reattachMetaAfter, err)
+	}
+	reattachEvts, _, _ := ReadTurnSpoolAfter(reattachSpoolPath, 0)
+	hasInterruptErr := false
+	for _, ev := range reattachEvts {
+		if ev.Type == "error" && ev.IsError && ev.Text == crashedWorkerErrorText {
+			hasInterruptErr = true
+			break
+		}
+	}
+	if !hasInterruptErr {
+		t.Fatalf("expected interrupted error event appended to spool, got %+v", reattachEvts)
+	}
+	if !srv2.headless.IsQueuePaused(sessReattach.ID) {
+		t.Fatalf("expected crashed recycled-PID session queue to be paused")
+	}
+	if slices.Contains(db2.PopInterruptedHeadlessSessionIDs(), sessReattach.ID) {
+		t.Fatalf("expected crashed recycled-PID session cleared from interruptedHeadlessIDs")
+	}
+	if reattachSessAfter, _ := db2.GetSession(sessReattach.ID); reattachSessAfter == nil || reattachSessAfter.State != StateIdle || reattachSessAfter.PID != 0 || reattachSessAfter.Activity != "Turn error: "+crashedWorkerErrorText {
+		t.Fatalf("unexpected crashed recycled-PID session state: %+v", reattachSessAfter)
 	}
 
 	cleanupMetaPath := filepath.Join(runDir, "turn_recycled_cleanup.meta.json")

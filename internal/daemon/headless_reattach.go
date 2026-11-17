@@ -7,120 +7,9 @@ import (
 	"net"
 	"os"
 	"os/exec"
-	"path/filepath"
-	"sort"
-	"strings"
 	"sync"
-	"syscall"
 	"time"
 )
-
-func blockActivityText(b *Blocked) string {
-	if b.Kind == BlockApproval {
-		return "Waiting for plan approval"
-	}
-	if b.Kind == BlockRateLimit {
-		return "Rate limit: " + b.Reason
-	}
-	if b.Kind == BlockAuth {
-		return "Authentication required: " + b.AuthServer
-	}
-	return "Waiting for user response"
-}
-
-func preserveLatestSessionConfigFromDB(db *DB, sess *Session, lookupIDs ...string) {
-	if db == nil || sess == nil {
-		return
-	}
-	var candidates []string
-	if sess.ID != "" {
-		candidates = append(candidates, sess.ID)
-	}
-	if sess.OldID != "" {
-		candidates = append(candidates, sess.OldID)
-	}
-	candidates = append(candidates, lookupIDs...)
-
-	seen := make(map[string]bool, len(candidates))
-	var best *Session
-	for _, id := range candidates {
-		if id == "" || seen[id] {
-			continue
-		}
-		seen[id] = true
-		if dbSess, err := db.GetSession(id); err == nil && dbSess != nil {
-			if best == nil || (!dbSess.MetadataUpdatedAt.IsZero() && (best.MetadataUpdatedAt.IsZero() || dbSess.MetadataUpdatedAt.After(best.MetadataUpdatedAt))) {
-				best = dbSess
-			}
-		}
-	}
-	if best == nil {
-		return
-	}
-	if (sess.MetadataUpdatedAt.IsZero() && !best.MetadataUpdatedAt.IsZero()) || best.MetadataUpdatedAt.After(sess.MetadataUpdatedAt) {
-		sess.Model = best.Model
-		sess.Effort = best.Effort
-		sess.PermissionMode = best.PermissionMode
-		if best.ExtraDirs != nil {
-			sess.ExtraDirs = append([]string(nil), best.ExtraDirs...)
-		} else {
-			sess.ExtraDirs = nil
-		}
-		sess.MetadataUpdatedAt = best.MetadataUpdatedAt
-	}
-}
-
-func (h *HeadlessRunner) applyWorkerEvent(sess *Session, origSessionID string, meta *TurnSpoolMeta, evt ChatStreamEvent, emitLive bool) {
-	switch evt.Type {
-	case "session_init":
-		if evt.Model != "" && sess != nil {
-			h.SetRuntimeModel(sess.ID, sess.Agent, evt.Model)
-		}
-		if evt.NativeID != "" {
-			h.handleAntigravityInit(sess, evt.NativeID, meta.Prompt)
-		}
-		if evt.Model != "" && sess != nil {
-			h.SetRuntimeModel(sess.ID, sess.Agent, evt.Model)
-		}
-	case "model_detected":
-		if evt.Model != "" && sess != nil {
-			h.SetRuntimeModel(sess.ID, sess.Agent, evt.Model)
-		}
-		return
-	case "interactive_block":
-		if evt.Blocked == nil {
-			return
-		}
-		h.setInteractiveBlock(sess.ID, evt.Blocked)
-		if origSessionID != "" && origSessionID != sess.ID {
-			h.setInteractiveBlock(origSessionID, evt.Blocked)
-		}
-		h.SetQueuePaused(sess.ID, true)
-		if emitLive {
-			if h.db != nil && sess != nil {
-				preserveLatestSessionConfigFromDB(h.db, sess, origSessionID)
-				sess.State, sess.Blocked, sess.Activity = StateBlocked, evt.Blocked, blockActivityText(evt.Blocked)
-				sess.IsUnread, sess.LastStateChangeAt, sess.LastEventAt = true, time.Now(), time.Now()
-				_ = h.db.SaveSession(sess)
-				if h.broadcast != nil {
-					h.broadcast(sess)
-				}
-			}
-			evt.SessionID = sess.ID
-			h.Emit(sess.ID, evt, origSessionID)
-			if evt.Blocked.Kind == BlockRateLimit || evt.Blocked.Kind == BlockAuth {
-				h.EmitQueueUpdate(sess.ID)
-			}
-		}
-	default:
-		if emitLive {
-			if sess != nil && sess.ID != "" {
-				evt.SessionID = sess.ID
-			}
-			h.Emit(sess.ID, evt, origSessionID)
-		}
-	}
-}
 
 func (h *HeadlessRunner) monitorWorkerTurn(sess *Session, origSessionID string, meta *TurnSpoolMeta, trackedCmd *exec.Cmd, afterSeq int64) {
 	defer func() { h.mu.Lock(); h.activeMonitors--; h.mu.Unlock() }()
@@ -262,7 +151,12 @@ func (h *HeadlessRunner) finalizeTurnFromSpool(sess *Session, origSessionID stri
 			}
 			curSpool := h.sessionSpools[id]
 			if curSpool != nil && (turnID == "" || curSpool.TurnID == turnID) {
-				curSpool.FinalizedByDaemon = true
+				cp := *curSpool
+				if meta != nil {
+					cp = *meta
+				}
+				cp.FinalizedByDaemon = true
+				h.sessionSpools[id] = &cp
 			}
 			if curSpool == nil || turnID == "" || curSpool.TurnID == turnID {
 				if cur, exists := h.processes[id]; !exists || cur == nil || cur == trackedCmd {
@@ -427,6 +321,12 @@ func (h *HeadlessRunner) finalizeTurnFromSpool(sess *Session, origSessionID stri
 	}
 
 	markFinalized()
+	keepRateLimitWarm := interactiveBlock != nil && interactiveBlock.Kind == BlockRateLimit && !wasCancelled && (meta == nil || (meta.Status != "failed" && meta.ExitCode == 0))
+	if keepRateLimitWarm && meta != nil && meta.WorkerMetaPath != "" {
+		if wm, err := ReadSessionWorkerMeta(meta.WorkerMetaPath); err != nil || wm == nil || (wm.State != "idle_warm" && wm.State != "running_turn") {
+			keepRateLimitWarm = false
+		}
+	}
 	resolvedChildPID := 0
 	if meta != nil {
 		resolvedChildPID = meta.ChildPID
@@ -464,7 +364,7 @@ func (h *HeadlessRunner) finalizeTurnFromSpool(sess *Session, origSessionID stri
 		checkDrain()
 		return
 	}
-	if interactiveBlock != nil || wasCancelled || wasFailed {
+	if (interactiveBlock != nil && !keepRateLimitWarm) || wasCancelled || (wasFailed && !keepRateLimitWarm) {
 		delete(h.warmWorkers, sess.ID)
 		if sess.NativeID != "" {
 			delete(h.warmWorkers, sess.NativeID)
@@ -489,7 +389,7 @@ func (h *HeadlessRunner) finalizeTurnFromSpool(sess *Session, origSessionID stri
 		}
 	}
 
-	if wasFailed && meta != nil && meta.WorkerMetaPath != "" {
+	if wasFailed && !keepRateLimitWarm && meta != nil && meta.WorkerMetaPath != "" {
 		if wm, err := ReadSessionWorkerMeta(meta.WorkerMetaPath); err == nil && wm != nil && wm.State == "idle_warm" {
 			h.killWorkerMeta(wm, 300*time.Millisecond)
 		}
@@ -524,205 +424,22 @@ func (h *HeadlessRunner) finalizeTurnFromSpool(sess *Session, origSessionID stri
 	if checkDrain() {
 		return
 	}
-	if !h.IsRestartPending() && interactiveBlock == nil && !wasCancelled && !h.IsQueuePaused(sess.ID) {
-		if nextItem := h.DequeuePrompt(sess.ID); nextItem != nil {
-			h.EmitQueueUpdate(sess.ID)
-			go func(nextPrompt string) {
-				time.Sleep(50 * time.Millisecond)
-				targetSess := sess
-				if h.db != nil {
-					if cs, err := h.db.GetSession(sess.ID); err == nil && cs != nil {
-						targetSess = cs
-					}
-				}
-				_ = h.RunTurn(context.Background(), targetSess, nextPrompt)
-			}(nextItem.Text)
-		}
-	}
-}
-
-func (h *HeadlessRunner) resolveSession(id, origID, nativeID string) *Session {
-	if h == nil || h.db == nil {
-		return nil
-	}
-	for _, sid := range []string{id, origID} {
-		if sid != "" {
-			if s, err := h.db.GetSession(sid); err == nil && s != nil {
-				return s
+	if !h.IsRestartPending() && interactiveBlock == nil && !wasCancelled && !h.IsQueuePaused(sess.ID) && h.HasReadyPrompt(sess.ID) {
+		go func(sessID string, fallbackSess *Session) {
+			time.Sleep(50 * time.Millisecond)
+			if h.IsRestartPending() || h.IsQueuePaused(sessID) || h.IsRunning(sessID) {
+				return
 			}
-		}
-	}
-	if nativeID != "" {
-		if list, err := h.db.ListSessions(); err == nil {
-			for _, s := range list {
-				if s != nil && s.NativeID == nativeID && s.EngineType == EngineHeadless {
-					return s
+			targetSess := fallbackSess
+			if h.db != nil {
+				if cs, err := h.db.GetSession(sessID); err == nil && cs != nil {
+					targetSess = cs
 				}
 			}
-		}
+			if targetSess == nil || targetSess.Deleted || targetSess.IsDone || targetSess.State != StateIdle {
+				return
+			}
+			_, _ = h.DispatchNextQueuedPrompt(context.Background(), targetSess)
+		}(sess.ID, sess)
 	}
-	return nil
-}
-
-func (h *HeadlessRunner) resolveSessionForSpool(meta *TurnSpoolMeta) *Session {
-	if meta == nil {
-		return nil
-	}
-	return h.resolveSession(meta.SessionID, meta.OrigSessionID, meta.NativeID)
-}
-
-func (h *HeadlessRunner) ReattachLiveWorkers() {
-	if h == nil || h.db == nil {
-		return
-	}
-	runDir, _ := h.resolveRunDir(false)
-	entries, err := os.ReadDir(runDir)
-	if runDir == "" || err != nil {
-		return
-	}
-
-	adoptedTurns := make(map[string]bool)
-	adoptedIdle := make(map[string]bool)
-	for _, e := range entries {
-		if !e.IsDir() && strings.HasSuffix(e.Name(), ".worker.json") {
-			wp := filepath.Join(runDir, e.Name())
-			wm, err := ReadSessionWorkerMeta(wp)
-			if err != nil || wm == nil {
-				continue
-			}
-			resp, err := callWorkerSocket(wm.SocketPath, workerIPCReq{Op: "status"}, 250*time.Millisecond)
-			alive := err == nil && resp != nil && resp.OK
-			sess := h.resolveSession(wm.SessionID, wm.OrigSessionID, wm.NativeID)
-			if !alive || resp.State == "shutting_down" || resp.State == "exited" || sess == nil || sess.Deleted || sess.IsDone || sess.TmuxName != "" || wm.ConfigFingerprint != ConfigFingerprint(sess) {
-				if alive {
-					h.killWorkerMeta(wm, 300*time.Millisecond)
-				} else {
-					cleanupWorkerArtifacts(wm)
-				}
-				continue
-			}
-			h.mu.Lock()
-			h.warmWorkers[sess.ID] = &warmWorkerHandle{
-				WorkerID: wm.WorkerID, SessionID: sess.ID, NativeID: sess.NativeID,
-				SocketPath: wm.SocketPath, WorkerMetaPath: wm.WorkerMetaPath,
-				ConfigFingerprint: wm.ConfigFingerprint, ConfigFingerprintNoModel: wm.ConfigFingerprintNoModel,
-				MCPFingerprint: wm.MCPFingerprint, Bin: wm.Bin, Args: wm.Args,
-				WorkerPID: resp.WorkerPID, ChildPID: resp.ChildPID,
-			}
-			h.mu.Unlock()
-
-			if resp.State == "running_turn" && wm.ActiveTurnID != "" {
-				adoptedTurns[wm.ActiveTurnID] = true
-			} else {
-				adoptedIdle[sess.ID] = true
-				sess.State, sess.Blocked, sess.PID = StateIdle, nil, 0
-				if h.db != nil {
-					_ = h.db.SaveSession(sess)
-				}
-				if h.broadcast != nil {
-					h.broadcast(sess)
-				}
-			}
-		}
-	}
-
-	var metas []*TurnSpoolMeta
-	for _, e := range entries {
-		if !e.IsDir() && strings.HasSuffix(e.Name(), ".meta.json") {
-			if m, err := ReadTurnSpoolMeta(filepath.Join(runDir, e.Name())); err == nil && m != nil {
-				metas = append(metas, m)
-			}
-		}
-	}
-	sort.Slice(metas, func(i, j int) bool { return metas[i].StartedAt.Before(metas[j].StartedAt) })
-
-	clearInterrupted := func(sess *Session, m *TurnSpoolMeta) {
-		if sess != nil {
-			h.db.RemoveInterruptedHeadlessSessionID(sess.ID)
-		}
-		h.db.RemoveInterruptedHeadlessSessionID(m.SessionID)
-		h.db.RemoveInterruptedHeadlessSessionID(m.OrigSessionID)
-	}
-
-	for _, meta := range metas {
-		isActiveStatus := meta.Status == "starting" || meta.Status == "running"
-		var pingResp *workerIPCResp
-		alive := false
-		if isActiveStatus {
-			pingResp, alive = probeLiveWorker(meta, 250*time.Millisecond)
-		}
-		sess := h.resolveSessionForSpool(meta)
-		if alive {
-			if sess == nil || sess.Deleted || sess.IsDone {
-				_ = sendWorkerCancel(meta)
-				h.terminateVerifiedWorker(meta, syscall.SIGKILL)
-				removeTurnSpoolFiles(meta.MetaPath, meta)
-				continue
-			}
-			clearInterrupted(sess, meta)
-			livePID := meta.WorkerPID
-			if pingResp != nil && pingResp.WorkerPID > 1 {
-				livePID = pingResp.WorkerPID
-			}
-			sess.State, sess.Blocked, sess.PID = StateWorking, nil, livePID
-			if sess.Activity == "" {
-				sess.Activity = "Thinking..."
-			}
-			_ = h.db.SaveSession(sess)
-			if h.broadcast != nil {
-				h.broadcast(sess)
-			}
-			trackedCmd := &exec.Cmd{}
-			h.mu.Lock()
-			h.processes[sess.ID] = trackedCmd
-			h.activeSessions[sess.ID] = sess
-			h.activeTurns[sess.ID] = true
-			h.activePrompts[sess.ID] = TranscriptMessage{
-				Role:      "user",
-				Content:   meta.Prompt,
-				Timestamp: meta.StartedAt,
-				TurnID:    meta.TurnID,
-				InFlight:  true,
-			}
-			h.sessionSpools[sess.ID] = meta
-			h.activeMonitors++
-			h.mu.Unlock()
-			h.syncSleepInhibitor()
-			go h.monitorWorkerTurn(sess, meta.OrigSessionID, meta, trackedCmd, 0)
-		} else if isActiveStatus {
-			removeTurnSpoolFiles(meta.MetaPath, meta)
-		} else if !meta.FinalizedByDaemon {
-			clearInterrupted(sess, meta)
-			if sess == nil || sess.Deleted || sess.IsDone {
-				removeTurnSpoolFiles(meta.MetaPath, meta)
-				continue
-			}
-			h.mu.Lock()
-			h.sessionSpools[sess.ID] = meta
-			h.mu.Unlock()
-			events, _, _ := ReadTurnSpoolAfter(meta.SpoolPath, 0)
-			for _, evt := range events {
-				h.applyWorkerEvent(sess, meta.OrigSessionID, meta, evt, false)
-			}
-			h.finalizeTurnFromSpool(sess, meta.OrigSessionID, meta, nil)
-			if adoptedIdle[sess.ID] {
-				sess.State = StateIdle
-				if h.db != nil {
-					_ = h.db.SaveSession(sess)
-				}
-			}
-		} else if sess != nil && !sess.Deleted && !sess.IsDone {
-			clearInterrupted(sess, meta)
-			if sess.State == StateWorking {
-				sess.State, sess.Blocked, sess.PID = StateIdle, nil, 0
-				if h.db != nil {
-					_ = h.db.SaveSession(sess)
-				}
-			}
-			h.mu.Lock()
-			h.sessionSpools[sess.ID] = meta
-			h.mu.Unlock()
-		}
-	}
-	h.PruneStaleSpools(24 * time.Hour)
 }

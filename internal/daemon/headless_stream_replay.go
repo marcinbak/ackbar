@@ -179,7 +179,17 @@ func (s *Server) mergeInFlightSpoolIntoTranscript(transcript *Transcript, sess *
 		}
 	}
 
-	hasStreamedAssistant := strings.TrimSpace(snap.AssistantText) != "" || strings.TrimSpace(snap.ThinkingText) != "" || len(snap.ToolCalls) > 0
+	hasError := snap.StreamHadError || strings.TrimSpace(snap.LastErrorText) != ""
+	errText := strings.TrimSpace(snap.LastErrorText)
+	hasStreamedAssistant := strings.TrimSpace(snap.AssistantText) != "" || strings.TrimSpace(snap.ThinkingText) != "" || len(snap.ToolCalls) > 0 || errText != ""
+	assistantContent := snap.AssistantText
+	if errText != "" {
+		if strings.TrimSpace(assistantContent) == "" {
+			assistantContent = errText
+		} else if !strings.Contains(assistantContent, errText) {
+			assistantContent = strings.TrimRight(assistantContent, "\n") + "\n\n" + errText
+		}
+	}
 	asstIdx := -1
 	if matchedUserIdx >= 0 {
 		for i := n - 1; i > matchedUserIdx; i-- {
@@ -189,10 +199,11 @@ func (s *Server) mergeInFlightSpoolIntoTranscript(transcript *Transcript, sess *
 			}
 		}
 	}
+	hasUnhandledError := errText != "" && (asstIdx <= matchedUserIdx || !strings.Contains(msgs[asstIdx].Content, errText))
 
 	// Suppress spool synthesis once the provider transcript on disk covers the completed turn.
 	if !snap.IsActive {
-		if matchedUserIdx >= 0 && (asstIdx > matchedUserIdx && (strings.TrimSpace(msgs[asstIdx].Content) != "" || !hasStreamedAssistant) || !hasStreamedAssistant) {
+		if matchedUserIdx >= 0 && !hasUnhandledError && (asstIdx > matchedUserIdx && (strings.TrimSpace(msgs[asstIdx].Content) != "" || !hasStreamedAssistant) || !hasStreamedAssistant) {
 			if snap.TurnID != "" {
 				msgs[matchedUserIdx].TurnID = snap.TurnID
 				if asstIdx > matchedUserIdx {
@@ -202,7 +213,10 @@ func (s *Server) mergeInFlightSpoolIntoTranscript(transcript *Transcript, sess *
 			transcript.Messages = msgs
 			return transcript, nil
 		}
-		if matchedUserIdx < 0 && (snap.WasCancelled || (!snap.FinishedAt.IsZero() && time.Since(snap.FinishedAt) > 10*time.Second)) {
+		if matchedUserIdx < 0 && !hasError && (snap.WasCancelled || (!snap.FinishedAt.IsZero() && time.Since(snap.FinishedAt) > 10*time.Second)) {
+			return transcript, nil
+		}
+		if matchedUserIdx < 0 && hasError && n > 0 && !snap.FinishedAt.IsZero() && msgs[n-1].Timestamp.After(snap.FinishedAt) {
 			return transcript, nil
 		}
 	}
@@ -218,7 +232,7 @@ func (s *Server) mergeInFlightSpoolIntoTranscript(transcript *Transcript, sess *
 		if hasStreamedAssistant {
 			msgs = append(msgs, TranscriptMessage{
 				Role:      "assistant",
-				Content:   snap.AssistantText,
+				Content:   assistantContent,
 				Thinking:  snap.ThinkingText,
 				ToolCalls: snap.ToolCalls,
 				Timestamp: snap.UpdatedAt,
@@ -240,6 +254,14 @@ func (s *Server) mergeInFlightSpoolIntoTranscript(transcript *Transcript, sess *
 			if len(snap.AssistantText) > len(msgs[asstIdx].Content) {
 				msgs[asstIdx].Content = snap.AssistantText
 			}
+			if errText != "" && !strings.Contains(msgs[asstIdx].Content, errText) {
+				trimmed := strings.TrimRight(msgs[asstIdx].Content, "\n")
+				if trimmed == "" {
+					msgs[asstIdx].Content = errText
+				} else {
+					msgs[asstIdx].Content = trimmed + "\n\n" + errText
+				}
+			}
 			if len(snap.ThinkingText) > len(msgs[asstIdx].Thinking) {
 				msgs[asstIdx].Thinking = snap.ThinkingText
 			}
@@ -249,7 +271,7 @@ func (s *Server) mergeInFlightSpoolIntoTranscript(transcript *Transcript, sess *
 		} else if hasStreamedAssistant {
 			msgs = append(msgs, TranscriptMessage{
 				Role:      "assistant",
-				Content:   snap.AssistantText,
+				Content:   assistantContent,
 				Thinking:  snap.ThinkingText,
 				ToolCalls: snap.ToolCalls,
 				Timestamp: snap.UpdatedAt,
@@ -265,7 +287,7 @@ func (s *Server) mergeInFlightSpoolIntoTranscript(transcript *Transcript, sess *
 		"last_seq":            snap.LastSeq,
 		"active":              snap.IsActive,
 		"prompt":              snap.UserPrompt,
-		"assistant_text":      snap.AssistantText,
+		"assistant_text":      assistantContent,
 		"thinking":            snap.ThinkingText,
 		"tool_calls":          snap.ToolCalls,
 		"timestamp":           snap.UserTimestamp,

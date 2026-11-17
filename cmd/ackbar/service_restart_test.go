@@ -2,9 +2,13 @@ package main
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"ackbar/internal/daemon"
 )
 
 func TestHasLaunchctlLabel(t *testing.T) {
@@ -295,5 +299,50 @@ func TestDaemonServiceRestarter_LinuxSystemd(t *testing.T) {
 	}
 	if m, r, dErr := disabled.restart(); m || r || dErr != nil {
 		t.Fatalf("expected (false, false, nil) when systemd service is disabled and inactive, got (%v, %v, %v)", m, r, dErr)
+	}
+}
+
+func TestDaemonServiceRestarter_DarwinReloadsModifiedPlist(t *testing.T) {
+	home := t.TempDir()
+	agentsDir := filepath.Join(home, "Library", "LaunchAgents")
+	_ = os.MkdirAll(agentsDir, 0755)
+	plistPath := filepath.Join(agentsDir, "com.marcinbak.ackbard.plist")
+	_ = os.WriteFile(plistPath, []byte("<plist version=\"1.0\"><dict><key>Label</key><string>com.marcinbak.ackbard</string></dict></plist>\n"), 0644)
+
+	changed, err := daemon.EnsureServiceProcessIsolation(home)
+	if err != nil || !changed {
+		t.Fatalf("expected EnsureServiceProcessIsolation to update plist, got changed=%v err=%v", changed, err)
+	}
+	marker := daemon.LaunchAgentReloadMarkerPath(home)
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("expected reload marker to exist after plist modification: %v", err)
+	}
+
+	var cmds []string
+	restarter := &daemonServiceRestarter{
+		goos:             "darwin",
+		uid:              501,
+		homeDir:          home,
+		readinessTimeout: 50 * time.Millisecond,
+		pollInterval:     5 * time.Millisecond,
+		runCmd: func(env []string, name string, args ...string) ([]byte, error) {
+			cmds = append(cmds, name+" "+strings.Join(args, " "))
+			if name == "launchctl" && len(args) == 1 && args[0] == "list" {
+				return []byte("PID\tStatus\tLabel\n812\t0\tcom.marcinbak.ackbard\n"), nil
+			}
+			return nil, nil
+		},
+		probePort: func(addr string, timeout time.Duration) error { return nil },
+	}
+	managed, ready, rErr := restarter.restart()
+	if !managed || !ready || rErr != nil {
+		t.Fatalf("expected (true, true, nil), got (%v, %v, %v)", managed, ready, rErr)
+	}
+	joined := strings.Join(cmds, "\n")
+	if !strings.Contains(joined, "launchctl bootout gui/501 "+plistPath) || !strings.Contains(joined, "launchctl bootstrap gui/501 "+plistPath) {
+		t.Fatalf("expected bootout and bootstrap on modified plist, got:\n%s", joined)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("expected reload marker cleared after bootstrap, got err=%v", err)
 	}
 }

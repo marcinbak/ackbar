@@ -37,6 +37,9 @@ func resolveRestartExecutable() string {
 }
 
 func restartLocalDaemonAsync() {
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		_, _ = EnsureServiceProcessIsolation(home)
+	}
 	script := buildLocalAsyncRestartScript(os.Getpid(), resolveRestartExecutable(), os.Args[1:])
 	cmd := exec.Command("sh", "-c", script)
 	_ = cmd.Start()
@@ -77,32 +80,35 @@ if echo "$DRAIN_RES" | grep -q '"restart_deferred":true'; then
   echo "RESTART_DEFERRED"
   exit 0
 fi
+%s
+self_heal_ackbard_service
 if %s; then
-  pkill -15 -x ackbard 2>/dev/null || true
+  signal_non_worker_ackbard 15
   sleep 0.3
-  pkill -9 -x ackbard 2>/dev/null || true
+  signal_non_worker_ackbard 9
+  systemctl --user daemon-reload >/dev/null 2>&1 || true
   systemctl --user restart ackbard.service >/dev/null
-  i=0; while [ "$i" -lt 25 ]; do pgrep -x ackbard >/dev/null 2>&1 && break; sleep 0.2; i=$((i + 1)); done
+  i=0; while [ "$i" -lt 25 ]; do has_non_worker_ackbard && break; sleep 0.2; i=$((i + 1)); done
 elif command -v launchctl >/dev/null 2>&1 && launchctl list 2>/dev/null | grep -Eq '(^|[[:space:]])com\.marcinbak\.ackbard($|[[:space:]])'; then
-  pkill -15 -x ackbard 2>/dev/null || true
+  signal_non_worker_ackbard 15
   sleep 0.3
-  pkill -9 -x ackbard 2>/dev/null || true
-  (launchctl kickstart -k "gui/$(id -u)/com.marcinbak.ackbard" >/dev/null || launchctl kickstart -k "user/$(id -u)/com.marcinbak.ackbard" >/dev/null)
-  i=0; while [ "$i" -lt 25 ]; do pgrep -x ackbard >/dev/null 2>&1 && break; sleep 0.2; i=$((i + 1)); done
+  signal_non_worker_ackbard 9
+  reload_launchagent_if_changed || (launchctl kickstart -k "gui/$(id -u)/com.marcinbak.ackbard" >/dev/null || launchctl kickstart -k "user/$(id -u)/com.marcinbak.ackbard" >/dev/null)
+  i=0; while [ "$i" -lt 25 ]; do has_non_worker_ackbard && break; sleep 0.2; i=$((i + 1)); done
 elif command -v launchctl >/dev/null 2>&1 && launchctl list 2>/dev/null | grep -Eq '(^|[[:space:]])homebrew\.mxcl\.ackbar($|[[:space:]])'; then
-  pkill -15 -x ackbard 2>/dev/null || true
+  signal_non_worker_ackbard 15
   sleep 0.3
-  pkill -9 -x ackbard 2>/dev/null || true
+  signal_non_worker_ackbard 9
   export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
   brew services restart ackbar >/dev/null
-  i=0; while [ "$i" -lt 25 ]; do pgrep -x ackbard >/dev/null 2>&1 && break; sleep 0.2; i=$((i + 1)); done
+  i=0; while [ "$i" -lt 25 ]; do has_non_worker_ackbard && break; sleep 0.2; i=$((i + 1)); done
 else
-  pkill -15 -x ackbard 2>/dev/null || true
+  signal_non_worker_ackbard 15
   sleep 0.3
-  pkill -9 -x ackbard 2>/dev/null || true
+  signal_non_worker_ackbard 9
   sleep 0.2
   nohup "$HOME/.local/bin/ackbard"%s >/dev/null 2>&1 < /dev/null &
-fi`, quotedAuthToken, systemdManagedShellCond, hostFlagArg)
+fi`, quotedAuthToken, DaemonSafeShellHelpers(), systemdManagedShellCond, hostFlagArg)
 }
 
 func buildRemoteSelfUpdateScript(quotedAuthToken, hostFlagArg string) string {
@@ -124,19 +130,22 @@ if printf '%%s\n' "$UPD_OUT" | grep -q "restart automatically once the current t
   echo "RESTART_DEFERRED"
   exit 0
 fi
+%s
+self_heal_ackbard_service
 if %s; then
+  systemctl --user daemon-reload >/dev/null 2>&1 || true
   systemctl --user restart ackbard.service >/dev/null
-  i=0; while [ "$i" -lt 25 ]; do pgrep -x ackbard >/dev/null 2>&1 && break; sleep 0.2; i=$((i + 1)); done
+  i=0; while [ "$i" -lt 25 ]; do has_non_worker_ackbard && break; sleep 0.2; i=$((i + 1)); done
 elif command -v launchctl >/dev/null 2>&1 && launchctl list 2>/dev/null | grep -Eq '(^|[[:space:]])com\.marcinbak\.ackbard($|[[:space:]])'; then
-  (launchctl kickstart -k "gui/$(id -u)/com.marcinbak.ackbard" >/dev/null || launchctl kickstart -k "user/$(id -u)/com.marcinbak.ackbard" >/dev/null)
-  i=0; while [ "$i" -lt 25 ]; do pgrep -x ackbard >/dev/null 2>&1 && break; sleep 0.2; i=$((i + 1)); done
+  reload_launchagent_if_changed || (launchctl kickstart -k "gui/$(id -u)/com.marcinbak.ackbard" >/dev/null || launchctl kickstart -k "user/$(id -u)/com.marcinbak.ackbard" >/dev/null)
+  i=0; while [ "$i" -lt 25 ]; do has_non_worker_ackbard && break; sleep 0.2; i=$((i + 1)); done
 elif command -v launchctl >/dev/null 2>&1 && launchctl list 2>/dev/null | grep -Eq '(^|[[:space:]])homebrew\.mxcl\.ackbar($|[[:space:]])'; then
   export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
   brew services restart ackbar >/dev/null
-  i=0; while [ "$i" -lt 25 ]; do pgrep -x ackbard >/dev/null 2>&1 && break; sleep 0.2; i=$((i + 1)); done
+  i=0; while [ "$i" -lt 25 ]; do has_non_worker_ackbard && break; sleep 0.2; i=$((i + 1)); done
 else
-  pgrep -x ackbard >/dev/null 2>&1 || (nohup "$HOME/.local/bin/ackbard"%s >/dev/null 2>&1 < /dev/null &)
-fi`, quotedAuthToken, systemdManagedShellCond, hostFlagArg)
+  has_non_worker_ackbard || (nohup "$HOME/.local/bin/ackbard"%s >/dev/null 2>&1 < /dev/null &)
+fi`, quotedAuthToken, DaemonSafeShellHelpers(), systemdManagedShellCond, hostFlagArg)
 }
 
 func buildLocalAsyncRestartScript(pid int, exe string, rawArgs []string) string {
@@ -145,30 +154,33 @@ func buildLocalAsyncRestartScript(pid int, exe string, rawArgs []string) string 
 		cmdLine += " " + quotedArgs
 	}
 	return fmt.Sprintf(`sleep 0.5
+%s
+self_heal_ackbard_service
 if %s; then
   kill -15 %d 2>/dev/null || true
   sleep 0.3
   kill -9 %d 2>/dev/null || true
+  systemctl --user daemon-reload >/dev/null 2>&1 || true
   systemctl --user restart ackbard.service >/dev/null 2>&1 || true
-  i=0; while [ "$i" -lt 25 ]; do pgrep -x ackbard >/dev/null 2>&1 && break; sleep 0.2; i=$((i + 1)); done
+  i=0; while [ "$i" -lt 25 ]; do has_non_worker_ackbard && break; sleep 0.2; i=$((i + 1)); done
 elif command -v launchctl >/dev/null 2>&1 && launchctl list 2>/dev/null | grep -Eq '(^|[[:space:]])com\.marcinbak\.ackbard($|[[:space:]])'; then
   kill -15 %d 2>/dev/null || true
   sleep 0.3
   kill -9 %d 2>/dev/null || true
-  launchctl kickstart -k "gui/$(id -u)/com.marcinbak.ackbard" >/dev/null 2>&1 || launchctl kickstart -k "user/$(id -u)/com.marcinbak.ackbard" >/dev/null 2>&1 || true
-  i=0; while [ "$i" -lt 25 ]; do pgrep -x ackbard >/dev/null 2>&1 && break; sleep 0.2; i=$((i + 1)); done
+  reload_launchagent_if_changed >/dev/null 2>&1 || launchctl kickstart -k "gui/$(id -u)/com.marcinbak.ackbard" >/dev/null 2>&1 || launchctl kickstart -k "user/$(id -u)/com.marcinbak.ackbard" >/dev/null 2>&1 || true
+  i=0; while [ "$i" -lt 25 ]; do has_non_worker_ackbard && break; sleep 0.2; i=$((i + 1)); done
 elif command -v launchctl >/dev/null 2>&1 && launchctl list 2>/dev/null | grep -Eq '(^|[[:space:]])homebrew\.mxcl\.ackbar($|[[:space:]])'; then
   kill -15 %d 2>/dev/null || true
   sleep 0.3
   kill -9 %d 2>/dev/null || true
   export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
   brew services restart ackbar >/dev/null 2>&1 || true
-  i=0; while [ "$i" -lt 25 ]; do pgrep -x ackbard >/dev/null 2>&1 && break; sleep 0.2; i=$((i + 1)); done
+  i=0; while [ "$i" -lt 25 ]; do has_non_worker_ackbard && break; sleep 0.2; i=$((i + 1)); done
 else
   kill -15 %d 2>/dev/null || true
   sleep 0.3
   kill -9 %d 2>/dev/null || true
   sleep 0.2
   nohup %s >/dev/null 2>&1 < /dev/null &
-fi`, systemdManagedShellCond, pid, pid, pid, pid, pid, pid, pid, pid, cmdLine)
+fi`, DaemonSafeShellHelpers(), systemdManagedShellCond, pid, pid, pid, pid, pid, pid, pid, pid, cmdLine)
 }
