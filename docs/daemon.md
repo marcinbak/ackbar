@@ -37,7 +37,7 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 * **`rate_limit.go`:** Rate-limit reset timestamp parsers (pipe-delimited epoch, relative durations, 12h/24h/month clock times with past rollover and +1m safety buffer) and `/delay` duration/slash-command parsers.
 * **`server_subagents.go`:** Subagent discovery endpoint (`/v1/sessions/subagents`) and in-memory/disk subagent lifecycle reconciliation.
 * **`server_accounts.go`:** Multi-account profile management (`/v1/accounts`), agent discovery (`/v1/agents/discovery`), provider catalog (`/v1/providers`), and fleet propagation.
-* **`server_hosts.go`:** Remote host health tracking, SSH target resolution, host CRUD (`/v1/hosts`), cross-compiled remote upgrades (`/v1/hosts/update`), and resilient SSH tunnel management (`/v1/hosts/reconnect`, `ensureHostTunnels`).
+* **`server_hosts.go` & `daemon_restart.go`:** Remote host health tracking, SSH target resolution, host CRUD (`/v1/hosts`), cross-compiled remote upgrades (`/v1/hosts/update`), service-manager-aware restart scripts, and resilient SSH tunnel management (`/v1/hosts/reconnect`, `ensureHostTunnels`).
 * **`server_projects.go`:** Workspace document discovery (`/v1/documents`), tree node CRUD and move (`/v1/nodes`), project creation (`/v1/projects/create`), worktree/path normalization, and VS Code URI launching (`/v1/editor/open`).
 * **`files.go` & `files_resolve.go`:** Workspace file serving (`GET /v1/files/content`), external launching (`POST /v1/files/open`), sandbox CSP headers, and path resolution (worktrees, brain, subagents, cross-OS homes).
 * **`server_tasks.go` & `task_scope.go`:** Task CRUD (`/v1/tasks`), canonical project node scope resolution (`resolveTaskNodeScope`), task moves, and subproject normalization.
@@ -263,7 +263,14 @@ The SQLite database (`~/.config/ackbar/ackbard.db`) uses CGO-free pure Go SQLite
 
 ---
 
-## 6. Linux Service Management (`systemd`)
+## 6. Service Management (launchd & systemd)
+
+### macOS (`launchd`)
+* **LaunchAgent (`com.marcinbak.ackbard`):** Restart via `launchctl kickstart -k gui/$(id -u)/com.marcinbak.ackbard` (falls back to `user/$(id -u)` over headless SSH).
+* **Homebrew (`homebrew.mxcl.ackbar`):** Restart managed formula service via `brew services restart ackbar`.
+* **Port `:7777` Ownership:** [`service_restart.go`](../cmd/ackbar/service_restart.go) and [`daemon_restart.go`](../internal/daemon/daemon_restart.go) omit `nohup` fallbacks when managed; never run `ackbard &` under `launchd`/`systemd`.
+
+### Linux (`systemd`)
 
 On Linux hosts (such as remote GPU compute boxes), `ackbard` can run as a background `systemd` user service:
 
@@ -288,6 +295,8 @@ WantedBy=default.target
 ```
 
 > **Process Isolation:** `KillMode=process` ensures `systemctl --user restart ackbard` terminates only the daemon process. Detached headless workers continue running and re-attach upon daemon restart.
+
+* **Unit Detection:** [`service_restart.go`](../cmd/ackbar/service_restart.go) and [`daemon_restart.go`](../internal/daemon/daemon_restart.go) treat `enabled*`, dotfile-`linked*`, `static`, and `active`/`activating`/`reloading` `ackbard.service` units as managed.
 
 ### Commands:
 ```bash

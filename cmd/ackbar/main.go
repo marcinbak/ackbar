@@ -7,7 +7,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -164,58 +163,6 @@ func buildDaemonRestartArgs(home, runningHost, runningDisplayName string) []stri
 	return args
 }
 
-func resolveBrewExecutable() string {
-	for _, candidate := range []string{
-		"/opt/homebrew/bin/brew",
-		"/usr/local/bin/brew",
-	} {
-		if _, err := os.Stat(candidate); err == nil {
-			return candidate
-		}
-	}
-	if p, err := exec.LookPath("brew"); err == nil {
-		return p
-	}
-	return ""
-}
-
-func tryRestartDarwinLaunchdService() bool {
-	if runtime.GOOS != "darwin" {
-		return false
-	}
-	out, err := exec.Command("launchctl", "list").Output()
-	if err != nil {
-		return false
-	}
-	outStr := string(out)
-	var started bool
-	if strings.Contains(outStr, "com.marcinbak.ackbard") {
-		err := exec.Command("launchctl", "kickstart", "-k", fmt.Sprintf("gui/%d/com.marcinbak.ackbard", os.Getuid())).Run()
-		started = err == nil
-	} else if strings.Contains(outStr, "homebrew.mxcl.ackbar") {
-		brewBin := resolveBrewExecutable()
-		if brewBin == "" {
-			return false
-		}
-		cmd := exec.Command(brewBin, "services", "restart", "ackbar")
-		cmd.Env = append(os.Environ(), "PATH=/opt/homebrew/bin:/usr/local/bin:"+os.Getenv("PATH"))
-		err := cmd.Run()
-		started = err == nil
-	}
-	if !started {
-		return false
-	}
-	deadline := time.Now().Add(800 * time.Millisecond)
-	for time.Now().Before(deadline) {
-		time.Sleep(100 * time.Millisecond)
-		if conn, err := net.DialTimeout("tcp", "127.0.0.1:7777", 100*time.Millisecond); err == nil {
-			_ = conn.Close()
-			return true
-		}
-	}
-	return false
-}
-
 func ensureDaemonRunning() {
 	token := os.Getenv("ACKBAR_TOKEN")
 	httpClient := &http.Client{Timeout: 500 * time.Millisecond}
@@ -255,7 +202,8 @@ func ensureDaemonRunning() {
 
 	fmt.Println("🚀 Local ackbard daemon starting in background...")
 
-	if !tryRestartDarwinLaunchdService() {
+	managed, ready, restartErr := tryRestartManagedDaemonService()
+	if !managed {
 		home, _ := os.UserHomeDir()
 		ackbardBin := "ackbard"
 		if home != "" {
@@ -272,6 +220,11 @@ func ensureDaemonRunning() {
 			cmdRun := exec.Command("go", goArgs...)
 			_ = cmdRun.Start()
 		}
+	} else if restartErr != nil {
+		fmt.Fprintf(os.Stderr, "⚠️ Managed ackbard service restart failed: %v\n", restartErr)
+		return
+	} else if !ready {
+		fmt.Println("⚠️ Managed ackbard service (launchd/systemd) is still starting on 127.0.0.1:7777...")
 	}
 
 	// Poll up to 3 seconds for daemon port 7777 to become ready
@@ -1153,7 +1106,8 @@ func runUpdateCmd(args []string) {
 		}
 
 		time.Sleep(400 * time.Millisecond)
-		if !tryRestartDarwinLaunchdService() {
+		managed, ready, restartErr := tryRestartManagedDaemonService()
+		if !managed {
 			home, _ := os.UserHomeDir()
 			ackbardBin := ""
 			if res != nil && res.TargetDir != "" {
@@ -1166,6 +1120,11 @@ func runUpdateCmd(args []string) {
 			}
 			args := buildDaemonRestartArgs(home, runningHost, runningDisplayName)
 			_ = exec.Command(ackbardBin, args...).Start()
+		} else if restartErr != nil {
+			fmt.Fprintf(os.Stderr, "⚠️ Managed ackbard service restart failed: %v\n", restartErr)
+			os.Exit(1)
+		} else if !ready {
+			fmt.Println("⚠️ Managed ackbard service (launchd/systemd) is still starting on 127.0.0.1:7777...")
 		}
 	}
 
