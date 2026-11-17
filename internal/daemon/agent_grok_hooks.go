@@ -7,42 +7,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"ackbar/internal/agentutil"
 )
 
 func FormatToolDisplay(name string, input interface{}) string {
-	if name == "" {
-		name = "tool"
-	}
-	if input == nil {
-		return name
-	}
-	if m, ok := input.(map[string]interface{}); ok {
-		for _, k := range []string{"command", "cmd", "query", "path", "file_path", "pattern", "prompt"} {
-			if v, exists := m[k]; exists {
-				if s, ok := v.(string); ok && s != "" {
-					s = strings.TrimSpace(s)
-					if len(s) > 60 {
-						s = s[:57] + "..."
-					}
-					return fmt.Sprintf("%s: %s", name, s)
-				}
-			}
-		}
-		b, _ := json.Marshal(m)
-		s := string(b)
-		if len(s) > 60 {
-			s = s[:57] + "..."
-		}
-		return fmt.Sprintf("%s(%s)", name, s)
-	}
-	if s, ok := input.(string); ok && s != "" {
-		s = strings.TrimSpace(s)
-		if len(s) > 60 {
-			s = s[:57] + "..."
-		}
-		return fmt.Sprintf("%s: %s", name, s)
-	}
-	return name
+	return agentutil.FormatToolDisplay(name, input)
 }
 
 func WriteGrokHooksFile(grokDir, accountName string) error {

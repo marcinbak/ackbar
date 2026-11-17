@@ -70,7 +70,7 @@ func (s *Server) handleHook(w http.ResponseWriter, r *http.Request) {
 	}
 	agentName := parts[3]
 
-	p, exists := s.providers[agentName]
+	p, exists := s.resolveProvider(agentName)
 	if !exists {
 		http.Error(w, fmt.Sprintf("Unsupported agent provider: %s", agentName), http.StatusBadRequest)
 		return

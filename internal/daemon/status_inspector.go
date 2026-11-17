@@ -11,22 +11,12 @@ import (
 	"strings"
 	"time"
 
+	"ackbar/internal/agentutil"
 	"ackbar/internal/tmux"
 )
 
 func extractTailLines(lines []string, count int) []string {
-	lastNonEmpty := len(lines) - 1
-	for lastNonEmpty >= 0 && strings.TrimSpace(lines[lastNonEmpty]) == "" {
-		lastNonEmpty--
-	}
-	if lastNonEmpty < 0 {
-		return nil
-	}
-	startIdx := lastNonEmpty - count + 1
-	if startIdx < 0 {
-		startIdx = 0
-	}
-	return lines[startIdx : lastNonEmpty+1]
+	return agentutil.ExtractTailLinesSlice(lines, count)
 }
 
 func extractTailText(lines []string, count int) string {

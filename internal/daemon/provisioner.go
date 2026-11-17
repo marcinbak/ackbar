@@ -11,26 +11,12 @@ import (
 	"runtime"
 	"strings"
 
+	"ackbar/internal/agent"
 	"ackbar/internal/skills"
 	"ackbar/internal/version"
 )
 
-// AgentStatus represents the installation and configuration state for an agent
-type AgentStatus struct {
-	Key            string `json:"key"`             // e.g. "claude-code", "antigravity", "codex"
-	DisplayName    string `json:"display_name"`    // e.g. "Claude Code"
-	Detected       bool   `json:"detected"`        // Whether agent was detected on system
-	ConfigFile     string `json:"config_file"`     // Path to MCP configuration file
-	SkillsDir      string `json:"skills_dir"`      // Path to skills directory
-	RulesFile      string `json:"rules_file"`      // Path to global rules markdown file
-	MCPInstalled   bool   `json:"mcp_installed"`   // Whether ackbar MCP server is configured
-	MCPCommand     string `json:"mcp_command"`     // Registered command string (e.g. "ackbar mcp")
-	SkillInstalled bool   `json:"skill_installed"` // Whether ackbar-tasks skill is installed
-	SkillVersion   string `json:"skill_version"`   // Installed skill version (e.g. "20260929.02")
-	RulesInstalled bool   `json:"rules_installed"` // Whether Ackbar communication/brevity rules are installed
-	RulesVersion   string `json:"rules_version"`   // Installed rules version (e.g. "20261109.04")
-	DriftDetected  bool   `json:"drift_detected"`  // Whether configuration or skill version is out of date
-}
+type AgentStatus = agent.AgentStatus
 
 // AgentDefinition encapsulates paths and conventions for an agent runtime
 type AgentDefinition struct {

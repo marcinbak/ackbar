@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"ackbar/internal/agentutil"
 	"ackbar/internal/tmux"
 )
 
@@ -122,7 +123,7 @@ func (s *Server) verifySessionLiveness(ctx context.Context, sessions []*Session)
 			continue
 		}
 
-		if p, ok := s.providers[sess.Agent]; ok {
+		if p, ok := s.resolveProvider(sess.Agent); ok {
 			if inspector, ok := p.(StatusInspector); ok {
 				prevState := sess.State
 				if inspector.InspectStatus(ctx, sess) {
@@ -179,14 +180,7 @@ func (s *Server) verifySessionLiveness(ctx context.Context, sessions []*Session)
 }
 
 func isProcessAlive(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-	return proc.Signal(syscall.Signal(0)) == nil
+	return agentutil.IsProcessAlive(pid)
 }
 
 // isIgnoredAgentCommand returns true if the command line represents a utility subcommand,
@@ -271,7 +265,7 @@ func (s *Server) refreshExistingSessions(ctx context.Context, state *ScanState) 
 
 		prevState := sess.State
 		changed := false
-		if p, ok := s.providers[sess.Agent]; ok && sess.NativeID != "" {
+		if p, ok := s.resolveProvider(sess.Agent); ok && sess.NativeID != "" {
 			if meta := p.ReadSessionMetadata(sess.Cwd, sess.NativeID); meta != nil {
 				if sess.CustomTitle != "" {
 					if sess.Name != sess.CustomTitle {
@@ -693,7 +687,7 @@ func (s *Server) adoptExistingTmuxSession(ctx context.Context, state *ScanState,
 	if existing.NodePath == "" && existing.Cwd != "" && !existing.IsSupervisor {
 		existing.NodePath = s.resolveSessionNodePath(existing.Cwd)
 	}
-	if p, ok := s.providers[agent]; ok {
+	if p, ok := s.resolveProvider(agent); ok {
 		if inspector, ok := p.(StatusInspector); ok {
 			inspector.InspectStatus(ctx, existing)
 		}
@@ -817,7 +811,7 @@ func (s *Server) reconstructManagedTmuxSession(hostName, agent, targetNativeID, 
 		LastEventAt: time.Now(),
 	}
 
-	if p, ok := s.providers[agent]; ok {
+	if p, ok := s.resolveProvider(agent); ok {
 		meta := p.ReadSessionMetadata(cwd, targetNativeID)
 		if meta != nil {
 			if meta.Title != "" && !strings.HasPrefix(meta.Title, "<") && !isRawSessionName(meta.Title) {

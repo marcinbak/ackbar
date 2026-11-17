@@ -81,7 +81,7 @@ func (s *Server) getRunningSubagents(sessionID, nativeID, agent, cwd string) []S
 	}
 	s.subagentDiskMu.RUnlock()
 
-	if p, ok := s.providers[agent]; ok {
+	if p, ok := s.resolveProvider(agent); ok {
 		if discoverer, ok := p.(SubagentDiscoverer); ok {
 			hasDiscoverer = true
 			home, _ := os.UserHomeDir()

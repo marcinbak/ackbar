@@ -16,6 +16,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"ackbar/internal/agent"
 )
 
 type CommandSuggestion struct {
@@ -32,10 +34,7 @@ type FileSuggestion struct {
 	IsDir bool   `json:"is_dir"`
 }
 
-type ModelSuggestion struct {
-	ID    string `json:"id"`
-	Label string `json:"label"`
-}
+type ModelSuggestion = agent.ModelSuggestion
 
 type cachedFileList struct {
 	files     []FileSuggestion

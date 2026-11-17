@@ -4,35 +4,12 @@ import (
 	"context"
 	"strings"
 	"time"
+
+	"ackbar/internal/agent"
 )
 
-// SessionMeta contains rich session discovery metadata resolved from workspace files
-type SessionMeta struct {
-	Title             string    `json:"title,omitempty"`
-	CustomTitle       string    `json:"custom_title,omitempty"`
-	AITitle           string    `json:"ai_title,omitempty"`
-	AIDescription     string    `json:"ai_description,omitempty"`
-	FirstPrompt       string    `json:"first_prompt,omitempty"`
-	LastPrompt        string    `json:"last_prompt,omitempty"`
-	Entrypoint        string    `json:"entrypoint,omitempty"`
-	Kind              string    `json:"kind,omitempty"`
-	Version           string    `json:"version,omitempty"`
-	GitBranch         string    `json:"git_branch,omitempty"`
-	ContextPct        int       `json:"context_pct,omitempty"`
-	LastMessageAt     time.Time `json:"last_message_at,omitempty"`
-	LastUserMessageAt time.Time `json:"last_user_message_at,omitempty"`
-}
-
-// ActiveSubagent represents a structured subagent discovered on disk or via hooks
-type ActiveSubagent struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	Role      string    `json:"role"`
-	Prompt    string    `json:"prompt,omitempty"`
-	State     string    `json:"state"` // "running", "completed", "killed"
-	Model     string    `json:"model,omitempty"`
-	StartedAt time.Time `json:"started_at"`
-}
+type SessionMeta = agent.SessionMeta
+type ActiveSubagent = agent.ActiveSubagent
 
 // AgentIdentity provides agent naming, branding, and UI presentation metadata.
 type AgentIdentity interface {
@@ -148,17 +125,7 @@ type FullProvider interface {
 	SubagentDiscoverer
 }
 
-// ProviderDTO represents provider discovery metadata exposed over the REST API
-type ProviderDTO struct {
-	Agent          string   `json:"agent"`
-	DisplayName    string   `json:"display_name"`
-	BrandColor     string   `json:"brand_color"`
-	IconSVG        string   `json:"icon_svg"`
-	IsInstalled    bool     `json:"is_installed"`
-	HookConfigured bool     `json:"hook_configured"`
-	SetupCmd       string   `json:"setup_cmd"`
-	ProcessNames   []string `json:"process_names"`
-}
+type ProviderDTO = agent.ProviderDTO
 
 func getDefaultAgentAdapter(agent string) AgentAdapter {
 	switch agent {
@@ -181,12 +148,27 @@ func getDefaultAgentAdapter(agent string) AgentAdapter {
 	}
 }
 
-func (s *Server) agentAdapter(agent string) AgentAdapter {
-	if s != nil {
-		if p, ok := s.providers[agent]; ok {
-			if adapter, ok := p.(AgentAdapter); ok {
-				return adapter
+func (s *Server) resolveProvider(agentName string) (Provider, bool) {
+	if s == nil {
+		return nil, false
+	}
+	if p, ok := s.providers[agentName]; ok {
+		return p, true
+	}
+	if s.registry != nil {
+		if plugin, ok := s.registry.Get(agentName); ok {
+			if p, ok := s.providers[plugin.Key()]; ok {
+				return p, true
 			}
+		}
+	}
+	return nil, false
+}
+
+func (s *Server) agentAdapter(agent string) AgentAdapter {
+	if p, ok := s.resolveProvider(agent); ok {
+		if adapter, ok := p.(AgentAdapter); ok {
+			return adapter
 		}
 	}
 	return getDefaultAgentAdapter(agent)

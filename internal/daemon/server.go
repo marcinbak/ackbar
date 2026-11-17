@@ -15,31 +15,13 @@ import (
 	"sync/atomic"
 	"time"
 
+	"ackbar/internal/agent"
 	"ackbar/internal/relay"
 	"ackbar/internal/tmux"
 	"ackbar/internal/version"
 )
 
-// Provider interface mapping to avoid cyclic dependencies
-type Event struct {
-	Agent       string
-	NativeID    string
-	Cwd         string
-	Roots       []string
-	EventName   string
-	State       State
-	Blocked     *Blocked
-	Activity    string
-	Name        string
-	Entrypoint  string
-	Kind        string
-	Version     string
-	ContextPct  int
-	ToolName    string
-	ToolInput   any
-	StartedAt   time.Time
-	LastEventAt time.Time
-}
+type Event = agent.Event
 
 type HostHealth struct {
 	Online               bool
@@ -56,6 +38,8 @@ type HostHealth struct {
 type Server struct {
 	db                   *DB
 	providers            map[string]Provider
+	registryMu           sync.Mutex
+	registry             *agent.Registry
 	subscribers          map[chan *Session]bool
 	subMutex             sync.Mutex
 	webFS                fs.FS
@@ -115,6 +99,7 @@ func NewServer(db *DB) *Server {
 	s := &Server{
 		db:                db,
 		providers:         make(map[string]Provider),
+		registry:          agent.NewRegistry(),
 		subscribers:       make(map[chan *Session]bool),
 		hostHealthMap:     make(map[string]*HostHealth),
 		activeSubagents:   make(map[string][]*SubagentInfo),
@@ -415,8 +400,45 @@ func (s *Server) isRequestForLocalDaemon(r *http.Request, host string) bool {
 	return false
 }
 
+func (s *Server) ensureRegistry() *agent.Registry {
+	s.registryMu.Lock()
+	defer s.registryMu.Unlock()
+	if s.registry == nil {
+		s.registry = agent.NewRegistry()
+	}
+	if s.providers == nil {
+		s.providers = make(map[string]Provider)
+	}
+	return s.registry
+}
+
+func (s *Server) PluginRegistry() *agent.Registry {
+	if s == nil {
+		return nil
+	}
+	return s.ensureRegistry()
+}
+
 func (s *Server) RegisterProvider(p Provider) {
+	s.ensureRegistry()
+	s.registryMu.Lock()
 	s.providers[p.Agent()] = p
+	s.registryMu.Unlock()
+}
+
+func (s *Server) RegisterPlugin(p agent.Plugin) error {
+	if s == nil {
+		return fmt.Errorf("server is nil")
+	}
+	reg := s.ensureRegistry()
+	if err := reg.Register(p); err != nil {
+		return err
+	}
+	bridge := NewPluginBridge(p, reg, s)
+	s.registryMu.Lock()
+	s.providers[p.Key()] = bridge
+	s.registryMu.Unlock()
+	return nil
 }
 
 func (s *Server) StartRelayClient(ctx context.Context, relayURL, relaySecret string) {
