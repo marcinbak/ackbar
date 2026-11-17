@@ -167,6 +167,10 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 		h.mu.Unlock()
 		return ErrTurnInProgress
 	}
+	delete(h.respondedWhileStopping, sess.ID)
+	if sess.OldID != "" {
+		delete(h.respondedWhileStopping, sess.OldID)
+	}
 	if sess.NativeID == "" {
 		sess.NativeID = generateUUID()
 	}
@@ -663,6 +667,12 @@ func (h *HeadlessRunner) restartHandleChild(sess *Session, handle *warmWorkerHan
 func (h *HeadlessRunner) RestartSessionChild(sess *Session, timeout time.Duration) bool {
 	if h == nil || sess == nil {
 		return false
+	}
+	if sess.ID != "" {
+		// Match RunTurn's lock order (sessionMu -> h.mu) so restarts serialize cleanly with RunTurn and finalization.
+		sessionMu := h.getSessionTurnMu(sess.ID)
+		sessionMu.Lock()
+		defer sessionMu.Unlock()
 	}
 	home, _ := os.UserHomeDir()
 	isExisting := sess.FirstPrompt != "" || sess.LastPrompt != "" || hasConversationOnDisk(sess, home, h.db)

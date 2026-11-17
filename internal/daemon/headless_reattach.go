@@ -124,12 +124,16 @@ func (h *HeadlessRunner) applyWorkerEvent(sess *Session, origSessionID string, m
 
 func (h *HeadlessRunner) monitorWorkerTurn(sess *Session, origSessionID string, meta *TurnSpoolMeta, trackedCmd *exec.Cmd, afterSeq int64) {
 	defer func() { h.mu.Lock(); h.activeMonitors--; h.mu.Unlock() }()
-	syncChildPID := func(pid int) {
+	syncChildPID := func(workerID string, pid int) {
 		if pid <= 1 {
 			return
 		}
 		h.mu.Lock()
-		if _, handle := h.findWarmHandleLocked(sess); handle != nil && handle.ChildPID <= 1 {
+		if cur, exists := h.processes[sess.ID]; exists && cur != nil && cur != trackedCmd {
+			h.mu.Unlock()
+			return
+		}
+		if _, handle := h.findWarmHandleLocked(sess); handle != nil && handle.ChildPID <= 1 && (workerID == "" || handle.WorkerID == "" || handle.WorkerID == workerID) {
 			handle.ChildPID = pid
 		}
 		h.mu.Unlock()
@@ -144,7 +148,7 @@ func (h *HeadlessRunner) monitorWorkerTurn(sess *Session, origSessionID string, 
 			}
 		}
 		if curMeta != nil {
-			syncChildPID(curMeta.ChildPID)
+			syncChildPID(curMeta.WorkerID, curMeta.ChildPID)
 		}
 		conn, err := net.DialTimeout("unix", curMeta.SocketPath, 250*time.Millisecond)
 		if err == nil {
@@ -168,11 +172,15 @@ func (h *HeadlessRunner) monitorWorkerTurn(sess *Session, origSessionID string, 
 			}
 		}
 		if curMeta != nil {
-			syncChildPID(curMeta.ChildPID)
+			syncChildPID(curMeta.WorkerID, curMeta.ChildPID)
 		}
 		probeResp, liveOnSocket := probeLiveWorker(curMeta, 0)
 		if probeResp != nil {
-			syncChildPID(probeResp.ChildPID)
+			wid := ""
+			if curMeta != nil {
+				wid = curMeta.WorkerID
+			}
+			syncChildPID(wid, probeResp.ChildPID)
 		}
 		stillRunning := (curMeta.Status == "starting" || curMeta.Status == "running") &&
 			(liveOnSocket || (time.Now().Before(dialDeadline) && h.isTurnWorkerOwnedAlive(curMeta.TurnID)))

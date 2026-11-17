@@ -1026,6 +1026,15 @@ func (h *HeadlessRunner) CancelTurn(sessionID string) error {
 	meta := h.findSpoolForSessionLocked(sessionID, "")
 	h.mu.Unlock()
 
+	if meta != nil && meta.MetaPath != "" && fileExists(meta.MetaPath) {
+		if dm, err := ReadTurnSpoolMeta(meta.MetaPath); err == nil && dm != nil {
+			meta = dm
+		}
+	}
+	if meta != nil && (meta.FinalizedByDaemon || (meta.WorkerID != "" && meta.Status != "starting" && meta.Status != "running")) {
+		return nil
+	}
+
 	workerActive := meta != nil && (meta.Status == "starting" || meta.Status == "running")
 	if (!ok || cmd == nil || cmd.Process == nil) && !workerActive {
 		if ok {

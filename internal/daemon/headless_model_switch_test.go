@@ -665,3 +665,98 @@ done
 
 	wg.Wait()
 }
+
+func TestWarmWorker_RestartSessionChildAndCancelAfterFinalize(t *testing.T) {
+	tmpDir := t.TempDir()
+	binDir := filepath.Join(tmpDir, "bin")
+	_ = os.MkdirAll(binDir, 0755)
+	mockClaude := filepath.Join(binDir, "claude")
+	script := `#!/bin/sh
+while IFS= read -r line; do
+  echo '{"type":"result","result":"ok","is_error":false}'
+done
+`
+	if err := os.WriteFile(mockClaude, []byte(script), 0755); err != nil {
+		t.Fatalf("write mock claude: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	db, err := InitDB(filepath.Join(tmpDir, "test.db"))
+	if err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+	h := NewHeadlessRunner(db, nil)
+	defer h.ShutdownAllWorkers(time.Second)
+
+	sess := &Session{
+		ID:         "claude-code:local:restart-cancel-1",
+		Agent:      "claude-code",
+		Host:       "local",
+		NativeID:   "restart-cancel-1",
+		Cwd:        tmpDir,
+		EngineType: EngineHeadless,
+	}
+	_ = db.SaveSession(sess)
+
+	runTurn := func(prompt string) {
+		sub, unsub := h.Subscribe(sess.ID)
+		done := waitTurnDone(h, sess.ID, sub)
+		if err := h.RunTurn(context.Background(), sess, prompt); err != nil {
+			t.Fatalf("RunTurn(%q): %v", prompt, err)
+		}
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("timed out waiting for turn %q", prompt)
+		}
+		unsub()
+	}
+
+	runTurn("turn 1")
+
+	h.mu.RLock()
+	h1 := h.warmWorkers[sess.ID]
+	workerPID1, sockPath1 := h1.WorkerPID, h1.SocketPath
+	h.mu.RUnlock()
+	if h1 == nil || workerPID1 <= 1 {
+		t.Fatalf("expected warm worker after turn 1, got %+v", h1)
+	}
+
+	// Calling CancelTurn on an already-finalized warm turn must be a no-op and preserve the warm worker.
+	if err := h.CancelTurn(sess.ID); err != nil {
+		t.Fatalf("CancelTurn on finalized turn returned error: %v", err)
+	}
+	h.mu.RLock()
+	hAfterCancel := h.warmWorkers[sess.ID]
+	h.mu.RUnlock()
+	if hAfterCancel == nil || hAfterCancel.WorkerPID != workerPID1 {
+		t.Fatalf("expected warm worker preserved after CancelTurn on finalized turn, got %+v", hAfterCancel)
+	}
+	if resp, sErr := callWorkerSocket(sockPath1, workerIPCReq{Op: "status"}, time.Second); sErr != nil || resp == nil || !resp.OK || resp.State != "idle_warm" {
+		t.Fatalf("expected idle_warm worker intact after finalized CancelTurn, got resp=%+v err=%v", resp, sErr)
+	}
+
+	// Simulate RestartSessionChild leaving respondedWhileStopping set (or explicit stale flag) before Turn 2.
+	if !h.RestartSessionChild(sess, 2*time.Second) {
+		t.Fatalf("expected RestartSessionChild to succeed")
+	}
+	h.mu.Lock()
+	h.respondedWhileStopping[sess.ID] = true
+	h.mu.Unlock()
+
+	runTurn("turn 2 after restart")
+
+	saved, err := db.GetSession(sess.ID)
+	if err != nil || saved == nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if saved.State != StateIdle || saved.LastPrompt != "turn 2 after restart" {
+		t.Fatalf("expected Turn 2 finalization to save StateIdle and LastPrompt despite prior respondedWhileStopping, got state=%v lastPrompt=%q", saved.State, saved.LastPrompt)
+	}
+	h.mu.RLock()
+	h2 := h.warmWorkers[sess.ID]
+	h.mu.RUnlock()
+	if h2 == nil || h2.WorkerPID != workerPID1 {
+		t.Fatalf("expected Turn 2 to reuse restarted warm worker PID=%d, got %+v", workerPID1, h2)
+	}
+}
