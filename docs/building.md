@@ -66,6 +66,7 @@ go test ./...
     go run ./cmd/ackbard
     ```
     *Listens on `127.0.0.1:7777` by default and initializes SQLite database at `~/.config/ackbar/ackbard.db`.*
+    *   Avoid `ackbard &`/`go run ./cmd/ackbard` under `launchctl` `KeepAlive` (`:7777`); use `launchctl kickstart -k gui/$(id -u)/com.marcinbak.ackbard` or `brew services restart ackbar`.
 
 2.  **Launch Web GUI (`ackbar` or `http://127.0.0.1:7777`):**
     ```bash
