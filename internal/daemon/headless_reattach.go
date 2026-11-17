@@ -49,7 +49,9 @@ func (h *HeadlessRunner) monitorWorkerTurn(sess *Session, origSessionID string, 
 					var evt ChatStreamEvent
 					if json.Unmarshal(sc.Bytes(), &evt) == nil && evt.Seq > lastSeq {
 						lastSeq = evt.Seq
-						h.applyWorkerEvent(sess, origSessionID, curMeta, evt, true)
+						if !h.isTurnSuperseded(curMeta.TurnID) {
+							h.applyWorkerEvent(sess, origSessionID, curMeta, evt, true)
+						}
 					}
 				}
 			}
@@ -75,10 +77,13 @@ func (h *HeadlessRunner) monitorWorkerTurn(sess *Session, origSessionID string, 
 			(liveOnSocket || (time.Now().Before(dialDeadline) && h.isTurnWorkerOwnedAlive(curMeta.TurnID)))
 		if !stillRunning {
 			events, _, _ := ReadTurnSpoolAfter(curMeta.SpoolPath, lastSeq)
+			superseded := h.isTurnSuperseded(curMeta.TurnID)
 			for _, evt := range events {
 				if evt.Seq > lastSeq {
 					lastSeq = evt.Seq
-					h.applyWorkerEvent(sess, origSessionID, curMeta, evt, true)
+					if !superseded {
+						h.applyWorkerEvent(sess, origSessionID, curMeta, evt, true)
+					}
 				}
 			}
 			h.finalizeTurnFromSpool(sess, origSessionID, curMeta, trackedCmd)
@@ -86,6 +91,16 @@ func (h *HeadlessRunner) monitorWorkerTurn(sess *Session, origSessionID string, 
 		}
 		time.Sleep(15 * time.Millisecond)
 	}
+}
+
+func (h *HeadlessRunner) isTurnSuperseded(turnID string) bool {
+	if h == nil || turnID == "" {
+		return false
+	}
+	h.mu.RLock()
+	superseded := h.supersededTurns[turnID]
+	h.mu.RUnlock()
+	return superseded
 }
 
 func (h *HeadlessRunner) finalizeTurnFromSpool(sess *Session, origSessionID string, meta *TurnSpoolMeta, trackedCmd *exec.Cmd) {

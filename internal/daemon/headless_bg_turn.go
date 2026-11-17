@@ -158,12 +158,16 @@ func (h *HeadlessRunner) maybeAttachObservedTurn(sessID, workerMetaPath string, 
 		h.mu.Unlock()
 		return
 	}
+	if curSpool := h.sessionSpools[sess.ID]; curSpool != nil && curSpool.TurnID != frame.TurnID && !meta.StartedAt.After(curSpool.StartedAt) {
+		h.mu.Unlock()
+		return
+	}
 	h.monitoredTurns[frame.TurnID] = true
+	h.activeTurns[sess.ID] = true
+	h.activeSessions[sess.ID] = sess
 	h.sessionSpools[sess.ID] = meta
+	h.processes[sess.ID] = trackedCmd
 	if isStillActive {
-		h.activeTurns[sess.ID] = true
-		h.activeSessions[sess.ID] = sess
-		h.processes[sess.ID] = trackedCmd
 		if !meta.IsSynthetic && strings.TrimSpace(meta.Prompt) != "" {
 			h.activePrompts[sess.ID] = TranscriptMessage{Role: "user", Content: meta.Prompt, Timestamp: meta.StartedAt, TurnID: frame.TurnID, InFlight: true}
 		}

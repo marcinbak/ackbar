@@ -188,6 +188,7 @@ func (s *Server) mergeInFlightSpoolIntoTranscript(transcript *Transcript, sess *
 				(msgs[n-1].TurnID == "" && !snap.UserTimestamp.IsZero() &&
 					(!msgs[n-1].Timestamp.Before(snap.UserTimestamp) ||
 						(!msgs[n-1].Timestamp.Before(snap.UserTimestamp.Add(-100*time.Millisecond)) &&
+							strings.TrimSpace(assistantContent) != "" &&
 							strings.TrimSpace(msgs[n-1].Content) == strings.TrimSpace(assistantContent)))))
 		if !snap.IsActive {
 			if !snap.FinishedAt.IsZero() && time.Since(snap.FinishedAt) > 10*time.Second {

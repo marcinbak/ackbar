@@ -673,6 +673,44 @@ func TestBgTasks_TranscriptMergeAfterRecentTurnAndBusyRace(t *testing.T) {
 		if len(mergedFlushed.Messages) != 2 {
 			t.Fatalf("expected millisecond-truncated JSONL flush to deduplicate completed synthetic turn, got %+v", mergedFlushed.Messages)
 		}
+
+		toolTurnID := "turn_bg_toolonly"
+		toolMetaPath := filepath.Join(tmpDir, toolTurnID+".meta.json")
+		toolSpoolPath := filepath.Join(tmpDir, toolTurnID+".ndjson")
+		tw, tErr := OpenTurnSpoolWriter(toolSpoolPath, toolTurnID)
+		if tErr != nil {
+			t.Fatalf("OpenTurnSpoolWriter tool-only: %v", tErr)
+		}
+		_, _ = tw.Append(ChatStreamEvent{SessionID: "s-merge", TurnID: toolTurnID, Type: "turn_start", Timestamp: now})
+		_, _ = tw.Append(ChatStreamEvent{SessionID: "s-merge", TurnID: toolTurnID, Type: "tool_start", ToolName: "Bash", Timestamp: now.Add(10 * time.Millisecond)})
+		_ = tw.Close()
+		toolMeta := &TurnSpoolMeta{
+			TurnID:      toolTurnID,
+			SessionID:   "s-merge",
+			Agent:       "claude-code",
+			SpoolPath:   toolSpoolPath,
+			MetaPath:    toolMetaPath,
+			StartedAt:   now,
+			FinishedAt:  now.Add(20 * time.Millisecond),
+			Status:      "completed",
+			IsSynthetic: true,
+		}
+		_ = WriteTurnSpoolMeta(toolMetaPath, toolMeta)
+		runner.mu.Lock()
+		runner.sessionSpools["s-merge"] = toolMeta
+		runner.mu.Unlock()
+		toolBase := &Transcript{
+			SessionID: "s-merge",
+			Agent:     "claude-code",
+			Messages: []TranscriptMessage{
+				{Role: "user", Content: "Turn 1 prompt", Timestamp: now.Add(-100 * time.Millisecond)},
+				{Role: "assistant", Content: "", ToolCalls: []string{"Read"}, Timestamp: now.Add(-50 * time.Millisecond)},
+			},
+		}
+		mergedTool, _ := srv.mergeInFlightSpoolIntoTranscript(toolBase, &Session{ID: "s-merge", Agent: "claude-code", EngineType: EngineHeadless}, "s-merge", "", "claude-code", tmpDir)
+		if len(mergedTool.Messages) != 3 || len(mergedTool.Messages[2].ToolCalls) != 1 || mergedTool.Messages[2].ToolCalls[0] != "Bash" {
+			t.Fatalf("expected empty-content tool-only synthetic turn within 50ms not to collide, got %+v", mergedTool.Messages)
+		}
 	})
 
 	t.Run("RunTurn busy race returns ErrTurnInProgress and preserves warm worker", func(t *testing.T) {
