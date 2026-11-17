@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -52,6 +53,7 @@ func IsolateTestEnv() (string, func(), error) {
 		"ACKBAR_RELAY_URL",
 		"ACKBAR_RELAY_SECRET",
 		"GIT_CONFIG_GLOBAL",
+		"PATH",
 	}
 
 	type envVal struct {
@@ -74,12 +76,34 @@ func IsolateTestEnv() (string, func(), error) {
 		".cache",
 		filepath.Join(".local", "share"),
 		filepath.Join(".local", "state"),
+		".test-bin",
 	}
 	for _, sub := range subdirs {
 		if err := os.MkdirAll(filepath.Join(tmpHome, sub), 0o700); err != nil {
 			_ = os.RemoveAll(tmpHome)
 			return "", nil, err
 		}
+	}
+
+	testBinDir := filepath.Join(tmpHome, ".test-bin")
+	// Prepend no-op agent CLI stubs so tests never execute host binaries or fail when CLIs are absent.
+	agentBins := []string{"claude", "agy", "antigravity", "codex", "grok", "grok-cli", "opencode"}
+	for _, name := range agentBins {
+		if err := os.WriteFile(filepath.Join(testBinDir, name), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+			_ = os.RemoveAll(tmpHome)
+			return "", nil, err
+		}
+		if runtime.GOOS == "windows" {
+			if err := os.WriteFile(filepath.Join(testBinDir, name+".bat"), []byte("@echo off\r\nexit /b 0\r\n"), 0o755); err != nil {
+				_ = os.RemoveAll(tmpHome)
+				return "", nil, err
+			}
+		}
+	}
+	if origPath := snapshot["PATH"]; origPath.set && origPath.val != "" {
+		_ = os.Setenv("PATH", testBinDir+string(os.PathListSeparator)+origPath.val)
+	} else {
+		_ = os.Setenv("PATH", testBinDir)
 	}
 
 	_ = os.Setenv("HOME", tmpHome)
