@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -123,6 +124,16 @@ func (h *HeadlessRunner) applyWorkerEvent(sess *Session, origSessionID string, m
 
 func (h *HeadlessRunner) monitorWorkerTurn(sess *Session, origSessionID string, meta *TurnSpoolMeta, trackedCmd *exec.Cmd, afterSeq int64) {
 	defer func() { h.mu.Lock(); h.activeMonitors--; h.mu.Unlock() }()
+	syncChildPID := func(pid int) {
+		if pid <= 1 {
+			return
+		}
+		h.mu.Lock()
+		if _, handle := h.findWarmHandleLocked(sess); handle != nil && handle.ChildPID <= 1 {
+			handle.ChildPID = pid
+		}
+		h.mu.Unlock()
+	}
 	lastSeq := afterSeq
 	dialDeadline := time.Now().Add(3 * time.Second)
 	for {
@@ -131,6 +142,9 @@ func (h *HeadlessRunner) monitorWorkerTurn(sess *Session, origSessionID string, 
 			if dm, err := ReadTurnSpoolMeta(meta.MetaPath); err == nil && dm != nil {
 				curMeta = dm
 			}
+		}
+		if curMeta != nil {
+			syncChildPID(curMeta.ChildPID)
 		}
 		conn, err := net.DialTimeout("unix", curMeta.SocketPath, 250*time.Millisecond)
 		if err == nil {
@@ -153,7 +167,13 @@ func (h *HeadlessRunner) monitorWorkerTurn(sess *Session, origSessionID string, 
 				curMeta = dm
 			}
 		}
-		_, liveOnSocket := probeLiveWorker(curMeta, 0)
+		if curMeta != nil {
+			syncChildPID(curMeta.ChildPID)
+		}
+		probeResp, liveOnSocket := probeLiveWorker(curMeta, 0)
+		if probeResp != nil {
+			syncChildPID(probeResp.ChildPID)
+		}
 		stillRunning := (curMeta.Status == "starting" || curMeta.Status == "running") &&
 			(liveOnSocket || (time.Now().Before(dialDeadline) && h.isTurnWorkerOwnedAlive(curMeta.TurnID)))
 		if !stillRunning {
@@ -176,18 +196,30 @@ func (h *HeadlessRunner) finalizeTurnFromSpool(sess *Session, origSessionID stri
 	responded := h.respondedWhileStopping[sess.ID] || h.respondedWhileStopping[origSessionID]
 	delete(h.respondedWhileStopping, sess.ID)
 	delete(h.respondedWhileStopping, origSessionID)
-	for _, id := range []string{origSessionID, sess.ID} {
-		if id != "" {
-			if cur, exists := h.processes[id]; !exists || cur == nil || cur == trackedCmd {
-				delete(h.processes, id)
-				delete(h.activeSessions, id)
-				delete(h.activeTurns, id)
-				delete(h.activePrompts, id)
+	h.mu.Unlock()
+
+	cleared := false
+	clearActiveTurn := func() {
+		h.mu.Lock()
+		if cleared {
+			h.mu.Unlock()
+			return
+		}
+		cleared = true
+		for _, id := range []string{origSessionID, sess.ID} {
+			if id != "" {
+				if cur, exists := h.processes[id]; !exists || cur == nil || cur == trackedCmd {
+					delete(h.processes, id)
+					delete(h.activeSessions, id)
+					delete(h.activeTurns, id)
+					delete(h.activePrompts, id)
+				}
 			}
 		}
+		h.mu.Unlock()
+		h.syncSleepInhibitor()
 	}
-	h.mu.Unlock()
-	h.syncSleepInhibitor()
+	defer clearActiveTurn()
 
 	markFinalized := func() {
 		if meta != nil && meta.MetaPath != "" && fileExists(meta.MetaPath) {
@@ -216,17 +248,20 @@ func (h *HeadlessRunner) finalizeTurnFromSpool(sess *Session, origSessionID stri
 
 	if responded {
 		markFinalized()
+		clearActiveTurn()
 		checkDrain()
 		return
 	}
 	if h.db != nil {
 		currentSess, err := h.db.GetSession(sess.ID)
 		if err != nil || currentSess == nil {
+			clearActiveTurn()
 			checkDrain()
 			return
 		}
 		if currentSess.Deleted {
 			removeTurnSpoolFiles(meta.MetaPath, meta)
+			clearActiveTurn()
 			checkDrain()
 			return
 		}
@@ -237,6 +272,7 @@ func (h *HeadlessRunner) finalizeTurnFromSpool(sess *Session, origSessionID stri
 			currentSess.Activity = ""
 			currentSess.MetadataUpdatedAt = time.Now().UTC()
 			_ = h.db.SaveSession(currentSess)
+			clearActiveTurn()
 			if h.broadcast != nil {
 				h.broadcast(currentSess)
 			}
@@ -334,24 +370,58 @@ func (h *HeadlessRunner) finalizeTurnFromSpool(sess *Session, origSessionID stri
 	}
 
 	markFinalized()
+	resolvedChildPID := 0
+	if meta != nil {
+		resolvedChildPID = meta.ChildPID
+		if resolvedChildPID <= 1 && meta.WorkerMetaPath != "" {
+			if wm, wErr := ReadSessionWorkerMeta(meta.WorkerMetaPath); wErr == nil && wm != nil && wm.ChildPID > 1 {
+				resolvedChildPID = wm.ChildPID
+			}
+		}
+	}
+
+	var sessionMu *sync.Mutex
+	if sess.ID != "" {
+		sessionMu = h.getSessionTurnMu(sess.ID)
+		sessionMu.Lock()
+	}
+	unlockSessionMu := func() {
+		if sessionMu != nil {
+			sessionMu.Unlock()
+			sessionMu = nil
+		}
+	}
+	defer unlockSessionMu()
+
 	var staleHandle *warmWorkerHandle
+	var staleWorkerID string
 	h.mu.Lock()
-	if (interactiveBlock != nil || wasCancelled || wasFailed) && !h.activeTurns[sess.ID] {
+	replacedOrResponded := h.respondedWhileStopping[sess.ID] || h.respondedWhileStopping[origSessionID] || (h.processes[sess.ID] != nil && h.processes[sess.ID] != trackedCmd)
+	if replacedOrResponded {
+		delete(h.respondedWhileStopping, sess.ID)
+		delete(h.respondedWhileStopping, origSessionID)
+		h.mu.Unlock()
+		clearActiveTurn()
+		unlockSessionMu()
+		checkDrain()
+		return
+	}
+	if interactiveBlock != nil || wasCancelled || wasFailed {
 		delete(h.warmWorkers, sess.ID)
 		if sess.NativeID != "" {
 			delete(h.warmWorkers, sess.NativeID)
 		}
-	} else if !h.activeTurns[sess.ID] {
-		if _, handle := h.findWarmHandleLocked(sess); handle != nil {
-			if meta != nil && meta.ChildPID > 1 && handle.ChildPID <= 1 {
-				handle.ChildPID = meta.ChildPID
-			}
-			if handle.rotateAfterTurn {
-				staleHandle = handle
-			}
+	} else if _, handle := h.findWarmHandleLocked(sess); handle != nil {
+		if resolvedChildPID > 1 && handle.ChildPID <= 1 {
+			handle.ChildPID = resolvedChildPID
+		}
+		if handle.rotateAfterTurn {
+			staleHandle = handle
+			staleWorkerID = handle.WorkerID
 		}
 	}
 	h.mu.Unlock()
+
 	if wasFailed && meta != nil && meta.WorkerMetaPath != "" {
 		if wm, err := ReadSessionWorkerMeta(meta.WorkerMetaPath); err == nil && wm != nil && wm.State == "idle_warm" {
 			h.killWorkerMeta(wm, 300*time.Millisecond)
@@ -359,7 +429,6 @@ func (h *HeadlessRunner) finalizeTurnFromSpool(sess *Session, origSessionID stri
 	}
 	preserveLatestSessionConfigFromDB(h.db, sess, origSessionID)
 	if staleHandle != nil {
-		staleWorkerID := staleHandle.WorkerID
 		home, _ := os.UserHomeDir()
 		isExisting := sess.FirstPrompt != "" || sess.LastPrompt != "" || hasConversationOnDisk(sess, home, h.db)
 		fp := ConfigFingerprint(sess)
@@ -372,6 +441,10 @@ func (h *HeadlessRunner) finalizeTurnFromSpool(sess *Session, origSessionID stri
 	if h.db != nil {
 		_ = h.db.SaveSession(sess)
 	}
+	// Clear active turn state only after ChildPID, worker rotation, and DB save finish so IsRunning() waiters never observe unfinalized state.
+	clearActiveTurn()
+	unlockSessionMu()
+
 	if h.broadcast != nil {
 		h.broadcast(sess)
 	}
