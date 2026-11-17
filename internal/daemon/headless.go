@@ -89,6 +89,7 @@ type HeadlessRunner struct {
 	paused                 map[string]bool               // sessionID -> is queue paused
 	interactiveBlocks      map[string]*Blocked           // sessionID -> pending interactive Blocked struct
 	respondedWhileStopping map[string]bool               // sessionID -> response arrived while stopping
+	supersededTurns        map[string]bool               // turnID -> turn interrupted or replaced before finalization
 	pendingRestart         bool
 	onAllTurnsDrained      func()
 	db                     *DB
@@ -115,6 +116,7 @@ func NewHeadlessRunner(db *DB, broadcast func(s *Session)) *HeadlessRunner {
 		paused:                 make(map[string]bool),
 		interactiveBlocks:      make(map[string]*Blocked),
 		respondedWhileStopping: make(map[string]bool),
+		supersededTurns:        make(map[string]bool),
 		warmWorkers:            make(map[string]*warmWorkerHandle),
 		sessionTurnMu:          make(map[string]*sync.Mutex),
 		runtimeModels:          make(map[string]string),
@@ -283,7 +285,14 @@ func (h *HeadlessRunner) ClearInteractiveBlockAndWait(sessionID string, timeout 
 	if cmd == nil && nativeID != "" {
 		cmd = h.processes[nativeID]
 	}
-	meta := h.findSpoolForSessionLocked(sessionID, "")
+	meta := h.findSpoolForSessionLocked(sessionID, nativeID)
+	if meta != nil {
+		if meta.TurnID != "" && !meta.FinalizedByDaemon {
+			h.supersededTurns[meta.TurnID] = true
+		}
+		mCopy := *meta
+		meta = &mCopy
+	}
 	h.mu.Unlock()
 	h.syncSleepInhibitor()
 
@@ -1024,6 +1033,10 @@ func (h *HeadlessRunner) CancelTurn(sessionID string) error {
 		}
 	}
 	meta := h.findSpoolForSessionLocked(sessionID, "")
+	if meta != nil {
+		mCopy := *meta
+		meta = &mCopy
+	}
 	h.mu.Unlock()
 
 	if meta != nil && meta.MetaPath != "" && fileExists(meta.MetaPath) {

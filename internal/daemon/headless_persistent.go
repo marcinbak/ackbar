@@ -114,6 +114,9 @@ func (h *HeadlessRunner) recordTurnActive(sess *Session, prompt, turnID string, 
 	h.mu.Lock()
 	h.activeTurns[sess.ID] = true
 	h.activeSessions[sess.ID] = sess
+	if prev := h.sessionSpools[sess.ID]; prev != nil && prev.TurnID != "" && prev.TurnID != turnID && !prev.FinalizedByDaemon {
+		h.supersededTurns[prev.TurnID] = true
+	}
 	h.sessionSpools[sess.ID] = meta
 	h.activePrompts[sess.ID] = TranscriptMessage{Role: "user", Content: prompt, Timestamp: turnStart, TurnID: turnID, InFlight: true}
 	h.processes[sess.ID] = trackedCmd
@@ -683,6 +686,9 @@ func (h *HeadlessRunner) RestartSessionChild(sess *Session, timeout time.Duratio
 	delete(h.interactiveBlocks, sess.ID)
 	if sess.NativeID != "" {
 		delete(h.interactiveBlocks, sess.NativeID)
+	}
+	if curSpool := h.findSpoolForSessionLocked(sess.ID, sess.NativeID); curSpool != nil && curSpool.TurnID != "" && !curSpool.FinalizedByDaemon {
+		h.supersededTurns[curSpool.TurnID] = true
 	}
 	if h.activeTurns[sess.ID] || h.processes[sess.ID] != nil {
 		h.respondedWhileStopping[sess.ID] = true

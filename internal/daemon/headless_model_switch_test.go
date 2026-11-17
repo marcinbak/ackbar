@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -758,5 +759,219 @@ done
 	h.mu.RUnlock()
 	if h2 == nil || h2.WorkerPID != workerPID1 {
 		t.Fatalf("expected Turn 2 to reuse restarted warm worker PID=%d, got %+v", workerPID1, h2)
+	}
+}
+
+func TestWarmWorker_SupersededTurn1DoesNotClobberTurn2(t *testing.T) {
+	tmpDir := t.TempDir()
+	binDir := filepath.Join(tmpDir, "bin")
+	_ = os.MkdirAll(binDir, 0755)
+	mockClaude := filepath.Join(binDir, "claude")
+	script := `#!/bin/sh
+while IFS= read -r line; do
+  echo '{"type":"result","result":"ok","is_error":false}'
+done
+`
+	if err := os.WriteFile(mockClaude, []byte(script), 0755); err != nil {
+		t.Fatalf("write mock claude: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	db, err := InitDB(filepath.Join(tmpDir, "test.db"))
+	if err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+	h := NewHeadlessRunner(db, nil)
+	defer h.ShutdownAllWorkers(time.Second)
+
+	sess := &Session{
+		ID:         "claude-code:local:superseded-1",
+		Agent:      "claude-code",
+		Host:       "local",
+		NativeID:   "superseded-1",
+		Cwd:        tmpDir,
+		EngineType: EngineHeadless,
+	}
+	_ = db.SaveSession(sess)
+
+	runTurn := func(prompt string) {
+		sub, unsub := h.Subscribe(sess.ID)
+		done := waitTurnDone(h, sess.ID, sub)
+		if err := h.RunTurn(context.Background(), sess, prompt); err != nil {
+			t.Fatalf("RunTurn(%q): %v", prompt, err)
+		}
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("timed out waiting for turn %q", prompt)
+		}
+		unsub()
+	}
+
+	runTurn("turn 0 warmup")
+
+	h.mu.RLock()
+	h0 := h.warmWorkers[sess.ID]
+	h.mu.RUnlock()
+	if h0 == nil || h0.WorkerPID <= 1 {
+		t.Fatalf("expected warm worker after warmup, got %+v", h0)
+	}
+	workerPID0 := h0.WorkerPID
+
+	runDir, err := h.resolveRunDir(true)
+	if err != nil {
+		t.Fatalf("resolveRunDir: %v", err)
+	}
+
+	// Subcase 1: Turn 1 interrupted mid-turn by RestartSessionChild; Turn 2 runs and finishes BEFORE Turn 1's finalizeTurnFromSpool executes.
+	meta1 := &TurnSpoolMeta{
+		TurnID:    "turn_superseded_1",
+		SessionID: sess.ID,
+		NativeID:  sess.NativeID,
+		Agent:     "claude-code",
+		Prompt:    "turn 1 interrupted",
+		Status:    "running",
+		StartedAt: time.Now().UTC(),
+		MetaPath:  filepath.Join(runDir, "turn_superseded_1.meta.json"),
+		SpoolPath: filepath.Join(runDir, "turn_superseded_1.ndjson"),
+	}
+	_ = os.WriteFile(meta1.SpoolPath, nil, 0600)
+	if err := WriteTurnSpoolMeta(meta1.MetaPath, meta1); err != nil {
+		t.Fatalf("WriteTurnSpoolMeta(meta1): %v", err)
+	}
+	cmd1 := &exec.Cmd{}
+	h.mu.Lock()
+	h.activeTurns[sess.ID] = true
+	h.activeSessions[sess.ID] = sess
+	h.sessionSpools[sess.ID] = meta1
+	h.processes[sess.ID] = cmd1
+	h.mu.Unlock()
+
+	if !h.RestartSessionChild(sess, 2*time.Second) {
+		t.Fatalf("expected RestartSessionChild to succeed")
+	}
+	h.mu.RLock()
+	superseded1 := h.supersededTurns[meta1.TurnID]
+	h.mu.RUnlock()
+	if !superseded1 {
+		t.Fatalf("expected RestartSessionChild to record %q in supersededTurns", meta1.TurnID)
+	}
+
+	meta1.Status = "failed"
+	meta1.ExitCode = 1
+	_ = WriteTurnSpoolMeta(meta1.MetaPath, meta1)
+
+	runTurn("turn 2 completes first")
+
+	saved, err := db.GetSession(sess.ID)
+	if err != nil || saved == nil {
+		t.Fatalf("GetSession after Turn 2: %v", err)
+	}
+	if saved.State != StateIdle || saved.LastPrompt != "turn 2 completes first" {
+		t.Fatalf("expected Turn 2 to finish cleanly, got state=%v lastPrompt=%q", saved.State, saved.LastPrompt)
+	}
+
+	h.finalizeTurnFromSpool(&Session{ID: sess.ID, NativeID: sess.NativeID, Agent: "claude-code", Cwd: tmpDir}, sess.ID, meta1, cmd1)
+
+	if h.IsQueuePaused(sess.ID) {
+		t.Fatalf("expected superseded failed Turn 1 not to pause Turn 2 queue")
+	}
+	saved, err = db.GetSession(sess.ID)
+	if err != nil || saved == nil {
+		t.Fatalf("GetSession after delayed Turn 1 finalize: %v", err)
+	}
+	if saved.State != StateIdle || saved.LastPrompt != "turn 2 completes first" || saved.Activity != "" {
+		t.Fatalf("expected delayed Turn 1 not to clobber Turn 2 DB state, got state=%v prompt=%q activity=%q", saved.State, saved.LastPrompt, saved.Activity)
+	}
+	h.mu.RLock()
+	hAfterT1 := h.warmWorkers[sess.ID]
+	t2Spool := h.sessionSpools[sess.ID]
+	supersededLeft1 := len(h.supersededTurns)
+	h.mu.RUnlock()
+	if hAfterT1 == nil || hAfterT1.WorkerPID != workerPID0 {
+		t.Fatalf("expected delayed Turn 1 not to evict Turn 2 warm worker PID=%d, got %+v", workerPID0, hAfterT1)
+	}
+	if t2Spool == nil || t2Spool.TurnID == meta1.TurnID || !t2Spool.FinalizedByDaemon {
+		t.Fatalf("expected Turn 2 spool intact and FinalizedByDaemon=true, got %+v", t2Spool)
+	}
+	if supersededLeft1 != 0 {
+		t.Fatalf("expected supersededTurns to be cleaned up after Turn 1 finalized, got %d entries", supersededLeft1)
+	}
+
+	// Subcase 2: Turn 3 passes finalizeTurnFromSpool entry check, then ClearInteractiveBlockAndWait runs before sessionMu lock;
+	// deferred SetQueuePaused / EmitQueueUpdate must NOT pause the queue.
+	metaLate := &TurnSpoolMeta{
+		TurnID:    "turn_late_cancel",
+		SessionID: sess.ID,
+		NativeID:  sess.NativeID,
+		Agent:     "claude-code",
+		Prompt:    "turn 3 cancelled late",
+		Status:    "cancelled",
+		StartedAt: time.Now().UTC(),
+		MetaPath:  filepath.Join(runDir, "turn_late_cancel.meta.json"),
+		SpoolPath: filepath.Join(runDir, "turn_late_cancel.ndjson"),
+	}
+	_ = os.WriteFile(metaLate.SpoolPath, nil, 0600)
+	if err := WriteTurnSpoolMeta(metaLate.MetaPath, metaLate); err != nil {
+		t.Fatalf("WriteTurnSpoolMeta(metaLate): %v", err)
+	}
+	cmdLate := &exec.Cmd{}
+	h.mu.Lock()
+	h.activeTurns[sess.ID] = true
+	h.activeSessions[sess.ID] = sess
+	h.sessionSpools[sess.ID] = metaLate
+	h.processes[sess.ID] = cmdLate
+	h.mu.Unlock()
+
+	sessionMu := h.getSessionTurnMu(sess.ID)
+	sessionMu.Lock()
+	doneFin := make(chan struct{})
+	go func() {
+		defer close(doneFin)
+		h.finalizeTurnFromSpool(&Session{ID: sess.ID, NativeID: sess.NativeID, Agent: "claude-code", Cwd: tmpDir}, sess.ID, metaLate, cmdLate)
+	}()
+
+	waitForWorkerCond(t, 2*time.Second, "metaLate reached markFinalized before sessionMu", func() bool {
+		m, rErr := ReadTurnSpoolMeta(metaLate.MetaPath)
+		return rErr == nil && m != nil && m.FinalizedByDaemon
+	})
+	if h.IsQueuePaused(sess.ID) {
+		sessionMu.Unlock()
+		<-doneFin
+		t.Fatalf("expected SetQueuePaused to be deferred until after sessionMu supersession check")
+	}
+
+	h.ClearInteractiveBlockAndWait(sess.ID, 20*time.Millisecond)
+	sessionMu.Unlock()
+	select {
+	case <-doneFin:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for late finalizeTurnFromSpool")
+	}
+
+	if h.IsQueuePaused(sess.ID) {
+		t.Fatalf("expected late-superseded cancelled Turn 3 not to pause queue")
+	}
+	saved, err = db.GetSession(sess.ID)
+	if err != nil || saved == nil {
+		t.Fatalf("GetSession after late Turn 3 finalize: %v", err)
+	}
+	if saved.LastPrompt != "turn 2 completes first" || saved.Activity != "" {
+		t.Fatalf("expected late-superseded Turn 3 not to clobber DB state, got prompt=%q activity=%q", saved.LastPrompt, saved.Activity)
+	}
+	h.mu.RLock()
+	supersededLeft2 := len(h.supersededTurns)
+	h.mu.RUnlock()
+	if supersededLeft2 != 0 {
+		t.Fatalf("expected supersededTurns empty after late Turn 3 finalize, got %d entries", supersededLeft2)
+	}
+
+	runTurn("turn 4 after clear")
+	saved, err = db.GetSession(sess.ID)
+	if err != nil || saved == nil {
+		t.Fatalf("GetSession after Turn 4: %v", err)
+	}
+	if saved.State != StateIdle || saved.LastPrompt != "turn 4 after clear" {
+		t.Fatalf("expected Turn 4 to succeed cleanly after ClearInteractiveBlockAndWait, got state=%v prompt=%q", saved.State, saved.LastPrompt)
 	}
 }

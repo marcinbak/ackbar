@@ -163,7 +163,11 @@ func (h *HeadlessRunner) CleanupSessionRuntime(sessionID, nativeID string) {
 	for k, m := range h.sessionSpools {
 		if matchesKey(k) || metaMatchesSession(m, sessionID, nativeID) {
 			if m != nil {
-				toKill = append(toKill, m)
+				if m.TurnID != "" && !m.FinalizedByDaemon {
+					h.supersededTurns[m.TurnID] = true
+				}
+				mCopy := *m
+				toKill = append(toKill, &mCopy)
 			}
 			delete(h.sessionSpools, k)
 		}

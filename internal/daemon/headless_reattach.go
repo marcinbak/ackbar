@@ -200,10 +200,52 @@ func (h *HeadlessRunner) monitorWorkerTurn(sess *Session, origSessionID string, 
 }
 
 func (h *HeadlessRunner) finalizeTurnFromSpool(sess *Session, origSessionID string, meta *TurnSpoolMeta, trackedCmd *exec.Cmd) {
+	if meta != nil {
+		// Work on a local copy so markFinalized() never mutates h.sessionSpools[id] prematurely or outside h.mu.
+		mCopy := *meta
+		meta = &mCopy
+	}
+	turnID := ""
+	if meta != nil {
+		turnID = meta.TurnID
+	}
+	if turnID != "" {
+		defer func() {
+			h.mu.Lock()
+			delete(h.supersededTurns, turnID)
+			h.mu.Unlock()
+		}()
+	}
+
+	isSupersededLocked := func() bool {
+		if turnID != "" && h.supersededTurns[turnID] {
+			return true
+		}
+		if turnID != "" {
+			if curSpool := h.sessionSpools[sess.ID]; curSpool != nil && curSpool.TurnID != "" && curSpool.TurnID != turnID {
+				return true
+			}
+			if origSessionID != "" && origSessionID != sess.ID {
+				if curSpool := h.sessionSpools[origSessionID]; curSpool != nil && curSpool.TurnID != "" && curSpool.TurnID != turnID {
+					return true
+				}
+			}
+		}
+		if cur, exists := h.processes[sess.ID]; exists && cur != nil && cur != trackedCmd {
+			return true
+		}
+		if turnID == "" && (h.respondedWhileStopping[sess.ID] || h.respondedWhileStopping[origSessionID]) {
+			return true
+		}
+		return false
+	}
+
 	h.mu.Lock()
-	responded := h.respondedWhileStopping[sess.ID] || h.respondedWhileStopping[origSessionID]
-	delete(h.respondedWhileStopping, sess.ID)
-	delete(h.respondedWhileStopping, origSessionID)
+	responded := isSupersededLocked()
+	if turnID == "" && responded {
+		delete(h.respondedWhileStopping, sess.ID)
+		delete(h.respondedWhileStopping, origSessionID)
+	}
 	h.mu.Unlock()
 
 	cleared := false
@@ -215,7 +257,14 @@ func (h *HeadlessRunner) finalizeTurnFromSpool(sess *Session, origSessionID stri
 		}
 		cleared = true
 		for _, id := range []string{origSessionID, sess.ID} {
-			if id != "" {
+			if id == "" {
+				continue
+			}
+			curSpool := h.sessionSpools[id]
+			if curSpool != nil && (turnID == "" || curSpool.TurnID == turnID) {
+				curSpool.FinalizedByDaemon = true
+			}
+			if curSpool == nil || turnID == "" || curSpool.TurnID == turnID {
 				if cur, exists := h.processes[id]; !exists || cur == nil || cur == trackedCmd {
 					delete(h.processes, id)
 					delete(h.activeSessions, id)
@@ -304,7 +353,10 @@ func (h *HeadlessRunner) finalizeTurnFromSpool(sess *Session, origSessionID stri
 	}
 	wasCancelled := (meta != nil && meta.Status == "cancelled") || (snap != nil && snap.WasCancelled)
 	wasFailed := (meta != nil && (meta.ExitCode != 0 || meta.Status == "failed")) || (snap != nil && snap.StreamHadError)
-	prompt := meta.Prompt
+	prompt := ""
+	if meta != nil {
+		prompt = meta.Prompt
+	}
 
 	if interactiveBlock != nil {
 		sess.State, sess.Blocked, sess.Activity = StateBlocked, interactiveBlock, blockActivityText(interactiveBlock)
@@ -315,7 +367,6 @@ func (h *HeadlessRunner) finalizeTurnFromSpool(sess *Session, origSessionID stri
 		sess.LastPrompt = prompt
 	} else if wasCancelled {
 		sess.State, sess.Blocked, sess.Activity, sess.PID, sess.LastEventAt = StateIdle, nil, "Turn cancelled", 0, time.Now()
-		h.SetQueuePaused(sess.ID, true)
 	} else {
 		sess.State, sess.Blocked, sess.Activity, sess.PID, sess.LastEventAt = StateIdle, nil, "", 0, time.Now()
 		if !wasFailed {
@@ -325,8 +376,6 @@ func (h *HeadlessRunner) finalizeTurnFromSpool(sess *Session, origSessionID stri
 			sess.LastPrompt = prompt
 		} else {
 			sess.Activity = formatFailedTurnActivity(meta, snap)
-			h.SetQueuePaused(sess.ID, true)
-			h.EmitQueueUpdate(sess.ID)
 		}
 	}
 
@@ -404,10 +453,11 @@ func (h *HeadlessRunner) finalizeTurnFromSpool(sess *Session, origSessionID stri
 	var staleHandle *warmWorkerHandle
 	var staleWorkerID string
 	h.mu.Lock()
-	replacedOrResponded := h.respondedWhileStopping[sess.ID] || h.respondedWhileStopping[origSessionID] || (h.processes[sess.ID] != nil && h.processes[sess.ID] != trackedCmd)
-	if replacedOrResponded {
-		delete(h.respondedWhileStopping, sess.ID)
-		delete(h.respondedWhileStopping, origSessionID)
+	if isSupersededLocked() {
+		if turnID == "" {
+			delete(h.respondedWhileStopping, sess.ID)
+			delete(h.respondedWhileStopping, origSessionID)
+		}
 		h.mu.Unlock()
 		clearActiveTurn()
 		unlockSessionMu()
@@ -429,6 +479,15 @@ func (h *HeadlessRunner) finalizeTurnFromSpool(sess *Session, origSessionID stri
 		}
 	}
 	h.mu.Unlock()
+
+	if interactiveBlock == nil {
+		if wasCancelled {
+			h.SetQueuePaused(sess.ID, true)
+		} else if wasFailed {
+			h.SetQueuePaused(sess.ID, true)
+			h.EmitQueueUpdate(sess.ID)
+		}
+	}
 
 	if wasFailed && meta != nil && meta.WorkerMetaPath != "" {
 		if wm, err := ReadSessionWorkerMeta(meta.WorkerMetaPath); err == nil && wm != nil && wm.State == "idle_warm" {
