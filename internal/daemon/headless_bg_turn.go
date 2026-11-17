@@ -132,6 +132,26 @@ func (h *HeadlessRunner) maybeAttachObservedTurn(sessID, workerMetaPath string, 
 		sess = &Session{ID: sessID, NativeID: meta.NativeID, Agent: meta.Agent, Cwd: meta.Cwd, EngineType: EngineHeadless}
 	}
 
+	var sessMu *sync.Mutex
+	if sess.ID != "" {
+		sessMu = h.getSessionTurnMu(sess.ID)
+		sessMu.Lock()
+	}
+	unlockSessMu := func() {
+		if sessMu != nil {
+			sessMu.Unlock()
+			sessMu = nil
+		}
+	}
+	defer unlockSessMu()
+
+	meta, err = ReadTurnSpoolMeta(filepath.Join(runDir, frame.TurnID+".meta.json"))
+	if err != nil || meta == nil || meta.FinalizedByDaemon || meta.Status == "cancelled" {
+		return
+	}
+	isStillActive := isActiveTurnStatus(meta.Status)
+	isBlocked := meta.Status == "blocked"
+
 	trackedCmd := &exec.Cmd{}
 	h.mu.Lock()
 	if h.monitoredTurns[frame.TurnID] || h.supersededTurns[frame.TurnID] || h.activeTurns[sess.ID] {
@@ -139,43 +159,44 @@ func (h *HeadlessRunner) maybeAttachObservedTurn(sessID, workerMetaPath string, 
 		return
 	}
 	h.monitoredTurns[frame.TurnID] = true
-	h.activeTurns[sess.ID] = true
-	h.activeSessions[sess.ID] = sess
 	h.sessionSpools[sess.ID] = meta
-	h.processes[sess.ID] = trackedCmd
-	if !meta.IsSynthetic && strings.TrimSpace(meta.Prompt) != "" {
-		h.activePrompts[sess.ID] = TranscriptMessage{Role: "user", Content: meta.Prompt, Timestamp: meta.StartedAt, TurnID: frame.TurnID, InFlight: true}
-	}
-	if frame.State == "blocked_control" {
-		h.blockedControlTurns[sess.ID] = true
+	if isStillActive {
+		h.activeTurns[sess.ID] = true
+		h.activeSessions[sess.ID] = sess
+		h.processes[sess.ID] = trackedCmd
+		if !meta.IsSynthetic && strings.TrimSpace(meta.Prompt) != "" {
+			h.activePrompts[sess.ID] = TranscriptMessage{Role: "user", Content: meta.Prompt, Timestamp: meta.StartedAt, TurnID: frame.TurnID, InFlight: true}
+		}
+		if isBlocked {
+			h.blockedControlTurns[sess.ID] = true
+		}
 	}
 	h.activeMonitors++
 	h.mu.Unlock()
-	h.syncSleepInhibitor()
-
-	var sessMu *sync.Mutex
-	if sess.ID != "" {
-		sessMu = h.getSessionTurnMu(sess.ID)
-		sessMu.Lock()
-	}
-	preserveLatestSessionConfigFromDB(h.db, sess, meta.OrigSessionID)
-	if frame.State == "blocked_control" {
-		h.restoreBlockedControlOnReattach(sess, meta, &frame)
-	} else {
-		pid := frame.ChildPID
-		if pid <= 1 {
-			pid = frame.WorkerPID
+	if isStillActive {
+		h.syncSleepInhibitor()
+		preserveLatestSessionConfigFromDB(h.db, sess, meta.OrigSessionID)
+		if isBlocked {
+			h.restoreBlockedControlOnReattach(sess, meta, nil)
+		} else {
+			pid := frame.ChildPID
+			if pid <= 1 {
+				pid = meta.ChildPID
+			}
+			if pid <= 1 {
+				pid = frame.WorkerPID
+			}
+			sess.State, sess.Blocked, sess.Activity, sess.LastEventAt, sess.PID = StateWorking, nil, "Thinking...", meta.StartedAt, pid
 		}
-		sess.State, sess.Blocked, sess.Activity, sess.LastEventAt, sess.PID = StateWorking, nil, "Thinking...", meta.StartedAt, pid
-	}
-	if h.db != nil {
-		_ = h.db.SaveSession(sess)
-	}
-	if sessMu != nil {
-		sessMu.Unlock()
-	}
-	if h.broadcast != nil {
-		h.broadcast(sess)
+		if h.db != nil {
+			_ = h.db.SaveSession(sess)
+		}
+		unlockSessMu()
+		if h.broadcast != nil {
+			h.broadcast(sess)
+		}
+	} else {
+		unlockSessMu()
 	}
 	go h.monitorWorkerTurn(sess, sess.ID, meta, trackedCmd, 0)
 }

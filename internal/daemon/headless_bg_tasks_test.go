@@ -657,6 +657,22 @@ func TestBgTasks_TranscriptMergeAfterRecentTurnAndBusyRace(t *testing.T) {
 		if len(mergedDone.Messages) != 3 || mergedDone.Messages[2].Content != "Background summary ready" {
 			t.Fatalf("expected finished synthetic merge before JSONL flush not to be suppressed by Turn 1, got %+v", mergedDone.Messages)
 		}
+
+		subMsStart := now.Truncate(time.Millisecond).Add(900 * time.Microsecond)
+		meta.StartedAt = subMsStart
+		_ = WriteTurnSpoolMeta(metaPath, meta)
+		flushed := &Transcript{
+			SessionID: "s-merge",
+			Agent:     "claude-code",
+			Messages: []TranscriptMessage{
+				{Role: "user", Content: "Turn 1 prompt", Timestamp: subMsStart.Add(-1200 * time.Millisecond)},
+				{Role: "assistant", Content: "Background summary ready", Timestamp: subMsStart.Truncate(time.Millisecond)},
+			},
+		}
+		mergedFlushed, _ := srv.mergeInFlightSpoolIntoTranscript(flushed, &Session{ID: "s-merge", Agent: "claude-code", EngineType: EngineHeadless}, "s-merge", "", "claude-code", tmpDir)
+		if len(mergedFlushed.Messages) != 2 {
+			t.Fatalf("expected millisecond-truncated JSONL flush to deduplicate completed synthetic turn, got %+v", mergedFlushed.Messages)
+		}
 	})
 
 	t.Run("RunTurn busy race returns ErrTurnInProgress and preserves warm worker", func(t *testing.T) {
