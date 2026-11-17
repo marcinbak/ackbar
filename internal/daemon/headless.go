@@ -15,6 +15,8 @@ import (
 	"syscall"
 	"time"
 
+	"ackbar/internal/agent"
+	"ackbar/internal/agentutil"
 	"ackbar/internal/tmux"
 )
 
@@ -23,35 +25,8 @@ var (
 	ErrAgentUnsupported = errors.New("headless engine is currently supported for claude-code, antigravity, and grok")
 )
 
-// ChatStreamEvent represents a real-time event pushed over SSE to chat clients
-type ChatStreamEvent struct {
-	Seq         int64              `json:"seq,omitempty"`
-	SessionID   string             `json:"session_id"`
-	TurnID      string             `json:"turn_id,omitempty"`
-	NativeID    string             `json:"native_id,omitempty"`
-	Model       string             `json:"model,omitempty"`
-	Type        string             `json:"type"` // "turn_start", "text_delta", "thought_delta", "tool_start", "tool_result", "turn_complete", "turn_cancelled", "error", "queue_update", "interactive_block", "session_init", "model_detected"
-	Text        string             `json:"text,omitempty"`
-	Thinking    string             `json:"thinking,omitempty"`
-	ToolName    string             `json:"tool_name,omitempty"`
-	ToolInput   any                `json:"tool_input,omitempty"`
-	ToolOutput  string             `json:"tool_output,omitempty"`
-	Blocked     *Blocked           `json:"blocked,omitempty"`
-	IsError     bool               `json:"is_error,omitempty"`
-	QueueItems  []*PromptQueueItem `json:"queue_items,omitempty"`
-	QueuePaused bool               `json:"queue_paused,omitempty"`
-	Subagents   []*SubagentInfo    `json:"subagents,omitempty"`
-	Timestamp   time.Time          `json:"timestamp"`
-}
-
-// PromptQueueItem represents a queued prompt held in daemon memory
-type PromptQueueItem struct {
-	ID        string     `json:"id"`
-	SessionID string     `json:"session_id"`
-	Text      string     `json:"text"`
-	DeliverAt *time.Time `json:"deliver_at,omitempty"`
-	CreatedAt time.Time  `json:"created_at"`
-}
+type ChatStreamEvent = agent.ChatStreamEvent
+type PromptQueueItem = agent.PromptQueueItem
 
 // StripBilledCredentials removes API keys and billed auth tokens from the environment,
 // ensuring the child process uses the user's flat-rate subscription OAuth (e.g. ~/.claude.json).
@@ -395,78 +370,7 @@ func (h *HeadlessRunner) ClearInteractiveBlockAndWait(sessionID string, timeout 
 }
 
 func parseInteractiveToolBlock(toolName string, toolInput interface{}) *Blocked {
-	if toolName == "" {
-		return nil
-	}
-	tLower := strings.ToLower(toolName)
-
-	// 1. ExitPlanMode
-	if tLower == "exitplanmode" || tLower == "exit_plan_mode" {
-		planMarkdown := ""
-		if toolInput != nil {
-			switch v := toolInput.(type) {
-			case string:
-				var m map[string]interface{}
-				if err := json.Unmarshal([]byte(v), &m); err == nil {
-					if pStr, ok := m["plan"].(string); ok {
-						planMarkdown = pStr
-					}
-				} else {
-					planMarkdown = v
-				}
-			case map[string]interface{}:
-				if pStr, ok := v["plan"].(string); ok {
-					planMarkdown = pStr
-				}
-			}
-		}
-		return &Blocked{
-			Kind:     BlockApproval,
-			Reason:   planMarkdown,
-			Question: "Approve implementation plan?",
-			Options:  []string{"Approve Plan", "Request Changes"},
-			Since:    time.Now(),
-		}
-	}
-
-	// 2. AskUserQuestion / ask_question / etc.
-	if toolName == "AskUserQuestion" || toolName == "ask_question" || toolName == "AskFollowupQuestion" ||
-		strings.Contains(tLower, "question") || strings.Contains(tLower, "askuser") {
-		var inputMap map[string]interface{}
-		if toolInput != nil {
-			switch v := toolInput.(type) {
-			case string:
-				_ = json.Unmarshal([]byte(v), &inputMap)
-			case map[string]interface{}:
-				inputMap = v
-			}
-		}
-
-		questions := ExtractAntigravityQuestions(inputMap)
-		questionText, optionsList := ExtractAntigravityQuestionAndOptions(inputMap)
-		if questionText == "" && len(questions) > 0 {
-			questionText = questions[0].Question
-		}
-		if len(optionsList) == 0 && len(questions) > 0 {
-			optionsList = questions[0].Options
-		}
-
-		reason := "Waiting for user response"
-		if questionText != "" {
-			reason = questionText
-		}
-
-		return &Blocked{
-			Kind:      BlockQuestion,
-			Reason:    reason,
-			Question:  questionText,
-			Options:   optionsList,
-			Questions: questions,
-			Since:     time.Now(),
-		}
-	}
-
-	return nil
+	return agentutil.ParseInteractiveToolBlock(toolName, toolInput)
 }
 
 // SetOnTurnComplete registers a callback invoked when a headless turn completes
@@ -2495,27 +2399,7 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 }
 
 func ensureDoubleNewlineSeparation(prev, next string) string {
-	trailing := 0
-	for i := len(prev) - 1; i >= 0; i-- {
-		if prev[i] == '\n' {
-			trailing++
-		} else if prev[i] != '\r' {
-			break
-		}
-	}
-	leading := 0
-	for i := 0; i < len(next); i++ {
-		if next[i] == '\n' {
-			leading++
-		} else if next[i] != '\r' {
-			break
-		}
-	}
-	needed := 2 - (trailing + leading)
-	if needed <= 0 {
-		return next
-	}
-	return strings.Repeat("\n", needed) + next
+	return agentutil.EnsureDoubleNewlineSeparation(prev, next)
 }
 
 func extractLocalCommandOutput(content string) string {

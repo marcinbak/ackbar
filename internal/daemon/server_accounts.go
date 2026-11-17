@@ -29,7 +29,8 @@ func (s *Server) handleAgentDiscovery(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var results []AgentDiscoveryResult
-	for name, p := range s.providers {
+	for _, p := range s.snapshotProviders() {
+		name := p.Agent()
 		installed := p.IsInstalled()
 		configured, setupCmd, _ := p.CheckHookConfig()
 
@@ -63,7 +64,7 @@ func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var results []ProviderDTO
-	for _, p := range s.providers {
+	for _, p := range s.snapshotProviders() {
 		configured, setupCmd, _ := p.CheckHookConfig()
 		results = append(results, ProviderDTO{
 			Agent:          p.Agent(),
@@ -138,9 +139,13 @@ func (s *Server) checkAccountLoggedIn(a *AgentAccount) bool {
 	return s.agentAdapter(a.Agent).IsAccountLoggedIn(home, a)
 }
 
-func setupProfileDirectory(agent, name, configDir string) (string, error) {
+func (s *Server) setupProfileDirectory(agent, name, configDir string) (string, error) {
 	home, _ := os.UserHomeDir()
-	return getDefaultAgentAdapter(agent).SetupProfileDir(home, name, configDir)
+	return s.agentAdapter(agent).SetupProfileDir(home, name, configDir)
+}
+
+func setupProfileDirectory(agent, name, configDir string) (string, error) {
+	return (*Server)(nil).setupProfileDirectory(agent, name, configDir)
 }
 
 func (s *Server) propagateAccountToFleet(acc *AgentAccount) {
@@ -271,7 +276,7 @@ func (s *Server) handleAccounts(w http.ResponseWriter, r *http.Request) {
 		configDir := req.ConfigDir
 		if req.Name != "default" {
 			var err error
-			configDir, err = setupProfileDirectory(req.Agent, req.Name, req.ConfigDir)
+			configDir, err = s.setupProfileDirectory(req.Agent, req.Name, req.ConfigDir)
 			if err != nil {
 				http.Error(w, fmt.Sprintf("Failed to setup profile directory: %v", err), http.StatusInternalServerError)
 				return

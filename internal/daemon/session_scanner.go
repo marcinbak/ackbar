@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"ackbar/internal/agentutil"
 	"ackbar/internal/tmux"
 )
 
@@ -125,7 +126,7 @@ func (s *Server) verifySessionLiveness(ctx context.Context, sessions []*Session)
 			continue
 		}
 
-		if p, ok := s.providers[sess.Agent]; ok {
+		if p, ok := s.resolveProvider(sess.Agent); ok {
 			if inspector, ok := p.(StatusInspector); ok {
 				prevState := sess.State
 				if inspector.InspectStatus(ctx, sess) {
@@ -182,14 +183,7 @@ func (s *Server) verifySessionLiveness(ctx context.Context, sessions []*Session)
 }
 
 func isProcessAlive(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-	return proc.Signal(syscall.Signal(0)) == nil
+	return agentutil.IsProcessAlive(pid)
 }
 
 // isIgnoredAgentCommand returns true if the command line represents a utility subcommand,
@@ -274,7 +268,7 @@ func (s *Server) refreshExistingSessions(ctx context.Context, state *ScanState) 
 
 		prevState := sess.State
 		changed := false
-		if p, ok := s.providers[sess.Agent]; ok && sess.NativeID != "" {
+		if p, ok := s.resolveProvider(sess.Agent); ok && sess.NativeID != "" {
 			if meta := p.ReadSessionMetadata(sess.Cwd, sess.NativeID); meta != nil {
 				if sess.CustomTitle != "" {
 					if sess.Name != sess.CustomTitle {
@@ -415,6 +409,7 @@ func (s *Server) scanTmuxPanes(ctx context.Context, state *ScanState) {
 		}
 	}
 
+	providers := s.snapshotProviders()
 	lines := strings.Split(string(out), "\n")
 	for _, line := range lines {
 		pidStr, cwd, tmuxName, cmdName, ok := parseTmuxPaneLine(line)
@@ -436,7 +431,7 @@ func (s *Server) scanTmuxPanes(ctx context.Context, state *ScanState) {
 			actualPID = panePID
 		}
 
-		for _, p := range s.providers {
+		for _, p := range providers {
 			prefix := fmt.Sprintf("ackbar-%s-", p.Agent())
 			if strings.HasPrefix(tmuxName, prefix) {
 				agent = p.Agent()
@@ -447,7 +442,7 @@ func (s *Server) scanTmuxPanes(ctx context.Context, state *ScanState) {
 		if panePID > 0 {
 			for _, child := range childrenByPPID[panePID] {
 				matchedAgent := ""
-				for _, p := range s.providers {
+				for _, p := range providers {
 					for _, pName := range p.ProcessNames() {
 						if strings.Contains(child.cmd, pName) {
 							matchedAgent = p.Agent()
@@ -467,7 +462,7 @@ func (s *Server) scanTmuxPanes(ctx context.Context, state *ScanState) {
 		}
 
 		if agent == "" {
-			for _, p := range s.providers {
+			for _, p := range providers {
 				for _, pName := range p.ProcessNames() {
 					if strings.Contains(cmdLower, pName) {
 						agent = p.Agent()
@@ -699,7 +694,7 @@ func (s *Server) adoptExistingTmuxSession(ctx context.Context, state *ScanState,
 	if existing.NodePath == "" && existing.Cwd != "" && !existing.IsSupervisor {
 		existing.NodePath = s.resolveSessionNodePath(existing.Cwd)
 	}
-	if p, ok := s.providers[agent]; ok {
+	if p, ok := s.resolveProvider(agent); ok {
 		if inspector, ok := p.(StatusInspector); ok {
 			inspector.InspectStatus(ctx, existing)
 		}
@@ -752,6 +747,18 @@ func (s *Server) scanDiskSessions(ctx context.Context, state *ScanState) {
 	}
 	s.agentAdapter("claude-code").ScanDiskSessions(ctx, s, home, state)
 	s.agentAdapter("antigravity").ScanDiskSessions(ctx, s, home, state)
+
+	if reg := s.PluginRegistry(); reg != nil {
+		for _, p := range reg.List() {
+			key := strings.ToLower(strings.TrimSpace(p.Key()))
+			if key == "claude-code" || key == "antigravity" {
+				continue
+			}
+			if _, ok := reg.AsScanner(p.Key()); ok {
+				s.agentAdapter(p.Key()).ScanDiskSessions(ctx, s, home, state)
+			}
+		}
+	}
 }
 
 func (d *DB) GetSessionTaskBinding(sessionID string) (taskID string, nodePath string) {
@@ -823,7 +830,7 @@ func (s *Server) reconstructManagedTmuxSession(hostName, agent, targetNativeID, 
 		LastEventAt: time.Now(),
 	}
 
-	if p, ok := s.providers[agent]; ok {
+	if p, ok := s.resolveProvider(agent); ok {
 		meta := p.ReadSessionMetadata(cwd, targetNativeID)
 		if meta != nil {
 			if meta.Title != "" && !strings.HasPrefix(meta.Title, "<") && !isRawSessionName(meta.Title) {

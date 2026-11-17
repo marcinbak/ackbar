@@ -9,38 +9,13 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"ackbar/internal/agent"
 )
 
-type TranscriptMessage struct {
-	Role      string    `json:"role"` // "user", "assistant", "system", "tool"
-	Content   string    `json:"content"`
-	Thinking  string    `json:"thinking,omitempty"`
-	ToolCalls []string  `json:"tool_calls,omitempty"`
-	TurnID    string    `json:"turn_id,omitempty"`
-	InFlight  bool      `json:"in_flight,omitempty"`
-	Timestamp time.Time `json:"timestamp"`
-}
-
-type Transcript struct {
-	SessionID string              `json:"session_id"`
-	NativeID  string              `json:"native_id"`
-	Agent     string              `json:"agent"`
-	Title     string              `json:"title,omitempty"`
-	Cwd       string              `json:"cwd,omitempty"`
-	Messages  []TranscriptMessage `json:"messages"`
-}
-
-// SubagentInfo represents an active or completed subagent spawned by an AI agent
-type SubagentInfo struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	Role      string    `json:"role,omitempty"`
-	Prompt    string    `json:"prompt"`
-	State     string    `json:"state"` // "running", "completed"
-	StartedAt time.Time `json:"started_at"`
-	ToolName  string    `json:"-"`
-	Synthetic bool      `json:"-"`
-}
+type TranscriptMessage = agent.TranscriptMessage
+type Transcript = agent.Transcript
+type SubagentInfo = agent.SubagentInfo
 
 // ExtractTranscript loads and parses conversation logs for a session from disk
 func ExtractTranscript(agent, nativeID, cwd string) (*Transcript, error) {

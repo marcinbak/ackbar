@@ -23,6 +23,7 @@ import (
 	"syscall"
 	"time"
 
+	"ackbar/internal/agentutil"
 	"ackbar/internal/router"
 	"ackbar/internal/tmux"
 )
@@ -1679,13 +1680,13 @@ func (s *Server) deleteSessionFilesOnDisk(sess *Session) {
 		return
 	}
 
-	if p, ok := s.providers[sess.Agent]; ok {
+	if p, ok := s.resolveProvider(sess.Agent); ok {
 		_ = p.CleanSessionFiles(home, sess.Cwd, nativeID)
 		return
 	}
 
 	// Fallback to all providers
-	for _, p := range s.providers {
+	for _, p := range s.snapshotProviders() {
 		_ = p.CleanSessionFiles(home, sess.Cwd, nativeID)
 	}
 }
@@ -2423,7 +2424,7 @@ func (s *Server) getResumeCmd(agent, nativeID string) string {
 	if strings.HasPrefix(nativeID, "proc-") {
 		nativeID = ""
 	}
-	if p, ok := s.providers[agent]; ok {
+	if p, ok := s.resolveProvider(agent); ok {
 		return p.GetResumeCommand(nativeID)
 	}
 	if agent == "mock-agent" {
@@ -2436,7 +2437,7 @@ func (s *Server) getResumeCmd(agent, nativeID string) string {
 }
 
 func (s *Server) getSpawnCmd(agent, tempUUID string) string {
-	if p, ok := s.providers[agent]; ok {
+	if p, ok := s.resolveProvider(agent); ok {
 		return p.GetSpawnCommand(tempUUID)
 	}
 	if agent == "mock-agent" {
@@ -2464,7 +2465,7 @@ func appendCLIInitPrompt(agent, baseCmd string) string {
 	}
 }
 
-var safeCLIArgRegex = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_\-\.:/]{0,127}$`)
+var safeCLIArgRegex = agentutil.SafeCLIArgRegex
 
 func appendGrokCLIArgs(baseCmd, model, effort, permissionMode string, extraDirs []string) string {
 	cmd := baseCmd

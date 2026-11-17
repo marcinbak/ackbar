@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"ackbar/internal/agentutil"
 )
 
 var grokIgnoredSubcommands = map[string]bool{
@@ -18,8 +20,7 @@ var grokIgnoredSubcommands = map[string]bool{
 }
 
 func realOSUserHome() string {
-	h, _ := os.UserHomeDir()
-	return h
+	return agentutil.RealUserHome()
 }
 
 func GrokHomeDir(home string) string {
@@ -34,20 +35,7 @@ func GrokHomeDir(home string) string {
 }
 
 func IsSafeGrokSessionID(id string) bool {
-	if id == "" || len(id) > 128 || id == "." || strings.Contains(id, "..") {
-		return false
-	}
-	first := id[0]
-	if !((first >= 'a' && first <= 'z') || (first >= 'A' && first <= 'Z') || (first >= '0' && first <= '9')) {
-		return false
-	}
-	for i := 0; i < len(id); i++ {
-		c := id[i]
-		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.' || c == ':') {
-			return false
-		}
-	}
-	return true
+	return agentutil.IsSafeGrokSessionID(id)
 }
 
 func EncodeGrokCwd(cwd string) string {
@@ -251,21 +239,7 @@ func (a GrokAgentAdapter) HasConversationArtifacts(home, nativeID string) bool {
 }
 
 func stripXMLBlock(s, tag string) string {
-	startTag := "<" + tag + ">"
-	endTag := "</" + tag + ">"
-	for {
-		start := strings.Index(s, startTag)
-		if start == -1 {
-			break
-		}
-		end := strings.Index(s[start:], endTag)
-		if end == -1 {
-			s = s[:start]
-			break
-		}
-		s = s[:start] + s[start+end+len(endTag):]
-	}
-	return s
+	return agentutil.StripXMLBlock(s, tag)
 }
 
 func (a GrokAgentAdapter) FilterUserEntry(raw map[string]interface{}, content string) (string, bool) {

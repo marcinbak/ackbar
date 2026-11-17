@@ -405,7 +405,7 @@ func (a AntigravityAgentAdapter) ScanDiskSessions(ctx context.Context, s *Server
 					spawningSess.TmuxName = tmuxName
 					spawningSess.LastEventAt = modTime
 
-					if p, ok := s.providers["antigravity"]; ok {
+					if p, ok := s.resolveProvider("antigravity"); ok {
 						if inspector, ok := p.(StatusInspector); ok {
 							inspector.InspectStatus(ctx, spawningSess)
 						}
