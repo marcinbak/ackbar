@@ -5,7 +5,9 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -99,6 +101,70 @@ func TestIsolateTestEnv_RestoresAndCleansReadOnlyFiles(t *testing.T) {
 	}
 	if got := os.Getenv("GROK_HOME"); got != "/custom/grok" {
 		t.Errorf("expected GROK_HOME restored to /custom/grok, got %q", got)
+	}
+}
+
+func TestIsolateTestEnv_StubsAgentCLIs(t *testing.T) {
+	origPath := os.Getenv("PATH")
+
+	tmpHome, cleanup, err := IsolateTestEnv()
+	if err != nil {
+		t.Fatalf("IsolateTestEnv failed: %v", err)
+	}
+	cleaned := false
+	defer func() {
+		if !cleaned {
+			cleanup()
+		}
+	}()
+
+	ext := ""
+	stubContent := "#!/bin/sh\nexit 0\n"
+	if runtime.GOOS == "windows" {
+		ext = ".bat"
+		stubContent = "@echo off\r\nexit /b 0\r\n"
+	}
+	samePath := func(a, b string) bool {
+		if runtime.GOOS == "windows" {
+			return strings.EqualFold(filepath.Clean(a), filepath.Clean(b))
+		}
+		return filepath.Clean(a) == filepath.Clean(b)
+	}
+
+	agentBins := []string{"claude", "agy", "antigravity", "codex", "grok", "grok-cli", "opencode"}
+	for _, name := range agentBins {
+		got, err := exec.LookPath(name)
+		if err != nil {
+			t.Fatalf("exec.LookPath(%q) failed: %v", name, err)
+		}
+		want := filepath.Join(tmpHome, ".test-bin", name+ext)
+		if !samePath(got, want) {
+			t.Errorf("exec.LookPath(%q) = %q, want %q", name, got, want)
+		}
+	}
+
+	customDir := t.TempDir()
+	customClaude := filepath.Join(customDir, "claude"+ext)
+	if err := os.WriteFile(customClaude, []byte(stubContent), 0o755); err != nil {
+		t.Fatalf("write custom claude: %v", err)
+	}
+	if err := os.Setenv("PATH", customDir+string(os.PathListSeparator)+os.Getenv("PATH")); err != nil {
+		t.Fatalf("Setenv PATH: %v", err)
+	}
+
+	gotCustom, err := exec.LookPath("claude")
+	if err != nil {
+		t.Fatalf("exec.LookPath(custom claude) failed: %v", err)
+	}
+	if !samePath(gotCustom, customClaude) {
+		t.Errorf("expected custom PATH dir to take precedence: got %q, want %q", gotCustom, customClaude)
+	}
+
+	cleanup()
+	cleaned = true
+
+	if got := os.Getenv("PATH"); got != origPath {
+		t.Errorf("expected PATH restored to %q, got %q", origPath, got)
 	}
 }
 

@@ -13,7 +13,6 @@ import (
 
 func TestExecuteHeadlessHandover(t *testing.T) {
 	srv, db, tmpDir := setupTestCommandsServer(t)
-	defer db.Close()
 
 	sess := &Session{
 		ID:            "claude-code:local:handover-test-1",
@@ -71,11 +70,12 @@ func TestExecuteHeadlessHandover(t *testing.T) {
 	if len(newSess.ExtraDirs) != 1 || newSess.ExtraDirs[0] != tmpDir {
 		t.Fatalf("expected ExtraDirs preserved, got %v", newSess.ExtraDirs)
 	}
+
+	waitForDetachedSessionTurn(t, srv, db, newSessID, true)
 }
 
 func TestHandleSessionRewind(t *testing.T) {
 	srv, db, tmpDir := setupTestCommandsServer(t)
-	defer db.Close()
 
 	// Mock claude project transcript
 	encodedCwd := encodeClaudeProjectDir(tmpDir)
@@ -165,4 +165,7 @@ func TestHandleSessionRewind(t *testing.T) {
 	if !bytes.Contains(clonedBytes, []byte(clonedNativeID)) {
 		t.Fatalf("cloned transcript must have sessionId rewritten to %s", clonedNativeID)
 	}
+
+	clonedSessID, _ := newSessRaw["id"].(string)
+	waitForDetachedSessionTurn(t, srv, db, clonedSessID, false)
 }
