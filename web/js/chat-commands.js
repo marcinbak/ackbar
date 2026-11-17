@@ -8,7 +8,10 @@ import {
   disconnectChatStream,
   loadChatTranscript,
   updateStatusPills,
-  formatModelLabel
+  formatModelLabel,
+  getAgentModelOptions,
+  renderConfigPopoverContent,
+  fetchSessionAgentModels
 } from './chat.js';
 import { mountMCPStatus } from './chat-auth.js';
 import {
@@ -230,12 +233,95 @@ export async function interceptChatInput(tabObj, rawText) {
 
       case 'model':
         if (!args) {
-          const curLabel = tabObj.session.model
-            ? `${formatModelLabel(tabObj.session.model, tabObj.session.agent, tabObj.agentModels)} (${tabObj.session.model})`
+          const currentModel = tabObj.session.model || '';
+          const defaultId = !currentModel ? (tabObj.session.resolved_model || '') : (tabObj.lastDefaultModel || '');
+          const defaultOptionLabel = defaultId
+            ? `Default (${formatModelLabel(defaultId, tabObj.session.agent, tabObj.agentModels)})`
+            : 'Default (Agent Default)';
+          const curLabel = currentModel
+            ? `${formatModelLabel(currentModel, tabObj.session.agent, tabObj.agentModels)} (${currentModel})`
             : (tabObj.session.resolved_model
                 ? `Default (${formatModelLabel(tabObj.session.resolved_model, tabObj.session.agent, tabObj.agentModels)})`
                 : 'Default');
-          renderConfigNoticeCard(tabObj, 'Current Model', curLabel);
+          const card = renderConfigNoticeCard(tabObj, 'Current Model', curLabel);
+          const selectEl = document.createElement('select');
+          selectEl.className = 'config-select chat-inline-model-select';
+          selectEl.style.marginTop = '8px';
+          selectEl.style.width = '100%';
+          const populateModelSelect = (modelsList) => {
+            const curVal = selectEl.value || currentModel;
+            selectEl.innerHTML = '';
+            const addOpt = (val, label, isSel) => {
+              const opt = document.createElement('option');
+              opt.value = val;
+              opt.textContent = label;
+              opt.selected = Boolean(isSel);
+              selectEl.appendChild(opt);
+            };
+            const curDefId = !curVal ? (tabObj.session.resolved_model || '') : (tabObj.lastDefaultModel || '');
+            const curDefLabel = curDefId
+              ? `Default (${formatModelLabel(curDefId, tabObj.session.agent, modelsList)})`
+              : defaultOptionLabel;
+            addOpt('', curDefLabel, !curVal);
+            if (curVal && !modelsList.some(m => m && m.id === curVal)) {
+              addOpt(curVal, formatModelLabel(curVal, tabObj.session.agent, modelsList), true);
+            }
+            for (const m of modelsList) {
+              if (m && m.id) {
+                addOpt(m.id, m.label || m.id, m.id === curVal);
+              }
+            }
+            selectEl.value = curVal;
+          };
+          populateModelSelect(getAgentModelOptions(tabObj.session.agent, tabObj.agentModels));
+          selectEl.value = currentModel;
+          const statusEl = document.createElement('div');
+          statusEl.className = 'chat-inline-model-status';
+          statusEl.style.fontSize = '11px';
+          statusEl.style.marginTop = '4px';
+          const bodyEl = card.querySelector('.config-notice-body');
+          selectEl.addEventListener('change', async () => {
+            const nextModel = selectEl.value;
+            selectEl.disabled = true;
+            try {
+              const updated = await fetchSessionJSON(`${baseUrl}/v1/sessions/${encodeURIComponent(sessionId)}/config`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ model: nextModel })
+              });
+              tabObj.session = {
+                ...tabObj.session,
+                ...updated,
+                model: updated.model || '',
+                effort: updated.effort || '',
+                resolved_model: updated.resolved_model || ''
+              };
+              updateStatusPills(tabObj);
+              if (tabObj.chatConfigPopover && tabObj.chatConfigPopover.style.display !== 'none') {
+                renderConfigPopoverContent(tabObj);
+              }
+              const nextLabel = updated.model
+                ? `${formatModelLabel(updated.model, tabObj.session.agent, tabObj.agentModels)} (${updated.model})`
+                : (updated.resolved_model
+                    ? `Default (${formatModelLabel(updated.resolved_model, tabObj.session.agent, tabObj.agentModels)})`
+                    : 'Default');
+              if (bodyEl) bodyEl.textContent = nextLabel;
+              statusEl.textContent = `Model set to: ${nextLabel}`;
+            } catch (err) {
+              statusEl.textContent = `Model update failed: ${err.message}`;
+            } finally {
+              selectEl.disabled = false;
+            }
+          });
+          card.appendChild(selectEl);
+          card.appendChild(statusEl);
+          if (!tabObj.agentModels || tabObj.agentModelsAgent !== (tabObj.session.agent || '')) {
+            fetchSessionAgentModels(tabObj).then(() => {
+              if (Array.isArray(tabObj.agentModels) && tabObj.agentModels.length > 0) {
+                populateModelSelect(tabObj.agentModels);
+              }
+            }).catch(() => {});
+          }
           return true;
         }
         try {

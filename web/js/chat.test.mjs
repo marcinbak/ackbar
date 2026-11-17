@@ -2961,6 +2961,214 @@ test('linkifyChatFiles renders .chat-file-preview-card for image links', () => {
   assert.ok(previewCard, 'Expected .chat-file-preview-card to be rendered next to pill');
 });
 
+test('/model interactive selector card switches model via PATCH and updates status pill', async () => {
+  const { interceptChatInput } = await import('./chat-commands.js');
+  const container = document.createElement('div');
+  const inputEl = document.createElement('textarea');
+  const pillEl = document.createElement('span');
+  const tabObj = {
+    id: 'claude-code:local:interactive-model-1',
+    session: {
+      id: 'claude-code:local:interactive-model-1',
+      agent: 'claude-code',
+      model: '',
+      resolved_model: 'claude-fable-5-1'
+    },
+    agentModels: [
+      { id: 'claude-fable-5-1', label: 'Claude Fable 5.1' },
+      { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' }
+    ],
+    agentModelsAgent: 'claude-code',
+    chatMessagesEl: container,
+    chatInputEl: inputEl,
+    chatPillModel: pillEl,
+    ephemeralCards: []
+  };
+
+  let patchPayload = null;
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = async (url, opts = {}) => {
+    if (String(url).includes('/config') && opts.method === 'PATCH') {
+      patchPayload = JSON.parse(opts.body);
+      return {
+        ok: true,
+        json: async () => ({
+          id: tabObj.session.id,
+          agent: 'claude-code',
+          model: patchPayload.model,
+          resolved_model: patchPayload.model || 'claude-fable-5-1'
+        })
+      };
+    }
+    return { ok: true, json: async () => [] };
+  };
+
+  try {
+    const handled = await interceptChatInput(tabObj, '/model');
+    assert.equal(handled, true);
+    const selectEl = container.querySelector('.chat-inline-model-select');
+    assert.ok(selectEl, 'expected .chat-inline-model-select in .chat-config-notice');
+    assert.ok(selectEl.children.some(o => o.value === 'claude-sonnet-4-6'));
+
+    selectEl.value = 'claude-sonnet-4-6';
+    selectEl.dispatchEvent({ type: 'change', target: selectEl });
+    await new Promise(r => setTimeout(r, 15));
+
+    assert.deepEqual(patchPayload, { model: 'claude-sonnet-4-6' });
+    assert.equal(tabObj.session.model, 'claude-sonnet-4-6');
+    assert.equal(pillEl.textContent, 'Claude Sonnet 4.6');
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});
+
+test('/model <query> autocomplete fetches kind=models, prepends default, and selects via /model <id>', async () => {
+  const inputEl = document.createElement('textarea');
+  const menuEl = document.createElement('div');
+  menuEl.style.display = 'none';
+  const container = document.createElement('div');
+  const pillEl = document.createElement('span');
+  const tabObj = {
+    id: 'claude-code:local:ac-model-1',
+    session: {
+      id: 'claude-code:local:ac-model-1',
+      agent: 'claude-code',
+      model: '',
+      resolved_model: 'claude-fable-5-1'
+    },
+    chatInputEl: inputEl,
+    chatAutocompleteMenu: menuEl,
+    chatMessagesEl: container,
+    chatPillModel: pillEl,
+    ephemeralCards: []
+  };
+
+  chat.setupChatAutocomplete(tabObj);
+
+  const fetchedUrls = [];
+  let patchedModel = null;
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = async (url, opts = {}) => {
+    const u = String(url);
+    fetchedUrls.push(u);
+    if (u.includes('kind=models') && u.includes('q=son')) {
+      return {
+        ok: true,
+        json: async () => [{ id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' }]
+      };
+    }
+    if (u.includes('kind=models') && u.includes('q=def')) {
+      return { ok: true, json: async () => [] };
+    }
+    if (u.includes('kind=models')) {
+      return {
+        ok: true,
+        json: async () => [{ id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' }]
+      };
+    }
+    if (u.includes('/config') && opts.method === 'PATCH') {
+      patchedModel = JSON.parse(opts.body).model;
+      return {
+        ok: true,
+        json: async () => ({
+          id: tabObj.session.id,
+          agent: 'claude-code',
+          model: patchedModel,
+          resolved_model: patchedModel
+        })
+      };
+    }
+    return { ok: true, json: async () => [] };
+  };
+
+  try {
+    inputEl.value = '/model son';
+    inputEl.selectionStart = 10;
+    inputEl.dispatchEvent({ type: 'input' });
+    await new Promise(r => setTimeout(r, 150));
+
+    assert.ok(fetchedUrls.some(u => u.includes('kind=models&q=son')));
+    assert.equal(menuEl.style.display, 'block');
+    assert.equal(tabObj.autocompleteItems[0].id, 'claude-sonnet-4-6');
+
+    chat.selectAutocompleteItem(
+      tabObj,
+      { name: 'model', trigger: '/model', execution_mode: 'slash_arg' },
+      'commands',
+      { matchStart: 0, matchEnd: inputEl.value.length }
+    );
+    assert.equal(inputEl.value, '/model ');
+    await new Promise(r => setTimeout(r, 150));
+    assert.ok(tabObj.autocompleteItems.some(m => m.id === 'default'));
+
+    inputEl.value = '/model def';
+    inputEl.selectionStart = 10;
+    inputEl.dispatchEvent({ type: 'input' });
+    await new Promise(r => setTimeout(r, 150));
+    assert.equal(tabObj.autocompleteItems[0].id, 'default');
+
+    chat.selectAutocompleteItem(
+      tabObj,
+      { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
+      'models',
+      { matchStart: 0, matchEnd: inputEl.value.length }
+    );
+    await new Promise(r => setTimeout(r, 20));
+    assert.equal(patchedModel, 'claude-sonnet-4-6');
+    assert.equal(inputEl.value, '');
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});
+
+test('fetchSessionAgentModels preserves focused .config-select-model element in-place', async () => {
+  const popover = document.createElement('div');
+  popover.style.display = 'flex';
+  const pillEl = document.createElement('span');
+  const tabObj = {
+    id: 'claude-code:local:focus-preserve-1',
+    session: {
+      id: 'claude-code:local:focus-preserve-1',
+      agent: 'claude-code',
+      model: 'claude-sonnet-4-6',
+      resolved_model: 'claude-sonnet-4-6'
+    },
+    agentModels: [{ id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' }],
+    agentModelsAgent: 'claude-code',
+    chatConfigPopover: popover,
+    chatPillModel: pillEl
+  };
+
+  renderConfigPopoverContent(tabObj);
+  const originalSelect = popover.querySelector('.config-select-model');
+  assert.ok(originalSelect);
+  originalSelect.value = 'claude-sonnet-4-6';
+
+  tabObj.agentModelsAgent = '';
+  const prevActive = globalThis.document.activeElement;
+  globalThis.document.activeElement = originalSelect;
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: true,
+    json: async () => [
+      { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
+      { id: 'claude-opus-4-6', label: 'Claude Opus 4.6' }
+    ]
+  });
+
+  try {
+    await chat.fetchSessionAgentModels(tabObj);
+    const afterSelect = popover.querySelector('.config-select-model');
+    assert.equal(afterSelect, originalSelect, 'focused .config-select-model must not be destroyed and recreated');
+    assert.equal(afterSelect.value, 'claude-sonnet-4-6');
+    assert.ok(afterSelect.children.some(o => o.value === 'claude-opus-4-6'));
+  } finally {
+    globalThis.fetch = prevFetch;
+    globalThis.document.activeElement = prevActive;
+  }
+});
+
+
 
 
 

@@ -1,12 +1,14 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:ackbar_mobile/core/models/headless_models.dart';
 import 'package:ackbar_mobile/core/models/host.dart';
 import 'package:ackbar_mobile/core/models/session.dart';
 import 'package:ackbar_mobile/core/network/api_client.dart';
+import 'package:ackbar_mobile/core/providers/fleet_providers.dart';
 import 'package:ackbar_mobile/features/transcript/presentation/headless_autocomplete_strip.dart';
 import 'package:ackbar_mobile/features/transcript/presentation/headless_command_cards.dart';
 import 'package:ackbar_mobile/features/transcript/presentation/headless_command_dispatcher.dart';
@@ -83,6 +85,82 @@ void main() {
     test('returns null for standard messages', () {
       expect(detectComposerTrigger('Hello world', 5), isNull);
       expect(detectComposerTrigger('', 0), isNull);
+    });
+
+    test('detects /model argument trigger', () {
+      final t1 = detectComposerTrigger('/model arg', 10);
+      expect(t1?.kind, ComposerTriggerKind.model);
+      expect(t1?.query, 'arg');
+      expect(t1?.replaceStart, 0);
+      expect(t1?.replaceEnd, 10);
+
+      final t2 = detectComposerTrigger('/model ', 7);
+      expect(t2?.kind, ComposerTriggerKind.model);
+      expect(t2?.query, '');
+    });
+
+    testWidgets(
+        'HeadlessAutocompleteStrip fetches model suggestions and applies /model <id>',
+        (tester) async {
+      Uri? capturedUri;
+      final client = FakeCommandHttpClient((req) {
+        capturedUri = req.url;
+        return http.Response(
+          jsonEncode([
+            {'id': 'claude-sonnet-4-6', 'label': 'Claude Sonnet 4.6'},
+          ]),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      });
+
+      final controller = TextEditingController();
+      addTearDown(controller.dispose);
+      final sess = Session(
+        id: 's-ac-model',
+        agent: 'claude-code',
+        host: 'local',
+        nativeId: 'n1',
+        cwd: '/work',
+        state: SessionState.idle,
+        startedAt: DateTime.now(),
+        lastEventAt: DateTime.now(),
+        engineType: 'headless',
+      );
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            apiClientProvider.overrideWithValue(ApiClient(client: client)),
+          ],
+          child: MaterialApp(
+            home: Scaffold(
+              body: HeadlessAutocompleteStrip(
+                controller: controller,
+                session: sess,
+                resolveHost: () async =>
+                    (url: 'http://127.0.0.1:7777', authToken: null),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      controller.value = const TextEditingValue(
+        text: '/model ',
+        selection: TextSelection.collapsed(offset: 7),
+      );
+      await tester.pump(const Duration(milliseconds: 180));
+      await tester.pump();
+
+      expect(capturedUri?.queryParameters['kind'], 'models');
+      expect(find.text('Default Model'), findsOneWidget);
+      expect(find.text('Claude Sonnet 4.6'), findsOneWidget);
+
+      await tester.tap(find.text('Claude Sonnet 4.6'));
+      await tester.pump();
+
+      expect(controller.text, '/model claude-sonnet-4-6');
     });
   });
 

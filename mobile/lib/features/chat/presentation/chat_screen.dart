@@ -149,7 +149,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
 
   Future<void> _sendPrompt() async {
     final text = _promptController.text.trim();
-    if (text.isEmpty || _streamController.isSending) return;
+    if (text.isEmpty) return;
+    final isSlashOrShell = text.startsWith('/') || text.startsWith('!');
+    if (_streamController.isSending && !isSlashOrShell) return;
     final currentSession = _resolveLiveSession();
     final host = SessionHostResolver.resolveHostRecord(
         ref.read(hostsListProvider), currentSession.host);
@@ -175,6 +177,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       _scrollToBottom();
       return;
     }
+    if (_streamController.isSending) return;
     _promptController.clear();
     _streamController.updateSession(currentSession);
     final submitRes = await _streamController.submitPrompt(text);

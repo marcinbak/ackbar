@@ -96,7 +96,7 @@ func (h *HeadlessRunner) SubscribeWithReplay(sessionID, reqTurnID string, afterS
 	go func() {
 		defer close(outCh)
 		for _, evt := range replayEvents {
-			if evt.Type == "session_init" {
+			if evt.Type == "session_init" || evt.Type == "model_detected" {
 				continue
 			}
 			if evt.Type == "turn_start" && evt.Text != "" {
@@ -116,7 +116,7 @@ func (h *HeadlessRunner) SubscribeWithReplay(sessionID, reqTurnID string, afterS
 				if !ok {
 					return
 				}
-				if evt.Type == "session_init" {
+				if evt.Type == "session_init" || evt.Type == "model_detected" {
 					continue
 				}
 				if replayTurnID != "" && evt.TurnID == replayTurnID && evt.Seq > 0 && evt.Seq <= maxReplayedSeq {

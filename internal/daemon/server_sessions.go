@@ -1275,6 +1275,42 @@ func (s *Server) handleRespond(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) normalizeModelInput(agent, raw string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" || strings.EqualFold(trimmed, "default") {
+		return "", nil
+	}
+	if strings.ContainsAny(trimmed, "\x00\r\n") {
+		return "", fmt.Errorf("Invalid model name")
+	}
+
+	resolved := trimmed
+	var candidates []ModelSuggestion
+	if s != nil {
+		candidates = append(candidates, s.collectModelsForAgent(agent)...)
+	}
+	agLower := strings.ToLower(strings.TrimSpace(agent))
+	if agLower == "antigravity" {
+		candidates = append(candidates, getAntigravityDefaultModels()...)
+	} else if agLower == "claude" || agLower == "claude-code" {
+		candidates = append(candidates, getClaudeDefaultModels()...)
+	}
+	for _, m := range candidates {
+		if strings.EqualFold(trimmed, m.ID) || strings.EqualFold(trimmed, m.Label) {
+			resolved = m.ID
+			break
+		}
+	}
+
+	if len(resolved) > 128 || strings.HasPrefix(resolved, "-") || strings.ContainsAny(resolved, "\x00\r\n \t") {
+		return "", fmt.Errorf("Invalid model name")
+	}
+	if (agLower == "grok" || agLower == "grok-cli") && !safeCLIArgRegex.MatchString(resolved) {
+		return "", fmt.Errorf("Invalid model name")
+	}
+	return resolved, nil
+}
+
 func (s *Server) handleSessionConfig(w http.ResponseWriter, r *http.Request, sessionID string) {
 	if r.Method != http.MethodPost && r.Method != http.MethodPatch {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -1333,16 +1369,12 @@ func (s *Server) handleSessionConfig(w http.ResponseWriter, r *http.Request, ses
 	}
 
 	if req.Model != nil {
-		m := strings.TrimSpace(*req.Model)
-		if strings.EqualFold(m, "default") {
-			sess.Model = ""
-		} else {
-			if strings.HasPrefix(m, "-") || strings.ContainsAny(m, "\x00\r\n \t") {
-				http.Error(w, "Invalid model name", http.StatusBadRequest)
-				return
-			}
-			sess.Model = m
+		normalized, mErr := s.normalizeModelInput(sess.Agent, *req.Model)
+		if mErr != nil {
+			http.Error(w, mErr.Error(), http.StatusBadRequest)
+			return
 		}
+		sess.Model = normalized
 	}
 
 	if req.Effort != nil {
@@ -1668,19 +1700,6 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if req.Model != "" {
-		m := strings.TrimSpace(req.Model)
-		if strings.EqualFold(m, "default") {
-			req.Model = ""
-		} else {
-			if strings.HasPrefix(m, "-") || strings.ContainsAny(m, "\x00\r\n \t") || len(m) > 128 {
-				http.Error(w, "Invalid model name", http.StatusBadRequest)
-				return
-			}
-			req.Model = m
-		}
-	}
-
 	if req.Effort != "" {
 		eff := strings.ToLower(strings.TrimSpace(req.Effort))
 		if eff == "" || eff == "default" {
@@ -1739,6 +1758,15 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 	if req.Agent == "" {
 		http.Error(w, "Missing agent", http.StatusBadRequest)
 		return
+	}
+
+	if req.Model != "" {
+		normalized, mErr := s.normalizeModelInput(req.Agent, req.Model)
+		if mErr != nil {
+			http.Error(w, mErr.Error(), http.StatusBadRequest)
+			return
+		}
+		req.Model = normalized
 	}
 
 	if req.Cwd == "" && req.NodePath == "" && req.RepoNodePath == "" {

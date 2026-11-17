@@ -4,52 +4,57 @@ import (
 	"bufio"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
 
 type SessionWorkerMeta struct {
-	WorkerID          string        `json:"worker_id"`
-	SessionID         string        `json:"session_id"`
-	OrigSessionID     string        `json:"orig_session_id,omitempty"`
-	NativeID          string        `json:"native_id"`
-	Agent             string        `json:"agent"`
-	Cwd               string        `json:"cwd,omitempty"`
-	IsSupervisor      bool          `json:"is_supervisor,omitempty"`
-	ConfigFingerprint string        `json:"config_fingerprint"`
-	MCPFingerprint    string        `json:"mcp_fingerprint,omitempty"`
-	Bin               string        `json:"bin"`
-	Args              []string      `json:"args,omitempty"`
-	SocketPath        string        `json:"socket_path"`
-	SocketTempDir     string        `json:"socket_temp_dir,omitempty"`
-	WorkerMetaPath    string        `json:"worker_meta_path,omitempty"`
-	WorkerPID         int           `json:"worker_pid,omitempty"`
-	ChildPID          int           `json:"child_pid,omitempty"`
-	State             string        `json:"state"`
-	ActiveTurnID      string        `json:"active_turn_id,omitempty"`
-	ActiveMetaPath    string        `json:"active_meta_path,omitempty"`
-	IdleTTLNs         time.Duration `json:"idle_ttl_ns,omitempty"`
-	StartedAt         time.Time     `json:"started_at"`
-	LastTurnEndedAt   time.Time     `json:"last_turn_ended_at,omitempty"`
-	UpdatedAt         time.Time     `json:"updated_at"`
+	WorkerID                 string        `json:"worker_id"`
+	SessionID                string        `json:"session_id"`
+	OrigSessionID            string        `json:"orig_session_id,omitempty"`
+	NativeID                 string        `json:"native_id"`
+	Agent                    string        `json:"agent"`
+	Cwd                      string        `json:"cwd,omitempty"`
+	IsSupervisor             bool          `json:"is_supervisor,omitempty"`
+	ConfigFingerprint        string        `json:"config_fingerprint"`
+	ConfigFingerprintNoModel string        `json:"config_fingerprint_no_model,omitempty"`
+	MCPFingerprint           string        `json:"mcp_fingerprint,omitempty"`
+	Bin                      string        `json:"bin"`
+	Args                     []string      `json:"args,omitempty"`
+	SocketPath               string        `json:"socket_path"`
+	SocketTempDir            string        `json:"socket_temp_dir,omitempty"`
+	WorkerMetaPath           string        `json:"worker_meta_path,omitempty"`
+	WorkerPID                int           `json:"worker_pid,omitempty"`
+	ChildPID                 int           `json:"child_pid,omitempty"`
+	State                    string        `json:"state"`
+	ActiveTurnID             string        `json:"active_turn_id,omitempty"`
+	ActiveMetaPath           string        `json:"active_meta_path,omitempty"`
+	IdleTTLNs                time.Duration `json:"idle_ttl_ns,omitempty"`
+	StartedAt                time.Time     `json:"started_at"`
+	LastTurnEndedAt          time.Time     `json:"last_turn_ended_at,omitempty"`
+	UpdatedAt                time.Time     `json:"updated_at"`
 }
 
 type workerIPCReq struct {
-	Op                string   `json:"op"`
-	TurnID            string   `json:"turn_id,omitempty"`
-	AfterSeq          int64    `json:"after_seq,omitempty"`
-	MetaPath          string   `json:"meta_path,omitempty"`
-	StdinLine         string   `json:"stdin_line,omitempty"`
-	SessionID         string   `json:"session_id,omitempty"`
-	NativeID          string   `json:"native_id,omitempty"`
-	Bin               string   `json:"bin,omitempty"`
-	Args              []string `json:"args,omitempty"`
-	Env               []string `json:"env,omitempty"`
-	ConfigFingerprint string   `json:"config_fingerprint,omitempty"`
-	MCPFingerprint    string   `json:"mcp_fingerprint,omitempty"`
+	Op                       string   `json:"op"`
+	TurnID                   string   `json:"turn_id,omitempty"`
+	AfterSeq                 int64    `json:"after_seq,omitempty"`
+	MetaPath                 string   `json:"meta_path,omitempty"`
+	StdinLine                string   `json:"stdin_line,omitempty"`
+	Model                    string   `json:"model,omitempty"`
+	SessionID                string   `json:"session_id,omitempty"`
+	NativeID                 string   `json:"native_id,omitempty"`
+	Bin                      string   `json:"bin,omitempty"`
+	Args                     []string `json:"args,omitempty"`
+	Env                      []string `json:"env,omitempty"`
+	ConfigFingerprint        string   `json:"config_fingerprint,omitempty"`
+	ConfigFingerprintNoModel string   `json:"config_fingerprint_no_model,omitempty"`
+	MCPFingerprint           string   `json:"mcp_fingerprint,omitempty"`
 }
 
 type workerIPCResp struct {
@@ -281,6 +286,53 @@ func handleWorkerIPC(c net.Conn, stateMu *sync.Mutex, state *string, workerMeta 
 			WorkerPID:         os.Getpid(),
 			ChildPID:          newPID,
 			State:             "idle_warm",
+			ConfigFingerprint: cfgFP,
+			MCPFingerprint:    mcpFP,
+		})
+
+	case "set_model":
+		stateMu.Lock()
+		curChildPID := getChildPGID()
+		if !strings.EqualFold(workerMeta.Agent, "claude-code") || *state == "shutting_down" || *state == "exited" || *state == "restarting_child" || curChildPID <= 1 {
+			stateMu.Unlock()
+			reply(workerIPCResp{OK: false, ErrCode: "unsupported_or_inactive", WorkerPID: os.Getpid()})
+			return
+		}
+		targetModel := strings.TrimSpace(req.Model)
+		if targetModel == "" {
+			targetModel = "default"
+		}
+		ctrlLine, _ := json.Marshal(map[string]any{
+			"type":       "control_request",
+			"request_id": fmt.Sprintf("req_model_%d", time.Now().UnixNano()),
+			"request": map[string]any{
+				"subtype": "set_model",
+				"model":   targetModel,
+			},
+		})
+		if len(req.Args) > 0 {
+			workerMeta.Args = req.Args
+		}
+		if req.ConfigFingerprint != "" {
+			workerMeta.ConfigFingerprint = req.ConfigFingerprint
+		}
+		if req.ConfigFingerprintNoModel != "" {
+			workerMeta.ConfigFingerprintNoModel = req.ConfigFingerprintNoModel
+		}
+		workerMeta.UpdatedAt = time.Now().UTC()
+		if workerMeta.WorkerMetaPath != "" {
+			_ = WriteSessionWorkerMeta(workerMeta.WorkerMetaPath, workerMeta)
+		}
+		curState := *state
+		cfgFP, mcpFP := workerMeta.ConfigFingerprint, workerMeta.MCPFingerprint
+		stateMu.Unlock()
+
+		writeStdinLine(string(ctrlLine))
+		reply(workerIPCResp{
+			OK:                true,
+			WorkerPID:         os.Getpid(),
+			ChildPID:          curChildPID,
+			State:             curState,
 			ConfigFingerprint: cfgFP,
 			MCPFingerprint:    mcpFP,
 		})

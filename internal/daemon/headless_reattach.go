@@ -27,12 +27,65 @@ func blockActivityText(b *Blocked) string {
 	return "Waiting for user response"
 }
 
+func preserveLatestSessionConfigFromDB(db *DB, sess *Session, lookupIDs ...string) {
+	if db == nil || sess == nil {
+		return
+	}
+	var candidates []string
+	if sess.ID != "" {
+		candidates = append(candidates, sess.ID)
+	}
+	if sess.OldID != "" {
+		candidates = append(candidates, sess.OldID)
+	}
+	candidates = append(candidates, lookupIDs...)
+
+	seen := make(map[string]bool, len(candidates))
+	var best *Session
+	for _, id := range candidates {
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		if dbSess, err := db.GetSession(id); err == nil && dbSess != nil {
+			if best == nil || (!dbSess.MetadataUpdatedAt.IsZero() && (best.MetadataUpdatedAt.IsZero() || dbSess.MetadataUpdatedAt.After(best.MetadataUpdatedAt))) {
+				best = dbSess
+			}
+		}
+	}
+	if best == nil {
+		return
+	}
+	if (sess.MetadataUpdatedAt.IsZero() && !best.MetadataUpdatedAt.IsZero()) || best.MetadataUpdatedAt.After(sess.MetadataUpdatedAt) {
+		sess.Model = best.Model
+		sess.Effort = best.Effort
+		sess.PermissionMode = best.PermissionMode
+		if best.ExtraDirs != nil {
+			sess.ExtraDirs = append([]string(nil), best.ExtraDirs...)
+		} else {
+			sess.ExtraDirs = nil
+		}
+		sess.MetadataUpdatedAt = best.MetadataUpdatedAt
+	}
+}
+
 func (h *HeadlessRunner) applyWorkerEvent(sess *Session, origSessionID string, meta *TurnSpoolMeta, evt ChatStreamEvent, emitLive bool) {
 	switch evt.Type {
 	case "session_init":
+		if evt.Model != "" && sess != nil {
+			h.SetRuntimeModel(sess.ID, sess.Agent, evt.Model)
+		}
 		if evt.NativeID != "" {
 			h.handleAntigravityInit(sess, evt.NativeID, meta.Prompt)
 		}
+		if evt.Model != "" && sess != nil {
+			h.SetRuntimeModel(sess.ID, sess.Agent, evt.Model)
+		}
+	case "model_detected":
+		if evt.Model != "" && sess != nil {
+			h.SetRuntimeModel(sess.ID, sess.Agent, evt.Model)
+		}
+		return
 	case "interactive_block":
 		if evt.Blocked == nil {
 			return
@@ -44,6 +97,7 @@ func (h *HeadlessRunner) applyWorkerEvent(sess *Session, origSessionID string, m
 		h.SetQueuePaused(sess.ID, true)
 		if emitLive {
 			if h.db != nil && sess != nil {
+				preserveLatestSessionConfigFromDB(h.db, sess, origSessionID)
 				sess.State, sess.Blocked, sess.Activity = StateBlocked, evt.Blocked, blockActivityText(evt.Blocked)
 				sess.IsUnread, sess.LastStateChangeAt, sess.LastEventAt = true, time.Now(), time.Now()
 				_ = h.db.SaveSession(sess)
@@ -280,15 +334,22 @@ func (h *HeadlessRunner) finalizeTurnFromSpool(sess *Session, origSessionID stri
 	}
 
 	markFinalized()
-	var rotateWorker bool
+	var staleHandle *warmWorkerHandle
 	h.mu.Lock()
 	if (interactiveBlock != nil || wasCancelled || wasFailed) && !h.activeTurns[sess.ID] {
 		delete(h.warmWorkers, sess.ID)
 		if sess.NativeID != "" {
 			delete(h.warmWorkers, sess.NativeID)
 		}
-	} else if handle, ok := h.warmWorkers[sess.ID]; ok && handle != nil && handle.rotateAfterTurn && !h.activeTurns[sess.ID] {
-		rotateWorker = true
+	} else if !h.activeTurns[sess.ID] {
+		if _, handle := h.findWarmHandleLocked(sess); handle != nil {
+			if meta != nil && meta.ChildPID > 1 && handle.ChildPID <= 1 {
+				handle.ChildPID = meta.ChildPID
+			}
+			if handle.rotateAfterTurn {
+				staleHandle = handle
+			}
+		}
 	}
 	h.mu.Unlock()
 	if wasFailed && meta != nil && meta.WorkerMetaPath != "" {
@@ -296,8 +357,16 @@ func (h *HeadlessRunner) finalizeTurnFromSpool(sess *Session, origSessionID stri
 			h.killWorkerMeta(wm, 300*time.Millisecond)
 		}
 	}
-	if rotateWorker {
-		go h.ShutdownSessionWorker(sess.ID, sess.NativeID, 2*time.Second)
+	preserveLatestSessionConfigFromDB(h.db, sess, origSessionID)
+	if staleHandle != nil {
+		staleWorkerID := staleHandle.WorkerID
+		home, _ := os.UserHomeDir()
+		isExisting := sess.FirstPrompt != "" || sess.LastPrompt != "" || hasConversationOnDisk(sess, home, h.db)
+		fp := ConfigFingerprint(sess)
+		mcpFP := MCPFingerprint(sess, h.db, home)
+		if !h.restartHandleChild(sess, staleHandle, isExisting, fp, mcpFP, home, 3*time.Second) {
+			h.ShutdownSpecificWorker(staleWorkerID, 2*time.Second)
+		}
 	}
 
 	if h.db != nil {
@@ -396,8 +465,8 @@ func (h *HeadlessRunner) ReattachLiveWorkers() {
 			h.warmWorkers[sess.ID] = &warmWorkerHandle{
 				WorkerID: wm.WorkerID, SessionID: sess.ID, NativeID: sess.NativeID,
 				SocketPath: wm.SocketPath, WorkerMetaPath: wm.WorkerMetaPath,
-				ConfigFingerprint: wm.ConfigFingerprint, MCPFingerprint: wm.MCPFingerprint,
-				Bin: wm.Bin, Args: wm.Args,
+				ConfigFingerprint: wm.ConfigFingerprint, ConfigFingerprintNoModel: wm.ConfigFingerprintNoModel,
+				MCPFingerprint: wm.MCPFingerprint, Bin: wm.Bin, Args: wm.Args,
 				WorkerPID: resp.WorkerPID, ChildPID: resp.ChildPID,
 			}
 			h.mu.Unlock()
