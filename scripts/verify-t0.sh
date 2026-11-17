@@ -67,6 +67,15 @@ if [ "$AGENTS_LINES" -gt 160 ]; then
     exit 1
 fi
 
+echo "--> Verifying RunIsolatedTestMain across test packages..."
+TEST_DIRS=$(find . -type f -name '*_test.go' -not -path './.worktrees/*' -not -path './vendor/*' -exec dirname {} + | sort -u)
+for dir in $TEST_DIRS; do
+    if ! grep -q "RunIsolatedTestMain" "$dir"/*_test.go 2>/dev/null; then
+        echo "ERROR: Package $dir has *_test.go files without RunIsolatedTestMain in TestMain" >&2
+        exit 1
+    fi
+done
+
 # c. Isolated Go race tests
 echo "--> Running Go race test suite..."
 TMP_HOME="$(mktemp -d)"
@@ -76,7 +85,8 @@ cleanup_tmp() {
 }
 trap cleanup_tmp EXIT
 REAL_GOPATH="${GOPATH:-$(go env GOPATH)}"
-HOME="$TMP_HOME" GOPATH="$REAL_GOPATH" env -u ACKBAR_HOST go test -race ./...
+REAL_GOCACHE="${GOCACHE:-$(go env GOCACHE)}"
+HOME="$TMP_HOME" GOPATH="$REAL_GOPATH" GOCACHE="$REAL_GOCACHE" env -u ACKBAR_HOST go test -race ./...
 
 # d. Compile gates
 echo "--> Verifying native binary compilation..."

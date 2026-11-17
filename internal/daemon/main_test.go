@@ -4,6 +4,8 @@ import (
 	"os"
 	"strconv"
 	"testing"
+
+	"ackbar/internal/testutil"
 )
 
 func TestMain(m *testing.M) {
@@ -13,5 +15,5 @@ func TestMain(m *testing.M) {
 		}
 	}
 	_ = os.Setenv("ACKBAR_TEST_SUITE_PID", strconv.Itoa(os.Getpid()))
-	os.Exit(m.Run())
+	testutil.RunIsolatedTestMain(m)
 }

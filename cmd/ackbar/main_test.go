@@ -10,7 +10,12 @@ import (
 	"testing"
 
 	"ackbar/internal/daemon"
+	"ackbar/internal/testutil"
 )
+
+func TestMain(m *testing.M) {
+	testutil.RunIsolatedTestMain(m)
+}
 
 func TestLoginAccount_TmuxName(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
