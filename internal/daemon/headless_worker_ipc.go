@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"ackbar/internal/agent"
 )
 
 type SessionWorkerMeta struct {
@@ -23,7 +25,13 @@ type SessionWorkerMeta struct {
 	IsSupervisor             bool                   `json:"is_supervisor,omitempty"`
 	ConfigFingerprint        string                 `json:"config_fingerprint"`
 	ConfigFingerprintNoModel string                 `json:"config_fingerprint_no_model,omitempty"`
+	ImmutableFingerprint     string                 `json:"immutable_fingerprint,omitempty"`
 	MCPFingerprint           string                 `json:"mcp_fingerprint,omitempty"`
+	IsExisting               bool                   `json:"is_existing,omitempty"`
+	SystemPrompt             string                 `json:"system_prompt,omitempty"`
+	PermissionMode           string                 `json:"permission_mode,omitempty"`
+	Model                    string                 `json:"model,omitempty"`
+	Effort                   string                 `json:"effort,omitempty"`
 	Bin                      string                 `json:"bin"`
 	Args                     []string               `json:"args,omitempty"`
 	SocketPath               string                 `json:"socket_path"`
@@ -48,7 +56,10 @@ type workerIPCReq struct {
 	AfterSeq                 int64    `json:"after_seq,omitempty"`
 	MetaPath                 string   `json:"meta_path,omitempty"`
 	StdinLine                string   `json:"stdin_line,omitempty"`
+	Prompt                   string   `json:"prompt,omitempty"`
 	Model                    string   `json:"model,omitempty"`
+	Effort                   string   `json:"effort,omitempty"`
+	PermissionMode           string   `json:"permission_mode,omitempty"`
 	SessionID                string   `json:"session_id,omitempty"`
 	NativeID                 string   `json:"native_id,omitempty"`
 	Bin                      string   `json:"bin,omitempty"`
@@ -56,27 +67,34 @@ type workerIPCReq struct {
 	Env                      []string `json:"env,omitempty"`
 	ConfigFingerprint        string   `json:"config_fingerprint,omitempty"`
 	ConfigFingerprintNoModel string   `json:"config_fingerprint_no_model,omitempty"`
+	ImmutableFingerprint     string   `json:"immutable_fingerprint,omitempty"`
 	MCPFingerprint           string   `json:"mcp_fingerprint,omitempty"`
+	IsExisting               bool     `json:"is_existing,omitempty"`
 	RequestID                string   `json:"request_id,omitempty"`
 	Action                   string   `json:"action,omitempty"`
 	Approved                 bool     `json:"approved,omitempty"`
 	Answer                   string   `json:"answer,omitempty"`
+	TargetID                 string   `json:"target_id,omitempty"`
 }
 
 type workerIPCResp struct {
-	OK                       bool     `json:"ok"`
-	ErrCode                  string   `json:"err_code,omitempty"`
-	Approved                 bool     `json:"approved,omitempty"`
-	WorkerPID                int      `json:"worker_pid,omitempty"`
-	ChildPID                 int      `json:"child_pid,omitempty"`
-	TurnID                   string   `json:"turn_id,omitempty"`
-	State                    string   `json:"state,omitempty"`
-	ConfigFingerprint        string   `json:"config_fingerprint,omitempty"`
-	ConfigFingerprintNoModel string   `json:"config_fingerprint_no_model,omitempty"`
-	MCPFingerprint           string   `json:"mcp_fingerprint,omitempty"`
-	PermissionMode           string   `json:"permission_mode,omitempty"`
-	BgTaskCount              int      `json:"bg_task_count,omitempty"`
-	Blocked                  *Blocked `json:"blocked,omitempty"`
+	OK                       bool                   `json:"ok"`
+	ErrCode                  string                 `json:"err_code,omitempty"`
+	Approved                 bool                   `json:"approved,omitempty"`
+	PlanApproved             bool                   `json:"plan_approved,omitempty"`
+	KeptWarm                 bool                   `json:"kept_warm,omitempty"`
+	WorkerPID                int                    `json:"worker_pid,omitempty"`
+	ChildPID                 int                    `json:"child_pid,omitempty"`
+	TurnID                   string                 `json:"turn_id,omitempty"`
+	State                    string                 `json:"state,omitempty"`
+	ConfigFingerprint        string                 `json:"config_fingerprint,omitempty"`
+	ConfigFingerprintNoModel string                 `json:"config_fingerprint_no_model,omitempty"`
+	MCPFingerprint           string                 `json:"mcp_fingerprint,omitempty"`
+	PermissionMode           string                 `json:"permission_mode,omitempty"`
+	BgTaskCount              int                    `json:"bg_task_count,omitempty"`
+	Blocked                  *Blocked               `json:"blocked,omitempty"`
+	RewindPoints             []agent.ACPRewindPoint `json:"rewind_points,omitempty"`
+	RewindResult             json.RawMessage        `json:"rewind_result,omitempty"`
 }
 
 type workerIPCExtensions struct {
@@ -84,6 +102,10 @@ type workerIPCExtensions struct {
 	pendingBlocked  func() *Blocked
 	onAnswerControl func(workerIPCReq) workerIPCResp
 	onWatchWorker   func(net.Conn)
+	onACPStartTurn  func(workerIPCReq) workerIPCResp
+	onACPSetConfig  func(workerIPCReq) workerIPCResp
+	onACPCancel     func(workerIPCReq) workerIPCResp
+	onACPRewind     func(workerIPCReq) workerIPCResp
 }
 
 type boundedTailBuffer struct {
@@ -263,6 +285,10 @@ func handleWorkerIPC(c net.Conn, stateMu *sync.Mutex, state *string, workerMeta 
 		reply(workerIPCResp{OK: ok, WorkerPID: os.Getpid(), ChildPID: curChildPID, TurnID: activeTID, State: curState, ConfigFingerprint: cfgFP, MCPFingerprint: mcpFP, BgTaskCount: bgCount, Blocked: blocked})
 
 	case "send_turn":
+		if ext.onACPStartTurn != nil {
+			reply(ext.onACPStartTurn(req))
+			return
+		}
 		stateMu.Lock()
 		curChildPID := getChildPGID()
 		if *state == "shutting_down" || *state == "exited" || *state == "restarting_child" {
@@ -367,6 +393,20 @@ func handleWorkerIPC(c net.Conn, stateMu *sync.Mutex, state *string, workerMeta 
 			MCPFingerprint:    mcpFP,
 		})
 
+	case "set_config":
+		if ext.onACPSetConfig == nil {
+			reply(workerIPCResp{OK: false, ErrCode: "unsupported", WorkerPID: os.Getpid()})
+			return
+		}
+		reply(ext.onACPSetConfig(req))
+
+	case "acp_rewind_list", "acp_rewind_exec", "acp_rewind_cancel":
+		if ext.onACPRewind == nil {
+			reply(workerIPCResp{OK: false, ErrCode: "unsupported", WorkerPID: os.Getpid()})
+			return
+		}
+		reply(ext.onACPRewind(req))
+
 	case "answer_control":
 		if ext.onAnswerControl == nil {
 			reply(workerIPCResp{OK: false, ErrCode: "unsupported", WorkerPID: os.Getpid()})
@@ -394,6 +434,10 @@ func handleWorkerIPC(c net.Conn, stateMu *sync.Mutex, state *string, workerMeta 
 		streamSpoolToConn(c, spool, compPath, req.AfterSeq)
 
 	case "cancel", "shutdown":
+		if req.Op == "cancel" && ext.onACPCancel != nil {
+			reply(ext.onACPCancel(req))
+			return
+		}
 		stateMu.Lock()
 		curChildPID := getChildPGID()
 		*state, workerMeta.State = "shutting_down", "shutting_down"

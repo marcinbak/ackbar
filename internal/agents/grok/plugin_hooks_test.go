@@ -18,7 +18,7 @@ func TestPlugin_IdentityCapabilitiesAndCommands(t *testing.T) {
 		t.Fatalf("branding mismatch")
 	}
 	caps := p.Capabilities()
-	if !caps.SupportsTmux || !caps.SupportsHeadless || caps.HeadlessMode != agent.HeadlessModeOneShot || !caps.LocksExtraDirsOnResume {
+	if !caps.SupportsTmux || !caps.SupportsHeadless || caps.HeadlessMode != agent.HeadlessModeACP || !caps.LocksExtraDirsOnResume {
 		t.Fatalf("capabilities mismatch: %+v", caps)
 	}
 
@@ -189,7 +189,7 @@ func TestPlugin_AccountsAndScanner(t *testing.T) {
 	if !p.IsValidNativeID("sess-1") || p.IsValidNativeID("default") || p.IsValidNativeID("../bad") {
 		t.Errorf("IsValidNativeID mismatch")
 	}
-	if !p.IsIgnoredCommand("grok mcp list") || p.IsIgnoredCommand("grok -r sess-1") {
+	if !p.IsIgnoredCommand("grok mcp list") || !p.IsIgnoredCommand("grok agent stdio --no-auto-update") || !p.IsIgnoredCommand("grok --single=hi") || p.IsIgnoredCommand("grok -r sess-1") {
 		t.Errorf("IsIgnoredCommand mismatch")
 	}
 	if !p.MatchProcessCommand("grok", "grok -s 123") || p.MatchProcessCommand("grok", "ackbar-hook --agent=grok") {

@@ -49,9 +49,11 @@ Ackbar supports the major agent ecosystems:
 
 ### xAI Grok
 * **Session Storage & Usage Metrics:** `$GROK_HOME/sessions/<url-encoded-cwd>/<session-id>/` stores `summary.json`, `signals.json` (`contextTokensUsed`, `contextWindowTokens`), `chat_history.jsonl` (`<user_query>` extraction, `synthetic_reason` filtering), `updates.jsonl` (ACP fallback), and nested `session` totals in `usage.json` (`1 USD = 1e10 ticks`).
-* **Headless One-Shot Turn Execution:** Runs `grok --single=<prompt> [-s <uuid> | -r <uuid>] --output-format streaming-json`. Spawns fresh sessions with `-s <uuid>` or resumes with `-r <uuid>`, streaming real-time NDJSON event objects across detached one-shot turns without persistent stdio child processes.
-* **CLI Flags & Directory Access:** Passes `--model`, `--effort`, and `--permission-mode`. Passes `--add-dir` for `extra_dirs` on initial `-s` creation; `grok -r` rejects `--add-dir`, locking `extra_dirs` post-spawn.
-* **Dynamic Model Discovery:** Discovers available models dynamically from `~/.grok/models_cache.json` (`models.<id>.info`), filtering entries with `hidden: true`.
+* **Headless Persistent ACP Stdio ([`headless.go`](../internal/agents/grok/headless.go), [`acp_driver.go`](../internal/agents/grok/acp_driver.go)):** Runs `grok agent stdio --no-auto-update` over JSON-RPC 2.0; authenticates (`xai.api_key` or `cached_token`) and resumes via `session/load`.
+* **ACP Control, Switching & Rewind ([`acp_control.go`](../internal/agents/grok/acp_control.go)):** Handles `session/request_permission`, `_x.ai/exit_plan_mode`, `_x.ai/ask_user_question`, live `session/set_model`/`session/set_mode`, `session/cancel`, and `_x.ai/rewind/*`.
+* **CLI Flags & Directory Access:** Passes `-m`, `--effort`, `--permission-mode`, `--add-dir` on initial spawn (`!IsExisting`), and `--always-approve` only on `yolo_mode`/`bypassPermissions`.
+* **Dynamic Model Discovery ([`acp_models.go`](../internal/agents/grok/acp_models.go)):** Reads `$GROK_HOME/acp_models_cache.json` (from `_x.ai/models/update`) ahead of `~/.grok/models_cache.json`, filtering `hidden: true`.
+* **Slash Command Catalog (`CommandCatalog`):** Merges `$GROK_HOME/acp_commands_cache.json` with native `/compact`, `/context`, `/always-approve`, `/goal`, and `/workflow` commands.
 * **CLI Lifecycle & Turn Rotation:** Spawns interactive turns `grok -s <uuid>` with `-- "$ACKBAR_INIT_PROMPT"`, resumes `grok -r <id>`, and resolves `/clear` rotation ownership via `$GROK_HOME/active_sessions.json` (`ResolveSessionOwner`).
 * **Hook Configuration:** `~/.grok/hooks/ackbar.json` (`{"hooks": {...}}` native HTTP hooks to `http://127.0.0.1:7777/v1/hooks/grok`, `matcher` omitted) and `[compat.claude] hooks = false` in `~/.grok/config.toml`.
 
@@ -152,9 +154,9 @@ Legacy providers in `internal/provider/` use `<agent>.go`, `<agent>_hook.go`, `<
 
 ### Agent Contract & Registry (`internal/agent`, `internal/agentutil`)
 New and migrated adapters implement the leaf contract without importing `internal/daemon` or `internal/provider`:
-* **Contract & Registry ([facets.go](../internal/agent/facets.go), [capabilities.go](../internal/agent/capabilities.go)):** Canonical DTOs, fail-closed `Capabilities` (`LocksExtraDirsOnResume`), optional facets (`StreamParserFactory`, `ModelResolver`, `TranscriptStatter`, `TranscriptUsageInspector`, `CLIInspector`), and [`Registry`](../internal/agent/registry.go).
-* **Shared Helpers ([fs.go](../internal/agentutil/fs.go), [toml.go](../internal/agentutil/toml.go), [provision.go](../internal/agentutil/provision.go)):** Leaf filesystem, CLI exec, ID validation, TOML config, provisioning, rate-limit, and prompt parsing helpers.
-* **Grok Leaf Plugin ([plugin.go](../internal/agents/grok/plugin.go)):** `grok.New()` implements `agent.Plugin` and facets, wired via `agent.Registry` across `ackbard`, `ackbar`, and `ackbar-hook`.
+* **Contract & Registry ([facets.go](../internal/agent/facets.go), [capabilities.go](../internal/agent/capabilities.go)):** Canonical DTOs, `Capabilities` (`LocksExtraDirsOnResume`), optional facets (`ACPDriver`, `CommandCatalog`, `StreamParserFactory`, `ModelResolver`, `TranscriptStatter`, `TranscriptUsageInspector`, `CLIInspector`), and [`Registry`](../internal/agent/registry.go).
+* **Shared Helpers ([fs.go](../internal/agentutil/fs.go), [acp_rpc.go](../internal/agentutil/acp_rpc.go)):** Leaf filesystem, CLI exec, ID validation, TOML, provisioning, rate-limit, prompt parsing, and `ACPConn` JSON-RPC helpers.
+* **Grok Leaf Plugin ([plugin.go](../internal/agents/grok/plugin.go)):** `grok.New()` implements `agent.Plugin`, `ACPDriver`, and `CommandCatalog`, wired via `agent.Registry` across `ackbard`, `ackbar`, and `ackbar-hook`.
 * **Daemon & Headless Bridge ([provider_bridge.go](../internal/daemon/provider_bridge.go), [headless_plugin.go](../internal/daemon/headless_plugin.go)):** [`PluginBridge`](../internal/daemon/provider_bridge.go), [`Server.RegisterPlugin`](../internal/daemon/server.go), and `HeadlessRunner` adapt `agent.Plugin` to daemon interfaces.
 
 ---

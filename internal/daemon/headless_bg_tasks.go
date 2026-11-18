@@ -244,6 +244,16 @@ func (c *workerBgController) onPokeTimerFired(myGen uint64) {
 		return
 	}
 	c.cancelAutoPokeLocked()
+	if g.acp != nil {
+		if err := c.openSyntheticBgTurnLocked(BgAutoPokePrompt); err != nil {
+			c.rt.mu.Unlock()
+			return
+		}
+		turn := *c.rt.activeTurn
+		c.rt.mu.Unlock()
+		go g.acp.runPromptTurn(turn, BgAutoPokePrompt)
+		return
+	}
 	stdinLine, fErr := formatPersistentStdinTurn(c.rt.workerMeta.Agent, c.rt.workerMeta.SessionID, c.rt.workerMeta.IsSupervisor, false, BgAutoPokePrompt)
 	if fErr != nil {
 		c.rt.mu.Unlock()

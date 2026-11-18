@@ -149,7 +149,7 @@ func (h *HeadlessRunner) TryAnswerControlRequest(ctx context.Context, sess *Sess
 
 func (h *HeadlessRunner) TryAnswerControlAction(ctx context.Context, sess *Session, actionLower, answerOrFeedback, reqRequestID string) (bool, error) {
 	_ = ctx
-	if h == nil || sess == nil || !strings.EqualFold(sess.Agent, "claude-code") {
+	if h == nil || sess == nil || (!strings.EqualFold(sess.Agent, "claude-code") && !isACPHeadlessAgent(h.pluginRegistry(), sess.Agent)) {
 		return false, nil
 	}
 	var sessionMu *sync.Mutex
@@ -180,11 +180,12 @@ func (h *HeadlessRunner) TryAnswerControlAction(ctx context.Context, sess *Sessi
 	} else if sess.Blocked != nil && sess.Blocked.RequestID != "" {
 		req.RequestID = sess.Blocked.RequestID
 	}
-	if sess.PermissionMode != "bypassPermissions" {
-		bypassSess := *sess
-		bypassSess.PermissionMode = "bypassPermissions"
-		req.ConfigFingerprint = ConfigFingerprint(&bypassSess)
-		req.ConfigFingerprintNoModel = ConfigFingerprintWithoutModel(&bypassSess)
+	targetPerm := defaultSessionPermissionMode(sess.Agent)
+	if sess.PermissionMode != targetPerm {
+		nextSess := *sess
+		nextSess.PermissionMode = targetPerm
+		req.ConfigFingerprint = ConfigFingerprint(&nextSess)
+		req.ConfigFingerprintNoModel = ConfigFingerprintWithoutModel(&nextSess)
 	}
 
 	resp, err := callWorkerSocket(sockPath, req, 2*time.Second)
@@ -221,8 +222,8 @@ func (h *HeadlessRunner) TryAnswerControlAction(ctx context.Context, sess *Sessi
 	sess.IsUnread = false
 	sess.LastEventAt = now
 	sess.LastStateChangeAt = now
-	if resp.PermissionMode == "bypassPermissions" {
-		sess.PermissionMode = "bypassPermissions"
+	if resp.PlanApproved {
+		sess.PermissionMode = resp.PermissionMode
 		ts := now.UTC()
 		if !ts.After(sess.MetadataUpdatedAt) {
 			ts = sess.MetadataUpdatedAt.Add(time.Nanosecond)
@@ -230,7 +231,7 @@ func (h *HeadlessRunner) TryAnswerControlAction(ctx context.Context, sess *Sessi
 		sess.MetadataUpdatedAt = ts
 	}
 	if approved {
-		if resp.PermissionMode == "bypassPermissions" {
+		if resp.PlanApproved {
 			sess.Activity = "Approved plan"
 		} else if strings.TrimSpace(answerOrFeedback) != "" {
 			sess.Activity = "Answered: " + strings.TrimSpace(answerOrFeedback)

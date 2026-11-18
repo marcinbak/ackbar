@@ -18,12 +18,13 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 * **`server.go`:** Core `Server` struct, HTTP `Mux()` route registration, token `authMiddleware`, CORS wrapper, SSE `/v1/events` broadcaster with immediate header flush and `: keepalive\n\n` heartbeat (20s default), background loop, version/update/settings/shutdown handlers, and normalized OS hostname fallback (`DefaultSystemHostName`).
 * **`server_hooks.go`:** Hook ingestion (`/v1/hooks/<agent>`), per-session FIFO serialization (`reserveSessionHook`), managed-only resolution, spawning adoption, in-place `/clear` / `/reset` rotation, pure-headless `Cwd` preservation, and subagent tracking.
 * **`server_sessions.go`:** Session listing, maintenance purge, remote-host proxy resolution (`resolveSessionOrProxy`), lifecycle control actions (`/v1/sessions/control`), session configuration (`PATCH /v1/sessions/{id}/config` with `normalizeModelInput`), interactive response dispatch (`applyInteractiveResponse`, `/v1/sessions/respond`), mode switching between headless and tmux (`/v1/sessions/take-wheel` and `/v1/sessions/switch-headless`), session spawn (`/v1/sessions/spawn`), and meta-routing (`/v1/meta/resolve`).
-* **`server_suggestions.go`:** Slash command (`/`), workspace file (`@`), and agent-aware model suggestions endpoint (`GET /v1/sessions/{id}/suggestions?kind=commands|files|models&q=...`) with 10-second directory caching, 5-minute Antigravity model discovery caching, and bounded `git ls-files` / `filepath.WalkDir` traversal (pruned via `IsProtectedHomeWalkDir`).
+* **`server_suggestions.go`:** Slash (`/` via builtins, `agent.CommandCatalog`, workspace/skills), file (`@`, 10s cache, `git ls-files`/`WalkDir` pruned via `IsProtectedHomeWalkDir`), and model suggestions (`GET /v1/sessions/{id}/suggestions`, 5m Antigravity cache).
 * **`server_chat.go`:** Headless/tmux prompt submission (`/v1/sessions/prompt` with `delay_seconds`, `deliver_at`, inline `/delay <duration> <prompt>` scheduling, and `client_turn_id` deduplication), prompt queue management (`GET`/`DELETE`/`POST` `/v1/sessions/prompt/queue` with `action: send_now`), `scheduled_prompts` SQLite persistence, SSE chat streaming (`/v1/sessions/chat/stream`), turn cancellation, automated session handover (`/v1/sessions/handover`), and transcript endpoints.
 * **`transcript_cache.go`:** Bounded in-memory transcript cache (128 entries) with `(size, mtimeNano)` validation, incremental Claude `.jsonl` seek-append parsing, and 3-second subagent discovery caching.
 * **`prompt_dedup.go`:** Bounded in-memory LRU prompt deduplication cache (512 entries, 10m TTL) tracking in-flight reservations and committed status for idempotent `client_turn_id` submissions.
 * **`headless.go`, `headless_persistent.go`, `headless_plugin.go`, `headless_spool.go`, `headless_errors.go`:** Headless coordinator, warm worker and one-shot `agent.HeadlessDriver` turn dispatch, stream error tracking, and monotonic NDJSON turn spooling.
 * **`headless_worker.go`, `headless_config.go`, `headless_mcp_fingerprint.go`, `headless_worker_ipc.go`:** Detached `--headless-worker` process, persistent stdio stream loop, configuration and normalized MCP fingerprinting, and Unix socket RPC.
+* **`headless_acp_*.go`:** Persistent ACP stdio runtime (`worker`, `turn`, `ipc`, `bridge`, `runner`, `rewind`) for `HeadlessModeACP` plugins.
 * **`headless_control.go`, `headless_control_codec.go`, `headless_control_runner.go`:** Stdio control gate parsing, `blocked_control` state tracking, and in-place `control_response` dispatch.
 * **`headless_bg_tasks.go`, `headless_bg_turn.go`, `headless_bg_watch.go`:** Warm background task tracking, debounced `turn_bg_*` auto-poke synthesis, and `watch_worker` IPC streaming.
 * **`headless_commands.go`:** Inline shell execution (`POST /v1/sessions/{id}/shell`), directory validation (`/add-dir`), in-place conversation rotation, `/clear`, `/reset`, and `/compact`.
@@ -65,20 +66,20 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 | `POST` | `/v1/sessions/prompt` | Submits prompt to headless or tmux session (supports `delay_seconds`, `deliver_at`, and idempotent `client_turn_id` deduplication). |
 | `GET` | `/v1/sessions/chat/stream` | SSE stream for real-time turn text, thoughts, subagents, and keepalive heartbeats (supports `?after_seq=<n>`, `?turn_id=<id>`, and `Last-Event-ID`). |
 | `GET` | `/v1/sessions/pty` | WebSocket endpoint streaming interactive PTY data to `xterm.js`. |
-| `POST` | `/v1/sessions/spawn` | Spawns a new agent process in a supervised tmux session using RFC 4122 UUIDv4 (supports prompt injection and zero-input `is_supervisor: true`). |
+| `POST` | `/v1/sessions/spawn` | Spawns a new agent process (tmux or headless) using RFC 4122 UUIDv4 (supports `prompt`, `yolo_mode`, `is_supervisor`). |
 | `POST` | `/v1/sessions/bind-supervisor` | Auto-binds a Supervisor session (`is_supervisor = true`) to a logical project `node_path` and `title` on Turn 1, broadcasting SSE and LWW sync. |
 | `POST` | `/v1/meta/resolve` | Derives host, agent, group, and existing session match from prompt via Jev AI / heuristics. |
 | `POST` | `/v1/hooks/{agent}` | Ingests agent lifecycle and tool hook events with in-place `/clear` rotation detection. |
 | `POST` | `/v1/sessions/control` | Executes control actions: `resume`, `restart`, `kill`, `move`, `rename`, `delete`, `handover`, `later`, `unlater`, `done`, `active`, `update_config`, `respond`. |
 | `POST` | `/v1/sessions/respond` | Dispatches interactive answers or permission decisions (accepts optional `request_id`; returns `409 Conflict` on stale stdio control gates). |
-| `PATCH` | `/v1/sessions/{id}/config` | Updates session `model`, `effort`, `permission_mode`, and `extra_dirs`; normalizes model labels and resets on `""`/`"default"`. |
+| `PATCH` | `/v1/sessions/{id}/config` | Updates `model`, `effort`, `permission_mode`, `yolo_mode`, and `extra_dirs`; normalizes model labels and resets on `""`/`"default"`. |
 | `POST` | `/v1/sessions/{id}/shell` | Executes shell command in session CWD via `/bin/sh -c` (30s timeout, 128KB cap, `-pgid` kill). |
 | `POST` | `/v1/sessions/{id}/clear` | Rotates conversation context in-place to `Conv N+1` while preserving session configuration. |
 | `POST` | `/v1/sessions/{id}/compact` | Triggers context compaction (native stream-json turn for Claude, daemon rotation for Antigravity). |
 | `GET` | `/v1/sessions/{id}/inspect` | Runs allowlisted CLI inspection (`kind=plugins|agents|doctor|context|cost`), computes token metrics, and populates `resolved_model`. |
 | `GET` | `/v1/sessions/{id}/diff` | Returns working directory Git status, diffstat, and unified diff (`GIT_OPTIONAL_LOCKS=0`). |
 | `GET` | `/v1/sessions/{id}/rewind` | Lists human turn checkpoints available for conversation rollback. |
-| `POST` | `/v1/sessions/{id}/rewind` | Rolls back session to target turn checkpoint via transcript clone or bounded history seed. |
+| `POST` | `/v1/sessions/{id}/rewind` | Rolls back session via transcript clone, history seed, or native ACP (`acp_native`; `cancel: true` cancels rewind). |
 | `GET` | `/v1/sessions/{id}/suggestions` | Returns `/` command/skill suggestions (`kind=commands`), `@` relative file path suggestions (`kind=files&q=...`), or agent-aware model options (`kind=models&q=...`). |
 | `POST` | `/v1/sessions/handover`| Initiates automated session handover, briefing extraction, and context rotation. |
 | `POST` | `/v1/sessions/mark-read` | Marks a session as read (`is_unread = false`), clearing visual unread cues. |
@@ -144,14 +145,14 @@ When several clients with different sizes are attached to one session (web, mobi
 Headless sessions (`engine_type = "headless"`, `tmux_name = ""`) execute turns through detached worker processes (`ackbard --headless-worker`) without allocating a `tmux` session:
 
 * **Warm Persistent Worker (`Setsid: true`):** Spawns detached `ackbard --headless-worker --worker-spec <path> --idle-ttl <dur>`. Keeps child CLI and MCP servers alive across turns.
-* **Unix Domain Socket RPC ([`headless_worker_ipc.go`](../internal/daemon/headless_worker_ipc.go)):** Communicates over `0600` sockets (`~/.config/ackbar/run`); supports `status`, `send_turn`, `set_model`, `restart_child`, `answer_control`, `watch_worker`, `subscribe`, `cancel`, `shutdown`.
+* **Unix Domain Socket RPC ([`headless_worker_ipc.go`](../internal/daemon/headless_worker_ipc.go)):** Communicates over `0600` sockets (`~/.config/ackbar/run`); supports `status`, `send_turn`, `set_model`, `set_config`, `restart_child`, `answer_control`, `acp_rewind_*`, `watch_worker`, `subscribe`, `cancel`, `shutdown`.
 * **Worker Sidecar Isolation:** Persists `w_<workerID>.worker.json` (`bg_task_count`, `pending_control`) and `turn_<id>.meta.json` (`Status: "blocked"`, `pending_control`) with `0600` permissions.
 * **Monotonic Turn Spool (`turn_<id>.ndjson`):** Sequenced events stream to disk atomically with `0600` permissions. Pre-writes `seq: 1` (`turn_start`) before provider output arrives.
 * **Idle-Warm Lifetime & Holds ([`headless_worker.go`](../internal/daemon/headless_worker.go), [`headless_bg_tasks.go`](../internal/daemon/headless_bg_tasks.go)):** `65m` default TTL (`ACKBAR_HEADLESS_IDLE_TTL`); `BgTaskCount > 0` or `BlockRateLimit` extends hold up to `6h`.
 * **Warm Background Tracking ([`headless_bg_tasks.go`](../internal/daemon/headless_bg_tasks.go)):** Tracks `background_tasks_changed` (replace semantics, excluding `ambient`/`off_host`/terminal), `task_started`, and `task_notification` (`BgTaskCount`).
 * **Synthetic `turn_bg_*` Auto-Poke ([`headless_bg_turn.go`](../internal/daemon/headless_bg_turn.go), [`headless_bg_watch.go`](../internal/daemon/headless_bg_watch.go)):** Opens `turn_bg_*` spools on unsolicited output or debounced `task_notification` (`600ms`/`3s`, `ACKBAR_BG_POKE_*`); streams via `watch_worker`.
 * **Idle-TTL Race Recovery:** If `send_turn` races with idle timeout reap, `HeadlessRunner.RunTurn` automatically respawns a warm worker.
-* **Configuration & Model Switching (`ConfigFingerprint`, `ConfigFingerprintWithoutModel`, `MCPFingerprint`):** Live `set_model` IPC updates Claude Code models in-process; normalized `MCPFingerprint` JSON digests and non-live config changes swap the child via `restart_child`.
+* **Configuration & Model Switching (`ConfigFingerprint`, `ConfigFingerprintWithoutModel`, `MCPFingerprint`):** Live `set_model` (Claude) and `set_config` (ACP) update warm workers in-process; non-live changes call `restart_child`.
 * **Active Turn Config Safety:** Mid-turn non-live config changes and active-turn `ConfigFingerprint` mismatches on reattach set `rotateAfterTurn`; `preserveLatestSessionConfigFromDB` prevents stale saves.
 * **Gapless SSE Replay & Synthesis:** `/v1/sessions/chat/stream` supports `?after_seq`, `?turn_id`, `Last-Event-ID` (filtering internal `model_detected` events); `/v1/sessions/transcript` synthesizes `in_flight_turn` (`activity_started_at`, `activity_kind`).
 * **Startup Re-Attachment & Recovery ([`headless_recovery.go`](../internal/daemon/headless_recovery.go)):** Adopts live workers, silently replays active spools from `maxSeq`, and preserves crashed spools with paused queues.
@@ -164,13 +165,13 @@ Headless sessions (`engine_type = "headless"`, `tmux_name = ""`) execute turns t
 * **Per-Turn Invocation & Conversation Continuity:**
   * **Claude Code:** Runs `claude -p --input-format stream-json --output-format stream-json --verbose --permission-prompt-tool stdio`; sends stdin NDJSON `{"type":"user"}`.
   * **Google Antigravity:** Runs `agy --input-format stream-json --output-format stream-json` omitting `-p`. Dispatches turns via stdin NDJSON `{"event":"user","message":{"role":"user","content":"<prompt>"}}`.
-  * **xAI Grok:** Runs `grok --single=<prompt> [-s <uuid> | -r <uuid>] --output-format streaming-json`. Dispatches detached one-shot turns without persistent stdio child processes.
+  * **xAI Grok:** Runs persistent `grok agent stdio --no-auto-update` via JSON-RPC 2.0 ACP (`HeadlessModeACP`), keeping child and MCP servers warm.
   * **Antigravity Boot Init Handling:** Buffers startup `{"event":"init"}` event until Turn 1 attaches. Migrates temporary spawn ID to canonical conversation ID atomically.
   * **Safe First-Turn Recovery:** Persists prompts only after initial event arrives or process succeeds. Prevents broken resume state on early startup failure.
   * **Initial Prompt on Spawn:** Passing non-empty `prompt` to `POST /v1/sessions/spawn` triggers Turn 1 immediately in background.
   * **Session Configuration:** Passes `--model`, `--effort`, `--add-dir` (locked post-spawn on Grok), and permission flags (`--allow-dangerously-skip-permissions` alongside Claude non-bypass modes).
-  * **Interactive Tool Interception ([`headless_control.go`](../internal/daemon/headless_control.go)):** Claude `control_request` pauses in `blocked_control` and resumes in-place via `answer_control`; non-stdio agents reap and resume.
-  * **In-Place Control Gates ([`headless_control_codec.go`](../internal/daemon/headless_control_codec.go), [`headless_control_runner.go`](../internal/daemon/headless_control_runner.go)):** Handles `control_cancel_request` and `keep_alive`; `ExitPlanMode` approval updates `PermissionMode` (`bypassPermissions`) and `ConfigFingerprint` in-place, emitting `control_resolved`.
+  * **Interactive Tool Interception ([`headless_control.go`](../internal/daemon/headless_control.go)):** Claude `control_request` and ACP server requests pause in `blocked_control` and resume via `answer_control`.
+  * **In-Place Control Gates ([`headless_control_codec.go`](../internal/daemon/headless_control_codec.go), [`headless_control_runner.go`](../internal/daemon/headless_control_runner.go)):** Handles `control_cancel_request`, `keep_alive`, and ACP gates; `ExitPlanMode` resets `"plan"` mode in-place, emitting `control_resolved`.
   * **OAuth Authentication Interception (`BlockAuth`):** Pauses queue on OAuth failure, persists `blocked_meta`, emits `interactive_block`, and auto-resumes on successful callback.
   * **Transactional Prompt Queue (`scheduled_prompts`):** Claims ready prompts (`ClaimReadyPrompt`) and deletes from memory and SQLite only after `RunTurn` or `tmux.SendInput` succeeds.
 
@@ -266,6 +267,7 @@ The SQLite database (`~/.config/ackbar/ackbard.db`) uses CGO-free pure Go SQLite
 * `current_task_id`: Tracks the active Ackbar task ID bound to the session (if any), categorizing the session under the `📋 Tasks` subsection. Each host strictly stores only its own local sessions in the `sessions` table (no cross-host session replicas).
 * `blocked_meta`: Persists structured JSON metadata (`auth_target`, `auth_kind`, `auth_server`, `auth_url`, `auth_hint`, `flow_id`) for sessions in `BlockAuth` state.
 * `extra_dirs`: Persists JSON array of additional allowed directory paths (`--add-dir`) for agent workspace access. On Grok, `extra_dirs` is immutable after creation because `grok -r` rejects `--add-dir`.
+* `yolo_mode`: Persists boolean opt-in (`0` default) to pass `--always-approve` on ACP/Grok launches.
 * `model`: Stores explicit model override. Empty string tracks agent default; `resolved_model` dynamically exposes active model without database migration.
 * `task_deliverables` LWW columns: Adds `updated_at`, `provider`, `content_md`, `deleted_at` (tombstone for LWW sync), `metadata_json` (structured `RetroMetrics`), and `dedup_key` with indexes for peer replication.
 

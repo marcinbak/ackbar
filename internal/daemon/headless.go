@@ -1206,12 +1206,16 @@ func (h *HeadlessRunner) CancelTurn(sessionID string) error {
 		h.mu.Unlock()
 	}
 
-	if workerActive && sendWorkerCancel(meta) == nil {
-		h.clearControlBlockState(sessionID)
-		h.SetQueuePaused(sessionID, true)
-		h.EmitQueueUpdate(sessionID)
-		deleteWarmHandle()
-		return nil
+	if workerActive {
+		if cancelResp, err := sendWorkerCancelResp(meta); err == nil {
+			h.clearControlBlockState(sessionID)
+			h.SetQueuePaused(sessionID, true)
+			h.EmitQueueUpdate(sessionID)
+			if cancelResp == nil || !cancelResp.KeptWarm {
+				deleteWarmHandle()
+			}
+			return nil
+		}
 	}
 	h.clearControlBlockState(sessionID)
 	deleteWarmHandle()
@@ -1538,6 +1542,14 @@ func (h *HeadlessRunner) handleAntigravityInit(sess *Session, convID, prompt str
 	}
 	if sess.NativeID != convID {
 		oldID := sess.ID
+		if sess.Agent != "" && sess.Host != "" {
+			newID := fmt.Sprintf("%s:%s:%s", sess.Agent, sess.Host, convID)
+			if oldID != "" && oldID != newID && h.db != nil {
+				if existing, _ := h.db.GetSession(newID); existing != nil && existing.ID != oldID && existing.OldID != oldID {
+					return
+				}
+			}
+		}
 		sess.NativeID = convID
 		changed = true
 		if sess.TmuxName != "" {

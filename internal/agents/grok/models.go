@@ -59,6 +59,9 @@ func sortModels(models []agent.ModelSuggestion) {
 }
 
 func (p *Plugin) CollectModels(homeDir string) []agent.ModelSuggestion {
+	if acpModels := collectACPModels(homeDir); len(acpModels) > 0 {
+		return acpModels
+	}
 	cachePath := filepath.Join(HomeDir(homeDir), "models_cache.json")
 	if data, err := os.ReadFile(cachePath); err == nil && len(data) > 0 {
 		var cache struct {

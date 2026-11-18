@@ -485,6 +485,24 @@ func (s *Server) collectCommands(cwd string, agentOpt ...string) []CommandSugges
 		seen[b.Name] = true
 	}
 
+	if s != nil && s.PluginRegistry() != nil && agent != "" {
+		if cat, ok := s.PluginRegistry().AsCommandCatalog(agent); ok {
+			for _, ac := range cat.CollectCommands(s.effectiveHomeDir()) {
+				name := strings.TrimPrefix(strings.TrimSpace(ac.Command), "/")
+				if name != "" && !seen[name] {
+					cmds = append(cmds, CommandSuggestion{
+						Name:          name,
+						Trigger:       "/" + name,
+						Description:   ac.Description,
+						Category:      "Agent Command",
+						ExecutionMode: "prompt",
+					})
+					seen[name] = true
+				}
+			}
+		}
+	}
+
 	// 2. Workspace Commands (.claude/commands/*.md & .agents/workflows/*.md)
 	if cwd != "" {
 		for _, c := range scanMarkdownCommands(filepath.Join(cwd, ".claude", "commands"), "Workspace Command") {
