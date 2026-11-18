@@ -621,6 +621,7 @@ func (s *Server) populateFiles(cwd string) []FileSuggestion {
 	// 2. Fallback to bounded filepath.WalkDir
 	var list []FileSuggestion
 	cleanRoot := filepath.Clean(cwd)
+	home := s.effectiveHomeDir()
 	count := 0
 
 	ignoredDirs := map[string]bool{
@@ -660,7 +661,7 @@ func (s *Server) populateFiles(cwd string) []FileSuggestion {
 
 		base := d.Name()
 		if d.IsDir() {
-			if ignoredDirs[base] {
+			if ignoredDirs[base] || IsProtectedHomeWalkDir(p, home, base) {
 				return fs.SkipDir
 			}
 			if strings.HasPrefix(base, ".") && base != ".claude" && base != ".agents" {

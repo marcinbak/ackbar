@@ -117,9 +117,15 @@ ackbar update --force
 * **Standalone / Local Bin Users (`~/.local/bin`):** `ackbar update`, [`daemon_lifecycle.go`](../cmd/ackbar/daemon_lifecycle.go), and [`service_restart.go`](../cmd/ackbar/service_restart.go) probe `/v1/version` (`2s`), drain via `/v1/shutdown?drain=true`, and poll managed restarts (`5s`) without unmanaged fallbacks.
 * **Service Process Isolation ([`service_isolation.go`](../internal/daemon/service_isolation.go)):** Daemon startup and updates set `KillMode=process` (systemd) and `AbandonProcessGroup` (launchd) on writable non-symlink unit files.
 * **Worker-Safe Daemon Restart (`DaemonSafeShellHelpers`):** Update scripts filter out `--headless-worker` PIDs; never run raw `pkill -x ackbard` or `pgrep -x ackbard`.
+* **macOS Code Signing ([`codesign.go`](../internal/version/codesign.go)):** Local updates, `setup-hooks`, and SSH restarts re-sign staged binaries when unlocked; cross-host staging (`DownloadAndInstallForPlatform`) skips signing.
 * **In-App Web Discovery:**
   * **Web GUI:** Displays an update pill in the top header and provides a 1-click update modal.
   * **Fleet Peers:** Cross-compares daemon versions in multi-machine setups; remote hosts ahead of the local client are tagged `[AHEAD]` while preventing accidental downgrades.
+
+### Persistent macOS Code Signing (`ackbar setup-codesign`)
+* **Command ([`codesign_cmd.go`](../cmd/ackbar/codesign_cmd.go)):** Run `ackbar setup-codesign [--identity <name|sha1>] [--verify]` to keep macOS TCC grants across updates.
+* **Identity & Trust:** Bootstraps `"Ackbar Local Code Signing"` in `login.keychain-db` and writes `~/.config/ackbar/codesign-identity` (`ACKBAR_CODESIGN_IDENTITY` overrides).
+* **Certificate-Root Pinning:** Atomically signs `com.marcinbak.<bin>` binaries using a certificate-root Designated Requirement instead of per-build `cdhash`, then restarts `ackbard`.
 
 ---
 

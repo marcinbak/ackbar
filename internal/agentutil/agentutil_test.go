@@ -192,6 +192,9 @@ func TestTOMLAndProvisionHelpers(t *testing.T) {
 	if !strings.Contains(string(raw), "# Header") || ExtractRulesVersion(string(raw)) != "2.0.0" {
 		t.Fatalf("unexpected rules content: %q", string(raw))
 	}
+	if !strings.Contains(string(raw), "### Host & Filesystem Safety") || !strings.Contains(string(raw), "~/Pictures") {
+		t.Fatalf("expected Host & Filesystem Safety section in rules block: %q", string(raw))
+	}
 
 	skillDir := filepath.Join(t.TempDir(), "skill")
 	if err := InstallEmbeddedSkill(skillDir); err != nil {

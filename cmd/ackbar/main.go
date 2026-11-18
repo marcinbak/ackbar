@@ -61,6 +61,10 @@ func main() {
 		runAccountCmd(os.Args[2:])
 		os.Exit(0)
 	}
+	if len(os.Args) > 1 && (os.Args[1] == "setup-codesign" || os.Args[1] == "codesign") {
+		runSetupCodesignCmd(os.Args[2:])
+		os.Exit(0)
+	}
 
 	shouldSetup := false
 	isGUICmd := false
@@ -120,6 +124,7 @@ Usage:
 Available Commands:
   web, gui          Launch the Web GUI in your browser (default)
   setup-hooks       Auto-configure agent hooks and install binaries
+  setup-codesign    Configure persistent macOS code signing for TCC permissions
   agent, agents     Manage agent providers, MCP servers, and skills
   account, accounts Manage agent profiles and authentication accounts
   mcp               Run the Ackbar MCP server over stdio
@@ -188,6 +193,7 @@ func runSetupHooks() error {
 			_ = cmd2.Run()
 			return
 		}
+		_ = version.CodesignBinaryFile(context.Background(), tmpTarget, filepath.Base(target))
 		if err := os.Rename(tmpTarget, target); err != nil {
 			_ = os.Remove(tmpTarget)
 		}

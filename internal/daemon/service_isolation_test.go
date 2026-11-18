@@ -169,8 +169,12 @@ func TestDaemonSafeShellHelpers_SkipsHeadlessWorkerPIDs(t *testing.T) {
 	tmpDir := t.TempDir()
 	procName := fmt.Sprintf("ackt%d", os.Getpid()%100000)
 	scriptPath := filepath.Join(tmpDir, procName)
-	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\nsleep 30\n"), 0755); err != nil {
-		t.Fatalf("write test script: %v", err)
+	srcPath := filepath.Join(tmpDir, "main.go")
+	if err := os.WriteFile(srcPath, []byte("package main\nimport \"time\"\nfunc main() { time.Sleep(30 * time.Second) }\n"), 0644); err != nil {
+		t.Fatalf("write test source: %v", err)
+	}
+	if out, err := exec.Command("go", "build", "-o", scriptPath, srcPath).CombinedOutput(); err != nil {
+		t.Fatalf("build test binary: %v (%s)", err, string(out))
 	}
 
 	workerCmd := exec.Command(scriptPath, "--headless-worker", "--worker-spec", "/tmp/w.json")
