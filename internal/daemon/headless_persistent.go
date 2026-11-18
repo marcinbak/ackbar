@@ -19,7 +19,7 @@ import (
 type warmWorkerHandle struct {
 	WorkerID, SessionID, NativeID, SocketPath, WorkerMetaPath string
 	ConfigFingerprint, ConfigFingerprintNoModel               string
-	MCPFingerprint, Bin                                       string
+	ImmutableFingerprint, MCPFingerprint, Bin                 string
 	Args                                                      []string
 	WorkerPID, ChildPID                                       int
 	rotateAfterTurn                                           bool
@@ -149,7 +149,8 @@ func (h *HeadlessRunner) recordTurnActive(sess *Session, prompt, turnID string, 
 
 func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt string) error {
 	_ = ctx
-	if sess.Agent != "claude-code" && sess.Agent != "antigravity" {
+	isACP := isACPHeadlessAgent(h.pluginRegistry(), sess.Agent)
+	if sess.Agent != "claude-code" && sess.Agent != "antigravity" && !isACP {
 		if reg := h.pluginRegistry(); reg != nil {
 			if hd, ok := reg.AsHeadlessDriver(sess.Agent); ok && hd.Mode() == agent.HeadlessModeOneShot {
 				return h.runOneShotPluginTurn(sess, prompt, hd)
@@ -214,6 +215,14 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 	mcpFP := MCPFingerprint(sess, h.db, home)
 
 	if handle != nil {
+		if isACP && hCfgFP != fp && !hRotate && !hRestartChild && (hMCPFP == "" || hMCPFP == mcpFP) {
+			if tryLiveUpdateACPWarmWorker(h, sess, handle, fp, fpNoModel) {
+				hCfgFP = fp
+				h.mu.RLock()
+				hArgs = slices.Clone(handle.Args)
+				h.mu.RUnlock()
+			}
+		}
 		if hCfgFP != fp || hRotate {
 			h.ShutdownSessionWorker(sess.ID, sess.NativeID, 3*time.Second)
 			handle, isExisting = nil, true
@@ -230,7 +239,15 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 				}
 			}
 			if handle != nil {
-				if stdinLine, fErr := formatPersistentStdinTurn(sess.Agent, sess.ID, sess.IsSupervisor, false, prompt); fErr == nil {
+				var stdinLine string
+				var fErr error
+				ipcTimeout := 500 * time.Millisecond
+				if isACP {
+					ipcTimeout = 2500 * time.Millisecond
+				} else {
+					stdinLine, fErr = formatPersistentStdinTurn(sess.Agent, sess.ID, sess.IsSupervisor, false, prompt)
+				}
+				if fErr == nil {
 					turnStart := time.Now().UTC()
 					turnID := fmt.Sprintf("turn_%d_%s", turnStart.UnixNano(), generateUUID()[:8])
 					meta, startEvt, sErr := h.initTurnSpool(runDir, turnID, sess.ID, sess.NativeID, sess.Agent, sess.Cwd, prompt, hBin, hArgs, hSock, "", hWorkerID, hWorkerMetaPath, turnStart)
@@ -239,9 +256,9 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 						h.monitoredTurns[turnID] = true
 						h.mu.Unlock()
 						resp, cErr := callWorkerSocket(hSock, workerIPCReq{
-							Op: "send_turn", MetaPath: meta.MetaPath, TurnID: turnID, StdinLine: stdinLine,
+							Op: "send_turn", MetaPath: meta.MetaPath, TurnID: turnID, StdinLine: stdinLine, Prompt: prompt,
 							SessionID: sess.ID, NativeID: sess.NativeID,
-						}, 500*time.Millisecond)
+						}, ipcTimeout)
 						if cErr == nil && resp != nil && resp.OK {
 							h.mu.Lock()
 							handle.ChildPID = resp.ChildPID
@@ -278,7 +295,7 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 		return fmt.Errorf("failed to allocate worker socket: %w", err)
 	}
 	workerMetaPath := filepath.Join(runDir, workerID+".worker.json")
-	bin, args, bErr := buildPersistentArgs(sess, isExisting)
+	bin, args, extraEnv, sysPrompt, bErr := buildPersistentOrACPArgs(h.pluginRegistry(), sess, home, h.db, isExisting)
 	if bErr != nil {
 		_ = os.Remove(sockPath)
 		if sockTempDir != "" {
@@ -286,6 +303,10 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 		}
 		return bErr
 	}
+	if len(extraEnv) > 0 {
+		cleanEnv = append(cleanEnv, extraEnv...)
+	}
+	immFP := acpImmutableFingerprint(sess)
 	meta, startEvt, sErr := h.initTurnSpool(runDir, turnID, sess.ID, sess.NativeID, sess.Agent, sess.Cwd, prompt, bin, args, sockPath, sockTempDir, workerID, workerMetaPath, turnStart)
 	if sErr != nil {
 		_ = os.Remove(sockPath)
@@ -298,7 +319,8 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 	dur := h.getIdleTTL()
 	workerMeta := &SessionWorkerMeta{
 		WorkerID: workerID, SessionID: sess.ID, OrigSessionID: sess.ID, NativeID: sess.NativeID,
-		Agent: sess.Agent, Cwd: sess.Cwd, IsSupervisor: sess.IsSupervisor, ConfigFingerprint: fp, ConfigFingerprintNoModel: fpNoModel, MCPFingerprint: mcpFP,
+		Agent: sess.Agent, Cwd: sess.Cwd, IsSupervisor: sess.IsSupervisor, ConfigFingerprint: fp, ConfigFingerprintNoModel: fpNoModel,
+		ImmutableFingerprint: immFP, MCPFingerprint: mcpFP, IsExisting: isExisting, SystemPrompt: sysPrompt, PermissionMode: sess.PermissionMode,
 		Bin: bin, Args: args, SocketPath: sockPath, SocketTempDir: sockTempDir, WorkerMetaPath: workerMetaPath,
 		State: "starting", ActiveTurnID: turnID, ActiveMetaPath: meta.MetaPath, IdleTTLNs: dur, StartedAt: turnStart, UpdatedAt: turnStart,
 	}
@@ -340,7 +362,8 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 
 	handle = &warmWorkerHandle{
 		WorkerID: workerID, SessionID: sess.ID, NativeID: sess.NativeID, SocketPath: sockPath,
-		WorkerMetaPath: workerMetaPath, ConfigFingerprint: fp, ConfigFingerprintNoModel: fpNoModel, MCPFingerprint: mcpFP, Bin: bin, Args: args, WorkerPID: workerCmd.Process.Pid,
+		WorkerMetaPath: workerMetaPath, ConfigFingerprint: fp, ConfigFingerprintNoModel: fpNoModel,
+		ImmutableFingerprint: immFP, MCPFingerprint: mcpFP, Bin: bin, Args: args, WorkerPID: workerCmd.Process.Pid,
 	}
 	h.mu.Lock()
 	h.warmWorkers[sess.ID] = handle
@@ -569,6 +592,7 @@ func (h *HeadlessRunner) NotifyConfigChanged(sess *Session) {
 	}
 
 	home, _ := os.UserHomeDir()
+	isACP := isACPHeadlessAgent(h.pluginRegistry(), sess.Agent)
 	isExisting := sess.FirstPrompt != "" || sess.LastPrompt != "" || hasConversationOnDiskWithRegistry(h.pluginRegistry(), sess, home, h.db)
 	newFP := ConfigFingerprint(sess)
 	newNoModelFP := ConfigFingerprintWithoutModel(sess)
@@ -595,6 +619,9 @@ func (h *HeadlessRunner) NotifyConfigChanged(sess *Session) {
 		workerID := handle.WorkerID
 		h.mu.Unlock()
 
+		if isACP && tryLiveUpdateACPWarmWorker(h, sess, handle, newFP, newNoModelFP) {
+			return
+		}
 		if canLiveSetModel && h.setHandleModelLive(sess, handle, isExisting, newFP, home, 2*time.Second) {
 			return
 		}
@@ -629,8 +656,17 @@ func (h *HeadlessRunner) NotifyConfigChanged(sess *Session) {
 			WorkerID: wm.WorkerID, SessionID: sess.ID, NativeID: sess.NativeID,
 			SocketPath: wm.SocketPath, WorkerMetaPath: wm.WorkerMetaPath,
 			ConfigFingerprint: wm.ConfigFingerprint, ConfigFingerprintNoModel: wm.ConfigFingerprintNoModel,
-			MCPFingerprint: wm.MCPFingerprint, Bin: wm.Bin, Args: wm.Args,
+			ImmutableFingerprint: wm.ImmutableFingerprint, MCPFingerprint: wm.MCPFingerprint, Bin: wm.Bin, Args: wm.Args,
 			WorkerPID: wm.WorkerPID, ChildPID: wm.ChildPID,
+		}
+		if isACP && tryLiveUpdateACPWarmWorker(h, sess, tmpHandle, newFP, newNoModelFP) {
+			h.mu.Lock()
+			if h.warmWorkers[sess.ID] == nil {
+				h.warmWorkers[sess.ID] = tmpHandle
+			}
+			h.mu.Unlock()
+			h.ensureWarmWatcher(tmpHandle)
+			return
 		}
 		if sess.Agent == "claude-code" && wm.ConfigFingerprintNoModel != "" && wm.ConfigFingerprintNoModel == newNoModelFP {
 			if h.setHandleModelLive(sess, tmpHandle, isExisting, newFP, home, 2*time.Second) {
@@ -683,12 +719,16 @@ func (h *HeadlessRunner) restartHandleChild(sess *Session, handle *warmWorkerHan
 	if sockPath == "" {
 		return false
 	}
-	bin, args, err := buildPersistentArgs(sess, isExisting)
+	bin, args, extraEnv, _, err := buildPersistentOrACPArgs(h.pluginRegistry(), sess, home, h.db, isExisting)
 	if err != nil {
 		return false
 	}
 	fpNoModel := ConfigFingerprintWithoutModel(sess)
+	immFP := acpImmutableFingerprint(sess)
 	cleanEnv := buildWorkerEnvWithRegistry(h.pluginRegistry(), sess, h.db, home)
+	if len(extraEnv) > 0 {
+		cleanEnv = append(cleanEnv, extraEnv...)
+	}
 	resp, cErr := callWorkerSocket(sockPath, workerIPCReq{
 		Op:                       "restart_child",
 		SessionID:                sess.ID,
@@ -698,7 +738,9 @@ func (h *HeadlessRunner) restartHandleChild(sess *Session, handle *warmWorkerHan
 		Env:                      cleanEnv,
 		ConfigFingerprint:        fp,
 		ConfigFingerprintNoModel: fpNoModel,
+		ImmutableFingerprint:     immFP,
 		MCPFingerprint:           mcpFP,
+		IsExisting:               isExisting,
 	}, timeout)
 	if cErr != nil || resp == nil || !resp.OK {
 		return false
@@ -709,6 +751,7 @@ func (h *HeadlessRunner) restartHandleChild(sess *Session, handle *warmWorkerHan
 	handle.ChildPID = resp.ChildPID
 	handle.ConfigFingerprint = fp
 	handle.ConfigFingerprintNoModel = fpNoModel
+	handle.ImmutableFingerprint = immFP
 	handle.MCPFingerprint = mcpFP
 	handle.rotateAfterTurn = false
 	handle.restartChildAfterTurn = false
@@ -824,8 +867,12 @@ func pingWorkerSocket(meta *TurnSpoolMeta) bool {
 	return ok
 }
 
+func sendWorkerCancelResp(meta *TurnSpoolMeta) (*workerIPCResp, error) {
+	return callWorkerTurnSocket(meta, "cancel", 350*time.Millisecond)
+}
+
 func sendWorkerCancel(meta *TurnSpoolMeta) error {
-	_, err := callWorkerTurnSocket(meta, "cancel", 350*time.Millisecond)
+	_, err := sendWorkerCancelResp(meta)
 	return err
 }
 

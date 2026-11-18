@@ -11,6 +11,9 @@ import (
 
 func TestHeadless_BuildTurnSpec(t *testing.T) {
 	p := New()
+	if p.Mode() != agent.HeadlessModeACP {
+		t.Fatalf("expected HeadlessModeACP, got %q", p.Mode())
+	}
 	sess := &agent.Session{
 		ID:             "grok:local:sess-123",
 		Agent:          "grok",
@@ -21,59 +24,63 @@ func TestHeadless_BuildTurnSpec(t *testing.T) {
 		ExtraDirs:      []string{"/tmp/extra1", "/tmp/extra2", "-unsafe-flag", "relative/dir"},
 	}
 
-	spec1, err := p.BuildTurnSpec(agent.HeadlessTurnInput{
-		Session: sess, Prompt: "hello turn 1", SystemPrompt: "be supervisor",
-	})
+	spec1, err := p.BuildTurnSpec(agent.HeadlessTurnInput{Session: sess})
 	if err != nil {
 		t.Fatalf("BuildTurnSpec Turn 1 failed: %v", err)
 	}
 	args1Str := strings.Join(spec1.Args, " ")
 	for _, want := range []string{
-		"--single=[System Instruction: be supervisor]\n\nhello turn 1",
-		"-s sess-123",
+		"agent stdio --no-auto-update",
 		"--add-dir /tmp/extra1",
 		"--add-dir /tmp/extra2",
+		"--permission-mode plan",
 		"-m grok-4.7",
 		"--effort high",
-		"--permission-mode plan",
-		"--output-format streaming-json",
 	} {
 		if !strings.Contains(args1Str, want) {
 			t.Errorf("Turn 1 missing %q in %s", want, args1Str)
 		}
 	}
-	if strings.Contains(args1Str, "-unsafe-flag") || strings.Contains(args1Str, "relative/dir") {
-		t.Errorf("invalid ExtraDirs should be skipped: %s", args1Str)
+	if strings.Contains(args1Str, "-unsafe-flag") || strings.Contains(args1Str, "relative/dir") || strings.Contains(args1Str, "--always-approve") {
+		t.Errorf("unexpected flags in Turn 1: %s", args1Str)
 	}
 
-	spec2, err := p.BuildTurnSpec(agent.HeadlessTurnInput{
-		Session: sess, Prompt: "hello turn 2", IsExisting: true, SystemPrompt: "be supervisor",
-	})
+	spec2, err := p.BuildTurnSpec(agent.HeadlessTurnInput{Session: sess, IsExisting: true})
 	if err != nil {
 		t.Fatalf("BuildTurnSpec Turn 2 failed: %v", err)
 	}
-	args2Str := strings.Join(spec2.Args, " ")
-	if !strings.Contains(args2Str, "--single=hello turn 2") || !strings.Contains(args2Str, "-r sess-123") || strings.Contains(args2Str, "--add-dir") {
-		t.Errorf("Turn 2 args mismatch (must not include --add-dir): %s", args2Str)
+	if strings.Contains(strings.Join(spec2.Args, " "), "--add-dir") {
+		t.Errorf("Turn 2 must not include --add-dir: %v", spec2.Args)
 	}
 
-	hyphenSpec, _ := p.BuildTurnSpec(agent.HeadlessTurnInput{
-		Session: &agent.Session{NativeID: "sess-hyphen", PermissionMode: "plan"},
-		Prompt:  "--always-approve",
-	})
-	if !strings.Contains(strings.Join(hyphenSpec.Args, " "), "--single=--always-approve") {
-		t.Errorf("hyphen prompt mismatch: %v", hyphenSpec.Args)
-	}
-
-	for _, pm := range []string{"", "default", "bypassPermissions", "auto"} {
-		approveSpec, _ := p.BuildTurnSpec(agent.HeadlessTurnInput{
-			Session: &agent.Session{NativeID: "sess-approve", PermissionMode: pm},
-			Prompt:  "run",
+	for _, pm := range []string{"", "default"} {
+		defSpec, _ := p.BuildTurnSpec(agent.HeadlessTurnInput{
+			Session: &agent.Session{NativeID: "sess-def", PermissionMode: pm},
 		})
-		s := strings.Join(approveSpec.Args, " ")
-		if !strings.Contains(s, "--always-approve") || strings.Contains(s, "--permission-mode") {
-			t.Errorf("permission mode %q mismatch: %s", pm, s)
+		s := strings.Join(defSpec.Args, " ")
+		if strings.Contains(s, "--always-approve") || strings.Contains(s, "--permission-mode") {
+			t.Errorf("default permission mode %q should omit approval flags: %s", pm, s)
 		}
+	}
+	for _, pm := range []string{"auto", "acceptEdits", "dontAsk"} {
+		pmSpec, _ := p.BuildTurnSpec(agent.HeadlessTurnInput{
+			Session: &agent.Session{NativeID: "sess-pm", PermissionMode: pm},
+		})
+		if !strings.Contains(strings.Join(pmSpec.Args, " "), "--permission-mode "+pm) {
+			t.Errorf("expected --permission-mode %s in %v", pm, pmSpec.Args)
+		}
+	}
+	yoloSpec, _ := p.BuildTurnSpec(agent.HeadlessTurnInput{
+		Session: &agent.Session{NativeID: "sess-yolo", YoloMode: true, PermissionMode: "plan"},
+	})
+	if !strings.Contains(strings.Join(yoloSpec.Args, " "), "--always-approve") {
+		t.Errorf("YoloMode=true should emit --always-approve: %v", yoloSpec.Args)
+	}
+	bypassSpec, _ := p.BuildTurnSpec(agent.HeadlessTurnInput{
+		Session: &agent.Session{NativeID: "sess-bypass", PermissionMode: "bypassPermissions"},
+	})
+	if !strings.Contains(strings.Join(bypassSpec.Args, " "), "--always-approve") {
+		t.Errorf("bypassPermissions should emit --always-approve: %v", bypassSpec.Args)
 	}
 }
 

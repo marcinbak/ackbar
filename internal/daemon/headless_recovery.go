@@ -152,6 +152,7 @@ func preserveLatestSessionConfigFromDB(db *DB, sess *Session, lookupIDs ...strin
 		sess.Model = best.Model
 		sess.Effort = best.Effort
 		sess.PermissionMode = best.PermissionMode
+		sess.YoloMode = best.YoloMode
 		if best.ExtraDirs != nil {
 			sess.ExtraDirs = append([]string(nil), best.ExtraDirs...)
 		} else {

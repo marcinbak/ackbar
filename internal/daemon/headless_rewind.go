@@ -15,6 +15,7 @@ import (
 )
 
 type rewindHumanTurn struct {
+	ID        string    `json:"id,omitempty"`
 	Turn      int       `json:"turn"`
 	Timestamp time.Time `json:"timestamp"`
 	Preview   string    `json:"preview"`
@@ -185,6 +186,12 @@ func (s *Server) handleSessionRewind(w http.ResponseWriter, r *http.Request, ses
 		return
 	}
 
+	if r.Method == http.MethodGet {
+		if s.tryACPRewindGet(w, sess) {
+			return
+		}
+	}
+
 	home := s.effectiveHomeDir()
 	var turns []rewindHumanTurn
 	var rawLines []string
@@ -206,6 +213,10 @@ func (s *Server) handleSessionRewind(w http.ResponseWriter, r *http.Request, ses
 			"total_turns": len(turns),
 			"turns":       turns,
 		})
+		return
+	}
+
+	if r.Method == http.MethodPost && s.tryACPRewindPost(w, r, sess, bodyBytes) {
 		return
 	}
 

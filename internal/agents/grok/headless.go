@@ -13,7 +13,7 @@ import (
 )
 
 func (*Plugin) Mode() agent.HeadlessExecMode {
-	return agent.HeadlessModeOneShot
+	return agent.HeadlessModeACP
 }
 
 func (*Plugin) ResolveBinary() (string, error) {
@@ -39,14 +39,8 @@ func (p *Plugin) BuildTurnSpec(in agent.HeadlessTurnInput) (agent.HeadlessTurnSp
 		return agent.HeadlessTurnSpec{}, fmt.Errorf("unsafe grok session ID: %q", in.Session.NativeID)
 	}
 
-	effectivePrompt := in.Prompt
-	if !in.IsExisting && in.SystemPrompt != "" {
-		effectivePrompt = fmt.Sprintf("[System Instruction: %s]\n\n%s", in.SystemPrompt, in.Prompt)
-	}
-
-	var args []string
+	args := []string{"agent", "stdio", "--no-auto-update"}
 	if !in.IsExisting {
-		args = []string{"--single=" + effectivePrompt, "-s", in.Session.NativeID, "--output-format", "streaming-json"}
 		for _, dir := range in.Session.ExtraDirs {
 			dir = strings.TrimSpace(dir)
 			if dir != "" && !strings.ContainsAny(dir, "\x00\r\n") {
@@ -56,21 +50,22 @@ func (p *Plugin) BuildTurnSpec(in agent.HeadlessTurnInput) (agent.HeadlessTurnSp
 				}
 			}
 		}
-	} else {
-		// Resumed Grok sessions lock extra_dirs at creation; passing --add-dir on -r errors out.
-		args = []string{"--single=" + effectivePrompt, "-r", in.Session.NativeID, "--output-format", "streaming-json"}
 	}
 
-	switch strings.ToLower(strings.TrimSpace(in.Session.PermissionMode)) {
-	case "plan":
-		args = append(args, "--permission-mode", "plan")
-	case "acceptedits":
-		args = append(args, "--permission-mode", "acceptEdits")
-	case "dontask":
-		args = append(args, "--permission-mode", "dontAsk")
-	default:
-		// Headless execution cannot answer interactive stdin prompts.
+	pm := strings.ToLower(strings.TrimSpace(in.Session.PermissionMode))
+	if in.Session.YoloMode || pm == "bypasspermissions" {
 		args = append(args, "--always-approve")
+	} else {
+		switch pm {
+		case "plan":
+			args = append(args, "--permission-mode", "plan")
+		case "acceptedits":
+			args = append(args, "--permission-mode", "acceptEdits")
+		case "dontask":
+			args = append(args, "--permission-mode", "dontAsk")
+		case "auto":
+			args = append(args, "--permission-mode", "auto")
+		}
 	}
 
 	if m := strings.TrimSpace(in.Session.Model); m != "" && !strings.EqualFold(m, "default") && agentutil.IsSafeCLIArg(m) {
@@ -88,7 +83,7 @@ func (p *Plugin) BuildTurnSpec(in agent.HeadlessTurnInput) (agent.HeadlessTurnSp
 		Binary: bin,
 		Args:   args,
 		Cwd:    in.Session.Cwd,
-		Mode:   agent.HeadlessModeOneShot,
+		Mode:   agent.HeadlessModeACP,
 	}, nil
 }
 

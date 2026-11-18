@@ -24,6 +24,37 @@ func runIsolatedTestMain(m *testing.M) int {
 	return m.Run()
 }
 
+const grokACPStubPOSIX = `#!/bin/sh
+if [ "$1" = "agent" ] && [ "$2" = "stdio" ]; then
+  while IFS= read -r line; do
+    case "$line" in
+      *'"method":"'*'"id":'*|*'"id":'*'"method":"'*)
+        id=$(printf '%s\n' "$line" | sed -n 's/,"params":.*//; s/.*"id": *\([^,}]*\).*/\1/p')
+        [ -z "$id" ] && continue
+        case "$line" in
+          *'"method":"initialize"'*)
+            printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1,"authMethods":[{"id":"cached_token","name":"Cached"}]}}\n' "$id"
+            ;;
+          *'"method":"authenticate"'*|*'"method":"session/set_model"'*|*'"method":"session/set_mode"'*|*'"method":"session/set_config_option"'*)
+            printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"
+            ;;
+          *'"method":"session/new"'*|*'"method":"session/load"'*)
+            printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"stub-session"}}\n' "$id"
+            ;;
+          *'"method":"session/prompt"'*)
+            printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id"
+            ;;
+          *)
+            printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32601,"message":"Method not found"}}\n' "$id"
+            ;;
+        esac
+        ;;
+    esac
+  done
+fi
+exit 0
+`
+
 func IsolateTestEnv() (string, func(), error) {
 	preserveGoEnv()
 
@@ -89,7 +120,11 @@ func IsolateTestEnv() (string, func(), error) {
 	// Prepend no-op agent CLI stubs so tests never execute host binaries or fail when CLIs are absent.
 	agentBins := []string{"claude", "agy", "antigravity", "codex", "grok", "grok-cli", "opencode"}
 	for _, name := range agentBins {
-		if err := os.WriteFile(filepath.Join(testBinDir, name), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		content := "#!/bin/sh\nexit 0\n"
+		if name == "grok" || name == "grok-cli" {
+			content = grokACPStubPOSIX
+		}
+		if err := os.WriteFile(filepath.Join(testBinDir, name), []byte(content), 0o755); err != nil {
 			_ = os.RemoveAll(tmpHome)
 			return "", nil, err
 		}

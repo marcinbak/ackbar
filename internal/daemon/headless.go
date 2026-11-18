@@ -1206,12 +1206,16 @@ func (h *HeadlessRunner) CancelTurn(sessionID string) error {
 		h.mu.Unlock()
 	}
 
-	if workerActive && sendWorkerCancel(meta) == nil {
-		h.clearControlBlockState(sessionID)
-		h.SetQueuePaused(sessionID, true)
-		h.EmitQueueUpdate(sessionID)
-		deleteWarmHandle()
-		return nil
+	if workerActive {
+		if cancelResp, err := sendWorkerCancelResp(meta); err == nil {
+			h.clearControlBlockState(sessionID)
+			h.SetQueuePaused(sessionID, true)
+			h.EmitQueueUpdate(sessionID)
+			if cancelResp == nil || !cancelResp.KeptWarm {
+				deleteWarmHandle()
+			}
+			return nil
+		}
 	}
 	h.clearControlBlockState(sessionID)
 	deleteWarmHandle()

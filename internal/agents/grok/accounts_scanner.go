@@ -83,9 +83,18 @@ func (*Plugin) IsValidNativeID(nativeID string) bool {
 }
 
 func (*Plugin) IsIgnoredCommand(fullCmd string) bool {
-	return agentutil.CheckIgnoredCLIArgs(fullCmd, func(field, base string) bool {
+	if agentutil.CheckIgnoredCLIArgs(fullCmd, func(field, base string) bool {
 		return base == "grok" || base == "grok-cli"
-	}, ignoredSubcommands, nil)
+	}, ignoredSubcommands, map[string]bool{"--single": true}) {
+		return true
+	}
+	for _, f := range strings.Fields(fullCmd) {
+		low := strings.ToLower(strings.TrimSpace(f))
+		if low == "--single" || strings.HasPrefix(low, "--single=") {
+			return true
+		}
+	}
+	return false
 }
 
 func (*Plugin) MatchProcessCommand(binLower, cmdLower string) bool {

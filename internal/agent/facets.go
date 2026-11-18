@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 )
 
@@ -120,4 +121,17 @@ type TranscriptUsageInspector interface {
 
 type CLIInspector interface {
 	InspectSubcommandArgs(kind string) ([]string, bool)
+}
+
+type ACPDriver interface {
+	HeadlessDriver
+	SelectACPAuth(methods []ACPAuthMethod, env []string) (methodID string, meta map[string]any, ok bool)
+	HandleACPNotification(homeDir string, env []string, method string, params map[string]any) ACPNotificationResult
+	ParseACPServerRequest(rawID json.RawMessage, reqID string, method string, params map[string]any) (*ACPControlPrompt, bool)
+	BuildACPServerResponse(prompt *ACPControlPrompt, approved bool, answer string) (result any, err error)
+	ACPRewindMethods() (listMethod, execMethod, cancelMethod string, supported bool)
+}
+
+type CommandCatalog interface {
+	CollectCommands(homeDir string) []CommandSuggestion
 }

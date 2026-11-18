@@ -240,3 +240,24 @@ func (r *Registry) AsCLIInspector(key string) (CLIInspector, bool) {
 	f, ok := p.(CLIInspector)
 	return f, ok
 }
+
+func (r *Registry) AsACPDriver(key string) (ACPDriver, bool) {
+	p, ok := r.Get(key)
+	if !ok || !p.Capabilities().SupportsHeadless {
+		return nil, false
+	}
+	d, ok := p.(ACPDriver)
+	if !ok || d.Mode() != HeadlessModeACP {
+		return nil, false
+	}
+	return d, true
+}
+
+func (r *Registry) AsCommandCatalog(key string) (CommandCatalog, bool) {
+	p, ok := r.Get(key)
+	if !ok {
+		return nil, false
+	}
+	f, ok := p.(CommandCatalog)
+	return f, ok
+}
