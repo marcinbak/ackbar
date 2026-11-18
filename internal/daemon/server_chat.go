@@ -9,7 +9,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -1245,9 +1244,9 @@ func (s *Server) ExtractTranscript(agent, nativeID, cwd string) (*Transcript, er
 		}
 	}
 
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get home dir: %w", err)
+	home := s.effectiveHomeDir()
+	if home == "" {
+		return nil, fmt.Errorf("failed to get home dir")
 	}
 
 	t := &Transcript{

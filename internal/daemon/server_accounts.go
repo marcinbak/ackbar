@@ -224,7 +224,7 @@ func (s *Server) handleAccounts(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Ensure default account exists for agents
-		agentsToCheck := []string{"claude-code", "antigravity", "codex"}
+		agentsToCheck := []string{"claude-code", "antigravity"}
 		if s.PluginRegistry() != nil {
 			for _, p := range s.PluginRegistry().List() {
 				if p.Capabilities().SupportsMultiAccount && !slices.Contains(agentsToCheck, p.Key()) {

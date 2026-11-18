@@ -9,7 +9,9 @@ import (
 	"os"
 
 	"ackbar/internal/agent"
+	"ackbar/internal/agents/codex"
 	"ackbar/internal/agents/grok"
+	"ackbar/internal/agents/opencode"
 	"ackbar/internal/version"
 )
 
@@ -47,6 +49,8 @@ func main() {
 
 	reg := agent.NewRegistry()
 	_ = reg.Register(grok.New())
+	_ = reg.Register(codex.New())
+	_ = reg.Register(opencode.New())
 	if p, ok := reg.Get(agentName); ok {
 		agentName = p.Key()
 	}

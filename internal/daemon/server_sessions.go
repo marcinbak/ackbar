@@ -2147,7 +2147,7 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 				envVars = spec.Env
 			}
 			if strings.TrimSpace(req.Prompt) != "" && req.EngineType == EngineTmux {
-				useCLIInitPrompt = true
+				useCLIInitPrompt = spec.PromptInCommand
 			}
 		}
 	}

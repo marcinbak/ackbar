@@ -1,16 +1,43 @@
-package provider
+package opencode
 
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
-	"ackbar/internal/daemon"
+	"ackbar/internal/agent"
+	"ackbar/internal/agentutil"
 )
 
-// ParseHook parses incoming hook events from OpenCode into canonical Ackbar Events.
-func (o *OpenCodeProvider) ParseHook(eventName string, payload []byte) (*daemon.Event, error) {
+func (*Plugin) CheckHookConfig(homeDir string) (bool, string, error) {
+	setupCmd := "ackbar-hook --agent=opencode"
+	ocDir := HomeDir(homeDir)
+	for _, path := range []string{
+		filepath.Join(ocDir, "hooks.json"),
+		filepath.Join(ocDir, "config.json"),
+		filepath.Join(ocDir, "config.toml"),
+	} {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		content := string(data)
+		if strings.Contains(content, "127.0.0.1:7777") || strings.Contains(content, "localhost:7777") || strings.Contains(content, "ackbar-hook") {
+			return true, setupCmd, nil
+		}
+	}
+	return false, setupCmd, nil
+}
+
+func (*Plugin) HookAckPayload(eventName string) []byte {
+	_ = eventName
+	return []byte("{}")
+}
+
+func (*Plugin) ParseHook(eventName string, payload []byte) (*agent.Event, error) {
 	var raw map[string]interface{}
 	if len(payload) > 0 {
 		if err := json.Unmarshal(payload, &raw); err != nil {
@@ -20,13 +47,12 @@ func (o *OpenCodeProvider) ParseHook(eventName string, payload []byte) (*daemon.
 		raw = make(map[string]interface{})
 	}
 
-	ev := &daemon.Event{
+	ev := &agent.Event{
 		Agent:       "opencode",
 		LastEventAt: time.Now(),
-		State:       daemon.StateWorking,
+		State:       agent.StateWorking,
 	}
 
-	// Resolve event name (from argument or payload)
 	resolvedEvent := eventName
 	if resolvedEvent == "" {
 		if evVal, ok := raw["event"].(string); ok && evVal != "" {
@@ -39,7 +65,6 @@ func (o *OpenCodeProvider) ParseHook(eventName string, payload []byte) (*daemon.
 	}
 	ev.EventName = resolvedEvent
 
-	// Extract session ID
 	if sid, ok := raw["session_id"].(string); ok && sid != "" {
 		ev.NativeID = sid
 	} else if sid, ok := raw["id"].(string); ok && sid != "" {
@@ -49,25 +74,22 @@ func (o *OpenCodeProvider) ParseHook(eventName string, payload []byte) (*daemon.
 		ev.NativeID = "default"
 	}
 
-	// Extract cwd
 	if cwd, ok := raw["cwd"].(string); ok && cwd != "" {
 		ev.Cwd = cwd
 	}
 
-	// Event-specific mapping
 	lowerEvent := strings.ToLower(resolvedEvent)
 	switch {
 	case strings.Contains(lowerEvent, "prompt") || lowerEvent == "userpromptsubmit":
-		ev.State = daemon.StateWorking
+		ev.State = agent.StateWorking
 		ev.Activity = "Processing user prompt"
 		if prompt, ok := raw["prompt"].(string); ok && prompt != "" {
-			ev.Activity = "Processing: " + daemon.TruncateTitle(prompt)
+			ev.Activity = "Processing: " + agentutil.TruncateTitle(prompt, 50)
 		} else if text, ok := raw["text"].(string); ok && text != "" {
-			ev.Activity = "Processing: " + daemon.TruncateTitle(text)
+			ev.Activity = "Processing: " + agentutil.TruncateTitle(text, 50)
 		}
-
 	case strings.Contains(lowerEvent, "pretool") || strings.Contains(lowerEvent, "tool_start") || strings.Contains(lowerEvent, "tool_use"):
-		ev.State = daemon.StateWorking
+		ev.State = agent.StateWorking
 		toolName := "tool"
 		if name, ok := raw["tool_name"].(string); ok && name != "" {
 			toolName = name
@@ -87,13 +109,11 @@ func (o *OpenCodeProvider) ParseHook(eventName string, payload []byte) (*daemon.
 		} else {
 			ev.Activity = "Running tool"
 		}
-
 	case strings.Contains(lowerEvent, "posttool") || strings.Contains(lowerEvent, "tool_end") || strings.Contains(lowerEvent, "tool_result"):
-		ev.State = daemon.StateWorking
+		ev.State = agent.StateWorking
 		ev.Activity = "Tool execution completed"
-
 	case strings.Contains(lowerEvent, "permission") || strings.Contains(lowerEvent, "approval") || strings.Contains(lowerEvent, "confirm"):
-		ev.State = daemon.StateBlocked
+		ev.State = agent.StateBlocked
 		reason := "Tool permission requested"
 		if r, ok := raw["reason"].(string); ok && r != "" {
 			reason = r
@@ -102,41 +122,36 @@ func (o *OpenCodeProvider) ParseHook(eventName string, payload []byte) (*daemon.
 		if q, ok := raw["question"].(string); ok && q != "" {
 			question = q
 		}
-		ev.Blocked = &daemon.Blocked{
-			Kind:     daemon.BlockPermission,
+		ev.Blocked = &agent.Blocked{
+			Kind:     agent.BlockPermission,
 			Reason:   reason,
 			Question: question,
 			Options:  []string{"Allow", "Deny"},
 			Since:    time.Now(),
 		}
-		ev.Activity = "Waiting for permission: " + daemon.TruncateTitle(reason)
-
+		ev.Activity = "Waiting for permission: " + agentutil.TruncateTitle(reason, 50)
 	case strings.Contains(lowerEvent, "question") || strings.Contains(lowerEvent, "input"):
-		ev.State = daemon.StateBlocked
+		ev.State = agent.StateBlocked
 		question := "Waiting for user input"
 		if q, ok := raw["question"].(string); ok && q != "" {
 			question = q
 		}
-		ev.Blocked = &daemon.Blocked{
-			Kind:     daemon.BlockQuestion,
+		ev.Blocked = &agent.Blocked{
+			Kind:     agent.BlockQuestion,
 			Reason:   question,
 			Question: question,
-			Options:  nil,
 			Since:    time.Now(),
 		}
 		ev.Activity = "Waiting for user input"
-
 	case strings.Contains(lowerEvent, "stop") || strings.Contains(lowerEvent, "done") || strings.Contains(lowerEvent, "idle"):
-		ev.State = daemon.StateIdle
+		ev.State = agent.StateIdle
 		ev.Activity = "Awaiting user prompt"
-
 	case strings.Contains(lowerEvent, "start") || strings.Contains(lowerEvent, "init"):
-		ev.State = daemon.StateIdle
+		ev.State = agent.StateIdle
 		ev.Activity = "Session started"
 		ev.StartedAt = time.Now()
-
 	default:
-		ev.State = daemon.StateWorking
+		ev.State = agent.StateWorking
 		ev.Activity = "Working"
 	}
 

@@ -15,6 +15,9 @@ import (
 	"testing"
 	"time"
 
+	"ackbar/internal/agent"
+	"ackbar/internal/agents/codex"
+	"ackbar/internal/agents/opencode"
 	"ackbar/internal/tmux"
 )
 
@@ -1291,16 +1294,17 @@ func TestInspectCodexStatus_TmuxIntegration(t *testing.T) {
 	}
 
 	// 1. Inspect should detect permission prompt and set StateBlocked
+	codexPlugin := codex.New()
 	var changed bool
 	for i := 0; i < 20; i++ {
 		time.Sleep(50 * time.Millisecond)
-		if InspectCodexStatus(ctx, sess) {
+		if codexPlugin.InspectStatus(ctx, sess) {
 			changed = true
 			break
 		}
 	}
 	if !changed {
-		t.Errorf("Expected InspectCodexStatus to report changed=true on permission prompt")
+		t.Errorf("Expected codex InspectStatus to report changed=true on permission prompt")
 	}
 	if sess.State != StateBlocked || sess.Blocked == nil || sess.Blocked.Kind != BlockPermission {
 		t.Fatalf("Expected StateBlocked with BlockPermission, got state %v, blocked: %+v", sess.State, sess.Blocked)
@@ -1312,13 +1316,13 @@ func TestInspectCodexStatus_TmuxIntegration(t *testing.T) {
 	unblocked := false
 	for i := 0; i < 20; i++ {
 		time.Sleep(50 * time.Millisecond)
-		if InspectCodexStatus(ctx, sess) {
+		if codexPlugin.InspectStatus(ctx, sess) {
 			unblocked = true
 			break
 		}
 	}
 	if !unblocked {
-		t.Errorf("Expected InspectCodexStatus to report changed=true when recovering from blocked")
+		t.Errorf("Expected codex InspectStatus to report changed=true when recovering from blocked")
 	}
 	if sess.State != StateIdle || sess.Blocked != nil {
 		t.Errorf("Expected StateIdle and nil Blocked after unblocking, got state %v, blocked: %+v", sess.State, sess.Blocked)
@@ -1356,16 +1360,17 @@ func TestInspectOpenCodeStatus_TmuxIntegration(t *testing.T) {
 	}
 
 	// 1. Inspect should detect permission prompt and set StateBlocked
+	openCodePlugin := opencode.New()
 	var changed bool
 	for i := 0; i < 20; i++ {
 		time.Sleep(50 * time.Millisecond)
-		if InspectOpenCodeStatus(ctx, sess) {
+		if openCodePlugin.InspectStatus(ctx, sess) {
 			changed = true
 			break
 		}
 	}
 	if !changed {
-		t.Errorf("Expected InspectOpenCodeStatus to report changed=true on permission prompt")
+		t.Errorf("Expected opencode InspectStatus to report changed=true on permission prompt")
 	}
 	if sess.State != StateBlocked || sess.Blocked == nil || sess.Blocked.Kind != BlockPermission {
 		t.Fatalf("Expected StateBlocked with BlockPermission, got state %v, blocked: %+v", sess.State, sess.Blocked)
@@ -1377,13 +1382,13 @@ func TestInspectOpenCodeStatus_TmuxIntegration(t *testing.T) {
 	unblocked := false
 	for i := 0; i < 20; i++ {
 		time.Sleep(50 * time.Millisecond)
-		if InspectOpenCodeStatus(ctx, sess) {
+		if openCodePlugin.InspectStatus(ctx, sess) {
 			unblocked = true
 			break
 		}
 	}
 	if !unblocked {
-		t.Errorf("Expected InspectOpenCodeStatus to report changed=true when recovering from blocked")
+		t.Errorf("Expected opencode InspectStatus to report changed=true when recovering from blocked")
 	}
 	if sess.State != StateIdle || sess.Blocked != nil {
 		t.Errorf("Expected StateIdle and nil Blocked after unblocking, got state %v, blocked: %+v", sess.State, sess.Blocked)
@@ -2600,10 +2605,13 @@ func TestIsIgnoredAgentCommand(t *testing.T) {
 		{"codex", "codex", false},
 	}
 
+	reg := agent.NewRegistry()
+	_ = reg.Register(codex.New())
+	_ = reg.Register(opencode.New())
 	for _, tt := range tests {
-		got := isIgnoredAgentCommand(tt.agent, tt.fullCmd)
+		got := isIgnoredAgentCommandWithRegistry(reg, tt.agent, tt.fullCmd)
 		if got != tt.expected {
-			t.Errorf("isIgnoredAgentCommand(%q, %q) = %v; expected %v", tt.agent, tt.fullCmd, got, tt.expected)
+			t.Errorf("isIgnoredAgentCommandWithRegistry(%q, %q) = %v; expected %v", tt.agent, tt.fullCmd, got, tt.expected)
 		}
 	}
 }

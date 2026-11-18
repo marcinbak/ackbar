@@ -115,6 +115,15 @@ func (r *Registry) All() iter.Seq[Plugin] {
 	}
 }
 
+func (r *Registry) AsInstallationDetector(keyOrAlias string) (InstallationDetector, bool) {
+	p, ok := r.Get(keyOrAlias)
+	if !ok {
+		return nil, false
+	}
+	f, ok := p.(InstallationDetector)
+	return f, ok
+}
+
 func (r *Registry) AsProvisioner(key string) (Provisioner, bool) {
 	p, ok := r.Get(key)
 	if !ok {

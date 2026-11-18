@@ -218,3 +218,160 @@ func TestApplyDiskScanResult_AdoptionGuardsAndTaskReassignment(t *testing.T) {
 		t.Fatalf("expected task worker reassigned to %q, got %+v err=%v", newID, task, err)
 	}
 }
+
+type detectOnlyBridgePlugin struct {
+	agent.BasePlugin
+	agent.BaseInstallationDetector
+	installed bool
+	gotHome   string
+}
+
+func (p *detectOnlyBridgePlugin) Key() string         { return "detect-bridge" }
+func (p *detectOnlyBridgePlugin) DisplayName() string { return "Detect Bridge" }
+func (p *detectOnlyBridgePlugin) Capabilities() agent.Capabilities {
+	return agent.Capabilities{SupportsTmux: true}
+}
+func (p *detectOnlyBridgePlugin) IsInstalled(homeDir string) bool {
+	p.gotHome = homeDir
+	return p.installed
+}
+
+func TestPluginBridge_InstallationDetectorWithoutProvisioner(t *testing.T) {
+	srv := NewServer(nil)
+	srv.homeDir = "/tmp/custom-ackbar-home"
+	plg := &detectOnlyBridgePlugin{installed: true}
+	if err := srv.RegisterPlugin(plg); err != nil {
+		t.Fatalf("RegisterPlugin: %v", err)
+	}
+	prov, ok := srv.resolveProvider("detect-bridge")
+	if !ok {
+		t.Fatal("expected resolved provider")
+	}
+	if !prov.IsInstalled() || plg.gotHome != srv.homeDir {
+		t.Fatalf("IsInstalled() = %v home=%q, want true / %q", prov.IsInstalled(), plg.gotHome, srv.homeDir)
+	}
+	if _, isProv := srv.PluginRegistry().AsProvisioner("detect-bridge"); isProv {
+		t.Fatal("detectOnlyBridgePlugin must not satisfy Provisioner")
+	}
+}
+
+type effectiveHomeBridgePlugin struct {
+	agent.BasePlugin
+	agent.BaseHooks
+	agent.BaseTranscripts
+	hookHome       string
+	transcriptHome string
+}
+
+func (p *effectiveHomeBridgePlugin) Key() string         { return "effective-home-bridge" }
+func (p *effectiveHomeBridgePlugin) DisplayName() string { return "Effective Home Bridge" }
+func (p *effectiveHomeBridgePlugin) Capabilities() agent.Capabilities {
+	return agent.Capabilities{SupportsTmux: true, SupportsTranscript: true}
+}
+func (p *effectiveHomeBridgePlugin) CheckHookConfig(homeDir string) (bool, string, error) {
+	p.hookHome = homeDir
+	return homeDir != "", "", nil
+}
+func (p *effectiveHomeBridgePlugin) ExtractTranscript(homeDir, cwd, nativeID string) (*agent.Transcript, error) {
+	p.transcriptHome = homeDir
+	return &agent.Transcript{Messages: []agent.TranscriptMessage{{Role: "assistant", Content: homeDir}}}, nil
+}
+
+func TestPluginBridge_CheckHookConfigAndExtractTranscript_HonorServerHomeDir(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	customHome := t.TempDir()
+
+	srv := NewServer(nil)
+	srv.homeDir = customHome
+	plg := &effectiveHomeBridgePlugin{}
+	if err := srv.RegisterPlugin(plg); err != nil {
+		t.Fatalf("RegisterPlugin: %v", err)
+	}
+	prov, ok := srv.resolveProvider("effective-home-bridge")
+	if !ok {
+		t.Fatal("expected resolved provider")
+	}
+	if okCfg, _, err := prov.CheckHookConfig(); err != nil || !okCfg || plg.hookHome != customHome {
+		t.Fatalf("CheckHookConfig = (%v, %v) home=%q, want (true, nil) / %q", okCfg, err, plg.hookHome, customHome)
+	}
+	tr, err := srv.ExtractTranscript("effective-home-bridge", "sess-1", "/work")
+	if err != nil || plg.transcriptHome != customHome || len(tr.Messages) != 1 || tr.Messages[0].Content != customHome {
+		t.Fatalf("ExtractTranscript = (%+v, %v) home=%q, want home=%q", tr, err, plg.transcriptHome, customHome)
+	}
+	srv.homeDir = ""
+	t.Setenv("HOME", "")
+	if _, err := srv.ExtractTranscript("effective-home-bridge", "sess-1", "/work"); err == nil {
+		t.Fatal("expected ExtractTranscript error when both Server.homeDir and HOME are empty")
+	}
+}
+
+func TestServer_CodexAndOpenCodePluginWiring(t *testing.T) {
+	srv, _ := setupTestServer(t)
+
+	// OpenCode alias resolves cleanly and exposes InstallationDetector without Provisioner.
+	if p, ok := srv.resolveProvider("open-code"); !ok || p.Agent() != "opencode" {
+		t.Fatalf("resolveProvider('open-code') = (%v, %v)", p, ok)
+	}
+	if _, ok := srv.PluginRegistry().AsInstallationDetector("opencode"); !ok {
+		t.Error("expected opencode InstallationDetector")
+	}
+	if _, ok := srv.PluginRegistry().AsProvisioner("opencode"); ok {
+		t.Error("opencode must not satisfy Provisioner")
+	}
+
+	// Codex is included dynamically in /v1/accounts via SupportsMultiAccount and resolves CODEX_HOME.
+	accRec := httptest.NewRecorder()
+	srv.handleAccounts(accRec, httptest.NewRequest(http.MethodGet, "/v1/accounts", nil))
+	if accRec.Code != http.StatusOK {
+		t.Fatalf("GET /v1/accounts = %d", accRec.Code)
+	}
+	var accts []AgentAccount
+	if err := json.Unmarshal(accRec.Body.Bytes(), &accts); err != nil {
+		t.Fatal(err)
+	}
+	seenCodexDefault := false
+	for _, a := range accts {
+		if a.ID == "codex:default" {
+			seenCodexDefault = true
+		}
+		if a.Agent == "opencode" {
+			t.Errorf("opencode should not get default multi-account entry: %+v", a)
+		}
+	}
+	if !seenCodexDefault {
+		t.Errorf("expected codex:default in GET /v1/accounts, got %+v", accts)
+	}
+
+	postRec := httptest.NewRecorder()
+	srv.handleAccounts(postRec, httptest.NewRequest(http.MethodPost, "/v1/accounts", bytes.NewBufferString(`{"agent":"codex","name":"work"}`)))
+	if postRec.Code != http.StatusOK {
+		t.Fatalf("POST /v1/accounts codex = %d: %s", postRec.Code, postRec.Body.String())
+	}
+	var created AgentAccount
+	if err := json.Unmarshal(postRec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	_, env := srv.resolveAccountEnv("codex", "work", "/tmp/home", false)
+	if env["CODEX_HOME"] == "" || env["CODEX_HOME"] != created.ConfigDir {
+		t.Fatalf("expected CODEX_HOME == %q in account env, got %+v", created.ConfigDir, env)
+	}
+
+	// LaunchSpec PromptInCommand differentiation: grok=true (when prompt non-empty), codex=false, opencode=false.
+	for _, tc := range []struct {
+		agent string
+		want  bool
+	}{
+		{"grok", true},
+		{"codex", false},
+		{"opencode", false},
+	} {
+		td, ok := srv.PluginRegistry().AsTMuxDriver(tc.agent)
+		if !ok {
+			t.Fatalf("missing TMuxDriver for %s", tc.agent)
+		}
+		spec, err := td.BuildLaunchSpec(agent.LaunchInput{Prompt: "run tests"})
+		if err != nil || spec.PromptInCommand != tc.want {
+			t.Errorf("%s BuildLaunchSpec PromptInCommand = %v (err=%v), want %v", tc.agent, spec.PromptInCommand, err, tc.want)
+		}
+	}
+}

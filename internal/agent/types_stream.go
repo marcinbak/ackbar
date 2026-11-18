@@ -137,10 +137,11 @@ type LaunchInput struct {
 }
 
 type LaunchSpec struct {
-	Command     string
-	Args        []string
-	Env         map[string]string
-	CommandLine string
+	Command         string
+	Args            []string
+	Env             map[string]string
+	CommandLine     string
+	PromptInCommand bool
 }
 
 type HeadlessTurnInput struct {

@@ -62,10 +62,12 @@ func (s *stubBridgePlugin) ParseHook(eventName string, payload []byte) (*agent.E
 		LastEventAt: time.Now(),
 	}, nil
 }
-func (s *stubBridgePlugin) ReadSessionMetadata(cwd, nativeID string) *agent.SessionMeta {
+func (s *stubBridgePlugin) ReadSessionMetadata(homeDir, cwd, nativeID string) *agent.SessionMeta {
 	return &agent.SessionMeta{Title: "Bridge Title"}
 }
-func (s *stubBridgePlugin) ResolveSessionTitle(cwd, nativeID string) string { return "Bridge Title" }
+func (s *stubBridgePlugin) ResolveSessionTitle(homeDir, cwd, nativeID string) string {
+	return "Bridge Title"
+}
 func (s *stubBridgePlugin) ExtractTranscript(homeDir, cwd, nativeID string) (*agent.Transcript, error) {
 	return &agent.Transcript{
 		Agent:    "plugin-x",

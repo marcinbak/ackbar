@@ -104,9 +104,17 @@ func TestRegistry_OrderAliasesAndCollisionRollback(t *testing.T) {
 	}
 }
 
+type detectOnlyPlugin struct {
+	minimalPlugin
+	BaseInstallationDetector
+}
+
 func TestRegistry_FacetAssertionsAndHeadlessGate(t *testing.T) {
 	reg := NewRegistry()
 	bare := &minimalPlugin{key: "bare"}
+	detectOnly := &detectOnlyPlugin{
+		minimalPlugin: minimalPlugin{key: "detect-only", aliases: []string{"do"}},
+	}
 	gatedHeadless := &fullStubPlugin{
 		minimalPlugin: minimalPlugin{
 			key:     "tmux-only",
@@ -124,14 +132,26 @@ func TestRegistry_FacetAssertionsAndHeadlessGate(t *testing.T) {
 		mode: HeadlessModeACP,
 	}
 
-	for _, p := range []Plugin{bare, gatedHeadless, full} {
+	for _, p := range []Plugin{bare, detectOnly, gatedHeadless, full} {
 		if err := reg.Register(p); err != nil {
 			t.Fatalf("register %s: %v", p.Key(), err)
 		}
 	}
 
+	if _, ok := reg.AsInstallationDetector("bare"); ok {
+		t.Error("bare plugin should not satisfy InstallationDetector")
+	}
 	if _, ok := reg.AsProvisioner("bare"); ok {
 		t.Error("bare plugin should not satisfy Provisioner")
+	}
+	if det, ok := reg.AsInstallationDetector("do"); !ok || det.IsInstalled("/tmp") {
+		t.Error("detect-only plugin should satisfy InstallationDetector")
+	}
+	if _, ok := reg.AsProvisioner("do"); ok {
+		t.Error("detect-only plugin should not satisfy Provisioner")
+	}
+	if _, ok := reg.AsInstallationDetector("fa"); !ok {
+		t.Error("expected full-agent InstallationDetector via Provisioner")
 	}
 	if _, ok := reg.AsHeadlessDriver("bare"); ok {
 		t.Error("bare plugin should not satisfy HeadlessDriver")
@@ -145,8 +165,8 @@ func TestRegistry_FacetAssertionsAndHeadlessGate(t *testing.T) {
 	if _, ok := reg.AsProvisioner("fa"); !ok {
 		t.Error("expected full-agent Provisioner")
 	}
-	if _, ok := reg.AsAccounts("fa"); !ok {
-		t.Error("expected full-agent Accounts")
+	if accts, ok := reg.AsAccounts("fa"); !ok || accts.APIKeyEnvVar() != "" {
+		t.Error("expected full-agent Accounts with empty APIKeyEnvVar default")
 	}
 	if _, ok := reg.AsTMuxDriver("fa"); !ok {
 		t.Error("expected full-agent TMuxDriver")
@@ -154,7 +174,7 @@ func TestRegistry_FacetAssertionsAndHeadlessGate(t *testing.T) {
 	if _, ok := reg.AsHooks("fa"); !ok {
 		t.Error("expected full-agent Hooks")
 	}
-	if _, ok := reg.AsTranscript("fa"); !ok {
+	if tr, ok := reg.AsTranscript("fa"); !ok || tr.ReadSessionMetadata("", "", "") != nil || tr.ResolveSessionTitle("", "", "") != "" {
 		t.Error("expected full-agent Transcript")
 	}
 	if _, ok := reg.AsScanner("fa"); !ok {

@@ -23,14 +23,19 @@ type Plugin interface {
 	Capabilities() Capabilities
 }
 
-type Provisioner interface {
+type InstallationDetector interface {
 	IsInstalled(homeDir string) bool
+}
+
+type Provisioner interface {
+	InstallationDetector
 	CheckStatus(ctx context.Context, homeDir string) AgentStatus
 	InstallHooks(homeDir string) error
 	Provision(ctx context.Context, homeDir string) error
 }
 
 type Accounts interface {
+	APIKeyEnvVar() string
 	AccountEnvVars(homeDir string, acct *AgentAccount) map[string]string
 	IsAccountLoggedIn(homeDir string, acct *AgentAccount) bool
 	SetupProfileDir(homeDir, name, configDir string) (string, error)
@@ -66,8 +71,8 @@ type Hooks interface {
 }
 
 type Transcripts interface {
-	ReadSessionMetadata(cwd, nativeID string) *SessionMeta
-	ResolveSessionTitle(cwd, nativeID string) string
+	ReadSessionMetadata(homeDir, cwd, nativeID string) *SessionMeta
+	ResolveSessionTitle(homeDir, cwd, nativeID string) string
 	ExtractTranscript(homeDir, cwd, nativeID string) (*Transcript, error)
 	FilterUserEntry(raw map[string]interface{}, content string) (clean string, keep bool)
 	ListSubagents(homeDir, cwd, nativeID string) ([]SubagentInfo, error)

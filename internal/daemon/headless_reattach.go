@@ -308,7 +308,7 @@ func (h *HeadlessRunner) finalizeTurnFromSpool(sess *Session, origSessionID stri
 			sess.Name = TruncateTitle(prompt)
 		}
 	} else if tr, ok := h.pluginRegistry().AsTranscript(sess.Agent); ok {
-		if gm := tr.ReadSessionMetadata(sess.Cwd, sess.NativeID); gm != nil {
+		if gm := tr.ReadSessionMetadata(home, sess.Cwd, sess.NativeID); gm != nil {
 			if gm.ContextPct > 0 {
 				sess.ContextPct = gm.ContextPct
 			}

@@ -6,7 +6,9 @@ import (
 	"strings"
 	"testing"
 
+	"ackbar/internal/agents/codex"
 	"ackbar/internal/agents/grok"
+	"ackbar/internal/agents/opencode"
 )
 
 func TestExtractTranscript_Antigravity(t *testing.T) {
@@ -565,9 +567,9 @@ func TestExtractTranscript_ClaudeCode_FiltersSyntheticUserEntries(t *testing.T) 
 func TestAgentAdapter_FilterUserEntry_AgentSpecificIsolation(t *testing.T) {
 	claudeAdapter := getDefaultAgentAdapter("claude-code")
 	agyAdapter := getDefaultAgentAdapter("antigravity")
-	codexAdapter := getDefaultAgentAdapter("codex")
+	codexAdapter := &PluginBridge{plugin: codex.New()}
 	grokAdapter := &PluginBridge{plugin: grok.New()}
-	openCodeAdapter := getDefaultAgentAdapter("opencode")
+	openCodeAdapter := &PluginBridge{plugin: opencode.New()}
 	defaultAdapter := getDefaultAgentAdapter("unknown")
 
 	// 1. Claude filters its own synthetic flags/patterns and strips <system-reminder>,

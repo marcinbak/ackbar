@@ -1,13 +1,20 @@
-package provider
+package codex
 
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
-	"ackbar/internal/daemon"
+	"ackbar/internal/agent"
+	"ackbar/internal/agentutil"
 )
+
+var ignoredSubcommands = map[string]bool{
+	"login": true, "logout": true, "auth": true, "mcp": true, "update": true, "upgrade": true,
+}
 
 type codexPayload struct {
 	SessionID      string `json:"session_id"`
@@ -19,21 +26,44 @@ type codexPayload struct {
 	ToolInput      string `json:"tool_input"`
 }
 
-func (c *CodexProvider) ParseHook(eventName string, payload []byte) (*daemon.Event, error) {
+func (*Plugin) CheckHookConfig(homeDir string) (bool, string, error) {
+	setupCmd := "ackbar-hook --agent=codex"
+	codexDir := HomeDir(homeDir)
+	for _, path := range []string{
+		filepath.Join(codexDir, "hooks.json"),
+		filepath.Join(codexDir, "config.toml"),
+	} {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		content := string(data)
+		if strings.Contains(content, "127.0.0.1:7777") || strings.Contains(content, "localhost:7777") || strings.Contains(content, "ackbar-hook") {
+			return true, setupCmd, nil
+		}
+	}
+	return false, setupCmd, nil
+}
+
+func (*Plugin) HookAckPayload(eventName string) []byte {
+	_ = eventName
+	return []byte("{}")
+}
+
+func (*Plugin) ParseHook(eventName string, payload []byte) (*agent.Event, error) {
 	var p codexPayload
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal Codex hook payload: %w", err)
 	}
 
-	event := &daemon.Event{
+	event := &agent.Event{
 		Agent:       "codex",
 		NativeID:    p.SessionID,
 		Cwd:         p.Cwd,
 		EventName:   p.HookEventName,
 		LastEventAt: time.Now(),
-		State:       daemon.StateWorking, // default assumption
+		State:       agent.StateWorking,
 	}
-
 	if event.NativeID == "" {
 		event.NativeID = "default"
 	}
@@ -45,42 +75,38 @@ func (c *CodexProvider) ParseHook(eventName string, payload []byte) (*daemon.Eve
 
 	switch evt {
 	case "sessionstart":
-		event.State = daemon.StateIdle
+		event.State = agent.StateIdle
 		event.Activity = "Session started"
 		event.StartedAt = time.Now()
-
 	case "sessionend", "stop":
-		event.State = daemon.StateEnded
+		event.State = agent.StateEnded
 		event.Activity = "Session ended"
-
 	case "userpromptsubmit":
-		event.State = daemon.StateWorking
+		event.State = agent.StateWorking
 		event.Activity = "Processing user prompt"
-
 	case "permissionrequest":
-		event.State = daemon.StateBlocked
+		event.State = agent.StateBlocked
 		reason := "Authorize tool execution"
 		if p.ToolName != "" {
 			reason = "Allow running tool: " + p.ToolName
 		}
-		event.Blocked = &daemon.Blocked{
-			Kind:     daemon.BlockPermission,
+		event.Blocked = &agent.Blocked{
+			Kind:     agent.BlockPermission,
 			Reason:   reason,
 			Question: reason,
 			Options:  []string{"Allow", "Deny"},
 			Since:    time.Now(),
 		}
 		event.Activity = "Waiting for permission"
-
 	case "pretooluse":
 		if p.ToolName == "request_user_input" || p.ToolName == "ask_question" {
-			event.State = daemon.StateBlocked
+			event.State = agent.StateBlocked
 			var q string
 			var opts []string
 			if p.ToolInput != "" {
 				var data map[string]interface{}
 				if err := json.Unmarshal([]byte(p.ToolInput), &data); err == nil {
-					q, opts = daemon.ExtractAntigravityQuestionAndOptions(data)
+					q, opts = agentutil.ExtractQuestionAndOptions(data)
 				} else {
 					q = p.ToolInput
 				}
@@ -89,8 +115,8 @@ func (c *CodexProvider) ParseHook(eventName string, payload []byte) (*daemon.Eve
 			if q != "" {
 				reason = q
 			}
-			event.Blocked = &daemon.Blocked{
-				Kind:     daemon.BlockQuestion,
+			event.Blocked = &agent.Blocked{
+				Kind:     agent.BlockQuestion,
 				Reason:   reason,
 				Question: q,
 				Options:  opts,
@@ -98,17 +124,29 @@ func (c *CodexProvider) ParseHook(eventName string, payload []byte) (*daemon.Eve
 			}
 			event.Activity = "Waiting for user input"
 		} else {
-			event.State = daemon.StateWorking
+			event.State = agent.StateWorking
 			event.Activity = "Running tool: " + p.ToolName
 		}
-
 	case "posttooluse":
-		event.State = daemon.StateWorking
+		event.State = agent.StateWorking
 		event.Activity = "Tool execution completed"
-
 	default:
 		event.Activity = "Event: " + p.HookEventName
 	}
 
 	return event, nil
+}
+
+func (*Plugin) IsValidNativeID(nativeID string) bool {
+	return agentutil.IsSafeSessionID(nativeID)
+}
+
+func (*Plugin) IsIgnoredCommand(fullCmd string) bool {
+	return agentutil.CheckIgnoredCLIArgs(fullCmd, func(field, base string) bool {
+		return base == "codex"
+	}, ignoredSubcommands, nil)
+}
+
+func (*Plugin) MatchProcessCommand(binLower, cmdLower string) bool {
+	return binLower == "codex" && !agentutil.IsAckbarProcess(binLower, cmdLower)
 }
