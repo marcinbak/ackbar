@@ -268,7 +268,7 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 		}
 	}
 
-	cleanEnv := buildWorkerEnv(sess, h.db, home)
+	cleanEnv := buildWorkerEnvWithRegistry(h.pluginRegistry(), sess, h.db, home)
 	turnStart := time.Now().UTC()
 	workerID, turnID := fmt.Sprintf("w_%d_%s", turnStart.UnixNano(), generateUUID()[:8]), fmt.Sprintf("turn_%d_%s", turnStart.UnixNano(), generateUUID()[:8])
 	h.pruneCompletedSpoolsForSession(runDir, sess.ID, sess.NativeID, turnID)
@@ -688,7 +688,7 @@ func (h *HeadlessRunner) restartHandleChild(sess *Session, handle *warmWorkerHan
 		return false
 	}
 	fpNoModel := ConfigFingerprintWithoutModel(sess)
-	cleanEnv := buildWorkerEnv(sess, h.db, home)
+	cleanEnv := buildWorkerEnvWithRegistry(h.pluginRegistry(), sess, h.db, home)
 	resp, cErr := callWorkerSocket(sockPath, workerIPCReq{
 		Op:                       "restart_child",
 		SessionID:                sess.ID,

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -28,22 +27,16 @@ func (p *Plugin) IsInstalled(homeDir string) bool {
 
 func (p *Plugin) CheckStatus(ctx context.Context, homeDir string) agent.AgentStatus {
 	_ = ctx
-	home := homeDir
-	if home == "" {
-		home = agentutil.RealUserHome()
-	}
-	grokDir := filepath.Join(home, ".grok")
+	grokDir := HomeDir(homeDir)
 	configPath := filepath.Join(grokDir, "config.toml")
 	skillsDir := filepath.Join(grokDir, "skills")
 	rulesFile := filepath.Join(grokDir, "rules", "ackbar.md")
 
-	detected := false
-	if _, err := os.Stat(grokDir); err == nil {
-		detected = true
-	} else if _, err := os.Stat(configPath); err == nil {
-		detected = true
-	} else if _, err := exec.LookPath("grok"); err == nil {
-		detected = true
+	detected := p.IsInstalled(homeDir)
+	if !detected {
+		if _, err := os.Stat(configPath); err == nil {
+			detected = true
+		}
 	}
 
 	status := agent.AgentStatus{
@@ -90,11 +83,7 @@ func (p *Plugin) InstallHooks(homeDir string) error {
 
 func (p *Plugin) Provision(ctx context.Context, homeDir string) error {
 	_ = ctx
-	home := homeDir
-	if home == "" {
-		home = agentutil.RealUserHome()
-	}
-	grokDir := filepath.Join(home, ".grok")
+	grokDir := HomeDir(homeDir)
 	if err := UpsertTOMLConfig(filepath.Join(grokDir, "config.toml"), "ackbar"); err != nil {
 		return err
 	}

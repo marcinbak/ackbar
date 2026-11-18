@@ -97,6 +97,54 @@ func TestInspectStatus_GuardsAndMetadata(t *testing.T) {
 	if sess.ContextPct != 25 || sess.RunningSubagents != 1 {
 		t.Errorf("unexpected ContextPct=%d RunningSubagents=%d", sess.ContextPct, sess.RunningSubagents)
 	}
+
+	aliasSess := &agent.Session{
+		ID: "grok:local:" + nativeID, Agent: "grok-cli", EngineType: agent.EngineTmux,
+		TmuxName: "dummy-tmux-pane-not-running", State: agent.StateWorking, NativeID: nativeID, Cwd: projectDir,
+	}
+	if !p.InspectStatus(context.Background(), aliasSess) || aliasSess.ContextPct != 25 {
+		t.Fatalf("expected InspectStatus to accept grok-cli alias, got ContextPct=%d", aliasSess.ContextPct)
+	}
+}
+
+func TestProvisionAndCheckStatus_GrokHomeAndStandardBinDir(t *testing.T) {
+	p := New()
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	customGrokHome := filepath.Join(tmpHome, "custom-grok-home")
+	t.Setenv("GROK_HOME", customGrokHome)
+
+	if err := p.Provision(context.Background(), ""); err != nil {
+		t.Fatalf("Provision with GROK_HOME failed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(customGrokHome, "hooks", "ackbar.json")); err != nil {
+		t.Fatalf("expected hooks inside GROK_HOME: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(tmpHome, ".grok", "hooks", "ackbar.json")); !os.IsNotExist(err) {
+		t.Fatalf("Provision must not write to ~/.grok when GROK_HOME is set")
+	}
+	st := p.CheckStatus(context.Background(), "")
+	if st.ConfigFile != filepath.Join(customGrokHome, "config.toml") {
+		t.Fatalf("CheckStatus ConfigFile = %q, want under GROK_HOME", st.ConfigFile)
+	}
+	if !st.Detected || !st.MCPInstalled || !st.SkillInstalled || !st.RulesInstalled || st.DriftDetected {
+		t.Fatalf("expected clean CheckStatus under GROK_HOME, got %+v", st)
+	}
+
+	tmpHome2 := t.TempDir()
+	t.Setenv("HOME", tmpHome2)
+	t.Setenv("GROK_HOME", "")
+	t.Setenv("PATH", "/usr/bin:/bin")
+	localBin := filepath.Join(tmpHome2, ".local", "bin")
+	if err := os.MkdirAll(localBin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(localBin, "grok-cli"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if binStatus := p.CheckStatus(context.Background(), ""); !binStatus.Detected {
+		t.Fatalf("expected CheckStatus.Detected=true via ~/.local/bin/grok-cli, got %+v", binStatus)
+	}
 }
 
 func TestInspectStatus_TmuxIntegration(t *testing.T) {

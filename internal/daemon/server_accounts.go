@@ -93,8 +93,19 @@ func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(results)
 }
 
+func (s *Server) canonicalAgentName(agentName string) string {
+	trimmed := strings.TrimSpace(agentName)
+	if s != nil && s.PluginRegistry() != nil {
+		if p, ok := s.PluginRegistry().Get(trimmed); ok {
+			return p.Key()
+		}
+	}
+	return trimmed
+}
+
 // resolveAccountEnv resolves the account record and environment variables for a session or spawn request.
 func (s *Server) resolveAccountEnv(agent, accountID, home string, fallbackToDefault bool) (string, map[string]string) {
+	agent = s.canonicalAgentName(agent)
 	var envVars map[string]string
 	resolvedID := accountID
 	if s.db != nil {
@@ -202,7 +213,10 @@ func (s *Server) propagateAccountToFleet(acc *AgentAccount) {
 func (s *Server) handleAccounts(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		agentFilter := r.URL.Query().Get("agent")
+		agentFilter := strings.TrimSpace(r.URL.Query().Get("agent"))
+		if agentFilter != "" {
+			agentFilter = s.canonicalAgentName(agentFilter)
+		}
 		accounts, err := s.db.ListAccounts(agentFilter)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("Failed to list accounts: %v", err), http.StatusInternalServerError)
@@ -270,6 +284,7 @@ func (s *Server) handleAccounts(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Invalid payload", http.StatusBadRequest)
 			return
 		}
+		req.Agent = s.canonicalAgentName(req.Agent)
 		if req.Agent == "" || req.Name == "" {
 			http.Error(w, "Missing agent or name", http.StatusBadRequest)
 			return

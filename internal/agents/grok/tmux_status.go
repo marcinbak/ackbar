@@ -93,7 +93,7 @@ func (p *Plugin) BuildLaunchSpec(in agent.LaunchInput) (agent.LaunchSpec, error)
 }
 
 func (p *Plugin) InspectStatus(ctx context.Context, sess *agent.Session) bool {
-	if sess == nil || sess.Agent != "grok" || sess.State == agent.StateEnded {
+	if sess == nil || (sess.Agent != "grok" && sess.Agent != "grok-cli") || sess.State == agent.StateEnded {
 		return false
 	}
 	if sess.EngineType == agent.EngineHeadless && sess.TmuxName == "" && (sess.PID <= 0 || !agentutil.IsProcessAlive(sess.PID)) {

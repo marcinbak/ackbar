@@ -1736,6 +1736,8 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	req.Agent = s.canonicalAgentName(req.Agent)
+
 	if req.Host == "" && req.TargetHost != "" {
 		req.Host = req.TargetHost
 	}

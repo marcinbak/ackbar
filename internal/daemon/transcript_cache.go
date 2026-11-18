@@ -316,8 +316,7 @@ func (s *Server) getCachedTranscript(agent, nativeID, cwd string) ([]TranscriptM
 	var curSize, curModTime int64
 	var err error
 	if st, ok := s.PluginRegistry().AsTranscriptStatter(agent); ok {
-		home, _ := os.UserHomeDir()
-		_, curSize, curModTime, err = st.StatTranscript(home, cwd, nativeID)
+		_, curSize, curModTime, err = st.StatTranscript(s.effectiveHomeDir(), cwd, nativeID)
 	} else {
 		curSize, curModTime, err = statTranscriptFile(agent, filePath)
 	}

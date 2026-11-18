@@ -105,7 +105,7 @@ func (s *Server) handleSessionAuthTool(w http.ResponseWriter, r *http.Request) {
 	if dir != "" {
 		cmd.Dir = dir
 	}
-	cmd.Env = append(buildWorkerEnv(sess, s.db, home), "DISPLAY=", "BROWSER=true")
+	cmd.Env = append(buildWorkerEnvWithRegistry(s.PluginRegistry(), sess, s.db, home), "DISPLAY=", "BROWSER=true")
 	cmd.WaitDelay = 2 * time.Second
 
 	stdinPipe, err := cmd.StdinPipe()

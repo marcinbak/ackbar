@@ -293,3 +293,142 @@ echo '{"type":"end","stopReason":"stop"}'
 		t.Errorf("expected -r grok-e2e-1 in Turn 2 run, got: %s", lines[len(lines)-1])
 	}
 }
+
+func TestGrokBuildCommandEnv_MultiAccountGrokHome(t *testing.T) {
+	srv, db := setupTestServer(t)
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	acc := &AgentAccount{
+		ID:        "grok:work",
+		Agent:     "grok",
+		Name:      "work",
+		ConfigDir: "~/.grok-profiles/work",
+	}
+	if err := db.SaveAccount(acc); err != nil {
+		t.Fatalf("SaveAccount failed: %v", err)
+	}
+
+	sess := &Session{
+		ID:        "grok:local:cmd-env-1",
+		Agent:     "grok",
+		AccountID: "grok:work",
+		Cwd:       tmpHome,
+	}
+	want := "GROK_HOME=" + filepath.Join(tmpHome, ".grok-profiles", "work")
+	env := srv.headless.buildCommandEnv(sess)
+	found := false
+	for _, entry := range env {
+		if entry == want {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("buildCommandEnv missing %q in %+v", want, env)
+	}
+
+	_, resolvedEnv := srv.resolveAccountEnv("grok-cli", "work", tmpHome, false)
+	if resolvedEnv["GROK_HOME"] != filepath.Join(tmpHome, ".grok-profiles", "work") {
+		t.Fatalf("resolveAccountEnv('grok-cli') GROK_HOME = %q", resolvedEnv["GROK_HOME"])
+	}
+}
+
+func TestGrokSpawnAndAccounts_CanonicalizesGrokCLIAlias(t *testing.T) {
+	srv, db := setupTestServer(t)
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	cwd := filepath.Join(tmpHome, "repo")
+	_ = os.MkdirAll(cwd, 0755)
+
+	body, _ := json.Marshal(map[string]any{
+		"agent":       "grok-cli",
+		"cwd":         cwd,
+		"engine_type": EngineHeadless,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/spawn", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	srv.handleSpawn(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("spawn with grok-cli failed: %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode spawn response: %v", err)
+	}
+	sessResp, _ := resp["session"].(map[string]any)
+	if sessResp["agent"] != "grok" {
+		t.Fatalf("expected canonical response session.agent 'grok', got %v", resp["session"])
+	}
+	sessID, _ := resp["id"].(string)
+	sess, err := db.GetSession(sessID)
+	if err != nil || sess == nil {
+		t.Fatalf("GetSession(%q): %v", sessID, err)
+	}
+	if sess.Agent != "grok" || !strings.HasPrefix(sess.ID, "grok:") {
+		t.Fatalf("expected canonicalized session Agent=grok, got id=%q agent=%q", sess.ID, sess.Agent)
+	}
+
+	accBody, _ := json.Marshal(map[string]any{"agent": "grok-cli", "name": "work"})
+	accReq := httptest.NewRequest(http.MethodPost, "/v1/accounts", bytes.NewReader(accBody))
+	accW := httptest.NewRecorder()
+	srv.handleAccounts(accW, accReq)
+	if accW.Code != http.StatusOK {
+		t.Fatalf("POST /v1/accounts with grok-cli failed: %d: %s", accW.Code, accW.Body.String())
+	}
+	var created AgentAccount
+	if err := json.Unmarshal(accW.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode account response: %v", err)
+	}
+	if created.Agent != "grok" || created.ID != "grok:work" {
+		t.Fatalf("expected canonical account grok:work, got id=%q agent=%q", created.ID, created.Agent)
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/v1/accounts?agent=grok-cli", nil)
+	listW := httptest.NewRecorder()
+	srv.handleAccounts(listW, listReq)
+	if listW.Code != http.StatusOK {
+		t.Fatalf("GET /v1/accounts?agent=grok-cli failed: %d: %s", listW.Code, listW.Body.String())
+	}
+	var listed []AgentAccount
+	if err := json.Unmarshal(listW.Body.Bytes(), &listed); err != nil {
+		t.Fatalf("decode accounts list: %v", err)
+	}
+	seenWork := false
+	for _, a := range listed {
+		if a.Agent != "grok" {
+			t.Errorf("expected canonical agent 'grok', got %+v", a)
+		}
+		if a.ID == "grok:work" {
+			seenWork = true
+		}
+	}
+	if !seenWork {
+		t.Fatalf("expected grok:work in GET /v1/accounts?agent=grok-cli, got %+v", listed)
+	}
+}
+
+func TestGrokTranscriptCache_UsesEffectiveHomeDir(t *testing.T) {
+	srv, _ := setupTestServer(t)
+	tmpHome := t.TempDir()
+	srv.homeDir = tmpHome
+
+	cwd := filepath.Join(tmpHome, "proj")
+	nativeID := "grok-cache-1"
+	sessDir := filepath.Join(tmpHome, ".grok", "sessions", grok.EncodeCwd(cwd), nativeID)
+	_ = os.MkdirAll(sessDir, 0755)
+	historyPath := filepath.Join(sessDir, "chat_history.jsonl")
+	_ = os.WriteFile(historyPath, []byte(`{"role":"user","content":"hi"}`+"\n"), 0644)
+
+	statPath, size, modNano, err := srv.resolveTranscriptStat(tmpHome, "grok", nativeID, cwd)
+	if err != nil {
+		t.Fatalf("resolveTranscriptStat: %v", err)
+	}
+	srv.setCachedTranscript("grok", nativeID, cwd, statPath, size, modNano, []TranscriptMessage{{Role: "user", Content: "hi"}})
+
+	cached, ok := srv.getCachedTranscript("grok", nativeID, cwd)
+	if !ok || len(cached) != 1 || cached[0].Content != "hi" {
+		t.Fatalf("expected cache hit using effectiveHomeDir, got ok=%v msgs=%+v", ok, cached)
+	}
+}
