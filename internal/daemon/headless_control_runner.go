@@ -255,9 +255,10 @@ func (h *HeadlessRunner) TryAnswerControlAction(ctx context.Context, sess *Sessi
 			return true, dbErr
 		}
 	}
+	bcastSess := cloneSessionForHeadless(sess)
 	unlockSessionMu()
 	if h.broadcast != nil {
-		h.broadcast(sess)
+		h.broadcast(bcastSess)
 	}
 	return true, nil
 }

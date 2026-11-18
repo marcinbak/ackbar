@@ -1574,7 +1574,7 @@ func (h *HeadlessRunner) handleAntigravityInit(sess *Session, convID, prompt str
 			_ = h.db.SaveSession(sess)
 		}
 		if h.broadcast != nil {
-			h.broadcast(sess)
+			h.broadcast(cloneSessionForHeadless(sess))
 		}
 	}
 }

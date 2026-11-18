@@ -446,23 +446,26 @@ func (h *HeadlessRunner) finalizeTurnFromSpool(sess *Session, origSessionID stri
 	if h.db != nil {
 		_ = h.db.SaveSession(sess)
 	}
+	bcastSess := cloneSessionForHeadless(sess)
+	doneSessID, doneNativeID := sess.ID, sess.NativeID
+	fallbackCopy := cloneSessionForHeadless(sess)
 	// Clear active turn state only after ChildPID, worker rotation, and DB save finish so IsRunning() waiters never observe unfinalized state.
 	clearActiveTurn()
 	unlockSessionMu()
 
 	if h.broadcast != nil {
-		h.broadcast(sess)
+		h.broadcast(bcastSess)
 	}
 	h.mu.RLock()
 	onDone := h.onTurnComplete
 	h.mu.RUnlock()
 	if onDone != nil {
-		onDone(sess.ID, sess.NativeID)
+		onDone(doneSessID, doneNativeID)
 	}
 	if checkDrain() {
 		return
 	}
-	if !h.IsRestartPending() && interactiveBlock == nil && !wasCancelled && !h.IsQueuePaused(sess.ID) && h.HasReadyPrompt(sess.ID) {
+	if !h.IsRestartPending() && interactiveBlock == nil && !wasCancelled && !h.IsQueuePaused(doneSessID) && h.HasReadyPrompt(doneSessID) {
 		go func(sessID string, fallbackSess *Session) {
 			time.Sleep(50 * time.Millisecond)
 			if h.IsRestartPending() || h.IsQueuePaused(sessID) || h.IsRunning(sessID) {
@@ -478,6 +481,6 @@ func (h *HeadlessRunner) finalizeTurnFromSpool(sess *Session, origSessionID stri
 				return
 			}
 			_, _ = h.DispatchNextQueuedPrompt(context.Background(), targetSess)
-		}(sess.ID, sess)
+		}(doneSessID, fallbackCopy)
 	}
 }

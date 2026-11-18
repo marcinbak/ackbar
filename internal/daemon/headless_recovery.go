@@ -64,11 +64,12 @@ func (h *HeadlessRunner) applyWorkerEvent(sess *Session, origSessionID string, m
 				sess.State, sess.Blocked, sess.Activity = StateBlocked, evt.Blocked, blockActivityText(evt.Blocked)
 				sess.IsUnread, sess.LastStateChangeAt, sess.LastEventAt = true, time.Now(), time.Now()
 				_ = h.db.SaveSession(sess)
+				bcastSess := cloneSessionForHeadless(sess)
 				if sessMu != nil {
 					sessMu.Unlock()
 				}
 				if h.broadcast != nil {
-					h.broadcast(sess)
+					h.broadcast(bcastSess)
 				}
 			}
 			evt.SessionID = sess.ID
@@ -97,11 +98,12 @@ func (h *HeadlessRunner) applyWorkerEvent(sess *Session, origSessionID string, m
 				}
 				sess.IsUnread, sess.LastStateChangeAt, sess.LastEventAt = false, time.Now(), time.Now()
 				_ = h.db.SaveSession(sess)
+				bcastSess := cloneSessionForHeadless(sess)
 				if sessMu != nil {
 					sessMu.Unlock()
 				}
 				if h.broadcast != nil {
-					h.broadcast(sess)
+					h.broadcast(bcastSess)
 				}
 			}
 			if sess != nil && sess.ID != "" {

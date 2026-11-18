@@ -108,17 +108,56 @@ func (h *HeadlessRunner) initTurnSpool(runDir, turnID, sessID, nativeID, agent, 
 	return meta, evt, nil
 }
 
+func cloneBlockedForHeadless(b *Blocked) *Blocked {
+	if b == nil {
+		return nil
+	}
+	cp := *b
+	cp.Options = slices.Clone(b.Options)
+	if len(b.Questions) > 0 {
+		cp.Questions = make([]BlockedQuestion, len(b.Questions))
+		for i, q := range b.Questions {
+			cp.Questions[i] = q
+			cp.Questions[i].Options = slices.Clone(q.Options)
+		}
+	}
+	if b.ResetAt != nil {
+		t := *b.ResetAt
+		cp.ResetAt = &t
+	}
+	return &cp
+}
+
+func cloneSessionForHeadless(sess *Session) *Session {
+	if sess == nil {
+		return nil
+	}
+	cp := *sess
+	cp.Roots = slices.Clone(sess.Roots)
+	cp.ExtraDirs = slices.Clone(sess.ExtraDirs)
+	cp.Blocked = cloneBlockedForHeadless(sess.Blocked)
+	return &cp
+}
+
 func (h *HeadlessRunner) recordTurnActive(sess *Session, prompt, turnID string, turnStart time.Time, meta *TurnSpoolMeta, pid int, startEvt ChatStreamEvent, cmd *exec.Cmd) {
 	trackedCmd := cmd
 	if trackedCmd == nil {
 		trackedCmd = &exec.Cmd{}
 	}
+	sess.State, sess.Blocked, sess.Activity, sess.LastEventAt, sess.PID = StateWorking, nil, "Thinking...", turnStart, pid
+	if sess.FirstPrompt == "" {
+		sess.FirstPrompt = prompt
+	}
+	sess.LastPrompt = prompt
+	monSess := cloneSessionForHeadless(sess)
+	bcastSess := cloneSessionForHeadless(sess)
+
 	h.mu.Lock()
 	h.activeTurns[sess.ID] = true
 	if turnID != "" {
 		h.monitoredTurns[turnID] = true
 	}
-	h.activeSessions[sess.ID] = sess
+	h.activeSessions[sess.ID] = monSess
 	if prev := h.sessionSpools[sess.ID]; prev != nil && prev.TurnID != "" && prev.TurnID != turnID && !prev.FinalizedByDaemon {
 		h.supersededTurns[prev.TurnID] = true
 	}
@@ -132,19 +171,14 @@ func (h *HeadlessRunner) recordTurnActive(sess *Session, prompt, turnID string, 
 	h.mu.Unlock()
 	h.syncSleepInhibitor()
 
-	sess.State, sess.Blocked, sess.Activity, sess.LastEventAt, sess.PID = StateWorking, nil, "Thinking...", turnStart, pid
-	if sess.FirstPrompt == "" {
-		sess.FirstPrompt = prompt
-	}
-	sess.LastPrompt = prompt
 	if h.db != nil {
 		_ = h.db.SaveSession(sess)
 	}
 	if h.broadcast != nil {
-		h.broadcast(sess)
+		h.broadcast(bcastSess)
 	}
 	h.Emit(sess.ID, startEvt)
-	go h.monitorWorkerTurn(sess, sess.ID, meta, trackedCmd, startEvt.Seq)
+	go h.monitorWorkerTurn(monSess, monSess.ID, meta, trackedCmd, startEvt.Seq)
 }
 
 func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt string) error {

@@ -74,8 +74,7 @@ func (p *mockPersistentPlugin) FormatSetModel(model string) (string, bool) {
 func (p *mockPersistentPlugin) InspectSubcommandArgs(kind string) ([]string, bool) {
 	if !p.stdioMode && kind == "auth_login" {
 		return []string{"acp", "--custom-login"}, true
-	}
-	if p.stdioMode && kind == "mcp_login" {
+	} else if p.stdioMode && kind == "mcp_login" {
 		return []string{"mcp", "custom-login", "--no-browser"}, true
 	}
 	return nil, false
@@ -124,20 +123,19 @@ func installMockAgentBin(t *testing.T, binName, script string) string {
 	t.Helper()
 	binDir := t.TempDir()
 	p := filepath.Join(binDir, binName)
-	if err := os.WriteFile(p, []byte("#!/usr/bin/env bash\n"+script+"\n"), 0o755); err != nil {
-		t.Fatalf("write %s: %v", binName, err)
-	}
+	_ = os.WriteFile(p, []byte("#!/usr/bin/env bash\n"+script+"\n"), 0o755)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	return p
 }
 
 func warmHandlePID(srv *Server, sess *Session) int {
 	srv.headless.mu.RLock()
-	defer srv.headless.mu.RUnlock()
-	if _, wh := srv.headless.findWarmHandleLocked(sess); wh != nil {
-		return wh.ChildPID
+	_, wh := srv.headless.findWarmHandleLocked(sess)
+	srv.headless.mu.RUnlock()
+	if wh == nil {
+		return 0
 	}
-	return 0
+	return wh.ChildPID
 }
 
 func setupPersistTestServer(t *testing.T, tmpDir string) (*Server, *DB) {
@@ -162,45 +160,45 @@ read -r ctrl; echo "$ctrl" >> "`+stdinLog+`"; echo '{"type":"mock_delta","text":
 	_ = os.WriteFile(filepath.Join(tmpDir, ".mcp.json"), []byte(`{"mcpServers":{"corp":{"type":"http","url":"https://mcp.example.com"}}}`), 0o600)
 	sess := &Session{ID: "mock-persist-stdio:local:s1", Agent: "mock-persist-stdio", Host: "local", NativeID: "s1", Cwd: tmpDir, EngineType: EngineHeadless, Model: "v1", PermissionMode: "plan", Managed: true, State: StateIdle}
 	_ = db.SaveSession(sess)
-
 	if argv, _, _, err := resolveAllowlistedAuthCommandWithRegistry(srv.PluginRegistry(), sess, "mcp:corp", db, tmpDir); err != nil || len(argv) != 5 || argv[0] != binPath || argv[4] != "corp" {
 		t.Fatalf("mcp_login mismatch: argv=%v err=%v", argv, err)
 	}
 	if _, _, _, err := resolveAllowlistedAuthCommandWithRegistry(srv.PluginRegistry(), sess, "mcp:--bad", db, tmpDir); err == nil {
 		t.Fatal("expected leading-hyphen mcp rejection")
 	}
-
+	sessID := sess.ID
+	loadSess := func() *Session { s, _ := db.GetSession(sessID); return s }
 	if err := srv.headless.RunTurn(context.Background(), sess, "first"); err != nil {
 		t.Fatalf("RunTurn 1: %v", err)
 	}
-	waitForWorkerCond(t, 5*time.Second, "turn 1 idle", func() bool { return !srv.headless.IsRunning(sess.ID) })
-	pidBefore := warmHandlePID(srv, sess)
-	sess.Model = "v2"
-	_ = db.SaveSession(sess)
-	srv.headless.NotifyConfigChanged(sess)
-	if pidAfter := warmHandlePID(srv, sess); pidBefore <= 1 || pidAfter != pidBefore {
+	waitForWorkerCond(t, 5*time.Second, "turn 1 idle", func() bool { return !srv.headless.IsRunning(sessID) })
+	cur := loadSess()
+	pidBefore := warmHandlePID(srv, cur)
+	cur.Model = "v2"
+	_ = db.SaveSession(cur)
+	srv.headless.NotifyConfigChanged(cur)
+	if pidAfter := warmHandlePID(srv, cur); pidBefore <= 1 || pidAfter != pidBefore {
 		t.Fatalf("expected live set_model without child restart: %d -> %d", pidBefore, pidAfter)
 	}
-
-	if err := srv.headless.RunTurn(context.Background(), sess, "second"); err != nil {
+	if err := srv.headless.RunTurn(context.Background(), loadSess(), "second"); err != nil {
 		t.Fatalf("RunTurn 2: %v", err)
 	}
 	waitForWorkerCond(t, 5*time.Second, "blocked ExitPlanMode", func() bool {
-		cur, _ := db.GetSession(sess.ID)
-		return cur != nil && cur.State == StateBlocked && cur.Blocked != nil && cur.Blocked.Kind == BlockApproval
+		c := loadSess()
+		return c != nil && c.State == StateBlocked && c.Blocked != nil && c.Blocked.Kind == BlockApproval
 	})
-	if handled, err := srv.headless.TryAnswerControlAction(context.Background(), sess, "allow", "", ""); !handled || err != nil {
+	if handled, err := srv.headless.TryAnswerControlAction(context.Background(), loadSess(), "allow", "", ""); !handled || err != nil {
 		t.Fatalf("TryAnswerControlAction = (%v, %v)", handled, err)
 	}
-	waitForWorkerCond(t, 5*time.Second, "turn 2 idle", func() bool { return !srv.headless.IsRunning(sess.ID) })
-	if snap := srv.headless.GetInFlightTurnSnapshot(sess, sess.ID, sess.NativeID, sess.Agent); snap == nil || snap.AssistantText != "turn2-clean" {
+	waitForWorkerCond(t, 5*time.Second, "turn 2 idle", func() bool { return !srv.headless.IsRunning(sessID) })
+	cur = loadSess()
+	if snap := srv.headless.GetInFlightTurnSnapshot(cur, cur.ID, cur.NativeID, cur.Agent); snap == nil || snap.AssistantText != "turn2-clean" {
 		t.Fatalf("expected isolated turn 2 output, got %+v", snap)
 	}
-
-	_ = srv.headless.RunTurn(context.Background(), sess, "third")
-	waitForWorkerCond(t, 5*time.Second, "turn 3 active", func() bool { return srv.headless.IsRunning(sess.ID) })
-	_ = srv.headless.CancelTurn(sess.ID)
-	waitForWorkerCond(t, 5*time.Second, "turn 3 cancelled", func() bool { return !srv.headless.IsRunning(sess.ID) })
+	_ = srv.headless.RunTurn(context.Background(), cur, "third")
+	waitForWorkerCond(t, 5*time.Second, "turn 3 active", func() bool { return srv.headless.IsRunning(sessID) })
+	_ = srv.headless.CancelTurn(sessID)
+	waitForWorkerCond(t, 5*time.Second, "turn 3 cancelled", func() bool { return !srv.headless.IsRunning(sessID) })
 
 	data, _ := os.ReadFile(stdinLog)
 	if !strings.Contains(string(data), `"type":"set_model_custom"`) || !strings.Contains(string(data), `"control_response"`) {
@@ -221,16 +219,21 @@ while IFS= read -r line; do echo "IN:$line" >> "`+stdinLog+`"; echo '{"event":"c
 	if argv, _, _, err := resolveAllowlistedAuthCommandWithRegistry(srv.PluginRegistry(), sess, "agent:mock-agy", db, tmpDir); err != nil || len(argv) != 3 || argv[0] != binPath {
 		t.Fatalf("auth_login alias mismatch: argv=%v err=%v", argv, err)
 	}
+	origID, adoptedID := sess.ID, "mock-persist-agy:local:conv-adopted-7"
 	if err := srv.headless.RunTurn(context.Background(), sess, "hello-sup"); err != nil {
 		t.Fatalf("RunTurn 1: %v", err)
 	}
-	waitForWorkerCond(t, 5*time.Second, "agy turn 1 idle", func() bool { return !srv.headless.IsRunning(sess.ID) })
-	if got := srv.headless.GetRuntimeModel(sess.ID); got != "agy-pro-1" {
+	waitForWorkerCond(t, 5*time.Second, "agy turn 1 adopted idle", func() bool {
+		cur, _ := db.GetSession(adoptedID)
+		return !srv.headless.IsRunning(origID) && !srv.headless.IsRunning(adoptedID) && cur != nil && cur.State == StateIdle
+	})
+	sess, _ = db.GetSession(adoptedID)
+	if got := srv.headless.GetRuntimeModel(adoptedID); got != "agy-pro-1" {
 		t.Fatalf("GetRuntimeModel = %q, want agy-pro-1", got)
 	}
 	_ = srv.headless.RunTurn(context.Background(), sess, "followup")
-	waitForWorkerCond(t, 5*time.Second, "agy turn 2 idle", func() bool { return !srv.headless.IsRunning(sess.ID) })
-
+	waitForWorkerCond(t, 5*time.Second, "agy turn 2 idle", func() bool { return !srv.headless.IsRunning(adoptedID) })
+	sess, _ = db.GetSession(adoptedID)
 	pid1 := warmHandlePID(srv, sess)
 	sess.Model = "m2"
 	_ = db.SaveSession(sess)

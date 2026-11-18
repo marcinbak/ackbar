@@ -163,13 +163,13 @@ func dispatchPluginStreamLine(
 	for _, ev := range events {
 		switch ev.Type {
 		case "session_init":
-			if ev.Model != "" && hooks.onModelDetected != nil {
-				hooks.onModelDetected(ev.Model)
-			}
 			if ev.NativeID != "" && hooks.onAntigravityInit != nil {
 				hooks.onAntigravityInit(ev.NativeID)
 			} else if hooks.onSystemInit != nil {
 				hooks.onSystemInit()
+			}
+			if ev.Model != "" && hooks.onModelDetected != nil {
+				hooks.onModelDetected(ev.Model)
 			}
 		case "thought_delta", "tool_start", "tool_result":
 			if hooks.onTurnContent != nil {
