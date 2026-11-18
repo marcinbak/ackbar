@@ -254,3 +254,74 @@ func TestPluginBridge_InstallationDetectorWithoutProvisioner(t *testing.T) {
 		t.Fatal("detectOnlyBridgePlugin must not satisfy Provisioner")
 	}
 }
+
+func TestServer_CodexAndOpenCodePluginWiring(t *testing.T) {
+	srv, _ := setupTestServer(t)
+
+	// OpenCode alias resolves cleanly and exposes InstallationDetector without Provisioner.
+	if p, ok := srv.resolveProvider("open-code"); !ok || p.Agent() != "opencode" {
+		t.Fatalf("resolveProvider('open-code') = (%v, %v)", p, ok)
+	}
+	if _, ok := srv.PluginRegistry().AsInstallationDetector("opencode"); !ok {
+		t.Error("expected opencode InstallationDetector")
+	}
+	if _, ok := srv.PluginRegistry().AsProvisioner("opencode"); ok {
+		t.Error("opencode must not satisfy Provisioner")
+	}
+
+	// Codex is included dynamically in /v1/accounts via SupportsMultiAccount and resolves CODEX_HOME.
+	accRec := httptest.NewRecorder()
+	srv.handleAccounts(accRec, httptest.NewRequest(http.MethodGet, "/v1/accounts", nil))
+	if accRec.Code != http.StatusOK {
+		t.Fatalf("GET /v1/accounts = %d", accRec.Code)
+	}
+	var accts []AgentAccount
+	if err := json.Unmarshal(accRec.Body.Bytes(), &accts); err != nil {
+		t.Fatal(err)
+	}
+	seenCodexDefault := false
+	for _, a := range accts {
+		if a.ID == "codex:default" {
+			seenCodexDefault = true
+		}
+		if a.Agent == "opencode" {
+			t.Errorf("opencode should not get default multi-account entry: %+v", a)
+		}
+	}
+	if !seenCodexDefault {
+		t.Errorf("expected codex:default in GET /v1/accounts, got %+v", accts)
+	}
+
+	postRec := httptest.NewRecorder()
+	srv.handleAccounts(postRec, httptest.NewRequest(http.MethodPost, "/v1/accounts", bytes.NewBufferString(`{"agent":"codex","name":"work"}`)))
+	if postRec.Code != http.StatusOK {
+		t.Fatalf("POST /v1/accounts codex = %d: %s", postRec.Code, postRec.Body.String())
+	}
+	var created AgentAccount
+	if err := json.Unmarshal(postRec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	_, env := srv.resolveAccountEnv("codex", "work", "/tmp/home", false)
+	if env["CODEX_HOME"] == "" || env["CODEX_HOME"] != created.ConfigDir {
+		t.Fatalf("expected CODEX_HOME == %q in account env, got %+v", created.ConfigDir, env)
+	}
+
+	// LaunchSpec PromptInCommand differentiation: grok=true (when prompt non-empty), codex=false, opencode=false.
+	for _, tc := range []struct {
+		agent string
+		want  bool
+	}{
+		{"grok", true},
+		{"codex", false},
+		{"opencode", false},
+	} {
+		td, ok := srv.PluginRegistry().AsTMuxDriver(tc.agent)
+		if !ok {
+			t.Fatalf("missing TMuxDriver for %s", tc.agent)
+		}
+		spec, err := td.BuildLaunchSpec(agent.LaunchInput{Prompt: "run tests"})
+		if err != nil || spec.PromptInCommand != tc.want {
+			t.Errorf("%s BuildLaunchSpec PromptInCommand = %v (err=%v), want %v", tc.agent, spec.PromptInCommand, err, tc.want)
+		}
+	}
+}

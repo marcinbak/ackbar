@@ -8,7 +8,9 @@ import (
 	"testing"
 
 	"ackbar/internal/agent"
+	"ackbar/internal/agents/codex"
 	"ackbar/internal/agents/grok"
+	"ackbar/internal/agents/opencode"
 	"ackbar/internal/agentutil"
 	"ackbar/internal/version"
 )
@@ -468,5 +470,58 @@ func TestGrokProvisioner(t *testing.T) {
 	}
 	if grokStatus == nil || !grokStatus.MCPInstalled || grokStatus.DriftDetected {
 		t.Fatalf("unexpected grok status after ProvisionAgentsWithRegistry: %+v", grokStatus)
+	}
+}
+
+func TestCodexProvisioner(t *testing.T) {
+	tempHome := t.TempDir()
+	codexDir := filepath.Join(tempHome, ".codex")
+	if err := os.MkdirAll(codexDir, 0o700); err != nil {
+		t.Fatalf("failed to create .codex: %v", err)
+	}
+	cfgPath := filepath.Join(codexDir, "config.json")
+	if err := os.WriteFile(cfgPath, []byte(`{"model":"gpt-5"}`), 0o600); err != nil {
+		t.Fatalf("failed to write initial config.json: %v", err)
+	}
+
+	reg := agent.NewRegistry()
+	_ = reg.Register(codex.New())
+	_ = reg.Register(opencode.New())
+
+	initialStatuses, err := GetAgentStatusesWithRegistry(tempHome, reg)
+	if err != nil {
+		t.Fatalf("GetAgentStatusesWithRegistry failed: %v", err)
+	}
+	var codexInitial *AgentStatus
+	for i := range initialStatuses {
+		if initialStatuses[i].Key == "opencode" {
+			t.Fatalf("opencode does not implement Provisioner and must not appear in GetAgentStatusesWithRegistry")
+		}
+		if initialStatuses[i].Key == "codex" {
+			codexInitial = &initialStatuses[i]
+		}
+	}
+	if codexInitial == nil || !codexInitial.Detected || codexInitial.MCPInstalled || !codexInitial.DriftDetected {
+		t.Fatalf("unexpected initial codex status: %+v", codexInitial)
+	}
+
+	statuses, err := ProvisionAgentsWithRegistry(tempHome, []string{"codex"}, reg)
+	if err != nil {
+		t.Fatalf("ProvisionAgentsWithRegistry for codex failed: %v", err)
+	}
+	var codexStatus *AgentStatus
+	for i := range statuses {
+		if statuses[i].Key == "codex" {
+			codexStatus = &statuses[i]
+		}
+	}
+	if codexStatus == nil || !codexStatus.MCPInstalled || codexStatus.MCPCommand != "ackbar mcp" ||
+		!codexStatus.SkillInstalled || codexStatus.SkillVersion != version.Version ||
+		!codexStatus.RulesInstalled || codexStatus.RulesVersion != version.Version || codexStatus.DriftDetected {
+		t.Fatalf("unexpected codex status after ProvisionAgentsWithRegistry: %+v", codexStatus)
+	}
+	rawCfg, err := os.ReadFile(cfgPath)
+	if err != nil || !strings.Contains(string(rawCfg), `"model": "gpt-5"`) || !strings.Contains(string(rawCfg), `"ackbar"`) {
+		t.Fatalf("expected merged config.json preserving model key, got: %s (err=%v)", string(rawCfg), err)
 	}
 }

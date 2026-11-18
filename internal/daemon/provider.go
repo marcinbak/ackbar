@@ -133,10 +133,6 @@ func getDefaultAgentAdapter(agent string) AgentAdapter {
 		return &ClaudeAgentAdapter{}
 	case "antigravity":
 		return &AntigravityAgentAdapter{}
-	case "codex":
-		return &CodexAgentAdapter{}
-	case "opencode", "open-code":
-		return &OpenCodeAgentAdapter{}
 	default:
 		lower := strings.ToLower(agent)
 		if strings.Contains(lower, "antigravity") || strings.Contains(lower, "agy") {

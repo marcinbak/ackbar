@@ -55,15 +55,6 @@ var supportedAgents = []AgentDefinition{
 		SkillsRel:   filepath.Join(".gemini", "config", "skills"),
 		RulesRel:    filepath.Join(".gemini", "GEMINI.md"),
 	},
-	{
-		Key:         "codex",
-		DisplayName: "OpenAI Codex",
-		CLICommand:  "codex",
-		HomeSubdir:  ".codex",
-		ConfigRel:   filepath.Join(".codex", "config.json"),
-		SkillsRel:   filepath.Join(".codex", "skills"),
-		RulesRel:    filepath.Join(".codex", "AGENTS.md"),
-	},
 }
 
 // getClaudeDesktopConfigPath resolves the OS-specific path for Claude Desktop config

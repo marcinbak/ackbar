@@ -20,7 +20,9 @@ import (
 	"time"
 
 	"ackbar/internal/agent"
+	"ackbar/internal/agents/codex"
 	"ackbar/internal/agents/grok"
+	"ackbar/internal/agents/opencode"
 	"ackbar/internal/daemon"
 	"ackbar/internal/mcp"
 	"ackbar/internal/version"
@@ -29,6 +31,8 @@ import (
 func cliPluginRegistry() *agent.Registry {
 	reg := agent.NewRegistry()
 	_ = reg.Register(grok.New())
+	_ = reg.Register(codex.New())
+	_ = reg.Register(opencode.New())
 	return reg
 }
 
@@ -285,7 +289,9 @@ func runSetupHooks() error {
 	for _, p := range reg.List() {
 		if prov, ok := reg.AsProvisioner(p.Key()); ok && prov.IsInstalled(home) {
 			if err := prov.InstallHooks(home); err == nil {
-				fmt.Printf("✅ Configured %s lifecycle hooks\n", p.DisplayName())
+				if p.Capabilities().SupportsNativeHooks {
+					fmt.Printf("✅ Configured %s lifecycle hooks\n", p.DisplayName())
+				}
 			} else {
 				fmt.Printf("⚠️ Warning: Failed to configure %s hooks: %v\n", p.DisplayName(), err)
 			}
@@ -480,10 +486,10 @@ func runAccountCmd(args []string) {
 		tail := fs.Args()
 		if len(tail) < 2 {
 			fmt.Println("Usage: ackbar account add <agent> <name> [flags]")
-			fmt.Println("  Agents: claude-code, antigravity, grok")
+			fmt.Println("  Agents: claude-code, antigravity, codex, grok")
 			fmt.Println("  Flags:")
 			fmt.Println("    --display-name <name>  Human-readable name (e.g. \"Work Anthropic\")")
-			fmt.Println("    --api-key <key>        API key (e.g. ANTHROPIC_API_KEY, XAI_API_KEY)")
+			fmt.Println("    --api-key <key>        API key (e.g. ANTHROPIC_API_KEY, OPENAI_API_KEY, XAI_API_KEY)")
 			fmt.Println("    --config-dir <path>    Custom config directory")
 			fmt.Println("    --default              Set as default profile")
 			fmt.Println("    --all-hosts            Propagate to connected fleet hosts")

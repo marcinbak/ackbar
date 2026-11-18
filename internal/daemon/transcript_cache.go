@@ -240,13 +240,6 @@ func resolveTranscriptFileStat(home, agent, nativeID, cwd string) (string, int64
 				break
 			}
 		}
-
-	case agent == "codex":
-		if matches, _ := filepath.Glob(filepath.Join(home, ".codex", "sessions", "*", "*", "*", "*"+nativeID+"*.jsonl")); len(matches) > 0 {
-			filePath = matches[0]
-		} else if matches, _ := filepath.Glob(filepath.Join(home, ".codex", "archived_sessions", "*"+nativeID+"*.jsonl")); len(matches) > 0 {
-			filePath = matches[0]
-		}
 	}
 
 	if filePath == "" {

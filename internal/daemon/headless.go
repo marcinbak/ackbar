@@ -1366,14 +1366,6 @@ func hasConversationOnDisk(sess *Session, home string, db *DB) bool {
 			}
 		}
 		return hasAntigravityConversation(home, sess.NativeID)
-	case "codex":
-		if accCfgDir != "" {
-			if (CodexAgentAdapter{}).HasConversationArtifacts(accCfgDir, sess.NativeID) ||
-				(CodexAgentAdapter{}).HasConversationArtifacts(filepath.Dir(accCfgDir), sess.NativeID) {
-				return true
-			}
-		}
-		return (CodexAgentAdapter{}).HasConversationArtifacts(home, sess.NativeID)
 	}
 	claudeDir := filepath.Join(home, ".claude")
 	if accCfgDir != "" {

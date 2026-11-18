@@ -645,8 +645,6 @@ func (s *Server) applyHookStateTransition(sess *Session, event *Event, sessionID
 					InspectClaudeStatus(context.Background(), sess)
 				case "antigravity":
 					InspectAntigravityStatus(context.Background(), sess)
-				case "codex":
-					InspectCodexStatus(context.Background(), sess)
 				default:
 					if td, ok := s.PluginRegistry().AsTMuxDriver(event.Agent); ok {
 						td.InspectStatus(context.Background(), sess)
