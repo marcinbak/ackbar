@@ -282,6 +282,22 @@ func (s *Server) resolveTranscriptStat(home, agent, nativeID, cwd string) (strin
 	return resolveTranscriptFileStat(home, agent, nativeID, cwd)
 }
 
+func cloneTranscriptMessages(src []TranscriptMessage) []TranscriptMessage {
+	if src == nil {
+		return nil
+	}
+	dst := make([]TranscriptMessage, len(src))
+	for i, m := range src {
+		dst[i] = m
+		if len(m.ToolCalls) > 0 {
+			tc := make([]string, len(m.ToolCalls))
+			copy(tc, m.ToolCalls)
+			dst[i].ToolCalls = tc
+		}
+	}
+	return dst
+}
+
 func (s *Server) getCachedTranscript(agent, nativeID, cwd string) ([]TranscriptMessage, bool) {
 	if s == nil {
 		return nil, false
@@ -306,11 +322,13 @@ func (s *Server) getCachedTranscript(agent, nativeID, cwd string) ([]TranscriptM
 	cachedMsgs := entry.messages
 	s.transcriptCacheMu.RUnlock()
 
+	var curPath string
 	var curSize, curModTime int64
 	var err error
 	if st, ok := s.PluginRegistry().AsTranscriptStatter(agent); ok {
-		_, curSize, curModTime, err = st.StatTranscript(s.effectiveHomeDir(), cwd, nativeID)
+		curPath, curSize, curModTime, err = st.StatTranscript(s.effectiveHomeDir(), cwd, nativeID)
 	} else {
+		curPath = filePath
 		curSize, curModTime, err = statTranscriptFile(agent, filePath)
 	}
 	if err != nil {
@@ -320,57 +338,53 @@ func (s *Server) getCachedTranscript(agent, nativeID, cwd string) ([]TranscriptM
 		return nil, false
 	}
 
-	// Exact file match
-	if curSize == entrySize && curModTime == entryModTime {
-		res := make([]TranscriptMessage, len(cachedMsgs))
-		for i, m := range cachedMsgs {
-			res[i] = m
-			if len(m.ToolCalls) > 0 {
-				tc := make([]string, len(m.ToolCalls))
-				copy(tc, m.ToolCalls)
-				res[i].ToolCalls = tc
-			}
-		}
-		return res, true
+	if curPath == filePath && curSize == entrySize && curModTime == entryModTime {
+		return cloneTranscriptMessages(cachedMsgs), true
 	}
 
-	// Incremental append for Claude Code
-	if (agent == "claude-code" || strings.HasPrefix(agent, "claude")) && curSize > entrySize && entrySize > 0 {
-		f, ferr := os.Open(filePath)
+	var appendFn func(r io.Reader, existing []TranscriptMessage) ([]TranscriptMessage, error)
+	if inc, ok := s.PluginRegistry().AsIncrementalTranscript(agent); ok {
+		appendFn = inc.AppendTranscript
+	} else if agent == "claude-code" || strings.HasPrefix(agent, "claude") {
+		appendFn = func(r io.Reader, existing []TranscriptMessage) ([]TranscriptMessage, error) {
+			return ParseClaudeCodeJSONL(r, (ClaudeAgentAdapter{}).FilterUserEntry, existing)
+		}
+	}
+
+	if appendFn != nil && curPath == filePath && curSize > entrySize && entrySize > 0 {
+		f, ferr := openRegularFile(filePath)
 		if ferr == nil {
 			defer f.Close()
-			var head [128]byte
-			n, rerr := io.ReadFull(f, head[:])
-			if rerr == nil && n == 128 && entryHasHead && head == entryHead {
-				if _, serr := f.Seek(entrySize, io.SeekStart); serr == nil {
-					updatedMsgs, perr := ParseClaudeCodeJSONL(f, (ClaudeAgentAdapter{}).FilterUserEntry, cachedMsgs)
-					if perr == nil && len(updatedMsgs) >= len(cachedMsgs) {
-						newEntry := &transcriptCacheEntry{
-							agent:           agent,
-							nativeID:        nativeID,
-							cwd:             cwd,
-							filePath:        filePath,
-							fileSize:        curSize,
-							modTimeUnixNano: curModTime,
-							header128:       entryHead,
-							hasHeader:       entryHasHead,
-							messages:        updatedMsgs,
-							cachedAt:        time.Now(),
-						}
-						s.transcriptCacheMu.Lock()
-						s.transcriptCache[key] = newEntry
-						s.transcriptCacheMu.Unlock()
-
-						res := make([]TranscriptMessage, len(updatedMsgs))
-						for i, m := range updatedMsgs {
-							res[i] = m
-							if len(m.ToolCalls) > 0 {
-								tc := make([]string, len(m.ToolCalls))
-								copy(tc, m.ToolCalls)
-								res[i].ToolCalls = tc
+			if fStat, stErr := f.Stat(); stErr == nil && fStat.Size() >= curSize {
+				var head [128]byte
+				n, rerr := io.ReadFull(f, head[:])
+				var prevByte, endByte [1]byte
+				_, prevErr := f.ReadAt(prevByte[:], entrySize-1)
+				_, endErr := f.ReadAt(endByte[:], curSize-1)
+				if rerr == nil && n == 128 && entryHasHead && head == entryHead && prevErr == nil && prevByte[0] == '\n' && endErr == nil && endByte[0] == '\n' {
+					if _, serr := f.Seek(entrySize, io.SeekStart); serr == nil {
+						deltaReader := io.LimitReader(f, curSize-entrySize)
+						updatedMsgs, perr := appendFn(deltaReader, cloneTranscriptMessages(cachedMsgs))
+						if perr == nil && len(updatedMsgs) >= len(cachedMsgs) {
+							storedMsgs := cloneTranscriptMessages(updatedMsgs)
+							newEntry := &transcriptCacheEntry{
+								agent:           agent,
+								nativeID:        nativeID,
+								cwd:             cwd,
+								filePath:        filePath,
+								fileSize:        curSize,
+								modTimeUnixNano: curModTime,
+								header128:       entryHead,
+								hasHeader:       entryHasHead,
+								messages:        storedMsgs,
+								cachedAt:        time.Now(),
 							}
+							s.transcriptCacheMu.Lock()
+							s.transcriptCache[key] = newEntry
+							s.transcriptCacheMu.Unlock()
+
+							return cloneTranscriptMessages(storedMsgs), true
 						}
-						return res, true
 					}
 				}
 			}
@@ -387,7 +401,7 @@ func (s *Server) setCachedTranscript(agent, nativeID, cwd, filePath string, file
 
 	var head [128]byte
 	hasHeader := false
-	if f, err := os.Open(filePath); err == nil {
+	if f, err := openRegularFile(filePath); err == nil {
 		n, _ := io.ReadFull(f, head[:])
 		if n == 128 {
 			hasHeader = true

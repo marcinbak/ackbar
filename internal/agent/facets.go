@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"time"
 )
 
@@ -32,6 +33,7 @@ type Provisioner interface {
 	CheckStatus(ctx context.Context, homeDir string) AgentStatus
 	InstallHooks(homeDir string) error
 	Provision(ctx context.Context, homeDir string) error
+	SkillDirs(homeDir string) []string
 }
 
 type Accounts interface {
@@ -44,6 +46,7 @@ type Accounts interface {
 	ActivateAccount(homeDir string, acct *AgentAccount) error
 	RefreshAccount(ctx context.Context, acct *AgentAccount) (bool, error)
 	AuthenticateAccount(ctx context.Context, label string, env []string) (*AgentAccount, error)
+	ProfileSkillDirs(homeDir string, acct *AgentAccount) []string
 }
 
 type TMuxDriver interface {
@@ -61,6 +64,14 @@ type HeadlessDriver interface {
 	BuildTurnSpec(in HeadlessTurnInput) (HeadlessTurnSpec, error)
 	ParseStreamEvent(line []byte) ([]ChatStreamEvent, error)
 	ComputeUsage(sessionID, cwd, model string) (TranscriptUsage, bool)
+}
+
+type PersistentHeadlessDriver interface {
+	HeadlessDriver
+	SupportsStdioControl() bool
+	DefaultPermissionMode() string
+	FormatStdinTurn(in PersistentTurnInput) (string, error)
+	FormatSetModel(model string) (stdinLine string, supported bool)
 }
 
 type Hooks interface {
@@ -83,6 +94,15 @@ type Transcripts interface {
 	ListWorkspaceDocuments(homeDir, cwd, nativeID string) []WorkspaceDoc
 }
 
+type IncrementalTranscripts interface {
+	AppendTranscript(r io.Reader, existing []TranscriptMessage) ([]TranscriptMessage, error)
+}
+
+type SessionRewinder interface {
+	ListRewindTurns(homeDir, cwd, nativeID string) ([]RewindTurn, error)
+	CloneTranscriptBeforeTurn(homeDir, cwd, nativeID string, beforeTurn int, newNativeID string) (cloned bool, err error)
+}
+
 type Scanner interface {
 	IsValidNativeID(nativeID string) bool
 	IsIgnoredCommand(fullCmd string) bool
@@ -97,6 +117,7 @@ type ModelCatalog interface {
 	DefaultModels() []ModelSuggestion
 	CollectModels(homeDir string) []ModelSuggestion
 	ValidateModelID(model string) bool
+	NormalizeModelID(raw string) string
 }
 
 type RateLimiter interface {

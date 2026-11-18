@@ -102,6 +102,10 @@ func validateAuthURL(raw string) (*url.URL, error) {
 }
 
 func resolveAllowlistedAuthCommand(sess *Session, target string, db *DB, home string) ([]string, string, bool, error) {
+	return resolveAllowlistedAuthCommandWithRegistry(nil, sess, target, db, home)
+}
+
+func resolveAllowlistedAuthCommandWithRegistry(reg *agent.Registry, sess *Session, target string, db *DB, home string) ([]string, string, bool, error) {
 	if home == "" || !filepath.IsAbs(home) {
 		return nil, "", false, fmt.Errorf("invalid home directory")
 	}
@@ -130,18 +134,82 @@ func resolveAllowlistedAuthCommand(sess *Session, target string, db *DB, home st
 		return []string{evalScript, "auth", "login"}, "", true, nil
 	}
 
-	if target == "agent:agy" {
-		bin, err := resolveAntigravityBinary()
-		if err != nil {
-			return nil, "", false, err
+	if strings.HasPrefix(target, "agent:") {
+		targetAgent := strings.TrimPrefix(target, "agent:")
+		if reg != nil && targetAgent != "" {
+			if p, ok := reg.Get(targetAgent); ok {
+				matchesSess := sess == nil || sess.Agent == "" || strings.EqualFold(p.Key(), sess.Agent)
+				if !matchesSess && sess != nil {
+					if sp, ok2 := reg.Get(sess.Agent); ok2 && sp.Key() == p.Key() {
+						matchesSess = true
+					}
+				}
+				if !matchesSess {
+					return nil, "", false, fmt.Errorf("auth target %s does not match session agent %s", target, sess.Agent)
+				}
+				if ci, ok := reg.AsCLIInspector(p.Key()); ok {
+					if subArgs, ok := ci.InspectSubcommandArgs("auth_login"); ok && len(subArgs) > 0 {
+						if hd, ok := reg.AsHeadlessDriver(p.Key()); ok {
+							bin, err := hd.ResolveBinary()
+							if err != nil {
+								return nil, "", false, err
+							}
+							argv := append([]string{bin}, subArgs...)
+							return argv, "", true, nil
+						}
+					}
+				}
+			}
 		}
-		return []string{bin, "acp", "--login"}, "", true, nil
+		if target == "agent:agy" {
+			if sess != nil && sess.Agent != "" && !strings.EqualFold(sess.Agent, "antigravity") && !strings.EqualFold(sess.Agent, "agy") {
+				return nil, "", false, fmt.Errorf("auth target %s does not match session agent %s", target, sess.Agent)
+			}
+			bin, err := resolveAntigravityBinary()
+			if err != nil {
+				return nil, "", false, err
+			}
+			return []string{bin, "acp", "--login"}, "", true, nil
+		}
 	}
 
 	if strings.HasPrefix(target, "mcp:") {
 		name := strings.TrimPrefix(target, "mcp:")
 		if strings.HasPrefix(name, "-") || !validServerNameRegex.MatchString(name) {
 			return nil, "", false, fmt.Errorf("invalid mcp server name: %s", name)
+		}
+		if sess != nil && reg != nil {
+			if ci, ok := reg.AsCLIInspector(sess.Agent); ok {
+				if subArgs, ok := ci.InspectSubcommandArgs("mcp_login"); ok && len(subArgs) > 0 {
+					servers, err := discoverConfiguredMCPServers(sess, db, home)
+					if err != nil {
+						return nil, "", false, err
+					}
+					var found *MCPServerHealth
+					for _, s := range servers {
+						if s.Name == name {
+							found = &s
+							break
+						}
+					}
+					if found == nil || (found.Transport != "http" && found.Transport != "sse") {
+						return nil, "", false, fmt.Errorf("mcp server %s is not configured for http/sse", name)
+					}
+					hd, ok := reg.AsHeadlessDriver(sess.Agent)
+					if !ok {
+						return nil, "", false, fmt.Errorf("agent %s has no headless driver", sess.Agent)
+					}
+					bin, err := hd.ResolveBinary()
+					if err != nil {
+						return nil, "", false, err
+					}
+					argv := make([]string, 0, 1+len(subArgs)+1)
+					argv = append(argv, bin)
+					argv = append(argv, subArgs...)
+					argv = append(argv, name)
+					return argv, sess.Cwd, true, nil
+				}
+			}
 		}
 		if sess == nil || sess.Agent != "claude-code" {
 			return nil, "", false, fmt.Errorf("mcp auth broker requires claude-code session")

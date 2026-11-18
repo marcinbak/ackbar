@@ -317,10 +317,10 @@ func runSetupHooks() error {
 	if db != nil {
 		defer db.Close()
 	}
-	repoPath, repoURL := daemon.DiscoverSkillsRepo(home, db)
+	repoPath, repoURL := daemon.DiscoverSkillsRepoWithRegistry(home, db, reg)
 	if repoPath != "" || repoURL != "" {
 		fmt.Printf("🔄 Syncing external skills repository...\n")
-		syncStatus, err := daemon.SyncSkillsRepo(home, db, daemon.SyncSkillsRepoOptions{})
+		syncStatus, err := daemon.SyncSkillsRepoWithRegistry(home, db, reg, daemon.SyncSkillsRepoOptions{})
 		if err != nil {
 			fmt.Printf("⚠️ Note: Skills repository sync: %v\n", err)
 		} else if syncStatus != nil && syncStatus.Cloned {
@@ -660,7 +660,7 @@ func runAgentCmd(args []string) {
 		if db != nil {
 			defer db.Close()
 		}
-		repoStatus := daemon.GetSkillsRepoStatus(home, db, false)
+		repoStatus := daemon.GetSkillsRepoStatusWithRegistry(home, db, cliPluginRegistry(), false)
 		fmt.Println("\nSKILLS REPOSITORY:")
 		if !repoStatus.Configured && !repoStatus.Cloned {
 			fmt.Println("  Status: Not configured")
@@ -737,7 +737,7 @@ func runAgentCmd(args []string) {
 		}
 
 		// 2. Skills repo handling
-		repoStatus := daemon.GetSkillsRepoStatus(home, db, false)
+		repoStatus := daemon.GetSkillsRepoStatusWithRegistry(home, db, cliPluginRegistry(), false)
 		repoURL := *repoURLFlag
 		if repoURL == "" {
 			repoURL = repoStatus.RepoURL
@@ -748,7 +748,7 @@ func runAgentCmd(args []string) {
 		}
 		suggestedPath := repoStatus.SuggestedPath
 		if suggestedPath == "" && repoURL != "" {
-			suggestedPath = daemon.GetSkillsRepoStatus(home, db, false).SuggestedPath
+			suggestedPath = daemon.GetSkillsRepoStatusWithRegistry(home, db, cliPluginRegistry(), false).SuggestedPath
 		}
 
 		shouldClone := *cloneFlag
@@ -786,7 +786,7 @@ func runAgentCmd(args []string) {
 				RepoURL:        repoURL,
 				CloneIfMissing: shouldClone,
 			}
-			syncStatus, err := daemon.SyncSkillsRepo(home, db, opts)
+			syncStatus, err := daemon.SyncSkillsRepoWithRegistry(home, db, cliPluginRegistry(), opts)
 			if err != nil {
 				fmt.Printf("❌ Skills repo sync failed: %v\n", err)
 			} else if syncStatus != nil && syncStatus.Cloned {

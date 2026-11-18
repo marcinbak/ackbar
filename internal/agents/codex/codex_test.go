@@ -58,6 +58,13 @@ func TestPlugin_IdentityCapabilitiesLaunchAndAccounts(t *testing.T) {
 	if env["CODEX_HOME"] != filepath.Join(tmpHome, "custom-codex") || env["ACKBAR_ACCOUNT"] != "work" || env["OPENAI_API_KEY"] != "sk-1" {
 		t.Fatalf("AccountEnvVars mismatch: %+v", env)
 	}
+	if dirs := p.SkillDirs(tmpHome); len(dirs) != 1 || dirs[0] != filepath.Join(tmpHome, ".codex", "skills") {
+		t.Fatalf("SkillDirs = %v", dirs)
+	}
+	profDirs := p.ProfileSkillDirs(tmpHome, &agent.AgentAccount{ConfigDir: "~/.codex-profiles/work"})
+	if len(profDirs) != 1 || profDirs[0] != filepath.Join(tmpHome, ".codex-profiles", "work", "skills") {
+		t.Fatalf("ProfileSkillDirs = %v", profDirs)
+	}
 
 	t.Setenv("CODEX_HOME", filepath.Join(tmpHome, "env-codex"))
 	if got := HomeDir(""); got != filepath.Join(tmpHome, "env-codex") {

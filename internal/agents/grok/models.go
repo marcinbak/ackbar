@@ -115,6 +115,10 @@ func (*Plugin) ValidateModelID(model string) bool {
 	return agentutil.IsSafeCLIArg(strings.TrimSpace(model))
 }
 
+func (*Plugin) NormalizeModelID(raw string) string {
+	return normalizeModelID(raw)
+}
+
 func normalizeModelID(raw string) string {
 	s := strings.TrimSpace(raw)
 	if s == "" || strings.EqualFold(s, "default") || strings.EqualFold(s, "synthetic") || strings.HasPrefix(s, "<") {

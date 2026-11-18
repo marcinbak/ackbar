@@ -34,6 +34,7 @@ func parseChatStreamReplayCursor(r *http.Request) (string, int64) {
 // SubscribeWithReplay subscribes to live events BEFORE reading the turn spool and deduplicates by Seq so reconnects never miss or duplicate deltas.
 func (h *HeadlessRunner) SubscribeWithReplay(sessionID, reqTurnID string, afterSeq int64, streamAgent string) (chan ChatStreamEvent, func()) {
 	liveCh, liveCleanup := h.Subscribe(sessionID)
+	reg := h.pluginRegistry()
 
 	h.mu.RLock()
 	meta := h.findSpoolForSessionLocked(sessionID, "")
@@ -77,7 +78,7 @@ func (h *HeadlessRunner) SubscribeWithReplay(sessionID, reqTurnID string, afterS
 				SessionID: sessionID,
 				TurnID:    activeMsg.TurnID,
 				Type:      "turn_start",
-				Text:      cleanActivePromptForAgent(streamAgent, activeMsg.Content),
+				Text:      cleanActivePromptWithRegistry(reg, streamAgent, activeMsg.Content),
 				Timestamp: activeMsg.Timestamp,
 			}}
 		}
@@ -100,7 +101,7 @@ func (h *HeadlessRunner) SubscribeWithReplay(sessionID, reqTurnID string, afterS
 				continue
 			}
 			if evt.Type == "turn_start" && evt.Text != "" {
-				evt.Text = cleanActivePromptForAgent(streamAgent, evt.Text)
+				evt.Text = cleanActivePromptWithRegistry(reg, streamAgent, evt.Text)
 			}
 			select {
 			case outCh <- evt:
@@ -130,7 +131,7 @@ func (h *HeadlessRunner) SubscribeWithReplay(sessionID, reqTurnID string, afterS
 					}
 				}
 				if evt.Type == "turn_start" && evt.Text != "" {
-					evt.Text = cleanActivePromptForAgent(streamAgent, evt.Text)
+					evt.Text = cleanActivePromptWithRegistry(reg, streamAgent, evt.Text)
 				}
 				select {
 				case outCh <- evt:

@@ -748,7 +748,7 @@ func (h *HeadlessRunner) SetRuntimeModel(sessionID, agent, model string) {
 	if h == nil || sessionID == "" {
 		return
 	}
-	norm := normalizeModelIdentifier(agent, model)
+	norm := normalizeModelIdentifierWithRegistry(h.pluginRegistry(), agent, model)
 	if norm == "" {
 		return
 	}
@@ -1574,7 +1574,7 @@ func (h *HeadlessRunner) handleAntigravityInit(sess *Session, convID, prompt str
 			_ = h.db.SaveSession(sess)
 		}
 		if h.broadcast != nil {
-			h.broadcast(sess)
+			h.broadcast(cloneSessionForHeadless(sess))
 		}
 	}
 }
@@ -1634,11 +1634,15 @@ func (h *HeadlessRunner) processStreamCore(sessionID string, r io.Reader, prompt
 			h.handleAntigravityInit(sess, convID, prompt)
 		},
 		onModelDetected: func(m string) {
-			agent := ""
+			agentName := ""
+			targetID := sessionID
 			if sess != nil {
-				agent = sess.Agent
+				agentName = sess.Agent
+				if sess.ID != "" {
+					targetID = sess.ID
+				}
 			}
-			h.SetRuntimeModel(sessionID, agent, m)
+			h.SetRuntimeModel(targetID, agentName, m)
 		},
 		onSystemInit: func() {
 			if sess != nil && prompt != "" {
@@ -1695,6 +1699,20 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 
 		var raw map[string]interface{}
 		if err := json.Unmarshal([]byte(line), &raw); err != nil {
+			continue
+		}
+
+		if hooks.streamParser != nil && dispatchPluginStreamLine(
+			hooks.streamParser,
+			[]byte(line),
+			&lastTextBuilder,
+			&resultText,
+			&streamHadError,
+			&finalLastTurnText,
+			&finalResultText,
+			&finalStreamHadError,
+			hooks,
+		) {
 			continue
 		}
 
@@ -1929,10 +1947,6 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 				hasEmittedDeltaInTurn = false
 				needsSeparation = false
 			}
-			continue
-		}
-
-		if dispatchPluginStreamLine(hooks.streamParser, []byte(line), &lastTextBuilder, &resultText, &streamHadError, hooks) {
 			continue
 		}
 

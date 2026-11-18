@@ -10,6 +10,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"ackbar/internal/agent"
 )
 
 type cachedModelEntry struct {
@@ -86,6 +88,15 @@ func readCachedModelFile(filePath string, parser func(f *os.File) (string, error
 	return model, stat.ModTime(), nil
 }
 
+func normalizeModelIdentifierWithRegistry(reg *agent.Registry, agentName, raw string) string {
+	if reg != nil && strings.TrimSpace(agentName) != "" {
+		if mc, ok := reg.AsModelCatalog(agentName); ok {
+			return mc.NormalizeModelID(raw)
+		}
+	}
+	return normalizeModelIdentifier(agentName, raw)
+}
+
 func normalizeModelIdentifier(agent, raw string) string {
 	s := strings.TrimSpace(raw)
 	if s == "" || strings.EqualFold(s, "default") || strings.EqualFold(s, "synthetic") || strings.HasPrefix(s, "<") {
@@ -123,21 +134,22 @@ func (s *Server) resolveSessionModel(sess *Session) string {
 	if sess == nil {
 		return ""
 	}
+	reg := s.PluginRegistry()
 
 	if sess.Model != "" && !strings.EqualFold(sess.Model, "default") {
-		return normalizeModelIdentifier(sess.Agent, sess.Model)
+		return normalizeModelIdentifierWithRegistry(reg, sess.Agent, sess.Model)
 	}
 
 	if s.headless != nil {
 		if rt := s.headless.GetRuntimeModel(sess.ID); rt != "" {
-			if norm := normalizeModelIdentifier(sess.Agent, rt); norm != "" {
+			if norm := normalizeModelIdentifierWithRegistry(reg, sess.Agent, rt); norm != "" {
 				return norm
 			}
 		}
 	}
 
 	tailModel, tailModTime := s.resolveTranscriptTailModel(sess)
-	if tailModel != "" {
+	if tailModel = normalizeModelIdentifierWithRegistry(reg, sess.Agent, tailModel); tailModel != "" {
 		if sess.EngineType == EngineHeadless && !sess.MetadataUpdatedAt.IsZero() && sess.MetadataUpdatedAt.After(tailModTime) {
 			if p3 := s.resolveSettingsModel(sess); p3 != "" {
 				return p3
@@ -161,6 +173,12 @@ func (s *Server) resolveTranscriptTailModel(sess *Session) (string, time.Time) {
 		accCfgDir = acc.ConfigDir
 		if strings.HasPrefix(accCfgDir, "~/") && home != "" {
 			accCfgDir = filepath.Join(home, accCfgDir[2:])
+		}
+	}
+
+	if reg := s.PluginRegistry(); reg != nil {
+		if mr, ok := reg.AsModelResolver(sess.Agent); ok {
+			return mr.ResolveArtifactModel(home, accCfgDir, sess.Cwd, sess.NativeID)
 		}
 	}
 
@@ -211,12 +229,6 @@ func (s *Server) resolveTranscriptTailModel(sess *Session) (string, time.Time) {
 			}
 		}
 		return "", time.Time{}
-	}
-
-	if s != nil && s.PluginRegistry() != nil {
-		if mr, ok := s.PluginRegistry().AsModelResolver(sess.Agent); ok {
-			return mr.ResolveArtifactModel(home, accCfgDir, sess.Cwd, sess.NativeID)
-		}
 	}
 
 	return "", time.Time{}
@@ -335,6 +347,13 @@ func (s *Server) resolveSettingsModel(sess *Session) string {
 		}
 	}
 
+	reg := s.PluginRegistry()
+	if reg != nil {
+		if mr, ok := reg.AsModelResolver(sess.Agent); ok {
+			return normalizeModelIdentifierWithRegistry(reg, sess.Agent, mr.ResolveConfiguredModel(home, acc))
+		}
+	}
+
 	agentLower := strings.ToLower(strings.TrimSpace(sess.Agent))
 	if agentLower == "claude" || agentLower == "claude-code" {
 		if sess.Cwd != "" {
@@ -346,7 +365,7 @@ func (s *Server) resolveSettingsModel(sess *Session) string {
 			}
 		}
 		if acc != nil && acc.Env != nil && acc.Env["ANTHROPIC_MODEL"] != "" {
-			if norm := normalizeModelIdentifier(sess.Agent, acc.Env["ANTHROPIC_MODEL"]); norm != "" {
+			if norm := normalizeModelIdentifierWithRegistry(reg, sess.Agent, acc.Env["ANTHROPIC_MODEL"]); norm != "" {
 				return norm
 			}
 		}
@@ -368,7 +387,7 @@ func (s *Server) resolveSettingsModel(sess *Session) string {
 
 	if agentLower == "antigravity" {
 		if acc != nil && acc.Env != nil && acc.Env["GEMINI_MODEL"] != "" {
-			if norm := normalizeModelIdentifier(sess.Agent, acc.Env["GEMINI_MODEL"]); norm != "" {
+			if norm := normalizeModelIdentifierWithRegistry(reg, sess.Agent, acc.Env["GEMINI_MODEL"]); norm != "" {
 				return norm
 			}
 		}
@@ -409,12 +428,6 @@ func (s *Server) resolveSettingsModel(sess *Session) string {
 			}
 		}
 		return ""
-	}
-
-	if s != nil && s.PluginRegistry() != nil {
-		if mr, ok := s.PluginRegistry().AsModelResolver(sess.Agent); ok {
-			return mr.ResolveConfiguredModel(home, acc)
-		}
 	}
 
 	return ""

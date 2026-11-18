@@ -208,6 +208,7 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string, reg *agent.Regis
 	}
 
 	acpDrv, isACP := acpDriverForAgent(reg, workerMeta.Agent)
+	persDrv, isPers := persistentDriverForAgent(reg, workerMeta.Agent)
 	rt := &workerRuntime{
 		mu:                 &stateMu,
 		reg:                reg,
@@ -219,7 +220,7 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string, reg *agent.Regis
 		idleTimer:          &idleTimer,
 		pendingControl:     &pendingControl,
 		idleTTL:            idleTTL,
-		isStdioControl:     workerMetaPath != "" && (strings.EqualFold(workerMeta.Agent, "claude-code") || isACP),
+		isStdioControl:     workerMetaPath != "" && ((isPers && persDrv.SupportsStdioControl()) || (!isPers && strings.EqualFold(workerMeta.Agent, "claude-code")) || isACP),
 		saveMeta:           saveWorkerMeta,
 		getChildPGIDLocked: getChildPGIDLocked,
 		writeStdin:         writeStdinLine,
@@ -689,8 +690,20 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string, reg *agent.Regis
 		if tMeta, rErr := ReadTurnSpoolMeta(specPath); rErr == nil && tMeta != nil {
 			initialPrompt = tMeta.Prompt
 			if workerMetaPath != "" && !isACP {
-				isNewConv := !slices.Contains(workerMeta.Args, "--conversation")
-				initialStdinLine, _ = formatPersistentStdinTurn(workerMeta.Agent, workerMeta.SessionID, workerMeta.IsSupervisor, isNewConv, tMeta.Prompt)
+				isFirstTurn := !workerMeta.IsExisting && !slices.Contains(workerMeta.Args, "--conversation")
+				sysPrompt := workerMeta.SystemPrompt
+				if workerMeta.IsSupervisor && sysPrompt == "" && workerMeta.SessionID != "" {
+					sysPrompt = BuildSupervisorSystemPrompt(workerMeta.SessionID)
+				}
+				initialStdinLine, _ = formatPersistentStdinTurnWithRegistry(reg, agent.PersistentTurnInput{
+					Agent:        workerMeta.Agent,
+					SessionID:    workerMeta.SessionID,
+					NativeID:     workerMeta.NativeID,
+					Prompt:       tMeta.Prompt,
+					SystemPrompt: sysPrompt,
+					IsSupervisor: workerMeta.IsSupervisor,
+					IsFirstTurn:  isFirstTurn,
+				})
 			}
 		}
 	}
@@ -891,6 +904,15 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string, reg *agent.Regis
 		},
 		onAnswerControl: rt.handleAnswerControlIPC,
 		onWatchWorker:   func(c net.Conn) { watchHub.handleWatchIPC(c, rt) },
+		formatSetModel: func(targetModel string) (string, bool) {
+			if isPers {
+				return persDrv.FormatSetModel(targetModel)
+			}
+			if strings.EqualFold(workerMeta.Agent, "claude-code") {
+				return formatLegacyClaudeSetModel(targetModel)
+			}
+			return "", false
+		},
 	}
 	if isACP {
 		attachACPWorkerIPC(&ipcExt, rt, startTurnLocked)

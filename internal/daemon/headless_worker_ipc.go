@@ -102,10 +102,26 @@ type workerIPCExtensions struct {
 	pendingBlocked  func() *Blocked
 	onAnswerControl func(workerIPCReq) workerIPCResp
 	onWatchWorker   func(net.Conn)
+	formatSetModel  func(model string) (string, bool)
 	onACPStartTurn  func(workerIPCReq) workerIPCResp
 	onACPSetConfig  func(workerIPCReq) workerIPCResp
 	onACPCancel     func(workerIPCReq) workerIPCResp
 	onACPRewind     func(workerIPCReq) workerIPCResp
+}
+
+func formatLegacyClaudeSetModel(targetModel string) (string, bool) {
+	b, err := json.Marshal(map[string]any{
+		"type":       "control_request",
+		"request_id": fmt.Sprintf("req_model_%d", time.Now().UnixNano()),
+		"request": map[string]any{
+			"subtype": "set_model",
+			"model":   targetModel,
+		},
+	})
+	if err != nil {
+		return "", false
+	}
+	return string(b), true
 }
 
 type boundedTailBuffer struct {
@@ -347,25 +363,24 @@ func handleWorkerIPC(c net.Conn, stateMu *sync.Mutex, state *string, workerMeta 
 		})
 
 	case "set_model":
-		stateMu.Lock()
-		curChildPID := getChildPGID()
-		if !strings.EqualFold(workerMeta.Agent, "claude-code") || *state == "shutting_down" || *state == "exited" || *state == "restarting_child" || curChildPID <= 1 {
-			stateMu.Unlock()
-			reply(workerIPCResp{OK: false, ErrCode: "unsupported_or_inactive", WorkerPID: os.Getpid()})
-			return
-		}
 		targetModel := strings.TrimSpace(req.Model)
 		if targetModel == "" {
 			targetModel = "default"
 		}
-		ctrlLine, _ := json.Marshal(map[string]any{
-			"type":       "control_request",
-			"request_id": fmt.Sprintf("req_model_%d", time.Now().UnixNano()),
-			"request": map[string]any{
-				"subtype": "set_model",
-				"model":   targetModel,
-			},
-		})
+		var ctrlLine string
+		var supported bool
+		if ext.formatSetModel != nil {
+			ctrlLine, supported = ext.formatSetModel(targetModel)
+		} else if strings.EqualFold(workerMeta.Agent, "claude-code") {
+			ctrlLine, supported = formatLegacyClaudeSetModel(targetModel)
+		}
+		stateMu.Lock()
+		curChildPID := getChildPGID()
+		if !supported || strings.TrimSpace(ctrlLine) == "" || *state == "shutting_down" || *state == "exited" || *state == "restarting_child" || curChildPID <= 1 {
+			stateMu.Unlock()
+			reply(workerIPCResp{OK: false, ErrCode: "unsupported_or_inactive", WorkerPID: os.Getpid()})
+			return
+		}
 		if len(req.Args) > 0 {
 			workerMeta.Args = req.Args
 		}
@@ -383,7 +398,7 @@ func handleWorkerIPC(c net.Conn, stateMu *sync.Mutex, state *string, workerMeta 
 		cfgFP, mcpFP := workerMeta.ConfigFingerprint, workerMeta.MCPFingerprint
 		stateMu.Unlock()
 
-		writeStdinLine(string(ctrlLine))
+		writeStdinLine(ctrlLine)
 		reply(workerIPCResp{
 			OK:                true,
 			WorkerPID:         os.Getpid(),

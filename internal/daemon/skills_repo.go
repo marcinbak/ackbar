@@ -11,6 +11,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"ackbar/internal/agent"
 )
 
 // SkillsRepoStatus represents the configuration, git tracking, and sync state of the external skills repository
@@ -117,8 +119,110 @@ func isDedicatedSkillsRepo(root string) bool {
 	return false
 }
 
-// DiscoverSkillsRepo inspects persistent settings or scans agent skill directories for an external repository
+func collectSkillDirsWithRegistry(home string, db *DB, reg *agent.Registry, includeProfiles bool) []string {
+	var out []string
+	seen := make(map[string]bool)
+	expandPath := func(raw string) string {
+		s := strings.TrimSpace(raw)
+		if s == "" {
+			return ""
+		}
+		if home != "" {
+			if s == "~" {
+				s = home
+			} else if strings.HasPrefix(s, "~/") {
+				s = filepath.Join(home, s[2:])
+			}
+		}
+		clean := filepath.Clean(s)
+		if clean == "" || clean == "." {
+			return ""
+		}
+		return clean
+	}
+	addDir := func(raw string) {
+		clean := expandPath(raw)
+		if clean != "" && !seen[clean] {
+			seen[clean] = true
+			out = append(out, clean)
+		}
+	}
+
+	if home != "" {
+		if reg == nil {
+			addDir(filepath.Join(home, ".gemini", "config", "skills"))
+			addDir(filepath.Join(home, ".gemini", "antigravity-cli", "skills"))
+			addDir(filepath.Join(home, ".claude", "skills"))
+			addDir(filepath.Join(home, ".codex", "skills"))
+			addDir(filepath.Join(home, ".grok", "skills"))
+		} else {
+			if _, ok := reg.AsProvisioner("antigravity"); !ok {
+				addDir(filepath.Join(home, ".gemini", "config", "skills"))
+				addDir(filepath.Join(home, ".gemini", "antigravity-cli", "skills"))
+			}
+			if _, ok := reg.AsProvisioner("claude-code"); !ok {
+				addDir(filepath.Join(home, ".claude", "skills"))
+			}
+		}
+	}
+
+	if reg != nil {
+		for p := range reg.All() {
+			if prov, ok := reg.AsProvisioner(p.Key()); ok {
+				for _, d := range prov.SkillDirs(home) {
+					addDir(d)
+				}
+			}
+		}
+	}
+
+	if includeProfiles && db != nil {
+		if reg == nil || func() bool { _, ok := reg.AsAccounts("claude-code"); return !ok }() {
+			if accounts, err := db.ListAccounts("claude-code"); err == nil {
+				for _, acc := range accounts {
+					if acc != nil && strings.TrimSpace(acc.ConfigDir) != "" {
+						if cfg := expandPath(acc.ConfigDir); cfg != "" {
+							addDir(filepath.Join(cfg, "skills"))
+						}
+					}
+				}
+			}
+		}
+		if reg == nil || func() bool { _, ok := reg.AsAccounts("antigravity"); return !ok }() {
+			if accounts, err := db.ListAccounts("antigravity"); err == nil {
+				for _, acc := range accounts {
+					if acc != nil && strings.TrimSpace(acc.ConfigDir) != "" {
+						if cfg := expandPath(acc.ConfigDir); cfg != "" {
+							addDir(filepath.Join(cfg, "config", "skills"))
+							addDir(filepath.Join(cfg, "antigravity-cli", "skills"))
+						}
+					}
+				}
+			}
+		}
+		if reg != nil {
+			for p := range reg.All() {
+				if ac, ok := reg.AsAccounts(p.Key()); ok {
+					if accounts, err := db.ListAccounts(p.Key()); err == nil {
+						for _, acc := range accounts {
+							for _, d := range ac.ProfileSkillDirs(home, acc) {
+								addDir(d)
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return out
+}
+
 func DiscoverSkillsRepo(home string, db *DB) (repoPath, repoURL string) {
+	return DiscoverSkillsRepoWithRegistry(home, db, nil)
+}
+
+func DiscoverSkillsRepoWithRegistry(home string, db *DB, reg *agent.Registry) (repoPath, repoURL string) {
 	if db != nil {
 		if p, err := db.GetSetting("skills_repo_path"); err == nil && p != "" {
 			repoPath = p
@@ -143,14 +247,7 @@ func DiscoverSkillsRepo(home string, db *DB) (repoPath, repoURL string) {
 		}
 	}
 
-	// Scan candidate agent skill directories
-	scanDirs := []string{
-		filepath.Join(home, ".gemini", "config", "skills"),
-		filepath.Join(home, ".gemini", "antigravity-cli", "skills"),
-		filepath.Join(home, ".claude", "skills"),
-		filepath.Join(home, ".codex", "skills"),
-		filepath.Join(home, ".grok", "skills"),
-	}
+	scanDirs := collectSkillDirsWithRegistry(home, db, reg, true)
 
 	for _, sDir := range scanDirs {
 		entries, err := os.ReadDir(sDir)
@@ -284,15 +381,18 @@ func computeSuggestedPath(home, repoURL string) string {
 	return filepath.Join(home, "Projects", repoName)
 }
 
-// GetSkillsRepoStatus returns the current git and sync status of the skills repository
 func GetSkillsRepoStatus(home string, db *DB, fetchRemote bool) SkillsRepoStatus {
+	return GetSkillsRepoStatusWithRegistry(home, db, nil, fetchRemote)
+}
+
+func GetSkillsRepoStatusWithRegistry(home string, db *DB, reg *agent.Registry, fetchRemote bool) SkillsRepoStatus {
 	if home == "" {
 		if h, err := os.UserHomeDir(); err == nil {
 			home = h
 		}
 	}
 
-	repoPath, repoURL := DiscoverSkillsRepo(home, db)
+	repoPath, repoURL := DiscoverSkillsRepoWithRegistry(home, db, reg)
 
 	var lastSync, lastCheck string
 	if db != nil {
@@ -404,8 +504,11 @@ func GetSkillsRepoStatus(home string, db *DB, fetchRemote bool) SkillsRepoStatus
 	return status
 }
 
-// SyncSkillsRepo clones, pulls, and executes the skill installer for the configured skills repository
 func SyncSkillsRepo(home string, db *DB, opts SyncSkillsRepoOptions) (*SkillsRepoStatus, error) {
+	return SyncSkillsRepoWithRegistry(home, db, nil, opts)
+}
+
+func SyncSkillsRepoWithRegistry(home string, db *DB, reg *agent.Registry, opts SyncSkillsRepoOptions) (*SkillsRepoStatus, error) {
 	if home == "" {
 		if h, err := os.UserHomeDir(); err == nil {
 			home = h
@@ -433,7 +536,7 @@ func SyncSkillsRepo(home string, db *DB, opts SyncSkillsRepoOptions) (*SkillsRep
 		}
 	}
 
-	status := GetSkillsRepoStatus(home, db, false)
+	status := GetSkillsRepoStatusWithRegistry(home, db, reg, false)
 	repoPath := status.RepoPath
 	repoURL := status.RepoURL
 
@@ -546,6 +649,8 @@ func SyncSkillsRepo(home string, db *DB, opts SyncSkillsRepoOptions) (*SkillsRep
 			}
 		}
 
+		skillDirs := collectSkillDirsWithRegistry(home, db, reg, true)
+
 		ctxInstall, cancelInstall := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancelInstall()
 
@@ -557,14 +662,16 @@ func SyncSkillsRepo(home string, db *DB, opts SyncSkillsRepoOptions) (*SkillsRep
 		if len(claudeDirs) > 0 {
 			cmdInstall.Env = append(cmdInstall.Env, fmt.Sprintf("ACKBAR_CLAUDE_DIRS=%s", strings.Join(claudeDirs, ":")))
 		}
+		if len(skillDirs) > 0 {
+			cmdInstall.Env = append(cmdInstall.Env, fmt.Sprintf("ACKBAR_SKILL_DIRS=%s", strings.Join(skillDirs, string(os.PathListSeparator))))
+		}
 
 		outInstall, err := cmdInstall.CombinedOutput()
 		if err != nil {
 			return &status, fmt.Errorf("installer failed: %v (output: %s)", err, strings.TrimSpace(string(outInstall)))
 		}
 	} else {
-		// Fallback: copy skills directly
-		if err := fallbackInstallSkills(home, repoPath); err != nil {
+		if err := fallbackInstallSkillsWithRegistry(home, db, reg, repoPath); err != nil {
 			return &status, fmt.Errorf("fallback skill installation failed: %w", err)
 		}
 	}
@@ -578,19 +685,16 @@ func SyncSkillsRepo(home string, db *DB, opts SyncSkillsRepoOptions) (*SkillsRep
 		})
 	}
 
-	finalStatus := GetSkillsRepoStatus(home, db, false)
+	finalStatus := GetSkillsRepoStatusWithRegistry(home, db, reg, false)
 	return &finalStatus, nil
 }
 
-// fallbackInstallSkills copies skills when no install.sh script exists in the repository
 func fallbackInstallSkills(home, repoPath string) error {
-	destDirs := []string{
-		filepath.Join(home, ".claude", "skills"),
-		filepath.Join(home, ".gemini", "config", "skills"),
-		filepath.Join(home, ".gemini", "antigravity-cli", "skills"),
-		filepath.Join(home, ".codex", "skills"),
-		filepath.Join(home, ".grok", "skills"),
-	}
+	return fallbackInstallSkillsWithRegistry(home, nil, nil, repoPath)
+}
+
+func fallbackInstallSkillsWithRegistry(home string, db *DB, reg *agent.Registry, repoPath string) error {
+	destDirs := collectSkillDirsWithRegistry(home, db, reg, true)
 
 	type skillCandidate struct {
 		name string
@@ -677,8 +781,12 @@ func copyDirectory(src, dst string) error {
 	})
 }
 
-// MaybeAutoSyncSkillsRepo executes a background sync if >=24h has elapsed since last check
 func MaybeAutoSyncSkillsRepo(ctx context.Context, home string, db *DB) {
+	MaybeAutoSyncSkillsRepoWithRegistry(ctx, home, db, nil)
+}
+
+func MaybeAutoSyncSkillsRepoWithRegistry(ctx context.Context, home string, db *DB, reg *agent.Registry) {
+	_ = ctx
 	if db == nil {
 		return
 	}
@@ -698,8 +806,8 @@ func MaybeAutoSyncSkillsRepo(ctx context.Context, home string, db *DB) {
 		return
 	}
 
-	status := GetSkillsRepoStatus(home, db, false)
+	status := GetSkillsRepoStatusWithRegistry(home, db, reg, false)
 	if status.Cloned && status.RepoPath != "" {
-		_, _ = SyncSkillsRepo(home, db, SyncSkillsRepoOptions{})
+		_, _ = SyncSkillsRepoWithRegistry(home, db, reg, SyncSkillsRepoOptions{})
 	}
 }

@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"ackbar/internal/agent"
 )
 
 const DefaultHeadlessIdleTTL = 65 * time.Minute
@@ -23,7 +25,23 @@ func defaultSessionPermissionMode(agentName string) string {
 	}
 }
 
+func defaultSessionPermissionModeWithRegistry(reg *agent.Registry, agentName string) string {
+	if pd, ok := persistentDriverForAgent(reg, agentName); ok {
+		return pd.DefaultPermissionMode()
+	}
+	if reg != nil && strings.TrimSpace(agentName) != "" {
+		if _, ok := reg.AsHeadlessDriver(agentName); ok {
+			return ""
+		}
+	}
+	return defaultSessionPermissionMode(agentName)
+}
+
 func normalizePermissionMode(agentName, mode string) string {
+	return normalizePermissionModeWithRegistry(nil, agentName, mode)
+}
+
+func normalizePermissionModeWithRegistry(reg *agent.Registry, agentName, mode string) string {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
 	case "plan":
 		return "plan"
@@ -36,15 +54,24 @@ func normalizePermissionMode(agentName, mode string) string {
 	case "bypasspermissions":
 		return "bypassPermissions"
 	default:
-		return defaultSessionPermissionMode(agentName)
+		return defaultSessionPermissionModeWithRegistry(reg, agentName)
 	}
 }
 
 func computeConfigFingerprint(sess *Session, includeModel bool) string {
+	return computeConfigFingerprintWithRegistry(nil, sess, includeModel)
+}
+
+func computeConfigFingerprintWithRegistry(reg *agent.Registry, sess *Session, includeModel bool) string {
 	if sess == nil {
 		return ""
 	}
 	ag := strings.ToLower(strings.TrimSpace(sess.Agent))
+	supportsEffort := ag == "claude-code" || ag == "grok"
+	if p, ok := reg.Get(ag); ok {
+		ag = strings.ToLower(strings.TrimSpace(p.Key()))
+		supportsEffort = p.Capabilities().SupportsEffortLevel
+	}
 	m := ""
 	if includeModel {
 		m = strings.TrimSpace(sess.Model)
@@ -53,10 +80,10 @@ func computeConfigFingerprint(sess *Session, includeModel bool) string {
 		}
 	}
 	e := strings.TrimSpace(sess.Effort)
-	if (ag != "claude-code" && ag != "grok") || strings.EqualFold(e, "default") {
+	if !supportsEffort || strings.EqualFold(e, "default") {
 		e = ""
 	}
-	pm := normalizePermissionMode(ag, sess.PermissionMode)
+	pm := normalizePermissionModeWithRegistry(reg, sess.Agent, sess.PermissionMode)
 	acc := strings.TrimSpace(sess.AccountID)
 	cwd := filepath.Clean(strings.TrimSpace(sess.Cwd))
 	sup := strconv.FormatBool(sess.IsSupervisor)
@@ -87,6 +114,14 @@ func ConfigFingerprint(sess *Session) string {
 
 func ConfigFingerprintWithoutModel(sess *Session) string {
 	return computeConfigFingerprint(sess, false)
+}
+
+func ConfigFingerprintWithRegistry(reg *agent.Registry, sess *Session) string {
+	return computeConfigFingerprintWithRegistry(reg, sess, true)
+}
+
+func ConfigFingerprintWithoutModelWithRegistry(reg *agent.Registry, sess *Session) string {
+	return computeConfigFingerprintWithRegistry(reg, sess, false)
 }
 
 func ResolveHeadlessIdleTTL(override time.Duration) time.Duration {
@@ -195,6 +230,16 @@ type agyStdinTurnMsg struct {
 type stdinTurnMsgDetail struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
+}
+
+func formatPersistentStdinTurnWithRegistry(reg *agent.Registry, in agent.PersistentTurnInput) (string, error) {
+	if pd, ok := persistentDriverForAgent(reg, in.Agent); ok {
+		if in.IsSupervisor && in.SystemPrompt == "" && in.SessionID != "" {
+			in.SystemPrompt = BuildSupervisorSystemPrompt(in.SessionID)
+		}
+		return pd.FormatStdinTurn(in)
+	}
+	return formatPersistentStdinTurn(in.Agent, in.SessionID, in.IsSupervisor, in.IsFirstTurn, in.Prompt)
 }
 
 func formatPersistentStdinTurn(agent, sessID string, isSupervisor, isFirstTurnOfNewConv bool, prompt string) (string, error) {

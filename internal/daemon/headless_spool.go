@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"ackbar/internal/agent"
 )
 
 // TurnSpoolMeta persists worker sidecar metadata at 0600 without environment variables or secrets.
@@ -324,14 +326,18 @@ func ReadTurnSpoolAfter(spoolPath string, afterSeq int64) ([]ChatStreamEvent, in
 }
 
 func SynthesizeInFlightTurn(meta *TurnSpoolMeta, streamAgent string) (*InFlightTurnSnapshot, error) {
+	return SynthesizeInFlightTurnWithRegistry(nil, meta, streamAgent)
+}
+
+func SynthesizeInFlightTurnWithRegistry(reg *agent.Registry, meta *TurnSpoolMeta, streamAgent string) (*InFlightTurnSnapshot, error) {
 	if meta == nil {
 		return nil, nil
 	}
-	agent := streamAgent
-	if agent == "" {
-		agent = meta.Agent
+	agentName := streamAgent
+	if agentName == "" {
+		agentName = meta.Agent
 	}
-	userPrompt := cleanActivePromptForAgent(agent, meta.Prompt)
+	userPrompt := cleanActivePromptWithRegistry(reg, agentName, meta.Prompt)
 	if meta.IsSynthetic {
 		userPrompt = ""
 	}
@@ -359,7 +365,7 @@ func SynthesizeInFlightTurn(meta *TurnSpoolMeta, streamAgent string) (*InFlightT
 		case "turn_start":
 			snap.ActivityKind = "thinking"
 			if evt.Text != "" {
-				snap.UserPrompt = cleanActivePromptForAgent(agent, evt.Text)
+				snap.UserPrompt = cleanActivePromptWithRegistry(reg, agentName, evt.Text)
 			}
 			if !evt.Timestamp.IsZero() {
 				snap.UserTimestamp = evt.Timestamp
@@ -450,6 +456,7 @@ func (h *HeadlessRunner) GetInFlightTurnSnapshot(sess *Session, sessionID, nativ
 	if h == nil {
 		return nil
 	}
+	reg := h.pluginRegistry()
 	h.mu.RLock()
 	meta := h.findSpoolForSessionLocked(sessionID, nativeID)
 	if meta == nil && sess != nil && sess.ID != "" {
@@ -463,7 +470,7 @@ func (h *HeadlessRunner) GetInFlightTurnSnapshot(sess *Session, sessionID, nativ
 				meta = dm
 			}
 		}
-		if snap, err := SynthesizeInFlightTurn(meta, streamAgent); err == nil && snap != nil {
+		if snap, err := SynthesizeInFlightTurnWithRegistry(reg, meta, streamAgent); err == nil && snap != nil {
 			if h.IsRunning(sessionID) || (sess != nil && sess.ID != "" && h.IsRunning(sess.ID)) {
 				snap.IsActive = true
 			} else {
@@ -484,7 +491,7 @@ func (h *HeadlessRunner) GetInFlightTurnSnapshot(sess *Session, sessionID, nativ
 					TurnID:            msg.TurnID,
 					SessionID:         sessionID,
 					NativeID:          nativeID,
-					UserPrompt:        cleanActivePromptForAgent(streamAgent, msg.Content),
+					UserPrompt:        cleanActivePromptWithRegistry(reg, streamAgent, msg.Content),
 					UserTimestamp:     msg.Timestamp,
 					IsActive:          true,
 					UpdatedAt:         msg.Timestamp,

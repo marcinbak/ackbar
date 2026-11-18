@@ -64,11 +64,12 @@ func (h *HeadlessRunner) applyWorkerEvent(sess *Session, origSessionID string, m
 				sess.State, sess.Blocked, sess.Activity = StateBlocked, evt.Blocked, blockActivityText(evt.Blocked)
 				sess.IsUnread, sess.LastStateChangeAt, sess.LastEventAt = true, time.Now(), time.Now()
 				_ = h.db.SaveSession(sess)
+				bcastSess := cloneSessionForHeadless(sess)
 				if sessMu != nil {
 					sessMu.Unlock()
 				}
 				if h.broadcast != nil {
-					h.broadcast(sess)
+					h.broadcast(bcastSess)
 				}
 			}
 			evt.SessionID = sess.ID
@@ -97,11 +98,12 @@ func (h *HeadlessRunner) applyWorkerEvent(sess *Session, origSessionID string, m
 				}
 				sess.IsUnread, sess.LastStateChangeAt, sess.LastEventAt = false, time.Now(), time.Now()
 				_ = h.db.SaveSession(sess)
+				bcastSess := cloneSessionForHeadless(sess)
 				if sessMu != nil {
 					sessMu.Unlock()
 				}
 				if h.broadcast != nil {
-					h.broadcast(sess)
+					h.broadcast(bcastSess)
 				}
 			}
 			if sess != nil && sess.ID != "" {
@@ -210,7 +212,7 @@ func (h *HeadlessRunner) adoptLiveWorkers(runDir string, entries []os.DirEntry) 
 		resp, err := callWorkerSocket(wm.SocketPath, workerIPCReq{Op: "status"}, 250*time.Millisecond)
 		alive := err == nil && resp != nil && resp.OK
 		sess := h.resolveSession(wm.SessionID, wm.OrigSessionID, wm.NativeID)
-		fpMismatch := sess != nil && wm.ConfigFingerprint != ConfigFingerprint(sess)
+		fpMismatch := sess != nil && wm.ConfigFingerprint != ConfigFingerprintWithRegistry(h.pluginRegistry(), sess)
 		inActiveTurn := alive && (resp.State == "running_turn" || resp.State == "blocked_control")
 		if !alive || resp.State == "shutting_down" || resp.State == "exited" || isInactiveOrNonHeadless(sess) || (fpMismatch && !inActiveTurn) {
 			if alive {

@@ -197,7 +197,38 @@ func (s *Server) handleSessionRewind(w http.ResponseWriter, r *http.Request, ses
 	var rawLines []string
 	var targetFile string
 
-	if sess.Agent == "antigravity" {
+	rw, hasRewinder := s.PluginRegistry().AsSessionRewinder(sess.Agent)
+	if hasRewinder {
+		rTurns, rwErr := rw.ListRewindTurns(home, sess.Cwd, sess.NativeID)
+		if rwErr != nil {
+			http.Error(w, fmt.Sprintf("Failed to list rewind turns: %v", rwErr), http.StatusInternalServerError)
+			return
+		}
+		for i, rt := range rTurns {
+			turnNum := rt.Turn
+			if turnNum <= 0 {
+				turnNum = i + 1
+			}
+			rawPrompt := rt.RawPrompt
+			if rawPrompt == "" {
+				rawPrompt = rt.Preview
+			}
+			preview := rt.Preview
+			if preview == "" && rawPrompt != "" {
+				preview = strings.TrimSpace(rawPrompt)
+				if len(preview) > 120 {
+					preview = preview[:120] + "..."
+				}
+			}
+			turns = append(turns, rewindHumanTurn{
+				ID:        rt.ID,
+				Turn:      turnNum,
+				Timestamp: rt.Timestamp,
+				Preview:   preview,
+				RawPrompt: rawPrompt,
+			})
+		}
+	} else if sess.Agent == "antigravity" {
 		turns = s.extractAntigravityRewindTurns(home, sess)
 	} else if _, ok := s.PluginRegistry().AsTranscript(sess.Agent); ok {
 		turns = s.extractPluginRewindTurns(home, sess)
@@ -257,7 +288,30 @@ func (s *Server) handleSessionRewind(w http.ResponseWriter, r *http.Request, ses
 		return
 	}
 
-	if sess.Agent == "claude-code" && targetFile != "" && len(rawLines) > 0 {
+	if hasRewinder {
+		newUUID := generateUUID()
+		cloned, cErr := rw.CloneTranscriptBeforeTurn(home, sess.Cwd, sess.NativeID, targetTurn, newUUID)
+		if cErr != nil {
+			http.Error(w, fmt.Sprintf("Failed to clone transcript for rewind: %v", cErr), http.StatusInternalServerError)
+			return
+		}
+		if cloned {
+			newSess, rotErr := s.rotateHeadlessConversation(r.Context(), sess, fmt.Sprintf("Rewound before Turn %d", targetTurn), "", true, newUUID)
+			if rotErr != nil {
+				http.Error(w, fmt.Sprintf("Failed to rewind session: %v", rotErr), http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"status":         "ok",
+				"mode":           "cloned_transcript",
+				"before_turn":    targetTurn,
+				"old_session_id": sess.ID,
+				"session":        newSess,
+			})
+			return
+		}
+	} else if sess.Agent == "claude-code" && targetFile != "" && len(rawLines) > 0 {
 		cutIdx := turns[targetTurn-1].LineIndex
 		for cutIdx > 0 {
 			prevLine := strings.TrimSpace(rawLines[cutIdx-1])

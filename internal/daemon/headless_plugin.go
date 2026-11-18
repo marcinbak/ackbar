@@ -148,6 +148,9 @@ func dispatchPluginStreamLine(
 	lastTextBuilder *strings.Builder,
 	resultText *string,
 	streamHadError *bool,
+	finalLastTurnText *string,
+	finalResultText *string,
+	finalStreamHadError *bool,
 	hooks streamParseHooks,
 ) bool {
 	if parser == nil {
@@ -159,11 +162,26 @@ func dispatchPluginStreamLine(
 	}
 	for _, ev := range events {
 		switch ev.Type {
+		case "session_init":
+			if ev.NativeID != "" && hooks.onAntigravityInit != nil {
+				hooks.onAntigravityInit(ev.NativeID)
+			} else if hooks.onSystemInit != nil {
+				hooks.onSystemInit()
+			}
+			if ev.Model != "" && hooks.onModelDetected != nil {
+				hooks.onModelDetected(ev.Model)
+			}
 		case "thought_delta", "tool_start", "tool_result":
+			if hooks.onTurnContent != nil {
+				hooks.onTurnContent()
+			}
 			if hooks.emit != nil {
 				hooks.emit(ev)
 			}
 		case "text_delta":
+			if hooks.onTurnContent != nil {
+				hooks.onTurnContent()
+			}
 			if ev.Text != "" {
 				lastTextBuilder.WriteString(ev.Text)
 			}
@@ -179,20 +197,65 @@ func dispatchPluginStreamLine(
 				hooks.onModelDetected(ev.Model)
 			}
 		case "error":
+			if hooks.onTurnContent != nil {
+				hooks.onTurnContent()
+			}
 			*streamHadError = true
 			lastTextBuilder.WriteString("\n" + ev.Text)
 			if hooks.emit != nil {
 				hooks.emit(ev)
 			}
 		case "turn_complete":
-			*resultText = lastTextBuilder.String()
+			if hooks.onTurnContent != nil {
+				hooks.onTurnContent()
+			}
+			priorHadErr := *streamHadError
+			priorText := lastTextBuilder.String()
+			if ev.IsError {
+				*streamHadError = true
+			}
+			trimmedEvText := strings.TrimSpace(ev.Text)
+			alreadyInPrior := trimmedEvText != "" && strings.Contains(priorText, trimmedEvText)
+			if ev.Text != "" {
+				*resultText = ev.Text
+				if lastTextBuilder.Len() == 0 {
+					lastTextBuilder.WriteString(ev.Text)
+				} else if !alreadyInPrior {
+					lastTextBuilder.WriteString("\n" + ev.Text)
+				}
+			} else {
+				*resultText = priorText
+			}
 			if hooks.emitTurnComplete && hooks.emit != nil {
 				ev.Text = *resultText
 				hooks.emit(ev)
+			} else if ev.IsError && !hooks.emitTurnComplete && hooks.emit != nil && ev.Text != "" && !(priorHadErr && alreadyInPrior) {
+				hooks.emit(ChatStreamEvent{
+					SessionID: ev.SessionID,
+					TurnID:    ev.TurnID,
+					Type:      "error",
+					Text:      ev.Text,
+					IsError:   true,
+				})
+			}
+			turnLastText := lastTextBuilder.String()
+			turnResText := *resultText
+			turnHadErr := *streamHadError
+			if finalLastTurnText != nil {
+				*finalLastTurnText = turnLastText
+			}
+			if finalResultText != nil {
+				*finalResultText = turnResText
+			}
+			if finalStreamHadError != nil {
+				*finalStreamHadError = turnHadErr
 			}
 			if hooks.onTurnResult != nil {
-				hooks.onTurnResult(lastTextBuilder.String(), *resultText, *streamHadError)
+				hooks.onTurnResult(turnLastText, turnResText, turnHadErr)
 			}
+			lastTextBuilder.Reset()
+			*resultText = ""
+			*streamHadError = false
 		}
 	}
 	return true
