@@ -219,4 +219,12 @@ func TestACPStreamAndControlParsing(t *testing.T) {
 	if !strings.Contains(string(b2), `"outcome":"cancelled"`) {
 		t.Fatalf("expected cancelled outcome, got %s", b2)
 	}
+	bDenyMismatch, _ := json.Marshal(BuildACPPermissionResponse(prompt, false, "Allow Once"))
+	if !strings.Contains(string(bDenyMismatch), `"optionId":"reject_once"`) {
+		t.Fatalf("expected deny with allow label to pick reject_once, got %s", bDenyMismatch)
+	}
+	bAllowMismatch, _ := json.Marshal(BuildACPPermissionResponse(prompt, true, "Reject"))
+	if !strings.Contains(string(bAllowMismatch), `"optionId":"allow_once"`) {
+		t.Fatalf("expected allow with reject label to pick allow_once, got %s", bAllowMismatch)
+	}
 }

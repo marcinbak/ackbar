@@ -321,6 +321,7 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 		WorkerID: workerID, SessionID: sess.ID, OrigSessionID: sess.ID, NativeID: sess.NativeID,
 		Agent: sess.Agent, Cwd: sess.Cwd, IsSupervisor: sess.IsSupervisor, ConfigFingerprint: fp, ConfigFingerprintNoModel: fpNoModel,
 		ImmutableFingerprint: immFP, MCPFingerprint: mcpFP, IsExisting: isExisting, SystemPrompt: sysPrompt, PermissionMode: sess.PermissionMode,
+		Model: normalizeACPConfigValue(sess.Model), Effort: normalizeACPConfigValue(sess.Effort),
 		Bin: bin, Args: args, SocketPath: sockPath, SocketTempDir: sockTempDir, WorkerMetaPath: workerMetaPath,
 		State: "starting", ActiveTurnID: turnID, ActiveMetaPath: meta.MetaPath, IdleTTLNs: dur, StartedAt: turnStart, UpdatedAt: turnStart,
 	}
@@ -733,6 +734,8 @@ func (h *HeadlessRunner) restartHandleChild(sess *Session, handle *warmWorkerHan
 		Op:                       "restart_child",
 		SessionID:                sess.ID,
 		NativeID:                 sess.NativeID,
+		Model:                    normalizeACPConfigValue(sess.Model),
+		Effort:                   normalizeACPConfigValue(sess.Effort),
 		Bin:                      bin,
 		Args:                     args,
 		Env:                      cleanEnv,

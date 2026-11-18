@@ -124,3 +124,39 @@ func (s *ACPStreamState) ParseACPSessionUpdate(agentKey, sessionID string, param
 	}
 	return events, res
 }
+
+func acpFirstStr(m map[string]any, keys ...string) string {
+	if m == nil {
+		return ""
+	}
+	for _, k := range keys {
+		if s, ok := m[k].(string); ok && s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+func firstMapAny(m map[string]any, keys ...string) any {
+	if m == nil {
+		return nil
+	}
+	for _, k := range keys {
+		if v, ok := m[k]; ok && v != nil {
+			return v
+		}
+	}
+	return nil
+}
+
+func firstNonNilMapVal(primary map[string]any, key string, fallback map[string]any) any {
+	if primary != nil {
+		if v, ok := primary[key]; ok && v != nil {
+			return v
+		}
+	}
+	if fallback != nil {
+		return fallback[key]
+	}
+	return nil
+}

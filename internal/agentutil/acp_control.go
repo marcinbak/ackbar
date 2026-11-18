@@ -90,6 +90,9 @@ func BuildACPPermissionResponse(prompt *agent.ACPControlPrompt, approved bool, a
 	}
 	if trimmed != "" {
 		for _, o := range opts {
+			if !optionMatchesApproval(o, approved) {
+				continue
+			}
 			if strings.EqualFold(trimmed, o.OptionID) || strings.EqualFold(trimmed, o.Name) || (o.Kind != "" && strings.EqualFold(trimmed, o.Kind)) {
 				return map[string]any{"outcome": map[string]any{"outcome": "selected", "optionId": o.OptionID}}
 			}
@@ -97,8 +100,13 @@ func BuildACPPermissionResponse(prompt *agent.ACPControlPrompt, approved bool, a
 	}
 	if approved {
 		selected := pickOptionByKind(opts, "allow_once", "allow")
-		if selected == "" && len(opts) > 0 {
-			selected = opts[0].OptionID
+		if selected == "" {
+			for _, o := range opts {
+				if optionMatchesApproval(o, true) {
+					selected = o.OptionID
+					break
+				}
+			}
 		}
 		if selected == "" {
 			selected = "allow_once"
@@ -109,6 +117,16 @@ func BuildACPPermissionResponse(prompt *agent.ACPControlPrompt, approved bool, a
 		return map[string]any{"outcome": map[string]any{"outcome": "selected", "optionId": selected}}
 	}
 	return map[string]any{"outcome": map[string]any{"outcome": "cancelled"}}
+}
+
+func optionMatchesApproval(o agent.ACPPermissionOption, approved bool) bool {
+	k, id := strings.ToLower(o.Kind), strings.ToLower(o.OptionID)
+	isAllow := strings.HasPrefix(k, "allow") || strings.HasPrefix(k, "proceed") || strings.HasPrefix(id, "allow") || strings.HasPrefix(id, "proceed")
+	isReject := strings.HasPrefix(k, "reject") || strings.HasPrefix(k, "deny") || strings.HasPrefix(id, "reject") || strings.HasPrefix(id, "deny")
+	if approved {
+		return !isReject
+	}
+	return !isAllow
 }
 
 func pickOptionByKind(opts []agent.ACPPermissionOption, exactKind, prefix string) string {
@@ -243,40 +261,4 @@ func stringifyACPValue(val any) string {
 		}
 	}
 	return ""
-}
-
-func acpFirstStr(m map[string]any, keys ...string) string {
-	if m == nil {
-		return ""
-	}
-	for _, k := range keys {
-		if s, ok := m[k].(string); ok && s != "" {
-			return s
-		}
-	}
-	return ""
-}
-
-func firstMapAny(m map[string]any, keys ...string) any {
-	if m == nil {
-		return nil
-	}
-	for _, k := range keys {
-		if v, ok := m[k]; ok && v != nil {
-			return v
-		}
-	}
-	return nil
-}
-
-func firstNonNilMapVal(primary map[string]any, key string, fallback map[string]any) any {
-	if primary != nil {
-		if v, ok := primary[key]; ok && v != nil {
-			return v
-		}
-	}
-	if fallback != nil {
-		return fallback[key]
-	}
-	return nil
 }

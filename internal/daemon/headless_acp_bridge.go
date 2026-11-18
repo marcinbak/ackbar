@@ -46,6 +46,7 @@ func buildWorkerACPDeps(rt *workerRuntime, b workerACPBridgeState) workerACPDeps
 			rt.mu.Lock()
 			if *rt.curChild == g && !g.replaced {
 				rt.workerMeta.NativeID = convID
+				rt.workerMeta.IsExisting = true
 				rt.saveMeta()
 				if turn := *rt.activeTurn; turn != nil {
 					turn.meta.NativeID = convID
@@ -70,15 +71,13 @@ func buildWorkerACPDeps(rt *workerRuntime, b workerACPBridgeState) workerACPDeps
 		},
 		onInteractiveBlock: func(g *workerChildGen, toolName string, toolInput any, blocked *Blocked) {
 			rt.mu.Lock()
-			if *rt.curChild != g || g.replaced || (*rt.activeTurn != nil && (*rt.activeTurn).cancelled) {
+			if *rt.curChild != g || g.replaced || *rt.state == "shutting_down" || *rt.state == "exited" || *rt.state == "cancelling" || *rt.activeTurn == nil || (*rt.activeTurn).cancelled {
 				rt.mu.Unlock()
 				return
 			}
 			turn := *rt.activeTurn
-			if turn != nil {
-				turn.hadBlock = true
-				_, _ = turn.spool.Append(ChatStreamEvent{SessionID: rt.workerMeta.SessionID, TurnID: turn.turnID, Type: "interactive_block", ToolName: toolName, ToolInput: toolInput, Blocked: blocked})
-			}
+			turn.hadBlock = true
+			_, _ = turn.spool.Append(ChatStreamEvent{SessionID: rt.workerMeta.SessionID, TurnID: turn.turnID, Type: "interactive_block", ToolName: toolName, ToolInput: toolInput, Blocked: blocked})
 			*rt.pendingControl, rt.workerMeta.PendingControl = nil, nil
 			*rt.state, rt.workerMeta.State = "shutting_down", "shutting_down"
 			rt.saveMeta()
@@ -87,7 +86,7 @@ func buildWorkerACPDeps(rt *workerRuntime, b workerACPBridgeState) workerACPDeps
 			go func() {
 				g.shutdown(500 * time.Millisecond)
 				rt.mu.Lock()
-				if turn != nil {
+				if *rt.activeTurn == turn {
 					b.finalizeTurnMeta(turn, g.stderrTail, "completed", 0, "")
 					*rt.activeTurn = nil
 				}
@@ -96,13 +95,13 @@ func buildWorkerACPDeps(rt *workerRuntime, b workerACPBridgeState) workerACPDeps
 			}()
 		},
 		onRateLimitBlock: func(g *workerChildGen, turn *activeTurnState, blocked *Blocked) {
-			_, _ = turn.spool.Append(ChatStreamEvent{SessionID: turn.meta.SessionID, TurnID: turn.turnID, Type: "interactive_block", Blocked: blocked})
-			turn.hadBlock = true
 			rt.mu.Lock()
-			if *rt.curChild != g || g.replaced || *rt.state == "shutting_down" || *rt.state == "exited" {
+			if *rt.curChild != g || g.replaced || *rt.activeTurn != turn || turn.cancelled || *rt.state == "cancelling" || *rt.state == "shutting_down" || *rt.state == "exited" {
 				rt.mu.Unlock()
 				return
 			}
+			_, _ = turn.spool.Append(ChatStreamEvent{SessionID: turn.meta.SessionID, TurnID: turn.turnID, Type: "interactive_block", Blocked: blocked})
+			turn.hadBlock = true
 			b.finalizeTurnMeta(turn, g.stderrTail, "completed", 0, "")
 			*b.rateLimitEnteredAt = time.Now()
 			if blocked.ResetAt != nil && !blocked.ResetAt.IsZero() {
@@ -110,6 +109,7 @@ func buildWorkerACPDeps(rt *workerRuntime, b workerACPBridgeState) workerACPDeps
 			}
 			g.stderrTail.Reset()
 			*rt.pendingControl, rt.workerMeta.PendingControl = nil, nil
+			rt.workerMeta.IsExisting = true
 			*rt.state, rt.workerMeta.State = "idle_warm", "idle_warm"
 			rt.workerMeta.ActiveTurnID, rt.workerMeta.ActiveMetaPath = "", ""
 			rt.workerMeta.LastTurnEndedAt, rt.workerMeta.UpdatedAt = time.Now().UTC(), time.Now().UTC()
@@ -127,20 +127,22 @@ func buildWorkerACPDeps(rt *workerRuntime, b workerACPBridgeState) workerACPDeps
 			rt.mu.Unlock()
 		},
 		onTurnFailure: func(g *workerChildGen, turn *activeTurnState, errMsg string) {
-			_, _ = turn.spool.Append(ChatStreamEvent{SessionID: turn.meta.SessionID, TurnID: turn.turnID, Type: "error", Text: errMsg, IsError: true})
 			rt.mu.Lock()
-			if *rt.curChild != g || g.replaced || *rt.state == "shutting_down" || *rt.state == "exited" {
+			if *rt.curChild != g || g.replaced || *rt.activeTurn != turn || turn.cancelled || *rt.state == "cancelling" || *rt.state == "shutting_down" || *rt.state == "exited" {
 				rt.mu.Unlock()
 				return
 			}
+			_, _ = turn.spool.Append(ChatStreamEvent{SessionID: turn.meta.SessionID, TurnID: turn.turnID, Type: "error", Text: errMsg, IsError: true})
 			*rt.state, rt.workerMeta.State = "shutting_down", "shutting_down"
 			rt.saveMeta()
 			rt.mu.Unlock()
 			go func() {
 				g.shutdown(500 * time.Millisecond)
 				rt.mu.Lock()
-				b.finalizeTurnMeta(turn, g.stderrTail, "failed", 1, "")
-				*rt.activeTurn = nil
+				if *rt.activeTurn == turn {
+					b.finalizeTurnMeta(turn, g.stderrTail, "failed", 1, "")
+					*rt.activeTurn = nil
+				}
 				rt.mu.Unlock()
 				b.exitCleanly(0)
 			}()

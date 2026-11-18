@@ -260,8 +260,12 @@ func resolveRespondApproval(blocked *Blocked, actionLower, value string) bool {
 			return strings.EqualFold(valTrim, "Approve Plan") || strings.EqualFold(valTrim, "approve") || strings.EqualFold(valTrim, "yes") || strings.EqualFold(valTrim, "allow")
 		}
 		if blocked.Kind == BlockPermission {
-			valLower := strings.ToLower(valTrim)
-			return valLower == "allow" || valLower == "yes" || valLower == "approve" || strings.HasPrefix(valLower, "allow ") || strings.HasPrefix(valLower, "allow_") || strings.Contains(valLower, "always allow")
+			switch strings.ToLower(valTrim) {
+			case "allow", "allow once", "allow_once", "always allow", "allow always", "allow_always", "proceed_once", "proceed_always", "yes", "approve":
+				return true
+			default:
+				return false
+			}
 		}
 		return false
 	default:

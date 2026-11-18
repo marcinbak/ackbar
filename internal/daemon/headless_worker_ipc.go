@@ -30,6 +30,8 @@ type SessionWorkerMeta struct {
 	IsExisting               bool                   `json:"is_existing,omitempty"`
 	SystemPrompt             string                 `json:"system_prompt,omitempty"`
 	PermissionMode           string                 `json:"permission_mode,omitempty"`
+	Model                    string                 `json:"model,omitempty"`
+	Effort                   string                 `json:"effort,omitempty"`
 	Bin                      string                 `json:"bin"`
 	Args                     []string               `json:"args,omitempty"`
 	SocketPath               string                 `json:"socket_path"`

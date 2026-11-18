@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"ackbar/internal/agent"
 	"ackbar/internal/agentutil"
 	"ackbar/internal/tmux"
 )
@@ -188,24 +189,17 @@ func isProcessAlive(pid int) bool {
 
 // isIgnoredAgentCommand returns true if the command line represents a utility subcommand,
 // non-interactive run, or help/version invocation that should not be tracked as an agentic session.
+func isIgnoredAgentCommandWithRegistry(reg *agent.Registry, agentName, fullCmd string) bool {
+	if reg != nil {
+		if sc, ok := reg.AsScanner(agentName); ok {
+			return sc.IsIgnoredCommand(fullCmd)
+		}
+	}
+	return getDefaultAgentAdapter(agentName).IsIgnoredCommand(fullCmd)
+}
+
 func isIgnoredAgentCommand(agent string, fullCmd string) bool {
-	if getDefaultAgentAdapter(agent).IsIgnoredCommand(fullCmd) {
-		return true
-	}
-	if strings.EqualFold(agent, "grok") || strings.EqualFold(agent, "grok-cli") {
-		if agentutil.CheckIgnoredCLIArgs(fullCmd, func(_, base string) bool {
-			return base == "grok" || base == "grok-cli"
-		}, map[string]bool{"agent": true, "login": true, "logout": true, "auth": true, "mcp": true, "doctor": true}, map[string]bool{"--single": true}) {
-			return true
-		}
-		for _, f := range strings.Fields(fullCmd) {
-			low := strings.ToLower(strings.TrimSpace(f))
-			if low == "--single" || strings.HasPrefix(low, "--single=") {
-				return true
-			}
-		}
-	}
-	return false
+	return isIgnoredAgentCommandWithRegistry(nil, agent, fullCmd)
 }
 
 func (s *Server) scanObservedSessions(ctx context.Context) {

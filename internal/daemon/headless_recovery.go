@@ -224,7 +224,7 @@ func (h *HeadlessRunner) adoptLiveWorkers(runDir string, entries []os.DirEntry) 
 			WorkerID: wm.WorkerID, SessionID: sess.ID, NativeID: sess.NativeID,
 			SocketPath: wm.SocketPath, WorkerMetaPath: wm.WorkerMetaPath,
 			ConfigFingerprint: wm.ConfigFingerprint, ConfigFingerprintNoModel: wm.ConfigFingerprintNoModel,
-			MCPFingerprint: wm.MCPFingerprint, Bin: wm.Bin, Args: wm.Args,
+			ImmutableFingerprint: wm.ImmutableFingerprint, MCPFingerprint: wm.MCPFingerprint, Bin: wm.Bin, Args: wm.Args,
 			WorkerPID: resp.WorkerPID, ChildPID: resp.ChildPID,
 			rotateAfterTurn: fpMismatch,
 		}

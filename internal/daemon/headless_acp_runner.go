@@ -18,6 +18,14 @@ import (
 
 var errACPMethodNotFound = errors.New("acp method not found")
 
+func normalizeACPConfigValue(raw string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" || strings.EqualFold(s, "default") {
+		return ""
+	}
+	return s
+}
+
 func isACPHeadlessAgent(reg *agent.Registry, agentName string) bool {
 	_, ok := acpDriverForAgent(reg, agentName)
 	return ok
@@ -125,8 +133,10 @@ func tryLiveUpdateACPWarmWorker(h *HeadlessRunner, sess *Session, handle *warmWo
 		handle.ChildPID = resp.ChildPID
 	}
 	h.mu.Unlock()
-	if strings.TrimSpace(sess.Model) != "" {
-		h.SetRuntimeModel(sess.ID, sess.Agent, sess.Model)
+	if m := normalizeACPConfigValue(sess.Model); m != "" {
+		h.SetRuntimeModel(sess.ID, sess.Agent, m)
+	} else {
+		h.ClearRuntimeModel(sess.ID)
 	}
 	return true
 }

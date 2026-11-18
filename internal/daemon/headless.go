@@ -1542,6 +1542,14 @@ func (h *HeadlessRunner) handleAntigravityInit(sess *Session, convID, prompt str
 	}
 	if sess.NativeID != convID {
 		oldID := sess.ID
+		if sess.Agent != "" && sess.Host != "" {
+			newID := fmt.Sprintf("%s:%s:%s", sess.Agent, sess.Host, convID)
+			if oldID != "" && oldID != newID && h.db != nil {
+				if existing, _ := h.db.GetSession(newID); existing != nil && existing.ID != oldID && existing.OldID != oldID {
+					return
+				}
+			}
+		}
 		sess.NativeID = convID
 		changed = true
 		if sess.TmuxName != "" {

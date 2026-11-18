@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -57,6 +56,7 @@ type acpChildSession struct {
 	bootDone        chan struct{}
 	bootErr         error
 	bootBlock       *Blocked
+	inPromptTurn    bool
 	promptDone      chan struct{}
 	cancelTimer     *time.Timer
 	cancelSettledCh chan struct{}
@@ -93,8 +93,9 @@ func spawnACPChildGen(rt *workerRuntime, reg *agent.Registry, driver agent.ACPDr
 	s := &acpChildSession{
 		rt: rt, gen: gen, driver: driver, reg: reg, homeDir: homeDir, env: cmd.Env, cmd: cmd,
 		stderrTail: stderrTailBuf, deps: deps, sessionID: rt.workerMeta.NativeID,
-		isExisting: isExisting, sysPrompt: sysPrompt, curPermMode: rt.workerMeta.PermissionMode,
-		bootDone: make(chan struct{}),
+		isExisting: isExisting, sysPrompt: sysPrompt,
+		curModel: normalizeACPConfigValue(rt.workerMeta.Model), curEffort: normalizeACPConfigValue(rt.workerMeta.Effort),
+		curPermMode: rt.workerMeta.PermissionMode, bootDone: make(chan struct{}),
 	}
 	gen.acp = s
 
@@ -109,6 +110,34 @@ func spawnACPChildGen(rt *workerRuntime, reg *agent.Registry, driver agent.ACPDr
 	return gen, nil
 }
 
+func (s *acpChildSession) isValidSessionID(id string) bool {
+	id = strings.TrimSpace(id)
+	if id == "" || !agentutil.IsSafeCLIArg(id) {
+		return false
+	}
+	if s.reg != nil {
+		if sc, ok := s.reg.AsScanner(s.rt.workerMeta.Agent); ok {
+			return sc.IsValidNativeID(id)
+		}
+	}
+	return true
+}
+
+func (s *acpChildSession) waitStderrDrained(timeout time.Duration) {
+	select {
+	case <-s.gen.done:
+		return
+	case <-s.conn.Done():
+		t := time.NewTimer(timeout)
+		defer t.Stop()
+		select {
+		case <-s.gen.done:
+		case <-t.C:
+		}
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
 func (s *acpChildSession) bootstrap() {
 	defer close(s.bootDone)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -119,23 +148,31 @@ func (s *acpChildSession) bootstrap() {
 		Env: s.env, SelectAuth: s.driver.SelectACPAuth,
 	})
 	if err != nil {
+		if !errors.Is(err, context.DeadlineExceeded) {
+			s.waitStderrDrained(500 * time.Millisecond)
+		}
+		tail := strings.TrimSpace(s.stderrTail.String())
+		enrichedErr := err
+		if tail != "" && !strings.Contains(err.Error(), tail) {
+			enrichedErr = fmt.Errorf("%w: %s", err, tail)
+		}
 		s.mu.Lock()
-		s.bootErr = err
-		s.bootBlock = detectTurnFailureBlockWithRegistry(s.reg, s.rt.workerMeta.Agent, err.Error()+"\n"+s.stderrTail.String())
+		s.bootErr = enrichedErr
+		s.bootBlock = detectTurnFailureBlockWithRegistry(s.reg, s.rt.workerMeta.Agent, err.Error()+"\n"+tail)
 		s.mu.Unlock()
 		return
 	}
 	if res == nil {
 		return
 	}
+	adoptedValid := res.SessionID != "" && s.isValidSessionID(res.SessionID)
 	s.mu.Lock()
-	if res.SessionID != "" {
+	if adoptedValid {
 		s.sessionID = res.SessionID
 	}
-	s.isExisting = true
 	s.mu.Unlock()
 
-	if res.AdoptedNewID && res.SessionID != "" && s.deps.onSessionInit != nil {
+	if adoptedValid && res.AdoptedNewID && s.deps.onSessionInit != nil {
 		s.deps.onSessionInit(s.gen, res.SessionID, res.CurrentModel)
 	} else if res.CurrentModel != "" && s.deps.onModelDetected != nil {
 		s.deps.onModelDetected(s.gen, res.CurrentModel)
@@ -153,6 +190,20 @@ func (s *acpChildSession) waitForExit() {
 	waitErr := s.cmd.Wait()
 	close(s.gen.done)
 
+	code := 0
+	if waitErr != nil {
+		var exitErr *exec.ExitError
+		if errors.As(waitErr, &exitErr) {
+			code = exitErr.ExitCode()
+		} else {
+			code = 1
+		}
+	}
+	s.streamMu.Lock()
+	lastText := s.streamState.LastText()
+	s.streamMu.Unlock()
+	tail := strings.TrimSpace(s.stderrTail.String())
+
 	s.rt.mu.Lock()
 	if s.gen.replaced || *s.rt.curChild != s.gen || *s.rt.state == "shutting_down" || *s.rt.state == "exited" {
 		s.rt.mu.Unlock()
@@ -169,21 +220,7 @@ func (s *acpChildSession) waitForExit() {
 		s.deps.exitCleanly(0)
 		return
 	}
-	s.rt.mu.Unlock()
 
-	code := 0
-	if waitErr != nil {
-		var exitErr *exec.ExitError
-		if errors.As(waitErr, &exitErr) {
-			code = exitErr.ExitCode()
-		} else {
-			code = 1
-		}
-	}
-	s.streamMu.Lock()
-	lastText := s.streamState.LastText()
-	s.streamMu.Unlock()
-	tail := strings.TrimSpace(s.stderrTail.String())
 	finalStatus := "completed"
 	if turn.cancelled {
 		_, _ = turn.spool.Append(ChatStreamEvent{SessionID: turn.meta.SessionID, TurnID: turn.turnID, Type: "turn_cancelled", Text: "Turn was cancelled by user."})
@@ -199,8 +236,8 @@ func (s *acpChildSession) waitForExit() {
 		_, _ = turn.spool.Append(ChatStreamEvent{SessionID: turn.meta.SessionID, TurnID: turn.turnID, Type: "error", Text: errMsg, IsError: true})
 		finalStatus = "failed"
 	}
-	s.rt.mu.Lock()
 	s.deps.finalizeTurnMeta(turn, s.stderrTail, finalStatus, code, "")
+	*s.rt.activeTurn = nil
 	s.rt.bgCtrl.resetOnChildChangeLocked()
 	*s.rt.pendingControl, s.rt.workerMeta.PendingControl = nil, nil
 	*s.rt.state, s.rt.workerMeta.State = "exited", "exited"
@@ -208,69 +245,4 @@ func (s *acpChildSession) waitForExit() {
 	s.rt.notifyWatchersLocked()
 	s.rt.mu.Unlock()
 	s.deps.exitCleanly(0)
-}
-
-func (s *acpChildSession) handleNotification(method string, params map[string]any) {
-	notif := s.driver.HandleACPNotification(s.homeDir, s.env, method, params)
-	if notif.DetectedModel != "" && s.deps.onModelDetected != nil {
-		s.deps.onModelDetected(s.gen, notif.DetectedModel)
-	}
-	for _, sysEvt := range notif.SystemEvents {
-		s.rt.bgCtrl.handleSystemEvent(s.gen, sysEvt)
-	}
-	if method != "session/update" && method != "_x.ai/session/update" {
-		return
-	}
-	s.streamMu.Lock()
-	evts, _ := s.streamState.ParseACPSessionUpdate(s.rt.workerMeta.Agent, s.rt.workerMeta.SessionID, params)
-	s.streamMu.Unlock()
-	for _, ev := range evts {
-		if ev.Type == "interactive_block" && ev.Blocked != nil {
-			if s.deps.onInteractiveBlock != nil {
-				s.deps.onInteractiveBlock(s.gen, ev.ToolName, ev.ToolInput, ev.Blocked)
-			}
-			continue
-		}
-		s.rt.mu.Lock()
-		valid := *s.rt.curChild == s.gen && !s.gen.replaced && *s.rt.state != "shutting_down" && *s.rt.state != "exited" && *s.rt.state != "cancelling"
-		if turn := *s.rt.activeTurn; valid && turn != nil && !turn.cancelled && turn.spool != nil {
-			_, _ = turn.spool.Append(ev)
-		}
-		s.rt.mu.Unlock()
-	}
-}
-
-func (s *acpChildSession) handleServerRequest(rawID json.RawMessage, reqID, method string, params map[string]any) bool {
-	prompt, ok := s.driver.ParseACPServerRequest(rawID, reqID, method, params)
-	if !ok || prompt == nil {
-		return false
-	}
-	rawMap, _ := prompt.ToolInput.(map[string]any)
-	ctrl := &PendingControlRequest{
-		RequestID: prompt.RequestID, Subtype: "acp_control", ToolName: prompt.ToolName,
-		RawInput: rawMap, Blocked: prompt.Blocked, ACP: prompt,
-	}
-	if !s.rt.handleControlRequest(s.gen, ctrl) {
-		// Unblock child immediately if no active turn can service the prompt.
-		if res, bErr := s.driver.BuildACPServerResponse(prompt, false, "cancel"); bErr == nil {
-			_ = s.conn.SendResponse(prompt.RawID, res)
-		} else {
-			_ = s.conn.SendError(prompt.RawID, -32000, "turn inactive")
-		}
-	}
-	return true
-}
-
-func (s *acpChildSession) sendControlResponse(rawID json.RawMessage, result any) {
-	_ = s.conn.SendResponse(rawID, result)
-}
-
-func (s *acpChildSession) notifyModeAfterPlanApproval(modeID string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	s.mu.Lock()
-	sid := s.sessionID
-	s.curPermMode = ""
-	s.mu.Unlock()
-	_ = agentutil.SwitchACPMode(ctx, s.conn, sid, modeID)
 }

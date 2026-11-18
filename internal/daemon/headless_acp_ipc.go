@@ -108,15 +108,18 @@ func (s *acpChildSession) handleSetConfigIPC(req workerIPCReq) workerIPCResp {
 		s.mu.Unlock()
 		return workerIPCResp{OK: false, ErrCode: s.bootErr.Error(), WorkerPID: os.Getpid()}
 	}
-	sid, prevPerm := s.sessionID, s.curPermMode
+	sid, prevModel, prevEffort, prevPerm := s.sessionID, s.curModel, s.curEffort, s.curPermMode
 	s.mu.Unlock()
 
-	targetModel, targetEffort := strings.TrimSpace(req.Model), strings.TrimSpace(req.Effort)
-	if targetModel != "" && !strings.EqualFold(targetModel, "default") {
+	targetModel, targetEffort := normalizeACPConfigValue(req.Model), normalizeACPConfigValue(req.Effort)
+	if (prevModel != "" && targetModel == "") || (prevEffort != "" && targetEffort == "") {
+		return workerIPCResp{OK: false, ErrCode: "requires_restart", WorkerPID: os.Getpid()}
+	}
+	if targetModel != "" {
 		if err := agentutil.SwitchACPModel(ctx, s.conn, sid, targetModel, targetEffort); err != nil {
 			return workerIPCResp{OK: false, ErrCode: err.Error(), WorkerPID: os.Getpid()}
 		}
-	} else if targetEffort != "" && !strings.EqualFold(targetEffort, "default") {
+	} else if targetEffort != "" {
 		if _, rpcErr, err := s.conn.Call(ctx, "session/set_config_option", map[string]any{
 			"sessionId": sid, "configId": "reasoning_effort", "value": targetEffort,
 		}); err != nil {
@@ -150,6 +153,8 @@ func (s *acpChildSession) handleSetConfigIPC(req workerIPCReq) workerIPCResp {
 	if req.ConfigFingerprintNoModel != "" {
 		s.rt.workerMeta.ConfigFingerprintNoModel = req.ConfigFingerprintNoModel
 	}
+	s.rt.workerMeta.Model = targetModel
+	s.rt.workerMeta.Effort = targetEffort
 	s.rt.workerMeta.PermissionMode = targetPerm
 	s.rt.workerMeta.UpdatedAt = time.Now().UTC()
 	s.deps.saveMeta()

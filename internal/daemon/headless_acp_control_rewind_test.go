@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -271,5 +272,21 @@ fi
 		if !strings.Contains(string(callsBytes), want) {
 			t.Errorf("expected %s in calls log, got:\n%s", want, string(callsBytes))
 		}
+	}
+}
+
+func TestGrokACP_LateCallbacksIgnoreCancelledTurn(t *testing.T) {
+	var mu sync.Mutex
+	st, gen := "idle_warm", &workerChildGen{}
+	var activeTurn, turn2 *activeTurnState
+	turn1 := &activeTurnState{turnID: "t1", meta: &TurnSpoolMeta{TurnID: "t1"}, cancelled: true}
+	turn2 = &activeTurnState{turnID: "t2", meta: &TurnSpoolMeta{TurnID: "t2"}}
+	activeTurn, st = turn2, "running_turn"
+	rt := &workerRuntime{mu: &mu, state: &st, workerMeta: &SessionWorkerMeta{}, curChild: &gen, activeTurn: &activeTurn, saveMeta: func() {}}
+	deps := buildWorkerACPDeps(rt, workerACPBridgeState{finalizeTurnMeta: func(*activeTurnState, *boundedTailBuffer, string, int, string) {}, exitCleanly: func(int) {}})
+	deps.onTurnFailure(gen, turn1, "late-err")
+	deps.onRateLimitBlock(gen, turn1, &Blocked{Kind: BlockRateLimit})
+	if st != "running_turn" || activeTurn != turn2 {
+		t.Fatalf("expected cancelled/superseded turn1 callbacks ignored, got state=%s active=%v", st, activeTurn)
 	}
 }

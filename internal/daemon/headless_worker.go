@@ -808,6 +808,11 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string, reg *agent.Regis
 		if len(req.Args) > 0 {
 			nextArgs = req.Args
 		}
+		if req.IsExisting {
+			workerMeta.IsExisting = true
+		}
+		workerMeta.Model = normalizeACPConfigValue(req.Model)
+		workerMeta.Effort = normalizeACPConfigValue(req.Effort)
 		stateMu.Unlock()
 
 		oldGen.shutdown(500 * time.Millisecond)

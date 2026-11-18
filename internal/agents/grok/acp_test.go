@@ -2,6 +2,7 @@ package grok
 
 import (
 	"encoding/json"
+	"math"
 	"strings"
 	"testing"
 
@@ -76,6 +77,19 @@ func TestACPDriver_AuthModelsCommandsAndQueue(t *testing.T) {
 	qRes := p.HandleACPNotification(tmpHome, nil, "_x.ai/queue/changed", map[string]any{"count": float64(2)})
 	if len(qRes.SystemEvents) != 1 || qRes.SystemEvents[0]["subtype"] != "background_tasks_changed" {
 		t.Fatalf("unexpected queue system event: %+v", qRes.SystemEvents)
+	}
+	hugeRes := p.HandleACPNotification(tmpHome, nil, "_x.ai/queue/changed", map[string]any{"count": 1e20})
+	if len(hugeRes.SystemEvents) != 1 {
+		t.Fatalf("expected capped system event for huge count, got %+v", hugeRes.SystemEvents)
+	}
+	if tasks, _ := hugeRes.SystemEvents[0]["tasks"].([]any); len(tasks) != maxSynthesizedQueueTasks {
+		t.Fatalf("expected huge count capped at %d tasks, got %d", maxSynthesizedQueueTasks, len(tasks))
+	}
+	for _, bad := range []float64{math.NaN(), math.Inf(1), -5} {
+		badRes := p.HandleACPNotification(tmpHome, nil, "_x.ai/queue/changed", map[string]any{"count": bad})
+		if len(badRes.SystemEvents) != 0 {
+			t.Fatalf("expected invalid count %v ignored, got %+v", bad, badRes.SystemEvents)
+		}
 	}
 	listM, execM, cancelM, sup := p.ACPRewindMethods()
 	if !sup || listM != "_x.ai/rewind/points" || execM != "_x.ai/rewind/execute" || cancelM != "_x.ai/cancelRewind" {

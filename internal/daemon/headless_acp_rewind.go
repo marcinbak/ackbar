@@ -103,6 +103,9 @@ func (s *Server) tryACPRewindGet(w http.ResponseWriter, sess *Session) bool {
 }
 
 func (s *Server) tryACPRewindPost(w http.ResponseWriter, r *http.Request, sess *Session, bodyBytes []byte) bool {
+	if s.headless == nil || !isACPHeadlessAgent(s.PluginRegistry(), sess.Agent) {
+		return false
+	}
 	var req struct {
 		BeforeTurn int    `json:"before_turn"`
 		TargetID   string `json:"target_id"`
@@ -112,9 +115,7 @@ func (s *Server) tryACPRewindPost(w http.ResponseWriter, r *http.Request, sess *
 		return false
 	}
 	if req.Cancel {
-		if s.headless != nil {
-			_ = s.headless.CancelACPRewind(sess)
-		}
+		_ = s.headless.CancelACPRewind(sess)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"status":     "ok",
@@ -123,7 +124,7 @@ func (s *Server) tryACPRewindPost(w http.ResponseWriter, r *http.Request, sess *
 		})
 		return true
 	}
-	if s.headless == nil || !isACPHeadlessAgent(s.PluginRegistry(), sess.Agent) || !s.headless.HasWarmWorker(sess.ID) {
+	if !s.headless.HasWarmWorker(sess.ID) {
 		return false
 	}
 	targetID := strings.TrimSpace(req.TargetID)

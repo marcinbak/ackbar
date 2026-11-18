@@ -2,11 +2,14 @@ package grok
 
 import (
 	"fmt"
+	"math"
 	"strings"
 
 	"ackbar/internal/agent"
 	"ackbar/internal/agentutil"
 )
+
+const maxSynthesizedQueueTasks = 128
 
 func envValue(env []string, key string) string {
 	prefix := key + "="
@@ -132,15 +135,25 @@ func normalizeGrokQueueEvent(params map[string]any) map[string]any {
 func asNonNegInt(v any) (int, bool) {
 	switch n := v.(type) {
 	case float64:
-		if n >= 0 {
-			return int(n), true
+		if math.IsNaN(n) || math.IsInf(n, 0) || n < 0 {
+			return 0, false
 		}
+		if n > float64(maxSynthesizedQueueTasks) {
+			return maxSynthesizedQueueTasks, true
+		}
+		return int(n), true
 	case int:
 		if n >= 0 {
+			if n > maxSynthesizedQueueTasks {
+				return maxSynthesizedQueueTasks, true
+			}
 			return n, true
 		}
 	case int64:
 		if n >= 0 {
+			if n > maxSynthesizedQueueTasks {
+				return maxSynthesizedQueueTasks, true
+			}
 			return int(n), true
 		}
 	}
