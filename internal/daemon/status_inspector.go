@@ -1858,10 +1858,6 @@ func InspectCodexStatus(ctx context.Context, sess *Session) bool {
 	return changed
 }
 
-func (s *Server) inspectGrokStatus(ctx context.Context, sess *Session) bool {
-	return InspectGrokStatus(ctx, sess)
-}
-
 func (s *Server) inspectOpenCodeStatus(ctx context.Context, sess *Session) bool {
 	return InspectOpenCodeStatus(ctx, sess)
 }

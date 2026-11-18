@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"ackbar/internal/agent"
 	"ackbar/internal/tmux"
 )
 
@@ -170,10 +171,14 @@ func resolveAllowlistedAuthCommand(sess *Session, target string, db *DB, home st
 }
 
 func resumePromptForAuth(sess *Session, prevBlocked *Blocked, home string, db *DB) string {
+	return resumePromptForAuthWithRegistry(nil, sess, prevBlocked, home, db)
+}
+
+func resumePromptForAuthWithRegistry(reg *agent.Registry, sess *Session, prevBlocked *Blocked, home string, db *DB) string {
 	if prevBlocked != nil && prevBlocked.AuthKind == "agent" && sess != nil && sess.LastPrompt != "" {
 		return sess.LastPrompt
 	}
-	if sess != nil && !hasConversationOnDisk(sess, home, db) && sess.LastPrompt != "" {
+	if sess != nil && !hasConversationOnDiskWithRegistry(reg, sess, home, db) && sess.LastPrompt != "" {
 		return sess.LastPrompt
 	}
 	server := "operation"
@@ -330,7 +335,7 @@ func (b *AuthBroker) watchAuthFlow(flow *AuthFlow) {
 			sessCopy := *sess
 			go func() {
 				home, _ := os.UserHomeDir()
-				prompt := resumePromptForAuth(&sessCopy, prevBlocked, home, s.db)
+				prompt := resumePromptForAuthWithRegistry(s.PluginRegistry(), &sessCopy, prevBlocked, home, s.db)
 				_ = s.headless.RunTurn(context.Background(), &sessCopy, prompt)
 			}()
 		}

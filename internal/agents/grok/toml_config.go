@@ -1,4 +1,4 @@
-package daemon
+package grok
 
 import (
 	"fmt"
@@ -6,30 +6,14 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"ackbar/internal/agentutil"
 )
 
-func stripTOMLComment(line string) string {
-	inQuote := false
-	var quoteChar rune
-	for i, r := range line {
-		if inQuote {
-			if r == quoteChar && (i == 0 || line[i-1] != '\\') {
-				inQuote = false
-			}
-		} else if r == '"' || r == '\'' {
-			inQuote = true
-			quoteChar = r
-		} else if r == '#' {
-			return strings.TrimSpace(line[:i])
-		}
-	}
-	return strings.TrimSpace(line)
-}
-
-func inspectGrokTOMLConfig(data []byte) (mcpInstalled bool, mcpCmd string, claudeHooksDisabled bool) {
+func inspectTOMLConfig(data []byte) (mcpInstalled bool, mcpCmd string, claudeHooksDisabled bool) {
 	currentSection, command, args, enabled := "", "", []string{}, true
 	for _, rawLine := range strings.Split(string(data), "\n") {
-		line := stripTOMLComment(rawLine)
+		line := agentutil.StripTOMLComment(rawLine)
 		if line == "" {
 			continue
 		}
@@ -75,14 +59,14 @@ func upsertCompatClaudeHooks(content string) string {
 	lines := strings.Split(content, "\n")
 	secIdx := -1
 	for i, l := range lines {
-		if strings.EqualFold(stripTOMLComment(l), "[compat.claude]") {
+		if strings.EqualFold(agentutil.StripTOMLComment(l), "[compat.claude]") {
 			secIdx = i
 			break
 		}
 	}
 	if secIdx != -1 {
 		for j := secIdx + 1; j < len(lines); j++ {
-			trimmed := stripTOMLComment(lines[j])
+			trimmed := agentutil.StripTOMLComment(lines[j])
 			if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
 				break
 			}
@@ -95,7 +79,7 @@ func upsertCompatClaudeHooks(content string) string {
 		return strings.Join(lines, "\n")
 	}
 	for i, l := range lines {
-		if p := strings.SplitN(stripTOMLComment(l), "=", 2); len(p) == 2 && strings.TrimSpace(p[0]) == "compat.claude.hooks" {
+		if p := strings.SplitN(agentutil.StripTOMLComment(l), "=", 2); len(p) == 2 && strings.TrimSpace(p[0]) == "compat.claude.hooks" {
 			lines[i] = "compat.claude.hooks = false"
 			return strings.Join(lines, "\n")
 		}
@@ -112,7 +96,7 @@ func upsertAckbarMCPServer(content, quotedBin string) string {
 	lines := strings.Split(content, "\n")
 	secIdx := -1
 	for i, l := range lines {
-		if strings.EqualFold(stripTOMLComment(l), "[mcp_servers.ackbar]") {
+		if strings.EqualFold(agentutil.StripTOMLComment(l), "[mcp_servers.ackbar]") {
 			secIdx = i
 			break
 		}
@@ -120,7 +104,7 @@ func upsertAckbarMCPServer(content, quotedBin string) string {
 	if secIdx != -1 {
 		cmdIdx, argsIdx, endIdx := -1, -1, len(lines)
 		for j := secIdx + 1; j < len(lines); j++ {
-			trimmed := stripTOMLComment(lines[j])
+			trimmed := agentutil.StripTOMLComment(lines[j])
 			if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
 				endIdx = j
 				break
@@ -164,12 +148,12 @@ func upsertAckbarMCPServer(content, quotedBin string) string {
 	return block
 }
 
-func UpsertGrokTOMLConfig(configPath, ackbarBin string) error {
+func UpsertTOMLConfig(configPath, ackbarBin string) error {
 	target := configPath
 	if res, err := filepath.EvalSymlinks(configPath); err == nil {
 		target = res
 	}
-	fileMode, content := os.FileMode(0600), ""
+	fileMode, content := os.FileMode(0o600), ""
 	if fi, err := os.Stat(target); err == nil {
 		fileMode = fi.Mode().Perm()
 		if data, err := os.ReadFile(target); err == nil {
@@ -184,27 +168,8 @@ func UpsertGrokTOMLConfig(configPath, ackbarBin string) error {
 		content += "\n"
 	}
 	parent := filepath.Dir(target)
-	if err := os.MkdirAll(parent, 0700); err != nil {
+	if err := os.MkdirAll(parent, 0o700); err != nil {
 		return fmt.Errorf("failed to create directory %s: %w", parent, err)
 	}
-	tmp, err := os.CreateTemp(parent, ".config.toml.tmp.*")
-	if err != nil {
-		return fmt.Errorf("failed to create temp file: %w", err)
-	}
-	tmpName := tmp.Name()
-	_ = tmp.Chmod(fileMode)
-	if _, err := tmp.Write([]byte(content)); err != nil {
-		_ = tmp.Close()
-		_ = os.Remove(tmpName)
-		return fmt.Errorf("failed to write temp file: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpName)
-		return fmt.Errorf("failed to close temp file: %w", err)
-	}
-	if err := os.Rename(tmpName, target); err != nil {
-		_ = os.Remove(tmpName)
-		return fmt.Errorf("failed to rename temp file: %w", err)
-	}
-	return nil
+	return agentutil.WriteFileAtomic(target, []byte(content), fileMode)
 }

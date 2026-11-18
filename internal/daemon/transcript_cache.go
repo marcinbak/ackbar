@@ -247,28 +247,6 @@ func resolveTranscriptFileStat(home, agent, nativeID, cwd string) (string, int64
 		} else if matches, _ := filepath.Glob(filepath.Join(home, ".codex", "archived_sessions", "*"+nativeID+"*.jsonl")); len(matches) > 0 {
 			filePath = matches[0]
 		}
-
-	case agent == "grok":
-		if sessDir := FindGrokSessionDirForHome(home, cwd, nativeID); sessDir != "" {
-			candHistory := filepath.Join(sessDir, "chat_history.jsonl")
-			candUpdates := filepath.Join(sessDir, "updates.jsonl")
-			if stat, err := os.Stat(candHistory); err == nil && !stat.IsDir() {
-				filePath = candHistory
-			} else if stat, err := os.Stat(candUpdates); err == nil && !stat.IsDir() {
-				filePath = candUpdates
-			}
-		}
-		if filePath == "" {
-			candFlat := filepath.Join(GrokHomeDir(home), "sessions", nativeID+".jsonl")
-			if stat, err := os.Stat(candFlat); err == nil && !stat.IsDir() {
-				filePath = candFlat
-			} else {
-				candDir := filepath.Join(GrokHomeDir(home), "sessions", nativeID, "transcript.jsonl")
-				if stat, err := os.Stat(candDir); err == nil && !stat.IsDir() {
-					filePath = candDir
-				}
-			}
-		}
 	}
 
 	if filePath == "" {
@@ -299,16 +277,16 @@ func statTranscriptFile(agent, filePath string) (int64, int64, error) {
 			}
 		}
 	}
-	if (agent == "grok" || strings.HasPrefix(agent, "grok")) && filepath.Base(filePath) == "chat_history.jsonl" {
-		siblingUpdates := filepath.Join(filepath.Dir(filePath), "updates.jsonl")
-		if updStat, err := os.Stat(siblingUpdates); err == nil && !updStat.IsDir() {
-			size += updStat.Size()
-			if updMod := updStat.ModTime().UnixNano(); updMod > modTimeNano {
-				modTimeNano = updMod
-			}
+	return size, modTimeNano, nil
+}
+
+func (s *Server) resolveTranscriptStat(home, agent, nativeID, cwd string) (string, int64, int64, error) {
+	if s != nil && s.PluginRegistry() != nil {
+		if st, ok := s.PluginRegistry().AsTranscriptStatter(agent); ok {
+			return st.StatTranscript(home, cwd, nativeID)
 		}
 	}
-	return size, modTimeNano, nil
+	return resolveTranscriptFileStat(home, agent, nativeID, cwd)
 }
 
 func (s *Server) getCachedTranscript(agent, nativeID, cwd string) ([]TranscriptMessage, bool) {
@@ -335,7 +313,14 @@ func (s *Server) getCachedTranscript(agent, nativeID, cwd string) ([]TranscriptM
 	cachedMsgs := entry.messages
 	s.transcriptCacheMu.RUnlock()
 
-	curSize, curModTime, err := statTranscriptFile(agent, filePath)
+	var curSize, curModTime int64
+	var err error
+	if st, ok := s.PluginRegistry().AsTranscriptStatter(agent); ok {
+		home, _ := os.UserHomeDir()
+		_, curSize, curModTime, err = st.StatTranscript(home, cwd, nativeID)
+	} else {
+		curSize, curModTime, err = statTranscriptFile(agent, filePath)
+	}
 	if err != nil {
 		s.transcriptCacheMu.Lock()
 		delete(s.transcriptCache, key)

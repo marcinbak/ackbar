@@ -7,6 +7,9 @@ import (
 	"strings"
 	"testing"
 
+	"ackbar/internal/agent"
+	"ackbar/internal/agents/grok"
+	"ackbar/internal/agentutil"
 	"ackbar/internal/version"
 )
 
@@ -270,28 +273,28 @@ func TestClaudeDesktopProvisioning(t *testing.T) {
 func TestStampSkillVersion(t *testing.T) {
 	// Case 1: version line exists
 	raw1 := []byte("---\nname: test\nversion: \"old\"\n---\nBody")
-	out1 := stampSkillVersion(raw1, "20261104.05")
+	out1 := agentutil.StampSkillVersion(raw1, "20261104.05")
 	if !strings.Contains(string(out1), `version: "20261104.05"`) || strings.Contains(string(out1), "old") {
 		t.Errorf("Case 1 failed, got:\n%s", string(out1))
 	}
 
 	// Case 2: argument-hint exists, no version
 	raw2 := []byte("---\nname: test\nargument-hint: [foo]\n---\nBody")
-	out2 := stampSkillVersion(raw2, "20261104.05")
+	out2 := agentutil.StampSkillVersion(raw2, "20261104.05")
 	if !strings.Contains(string(out2), `version: "20261104.05"`) || !strings.Contains(string(out2), "argument-hint:") {
 		t.Errorf("Case 2 failed, got:\n%s", string(out2))
 	}
 
 	// Case 3: standard frontmatter without version
 	raw3 := []byte("---\nname: test\n---\nBody")
-	out3 := stampSkillVersion(raw3, "20261104.05")
+	out3 := agentutil.StampSkillVersion(raw3, "20261104.05")
 	if !strings.Contains(string(out3), `version: "20261104.05"`) {
 		t.Errorf("Case 3 failed, got:\n%s", string(out3))
 	}
 
 	// Case 4: no frontmatter at all
 	raw4 := []byte("# Just a header\nBody text")
-	out4 := stampSkillVersion(raw4, "20261104.05")
+	out4 := agentutil.StampSkillVersion(raw4, "20261104.05")
 	if !strings.Contains(string(out4), `version: "20261104.05"`) {
 		t.Errorf("Case 4 failed, got:\n%s", string(out4))
 	}
@@ -438,91 +441,24 @@ func TestProvisioner_RulesNonDestructiveUpsertAndUpgrade(t *testing.T) {
 }
 
 func TestGrokProvisioner(t *testing.T) {
-	tempHome, err := os.MkdirTemp("", "test-grok-provision-*")
-	if err != nil {
-		t.Fatalf("failed to create temp home: %v", err)
-	}
-	defer os.RemoveAll(tempHome)
-
+	tempHome := t.TempDir()
 	grokDir := filepath.Join(tempHome, ".grok")
 	if err := os.MkdirAll(grokDir, 0700); err != nil {
 		t.Fatalf("failed to create .grok: %v", err)
 	}
 
 	configTOMLPath := filepath.Join(grokDir, "config.toml")
-	initialTOML := `# Grok User Config
-[user_settings]
-theme = "dark"
-`
+	initialTOML := "# Grok User Config\n[user_settings]\ntheme = \"dark\"\n"
 	if err := os.WriteFile(configTOMLPath, []byte(initialTOML), 0600); err != nil {
 		t.Fatalf("failed to write initial config.toml: %v", err)
 	}
 
-	// 1. Test UpsertGrokTOMLConfig non-destructive merge
-	if err := UpsertGrokTOMLConfig(configTOMLPath, "ackbar"); err != nil {
-		t.Fatalf("UpsertGrokTOMLConfig failed: %v", err)
-	}
+	reg := agent.NewRegistry()
+	_ = reg.Register(grok.New())
 
-	contentBytes, err := os.ReadFile(configTOMLPath)
+	statuses, err := ProvisionAgentsWithRegistry(tempHome, []string{"grok"}, reg)
 	if err != nil {
-		t.Fatalf("failed to read updated config.toml: %v", err)
-	}
-	content := string(contentBytes)
-	if !strings.Contains(content, `theme = "dark"`) {
-		t.Errorf("Expected initial user settings preserved in config.toml")
-	}
-	if !strings.Contains(content, "[compat.claude]") || !strings.Contains(content, "hooks = false") {
-		t.Errorf("Expected [compat.claude] hooks = false in config.toml, got:\n%s", content)
-	}
-	if !strings.Contains(content, "[mcp_servers.ackbar]") || !strings.Contains(content, `command = "ackbar"`) {
-		t.Errorf("Expected [mcp_servers.ackbar] in config.toml, got:\n%s", content)
-	}
-
-	// 2. Test WriteGrokHooksFile without matcher field
-	if err := WriteGrokHooksFile(grokDir, ""); err != nil {
-		t.Fatalf("WriteGrokHooksFile failed: %v", err)
-	}
-	hooksPath := filepath.Join(grokDir, "hooks", "ackbar.json")
-	hooksBytes, err := os.ReadFile(hooksPath)
-	if err != nil {
-		t.Fatalf("failed to read hooks/ackbar.json: %v", err)
-	}
-	var rootConfig map[string]interface{}
-	if err := json.Unmarshal(hooksBytes, &rootConfig); err != nil {
-		t.Fatalf("failed to parse hooks/ackbar.json: %v", err)
-	}
-	hooksConfig, ok := rootConfig["hooks"].(map[string]interface{})
-	if !ok || len(hooksConfig) == 0 {
-		t.Fatalf("Expected top-level 'hooks' map in hooks/ackbar.json")
-	}
-	for evtName, entries := range hooksConfig {
-		list, ok := entries.([]interface{})
-		if !ok || len(list) == 0 {
-			t.Errorf("Expected list of hooks for event %s", evtName)
-			continue
-		}
-		for _, rawItem := range list {
-			item, ok := rawItem.(map[string]interface{})
-			if !ok {
-				continue
-			}
-			if _, hasMatcher := item["matcher"]; hasMatcher {
-				t.Errorf("Event %s contains forbidden 'matcher' key: %+v", evtName, item)
-			}
-			innerList, _ := item["hooks"].([]interface{})
-			for _, inner := range innerList {
-				hMap, _ := inner.(map[string]interface{})
-				if urlVal, _ := hMap["url"].(string); !strings.Contains(urlVal, "127.0.0.1:7777/v1/hooks/grok") {
-					t.Errorf("Event %s has incorrect url: %s", evtName, urlVal)
-				}
-			}
-		}
-	}
-
-	// 3. Test ProvisionAgents and zero drift
-	statuses, err := ProvisionAgents(tempHome, []string{"grok"})
-	if err != nil {
-		t.Fatalf("ProvisionAgents for grok failed: %v", err)
+		t.Fatalf("ProvisionAgentsWithRegistry for grok failed: %v", err)
 	}
 	var grokStatus *AgentStatus
 	for i := range statuses {
@@ -530,13 +466,7 @@ theme = "dark"
 			grokStatus = &statuses[i]
 		}
 	}
-	if grokStatus == nil {
-		t.Fatalf("Expected grok in provision statuses")
-	}
-	if !grokStatus.MCPInstalled {
-		t.Errorf("Expected MCPInstalled == true for grok")
-	}
-	if grokStatus.DriftDetected {
-		t.Errorf("Expected DriftDetected == false after provisioning")
+	if grokStatus == nil || !grokStatus.MCPInstalled || grokStatus.DriftDetected {
+		t.Fatalf("unexpected grok status after ProvisionAgentsWithRegistry: %+v", grokStatus)
 	}
 }

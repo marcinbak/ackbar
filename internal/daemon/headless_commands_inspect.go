@@ -156,9 +156,17 @@ func (s *Server) computeTranscriptContextAndCost(home string, sess *Session) map
 				}
 			}
 		}
-	} else if sess.Agent == "grok" {
-		sumInputTokens, outputTokens, cacheRead, lastTurnContextTokens, limitTokens, turnCount, customCostUSD = computeGrokTranscriptUsage(home, sess, limitTokens)
-		hasCustomCost = true
+	} else if tui, ok := s.PluginRegistry().AsTranscriptUsageInspector(sess.Agent); ok {
+		if u, uOk := tui.ComputeTranscriptUsage(home, sess.Cwd, sess.NativeID, limitTokens); uOk {
+			sumInputTokens = u.InputTokens
+			outputTokens = u.OutputTokens
+			cacheRead = u.CacheReadTokens
+			lastTurnContextTokens = u.LastTurnContextTokens
+			limitTokens = u.ContextLimitTokens
+			turnCount = u.TurnCount
+			customCostUSD = u.CostUSD
+			hasCustomCost = true
+		}
 	} else {
 		targetFile := findClaudeTranscriptPath(home, sess.NativeID, sess.Cwd)
 		if targetFile != "" && fileExists(targetFile) {
@@ -293,9 +301,14 @@ func (s *Server) handleSessionInspect(w http.ResponseWriter, r *http.Request, se
 			if err == nil {
 				out, _ = s.runAllowlistedInspectCmd(r.Context(), sess, bin, "plugin", "list", "--json")
 			}
-		} else if sess.Agent == "grok" {
-			bin := resolveGrokBinary()
-			out, _ = s.runAllowlistedInspectCmd(r.Context(), sess, bin, "plugin", "list", "--json")
+		} else if ci, ok := s.PluginRegistry().AsCLIInspector(sess.Agent); ok {
+			if args, ok := ci.InspectSubcommandArgs("plugins"); ok {
+				if hd, ok := s.PluginRegistry().AsHeadlessDriver(sess.Agent); ok {
+					if bin, err := hd.ResolveBinary(); err == nil && bin != "" {
+						out, _ = s.runAllowlistedInspectCmd(r.Context(), sess, bin, args...)
+					}
+				}
+			}
 		}
 		if home != "" && out != "" {
 			out = strings.ReplaceAll(out, home, "~")
@@ -327,10 +340,15 @@ func (s *Server) handleSessionInspect(w http.ResponseWriter, r *http.Request, se
 					cliAgents = strings.TrimSpace(out)
 				}
 			}
-		} else if sess.Agent == "grok" {
-			bin := resolveGrokBinary()
-			if out, err := s.runAllowlistedInspectCmd(r.Context(), sess, bin, "inspect"); err == nil {
-				_ = json.Unmarshal([]byte(strings.TrimSpace(out)), &cliAgents)
+		} else if ci, ok := s.PluginRegistry().AsCLIInspector(sess.Agent); ok {
+			if args, ok := ci.InspectSubcommandArgs("agents"); ok {
+				if hd, ok := s.PluginRegistry().AsHeadlessDriver(sess.Agent); ok {
+					if bin, err := hd.ResolveBinary(); err == nil && bin != "" {
+						if out, err := s.runAllowlistedInspectCmd(r.Context(), sess, bin, args...); err == nil {
+							_ = json.Unmarshal([]byte(strings.TrimSpace(out)), &cliAgents)
+						}
+					}
+				}
 			}
 		}
 		localAgents := scanAgentMarkdownFiles(
@@ -365,10 +383,15 @@ func (s *Server) handleSessionInspect(w http.ResponseWriter, r *http.Request, se
 				report, _ = s.runAllowlistedInspectCmd(r.Context(), sess, bin, "doctor")
 				rawVersion, _ = s.runAllowlistedInspectCmd(r.Context(), sess, bin, "--version")
 			}
-		} else if sess.Agent == "grok" {
-			bin := resolveGrokBinary()
-			report, _ = s.runAllowlistedInspectCmd(r.Context(), sess, bin, "doctor")
-			rawVersion, _ = s.runAllowlistedInspectCmd(r.Context(), sess, bin, "--version")
+		} else if ci, ok := s.PluginRegistry().AsCLIInspector(sess.Agent); ok {
+			if args, ok := ci.InspectSubcommandArgs("doctor"); ok {
+				if hd, ok := s.PluginRegistry().AsHeadlessDriver(sess.Agent); ok {
+					if bin, err := hd.ResolveBinary(); err == nil && bin != "" {
+						report, _ = s.runAllowlistedInspectCmd(r.Context(), sess, bin, args...)
+						rawVersion, _ = s.runAllowlistedInspectCmd(r.Context(), sess, bin, "--version")
+					}
+				}
+			}
 		} else {
 			if bin, err := resolveAntigravityBinary(); err == nil {
 				rawVersion, _ = s.runAllowlistedInspectCmd(r.Context(), sess, bin, "--version")

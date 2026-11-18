@@ -307,8 +307,8 @@ func (h *HeadlessRunner) finalizeTurnFromSpool(sess *Session, origSessionID stri
 		} else if (sess.Name == "" || isRawSessionName(sess.Name)) && prompt != "" {
 			sess.Name = TruncateTitle(prompt)
 		}
-	} else if sess.Agent == "grok" {
-		if gm := ReadGrokSessionMeta(home, sess.Cwd, sess.NativeID); gm != nil {
+	} else if tr, ok := h.pluginRegistry().AsTranscript(sess.Agent); ok {
+		if gm := tr.ReadSessionMetadata(sess.Cwd, sess.NativeID); gm != nil {
 			if gm.ContextPct > 0 {
 				sess.ContextPct = gm.ContextPct
 			}
@@ -423,7 +423,7 @@ func (h *HeadlessRunner) finalizeTurnFromSpool(sess *Session, origSessionID stri
 	preserveLatestSessionConfigFromDB(h.db, sess, origSessionID)
 	if staleHandle != nil {
 		home, _ := os.UserHomeDir()
-		isExisting := sess.FirstPrompt != "" || sess.LastPrompt != "" || hasConversationOnDisk(sess, home, h.db)
+		isExisting := sess.FirstPrompt != "" || sess.LastPrompt != "" || hasConversationOnDiskWithRegistry(h.pluginRegistry(), sess, home, h.db)
 		fp := ConfigFingerprint(sess)
 		mcpFP := MCPFingerprint(sess, h.db, home)
 		if !h.restartHandleChild(sess, staleHandle, isExisting, fp, mcpFP, home, 3*time.Second) {

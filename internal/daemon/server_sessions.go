@@ -23,7 +23,7 @@ import (
 	"syscall"
 	"time"
 
-	"ackbar/internal/agentutil"
+	"ackbar/internal/agent"
 	"ackbar/internal/router"
 	"ackbar/internal/tmux"
 )
@@ -1152,7 +1152,7 @@ func (s *Server) handleRespond(w http.ResponseWriter, r *http.Request) {
 				sessCopy := *sess
 				go func() {
 					home, _ := os.UserHomeDir()
-					prompt := resumePromptForAuth(&sessCopy, prevBlocked, home, s.db)
+					prompt := resumePromptForAuthWithRegistry(s.PluginRegistry(), &sessCopy, prevBlocked, home, s.db)
 					if value != "" && value != "retry" && value != "approve" {
 						prompt = value
 					}
@@ -1333,6 +1333,10 @@ func (s *Server) normalizeModelInput(agent, raw string) (string, error) {
 		candidates = append(candidates, getAntigravityDefaultModels()...)
 	} else if agLower == "claude" || agLower == "claude-code" {
 		candidates = append(candidates, getClaudeDefaultModels()...)
+	} else if s != nil && s.PluginRegistry() != nil {
+		if mc, ok := s.PluginRegistry().AsModelCatalog(agent); ok {
+			candidates = append(candidates, mc.DefaultModels()...)
+		}
 	}
 	for _, m := range candidates {
 		if strings.EqualFold(trimmed, m.ID) || strings.EqualFold(trimmed, m.Label) {
@@ -1344,8 +1348,10 @@ func (s *Server) normalizeModelInput(agent, raw string) (string, error) {
 	if len(resolved) > 128 || strings.HasPrefix(resolved, "-") || strings.ContainsAny(resolved, "\x00\r\n \t") {
 		return "", fmt.Errorf("Invalid model name")
 	}
-	if (agLower == "grok" || agLower == "grok-cli") && !safeCLIArgRegex.MatchString(resolved) {
-		return "", fmt.Errorf("Invalid model name")
+	if s != nil && s.PluginRegistry() != nil {
+		if mc, ok := s.PluginRegistry().AsModelCatalog(agent); ok && !mc.ValidateModelID(resolved) {
+			return "", fmt.Errorf("Invalid model name")
+		}
 	}
 	return resolved, nil
 }
@@ -1452,7 +1458,13 @@ func (s *Server) handleSessionConfig(w http.ResponseWriter, r *http.Request, ses
 	}
 
 	if req.ExtraDirs != nil || len(req.AddDirs) > 0 || len(req.RemoveDirs) > 0 {
-		if sess.Agent == "grok" && (sess.FirstPrompt != "" || sess.LastPrompt != "" || hasConversationOnDisk(sess, s.effectiveHomeDir(), s.db)) {
+		locksExtraDirs := false
+		if s.PluginRegistry() != nil {
+			if p, ok := s.PluginRegistry().Get(sess.Agent); ok {
+				locksExtraDirs = p.Capabilities().LocksExtraDirsOnResume
+			}
+		}
+		if locksExtraDirs && (sess.FirstPrompt != "" || sess.LastPrompt != "" || hasConversationOnDiskWithRegistry(s.PluginRegistry(), sess, s.effectiveHomeDir(), s.db)) {
 			http.Error(w, "Grok resumed sessions cannot modify extra_dirs (dirs are locked after session creation)", http.StatusBadRequest)
 			return
 		}
@@ -1619,7 +1631,7 @@ func (s *Server) handleSwitchHeadless(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if sess.Agent != "claude-code" && sess.Agent != "antigravity" && sess.Agent != "grok" {
+	if !s.supportsHeadless(sess.Agent) {
 		http.Error(w, ErrAgentUnsupported.Error(), http.StatusBadRequest)
 		return
 	}
@@ -1816,7 +1828,7 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 	if req.EngineType == "" {
 		req.EngineType = EngineTmux
 	}
-	if req.EngineType == EngineHeadless && req.Agent != "claude-code" && req.Agent != "antigravity" && req.Agent != "grok" {
+	if req.EngineType == EngineHeadless && !s.supportsHeadless(req.Agent) {
 		req.EngineType = EngineTmux
 	}
 
@@ -2098,16 +2110,39 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tmuxName := fmt.Sprintf("ackbar-%s-%s", req.Agent, tempUUID)
-	launchCmd := s.getSpawnCmd(req.Agent, tempUUID)
-	if req.Agent == "grok" {
-		launchCmd = appendGrokCLIArgs(launchCmd, req.Model, req.Effort, req.PermissionMode, initialExtraDirs)
-	}
+	launchCmd := ""
 	useCLIInitPrompt := false
-	if strings.TrimSpace(req.Prompt) != "" && req.EngineType == EngineTmux {
-		if initCmd := appendCLIInitPrompt(req.Agent, launchCmd); initCmd != "" {
-			envVars["ACKBAR_INIT_PROMPT"] = req.Prompt
-			launchCmd = initCmd
-			useCLIInitPrompt = true
+	if td, ok := s.PluginRegistry().AsTMuxDriver(req.Agent); ok {
+		if spec, err := td.BuildLaunchSpec(agent.LaunchInput{
+			SessionID:      spawnSessID,
+			NativeID:       tempUUID,
+			TempUUID:       tempUUID,
+			Resume:         false,
+			Cwd:            req.Cwd,
+			Prompt:         req.Prompt,
+			Model:          req.Model,
+			Effort:         req.Effort,
+			PermissionMode: req.PermissionMode,
+			ExtraDirs:      initialExtraDirs,
+			Env:            envVars,
+		}); err == nil && spec.CommandLine != "" {
+			launchCmd = spec.CommandLine
+			if len(spec.Env) > 0 {
+				envVars = spec.Env
+			}
+			if strings.TrimSpace(req.Prompt) != "" && req.EngineType == EngineTmux {
+				useCLIInitPrompt = true
+			}
+		}
+	}
+	if launchCmd == "" {
+		launchCmd = s.getSpawnCmd(req.Agent, tempUUID)
+		if strings.TrimSpace(req.Prompt) != "" && req.EngineType == EngineTmux {
+			if initCmd := appendCLIInitPrompt(req.Agent, launchCmd); initCmd != "" {
+				envVars["ACKBAR_INIT_PROMPT"] = req.Prompt
+				launchCmd = initCmd
+				useCLIInitPrompt = true
+			}
 		}
 	}
 
@@ -2449,6 +2484,18 @@ func (s *Server) getSpawnCmd(agent, tempUUID string) string {
 	return "claude"
 }
 
+func (s *Server) supportsHeadless(agentName string) bool {
+	if agentName == "claude-code" || agentName == "antigravity" {
+		return true
+	}
+	if s != nil && s.PluginRegistry() != nil {
+		if p, ok := s.PluginRegistry().Get(agentName); ok {
+			return p.Capabilities().SupportsHeadless
+		}
+	}
+	return false
+}
+
 func appendCLIInitPrompt(agent, baseCmd string) string {
 	if baseCmd == "" {
 		return ""
@@ -2458,35 +2505,9 @@ func appendCLIInitPrompt(agent, baseCmd string) string {
 		return baseCmd + ` "$ACKBAR_INIT_PROMPT"`
 	case "antigravity", "agy":
 		return baseCmd + ` -i "$ACKBAR_INIT_PROMPT"`
-	case "grok", "grok-cli":
-		return baseCmd + ` -- "$ACKBAR_INIT_PROMPT"`
 	default:
 		return ""
 	}
-}
-
-var safeCLIArgRegex = agentutil.SafeCLIArgRegex
-
-func appendGrokCLIArgs(baseCmd, model, effort, permissionMode string, extraDirs []string) string {
-	cmd := baseCmd
-	if m := strings.TrimSpace(model); m != "" && safeCLIArgRegex.MatchString(m) {
-		cmd += " -m " + m
-	}
-	if e := strings.TrimSpace(effort); e != "" && safeCLIArgRegex.MatchString(e) {
-		cmd += " --effort " + e
-	}
-	if p := strings.TrimSpace(permissionMode); p != "" && safeCLIArgRegex.MatchString(p) {
-		cmd += " --permission-mode " + p
-	}
-	for _, dir := range extraDirs {
-		dir = strings.TrimSpace(dir)
-		if dir == "" || strings.ContainsAny(dir, "\x00\r\n") {
-			continue
-		}
-		escaped := strings.ReplaceAll(dir, "'", `'\''`)
-		cmd += " --add-dir '" + escaped + "'"
-	}
-	return cmd
 }
 
 func (s *Server) activateTaskForSpawnedWorker(taskID, sessionID, agent, host, repoNodePath string, now time.Time) {
@@ -2574,12 +2595,31 @@ func (s *Server) getRestartOrResumeCmd(sess *Session, home string) (string, bool
 	if home == "" {
 		home = s.effectiveHomeDir()
 	}
-	hasDisk := hasConversationOnDisk(sess, home, s.db)
+	hasDisk := hasConversationOnDiskWithRegistry(s.PluginRegistry(), sess, home, s.db)
 	var isExisting bool
 	if sess.Agent == "claude-code" {
 		isExisting = hasDisk
 	} else {
 		isExisting = hasDisk || sess.FirstPrompt != "" || sess.LastPrompt != "" || sess.OldID != "" || !sess.Managed
+	}
+	if td, ok := s.PluginRegistry().AsTMuxDriver(sess.Agent); ok {
+		useResume := isExisting && td.ResumeCommand(sess.NativeID) != ""
+		if !useResume {
+			isExisting = false
+		}
+		if spec, err := td.BuildLaunchSpec(agent.LaunchInput{
+			SessionID:      sess.ID,
+			NativeID:       sess.NativeID,
+			TempUUID:       sess.NativeID,
+			Resume:         useResume,
+			Cwd:            sess.Cwd,
+			Model:          sess.Model,
+			Effort:         sess.Effort,
+			PermissionMode: sess.PermissionMode,
+			ExtraDirs:      sess.ExtraDirs,
+		}); err == nil && spec.CommandLine != "" {
+			return spec.CommandLine, isExisting
+		}
 	}
 	var cmd string
 	if isExisting {
@@ -2594,13 +2634,6 @@ func (s *Server) getRestartOrResumeCmd(sess *Session, home string) (string, bool
 		} else {
 			cmd = s.getResumeCmd(sess.Agent, sess.NativeID)
 		}
-	}
-	if sess.Agent == "grok" && cmd != "" {
-		extraDirs := sess.ExtraDirs
-		if isExisting {
-			extraDirs = nil
-		}
-		cmd = appendGrokCLIArgs(cmd, sess.Model, sess.Effort, sess.PermissionMode, extraDirs)
 	}
 	return cmd, isExisting
 }

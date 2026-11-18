@@ -213,40 +213,10 @@ func (s *Server) resolveTranscriptTailModel(sess *Session) (string, time.Time) {
 		return "", time.Time{}
 	}
 
-	if agentLower == "grok" {
-		sessDir := FindGrokSessionDirForHome(home, sess.Cwd, sess.NativeID)
-		if sessDir != "" {
-			sumPath := filepath.Join(sessDir, "summary.json")
-			if model, modTime, err := readCachedModelFile(sumPath, func(f *os.File) (string, error) {
-				var sum map[string]interface{}
-				if err := json.NewDecoder(f).Decode(&sum); err != nil {
-					return "", err
-				}
-				for _, k := range []string{"current_model_id", "model"} {
-					if m, ok := sum[k].(string); ok && m != "" {
-						return normalizeModelIdentifier("grok", m), nil
-					}
-				}
-				return "", nil
-			}); err == nil && model != "" {
-				return model, modTime
-			}
-
-			sigPath := filepath.Join(sessDir, "signals.json")
-			if model, modTime, err := readCachedModelFile(sigPath, func(f *os.File) (string, error) {
-				var sig map[string]interface{}
-				if err := json.NewDecoder(f).Decode(&sig); err != nil {
-					return "", err
-				}
-				if m, ok := sig["primaryModelId"].(string); ok && m != "" {
-					return normalizeModelIdentifier("grok", m), nil
-				}
-				return "", nil
-			}); err == nil && model != "" {
-				return model, modTime
-			}
+	if s != nil && s.PluginRegistry() != nil {
+		if mr, ok := s.PluginRegistry().AsModelResolver(sess.Agent); ok {
+			return mr.ResolveArtifactModel(home, accCfgDir, sess.Cwd, sess.NativeID)
 		}
-		return "", time.Time{}
 	}
 
 	return "", time.Time{}
@@ -441,23 +411,10 @@ func (s *Server) resolveSettingsModel(sess *Session) string {
 		return ""
 	}
 
-	if agentLower == "grok" {
-		if acc != nil && acc.Env != nil && acc.Env["GROK_MODEL"] != "" {
-			if norm := normalizeModelIdentifier(sess.Agent, acc.Env["GROK_MODEL"]); norm != "" {
-				return norm
-			}
+	if s != nil && s.PluginRegistry() != nil {
+		if mr, ok := s.PluginRegistry().AsModelResolver(sess.Agent); ok {
+			return mr.ResolveConfiguredModel(home, acc)
 		}
-		var candidates []string
-		if accCfgDir != "" {
-			candidates = append(candidates, filepath.Join(accCfgDir, "config.toml"))
-		}
-		candidates = append(candidates, filepath.Join(GrokHomeDir(home), "config.toml"))
-		for _, p := range candidates {
-			if m := readGrokSettingsFile(p); m != "" {
-				return m
-			}
-		}
-		return ""
 	}
 
 	return ""
@@ -505,44 +462,6 @@ func readAntigravitySettingsFile(filePath string) string {
 		if mObj, ok := raw["model"].(map[string]interface{}); ok {
 			if name, ok := mObj["name"].(string); ok {
 				if norm := normalizeModelIdentifier("antigravity", name); norm != "" {
-					return norm, nil
-				}
-			}
-		}
-		return "", nil
-	})
-	if err == nil {
-		return model
-	}
-	return ""
-}
-
-func readGrokSettingsFile(filePath string) string {
-	model, _, err := readCachedModelFile(filePath, func(f *os.File) (string, error) {
-		lr := io.LimitReader(f, 256*1024)
-		data, err := io.ReadAll(lr)
-		if err != nil {
-			return "", err
-		}
-		lines := strings.Split(string(data), "\n")
-		currentSection := ""
-		for _, rawLine := range lines {
-			line := stripTOMLComment(rawLine)
-			if line == "" {
-				continue
-			}
-			if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
-				currentSection = strings.Trim(line[1:len(line)-1], " \"'")
-				continue
-			}
-			parts := strings.SplitN(line, "=", 2)
-			if len(parts) != 2 {
-				continue
-			}
-			k := strings.TrimSpace(parts[0])
-			v := strings.Trim(strings.TrimSpace(parts[1]), " \"'")
-			if (currentSection == "models" && (k == "default" || k == "model")) || (currentSection == "" && (k == "model" || k == "default_model")) {
-				if norm := normalizeModelIdentifier("grok", v); norm != "" {
 					return norm, nil
 				}
 			}

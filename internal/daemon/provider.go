@@ -135,8 +135,6 @@ func getDefaultAgentAdapter(agent string) AgentAdapter {
 		return &AntigravityAgentAdapter{}
 	case "codex":
 		return &CodexAgentAdapter{}
-	case "grok", "grok-cli":
-		return &GrokAgentAdapter{}
 	case "opencode", "open-code":
 		return &OpenCodeAgentAdapter{}
 	default:

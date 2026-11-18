@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -209,7 +210,14 @@ func (s *Server) handleAccounts(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Ensure default account exists for agents
-		agentsToCheck := []string{"claude-code", "antigravity", "codex", "grok"}
+		agentsToCheck := []string{"claude-code", "antigravity", "codex"}
+		if s.PluginRegistry() != nil {
+			for _, p := range s.PluginRegistry().List() {
+				if p.Capabilities().SupportsMultiAccount && !slices.Contains(agentsToCheck, p.Key()) {
+					agentsToCheck = append(agentsToCheck, p.Key())
+				}
+			}
+		}
 		if agentFilter != "" {
 			agentsToCheck = []string{agentFilter}
 		}

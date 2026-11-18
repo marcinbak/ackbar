@@ -96,3 +96,28 @@ type ModelCatalog interface {
 type RateLimiter interface {
 	DetectRateLimit(text string, now time.Time) (limited bool, resetAt time.Time, reason string)
 }
+
+type StreamParser interface {
+	ParseStreamLine(line []byte) (events []ChatStreamEvent, handled bool, err error)
+}
+
+type StreamParserFactory interface {
+	NewStreamParser(sessionID string) StreamParser
+}
+
+type ModelResolver interface {
+	ResolveArtifactModel(homeDir, accConfigDir, cwd, nativeID string) (string, time.Time)
+	ResolveConfiguredModel(homeDir string, acct *AgentAccount) string
+}
+
+type TranscriptStatter interface {
+	StatTranscript(homeDir, cwd, nativeID string) (path string, size int64, modTimeNano int64, err error)
+}
+
+type TranscriptUsageInspector interface {
+	ComputeTranscriptUsage(homeDir, cwd, nativeID string, defaultLimit int) (TranscriptUsage, bool)
+}
+
+type CLIInspector interface {
+	InspectSubcommandArgs(kind string) ([]string, bool)
+}

@@ -20,9 +20,9 @@ func (s *Server) buildDeterministicHandoverBriefing(sess *Session, customInstruc
 				}
 			}
 		}
-	} else if sess.Agent == "grok" {
-		if msgs, err := ExtractGrokTranscriptMessages(home, sess.Cwd, sess.NativeID); err == nil {
-			for _, m := range msgs {
+	} else if tr, ok := s.PluginRegistry().AsTranscript(sess.Agent); ok {
+		if t, err := tr.ExtractTranscript(home, sess.Cwd, sess.NativeID); err == nil && t != nil {
+			for _, m := range t.Messages {
 				if m.Role == "user" && strings.TrimSpace(m.Content) != "" {
 					recentPrompts = append(recentPrompts, strings.TrimSpace(m.Content))
 				}

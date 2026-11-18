@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"ackbar/internal/agents/grok"
 )
 
 func TestExtractTranscript_Antigravity(t *testing.T) {
@@ -564,7 +566,7 @@ func TestAgentAdapter_FilterUserEntry_AgentSpecificIsolation(t *testing.T) {
 	claudeAdapter := getDefaultAgentAdapter("claude-code")
 	agyAdapter := getDefaultAgentAdapter("antigravity")
 	codexAdapter := getDefaultAgentAdapter("codex")
-	grokAdapter := getDefaultAgentAdapter("grok")
+	grokAdapter := &PluginBridge{plugin: grok.New()}
 	openCodeAdapter := getDefaultAgentAdapter("opencode")
 	defaultAdapter := getDefaultAgentAdapter("unknown")
 

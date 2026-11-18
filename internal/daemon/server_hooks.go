@@ -167,7 +167,13 @@ func (s *Server) processParsedHookEvent(event *Event, urlEventName string, heade
 		defer unlock()
 	}
 
-	if event.Agent == "antigravity" || event.Agent == "grok" {
+	supportsSubagents := event.Agent == "antigravity"
+	if !supportsSubagents && s.PluginRegistry() != nil {
+		if p, ok := s.PluginRegistry().Get(event.Agent); ok {
+			supportsSubagents = p.Capabilities().SupportsSubagents
+		}
+	}
+	if supportsSubagents {
 		home, _ := os.UserHomeDir()
 		if home != "" && s.agentAdapter(event.Agent).IsSubagentSession(home, event.NativeID, nil) {
 			if existing := s.resolveSession(sessionID); existing != nil {
@@ -184,8 +190,8 @@ func (s *Server) processParsedHookEvent(event *Event, urlEventName string, heade
 			var parentConvID, role, typeName string
 			if event.Agent == "antigravity" {
 				parentConvID, role, typeName = ResolveAntigravitySubagentParent(home, event.NativeID)
-			} else {
-				parentConvID, role, typeName = ResolveGrokSubagentParent(home, event.NativeID)
+			} else if h, ok := s.PluginRegistry().AsHooks(event.Agent); ok {
+				parentConvID, role, typeName = h.ResolveSubagentParent(home, event.NativeID)
 			}
 			if parentConvID != "" && parentConvID != event.NativeID {
 				unlockParent := s.lockSessionHook(hookLockKey(event.Agent, parentConvID, event.Agent+"-"+parentConvID))
@@ -581,9 +587,8 @@ func (s *Server) updateHookSessionMetadataAndTitle(sess *Session, event *Event) 
 					sess.AITitle = meta.AITitle
 				}
 			}
-		} else if sess.Agent == "grok" {
-			home, _ := os.UserHomeDir()
-			if meta := ReadGrokSessionMeta(home, sess.Cwd, sess.NativeID); meta != nil && meta.Title != "" {
+		} else if tr, ok := s.PluginRegistry().AsTranscript(sess.Agent); ok {
+			if meta := tr.ReadSessionMetadata(sess.Cwd, sess.NativeID); meta != nil && meta.Title != "" {
 				sess.Name = meta.Title
 				if meta.CustomTitle != "" {
 					sess.CustomTitle = meta.CustomTitle
@@ -617,7 +622,15 @@ func (s *Server) applyHookStateTransition(sess *Session, event *Event, sessionID
 			s.pruneSyntheticSubagents(sessionID, event.NativeID)
 		}
 		if !isPureHeadless {
-			if diskSubs, err := ExtractSubagents(event.Agent, event.NativeID, sess.Cwd); err == nil {
+			var diskSubs []SubagentInfo
+			var subErr error
+			if tr, ok := s.PluginRegistry().AsTranscript(event.Agent); ok {
+				home, _ := os.UserHomeDir()
+				diskSubs, subErr = tr.ListSubagents(home, sess.Cwd, event.NativeID)
+			} else {
+				diskSubs, subErr = ExtractSubagents(event.Agent, event.NativeID, sess.Cwd)
+			}
+			if subErr == nil {
 				for _, sub := range diskSubs {
 					if sub.State == "running" && time.Since(sub.StartedAt) < 2*time.Minute {
 						event.State = StateWorking
@@ -634,8 +647,10 @@ func (s *Server) applyHookStateTransition(sess *Session, event *Event, sessionID
 					InspectAntigravityStatus(context.Background(), sess)
 				case "codex":
 					InspectCodexStatus(context.Background(), sess)
-				case "grok":
-					InspectGrokStatus(context.Background(), sess)
+				default:
+					if td, ok := s.PluginRegistry().AsTMuxDriver(event.Agent); ok {
+						td.InspectStatus(context.Background(), sess)
+					}
 				}
 				if sess.State == StateBlocked && sess.Blocked != nil {
 					event.State = sess.State
