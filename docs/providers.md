@@ -155,13 +155,17 @@ Legacy providers in `internal/provider/` (`Claude Code`, `Antigravity`) use `<ag
 
 ### Agent Contract & Registry (`internal/agent`, `internal/agentutil`)
 New and migrated adapters implement the leaf contract without importing `internal/daemon` or `internal/provider`:
-* **Contract & Registry ([facets.go](../internal/agent/facets.go), [capabilities.go](../internal/agent/capabilities.go)):** Canonical DTOs, `Capabilities` (`LocksExtraDirsOnResume`), `LaunchSpec.PromptInCommand`, optional facets (`InstallationDetector`, `Provisioner`, `Accounts.APIKeyEnvVar()`, `Transcripts` with `homeDir`, `ACPDriver`, `CommandCatalog`, `StreamParserFactory`, `ModelResolver`, `TranscriptStatter`, `TranscriptUsageInspector`, `CLIInspector`), and [`Registry`](../internal/agent/registry.go).
+* **Contract & Facets ([facets.go](../internal/agent/facets.go), [base.go](../internal/agent/base.go), [capabilities.go](../internal/agent/capabilities.go), [headless_types.go](../internal/agent/headless_types.go)):** Canonical DTOs, `Capabilities`, `LaunchSpec.PromptInCommand`, `PersistentTurnInput`, `RewindTurn`, and optional facets:
+  * **Headless & Rewind:** `HeadlessDriver`, `PersistentHeadlessDriver` (`SupportsStdioControl`, `DefaultPermissionMode`, `FormatStdinTurn`, `FormatSetModel`, `BasePersistentHeadless`), `ACPDriver`, and `SessionRewinder` (`BaseSessionRewinder`).
+  * **Transcripts & Models:** `Transcripts`, opt-in `IncrementalTranscripts` (`AppendTranscript`, no base default), `TranscriptStatter`, `TranscriptUsageInspector`, `ModelCatalog` (`NormalizeModelID`), and `ModelResolver`.
+  * **Discovery, Provisioning & CLI:** `InstallationDetector`, `Provisioner` (`SkillDirs`), `Accounts` (`APIKeyEnvVar`, `ProfileSkillDirs`), `TMuxDriver`, `Hooks`, `Scanner`, `RateLimiter`, `StreamParserFactory`, `CommandCatalog`, and `CLIInspector`.
+* **Registry ([registry.go](../internal/agent/registry.go), [registry_facets.go](../internal/agent/registry_facets.go)):** Thread-safe plugin lookup and `As*` facet accessors (`AsPersistentHeadless`, `AsIncrementalTranscript`, `AsSessionRewinder`, etc.).
 * **Shared Helpers ([fs.go](../internal/agentutil/fs.go), [provision.go](../internal/agentutil/provision.go), [acp_rpc.go](../internal/agentutil/acp_rpc.go)):** Leaf filesystem, CLI exec, ID validation, TOML, JSON/Markdown provisioning (`UpsertJSONMCPServer`, `InspectJSONMCPServer`), rate-limit, prompt parsing, and `ACPConn` JSON-RPC helpers.
 * **Leaf Plugins ([codex](../internal/agents/codex/plugin.go), [grok](../internal/agents/grok/plugin.go), [opencode](../internal/agents/opencode/plugin.go)):**
-  * `codex.New()` implements `Plugin`, `Branding`, `InstallationDetector`, `Provisioner`, `Accounts` (`OPENAI_API_KEY`), `TMuxDriver`, `Hooks`, `Transcripts`, `Scanner`, `RateLimiter`, and `TranscriptStatter`.
-  * `grok.New()` implements `Plugin`, `ACPDriver`, `CommandCatalog`, and `Accounts` (`XAI_API_KEY`).
+  * `codex.New()` implements `Plugin`, `Branding`, `InstallationDetector`, `Provisioner` (`SkillDirs`), `Accounts` (`OPENAI_API_KEY`), `TMuxDriver`, `Hooks`, `Transcripts`, `Scanner`, `RateLimiter`, and `TranscriptStatter`.
+  * `grok.New()` implements `Plugin`, `Provisioner` (`SkillDirs`), `ModelCatalog` (`NormalizeModelID`), `ACPDriver`, `CommandCatalog`, and `Accounts` (`XAI_API_KEY`).
   * `opencode.New()` implements `Plugin`, `Branding`, `InstallationDetector` (without `Provisioner`), `Accounts`, `TMuxDriver`, `Hooks`, `Transcripts`, `Scanner`, `RateLimiter`, and `TranscriptStatter`.
-* **Daemon & Headless Bridge ([provider_bridge.go](../internal/daemon/provider_bridge.go), [headless_plugin.go](../internal/daemon/headless_plugin.go)):** [`PluginBridge`](../internal/daemon/provider_bridge.go), [`Server.RegisterPlugin`](../internal/daemon/server.go), and `HeadlessRunner` adapt `agent.Plugin` to daemon interfaces.
+* **Daemon & Headless Bridge ([provider_bridge.go](../internal/daemon/provider_bridge.go), [headless_plugin.go](../internal/daemon/headless_plugin.go)):** [`PluginBridge`](../internal/daemon/provider_bridge.go), [`Server.RegisterPlugin`](../internal/daemon/server.go), and `HeadlessRunner` dispatch plugin facets first while retaining `ClaudeAgentAdapter` and `AntigravityAgentAdapter` fallbacks until Waves 4–5.
 
 ---
 

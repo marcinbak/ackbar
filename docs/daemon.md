@@ -20,7 +20,7 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 * **`server_sessions.go`:** Session listing, maintenance purge, remote-host proxy resolution (`resolveSessionOrProxy`), lifecycle control actions (`/v1/sessions/control`), session configuration (`PATCH /v1/sessions/{id}/config` with `normalizeModelInput`), interactive response dispatch (`applyInteractiveResponse`, `/v1/sessions/respond`), mode switching between headless and tmux (`/v1/sessions/take-wheel` and `/v1/sessions/switch-headless`), session spawn (`/v1/sessions/spawn`), and meta-routing (`/v1/meta/resolve`).
 * **`server_suggestions.go`:** Slash (`/` via builtins, `agent.CommandCatalog`, workspace/skills), file (`@`, 10s cache, `git ls-files`/`WalkDir` pruned via `IsProtectedHomeWalkDir`), and model suggestions (`GET /v1/sessions/{id}/suggestions`, 5m Antigravity cache).
 * **`server_chat.go`:** Headless/tmux prompt submission (`/v1/sessions/prompt` with `delay_seconds`, `deliver_at`, inline `/delay <duration> <prompt>` scheduling, and `client_turn_id` deduplication), prompt queue management (`GET`/`DELETE`/`POST` `/v1/sessions/prompt/queue` with `action: send_now`), `scheduled_prompts` SQLite persistence, SSE chat streaming (`/v1/sessions/chat/stream`), turn cancellation, automated session handover (`/v1/sessions/handover`), and transcript endpoints.
-* **`transcript_cache.go`:** Bounded in-memory transcript cache (128 entries) with `(size, mtimeNano)` validation, incremental Claude `.jsonl` seek-append parsing, and 3-second subagent discovery caching.
+* **`transcript_cache.go`:** Bounded in-memory transcript cache (128 entries) with `(size, mtimeNano)` validation, registry-first `AsIncrementalTranscript` delta parsing, and 3s subagent cache.
 * **`prompt_dedup.go`:** Bounded in-memory LRU prompt deduplication cache (512 entries, 10m TTL) tracking in-flight reservations and committed status for idempotent `client_turn_id` submissions.
 * **`headless.go`, `headless_persistent.go`, `headless_plugin.go`, `headless_spool.go`, `headless_errors.go`:** Headless coordinator, warm worker and one-shot `agent.HeadlessDriver` turn dispatch, stream error tracking, and monotonic NDJSON turn spooling.
 * **`headless_worker.go`, `headless_config.go`, `headless_mcp_fingerprint.go`, `headless_worker_ipc.go`:** Detached `--headless-worker` process, persistent stdio stream loop, configuration and normalized MCP fingerprinting, and Unix socket RPC.
@@ -29,10 +29,10 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 * **`headless_bg_tasks.go`, `headless_bg_turn.go`, `headless_bg_watch.go`:** Warm background task tracking, debounced `turn_bg_*` auto-poke synthesis, and `watch_worker` IPC streaming.
 * **`headless_commands.go`:** Inline shell execution (`POST /v1/sessions/{id}/shell`), directory validation (`/add-dir`), in-place conversation rotation, `/clear`, `/reset`, and `/compact`.
 * **`headless_commands_inspect.go`:** Allowlisted CLI inspection (`/v1/sessions/{id}/inspect`), git diff inspection (`/v1/sessions/{id}/diff`), and transcript token/cost metrics.
-* **`headless_model.go`:** Resolves active default model name (`populateResolvedModel`) via 3-tier precedence and caches config file timestamps.
-* **`headless_rewind.go`:** Human turn rewind listing and execution (`/v1/sessions/{id}/rewind`), transcript cloning, and history seeding.
+* **`headless_model.go`:** Normalizes model IDs via `AsModelCatalog.NormalizeModelID` first, resolves default model (`populateResolvedModel`), and caches config file timestamps.
+* **`headless_rewind.go`:** Human turn rewind listing and execution (`/v1/sessions/{id}/rewind`) via `AsSessionRewinder`, transcript cloning, and history seeding.
 * **`headless_handover.go`:** Deterministic 4-point handover briefing synthesis and headless context compaction.
-* **`headless_auth_detect.go`, `headless_auth_broker.go`, `headless_auth_flow.go`:** Detects OAuth authentication blocks (`BlockAuth`), manages allowlisted auth processes, relays loopback/stdin callbacks, and auto-resumes sessions.
+* **`headless_auth_detect.go`, `headless_auth_broker.go`, `headless_auth_flow.go`:** Detects `BlockAuth`, resolves allowlisted `CLIInspector` (`auth_login`, `mcp_login`) commands, relays callbacks, and auto-resumes sessions.
 * **`server_mcp_status.go`:** Inspects configured MCP servers, probes compiled plugin authentication status, and caches status responses with 10s TTL.
 * **`headless_reattach.go`, `headless_recovery.go`, `headless_stream_replay.go`:** Daemon reboot worker adoption, crashed-spool finalization, socket re-attachment, and gapless SSE replay (`?after_seq`, `Last-Event-ID`).
 * **`session_done.go`:** Manual `Done` runtime cleanup, process teardown, spool pruning, and periodic `auto_done` sweep.
@@ -144,7 +144,9 @@ When several clients with different sizes are attached to one session (web, mobi
 
 Headless sessions (`engine_type = "headless"`, `tmux_name = ""`) execute turns through detached worker processes (`ackbard --headless-worker`) without allocating a `tmux` session:
 
-* **Warm Persistent Worker (`Setsid: true`):** Spawns detached `ackbard --headless-worker --worker-spec <path> --idle-ttl <dur>`. Keeps child CLI and MCP servers alive across turns.
+* **Warm Persistent Worker (`Setsid: true`):** Spawns detached `ackbard --headless-worker --worker-spec <path> --idle-ttl <dur>` keeping child CLI and MCP servers warm.
+* **Registry-First Persistent Dispatch ([`headless_persistent.go`](../internal/daemon/headless_persistent.go), [`headless_plugin.go`](../internal/daemon/headless_plugin.go)):** Routes `AsPersistentHeadless` plugins through warm workers (`FormatStdinTurn`, `SupportsStdioControl`, `FormatSetModel`, `ConfigFingerprintWithRegistry`), keeping legacy fallbacks until Waves 4–5.
+* **Broadcast Pointer & Init Invariants:** [`recordTurnActive`](../internal/daemon/headless_persistent.go) preserves caller `*Session` for in-place `sess.ID` adoption while cloning snapshots for `broadcast`; [`dispatchPluginStreamLine`](../internal/daemon/headless_plugin.go) runs `onAntigravityInit` before `onModelDetected`.
 * **Unix Domain Socket RPC ([`headless_worker_ipc.go`](../internal/daemon/headless_worker_ipc.go)):** Communicates over `0600` sockets (`~/.config/ackbar/run`); supports `status`, `send_turn`, `set_model`, `set_config`, `restart_child`, `answer_control`, `acp_rewind_*`, `watch_worker`, `subscribe`, `cancel`, `shutdown`.
 * **Worker Sidecar Isolation:** Persists `w_<workerID>.worker.json` (`bg_task_count`, `pending_control`) and `turn_<id>.meta.json` (`Status: "blocked"`, `pending_control`) with `0600` permissions.
 * **Monotonic Turn Spool (`turn_<id>.ndjson`):** Sequenced events stream to disk atomically with `0600` permissions. Pre-writes `seq: 1` (`turn_start`) before provider output arrives.
@@ -190,7 +192,7 @@ Headless sessions (`engine_type = "headless"`, `tmux_name = ""`) execute turns t
 * **Payload Trimming (`include_formats=false`):** Skips generating heavy ANSI and Markdown strings during JSON serialization to reduce payload size and CPU usage.
 * **Response Compression:** Automatically compresses JSON responses larger than 2KB with `gzip` when requested via `Accept-Encoding: gzip`.
 * **Bounded In-Memory Cache ([`transcript_cache.go`](file:///Users/dev4u/Work/Ackbar/internal/daemon/transcript_cache.go)):** Caches up to 128 parsed transcripts by `(agent, nativeID, cwd)` with file size, modification timestamp, and 128-byte header validation.
-* **Incremental Seek-Append:** Performs fast `Seek` append parsing on Claude `.jsonl` files when file size grows and header matches.
+* **Incremental Seek-Append (`getCachedTranscript`):** Dispatches `AsIncrementalTranscript` (ahead of Claude `.jsonl` fallback) using [`openRegularFile`](../internal/daemon/headless_model.go), 128-byte header match, `\n` checks at `entrySize-1` and `curSize-1`, `io.LimitReader(f, curSize-entrySize)`, and cloned message slices.
 * **Pre-Filtered JSONL Parsing:** Skips non-message lines (tool progress, file snapshots) before JSON unmarshaling to prevent memory thrash.
 * **Subagent Discovery Cache:** Caches disk-discovered subagents for 3 seconds to avoid repetitive directory scans during active polling.
 * **Streaming Proxy Timeout Safety:** Proxied remote transcripts use `ResponseHeaderTimeout: 10s` so streaming NDJSON responses do not terminate prematurely.
@@ -355,7 +357,7 @@ Stored in the SQLite `settings` table:
 * `skills_repo_last_check`: RFC 3339 timestamp of the last upstream remote fetch or sync check.
 
 ### Auto-Discovery Contract
-If `skills_repo_path` is not explicitly set in the database, `ackbard` inspects agent skill directories (`~/.gemini/config/skills/`, `~/.gemini/antigravity-cli/skills/`, `~/.claude/skills/`):
+If `skills_repo_path` is not set in SQLite, [`collectSkillDirsWithRegistry`](../internal/daemon/skills_repo.go) gathers `Provisioner.SkillDirs`, `Accounts.ProfileSkillDirs`, and legacy agent paths (`cmd/ackbar` passes `cliPluginRegistry()`):
 1. **Marker Files:** Looks for `.ackbar-skills-source` or `.personal-config-managed` containing `source_repo=<path>`.
 2. **Symlinks:** Inspects symlink targets and walks parent directories to identify the enclosing `.git` repository root.
 3. Discovered repositories are validated against security constraints and persisted to database settings.
@@ -367,8 +369,8 @@ If `skills_repo_path` is not explicitly set in the database, `ackbard` inspects 
 
 ### Execution & Fallback Contract
 1. **Clean Fast-Forward Pull:** Runs `git fetch origin` followed by `git pull --ff-only` if `git status --porcelain` is clean. If uncommitted local changes exist, the pull is safely skipped to avoid clobbering work.
-2. **Installer Execution:** If `install.sh` exists at the root of the repository, executes `/bin/bash ./install.sh` with `HOME` and `ACKBAR_CLAUDE_DIRS` (colon-delimited list of custom account config directories from `accounts`).
-3. **Fallback Directory Copy:** If no `install.sh` is present, recursively mirrors any skills in `skills/*/SKILL.md` or `plugins/*/skills/*/SKILL.md` to `~/.claude/skills/`, `~/.gemini/config/skills/`, `~/.gemini/antigravity-cli/skills/`, `~/.codex/skills/`, and `~/.grok/skills/`.
+2. **Installer Execution:** Executes `/bin/bash ./install.sh` with `HOME`, `ACKBAR_CLAUDE_DIRS` (colon-delimited Claude config dirs), and `ACKBAR_SKILL_DIRS` (OS path-list-separated skill dirs).
+3. **Fallback Directory Copy:** If `install.sh` is absent, mirrors `skills/*/SKILL.md` and `plugins/*/skills/*/SKILL.md` into all collected skill directories.
 4. **Periodic Auto-Sync:** The background loop checks `skills_repo_last_check` on startup and hourly. If more than 24 hours have elapsed since the last check, an automated background sync is triggered.
 
 ---
