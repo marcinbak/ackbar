@@ -358,9 +358,10 @@ func (s *Server) getCachedTranscript(agent, nativeID, cwd string) ([]TranscriptM
 			if fStat, stErr := f.Stat(); stErr == nil && fStat.Size() >= curSize {
 				var head [128]byte
 				n, rerr := io.ReadFull(f, head[:])
-				var endByte [1]byte
+				var prevByte, endByte [1]byte
+				_, prevErr := f.ReadAt(prevByte[:], entrySize-1)
 				_, endErr := f.ReadAt(endByte[:], curSize-1)
-				if rerr == nil && n == 128 && entryHasHead && head == entryHead && endErr == nil && endByte[0] == '\n' {
+				if rerr == nil && n == 128 && entryHasHead && head == entryHead && prevErr == nil && prevByte[0] == '\n' && endErr == nil && endByte[0] == '\n' {
 					if _, serr := f.Seek(entrySize, io.SeekStart); serr == nil {
 						deltaReader := io.LimitReader(f, curSize-entrySize)
 						updatedMsgs, perr := appendFn(deltaReader, cloneTranscriptMessages(cachedMsgs))

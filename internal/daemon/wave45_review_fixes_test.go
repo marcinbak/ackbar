@@ -62,14 +62,21 @@ func (p *boundedIncPlugin) AppendTranscript(r io.Reader, existing []agent.Transc
 }
 func (p *boundedIncPlugin) parse(r io.Reader, base []agent.TranscriptMessage) ([]agent.TranscriptMessage, error) {
 	msgs := append([]agent.TranscriptMessage(nil), base...)
-	sc := bufio.NewScanner(r)
-	for sc.Scan() {
-		l := strings.TrimSpace(sc.Text())
-		if l != "" && !strings.HasPrefix(l, "#") {
-			msgs = append(msgs, agent.TranscriptMessage{Role: "user", Content: l, Timestamp: time.Now().UTC()})
+	br := bufio.NewReader(r)
+	for {
+		raw, err := br.ReadString('\n')
+		if len(raw) > 0 && raw[len(raw)-1] == '\n' {
+			if l := strings.TrimSpace(raw); l != "" && !strings.HasPrefix(l, "#") {
+				msgs = append(msgs, agent.TranscriptMessage{Role: "user", Content: l, Timestamp: time.Now().UTC()})
+			}
+		}
+		if err != nil {
+			if err == io.EOF {
+				return msgs, nil
+			}
+			return msgs, err
 		}
 	}
-	return msgs, sc.Err()
 }
 
 func TestWave45ReviewFixes_IncrementalTranscriptBoundsAndPathSwitch(t *testing.T) {
@@ -106,46 +113,41 @@ func TestWave45ReviewFixes_IncrementalTranscriptBoundsAndPathSwitch(t *testing.T
 	plug.overrideSize, plug.overrideMod = 0, 0
 	_, _ = srv.ExtractTranscript("bounded-inc", "n1", tmpDir)
 	baseExtracts := plug.extractCalls.Load()
-
-	f, _ := os.OpenFile(pathB, os.O_WRONLY|os.O_APPEND, 0o600)
-	_, _ = f.WriteString("b3\n")
-	_ = f.Close()
-	t3Time := time.Now().Add(2 * time.Second)
-	_ = os.Chtimes(pathB, t3Time, t3Time)
+	step := time.Now()
+	appendTouch := func(s string, touch bool) {
+		f, _ := os.OpenFile(pathB, os.O_WRONLY|os.O_APPEND, 0o600)
+		_, _ = f.WriteString(s)
+		_ = f.Close()
+		if touch {
+			step = step.Add(2 * time.Second)
+			_ = os.Chtimes(pathB, step, step)
+		}
+	}
+	appendTouch("b3\n", true)
 	stSnap, _ := os.Stat(pathB)
-	plug.overrideSize = stSnap.Size()
-	plug.overrideMod = stSnap.ModTime().UnixNano()
-
-	f, _ = os.OpenFile(pathB, os.O_WRONLY|os.O_APPEND, 0o600)
-	_, _ = f.WriteString("b4\n")
-	_ = f.Close()
-
+	plug.overrideSize, plug.overrideMod = stSnap.Size(), stSnap.ModTime().UnixNano()
+	appendTouch("b4\n", false)
 	tBounded, err := srv.ExtractTranscript("bounded-inc", "n1", tmpDir)
 	if err != nil || len(tBounded.Messages) != 3 || tBounded.Messages[2].Content != "b3" || plug.appendCalls.Load() != 1 || plug.extractCalls.Load() != baseExtracts {
 		t.Fatalf("post-stat growth must stop at curSize: msgs=%+v extract=%d append=%d err=%v", tBounded.Messages, plug.extractCalls.Load(), plug.appendCalls.Load(), err)
 	}
-
 	plug.overrideSize, plug.overrideMod = 0, 0
-	t4Time := t3Time.Add(2 * time.Second)
-	_ = os.Chtimes(pathB, t4Time, t4Time)
+	appendTouch("", true)
 	tNext, err := srv.ExtractTranscript("bounded-inc", "n1", tmpDir)
 	if err != nil || len(tNext.Messages) != 4 || tNext.Messages[2].Content != "b3" || tNext.Messages[3].Content != "b4" || plug.appendCalls.Load() != 2 {
 		t.Fatalf("subsequent delta should read b4 without duplicates: msgs=%+v append=%d err=%v", tNext.Messages, plug.appendCalls.Load(), err)
 	}
-
-	f, _ = os.OpenFile(pathB, os.O_WRONLY|os.O_APPEND, 0o600)
-	_, _ = f.WriteString("partial-line")
-	_ = f.Close()
-	t5Time := t4Time.Add(2 * time.Second)
-	_ = os.Chtimes(pathB, t5Time, t5Time)
-	if _, ok := srv.getCachedTranscript("bounded-inc", "n1", tmpDir); ok || plug.appendCalls.Load() != 2 {
-		t.Fatalf("unterminated trailing line must not run incremental append")
+	appendTouch("partial", true)
+	if tMid, err := srv.ExtractTranscript("bounded-inc", "n1", tmpDir); err != nil || len(tMid.Messages) != 4 || plug.appendCalls.Load() != 2 {
+		t.Fatalf("mid-line ExtractTranscript must skip incomplete line: msgs=%+v append=%d err=%v", tMid.Messages, plug.appendCalls.Load(), err)
+	}
+	appendTouch("-done\n", true)
+	if tDone, err := srv.ExtractTranscript("bounded-inc", "n1", tmpDir); err != nil || len(tDone.Messages) != 5 || tDone.Messages[4].Content != "partial-done" || plug.appendCalls.Load() != 2 {
+		t.Fatalf("completed line after mid-line cache must not split/drop prefix: msgs=%+v append=%d err=%v", tDone.Messages, plug.appendCalls.Load(), err)
 	}
 }
 
-type autoDefaultPermPlugin struct {
-	mockPersistentPlugin
-}
+type autoDefaultPermPlugin struct{ mockPersistentPlugin }
 
 func (p *autoDefaultPermPlugin) DefaultPermissionMode() string { return "auto" }
 
@@ -156,14 +158,13 @@ func (errTurnCompleteParser) ParseStreamLine(line []byte) ([]agent.ChatStreamEve
 	if json.Unmarshal(line, &m) != nil {
 		return nil, false, nil
 	}
-	if m["kind"] == "fatal_done" {
+	switch m["kind"] {
+	case "fatal_done":
 		return []agent.ChatStreamEvent{{SessionID: "s1", TurnID: "t1", Type: "turn_complete", Text: m["msg"], IsError: true}}, true, nil
-	}
-	if m["kind"] == "err_then_empty_done" {
-		return []agent.ChatStreamEvent{
-			{SessionID: "s1", TurnID: "t1", Type: "error", Text: m["msg"], IsError: true},
-			{SessionID: "s1", TurnID: "t1", Type: "turn_complete", IsError: true},
-		}, true, nil
+	case "err_then_empty_done":
+		return []agent.ChatStreamEvent{{SessionID: "s1", TurnID: "t1", Type: "error", Text: m["msg"], IsError: true}, {SessionID: "s1", TurnID: "t1", Type: "turn_complete", IsError: true}}, true, nil
+	case "err_then_same_done":
+		return []agent.ChatStreamEvent{{SessionID: "s1", TurnID: "t1", Type: "error", Text: m["msg"], IsError: true}, {SessionID: "s1", TurnID: "t1", Type: "turn_complete", Text: m["msg"], IsError: true}}, true, nil
 	}
 	return nil, false, nil
 }
@@ -211,21 +212,19 @@ func TestWave45ReviewFixes_PermDefaultsErrorSpoolModelAdoptAndAuthGuard(t *testi
 	if s3, _ := db.GetSession(sessID); s3 == nil || s3.PermissionMode != "auto" {
 		t.Fatalf("respond plan approval permission_mode = %+v, want 'auto'", s3)
 	}
-	var emitted []ChatStreamEvent
-	_, res, hadErr := parseHeadlessStream("s1", strings.NewReader(`{"kind":"fatal_done","msg":"API key invalid"}`+"\n"), streamParseHooks{
-		emitTurnComplete: false, streamParser: errTurnCompleteParser{},
-		emit: func(e ChatStreamEvent) { emitted = append(emitted, e) },
-	})
-	if !hadErr || res != "API key invalid" || len(emitted) != 1 || emitted[0].Type != "error" || emitted[0].Text != "API key invalid" {
-		t.Fatalf("turn_complete IsError spool mismatch: hadErr=%v res=%q emitted=%+v", hadErr, res, emitted)
+	runErrParse := func(line string) ([]ChatStreamEvent, string, string, bool) {
+		var emitted []ChatStreamEvent
+		lt, res, had := parseHeadlessStream("s1", strings.NewReader(line+"\n"), streamParseHooks{emitTurnComplete: false, streamParser: errTurnCompleteParser{}, emit: func(e ChatStreamEvent) { emitted = append(emitted, e) }})
+		return emitted, lt, res, had
 	}
-	emitted = nil
-	parseHeadlessStream("s1", strings.NewReader(`{"kind":"err_then_empty_done","msg":"rate fault"}`+"\n"), streamParseHooks{
-		emitTurnComplete: false, streamParser: errTurnCompleteParser{},
-		emit: func(e ChatStreamEvent) { emitted = append(emitted, e) },
-	})
-	if len(emitted) != 1 || emitted[0].Text != "rate fault" {
-		t.Fatalf("expected single error event without duplicate on empty turn_complete: %+v", emitted)
+	if em, _, res, had := runErrParse(`{"kind":"fatal_done","msg":"API key invalid"}`); !had || res != "API key invalid" || len(em) != 1 || em[0].Type != "error" || em[0].Text != "API key invalid" {
+		t.Fatalf("turn_complete IsError spool mismatch: had=%v res=%q em=%+v", had, res, em)
+	}
+	if em, _, _, _ := runErrParse(`{"kind":"err_then_empty_done","msg":"rate fault"}`); len(em) != 1 || em[0].Text != "rate fault" {
+		t.Fatalf("expected single error event on empty turn_complete: %+v", em)
+	}
+	if em, lt, _, _ := runErrParse(`{"kind":"err_then_same_done","msg":"401 Unauthorized"}`); len(em) != 1 || strings.Count(lt, "401 Unauthorized") != 1 {
+		t.Fatalf("expected deduplicated error on matching turn_complete: em=%+v lt=%q", em, lt)
 	}
 	preSess := &Session{ID: "mock-persist-agy:local:pre1", Agent: "mock-persist-agy", Host: "local", NativeID: "pre1", Cwd: tmpDir, EngineType: EngineHeadless, State: StateWorking}
 	_ = db.SaveSession(preSess)

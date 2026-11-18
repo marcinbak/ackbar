@@ -209,23 +209,27 @@ func dispatchPluginStreamLine(
 			if hooks.onTurnContent != nil {
 				hooks.onTurnContent()
 			}
+			priorHadErr := *streamHadError
+			priorText := lastTextBuilder.String()
 			if ev.IsError {
 				*streamHadError = true
 			}
+			trimmedEvText := strings.TrimSpace(ev.Text)
+			alreadyInPrior := trimmedEvText != "" && strings.Contains(priorText, trimmedEvText)
 			if ev.Text != "" {
 				*resultText = ev.Text
 				if lastTextBuilder.Len() == 0 {
 					lastTextBuilder.WriteString(ev.Text)
-				} else {
+				} else if !alreadyInPrior {
 					lastTextBuilder.WriteString("\n" + ev.Text)
 				}
 			} else {
-				*resultText = lastTextBuilder.String()
+				*resultText = priorText
 			}
 			if hooks.emitTurnComplete && hooks.emit != nil {
 				ev.Text = *resultText
 				hooks.emit(ev)
-			} else if ev.IsError && !hooks.emitTurnComplete && hooks.emit != nil && ev.Text != "" {
+			} else if ev.IsError && !hooks.emitTurnComplete && hooks.emit != nil && ev.Text != "" && !(priorHadErr && alreadyInPrior) {
 				hooks.emit(ChatStreamEvent{
 					SessionID: ev.SessionID,
 					TurnID:    ev.TurnID,
