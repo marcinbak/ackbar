@@ -1634,11 +1634,15 @@ func (h *HeadlessRunner) processStreamCore(sessionID string, r io.Reader, prompt
 			h.handleAntigravityInit(sess, convID, prompt)
 		},
 		onModelDetected: func(m string) {
-			agent := ""
+			agentName := ""
+			targetID := sessionID
 			if sess != nil {
-				agent = sess.Agent
+				agentName = sess.Agent
+				if sess.ID != "" {
+					targetID = sess.ID
+				}
 			}
-			h.SetRuntimeModel(sessionID, agent, m)
+			h.SetRuntimeModel(targetID, agentName, m)
 		},
 		onSystemInit: func() {
 			if sess != nil && prompt != "" {

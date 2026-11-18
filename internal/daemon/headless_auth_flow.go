@@ -144,23 +144,27 @@ func resolveAllowlistedAuthCommandWithRegistry(reg *agent.Registry, sess *Sessio
 						matchesSess = true
 					}
 				}
-				if matchesSess {
-					if ci, ok := reg.AsCLIInspector(p.Key()); ok {
-						if subArgs, ok := ci.InspectSubcommandArgs("auth_login"); ok && len(subArgs) > 0 {
-							if hd, ok := reg.AsHeadlessDriver(p.Key()); ok {
-								bin, err := hd.ResolveBinary()
-								if err != nil {
-									return nil, "", false, err
-								}
-								argv := append([]string{bin}, subArgs...)
-								return argv, "", true, nil
+				if !matchesSess {
+					return nil, "", false, fmt.Errorf("auth target %s does not match session agent %s", target, sess.Agent)
+				}
+				if ci, ok := reg.AsCLIInspector(p.Key()); ok {
+					if subArgs, ok := ci.InspectSubcommandArgs("auth_login"); ok && len(subArgs) > 0 {
+						if hd, ok := reg.AsHeadlessDriver(p.Key()); ok {
+							bin, err := hd.ResolveBinary()
+							if err != nil {
+								return nil, "", false, err
 							}
+							argv := append([]string{bin}, subArgs...)
+							return argv, "", true, nil
 						}
 					}
 				}
 			}
 		}
 		if target == "agent:agy" {
+			if sess != nil && sess.Agent != "" && !strings.EqualFold(sess.Agent, "antigravity") && !strings.EqualFold(sess.Agent, "agy") {
+				return nil, "", false, fmt.Errorf("auth target %s does not match session agent %s", target, sess.Agent)
+			}
 			bin, err := resolveAntigravityBinary()
 			if err != nil {
 				return nil, "", false, err

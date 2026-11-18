@@ -322,11 +322,13 @@ func (s *Server) getCachedTranscript(agent, nativeID, cwd string) ([]TranscriptM
 	cachedMsgs := entry.messages
 	s.transcriptCacheMu.RUnlock()
 
+	var curPath string
 	var curSize, curModTime int64
 	var err error
 	if st, ok := s.PluginRegistry().AsTranscriptStatter(agent); ok {
-		_, curSize, curModTime, err = st.StatTranscript(s.effectiveHomeDir(), cwd, nativeID)
+		curPath, curSize, curModTime, err = st.StatTranscript(s.effectiveHomeDir(), cwd, nativeID)
 	} else {
+		curPath = filePath
 		curSize, curModTime, err = statTranscriptFile(agent, filePath)
 	}
 	if err != nil {
@@ -336,7 +338,7 @@ func (s *Server) getCachedTranscript(agent, nativeID, cwd string) ([]TranscriptM
 		return nil, false
 	}
 
-	if curSize == entrySize && curModTime == entryModTime {
+	if curPath == filePath && curSize == entrySize && curModTime == entryModTime {
 		return cloneTranscriptMessages(cachedMsgs), true
 	}
 
@@ -349,34 +351,39 @@ func (s *Server) getCachedTranscript(agent, nativeID, cwd string) ([]TranscriptM
 		}
 	}
 
-	if appendFn != nil && curSize > entrySize && entrySize > 0 {
+	if appendFn != nil && curPath == filePath && curSize > entrySize && entrySize > 0 {
 		f, ferr := openRegularFile(filePath)
 		if ferr == nil {
 			defer f.Close()
-			var head [128]byte
-			n, rerr := io.ReadFull(f, head[:])
-			if rerr == nil && n == 128 && entryHasHead && head == entryHead {
-				if _, serr := f.Seek(entrySize, io.SeekStart); serr == nil {
-					updatedMsgs, perr := appendFn(f, cloneTranscriptMessages(cachedMsgs))
-					if perr == nil && len(updatedMsgs) >= len(cachedMsgs) {
-						storedMsgs := cloneTranscriptMessages(updatedMsgs)
-						newEntry := &transcriptCacheEntry{
-							agent:           agent,
-							nativeID:        nativeID,
-							cwd:             cwd,
-							filePath:        filePath,
-							fileSize:        curSize,
-							modTimeUnixNano: curModTime,
-							header128:       entryHead,
-							hasHeader:       entryHasHead,
-							messages:        storedMsgs,
-							cachedAt:        time.Now(),
-						}
-						s.transcriptCacheMu.Lock()
-						s.transcriptCache[key] = newEntry
-						s.transcriptCacheMu.Unlock()
+			if fStat, stErr := f.Stat(); stErr == nil && fStat.Size() >= curSize {
+				var head [128]byte
+				n, rerr := io.ReadFull(f, head[:])
+				var endByte [1]byte
+				_, endErr := f.ReadAt(endByte[:], curSize-1)
+				if rerr == nil && n == 128 && entryHasHead && head == entryHead && endErr == nil && endByte[0] == '\n' {
+					if _, serr := f.Seek(entrySize, io.SeekStart); serr == nil {
+						deltaReader := io.LimitReader(f, curSize-entrySize)
+						updatedMsgs, perr := appendFn(deltaReader, cloneTranscriptMessages(cachedMsgs))
+						if perr == nil && len(updatedMsgs) >= len(cachedMsgs) {
+							storedMsgs := cloneTranscriptMessages(updatedMsgs)
+							newEntry := &transcriptCacheEntry{
+								agent:           agent,
+								nativeID:        nativeID,
+								cwd:             cwd,
+								filePath:        filePath,
+								fileSize:        curSize,
+								modTimeUnixNano: curModTime,
+								header128:       entryHead,
+								hasHeader:       entryHasHead,
+								messages:        storedMsgs,
+								cachedAt:        time.Now(),
+							}
+							s.transcriptCacheMu.Lock()
+							s.transcriptCache[key] = newEntry
+							s.transcriptCacheMu.Unlock()
 
-						return cloneTranscriptMessages(storedMsgs), true
+							return cloneTranscriptMessages(storedMsgs), true
+						}
 					}
 				}
 			}

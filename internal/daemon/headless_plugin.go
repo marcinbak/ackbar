@@ -225,6 +225,14 @@ func dispatchPluginStreamLine(
 			if hooks.emitTurnComplete && hooks.emit != nil {
 				ev.Text = *resultText
 				hooks.emit(ev)
+			} else if ev.IsError && !hooks.emitTurnComplete && hooks.emit != nil && ev.Text != "" {
+				hooks.emit(ChatStreamEvent{
+					SessionID: ev.SessionID,
+					TurnID:    ev.TurnID,
+					Type:      "error",
+					Text:      ev.Text,
+					IsError:   true,
+				})
 			}
 			turnLastText := lastTextBuilder.String()
 			turnResText := *resultText

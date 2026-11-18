@@ -1244,7 +1244,7 @@ func (s *Server) handleRespond(w http.ResponseWriter, r *http.Request) {
 			answerText = "Approve Plan"
 		}
 		if isApprovalBlock && (answerText == "Approve Plan" || strings.HasPrefix(strings.ToLower(answerText), "approve")) && sess.PermissionMode == "plan" {
-			sess.PermissionMode = defaultSessionPermissionMode(sess.Agent)
+			sess.PermissionMode = defaultSessionPermissionModeWithRegistry(s.PluginRegistry(), sess.Agent)
 		}
 
 		if s.headless != nil {
@@ -1439,7 +1439,7 @@ func (s *Server) handleSessionConfig(w http.ResponseWriter, r *http.Request, ses
 		rawPm := strings.TrimSpace(*req.PermissionMode)
 		pmLower := strings.ToLower(rawPm)
 		if pmLower == "" || pmLower == "default" {
-			sess.PermissionMode = defaultSessionPermissionMode(sess.Agent)
+			sess.PermissionMode = defaultSessionPermissionModeWithRegistry(s.PluginRegistry(), sess.Agent)
 		} else if pmLower == "bypasspermissions" {
 			sess.PermissionMode = "bypassPermissions"
 		} else if pmLower == "plan" {
@@ -1777,7 +1777,7 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		rawPm := strings.TrimSpace(req.PermissionMode)
 		pmLower := strings.ToLower(rawPm)
 		if pmLower == "" || pmLower == "default" {
-			req.PermissionMode = defaultSessionPermissionMode(req.Agent)
+			req.PermissionMode = defaultSessionPermissionModeWithRegistry(s.PluginRegistry(), req.Agent)
 		} else if pmLower == "bypasspermissions" {
 			req.PermissionMode = "bypassPermissions"
 		} else if pmLower == "plan" {
@@ -1819,6 +1819,9 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 	if req.Agent == "" {
 		http.Error(w, "Missing agent", http.StatusBadRequest)
 		return
+	}
+	if req.PermissionMode == "" {
+		req.PermissionMode = defaultSessionPermissionModeWithRegistry(s.PluginRegistry(), req.Agent)
 	}
 
 	if req.Model != "" {
