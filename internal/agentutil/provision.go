@@ -68,6 +68,9 @@ func BuildMarkdownRulesBlock(ver string) string {
 - Docs (`+"`docs/*.md`"+`): document current architecture using tables and file links; never paste large code blocks or changelog history.
 - PR bodies: max 5 bullets covering intent, blast radius, and verification gates.
 - Chat replies: report only the outcome, key decisions, and links to changed files/artifacts.
+
+### Host & Filesystem Safety
+- On macOS, never run unscoped recursive searches (`+"`find`"+`, `+"`rg`"+`, `+"`fd`"+`, `+"`mdfind`"+`) rooted at `+"`~`"+` or `+"`/Users/<user>`"+`; scope searches to the workspace, `+"`~/.claude`"+`, `+"`~/.gemini`"+`, or `+"`~/Work`"+` to prevent macOS TCC prompts on `+"`~/Pictures`"+`, `+"`~/Music`"+`, and `+"`~/Movies`"+`.
 <!-- /ackbar-rules -->`, ver)
 }
 
