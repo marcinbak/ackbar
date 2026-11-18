@@ -149,7 +149,6 @@ func (h *HeadlessRunner) recordTurnActive(sess *Session, prompt, turnID string, 
 		sess.FirstPrompt = prompt
 	}
 	sess.LastPrompt = prompt
-	monSess := cloneSessionForHeadless(sess)
 	bcastSess := cloneSessionForHeadless(sess)
 
 	h.mu.Lock()
@@ -157,7 +156,7 @@ func (h *HeadlessRunner) recordTurnActive(sess *Session, prompt, turnID string, 
 	if turnID != "" {
 		h.monitoredTurns[turnID] = true
 	}
-	h.activeSessions[sess.ID] = monSess
+	h.activeSessions[sess.ID] = sess
 	if prev := h.sessionSpools[sess.ID]; prev != nil && prev.TurnID != "" && prev.TurnID != turnID && !prev.FinalizedByDaemon {
 		h.supersededTurns[prev.TurnID] = true
 	}
@@ -178,7 +177,7 @@ func (h *HeadlessRunner) recordTurnActive(sess *Session, prompt, turnID string, 
 		h.broadcast(bcastSess)
 	}
 	h.Emit(sess.ID, startEvt)
-	go h.monitorWorkerTurn(monSess, monSess.ID, meta, trackedCmd, startEvt.Seq)
+	go h.monitorWorkerTurn(sess, sess.ID, meta, trackedCmd, startEvt.Seq)
 }
 
 func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt string) error {

@@ -168,7 +168,7 @@ read -r ctrl; echo "$ctrl" >> "`+stdinLog+`"; echo '{"type":"mock_delta","text":
 	}
 	sessID := sess.ID
 	loadSess := func() *Session { s, _ := db.GetSession(sessID); return s }
-	if err := srv.headless.RunTurn(context.Background(), sess, "first"); err != nil {
+	if err := srv.headless.RunTurn(context.Background(), loadSess(), "first"); err != nil {
 		t.Fatalf("RunTurn 1: %v", err)
 	}
 	waitForWorkerCond(t, 5*time.Second, "turn 1 idle", func() bool { return !srv.headless.IsRunning(sessID) })
@@ -177,7 +177,7 @@ read -r ctrl; echo "$ctrl" >> "`+stdinLog+`"; echo '{"type":"mock_delta","text":
 	cur.Model = "v2"
 	_ = db.SaveSession(cur)
 	srv.headless.NotifyConfigChanged(cur)
-	if pidAfter := warmHandlePID(srv, cur); pidBefore <= 1 || pidAfter != pidBefore {
+	if pidAfter := warmHandlePID(srv, loadSess()); pidBefore <= 1 || pidAfter != pidBefore {
 		t.Fatalf("expected live set_model without child restart: %d -> %d", pidBefore, pidAfter)
 	}
 	if err := srv.headless.RunTurn(context.Background(), loadSess(), "second"); err != nil {
@@ -195,7 +195,7 @@ read -r ctrl; echo "$ctrl" >> "`+stdinLog+`"; echo '{"type":"mock_delta","text":
 	if snap := srv.headless.GetInFlightTurnSnapshot(cur, cur.ID, cur.NativeID, cur.Agent); snap == nil || snap.AssistantText != "turn2-clean" {
 		t.Fatalf("expected isolated turn 2 output, got %+v", snap)
 	}
-	_ = srv.headless.RunTurn(context.Background(), cur, "third")
+	_ = srv.headless.RunTurn(context.Background(), loadSess(), "third")
 	waitForWorkerCond(t, 5*time.Second, "turn 3 active", func() bool { return srv.headless.IsRunning(sessID) })
 	_ = srv.headless.CancelTurn(sessID)
 	waitForWorkerCond(t, 5*time.Second, "turn 3 cancelled", func() bool { return !srv.headless.IsRunning(sessID) })
@@ -217,25 +217,26 @@ while IFS= read -r line; do echo "IN:$line" >> "`+stdinLog+`"; echo '{"event":"c
 		t.Fatalf("auth_login alias mismatch: argv=%v err=%v", argv, err)
 	}
 	origID, adoptedID := sess.ID, "mock-persist-agy:local:conv-adopted-7"
-	if err := srv.headless.RunTurn(context.Background(), sess, "hello-sup"); err != nil {
+	loadAgy := func(id string) *Session { s, _ := db.GetSession(id); return s }
+	t1Sess := loadAgy(origID)
+	if err := srv.headless.RunTurn(context.Background(), t1Sess, "hello-sup"); err != nil {
 		t.Fatalf("RunTurn 1: %v", err)
 	}
 	waitForWorkerCond(t, 5*time.Second, "agy turn 1 adopted idle", func() bool {
-		cur, _ := db.GetSession(adoptedID)
+		cur := loadAgy(adoptedID)
 		return !srv.headless.IsRunning(origID) && !srv.headless.IsRunning(adoptedID) && cur != nil && cur.State == StateIdle
 	})
-	sess, _ = db.GetSession(adoptedID)
-	if got := srv.headless.GetRuntimeModel(adoptedID); got != "agy-pro-1" {
-		t.Fatalf("GetRuntimeModel = %q, want agy-pro-1", got)
+	if t1Sess.ID != adoptedID || srv.headless.GetRuntimeModel(adoptedID) != "agy-pro-1" {
+		t.Fatalf("adopted ID/model = (%q, %q)", t1Sess.ID, srv.headless.GetRuntimeModel(adoptedID))
 	}
-	_ = srv.headless.RunTurn(context.Background(), sess, "followup")
+	_ = srv.headless.RunTurn(context.Background(), loadAgy(adoptedID), "followup")
 	waitForWorkerCond(t, 5*time.Second, "agy turn 2 idle", func() bool { return !srv.headless.IsRunning(adoptedID) })
-	sess, _ = db.GetSession(adoptedID)
-	pid1 := warmHandlePID(srv, sess)
-	sess.Model = "m2"
-	_ = db.SaveSession(sess)
-	srv.headless.NotifyConfigChanged(sess)
-	if pid2 := warmHandlePID(srv, sess); pid1 <= 1 || pid2 <= 1 || pid1 == pid2 {
+	cfgSess := loadAgy(adoptedID)
+	pid1 := warmHandlePID(srv, cfgSess)
+	cfgSess.Model = "m2"
+	_ = db.SaveSession(cfgSess)
+	srv.headless.NotifyConfigChanged(cfgSess)
+	if pid2 := warmHandlePID(srv, loadAgy(adoptedID)); pid1 <= 1 || pid2 <= 1 || pid1 == pid2 {
 		t.Fatalf("expected child restart on model change: %d -> %d", pid1, pid2)
 	}
 	waitForWorkerCond(t, 2*time.Second, "restarted child logged m2 args", func() bool {
