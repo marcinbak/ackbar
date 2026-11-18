@@ -1,6 +1,8 @@
 package agentutil
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -135,4 +137,71 @@ func InstallEmbeddedSkill(targetSkillDir string) error {
 		}
 	}
 	return nil
+}
+
+func UpsertJSONMCPServer(configPath, serverName string, serverConfig map[string]any) error {
+	targetPath := configPath
+	if resolved, err := filepath.EvalSymlinks(configPath); err == nil {
+		targetPath = resolved
+	}
+
+	var root map[string]any
+	if data, err := os.ReadFile(targetPath); err == nil {
+		if len(bytes.TrimSpace(data)) > 0 {
+			if err := json.Unmarshal(data, &root); err != nil {
+				return fmt.Errorf("existing configuration %s contains malformed JSON, aborting to prevent data loss: %w", targetPath, err)
+			}
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("failed to read existing config %s: %w", targetPath, err)
+	}
+
+	if root == nil {
+		root = make(map[string]any)
+	}
+
+	mcpServers, ok := root["mcpServers"].(map[string]any)
+	if !ok || mcpServers == nil {
+		mcpServers = make(map[string]any)
+		root["mcpServers"] = mcpServers
+	}
+	mcpServers[serverName] = serverConfig
+
+	parentDir := filepath.Dir(targetPath)
+	if err := os.MkdirAll(parentDir, 0o700); err != nil {
+		return fmt.Errorf("failed to create directory %s: %w", parentDir, err)
+	}
+
+	updatedData, err := json.MarshalIndent(root, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to serialize MCP config: %w", err)
+	}
+	updatedData = append(updatedData, '\n')
+
+	if err := WriteFileAtomic(targetPath, updatedData, 0o600); err != nil {
+		return fmt.Errorf("failed to atomically update MCP config %s: %w", targetPath, err)
+	}
+	return nil
+}
+
+func InspectJSONMCPServer(cfgData []byte, serverName string) (installed bool, command string) {
+	var root map[string]any
+	if err := json.Unmarshal(cfgData, &root); err != nil || root == nil {
+		return false, ""
+	}
+	mcpServers, ok := root["mcpServers"].(map[string]any)
+	if !ok {
+		return false, ""
+	}
+	entry, ok := mcpServers[serverName].(map[string]any)
+	if !ok {
+		return false, ""
+	}
+	cmd, _ := entry["command"].(string)
+	argsList, _ := entry["args"].([]any)
+	var argsStr []string
+	for _, a := range argsList {
+		argsStr = append(argsStr, fmt.Sprint(a))
+	}
+	return true, strings.TrimSpace(cmd + " " + strings.Join(argsStr, " "))
 }

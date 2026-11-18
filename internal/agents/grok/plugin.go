@@ -21,6 +21,7 @@ type Plugin struct {
 var (
 	_ agent.Plugin                   = (*Plugin)(nil)
 	_ agent.Branding                 = (*Plugin)(nil)
+	_ agent.InstallationDetector     = (*Plugin)(nil)
 	_ agent.Provisioner              = (*Plugin)(nil)
 	_ agent.Accounts                 = (*Plugin)(nil)
 	_ agent.TMuxDriver               = (*Plugin)(nil)

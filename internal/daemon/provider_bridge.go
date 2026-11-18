@@ -33,6 +33,14 @@ func (b *PluginBridge) fallback() defaultAgentAdapter {
 	return defaultAgentAdapter{agent: b.plugin.Key()}
 }
 
+func (b *PluginBridge) installationDetector() (agent.InstallationDetector, bool) {
+	if b.registry != nil {
+		return b.registry.AsInstallationDetector(b.plugin.Key())
+	}
+	f, ok := b.plugin.(agent.InstallationDetector)
+	return f, ok
+}
+
 func (b *PluginBridge) provisioner() (agent.Provisioner, bool) {
 	if b.registry != nil {
 		return b.registry.AsProvisioner(b.plugin.Key())
@@ -108,9 +116,8 @@ func (b *PluginBridge) IconSVG() string {
 }
 
 func (b *PluginBridge) IsInstalled() bool {
-	if prov, ok := b.provisioner(); ok {
-		home, _ := os.UserHomeDir()
-		return prov.IsInstalled(home)
+	if det, ok := b.installationDetector(); ok {
+		return det.IsInstalled(b.server.effectiveHomeDir())
 	}
 	for _, bin := range b.plugin.BinaryNames() {
 		if _, err := agentutil.LookPathInStandardDirs(bin); err == nil {
@@ -165,14 +172,14 @@ func (b *PluginBridge) GetResumeCommand(nativeID string) string {
 
 func (b *PluginBridge) ReadSessionMetadata(cwd, nativeID string) *SessionMeta {
 	if tr, ok := b.transcripts(); ok {
-		return tr.ReadSessionMetadata(cwd, nativeID)
+		return tr.ReadSessionMetadata(b.server.effectiveHomeDir(), cwd, nativeID)
 	}
 	return nil
 }
 
 func (b *PluginBridge) ResolveSessionTitle(cwd, nativeID string) string {
 	if tr, ok := b.transcripts(); ok {
-		return tr.ResolveSessionTitle(cwd, nativeID)
+		return tr.ResolveSessionTitle(b.server.effectiveHomeDir(), cwd, nativeID)
 	}
 	return ""
 }

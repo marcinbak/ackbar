@@ -75,12 +75,18 @@ func parseGrokToolInput(raw map[string]interface{}) interface{} {
 	return nil
 }
 
-func (*Plugin) ReadSessionMetadata(cwd, nativeID string) *agent.SessionMeta {
-	return ReadSessionMetadataForHome(agentutil.RealUserHome(), cwd, nativeID)
+func (*Plugin) ReadSessionMetadata(homeDir, cwd, nativeID string) *agent.SessionMeta {
+	if homeDir == "" {
+		homeDir = agentutil.RealUserHome()
+	}
+	return ReadSessionMetadataForHome(homeDir, cwd, nativeID)
 }
 
-func (*Plugin) ResolveSessionTitle(cwd, nativeID string) string {
-	if meta := ReadSessionMetadataForHome(agentutil.RealUserHome(), cwd, nativeID); meta != nil && meta.Title != "" {
+func (*Plugin) ResolveSessionTitle(homeDir, cwd, nativeID string) string {
+	if homeDir == "" {
+		homeDir = agentutil.RealUserHome()
+	}
+	if meta := ReadSessionMetadataForHome(homeDir, cwd, nativeID); meta != nil && meta.Title != "" {
 		return meta.Title
 	}
 	return ""

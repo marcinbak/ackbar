@@ -16,9 +16,14 @@ func (BasePlugin) BinaryNames() []string { return nil }
 func (BasePlugin) BrandColor() string    { return "" }
 func (BasePlugin) IconSVG() string       { return "" }
 
-type BaseProvisioner struct{}
+type BaseInstallationDetector struct{}
 
-func (BaseProvisioner) IsInstalled(homeDir string) bool { return false }
+func (BaseInstallationDetector) IsInstalled(homeDir string) bool { return false }
+
+type BaseProvisioner struct {
+	BaseInstallationDetector
+}
+
 func (BaseProvisioner) CheckStatus(ctx context.Context, homeDir string) AgentStatus {
 	return AgentStatus{}
 }
@@ -26,6 +31,8 @@ func (BaseProvisioner) InstallHooks(homeDir string) error                   { re
 func (BaseProvisioner) Provision(ctx context.Context, homeDir string) error { return nil }
 
 type BaseAccounts struct{}
+
+func (BaseAccounts) APIKeyEnvVar() string { return "" }
 
 func (BaseAccounts) AccountEnvVars(homeDir string, acct *AgentAccount) map[string]string {
 	if acct == nil {
@@ -86,8 +93,8 @@ func (BaseHooks) ResolveSubagentParent(homeDir, nativeID string) (string, string
 
 type BaseTranscripts struct{}
 
-func (BaseTranscripts) ReadSessionMetadata(cwd, nativeID string) *SessionMeta { return nil }
-func (BaseTranscripts) ResolveSessionTitle(cwd, nativeID string) string       { return "" }
+func (BaseTranscripts) ReadSessionMetadata(homeDir, cwd, nativeID string) *SessionMeta { return nil }
+func (BaseTranscripts) ResolveSessionTitle(homeDir, cwd, nativeID string) string       { return "" }
 func (BaseTranscripts) ExtractTranscript(homeDir, cwd, nativeID string) (*Transcript, error) {
 	return nil, nil
 }

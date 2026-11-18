@@ -19,6 +19,8 @@ var ignoredSubcommands = map[string]bool{
 	"worker": true, "agent": true,
 }
 
+func (*Plugin) APIKeyEnvVar() string { return "XAI_API_KEY" }
+
 func (*Plugin) SetupProfileDir(homeDir, name, configDir string) (string, error) {
 	if configDir == "" {
 		configDir = filepath.Join(homeDir, ".grok-profiles", name)

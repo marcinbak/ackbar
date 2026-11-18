@@ -202,3 +202,74 @@ func TestTOMLAndProvisionHelpers(t *testing.T) {
 		t.Fatalf("expected stamped SKILL.md, err=%v", err)
 	}
 }
+
+func TestJSONMCPHelpers(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "nested", "config.json")
+	if err := UpsertJSONMCPServer(cfgPath, "ackbar", map[string]any{
+		"command": "ackbar",
+		"args":    []string{"mcp"},
+	}); err != nil {
+		t.Fatalf("UpsertJSONMCPServer create: %v", err)
+	}
+	fi, err := os.Stat(cfgPath)
+	if err != nil || fi.Mode().Perm() != 0o600 {
+		t.Fatalf("config stat/perm = (%v, %o), want 0600", err, fi.Mode().Perm())
+	}
+
+	raw, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if installed, cmd := InspectJSONMCPServer(raw, "ackbar"); !installed || cmd != "ackbar mcp" {
+		t.Fatalf("InspectJSONMCPServer = (%v, %q), want (true, 'ackbar mcp')", installed, cmd)
+	}
+
+	// Preserve existing servers on subsequent upsert and test symlink resolution.
+	linkPath := filepath.Join(dir, "link.json")
+	if err := os.Symlink(cfgPath, linkPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := UpsertJSONMCPServer(linkPath, "other", map[string]any{"command": "other"}); err != nil {
+		t.Fatalf("UpsertJSONMCPServer symlink: %v", err)
+	}
+	if lfi, err := os.Lstat(linkPath); err != nil || lfi.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("expected symlink preserved, err=%v", err)
+	}
+	raw2, _ := os.ReadFile(cfgPath)
+	if installed, _ := InspectJSONMCPServer(raw2, "ackbar"); !installed {
+		t.Error("expected ackbar preserved after second upsert")
+	}
+	if installed, cmd := InspectJSONMCPServer(raw2, "other"); !installed || cmd != "other" {
+		t.Errorf("InspectJSONMCPServer other = (%v, %q)", installed, cmd)
+	}
+
+	// Null JSON root handling.
+	nullPath := filepath.Join(dir, "null.json")
+	_ = os.WriteFile(nullPath, []byte("null"), 0o600)
+	if err := UpsertJSONMCPServer(nullPath, "ackbar", map[string]any{"command": "ackbar"}); err != nil {
+		t.Fatalf("UpsertJSONMCPServer null root: %v", err)
+	}
+	nullData, _ := os.ReadFile(nullPath)
+	if installed, _ := InspectJSONMCPServer(nullData, "ackbar"); !installed {
+		t.Error("expected ackbar installed after null root upsert")
+	}
+
+	// Malformed JSON aborts without clobbering.
+	badPath := filepath.Join(dir, "bad.json")
+	badContent := []byte(`{"mcpServers": { broken`)
+	_ = os.WriteFile(badPath, badContent, 0o600)
+	if err := UpsertJSONMCPServer(badPath, "ackbar", map[string]any{"command": "ackbar"}); err == nil {
+		t.Fatal("expected error for malformed JSON")
+	}
+	gotBad, _ := os.ReadFile(badPath)
+	if string(gotBad) != string(badContent) {
+		t.Errorf("malformed file clobbered: %q", string(gotBad))
+	}
+	if installed, _ := InspectJSONMCPServer(badContent, "ackbar"); installed {
+		t.Error("expected false on malformed JSON inspect")
+	}
+	if installed, _ := InspectJSONMCPServer([]byte(`{}`), "ackbar"); installed {
+		t.Error("expected false when mcpServers missing")
+	}
+}

@@ -75,7 +75,8 @@ func (p *Plugin) BuildLaunchSpec(in agent.LaunchInput) (agent.LaunchSpec, error)
 	if len(in.Env) > 0 {
 		env = maps.Clone(in.Env)
 	}
-	if strings.TrimSpace(in.Prompt) != "" {
+	hasPrompt := strings.TrimSpace(in.Prompt) != ""
+	if hasPrompt {
 		if env == nil {
 			env = make(map[string]string)
 		}
@@ -85,10 +86,11 @@ func (p *Plugin) BuildLaunchSpec(in agent.LaunchInput) (agent.LaunchSpec, error)
 	}
 
 	return agent.LaunchSpec{
-		Command:     "grok",
-		Args:        args,
-		Env:         env,
-		CommandLine: cmd,
+		Command:         "grok",
+		Args:            args,
+		Env:             env,
+		CommandLine:     cmd,
+		PromptInCommand: hasPrompt,
 	}, nil
 }
 

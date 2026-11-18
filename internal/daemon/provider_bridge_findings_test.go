@@ -218,3 +218,39 @@ func TestApplyDiskScanResult_AdoptionGuardsAndTaskReassignment(t *testing.T) {
 		t.Fatalf("expected task worker reassigned to %q, got %+v err=%v", newID, task, err)
 	}
 }
+
+type detectOnlyBridgePlugin struct {
+	agent.BasePlugin
+	agent.BaseInstallationDetector
+	installed bool
+	gotHome   string
+}
+
+func (p *detectOnlyBridgePlugin) Key() string         { return "detect-bridge" }
+func (p *detectOnlyBridgePlugin) DisplayName() string { return "Detect Bridge" }
+func (p *detectOnlyBridgePlugin) Capabilities() agent.Capabilities {
+	return agent.Capabilities{SupportsTmux: true}
+}
+func (p *detectOnlyBridgePlugin) IsInstalled(homeDir string) bool {
+	p.gotHome = homeDir
+	return p.installed
+}
+
+func TestPluginBridge_InstallationDetectorWithoutProvisioner(t *testing.T) {
+	srv := NewServer(nil)
+	srv.homeDir = "/tmp/custom-ackbar-home"
+	plg := &detectOnlyBridgePlugin{installed: true}
+	if err := srv.RegisterPlugin(plg); err != nil {
+		t.Fatalf("RegisterPlugin: %v", err)
+	}
+	prov, ok := srv.resolveProvider("detect-bridge")
+	if !ok {
+		t.Fatal("expected resolved provider")
+	}
+	if !prov.IsInstalled() || plg.gotHome != srv.homeDir {
+		t.Fatalf("IsInstalled() = %v home=%q, want true / %q", prov.IsInstalled(), plg.gotHome, srv.homeDir)
+	}
+	if _, isProv := srv.PluginRegistry().AsProvisioner("detect-bridge"); isProv {
+		t.Fatal("detectOnlyBridgePlugin must not satisfy Provisioner")
+	}
+}

@@ -588,7 +588,7 @@ func (s *Server) updateHookSessionMetadataAndTitle(sess *Session, event *Event) 
 				}
 			}
 		} else if tr, ok := s.PluginRegistry().AsTranscript(sess.Agent); ok {
-			if meta := tr.ReadSessionMetadata(sess.Cwd, sess.NativeID); meta != nil && meta.Title != "" {
+			if meta := tr.ReadSessionMetadata(s.effectiveHomeDir(), sess.Cwd, sess.NativeID); meta != nil && meta.Title != "" {
 				sess.Name = meta.Title
 				if meta.CustomTitle != "" {
 					sess.CustomTitle = meta.CustomTitle

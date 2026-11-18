@@ -1,9 +1,7 @@
 package daemon
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -178,21 +176,7 @@ func inspectAgent(home string, def AgentDefinition) AgentStatus {
 
 	// 1. Inspect MCP config
 	if cfgData, err := os.ReadFile(configPath); err == nil {
-		var root map[string]any
-		if err := json.Unmarshal(cfgData, &root); err == nil {
-			if mcpServers, ok := root["mcpServers"].(map[string]any); ok {
-				if ackbarEntry, ok := mcpServers["ackbar"].(map[string]any); ok {
-					status.MCPInstalled = true
-					cmd, _ := ackbarEntry["command"].(string)
-					argsList, _ := ackbarEntry["args"].([]any)
-					var argsStr []string
-					for _, a := range argsList {
-						argsStr = append(argsStr, fmt.Sprint(a))
-					}
-					status.MCPCommand = strings.TrimSpace(cmd + " " + strings.Join(argsStr, " "))
-				}
-			}
-		}
+		status.MCPInstalled, status.MCPCommand = agentutil.InspectJSONMCPServer(cfgData, "ackbar")
 	}
 
 	// 2. Inspect Skill installation
@@ -341,61 +325,7 @@ func UpsertJSONMCPServer(configPath string, serverName string, serverConfig map[
 }
 
 func upsertJSONMCPServer(configPath string, serverName string, serverConfig map[string]any) error {
-	// If configPath is a symlink, resolve destination to preserve symlink
-	targetPath := configPath
-	if resolved, err := filepath.EvalSymlinks(configPath); err == nil {
-		targetPath = resolved
-	}
-
-	var root map[string]any
-	if data, err := os.ReadFile(targetPath); err == nil {
-		if len(bytes.TrimSpace(data)) > 0 {
-			if err := json.Unmarshal(data, &root); err != nil {
-				return fmt.Errorf("existing configuration %s contains malformed JSON, aborting to prevent data loss: %w", targetPath, err)
-			}
-		}
-	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("failed to read existing config %s: %w", targetPath, err)
-	}
-
-	if root == nil {
-		root = make(map[string]any)
-	}
-
-	// Ensure mcpServers exists
-	mcpServers, ok := root["mcpServers"].(map[string]any)
-	if !ok || mcpServers == nil {
-		mcpServers = make(map[string]any)
-		root["mcpServers"] = mcpServers
-	}
-
-	// Set entry
-	mcpServers[serverName] = serverConfig
-
-	// Ensure parent directory exists with restrictive permissions
-	parentDir := filepath.Dir(targetPath)
-	if err := os.MkdirAll(parentDir, 0700); err != nil {
-		return fmt.Errorf("failed to create directory %s: %w", parentDir, err)
-	}
-
-	// Format JSON nicely with 2 spaces
-	updatedData, err := json.MarshalIndent(root, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to serialize MCP config: %w", err)
-	}
-	updatedData = append(updatedData, '\n')
-
-	// Write atomically via temporary file with 0600 permissions (contains developer credentials)
-	tmpPath := targetPath + ".tmp"
-	if err := os.WriteFile(tmpPath, updatedData, 0600); err != nil {
-		return fmt.Errorf("failed to write temp MCP config %s: %w", tmpPath, err)
-	}
-	if err := os.Rename(tmpPath, targetPath); err != nil {
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("failed to atomically update MCP config %s: %w", targetPath, err)
-	}
-
-	return nil
+	return agentutil.UpsertJSONMCPServer(configPath, serverName, serverConfig)
 }
 
 func installAgentSkill(home string, def AgentDefinition) error {

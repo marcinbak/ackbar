@@ -53,8 +53,8 @@ func TestPlugin_BuildLaunchSpec(t *testing.T) {
 	if spec.CommandLine != want {
 		t.Errorf("CommandLine mismatch:\ngot:  %q\nwant: %q", spec.CommandLine, want)
 	}
-	if spec.Env["ACKBAR_INIT_PROMPT"] != "-starts-with-hyphen" {
-		t.Errorf("expected ACKBAR_INIT_PROMPT set, got %+v", spec.Env)
+	if spec.Env["ACKBAR_INIT_PROMPT"] != "-starts-with-hyphen" || !spec.PromptInCommand {
+		t.Errorf("expected ACKBAR_INIT_PROMPT and PromptInCommand=true, got %+v", spec)
 	}
 
 	unsafeSpec, _ := p.BuildLaunchSpec(agent.LaunchInput{
@@ -72,8 +72,8 @@ func TestPlugin_BuildLaunchSpec(t *testing.T) {
 		Resume:    true,
 		ExtraDirs: []string{"/path/one"},
 	})
-	if resumedSpec.CommandLine != "grok -r sess-123" {
-		t.Errorf("resumed CommandLine should omit --add-dir, got %q", resumedSpec.CommandLine)
+	if resumedSpec.CommandLine != "grok -r sess-123" || resumedSpec.PromptInCommand {
+		t.Errorf("resumed CommandLine should omit --add-dir and PromptInCommand, got %+v", resumedSpec)
 	}
 }
 
@@ -183,8 +183,8 @@ func TestPlugin_AccountsAndScanner(t *testing.T) {
 	if !p.IsAccountLoggedIn(tmpHome, &agent.AgentAccount{Env: map[string]string{"XAI_API_KEY": "k1"}}) {
 		t.Errorf("expected logged in with XAI_API_KEY")
 	}
-	if p.LoginCommand() != "grok login" {
-		t.Errorf("LoginCommand = %q", p.LoginCommand())
+	if p.LoginCommand() != "grok login" || p.APIKeyEnvVar() != "XAI_API_KEY" {
+		t.Errorf("LoginCommand=%q APIKeyEnvVar=%q", p.LoginCommand(), p.APIKeyEnvVar())
 	}
 	if !p.IsValidNativeID("sess-1") || p.IsValidNativeID("default") || p.IsValidNativeID("../bad") {
 		t.Errorf("IsValidNativeID mismatch")

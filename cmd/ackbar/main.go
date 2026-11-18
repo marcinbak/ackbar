@@ -498,12 +498,12 @@ func runAccountCmd(args []string) {
 
 		envMap := make(map[string]string)
 		if *apiKey != "" {
-			if agent == "claude-code" {
+			if accts, ok := cliPluginRegistry().AsAccounts(agent); ok && accts.APIKeyEnvVar() != "" {
+				envMap[accts.APIKeyEnvVar()] = *apiKey
+			} else if agent == "claude-code" {
 				envMap["ANTHROPIC_API_KEY"] = *apiKey
 			} else if agent == "antigravity" {
 				envMap["GEMINI_API_KEY"] = *apiKey
-			} else if agent == "grok" {
-				envMap["XAI_API_KEY"] = *apiKey
 			}
 		}
 

@@ -66,7 +66,7 @@ func TestPlugin_ResolveSessionTitleAndLegacyTranscript(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 	p := New()
 
-	if title := p.ResolveSessionTitle("/tmp", "session-123"); title != "" {
+	if title := p.ResolveSessionTitle(tmpHome, "/tmp", "session-123"); title != "" {
 		t.Errorf("expected empty title without index, got %q", title)
 	}
 	grokDir := filepath.Join(tmpHome, ".grok")
@@ -74,7 +74,7 @@ func TestPlugin_ResolveSessionTitleAndLegacyTranscript(t *testing.T) {
 	indexLines := `{"id":"session-123","title":"Add search filters"}` + "\n" +
 		`{"id":"session-123","title":"Add search filters - Updated"}` + "\n"
 	_ = os.WriteFile(filepath.Join(grokDir, "session_index.jsonl"), []byte(indexLines), 0o644)
-	if got := p.ResolveSessionTitle("/tmp", "session-123"); got != "Add search filters - Updated" {
+	if got := p.ResolveSessionTitle(tmpHome, "/tmp", "session-123"); got != "Add search filters - Updated" {
 		t.Errorf("ResolveSessionTitle = %q", got)
 	}
 
@@ -94,7 +94,7 @@ func TestPlugin_ResolveSessionTitleAndLegacyTranscript(t *testing.T) {
 	if err != nil || len(tr.Messages) != 2 || len(tr.Messages[1].ToolCalls) != 1 {
 		t.Fatalf("legacy transcript mismatch: %+v err=%v", tr, err)
 	}
-	meta := p.ReadSessionMetadata("/work", sessionID)
+	meta := p.ReadSessionMetadata(tmpHome, "/work", sessionID)
 	if meta == nil || meta.Version != "1.2.0" || meta.ContextPct != 40 || meta.FirstPrompt != "Optimize database performance" {
 		t.Fatalf("legacy meta mismatch: %+v", meta)
 	}
@@ -126,7 +126,7 @@ func TestPlugin_1077TranscriptACPAndStat(t *testing.T) {
 	if err != nil || len(tr.Messages) != 2 || tr.Messages[0].Content != "Investigate high memory usage" || tr.Messages[1].Thinking != "Analyzing heap dump..." {
 		t.Fatalf("1077 transcript mismatch: %+v err=%v", tr, err)
 	}
-	meta := p.ReadSessionMetadata(cwd, nativeID)
+	meta := p.ReadSessionMetadata("", cwd, nativeID)
 	if meta == nil || meta.Title != "Fix memory leak" || meta.GitBranch != "feat/fix-leak" || meta.ContextPct != 45 {
 		t.Fatalf("1077 meta mismatch: %+v", meta)
 	}
