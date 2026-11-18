@@ -257,11 +257,15 @@ func DownloadAndInstallForPlatform(ctx context.Context, targetVersion, goos, goa
 	if err != nil {
 		return nil, err
 	}
-	return DownloadAndInstall(ctx, rel, destDir)
+	return downloadAndInstall(ctx, rel, destDir, false)
 }
 
 // DownloadAndInstall downloads the prebuilt release tarball from GitHub and installs binaries to destDir.
 func DownloadAndInstall(ctx context.Context, release *ReleaseInfo, destDir string) (*UpdateResult, error) {
+	return downloadAndInstall(ctx, release, destDir, true)
+}
+
+func downloadAndInstall(ctx context.Context, release *ReleaseInfo, destDir string, signLocal bool) (*UpdateResult, error) {
 	if release == nil {
 		var err error
 		release, err = CheckLatestRelease(ctx, true)
@@ -323,7 +327,7 @@ func DownloadAndInstall(ctx context.Context, release *ReleaseInfo, destDir strin
 		return nil, fmt.Errorf("security verification failed: %w", err)
 	}
 
-	extracted, err := ExtractTarGz(bytes.NewReader(archiveBytes), destDir, TargetBinaries)
+	extracted, err := extractTarGz(bytes.NewReader(archiveBytes), destDir, TargetBinaries, signLocal)
 	if err != nil {
 		return nil, fmt.Errorf("failed to unpack and install binaries: %w", err)
 	}
@@ -389,6 +393,10 @@ func verifyArchiveChecksum(ctx context.Context, release *ReleaseInfo, archiveByt
 
 // ExtractTarGz extracts specified binaryNames from a gzipped tar archive into destDir atomically.
 func ExtractTarGz(r io.Reader, destDir string, binaryNames []string) ([]string, error) {
+	return extractTarGz(r, destDir, binaryNames, true)
+}
+
+func extractTarGz(r io.Reader, destDir string, binaryNames []string, signLocal bool) ([]string, error) {
 	gzr, err := gzip.NewReader(r)
 	if err != nil {
 		return nil, fmt.Errorf("invalid gzip archive: %w", err)
@@ -442,7 +450,9 @@ func ExtractTarGz(r io.Reader, destDir string, binaryNames []string) ([]string, 
 
 		// Set executable permissions
 		_ = os.Chmod(tempPath, 0755)
-		_ = CodesignBinaryFile(context.Background(), tempPath, baseName)
+		if signLocal {
+			_ = CodesignBinaryFile(context.Background(), tempPath, baseName)
+		}
 
 		// Atomic replace
 		if err := os.Rename(tempPath, destPath); err != nil {

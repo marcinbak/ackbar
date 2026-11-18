@@ -26,7 +26,7 @@ type codesignSetupRunner struct {
 	bootstrapIdentity  func(ctx context.Context, home, customIdentity string) (string, string, bool, error)
 	isKeychainUnlocked func(ctx context.Context, home string) bool
 	resolveIdentity    func(ctx context.Context, home string) (string, string, bool)
-	codesignDir        func(ctx context.Context, dir string, binaries []string)
+	codesignDirStrict  func(ctx context.Context, dir string, binaries []string, explicitSHA1 string) ([]string, error)
 	inspectReq         func(ctx context.Context, filePath string) (string, error)
 	verifySig          func(ctx context.Context, filePath string) error
 	restartDaemon      func(out io.Writer) error
@@ -34,7 +34,7 @@ type codesignSetupRunner struct {
 
 func newDefaultCodesignSetupRunner() *codesignSetupRunner {
 	home, _ := os.UserHomeDir()
-	return &codesignSetupRunner{
+	r := &codesignSetupRunner{
 		goos:               runtime.GOOS,
 		homeDir:            home,
 		homebrewOptBinDirs: []string{"/opt/homebrew/opt/ackbar/bin", "/usr/local/opt/ackbar/bin"},
@@ -42,11 +42,12 @@ func newDefaultCodesignSetupRunner() *codesignSetupRunner {
 		bootstrapIdentity:  version.BootstrapLocalCodesignIdentity,
 		isKeychainUnlocked: version.IsLoginKeychainUnlocked,
 		resolveIdentity:    version.ResolveDarwinSigningIdentity,
-		codesignDir:        version.CodesignInstalledDir,
+		codesignDirStrict:  version.CodesignInstalledDirStrict,
 		inspectReq:         version.InspectCodesignRequirement,
 		verifySig:          version.VerifyBinarySignature,
-		restartDaemon:      restartLocalDaemonAfterCodesign,
 	}
+	r.restartDaemon = r.restartLocalDaemon
+	return r
 }
 
 func runSetupCodesignCmd(args []string) {
@@ -106,6 +107,10 @@ Flags:
 		fmt.Fprintf(r.stdout, "✅ Configured signing identity %q (%s)\n", idName, sha1Hex)
 	}
 
+	if envID := strings.TrimSpace(os.Getenv("ACKBAR_CODESIGN_IDENTITY")); envID != "" && envID != idName && !strings.EqualFold(envID, sha1Hex) {
+		fmt.Fprintf(r.stdout, "⚠️ ACKBAR_CODESIGN_IDENTITY=%q is set in environment and will override %s on future updates unless unset or updated.\n", envID, version.CodesignIdentityRelPath)
+	}
+
 	dirs := r.installDirs()
 	if len(dirs) == 0 {
 		fmt.Fprintln(r.stdout, "ℹ️  No installed Ackbar binaries found in ~/.local/bin or Homebrew opt/ackbar/bin.")
@@ -113,29 +118,22 @@ Flags:
 	}
 
 	for _, dir := range dirs {
-		r.codesignDir(ctx, dir, version.TargetBinaries)
-		var signedNames []string
-		for _, binName := range version.TargetBinaries {
-			p := filepath.Join(dir, binName)
-			if info, statErr := os.Stat(p); statErr == nil && !info.IsDir() {
-				signedNames = append(signedNames, binName)
-			}
+		signedNames, err := r.codesignDirStrict(ctx, dir, version.TargetBinaries, sha1Hex)
+		if err != nil {
+			return err
 		}
-		if len(signedNames) > 0 {
-			fmt.Fprintf(r.stdout, "✅ Atomically signed binaries in %s: %s\n", dir, strings.Join(signedNames, ", "))
+		if len(signedNames) == 0 {
+			continue
 		}
+		fmt.Fprintf(r.stdout, "✅ Atomically signed binaries in %s: %s\n", dir, strings.Join(signedNames, ", "))
 
-		ackbardPath := filepath.Join(dir, "ackbard")
-		if info, statErr := os.Stat(ackbardPath); statErr == nil && !info.IsDir() {
-			reqOut, reqErr := r.inspectReq(ctx, ackbardPath)
-			if reqErr != nil {
-				return fmt.Errorf("failed to verify ackbard designated requirement (%s): %w", ackbardPath, reqErr)
+		for _, binName := range signedNames {
+			binPath := filepath.Join(dir, binName)
+			trimmedReq, verifyErr := r.verifySignedBinary(ctx, binPath)
+			if verifyErr != nil {
+				return verifyErr
 			}
-			trimmedReq := strings.TrimSpace(reqOut)
-			if strings.Contains(strings.ToLower(trimmedReq), "cdhash") {
-				return fmt.Errorf("ackbard (%s) designated requirement still pins cdhash: %s", ackbardPath, trimmedReq)
-			}
-			fmt.Fprintf(r.stdout, "✅ Verified persistent requirement (%s): %s\n", ackbardPath, trimmedReq)
+			fmt.Fprintf(r.stdout, "✅ Verified %s: %s\n", binPath, trimmedReq)
 		}
 	}
 
@@ -145,6 +143,21 @@ Flags:
 		}
 	}
 	return nil
+}
+
+func (r *codesignSetupRunner) verifySignedBinary(ctx context.Context, binPath string) (string, error) {
+	if err := r.verifySig(ctx, binPath); err != nil {
+		return "", fmt.Errorf("signature verification failed for %s: %w", binPath, err)
+	}
+	reqOut, reqErr := r.inspectReq(ctx, binPath)
+	if reqErr != nil {
+		return "", fmt.Errorf("failed to read designated requirement for %s: %w", binPath, reqErr)
+	}
+	trimmedReq := strings.TrimSpace(reqOut)
+	if strings.Contains(strings.ToLower(trimmedReq), "cdhash") {
+		return "", fmt.Errorf("binary %s is pinned to per-build cdhash (%s); run 'ackbar setup-codesign' to re-sign", binPath, trimmedReq)
+	}
+	return trimmedReq, nil
 }
 
 func (r *codesignSetupRunner) runVerify(ctx context.Context) error {
@@ -166,16 +179,9 @@ func (r *codesignSetupRunner) runVerify(ctx context.Context) error {
 			if err != nil || info.IsDir() {
 				continue
 			}
-			if err := r.verifySig(ctx, p); err != nil {
-				return fmt.Errorf("signature verification failed for %s: %w", p, err)
-			}
-			reqOut, reqErr := r.inspectReq(ctx, p)
-			if reqErr != nil {
-				return fmt.Errorf("failed to read requirement for %s: %w", p, reqErr)
-			}
-			trimmedReq := strings.TrimSpace(reqOut)
-			if strings.Contains(strings.ToLower(trimmedReq), "cdhash") {
-				return fmt.Errorf("binary %s is pinned to per-build cdhash (%s); run 'ackbar setup-codesign' to re-sign", p, trimmedReq)
+			trimmedReq, err := r.verifySignedBinary(ctx, p)
+			if err != nil {
+				return err
 			}
 			fmt.Fprintf(r.stdout, "✅ %s: %s\n", p, trimmedReq)
 			if binName == "ackbard" {
@@ -214,7 +220,25 @@ func (r *codesignSetupRunner) installDirs() []string {
 	return dirs
 }
 
-func restartLocalDaemonAfterCodesign(out io.Writer) error {
+func resolveAckbardBinary(home string, homebrewOptBinDirs []string) string {
+	var candidates []string
+	if home != "" {
+		candidates = append(candidates, filepath.Join(home, ".local", "bin", "ackbard"))
+	}
+	for _, dir := range homebrewOptBinDirs {
+		if dir != "" {
+			candidates = append(candidates, filepath.Join(dir, "ackbard"))
+		}
+	}
+	for _, cand := range candidates {
+		if info, err := os.Stat(cand); err == nil && !info.IsDir() {
+			return cand
+		}
+	}
+	return "ackbard"
+}
+
+func (r *codesignSetupRunner) restartLocalDaemon(out io.Writer) error {
 	token := localDaemonAuthToken()
 	httpClient := &http.Client{Timeout: 5 * time.Second}
 	return restartLocalDaemonAfterCodesignWith(
@@ -226,17 +250,10 @@ func restartLocalDaemonAfterCodesign(out io.Writer) error {
 			return requestDaemonDrainShutdown(httpClient, localDaemonBaseURL, token)
 		},
 		tryRestartManagedDaemonService,
-		func(runningHost, runningDisplayName string) {
-			home, _ := os.UserHomeDir()
-			ackbardBin := "ackbard"
-			if home != "" {
-				cand := filepath.Join(home, ".local", "bin", "ackbard")
-				if _, err := os.Stat(cand); err == nil {
-					ackbardBin = cand
-				}
-			}
-			args := buildDaemonRestartArgs(home, runningHost, runningDisplayName)
-			_ = exec.Command(ackbardBin, args...).Start()
+		func(runningHost, runningDisplayName string) error {
+			ackbardBin := resolveAckbardBinary(r.homeDir, r.homebrewOptBinDirs)
+			args := buildDaemonRestartArgs(r.homeDir, runningHost, runningDisplayName)
+			return exec.Command(ackbardBin, args...).Start()
 		},
 	)
 }
@@ -246,7 +263,7 @@ func restartLocalDaemonAfterCodesignWith(
 	probeFn func() (ver, host, disp string, ok bool),
 	drainFn func() (deferred, unauth bool, err error),
 	restartManagedFn func() (managed, ready bool, err error),
-	spawnFn func(runningHost, runningDisplayName string),
+	spawnFn func(runningHost, runningDisplayName string) error,
 ) error {
 	_, runningHost, runningDisplayName, ok := probeFn()
 	if !ok {
@@ -265,8 +282,7 @@ func restartLocalDaemonAfterCodesignWith(
 	time.Sleep(400 * time.Millisecond)
 	managed, ready, restartErr := restartManagedFn()
 	if !managed {
-		spawnFn(runningHost, runningDisplayName)
-		return nil
+		return spawnFn(runningHost, runningDisplayName)
 	}
 	if restartErr != nil {
 		return fmt.Errorf("managed ackbard service restart failed: %w", restartErr)

@@ -260,36 +260,13 @@ func VerifyBinarySignature(ctx context.Context, filePath string) error {
 	return nil
 }
 
-// CodesignBinaryFile signs a staged Mach-O binary on darwin with a persistent certificate-root requirement.
-func CodesignBinaryFile(ctx context.Context, filePath, binName string) error {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	hooks := currentCodesignHooks()
-	if hooks.goos != "darwin" || (hooks.runCmd == nil && isTestEnv()) {
-		return nil
-	}
+func codesignFileWithIdentity(ctx context.Context, hooks codesignRunner, filePath, binName, signArg, certSHA1 string) error {
 	if filePath == "" {
 		return fmt.Errorf("empty binary path")
 	}
 	bundleID := BundleIdentifierForBinary(binName)
 	if bundleID == "" {
 		return fmt.Errorf("invalid binary name %q for codesign identifier", binName)
-	}
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return nil
-	}
-	if !IsLoginKeychainUnlocked(ctx, home) {
-		return nil
-	}
-	identity, certSHA1, ok := ResolveDarwinSigningIdentity(ctx, home)
-	if !ok {
-		return nil
-	}
-	signArg := certSHA1
-	if signArg == "" {
-		signArg = identity
 	}
 
 	sCtx, sCancel := context.WithTimeout(ctx, 5*time.Second)
@@ -316,8 +293,8 @@ func CodesignBinaryFile(ctx context.Context, filePath, binName string) error {
 	return nil
 }
 
-// CodesignInstalledBinaryAtomic signs a copy of targetPath before replacing it so live vnodes stay valid on Apple Silicon.
-func CodesignInstalledBinaryAtomic(ctx context.Context, targetPath, binName string) error {
+// CodesignBinaryFile signs a staged Mach-O binary on darwin with a persistent certificate-root requirement.
+func CodesignBinaryFile(ctx context.Context, filePath, binName string) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -325,6 +302,31 @@ func CodesignInstalledBinaryAtomic(ctx context.Context, targetPath, binName stri
 	if hooks.goos != "darwin" || (hooks.runCmd == nil && isTestEnv()) {
 		return nil
 	}
+	if filePath == "" {
+		return fmt.Errorf("empty binary path")
+	}
+	if BundleIdentifierForBinary(binName) == "" {
+		return fmt.Errorf("invalid binary name %q for codesign identifier", binName)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return nil
+	}
+	if !IsLoginKeychainUnlocked(ctx, home) {
+		return nil
+	}
+	identity, certSHA1, ok := ResolveDarwinSigningIdentity(ctx, home)
+	if !ok {
+		return nil
+	}
+	signArg := certSHA1
+	if signArg == "" {
+		signArg = identity
+	}
+	return codesignFileWithIdentity(ctx, hooks, filePath, binName, signArg, certSHA1)
+}
+
+func copyAndReplaceBinaryAtomic(ctx context.Context, hooks codesignRunner, targetPath, binName, signArg, certSHA1 string) error {
 	if targetPath == "" {
 		return fmt.Errorf("empty binary path")
 	}
@@ -337,13 +339,6 @@ func CodesignInstalledBinaryAtomic(ctx context.Context, targetPath, binName stri
 	}
 	if BundleIdentifierForBinary(binName) == "" {
 		return fmt.Errorf("invalid binary name %q for codesign identifier", binName)
-	}
-	home, _ := os.UserHomeDir()
-	if home == "" || !IsLoginKeychainUnlocked(ctx, home) {
-		return nil
-	}
-	if _, _, ok := ResolveDarwinSigningIdentity(ctx, home); !ok {
-		return nil
 	}
 
 	src, err := os.Open(realTarget)
@@ -371,7 +366,7 @@ func CodesignInstalledBinaryAtomic(ctx context.Context, targetPath, binName stri
 		return tmpCloseErr
 	}
 
-	if err := CodesignBinaryFile(ctx, tmpPath, binName); err != nil {
+	if err := codesignFileWithIdentity(ctx, hooks, tmpPath, binName, signArg, certSHA1); err != nil {
 		_ = os.Remove(tmpPath)
 		return err
 	}
@@ -386,6 +381,58 @@ func CodesignInstalledBinaryAtomic(ctx context.Context, targetPath, binName stri
 	return nil
 }
 
+func codesignInstalledBinaryWithIdentity(ctx context.Context, targetPath, binName, signSHA1 string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	hooks := currentCodesignHooks()
+	if hooks.goos != "darwin" {
+		return fmt.Errorf("code signing is only supported on macOS (current OS: %s)", hooks.goos)
+	}
+	if hooks.runCmd == nil && isTestEnv() {
+		return fmt.Errorf("code signing disabled in test environment without mock runner")
+	}
+	if !isValidHexSHA1(signSHA1) {
+		return fmt.Errorf("invalid signing certificate SHA-1 %q", signSHA1)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return fmt.Errorf("unable to determine user home directory")
+	}
+	if !IsLoginKeychainUnlocked(ctx, home) {
+		return fmt.Errorf("login keychain is locked; unlock Keychain and re-run 'ackbar setup-codesign'")
+	}
+	upperSHA1 := strings.ToUpper(signSHA1)
+	return copyAndReplaceBinaryAtomic(ctx, hooks, targetPath, binName, upperSHA1, upperSHA1)
+}
+
+// CodesignInstalledBinaryAtomic signs a copy of targetPath before replacing it so live vnodes stay valid on Apple Silicon.
+func CodesignInstalledBinaryAtomic(ctx context.Context, targetPath, binName string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	hooks := currentCodesignHooks()
+	if hooks.goos != "darwin" || (hooks.runCmd == nil && isTestEnv()) {
+		return nil
+	}
+	if targetPath == "" {
+		return fmt.Errorf("empty binary path")
+	}
+	home, _ := os.UserHomeDir()
+	if home == "" || !IsLoginKeychainUnlocked(ctx, home) {
+		return nil
+	}
+	identity, certSHA1, ok := ResolveDarwinSigningIdentity(ctx, home)
+	if !ok {
+		return nil
+	}
+	signArg := certSHA1
+	if signArg == "" {
+		signArg = identity
+	}
+	return copyAndReplaceBinaryAtomic(ctx, hooks, targetPath, binName, signArg, certSHA1)
+}
+
 // CodesignInstalledDir atomically signs all existing Ackbar binaries inside dir on best-effort basis.
 func CodesignInstalledDir(ctx context.Context, dir string, binaries []string) {
 	if dir == "" {
@@ -397,6 +444,45 @@ func CodesignInstalledDir(ctx context.Context, dir string, binaries []string) {
 			_ = CodesignInstalledBinaryAtomic(ctx, p, binName)
 		}
 	}
+}
+
+// CodesignInstalledDirStrict atomically signs all existing binaries in dir using explicitSHA1 and returns any error.
+func CodesignInstalledDirStrict(ctx context.Context, dir string, binaries []string, explicitSHA1 string) ([]string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	hooks := currentCodesignHooks()
+	if hooks.goos != "darwin" {
+		return nil, fmt.Errorf("code signing is only supported on macOS (current OS: %s)", hooks.goos)
+	}
+	if hooks.runCmd == nil && isTestEnv() {
+		return nil, fmt.Errorf("code signing disabled in test environment without mock runner")
+	}
+	if dir == "" {
+		return nil, fmt.Errorf("empty binary directory")
+	}
+	if !isValidHexSHA1(explicitSHA1) {
+		return nil, fmt.Errorf("invalid signing certificate SHA-1 %q", explicitSHA1)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return nil, fmt.Errorf("unable to determine user home directory")
+	}
+	if !IsLoginKeychainUnlocked(ctx, home) {
+		return nil, fmt.Errorf("login keychain is locked; unlock Keychain and re-run 'ackbar setup-codesign'")
+	}
+
+	var signed []string
+	for _, binName := range binaries {
+		p := filepath.Join(dir, binName)
+		if info, statErr := os.Stat(p); statErr == nil && !info.IsDir() {
+			if err := codesignInstalledBinaryWithIdentity(ctx, p, binName, explicitSHA1); err != nil {
+				return signed, err
+			}
+			signed = append(signed, binName)
+		}
+	}
+	return signed, nil
 }
 
 func writeCodesignConfigFile(home, identity string) error {

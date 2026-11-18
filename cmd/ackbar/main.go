@@ -120,6 +120,7 @@ Usage:
 Available Commands:
   web, gui          Launch the Web GUI in your browser (default)
   setup-hooks       Auto-configure agent hooks and install binaries
+  setup-codesign    Configure persistent macOS code signing for TCC permissions
   agent, agents     Manage agent providers, MCP servers, and skills
   account, accounts Manage agent profiles and authentication accounts
   mcp               Run the Ackbar MCP server over stdio

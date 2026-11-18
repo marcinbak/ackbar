@@ -600,4 +600,105 @@ func TestUpdaterPaths_CodesignStagedBinaries(t *testing.T) {
 			t.Errorf("expected staged .sync-* path, got %q", p)
 		}
 	}
+
+	// Cross-host staging (signLocal=false) must never invoke local codesigning
+	var crossBuf bytes.Buffer
+	gw2 := gzip.NewWriter(&crossBuf)
+	tw2 := tar.NewWriter(gw2)
+	body := []byte("#!/bin/sh\n")
+	_ = tw2.WriteHeader(&tar.Header{Name: "ackbard", Mode: 0755, Size: int64(len(body))})
+	_, _ = tw2.Write(body)
+	_ = tw2.Close()
+	_ = gw2.Close()
+
+	signed = nil
+	crossDir := t.TempDir()
+	crossExtracted, err := extractTarGz(&crossBuf, crossDir, []string{"ackbard"}, false)
+	if err != nil || len(crossExtracted) != 1 {
+		t.Fatalf("extractTarGz(signLocal=false) got (%v, %v)", crossExtracted, err)
+	}
+	if len(signed) != 0 {
+		t.Fatalf("expected zero codesign invocations when signLocal=false, got %v", signed)
+	}
+}
+
+func TestCodesignInstalledDirStrict(t *testing.T) {
+	const sha = "A1B2C3D4E5F60718293A4B5C6D7E8F9012345678"
+
+	t.Run("rejects_non_darwin", func(t *testing.T) {
+		setTestCodesignHooks(t, "linux", nil)
+		if _, err := CodesignInstalledDirStrict(context.Background(), t.TempDir(), TargetBinaries, sha); err == nil {
+			t.Fatal("expected error on non-darwin")
+		}
+	})
+
+	t.Run("rejects_locked_keychain", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		kcDir := filepath.Join(home, "Library", "Keychains")
+		_ = os.MkdirAll(kcDir, 0700)
+		_ = os.WriteFile(filepath.Join(kcDir, "login.keychain-db"), []byte("kc"), 0600)
+
+		setTestCodesignHooks(t, "darwin", func(ctx context.Context, env []string, name string, args ...string) ([]byte, error) {
+			if name == "security" && args[0] == "show-keychain-info" {
+				return []byte("locked"), errors.New("exit 1")
+			}
+			return nil, nil
+		})
+		_, err := CodesignInstalledDirStrict(context.Background(), t.TempDir(), TargetBinaries, sha)
+		if err == nil || !strings.Contains(err.Error(), "login keychain is locked") {
+			t.Fatalf("expected locked keychain error, got %v", err)
+		}
+	})
+
+	t.Run("ignores_env_none_and_propagates_errors", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("ACKBAR_CODESIGN_IDENTITY", "none")
+		kcDir := filepath.Join(home, "Library", "Keychains")
+		_ = os.MkdirAll(kcDir, 0700)
+		_ = os.WriteFile(filepath.Join(kcDir, "login.keychain-db"), []byte("kc"), 0600)
+
+		binDir := t.TempDir()
+		_ = os.WriteFile(filepath.Join(binDir, "ackbar"), []byte("a"), 0755)
+		_ = os.WriteFile(filepath.Join(binDir, "ackbard"), []byte("b"), 0755)
+
+		var signArgs []string
+		setTestCodesignHooks(t, "darwin", func(ctx context.Context, env []string, name string, args ...string) ([]byte, error) {
+			if name == "security" && args[0] == "find-identity" {
+				t.Fatal("find-identity should not be consulted when explicitSHA1 is provided")
+			}
+			if name == "codesign" && args[0] == "--force" {
+				signArgs = append(signArgs, strings.Join(args, " "))
+			}
+			if name == "codesign" && args[0] == "-d" {
+				return []byte(`designated => identifier "x" and certificate root = H"` + strings.ToLower(sha) + `"`), nil
+			}
+			return nil, nil
+		})
+
+		signed, err := CodesignInstalledDirStrict(context.Background(), binDir, TargetBinaries, strings.ToLower(sha))
+		if err != nil {
+			t.Fatalf("CodesignInstalledDirStrict failed: %v", err)
+		}
+		if len(signed) != 2 || signed[0] != "ackbar" || signed[1] != "ackbard" {
+			t.Fatalf("unexpected signed slice: %v", signed)
+		}
+		for _, call := range signArgs {
+			if !strings.Contains(call, "--sign "+sha) {
+				t.Errorf("expected explicit uppercase SHA1 %s in %q", sha, call)
+			}
+		}
+
+		// Propagate codesign failure immediately
+		setTestCodesignHooks(t, "darwin", func(ctx context.Context, env []string, name string, args ...string) ([]byte, error) {
+			if name == "codesign" && args[0] == "--force" {
+				return []byte("errSecInternalComponent"), errors.New("exit 1")
+			}
+			return nil, nil
+		})
+		if _, err := CodesignInstalledDirStrict(context.Background(), binDir, TargetBinaries, sha); err == nil || !strings.Contains(err.Error(), "errSecInternalComponent") {
+			t.Fatalf("expected strict error propagation, got %v", err)
+		}
+	})
 }
