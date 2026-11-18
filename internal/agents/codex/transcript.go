@@ -31,7 +31,7 @@ func (*Plugin) HasConversationArtifacts(homeDir, nativeID string) bool {
 
 func (*Plugin) CleanSessionFiles(homeDir, cwd, nativeID string) error {
 	_ = cwd
-	if !agentutil.IsSafeSessionID(nativeID) {
+	if homeDir == "" || !agentutil.IsSafeSessionID(nativeID) {
 		return nil
 	}
 	_ = os.RemoveAll(filepath.Join(HomeDir(homeDir), "sessions", nativeID))

@@ -3,7 +3,6 @@ package daemon
 import (
 	"context"
 	"fmt"
-	"os"
 
 	"ackbar/internal/agent"
 	"ackbar/internal/agentutil"
@@ -129,8 +128,7 @@ func (b *PluginBridge) IsInstalled() bool {
 
 func (b *PluginBridge) CheckHookConfig() (bool, string, error) {
 	if h, ok := b.hooks(); ok {
-		home, _ := os.UserHomeDir()
-		return h.CheckHookConfig(home)
+		return h.CheckHookConfig(b.server.effectiveHomeDir())
 	}
 	return false, "", nil
 }

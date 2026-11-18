@@ -73,6 +73,13 @@ func TestPlugin_TitleTranscriptMetadataAndClean(t *testing.T) {
 	if _, err := os.Stat(logPath); err != nil {
 		t.Fatalf("unsafe CleanSessionFiles removed file: %v", err)
 	}
+	t.Setenv("CODEX_HOME", codexDir)
+	if err := p.CleanSessionFiles("", "/work", sessionID); err != nil {
+		t.Fatalf("empty homeDir CleanSessionFiles: %v", err)
+	}
+	if _, err := os.Stat(logPath); err != nil {
+		t.Fatalf("empty homeDir CleanSessionFiles removed file: %v", err)
+	}
 	if err := p.CleanSessionFiles(tmpHome, "/work", sessionID); err != nil {
 		t.Fatalf("CleanSessionFiles: %v", err)
 	}

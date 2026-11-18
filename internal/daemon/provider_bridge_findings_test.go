@@ -255,6 +255,56 @@ func TestPluginBridge_InstallationDetectorWithoutProvisioner(t *testing.T) {
 	}
 }
 
+type effectiveHomeBridgePlugin struct {
+	agent.BasePlugin
+	agent.BaseHooks
+	agent.BaseTranscripts
+	hookHome       string
+	transcriptHome string
+}
+
+func (p *effectiveHomeBridgePlugin) Key() string         { return "effective-home-bridge" }
+func (p *effectiveHomeBridgePlugin) DisplayName() string { return "Effective Home Bridge" }
+func (p *effectiveHomeBridgePlugin) Capabilities() agent.Capabilities {
+	return agent.Capabilities{SupportsTmux: true, SupportsTranscript: true}
+}
+func (p *effectiveHomeBridgePlugin) CheckHookConfig(homeDir string) (bool, string, error) {
+	p.hookHome = homeDir
+	return homeDir != "", "", nil
+}
+func (p *effectiveHomeBridgePlugin) ExtractTranscript(homeDir, cwd, nativeID string) (*agent.Transcript, error) {
+	p.transcriptHome = homeDir
+	return &agent.Transcript{Messages: []agent.TranscriptMessage{{Role: "assistant", Content: homeDir}}}, nil
+}
+
+func TestPluginBridge_CheckHookConfigAndExtractTranscript_HonorServerHomeDir(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	customHome := t.TempDir()
+
+	srv := NewServer(nil)
+	srv.homeDir = customHome
+	plg := &effectiveHomeBridgePlugin{}
+	if err := srv.RegisterPlugin(plg); err != nil {
+		t.Fatalf("RegisterPlugin: %v", err)
+	}
+	prov, ok := srv.resolveProvider("effective-home-bridge")
+	if !ok {
+		t.Fatal("expected resolved provider")
+	}
+	if okCfg, _, err := prov.CheckHookConfig(); err != nil || !okCfg || plg.hookHome != customHome {
+		t.Fatalf("CheckHookConfig = (%v, %v) home=%q, want (true, nil) / %q", okCfg, err, plg.hookHome, customHome)
+	}
+	tr, err := srv.ExtractTranscript("effective-home-bridge", "sess-1", "/work")
+	if err != nil || plg.transcriptHome != customHome || len(tr.Messages) != 1 || tr.Messages[0].Content != customHome {
+		t.Fatalf("ExtractTranscript = (%+v, %v) home=%q, want home=%q", tr, err, plg.transcriptHome, customHome)
+	}
+	srv.homeDir = ""
+	t.Setenv("HOME", "")
+	if _, err := srv.ExtractTranscript("effective-home-bridge", "sess-1", "/work"); err == nil {
+		t.Fatal("expected ExtractTranscript error when both Server.homeDir and HOME are empty")
+	}
+}
+
 func TestServer_CodexAndOpenCodePluginWiring(t *testing.T) {
 	srv, _ := setupTestServer(t)
 
