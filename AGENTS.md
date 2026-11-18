@@ -50,9 +50,10 @@ Detailed architectural and technical domain documentation is organized in the `d
 │   └── ackbar-relay/   # Outbound reverse WebSocket tunnel relay server entrypoint
 ├── internal/
 │   ├── agent/          # Leaf agent contract: canonical DTOs, Capabilities, plugin facets, and Registry
-│   ├── agentutil/      # Leaf helpers for fs, CLI exec, ID validation, rate-limit, and prompt parsing
+│   ├── agents/         # Standalone leaf agent plugins (grok/)
+│   ├── agentutil/      # Leaf helpers for fs, CLI exec, ID validation, TOML, provisioning, and prompt parsing
 │   ├── daemon/         # SQLite DB, modular HTTP server handlers (server_*.go), session_scanner.go, SSE streaming, OAuth broker, and agent capability adapters (agent_*.go)
-│   ├── provider/       # Agent adapters (Claude Code, Codex, Antigravity, Grok, OpenCode)
+│   ├── provider/       # Legacy agent adapters (Claude Code, Codex, Antigravity, OpenCode)
 │   ├── relay/          # Outbound reverse tunnel server and daemon client
 │   ├── testutil/       # Isolated TestMain HOME/env helper and repo-wide AST gate
 │   ├── tmux/           # Tmux process supervision wrapper (Spawn, Kill, GetPID)
