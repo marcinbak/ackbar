@@ -62,6 +62,7 @@ type workerChildGen struct {
 	done        chan struct{}
 	stderrTail  *boundedTailBuffer
 	replaced    bool
+	acp         *acpChildSession
 }
 
 func (g *workerChildGen) writeLine(sLine string) {
@@ -206,8 +207,10 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string, reg *agent.Regis
 		g.writeLine(sLine)
 	}
 
+	acpDrv, isACP := acpDriverForAgent(reg, workerMeta.Agent)
 	rt := &workerRuntime{
 		mu:                 &stateMu,
+		reg:                reg,
 		state:              &state,
 		workerMeta:         workerMeta,
 		workerMetaPath:     workerMetaPath,
@@ -216,7 +219,7 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string, reg *agent.Regis
 		idleTimer:          &idleTimer,
 		pendingControl:     &pendingControl,
 		idleTTL:            idleTTL,
-		isStdioControl:     workerMetaPath != "" && strings.EqualFold(workerMeta.Agent, "claude-code"),
+		isStdioControl:     workerMetaPath != "" && (strings.EqualFold(workerMeta.Agent, "claude-code") || isACP),
 		saveMeta:           saveWorkerMeta,
 		getChildPGIDLocked: getChildPGIDLocked,
 		writeStdin:         writeStdinLine,
@@ -300,7 +303,21 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string, reg *agent.Regis
 		exitCleanly(0)
 	}
 
+	acpDeps := buildWorkerACPDeps(rt, workerACPBridgeState{
+		rateLimitedUntil:     &rateLimitedUntil,
+		rateLimitEnteredAt:   &rateLimitEnteredAt,
+		pendingInitConvID:    &pendingInitConvID,
+		pendingDetectedModel: &pendingDetectedModel,
+		completedTurns:       completedTurns,
+		onIdleTTLExpired:     onIdleTTLExpired,
+		finalizeTurnMeta:     finalizeTurnMeta,
+		exitCleanly:          exitCleanly,
+	})
+
 	spawnChildGen := func(bin string, args []string, env []string) (*workerChildGen, error) {
+		if isACP {
+			return spawnACPChildGen(rt, reg, acpDrv, bin, args, env, workerMeta.IsExisting, workerMeta.SystemPrompt, acpDeps)
+		}
 		cmd := exec.Command(bin, args...)
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 		if len(env) > 0 {
@@ -667,10 +684,11 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string, reg *agent.Regis
 		return nil
 	}
 
-	var initialStdinLine string
+	var initialStdinLine, initialPrompt string
 	if specPath != "" {
 		if tMeta, rErr := ReadTurnSpoolMeta(specPath); rErr == nil && tMeta != nil {
-			if workerMetaPath != "" {
+			initialPrompt = tMeta.Prompt
+			if workerMetaPath != "" && !isACP {
 				isNewConv := !slices.Contains(workerMeta.Args, "--conversation")
 				initialStdinLine, _ = formatPersistentStdinTurn(workerMeta.Agent, workerMeta.SessionID, workerMeta.IsSupervisor, isNewConv, tMeta.Prompt)
 			}
@@ -725,9 +743,12 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string, reg *agent.Regis
 		activeTurn.meta.ChildPID = firstGen.pgid
 		_ = WriteTurnSpoolMeta(activeTurn.metaPath, activeTurn.meta)
 	}
+	initTurn := activeTurn
 	stateMu.Unlock()
 
-	if initialStdinLine != "" {
+	if firstGen.acp != nil && initTurn != nil && initialPrompt != "" {
+		go firstGen.acp.runPromptTurn(initTurn, initialPrompt)
+	} else if initialStdinLine != "" {
 		writeStdinLine(initialStdinLine)
 	}
 
@@ -787,6 +808,12 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string, reg *agent.Regis
 		if len(req.Args) > 0 {
 			nextArgs = req.Args
 		}
+		if req.IsExisting {
+			workerMeta.IsExisting = true
+		}
+		workerMeta.Model = normalizeACPConfigValue(req.Model)
+		workerMeta.Effort = normalizeACPConfigValue(req.Effort)
+		workerMeta.PermissionMode = strings.TrimSpace(req.PermissionMode)
 		stateMu.Unlock()
 
 		oldGen.shutdown(500 * time.Millisecond)
@@ -830,6 +857,12 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string, reg *agent.Regis
 		if req.MCPFingerprint != "" {
 			workerMeta.MCPFingerprint = req.MCPFingerprint
 		}
+		if req.ImmutableFingerprint != "" {
+			workerMeta.ImmutableFingerprint = req.ImmutableFingerprint
+		}
+		if req.IsExisting {
+			workerMeta.IsExisting = true
+		}
 		workerMeta.ChildPID = newGen.pgid
 		workerMeta.ActiveTurnID, workerMeta.ActiveMetaPath = "", ""
 		workerMeta.UpdatedAt = time.Now().UTC()
@@ -858,6 +891,9 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string, reg *agent.Regis
 		},
 		onAnswerControl: rt.handleAnswerControlIPC,
 		onWatchWorker:   func(c net.Conn) { watchHub.handleWatchIPC(c, rt) },
+	}
+	if isACP {
+		attachACPWorkerIPC(&ipcExt, rt, startTurnLocked)
 	}
 	for {
 		conn, aErr := ln.Accept()

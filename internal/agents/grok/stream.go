@@ -18,6 +18,7 @@ type streamParser struct {
 	emittedAuthBlock        bool
 	toolUses                map[string]string
 	toolInputs              map[string]map[string]any
+	acpState                agentutil.ACPStreamState
 }
 
 func (*Plugin) NewStreamParser(sessionID string) agent.StreamParser {
@@ -47,6 +48,16 @@ func (p *streamParser) ParseStreamLine(line []byte) ([]agent.ChatStreamEvent, bo
 	var raw map[string]interface{}
 	if err := json.Unmarshal([]byte(trimmed), &raw); err != nil {
 		return nil, false, nil
+	}
+
+	if rpcVer, _ := raw["jsonrpc"].(string); rpcVer == "2.0" {
+		method, _ := raw["method"].(string)
+		if method == "session/update" || method == "_x.ai/session/update" {
+			params, _ := raw["params"].(map[string]any)
+			events, _ := p.acpState.ParseACPSessionUpdate("grok", p.sessionID, params)
+			p.seenGrok = true
+			return events, true, nil
+		}
 	}
 
 	evtType, _ := raw["type"].(string)

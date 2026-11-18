@@ -35,6 +35,8 @@ var (
 	_ agent.TranscriptStatter        = (*Plugin)(nil)
 	_ agent.TranscriptUsageInspector = (*Plugin)(nil)
 	_ agent.CLIInspector             = (*Plugin)(nil)
+	_ agent.ACPDriver                = (*Plugin)(nil)
+	_ agent.CommandCatalog           = (*Plugin)(nil)
 )
 
 func New() *Plugin {
@@ -55,7 +57,7 @@ func (*Plugin) Capabilities() agent.Capabilities {
 	return agent.Capabilities{
 		SupportsTmux:             true,
 		SupportsHeadless:         true,
-		HeadlessMode:             agent.HeadlessModeOneShot,
+		HeadlessMode:             agent.HeadlessModeACP,
 		NativeIDStrategy:         agent.NativeIDEagerUUID,
 		SupportsNativeHooks:      true,
 		SupportsHookShim:         true,

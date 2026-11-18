@@ -179,6 +179,7 @@ type Session struct {
 	ResolvedModel     string    `json:"resolved_model,omitempty"`
 	Effort            string    `json:"effort,omitempty"`
 	PermissionMode    string    `json:"permission_mode,omitempty"`
+	YoloMode          bool      `json:"yolo_mode,omitempty"`
 	ExtraDirs         []string  `json:"extra_dirs,omitempty"`
 	RunningSubagents  int       `json:"running_subagents,omitempty"`
 	HostOffline       bool      `json:"host_offline,omitempty"`
@@ -235,4 +236,10 @@ type SubagentInfo struct {
 	StartedAt time.Time `json:"started_at"`
 	ToolName  string    `json:"-"`
 	Synthetic bool      `json:"-"`
+}
+
+type CommandSuggestion struct {
+	Command      string `json:"command"`
+	Description  string `json:"description,omitempty"`
+	ArgumentHint string `json:"argument_hint,omitempty"`
 }

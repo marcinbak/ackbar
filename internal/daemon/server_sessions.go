@@ -1244,7 +1244,7 @@ func (s *Server) handleRespond(w http.ResponseWriter, r *http.Request) {
 			answerText = "Approve Plan"
 		}
 		if isApprovalBlock && (answerText == "Approve Plan" || strings.HasPrefix(strings.ToLower(answerText), "approve")) && sess.PermissionMode == "plan" {
-			sess.PermissionMode = "bypassPermissions"
+			sess.PermissionMode = defaultSessionPermissionMode(sess.Agent)
 		}
 
 		if s.headless != nil {
@@ -1401,6 +1401,7 @@ func (s *Server) handleSessionConfig(w http.ResponseWriter, r *http.Request, ses
 		Model          *string   `json:"model"`
 		Effort         *string   `json:"effort"`
 		PermissionMode *string   `json:"permission_mode"`
+		YoloMode       *bool     `json:"yolo_mode"`
 		ExtraDirs      *[]string `json:"extra_dirs"`
 		AddDirs        []string  `json:"add_dirs"`
 		RemoveDirs     []string  `json:"remove_dirs"`
@@ -1437,7 +1438,9 @@ func (s *Server) handleSessionConfig(w http.ResponseWriter, r *http.Request, ses
 	if req.PermissionMode != nil {
 		rawPm := strings.TrimSpace(*req.PermissionMode)
 		pmLower := strings.ToLower(rawPm)
-		if pmLower == "" || pmLower == "default" || pmLower == "bypasspermissions" {
+		if pmLower == "" || pmLower == "default" {
+			sess.PermissionMode = defaultSessionPermissionMode(sess.Agent)
+		} else if pmLower == "bypasspermissions" {
 			sess.PermissionMode = "bypassPermissions"
 		} else if pmLower == "plan" {
 			sess.PermissionMode = "plan"
@@ -1455,6 +1458,10 @@ func (s *Server) handleSessionConfig(w http.ResponseWriter, r *http.Request, ses
 			http.Error(w, "Invalid permission_mode: must be 'bypassPermissions', 'auto', 'acceptEdits', 'dontAsk', or 'plan'", http.StatusBadRequest)
 			return
 		}
+	}
+
+	if req.YoloMode != nil {
+		sess.YoloMode = *req.YoloMode
 	}
 
 	if req.ExtraDirs != nil || len(req.AddDirs) > 0 || len(req.RemoveDirs) > 0 {
@@ -1728,6 +1735,7 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		Model                string   `json:"model"`
 		Effort               string   `json:"effort"`
 		PermissionMode       string   `json:"permission_mode"`
+		YoloMode             *bool    `json:"yolo_mode"`
 		ExtraDirs            []string `json:"extra_dirs"`
 	}
 
@@ -1769,7 +1777,7 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		rawPm := strings.TrimSpace(req.PermissionMode)
 		pmLower := strings.ToLower(rawPm)
 		if pmLower == "" || pmLower == "default" {
-			req.PermissionMode = ""
+			req.PermissionMode = defaultSessionPermissionMode(req.Agent)
 		} else if pmLower == "bypasspermissions" {
 			req.PermissionMode = "bypassPermissions"
 		} else if pmLower == "plan" {
@@ -1872,7 +1880,7 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		hostRec := s.resolveHost(req.Host)
 		if hostRec != nil && hostRec.URL != "" && !s.isLocalHost(hostRec.Name) && hostRec.URL != "http://127.0.0.1:7777" {
 			targetURL := strings.TrimSuffix(hostRec.URL, "/") + "/v1/sessions/spawn"
-			payload, _ := json.Marshal(map[string]interface{}{
+			payloadMap := map[string]interface{}{
 				"agent":           req.Agent,
 				"cwd":             req.Cwd,
 				"node_path":       req.NodePath,
@@ -1888,7 +1896,11 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 				"effort":          req.Effort,
 				"permission_mode": req.PermissionMode,
 				"extra_dirs":      req.ExtraDirs,
-			})
+			}
+			if req.YoloMode != nil {
+				payloadMap["yolo_mode"] = *req.YoloMode
+			}
+			payload, _ := json.Marshal(payloadMap)
 			fwdReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, targetURL, bytes.NewBuffer(payload))
 			if err != nil {
 				http.Error(w, fmt.Sprintf("Failed to create remote request: %v", err), http.StatusInternalServerError)
@@ -2044,6 +2056,7 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		initialExtraDirs = cleanDirs
 	}
 
+	yoloMode := req.YoloMode != nil && *req.YoloMode
 	if req.EngineType == EngineHeadless {
 		now := time.Now().UTC()
 		sess := &Session{
@@ -2063,6 +2076,7 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 			Model:             req.Model,
 			Effort:            req.Effort,
 			PermissionMode:    req.PermissionMode,
+			YoloMode:          yoloMode,
 			ExtraDirs:         initialExtraDirs,
 			State:             StateIdle,
 			Activity:          "Headless chat session ready",
@@ -2182,6 +2196,7 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		Model:             req.Model,
 		Effort:            req.Effort,
 		PermissionMode:    req.PermissionMode,
+		YoloMode:          yoloMode,
 		ExtraDirs:         initialExtraDirs,
 		State:             StateUnknown,
 		Activity:          "Spawning session...",

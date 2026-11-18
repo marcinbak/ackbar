@@ -363,6 +363,17 @@ func (h *HeadlessRunner) finalizeTurnFromSpool(sess *Session, origSessionID stri
 		}
 	}
 
+	keepCancelWarm := false
+	if wasCancelled && isACPHeadlessAgent(h.pluginRegistry(), sess.Agent) && meta != nil && meta.WorkerMetaPath != "" {
+		if wm, err := ReadSessionWorkerMeta(meta.WorkerMetaPath); err == nil && wm != nil &&
+			(wm.State == "idle_warm" || wm.State == "cancelling" || wm.State == "running_turn") {
+			if resp, sErr := callWorkerSocket(wm.SocketPath, workerIPCReq{Op: "status"}, 150*time.Millisecond); sErr == nil && resp != nil && resp.OK &&
+				resp.State != "shutting_down" && resp.State != "exited" {
+				keepCancelWarm = true
+			}
+		}
+	}
+
 	var sessionMu *sync.Mutex
 	if sess.ID != "" {
 		sessionMu = h.getSessionTurnMu(sess.ID)
@@ -390,7 +401,7 @@ func (h *HeadlessRunner) finalizeTurnFromSpool(sess *Session, origSessionID stri
 		checkDrain()
 		return
 	}
-	if (interactiveBlock != nil && !keepRateLimitWarm) || wasCancelled || (wasFailed && !keepRateLimitWarm) {
+	if (interactiveBlock != nil && !keepRateLimitWarm) || (wasCancelled && !keepCancelWarm) || (wasFailed && !keepRateLimitWarm) {
 		delete(h.warmWorkers, sess.ID)
 		if sess.NativeID != "" {
 			delete(h.warmWorkers, sess.NativeID)

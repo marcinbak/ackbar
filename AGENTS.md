@@ -51,7 +51,7 @@ Detailed architectural and technical domain documentation is organized in the `d
 ├── internal/
 │   ├── agent/          # Leaf agent contract: canonical DTOs, Capabilities, plugin facets, and Registry
 │   ├── agents/         # Standalone leaf agent plugins (grok/)
-│   ├── agentutil/      # Leaf helpers for fs, CLI exec, ID validation, TOML, provisioning, and prompt parsing
+│   ├── agentutil/      # Leaf helpers for fs, CLI exec, ID validation, TOML, provisioning, prompt parsing, and ACP
 │   ├── daemon/         # SQLite DB, modular HTTP server handlers (server_*.go), session_scanner.go, SSE streaming, OAuth broker, and agent capability adapters (agent_*.go)
 │   ├── provider/       # Legacy agent adapters (Claude Code, Codex, Antigravity, OpenCode)
 │   ├── relay/          # Outbound reverse tunnel server and daemon client

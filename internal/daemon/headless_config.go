@@ -14,7 +14,16 @@ import (
 
 const DefaultHeadlessIdleTTL = 65 * time.Minute
 
-func normalizePermissionMode(mode string) string {
+func defaultSessionPermissionMode(agentName string) string {
+	switch strings.ToLower(strings.TrimSpace(agentName)) {
+	case "", "claude-code", "claude", "antigravity", "agy":
+		return "bypassPermissions"
+	default:
+		return ""
+	}
+}
+
+func normalizePermissionMode(agentName, mode string) string {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
 	case "plan":
 		return "plan"
@@ -24,8 +33,10 @@ func normalizePermissionMode(mode string) string {
 		return "acceptEdits"
 	case "dontask":
 		return "dontAsk"
-	default:
+	case "bypasspermissions":
 		return "bypassPermissions"
+	default:
+		return defaultSessionPermissionMode(agentName)
 	}
 }
 
@@ -45,13 +56,16 @@ func computeConfigFingerprint(sess *Session, includeModel bool) string {
 	if (ag != "claude-code" && ag != "grok") || strings.EqualFold(e, "default") {
 		e = ""
 	}
-	pm := normalizePermissionMode(sess.PermissionMode)
+	pm := normalizePermissionMode(ag, sess.PermissionMode)
 	acc := strings.TrimSpace(sess.AccountID)
 	cwd := filepath.Clean(strings.TrimSpace(sess.Cwd))
 	sup := strconv.FormatBool(sess.IsSupervisor)
 
 	h := sha256.New()
 	parts := []string{ag, m, e, pm, acc, cwd, sup}
+	if sess.YoloMode {
+		parts = append(parts, "yolo:1")
+	}
 	for _, d := range sess.ExtraDirs {
 		if cleaned := filepath.Clean(strings.TrimSpace(d)); cleaned != "" && cleaned != "." {
 			parts = append(parts, "extra:"+cleaned)

@@ -5,22 +5,26 @@ import (
 	"os"
 	"sync"
 	"time"
+
+	"ackbar/internal/agent"
 )
 
 var ErrStaleControlRequest = errors.New("stale or already-resolved control request")
 
 type PendingControlRequest struct {
-	RequestID      string                 `json:"request_id"`
-	Subtype        string                 `json:"subtype"`
-	ToolName       string                 `json:"tool_name"`
-	ToolUseID      string                 `json:"tool_use_id,omitempty"`
-	DecisionReason string                 `json:"decision_reason,omitempty"`
-	RawInput       map[string]interface{} `json:"raw_input,omitempty"`
-	Blocked        *Blocked               `json:"blocked,omitempty"`
+	RequestID      string                  `json:"request_id"`
+	Subtype        string                  `json:"subtype"`
+	ToolName       string                  `json:"tool_name"`
+	ToolUseID      string                  `json:"tool_use_id,omitempty"`
+	DecisionReason string                  `json:"decision_reason,omitempty"`
+	RawInput       map[string]interface{}  `json:"raw_input,omitempty"`
+	Blocked        *Blocked                `json:"blocked,omitempty"`
+	ACP            *agent.ACPControlPrompt `json:"acp,omitempty"`
 }
 
 type workerRuntime struct {
 	mu                 *sync.Mutex
+	reg                *agent.Registry
 	state              *string
 	workerMeta         *SessionWorkerMeta
 	workerMetaPath     string
@@ -74,18 +78,18 @@ func (rt *workerRuntime) notifyWatchersLocked() {
 	}
 }
 
-func (rt *workerRuntime) handleControlRequest(gen *workerChildGen, ctrl *PendingControlRequest) {
+func (rt *workerRuntime) handleControlRequest(gen *workerChildGen, ctrl *PendingControlRequest) bool {
 	if rt == nil || ctrl == nil {
-		return
+		return false
 	}
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 	if *rt.curChild != gen || gen.replaced || *rt.state == "shutting_down" || *rt.state == "exited" {
-		return
+		return false
 	}
 	turn := *rt.activeTurn
 	if turn == nil || turn.cancelled {
-		return
+		return false
 	}
 	*rt.pendingControl = ctrl
 	rt.workerMeta.PendingControl = ctrl
@@ -105,6 +109,7 @@ func (rt *workerRuntime) handleControlRequest(gen *workerChildGen, ctrl *Pending
 		Blocked:   ctrl.Blocked,
 	})
 	rt.notifyWatchersLocked()
+	return true
 }
 
 func (rt *workerRuntime) handleControlCancel(gen *workerChildGen, requestID string) {
@@ -164,21 +169,42 @@ func (rt *workerRuntime) handleAnswerControlIPC(req workerIPCReq) workerIPCResp 
 		}
 		approved = resolveRespondApproval(evalBlocked, req.Action, req.Answer)
 	}
-	ctrlLine, bErr := buildControlResponseJSON(ctrl, approved, req.Answer)
-	if bErr != nil {
-		curState := *rt.state
-		rt.mu.Unlock()
-		return workerIPCResp{OK: false, ErrCode: bErr.Error(), State: curState, WorkerPID: os.Getpid(), ChildPID: curChildPID}
-	}
 	g := *rt.curChild
 	if g == nil || g.pgid <= 1 {
 		curState := *rt.state
 		rt.mu.Unlock()
 		return workerIPCResp{OK: false, ErrCode: "inactive_child", State: curState, WorkerPID: os.Getpid(), ChildPID: curChildPID}
 	}
+	var acpRes any
+	var ctrlLine []byte
+	if ctrl.ACP != nil {
+		drv, ok := acpDriverForAgent(rt.reg, rt.workerMeta.Agent)
+		if !ok || g.acp == nil {
+			curState := *rt.state
+			rt.mu.Unlock()
+			return workerIPCResp{OK: false, ErrCode: "acp_inactive", State: curState, WorkerPID: os.Getpid(), ChildPID: curChildPID}
+		}
+		var aErr error
+		acpRes, aErr = drv.BuildACPServerResponse(ctrl.ACP, approved, req.Answer)
+		if aErr != nil {
+			curState := *rt.state
+			rt.mu.Unlock()
+			return workerIPCResp{OK: false, ErrCode: aErr.Error(), State: curState, WorkerPID: os.Getpid(), ChildPID: curChildPID}
+		}
+	} else {
+		var bErr error
+		ctrlLine, bErr = buildControlResponseJSON(ctrl, approved, req.Answer)
+		if bErr != nil {
+			curState := *rt.state
+			rt.mu.Unlock()
+			return workerIPCResp{OK: false, ErrCode: bErr.Error(), State: curState, WorkerPID: os.Getpid(), ChildPID: curChildPID}
+		}
+	}
+	planApproved := isExitPlanTool(ctrl.ToolName) && approved
 	updatedPermMode := ""
-	if isExitPlanTool(ctrl.ToolName) && approved {
-		updatedPermMode = "bypassPermissions"
+	if planApproved {
+		updatedPermMode = defaultSessionPermissionMode(rt.workerMeta.Agent)
+		rt.workerMeta.PermissionMode = updatedPermMode
 		if req.ConfigFingerprint != "" {
 			rt.workerMeta.ConfigFingerprint = req.ConfigFingerprint
 		}
@@ -205,6 +231,7 @@ func (rt *workerRuntime) handleAnswerControlIPC(req workerIPCReq) workerIPCResp 
 	resp := workerIPCResp{
 		OK:                       true,
 		Approved:                 approved,
+		PlanApproved:             planApproved,
 		WorkerPID:                os.Getpid(),
 		ChildPID:                 g.pgid,
 		TurnID:                   turn.turnID,
@@ -216,6 +243,13 @@ func (rt *workerRuntime) handleAnswerControlIPC(req workerIPCReq) workerIPCResp 
 	}
 	rt.mu.Unlock()
 
-	g.writeLine(string(ctrlLine))
+	if ctrl.ACP != nil && g.acp != nil {
+		g.acp.sendControlResponse(ctrl.ACP.RawID, acpRes)
+		if planApproved {
+			go g.acp.notifyModeAfterPlanApproval("auto")
+		}
+	} else {
+		g.writeLine(string(ctrlLine))
+	}
 	return resp
 }

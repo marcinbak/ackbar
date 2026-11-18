@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -210,24 +211,47 @@ func TestGrokSpawnValidation(t *testing.T) {
 	}
 }
 
-func TestHeadlessRunner_GrokOneShotWorkerE2E(t *testing.T) {
+func TestHeadlessRunner_GrokACPWorkerE2E(t *testing.T) {
 	tmpDir := t.TempDir()
 	binDir := filepath.Join(tmpDir, "bin")
 	_ = os.MkdirAll(binDir, 0755)
 
+	argsLog := filepath.Join(tmpDir, "grok_args.log")
+	callsLog := filepath.Join(tmpDir, "grok_calls.log")
 	mockGrokPath := filepath.Join(binDir, "grok")
-	script := `#!/bin/sh
-echo "$@" >> "` + filepath.Join(tmpDir, "grok.log") + `"
-echo '{"type":"thought","data":"analyzing"}'
-echo '{"type":"text","data":"pong from mock grok"}'
-echo '{"type":"end","stopReason":"stop"}'
-`
+	script := fmt.Sprintf(`#!/bin/sh
+printf '%%s\n' "$*" >> %q
+if [ "$1" = "agent" ] && [ "$2" = "stdio" ]; then
+  while IFS= read -r line; do
+    printf '%%s\n' "$line" >> %q
+    id=$(printf '%%s\n' "$line" | sed -n 's/,"params":.*//; s/.*"id": *\([^,}]*\).*/\1/p')
+    [ -z "$id" ] && continue
+    case "$line" in
+      *'"method":"initialize"'*)
+        printf '{"jsonrpc":"2.0","id":%%s,"result":{"protocolVersion":1,"authMethods":[{"id":"cached_token","name":"Cached"}]}}\n' "$id"
+        ;;
+      *'"method":"authenticate"'*)
+        printf '{"jsonrpc":"2.0","id":%%s,"result":{}}\n' "$id"
+        ;;
+      *'"method":"session/new"'*|*'"method":"session/load"'*)
+        printf '{"jsonrpc":"2.0","id":%%s,"result":{"sessionId":"grok-e2e-1"}}\n' "$id"
+        ;;
+      *'"method":"session/prompt"'*)
+        printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"grok-e2e-1","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"analyzing"}}}}\n'
+        printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"grok-e2e-1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"pong from mock grok"}}}}\n'
+        printf '{"jsonrpc":"2.0","id":%%s,"result":{"stopReason":"end_turn"}}\n' "$id"
+        ;;
+      *)
+        printf '{"jsonrpc":"2.0","id":%%s,"error":{"code":-32601,"message":"Method not found"}}\n' "$id"
+        ;;
+    esac
+  done
+fi
+`, argsLog, callsLog)
 	if err := os.WriteFile(mockGrokPath, []byte(script), 0755); err != nil {
 		t.Fatalf("failed to write mock grok: %v", err)
 	}
-
-	origPath := os.Getenv("PATH")
-	t.Setenv("PATH", binDir+":"+origPath)
+	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
 
 	srv, db := setupTestServer(t)
 	cwd := filepath.Join(tmpDir, "project")
@@ -235,6 +259,7 @@ echo '{"type":"end","stopReason":"stop"}'
 
 	sess := &Session{
 		ID:         "grok:local:grok-e2e-1",
+		Host:       "local",
 		Agent:      "grok",
 		EngineType: EngineHeadless,
 		NativeID:   "grok-e2e-1",
@@ -246,51 +271,69 @@ echo '{"type":"end","stopReason":"stop"}'
 	}
 
 	hr := srv.headless
-	if err := hr.RunTurn(context.Background(), sess, "ping turn 1"); err != nil {
-		t.Fatalf("RunTurn Turn 1 failed: %v", err)
-	}
-
-	var logStr string
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if b, err := os.ReadFile(filepath.Join(tmpDir, "grok.log")); err == nil && len(b) > 0 {
-			if !hr.IsRunning(sess.ID) {
-				logStr = string(b)
-				break
+	runTurnAndWait := func(prompt string) []ChatStreamEvent {
+		sub, unsub := hr.Subscribe(sess.ID)
+		defer unsub()
+		if err := hr.RunTurn(context.Background(), sess, prompt); err != nil {
+			t.Fatalf("RunTurn(%q) failed: %v", prompt, err)
+		}
+		var evts []ChatStreamEvent
+		deadline := time.After(5 * time.Second)
+		for {
+			select {
+			case ev := <-sub:
+				evts = append(evts, ev)
+				if ev.Type == "turn_complete" || ev.Type == "error" || ev.Type == "turn_cancelled" {
+					waitEnd := time.Now().Add(2 * time.Second)
+					for time.Now().Before(waitEnd) && hr.IsRunning(sess.ID) {
+						time.Sleep(10 * time.Millisecond)
+					}
+					return evts
+				}
+			case <-deadline:
+				t.Fatalf("timed out waiting for turn %q", prompt)
 			}
 		}
-		time.Sleep(25 * time.Millisecond)
-	}
-	if logStr == "" {
-		t.Fatalf("timed out waiting for Turn 1 completion and grok.log")
-	}
-	if !strings.Contains(logStr, "-s grok-e2e-1") {
-		t.Errorf("expected -s grok-e2e-1 in Turn 1 run, got: %s", logStr)
 	}
 
-	sess.LastPrompt = "ping turn 1"
-	if err := hr.RunTurn(context.Background(), sess, "ping turn 2"); err != nil {
-		t.Fatalf("RunTurn Turn 2 failed: %v", err)
+	evts1 := runTurnAndWait("ping turn 1")
+	if !hr.HasWarmWorker(sess.ID) {
+		t.Fatalf("expected HasWarmWorker true after Turn 1")
+	}
+	hr.mu.RLock()
+	h1 := hr.warmWorkers[sess.ID]
+	wpid1, cpid1 := h1.WorkerPID, h1.ChildPID
+	hr.mu.RUnlock()
+
+	evts2 := runTurnAndWait("ping turn 2")
+	hr.mu.RLock()
+	h2 := hr.warmWorkers[sess.ID]
+	wpid2, cpid2 := h2.WorkerPID, h2.ChildPID
+	hr.mu.RUnlock()
+	if wpid2 != wpid1 || cpid2 != cpid1 || cpid1 <= 1 {
+		t.Fatalf("expected same WorkerPID/ChildPID across ACP turns, got (%d,%d) vs (%d,%d)", wpid1, cpid1, wpid2, cpid2)
 	}
 
-	var logStr2 string
-	deadline2 := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline2) {
-		if b, err := os.ReadFile(filepath.Join(tmpDir, "grok.log")); err == nil {
-			lines := strings.Split(strings.TrimSpace(string(b)), "\n")
-			if len(lines) >= 2 && !hr.IsRunning(sess.ID) {
-				logStr2 = string(b)
-				break
-			}
+	argsBytes, _ := os.ReadFile(argsLog)
+	argLines := strings.Split(strings.TrimSpace(string(argsBytes)), "\n")
+	if len(argLines) != 1 || !strings.Contains(argLines[0], "agent stdio --no-auto-update") {
+		t.Fatalf("expected single persistent agent stdio invocation, got %q", string(argsBytes))
+	}
+	callsBytes, _ := os.ReadFile(callsLog)
+	if !strings.Contains(string(callsBytes), `"method":"authenticate"`) || !strings.Contains(string(callsBytes), `"method":"session/new"`) {
+		t.Errorf("expected initialize/authenticate/session/new sequence, got:\n%s", string(callsBytes))
+	}
+	var gotThought, gotText bool
+	for _, ev := range append(evts1, evts2...) {
+		if ev.Type == "thought_delta" && strings.Contains(ev.Thinking, "analyzing") {
+			gotThought = true
 		}
-		time.Sleep(25 * time.Millisecond)
+		if ev.Type == "text_delta" && strings.Contains(ev.Text, "pong from mock grok") {
+			gotText = true
+		}
 	}
-	if logStr2 == "" {
-		t.Fatalf("timed out waiting for Turn 2 completion and grok.log")
-	}
-	lines := strings.Split(strings.TrimSpace(logStr2), "\n")
-	if !strings.Contains(lines[len(lines)-1], "-r grok-e2e-1") {
-		t.Errorf("expected -r grok-e2e-1 in Turn 2 run, got: %s", lines[len(lines)-1])
+	if !gotThought || !gotText {
+		t.Errorf("expected thought_delta and text_delta from ACP turns, got thought=%v text=%v", gotThought, gotText)
 	}
 }
 
