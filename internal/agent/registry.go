@@ -195,3 +195,48 @@ func (r *Registry) AsRateLimiter(key string) (RateLimiter, bool) {
 	f, ok := p.(RateLimiter)
 	return f, ok
 }
+
+func (r *Registry) AsStreamParserFactory(key string) (StreamParserFactory, bool) {
+	p, ok := r.Get(key)
+	if !ok {
+		return nil, false
+	}
+	f, ok := p.(StreamParserFactory)
+	return f, ok
+}
+
+func (r *Registry) AsModelResolver(key string) (ModelResolver, bool) {
+	p, ok := r.Get(key)
+	if !ok {
+		return nil, false
+	}
+	f, ok := p.(ModelResolver)
+	return f, ok
+}
+
+func (r *Registry) AsTranscriptStatter(key string) (TranscriptStatter, bool) {
+	p, ok := r.Get(key)
+	if !ok {
+		return nil, false
+	}
+	f, ok := p.(TranscriptStatter)
+	return f, ok
+}
+
+func (r *Registry) AsTranscriptUsageInspector(key string) (TranscriptUsageInspector, bool) {
+	p, ok := r.Get(key)
+	if !ok {
+		return nil, false
+	}
+	f, ok := p.(TranscriptUsageInspector)
+	return f, ok
+}
+
+func (r *Registry) AsCLIInspector(key string) (CLIInspector, bool) {
+	p, ok := r.Get(key)
+	if !ok {
+		return nil, false
+	}
+	f, ok := p.(CLIInspector)
+	return f, ok
+}

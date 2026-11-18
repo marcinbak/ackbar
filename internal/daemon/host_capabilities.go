@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"sort"
 	"strconv"
@@ -16,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"ackbar/internal/agent"
 	"ackbar/internal/version"
 )
 
@@ -56,7 +58,12 @@ func (s *Server) GetDetectedCapabilities() []string {
 	if home == "" {
 		home, _ = os.UserHomeDir()
 	}
-	caps := DetectCapabilitiesFunc(home)
+	var caps []string
+	if reflect.ValueOf(DetectCapabilitiesFunc).Pointer() == reflect.ValueOf(defaultDetectHostCapabilities).Pointer() {
+		caps = defaultDetectHostCapabilitiesWithRegistry(home, s.PluginRegistry())
+	} else {
+		caps = DetectCapabilitiesFunc(home)
+	}
 
 	s.hostHealthMu.Lock()
 	s.cachedCapabilities = caps
@@ -67,6 +74,10 @@ func (s *Server) GetDetectedCapabilities() []string {
 }
 
 func defaultDetectHostCapabilities(home string) []string {
+	return defaultDetectHostCapabilitiesWithRegistry(home, nil)
+}
+
+func defaultDetectHostCapabilitiesWithRegistry(home string, reg *agent.Registry) []string {
 	if home == "" {
 		home, _ = os.UserHomeDir()
 	}
@@ -153,7 +164,7 @@ func defaultDetectHostCapabilities(home string) []string {
 	}
 
 	// 5. Installed & Authenticated AI Agents
-	if statuses, err := GetAgentStatuses(home); err == nil {
+	if statuses, err := GetAgentStatusesWithRegistry(home, reg); err == nil {
 		for _, st := range statuses {
 			if st.Detected && st.Key != "claude-desktop" {
 				addCap("agent:" + st.Key)

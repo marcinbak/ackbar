@@ -1,26 +1,27 @@
-package daemon
+package grok
 
 import (
 	"bufio"
 	"encoding/json"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
+
+	"ackbar/internal/agent"
+	"ackbar/internal/agentutil"
 )
 
-func extractGrokUpdatesMessages(updatesFile string) ([]TranscriptMessage, error) {
+func extractUpdatesMessages(p *Plugin, updatesFile string) ([]agent.TranscriptMessage, error) {
 	f, err := os.Open(updatesFile)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
 
-	var messages []TranscriptMessage
-	var pendingAssistant *TranscriptMessage
+	var messages []agent.TranscriptMessage
+	var pendingAssistant *agent.TranscriptMessage
 	var currentPromptChunks []string
 	var currentPromptTS time.Time
-	adapter := GrokAgentAdapter{}
 
 	flushUser := func() {
 		if len(currentPromptChunks) > 0 {
@@ -28,18 +29,13 @@ func extractGrokUpdatesMessages(updatesFile string) ([]TranscriptMessage, error)
 			currentPromptChunks = nil
 			ts := currentPromptTS
 			currentPromptTS = time.Time{}
-			if cleaned, keep := adapter.FilterUserEntry(nil, fullPrompt); keep {
-				messages = append(messages, TranscriptMessage{
-					Role:      "user",
-					Content:   cleaned,
-					Timestamp: ts,
-				})
+			if cleaned, keep := p.FilterUserEntry(nil, fullPrompt); keep {
+				messages = append(messages, agent.TranscriptMessage{Role: "user", Content: cleaned, Timestamp: ts})
 			}
 		} else {
 			currentPromptTS = time.Time{}
 		}
 	}
-
 	flushAssistant := func() {
 		if pendingAssistant != nil {
 			if pendingAssistant.Content != "" || len(pendingAssistant.ToolCalls) > 0 || pendingAssistant.Thinking != "" {
@@ -48,7 +44,6 @@ func extractGrokUpdatesMessages(updatesFile string) ([]TranscriptMessage, error)
 			pendingAssistant = nil
 		}
 	}
-
 	extractChunk := func(obj map[string]interface{}, primaryKey string) string {
 		val := obj[primaryKey]
 		if val == nil {
@@ -58,19 +53,13 @@ func extractGrokUpdatesMessages(updatesFile string) ([]TranscriptMessage, error)
 			return s
 		}
 		if m, ok := val.(map[string]interface{}); ok {
-			if t, ok := m["text"].(string); ok {
-				return t
-			}
-			if t, ok := m["content"].(string); ok {
-				return t
-			}
+			return firstMapStr(m, "text", "content")
 		}
 		return ""
 	}
 
 	scanner := bufio.NewScanner(f)
-	buf := make([]byte, 1024*1024)
-	scanner.Buffer(buf, 10*1024*1024)
+	scanner.Buffer(make([]byte, 1024*1024), 10*1024*1024)
 
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -78,7 +67,7 @@ func extractGrokUpdatesMessages(updatesFile string) ([]TranscriptMessage, error)
 			continue
 		}
 		var raw map[string]interface{}
-		if err := json.Unmarshal([]byte(line), &raw); err != nil {
+		if json.Unmarshal([]byte(line), &raw) != nil {
 			continue
 		}
 		params, _ := raw["params"].(map[string]interface{})
@@ -88,14 +77,7 @@ func extractGrokUpdatesMessages(updatesFile string) ([]TranscriptMessage, error)
 			target = raw
 		}
 
-		uType, _ := target["sessionUpdate"].(string)
-		if uType == "" {
-			uType, _ = target["update_type"].(string)
-		}
-		if uType == "" {
-			uType, _ = target["type"].(string)
-		}
-
+		uType := firstMapStr(target, "sessionUpdate", "update_type", "type")
 		var ts time.Time
 		if metaMap, ok := params["_meta"].(map[string]interface{}); ok {
 			ts = parseGrokTime(metaMap["agentTimestampMs"])
@@ -112,8 +94,7 @@ func extractGrokUpdatesMessages(updatesFile string) ([]TranscriptMessage, error)
 		switch uType {
 		case "user_message_chunk":
 			flushAssistant()
-			chunk := extractChunk(target, "content")
-			currentPromptChunks = append(currentPromptChunks, chunk)
+			currentPromptChunks = append(currentPromptChunks, extractChunk(target, "content"))
 			if currentPromptTS.IsZero() {
 				currentPromptTS = ts
 			}
@@ -125,35 +106,26 @@ func extractGrokUpdatesMessages(updatesFile string) ([]TranscriptMessage, error)
 			}
 			if thought != "" {
 				if pendingAssistant == nil {
-					pendingAssistant = &TranscriptMessage{Role: "assistant", Timestamp: ts}
+					pendingAssistant = &agent.TranscriptMessage{Role: "assistant", Timestamp: ts}
 				}
 				pendingAssistant.Thinking += thought
 			}
 		case "tool_call":
 			flushUser()
-			toolName := ""
-			for _, k := range []string{"title", "name", "toolName"} {
-				if s, ok := target[k].(string); ok && s != "" {
-					toolName = s
-					break
-				}
-			}
-			var toolInput interface{}
-			if rawIn, exists := target["rawInput"]; exists && rawIn != nil {
-				toolInput = rawIn
-			} else {
+			toolName := firstMapStr(target, "title", "name", "toolName")
+			toolInput := target["rawInput"]
+			if toolInput == nil {
 				toolInput = parseGrokToolInput(target)
 			}
 			if pendingAssistant == nil {
-				pendingAssistant = &TranscriptMessage{Role: "assistant", Timestamp: ts}
+				pendingAssistant = &agent.TranscriptMessage{Role: "assistant", Timestamp: ts}
 			}
-			pendingAssistant.ToolCalls = append(pendingAssistant.ToolCalls, FormatToolDisplay(toolName, toolInput))
+			pendingAssistant.ToolCalls = append(pendingAssistant.ToolCalls, agentutil.FormatToolDisplay(toolName, toolInput))
 		case "agent_message_chunk":
 			flushUser()
-			chunk := extractChunk(target, "content")
-			if chunk != "" {
+			if chunk := extractChunk(target, "content"); chunk != "" {
 				if pendingAssistant == nil {
-					pendingAssistant = &TranscriptMessage{Role: "assistant", Timestamp: ts}
+					pendingAssistant = &agent.TranscriptMessage{Role: "assistant", Timestamp: ts}
 				}
 				pendingAssistant.Content += chunk
 			}
@@ -164,50 +136,18 @@ func extractGrokUpdatesMessages(updatesFile string) ([]TranscriptMessage, error)
 	}
 	flushUser()
 	flushAssistant()
-
 	return messages, nil
 }
 
-func findGrokLegacyLog(home, nativeID string) string {
-	if !IsSafeGrokSessionID(nativeID) {
-		return ""
-	}
-	if home == "" {
-		home = realOSUserHome()
-	}
-	for _, baseDir := range []string{GrokHomeDir(home), filepath.Join(home, ".grok")} {
-		cand1 := filepath.Join(baseDir, "sessions", nativeID+".jsonl")
-		if stat, err := os.Stat(cand1); err == nil && !stat.IsDir() {
-			return cand1
-		}
-		cand2 := filepath.Join(baseDir, "sessions", nativeID, "transcript.jsonl")
-		if stat, err := os.Stat(cand2); err == nil && !stat.IsDir() {
-			return cand2
-		}
-		sessRoot := filepath.Join(baseDir, "sessions")
-		if entries, err := os.ReadDir(sessRoot); err == nil {
-			for _, e := range entries {
-				name := e.Name()
-				if !e.IsDir() && strings.Contains(name, nativeID) && strings.HasSuffix(name, ".jsonl") {
-					return filepath.Join(sessRoot, name)
-				}
-			}
-		}
-	}
-	return ""
-}
-
-func extractGrokLegacyMessages(logPath string) ([]TranscriptMessage, error) {
+func extractLegacyMessages(p *Plugin, logPath string) ([]agent.TranscriptMessage, error) {
 	file, err := os.Open(logPath)
 	if err != nil {
 		return nil, err
 	}
 	defer file.Close()
 
-	var messages []TranscriptMessage
-	var pendingAssistant *TranscriptMessage
-	adapter := GrokAgentAdapter{}
-
+	var messages []agent.TranscriptMessage
+	var pendingAssistant *agent.TranscriptMessage
 	flushAssistant := func() {
 		if pendingAssistant != nil {
 			if pendingAssistant.Content != "" || len(pendingAssistant.ToolCalls) > 0 || pendingAssistant.Thinking != "" {
@@ -218,8 +158,7 @@ func extractGrokLegacyMessages(logPath string) ([]TranscriptMessage, error) {
 	}
 
 	scanner := bufio.NewScanner(file)
-	buf := make([]byte, 1024*1024)
-	scanner.Buffer(buf, 10*1024*1024)
+	scanner.Buffer(make([]byte, 1024*1024), 10*1024*1024)
 
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -227,7 +166,7 @@ func extractGrokLegacyMessages(logPath string) ([]TranscriptMessage, error) {
 			continue
 		}
 		var raw map[string]interface{}
-		if err := json.Unmarshal([]byte(line), &raw); err != nil {
+		if json.Unmarshal([]byte(line), &raw) != nil {
 			continue
 		}
 		role, _ := raw["role"].(string)
@@ -239,18 +178,13 @@ func extractGrokLegacyMessages(logPath string) ([]TranscriptMessage, error) {
 
 		if role == "user" || tVal == "user" {
 			flushAssistant()
-			content := parseGrokContentText(raw["content"])
-			if cleaned, keep := adapter.FilterUserEntry(raw, content); keep {
-				messages = append(messages, TranscriptMessage{
-					Role:      "user",
-					Content:   cleaned,
-					Timestamp: ts,
-				})
+			if cleaned, keep := p.FilterUserEntry(raw, parseGrokContentText(raw["content"])); keep {
+				messages = append(messages, agent.TranscriptMessage{Role: "user", Content: cleaned, Timestamp: ts})
 			}
 		} else if role == "assistant" || tVal == "assistant" {
 			content := parseGrokContentText(raw["content"])
 			if pendingAssistant == nil {
-				pendingAssistant = &TranscriptMessage{Role: "assistant", Timestamp: ts}
+				pendingAssistant = &agent.TranscriptMessage{Role: "assistant", Timestamp: ts}
 			}
 			if content != "" {
 				if pendingAssistant.Content != "" {
@@ -264,15 +198,13 @@ func extractGrokLegacyMessages(logPath string) ([]TranscriptMessage, error) {
 			}
 		} else if tVal == "tool_call" || tVal == "function_call" {
 			name, _ := raw["name"].(string)
-			input := parseGrokToolInput(raw)
-			display := FormatToolDisplay(name, input)
+			display := agentutil.FormatToolDisplay(name, parseGrokToolInput(raw))
 			if pendingAssistant == nil {
-				pendingAssistant = &TranscriptMessage{Role: "assistant", Timestamp: ts}
+				pendingAssistant = &agent.TranscriptMessage{Role: "assistant", Timestamp: ts}
 			}
 			pendingAssistant.ToolCalls = append(pendingAssistant.ToolCalls, display)
 		}
 	}
 	flushAssistant()
-
 	return messages, nil
 }

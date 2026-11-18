@@ -12,6 +12,8 @@ import (
 	"runtime"
 	"strings"
 
+	"ackbar/internal/agent"
+	"ackbar/internal/agents/grok"
 	"ackbar/internal/daemon"
 	"ackbar/internal/provider"
 	"ackbar/internal/version"
@@ -19,8 +21,12 @@ import (
 )
 
 func main() {
+	reg := agent.NewRegistry()
+	if err := reg.Register(grok.New()); err != nil {
+		log.Fatalf("Failed to register grok plugin: %v", err)
+	}
 	if len(os.Args) > 1 && os.Args[1] == "--headless-worker" {
-		os.Exit(daemon.RunHeadlessWorker(os.Args[2:]))
+		os.Exit(daemon.RunHeadlessWorkerWithRegistry(os.Args[2:], reg))
 	}
 	if len(os.Args) > 1 && (os.Args[1] == "version" || os.Args[1] == "--version" || os.Args[1] == "-v") {
 		fmt.Printf("ackbard version %s\n", version.Version)
@@ -171,8 +177,12 @@ func main() {
 	server.RegisterProvider(provider.NewClaudeProvider())
 	server.RegisterProvider(provider.NewCodexProvider())
 	server.RegisterProvider(provider.NewAntigravityProvider())
-	server.RegisterProvider(provider.NewGrokProvider())
 	server.RegisterProvider(provider.NewOpenCodeProvider())
+	for _, p := range reg.List() {
+		if err := server.RegisterPlugin(p); err != nil {
+			log.Fatalf("Failed to register plugin %s: %v", p.Key(), err)
+		}
+	}
 
 	// Start Antigravity JETSKI-AUDIO/1 Live Voice Bridge (default 127.0.0.1:4713)
 	server.EnsureVoiceBridge()

@@ -38,6 +38,7 @@ type Capabilities struct {
 	SupportsYoloMode         bool
 	SupportsSystemPrompt     bool
 	SupportsExtraDirs        bool
+	LocksExtraDirsOnResume   bool `json:"locks_extra_dirs_on_resume"`
 	SupportedPermissionModes []string
 }
 

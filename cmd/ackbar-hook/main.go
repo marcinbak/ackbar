@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"os"
 
+	"ackbar/internal/agent"
+	"ackbar/internal/agents/grok"
 	"ackbar/internal/version"
 )
 
@@ -28,19 +30,25 @@ func main() {
 		os.Exit(0)
 	}
 
-	agent := *agentFlag
+	agentName := *agentFlag
 	event := *eventFlag
 
-	if agent == "" && len(flag.Args()) > 0 {
-		agent = flag.Arg(0)
+	if agentName == "" && len(flag.Args()) > 0 {
+		agentName = flag.Arg(0)
 	}
 	if event == "" && len(flag.Args()) > 1 {
 		event = flag.Arg(1)
 	}
 
-	if agent == "" {
+	if agentName == "" {
 		fmt.Fprintln(os.Stderr, "Error: --agent flag is required")
 		os.Exit(1)
+	}
+
+	reg := agent.NewRegistry()
+	_ = reg.Register(grok.New())
+	if p, ok := reg.Get(agentName); ok {
+		agentName = p.Key()
 	}
 
 	// Read stdin payload
@@ -51,7 +59,7 @@ func main() {
 	}
 
 	// Construct request URL
-	url := fmt.Sprintf("http://127.0.0.1:%d/v1/hooks/%s", *portFlag, agent)
+	url := fmt.Sprintf("http://127.0.0.1:%d/v1/hooks/%s", *portFlag, agentName)
 	if event != "" {
 		url += "?event=" + event
 	}
@@ -60,22 +68,26 @@ func main() {
 	resp, err := http.Post(url, "application/json", bytes.NewBuffer(body))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error sending hook payload: %v\n", err)
-		outputHookSuccess(agent, event)
+		outputHookSuccess(reg, agentName, event)
 		os.Exit(0)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		fmt.Fprintf(os.Stderr, "Error: daemon returned status %d\n", resp.StatusCode)
-		outputHookSuccess(agent, event)
+		outputHookSuccess(reg, agentName, event)
 		os.Exit(0)
 	}
 
-	outputHookSuccess(agent, event)
+	outputHookSuccess(reg, agentName, event)
 }
 
-func outputHookSuccess(agent, event string) {
-	if agent == "antigravity" && event == "PreToolUse" {
+func outputHookSuccess(reg *agent.Registry, agentName, event string) {
+	if h, ok := reg.AsHooks(agentName); ok {
+		fmt.Println(string(h.HookAckPayload(event)))
+		return
+	}
+	if agentName == "antigravity" && event == "PreToolUse" {
 		fmt.Println(`{"decision":"allow"}`)
 		return
 	}

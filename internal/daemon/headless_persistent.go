@@ -12,6 +12,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"ackbar/internal/agent"
 )
 
 type warmWorkerHandle struct {
@@ -147,11 +149,13 @@ func (h *HeadlessRunner) recordTurnActive(sess *Session, prompt, turnID string, 
 
 func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt string) error {
 	_ = ctx
-	if sess.Agent != "claude-code" && sess.Agent != "antigravity" && sess.Agent != "grok" {
+	if sess.Agent != "claude-code" && sess.Agent != "antigravity" {
+		if reg := h.pluginRegistry(); reg != nil {
+			if hd, ok := reg.AsHeadlessDriver(sess.Agent); ok && hd.Mode() == agent.HeadlessModeOneShot {
+				return h.runOneShotPluginTurn(sess, prompt, hd)
+			}
+		}
 		return ErrAgentUnsupported
-	}
-	if sess.Agent == "grok" {
-		return h.runGrokOneShotTurn(sess, prompt)
 	}
 	sessionMu := h.getSessionTurnMu(sess.ID)
 	sessionMu.Lock()
@@ -204,7 +208,7 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 	h.mu.Unlock()
 
 	home, _ := os.UserHomeDir()
-	isExisting := sess.FirstPrompt != "" || sess.LastPrompt != "" || hasConversationOnDisk(sess, home, h.db)
+	isExisting := sess.FirstPrompt != "" || sess.LastPrompt != "" || hasConversationOnDiskWithRegistry(h.pluginRegistry(), sess, home, h.db)
 	fp := ConfigFingerprint(sess)
 	fpNoModel := ConfigFingerprintWithoutModel(sess)
 	mcpFP := MCPFingerprint(sess, h.db, home)
@@ -264,7 +268,7 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 		}
 	}
 
-	cleanEnv := buildWorkerEnv(sess, h.db, home)
+	cleanEnv := buildWorkerEnvWithRegistry(h.pluginRegistry(), sess, h.db, home)
 	turnStart := time.Now().UTC()
 	workerID, turnID := fmt.Sprintf("w_%d_%s", turnStart.UnixNano(), generateUUID()[:8]), fmt.Sprintf("turn_%d_%s", turnStart.UnixNano(), generateUUID()[:8])
 	h.pruneCompletedSpoolsForSession(runDir, sess.ID, sess.NativeID, turnID)
@@ -565,7 +569,7 @@ func (h *HeadlessRunner) NotifyConfigChanged(sess *Session) {
 	}
 
 	home, _ := os.UserHomeDir()
-	isExisting := sess.FirstPrompt != "" || sess.LastPrompt != "" || hasConversationOnDisk(sess, home, h.db)
+	isExisting := sess.FirstPrompt != "" || sess.LastPrompt != "" || hasConversationOnDiskWithRegistry(h.pluginRegistry(), sess, home, h.db)
 	newFP := ConfigFingerprint(sess)
 	newNoModelFP := ConfigFingerprintWithoutModel(sess)
 	mcpFP := MCPFingerprint(sess, h.db, home)
@@ -684,7 +688,7 @@ func (h *HeadlessRunner) restartHandleChild(sess *Session, handle *warmWorkerHan
 		return false
 	}
 	fpNoModel := ConfigFingerprintWithoutModel(sess)
-	cleanEnv := buildWorkerEnv(sess, h.db, home)
+	cleanEnv := buildWorkerEnvWithRegistry(h.pluginRegistry(), sess, h.db, home)
 	resp, cErr := callWorkerSocket(sockPath, workerIPCReq{
 		Op:                       "restart_child",
 		SessionID:                sess.ID,
@@ -723,7 +727,7 @@ func (h *HeadlessRunner) RestartSessionChild(sess *Session, timeout time.Duratio
 		defer sessionMu.Unlock()
 	}
 	home, _ := os.UserHomeDir()
-	isExisting := sess.FirstPrompt != "" || sess.LastPrompt != "" || hasConversationOnDisk(sess, home, h.db)
+	isExisting := sess.FirstPrompt != "" || sess.LastPrompt != "" || hasConversationOnDiskWithRegistry(h.pluginRegistry(), sess, home, h.db)
 	fp := ConfigFingerprint(sess)
 	mcpFP := MCPFingerprint(sess, h.db, home)
 

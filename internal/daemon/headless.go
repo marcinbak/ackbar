@@ -69,6 +69,7 @@ type HeadlessRunner struct {
 	pendingRestart         bool
 	onAllTurnsDrained      func()
 	db                     *DB
+	registry               *agent.Registry
 	broadcast              func(s *Session)
 	onTurnComplete         func(sessionID, nativeID string)
 	onBgTaskCountChange    func(sessionID, nativeID string, count int)
@@ -1369,14 +1370,6 @@ func hasConversationOnDisk(sess *Session, home string, db *DB) bool {
 			}
 		}
 		return (CodexAgentAdapter{}).HasConversationArtifacts(home, sess.NativeID)
-	case "grok":
-		if accCfgDir != "" {
-			if (GrokAgentAdapter{}).HasConversationArtifacts(accCfgDir, sess.NativeID) ||
-				(GrokAgentAdapter{}).HasConversationArtifacts(filepath.Dir(accCfgDir), sess.NativeID) {
-				return true
-			}
-		}
-		return (GrokAgentAdapter{}).HasConversationArtifacts(home, sess.NativeID)
 	}
 	claudeDir := filepath.Join(home, ".claude")
 	if accCfgDir != "" {
@@ -1403,14 +1396,21 @@ func hasConversationOnDisk(sess *Session, home string, db *DB) bool {
 
 // buildArgs constructs the binary path and CLI arguments for a headless turn.
 func (h *HeadlessRunner) buildArgs(sess *Session, prompt, home string) (string, []string, error) {
-	if sess.Agent == "grok" {
-		if !IsSafeGrokSessionID(sess.NativeID) {
-			return "", nil, fmt.Errorf("unsafe grok session ID: %q", sess.NativeID)
+	if reg := h.pluginRegistry(); reg != nil {
+		if hd, ok := reg.AsHeadlessDriver(sess.Agent); ok {
+			isExisting := sess.FirstPrompt != "" || sess.LastPrompt != "" || hasConversationOnDiskWithRegistry(reg, sess, home, h.db)
+			var sysPrompt string
+			if sess.IsSupervisor {
+				sysPrompt = BuildSupervisorSystemPrompt(sess.ID)
+			}
+			spec, err := hd.BuildTurnSpec(agent.HeadlessTurnInput{
+				Session: sess, Prompt: prompt, HomeDir: home, IsExisting: isExisting, SystemPrompt: sysPrompt,
+			})
+			if err != nil {
+				return "", nil, err
+			}
+			return spec.Binary, spec.Args, nil
 		}
-		bin := resolveGrokBinary()
-		isExisting := sess.FirstPrompt != "" || sess.LastPrompt != "" || hasConversationOnDisk(sess, home, h.db)
-		args := buildGrokHeadlessArgs(sess, prompt, isExisting)
-		return bin, args, nil
 	}
 
 	if sess.Agent == "antigravity" {
@@ -1509,7 +1509,7 @@ func (h *HeadlessRunner) buildArgs(sess *Session, prompt, home string) (string, 
 
 func (h *HeadlessRunner) buildCommandEnv(sess *Session) []string {
 	home, _ := os.UserHomeDir()
-	env := buildWorkerEnv(sess, h.db, home)
+	env := buildWorkerEnvWithRegistry(h.pluginRegistry(), sess, h.db, home)
 	env = append(env, "GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0", "TERM=dumb")
 	if sess != nil && sess.NodePath != "" {
 		env = append(env, "ACKBAR_NODE_PATH="+sess.NodePath)
@@ -1583,6 +1583,7 @@ func (h *HeadlessRunner) processStreamWithPrompt(sessionID string, r io.Reader, 
 type streamParseHooks struct {
 	emitTurnComplete   bool
 	stdioControl       bool
+	streamParser       agent.StreamParser
 	emit               func(ChatStreamEvent)
 	onAntigravityInit  func(convID string)
 	onSystemInit       func()
@@ -1615,8 +1616,15 @@ func (h *HeadlessRunner) processStreamCore(sessionID string, r io.Reader, prompt
 		}
 		h.Emit(sessionID, evt, extraID)
 	}
+	var streamParser agent.StreamParser
+	if reg := h.pluginRegistry(); reg != nil && sess != nil {
+		if f, ok := reg.AsStreamParserFactory(sess.Agent); ok {
+			streamParser = f.NewStreamParser(sessionID)
+		}
+	}
 	return parseHeadlessStream(sessionID, r, streamParseHooks{
 		emitTurnComplete: emitTurnComplete,
+		streamParser:     streamParser,
 		emit:             emitStreamEvt,
 		onAntigravityInit: func(convID string) {
 			h.handleAntigravityInit(sess, convID, prompt)
@@ -1669,7 +1677,6 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 	hasEmittedAssistantText := false
 	hasEmittedDeltaInTurn := false
 	needsSeparation := false
-	seenGrok := strings.HasPrefix(sessionID, "grok")
 	var pendingTool *pendingInteractiveToolBlock
 	emitStreamEvt := func(evt ChatStreamEvent) {
 		if hooks.emit != nil {
@@ -1921,7 +1928,7 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 			continue
 		}
 
-		if handled := handleGrokStreamEvent(raw, sessionID, &seenGrok, &lastTextBuilder, &resultText, &streamHadError, &needsSeparation, &hasEmittedAssistantText, toolUses, toolInputs, &emittedAuthBlock, emitStreamEvt, hooks); handled {
+		if dispatchPluginStreamLine(hooks.streamParser, []byte(line), &lastTextBuilder, &resultText, &streamHadError, hooks) {
 			continue
 		}
 

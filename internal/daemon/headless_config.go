@@ -221,37 +221,7 @@ func formatPersistentStdinTurn(agent, sessID string, isSupervisor, isFirstTurnOf
 }
 
 func buildWorkerEnv(sess *Session, db *DB, home string) []string {
-	env := StripBilledCredentials(os.Environ())
-	if sess == nil {
-		return env
-	}
-	if sess.ID != "" {
-		env = append(env, "ACKBAR_SESSION_ID="+sess.ID)
-	}
-	if sess.IsSupervisor {
-		env = append(env, "ACKBAR_IS_SUPERVISOR=1")
-	}
-	if sess.AccountID != "" && db != nil {
-		if acc, _ := db.GetAccount(sess.AccountID); acc != nil {
-			cfgDir := acc.ConfigDir
-			if cfgDir != "" {
-				if strings.HasPrefix(cfgDir, "~/") && home != "" {
-					cfgDir = filepath.Join(home, cfgDir[2:])
-				}
-				if sess.Agent == "claude-code" {
-					env = append(env, "CLAUDE_CONFIG_DIR="+cfgDir)
-				} else if sess.Agent == "antigravity" {
-					env = append(env, "GEMINI_CLI_HOME="+cfgDir)
-				} else if sess.Agent == "grok" {
-					env = append(env, "GROK_HOME="+cfgDir)
-				}
-			}
-			for k, v := range acc.Env {
-				env = append(env, fmt.Sprintf("%s=%s", k, v))
-			}
-		}
-	}
-	return augmentWorkerPluginEnv(env, home)
+	return buildWorkerEnvWithRegistry(nil, sess, db, home)
 }
 
 func augmentWorkerPluginEnv(env []string, home string) []string {

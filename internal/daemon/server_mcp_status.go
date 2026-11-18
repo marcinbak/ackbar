@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"ackbar/internal/agent"
 )
 
 type MCPServerHealth struct {
@@ -85,7 +87,7 @@ func (s *Server) handleSessionMCPStatus(w http.ResponseWriter, r *http.Request, 
 
 	home, _ := os.UserHomeDir()
 	servers, _ := discoverConfiguredMCPServers(sess, s.db, home)
-	plugins := probeWorkspacePlugins(home, sess, s.db)
+	plugins := probeWorkspacePluginsWithRegistry(home, sess, s.db, s.PluginRegistry())
 
 	resp := &SessionMCPStatusResponse{
 		Servers: servers,
@@ -247,6 +249,10 @@ func discoverConfiguredMCPServers(sess *Session, db *DB, home string) ([]MCPServ
 }
 
 func probeWorkspacePlugins(home string, sess *Session, db *DB) []WorkspacePluginHealth {
+	return probeWorkspacePluginsWithRegistry(home, sess, db, nil)
+}
+
+func probeWorkspacePluginsWithRegistry(home string, sess *Session, db *DB, reg *agent.Registry) []WorkspacePluginHealth {
 	var wg sync.WaitGroup
 	plugins := []string{"gslides", "gdocs", "gdrive", "gsheets"}
 	results := make([]WorkspacePluginHealth, len(plugins))
@@ -255,7 +261,7 @@ func probeWorkspacePlugins(home string, sess *Session, db *DB) []WorkspacePlugin
 		wg.Add(1)
 		go func(idx int, toolName string) {
 			defer wg.Done()
-			results[idx] = probeSinglePlugin(toolName, home, sess, db)
+			results[idx] = probeSinglePluginWithRegistry(toolName, home, sess, db, reg)
 		}(i, tool)
 	}
 	wg.Wait()
@@ -263,6 +269,10 @@ func probeWorkspacePlugins(home string, sess *Session, db *DB) []WorkspacePlugin
 }
 
 func probeSinglePlugin(tool, home string, sess *Session, db *DB) WorkspacePluginHealth {
+	return probeSinglePluginWithRegistry(tool, home, sess, db, nil)
+}
+
+func probeSinglePluginWithRegistry(tool, home string, sess *Session, db *DB, reg *agent.Registry) WorkspacePluginHealth {
 	failHealth := WorkspacePluginHealth{Name: tool, Installed: true, Authenticated: false, AuthSupported: true, Target: "plugin:" + tool}
 	if home == "" || !filepath.IsAbs(home) {
 		failHealth.Installed = false
@@ -305,7 +315,7 @@ func probeSinglePlugin(tool, home string, sess *Session, db *DB) WorkspacePlugin
 
 	cmd := exec.CommandContext(ctx, compiledBin, "auth", "status", "--json")
 	cmd.WaitDelay = 500 * time.Millisecond
-	cmd.Env = append(buildWorkerEnv(sess, db, home), "DISPLAY=")
+	cmd.Env = append(buildWorkerEnvWithRegistry(reg, sess, db, home), "DISPLAY=")
 
 	out, err := cmd.Output()
 	if err != nil {

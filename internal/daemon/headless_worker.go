@@ -13,9 +13,15 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"ackbar/internal/agent"
 )
 
 func RunHeadlessWorker(args []string) int {
+	return RunHeadlessWorkerWithRegistry(args, nil)
+}
+
+func RunHeadlessWorkerWithRegistry(args []string, reg *agent.Registry) int {
 	var workerMetaPath, specPath, idleTTLStr string
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -36,7 +42,7 @@ func RunHeadlessWorker(args []string) int {
 	if workerMetaPath == "" && specPath == "" {
 		return 2
 	}
-	return runWorkerLoop(workerMetaPath, specPath, idleTTLStr)
+	return runWorkerLoop(workerMetaPath, specPath, idleTTLStr, reg)
 }
 
 type activeTurnState struct {
@@ -118,7 +124,7 @@ func computeRateLimitIdleHold(rateLimitedUntil, enteredAt, now time.Time) (time.
 	return 0, false
 }
 
-func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string) int {
+func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string, reg *agent.Registry) int {
 	var workerMeta *SessionWorkerMeta
 	var initialTMeta *TurnSpoolMeta
 	var err error
@@ -364,7 +370,7 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string) int {
 				status = "cancelled"
 			} else if !hadBlock {
 				if streamHadError {
-					if failBlock := detectTurnFailureBlock(workerMeta.Agent, strings.TrimSpace(lastTurnText+"\n"+stderrTailBuf.String())); failBlock != nil {
+					if failBlock := detectTurnFailureBlockWithRegistry(reg, workerMeta.Agent, strings.TrimSpace(lastTurnText+"\n"+stderrTailBuf.String())); failBlock != nil {
 						_, _ = turn.spool.Append(ChatStreamEvent{SessionID: turn.meta.SessionID, TurnID: turn.meta.TurnID, Type: "interactive_block", Blocked: failBlock})
 						hadBlock, turn.hadBlock = true, true
 						blockKind = failBlock.Kind
@@ -453,6 +459,12 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string) int {
 			stateMu.Unlock()
 		}
 
+		var streamParser agent.StreamParser
+		if reg != nil {
+			if f, ok := reg.AsStreamParserFactory(workerMeta.Agent); ok {
+				streamParser = f.NewStreamParser(workerMeta.SessionID)
+			}
+		}
 		var eofLastText string
 		var eofHadError bool
 		stdoutDone := make(chan struct{})
@@ -461,6 +473,7 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string) int {
 			eofLastText, _, eofHadError = parseHeadlessStream(workerMeta.SessionID, stdoutPipe, streamParseHooks{
 				emitTurnComplete: false,
 				stdioControl:     rt.isStdioControl,
+				streamParser:     streamParser,
 				onSystemEvent: func(raw map[string]interface{}) {
 					bgCtrl.handleSystemEvent(gen, raw)
 				},
@@ -584,7 +597,7 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string) int {
 			} else if !turn.hadBlock {
 				if waitErr != nil || eofHadError {
 					tail := strings.TrimSpace(stderrTailBuf.String())
-					if failBlock := detectTurnFailureBlock(workerMeta.Agent, strings.TrimSpace(eofLastText+"\n"+tail)); failBlock != nil {
+					if failBlock := detectTurnFailureBlockWithRegistry(reg, workerMeta.Agent, strings.TrimSpace(eofLastText+"\n"+tail)); failBlock != nil {
 						_, _ = turn.spool.Append(ChatStreamEvent{SessionID: turn.meta.SessionID, TurnID: turn.meta.TurnID, Type: "interactive_block", Blocked: failBlock})
 						turn.hadBlock = true
 					} else {

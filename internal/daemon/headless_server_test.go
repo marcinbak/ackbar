@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"ackbar/internal/agents/grok"
 	"ackbar/internal/tmux"
 )
 
@@ -28,6 +29,7 @@ func setupTestServer(t *testing.T) (*Server, *DB) {
 	srv.restartDaemonFn = func() {}
 	srv.shutdownExitFn = func(int) {}
 	srv.RegisterProvider(&MockProvider{})
+	_ = srv.RegisterPlugin(grok.New())
 	t.Cleanup(func() {
 		if srv.headless != nil {
 			srv.headless.ShutdownAllWorkers(2 * time.Second)

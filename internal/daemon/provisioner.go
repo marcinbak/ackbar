@@ -2,17 +2,17 @@ package daemon
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"strings"
 
 	"ackbar/internal/agent"
-	"ackbar/internal/skills"
+	"ackbar/internal/agentutil"
 	"ackbar/internal/version"
 )
 
@@ -66,15 +66,6 @@ var supportedAgents = []AgentDefinition{
 		SkillsRel:   filepath.Join(".codex", "skills"),
 		RulesRel:    filepath.Join(".codex", "AGENTS.md"),
 	},
-	{
-		Key:         "grok",
-		DisplayName: "xAI Grok",
-		CLICommand:  "grok",
-		HomeSubdir:  ".grok",
-		ConfigRel:   filepath.Join(".grok", "config.toml"),
-		SkillsRel:   filepath.Join(".grok", "skills"),
-		RulesRel:    filepath.Join(".grok", "rules", "ackbar.md"),
-	},
 }
 
 // getClaudeDesktopConfigPath resolves the OS-specific path for Claude Desktop config
@@ -109,6 +100,10 @@ func getAgentHomeSubdirPath(home string, def AgentDefinition) string {
 
 // GetAgentStatuses inspects the system and returns current status for all supported agents
 func GetAgentStatuses(customHome string) ([]AgentStatus, error) {
+	return GetAgentStatusesWithRegistry(customHome, nil)
+}
+
+func GetAgentStatusesWithRegistry(customHome string, reg *agent.Registry) ([]AgentStatus, error) {
 	home := customHome
 	if home == "" {
 		h, err := os.UserHomeDir()
@@ -119,10 +114,23 @@ func GetAgentStatuses(customHome string) ([]AgentStatus, error) {
 	}
 
 	var results []AgentStatus
+	seen := make(map[string]bool)
 
 	for _, def := range supportedAgents {
+		seen[def.Key] = true
 		status := inspectAgent(home, def)
 		results = append(results, status)
+	}
+
+	if reg != nil {
+		for _, p := range reg.List() {
+			if seen[p.Key()] {
+				continue
+			}
+			if prov, ok := reg.AsProvisioner(p.Key()); ok {
+				results = append(results, prov.CheckStatus(context.Background(), home))
+			}
+		}
 	}
 
 	return results, nil
@@ -169,14 +177,7 @@ func inspectAgent(home string, def AgentDefinition) AgentStatus {
 	}
 
 	// 1. Inspect MCP config
-	claudeHooksDisabled := false
-	hasHooks := false
-	if def.Key == "grok" {
-		if cfgData, err := os.ReadFile(configPath); err == nil {
-			status.MCPInstalled, status.MCPCommand, claudeHooksDisabled = inspectGrokTOMLConfig(cfgData)
-		}
-		hasHooks = hasGrokAckbarHook(filepath.Join(home, ".grok"))
-	} else if cfgData, err := os.ReadFile(configPath); err == nil {
+	if cfgData, err := os.ReadFile(configPath); err == nil {
 		var root map[string]any
 		if err := json.Unmarshal(cfgData, &root); err == nil {
 			if mcpServers, ok := root["mcpServers"].(map[string]any); ok {
@@ -202,12 +203,12 @@ func inspectAgent(home string, def AgentDefinition) AgentStatus {
 		skillMDPath := filepath.Join(skillsDirPath, "ackbar-tasks", "SKILL.md")
 		if data, err := os.ReadFile(skillMDPath); err == nil {
 			status.SkillInstalled = true
-			status.SkillVersion = extractSkillVersion(string(data))
+			status.SkillVersion = agentutil.ExtractSkillVersion(string(data))
 		} else if def.Key == "antigravity" {
 			cliSkillMDPath := filepath.Join(home, ".gemini", "antigravity-cli", "skills", "ackbar-tasks", "SKILL.md")
 			if data, err := os.ReadFile(cliSkillMDPath); err == nil {
 				status.SkillInstalled = true
-				status.SkillVersion = extractSkillVersion(string(data))
+				status.SkillVersion = agentutil.ExtractSkillVersion(string(data))
 			}
 		}
 	}
@@ -218,14 +219,14 @@ func inspectAgent(home string, def AgentDefinition) AgentStatus {
 		status.RulesVersion = version.Version
 	} else {
 		if data, err := os.ReadFile(rulesFilePath); err == nil {
-			if ver := extractRulesVersion(string(data)); ver != "" {
+			if ver := agentutil.ExtractRulesVersion(string(data)); ver != "" {
 				status.RulesInstalled = true
 				status.RulesVersion = ver
 			}
 		} else if def.Key == "antigravity" {
 			cliRulesPath := filepath.Join(home, ".gemini", "config", "GEMINI.md")
 			if data, err := os.ReadFile(cliRulesPath); err == nil {
-				if ver := extractRulesVersion(string(data)); ver != "" {
+				if ver := agentutil.ExtractRulesVersion(string(data)); ver != "" {
 					status.RulesInstalled = true
 					status.RulesVersion = ver
 				}
@@ -236,13 +237,7 @@ func inspectAgent(home string, def AgentDefinition) AgentStatus {
 	// 4. Evaluate Drift
 	// Drift occurs if detected but MCP, Skill, or Rules is missing, or versions are out of date
 	if detected {
-		if def.Key == "grok" {
-			if !status.MCPInstalled || !claudeHooksDisabled || !hasHooks ||
-				!status.SkillInstalled || status.SkillVersion != version.Version ||
-				!status.RulesInstalled || status.RulesVersion != version.Version {
-				status.DriftDetected = true
-			}
-		} else if !status.MCPInstalled || !status.SkillInstalled || status.SkillVersion != version.Version ||
+		if !status.MCPInstalled || !status.SkillInstalled || status.SkillVersion != version.Version ||
 			!status.RulesInstalled || status.RulesVersion != version.Version {
 			status.DriftDetected = true
 		}
@@ -253,6 +248,10 @@ func inspectAgent(home string, def AgentDefinition) AgentStatus {
 
 // ProvisionAgents installs the Ackbar Tasks MCP server, Skill, and global rules into the specified agents
 func ProvisionAgents(customHome string, targetAgentKeys []string) ([]AgentStatus, error) {
+	return ProvisionAgentsWithRegistry(customHome, targetAgentKeys, nil)
+}
+
+func ProvisionAgentsWithRegistry(customHome string, targetAgentKeys []string, reg *agent.Registry) ([]AgentStatus, error) {
 	home := customHome
 	if home == "" {
 		h, err := os.UserHomeDir()
@@ -268,7 +267,9 @@ func ProvisionAgents(customHome string, targetAgentKeys []string) ([]AgentStatus
 		targetMap[strings.ToLower(strings.TrimSpace(k))] = true
 	}
 
+	seen := make(map[string]bool)
 	for _, def := range supportedAgents {
+		seen[def.Key] = true
 		if !provisionAll && !targetMap[def.Key] {
 			continue
 		}
@@ -297,58 +298,37 @@ func ProvisionAgents(customHome string, targetAgentKeys []string) ([]AgentStatus
 		}
 	}
 
-	// Return updated statuses
-	return GetAgentStatuses(home)
-}
-
-func hasGrokAckbarHook(grokDir string) bool {
-	hookFile := filepath.Join(grokDir, "hooks", "ackbar.json")
-	data, err := os.ReadFile(hookFile)
-	if err != nil {
-		return false
-	}
-	var root map[string]interface{}
-	if err := json.Unmarshal(data, &root); err != nil {
-		return false
-	}
-	hooksMap, ok := root["hooks"].(map[string]interface{})
-	if !ok || len(hooksMap) == 0 {
-		return false
-	}
-	for _, entries := range hooksMap {
-		list, ok := entries.([]interface{})
-		if !ok {
-			continue
-		}
-		for _, rawItem := range list {
-			item, ok := rawItem.(map[string]interface{})
-			if !ok {
+	if reg != nil {
+		for _, p := range reg.List() {
+			if seen[p.Key()] {
 				continue
 			}
-			innerList, _ := item["hooks"].([]interface{})
-			for _, inner := range innerList {
-				hMap, _ := inner.(map[string]interface{})
-				u, _ := hMap["url"].(string)
-				c, _ := hMap["command"].(string)
-				if strings.Contains(u, "127.0.0.1:7777/v1/hooks/grok") ||
-					strings.Contains(u, "localhost:7777/v1/hooks/grok") ||
-					strings.Contains(c, "ackbar-hook") {
-					return true
+			targeted := provisionAll || targetMap[strings.ToLower(p.Key())]
+			if !targeted {
+				for _, a := range p.Aliases() {
+					if targetMap[strings.ToLower(strings.TrimSpace(a))] {
+						targeted = true
+						break
+					}
+				}
+			}
+			if !targeted {
+				continue
+			}
+			if prov, ok := reg.AsProvisioner(p.Key()); ok {
+				if err := prov.Provision(context.Background(), home); err != nil {
+					return nil, fmt.Errorf("failed to provision %s: %w", p.DisplayName(), err)
 				}
 			}
 		}
 	}
-	return false
+
+	// Return updated statuses
+	return GetAgentStatusesWithRegistry(home, reg)
 }
 
 func configureAgentMCP(home string, def AgentDefinition) error {
 	configPath := getAgentConfigPath(home, def)
-	if def.Key == "grok" {
-		if err := UpsertGrokTOMLConfig(configPath, "ackbar"); err != nil {
-			return err
-		}
-		return WriteGrokHooksFile(filepath.Join(home, ".grok"), "")
-	}
 	return upsertJSONMCPServer(configPath, "ackbar", map[string]any{
 		"command": "ackbar",
 		"args":    []string{"mcp"},
@@ -423,68 +403,18 @@ func installAgentSkill(home string, def AgentDefinition) error {
 		return nil
 	}
 
-	skillFiles, err := skills.GetSkillFiles()
-	if err != nil {
-		return fmt.Errorf("failed to retrieve embedded skill files: %w", err)
-	}
-
 	targetDirs := []string{filepath.Join(home, def.SkillsRel, "ackbar-tasks")}
 	if def.Key == "antigravity" {
 		targetDirs = append(targetDirs, filepath.Join(home, ".gemini", "antigravity-cli", "skills", "ackbar-tasks"))
 	}
 
 	for _, targetSkillDir := range targetDirs {
-		if err := os.MkdirAll(targetSkillDir, 0755); err != nil {
-			return fmt.Errorf("failed to create skill directory %s: %w", targetSkillDir, err)
-		}
-
-		for relPath, content := range skillFiles {
-			filePath := filepath.Join(targetSkillDir, relPath)
-			if err := os.MkdirAll(filepath.Dir(filePath), 0755); err != nil {
-				return fmt.Errorf("failed to create directory for %s: %w", filePath, err)
-			}
-			fileBytes := content
-			if relPath == "SKILL.md" {
-				fileBytes = stampSkillVersion(content, version.Version)
-			}
-			if err := os.WriteFile(filePath, fileBytes, 0644); err != nil {
-				return fmt.Errorf("failed to write skill file %s: %w", filePath, err)
-			}
+		if err := agentutil.InstallEmbeddedSkill(targetSkillDir); err != nil {
+			return err
 		}
 	}
 
 	return nil
-}
-
-var skillVersionRegex = regexp.MustCompile(`(?m)^version:\s*".*?"\s*$`)
-
-func stampSkillVersion(content []byte, ver string) []byte {
-	str := string(content)
-	vTag := fmt.Sprintf("version: %q", ver)
-	if skillVersionRegex.MatchString(str) {
-		return []byte(skillVersionRegex.ReplaceAllString(str, vTag))
-	}
-	if strings.Contains(str, "argument-hint:") {
-		return []byte(strings.Replace(str, "argument-hint:", vTag+"\nargument-hint:", 1))
-	}
-	parts := strings.SplitN(str, "---", 3)
-	if len(parts) >= 3 {
-		return []byte(parts[0] + "---\n" + vTag + "\n" + strings.TrimLeft(parts[1], "\r\n") + "---" + parts[2])
-	}
-	return []byte("---\n" + vTag + "\n---\n\n" + str)
-}
-
-func extractSkillVersion(content string) string {
-	lines := strings.Split(content, "\n")
-	for _, l := range lines {
-		l = strings.TrimSpace(l)
-		if strings.HasPrefix(l, "version:") {
-			val := strings.TrimPrefix(l, "version:")
-			val = strings.Trim(strings.TrimSpace(val), "\"'")
-			return val
-		}
-	}
-	return ""
 }
 
 func installAgentRules(home string, def AgentDefinition) error {
@@ -498,88 +428,9 @@ func installAgentRules(home string, def AgentDefinition) error {
 	}
 
 	for _, target := range targets {
-		if err := upsertMarkdownRulesBlock(target, version.Version); err != nil {
+		if err := agentutil.UpsertMarkdownRulesBlock(target, version.Version); err != nil {
 			return err
 		}
-	}
-
-	return nil
-}
-
-var rulesBlockRegex = regexp.MustCompile(`(?s)<!-- ackbar-rules:v([^>]+) -->.*?<!-- /ackbar-rules -->`)
-
-func extractRulesVersion(content string) string {
-	matches := rulesBlockRegex.FindStringSubmatch(content)
-	if len(matches) > 1 {
-		return strings.TrimSpace(matches[1])
-	}
-	return ""
-}
-
-func buildMarkdownRulesBlock(ver string) string {
-	return fmt.Sprintf(`<!-- ackbar-rules:v%s -->
-## Communication & Documentation Rules (Ackbar Managed)
-
-### Style (ASD-STE100 & Strunk Heuristic)
-- Eliminate conversational filler, greetings, sign-offs, hedging, and meta-commentary.
-- Lead with the answer, command, or code in the first sentence.
-- Write in ASD-STE100 style: active voice, literal phrasing, simplest word choice, no metaphors, no synonyms for stylistic variety.
-- State limitations as technical constraints, never apologies.
-- Prefer tables and bullet points over prose paragraphs. Keep bullets under 20 words unless explaining a complex causal chain.
-
-### Anti-Redundancy (Single Source of Truth)
-- Never duplicate information across code comments, `+"`docs/*.md`"+`, PR descriptions, and chat.
-- Code comments: document *why* (invariants/constraints), never *what* the code literally does.
-- Docs (`+"`docs/*.md`"+`): document current architecture using tables and file links; never paste large code blocks or changelog history.
-- PR bodies: max 5 bullets covering intent, blast radius, and verification gates.
-- Chat replies: report only the outcome, key decisions, and links to changed files/artifacts.
-<!-- /ackbar-rules -->`, ver)
-}
-
-func upsertMarkdownRulesBlock(filePath string, ver string) error {
-	targetPath := filePath
-	if resolved, err := filepath.EvalSymlinks(filePath); err == nil {
-		targetPath = resolved
-	}
-
-	parentDir := filepath.Dir(targetPath)
-	if err := os.MkdirAll(parentDir, 0755); err != nil {
-		return fmt.Errorf("failed to create directory %s: %w", parentDir, err)
-	}
-
-	newBlock := buildMarkdownRulesBlock(ver)
-
-	var newContent string
-	data, err := os.ReadFile(targetPath)
-	if err != nil {
-		if !os.IsNotExist(err) {
-			return fmt.Errorf("failed to read rules file %s: %w", targetPath, err)
-		}
-		newContent = newBlock + "\n"
-	} else {
-		existing := string(data)
-		if rulesBlockRegex.MatchString(existing) {
-			newContent = rulesBlockRegex.ReplaceAllLiteralString(existing, newBlock)
-		} else {
-			if len(existing) == 0 {
-				newContent = newBlock + "\n"
-			} else if strings.HasSuffix(existing, "\n\n") {
-				newContent = existing + newBlock + "\n"
-			} else if strings.HasSuffix(existing, "\n") {
-				newContent = existing + "\n" + newBlock + "\n"
-			} else {
-				newContent = existing + "\n\n" + newBlock + "\n"
-			}
-		}
-	}
-
-	tmpPath := targetPath + ".tmp"
-	if err := os.WriteFile(tmpPath, []byte(newContent), 0644); err != nil {
-		return fmt.Errorf("failed to write temp rules file %s: %w", tmpPath, err)
-	}
-	if err := os.Rename(tmpPath, targetPath); err != nil {
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("failed to atomically update rules file %s: %w", targetPath, err)
 	}
 
 	return nil

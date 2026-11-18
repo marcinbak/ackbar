@@ -174,8 +174,10 @@ func (s *Server) collectModelsForAgent(agent string) []ModelSuggestion {
 		return getAntigravityDefaultModels()
 	}
 
-	if strings.EqualFold(agent, "grok") || strings.EqualFold(agent, "grok-cli") {
-		return s.collectGrokModels()
+	if s != nil && s.PluginRegistry() != nil {
+		if mc, ok := s.PluginRegistry().AsModelCatalog(agent); ok {
+			return mc.CollectModels(s.effectiveHomeDir())
+		}
 	}
 
 	return getClaudeDefaultModels()

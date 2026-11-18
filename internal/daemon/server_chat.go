@@ -1262,7 +1262,7 @@ func (s *Server) ExtractTranscript(agent, nativeID, cwd string) (*Transcript, er
 			msgs, perr := p.ExtractTranscript(home, cwd, nativeID)
 			if perr == nil && len(msgs) > 0 {
 				t.Messages = msgs
-				if path, size, modTime, serr := resolveTranscriptFileStat(home, agent, nativeID, cwd); serr == nil {
+				if path, size, modTime, serr := s.resolveTranscriptStat(home, agent, nativeID, cwd); serr == nil {
 					s.setCachedTranscript(agent, nativeID, cwd, path, size, modTime, msgs)
 				}
 				return t, nil
@@ -1274,7 +1274,7 @@ func (s *Server) ExtractTranscript(agent, nativeID, cwd string) (*Transcript, er
 			if perr == nil && len(msgs) > 0 {
 				t.Messages = msgs
 				t.Agent = p.Agent()
-				if path, size, modTime, serr := resolveTranscriptFileStat(home, t.Agent, nativeID, cwd); serr == nil {
+				if path, size, modTime, serr := s.resolveTranscriptStat(home, t.Agent, nativeID, cwd); serr == nil {
 					s.setCachedTranscript(t.Agent, nativeID, cwd, path, size, modTime, msgs)
 				}
 				return t, nil

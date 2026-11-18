@@ -111,6 +111,7 @@ func NewServer(db *DB) *Server {
 		subagentDiskCache: make(map[string]*subagentDiskCacheEntry),
 	}
 	s.headless = NewHeadlessRunner(db, s.broadcast)
+	s.headless.SetPluginRegistry(s.registry)
 	s.headless.SetOnTurnComplete(s.onHeadlessTurnComplete)
 	s.headless.SetOnBgTaskCountChange(s.onBgTaskCountChanged)
 	s.headless.SetOnWorkerExit(s.onHeadlessWorkerExited)
@@ -1159,7 +1160,7 @@ func (s *Server) resumeInterruptedHeadlessSessions(ctx context.Context) {
 		}
 
 		resumePrompt := ""
-		if hasConversationOnDisk(sess, home, s.db) {
+		if hasConversationOnDiskWithRegistry(s.PluginRegistry(), sess, home, s.db) {
 			resumePrompt = "Continue from where you left off."
 		} else if sess.LastPrompt != "" {
 			resumePrompt = sess.LastPrompt

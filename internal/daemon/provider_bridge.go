@@ -135,6 +135,20 @@ func (b *PluginBridge) ParseHook(eventName string, payload []byte) (*Event, erro
 	return nil, fmt.Errorf("plugin %q does not implement Hooks", b.plugin.Key())
 }
 
+func (b *PluginBridge) ResolveSubagentParent(home, nativeID string) (string, string, string) {
+	if h, ok := b.hooks(); ok {
+		return h.ResolveSubagentParent(home, nativeID)
+	}
+	return "", "", ""
+}
+
+func (b *PluginBridge) BuildLaunchSpec(in agent.LaunchInput) (agent.LaunchSpec, error) {
+	if td, ok := b.tmuxDriver(); ok {
+		return td.BuildLaunchSpec(in)
+	}
+	return agent.LaunchSpec{}, fmt.Errorf("plugin %q does not implement TMuxDriver", b.plugin.Key())
+}
+
 func (b *PluginBridge) GetSpawnCommand(tempUUID string) string {
 	if td, ok := b.tmuxDriver(); ok {
 		return td.SpawnCommand(tempUUID)

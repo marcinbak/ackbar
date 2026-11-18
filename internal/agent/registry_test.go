@@ -166,6 +166,21 @@ func TestRegistry_FacetAssertionsAndHeadlessGate(t *testing.T) {
 	if _, ok := reg.AsRateLimiter("fa"); !ok {
 		t.Error("expected full-agent RateLimiter")
 	}
+	if _, ok := reg.AsStreamParserFactory("fa"); ok {
+		t.Error("did not expect full-agent StreamParserFactory")
+	}
+	if _, ok := reg.AsModelResolver("fa"); ok {
+		t.Error("did not expect full-agent ModelResolver")
+	}
+	if _, ok := reg.AsTranscriptStatter("fa"); ok {
+		t.Error("did not expect full-agent TranscriptStatter")
+	}
+	if _, ok := reg.AsTranscriptUsageInspector("fa"); ok {
+		t.Error("did not expect full-agent TranscriptUsageInspector")
+	}
+	if _, ok := reg.AsCLIInspector("fa"); ok {
+		t.Error("did not expect full-agent CLIInspector")
+	}
 }
 
 func TestRegistry_ConcurrentAccess(t *testing.T) {

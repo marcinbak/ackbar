@@ -164,3 +164,41 @@ func TestRateLimitParsing(t *testing.T) {
 		t.Error("expected unmatched rate limit")
 	}
 }
+
+func TestTOMLAndProvisionHelpers(t *testing.T) {
+	if got := StripTOMLComment(`key = "val # keep" # strip me`); got != `key = "val # keep"` {
+		t.Fatalf("StripTOMLComment = %q", got)
+	}
+	if got := StripTOMLComment(`  # full comment`); got != "" {
+		t.Fatalf("StripTOMLComment full = %q", got)
+	}
+
+	stamped := StampSkillVersion([]byte("---\nname: ackbar\n---\nbody\n"), "1.2.3")
+	if got := ExtractSkillVersion(string(stamped)); got != "1.2.3" {
+		t.Fatalf("ExtractSkillVersion = %q, want 1.2.3", got)
+	}
+
+	rulesPath := filepath.Join(t.TempDir(), "AGENTS.md")
+	if err := os.WriteFile(rulesPath, []byte("# Header\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := UpsertMarkdownRulesBlock(rulesPath, "1.0.0"); err != nil {
+		t.Fatalf("UpsertMarkdownRulesBlock insert: %v", err)
+	}
+	if err := UpsertMarkdownRulesBlock(rulesPath, "2.0.0"); err != nil {
+		t.Fatalf("UpsertMarkdownRulesBlock update: %v", err)
+	}
+	raw, _ := os.ReadFile(rulesPath)
+	if !strings.Contains(string(raw), "# Header") || ExtractRulesVersion(string(raw)) != "2.0.0" {
+		t.Fatalf("unexpected rules content: %q", string(raw))
+	}
+
+	skillDir := filepath.Join(t.TempDir(), "skill")
+	if err := InstallEmbeddedSkill(skillDir); err != nil {
+		t.Fatalf("InstallEmbeddedSkill: %v", err)
+	}
+	skillMD, err := os.ReadFile(filepath.Join(skillDir, "SKILL.md"))
+	if err != nil || ExtractSkillVersion(string(skillMD)) == "" {
+		t.Fatalf("expected stamped SKILL.md, err=%v", err)
+	}
+}

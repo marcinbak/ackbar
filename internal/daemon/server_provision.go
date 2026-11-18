@@ -43,7 +43,7 @@ func (s *Server) handleAgentsStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	statuses, err := GetAgentStatuses(s.homeDir)
+	statuses, err := GetAgentStatusesWithRegistry(s.homeDir, s.PluginRegistry())
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to query agent statuses: %v", err), http.StatusInternalServerError)
 		return
@@ -88,7 +88,7 @@ func (s *Server) handleAgentsProvision(w http.ResponseWriter, r *http.Request) {
 		req.Agents = []string{"all"}
 	}
 
-	updated, err := ProvisionAgents(s.homeDir, req.Agents)
+	updated, err := ProvisionAgentsWithRegistry(s.homeDir, req.Agents, s.PluginRegistry())
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
@@ -171,7 +171,7 @@ func (s *Server) handleSkillsRepoSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	agents, _ := GetAgentStatuses(s.homeDir)
+	agents, _ := GetAgentStatusesWithRegistry(s.homeDir, s.PluginRegistry())
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{

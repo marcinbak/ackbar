@@ -19,10 +19,18 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"ackbar/internal/agent"
+	"ackbar/internal/agents/grok"
 	"ackbar/internal/daemon"
 	"ackbar/internal/mcp"
 	"ackbar/internal/version"
 )
+
+func cliPluginRegistry() *agent.Registry {
+	reg := agent.NewRegistry()
+	_ = reg.Register(grok.New())
+	return reg
+}
 
 func main() {
 	if len(os.Args) > 1 && (os.Args[1] == "update" || os.Args[1] == "upgrade") {
@@ -272,27 +280,21 @@ func runSetupHooks() error {
 		fmt.Printf("✅ Configured Antigravity lifecycle hooks in %s\n", geminiHooksFile)
 	}
 
-	// 4. Configure Grok hooks (~/.grok/hooks/ackbar.json) if grok is installed or ~/.grok exists
-	grokDir := filepath.Join(home, ".grok")
-	grokInstalled := false
-	if _, err := os.Stat(grokDir); err == nil {
-		grokInstalled = true
-	} else if _, err := exec.LookPath("grok"); err == nil {
-		grokInstalled = true
-	} else if _, err := exec.LookPath("grok-cli"); err == nil {
-		grokInstalled = true
-	}
-	if grokInstalled {
-		if err := daemon.WriteGrokHooksFile(grokDir, ""); err == nil {
-			fmt.Printf("✅ Configured Grok lifecycle hooks in %s/hooks/ackbar.json\n", grokDir)
-		} else {
-			fmt.Printf("⚠️ Warning: Failed to configure Grok hooks: %v\n", err)
+	// 4. Configure registered plugin hooks if installed
+	reg := cliPluginRegistry()
+	for _, p := range reg.List() {
+		if prov, ok := reg.AsProvisioner(p.Key()); ok && prov.IsInstalled(home) {
+			if err := prov.InstallHooks(home); err == nil {
+				fmt.Printf("✅ Configured %s lifecycle hooks\n", p.DisplayName())
+			} else {
+				fmt.Printf("⚠️ Warning: Failed to configure %s hooks: %v\n", p.DisplayName(), err)
+			}
 		}
 	}
 
 	// 5. Provision agent MCP servers and ackbar-tasks skills
 	fmt.Printf("⚡ Configuring agent MCP servers and ackbar-tasks skills...\n")
-	if _, err := daemon.ProvisionAgents(home, []string{"all"}); err != nil {
+	if _, err := daemon.ProvisionAgentsWithRegistry(home, []string{"all"}, reg); err != nil {
 		fmt.Printf("⚠️ Warning: Agent provisioning encountered an error: %v\n", err)
 	} else {
 		fmt.Printf("✅ Provisioned agent MCP servers and skills\n")
@@ -489,6 +491,9 @@ func runAccountCmd(args []string) {
 			os.Exit(1)
 		}
 		agent := strings.TrimSpace(tail[0])
+		if p, ok := cliPluginRegistry().Get(agent); ok {
+			agent = p.Key()
+		}
 		name := strings.TrimSpace(tail[1])
 
 		envMap := make(map[string]string)
@@ -604,7 +609,7 @@ func runMCPCmd(args []string) {
 
 func runAgentCmd(args []string) {
 	if len(args) == 0 || args[0] == "status" || args[0] == "list" || args[0] == "ls" {
-		statuses, err := daemon.GetAgentStatuses("")
+		statuses, err := daemon.GetAgentStatusesWithRegistry("", cliPluginRegistry())
 		if err != nil {
 			fmt.Printf("❌ Failed to query agent statuses: %v\n", err)
 			os.Exit(1)
@@ -706,7 +711,7 @@ func runAgentCmd(args []string) {
 		if subcmd != "sync" {
 			targets := []string{*agentFlag}
 			fmt.Printf("⚡ Configuring Ackbar Tasks MCP server and Skill for: %s...\n", *agentFlag)
-			updated, err := daemon.ProvisionAgents(home, targets)
+			updated, err := daemon.ProvisionAgentsWithRegistry(home, targets, cliPluginRegistry())
 			if err != nil {
 				fmt.Printf("❌ Provisioning failed: %v\n", err)
 				os.Exit(1)

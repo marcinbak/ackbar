@@ -131,16 +131,20 @@ func (s *Server) extractAntigravityRewindTurns(home string, sess *Session) []rew
 	return turns
 }
 
-func (s *Server) extractGrokRewindTurns(home string, sess *Session) []rewindHumanTurn {
+func (s *Server) extractPluginRewindTurns(home string, sess *Session) []rewindHumanTurn {
 	if sess == nil {
 		return nil
 	}
-	msgs, err := ExtractGrokTranscriptMessages(home, sess.Cwd, sess.NativeID)
-	if err != nil || len(msgs) == 0 {
+	tr, ok := s.PluginRegistry().AsTranscript(sess.Agent)
+	if !ok {
+		return nil
+	}
+	t, err := tr.ExtractTranscript(home, sess.Cwd, sess.NativeID)
+	if err != nil || t == nil || len(t.Messages) == 0 {
 		return nil
 	}
 	var turns []rewindHumanTurn
-	for _, m := range msgs {
+	for _, m := range t.Messages {
 		if m.Role == "user" && strings.TrimSpace(m.Content) != "" {
 			preview := strings.TrimSpace(m.Content)
 			if len(preview) > 120 {
@@ -188,8 +192,8 @@ func (s *Server) handleSessionRewind(w http.ResponseWriter, r *http.Request, ses
 
 	if sess.Agent == "antigravity" {
 		turns = s.extractAntigravityRewindTurns(home, sess)
-	} else if sess.Agent == "grok" {
-		turns = s.extractGrokRewindTurns(home, sess)
+	} else if _, ok := s.PluginRegistry().AsTranscript(sess.Agent); ok {
+		turns = s.extractPluginRewindTurns(home, sess)
 	} else {
 		turns, rawLines, targetFile = s.extractClaudeRewindTurns(home, sess)
 	}
