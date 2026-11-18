@@ -120,10 +120,6 @@ func (s *acpChildSession) runPromptTurn(turn *activeTurnState, prompt string) {
 	s.waitCancelSettled(time.Second)
 	<-s.bootDone
 
-	s.streamMu.Lock()
-	s.streamState.ResetTurn()
-	s.streamMu.Unlock()
-
 	doneCh := make(chan struct{})
 	s.mu.Lock()
 	s.rt.mu.Lock()
@@ -151,6 +147,9 @@ func (s *acpChildSession) runPromptTurn(turn *activeTurnState, prompt string) {
 	}
 	s.sentFirstTurn = true
 	sid := s.sessionID
+	s.streamMu.Lock()
+	s.streamState.ResetTurn()
+	s.streamMu.Unlock()
 	s.promptDone = doneCh
 	s.inPromptTurn = true
 	s.mu.Unlock()
