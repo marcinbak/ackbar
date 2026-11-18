@@ -199,7 +199,6 @@ read -r ctrl; echo "$ctrl" >> "`+stdinLog+`"; echo '{"type":"mock_delta","text":
 	waitForWorkerCond(t, 5*time.Second, "turn 3 active", func() bool { return srv.headless.IsRunning(sessID) })
 	_ = srv.headless.CancelTurn(sessID)
 	waitForWorkerCond(t, 5*time.Second, "turn 3 cancelled", func() bool { return !srv.headless.IsRunning(sessID) })
-
 	data, _ := os.ReadFile(stdinLog)
 	if !strings.Contains(string(data), `"type":"set_model_custom"`) || !strings.Contains(string(data), `"control_response"`) {
 		t.Fatalf("unexpected stdin log:\n%s", string(data))
@@ -212,10 +211,8 @@ func TestPersistentPlugin_AgyEventStreamSupervisorInitAndModelSwap(t *testing.T)
 	binPath := installMockAgentBin(t, "mock-persist-agy", `echo "ARGS:$*" >> "`+stdinLog+`"
 while IFS= read -r line; do echo "IN:$line" >> "`+stdinLog+`"; echo '{"event":"custom_init","conv_id":"conv-adopted-7","model":"agy-pro-1"}'; echo '{"event":"custom_step","text":"agy-reply"}'; echo '{"event":"custom_done","text":"agy-reply"}'; done`)
 	srv, db := setupPersistTestServer(t, tmpDir)
-
 	sess := &Session{ID: "mock-persist-agy:local:init1", Agent: "mock-persist-agy", Host: "local", NativeID: "init1", Cwd: tmpDir, EngineType: EngineHeadless, IsSupervisor: true, Model: "m1", Managed: true, State: StateIdle}
 	_ = db.SaveSession(sess)
-
 	if argv, _, _, err := resolveAllowlistedAuthCommandWithRegistry(srv.PluginRegistry(), sess, "agent:mock-agy", db, tmpDir); err != nil || len(argv) != 3 || argv[0] != binPath {
 		t.Fatalf("auth_login alias mismatch: argv=%v err=%v", argv, err)
 	}
@@ -241,8 +238,11 @@ while IFS= read -r line; do echo "IN:$line" >> "`+stdinLog+`"; echo '{"event":"c
 	if pid2 := warmHandlePID(srv, sess); pid1 <= 1 || pid2 <= 1 || pid1 == pid2 {
 		t.Fatalf("expected child restart on model change: %d -> %d", pid1, pid2)
 	}
-	logBytes, _ := os.ReadFile(stdinLog)
-	if !strings.Contains(string(logBytes), "[SYS:") || strings.Count(string(logBytes), "[SYS:") != 1 || !strings.Contains(string(logBytes), "--model m2") {
-		t.Fatalf("unexpected agy log:\n%s", string(logBytes))
+	waitForWorkerCond(t, 2*time.Second, "restarted child logged m2 args", func() bool {
+		b, _ := os.ReadFile(stdinLog)
+		return strings.Contains(string(b), "--model m2")
+	})
+	if logBytes, _ := os.ReadFile(stdinLog); strings.Count(string(logBytes), "[SYS:") != 1 {
+		t.Fatalf("unexpected supervisor prefix count in agy log:\n%s", string(logBytes))
 	}
 }
