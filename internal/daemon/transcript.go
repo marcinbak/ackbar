@@ -17,11 +17,17 @@ type TranscriptMessage = agent.TranscriptMessage
 type Transcript = agent.Transcript
 type SubagentInfo = agent.SubagentInfo
 
-// ExtractTranscript loads and parses conversation logs for a session from disk
 func ExtractTranscript(agent, nativeID, cwd string) (*Transcript, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get home dir: %w", err)
+	}
+	return extractTranscriptWithHome(home, agent, nativeID, cwd)
+}
+
+func extractTranscriptWithHome(home, agent, nativeID, cwd string) (*Transcript, error) {
+	if home == "" {
+		return nil, fmt.Errorf("failed to get home dir")
 	}
 
 	t := &Transcript{

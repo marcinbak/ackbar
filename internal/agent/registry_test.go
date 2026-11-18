@@ -2,6 +2,8 @@ package agent
 
 import (
 	"fmt"
+	"io"
+	"path/filepath"
 	"sync"
 	"testing"
 )
@@ -200,6 +202,125 @@ func TestRegistry_FacetAssertionsAndHeadlessGate(t *testing.T) {
 	}
 	if _, ok := reg.AsCLIInspector("fa"); ok {
 		t.Error("did not expect full-agent CLIInspector")
+	}
+}
+
+type persistentWavePlugin struct {
+	minimalPlugin
+	BasePersistentHeadless
+	BaseTranscripts
+	BaseSessionRewinder
+}
+
+func (p *persistentWavePlugin) ResolveBinary() (string, error) { return p.key, nil }
+func (p *persistentWavePlugin) BuildTurnSpec(in HeadlessTurnInput) (HeadlessTurnSpec, error) {
+	return HeadlessTurnSpec{Binary: p.key, Mode: HeadlessModePersistent}, nil
+}
+func (p *persistentWavePlugin) ParseStreamEvent(line []byte) ([]ChatStreamEvent, error) {
+	return nil, nil
+}
+func (p *persistentWavePlugin) ComputeUsage(sessionID, cwd, model string) (TranscriptUsage, bool) {
+	return TranscriptUsage{}, false
+}
+func (p *persistentWavePlugin) FormatStdinTurn(in PersistentTurnInput) (string, error) {
+	return in.Prompt, nil
+}
+func (p *persistentWavePlugin) AppendTranscript(r io.Reader, existing []TranscriptMessage) ([]TranscriptMessage, error) {
+	_ = r
+	return existing, nil
+}
+
+func TestRegistry_Wave45FacetsAndBaseDefaults(t *testing.T) {
+	reg := NewRegistry()
+	acpAgent := &fullStubPlugin{
+		minimalPlugin: minimalPlugin{
+			key:  "acp-agent",
+			caps: Capabilities{SupportsHeadless: true, HeadlessMode: HeadlessModeACP},
+		},
+		mode: HeadlessModeACP,
+	}
+	gatedPersist := &persistentWavePlugin{
+		minimalPlugin: minimalPlugin{
+			key:  "gated-persist",
+			caps: Capabilities{SupportsHeadless: false},
+		},
+	}
+	persist := &persistentWavePlugin{
+		minimalPlugin: minimalPlugin{
+			key:     "persist-agent",
+			aliases: []string{"pa"},
+			caps:    Capabilities{SupportsHeadless: true, HeadlessMode: HeadlessModePersistent},
+		},
+	}
+	for _, p := range []Plugin{acpAgent, gatedPersist, persist} {
+		if err := reg.Register(p); err != nil {
+			t.Fatalf("register %s: %v", p.Key(), err)
+		}
+	}
+
+	if _, ok := reg.AsPersistentHeadless("acp-agent"); ok {
+		t.Fatal("ACP plugin must not satisfy AsPersistentHeadless")
+	}
+	if _, ok := reg.AsPersistentHeadless("gated-persist"); ok {
+		t.Fatal("SupportsHeadless=false must gate AsPersistentHeadless")
+	}
+	pd, ok := reg.AsPersistentHeadless("PA")
+	if !ok || pd.Mode() != HeadlessModePersistent || pd.SupportsStdioControl() || pd.DefaultPermissionMode() != "" {
+		t.Fatalf("AsPersistentHeadless('PA') mismatch: ok=%v pd=%+v", ok, pd)
+	}
+	if line, sup := pd.FormatSetModel("m1"); sup || line != "" {
+		t.Fatalf("expected BasePersistentHeadless.FormatSetModel unsupported, got (%q, %v)", line, sup)
+	}
+
+	if _, ok := reg.AsIncrementalTranscript("acp-agent"); ok {
+		t.Fatal("BaseTranscripts alone must not satisfy IncrementalTranscripts")
+	}
+	if _, ok := reg.AsIncrementalTranscript("pa"); !ok {
+		t.Fatal("expected persist-agent to satisfy IncrementalTranscripts")
+	}
+	if _, ok := reg.AsSessionRewinder("acp-agent"); ok {
+		t.Fatal("plugin without SessionRewinder must return false")
+	}
+	rw, ok := reg.AsSessionRewinder("pa")
+	if !ok {
+		t.Fatal("expected persist-agent to satisfy SessionRewinder")
+	}
+	if turns, err := rw.ListRewindTurns("/h", "/c", "n"); err != nil || turns != nil {
+		t.Fatalf("BaseSessionRewinder.ListRewindTurns = (%v, %v)", turns, err)
+	}
+	if cloned, err := rw.CloneTranscriptBeforeTurn("/h", "/c", "n", 2, "n2"); err != nil || cloned {
+		t.Fatalf("BaseSessionRewinder.CloneTranscriptBeforeTurn = (%v, %v)", cloned, err)
+	}
+
+	var mc BaseModelCatalog
+	for _, blank := range []string{"", "   ", "default", "DEFAULT", "synthetic", "SYNTHETIC", "<synthetic>"} {
+		if got := mc.NormalizeModelID(blank); got != "" {
+			t.Errorf("NormalizeModelID(%q) = %q, want empty", blank, got)
+		}
+	}
+	if got := mc.NormalizeModelID("  claude-opus-4-6  "); got != "claude-opus-4-6" {
+		t.Errorf("NormalizeModelID valid = %q", got)
+	}
+
+	var bp BaseProvisioner
+	if dirs := bp.SkillDirs("/home/u"); dirs != nil {
+		t.Errorf("BaseProvisioner.SkillDirs = %v, want nil", dirs)
+	}
+
+	var ba BaseAccounts
+	if dirs := ba.ProfileSkillDirs("/home/u", nil); dirs != nil {
+		t.Errorf("ProfileSkillDirs(nil) = %v, want nil", dirs)
+	}
+	if dirs := ba.ProfileSkillDirs("/home/u", &AgentAccount{ConfigDir: "  "}); dirs != nil {
+		t.Errorf("ProfileSkillDirs(blank) = %v, want nil", dirs)
+	}
+	tildeDirs := ba.ProfileSkillDirs("/home/u", &AgentAccount{ConfigDir: "~/profiles/work"})
+	if len(tildeDirs) != 1 || tildeDirs[0] != filepath.Join("/home/u", "profiles", "work", "skills") {
+		t.Errorf("ProfileSkillDirs(tilde) = %v", tildeDirs)
+	}
+	absDirs := ba.ProfileSkillDirs("/home/u", &AgentAccount{ConfigDir: "/opt/acct"})
+	if len(absDirs) != 1 || absDirs[0] != filepath.Join("/opt/acct", "skills") {
+		t.Errorf("ProfileSkillDirs(abs) = %v", absDirs)
 	}
 }
 

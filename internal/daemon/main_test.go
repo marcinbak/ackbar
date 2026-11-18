@@ -17,6 +17,9 @@ func TestMain(m *testing.M) {
 	_ = reg.Register(grok.New())
 	_ = reg.Register(codex.New())
 	_ = reg.Register(opencode.New())
+	if os.Getenv("ACKBAR_TEST_MOCK_PERSISTENT_PLUGIN") == "1" {
+		registerMockPersistentPlugins(reg)
+	}
 	for i, arg := range os.Args[1:] {
 		if arg == "--headless-worker" {
 			os.Exit(RunHeadlessWorkerWithRegistry(os.Args[i+2:], reg))

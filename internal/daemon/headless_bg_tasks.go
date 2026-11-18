@@ -4,6 +4,8 @@ import (
 	"os"
 	"strconv"
 	"time"
+
+	"ackbar/internal/agent"
 )
 
 const (
@@ -254,7 +256,19 @@ func (c *workerBgController) onPokeTimerFired(myGen uint64) {
 		go g.acp.runPromptTurn(turn, BgAutoPokePrompt)
 		return
 	}
-	stdinLine, fErr := formatPersistentStdinTurn(c.rt.workerMeta.Agent, c.rt.workerMeta.SessionID, c.rt.workerMeta.IsSupervisor, false, BgAutoPokePrompt)
+	sysPrompt := c.rt.workerMeta.SystemPrompt
+	if c.rt.workerMeta.IsSupervisor && sysPrompt == "" && c.rt.workerMeta.SessionID != "" {
+		sysPrompt = BuildSupervisorSystemPrompt(c.rt.workerMeta.SessionID)
+	}
+	stdinLine, fErr := formatPersistentStdinTurnWithRegistry(c.rt.reg, agent.PersistentTurnInput{
+		Agent:        c.rt.workerMeta.Agent,
+		SessionID:    c.rt.workerMeta.SessionID,
+		NativeID:     c.rt.workerMeta.NativeID,
+		Prompt:       BgAutoPokePrompt,
+		SystemPrompt: sysPrompt,
+		IsSupervisor: c.rt.workerMeta.IsSupervisor,
+		IsFirstTurn:  false,
+	})
 	if fErr != nil {
 		c.rt.mu.Unlock()
 		return

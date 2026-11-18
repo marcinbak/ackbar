@@ -748,7 +748,7 @@ func (h *HeadlessRunner) SetRuntimeModel(sessionID, agent, model string) {
 	if h == nil || sessionID == "" {
 		return
 	}
-	norm := normalizeModelIdentifier(agent, model)
+	norm := normalizeModelIdentifierWithRegistry(h.pluginRegistry(), agent, model)
 	if norm == "" {
 		return
 	}
@@ -1698,6 +1698,20 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 			continue
 		}
 
+		if hooks.streamParser != nil && dispatchPluginStreamLine(
+			hooks.streamParser,
+			[]byte(line),
+			&lastTextBuilder,
+			&resultText,
+			&streamHadError,
+			&finalLastTurnText,
+			&finalResultText,
+			&finalStreamHadError,
+			hooks,
+		) {
+			continue
+		}
+
 		// Check for Antigravity stream format: top-level "event" field
 		if agyEvt, ok := raw["event"].(string); ok && agyEvt != "" {
 			if (agyEvt == "step_update" || agyEvt == "result") && hooks.onTurnContent != nil {
@@ -1929,10 +1943,6 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 				hasEmittedDeltaInTurn = false
 				needsSeparation = false
 			}
-			continue
-		}
-
-		if dispatchPluginStreamLine(hooks.streamParser, []byte(line), &lastTextBuilder, &resultText, &streamHadError, hooks) {
 			continue
 		}
 

@@ -149,7 +149,13 @@ func (h *HeadlessRunner) TryAnswerControlRequest(ctx context.Context, sess *Sess
 
 func (h *HeadlessRunner) TryAnswerControlAction(ctx context.Context, sess *Session, actionLower, answerOrFeedback, reqRequestID string) (bool, error) {
 	_ = ctx
-	if h == nil || sess == nil || (!strings.EqualFold(sess.Agent, "claude-code") && !isACPHeadlessAgent(h.pluginRegistry(), sess.Agent)) {
+	if h == nil || sess == nil {
+		return false, nil
+	}
+	reg := h.pluginRegistry()
+	persDrv, isPers := persistentDriverForAgent(reg, sess.Agent)
+	supportsControl := (isPers && persDrv.SupportsStdioControl()) || (!isPers && strings.EqualFold(sess.Agent, "claude-code")) || isACPHeadlessAgent(reg, sess.Agent)
+	if !supportsControl {
 		return false, nil
 	}
 	var sessionMu *sync.Mutex
@@ -180,12 +186,12 @@ func (h *HeadlessRunner) TryAnswerControlAction(ctx context.Context, sess *Sessi
 	} else if sess.Blocked != nil && sess.Blocked.RequestID != "" {
 		req.RequestID = sess.Blocked.RequestID
 	}
-	targetPerm := defaultSessionPermissionMode(sess.Agent)
+	targetPerm := defaultSessionPermissionModeWithRegistry(reg, sess.Agent)
 	if sess.PermissionMode != targetPerm {
 		nextSess := *sess
 		nextSess.PermissionMode = targetPerm
-		req.ConfigFingerprint = ConfigFingerprint(&nextSess)
-		req.ConfigFingerprintNoModel = ConfigFingerprintWithoutModel(&nextSess)
+		req.ConfigFingerprint = ConfigFingerprintWithRegistry(reg, &nextSess)
+		req.ConfigFingerprintNoModel = ConfigFingerprintWithoutModelWithRegistry(reg, &nextSess)
 	}
 
 	resp, err := callWorkerSocket(sockPath, req, 2*time.Second)

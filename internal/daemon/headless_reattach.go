@@ -434,8 +434,9 @@ func (h *HeadlessRunner) finalizeTurnFromSpool(sess *Session, origSessionID stri
 	preserveLatestSessionConfigFromDB(h.db, sess, origSessionID)
 	if staleHandle != nil {
 		home, _ := os.UserHomeDir()
-		isExisting := sess.FirstPrompt != "" || sess.LastPrompt != "" || hasConversationOnDiskWithRegistry(h.pluginRegistry(), sess, home, h.db)
-		fp := ConfigFingerprint(sess)
+		reg := h.pluginRegistry()
+		isExisting := sess.FirstPrompt != "" || sess.LastPrompt != "" || hasConversationOnDiskWithRegistry(reg, sess, home, h.db)
+		fp := ConfigFingerprintWithRegistry(reg, sess)
 		mcpFP := MCPFingerprint(sess, h.db, home)
 		if !h.restartHandleChild(sess, staleHandle, isExisting, fp, mcpFP, home, 3*time.Second) {
 			h.ShutdownSpecificWorker(staleWorkerID, 2*time.Second)

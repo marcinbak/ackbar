@@ -210,7 +210,7 @@ func (h *HeadlessRunner) adoptLiveWorkers(runDir string, entries []os.DirEntry) 
 		resp, err := callWorkerSocket(wm.SocketPath, workerIPCReq{Op: "status"}, 250*time.Millisecond)
 		alive := err == nil && resp != nil && resp.OK
 		sess := h.resolveSession(wm.SessionID, wm.OrigSessionID, wm.NativeID)
-		fpMismatch := sess != nil && wm.ConfigFingerprint != ConfigFingerprint(sess)
+		fpMismatch := sess != nil && wm.ConfigFingerprint != ConfigFingerprintWithRegistry(h.pluginRegistry(), sess)
 		inActiveTurn := alive && (resp.State == "running_turn" || resp.State == "blocked_control")
 		if !alive || resp.State == "shutting_down" || resp.State == "exited" || isInactiveOrNonHeadless(sess) || (fpMismatch && !inActiveTurn) {
 			if alive {

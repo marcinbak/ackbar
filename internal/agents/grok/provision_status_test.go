@@ -60,6 +60,17 @@ func TestProvision_TOMLConfigHooksAndStatus(t *testing.T) {
 	if !st.Detected || !st.MCPInstalled || !st.SkillInstalled || st.SkillVersion != version.Version || !st.RulesInstalled || st.DriftDetected {
 		t.Fatalf("expected clean CheckStatus after Provision, got %+v", st)
 	}
+
+	if dirs := p.SkillDirs(tempHome); len(dirs) != 1 || dirs[0] != filepath.Join(grokDir, "skills") {
+		t.Fatalf("SkillDirs = %v, want [%s]", dirs, filepath.Join(grokDir, "skills"))
+	}
+	profDirs := p.ProfileSkillDirs(tempHome, &agent.AgentAccount{ConfigDir: "~/.grok-profiles/work"})
+	if len(profDirs) != 1 || profDirs[0] != filepath.Join(tempHome, ".grok-profiles", "work", "skills") {
+		t.Fatalf("ProfileSkillDirs = %v", profDirs)
+	}
+	if p.NormalizeModelID("default") != "" || p.NormalizeModelID("<synthetic>") != "" || p.NormalizeModelID("  grok-4.7 ") != "grok-4.7" {
+		t.Fatalf("NormalizeModelID mismatch")
+	}
 }
 
 func TestInspectStatus_GuardsAndMetadata(t *testing.T) {

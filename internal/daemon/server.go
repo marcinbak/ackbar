@@ -1275,13 +1275,8 @@ func (s *Server) processDueScheduledPrompts(ctx context.Context) {
 }
 
 func (s *Server) maybeAutoSyncSkillsRepo(ctx context.Context) {
-	home := s.homeDir
-	if home == "" {
-		if h, err := os.UserHomeDir(); err == nil {
-			home = h
-		}
-	}
-	MaybeAutoSyncSkillsRepo(ctx, home, s.db)
+	home := s.effectiveHomeDir()
+	MaybeAutoSyncSkillsRepoWithRegistry(ctx, home, s.db, s.PluginRegistry())
 }
 
 func (s *Server) effectiveHomeDir() string {

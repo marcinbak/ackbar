@@ -155,3 +155,33 @@ func (r *Registry) AsCommandCatalog(key string) (CommandCatalog, bool) {
 	f, ok := p.(CommandCatalog)
 	return f, ok
 }
+
+func (r *Registry) AsPersistentHeadless(key string) (PersistentHeadlessDriver, bool) {
+	p, ok := r.Get(key)
+	if !ok || !p.Capabilities().SupportsHeadless {
+		return nil, false
+	}
+	d, ok := p.(PersistentHeadlessDriver)
+	if !ok || d.Mode() != HeadlessModePersistent {
+		return nil, false
+	}
+	return d, true
+}
+
+func (r *Registry) AsIncrementalTranscript(key string) (IncrementalTranscripts, bool) {
+	p, ok := r.Get(key)
+	if !ok {
+		return nil, false
+	}
+	f, ok := p.(IncrementalTranscripts)
+	return f, ok
+}
+
+func (r *Registry) AsSessionRewinder(key string) (SessionRewinder, bool) {
+	p, ok := r.Get(key)
+	if !ok {
+		return nil, false
+	}
+	f, ok := p.(SessionRewinder)
+	return f, ok
+}

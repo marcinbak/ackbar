@@ -74,6 +74,10 @@ func (*Plugin) InstallHooks(homeDir string) error {
 	return nil
 }
 
+func (*Plugin) SkillDirs(homeDir string) []string {
+	return []string{filepath.Join(HomeDir(homeDir), "skills")}
+}
+
 func (*Plugin) Provision(ctx context.Context, homeDir string) error {
 	_ = ctx
 	codexDir := HomeDir(homeDir)

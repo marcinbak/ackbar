@@ -533,17 +533,15 @@ func (s *Server) collectCommands(cwd string, agentOpt ...string) []CommandSugges
 		}
 	}
 
-	// 3. Global Skills
-	home, _ := os.UserHomeDir()
+	home := s.effectiveHomeDir()
 	if home != "" {
-		globalSkillDirs := []string{
-			filepath.Join(home, ".gemini", "config", "skills"),
-			filepath.Join(home, ".claude", "skills"),
+		globalSkillDirs := append(
+			collectSkillDirsWithRegistry(home, s.db, s.PluginRegistry(), true),
 			filepath.Join(home, ".agents", "skills"),
 			filepath.Join(home, ".config", "skills"),
-		}
+		)
 		if s.db != nil {
-			repoPath, _ := DiscoverSkillsRepo(home, s.db)
+			repoPath, _ := DiscoverSkillsRepoWithRegistry(home, s.db, s.PluginRegistry())
 			if repoPath != "" {
 				globalSkillDirs = append(globalSkillDirs, repoPath, filepath.Join(repoPath, "skills"))
 			}

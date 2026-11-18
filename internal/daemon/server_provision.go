@@ -50,7 +50,7 @@ func (s *Server) handleAgentsStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	fetchRemote := r.URL.Query().Get("fetch") == "true"
-	skillsRepoStatus := GetSkillsRepoStatus(s.homeDir, s.db, fetchRemote)
+	skillsRepoStatus := GetSkillsRepoStatusWithRegistry(s.homeDir, s.db, s.PluginRegistry(), fetchRemote)
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
@@ -100,14 +100,14 @@ func (s *Server) handleAgentsProvision(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var skillsRepoStatus *SkillsRepoStatus
-	currentRepoStatus := GetSkillsRepoStatus(s.homeDir, s.db, false)
+	currentRepoStatus := GetSkillsRepoStatusWithRegistry(s.homeDir, s.db, s.PluginRegistry(), false)
 	if currentRepoStatus.Configured || req.SkillsRepoPath != "" || req.SkillsRepoURL != "" {
 		syncOpts := SyncSkillsRepoOptions{
 			RepoPath:       req.SkillsRepoPath,
 			RepoURL:        req.SkillsRepoURL,
 			CloneIfMissing: req.CloneIfMissing,
 		}
-		resStatus, _ := SyncSkillsRepo(s.homeDir, s.db, syncOpts)
+		resStatus, _ := SyncSkillsRepoWithRegistry(s.homeDir, s.db, s.PluginRegistry(), syncOpts)
 		if resStatus != nil {
 			skillsRepoStatus = resStatus
 		} else {
@@ -159,7 +159,7 @@ func (s *Server) handleSkillsRepoSync(w http.ResponseWriter, r *http.Request) {
 		CloneIfMissing: req.CloneIfMissing,
 	}
 
-	syncStatus, err := SyncSkillsRepo(s.homeDir, s.db, opts)
+	syncStatus, err := SyncSkillsRepoWithRegistry(s.homeDir, s.db, s.PluginRegistry(), opts)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)

@@ -81,6 +81,10 @@ func (p *Plugin) InstallHooks(homeDir string) error {
 	return WriteHooksFile(HomeDir(homeDir), "")
 }
 
+func (*Plugin) SkillDirs(homeDir string) []string {
+	return []string{filepath.Join(HomeDir(homeDir), "skills")}
+}
+
 func (p *Plugin) Provision(ctx context.Context, homeDir string) error {
 	_ = ctx
 	grokDir := HomeDir(homeDir)

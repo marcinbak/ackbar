@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -29,6 +30,7 @@ func (BaseProvisioner) CheckStatus(ctx context.Context, homeDir string) AgentSta
 }
 func (BaseProvisioner) InstallHooks(homeDir string) error                   { return nil }
 func (BaseProvisioner) Provision(ctx context.Context, homeDir string) error { return nil }
+func (BaseProvisioner) SkillDirs(homeDir string) []string                   { return nil }
 
 type BaseAccounts struct{}
 
@@ -62,6 +64,23 @@ func (BaseAccounts) RefreshAccount(ctx context.Context, acct *AgentAccount) (boo
 }
 func (BaseAccounts) AuthenticateAccount(ctx context.Context, label string, env []string) (*AgentAccount, error) {
 	return nil, fmt.Errorf("account authentication not supported")
+}
+func (BaseAccounts) ProfileSkillDirs(homeDir string, acct *AgentAccount) []string {
+	if acct == nil {
+		return nil
+	}
+	cfgDir := strings.TrimSpace(acct.ConfigDir)
+	if cfgDir == "" {
+		return nil
+	}
+	if homeDir != "" {
+		if cfgDir == "~" {
+			cfgDir = homeDir
+		} else if strings.HasPrefix(cfgDir, "~/") {
+			cfgDir = filepath.Join(homeDir, cfgDir[2:])
+		}
+	}
+	return []string{filepath.Join(cfgDir, "skills")}
 }
 
 type BaseTMuxDriver struct{}
@@ -139,6 +158,29 @@ type BaseModelCatalog struct{}
 func (BaseModelCatalog) DefaultModels() []ModelSuggestion               { return nil }
 func (BaseModelCatalog) CollectModels(homeDir string) []ModelSuggestion { return nil }
 func (BaseModelCatalog) ValidateModelID(model string) bool              { return strings.TrimSpace(model) != "" }
+func (BaseModelCatalog) NormalizeModelID(raw string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" || strings.EqualFold(s, "default") || strings.EqualFold(s, "synthetic") || strings.HasPrefix(s, "<") {
+		return ""
+	}
+	return s
+}
+
+type BasePersistentHeadless struct{}
+
+func (BasePersistentHeadless) Mode() HeadlessExecMode               { return HeadlessModePersistent }
+func (BasePersistentHeadless) SupportsStdioControl() bool           { return false }
+func (BasePersistentHeadless) DefaultPermissionMode() string        { return "" }
+func (BasePersistentHeadless) FormatSetModel(string) (string, bool) { return "", false }
+
+type BaseSessionRewinder struct{}
+
+func (BaseSessionRewinder) ListRewindTurns(homeDir, cwd, nativeID string) ([]RewindTurn, error) {
+	return nil, nil
+}
+func (BaseSessionRewinder) CloneTranscriptBeforeTurn(homeDir, cwd, nativeID string, beforeTurn int, newNativeID string) (bool, error) {
+	return false, nil
+}
 
 type BaseRateLimiter struct{}
 

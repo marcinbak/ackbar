@@ -29,11 +29,10 @@ type AuthBroker struct {
 
 func newAuthBroker(s *Server) *AuthBroker {
 	return &AuthBroker{
-		server:          s,
-		activeFlows:     make(map[string]*AuthFlow),
-		completedFlows:  make(map[string]*AuthFlow),
-		authURLTimeout:  10 * time.Second,
-		commandResolver: resolveAllowlistedAuthCommand,
+		server:         s,
+		activeFlows:    make(map[string]*AuthFlow),
+		completedFlows: make(map[string]*AuthFlow),
+		authURLTimeout: 10 * time.Second,
 	}
 }
 
@@ -90,11 +89,16 @@ func (s *Server) handleSessionAuthTool(w http.ResponseWriter, r *http.Request) {
 	b.mu.Unlock()
 
 	home, _ := os.UserHomeDir()
-	resolver := b.commandResolver
-	if resolver == nil {
-		resolver = resolveAllowlistedAuthCommand
+	var (
+		argv         []string
+		dir          string
+		acceptsStdin bool
+	)
+	if b.commandResolver != nil {
+		argv, dir, acceptsStdin, err = b.commandResolver(sess, req.Target, s.db, home)
+	} else {
+		argv, dir, acceptsStdin, err = resolveAllowlistedAuthCommandWithRegistry(b.server.PluginRegistry(), sess, req.Target, s.db, home)
 	}
-	argv, dir, acceptsStdin, err := resolver(sess, req.Target, s.db, home)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to resolve auth command: %v", err), http.StatusBadRequest)
 		return

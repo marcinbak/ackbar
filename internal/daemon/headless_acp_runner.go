@@ -38,6 +38,18 @@ func acpDriverForAgent(reg *agent.Registry, agentName string) (agent.ACPDriver, 
 	return reg.AsACPDriver(agentName)
 }
 
+func persistentDriverForAgent(reg *agent.Registry, agentName string) (agent.PersistentHeadlessDriver, bool) {
+	if reg == nil || strings.TrimSpace(agentName) == "" {
+		return nil, false
+	}
+	return reg.AsPersistentHeadless(agentName)
+}
+
+func isPersistentHeadlessAgent(reg *agent.Registry, agentName string) bool {
+	_, ok := persistentDriverForAgent(reg, agentName)
+	return ok
+}
+
 func buildPersistentOrACPArgs(reg *agent.Registry, sess *Session, home string, db *DB, isResume bool) (bin string, args []string, extraEnv []string, sysPrompt string, err error) {
 	if sess == nil {
 		return "", nil, nil, "", errors.New("nil session")
@@ -48,6 +60,21 @@ func buildPersistentOrACPArgs(reg *agent.Registry, sess *Session, home string, d
 			sysPrompt = BuildSupervisorSystemPrompt(sess.ID)
 		}
 		spec, bErr := hd.BuildTurnSpec(agent.HeadlessTurnInput{
+			Session:      sess,
+			HomeDir:      home,
+			IsExisting:   isResume,
+			SystemPrompt: sysPrompt,
+		})
+		if bErr != nil {
+			return "", nil, nil, "", bErr
+		}
+		return spec.Binary, spec.Args, spec.Env, sysPrompt, nil
+	}
+	if pd, ok := persistentDriverForAgent(reg, sess.Agent); ok {
+		if sess.IsSupervisor {
+			sysPrompt = BuildSupervisorSystemPrompt(sess.ID)
+		}
+		spec, bErr := pd.BuildTurnSpec(agent.HeadlessTurnInput{
 			Session:      sess,
 			HomeDir:      home,
 			IsExisting:   isResume,

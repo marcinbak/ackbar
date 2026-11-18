@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"ackbar/internal/agent"
 	"ackbar/internal/tmux"
 )
 
@@ -21,9 +22,18 @@ var (
 	chatAttachedFileNoticeRegex = regexp.MustCompile(`\[Attached file:\s*"[^"]+"\](?:\s*Please inspect the attached file\.)?`)
 )
 
-func cleanActivePromptForAgent(agent, raw string) string {
+func cleanActivePromptWithRegistry(reg *agent.Registry, agentName, raw string) string {
+	if reg != nil && strings.TrimSpace(agentName) != "" {
+		if tr, ok := reg.AsTranscript(agentName); ok {
+			cleaned, _ := tr.FilterUserEntry(nil, raw)
+			if strings.TrimSpace(cleaned) != "" {
+				return cleaned
+			}
+			return strings.TrimSpace(raw)
+		}
+	}
 	var cleaned string
-	if agent == "antigravity" {
+	if agentName == "antigravity" {
 		cleaned = CleanAntigravityPrompt(raw)
 	} else {
 		cleaned = CleanClaudePrompt(raw)
@@ -32,6 +42,18 @@ func cleanActivePromptForAgent(agent, raw string) string {
 		cleaned = strings.TrimSpace(raw)
 	}
 	return cleaned
+}
+
+func cleanActivePromptForAgent(agentName, raw string) string {
+	return cleanActivePromptWithRegistry(nil, agentName, raw)
+}
+
+func (s *Server) cleanActivePromptForAgent(agentName, raw string) string {
+	var reg *agent.Registry
+	if s != nil {
+		reg = s.PluginRegistry()
+	}
+	return cleanActivePromptWithRegistry(reg, agentName, raw)
 }
 
 func normalizePromptComparisonText(raw string) string {
@@ -1266,6 +1288,17 @@ func (s *Server) ExtractTranscript(agent, nativeID, cwd string) (*Transcript, er
 				}
 				return t, nil
 			}
+		} else if tr, ok := s.PluginRegistry().AsTranscript(agent); ok {
+			if pt, perr := tr.ExtractTranscript(home, cwd, nativeID); perr == nil && pt != nil && len(pt.Messages) > 0 {
+				t.Messages = pt.Messages
+				if pt.Title != "" {
+					t.Title = pt.Title
+				}
+				if path, size, modTime, serr := s.resolveTranscriptStat(home, agent, nativeID, cwd); serr == nil {
+					s.setCachedTranscript(agent, nativeID, cwd, path, size, modTime, pt.Messages)
+				}
+				return t, nil
+			}
 		}
 
 		for _, p := range s.snapshotProviders() {
@@ -1281,10 +1314,9 @@ func (s *Server) ExtractTranscript(agent, nativeID, cwd string) (*Transcript, er
 		}
 	}
 
-	// Legacy fallback
-	legacyT, lerr := ExtractTranscript(agent, nativeID, cwd)
+	legacyT, lerr := extractTranscriptWithHome(home, agent, nativeID, cwd)
 	if lerr == nil && legacyT != nil && len(legacyT.Messages) > 0 && s != nil {
-		if path, size, modTime, serr := resolveTranscriptFileStat(home, agent, nativeID, cwd); serr == nil {
+		if path, size, modTime, serr := s.resolveTranscriptStat(home, agent, nativeID, cwd); serr == nil {
 			s.setCachedTranscript(agent, nativeID, cwd, path, size, modTime, legacyT.Messages)
 		}
 	}

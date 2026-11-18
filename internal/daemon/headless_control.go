@@ -203,7 +203,7 @@ func (rt *workerRuntime) handleAnswerControlIPC(req workerIPCReq) workerIPCResp 
 	planApproved := isExitPlanTool(ctrl.ToolName) && approved
 	updatedPermMode := ""
 	if planApproved {
-		updatedPermMode = defaultSessionPermissionMode(rt.workerMeta.Agent)
+		updatedPermMode = defaultSessionPermissionModeWithRegistry(rt.reg, rt.workerMeta.Agent)
 		rt.workerMeta.PermissionMode = updatedPermMode
 		if req.ConfigFingerprint != "" {
 			rt.workerMeta.ConfigFingerprint = req.ConfigFingerprint
