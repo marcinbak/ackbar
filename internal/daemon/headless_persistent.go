@@ -736,6 +736,7 @@ func (h *HeadlessRunner) restartHandleChild(sess *Session, handle *warmWorkerHan
 		NativeID:                 sess.NativeID,
 		Model:                    normalizeACPConfigValue(sess.Model),
 		Effort:                   normalizeACPConfigValue(sess.Effort),
+		PermissionMode:           strings.TrimSpace(sess.PermissionMode),
 		Bin:                      bin,
 		Args:                     args,
 		Env:                      cleanEnv,

@@ -813,6 +813,7 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string, reg *agent.Regis
 		}
 		workerMeta.Model = normalizeACPConfigValue(req.Model)
 		workerMeta.Effort = normalizeACPConfigValue(req.Effort)
+		workerMeta.PermissionMode = strings.TrimSpace(req.PermissionMode)
 		stateMu.Unlock()
 
 		oldGen.shutdown(500 * time.Millisecond)

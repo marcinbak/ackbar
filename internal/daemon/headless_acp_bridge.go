@@ -69,9 +69,9 @@ func buildWorkerACPDeps(rt *workerRuntime, b workerACPBridgeState) workerACPDeps
 			}
 			rt.mu.Unlock()
 		},
-		onInteractiveBlock: func(g *workerChildGen, toolName string, toolInput any, blocked *Blocked) {
+		onInteractiveBlock: func(g *workerChildGen, expectedTurn *activeTurnState, toolName string, toolInput any, blocked *Blocked) {
 			rt.mu.Lock()
-			if *rt.curChild != g || g.replaced || *rt.state == "shutting_down" || *rt.state == "exited" || *rt.state == "cancelling" || *rt.activeTurn == nil || (*rt.activeTurn).cancelled {
+			if *rt.curChild != g || g.replaced || *rt.state == "shutting_down" || *rt.state == "exited" || *rt.state == "cancelling" || *rt.activeTurn == nil || (*rt.activeTurn).cancelled || (expectedTurn != nil && *rt.activeTurn != expectedTurn) {
 				rt.mu.Unlock()
 				return
 			}

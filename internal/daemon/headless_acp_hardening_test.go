@@ -32,6 +32,8 @@ if [ "$1" = "agent" ] && [ "$2" = "stdio" ]; then
         printf '{"jsonrpc":"2.0","id":%%s,"result":{"protocolVersion":1}}\n' "$id" ;;
       *'"method":"session/new"'*|*'"method":"session/load"'*)
         printf '{"jsonrpc":"2.0","id":%%s,"result":{"sessionId":"grok-hard-1"}}\n' "$id" ;;
+      *'"method":"session/set_mode"'*|*'"method":"session/set_config_option"'*)
+        printf '{"jsonrpc":"2.0","id":%%s,"result":{}}\n' "$id" ;;
       *'"method":"session/prompt"'*)
         printf '{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"ok"}}}}\n'
         printf '{"jsonrpc":"2.0","id":%%s,"result":{"stopReason":"end_turn"}}\n' "$id" ;;
@@ -71,7 +73,7 @@ fi
 			t.Fatalf("POST config %v code=%d body=%s", body, w.Code, w.Body.String())
 		}
 	}
-	patchCfg(map[string]any{"model": "default", "effort": "default"})
+	patchCfg(map[string]any{"model": "default", "effort": "default", "permission_mode": "plan"})
 	sess, _ = db.GetSession(sess.ID)
 	runACPTurnAndWait(t, srv.headless, sess, "turn 2")
 	srv.headless.mu.RLock()
@@ -80,6 +82,7 @@ fi
 	if h2 == nil || h2.WorkerPID != wp1 || h2.ChildPID == cp1 {
 		t.Fatalf("expected clearing model/effort to restart child in same worker %d (old child %d), got %+v", wp1, cp1, h2)
 	}
+	patchCfg(map[string]any{"permission_mode": ""})
 
 	patchCfg(map[string]any{"yolo_mode": true})
 	sess, _ = db.GetSession(sess.ID)
@@ -89,15 +92,15 @@ fi
 	if len(argLines) < 3 {
 		t.Fatalf("expected 3 child spawns, got %d:\n%s", len(argLines), strings.Join(argLines, "\n"))
 	}
-	if strings.Contains(argLines[1], "-m ") || strings.Contains(argLines[1], "--effort") {
-		t.Errorf("expected cleared -m/--effort in second spawn args, got %q", argLines[1])
+	if strings.Contains(argLines[1], "-m ") || strings.Contains(argLines[1], "--effort") || !strings.Contains(argLines[1], "--permission-mode plan") {
+		t.Errorf("expected cleared -m/--effort and --permission-mode plan in second spawn args, got %q", argLines[1])
 	}
 	if !strings.Contains(argLines[2], "--always-approve") {
 		t.Errorf("expected --always-approve in third spawn args, got %q", argLines[2])
 	}
 	callsAll := mustReadFile(t, callsLog)
-	if strings.Count(callsAll, `"method":"session/load"`) < 2 {
-		t.Errorf("expected session/load after restart on Turn 2 and Turn 3, got:\n%s", callsAll)
+	if strings.Count(callsAll, `"method":"session/load"`) < 2 || !strings.Contains(callsAll, `"modeId":"default"`) {
+		t.Errorf("expected session/load x2 and modeId=default after restart, got:\n%s", callsAll)
 	}
 }
 

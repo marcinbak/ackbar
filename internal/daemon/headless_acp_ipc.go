@@ -86,7 +86,9 @@ func (s *acpChildSession) handleCancelIPC(req workerIPCReq) workerIPCResp {
 	}
 	s.mu.Unlock()
 
-	_ = s.conn.SendNotification("session/cancel", map[string]any{"sessionId": sid})
+	if promptDone != nil {
+		_ = s.conn.SendNotification("session/cancel", map[string]any{"sessionId": sid})
+	}
 	if inFlightRew {
 		if _, _, cancelM, ok := s.driver.ACPRewindMethods(); ok && cancelM != "" {
 			_ = s.conn.SendNotification(cancelM, map[string]any{"sessionId": sid})

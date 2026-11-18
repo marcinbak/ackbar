@@ -14,35 +14,30 @@ import (
 	"time"
 
 	"ackbar/internal/agents/grok"
+	"ackbar/internal/agentutil"
 )
 
-func waitForBlockedSession(t *testing.T, db *DB, sessID string, wantKind BlockKind) *Session {
+func waitForBlockedSession(t *testing.T, db *DB, sessID string, wantKind BlockKind) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		s, err := db.GetSession(sessID)
-		if err == nil && s != nil && s.State == StateBlocked && s.Blocked != nil && s.Blocked.Kind == wantKind {
-			return s
+		if s, err := db.GetSession(sessID); err == nil && s != nil && s.State == StateBlocked && s.Blocked != nil && s.Blocked.Kind == wantKind {
+			return
 		}
 		time.Sleep(15 * time.Millisecond)
 	}
 	s, _ := db.GetSession(sessID)
 	t.Fatalf("timed out waiting for session %s blocked=%s (got %+v)", sessID, wantKind, s)
-	return nil
 }
 
-func postRespondJSON(t *testing.T, srv *Server, body map[string]any) map[string]any {
+func postRespondJSON(t *testing.T, srv *Server, body map[string]any) {
 	t.Helper()
 	b, _ := json.Marshal(body)
-	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/respond", bytes.NewReader(b))
 	w := httptest.NewRecorder()
-	srv.Mux().ServeHTTP(w, req)
+	srv.Mux().ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/v1/sessions/respond", bytes.NewReader(b)))
 	if w.Code != http.StatusOK {
 		t.Fatalf("POST /v1/sessions/respond status=%d body=%s", w.Code, w.Body.String())
 	}
-	var out map[string]any
-	_ = json.Unmarshal(w.Body.Bytes(), &out)
-	return out
 }
 
 func TestGrokACP_ControlPromptsAndUnknownNonDeadlock(t *testing.T) {
@@ -277,16 +272,25 @@ fi
 
 func TestGrokACP_LateCallbacksIgnoreCancelledTurn(t *testing.T) {
 	var mu sync.Mutex
-	st, gen := "idle_warm", &workerChildGen{}
-	var activeTurn, turn2 *activeTurnState
+	var pendingCtrl *PendingControlRequest
+	st, gen := "running_turn", &workerChildGen{}
 	turn1 := &activeTurnState{turnID: "t1", meta: &TurnSpoolMeta{TurnID: "t1"}, cancelled: true}
-	turn2 = &activeTurnState{turnID: "t2", meta: &TurnSpoolMeta{TurnID: "t2"}}
-	activeTurn, st = turn2, "running_turn"
-	rt := &workerRuntime{mu: &mu, state: &st, workerMeta: &SessionWorkerMeta{}, curChild: &gen, activeTurn: &activeTurn, saveMeta: func() {}}
+	turn2 := &activeTurnState{turnID: "t2", meta: &TurnSpoolMeta{TurnID: "t2"}}
+	activeTurn := turn2
+	rt := &workerRuntime{mu: &mu, state: &st, workerMeta: &SessionWorkerMeta{}, curChild: &gen, activeTurn: &activeTurn, pendingControl: &pendingCtrl, saveMeta: func() {}, getChildPGIDLocked: func() int { return 0 }}
 	deps := buildWorkerACPDeps(rt, workerACPBridgeState{finalizeTurnMeta: func(*activeTurnState, *boundedTailBuffer, string, int, string) {}, exitCleanly: func(int) {}})
 	deps.onTurnFailure(gen, turn1, "late-err")
 	deps.onRateLimitBlock(gen, turn1, &Blocked{Kind: BlockRateLimit})
+	deps.onInteractiveBlock(gen, turn1, "", nil, &Blocked{Kind: BlockPermission})
 	if st != "running_turn" || activeTurn != turn2 {
 		t.Fatalf("expected cancelled/superseded turn1 callbacks ignored, got state=%s active=%v", st, activeTurn)
+	}
+	var out bytes.Buffer
+	spool, _ := OpenTurnSpoolWriter(filepath.Join(t.TempDir(), "pre.ndjson"), "t2")
+	defer spool.Close()
+	turn2.spool, turn2.metaPath = spool, filepath.Join(t.TempDir(), "pre.meta.json")
+	cs := &acpChildSession{rt: rt, gen: gen, conn: agentutil.NewACPConn(strings.NewReader(""), &out), deps: deps}
+	if resp := cs.handleCancelIPC(workerIPCReq{Op: "cancel", TurnID: "t2"}); !resp.OK || st != "idle_warm" || out.Len() != 0 {
+		t.Fatalf("expected pre-prompt cancel to skip session/cancel and settle idle_warm, got resp=%+v state=%s out=%q", resp, st, out.String())
 	}
 }

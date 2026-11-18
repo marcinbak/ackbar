@@ -23,7 +23,7 @@ type workerACPDeps struct {
 	stopIdleTimer      func()
 	onSessionInit      func(gen *workerChildGen, nativeID, model string)
 	onModelDetected    func(gen *workerChildGen, model string)
-	onInteractiveBlock func(gen *workerChildGen, toolName string, toolInput any, blocked *Blocked)
+	onInteractiveBlock func(gen *workerChildGen, expectedTurn *activeTurnState, toolName string, toolInput any, blocked *Blocked)
 	onRateLimitBlock   func(gen *workerChildGen, turn *activeTurnState, blocked *Blocked)
 	onTurnFailure      func(gen *workerChildGen, turn *activeTurnState, text string)
 	completedTurns     map[string]string

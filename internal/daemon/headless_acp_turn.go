@@ -50,7 +50,7 @@ func (s *acpChildSession) handleNotification(method string, params map[string]an
 	for _, ev := range evts {
 		if ev.Type == "interactive_block" && ev.Blocked != nil {
 			if s.deps.onInteractiveBlock != nil {
-				s.deps.onInteractiveBlock(s.gen, ev.ToolName, ev.ToolInput, ev.Blocked)
+				s.deps.onInteractiveBlock(s.gen, nil, ev.ToolName, ev.ToolInput, ev.Blocked)
 			}
 			continue
 		}
@@ -120,19 +120,24 @@ func (s *acpChildSession) runPromptTurn(turn *activeTurnState, prompt string) {
 	s.waitCancelSettled(time.Second)
 	<-s.bootDone
 
+	s.streamMu.Lock()
+	s.streamState.ResetTurn()
+	s.streamMu.Unlock()
+
+	doneCh := make(chan struct{})
+	s.mu.Lock()
 	s.rt.mu.Lock()
-	cancelledBeforeCall := turn.cancelled || *s.rt.curChild != s.gen || s.gen.replaced || *s.rt.activeTurn != turn || *s.rt.state == "shutting_down" || *s.rt.state == "exited"
+	active := !turn.cancelled && *s.rt.curChild == s.gen && !s.gen.replaced && *s.rt.activeTurn == turn && *s.rt.state == "running_turn"
 	s.rt.mu.Unlock()
-	if cancelledBeforeCall {
+	if !active {
+		s.mu.Unlock()
 		return
 	}
-
-	s.mu.Lock()
 	bootErr, bootBlock := s.bootErr, s.bootBlock
 	if bootErr != nil {
 		s.mu.Unlock()
 		if bootBlock != nil && s.deps.onInteractiveBlock != nil {
-			s.deps.onInteractiveBlock(s.gen, "", nil, bootBlock)
+			s.deps.onInteractiveBlock(s.gen, turn, "", nil, bootBlock)
 			return
 		}
 		if s.deps.onTurnFailure != nil {
@@ -146,14 +151,6 @@ func (s *acpChildSession) runPromptTurn(turn *activeTurnState, prompt string) {
 	}
 	s.sentFirstTurn = true
 	sid := s.sessionID
-	doneCh := make(chan struct{})
-	s.mu.Unlock()
-
-	s.streamMu.Lock()
-	s.streamState.ResetTurn()
-	s.streamMu.Unlock()
-
-	s.mu.Lock()
 	s.promptDone = doneCh
 	s.inPromptTurn = true
 	s.mu.Unlock()
@@ -231,7 +228,7 @@ func (s *acpChildSession) runPromptTurn(turn *activeTurnState, prompt string) {
 				return
 			}
 			if s.deps.onInteractiveBlock != nil {
-				s.deps.onInteractiveBlock(s.gen, "", nil, failBlock)
+				s.deps.onInteractiveBlock(s.gen, turn, "", nil, failBlock)
 				return
 			}
 		}
