@@ -57,6 +57,10 @@ func main() {
 		runAccountCmd(os.Args[2:])
 		os.Exit(0)
 	}
+	if len(os.Args) > 1 && (os.Args[1] == "setup-codesign" || os.Args[1] == "codesign") {
+		runSetupCodesignCmd(os.Args[2:])
+		os.Exit(0)
+	}
 
 	shouldSetup := false
 	isGUICmd := false
@@ -184,6 +188,7 @@ func runSetupHooks() error {
 			_ = cmd2.Run()
 			return
 		}
+		_ = version.CodesignBinaryFile(context.Background(), tmpTarget, filepath.Base(target))
 		if err := os.Rename(tmpTarget, target); err != nil {
 			_ = os.Remove(tmpTarget)
 		}

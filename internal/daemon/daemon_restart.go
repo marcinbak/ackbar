@@ -53,13 +53,15 @@ func buildRemoteBinaryRestartScript(quotedAuthToken, hostFlagArg string) string 
 	}
 	return fmt.Sprintf(`set -e
 export PATH="$HOME/.local/bin:$HOME/go/bin:/usr/local/go/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+%s
 for b in ackbard ackbar ackbar-hook ackbar-relay; do
   if [ -f "$HOME/.local/bin/$b.new" ]; then
     chmod +x "$HOME/.local/bin/$b.new"
+    codesign_darwin_staged_binary "$HOME/.local/bin/$b.new" "$b"
     mv -f "$HOME/.local/bin/$b.new" "$HOME/.local/bin/$b"
     for brewdir in /opt/homebrew/opt/ackbar/bin /usr/local/opt/ackbar/bin; do
       if [ -d "$brewdir" ] && [ -w "$brewdir" ]; then
-        cp -f "$HOME/.local/bin/$b" "$brewdir/$b.tmp" && mv -f "$brewdir/$b.tmp" "$brewdir/$b" || true
+        cp -f "$HOME/.local/bin/$b" "$brewdir/$b.tmp" && codesign_darwin_staged_binary "$brewdir/$b.tmp" "$b" && mv -f "$brewdir/$b.tmp" "$brewdir/$b" || true
       fi
     done
   fi
@@ -80,7 +82,6 @@ if echo "$DRAIN_RES" | grep -q '"restart_deferred":true'; then
   echo "RESTART_DEFERRED"
   exit 0
 fi
-%s
 self_heal_ackbard_service
 if %s; then
   signal_non_worker_ackbard 15
@@ -108,7 +109,7 @@ else
   signal_non_worker_ackbard 9
   sleep 0.2
   nohup "$HOME/.local/bin/ackbard"%s >/dev/null 2>&1 < /dev/null &
-fi`, quotedAuthToken, DaemonSafeShellHelpers(), systemdManagedShellCond, hostFlagArg)
+fi`, DaemonSafeShellHelpers(), quotedAuthToken, systemdManagedShellCond, hostFlagArg)
 }
 
 func buildRemoteSelfUpdateScript(quotedAuthToken, hostFlagArg string) string {

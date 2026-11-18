@@ -282,5 +282,62 @@ reload_launchagent_if_changed() {
     return 0
   fi
   return 1
+}
+codesign_darwin_staged_binary() {
+  BIN_FILE="$1"
+  BIN_NAME="$2"
+  [ -f "$BIN_FILE" ] || return 0
+  [ "$(uname -s)" = "Darwin" ] || return 0
+  command -v codesign >/dev/null 2>&1 || return 0
+  command -v security >/dev/null 2>&1 || return 0
+  case "$BIN_NAME" in
+    ""|*[!a-z0-9_-]*) return 0 ;;
+  esac
+  KEYCHAIN="$HOME/Library/Keychains/login.keychain-db"
+  if [ ! -f "$KEYCHAIN" ] && [ -f "$HOME/Library/Keychains/login.keychain" ]; then
+    KEYCHAIN="$HOME/Library/Keychains/login.keychain"
+  fi
+  security show-keychain-info "$KEYCHAIN" >/dev/null 2>&1 || return 0
+  CS_IDENT="${ACKBAR_CODESIGN_IDENTITY:-}"
+  if [ -z "$CS_IDENT" ] && [ -f "$HOME/.config/ackbar/codesign-identity" ]; then
+    CS_IDENT=$(tr -d '\r\n' < "$HOME/.config/ackbar/codesign-identity" 2>/dev/null | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' || true)
+  fi
+  case "$CS_IDENT" in
+    -|none|None|NONE|adhoc|Adhoc|ADHOC) return 0 ;;
+  esac
+  CS_SHA1=$(security find-identity -v -p codesigning 2>/dev/null | TARGET_IDENT="$CS_IDENT" awk '
+    /^[[:space:]]*[0-9]+\)[[:space:]]+[0-9A-Fa-f]{40}[[:space:]]+"[^"]+"[[:space:]]*$/ {
+      sha = toupper($2)
+      line = $0
+      sub(/^[[:space:]]*[0-9]+\)[[:space:]]+[0-9A-Fa-f]{40}[[:space:]]+"/, "", line)
+      sub(/"[[:space:]]*$/, "", line)
+      t = ENVIRON["TARGET_IDENT"]
+      if (t != "") {
+        if (toupper(t) == sha || t == line) { print sha; found = 1; exit }
+      } else {
+        if (line == "Ackbar Local Code Signing" && p1 == "") { p1 = sha }
+        else if (index(line, "Developer ID Application:") == 1 && p2 == "") { p2 = sha }
+        else if (index(line, "Apple Development:") == 1 && p3 == "") { p3 = sha }
+      }
+    }
+    END {
+      if (!found && ENVIRON["TARGET_IDENT"] == "") {
+        if (p1 != "") print p1
+        else if (p2 != "") print p2
+        else if (p3 != "") print p3
+      }
+    }' || true)
+  [ -n "$CS_SHA1" ] || return 0
+  CS_BUNDLE_ID="com.marcinbak.$BIN_NAME"
+  if codesign --force --sign "$CS_SHA1" --identifier "$CS_BUNDLE_ID" "$BIN_FILE" >/dev/null 2>&1; then
+    CS_REQ=$(codesign -d -r- "$BIN_FILE" 2>&1 || true)
+    case "$CS_REQ" in
+      *[Cc][Dd][Hh][Aa][Ss][Hh]*)
+        CS_SHA1_LOWER=$(printf '%s' "$CS_SHA1" | tr 'A-F' 'a-f')
+        codesign --force --sign "$CS_SHA1" --identifier "$CS_BUNDLE_ID" -r="designated => identifier \"$CS_BUNDLE_ID\" and certificate root = H\"$CS_SHA1_LOWER\"" "$BIN_FILE" >/dev/null 2>&1 || true
+        ;;
+    esac
+  fi
+  return 0
 }`
 }

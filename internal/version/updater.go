@@ -148,6 +148,9 @@ func RunHomebrewUpgrade(ctx context.Context) (*UpdateResult, error) {
 
 	// If brew succeeded AND installed binary is at least targetVer, return success.
 	if brewErr == nil && installedVer != "" && (targetVer == "" || !IsNewer(targetVer, installedVer)) {
+		if brewBinDir != "" {
+			CodesignInstalledDir(ctx, brewBinDir, TargetBinaries)
+		}
 		return &UpdateResult{
 			PreviousVersion: Version,
 			NewVersion:      installedVer,
@@ -176,6 +179,10 @@ func RunHomebrewUpgrade(ctx context.Context) (*UpdateResult, error) {
 
 	if brewErr != nil {
 		return nil, fmt.Errorf("brew upgrade ackbar failed: %s (%w)", brewOut, brewErr)
+	}
+
+	if brewBinDir != "" {
+		CodesignInstalledDir(ctx, brewBinDir, TargetBinaries)
 	}
 
 	newVer := installedVer
@@ -238,6 +245,7 @@ func syncSecondaryInstallLocations(ctx context.Context, primaryRes *UpdateResult
 				continue
 			}
 			_ = os.Chmod(tmpPath, 0755)
+			_ = CodesignBinaryFile(ctx, tmpPath, binName)
 			_ = os.Rename(tmpPath, filepath.Join(secDir, binName))
 		}
 	}
@@ -434,6 +442,7 @@ func ExtractTarGz(r io.Reader, destDir string, binaryNames []string) ([]string, 
 
 		// Set executable permissions
 		_ = os.Chmod(tempPath, 0755)
+		_ = CodesignBinaryFile(context.Background(), tempPath, baseName)
 
 		// Atomic replace
 		if err := os.Rename(tempPath, destPath); err != nil {

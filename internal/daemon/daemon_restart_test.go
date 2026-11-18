@@ -201,3 +201,133 @@ func TestBuildLocalAsyncRestartScript_SingleQuotesHazardousExePath(t *testing.T)
 		t.Fatalf("expected single-quoted command:\n%s\nin script:\n%s", expectedCmd, script)
 	}
 }
+
+func TestCodesignDarwinStagedBinaryShellHelper(t *testing.T) {
+	const sha = "A1B2C3D4E5F60718293A4B5C6D7E8F9012345678"
+
+	setupMockEnv := func(t *testing.T, unameOut string, keychainOK bool, logPath string) (mockHome, mockBin string) {
+		t.Helper()
+		mockHome = t.TempDir()
+		mockBin = t.TempDir()
+		_ = os.MkdirAll(filepath.Join(mockHome, "Library", "Keychains"), 0700)
+		_ = os.WriteFile(filepath.Join(mockHome, "Library", "Keychains", "login.keychain-db"), []byte("kc"), 0600)
+
+		writeStub := func(name, body string) {
+			p := filepath.Join(mockBin, name)
+			if err := os.WriteFile(p, []byte("#!/bin/sh\n"+body+"\n"), 0755); err != nil {
+				t.Fatalf("write %s: %v", name, err)
+			}
+		}
+
+		writeStub("uname", "echo "+unameOut)
+		if keychainOK {
+			writeStub("security", `
+if [ "$1" = "show-keychain-info" ]; then
+  exit 0
+fi
+if [ "$1" = "find-identity" ]; then
+  echo '  1) `+strings.ToLower(sha)+` "Ackbar Local Code Signing"'
+  exit 0
+fi
+exit 1`)
+		} else {
+			writeStub("security", `exit 1`)
+		}
+		writeStub("codesign", `
+echo "codesign $*" >> "`+logPath+`"
+if [ "$1" = "-d" ]; then
+  echo 'designated => identifier "com.marcinbak.ackbard" and cdhash H"deadbeef"'
+  exit 0
+fi
+exit 0`)
+		return mockHome, mockBin
+	}
+
+	t.Run("darwin_unlocked_signs_staged_new_before_mv", func(t *testing.T) {
+		logFile := filepath.Join(t.TempDir(), "codesign.log")
+		mockHome, mockBin := setupMockEnv(t, "Darwin", true, logFile)
+		localBin := filepath.Join(mockHome, ".local", "bin")
+		_ = os.MkdirAll(localBin, 0755)
+		_ = os.WriteFile(filepath.Join(localBin, "ackbard.new"), []byte("new-bin"), 0644)
+
+		// Stub curl/systemctl/launchctl/pgrep so buildRemoteBinaryRestartScript completes cleanly after mv
+		for _, tool := range []string{"curl", "pgrep", "sleep"} {
+			_ = os.WriteFile(filepath.Join(mockBin, tool), []byte("#!/bin/sh\nexit 0\n"), 0755)
+		}
+		_ = os.WriteFile(filepath.Join(mockBin, "systemctl"), []byte("#!/bin/sh\nif [ \"$2\" = \"is-enabled\" ]; then echo enabled; exit 0; fi\nexit 0\n"), 0755)
+
+		script := buildRemoteBinaryRestartScript(shellSingleQuote(""), "")
+		cmd := exec.Command("sh", "-c", script)
+		cmd.Env = []string{"HOME=" + mockHome, "PATH=" + mockBin + ":/usr/bin:/bin"}
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("remote restart script failed: %v (%s)", err, string(out))
+		}
+
+		logBytes, err := os.ReadFile(logFile)
+		if err != nil {
+			t.Fatalf("expected codesign log: %v", err)
+		}
+		logStr := string(logBytes)
+		if !strings.Contains(logStr, "--sign "+sha+" --identifier com.marcinbak.ackbard "+filepath.Join(localBin, "ackbard.new")) {
+			t.Fatalf("expected initial codesign on ackbard.new, got:\n%s", logStr)
+		}
+		wantReq := `-r=designated => identifier "com.marcinbak.ackbard" and certificate root = H"` + strings.ToLower(sha) + `"`
+		if !strings.Contains(logStr, wantReq) {
+			t.Fatalf("expected cdhash replacement requirement, got:\n%s", logStr)
+		}
+		if _, err := os.Stat(filepath.Join(localBin, "ackbard")); err != nil {
+			t.Fatalf("expected ackbard moved into place: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(localBin, "ackbard.new")); !os.IsNotExist(err) {
+			t.Fatalf("expected ackbard.new moved away")
+		}
+	})
+
+	t.Run("locked_keychain_skips_codesign_without_error", func(t *testing.T) {
+		logFile := filepath.Join(t.TempDir(), "codesign.log")
+		mockHome, mockBin := setupMockEnv(t, "Darwin", false, logFile)
+		staged := filepath.Join(mockHome, "ackbard.new")
+		_ = os.WriteFile(staged, []byte("bin"), 0755)
+
+		cmd := exec.Command("sh", "-c", DaemonSafeShellHelpers()+"\ncodesign_darwin_staged_binary \"$1\" \"$2\"", "sh", staged, "ackbard")
+		cmd.Env = []string{"HOME=" + mockHome, "PATH=" + mockBin + ":/usr/bin:/bin"}
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("expected clean 0 exit on locked keychain, got %v (%s)", err, string(out))
+		}
+		if _, err := os.Stat(logFile); !os.IsNotExist(err) {
+			t.Fatalf("expected codesign not invoked when keychain locked")
+		}
+	})
+
+	t.Run("non_darwin_skips_codesign", func(t *testing.T) {
+		logFile := filepath.Join(t.TempDir(), "codesign.log")
+		mockHome, mockBin := setupMockEnv(t, "Linux", true, logFile)
+		staged := filepath.Join(mockHome, "ackbard.new")
+		_ = os.WriteFile(staged, []byte("bin"), 0755)
+
+		cmd := exec.Command("sh", "-c", DaemonSafeShellHelpers()+"\ncodesign_darwin_staged_binary \"$1\" \"$2\"", "sh", staged, "ackbard")
+		cmd.Env = []string{"HOME=" + mockHome, "PATH=" + mockBin + ":/usr/bin:/bin"}
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("expected clean 0 exit on Linux, got %v (%s)", err, string(out))
+		}
+		if _, err := os.Stat(logFile); !os.IsNotExist(err) {
+			t.Fatalf("expected codesign not invoked on Linux")
+		}
+	})
+
+	t.Run("disabled_by_env_skips_codesign", func(t *testing.T) {
+		logFile := filepath.Join(t.TempDir(), "codesign.log")
+		mockHome, mockBin := setupMockEnv(t, "Darwin", true, logFile)
+		staged := filepath.Join(mockHome, "ackbard.new")
+		_ = os.WriteFile(staged, []byte("bin"), 0755)
+
+		cmd := exec.Command("sh", "-c", DaemonSafeShellHelpers()+"\ncodesign_darwin_staged_binary \"$1\" \"$2\"", "sh", staged, "ackbard")
+		cmd.Env = []string{"HOME=" + mockHome, "PATH=" + mockBin + ":/usr/bin:/bin", "ACKBAR_CODESIGN_IDENTITY=none"}
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("expected clean 0 exit when disabled, got %v (%s)", err, string(out))
+		}
+		if _, err := os.Stat(logFile); !os.IsNotExist(err) {
+			t.Fatalf("expected codesign not invoked when disabled")
+		}
+	})
+}

@@ -80,8 +80,9 @@ func (s *Server) handleDocuments(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	home := s.effectiveHomeDir()
 	if cwd == "" {
-		cwd = os.Getenv("HOME")
+		cwd = home
 	}
 
 	var docs []DocumentItem
@@ -133,6 +134,9 @@ func (s *Server) handleDocuments(w http.ResponseWriter, r *http.Request) {
 					return nil
 				}
 				if d.IsDir() {
+					if IsProtectedHomeWalkDir(p, home, d.Name()) {
+						return filepath.SkipDir
+					}
 					rel, _ := filepath.Rel(docDir, p)
 					if strings.Count(rel, string(filepath.Separator)) > 3 {
 						return filepath.SkipDir
@@ -149,7 +153,6 @@ func (s *Server) handleDocuments(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	home, _ := os.UserHomeDir()
 	// 3. Scan .claude/ directory if present
 	(&ClaudeAgentAdapter{}).ListWorkspaceDocuments(home, cwd, nativeID, addDoc)
 
