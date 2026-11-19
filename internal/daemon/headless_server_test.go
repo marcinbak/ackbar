@@ -13,9 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"ackbar/internal/agents/codex"
-	"ackbar/internal/agents/grok"
-	"ackbar/internal/agents/opencode"
+	"ackbar/internal/agents"
 	"ackbar/internal/tmux"
 )
 
@@ -31,9 +29,9 @@ func setupTestServer(t *testing.T) (*Server, *DB) {
 	srv.restartDaemonFn = func() {}
 	srv.shutdownExitFn = func(int) {}
 	srv.RegisterProvider(&MockProvider{})
-	_ = srv.RegisterPlugin(grok.New())
-	_ = srv.RegisterPlugin(codex.New())
-	_ = srv.RegisterPlugin(opencode.New())
+	for _, p := range agents.DefaultPlugins() {
+		_ = srv.RegisterPlugin(p)
+	}
 	t.Cleanup(func() {
 		if srv.headless != nil {
 			srv.headless.ShutdownAllWorkers(2 * time.Second)

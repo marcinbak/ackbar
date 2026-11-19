@@ -161,3 +161,7 @@ type ACPDriver interface {
 type CommandCatalog interface {
 	CollectCommands(homeDir string) []CommandSuggestion
 }
+
+type SubagentBlockInspector interface {
+	InspectSubagentBlock(homeDir, subID string, blockedSince time.Time) (blocked *Blocked, activity string, ok bool)
+}

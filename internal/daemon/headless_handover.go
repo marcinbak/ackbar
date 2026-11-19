@@ -12,17 +12,17 @@ func (s *Server) buildDeterministicHandoverBriefing(sess *Session, customInstruc
 	home := s.effectiveHomeDir()
 	var recentPrompts []string
 
-	if sess.Agent == "antigravity" {
-		if msgs, err := ExtractAntigravityTranscriptMessages(home, sess.NativeID); err == nil {
-			for _, m := range msgs {
+	if tr, ok := s.PluginRegistry().AsTranscript(sess.Agent); ok {
+		if t, err := tr.ExtractTranscript(home, sess.Cwd, sess.NativeID); err == nil && t != nil {
+			for _, m := range t.Messages {
 				if m.Role == "user" && strings.TrimSpace(m.Content) != "" {
 					recentPrompts = append(recentPrompts, strings.TrimSpace(m.Content))
 				}
 			}
 		}
-	} else if tr, ok := s.PluginRegistry().AsTranscript(sess.Agent); ok {
-		if t, err := tr.ExtractTranscript(home, sess.Cwd, sess.NativeID); err == nil && t != nil {
-			for _, m := range t.Messages {
+	} else if sess.Agent == "antigravity" {
+		if msgs, err := ExtractAntigravityTranscriptMessages(home, sess.NativeID); err == nil {
+			for _, m := range msgs {
 				if m.Role == "user" && strings.TrimSpace(m.Content) != "" {
 					recentPrompts = append(recentPrompts, strings.TrimSpace(m.Content))
 				}

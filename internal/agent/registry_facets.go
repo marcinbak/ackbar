@@ -185,3 +185,12 @@ func (r *Registry) AsSessionRewinder(key string) (SessionRewinder, bool) {
 	f, ok := p.(SessionRewinder)
 	return f, ok
 }
+
+func (r *Registry) AsSubagentBlockInspector(key string) (SubagentBlockInspector, bool) {
+	p, ok := r.Get(key)
+	if !ok {
+		return nil, false
+	}
+	f, ok := p.(SubagentBlockInspector)
+	return f, ok
+}

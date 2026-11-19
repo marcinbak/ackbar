@@ -172,8 +172,15 @@ reconcile:
 		return freshRunningInMem
 	}
 
-	// 3. Fallback to transcript and file extraction
-	subs, err := ExtractSubagents(agent, nativeID, cwd)
+	// 3. Fallback to plugin or transcript extraction
+	var subs []SubagentInfo
+	var err error
+	if tr, ok := s.PluginRegistry().AsTranscript(agent); ok {
+		home, _ := os.UserHomeDir()
+		subs, err = tr.ListSubagents(home, cwd, nativeID)
+	} else {
+		subs, err = ExtractSubagents(agent, nativeID, cwd)
+	}
 	if err == nil {
 		var running []SubagentInfo
 		for _, sub := range subs {

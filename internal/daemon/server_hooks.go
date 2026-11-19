@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"ackbar/internal/agent"
 	"ackbar/internal/tmux"
 )
 
@@ -167,11 +168,15 @@ func (s *Server) processParsedHookEvent(event *Event, urlEventName string, heade
 		defer unlock()
 	}
 
-	supportsSubagents := event.Agent == "antigravity"
-	if !supportsSubagents && s.PluginRegistry() != nil {
+	supportsSubagents := false
+	if s.PluginRegistry() != nil {
 		if p, ok := s.PluginRegistry().Get(event.Agent); ok {
 			supportsSubagents = p.Capabilities().SupportsSubagents
+		} else {
+			supportsSubagents = event.Agent == "antigravity"
 		}
+	} else {
+		supportsSubagents = event.Agent == "antigravity"
 	}
 	if supportsSubagents {
 		home, _ := os.UserHomeDir()
@@ -188,10 +193,10 @@ func (s *Server) processParsedHookEvent(event *Event, urlEventName string, heade
 			}
 
 			var parentConvID, role, typeName string
-			if event.Agent == "antigravity" {
-				parentConvID, role, typeName = ResolveAntigravitySubagentParent(home, event.NativeID)
-			} else if h, ok := s.PluginRegistry().AsHooks(event.Agent); ok {
+			if h, ok := s.PluginRegistry().AsHooks(event.Agent); ok {
 				parentConvID, role, typeName = h.ResolveSubagentParent(home, event.NativeID)
+			} else if event.Agent == "antigravity" {
+				parentConvID, role, typeName = ResolveAntigravitySubagentParent(home, event.NativeID)
 			}
 			if parentConvID != "" && parentConvID != event.NativeID {
 				unlockParent := s.lockSessionHook(hookLockKey(event.Agent, parentConvID, event.Agent+"-"+parentConvID))
@@ -288,19 +293,13 @@ func (s *Server) processParsedHookEvent(event *Event, urlEventName string, heade
 							}
 						}
 						if !stillBlockedBySibling && home != "" && len(runningSubs) > 0 {
-							subBrainDirs := antigravityBrainDirs(home)
 							blockSince := effectiveBlockedSince(parentSess)
-							for _, sub := range runningSubs {
-								if sub.ID == event.NativeID {
-									continue
-								}
-								cleanSubID := filepath.Base(filepath.Clean(sub.ID))
-								if cleanSubID == "" || cleanSubID == "." || cleanSubID == ".." || strings.ContainsAny(cleanSubID, "*?[") {
-									continue
-								}
-								for _, bDir := range subBrainDirs {
-									subLogPath := filepath.Join(bDir, cleanSubID, ".system_generated", "logs", "transcript.jsonl")
-									if blocked, activity, ok, _ := inspectAntigravityTranscriptFileBlocked(subLogPath, blockSince); ok {
+							if sbi, ok := s.PluginRegistry().AsSubagentBlockInspector(event.Agent); ok {
+								for _, sub := range runningSubs {
+									if sub.ID == event.NativeID {
+										continue
+									}
+									if blocked, activity, bOk := sbi.InspectSubagentBlock(home, sub.ID, blockSince); bOk {
 										stillBlockedBySibling = true
 										s.blockedBySubagent.Store(parentSess.ID, sub.ID)
 										parentSess.State = StateBlocked
@@ -309,8 +308,30 @@ func (s *Server) processParsedHookEvent(event *Event, urlEventName string, heade
 										break
 									}
 								}
-								if stillBlockedBySibling {
-									break
+							} else {
+								subBrainDirs := antigravityBrainDirs(home)
+								for _, sub := range runningSubs {
+									if sub.ID == event.NativeID {
+										continue
+									}
+									cleanSubID := filepath.Base(filepath.Clean(sub.ID))
+									if cleanSubID == "" || cleanSubID == "." || cleanSubID == ".." || strings.ContainsAny(cleanSubID, "*?[") {
+										continue
+									}
+									for _, bDir := range subBrainDirs {
+										subLogPath := filepath.Join(bDir, cleanSubID, ".system_generated", "logs", "transcript.jsonl")
+										if blocked, activity, ok, _ := inspectAntigravityTranscriptFileBlocked(subLogPath, blockSince); ok {
+											stillBlockedBySibling = true
+											s.blockedBySubagent.Store(parentSess.ID, sub.ID)
+											parentSess.State = StateBlocked
+											parentSess.Blocked = blocked
+											parentSess.Activity = activity
+											break
+										}
+									}
+									if stillBlockedBySibling {
+										break
+									}
 								}
 							}
 						}
@@ -573,7 +594,20 @@ func (s *Server) updateHookSessionMetadataAndTitle(sess *Session, event *Event) 
 		}
 	} else if isRawSessionName(sess.Name) {
 		// Attempt title resolution from disk
-		if sess.Agent == "antigravity" {
+		if tr, ok := s.PluginRegistry().AsTranscript(sess.Agent); ok {
+			if meta := tr.ReadSessionMetadata(s.effectiveHomeDir(), sess.Cwd, sess.NativeID); meta != nil && meta.Title != "" && !isRawSessionName(meta.Title) {
+				sess.Name = meta.Title
+				if meta.CustomTitle != "" {
+					sess.CustomTitle = meta.CustomTitle
+				}
+				if meta.AITitle != "" {
+					sess.AITitle = meta.AITitle
+				}
+				if meta.GitBranch != "" && sess.GitBranch == "" {
+					sess.GitBranch = meta.GitBranch
+				}
+			}
+		} else if sess.Agent == "antigravity" {
 			if title := ReadAntigravitySessionTitle(sess.Cwd, sess.NativeID); title != "" && !isRawSessionName(title) {
 				sess.Name = title
 			}
@@ -587,23 +621,18 @@ func (s *Server) updateHookSessionMetadataAndTitle(sess *Session, event *Event) 
 					sess.AITitle = meta.AITitle
 				}
 			}
-		} else if tr, ok := s.PluginRegistry().AsTranscript(sess.Agent); ok {
-			if meta := tr.ReadSessionMetadata(s.effectiveHomeDir(), sess.Cwd, sess.NativeID); meta != nil && meta.Title != "" {
-				sess.Name = meta.Title
-				if meta.CustomTitle != "" {
-					sess.CustomTitle = meta.CustomTitle
-				}
-				if meta.AITitle != "" {
-					sess.AITitle = meta.AITitle
-				}
-				if meta.GitBranch != "" && sess.GitBranch == "" {
-					sess.GitBranch = meta.GitBranch
+		}
+	} else if sess.CustomTitle == "" {
+		if tr, ok := s.PluginRegistry().AsTranscript(sess.Agent); ok {
+			if p, pOk := s.PluginRegistry().Get(sess.Agent); pOk && p.Capabilities().NativeIDStrategy == agent.NativeIDLazyAdopt {
+				if meta := tr.ReadSessionMetadata(s.effectiveHomeDir(), sess.Cwd, sess.NativeID); meta != nil && meta.AITitle != "" && meta.AITitle != sess.Name {
+					sess.Name = meta.AITitle
 				}
 			}
-		}
-	} else if sess.Agent == "antigravity" && sess.CustomTitle == "" {
-		if anno := ReadAntigravityAnnotationTitle(sess.NativeID); anno != "" && anno != sess.Name {
-			sess.Name = anno
+		} else if sess.Agent == "antigravity" {
+			if anno := ReadAntigravityAnnotationTitle(sess.NativeID); anno != "" && anno != sess.Name {
+				sess.Name = anno
+			}
 		}
 	}
 }
@@ -640,14 +669,14 @@ func (s *Server) applyHookStateTransition(sess *Session, event *Event, sessionID
 				}
 			}
 			if sess.TmuxName != "" && event.State != StateBlocked {
-				switch event.Agent {
-				case "claude-code":
-					InspectClaudeStatus(context.Background(), sess)
-				case "antigravity":
-					InspectAntigravityStatus(context.Background(), sess)
-				default:
-					if td, ok := s.PluginRegistry().AsTMuxDriver(event.Agent); ok {
-						td.InspectStatus(context.Background(), sess)
+				if td, ok := s.PluginRegistry().AsTMuxDriver(event.Agent); ok {
+					td.InspectStatus(context.Background(), sess)
+				} else {
+					switch event.Agent {
+					case "claude-code":
+						InspectClaudeStatus(context.Background(), sess)
+					case "antigravity":
+						InspectAntigravityStatus(context.Background(), sess)
 					}
 				}
 				if sess.State == StateBlocked && sess.Blocked != nil {
@@ -841,19 +870,19 @@ func (s *Server) trackHookSubagentEvent(sessionID string, event *Event) {
 	}
 }
 
-func (s *Server) findSpawningSession(agent, cwd string) (*Session, error) {
+func (s *Server) findSpawningSession(agentName, cwd string) (*Session, error) {
 	sessions, err := s.db.ListSessions()
 	if err != nil {
 		return nil, err
 	}
 	home, _ := os.UserHomeDir()
-	adapter := s.agentAdapter(agent)
+	adapter := s.agentAdapter(agentName)
 	// 1. Exact CWD + StateUnknown match
 	for _, sess := range sessions {
 		if sess.EngineType == EngineHeadless && sess.TmuxName == "" {
 			continue
 		}
-		if sess.Agent == agent && sess.Cwd == cwd && sess.Managed && sess.State == StateUnknown && sess.OldID == "" {
+		if sess.Agent == agentName && sess.Cwd == cwd && sess.Managed && sess.State == StateUnknown && sess.OldID == "" {
 			if adapter.HasConversationArtifacts(home, sess.NativeID) {
 				continue
 			}
@@ -865,7 +894,7 @@ func (s *Server) findSpawningSession(agent, cwd string) (*Session, error) {
 		if sess.EngineType == EngineHeadless && sess.TmuxName == "" {
 			continue
 		}
-		if sess.Agent == agent && sameOrRelatedDir(sess.Cwd, cwd) && sess.Managed && sess.State == StateUnknown && sess.OldID == "" {
+		if sess.Agent == agentName && sameOrRelatedDir(sess.Cwd, cwd) && sess.Managed && sess.State == StateUnknown && sess.OldID == "" {
 			if adapter.HasConversationArtifacts(home, sess.NativeID) {
 				continue
 			}
@@ -874,16 +903,22 @@ func (s *Server) findSpawningSession(agent, cwd string) (*Session, error) {
 	}
 	// 3. For Antigravity: match a managed placeholder session whose State was updated by scanObservedSessions
 	// before the user submitted their first prompt (still holds synthetic tempUUID with no brain artifacts).
-	if agent == "antigravity" {
+	supportsLazyAdopt := agentName == "antigravity"
+	if s.PluginRegistry() != nil {
+		if p, ok := s.PluginRegistry().Get(agentName); ok {
+			supportsLazyAdopt = p.Capabilities().NativeIDStrategy == agent.NativeIDLazyAdopt
+		}
+	}
+	if supportsLazyAdopt {
 		var best *Session
 		for _, sess := range sessions {
-			if sess.Agent != "antigravity" || !sess.Managed || sess.State == StateEnded || sess.OldID != "" {
+			if sess.Agent != agentName || !sess.Managed || sess.State == StateEnded || sess.OldID != "" {
 				continue
 			}
 			if !sameOrRelatedDir(sess.Cwd, cwd) {
 				continue
 			}
-			expectedTmux := fmt.Sprintf("ackbar-antigravity-%s", sess.NativeID)
+			expectedTmux := fmt.Sprintf("ackbar-%s-%s", agentName, sess.NativeID)
 			if sess.TmuxName != expectedTmux {
 				continue
 			}

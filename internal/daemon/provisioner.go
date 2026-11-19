@@ -107,6 +107,12 @@ func GetAgentStatusesWithRegistry(customHome string, reg *agent.Registry) ([]Age
 
 	for _, def := range supportedAgents {
 		seen[def.Key] = true
+		if reg != nil {
+			if prov, ok := reg.AsProvisioner(def.Key); ok {
+				results = append(results, prov.CheckStatus(context.Background(), home))
+				continue
+			}
+		}
 		status := inspectAgent(home, def)
 		results = append(results, status)
 	}
@@ -245,8 +251,28 @@ func ProvisionAgentsWithRegistry(customHome string, targetAgentKeys []string, re
 	seen := make(map[string]bool)
 	for _, def := range supportedAgents {
 		seen[def.Key] = true
-		if !provisionAll && !targetMap[def.Key] {
+		targeted := provisionAll || targetMap[def.Key]
+		if !targeted && reg != nil {
+			if p, ok := reg.Get(def.Key); ok {
+				for _, a := range p.Aliases() {
+					if targetMap[strings.ToLower(strings.TrimSpace(a))] {
+						targeted = true
+						break
+					}
+				}
+			}
+		}
+		if !targeted {
 			continue
+		}
+
+		if reg != nil {
+			if prov, ok := reg.AsProvisioner(def.Key); ok {
+				if err := prov.Provision(context.Background(), home); err != nil {
+					return nil, fmt.Errorf("failed to provision %s: %w", def.DisplayName, err)
+				}
+				continue
+			}
 		}
 
 		// When provisioning all, claude-desktop is only provisioned if its parent directory exists

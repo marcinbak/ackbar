@@ -164,6 +164,7 @@ type DiskScanInput struct {
 	HomeDir          string
 	HostName         string
 	ExistingSessions []*Session
+	IsSessionDeleted func(id string) bool
 }
 
 type DiskSessionAdoption struct {

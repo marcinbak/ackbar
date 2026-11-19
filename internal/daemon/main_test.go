@@ -5,18 +5,12 @@ import (
 	"strconv"
 	"testing"
 
-	"ackbar/internal/agent"
-	"ackbar/internal/agents/codex"
-	"ackbar/internal/agents/grok"
-	"ackbar/internal/agents/opencode"
+	"ackbar/internal/agents"
 	"ackbar/internal/testutil"
 )
 
 func TestMain(m *testing.M) {
-	reg := agent.NewRegistry()
-	_ = reg.Register(grok.New())
-	_ = reg.Register(codex.New())
-	_ = reg.Register(opencode.New())
+	reg, _ := agents.NewDefaultRegistry()
 	if os.Getenv("ACKBAR_TEST_MOCK_PERSISTENT_PLUGIN") == "1" {
 		registerMockPersistentPlugins(reg)
 	}

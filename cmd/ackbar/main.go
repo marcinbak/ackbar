@@ -20,19 +20,14 @@ import (
 	"time"
 
 	"ackbar/internal/agent"
-	"ackbar/internal/agents/codex"
-	"ackbar/internal/agents/grok"
-	"ackbar/internal/agents/opencode"
+	"ackbar/internal/agents"
 	"ackbar/internal/daemon"
 	"ackbar/internal/mcp"
 	"ackbar/internal/version"
 )
 
 func cliPluginRegistry() *agent.Registry {
-	reg := agent.NewRegistry()
-	_ = reg.Register(grok.New())
-	_ = reg.Register(codex.New())
-	_ = reg.Register(opencode.New())
+	reg, _ := agents.NewDefaultRegistry()
 	return reg
 }
 
@@ -227,75 +222,78 @@ func runSetupHooks() error {
 		}
 	}
 
+	reg := cliPluginRegistry()
+
 	// 3. Configure Antigravity hooks (~/.gemini/config/hooks.json)
-	geminiHooksDir := filepath.Join(home, ".gemini", "config")
-	_ = os.MkdirAll(geminiHooksDir, 0755)
-	geminiHooksFile := filepath.Join(geminiHooksDir, "hooks.json")
+	if _, hasAgyPlugin := reg.Get("antigravity"); !hasAgyPlugin {
+		geminiHooksDir := filepath.Join(home, ".gemini", "config")
+		_ = os.MkdirAll(geminiHooksDir, 0755)
+		geminiHooksFile := filepath.Join(geminiHooksDir, "hooks.json")
 
-	var existingHooks map[string]interface{}
-	if data, err := os.ReadFile(geminiHooksFile); err == nil {
-		_ = json.Unmarshal(data, &existingHooks)
-	}
-	if existingHooks == nil {
-		existingHooks = make(map[string]interface{})
-	}
-	delete(existingHooks, "hooks") // remove legacy flat array if present
+		var existingHooks map[string]interface{}
+		if data, err := os.ReadFile(geminiHooksFile); err == nil {
+			_ = json.Unmarshal(data, &existingHooks)
+		}
+		if existingHooks == nil {
+			existingHooks = make(map[string]interface{})
+		}
+		delete(existingHooks, "hooks") // remove legacy flat array if present
 
-	hookCmd := fmt.Sprintf("%s --agent=antigravity", hookBinTarget)
-	existingHooks["ackbar"] = map[string]interface{}{
-		"PreInvocation": []map[string]interface{}{
-			{
-				"type":    "command",
-				"command": hookCmd + " --event=PreInvocation",
+		hookCmd := fmt.Sprintf("%s --agent=antigravity", hookBinTarget)
+		existingHooks["ackbar"] = map[string]interface{}{
+			"PreInvocation": []map[string]interface{}{
+				{
+					"type":    "command",
+					"command": hookCmd + " --event=PreInvocation",
+				},
 			},
-		},
-		"PostInvocation": []map[string]interface{}{
-			{
-				"type":    "command",
-				"command": hookCmd + " --event=PostInvocation",
+			"PostInvocation": []map[string]interface{}{
+				{
+					"type":    "command",
+					"command": hookCmd + " --event=PostInvocation",
+				},
 			},
-		},
-		"Stop": []map[string]interface{}{
-			{
-				"type":    "command",
-				"command": hookCmd + " --event=Stop",
+			"Stop": []map[string]interface{}{
+				{
+					"type":    "command",
+					"command": hookCmd + " --event=Stop",
+				},
 			},
-		},
-		"PreToolUse": []map[string]interface{}{
-			{
-				"matcher": "*",
-				"hooks": []map[string]interface{}{
-					{
-						"type":    "command",
-						"command": hookCmd + " --event=PreToolUse",
+			"PreToolUse": []map[string]interface{}{
+				{
+					"matcher": "*",
+					"hooks": []map[string]interface{}{
+						{
+							"type":    "command",
+							"command": hookCmd + " --event=PreToolUse",
+						},
 					},
 				},
 			},
-		},
-		"PostToolUse": []map[string]interface{}{
-			{
-				"matcher": "*",
-				"hooks": []map[string]interface{}{
-					{
-						"type":    "command",
-						"command": hookCmd + " --event=PostToolUse",
+			"PostToolUse": []map[string]interface{}{
+				{
+					"matcher": "*",
+					"hooks": []map[string]interface{}{
+						{
+							"type":    "command",
+							"command": hookCmd + " --event=PostToolUse",
+						},
 					},
 				},
 			},
-		},
-	}
+		}
 
-	if updated, err := json.MarshalIndent(existingHooks, "", "  "); err == nil {
-		_ = os.WriteFile(geminiHooksFile, updated, 0644)
-		fmt.Printf("✅ Configured Antigravity lifecycle hooks in %s\n", geminiHooksFile)
+		if updated, err := json.MarshalIndent(existingHooks, "", "  "); err == nil {
+			_ = os.WriteFile(geminiHooksFile, updated, 0644)
+			fmt.Printf("✅ Configured Antigravity lifecycle hooks in %s\n", geminiHooksFile)
+		}
 	}
 
 	// 4. Configure registered plugin hooks if installed
-	reg := cliPluginRegistry()
 	for _, p := range reg.List() {
-		if prov, ok := reg.AsProvisioner(p.Key()); ok && prov.IsInstalled(home) {
+		if prov, ok := reg.AsProvisioner(p.Key()); ok && (p.Key() == "antigravity" || prov.IsInstalled(home)) {
 			if err := prov.InstallHooks(home); err == nil {
-				if p.Capabilities().SupportsNativeHooks {
+				if p.Capabilities().SupportsNativeHooks || p.Key() == "antigravity" {
 					fmt.Printf("✅ Configured %s lifecycle hooks\n", p.DisplayName())
 				}
 			} else {

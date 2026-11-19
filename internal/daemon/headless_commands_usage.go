@@ -16,9 +16,6 @@ func (s *Server) computeTranscriptContextAndCost(home string, sess *Session) map
 		effectiveModel = resolvedModel
 	}
 	limitTokens := getModelContextLimit(effectiveModel)
-	if sess.Agent == "antigravity" && limitTokens < 1000000 {
-		limitTokens = 1000000
-	}
 
 	sumInputTokens := 0
 	outputTokens := 0
@@ -30,7 +27,21 @@ func (s *Server) computeTranscriptContextAndCost(home string, sess *Session) map
 	customCostUSD := 0.0
 	hasCustomCost := false
 
-	if sess.Agent == "antigravity" {
+	if tui, ok := s.PluginRegistry().AsTranscriptUsageInspector(sess.Agent); ok {
+		if u, uOk := tui.ComputeTranscriptUsage(home, sess.Cwd, sess.NativeID, limitTokens); uOk {
+			sumInputTokens = u.InputTokens
+			outputTokens = u.OutputTokens
+			cacheRead = u.CacheReadTokens
+			lastTurnContextTokens = u.LastTurnContextTokens
+			limitTokens = u.ContextLimitTokens
+			turnCount = u.TurnCount
+			customCostUSD = u.CostUSD
+			hasCustomCost = true
+		}
+	} else if sess.Agent == "antigravity" {
+		if limitTokens < 1000000 {
+			limitTokens = 1000000
+		}
 		logFile := filepath.Join(home, ".gemini", "antigravity-cli", "brain", sess.NativeID, ".system_generated", "logs", "transcript.jsonl")
 		if !fileExists(logFile) {
 			logFile = filepath.Join(home, ".gemini", "antigravity", "brain", sess.NativeID, ".system_generated", "logs", "transcript.jsonl")
@@ -63,17 +74,6 @@ func (s *Server) computeTranscriptContextAndCost(home string, sess *Session) map
 					}
 				}
 			}
-		}
-	} else if tui, ok := s.PluginRegistry().AsTranscriptUsageInspector(sess.Agent); ok {
-		if u, uOk := tui.ComputeTranscriptUsage(home, sess.Cwd, sess.NativeID, limitTokens); uOk {
-			sumInputTokens = u.InputTokens
-			outputTokens = u.OutputTokens
-			cacheRead = u.CacheReadTokens
-			lastTurnContextTokens = u.LastTurnContextTokens
-			limitTokens = u.ContextLimitTokens
-			turnCount = u.TurnCount
-			customCostUSD = u.CostUSD
-			hasCustomCost = true
 		}
 	} else {
 		targetFile := findClaudeTranscriptPath(home, sess.NativeID, sess.Cwd)

@@ -1329,14 +1329,18 @@ func (s *Server) normalizeModelInput(agent, raw string) (string, error) {
 		candidates = append(candidates, s.collectModelsForAgent(agent)...)
 	}
 	agLower := strings.ToLower(strings.TrimSpace(agent))
-	if agLower == "antigravity" {
+	if s != nil && s.PluginRegistry() != nil {
+		if mc, ok := s.PluginRegistry().AsModelCatalog(agent); ok {
+			candidates = append(candidates, mc.DefaultModels()...)
+		} else if agLower == "antigravity" {
+			candidates = append(candidates, getAntigravityDefaultModels()...)
+		} else if agLower == "claude" || agLower == "claude-code" {
+			candidates = append(candidates, getClaudeDefaultModels()...)
+		}
+	} else if agLower == "antigravity" {
 		candidates = append(candidates, getAntigravityDefaultModels()...)
 	} else if agLower == "claude" || agLower == "claude-code" {
 		candidates = append(candidates, getClaudeDefaultModels()...)
-	} else if s != nil && s.PluginRegistry() != nil {
-		if mc, ok := s.PluginRegistry().AsModelCatalog(agent); ok {
-			candidates = append(candidates, mc.DefaultModels()...)
-		}
 	}
 	for _, m := range candidates {
 		if strings.EqualFold(trimmed, m.ID) || strings.EqualFold(trimmed, m.Label) {
@@ -1449,8 +1453,8 @@ func (s *Server) handleSessionConfig(w http.ResponseWriter, r *http.Request, ses
 		} else if pmLower == "acceptedits" {
 			sess.PermissionMode = "acceptEdits"
 		} else if pmLower == "dontask" {
-			if strings.EqualFold(sess.Agent, "antigravity") {
-				http.Error(w, "permission_mode 'dontAsk' is not supported for antigravity", http.StatusBadRequest)
+			if !supportsDontAskMode(s.PluginRegistry(), sess.Agent) {
+				http.Error(w, fmt.Sprintf("permission_mode 'dontAsk' is not supported for %s", canonicalAgentKey(s.PluginRegistry(), sess.Agent)), http.StatusBadRequest)
 				return
 			}
 			sess.PermissionMode = "dontAsk"
@@ -1787,8 +1791,8 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		} else if pmLower == "acceptedits" {
 			req.PermissionMode = "acceptEdits"
 		} else if pmLower == "dontask" {
-			if strings.EqualFold(req.Agent, "antigravity") {
-				http.Error(w, "permission_mode 'dontAsk' is not supported for antigravity", http.StatusBadRequest)
+			if !supportsDontAskMode(s.PluginRegistry(), req.Agent) {
+				http.Error(w, fmt.Sprintf("permission_mode 'dontAsk' is not supported for %s", canonicalAgentKey(s.PluginRegistry(), req.Agent)), http.StatusBadRequest)
 				return
 			}
 			req.PermissionMode = "dontAsk"
@@ -2504,14 +2508,37 @@ func (s *Server) getSpawnCmd(agent, tempUUID string) string {
 	return "claude"
 }
 
-func (s *Server) supportsHeadless(agentName string) bool {
-	if agentName == "claude-code" || agentName == "antigravity" {
-		return true
+func supportsDontAskMode(reg *agent.Registry, agentName string) bool {
+	if reg != nil {
+		if p, ok := reg.Get(agentName); ok && len(p.Capabilities().SupportedPermissionModes) > 0 {
+			for _, m := range p.Capabilities().SupportedPermissionModes {
+				if strings.EqualFold(m, "dontAsk") {
+					return true
+				}
+			}
+			return false
+		}
 	}
+	return !strings.EqualFold(agentName, "antigravity") && !strings.EqualFold(agentName, "agy")
+}
+
+func canonicalAgentKey(reg *agent.Registry, agentName string) string {
+	if reg != nil {
+		if p, ok := reg.Get(agentName); ok {
+			return strings.ToLower(p.Key())
+		}
+	}
+	return strings.ToLower(agentName)
+}
+
+func (s *Server) supportsHeadless(agentName string) bool {
 	if s != nil && s.PluginRegistry() != nil {
 		if p, ok := s.PluginRegistry().Get(agentName); ok {
 			return p.Capabilities().SupportsHeadless
 		}
+	}
+	if agentName == "claude-code" || agentName == "antigravity" {
+		return true
 	}
 	return false
 }

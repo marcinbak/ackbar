@@ -124,11 +124,6 @@ func (s *Server) handleSessionInspect(w http.ResponseWriter, r *http.Request, se
 			if err == nil {
 				out, _ = s.runAllowlistedInspectCmd(r.Context(), sess, bin, "plugin", "list", "--json")
 			}
-		} else if sess.Agent == "antigravity" {
-			bin, err := resolveAntigravityBinary()
-			if err == nil {
-				out, _ = s.runAllowlistedInspectCmd(r.Context(), sess, bin, "plugin", "list", "--json")
-			}
 		} else if ci, ok := s.PluginRegistry().AsCLIInspector(sess.Agent); ok {
 			if args, ok := ci.InspectSubcommandArgs("plugins"); ok {
 				if hd, ok := s.PluginRegistry().AsHeadlessDriver(sess.Agent); ok {
@@ -136,6 +131,11 @@ func (s *Server) handleSessionInspect(w http.ResponseWriter, r *http.Request, se
 						out, _ = s.runAllowlistedInspectCmd(r.Context(), sess, bin, args...)
 					}
 				}
+			}
+		} else if sess.Agent == "antigravity" {
+			bin, err := resolveAntigravityBinary()
+			if err == nil {
+				out, _ = s.runAllowlistedInspectCmd(r.Context(), sess, bin, "plugin", "list", "--json")
 			}
 		}
 		if home != "" && out != "" {
@@ -145,7 +145,7 @@ func (s *Server) handleSessionInspect(w http.ResponseWriter, r *http.Request, se
 		if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &parsed); err != nil {
 			parsed = []any{}
 		}
-		workspacePlugins := probeWorkspacePlugins(home, sess, s.db)
+		workspacePlugins := probeWorkspacePluginsWithRegistry(home, sess, s.db, s.PluginRegistry())
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"kind":              "plugins",
@@ -162,20 +162,23 @@ func (s *Server) handleSessionInspect(w http.ResponseWriter, r *http.Request, se
 					_ = json.Unmarshal([]byte(strings.TrimSpace(out)), &cliAgents)
 				}
 			}
-		} else if sess.Agent == "antigravity" {
-			if bin, err := resolveAntigravityBinary(); err == nil {
-				if out, err := s.runAllowlistedInspectCmd(r.Context(), sess, bin, "agents"); err == nil {
-					cliAgents = strings.TrimSpace(out)
-				}
-			}
 		} else if ci, ok := s.PluginRegistry().AsCLIInspector(sess.Agent); ok {
 			if args, ok := ci.InspectSubcommandArgs("agents"); ok {
 				if hd, ok := s.PluginRegistry().AsHeadlessDriver(sess.Agent); ok {
 					if bin, err := hd.ResolveBinary(); err == nil && bin != "" {
 						if out, err := s.runAllowlistedInspectCmd(r.Context(), sess, bin, args...); err == nil {
-							_ = json.Unmarshal([]byte(strings.TrimSpace(out)), &cliAgents)
+							trimmed := strings.TrimSpace(out)
+							if uErr := json.Unmarshal([]byte(trimmed), &cliAgents); uErr != nil && strings.EqualFold(sess.Agent, "antigravity") {
+								cliAgents = trimmed
+							}
 						}
 					}
+				}
+			}
+		} else if sess.Agent == "antigravity" {
+			if bin, err := resolveAntigravityBinary(); err == nil {
+				if out, err := s.runAllowlistedInspectCmd(r.Context(), sess, bin, "agents"); err == nil {
+					cliAgents = strings.TrimSpace(out)
 				}
 			}
 		}
@@ -206,11 +209,13 @@ func (s *Server) handleSessionInspect(w http.ResponseWriter, r *http.Request, se
 		var report string
 		var rawVersion string
 		isWorkerRunning := s.headless != nil && s.headless.IsRunning(sess.ID)
+		handledDoctor := false
 		if sess.Agent == "claude-code" {
 			if bin, err := resolveClaudeBinary(); err == nil {
 				report, _ = s.runAllowlistedInspectCmd(r.Context(), sess, bin, "doctor")
 				rawVersion, _ = s.runAllowlistedInspectCmd(r.Context(), sess, bin, "--version")
 			}
+			handledDoctor = true
 		} else if ci, ok := s.PluginRegistry().AsCLIInspector(sess.Agent); ok {
 			if args, ok := ci.InspectSubcommandArgs("doctor"); ok {
 				if hd, ok := s.PluginRegistry().AsHeadlessDriver(sess.Agent); ok {
@@ -219,13 +224,21 @@ func (s *Server) handleSessionInspect(w http.ResponseWriter, r *http.Request, se
 						rawVersion, _ = s.runAllowlistedInspectCmd(r.Context(), sess, bin, "--version")
 					}
 				}
+				handledDoctor = true
 			}
-		} else {
-			if bin, err := resolveAntigravityBinary(); err == nil {
+		}
+		if !handledDoctor {
+			var bin string
+			if hd, ok := s.PluginRegistry().AsHeadlessDriver(sess.Agent); ok {
+				bin, _ = hd.ResolveBinary()
+			} else if sess.Agent == "antigravity" {
+				bin, _ = resolveAntigravityBinary()
+			}
+			if bin != "" {
 				rawVersion, _ = s.runAllowlistedInspectCmd(r.Context(), sess, bin, "--version")
 			}
 			servers, _ := discoverConfiguredMCPServers(sess, s.db, home)
-			plugins := probeWorkspacePlugins(home, sess, s.db)
+			plugins := probeWorkspacePluginsWithRegistry(home, sess, s.db, s.PluginRegistry())
 			report = fmt.Sprintf("Antigravity Diagnostic Check\nVersion: %s\nConfigured MCP Servers: %d\nWorkspace Plugins: %d\nWorking Directory: %s",
 				strings.TrimSpace(rawVersion), len(servers), len(plugins), sess.Cwd)
 		}
