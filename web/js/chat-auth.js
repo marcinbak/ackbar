@@ -2,6 +2,7 @@
 import { escapeHtml, getSessionBaseUrl } from './utils.js';
 import { handleTakeWheel } from './tabs.js';
 import { getAuthToken } from './auth.js';
+import { scrollChatToBottom } from './chat.js';
 
 export function isSafeHTTPSUrl(raw) {
   if (!raw || typeof raw !== 'string') return false;
@@ -263,7 +264,7 @@ export function renderAuthCard(tabObj, blocked, toolName) {
   }
 
   tabObj.chatMessagesEl.appendChild(card);
-  tabObj.chatMessagesEl.scrollTop = tabObj.chatMessagesEl.scrollHeight;
+  scrollChatToBottom(tabObj);
 }
 
 export async function mountMCPStatus(container, sessionId, tabObj, options = {}) {

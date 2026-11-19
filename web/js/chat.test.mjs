@@ -205,6 +205,23 @@ class MockElement {
     }
   }
 
+  cloneNode(deep = false) {
+    const copy = new MockElement(this.tagName);
+    copy.className = this.className;
+    copy.dataset = { ...this.dataset };
+    copy.style = { ...this.style };
+    copy._innerHTML = this._innerHTML;
+    copy._textContent = this._textContent;
+    copy.id = this.id;
+    copy.title = this.title;
+    if (deep) {
+      for (const child of this.children) {
+        copy.appendChild(child.cloneNode(true));
+      }
+    }
+    return copy;
+  }
+
   addEventListener(event, fn) {
     if (!this.listeners.has(event)) {
       this.listeners.set(event, []);
@@ -3716,6 +3733,186 @@ test('two-row .chat-composer-box places textarea above .chat-composer-toolbar an
   } finally {
     globalThis.fetch = prevFetch;
   }
+});
+
+test('NDJSON reload while scrolled up guards transient scrollTop=0 events with _isRenderingTranscript and restores scrollTop via _programmaticScroll', async () => {
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ ok: true, json: async () => ({}) });
+  try {
+    const chatView = new MockElement('div');
+    const tabObj = {
+      id: 'tab-ndjson-scroll-guard',
+      viewMode: 'chat',
+      session: { id: 'claude-code:local:ndjson-guard-1', agent: 'claude-code', engine_type: 'tmux', state: 0 }
+    };
+    chat.setupChatInterface(tabObj, chatView, tabObj.session);
+    if (tabObj._inFlightTranscriptPromise) {
+      await tabObj._inFlightTranscriptPromise;
+    }
+    tabObj._lastTranscriptLoadAt = 0;
+
+    const msgContainer = tabObj.chatMessagesEl;
+    const scrollBtn = tabObj.chatScrollBottomBtn;
+
+    // Seed existing messages and scrolled-up state
+    for (let i = 0; i < 6; i++) {
+      const m = new MockElement('div');
+      m.className = 'chat-msg assistant-msg';
+      msgContainer.appendChild(m);
+    }
+    msgContainer.scrollHeight = 1400;
+    msgContainer.clientHeight = 300;
+    msgContainer.scrollTop = 250;
+    msgContainer.dispatchEvent({ type: 'scroll' });
+    assert.equal(tabObj._chatUserScrolledUp, true);
+    assert.equal(scrollBtn.style.display, 'inline-flex');
+
+    const total = 60;
+    const expectedStart = total - chat.CHAT_PAGE_SIZE;
+    const lines = [JSON.stringify({ type: 'meta', total })];
+    for (let idx = total - 1; idx >= expectedStart; idx--) {
+      lines.push(JSON.stringify({
+        type: 'msg',
+        index: idx,
+        message: { role: idx % 2 === 0 ? 'user' : 'assistant', content: `Msg ${idx}`, timestamp: '2026-11-19T12:00:00Z' }
+      }));
+    }
+    const encoder = new TextEncoder();
+    const chunks = [
+      encoder.encode(lines.slice(0, 8).join('\n') + '\n'),
+      encoder.encode(lines.slice(8).join('\n') + '\n')
+    ];
+
+    let readCount = 0;
+    let sawRenderingFlagMidStream = false;
+    globalThis.fetch = async (url) => {
+      if (String(url).includes('/transcript')) {
+        return {
+          ok: true,
+          headers: { get: () => 'application/x-ndjson' },
+          body: {
+            getReader() {
+              return {
+                async read() {
+                  if (readCount === 1) {
+                    // Simulate container.innerHTML = '' resetting scrollTop to 0 mid-stream
+                    sawRenderingFlagMidStream = tabObj._isRenderingTranscript === true;
+                    msgContainer.scrollTop = 0;
+                    msgContainer.dispatchEvent({ type: 'scroll' });
+                  }
+                  if (readCount >= chunks.length) {
+                    return { done: true, value: undefined };
+                  }
+                  const val = chunks[readCount++];
+                  return { done: false, value: val };
+                },
+                cancel() {}
+              };
+            }
+          }
+        };
+      }
+      return { ok: true, json: async () => ({}) };
+    };
+
+    await loadChatTranscript(tabObj);
+
+    assert.equal(sawRenderingFlagMidStream, true, 'expected _isRenderingTranscript to be true during NDJSON DOM render');
+    assert.equal(tabObj._isRenderingTranscript, false, 'expected _isRenderingTranscript cleared in finally');
+    assert.equal(tabObj.loadedTranscriptStartIndex, expectedStart, 'mid-stream scrollTop=0 must not trigger loadOlderTranscriptMessages');
+    assert.equal(tabObj._chatUserScrolledUp, true, 'mid-stream scrollTop=0 must not reset _chatUserScrolledUp');
+    assert.equal(msgContainer.scrollTop, 250, 'should restore prevScrollTop after render');
+    assert.equal(tabObj._programmaticScroll, true);
+    assert.equal(tabObj._programmaticScrollTarget, 250);
+    assert.equal(scrollBtn.style.display, 'inline-flex');
+
+    // Async restoration scroll event at scrollTop=250 is absorbed by _programmaticScroll
+    msgContainer.dispatchEvent({ type: 'scroll' });
+    assert.equal(tabObj._programmaticScroll, false);
+    assert.equal(tabObj._chatUserScrolledUp, true);
+
+    // _isRenderingTranscript is also cleared when response parsing throws
+    tabObj._lastTranscriptLoadAt = 0;
+    globalThis.fetch = async (url) => {
+      if (String(url).includes('/transcript')) {
+        return {
+          ok: true,
+          headers: { get: () => 'application/json' },
+          json: async () => { throw new Error('corrupt json'); }
+        };
+      }
+      return { ok: true, json: async () => ({}) };
+    };
+    await loadChatTranscript(tabObj);
+    assert.equal(tabObj._isRenderingTranscript, false);
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});
+
+test('renderAuthCard respects _chatUserScrolledUp via scrollChatToBottom', () => {
+  const container = new MockElement('div');
+  container.scrollHeight = 1000;
+  container.clientHeight = 300;
+  container.scrollTop = 180;
+  const scrollBtn = new MockElement('button');
+  scrollBtn.style.display = 'inline-flex';
+
+  const tabObj = {
+    id: 'tab-auth-scroll',
+    chatMessagesEl: container,
+    chatScrollBottomBtn: scrollBtn,
+    _chatUserScrolledUp: true,
+    session: { id: 'claude-code:local:auth-scroll-1', agent: 'claude-code' }
+  };
+
+  renderAuthCard(tabObj, {
+    auth_server: 'gslides',
+    auth_target: 'plugin:gslides',
+    question: 'Sign in to gslides?'
+  });
+  assert.equal(container.scrollTop, 180, 'renderAuthCard must not snap scrollTop when user scrolled up');
+  assert.equal(scrollBtn.style.display, 'inline-flex');
+
+  tabObj._chatUserScrolledUp = false;
+  renderAuthCard(tabObj, {
+    auth_server: 'gslides',
+    auth_target: 'plugin:gslides',
+    question: 'Sign in to gslides?'
+  });
+  assert.equal(container.scrollTop, 1000, 'renderAuthCard scrolls to bottom when not scrolled up');
+  assert.equal(scrollBtn.style.display, 'none');
+});
+
+test('attachCodeBlockCopyButtons omits .has-code-header and .chat-code-header for <pre> without <code> child', async () => {
+  const origMarked = globalThis.window.marked;
+  globalThis.window.marked = null;
+  let fallbackHtml = '';
+  try {
+    fallbackHtml = renderMarkdown('plain <fallback> output');
+  } finally {
+    globalThis.window.marked = origMarked;
+  }
+  assert.ok(fallbackHtml.startsWith('<pre>') && !fallbackHtml.includes('<code>'));
+
+  const container = new MockElement('div');
+  const rawPre = new MockElement('pre');
+  rawPre.textContent = 'plain <fallback> output';
+  container.appendChild(rawPre);
+
+  chat.attachCodeBlockCopyButtons(container, { skipMermaid: true });
+
+  assert.equal(rawPre.classList.contains('has-code-header'), false);
+  assert.equal(rawPre.querySelector('.chat-code-header'), null);
+  const copyBtn = rawPre.querySelector('.btn-copy-code');
+  assert.ok(copyBtn, 'expected direct .btn-copy-code child on raw <pre>');
+  assert.equal(copyBtn.parentNode, rawPre);
+
+  await withMockClipboard(async (getCopied) => {
+    copyBtn.click();
+    await new Promise(r => setTimeout(r, 10));
+    assert.equal(getCopied(), 'plain <fallback> output');
+  });
 });
 
 

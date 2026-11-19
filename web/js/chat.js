@@ -2142,6 +2142,21 @@ function updateChatScrollBottomButton(tabObj) {
   tabObj.chatScrollBottomBtn.style.display = tabObj._chatUserScrolledUp ? 'inline-flex' : 'none';
 }
 
+function setProgrammaticScrollTop(tabObj, targetTop) {
+  const container = tabObj && tabObj.chatMessagesEl;
+  if (!container) return;
+  const prevTop = container.scrollTop;
+  tabObj._programmaticScroll = true;
+  container.scrollTop = targetTop;
+  if (container.scrollTop === prevTop) {
+    tabObj._programmaticScroll = false;
+    tabObj._programmaticScrollTarget = null;
+  } else {
+    tabObj._programmaticScrollTarget = container.scrollTop;
+  }
+  updateChatScrollBottomButton(tabObj);
+}
+
 function scrollChatToBottom(tabObj, options = {}) {
   if (!tabObj || !tabObj.chatMessagesEl) return false;
   const force = Boolean(options && options.force);
@@ -2152,17 +2167,7 @@ function scrollChatToBottom(tabObj, options = {}) {
     updateChatScrollBottomButton(tabObj);
     return false;
   }
-  const container = tabObj.chatMessagesEl;
-  const prevTop = container.scrollTop;
-  tabObj._programmaticScroll = true;
-  container.scrollTop = container.scrollHeight;
-  if (container.scrollTop === prevTop) {
-    tabObj._programmaticScroll = false;
-    tabObj._programmaticScrollTarget = null;
-  } else {
-    tabObj._programmaticScrollTarget = container.scrollTop;
-  }
-  updateChatScrollBottomButton(tabObj);
+  setProgrammaticScrollTop(tabObj, tabObj.chatMessagesEl.scrollHeight);
   return true;
 }
 
@@ -2627,12 +2632,14 @@ function setupChatInterface(tabObj, chatViewEl, session) {
     tabObj._chatUserScrolledUp = false;
     tabObj._programmaticScroll = false;
     tabObj._programmaticScrollTarget = null;
+    tabObj._isRenderingTranscript = false;
     tabObj.chatMessagesEl.addEventListener('scroll', () => {
+      if (tabObj._isRenderingTranscript) return;
       if (tabObj._programmaticScroll) {
         tabObj._programmaticScroll = false;
         const target = tabObj._programmaticScrollTarget;
         tabObj._programmaticScrollTarget = null;
-        if (typeof target !== 'number' || tabObj.chatMessagesEl.scrollTop >= target - 2) {
+        if (typeof target !== 'number' || Math.abs(tabObj.chatMessagesEl.scrollTop - target) <= 2) {
           return;
         }
       } else {
@@ -3034,6 +3041,7 @@ async function loadChatTranscript(tabObj) {
         : '';
       const isNDJSON = contentType.includes('application/x-ndjson') || contentType.includes('ndjson');
 
+      tabObj._isRenderingTranscript = true;
       if (isNDJSON && ((res.body && typeof res.body.getReader === 'function') || typeof res.text === 'function')) {
         await processNDJSONTranscript(tabObj, res, reqId, container, shouldStickToBottom, prevScrollTop, isInitialLoad);
       } else {
@@ -3043,6 +3051,8 @@ async function loadChatTranscript(tabObj) {
       }
     } catch (e) {
       console.warn('Failed to load chat transcript:', e);
+    } finally {
+      tabObj._isRenderingTranscript = false;
     }
   })();
 
@@ -3702,7 +3712,7 @@ function finalizeTranscriptLoad(tabObj, container, total, coalesced, inFlightPro
       });
     }
   } else {
-    container.scrollTop = prevScrollTop;
+    setProgrammaticScrollTop(tabObj, prevScrollTop);
   }
 
   if (data && Array.isArray(data.running_subagents)) {
@@ -3815,12 +3825,16 @@ function attachCodeBlockCopyButtons(container, options = {}) {
       }
     });
 
-    const headerEl = document.createElement('div');
-    headerEl.className = 'chat-code-header';
-    headerEl.innerHTML = `<span class="chat-code-lang">${escapeHtml(rawLang || 'code')}</span>`;
-    headerEl.appendChild(copyBtn);
-    pre.insertBefore(headerEl, pre.firstChild || null);
-    pre.classList.add('has-code-header');
+    if (codeEl) {
+      const headerEl = document.createElement('div');
+      headerEl.className = 'chat-code-header';
+      headerEl.innerHTML = `<span class="chat-code-lang">${escapeHtml(rawLang || 'code')}</span>`;
+      headerEl.appendChild(copyBtn);
+      pre.insertBefore(headerEl, pre.firstChild || null);
+      pre.classList.add('has-code-header');
+    } else {
+      pre.appendChild(copyBtn);
+    }
   });
   if (!options || !options.skipMermaid) {
     renderMermaidDiagrams(container, copyTextToClipboard);
