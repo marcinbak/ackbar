@@ -1,5 +1,5 @@
 import { escapeHtml } from './utils.js';
-import { formatModelLabel } from './chat.js';
+import { formatModelLabel, replacePromptInputRange, scrollChatToBottom } from './chat.js';
 
 export function appendEphemeralCard(tabObj, cardEl) {
   if (!tabObj || !tabObj.chatMessagesEl || !cardEl) return;
@@ -7,21 +7,18 @@ export function appendEphemeralCard(tabObj, cardEl) {
   tabObj.ephemeralCards = tabObj.ephemeralCards || [];
   tabObj.ephemeralCards.push(cardEl);
   tabObj.chatMessagesEl.appendChild(cardEl);
-  tabObj.chatMessagesEl.scrollTop = tabObj.chatMessagesEl.scrollHeight;
+  scrollChatToBottom(tabObj, { force: true });
 }
 
 export function insertSnippetIntoComposer(tabObj, snippet) {
   if (!tabObj || !tabObj.chatInputEl || !snippet) return;
   const input = tabObj.chatInputEl;
-  const current = input.value;
+  const current = input.value || '';
+  let prefix = '';
   if (current && !current.endsWith('\n\n')) {
-    input.value = current.endsWith('\n') ? `${current}\n${snippet}\n` : `${current}\n\n${snippet}\n`;
-  } else {
-    input.value = `${current}${snippet}\n`;
+    prefix = current.endsWith('\n') ? '\n' : '\n\n';
   }
-  input.style.height = 'auto';
-  input.style.height = `${Math.min(input.scrollHeight, 180)}px`;
-  input.focus();
+  replacePromptInputRange(input, current.length, current.length, `${prefix}${snippet}\n`);
 }
 
 function wireCollapsibleCard(card, headerEl) {

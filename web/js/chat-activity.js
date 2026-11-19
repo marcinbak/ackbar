@@ -1,5 +1,6 @@
 // Ephemeral In-Stream Activity Indicator Lifecycle & Timers
 import { escapeHtml } from './utils.js';
+import { scrollChatToBottom } from './chat.js';
 
 export function resolveToolDisplay(toolName, toolInput) {
   const rawName = String(toolName || '').trim();
@@ -287,7 +288,7 @@ export function showInStreamActivity(tabObj, { icon, text, badge, phaseKey, star
   if (typeof onUpdate === 'function') {
     onUpdate(tabObj);
   }
-  tabObj.chatMessagesEl.scrollTop = tabObj.chatMessagesEl.scrollHeight;
+  scrollChatToBottom(tabObj);
 }
 
 export function pauseInStreamActivity(tabObj) {

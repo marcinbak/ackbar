@@ -26,7 +26,7 @@ import {
   showUploadToast
 } from './terminal.js';
 import { fetchSessions } from './api.js';
-import { renderMermaidDiagrams } from './mermaid.js';
+import { renderMermaidDiagrams, isMermaidSource } from './mermaid.js';
 import { renderAuthCard, mountMCPStatus } from './chat-auth.js';
 import { interceptChatInput, updateShellModeHint } from './chat-commands.js';
 import {
@@ -58,20 +58,184 @@ function extractPastedAttachmentFiles(clipboardData) {
   return files;
 }
 
+const MAX_PROMPT_UNDO_HISTORY = 100;
+
+const SEND_BUTTON_ICON_SVG = `
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+    <line x1="12" y1="19" x2="12" y2="5"></line>
+    <polyline points="5 12 12 5 19 12"></polyline>
+  </svg>
+`;
+
+function getInputSelectionRange(inputEl) {
+  const value = inputEl.value || '';
+  const start = typeof inputEl.selectionStart === 'number'
+    ? Math.max(0, Math.min(value.length, inputEl.selectionStart))
+    : value.length;
+  const end = typeof inputEl.selectionEnd === 'number'
+    ? Math.max(start, Math.min(value.length, inputEl.selectionEnd))
+    : start;
+  return { value, selectionStart: start, selectionEnd: end };
+}
+
+function pushPromptUndoSnapshot(inputEl, snapshot) {
+  if (!inputEl) return;
+  if (!Array.isArray(inputEl._ackbarUndoStack)) {
+    inputEl._ackbarUndoStack = [];
+  }
+  const snap = snapshot || getInputSelectionRange(inputEl);
+  const prev = inputEl._ackbarUndoStack[inputEl._ackbarUndoStack.length - 1];
+  if (prev && prev.value === snap.value && prev.selectionStart === snap.selectionStart && prev.selectionEnd === snap.selectionEnd) {
+    return;
+  }
+  inputEl._ackbarUndoStack.push(snap);
+  if (inputEl._ackbarUndoStack.length > MAX_PROMPT_UNDO_HISTORY) {
+    inputEl._ackbarUndoStack.shift();
+  }
+  inputEl._ackbarRedoStack = [];
+}
+
+function resetPromptInputUndoHistory(inputEl) {
+  if (!inputEl) return;
+  inputEl._ackbarUndoStack = [];
+  inputEl._ackbarRedoStack = [];
+  inputEl._ackbarNativeUndoActive = undefined;
+}
+
+function setPromptInputSelection(inputEl, start, end) {
+  if (typeof inputEl.setSelectionRange === 'function') {
+    try { inputEl.setSelectionRange(start, end); } catch (_) {}
+  } else {
+    inputEl.selectionStart = start;
+    inputEl.selectionEnd = end;
+  }
+}
+
+function resizePromptInput(inputEl) {
+  if (!inputEl || !inputEl.style) return;
+  inputEl.style.height = 'auto';
+  inputEl.style.height = Math.min(inputEl.scrollHeight || 0, 180) + 'px';
+}
+
+function dispatchPromptInputEvent(inputEl) {
+  if (!inputEl || typeof inputEl.dispatchEvent !== 'function') return;
+  const evt = typeof Event === 'function' ? new Event('input', { bubbles: true }) : { type: 'input' };
+  inputEl.dispatchEvent(evt);
+}
+
+function applyPromptSnapshot(inputEl, snap) {
+  if (!inputEl || !snap) return;
+  inputEl.value = snap.value || '';
+  const start = typeof snap.selectionStart === 'number' ? snap.selectionStart : inputEl.value.length;
+  const end = typeof snap.selectionEnd === 'number' ? snap.selectionEnd : start;
+  setPromptInputSelection(inputEl, start, end);
+  resizePromptInput(inputEl);
+  dispatchPromptInputEvent(inputEl);
+}
+
+function replacePromptInputRange(inputEl, start, end, text) {
+  if (!inputEl) return false;
+  const beforeValue = inputEl.value || '';
+  const safeStart = Math.max(0, Math.min(beforeValue.length, typeof start === 'number' ? start : beforeValue.length));
+  const safeEnd = Math.max(safeStart, Math.min(beforeValue.length, typeof end === 'number' ? end : safeStart));
+  const insertStr = (typeof text === 'string' ? text : '').replace(/\r\n?/g, '\n');
+  if (safeStart === safeEnd && insertStr === '') return false;
+
+  const expectedValue = beforeValue.slice(0, safeStart) + insertStr + beforeValue.slice(safeEnd);
+  const caretPos = safeStart + insertStr.length;
+
+  pushPromptUndoSnapshot(inputEl, {
+    value: beforeValue,
+    selectionStart: safeStart,
+    selectionEnd: safeEnd
+  });
+
+  if (typeof inputEl.focus === 'function') {
+    inputEl.focus();
+  }
+  setPromptInputSelection(inputEl, safeStart, safeEnd);
+
+  let execInputFired = false;
+  const onExecInput = () => { execInputFired = true; };
+  if (typeof inputEl.addEventListener === 'function') {
+    inputEl.addEventListener('input', onExecInput);
+  }
+  let nativeInserted = false;
+  try {
+    if (typeof document !== 'undefined' && typeof document.execCommand === 'function') {
+      const inserted = document.execCommand('insertText', false, insertStr);
+      nativeInserted = Boolean(inserted && inputEl.value === expectedValue);
+    }
+  } catch (_) {
+    nativeInserted = false;
+  } finally {
+    if (typeof inputEl.removeEventListener === 'function') {
+      inputEl.removeEventListener('input', onExecInput);
+    }
+  }
+
+  if (nativeInserted) {
+    // Keep native browser Cmd+Z active unless an earlier edit already forced fallback mode.
+    inputEl._ackbarNativeUndoActive = inputEl._ackbarNativeUndoActive !== false;
+    setPromptInputSelection(inputEl, caretPos, caretPos);
+    resizePromptInput(inputEl);
+    if (!execInputFired) {
+      dispatchPromptInputEvent(inputEl);
+    }
+    return true;
+  }
+
+  inputEl._ackbarNativeUndoActive = false;
+  inputEl.value = expectedValue;
+  setPromptInputSelection(inputEl, caretPos, caretPos);
+  resizePromptInput(inputEl);
+  dispatchPromptInputEvent(inputEl);
+  return true;
+}
+
+function handlePromptInputUndoKeydown(inputEl, e) {
+  if (!inputEl || !e) return false;
+  if (inputEl._ackbarNativeUndoActive !== false) return false;
+  if (!(e.metaKey || e.ctrlKey) || e.altKey) return false;
+
+  const key = (e.key || '').toLowerCase();
+  const isUndo = key === 'z' && !e.shiftKey;
+  const isRedo = (key === 'z' && e.shiftKey) || (key === 'y' && !e.shiftKey && e.ctrlKey && !e.metaKey);
+  if (!isUndo && !isRedo) return false;
+
+  if (isUndo) {
+    const undoStack = inputEl._ackbarUndoStack;
+    if (!Array.isArray(undoStack) || undoStack.length === 0) return false;
+    const target = undoStack.pop();
+    if (!Array.isArray(inputEl._ackbarRedoStack)) {
+      inputEl._ackbarRedoStack = [];
+    }
+    inputEl._ackbarRedoStack.push(getInputSelectionRange(inputEl));
+    applyPromptSnapshot(inputEl, target);
+    if (typeof e.preventDefault === 'function') e.preventDefault();
+    if (typeof e.stopPropagation === 'function') e.stopPropagation();
+    return true;
+  }
+
+  const redoStack = inputEl._ackbarRedoStack;
+  if (!Array.isArray(redoStack) || redoStack.length === 0) return false;
+  const target = redoStack.pop();
+  if (!Array.isArray(inputEl._ackbarUndoStack)) {
+    inputEl._ackbarUndoStack = [];
+  }
+  inputEl._ackbarUndoStack.push(getInputSelectionRange(inputEl));
+  applyPromptSnapshot(inputEl, target);
+  if (typeof e.preventDefault === 'function') e.preventDefault();
+  if (typeof e.stopPropagation === 'function') e.stopPropagation();
+  return true;
+}
+
 function insertTextIntoPromptInput(inputEl, text) {
   if (!inputEl || !text) return;
   const value = inputEl.value || '';
   const start = typeof inputEl.selectionStart === 'number' ? inputEl.selectionStart : value.length;
   const end = typeof inputEl.selectionEnd === 'number' ? inputEl.selectionEnd : value.length;
-  inputEl.value = value.slice(0, start) + text + value.slice(end);
-  const caretPos = start + text.length;
-  if (typeof inputEl.setSelectionRange === 'function') {
-    try { inputEl.setSelectionRange(caretPos, caretPos); } catch (_) {}
-  }
-  inputEl.style.height = 'auto';
-  inputEl.style.height = Math.min(inputEl.scrollHeight, 180) + 'px';
-  inputEl.dispatchEvent(new Event('input', { bubbles: true }));
-  inputEl.focus();
+  replacePromptInputRange(inputEl, start, end, text);
 }
 
 // --- Phase 4: Voice Companion & 2-Tier Lazy Speech Pipeline ---
@@ -1323,6 +1487,7 @@ function toggleSchedulePopover(tabObj) {
       const clearComposer = () => {
         if (tabObj.chatInputEl) {
           tabObj.chatInputEl.value = '';
+          resetPromptInputUndoHistory(tabObj.chatInputEl);
           tabObj.chatInputEl.style.height = 'auto';
         }
         if (tabObj.session && tabObj.session.id) {
@@ -1590,40 +1755,22 @@ function selectAutocompleteItem(tabObj, item, kind, match) {
 
   if (kind === 'commands') {
     if (item.execution_mode === 'client_action') {
-      inputEl.value = fullText.slice(0, start) + fullText.slice(end);
-      inputEl.style.height = 'auto';
+      replacePromptInputRange(inputEl, start, end, '');
       executeClientAction(tabObj, item.name);
       return;
     }
     const insertText = (item.trigger || ('/' + item.name)) + ' ';
-    inputEl.value = fullText.slice(0, start) + insertText + fullText.slice(end);
-    const newPos = start + insertText.length;
-    inputEl.focus();
-    inputEl.selectionStart = newPos;
-    inputEl.selectionEnd = newPos;
-    if (typeof inputEl.setSelectionRange === 'function') {
-      inputEl.setSelectionRange(newPos, newPos);
-    }
-    if ((item.name === 'model' || insertText.trim() === '/model') && typeof inputEl.dispatchEvent === 'function') {
-      const evt = typeof Event === 'function' ? new Event('input', { bubbles: true }) : { type: 'input' };
-      inputEl.dispatchEvent(evt);
-    }
+    replacePromptInputRange(inputEl, start, end, insertText);
   } else if (kind === 'models') {
     inputEl.value = '';
+    resetPromptInputUndoHistory(inputEl);
     clearChatDraft(tabObj.id || (tabObj.session && tabObj.session.id));
     inputEl.style.height = 'auto';
     tabObj.autocompleteItems = [];
     interceptChatInput(tabObj, `/model ${item.id}`);
   } else if (kind === 'files') {
     const insertText = '@' + item.path + ' ';
-    inputEl.value = fullText.slice(0, start) + insertText + fullText.slice(end);
-    const newPos = start + insertText.length;
-    inputEl.focus();
-    inputEl.selectionStart = newPos;
-    inputEl.selectionEnd = newPos;
-    if (typeof inputEl.setSelectionRange === 'function') {
-      inputEl.setSelectionRange(newPos, newPos);
-    }
+    replacePromptInputRange(inputEl, start, end, insertText);
   }
 }
 
@@ -1727,7 +1874,7 @@ function renderInteractiveBlockCard(tabObj, blocked, toolName) {
     }
 
     tabObj.chatMessagesEl.appendChild(card);
-    tabObj.chatMessagesEl.scrollTop = tabObj.chatMessagesEl.scrollHeight;
+    scrollChatToBottom(tabObj);
     return;
   }
 
@@ -1897,7 +2044,7 @@ function renderInteractiveBlockCard(tabObj, blocked, toolName) {
   }
 
   tabObj.chatMessagesEl.appendChild(card);
-  tabObj.chatMessagesEl.scrollTop = tabObj.chatMessagesEl.scrollHeight;
+  scrollChatToBottom(tabObj);
 }
 
 function renderTodoWriteCard(tabObj, toolInput) {
@@ -1984,6 +2131,46 @@ async function submitSessionResponse(tabObj, action, value) {
 }
 
 
+function isChatNearBottom(container, threshold = 80) {
+  if (!container) return true;
+  const distance = (container.scrollHeight || 0) - (container.scrollTop || 0) - (container.clientHeight || 0);
+  return distance <= threshold;
+}
+
+function updateChatScrollBottomButton(tabObj) {
+  if (!tabObj || !tabObj.chatScrollBottomBtn) return;
+  tabObj.chatScrollBottomBtn.style.display = tabObj._chatUserScrolledUp ? 'inline-flex' : 'none';
+}
+
+function setProgrammaticScrollTop(tabObj, targetTop) {
+  const container = tabObj && tabObj.chatMessagesEl;
+  if (!container) return;
+  const prevTop = container.scrollTop;
+  tabObj._programmaticScroll = true;
+  container.scrollTop = targetTop;
+  if (container.scrollTop === prevTop) {
+    tabObj._programmaticScroll = false;
+    tabObj._programmaticScrollTarget = null;
+  } else {
+    tabObj._programmaticScrollTarget = container.scrollTop;
+  }
+  updateChatScrollBottomButton(tabObj);
+}
+
+function scrollChatToBottom(tabObj, options = {}) {
+  if (!tabObj || !tabObj.chatMessagesEl) return false;
+  const force = Boolean(options && options.force);
+  if (force) {
+    tabObj._chatUserScrolledUp = false;
+  }
+  if (tabObj._chatUserScrolledUp) {
+    updateChatScrollBottomButton(tabObj);
+    return false;
+  }
+  setProgrammaticScrollTop(tabObj, tabObj.chatMessagesEl.scrollHeight);
+  return true;
+}
+
 function setupChatInterface(tabObj, chatViewEl, session) {
   const isTmux = session.engine_type === 'tmux';
 
@@ -2006,6 +2193,12 @@ function setupChatInterface(tabObj, chatViewEl, session) {
     </div>
     <div class="chat-messages-container"></div>
     <div class="chat-composer-container">
+      <button type="button" class="btn-chat-scroll-bottom" style="display: none;" title="Scroll to latest message" aria-label="Scroll to latest message">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="12" y1="5" x2="12" y2="19"></line>
+          <polyline points="19 12 12 19 5 12"></polyline>
+        </svg>
+      </button>
       <div class="chat-queue-container" style="display: none;">
         <div class="chat-queue-bar">
           <div class="chat-queue-summary">
@@ -2033,35 +2226,39 @@ function setupChatInterface(tabObj, chatViewEl, session) {
       </div>
       <div class="chat-suggested-chips" style="display: none;"></div>
       <div class="chat-composer-attachments" style="display: none;"></div>
-      <div class="chat-composer-bar">
-        <div class="chat-composer-pills-left">
-          <span class="chat-pill chat-pill-model" title="Change Model">Default Model</span>
-          <span class="chat-pill chat-pill-effort" title="Reasoning Effort">Effort: Default</span>
-          <span class="chat-pill chat-pill-mode pill-auto-mode" title="Click to toggle Auto / Plan Mode">⚡ Auto Mode</span>
-        </div>
-        <div class="chat-composer-pills-right">
-          <span class="chat-pill chat-pill-usage" title="Context Usage">
-            <span class="chat-pill-dot"></span>
-            <span class="chat-pill-usage-text">0% Context</span>
-          </span>
-          <button type="button" class="chat-pill chat-pill-config" title="Session Configuration">⚙️ /config</button>
-        </div>
-      </div>
       <div class="chat-autocomplete-menu" style="display: none;"></div>
       <div class="chat-config-popover" style="display: none;"></div>
       <div class="chat-schedule-popover" style="display: none;"></div>
       <div class="chat-composer-box">
-        <button class="btn-composer-attach" type="button" title="Attach file or image">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
-          </svg>
-        </button>
-        <input type="file" class="chat-file-input" multiple style="display: none;" accept="image/*,.pdf,.txt,.md,.log,.json,.yaml,.yml,.csv" />
         <textarea class="chat-composer-textarea" rows="1" placeholder="Ask ${escapeHtml(formatAgentChatName(session.agent))} anything... (Enter to send, Shift+Enter for newline)"></textarea>
-        <div class="chat-composer-actions">
-          <button class="btn-composer-cancel" style="display: none;" title="Cancel turn (SIGINT)">🛑 Stop</button>
-          <button class="btn-composer-schedule" type="button" title="Schedule delayed prompt">⏱️</button>
-          <button class="btn-composer-send" title="Send Prompt (Enter)">➤</button>
+        <div class="chat-composer-toolbar">
+          <div class="chat-composer-toolbar-left">
+            <button class="btn-composer-attach" type="button" title="Attach file or image">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
+              </svg>
+            </button>
+            <input type="file" class="chat-file-input" multiple style="display: none;" accept="image/*,.pdf,.txt,.md,.log,.json,.yaml,.yml,.csv" />
+            <div class="chat-composer-bar">
+              <div class="chat-composer-pills-left">
+                <span class="chat-pill chat-pill-model" title="Change Model">Default Model</span>
+                <span class="chat-pill chat-pill-effort" title="Reasoning Effort">Effort: Default</span>
+                <span class="chat-pill chat-pill-mode pill-auto-mode" title="Click to toggle Auto / Plan Mode">⚡ Auto Mode</span>
+              </div>
+              <div class="chat-composer-pills-right">
+                <span class="chat-pill chat-pill-usage" title="Context Usage">
+                  <span class="chat-pill-dot"></span>
+                  <span class="chat-pill-usage-text">0% Context</span>
+                </span>
+                <button type="button" class="chat-pill chat-pill-config" title="Session Configuration">⚙️ /config</button>
+              </div>
+            </div>
+          </div>
+          <div class="chat-composer-actions">
+            <button class="btn-composer-cancel" style="display: none;" title="Cancel turn (SIGINT)">🛑 Stop</button>
+            <button class="btn-composer-schedule" type="button" title="Schedule delayed prompt">⏱️</button>
+            <button class="btn-composer-send" type="button" title="Send Prompt (Enter)" aria-label="Send Prompt">${SEND_BUTTON_ICON_SVG}</button>
+          </div>
         </div>
       </div>
       <div class="chat-composer-hints">
@@ -2079,6 +2276,7 @@ function setupChatInterface(tabObj, chatViewEl, session) {
   tabObj.isSubagentsExpanded = false;
 
   tabObj.chatMessagesEl = chatViewEl.querySelector('.chat-messages-container');
+  tabObj.chatScrollBottomBtn = chatViewEl.querySelector('.btn-chat-scroll-bottom');
   tabObj.chatSubagentsContainer = chatViewEl.querySelector('.chat-subagents-container');
   tabObj.chatSubagentsBar = chatViewEl.querySelector('.chat-subagents-bar');
   tabObj.chatSubagentsCountText = chatViewEl.querySelector('.chat-subagents-count-text');
@@ -2367,15 +2565,31 @@ function setupChatInterface(tabObj, chatViewEl, session) {
       }
     });
 
+    tabObj.chatInputEl.addEventListener('beforeinput', (e) => {
+      if (tabObj.chatInputEl._ackbarNativeUndoActive === false) {
+        if (!e || !e.inputType || !e.inputType.startsWith('history')) {
+          pushPromptUndoSnapshot(tabObj.chatInputEl);
+        }
+      }
+    });
+
     tabObj.chatInputEl.addEventListener('input', () => {
       tabObj._lastInputAt = Date.now();
-      tabObj.chatInputEl.style.height = 'auto';
-      tabObj.chatInputEl.style.height = Math.min(tabObj.chatInputEl.scrollHeight, 180) + 'px';
+      resizePromptInput(tabObj.chatInputEl);
       saveChatDraft(tabObj.id || (tabObj.session && tabObj.session.id), tabObj.chatInputEl.value, tabObj.pendingAttachments);
       updateShellModeHint(tabObj);
     });
 
     tabObj.chatInputEl.addEventListener('keydown', (e) => {
+      if (handlePromptInputUndoKeydown(tabObj.chatInputEl, e)) {
+        return;
+      }
+      if (tabObj.chatInputEl._ackbarNativeUndoActive === false && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        const k = e.key || '';
+        if (k.length === 1 || k === 'Backspace' || k === 'Delete' || (k === 'Enter' && e.shiftKey)) {
+          pushPromptUndoSnapshot(tabObj.chatInputEl);
+        }
+      }
       if (e.key === 'Enter' && !e.shiftKey) {
         if (tabObj.chatAutocompleteMenu && tabObj.chatAutocompleteMenu.style.display !== 'none' && tabObj.autocompleteItems && tabObj.autocompleteItems.length > 0) {
           return;
@@ -2388,7 +2602,7 @@ function setupChatInterface(tabObj, chatViewEl, session) {
 
   if (tabObj.chatComposerBox) {
     tabObj.chatComposerBox.addEventListener('click', (e) => {
-      if (e.target && e.target.closest && e.target.closest('button, input, a')) return;
+      if (e.target && e.target.closest && e.target.closest('button, input, a, .chat-pill')) return;
       if (tabObj.chatInputEl) {
         tabObj.chatInputEl.focus();
       }
@@ -2397,7 +2611,7 @@ function setupChatInterface(tabObj, chatViewEl, session) {
 
   chatViewEl.addEventListener('click', (e) => {
     if (tabObj.viewMode !== 'chat' || !tabObj.chatInputEl) return;
-    if (e.target && e.target.closest && e.target.closest('button, input, textarea, select, a, summary, details, .chat-file-pill, .chat-context-menu')) {
+    if (e.target && e.target.closest && e.target.closest('button, input, textarea, select, a, summary, details, .chat-pill, .chat-file-pill, .chat-context-menu')) {
       return;
     }
     const sel = window.getSelection ? window.getSelection() : null;
@@ -2405,9 +2619,34 @@ function setupChatInterface(tabObj, chatViewEl, session) {
     tabObj.chatInputEl.focus();
   });
 
+  if (tabObj.chatScrollBottomBtn) {
+    tabObj.chatScrollBottomBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      scrollChatToBottom(tabObj, { force: true });
+    });
+  }
+
   // Auto-load older messages when user scrolls near top of chat
   if (tabObj.chatMessagesEl) {
+    tabObj._chatUserScrolledUp = false;
+    tabObj._programmaticScroll = false;
+    tabObj._programmaticScrollTarget = null;
+    tabObj._isRenderingTranscript = false;
     tabObj.chatMessagesEl.addEventListener('scroll', () => {
+      if (tabObj._isRenderingTranscript) return;
+      if (tabObj._programmaticScroll) {
+        tabObj._programmaticScroll = false;
+        const target = tabObj._programmaticScrollTarget;
+        tabObj._programmaticScrollTarget = null;
+        if (typeof target !== 'number' || Math.abs(tabObj.chatMessagesEl.scrollTop - target) <= 2) {
+          return;
+        }
+      } else {
+        tabObj._programmaticScrollTarget = null;
+      }
+      tabObj._chatUserScrolledUp = !isChatNearBottom(tabObj.chatMessagesEl, 80);
+      updateChatScrollBottomButton(tabObj);
       if (tabObj.chatMessagesEl.scrollTop < 60) {
         loadOlderTranscriptMessages(tabObj);
       }
@@ -2787,8 +3026,9 @@ async function loadChatTranscript(tabObj) {
 
     const container = tabObj.chatMessagesEl;
     const hadMessages = container.children.length > 0;
+    const isInitialLoad = !hadMessages;
     const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
-    const shouldStickToBottom = !hadMessages || distanceFromBottom < 120 || hasActiveTurnUI(tabObj);
+    const shouldStickToBottom = isInitialLoad || (!tabObj._chatUserScrolledUp && (distanceFromBottom < 120 || hasActiveTurnUI(tabObj)));
     const prevScrollTop = container.scrollTop;
 
     try {
@@ -2801,15 +3041,18 @@ async function loadChatTranscript(tabObj) {
         : '';
       const isNDJSON = contentType.includes('application/x-ndjson') || contentType.includes('ndjson');
 
+      tabObj._isRenderingTranscript = true;
       if (isNDJSON && ((res.body && typeof res.body.getReader === 'function') || typeof res.text === 'function')) {
-        await processNDJSONTranscript(tabObj, res, reqId, container, shouldStickToBottom, prevScrollTop);
+        await processNDJSONTranscript(tabObj, res, reqId, container, shouldStickToBottom, prevScrollTop, isInitialLoad);
       } else {
         const data = await res.json();
         if (tabObj._transcriptReqId !== reqId) return;
-        processJSONTranscript(tabObj, data, container, shouldStickToBottom, prevScrollTop);
+        processJSONTranscript(tabObj, data, container, shouldStickToBottom, prevScrollTop, isInitialLoad);
       }
     } catch (e) {
       console.warn('Failed to load chat transcript:', e);
+    } finally {
+      tabObj._isRenderingTranscript = false;
     }
   })();
 
@@ -2827,7 +3070,7 @@ async function loadChatTranscript(tabObj) {
   }
 }
 
-async function processNDJSONTranscript(tabObj, res, reqId, container, shouldStickToBottom, prevScrollTop) {
+async function processNDJSONTranscript(tabObj, res, reqId, container, shouldStickToBottom, prevScrollTop, isInitialLoad = false) {
   let meta = null;
   let total = 0;
   let inFlightTurn = null;
@@ -2929,7 +3172,7 @@ async function processNDJSONTranscript(tabObj, res, reqId, container, shouldStic
       if (total === 0) {
         tabObj.allTranscriptMessages = [];
         tabObj.loadedTranscriptStartIndex = 0;
-        finalizeTranscriptLoad(tabObj, container, 0, [], inFlightPrompt, inFlightTurn, activePromptFromDaemon, daemonActiveTs, liveTurnMsgEl, liveActivityEl, recentTurn, true, false, shouldStickToBottom, prevScrollTop, meta);
+        finalizeTranscriptLoad(tabObj, container, 0, [], inFlightPrompt, inFlightTurn, activePromptFromDaemon, daemonActiveTs, liveTurnMsgEl, liveActivityEl, recentTurn, true, false, shouldStickToBottom, prevScrollTop, meta, isInitialLoad);
         return;
       }
 
@@ -2962,7 +3205,7 @@ async function processNDJSONTranscript(tabObj, res, reqId, container, shouldStic
             }
           }
           if (shouldStickToBottom) {
-            container.scrollTop = container.scrollHeight;
+            scrollChatToBottom(tabObj, { force: isInitialLoad });
           }
           renderedFirstBatch = true;
         }
@@ -3122,10 +3365,10 @@ async function processNDJSONTranscript(tabObj, res, reqId, container, shouldStic
     renderLoadMoreBanner(tabObj);
   }
 
-  finalizeTranscriptLoad(tabObj, container, total, coalesced, inFlightPrompt, inFlightTurn, activePromptFromDaemon, daemonActiveTs, liveTurnMsgEl, liveActivityEl, recentTurn, inFlightOnDisk, isTurnActive, shouldStickToBottom, prevScrollTop, meta);
+  finalizeTranscriptLoad(tabObj, container, total, coalesced, inFlightPrompt, inFlightTurn, activePromptFromDaemon, daemonActiveTs, liveTurnMsgEl, liveActivityEl, recentTurn, inFlightOnDisk, isTurnActive, shouldStickToBottom, prevScrollTop, meta, isInitialLoad);
 }
 
-function processJSONTranscript(tabObj, data, container, shouldStickToBottom, prevScrollTop) {
+function processJSONTranscript(tabObj, data, container, shouldStickToBottom, prevScrollTop, isInitialLoad = false) {
   if (!data || !Array.isArray(data.messages)) {
     fetchRunningSubagents(tabObj);
     if (tabObj.session && tabObj.session.blocked && (tabObj.session.state === 2 || tabObj.session.state === 'blocked')) {
@@ -3202,7 +3445,7 @@ function processJSONTranscript(tabObj, data, container, shouldStickToBottom, pre
 
   const total = coalesced.length;
   if (total === 0) {
-    finalizeTranscriptLoad(tabObj, container, 0, coalesced, inFlightPrompt, inFlightTurn, activePromptFromDaemon, daemonActiveTs, liveTurnMsgEl, liveActivityEl, recentTurn, true, false, shouldStickToBottom, prevScrollTop, data);
+    finalizeTranscriptLoad(tabObj, container, 0, coalesced, inFlightPrompt, inFlightTurn, activePromptFromDaemon, daemonActiveTs, liveTurnMsgEl, liveActivityEl, recentTurn, true, false, shouldStickToBottom, prevScrollTop, data, isInitialLoad);
     return;
   }
 
@@ -3284,10 +3527,10 @@ function processJSONTranscript(tabObj, data, container, shouldStickToBottom, pre
     }
   }
 
-  finalizeTranscriptLoad(tabObj, container, total, coalesced, inFlightPrompt, inFlightTurn, activePromptFromDaemon, daemonActiveTs, liveTurnMsgEl, liveActivityEl, recentTurn, inFlightOnDisk, isTurnActive, shouldStickToBottom, prevScrollTop, data);
+  finalizeTranscriptLoad(tabObj, container, total, coalesced, inFlightPrompt, inFlightTurn, activePromptFromDaemon, daemonActiveTs, liveTurnMsgEl, liveActivityEl, recentTurn, inFlightOnDisk, isTurnActive, shouldStickToBottom, prevScrollTop, data, isInitialLoad);
 }
 
-function finalizeTranscriptLoad(tabObj, container, total, coalesced, inFlightPrompt, inFlightTurn, activePromptFromDaemon, daemonActiveTs, liveTurnMsgEl, liveActivityEl, recentTurn, inFlightOnDisk, isTurnActive, shouldStickToBottom, prevScrollTop, data) {
+function finalizeTranscriptLoad(tabObj, container, total, coalesced, inFlightPrompt, inFlightTurn, activePromptFromDaemon, daemonActiveTs, liveTurnMsgEl, liveActivityEl, recentTurn, inFlightOnDisk, isTurnActive, shouldStickToBottom, prevScrollTop, data, isInitialLoad = false) {
   if (total === 0) {
     tabObj.loadedTranscriptStartIndex = 0;
     if (!inFlightPrompt && !liveTurnMsgEl && !liveActivityEl && !container.querySelector('.chat-msg')) {
@@ -3460,14 +3703,16 @@ function finalizeTranscriptLoad(tabObj, container, total, coalesced, inFlightPro
   }
 
   if (shouldStickToBottom) {
-    container.scrollTop = container.scrollHeight;
-    requestAnimationFrame(() => {
-      if (tabObj.chatMessagesEl) {
-        tabObj.chatMessagesEl.scrollTop = tabObj.chatMessagesEl.scrollHeight;
-      }
-    });
+    if (isInitialLoad || !tabObj._chatUserScrolledUp) {
+      scrollChatToBottom(tabObj, { force: isInitialLoad });
+      requestAnimationFrame(() => {
+        if (tabObj.chatMessagesEl && !tabObj._chatUserScrolledUp) {
+          scrollChatToBottom(tabObj);
+        }
+      });
+    }
   } else {
-    container.scrollTop = prevScrollTop;
+    setProgrammaticScrollTop(tabObj, prevScrollTop);
   }
 
   if (data && Array.isArray(data.running_subagents)) {
@@ -3514,14 +3759,24 @@ async function copyTextToClipboard(text) {
   }
 }
 
-// Attach code block copy buttons to all <pre> elements inside container
-function attachCodeBlockCopyButtons(container) {
+// Attach code block copy buttons and header bars to <pre> elements inside container
+function attachCodeBlockCopyButtons(container, options = {}) {
   if (!container) return;
   const preEls = container.querySelectorAll('pre');
   preEls.forEach(pre => {
     if (pre.closest('.mermaid-diagram-block')) return;
-    if (pre.querySelector('.btn-copy-code')) return;
     if (pre.closest('.chat-thinking') || pre.closest('.chat-tool-card')) return;
+    const codeEl = pre.querySelector('code');
+    const codeClass = codeEl ? (codeEl.className || '') : '';
+    const classTokens = codeClass.split(/\s+/).filter(Boolean);
+    const langToken = classTokens.find(c => c.startsWith('language-') && c.length > 'language-'.length);
+    const rawLang = langToken ? langToken.slice('language-'.length) : '';
+    if (rawLang === 'mermaid' || classTokens.includes('mermaid')) return;
+    const isExplicitOtherLang = Boolean(rawLang && rawLang !== 'text' && rawLang !== 'plaintext');
+    if (!isExplicitOtherLang && isMermaidSource(codeEl ? (codeEl.textContent || '') : (pre.textContent || ''))) {
+      return;
+    }
+    if (pre.classList.contains('has-code-header') || pre.querySelector('.btn-copy-code')) return;
 
     const copyBtn = document.createElement('button');
     copyBtn.className = 'btn-copy-code';
@@ -3538,15 +3793,14 @@ function attachCodeBlockCopyButtons(container) {
     copyBtn.addEventListener('click', async (e) => {
       e.stopPropagation();
       e.preventDefault();
-      const codeEl = pre.querySelector('code');
+      const liveCodeEl = pre.querySelector('code');
       let text = '';
-      if (codeEl) {
-        text = codeEl.innerText;
+      if (liveCodeEl) {
+        text = liveCodeEl.innerText ?? liveCodeEl.textContent ?? '';
       } else {
         const clone = pre.cloneNode(true);
-        const btn = clone.querySelector('.btn-copy-code');
-        if (btn) btn.remove();
-        text = clone.innerText;
+        clone.querySelectorAll('.chat-code-header, .btn-copy-code').forEach(el => el.remove());
+        text = clone.innerText ?? clone.textContent ?? '';
       }
       text = text.replace(/\r\n/g, '\n').replace(/\n+$/, '');
       const ok = await copyTextToClipboard(text);
@@ -3570,9 +3824,21 @@ function attachCodeBlockCopyButtons(container) {
         }, 1500);
       }
     });
-    pre.appendChild(copyBtn);
+
+    if (codeEl) {
+      const headerEl = document.createElement('div');
+      headerEl.className = 'chat-code-header';
+      headerEl.innerHTML = `<span class="chat-code-lang">${escapeHtml(rawLang || 'code')}</span>`;
+      headerEl.appendChild(copyBtn);
+      pre.insertBefore(headerEl, pre.firstChild || null);
+      pre.classList.add('has-code-header');
+    } else {
+      pre.appendChild(copyBtn);
+    }
   });
-  renderMermaidDiagrams(container, copyTextToClipboard);
+  if (!options || !options.skipMermaid) {
+    renderMermaidDiagrams(container, copyTextToClipboard);
+  }
 }
 
 // Known file extensions for linkification & action pills
@@ -4266,7 +4532,7 @@ function attachChatMessageListeners(msgEl, rawContent, tabObj) {
         const bodyEl = msgEl.querySelector('.chat-msg-body') || msgEl.querySelector('.msg-body') || msgEl.querySelector('.markdown-body');
         if (bodyEl) {
           const clone = bodyEl.cloneNode(true);
-          clone.querySelectorAll('.btn-copy-code, .chat-streaming-cursor').forEach(el => el.remove());
+          clone.querySelectorAll('.chat-code-header, .btn-copy-code, .chat-streaming-cursor').forEach(el => el.remove());
           textToCopy = clone.innerText || clone.textContent || '';
         }
       }
@@ -4274,7 +4540,9 @@ function attachChatMessageListeners(msgEl, rawContent, tabObj) {
       textToCopy = textToCopy.replace(/\r\n/g, '\n').trim();
       const ok = await copyTextToClipboard(textToCopy);
       if (ok) {
+        const actionsEl = (typeof copyBtn.closest === 'function' ? copyBtn.closest('.chat-msg-actions') : null) || msgEl.querySelector('.chat-msg-actions');
         copyBtn.classList.add('copied');
+        if (actionsEl) actionsEl.classList.add('has-copied');
         copyBtn.title = 'Copied!';
         const origSvg = copyBtn.innerHTML;
         copyBtn.innerHTML = `
@@ -4284,6 +4552,7 @@ function attachChatMessageListeners(msgEl, rawContent, tabObj) {
         `;
         setTimeout(() => {
           copyBtn.classList.remove('copied');
+          if (actionsEl) actionsEl.classList.remove('has-copied');
           copyBtn.title = 'Copy message';
           copyBtn.innerHTML = origSvg;
         }, 1500);
@@ -4420,11 +4689,63 @@ function renderToolGroupHtml(toolCalls) {
   `;
 }
 
+function formatChatMessageTimeParts(timestamp) {
+  if (!timestamp) return { timeStr: '', fullTimeStr: '' };
+  const d = timestamp instanceof Date ? timestamp : new Date(timestamp);
+  if (isNaN(d.getTime())) return { timeStr: '', fullTimeStr: '' };
+  return {
+    timeStr: d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    fullTimeStr: d.toLocaleString()
+  };
+}
+
+function buildChatMessageActionsHtml({ timeStr = '', fullTimeStr = '', includeSpeech = false } = {}) {
+  const timeHtml = timeStr
+    ? `<span class="chat-msg-time"${fullTimeStr ? ` title="${escapeHtml(fullTimeStr)}"` : ''}>${escapeHtml(timeStr)}</span>`
+    : '';
+  const speechHtml = includeSpeech ? `
+        <button class="btn-read-chat-msg" title="Read message aloud" type="button" aria-label="Read message aloud">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
+            <path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"></path>
+          </svg>
+        </button>
+        <button class="btn-stop-chat-msg" title="Stop speech" type="button" aria-label="Stop speech" style="display:none;">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+            <rect x="6" y="6" width="12" height="12" rx="2"></rect>
+          </svg>
+        </button>
+        <button class="btn-replay-chat-msg" title="Replay spoken briefing" type="button" aria-label="Replay spoken briefing" style="display:none;">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="1 4 1 10 7 10"></polyline>
+            <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path>
+          </svg>
+        </button>
+        <button class="btn-full-read-chat-msg" title="Read full text" type="button" aria-label="Read full text" style="display:none;">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"></path>
+            <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"></path>
+          </svg>
+        </button>` : '';
+  return `
+      <div class="chat-msg-actions">
+        ${timeHtml}
+        ${speechHtml}
+        <button class="btn-copy-chat-msg" title="Copy message" type="button" aria-label="Copy message">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+          </svg>
+        </button>
+      </div>
+  `;
+}
+
 // Create a chat message DOM element from message object
 function createChatMessageElement(tabObj, msg) {
   if (!tabObj || !msg) return null;
   const msgEl = document.createElement('div');
-  const timeStr = msg.timestamp ? new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+  const { timeStr, fullTimeStr } = formatChatMessageTimeParts(msg.timestamp);
   if (msg.timestamp) {
     msgEl.dataset.timestamp = msg.timestamp;
   }
@@ -4501,20 +4822,9 @@ function createChatMessageElement(tabObj, msg) {
     }
 
     msgEl.innerHTML = `
-      <div class="chat-msg-header">
-        <span class="chat-msg-role">👤 You</span>
-        <div class="chat-msg-actions">
-          <span class="chat-msg-time">${timeStr}</span>
-          <button class="btn-copy-chat-msg" title="Copy message" type="button" aria-label="Copy message">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-            </svg>
-          </button>
-        </div>
-      </div>
       ${attachmentsHtml}
       ${bodyHtml}
+      ${buildChatMessageActionsHtml({ timeStr, fullTimeStr, includeSpeech: false })}
     `;
 
     msgEl.querySelectorAll('.chat-msg-attachments .chat-attachment-chip').forEach(chip => {
@@ -4546,48 +4856,13 @@ function createChatMessageElement(tabObj, msg) {
       toolsHtml = renderToolGroupHtml(msg.tool_calls);
     }
     const bodyHtml = renderMarkdown(msg.content || '') + (isInFlightAssistant ? '<span class="chat-streaming-cursor"></span>' : '');
-    const agentName = formatAgentChatName(tabObj.session ? tabObj.session.agent : null);
     const slotsHtml = isInFlightAssistant
       ? `<div class="chat-thinking-slot">${thinkingHtml}</div><div class="chat-tools-slot">${toolsHtml}</div>`
       : `${thinkingHtml}${toolsHtml ? `<div class="chat-tools">${toolsHtml}</div>` : ''}`;
     msgEl.innerHTML = `
-      <div class="chat-msg-header">
-        <span class="chat-msg-role">🤖 ${escapeHtml(agentName)}</span>
-        <div class="chat-msg-actions">
-          <span class="chat-msg-time">${timeStr}</span>
-          <button class="btn-read-chat-msg" title="Read message aloud" type="button" aria-label="Read message aloud">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
-              <path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"></path>
-            </svg>
-          </button>
-          <button class="btn-stop-chat-msg" title="Stop speech" type="button" aria-label="Stop speech" style="display:none;">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
-              <rect x="6" y="6" width="12" height="12" rx="2"></rect>
-            </svg>
-          </button>
-          <button class="btn-replay-chat-msg" title="Replay spoken briefing" type="button" aria-label="Replay spoken briefing" style="display:none;">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <polyline points="1 4 1 10 7 10"></polyline>
-              <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path>
-            </svg>
-          </button>
-          <button class="btn-full-read-chat-msg" title="Read full text" type="button" aria-label="Read full text" style="display:none;">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"></path>
-              <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"></path>
-            </svg>
-          </button>
-          <button class="btn-copy-chat-msg" title="Copy message" type="button" aria-label="Copy message">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-            </svg>
-          </button>
-        </div>
-      </div>
       ${slotsHtml}
       <div class="chat-msg-body markdown-body">${bodyHtml}</div>
+      ${buildChatMessageActionsHtml({ timeStr, fullTimeStr, includeSpeech: true })}
     `;
     if (isInFlightAssistant && msg.tool_calls && msg.tool_calls.length > 0) {
       const groupCard = msgEl.querySelector('.chat-tool-group');
@@ -4774,7 +5049,7 @@ function updateComposerButtonState(tabObj) {
       tabObj.chatSendBtn.disabled = false;
       tabObj.chatSendBtn.classList.remove('is-queue');
       tabObj.chatSendBtn.title = 'Send Prompt (Enter)';
-      tabObj.chatSendBtn.innerHTML = '➤';
+      tabObj.chatSendBtn.innerHTML = SEND_BUTTON_ICON_SVG;
     }
     if (tabObj.chatInputEl) {
       const nextPlaceholder = `Ask ${escapeHtml(formatAgentChatName(tabObj.session ? tabObj.session.agent : null))} anything... (Enter to send, Shift+Enter for newline)`;
@@ -5133,46 +5408,16 @@ function ensureActiveAssistantMessage(tabObj) {
   if (tabObj.activeTurnId) {
     assistantMsgEl.dataset.turnId = tabObj.activeTurnId;
   }
+  const nowDate = new Date();
+  const nowIso = nowDate.toISOString();
+  assistantMsgEl.dataset.timestamp = nowIso;
+  const { timeStr, fullTimeStr } = formatChatMessageTimeParts(nowDate);
   assistantMsgEl.dataset.rawContent = tabObj.activeTurnBuffer || '';
   assistantMsgEl.innerHTML = `
-    <div class="chat-msg-header">
-      <span class="chat-msg-role">🤖 ${escapeHtml(formatAgentChatName(tabObj.session ? tabObj.session.agent : null))}</span>
-      <div class="chat-msg-actions">
-        <span class="chat-msg-time">${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-        <button class="btn-read-chat-msg" title="Read message aloud" type="button" aria-label="Read message aloud">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
-            <path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"></path>
-          </svg>
-        </button>
-        <button class="btn-stop-chat-msg" title="Stop speech" type="button" aria-label="Stop speech" style="display:none;">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
-            <rect x="6" y="6" width="12" height="12" rx="2"></rect>
-          </svg>
-        </button>
-        <button class="btn-replay-chat-msg" title="Replay spoken briefing" type="button" aria-label="Replay spoken briefing" style="display:none;">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <polyline points="1 4 1 10 7 10"></polyline>
-            <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path>
-          </svg>
-        </button>
-        <button class="btn-full-read-chat-msg" title="Read full text" type="button" aria-label="Read full text" style="display:none;">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"></path>
-            <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"></path>
-          </svg>
-        </button>
-        <button class="btn-copy-chat-msg" title="Copy message" type="button" aria-label="Copy message">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-          </svg>
-        </button>
-      </div>
-    </div>
     <div class="chat-thinking-slot"></div>
     <div class="chat-tools-slot"></div>
     <div class="chat-msg-body markdown-body"><span class="chat-streaming-cursor"></span></div>
+    ${buildChatMessageActionsHtml({ timeStr, fullTimeStr, includeSpeech: true })}
   `;
 
   if (tabObj.activeTurnThinking) {
@@ -5197,7 +5442,7 @@ function ensureActiveAssistantMessage(tabObj) {
   tabObj.chatMessagesEl.appendChild(assistantMsgEl);
   tabObj.activeTurnMsgEl = assistantMsgEl;
   updateComposerButtonState(tabObj);
-  tabObj.chatMessagesEl.scrollTop = tabObj.chatMessagesEl.scrollHeight;
+  scrollChatToBottom(tabObj);
 
   return assistantMsgEl;
 }
@@ -5220,6 +5465,7 @@ async function sendChatPrompt(tabObj, forcedPromptText, schedulingOptions) {
   if (promptText === '/config') {
     toggleChatConfigPopover(tabObj);
     tabObj.chatInputEl.value = '';
+    resetPromptInputUndoHistory(tabObj.chatInputEl);
     if (typeof forcedPromptText !== 'string') {
       clearChatDraft(tabObj.id || (tabObj.session && tabObj.session.id));
     }
@@ -5228,6 +5474,7 @@ async function sendChatPrompt(tabObj, forcedPromptText, schedulingOptions) {
   if (promptText === '/plan') {
     togglePlanMode(tabObj);
     tabObj.chatInputEl.value = '';
+    resetPromptInputUndoHistory(tabObj.chatInputEl);
     if (typeof forcedPromptText !== 'string') {
       clearChatDraft(tabObj.id || (tabObj.session && tabObj.session.id));
     }
@@ -5235,6 +5482,7 @@ async function sendChatPrompt(tabObj, forcedPromptText, schedulingOptions) {
   }
   if (promptText === '/clear') {
     tabObj.chatInputEl.value = '';
+    resetPromptInputUndoHistory(tabObj.chatInputEl);
     if (typeof forcedPromptText !== 'string') {
       clearChatDraft(tabObj.id || (tabObj.session && tabObj.session.id));
     }
@@ -5243,6 +5491,7 @@ async function sendChatPrompt(tabObj, forcedPromptText, schedulingOptions) {
   }
   if (promptText === '/terminal') {
     tabObj.chatInputEl.value = '';
+    resetPromptInputUndoHistory(tabObj.chatInputEl);
     if (typeof forcedPromptText !== 'string') {
       clearChatDraft(tabObj.id || (tabObj.session && tabObj.session.id));
     }
@@ -5251,6 +5500,7 @@ async function sendChatPrompt(tabObj, forcedPromptText, schedulingOptions) {
   }
   if (promptText === '/handover') {
     tabObj.chatInputEl.value = '';
+    resetPromptInputUndoHistory(tabObj.chatInputEl);
     if (typeof forcedPromptText !== 'string') {
       clearChatDraft(tabObj.id || (tabObj.session && tabObj.session.id));
     }
@@ -5283,6 +5533,7 @@ async function sendChatPrompt(tabObj, forcedPromptText, schedulingOptions) {
 
   if (typeof forcedPromptText !== 'string') {
     tabObj.chatInputEl.value = '';
+    resetPromptInputUndoHistory(tabObj.chatInputEl);
     clearChatDraft(tabObj.id || (tabObj.session && tabObj.session.id));
     tabObj.chatInputEl.style.height = 'auto';
     tabObj.chatInputEl.focus();
@@ -5322,6 +5573,7 @@ async function sendChatPrompt(tabObj, forcedPromptText, schedulingOptions) {
     inFlight: true,
     timestamp: new Date().toISOString()
   });
+  scrollChatToBottom(tabObj, { force: true });
 
   tabObj.inFlightPrompt = {
     text: normalizePromptText(daemonPrompt),
@@ -5426,14 +5678,12 @@ async function sendChatPrompt(tabObj, forcedPromptText, schedulingOptions) {
     const errEl = document.createElement('div');
     errEl.className = 'chat-msg assistant-msg';
     errEl.innerHTML = `
-      <div class="chat-msg-header">
-        <span class="chat-msg-role">🤖 ${escapeHtml(formatAgentChatName(tabObj.session ? tabObj.session.agent : null))}</span>
-      </div>
       <div class="chat-msg-body markdown-body">
         <span style="color: var(--accent-red);">⚠️ Error sending prompt: ${escapeHtml(err.message)}</span>
       </div>
     `;
     tabObj.chatMessagesEl.appendChild(errEl);
+    scrollChatToBottom(tabObj);
     setChatSending(tabObj, false);
   }
 }
@@ -5571,6 +5821,7 @@ function flushActiveTurnStreamRender(tabObj) {
     if (tabObj.session) {
       linkifyChatFiles(bodyEl, tabObj.session);
     }
+    attachCodeBlockCopyButtons(bodyEl, { skipMermaid: true });
     if (tabObj.activeTurnBuffer) {
       const fenceCount = (tabObj.activeTurnBuffer.match(/```/g) || []).length;
       if (fenceCount >= 2) {
@@ -5578,9 +5829,7 @@ function flushActiveTurnStreamRender(tabObj) {
       }
     }
   }
-  if (tabObj.chatMessagesEl) {
-    tabObj.chatMessagesEl.scrollTop = tabObj.chatMessagesEl.scrollHeight;
-  }
+  scrollChatToBottom(tabObj);
 }
 
 function scheduleActiveTurnStreamRender(tabObj) {
@@ -5842,7 +6091,7 @@ function handleChatStreamEvent(tabObj, evt) {
             if (thinkText) {
               thinkText.textContent += evt.thinking;
             }
-            tabObj.chatMessagesEl.scrollTop = tabObj.chatMessagesEl.scrollHeight;
+            scrollChatToBottom(tabObj);
           }
         } else {
           showInStreamActivity(tabObj, {
@@ -5932,7 +6181,7 @@ function handleChatStreamEvent(tabObj, evt) {
             `;
             listEl.appendChild(itemEl);
           }
-          tabObj.chatMessagesEl.scrollTop = tabObj.chatMessagesEl.scrollHeight;
+          scrollChatToBottom(tabObj);
         }
       }
 
@@ -6049,7 +6298,7 @@ function handleChatStreamEvent(tabObj, evt) {
             }
           }
         }
-        tabObj.chatMessagesEl.scrollTop = tabObj.chatMessagesEl.scrollHeight;
+        scrollChatToBottom(tabObj);
       }
 
       const displayToolName = (lastTool && lastTool.name && lastTool.name !== 'call_mcp_tool') ? lastTool.name : (resolvedResult.name || rawToolName);
@@ -6499,7 +6748,8 @@ if (typeof window !== 'undefined') {
     loadChatTranscript,
     connectChatStream,
     disconnectChatStream,
-    insertTextIntoPromptInput
+    insertTextIntoPromptInput,
+    replacePromptInputRange
   };
 }
 
@@ -6511,7 +6761,12 @@ export {
   CHAT_IMAGE_EXTS,
   APP_ICONS,
   extractPastedAttachmentFiles,
+  replacePromptInputRange,
+  handlePromptInputUndoKeydown,
+  resetPromptInputUndoHistory,
   insertTextIntoPromptInput,
+  isChatNearBottom,
+  scrollChatToBottom,
   setupChatInterface,
   loadChatQueue,
   renderLoadMoreBanner,

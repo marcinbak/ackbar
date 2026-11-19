@@ -11,7 +11,8 @@ import {
   formatModelLabel,
   getAgentModelOptions,
   renderConfigPopoverContent,
-  fetchSessionAgentModels
+  fetchSessionAgentModels,
+  resetPromptInputUndoHistory
 } from './chat.js';
 import { mountMCPStatus } from './chat-auth.js';
 import {
@@ -119,6 +120,7 @@ export async function interceptChatInput(tabObj, rawText) {
     if (!cmd) return false;
 
     tabObj.chatInputEl.value = '';
+    resetPromptInputUndoHistory(tabObj.chatInputEl);
     clearChatDraft(tabObj.id || sessionId);
     tabObj.chatInputEl.style.height = 'auto';
     updateShellModeHint(tabObj);
@@ -152,6 +154,7 @@ export async function interceptChatInput(tabObj, rawText) {
     }
 
     tabObj.chatInputEl.value = '';
+    resetPromptInputUndoHistory(tabObj.chatInputEl);
     clearChatDraft(tabObj.id || sessionId);
     tabObj.chatInputEl.style.height = 'auto';
 
