@@ -226,10 +226,10 @@ func dispatchPluginStreamLine(
 			} else {
 				*resultText = priorText
 			}
-			if hooks.emitTurnComplete && hooks.emit != nil {
+			if !ev.IsError && hooks.emitTurnComplete && hooks.emit != nil {
 				ev.Text = *resultText
 				hooks.emit(ev)
-			} else if ev.IsError && !hooks.emitTurnComplete && hooks.emit != nil && ev.Text != "" && !(priorHadErr && alreadyInPrior) {
+			} else if ev.IsError && hooks.emit != nil && ev.Text != "" && !(priorHadErr && alreadyInPrior) {
 				hooks.emit(ChatStreamEvent{
 					SessionID: ev.SessionID,
 					TurnID:    ev.TurnID,

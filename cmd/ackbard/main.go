@@ -13,9 +13,7 @@ import (
 	"strings"
 
 	"ackbar/internal/agent"
-	"ackbar/internal/agents/codex"
-	"ackbar/internal/agents/grok"
-	"ackbar/internal/agents/opencode"
+	"ackbar/internal/agents"
 	"ackbar/internal/daemon"
 	"ackbar/internal/provider"
 	"ackbar/internal/version"
@@ -23,11 +21,9 @@ import (
 )
 
 func main() {
-	reg := agent.NewRegistry()
-	for _, p := range []agent.Plugin{grok.New(), codex.New(), opencode.New()} {
-		if err := reg.Register(p); err != nil {
-			log.Fatalf("Failed to register %s plugin: %v", p.Key(), err)
-		}
+	reg, err := agents.NewDefaultRegistry()
+	if err != nil {
+		log.Fatalf("Failed to initialize plugin registry: %v", err)
 	}
 	if len(os.Args) > 1 && os.Args[1] == "--headless-worker" {
 		os.Exit(daemon.RunHeadlessWorkerWithRegistry(os.Args[2:], reg))
@@ -179,7 +175,9 @@ func main() {
 
 	// Register Provider Adapters
 	server.RegisterProvider(provider.NewClaudeProvider())
-	server.RegisterProvider(provider.NewAntigravityProvider())
+	if agent.IsLegacyAgent("antigravity", "agy") {
+		server.RegisterProvider(provider.NewAntigravityProvider())
+	}
 	for _, p := range reg.List() {
 		if err := server.RegisterPlugin(p); err != nil {
 			log.Fatalf("Failed to register plugin %s: %v", p.Key(), err)

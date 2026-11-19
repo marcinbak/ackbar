@@ -3,11 +3,13 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
 	"ackbar/internal/agent"
 	"ackbar/internal/agentutil"
+	"ackbar/internal/tmux"
 )
 
 func (b *PluginBridge) GetResetCommand() string {
@@ -129,7 +131,10 @@ func (b *PluginBridge) ScanDiskSessions(ctx context.Context, s *Server, home str
 		in.HostName = state.hostName
 		in.ExistingSessions = state.existingSessions
 	}
-	applyDiskScanResult(s, state, sc.ScanDisk(ctx, in))
+	if s != nil && s.db != nil {
+		in.IsSessionDeleted = s.db.IsSessionDeleted
+	}
+	applyDiskScanResultWithContext(ctx, s, state, sc.ScanDisk(ctx, in))
 }
 
 func (b *PluginBridge) FilterUserEntry(raw map[string]interface{}, content string) (string, bool) {
@@ -147,6 +152,10 @@ func (b *PluginBridge) DetectRateLimit(text string, now time.Time) (bool, time.T
 }
 
 func applyDiskScanResult(s *Server, state *ScanState, res agent.DiskScanResult) {
+	applyDiskScanResultWithContext(context.Background(), s, state, res)
+}
+
+func applyDiskScanResultWithContext(ctx context.Context, s *Server, state *ScanState, res agent.DiskScanResult) {
 	if state == nil {
 		return
 	}
@@ -168,6 +177,9 @@ func applyDiskScanResult(s *Server, state *ScanState, res agent.DiskScanResult) 
 		}
 	}
 	for _, upd := range res.MetadataUpdates {
+		if s != nil && s.db != nil && s.db.IsSessionDeleted(upd.SessionID) {
+			continue
+		}
 		sess := state.knownIDs[upd.SessionID]
 		if sess == nil {
 			continue
@@ -181,6 +193,12 @@ func applyDiskScanResult(s *Server, state *ScanState, res agent.DiskScanResult) 
 		if upd.Title != "" && sess.CustomTitle == "" && sess.Name != upd.Title {
 			sess.Name = upd.Title
 			changed = true
+		}
+		if sess.NodePath == "" && !sess.IsSupervisor && sess.Cwd != "" && s != nil {
+			if np := s.resolveSessionNodePath(sess.Cwd); np != "" {
+				sess.NodePath = np
+				changed = true
+			}
 		}
 		if changed && s != nil {
 			if s.db != nil {
@@ -205,6 +223,9 @@ func applyDiskScanResult(s *Server, state *ScanState, res agent.DiskScanResult) 
 			continue
 		}
 		newSessID := fmt.Sprintf("%s:%s:%s", oldSess.Agent, state.hostName, newNativeID)
+		if s != nil && s.db != nil && (s.db.IsSessionDeleted(adopt.OldSessionID) || s.db.IsSessionDeleted(newSessID) || s.db.IsSessionDeleted(newNativeID)) {
+			continue
+		}
 		if existingNew, exists := state.knownIDs[newSessID]; exists && existingNew != oldSess {
 			continue
 		}
@@ -217,6 +238,19 @@ func applyDiskScanResult(s *Server, state *ScanState, res agent.DiskScanResult) 
 			delete(state.knownByNativeID, oldSess.NativeID)
 		}
 
+		tmuxName := oldSess.TmuxName
+		newTmuxName := fmt.Sprintf("ackbar-%s-%s", oldSess.Agent, newNativeID)
+		if strings.HasPrefix(tmuxName, "ackbar-") && tmuxName != newTmuxName {
+			if rErr := tmux.Rename(ctx, tmuxName, newTmuxName); rErr == nil {
+				if state.knownByTmux != nil {
+					delete(state.knownByTmux, tmuxName)
+				}
+				tmuxName = newTmuxName
+			} else {
+				log.Printf("[daemon] failed to rename tmux session %s to %s in disk scan adoption: %v", tmuxName, newTmuxName, rErr)
+			}
+		}
+
 		oldSess.ID = newSessID
 		oldSess.OldID = adopt.OldSessionID
 		oldSess.NativeID = newNativeID
@@ -227,11 +261,28 @@ func applyDiskScanResult(s *Server, state *ScanState, res agent.DiskScanResult) 
 		if adopt.Title != "" && oldSess.CustomTitle == "" {
 			oldSess.Name = adopt.Title
 		}
+		if oldSess.NodePath == "" && !oldSess.IsSupervisor && oldSess.Cwd != "" && s != nil {
+			oldSess.NodePath = s.resolveSessionNodePath(oldSess.Cwd)
+		}
+		oldSess.TmuxName = tmuxName
 		if !adopt.UpdatedAt.IsZero() {
 			oldSess.LastEventAt = adopt.UpdatedAt
 		}
+		if s != nil {
+			if p, ok := s.resolveProvider(oldSess.Agent); ok {
+				if inspector, ok := p.(StatusInspector); ok {
+					inspector.InspectStatus(ctx, oldSess)
+				}
+			}
+		}
 		state.knownIDs[newSessID] = oldSess
 		state.knownByNativeID[newNativeID] = oldSess
+		if tmuxName != "" {
+			if state.knownByTmux == nil {
+				state.knownByTmux = make(map[string]*Session)
+			}
+			state.knownByTmux[tmuxName] = oldSess
+		}
 		if s != nil {
 			if s.db != nil {
 				_ = s.db.SaveSession(oldSess)

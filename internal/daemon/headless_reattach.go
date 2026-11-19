@@ -308,15 +308,8 @@ func (h *HeadlessRunner) finalizeTurnFromSpool(sess *Session, origSessionID stri
 		}
 	}
 
-	if home, _ := os.UserHomeDir(); sess.Agent == "antigravity" {
-		if sess.CustomTitle != "" {
-			sess.Name = sess.CustomTitle
-		} else if title := ReadAntigravitySessionTitle(sess.Cwd, sess.NativeID); title != "" && !isRawSessionName(title) {
-			sess.Name = title
-		} else if (sess.Name == "" || isRawSessionName(sess.Name)) && prompt != "" {
-			sess.Name = TruncateTitle(prompt)
-		}
-	} else if tr, ok := h.pluginRegistry().AsTranscript(sess.Agent); ok {
+	home, _ := os.UserHomeDir()
+	if tr, ok := h.pluginRegistry().AsTranscript(sess.Agent); ok {
 		if gm := tr.ReadSessionMetadata(home, sess.Cwd, sess.NativeID); gm != nil {
 			if gm.ContextPct > 0 {
 				sess.ContextPct = gm.ContextPct
@@ -332,13 +325,21 @@ func (h *HeadlessRunner) finalizeTurnFromSpool(sess *Session, origSessionID stri
 			}
 			if sess.CustomTitle != "" {
 				sess.Name = sess.CustomTitle
-			} else if sess.AITitle != "" {
+			} else if sess.AITitle != "" && !isRawSessionName(sess.AITitle) {
 				sess.Name = sess.AITitle
-			} else if gm.Title != "" {
+			} else if gm.Title != "" && !isRawSessionName(gm.Title) {
 				sess.Name = gm.Title
 			}
 		}
 		if (sess.Name == "" || isRawSessionName(sess.Name)) && prompt != "" {
+			sess.Name = TruncateTitle(prompt)
+		}
+	} else if sess.Agent == "antigravity" {
+		if sess.CustomTitle != "" {
+			sess.Name = sess.CustomTitle
+		} else if title := ReadAntigravitySessionTitle(sess.Cwd, sess.NativeID); title != "" && !isRawSessionName(title) {
+			sess.Name = title
+		} else if (sess.Name == "" || isRawSessionName(sess.Name)) && prompt != "" {
 			sess.Name = TruncateTitle(prompt)
 		}
 	} else if home != "" {

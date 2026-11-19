@@ -228,10 +228,10 @@ func (s *Server) handleSessionRewind(w http.ResponseWriter, r *http.Request, ses
 				RawPrompt: rawPrompt,
 			})
 		}
-	} else if sess.Agent == "antigravity" {
-		turns = s.extractAntigravityRewindTurns(home, sess)
 	} else if _, ok := s.PluginRegistry().AsTranscript(sess.Agent); ok {
 		turns = s.extractPluginRewindTurns(home, sess)
+	} else if sess.Agent == "antigravity" {
+		turns = s.extractAntigravityRewindTurns(home, sess)
 	} else {
 		turns, rawLines, targetFile = s.extractClaudeRewindTurns(home, sess)
 	}

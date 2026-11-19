@@ -141,6 +141,12 @@ func parseAntigravityModelsOutput(out string) []ModelSuggestion {
 }
 
 func (s *Server) collectModelsForAgent(agent string) []ModelSuggestion {
+	if s != nil && s.PluginRegistry() != nil {
+		if mc, ok := s.PluginRegistry().AsModelCatalog(agent); ok {
+			return mc.CollectModels(s.effectiveHomeDir())
+		}
+	}
+
 	if strings.EqualFold(agent, "antigravity") {
 		modelCacheMu.Lock()
 		if len(antigravityModelCache.models) > 0 && time.Now().Before(antigravityModelCache.expiresAt) {
@@ -477,8 +483,14 @@ func (s *Server) collectCommands(cwd string, agentOpt ...string) []CommandSugges
 	}
 
 	// 1. Builtins
+	supportsEffort := agent != "antigravity"
+	if s != nil && s.PluginRegistry() != nil && agent != "" {
+		if p, ok := s.PluginRegistry().Get(agent); ok {
+			supportsEffort = p.Capabilities().SupportsEffortLevel
+		}
+	}
 	for _, b := range getBuiltinCommands() {
-		if agent == "antigravity" && b.Name == "effort" {
+		if b.Name == "effort" && !supportsEffort {
 			continue
 		}
 		cmds = append(cmds, b)

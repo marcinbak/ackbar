@@ -168,7 +168,13 @@ func (s *Server) resolveSessionForFile(sessionID string) *Session {
 	if homeDir == "" {
 		return nil
 	}
-	if parentID, _, _ := ResolveAntigravitySubagentParent(homeDir, uuidCandidate); parentID != "" {
+	parentID := ""
+	if h, ok := s.PluginRegistry().AsHooks("antigravity"); ok {
+		parentID, _, _ = h.ResolveSubagentParent(homeDir, uuidCandidate)
+	} else {
+		parentID, _, _ = ResolveAntigravitySubagentParent(homeDir, uuidCandidate)
+	}
+	if parentID != "" {
 		if parentSess := s.resolveSession(parentID); parentSess != nil {
 			sessCopy := *parentSess
 			sessCopy.NativeID = uuidCandidate

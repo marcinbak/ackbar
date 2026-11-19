@@ -532,6 +532,14 @@ func (s *Server) scanTmuxPanes(ctx context.Context, state *ScanState) {
 					targetNativeID = sID
 				}
 			}
+		} else if adapter.RequiresResolvedSessionID() {
+			sID := adapter.ResolveSessionForPID(ctx, home, pid, nil)
+			if sID != "" && IsUUID(sID) && sID != targetNativeID && (home == "" || !adapter.IsSubagentSession(home, sID, nil)) {
+				tmuxName, targetNativeID = s.reconcileAntigravityTmuxSession(ctx, state, agent, tmuxName, targetNativeID, sID, pid)
+			}
+			if targetNativeID != "" && home != "" && adapter.IsSubagentSession(home, targetNativeID, nil) {
+				continue
+			}
 		} else if agent == "antigravity" {
 			sID := findAntigravitySessionForPID(ctx, pid)
 			if sID != "" && IsUUID(sID) && sID != targetNativeID && (home == "" || !adapter.IsSubagentSession(home, sID, nil)) {
@@ -635,7 +643,13 @@ func (s *Server) reconcileAntigravityTmuxSession(ctx context.Context, state *Sca
 				existingReal.CurrentTaskID = existingOld.CurrentTaskID
 			}
 			if existingReal.CustomTitle == "" {
-				if title := ReadAntigravitySessionTitle(existingReal.Cwd, sID); title != "" && !isRawSessionName(title) {
+				var title string
+				if tr, ok := s.PluginRegistry().AsTranscript(agent); ok {
+					title = tr.ResolveSessionTitle(s.effectiveHomeDir(), existingReal.Cwd, sID)
+				} else {
+					title = ReadAntigravitySessionTitle(existingReal.Cwd, sID)
+				}
+				if title != "" && !isRawSessionName(title) {
 					existingReal.Name = title
 				}
 			}
@@ -654,7 +668,13 @@ func (s *Server) reconcileAntigravityTmuxSession(ctx context.Context, state *Sca
 				existingOld.TmuxName = tmuxName
 			}
 			if existingOld.CustomTitle == "" {
-				if title := ReadAntigravitySessionTitle(existingOld.Cwd, sID); title != "" && !isRawSessionName(title) {
+				var title string
+				if tr, ok := s.PluginRegistry().AsTranscript(agent); ok {
+					title = tr.ResolveSessionTitle(s.effectiveHomeDir(), existingOld.Cwd, sID)
+				} else {
+					title = ReadAntigravitySessionTitle(existingOld.Cwd, sID)
+				}
+				if title != "" && !isRawSessionName(title) {
 					existingOld.Name = title
 				}
 			}
@@ -713,13 +733,24 @@ func (s *Server) adoptExistingTmuxSession(ctx context.Context, state *ScanState,
 		existing.State = StateIdle
 		existing.Activity = "Awaiting user prompt"
 	}
-	if agent == "antigravity" && existing.CustomTitle == "" {
-		if isRawSessionName(existing.Name) {
-			if title := ReadAntigravitySessionTitle(existing.Cwd, existing.NativeID); title != "" && !isRawSessionName(title) {
-				existing.Name = title
+	if existing.CustomTitle == "" {
+		if tr, ok := s.PluginRegistry().AsTranscript(agent); ok {
+			home := s.effectiveHomeDir()
+			if isRawSessionName(existing.Name) {
+				if title := tr.ResolveSessionTitle(home, existing.Cwd, existing.NativeID); title != "" && !isRawSessionName(title) {
+					existing.Name = title
+				}
+			} else if meta := tr.ReadSessionMetadata(home, existing.Cwd, existing.NativeID); meta != nil && meta.AITitle != "" && meta.AITitle != existing.Name {
+				existing.Name = meta.AITitle
 			}
-		} else if anno := ReadAntigravityAnnotationTitle(existing.NativeID); anno != "" && anno != existing.Name {
-			existing.Name = anno
+		} else if agent == "antigravity" {
+			if isRawSessionName(existing.Name) {
+				if title := ReadAntigravitySessionTitle(existing.Cwd, existing.NativeID); title != "" && !isRawSessionName(title) {
+					existing.Name = title
+				}
+			} else if anno := ReadAntigravityAnnotationTitle(existing.NativeID); anno != "" && anno != existing.Name {
+				existing.Name = anno
+			}
 		}
 	}
 	_ = s.db.SaveSession(existing)
