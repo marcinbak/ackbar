@@ -78,15 +78,21 @@ done
 
 # c. Isolated Go race tests
 echo "--> Running Go race test suite..."
-TMP_HOME="$(mktemp -d)"
+TMP_ROOT="$(mktemp -d /tmp/ackbar-t0.XXXXXX 2>/dev/null || mktemp -d)"
+TMP_HOME="$TMP_ROOT/h"
+TMP_DIR="$TMP_ROOT/t"
+mkdir -p "$TMP_HOME" "$TMP_DIR"
 cleanup_tmp() {
-    chmod -R u+w "$TMP_HOME" 2>/dev/null || true
-    rm -rf "$TMP_HOME" 2>/dev/null || true
+    if [ -d "$TMP_DIR/tmux-$(id -u)" ]; then
+        TMUX= TMUX_TMPDIR="$TMP_DIR" tmux kill-server 2>/dev/null || true
+    fi
+    chmod -R u+w "$TMP_ROOT" 2>/dev/null || true
+    rm -rf "$TMP_ROOT" 2>/dev/null || true
 }
 trap cleanup_tmp EXIT
 REAL_GOPATH="${GOPATH:-$(go env GOPATH)}"
 REAL_GOCACHE="${GOCACHE:-$(go env GOCACHE)}"
-HOME="$TMP_HOME" GOPATH="$REAL_GOPATH" GOCACHE="$REAL_GOCACHE" env -u ACKBAR_HOST go test -race ./...
+HOME="$TMP_HOME" TMPDIR="$TMP_DIR" TMUX_TMPDIR="$TMP_DIR" ACKBAR_BREW_OPT_BIN_DIRS="" GOPATH="$REAL_GOPATH" GOCACHE="$REAL_GOCACHE" env -u ACKBAR_HOST -u TMUX go test -race ./...
 
 # d. Compile gates
 echo "--> Verifying native binary compilation..."

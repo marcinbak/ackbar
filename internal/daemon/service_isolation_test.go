@@ -168,7 +168,11 @@ func TestDaemonSafeShellHelpers_SkipsHeadlessWorkerPIDs(t *testing.T) {
 	}
 	tmpDir := t.TempDir()
 	procName := fmt.Sprintf("ackt%d", os.Getpid()%100000)
-	scriptPath := filepath.Join(tmpDir, procName)
+	binDir := filepath.Join(tmpDir, "dir with space")
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		t.Fatalf("mkdir binDir: %v", err)
+	}
+	scriptPath := filepath.Join(binDir, procName)
 	srcPath := filepath.Join(tmpDir, "main.go")
 	if err := os.WriteFile(srcPath, []byte("package main\nimport \"time\"\nfunc main() { time.Sleep(30 * time.Second) }\n"), 0644); err != nil {
 		t.Fatalf("write test source: %v", err)
@@ -200,13 +204,19 @@ func TestDaemonSafeShellHelpers_SkipsHeadlessWorkerPIDs(t *testing.T) {
 		}
 	}()
 
-	waitForWorkerCond(t, 2*time.Second, "both test processes visible to pgrep", func() bool {
-		out, err := exec.Command("pgrep", "-x", procName).Output()
+	wantWorkerPID := fmt.Sprintf("%d", workerCmd.Process.Pid)
+	wantDaemonPID := fmt.Sprintf("%d", daemonCmd.Process.Pid)
+	waitForWorkerCond(t, 2*time.Second, "both test processes visible to ackbard_candidate_pids", func() bool {
+		cmd := exec.Command("sh", "-c", DaemonSafeShellHelpers()+"\nackbard_candidate_pids \"$1\"", "sh", procName)
+		out, err := cmd.Output()
 		if err != nil {
 			return false
 		}
-		lines := strings.Fields(strings.TrimSpace(string(out)))
-		return len(lines) >= 2
+		pids := make(map[string]bool)
+		for _, tok := range strings.Fields(string(out)) {
+			pids[tok] = true
+		}
+		return pids[wantWorkerPID] && pids[wantDaemonPID]
 	})
 
 	checkBefore := exec.Command("sh", "-c", DaemonSafeShellHelpers()+"\nhas_non_worker_ackbard")

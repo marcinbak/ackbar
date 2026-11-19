@@ -129,6 +129,7 @@ exit 1`)
 	cmd.Env = []string{
 		"HOME=" + mockHome,
 		"PATH=" + mockBin + ":/usr/bin:/bin",
+		"ACKBAR_BREW_OPT_BIN_DIRS=",
 	}
 	out, err := cmd.CombinedOutput()
 	if err == nil {
@@ -159,6 +160,7 @@ exit 1`)
 	cmd2.Env = []string{
 		"HOME=" + mockHome,
 		"PATH=" + mockBin + ":/usr/bin:/bin",
+		"ACKBAR_BREW_OPT_BIN_DIRS=",
 	}
 	if out2, err2 := cmd2.CombinedOutput(); err2 != nil {
 		t.Fatalf("expected activating systemd unit restart to succeed, got %v (%s)", err2, string(out2))
@@ -177,6 +179,7 @@ exit 42`)
 	cmd3.Env = []string{
 		"HOME=" + mockHome,
 		"PATH=" + mockBin + ":/usr/bin:/bin",
+		"ACKBAR_BREW_OPT_BIN_DIRS=",
 	}
 	out3, err3 := cmd3.CombinedOutput()
 	if err3 == nil {
@@ -258,7 +261,7 @@ exit 0`)
 
 		script := buildRemoteBinaryRestartScript(shellSingleQuote(""), "")
 		cmd := exec.Command("sh", "-c", script)
-		cmd.Env = []string{"HOME=" + mockHome, "PATH=" + mockBin + ":/usr/bin:/bin"}
+		cmd.Env = []string{"HOME=" + mockHome, "PATH=" + mockBin + ":/usr/bin:/bin", "ACKBAR_BREW_OPT_BIN_DIRS="}
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("remote restart script failed: %v (%s)", err, string(out))
 		}

@@ -556,7 +556,13 @@ func TestBgTasks_WatchWarmWorkerColdStartDialRetry(t *testing.T) {
 	runner := NewHeadlessRunner(nil, nil)
 	defer runner.ShutdownAllWorkers(time.Second)
 
-	sockPath := filepath.Join(t.TempDir(), "delayed.sock")
+	sockPath, sockTempDir, err := allocateWorkerSocketPath(t.TempDir(), "delayed")
+	if err != nil {
+		t.Fatalf("allocateWorkerSocketPath: %v", err)
+	}
+	if sockTempDir != "" {
+		t.Cleanup(func() { _ = os.RemoveAll(sockTempDir) })
+	}
 	workerID := "w-cold-retry"
 	sessID := "claude-code:local:cold-retry"
 	wh := &warmWorkerHandle{
@@ -570,18 +576,17 @@ func TestBgTasks_WatchWarmWorkerColdStartDialRetry(t *testing.T) {
 	runner.warmWorkers[sessID] = wh
 	runner.mu.Unlock()
 
-	lnReady := make(chan struct{})
+	listenErrCh := make(chan error, 1)
 	doneServe := make(chan struct{})
 	go func() {
 		defer close(doneServe)
 		time.Sleep(160 * time.Millisecond)
 		ln, err := net.Listen("unix", sockPath)
+		listenErrCh <- err
 		if err != nil {
-			t.Errorf("listen delayed sock: %v", err)
 			return
 		}
 		defer ln.Close()
-		close(lnReady)
 		conn, err := ln.Accept()
 		if err != nil {
 			return
@@ -596,7 +601,11 @@ func TestBgTasks_WatchWarmWorkerColdStartDialRetry(t *testing.T) {
 	}()
 
 	runner.ensureWarmWatcher(wh)
-	<-lnReady
+	if err := <-listenErrCh; err != nil {
+		runner.stopAllWarmWatchers()
+		<-doneServe
+		t.Fatalf("listen delayed socket: %v", err)
+	}
 	waitForWorkerCond(t, 3*time.Second, "watchWarmWorker attached after 160ms socket delay", func() bool {
 		return runner.GetBgTaskCount(sessID) == 2 && runner.HasWarmWorker(sessID)
 	})

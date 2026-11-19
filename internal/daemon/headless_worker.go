@@ -756,6 +756,7 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string, reg *agent.Regis
 		activeTurn.meta.ChildPID = firstGen.pgid
 		_ = WriteTurnSpoolMeta(activeTurn.metaPath, activeTurn.meta)
 	}
+	rt.notifyWatchersLocked()
 	initTurn := activeTurn
 	stateMu.Unlock()
 

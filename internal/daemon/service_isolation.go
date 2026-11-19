@@ -225,10 +225,21 @@ func DaemonSafeShellHelpers() string {
   if [ -r "/proc/$p/cmdline" ]; then tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null || true
   else ps -ww -p "$p" -o args= 2>/dev/null || ps -ww -p "$p" -o command= 2>/dev/null || true; fi
 }
+ackbard_pid_argv0() {
+  p="$1"
+  if [ -r "/proc/$p/cmdline" ]; then tr '\0' '\n' < "/proc/$p/cmdline" 2>/dev/null | sed -n '1p' || true
+  else ps -ww -p "$p" -o comm= 2>/dev/null || true; fi
+}
+ackbard_candidate_pids() {
+  if [ "$(uname -s)" = "Darwin" ]; then pgrep -a -f -- "$1" 2>/dev/null || true
+  else pgrep -f -- "$1" 2>/dev/null || true; fi
+}
 signal_non_worker_ackbard() {
   sig="$1"; proc_name="${ACKBAR_DAEMON_PROC_NAME:-ackbard}"
-  for p in $(pgrep -x "$proc_name" 2>/dev/null || true); do
+  for p in $(ackbard_candidate_pids "$proc_name"); do
     if [ -z "$p" ] || [ "$p" = "$$" ]; then continue; fi
+    argv0="$(ackbard_pid_argv0 "$p")"
+    [ "${argv0##*/}" = "$proc_name" ] || continue
     cmd=$(ackbard_pid_cmdline "$p")
     if [ -z "$cmd" ]; then continue; fi
     case "$cmd" in *--headless-worker*) continue ;; esac
@@ -237,8 +248,10 @@ signal_non_worker_ackbard() {
 }
 has_non_worker_ackbard() {
   proc_name="${ACKBAR_DAEMON_PROC_NAME:-ackbard}"
-  for p in $(pgrep -x "$proc_name" 2>/dev/null || true); do
+  for p in $(ackbard_candidate_pids "$proc_name"); do
     if [ -z "$p" ]; then continue; fi
+    argv0="$(ackbard_pid_argv0 "$p")"
+    [ "${argv0##*/}" = "$proc_name" ] || continue
     cmd=$(ackbard_pid_cmdline "$p")
     if [ -z "$cmd" ]; then continue; fi
     case "$cmd" in *--headless-worker*) continue ;; esac

@@ -250,7 +250,13 @@ func TestGrokACP_ControlValidationScannerRewindAndAdopt(t *testing.T) {
 		t.Fatalf("expected non-ACP cancel rewind rejected with 400, got %d: %s", w.Code, w.Body.String())
 	}
 
-	sockPath := filepath.Join(t.TempDir(), "adopt.sock")
+	sockPath, sockTempDir, err := allocateWorkerSocketPath(t.TempDir(), "adopt")
+	if err != nil {
+		t.Fatalf("allocateWorkerSocketPath: %v", err)
+	}
+	if sockTempDir != "" {
+		t.Cleanup(func() { _ = os.RemoveAll(sockTempDir) })
+	}
 	ln, err := net.Listen("unix", sockPath)
 	if err != nil {
 		t.Fatalf("listen: %v", err)

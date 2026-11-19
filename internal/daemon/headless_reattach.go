@@ -29,16 +29,28 @@ func (h *HeadlessRunner) monitorWorkerTurn(sess *Session, origSessionID string, 
 	}
 	lastSeq := afterSeq
 	dialDeadline := time.Now().Add(3 * time.Second)
-	for {
-		curMeta := meta
-		if meta.MetaPath != "" {
+	var curMeta *TurnSpoolMeta
+	if meta != nil {
+		mCopy := *meta
+		curMeta = &mCopy
+	}
+	refreshMetaAndChildPID := func() {
+		if meta != nil && meta.MetaPath != "" {
 			if dm, err := ReadTurnSpoolMeta(meta.MetaPath); err == nil && dm != nil {
 				curMeta = dm
 			}
 		}
-		if curMeta != nil {
+		if curMeta != nil && curMeta.ChildPID <= 1 && curMeta.WorkerMetaPath != "" {
+			if wm, err := ReadSessionWorkerMeta(curMeta.WorkerMetaPath); err == nil && wm != nil && wm.ChildPID > 1 {
+				curMeta.ChildPID = wm.ChildPID
+			}
+		}
+		if curMeta != nil && curMeta.ChildPID > 1 {
 			syncChildPID(curMeta.WorkerID, curMeta.ChildPID)
 		}
+	}
+	for {
+		refreshMetaAndChildPID()
 		conn, err := net.DialTimeout("unix", curMeta.SocketPath, 250*time.Millisecond)
 		if err == nil {
 			b, _ := json.Marshal(workerIPCReq{Op: "subscribe", AfterSeq: lastSeq, TurnID: curMeta.TurnID})
@@ -49,6 +61,10 @@ func (h *HeadlessRunner) monitorWorkerTurn(sess *Session, origSessionID string, 
 					var evt ChatStreamEvent
 					if json.Unmarshal(sc.Bytes(), &evt) == nil && evt.Seq > lastSeq {
 						lastSeq = evt.Seq
+						// stateMu serializes cold-start ChildPID persistence before any Seq > 1 event.
+						if curMeta == nil || curMeta.ChildPID <= 1 {
+							refreshMetaAndChildPID()
+						}
 						if !h.isTurnSuperseded(curMeta.TurnID) {
 							h.applyWorkerEvent(sess, origSessionID, curMeta, evt, true)
 						}
@@ -57,14 +73,7 @@ func (h *HeadlessRunner) monitorWorkerTurn(sess *Session, origSessionID string, 
 			}
 			_ = conn.Close()
 		}
-		if meta.MetaPath != "" {
-			if dm, err := ReadTurnSpoolMeta(meta.MetaPath); err == nil && dm != nil {
-				curMeta = dm
-			}
-		}
-		if curMeta != nil {
-			syncChildPID(curMeta.WorkerID, curMeta.ChildPID)
-		}
+		refreshMetaAndChildPID()
 		probeResp, liveOnSocket := probeLiveWorker(curMeta, 0)
 		if probeResp != nil {
 			wid := ""
