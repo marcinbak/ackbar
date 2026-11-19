@@ -183,6 +183,19 @@ func (h *HeadlessRunner) resolveWatchSessionID(workerID, fallbackSessID, fallbac
 	return fallbackSessID, fallbackNativeID
 }
 
+func (h *HeadlessRunner) syncWarmWorkerChildPID(workerID string, childPID int, state string) {
+	if h == nil || workerID == "" || childPID <= 1 || state == "restarting_child" || state == "shutting_down" || state == "exited" {
+		return
+	}
+	h.mu.Lock()
+	for _, wh := range h.warmWorkers {
+		if wh != nil && wh.WorkerID == workerID {
+			wh.ChildPID = childPID
+		}
+	}
+	h.mu.Unlock()
+}
+
 func (h *HeadlessRunner) watchWarmWorker(ctx context.Context, workerID, sockPath, workerMetaPath, initSessID, initNativeID string) {
 	defer h.watchWG.Done()
 	defer func() {
@@ -252,6 +265,7 @@ func (h *HeadlessRunner) watchWarmWorker(ctx context.Context, workerID, sockPath
 				continue
 			}
 			sid, nid := h.resolveWatchSessionID(workerID, initSessID, initNativeID)
+			h.syncWarmWorkerChildPID(workerID, frame.ChildPID, frame.State)
 			h.setBgTaskCount(sid, nid, frame.BgTaskCount)
 			if frame.State == "shutting_down" || frame.State == "exited" {
 				h.handleWarmWorkerExited(workerID, sid, nid)

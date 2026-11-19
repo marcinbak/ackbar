@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -152,6 +153,10 @@ func allocateWorkerSocketPath(runDir, id string) (string, string, error) {
 		return cand, "", nil
 	}
 	td, err := os.MkdirTemp("", "akw-*")
+	if runtime.GOOS != "windows" && (err != nil || len(filepath.Join(td, "w.sock")) > 96) {
+		_ = os.RemoveAll(td)
+		td, err = os.MkdirTemp("/tmp", "akw-*")
+	}
 	if err != nil {
 		return "", "", err
 	}

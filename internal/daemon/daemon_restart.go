@@ -59,7 +59,7 @@ for b in ackbard ackbar ackbar-hook ackbar-relay; do
     chmod +x "$HOME/.local/bin/$b.new"
     codesign_darwin_staged_binary "$HOME/.local/bin/$b.new" "$b"
     mv -f "$HOME/.local/bin/$b.new" "$HOME/.local/bin/$b"
-    for brewdir in /opt/homebrew/opt/ackbar/bin /usr/local/opt/ackbar/bin; do
+    for brewdir in ${ACKBAR_BREW_OPT_BIN_DIRS-/opt/homebrew/opt/ackbar/bin /usr/local/opt/ackbar/bin}; do
       if [ -d "$brewdir" ] && [ -w "$brewdir" ]; then
         cp -f "$HOME/.local/bin/$b" "$brewdir/$b.tmp" && codesign_darwin_staged_binary "$brewdir/$b.tmp" "$b" && mv -f "$brewdir/$b.tmp" "$brewdir/$b" || true
       fi

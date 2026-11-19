@@ -1,6 +1,7 @@
 package testutil
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -8,7 +9,18 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
+
+func mkdirShortTempDir(pattern string) (string, error) {
+	if runtime.GOOS != "windows" {
+		// Keep Unix socket paths under the 104-byte sun_path limit on Darwin.
+		if dir, err := os.MkdirTemp("/tmp", pattern); err == nil {
+			return dir, nil
+		}
+	}
+	return os.MkdirTemp("", pattern)
+}
 
 func RunIsolatedTestMain(m *testing.M) {
 	os.Exit(runIsolatedTestMain(m))
@@ -67,6 +79,10 @@ func IsolateTestEnv() (string, func(), error) {
 		"XDG_STATE_HOME",
 		"APPDATA",
 		"LOCALAPPDATA",
+		"TMPDIR",
+		"TMUX",
+		"TMUX_TMPDIR",
+		"ACKBAR_BREW_OPT_BIN_DIRS",
 		"ACKBAR_HOST",
 		"ACKBAR_DISPLAY_NAME",
 		"ACKBAR_TOKEN",
@@ -97,8 +113,13 @@ func IsolateTestEnv() (string, func(), error) {
 		snapshot[k] = envVal{val: val, set: ok}
 	}
 
-	tmpHome, err := os.MkdirTemp("", "ackbar-test-home-*")
+	tmpHome, err := mkdirShortTempDir("ackbar-test-home-*")
 	if err != nil {
+		return "", nil, err
+	}
+	shortTmpDir, err := mkdirShortTempDir("akt-*")
+	if err != nil {
+		_ = os.RemoveAll(tmpHome)
 		return "", nil, err
 	}
 
@@ -111,6 +132,7 @@ func IsolateTestEnv() (string, func(), error) {
 	}
 	for _, sub := range subdirs {
 		if err := os.MkdirAll(filepath.Join(tmpHome, sub), 0o700); err != nil {
+			_ = os.RemoveAll(shortTmpDir)
 			_ = os.RemoveAll(tmpHome)
 			return "", nil, err
 		}
@@ -125,11 +147,13 @@ func IsolateTestEnv() (string, func(), error) {
 			content = grokACPStubPOSIX
 		}
 		if err := os.WriteFile(filepath.Join(testBinDir, name), []byte(content), 0o755); err != nil {
+			_ = os.RemoveAll(shortTmpDir)
 			_ = os.RemoveAll(tmpHome)
 			return "", nil, err
 		}
 		if runtime.GOOS == "windows" {
 			if err := os.WriteFile(filepath.Join(testBinDir, name+".bat"), []byte("@echo off\r\nexit /b 0\r\n"), 0o755); err != nil {
+				_ = os.RemoveAll(shortTmpDir)
 				_ = os.RemoveAll(tmpHome)
 				return "", nil, err
 			}
@@ -149,6 +173,12 @@ func IsolateTestEnv() (string, func(), error) {
 	_ = os.Setenv("XDG_STATE_HOME", filepath.Join(tmpHome, ".local", "state"))
 	_ = os.Setenv("APPDATA", filepath.Join(tmpHome, ".config"))
 	_ = os.Setenv("LOCALAPPDATA", filepath.Join(tmpHome, ".cache"))
+	_ = os.Setenv("TMPDIR", shortTmpDir)
+	if runtime.GOOS != "windows" {
+		_ = os.Setenv("TMUX_TMPDIR", shortTmpDir)
+	}
+	_ = os.Unsetenv("TMUX")
+	_ = os.Setenv("ACKBAR_BREW_OPT_BIN_DIRS", "")
 
 	ambientVars := []string{
 		"ACKBAR_HOST",
@@ -173,9 +203,12 @@ func IsolateTestEnv() (string, func(), error) {
 		_ = os.Unsetenv(v)
 	}
 
-	cleanup := func() {
+	widenAndRemoveAll := func(root string) {
+		if root == "" {
+			return
+		}
 		// Permissions must be widened before deletion to remove read-only fixtures without EPERM.
-		_ = filepath.WalkDir(tmpHome, func(path string, d os.DirEntry, err error) error {
+		_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 			if err != nil {
 				_ = os.Chmod(path, 0o700)
 				return nil
@@ -194,7 +227,29 @@ func IsolateTestEnv() (string, func(), error) {
 			}
 			return nil
 		})
-		_ = os.RemoveAll(tmpHome)
+		_ = os.RemoveAll(root)
+	}
+
+	cleanup := func() {
+		if runtime.GOOS != "windows" {
+			tmuxDir := filepath.Join(shortTmpDir, fmt.Sprintf("tmux-%d", os.Getuid()))
+			if info, err := os.Stat(tmuxDir); err == nil && info.IsDir() {
+				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				cmd := exec.CommandContext(ctx, "tmux", "kill-server")
+				env := make([]string, 0, len(os.Environ())+1)
+				for _, e := range os.Environ() {
+					if strings.HasPrefix(e, "TMUX=") || strings.HasPrefix(e, "TMUX_TMPDIR=") {
+						continue
+					}
+					env = append(env, e)
+				}
+				cmd.Env = append(env, "TMUX_TMPDIR="+shortTmpDir)
+				_ = cmd.Run()
+				cancel()
+			}
+		}
+		widenAndRemoveAll(shortTmpDir)
+		widenAndRemoveAll(tmpHome)
 
 		for k, v := range snapshot {
 			if v.set {

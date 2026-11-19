@@ -40,7 +40,13 @@ func TestPackageHomeIsIsolated(t *testing.T) {
 
 func TestIsolateTestEnv_RestoresAndCleansReadOnlyFiles(t *testing.T) {
 	origHome := os.Getenv("HOME")
+	longPreTmp := filepath.Join(t.TempDir(), "very-long-preexisting-tmpdir-path")
+	if err := os.MkdirAll(longPreTmp, 0o700); err != nil {
+		t.Fatalf("mkdir longPreTmp: %v", err)
+	}
 
+	t.Setenv("TMPDIR", longPreTmp)
+	t.Setenv("ACKBAR_BREW_OPT_BIN_DIRS", "/custom/brew/bin")
 	t.Setenv("ACKBAR_HOST", "poison")
 	t.Setenv("ACKBAR_TOKEN", "poison")
 	t.Setenv("ACKBAR_SESSION_ID", "poison")
@@ -54,7 +60,7 @@ func TestIsolateTestEnv_RestoresAndCleansReadOnlyFiles(t *testing.T) {
 		t.Fatalf("IsolateTestEnv failed: %v", err)
 	}
 
-	for _, k := range []string{"ACKBAR_HOST", "ACKBAR_TOKEN", "ACKBAR_SESSION_ID", "GIT_CONFIG_GLOBAL", "CLAUDE_CONFIG_DIR", "GEMINI_CLI_HOME", "GROK_HOME"} {
+	for _, k := range []string{"ACKBAR_HOST", "ACKBAR_TOKEN", "ACKBAR_SESSION_ID", "GIT_CONFIG_GLOBAL", "CLAUDE_CONFIG_DIR", "GEMINI_CLI_HOME", "GROK_HOME", "TMUX"} {
 		if v, ok := os.LookupEnv(k); ok {
 			t.Errorf("expected %s unset, got %q", k, v)
 		}
@@ -62,6 +68,25 @@ func TestIsolateTestEnv_RestoresAndCleansReadOnlyFiles(t *testing.T) {
 
 	if os.Getenv("HOME") != tmpHome {
 		t.Errorf("expected HOME %q, got %q", tmpHome, os.Getenv("HOME"))
+	}
+
+	isolatedTmpDir := os.Getenv("TMPDIR")
+	if isolatedTmpDir == "" || isolatedTmpDir == longPreTmp {
+		t.Fatalf("expected isolated TMPDIR distinct from %q, got %q", longPreTmp, isolatedTmpDir)
+	}
+	if runtime.GOOS != "windows" {
+		if len(isolatedTmpDir) > 40 {
+			t.Errorf("expected Unix isolated TMPDIR <= 40 bytes, got %d (%q)", len(isolatedTmpDir), isolatedTmpDir)
+		}
+		if got := os.Getenv("TMUX_TMPDIR"); got != isolatedTmpDir {
+			t.Errorf("expected TMUX_TMPDIR %q, got %q", isolatedTmpDir, got)
+		}
+	}
+	if info, statErr := os.Stat(isolatedTmpDir); statErr != nil || !info.IsDir() {
+		t.Fatalf("expected isolated TMPDIR %q to exist as directory, err=%v", isolatedTmpDir, statErr)
+	}
+	if got, ok := os.LookupEnv("ACKBAR_BREW_OPT_BIN_DIRS"); !ok || got != "" {
+		t.Errorf("expected ACKBAR_BREW_OPT_BIN_DIRS set to empty string, got ok=%v val=%q", ok, got)
 	}
 
 	if os.Getenv("GOCACHE") == "" {
@@ -89,9 +114,18 @@ func TestIsolateTestEnv_RestoresAndCleansReadOnlyFiles(t *testing.T) {
 	if _, err := os.Stat(tmpHome); !os.IsNotExist(err) {
 		t.Fatalf("expected tmpHome to be removed, got err: %v", err)
 	}
+	if _, err := os.Stat(isolatedTmpDir); !os.IsNotExist(err) {
+		t.Fatalf("expected isolated TMPDIR %q to be removed, got err: %v", isolatedTmpDir, err)
+	}
 
 	if got := os.Getenv("HOME"); got != origHome {
 		t.Errorf("expected HOME restored to %q, got %q", origHome, got)
+	}
+	if got := os.Getenv("TMPDIR"); got != longPreTmp {
+		t.Errorf("expected TMPDIR restored to %q, got %q", longPreTmp, got)
+	}
+	if got := os.Getenv("ACKBAR_BREW_OPT_BIN_DIRS"); got != "/custom/brew/bin" {
+		t.Errorf("expected ACKBAR_BREW_OPT_BIN_DIRS restored to /custom/brew/bin, got %q", got)
 	}
 	if got := os.Getenv("CLAUDE_CONFIG_DIR"); got != "/custom/claude" {
 		t.Errorf("expected CLAUDE_CONFIG_DIR restored to /custom/claude, got %q", got)
