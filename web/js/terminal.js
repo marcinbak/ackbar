@@ -11,6 +11,7 @@ import {
 import { fetchSessions } from './api.js';
 import { closeTab } from './tabs.js';
 import { renderTree, updateTreeSessionUnread, scheduleRenderTree } from './tree.js';
+import { replacePromptInputRange } from './chat.js';
 
 
 function connectTerminalWebSocket(tab, tabId, term, fitAddon, session) {
@@ -167,23 +168,12 @@ function insertPathIntoPromptInput(inputEl, filePath) {
 
   if (typeof start === 'number' && typeof end === 'number' && document.activeElement === inputEl) {
     const before = val.substring(0, start);
-    const after = val.substring(end);
     const spaceBefore = (before.length > 0 && !before.endsWith(' ') && !before.endsWith('\n')) ? ' ' : '';
-    inputEl.value = before + spaceBefore + quotedPath + after;
-    const newPos = start + spaceBefore.length + quotedPath.length;
-    inputEl.selectionStart = newPos;
-    inputEl.selectionEnd = newPos;
+    replacePromptInputRange(inputEl, start, end, spaceBefore + quotedPath);
   } else {
     const spaceBefore = (val.length > 0 && !val.endsWith(' ') && !val.endsWith('\n')) ? ' ' : '';
-    inputEl.value = val + spaceBefore + quotedPath;
-    inputEl.selectionStart = inputEl.value.length;
-    inputEl.selectionEnd = inputEl.value.length;
+    replacePromptInputRange(inputEl, val.length, val.length, spaceBefore + quotedPath);
   }
-
-  inputEl.style.height = 'auto';
-  inputEl.style.height = Math.min(inputEl.scrollHeight, 180) + 'px';
-  inputEl.dispatchEvent(new Event('input', { bubbles: true }));
-  inputEl.focus();
 }
 
 function getAttachmentIcon(filename, type) {

@@ -814,3 +814,66 @@ func TestWorkBoardKanbanDragAndDrop_Integration(t *testing.T) {
 		}
 	}
 }
+
+func TestHeadlessChatNativeUX_Web(t *testing.T) {
+	embeddedFS := web.GetFS()
+
+	readEmbedded := func(path string) string {
+		t.Helper()
+		f, err := embeddedFS.Open(path)
+		if err != nil {
+			t.Fatalf("failed to open %s: %v", path, err)
+		}
+		defer f.Close()
+		b, err := io.ReadAll(f)
+		if err != nil {
+			t.Fatalf("failed to read %s: %v", path, err)
+		}
+		return string(b)
+	}
+
+	chatJS := readEmbedded("js/chat.js")
+	for _, expected := range []string{
+		"function replacePromptInputRange(",
+		"function handlePromptInputUndoKeydown(",
+		"function resetPromptInputUndoHistory(",
+		"function isChatNearBottom(",
+		"function scrollChatToBottom(",
+		"btn-chat-scroll-bottom",
+		"chat-composer-toolbar",
+		"chat-code-header",
+		"chat-code-lang",
+		"e.target.closest('button, input, a, .chat-pill')",
+	} {
+		if !strings.Contains(chatJS, expected) {
+			t.Errorf("expected js/chat.js to contain %q", expected)
+		}
+	}
+	for _, disallowed := range []string{
+		"chat-msg-header",
+		"chat-msg-role",
+	} {
+		if strings.Contains(chatJS, disallowed) {
+			t.Errorf("expected js/chat.js not to contain %q", disallowed)
+		}
+	}
+
+	utilsJS := readEmbedded("js/utils.js")
+	if !strings.Contains(utilsJS, "markdown-table-wrap") {
+		t.Errorf("expected js/utils.js to contain %q", "markdown-table-wrap")
+	}
+
+	styleCSS := readEmbedded("style.css")
+	for _, expected := range []string{
+		"padding-inline: max(20px, calc((100% - 54rem) / 2))",
+		".markdown-table-wrap",
+		".chat-code-header",
+		".btn-chat-scroll-bottom",
+		".chat-composer-toolbar",
+		".transcript-msg:hover .btn-copy-chat-msg",
+	} {
+		if !strings.Contains(styleCSS, expected) {
+			t.Errorf("expected style.css to contain %q", expected)
+		}
+	}
+}

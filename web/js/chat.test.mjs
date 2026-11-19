@@ -370,6 +370,10 @@ function parseHtmlFragment(html, parent) {
     if (classMatch) {
       el.className = classMatch[1];
     }
+    const titleMatch = attrs.match(/title=["']([^"']*)["']/);
+    if (titleMatch) {
+      el.title = titleMatch[1];
+    }
     const dataMatches = attrs.matchAll(/data-([a-zA-Z0-9-]+)=["']([^"']+)["']/g);
     for (const dm of dataMatches) {
       const camelKey = dm[1].replace(/-([a-z])/g, (_, l) => l.toUpperCase());
@@ -3241,6 +3245,476 @@ test('fetchSessionAgentModels preserves focused .config-select-model element in-
   } finally {
     globalThis.fetch = prevFetch;
     globalThis.document.activeElement = prevActive;
+  }
+});
+
+async function withMockClipboard(fn) {
+  const origNavDesc = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  let copiedText = '';
+  Object.defineProperty(globalThis, 'navigator', {
+    configurable: true,
+    value: {
+      clipboard: {
+        writeText: async (txt) => { copiedText = txt; }
+      }
+    }
+  });
+  try {
+    await fn(() => copiedText);
+  } finally {
+    if (origNavDesc) {
+      Object.defineProperty(globalThis, 'navigator', origNavDesc);
+    }
+  }
+}
+
+test('headerless messages omit .chat-msg-header/.chat-msg-role, render bottom .chat-msg-actions with timestamp tooltip, and style.css uses flat assistant responses', async () => {
+  const tsUser = '2026-11-19T10:15:00.000Z';
+  const tsAsst = '2026-11-19T10:16:00.000Z';
+  const tabObj = {
+    id: 'tab-headerless-test',
+    viewMode: 'chat',
+    chatMessagesEl: new MockElement('div'),
+    session: { id: 'claude-code:local:sess-headerless', agent: 'claude-code', state: 0 }
+  };
+
+  const userEl = createChatMessageElement(tabObj, {
+    role: 'user',
+    content: 'Inspect layout',
+    timestamp: tsUser
+  });
+  assert.equal(userEl.querySelector('.chat-msg-header'), null);
+  assert.equal(userEl.querySelector('.chat-msg-role'), null);
+  const userActions = userEl.querySelector('.chat-msg-actions');
+  assert.ok(userActions);
+  assert.equal(userEl.lastElementChild, userActions);
+  const userTime = userActions.querySelector('.chat-msg-time');
+  assert.ok(userTime);
+  assert.equal(userTime.getAttribute('title'), new Date(tsUser).toLocaleString());
+  assert.ok(userActions.querySelector('.btn-copy-chat-msg'));
+
+  const asstEl = createChatMessageElement(tabObj, {
+    role: 'assistant',
+    content: 'Flat response body',
+    timestamp: tsAsst
+  });
+  assert.equal(asstEl.querySelector('.chat-msg-header'), null);
+  assert.equal(asstEl.querySelector('.chat-msg-role'), null);
+  const asstActions = asstEl.querySelector('.chat-msg-actions');
+  assert.ok(asstActions);
+  assert.equal(asstEl.lastElementChild, asstActions);
+  const asstTime = asstActions.querySelector('.chat-msg-time');
+  assert.ok(asstTime);
+  assert.equal(asstTime.getAttribute('title'), new Date(tsAsst).toLocaleString());
+  for (const cls of ['.btn-read-chat-msg', '.btn-stop-chat-msg', '.btn-replay-chat-msg', '.btn-full-read-chat-msg', '.btn-copy-chat-msg']) {
+    assert.ok(asstActions.querySelector(cls), `expected ${cls} in assistant .chat-msg-actions`);
+  }
+
+  // Streaming in-flight assistant message also omits header and stamps dataset.timestamp + tooltip
+  handleChatStreamEvent(tabObj, {
+    type: 'text_delta',
+    turn_id: 'turn-stream-headerless',
+    text: 'Streaming text'
+  });
+  const streamEl = tabObj.chatMessagesEl.querySelector('.chat-msg.assistant-msg.in-flight');
+  assert.ok(streamEl);
+  assert.equal(streamEl.querySelector('.chat-msg-header'), null);
+  assert.equal(streamEl.querySelector('.chat-msg-role'), null);
+  assert.ok(streamEl.dataset.timestamp);
+  const streamTime = streamEl.querySelector('.chat-msg-actions').querySelector('.chat-msg-time');
+  assert.ok(streamTime && streamTime.getAttribute('title'));
+
+  await withMockClipboard(async (getCopied) => {
+    const copyBtn = asstActions.querySelector('.btn-copy-chat-msg');
+    copyBtn.click();
+    await new Promise(r => setTimeout(r, 10));
+    assert.equal(getCopied(), 'Flat response body');
+    assert.ok(copyBtn.classList.contains('copied'));
+    assert.ok(asstActions.classList.contains('has-copied'));
+  });
+
+  // Prompt-dispatch error message also omits .chat-msg-header/.chat-msg-role
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ ok: false, status: 500, json: async () => ({ error: 'boom' }) });
+  try {
+    const errTab = {
+      id: 'tab-err-headerless',
+      viewMode: 'chat',
+      chatMessagesEl: new MockElement('div'),
+      chatInputEl: new MockElement('textarea'),
+      session: { id: 'claude-code:local:err-headerless', agent: 'claude-code', engine_type: 'tmux', state: 0 }
+    };
+    errTab.chatInputEl.value = 'trigger failure';
+    await sendChatPrompt(errTab);
+    const errAssistant = errTab.chatMessagesEl.querySelector('.chat-msg.assistant-msg');
+    assert.ok(errAssistant);
+    assert.equal(errAssistant.querySelector('.chat-msg-header'), null);
+    assert.equal(errAssistant.querySelector('.chat-msg-role'), null);
+    assert.ok(errAssistant.textContent.includes('boom'));
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+
+  // Verify style.css flat assistant, user bubble, centered column, and transcript hover rules
+  const fs = await import('node:fs/promises');
+  const css = await fs.readFile(new URL('../style.css', import.meta.url), 'utf8');
+  assert.match(css, /\.chat-msg\.assistant-msg\s*\{[^}]*background:\s*transparent;[^}]*border:\s*none;[^}]*width:\s*100%;[^}]*max-width:\s*100%;/s);
+  assert.match(css, /\.chat-msg\.user-msg\s*\{[^}]*max-width:\s*min\(80%,\s*40rem\);/s);
+  assert.match(css, /\.chat-messages-container\s*\{[^}]*padding-inline:\s*max\(20px,\s*calc\(\(100%\s*-\s*54rem\)\s*\/\s*2\)\);/s);
+  assert.match(css, /\.chat-composer-container\s*\{[^}]*padding-inline:\s*max\(20px,\s*calc\(\(100%\s*-\s*54rem\)\s*\/\s*2\)\);/s);
+  assert.ok(css.includes('.transcript-msg:hover .btn-copy-chat-msg'));
+  assert.ok(!css.includes('max-width: 850px'));
+});
+
+test('insertTextIntoPromptInput and replacePromptInputRange preserve native execCommand undo and provide deterministic fallback Cmd+Z / Cmd+Shift+Z', async () => {
+  const { insertSnippetIntoComposer } = await import('./chat-command-cards.js');
+  const { insertPathIntoPromptInput } = await import('./terminal.js');
+
+  const prevExec = globalThis.document.execCommand;
+  const prevActive = globalThis.document.activeElement;
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ ok: true, json: async () => ({}) });
+
+  try {
+    // 1. Native execCommand path: preserves native browser undo stack
+    const nativeInput = new MockElement('textarea');
+    nativeInput.value = 'hello ';
+    nativeInput.selectionStart = 6;
+    nativeInput.selectionEnd = 6;
+    let focusCalled = 0;
+    let selectionSet = null;
+    nativeInput.focus = () => { focusCalled++; };
+    nativeInput.setSelectionRange = (s, e) => {
+      selectionSet = [s, e];
+      nativeInput.selectionStart = s;
+      nativeInput.selectionEnd = e;
+    };
+    let execArgs = null;
+    globalThis.document.execCommand = (cmd, ui, val) => {
+      execArgs = [cmd, ui, val];
+      const before = nativeInput.value.slice(0, nativeInput.selectionStart);
+      const after = nativeInput.value.slice(nativeInput.selectionEnd);
+      nativeInput.value = before + val + after;
+      return true;
+    };
+
+    chat.insertTextIntoPromptInput(nativeInput, 'world');
+    assert.equal(focusCalled, 1);
+    assert.deepEqual(selectionSet, [11, 11]);
+    assert.deepEqual(execArgs, ['insertText', false, 'world']);
+    assert.equal(nativeInput.value, 'hello world');
+    assert.equal(nativeInput._ackbarNativeUndoActive, true);
+    assert.equal(chat.handlePromptInputUndoKeydown(nativeInput, { metaKey: true, key: 'z' }), false);
+
+    // 2. Fallback path when execCommand returns false: deterministic Cmd+Z / Cmd+Shift+Z
+    globalThis.document.execCommand = () => false;
+    const chatView = new MockElement('div');
+    const tabObj = {
+      id: 'tab-undo-fallback',
+      viewMode: 'chat',
+      session: { id: 'claude-code:local:undo-1', agent: 'claude-code', engine_type: 'tmux', state: 0 }
+    };
+    chat.setupChatInterface(tabObj, chatView, tabObj.session);
+    const inputEl = tabObj.chatInputEl;
+    inputEl.setSelectionRange = (s, e) => {
+      inputEl.selectionStart = s;
+      inputEl.selectionEnd = e;
+    };
+
+    // Paste text via insertTextIntoPromptInput -> falls back & enables Cmd+Z
+    inputEl.value = 'prefix ';
+    inputEl.selectionStart = 7;
+    inputEl.selectionEnd = 7;
+    chat.insertTextIntoPromptInput(inputEl, 'pasted');
+    assert.equal(inputEl.value, 'prefix pasted');
+    assert.equal(inputEl._ackbarNativeUndoActive, false);
+
+    // Type additional character via keydown while fallback active
+    let prevented = false;
+    inputEl.dispatchEvent({ type: 'keydown', key: '!', preventDefault() { prevented = true; } });
+    inputEl.value = 'prefix pasted!';
+    inputEl.selectionStart = 14;
+    inputEl.selectionEnd = 14;
+
+    // Undo typing '!'
+    inputEl.dispatchEvent({ type: 'keydown', key: 'z', metaKey: true, preventDefault() { prevented = true; }, stopPropagation() {} });
+    assert.equal(prevented, true);
+    assert.equal(inputEl.value, 'prefix pasted');
+
+    // Undo paste 'pasted'
+    inputEl.dispatchEvent({ type: 'keydown', key: 'z', metaKey: true, preventDefault() {}, stopPropagation() {} });
+    assert.equal(inputEl.value, 'prefix ');
+
+    // Redo paste 'pasted' via Cmd+Shift+Z and Ctrl+Y
+    inputEl.dispatchEvent({ type: 'keydown', key: 'z', metaKey: true, shiftKey: true, preventDefault() {}, stopPropagation() {} });
+    assert.equal(inputEl.value, 'prefix pasted');
+    inputEl.dispatchEvent({ type: 'keydown', key: 'z', ctrlKey: true, preventDefault() {}, stopPropagation() {} });
+    assert.equal(inputEl.value, 'prefix ');
+    inputEl.dispatchEvent({ type: 'keydown', key: 'y', ctrlKey: true, preventDefault() {}, stopPropagation() {} });
+    assert.equal(inputEl.value, 'prefix pasted');
+
+    // Autocomplete /command & @file, bash snippet, and file path insertion are undoable
+    inputEl.value = '/mod';
+    chat.selectAutocompleteItem(tabObj, { name: 'model', trigger: '/model', execution_mode: 'slash_arg' }, 'commands', { matchStart: 0, matchEnd: 4 });
+    assert.equal(inputEl.value, '/model ');
+    inputEl.dispatchEvent({ type: 'keydown', key: 'z', metaKey: true, preventDefault() {}, stopPropagation() {} });
+    assert.equal(inputEl.value, '/mod');
+
+    inputEl.value = '@';
+    chat.selectAutocompleteItem(tabObj, { path: 'web/js/chat.js' }, 'files', { matchStart: 0, matchEnd: 1 });
+    assert.equal(inputEl.value, '@web/js/chat.js ');
+    inputEl.dispatchEvent({ type: 'keydown', key: 'z', metaKey: true, preventDefault() {}, stopPropagation() {} });
+    assert.equal(inputEl.value, '@');
+
+    inputEl.value = '';
+    insertSnippetIntoComposer(tabObj, '```sh\nls\n```');
+    assert.ok(inputEl.value.includes('```sh\nls\n```'));
+    inputEl.dispatchEvent({ type: 'keydown', key: 'z', metaKey: true, preventDefault() {}, stopPropagation() {} });
+    assert.equal(inputEl.value, '');
+
+    globalThis.document.activeElement = inputEl;
+    inputEl.selectionStart = 0;
+    inputEl.selectionEnd = 0;
+    insertPathIntoPromptInput(inputEl, 'docs/architecture.md');
+    assert.equal(inputEl.value, '"docs/architecture.md" ');
+    inputEl.dispatchEvent({ type: 'keydown', key: 'z', ctrlKey: true, preventDefault() {}, stopPropagation() {} });
+    assert.equal(inputEl.value, '');
+
+    // Sending prompt resets undo history
+    inputEl.value = 'final prompt';
+    await sendChatPrompt(tabObj);
+    assert.equal(inputEl.value, '');
+    assert.equal(inputEl._ackbarUndoStack.length, 0);
+  } finally {
+    globalThis.document.execCommand = prevExec;
+    globalThis.document.activeElement = prevActive;
+    globalThis.fetch = prevFetch;
+  }
+});
+
+test('smart auto-scroll lock pauses streaming auto-scroll when scrolled up and reveals floating scroll-bottom button', async () => {
+  const { showInStreamActivity } = await import('./chat-activity.js');
+
+  const container = new MockElement('div');
+  container.scrollHeight = 1000;
+  container.clientHeight = 300;
+  container.scrollTop = 650;
+  assert.equal(chat.isChatNearBottom(container, 80), true);
+  container.scrollTop = 500;
+  assert.equal(chat.isChatNearBottom(container, 80), false);
+
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ ok: true, json: async () => ({}) });
+  try {
+    const chatView = new MockElement('div');
+    const tabObj = {
+      id: 'tab-scroll-lock',
+      viewMode: 'chat',
+      session: { id: 'claude-code:local:scroll-1', agent: 'claude-code', engine_type: 'tmux', state: 0 }
+    };
+    chat.setupChatInterface(tabObj, chatView, tabObj.session);
+
+    const msgContainer = tabObj.chatMessagesEl;
+    const scrollBtn = tabObj.chatScrollBottomBtn;
+    assert.ok(scrollBtn, 'expected .btn-chat-scroll-bottom in composer container');
+    assert.equal(scrollBtn.style.display, 'none');
+
+    msgContainer.scrollHeight = 1200;
+    msgContainer.clientHeight = 300;
+    msgContainer.scrollTop = 900;
+
+    // Streaming while at bottom keeps pinned
+    handleChatStreamEvent(tabObj, { type: 'text_delta', turn_id: 'turn-s1', text: 'chunk 1' });
+    assert.equal(msgContainer.scrollTop, 1200);
+    assert.equal(tabObj._chatUserScrolledUp, false);
+    assert.equal(scrollBtn.style.display, 'none');
+
+    // Programmatic scroll flag suppresses false scroll-up detection
+    tabObj._programmaticScroll = true;
+    tabObj._programmaticScrollTarget = null;
+    msgContainer.scrollTop = 200;
+    msgContainer.dispatchEvent({ type: 'scroll' });
+    assert.equal(tabObj._programmaticScroll, false);
+    assert.equal(tabObj._chatUserScrolledUp, false);
+
+    // User scrolls up manually -> pauses auto-scroll & shows button
+    msgContainer.scrollTop = 200;
+    msgContainer.dispatchEvent({ type: 'scroll' });
+    assert.equal(tabObj._chatUserScrolledUp, true);
+    assert.equal(scrollBtn.style.display, 'inline-flex');
+
+    // Subsequent streaming, thinking, tool events, and activity updates must NOT snap scrollTop
+    msgContainer.scrollHeight = 1600;
+    handleChatStreamEvent(tabObj, { type: 'text_delta', turn_id: 'turn-s1', text: ' chunk 2' });
+    handleChatStreamEvent(tabObj, { type: 'thought_delta', turn_id: 'turn-s1', thinking: 'hmm' });
+    handleChatStreamEvent(tabObj, { type: 'tool_start', turn_id: 'turn-s1', tool_name: 'read_file', tool_input: { path: 'a.js' } });
+    handleChatStreamEvent(tabObj, { type: 'tool_result', turn_id: 'turn-s1', tool_name: 'read_file', tool_output: 'ok' });
+    showInStreamActivity(tabObj, { icon: '⚡', text: 'Working...' });
+    assert.equal(msgContainer.scrollTop, 200);
+    assert.equal(scrollBtn.style.display, 'inline-flex');
+
+    // Clicking floating scroll-bottom button jumps to bottom and hides button
+    scrollBtn.click();
+    assert.equal(tabObj._chatUserScrolledUp, false);
+    assert.equal(msgContainer.scrollTop, 1600);
+    assert.equal(scrollBtn.style.display, 'none');
+
+    // Initial transcript load resets _chatUserScrolledUp and scrolls to bottom
+    if (tabObj._inFlightTranscriptPromise) {
+      await tabObj._inFlightTranscriptPromise;
+    }
+    tabObj._lastTranscriptLoadAt = 0;
+    msgContainer.children = [];
+    tabObj._chatUserScrolledUp = true;
+    msgContainer.scrollTop = 0;
+    globalThis.fetch = async (url) => {
+      if (String(url).includes('/transcript')) {
+        return {
+          ok: true,
+          headers: { get: () => 'application/json' },
+          json: async () => ({ messages: [{ role: 'assistant', content: 'Loaded' }] })
+        };
+      }
+      return { ok: true, json: async () => ({}) };
+    };
+    await loadChatTranscript(tabObj);
+    assert.equal(tabObj._chatUserScrolledUp, false);
+    assert.equal(scrollBtn.style.display, 'none');
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});
+
+test('code blocks render .chat-code-header with language label (skipping mermaid) and renderMarkdown wraps tables in .markdown-table-wrap', async () => {
+  const container = new MockElement('div');
+  const preTs = new MockElement('pre');
+  const codeTs = new MockElement('code');
+  codeTs.className = 'language-typescript';
+  codeTs.textContent = 'const x: number = 42;';
+  preTs.appendChild(codeTs);
+  container.appendChild(preTs);
+
+  const prePlain = new MockElement('pre');
+  const codePlain = new MockElement('code');
+  codePlain.textContent = 'echo hi';
+  prePlain.appendChild(codePlain);
+  container.appendChild(prePlain);
+
+  const preMermaid = new MockElement('pre');
+  const codeMermaid = new MockElement('code');
+  codeMermaid.className = 'language-mermaid';
+  codeMermaid.textContent = 'flowchart TD\nA --> B';
+  preMermaid.appendChild(codeMermaid);
+  container.appendChild(preMermaid);
+
+  const preUnclassedMermaid = new MockElement('pre');
+  const codeUnclassedMermaid = new MockElement('code');
+  codeUnclassedMermaid.textContent = 'flowchart LR\nX --> Y';
+  preUnclassedMermaid.appendChild(codeUnclassedMermaid);
+  container.appendChild(preUnclassedMermaid);
+
+  chat.attachCodeBlockCopyButtons(container, { skipMermaid: true });
+
+  assert.ok(preTs.classList.contains('has-code-header'));
+  const tsHeader = preTs.firstElementChild;
+  assert.ok(tsHeader && tsHeader.classList.contains('chat-code-header'));
+  assert.equal(tsHeader.querySelector('.chat-code-lang').textContent, 'typescript');
+  assert.ok(tsHeader.querySelector('.btn-copy-code'));
+
+  assert.ok(prePlain.classList.contains('has-code-header'));
+  assert.equal(prePlain.querySelector('.chat-code-lang').textContent, 'code');
+
+  assert.equal(preMermaid.classList.contains('has-code-header'), false);
+  assert.equal(preMermaid.querySelector('.chat-code-header'), null);
+  assert.equal(preUnclassedMermaid.classList.contains('has-code-header'), false);
+
+  await withMockClipboard(async (getCopied) => {
+    tsHeader.querySelector('.btn-copy-code').click();
+    await new Promise(r => setTimeout(r, 10));
+    assert.equal(getCopied(), 'const x: number = 42;');
+  });
+
+  // Streaming text_delta synchronously adds .chat-code-header via flushActiveTurnStreamRender
+  const origParse = globalThis.window.marked.parse;
+  const streamContainer = new MockElement('div');
+  const streamTab = {
+    id: 'tab-stream-code-header',
+    viewMode: 'chat',
+    chatMessagesEl: streamContainer,
+    session: { id: 'claude-code:local:stream-code', agent: 'claude-code', state: 0 }
+  };
+  const origRaf = globalThis.window.requestAnimationFrame;
+  globalThis.window.requestAnimationFrame = null;
+  globalThis.window.marked.parse = () => '<pre><code class="language-go">package main</code></pre>';
+  try {
+    handleChatStreamEvent(streamTab, {
+      type: 'text_delta',
+      turn_id: 'turn-code-stream',
+      text: '```go\npackage main\n```'
+    });
+    const streamCodeHeader = streamContainer.querySelector('.chat-code-header');
+    assert.ok(streamCodeHeader);
+    assert.equal(streamCodeHeader.querySelector('.chat-code-lang').textContent, 'go');
+  } finally {
+    globalThis.window.requestAnimationFrame = origRaf;
+    globalThis.window.marked.parse = origParse;
+  }
+
+  // renderMarkdown wraps <table> without double-wrapping
+  globalThis.window.marked.parse = () => '<table><thead><tr><th>Col</th></tr></thead><tbody><tr><td>Val</td></tr></tbody></table>';
+  try {
+    const wrappedOnce = renderMarkdown('| Col |\n| --- |\n| Val |');
+    assert.equal(wrappedOnce, '<div class="markdown-table-wrap"><table><thead><tr><th>Col</th></tr></thead><tbody><tr><td>Val</td></tr></tbody></table></div>');
+
+    globalThis.window.marked.parse = () => '<div class="markdown-table-wrap"><table><tr><td>Already</td></tr></table></div>';
+    const wrappedAlready = renderMarkdown('| Already |');
+    assert.equal((wrappedAlready.match(/markdown-table-wrap/g) || []).length, 1);
+  } finally {
+    globalThis.window.marked.parse = origParse;
+  }
+});
+
+test('two-row .chat-composer-box places textarea above .chat-composer-toolbar and excludes .chat-pill from click-to-focus', async () => {
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ ok: true, json: async () => ({}) });
+  try {
+    const chatView = new MockElement('div');
+    const tabObj = {
+      id: 'tab-composer-layout',
+      viewMode: 'chat',
+      session: { id: 'claude-code:local:comp-1', agent: 'claude-code', engine_type: 'tmux', state: 0 }
+    };
+    chat.setupChatInterface(tabObj, chatView, tabObj.session);
+
+    const composerBox = tabObj.chatComposerBox;
+    assert.ok(composerBox);
+    assert.equal(composerBox.children.length, 2);
+    assert.ok(composerBox.children[0].classList.contains('chat-composer-textarea'));
+    assert.ok(composerBox.children[1].classList.contains('chat-composer-toolbar'));
+
+    const toolbar = composerBox.children[1];
+    const left = toolbar.querySelector('.chat-composer-toolbar-left');
+    const actions = toolbar.querySelector('.chat-composer-actions');
+    assert.ok(left && left.querySelector('.btn-composer-attach') && left.querySelector('.chat-composer-bar'));
+    assert.ok(actions && actions.querySelector('.btn-composer-send') && actions.querySelector('.btn-composer-schedule'));
+
+    let focusCount = 0;
+    tabObj.chatInputEl.focus = () => { focusCount++; };
+
+    // Clicking a .chat-pill inside toolbar must NOT focus textarea
+    const pillModel = tabObj.chatPillModel;
+    for (const fn of (composerBox.listeners.get('click') || [])) {
+      fn({ target: pillModel });
+    }
+    assert.equal(focusCount, 0);
+
+    // Clicking empty space in composerBox focuses textarea
+    for (const fn of (composerBox.listeners.get('click') || [])) {
+      fn({ target: composerBox });
+    }
+    assert.equal(focusCount, 1);
+  } finally {
+    globalThis.fetch = prevFetch;
   }
 });
 

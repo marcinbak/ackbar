@@ -187,7 +187,7 @@ function renderSlideContent(slideMd) {
     const raw = window.marked.parse(masked);
     const linked = ensureExternalLinksTargetBlank(raw);
     const alerted = processMarkdownAlerts(linked);
-    return sanitizeRenderedMarkdownHtml(alerted);
+    return wrapMarkdownTables(sanitizeRenderedMarkdownHtml(alerted));
   }
   return `<p>${escapeHtml(slideMd)}</p>`;
 }
@@ -587,6 +587,33 @@ function preprocessMarkdownExtensions(content) {
   return masked;
 }
 
+function wrapMarkdownTables(html) {
+  if (!html || typeof html !== 'string' || !/<table\b/i.test(html)) {
+    return html || '';
+  }
+  if (typeof document !== 'undefined' && typeof document.createElement === 'function') {
+    const tpl = document.createElement('template');
+    if (tpl && tpl.content && typeof tpl.content.querySelectorAll === 'function') {
+      tpl.innerHTML = html;
+      tpl.content.querySelectorAll('table').forEach(table => {
+        if (table.closest && table.closest('.markdown-table-wrap')) return;
+        const wrap = document.createElement('div');
+        wrap.className = 'markdown-table-wrap';
+        table.parentNode.insertBefore(wrap, table);
+        wrap.appendChild(table);
+      });
+      return tpl.innerHTML;
+    }
+  }
+  return html.replace(/<table\b[^>]*>[\s\S]*?<\/table>/gi, (match, offset, full) => {
+    const before = full.slice(Math.max(0, offset - 128), offset);
+    if (/<div\s+class=["'][^"']*\bmarkdown-table-wrap\b[^"']*["'][^>]*>\s*$/i.test(before)) {
+      return match;
+    }
+    return `<div class="markdown-table-wrap">${match}</div>`;
+  });
+}
+
 function renderMarkdown(content) {
   if (!content || typeof content !== 'string') return '';
   if (!window.marked) {
@@ -597,7 +624,7 @@ function renderMarkdown(content) {
   const raw = window.marked.parse(preprocessed || '');
   const linked = ensureExternalLinksTargetBlank(raw);
   const alerted = processMarkdownAlerts(linked);
-  return sanitizeRenderedMarkdownHtml(alerted);
+  return wrapMarkdownTables(sanitizeRenderedMarkdownHtml(alerted));
 }
 
 function ensureDoubleNewlineSeparation(prev, next) {
@@ -1157,6 +1184,7 @@ export {
   convertLatexToHtml,
   preprocessMarkdownExtensions,
   processMarkdownAlerts,
+  wrapMarkdownTables,
   renderMarkdown,
   hasMarkdownSyntax,
   ensureDoubleNewlineSeparation,
