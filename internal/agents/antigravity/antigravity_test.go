@@ -137,8 +137,12 @@ func TestHeadlessBuildTurnAndStreamParser(t *testing.T) {
 	}
 	_, _, _ = sp.ParseStreamLine([]byte(`{"event":"step_update","step_update":{"step_index":2,"step_type":"error_message","error":"boom detail"}}`))
 	resEvts, _, _ := sp.ParseStreamLine([]byte(`{"event":"result","result":{"status":"ERROR","error":"boom detail"}}`))
-	if len(resEvts) != 2 || resEvts[0].Type != "error" || !resEvts[0].IsError || resEvts[1].Type != "turn_complete" || !resEvts[1].IsError {
-		t.Fatalf("expected error + error turn_complete events, got %+v", resEvts)
+	if len(resEvts) != 1 || resEvts[0].Type != "turn_complete" || !resEvts[0].IsError || resEvts[0].Text != "boom detail" {
+		t.Fatalf("expected single error turn_complete event, got %+v", resEvts)
+	}
+	nullEvts, handledNull, _ := sp.ParseStreamLine([]byte(`{"event":"result","result":null}`))
+	if !handledNull || len(nullEvts) != 1 || nullEvts[0].Type != "turn_complete" || nullEvts[0].IsError {
+		t.Fatalf("expected turn_complete on null result, got %+v handled=%v", nullEvts, handledNull)
 	}
 	var raw map[string]any
 	_ = json.Unmarshal([]byte(stdinTurn1), &raw)
@@ -147,5 +151,49 @@ func TestHeadlessBuildTurnAndStreamParser(t *testing.T) {
 	}
 	if _, ok := p.InspectSubcommandArgs("doctor"); ok {
 		t.Fatal("expected doctor CLI subcommand false for antigravity")
+	}
+}
+
+func TestInstallHooksLocalBinPreference(t *testing.T) {
+	p := New()
+	home := t.TempDir()
+	hookPath := filepath.Join(home, ".gemini", "config", "hooks.json")
+
+	if err := p.InstallHooks(home); err != nil {
+		t.Fatalf("InstallHooks fallback failed: %v", err)
+	}
+	data, err := os.ReadFile(hookPath)
+	if err != nil {
+		t.Fatalf("read hooks.json: %v", err)
+	}
+	if !strings.Contains(string(data), `"command": "ackbar-hook --agent=antigravity --event=SessionStart"`) {
+		t.Fatalf("expected bare ackbar-hook fallback, got:\n%s", string(data))
+	}
+
+	localBin := filepath.Join(home, ".local", "bin", "ackbar-hook")
+	if err := os.MkdirAll(filepath.Dir(localBin), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(localBin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.InstallHooks(home); err != nil {
+		t.Fatalf("InstallHooks local bin failed: %v", err)
+	}
+	data, err = os.ReadFile(hookPath)
+	if err != nil {
+		t.Fatalf("read updated hooks.json: %v", err)
+	}
+	wantCmd := localBin + " --agent=antigravity --event=SessionStart"
+	if !strings.Contains(string(data), wantCmd) {
+		t.Fatalf("expected %q in hooks.json, got:\n%s", wantCmd, string(data))
+	}
+	profDir, err := p.SetupProfileDir(home, "localbin-prof", "")
+	if err != nil {
+		t.Fatalf("SetupProfileDir failed: %v", err)
+	}
+	profData, err := os.ReadFile(filepath.Join(profDir, "config", "hooks.json"))
+	if err != nil || !strings.Contains(string(profData), wantCmd) {
+		t.Fatalf("expected %q in profile hooks.json, err=%v got:\n%s", wantCmd, err, string(profData))
 	}
 }

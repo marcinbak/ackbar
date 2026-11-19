@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"ackbar/internal/agent"
+	"ackbar/internal/agentutil"
 )
 
 type streamParser struct {
@@ -50,6 +51,9 @@ func (p *streamParser) ParseStreamLine(line []byte) ([]agent.ChatStreamEvent, bo
 	if agyEvt == "" {
 		if t, _ := raw["type"].(string); t == "init" {
 			convID, _ := raw["conversation_id"].(string)
+			if !agentutil.IsSafeSessionID(convID) {
+				convID = ""
+			}
 			model, _ := raw["model"].(string)
 			return []agent.ChatStreamEvent{{SessionID: p.sessionID, Type: "session_init", NativeID: convID, Model: model}}, true, nil
 		}
@@ -59,6 +63,9 @@ func (p *streamParser) ParseStreamLine(line []byte) ([]agent.ChatStreamEvent, bo
 	switch agyEvt {
 	case "init":
 		convID, _ := raw["conversation_id"].(string)
+		if !agentutil.IsSafeSessionID(convID) {
+			convID = ""
+		}
 		model, _ := raw["model"].(string)
 		if model == "" {
 			if initObj, ok := raw["init"].(map[string]interface{}); ok {
@@ -84,7 +91,7 @@ func (p *streamParser) ParseStreamLine(line []byte) ([]agent.ChatStreamEvent, bo
 		res, ok := raw["result"].(map[string]interface{})
 		if !ok {
 			p.resetTurnState()
-			return nil, true, nil
+			return []agent.ChatStreamEvent{{SessionID: p.sessionID, Type: "turn_complete"}}, true, nil
 		}
 		status, _ := res["status"].(string)
 		respText, _ := res["response"].(string)
@@ -97,7 +104,6 @@ func (p *streamParser) ParseStreamLine(line []byte) ([]agent.ChatStreamEvent, bo
 			errText := p.errTracker.resolveFinal(rawErr)
 			p.resetTurnState()
 			return []agent.ChatStreamEvent{
-				{SessionID: p.sessionID, Type: "error", Text: errText, IsError: true},
 				{SessionID: p.sessionID, Type: "turn_complete", Text: errText, IsError: true},
 			}, true, nil
 		}

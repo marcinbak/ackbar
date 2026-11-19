@@ -60,7 +60,7 @@ func (*Plugin) SetupProfileDir(homeDir, name, configDir string) (string, error) 
 	if err := os.MkdirAll(configDir, 0o755); err != nil {
 		return configDir, fmt.Errorf("failed to create profile directory: %w", err)
 	}
-	_ = writeHooksFile(filepath.Join(configDir, "config", "hooks.json"))
+	_ = writeHooksFile(home, filepath.Join(configDir, "config", "hooks.json"))
 	return configDir, nil
 }
 

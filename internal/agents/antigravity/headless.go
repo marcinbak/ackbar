@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"ackbar/internal/agent"
+	"ackbar/internal/agentutil"
 )
 
 func (*Plugin) Mode() agent.HeadlessExecMode         { return agent.HeadlessModePersistent }
@@ -51,7 +52,7 @@ func (p *Plugin) BuildTurnSpec(in agent.HeadlessTurnInput) (agent.HeadlessTurnSp
 			args = append(args, "--add-dir", cleaned)
 		}
 	}
-	if in.IsExisting && in.Session.NativeID != "" {
+	if in.IsExisting && agentutil.IsSafeSessionID(in.Session.NativeID) {
 		args = append(args, "--conversation", in.Session.NativeID)
 	}
 	if in.Session.Model != "" && !strings.EqualFold(in.Session.Model, "default") {

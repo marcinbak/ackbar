@@ -21,7 +21,7 @@ var (
 	ignoredFlags = map[string]bool{"--prompt": true}
 )
 
-func (*Plugin) IsValidNativeID(nativeID string) bool { return nativeID != "" }
+func (*Plugin) IsValidNativeID(nativeID string) bool { return agentutil.IsSafeSessionID(nativeID) }
 
 func (*Plugin) IsIgnoredCommand(fullCmd string) bool {
 	return agentutil.CheckIgnoredCLIArgs(fullCmd, func(_, base string) bool {

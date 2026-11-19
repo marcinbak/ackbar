@@ -645,7 +645,7 @@ func (s *Server) reconcileAntigravityTmuxSession(ctx context.Context, state *Sca
 			if existingReal.CustomTitle == "" {
 				var title string
 				if tr, ok := s.PluginRegistry().AsTranscript(agent); ok {
-					title = tr.ResolveSessionTitle(os.Getenv("HOME"), existingReal.Cwd, sID)
+					title = tr.ResolveSessionTitle(s.effectiveHomeDir(), existingReal.Cwd, sID)
 				} else {
 					title = ReadAntigravitySessionTitle(existingReal.Cwd, sID)
 				}
@@ -670,7 +670,7 @@ func (s *Server) reconcileAntigravityTmuxSession(ctx context.Context, state *Sca
 			if existingOld.CustomTitle == "" {
 				var title string
 				if tr, ok := s.PluginRegistry().AsTranscript(agent); ok {
-					title = tr.ResolveSessionTitle(os.Getenv("HOME"), existingOld.Cwd, sID)
+					title = tr.ResolveSessionTitle(s.effectiveHomeDir(), existingOld.Cwd, sID)
 				} else {
 					title = ReadAntigravitySessionTitle(existingOld.Cwd, sID)
 				}

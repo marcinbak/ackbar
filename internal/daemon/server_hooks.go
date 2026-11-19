@@ -179,7 +179,7 @@ func (s *Server) processParsedHookEvent(event *Event, urlEventName string, heade
 		supportsSubagents = event.Agent == "antigravity"
 	}
 	if supportsSubagents {
-		home, _ := os.UserHomeDir()
+		home := s.effectiveHomeDir()
 		if home != "" && s.agentAdapter(event.Agent).IsSubagentSession(home, event.NativeID, nil) {
 			if existing := s.resolveSession(sessionID); existing != nil {
 				_ = s.db.DeleteSession(existing.ID)

@@ -14,7 +14,7 @@ import (
 var pbtxtTitleRegex = regexp.MustCompile(`title\s*:\s*"([^"]+)"`)
 
 func ReadAnnotationTitle(homeDir, sessionID string) string {
-	if sessionID == "" || strings.HasPrefix(sessionID, "proc-") {
+	if !agentutil.IsSafeSessionID(sessionID) || strings.HasPrefix(sessionID, "proc-") {
 		return ""
 	}
 	home := effectiveHome(homeDir)
@@ -34,6 +34,9 @@ func ReadAnnotationTitle(homeDir, sessionID string) string {
 }
 
 func (p *Plugin) ReadSessionMetadata(homeDir, cwd, nativeID string) *agent.SessionMeta {
+	if !agentutil.IsSafeSessionID(nativeID) || strings.HasPrefix(nativeID, "proc-") {
+		return nil
+	}
 	home := effectiveHome(homeDir)
 	anno := ReadAnnotationTitle(home, nativeID)
 	title := p.ResolveSessionTitle(home, cwd, nativeID)
@@ -47,7 +50,7 @@ func (p *Plugin) ReadSessionMetadata(homeDir, cwd, nativeID string) *agent.Sessi
 }
 
 func (p *Plugin) ResolveSessionTitle(homeDir, _, nativeID string) string {
-	if nativeID == "" || strings.HasPrefix(nativeID, "proc-") {
+	if !agentutil.IsSafeSessionID(nativeID) || strings.HasPrefix(nativeID, "proc-") {
 		return ""
 	}
 	home := effectiveHome(homeDir)

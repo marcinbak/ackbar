@@ -16,6 +16,9 @@ import (
 var metaCacheMu sync.Mutex
 
 func (*Plugin) StatTranscript(homeDir, _, nativeID string) (string, int64, int64, error) {
+	if !agentutil.IsSafeSessionID(nativeID) {
+		return "", 0, 0, os.ErrNotExist
+	}
 	home := effectiveHome(homeDir)
 	for _, dir := range transcriptCandidateDirs(home, nativeID) {
 		for _, name := range []string{"transcript.jsonl", "transcript_full.jsonl"} {
@@ -44,52 +47,59 @@ func (*Plugin) ComputeTranscriptUsage(homeDir, _, nativeID string, defaultLimit 
 	if limitTokens < 1000000 {
 		limitTokens = 1000000
 	}
-	home := effectiveHome(homeDir)
+	if !agentutil.IsSafeSessionID(nativeID) {
+		if nativeID == "" {
+			return agent.TranscriptUsage{ContextLimitTokens: limitTokens}, true
+		}
+		return agent.TranscriptUsage{}, false
+	}
 	var logFile string
-	if home != "" && agentutil.IsSafeSessionID(nativeID) {
+	if home := effectiveHome(homeDir); home != "" {
 		cleanID := filepath.Base(filepath.Clean(nativeID))
-		candidates := []string{
+		for _, c := range []string{
 			filepath.Join(home, ".gemini", "antigravity-cli", "brain", cleanID, ".system_generated", "logs", "transcript.jsonl"),
 			filepath.Join(home, ".gemini", "antigravity", "brain", cleanID, ".system_generated", "logs", "transcript.jsonl"),
 			filepath.Join(home, ".antigravity", "brain", cleanID, ".system_generated", "logs", "transcript.jsonl"),
-		}
-		for _, c := range candidates {
+		} {
 			if agentutil.FileExists(c) {
 				logFile = c
 				break
 			}
 		}
 	}
+	if logFile == "" {
+		return agent.TranscriptUsage{ContextLimitTokens: limitTokens}, true
+	}
 
+	f, err := os.Open(logFile)
+	if err != nil {
+		return agent.TranscriptUsage{ContextLimitTokens: limitTokens}, true
+	}
+	defer f.Close()
 	var sumInput, output, cacheRead, turnCount, lastTurnContext int
-	if logFile != "" {
-		if f, err := os.Open(logFile); err == nil {
-			defer f.Close()
-			sc := bufio.NewScanner(f)
-			sc.Buffer(make([]byte, 1024*1024), 10*1024*1024)
-			for sc.Scan() {
-				var raw map[string]interface{}
-				if json.Unmarshal([]byte(sc.Text()), &raw) != nil {
-					continue
-				}
-				msgType, _ := raw["type"].(string)
-				if inT, ok := raw["input_tokens"].(float64); ok && inT > 0 {
-					if msgType == "PLANNER_RESPONSE" {
-						lastTurnContext = int(inT)
-					}
-					crT, _ := raw["cache_read_tokens"].(float64)
-					if uncached := int(inT) - int(crT); uncached > 0 {
-						sumInput += uncached
-					}
-					cacheRead += int(crT)
-				}
-				if outT, ok := raw["output_tokens"].(float64); ok && outT > 0 {
-					output += int(outT)
-				}
-				if raw["source"] == "USER" || raw["type"] == "USER_INPUT" {
-					turnCount++
-				}
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 1024*1024), 10*1024*1024)
+	for sc.Scan() {
+		var raw map[string]interface{}
+		if json.Unmarshal([]byte(sc.Text()), &raw) != nil {
+			continue
+		}
+		msgType, _ := raw["type"].(string)
+		if inT, ok := raw["input_tokens"].(float64); ok && inT > 0 {
+			if msgType == "PLANNER_RESPONSE" {
+				lastTurnContext = int(inT)
 			}
+			crT, _ := raw["cache_read_tokens"].(float64)
+			if uncached := int(inT) - int(crT); uncached > 0 {
+				sumInput += uncached
+			}
+			cacheRead += int(crT)
+		}
+		if outT, ok := raw["output_tokens"].(float64); ok && outT > 0 {
+			output += int(outT)
+		}
+		if raw["source"] == "USER" || raw["type"] == "USER_INPUT" {
+			turnCount++
 		}
 	}
 
@@ -181,8 +191,11 @@ func pruneMetadataCacheEntry(metaPath, nativeID string) {
 }
 
 func (*Plugin) ListWorkspaceDocuments(homeDir, _, nativeID string) []agent.WorkspaceDoc {
+	if !agentutil.IsSafeSessionID(nativeID) {
+		return nil
+	}
 	home := effectiveHome(homeDir)
-	if nativeID == "" || home == "" {
+	if home == "" {
 		return nil
 	}
 	var docs []agent.WorkspaceDoc
@@ -191,9 +204,6 @@ func (*Plugin) ListWorkspaceDocuments(homeDir, _, nativeID string) []agent.Works
 		filepath.Join(home, ".gemini", "antigravity-cli", "brain", nativeID),
 		filepath.Join(home, ".antigravity", "brain", nativeID),
 	} {
-		if !agentutil.DirExists(bDir) {
-			continue
-		}
 		files, err := os.ReadDir(bDir)
 		if err != nil {
 			continue

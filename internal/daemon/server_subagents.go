@@ -176,7 +176,7 @@ reconcile:
 	var subs []SubagentInfo
 	var err error
 	if tr, ok := s.PluginRegistry().AsTranscript(agent); ok {
-		home, _ := os.UserHomeDir()
+		home := s.effectiveHomeDir()
 		subs, err = tr.ListSubagents(home, cwd, nativeID)
 	} else {
 		subs, err = ExtractSubagents(agent, nativeID, cwd)

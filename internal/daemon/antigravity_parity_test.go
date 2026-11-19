@@ -146,3 +146,79 @@ func TestAntigravityParity_ArgsTranscriptTitleAndSubagents(t *testing.T) {
 	_ = context.Background()
 	_ = bytes.NewBuffer(nil)
 }
+
+func TestAntigravityParity_StreamErrorsNullResultAndTranscriptSubagents(t *testing.T) {
+	p := antigravity.New()
+	cases := []struct {
+		name  string
+		lines string
+	}{
+		{
+			name:  "null_result",
+			lines: `{"event":"step_update","step_update":{"step_index":1,"step_type":"agent_response","state":"DONE","text_delta":"Hi"}}` + "\n" + `{"event":"result","result":null}`,
+		},
+		{
+			name:  "error_result",
+			lines: `{"event":"result","result":{"status":"ERROR","error":"boom"}}`,
+		},
+		{
+			name: "step_error_dedupe",
+			lines: `{"event":"step_update","step_update":{"step_index":2,"step_type":"error_message","error":"boom detail"}}` + "\n" +
+				`{"event":"result","result":{"status":"ERROR","error":"boom detail"}}`,
+		},
+	}
+
+	for _, tc := range cases {
+		for _, emitTC := range []bool{true, false} {
+			runOne := func(sp agent.StreamParser) ([]string, int, bool) {
+				var evts []string
+				var cbCount int
+				var hadErr bool
+				parseHeadlessStream("s-par", strings.NewReader(tc.lines), streamParseHooks{
+					emitTurnComplete: emitTC,
+					streamParser:     sp,
+					emit: func(ev ChatStreamEvent) {
+						errTag := ""
+						if ev.IsError {
+							errTag = ":err"
+						}
+						evts = append(evts, ev.Type+":"+ev.Text+errTag)
+					},
+					onTurnResult: func(_, _ string, streamHadError bool) {
+						cbCount++
+						hadErr = streamHadError
+					},
+				})
+				return evts, cbCount, hadErr
+			}
+			pEvts, pCount, pErr := runOne(p.NewStreamParser("s-par"))
+			lEvts, lCount, lErr := runOne(nil)
+			if pCount != 1 || lCount != 1 || pErr != lErr {
+				t.Fatalf("%s (emitTC=%v) callback mismatch: plugin=(%d,%v) legacy=(%d,%v)", tc.name, emitTC, pCount, pErr, lCount, lErr)
+			}
+			if !(tc.name == "null_result" && emitTC) && !reflect.DeepEqual(pEvts, lEvts) {
+				t.Fatalf("%s (emitTC=%v) event mismatch: plugin=%v legacy=%v", tc.name, emitTC, pEvts, lEvts)
+			}
+			if tc.name != "null_result" && (len(pEvts) != 1 || !strings.HasPrefix(pEvts[0], "error:") || !strings.HasSuffix(pEvts[0], ":err")) {
+				t.Fatalf("%s (emitTC=%v) unexpected plugin error events: %v", tc.name, emitTC, pEvts)
+			}
+		}
+	}
+
+	home := t.TempDir()
+	convID := "55555555-2222-3333-4444-555555555555"
+	subID := "dddddddd-2222-3333-4444-555555555555"
+	logDir := filepath.Join(home, ".gemini", "antigravity", "brain", convID, ".system_generated", "logs")
+	_ = os.MkdirAll(logDir, 0o755)
+	_ = os.WriteFile(filepath.Join(logDir, "transcript.jsonl"), []byte(strings.Join([]string{
+		`{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","content":"Check parity"}`,
+		`{"step_index":1,"type":"PLANNER_RESPONSE","status":"RUNNING","tool_calls":[{"name":"invoke_subagent","args":{"Subagents":[{"Role":"Inspector","TypeName":"insp","Prompt":"Scan"}]}}]}`,
+		`{"step_index":2,"type":"SYSTEM","content":"Created the following subagents:\n\"conversationId\": \"` + subID + `\""}`,
+	}, "\n")+"\n"), 0o644)
+
+	pSubs, errP := p.ListSubagents(home, "", convID)
+	lSubs, errL := loadAntigravitySubagents(home, convID)
+	if errP != nil || errL != nil || len(pSubs) != 1 || len(lSubs) != 1 || pSubs[0].ID != lSubs[0].ID || pSubs[0].Name != lSubs[0].Name || pSubs[0].State != lSubs[0].State {
+		t.Fatalf("transcript subagent parity mismatch: plugin=%+v (%v) legacy=%+v (%v)", pSubs, errP, lSubs, errL)
+	}
+}

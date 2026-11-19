@@ -33,10 +33,10 @@ type transcriptEntry struct {
 }
 
 func (p *Plugin) ExtractTranscript(homeDir, _, nativeID string) (*agent.Transcript, error) {
-	home := effectiveHome(homeDir)
 	if !agentutil.IsSafeSessionID(nativeID) {
 		return nil, fmt.Errorf("invalid conversation ID %q", nativeID)
 	}
+	home := effectiveHome(homeDir)
 	var file *os.File
 	var openedDir string
 	var openErr error

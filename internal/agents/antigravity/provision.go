@@ -147,10 +147,20 @@ func (*Plugin) InstallHooks(homeDir string) error {
 	if home == "" {
 		return fmt.Errorf("cannot resolve home directory")
 	}
-	return writeHooksFile(filepath.Join(home, ".gemini", "config", "hooks.json"))
+	return writeHooksFile(home, filepath.Join(home, ".gemini", "config", "hooks.json"))
 }
 
-func writeHooksFile(hookFile string) error {
+func resolveHookCommand(home string) string {
+	if home != "" {
+		localHookBin := filepath.Join(home, ".local", "bin", "ackbar-hook")
+		if st, err := os.Stat(localHookBin); err == nil && !st.IsDir() {
+			return localHookBin + " --agent=antigravity"
+		}
+	}
+	return "ackbar-hook --agent=antigravity"
+}
+
+func writeHooksFile(home, hookFile string) error {
 	if err := os.MkdirAll(filepath.Dir(hookFile), 0o755); err != nil {
 		return err
 	}
@@ -163,7 +173,7 @@ func writeHooksFile(hookFile string) error {
 	}
 	delete(existing, "hooks")
 
-	const hookCmd = "ackbar-hook --agent=antigravity"
+	hookCmd := resolveHookCommand(home)
 	existing["ackbar"] = map[string]interface{}{
 		"SessionStart":   []map[string]interface{}{{"type": "command", "command": hookCmd + " --event=SessionStart"}},
 		"PreInvocation":  []map[string]interface{}{{"type": "command", "command": hookCmd + " --event=PreInvocation"}},

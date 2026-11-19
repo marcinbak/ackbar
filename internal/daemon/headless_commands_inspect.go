@@ -227,7 +227,7 @@ func (s *Server) handleSessionInspect(w http.ResponseWriter, r *http.Request, se
 				handledDoctor = true
 			}
 		}
-		if !handledDoctor {
+		if !handledDoctor && strings.EqualFold(sess.Agent, "antigravity") {
 			var bin string
 			if hd, ok := s.PluginRegistry().AsHeadlessDriver(sess.Agent); ok {
 				bin, _ = hd.ResolveBinary()

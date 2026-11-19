@@ -101,3 +101,32 @@ func TestModelsCatalogAndResolution(t *testing.T) {
 		t.Fatalf("ResolveConfiguredModel = %q", got)
 	}
 }
+
+func TestTranscriptSubagentFallbackAndHydration(t *testing.T) {
+	p := New()
+	home := t.TempDir()
+	convID := "33333333-2222-3333-4444-555555555555"
+	sub1 := "bbbbbbbb-1111-2222-3333-444444444444"
+	sub2 := "cccccccc-1111-2222-3333-444444444444"
+
+	logDir := filepath.Join(home, ".gemini", "antigravity", "brain", convID, ".system_generated", "logs")
+	_ = os.MkdirAll(logDir, 0o755)
+	compact := strings.Join([]string{
+		`{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","content":"Audit auth"}`,
+		`{"step_index":1,"type":"PLANNER_RESPONSE","status":"RUNNING","truncated_fields":["tool_calls"]}`,
+		`{"step_index":2,"type":"SYSTEM","content":"Created the following subagents:\n\"conversationId\": \"` + sub1 + `\"\n\"conversationId\": \"` + sub2 + `\""}`,
+		`{"step_index":3,"type":"SYSTEM","content":"Message from sender=` + sub1 + ` completed"}`,
+	}, "\n") + "\n"
+	full := `{"step_index":1,"type":"PLANNER_RESPONSE","status":"RUNNING","tool_calls":[{"name":"invoke_subagent","args":{"Subagents":[{"Role":"Security","TypeName":"sec","Prompt":"Audit tokens"},{"Role":"Tests","TypeName":"qa","Prompt":"Write tests"}]}}]}` + "\n"
+	_ = os.WriteFile(filepath.Join(logDir, "transcript.jsonl"), []byte(compact), 0o644)
+	_ = os.WriteFile(filepath.Join(logDir, "transcript_full.jsonl"), []byte(full), 0o644)
+
+	subs, err := p.ListSubagents(home, "", convID)
+	if err != nil || len(subs) != 1 || subs[0].ID != sub2 || subs[0].Name != "Tests" || subs[0].State != "running" {
+		t.Fatalf("expected only active hydrated sub2, got %+v err=%v", subs, err)
+	}
+	active, err := p.ListActiveSubagents(home, "", convID)
+	if err != nil || len(active) != 1 || active[0].ID != sub2 {
+		t.Fatalf("unexpected ListActiveSubagents: %+v err=%v", active, err)
+	}
+}

@@ -131,7 +131,7 @@ func hookConfigCandidatePaths(home string) []string {
 }
 
 func hasUserAnnotation(home, convID string) bool {
-	if home == "" || convID == "" {
+	if home == "" || !agentutil.IsSafeSessionID(convID) {
 		return false
 	}
 	var paths []string

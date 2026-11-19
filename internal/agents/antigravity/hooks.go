@@ -51,6 +51,10 @@ func (*Plugin) ParseHook(eventName string, payload []byte) (*agent.Event, error)
 		return nil, fmt.Errorf("failed to unmarshal Antigravity hook payload: %w", err)
 	}
 
+	if p.ConversationID != "" && !agentutil.IsSafeSessionID(p.ConversationID) {
+		return nil, fmt.Errorf("invalid conversationId")
+	}
+
 	cwd := ""
 	if len(p.WorkspacePaths) > 0 {
 		cwd = p.WorkspacePaths[0]

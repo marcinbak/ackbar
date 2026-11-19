@@ -64,6 +64,9 @@ func (p *Plugin) collectSubagents(homeDir, nativeID string) []agent.SubagentInfo
 			if subID == "" {
 				subID = strings.TrimSuffix(entry.Name(), ".json")
 			}
+			if !agentutil.IsSafeSessionID(subID) {
+				continue
+			}
 			if seen[subID] {
 				continue
 			}
@@ -106,6 +109,9 @@ func (p *Plugin) collectSubagents(homeDir, nativeID string) []agent.SubagentInfo
 			})
 		}
 	}
+	if len(results) == 0 {
+		return collectTranscriptSubagents(home, cleanID)
+	}
 	return results
 }
 
@@ -131,6 +137,9 @@ func (p *Plugin) ListActiveSubagents(homeDir, _, nativeID string) ([]*agent.Acti
 
 func (p *Plugin) inspectSubagentTranscript(brainBaseDir, subID string, fallbackStart time.Time) (state string, prompt string, startTime time.Time) {
 	startTime = fallbackStart
+	if !agentutil.IsSafeSessionID(subID) {
+		return "completed", "", fallbackStart
+	}
 	cleanSubID := filepath.Base(filepath.Clean(subID))
 	logPath := filepath.Join(brainBaseDir, cleanSubID, ".system_generated", "logs", "transcript.jsonl")
 

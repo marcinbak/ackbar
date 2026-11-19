@@ -49,7 +49,7 @@ func readCachedModel(filePath string, parser func(string) (string, error)) (stri
 }
 
 func (p *Plugin) ResolveArtifactModel(homeDir, accCfgDir, _, nativeID string) (string, time.Time) {
-	if nativeID == "" {
+	if !agentutil.IsSafeSessionID(nativeID) {
 		return "", time.Time{}
 	}
 	home := effectiveHome(homeDir)

@@ -83,6 +83,13 @@ func TestAntigravityDualMode_PluginAndLegacy(t *testing.T) {
 					t.Fatalf("expected Antigravity Diagnostic Check in doctor, got %s", rec.Body.String())
 				}
 			}
+			ocID := "opencode:" + srv.HostName() + ":oc-doc-1"
+			_ = db.SaveSession(&Session{ID: ocID, Agent: "opencode", Host: srv.HostName(), Cwd: proj, Managed: true, State: StateIdle})
+			recOC := httptest.NewRecorder()
+			srv.handleSessionInspect(recOC, httptest.NewRequest(http.MethodGet, "/v1/sessions/"+ocID+"/inspect?kind=doctor", nil), ocID)
+			if recOC.Code != http.StatusOK || strings.Contains(recOC.Body.String(), "Antigravity Diagnostic Check") {
+				t.Fatalf("unexpected non-Antigravity doctor output (%d): %s", recOC.Code, recOC.Body.String())
+			}
 
 			wRew := httptest.NewRecorder()
 			srv.handleSessionRewind(wRew, httptest.NewRequest(http.MethodGet, "/v1/sessions/"+inspectID+"/rewind", nil), inspectID)
