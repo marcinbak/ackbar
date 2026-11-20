@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -288,71 +290,20 @@ func (s *Server) handleHosts(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) handleHostUpdate(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
+type httpStatusError struct {
+	code int
+	err  error
+}
 
-	hostName := r.URL.Query().Get("name")
-	if hostName == "" {
-		var req struct {
-			Name string `json:"name"`
-		}
-		_ = json.NewDecoder(r.Body).Decode(&req)
-		hostName = req.Name
-	}
-	if hostName == "" {
-		http.Error(w, "Missing host name", http.StatusBadRequest)
-		return
-	}
+func (e *httpStatusError) Error() string { return e.err.Error() }
+func (e *httpStatusError) Unwrap() error { return e.err }
 
-	if hostName == "local" || hostName == s.HostName() {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"status":  "error",
-			"message": "Local host daemon is managed directly on this machine (run 'ackbar setup-hooks')",
-		})
-		return
+func statusCodeOf(err error, fallback int) int {
+	var se *httpStatusError
+	if errors.As(err, &se) && se.code > 0 {
+		return se.code
 	}
-
-	host, err := s.db.GetHost(hostName)
-	if err != nil || host == nil {
-		if allHosts, lerr := s.db.ListHosts(); lerr == nil {
-			for _, h := range allHosts {
-				if h.Name == hostName || h.SSHTarget == hostName || strings.EqualFold(h.Name, hostName) || strings.Contains(strings.ToLower(h.Name), strings.ToLower(hostName)) {
-					host = h
-					break
-				}
-			}
-		}
-	}
-	if host == nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusNotFound)
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"status":  "error",
-			"message": fmt.Sprintf("Host '%s' not registered", hostName),
-		})
-		return
-	}
-
-	targetVer := version.Version
-	if info, cerr := version.CheckLatestRelease(r.Context(), false); cerr == nil && info != nil && version.IsNewer(info.Version, targetVer) {
-		targetVer = info.Version
-	}
-
-	res, statusCode, err := s.updateRemoteHostToVersion(host, targetVer)
-	w.Header().Set("Content-Type", "application/json")
-	if err != nil {
-		w.WriteHeader(statusCode)
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"status":  "error",
-			"message": err.Error(),
-		})
-		return
-	}
-	_ = json.NewEncoder(w).Encode(res)
+	return fallback
 }
 
 func readSourceDirVersion(srcDir string) string {
@@ -372,9 +323,7 @@ func readSourceDirVersion(srcDir string) string {
 	return ""
 }
 
-// findUpToDateSourceDir returns a local Ackbar git repository path ONLY if its VERSION file
-// is at least as new as both targetVersion and the running daemon's version.Version.
-// This prevents a stale local checkout (e.g. an un-pulled ~/Work/Ackbar repo) from downgrading remote hosts.
+// findUpToDateSourceDir requires srcDir >= targetVersion and running daemon version to prevent stale checkouts from downgrading hosts.
 func findUpToDateSourceDir(targetVersion string) string {
 	home, _ := os.UserHomeDir()
 	candidates := []string{
@@ -406,16 +355,6 @@ func findUpToDateSourceDir(targetVersion string) string {
 	return ""
 }
 
-func (s *Server) updateRemoteHost(host *HostRecord) (map[string]interface{}, int, error) {
-	targetVer := version.Version
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	if info, err := version.CheckLatestRelease(ctx, false); err == nil && info != nil && version.IsNewer(info.Version, targetVer) {
-		targetVer = info.Version
-	}
-	cancel()
-	return s.updateRemoteHostToVersion(host, targetVer)
-}
-
 func shellSingleQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
@@ -431,25 +370,26 @@ func shellQuoteArgs(args []string) string {
 	return strings.Join(quoted, " ")
 }
 
-func (s *Server) updateRemoteHostToVersion(host *HostRecord, targetVersion string) (map[string]interface{}, int, error) {
-	hostName := host.Name
+func detectRemotePlatformSSH(host *HostRecord) (string, string, error) {
 	sshTarget := host.SSHTarget
 	if sshTarget == "" {
 		sshTarget = host.Name
 	}
-
-	// 1. Detect target OS and Architecture via SSH
 	detectCmd := exec.Command("ssh", "-o", "ConnectTimeout=8", "-o", "BatchMode=yes", sshTarget, "uname -s && uname -m")
 	out, err := detectCmd.CombinedOutput()
 	if err != nil {
-		return nil, http.StatusBadGateway, fmt.Errorf("SSH connection to '%s' failed: %s (%v)", sshTarget, strings.TrimSpace(string(out)), err)
+		return "", "", &httpStatusError{
+			code: http.StatusBadGateway,
+			err:  fmt.Errorf("SSH connection to '%s' failed: %s (%v)", sshTarget, strings.TrimSpace(string(out)), err),
+		}
 	}
-
 	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
 	if len(lines) < 2 {
-		return nil, http.StatusInternalServerError, fmt.Errorf("Could not parse remote OS/architecture: %q", string(out))
+		return "", "", &httpStatusError{
+			code: http.StatusInternalServerError,
+			err:  fmt.Errorf("Could not parse remote OS/architecture: %q", string(out)),
+		}
 	}
-
 	targetOSRaw := strings.ToLower(strings.TrimSpace(lines[0]))
 	targetArchRaw := strings.ToLower(strings.TrimSpace(lines[1]))
 
@@ -468,38 +408,29 @@ func (s *Server) updateRemoteHostToVersion(host *HostRecord, targetVersion strin
 	} else if strings.Contains(targetArchRaw, "i386") || strings.Contains(targetArchRaw, "686") {
 		goarch = "386"
 	}
+	return goos, goarch, nil
+}
 
-	// 2. Check for an up-to-date local Go source directory (never use a checkout older than targetVersion)
-	srcDir := findUpToDateSourceDir(targetVersion)
-
-	shortHost := ShortRemoteHostIdentifier(host.Name)
-	hostFlagArg := ""
-	if shortHost != "" {
-		hostFlagArg = " --host-name " + shortHost
+func preparePlatformBinariesDefault(ctx context.Context, targetVersion, srcDir, goos, goarch, destDir string, onDetail func(string)) (bool, string) {
+	emit := func(d string) {
+		if onDetail != nil {
+			onDetail(d)
+		}
 	}
-
-	tmpDir, err := os.MkdirTemp("", "ackbar-remote-update-*")
-	if err != nil {
-		return nil, http.StatusInternalServerError, fmt.Errorf("Failed to create temp build dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	binariesPrepared := false
-
 	if srcDir != "" {
-		// 3a. Cross-compile from up-to-date local source
 		buildOK := true
 		for _, target := range []struct {
 			out string
 			pkg string
 			bin string
 		}{
-			{filepath.Join(tmpDir, "ackbard"), "./cmd/ackbard", "ackbard"},
-			{filepath.Join(tmpDir, "ackbar-hook"), "./cmd/ackbar-hook", "ackbar-hook"},
-			{filepath.Join(tmpDir, "ackbar"), "./cmd/ackbar", "ackbar"},
-			{filepath.Join(tmpDir, "ackbar-relay"), "./cmd/ackbar-relay", "ackbar-relay"},
+			{filepath.Join(destDir, "ackbard"), "./cmd/ackbard", "ackbard"},
+			{filepath.Join(destDir, "ackbar-hook"), "./cmd/ackbar-hook", "ackbar-hook"},
+			{filepath.Join(destDir, "ackbar"), "./cmd/ackbar", "ackbar"},
+			{filepath.Join(destDir, "ackbar-relay"), "./cmd/ackbar-relay", "ackbar-relay"},
 		} {
-			cmdBuild := exec.Command("go", "build", "-ldflags=-s -w", "-o", target.out, target.pkg)
+			emit("compiling " + target.bin)
+			cmdBuild := exec.CommandContext(ctx, "go", "build", "-ldflags=-s -w", "-o", target.out, target.pkg)
 			cmdBuild.Dir = srcDir
 			cmdBuild.Env = append(os.Environ(), "GOOS="+goos, "GOARCH="+goarch, "CGO_ENABLED=0")
 			if _, berr := cmdBuild.CombinedOutput(); berr != nil {
@@ -507,32 +438,50 @@ func (s *Server) updateRemoteHostToVersion(host *HostRecord, targetVersion strin
 				break
 			}
 		}
-		binariesPrepared = buildOK
+		if buildOK {
+			return true, "compiled"
+		}
 	}
 
-	if !binariesPrepared {
-		// 3b. Download official prebuilt GitHub Release tarball for the remote host's (goos, goarch)
-		dlCtx, dlCancel := context.WithTimeout(context.Background(), 90*time.Second)
-		_, dlErr := version.DownloadAndInstallForPlatform(dlCtx, targetVersion, goos, goarch, tmpDir)
-		dlCancel()
-		if dlErr == nil {
-			binariesPrepared = true
+	emit("downloading release tarball")
+	dlCtx, dlCancel := context.WithTimeout(ctx, 90*time.Second)
+	_, dlErr := version.DownloadAndInstallForPlatform(dlCtx, targetVersion, goos, goarch, destDir)
+	dlCancel()
+	if dlErr == nil {
+		return true, "downloaded"
+	}
+	return false, "fallback"
+}
+
+func (s *Server) deployRemoteHostDefault(host *HostRecord, targetVersion, goos, goarch, preparedDir string, binariesPrepared bool, onDetail func(string)) (map[string]interface{}, int, error) {
+	emit := func(d string) {
+		if onDetail != nil {
+			onDetail(d)
 		}
+	}
+	hostName := host.Name
+	sshTarget := host.SSHTarget
+	if sshTarget == "" {
+		sshTarget = host.Name
+	}
+
+	shortHost := ShortRemoteHostIdentifier(host.Name)
+	hostFlagArg := ""
+	if shortHost != "" {
+		hostFlagArg = " --host-name " + shortHost
 	}
 
 	authToken := s.configuredToken
 	if authToken == "" {
 		authToken = os.Getenv("ACKBAR_TOKEN")
 	}
-
 	quotedAuthToken := shellSingleQuote(authToken)
 
 	if binariesPrepared {
-		// 4a. Deploy binaries to remote host via SCP using atomic staging files
+		emit("uploading binaries")
 		_ = exec.Command("ssh", "-o", "BatchMode=yes", sshTarget, "mkdir -p ~/.local/bin").Run()
-
 		for _, binName := range []string{"ackbard", "ackbar", "ackbar-hook", "ackbar-relay"} {
-			localPath := filepath.Join(tmpDir, binName)
+			localPath := filepath.Join(preparedDir, binName)
 			if _, serr := os.Stat(localPath); serr != nil {
 				if binName == "ackbar-relay" {
 					continue
@@ -546,15 +495,12 @@ func (s *Server) updateRemoteHostToVersion(host *HostRecord, targetVersion strin
 			}
 		}
 
-		// 5a. Atomically replace binaries (in ~/.local/bin and Homebrew bin if present) and restart daemon cleanly
+		emit("restarting ackbard")
 		remoteRestartScript := buildRemoteBinaryRestartScript(quotedAuthToken, hostFlagArg)
-
 		restartCmd := exec.Command("ssh", "-o", "ConnectTimeout=15", "-o", "BatchMode=yes", sshTarget, remoteRestartScript)
-		rout, rerr := restartCmd.CombinedOutput()
-		if rerr != nil {
+		if rout, rerr := restartCmd.CombinedOutput(); rerr != nil {
 			return nil, http.StatusInternalServerError, fmt.Errorf("Failed to replace binaries or restart ackbard on %s: %s (%v)", sshTarget, strings.TrimSpace(string(rout)), rerr)
-		}
-		if strings.Contains(string(rout), "RESTART_DEFERRED") {
+		} else if strings.Contains(string(rout), "RESTART_DEFERRED") {
 			return map[string]interface{}{
 				"status":      "restart_deferred",
 				"message":     fmt.Sprintf("Upgraded binaries on '%s' to v%s (daemon restart deferred until active headless turn completes)", hostName, targetVersion),
@@ -565,14 +511,12 @@ func (s *Server) updateRemoteHostToVersion(host *HostRecord, targetVersion strin
 			}, http.StatusOK, nil
 		}
 	} else {
-		// 3c. Fallback: run `ackbar update --force` directly on the remote host via SSH and restart ackbard
+		emit("running remote self-update")
 		remoteUpdateScript := buildRemoteSelfUpdateScript(quotedAuthToken, hostFlagArg)
 		updCmd := exec.Command("ssh", "-o", "ConnectTimeout=30", "-o", "BatchMode=yes", sshTarget, remoteUpdateScript)
-		uout, uerr := updCmd.CombinedOutput()
-		if uerr != nil {
+		if uout, uerr := updCmd.CombinedOutput(); uerr != nil {
 			return nil, http.StatusInternalServerError, fmt.Errorf("Remote 'ackbar update' on %s failed: %s (%v)", sshTarget, strings.TrimSpace(string(uout)), uerr)
-		}
-		if strings.Contains(string(uout), "RESTART_DEFERRED") {
+		} else if strings.Contains(string(uout), "RESTART_DEFERRED") {
 			return map[string]interface{}{
 				"status":      "restart_deferred",
 				"message":     fmt.Sprintf("Upgraded binaries on '%s' to v%s (daemon restart deferred until active headless turn completes)", hostName, targetVersion),
@@ -584,7 +528,27 @@ func (s *Server) updateRemoteHostToVersion(host *HostRecord, targetVersion strin
 		}
 	}
 
-	// 6. Verify remote daemon responsiveness and update in-memory health cache
+	if targetVersion != "" {
+		emit("verifying v" + targetVersion)
+	} else {
+		emit("verifying daemon")
+	}
+	remoteVersion := s.verifyRemoteHostVersion(host, sshTarget, targetVersion)
+	if targetVersion != "" && version.IsNewer(targetVersion, remoteVersion) {
+		return nil, http.StatusInternalServerError, fmt.Errorf("Host '%s' restarted but is still reporting v%s (expected v%s)", hostName, remoteVersion, targetVersion)
+	}
+
+	return map[string]interface{}{
+		"status":      "success",
+		"message":     fmt.Sprintf("Successfully upgraded ackbard on '%s' (%s/%s) to v%s", hostName, goos, goarch, remoteVersion),
+		"host":        hostName,
+		"version":     remoteVersion,
+		"target_os":   goos,
+		"target_arch": goarch,
+	}, http.StatusOK, nil
+}
+
+func (s *Server) verifyRemoteHostVersion(host *HostRecord, sshTarget, targetVersion string) string {
 	remoteVersion := ""
 	if host.URL != "" {
 		client := &http.Client{Timeout: 2 * time.Second}
@@ -614,7 +578,6 @@ func (s *Server) updateRemoteHostToVersion(host *HostRecord, targetVersion strin
 		}
 	}
 	if remoteVersion == "" {
-		// Fallback to probing binary version via SSH if HTTP tunnel isn't up yet
 		if vout, verr := exec.Command("ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", sshTarget, `~/.local/bin/ackbard --version`).CombinedOutput(); verr == nil {
 			fields := strings.Fields(strings.TrimSpace(string(vout)))
 			if len(fields) > 0 {
@@ -625,133 +588,145 @@ func (s *Server) updateRemoteHostToVersion(host *HostRecord, targetVersion strin
 	if remoteVersion == "" {
 		remoteVersion = targetVersion
 	}
-
-	if targetVersion != "" && version.IsNewer(targetVersion, remoteVersion) {
-		return nil, http.StatusInternalServerError, fmt.Errorf("Host '%s' restarted but is still reporting v%s (expected v%s)", hostName, remoteVersion, targetVersion)
-	}
-
-	return map[string]interface{}{
-		"status":      "success",
-		"message":     fmt.Sprintf("Successfully upgraded ackbard on '%s' (%s/%s) to v%s", hostName, goos, goarch, remoteVersion),
-		"host":        hostName,
-		"version":     remoteVersion,
-		"target_os":   goos,
-		"target_arch": goarch,
-	}, http.StatusOK, nil
+	return remoteVersion
 }
 
-// HostUpdateSummary captures the result of updating a single fleet host.
 type HostUpdateSummary struct {
 	Host            string `json:"host"`
 	PreviousVersion string `json:"previous_version"`
 	NewVersion      string `json:"new_version"`
-	Status          string `json:"status"` // "updated", "up_to_date", "skipped_offline", "error"
+	Status          string `json:"status"`
 	Message         string `json:"message"`
 }
 
-// UpdateOutdatedRemoteHosts checks all registered remote hosts and upgrades any connected host running a version older than targetVersion.
-func (s *Server) UpdateOutdatedRemoteHosts(targetVersion string) []HostUpdateSummary {
+type hostProbeResult struct {
+	host      *HostRecord
+	status    string
+	remoteVer string
+	goos      string
+	goarch    string
+	probeErr  error
+}
+
+func (s *Server) probeHostForUpdate(ctx context.Context, h *HostRecord, targetVer string) hostProbeResult {
+	remoteVer, isOnline := "", false
+	s.hostHealthMu.RLock()
+	if hh, ok := s.hostHealthMap[h.Name]; ok && hh != nil {
+		isOnline, remoteVer = hh.Online, hh.Version
+	}
+	s.hostHealthMu.RUnlock()
+
+	if h.URL != "" {
+		client := &http.Client{Timeout: 2 * time.Second}
+		if req, rErr := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(h.URL, "/")+"/v1/version", nil); rErr == nil {
+			if resp, gErr := client.Do(req); gErr == nil {
+				var vData struct {
+					Version string `json:"version"`
+				}
+				if json.NewDecoder(resp.Body).Decode(&vData) == nil && vData.Version != "" {
+					remoteVer, isOnline = vData.Version, true
+				}
+				_ = resp.Body.Close()
+			}
+		}
+	}
+
+	if !isOnline {
+		return hostProbeResult{host: h, status: "skipped_offline", remoteVer: remoteVer}
+	}
+	if remoteVer != "" && remoteVer != "online" && !version.IsNewer(targetVer, remoteVer) {
+		return hostProbeResult{host: h, status: "up_to_date", remoteVer: remoteVer}
+	}
+	goos, goarch, pErr := s.detectRemotePlatform(h)
+	return hostProbeResult{host: h, status: "outdated", remoteVer: remoteVer, goos: goos, goarch: goarch, probeErr: pErr}
+}
+
+type fleetProbePlan struct {
+	probes          []hostProbeResult
+	outdatedIndices []int
+	uniquePlats     []string
+	platSet         map[string][2]string
+}
+
+func (s *Server) probeFleetHostsForUpdate(ctx context.Context, targetVer string) fleetProbePlan {
 	if s.db == nil {
-		return nil
+		return fleetProbePlan{}
 	}
-	hosts, err := s.db.ListHosts()
-	if err != nil || len(hosts) == 0 {
-		return nil
-	}
-
-	results := make([]HostUpdateSummary, len(hosts))
+	hosts, _ := s.db.ListHosts()
+	probes := make([]hostProbeResult, len(hosts))
 	var wg sync.WaitGroup
-
 	for idx, h := range hosts {
 		if h == nil || s.isLocalHost(h.Name) {
 			continue
 		}
 		wg.Add(1)
-		go func(i int, hostRec *HostRecord) {
+		go func(i int, hr *HostRecord) {
 			defer wg.Done()
-
-			// Probe live remote version via HTTP if URL is configured
-			remoteVer := ""
-			isOnline := false
-			s.hostHealthMu.RLock()
-			if hh, ok := s.hostHealthMap[hostRec.Name]; ok && hh != nil {
-				isOnline = hh.Online
-				remoteVer = hh.Version
-			}
-			s.hostHealthMu.RUnlock()
-
-			if hostRec.URL != "" {
-				client := &http.Client{Timeout: 2 * time.Second}
-				if resp, gErr := client.Get(strings.TrimRight(hostRec.URL, "/") + "/v1/version"); gErr == nil {
-					var vData struct {
-						Version string `json:"version"`
-					}
-					if jErr := json.NewDecoder(resp.Body).Decode(&vData); jErr == nil && vData.Version != "" {
-						remoteVer = vData.Version
-						isOnline = true
-					}
-					_ = resp.Body.Close()
-				}
-			}
-
-			if !isOnline {
-				results[i] = HostUpdateSummary{
-					Host:            hostRec.Name,
-					PreviousVersion: remoteVer,
-					NewVersion:      remoteVer,
-					Status:          "skipped_offline",
-					Message:         fmt.Sprintf("Skipped '%s' (offline)", hostRec.Name),
-				}
-				return
-			}
-
-			if remoteVer != "" && remoteVer != "online" && !version.IsNewer(targetVersion, remoteVer) {
-				results[i] = HostUpdateSummary{
-					Host:            hostRec.Name,
-					PreviousVersion: remoteVer,
-					NewVersion:      remoteVer,
-					Status:          "up_to_date",
-					Message:         fmt.Sprintf("Host '%s' is already up to date (v%s)", hostRec.Name, remoteVer),
-				}
-				return
-			}
-
-			res, _, uErr := s.updateRemoteHostToVersion(hostRec, targetVersion)
-			if uErr != nil {
-				results[i] = HostUpdateSummary{
-					Host:            hostRec.Name,
-					PreviousVersion: remoteVer,
-					NewVersion:      remoteVer,
-					Status:          "error",
-					Message:         uErr.Error(),
-				}
-				return
-			}
-
-			newVer, _ := res["version"].(string)
-			msg, _ := res["message"].(string)
-			status, _ := res["status"].(string)
-			if status == "" {
-				status = "updated"
-			}
-			results[i] = HostUpdateSummary{
-				Host:            hostRec.Name,
-				PreviousVersion: remoteVer,
-				NewVersion:      newVer,
-				Status:          status,
-				Message:         msg,
-			}
+			probes[i] = s.probeHostForUpdate(ctx, hr, targetVer)
 		}(idx, h)
 	}
 	wg.Wait()
 
-	var filtered []HostUpdateSummary
-	for _, r := range results {
-		if r.Host != "" {
-			filtered = append(filtered, r)
+	var outdatedIndices []int
+	platSet := make(map[string][2]string)
+	for i, p := range probes {
+		if p.status == "outdated" {
+			outdatedIndices = append(outdatedIndices, i)
+			if p.probeErr == nil {
+				platSet[p.goos+"/"+p.goarch] = [2]string{p.goos, p.goarch}
+			}
 		}
 	}
-	return filtered
+	uniquePlats := make([]string, 0, len(platSet))
+	for k := range platSet {
+		uniquePlats = append(uniquePlats, k)
+	}
+	sort.Strings(uniquePlats)
+	return fleetProbePlan{probes: probes, outdatedIndices: outdatedIndices, uniquePlats: uniquePlats, platSet: platSet}
+}
+
+func (s *Server) lookupUpdateHost(hostName string) *HostRecord {
+	if s.db == nil {
+		return nil
+	}
+	if host, err := s.db.GetHost(hostName); err == nil && host != nil {
+		return host
+	}
+	allHosts, err := s.db.ListHosts()
+	if err != nil {
+		return nil
+	}
+	lower := strings.ToLower(hostName)
+	for _, h := range allHosts {
+		if h.Name == hostName || h.SSHTarget == hostName || strings.EqualFold(h.Name, hostName) || strings.Contains(strings.ToLower(h.Name), lower) {
+			return h
+		}
+	}
+	return nil
+}
+
+func (s *Server) checkLatestRelease(ctx context.Context, force bool) (*version.ReleaseInfo, error) {
+	if s.checkLatestReleaseFn != nil {
+		return s.checkLatestReleaseFn(ctx, force)
+	}
+	return version.CheckLatestRelease(ctx, force)
+}
+
+func (s *Server) detectRemotePlatform(host *HostRecord) (string, string, error) {
+	if s.detectRemotePlatformFn != nil {
+		return s.detectRemotePlatformFn(host)
+	}
+	return detectRemotePlatformSSH(host)
+}
+
+func (s *Server) UpdateOutdatedRemoteHosts(targetVersion string) []HostUpdateSummary {
+	if s.db == nil {
+		return nil
+	}
+	if outcome, _ := s.runFleetUpdate(context.Background(), false, true, targetVersion, nil); outcome != nil {
+		return outcome.hostSummaries
+	}
+	return nil
 }
 
 var tunnelMu sync.Mutex

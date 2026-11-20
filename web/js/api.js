@@ -13,6 +13,7 @@ import {
 import { renderTree, getSessionTimestamp, sortSessionsByInteraction } from './tree.js';
 import { updateOpenTabsState, applyTabStripVisibility } from './tabs.js';
 import { showModal, hideModal, showHostSummaryModal, showUpdateModal } from './modals.js';
+import { isFleetUpdateBadgeActive, syncNavbarUpdateBadge, configureFleetUpdateUI, runSingleHostUpdate } from './fleet-update.js';
 
 // Fetch Providers
 async function fetchProviders() {
@@ -80,6 +81,13 @@ function refreshUpdateBadge() {
   const updateBadge = document.getElementById('updateBadge');
   if (!updateBadge) return;
 
+  configureFleetUpdateUI({ onBadgeInactive: refreshUpdateBadge });
+  if (isFleetUpdateBadgeActive()) {
+    syncNavbarUpdateBadge();
+    return;
+  }
+
+  updateBadge.className = 'brand-badge update-badge';
   if (localNeedsUpdate || outdatedRemotes.length > 0) {
     if (localNeedsUpdate && outdatedRemotes.length > 0) {
       updateBadge.textContent = `⚡ Update All (${1 + outdatedRemotes.length}): v${targetVer}`;
@@ -88,6 +96,7 @@ function refreshUpdateBadge() {
     } else {
       updateBadge.textContent = `⚡ Update: v${targetVer}`;
     }
+    updateBadge.title = 'Click to view update details';
     updateBadge.style.display = 'inline-block';
     updateBadge.onclick = () => {
       if (typeof showUpdateModal === 'function') {
@@ -592,75 +601,18 @@ async function handleReconnectHost(h) {
   }
 }
 
-// Smooth Host Binary Upgrade Flow
 async function handleUpdateHost(h) {
-  if (!confirm(`Upgrade and restart ackbard daemon & hook binaries on "${h.name}" to v${state.version}?`)) return;
-
-  showModal(`Updating ${h.name}`, `
-    <div style="padding: 32px 20px; text-align: center;">
-      <div class="modal-loading-spinner"></div>
-      <div style="font-size: 15px; font-weight: 600; color: #fff; margin-bottom: 6px;">Upgrading ackbard on ${h.name}...</div>
-      <div style="font-size: 12px; color: var(--text-muted);">Compiling and deploying v${state.version}</div>
-    </div>
-  `, '');
-
-  try {
-    const res = await fetch('/v1/hosts/update', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: h.name })
-    });
-    const data = await res.json().catch(() => ({}));
-
-    if (res.ok && data.status === 'success') {
-      showModal(`Update Complete: ${h.name}`, `
-        <div style="padding: 32px 20px; text-align: center;">
-          <div style="font-size: 38px; margin-bottom: 12px; color: var(--accent-green);">✓</div>
-          <div style="font-size: 16px; font-weight: 600; color: var(--accent-green); margin-bottom: 6px;">Update Succeeded</div>
-          <div style="font-size: 12px; color: var(--text-muted);">${data.message || 'Upgrade completed successfully!'}</div>
-        </div>
-      `, '');
-
-      await fetchHosts();
-      await fetchSessions();
-      setTimeout(() => {
-        showHostSummaryModal(h);
-      }, 1000);
-    } else {
-      const errMsg = data.message || (data.error ? (data.error.message || data.error) : 'Unknown update error');
-      showModal(`Update Failed: ${h.name}`, `
-        <div style="padding: 24px 20px; text-align: center;">
-          <div style="font-size: 38px; margin-bottom: 12px; color: var(--accent-red);">✗</div>
-          <div style="font-size: 16px; font-weight: 600; color: var(--accent-red); margin-bottom: 8px;">Update Failed</div>
-          <div style="font-size: 12px; color: var(--text-muted); margin-bottom: 16px; line-height: 1.5; max-width: 440px; margin-left: auto; margin-right: auto; word-break: break-word;">
-            ${escapeHtml(errMsg)}
-          </div>
-        </div>
-      `, `
-        <button class="btn btn-secondary" id="mBtnBackToDetailsUpdate">← Go Back to Details</button>
-      `);
-
-      document.getElementById('mBtnBackToDetailsUpdate')?.addEventListener('click', () => {
-        showHostSummaryModal(h);
-      });
-    }
-  } catch (err) {
-    showModal(`Update Failed: ${h.name}`, `
-      <div style="padding: 24px 20px; text-align: center;">
-        <div style="font-size: 38px; margin-bottom: 12px; color: var(--accent-red);">✗</div>
-        <div style="font-size: 16px; font-weight: 600; color: var(--accent-red); margin-bottom: 8px;">Update Failed</div>
-        <div style="font-size: 12px; color: var(--text-muted); margin-bottom: 16px; line-height: 1.5; max-width: 440px; margin-left: auto; margin-right: auto; word-break: break-word;">
-          ${escapeHtml(err.message)}
-        </div>
-      </div>
-    `, `
-      <button class="btn btn-secondary" id="mBtnBackToDetailsUpdate">← Go Back to Details</button>
-    `);
-
-    document.getElementById('mBtnBackToDetailsUpdate')?.addEventListener('click', () => {
-      showHostSummaryModal(h);
-    });
-  }
+  return runSingleHostUpdate(h, {
+    showModal,
+    hideModal,
+    fetchHosts,
+    fetchSessions,
+    showHostSummaryModal,
+    getSnapshot: () => ({
+      version: state.version,
+      latestVersion: state.latestVersion
+    })
+  });
 }
 
 // Task API Endpoints
