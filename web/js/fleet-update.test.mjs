@@ -449,3 +449,92 @@ test('remoteDeferred disables upgrade button and newly online outdated host rese
     delete globalThis.fetch;
   }
 });
+
+test('mixed error+remoteDeferred keeps Retry enabled, reloadPending+remoteDeferred keeps Reload enabled, and newerRelease resets deferred runs', async () => {
+  resetFleetRunState();
+  const { elements, document } = createFakeDOM();
+  globalThis.document = document;
+  globalThis.window = { location: { reload: () => {} } };
+
+  const modalOverlay = elements.get('modalOverlay');
+  const modalBody = elements.get('modalBody');
+  const modalFooter = elements.get('modalFooter');
+  const deps = {
+    showModal: (_t, body, footer) => { modalBody.innerHTML = body; modalFooter.innerHTML = footer; modalOverlay.style.display = 'flex'; },
+    hideModal: () => { modalOverlay.style.display = 'none'; notifyUpdateModalClosed(); },
+    showToast: () => {},
+    fetchVersion: async () => {},
+    fetchHosts: async () => {},
+    getSnapshot: () => ({ version: '20261120.02', latestVersion: '20261120.02', selfHostName: 'legion', hosts: [{ name: 'macmini', online: true, version: '20261120.02' }] })
+  };
+
+  try {
+    // 1. Mixed host_results (error + restart_deferred) -> Retry Failed Hosts must remain enabled
+    globalThis.fetch = async () => ({
+      ok: true,
+      headers: { get: () => 'text/event-stream' },
+      body: makeSSEBody([
+        'data: {"type":"complete","phase":"complete","status":"done","completed_steps":2,"total_steps":2,"result":{"new_version":"20261120.02","restarting_local":false,"host_results":[{"host":"gpu1","status":"error","message":"ssh timeout"},{"host":"macmini","status":"restart_deferred","new_version":"20261120.02"}]}}\n\n'
+      ])
+    });
+    openFleetUpdateModal({ latest_version: '20261120.02' }, deps);
+    elements.get('btnExecuteUpdate').click();
+    await new Promise(r => setTimeout(r, 30));
+    assert.equal(getFleetRunState().remoteDeferred, true);
+    assert.equal(getFleetRunState().status, 'error');
+    assert.equal(elements.get('btnExecuteUpdate').textContent, '⚠️ Retry Failed Hosts');
+    assert.equal(elements.get('btnExecuteUpdate').disabled, false);
+
+    // 2. Background restarting_local + remote restart_deferred -> Reload UI must remain enabled
+    resetFleetRunState();
+    globalThis.fetch = async (url) => {
+      if (url.startsWith('/v1/update')) {
+        return {
+          ok: true,
+          headers: { get: () => 'text/event-stream' },
+          body: makeSSEBody([
+            'data: {"type":"complete","phase":"complete","status":"done","completed_steps":2,"total_steps":2,"result":{"new_version":"20261120.02","restarting_local":true,"host_results":[{"host":"macmini","status":"restart_deferred","new_version":"20261120.02"}]}}\n\n'
+          ])
+        };
+      }
+      return { ok: true, json: async () => ({ version: '20261120.02' }) };
+    };
+    openFleetUpdateModal({ latest_version: '20261120.02' }, deps);
+    elements.get('btnExecuteUpdate').click();
+    await new Promise(r => setTimeout(r, 20));
+    deps.hideModal();
+    await new Promise(r => setTimeout(r, 1050));
+    assert.equal(getFleetRunState().reloadPending, true);
+    assert.equal(getFleetRunState().remoteDeferred, true);
+    openFleetUpdateModal({ latest_version: '20261120.02' }, deps);
+    assert.equal(elements.get('btnExecuteUpdate').textContent, '🔄 Reload UI to Apply v20261120.02');
+    assert.equal(elements.get('btnExecuteUpdate').disabled, false);
+
+    // 3. Opening modal with a newer release (20261120.03) resets remoteDeferred & localDeferred done runs to idle
+    for (const payload of [
+      { new_version: '20261120.02', restarting_local: false, host_results: [{ host: 'macmini', status: 'restart_deferred' }] },
+      { new_version: '20261120.02', restarting_local: false, restart_deferred: true, host_results: [] }
+    ]) {
+      resetFleetRunState();
+      globalThis.fetch = async () => ({
+        ok: true,
+        headers: { get: () => 'text/event-stream' },
+        body: makeSSEBody([`data: ${JSON.stringify({ type: 'complete', phase: 'complete', status: 'done', completed_steps: 1, total_steps: 1, result: payload })}\n\n`])
+      });
+      openFleetUpdateModal({ latest_version: '20261120.02' }, deps);
+      elements.get('btnExecuteUpdate').click();
+      await new Promise(r => setTimeout(r, 30));
+      assert.equal(getFleetRunState().status, 'done');
+      assert.equal(elements.get('btnExecuteUpdate').disabled, true);
+
+      openFleetUpdateModal({ latest_version: '20261120.03' }, deps);
+      assert.equal(getFleetRunState().status, 'idle');
+      assert.equal(elements.get('btnExecuteUpdate').disabled, false);
+      assert.equal(elements.get('btnExecuteUpdate').textContent, '⚡ Upgrade All Outdated Hosts to v20261120.03');
+    }
+  } finally {
+    delete globalThis.document;
+    delete globalThis.window;
+    delete globalThis.fetch;
+  }
+});

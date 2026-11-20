@@ -230,7 +230,8 @@ function syncFleetModalDOM() {
   });
   if (execBtn) {
     execBtn.textContent = formatUpdateButtonLabel(fleetRunState, root?.getAttribute('data-latest-ver') || fleetRunState.targetVersion || 'latest');
-    execBtn.disabled = active || fleetRunState.localDeferred || fleetRunState.remoteDeferred || (fleetRunState.status === 'done' && !fleetRunState.reloadPending && fleetRunState.failedCount === 0);
+    const canAct = fleetRunState.status === 'idle' || (!active && (fleetRunState.reloadPending || fleetRunState.status === 'error' || (fleetRunState.failedCount || 0) > 0));
+    execBtn.disabled = !canAct;
   }
   if (dismissBtn) {
     dismissBtn.disabled = false;
@@ -332,7 +333,8 @@ export function openFleetUpdateModal(data = {}, deps = null) {
   ];
   const isOutdatedRow = r => r.online && r.version && r.version !== 'online' && r.version !== latestVer;
   const hasOutdated = rows.some(isOutdatedRow);
-  if (fleetRunState.status === 'done' && !fleetRunState.reloadPending && !fleetRunState.localDeferred && !fleetRunState.remoteDeferred && ((fleetRunState.newVersion && latestVer && fleetRunState.newVersion !== latestVer) || hasOutdated)) {
+  const newerRelease = Boolean(fleetRunState.newVersion && latestVer && fleetRunState.newVersion !== latestVer);
+  if (fleetRunState.status === 'done' && !fleetRunState.reloadPending && (newerRelease || (!fleetRunState.localDeferred && !fleetRunState.remoteDeferred && hasOutdated))) {
     fleetRunState = { status: 'idle', steps: [], hostStatuses: {}, completedSteps: 0, totalSteps: 0 };
   }
   const releaseUrl = lastModalData.release_url || snap.releaseUrl || `https://github.com/marcinbak/ackbar/releases/tag/v${latestVer}`;
