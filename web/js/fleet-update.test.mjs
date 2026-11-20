@@ -13,9 +13,11 @@ import {
   applyUpdateProgressEvent,
   configureFleetUpdateUI,
   openFleetUpdateModal,
+  runSingleHostUpdate,
   notifyUpdateModalClosed,
   isFleetUpdateBadgeActive,
-  getFleetRunState
+  getFleetRunState,
+  resetFleetRunState
 } from './fleet-update.js';
 
 test('time formatters and step number clamping', () => {
@@ -149,6 +151,7 @@ function createFakeDOM() {
 }
 
 test('background dismiss keeps update running, sets reloadPending without auto-reloading, and re-attaches on re-open', async () => {
+  resetFleetRunState();
   const { elements, document } = createFakeDOM();
   let reloadCount = 0;
   const toasts = [];
@@ -246,4 +249,203 @@ test('background dismiss keeps update running, sets reloadPending without auto-r
   delete globalThis.document;
   delete globalThis.window;
   delete globalThis.fetch;
+});
+
+function makeSSEBody(chunks) {
+  const encoder = new TextEncoder();
+  let idx = 0;
+  return {
+    getReader() {
+      return {
+        async read() {
+          if (idx >= chunks.length) return { done: true };
+          return { done: false, value: encoder.encode(chunks[idx++]) };
+        }
+      };
+    }
+  };
+}
+
+test('premature SSE EOF transitions fleetRunState to error instead of remaining stuck in running', async () => {
+  resetFleetRunState();
+  const { elements, document } = createFakeDOM();
+  globalThis.document = document;
+  globalThis.window = { location: { reload: () => {} } };
+  globalThis.fetch = async () => ({
+    ok: true,
+    headers: { get: () => 'text/event-stream' },
+    body: makeSSEBody([
+      'data: {"type":"step","step_id":"preflight","phase":"preflight","label":"Checked","status":"done","completed_steps":0,"total_steps":2}\n\n'
+    ])
+  });
+
+  try {
+    const modalOverlay = elements.get('modalOverlay');
+    const modalBody = elements.get('modalBody');
+    const modalFooter = elements.get('modalFooter');
+    const deps = {
+      showModal: (_t, body, footer) => { modalBody.innerHTML = body; modalFooter.innerHTML = footer; modalOverlay.style.display = 'flex'; },
+      hideModal: () => { modalOverlay.style.display = 'none'; notifyUpdateModalClosed(); },
+      showToast: () => {},
+      fetchVersion: async () => {},
+      fetchHosts: async () => {},
+      getSnapshot: () => ({ version: '20261120.01', latestVersion: '20261120.02', selfHostName: 'legion', hosts: [] })
+    };
+    openFleetUpdateModal({ latest_version: '20261120.02' }, deps);
+    elements.get('btnExecuteUpdate').click();
+    await new Promise(r => setTimeout(r, 30));
+
+    assert.equal(getFleetRunState().status, 'error');
+    assert.equal(getFleetRunState().errorMessage, 'Update stream ended before completion');
+    assert.equal(elements.get('btnExecuteUpdate').textContent, '⚠️ Retry Failed Hosts');
+    assert.equal(elements.get('btnExecuteUpdate').disabled, false);
+  } finally {
+    delete globalThis.document;
+    delete globalThis.window;
+    delete globalThis.fetch;
+  }
+});
+
+test('runSingleHostUpdate preserves singleton uiDeps, handles EOF, and replaces close handler without calling hideModal', async () => {
+  resetFleetRunState();
+  const { elements, document } = createFakeDOM();
+  globalThis.document = document;
+  globalThis.window = { location: { reload: () => {} } };
+  globalThis.confirm = () => true;
+
+  let hideCalls = 0;
+  let summaryCalls = 0;
+  let fetchHostsCalls = 0;
+  const fleetHosts = [{ name: 'macmini', online: true, version: '20261120.01' }];
+  const modalOverlay = elements.get('modalOverlay');
+  const modalBody = elements.get('modalBody');
+  const modalFooter = elements.get('modalFooter');
+
+  configureFleetUpdateUI({
+    showModal: (_t, body, footer) => { modalBody.innerHTML = body; modalFooter.innerHTML = footer; modalOverlay.style.display = 'flex'; },
+    hideModal: () => { hideCalls++; modalOverlay.style.display = 'none'; notifyUpdateModalClosed(); },
+    showToast: () => {},
+    fetchVersion: async () => {},
+    fetchHosts: async () => {},
+    getSnapshot: () => ({ version: '20261120.02', latestVersion: '20261120.02', selfHostName: 'legion', hosts: fleetHosts })
+  });
+
+  try {
+    // 1. Success path: verify mBtnBackToDetailsUpdate only calls showHostSummaryModal (not hideModal) and preserves singleton hosts
+    globalThis.fetch = async () => ({
+      ok: true,
+      headers: { get: () => 'text/event-stream' },
+      body: makeSSEBody([
+        'data: {"type":"step","step_id":"host:macmini","phase":"updating_host","host":"macmini","label":"Updating macmini","status":"done","completed_steps":2,"total_steps":2}\n\n',
+        'data: {"type":"complete","phase":"complete","status":"done","completed_steps":2,"total_steps":2,"result":{"status":"success","version":"20261120.02","message":"Upgraded"}}\n\n'
+      ])
+    });
+
+    await runSingleHostUpdate({ name: 'macmini' }, {
+      showModal: (_t, body, footer) => { modalBody.innerHTML = body; modalFooter.innerHTML = footer; modalOverlay.style.display = 'flex'; },
+      hideModal: () => { hideCalls++; modalOverlay.style.display = 'none'; notifyUpdateModalClosed(); },
+      fetchHosts: async () => { fetchHostsCalls++; },
+      fetchSessions: async () => {},
+      showHostSummaryModal: () => { summaryCalls++; },
+      getSnapshot: () => ({ version: '20261120.02', latestVersion: '20261120.02' })
+    });
+
+    assert.equal(fetchHostsCalls, 1);
+    assert.equal(elements.get('mBtnBackToDetailsUpdate').textContent, '← Go Back to Details');
+    elements.get('mBtnBackToDetailsUpdate').click();
+    assert.equal(summaryCalls, 1);
+    assert.equal(hideCalls, 0, 'Go Back to Details must not also invoke hideModal');
+
+    // Re-opening fleet modal must still use singleton getSnapshot (with hosts)
+    openFleetUpdateModal({ latest_version: '20261120.02' });
+    assert.match(modalBody.innerHTML, /macmini/);
+
+    // 2. Premature SSE EOF in runSingleHostUpdate must transition to error and skip fetchHosts
+    globalThis.fetch = async () => ({
+      ok: true,
+      headers: { get: () => 'text/event-stream' },
+      body: makeSSEBody([
+        'data: {"type":"step","step_id":"compile:darwin/arm64","phase":"compiling","label":"Compiling","status":"running","completed_steps":0,"total_steps":2}\n\n'
+      ])
+    });
+
+    await runSingleHostUpdate({ name: 'macmini' }, {
+      showModal: (_t, body, footer) => { modalBody.innerHTML = body; modalFooter.innerHTML = footer; modalOverlay.style.display = 'flex'; },
+      hideModal: () => { hideCalls++; },
+      fetchHosts: async () => { fetchHostsCalls++; },
+      fetchSessions: async () => {},
+      showHostSummaryModal: () => {},
+      getSnapshot: () => ({ version: '20261120.02', latestVersion: '20261120.02' })
+    });
+
+    assert.equal(fetchHostsCalls, 1, 'fetchHosts must not run when single-host SSE stream ends prematurely');
+    assert.equal(elements.get('singleHostSummary').textContent, 'Update stream ended before completion');
+    assert.equal(elements.get('singleHostStepLabel').textContent, 'Failed updating macmini');
+  } finally {
+    delete globalThis.document;
+    delete globalThis.window;
+    delete globalThis.fetch;
+    delete globalThis.confirm;
+  }
+});
+
+test('remoteDeferred disables upgrade button and newly online outdated host resets stale done state', async () => {
+  resetFleetRunState();
+  const { elements, document } = createFakeDOM();
+  globalThis.document = document;
+  globalThis.window = { location: { reload: () => {} } };
+
+  let remoteHosts = [{ name: 'macmini', online: false, version: '20261120.01' }];
+  const modalOverlay = elements.get('modalOverlay');
+  const modalBody = elements.get('modalBody');
+  const modalFooter = elements.get('modalFooter');
+  const deps = {
+    showModal: (_t, body, footer) => { modalBody.innerHTML = body; modalFooter.innerHTML = footer; modalOverlay.style.display = 'flex'; },
+    hideModal: () => { modalOverlay.style.display = 'none'; notifyUpdateModalClosed(); },
+    showToast: () => {},
+    fetchVersion: async () => {},
+    fetchHosts: async () => {},
+    getSnapshot: () => ({ version: '20261120.02', latestVersion: '20261120.02', selfHostName: 'legion', hosts: remoteHosts })
+  };
+
+  try {
+    // 1. remoteDeferred disables #btnExecuteUpdate
+    globalThis.fetch = async () => ({
+      ok: true,
+      headers: { get: () => 'text/event-stream' },
+      body: makeSSEBody([
+        'data: {"type":"complete","phase":"complete","status":"done","completed_steps":2,"total_steps":2,"result":{"new_version":"20261120.02","restarting_local":false,"host_results":[{"host":"macmini","status":"restart_deferred","new_version":"20261120.02"}]}}\n\n'
+      ])
+    });
+    openFleetUpdateModal({ latest_version: '20261120.02' }, deps);
+    elements.get('btnExecuteUpdate').click();
+    await new Promise(r => setTimeout(r, 30));
+    assert.equal(elements.get('btnExecuteUpdate').textContent, '⏳ Remote Daemon(s) Draining');
+    assert.equal(elements.get('btnExecuteUpdate').disabled, true);
+
+    // 2. Clean done run with offline host, then re-open after offline host reconnects outdated for same latestVer
+    globalThis.fetch = async () => ({
+      ok: true,
+      headers: { get: () => 'text/event-stream' },
+      body: makeSSEBody([
+        'data: {"type":"complete","phase":"complete","status":"done","completed_steps":1,"total_steps":1,"result":{"new_version":"20261120.02","restarting_local":false,"host_results":[{"host":"macmini","status":"skipped_offline"}]}}\n\n'
+      ])
+    });
+    openFleetUpdateModal({ latest_version: '20261120.02' }, deps);
+    elements.get('btnExecuteUpdate').click();
+    await new Promise(r => setTimeout(r, 30));
+    assert.equal(getFleetRunState().status, 'done');
+    assert.equal(elements.get('btnExecuteUpdate').disabled, true);
+
+    // Host comes back online still running old version
+    remoteHosts = [{ name: 'macmini', online: true, version: '20261120.01' }];
+    openFleetUpdateModal({ latest_version: '20261120.02' }, deps);
+    assert.equal(getFleetRunState().status, 'idle');
+    assert.equal(elements.get('btnExecuteUpdate').disabled, false);
+    assert.equal(elements.get('btnExecuteUpdate').textContent, '⚡ Upgrade All Outdated Hosts to v20261120.02');
+  } finally {
+    delete globalThis.document;
+    delete globalThis.window;
+    delete globalThis.fetch;
+  }
 });

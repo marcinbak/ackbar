@@ -130,12 +130,7 @@ export function applyUpdateProgressEvent(runState, event, nowMs = Date.now()) {
       if (hr?.host) next.hostStatuses[hr.host] = { status: hr.status === 'success' || hr.status === 'updated' ? 'done' : hr.status, detail: hr.message || '', label: hr.new_version ? `v${hr.new_version}` : '' };
     }
     const failed = hostResults.filter(h => h?.status === 'error');
-    Object.assign(next, {
-      result: res, finishedAtMs: nowMs, finalElapsedMs: event.elapsed_ms > 0 ? event.elapsed_ms : Math.max(0, nowMs - (next.startedAtMs || nowMs)),
-      failedCount: failed.length, localDeferred: Boolean(res.restart_deferred),
-      remoteDeferred: hostResults.some(h => h?.status === 'restart_deferred'),
-      restartingLocal: Boolean(res.restarting_local), newVersion: res.new_version || res.version || next.targetVersion
-    });
+    Object.assign(next, { result: res, finishedAtMs: nowMs, finalElapsedMs: event.elapsed_ms > 0 ? event.elapsed_ms : Math.max(0, nowMs - (next.startedAtMs || nowMs)), failedCount: failed.length, localDeferred: Boolean(res.restart_deferred), remoteDeferred: hostResults.some(h => h?.status === 'restart_deferred'), restartingLocal: Boolean(res.restarting_local), newVersion: res.new_version || res.version || next.targetVersion });
     if (failed.length > 0 || res.status === 'error') {
       Object.assign(next, { status: 'error', failedCount: Math.max(1, failed.length), errorMessage: res.message || `${failed.length} host(s) failed to update` });
     } else if (next.restartingLocal) {
@@ -152,6 +147,13 @@ export function applyUpdateProgressEvent(runState, event, nowMs = Date.now()) {
 export function configureFleetUpdateUI(deps) { if (deps && typeof deps === 'object') uiDeps = { ...uiDeps, ...deps }; }
 export function isFleetUpdateBadgeActive() { return formatNavbarUpdateBadge(fleetRunState, Date.now()).visible; }
 export function getFleetRunState() { return fleetRunState; }
+export function resetFleetRunState() {
+  stopFleetTicker();
+  if (singleTickerId) { clearInterval(singleTickerId); singleTickerId = null; }
+  if (doneExpiryTimerId) { clearTimeout(doneExpiryTimerId); doneExpiryTimerId = null; }
+  fleetBadgeWasVisible = false; modalOpen = false; lastModalData = {};
+  fleetRunState = { status: 'idle', steps: [], hostStatuses: {}, completedSteps: 0, totalSteps: 0 };
+}
 export function notifyUpdateModalClosed() {
   modalOpen = false;
   if (singleTickerId) { clearInterval(singleTickerId); singleTickerId = null; }
@@ -228,7 +230,7 @@ function syncFleetModalDOM() {
   });
   if (execBtn) {
     execBtn.textContent = formatUpdateButtonLabel(fleetRunState, root?.getAttribute('data-latest-ver') || fleetRunState.targetVersion || 'latest');
-    execBtn.disabled = active || fleetRunState.localDeferred || (fleetRunState.status === 'done' && !fleetRunState.reloadPending && !fleetRunState.remoteDeferred && fleetRunState.failedCount === 0);
+    execBtn.disabled = active || fleetRunState.localDeferred || fleetRunState.remoteDeferred || (fleetRunState.status === 'done' && !fleetRunState.reloadPending && fleetRunState.failedCount === 0);
   }
   if (dismissBtn) {
     dismissBtn.disabled = false;
@@ -286,6 +288,9 @@ async function startFleetUpdate(targetVer) {
       syncFleetModalDOM();
       syncNavbarUpdateBadge();
     });
+    if (fleetRunState.status === 'running') {
+      fleetRunState = applyUpdateProgressEvent(fleetRunState, { type: 'error', message: 'Update stream ended before completion' }, Date.now());
+    }
   } catch (err) {
     if (fleetRunState.status !== 'reloading' && fleetRunState.status !== 'done') {
       fleetRunState = applyUpdateProgressEvent(fleetRunState, { type: 'error', message: err.message || 'Connection lost during update' }, Date.now());
@@ -321,22 +326,18 @@ export function openFleetUpdateModal(data = {}, deps = null) {
   if (data && Object.keys(data).length > 0) lastModalData = data;
   const snap = uiDeps.getSnapshot ? uiDeps.getSnapshot() : {};
   const curVer = snap.version || '...', latestVer = lastModalData.latest_version || snap.latestVersion || curVer || 'latest';
-  if (fleetRunState.status === 'done' && !fleetRunState.reloadPending && fleetRunState.newVersion && latestVer && fleetRunState.newVersion !== latestVer) {
-    fleetRunState = { status: 'idle', steps: [], hostStatuses: {}, completedSteps: 0, totalSteps: 0 };
-  }
-  const releaseUrl = lastModalData.release_url || snap.releaseUrl || `https://github.com/marcinbak/ackbar/releases/tag/v${latestVer}`;
-  const methodStr = (lastModalData.is_homebrew ?? snap.isHomebrew) ? 'Homebrew (brew upgrade ackbar)' : 'Prebuilt Binary (~/.local/bin) + SSH Cross-Compile';
   const rows = [
     { key: '__local__', name: `${snap.selfHostName || 'local'} (local)`, online: true, version: curVer },
     ...(snap.hosts || []).map(h => ({ key: h.name, name: h.name, online: !!h.online, version: h.version || 'unknown' }))
   ];
-  const fleetHtml = rows.map(r => {
-    const outdated = r.online && r.version && r.version !== 'online' && r.version !== latestVer;
-    const badge = !r.online ? '<span class="fleet-host-muted">🔴 Offline (skipped)</span>'
-      : outdated ? `<span class="fleet-host-warn">⚡ v${esc(r.version)} ➔ v${esc(latestVer)}</span>`
-      : `<span class="fleet-host-done">✅ v${esc(r.version)} (Up to date)</span>`;
-    return `<div class="fleet-host-row"><strong>${esc(r.name)}</strong><span class="fleet-host-status" data-fleet-host-status="${esc(r.key)}">${badge}</span></div>`;
-  }).join('');
+  const isOutdatedRow = r => r.online && r.version && r.version !== 'online' && r.version !== latestVer;
+  const hasOutdated = rows.some(isOutdatedRow);
+  if (fleetRunState.status === 'done' && !fleetRunState.reloadPending && !fleetRunState.localDeferred && !fleetRunState.remoteDeferred && ((fleetRunState.newVersion && latestVer && fleetRunState.newVersion !== latestVer) || hasOutdated)) {
+    fleetRunState = { status: 'idle', steps: [], hostStatuses: {}, completedSteps: 0, totalSteps: 0 };
+  }
+  const releaseUrl = lastModalData.release_url || snap.releaseUrl || `https://github.com/marcinbak/ackbar/releases/tag/v${latestVer}`;
+  const methodStr = (lastModalData.is_homebrew ?? snap.isHomebrew) ? 'Homebrew (brew upgrade ackbar)' : 'Prebuilt Binary (~/.local/bin) + SSH Cross-Compile';
+  const fleetHtml = rows.map(r => `<div class="fleet-host-row"><strong>${esc(r.name)}</strong><span class="fleet-host-status" data-fleet-host-status="${esc(r.key)}">${!r.online ? '<span class="fleet-host-muted">🔴 Offline (skipped)</span>' : isOutdatedRow(r) ? `<span class="fleet-host-warn">⚡ v${esc(r.version)} ➔ v${esc(latestVer)}</span>` : `<span class="fleet-host-done">✅ v${esc(r.version)} (Up to date)</span>`}</span></div>`).join('');
 
   uiDeps.showModal?.('⚡ Ackbar Fleet Update', `<div id="fleetExecRoot" data-latest-ver="${esc(latestVer)}" class="fleet-modal-root">
     <div class="fleet-banner-card"><div class="fleet-banner-left"><span class="fleet-banner-icon">⚡</span><div><div class="fleet-banner-title">Fleet Version & Update Manager</div><div class="fleet-banner-sub">Target Release: <code>v${esc(latestVer)}</code></div></div></div><div class="fleet-exec-timer" id="fleetExecTimer">0:00.0</div></div>
@@ -352,14 +353,15 @@ export function openFleetUpdateModal(data = {}, deps = null) {
 }
 
 export async function runSingleHostUpdate(h, deps = null) {
-  if (deps) configureFleetUpdateUI(deps);
-  const snap = uiDeps.getSnapshot ? uiDeps.getSnapshot() : {};
+  const d = { ...uiDeps, ...(deps || {}) };
+  const snap = d.getSnapshot ? d.getSnapshot() : {};
   if (typeof confirm === 'function' && !confirm(`Upgrade and restart ackbard daemon & hook binaries on "${h.name}" to v${snap.version || 'latest'}?`)) return;
 
   let runState = createFleetRunState(snap.latestVersion || snap.version || '', Date.now());
   runState.totalSteps = 2;
-  uiDeps.showModal?.(`Updating ${h.name}`, `<div id="singleHostExecRoot" class="fleet-modal-root"><div class="fleet-exec-log"><div class="fleet-exec-header"><span id="singleHostStepLabel">Updating 1/2 · ${esc(h.name)}</span><span id="singleHostTimer" class="fleet-exec-timer">0:00.0</span></div><div id="singleHostExecList" class="fleet-exec-list"></div><div id="singleHostSummary" class="fleet-exec-summary" style="display: none;"></div></div></div>`, '<button class="btn btn-secondary" id="mBtnBackToDetailsUpdate">Close</button>');
-  document.getElementById('mBtnBackToDetailsUpdate')?.addEventListener('click', () => uiDeps.hideModal?.());
+  d.showModal?.(`Updating ${h.name}`, `<div id="singleHostExecRoot" class="fleet-modal-root"><div class="fleet-exec-log"><div class="fleet-exec-header"><span id="singleHostStepLabel">Updating 1/2 · ${esc(h.name)}</span><span id="singleHostTimer" class="fleet-exec-timer">0:00.0</span></div><div id="singleHostExecList" class="fleet-exec-list"></div><div id="singleHostSummary" class="fleet-exec-summary" style="display: none;"></div></div></div>`, '<button class="btn btn-secondary" id="mBtnBackToDetailsUpdate">Close</button>');
+  const initBtn = document.getElementById('mBtnBackToDetailsUpdate');
+  if (initBtn) initBtn.onclick = () => d.hideModal?.();
 
   const renderSingle = () => {
     const active = runState.status === 'running';
@@ -379,13 +381,16 @@ export async function runSingleHostUpdate(h, deps = null) {
       runState = applyUpdateProgressEvent(runState, evt, Date.now());
       renderSingle();
     });
-    if (runState.status !== 'error') { await uiDeps.fetchHosts?.(); await uiDeps.fetchSessions?.(); }
+    if (runState.status === 'running') {
+      runState = applyUpdateProgressEvent(runState, { type: 'error', message: 'Update stream ended before completion' }, Date.now());
+    }
+    if (runState.status !== 'error') { await d.fetchHosts?.(); await d.fetchSessions?.(); }
   } catch (err) {
     runState = applyUpdateProgressEvent(runState, { type: 'error', message: err.message }, Date.now());
   } finally {
     if (singleTickerId) { clearInterval(singleTickerId); singleTickerId = null; }
     renderSingle();
     const btn = document.getElementById('mBtnBackToDetailsUpdate');
-    if (btn) { btn.textContent = '← Go Back to Details'; btn.onclick = () => uiDeps.showHostSummaryModal?.(h); }
+    if (btn) { btn.textContent = '← Go Back to Details'; btn.onclick = () => d.showHostSummaryModal?.(h); }
   }
 }
