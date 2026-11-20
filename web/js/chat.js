@@ -1817,6 +1817,8 @@ function executeClientAction(tabObj, actionName) {
   }
 }
 
+let interactiveCardSeq = 0;
+
 function renderInteractiveBlockCard(tabObj, blocked, toolName) {
   if (!tabObj || !tabObj.chatMessagesEl || !blocked) return;
 
@@ -1948,6 +1950,7 @@ function renderInteractiveBlockCard(tabObj, blocked, toolName) {
       await submitSessionResponse(tabObj, 'reject', feedback);
     });
   } else {
+    const cardUid = ++interactiveCardSeq;
     const questions = (Array.isArray(blocked.questions) && blocked.questions.length > 0)
       ? blocked.questions
       : [{
@@ -1960,6 +1963,7 @@ function renderInteractiveBlockCard(tabObj, blocked, toolName) {
     questions.forEach((q, qIdx) => {
       const inputType = q.multi_select ? 'checkbox' : 'radio';
       const opts = Array.isArray(q.options) ? q.options : [];
+      const fieldName = `q_${cardUid}_${qIdx}`;
       questionsHtml += `
         <div class="interactive-question-group" data-q-idx="${qIdx}">
           ${q.header ? `<div class="interactive-question-header">${escapeHtml(q.header)}</div>` : ''}
@@ -1967,12 +1971,12 @@ function renderInteractiveBlockCard(tabObj, blocked, toolName) {
           <div class="interactive-options-list">
             ${opts.map((opt, oIdx) => `
               <label class="interactive-option-label">
-                <input type="${inputType}" name="q_${qIdx}" value="${escapeHtml(opt)}" ${oIdx === 0 && !q.multi_select ? 'checked' : ''} />
+                <input type="${inputType}" name="${fieldName}" value="${escapeHtml(opt)}" ${oIdx === 0 && !q.multi_select ? 'checked' : ''} />
                 <span>${escapeHtml(opt)}</span>
               </label>
             `).join('')}
             <label class="interactive-option-label">
-              <input type="${inputType}" name="q_${qIdx}" value="__other__" />
+              <input type="${inputType}" name="${fieldName}" value="__other__" />
               <span>Other</span>
             </label>
             <div class="interactive-other-box" style="display: none;">
@@ -2004,6 +2008,7 @@ function renderInteractiveBlockCard(tabObj, blocked, toolName) {
 
       allInputs.forEach(inp => {
         inp.addEventListener('change', () => {
+          if (card.classList.contains('answered')) return;
           if (otherRadio.checked) {
             otherBox.style.display = 'block';
             otherInput.focus();
@@ -2016,6 +2021,7 @@ function renderInteractiveBlockCard(tabObj, blocked, toolName) {
 
     const btnSubmit = card.querySelector('.btn-submit-question');
     btnSubmit.addEventListener('click', async () => {
+      if (card.classList.contains('answered')) return;
       const answers = [];
       card.querySelectorAll('.interactive-question-group').forEach(group => {
         const checked = group.querySelectorAll('input[type="radio"]:checked, input[type="checkbox"]:checked');
@@ -2038,6 +2044,12 @@ function renderInteractiveBlockCard(tabObj, blocked, toolName) {
 
       btnSubmit.disabled = true;
       card.classList.add('answered');
+      card.querySelectorAll('input[type="radio"], input[type="checkbox"], .interactive-other-input').forEach(inp => {
+        inp.disabled = true;
+        if (inp.classList.contains('interactive-other-input')) {
+          inp.readOnly = true;
+        }
+      });
       card.querySelector('.interactive-card-actions').innerHTML = `<span class="interactive-answered-badge">✓ Answered: ${escapeHtml(finalAnswer)}</span>`;
       await submitSessionResponse(tabObj, 'answer', finalAnswer);
     });
