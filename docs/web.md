@@ -193,6 +193,12 @@ It is embedded directly into the `ackbard` Go binary and served on `http://127.0
 * **1-Click Source Copy:** Includes a dedicated **`[Copy Text]`** button (`.btn-copy-mermaid`) to copy the diagram source directly to the clipboard.
 * **Multi-Surface Integration:** Enabled across interactive chat transcripts, `ExitPlanMode` plan approval cards, Right Inspector Pane markdown document/plan viewers, and Kanban task deliverable modals.
 
+### ⚡ 12. Fleet & Single-Host Update Progress ([`fleet-update.js`](../web/js/fleet-update.js))
+* **Live Execution Log:** Streams `POST /v1/update?stream=true` and `POST /v1/hosts/update?stream=true` SSE steps (`preflight`, `compiling`, `downloading`, `updating_host`, `complete`) with per-step durations.
+* **100ms Elapsed Timer & `1/N` Progress:** Updates modal timer every `100ms` and advances `#btnExecuteUpdate` through `⏳ Updating 1/N...` to `N/N`.
+* **Background Execution & Badge Sync:** Dismissing the modal keeps updates running while `#updateBadge` mirrors `⏳ Updating k/N · <host> (m:ss)` and re-attaches on click.
+* **Deferred UI Reload:** Prompts `✅ Updated to v<ver> — Click to Reload` on `#updateBadge` after background restarts; open modals reload automatically.
+
 
 ---
 
@@ -238,6 +244,7 @@ The web frontend is organized as zero-build native ECMAScript modules (`<script 
 * **`palette.js`**: Command palette fuzzy search (`Cmd+K` / `Ctrl+K`) and dispatcher launcher.
 * **`context-menu.js`**: Context menus for sessions, groups, tabs, and chat files.
 * **`modals.js`**: Modal dialogs for new sessions, groups, hosts, settings (including Push Notifications `ntfy.sh` topic configuration, test notifications, and fleet-wide propagation), and context handover.
+* **[`fleet-update.js`](../web/js/fleet-update.js)**: Leaf singleton controller for fleet and single-host update SSE streams, `100ms` timer, `1/N` progress, and `#updateBadge` background sync.
 * **`statusbar.js`**: Status bar indicators.
 * **`app.js`**: Main module entrypoint, event listeners, and lifecycle boot.
 * **`web/app.js`**: Backward-compatibility proxy dynamically importing `/js/app.js`.

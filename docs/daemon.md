@@ -15,7 +15,8 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 8. **Background Session Scanner:** Periodically inspects `tmux list-panes` and on-disk conversation directories ([`session_scanner.go`](../internal/daemon/session_scanner.go)) to reconcile sessions, reconstruct orphaned managed tmux sessions, and supervise Ackbar-managed agent sessions.
 
 ### Modular Daemon File Layout (`internal/daemon/`)
-* **`server.go`:** Core `Server` struct, HTTP `Mux()` route registration, token `authMiddleware`, CORS wrapper, SSE `/v1/events` broadcaster with immediate header flush and `: keepalive\n\n` heartbeat (20s default), background loop, version/update/settings/shutdown handlers, and normalized OS hostname fallback (`DefaultSystemHostName`).
+* **`server.go`:** Core `Server` struct, HTTP `Mux()` route registration, token `authMiddleware`, CORS wrapper, SSE `/v1/events` broadcaster with immediate header flush and `: keepalive\n\n` heartbeat (20s default), background loop, version/settings/shutdown handlers, and normalized OS hostname fallback (`DefaultSystemHostName`).
+* **[`server_update.go`](../internal/daemon/server_update.go):** Fleet (`/v1/update`) and host (`/v1/hosts/update`) SSE progress streams (`UpdateProgressEvent`), preflight step counts, `(goos, goarch)` compile deduplication.
 * **`server_hooks.go`:** Hook ingestion (`/v1/hooks/<agent>`), per-session FIFO serialization (`reserveSessionHook`), managed-only resolution, spawning adoption, in-place `/clear` / `/reset` rotation, pure-headless `Cwd` preservation, and subagent tracking.
 * **`server_sessions.go`:** Session listing, maintenance purge, remote-host proxy resolution (`resolveSessionOrProxy`), lifecycle control actions (`/v1/sessions/control`), session configuration (`PATCH /v1/sessions/{id}/config` with `normalizeModelInput`), interactive response dispatch (`applyInteractiveResponse`, `/v1/sessions/respond`), mode switching between headless and tmux (`/v1/sessions/take-wheel` and `/v1/sessions/switch-headless`), session spawn (`/v1/sessions/spawn`), and meta-routing (`/v1/meta/resolve`).
 * **`server_suggestions.go`:** Slash (`/` via builtins, `agent.CommandCatalog`, workspace/skills), file (`@`, 10s cache, `git ls-files`/`WalkDir` pruned via `IsProtectedHomeWalkDir`), and model suggestions (`GET /v1/sessions/{id}/suggestions`, 5m Antigravity cache).
@@ -41,7 +42,7 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 * **`rate_limit.go`:** Rate-limit reset timestamp parsers (pipe-delimited epoch, relative durations, 12h/24h/month clock times with past rollover and +1m safety buffer) and `/delay` duration/slash-command parsers.
 * **`server_subagents.go`:** Subagent discovery endpoint (`/v1/sessions/subagents`) and in-memory/disk subagent lifecycle reconciliation.
 * **`server_accounts.go`:** Multi-account profile management (`/v1/accounts`), agent discovery (`/v1/agents/discovery`), provider catalog (`/v1/providers`), and fleet propagation.
-* **`server_hosts.go` & `daemon_restart.go`:** Remote host health tracking, SSH target resolution, host CRUD (`/v1/hosts`), cross-compiled remote upgrades (`/v1/hosts/update`), service-manager-aware restart scripts, and resilient SSH tunnel management (`/v1/hosts/reconnect`, `ensureHostTunnels`).
+* **`server_hosts.go` & `daemon_restart.go`:** Remote host health tracking, SSH target resolution, host CRUD (`/v1/hosts`), remote platform binary prepare/deploy helpers, service-manager-aware restart scripts, and resilient SSH tunnel management (`/v1/hosts/reconnect`, `ensureHostTunnels`).
 * **`server_projects.go`:** Workspace document discovery (`/v1/documents`, pruned via `IsProtectedHomeWalkDir`), tree node CRUD and move (`/v1/nodes`), project creation (`/v1/projects/create`), worktree/path normalization, and VS Code URI launching (`/v1/editor/open`).
 * **`tcc_guard.go`:** Prunes `$HOME` TCC-protected containers (`Library`, `Pictures`, `Music`, `Movies`, `Desktop`, `Documents`, `Downloads`, `Public`, `.Trash`) and media bundles (`*.photoslibrary`, `*.photolibrary`, `*.aplibrary`, `*.musiclibrary`, `*.tvlibrary`, `*.theater`) during directory walks.
 * **`files.go` & `files_resolve.go`:** Workspace file serving (`GET /v1/files/content`), external launching (`POST /v1/files/open`), sandbox CSP headers, and path resolution (worktrees, brain, subagents, cross-OS homes).
@@ -95,7 +96,7 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 | `GET` | `/v1/nodes/paths` | Returns registered host execution paths (`node_host_paths`) for tree nodes. |
 | `POST` | `/v1/nodes/paths` | Registers or updates a host-specific project execution path (`node_host_paths`) for a node. |
 | `GET` | `/v1/hosts` | Returns registered local and remote compute hosts. |
-| `POST` | `/v1/hosts/update` | Upgrades and restarts `ackbard` on a remote target host. |
+| `POST` | `/v1/hosts/update` | Upgrades and restarts `ackbard` on a target remote host; streams `UpdateProgressEvent` SSE when `?stream=true` or `Accept: text/event-stream` is set. |
 | `GET` | `/v1/tasks` | Returns tasks across all projects with associated workers, external refs, and deliverable headers (`has_content_md: true`, omitting inline `content_md`). Supports `?federated=true` and `?reconcile_prs=true` (on-demand GitHub PR state check via `gh pr view`). |
 | `POST` | `/v1/tasks` | Creates or updates a task; resolves canonical tree scope, clears subprojects on move, and auto-marks bound worker sessions `Done` on `DONE`. |
 | `DELETE` | `/v1/tasks` | Soft-deletes a task (`deleted_at = now`) and cascades cleanup across workers, workstreams, external refs, and deliverables for LWW peer sync. |
@@ -121,7 +122,7 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 | `POST` | `/v1/sessions/auth-callback` | Completes active OAuth flow by relaying callback URL/code to loopback listener (`127.0.0.1:<port>`) or subprocess stdin. |
 | `GET` | `/v1/sessions/{id}/mcp-status` | Returns sanitized configured MCP servers and Google Workspace plugin authentication statuses (`10s` TTL cache, `?refresh=1` bypass). |
 | `POST` | `/v1/sessions/summarize-speech` | On-demand speech summarizer with 2-level caching (in-memory + SQLite `speech_summaries`), headless Haiku synthesis ($0 flat OAuth), optional cloud API, and pure-Go structural AST fallback. |
-| `POST` | `/v1/update` | Updates daemon executable; if headless turns are active, daemon restart is deferred (`restart_deferred: true`) until active turns drain. |
+| `POST` | `/v1/update` | Upgrades local and remote hosts (deduplicated per `(goos, goarch)`), defers local restart during active turns, and streams SSE (`?stream=true` / `Accept: text/event-stream`). |
 | `POST` | `/v1/shutdown` | Gracefully shuts down daemon (supports `?drain=true` to defer restart until active headless turns complete). |
 | `GET` | `/v1/files/content` | Streams workspace or artifact file content (supports `path`, `session_id`, `cwd`, `download`, SVG sandbox CSP). |
 | `POST` | `/v1/files/open` | Launches local or staged remote file in default application or VS Code (supports `path`, `session_id`, `cwd`, `app`). |
