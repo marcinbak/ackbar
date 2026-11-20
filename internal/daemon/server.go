@@ -36,48 +36,53 @@ type HostHealth struct {
 }
 
 type Server struct {
-	db                   *DB
-	providers            map[string]Provider
-	registryMu           sync.RWMutex
-	registry             *agent.Registry
-	subscribers          map[chan *Session]bool
-	subMutex             sync.Mutex
-	webFS                fs.FS
-	configuredToken      string
-	relayClient          *relay.Client
-	headless             *HeadlessRunner
-	hostName             string
-	displayName          string
-	hostHealthMap        map[string]*HostHealth
-	hostHealthMu         sync.RWMutex
-	cachedCapabilities   []string
-	capabilitiesCachedAt time.Time
-	activeSubagents      map[string][]*SubagentInfo
-	subagentsMu          sync.RWMutex
-	sessionHookLocks     sync.Map
-	blockedBySubagent    sync.Map
-	recentTmuxRestarts   sync.Map
-	homeDir              string
-	livenessRunning      atomic.Bool
-	lastLivenessAt       atomic.Int64
-	speechCacheMu        sync.RWMutex
-	speechCache          map[string]*SpeechSummary
-	speechLLMRunner      func(ctx context.Context, content string) (string, []string, error)
-	ntfyServer           string
-	ntfyTopic            string
-	ntfyClient           *http.Client
-	ntfyHook             func(payload NtfyPayload)
-	voiceBridgeMu        sync.Mutex
-	voiceBridge          *MicServeBridge
-	authBroker           *AuthBroker
-	promptDedup          *PromptDedup
-	eventsKeepaliveNs    atomic.Int64
-	shutdownExitFn       func(int)
-	restartDaemonFn      func()
-	transcriptCacheMu    sync.RWMutex
-	transcriptCache      map[string]*transcriptCacheEntry
-	subagentDiskMu       sync.RWMutex
-	subagentDiskCache    map[string]*subagentDiskCacheEntry
+	db                        *DB
+	providers                 map[string]Provider
+	registryMu                sync.RWMutex
+	registry                  *agent.Registry
+	subscribers               map[chan *Session]bool
+	subMutex                  sync.Mutex
+	webFS                     fs.FS
+	configuredToken           string
+	relayClient               *relay.Client
+	headless                  *HeadlessRunner
+	hostName                  string
+	displayName               string
+	hostHealthMap             map[string]*HostHealth
+	hostHealthMu              sync.RWMutex
+	cachedCapabilities        []string
+	capabilitiesCachedAt      time.Time
+	activeSubagents           map[string][]*SubagentInfo
+	subagentsMu               sync.RWMutex
+	sessionHookLocks          sync.Map
+	blockedBySubagent         sync.Map
+	recentTmuxRestarts        sync.Map
+	homeDir                   string
+	livenessRunning           atomic.Bool
+	lastLivenessAt            atomic.Int64
+	speechCacheMu             sync.RWMutex
+	speechCache               map[string]*SpeechSummary
+	speechLLMRunner           func(ctx context.Context, content string) (string, []string, error)
+	ntfyServer                string
+	ntfyTopic                 string
+	ntfyClient                *http.Client
+	ntfyHook                  func(payload NtfyPayload)
+	voiceBridgeMu             sync.Mutex
+	voiceBridge               *MicServeBridge
+	authBroker                *AuthBroker
+	promptDedup               *PromptDedup
+	eventsKeepaliveNs         atomic.Int64
+	shutdownExitFn            func(int)
+	restartDaemonFn           func()
+	checkLatestReleaseFn      func(ctx context.Context, force bool) (*version.ReleaseInfo, error)
+	updateLocalFn             func(ctx context.Context) (*version.UpdateResult, error)
+	detectRemotePlatformFn    func(host *HostRecord) (goos, goarch string, err error)
+	preparePlatformBinariesFn func(ctx context.Context, targetVer, srcDir, goos, goarch, destDir string, onDetail func(string)) (prepared bool, method string)
+	deployRemoteHostFn        func(host *HostRecord, targetVer, goos, goarch, preparedDir string, binariesPrepared bool, onDetail func(string)) (map[string]interface{}, int, error)
+	transcriptCacheMu         sync.RWMutex
+	transcriptCache           map[string]*transcriptCacheEntry
+	subagentDiskMu            sync.RWMutex
+	subagentDiskCache         map[string]*subagentDiskCacheEntry
 }
 
 const defaultEventsKeepaliveInterval = 20 * time.Second
@@ -861,99 +866,6 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_ = json.NewEncoder(w).Encode(resp)
-}
-
-func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		force := r.URL.Query().Get("force") == "true"
-		info, err := version.CheckLatestRelease(r.Context(), force)
-		if err != nil {
-			http.Error(w, fmt.Sprintf("Failed to check for updates: %v", err), http.StatusBadGateway)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(info)
-
-	case http.MethodPost:
-		localOnly := r.URL.Query().Get("local_only") == "true"
-		info, _ := version.CheckLatestRelease(r.Context(), true)
-		targetVer := version.Version
-		if info != nil && version.IsNewer(info.Version, targetVer) {
-			targetVer = info.Version
-		}
-
-		var res *version.UpdateResult
-		var localRestartNeeded bool
-
-		if info != nil && version.IsNewer(info.Version, version.Version) {
-			var err error
-			res, err = version.UpdateToLatest(r.Context(), "")
-			if err != nil {
-				http.Error(w, fmt.Sprintf("Update failed: %v", err), http.StatusInternalServerError)
-				return
-			}
-			localRestartNeeded = true
-			if res.NewVersion != "" && res.NewVersion != "latest" {
-				targetVer = res.NewVersion
-			}
-		} else {
-			res = &version.UpdateResult{
-				PreviousVersion: version.Version,
-				NewVersion:      version.Version,
-				Method:          "local",
-				Message:         fmt.Sprintf("Local daemon is already at v%s.", version.Version),
-			}
-		}
-
-		var hostSummaries []HostUpdateSummary
-		if !localOnly {
-			hostSummaries = s.UpdateOutdatedRemoteHosts(targetVer)
-			var msgLines []string
-			if res.Message != "" {
-				msgLines = append(msgLines, res.Message)
-			}
-			for _, hs := range hostSummaries {
-				if hs.Message != "" {
-					msgLines = append(msgLines, fmt.Sprintf("• %s: %s", hs.Host, hs.Message))
-				}
-			}
-			res.Message = strings.Join(msgLines, "\n")
-		}
-
-		var deferred bool
-		var activeCount int
-		restartFn := s.restartDaemonFn
-		if restartFn == nil {
-			restartFn = restartLocalDaemonAsync
-		}
-		if localRestartNeeded {
-			if s.headless != nil {
-				deferred, activeCount = s.headless.RequestRestartAfterDrain(restartFn)
-			} else {
-				restartFn()
-			}
-		}
-
-		if deferred {
-			res.Message = strings.TrimSpace(res.Message + fmt.Sprintf("\n⏳ Local daemon restart deferred until %d active headless turn(s) complete.", activeCount))
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"previous_version":      res.PreviousVersion,
-			"new_version":           targetVer,
-			"method":                res.Method,
-			"message":               res.Message,
-			"host_results":          hostSummaries,
-			"restarting_local":      localRestartNeeded && !deferred,
-			"restart_deferred":      deferred,
-			"active_headless_turns": activeCount,
-		})
-
-	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-	}
 }
 
 func (s *Server) populateDefaultSettings(settings map[string]string) map[string]string {

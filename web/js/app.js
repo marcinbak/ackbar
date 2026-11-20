@@ -808,6 +808,11 @@ function setupEventListeners() {
   if (el.modalCloseBtn) {
     el.modalCloseBtn.addEventListener('click', hideModal);
   }
+  if (el.modalOverlay) {
+    el.modalOverlay.addEventListener('click', (e) => {
+      if (e.target === el.modalOverlay) hideModal();
+    });
+  }
 
   if (el.btnCloseInspector) {
     el.btnCloseInspector.addEventListener('click', () => {

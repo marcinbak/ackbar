@@ -32,6 +32,7 @@ func TestGetFS(t *testing.T) {
 		"js/chat.js",
 		"js/context-menu.js",
 		"js/details.js",
+		"js/fleet-update.js",
 		"js/mermaid.js",
 		"js/modals.js",
 		"js/palette.js",

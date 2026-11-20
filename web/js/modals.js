@@ -15,6 +15,7 @@ import {
   getSelfDisplayName
 } from './utils.js';
 import {
+  fetchVersion,
   fetchHosts,
   fetchSessions,
   fetchTreeNodes,
@@ -30,6 +31,7 @@ import { openSessionInTab, setTabViewMode } from './tabs.js';
 import { rotateSessionTabInPlace } from './chat-commands.js';
 import { openDocViewerTab } from './details.js';
 import { showUploadToast } from './terminal.js';
+import { openFleetUpdateModal, notifyUpdateModalClosed } from './fleet-update.js';
 
 
 function showSettingsModal() {
@@ -1099,6 +1101,7 @@ async function handleSpawnNewSession() {
 
 function showModal(title, bodyHtml, footerHtml, options = {}) {
   if (!el.modalOverlay) return;
+  notifyUpdateModalClosed();
   el.modalTitle.textContent = title;
   el.modalBody.innerHTML = bodyHtml;
   el.modalFooter.innerHTML = footerHtml;
@@ -1111,6 +1114,7 @@ function hideModal() {
     el.modalCard.classList.remove('modal-card-wide');
   }
   if (el.modalOverlay) el.modalOverlay.style.display = 'none';
+  notifyUpdateModalClosed();
 }
 
 // Handover Modal Dialog
@@ -1739,151 +1743,20 @@ async function showHostSummaryModal(h) {
 }
 
 function showUpdateModal(data = {}) {
-  const curVer = state.version || '...';
-  const latestVer = data.latest_version || state.latestVersion || curVer || 'latest';
-  const releaseUrl = data.release_url || state.releaseUrl || `https://github.com/marcinbak/ackbar/releases/tag/v${latestVer}`;
-  const isHomebrew = data.is_homebrew ?? state.isHomebrew;
-  const methodStr = isHomebrew ? 'Homebrew (brew upgrade ackbar)' : 'Prebuilt Binary (~/.local/bin) + SSH Cross-Compile';
-
-  const selfName = getSelfHostName();
-  const fleetRows = [
-    { name: `${selfName} (local)`, online: true, version: curVer },
-    ...(state.hosts || []).filter(h => !isLocalHost(h.name)).map(h => ({
-      name: h.name,
-      online: !!h.online,
-      version: h.version || 'unknown'
-    }))
-  ];
-
-  const fleetHtml = fleetRows.map(r => {
-    const isOutdated = r.online && r.version && r.version !== 'online' && r.version !== latestVer;
-    const statusBadge = !r.online
-      ? `<span style="color: var(--text-muted);">🔴 Offline (skipped)</span>`
-      : isOutdated
-        ? `<span style="color: #ffbb00; font-weight: 600;">⚡ v${escapeHtml(r.version)} ➔ v${escapeHtml(latestVer)}</span>`
-        : `<span style="color: var(--accent-green);">✅ v${escapeHtml(r.version)} (Up to date)</span>`;
-    return `
-      <div style="display: flex; justify-content: space-between; align-items: center; padding: 6px 10px; border-bottom: 1px solid rgba(255,255,255,0.05); font-size: 12px;">
-        <strong style="color: #fff;">${escapeHtml(r.name)}</strong>
-        <span style="font-family: var(--font-mono);">${statusBadge}</span>
-      </div>
-    `;
-  }).join('');
-
-  const bodyHtml = `
-    <div style="padding: 12px 4px;">
-      <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px; background: rgba(255, 187, 0, 0.1); border: 1px solid rgba(255, 187, 0, 0.3); border-radius: 8px; padding: 12px 16px;">
-        <span style="font-size: 24px;">⚡</span>
-        <div>
-          <div style="font-size: 15px; font-weight: 600; color: #ffbb00;">Fleet Version & Update Manager</div>
-          <div style="font-size: 13px; color: var(--text-muted);">Target Release: <strong style="color: #fff;"><code>v${escapeHtml(latestVer)}</code></strong></div>
-        </div>
-      </div>
-      <div style="margin-bottom: 12px; background: rgba(255,255,255,0.02); border: 1px solid var(--border-color); border-radius: 6px; overflow: hidden;">
-        ${fleetHtml}
-      </div>
-      <div style="margin-bottom: 12px; font-size: 12px; color: var(--text-muted);">
-        <strong>Update Strategy:</strong> <code>${escapeHtml(methodStr)}</code>
-      </div>
-      <div style="margin-bottom: 12px; font-size: 12px;">
-        <a href="${escapeHtml(releaseUrl)}" target="_blank" rel="noopener noreferrer" style="color: var(--accent-blue); text-decoration: underline;">
-          🔗 View Release Notes & Artifacts on GitHub
-        </a>
-      </div>
-      <div id="updateOutput" style="display: none; white-space: pre-wrap; padding: 10px; background: rgba(0,0,0,0.5); border-radius: 6px; font-family: monospace; font-size: 12px; max-height: 160px; overflow-y: auto; margin-top: 10px;"></div>
-    </div>
-  `;
-
-  const footerHtml = `
-    <button class="btn btn-secondary" id="btnDismissUpdate">Dismiss</button>
-    <button class="btn btn-primary" id="btnExecuteUpdate" style="background: #ffbb00; color: #000; font-weight: 600;">⚡ Upgrade All Outdated Hosts to v${escapeHtml(latestVer)}</button>
-  `;
-
-  showModal('⚡ Ackbar Fleet Update', bodyHtml, footerHtml);
-
-  const waitForDaemonReadyAndReload = async (expectedVer) => {
-    const deadline = Date.now() + 8000;
-    // Give local daemon 900ms to begin its async restart if needed
-    await new Promise(r => setTimeout(r, 900));
-    while (Date.now() < deadline) {
-      try {
-        const vRes = await fetch('/v1/version', { cache: 'no-store' });
-        if (vRes.ok) {
-          const vData = await vRes.json();
-          if (!expectedVer || !vData.version || vData.version === expectedVer) {
-            break;
-          }
-        }
-      } catch (_) {
-        // Daemon is mid-restart; keep polling
-      }
-      await new Promise(r => setTimeout(r, 600));
-    }
-    location.reload();
-  };
-
-  document.getElementById('btnDismissUpdate')?.addEventListener('click', hideModal);
-  document.getElementById('btnExecuteUpdate')?.addEventListener('click', async () => {
-    const btn = document.getElementById('btnExecuteUpdate');
-    const out = document.getElementById('updateOutput');
-    if (btn) {
-      btn.disabled = true;
-      btn.textContent = '⏳ Updating Fleet Hosts...';
-    }
-    if (out) {
-      out.style.display = 'block';
-      out.textContent = 'Upgrading local daemon and connected remote hosts... please wait (5–15s).';
-    }
-
-    try {
-      const res = await fetch('/v1/update', { method: 'POST' });
-      const resData = await res.json().catch(() => ({}));
-      if (res.ok) {
-        const hostResults = Array.isArray(resData.host_results) ? resData.host_results : [];
-        const failedHosts = hostResults.filter(h => h && h.status === 'error');
-        const anyHostDeferred = hostResults.some(h => h && h.status === 'restart_deferred');
-        const localDeferred = Boolean(resData.restart_deferred);
-
-        const dismissBtn = document.getElementById('btnDismissUpdate');
-        if (dismissBtn) {
-          dismissBtn.textContent = 'Close';
-          dismissBtn.disabled = false;
-        }
-
-        if (out) out.textContent = resData.message || 'Fleet update completed!';
-        if (failedHosts.length > 0) {
-          if (btn) {
-            btn.disabled = false;
-            btn.textContent = '⚠️ Retry Failed Hosts';
-          }
-        } else if (localDeferred) {
-          if (btn) {
-            btn.disabled = true;
-            btn.textContent = '⏳ Restart Scheduled After Active Turn';
-          }
-          if (typeof showUploadToast === 'function') {
-            showUploadToast('Update installed — daemon will restart when active turn finishes', 'info', 4000);
-          }
-        } else if (resData.restarting_local === false) {
-          if (btn) {
-            btn.disabled = true;
-            btn.textContent = anyHostDeferred ? '⏳ Remote Daemon(s) Draining' : '✅ Fleet Updated!';
-          }
-        } else {
-          if (btn) btn.textContent = '✅ All Hosts Updated! Reloading...';
-          await waitForDaemonReadyAndReload(resData.new_version || latestVer);
-        }
-      } else {
-        if (out) out.textContent = `Error: ${resData.message || res.statusText}`;
-        if (btn) {
-          btn.disabled = false;
-          btn.textContent = 'Retry Fleet Update';
-        }
-      }
-    } catch (e) {
-      if (out) out.textContent = 'Update triggered. Waiting for daemon to finish restarting...';
-      await waitForDaemonReadyAndReload(latestVer);
-    }
+  openFleetUpdateModal(data, {
+    showModal,
+    hideModal,
+    showToast: showUploadToast,
+    fetchVersion,
+    fetchHosts,
+    getSnapshot: () => ({
+      version: state.version,
+      latestVersion: state.latestVersion,
+      releaseUrl: state.releaseUrl,
+      isHomebrew: state.isHomebrew,
+      selfHostName: getSelfHostName(),
+      hosts: (state.hosts || []).filter(h => !isLocalHost(h.name))
+    })
   });
 }
 
