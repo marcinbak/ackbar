@@ -5226,6 +5226,11 @@ body, html {
   border-color: rgba(59, 130, 246, 0.35);
 }
 
+.chat-interactive-card.answered .interactive-option-label {
+  cursor: default;
+  pointer-events: none;
+}
+
 .interactive-other-box {
   margin-top: 4px;
 }
@@ -5243,6 +5248,12 @@ body, html {
 .interactive-other-input:focus {
   border-color: var(--accent-blue);
   outline: none;
+}
+
+.chat-interactive-card.answered .interactive-other-input {
+  cursor: default;
+  pointer-events: none;
+  opacity: 0.7;
 }
 
 .interactive-answered-badge {

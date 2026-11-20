@@ -53,7 +53,13 @@ class MockElement {
     this.scrollTop = 0;
     this.scrollHeight = 100;
     this.clientHeight = 100;
+    this.id = '';
+    this.type = '';
+    this.name = '';
     this.value = '';
+    this.checked = false;
+    this.disabled = false;
+    this.readOnly = false;
     this.listeners = new Map();
   }
 
@@ -214,6 +220,12 @@ class MockElement {
     copy._textContent = this._textContent;
     copy.id = this.id;
     copy.title = this.title;
+    copy.type = this.type;
+    copy.name = this.name;
+    copy.value = this.value;
+    copy.checked = this.checked;
+    copy.disabled = this.disabled;
+    copy.readOnly = this.readOnly;
     if (deep) {
       for (const child of this.children) {
         copy.appendChild(child.cloneNode(true));
@@ -257,6 +269,21 @@ class MockElement {
   }
 
   click() {
+    if (this.disabled) return;
+    if (this.tagName === 'INPUT' && this.type === 'checkbox') {
+      this.checked = !this.checked;
+      this.dispatchEvent({ type: 'change', target: this, preventDefault() {}, stopPropagation() {} });
+    } else if (this.tagName === 'INPUT' && this.type === 'radio') {
+      if (this.name) {
+        let root = this;
+        while (root.parentNode) root = root.parentNode;
+        for (const r of root.querySelectorAll('input[type="radio"]')) {
+          if (r.name === this.name) r.checked = false;
+        }
+      }
+      this.checked = true;
+      this.dispatchEvent({ type: 'change', target: this, preventDefault() {}, stopPropagation() {} });
+    }
     const list = this.listeners.get('click');
     if (list) {
       for (const fn of [...list]) {
@@ -334,7 +361,37 @@ function matchesSelector(el, sel) {
     if (matchesSelector(el, notPart)) return false;
   }
   if (!baseSel) return true;
-  const parts = baseSel.split(/(?=[.#])/);
+
+  const attrSelectors = [];
+  let strippedSel = baseSel.replace(/\[([^\]]+)\]/g, (_, expr) => {
+    attrSelectors.push(expr.trim());
+    return '';
+  });
+
+  const pseudoSelectors = [];
+  strippedSel = strippedSel.replace(/:([a-zA-Z0-9_-]+)/g, (_, pseudo) => {
+    pseudoSelectors.push(pseudo);
+    return '';
+  });
+
+  for (const expr of attrSelectors) {
+    const eqMatch = expr.match(/^([a-zA-Z0-9_-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s]+))$/);
+    if (eqMatch) {
+      const attrName = eqMatch[1];
+      const expected = eqMatch[2] ?? eqMatch[3] ?? eqMatch[4];
+      const actual = el[attrName] !== undefined ? String(el[attrName]) : el.getAttribute(attrName);
+      if (actual !== expected) return false;
+    } else if (!el.hasAttribute(expr)) {
+      return false;
+    }
+  }
+
+  for (const pseudo of pseudoSelectors) {
+    if (pseudo === 'checked' && !el.checked) return false;
+    if (pseudo === 'disabled' && !el.disabled) return false;
+  }
+
+  const parts = strippedSel.split(/(?=[.#])/);
   for (const p of parts) {
     if (!p) continue;
     if (p.startsWith('.')) {
@@ -406,6 +463,19 @@ function parseHtmlFragment(html, parent) {
           if (k && v) el.style[k] = v;
         }
       }
+    }
+    const attrTokenRegex = /([a-zA-Z0-9_-]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
+    for (const am of attrs.matchAll(attrTokenRegex)) {
+      const attrName = am[1].toLowerCase();
+      const attrVal = am[2] ?? am[3] ?? am[4];
+      if (attrName === 'id' && attrVal !== undefined) el.id = attrVal;
+      else if (attrName === 'type' && attrVal !== undefined) el.type = attrVal;
+      else if (attrName === 'name' && attrVal !== undefined) el.name = attrVal;
+      else if (attrName === 'value' && attrVal !== undefined) el.value = attrVal;
+      else if (attrName === 'placeholder' && attrVal !== undefined) el.placeholder = attrVal;
+      else if (attrName === 'checked') el.checked = attrVal !== 'false';
+      else if (attrName === 'disabled') el.disabled = attrVal !== 'false';
+      else if (attrName === 'readonly') el.readOnly = attrVal !== 'false';
     }
 
     if (isSelfClosing) {
@@ -3913,6 +3983,211 @@ test('attachCodeBlockCopyButtons omits .has-code-header and .chat-code-header fo
     await new Promise(r => setTimeout(r, 10));
     assert.equal(getCopied(), 'plain <fallback> output');
   });
+});
+
+test('renderInteractiveBlockCard locks radio options and ignores post-submit interactions after submitting answer', async () => {
+  const container = new MockElement('div');
+  container.className = 'chat-messages-container';
+
+  const tabObj = {
+    id: 'tab-q-radio',
+    chatMessagesEl: container,
+    session: {
+      id: 'claude-code:local:sess-q-radio',
+      agent: 'claude-code',
+      state: 2
+    }
+  };
+
+  const respondCalls = [];
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = async (url, opts = {}) => {
+    if (String(url).includes('/v1/sessions/respond')) {
+      respondCalls.push(opts.body ? JSON.parse(opts.body) : {});
+    }
+    return { ok: true, status: 200, json: async () => ({ status: 'resumed' }) };
+  };
+
+  try {
+    renderInteractiveBlockCard(tabObj, {
+      kind: 'question',
+      question: 'Choose deployment target',
+      options: ['Staging', 'Production']
+    });
+
+    const card = container.querySelector('.chat-interactive-card');
+    assert.ok(card, 'Must render question card');
+
+    const radios = card.querySelectorAll('input[type="radio"]');
+    assert.equal(radios.length, 3);
+    const stagingRadio = radios.find(r => r.value === 'Staging');
+    const prodRadio = radios.find(r => r.value === 'Production');
+    const otherRadio = radios.find(r => r.value === '__other__');
+    const otherInput = card.querySelector('.interactive-other-input');
+    const otherBox = card.querySelector('.interactive-other-box');
+    assert.equal(stagingRadio.checked, true);
+
+    prodRadio.click();
+    assert.equal(prodRadio.checked, true);
+    assert.equal(stagingRadio.checked, false);
+
+    const btnSubmit = card.querySelector('.btn-submit-question');
+    btnSubmit.click();
+    await new Promise((r) => setTimeout(r, 10));
+
+    assert.equal(respondCalls.length, 1);
+    assert.equal(respondCalls[0].action, 'answer');
+    assert.equal(respondCalls[0].answer, 'Production');
+    assert.ok(card.classList.contains('answered'));
+    assert.equal(btnSubmit.disabled, true);
+    assert.equal(prodRadio.checked, true);
+    for (const r of radios) {
+      assert.equal(r.disabled, true);
+    }
+    assert.equal(otherInput.disabled, true);
+    assert.equal(otherInput.readOnly, true);
+
+    // Post-submit click & synthetic change/submit attempts must be ignored
+    otherRadio.click();
+    assert.equal(otherRadio.checked, false);
+    assert.equal(prodRadio.checked, true);
+    assert.equal(otherBox.style.display, 'none');
+
+    otherRadio.checked = true;
+    otherRadio.dispatchEvent({ type: 'change', target: otherRadio });
+    assert.equal(otherBox.style.display, 'none', 'Answered card must ignore change events');
+
+    btnSubmit.dispatchEvent({ type: 'click', target: btnSubmit });
+    await new Promise((r) => setTimeout(r, 10));
+    assert.equal(respondCalls.length, 1, 'Answered card must ignore repeat submit clicks');
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});
+
+test('renderInteractiveBlockCard multi_select question with Other disables checkboxes and locks custom input on submit', async () => {
+  const container = new MockElement('div');
+  container.className = 'chat-messages-container';
+
+  const tabObj = {
+    id: 'tab-q-multi',
+    chatMessagesEl: container,
+    session: {
+      id: 'claude-code:local:sess-q-multi',
+      agent: 'claude-code',
+      state: 2
+    }
+  };
+
+  const respondCalls = [];
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = async (url, opts = {}) => {
+    if (String(url).includes('/v1/sessions/respond')) {
+      respondCalls.push(opts.body ? JSON.parse(opts.body) : {});
+    }
+    return { ok: true, status: 200, json: async () => ({ status: 'resumed' }) };
+  };
+
+  try {
+    renderInteractiveBlockCard(tabObj, {
+      kind: 'question',
+      questions: [{
+        question: 'Select checks to run',
+        options: ['Unit', 'Lint'],
+        multi_select: true
+      }]
+    });
+
+    const card = container.querySelector('.chat-interactive-card');
+    const checkboxes = card.querySelectorAll('input[type="checkbox"]');
+    assert.equal(checkboxes.length, 3);
+    const unitCb = checkboxes.find(c => c.value === 'Unit');
+    const otherCb = checkboxes.find(c => c.value === '__other__');
+    const otherBox = card.querySelector('.interactive-other-box');
+    const otherInput = card.querySelector('.interactive-other-input');
+
+    unitCb.click();
+    otherCb.click();
+    assert.equal(otherBox.style.display, 'block');
+    otherInput.value = 'Security scan';
+
+    const btnSubmit = card.querySelector('.btn-submit-question');
+    btnSubmit.click();
+    await new Promise((r) => setTimeout(r, 10));
+
+    assert.equal(respondCalls.length, 1);
+    assert.equal(respondCalls[0].action, 'answer');
+    assert.equal(respondCalls[0].answer, 'Unit, Security scan');
+    assert.ok(card.classList.contains('answered'));
+    for (const cb of checkboxes) {
+      assert.equal(cb.disabled, true);
+    }
+    assert.equal(otherInput.disabled, true);
+    assert.equal(otherInput.readOnly, true);
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});
+
+test('renderInteractiveBlockCard scopes radio names per card instance and preserves answered cards', async () => {
+  const container = new MockElement('div');
+  container.className = 'chat-messages-container';
+
+  const tabObj = {
+    id: 'tab-q-multi-cards',
+    chatMessagesEl: container,
+    session: {
+      id: 'claude-code:local:sess-q-seq',
+      agent: 'claude-code',
+      state: 2
+    }
+  };
+
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => ({ status: 'resumed' }) });
+
+  try {
+    renderInteractiveBlockCard(tabObj, {
+      kind: 'question',
+      question: 'First question',
+      options: ['Alpha', 'Beta']
+    });
+    const firstCard = container.querySelector('.chat-interactive-card');
+    const firstBeta = firstCard.querySelector('input[value="Beta"]');
+    firstBeta.click();
+    firstCard.querySelector('.btn-submit-question').click();
+    await new Promise((r) => setTimeout(r, 10));
+    assert.ok(firstCard.classList.contains('answered'));
+
+    // Render an unanswered intermediate card, then replace it with a second question card
+    renderInteractiveBlockCard(tabObj, {
+      kind: 'question',
+      question: 'Stale unanswered question',
+      options: ['Skip']
+    });
+    renderInteractiveBlockCard(tabObj, {
+      kind: 'question',
+      question: 'Second question',
+      options: ['Gamma', 'Delta']
+    });
+
+    const cards = container.querySelectorAll('.chat-interactive-card');
+    assert.equal(cards.length, 2, 'Answered card must remain while unanswered card is replaced');
+    const secondCard = cards[1];
+    assert.equal(cards[0], firstCard);
+    assert.equal(secondCard.classList.contains('answered'), false);
+
+    const card1Radio = firstCard.querySelector('input[type="radio"]');
+    const card2Radio = secondCard.querySelector('input[type="radio"]');
+    assert.notEqual(card1Radio.name, card2Radio.name);
+
+    const secondDelta = secondCard.querySelector('input[value="Delta"]');
+    secondDelta.click();
+    assert.equal(secondDelta.checked, true);
+    assert.equal(firstBeta.checked, true, 'Interacting with second card must not uncheck first answered card radio');
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
 });
 
 
