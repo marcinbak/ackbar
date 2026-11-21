@@ -174,7 +174,9 @@ func main() {
 	server.SetWebFS(web.GetFS())
 
 	// Register Provider Adapters
-	server.RegisterProvider(provider.NewClaudeProvider())
+	if agent.IsLegacyAgent("claude-code", "claude") {
+		server.RegisterProvider(provider.NewClaudeProvider())
+	}
 	if agent.IsLegacyAgent("antigravity", "agy") {
 		server.RegisterProvider(provider.NewAntigravityProvider())
 	}

@@ -154,7 +154,7 @@ func (s *Server) handleDocuments(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 3. Scan .claude/ directory if present
-	(&ClaudeAgentAdapter{}).ListWorkspaceDocuments(home, cwd, nativeID, addDoc)
+	s.agentAdapter("claude-code").ListWorkspaceDocuments(home, cwd, nativeID, addDoc)
 
 	// 4. Scan agent-specific conversation/brain documents
 	if agent != "" && agent != "claude-code" {

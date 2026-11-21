@@ -32,6 +32,8 @@ func (s *Server) computeTranscriptContextAndCost(home string, sess *Session) map
 			sumInputTokens = u.InputTokens
 			outputTokens = u.OutputTokens
 			cacheRead = u.CacheReadTokens
+			cacheWrite = u.CacheWriteTokens
+			thinkingTokens = u.ThinkingTokens
 			lastTurnContextTokens = u.LastTurnContextTokens
 			limitTokens = u.ContextLimitTokens
 			turnCount = u.TurnCount

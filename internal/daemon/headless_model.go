@@ -349,6 +349,9 @@ func (s *Server) resolveSettingsModel(sess *Session) string {
 
 	reg := s.PluginRegistry()
 	if reg != nil {
+		if wmr, ok := reg.AsWorkspaceModelResolver(sess.Agent); ok {
+			return normalizeModelIdentifierWithRegistry(reg, sess.Agent, wmr.ResolveWorkspaceModel(home, sess.Cwd, acc))
+		}
 		if mr, ok := reg.AsModelResolver(sess.Agent); ok {
 			return normalizeModelIdentifierWithRegistry(reg, sess.Agent, mr.ResolveConfiguredModel(home, acc))
 		}

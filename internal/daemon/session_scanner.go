@@ -11,7 +11,7 @@ import (
 	"syscall"
 	"time"
 
-	"ackbar/internal/agent"
+	pkgagent "ackbar/internal/agent"
 	"ackbar/internal/agentutil"
 	"ackbar/internal/tmux"
 )
@@ -189,7 +189,7 @@ func isProcessAlive(pid int) bool {
 
 // isIgnoredAgentCommand returns true if the command line represents a utility subcommand,
 // non-interactive run, or help/version invocation that should not be tracked as an agentic session.
-func isIgnoredAgentCommandWithRegistry(reg *agent.Registry, agentName, fullCmd string) bool {
+func isIgnoredAgentCommandWithRegistry(reg *pkgagent.Registry, agentName, fullCmd string) bool {
 	if reg != nil {
 		if sc, ok := reg.AsScanner(agentName); ok {
 			return sc.IsIgnoredCommand(fullCmd)
@@ -524,7 +524,26 @@ func (s *Server) scanTmuxPanes(ctx context.Context, state *ScanState) {
 		targetNativeID := extractNativeIDFromTmuxName(agent, tmuxName)
 		home, _ := os.UserHomeDir()
 
-		if agent == "claude-code" && (targetNativeID == "" || !IsUUID(targetNativeID)) {
+		if p, ok := s.PluginRegistry().Get(agent); ok {
+			if p.Capabilities().NativeIDStrategy == pkgagent.NativeIDEagerUUID {
+				if targetNativeID == "" || !adapter.IsValidNativeID(targetNativeID) {
+					targetNativeID = ""
+					if home != "" {
+						if sID := adapter.ResolveSessionForPID(ctx, home, pid, nil); sID != "" && IsUUID(sID) {
+							targetNativeID = sID
+						}
+					}
+				}
+			} else if adapter.RequiresResolvedSessionID() {
+				sID := adapter.ResolveSessionForPID(ctx, home, pid, nil)
+				if sID != "" && IsUUID(sID) && sID != targetNativeID && (home == "" || !adapter.IsSubagentSession(home, sID, nil)) {
+					tmuxName, targetNativeID = s.reconcileAntigravityTmuxSession(ctx, state, agent, tmuxName, targetNativeID, sID, pid)
+				}
+				if targetNativeID != "" && home != "" && adapter.IsSubagentSession(home, targetNativeID, nil) {
+					continue
+				}
+			}
+		} else if agent == "claude-code" && (targetNativeID == "" || !IsUUID(targetNativeID)) {
 			targetNativeID = ""
 			if home != "" {
 				sID, _ := findClaudeSessionForPID(home, pid)
@@ -740,8 +759,10 @@ func (s *Server) adoptExistingTmuxSession(ctx context.Context, state *ScanState,
 				if title := tr.ResolveSessionTitle(home, existing.Cwd, existing.NativeID); title != "" && !isRawSessionName(title) {
 					existing.Name = title
 				}
-			} else if meta := tr.ReadSessionMetadata(home, existing.Cwd, existing.NativeID); meta != nil && meta.AITitle != "" && meta.AITitle != existing.Name {
-				existing.Name = meta.AITitle
+			} else if p, pOk := s.PluginRegistry().Get(agent); pOk && p.Capabilities().NativeIDStrategy == pkgagent.NativeIDLazyAdopt {
+				if meta := tr.ReadSessionMetadata(home, existing.Cwd, existing.NativeID); meta != nil && meta.AITitle != "" && meta.AITitle != existing.Name {
+					existing.Name = meta.AITitle
+				}
 			}
 		} else if agent == "antigravity" {
 			if isRawSessionName(existing.Name) {

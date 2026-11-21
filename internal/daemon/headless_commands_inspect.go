@@ -119,18 +119,18 @@ func (s *Server) handleSessionInspect(w http.ResponseWriter, r *http.Request, se
 	switch kind {
 	case "plugins":
 		var out string
-		if sess.Agent == "claude-code" {
-			bin, err := resolveClaudeBinary()
-			if err == nil {
-				out, _ = s.runAllowlistedInspectCmd(r.Context(), sess, bin, "plugin", "list", "--json")
-			}
-		} else if ci, ok := s.PluginRegistry().AsCLIInspector(sess.Agent); ok {
+		if ci, ok := s.PluginRegistry().AsCLIInspector(sess.Agent); ok {
 			if args, ok := ci.InspectSubcommandArgs("plugins"); ok {
 				if hd, ok := s.PluginRegistry().AsHeadlessDriver(sess.Agent); ok {
 					if bin, err := hd.ResolveBinary(); err == nil && bin != "" {
 						out, _ = s.runAllowlistedInspectCmd(r.Context(), sess, bin, args...)
 					}
 				}
+			}
+		} else if sess.Agent == "claude-code" {
+			bin, err := resolveClaudeBinary()
+			if err == nil {
+				out, _ = s.runAllowlistedInspectCmd(r.Context(), sess, bin, "plugin", "list", "--json")
 			}
 		} else if sess.Agent == "antigravity" {
 			bin, err := resolveAntigravityBinary()
@@ -156,13 +156,7 @@ func (s *Server) handleSessionInspect(w http.ResponseWriter, r *http.Request, se
 
 	case "agents":
 		var cliAgents any = []any{}
-		if sess.Agent == "claude-code" {
-			if bin, err := resolveClaudeBinary(); err == nil {
-				if out, err := s.runAllowlistedInspectCmd(r.Context(), sess, bin, "agents", "--json"); err == nil {
-					_ = json.Unmarshal([]byte(strings.TrimSpace(out)), &cliAgents)
-				}
-			}
-		} else if ci, ok := s.PluginRegistry().AsCLIInspector(sess.Agent); ok {
+		if ci, ok := s.PluginRegistry().AsCLIInspector(sess.Agent); ok {
 			if args, ok := ci.InspectSubcommandArgs("agents"); ok {
 				if hd, ok := s.PluginRegistry().AsHeadlessDriver(sess.Agent); ok {
 					if bin, err := hd.ResolveBinary(); err == nil && bin != "" {
@@ -173,6 +167,12 @@ func (s *Server) handleSessionInspect(w http.ResponseWriter, r *http.Request, se
 							}
 						}
 					}
+				}
+			}
+		} else if sess.Agent == "claude-code" {
+			if bin, err := resolveClaudeBinary(); err == nil {
+				if out, err := s.runAllowlistedInspectCmd(r.Context(), sess, bin, "agents", "--json"); err == nil {
+					_ = json.Unmarshal([]byte(strings.TrimSpace(out)), &cliAgents)
 				}
 			}
 		} else if sess.Agent == "antigravity" {
@@ -210,13 +210,7 @@ func (s *Server) handleSessionInspect(w http.ResponseWriter, r *http.Request, se
 		var rawVersion string
 		isWorkerRunning := s.headless != nil && s.headless.IsRunning(sess.ID)
 		handledDoctor := false
-		if sess.Agent == "claude-code" {
-			if bin, err := resolveClaudeBinary(); err == nil {
-				report, _ = s.runAllowlistedInspectCmd(r.Context(), sess, bin, "doctor")
-				rawVersion, _ = s.runAllowlistedInspectCmd(r.Context(), sess, bin, "--version")
-			}
-			handledDoctor = true
-		} else if ci, ok := s.PluginRegistry().AsCLIInspector(sess.Agent); ok {
+		if ci, ok := s.PluginRegistry().AsCLIInspector(sess.Agent); ok {
 			if args, ok := ci.InspectSubcommandArgs("doctor"); ok {
 				if hd, ok := s.PluginRegistry().AsHeadlessDriver(sess.Agent); ok {
 					if bin, err := hd.ResolveBinary(); err == nil && bin != "" {
@@ -226,6 +220,12 @@ func (s *Server) handleSessionInspect(w http.ResponseWriter, r *http.Request, se
 				}
 				handledDoctor = true
 			}
+		} else if sess.Agent == "claude-code" {
+			if bin, err := resolveClaudeBinary(); err == nil {
+				report, _ = s.runAllowlistedInspectCmd(r.Context(), sess, bin, "doctor")
+				rawVersion, _ = s.runAllowlistedInspectCmd(r.Context(), sess, bin, "--version")
+			}
+			handledDoctor = true
 		}
 		if !handledDoctor && strings.EqualFold(sess.Agent, "antigravity") {
 			var bin string

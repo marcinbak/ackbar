@@ -165,3 +165,7 @@ type CommandCatalog interface {
 type SubagentBlockInspector interface {
 	InspectSubagentBlock(homeDir, subID string, blockedSince time.Time) (blocked *Blocked, activity string, ok bool)
 }
+
+type WorkspaceModelResolver interface {
+	ResolveWorkspaceModel(homeDir, cwd string, acct *AgentAccount) string
+}

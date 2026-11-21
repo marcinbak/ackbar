@@ -82,7 +82,7 @@ func TestHandleSessionRewind(t *testing.T) {
 	projDir := filepath.Join(tmpDir, ".claude", "projects", encodedCwd)
 	_ = os.MkdirAll(projDir, 0755)
 
-	nativeID := "rewind-native-uuid-1"
+	nativeID := "22222222-2222-4222-8222-222222222222"
 	sess := &Session{
 		ID:         "claude-code:local:" + nativeID,
 		Agent:      "claude-code",
@@ -97,11 +97,11 @@ func TestHandleSessionRewind(t *testing.T) {
 
 	transcriptPath := filepath.Join(projDir, nativeID+".jsonl")
 	lines := []string{
-		`{"type": "user", "message": {"content": "Turn 1: initialize git"}, "timestamp": "2026-11-10T10:00:00Z", "sessionId": "rewind-native-uuid-1"}`,
-		`{"type": "assistant", "message": {"content": "Git initialized."}, "timestamp": "2026-11-10T10:00:05Z", "sessionId": "rewind-native-uuid-1"}`,
-		`{"type": "attachment", "path": "test.txt", "sessionId": "rewind-native-uuid-1"}`,
-		`{"type": "user", "message": {"content": "Turn 2: add documentation"}, "timestamp": "2026-11-10T10:01:00Z", "sessionId": "rewind-native-uuid-1"}`,
-		`{"type": "assistant", "message": {"content": "Docs added."}, "timestamp": "2026-11-10T10:01:05Z", "sessionId": "rewind-native-uuid-1"}`,
+		`{"type": "user", "message": {"content": "Turn 1: initialize git"}, "timestamp": "2026-11-10T10:00:00Z", "sessionId": "` + nativeID + `"}`,
+		`{"type": "assistant", "message": {"content": "Git initialized."}, "timestamp": "2026-11-10T10:00:05Z", "sessionId": "` + nativeID + `"}`,
+		`{"type": "attachment", "path": "test.txt", "sessionId": "` + nativeID + `"}`,
+		`{"type": "user", "message": {"content": "Turn 2: add documentation"}, "timestamp": "2026-11-10T10:01:00Z", "sessionId": "` + nativeID + `"}`,
+		`{"type": "assistant", "message": {"content": "Docs added."}, "timestamp": "2026-11-10T10:01:05Z", "sessionId": "` + nativeID + `"}`,
 	}
 	_ = os.WriteFile(transcriptPath, []byte(fmt.Sprintf("%s\n%s\n%s\n%s\n%s\n", lines[0], lines[1], lines[2], lines[3], lines[4])), 0600)
 

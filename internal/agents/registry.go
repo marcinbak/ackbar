@@ -5,6 +5,7 @@ import (
 
 	"ackbar/internal/agent"
 	"ackbar/internal/agents/antigravity"
+	"ackbar/internal/agents/claude"
 	"ackbar/internal/agents/codex"
 	"ackbar/internal/agents/grok"
 	"ackbar/internal/agents/opencode"
@@ -18,6 +19,9 @@ func DefaultPluginsFromEnv(rawLegacyEnv string) []agent.Plugin {
 	}
 	if !agent.IsLegacyAgentFromEnv(rawLegacyEnv, "antigravity", "agy") {
 		plugins = append(plugins, antigravity.New())
+	}
+	if !agent.IsLegacyAgentFromEnv(rawLegacyEnv, "claude-code", "claude") {
+		plugins = append(plugins, claude.New())
 	}
 	return plugins
 }
