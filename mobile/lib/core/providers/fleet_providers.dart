@@ -303,6 +303,7 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
   ProviderSubscription<List<HostRecord>>? _hostsSub;
   ProviderSubscription<bool>? _showDoneSub;
   Future<void>? _inFlightRefresh;
+  int _refreshEpoch = 0;
 
   FleetSessionsNotifier(this._apiClient, this._ref) : super(const []) {
     _initLiveSync();
@@ -344,6 +345,8 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
   }
 
   void _syncWithHosts(List<HostRecord> hosts) async {
+    _refreshEpoch++;
+    _inFlightRefresh = null;
     _sseSub?.cancel();
     if (hosts.isNotEmpty) {
       final sse = _ref.read(sseClientProvider);
@@ -376,17 +379,21 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
   Future<void> refreshSessions() {
     final active = _inFlightRefresh;
     if (active != null) return active;
-    final future = _doRefreshSessions();
-    _inFlightRefresh = future;
-    return future.whenComplete(() {
-      _inFlightRefresh = null;
+    final epoch = _refreshEpoch;
+    late final Future<void> future;
+    future = _doRefreshSessions(epoch).whenComplete(() {
+      if (identical(_inFlightRefresh, future)) {
+        _inFlightRefresh = null;
+      }
     });
+    _inFlightRefresh = future;
+    return future;
   }
 
-  Future<void> _doRefreshSessions() async {
+  Future<void> _doRefreshSessions(int epoch) async {
     final hosts = _ref.read(hostsListProvider);
     if (hosts.isEmpty) {
-      if (mounted) state = const [];
+      if (mounted && epoch == _refreshEpoch) state = const [];
       return;
     }
 
@@ -401,7 +408,7 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
         includeArchived: false,
         includeDone: showDone,
       );
-      if (!mounted) return;
+      if (!mounted || epoch != _refreshEpoch) return;
       final hostSessions = remoteSessions ??
           state.where((s) => _sessionBelongsToHost(s, host, hosts.length));
       for (final s in hostSessions) {
@@ -417,7 +424,7 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
       }
     }
 
-    if (mounted) {
+    if (mounted && epoch == _refreshEpoch) {
       state = allFetched;
     }
   }

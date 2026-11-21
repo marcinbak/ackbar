@@ -249,6 +249,7 @@ class FleetTreeView extends ConsumerWidget {
     final isCollapsed = collapseState.isSubsectionCollapsed(
       subsectionKey,
       defaultCollapsed: defaultCollapsed,
+      isSearching: isSearching,
     );
 
     return Padding(

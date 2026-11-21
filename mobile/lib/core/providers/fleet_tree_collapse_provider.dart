@@ -6,9 +6,10 @@ import 'package:shared_preferences/shared_preferences.dart';
 class FleetShowDoneNotifier extends StateNotifier<bool> {
   static const String _kShowDoneKey = 'ackbar_fleet_show_done';
   bool _userUpdated = false;
+  late final Future<void> _loadFuture = _load();
 
   FleetShowDoneNotifier() : super(false) {
-    _load();
+    _loadFuture;
   }
 
   Future<void> _load() async {
@@ -25,12 +26,12 @@ class FleetShowDoneNotifier extends StateNotifier<bool> {
 
   Future<void> setShowDone(bool value) async {
     _userUpdated = true;
-    if (state != value) {
-      state = value;
-    }
+    if (state != value) state = value;
+    await _loadFuture;
+    if (!mounted) return;
     try {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setBool(_kShowDoneKey, value);
+      await prefs.setBool(_kShowDoneKey, state);
     } catch (_) {}
   }
 }
@@ -51,105 +52,103 @@ class FleetTreeCollapseState {
     this.expandedSubsections = const {},
   });
 
-  bool isFolderCollapsed(String path, {bool isSearching = false}) {
-    if (isSearching) return false;
-    return collapsedFolders.contains(path);
-  }
+  bool isFolderCollapsed(String path, {bool isSearching = false}) =>
+      !isSearching && collapsedFolders.contains(path);
 
-  bool isSubsectionCollapsed(String key, {bool defaultCollapsed = false}) {
-    if (defaultCollapsed) {
-      return !expandedSubsections.contains(key);
-    }
-    return collapsedSubsections.contains(key);
-  }
-
-  FleetTreeCollapseState copyWith({
-    Set<String>? collapsedFolders,
-    Set<String>? collapsedSubsections,
-    Set<String>? expandedSubsections,
+  bool isSubsectionCollapsed(
+    String key, {
+    bool defaultCollapsed = false,
+    bool isSearching = false,
   }) {
-    return FleetTreeCollapseState(
-      collapsedFolders: collapsedFolders ?? this.collapsedFolders,
-      collapsedSubsections: collapsedSubsections ?? this.collapsedSubsections,
-      expandedSubsections: expandedSubsections ?? this.expandedSubsections,
-    );
+    if (isSearching) return false;
+    return defaultCollapsed
+        ? !expandedSubsections.contains(key)
+        : collapsedSubsections.contains(key);
   }
 }
 
 class FleetTreeCollapseNotifier extends StateNotifier<FleetTreeCollapseState> {
-  static const String _kCollapsedFoldersKey = 'ackbar_collapsed_groups';
-  static const String _kCollapsedSubsectionsKey =
-      'ackbar_collapsed_subsections';
-  static const String _kExpandedSubsectionsKey = 'ackbar_expanded_subsections';
+  static const String _kFoldersKey = 'ackbar_collapsed_groups';
+  static const String _kCollapsedSubsKey = 'ackbar_collapsed_subsections';
+  static const String _kExpandedSubsKey = 'ackbar_expanded_subsections';
   final Set<String> _dirtyFolders = {};
   final Set<String> _dirtySubsections = {};
+  late final Future<void> _loadFuture = _load();
 
   FleetTreeCollapseNotifier() : super(const FleetTreeCollapseState()) {
-    _load();
+    _loadFuture;
   }
 
   Set<String> _decodeSet(String? raw) {
     if (raw == null || raw.isEmpty) return const {};
     final decoded = jsonDecode(raw);
-    if (decoded is! List) return const {};
-    return decoded.map((e) => e.toString()).toSet();
+    return decoded is List
+        ? decoded.map((e) => e.toString()).toSet()
+        : const {};
   }
 
-  Set<String> _mergeLoaded(
-    Set<String> current,
-    Set<String> loaded,
-    Set<String> dirty,
-  ) {
-    final merged = Set<String>.from(current);
-    for (final item in loaded) {
-      if (!dirty.contains(item)) {
-        merged.add(item);
-      }
-    }
-    return merged;
-  }
+  Set<String> _merge(Set<String> cur, Set<String> loaded, Set<String> dirty) =>
+      {...cur, ...loaded.where((item) => !dirty.contains(item))};
 
   Future<void> _load() async {
     try {
       final prefs = await SharedPreferences.getInstance();
       if (!mounted) return;
       state = FleetTreeCollapseState(
-        collapsedFolders: _mergeLoaded(
+        collapsedFolders: _merge(
           state.collapsedFolders,
-          _decodeSet(prefs.getString(_kCollapsedFoldersKey)),
+          _decodeSet(prefs.getString(_kFoldersKey)),
           _dirtyFolders,
         ),
-        collapsedSubsections: _mergeLoaded(
+        collapsedSubsections: _merge(
           state.collapsedSubsections,
-          _decodeSet(prefs.getString(_kCollapsedSubsectionsKey)),
+          _decodeSet(prefs.getString(_kCollapsedSubsKey)),
           _dirtySubsections,
         ),
-        expandedSubsections: _mergeLoaded(
+        expandedSubsections: _merge(
           state.expandedSubsections,
-          _decodeSet(prefs.getString(_kExpandedSubsectionsKey)),
+          _decodeSet(prefs.getString(_kExpandedSubsKey)),
           _dirtySubsections,
         ),
       );
     } catch (_) {}
   }
 
+  Future<void> _persist(Map<String, Set<String>> Function() entries) async {
+    await _loadFuture;
+    if (!mounted) return;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      for (final entry in entries().entries) {
+        await prefs.setString(entry.key, jsonEncode(entry.value.toList()));
+      }
+    } catch (_) {}
+  }
+
   bool isFolderCollapsed(String path, {bool isSearching = false}) =>
       state.isFolderCollapsed(path, isSearching: isSearching);
 
-  bool isSubsectionCollapsed(String key, {bool defaultCollapsed = false}) =>
-      state.isSubsectionCollapsed(key, defaultCollapsed: defaultCollapsed);
+  bool isSubsectionCollapsed(
+    String key, {
+    bool defaultCollapsed = false,
+    bool isSearching = false,
+  }) =>
+      state.isSubsectionCollapsed(
+        key,
+        defaultCollapsed: defaultCollapsed,
+        isSearching: isSearching,
+      );
 
   Future<void> toggleFolder(String path) async {
     _dirtyFolders.add(path);
     final next = Set<String>.from(state.collapsedFolders);
-    if (!next.add(path)) {
-      next.remove(path);
-    }
-    state = state.copyWith(collapsedFolders: next);
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(_kCollapsedFoldersKey, jsonEncode(next.toList()));
-    } catch (_) {}
+    if (!next.add(path)) next.remove(path);
+    state = FleetTreeCollapseState(
+      collapsedFolders: next,
+      collapsedSubsections: state.collapsedSubsections,
+      expandedSubsections: state.expandedSubsections,
+    );
+    await _persist(() => {_kFoldersKey: state.collapsedFolders});
   }
 
   Future<void> toggleSubsection(
@@ -157,10 +156,8 @@ class FleetTreeCollapseNotifier extends StateNotifier<FleetTreeCollapseState> {
     bool defaultCollapsed = false,
   }) async {
     _dirtySubsections.add(key);
-    final wasCollapsed = state.isSubsectionCollapsed(
-      key,
-      defaultCollapsed: defaultCollapsed,
-    );
+    final wasCollapsed =
+        state.isSubsectionCollapsed(key, defaultCollapsed: defaultCollapsed);
     final nextCollapsed = Set<String>.from(state.collapsedSubsections);
     final nextExpanded = Set<String>.from(state.expandedSubsections);
     if (wasCollapsed) {
@@ -170,21 +167,17 @@ class FleetTreeCollapseNotifier extends StateNotifier<FleetTreeCollapseState> {
       nextCollapsed.add(key);
       nextExpanded.remove(key);
     }
-    state = state.copyWith(
+    state = FleetTreeCollapseState(
+      collapsedFolders: state.collapsedFolders,
       collapsedSubsections: nextCollapsed,
       expandedSubsections: nextExpanded,
     );
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(
-        _kCollapsedSubsectionsKey,
-        jsonEncode(nextCollapsed.toList()),
-      );
-      await prefs.setString(
-        _kExpandedSubsectionsKey,
-        jsonEncode(nextExpanded.toList()),
-      );
-    } catch (_) {}
+    await _persist(
+      () => {
+        _kCollapsedSubsKey: state.collapsedSubsections,
+        _kExpandedSubsKey: state.expandedSubsections,
+      },
+    );
   }
 }
 

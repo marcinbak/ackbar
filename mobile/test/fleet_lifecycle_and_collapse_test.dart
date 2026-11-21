@@ -491,4 +491,255 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Ackbar Manual Session'), findsNothing);
   });
+
+  test(
+      'FleetSessionsNotifier ignores stale in-flight refresh when fleetShowDoneProvider toggles mid-flight',
+      () async {
+    SharedPreferences.setMockInitialValues({'ackbar_fleet_show_done': false});
+
+    final staleCompleter = Completer<http.Response>();
+    final staleStarted = Completer<void>();
+    final freshCompleted = Completer<void>();
+    final includeDoneParams = <String?>[];
+
+    final staleOnlySess = _makeSession(
+      id: 'sess-stale-only',
+      title: 'Stale Only',
+    );
+    final activeSess = _makeSession(
+      id: 'sess-active-fresh',
+      title: 'Fresh Active',
+    );
+    final doneSess = _makeSession(
+      id: 'sess-done-fresh',
+      title: 'Fresh Done',
+      state: SessionState.ended,
+      isDone: true,
+    );
+
+    final mockHttp = MockClient((req) async {
+      if (req.url.path == '/v1/sessions') {
+        final incDone = req.url.queryParameters['include_done'];
+        includeDoneParams.add(incDone);
+        if (incDone == 'false') {
+          if (!staleStarted.isCompleted) staleStarted.complete();
+          return staleCompleter.future;
+        }
+        if (!freshCompleted.isCompleted) freshCompleted.complete();
+        return http.Response(
+          jsonEncode([activeSess.toJson(), doneSess.toJson()]),
+          200,
+        );
+      }
+      return http.Response('[]', 200);
+    });
+
+    final api = ApiClient(client: mockHttp);
+    final sse = _RecordingSSEClient();
+    addTearDown(() {
+      api.dispose();
+      sse.dispose();
+    });
+
+    final container = ProviderContainer(
+      overrides: [
+        apiClientProvider.overrideWithValue(api),
+        sseClientProvider.overrideWithValue(sse),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    container.read(hostsListProvider.notifier).setHosts([
+      HostRecord(
+        name: 'local',
+        url: 'http://127.0.0.1:7777',
+        online: true,
+        createdAt: DateTime.utc(2026, 11, 21),
+      ),
+    ]);
+
+    container.read(fleetSessionsProvider.notifier);
+    await staleStarted.future;
+
+    await container.read(fleetShowDoneProvider.notifier).toggle();
+    await freshCompleted.future;
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+
+    expect(includeDoneParams, ['false', 'true']);
+    expect(
+      container.read(fleetSessionsProvider).map((s) => s.id).toSet(),
+      {'sess-active-fresh', 'sess-done-fresh'},
+    );
+
+    staleCompleter.complete(
+      http.Response(jsonEncode([staleOnlySess.toJson()]), 200),
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+
+    final finalIds =
+        container.read(fleetSessionsProvider).map((s) => s.id).toSet();
+    expect(finalIds, {'sess-active-fresh', 'sess-done-fresh'});
+    expect(finalIds, isNot(contains('sess-stale-only')));
+  });
+
+  test(
+      'FleetTreeCollapseNotifier preserves pre-existing saved state when toggling before hydration completes',
+      () async {
+    SharedPreferences.setMockInitialValues({
+      'ackbar_collapsed_groups': jsonEncode(['Saved/Folder']),
+      'ackbar_collapsed_subsections': jsonEncode(['Saved/Folder:manual']),
+      'ackbar_expanded_subsections': jsonEncode(['Saved/Folder:done']),
+    });
+
+    final container1 = ProviderContainer();
+    addTearDown(container1.dispose);
+
+    final notifier = container1.read(fleetTreeCollapseProvider.notifier);
+    final folderFuture = notifier.toggleFolder('New/Folder');
+    final subFuture = notifier.toggleSubsection(
+      'New/Folder:done',
+      defaultCollapsed: true,
+    );
+
+    expect(
+      container1
+          .read(fleetTreeCollapseProvider)
+          .isFolderCollapsed('New/Folder'),
+      isTrue,
+    );
+
+    await Future.wait([folderFuture, subFuture]);
+
+    final state1 = container1.read(fleetTreeCollapseProvider);
+    expect(
+        state1.collapsedFolders, containsAll(['Saved/Folder', 'New/Folder']));
+    expect(state1.collapsedSubsections, contains('Saved/Folder:manual'));
+    expect(
+      state1.expandedSubsections,
+      containsAll(['Saved/Folder:done', 'New/Folder:done']),
+    );
+
+    final prefs = await SharedPreferences.getInstance();
+    expect(
+      jsonDecode(prefs.getString('ackbar_collapsed_groups')!),
+      containsAll(['Saved/Folder', 'New/Folder']),
+    );
+    expect(
+      jsonDecode(prefs.getString('ackbar_collapsed_subsections')!),
+      contains('Saved/Folder:manual'),
+    );
+    expect(
+      jsonDecode(prefs.getString('ackbar_expanded_subsections')!),
+      containsAll(['Saved/Folder:done', 'New/Folder:done']),
+    );
+
+    final container2 = ProviderContainer();
+    addTearDown(container2.dispose);
+    container2.read(fleetTreeCollapseProvider);
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+
+    final state2 = container2.read(fleetTreeCollapseProvider);
+    expect(
+        state2.collapsedFolders, containsAll(['Saved/Folder', 'New/Folder']));
+    expect(state2.collapsedSubsections, contains('Saved/Folder:manual'));
+    expect(
+      state2.expandedSubsections,
+      containsAll(['Saved/Folder:done', 'New/Folder:done']),
+    );
+  });
+
+  testWidgets(
+      'FleetTreeView expands collapsed subsections including default-collapsed :done during search without mutating saved state',
+      (tester) async {
+    SharedPreferences.setMockInitialValues({});
+
+    final folder = FleetTreeFolderNode(
+      path: 'Personal/Ackbar',
+      name: 'Ackbar',
+      manualSessions: [
+        _makeSession(
+          id: 'sub-manual',
+          title: 'Collapsed Manual Item',
+          nodePath: 'Personal/Ackbar',
+        ),
+      ],
+      doneSessions: [
+        _makeSession(
+          id: 'sub-done',
+          title: 'Default Collapsed Done Item',
+          nodePath: 'Personal/Ackbar',
+          state: SessionState.ended,
+          isDone: true,
+        ),
+      ],
+    );
+
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+
+    await tester.pumpWidget(
+      _wrap(
+        FleetTreeView(
+          rootFolders: [folder],
+          hosts: const [],
+          onSessionTap: (_) {},
+          onAddSession: (_) {},
+        ),
+        container,
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(
+      find.byKey(const Key('fleet_subsection_header_Personal/Ackbar:manual')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Collapsed Manual Item'), findsNothing);
+    expect(find.text('Default Collapsed Done Item'), findsNothing);
+
+    await tester.pumpWidget(
+      _wrap(
+        FleetTreeView(
+          rootFolders: [folder],
+          hosts: const [],
+          isSearching: true,
+          onSessionTap: (_) {},
+          onAddSession: (_) {},
+        ),
+        container,
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Collapsed Manual Item'), findsOneWidget);
+    expect(find.text('Default Collapsed Done Item'), findsOneWidget);
+
+    await tester.pumpWidget(
+      _wrap(
+        FleetTreeView(
+          rootFolders: [folder],
+          hosts: const [],
+          isSearching: false,
+          onSessionTap: (_) {},
+          onAddSession: (_) {},
+        ),
+        container,
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Collapsed Manual Item'), findsNothing);
+    expect(find.text('Default Collapsed Done Item'), findsNothing);
+
+    final collapseState = container.read(fleetTreeCollapseProvider);
+    expect(
+      collapseState.collapsedSubsections,
+      contains('Personal/Ackbar:manual'),
+    );
+    expect(
+      collapseState.expandedSubsections,
+      isNot(contains('Personal/Ackbar:done')),
+    );
+  });
 }
