@@ -11,9 +11,22 @@ func TestDefaultRegistry_UnconditionalBuiltinPlugins(t *testing.T) {
 	if err := RegisterDefaultsFromEnv(reg, ""); err != nil {
 		t.Fatalf("RegisterDefaultsFromEnv empty failed: %v", err)
 	}
-	for _, want := range []string{"grok", "codex", "opencode", "antigravity", "agy"} {
+	for _, want := range []string{"grok", "codex", "opencode", "antigravity", "agy", "claude-code", "claude"} {
 		if _, ok := reg.Get(want); !ok {
 			t.Errorf("expected %q to be registered in default registry", want)
+		}
+	}
+
+	for _, envVal := range []string{"claude-code", "claude", "codex,CLAUDE", "all", "*"} {
+		legacyReg := agent.NewRegistry()
+		if err := RegisterDefaultsFromEnv(legacyReg, envVal); err != nil {
+			t.Fatalf("RegisterDefaultsFromEnv(%q) failed: %v", envVal, err)
+		}
+		if _, ok := legacyReg.Get("claude-code"); ok {
+			t.Errorf("expected claude-code omitted when %s=%q", agent.LegacyAgentsEnvVar, envVal)
+		}
+		if _, ok := legacyReg.Get("claude"); ok {
+			t.Errorf("expected claude alias omitted when %s=%q", agent.LegacyAgentsEnvVar, envVal)
 		}
 	}
 

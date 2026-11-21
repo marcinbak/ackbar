@@ -86,7 +86,7 @@ func (s *Server) handleSessionMCPStatus(w http.ResponseWriter, r *http.Request, 
 	}
 
 	home, _ := os.UserHomeDir()
-	servers, _ := discoverConfiguredMCPServers(sess, s.db, home)
+	servers, _ := discoverConfiguredMCPServersWithRegistry(s.PluginRegistry(), sess, s.db, home)
 	plugins := probeWorkspacePluginsWithRegistry(home, sess, s.db, s.PluginRegistry())
 
 	resp := &SessionMCPStatusResponse{
@@ -146,6 +146,10 @@ func readBoundedJSONFile(path string, forbidSymlink bool) ([]byte, error) {
 }
 
 func discoverConfiguredMCPServers(sess *Session, db *DB, home string) ([]MCPServerHealth, error) {
+	return discoverConfiguredMCPServersWithRegistry(nil, sess, db, home)
+}
+
+func discoverConfiguredMCPServersWithRegistry(reg *agent.Registry, sess *Session, db *DB, home string) ([]MCPServerHealth, error) {
 	var results []MCPServerHealth
 	seen := make(map[string]bool)
 
@@ -176,7 +180,19 @@ func discoverConfiguredMCPServers(sess *Session, db *DB, home string) ([]MCPServ
 		if sess != nil && sess.Blocked != nil && sess.Blocked.Kind == BlockAuth && sess.Blocked.AuthTarget == "mcp:"+name {
 			status = "needs_auth"
 		}
-		authSupported := sess != nil && sess.Agent == "claude-code" && (transport == "http" || transport == "sse")
+		supportsMCPLogin := false
+		if sess != nil && (transport == "http" || transport == "sse") {
+			if reg != nil {
+				if ci, ok := reg.AsCLIInspector(sess.Agent); ok {
+					_, supportsMCPLogin = ci.InspectSubcommandArgs("mcp_login")
+				} else if _, regOK := reg.Get(sess.Agent); !regOK {
+					supportsMCPLogin = strings.EqualFold(sess.Agent, "claude-code")
+				}
+			} else {
+				supportsMCPLogin = strings.EqualFold(sess.Agent, "claude-code")
+			}
+		}
+		authSupported := supportsMCPLogin
 
 		results = append(results, MCPServerHealth{
 			Name:          name,

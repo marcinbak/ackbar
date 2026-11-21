@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"strings"
 
+	"ackbar/internal/agent"
 	"ackbar/internal/agents"
 	"ackbar/internal/daemon"
 	"ackbar/internal/provider"
@@ -176,7 +177,9 @@ func main() {
 	server.SetWebFS(web.GetFS())
 
 	// Register Provider Adapters
-	server.RegisterProvider(provider.NewClaudeProvider())
+	if agent.IsLegacyAgent("claude-code", "claude") {
+		server.RegisterProvider(provider.NewClaudeProvider())
+	}
 
 	// Start Antigravity JETSKI-AUDIO/1 Live Voice Bridge (default 127.0.0.1:4713)
 	server.EnsureVoiceBridge()

@@ -256,10 +256,10 @@ echo '{"type":"result","result":"done","is_error":false}'
 	}
 
 	sess := &Session{
-		ID:         "claude-code:local:uuid-server-drain-1",
+		ID:         "claude-code:local:11111111-1111-4111-8111-111111111111",
 		Agent:      "claude-code",
 		Host:       "local",
-		NativeID:   "uuid-server-drain-1",
+		NativeID:   "11111111-1111-4111-8111-111111111111",
 		Cwd:        tmpDir,
 		EngineType: EngineHeadless,
 		State:      StateIdle,

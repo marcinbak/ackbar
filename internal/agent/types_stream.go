@@ -52,6 +52,8 @@ type TranscriptUsage struct {
 	InputTokens           int     `json:"input_tokens,omitempty"`
 	OutputTokens          int     `json:"output_tokens,omitempty"`
 	CacheReadTokens       int     `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens      int     `json:"cache_write_tokens,omitempty"`
+	ThinkingTokens        int     `json:"thinking_tokens,omitempty"`
 	LastTurnContextTokens int     `json:"last_turn_context_tokens,omitempty"`
 	ContextLimitTokens    int     `json:"context_limit_tokens,omitempty"`
 	TurnCount             int     `json:"turn_count,omitempty"`

@@ -5,19 +5,23 @@ import (
 
 	"ackbar/internal/agent"
 	"ackbar/internal/agents/antigravity"
+	"ackbar/internal/agents/claude"
 	"ackbar/internal/agents/codex"
 	"ackbar/internal/agents/grok"
 	"ackbar/internal/agents/opencode"
 )
 
 func DefaultPluginsFromEnv(rawLegacyEnv string) []agent.Plugin {
-	_ = rawLegacyEnv
-	return []agent.Plugin{
+	plugins := []agent.Plugin{
 		grok.New(),
 		codex.New(),
 		opencode.New(),
 		antigravity.New(),
 	}
+	if !agent.IsLegacyAgentFromEnv(rawLegacyEnv, "claude-code", "claude") {
+		plugins = append(plugins, claude.New())
+	}
+	return plugins
 }
 
 func RegisterDefaultsFromEnv(reg *agent.Registry, rawLegacyEnv string) error {

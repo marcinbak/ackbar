@@ -194,3 +194,12 @@ func (r *Registry) AsSubagentBlockInspector(key string) (SubagentBlockInspector,
 	f, ok := p.(SubagentBlockInspector)
 	return f, ok
 }
+
+func (r *Registry) AsWorkspaceModelResolver(key string) (WorkspaceModelResolver, bool) {
+	p, ok := r.Get(key)
+	if !ok {
+		return nil, false
+	}
+	f, ok := p.(WorkspaceModelResolver)
+	return f, ok
+}

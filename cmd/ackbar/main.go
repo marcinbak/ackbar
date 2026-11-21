@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -202,27 +203,29 @@ func runSetupHooks() error {
 	installBinary("./cmd/ackbard", ackbardBinTarget)
 	fmt.Printf("✅ Installed ackbard daemon (v%s) to %s\n", version.Version, ackbardBinTarget)
 
-	// 2. Configure Claude Code settings (~/.claude/settings.json)
-	if err := setupClaudeHooksInHome(home); err == nil {
-		fmt.Printf("✅ Configured Claude Code HTTP hook and fixed permission rules in %s\n", filepath.Join(home, ".claude", "settings.json"))
-	}
+	reg := cliPluginRegistry()
 
-	// Clean up legacy hooks in ~/.claude.json if present
-	legacyClaudePath := filepath.Join(home, ".claude.json")
-	if data, err := os.ReadFile(legacyClaudePath); err == nil {
-		var legMap map[string]interface{}
-		if err := json.Unmarshal(data, &legMap); err == nil {
-			if _, exists := legMap["hooks"]; exists {
-				delete(legMap, "hooks")
-				if updated, err := json.MarshalIndent(legMap, "", "  "); err == nil {
-					_ = os.WriteFile(legacyClaudePath, updated, 0644)
-					fmt.Printf("🧹 Cleaned legacy hooks from %s\n", legacyClaudePath)
+	// 2. Configure Claude Code settings (~/.claude/settings.json)
+	if _, hasClaude := reg.Get("claude-code"); !hasClaude {
+		if err := setupClaudeHooksInHome(home); err == nil {
+			fmt.Printf("✅ Configured Claude Code HTTP hook and fixed permission rules in %s\n", filepath.Join(home, ".claude", "settings.json"))
+		}
+
+		// Clean up legacy hooks in ~/.claude.json if present
+		legacyClaudePath := filepath.Join(home, ".claude.json")
+		if data, err := os.ReadFile(legacyClaudePath); err == nil {
+			var legMap map[string]interface{}
+			if err := json.Unmarshal(data, &legMap); err == nil {
+				if _, exists := legMap["hooks"]; exists {
+					delete(legMap, "hooks")
+					if updated, err := json.MarshalIndent(legMap, "", "  "); err == nil {
+						_ = os.WriteFile(legacyClaudePath, updated, 0644)
+						fmt.Printf("🧹 Cleaned legacy hooks from %s\n", legacyClaudePath)
+					}
 				}
 			}
 		}
 	}
-
-	reg := cliPluginRegistry()
 
 	// 3. Configure registered plugin hooks if installed
 	for _, p := range reg.List() {
@@ -231,7 +234,7 @@ func runSetupHooks() error {
 				if p.Capabilities().SupportsNativeHooks || p.Key() == "antigravity" {
 					fmt.Printf("✅ Configured %s lifecycle hooks\n", p.DisplayName())
 				}
-			} else {
+			} else if !errors.Is(err, os.ErrNotExist) {
 				fmt.Printf("⚠️ Warning: Failed to configure %s hooks: %v\n", p.DisplayName(), err)
 			}
 		}

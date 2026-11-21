@@ -651,8 +651,8 @@ func TestServer_HeadlessInFlightPrompt(t *testing.T) {
 	srv, db := setupTestServer(t)
 
 	sess := &Session{
-		ID:          "claude-code:local:uuid-inflight-turn",
-		Agent:       "claude-code",
+		ID:          "mock-agent:local:uuid-inflight-turn",
+		Agent:       "mock-agent",
 		Host:        "local",
 		NativeID:    "uuid-inflight-turn",
 		Cwd:         t.TempDir(),
@@ -707,7 +707,7 @@ func TestServer_HeadlessInFlightPrompt(t *testing.T) {
 	}
 
 	priorProvider := &mockInFlightTranscriptProvider{
-		agent: "claude-code",
+		agent: "mock-agent",
 		messages: []TranscriptMessage{
 			{Role: "user", Content: "First prompt", Timestamp: time.Now().Add(-1 * time.Minute)},
 			{Role: "assistant", Content: "First answer", Timestamp: time.Now().Add(-30 * time.Second)},
@@ -771,7 +771,7 @@ func TestServer_HeadlessInFlightPrompt(t *testing.T) {
 	srv.headless.mu.Unlock()
 
 	priorPrefixProvider := &mockInFlightTranscriptProvider{
-		agent: "claude-code",
+		agent: "mock-agent",
 		messages: []TranscriptMessage{
 			{Role: "user", Content: "run", Timestamp: time.Now().Add(-2 * time.Second)},
 			{Role: "assistant", Content: "done", Timestamp: time.Now().Add(-1 * time.Second)},
@@ -811,7 +811,7 @@ func TestServer_HeadlessInFlightPrompt(t *testing.T) {
 	srv.headless.mu.Unlock()
 
 	attachmentProvider := &mockInFlightTranscriptProvider{
-		agent: "claude-code",
+		agent: "mock-agent",
 		messages: []TranscriptMessage{
 			{Role: "user", Content: "Fix layout\n\n[Attached file: \"/tmp/mock.png\"]", Timestamp: turnStart},
 			{Role: "assistant", Content: "", Thinking: "Inspecting image...", ToolCalls: []string{"Read (/tmp/mock.png)"}, Timestamp: turnStart.Add(2 * time.Second)},

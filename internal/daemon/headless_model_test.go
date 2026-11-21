@@ -106,7 +106,7 @@ func TestResolveSessionModel_ClaudeTranscriptTail(t *testing.T) {
 	srv.homeDir = tmpHome
 
 	testCwd := "/workspace/my-app"
-	nativeID := "claude-uuid-transcript"
+	nativeID := "33333333-3333-4333-8333-333333333333"
 	encodedCwd := encodeClaudeProjectDir(testCwd)
 	projDir := filepath.Join(tmpHome, ".claude", "projects", encodedCwd)
 	if err := os.MkdirAll(projDir, 0755); err != nil {
@@ -173,7 +173,7 @@ func TestResolveSessionModel_PostResetGuard(t *testing.T) {
 	srv.homeDir = tmpHome
 
 	testCwd := "/workspace/post-reset"
-	nativeID := "claude-uuid-post-reset"
+	nativeID := "44444444-4444-4444-8444-444444444444"
 	encodedCwd := encodeClaudeProjectDir(testCwd)
 	projDir := filepath.Join(tmpHome, ".claude", "projects", encodedCwd)
 	if err := os.MkdirAll(projDir, 0755); err != nil {
