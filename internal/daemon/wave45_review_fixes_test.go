@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"ackbar/internal/agent"
+	"ackbar/internal/agents/antigravity"
 )
 
 type boundedIncPlugin struct {
@@ -179,6 +180,7 @@ func TestWave45ReviewFixes_PermDefaultsErrorSpoolModelAdoptAndAuthGuard(t *testi
 	srv := NewServer(db)
 	srv.homeDir = tmpDir
 	_ = srv.PluginRegistry().Register(&autoDefaultPermPlugin{mockPersistentPlugin: mockPersistentPlugin{key: "auto-perm-agent", stdioMode: true}})
+	_ = srv.RegisterPlugin(antigravity.New())
 	registerMockPersistentPlugins(srv.PluginRegistry())
 
 	wSpawn := httptest.NewRecorder()

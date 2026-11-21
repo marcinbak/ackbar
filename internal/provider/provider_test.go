@@ -1,7 +1,6 @@
 package provider
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -157,84 +156,9 @@ func TestClaudeProvider_GetResumeCommand(t *testing.T) {
 	}
 }
 
-func TestAntigravityProvider_ParseHook(t *testing.T) {
-	p := NewAntigravityProvider()
-
-	// Test PreToolUse with ask_question and structured questions/options
-	payload := `{"conversationId": "session-agy", "workspacePaths": ["/workspace"], "toolCall": {"name": "ask_question", "args": {"questions": [{"question": "Choose framework", "options": ["React", "Vue", "Svelte"]}]}}}`
-	ev, err := p.ParseHook("PreToolUse", []byte(payload))
-	if err != nil {
-		t.Fatalf("ParseHook failed: %v", err)
-	}
-	if ev.State != daemon.StateBlocked || ev.Blocked == nil || ev.Blocked.Kind != daemon.BlockQuestion {
-		t.Errorf("Expected blocked question state, got: %+v", ev)
-	}
-	if ev.Blocked.Question != "Choose framework" {
-		t.Errorf("Expected Question 'Choose framework', got '%s'", ev.Blocked.Question)
-	}
-	if len(ev.Blocked.Options) != 3 || ev.Blocked.Options[0] != "React" || ev.Blocked.Options[1] != "Vue" || ev.Blocked.Options[2] != "Svelte" {
-		t.Errorf("Expected options ['React', 'Vue', 'Svelte'], got %+v", ev.Blocked.Options)
-	}
-
-	// Test PreToolUse with ask_permission
-	payloadPerm := `{"conversationId": "session-agy", "workspacePaths": ["/workspace"], "toolCall": {"name": "ask_permission", "args": {"command": "rm -rf /tmp/cache"}}}`
-	evPerm, err := p.ParseHook("PreToolUse", []byte(payloadPerm))
-	if err != nil {
-		t.Fatalf("ParseHook ask_permission failed: %v", err)
-	}
-	if evPerm.State != daemon.StateBlocked || evPerm.Blocked == nil || evPerm.Blocked.Kind != daemon.BlockPermission {
-		t.Errorf("Expected blocked permission state, got: %+v", evPerm)
-	}
-	if evPerm.Blocked.Question != "Tool requires permission" {
-		t.Errorf("Expected question 'Tool requires permission', got %q", evPerm.Blocked.Question)
-	}
-	if !strings.Contains(evPerm.Blocked.Reason, "rm -rf /tmp/cache") {
-		t.Errorf("Expected reason to contain command, got %q", evPerm.Blocked.Reason)
-	}
-	if evPerm.Activity != "Waiting for user permission" {
-		t.Errorf("Expected activity 'Waiting for user permission', got %q", evPerm.Activity)
-	}
-	if len(evPerm.Blocked.Options) != 3 || evPerm.Blocked.Options[0] != "1. Yes" || evPerm.Blocked.Options[1] != "2. Yes, and always allow" || evPerm.Blocked.Options[2] != "3. No" {
-		t.Errorf("Expected options ['1. Yes', '2. Yes, and always allow', '3. No'], got %+v", evPerm.Blocked.Options)
-	}
-
-	// Test PreToolUse with ask_custom_permission
-	payloadCustomPerm := `{"conversationId": "session-agy", "workspacePaths": ["/workspace"], "toolCall": {"name": "ask_custom_permission", "args": {"action": "network_access", "target": "https://api.example.com"}}}`
-	evCustomPerm, err := p.ParseHook("PreToolUse", []byte(payloadCustomPerm))
-	if err != nil {
-		t.Fatalf("ParseHook ask_custom_permission failed: %v", err)
-	}
-	if evCustomPerm.State != daemon.StateBlocked || evCustomPerm.Blocked == nil || evCustomPerm.Blocked.Kind != daemon.BlockPermission {
-		t.Errorf("Expected blocked permission state for ask_custom_permission, got: %+v", evCustomPerm)
-	}
-	if evCustomPerm.Blocked.Question != "Tool requires permission" {
-		t.Errorf("Expected question 'Tool requires permission', got %q", evCustomPerm.Blocked.Question)
-	}
-	if evCustomPerm.Blocked.Reason != "network_access (https://api.example.com)" {
-		t.Errorf("Expected reason 'network_access (https://api.example.com)', got %q", evCustomPerm.Blocked.Reason)
-	}
-	if evCustomPerm.Activity != "Waiting for user permission" {
-		t.Errorf("Expected activity 'Waiting for user permission', got %q", evCustomPerm.Activity)
-	}
-	if len(evCustomPerm.Blocked.Options) != 3 || evCustomPerm.Blocked.Options[0] != "1. Yes" {
-		t.Errorf("Unexpected options for ask_custom_permission: %+v", evCustomPerm.Blocked.Options)
-	}
-
-	// Test postinvocation (should set StateIdle)
-	payloadPost := `{"conversationId": "session-agy", "workspacePaths": ["/workspace"]}`
-	evPost, err := p.ParseHook("postinvocation", []byte(payloadPost))
-	if err != nil {
-		t.Fatalf("ParseHook postinvocation failed: %v", err)
-	}
-	if evPost.State != daemon.StateIdle || evPost.Activity != "Awaiting user prompt" {
-		t.Errorf("Expected StateIdle on postinvocation, got state %v, activity %s", evPost.State, evPost.Activity)
-	}
-}
-
 func TestProviderDiscovery(t *testing.T) {
 	providers := []daemon.Provider{
 		NewClaudeProvider(),
-		NewAntigravityProvider(),
 	}
 
 	for _, p := range providers {
@@ -246,62 +170,6 @@ func TestProviderDiscovery(t *testing.T) {
 		if setupCmd == "" {
 			t.Errorf("Expected setupCmd for %s", p.Agent())
 		}
-	}
-}
-
-func TestAntigravityDiscoveryInLocalBin(t *testing.T) {
-	tmpHome, err := os.MkdirTemp("", "test-agy-localbin-*")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpHome)
-
-	origHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpHome)
-	defer os.Setenv("HOME", origHome)
-
-	p := NewAntigravityProvider()
-
-	// 1. When binary does not exist
-	if p.IsInstalled() {
-		// If agy is globally on host PATH it could be true, but if not it should be false
-	}
-
-	// 2. Create ~/.local/bin/agy mock executable
-	localBin := tmpHome + "/.local/bin"
-	_ = os.MkdirAll(localBin, 0755)
-	agyMock := localBin + "/agy"
-	_ = os.WriteFile(agyMock, []byte("#!/bin/sh\necho agy\n"), 0755)
-
-	if !p.IsInstalled() {
-		t.Errorf("Expected Antigravity to be detected when ~/.local/bin/agy exists")
-	}
-
-	// 3. Test hook detection in ~/.antigravity/config/hooks.json
-	hooksDir := tmpHome + "/.antigravity/config"
-	_ = os.MkdirAll(hooksDir, 0755)
-	_ = os.WriteFile(hooksDir+"/hooks.json", []byte(`{"hooks":{"PreInvocation":[{"command":"ackbar-hook antigravity"}]}}`), 0644)
-
-	installed, _, err := p.CheckHookConfig()
-	if err != nil {
-		t.Fatalf("CheckHookConfig failed: %v", err)
-	}
-	if !installed {
-		t.Errorf("Expected hook config in ~/.antigravity/config/hooks.json to be detected")
-	}
-
-	// 4. Test hook detection in ~/.gemini/config/hooks.json
-	_ = os.Remove(hooksDir + "/hooks.json")
-	geminiConfigDir := tmpHome + "/.gemini/config"
-	_ = os.MkdirAll(geminiConfigDir, 0755)
-	_ = os.WriteFile(geminiConfigDir+"/hooks.json", []byte(`{"ackbar":{"PreInvocation":[{"type":"command","command":"ackbar-hook --agent=antigravity --event=PreInvocation"}]}}`), 0644)
-
-	installed, _, err = p.CheckHookConfig()
-	if err != nil {
-		t.Fatalf("CheckHookConfig failed for ~/.gemini/config/hooks.json: %v", err)
-	}
-	if !installed {
-		t.Errorf("Expected hook config in ~/.gemini/config/hooks.json to be detected")
 	}
 }
 
@@ -349,7 +217,6 @@ func TestClaudeCheckHookConfig_OnlySettingsJson(t *testing.T) {
 func TestProviderInterfaceConformance(t *testing.T) {
 	providers := []daemon.Provider{
 		NewClaudeProvider(),
-		NewAntigravityProvider(),
 	}
 
 	testUUID := "12345678-1234-1234-1234-123456789abc"
@@ -391,10 +258,8 @@ func TestProviderInterfaceConformance(t *testing.T) {
 
 func TestProviderCapabilityConformance(t *testing.T) {
 	claude := NewClaudeProvider()
-	antigravity := NewAntigravityProvider()
 
-	// 1. Verify Core Role Interfaces for all providers
-	allProviders := []any{claude, antigravity}
+	allProviders := []any{claude}
 	for _, p := range allProviders {
 		if _, ok := p.(daemon.AgentIdentity); !ok {
 			t.Errorf("Provider %T must implement daemon.AgentIdentity", p)
@@ -416,7 +281,6 @@ func TestProviderCapabilityConformance(t *testing.T) {
 		}
 	}
 
-	// 2. Claude & Antigravity support FullProvider (StatusInspector + SubagentDiscoverer)
 	if _, ok := any(claude).(daemon.StatusInspector); !ok {
 		t.Errorf("ClaudeProvider should implement daemon.StatusInspector")
 	}
@@ -425,16 +289,6 @@ func TestProviderCapabilityConformance(t *testing.T) {
 	}
 	if _, ok := any(claude).(daemon.FullProvider); !ok {
 		t.Errorf("ClaudeProvider should implement daemon.FullProvider")
-	}
-
-	if _, ok := any(antigravity).(daemon.StatusInspector); !ok {
-		t.Errorf("AntigravityProvider should implement daemon.StatusInspector")
-	}
-	if _, ok := any(antigravity).(daemon.SubagentDiscoverer); !ok {
-		t.Errorf("AntigravityProvider should implement daemon.SubagentDiscoverer")
-	}
-	if _, ok := any(antigravity).(daemon.FullProvider); !ok {
-		t.Errorf("AntigravityProvider should implement daemon.FullProvider")
 	}
 }
 
@@ -586,32 +440,6 @@ func TestProvider_ListSubagents_ClaudeAndAntigravity(t *testing.T) {
 	if len(traversalSubs) != 0 {
 		t.Errorf("Expected 0 subagents for path traversal, got %d", len(traversalSubs))
 	}
-
-	// 3. Create Antigravity subagent on disk
-	agDir := filepath.Join(tmpHome, ".gemini", "antigravity", "brain", sessionID, ".system_generated", "subagents")
-	if err := os.MkdirAll(agDir, 0755); err != nil {
-		t.Fatalf("MkdirAll failed: %v", err)
-	}
-	agMeta := `{
-		"conversationId": "sub-ag-1",
-		"subagentDescriptor": {"typeName": "reviewer", "role": "Code Reviewer"},
-		"state": "RUNNING"
-	}`
-	if err := os.WriteFile(filepath.Join(agDir, "sub-ag-1.json"), []byte(agMeta), 0644); err != nil {
-		t.Fatalf("WriteFile failed: %v", err)
-	}
-
-	ap := NewAntigravityProvider()
-	agSubs, err := ap.ListSubagents(tmpHome, cwd, sessionID)
-	if err != nil {
-		t.Fatalf("Antigravity ListSubagents failed: %v", err)
-	}
-	if len(agSubs) != 1 {
-		t.Fatalf("Expected 1 antigravity subagent, got %d", len(agSubs))
-	}
-	if agSubs[0].Name != "reviewer" || agSubs[0].Role != "Code Reviewer" || agSubs[0].State != "running" {
-		t.Errorf("Unexpected antigravity subagent: %+v", agSubs[0])
-	}
 }
 
 func TestClaudeProvider_ListSubagents_StopReasonAndInactivity(t *testing.T) {
@@ -685,305 +513,6 @@ func TestClaudeProvider_ListSubagents_StopReasonAndInactivity(t *testing.T) {
 		if sub.State != "completed" {
 			t.Errorf("Expected subagent %s to have state 'completed', got %q", sub.Name, sub.State)
 		}
-	}
-}
-
-func TestAntigravityProvider_CleanSessionFiles(t *testing.T) {
-	tmpHome := t.TempDir()
-	sessionID := "12345678-abcd-ef01-2345-6789abcdef01"
-	otherID := "other-session"
-
-	// 1. Create base directory: ~/.gemini/antigravity
-	agyBase := filepath.Join(tmpHome, ".gemini", "antigravity")
-
-	// Brain dir
-	brainDir := filepath.Join(agyBase, "brain", sessionID)
-	if err := os.MkdirAll(brainDir, 0755); err != nil {
-		t.Fatalf("MkdirAll failed: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(brainDir, "task.md"), []byte("# Task"), 0644); err != nil {
-		t.Fatalf("WriteFile failed: %v", err)
-	}
-
-	// Conversations
-	convDir := filepath.Join(agyBase, "conversations")
-	if err := os.MkdirAll(convDir, 0755); err != nil {
-		t.Fatalf("MkdirAll failed: %v", err)
-	}
-	sessDb := filepath.Join(convDir, sessionID+".db")
-	sessWal := filepath.Join(convDir, sessionID+".db-wal")
-	otherDb := filepath.Join(convDir, otherID+".db")
-	for _, f := range []string{sessDb, sessWal, otherDb} {
-		if err := os.WriteFile(f, []byte("data"), 0644); err != nil {
-			t.Fatalf("WriteFile failed: %v", err)
-		}
-	}
-
-	// Annotations
-	annotDir := filepath.Join(agyBase, "annotations")
-	if err := os.MkdirAll(annotDir, 0755); err != nil {
-		t.Fatalf("MkdirAll failed: %v", err)
-	}
-	sessAnnot := filepath.Join(annotDir, sessionID+".pbtxt")
-	if err := os.WriteFile(sessAnnot, []byte("annot"), 0644); err != nil {
-		t.Fatalf("WriteFile failed: %v", err)
-	}
-
-	// Presence
-	presDir := filepath.Join(agyBase, "presence")
-	if err := os.MkdirAll(presDir, 0755); err != nil {
-		t.Fatalf("MkdirAll failed: %v", err)
-	}
-	sessLock := filepath.Join(presDir, sessionID+".lock")
-	if err := os.WriteFile(sessLock, []byte("lock"), 0644); err != nil {
-		t.Fatalf("WriteFile failed: %v", err)
-	}
-
-	// Cache conversation_metadata.json
-	cacheDir := filepath.Join(agyBase, "cache")
-	if err := os.MkdirAll(cacheDir, 0755); err != nil {
-		t.Fatalf("MkdirAll failed: %v", err)
-	}
-	metaContent := `{
-  "conversations": {
-    "` + sessionID + `": {
-      "title": "Clean Target"
-    },
-    "` + otherID + `": {
-      "title": "Keep Target"
-    }
-  }
-}`
-	metaPath := filepath.Join(cacheDir, "conversation_metadata.json")
-	if err := os.WriteFile(metaPath, []byte(metaContent), 0644); err != nil {
-		t.Fatalf("WriteFile failed: %v", err)
-	}
-
-	// 2. Profile directory: ~/.gemini-profiles/work
-	profileWork := filepath.Join(tmpHome, ".gemini-profiles", "work")
-	profBrainDir := filepath.Join(profileWork, "brain", sessionID)
-	if err := os.MkdirAll(profBrainDir, 0755); err != nil {
-		t.Fatalf("MkdirAll failed: %v", err)
-	}
-	profTask := filepath.Join(profBrainDir, "task.md")
-	if err := os.WriteFile(profTask, []byte("# Work Task"), 0644); err != nil {
-		t.Fatalf("WriteFile failed: %v", err)
-	}
-
-	profAnnotDir := filepath.Join(profileWork, "annotations")
-	if err := os.MkdirAll(profAnnotDir, 0755); err != nil {
-		t.Fatalf("MkdirAll failed: %v", err)
-	}
-	profAnnot := filepath.Join(profAnnotDir, sessionID+".pbtxt")
-	if err := os.WriteFile(profAnnot, []byte("work-annot"), 0644); err != nil {
-		t.Fatalf("WriteFile failed: %v", err)
-	}
-	profOtherAnnot := filepath.Join(profAnnotDir, otherID+".pbtxt")
-	if err := os.WriteFile(profOtherAnnot, []byte("work-keep-annot"), 0644); err != nil {
-		t.Fatalf("WriteFile failed: %v", err)
-	}
-
-	// Execute CleanSessionFiles
-	p := NewAntigravityProvider()
-	if err := p.CleanSessionFiles(tmpHome, "/work", sessionID); err != nil {
-		t.Fatalf("CleanSessionFiles failed: %v", err)
-	}
-
-	// 3. Verify sessionID files were removed
-	if _, err := os.Stat(brainDir); !os.IsNotExist(err) {
-		t.Errorf("Expected brainDir %s to be deleted", brainDir)
-	}
-	if _, err := os.Stat(sessDb); !os.IsNotExist(err) {
-		t.Errorf("Expected sessDb %s to be deleted", sessDb)
-	}
-	if _, err := os.Stat(sessWal); !os.IsNotExist(err) {
-		t.Errorf("Expected sessWal %s to be deleted", sessWal)
-	}
-	if _, err := os.Stat(sessAnnot); !os.IsNotExist(err) {
-		t.Errorf("Expected sessAnnot %s to be deleted", sessAnnot)
-	}
-	if _, err := os.Stat(sessLock); !os.IsNotExist(err) {
-		t.Errorf("Expected sessLock %s to be deleted", sessLock)
-	}
-	if _, err := os.Stat(profBrainDir); !os.IsNotExist(err) {
-		t.Errorf("Expected profBrainDir %s to be deleted", profBrainDir)
-	}
-	if _, err := os.Stat(profAnnot); !os.IsNotExist(err) {
-		t.Errorf("Expected profAnnot %s to be deleted", profAnnot)
-	}
-
-	// 4. Verify otherID files remain untouched
-	if _, err := os.Stat(otherDb); err != nil {
-		t.Errorf("Expected otherDb %s to exist, got err: %v", otherDb, err)
-	}
-	if _, err := os.Stat(profOtherAnnot); err != nil {
-		t.Errorf("Expected profOtherAnnot %s to exist, got err: %v", profOtherAnnot, err)
-	}
-
-	// 5. Verify conversation_metadata.json pruned sessionID but kept otherID
-	metaBytes, err := os.ReadFile(metaPath)
-	if err != nil {
-		t.Fatalf("Failed to read metadata file: %v", err)
-	}
-	var metaRoot map[string]interface{}
-	if err := json.Unmarshal(metaBytes, &metaRoot); err != nil {
-		t.Fatalf("Failed to unmarshal pruned metadata: %v", err)
-	}
-	convs, ok := metaRoot["conversations"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("Expected 'conversations' map in metadata")
-	}
-	if _, exists := convs[sessionID]; exists {
-		t.Errorf("Expected sessionID %s to be pruned from conversation_metadata.json", sessionID)
-	}
-	if otherEntry, exists := convs[otherID]; !exists {
-		t.Errorf("Expected otherID %s to remain in conversation_metadata.json", otherID)
-	} else if entryMap, ok := otherEntry.(map[string]interface{}); !ok || entryMap["title"] != "Keep Target" {
-		t.Errorf("Unexpected otherID metadata content: %+v", otherEntry)
-	}
-
-	// 6. Test path traversal safety
-	if err := p.CleanSessionFiles(tmpHome, "/work", "../.."); err != nil {
-		t.Errorf("Expected nil error for traversal, got: %v", err)
-	}
-	if err := p.CleanSessionFiles(tmpHome, "/work", ""); err != nil {
-		t.Errorf("Expected nil error for empty sessionID, got: %v", err)
-	}
-	if _, err := os.Stat(otherDb); err != nil {
-		t.Errorf("Expected otherDb to still exist after invalid sessionID clean calls")
-	}
-}
-
-func TestAntigravityProvider_ListSubagents_AliveStateAndTranscriptInspection(t *testing.T) {
-	tmpHome := t.TempDir()
-	parentID := "11111111-2222-3333-4444-555555555555"
-	activeSubID := "aaaaaaaa-1111-2222-3333-444444444444"
-	doneSubID := "bbbbbbbb-1111-2222-3333-444444444444"
-
-	subRegDir := filepath.Join(tmpHome, ".gemini", "antigravity-cli", "brain", parentID, ".system_generated", "subagents")
-	if err := os.MkdirAll(subRegDir, 0755); err != nil {
-		t.Fatalf("MkdirAll failed: %v", err)
-	}
-
-	// Both subagents have state SUBAGENT_STATE_ALIVE in their registry JSON
-	activeReg := `{"conversationId":"` + activeSubID + `","subagentDescriptor":{"typeName":"self","role":"Implementer"},"state":"SUBAGENT_STATE_ALIVE"}`
-	doneReg := `{"conversationId":"` + doneSubID + `","subagentDescriptor":{"typeName":"research","role":"Codebase Researcher"},"state":"SUBAGENT_STATE_ALIVE"}`
-	if err := os.WriteFile(filepath.Join(subRegDir, activeSubID+".json"), []byte(activeReg), 0644); err != nil {
-		t.Fatalf("WriteFile failed: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(subRegDir, doneSubID+".json"), []byte(doneReg), 0644); err != nil {
-		t.Fatalf("WriteFile failed: %v", err)
-	}
-
-	// 1. Active subagent transcript: last step has tool_calls
-	activeLogDir := filepath.Join(tmpHome, ".gemini", "antigravity-cli", "brain", activeSubID, ".system_generated", "logs")
-	if err := os.MkdirAll(activeLogDir, 0755); err != nil {
-		t.Fatalf("MkdirAll failed: %v", err)
-	}
-	activeTranscript := `{"step_index":0,"source":"SYSTEM","type":"SYSTEM_MESSAGE","status":"DONE","created_at":"2026-10-30T23:50:13Z","content":"<SYSTEM_MESSAGE>\n[Message] timestamp=2026-10-30T23:50:13Z sender=` + parentID + ` priority=MESSAGE_PRIORITY_HIGH content=Implement subagent filtering\n</SYSTEM_MESSAGE>"}` + "\n" +
-		`{"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-10-30T23:50:20Z","tool_calls":[{"name":"read_file","args":{}}]}` + "\n"
-	if err := os.WriteFile(filepath.Join(activeLogDir, "transcript.jsonl"), []byte(activeTranscript), 0644); err != nil {
-		t.Fatalf("WriteFile failed: %v", err)
-	}
-
-	// 2. Completed subagent transcript: last step is PLANNER_RESPONSE with status DONE and NO tool_calls
-	doneLogDir := filepath.Join(tmpHome, ".gemini", "antigravity-cli", "brain", doneSubID, ".system_generated", "logs")
-	if err := os.MkdirAll(doneLogDir, 0755); err != nil {
-		t.Fatalf("MkdirAll failed: %v", err)
-	}
-	doneTranscript := `{"step_index":0,"source":"SYSTEM","type":"SYSTEM_MESSAGE","status":"DONE","created_at":"2026-10-30T23:40:00Z","content":"<SYSTEM_MESSAGE>\n[Message] timestamp=2026-10-30T23:40:00Z sender=` + parentID + ` priority=MESSAGE_PRIORITY_HIGH content=Audit codebase structure\n</SYSTEM_MESSAGE>"}` + "\n" +
-		`{"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-10-30T23:41:00Z","content":"Finished audit report."}` + "\n" +
-		`{"step_index":2,"type":"CHECKPOINT","content":"checkpoint"}` + "\n"
-	if err := os.WriteFile(filepath.Join(doneLogDir, "transcript.jsonl"), []byte(doneTranscript), 0644); err != nil {
-		t.Fatalf("WriteFile failed: %v", err)
-	}
-
-	ap := NewAntigravityProvider()
-	subs, err := ap.ListSubagents(tmpHome, "/work", parentID)
-	if err != nil {
-		t.Fatalf("ListSubagents failed: %v", err)
-	}
-	if len(subs) != 2 {
-		t.Fatalf("Expected 2 subagents, got %d", len(subs))
-	}
-
-	byID := make(map[string]*daemon.ActiveSubagent)
-	for _, s := range subs {
-		byID[s.ID] = s
-	}
-
-	act := byID[activeSubID]
-	if act == nil {
-		t.Fatalf("Missing activeSubID in results")
-	}
-	if act.State != "running" {
-		t.Errorf("Expected activeSubID State='running', got %q", act.State)
-	}
-	if act.Prompt != "Implement subagent filtering" {
-		t.Errorf("Expected activeSubID Prompt='Implement subagent filtering', got %q", act.Prompt)
-	}
-
-	dn := byID[doneSubID]
-	if dn == nil {
-		t.Fatalf("Missing doneSubID in results")
-	}
-	if dn.State != "completed" {
-		t.Errorf("Expected doneSubID State='completed', got %q", dn.State)
-	}
-	if dn.Prompt != "Audit codebase structure" {
-		t.Errorf("Expected doneSubID Prompt='Audit codebase structure', got %q", dn.Prompt)
-	}
-}
-
-func TestAntigravityExtractTranscript_StripsUserRequestAndMetadataTags(t *testing.T) {
-	tmpHome := t.TempDir()
-	convID := "test-agy-tags-conv"
-	logDir := filepath.Join(tmpHome, ".gemini", "antigravity-cli", "brain", convID, ".system_generated", "logs")
-	if err := os.MkdirAll(logDir, 0755); err != nil {
-		t.Fatalf("MkdirAll failed: %v", err)
-	}
-
-	jsonlContent := strings.Join([]string{
-		`{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","created_at":"2026-10-31T14:51:44Z","content":"<USER_REQUEST>\nhow are you?\n</USER_REQUEST>\n<USER_SETTINGS_CHANGE>\nEffort level set to HIGH.\n</USER_SETTINGS_CHANGE>\n<ADDITIONAL_METADATA>\nThe current local time is: 2026-10-31T15:51:44+01:00.\n</ADDITIONAL_METADATA>"}`,
-		`{"step_index":1,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","created_at":"2026-10-31T14:52:00Z","content":"<USER_SETTINGS_CHANGE>\nEffort level set to HIGH.\n</USER_SETTINGS_CHANGE>\n<ADDITIONAL_METADATA>\nTime only\n</ADDITIONAL_METADATA>"}`,
-		`{"step_index":2,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","created_at":"2026-10-31T14:53:00Z","content":"<USER_REQUEST>\nPlease fix why <USER_REQUEST>example</USER_REQUEST> is shown in UI\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nLocal time\n</ADDITIONAL_METADATA>"}`,
-		`{"step_index":3,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-10-31T14:53:05Z","content":"I will fix the XML tag stripping."}`,
-		`{"step_index":4,"source":"SYSTEM","type":"CHECKPOINT","status":"DONE","created_at":"2026-10-31T14:54:00Z","content":"CHECKPOINT: Context summarized"}`,
-	}, "\n") + "\n"
-
-	if err := os.WriteFile(filepath.Join(logDir, "transcript.jsonl"), []byte(jsonlContent), 0644); err != nil {
-		t.Fatalf("WriteFile failed: %v", err)
-	}
-
-	ap := NewAntigravityProvider()
-	msgs, err := ap.ExtractTranscript(tmpHome, "/work", convID)
-	if err != nil {
-		t.Fatalf("ExtractTranscript failed: %v", err)
-	}
-
-	// Step 1 had only metadata (empty after cleaning), so we expect 4 messages: 2 user, 1 assistant, 1 system checkpoint
-	if len(msgs) != 4 {
-		t.Fatalf("Expected 4 messages, got %d: %+v", len(msgs), msgs)
-	}
-
-	if msgs[0].Role != "user" || msgs[0].Content != "how are you?" {
-		t.Errorf("Expected first user message 'how are you?', got %+v", msgs[0])
-	}
-	expectedNested := "Please fix why <USER_REQUEST>example</USER_REQUEST> is shown in UI"
-	if msgs[1].Role != "user" || msgs[1].Content != expectedNested {
-		t.Errorf("Expected second user message %q, got %q", expectedNested, msgs[1].Content)
-	}
-	if msgs[2].Role != "assistant" || msgs[2].Content != "I will fix the XML tag stripping." {
-		t.Errorf("Unexpected assistant message: %+v", msgs[2])
-	}
-	if msgs[3].Role != "system" || msgs[3].Content != "CHECKPOINT: Context summarized" {
-		t.Errorf("Unexpected system checkpoint message: %+v", msgs[3])
-	}
-
-	// Verify extractSubagentPromptText does not bypass CleanAntigravityPrompt when USER_INPUT mentions <SYSTEM_MESSAGE>
-	subPrompt := extractSubagentPromptText("USER_INPUT", "<USER_REQUEST>\nCheck <SYSTEM_MESSAGE> handling\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nTime\n</ADDITIONAL_METADATA>")
-	if subPrompt != "Check <SYSTEM_MESSAGE> handling" {
-		t.Errorf("Expected subPrompt 'Check <SYSTEM_MESSAGE> handling', got %q", subPrompt)
 	}
 }
 

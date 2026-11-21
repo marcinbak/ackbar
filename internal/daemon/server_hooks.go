@@ -7,7 +7,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
@@ -172,11 +171,7 @@ func (s *Server) processParsedHookEvent(event *Event, urlEventName string, heade
 	if s.PluginRegistry() != nil {
 		if p, ok := s.PluginRegistry().Get(event.Agent); ok {
 			supportsSubagents = p.Capabilities().SupportsSubagents
-		} else {
-			supportsSubagents = event.Agent == "antigravity"
 		}
-	} else {
-		supportsSubagents = event.Agent == "antigravity"
 	}
 	if supportsSubagents {
 		home := s.effectiveHomeDir()
@@ -195,8 +190,6 @@ func (s *Server) processParsedHookEvent(event *Event, urlEventName string, heade
 			var parentConvID, role, typeName string
 			if h, ok := s.PluginRegistry().AsHooks(event.Agent); ok {
 				parentConvID, role, typeName = h.ResolveSubagentParent(home, event.NativeID)
-			} else if event.Agent == "antigravity" {
-				parentConvID, role, typeName = ResolveAntigravitySubagentParent(home, event.NativeID)
 			}
 			if parentConvID != "" && parentConvID != event.NativeID {
 				unlockParent := s.lockSessionHook(hookLockKey(event.Agent, parentConvID, event.Agent+"-"+parentConvID))
@@ -305,31 +298,6 @@ func (s *Server) processParsedHookEvent(event *Event, urlEventName string, heade
 										parentSess.State = StateBlocked
 										parentSess.Blocked = blocked
 										parentSess.Activity = activity
-										break
-									}
-								}
-							} else {
-								subBrainDirs := antigravityBrainDirs(home)
-								for _, sub := range runningSubs {
-									if sub.ID == event.NativeID {
-										continue
-									}
-									cleanSubID := filepath.Base(filepath.Clean(sub.ID))
-									if cleanSubID == "" || cleanSubID == "." || cleanSubID == ".." || strings.ContainsAny(cleanSubID, "*?[") {
-										continue
-									}
-									for _, bDir := range subBrainDirs {
-										subLogPath := filepath.Join(bDir, cleanSubID, ".system_generated", "logs", "transcript.jsonl")
-										if blocked, activity, ok, _ := inspectAntigravityTranscriptFileBlocked(subLogPath, blockSince); ok {
-											stillBlockedBySibling = true
-											s.blockedBySubagent.Store(parentSess.ID, sub.ID)
-											parentSess.State = StateBlocked
-											parentSess.Blocked = blocked
-											parentSess.Activity = activity
-											break
-										}
-									}
-									if stillBlockedBySibling {
 										break
 									}
 								}
@@ -607,10 +575,6 @@ func (s *Server) updateHookSessionMetadataAndTitle(sess *Session, event *Event) 
 					sess.GitBranch = meta.GitBranch
 				}
 			}
-		} else if sess.Agent == "antigravity" {
-			if title := ReadAntigravitySessionTitle(sess.Cwd, sess.NativeID); title != "" && !isRawSessionName(title) {
-				sess.Name = title
-			}
 		} else if sess.Agent == "claude-code" {
 			if meta := ReadClaudeSessionMeta(sess.Cwd, sess.NativeID); meta != nil && meta.Title != "" {
 				sess.Name = meta.Title
@@ -628,10 +592,6 @@ func (s *Server) updateHookSessionMetadataAndTitle(sess *Session, event *Event) 
 				if meta := tr.ReadSessionMetadata(s.effectiveHomeDir(), sess.Cwd, sess.NativeID); meta != nil && meta.AITitle != "" && meta.AITitle != sess.Name {
 					sess.Name = meta.AITitle
 				}
-			}
-		} else if sess.Agent == "antigravity" {
-			if anno := ReadAntigravityAnnotationTitle(sess.NativeID); anno != "" && anno != sess.Name {
-				sess.Name = anno
 			}
 		}
 	}
@@ -675,8 +635,6 @@ func (s *Server) applyHookStateTransition(sess *Session, event *Event, sessionID
 					switch event.Agent {
 					case "claude-code":
 						InspectClaudeStatus(context.Background(), sess)
-					case "antigravity":
-						InspectAntigravityStatus(context.Background(), sess)
 					}
 				}
 				if sess.State == StateBlocked && sess.Blocked != nil {
@@ -903,7 +861,7 @@ func (s *Server) findSpawningSession(agentName, cwd string) (*Session, error) {
 	}
 	// 3. For Antigravity: match a managed placeholder session whose State was updated by scanObservedSessions
 	// before the user submitted their first prompt (still holds synthetic tempUUID with no brain artifacts).
-	supportsLazyAdopt := agentName == "antigravity"
+	supportsLazyAdopt := false
 	if s.PluginRegistry() != nil {
 		if p, ok := s.PluginRegistry().Get(agentName); ok {
 			supportsLazyAdopt = p.Capabilities().NativeIDStrategy == agent.NativeIDLazyAdopt

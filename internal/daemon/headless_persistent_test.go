@@ -11,6 +11,9 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"ackbar/internal/agent"
+	"ackbar/internal/agents/antigravity"
 )
 
 func TestPersistentArgsAndStdin_ClaudeAndAntigravity(t *testing.T) {
@@ -39,11 +42,16 @@ func TestPersistentArgsAndStdin_ClaudeAndAntigravity(t *testing.T) {
 		t.Errorf("expected --resume on existing conv: %v", argsExist)
 	}
 
+	agyPlugin := antigravity.New()
+	reg := agent.NewRegistry()
+	_ = reg.Register(agyPlugin)
+
 	newAgy := &Session{ID: "a1", Agent: "antigravity", NativeID: "native-a1", Model: "gemini-pro"}
-	_, agyArgs, err := buildPersistentArgs(newAgy, false)
+	agySpec, err := agyPlugin.BuildTurnSpec(agent.HeadlessTurnInput{Session: newAgy, IsExisting: false})
 	if err != nil {
-		t.Fatalf("buildPersistentArgs agy failed: %v", err)
+		t.Fatalf("antigravity BuildTurnSpec new failed: %v", err)
 	}
+	agyArgs := agySpec.Args
 	if slices.Contains(agyArgs, "-p") {
 		t.Errorf("antigravity persistent args must strictly omit -p: %v", agyArgs)
 	}
@@ -52,7 +60,11 @@ func TestPersistentArgsAndStdin_ClaudeAndAntigravity(t *testing.T) {
 	}
 
 	existAgy := &Session{ID: "a2", Agent: "antigravity", NativeID: "native-a2"}
-	_, existAgyArgs, _ := buildPersistentArgs(existAgy, true)
+	existAgySpec, err := agyPlugin.BuildTurnSpec(agent.HeadlessTurnInput{Session: existAgy, IsExisting: true})
+	if err != nil {
+		t.Fatalf("antigravity BuildTurnSpec existing failed: %v", err)
+	}
+	existAgyArgs := existAgySpec.Args
 	if !slices.Contains(existAgyArgs, "--conversation") {
 		t.Errorf("expected --conversation for existing conv: %v", existAgyArgs)
 	}
@@ -62,12 +74,16 @@ func TestPersistentArgsAndStdin_ClaudeAndAntigravity(t *testing.T) {
 		t.Errorf("invalid claude stdin turn: %s (err: %v)", cTurn, err)
 	}
 
-	aTurn1, err := formatPersistentStdinTurn("antigravity", "sess1", true, true, "Hello Agy")
+	aTurn1, err := formatPersistentStdinTurnWithRegistry(reg, agent.PersistentTurnInput{
+		Agent: "antigravity", SessionID: "sess1", IsSupervisor: true, IsFirstTurn: true, Prompt: "Hello Agy",
+	})
 	if err != nil || !strings.Contains(aTurn1, `"event":"user"`) || !strings.Contains(aTurn1, "[System Instruction:") {
 		t.Errorf("antigravity supervisor Turn 1 missing system instruction or wrong event key: %s", aTurn1)
 	}
 
-	aTurn2, err := formatPersistentStdinTurn("antigravity", "sess1", true, false, "Hello Agy 2")
+	aTurn2, err := formatPersistentStdinTurnWithRegistry(reg, agent.PersistentTurnInput{
+		Agent: "antigravity", SessionID: "sess1", IsSupervisor: true, IsFirstTurn: false, Prompt: "Hello Agy 2",
+	})
 	if err != nil || strings.Contains(aTurn2, "[System Instruction:") {
 		t.Errorf("antigravity supervisor Turn 2 must not have system instruction prepended: %s", aTurn2)
 	}
@@ -94,6 +110,9 @@ done
 		t.Fatalf("InitDB: %v", err)
 	}
 	h := NewHeadlessRunner(db, nil)
+	reg := agent.NewRegistry()
+	_ = reg.Register(antigravity.New())
+	h.SetPluginRegistry(reg)
 	defer h.ShutdownAllWorkers(time.Second)
 
 	sess := &Session{ID: "claude-code:local:m1", Agent: "claude-code", NativeID: "m1", Cwd: tmpDir, EngineType: EngineHeadless}
@@ -244,6 +263,9 @@ done
 		t.Fatalf("InitDB: %v", err)
 	}
 	h := NewHeadlessRunner(db, nil)
+	reg := agent.NewRegistry()
+	_ = reg.Register(antigravity.New())
+	h.SetPluginRegistry(reg)
 	defer h.ShutdownAllWorkers(time.Second)
 
 	sess := &Session{ID: "antigravity:local:temp1", Agent: "antigravity", NativeID: "temp1", Cwd: tmpDir, EngineType: EngineHeadless}
@@ -302,6 +324,9 @@ done
 
 	db, _ := InitDB(filepath.Join(tmpDir, "test.db"))
 	h := NewHeadlessRunner(db, nil)
+	reg := agent.NewRegistry()
+	_ = reg.Register(antigravity.New())
+	h.SetPluginRegistry(reg)
 	defer h.ShutdownAllWorkers(time.Second)
 	defer h.ReleaseSleepInhibitor()
 	h.sleepInhibitor.cmdFactory = func(_ string, _ int) *exec.Cmd { return exec.Command("sleep", "30") }
@@ -374,6 +399,9 @@ done
 		t.Fatalf("InitDB: %v", err)
 	}
 	h := NewHeadlessRunner(db, nil)
+	reg := agent.NewRegistry()
+	_ = reg.Register(antigravity.New())
+	h.SetPluginRegistry(reg)
 	t.Cleanup(func() {
 		h.ShutdownAllWorkers(time.Second)
 	})

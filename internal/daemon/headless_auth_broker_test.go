@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"ackbar/internal/agents/antigravity"
 )
 
 func TestValidateAuthURL(t *testing.T) {
@@ -75,6 +77,7 @@ func TestAuthBroker_ToolAndCallbackLoopbackFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := NewServer(db)
+	_ = s.RegisterPlugin(antigravity.New())
 
 	sess := &Session{
 		ID:        "claude-code:local:flow-1",
@@ -204,6 +207,7 @@ func TestAuthBroker_StdinCallbackFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := NewServer(db)
+	_ = s.RegisterPlugin(antigravity.New())
 
 	sess := &Session{
 		ID:        "antigravity:local:flow-stdin",
@@ -292,6 +296,7 @@ func TestAuthBroker_RespondRetryAndDismiss(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := NewServer(db)
+	_ = s.RegisterPlugin(antigravity.New())
 
 	sess := &Session{
 		ID:        "antigravity:local:auth-resp",
@@ -355,6 +360,7 @@ func TestAuthBroker_CrossSessionCompletedFlowAndDeadFlowNoSSRF(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := NewServer(db)
+	_ = s.RegisterPlugin(antigravity.New())
 
 	sess1 := &Session{ID: "antigravity:local:sess1", Agent: "antigravity", Host: s.HostName(), StartedAt: time.Now()}
 	sess2 := &Session{ID: "antigravity:local:sess2", Agent: "antigravity", Host: s.HostName(), StartedAt: time.Now()}

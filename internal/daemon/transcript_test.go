@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"ackbar/internal/agents/antigravity"
 	"ackbar/internal/agents/codex"
 	"ackbar/internal/agents/grok"
 	"ackbar/internal/agents/opencode"
@@ -34,7 +35,7 @@ func TestExtractTranscript_Antigravity(t *testing.T) {
 	os.Setenv("HOME", tmpHome)
 	defer os.Setenv("HOME", origHome)
 
-	transcript, err := ExtractTranscript("antigravity", convID, "/tmp")
+	transcript, err := antigravity.New().ExtractTranscript(tmpHome, "/tmp", convID)
 	if err != nil {
 		t.Fatalf("ExtractTranscript failed: %v", err)
 	}
@@ -91,10 +92,11 @@ func TestExtractTranscript_Antigravity_HydratesTruncatedFieldsFromFullTranscript
 		t.Fatalf("WriteFile full failed: %v", err)
 	}
 
-	msgs, err := ExtractAntigravityTranscriptMessages(tmpHome, convID)
+	tr, err := antigravity.New().ExtractTranscript(tmpHome, "", convID)
 	if err != nil {
-		t.Fatalf("ExtractAntigravityTranscriptMessages failed: %v", err)
+		t.Fatalf("ExtractTranscript failed: %v", err)
 	}
+	msgs := tr.Messages
 	if len(msgs) != 2 {
 		t.Fatalf("Expected 2 messages, got %d", len(msgs))
 	}
@@ -258,9 +260,9 @@ func TestExtractSubagents_Antigravity(t *testing.T) {
 	os.Setenv("HOME", tmpHome)
 	defer os.Setenv("HOME", origHome)
 
-	running, err := ExtractSubagents("antigravity", convID, "/tmp")
+	running, err := antigravity.New().ListActiveSubagents(tmpHome, "/tmp", convID)
 	if err != nil {
-		t.Fatalf("ExtractSubagents failed: %v", err)
+		t.Fatalf("ListActiveSubagents failed: %v", err)
 	}
 
 	// sub-conv-a completed; only Security Reviewer (sub-conv-sec) should still be running
@@ -393,9 +395,9 @@ func TestCleanAntigravityPrompt_NestedTags(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := CleanAntigravityPrompt(tc.raw)
+			got := antigravity.CleanPrompt(tc.raw)
 			if got != tc.expected {
-				t.Errorf("CleanAntigravityPrompt() = %q; want %q", got, tc.expected)
+				t.Errorf("antigravity.CleanPrompt() = %q; want %q", got, tc.expected)
 			}
 		})
 	}
@@ -487,7 +489,7 @@ func TestExtractTranscript_Antigravity_Media(t *testing.T) {
 	os.Setenv("HOME", tmpHome)
 	defer os.Setenv("HOME", origHome)
 
-	transcript, err := ExtractTranscript("antigravity", convID, "/tmp")
+	transcript, err := antigravity.New().ExtractTranscript(tmpHome, "/tmp", convID)
 	if err != nil {
 		t.Fatalf("ExtractTranscript failed: %v", err)
 	}
@@ -566,7 +568,7 @@ func TestExtractTranscript_ClaudeCode_FiltersSyntheticUserEntries(t *testing.T) 
 
 func TestAgentAdapter_FilterUserEntry_AgentSpecificIsolation(t *testing.T) {
 	claudeAdapter := getDefaultAgentAdapter("claude-code")
-	agyAdapter := getDefaultAgentAdapter("antigravity")
+	agyAdapter := &PluginBridge{plugin: antigravity.New()}
 	codexAdapter := &PluginBridge{plugin: codex.New()}
 	grokAdapter := &PluginBridge{plugin: grok.New()}
 	openCodeAdapter := &PluginBridge{plugin: opencode.New()}
@@ -655,10 +657,11 @@ func TestExtractAntigravityTranscriptMessages_ImageGenMediaVsReadFile(t *testing
 		t.Fatalf("WriteFile failed: %v", err)
 	}
 
-	msgs, err := ExtractAntigravityTranscriptMessages(tmpHome, convID)
+	tr, err := antigravity.New().ExtractTranscript(tmpHome, "", convID)
 	if err != nil {
-		t.Fatalf("ExtractAntigravityTranscriptMessages failed: %v", err)
+		t.Fatalf("ExtractTranscript failed: %v", err)
 	}
+	msgs := tr.Messages
 
 	if len(msgs) != 4 {
 		t.Fatalf("Expected 4 messages, got %d", len(msgs))

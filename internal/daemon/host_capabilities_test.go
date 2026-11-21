@@ -11,6 +11,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"ackbar/internal/agent"
+	"ackbar/internal/agents/antigravity"
 )
 
 func TestDefaultHostPolicy(t *testing.T) {
@@ -326,9 +329,10 @@ func TestCLIInitPromptAndProcessScannerCompatibility(t *testing.T) {
 		t.Fatalf("unexpected claude init prompt cmd: %s", claudeCmd)
 	}
 
-	agyCmd := appendCLIInitPrompt("antigravity", "agy")
-	if agyCmd != `agy -i "$ACKBAR_INIT_PROMPT"` {
-		t.Fatalf("unexpected antigravity init prompt cmd: %s", agyCmd)
+	agyPlugin := antigravity.New()
+	agySpec, err := agyPlugin.BuildLaunchSpec(agent.LaunchInput{Prompt: "hello"})
+	if err != nil || agySpec.CommandLine != `agy -i "$ACKBAR_INIT_PROMPT"` {
+		t.Fatalf("unexpected antigravity init prompt cmd: %q, err=%v", agySpec.CommandLine, err)
 	}
 
 	if other := appendCLIInitPrompt("mock-agent", "sleep 5"); other != "" {
@@ -336,7 +340,7 @@ func TestCLIInitPromptAndProcessScannerCompatibility(t *testing.T) {
 	}
 
 	claudeAdapter := ClaudeAgentAdapter{}
-	agyAdapter := AntigravityAgentAdapter{}
+	agyAdapter := agyPlugin
 
 	// Interactive Claude session whose prompt mentions "ackbar", "ackbard", "update", "mcp", and "-p"
 	claudePS := "claude --session-id 550e8400-e29b-41d4-a716-446655440000 update the mcp server in ackbard and test -p flag"

@@ -105,33 +105,6 @@ func (s *Server) extractClaudeRewindTurns(home string, sess *Session) ([]rewindH
 	return turns, lines, targetFile
 }
 
-func (s *Server) extractAntigravityRewindTurns(home string, sess *Session) []rewindHumanTurn {
-	if sess == nil {
-		return nil
-	}
-	msgs, err := ExtractAntigravityTranscriptMessages(home, sess.NativeID)
-	if err != nil || len(msgs) == 0 {
-		return nil
-	}
-
-	var turns []rewindHumanTurn
-	for _, m := range msgs {
-		if m.Role == "user" && strings.TrimSpace(m.Content) != "" {
-			preview := strings.TrimSpace(m.Content)
-			if len(preview) > 120 {
-				preview = preview[:120] + "..."
-			}
-			turns = append(turns, rewindHumanTurn{
-				Turn:      len(turns) + 1,
-				Timestamp: m.Timestamp,
-				Preview:   preview,
-				RawPrompt: m.Content,
-			})
-		}
-	}
-	return turns
-}
-
 func (s *Server) extractPluginRewindTurns(home string, sess *Session) []rewindHumanTurn {
 	if sess == nil {
 		return nil
@@ -230,8 +203,6 @@ func (s *Server) handleSessionRewind(w http.ResponseWriter, r *http.Request, ses
 		}
 	} else if _, ok := s.PluginRegistry().AsTranscript(sess.Agent); ok {
 		turns = s.extractPluginRewindTurns(home, sess)
-	} else if sess.Agent == "antigravity" {
-		turns = s.extractAntigravityRewindTurns(home, sess)
 	} else {
 		turns, rawLines, targetFile = s.extractClaudeRewindTurns(home, sess)
 	}

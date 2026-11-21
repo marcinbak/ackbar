@@ -53,7 +53,7 @@ Detailed architectural and technical domain documentation is organized in the `d
 │   ├── agents/         # Standalone leaf agent plugins (antigravity/, codex/, grok/, opencode/)
 │   ├── agentutil/      # Leaf helpers for fs, CLI exec, ID validation, TOML, provisioning, prompt parsing, and ACP
 │   ├── daemon/         # SQLite DB, modular HTTP server handlers (server_*.go), session_scanner.go, SSE streaming, OAuth broker, and agent capability adapters (agent_*.go)
-│   ├── provider/       # Legacy agent adapters (Claude Code, Antigravity)
+│   ├── provider/       # Legacy agent adapters (Claude Code)
 │   ├── relay/          # Outbound reverse tunnel server and daemon client
 │   ├── testutil/       # Isolated TestMain HOME/env helper and repo-wide AST gate
 │   ├── tmux/           # Tmux process supervision wrapper (Spawn, Kill, GetPID)

@@ -156,10 +156,6 @@ func collectSkillDirsWithRegistry(home string, db *DB, reg *agent.Registry, incl
 			addDir(filepath.Join(home, ".codex", "skills"))
 			addDir(filepath.Join(home, ".grok", "skills"))
 		} else {
-			if _, ok := reg.AsProvisioner("antigravity"); !ok {
-				addDir(filepath.Join(home, ".gemini", "config", "skills"))
-				addDir(filepath.Join(home, ".gemini", "antigravity-cli", "skills"))
-			}
 			if _, ok := reg.AsProvisioner("claude-code"); !ok {
 				addDir(filepath.Join(home, ".claude", "skills"))
 			}
@@ -188,7 +184,7 @@ func collectSkillDirsWithRegistry(home string, db *DB, reg *agent.Registry, incl
 				}
 			}
 		}
-		if reg == nil || func() bool { _, ok := reg.AsAccounts("antigravity"); return !ok }() {
+		if reg == nil {
 			if accounts, err := db.ListAccounts("antigravity"); err == nil {
 				for _, acc := range accounts {
 					if acc != nil && strings.TrimSpace(acc.ConfigDir) != "" {

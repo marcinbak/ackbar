@@ -12,7 +12,6 @@ import (
 	"runtime"
 	"strings"
 
-	"ackbar/internal/agent"
 	"ackbar/internal/agents"
 	"ackbar/internal/daemon"
 	"ackbar/internal/provider"
@@ -146,8 +145,11 @@ func main() {
 	}
 	defer db.Close()
 
-	// Initialize HTTP Server
-	server := daemon.NewServer(db)
+	// Initialize HTTP Server with plugins before startup worker reattach
+	server, err := daemon.NewServerWithPlugins(db, reg.List()...)
+	if err != nil {
+		log.Fatalf("Failed to initialize server plugins: %v", err)
+	}
 	if hostName == "" || strings.EqualFold(hostName, "local") {
 		if dbHost, err := db.GetSetting("host_name"); err == nil && dbHost != "" && !strings.EqualFold(dbHost, "local") {
 			hostName = dbHost
@@ -175,14 +177,6 @@ func main() {
 
 	// Register Provider Adapters
 	server.RegisterProvider(provider.NewClaudeProvider())
-	if agent.IsLegacyAgent("antigravity", "agy") {
-		server.RegisterProvider(provider.NewAntigravityProvider())
-	}
-	for _, p := range reg.List() {
-		if err := server.RegisterPlugin(p); err != nil {
-			log.Fatalf("Failed to register plugin %s: %v", p.Key(), err)
-		}
-	}
 
 	// Start Antigravity JETSKI-AUDIO/1 Live Voice Bridge (default 127.0.0.1:4713)
 	server.EnsureVoiceBridge()

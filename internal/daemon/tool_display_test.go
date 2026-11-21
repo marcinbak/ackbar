@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 	"unicode/utf8"
+
+	"ackbar/internal/agents/antigravity"
 )
 
 func TestFormatMCPToolDisplayAndSpoolSummary(t *testing.T) {
@@ -141,10 +143,11 @@ func TestExtractAntigravityTranscriptMessages_MCPTools(t *testing.T) {
 		t.Fatalf("WriteFile failed: %v", err)
 	}
 
-	msgs, err := ExtractAntigravityTranscriptMessages(tmpHome, convID)
+	tr, err := antigravity.New().ExtractTranscript(tmpHome, "", convID)
 	if err != nil {
-		t.Fatalf("ExtractAntigravityTranscriptMessages failed: %v", err)
+		t.Fatalf("ExtractTranscript failed: %v", err)
 	}
+	msgs := tr.Messages
 	if len(msgs) != 2 {
 		t.Fatalf("expected 2 messages, got %d", len(msgs))
 	}

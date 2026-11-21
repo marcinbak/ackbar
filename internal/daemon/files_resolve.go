@@ -153,6 +153,24 @@ func extractUUIDCandidate(sessionID string) string {
 	return ""
 }
 
+func antigravityBrainDirs(home string) []string {
+	if home == "" {
+		return nil
+	}
+	dirs := []string{
+		filepath.Join(home, ".gemini", "antigravity", "brain"),
+		filepath.Join(home, ".gemini", "antigravity-cli", "brain"),
+		filepath.Join(home, ".antigravity", "brain"),
+	}
+	if m1, err := filepath.Glob(filepath.Join(home, ".gemini-profiles", "*", "brain")); err == nil {
+		dirs = append(dirs, m1...)
+	}
+	if m2, err := filepath.Glob(filepath.Join(home, ".gemini-profiles", "*", "antigravity", "brain")); err == nil {
+		dirs = append(dirs, m2...)
+	}
+	return dirs
+}
+
 func (s *Server) resolveSessionForFile(sessionID string) *Session {
 	if sessionID == "" {
 		return nil
@@ -169,10 +187,10 @@ func (s *Server) resolveSessionForFile(sessionID string) *Session {
 		return nil
 	}
 	parentID := ""
-	if h, ok := s.PluginRegistry().AsHooks("antigravity"); ok {
-		parentID, _, _ = h.ResolveSubagentParent(homeDir, uuidCandidate)
-	} else {
-		parentID, _, _ = ResolveAntigravitySubagentParent(homeDir, uuidCandidate)
+	if s != nil {
+		if h, ok := s.PluginRegistry().AsHooks("antigravity"); ok {
+			parentID, _, _ = h.ResolveSubagentParent(homeDir, uuidCandidate)
+		}
 	}
 	if parentID != "" {
 		if parentSess := s.resolveSession(parentID); parentSess != nil {
