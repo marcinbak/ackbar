@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 )
@@ -211,35 +210,6 @@ func resolveTranscriptFileStat(home, agent, nativeID, cwd string) (string, int64
 	switch {
 	case agent == "claude-code" || strings.HasPrefix(agent, "claude"):
 		filePath = findClaudeTranscriptPath(home, nativeID, cwd)
-
-	case agent == "antigravity":
-		cleanID := filepath.Base(filepath.Clean(nativeID))
-		candidateDirs := []string{
-			filepath.Join(home, ".gemini", "antigravity", "brain", cleanID, ".system_generated", "logs"),
-			filepath.Join(home, ".gemini", "antigravity-cli", "brain", cleanID, ".system_generated", "logs"),
-			filepath.Join(home, ".antigravity", "brain", cleanID, ".system_generated", "logs"),
-		}
-		if p1, _ := filepath.Glob(filepath.Join(home, ".gemini-profiles", "*", "brain", cleanID, ".system_generated", "logs")); len(p1) > 0 {
-			candidateDirs = append(candidateDirs, p1...)
-		}
-		if p2, _ := filepath.Glob(filepath.Join(home, ".gemini-profiles", "*", "antigravity", "brain", cleanID, ".system_generated", "logs")); len(p2) > 0 {
-			candidateDirs = append(candidateDirs, p2...)
-		}
-		if p3, _ := filepath.Glob(filepath.Join(home, ".gemini-profiles", "*", "antigravity-cli", "brain", cleanID, ".system_generated", "logs")); len(p3) > 0 {
-			candidateDirs = append(candidateDirs, p3...)
-		}
-		for _, dir := range candidateDirs {
-			cand := filepath.Join(dir, "transcript.jsonl")
-			if stat, err := os.Stat(cand); err == nil && !stat.IsDir() {
-				filePath = cand
-				break
-			}
-			candFull := filepath.Join(dir, "transcript_full.jsonl")
-			if stat, err := os.Stat(candFull); err == nil && !stat.IsDir() {
-				filePath = candFull
-				break
-			}
-		}
 	}
 
 	if filePath == "" {
@@ -254,23 +224,12 @@ func resolveTranscriptFileStat(home, agent, nativeID, cwd string) (string, int64
 }
 
 func statTranscriptFile(agent, filePath string) (int64, int64, error) {
+	_ = agent
 	st, err := os.Stat(filePath)
 	if err != nil {
 		return 0, 0, err
 	}
-	size := st.Size()
-	modTimeNano := st.ModTime().UnixNano()
-
-	if (agent == "antigravity" || strings.HasPrefix(agent, "antigravity")) && filepath.Base(filePath) == "transcript.jsonl" {
-		siblingFull := filepath.Join(filepath.Dir(filePath), "transcript_full.jsonl")
-		if fullStat, ferr := os.Stat(siblingFull); ferr == nil && !fullStat.IsDir() {
-			size += fullStat.Size()
-			if fullMod := fullStat.ModTime().UnixNano(); fullMod > modTimeNano {
-				modTimeNano = fullMod
-			}
-		}
-	}
-	return size, modTimeNano, nil
+	return st.Size(), st.ModTime().UnixNano(), nil
 }
 
 func (s *Server) resolveTranscriptStat(home, agent, nativeID, cwd string) (string, int64, int64, error) {

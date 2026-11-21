@@ -128,6 +128,12 @@ type StreamParser interface {
 	ParseStreamLine(line []byte) (events []ChatStreamEvent, handled bool, err error)
 }
 
+// StreamFlusher is an optional extension for StreamParser implementations that
+// buffer state across lines and emit trailing events (e.g. unclosed errors) at EOF.
+type StreamFlusher interface {
+	FlushEOF() []ChatStreamEvent
+}
+
 type StreamParserFactory interface {
 	NewStreamParser(sessionID string) StreamParser
 }

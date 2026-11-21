@@ -46,15 +46,6 @@ var supportedAgents = []AgentDefinition{
 		SkillsRel:   "",
 		RulesRel:    "",
 	},
-	{
-		Key:         "antigravity",
-		DisplayName: "Google Antigravity",
-		CLICommand:  "agy",
-		HomeSubdir:  filepath.Join(".gemini", "antigravity"),
-		ConfigRel:   filepath.Join(".gemini", "antigravity", "mcp_config.json"),
-		SkillsRel:   filepath.Join(".gemini", "config", "skills"),
-		RulesRel:    filepath.Join(".gemini", "GEMINI.md"),
-	},
 }
 
 // getClaudeDesktopConfigPath resolves the OS-specific path for Claude Desktop config
@@ -185,12 +176,6 @@ func inspectAgent(home string, def AgentDefinition) AgentStatus {
 		if data, err := os.ReadFile(skillMDPath); err == nil {
 			status.SkillInstalled = true
 			status.SkillVersion = agentutil.ExtractSkillVersion(string(data))
-		} else if def.Key == "antigravity" {
-			cliSkillMDPath := filepath.Join(home, ".gemini", "antigravity-cli", "skills", "ackbar-tasks", "SKILL.md")
-			if data, err := os.ReadFile(cliSkillMDPath); err == nil {
-				status.SkillInstalled = true
-				status.SkillVersion = agentutil.ExtractSkillVersion(string(data))
-			}
 		}
 	}
 
@@ -203,14 +188,6 @@ func inspectAgent(home string, def AgentDefinition) AgentStatus {
 			if ver := agentutil.ExtractRulesVersion(string(data)); ver != "" {
 				status.RulesInstalled = true
 				status.RulesVersion = ver
-			}
-		} else if def.Key == "antigravity" {
-			cliRulesPath := filepath.Join(home, ".gemini", "config", "GEMINI.md")
-			if data, err := os.ReadFile(cliRulesPath); err == nil {
-				if ver := agentutil.ExtractRulesVersion(string(data)); ver != "" {
-					status.RulesInstalled = true
-					status.RulesVersion = ver
-				}
 			}
 		}
 	}
@@ -351,9 +328,6 @@ func installAgentSkill(home string, def AgentDefinition) error {
 	}
 
 	targetDirs := []string{filepath.Join(home, def.SkillsRel, "ackbar-tasks")}
-	if def.Key == "antigravity" {
-		targetDirs = append(targetDirs, filepath.Join(home, ".gemini", "antigravity-cli", "skills", "ackbar-tasks"))
-	}
 
 	for _, targetSkillDir := range targetDirs {
 		if err := agentutil.InstallEmbeddedSkill(targetSkillDir); err != nil {
@@ -370,9 +344,6 @@ func installAgentRules(home string, def AgentDefinition) error {
 	}
 
 	targets := []string{filepath.Join(home, def.RulesRel)}
-	if def.Key == "antigravity" {
-		targets = append(targets, filepath.Join(home, ".gemini", "config", "GEMINI.md"))
-	}
 
 	for _, target := range targets {
 		if err := agentutil.UpsertMarkdownRulesBlock(target, version.Version); err != nil {

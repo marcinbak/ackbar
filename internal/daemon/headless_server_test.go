@@ -25,13 +25,13 @@ func setupTestServer(t *testing.T) (*Server, *DB) {
 		t.Fatalf("InitDB failed: %v", err)
 	}
 
-	srv := NewServer(db)
+	srv, err := NewServerWithPlugins(db, agents.DefaultPlugins()...)
+	if err != nil {
+		t.Fatalf("NewServerWithPlugins failed: %v", err)
+	}
 	srv.restartDaemonFn = func() {}
 	srv.shutdownExitFn = func(int) {}
 	srv.RegisterProvider(&MockProvider{})
-	for _, p := range agents.DefaultPlugins() {
-		_ = srv.RegisterPlugin(p)
-	}
 	t.Cleanup(func() {
 		if srv.headless != nil {
 			srv.headless.ShutdownAllWorkers(2 * time.Second)

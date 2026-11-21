@@ -6,7 +6,7 @@ import (
 	"ackbar/internal/agent"
 )
 
-func TestDefaultRegistry_HonorLegacyEnv(t *testing.T) {
+func TestDefaultRegistry_UnconditionalBuiltinPlugins(t *testing.T) {
 	reg := agent.NewRegistry()
 	if err := RegisterDefaultsFromEnv(reg, ""); err != nil {
 		t.Fatalf("RegisterDefaultsFromEnv empty failed: %v", err)
@@ -35,14 +35,10 @@ func TestDefaultRegistry_HonorLegacyEnv(t *testing.T) {
 		if err := RegisterDefaultsFromEnv(legacyReg, envVal); err != nil {
 			t.Fatalf("RegisterDefaultsFromEnv(%q) failed: %v", envVal, err)
 		}
-		if _, ok := legacyReg.Get("antigravity"); ok {
-			t.Errorf("expected antigravity omitted when %s=%q", agent.LegacyAgentsEnvVar, envVal)
-		}
-		if _, ok := legacyReg.Get("agy"); ok {
-			t.Errorf("expected agy alias omitted when %s=%q", agent.LegacyAgentsEnvVar, envVal)
-		}
-		if _, ok := legacyReg.Get("grok"); !ok {
-			t.Errorf("expected grok to remain registered when %s=%q", agent.LegacyAgentsEnvVar, envVal)
+		for _, want := range []string{"grok", "codex", "opencode", "antigravity", "agy"} {
+			if _, ok := legacyReg.Get(want); !ok {
+				t.Errorf("expected %q to remain registered when %s=%q", want, agent.LegacyAgentsEnvVar, envVal)
+			}
 		}
 	}
 
@@ -51,7 +47,9 @@ func TestDefaultRegistry_HonorLegacyEnv(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewDefaultRegistry failed: %v", err)
 	}
-	if _, ok := envReg.Get("antigravity"); ok {
-		t.Error("expected NewDefaultRegistry to omit antigravity when ACKBAR_LEGACY_AGENTS=antigravity")
+	for _, want := range []string{"antigravity", "agy"} {
+		if _, ok := envReg.Get(want); !ok {
+			t.Errorf("expected NewDefaultRegistry to keep %q registered when ACKBAR_LEGACY_AGENTS=antigravity", want)
+		}
 	}
 }

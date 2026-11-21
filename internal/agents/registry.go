@@ -16,9 +16,7 @@ func DefaultPluginsFromEnv(rawLegacyEnv string) []agent.Plugin {
 		grok.New(),
 		codex.New(),
 		opencode.New(),
-	}
-	if !agent.IsLegacyAgentFromEnv(rawLegacyEnv, "antigravity", "agy") {
-		plugins = append(plugins, antigravity.New())
+		antigravity.New(),
 	}
 	if !agent.IsLegacyAgentFromEnv(rawLegacyEnv, "claude-code", "claude") {
 		plugins = append(plugins, claude.New())

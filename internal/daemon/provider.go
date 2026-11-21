@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"strings"
 	"time"
 
 	"ackbar/internal/agent"
@@ -131,13 +130,7 @@ func getDefaultAgentAdapter(agent string) AgentAdapter {
 	switch agent {
 	case "claude-code":
 		return &ClaudeAgentAdapter{}
-	case "antigravity":
-		return &AntigravityAgentAdapter{}
 	default:
-		lower := strings.ToLower(agent)
-		if strings.Contains(lower, "antigravity") || strings.Contains(lower, "agy") {
-			return &AntigravityAgentAdapter{}
-		}
 		return &defaultAgentAdapter{agent: agent}
 	}
 }

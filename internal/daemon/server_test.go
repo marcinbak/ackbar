@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"ackbar/internal/agent"
+	"ackbar/internal/agents/antigravity"
 	"ackbar/internal/agents/codex"
 	"ackbar/internal/agents/opencode"
 	"ackbar/internal/tmux"
@@ -1606,7 +1607,7 @@ func TestInspectAntigravityStatus_QuestionDetectedWithTrailingOutput(t *testing.
 	}
 
 	ctx := context.Background()
-	changed := InspectAntigravityStatus(ctx, sess)
+	changed := NewPluginBridge(antigravity.New(), nil, nil).InspectStatus(ctx, sess)
 	if !changed {
 		t.Errorf("Expected InspectAntigravityStatus to report changed=true")
 	}
@@ -1656,7 +1657,7 @@ func TestInspectAntigravityStatus_AnsweredQuestionDoesNotBlock(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	InspectAntigravityStatus(ctx, sess)
+	NewPluginBridge(antigravity.New(), nil, nil).InspectStatus(ctx, sess)
 	if sess.State == StateBlocked {
 		t.Fatalf("Expected session NOT to be blocked since question was answered, got StateBlocked")
 	}
@@ -1694,7 +1695,7 @@ func TestInspectAntigravityStatus_TranscriptTurnConcluded(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	changed := InspectAntigravityStatus(ctx, sess)
+	changed := NewPluginBridge(antigravity.New(), nil, nil).InspectStatus(ctx, sess)
 	if !changed {
 		t.Errorf("Expected InspectAntigravityStatus to report changed=true when turn concluded")
 	}
@@ -1735,7 +1736,7 @@ func TestInspectAntigravityStatus_TranscriptUserInputWorking(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	changed := InspectAntigravityStatus(ctx, sess)
+	changed := NewPluginBridge(antigravity.New(), nil, nil).InspectStatus(ctx, sess)
 	if !changed {
 		t.Errorf("Expected InspectAntigravityStatus to report changed=true on new USER_INPUT")
 	}
@@ -1785,28 +1786,6 @@ func TestExtractTailText_ExactCount(t *testing.T) {
 	}
 	if tailLines[0] != "line 5" || tailLines[4] != "line 9" {
 		t.Errorf("Unexpected tail content: %q", tailLines)
-	}
-}
-
-func TestIsAntigravityPromptLine(t *testing.T) {
-	if !isAntigravityPromptLine(">") {
-		t.Errorf("Expected '>' to match prompt")
-	}
-	if !isAntigravityPromptLine("> ") {
-		t.Errorf("Expected '> ' to match prompt")
-	}
-	if !isAntigravityPromptLine("> Accept-edits") {
-		t.Errorf("Expected '> Accept-edits' to match prompt")
-	}
-	if !isAntigravityPromptLine("> Plan mode") {
-		t.Errorf("Expected '> Plan mode' to match prompt")
-	}
-	// Crucial: previous user prompt must NOT match as an idle prompt
-	if isAntigravityPromptLine("> Fix the bug in main.go") {
-		t.Errorf("Expected user prompt '> Fix the bug in main.go' NOT to match idle prompt")
-	}
-	if isAntigravityPromptLine("> Update documentation") {
-		t.Errorf("Expected user prompt '> Update documentation' NOT to match idle prompt")
 	}
 }
 
@@ -2606,6 +2585,7 @@ func TestIsIgnoredAgentCommand(t *testing.T) {
 	}
 
 	reg := agent.NewRegistry()
+	_ = reg.Register(antigravity.New())
 	_ = reg.Register(codex.New())
 	_ = reg.Register(opencode.New())
 	for _, tt := range tests {
@@ -2807,24 +2787,6 @@ func (p *namedMockProvider) DisplayName() string {
 }
 
 func (p *namedMockProvider) ListSubagents(home, cwd, nativeID string) ([]*ActiveSubagent, error) {
-	if p.agentName == "antigravity" {
-		subs, err := ExtractSubagents("antigravity", nativeID, cwd)
-		if err != nil {
-			return nil, err
-		}
-		var out []*ActiveSubagent
-		for _, s := range subs {
-			out = append(out, &ActiveSubagent{
-				ID:        s.ID,
-				Name:      s.Name,
-				Role:      s.Role,
-				Prompt:    s.Prompt,
-				State:     s.State,
-				StartedAt: s.StartedAt,
-			})
-		}
-		return out, nil
-	}
 	return nil, nil
 }
 
@@ -2879,11 +2841,12 @@ func TestAgentDiscoveryDeterministicOrdering(t *testing.T) {
 }
 
 func TestIsAntigravitySubagent(t *testing.T) {
+	p := antigravity.New()
 	tmpDir := t.TempDir()
 	convID := "57ae3db6-0595-4f7e-aff7-ec6494aef363"
 
 	// 1. When no annotations, no metadata, no brain logs exist -> false (do not assume subagent!)
-	if isAntigravitySubagent(tmpDir, convID) {
+	if p.IsSubagentSession(tmpDir, convID, nil) {
 		t.Fatalf("Expected false when no files exist, got true")
 	}
 
@@ -2891,7 +2854,7 @@ func TestIsAntigravitySubagent(t *testing.T) {
 	annoDir := filepath.Join(tmpDir, ".gemini", "antigravity", "annotations")
 	_ = os.MkdirAll(annoDir, 0755)
 	_ = os.WriteFile(filepath.Join(annoDir, convID+".pbtxt"), []byte("title: test"), 0644)
-	if isAntigravitySubagent(tmpDir, convID) {
+	if p.IsSubagentSession(tmpDir, convID, nil) {
 		t.Fatalf("Expected false when annotation file exists, got true")
 	}
 	_ = os.Remove(filepath.Join(annoDir, convID+".pbtxt"))
@@ -2901,14 +2864,14 @@ func TestIsAntigravitySubagent(t *testing.T) {
 	_ = os.MkdirAll(cacheDir, 0755)
 	metaContent := fmt.Sprintf(`{"conversations": {"%s": {"is_internal": true}}}`, convID)
 	_ = os.WriteFile(filepath.Join(cacheDir, "conversation_metadata.json"), []byte(metaContent), 0644)
-	if !isAntigravitySubagent(tmpDir, convID) {
+	if !p.IsSubagentSession(tmpDir, convID, nil) {
 		t.Fatalf("Expected true when conversation_metadata marks is_internal: true, got false")
 	}
 
 	// 4. When conversation_metadata.json marks it NOT internal -> false
 	metaContentFalse := fmt.Sprintf(`{"conversations": {"%s": {"is_internal": false}}}`, convID)
 	_ = os.WriteFile(filepath.Join(cacheDir, "conversation_metadata.json"), []byte(metaContentFalse), 0644)
-	if isAntigravitySubagent(tmpDir, convID) {
+	if p.IsSubagentSession(tmpDir, convID, nil) {
 		t.Fatalf("Expected false when conversation_metadata marks is_internal: false, got true")
 	}
 	_ = os.Remove(filepath.Join(cacheDir, "conversation_metadata.json"))
@@ -2918,7 +2881,7 @@ func TestIsAntigravitySubagent(t *testing.T) {
 	_ = os.MkdirAll(brainLogDir, 0755)
 	logContent := `{"type": "USER_INPUT", "content": "You are a subagent helping with tasks"}` + "\n"
 	_ = os.WriteFile(filepath.Join(brainLogDir, "transcript.jsonl"), []byte(logContent), 0644)
-	if !isAntigravitySubagent(tmpDir, convID) {
+	if !p.IsSubagentSession(tmpDir, convID, nil) {
 		t.Fatalf("Expected true when transcript contains subagent marker, got false")
 	}
 }
@@ -2932,6 +2895,7 @@ func TestDatabaseSanitation_AntigravityManagedProtected(t *testing.T) {
 	defer db.Close()
 
 	server := NewServer(db)
+	_ = server.RegisterPlugin(antigravity.New())
 
 	sess := &Session{
 		ID:       "antigravity:local:57ae3db6-0595-4f7e-aff7-ec6494aef363",
@@ -3090,27 +3054,29 @@ func TestIsAntigravitySubagent_ReviewerPromptsAndMessages(t *testing.T) {
 	_ = os.MkdirAll(userLogDir, 0755)
 	_ = os.WriteFile(filepath.Join(userLogDir, "transcript.jsonl"), []byte(`{"type":"USER_INPUT","content":"Please build the mobile UI."}`), 0644)
 
-	if !isAntigravitySubagent(tempHome, convIDReviewer) {
+	p := antigravity.New()
+	if !p.IsSubagentSession(tempHome, convIDReviewer, nil) {
 		t.Errorf("expected convIDReviewer to be detected as subagent")
 	}
-	if !isAntigravitySubagent(tempHome, convIDSecurity) {
+	if !p.IsSubagentSession(tempHome, convIDSecurity, nil) {
 		t.Errorf("expected convIDSecurity to be detected as subagent")
 	}
-	if !isAntigravitySubagent(tempHome, convIDMessage) {
+	if !p.IsSubagentSession(tempHome, convIDMessage, nil) {
 		t.Errorf("expected convIDMessage to be detected as subagent")
 	}
-	if !isAntigravitySubagent(tempHome, convIDAdvisory) {
+	if !p.IsSubagentSession(tempHome, convIDAdvisory, nil) {
 		t.Errorf("expected convIDAdvisory to be detected as subagent")
 	}
-	if !isAntigravitySubagent(tempHome, convIDClean) {
+	if !p.IsSubagentSession(tempHome, convIDClean, nil) {
 		t.Errorf("expected convIDClean to be detected as subagent")
 	}
-	if isAntigravitySubagent(tempHome, convIDUser) {
+	if p.IsSubagentSession(tempHome, convIDUser, nil) {
 		t.Errorf("expected convIDUser NOT to be detected as subagent")
 	}
 }
 
 func TestIsAntigravitySubagent_ParentSubagentRegistry(t *testing.T) {
+	p := antigravity.New()
 	tempHome := t.TempDir()
 	parentID := "11111111-aaaa-bbbb-cccc-111111111111"
 	childID := "22222222-bbbb-cccc-dddd-222222222222"
@@ -3124,10 +3090,10 @@ func TestIsAntigravitySubagent_ParentSubagentRegistry(t *testing.T) {
 		t.Fatalf("WriteFile failed: %v", err)
 	}
 
-	if !isAntigravitySubagent(tempHome, childID) {
+	if !p.IsSubagentSession(tempHome, childID, nil) {
 		t.Fatalf("expected childID to be recognized as subagent from parent registry")
 	}
-	if isAntigravitySubagent(tempHome, parentID) {
+	if p.IsSubagentSession(tempHome, parentID, nil) {
 		t.Fatalf("expected parentID NOT to be recognized as subagent")
 	}
 
@@ -3135,10 +3101,10 @@ func TestIsAntigravitySubagent_ParentSubagentRegistry(t *testing.T) {
 	precomputed := map[string]bool{
 		strings.ToLower(childID): true,
 	}
-	if !isAntigravitySubagent(tempHome, childID, precomputed) {
+	if !p.IsSubagentSession(tempHome, childID, precomputed) {
 		t.Fatalf("expected childID to be recognized via precomputed map")
 	}
-	if isAntigravitySubagent(tempHome, parentID, precomputed) {
+	if p.IsSubagentSession(tempHome, parentID, precomputed) {
 		t.Fatalf("expected parentID NOT to be recognized via precomputed map")
 	}
 }
@@ -3155,6 +3121,7 @@ func TestDatabaseSanitation_AntigravitySubagentsPurged(t *testing.T) {
 	defer db.Close()
 
 	server := NewServer(db)
+	_ = server.RegisterPlugin(antigravity.New())
 
 	parentID := "11111111-aaaa-bbbb-cccc-111111111111"
 	subagentID := "33333333-cccc-dddd-eeee-333333333333"
@@ -3385,6 +3352,7 @@ func TestScanObservedSessions_AssignsAndBackfillsNodePath(t *testing.T) {
 	})
 
 	server := NewServer(db)
+	_ = server.RegisterPlugin(antigravity.New())
 
 	// 1. Create a disk Antigravity session with Ackbar workspace
 	convID := "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
@@ -3455,6 +3423,7 @@ func TestScanObservedSessions_PurgesReviewerSubagents(t *testing.T) {
 	defer db.Close()
 
 	server := NewServer(db)
+	_ = server.RegisterPlugin(antigravity.New())
 
 	// Create a reviewer subagent on disk
 	subID := "55555555-6666-7777-8888-999999999999"
@@ -3501,6 +3470,7 @@ func TestAccountsAPI(t *testing.T) {
 	defer db.Close()
 
 	server := NewServer(db)
+	_ = server.RegisterPlugin(antigravity.New())
 
 	// 1. GET /v1/accounts initially returns seeded default accounts
 	req := httptest.NewRequest(http.MethodGet, "/v1/accounts", nil)
@@ -3963,53 +3933,6 @@ func TestHandleMetaResolve(t *testing.T) {
 	}
 }
 
-func TestExtractConvIDFromPath(t *testing.T) {
-	cases := []struct {
-		path     string
-		expected string
-	}{
-		{
-			path:     "/home/dev4u/.gemini/antigravity-cli/presence/b06d1787-6f62-4515-9a05-acea8c7958a6.lock",
-			expected: "b06d1787-6f62-4515-9a05-acea8c7958a6",
-		},
-		{
-			path:     "/Users/dev4u/.gemini/antigravity-cli/presence/f74f0375-1d61-4c1c-baa4-67c8c8630a4e.lock",
-			expected: "f74f0375-1d61-4c1c-baa4-67c8c8630a4e",
-		},
-		{
-			path:     "/home/dev4u/.gemini/antigravity-cli/brain/b06d1787-6f62-4515-9a05-acea8c7958a6/.system_generated/logs/transcript.jsonl",
-			expected: "b06d1787-6f62-4515-9a05-acea8c7958a6",
-		},
-		{
-			path:     "/home/dev4u/.gemini/antigravity-cli/conversations/b06d1787-6f62-4515-9a05-acea8c7958a6.db",
-			expected: "b06d1787-6f62-4515-9a05-acea8c7958a6",
-		},
-		{
-			path:     "/home/dev4u/.gemini/antigravity-cli/annotations/b06d1787-6f62-4515-9a05-acea8c7958a6.pbtxt",
-			expected: "b06d1787-6f62-4515-9a05-acea8c7958a6",
-		},
-		{
-			path:     "/some/other/path/not-uuid.lock",
-			expected: "",
-		},
-		{
-			path:     "/proc/1234/fd/1",
-			expected: "",
-		},
-		{
-			path:     "",
-			expected: "",
-		},
-	}
-
-	for _, tc := range cases {
-		got := extractConvIDFromPath(tc.path)
-		if got != tc.expected {
-			t.Errorf("extractConvIDFromPath(%q) = %q; expected %q", tc.path, got, tc.expected)
-		}
-	}
-}
-
 func TestNewlySpawnedSession_StartupGracePeriodPreserved(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
 	db, err := InitDB(dbPath)
@@ -4056,9 +3979,9 @@ func TestNewlySpawnedSession_StartupGracePeriodPreserved(t *testing.T) {
 }
 
 func TestAntigravityProcess_NoSessionID_DoesNotCreateProcSession(t *testing.T) {
-	// Verify that findAntigravitySessionForPID returns empty string for non-existent PID
+	// Verify that ResolveSessionForPID returns empty string for non-existent PID
 	fakePID := 99999997
-	sID := findAntigravitySessionForPID(context.Background(), fakePID)
+	sID := antigravity.New().ResolveSessionForPID(context.Background(), t.TempDir(), fakePID, nil)
 	if sID != "" {
 		t.Errorf("Expected empty sessionID for non-existent PID, got %q", sID)
 	}
@@ -4071,6 +3994,7 @@ func TestAntigravityProcess_NoSessionID_DoesNotCreateProcSession(t *testing.T) {
 	defer db.Close()
 
 	server := NewServer(db)
+	_ = server.RegisterPlugin(antigravity.New())
 
 	// Seed a dead ghost proc session
 	ghostID := fmt.Sprintf("local:observed:proc-%d", fakePID)
@@ -4096,25 +4020,6 @@ func TestAntigravityProcess_NoSessionID_DoesNotCreateProcSession(t *testing.T) {
 	}
 }
 
-func TestParsePbtxtTitle(t *testing.T) {
-	cases := []struct {
-		input    string
-		expected string
-	}{
-		{`title:"Preparing for MacMini setup"`, "Preparing for MacMini setup"},
-		{`title: "Preparing for MacMini setup"`, "Preparing for MacMini setup"},
-		{`  title:   "Indented with spaces"  `, "Indented with spaces"},
-		{`last_user_view_time:{seconds:123}`, ""},
-		{``, ""},
-	}
-	for _, c := range cases {
-		got := parsePbtxtTitle(c.input)
-		if got != c.expected {
-			t.Errorf("parsePbtxtTitle(%q) = %q; want %q", c.input, got, c.expected)
-		}
-	}
-}
-
 func TestAntigravitySession_RenameAnnotationUpgradesName(t *testing.T) {
 	tempHome := t.TempDir()
 	origHome := os.Getenv("HOME")
@@ -4132,10 +4037,10 @@ func TestAntigravitySession_RenameAnnotationUpgradesName(t *testing.T) {
 		t.Fatalf("Failed to write annoFile: %v", err)
 	}
 
-	// 1. Verify ReadAntigravityAnnotationTitle reads the title correctly
-	gotTitle := ReadAntigravityAnnotationTitle(convUUID)
+	// 1. Verify antigravity.ReadAnnotationTitle reads the title correctly
+	gotTitle := antigravity.ReadAnnotationTitle(tempHome, convUUID)
 	if gotTitle != "Preparing for MacMini setup" {
-		t.Fatalf("Expected ReadAntigravityAnnotationTitle to return 'Preparing for MacMini setup', got %q", gotTitle)
+		t.Fatalf("Expected ReadAnnotationTitle to return 'Preparing for MacMini setup', got %q", gotTitle)
 	}
 
 	// 2. Set up DB and server
@@ -4147,6 +4052,7 @@ func TestAntigravitySession_RenameAnnotationUpgradesName(t *testing.T) {
 	defer db.Close()
 
 	server := NewServer(db)
+	_ = server.RegisterPlugin(antigravity.New())
 
 	// Create dummy brain directory with transcript so Step 4 disk scan finds it
 	brainDir := filepath.Join(tempHome, ".gemini", "antigravity-cli", "brain", convUUID, ".system_generated", "logs")
@@ -4233,8 +4139,8 @@ func TestProcessHookEvent_AdoptsSpawningAntigravitySessionWithOldIDAndGitRootCwd
 	defer db.Close()
 
 	server := NewServer(db)
+	_ = server.RegisterPlugin(antigravity.New())
 	p := &namedMockProvider{agentName: "antigravity"}
-	server.RegisterProvider(p)
 
 	repoRoot := filepath.Join(tempHome, "Work", "Ackbar")
 	docsDir := filepath.Join(repoRoot, "docs")
@@ -4318,6 +4224,7 @@ func TestScanObservedSessions_AdoptsSpawningAntigravitySessionInStep4AndNormaliz
 	defer db.Close()
 
 	server := NewServer(db)
+	_ = server.RegisterPlugin(antigravity.New())
 
 	// Create git repository with .git directory and a docs subdirectory
 	repoRoot := filepath.Join(tempHome, "Work", "Ackbar")
@@ -4359,15 +4266,9 @@ func TestScanObservedSessions_AdoptsSpawningAntigravitySessionInStep4AndNormaliz
 		t.Fatalf("WriteFile failed: %v", err)
 	}
 
-	// Verify extractAntigravityWorkspace normalizes subdirectory tool call to git root
-	extractedCwd := extractAntigravityWorkspace(logPath, tempHome)
-	if extractedCwd != repoRoot {
-		t.Fatalf("Expected extractAntigravityWorkspace to normalize to git root %q, got %q", repoRoot, extractedCwd)
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	server.scanObservedSessions(ctx)
+	runDiskScanForTest(t, ctx, server, db)
 
 	// Verify placeholder session was deleted and adopted into realUUID (no duplicate session in tree!)
 	if oldSess, _ := db.GetSession(oldID); oldSess != nil {
@@ -4438,6 +4339,7 @@ func TestScanObservedSessions_DeferredStep4AdoptionAfterToolCall(t *testing.T) {
 	defer db.Close()
 
 	server := NewServer(db)
+	_ = server.RegisterPlugin(antigravity.New())
 
 	repoRoot := filepath.Join(tempHome, "Work", "Ackbar")
 	docsDir := filepath.Join(repoRoot, "docs")
@@ -4477,7 +4379,7 @@ func TestScanObservedSessions_DeferredStep4AdoptionAfterToolCall(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	server.scanObservedSessions(ctx)
+	runDiskScanForTest(t, ctx, server, db)
 
 	// Scan 2: agent makes its first tool call in repoRoot/docs
 	docFile := filepath.Join(docsDir, "dev-workflow.md")
@@ -4486,7 +4388,7 @@ func TestScanObservedSessions_DeferredStep4AdoptionAfterToolCall(t *testing.T) {
 		t.Fatalf("WriteFile failed: %v", err)
 	}
 
-	server.scanObservedSessions(ctx)
+	runDiskScanForTest(t, ctx, server, db)
 
 	if oldSess, _ := db.GetSession(oldID); oldSess != nil {
 		t.Errorf("Expected placeholder session %s to be deleted after deferred Step 4 adoption", oldID)
@@ -4506,6 +4408,35 @@ func TestScanObservedSessions_DeferredStep4AdoptionAfterToolCall(t *testing.T) {
 	if adopted.NodePath != "Personal/Ackbar" {
 		t.Errorf("Expected NodePath='Personal/Ackbar', got %q", adopted.NodePath)
 	}
+}
+
+func runDiskScanForTest(t *testing.T, ctx context.Context, server *Server, db *DB) {
+	t.Helper()
+	existing, err := db.ListSessions()
+	if err != nil {
+		t.Fatalf("ListSessions failed: %v", err)
+	}
+	st := &ScanState{
+		hostName:         server.HostName(),
+		existingSessions: existing,
+		knownIDs:         make(map[string]*Session, len(existing)),
+		knownByNativeID:  make(map[string]*Session, len(existing)),
+		knownByTmux:      make(map[string]*Session, len(existing)),
+		knownByPID:       make(map[int]*Session, len(existing)),
+	}
+	for _, s := range existing {
+		st.knownIDs[s.ID] = s
+		if s.NativeID != "" {
+			st.knownByNativeID[s.NativeID] = s
+		}
+		if s.TmuxName != "" {
+			st.knownByTmux[s.TmuxName] = s
+		}
+		if s.PID > 0 {
+			st.knownByPID[s.PID] = s
+		}
+	}
+	server.scanDiskSessions(ctx, st)
 }
 
 func TestExtractAntigravityQuestionAndOptions_JSONStringifiedAndNative(t *testing.T) {
@@ -4614,7 +4545,7 @@ sleep 30
 		LastEventAt: time.Now(),
 	}
 
-	changed := InspectAntigravityStatus(ctx, sess)
+	changed := NewPluginBridge(antigravity.New(), nil, nil).InspectStatus(ctx, sess)
 	if !changed {
 		t.Errorf("Expected InspectAntigravityStatus to report changed=true")
 	}
@@ -4930,26 +4861,6 @@ func TestParallelSubagents_PostToolUseDoesNotPopUnmatchedSibling(t *testing.T) {
 	}
 }
 
-func TestResolveFullAntigravityStep_DoesNotFallbackToEarlierTurnWhenStepIndexSpecified(t *testing.T) {
-	tmpDir := t.TempDir()
-	logPath := filepath.Join(tmpDir, "transcript.jsonl")
-	fullPath := filepath.Join(tmpDir, "transcript_full.jsonl")
-
-	// Earlier turn had an ask_question at step 2; current turn is at step 5 (not yet flushed to transcript_full.jsonl)
-	fullContent := `{"step_index":2,"type":"PLANNER_RESPONSE","status":"DONE","tool_calls":[{"name":"ask_question","args":{"question":"Old question?"}}]}` + "\n" +
-		`{"step_index":3,"type":"USER_INPUT","content":"New turn"}` + "\n"
-	if err := os.WriteFile(fullPath, []byte(fullContent), 0644); err != nil {
-		t.Fatalf("WriteFile failed: %v", err)
-	}
-
-	if step, ok := resolveFullAntigravityStep(logPath, 5); ok || step != nil {
-		t.Errorf("Expected resolveFullAntigravityStep(logPath, 5) to return false when step 5 is missing, got %+v", step)
-	}
-	if step, ok := resolveFullAntigravityStep(logPath, 2); !ok || step == nil || step.StepIndex != 2 {
-		t.Errorf("Expected resolveFullAntigravityStep(logPath, 2) to return step 2, got %+v, ok=%v", step, ok)
-	}
-}
-
 func TestInspectAntigravityStatus_NonPlannerErrorDoesNotCompleteTurnAndGraceWindowRespected(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
@@ -4979,7 +4890,7 @@ func TestInspectAntigravityStatus_NonPlannerErrorDoesNotCompleteTurnAndGraceWind
 		StartedAt:   time.Now(),
 		LastEventAt: time.Now(),
 	}
-	InspectAntigravityStatus(context.Background(), sess)
+	NewPluginBridge(antigravity.New(), nil, nil).InspectStatus(context.Background(), sess)
 	if sess.State != StateWorking {
 		t.Errorf("Expected session to remain StateWorking on non-PLANNER_RESPONSE ERROR step, got %v", sess.State)
 	}
@@ -4999,17 +4910,18 @@ func TestInspectAntigravityStatus_NonPlannerErrorDoesNotCompleteTurnAndGraceWind
 		UpdatedAt: time.Now(),
 		PID:       os.Getpid(),
 	}
-	InspectAntigravityStatus(context.Background(), blockedSess)
+	NewPluginBridge(antigravity.New(), nil, nil).InspectStatus(context.Background(), blockedSess)
 	if blockedSess.State != StateBlocked {
 		t.Errorf("Expected StateBlocked to be preserved within 15s grace window via UpdatedAt, got %v", blockedSess.State)
 	}
 
 	// 3. Path traversal / glob metacharacters in NativeID must be ignored safely
-	if _, err := loadAntigravitySubagents(tmpHome, "../../../etc/passwd"); err == nil {
-		t.Errorf("Expected error from loadAntigravitySubagents for path traversal")
+	agyP := antigravity.New()
+	if subs, err := agyP.ListSubagents(tmpHome, "", "../../../etc/passwd"); err == nil && len(subs) > 0 {
+		t.Errorf("Expected empty subagents for path traversal, got %+v", subs)
 	}
-	if _, err := loadAntigravitySubagents(tmpHome, "*"); err == nil {
-		t.Errorf("Expected error from loadAntigravitySubagents for wildcard convID")
+	if subs, err := agyP.ListSubagents(tmpHome, "", "*"); err == nil && len(subs) > 0 {
+		t.Errorf("Expected empty subagents for wildcard convID, got %+v", subs)
 	}
 }
 
@@ -5111,6 +5023,7 @@ func TestAgentAdapter_ApprovalKeysAndRespond(t *testing.T) {
 	defer db.Close()
 
 	server := NewServer(db)
+	_ = server.RegisterPlugin(antigravity.New())
 
 	claudeAllow := server.agentAdapter("claude-code").GetApprovalKeys(true)
 	claudeDeny := server.agentAdapter("claude-code").GetApprovalKeys(false)
@@ -5171,7 +5084,7 @@ func TestHandleSpawn_HostCaseVariantAndRequestHostAndTmuxProjectKey(t *testing.T
 
 	server := NewServer(db)
 	server.SetHostIdentity("legion", "Legion Workstation")
-	server.RegisterProvider(&namedMockProvider{agentName: "antigravity"})
+	_ = server.RegisterPlugin(antigravity.New())
 
 	defer func() {
 		if sessions, err := db.ListSessions(); err == nil {
@@ -5410,7 +5323,7 @@ func TestInspectStatus_OnlyUserInteractionAdvancesLastEventAt(t *testing.T) {
 		LastEventAt: t0,
 	}
 
-	if !InspectAntigravityStatus(ctx, agySess) {
+	if !NewPluginBridge(antigravity.New(), nil, nil).InspectStatus(ctx, agySess) {
 		t.Fatalf("Expected InspectAntigravityStatus to detect blocked state")
 	}
 	if agySess.State != StateBlocked {
@@ -5429,7 +5342,7 @@ func TestInspectStatus_OnlyUserInteractionAdvancesLastEventAt(t *testing.T) {
 		t.Fatalf("WriteFile failed: %v", err)
 	}
 
-	if !InspectAntigravityStatus(ctx, agySess) {
+	if !NewPluginBridge(antigravity.New(), nil, nil).InspectStatus(ctx, agySess) {
 		t.Fatalf("Expected InspectAntigravityStatus to detect new USER_INPUT turn")
 	}
 	if !agySess.LastEventAt.Equal(tNewPrompt) {
@@ -5458,7 +5371,7 @@ func TestInspectStatus_OnlyUserInteractionAdvancesLastEventAt(t *testing.T) {
 	if err := os.WriteFile(logPath, []byte(withSubagentTranscript), 0644); err != nil {
 		t.Fatalf("WriteFile failed: %v", err)
 	}
-	InspectAntigravityStatus(ctx, agySess)
+	NewPluginBridge(antigravity.New(), nil, nil).InspectStatus(ctx, agySess)
 	if !agySess.LastEventAt.Equal(tFollowUpPrompt) {
 		t.Errorf("Expected USER_INPUT timestamp %v to be synced even when running subagent returns early, got %v", tFollowUpPrompt, agySess.LastEventAt)
 	}
@@ -5586,6 +5499,7 @@ func TestScanObservedSessions_OnlyUserMessageAdvancesLastEventAt(t *testing.T) {
 }
 
 func TestResolveAntigravitySubagentParent_And_SystemMessageDetection(t *testing.T) {
+	p := antigravity.New()
 	tempHome := t.TempDir()
 	parentID := "c4b38be9-f271-482a-b2b3-47a75437ddd7"
 	subByTranscriptID := "bda94bb5-3118-4771-bef0-6cbe6d0120f6"
@@ -5602,12 +5516,12 @@ func TestResolveAntigravitySubagentParent_And_SystemMessageDetection(t *testing.
 		t.Fatalf("WriteFile failed: %v", err)
 	}
 
-	if !isAntigravitySubagent(tempHome, subByTranscriptID) {
+	if !p.IsSubagentSession(tempHome, subByTranscriptID, nil) {
 		t.Fatalf("expected subByTranscriptID to be detected as subagent via <SYSTEM_MESSAGE> sender=<parent-uuid>")
 	}
-	gotParent, _, _ := ResolveAntigravitySubagentParent(tempHome, subByTranscriptID)
+	gotParent, _, _ := p.ResolveSubagentParent(tempHome, subByTranscriptID)
 	if gotParent != parentID {
-		t.Fatalf("expected ResolveAntigravitySubagentParent to return %q, got %q", parentID, gotParent)
+		t.Fatalf("expected ResolveSubagentParent to return %q, got %q", parentID, gotParent)
 	}
 
 	// 2. Subagent registered in parent's .system_generated/subagents/<subID>.json
@@ -5620,7 +5534,7 @@ func TestResolveAntigravitySubagentParent_And_SystemMessageDetection(t *testing.
 		t.Fatalf("WriteFile failed: %v", err)
 	}
 
-	gotParentReg, gotRole, gotType := ResolveAntigravitySubagentParent(tempHome, subByRegistryID)
+	gotParentReg, gotRole, gotType := p.ResolveSubagentParent(tempHome, subByRegistryID)
 	if gotParentReg != parentID || gotRole != "Codebase Researcher" || gotType != "research" {
 		t.Fatalf("unexpected parent resolution from registry: parent=%q role=%q type=%q", gotParentReg, gotRole, gotType)
 	}
@@ -5633,7 +5547,7 @@ func TestResolveAntigravitySubagentParent_And_SystemMessageDetection(t *testing.
 	if err := os.WriteFile(filepath.Join(msgDir, "m1.json"), []byte(`{"conversationId":"`+parentID+`"}`), 0644); err != nil {
 		t.Fatalf("WriteFile failed: %v", err)
 	}
-	gotParentMsg, _, _ := ResolveAntigravitySubagentParent(tempHome, subByMsgID)
+	gotParentMsg, _, _ := p.ResolveSubagentParent(tempHome, subByMsgID)
 	if gotParentMsg != parentID {
 		t.Fatalf("expected parent %q from messages, got %q", parentID, gotParentMsg)
 	}
@@ -5660,11 +5574,11 @@ func TestResolveAntigravitySubagentParent_And_SystemMessageDetection(t *testing.
 	if err := os.WriteFile(filepath.Join(rootMsgDir, "reply.json"), []byte(replyJSON), 0644); err != nil {
 		t.Fatalf("WriteFile failed: %v", err)
 	}
-	if isAntigravitySubagent(tempHome, rootNoAnnoID) {
+	if p.IsSubagentSession(tempHome, rootNoAnnoID, nil) {
 		t.Fatalf("expected rootNoAnnoID NOT to be classified as a subagent when step 0 is USER_INPUT and step 1 is a subagent reply")
 	}
-	if gotRootParent, _, _ := ResolveAntigravitySubagentParent(tempHome, rootNoAnnoID); gotRootParent != "" {
-		t.Fatalf("expected ResolveAntigravitySubagentParent to return empty parent for rootNoAnnoID, got %q", gotRootParent)
+	if gotRootParent, _, _ := p.ResolveSubagentParent(tempHome, rootNoAnnoID); gotRootParent != "" {
+		t.Fatalf("expected ResolveSubagentParent to return empty parent for rootNoAnnoID, got %q", gotRootParent)
 	}
 }
 
@@ -5679,8 +5593,7 @@ func TestHook_AntigravitySubagentRoutedToParentAndDeletesStraySession(t *testing
 	defer db.Close()
 
 	server := NewServer(db)
-	p := &namedMockProvider{agentName: "antigravity"}
-	server.RegisterProvider(p)
+	_ = server.RegisterPlugin(antigravity.New())
 
 	parentID := "11111111-2222-3333-4444-555555555555"
 	subID := "66666666-7777-8888-9999-aaaaaaaaaaaa"
@@ -5832,182 +5745,6 @@ func TestHook_AntigravitySubagentRoutedToParentAndDeletesStraySession(t *testing
 }
 
 func TestInspectAntigravityStatus_ToolConfirmationPromptsAndSubagentApproval(t *testing.T) {
-	cases := []struct {
-		name         string
-		pane         string
-		wantQuestion string
-		wantReason   string
-		wantOptions  []string
-	}{
-		{
-			name: "command_prompt",
-			pane: `
-╭──────────────────────────────────────────────────────────────────╮
-│ Run this command?                                                │
-│                                                                  │
-│   git status --short                                             │
-│                                                                  │
-│ > 1. Yes, run command                                            │
-│   2. Yes, and always allow git in this workspace                 │
-│   3. No, and tell Antigravity CLI what to do differently (esc)   │
-╰──────────────────────────────────────────────────────────────────╯
-Enter Submit  Tab Amend
-`,
-			wantQuestion: "Run this command?",
-			wantReason:   "git status --short",
-			wantOptions: []string{
-				"1. Yes, run command",
-				"2. Yes, and always allow git in this workspace",
-				"3. No, and tell Antigravity CLI what to do differently (esc)",
-			},
-		},
-		{
-			name: "file_edit_prompt",
-			pane: `
-Accept this file edit?
-Edit: foo.go +3 -1
-  + added line
-  - removed line
-1. Yes, accept this change
-2. Yes, and always allow edits
-3. No, reject this change (esc)
-Enter Submit  Tab Amend
-`,
-			wantQuestion: "Accept this file edit?",
-			wantReason:   "Edit: foo.go +3 -1",
-			wantOptions: []string{
-				"1. Yes, accept this change",
-				"2. Yes, and always allow edits",
-				"3. No, reject this change (esc)",
-			},
-		},
-		{
-			name: "file_creation_prompt",
-			pane: `
-Allow creation of this file?
-New file: bar.go
-> 1. Yes, allow creation
-  2. Yes, and always allow edits
-  3. No, deny creation (esc)
-`,
-			wantQuestion: "Allow creation of this file?",
-			wantReason:   "New file: bar.go",
-			wantOptions: []string{
-				"1. Yes, allow creation",
-				"2. Yes, and always allow edits",
-				"3. No, deny creation (esc)",
-			},
-		},
-		{
-			name: "file_access_prompt",
-			pane: `
-Allow access to this file?
-Path: /etc/hosts
-> 1. Yes, allow access
-  2. Yes, and always allow access
-  3. No, deny access (esc)
-`,
-			wantQuestion: "Allow access to this file?",
-			wantReason:   "Path: /etc/hosts",
-			wantOptions: []string{
-				"1. Yes, allow access",
-				"2. Yes, and always allow access",
-				"3. No, deny access (esc)",
-			},
-		},
-		{
-			name: "url_access_prompt",
-			pane: `
-Allow access to this URL?
-URL: https://example.com/api
-> 1. Yes, allow access
-  2. Yes, and always allow access
-  3. No, deny access (esc)
-`,
-			wantQuestion: "Allow access to this URL?",
-			wantReason:   "URL: https://example.com/api",
-			wantOptions: []string{
-				"1. Yes, allow access",
-				"2. Yes, and always allow access",
-				"3. No, deny access (esc)",
-			},
-		},
-		{
-			name: "sandbox_bypass_prompt",
-			pane: `
-🔓 Allow sandbox bypass for command execution?
-docker build .
-> 1. Yes, run command
-  2. Yes, and always allow docker
-  3. No, and tell Antigravity CLI what to do differently (esc)
-`,
-			wantQuestion: "Allow sandbox bypass for command execution?",
-			wantReason:   "docker build .",
-			wantOptions: []string{
-				"1. Yes, run command",
-				"2. Yes, and always allow docker",
-				"3. No, and tell Antigravity CLI what to do differently (esc)",
-			},
-		},
-		{
-			name: "admin_elevation_prompt",
-			pane: `
-Allow administrator elevation?
-sudo systemctl restart nginx
-> 1. Yes, elevate
-  2. No, and tell Antigravity CLI what to do differently (esc)
-`,
-			wantQuestion: "Allow administrator elevation?",
-			wantReason:   "sudo systemctl restart nginx",
-			wantOptions: []string{
-				"1. Yes, elevate",
-				"2. No, and tell Antigravity CLI what to do differently (esc)",
-			},
-		},
-		{
-			name: "custom_permission_prompt",
-			pane: `
-Grant requested permission?
-Action: deploy_service
-Target: staging
-> 1. Yes, grant permission
-  2. Yes, and always allow
-  3. No, deny permission (esc)
-`,
-			wantQuestion: "Grant requested permission?",
-			wantReason:   "Action: deploy_service, Target: staging",
-			wantOptions: []string{
-				"1. Yes, grant permission",
-				"2. Yes, and always allow",
-				"3. No, deny permission (esc)",
-			},
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			lines := strings.Split(tc.pane, "\n")
-			q, r, opts, ok := detectAntigravityPermissionPrompt(lines)
-			if !ok {
-				t.Fatalf("expected detectAntigravityPermissionPrompt to match for %s", tc.name)
-			}
-			if q != tc.wantQuestion {
-				t.Errorf("expected question %q, got %q", tc.wantQuestion, q)
-			}
-			if r != tc.wantReason {
-				t.Errorf("expected reason %q, got %q", tc.wantReason, r)
-			}
-			if len(opts) != len(tc.wantOptions) {
-				t.Fatalf("expected %d options (%v), got %d (%v)", len(tc.wantOptions), tc.wantOptions, len(opts), opts)
-			}
-			for i := range tc.wantOptions {
-				if opts[i] != tc.wantOptions[i] {
-					t.Errorf("option[%d] mismatch: want %q, got %q", i, tc.wantOptions[i], opts[i])
-				}
-			}
-		})
-	}
-
 	// Verify live tmux integration with subagent approval alert rendered above idle '>' prompt while runningCount > 0
 	if !tmux.IsTmuxInstalled() {
 		return
@@ -6069,7 +5806,7 @@ sleep 30
 
 	var changed bool
 	for i := 0; i < 40; i++ {
-		if InspectAntigravityStatus(ctx, sess) {
+		if NewPluginBridge(antigravity.New(), nil, nil).InspectStatus(ctx, sess) {
 			changed = true
 		}
 		if sess.State == StateBlocked {
@@ -6125,7 +5862,7 @@ func TestInspectAntigravityStatus_TranscriptPermissionAndSubagentTranscriptBlock
 		LastEventAt: time.Now(),
 	}
 
-	if !InspectAntigravityStatus(ctx, sess) {
+	if !NewPluginBridge(antigravity.New(), nil, nil).InspectStatus(ctx, sess) {
 		t.Fatalf("expected InspectAntigravityStatus to detect ask_permission block")
 	}
 	if sess.State != StateBlocked || sess.Blocked == nil || sess.Blocked.Kind != BlockPermission {
@@ -6140,7 +5877,7 @@ func TestInspectAntigravityStatus_TranscriptPermissionAndSubagentTranscriptBlock
 	if err := os.WriteFile(logPath, []byte(answeredTranscript), 0644); err != nil {
 		t.Fatalf("WriteFile failed: %v", err)
 	}
-	if !InspectAntigravityStatus(ctx, sess) {
+	if !NewPluginBridge(antigravity.New(), nil, nil).InspectStatus(ctx, sess) {
 		t.Fatalf("expected InspectAntigravityStatus to report changed=true when TOOL_RESPONSE arrives")
 	}
 	if sess.State != StateWorking || sess.Blocked != nil {
@@ -6168,7 +5905,7 @@ func TestInspectAntigravityStatus_TranscriptPermissionAndSubagentTranscriptBlock
 		t.Fatalf("WriteFile failed: %v", err)
 	}
 
-	if !InspectAntigravityStatus(ctx, sess) {
+	if !NewPluginBridge(antigravity.New(), nil, nil).InspectStatus(ctx, sess) {
 		t.Fatalf("expected InspectAntigravityStatus to detect subagent ask_custom_permission block")
 	}
 	if sess.State != StateBlocked || sess.Blocked == nil || sess.Blocked.Kind != BlockPermission {
@@ -6183,7 +5920,7 @@ func TestInspectAntigravityStatus_TranscriptPermissionAndSubagentTranscriptBlock
 	if err := os.WriteFile(subLogPath, []byte(subResumedTranscript), 0644); err != nil {
 		t.Fatalf("WriteFile failed: %v", err)
 	}
-	if !InspectAntigravityStatus(ctx, sess) {
+	if !NewPluginBridge(antigravity.New(), nil, nil).InspectStatus(ctx, sess) {
 		t.Fatalf("expected InspectAntigravityStatus to transition parent back to StateWorking after subagent TOOL_RESPONSE")
 	}
 	if sess.State != StateWorking || sess.Blocked != nil {
@@ -6202,8 +5939,7 @@ func TestHook_AntigravitySubagentPermissionPropagatesBlockedAndResumesWorking(t 
 	defer db.Close()
 
 	server := NewServer(db)
-	p := &namedMockProvider{agentName: "antigravity"}
-	server.RegisterProvider(p)
+	_ = server.RegisterPlugin(antigravity.New())
 
 	parentID := "aaaa1111-2222-3333-4444-555566667777"
 	subID := "bbbb1111-2222-3333-4444-555566667777"
@@ -6299,71 +6035,6 @@ func TestHook_AntigravitySubagentPermissionPropagatesBlockedAndResumesWorking(t 
 	}
 }
 
-func TestDetectAntigravityPermissionPrompt_ReviewFindings_C1_N3_N4(t *testing.T) {
-	// C1: ToolConfirmationModel rendered above a trailing "> Accept-edits" mode prompt line
-	c1Lines := []string{
-		"Accept this file edit?",
-		"Edit: internal/daemon/status_inspector.go (+12 -4)",
-		"> 1. Yes, accept this change",
-		"  2. Yes, and always allow",
-		"  3. No, reject this change",
-		"Enter Submit  Tab Amend",
-		"> Accept-edits",
-	}
-	q, r, opts, matched := detectAntigravityPermissionPrompt(c1Lines, false)
-	if !matched {
-		t.Fatalf("expected C1 ToolConfirmationModel above trailing '> Accept-edits' to match")
-	}
-	if q != "Accept this file edit?" {
-		t.Errorf("expected question 'Accept this file edit?', got %q", q)
-	}
-	if r != "Edit: internal/daemon/status_inspector.go (+12 -4)" {
-		t.Errorf("expected reason 'Edit: internal/daemon/status_inspector.go (+12 -4)', got %q", r)
-	}
-	if len(opts) != 3 {
-		t.Errorf("expected 3 options, got %v", opts)
-	}
-
-	// N3: Plain text mentioning " needs approval for " above an idle ">" prompt when runningSubagents=false
-	// and without a subagent alert prefix ("●", "•", "⚠") should NOT false-positive as StateBlocked.
-	n3PlainText := []string{
-		"The PR needs approval for deployment before merging.",
-		">",
-	}
-	if _, _, _, matched := detectAntigravityPermissionPrompt(n3PlainText, false); matched {
-		t.Errorf("expected plain text 'needs approval for' without running subagents or alert prefix NOT to match")
-	}
-	// With subagent alert prefix "● ", it SHOULD match even when runningSubagents=false
-	n3AlertPrefix := []string{
-		"● researcher needs approval for Run command: ls -la",
-		">",
-	}
-	qAlert, rAlert, _, matchedAlert := detectAntigravityPermissionPrompt(n3AlertPrefix, false)
-	if !matchedAlert || qAlert != "Subagent requires permission" || rAlert != "researcher needs approval for Run command: ls -la" {
-		t.Errorf("expected prefixed subagent alert to match, got matched=%v q=%q r=%q", matchedAlert, qAlert, rAlert)
-	}
-
-	// N4: "Requesting permission for:" followed by a specific header ("Run this command?") keeps headerIdx at the first header
-	// so intermediate detail lines are preserved in reason extraction.
-	n4Lines := []string{
-		"Requesting permission for:",
-		"git push origin main",
-		"Run this command?",
-		"> 1. Yes, run command",
-		"  2. No, deny tool call",
-	}
-	qN4, rN4, _, matchedN4 := detectAntigravityPermissionPrompt(n4Lines, false)
-	if !matchedN4 {
-		t.Fatalf("expected N4 lines to match")
-	}
-	if qN4 != "Run this command?" {
-		t.Errorf("expected question 'Run this command?', got %q", qN4)
-	}
-	if rN4 != "git push origin main" {
-		t.Errorf("expected reason 'git push origin main' preserved from before second header, got %q", rN4)
-	}
-}
-
 func TestInspectAntigravityStatus_ReviewFindings_C2_And_N2(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
@@ -6414,7 +6085,7 @@ func TestInspectAntigravityStatus_ReviewFindings_C2_And_N2(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	InspectAntigravityStatus(ctx, sess)
+	NewPluginBridge(antigravity.New(), nil, nil).InspectStatus(ctx, sess)
 	if sess.State != StateBlocked || sess.Blocked == nil || sess.Blocked.Reason != "rm -rf /tmp/new" {
 		t.Fatalf("N2 failed: expected new hook block to be preserved during grace window despite older answered block, got state=%v blocked=%+v", sess.State, sess.Blocked)
 	}
@@ -6434,7 +6105,7 @@ func TestInspectAntigravityStatus_ReviewFindings_C2_And_N2(t *testing.T) {
 		t.Fatalf("WriteFile failed: %v", err)
 	}
 
-	changed := InspectAntigravityStatus(ctx, sess)
+	changed := NewPluginBridge(antigravity.New(), nil, nil).InspectStatus(ctx, sess)
 	if !changed || sess.State != StateWorking || sess.Blocked != nil {
 		t.Fatalf("C2 failed: expected session to immediately transition to StateWorking when block answered followed by new PLANNER_RESPONSE, got changed=%v state=%v blocked=%+v", changed, sess.State, sess.Blocked)
 	}
@@ -6453,6 +6124,7 @@ func TestAntigravityConcurrentSubagents_HookPreservesSiblingBlock_N1(t *testing.
 
 	server := NewServer(db)
 	server.homeDir = tempHome
+	_ = server.RegisterPlugin(antigravity.New())
 
 	parentID := "aaaa1111-2222-3333-4444-555566668888"
 	subAID := "bbbb1111-2222-3333-4444-555566668888"

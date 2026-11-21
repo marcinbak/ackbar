@@ -112,3 +112,12 @@ func (p *streamParser) ParseStreamLine(line []byte) ([]agent.ChatStreamEvent, bo
 	}
 	return nil, false, nil
 }
+
+func (p *streamParser) FlushEOF() []agent.ChatStreamEvent {
+	if p.errTracker.hasPending() {
+		pendingErr := p.errTracker.resolveFinal("")
+		p.resetTurnState()
+		return []agent.ChatStreamEvent{{SessionID: p.sessionID, Type: "error", Text: pendingErr, IsError: true}}
+	}
+	return nil
+}

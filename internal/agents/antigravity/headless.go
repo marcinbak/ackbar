@@ -100,6 +100,8 @@ func (*Plugin) InspectSubcommandArgs(kind string) ([]string, bool) {
 		return []string{"plugin", "list", "--json"}, true
 	case "agents":
 		return []string{"agents"}, true
+	case "auth_login":
+		return []string{"acp", "--login"}, true
 	default:
 		return nil, false
 	}

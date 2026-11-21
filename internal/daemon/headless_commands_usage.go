@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 )
 
@@ -39,43 +38,6 @@ func (s *Server) computeTranscriptContextAndCost(home string, sess *Session) map
 			turnCount = u.TurnCount
 			customCostUSD = u.CostUSD
 			hasCustomCost = true
-		}
-	} else if sess.Agent == "antigravity" {
-		if limitTokens < 1000000 {
-			limitTokens = 1000000
-		}
-		logFile := filepath.Join(home, ".gemini", "antigravity-cli", "brain", sess.NativeID, ".system_generated", "logs", "transcript.jsonl")
-		if !fileExists(logFile) {
-			logFile = filepath.Join(home, ".gemini", "antigravity", "brain", sess.NativeID, ".system_generated", "logs", "transcript.jsonl")
-		}
-		if fileExists(logFile) {
-			if f, err := os.Open(logFile); err == nil {
-				defer f.Close()
-				sc := bufio.NewScanner(f)
-				for sc.Scan() {
-					var raw map[string]interface{}
-					if err := json.Unmarshal([]byte(sc.Text()), &raw); err == nil {
-						msgType, _ := raw["type"].(string)
-						if inT, ok := raw["input_tokens"].(float64); ok && inT > 0 {
-							if msgType == "PLANNER_RESPONSE" {
-								lastTurnContextTokens = int(inT)
-							}
-							crT, _ := raw["cache_read_tokens"].(float64)
-							uncached := int(inT) - int(crT)
-							if uncached > 0 {
-								sumInputTokens += uncached
-							}
-							cacheRead += int(crT)
-						}
-						if outT, ok := raw["output_tokens"].(float64); ok && outT > 0 {
-							outputTokens += int(outT)
-						}
-						if raw["source"] == "USER" || raw["type"] == "USER_INPUT" {
-							turnCount++
-						}
-					}
-				}
-			}
 		}
 	} else {
 		targetFile := findClaudeTranscriptPath(home, sess.NativeID, sess.Cwd)

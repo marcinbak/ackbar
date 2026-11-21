@@ -15,6 +15,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"ackbar/internal/agent"
+	"ackbar/internal/agents/antigravity"
 )
 
 func TestWarmWorker_ClaudeLiveSetModelAndDefaultReset(t *testing.T) {
@@ -175,6 +178,9 @@ done
 		t.Fatalf("InitDB: %v", err)
 	}
 	h := NewHeadlessRunner(db, nil)
+	reg := agent.NewRegistry()
+	_ = reg.Register(antigravity.New())
+	h.SetPluginRegistry(reg)
 	defer h.ShutdownAllWorkers(time.Second)
 
 	sess := &Session{
@@ -282,7 +288,7 @@ done
 	h.mu.RLock()
 	finalHandle := h.warmWorkers[sess.ID]
 	h.mu.RUnlock()
-	if finalHandle == nil || finalHandle.rotateAfterTurn || finalHandle.ConfigFingerprint != ConfigFingerprint(sess) {
+	if finalHandle == nil || finalHandle.rotateAfterTurn || finalHandle.ConfigFingerprint != ConfigFingerprintWithRegistry(h.pluginRegistry(), sess) {
 		t.Fatalf("expected active swapped worker after queued turn, got %+v", finalHandle)
 	}
 
@@ -351,6 +357,7 @@ func TestParseHeadlessStream_ModelDetectedRuntimeModel(t *testing.T) {
 		`{"type":"control_response","response":{"subtype":"success","response":{"model":"claude-sonnet-4-6"}}}`,
 	}, "\n")
 	parseHeadlessStream("sess-md", strings.NewReader(input), streamParseHooks{
+		streamParser: antigravity.New().NewStreamParser("sess-md"),
 		onModelDetected: func(m string) {
 			detected = append(detected, m)
 		},

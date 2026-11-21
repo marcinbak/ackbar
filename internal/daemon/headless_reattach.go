@@ -334,14 +334,6 @@ func (h *HeadlessRunner) finalizeTurnFromSpool(sess *Session, origSessionID stri
 		if (sess.Name == "" || isRawSessionName(sess.Name)) && prompt != "" {
 			sess.Name = TruncateTitle(prompt)
 		}
-	} else if sess.Agent == "antigravity" {
-		if sess.CustomTitle != "" {
-			sess.Name = sess.CustomTitle
-		} else if title := ReadAntigravitySessionTitle(sess.Cwd, sess.NativeID); title != "" && !isRawSessionName(title) {
-			sess.Name = title
-		} else if (sess.Name == "" || isRawSessionName(sess.Name)) && prompt != "" {
-			sess.Name = TruncateTitle(prompt)
-		}
 	} else if home != "" {
 		if cm := ReadClaudeSessionMeta(sess.Cwd, sess.NativeID); cm != nil {
 			sess.ContextPct = cm.ContextPct

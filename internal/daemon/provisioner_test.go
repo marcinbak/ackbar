@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"ackbar/internal/agent"
+	"ackbar/internal/agents/antigravity"
 	"ackbar/internal/agents/codex"
 	"ackbar/internal/agents/grok"
 	"ackbar/internal/agents/opencode"
@@ -37,10 +38,13 @@ func TestProvisioner_FullLifecycle(t *testing.T) {
 	cfgBytes, _ := json.MarshalIndent(existingClaudeCfg, "", "  ")
 	_ = os.WriteFile(filepath.Join(tempHome, ".claude.json"), cfgBytes, 0600)
 
+	reg := agent.NewRegistry()
+	_ = reg.Register(antigravity.New())
+
 	// 1. Inspect initial statuses (Claude should be detected, with drift detected because ackbar is not installed)
-	statuses, err := GetAgentStatuses(tempHome)
+	statuses, err := GetAgentStatusesWithRegistry(tempHome, reg)
 	if err != nil {
-		t.Fatalf("GetAgentStatuses failed: %v", err)
+		t.Fatalf("GetAgentStatusesWithRegistry failed: %v", err)
 	}
 
 	var claudeStatus *AgentStatus
@@ -63,9 +67,9 @@ func TestProvisioner_FullLifecycle(t *testing.T) {
 	}
 
 	// 2. Provision all agents
-	updatedStatuses, err := ProvisionAgents(tempHome, []string{"all"})
+	updatedStatuses, err := ProvisionAgentsWithRegistry(tempHome, []string{"all"}, reg)
 	if err != nil {
-		t.Fatalf("ProvisionAgents failed: %v", err)
+		t.Fatalf("ProvisionAgentsWithRegistry failed: %v", err)
 	}
 
 	for _, s := range updatedStatuses {

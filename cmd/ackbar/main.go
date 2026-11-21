@@ -227,72 +227,7 @@ func runSetupHooks() error {
 		}
 	}
 
-	// 3. Configure Antigravity hooks (~/.gemini/config/hooks.json)
-	if _, hasAgyPlugin := reg.Get("antigravity"); !hasAgyPlugin {
-		geminiHooksDir := filepath.Join(home, ".gemini", "config")
-		_ = os.MkdirAll(geminiHooksDir, 0755)
-		geminiHooksFile := filepath.Join(geminiHooksDir, "hooks.json")
-
-		var existingHooks map[string]interface{}
-		if data, err := os.ReadFile(geminiHooksFile); err == nil {
-			_ = json.Unmarshal(data, &existingHooks)
-		}
-		if existingHooks == nil {
-			existingHooks = make(map[string]interface{})
-		}
-		delete(existingHooks, "hooks") // remove legacy flat array if present
-
-		hookCmd := fmt.Sprintf("%s --agent=antigravity", hookBinTarget)
-		existingHooks["ackbar"] = map[string]interface{}{
-			"PreInvocation": []map[string]interface{}{
-				{
-					"type":    "command",
-					"command": hookCmd + " --event=PreInvocation",
-				},
-			},
-			"PostInvocation": []map[string]interface{}{
-				{
-					"type":    "command",
-					"command": hookCmd + " --event=PostInvocation",
-				},
-			},
-			"Stop": []map[string]interface{}{
-				{
-					"type":    "command",
-					"command": hookCmd + " --event=Stop",
-				},
-			},
-			"PreToolUse": []map[string]interface{}{
-				{
-					"matcher": "*",
-					"hooks": []map[string]interface{}{
-						{
-							"type":    "command",
-							"command": hookCmd + " --event=PreToolUse",
-						},
-					},
-				},
-			},
-			"PostToolUse": []map[string]interface{}{
-				{
-					"matcher": "*",
-					"hooks": []map[string]interface{}{
-						{
-							"type":    "command",
-							"command": hookCmd + " --event=PostToolUse",
-						},
-					},
-				},
-			},
-		}
-
-		if updated, err := json.MarshalIndent(existingHooks, "", "  "); err == nil {
-			_ = os.WriteFile(geminiHooksFile, updated, 0644)
-			fmt.Printf("✅ Configured Antigravity lifecycle hooks in %s\n", geminiHooksFile)
-		}
-	}
-
-	// 4. Configure registered plugin hooks if installed
+	// 3. Configure registered plugin hooks if installed
 	for _, p := range reg.List() {
 		if prov, ok := reg.AsProvisioner(p.Key()); ok && (p.Key() == "antigravity" || prov.IsInstalled(home)) {
 			if err := prov.InstallHooks(home); err == nil {
@@ -515,8 +450,6 @@ func runAccountCmd(args []string) {
 				envMap[accts.APIKeyEnvVar()] = *apiKey
 			} else if agent == "claude-code" {
 				envMap["ANTHROPIC_API_KEY"] = *apiKey
-			} else if agent == "antigravity" {
-				envMap["GEMINI_API_KEY"] = *apiKey
 			}
 		}
 

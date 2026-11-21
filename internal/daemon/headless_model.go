@@ -111,15 +111,6 @@ func normalizeModelIdentifier(agent, raw string) string {
 		return s
 	}
 
-	if agentLower == "antigravity" {
-		for _, m := range getAntigravityDefaultModels() {
-			if strings.EqualFold(s, m.ID) || strings.EqualFold(s, m.Label) {
-				return m.ID
-			}
-		}
-		return s
-	}
-
 	return s
 }
 
@@ -202,35 +193,6 @@ func (s *Server) resolveTranscriptTailModel(sess *Session) (string, time.Time) {
 		return "", time.Time{}
 	}
 
-	if agentLower == "antigravity" {
-		var candidates []string
-		if accCfgDir != "" {
-			candidates = append(candidates,
-				filepath.Join(accCfgDir, ".gemini", "antigravity-cli", "brain", sess.NativeID, ".system_generated", "logs", "transcript.jsonl"),
-				filepath.Join(accCfgDir, "antigravity-cli", "brain", sess.NativeID, ".system_generated", "logs", "transcript.jsonl"),
-				filepath.Join(accCfgDir, "brain", sess.NativeID, ".system_generated", "logs", "transcript.jsonl"),
-			)
-		}
-		candidates = append(candidates,
-			filepath.Join(home, ".gemini", "antigravity-cli", "brain", sess.NativeID, ".system_generated", "logs", "transcript.jsonl"),
-			filepath.Join(home, ".gemini", "antigravity", "brain", sess.NativeID, ".system_generated", "logs", "transcript.jsonl"),
-			filepath.Join(home, ".antigravity", "brain", sess.NativeID, ".system_generated", "logs", "transcript.jsonl"),
-		)
-		if profiles, _ := filepath.Glob(filepath.Join(home, ".gemini-profiles", "*", "brain", sess.NativeID, ".system_generated", "logs", "transcript.jsonl")); len(profiles) > 0 {
-			candidates = append(candidates, profiles...)
-		}
-
-		for _, cand := range candidates {
-			model, modTime, err := readCachedModelFile(cand, func(f *os.File) (string, error) {
-				return parseAntigravityTranscriptTail(f)
-			})
-			if err == nil && model != "" {
-				return model, modTime
-			}
-		}
-		return "", time.Time{}
-	}
-
 	return "", time.Time{}
 }
 
@@ -274,38 +236,6 @@ func parseClaudeTranscriptTail(f *os.File) (string, error) {
 					if norm := normalizeModelIdentifier("claude-code", m); norm != "" {
 						return norm, nil
 					}
-				}
-			}
-		}
-	}
-	return "", nil
-}
-
-func parseAntigravityTranscriptTail(f *os.File) (string, error) {
-	buf, err := readTailBuffer(f, 64*1024)
-	if err != nil {
-		return "", err
-	}
-
-	lines := bytes.Split(buf, []byte("\n"))
-	for i := len(lines) - 1; i >= 0; i-- {
-		line := bytes.TrimSpace(lines[i])
-		if len(line) == 0 {
-			continue
-		}
-		var raw map[string]interface{}
-		if jErr := json.Unmarshal(line, &raw); jErr != nil {
-			continue
-		}
-		if m, ok := raw["model"].(string); ok {
-			if norm := normalizeModelIdentifier("antigravity", m); norm != "" {
-				return norm, nil
-			}
-		}
-		if msg, ok := raw["message"].(map[string]interface{}); ok {
-			if m, ok := msg["model"].(string); ok {
-				if norm := normalizeModelIdentifier("antigravity", m); norm != "" {
-					return norm, nil
 				}
 			}
 		}
@@ -388,51 +318,6 @@ func (s *Server) resolveSettingsModel(sess *Session) string {
 		return ""
 	}
 
-	if agentLower == "antigravity" {
-		if acc != nil && acc.Env != nil && acc.Env["GEMINI_MODEL"] != "" {
-			if norm := normalizeModelIdentifierWithRegistry(reg, sess.Agent, acc.Env["GEMINI_MODEL"]); norm != "" {
-				return norm
-			}
-		}
-		if accCfgDir != "" {
-			subDirs := []string{
-				filepath.Join(accCfgDir, ".gemini", "antigravity-cli", "settings.json"),
-				filepath.Join(accCfgDir, "antigravity-cli", "settings.json"),
-				filepath.Join(accCfgDir, ".gemini", "antigravity", "settings.json"),
-				filepath.Join(accCfgDir, "antigravity", "settings.json"),
-				filepath.Join(accCfgDir, "settings.json"),
-			}
-			for _, p := range subDirs {
-				if m := readAntigravitySettingsFile(p); m != "" {
-					return m
-				}
-			}
-		}
-		if cliHome := os.Getenv("GEMINI_CLI_HOME"); cliHome != "" {
-			subDirs := []string{
-				filepath.Join(cliHome, ".gemini", "antigravity-cli", "settings.json"),
-				filepath.Join(cliHome, "antigravity-cli", "settings.json"),
-				filepath.Join(cliHome, "settings.json"),
-			}
-			for _, p := range subDirs {
-				if m := readAntigravitySettingsFile(p); m != "" {
-					return m
-				}
-			}
-		}
-		fallbacks := []string{
-			filepath.Join(home, ".gemini", "antigravity-cli", "settings.json"),
-			filepath.Join(home, ".gemini", "antigravity", "settings.json"),
-			filepath.Join(home, ".antigravity", "settings.json"),
-		}
-		for _, p := range fallbacks {
-			if m := readAntigravitySettingsFile(p); m != "" {
-				return m
-			}
-		}
-		return ""
-	}
-
 	return ""
 }
 
@@ -451,33 +336,6 @@ func readClaudeSettingsFile(filePath string) string {
 		if envMap, ok := raw["env"].(map[string]interface{}); ok {
 			if m, ok := envMap["ANTHROPIC_MODEL"].(string); ok {
 				if norm := normalizeModelIdentifier("claude-code", m); norm != "" {
-					return norm, nil
-				}
-			}
-		}
-		return "", nil
-	})
-	if err == nil {
-		return model
-	}
-	return ""
-}
-
-func readAntigravitySettingsFile(filePath string) string {
-	model, _, err := readCachedModelFile(filePath, func(f *os.File) (string, error) {
-		lr := io.LimitReader(f, 256*1024)
-		var raw map[string]interface{}
-		if err := json.NewDecoder(lr).Decode(&raw); err != nil {
-			return "", err
-		}
-		if m, ok := raw["model"].(string); ok {
-			if norm := normalizeModelIdentifier("antigravity", m); norm != "" {
-				return norm, nil
-			}
-		}
-		if mObj, ok := raw["model"].(map[string]interface{}); ok {
-			if name, ok := mObj["name"].(string); ok {
-				if norm := normalizeModelIdentifier("antigravity", name); norm != "" {
 					return norm, nil
 				}
 			}
