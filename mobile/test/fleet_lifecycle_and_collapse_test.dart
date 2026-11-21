@@ -15,6 +15,7 @@ import 'package:ackbar_mobile/core/network/api_client.dart';
 import 'package:ackbar_mobile/core/network/sse_client.dart';
 import 'package:ackbar_mobile/core/providers/fleet_providers.dart';
 import 'package:ackbar_mobile/core/theme/app_theme.dart';
+import 'package:ackbar_mobile/core/widgets/status_badge.dart';
 import 'package:ackbar_mobile/features/fleet/presentation/fleet_screen.dart';
 import 'package:ackbar_mobile/features/fleet/presentation/fleet_tree_view.dart';
 
@@ -741,5 +742,85 @@ void main() {
       collapseState.expandedSubsections,
       isNot(contains('Personal/Ackbar:done')),
     );
+  });
+
+  testWidgets(
+      'FleetSessionCard wraps metadata pills without overflow inside narrow depth-2 FleetTreeView folder',
+      (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    final now = DateTime.utc(2026, 11, 21, 12, 0, 0);
+    final deepSession = Session(
+      id: 'claude-code:127.0.0.1:7778:sup-deep',
+      agent: 'claude-code',
+      host: '127.0.0.1:7778',
+      nativeId: 'sup-deep',
+      cwd: '/workspace/ngl-ios',
+      nodePath: 'Modemobile/NGL/ngl-ios',
+      name: 'Deep Nested Supervisor',
+      customTitle: 'Deep Nested Supervisor',
+      gitBranch: 'feat/mobile-session-filters-collapse',
+      state: SessionState.working,
+      startedAt: now,
+      lastEventAt: now,
+      managed: true,
+      isSupervisor: true,
+    );
+
+    final leafFolder = FleetTreeFolderNode(
+      path: 'Modemobile/NGL/ngl-ios',
+      name: 'ngl-ios',
+      depth: 2,
+      supervisors: [deepSession],
+    );
+    final midFolder = FleetTreeFolderNode(
+      path: 'Modemobile/NGL',
+      name: 'NGL',
+      depth: 1,
+      children: [leafFolder],
+    );
+    final rootFolder = FleetTreeFolderNode(
+      path: 'Modemobile',
+      name: 'Modemobile',
+      depth: 0,
+      children: [midFolder],
+    );
+
+    Session? tappedActionsFor;
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+
+    await tester.pumpWidget(
+      _wrap(
+        Center(
+          child: SizedBox(
+            width: 340,
+            child: SingleChildScrollView(
+              child: FleetTreeView(
+                rootFolders: [rootFolder],
+                hosts: const [],
+                onSessionTap: (_) {},
+                onSessionActions: (s) => tappedActionsFor = s,
+                onAddSession: (_) {},
+              ),
+            ),
+          ),
+        ),
+        container,
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 200));
+
+    expect(tester.takeException(), isNull);
+    expect(find.byType(StatusBadge), findsOneWidget);
+
+    final moreButton = find.byKey(Key('session_more_${deepSession.id}'));
+    expect(moreButton, findsOneWidget);
+    await tester.tap(moreButton);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 200));
+
+    expect(tester.takeException(), isNull);
+    expect(tappedActionsFor?.id, deepSession.id);
   });
 }
