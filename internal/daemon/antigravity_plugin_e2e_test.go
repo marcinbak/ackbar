@@ -1,9 +1,11 @@
 package daemon
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,6 +13,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"ackbar/internal/agents"
+	"ackbar/internal/agents/antigravity"
 )
 
 func TestAntigravityPlugin_E2E(t *testing.T) {
@@ -152,5 +157,168 @@ func TestAntigravityPlugin_E2E(t *testing.T) {
 	updated, _ := db.GetSession("antigravity:" + srv.HostName() + ":" + convID2)
 	if updated == nil || updated.Name != "Hook Upgraded Title" {
 		t.Fatalf("expected hook annotation title upgrade, got %+v", updated)
+	}
+}
+
+func TestAntigravityPlugin_StartupReattachWithRegisteredPlugins(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	proj := filepath.Join(home, "proj")
+	_ = os.MkdirAll(proj, 0o755)
+	convID := "44444444-4444-4444-4444-444444444444"
+	logDir := filepath.Join(home, ".gemini", "antigravity", "brain", convID, ".system_generated", "logs")
+	_ = os.MkdirAll(logDir, 0o755)
+	_ = os.WriteFile(filepath.Join(logDir, "transcript.jsonl"), []byte(
+		`{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","content":"<USER_REQUEST>\nRecover startup title\n</USER_REQUEST>","created_at":"`+time.Now().UTC().Format(time.RFC3339)+`"}`+"\n",
+	), 0o644)
+
+	db, err := InitDB(filepath.Join(t.TempDir(), "startup_reattach.db"))
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer db.Close()
+
+	sess := &Session{
+		ID:             "antigravity:local:" + convID,
+		Agent:          "antigravity",
+		Host:           "local",
+		NativeID:       convID,
+		Cwd:            proj,
+		EngineType:     EngineHeadless,
+		State:          StateWorking,
+		PermissionMode: "",
+		Name:           "antigravity",
+	}
+	if err := db.SaveSession(sess); err != nil {
+		t.Fatalf("SaveSession failed: %v", err)
+	}
+
+	runDir := DefaultHeadlessRunDir(db.Path())
+	if err := os.MkdirAll(runDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll runDir failed: %v", err)
+	}
+
+	spoolPath := filepath.Join(runDir, "turn-n1.spool.jsonl")
+	if err := os.WriteFile(spoolPath, nil, 0o600); err != nil {
+		t.Fatalf("WriteFile spool failed: %v", err)
+	}
+	metaPath := filepath.Join(runDir, "turn-n1.meta.json")
+	if err := WriteTurnSpoolMeta(metaPath, &TurnSpoolMeta{
+		TurnID:            "turn-n1",
+		SessionID:         sess.ID,
+		OrigSessionID:     sess.ID,
+		NativeID:          convID,
+		Agent:             "antigravity",
+		Cwd:               proj,
+		Prompt:            "unrelated prompt fallback",
+		SpoolPath:         spoolPath,
+		MetaPath:          metaPath,
+		Status:            "completed",
+		FinalizedByDaemon: false,
+		StartedAt:         time.Now().Add(-time.Minute),
+	}); err != nil {
+		t.Fatalf("WriteTurnSpoolMeta failed: %v", err)
+	}
+
+	// Start a mock warm worker IPC socket expecting canonical PermissionMode "bypassPermissions".
+	sockDir, err := os.MkdirTemp("", "agy-reattach-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp sockDir failed: %v", err)
+	}
+	defer os.RemoveAll(sockDir)
+	sockPath := filepath.Join(sockDir, "w.sock")
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("net.Listen unix failed: %v", err)
+	}
+	defer ln.Close()
+	stopSock := make(chan struct{})
+	defer close(stopSock)
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				sc := bufio.NewScanner(c)
+				for sc.Scan() {
+					var req workerIPCReq
+					if json.Unmarshal(sc.Bytes(), &req) != nil {
+						continue
+					}
+					switch req.Op {
+					case "status":
+						_ = json.NewEncoder(c).Encode(workerIPCResp{OK: true, State: "idle_warm"})
+					case "shutdown":
+						_ = json.NewEncoder(c).Encode(workerIPCResp{OK: true, State: "exited"})
+						return
+					case "watch_worker":
+						_ = json.NewEncoder(c).Encode(workerIPCResp{OK: true, State: "idle_warm"})
+						<-stopSock
+						return
+					}
+				}
+			}(conn)
+		}
+	}()
+
+	preReg, err := agents.NewDefaultRegistry()
+	if err != nil {
+		t.Fatalf("NewDefaultRegistry failed: %v", err)
+	}
+	bypassSess := &Session{ID: sess.ID, Agent: "antigravity", Cwd: proj, PermissionMode: "bypassPermissions"}
+	workerMetaPath := filepath.Join(runDir, "w_n1.worker.json")
+	if err := WriteSessionWorkerMeta(workerMetaPath, &SessionWorkerMeta{
+		WorkerID:          "w_n1",
+		SessionID:         sess.ID,
+		OrigSessionID:     sess.ID,
+		NativeID:          convID,
+		Agent:             "antigravity",
+		Cwd:               proj,
+		ConfigFingerprint: ConfigFingerprintWithRegistry(preReg, bypassSess),
+		Bin:               "agy",
+		SocketPath:        sockPath,
+		WorkerMetaPath:    workerMetaPath,
+		State:             "idle_warm",
+		StartedAt:         time.Now().Add(-time.Minute),
+		UpdatedAt:         time.Now(),
+	}); err != nil {
+		t.Fatalf("WriteSessionWorkerMeta failed: %v", err)
+	}
+
+	srv, err := NewServerWithPlugins(db, agents.DefaultPlugins()...)
+	if err != nil {
+		t.Fatalf("NewServerWithPlugins failed: %v", err)
+	}
+	defer srv.headless.ShutdownAllWorkers(2 * time.Second)
+
+	reloadedMeta, err := ReadTurnSpoolMeta(metaPath)
+	if err != nil || reloadedMeta == nil || !reloadedMeta.FinalizedByDaemon {
+		t.Fatalf("expected spool FinalizedByDaemon=true after startup reattach, got meta=%+v err=%v", reloadedMeta, err)
+	}
+	updated, err := db.GetSession(sess.ID)
+	if err != nil || updated == nil {
+		t.Fatalf("GetSession failed: %v", err)
+	}
+	if updated.Name != "Recover startup title" || updated.State != StateIdle {
+		t.Fatalf("expected Antigravity transcript title 'Recover startup title' and StateIdle, got name=%q state=%v", updated.Name, updated.State)
+	}
+	if !srv.headless.HasWarmWorker(sess.ID) {
+		t.Fatalf("expected warm Antigravity worker adopted during NewServerWithPlugins")
+	}
+
+	fpBypass := ConfigFingerprintWithRegistry(srv.PluginRegistry(), bypassSess)
+	if fpEmpty := ConfigFingerprintWithRegistry(srv.PluginRegistry(), &Session{ID: sess.ID, Agent: "antigravity", Cwd: proj, PermissionMode: ""}); fpEmpty != fpBypass {
+		t.Fatalf("empty PermissionMode fingerprint = %s, want %s", fpEmpty, fpBypass)
+	}
+	if fpAlias := ConfigFingerprintWithRegistry(srv.PluginRegistry(), &Session{ID: sess.ID, Agent: "agy", Cwd: proj, PermissionMode: ""}); fpAlias != fpBypass {
+		t.Fatalf("agy alias fingerprint = %s, want %s", fpAlias, fpBypass)
+	}
+
+	if dupSrv, dupErr := NewServerWithPlugins(db, antigravity.New(), antigravity.New()); dupErr == nil || dupSrv != nil {
+		t.Fatalf("expected error on duplicate plugin registration, got srv=%v err=%v", dupSrv, dupErr)
 	}
 }

@@ -100,6 +100,13 @@ func (s *Server) eventsKeepaliveInterval() time.Duration {
 }
 
 func NewServer(db *DB) *Server {
+	s, _ := NewServerWithPlugins(db)
+	return s
+}
+
+// NewServerWithPlugins initializes Server and registers plugins before ReattachLiveWorkers
+// so startup worker adoption and spool recovery resolve plugin facets immediately.
+func NewServerWithPlugins(db *DB, plugins ...agent.Plugin) (*Server, error) {
 	StartUploadCleaner(defaultUploadDir, 6*time.Hour)
 	s := &Server{
 		db:                db,
@@ -122,12 +129,20 @@ func NewServer(db *DB) *Server {
 	s.headless.SetOnWorkerExit(s.onHeadlessWorkerExited)
 	s.headless.LoadScheduledPrompts()
 	s.authBroker = newAuthBroker(s)
+	for _, p := range plugins {
+		if p == nil {
+			continue
+		}
+		if err := s.RegisterPlugin(p); err != nil {
+			return nil, err
+		}
+	}
 	if host := s.HostName(); host != "local" && db != nil {
 		_ = db.MigrateLocalSessions(host)
 		s.pruneForeignSessions()
 	}
 	s.headless.ReattachLiveWorkers()
-	return s
+	return s, nil
 }
 
 func (s *Server) isForeignSession(host string) bool {
