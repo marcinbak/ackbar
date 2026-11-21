@@ -185,7 +185,7 @@ func (h *HeadlessRunner) RunTurn(ctx context.Context, sess *Session, prompt stri
 	reg := h.pluginRegistry()
 	isACP := isACPHeadlessAgent(reg, sess.Agent)
 	isPersPlugin := isPersistentHeadlessAgent(reg, sess.Agent)
-	if sess.Agent != "claude-code" && sess.Agent != "antigravity" && !isACP && !isPersPlugin {
+	if sess.Agent != "claude-code" && !isACP && !isPersPlugin {
 		if reg != nil {
 			if hd, ok := reg.AsHeadlessDriver(sess.Agent); ok && hd.Mode() == agent.HeadlessModeOneShot {
 				return h.runOneShotPluginTurn(sess, prompt, hd)

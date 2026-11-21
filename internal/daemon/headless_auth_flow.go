@@ -161,16 +161,6 @@ func resolveAllowlistedAuthCommandWithRegistry(reg *agent.Registry, sess *Sessio
 				}
 			}
 		}
-		if target == "agent:agy" {
-			if sess != nil && sess.Agent != "" && !strings.EqualFold(sess.Agent, "antigravity") && !strings.EqualFold(sess.Agent, "agy") {
-				return nil, "", false, fmt.Errorf("auth target %s does not match session agent %s", target, sess.Agent)
-			}
-			bin, err := resolveAntigravityBinary()
-			if err != nil {
-				return nil, "", false, err
-			}
-			return []string{bin, "acp", "--login"}, "", true, nil
-		}
 	}
 
 	if strings.HasPrefix(target, "mcp:") {

@@ -12,7 +12,6 @@ import (
 	"runtime"
 	"strings"
 
-	"ackbar/internal/agent"
 	"ackbar/internal/agents"
 	"ackbar/internal/daemon"
 	"ackbar/internal/provider"
@@ -175,9 +174,6 @@ func main() {
 
 	// Register Provider Adapters
 	server.RegisterProvider(provider.NewClaudeProvider())
-	if agent.IsLegacyAgent("antigravity", "agy") {
-		server.RegisterProvider(provider.NewAntigravityProvider())
-	}
 	for _, p := range reg.List() {
 		if err := server.RegisterPlugin(p); err != nil {
 			log.Fatalf("Failed to register plugin %s: %v", p.Key(), err)

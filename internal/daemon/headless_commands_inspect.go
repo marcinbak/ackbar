@@ -132,11 +132,6 @@ func (s *Server) handleSessionInspect(w http.ResponseWriter, r *http.Request, se
 					}
 				}
 			}
-		} else if sess.Agent == "antigravity" {
-			bin, err := resolveAntigravityBinary()
-			if err == nil {
-				out, _ = s.runAllowlistedInspectCmd(r.Context(), sess, bin, "plugin", "list", "--json")
-			}
 		}
 		if home != "" && out != "" {
 			out = strings.ReplaceAll(out, home, "~")
@@ -173,12 +168,6 @@ func (s *Server) handleSessionInspect(w http.ResponseWriter, r *http.Request, se
 							}
 						}
 					}
-				}
-			}
-		} else if sess.Agent == "antigravity" {
-			if bin, err := resolveAntigravityBinary(); err == nil {
-				if out, err := s.runAllowlistedInspectCmd(r.Context(), sess, bin, "agents"); err == nil {
-					cliAgents = strings.TrimSpace(out)
 				}
 			}
 		}
@@ -231,8 +220,6 @@ func (s *Server) handleSessionInspect(w http.ResponseWriter, r *http.Request, se
 			var bin string
 			if hd, ok := s.PluginRegistry().AsHeadlessDriver(sess.Agent); ok {
 				bin, _ = hd.ResolveBinary()
-			} else if sess.Agent == "antigravity" {
-				bin, _ = resolveAntigravityBinary()
 			}
 			if bin != "" {
 				rawVersion, _ = s.runAllowlistedInspectCmd(r.Context(), sess, bin, "--version")

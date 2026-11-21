@@ -32,12 +32,7 @@ func cleanActivePromptWithRegistry(reg *agent.Registry, agentName, raw string) s
 			return strings.TrimSpace(raw)
 		}
 	}
-	var cleaned string
-	if agentName == "antigravity" {
-		cleaned = CleanAntigravityPrompt(raw)
-	} else {
-		cleaned = CleanClaudePrompt(raw)
-	}
+	cleaned := CleanClaudePrompt(raw)
 	if strings.TrimSpace(cleaned) == "" {
 		cleaned = strings.TrimSpace(raw)
 	}

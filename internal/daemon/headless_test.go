@@ -13,6 +13,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"ackbar/internal/agent"
+	"ackbar/internal/agents/antigravity"
 )
 
 func TestStripBilledCredentials(t *testing.T) {
@@ -410,6 +413,9 @@ func TestHeadlessRunner_PromptQueue(t *testing.T) {
 
 func TestHeadlessStreamParser_Antigravity(t *testing.T) {
 	runner := NewHeadlessRunner(nil, nil)
+	reg := agent.NewRegistry()
+	_ = reg.Register(antigravity.New())
+	runner.SetPluginRegistry(reg)
 	sessionID := "antigravity:local:temp-uuid-999"
 	sess := &Session{
 		ID:       sessionID,
@@ -517,7 +523,11 @@ done:
 
 func TestHeadlessStreamParser_AntigravityError(t *testing.T) {
 	runner := NewHeadlessRunner(nil, nil)
+	reg := agent.NewRegistry()
+	_ = reg.Register(antigravity.New())
+	runner.SetPluginRegistry(reg)
 	sessionID := "antigravity:local:err-session"
+	sess := &Session{ID: sessionID, Agent: "antigravity", Host: "local", NativeID: "err-session"}
 
 	ch, cleanup := runner.Subscribe(sessionID)
 	defer cleanup()
@@ -526,7 +536,7 @@ func TestHeadlessStreamParser_AntigravityError(t *testing.T) {
 {"event":"result","result":{"conversation_id":"ag-err-1","status":"ERROR","error":"API rate limit exceeded"}}
 `
 	go func() {
-		runner.processStream(sessionID, strings.NewReader(sampleOutput))
+		runner.processStream(sessionID, strings.NewReader(sampleOutput), sess)
 	}()
 
 	select {
@@ -730,6 +740,9 @@ func TestInitDB_HeadlessMigrationsAndBootCleanup(t *testing.T) {
 func TestHeadlessRunner_BuildArgs_ClaudeAndAntigravity(t *testing.T) {
 	tmpHome := t.TempDir()
 	runner := NewHeadlessRunner(nil, nil)
+	reg := agent.NewRegistry()
+	_ = reg.Register(antigravity.New())
+	runner.SetPluginRegistry(reg)
 
 	// 1. Claude Code Turn 1: should include --dangerously-skip-permissions and --session-id
 	claudeSess := &Session{
@@ -801,6 +814,9 @@ func TestHeadlessRunner_BuildArgs_ClaudeAndAntigravity(t *testing.T) {
 
 func TestHeadlessRunner_SupervisorSystemPrompt(t *testing.T) {
 	runner := NewHeadlessRunner(nil, nil)
+	reg := agent.NewRegistry()
+	_ = reg.Register(antigravity.New())
+	runner.SetPluginRegistry(reg)
 	tmpHome := t.TempDir()
 
 	// 1. Claude Code Supervisor session
@@ -1095,6 +1111,9 @@ func TestHeadlessLivenessAndHookStateAuthority(t *testing.T) {
 
 func TestHeadlessRunner_AntigravityInitMigratesSubscribersAcrossTurns(t *testing.T) {
 	runner := NewHeadlessRunner(nil, nil)
+	reg := agent.NewRegistry()
+	_ = reg.Register(antigravity.New())
+	runner.SetPluginRegistry(reg)
 	oldID := "antigravity:local:temp-uuid-sub-1"
 	sess := &Session{
 		ID:         oldID,
@@ -1235,7 +1254,11 @@ loop:
 
 func TestHeadlessStreamParser_AntigravityBPESplitInterleavedTool(t *testing.T) {
 	runner := NewHeadlessRunner(nil, nil)
+	reg := agent.NewRegistry()
+	_ = reg.Register(antigravity.New())
+	runner.SetPluginRegistry(reg)
 	sessionID := "antigravity:local:test-bpe-split"
+	sess := &Session{ID: sessionID, Agent: "antigravity", Host: "local", NativeID: "test-bpe-split"}
 
 	ch, cleanup := runner.Subscribe(sessionID)
 	defer cleanup()
@@ -1253,7 +1276,7 @@ func TestHeadlessStreamParser_AntigravityBPESplitInterleavedTool(t *testing.T) {
 `
 
 	go func() {
-		runner.processStream(sessionID, strings.NewReader(sampleOutput))
+		runner.processStream(sessionID, strings.NewReader(sampleOutput), sess)
 	}()
 
 	var textDeltas []string
@@ -1346,6 +1369,7 @@ func TestHeadlessStreamParser_AntigravityRecoverableMidTurnError(t *testing.T) {
 `
 	var events []ChatStreamEvent
 	_, resText, streamHadError := parseHeadlessStream("sess1", strings.NewReader(input), streamParseHooks{
+		streamParser:     antigravity.New().NewStreamParser("sess1"),
 		emitTurnComplete: true,
 		emit: func(evt ChatStreamEvent) {
 			events = append(events, evt)
@@ -1382,6 +1406,7 @@ func TestHeadlessStreamParser_AntigravityFatalErrorDeduplication(t *testing.T) {
 `
 		var events []ChatStreamEvent
 		_, _, streamHadError := parseHeadlessStream("sess-err-1", strings.NewReader(input), streamParseHooks{
+			streamParser:     antigravity.New().NewStreamParser("sess-err-1"),
 			emitTurnComplete: true,
 			emit: func(evt ChatStreamEvent) {
 				events = append(events, evt)
@@ -1410,6 +1435,7 @@ func TestHeadlessStreamParser_AntigravityFatalErrorDeduplication(t *testing.T) {
 `
 		var events []ChatStreamEvent
 		_, _, streamHadError := parseHeadlessStream("sess-err-2", strings.NewReader(input), streamParseHooks{
+			streamParser:     antigravity.New().NewStreamParser("sess-err-2"),
 			emitTurnComplete: true,
 			emit: func(evt ChatStreamEvent) {
 				events = append(events, evt)
@@ -1437,6 +1463,7 @@ func TestHeadlessStreamParser_AntigravityFatalErrorDeduplication(t *testing.T) {
 `
 		var events []ChatStreamEvent
 		_, _, streamHadError := parseHeadlessStream("sess-err-3", strings.NewReader(input), streamParseHooks{
+			streamParser:     antigravity.New().NewStreamParser("sess-err-3"),
 			emitTurnComplete: true,
 			emit: func(evt ChatStreamEvent) {
 				events = append(events, evt)

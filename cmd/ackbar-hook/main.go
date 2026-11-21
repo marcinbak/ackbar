@@ -88,9 +88,5 @@ func outputHookSuccess(reg *agent.Registry, agentName, event string) {
 		fmt.Println(string(h.HookAckPayload(event)))
 		return
 	}
-	if agentName == "antigravity" && event == "PreToolUse" {
-		fmt.Println(`{"decision":"allow"}`)
-		return
-	}
 	fmt.Println("{}")
 }

@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"ackbar/internal/agents/antigravity"
 )
 
 func TestParseRateLimitResetTime(t *testing.T) {
@@ -182,7 +184,7 @@ func TestDetectRateLimit_Adapters(t *testing.T) {
 	}
 
 	// Antigravity
-	anti := AntigravityAgentAdapter{}
+	anti := antigravity.New()
 	matchAnti, _, reasonAnti := anti.DetectRateLimit("ResourceExhausted: 429 Too Many Requests, quota exceeded", now)
 	if !matchAnti || (!strings.Contains(reasonAnti, "Quota exceeded") && !strings.Contains(reasonAnti, "Resource exhausted")) {
 		t.Errorf("Antigravity quota exceeded should match, got %v, reason=%s", matchAnti, reasonAnti)

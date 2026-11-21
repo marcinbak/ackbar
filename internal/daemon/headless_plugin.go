@@ -160,6 +160,29 @@ func dispatchPluginStreamLine(
 	if err != nil || !handled {
 		return handled
 	}
+	applyPluginStreamEvents(
+		events,
+		lastTextBuilder,
+		resultText,
+		streamHadError,
+		finalLastTurnText,
+		finalResultText,
+		finalStreamHadError,
+		hooks,
+	)
+	return true
+}
+
+func applyPluginStreamEvents(
+	events []agent.ChatStreamEvent,
+	lastTextBuilder *strings.Builder,
+	resultText *string,
+	streamHadError *bool,
+	finalLastTurnText *string,
+	finalResultText *string,
+	finalStreamHadError *bool,
+	hooks streamParseHooks,
+) {
 	for _, ev := range events {
 		switch ev.Type {
 		case "session_init":
@@ -258,7 +281,6 @@ func dispatchPluginStreamLine(
 			*streamHadError = false
 		}
 	}
-	return true
 }
 
 func hasConversationOnDiskWithRegistry(reg *agent.Registry, sess *Session, home string, db *DB) bool {
@@ -311,8 +333,6 @@ func buildWorkerEnvWithRegistry(reg *agent.Registry, sess *Session, db *DB, home
 					}
 					if sess.Agent == "claude-code" {
 						env = append(env, "CLAUDE_CONFIG_DIR="+cfgDir)
-					} else if sess.Agent == "antigravity" {
-						env = append(env, "GEMINI_CLI_HOME="+cfgDir)
 					}
 				}
 				for k, v := range acc.Env {

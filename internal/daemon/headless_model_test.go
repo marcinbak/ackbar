@@ -11,6 +11,9 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"ackbar/internal/agent"
+	"ackbar/internal/agents/antigravity"
 )
 
 func TestNormalizeModelIdentifier(t *testing.T) {
@@ -40,10 +43,13 @@ func TestNormalizeModelIdentifier(t *testing.T) {
 		{"other", "gpt-4o", "gpt-4o"},
 	}
 
+	reg := agent.NewRegistry()
+	_ = reg.Register(antigravity.New())
+
 	for _, tc := range cases {
-		got := normalizeModelIdentifier(tc.agent, tc.raw)
+		got := normalizeModelIdentifierWithRegistry(reg, tc.agent, tc.raw)
 		if got != tc.expected {
-			t.Errorf("normalizeModelIdentifier(%q, %q) = %q; want %q", tc.agent, tc.raw, got, tc.expected)
+			t.Errorf("normalizeModelIdentifierWithRegistry(%q, %q) = %q; want %q", tc.agent, tc.raw, got, tc.expected)
 		}
 	}
 }

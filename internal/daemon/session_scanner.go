@@ -540,14 +540,6 @@ func (s *Server) scanTmuxPanes(ctx context.Context, state *ScanState) {
 			if targetNativeID != "" && home != "" && adapter.IsSubagentSession(home, targetNativeID, nil) {
 				continue
 			}
-		} else if agent == "antigravity" {
-			sID := findAntigravitySessionForPID(ctx, pid)
-			if sID != "" && IsUUID(sID) && sID != targetNativeID && (home == "" || !adapter.IsSubagentSession(home, sID, nil)) {
-				tmuxName, targetNativeID = s.reconcileAntigravityTmuxSession(ctx, state, agent, tmuxName, targetNativeID, sID, pid)
-			}
-			if targetNativeID != "" && home != "" && adapter.IsSubagentSession(home, targetNativeID, nil) {
-				continue
-			}
 		}
 
 		if targetNativeID != "" && adapter.IsValidNativeID(targetNativeID) {
@@ -646,8 +638,6 @@ func (s *Server) reconcileAntigravityTmuxSession(ctx context.Context, state *Sca
 				var title string
 				if tr, ok := s.PluginRegistry().AsTranscript(agent); ok {
 					title = tr.ResolveSessionTitle(s.effectiveHomeDir(), existingReal.Cwd, sID)
-				} else {
-					title = ReadAntigravitySessionTitle(existingReal.Cwd, sID)
 				}
 				if title != "" && !isRawSessionName(title) {
 					existingReal.Name = title
@@ -671,8 +661,6 @@ func (s *Server) reconcileAntigravityTmuxSession(ctx context.Context, state *Sca
 				var title string
 				if tr, ok := s.PluginRegistry().AsTranscript(agent); ok {
 					title = tr.ResolveSessionTitle(s.effectiveHomeDir(), existingOld.Cwd, sID)
-				} else {
-					title = ReadAntigravitySessionTitle(existingOld.Cwd, sID)
 				}
 				if title != "" && !isRawSessionName(title) {
 					existingOld.Name = title
@@ -743,14 +731,6 @@ func (s *Server) adoptExistingTmuxSession(ctx context.Context, state *ScanState,
 			} else if meta := tr.ReadSessionMetadata(home, existing.Cwd, existing.NativeID); meta != nil && meta.AITitle != "" && meta.AITitle != existing.Name {
 				existing.Name = meta.AITitle
 			}
-		} else if agent == "antigravity" {
-			if isRawSessionName(existing.Name) {
-				if title := ReadAntigravitySessionTitle(existing.Cwd, existing.NativeID); title != "" && !isRawSessionName(title) {
-					existing.Name = title
-				}
-			} else if anno := ReadAntigravityAnnotationTitle(existing.NativeID); anno != "" && anno != existing.Name {
-				existing.Name = anno
-			}
 		}
 	}
 	_ = s.db.SaveSession(existing)
@@ -787,12 +767,11 @@ func (s *Server) scanDiskSessions(ctx context.Context, state *ScanState) {
 		return
 	}
 	s.agentAdapter("claude-code").ScanDiskSessions(ctx, s, home, state)
-	s.agentAdapter("antigravity").ScanDiskSessions(ctx, s, home, state)
 
 	if reg := s.PluginRegistry(); reg != nil {
 		for _, p := range reg.List() {
 			key := strings.ToLower(strings.TrimSpace(p.Key()))
-			if key == "claude-code" || key == "antigravity" {
+			if key == "claude-code" {
 				continue
 			}
 			if _, ok := reg.AsScanner(p.Key()); ok {

@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"ackbar/internal/agents/antigravity"
 )
 
 func TestTranscriptCache_HitWithoutDiskRead(t *testing.T) {
@@ -21,6 +23,7 @@ func TestTranscriptCache_HitWithoutDiskRead(t *testing.T) {
 	defer db.Close()
 
 	server := NewServer(db)
+	_ = server.RegisterPlugin(antigravity.New())
 	tempHome := t.TempDir()
 	server.homeDir = tempHome
 
@@ -89,6 +92,7 @@ func TestTranscriptCache_IncrementalClaudeAppend(t *testing.T) {
 	defer db.Close()
 
 	server := NewServer(db)
+	_ = server.RegisterPlugin(antigravity.New())
 	tempHome := t.TempDir()
 	server.homeDir = tempHome
 
@@ -197,6 +201,7 @@ func TestHandleSessionTranscript_NDJSONReverseOrder(t *testing.T) {
 	defer db.Close()
 
 	server := NewServer(db)
+	_ = server.RegisterPlugin(antigravity.New())
 	mockMsgs := []TranscriptMessage{
 		{Role: "user", Content: "Prompt 0"},
 		{Role: "assistant", Content: "Answer 1"},
@@ -272,6 +277,7 @@ func TestHandleSessionTranscript_IncludeFormats(t *testing.T) {
 	defer db.Close()
 
 	server := NewServer(db)
+	_ = server.RegisterPlugin(antigravity.New())
 	server.RegisterProvider(&transcriptMockProvider{
 		agentName: "mock-formats",
 		messages: []TranscriptMessage{
@@ -437,6 +443,7 @@ func TestRemoteHostProxy_SuggestionsAndConfig_NoPanic(t *testing.T) {
 	}
 
 	server := NewServer(db)
+	_ = server.RegisterPlugin(antigravity.New())
 
 	remoteSessionID := "claude-code:remote-box:11111111-1111-1111-1111-111111111111"
 
@@ -469,6 +476,7 @@ func TestTranscriptCache_ConcurrentExtractTranscript_Race(t *testing.T) {
 	defer db.Close()
 
 	server := NewServer(db)
+	_ = server.RegisterPlugin(antigravity.New())
 	tempHome := t.TempDir()
 	server.homeDir = tempHome
 

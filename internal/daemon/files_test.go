@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"ackbar/internal/agents/antigravity"
 )
 
 func TestDetectMIMEType(t *testing.T) {
@@ -55,6 +57,7 @@ func TestResolveFilePath(t *testing.T) {
 	}
 
 	server := &Server{}
+	_ = server.RegisterPlugin(antigravity.New())
 	sess := &Session{
 		ID:  "sess-1",
 		Cwd: tmpDir,
@@ -102,6 +105,7 @@ func TestResolveFilePath_CrossOSHomeFallback(t *testing.T) {
 	}
 
 	server := &Server{}
+	_ = server.RegisterPlugin(antigravity.New())
 	sess := &Session{ID: "sess-cross-os"}
 
 	// Determine the opposite OS prefix
@@ -985,6 +989,7 @@ func TestResolveFilePath_FallbacksAndSecurity(t *testing.T) {
 	}
 
 	server := &Server{}
+	_ = server.RegisterPlugin(antigravity.New())
 	sess := &Session{
 		ID:  "sess-fallback-1",
 		Cwd: repoDir,
@@ -1113,6 +1118,7 @@ func TestHandleFileContent_SVG_SecurityHeaders(t *testing.T) {
 	_ = os.WriteFile(svgPath, []byte("<svg></svg>"), 0644)
 
 	server := &Server{}
+	_ = server.RegisterPlugin(antigravity.New())
 	sess := &Session{ID: "sess-svg", Cwd: tmpDir}
 
 	req := httptest.NewRequest("GET", "/v1/files/content?path=icon.svg", nil)
@@ -1155,6 +1161,7 @@ func TestHandleFileOpen_CwdOverrideAndRemotePathSanitization(t *testing.T) {
 	_ = os.WriteFile(shotFile, []byte("shot"), 0644)
 
 	server := &Server{}
+	_ = server.RegisterPlugin(antigravity.New())
 
 	// 1. Local open with cwd override and file://%20 URL
 	bodyData, _ := json.Marshal(map[string]interface{}{
@@ -1252,6 +1259,7 @@ func TestResolveFilePath_GlobWildcardRejection(t *testing.T) {
 	_ = os.WriteFile(secretFile, []byte("secret"), 0644)
 
 	server := &Server{}
+	_ = server.RegisterPlugin(antigravity.New())
 	sess := &Session{ID: "sess-glob", Cwd: repoDir}
 
 	// 1. Wildcard in path must NOT match files inside .worktrees via glob expansion
@@ -1274,6 +1282,7 @@ func TestHandleFileOpen_VSCode_SecurityAndRemote(t *testing.T) {
 	t.Setenv("HOME", homeDir)
 
 	server := &Server{}
+	_ = server.RegisterPlugin(antigravity.New())
 
 	// 1. Leading dash rejected with 400
 	dashBody, _ := json.Marshal(map[string]interface{}{

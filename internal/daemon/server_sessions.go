@@ -1332,13 +1332,9 @@ func (s *Server) normalizeModelInput(agent, raw string) (string, error) {
 	if s != nil && s.PluginRegistry() != nil {
 		if mc, ok := s.PluginRegistry().AsModelCatalog(agent); ok {
 			candidates = append(candidates, mc.DefaultModels()...)
-		} else if agLower == "antigravity" {
-			candidates = append(candidates, getAntigravityDefaultModels()...)
 		} else if agLower == "claude" || agLower == "claude-code" {
 			candidates = append(candidates, getClaudeDefaultModels()...)
 		}
-	} else if agLower == "antigravity" {
-		candidates = append(candidates, getAntigravityDefaultModels()...)
 	} else if agLower == "claude" || agLower == "claude-code" {
 		candidates = append(candidates, getClaudeDefaultModels()...)
 	}
@@ -2519,7 +2515,7 @@ func supportsDontAskMode(reg *agent.Registry, agentName string) bool {
 			return false
 		}
 	}
-	return !strings.EqualFold(agentName, "antigravity") && !strings.EqualFold(agentName, "agy")
+	return true
 }
 
 func canonicalAgentKey(reg *agent.Registry, agentName string) string {
@@ -2537,7 +2533,7 @@ func (s *Server) supportsHeadless(agentName string) bool {
 			return p.Capabilities().SupportsHeadless
 		}
 	}
-	if agentName == "claude-code" || agentName == "antigravity" {
+	if agentName == "claude-code" {
 		return true
 	}
 	return false
@@ -2550,8 +2546,6 @@ func appendCLIInitPrompt(agent, baseCmd string) string {
 	switch strings.ToLower(strings.TrimSpace(agent)) {
 	case "claude-code", "claude":
 		return baseCmd + ` "$ACKBAR_INIT_PROMPT"`
-	case "antigravity", "agy":
-		return baseCmd + ` -i "$ACKBAR_INIT_PROMPT"`
 	default:
 		return ""
 	}

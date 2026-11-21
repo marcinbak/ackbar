@@ -144,10 +144,21 @@ func TestHeadlessBuildTurnAndStreamParser(t *testing.T) {
 	if !handledNull || len(nullEvts) != 1 || nullEvts[0].Type != "turn_complete" || nullEvts[0].IsError {
 		t.Fatalf("expected turn_complete on null result, got %+v handled=%v", nullEvts, handledNull)
 	}
+	_, _, _ = sp.ParseStreamLine([]byte(`{"event":"step_update","step_update":{"step_index":3,"step_type":"error_message","error":"eof disconnect"}}`))
+	eofEvts := sp.(agent.StreamFlusher).FlushEOF()
+	if len(eofEvts) != 1 || eofEvts[0].Type != "error" || !eofEvts[0].IsError || eofEvts[0].Text != "eof disconnect" {
+		t.Fatalf("expected error event from FlushEOF, got %+v", eofEvts)
+	}
+	if second := sp.(agent.StreamFlusher).FlushEOF(); len(second) != 0 {
+		t.Fatalf("expected empty FlushEOF after reset, got %+v", second)
+	}
 	var raw map[string]any
 	_ = json.Unmarshal([]byte(stdinTurn1), &raw)
 	if args, ok := p.InspectSubcommandArgs("plugins"); !ok || !slices.Contains(args, "--json") {
 		t.Fatalf("unexpected inspect plugins args: %v %v", args, ok)
+	}
+	if args, ok := p.InspectSubcommandArgs("auth_login"); !ok || !slices.Equal(args, []string{"acp", "--login"}) {
+		t.Fatalf("unexpected inspect auth_login args: %v %v", args, ok)
 	}
 	if _, ok := p.InspectSubcommandArgs("doctor"); ok {
 		t.Fatal("expected doctor CLI subcommand false for antigravity")

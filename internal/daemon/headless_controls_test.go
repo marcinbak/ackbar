@@ -11,6 +11,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"ackbar/internal/agent"
+	"ackbar/internal/agents/antigravity"
 )
 
 func TestSessionConfig_DBPersistence(t *testing.T) {
@@ -104,6 +107,9 @@ func TestSessionConfig_DBPersistence(t *testing.T) {
 
 func TestHeadlessRunner_BuildArgs(t *testing.T) {
 	runner := NewHeadlessRunner(nil, nil)
+	reg := agent.NewRegistry()
+	_ = reg.Register(antigravity.New())
+	runner.SetPluginRegistry(reg)
 
 	// Case 1: Default / bypassPermissions Claude Code
 	sess1 := &Session{
@@ -505,20 +511,6 @@ func TestHeadlessRunner_ClearInteractiveBlockAndWait(t *testing.T) {
 	}
 	if !runner.respondedWhileStopping[sessionID] {
 		t.Errorf("expected respondedWhileStopping to be true")
-	}
-}
-
-func TestParseAntigravityModelsOutput(t *testing.T) {
-	spinnerOutput := "\r⠋ Fetching available models...\rgemini-4-argon-medium     Gemini 4 Argon (Medium)\ngemini-3.8-flash-high     Gemini 3.8 Flash (High)\n"
-	models := parseAntigravityModelsOutput(spinnerOutput)
-	if len(models) != 2 {
-		t.Fatalf("expected 2 models, got %d: %+v", len(models), models)
-	}
-	if models[0].ID != "gemini-4-argon-medium" || models[0].Label != "Gemini 4 Argon (Medium)" {
-		t.Errorf("unexpected model[0]: %+v", models[0])
-	}
-	if models[1].ID != "gemini-3.8-flash-high" || models[1].Label != "Gemini 3.8 Flash (High)" {
-		t.Errorf("unexpected model[1]: %+v", models[1])
 	}
 }
 

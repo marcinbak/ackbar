@@ -18,7 +18,7 @@ const DefaultHeadlessIdleTTL = 65 * time.Minute
 
 func defaultSessionPermissionMode(agentName string) string {
 	switch strings.ToLower(strings.TrimSpace(agentName)) {
-	case "", "claude-code", "claude", "antigravity", "agy":
+	case "", "claude-code", "claude":
 		return "bypassPermissions"
 	default:
 		return ""
@@ -140,36 +140,6 @@ func buildPersistentArgs(sess *Session, isExistingConversation bool) (string, []
 	if sess == nil {
 		return "", nil, fmt.Errorf("nil session")
 	}
-	if sess.Agent == "antigravity" {
-		bin, err := resolveAntigravityBinary()
-		if err != nil {
-			return "", nil, fmt.Errorf("failed to locate agy binary: %w", err)
-		}
-		// Antigravity's -p requires an immediate value and consumes --input-format if bare.
-		args := []string{"--input-format", "stream-json", "--output-format", "stream-json"}
-		switch strings.ToLower(strings.TrimSpace(sess.PermissionMode)) {
-		case "plan":
-			args = append(args, "--mode", "plan")
-		case "auto":
-			args = append(args, "--mode", "auto")
-		case "acceptedits":
-			args = append(args, "--mode", "accept-edits")
-		default:
-			args = append(args, "--dangerously-skip-permissions")
-		}
-		for _, d := range sess.ExtraDirs {
-			if cleaned := filepath.Clean(strings.TrimSpace(d)); cleaned != "" && cleaned != "." {
-				args = append(args, "--add-dir", cleaned)
-			}
-		}
-		if isExistingConversation && sess.NativeID != "" {
-			args = append(args, "--conversation", sess.NativeID)
-		}
-		if sess.Model != "" && !strings.EqualFold(sess.Model, "default") {
-			args = append(args, "--model", sess.Model)
-		}
-		return bin, args, nil
-	}
 
 	if sess.Agent == "claude-code" {
 		bin, err := resolveClaudeBinary()
@@ -222,11 +192,6 @@ type claudeStdinTurnMsg struct {
 	Message stdinTurnMsgDetail `json:"message"`
 }
 
-type agyStdinTurnMsg struct {
-	Event   string             `json:"event"`
-	Message stdinTurnMsgDetail `json:"message"`
-}
-
 type stdinTurnMsgDetail struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
@@ -250,23 +215,6 @@ func formatPersistentStdinTurn(agent, sessID string, isSupervisor, isFirstTurnOf
 			Message: stdinTurnMsgDetail{
 				Role:    "user",
 				Content: prompt,
-			},
-		}
-		b, err := json.Marshal(payload)
-		if err != nil {
-			return "", err
-		}
-		return string(b), nil
-	case "antigravity":
-		effectivePrompt := prompt
-		if isSupervisor && isFirstTurnOfNewConv {
-			effectivePrompt = "[System Instruction: " + BuildSupervisorSystemPrompt(sessID) + "]\n\n" + prompt
-		}
-		payload := agyStdinTurnMsg{
-			Event: "user",
-			Message: stdinTurnMsgDetail{
-				Role:    "user",
-				Content: effectivePrompt,
 			},
 		}
 		b, err := json.Marshal(payload)

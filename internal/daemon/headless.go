@@ -1279,64 +1279,6 @@ func resolveClaudeBinary() (string, error) {
 	return "claude", nil
 }
 
-// resolveAntigravityBinary discovers the installed agy / antigravity CLI executable
-func resolveAntigravityBinary() (string, error) {
-	if path, err := exec.LookPath("agy"); err == nil {
-		return path, nil
-	}
-	if path, err := exec.LookPath("antigravity"); err == nil {
-		return path, nil
-	}
-
-	home, _ := os.UserHomeDir()
-	var candidates []string
-	if home != "" {
-		candidates = append(candidates,
-			filepath.Join(home, ".local", "bin", "agy"),
-			filepath.Join(home, ".local", "bin", "antigravity"),
-			filepath.Join(home, "bin", "agy"),
-			filepath.Join(home, "bin", "antigravity"),
-		)
-	}
-	candidates = append(candidates,
-		"/opt/homebrew/bin/agy",
-		"/opt/homebrew/bin/antigravity",
-		"/usr/local/bin/agy",
-		"/usr/local/bin/antigravity",
-		"/usr/bin/agy",
-		"/usr/bin/antigravity",
-	)
-
-	for _, c := range candidates {
-		if stat, err := os.Stat(c); err == nil && !stat.IsDir() {
-			return c, nil
-		}
-	}
-
-	return "agy", nil
-}
-
-// hasAntigravityConversation checks if a conversation already exists on disk for nativeID
-func hasAntigravityConversation(home, nativeID string) bool {
-	if home == "" || nativeID == "" || filepath.Base(nativeID) != nativeID {
-		return false
-	}
-	candidates := []string{
-		filepath.Join(home, ".gemini", "antigravity-cli", "conversations", nativeID+".db"),
-		filepath.Join(home, ".gemini", "antigravity-cli", "brain", nativeID),
-		filepath.Join(home, ".gemini", "antigravity", "brain", nativeID),
-		filepath.Join(home, ".antigravity", "brain", nativeID),
-	}
-	for _, c := range candidates {
-		if stat, err := os.Stat(c); err == nil {
-			if stat.IsDir() || stat.Size() > 0 {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 func resolveSessionAccountConfigDir(sess *Session, home string, db *DB) string {
 	if sess == nil || sess.AccountID == "" || db == nil {
 		return ""
@@ -1357,16 +1299,6 @@ func hasConversationOnDisk(sess *Session, home string, db *DB) bool {
 		return false
 	}
 	accCfgDir := resolveSessionAccountConfigDir(sess, home, db)
-	switch sess.Agent {
-	case "antigravity":
-		if accCfgDir != "" {
-			if hasAntigravityConversation(accCfgDir, sess.NativeID) ||
-				hasAntigravityConversation(filepath.Dir(accCfgDir), sess.NativeID) {
-				return true
-			}
-		}
-		return hasAntigravityConversation(home, sess.NativeID)
-	}
 	claudeDir := filepath.Join(home, ".claude")
 	if accCfgDir != "" {
 		claudeDir = accCfgDir
@@ -1407,42 +1339,6 @@ func (h *HeadlessRunner) buildArgs(sess *Session, prompt, home string) (string, 
 			}
 			return spec.Binary, spec.Args, nil
 		}
-	}
-
-	if sess.Agent == "antigravity" {
-		bin, err := resolveAntigravityBinary()
-		if err != nil {
-			return "", nil, fmt.Errorf("failed to locate agy binary: %w", err)
-		}
-
-		effectivePrompt := prompt
-		if sess.IsSupervisor && sess.FirstPrompt == "" && sess.LastPrompt == "" && !hasAntigravityConversation(home, sess.NativeID) {
-			effectivePrompt = "[System Instruction: " + BuildSupervisorSystemPrompt(sess.ID) + "]\n\n" + prompt
-		}
-
-		args := []string{"-p", effectivePrompt, "--output-format", "stream-json"}
-		switch strings.ToLower(strings.TrimSpace(sess.PermissionMode)) {
-		case "plan":
-			args = append(args, "--mode", "plan")
-		case "auto":
-			args = append(args, "--mode", "auto")
-		case "acceptedits":
-			args = append(args, "--mode", "accept-edits")
-		default:
-			args = append(args, "--dangerously-skip-permissions")
-		}
-		for _, d := range sess.ExtraDirs {
-			if cleaned := filepath.Clean(strings.TrimSpace(d)); cleaned != "" && cleaned != "." {
-				args = append(args, "--add-dir", cleaned)
-			}
-		}
-		if hasAntigravityConversation(home, sess.NativeID) || sess.FirstPrompt != "" || sess.LastPrompt != "" {
-			args = append(args, "--conversation", sess.NativeID)
-		}
-		if sess.Model != "" && !strings.EqualFold(sess.Model, "default") {
-			args = append(args, "--model", sess.Model)
-		}
-		return bin, args, nil
 	}
 
 	bin, err := resolveClaudeBinary()
@@ -1678,8 +1574,6 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 	emittedToolStart := make(map[string]bool)
 	emittedTextBlocks := make(map[string]bool)
 	emittedThinkingBlocks := make(map[string]bool)
-	agStepText := make(map[int]string)
-	agHadToolSinceLastText := false
 	inActiveTextBlock := false
 	activeTextBlockIdx := -1
 	hasEmittedAssistantText := false
@@ -1713,240 +1607,6 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 			&finalStreamHadError,
 			hooks,
 		) {
-			continue
-		}
-
-		// Check for Antigravity stream format: top-level "event" field
-		if agyEvt, ok := raw["event"].(string); ok && agyEvt != "" {
-			if (agyEvt == "step_update" || agyEvt == "result") && hooks.onTurnContent != nil {
-				hooks.onTurnContent()
-			}
-			switch agyEvt {
-			case "init":
-				if m, ok := raw["model"].(string); ok && m != "" && hooks.onModelDetected != nil {
-					hooks.onModelDetected(m)
-				}
-				if initObj, ok := raw["init"].(map[string]interface{}); ok {
-					if m, ok := initObj["model"].(string); ok && m != "" && hooks.onModelDetected != nil {
-						hooks.onModelDetected(m)
-					}
-				}
-				if convID, ok := raw["conversation_id"].(string); ok && convID != "" && hooks.onAntigravityInit != nil {
-					hooks.onAntigravityInit(convID)
-				}
-
-			case "step_update":
-				if su, ok := raw["step_update"].(map[string]interface{}); ok {
-					if m, ok := su["model"].(string); ok && m != "" && hooks.onModelDetected != nil {
-						hooks.onModelDetected(m)
-					}
-					stepType, _ := su["step_type"].(string)
-					state, _ := su["state"].(string)
-					stepIdx := -1
-					if idxFloat, ok := su["step_index"].(float64); ok {
-						stepIdx = int(idxFloat)
-					}
-
-					switch stepType {
-					case "agent_response":
-						hasProgress := false
-						if textDelta, ok := su["text_delta"].(string); ok && textDelta != "" {
-							isDuplicateDone := stepIdx >= 0 && state == "DONE" && agStepText[stepIdx] != "" && strings.Contains(agStepText[stepIdx], textDelta)
-							if !isDuplicateDone {
-								hasProgress = true
-								isContinuationOfSameStep := stepIdx >= 0 && agStepText[stepIdx] != ""
-								isNewStep := (stepIdx >= 0 && agStepText[stepIdx] == "") || (stepIdx < 0 && agHadToolSinceLastText)
-								if stepIdx >= 0 {
-									agStepText[stepIdx] += textDelta
-								}
-								emittedText := textDelta
-								if !isContinuationOfSameStep && isNewStep && hasEmittedAssistantText {
-									emittedText = ensureDoubleNewlineSeparation(lastTextBuilder.String(), textDelta)
-								}
-								lastTextBuilder.WriteString(emittedText)
-								emitStreamEvt(ChatStreamEvent{
-									SessionID: sessionID,
-									Type:      "text_delta",
-									Text:      emittedText,
-								})
-								hasEmittedAssistantText = true
-								if !isContinuationOfSameStep {
-									agHadToolSinceLastText = false
-								}
-							}
-						}
-						if thoughtDelta, ok := su["thought_delta"].(string); ok && thoughtDelta != "" {
-							hasProgress = true
-							emitStreamEvt(ChatStreamEvent{
-								SessionID: sessionID,
-								Type:      "thought_delta",
-								Thinking:  thoughtDelta,
-							})
-						} else if thinking, ok := su["thinking"].(string); ok && thinking != "" {
-							hasProgress = true
-							emitStreamEvt(ChatStreamEvent{
-								SessionID: sessionID,
-								Type:      "thought_delta",
-								Thinking:  thinking,
-							})
-						}
-						if hasProgress {
-							errTracker.clear()
-						}
-
-					case "tool":
-						if state == "ACTIVE" {
-							errTracker.clear()
-						}
-						agHadToolSinceLastText = true
-						toolName, _ := su["tool_name"].(string)
-						toolInfo, _ := su["tool_info"].(map[string]interface{})
-						key := fmt.Sprintf("ag_%d", stepIdx)
-
-						if state == "ACTIVE" {
-							toolInput := extractToolInfoInput(toolInfo)
-							if params, ok := toolInput.(map[string]any); ok {
-								toolInputs[key] = params
-							}
-							emitStreamEvt(ChatStreamEvent{
-								SessionID: sessionID,
-								Type:      "tool_start",
-								ToolName:  toolName,
-								ToolInput: toolInput,
-							})
-
-							if blocked := parseInteractiveToolBlock(toolName, toolInput); blocked != nil && hooks.onInteractiveBlock != nil {
-								hooks.onInteractiveBlock(toolName, toolInput, blocked)
-							}
-						} else if state == "DONE" || state == "ERROR" {
-							toolOutput := ""
-							if toolInfo != nil {
-								if out, ok := toolInfo["output"].(string); ok {
-									toolOutput = out
-								}
-							}
-							curInput := toolInputs[key]
-							if curInput == nil {
-								if inp := extractToolInfoInput(toolInfo); inp != nil {
-									if params, ok := inp.(map[string]any); ok {
-										curInput = params
-										toolInputs[key] = params
-									}
-								}
-							}
-							var resInput any
-							if curInput != nil {
-								resInput = curInput
-							}
-							emitStreamEvt(ChatStreamEvent{
-								SessionID:  sessionID,
-								Type:       "tool_result",
-								ToolName:   toolName,
-								ToolInput:  resInput,
-								ToolOutput: toolOutput,
-								IsError:    state == "ERROR",
-							})
-							if !emittedAuthBlock {
-								if authBlock := DetectToolResultAuthBlock("", toolName, curInput, toolOutput, state == "ERROR"); authBlock != nil && hooks.onInteractiveBlock != nil {
-									emittedAuthBlock = true
-									hooks.onInteractiveBlock(toolName, curInput, authBlock)
-								}
-							}
-						}
-
-					case "subagent":
-						if state == "ACTIVE" {
-							errTracker.clear()
-						}
-						agHadToolSinceLastText = true
-						role, _ := su["role"].(string)
-						taskName, _ := su["task_name"].(string)
-						subagentName := role
-						if subagentName == "" {
-							subagentName = taskName
-						}
-						if subagentName == "" {
-							subagentName = "subagent"
-						}
-
-						if state == "ACTIVE" {
-							emitStreamEvt(ChatStreamEvent{
-								SessionID: sessionID,
-								Type:      "tool_start",
-								ToolName:  "Task: " + subagentName,
-								ToolInput: su["description"],
-							})
-						} else if state == "DONE" || state == "ERROR" {
-							emitStreamEvt(ChatStreamEvent{
-								SessionID:  sessionID,
-								Type:       "tool_result",
-								ToolName:   "Task: " + subagentName,
-								ToolOutput: fmt.Sprintf("Subagent completed (%s)", state),
-								IsError:    state == "ERROR",
-							})
-						}
-
-					case "error_message":
-						if errMsg, ok := su["error"].(string); ok && errMsg != "" {
-							errTracker.add(errMsg)
-						}
-					}
-				}
-
-			case "result":
-				if res, ok := raw["result"].(map[string]interface{}); ok {
-					status, _ := res["status"].(string)
-					respText, _ := res["response"].(string)
-					errVal, _ := res["error"].(string)
-					if strings.EqualFold(status, "ERROR") || strings.TrimSpace(errVal) != "" || errTracker.hasPending() {
-						streamHadError = true
-						rawErr := strings.TrimSpace(errVal)
-						if rawErr == "" && strings.EqualFold(status, "ERROR") {
-							rawErr = strings.TrimSpace(respText)
-						}
-						errText := errTracker.resolveFinal(rawErr)
-						lastTextBuilder.WriteString("\n" + errText)
-						emitStreamEvt(ChatStreamEvent{
-							SessionID: sessionID,
-							Type:      "error",
-							Text:      errText,
-							IsError:   true,
-						})
-					} else {
-						errTracker.clear()
-						resultText = respText
-						lastTextBuilder.WriteString("\n" + respText)
-						if hooks.emitTurnComplete {
-							emitStreamEvt(ChatStreamEvent{
-								SessionID: sessionID,
-								Type:      "turn_complete",
-								Text:      respText,
-							})
-						}
-					}
-				}
-				finalLastTurnText = lastTextBuilder.String()
-				finalResultText = resultText
-				finalStreamHadError = streamHadError
-				if hooks.onTurnResult != nil {
-					hooks.onTurnResult(finalLastTurnText, finalResultText, finalStreamHadError)
-				}
-				lastTextBuilder.Reset()
-				resultText = ""
-				streamHadError = false
-				errTracker.clear()
-				emittedAuthBlock = false
-				clear(emittedToolStart)
-				clear(emittedTextBlocks)
-				clear(emittedThinkingBlocks)
-				clear(agStepText)
-				agHadToolSinceLastText = false
-				inActiveTextBlock = false
-				activeTextBlockIdx = -1
-				hasEmittedAssistantText = false
-				hasEmittedDeltaInTurn = false
-				needsSeparation = false
-			}
 			continue
 		}
 
@@ -2389,8 +2049,6 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 			clear(emittedToolStart)
 			clear(emittedTextBlocks)
 			clear(emittedThinkingBlocks)
-			clear(agStepText)
-			agHadToolSinceLastText = false
 			inActiveTextBlock = false
 			activeTextBlockIdx = -1
 			hasEmittedAssistantText = false
@@ -2403,6 +2061,20 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 			hooks.onInteractiveBlock(pendingTool.toolName, pendingTool.toolInput, pendingTool.blocked)
 		}
 		pendingTool = nil
+	}
+	if hooks.streamParser != nil {
+		if flusher, ok := hooks.streamParser.(agent.StreamFlusher); ok {
+			applyPluginStreamEvents(
+				flusher.FlushEOF(),
+				&lastTextBuilder,
+				&resultText,
+				&streamHadError,
+				&finalLastTurnText,
+				&finalResultText,
+				&finalStreamHadError,
+				hooks,
+			)
+		}
 	}
 	if pendingErr, ok := errTracker.flushRemaining(); ok {
 		streamHadError = true

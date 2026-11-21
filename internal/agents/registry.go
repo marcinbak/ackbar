@@ -11,15 +11,13 @@ import (
 )
 
 func DefaultPluginsFromEnv(rawLegacyEnv string) []agent.Plugin {
-	plugins := []agent.Plugin{
+	_ = rawLegacyEnv
+	return []agent.Plugin{
 		grok.New(),
 		codex.New(),
 		opencode.New(),
+		antigravity.New(),
 	}
-	if !agent.IsLegacyAgentFromEnv(rawLegacyEnv, "antigravity", "agy") {
-		plugins = append(plugins, antigravity.New())
-	}
-	return plugins
 }
 
 func RegisterDefaultsFromEnv(reg *agent.Registry, rawLegacyEnv string) error {
