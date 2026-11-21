@@ -107,7 +107,6 @@ func NewServer(db *DB) *Server {
 // NewServerWithPlugins initializes Server and registers plugins before ReattachLiveWorkers
 // so startup worker adoption and spool recovery resolve plugin facets immediately.
 func NewServerWithPlugins(db *DB, plugins ...agent.Plugin) (*Server, error) {
-	StartUploadCleaner(defaultUploadDir, 6*time.Hour)
 	s := &Server{
 		db:                db,
 		providers:         make(map[string]Provider),
@@ -137,6 +136,7 @@ func NewServerWithPlugins(db *DB, plugins ...agent.Plugin) (*Server, error) {
 			return nil, err
 		}
 	}
+	StartUploadCleaner(defaultUploadDir, 6*time.Hour)
 	if host := s.HostName(); host != "local" && db != nil {
 		_ = db.MigrateLocalSessions(host)
 		s.pruneForeignSessions()

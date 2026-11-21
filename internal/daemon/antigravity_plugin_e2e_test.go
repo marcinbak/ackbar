@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -234,7 +235,9 @@ func TestAntigravityPlugin_StartupReattachWithRegisteredPlugins(t *testing.T) {
 	}
 	defer ln.Close()
 	stopSock := make(chan struct{})
-	defer close(stopSock)
+	var stopOnce sync.Once
+	closeStop := func() { stopOnce.Do(func() { close(stopSock) }) }
+	defer closeStop()
 	go func() {
 		for {
 			conn, err := ln.Accept()
@@ -254,6 +257,7 @@ func TestAntigravityPlugin_StartupReattachWithRegisteredPlugins(t *testing.T) {
 						_ = json.NewEncoder(c).Encode(workerIPCResp{OK: true, State: "idle_warm"})
 					case "shutdown":
 						_ = json.NewEncoder(c).Encode(workerIPCResp{OK: true, State: "exited"})
+						closeStop()
 						return
 					case "watch_worker":
 						_ = json.NewEncoder(c).Encode(workerIPCResp{OK: true, State: "idle_warm"})
