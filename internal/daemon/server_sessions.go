@@ -36,7 +36,8 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rawSessions, err := s.db.ListSessions()
+	includeArchived, includeDone := parseSessionFilterParams(r)
+	rawSessions, err := s.db.ListSessionsFiltered(includeArchived, includeDone)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -64,20 +65,25 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.URL.Query().Get("federated") == "true" {
-		sessions = s.getFederatedSessions(r.Context(), sessions)
+		sessions = s.getFederatedSessions(r.Context(), sessions, includeArchived, includeDone)
 	}
 
+	filtered := make([]*Session, 0, len(sessions))
 	for _, sess := range sessions {
-		if sess != nil && s.isLocalHost(sess.Host) {
+		if sess == nil || (!includeArchived && sess.Archived) || (!includeDone && sess.IsDone) {
+			continue
+		}
+		if s.isLocalHost(sess.Host) {
 			s.populateResolvedModel(sess)
 		}
+		filtered = append(filtered, sess)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(sessions)
+	_ = json.NewEncoder(w).Encode(filtered)
 }
 
-func (s *Server) getFederatedSessions(ctx context.Context, localSessions []*Session) []*Session {
+func (s *Server) getFederatedSessions(ctx context.Context, localSessions []*Session, includeArchived, includeDone bool) []*Session {
 	hosts, err := s.db.ListHosts()
 	if err != nil || len(hosts) == 0 {
 		return localSessions
@@ -100,6 +106,16 @@ func (s *Server) getFederatedSessions(ctx context.Context, localSessions []*Sess
 		go func(hr *HostRecord) {
 			defer wg.Done()
 			reqURL := strings.TrimSuffix(hr.URL, "/") + "/v1/sessions"
+			if !includeArchived || !includeDone {
+				params := url.Values{}
+				if !includeArchived {
+					params.Set("include_archived", "false")
+				}
+				if !includeDone {
+					params.Set("include_done", "false")
+				}
+				reqURL += "?" + params.Encode()
+			}
 			reqCtx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
 			defer cancel()
 			req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, reqURL, nil)
@@ -137,6 +153,9 @@ func (s *Server) getFederatedSessions(ctx context.Context, localSessions []*Sess
 
 	merged := make(map[string]*Session, len(localSessions))
 	for _, sess := range localSessions {
+		if sess == nil || (!includeArchived && sess.Archived) || (!includeDone && sess.IsDone) {
+			continue
+		}
 		sess.HostOffline = false
 		merged[sess.ID] = sess
 	}
@@ -151,6 +170,9 @@ func (s *Server) getFederatedSessions(ctx context.Context, localSessions []*Sess
 	for peerHost, rSessions := range peerSessions {
 		for _, peerSess := range rSessions {
 			if peerSess == nil || !peerMatchesHost(peerHost, peerSess.Host) {
+				continue
+			}
+			if (!includeArchived && peerSess.Archived) || (!includeDone && peerSess.IsDone) {
 				continue
 			}
 			if peerSess.Host == "" || peerSess.Host == "local" {

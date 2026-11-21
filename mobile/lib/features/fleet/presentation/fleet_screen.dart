@@ -59,10 +59,14 @@ class _FleetScreenState extends ConsumerState<FleetScreen> {
   @override
   Widget build(BuildContext context) {
     final allSessions = ref.watch(fleetSessionsProvider);
-    final activeSessions = allSessions.where((s) => !s.archived).toList();
+    final activeSessions = allSessions
+        .where((s) => !s.archived && !s.deleted && !s.isDone)
+        .toList();
     final fleetTree = ref.watch(fleetTreeProvider);
     final viewMode = ref.watch(fleetViewModeProvider);
     final filterIndex = ref.watch(fleetFilterIndexProvider);
+    final showDone = ref.watch(fleetShowDoneProvider);
+    final searchQuery = ref.watch(fleetSearchQueryProvider);
     final hosts = ref.watch(hostsListProvider);
 
     final workingCount =
@@ -88,6 +92,19 @@ class _FleetScreenState extends ConsumerState<FleetScreen> {
       appBar: AckbarAppBar(
         title: 'FLEET CONTROL',
         actions: [
+          IconButton(
+            key: const Key('fleet_toggle_show_done'),
+            visualDensity: VisualDensity.compact,
+            icon: Icon(
+              showDone
+                  ? Icons.task_alt_rounded
+                  : Icons.check_circle_outline_rounded,
+              size: 20,
+              color: showDone ? AppColors.statusEmerald : AppColors.textMuted,
+            ),
+            tooltip: showDone ? 'Hide Done Sessions' : 'Show Done Sessions',
+            onPressed: () => ref.read(fleetShowDoneProvider.notifier).toggle(),
+          ),
           IconButton(
             icon: const Text(
               '⚓+',
@@ -357,6 +374,7 @@ class _FleetScreenState extends ConsumerState<FleetScreen> {
                   child: FleetTreeView(
                     rootFolders: fleetTree,
                     hosts: hosts,
+                    isSearching: searchQuery.trim().isNotEmpty,
                     onSessionTap: (session) =>
                         SessionNavigator.openSession(context, ref, session),
                     onSessionActions: (session) =>

@@ -421,3 +421,58 @@ func (s *Server) sweepAutoDoneSessions(ctx context.Context) {
 		_ = s.markSessionDoneAndCleanup(ctx, sess, "")
 	}
 }
+
+func parseFilterBoolDefaultTrue(raw string) bool {
+	v := strings.ToLower(strings.TrimSpace(raw))
+	return v != "false" && v != "0"
+}
+
+func parseSessionFilterParams(r *http.Request) (includeArchived bool, includeDone bool) {
+	if r == nil || r.URL == nil {
+		return true, true
+	}
+	q := r.URL.Query()
+	return parseFilterBoolDefaultTrue(q.Get("include_archived")), parseFilterBoolDefaultTrue(q.Get("include_done"))
+}
+
+func (s *Server) sweepAutoArchiveSessions(ctx context.Context) {
+	if s == nil || s.db == nil {
+		return
+	}
+	rawSettings, err := s.db.GetAllSettings()
+	if err != nil {
+		return
+	}
+	settings := s.populateDefaultSettings(rawSettings)
+	if strings.EqualFold(strings.TrimSpace(settings["auto_archive_enabled"]), "false") {
+		return
+	}
+	days, err := strconv.ParseFloat(strings.TrimSpace(settings["auto_archive_days"]), 64)
+	if err != nil || days <= 0 {
+		return
+	}
+	threshold := time.Duration(days * 24 * float64(time.Hour))
+
+	sessions, err := s.db.ListSessionsFiltered(false, true)
+	if err != nil || len(sessions) == 0 {
+		return
+	}
+	now := time.Now()
+	for _, sess := range sessions {
+		if ctx.Err() != nil {
+			return
+		}
+		if sess == nil || sess.Deleted || sess.Archived || !sess.IsDone || sess.IsLater || !s.isLocalHost(sess.Host) {
+			continue
+		}
+		lastAt := sessionLastActivityAt(sess)
+		if lastAt.IsZero() || now.Sub(lastAt) <= threshold {
+			continue
+		}
+		sess.Archived = true
+		sess.MetadataUpdatedAt = now.UTC()
+		if err := s.db.SaveSession(sess); err == nil {
+			s.broadcast(sess)
+		}
+	}
+}

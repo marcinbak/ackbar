@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/models/host.dart';
 import '../../../core/models/session.dart';
 import '../../../core/providers/fleet_providers.dart';
@@ -20,12 +21,13 @@ typedef FolderAddCallback = void Function(String folderPath);
 /// 3. 💻 Manual Sessions
 /// 4. ⏳ Later
 /// 5. ✅ Done
-class FleetTreeView extends StatefulWidget {
+class FleetTreeView extends ConsumerWidget {
   final List<FleetTreeFolderNode> rootFolders;
   final List<HostRecord> hosts;
   final SessionTapCallback onSessionTap;
   final SessionTapCallback? onSessionActions;
   final FolderAddCallback onAddSession;
+  final bool isSearching;
 
   const FleetTreeView({
     super.key,
@@ -34,51 +36,41 @@ class FleetTreeView extends StatefulWidget {
     required this.onSessionTap,
     this.onSessionActions,
     required this.onAddSession,
+    this.isSearching = false,
   });
 
   @override
-  State<FleetTreeView> createState() => _FleetTreeViewState();
-}
-
-class _FleetTreeViewState extends State<FleetTreeView> {
-  final Set<String> _collapsedFolders = {};
-  final Set<String> _collapsedSubsections = {};
-
-  void _toggleFolder(String path) {
-    setState(() {
-      if (_collapsedFolders.contains(path)) {
-        _collapsedFolders.remove(path);
-      } else {
-        _collapsedFolders.add(path);
-      }
-    });
-  }
-
-  void _toggleSubsection(String key) {
-    setState(() {
-      if (_collapsedSubsections.contains(key)) {
-        _collapsedSubsections.remove(key);
-      } else {
-        _collapsedSubsections.add(key);
-      }
-    });
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    if (widget.rootFolders.isEmpty) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    if (rootFolders.isEmpty) {
       return const SizedBox.shrink();
     }
 
+    final collapseState = ref.watch(fleetTreeCollapseProvider);
+    final collapseNotifier = ref.read(fleetTreeCollapseProvider.notifier);
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
-      children:
-          widget.rootFolders.map((root) => _buildFolderBranch(root)).toList(),
+      children: rootFolders
+          .map(
+            (root) => _buildFolderBranch(
+              root,
+              collapseState,
+              collapseNotifier,
+            ),
+          )
+          .toList(),
     );
   }
 
-  Widget _buildFolderBranch(FleetTreeFolderNode node) {
-    final isCollapsed = _collapsedFolders.contains(node.path);
+  Widget _buildFolderBranch(
+    FleetTreeFolderNode node,
+    FleetTreeCollapseState collapseState,
+    FleetTreeCollapseNotifier collapseNotifier,
+  ) {
+    final isCollapsed = collapseState.isFolderCollapsed(
+      node.path,
+      isSearching: isSearching,
+    );
     final indent = node.depth * 14.0;
 
     return Padding(
@@ -86,9 +78,9 @@ class _FleetTreeViewState extends State<FleetTreeView> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Folder Header
           InkWell(
-            onTap: () => _toggleFolder(node.path),
+            key: Key('fleet_folder_header_${node.path}'),
+            onTap: () => collapseNotifier.toggleFolder(node.path),
             borderRadius: AppSpacing.roundedSm,
             child: Padding(
               padding:
@@ -135,7 +127,7 @@ class _FleetTreeViewState extends State<FleetTreeView> {
                   ),
                   const SizedBox(width: 6),
                   InkWell(
-                    onTap: () => widget.onAddSession(node.path),
+                    onTap: () => onAddSession(node.path),
                     borderRadius: BorderRadius.circular(12),
                     child: const Padding(
                       padding: EdgeInsets.symmetric(horizontal: 4, vertical: 2),
@@ -158,62 +150,70 @@ class _FleetTreeViewState extends State<FleetTreeView> {
               ),
             ),
           ),
-
-          // Folder Contents (if expanded)
           if (!isCollapsed) ...[
-            // 1. ⚓ Supervisors
             if (node.supervisors.isNotEmpty)
               _buildSubsection(
-                key: '${node.path}:supervisors',
+                subsectionKey: '${node.path}:supervisors',
                 label: '⚓ Supervisors',
                 color: AppColors.infoCyan,
                 sessions: node.supervisors,
+                collapseState: collapseState,
+                collapseNotifier: collapseNotifier,
               ),
 
-            // 2. 📋 Tasks
             if (node.tasks.isNotEmpty)
               _buildSubsection(
-                key: '${node.path}:tasks',
+                subsectionKey: '${node.path}:tasks',
                 label: '📋 Tasks',
                 color: AppColors.statusEmerald,
                 sessions: node.tasks,
+                collapseState: collapseState,
+                collapseNotifier: collapseNotifier,
               ),
 
-            // 3. 💻 Manual Sessions
             if (node.manualSessions.isNotEmpty)
               _buildSubsection(
-                key: '${node.path}:manual',
+                subsectionKey: '${node.path}:manual',
                 label: '💻 Manual Sessions',
                 color: AppColors.textSecondary,
                 sessions: node.manualSessions,
+                collapseState: collapseState,
+                collapseNotifier: collapseNotifier,
               ),
 
-            // 4. ⏳ Later
             if (node.laterSessions.isNotEmpty)
               _buildSubsection(
-                key: '${node.path}:later',
+                subsectionKey: '${node.path}:later',
                 label: '⏳ Later',
                 color: AppColors.statusAmber,
                 sessions: node.laterSessions,
+                collapseState: collapseState,
+                collapseNotifier: collapseNotifier,
               ),
 
-            // 5. ✅ Done
             if (node.doneSessions.isNotEmpty)
               _buildSubsection(
-                key: '${node.path}:done',
+                subsectionKey: '${node.path}:done',
                 label: '✅ Done',
                 color: AppColors.textMuted,
                 sessions: node.doneSessions,
+                collapseState: collapseState,
+                collapseNotifier: collapseNotifier,
               ),
 
-            // Child Folders (recursive)
             if (node.children.isNotEmpty)
               Padding(
                 padding: const EdgeInsets.only(top: 4.0),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: node.children
-                      .map((child) => _buildFolderBranch(child))
+                      .map(
+                        (child) => _buildFolderBranch(
+                          child,
+                          collapseState,
+                          collapseNotifier,
+                        ),
+                      )
                       .toList(),
                 ),
               ),
@@ -238,21 +238,30 @@ class _FleetTreeViewState extends State<FleetTreeView> {
   }
 
   Widget _buildSubsection({
-    required String key,
+    required String subsectionKey,
     required String label,
     required Color color,
     required List<Session> sessions,
+    required FleetTreeCollapseState collapseState,
+    required FleetTreeCollapseNotifier collapseNotifier,
   }) {
-    final isCollapsed = _collapsedSubsections.contains(key);
+    final defaultCollapsed = subsectionKey.endsWith(':done');
+    final isCollapsed = collapseState.isSubsectionCollapsed(
+      subsectionKey,
+      defaultCollapsed: defaultCollapsed,
+    );
 
     return Padding(
       padding: const EdgeInsets.only(left: 8.0, top: 4.0, bottom: 6.0),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Subsection Toggle Header
           InkWell(
-            onTap: () => _toggleSubsection(key),
+            key: Key('fleet_subsection_header_$subsectionKey'),
+            onTap: () => collapseNotifier.toggleSubsection(
+              subsectionKey,
+              defaultCollapsed: defaultCollapsed,
+            ),
             borderRadius: AppSpacing.roundedSm,
             child: Padding(
               padding:
@@ -312,9 +321,9 @@ class _FleetTreeViewState extends State<FleetTreeView> {
   Widget _buildSessionCard(Session session) {
     return FleetSessionCard(
       session: session,
-      hosts: widget.hosts,
-      onTap: widget.onSessionTap,
-      onActions: widget.onSessionActions,
+      hosts: hosts,
+      onTap: onSessionTap,
+      onActions: onSessionActions,
     );
   }
 }

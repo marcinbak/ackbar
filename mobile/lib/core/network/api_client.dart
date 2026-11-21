@@ -82,9 +82,21 @@ class ApiClient {
     String hostUrl, {
     String? authToken,
     String? hostName,
+    bool? includeArchived,
+    bool? includeDone,
   }) async {
-    final clean = _cleanUrl(hostUrl);
-    final uri = Uri.parse('$clean/v1/sessions');
+    final queryParams = <String, String>{};
+    if (includeArchived != null) {
+      queryParams['include_archived'] = includeArchived.toString();
+    }
+    if (includeDone != null) {
+      queryParams['include_done'] = includeDone.toString();
+    }
+    final uri = buildEndpointUri(
+      hostUrl,
+      '/v1/sessions',
+      queryParams.isEmpty ? null : queryParams,
+    );
     try {
       final response = await _client
           .get(uri, headers: _headers(authToken))
@@ -114,11 +126,15 @@ class ApiClient {
     String hostUrl, {
     String? authToken,
     String? hostName,
+    bool? includeArchived,
+    bool? includeDone,
   }) async {
     return await getSessionsOrNull(
           hostUrl,
           authToken: authToken,
           hostName: hostName,
+          includeArchived: includeArchived,
+          includeDone: includeDone,
         ) ??
         [];
   }

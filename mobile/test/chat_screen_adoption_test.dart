@@ -62,6 +62,8 @@ class MockSSEClient extends SSEClient {
   Stream<Session> subscribeHost(
     HostRecord host, {
     void Function(HostRecord host)? onHostReconnected,
+    bool? includeArchived,
+    bool? includeDone,
   }) =>
       const Stream.empty();
 
@@ -70,6 +72,8 @@ class MockSSEClient extends SSEClient {
     List<HostRecord> hosts, {
     bool includeOffline = false,
     void Function(HostRecord host)? onHostReconnected,
+    bool? includeArchived,
+    bool? includeDone,
   }) =>
       const Stream.empty();
 }
