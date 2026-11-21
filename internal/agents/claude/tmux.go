@@ -40,9 +40,13 @@ func (p *Plugin) BuildLaunchSpec(in agent.LaunchInput) (agent.LaunchSpec, error)
 	}
 	cmdLine := baseCmd
 	promptInCmd := false
-	if strings.TrimSpace(in.Prompt) != "" {
+	if trimmedPrompt := strings.TrimSpace(in.Prompt); trimmedPrompt != "" {
 		env["ACKBAR_INIT_PROMPT"] = in.Prompt
-		cmdLine += ` "$ACKBAR_INIT_PROMPT"`
+		if strings.HasPrefix(trimmedPrompt, "-") {
+			cmdLine += ` -- "$ACKBAR_INIT_PROMPT"`
+		} else {
+			cmdLine += ` "$ACKBAR_INIT_PROMPT"`
+		}
 		promptInCmd = true
 	}
 	return agent.LaunchSpec{
@@ -63,7 +67,7 @@ func (*Plugin) ApprovalKeys(allow bool) []string {
 }
 
 func (p *Plugin) InspectStatus(ctx context.Context, sess *agent.Session) bool {
-	if sess == nil || sess.Agent != "claude-code" || sess.State == agent.StateEnded {
+	if sess == nil || (!strings.EqualFold(sess.Agent, "claude-code") && !strings.EqualFold(sess.Agent, "claude")) || sess.State == agent.StateEnded {
 		return false
 	}
 	if sess.EngineType == agent.EngineHeadless && sess.TmuxName == "" && (sess.PID <= 0 || !agentutil.IsProcessAlive(sess.PID)) {

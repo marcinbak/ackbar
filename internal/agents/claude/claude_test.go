@@ -181,8 +181,41 @@ func TestHooksAndTmuxLaunch(t *testing.T) {
 	if err != nil || ev == nil || ev.State != agent.StateBlocked || ev.Blocked.Kind != agent.BlockApproval {
 		t.Fatalf("ExitPlanMode ParseHook = %+v err=%v", ev, err)
 	}
+	custEv, err := p.ParseHook("CustomEvent", []byte(`{"session_id":"`+testUUID+`"}`))
+	if err != nil || custEv == nil || custEv.Activity != "Event: CustomEvent" {
+		t.Fatalf("default evtName activity = %+v err=%v", custEv, err)
+	}
+
 	spec, err := p.BuildLaunchSpec(agent.LaunchInput{TempUUID: testUUID, Prompt: "hello", Env: map[string]string{"X": "1"}})
-	if err != nil || !spec.PromptInCommand || !strings.Contains(spec.CommandLine, `--session-id `+testUUID+` "$ACKBAR_INIT_PROMPT"`) {
-		t.Fatalf("BuildLaunchSpec = %+v err=%v", spec, err)
+	if err != nil || !spec.PromptInCommand || !strings.Contains(spec.CommandLine, `--session-id `+testUUID+` "$ACKBAR_INIT_PROMPT"`) || strings.Contains(spec.CommandLine, ` -- `) {
+		t.Fatalf("BuildLaunchSpec normal = %+v err=%v", spec, err)
+	}
+	dashSpec, err := p.BuildLaunchSpec(agent.LaunchInput{TempUUID: testUUID, Prompt: " --dangerously-skip-permissions", Env: map[string]string{"X": "1"}})
+	if err != nil || !dashSpec.PromptInCommand || !strings.Contains(dashSpec.CommandLine, `--session-id `+testUUID+` -- "$ACKBAR_INIT_PROMPT"`) {
+		t.Fatalf("BuildLaunchSpec leading dash = %+v err=%v", dashSpec, err)
+	}
+
+	aliasSess := &agent.Session{Agent: "claude", EngineType: agent.EngineTmux, TmuxName: "ackbar-claude-nonexistent-alias-test"}
+	if !p.InspectStatus(context.Background(), aliasSess) || aliasSess.State != agent.StateEnded {
+		t.Fatalf("InspectStatus should accept 'claude' alias, got %+v", aliasSess)
+	}
+
+	// Tail 8 MiB history.jsonl read (n2): entry after >8 MiB of noise must still resolve.
+	home := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(home, ".claude"), 0o755)
+	histPath := filepath.Join(home, ".claude", "history.jsonl")
+	hf, err := os.OpenFile(histPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	padLine := strings.Repeat("x", 1024)
+	for i := 0; i < 8400; i++ {
+		_, _ = hf.WriteString(`{"sessionId":"00000000-0000-4000-8000-000000000000","display":"` + padLine + `"}` + "\n")
+	}
+	histID := "99999999-8888-4777-8666-555555555555"
+	_, _ = hf.WriteString(`{"sessionId":"` + histID + `","display":"Tail History Title"}` + "\n")
+	_ = hf.Close()
+	if got := p.ResolveSessionTitle(home, "/repo", histID); got != "Tail History Title" {
+		t.Fatalf("ResolveSessionTitle tail >8MiB = %q, want Tail History Title", got)
 	}
 }

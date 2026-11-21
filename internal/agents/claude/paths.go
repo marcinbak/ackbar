@@ -173,16 +173,6 @@ func (*Plugin) StatTranscript(homeDir, cwd, nativeID string) (string, int64, int
 	return filePath, st.Size(), st.ModTime().UnixNano(), nil
 }
 
-func (*Plugin) CleanSessionFiles(homeDir, cwd, nativeID string) error {
-	if !agentutil.IsUUID(nativeID) {
-		return nil
-	}
-	if p := FindTranscriptPath(homeDir, cwd, nativeID); p != "" {
-		_ = os.Remove(p)
-	}
-	return nil
-}
-
 func classifyDoc(name string) (category, label string, priority int) {
 	nl := strings.ToLower(name)
 	switch {

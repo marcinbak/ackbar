@@ -101,7 +101,7 @@ func (plug *Plugin) ParseHook(eventName string, payload []byte) (*agent.Event, e
 				event.Activity = event.Activity[:77] + "..."
 			}
 		} else {
-			event.Activity = "Event: " + p.HookEventName
+			event.Activity = "Event: " + evtName
 		}
 	}
 	return event, nil

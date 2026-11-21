@@ -3,7 +3,6 @@ package claude
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -169,13 +168,8 @@ func scanTranscriptTitle(p *Plugin, filePath string) (title, source, aiTitle, fi
 }
 
 func lookupHistoryTitle(p *Plugin, home, targetID, curSource string) (string, string) {
-	f, err := openRegularFileNonBlocking(filepath.Join(home, ".claude", "history.jsonl"))
-	if err != nil {
-		return "", curSource
-	}
-	defer f.Close()
-	data, err := io.ReadAll(io.LimitReader(f, 8<<20))
-	if err != nil {
+	data, _, _, err := readRegularFileSlice(filepath.Join(home, ".claude", "history.jsonl"), -1, 8<<20)
+	if err != nil || len(data) == 0 {
 		return "", curSource
 	}
 	lines := strings.Split(string(data), "\n")

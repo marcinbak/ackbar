@@ -2644,7 +2644,13 @@ func (s *Server) getRestartOrResumeCmd(sess *Session, home string) (string, bool
 	}
 	hasDisk := hasConversationOnDiskWithRegistry(s.PluginRegistry(), sess, home, s.db)
 	var isExisting bool
-	if sess.Agent == "claude-code" {
+	if p, ok := s.PluginRegistry().Get(sess.Agent); ok {
+		if p.Capabilities().NativeIDStrategy == agent.NativeIDEagerUUID {
+			isExisting = hasDisk
+		} else {
+			isExisting = hasDisk || sess.FirstPrompt != "" || sess.LastPrompt != "" || sess.OldID != "" || !sess.Managed
+		}
+	} else if sess.Agent == "claude-code" {
 		isExisting = hasDisk
 	} else {
 		isExisting = hasDisk || sess.FirstPrompt != "" || sess.LastPrompt != "" || sess.OldID != "" || !sess.Managed

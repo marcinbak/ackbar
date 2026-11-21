@@ -237,7 +237,7 @@ func (s *Server) handleSessionInspect(w http.ResponseWriter, r *http.Request, se
 			if bin != "" {
 				rawVersion, _ = s.runAllowlistedInspectCmd(r.Context(), sess, bin, "--version")
 			}
-			servers, _ := discoverConfiguredMCPServers(sess, s.db, home)
+			servers, _ := discoverConfiguredMCPServersWithRegistry(s.PluginRegistry(), sess, s.db, home)
 			plugins := probeWorkspacePluginsWithRegistry(home, sess, s.db, s.PluginRegistry())
 			report = fmt.Sprintf("Antigravity Diagnostic Check\nVersion: %s\nConfigured MCP Servers: %d\nWorkspace Plugins: %d\nWorking Directory: %s",
 				strings.TrimSpace(rawVersion), len(servers), len(plugins), sess.Cwd)

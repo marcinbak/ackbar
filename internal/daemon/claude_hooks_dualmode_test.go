@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -28,13 +29,52 @@ func TestClaudeDualMode_HooksAliasesRegistryAndWorkerEnv(t *testing.T) {
 		ID: sessID, Agent: "claude-code", Host: srv.HostName(), NativeID: uuid,
 		Cwd: home, Managed: true, State: StateWorking, StartedAt: time.Now(),
 	})
-	for _, path := range []string{"/v1/hooks/claude-code", "/v1/hooks/claude"} {
-		body := `{"session_id":"` + uuid + `","hook_event_name":"PreToolUse","tool_name":"ExitPlanMode","tool_input":{"plan":"Plan A"},"cwd":"` + home + `"}`
+	getRunning := func() int {
 		rec := httptest.NewRecorder()
-		srv.handleHook(rec, httptest.NewRequest(http.MethodPost, path, strings.NewReader(body)))
+		srv.Mux().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/sessions/subagents?id="+sessID, nil))
+		var out struct {
+			RunningCount int `json:"running_count"`
+		}
+		_ = json.Unmarshal(rec.Body.Bytes(), &out)
+		return out.RunningCount
+	}
+	postHook := func(path, evt, body string) {
+		rec := httptest.NewRecorder()
+		srv.handleHook(rec, httptest.NewRequest(http.MethodPost, path+"?event="+evt, strings.NewReader(body)))
 		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "enqueued") {
 			t.Fatalf("POST %s = %d %q", path, rec.Code, rec.Body.String())
 		}
+	}
+
+	postHook("/v1/hooks/claude-code", "SubagentStart", `{"session_id":"`+uuid+`","hook_event_name":"SubagentStart","agent_id":"sub-1","agent_type":"coder","cwd":"`+home+`"}`)
+	for d := time.Now().Add(2 * time.Second); time.Now().Before(d) && getRunning() != 1; {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if rc := getRunning(); rc != 1 {
+		t.Fatalf("expected running_count == 1 after SubagentStart, got %d", rc)
+	}
+
+	postHook("/v1/hooks/claude", "Stop", `{"session_id":"`+uuid+`","hook_event_name":"Stop","cwd":"`+home+`"}`)
+	for d := time.Now().Add(2 * time.Second); time.Now().Before(d); {
+		if s, err := db.GetSession(sessID); err == nil && s != nil && s.State == StateIdle {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if rc := getRunning(); rc != 1 {
+		t.Fatalf("expected Stop to preserve running_count == 1, got %d", rc)
+	}
+
+	postHook("/v1/hooks/claude-code", "SubagentStop", `{"session_id":"`+uuid+`","hook_event_name":"SubagentStop","agent_id":"sub-1","agent_type":"coder","cwd":"`+home+`"}`)
+	for d := time.Now().Add(2 * time.Second); time.Now().Before(d) && getRunning() != 0; {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if rc := getRunning(); rc != 0 {
+		t.Fatalf("expected running_count == 0 after SubagentStop, got %d", rc)
+	}
+
+	for _, path := range []string{"/v1/hooks/claude-code", "/v1/hooks/claude"} {
+		postHook(path, "PreToolUse", `{"session_id":"`+uuid+`","hook_event_name":"PreToolUse","tool_name":"ExitPlanMode","tool_input":{"plan":"Plan A"},"cwd":"`+home+`"}`)
 	}
 	var sess *Session
 	for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); {

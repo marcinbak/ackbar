@@ -47,8 +47,29 @@ func TestClaudeDualMode_PluginAndLegacy(t *testing.T) {
 			now := time.Now().UTC().Format(time.RFC3339)
 			_ = os.WriteFile(tPath, []byte(strings.Join([]string{
 				`{"type":"user","sessionId":"` + nativeID + `","timestamp":"` + now + `","message":{"role":"user","content":"Turn 1"}}`,
-				`{"type":"assistant","sessionId":"` + nativeID + `","timestamp":"` + now + `","message":{"model":"claude-sonnet-4-6[1m]","usage":{"input_tokens":500,"output_tokens":50,"cache_creation_input_tokens":20,"cache_read_input_tokens":100},"output_tokens_details":{"thinking_tokens":12},"content":[{"type":"text","text":"Done"}]}}`,
+				`{"type":"assistant","sessionId":"` + nativeID + `","timestamp":"` + now + `","message":{"model":"claude-sonnet-4-6[1m]","usage":{"input_tokens":500,"output_tokens":50,"cache_creation_input_tokens":20,"cache_read_input_tokens":100},"output_tokens_details":{"thinking_tokens":12},"content":[{"type":"text","text":"Done with Turn 1 and ready for caching"}]}}`,
 			}, "\n")+"\n"), 0o644)
+
+			// Incremental transcript caching: cache >128B header on first read, coalesce appended Turn 2 on second read.
+			tr1, err := srv.ExtractTranscript("claude-code", nativeID, proj)
+			if err != nil || len(tr1.Messages) != 2 {
+				t.Fatalf("ExtractTranscript 1 = %+v err=%v", tr1, err)
+			}
+			fApp, err := os.OpenFile(tPath, os.O_APPEND|os.O_WRONLY, 0o644)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, _ = fApp.WriteString(strings.Join([]string{
+				`{"type":"attachment","path":"note.txt","sessionId":"` + nativeID + `"}`,
+				`{"type":"user","sessionId":"` + nativeID + `","timestamp":"` + now + `","message":{"role":"user","content":"Turn 2"}}`,
+				`{"type":"assistant","sessionId":"` + nativeID + `","timestamp":"` + now + `","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"Done Turn 2"}]}}`,
+				`{"type":"last-prompt","lastPrompt":"Turn 2"}`,
+			}, "\n") + "\n")
+			_ = fApp.Close()
+			tr2, err := srv.ExtractTranscript("claude-code", nativeID, proj)
+			if err != nil || len(tr2.Messages) != 4 || tr2.Messages[3].Content != "Done Turn 2" {
+				t.Fatalf("ExtractTranscript 2 (incremental) = %+v err=%v", tr2, err)
+			}
 
 			// 1. Spawn headless session & check persistent/live set_model formatting.
 			spawnBody, _ := json.Marshal(map[string]any{"agent": "claude-code", "cwd": proj, "engine_type": EngineHeadless, "permission_mode": "plan", "effort": "high"})
@@ -78,8 +99,42 @@ func TestClaudeDualMode_PluginAndLegacy(t *testing.T) {
 			}
 			wRew := httptest.NewRecorder()
 			srv.handleSessionRewind(wRew, httptest.NewRequest(http.MethodGet, "/v1/sessions/"+inspectID+"/rewind", nil), inspectID)
-			if wRew.Code != http.StatusOK || !strings.Contains(wRew.Body.String(), `"total_turns":1`) {
-				t.Fatalf("rewind = %d %s", wRew.Code, wRew.Body.String())
+			if wRew.Code != http.StatusOK || !strings.Contains(wRew.Body.String(), `"total_turns":2`) {
+				t.Fatalf("rewind GET = %d %s", wRew.Code, wRew.Body.String())
+			}
+			wRewPost := httptest.NewRecorder()
+			srv.handleSessionRewind(wRewPost, httptest.NewRequest(http.MethodPost, "/v1/sessions/"+inspectID+"/rewind", strings.NewReader(`{"before_turn":2}`)), inspectID)
+			if wRewPost.Code != http.StatusOK || !strings.Contains(wRewPost.Body.String(), `"cloned_transcript"`) {
+				t.Fatalf("rewind POST = %d %s", wRewPost.Code, wRewPost.Body.String())
+			}
+			var rewResp struct {
+				Session *Session `json:"session"`
+			}
+			_ = json.Unmarshal(wRewPost.Body.Bytes(), &rewResp)
+			if rewResp.Session == nil || rewResp.Session.NativeID == "" || rewResp.Session.NativeID == nativeID {
+				t.Fatalf("unexpected cloned session: %+v", rewResp.Session)
+			}
+			clonedPath := filepath.Join(projDir, rewResp.Session.NativeID+".jsonl")
+			fi, err := os.Stat(clonedPath)
+			if err != nil || fi.Mode().Perm() != 0o600 {
+				t.Fatalf("cloned file stat=%v err=%v", fi, err)
+			}
+			clonedRaw, _ := os.ReadFile(clonedPath)
+			clonedStr := string(clonedRaw)
+			if !strings.Contains(clonedStr, rewResp.Session.NativeID) || strings.Contains(clonedStr, "Turn 2") ||
+				strings.Contains(clonedStr, "note.txt") || strings.Contains(clonedStr, "last-prompt") {
+				t.Fatalf("cloned transcript mismatch:\n%s", clonedStr)
+			}
+
+			// c2 & c3 checks: facet-first mcp_login and NativeIDEagerUUID restart/resume.
+			_ = os.WriteFile(filepath.Join(proj, ".mcp.json"), []byte(`{"mcpServers":{"corp":{"type":"http","url":"https://mcp.example.com"}}}`), 0o600)
+			mcps, _ := discoverConfiguredMCPServersWithRegistry(srv.PluginRegistry(), sess, db, home)
+			if len(mcps) == 0 || !mcps[0].AuthSupported {
+				t.Fatalf("expected AuthSupported=true via registry/fallback, got %+v", mcps)
+			}
+			freshUUID := "99999999-8888-4777-8666-555555555555"
+			if _, existing := srv.getRestartOrResumeCmd(&Session{Agent: "claude-code", NativeID: freshUUID, Cwd: proj, FirstPrompt: "hi"}, home); existing {
+				t.Fatal("expected NativeIDEagerUUID without disk file to have isExisting=false")
 			}
 			var hasEffort bool
 			for _, c := range srv.collectCommands(proj, "claude-code") {

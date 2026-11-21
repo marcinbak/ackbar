@@ -87,6 +87,35 @@ func TestTranscriptCleaningCoalescingUsageRewindAndSubagents(t *testing.T) {
 	if docs := p.ListWorkspaceDocuments(home, cwd, nativeID); len(docs) != 1 || docs[0].Category != "plan" {
 		t.Fatalf("ListWorkspaceDocuments = %+v", docs)
 	}
+
+	// Verify CleanSessionFiles removes all session artifacts across .claude so HasConversationArtifacts is false.
+	_ = os.MkdirAll(filepath.Join(home, ".claude", "session-env", nativeID), 0o755)
+	_ = os.MkdirAll(filepath.Join(home, ".claude", "tasks", nativeID), 0o755)
+	_ = os.MkdirAll(filepath.Join(home, ".claude", "file-history", nativeID), 0o755)
+	_ = os.MkdirAll(filepath.Join(home, ".claude", "shell-snapshots", nativeID), 0o755)
+	_ = os.MkdirAll(filepath.Join(home, ".claude", "sessions"), 0o755)
+	_ = os.WriteFile(filepath.Join(home, ".claude", "sessions", "42.json"), []byte(`{"pid":42,"sessionId":"`+nativeID+`"}`), 0o644)
+	_ = os.WriteFile(filepath.Join(projDir, "agent-"+nativeID+".jsonl"), []byte("{}"), 0o644)
+	if err := p.CleanSessionFiles(home, cwd, nativeID); err != nil {
+		t.Fatalf("CleanSessionFiles: %v", err)
+	}
+	if p.HasConversationArtifacts(home, nativeID) {
+		t.Fatal("expected HasConversationArtifacts false after CleanSessionFiles")
+	}
+	for _, leftover := range []string{
+		tPath,
+		filepath.Join(projDir, nativeID),
+		filepath.Join(projDir, "agent-"+nativeID+".jsonl"),
+		filepath.Join(home, ".claude", "session-env", nativeID),
+		filepath.Join(home, ".claude", "tasks", nativeID),
+		filepath.Join(home, ".claude", "file-history", nativeID),
+		filepath.Join(home, ".claude", "shell-snapshots", nativeID),
+		filepath.Join(home, ".claude", "sessions", "42.json"),
+	} {
+		if _, err := os.Stat(leftover); !os.IsNotExist(err) {
+			t.Fatalf("CleanSessionFiles left artifact %s (err=%v)", leftover, err)
+		}
+	}
 }
 
 func TestFilterSyntheticEntries(t *testing.T) {

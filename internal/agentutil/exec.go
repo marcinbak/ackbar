@@ -149,6 +149,9 @@ func checkIgnoredArgsSlice(args []string, ignoredSubcommands, extraFlags map[str
 	for i := 0; i < len(args); i++ {
 		a := strings.ToLower(strings.TrimSpace(args[i]))
 		if strings.HasPrefix(a, "-") {
+			if a == "--" {
+				return false
+			}
 			if a == "-v" || a == "--version" || a == "-h" || a == "--help" || a == "-p" || a == "--print" || a == "--input-format" || a == "--output-format" {
 				return true
 			}

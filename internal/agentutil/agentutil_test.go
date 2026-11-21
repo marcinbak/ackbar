@@ -108,6 +108,11 @@ func TestExec_IDsAndText(t *testing.T) {
 	if CheckIgnoredCLIArgs("claude --resume abc", func(_, b string) bool { return b == "claude" }, map[string]bool{"mcp": true}, nil) {
 		t.Error("expected --resume session not to be ignored")
 	}
+	for _, cmd := range []string{"claude -- --help", "claude -- -p fix bug"} {
+		if CheckIgnoredCLIArgs(cmd, func(_, b string) bool { return b == "claude" }, map[string]bool{"mcp": true}, nil) {
+			t.Errorf("expected positional prompt after -- in %q not to be ignored", cmd)
+		}
+	}
 
 	uuid := "123e4567-e89b-12d3-a456-426614174000"
 	if !IsUUID(uuid) || IsUUID("not-a-uuid") {
