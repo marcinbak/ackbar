@@ -925,15 +925,31 @@ func (d *DB) GetSessionIDsByTaskID(taskID string) ([]string, error) {
 }
 
 func (d *DB) ListSessions() ([]*Session, error) {
-	query := `
+	return d.ListSessionsFiltered(true, true)
+}
+
+func (d *DB) ListSessionsFiltered(includeArchived, includeDone bool) ([]*Session, error) {
+	var conditions []string
+	if !includeArchived {
+		conditions = append(conditions, "COALESCE(archived, 0) = 0")
+	}
+	if !includeDone {
+		conditions = append(conditions, "COALESCE(is_done, 0) = 0")
+	}
+	whereClause := ""
+	if len(conditions) > 0 {
+		whereClause = "WHERE " + strings.Join(conditions, " AND ") + "\n\t"
+	}
+
+	query := fmt.Sprintf(`
 	SELECT id, agent, host, native_id, cwd, roots, project_key, state,
 	       blocked_kind, blocked_reason, blocked_since, blocked_question, blocked_options, blocked_questions, blocked_reset_at, blocked_meta, activity,
 	       started_at, last_event_at, managed, tmux_name, pid, archived, node_path, name, entrypoint, kind, version, context_pct, git_branch,
 	       custom_title, ai_title, ai_description, first_prompt, last_prompt, is_unread, last_state_change_at, is_done, is_later, account_id, engine_type, old_id, metadata_updated_at, is_supervisor, current_task_id,
 	       model, effort, permission_mode, yolo_mode, extra_dirs
 	FROM sessions
-	ORDER BY last_event_at DESC;
-	`
+	%sORDER BY last_event_at DESC;
+	`, whereClause)
 
 	rows, err := d.db.Query(query)
 	if err != nil {

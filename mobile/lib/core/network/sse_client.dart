@@ -36,6 +36,8 @@ class SSEClient {
   Stream<Session> subscribeHost(
     HostRecord host, {
     void Function(HostRecord host)? onHostReconnected,
+    bool? includeArchived,
+    bool? includeDone,
   }) {
     late final StreamController<Session> controller;
     bool cancelled = false;
@@ -79,6 +81,8 @@ class SSEClient {
         _activeCancels.add(cancelSubscription);
         _runLoop(
           host: host,
+          includeArchived: includeArchived,
+          includeDone: includeDone,
           isCancelled: () => cancelled || controller.isClosed,
           emitSession: (s) {
             if (!cancelled && !controller.isClosed) {
@@ -107,6 +111,8 @@ class SSEClient {
 
   Future<void> _runLoop({
     required HostRecord host,
+    bool? includeArchived,
+    bool? includeDone,
     required bool Function() isCancelled,
     required void Function(Session) emitSession,
     required void Function(HostRecord)? onHostReconnected,
@@ -130,8 +136,14 @@ class SSEClient {
       cleanUrl = cleanUrl.substring(0, cleanUrl.length - 1);
     }
     var uri = Uri.parse('$cleanUrl/v1/events');
-    if (host.authToken.isNotEmpty) {
-      uri = uri.replace(queryParameters: {'token': host.authToken});
+    final queryParams = <String, String>{
+      if (host.authToken.isNotEmpty) 'token': host.authToken,
+      if (includeArchived != null)
+        'include_archived': includeArchived.toString(),
+      if (includeDone != null) 'include_done': includeDone.toString(),
+    };
+    if (queryParams.isNotEmpty) {
+      uri = uri.replace(queryParameters: queryParams);
     }
 
     while (!isCancelled()) {
@@ -285,6 +297,8 @@ class SSEClient {
     List<HostRecord> hosts, {
     bool includeOffline = false,
     void Function(HostRecord host)? onHostReconnected,
+    bool? includeArchived,
+    bool? includeDone,
   }) {
     final controller = StreamController<Session>.broadcast();
     final List<StreamSubscription> subs = [];
@@ -294,6 +308,8 @@ class SSEClient {
       final sub = subscribeHost(
         host,
         onHostReconnected: onHostReconnected,
+        includeArchived: includeArchived,
+        includeDone: includeDone,
       ).listen(
         (session) {
           if (!controller.isClosed) {

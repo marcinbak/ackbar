@@ -754,8 +754,10 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		close(ch)
 	}()
 
+	includeArchived, includeDone := parseSessionFilterParams(r)
+
 	// Send initial list of sessions on connect
-	sessions, err := s.db.ListSessions()
+	sessions, err := s.db.ListSessionsFiltered(includeArchived, includeDone)
 	if err == nil {
 		localSessions := make([]*Session, 0, len(sessions))
 		var active []*Session
@@ -777,6 +779,9 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			s.triggerAsyncLiveness()
 		}
 		for _, sess := range localSessions {
+			if (!includeArchived && sess.Archived) || (!includeDone && sess.IsDone) {
+				continue
+			}
 			sessCopy := *sess
 			s.populateResolvedModel(&sessCopy)
 			data, err := json.Marshal(&sessCopy)
@@ -1049,6 +1054,7 @@ func (s *Server) StartBackgroundLoop(ctx context.Context) {
 			case <-ticker.C:
 				s.scanObservedSessions(ctx)
 				s.sweepAutoDoneSessions(ctx)
+				s.sweepAutoArchiveSessions(ctx)
 				go s.ensureHostTunnels(ctx)
 				go func() { _ = s.IngestDevWorkflowRuns() }()
 				go s.PullFromPeers(ctx)

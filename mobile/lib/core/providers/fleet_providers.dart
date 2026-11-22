@@ -14,6 +14,9 @@ import '../network/api_client.dart';
 import '../network/sse_client.dart';
 import '../services/audio_companion_service.dart';
 import '../utils/node_path_resolver.dart';
+import 'fleet_tree_collapse_provider.dart';
+
+export 'fleet_tree_collapse_provider.dart';
 
 // --- View Modes ---
 
@@ -195,6 +198,8 @@ class HostsNotifier extends StateNotifier<List<HostRecord>> {
           h.url,
           authToken: h.authToken,
           hostName: h.name,
+          includeArchived: false,
+          includeDone: false,
         );
         if (!mounted) return;
         updated.add(
@@ -203,7 +208,11 @@ class HostsNotifier extends StateNotifier<List<HostRecord>> {
             latencyMs: health['latency_ms'] as int? ?? 1,
             version: health['version'] as String? ?? '',
             uptime: health['uptime'] as String? ?? 'Active',
-            sessionsCount: sessions != null ? sessions.length : h.sessionsCount,
+            sessionsCount: sessions != null
+                ? sessions
+                    .where((s) => !s.archived && !s.deleted && !s.isDone)
+                    .length
+                : h.sessionsCount,
           ),
         );
       } else {
@@ -292,7 +301,9 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
   final Ref _ref;
   StreamSubscription<Session>? _sseSub;
   ProviderSubscription<List<HostRecord>>? _hostsSub;
+  ProviderSubscription<bool>? _showDoneSub;
   Future<void>? _inFlightRefresh;
+  int _refreshEpoch = 0;
 
   FleetSessionsNotifier(this._apiClient, this._ref) : super(const []) {
     _initLiveSync();
@@ -304,12 +315,23 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
         _syncWithHosts(next);
       }
     });
+    _showDoneSub = _ref.listen<bool>(fleetShowDoneProvider, (previous, next) {
+      if (previous != next) {
+        if (!next) {
+          state = state
+              .where((s) => !s.archived && !s.deleted && !s.isDone)
+              .toList();
+        }
+        _syncWithHosts(_ref.read(hostsListProvider));
+      }
+    });
   }
 
   @override
   void dispose() {
     _sseSub?.cancel();
     _hostsSub?.close();
+    _showDoneSub?.close();
     super.dispose();
   }
 
@@ -323,12 +345,17 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
   }
 
   void _syncWithHosts(List<HostRecord> hosts) async {
+    _refreshEpoch++;
+    _inFlightRefresh = null;
     _sseSub?.cancel();
     if (hosts.isNotEmpty) {
       final sse = _ref.read(sseClientProvider);
+      final showDone = _ref.read(fleetShowDoneProvider);
       _sseSub = sse
           .subscribeMultipleHosts(
         hosts,
+        includeArchived: false,
+        includeDone: showDone,
         onHostReconnected: (_) => refreshSessions(),
       )
           .listen((liveSess) {
@@ -352,20 +379,25 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
   Future<void> refreshSessions() {
     final active = _inFlightRefresh;
     if (active != null) return active;
-    final future = _doRefreshSessions();
-    _inFlightRefresh = future;
-    return future.whenComplete(() {
-      _inFlightRefresh = null;
+    final epoch = _refreshEpoch;
+    late final Future<void> future;
+    future = _doRefreshSessions(epoch).whenComplete(() {
+      if (identical(_inFlightRefresh, future)) {
+        _inFlightRefresh = null;
+      }
     });
+    _inFlightRefresh = future;
+    return future;
   }
 
-  Future<void> _doRefreshSessions() async {
+  Future<void> _doRefreshSessions(int epoch) async {
     final hosts = _ref.read(hostsListProvider);
     if (hosts.isEmpty) {
-      if (mounted) state = const [];
+      if (mounted && epoch == _refreshEpoch) state = const [];
       return;
     }
 
+    final showDone = _ref.read(fleetShowDoneProvider);
     final allFetched = <Session>[];
     final seenIds = <String>{};
     for (final host in hosts) {
@@ -373,18 +405,26 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
         host.url,
         authToken: host.authToken,
         hostName: host.name,
+        includeArchived: false,
+        includeDone: showDone,
       );
-      if (!mounted) return;
+      if (!mounted || epoch != _refreshEpoch) return;
       final hostSessions = remoteSessions ??
           state.where((s) => _sessionBelongsToHost(s, host, hosts.length));
       for (final s in hostSessions) {
+        if (s.deleted ||
+            s.activity == 'Deleted' ||
+            s.archived ||
+            (!showDone && s.isDone)) {
+          continue;
+        }
         if (seenIds.add(s.id)) {
           allFetched.add(s);
         }
       }
     }
 
-    if (mounted) {
+    if (mounted && epoch == _refreshEpoch) {
       state = allFetched;
     }
   }
@@ -401,14 +441,26 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
   }
 
   void _upsertSession(Session s) {
-    final index = state.indexWhere(
-      (item) =>
-          item.id == s.id ||
-          (s.nativeId.isNotEmpty &&
-              item.nativeId == s.nativeId &&
-              item.host.toLowerCase() == s.host.toLowerCase()) ||
-          (s.oldId.isNotEmpty && item.id == s.oldId),
-    );
+    final showDone = _ref.read(fleetShowDoneProvider);
+    bool matchesSession(Session item) =>
+        item.id == s.id ||
+        (s.nativeId.isNotEmpty &&
+            item.nativeId == s.nativeId &&
+            item.host.toLowerCase() == s.host.toLowerCase()) ||
+        (s.oldId.isNotEmpty && item.id == s.oldId);
+
+    if (s.deleted ||
+        s.activity == 'Deleted' ||
+        s.archived ||
+        (!showDone && s.isDone)) {
+      final next = state.where((item) => !matchesSession(item)).toList();
+      if (next.length != state.length) {
+        state = next;
+      }
+      return;
+    }
+
+    final index = state.indexWhere(matchesSession);
     if (index != -1) {
       final updated = List<Session>.from(state);
       updated[index] = s;
@@ -742,8 +794,9 @@ class FleetSessionsNotifier extends StateNotifier<List<Session>> {
     }
     if (!ok && mounted) {
       final current = _findSession(session.id);
-      if (identical(current, optimistic) ||
-          (current != null && current.lastEventAt == optimistic.lastEventAt)) {
+      if (current == null ||
+          identical(current, optimistic) ||
+          current.lastEventAt == optimistic.lastEventAt) {
         _upsertSession(session);
       }
     }
@@ -1061,21 +1114,31 @@ final fleetNodesProvider =
 
 final filteredSessionsProvider = Provider<List<Session>>((ref) {
   final allSessions = ref.watch(fleetSessionsProvider);
+  final showDone = ref.watch(fleetShowDoneProvider);
   final filterIndex = ref.watch(fleetFilterIndexProvider);
   final viewMode = ref.watch(fleetViewModeProvider);
   final query = ref.watch(fleetSearchQueryProvider).toLowerCase().trim();
 
   final list = allSessions.where((s) {
-    // Hide archived/deleted sessions from active fleet views
-    if (s.archived) return false;
+    if (s.deleted ||
+        s.activity == 'Deleted' ||
+        s.archived ||
+        (!showDone && s.isDone)) {
+      return false;
+    }
 
-    // ViewMode filter (All vs Supervisors)
-    if (viewMode == FleetViewMode.supervisors && !s.isSupervisor) return false;
+    if (viewMode == FleetViewMode.supervisors &&
+        (!s.isSupervisor || s.isDone)) {
+      return false;
+    }
 
-    // Tab filter: 0: All, 1: Working, 2: Attention/Blocked, 3: Idle
-    if (filterIndex == 1 && s.state != SessionState.working) return false;
-    if (filterIndex == 2 && !s.isBlocked) return false;
-    if (filterIndex == 3 && s.state != SessionState.idle) return false;
+    if (filterIndex == 1 && (s.isDone || s.state != SessionState.working)) {
+      return false;
+    }
+    if (filterIndex == 2 && (s.isDone || !s.isBlocked)) return false;
+    if (filterIndex == 3 && (s.isDone || s.state != SessionState.idle)) {
+      return false;
+    }
 
     // Search query filter
     if (query.isNotEmpty) {
@@ -1199,7 +1262,7 @@ final fleetTreeProvider = Provider<List<FleetTreeFolderNode>>((ref) {
     for (final s in direct) {
       if (s.isLater) {
         laters.add(s);
-      } else if (s.isDone || s.state == SessionState.ended) {
+      } else if (s.isDone) {
         dones.add(s);
       } else if (s.isSupervisor) {
         sups.add(s);
@@ -1517,13 +1580,19 @@ final audioCompanionServiceProvider =
 
 final attentionPendingSessionsProvider = Provider<List<Session>>((ref) {
   final sessions = ref.watch(fleetSessionsProvider);
-  return sessions.where((s) => !s.archived && s.isBlocked).toList();
+  return sessions
+      .where((s) => !s.deleted && !s.archived && !s.isDone && s.isBlocked)
+      .toList();
 });
 
 final inProgressSessionsProvider = Provider<List<Session>>((ref) {
   final sessions = ref.watch(fleetSessionsProvider);
   return sessions
-      .where((s) => !s.archived && s.state == SessionState.working)
+      .where((s) =>
+          !s.deleted &&
+          !s.archived &&
+          !s.isDone &&
+          s.state == SessionState.working)
       .toList();
 });
 

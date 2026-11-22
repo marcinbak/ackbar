@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -13,6 +14,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -470,5 +472,331 @@ func TestHeadlessWorker_RecycledPIDStaleMetaNotTrustedOrKilled(t *testing.T) {
 	srv2.headless.CleanupSessionRuntime(sessCleanup.ID, sessCleanup.NativeID)
 	if fileExists(cleanupMetaPath) || fileExists(cleanupSpoolPath) {
 		t.Fatalf("expected CleanupSessionRuntime to remove stale spool files without killing recycled os.Getpid()")
+	}
+}
+
+func TestSessionFilters_DBAndHTTPAndFederated(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	dbPath := filepath.Join(t.TempDir(), "ackbard.db")
+
+	db, err := InitDB(dbPath)
+	if err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+	defer db.Close()
+	srv := NewServer(db)
+	defer srv.headless.ReleaseSleepInhibitor()
+
+	now := time.Now().UTC()
+	activeSess := &Session{
+		ID: "claude-code:local:filt-active", NativeID: "filt-active", Agent: "claude-code",
+		Host: "local", Cwd: tmpHome, EngineType: EngineHeadless, State: StateIdle,
+		StartedAt: now, LastEventAt: now, UpdatedAt: now, MetadataUpdatedAt: now,
+	}
+	doneSess := &Session{
+		ID: "claude-code:local:filt-done", NativeID: "filt-done", Agent: "claude-code",
+		Host: "local", Cwd: tmpHome, EngineType: EngineHeadless, State: StateEnded, IsDone: true,
+		StartedAt: now, LastEventAt: now.Add(-time.Minute), UpdatedAt: now, MetadataUpdatedAt: now,
+	}
+	archivedSess := &Session{
+		ID: "claude-code:local:filt-archived", NativeID: "filt-archived", Agent: "claude-code",
+		Host: "local", Cwd: tmpHome, EngineType: EngineHeadless, State: StateEnded, Archived: true,
+		StartedAt: now, LastEventAt: now.Add(-2 * time.Minute), UpdatedAt: now, MetadataUpdatedAt: now,
+	}
+	for _, s := range []*Session{activeSess, doneSess, archivedSess} {
+		if err := db.SaveSession(s); err != nil {
+			t.Fatalf("SaveSession(%s): %v", s.ID, err)
+		}
+	}
+
+	assertIDs := func(label string, list []*Session, want ...string) {
+		t.Helper()
+		got := make(map[string]bool, len(list))
+		for _, s := range list {
+			got[s.ID] = true
+		}
+		if len(got) != len(want) {
+			t.Fatalf("%s: expected %v, got %d sessions (%+v)", label, want, len(list), got)
+		}
+		for _, id := range want {
+			if !got[id] {
+				t.Fatalf("%s: missing expected session %s in %+v", label, id, got)
+			}
+		}
+	}
+
+	allDB, err := db.ListSessions()
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	assertIDs("ListSessions", allDB, activeSess.ID, doneSess.ID, archivedSess.ID)
+
+	noArchDB, err := db.ListSessionsFiltered(false, true)
+	if err != nil {
+		t.Fatalf("ListSessionsFiltered(false, true): %v", err)
+	}
+	assertIDs("ListSessionsFiltered(false, true)", noArchDB, activeSess.ID, doneSess.ID)
+
+	noDoneDB, err := db.ListSessionsFiltered(true, false)
+	if err != nil {
+		t.Fatalf("ListSessionsFiltered(true, false): %v", err)
+	}
+	assertIDs("ListSessionsFiltered(true, false)", noDoneDB, activeSess.ID, archivedSess.ID)
+
+	onlyActiveDB, err := db.ListSessionsFiltered(false, false)
+	if err != nil {
+		t.Fatalf("ListSessionsFiltered(false, false): %v", err)
+	}
+	assertIDs("ListSessionsFiltered(false, false)", onlyActiveDB, activeSess.ID)
+
+	decodeSessions := func(target string) []*Session {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		srv.handleSessions(rec, httptest.NewRequest(http.MethodGet, target, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s returned %d: %s", target, rec.Code, rec.Body.String())
+		}
+		var out []*Session
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatalf("decode %s: %v", target, err)
+		}
+		return out
+	}
+
+	assertIDs("GET /v1/sessions", decodeSessions("/v1/sessions"), activeSess.ID, doneSess.ID, archivedSess.ID)
+	assertIDs("GET /v1/sessions?include_archived=false&include_done=false",
+		decodeSessions("/v1/sessions?include_archived=false&include_done=false"), activeSess.ID)
+	assertIDs("GET /v1/sessions?include_archived=0&include_done=1",
+		decodeSessions("/v1/sessions?include_archived=0&include_done=1"), activeSess.ID, doneSess.ID)
+
+	var peerMu sync.Mutex
+	var peerQuery string
+	peerSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/sessions" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		peerMu.Lock()
+		peerQuery = r.URL.RawQuery
+		peerMu.Unlock()
+		_ = json.NewEncoder(w).Encode([]*Session{
+			{ID: "claude-code:peer1:p-active", NativeID: "p-active", Agent: "claude-code", Host: "peer1", State: StateIdle, LastEventAt: now},
+			{ID: "claude-code:peer1:p-done", NativeID: "p-done", Agent: "claude-code", Host: "peer1", State: StateEnded, IsDone: true, LastEventAt: now},
+			{ID: "claude-code:peer1:p-arch", NativeID: "p-arch", Agent: "claude-code", Host: "peer1", State: StateEnded, Archived: true, LastEventAt: now},
+		})
+	}))
+	defer peerSrv.Close()
+
+	if err := db.SaveHost(&HostRecord{Name: "peer1", URL: peerSrv.URL}); err != nil {
+		t.Fatalf("SaveHost: %v", err)
+	}
+	fed := decodeSessions("/v1/sessions?federated=true&include_archived=false&include_done=false")
+	peerMu.Lock()
+	gotPeerQuery := peerQuery
+	peerMu.Unlock()
+	if !strings.Contains(gotPeerQuery, "include_archived=false") || !strings.Contains(gotPeerQuery, "include_done=false") {
+		t.Fatalf("expected federated peer query to forward filters, got %q", gotPeerQuery)
+	}
+	assertIDs("federated filtered", fed, activeSess.ID, "claude-code:peer1:p-active")
+}
+
+func TestHandleEvents_FiltersSnapshotButStreamsLiveTransitions(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	dbPath := filepath.Join(t.TempDir(), "ackbard.db")
+
+	db, err := InitDB(dbPath)
+	if err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+	defer db.Close()
+	srv := NewServer(db)
+	defer srv.headless.ReleaseSleepInhibitor()
+
+	now := time.Now().UTC()
+	activeSess := &Session{
+		ID: "claude-code:local:sse-active", NativeID: "sse-active", Agent: "claude-code",
+		Host: "local", Cwd: tmpHome, EngineType: EngineHeadless, State: StateIdle,
+		StartedAt: now, LastEventAt: now, UpdatedAt: now, MetadataUpdatedAt: now,
+	}
+	doneSess := &Session{
+		ID: "claude-code:local:sse-done", NativeID: "sse-done", Agent: "claude-code",
+		Host: "local", Cwd: tmpHome, EngineType: EngineHeadless, State: StateEnded, IsDone: true,
+		StartedAt: now, LastEventAt: now, UpdatedAt: now, MetadataUpdatedAt: now,
+	}
+	archivedSess := &Session{
+		ID: "claude-code:local:sse-archived", NativeID: "sse-archived", Agent: "claude-code",
+		Host: "local", Cwd: tmpHome, EngineType: EngineHeadless, State: StateEnded, Archived: true,
+		StartedAt: now, LastEventAt: now, UpdatedAt: now, MetadataUpdatedAt: now,
+	}
+	for _, s := range []*Session{activeSess, doneSess, archivedSess} {
+		if err := db.SaveSession(s); err != nil {
+			t.Fatalf("SaveSession(%s): %v", s.ID, err)
+		}
+	}
+
+	ts := httptest.NewServer(http.HandlerFunc(srv.handleEvents))
+	defer ts.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/v1/events?include_archived=false&include_done=false", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET /v1/events: %v", err)
+	}
+	defer resp.Body.Close()
+
+	events := make(chan Session, 8)
+	go func() {
+		scanner := bufio.NewScanner(resp.Body)
+		for scanner.Scan() {
+			line := scanner.Text()
+			if !strings.HasPrefix(line, "data:") {
+				continue
+			}
+			payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+			var s Session
+			if json.Unmarshal([]byte(payload), &s) == nil {
+				select {
+				case events <- s:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+	}()
+
+	select {
+	case first := <-events:
+		if first.ID != activeSess.ID {
+			t.Fatalf("expected initial snapshot event %s, got %+v", activeSess.ID, first)
+		}
+	case <-ctx.Done():
+		t.Fatalf("timed out waiting for initial SSE snapshot")
+	}
+
+	select {
+	case extra := <-events:
+		t.Fatalf("expected done/archived sessions omitted from initial snapshot, got %+v", extra)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	doneUpdate := *activeSess
+	doneUpdate.IsDone = true
+	srv.broadcast(&doneUpdate)
+
+	archivedUpdate := *activeSess
+	archivedUpdate.Archived = true
+	srv.broadcast(&archivedUpdate)
+
+	var sawDone, sawArchived bool
+	for !(sawDone && sawArchived) {
+		select {
+		case ev := <-events:
+			if ev.ID == activeSess.ID && ev.IsDone {
+				sawDone = true
+			}
+			if ev.ID == activeSess.ID && ev.Archived {
+				sawArchived = true
+			}
+		case <-ctx.Done():
+			t.Fatalf("timed out waiting for live transitions (sawDone=%v sawArchived=%v)", sawDone, sawArchived)
+		}
+	}
+}
+
+func TestSweepAutoArchiveSessions(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	dbPath := filepath.Join(t.TempDir(), "ackbard.db")
+
+	db, err := InitDB(dbPath)
+	if err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+	defer db.Close()
+	srv := NewServer(db)
+	defer srv.headless.ReleaseSleepInhibitor()
+
+	if err := db.SetSettings(map[string]string{
+		"auto_archive_enabled": "true",
+		"auto_archive_days":    "7",
+	}); err != nil {
+		t.Fatalf("SetSettings: %v", err)
+	}
+
+	now := time.Now().UTC()
+	staleTs := now.Add(-9 * 24 * time.Hour)
+	recentTs := now.Add(-2 * 24 * time.Hour)
+
+	oldDone := &Session{
+		ID: "claude-code:local:arch-old-done", NativeID: "arch-old-done", Agent: "claude-code",
+		Host: "local", Cwd: tmpHome, EngineType: EngineHeadless, State: StateEnded, IsDone: true,
+		StartedAt: staleTs, LastEventAt: staleTs, UpdatedAt: staleTs, MetadataUpdatedAt: staleTs,
+	}
+	recentDone := &Session{
+		ID: "claude-code:local:arch-recent-done", NativeID: "arch-recent-done", Agent: "claude-code",
+		Host: "local", Cwd: tmpHome, EngineType: EngineHeadless, State: StateEnded, IsDone: true,
+		StartedAt: recentTs, LastEventAt: recentTs, UpdatedAt: recentTs, MetadataUpdatedAt: recentTs,
+	}
+	oldActive := &Session{
+		ID: "claude-code:local:arch-old-active", NativeID: "arch-old-active", Agent: "claude-code",
+		Host: "local", Cwd: tmpHome, EngineType: EngineHeadless, State: StateIdle, IsDone: false,
+		StartedAt: staleTs, LastEventAt: staleTs, UpdatedAt: staleTs, MetadataUpdatedAt: staleTs,
+	}
+	oldLater := &Session{
+		ID: "claude-code:local:arch-old-later", NativeID: "arch-old-later", Agent: "claude-code",
+		Host: "local", Cwd: tmpHome, EngineType: EngineHeadless, State: StateEnded, IsDone: true, IsLater: true,
+		StartedAt: staleTs, LastEventAt: staleTs, UpdatedAt: staleTs, MetadataUpdatedAt: staleTs,
+	}
+	remoteDone := &Session{
+		ID: "claude-code:remote-box:arch-remote", NativeID: "arch-remote", Agent: "claude-code",
+		Host: "remote-box", Cwd: tmpHome, EngineType: EngineHeadless, State: StateEnded, IsDone: true,
+		StartedAt: staleTs, LastEventAt: staleTs, UpdatedAt: staleTs, MetadataUpdatedAt: staleTs,
+	}
+	for _, s := range []*Session{oldDone, recentDone, oldActive, oldLater, remoteDone} {
+		if err := db.SaveSession(s); err != nil {
+			t.Fatalf("SaveSession(%s): %v", s.ID, err)
+		}
+	}
+
+	srv.sweepAutoArchiveSessions(context.Background())
+
+	if got, _ := db.GetSession(oldDone.ID); got == nil || !got.Archived {
+		t.Fatalf("expected stale Done session archived, got %+v", got)
+	}
+	if got, _ := db.GetSession(recentDone.ID); got == nil || got.Archived {
+		t.Fatalf("expected recent Done session preserved, got %+v", got)
+	}
+	if got, _ := db.GetSession(oldActive.ID); got == nil || got.Archived {
+		t.Fatalf("expected non-Done session preserved, got %+v", got)
+	}
+	if got, _ := db.GetSession(oldLater.ID); got == nil || got.Archived {
+		t.Fatalf("expected IsLater session preserved, got %+v", got)
+	}
+	if got, _ := db.GetSession(remoteDone.ID); got == nil || got.Archived {
+		t.Fatalf("expected remote host session preserved, got %+v", got)
+	}
+
+	if err := db.SetSettings(map[string]string{"auto_archive_enabled": "false"}); err != nil {
+		t.Fatalf("SetSettings disable: %v", err)
+	}
+	disabledDone := &Session{
+		ID: "claude-code:local:arch-disabled", NativeID: "arch-disabled", Agent: "claude-code",
+		Host: "local", Cwd: tmpHome, EngineType: EngineHeadless, State: StateEnded, IsDone: true,
+		StartedAt: staleTs, LastEventAt: staleTs, UpdatedAt: staleTs, MetadataUpdatedAt: staleTs,
+	}
+	if err := db.SaveSession(disabledDone); err != nil {
+		t.Fatalf("SaveSession disabledDone: %v", err)
+	}
+	srv.sweepAutoArchiveSessions(context.Background())
+	if got, _ := db.GetSession(disabledDone.ID); got == nil || got.Archived {
+		t.Fatalf("expected auto_archive_enabled=false to skip archiving, got %+v", got)
 	}
 }

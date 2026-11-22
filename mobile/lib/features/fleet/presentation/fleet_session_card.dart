@@ -39,197 +39,215 @@ class FleetSessionCard extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                  decoration: BoxDecoration(
-                    color: AppColors.surfaceHighlight,
-                    borderRadius: AppSpacing.roundedSm,
-                    border:
-                        Border.all(color: AppColors.outlineSubtle, width: 0.5),
-                  ),
-                  child: Text(
-                    session.hostTag,
-                    style: AppTypography.codeXs.copyWith(
-                      color: AppColors.infoCyan,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                ),
-                if (isOffline) ...[
-                  const SizedBox(width: 6),
-                  Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
-                    decoration: BoxDecoration(
-                      color: AppColors.statusCoral.withOpacity(0.15),
-                      borderRadius: AppSpacing.roundedSm,
-                      border: Border.all(
-                        color: AppColors.statusCoral.withOpacity(0.4),
-                        width: 0.8,
-                      ),
-                    ),
-                    child: Text(
-                      'offline',
-                      style: AppTypography.codeXs.copyWith(
-                        color: AppColors.statusCoral,
-                        fontWeight: FontWeight.w700,
-                        fontSize: 9.5,
-                      ),
-                    ),
-                  ),
-                ],
-                if (session.isSupervisor) ...[
-                  const SizedBox(width: 6),
-                  Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
-                    decoration: BoxDecoration(
-                      color: AppColors.infoCyan.withOpacity(0.15),
-                      borderRadius: AppSpacing.roundedSm,
-                      border: Border.all(
-                        color: AppColors.infoCyan.withOpacity(0.4),
-                        width: 0.8,
-                      ),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const Text('⚓', style: TextStyle(fontSize: 10)),
-                        const SizedBox(width: 3),
-                        Text(
-                          'SUPERVISOR',
+                Expanded(
+                  child: Wrap(
+                    spacing: 6,
+                    runSpacing: 4,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: AppColors.surfaceHighlight,
+                          borderRadius: AppSpacing.roundedSm,
+                          border: Border.all(
+                              color: AppColors.outlineSubtle, width: 0.5),
+                        ),
+                        child: Text(
+                          session.hostTag,
                           style: AppTypography.codeXs.copyWith(
                             color: AppColors.infoCyan,
                             fontWeight: FontWeight.w700,
-                            fontSize: 9.5,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      if (isOffline)
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 5, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: AppColors.statusCoral.withOpacity(0.15),
+                            borderRadius: AppSpacing.roundedSm,
+                            border: Border.all(
+                              color: AppColors.statusCoral.withOpacity(0.4),
+                              width: 0.8,
+                            ),
+                          ),
+                          child: Text(
+                            'offline',
+                            style: AppTypography.codeXs.copyWith(
+                              color: AppColors.statusCoral,
+                              fontWeight: FontWeight.w700,
+                              fontSize: 9.5,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
                           ),
                         ),
-                      ],
-                    ),
-                  ),
-                ],
-                const SizedBox(width: 6),
-                Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                  decoration: BoxDecoration(
-                    color: session.agentColor.withOpacity(0.12),
-                    borderRadius: AppSpacing.roundedSm,
-                    border: Border.all(
-                      color: session.agentColor.withOpacity(0.3),
-                      width: 0.8,
-                    ),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      AgentLogo(
-                        agent: session.agent,
-                        size: 10,
-                        color: session.agentColor,
-                      ),
-                      const SizedBox(width: 4),
-                      Text(
-                        session.agentDisplayName,
-                        style: AppTypography.codeXs.copyWith(
-                          color: session.agentColor,
-                          fontWeight: FontWeight.w600,
-                          fontSize: 10,
+                      if (session.isSupervisor)
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 5, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: AppColors.infoCyan.withOpacity(0.15),
+                            borderRadius: AppSpacing.roundedSm,
+                            border: Border.all(
+                              color: AppColors.infoCyan.withOpacity(0.4),
+                              width: 0.8,
+                            ),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Text('⚓', style: TextStyle(fontSize: 10)),
+                              const SizedBox(width: 3),
+                              Flexible(
+                                child: Text(
+                                  'SUPERVISOR',
+                                  style: AppTypography.codeXs.copyWith(
+                                    color: AppColors.infoCyan,
+                                    fontWeight: FontWeight.w700,
+                                    fontSize: 9.5,
+                                  ),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: session.agentColor.withOpacity(0.12),
+                          borderRadius: AppSpacing.roundedSm,
+                          border: Border.all(
+                            color: session.agentColor.withOpacity(0.3),
+                            width: 0.8,
+                          ),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            AgentLogo(
+                              agent: session.agent,
+                              size: 10,
+                              color: session.agentColor,
+                            ),
+                            const SizedBox(width: 4),
+                            Flexible(
+                              child: Text(
+                                session.agentDisplayName,
+                                style: AppTypography.codeXs.copyWith(
+                                  color: session.agentColor,
+                                  fontWeight: FontWeight.w600,
+                                  fontSize: 10,
+                                ),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          ],
                         ),
                       ),
+                      Container(
+                        key: Key('session_mode_badge_${session.id}'),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 5, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: (session.isHeadless
+                                  ? AppColors.infoCyan
+                                  : AppColors.statusEmerald)
+                              .withOpacity(0.12),
+                          borderRadius: AppSpacing.roundedSm,
+                          border: Border.all(
+                            color: (session.isHeadless
+                                    ? AppColors.infoCyan
+                                    : AppColors.statusEmerald)
+                                .withOpacity(0.3),
+                            width: 0.8,
+                          ),
+                        ),
+                        child: Text(
+                          session.isHeadless ? 'CHAT' : 'PTY',
+                          style: AppTypography.codeXs.copyWith(
+                            color: session.isHeadless
+                                ? AppColors.infoCyan
+                                : AppColors.statusEmerald,
+                            fontWeight: FontWeight.w700,
+                            fontSize: 9.5,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      if (session.gitBranch.isNotEmpty)
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 5, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: AppColors.surfaceHighlight,
+                            borderRadius: AppSpacing.roundedSm,
+                          ),
+                          child: Text(
+                            session.gitBranch,
+                            style: AppTypography.codeXs.copyWith(
+                              color: AppColors.textSecondary,
+                              fontSize: 10,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
                     ],
                   ),
                 ),
-                const SizedBox(width: 6),
-                Container(
-                  key: Key('session_mode_badge_${session.id}'),
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
-                  decoration: BoxDecoration(
-                    color: (session.isHeadless
-                            ? AppColors.infoCyan
-                            : AppColors.statusEmerald)
-                        .withOpacity(0.12),
-                    borderRadius: AppSpacing.roundedSm,
-                    border: Border.all(
-                      color: (session.isHeadless
-                              ? AppColors.infoCyan
-                              : AppColors.statusEmerald)
-                          .withOpacity(0.3),
-                      width: 0.8,
-                    ),
-                  ),
-                  child: Text(
-                    session.isHeadless ? 'CHAT' : 'PTY',
-                    style: AppTypography.codeXs.copyWith(
-                      color: session.isHeadless
-                          ? AppColors.infoCyan
-                          : AppColors.statusEmerald,
-                      fontWeight: FontWeight.w700,
-                      fontSize: 9.5,
-                    ),
-                  ),
-                ),
-                if (session.gitBranch.isNotEmpty) ...[
-                  const SizedBox(width: 6),
-                  Flexible(
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 5, vertical: 2),
-                      decoration: BoxDecoration(
-                        color: AppColors.surfaceHighlight,
-                        borderRadius: AppSpacing.roundedSm,
-                      ),
-                      child: Text(
-                        session.gitBranch,
-                        style: AppTypography.codeXs.copyWith(
-                          color: AppColors.textSecondary,
-                          fontSize: 10,
+                const SizedBox(width: 8),
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (session.isUnread)
+                      Container(
+                        width: 8,
+                        height: 8,
+                        margin: const EdgeInsets.only(right: 6),
+                        decoration: const BoxDecoration(
+                          color: AppColors.infoCyan,
+                          shape: BoxShape.circle,
+                          boxShadow: [
+                            BoxShadow(
+                              color: Color(0x9906B6D4),
+                              blurRadius: 6,
+                              spreadRadius: 1,
+                            ),
+                          ],
                         ),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
                       ),
+                    StatusBadge(
+                      status: session.state.toBadgeStatus(),
+                      isCompact: true,
                     ),
-                  ),
-                ],
-                const Spacer(),
-                if (session.isUnread) ...[
-                  Container(
-                    width: 8,
-                    height: 8,
-                    margin: const EdgeInsets.only(right: 6),
-                    decoration: const BoxDecoration(
-                      color: AppColors.infoCyan,
-                      shape: BoxShape.circle,
-                      boxShadow: [
-                        BoxShadow(
-                          color: Color(0x9906B6D4),
-                          blurRadius: 6,
-                          spreadRadius: 1,
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-                StatusBadge(
-                  status: session.state.toBadgeStatus(),
-                  isCompact: true,
+                    if (onActions != null) ...[
+                      const SizedBox(width: 4),
+                      IconButton(
+                        key: Key('session_more_${session.id}'),
+                        icon: const Icon(Icons.more_horiz_rounded,
+                            size: 16, color: AppColors.textSecondary),
+                        tooltip: 'Session Actions',
+                        padding: EdgeInsets.zero,
+                        constraints:
+                            const BoxConstraints(minWidth: 24, minHeight: 24),
+                        onPressed: () => onActions!(session),
+                      ),
+                    ],
+                  ],
                 ),
-                if (onActions != null) ...[
-                  const SizedBox(width: 4),
-                  IconButton(
-                    key: Key('session_more_${session.id}'),
-                    icon: const Icon(Icons.more_horiz_rounded,
-                        size: 16, color: AppColors.textSecondary),
-                    tooltip: 'Session Actions',
-                    padding: EdgeInsets.zero,
-                    constraints:
-                        const BoxConstraints(minWidth: 24, minHeight: 24),
-                    onPressed: () => onActions!(session),
-                  ),
-                ],
               ],
             ),
             AppSpacing.gapH8,

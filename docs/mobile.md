@@ -52,8 +52,9 @@ It communicates with local and remote `ackbard` daemons over standard HTTP/REST,
 ## 2. Core Tabs & Capabilities
 
 ### 🚀 1. Fleet Dashboard
-* **Collapsible Project Folders:** Logical organization of sessions by repository and category.
-* **Rich Session Cards (`FleetSessionCard`):** Displays agent avatar badges, git branch tags, host badges (`@local`, `@gpu-box`), dynamic context token gauge bars, active elapsed time, and status pills:
+* **Collapsible Project Folders ([`fleet_tree_view.dart`](../mobile/lib/features/fleet/presentation/fleet_tree_view.dart)):** Persists folder and subsection collapse in `SharedPreferences` ([`fleet_tree_collapse_provider.dart`](../mobile/lib/core/providers/fleet_tree_collapse_provider.dart)); `:done` defaults collapsed, search temporarily expands all.
+* **Show/Hide Done Filter ([`fleet_screen.dart`](../mobile/lib/features/fleet/presentation/fleet_screen.dart), [`fleet_providers.dart`](../mobile/lib/core/providers/fleet_providers.dart)):** Toggle (`fleet_toggle_show_done`, default `false`) queries `include_archived=false&include_done=<showDone>` and evicts `deleted`/`archived`/`is_done` SSE updates.
+* **Rich Session Cards ([`fleet_session_card.dart`](../mobile/lib/features/fleet/presentation/fleet_session_card.dart)):** Displays wrapped metadata pills, agent badges, git branches, host tags, context gauges, and status pills:
   * `⚙️` *(animated spinner)* **WORKING:** Active command execution or code generation.
   * `❓` **BLOCKED:** Waiting for developer response or permission.
   * `✅` **IDLE:** Turn completed, awaiting next prompt.
@@ -135,7 +136,7 @@ Tap **View Transcript** from Chat or Terminal, or tap **Transcript** in `Session
 * **App Version Header:** The top `DAEMON HOSTS` toolbar on the `Hosts` tab displays the mobile app version pill (`AppVersion.displayVersion`, synced with `VERSION`) alongside per-node daemon versions, keeping the `Fleet`, `Attention`, and `Plans` toolbars uncluttered.
 * **Tailnet Status Banner:** Live connection indicator for your Tailscale network.
 * **Host Management:** Register multiple Mac, Linux, and cloud servers.
-* **Telemetry & Health:** Real-time latency tracking (ms), uptime, active session counts, and daemon version checks.
+* **Telemetry & Health ([`hosts_screen.dart`](../mobile/lib/features/hosts/presentation/hosts_screen.dart)):** Real-time latency (ms), uptime, active non-archived/non-done session counts, and daemon version checks.
 
 ---
 

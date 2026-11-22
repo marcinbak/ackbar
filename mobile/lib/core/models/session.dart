@@ -498,7 +498,7 @@ class Session {
       pid: json['pid'] is int
           ? json['pid'] as int
           : int.tryParse(json['pid']?.toString() ?? '') ?? 0,
-      archived: json['archived'] == true,
+      archived: json['archived'] == true || json['archived'] == 1,
       nodePath: json['node_path']?.toString() ?? '',
       name: json['name']?.toString() ?? '',
       entrypoint: json['entrypoint']?.toString() ?? '',
@@ -508,7 +508,7 @@ class Session {
           ? json['context_pct'] as int
           : int.tryParse(json['context_pct']?.toString() ?? '') ?? 0,
       gitBranch: json['git_branch']?.toString() ?? '',
-      deleted: json['deleted'] == true,
+      deleted: json['deleted'] == true || json['deleted'] == 1,
       customTitle: json['custom_title']?.toString() ?? '',
       aiTitle: json['ai_title']?.toString() ?? '',
       aiDescription: json['ai_description']?.toString() ?? '',
