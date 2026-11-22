@@ -36,7 +36,7 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 * **`headless_auth_detect.go`, `headless_auth_broker.go`, `headless_auth_flow.go`:** Detects `BlockAuth`, resolves allowlisted `CLIInspector` (`auth_login`, `mcp_login`) commands, relays callbacks, and auto-resumes sessions.
 * **`server_mcp_status.go`:** Inspects configured MCP servers, probes compiled plugin authentication status, and caches status responses with 10s TTL.
 * **`headless_reattach.go`, `headless_recovery.go`, `headless_stream_replay.go`:** Daemon reboot worker adoption, crashed-spool finalization, socket re-attachment, and gapless SSE replay (`?after_seq`, `Last-Event-ID`).
-* **`session_done.go`:** Manual `Done` runtime cleanup, process teardown, spool pruning, and periodic `auto_done` sweep.
+* **[`session_done.go`](../internal/daemon/session_done.go):** Manual `Done` runtime cleanup, process teardown, spool pruning, `auto_done` and `auto_archive` sweeps, and session filter parsing.
 * **`sleep_inhibitor.go`:** Cross-OS POSIX idle-sleep inhibitor (`caffeinate` / `systemd-inhibit`) active during running headless turns.
 * **`service_isolation.go`:** Sets `KillMode=process` (systemd) and `AbandonProcessGroup` (launchd); provides worker-safe `ackbard` signaling helpers.
 * **`rate_limit.go`:** Rate-limit reset timestamp parsers (pipe-delimited epoch, relative durations, 12h/24h/month clock times with past rollover and +1m safety buffer) and `/delay` duration/slash-command parsers.
@@ -62,8 +62,8 @@ The `ackbard` daemon is the central backend running on every monitored machine (
 | Method | Endpoint | Description |
 | :--- | :--- | :--- |
 | `GET` | `/v1/version` | Returns current daemon version, canonical host name, and display name. |
-| `GET` | `/v1/sessions` | Returns active, managed, and historic sessions with unread state and dynamically resolved `resolved_model` (`?federated=true` supported). |
-| `GET` | `/v1/events` | SSE stream broadcasting real-time session mutations with immediate header flush and periodic keepalive heartbeats (`: keepalive\n\n`, 20s default). |
+| `GET` | `/v1/sessions` | Returns sessions with unread state and `resolved_model` (`?federated=true`, `?include_archived=false`, `?include_done=false`; filters default `true` and forward to peers). |
+| `GET` | `/v1/events` | SSE stream sending initial snapshot (`?include_archived`, `?include_done`, default `true`) and live mutations with `: keepalive\n\n` heartbeats (20s default). |
 | `POST` | `/v1/sessions/prompt` | Submits prompt to headless or tmux session (supports `delay_seconds`, `deliver_at`, and idempotent `client_turn_id` deduplication). |
 | `GET` | `/v1/sessions/chat/stream` | SSE stream for real-time turn text, thoughts, subagents, and keepalive heartbeats (supports `?after_seq=<n>`, `?turn_id=<id>`, and `Last-Event-ID`). |
 | `GET` | `/v1/sessions/pty` | WebSocket endpoint streaming interactive PTY data to `xterm.js`. |
@@ -243,6 +243,8 @@ When long-running autonomous sessions consume significant token context (`contex
 ### Handover & Workspace Settings (`/v1/settings`):
 * `auto_done_enabled`: `"true"` | `"false"` (default: `"false"`) — toggle background sweep marking inactive sessions `Done`.
 * `auto_done_hours`: Integer (default: `24`) — inactivity hours before eligible non-working sessions become `Done`.
+* `auto_archive_enabled`: `"true"` | `"false"` (default: `"true"`) — toggle [`sweepAutoArchiveSessions`](../internal/daemon/session_done.go) archiving inactive `is_done` sessions.
+* `auto_archive_days`: Number (default: `7`) — inactivity days before local `is_done` sessions (excluding `is_later`) set `archived = true`.
 * **Task Completion Auto-Done:** Transitioning a task to `DONE` automatically marks bound non-supervisor worker sessions as `is_done = true` and `StateEnded`.
 * `handover_suggestion_enabled`: `"true"` | `"false"` (default: `"true"`) — toggle automated UI suggestions.
 * `handover_threshold_pct`: Integer between `10` and `95` (default: `"60"`) — context window threshold for triggering warnings and quick-action chips.
