@@ -269,4 +269,27 @@ void main() {
     spawnGate!.complete(true);
     await t.pump(const Duration(milliseconds: 50));
   });
+
+  testWidgets(
+      'non-embedded ChatScreen preserves rotated session across parent rebuilds',
+      (t) async {
+    _vp(t, const Size(390, 844));
+    final c = mk([_s('sess-a', 'Alpha')]);
+    late StateSetter rebuildParent;
+    await show(t, StatefulBuilder(builder: (_, setState) {
+      rebuildParent = setState;
+      return ChatScreen(session: sessions.first);
+    }), c, 300);
+    await t.enterText(
+        find.widgetWithText(TextField, 'Ask Claude Code...'), '/clear');
+    await t.pump();
+    await tap(t, find.byTooltip('Send prompt'), 300);
+    expect(find.text('Conversation Rotated'), findsOneWidget);
+    expect(find.text('Rotated B'), findsOneWidget);
+    rebuildParent(() {});
+    await t.pump(const Duration(milliseconds: 200));
+    expect(find.text('Conversation Rotated'), findsOneWidget);
+    expect(find.text('Rotated B'), findsOneWidget);
+    expect(find.text('Alpha'), findsNothing);
+  });
 }

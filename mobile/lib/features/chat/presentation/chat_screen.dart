@@ -99,7 +99,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   @override
   void didUpdateWidget(covariant ChatScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (_activeSession.id != widget.session.id) {
+    if (oldWidget.session.id != widget.session.id &&
+        _activeSession.id != widget.session.id) {
       _activeSession = widget.session;
       _restoreDraft();
       final h = SessionHostResolver.resolveHostRecord(
