@@ -6,6 +6,7 @@ import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_typography.dart';
 import '../../../core/widgets/ackbar_app_bar.dart';
+import '../../../core/widgets/adaptive_card_grid.dart';
 import '../../../core/widgets/glass_card.dart';
 import '../../../core/widgets/status_badge.dart';
 import 'add_host_dialog.dart';
@@ -175,19 +176,18 @@ class HostsScreen extends ConsumerWidget {
               ),
             )
           else
-            ...hosts.map((host) {
-              final activeSessionsCount = sessions
-                  .where((s) =>
-                      s.host == host.name &&
-                      !s.archived &&
-                      !s.deleted &&
-                      !s.isDone)
-                  .length;
-              return Padding(
-                padding: const EdgeInsets.only(bottom: AppSpacing.md),
-                child: _buildHostCard(context, ref, host, activeSessionsCount),
-              );
-            }),
+            AdaptiveCardListOrGrid(
+              children: hosts.map((host) {
+                final activeSessionsCount = sessions
+                    .where((s) =>
+                        s.host == host.name &&
+                        !s.archived &&
+                        !s.deleted &&
+                        !s.isDone)
+                    .length;
+                return _buildHostCard(context, ref, host, activeSessionsCount);
+              }).toList(),
+            ),
         ],
       ),
     );

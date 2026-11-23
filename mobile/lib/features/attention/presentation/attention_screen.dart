@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../headless/presentation/headless_auth_card.dart';
+import '../../../core/layout/responsive_breakpoints.dart';
 import '../../../core/models/session.dart';
 import '../../../core/navigation/session_navigator.dart';
 import '../../../core/providers/fleet_providers.dart';
@@ -15,6 +16,7 @@ import '../../../core/widgets/segmented_filter_tabs.dart';
 import '../../../core/widgets/status_badge.dart';
 import '../../../core/widgets/terminal_accessory_bar.dart';
 import '../../../core/widgets/token_gauge_bar.dart';
+import 'tablet_attention_view.dart';
 
 /// Screen managing developer attention queue, active working sessions, and decision audit history.
 /// Matches Stitch design ecf558261ecc479c8ca30ec6d251af98.
@@ -85,6 +87,14 @@ class _AttentionScreenState extends ConsumerState<AttentionScreen> {
         body: SafeArea(
           child: _buildPendingSubView(pendingSessions, isFullscreen: true),
         ),
+      );
+    }
+
+    if (ResponsiveBreakpoints.isTablet(context)) {
+      return const Scaffold(
+        backgroundColor: AppColors.background,
+        appBar: AckbarAppBar(title: 'ATTENTION CONTROL'),
+        body: TabletAttentionView(),
       );
     }
 

@@ -6,6 +6,7 @@ import '../../../core/providers/fleet_providers.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_typography.dart';
+import '../../../core/widgets/adaptive_side_sheet.dart';
 import '../../../core/widgets/agent_logo.dart';
 import '../../../core/navigation/session_navigator.dart';
 
@@ -28,10 +29,8 @@ class NewSessionSheet extends ConsumerStatefulWidget {
     String? prefillFolder,
     String? prefillHost,
   }) {
-    return showModalBottomSheet<Session>(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
+    return AdaptiveSideSheet.show<Session>(
+      context,
       builder: (context) => NewSessionSheet(
         prefillCwd: prefillCwd,
         prefillFolder: prefillFolder,

@@ -9,6 +9,7 @@ import '../../../../core/providers/fleet_providers.dart';
 import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/app_typography.dart';
 import '../../../../core/utils/session_host_resolver.dart';
+import '../../../../core/widgets/adaptive_side_sheet.dart';
 import 'headless_mcp_section.dart';
 
 class HeadlessConfigPillBar extends StatelessWidget {
@@ -100,11 +101,10 @@ class HeadlessConfigSheet extends ConsumerStatefulWidget {
   const HeadlessConfigSheet({super.key, required this.session});
 
   static Future<void> show(BuildContext context, Session session) {
-    return showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: AppColors.surface,
-      shape: const RoundedRectangleBorder(
+    return AdaptiveSideSheet.show(
+      context,
+      phoneBackgroundColor: AppColors.surface,
+      phoneShape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
       builder: (ctx) => HeadlessConfigSheet(session: session),

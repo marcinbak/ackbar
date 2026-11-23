@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../../core/layout/responsive_breakpoints.dart';
 import '../../../core/navigation/session_navigator.dart';
 import '../../../core/providers/fleet_providers.dart';
 import '../../../core/theme/app_colors.dart';
@@ -7,6 +8,7 @@ import '../../../core/theme/app_typography.dart';
 import '../../../core/widgets/ackbar_app_bar.dart';
 import 'fleet_tree_pane.dart';
 import 'new_session_sheet.dart';
+import 'tablet_fleet_workspace.dart';
 
 /// Screen displaying the active fleet of agent sessions across all supervised machines.
 class FleetScreen extends ConsumerStatefulWidget {
@@ -45,6 +47,10 @@ class _FleetScreenState extends ConsumerState<FleetScreen> {
 
   @override
   Widget build(BuildContext context) {
+    if (ResponsiveBreakpoints.isTablet(context)) {
+      return const TabletFleetWorkspace();
+    }
+
     final showDone = ref.watch(fleetShowDoneProvider);
 
     return Scaffold(

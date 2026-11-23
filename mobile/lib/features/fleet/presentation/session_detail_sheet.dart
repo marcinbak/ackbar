@@ -1,12 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/layout/responsive_breakpoints.dart';
 import '../../../core/models/session.dart';
 import '../../../core/navigation/session_navigator.dart';
 import '../../../core/providers/fleet_providers.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_typography.dart';
+import '../../../core/widgets/adaptive_side_sheet.dart';
 import '../../../core/widgets/agent_logo.dart';
 import '../../../core/widgets/glass_card.dart';
 import '../../../core/widgets/status_badge.dart';
@@ -19,11 +21,11 @@ class SessionDetailSheet extends ConsumerWidget {
   const SessionDetailSheet({super.key, required this.session});
 
   static Future<void> show(BuildContext context, Session session) {
-    return showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (context) => SessionDetailSheet(session: session),
+    return AdaptiveSideSheet.show(
+      context,
+      builder: (ctx) => ResponsiveBreakpoints.isTablet(ctx)
+          ? SingleChildScrollView(child: SessionDetailSheet(session: session))
+          : SessionDetailSheet(session: session),
     );
   }
 
@@ -341,6 +343,11 @@ class SessionDetailSheet extends ConsumerWidget {
                           (!session.isEnded && session.tmuxName != '(deleted)'))
                       ? () {
                           final navContext = Navigator.of(context).context;
+                          if (ResponsiveBreakpoints.isTablet(context)) {
+                            SessionNavigator.openSession(
+                                navContext, ref, session);
+                            return;
+                          }
                           if (session.isUnread) {
                             ref
                                 .read(fleetSessionsProvider.notifier)

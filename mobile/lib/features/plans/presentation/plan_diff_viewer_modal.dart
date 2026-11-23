@@ -5,6 +5,7 @@ import '../../../core/providers/fleet_providers.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_typography.dart';
+import '../../../core/widgets/adaptive_side_sheet.dart';
 import '../../../core/widgets/glass_card.dart';
 import '../../../core/widgets/status_badge.dart';
 
@@ -16,10 +17,9 @@ class PlanDiffViewerModal extends ConsumerWidget {
   const PlanDiffViewerModal({super.key, required this.plan});
 
   static Future<void> show(BuildContext context, PlanDocument plan) {
-    return showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
+    return AdaptiveSideSheet.show(
+      context,
+      width: 600,
       builder: (context) => PlanDiffViewerModal(plan: plan),
     );
   }

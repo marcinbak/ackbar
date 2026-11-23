@@ -6,6 +6,7 @@ import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_typography.dart';
 import '../../../core/widgets/ackbar_app_bar.dart';
+import '../../../core/widgets/adaptive_card_grid.dart';
 import '../../../core/widgets/glass_card.dart';
 import '../../../core/widgets/segmented_filter_tabs.dart';
 import '../../../core/widgets/status_badge.dart';
@@ -94,17 +95,10 @@ class PlansScreen extends ConsumerWidget {
               SliverPadding(
                 padding: const EdgeInsets.symmetric(
                     horizontal: AppSpacing.lg, vertical: AppSpacing.xs),
-                sliver: SliverList(
-                  delegate: SliverChildBuilderDelegate(
-                    (context, index) {
-                      final plan = pendingPlans[index];
-                      return Padding(
-                        padding: const EdgeInsets.only(bottom: AppSpacing.md),
-                        child: _buildPendingReviewCard(context, ref, plan),
-                      );
-                    },
-                    childCount: pendingPlans.length,
-                  ),
+                sliver: AdaptiveSliverCardGrid(
+                  itemCount: pendingPlans.length,
+                  itemBuilder: (context, index) => _buildPendingReviewCard(
+                      context, ref, pendingPlans[index]),
                 ),
               ),
             ],
@@ -139,17 +133,10 @@ class PlansScreen extends ConsumerWidget {
               SliverPadding(
                 padding: const EdgeInsets.symmetric(
                     horizontal: AppSpacing.lg, vertical: AppSpacing.xs),
-                sliver: SliverList(
-                  delegate: SliverChildBuilderDelegate(
-                    (context, index) {
-                      final plan = inProgressPlans[index];
-                      return Padding(
-                        padding: const EdgeInsets.only(bottom: AppSpacing.md),
-                        child: _buildInProgressPlanCard(context, ref, plan),
-                      );
-                    },
-                    childCount: inProgressPlans.length,
-                  ),
+                sliver: AdaptiveSliverCardGrid(
+                  itemCount: inProgressPlans.length,
+                  itemBuilder: (context, index) => _buildInProgressPlanCard(
+                      context, ref, inProgressPlans[index]),
                 ),
               ),
             ],
@@ -184,17 +171,10 @@ class PlansScreen extends ConsumerWidget {
               SliverPadding(
                 padding: const EdgeInsets.symmetric(
                     horizontal: AppSpacing.lg, vertical: AppSpacing.xs),
-                sliver: SliverList(
-                  delegate: SliverChildBuilderDelegate(
-                    (context, index) {
-                      final plan = completedPlans[index];
-                      return Padding(
-                        padding: const EdgeInsets.only(bottom: AppSpacing.md),
-                        child: _buildCompletedPlanCard(context, plan),
-                      );
-                    },
-                    childCount: completedPlans.length,
-                  ),
+                sliver: AdaptiveSliverCardGrid(
+                  itemCount: completedPlans.length,
+                  itemBuilder: (context, index) =>
+                      _buildCompletedPlanCard(context, completedPlans[index]),
                 ),
               ),
             ],
@@ -217,17 +197,10 @@ class PlansScreen extends ConsumerWidget {
               SliverPadding(
                 padding: const EdgeInsets.symmetric(
                     horizontal: AppSpacing.lg, vertical: AppSpacing.sm),
-                sliver: SliverList(
-                  delegate: SliverChildBuilderDelegate(
-                    (context, index) {
-                      final plan = approvedPlans[index];
-                      return Padding(
-                        padding: const EdgeInsets.only(bottom: AppSpacing.md),
-                        child: _buildApprovedPlanCard(context, plan),
-                      );
-                    },
-                    childCount: approvedPlans.length,
-                  ),
+                sliver: AdaptiveSliverCardGrid(
+                  itemCount: approvedPlans.length,
+                  itemBuilder: (context, index) =>
+                      _buildApprovedPlanCard(context, approvedPlans[index]),
                 ),
               ),
           ]
@@ -249,17 +222,10 @@ class PlansScreen extends ConsumerWidget {
               SliverPadding(
                 padding: const EdgeInsets.symmetric(
                     horizontal: AppSpacing.lg, vertical: AppSpacing.sm),
-                sliver: SliverList(
-                  delegate: SliverChildBuilderDelegate(
-                    (context, index) {
-                      final plan = completedPlans[index];
-                      return Padding(
-                        padding: const EdgeInsets.only(bottom: AppSpacing.md),
-                        child: _buildCompletedPlanCard(context, plan),
-                      );
-                    },
-                    childCount: completedPlans.length,
-                  ),
+                sliver: AdaptiveSliverCardGrid(
+                  itemCount: completedPlans.length,
+                  itemBuilder: (context, index) =>
+                      _buildCompletedPlanCard(context, completedPlans[index]),
                 ),
               ),
           ],

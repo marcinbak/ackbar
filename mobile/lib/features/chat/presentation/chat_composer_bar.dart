@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/layout/responsive_breakpoints.dart';
 import '../../../core/models/headless_models.dart';
 import '../../../core/models/session.dart';
 import '../../../core/models/transcript.dart';
@@ -18,6 +19,7 @@ class ChatComposerBar extends ConsumerWidget {
   final TextEditingController promptController;
   final FocusNode promptFocusNode;
   final VoidCallback onSend, onCancel;
+  final bool? isCompact;
 
   const ChatComposerBar({
     super.key,
@@ -27,11 +29,14 @@ class ChatComposerBar extends ConsumerWidget {
     required this.promptFocusNode,
     required this.onSend,
     required this.onCancel,
+    this.isCompact,
   });
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final audioCompanion = ref.watch(audioCompanionServiceProvider);
+    final compact =
+        isCompact ?? ResponsiveBreakpoints.isKeyboardCompact(context);
 
     return Container(
       decoration: const BoxDecoration(
@@ -125,37 +130,41 @@ class ChatComposerBar extends ConsumerWidget {
               ),
             ],
           ),
-          Padding(
-            padding: const EdgeInsets.only(top: 4, left: 2, right: 2),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text(
-                  session.isHeadless
-                      ? '💬 Headless turn-by-turn • OAuth Flat-rate'
-                      : '🖥️ Tmux process • Interactive shell',
-                  style:
-                      const TextStyle(color: AppColors.textMuted, fontSize: 10),
-                ),
-                if (isWorking)
-                  const Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      SizedBox(
-                        width: 10,
-                        height: 10,
-                        child: CircularProgressIndicator(
-                            strokeWidth: 1.5, color: AppColors.infoCyan),
-                      ),
-                      SizedBox(width: 4),
-                      Text('Working...',
-                          style: TextStyle(
-                              color: AppColors.infoCyan, fontSize: 10)),
-                    ],
+          if (!compact)
+            Padding(
+              padding: const EdgeInsets.only(top: 4, left: 2, right: 2),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Flexible(
+                    child: Text(
+                      session.isHeadless
+                          ? '💬 Headless turn-by-turn • OAuth Flat-rate'
+                          : '🖥️ Tmux process • Interactive shell',
+                      style: const TextStyle(
+                          color: AppColors.textMuted, fontSize: 10),
+                      overflow: TextOverflow.ellipsis,
+                    ),
                   ),
-              ],
+                  if (isWorking)
+                    const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        SizedBox(
+                          width: 10,
+                          height: 10,
+                          child: CircularProgressIndicator(
+                              strokeWidth: 1.5, color: AppColors.infoCyan),
+                        ),
+                        SizedBox(width: 4),
+                        Text('Working...',
+                            style: TextStyle(
+                                color: AppColors.infoCyan, fontSize: 10)),
+                      ],
+                    ),
+                ],
+              ),
             ),
-          ),
         ],
       ),
     );
@@ -175,6 +184,8 @@ class ChatTurnListView extends StatelessWidget {
       {bool forceRefresh, bool forceFull})? onSpeak;
   final ValueChanged<int> onDismissCard;
   final ValueChanged<String> onAttachToPrompt;
+  final bool showJumpToBottom;
+  final VoidCallback? onJumpToBottom;
 
   const ChatTurnListView({
     super.key,
@@ -189,6 +200,8 @@ class ChatTurnListView extends StatelessWidget {
     required this.onSpeak,
     required this.onDismissCard,
     required this.onAttachToPrompt,
+    this.showJumpToBottom = false,
+    this.onJumpToBottom,
   });
 
   @override
@@ -215,7 +228,7 @@ class ChatTurnListView extends StatelessWidget {
             (m) => m.turnId != null && m.turnId == pendingUserMessage!.turnId);
     final count =
         messages.length + ephemeralCards.length + (showPending ? 1 : 0);
-    return ListView.builder(
+    final list = ListView.builder(
       controller: scrollController,
       padding:
           const EdgeInsets.symmetric(horizontal: AppSpacing.md, vertical: 12),
@@ -244,6 +257,22 @@ class ChatTurnListView extends StatelessWidget {
           onSpeak: onSpeak,
         );
       },
+    );
+    if (!showJumpToBottom || onJumpToBottom == null) return list;
+    return Stack(
+      children: [
+        list,
+        Positioned(
+          right: 16,
+          bottom: 16,
+          child: FloatingActionButton.small(
+            backgroundColor: AppColors.surfaceHighlight,
+            onPressed: onJumpToBottom,
+            child: const Icon(Icons.keyboard_arrow_down_rounded,
+                color: AppColors.infoCyan),
+          ),
+        ),
+      ],
     );
   }
 }

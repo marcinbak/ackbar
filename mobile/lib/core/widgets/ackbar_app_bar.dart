@@ -68,20 +68,24 @@ class AckbarAppBar extends StatelessWidget implements PreferredSizeWidget {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
-          // Anchor Logo & Title
-          Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Text('⚓', style: TextStyle(fontSize: 16)),
-              const SizedBox(width: 6),
-              Text(
-                title,
-                style: AppTypography.appBarTitle.copyWith(
-                  color: AppColors.textPrimary,
-                  letterSpacing: 1.2,
+          Flexible(
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text('⚓', style: TextStyle(fontSize: 16)),
+                const SizedBox(width: 6),
+                Flexible(
+                  child: Text(
+                    title,
+                    style: AppTypography.appBarTitle.copyWith(
+                      color: AppColors.textPrimary,
+                      letterSpacing: 1.2,
+                    ),
+                    overflow: TextOverflow.ellipsis,
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
           if (showVersion) ...[
             const SizedBox(width: 8),

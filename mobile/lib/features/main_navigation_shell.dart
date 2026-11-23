@@ -1,13 +1,16 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../core/layout/responsive_breakpoints.dart';
 import '../core/models/host.dart';
 import '../core/models/plan.dart';
 import '../core/models/session.dart';
 import '../core/models/work_task.dart';
 import '../core/providers/fleet_providers.dart';
+import '../core/providers/tablet_workspace_provider.dart';
 import '../core/services/app_lifecycle_sync_observer.dart';
 import '../core/theme/app_colors.dart';
 import '../core/widgets/ackbar_bottom_nav.dart';
+import '../core/widgets/ackbar_nav_rail.dart';
 import 'attention/presentation/attention_screen.dart';
 import 'fleet/presentation/fleet_screen.dart';
 import 'fleet/presentation/session_detail_sheet.dart';
@@ -129,6 +132,15 @@ class _MainNavigationShellState extends ConsumerState<MainNavigationShell>
     }
   }
 
+  void _presentDeepLinkSession(Session target) {
+    if (ResponsiveBreakpoints.isTablet(context)) {
+      ref.read(selectedTabletSessionProvider.notifier).state = target;
+      ref.read(mainTabNavIndexProvider.notifier).state = 0;
+    } else {
+      SessionDetailSheet.show(context, target);
+    }
+  }
+
   void _openSessionOrQueue(String sessionId) {
     final sessions = ref.read(fleetSessionsProvider);
     Session? matching;
@@ -140,7 +152,7 @@ class _MainNavigationShellState extends ConsumerState<MainNavigationShell>
     }
     if (matching != null) {
       _pendingSessionId = null;
-      SessionDetailSheet.show(context, matching);
+      _presentDeepLinkSession(matching);
     } else {
       _pendingSessionId = sessionId;
     }
@@ -237,7 +249,7 @@ class _MainNavigationShellState extends ConsumerState<MainNavigationShell>
           _pendingSessionId = null;
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (mounted) {
-              SessionDetailSheet.show(context, target);
+              _presentDeepLinkSession(target);
             }
           });
           break;
@@ -281,23 +293,43 @@ class _MainNavigationShellState extends ConsumerState<MainNavigationShell>
     final hosts = ref.watch(hostsListProvider);
     final hostsCount = hosts.length;
     final hostsOnlineCount = hosts.where((h) => h.online).length;
+    final isTablet = ResponsiveBreakpoints.isTablet(context);
+    final stack = IndexedStack(
+      index: currentIndex,
+      children: _screens,
+    );
 
     return Scaffold(
       backgroundColor: AppColors.background,
-      body: IndexedStack(
-        index: currentIndex,
-        children: _screens,
-      ),
-      bottomNavigationBar: AckbarBottomNav(
-        currentIndex: currentIndex,
-        onTap: (index) {
-          ref.read(mainTabNavIndexProvider.notifier).state = index;
-        },
-        attentionCount: attentionCount,
-        plansCount: plansCount,
-        hostsCount: hostsCount,
-        hostsOnlineCount: hostsOnlineCount,
-      ),
+      resizeToAvoidBottomInset: !isTablet,
+      body: isTablet
+          ? Row(
+              children: [
+                AckbarNavRail(
+                  currentIndex: currentIndex,
+                  onTap: (index) =>
+                      ref.read(mainTabNavIndexProvider.notifier).state = index,
+                  attentionCount: attentionCount,
+                  plansCount: plansCount,
+                  hostsCount: hostsCount,
+                  hostsOnlineCount: hostsOnlineCount,
+                ),
+                Expanded(child: stack),
+              ],
+            )
+          : stack,
+      bottomNavigationBar: isTablet
+          ? null
+          : AckbarBottomNav(
+              currentIndex: currentIndex,
+              onTap: (index) {
+                ref.read(mainTabNavIndexProvider.notifier).state = index;
+              },
+              attentionCount: attentionCount,
+              plansCount: plansCount,
+              hostsCount: hostsCount,
+              hostsOnlineCount: hostsOnlineCount,
+            ),
     );
   }
 }

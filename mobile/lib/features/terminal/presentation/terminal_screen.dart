@@ -8,6 +8,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:xterm/xterm.dart';
 
+import '../../../core/layout/responsive_breakpoints.dart';
 import '../../../core/models/host.dart';
 import '../../../core/models/session.dart';
 import '../../../core/navigation/session_navigator.dart';
@@ -24,12 +25,20 @@ class TerminalScreen extends ConsumerStatefulWidget {
   final Session session;
   final WebSocketChannel Function(Uri uri)? channelBuilder;
   final TerminalReconnectController? reconnectController;
+  final bool isEmbedded;
+  final IconData? leadingIcon;
+  final Key? leadingKey;
+  final VoidCallback? onLeadingAction;
 
   const TerminalScreen({
     super.key,
     required this.session,
     this.channelBuilder,
     this.reconnectController,
+    this.isEmbedded = false,
+    this.leadingIcon,
+    this.leadingKey,
+    this.onLeadingAction,
   });
 
   static Future<void> open(BuildContext context, Session session) {
@@ -542,24 +551,32 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     });
     ref.watch(fleetSessionsProvider);
     final liveSession = _resolveLiveSession();
+    final isCompact = ResponsiveBreakpoints.isKeyboardCompact(context);
     final keyboardOpen = MediaQuery.of(context).viewInsets.bottom > 0 ||
         _terminalFocusNode.hasFocus;
+    final showLeading = !widget.isEmbedded || widget.onLeadingAction != null;
 
     return Scaffold(
       backgroundColor: AppColors.terminalBlack,
       appBar: AppBar(
         backgroundColor: AppColors.surface,
         elevation: 0,
-        leading: IconButton(
-          icon: const Icon(
-            Icons.arrow_back_ios_new_rounded,
-            size: 18,
-            color: AppColors.textPrimary,
-          ),
-          onPressed: () => Navigator.of(context).pop(),
-        ),
+        toolbarHeight: isCompact ? 40 : kToolbarHeight,
+        automaticallyImplyLeading: showLeading,
+        leading: showLeading
+            ? IconButton(
+                key: widget.leadingKey,
+                icon: Icon(
+                    widget.leadingIcon ?? Icons.arrow_back_ios_new_rounded,
+                    size: widget.leadingIcon != null ? 20 : 18,
+                    color: AppColors.textPrimary),
+                onPressed:
+                    widget.onLeadingAction ?? () => Navigator.of(context).pop(),
+              )
+            : null,
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
           children: [
             Row(
               children: [
@@ -582,14 +599,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                 ),
               ],
             ),
-            Text(
-              '${liveSession.agentDisplayName} @ ${liveSession.hostTag} • ${_currentCols}x$_currentRows',
-              style: AppTypography.codeXs.copyWith(
-                color: AppColors.textSecondary,
+            if (!isCompact)
+              Text(
+                '${liveSession.agentDisplayName} @ ${liveSession.hostTag} • ${_currentCols}x$_currentRows',
+                style: AppTypography.codeXs.copyWith(
+                  color: AppColors.textSecondary,
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
               ),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
           ],
         ),
         actions: [
