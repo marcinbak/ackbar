@@ -23,6 +23,7 @@ import '../../transcript/presentation/headless_autocomplete_strip.dart';
 import '../../transcript/presentation/headless_command_dispatcher.dart';
 import '../../transcript/presentation/subagents_dock.dart';
 import 'chat_composer_bar.dart';
+import 'chat_session_app_bar.dart';
 
 class ChatScreen extends ConsumerStatefulWidget {
   final Session session;
@@ -133,10 +134,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
         isMounted: () => mounted,
       );
 
-  Future<({String url, String? authToken})> _resolveHostRecord() async {
-    final res = await _resolveHost();
-    return (url: res.url, authToken: res.authToken);
-  }
+  Future<({String url, String? authToken})> _resolveHostRecord() =>
+      _resolveHost().then((r) => (url: r.url, authToken: r.authToken));
 
   void _scrollToBottom({bool animate = true}) {
     if (!_scrollController.hasClients) return;
@@ -170,9 +169,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     final res = await dispatcher.dispatch(currentSession, text);
     if (!mounted) return;
     if (res.intercepted) {
-      if (res.card != null) {
-        setState(() => _ephemeralCards.add(res.card!));
-      }
+      if (res.card != null) setState(() => _ephemeralCards.add(res.card!));
       _promptController.clear();
       _scrollToBottom();
       return;
@@ -184,12 +181,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     if (!mounted) return;
     if (!submitRes.ok) {
       _promptController.text = text;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Failed to dispatch prompt to agent'),
-          backgroundColor: AppColors.statusCoral,
-        ),
-      );
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Failed to dispatch prompt to agent'),
+        backgroundColor: AppColors.statusCoral,
+      ));
     }
     _scrollToBottom();
   }
@@ -301,86 +296,36 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
 
   Widget _buildBodyContent(
       Session s, List<TranscriptMessage> msgs, TranscriptMessage? pending) {
-    return Stack(
-      children: [
-        ChatTurnListView(
-          scrollController: _scrollController,
-          messages: msgs,
-          ephemeralCards: _ephemeralCards,
-          pendingUserMessage: pending,
-          session: s,
-          isLoading: _streamController.isLoading,
-          errorMessage: _streamController.errorMessage,
-          onRetry: _streamController.loadTranscript,
-          onSpeak: _speakMessage,
-          onDismissCard: (idx) => setState(() => _ephemeralCards.removeAt(idx)),
-          onAttachToPrompt: (text) =>
-              _promptController.text = '${_promptController.text} $text'.trim(),
-        ),
-        if (_showJumpToBottom)
-          Positioned(
-            right: 16,
-            bottom: 16,
-            child: FloatingActionButton.small(
-              backgroundColor: AppColors.surfaceHighlight,
-              onPressed: _scrollToBottom,
-              child: const Icon(Icons.keyboard_arrow_down_rounded,
-                  color: AppColors.infoCyan),
-            ),
+    return Stack(children: [
+      ChatTurnListView(
+        scrollController: _scrollController,
+        messages: msgs,
+        ephemeralCards: _ephemeralCards,
+        pendingUserMessage: pending,
+        session: s,
+        isLoading: _streamController.isLoading,
+        errorMessage: _streamController.errorMessage,
+        onRetry: _streamController.loadTranscript,
+        onSpeak: _speakMessage,
+        onDismissCard: (idx) => setState(() => _ephemeralCards.removeAt(idx)),
+        onAttachToPrompt: (text) =>
+            _promptController.text = '${_promptController.text} $text'.trim(),
+      ),
+      if (_showJumpToBottom)
+        Positioned(
+          right: 16,
+          bottom: 16,
+          child: FloatingActionButton.small(
+            backgroundColor: AppColors.surfaceHighlight,
+            onPressed: _scrollToBottom,
+            child: const Icon(Icons.keyboard_arrow_down_rounded,
+                color: AppColors.infoCyan),
           ),
-      ],
-    );
+        ),
+    ]);
   }
 
-  IconButton _action(IconData icon, String tip, VoidCallback press,
-          [Color? color, Key? key]) =>
-      IconButton(
-          key: key,
-          icon: Icon(icon, size: 20, color: color),
-          tooltip: tip,
-          onPressed: press);
-
-  List<Widget> _buildAppBarActions(Session s, AudioCompanionState audio) {
-    final notifier = ref.read(audioCompanionServiceProvider.notifier);
-    final auto = audio.autoReadEnabled;
-    final live = audio.liveVoiceConnected;
-    return [
-      if (s.agent == 'antigravity')
-        _action(
-            Icons.record_voice_over_rounded,
-            live ? 'Live Voice: Connected' : 'Live Voice: Connect',
-            () => _toggleAntigravityLiveVoice(s),
-            live ? AppColors.statusCoral : AppColors.textMuted),
-      _action(
-          auto ? Icons.volume_up_rounded : Icons.volume_off_rounded,
-          auto ? 'Auto-read enabled' : 'Auto-read disabled',
-          notifier.toggleAutoRead,
-          auto ? AppColors.infoCyan : AppColors.textMuted),
-      _action(
-          audio.micEnabled ? Icons.mic_rounded : Icons.mic_off_rounded,
-          audio.micEnabled ? 'Microphone active' : 'Microphone off',
-          () => notifier.toggleMic(onResult: _handleRecognizedSpeech),
-          audio.micEnabled ? AppColors.statusCoral : AppColors.textMuted),
-      _action(
-          Icons.sports_motorsports_rounded,
-          'Take the Wheel',
-          () => _takeTheWheel(s),
-          AppColors.statusEmerald,
-          const Key('chat_take_wheel_button')),
-      _action(
-          Icons.article_outlined,
-          'View Transcript',
-          () => SessionNavigator.openTranscript(context, s,
-              showOpenSessionAction: false),
-          AppColors.infoCyan,
-          const Key('chat_open_transcript_button')),
-      _action(
-          Icons.refresh_rounded, 'Refresh', _streamController.loadTranscript),
-    ];
-  }
-
-  @override
-  Widget build(BuildContext context) {
+  void _listenFleetUpdates() {
     ref.listen<List<Session>>(fleetSessionsProvider, (prev, next) {
       final s = SessionHostResolver.findMatchingSession(next, _activeSession);
       if (s == null) return;
@@ -397,80 +342,54 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
         _streamController.loadSubagents();
       }
     });
+  }
 
+  @override
+  Widget build(BuildContext context) {
+    _listenFleetUpdates();
     final sessions = ref.watch(fleetSessionsProvider);
     final currentSession = _resolveLiveSession(sessions);
     _streamController.updateSession(currentSession, notify: false);
     final isWorking = _isSessionWorking;
     final messages = _streamController.transcriptData?.messages ?? [];
-    final audio = ref.watch(audioCompanionServiceProvider);
     final pending = _streamController.pendingUserMessage;
 
     return Scaffold(
       backgroundColor: AppColors.surface,
-      appBar: AppBar(
-        backgroundColor: AppColors.surface,
-        elevation: 0,
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back_rounded,
-              color: AppColors.textPrimary),
-          onPressed: () => Navigator.of(context).pop(),
-        ),
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(children: [
-              const Icon(Icons.chat_bubble_outline_rounded,
-                  size: 16, color: AppColors.infoCyan),
-              const SizedBox(width: 6),
-              Expanded(
-                child: Text(currentSession.displayTitle,
-                    style: AppTypography.titleMedium.copyWith(
-                        color: AppColors.textPrimary,
-                        fontWeight: FontWeight.w700),
-                    overflow: TextOverflow.ellipsis),
-              ),
-            ]),
-            Text(
-              '${currentSession.agentDisplayName} @ ${currentSession.hostTag} • ${messages.length} messages',
-              style: AppTypography.codeXs
-                  .copyWith(color: AppColors.textSecondary, fontSize: 10),
-              overflow: TextOverflow.ellipsis,
-            ),
-          ],
-        ),
-        actions: _buildAppBarActions(currentSession, audio),
+      appBar: ChatSessionAppBar(
+        session: currentSession,
+        messageCount: messages.length,
+        onToggleLiveVoice: () => _toggleAntigravityLiveVoice(currentSession),
+        onToggleMic: () => ref
+            .read(audioCompanionServiceProvider.notifier)
+            .toggleMic(onResult: _handleRecognizedSpeech),
+        onTakeWheel: () => _takeTheWheel(currentSession),
+        onRefresh: _streamController.loadTranscript,
       ),
       body: SafeArea(
-        child: Column(
-          children: [
-            HeadlessConfigPillBar(session: currentSession),
-            Expanded(
-              child: _buildBodyContent(currentSession, messages, pending),
-            ),
-            SubagentsDock(runningSubagents: _streamController.runningSubagents),
-            if (currentSession.blocked?.kind == BlockKind.auth)
-              HeadlessAuthCard(
+        child: Column(children: [
+          HeadlessConfigPillBar(session: currentSession),
+          Expanded(child: _buildBodyContent(currentSession, messages, pending)),
+          SubagentsDock(runningSubagents: _streamController.runningSubagents),
+          if (currentSession.blocked?.kind == BlockKind.auth)
+            HeadlessAuthCard(
                 session: currentSession,
                 surfacePrefix: 'transcript',
-                onResolved: _streamController.loadTranscript,
-              ),
-            if (currentSession.isHeadless)
-              HeadlessAutocompleteStrip(
+                onResolved: _streamController.loadTranscript),
+          if (currentSession.isHeadless)
+            HeadlessAutocompleteStrip(
                 controller: _promptController,
                 session: currentSession,
-                resolveHost: _resolveHostRecord,
-              ),
-            ChatComposerBar(
-              session: currentSession,
-              isWorking: isWorking,
-              promptController: _promptController,
-              promptFocusNode: _promptFocusNode,
-              onSend: _sendPrompt,
-              onCancel: _cancelTurn,
-            ),
-          ],
-        ),
+                resolveHost: _resolveHostRecord),
+          ChatComposerBar(
+            session: currentSession,
+            isWorking: isWorking,
+            promptController: _promptController,
+            promptFocusNode: _promptFocusNode,
+            onSend: _sendPrompt,
+            onCancel: _cancelTurn,
+          ),
+        ]),
       ),
     );
   }

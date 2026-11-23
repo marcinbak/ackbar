@@ -15,6 +15,7 @@ class FleetSessionCard extends StatelessWidget {
   final List<HostRecord> hosts;
   final void Function(Session session) onTap;
   final void Function(Session session)? onActions;
+  final String? selectedSessionId;
 
   const FleetSessionCard({
     super.key,
@@ -22,17 +23,22 @@ class FleetSessionCard extends StatelessWidget {
     required this.hosts,
     required this.onTap,
     this.onActions,
+    this.selectedSessionId,
   });
 
   @override
   Widget build(BuildContext context) {
     final statusColor = session.state.toBadgeStatus().color;
     final isOffline = isSessionHostOffline(session, hosts);
+    final isSelected = selectedSessionId == session.id;
 
     return Padding(
       padding: const EdgeInsets.only(bottom: AppSpacing.sm),
       child: GlassCard(
         accentColor: statusColor,
+        backgroundColor:
+            isSelected ? AppColors.infoCyan.withOpacity(0.10) : null,
+        borderColor: isSelected ? AppColors.infoCyan : null,
         onTap: () => onTap(session),
         onLongPress: onActions != null ? () => onActions!(session) : null,
         child: Column(
