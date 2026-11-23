@@ -46,6 +46,7 @@ It communicates with local and remote `ackbard` daemons over standard HTTP/REST,
 * **UI Framework:** Flutter 3.x with Riverpod 2.5 state management.
 * **Decoupled Theme System:** Based on Google Stitch design tokens (*Terminal Velocity* dark theme: `#0E1015` background, `#161922` surface, `#10B981` emerald, `#06B6D4` cyan, `#EF4444` coral, `#F59E0B` amber).
 * **Zero Cloud Dependencies:** Communicates directly with your self-hosted `ackbard` daemons over LAN or private Tailscale VPN.
+* **Adaptive Tablet Layout:** Switches between phone bottom navigation and multi-pane tablet workspaces via [`responsive_breakpoints.dart`](../mobile/lib/core/layout/responsive_breakpoints.dart).
 
 ---
 
@@ -132,7 +133,7 @@ Tap **View Transcript** from Chat or Terminal, or tap **Transcript** in `Session
 ---
 
 ### 🌐 7. Multi-Host Mesh & Tailscale
-* **Bottom-Bar Fleet Health Badge:** The `Hosts` bottom navigation tab displays a round count badge showing the total number of configured hosts, dynamically colored by fleet connectivity: emerald green when all hosts are online, amber orange when some hosts are offline, and coral red when all hosts are offline.
+* **Navigation Fleet Health Badge:** `AckbarBottomNav` and `AckbarNavRail` show host count colored green (all online), amber (partial), or coral (offline).
 * **App Version Header:** The top `DAEMON HOSTS` toolbar on the `Hosts` tab displays the mobile app version pill (`AppVersion.displayVersion`, synced with `VERSION`) alongside per-node daemon versions, keeping the `Fleet`, `Attention`, and `Plans` toolbars uncluttered.
 * **Tailnet Status Banner:** Live connection indicator for your Tailscale network.
 * **Host Management:** Register multiple Mac, Linux, and cloud servers.
@@ -159,7 +160,7 @@ flutter run
 cd mobile
 flutter test
 ```
-*Executes all 300 unit and widget tests covering models, providers, `SessionNavigator`, `ChatScreen`, `TranscriptScreen`, streaming, and fleet cards.*
+*Executes all 336 unit and widget tests covering models, providers, `SessionNavigator`, `ChatScreen`, `TranscriptScreen`, streaming, fleet cards, and tablet layouts.*
 
 ### Installing to iOS Device
 ```bash
@@ -231,14 +232,32 @@ Phase 6 implements persistent connection reliability, socket lifecycle managemen
 
 ## 7. Implemented Phase 7: Mobile Native Session Views & Read-Only Transcript
 
-Phase 7 establishes a 3-surface session model (interactive Chat, live Terminal, read-only Transcript) with central routing and `< 500 LOC` modular presentation components:
+Phase 7 establishes a 3-surface session model (interactive Chat, live Terminal, read-only Transcript) with central routing and modular presentation components:
 
 | Subsystem | File Reference | Architecture & Native Routing Behavior |
 | :--- | :--- | :--- |
-| **Session Navigator** | [`session_navigator.dart`](../mobile/lib/core/navigation/session_navigator.dart) | Central router (`47 LOC`). Routes headless sessions to `ChatScreen` and tmux to `TerminalScreen`. Clears unread session badges. Provides loop-safe `openTranscript`. |
-| **Interactive Chat Screen** | [`chat_screen.dart`](../mobile/lib/features/chat/presentation/chat_screen.dart) & [`chat_composer_bar.dart`](../mobile/lib/features/chat/presentation/chat_composer_bar.dart) | Dedicated headless chat (`474 LOC` + `249 LOC`). Houses live SSE stream controller, Take-the-Wheel PTY promotion, 1-tap `View Transcript`, and command cards. |
-| **Read-Only Transcript Screen** | [`transcript_screen.dart`](../mobile/lib/features/transcript/presentation/transcript_screen.dart) | Pure read-only transcript viewer (`465 LOC`). Features inline search filter, match counter, Copy Markdown, Auto-Read TTS, and loop-safe session button. |
-| **Fleet Session Card & Detail** | [`fleet_session_card.dart`](../mobile/lib/features/fleet/presentation/fleet_session_card.dart) & [`session_detail_sheet.dart`](../mobile/lib/features/fleet/presentation/session_detail_sheet.dart) | `FleetSessionCard` (`277 LOC`) renders `CHAT`/`PTY` badges. `SessionDetailSheet` (`464 LOC`) provides mode-matched actions (**`Open Chat`** / **`Open Terminal`**) and **`Transcript`**. |
+| **Session Navigator** | [`session_navigator.dart`](../mobile/lib/core/navigation/session_navigator.dart) | Central router. Routes headless sessions to `ChatScreen` and tmux to `TerminalScreen` (or updates `selectedTabletSessionProvider` on tablet). Clears unread badges. |
+| **Interactive Chat Screen** | [`chat_screen.dart`](../mobile/lib/features/chat/presentation/chat_screen.dart), [`chat_session_app_bar.dart`](../mobile/lib/features/chat/presentation/chat_session_app_bar.dart) & [`chat_composer_bar.dart`](../mobile/lib/features/chat/presentation/chat_composer_bar.dart) | Dedicated headless chat view. Houses live SSE stream controller, Take-the-Wheel PTY promotion, 1-tap `View Transcript`, command cards, and embedded tablet support. |
+| **Read-Only Transcript Screen** | [`transcript_screen.dart`](../mobile/lib/features/transcript/presentation/transcript_screen.dart) | Pure read-only transcript viewer. Features inline search filter, match counter, Copy Markdown, Auto-Read TTS, and loop-safe session button. |
+| **Fleet Session Card & Detail** | [`fleet_session_card.dart`](../mobile/lib/features/fleet/presentation/fleet_session_card.dart) & [`session_detail_sheet.dart`](../mobile/lib/features/fleet/presentation/session_detail_sheet.dart) | `FleetSessionCard` renders `CHAT`/`PTY` badges. `SessionDetailSheet` provides mode-matched actions (**`Open Chat`** / **`Open Terminal`**) and **`Transcript`**. |
 | **Attention Queue Routing** | [`attention_screen.dart`](../mobile/lib/features/attention/presentation/attention_screen.dart) | Mode-aware Pending buttons (**`Open Chat`** / **`Live Terminal`** + **`Transcript`**). In-Progress card tap routes directly via `SessionNavigator.openSession`. |
-| **Shared Turn & Tool Modules** | [`transcript_turn_bubble.dart`](../mobile/lib/features/transcript/presentation/transcript_turn_bubble.dart) & [`transcript_tool_widgets.dart`](../mobile/lib/features/transcript/presentation/transcript_tool_widgets.dart) | Modular presentation components (`352 LOC` + `364 LOC`). Renders Markdown bubbles, tool invocations, and reasoning accordions across Chat and Transcript. |
-| **Subagents Dock & Host Resolver** | [`subagents_dock.dart`](../mobile/lib/features/transcript/presentation/subagents_dock.dart) & [`session_host_resolver.dart`](../mobile/lib/core/utils/session_host_resolver.dart) | Collapsible subagents dock (`240 LOC`) and host resolver (`89 LOC`). All touched presentation files strictly `< 500 LOC`. |
+| **Shared Turn & Tool Modules** | [`transcript_turn_bubble.dart`](../mobile/lib/features/transcript/presentation/transcript_turn_bubble.dart) & [`transcript_tool_widgets.dart`](../mobile/lib/features/transcript/presentation/transcript_tool_widgets.dart) | Modular presentation components. Render Markdown bubbles, tool invocations, and reasoning accordions across Chat and Transcript. |
+| **Subagents Dock & Host Resolver** | [`subagents_dock.dart`](../mobile/lib/features/transcript/presentation/subagents_dock.dart) & [`session_host_resolver.dart`](../mobile/lib/core/utils/session_host_resolver.dart) | Collapsible subagents dock and live session host resolver. |
+
+---
+
+## 8. Adaptive Tablet Mode (`>= 650 dp`)
+
+Adaptive Tablet Mode optimizes touchscreen Chromebooks and tablets (`effectiveShortestSide >= 650 dp || width >= 1000 dp`) while keeping phone layouts unchanged below `650 dp`:
+
+| Component | File Reference | Breakpoint & Adaptive Behavior |
+| :--- | :--- | :--- |
+| **Breakpoints** | [`responsive_breakpoints.dart`](../mobile/lib/core/layout/responsive_breakpoints.dart) | Checks `min(width, height + viewInsets.bottom) >= 650 || width >= 1000` so docked keyboards retain tablet mode. |
+| **Navigation Rail** | [`ackbar_nav_rail.dart`](../mobile/lib/core/widgets/ackbar_nav_rail.dart) & [`main_navigation_shell.dart`](../mobile/lib/features/main_navigation_shell.dart) | Renders a `72 dp` left rail with semantic badges (`attentionCount`, `plansCount`, `hostsCount`), replacing `AckbarBottomNav`. |
+| **Fleet Workspace** | [`tablet_fleet_workspace.dart`](../mobile/lib/features/fleet/presentation/tablet_fleet_workspace.dart), [`fleet_tree_pane.dart`](../mobile/lib/features/fleet/presentation/fleet_tree_pane.dart) & [`fleet_empty_workspace.dart`](../mobile/lib/features/fleet/presentation/fleet_empty_workspace.dart) | Shows `320 dp` collapsible `FleetTreePane` + `FleetEmptyWorkspace` at `>= 900 dp`, or full-width session with `☰` drawer below `900 dp`. |
+| **Rotation & Drafts** | [`tablet_workspace_provider.dart`](../mobile/lib/core/providers/tablet_workspace_provider.dart) & [`session_navigator.dart`](../mobile/lib/core/navigation/session_navigator.dart) | Preserves live `ChatScreen`/`TerminalScreen` state across rotation via `GlobalObjectKey`; stores per-session prompt drafts and jumps cross-tab taps to Fleet. |
+| **Work Board Kanban** | [`tablet_work_board_kanban.dart`](../mobile/lib/features/tasks/presentation/tablet_work_board_kanban.dart) | Renders 4-column task pillars at `>= 960 dp` and horizontally scrollable 2-column pillars at `< 960 dp`. |
+| **Attention Split View** | [`tablet_attention_view.dart`](../mobile/lib/features/attention/presentation/tablet_attention_view.dart) & [`tablet_attention_detail_pane.dart`](../mobile/lib/features/attention/presentation/tablet_attention_detail_pane.dart) | Splits at `>= 720 dp` into a `320 dp` segmented queue list and centered `640 dp` detail card with `TerminalAccessoryBar`. |
+| **Right Side Sheets** | [`adaptive_side_sheet.dart`](../mobile/lib/core/widgets/adaptive_side_sheet.dart) | Opens `TranscriptScreen`, `DeliverableMarkdownModal`, `PlanDiffViewerModal` (`600 dp`), and `HeadlessConfigSheet`, `SessionDetailSheet`, `NewSessionSheet` (`580 dp`) right-anchored. |
+| **2-Column Card Grids** | [`adaptive_card_grid.dart`](../mobile/lib/core/widgets/adaptive_card_grid.dart) | Renders [`hosts_screen.dart`](../mobile/lib/features/hosts/presentation/hosts_screen.dart) and [`plans_screen.dart`](../mobile/lib/features/plans/presentation/plans_screen.dart) cards in 2-column grids (`maxWidth: 1120 dp`) at `>= 840 dp`. |
+| **Keyboard Compaction** | [`chat_session_app_bar.dart`](../mobile/lib/features/chat/presentation/chat_session_app_bar.dart) & [`chat_composer_bar.dart`](../mobile/lib/features/chat/presentation/chat_composer_bar.dart) | Shrinks AppBar to `40 dp` and hides pill/footer bars when remaining height `< 480 dp`, keeping `320 dp` tree fixed. |
