@@ -35,7 +35,8 @@ It is embedded directly into the `ackbard` Go binary and served on `http://127.0
 ## 2. Key Features
 
 ### 🖥️ 1. Multi-Tab Terminal Multiplexer
-* Powered by `xterm.js` with `FitAddon` and `WebglAddon` (where hardware acceleration is available).
+* Powered by `xterm.js` with `FitAddon`, `WebLinksAddon`, and `WebglAddon` (where hardware acceleration is available).
+* **OSC 8 Hyperlinks ([`terminal.js`](../web/js/terminal.js), [`tabs.js`](../web/js/tabs.js)):** `createTerminalLinkHandler` opens `http:`/`https:` links with `noopener,noreferrer` and shows hover URL tooltips.
 * Attach simultaneously to multiple local and remote agent sessions.
 * Full keyboard fidelity, ANSI color rendering, mouse wheel scrolling, and window resize propagation.
 * **No redundant redraws:** `sendTerminalResize` only sends a resize when the size differs from the last one sent on that socket. Reconnects always re-send. Switching a tab from chat to terminal view repaints the xterm viewport locally (`terminal.refresh`) and never sends Ctrl+L to the agent. Each extra resize or Ctrl+L made agents such as Antigravity clear and replay their whole transcript. See [daemon PTY sizing](daemon.md#pty-terminal-sizing-v1sessionspty).
@@ -233,7 +234,7 @@ The web frontend is organized as zero-build native ECMAScript modules (`<script 
 * **`tree.js`**: Sidebar tree hierarchy, drag-and-drop reordering, O(1) tab selection, and coalesced RAF rendering.
 * **`tasks.js`**: Work & Fleet Overview Kanban board, 4-pillar task lifecycle, organization/project filters, and zero context-switch workspace tab navigation.
 * **`tabs.js`**: Terminal and chat tab strip lifecycle, batched single-view closing, overflow menu, and persistence.
-* **`terminal.js`**: `xterm.js` terminal tabs, WebSocket PTY streams, resizing, and attachment uploads.
+* **`terminal.js`**: `xterm.js` terminal tabs, WebSocket PTY streams, resizing, attachment uploads, and OSC 8 link handling.
 * **`chat.js`**: Interactive chat interface, progressive reverse-NDJSON streaming, tool call formatters, and composer queue.
 * **`chat-activity.js`**: Ephemeral in-stream activity indicator lifecycle, tool activity formatting, phase-anchored timers, and DOM deduplication.
 * **`chat-commands.js`**: Command router for inline shell (`! <cmd>`) and standalone slash commands, composer indicator, and tab migration.
