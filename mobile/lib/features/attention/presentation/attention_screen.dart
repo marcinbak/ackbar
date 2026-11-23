@@ -90,7 +90,7 @@ class _AttentionScreenState extends ConsumerState<AttentionScreen> {
       );
     }
 
-    if (ResponsiveBreakpoints.isTablet(context)) {
+    if (ResponsiveBreakpoints.isAttentionSplit(context)) {
       return const Scaffold(
         backgroundColor: AppColors.background,
         appBar: AckbarAppBar(title: 'ATTENTION CONTROL'),

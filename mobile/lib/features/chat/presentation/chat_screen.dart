@@ -99,7 +99,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   @override
   void didUpdateWidget(covariant ChatScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.session.id != widget.session.id) {
+    if (_activeSession.id != widget.session.id) {
       _activeSession = widget.session;
       _restoreDraft();
       final h = SessionHostResolver.resolveHostRecord(
@@ -116,6 +116,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
 
   void _handleSessionRotated(Session nextSession, String? notice) {
     if (!mounted) return;
+    final prevId = _activeSession.id;
     setState(() {
       _activeSession = nextSession;
       _ephemeralCards.add(HeadlessEphemeralCardEntry(
@@ -128,6 +129,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     });
     ref.read(fleetSessionsProvider.notifier).upsertSession(nextSession);
     if (widget.isEmbedded) {
+      if (prevId != nextSession.id) {
+        final aliases = ref.read(tabletSessionKeyAliasesProvider);
+        ref.read(tabletSessionKeyAliasesProvider.notifier).state = {
+          ...aliases,
+          nextSession.id: prevId,
+        };
+      }
       ref.read(selectedTabletSessionProvider.notifier).state = nextSession;
     }
     final h = SessionHostResolver.resolveHostRecord(

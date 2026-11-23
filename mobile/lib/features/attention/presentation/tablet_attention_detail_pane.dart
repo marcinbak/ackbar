@@ -37,7 +37,28 @@ class TabletAttentionDetailPane extends ConsumerStatefulWidget {
 class _TabletAttentionDetailPaneState
     extends ConsumerState<TabletAttentionDetailPane> {
   final Map<String, int> _selectedOptions = {};
+  final Map<String, String> _replyDrafts = {};
   final TextEditingController _replyCtrl = TextEditingController();
+
+  void _setReplyText(String text) => _replyCtrl.value = TextEditingValue(
+        text: text,
+        selection: TextSelection.collapsed(offset: text.length),
+      );
+
+  @override
+  void didUpdateWidget(covariant TabletAttentionDetailPane oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final oldId = oldWidget.selectedPending?.id;
+    final newId = widget.selectedPending?.id;
+    if (oldId != newId) {
+      if (oldId != null) {
+        _replyCtrl.text.isEmpty
+            ? _replyDrafts.remove(oldId)
+            : _replyDrafts[oldId] = _replyCtrl.text;
+      }
+      _setReplyText(newId != null ? (_replyDrafts[newId] ?? '') : '');
+    }
+  }
 
   @override
   void dispose() {
@@ -94,10 +115,14 @@ class _TabletAttentionDetailPaneState
           child:
               Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Row(children: [
-              Text('${s.hostTag} • ${s.agentDisplayName}',
-                  style:
-                      AppTypography.codeXs.copyWith(color: AppColors.infoCyan)),
-              const Spacer(),
+              Expanded(
+                child: Text('${s.hostTag} • ${s.agentDisplayName}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: AppTypography.codeXs
+                        .copyWith(color: AppColors.infoCyan)),
+              ),
+              const SizedBox(width: 8),
               StatusBadge.working(isCompact: true),
             ]),
             AppSpacing.gapH8,
@@ -144,9 +169,14 @@ class _TabletAttentionDetailPaneState
         Row(children: [
           AgentLogo(agent: session.agent, size: 12, color: session.agentColor),
           const SizedBox(width: 6),
-          Text('${session.agentDisplayName} @ ${session.hostTag}',
-              style: AppTypography.codeXs.copyWith(color: AppColors.infoCyan)),
-          const Spacer(),
+          Expanded(
+            child: Text('${session.agentDisplayName} @ ${session.hostTag}',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style:
+                    AppTypography.codeXs.copyWith(color: AppColors.infoCyan)),
+          ),
+          const SizedBox(width: 8),
           StatusBadge(
               status: AckbarSessionStatus.blocked,
               customLabel: blocked?.kind.label ?? 'BLOCKED',
@@ -232,6 +262,7 @@ class _TabletAttentionDetailPaneState
               final val = _replyCtrl.text.trim().isNotEmpty
                   ? _replyCtrl.text.trim()
                   : (options.isNotEmpty ? options[selectedOpt] : 'y');
+              _replyDrafts.remove(session.id);
               _replyCtrl.clear();
               final ok = await ref
                   .read(fleetSessionsProvider.notifier)
@@ -241,7 +272,12 @@ class _TabletAttentionDetailPaneState
                     value: val,
                     answerSummary: 'Answered: $val',
                   );
-              if (!ok && mounted) _replyCtrl.text = val;
+              if (!ok && mounted) {
+                _replyDrafts[session.id] = val;
+                if (widget.selectedPending?.id == session.id) {
+                  _setReplyText(val);
+                }
+              }
             },
             icon: const Icon(Icons.check_circle_rounded, size: 16),
             label: const Text('Submit Choice'),

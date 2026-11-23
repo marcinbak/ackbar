@@ -6,6 +6,9 @@ final selectedTabletSessionProvider = StateProvider<Session?>((ref) => null);
 
 final tabletFleetTreeCollapsedProvider = StateProvider<bool>((ref) => false);
 
+final tabletSessionKeyAliasesProvider =
+    StateProvider<Map<String, String>>((ref) => const {});
+
 class TabletDraftPromptsNotifier extends StateNotifier<Map<String, String>> {
   TabletDraftPromptsNotifier() : super(const {});
 

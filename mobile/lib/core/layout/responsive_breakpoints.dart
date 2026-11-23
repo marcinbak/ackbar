@@ -23,9 +23,11 @@ abstract final class ResponsiveBreakpoints {
   static bool isFourColumnKanban(BuildContext context) =>
       isTablet(context) && MediaQuery.sizeOf(context).width >= 960;
 
+  static bool isAttentionSplit(BuildContext context) =>
+      isTablet(context) && MediaQuery.sizeOf(context).width >= 720;
+
   static bool isKeyboardCompact(BuildContext context) {
     final mq = MediaQuery.of(context);
-    return isTablet(context) &&
-        (mq.viewInsets.bottom > 120 || mq.size.height < 480);
+    return isTablet(context) && (mq.size.height - mq.viewInsets.bottom) < 480;
   }
 }

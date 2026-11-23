@@ -32,12 +32,35 @@ class _TabletFleetWorkspaceState extends ConsumerState<TabletFleetWorkspace> {
   // Caching GlobalObjectKey per (session id, engine mode) lets Flutter reparent
   // the live ChatScreen/TerminalScreen State across orientation changes without
   // tearing down streams or WebSockets.
-  GlobalObjectKey _keyFor(Session s) => _sessionKeys.putIfAbsent(
-        '${s.id}:${s.isHeadless}',
-        () => GlobalObjectKey('tablet_active_session_${s.id}_${s.isHeadless}'),
-      );
+  GlobalObjectKey _keyFor(Session s) {
+    final cacheKey = '${s.id}:${s.isHeadless}';
+    final existing = _sessionKeys[cacheKey];
+    if (existing != null) return existing;
+
+    final aliases = ref.read(tabletSessionKeyAliasesProvider);
+    var probe = aliases[s.id] ?? s.oldId;
+    final visited = <String>{s.id};
+    while (probe.isNotEmpty && visited.add(probe)) {
+      final prevKey = _sessionKeys.remove('$probe:${s.isHeadless}');
+      if (prevKey != null) {
+        _sessionKeys[cacheKey] = prevKey;
+        return prevKey;
+      }
+      probe = aliases[probe] ?? '';
+    }
+
+    return _sessionKeys[cacheKey] =
+        GlobalObjectKey('tablet_active_session_${s.id}_${s.isHeadless}');
+  }
+
+  void _closeDrawer() {
+    if (_scaffoldKey.currentState?.isDrawerOpen == true) {
+      _scaffoldKey.currentState?.closeDrawer();
+    }
+  }
 
   Future<void> _spawnSupervisor() async {
+    _closeDrawer();
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
         content: Text('Spawning zero-input supervisor...'),
@@ -80,11 +103,15 @@ class _TabletFleetWorkspaceState extends ConsumerState<TabletFleetWorkspace> {
           onPressed: _spawnSupervisor,
         ),
         IconButton(
+          key: const Key('tablet_fleet_new_session_button'),
           visualDensity: VisualDensity.compact,
           icon: const Icon(Icons.add_circle_outline_rounded,
               size: 19, color: AppColors.infoCyan),
           tooltip: 'Launch New Session',
-          onPressed: () => NewSessionSheet.show(context),
+          onPressed: () {
+            _closeDrawer();
+            NewSessionSheet.show(context);
+          },
         ),
       ];
 
@@ -158,6 +185,10 @@ class _TabletFleetWorkspaceState extends ConsumerState<TabletFleetWorkspace> {
           (hadInPrev && match == null)) {
         ref.read(selectedTabletSessionProvider.notifier).state = null;
       }
+    });
+
+    ref.listen<Session?>(selectedTabletSessionProvider, (prev, next) {
+      if (next != null && prev?.id != next.id) _closeDrawer();
     });
 
     final selected = ref.watch(selectedTabletSessionProvider);

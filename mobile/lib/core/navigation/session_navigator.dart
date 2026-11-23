@@ -15,16 +15,28 @@ class SessionNavigator {
     WidgetRef? ref,
     Session session,
   ) {
-    if (ref != null && session.isUnread) {
-      ref.read(fleetSessionsProvider.notifier).markSessionRead(
-            session.id,
-            session.host,
-          );
+    ProviderContainer? resolveContainer() =>
+        ref == null ? ProviderScope.containerOf(context, listen: false) : null;
+
+    if (session.isUnread) {
+      final notifier = ref != null
+          ? ref.read(fleetSessionsProvider.notifier)
+          : resolveContainer()!.read(fleetSessionsProvider.notifier);
+      notifier.markSessionRead(
+        session.id,
+        session.host,
+      );
     }
-    if (ref != null && ResponsiveBreakpoints.isTablet(context)) {
+    if (ResponsiveBreakpoints.isTablet(context)) {
+      final container = resolveContainer();
       Navigator.of(context).popUntil((route) => route.isFirst);
-      ref.read(selectedTabletSessionProvider.notifier).state = session;
-      ref.read(mainTabNavIndexProvider.notifier).state = 0;
+      if (ref != null) {
+        ref.read(selectedTabletSessionProvider.notifier).state = session;
+        ref.read(mainTabNavIndexProvider.notifier).state = 0;
+      } else {
+        container!.read(selectedTabletSessionProvider.notifier).state = session;
+        container.read(mainTabNavIndexProvider.notifier).state = 0;
+      }
       return Future.value();
     }
     if (session.isHeadless) {

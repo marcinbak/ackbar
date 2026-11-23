@@ -23,7 +23,7 @@ class FleetEmptyWorkspace extends ConsumerWidget {
     final spawned = await ref
         .read(fleetSessionsProvider.notifier)
         .spawnZeroInputSupervisor();
-    if (spawned != null) {
+    if (spawned != null && context.mounted) {
       ref.read(selectedTabletSessionProvider.notifier).state = spawned;
     }
   }
