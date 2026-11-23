@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
+import '../../../core/layout/responsive_breakpoints.dart';
 import '../../../core/models/work_task.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_typography.dart';
+import '../../../core/widgets/adaptive_side_sheet.dart';
 
 /// Modal dialog displaying hosted Markdown deliverables (plans, retrospectives, review findings)
 class DeliverableMarkdownModal extends StatelessWidget {
@@ -12,17 +14,19 @@ class DeliverableMarkdownModal extends StatelessWidget {
   const DeliverableMarkdownModal({super.key, required this.deliverable});
 
   static Future<void> show(BuildContext context, TaskDeliverable deliverable) {
-    return showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (context) => SizedBox(
-        height: MediaQuery.of(context).size.height * 0.85,
-        child: ClipRRect(
-          borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
-          child: DeliverableMarkdownModal(deliverable: deliverable),
-        ),
-      ),
+    return AdaptiveSideSheet.show(
+      context,
+      width: 600,
+      builder: (ctx) => ResponsiveBreakpoints.isTablet(ctx)
+          ? DeliverableMarkdownModal(deliverable: deliverable)
+          : SizedBox(
+              height: MediaQuery.of(ctx).size.height * 0.85,
+              child: ClipRRect(
+                borderRadius:
+                    const BorderRadius.vertical(top: Radius.circular(16)),
+                child: DeliverableMarkdownModal(deliverable: deliverable),
+              ),
+            ),
     );
   }
 

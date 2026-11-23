@@ -28,6 +28,7 @@ class FleetTreeView extends ConsumerWidget {
   final SessionTapCallback? onSessionActions;
   final FolderAddCallback onAddSession;
   final bool isSearching;
+  final String? selectedSessionId;
 
   const FleetTreeView({
     super.key,
@@ -37,6 +38,7 @@ class FleetTreeView extends ConsumerWidget {
     this.onSessionActions,
     required this.onAddSession,
     this.isSearching = false,
+    this.selectedSessionId,
   });
 
   @override
@@ -325,6 +327,84 @@ class FleetTreeView extends ConsumerWidget {
       hosts: hosts,
       onTap: onSessionTap,
       onActions: onSessionActions,
+      selectedSessionId: selectedSessionId,
+    );
+  }
+}
+
+class FleetTreeEmptyState extends StatelessWidget {
+  final bool hasHosts;
+  final bool hasSessions;
+  final VoidCallback onStartSession;
+
+  const FleetTreeEmptyState({
+    super.key,
+    required this.hasHosts,
+    required this.hasSessions,
+    required this.onStartSession,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final noH = !hasHosts, noS = !hasSessions;
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(AppSpacing.xl),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              noH
+                  ? Icons.dns_rounded
+                  : (noS ? Icons.smart_toy_outlined : Icons.search_off_rounded),
+              size: 36,
+              color: AppColors.textMuted,
+            ),
+            AppSpacing.gapH12,
+            Text(
+              noH
+                  ? 'No Hosts Connected'
+                  : (noS
+                      ? 'No Sessions on Connected Hosts'
+                      : 'No matching sessions found'),
+              style: AppTypography.titleMedium
+                  .copyWith(color: AppColors.textSecondary),
+            ),
+            AppSpacing.gapH4,
+            Text(
+              noH
+                  ? 'Add a host in the Hosts tab to see active agent sessions.'
+                  : (noS
+                      ? 'Pull down to refresh or launch a new agent session.'
+                      : 'Try adjusting your search or tab filter.'),
+              textAlign: TextAlign.center,
+              style:
+                  AppTypography.bodySmall.copyWith(color: AppColors.textMuted),
+            ),
+            if (hasHosts && !hasSessions)
+              Padding(
+                padding: const EdgeInsets.only(top: AppSpacing.lg),
+                child: ElevatedButton.icon(
+                  onPressed: onStartSession,
+                  icon: const Icon(Icons.rocket_launch_rounded, size: 16),
+                  label: Text(
+                    'START FIRST SESSION',
+                    style: AppTypography.codeXs.copyWith(
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.terminalBlack,
+                    ),
+                  ),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.infoCyan,
+                    foregroundColor: AppColors.terminalBlack,
+                    shape: RoundedRectangleBorder(
+                        borderRadius: AppSpacing.roundedMd),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
     );
   }
 }

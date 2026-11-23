@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../../core/layout/responsive_breakpoints.dart';
 import '../../../core/models/work_task.dart';
 import '../../../core/providers/fleet_providers.dart';
 import '../../../core/theme/app_colors.dart';
@@ -8,6 +9,7 @@ import '../../../core/theme/app_typography.dart';
 import '../../../core/widgets/ackbar_app_bar.dart';
 import '../../../core/widgets/segmented_filter_tabs.dart';
 import '../../plans/presentation/plans_screen.dart';
+import 'tablet_work_board_kanban.dart';
 import 'task_card.dart';
 
 enum WorkBoardViewMode { board, plans }
@@ -75,6 +77,40 @@ class _WorkBoardScreenState extends ConsumerState<WorkBoardScreen> {
       );
     }
 
+    final appBar = AckbarAppBar(
+      title: 'WORK BOARD',
+      actions: [
+        TextButton.icon(
+          onPressed: () {
+            setState(() => _viewMode = WorkBoardViewMode.plans);
+          },
+          icon: const Icon(Icons.assignment_outlined,
+              size: 16, color: AppColors.infoCyan),
+          label: Text(
+            'PLANS',
+            style: AppTypography.codeXs.copyWith(
+              fontWeight: FontWeight.w700,
+              color: AppColors.infoCyan,
+            ),
+          ),
+        ),
+        IconButton(
+          icon: const Icon(Icons.refresh_rounded,
+              size: 18, color: AppColors.infoCyan),
+          tooltip: 'Refresh Tasks',
+          onPressed: () => ref.read(tasksProvider.notifier).refreshTasks(),
+        ),
+      ],
+    );
+
+    if (ResponsiveBreakpoints.isTablet(context)) {
+      return Scaffold(
+        backgroundColor: AppColors.background,
+        appBar: appBar,
+        body: const TabletWorkBoardKanban(),
+      );
+    }
+
     final pillars = ref.watch(pillarTasksProvider);
     final groups = ref.watch(discoveredTaskGroupsProvider);
     final selectedGroup = ref.watch(taskGroupFilterProvider);
@@ -102,31 +138,7 @@ class _WorkBoardScreenState extends ConsumerState<WorkBoardScreen> {
 
     return Scaffold(
       backgroundColor: AppColors.background,
-      appBar: AckbarAppBar(
-        title: 'WORK BOARD',
-        actions: [
-          TextButton.icon(
-            onPressed: () {
-              setState(() => _viewMode = WorkBoardViewMode.plans);
-            },
-            icon: const Icon(Icons.assignment_outlined,
-                size: 16, color: AppColors.infoCyan),
-            label: Text(
-              'PLANS',
-              style: AppTypography.codeXs.copyWith(
-                fontWeight: FontWeight.w700,
-                color: AppColors.infoCyan,
-              ),
-            ),
-          ),
-          IconButton(
-            icon: const Icon(Icons.refresh_rounded,
-                size: 18, color: AppColors.infoCyan),
-            tooltip: 'Refresh Tasks',
-            onPressed: () => ref.read(tasksProvider.notifier).refreshTasks(),
-          ),
-        ],
-      ),
+      appBar: appBar,
       body: RefreshIndicator(
         color: AppColors.infoCyan,
         backgroundColor: AppColors.surfaceHighlight,

@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../../../core/layout/responsive_breakpoints.dart';
 import '../../../../core/models/headless_models.dart';
 import '../../../../core/models/host.dart';
 import '../../../../core/models/session.dart';
+import '../../../../core/navigation/session_navigator.dart';
 import '../../../../core/network/api_client.dart';
 import '../../../../core/network/headless_api_client.dart';
 import '../../../../core/providers/fleet_providers.dart';
@@ -265,7 +267,9 @@ class _HeadlessAuthCardState extends ConsumerState<HeadlessAuthCard>
           clearBlocked: true,
         );
         ref.read(fleetSessionsProvider.notifier).upsertSession(updated);
-        if (widget.surfacePrefix == 'attention') {
+        if (ResponsiveBreakpoints.isTablet(context)) {
+          await SessionNavigator.openSession(context, ref, updated);
+        } else if (widget.surfacePrefix == 'attention') {
           TerminalScreen.open(context, updated);
         } else {
           TerminalScreen.openReplacement(context, updated);

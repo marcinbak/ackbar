@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/layout/responsive_breakpoints.dart';
 import '../../../core/models/session.dart';
 import '../../../core/models/transcript.dart';
 import '../../../core/navigation/session_navigator.dart';
@@ -14,17 +15,20 @@ import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_typography.dart';
 import '../../../core/utils/session_host_resolver.dart';
+import '../../../core/widgets/adaptive_side_sheet.dart';
 import 'transcript_tool_widgets.dart';
 import 'transcript_turn_bubble.dart';
 
 class TranscriptScreen extends ConsumerStatefulWidget {
   final Session session;
   final bool showOpenSessionAction;
+  final bool isSideSheet;
 
   const TranscriptScreen({
     super.key,
     required this.session,
     this.showOpenSessionAction = true,
+    this.isSideSheet = false,
   });
 
   static Future<void> open(
@@ -32,6 +36,17 @@ class TranscriptScreen extends ConsumerStatefulWidget {
     Session session, {
     bool showOpenSessionAction = true,
   }) {
+    if (ResponsiveBreakpoints.isTablet(context)) {
+      return AdaptiveSideSheet.show(
+        context,
+        width: 600,
+        builder: (_) => TranscriptScreen(
+          session: session,
+          showOpenSessionAction: showOpenSessionAction,
+          isSideSheet: true,
+        ),
+      );
+    }
     return Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => TranscriptScreen(
@@ -406,7 +421,10 @@ class _TranscriptScreenState extends ConsumerState<TranscriptScreen>
         backgroundColor: AppColors.surface,
         elevation: 0,
         leading: IconButton(
-          icon: const Icon(Icons.arrow_back_rounded,
+          icon: Icon(
+              widget.isSideSheet
+                  ? Icons.close_rounded
+                  : Icons.arrow_back_rounded,
               color: AppColors.textPrimary),
           onPressed: () => Navigator.of(context).pop(),
         ),
