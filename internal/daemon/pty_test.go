@@ -231,11 +231,20 @@ func TestBuildRemotePTYAttachArgs(t *testing.T) {
 	}
 
 	remoteScript := args[3]
-	if !strings.Contains(remoteScript, "exec tmux attach-session -t 'ackbar-session-1'") {
+	attachFragment := "exec tmux attach-session -t 'ackbar-session-1'"
+	attachIdx := strings.Index(remoteScript, attachFragment)
+	if attachIdx == -1 {
 		t.Errorf("remoteScript missing combined exec tmux attach-session: %q", remoteScript)
 	}
 	if !strings.Contains(remoteScript, "tmux has-session -t 'ackbar-session-1'") {
 		t.Errorf("remoteScript missing has-session check: %q", remoteScript)
+	}
+	hyperlinksGuard := "tmux show-options -s terminal-features 2>/dev/null | grep -qE 'xterm(-256color|\\*):[^ ]*hyperlinks' || tmux set-option -sa terminal-features ',xterm-256color:hyperlinks' 2>/dev/null || true;"
+	guardIdx := strings.Index(remoteScript, hyperlinksGuard)
+	if guardIdx == -1 {
+		t.Errorf("remoteScript missing idempotent hyperlinks terminal-features guard: %q", remoteScript)
+	} else if attachIdx != -1 && guardIdx >= attachIdx {
+		t.Errorf("hyperlinks guard (idx %d) must precede exec tmux attach-session (idx %d): %q", guardIdx, attachIdx, remoteScript)
 	}
 
 	// Metacharacters must be safely single-quoted to prevent $(...) expansion

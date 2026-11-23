@@ -2,7 +2,10 @@ package tmux
 
 import (
 	"context"
+	"errors"
 	"os"
+	"os/exec"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -201,5 +204,141 @@ sleep 30
 
 	if emptyArgs := buildPaneShellArgs("/tmp", " \t\r\n; ", nil); emptyArgs != nil {
 		t.Fatalf("expected nil args for whitespace/semicolon-only command, got %v", emptyArgs)
+	}
+}
+
+func TestEnsureHyperlinksFeature_Unit(t *testing.T) {
+	t.Run("sets feature when missing", func(t *testing.T) {
+		var calls [][]string
+		runner := func(_ context.Context, args ...string) ([]byte, error) {
+			calls = append(calls, args)
+			if len(args) > 0 && args[0] == "show-options" {
+				return []byte("terminal-features[0] xterm*:clipboard:ccolour:cstyle:focus:title\nterminal-features[1] screen*:title\n"), nil
+			}
+			return nil, nil
+		}
+
+		ensureHyperlinksFeature(context.Background(), runner)
+
+		want := [][]string{
+			{"show-options", "-s", "terminal-features"},
+			{"set-option", "-sa", "terminal-features", ",xterm-256color:hyperlinks"},
+		}
+		if !reflect.DeepEqual(calls, want) {
+			t.Fatalf("calls = %v, want %v", calls, want)
+		}
+	})
+
+	t.Run("sets feature when only non-xterm entry has hyperlinks", func(t *testing.T) {
+		var calls [][]string
+		runner := func(_ context.Context, args ...string) ([]byte, error) {
+			calls = append(calls, args)
+			if len(args) > 0 && args[0] == "show-options" {
+				return []byte("terminal-features[0] screen*:hyperlinks\nterminal-features[1] xterm*:clipboard\n"), nil
+			}
+			return nil, nil
+		}
+
+		ensureHyperlinksFeature(context.Background(), runner)
+
+		if len(calls) != 2 || calls[1][0] != "set-option" {
+			t.Fatalf("expected set-option when only screen* has hyperlinks, got calls = %v", calls)
+		}
+	})
+
+	t.Run("noop when xterm hyperlinks already present", func(t *testing.T) {
+		existingOutputs := []string{
+			"terminal-features[0] xterm*:clipboard:title\nterminal-features[3] xterm-256color:hyperlinks\n",
+			"terminal-features[0] xterm*:clipboard:ccolour:hyperlinks\n",
+			"terminal-features[0] xterm-256color:RGB:hyperlinks\n",
+		}
+		for _, out := range existingOutputs {
+			var calls [][]string
+			runner := func(_ context.Context, args ...string) ([]byte, error) {
+				calls = append(calls, args)
+				return []byte(out), nil
+			}
+
+			ensureHyperlinksFeature(context.Background(), runner)
+
+			want := [][]string{{"show-options", "-s", "terminal-features"}}
+			if !reflect.DeepEqual(calls, want) {
+				t.Fatalf("for output %q: calls = %v, want %v", out, calls, want)
+			}
+		}
+	})
+
+	t.Run("tolerates errors on older tmux or missing server", func(t *testing.T) {
+		var calls [][]string
+		runner := func(_ context.Context, args ...string) ([]byte, error) {
+			calls = append(calls, args)
+			return nil, errors.New("exit status 1")
+		}
+
+		ensureHyperlinksFeature(context.Background(), runner)
+
+		want := [][]string{
+			{"show-options", "-s", "terminal-features"},
+			{"set-option", "-sa", "terminal-features", ",xterm-256color:hyperlinks"},
+		}
+		if !reflect.DeepEqual(calls, want) {
+			t.Fatalf("calls = %v, want %v", calls, want)
+		}
+	})
+}
+
+func TestEnsureHyperlinksFeature_Integration(t *testing.T) {
+	if !IsTmuxInstalled() {
+		t.Skip("tmux not installed on host, skipping test")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	sessionName := "ackbar-test-hyperlinks"
+	_ = Kill(ctx, sessionName)
+	if err := Spawn(ctx, sessionName, os.TempDir(), "sleep 30"); err != nil {
+		if strings.Contains(err.Error(), "Operation not permitted") {
+			t.Skip("tmux socket creation blocked by sandbox environment, skipping test")
+		}
+		t.Fatalf("Spawn failed: %v", err)
+	}
+	defer Kill(ctx, sessionName)
+
+	countMatches := func(out []byte) int {
+		count := 0
+		for _, line := range strings.Split(string(out), "\n") {
+			if hyperlinksFeatureRegex.MatchString(line) {
+				count++
+			}
+		}
+		return count
+	}
+
+	out1, err := exec.CommandContext(ctx, "tmux", "show-options", "-s", "terminal-features").Output()
+	if err != nil {
+		t.Skipf("tmux show-options terminal-features not supported on host: %v", err)
+	}
+	c1 := countMatches(out1)
+
+	EnsureHyperlinksFeature(ctx)
+
+	out2, err := exec.CommandContext(ctx, "tmux", "show-options", "-s", "terminal-features").Output()
+	if err != nil {
+		t.Fatalf("show-options after EnsureHyperlinksFeature failed: %v", err)
+	}
+	c2 := countMatches(out2)
+
+	if c1 != c2 {
+		t.Fatalf("EnsureHyperlinksFeature was not idempotent: match count changed from %d to %d\n%s", c1, c2, string(out2))
+	}
+
+	if verOut, vErr := exec.CommandContext(ctx, "tmux", "-V").Output(); vErr == nil {
+		verStr := strings.TrimSpace(string(verOut))
+		if strings.HasPrefix(verStr, "tmux 3.4") || strings.HasPrefix(verStr, "tmux 3.5") || strings.HasPrefix(verStr, "tmux 3.6") {
+			if c2 < 1 {
+				t.Fatalf("expected hyperlinks terminal-feature on %s, got:\n%s", verStr, string(out2))
+			}
+		}
 	}
 }

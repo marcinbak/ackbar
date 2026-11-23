@@ -16,7 +16,8 @@ import {
   reconnectTerminalTab,
   markSessionAsRead,
   showUploadToast,
-  uploadAndAttachFile
+  uploadAndAttachFile,
+  createTerminalLinkHandler
 } from './terminal.js';
 import {
   setupChatInterface,
@@ -260,7 +261,8 @@ function mountTerminalInTab(tab) {
       cursor: '#3b82f6',
       selectionBackground: 'rgba(59, 130, 246, 0.3)'
     },
-    allowTransparency: true
+    allowTransparency: true,
+    linkHandler: createTerminalLinkHandler(termViewEl)
   });
 
   const fitAddon = new FitAddon.FitAddon();

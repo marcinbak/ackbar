@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -70,6 +71,7 @@ func SpawnWithEnv(ctx context.Context, sessionName, cwd, command string, env map
 	// Configure window-size latest so new sessions adapt dynamically to client geometries
 	_ = exec.CommandContext(ctx, "tmux", "set-option", "-t", sessionName, "window-size", "latest").Run()
 	_ = exec.CommandContext(ctx, "tmux", "set-window-option", "-t", sessionName, "window-size", "latest").Run()
+	EnsureHyperlinksFeature(ctx)
 
 	return nil
 }
@@ -98,8 +100,40 @@ func RespawnWithEnv(ctx context.Context, sessionName, cwd, command string, env m
 
 	_ = exec.CommandContext(ctx, "tmux", "set-option", "-t", exactSessionTarget(sessionName), "window-size", "latest").Run()
 	_ = exec.CommandContext(ctx, "tmux", "set-window-option", "-t", paneTarget, "window-size", "latest").Run()
+	EnsureHyperlinksFeature(ctx)
 
 	return nil
+}
+
+type tmuxCommandRunner func(ctx context.Context, args ...string) ([]byte, error)
+
+func defaultTmuxCommandRunner(ctx context.Context, args ...string) ([]byte, error) {
+	return exec.CommandContext(ctx, "tmux", args...).Output()
+}
+
+var hyperlinksFeatureRegex = regexp.MustCompile(`xterm(-256color|\*):[^ \r\n]*hyperlinks`)
+
+// EnsureHyperlinksFeature idempotently enables OSC 8 hyperlinks for xterm-256color
+// clients on tmux 3.4+ servers; errors are ignored for tmux < 3.4 or missing servers.
+func EnsureHyperlinksFeature(ctx context.Context) {
+	ensureHyperlinksFeature(ctx, defaultTmuxCommandRunner)
+}
+
+func ensureHyperlinksFeature(ctx context.Context, run tmuxCommandRunner) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if ctx.Err() != nil {
+		return
+	}
+	if run == nil {
+		run = defaultTmuxCommandRunner
+	}
+	out, _ := run(ctx, "show-options", "-s", "terminal-features")
+	if hyperlinksFeatureRegex.Match(out) {
+		return
+	}
+	_, _ = run(ctx, "set-option", "-sa", "terminal-features", ",xterm-256color:hyperlinks")
 }
 
 // Kill terminates the tmux session with the given name.

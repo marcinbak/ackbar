@@ -198,7 +198,7 @@ func buildRemotePTYAttachArgs(sshTarget, tmuxName, cwd, resumeCmd string) []stri
 			shellSingleQuote(tmuxName), shellSingleQuote(cwd))
 	}
 
-	remoteScript := fmt.Sprintf("tmux has-session -t %s 2>/dev/null || %s; tmux set-option -t %s mouse on 2>/dev/null || true; tmux set-option -t %s window-size latest 2>/dev/null || true; tmux set-window-option -t %s window-size latest 2>/dev/null || true; exec tmux attach-session -t %s",
+	remoteScript := fmt.Sprintf("tmux has-session -t %s 2>/dev/null || %s; tmux set-option -t %s mouse on 2>/dev/null || true; tmux set-option -t %s window-size latest 2>/dev/null || true; tmux set-window-option -t %s window-size latest 2>/dev/null || true; tmux show-options -s terminal-features 2>/dev/null | grep -qE 'xterm(-256color|\\*):[^ ]*hyperlinks' || tmux set-option -sa terminal-features ',xterm-256color:hyperlinks' 2>/dev/null || true; exec tmux attach-session -t %s",
 		shellSingleQuote(tmuxName),
 		newSessCmd,
 		shellSingleQuote(tmuxName),
@@ -333,6 +333,7 @@ func (s *Server) servePTYWS(ws *websocket.Conn) {
 		_ = exec.Command("tmux", "set-option", "-t", tmuxName, "mouse", "on").Run()
 		_ = exec.Command("tmux", "set-option", "-t", tmuxName, "window-size", "latest").Run()
 		_ = exec.Command("tmux", "set-window-option", "-t", tmuxName, "window-size", "latest").Run()
+		tmux.EnsureHyperlinksFeature(req.Context())
 		cmd = exec.Command("tmux", "attach-session", "-t", tmuxName)
 	} else {
 		sshTarget = s.resolveSSHTarget(sessHost)

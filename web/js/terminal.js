@@ -454,6 +454,45 @@ function sendTerminalResize(socket, cols, rows) {
   socket.ackbarLastResize = { cols, rows };
 }
 
+function parseSafeHttpUrl(text) {
+  if (typeof text !== 'string' || !text) return null;
+  try {
+    const url = new URL(text);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      return null;
+    }
+    return url;
+  } catch (_) {
+    return null;
+  }
+}
+
+function createTerminalLinkHandler(termViewEl) {
+  return {
+    activate(_event, text) {
+      const url = parseSafeHttpUrl(text);
+      if (!url) return;
+      if (typeof window !== 'undefined' && typeof window.open === 'function') {
+        const win = window.open(url.href, '_blank', 'noopener,noreferrer');
+        if (win) {
+          try {
+            win.opener = null;
+          } catch (_) {}
+        }
+      }
+    },
+    hover(_event, text) {
+      if (!termViewEl) return;
+      const url = parseSafeHttpUrl(text);
+      termViewEl.title = url ? text : '';
+    },
+    leave() {
+      if (!termViewEl) return;
+      termViewEl.title = '';
+    }
+  };
+}
+
 // Activate Tab
 
 export {
@@ -467,5 +506,7 @@ export {
   uploadAndAttachFile,
   reconnectTerminalTab,
   markSessionAsRead,
-  sendTerminalResize
+  sendTerminalResize,
+  parseSafeHttpUrl,
+  createTerminalLinkHandler
 };
