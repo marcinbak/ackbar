@@ -174,6 +174,12 @@ test('createTerminalLinkHandler hover and leave update and clear tooltip safely'
   handler.hover({}, 'https://example.com/page');
   assert.equal(termViewEl.title, 'https://example.com/page');
 
+  handler.hover({}, 'https://example.com');
+  assert.equal(termViewEl.title, 'https://example.com/');
+
+  handler.hover({}, 'https://trusted.com\t.attacker.example');
+  assert.equal(termViewEl.title, 'https://trusted.com.attacker.example/');
+
   handler.hover({}, 'javascript:alert(1)');
   assert.equal(termViewEl.title, '');
 

@@ -484,7 +484,7 @@ function createTerminalLinkHandler(termViewEl) {
     hover(_event, text) {
       if (!termViewEl) return;
       const url = parseSafeHttpUrl(text);
-      termViewEl.title = url ? text : '';
+      termViewEl.title = url ? url.href : '';
     },
     leave() {
       if (!termViewEl) return;
