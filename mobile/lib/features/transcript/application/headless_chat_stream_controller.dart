@@ -227,7 +227,11 @@ class HeadlessChatStreamController extends ChangeNotifier {
         final existing = msgs[idx];
         final tools = List<String>.from(existing.toolCalls)
           ..add(evt.formatToolCallSummary());
-        msgs[idx] = existing.copyWith(toolCalls: tools, inFlight: true);
+        msgs[idx] = existing.copyWith(
+          toolCalls: tools,
+          checklist: evt.checklist.isNotEmpty ? evt.checklist : null,
+          inFlight: true,
+        );
         _updateMessages(msgs);
         break;
       case ChatStreamEventType.toolResult:

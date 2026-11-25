@@ -3,6 +3,6 @@
 class AppVersion {
   AppVersion._();
 
-  static const String version = '20261123.02';
+  static const String version = '20261125.01';
   static const String displayVersion = 'v$version';
 }

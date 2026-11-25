@@ -53,6 +53,8 @@ type InFlightTurnSnapshot struct {
 	AssistantText     string
 	ThinkingText      string
 	ToolCalls         []string
+	Checklist         []agent.ChecklistItem
+	HasChecklist      bool
 	ResultText        string
 	LastTurnText      string
 	LastErrorText     string
@@ -352,6 +354,10 @@ func SynthesizeInFlightTurnWithRegistry(reg *agent.Registry, meta *TurnSpoolMeta
 	if err != nil {
 		return snap, err
 	}
+	var ce agent.ChecklistExtractor
+	if reg != nil {
+		ce, _ = reg.AsChecklistExtractor(agentName)
+	}
 	snap.LastSeq = maxSeq
 	for _, evt := range events {
 		if !evt.Timestamp.IsZero() {
@@ -389,6 +395,15 @@ func SynthesizeInFlightTurnWithRegistry(reg *agent.Registry, meta *TurnSpoolMeta
 				snap.ActivityStartedAt = evt.Timestamp
 			}
 			snap.ToolCalls = append(snap.ToolCalls, FormatSpoolToolSummary(evt.ToolName, evt.ToolInput))
+			if evt.Checklist != nil {
+				snap.Checklist = agent.CloneChecklist(evt.Checklist)
+				snap.HasChecklist = true
+			} else if ce != nil && evt.ToolInput != nil {
+				if next, ok := ce.ApplyToolChecklist(snap.Checklist, evt.ToolName, evt.ToolInput); ok {
+					snap.Checklist = next
+					snap.HasChecklist = true
+				}
+			}
 		case "tool_result":
 			snap.ActivityKind = "processing"
 			if !evt.Timestamp.IsZero() {

@@ -16,6 +16,7 @@ type streamParser struct {
 	hasEmittedAssistantText bool
 	errTracker              turnErrorTracker
 	toolInputs              map[string]map[string]any
+	checklist               []agent.ChecklistItem
 	emittedAuthBlock        bool
 }
 

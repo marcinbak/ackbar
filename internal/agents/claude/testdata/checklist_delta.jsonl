@@ -1,0 +1,1 @@
+{"type":"assistant","timestamp":"2026-11-25T08:00:03Z","message":{"content":[{"type":"tool_use","name":"TaskUpdate","input":{"taskId":"1","status":"completed"}},{"type":"tool_use","name":"TaskUpdate","input":{"taskId":"2","status":"in_progress","activeForm":"Wiring handlers"}},{"type":"text","text":"Updated progress."}]}}

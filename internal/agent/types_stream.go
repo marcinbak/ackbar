@@ -30,13 +30,14 @@ type AgentStatus struct {
 }
 
 type TranscriptMessage struct {
-	Role      string    `json:"role"`
-	Content   string    `json:"content"`
-	Thinking  string    `json:"thinking,omitempty"`
-	ToolCalls []string  `json:"tool_calls,omitempty"`
-	TurnID    string    `json:"turn_id,omitempty"`
-	InFlight  bool      `json:"in_flight,omitempty"`
-	Timestamp time.Time `json:"timestamp"`
+	Role      string          `json:"role"`
+	Content   string          `json:"content"`
+	Thinking  string          `json:"thinking,omitempty"`
+	ToolCalls []string        `json:"tool_calls,omitempty"`
+	Checklist []ChecklistItem `json:"checklist,omitempty"`
+	TurnID    string          `json:"turn_id,omitempty"`
+	InFlight  bool            `json:"in_flight,omitempty"`
+	Timestamp time.Time       `json:"timestamp"`
 }
 
 type Transcript struct {
@@ -92,6 +93,7 @@ type ChatStreamEvent struct {
 	ToolName    string             `json:"tool_name,omitempty"`
 	ToolInput   any                `json:"tool_input,omitempty"`
 	ToolOutput  string             `json:"tool_output,omitempty"`
+	Checklist   []ChecklistItem    `json:"checklist,omitempty"`
 	Blocked     *Blocked           `json:"blocked,omitempty"`
 	IsError     bool               `json:"is_error,omitempty"`
 	QueueItems  []*PromptQueueItem `json:"queue_items,omitempty"`

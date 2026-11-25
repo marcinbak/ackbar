@@ -175,3 +175,7 @@ type SubagentBlockInspector interface {
 type WorkspaceModelResolver interface {
 	ResolveWorkspaceModel(homeDir, cwd string, acct *AgentAccount) string
 }
+
+type ChecklistExtractor interface {
+	ApplyToolChecklist(prev []ChecklistItem, toolName string, toolInput any) (next []ChecklistItem, matched bool)
+}

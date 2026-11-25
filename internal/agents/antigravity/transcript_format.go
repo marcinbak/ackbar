@@ -74,7 +74,13 @@ func hasImageGenTool(entry *transcriptEntry) bool {
 
 func appendPlannerResponse(messages *[]agent.TranscriptMessage, entry *transcriptEntry, ts time.Time) {
 	var toolSummaries []string
+	var turnChecklist []agent.ChecklistItem
+	matchedChecklist := false
 	for _, tc := range entry.ToolCalls {
+		if next, matched := (*Plugin)(nil).ApplyToolChecklist(turnChecklist, tc.Name, tc.Args); matched {
+			turnChecklist = next
+			matchedChecklist = true
+		}
 		if mcpName, mcpDetail, isMCP := agentutil.FormatMCPToolDisplay(tc.Name, tc.Args); isMCP {
 			if mcpDetail != "" {
 				toolSummaries = append(toolSummaries, fmt.Sprintf("%s: %s", mcpName, mcpDetail))
@@ -109,7 +115,7 @@ func appendPlannerResponse(messages *[]agent.TranscriptMessage, entry *transcrip
 			}
 		}
 	}
-	if content == "" && entry.Thinking == "" && len(toolSummaries) == 0 {
+	if content == "" && entry.Thinking == "" && len(toolSummaries) == 0 && !matchedChecklist {
 		return
 	}
 	if len(*messages) > 0 && (*messages)[len(*messages)-1].Role == "assistant" {
@@ -131,11 +137,18 @@ func appendPlannerResponse(messages *[]agent.TranscriptMessage, entry *transcrip
 		if len(toolSummaries) > 0 {
 			last.ToolCalls = append(last.ToolCalls, toolSummaries...)
 		}
+		if matchedChecklist {
+			last.Checklist = agent.CloneChecklist(turnChecklist)
+		}
 		last.Timestamp = ts
 		return
 	}
+	var checklist []agent.ChecklistItem
+	if matchedChecklist {
+		checklist = agent.CloneChecklist(turnChecklist)
+	}
 	*messages = append(*messages, agent.TranscriptMessage{
-		Role: "assistant", Content: content, Thinking: entry.Thinking, ToolCalls: toolSummaries, Timestamp: ts,
+		Role: "assistant", Content: content, Thinking: entry.Thinking, ToolCalls: toolSummaries, Checklist: checklist, Timestamp: ts,
 	})
 }
 

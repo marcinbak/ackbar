@@ -27,6 +27,7 @@ func TestGetFS(t *testing.T) {
 		"js/auth.js",
 		"js/chat-activity.js",
 		"js/chat-auth.js",
+		"js/chat-checklist.js",
 		"js/chat-commands.js",
 		"js/chat-command-cards.js",
 		"js/chat.js",

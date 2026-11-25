@@ -39,6 +39,11 @@ import {
   deduplicateInStreamActivities,
   resolveFallbackActivityStartTime
 } from './chat-activity.js';
+import {
+  normalizeChecklistItems,
+  renderChecklistCard,
+  upsertTurnChecklistCard
+} from './chat-checklist.js';
 
 
 function extractPastedAttachmentFiles(clipboardData) {
@@ -2059,54 +2064,6 @@ function renderInteractiveBlockCard(tabObj, blocked, toolName) {
   scrollChatToBottom(tabObj);
 }
 
-function renderTodoWriteCard(tabObj, toolInput) {
-  let todos = [];
-  if (toolInput) {
-    if (Array.isArray(toolInput.todos)) todos = toolInput.todos;
-    else if (typeof toolInput === 'string') {
-      try {
-        const parsed = JSON.parse(toolInput);
-        if (Array.isArray(parsed.todos)) todos = parsed.todos;
-      } catch (_) {}
-    } else if (typeof toolInput === 'object' && Array.isArray(toolInput.tasks)) {
-      todos = toolInput.tasks;
-    }
-  }
-  if (!todos || todos.length === 0) return null;
-
-  const completedCount = todos.filter(t => (t.status || '').toLowerCase() === 'completed').length;
-  const card = document.createElement('div');
-  card.className = 'chat-todo-card';
-  card.innerHTML = `
-    <div class="chat-todo-header">
-      <span>📋</span>
-      <span>Task Progress (${completedCount}/${todos.length})</span>
-    </div>
-    <div class="chat-todo-list">
-      ${todos.map(t => {
-        const rawSt = String(t.status || 'pending').toLowerCase();
-        const st = ['completed', 'in_progress', 'pending'].includes(rawSt) ? rawSt : 'pending';
-        let iconClass = 'todo-icon-pending';
-        let iconChar = '○';
-        if (st === 'completed') {
-          iconClass = 'todo-icon-completed';
-          iconChar = '✓';
-        } else if (st === 'in_progress') {
-          iconClass = 'todo-icon-inprogress';
-          iconChar = '▶';
-        }
-        return `
-          <div class="chat-todo-item ${st}">
-            <span class="chat-todo-status-icon ${iconClass}">${iconChar}</span>
-            <span class="chat-todo-text">${escapeHtml(t.content || t.text || t.name || '')}</span>
-          </div>
-        `;
-      }).join('')}
-    </div>
-  `;
-  return card;
-}
-
 async function submitSessionResponse(tabObj, action, value) {
   if (!tabObj || !tabObj.session) return;
   const sessionId = tabObj.session.id;
@@ -2864,6 +2821,11 @@ function domMessageMatchesTranscript(el, msg) {
     const msgToolCount = Array.isArray(msg.tool_calls) ? msg.tool_calls.length : 0;
     const domToolCount = el.querySelectorAll('.chat-tool-call-item').length;
     if (msgToolCount !== domToolCount) return false;
+    const msgChecklist = normalizeChecklistItems(msg.checklist);
+    const domCard = el.querySelector('.chat-todo-card');
+    const domSig = domCard ? (domCard.dataset.checklistSig || '') : '';
+    const msgSig = msgChecklist.length > 0 ? JSON.stringify(msgChecklist) : '';
+    if (domSig !== msgSig) return false;
     return true;
   }
   return el.classList.contains('system-msg');
@@ -2897,6 +2859,9 @@ function coalesceTranscriptMessages(messages) {
       if (Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) {
         last.tool_calls = (last.tool_calls || []).concat(msg.tool_calls);
       }
+      if (Array.isArray(msg.checklist) && msg.checklist.length > 0) {
+        last.checklist = msg.checklist.map(item => ({ ...item }));
+      }
       if (msg.timestamp) {
         last.timestamp = msg.timestamp;
       }
@@ -2924,12 +2889,14 @@ function coalesceTranscriptMessages(messages) {
       }
       coalesced.push({
         ...msg,
-        tool_calls: Array.isArray(msg.tool_calls) ? [...msg.tool_calls] : []
+        tool_calls: Array.isArray(msg.tool_calls) ? [...msg.tool_calls] : [],
+        ...(Array.isArray(msg.checklist) ? { checklist: msg.checklist.map(item => ({ ...item })) } : {})
       });
     } else {
       coalesced.push({
         ...msg,
-        tool_calls: Array.isArray(msg.tool_calls) ? [...msg.tool_calls] : []
+        tool_calls: Array.isArray(msg.tool_calls) ? [...msg.tool_calls] : [],
+        ...(Array.isArray(msg.checklist) ? { checklist: msg.checklist.map(item => ({ ...item })) } : {})
       });
     }
   }
@@ -3673,6 +3640,10 @@ function finalizeTranscriptLoad(tabObj, container, total, coalesced, inFlightPro
           const parsed = parseToolCall(tc);
           return { name: parsed.name, detail: parsed.detail, status: 'done', output: '' };
         });
+      }
+      if (Array.isArray(inFlightTurn.checklist) && inFlightTurn.checklist.length > 0) {
+        tabObj.activeTurnChecklist = inFlightTurn.checklist;
+        upsertTurnChecklistCard(restoredInFlight, inFlightTurn.checklist);
       }
     }
     setChatSending(tabObj, true);
@@ -4867,10 +4838,11 @@ function createChatMessageElement(tabObj, msg) {
     if (msg.tool_calls && msg.tool_calls.length > 0) {
       toolsHtml = renderToolGroupHtml(msg.tool_calls);
     }
+    const hasChecklist = Array.isArray(msg.checklist) && msg.checklist.length > 0;
     const bodyHtml = renderMarkdown(msg.content || '') + (isInFlightAssistant ? '<span class="chat-streaming-cursor"></span>' : '');
     const slotsHtml = isInFlightAssistant
       ? `<div class="chat-thinking-slot">${thinkingHtml}</div><div class="chat-tools-slot">${toolsHtml}</div>`
-      : `${thinkingHtml}${toolsHtml ? `<div class="chat-tools">${toolsHtml}</div>` : ''}`;
+      : `${thinkingHtml}${(toolsHtml || hasChecklist) ? `<div class="chat-tools">${toolsHtml}</div>` : ''}`;
     msgEl.innerHTML = `
       ${slotsHtml}
       <div class="chat-msg-body markdown-body">${bodyHtml}</div>
@@ -4883,29 +4855,8 @@ function createChatMessageElement(tabObj, msg) {
         groupCard.dataset.toolCalls = JSON.stringify(msg.tool_calls.map(tc => parseToolCall(tc)));
       }
     }
-
-    const allTools = (msg.tool_calls && msg.tool_calls.length > 0) ? msg.tool_calls : (msg.tool_uses || []);
-    if (Array.isArray(allTools)) {
-      for (const tc of allTools) {
-        const tcName = (tc.name || '').toLowerCase();
-        if (tcName === 'todowrite' || tcName === 'todo_write') {
-          const inputData = tc.input || tc.detail;
-          const todoCard = renderTodoWriteCard(tabObj, inputData);
-          if (todoCard) {
-            const toolsSlot = msgEl.querySelector('.chat-tools');
-            if (toolsSlot) {
-              toolsSlot.appendChild(todoCard);
-            } else {
-              const bodyEl = msgEl.querySelector('.chat-msg-body');
-              if (bodyEl) {
-                msgEl.insertBefore(todoCard, bodyEl);
-              } else {
-                msgEl.appendChild(todoCard);
-              }
-            }
-          }
-        }
-      }
+    if (hasChecklist) {
+      upsertTurnChecklistCard(msgEl, msg.checklist);
     }
   } else {
     msgEl.className = 'chat-msg system-msg';
@@ -5449,6 +5400,9 @@ function ensureActiveAssistantMessage(tabObj) {
       renderBufferedToolsIntoSlot(slot, tabObj.activeTurnTools);
     }
   }
+  if (Array.isArray(tabObj.activeTurnChecklist) && tabObj.activeTurnChecklist.length > 0) {
+    upsertTurnChecklistCard(assistantMsgEl, tabObj.activeTurnChecklist);
+  }
 
   attachChatMessageListeners(assistantMsgEl, tabObj.activeTurnBuffer || '', tabObj);
   tabObj.chatMessagesEl.appendChild(assistantMsgEl);
@@ -5606,6 +5560,7 @@ async function sendChatPrompt(tabObj, forcedPromptText, schedulingOptions) {
     tabObj.activeTurnMsgEl = null;
     tabObj.activeTurnBuffer = '';
     tabObj.activeTurnTools = [];
+    tabObj.activeTurnChecklist = null;
     tabObj.activeTurnThinking = '';
   }
 
@@ -5662,6 +5617,7 @@ async function sendChatPrompt(tabObj, forcedPromptText, schedulingOptions) {
       tabObj.activeTurnMsgEl = null;
       tabObj.activeTurnBuffer = '';
       tabObj.activeTurnTools = [];
+      tabObj.activeTurnChecklist = null;
       tabObj.activeTurnThinking = '';
     }
     setChatSending(tabObj, true);
@@ -5879,6 +5835,7 @@ function handleChatStreamEvent(tabObj, evt) {
         tabObj.activeTurnMsgEl = null;
         tabObj.activeTurnBuffer = '';
         tabObj.activeTurnTools = [];
+        tabObj.activeTurnChecklist = null;
         tabObj.activeTurnThinking = '';
       }
       tabObj.activeActivityPhaseKey = null;
@@ -6136,12 +6093,9 @@ function handleChatStreamEvent(tabObj, evt) {
         output: ''
       });
 
-      if (evt.tool_name === 'TodoWrite' || evt.tool_name === 'todo_write') {
-        const todoCard = renderTodoWriteCard(tabObj, evt.tool_input);
-        if (todoCard && activeMsg) {
-          const slot = activeMsg.querySelector('.chat-tools-slot');
-          if (slot) slot.appendChild(todoCard);
-        }
+      if (Array.isArray(evt.checklist) && evt.checklist.length > 0 && activeMsg) {
+        upsertTurnChecklistCard(activeMsg, evt.checklist);
+        tabObj.activeTurnChecklist = evt.checklist;
       }
 
       if (activeMsg && evt.tool_name) {
@@ -6340,7 +6294,8 @@ function handleChatStreamEvent(tabObj, evt) {
         tabObj.inFlightPrompt ||
         tabObj.activeTurnMsgEl ||
         tabObj.activeTurnBuffer ||
-        (tabObj.activeTurnTools && tabObj.activeTurnTools.length > 0)
+        (tabObj.activeTurnTools && tabObj.activeTurnTools.length > 0) ||
+        (tabObj.activeTurnChecklist && tabObj.activeTurnChecklist.length > 0)
       );
       if (!hasTurnContext) {
         const domAssistants = tabObj.chatMessagesEl.querySelectorAll('.chat-msg.assistant-msg');
@@ -6373,7 +6328,7 @@ function handleChatStreamEvent(tabObj, evt) {
       }
 
       // If message bubble does not exist yet, create it if there is text or executed tools
-      if (!tabObj.activeTurnMsgEl && (tabObj.activeTurnBuffer || (tabObj.activeTurnTools && tabObj.activeTurnTools.length > 0))) {
+      if (!tabObj.activeTurnMsgEl && (tabObj.activeTurnBuffer || (tabObj.activeTurnTools && tabObj.activeTurnTools.length > 0) || (tabObj.activeTurnChecklist && tabObj.activeTurnChecklist.length > 0))) {
         ensureActiveAssistantMessage(tabObj);
       }
 
@@ -6443,7 +6398,7 @@ function handleChatStreamEvent(tabObj, evt) {
       renderSubagentsBar(tabObj);
       hideInStreamActivity(tabObj);
 
-      if (!tabObj.activeTurnMsgEl && (tabObj.activeTurnBuffer || (tabObj.activeTurnTools && tabObj.activeTurnTools.length > 0))) {
+      if (!tabObj.activeTurnMsgEl && (tabObj.activeTurnBuffer || (tabObj.activeTurnTools && tabObj.activeTurnTools.length > 0) || (tabObj.activeTurnChecklist && tabObj.activeTurnChecklist.length > 0))) {
         ensureActiveAssistantMessage(tabObj);
       }
 
@@ -6569,6 +6524,7 @@ function resetChatComposer(tabObj) {
   tabObj.activeTurnMsgEl = null;
   tabObj.activeTurnBuffer = '';
   tabObj.activeTurnTools = [];
+  tabObj.activeTurnChecklist = null;
   tabObj.activeTurnThinking = '';
   if (tabObj.chatCancelBtn) tabObj.chatCancelBtn.style.display = 'none';
   if (tabObj.chatStatusBadge) tabObj.chatStatusBadge.textContent = '🟢 Ready';
@@ -6840,7 +6796,8 @@ export {
   renderConfigPopoverContent,
   togglePlanMode,
   renderInteractiveBlockCard,
-  renderTodoWriteCard,
+  renderChecklistCard,
+  upsertTurnChecklistCard,
   submitSessionResponse,
   executeClientAction,
   ANTIGRAVITY_DEFAULT_MODELS,

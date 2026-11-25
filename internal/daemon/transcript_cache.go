@@ -8,6 +8,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"ackbar/internal/agent"
 )
 
 const maxTranscriptCacheEntries = 128
@@ -40,6 +42,7 @@ func ParseClaudeCodeJSONL(r io.Reader, filterUser func(raw map[string]interface{
 			copy(tc, m.ToolCalls)
 			messages[i].ToolCalls = tc
 		}
+		messages[i].Checklist = agent.CloneChecklist(m.Checklist)
 	}
 
 	scanner := bufio.NewScanner(r)
@@ -253,6 +256,7 @@ func cloneTranscriptMessages(src []TranscriptMessage) []TranscriptMessage {
 			copy(tc, m.ToolCalls)
 			dst[i].ToolCalls = tc
 		}
+		dst[i].Checklist = agent.CloneChecklist(m.Checklist)
 	}
 	return dst
 }
@@ -390,15 +394,7 @@ func (s *Server) setCachedTranscript(agent, nativeID, cwd, filePath string, file
 		}
 	}
 
-	storedMsgs := make([]TranscriptMessage, len(msgs))
-	for i, m := range msgs {
-		storedMsgs[i] = m
-		if len(m.ToolCalls) > 0 {
-			tc := make([]string, len(m.ToolCalls))
-			copy(tc, m.ToolCalls)
-			storedMsgs[i].ToolCalls = tc
-		}
-	}
+	storedMsgs := cloneTranscriptMessages(msgs)
 
 	s.transcriptCache[key] = &transcriptCacheEntry{
 		agent:           agent,

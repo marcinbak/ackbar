@@ -125,8 +125,13 @@ func (p *streamParser) parseStepUpdate(su map[string]interface{}) []agent.ChatSt
 			if params, ok := toolInput.(map[string]any); ok {
 				p.toolInputs[key] = params
 			}
+			var evtChecklist []agent.ChecklistItem
+			if next, matched := (*Plugin)(nil).ApplyToolChecklist(p.checklist, toolName, toolInput); matched {
+				p.checklist = next
+				evtChecklist = agent.CloneChecklist(next)
+			}
 			evts = append(evts, agent.ChatStreamEvent{
-				SessionID: p.sessionID, Type: "tool_start", ToolName: toolName, ToolInput: toolInput,
+				SessionID: p.sessionID, Type: "tool_start", ToolName: toolName, ToolInput: toolInput, Checklist: evtChecklist,
 			})
 			if blocked := agentutil.ParseInteractiveToolBlock(toolName, toolInput); blocked != nil {
 				evts = append(evts, agent.ChatStreamEvent{

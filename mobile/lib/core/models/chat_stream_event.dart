@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'checklist_item.dart';
 import 'session.dart';
 
 enum ChatStreamEventType {
@@ -69,6 +70,7 @@ class ChatStreamEvent {
   final String toolName;
   final dynamic toolInput;
   final String toolOutput;
+  final List<ChecklistItem> checklist;
   final Blocked? blocked;
   final bool isError;
   final List<PromptQueueItemModel> queueItems;
@@ -88,6 +90,7 @@ class ChatStreamEvent {
     this.toolName = '',
     this.toolInput,
     this.toolOutput = '',
+    this.checklist = const [],
     this.blocked,
     this.isError = false,
     this.queueItems = const [],
@@ -171,6 +174,7 @@ class ChatStreamEvent {
       toolName: json['tool_name']?.toString() ?? '',
       toolInput: json['tool_input'],
       toolOutput: json['tool_output']?.toString() ?? '',
+      checklist: ChecklistItem.listFromJson(json['checklist']),
       blocked: blocked,
       isError: json['is_error'] as bool? ?? false,
       queueItems: qItems,
@@ -207,6 +211,7 @@ class InFlightTurnMeta {
   final bool active;
   final String? prompt;
   final DateTime? startedAt;
+  final List<ChecklistItem> checklist;
 
   const InFlightTurnMeta({
     required this.turnId,
@@ -214,6 +219,7 @@ class InFlightTurnMeta {
     this.active = true,
     this.prompt,
     this.startedAt,
+    this.checklist = const [],
   });
 
   factory InFlightTurnMeta.fromJson(Map<String, dynamic> json) {
@@ -237,6 +243,7 @@ class InFlightTurnMeta {
       active: active,
       prompt: prompt,
       startedAt: started,
+      checklist: ChecklistItem.listFromJson(json['checklist']),
     );
   }
 
@@ -246,6 +253,8 @@ class InFlightTurnMeta {
         'active': active,
         if (prompt != null) 'prompt': prompt,
         if (startedAt != null) 'started_at': startedAt!.toIso8601String(),
+        if (checklist.isNotEmpty)
+          'checklist': checklist.map((e) => e.toJson()).toList(),
       };
 }
 

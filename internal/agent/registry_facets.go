@@ -203,3 +203,12 @@ func (r *Registry) AsWorkspaceModelResolver(key string) (WorkspaceModelResolver,
 	f, ok := p.(WorkspaceModelResolver)
 	return f, ok
 }
+
+func (r *Registry) AsChecklistExtractor(key string) (ChecklistExtractor, bool) {
+	p, ok := r.Get(key)
+	if !ok {
+		return nil, false
+	}
+	f, ok := p.(ChecklistExtractor)
+	return f, ok
+}

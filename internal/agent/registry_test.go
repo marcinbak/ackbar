@@ -230,6 +230,18 @@ func (p *persistentWavePlugin) AppendTranscript(r io.Reader, existing []Transcri
 	return existing, nil
 }
 
+type checklistStubPlugin struct {
+	minimalPlugin
+}
+
+func (c *checklistStubPlugin) ApplyToolChecklist(prev []ChecklistItem, toolName string, toolInput any) ([]ChecklistItem, bool) {
+	if toolName != "update_checklist" {
+		return nil, false
+	}
+	next := append(CloneChecklist(prev), ChecklistItem{Title: "Step 1", Status: ChecklistDone})
+	return next, true
+}
+
 func TestRegistry_Wave45FacetsAndBaseDefaults(t *testing.T) {
 	reg := NewRegistry()
 	acpAgent := &fullStubPlugin{
@@ -346,5 +358,53 @@ func TestRegistry_ConcurrentAccess(t *testing.T) {
 
 	if len(reg.Keys()) != 20 {
 		t.Fatalf("expected 20 registered plugins, got %d", len(reg.Keys()))
+	}
+}
+
+func TestCloneChecklistAndAsChecklistExtractor(t *testing.T) {
+	if got := CloneChecklist(nil); got != nil {
+		t.Fatalf("CloneChecklist(nil) = %#v, want nil", got)
+	}
+	empty := []ChecklistItem{}
+	clonedEmpty := CloneChecklist(empty)
+	if clonedEmpty == nil || len(clonedEmpty) != 0 {
+		t.Fatalf("CloneChecklist(empty) = %#v, want non-nil empty slice", clonedEmpty)
+	}
+
+	orig := []ChecklistItem{
+		{ID: "1", Title: "Audit", ActiveForm: "Auditing", Status: ChecklistInProgress},
+	}
+	cloned := CloneChecklist(orig)
+	cloned[0].Status = ChecklistDone
+	cloned[0].Title = "Mutated"
+	if orig[0].Status != ChecklistInProgress || orig[0].Title != "Audit" {
+		t.Fatalf("CloneChecklist did not isolate copy: %+v", orig)
+	}
+
+	reg := NewRegistry()
+	bare := &minimalPlugin{key: "bare"}
+	cePlug := &checklistStubPlugin{
+		minimalPlugin: minimalPlugin{key: "checklist-agent", aliases: []string{"ca"}},
+	}
+	if err := reg.Register(bare); err != nil {
+		t.Fatalf("register bare: %v", err)
+	}
+	if err := reg.Register(cePlug); err != nil {
+		t.Fatalf("register cePlug: %v", err)
+	}
+
+	if _, ok := reg.AsChecklistExtractor("bare"); ok {
+		t.Fatal("bare plugin must not satisfy AsChecklistExtractor")
+	}
+	if _, ok := reg.AsChecklistExtractor("missing"); ok {
+		t.Fatal("missing plugin must not satisfy AsChecklistExtractor")
+	}
+	ce, ok := reg.AsChecklistExtractor("CA")
+	if !ok || ce == nil {
+		t.Fatal("expected AsChecklistExtractor('CA') via alias to succeed")
+	}
+	next, matched := ce.ApplyToolChecklist(orig, "update_checklist", nil)
+	if !matched || len(next) != 2 || next[1].Status != ChecklistDone {
+		t.Fatalf("ApplyToolChecklist = (%+v, %v)", next, matched)
 	}
 }

@@ -478,10 +478,12 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string, reg *agent.Regis
 		}
 
 		var streamParser agent.StreamParser
+		var checklistExtractor agent.ChecklistExtractor
 		if reg != nil {
 			if f, ok := reg.AsStreamParserFactory(workerMeta.Agent); ok {
 				streamParser = f.NewStreamParser(workerMeta.SessionID)
 			}
+			checklistExtractor, _ = reg.AsChecklistExtractor(workerMeta.Agent)
 		}
 		var eofLastText string
 		var eofHadError bool
@@ -489,9 +491,10 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string, reg *agent.Regis
 		go func() {
 			defer close(stdoutDone)
 			eofLastText, _, eofHadError = parseHeadlessStream(workerMeta.SessionID, stdoutPipe, streamParseHooks{
-				emitTurnComplete: false,
-				stdioControl:     rt.isStdioControl,
-				streamParser:     streamParser,
+				emitTurnComplete:   false,
+				stdioControl:       rt.isStdioControl,
+				streamParser:       streamParser,
+				checklistExtractor: checklistExtractor,
 				onSystemEvent: func(raw map[string]interface{}) {
 					bgCtrl.handleSystemEvent(gen, raw)
 				},

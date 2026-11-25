@@ -142,6 +142,31 @@ func (h *HeadlessRunner) runOneShotPluginTurn(sess *Session, prompt string, hd a
 	return nil
 }
 
+func applyStreamEventChecklist(extractor agent.ChecklistExtractor, runningChecklist *[]agent.ChecklistItem, evt *ChatStreamEvent) {
+	if evt == nil {
+		return
+	}
+	if evt.Checklist != nil {
+		if runningChecklist != nil {
+			*runningChecklist = agent.CloneChecklist(evt.Checklist)
+		}
+		return
+	}
+	if extractor == nil {
+		return
+	}
+	var prev []agent.ChecklistItem
+	if runningChecklist != nil {
+		prev = *runningChecklist
+	}
+	if next, ok := extractor.ApplyToolChecklist(prev, evt.ToolName, evt.ToolInput); ok {
+		if runningChecklist != nil {
+			*runningChecklist = next
+		}
+		evt.Checklist = agent.CloneChecklist(next)
+	}
+}
+
 func dispatchPluginStreamLine(
 	parser agent.StreamParser,
 	line []byte,
@@ -151,6 +176,7 @@ func dispatchPluginStreamLine(
 	finalLastTurnText *string,
 	finalResultText *string,
 	finalStreamHadError *bool,
+	runningChecklist *[]agent.ChecklistItem,
 	hooks streamParseHooks,
 ) bool {
 	if parser == nil {
@@ -168,6 +194,7 @@ func dispatchPluginStreamLine(
 		finalLastTurnText,
 		finalResultText,
 		finalStreamHadError,
+		runningChecklist,
 		hooks,
 	)
 	return true
@@ -181,6 +208,7 @@ func applyPluginStreamEvents(
 	finalLastTurnText *string,
 	finalResultText *string,
 	finalStreamHadError *bool,
+	runningChecklist *[]agent.ChecklistItem,
 	hooks streamParseHooks,
 ) {
 	for _, ev := range events {
@@ -194,10 +222,18 @@ func applyPluginStreamEvents(
 			if ev.Model != "" && hooks.onModelDetected != nil {
 				hooks.onModelDetected(ev.Model)
 			}
-		case "thought_delta", "tool_start", "tool_result":
+		case "thought_delta", "tool_result":
 			if hooks.onTurnContent != nil {
 				hooks.onTurnContent()
 			}
+			if hooks.emit != nil {
+				hooks.emit(ev)
+			}
+		case "tool_start":
+			if hooks.onTurnContent != nil {
+				hooks.onTurnContent()
+			}
+			applyStreamEventChecklist(hooks.checklistExtractor, runningChecklist, &ev)
 			if hooks.emit != nil {
 				hooks.emit(ev)
 			}

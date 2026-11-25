@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'chat_stream_event.dart';
+import 'checklist_item.dart';
 
 /// A single conversational step / turn within an agent session transcript.
 class TranscriptMessage {
@@ -7,6 +8,7 @@ class TranscriptMessage {
   final String content;
   final String? thinking;
   final List<String> toolCalls;
+  final List<ChecklistItem> checklist;
   final DateTime timestamp;
   final String? turnId;
   final bool inFlight;
@@ -16,6 +18,7 @@ class TranscriptMessage {
     required this.content,
     this.thinking,
     this.toolCalls = const [],
+    this.checklist = const [],
     required this.timestamp,
     this.turnId,
     this.inFlight = false,
@@ -52,12 +55,15 @@ class TranscriptMessage {
     final inFlight =
         json['in_flight'] as bool? ?? json['inFlight'] as bool? ?? false;
 
+    final checklist = ChecklistItem.listFromJson(json['checklist']);
+
     return TranscriptMessage(
       role: role,
       content: content,
       thinking:
           (thinking != null && thinking.trim().isNotEmpty) ? thinking : null,
       toolCalls: tools,
+      checklist: checklist,
       timestamp: ts,
       turnId: turnId,
       inFlight: inFlight,
@@ -69,6 +75,7 @@ class TranscriptMessage {
     String? content,
     String? thinking,
     List<String>? toolCalls,
+    List<ChecklistItem>? checklist,
     DateTime? timestamp,
     String? turnId,
     bool? inFlight,
@@ -78,6 +85,7 @@ class TranscriptMessage {
       content: content ?? this.content,
       thinking: thinking ?? this.thinking,
       toolCalls: toolCalls ?? this.toolCalls,
+      checklist: checklist ?? this.checklist,
       timestamp: timestamp ?? this.timestamp,
       turnId: turnId ?? this.turnId,
       inFlight: inFlight ?? this.inFlight,
@@ -89,6 +97,8 @@ class TranscriptMessage {
         'content': content,
         if (thinking != null) 'thinking': thinking,
         if (toolCalls.isNotEmpty) 'tool_calls': toolCalls,
+        if (checklist.isNotEmpty)
+          'checklist': checklist.map((e) => e.toJson()).toList(),
         'timestamp': timestamp.toIso8601String(),
         if (turnId != null) 'turn_id': turnId,
         if (inFlight) 'in_flight': true,
@@ -125,10 +135,11 @@ class TranscriptData {
       for (final m in (json['messages'] as List)) {
         if (m is Map) {
           final msg = TranscriptMessage.fromJson(Map<String, dynamic>.from(m));
-          // Keep turns that have content, thinking, or tool calls
+          // Keep turns that have content, thinking, tool calls, or checklist
           if (msg.content.trim().isNotEmpty ||
               (msg.thinking != null && msg.thinking!.trim().isNotEmpty) ||
-              msg.toolCalls.isNotEmpty) {
+              msg.toolCalls.isNotEmpty ||
+              msg.checklist.isNotEmpty) {
             if (msgs.isNotEmpty &&
                 msgs.last.isUser &&
                 msg.isUser &&

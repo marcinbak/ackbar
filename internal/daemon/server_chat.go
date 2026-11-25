@@ -969,6 +969,9 @@ func CoalesceTranscriptMessagesForWire(msgs []TranscriptMessage) []TranscriptMes
 				if len(msg.ToolCalls) > 0 {
 					last.ToolCalls = append(last.ToolCalls, msg.ToolCalls...)
 				}
+				if len(msg.Checklist) > 0 {
+					last.Checklist = agent.CloneChecklist(msg.Checklist)
+				}
 				if !msg.Timestamp.IsZero() {
 					last.Timestamp = msg.Timestamp
 				}
@@ -1004,6 +1007,7 @@ func CoalesceTranscriptMessagesForWire(msgs []TranscriptMessage) []TranscriptMes
 			Content:   msg.Content,
 			Thinking:  msg.Thinking,
 			ToolCalls: tcCopy,
+			Checklist: agent.CloneChecklist(msg.Checklist),
 			TurnID:    msg.TurnID,
 			InFlight:  msg.InFlight,
 			Timestamp: msg.Timestamp,
