@@ -1,0 +1,1 @@
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu_u1","name":"TaskUpdate","input":{"taskId":"1","status":"completed"}},{"type":"tool_use","id":"tu_c3","name":"TaskCreate","input":{"subject":"Gamma"}}]}}

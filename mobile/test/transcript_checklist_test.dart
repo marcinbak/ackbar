@@ -221,6 +221,23 @@ void main() {
     expect(assistants.first.checklist[0].status, ChecklistStatus.done);
     expect(assistants.first.checklist[1].status, ChecklistStatus.done);
 
+    stream.streamCtrl.add(ChatStreamEvent.fromJson({
+      'type': 'tool_start',
+      'session_id': testSession.id,
+      'turn_id': 'turn-1',
+      'seq': 4,
+      'tool_name': 'progress',
+      'checklist_cleared': true,
+      'timestamp': '2026-11-25T08:00:03Z',
+    }));
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+
+    final clearedAssistants =
+        ctrl.transcriptData!.messages.where((m) => m.isAssistant).toList();
+    expect(clearedAssistants.length, 1);
+    expect(clearedAssistants.first.checklist, isEmpty);
+    expect(clearedAssistants.first.checklistCleared, isTrue);
+
     ctrl.dispose();
     await stream.streamCtrl.close();
   });

@@ -386,4 +386,15 @@ test('chat.js createChatMessageElement and tool_start stream events render check
   });
   assert.equal(tabObj.activeTurnMsgEl.querySelectorAll('.chat-todo-card').length, 1);
   assert.ok(tabObj.activeTurnMsgEl.querySelector('.chat-todo-header').textContent.includes('Task Progress (2/2)'));
+
+  // Explicit clear via checklist_cleared removes active turn's checklist card in-place
+  chat.handleChatStreamEvent(tabObj, {
+    type: 'tool_start',
+    turn_id: 't-1',
+    seq: 3,
+    tool_name: 'progress',
+    checklist_cleared: true
+  });
+  assert.equal(tabObj.activeTurnMsgEl.querySelectorAll('.chat-todo-card').length, 0);
+  assert.equal(tabObj.activeTurnChecklist, null);
 });

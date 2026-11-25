@@ -340,3 +340,199 @@ func TestCoalesceTranscriptMessagesForWire_PreservesChecklist(t *testing.T) {
 		t.Fatalf("CoalesceTranscriptMessagesForWire mutated source checklist: %+v", msgs[1].Checklist)
 	}
 }
+
+func TestMultiTurnSeedingAndExplicitClear_Integration(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	srv, db := setupTestServer(t)
+	srv.homeDir = home
+	reg := srv.PluginRegistry()
+
+	// 1. Multi-turn Claude seeding: Turn 1 on disk created 1 & 2, deleted 2 -> [1] with highWater=2.
+	cwd := filepath.Join(home, "repo-mt")
+	nativeID := "cccccccc-1111-4222-8333-444444444444"
+	projDir := filepath.Join(home, ".claude", "projects", encodeClaudeProjectDir(cwd))
+	if err := os.MkdirAll(projDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t1Bytes, err := os.ReadFile(filepath.Join("..", "agents", "claude", "testdata", "checklist_turn1.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projDir, nativeID+".jsonl"), t1Bytes, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sessID := "claude-code:" + srv.HostName() + ":" + nativeID
+	sess := &Session{
+		ID:         sessID,
+		NativeID:   nativeID,
+		Agent:      "claude-code",
+		Host:       srv.HostName(),
+		Cwd:        cwd,
+		EngineType: EngineHeadless,
+		Managed:    true,
+		State:      StateIdle,
+	}
+	if err := db.SaveSession(sess); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify initTurnSpool seeds SeedChecklist and SeedChecklistHighWater from disk Turn 1.
+	runDir := t.TempDir()
+	turnID := "turn_mt_2"
+	now := time.Now().UTC()
+	meta, _, err := srv.headless.initTurnSpool(runDir, turnID, sessID, nativeID, "claude-code", cwd, "Finish Alpha and add Gamma", "claude", nil, "", "", "", "", now)
+	if err != nil {
+		t.Fatalf("initTurnSpool failed: %v", err)
+	}
+	if len(meta.SeedChecklist) != 1 || meta.SeedChecklist[0].ID != "1" || meta.SeedChecklistHighWater != 2 {
+		t.Fatalf("unexpected TurnSpoolMeta seed: items=%+v high=%d cleared=%v", meta.SeedChecklist, meta.SeedChecklistHighWater, meta.SeedChecklistCleared)
+	}
+
+	// Live Turn 2 stream mutates Task 1 (from Turn 1 seed) and creates Task 3 (using highWater=2).
+	t2Stream, err := os.ReadFile(filepath.Join("..", "agents", "claude", "testdata", "checklist_turn2_update_stream.ndjson"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ce, _ := reg.AsChecklistExtractor("claude-code")
+	var emitted []ChatStreamEvent
+	parseHeadlessStream(sessID, bytes.NewReader(t2Stream), streamParseHooks{
+		checklistExtractor:        ce,
+		initialChecklist:          meta.SeedChecklist,
+		initialChecklistCleared:   meta.SeedChecklistCleared,
+		initialChecklistHighWater: meta.SeedChecklistHighWater,
+		emit: func(evt ChatStreamEvent) {
+			emitted = append(emitted, evt)
+		},
+	})
+	if len(emitted) != 2 {
+		t.Fatalf("expected 2 tool_start events in turn 2, got %+v", emitted)
+	}
+	lastCl := emitted[1].Checklist
+	if len(lastCl) != 2 || lastCl[0].ID != "1" || lastCl[0].Status != agent.ChecklistDone || lastCl[1].ID != "3" || lastCl[1].Title != "Gamma" {
+		t.Fatalf("seeded turn 2 live checklist = %+v", lastCl)
+	}
+
+	// Spool synthesis from raw tool inputs (without pre-populated evt.Checklist) also resolves seed + highWater.
+	sw, err := OpenTurnSpoolWriter(meta.SpoolPath, turnID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ev := range emitted {
+		// Strip pre-computed checklist to test synthesis tracker path with SeedChecklist too.
+		ev.Checklist = nil
+		ev.ChecklistCleared = false
+		_, _ = sw.Append(ev)
+	}
+	_ = sw.Close()
+
+	snap, err := SynthesizeInFlightTurnWithRegistry(reg, meta, "claude-code")
+	if err != nil || !snap.HasChecklist || len(snap.Checklist) != 2 {
+		t.Fatalf("SynthesizeInFlightTurnWithRegistry seeded = (%+v, %v)", snap, err)
+	}
+	if snap.Checklist[0].Status != agent.ChecklistDone || snap.Checklist[1].ID != "3" {
+		t.Fatalf("synthesized seeded checklist = %+v", snap.Checklist)
+	}
+
+	// 2. Explicit clear wire flag across stream, spool synthesis, and completed spool suppression.
+	for _, tc := range []struct {
+		name    string
+		agent   string
+		fixture string
+	}{
+		{"antigravity clear", "antigravity", filepath.Join("..", "agents", "antigravity", "testdata", "checklist_clear_stream.ndjson")},
+		{"claude clear", "claude-code", filepath.Join("..", "agents", "claude", "testdata", "checklist_clear_stream.ndjson")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, err := os.ReadFile(tc.fixture)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var sp agent.StreamParser
+			if f, ok := reg.AsStreamParserFactory(tc.agent); ok {
+				sp = f.NewStreamParser("s-clr")
+			}
+			ext, _ := reg.AsChecklistExtractor(tc.agent)
+			var clrEvts []ChatStreamEvent
+			parseHeadlessStream("s-clr", bytes.NewReader(raw), streamParseHooks{
+				streamParser:       sp,
+				checklistExtractor: ext,
+				initialChecklist:   []agent.ChecklistItem{{ID: "1", Title: "Old", Status: agent.ChecklistInProgress}},
+				emit:               func(evt ChatStreamEvent) { clrEvts = append(clrEvts, evt) },
+			})
+			if len(clrEvts) != 1 || !clrEvts[0].ChecklistCleared || clrEvts[0].Checklist != nil {
+				t.Fatalf("expected checklist_cleared=true and nil Checklist, got %+v", clrEvts)
+			}
+			wireJSON, err := json.Marshal(clrEvts[0])
+			if err != nil || !strings.Contains(string(wireJSON), `"checklist_cleared":true`) {
+				t.Fatalf("wire JSON missing checklist_cleared: %s err=%v", wireJSON, err)
+			}
+
+			clrDir := t.TempDir()
+			clrTurn := "turn_clr_" + tc.agent
+			clrSpool := filepath.Join(clrDir, clrTurn+".ndjson")
+			clrMetaPath := filepath.Join(clrDir, clrTurn+".meta.json")
+			cw, err := OpenTurnSpoolWriter(clrSpool, clrTurn)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, _ = cw.Append(ChatStreamEvent{SessionID: "s-clr", TurnID: clrTurn, Type: "turn_start", Text: "Clear steps", Timestamp: now})
+			clrEvts[0].SessionID = "s-clr"
+			clrEvts[0].TurnID = clrTurn
+			_, _ = cw.Append(clrEvts[0])
+			_ = cw.Close()
+
+			clrMeta := &TurnSpoolMeta{
+				TurnID:        clrTurn,
+				SessionID:     "s-clr",
+				Agent:         tc.agent,
+				Prompt:        "Clear steps",
+				SpoolPath:     clrSpool,
+				MetaPath:      clrMetaPath,
+				StartedAt:     now,
+				Status:        "running",
+				SeedChecklist: []agent.ChecklistItem{{ID: "1", Title: "Old", Status: agent.ChecklistInProgress}},
+			}
+			_ = WriteTurnSpoolMeta(clrMetaPath, clrMeta)
+			srv.headless.mu.Lock()
+			srv.headless.sessionSpools["s-clr"] = clrMeta
+			srv.headless.activeTurns["s-clr"] = true
+			srv.headless.mu.Unlock()
+
+			mergedLive, inFlight := srv.mergeInFlightSpoolIntoTranscript(&Transcript{
+				SessionID: "s-clr",
+				Agent:     tc.agent,
+				Messages: []TranscriptMessage{
+					{Role: "user", Content: "Clear steps", Timestamp: now},
+					{Role: "assistant", Content: "Clearing", Checklist: []agent.ChecklistItem{{ID: "1", Title: "Old", Status: agent.ChecklistPending}}, Timestamp: now.Add(time.Millisecond)},
+				},
+			}, &Session{ID: "s-clr", Agent: tc.agent, EngineType: EngineHeadless}, "s-clr", "", tc.agent, clrDir)
+			if len(mergedLive.Messages) != 2 || !mergedLive.Messages[1].ChecklistCleared || len(mergedLive.Messages[1].Checklist) != 0 {
+				t.Fatalf("mergedLive should clear stale assistant checklist: %+v", mergedLive.Messages)
+			}
+			if clearedVal, _ := inFlight["checklist_cleared"].(bool); !clearedVal {
+				t.Fatalf("expected in_flight_turn.checklist_cleared=true, got %+v", inFlight)
+			}
+
+			// Completed spool must be suppressed once disk transcript reflects ChecklistCleared=true.
+			clrMeta.Status = "completed"
+			clrMeta.FinishedAt = now.Add(20 * time.Millisecond)
+			_ = WriteTurnSpoolMeta(clrMetaPath, clrMeta)
+			srv.headless.mu.Lock()
+			delete(srv.headless.activeTurns, "s-clr")
+			srv.headless.mu.Unlock()
+			mergedDone, inFlightDone := srv.mergeInFlightSpoolIntoTranscript(&Transcript{
+				SessionID: "s-clr",
+				Agent:     tc.agent,
+				Messages: []TranscriptMessage{
+					{Role: "user", Content: "Clear steps", Timestamp: now},
+					{Role: "assistant", Content: "", ChecklistCleared: true, Timestamp: now.Add(time.Millisecond)},
+				},
+			}, &Session{ID: "s-clr", Agent: tc.agent, EngineType: EngineHeadless}, "s-clr", "", tc.agent, clrDir)
+			if inFlightDone != nil || len(mergedDone.Messages) != 2 || !mergedDone.Messages[1].ChecklistCleared {
+				t.Fatalf("expected completed cleared-checklist spool to be suppressed cleanly, got inFlight=%+v msgs=%+v", inFlightDone, mergedDone.Messages)
+			}
+		})
+	}
+}

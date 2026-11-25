@@ -206,19 +206,24 @@ func (s *Server) mergeInFlightSpoolIntoTranscript(transcript *Transcript, sess *
 			if snap.TurnID != "" {
 				msgs[n-1].TurnID = snap.TurnID
 			}
-			if snap.HasChecklist {
+			if snap.ChecklistCleared {
+				msgs[n-1].Checklist = nil
+				msgs[n-1].ChecklistCleared = true
+			} else if snap.HasChecklist {
 				msgs[n-1].Checklist = agentpkg.CloneChecklist(snap.Checklist)
+				msgs[n-1].ChecklistCleared = false
 			}
 		} else {
 			msgs = append(msgs, TranscriptMessage{
-				Role:      "assistant",
-				Content:   assistantContent,
-				Thinking:  snap.ThinkingText,
-				ToolCalls: snap.ToolCalls,
-				Checklist: agentpkg.CloneChecklist(snap.Checklist),
-				Timestamp: snap.UpdatedAt,
-				TurnID:    snap.TurnID,
-				InFlight:  snap.IsActive,
+				Role:             "assistant",
+				Content:          assistantContent,
+				Thinking:         snap.ThinkingText,
+				ToolCalls:        snap.ToolCalls,
+				Checklist:        agentpkg.CloneChecklist(snap.Checklist),
+				ChecklistCleared: snap.ChecklistCleared,
+				Timestamp:        snap.UpdatedAt,
+				TurnID:           snap.TurnID,
+				InFlight:         snap.IsActive,
 			})
 		}
 		transcript.Messages = msgs
@@ -233,7 +238,9 @@ func (s *Server) mergeInFlightSpoolIntoTranscript(transcript *Transcript, sess *
 			"activity_started_at": snap.ActivityStartedAt,
 			"activity_kind":       snap.ActivityKind,
 		}
-		if snap.HasChecklist {
+		if snap.ChecklistCleared {
+			payload["checklist_cleared"] = true
+		} else if snap.HasChecklist {
 			payload["checklist"] = agentpkg.CloneChecklist(snap.Checklist)
 		}
 		return transcript, payload
@@ -264,7 +271,11 @@ func (s *Server) mergeInFlightSpoolIntoTranscript(transcript *Transcript, sess *
 
 	// Suppress spool synthesis once the provider transcript on disk covers the completed turn.
 	if !snap.IsActive {
-		if matchedUserIdx >= 0 && !hasUnhandledError && (asstIdx > matchedUserIdx && ((strings.TrimSpace(msgs[asstIdx].Content) != "" || len(msgs[asstIdx].Checklist) > 0) && (!snap.HasChecklist || len(msgs[asstIdx].Checklist) > 0) || !hasStreamedAssistant) || !hasStreamedAssistant) {
+		diskHasChecklist := asstIdx > matchedUserIdx && (len(msgs[asstIdx].Checklist) > 0 || msgs[asstIdx].ChecklistCleared)
+		diskHasContent := asstIdx > matchedUserIdx && (strings.TrimSpace(msgs[asstIdx].Content) != "" || diskHasChecklist)
+		diskMatchesChecklist := !snap.HasChecklist ||
+			(asstIdx > matchedUserIdx && ((snap.ChecklistCleared && msgs[asstIdx].ChecklistCleared) || (!snap.ChecklistCleared && len(msgs[asstIdx].Checklist) > 0)))
+		if matchedUserIdx >= 0 && !hasUnhandledError && ((diskHasContent && diskMatchesChecklist) || !hasStreamedAssistant) {
 			if snap.TurnID != "" {
 				msgs[matchedUserIdx].TurnID = snap.TurnID
 				if asstIdx > matchedUserIdx {
@@ -292,14 +303,15 @@ func (s *Server) mergeInFlightSpoolIntoTranscript(transcript *Transcript, sess *
 		})
 		if hasStreamedAssistant {
 			msgs = append(msgs, TranscriptMessage{
-				Role:      "assistant",
-				Content:   assistantContent,
-				Thinking:  snap.ThinkingText,
-				ToolCalls: snap.ToolCalls,
-				Checklist: agentpkg.CloneChecklist(snap.Checklist),
-				Timestamp: snap.UpdatedAt,
-				TurnID:    snap.TurnID,
-				InFlight:  snap.IsActive,
+				Role:             "assistant",
+				Content:          assistantContent,
+				Thinking:         snap.ThinkingText,
+				ToolCalls:        snap.ToolCalls,
+				Checklist:        agentpkg.CloneChecklist(snap.Checklist),
+				ChecklistCleared: snap.ChecklistCleared,
+				Timestamp:        snap.UpdatedAt,
+				TurnID:           snap.TurnID,
+				InFlight:         snap.IsActive,
 			})
 		}
 	} else {
@@ -330,19 +342,24 @@ func (s *Server) mergeInFlightSpoolIntoTranscript(transcript *Transcript, sess *
 			if len(msgs[asstIdx].ToolCalls) == 0 && len(snap.ToolCalls) > 0 {
 				msgs[asstIdx].ToolCalls = snap.ToolCalls
 			}
-			if snap.HasChecklist {
+			if snap.ChecklistCleared {
+				msgs[asstIdx].Checklist = nil
+				msgs[asstIdx].ChecklistCleared = true
+			} else if snap.HasChecklist {
 				msgs[asstIdx].Checklist = agentpkg.CloneChecklist(snap.Checklist)
+				msgs[asstIdx].ChecklistCleared = false
 			}
 		} else if hasStreamedAssistant {
 			msgs = append(msgs, TranscriptMessage{
-				Role:      "assistant",
-				Content:   assistantContent,
-				Thinking:  snap.ThinkingText,
-				ToolCalls: snap.ToolCalls,
-				Checklist: agentpkg.CloneChecklist(snap.Checklist),
-				Timestamp: snap.UpdatedAt,
-				TurnID:    snap.TurnID,
-				InFlight:  snap.IsActive,
+				Role:             "assistant",
+				Content:          assistantContent,
+				Thinking:         snap.ThinkingText,
+				ToolCalls:        snap.ToolCalls,
+				Checklist:        agentpkg.CloneChecklist(snap.Checklist),
+				ChecklistCleared: snap.ChecklistCleared,
+				Timestamp:        snap.UpdatedAt,
+				TurnID:           snap.TurnID,
+				InFlight:         snap.IsActive,
 			})
 		}
 	}
@@ -360,7 +377,9 @@ func (s *Server) mergeInFlightSpoolIntoTranscript(transcript *Transcript, sess *
 		"activity_started_at": snap.ActivityStartedAt,
 		"activity_kind":       snap.ActivityKind,
 	}
-	if snap.HasChecklist {
+	if snap.ChecklistCleared {
+		payload["checklist_cleared"] = true
+	} else if snap.HasChecklist {
 		payload["checklist"] = agentpkg.CloneChecklist(snap.Checklist)
 	}
 	return transcript, payload

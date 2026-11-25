@@ -74,11 +74,10 @@ func hasImageGenTool(entry *transcriptEntry) bool {
 
 func appendPlannerResponse(messages *[]agent.TranscriptMessage, entry *transcriptEntry, ts time.Time) {
 	var toolSummaries []string
-	var turnChecklist []agent.ChecklistItem
+	tracker := (*Plugin)(nil).NewChecklistTracker()
 	matchedChecklist := false
 	for _, tc := range entry.ToolCalls {
-		if next, matched := (*Plugin)(nil).ApplyToolChecklist(turnChecklist, tc.Name, tc.Args); matched {
-			turnChecklist = next
+		if _, _, matched := tracker.Apply(tc.Name, tc.Args); matched {
 			matchedChecklist = true
 		}
 		if mcpName, mcpDetail, isMCP := agentutil.FormatMCPToolDisplay(tc.Name, tc.Args); isMCP {
@@ -118,6 +117,11 @@ func appendPlannerResponse(messages *[]agent.TranscriptMessage, entry *transcrip
 	if content == "" && entry.Thinking == "" && len(toolSummaries) == 0 && !matchedChecklist {
 		return
 	}
+	var turnChecklist []agent.ChecklistItem
+	var turnCleared bool
+	if matchedChecklist {
+		turnChecklist, turnCleared, _ = tracker.Snapshot()
+	}
 	if len(*messages) > 0 && (*messages)[len(*messages)-1].Role == "assistant" {
 		last := &(*messages)[len(*messages)-1]
 		if content != "" {
@@ -138,17 +142,23 @@ func appendPlannerResponse(messages *[]agent.TranscriptMessage, entry *transcrip
 			last.ToolCalls = append(last.ToolCalls, toolSummaries...)
 		}
 		if matchedChecklist {
-			last.Checklist = agent.CloneChecklist(turnChecklist)
+			if turnCleared {
+				last.Checklist = nil
+				last.ChecklistCleared = true
+			} else {
+				last.Checklist = agent.CloneChecklist(turnChecklist)
+				last.ChecklistCleared = false
+			}
 		}
 		last.Timestamp = ts
 		return
 	}
 	var checklist []agent.ChecklistItem
-	if matchedChecklist {
+	if matchedChecklist && !turnCleared {
 		checklist = agent.CloneChecklist(turnChecklist)
 	}
 	*messages = append(*messages, agent.TranscriptMessage{
-		Role: "assistant", Content: content, Thinking: entry.Thinking, ToolCalls: toolSummaries, Checklist: checklist, Timestamp: ts,
+		Role: "assistant", Content: content, Thinking: entry.Thinking, ToolCalls: toolSummaries, Checklist: checklist, ChecklistCleared: matchedChecklist && turnCleared, Timestamp: ts,
 	})
 }
 

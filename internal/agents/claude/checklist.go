@@ -110,41 +110,108 @@ func bumpHighWater(high int, id string) int {
 	return high
 }
 
+func sanitizeAndCapSlice(items []agent.ChecklistItem) []agent.ChecklistItem {
+	if len(items) == 0 {
+		return nil
+	}
+	limit := min(len(items), agent.MaxChecklistItems)
+	out := make([]agent.ChecklistItem, 0, limit)
+	for _, it := range items[:limit] {
+		s := agent.SanitizeChecklistItem(it)
+		if s.Title != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 type checklistReducer struct {
 	items         []agent.ChecklistItem
+	cleared       bool
 	highWaterMark int
+}
+
+func (*Plugin) NewChecklistTracker() agent.ChecklistTracker {
+	return &checklistReducer{}
+}
+
+func (r *checklistReducer) Seed(items []agent.ChecklistItem, cleared bool, highWater int) {
+	if highWater > r.highWaterMark {
+		r.highWaterMark = highWater
+	}
+	if maxID := maxNumericID(items); maxID > r.highWaterMark {
+		r.highWaterMark = maxID
+	}
+	if cleared {
+		r.items = nil
+		r.cleared = true
+		return
+	}
+	r.items = sanitizeAndCapSlice(items)
+	r.cleared = false
 }
 
 func (r *checklistReducer) seedFromBase(base []agent.TranscriptMessage) {
 	for _, m := range base {
-		if len(m.Checklist) > 0 {
-			r.items = agent.CloneChecklist(m.Checklist)
-			if maxID := maxNumericID(m.Checklist); maxID > r.highWaterMark {
-				r.highWaterMark = maxID
-			}
+		if m.ChecklistHighWater > r.highWaterMark {
+			r.highWaterMark = m.ChecklistHighWater
+		}
+		if maxID := maxNumericID(m.Checklist); maxID > r.highWaterMark {
+			r.highWaterMark = maxID
+		}
+		if m.ChecklistCleared {
+			r.items = nil
+			r.cleared = true
+		} else if len(m.Checklist) > 0 {
+			r.items = sanitizeAndCapSlice(m.Checklist)
+			r.cleared = false
 		}
 	}
 }
 
-func (r *checklistReducer) apply(toolName string, toolInput any) bool {
-	next, nextHigh, matched := applyClaudeChecklist(r.items, r.highWaterMark, toolName, toolInput)
+func (r *checklistReducer) applyOnly(toolName string, toolInput any) bool {
+	matched := applyClaudeChecklistInPlace(&r.items, &r.highWaterMark, toolName, toolInput)
 	if !matched {
 		return false
 	}
-	r.items = next
-	r.highWaterMark = nextHigh
+	r.cleared = len(r.items) == 0
 	return true
 }
 
-func (*Plugin) ApplyToolChecklist(prev []agent.ChecklistItem, toolName string, toolInput any) ([]agent.ChecklistItem, bool) {
-	next, _, matched := applyClaudeChecklist(prev, maxNumericID(prev), toolName, toolInput)
-	return next, matched
+func (r *checklistReducer) Apply(toolName string, toolInput any) ([]agent.ChecklistItem, bool, bool) {
+	if !r.applyOnly(toolName, toolInput) {
+		return nil, false, false
+	}
+	if len(r.items) == 0 {
+		return nil, true, true
+	}
+	return agent.CloneChecklist(r.items), false, true
 }
 
-func applyClaudeChecklist(prev []agent.ChecklistItem, highWater int, toolName string, toolInput any) ([]agent.ChecklistItem, int, bool) {
-	high := highWater
-	if m := maxNumericID(prev); m > high {
-		high = m
+func (r *checklistReducer) Snapshot() ([]agent.ChecklistItem, bool, int) {
+	if r.cleared {
+		return nil, true, r.highWaterMark
+	}
+	return agent.CloneChecklist(r.items), false, r.highWaterMark
+}
+
+func (*Plugin) ApplyToolChecklist(prev []agent.ChecklistItem, toolName string, toolInput any) ([]agent.ChecklistItem, bool) {
+	r := checklistReducer{
+		items:         sanitizeAndCapSlice(prev),
+		highWaterMark: maxNumericID(prev),
+	}
+	if !r.applyOnly(toolName, toolInput) {
+		return nil, false
+	}
+	if len(r.items) == 0 {
+		return []agent.ChecklistItem{}, true
+	}
+	return r.items, true
+}
+
+func applyClaudeChecklistInPlace(items *[]agent.ChecklistItem, high *int, toolName string, toolInput any) bool {
+	if m := maxNumericID(*items); m > *high {
+		*high = m
 	}
 
 	base := baseToolName(toolName)
@@ -152,145 +219,157 @@ func applyClaudeChecklist(prev []agent.ChecklistItem, highWater int, toolName st
 	case "todowrite", "todo_write":
 		inputMap := parseInputMap(toolInput)
 		if inputMap == nil {
-			return nil, high, false
+			return false
 		}
 		rawList, hasList := inputMap["todos"]
 		if !hasList {
 			rawList, hasList = inputMap["tasks"]
 		}
 		if !hasList {
-			return nil, high, false
+			return false
 		}
 		parsed := agentutil.ParseInterfaceSlice(rawList)
 		if parsed == nil {
-			return nil, high, false
+			return false
 		}
-		items := make([]agent.ChecklistItem, 0, len(parsed))
+		next := make([]agent.ChecklistItem, 0, min(len(parsed), agent.MaxChecklistItems))
 		for _, rawItem := range parsed {
+			if len(next) >= agent.MaxChecklistItems {
+				break
+			}
 			m, ok := rawItem.(map[string]any)
 			if !ok {
 				continue
 			}
-			title := firstTrimmedString(m, "content", "title", "subject", "text", "name")
-			if title == "" {
+			rawTitle := firstTrimmedString(m, "content", "title", "subject", "text", "name")
+			if rawTitle == "" {
 				continue
 			}
-			id := idString(m["id"])
-			high = bumpHighWater(high, id)
-			items = append(items, agent.ChecklistItem{
-				ID:         id,
-				Title:      title,
+			item := agent.SanitizeChecklistItem(agent.ChecklistItem{
+				ID:         idString(m["id"]),
+				Title:      rawTitle,
 				ActiveForm: firstTrimmedString(m, "activeForm", "active_form"),
 				Status:     normalizeChecklistStatus(m["status"]),
 			})
+			if item.Title == "" {
+				continue
+			}
+			*high = bumpHighWater(*high, item.ID)
+			next = append(next, item)
 		}
-		if len(items) > 0 {
-			return items, high, true
+		if len(next) > 0 {
+			*items = next
+			return true
 		}
 		if len(parsed) == 0 {
-			return []agent.ChecklistItem{}, high, true
+			*items = nil
+			return true
 		}
-		return nil, high, false
+		return false
 
 	case "taskcreate", "task_create":
 		inputMap := parseInputMap(toolInput)
 		if inputMap == nil {
-			return nil, high, false
+			return false
 		}
-		title := firstTrimmedString(inputMap, "subject", "title", "content", "description")
-		if title == "" {
-			return nil, high, false
+		rawTitle := firstTrimmedString(inputMap, "subject", "title", "content", "description")
+		if rawTitle == "" {
+			return false
 		}
-		id := idString(inputMap["id"])
+		id := agent.TruncateBytesUTF8(firstNonEmptyID(inputMap, "id", "taskId", "task_id"), agent.MaxChecklistIDBytes)
 		if id == "" {
-			id = idString(inputMap["taskId"])
-		}
-		if id == "" {
-			id = idString(inputMap["task_id"])
-		}
-		if id == "" {
-			high++
-			id = strconv.Itoa(high)
+			*high++
+			id = strconv.Itoa(*high)
 		} else {
-			high = bumpHighWater(high, id)
+			*high = bumpHighWater(*high, id)
 		}
-		next := agent.CloneChecklist(prev)
-		next = append(next, agent.ChecklistItem{
+		item := agent.SanitizeChecklistItem(agent.ChecklistItem{
 			ID:         id,
-			Title:      title,
+			Title:      rawTitle,
 			ActiveForm: firstTrimmedString(inputMap, "activeForm", "active_form"),
 			Status:     normalizeChecklistStatus(inputMap["status"]),
 		})
-		return next, high, true
+		if item.Title == "" {
+			return false
+		}
+		if len(*items) < agent.MaxChecklistItems {
+			*items = append(*items, item)
+		}
+		return true
 
 	case "taskupdate", "task_update":
 		inputMap := parseInputMap(toolInput)
 		if inputMap == nil {
-			return nil, high, false
+			return false
 		}
-		taskID := idString(inputMap["taskId"])
-		if taskID == "" {
-			taskID = idString(inputMap["task_id"])
-		}
-		if taskID == "" {
-			taskID = idString(inputMap["id"])
-		}
+		taskID := agent.TruncateBytesUTF8(firstNonEmptyID(inputMap, "taskId", "task_id", "id"), agent.MaxChecklistIDBytes)
 		statusStr, hasStatus := inputMap["status"].(string)
 		hasStatus = hasStatus && strings.TrimSpace(statusStr) != ""
 		if hasStatus && strings.EqualFold(strings.TrimSpace(statusStr), "deleted") {
 			if taskID == "" {
-				return nil, high, false
+				return false
 			}
-			filtered := make([]agent.ChecklistItem, 0, len(prev))
-			for _, it := range prev {
+			kept := (*items)[:0]
+			for _, it := range *items {
 				if it.ID != taskID {
-					filtered = append(filtered, it)
+					kept = append(kept, it)
 				}
 			}
-			return filtered, high, true
+			*items = kept
+			return true
 		}
 
-		title := firstTrimmedString(inputMap, "subject", "title")
-		activeForm := firstTrimmedString(inputMap, "activeForm", "active_form")
-		next := agent.CloneChecklist(prev)
+		title := agent.TruncateRunes(firstTrimmedString(inputMap, "subject", "title"), agent.MaxChecklistTitleRunes)
+		activeForm := agent.TruncateRunes(firstTrimmedString(inputMap, "activeForm", "active_form"), agent.MaxChecklistTitleRunes)
 		if taskID != "" {
-			for i := range next {
-				if next[i].ID == taskID {
+			for i := range *items {
+				if (*items)[i].ID == taskID {
 					if hasStatus {
-						next[i].Status = normalizeChecklistStatus(statusStr)
+						(*items)[i].Status = normalizeChecklistStatus(statusStr)
 					}
 					if title != "" {
-						next[i].Title = title
+						(*items)[i].Title = title
 					}
 					if activeForm != "" {
-						next[i].ActiveForm = activeForm
+						(*items)[i].ActiveForm = activeForm
 					}
-					return next, high, true
+					return true
 				}
 			}
 		}
 		if title != "" {
 			id := taskID
 			if id == "" {
-				high++
-				id = strconv.Itoa(high)
+				*high++
+				id = strconv.Itoa(*high)
 			} else {
-				high = bumpHighWater(high, id)
+				*high = bumpHighWater(*high, id)
 			}
 			st := agent.ChecklistPending
 			if hasStatus {
 				st = normalizeChecklistStatus(statusStr)
 			}
-			next = append(next, agent.ChecklistItem{
-				ID:         id,
-				Title:      title,
-				ActiveForm: activeForm,
-				Status:     st,
-			})
-			return next, high, true
+			if len(*items) < agent.MaxChecklistItems {
+				*items = append(*items, agent.ChecklistItem{
+					ID:         id,
+					Title:      title,
+					ActiveForm: activeForm,
+					Status:     st,
+				})
+			}
+			return true
 		}
-		return nil, high, false
+		return false
 	}
 
-	return nil, high, false
+	return false
+}
+
+func firstNonEmptyID(m map[string]any, keys ...string) string {
+	for _, k := range keys {
+		if id := idString(m[k]); id != "" {
+			return id
+		}
+	}
+	return ""
 }

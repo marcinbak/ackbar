@@ -154,4 +154,28 @@ func TestStreamParser_AntigravityChecklistEvents(t *testing.T) {
 	if len(evts2[0].Checklist) != 2 || evts2[0].Checklist[0].Status != agent.ChecklistDone || evts2[0].Checklist[1].Status != agent.ChecklistDone {
 		t.Fatalf("unexpected tool_start 2: %+v", evts2[0])
 	}
+
+	evts3, _, _ := sp.ParseStreamLine([]byte(`{"event":"step_update","step_update":{"step_index":4,"step_type":"tool","state":"ACTIVE","tool_name":"update_steps","tool_info":{"parameters":{"steps":[]}}}}`))
+	if len(evts3) != 1 || evts3[0].Checklist != nil || !evts3[0].ChecklistCleared {
+		t.Fatalf("expected ChecklistCleared=true and nil Checklist on empty steps, got %+v", evts3)
+	}
+}
+
+func TestAntigravityChecklistBounds(t *testing.T) {
+	p := New()
+	rawSteps := make([]any, 0, agent.MaxChecklistItems+25)
+	for i := 0; i < agent.MaxChecklistItems+25; i++ {
+		rawSteps = append(rawSteps, map[string]any{
+			"id":     strings.Repeat("k", 90),
+			"title":  strings.Repeat("x", agent.MaxChecklistTitleRunes+40),
+			"status": "pending",
+		})
+	}
+	got, ok := p.ApplyToolChecklist(nil, "update_steps", map[string]any{"steps": rawSteps})
+	if !ok || len(got) != agent.MaxChecklistItems {
+		t.Fatalf("expected capped %d items, got (%d, %v)", agent.MaxChecklistItems, len(got), ok)
+	}
+	if len(got[0].ID) != agent.MaxChecklistIDBytes || len([]rune(got[0].Title)) != agent.MaxChecklistTitleRunes {
+		t.Fatalf("expected clamped ID/title, got id=%d title=%d", len(got[0].ID), len([]rune(got[0].Title)))
+	}
 }

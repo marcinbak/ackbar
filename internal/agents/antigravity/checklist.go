@@ -108,22 +108,29 @@ func (*Plugin) ApplyToolChecklist(prev []agent.ChecklistItem, toolName string, t
 		return nil, false
 	}
 
-	items := make([]agent.ChecklistItem, 0, len(parsedSteps))
+	items := make([]agent.ChecklistItem, 0, min(len(parsedSteps), agent.MaxChecklistItems))
 	for _, rawStep := range parsedSteps {
+		if len(items) >= agent.MaxChecklistItems {
+			break
+		}
 		stepMap, ok := rawStep.(map[string]any)
 		if !ok {
 			continue
 		}
-		title := firstTrimmedString(stepMap, "title", "content", "text", "name")
-		if title == "" {
+		rawTitle := firstTrimmedString(stepMap, "title", "content", "text", "name")
+		if rawTitle == "" {
 			continue
 		}
-		items = append(items, agent.ChecklistItem{
+		item := agent.SanitizeChecklistItem(agent.ChecklistItem{
 			ID:         idString(stepMap["id"]),
-			Title:      title,
+			Title:      rawTitle,
 			ActiveForm: firstTrimmedString(stepMap, "active_form", "activeForm"),
 			Status:     normalizeChecklistStatus(stepMap["status"]),
 		})
+		if item.Title == "" {
+			continue
+		}
+		items = append(items, item)
 	}
 	if len(items) > 0 {
 		return items, true
@@ -132,4 +139,59 @@ func (*Plugin) ApplyToolChecklist(prev []agent.ChecklistItem, toolName string, t
 		return []agent.ChecklistItem{}, true
 	}
 	return nil, false
+}
+
+type antigravityChecklistTracker struct {
+	items   []agent.ChecklistItem
+	cleared bool
+}
+
+func (*Plugin) NewChecklistTracker() agent.ChecklistTracker {
+	return &antigravityChecklistTracker{}
+}
+
+func (t *antigravityChecklistTracker) Seed(items []agent.ChecklistItem, cleared bool, highWater int) {
+	_ = highWater
+	if cleared {
+		t.items = nil
+		t.cleared = true
+		return
+	}
+	if len(items) == 0 {
+		t.items = nil
+		t.cleared = false
+		return
+	}
+	limit := min(len(items), agent.MaxChecklistItems)
+	sanitized := make([]agent.ChecklistItem, 0, limit)
+	for _, it := range items[:limit] {
+		s := agent.SanitizeChecklistItem(it)
+		if s.Title != "" {
+			sanitized = append(sanitized, s)
+		}
+	}
+	t.items = sanitized
+	t.cleared = false
+}
+
+func (t *antigravityChecklistTracker) Apply(toolName string, toolInput any) ([]agent.ChecklistItem, bool, bool) {
+	next, matched := (*Plugin)(nil).ApplyToolChecklist(t.items, toolName, toolInput)
+	if !matched {
+		return nil, false, false
+	}
+	if len(next) == 0 {
+		t.items = nil
+		t.cleared = true
+		return nil, true, true
+	}
+	t.items = next
+	t.cleared = false
+	return agent.CloneChecklist(next), false, true
+}
+
+func (t *antigravityChecklistTracker) Snapshot() ([]agent.ChecklistItem, bool, int) {
+	if t.cleared {
+		return nil, true, 0
+	}
+	return agent.CloneChecklist(t.items), false, 0
 }

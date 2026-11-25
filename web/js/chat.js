@@ -2859,8 +2859,12 @@ function coalesceTranscriptMessages(messages) {
       if (Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) {
         last.tool_calls = (last.tool_calls || []).concat(msg.tool_calls);
       }
-      if (Array.isArray(msg.checklist) && msg.checklist.length > 0) {
+      if (msg.checklist_cleared) {
+        last.checklist = [];
+        last.checklist_cleared = true;
+      } else if (Array.isArray(msg.checklist) && msg.checklist.length > 0) {
         last.checklist = msg.checklist.map(item => ({ ...item }));
+        last.checklist_cleared = false;
       }
       if (msg.timestamp) {
         last.timestamp = msg.timestamp;
@@ -2890,13 +2894,15 @@ function coalesceTranscriptMessages(messages) {
       coalesced.push({
         ...msg,
         tool_calls: Array.isArray(msg.tool_calls) ? [...msg.tool_calls] : [],
-        ...(Array.isArray(msg.checklist) ? { checklist: msg.checklist.map(item => ({ ...item })) } : {})
+        ...(Array.isArray(msg.checklist) ? { checklist: msg.checklist.map(item => ({ ...item })) } : {}),
+        ...(msg.checklist_cleared ? { checklist_cleared: true } : {})
       });
     } else {
       coalesced.push({
         ...msg,
         tool_calls: Array.isArray(msg.tool_calls) ? [...msg.tool_calls] : [],
-        ...(Array.isArray(msg.checklist) ? { checklist: msg.checklist.map(item => ({ ...item })) } : {})
+        ...(Array.isArray(msg.checklist) ? { checklist: msg.checklist.map(item => ({ ...item })) } : {}),
+        ...(msg.checklist_cleared ? { checklist_cleared: true } : {})
       });
     }
   }
@@ -3641,7 +3647,10 @@ function finalizeTranscriptLoad(tabObj, container, total, coalesced, inFlightPro
           return { name: parsed.name, detail: parsed.detail, status: 'done', output: '' };
         });
       }
-      if (Array.isArray(inFlightTurn.checklist) && inFlightTurn.checklist.length > 0) {
+      if (inFlightTurn.checklist_cleared) {
+        tabObj.activeTurnChecklist = null;
+        upsertTurnChecklistCard(restoredInFlight, []);
+      } else if (Array.isArray(inFlightTurn.checklist) && inFlightTurn.checklist.length > 0) {
         tabObj.activeTurnChecklist = inFlightTurn.checklist;
         upsertTurnChecklistCard(restoredInFlight, inFlightTurn.checklist);
       }
@@ -6093,9 +6102,14 @@ function handleChatStreamEvent(tabObj, evt) {
         output: ''
       });
 
-      if (Array.isArray(evt.checklist) && evt.checklist.length > 0 && activeMsg) {
-        upsertTurnChecklistCard(activeMsg, evt.checklist);
-        tabObj.activeTurnChecklist = evt.checklist;
+      if (activeMsg) {
+        if (evt.checklist_cleared || (Array.isArray(evt.checklist) && evt.checklist.length === 0)) {
+          upsertTurnChecklistCard(activeMsg, []);
+          tabObj.activeTurnChecklist = null;
+        } else if (Array.isArray(evt.checklist) && evt.checklist.length > 0) {
+          upsertTurnChecklistCard(activeMsg, evt.checklist);
+          tabObj.activeTurnChecklist = evt.checklist;
+        }
       }
 
       if (activeMsg && evt.tool_name) {

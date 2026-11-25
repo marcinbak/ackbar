@@ -138,3 +138,86 @@ func TestApplyToolChecklist_TaskUpdateMidSessionFallbackAndStream(t *testing.T) 
 		t.Fatalf("event 1 checklist = %+v", evts2[1].Checklist)
 	}
 }
+
+func TestChecklistTrackerAndBounds_ClaudeRegressions(t *testing.T) {
+	p := New()
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	// 1. Delete highest task ID -> TaskCreate -> TaskUpdate via ChecklistTracker.
+	tr := p.NewChecklistTracker()
+	if items, cleared, ok := tr.Apply("TaskCreate", map[string]any{"subject": "Task A"}); !ok || cleared || len(items) != 1 || items[0].ID != "1" {
+		t.Fatalf("create A = (%+v, %v, %v)", items, cleared, ok)
+	}
+	if items, cleared, ok := tr.Apply("TaskCreate", map[string]any{"subject": "Task B"}); !ok || cleared || len(items) != 2 || items[1].ID != "2" {
+		t.Fatalf("create B = (%+v, %v, %v)", items, cleared, ok)
+	}
+	if items, cleared, ok := tr.Apply("TaskUpdate", map[string]any{"taskId": "2", "status": "deleted"}); !ok || cleared || len(items) != 1 {
+		t.Fatalf("delete B = (%+v, %v, %v)", items, cleared, ok)
+	}
+	if items, cleared, ok := tr.Apply("TaskCreate", map[string]any{"subject": "Task C"}); !ok || cleared || len(items) != 2 || items[1].ID != "3" {
+		t.Fatalf("create C after deleting highest ID must allocate '3', got (%+v, %v, %v)", items, cleared, ok)
+	}
+	if items, cleared, ok := tr.Apply("TaskUpdate", map[string]any{"taskId": "3", "status": "completed"}); !ok || cleared || items[1].Status != agent.ChecklistDone {
+		t.Fatalf("update Task C (id 3) = (%+v, %v, %v)", items, cleared, ok)
+	}
+	// Deleting remaining tasks clears tracker and sets cleared=true while retaining highWater=3.
+	_, _, _ = tr.Apply("TaskUpdate", map[string]any{"taskId": "1", "status": "deleted"})
+	items, cleared, ok := tr.Apply("TaskUpdate", map[string]any{"taskId": "3", "status": "deleted"})
+	if !ok || !cleared || items != nil {
+		t.Fatalf("deleting last task should emit (nil, cleared=true, ok=true), got (%+v, %v, %v)", items, cleared, ok)
+	}
+	_, snapCleared, snapHigh := tr.Snapshot()
+	if !snapCleared || snapHigh != 3 {
+		t.Fatalf("Snapshot after full delete = (cleared=%v, high=%d), want (true, 3)", snapCleared, snapHigh)
+	}
+
+	// 2. ParseJSONL + AppendTranscript: Turn 1 creates/deletes highest ID, Turn 2 clears via TodoWrite([]),
+	//    Turn 3 AppendTranscript must NOT re-seed Turn 1's stale tasks and must preserve highWater=2.
+	turn1 := strings.Join([]string{
+		`{"type":"user","timestamp":"` + now + `","message":{"role":"user","content":"Turn 1"}}`,
+		`{"type":"assistant","timestamp":"` + now + `","message":{"content":[{"type":"tool_use","name":"TaskCreate","input":{"subject":"Alpha"}},{"type":"tool_use","name":"TaskCreate","input":{"subject":"Beta"}},{"type":"tool_use","name":"TaskUpdate","input":{"taskId":"2","status":"deleted"}}]}}`,
+	}, "\n") + "\n"
+	msgs1, err := ParseJSONL(strings.NewReader(turn1), p.FilterUserEntry, nil)
+	if err != nil || len(msgs1) != 2 || msgs1[1].ChecklistHighWater != 2 {
+		t.Fatalf("turn1 = (%+v, %v)", msgs1, err)
+	}
+
+	turn2Delta := strings.Join([]string{
+		`{"type":"user","timestamp":"` + now + `","message":{"role":"user","content":"Turn 2"}}`,
+		`{"type":"assistant","timestamp":"` + now + `","message":{"content":[{"type":"tool_use","name":"TodoWrite","input":{"todos":[]}}]}}`,
+	}, "\n") + "\n"
+	msgs2, err := p.AppendTranscript(strings.NewReader(turn2Delta), msgs1)
+	if err != nil || len(msgs2) != 4 || !msgs2[3].ChecklistCleared || len(msgs2[3].Checklist) != 0 {
+		t.Fatalf("turn2 cleared = (%+v, %v)", msgs2, err)
+	}
+
+	turn3Delta := strings.Join([]string{
+		`{"type":"user","timestamp":"` + now + `","message":{"role":"user","content":"Turn 3"}}`,
+		`{"type":"assistant","timestamp":"` + now + `","message":{"content":[{"type":"tool_use","name":"TaskCreate","input":{"subject":"Gamma"}}]}}`,
+	}, "\n") + "\n"
+	msgs3, err := p.AppendTranscript(strings.NewReader(turn3Delta), msgs2)
+	if err != nil || len(msgs3) != 6 {
+		t.Fatalf("turn3 = (%+v, %v)", msgs3, err)
+	}
+	turn3Checklist := msgs3[5].Checklist
+	if len(turn3Checklist) != 1 || turn3Checklist[0].Title != "Gamma" || turn3Checklist[0].ID != "3" {
+		t.Fatalf("turn3 should only contain Gamma(id=3) and NOT re-seed Alpha, got %+v", turn3Checklist)
+	}
+
+	// 3. Enforce MaxChecklistItems and title/ID clamping.
+	boundTracker := p.NewChecklistTracker()
+	for i := 0; i < agent.MaxChecklistItems+15; i++ {
+		_, _, _ = boundTracker.Apply("TaskCreate", map[string]any{
+			"id":         strings.Repeat("z", 80),
+			"subject":    strings.Repeat("t", agent.MaxChecklistTitleRunes+40),
+			"activeForm": strings.Repeat("a", agent.MaxChecklistTitleRunes+20),
+		})
+	}
+	capped, _, _ := boundTracker.Snapshot()
+	if len(capped) != agent.MaxChecklistItems {
+		t.Fatalf("expected capped %d items, got %d", agent.MaxChecklistItems, len(capped))
+	}
+	if len(capped[0].ID) != agent.MaxChecklistIDBytes || len([]rune(capped[0].Title)) != agent.MaxChecklistTitleRunes || len([]rune(capped[0].ActiveForm)) != agent.MaxChecklistTitleRunes {
+		t.Fatalf("expected clamped fields, got id=%d title=%d active=%d", len(capped[0].ID), len([]rune(capped[0].Title)), len([]rune(capped[0].ActiveForm)))
+	}
+}

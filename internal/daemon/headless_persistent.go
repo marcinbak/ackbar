@@ -87,13 +87,22 @@ func (h *HeadlessRunner) getSessionTurnMu(sessionID string) *sync.Mutex {
 	return mu
 }
 
-func (h *HeadlessRunner) initTurnSpool(runDir, turnID, sessID, nativeID, agent, cwd, prompt, bin string, args []string, sockPath, sockTempDir, workerID, workerMetaPath string, turnStart time.Time) (*TurnSpoolMeta, ChatStreamEvent, error) {
+func (h *HeadlessRunner) initTurnSpool(runDir, turnID, sessID, nativeID, agentName, cwd, prompt, bin string, args []string, sockPath, sockTempDir, workerID, workerMetaPath string, turnStart time.Time) (*TurnSpoolMeta, ChatStreamEvent, error) {
 	spoolPath, metaPath := filepath.Join(runDir, turnID+".ndjson"), filepath.Join(runDir, turnID+".meta.json")
+	var seedSess *Session
+	if h.db != nil && sessID != "" {
+		seedSess, _ = h.db.GetSession(sessID)
+	}
+	if seedSess == nil {
+		seedSess = &Session{ID: sessID, NativeID: nativeID, Agent: agentName, Cwd: cwd}
+	}
+	seedItems, seedCleared, seedHigh := h.seedChecklistFromTranscript(seedSess)
 	meta := &TurnSpoolMeta{
 		TurnID: turnID, SessionID: sessID, OrigSessionID: sessID, NativeID: nativeID,
-		Agent: agent, Cwd: cwd, Prompt: prompt, Bin: bin, Args: args,
+		Agent: agentName, Cwd: cwd, Prompt: prompt, Bin: bin, Args: args,
 		SocketPath: sockPath, SocketTempDir: sockTempDir, SpoolPath: spoolPath, MetaPath: metaPath,
 		WorkerID: workerID, WorkerMetaPath: workerMetaPath, StartedAt: turnStart, Status: "starting",
+		SeedChecklist: seedItems, SeedChecklistCleared: seedCleared, SeedChecklistHighWater: seedHigh,
 	}
 	initSpool, err := OpenTurnSpoolWriter(spoolPath, turnID)
 	if err != nil {

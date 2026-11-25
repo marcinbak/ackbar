@@ -50,11 +50,14 @@ func (p *Plugin) ParseStreamEvent(line []byte) ([]agent.ChatStreamEvent, error) 
 		if cb, ok := raw["content_block"].(map[string]interface{}); ok && cb["type"] == "tool_use" {
 			tName, _ := cb["name"].(string)
 			tInput := cb["input"]
+			tr := p.NewChecklistTracker()
 			var checklist []agent.ChecklistItem
-			if next, ok := p.ApplyToolChecklist(nil, tName, tInput); ok {
-				checklist = next
+			var cleared bool
+			if items, cl, ok := tr.Apply(tName, tInput); ok {
+				checklist = items
+				cleared = cl
 			}
-			events = append(events, agent.ChatStreamEvent{Type: "tool_start", ToolName: tName, ToolInput: tInput, Checklist: checklist, Timestamp: now})
+			events = append(events, agent.ChatStreamEvent{Type: "tool_start", ToolName: tName, ToolInput: tInput, Checklist: checklist, ChecklistCleared: cleared, Timestamp: now})
 			if blocked := agentutil.ParseInteractiveToolBlock(tName, tInput); blocked != nil {
 				events = append(events, agent.ChatStreamEvent{Type: "blocked", Blocked: blocked, ToolName: tName, ToolInput: tInput, Timestamp: now})
 			}
@@ -152,7 +155,7 @@ func (p *Plugin) parseStreamAssistantEvents(raw map[string]interface{}, now time
 			events = append(events, agent.ChatStreamEvent{Type: "text_delta", Text: c, Timestamp: now})
 		}
 	case []interface{}:
-		var cl []agent.ChecklistItem
+		tr := p.NewChecklistTracker()
 		for _, item := range c {
 			m, ok := item.(map[string]interface{})
 			if !ok {
@@ -171,11 +174,12 @@ func (p *Plugin) parseStreamAssistantEvents(raw map[string]interface{}, now time
 				tName, _ := m["name"].(string)
 				tInput := m["input"]
 				var checklist []agent.ChecklistItem
-				if next, ok := p.ApplyToolChecklist(cl, tName, tInput); ok {
-					cl = next
-					checklist = agent.CloneChecklist(next)
+				var cleared bool
+				if items, cl, ok := tr.Apply(tName, tInput); ok {
+					checklist = items
+					cleared = cl
 				}
-				events = append(events, agent.ChatStreamEvent{Type: "tool_start", ToolName: tName, ToolInput: tInput, Checklist: checklist, Timestamp: now})
+				events = append(events, agent.ChatStreamEvent{Type: "tool_start", ToolName: tName, ToolInput: tInput, Checklist: checklist, ChecklistCleared: cleared, Timestamp: now})
 				if blocked := agentutil.ParseInteractiveToolBlock(tName, tInput); blocked != nil {
 					events = append(events, agent.ChatStreamEvent{Type: "blocked", Blocked: blocked, ToolName: tName, ToolInput: tInput, Timestamp: now})
 				}

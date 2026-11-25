@@ -55,14 +55,19 @@ type activeTurnState struct {
 }
 
 type workerChildGen struct {
-	pgid        int
-	stdinPipe   io.WriteCloser
-	stdinMu     sync.Mutex
-	stdinClosed bool
-	done        chan struct{}
-	stderrTail  *boundedTailBuffer
-	replaced    bool
-	acp         *acpChildSession
+	pgid          int
+	stdinPipe     io.WriteCloser
+	stdinMu       sync.Mutex
+	stdinClosed   bool
+	done          chan struct{}
+	stderrTail    *boundedTailBuffer
+	replaced      bool
+	acp           *acpChildSession
+	trackerSeeded bool
+	seedPending   bool
+	seedItems     []agent.ChecklistItem
+	seedCleared   bool
+	seedHigh      int
 }
 
 func (g *workerChildGen) writeLine(sLine string) {
@@ -485,16 +490,39 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string, reg *agent.Regis
 			}
 			checklistExtractor, _ = reg.AsChecklistExtractor(workerMeta.Agent)
 		}
+		var initChecklist []agent.ChecklistItem
+		var initChecklistCleared bool
+		var initChecklistHigh int
+		if activeTurn != nil && activeTurn.meta != nil {
+			initChecklist = agent.CloneChecklist(activeTurn.meta.SeedChecklist)
+			initChecklistCleared = activeTurn.meta.SeedChecklistCleared
+			initChecklistHigh = activeTurn.meta.SeedChecklistHighWater
+			gen.trackerSeeded = true
+		}
 		var eofLastText string
 		var eofHadError bool
 		stdoutDone := make(chan struct{})
 		go func() {
 			defer close(stdoutDone)
 			eofLastText, _, eofHadError = parseHeadlessStream(workerMeta.SessionID, stdoutPipe, streamParseHooks{
-				emitTurnComplete:   false,
-				stdioControl:       rt.isStdioControl,
-				streamParser:       streamParser,
-				checklistExtractor: checklistExtractor,
+				emitTurnComplete:          false,
+				stdioControl:              rt.isStdioControl,
+				streamParser:              streamParser,
+				checklistExtractor:        checklistExtractor,
+				initialChecklist:          initChecklist,
+				initialChecklistCleared:   initChecklistCleared,
+				initialChecklistHighWater: initChecklistHigh,
+				consumeChecklistSeed: func() ([]agent.ChecklistItem, bool, int, bool) {
+					stateMu.Lock()
+					defer stateMu.Unlock()
+					if !gen.seedPending {
+						return nil, false, 0, false
+					}
+					gen.seedPending = false
+					items := gen.seedItems
+					gen.seedItems = nil
+					return items, gen.seedCleared, gen.seedHigh, true
+				},
 				onSystemEvent: func(raw map[string]interface{}) {
 					bgCtrl.handleSystemEvent(gen, raw)
 				},
@@ -683,6 +711,13 @@ func runWorkerLoop(workerMetaPath, specPath, idleTTLStr string, reg *agent.Regis
 		tMeta.WorkerPID, tMeta.ChildPID, tMeta.Status = os.Getpid(), getChildPGIDLocked(), "running"
 		_ = WriteTurnSpoolMeta(tMetaPath, tMeta)
 
+		if curChild != nil && !curChild.trackerSeeded && (len(tMeta.SeedChecklist) > 0 || tMeta.SeedChecklistCleared || tMeta.SeedChecklistHighWater > 0) {
+			curChild.seedItems = agent.CloneChecklist(tMeta.SeedChecklist)
+			curChild.seedCleared = tMeta.SeedChecklistCleared
+			curChild.seedHigh = tMeta.SeedChecklistHighWater
+			curChild.seedPending = true
+			curChild.trackerSeeded = true
+		}
 		activeTurn = &activeTurnState{turnID: tMeta.TurnID, metaPath: tMetaPath, meta: tMeta, spool: spool}
 		rt.notifyWatchersLocked()
 		return nil

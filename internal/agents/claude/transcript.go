@@ -96,7 +96,7 @@ func appendAssistantContent(messages []agent.TranscriptMessage, rawContent inter
 		if c == "" {
 			return messages
 		}
-		return mergeOrAppendAssistant(messages, c, nil, nil, false, ts)
+		return mergeOrAppendAssistant(messages, c, nil, nil, false, 0, false, ts)
 	case []interface{}:
 		var textParts, tools []string
 		matchedChecklist := false
@@ -116,7 +116,7 @@ func appendAssistantContent(messages []agent.TranscriptMessage, rawContent inter
 				}
 				if reducer != nil {
 					tName, _ := cMap["name"].(string)
-					if reducer.apply(tName, cMap["input"]) {
+					if reducer.applyOnly(tName, cMap["input"]) {
 						matchedChecklist = true
 					}
 				}
@@ -127,15 +127,17 @@ func appendAssistantContent(messages []agent.TranscriptMessage, rawContent inter
 			return messages
 		}
 		var turnChecklist []agent.ChecklistItem
+		var turnCleared bool
+		var turnHighWater int
 		if matchedChecklist && reducer != nil {
-			turnChecklist = reducer.items
+			turnChecklist, turnCleared, turnHighWater = reducer.Snapshot()
 		}
-		return mergeOrAppendAssistant(messages, fullText, tools, turnChecklist, matchedChecklist, ts)
+		return mergeOrAppendAssistant(messages, fullText, tools, turnChecklist, turnCleared, turnHighWater, matchedChecklist, ts)
 	}
 	return messages
 }
 
-func mergeOrAppendAssistant(messages []agent.TranscriptMessage, text string, tools []string, turnChecklist []agent.ChecklistItem, matchedChecklist bool, ts time.Time) []agent.TranscriptMessage {
+func mergeOrAppendAssistant(messages []agent.TranscriptMessage, text string, tools []string, turnChecklist []agent.ChecklistItem, turnCleared bool, turnHighWater int, matchedChecklist bool, ts time.Time) []agent.TranscriptMessage {
 	if len(messages) > 0 && messages[len(messages)-1].Role == "assistant" {
 		last := &messages[len(messages)-1]
 		if text != "" {
@@ -151,21 +153,36 @@ func mergeOrAppendAssistant(messages []agent.TranscriptMessage, text string, too
 			last.ToolCalls = append(last.ToolCalls, tools...)
 		}
 		if matchedChecklist {
-			last.Checklist = agent.CloneChecklist(turnChecklist)
+			if turnCleared {
+				last.Checklist = nil
+				last.ChecklistCleared = true
+			} else {
+				last.Checklist = agent.CloneChecklist(turnChecklist)
+				last.ChecklistCleared = false
+			}
+			if turnHighWater > last.ChecklistHighWater {
+				last.ChecklistHighWater = turnHighWater
+			}
 		}
 		last.Timestamp = ts
 		return messages
 	}
 	var checklist []agent.ChecklistItem
-	if matchedChecklist {
+	if matchedChecklist && !turnCleared {
 		checklist = agent.CloneChecklist(turnChecklist)
 	}
+	var highWater int
+	if matchedChecklist {
+		highWater = turnHighWater
+	}
 	return append(messages, agent.TranscriptMessage{
-		Role:      "assistant",
-		Content:   text,
-		ToolCalls: tools,
-		Checklist: checklist,
-		Timestamp: ts,
+		Role:               "assistant",
+		Content:            text,
+		ToolCalls:          tools,
+		Checklist:          checklist,
+		ChecklistCleared:   matchedChecklist && turnCleared,
+		ChecklistHighWater: highWater,
+		Timestamp:          ts,
 	})
 }
 

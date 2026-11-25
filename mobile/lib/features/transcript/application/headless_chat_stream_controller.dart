@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:math';
 import 'package:flutter/foundation.dart';
 import '../../../core/models/chat_stream_event.dart';
+import '../../../core/models/checklist_item.dart';
 import '../../../core/models/host.dart';
 import '../../../core/models/session.dart';
 import '../../../core/models/subagent.dart';
@@ -227,9 +228,15 @@ class HeadlessChatStreamController extends ChangeNotifier {
         final existing = msgs[idx];
         final tools = List<String>.from(existing.toolCalls)
           ..add(evt.formatToolCallSummary());
+        final nextChecklist = evt.checklistCleared
+            ? const <ChecklistItem>[]
+            : (evt.checklist.isNotEmpty ? evt.checklist : null);
         msgs[idx] = existing.copyWith(
           toolCalls: tools,
-          checklist: evt.checklist.isNotEmpty ? evt.checklist : null,
+          checklist: nextChecklist,
+          checklistCleared: evt.checklistCleared
+              ? true
+              : (evt.checklist.isNotEmpty ? false : null),
           inFlight: true,
         );
         _updateMessages(msgs);

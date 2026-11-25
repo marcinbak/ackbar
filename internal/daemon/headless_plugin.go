@@ -142,28 +142,80 @@ func (h *HeadlessRunner) runOneShotPluginTurn(sess *Session, prompt string, hd a
 	return nil
 }
 
-func applyStreamEventChecklist(extractor agent.ChecklistExtractor, runningChecklist *[]agent.ChecklistItem, evt *ChatStreamEvent) {
+func (h *HeadlessRunner) seedChecklistFromTranscript(sess *Session) ([]agent.ChecklistItem, bool, int) {
+	if h == nil || sess == nil || sess.NativeID == "" {
+		return nil, false, 0
+	}
+	reg := h.pluginRegistry()
+	if reg == nil {
+		return nil, false, 0
+	}
+	tr, ok := reg.AsTranscript(sess.Agent)
+	if !ok {
+		return nil, false, 0
+	}
+	home, _ := os.UserHomeDir()
+	var t *agent.Transcript
+	if accCfgDir := resolveSessionAccountConfigDir(sess, home, h.db); accCfgDir != "" {
+		for _, dir := range []string{accCfgDir, filepath.Dir(accCfgDir)} {
+			if cand, err := tr.ExtractTranscript(dir, sess.Cwd, sess.NativeID); err == nil && cand != nil {
+				t = cand
+				break
+			}
+		}
+	}
+	if t == nil {
+		t, _ = tr.ExtractTranscript(home, sess.Cwd, sess.NativeID)
+	}
+	if t == nil || len(t.Messages) == 0 {
+		return nil, false, 0
+	}
+	var items []agent.ChecklistItem
+	cleared := false
+	highWater := 0
+	for _, m := range t.Messages {
+		if m.ChecklistHighWater > highWater {
+			highWater = m.ChecklistHighWater
+		}
+		if m.ChecklistCleared {
+			items = nil
+			cleared = true
+		} else if len(m.Checklist) > 0 {
+			items = agent.CloneChecklist(m.Checklist)
+			cleared = false
+		}
+	}
+	return items, cleared, highWater
+}
+
+func applyStreamEventChecklist(hooks streamParseHooks, tracker agent.ChecklistTracker, evt *ChatStreamEvent) {
 	if evt == nil {
 		return
 	}
+	if tracker != nil && hooks.consumeChecklistSeed != nil {
+		if items, cleared, high, ok := hooks.consumeChecklistSeed(); ok {
+			tracker.Seed(items, cleared, high)
+		}
+	}
+	if evt.ChecklistCleared {
+		if tracker != nil {
+			_, _, high := tracker.Snapshot()
+			tracker.Seed(nil, true, high)
+		}
+		return
+	}
 	if evt.Checklist != nil {
-		if runningChecklist != nil {
-			*runningChecklist = agent.CloneChecklist(evt.Checklist)
+		if tracker != nil {
+			_, _, high := tracker.Snapshot()
+			tracker.Seed(evt.Checklist, false, high)
 		}
 		return
 	}
-	if extractor == nil {
-		return
-	}
-	var prev []agent.ChecklistItem
-	if runningChecklist != nil {
-		prev = *runningChecklist
-	}
-	if next, ok := extractor.ApplyToolChecklist(prev, evt.ToolName, evt.ToolInput); ok {
-		if runningChecklist != nil {
-			*runningChecklist = next
+	if tracker != nil {
+		if items, cleared, matched := tracker.Apply(evt.ToolName, evt.ToolInput); matched {
+			evt.Checklist = items
+			evt.ChecklistCleared = cleared
 		}
-		evt.Checklist = agent.CloneChecklist(next)
 	}
 }
 
@@ -176,7 +228,7 @@ func dispatchPluginStreamLine(
 	finalLastTurnText *string,
 	finalResultText *string,
 	finalStreamHadError *bool,
-	runningChecklist *[]agent.ChecklistItem,
+	tracker agent.ChecklistTracker,
 	hooks streamParseHooks,
 ) bool {
 	if parser == nil {
@@ -194,7 +246,7 @@ func dispatchPluginStreamLine(
 		finalLastTurnText,
 		finalResultText,
 		finalStreamHadError,
-		runningChecklist,
+		tracker,
 		hooks,
 	)
 	return true
@@ -208,7 +260,7 @@ func applyPluginStreamEvents(
 	finalLastTurnText *string,
 	finalResultText *string,
 	finalStreamHadError *bool,
-	runningChecklist *[]agent.ChecklistItem,
+	tracker agent.ChecklistTracker,
 	hooks streamParseHooks,
 ) {
 	for _, ev := range events {
@@ -233,7 +285,7 @@ func applyPluginStreamEvents(
 			if hooks.onTurnContent != nil {
 				hooks.onTurnContent()
 			}
-			applyStreamEventChecklist(hooks.checklistExtractor, runningChecklist, &ev)
+			applyStreamEventChecklist(hooks, tracker, &ev)
 			if hooks.emit != nil {
 				hooks.emit(ev)
 			}

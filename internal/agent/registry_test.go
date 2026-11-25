@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -230,6 +231,42 @@ func (p *persistentWavePlugin) AppendTranscript(r io.Reader, existing []Transcri
 	return existing, nil
 }
 
+type checklistStubTracker struct {
+	items     []ChecklistItem
+	cleared   bool
+	highWater int
+}
+
+func (t *checklistStubTracker) Seed(items []ChecklistItem, cleared bool, highWater int) {
+	if highWater > t.highWater {
+		t.highWater = highWater
+	}
+	if cleared {
+		t.items = nil
+		t.cleared = true
+		return
+	}
+	t.items = CloneChecklist(items)
+	t.cleared = false
+}
+
+func (t *checklistStubTracker) Apply(toolName string, toolInput any) ([]ChecklistItem, bool, bool) {
+	if toolName != "update_checklist" {
+		return nil, false, false
+	}
+	t.highWater++
+	t.items = append(t.items, ChecklistItem{Title: "Step 1", Status: ChecklistDone})
+	t.cleared = false
+	return CloneChecklist(t.items), false, true
+}
+
+func (t *checklistStubTracker) Snapshot() ([]ChecklistItem, bool, int) {
+	if t.cleared {
+		return nil, true, t.highWater
+	}
+	return CloneChecklist(t.items), false, t.highWater
+}
+
 type checklistStubPlugin struct {
 	minimalPlugin
 }
@@ -240,6 +277,10 @@ func (c *checklistStubPlugin) ApplyToolChecklist(prev []ChecklistItem, toolName 
 	}
 	next := append(CloneChecklist(prev), ChecklistItem{Title: "Step 1", Status: ChecklistDone})
 	return next, true
+}
+
+func (c *checklistStubPlugin) NewChecklistTracker() ChecklistTracker {
+	return &checklistStubTracker{}
 }
 
 func TestRegistry_Wave45FacetsAndBaseDefaults(t *testing.T) {
@@ -406,5 +447,25 @@ func TestCloneChecklistAndAsChecklistExtractor(t *testing.T) {
 	next, matched := ce.ApplyToolChecklist(orig, "update_checklist", nil)
 	if !matched || len(next) != 2 || next[1].Status != ChecklistDone {
 		t.Fatalf("ApplyToolChecklist = (%+v, %v)", next, matched)
+	}
+	tracker := ce.NewChecklistTracker()
+	tracker.Seed(orig, false, 3)
+	tItems, tCleared, tMatched := tracker.Apply("update_checklist", nil)
+	if !tMatched || tCleared || len(tItems) != 2 {
+		t.Fatalf("tracker.Apply = (%+v, %v, %v)", tItems, tCleared, tMatched)
+	}
+	snap, sCleared, high := tracker.Snapshot()
+	if sCleared || len(snap) != 2 || high != 4 {
+		t.Fatalf("tracker.Snapshot = (%+v, %v, %d)", snap, sCleared, high)
+	}
+
+	san := SanitizeChecklistItem(ChecklistItem{
+		ID:         strings.Repeat("x", 80),
+		Title:      "  " + strings.Repeat("a", MaxChecklistTitleRunes+50) + " ",
+		ActiveForm: strings.Repeat("é", MaxChecklistTitleRunes+10),
+		Status:     ChecklistInProgress,
+	})
+	if len(san.ID) != MaxChecklistIDBytes || len([]rune(san.Title)) != MaxChecklistTitleRunes || len([]rune(san.ActiveForm)) != MaxChecklistTitleRunes {
+		t.Fatalf("SanitizeChecklistItem lengths = (id=%d, title=%d, active=%d)", len(san.ID), len([]rune(san.Title)), len([]rune(san.ActiveForm)))
 	}
 }
