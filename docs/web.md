@@ -170,7 +170,7 @@ It is embedded directly into the `ackbard` Go binary and served on `http://127.0
 * **Interactive Question, Plan Approval & Task Cards:**
   * **`AskUserQuestion` / `ask_question` (`.chat-interactive-card`):** Renders single- and multi-question forms supporting radio buttons, `multi_select` checkboxes, and custom `"Other"` text answers, submitting directly to `POST /v1/sessions/respond`.
   * **`ExitPlanMode` (`.card-approval`):** Renders the markdown plan preview with **`✓ Approve & Execute`** (auto-switching the session from `Plan Mode` to `Auto Mode`) and **`Request Changes`** feedback input.
-  * **`TodoWrite` / `todo_write` (`.chat-todo-card`):** Renders a read-only live Task Progress checklist (`completed`, `in_progress`, `pending`) both during live SSE streaming and in historical transcripts.
+  * **Inline Turn Checklists ([`chat-checklist.js`](../web/js/chat-checklist.js), `.chat-todo-card`):** Renders canonical `checklist` items (`pending`, `in_progress`, `done`, `skipped`, `failed`) in-place during streaming and reloads.
   * **OAuth Authentication (`.card-auth`, `web/js/chat-auth.js`):** Renders interactive cards with **`[Sign in]`**, remote callback paste, **`[↻ Retry]`**, **`[🏎️ Authenticate in Terminal]`**, and **`[Dismiss]`**.
 * **Markdown Image Cards, Captions & Interactive Carousels (`chat.js`, `utils.js`):**
   * **Inline Image Cards & Captions (`.chat-file-preview-card`, `.chat-file-preview-caption`):** Rewrites Markdown images (`![alt](...)`) and file links (`[img.png](file:///...)`) into interactive preview cards supporting PNG, JPEG, GIF, WebP, AVIF, and SVG.
@@ -237,6 +237,7 @@ The web frontend is organized as zero-build native ECMAScript modules (`<script 
 * **`terminal.js`**: `xterm.js` terminal tabs, WebSocket PTY streams, resizing, attachment uploads, and OSC 8 link handling.
 * **`chat.js`**: Interactive chat interface, progressive reverse-NDJSON streaming, tool call formatters, and composer queue.
 * **`chat-activity.js`**: Ephemeral in-stream activity indicator lifecycle, tool activity formatting, phase-anchored timers, and DOM deduplication.
+* **[`chat-checklist.js`](../web/js/chat-checklist.js):** Normalizes canonical `checklist` payloads and updates inline `.chat-todo-card` cards in-place (`upsertTurnChecklistCard`).
 * **`chat-commands.js`**: Command router for inline shell (`! <cmd>`) and standalone slash commands, composer indicator, and tab migration.
 * **`chat-command-cards.js`**: DOM card renderers for `.chat-bash-card` shell output, inspection reports, git diffs, and rewind turn picker.
 * **`chat-auth.js`**: Headless OAuth login flows, `.card-auth` cards, callback relay, and `/config` popover MCP and plugin health pills.
