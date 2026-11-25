@@ -50,7 +50,14 @@ func (p *Plugin) ParseStreamEvent(line []byte) ([]agent.ChatStreamEvent, error) 
 		if cb, ok := raw["content_block"].(map[string]interface{}); ok && cb["type"] == "tool_use" {
 			tName, _ := cb["name"].(string)
 			tInput := cb["input"]
-			events = append(events, agent.ChatStreamEvent{Type: "tool_start", ToolName: tName, ToolInput: tInput, Timestamp: now})
+			tr := p.NewChecklistTracker()
+			var checklist []agent.ChecklistItem
+			var cleared bool
+			if items, cl, ok := tr.Apply(tName, tInput); ok {
+				checklist = items
+				cleared = cl
+			}
+			events = append(events, agent.ChatStreamEvent{Type: "tool_start", ToolName: tName, ToolInput: tInput, Checklist: checklist, ChecklistCleared: cleared, Timestamp: now})
 			if blocked := agentutil.ParseInteractiveToolBlock(tName, tInput); blocked != nil {
 				events = append(events, agent.ChatStreamEvent{Type: "blocked", Blocked: blocked, ToolName: tName, ToolInput: tInput, Timestamp: now})
 			}
@@ -69,7 +76,7 @@ func (p *Plugin) ParseStreamEvent(line []byte) ([]agent.ChatStreamEvent, error) 
 		events = append(events, parseStreamUserEvents(raw, now)...)
 
 	case "assistant":
-		events = append(events, parseStreamAssistantEvents(raw, now)...)
+		events = append(events, p.parseStreamAssistantEvents(raw, now)...)
 
 	case "error":
 		msg := extractStreamErrorText(raw)
@@ -133,7 +140,7 @@ func parseStreamUserEvents(raw map[string]interface{}, now time.Time) []agent.Ch
 	return events
 }
 
-func parseStreamAssistantEvents(raw map[string]interface{}, now time.Time) []agent.ChatStreamEvent {
+func (p *Plugin) parseStreamAssistantEvents(raw map[string]interface{}, now time.Time) []agent.ChatStreamEvent {
 	var events []agent.ChatStreamEvent
 	msg, ok := raw["message"].(map[string]interface{})
 	if !ok {
@@ -148,6 +155,7 @@ func parseStreamAssistantEvents(raw map[string]interface{}, now time.Time) []age
 			events = append(events, agent.ChatStreamEvent{Type: "text_delta", Text: c, Timestamp: now})
 		}
 	case []interface{}:
+		tr := p.NewChecklistTracker()
 		for _, item := range c {
 			m, ok := item.(map[string]interface{})
 			if !ok {
@@ -165,7 +173,13 @@ func parseStreamAssistantEvents(raw map[string]interface{}, now time.Time) []age
 			case "tool_use":
 				tName, _ := m["name"].(string)
 				tInput := m["input"]
-				events = append(events, agent.ChatStreamEvent{Type: "tool_start", ToolName: tName, ToolInput: tInput, Timestamp: now})
+				var checklist []agent.ChecklistItem
+				var cleared bool
+				if items, cl, ok := tr.Apply(tName, tInput); ok {
+					checklist = items
+					cleared = cl
+				}
+				events = append(events, agent.ChatStreamEvent{Type: "tool_start", ToolName: tName, ToolInput: tInput, Checklist: checklist, ChecklistCleared: cleared, Timestamp: now})
 				if blocked := agentutil.ParseInteractiveToolBlock(tName, tInput); blocked != nil {
 					events = append(events, agent.ChatStreamEvent{Type: "blocked", Blocked: blocked, ToolName: tName, ToolInput: tInput, Timestamp: now})
 				}

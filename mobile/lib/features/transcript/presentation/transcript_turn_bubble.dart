@@ -11,6 +11,7 @@ import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_typography.dart';
 import '../../../core/widgets/agent_logo.dart';
+import 'transcript_checklist_card.dart';
 import 'transcript_tool_widgets.dart';
 
 class TranscriptTurnBubble extends ConsumerWidget {
@@ -362,6 +363,10 @@ class TranscriptTurnBubble extends ConsumerWidget {
                 message.thinking!.trim().isNotEmpty) ...[
               const SizedBox(height: 8),
               TranscriptThinkingAccordion(thinking: message.thinking!),
+            ],
+            if (message.checklist.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              TranscriptChecklistCard(items: message.checklist),
             ],
             if (message.content.trim().isNotEmpty) ...[
               const SizedBox(height: 10),

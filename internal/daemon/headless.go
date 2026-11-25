@@ -1481,19 +1481,24 @@ func (h *HeadlessRunner) processStreamWithPrompt(sessionID string, r io.Reader, 
 }
 
 type streamParseHooks struct {
-	emitTurnComplete   bool
-	stdioControl       bool
-	streamParser       agent.StreamParser
-	emit               func(ChatStreamEvent)
-	onAntigravityInit  func(convID string)
-	onSystemInit       func()
-	onSystemEvent      func(raw map[string]interface{})
-	onTurnContent      func()
-	onControlRequest   func(ctrl *PendingControlRequest)
-	onControlCancel    func(requestID string)
-	onInteractiveBlock func(toolName string, toolInput any, blocked *Blocked)
-	onTurnResult       func(lastTurnText, resultText string, streamHadError bool)
-	onModelDetected    func(model string)
+	emitTurnComplete          bool
+	stdioControl              bool
+	streamParser              agent.StreamParser
+	checklistExtractor        agent.ChecklistExtractor
+	initialChecklist          []agent.ChecklistItem
+	initialChecklistCleared   bool
+	initialChecklistHighWater int
+	consumeChecklistSeed      func() ([]agent.ChecklistItem, bool, int, bool)
+	emit                      func(ChatStreamEvent)
+	onAntigravityInit         func(convID string)
+	onSystemInit              func()
+	onSystemEvent             func(raw map[string]interface{})
+	onTurnContent             func()
+	onControlRequest          func(ctrl *PendingControlRequest)
+	onControlCancel           func(requestID string)
+	onInteractiveBlock        func(toolName string, toolInput any, blocked *Blocked)
+	onTurnResult              func(lastTurnText, resultText string, streamHadError bool)
+	onModelDetected           func(model string)
 }
 
 type pendingInteractiveToolBlock struct {
@@ -1517,15 +1522,22 @@ func (h *HeadlessRunner) processStreamCore(sessionID string, r io.Reader, prompt
 		h.Emit(sessionID, evt, extraID)
 	}
 	var streamParser agent.StreamParser
+	var checklistExtractor agent.ChecklistExtractor
 	if reg := h.pluginRegistry(); reg != nil && sess != nil {
 		if f, ok := reg.AsStreamParserFactory(sess.Agent); ok {
 			streamParser = f.NewStreamParser(sessionID)
 		}
+		checklistExtractor, _ = reg.AsChecklistExtractor(sess.Agent)
 	}
+	seedItems, seedCleared, seedHigh := h.seedChecklistFromTranscript(sess)
 	return parseHeadlessStream(sessionID, r, streamParseHooks{
-		emitTurnComplete: emitTurnComplete,
-		streamParser:     streamParser,
-		emit:             emitStreamEvt,
+		emitTurnComplete:          emitTurnComplete,
+		streamParser:              streamParser,
+		checklistExtractor:        checklistExtractor,
+		initialChecklist:          seedItems,
+		initialChecklistCleared:   seedCleared,
+		initialChecklistHighWater: seedHigh,
+		emit:                      emitStreamEvt,
 		onAntigravityInit: func(convID string) {
 			h.handleAntigravityInit(sess, convID, prompt)
 		},
@@ -1580,6 +1592,13 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 	hasEmittedDeltaInTurn := false
 	needsSeparation := false
 	var pendingTool *pendingInteractiveToolBlock
+	var checklistTracker agent.ChecklistTracker
+	if hooks.checklistExtractor != nil {
+		checklistTracker = hooks.checklistExtractor.NewChecklistTracker()
+		if len(hooks.initialChecklist) > 0 || hooks.initialChecklistCleared || hooks.initialChecklistHighWater > 0 {
+			checklistTracker.Seed(hooks.initialChecklist, hooks.initialChecklistCleared, hooks.initialChecklistHighWater)
+		}
+	}
 	emitStreamEvt := func(evt ChatStreamEvent) {
 		if hooks.emit != nil {
 			hooks.emit(evt)
@@ -1605,6 +1624,7 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 			&finalLastTurnText,
 			&finalResultText,
 			&finalStreamHadError,
+			checklistTracker,
 			hooks,
 		) {
 			continue
@@ -1758,12 +1778,14 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 							toolInputs[toolID] = inp
 						}
 					}
-					emitStreamEvt(ChatStreamEvent{
+					evt := ChatStreamEvent{
 						SessionID: sessionID,
 						Type:      "tool_start",
 						ToolName:  toolName,
 						ToolInput: toolInput,
-					})
+					}
+					applyStreamEventChecklist(hooks, checklistTracker, &evt)
+					emitStreamEvt(evt)
 					if toolInput != nil {
 						if blocked := parseInteractiveToolBlock(toolName, toolInput); blocked != nil {
 							if hooks.stdioControl {
@@ -1975,12 +1997,14 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 									if toolID != "" {
 										emittedToolStart[toolID] = true
 									}
-									emitStreamEvt(ChatStreamEvent{
+									evt := ChatStreamEvent{
 										SessionID: sessionID,
 										Type:      "tool_start",
 										ToolName:  toolName,
 										ToolInput: toolInput,
-									})
+									}
+									applyStreamEventChecklist(hooks, checklistTracker, &evt)
+									emitStreamEvt(evt)
 								}
 								if blocked := parseInteractiveToolBlock(toolName, toolInput); blocked != nil {
 									if hooks.stdioControl {
@@ -2072,6 +2096,7 @@ func parseHeadlessStream(sessionID string, r io.Reader, hooks streamParseHooks) 
 				&finalLastTurnText,
 				&finalResultText,
 				&finalStreamHadError,
+				checklistTracker,
 				hooks,
 			)
 		}

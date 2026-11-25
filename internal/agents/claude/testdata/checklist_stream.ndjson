@@ -1,0 +1,1 @@
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"TodoWrite","input":{"todos":[{"content":"Step 1","status":"completed"},{"content":"Step 2","activeForm":"Running Step 2","status":"in_progress"}]}}]}}

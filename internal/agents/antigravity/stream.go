@@ -16,14 +16,16 @@ type streamParser struct {
 	hasEmittedAssistantText bool
 	errTracker              turnErrorTracker
 	toolInputs              map[string]map[string]any
+	tracker                 agent.ChecklistTracker
 	emittedAuthBlock        bool
 }
 
-func (*Plugin) NewStreamParser(sessionID string) agent.StreamParser {
+func (p *Plugin) NewStreamParser(sessionID string) agent.StreamParser {
 	return &streamParser{
 		sessionID:  sessionID,
 		agStepText: make(map[int]string),
 		toolInputs: make(map[string]map[string]any),
+		tracker:    p.NewChecklistTracker(),
 	}
 }
 

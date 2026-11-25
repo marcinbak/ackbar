@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -230,6 +231,58 @@ func (p *persistentWavePlugin) AppendTranscript(r io.Reader, existing []Transcri
 	return existing, nil
 }
 
+type checklistStubTracker struct {
+	items     []ChecklistItem
+	cleared   bool
+	highWater int
+}
+
+func (t *checklistStubTracker) Seed(items []ChecklistItem, cleared bool, highWater int) {
+	if highWater > t.highWater {
+		t.highWater = highWater
+	}
+	if cleared {
+		t.items = nil
+		t.cleared = true
+		return
+	}
+	t.items = CloneChecklist(items)
+	t.cleared = false
+}
+
+func (t *checklistStubTracker) Apply(toolName string, toolInput any) ([]ChecklistItem, bool, bool) {
+	if toolName != "update_checklist" {
+		return nil, false, false
+	}
+	t.highWater++
+	t.items = append(t.items, ChecklistItem{Title: "Step 1", Status: ChecklistDone})
+	t.cleared = false
+	return CloneChecklist(t.items), false, true
+}
+
+func (t *checklistStubTracker) Snapshot() ([]ChecklistItem, bool, int) {
+	if t.cleared {
+		return nil, true, t.highWater
+	}
+	return CloneChecklist(t.items), false, t.highWater
+}
+
+type checklistStubPlugin struct {
+	minimalPlugin
+}
+
+func (c *checklistStubPlugin) ApplyToolChecklist(prev []ChecklistItem, toolName string, toolInput any) ([]ChecklistItem, bool) {
+	if toolName != "update_checklist" {
+		return nil, false
+	}
+	next := append(CloneChecklist(prev), ChecklistItem{Title: "Step 1", Status: ChecklistDone})
+	return next, true
+}
+
+func (c *checklistStubPlugin) NewChecklistTracker() ChecklistTracker {
+	return &checklistStubTracker{}
+}
+
 func TestRegistry_Wave45FacetsAndBaseDefaults(t *testing.T) {
 	reg := NewRegistry()
 	acpAgent := &fullStubPlugin{
@@ -346,5 +399,73 @@ func TestRegistry_ConcurrentAccess(t *testing.T) {
 
 	if len(reg.Keys()) != 20 {
 		t.Fatalf("expected 20 registered plugins, got %d", len(reg.Keys()))
+	}
+}
+
+func TestCloneChecklistAndAsChecklistExtractor(t *testing.T) {
+	if got := CloneChecklist(nil); got != nil {
+		t.Fatalf("CloneChecklist(nil) = %#v, want nil", got)
+	}
+	empty := []ChecklistItem{}
+	clonedEmpty := CloneChecklist(empty)
+	if clonedEmpty == nil || len(clonedEmpty) != 0 {
+		t.Fatalf("CloneChecklist(empty) = %#v, want non-nil empty slice", clonedEmpty)
+	}
+
+	orig := []ChecklistItem{
+		{ID: "1", Title: "Audit", ActiveForm: "Auditing", Status: ChecklistInProgress},
+	}
+	cloned := CloneChecklist(orig)
+	cloned[0].Status = ChecklistDone
+	cloned[0].Title = "Mutated"
+	if orig[0].Status != ChecklistInProgress || orig[0].Title != "Audit" {
+		t.Fatalf("CloneChecklist did not isolate copy: %+v", orig)
+	}
+
+	reg := NewRegistry()
+	bare := &minimalPlugin{key: "bare"}
+	cePlug := &checklistStubPlugin{
+		minimalPlugin: minimalPlugin{key: "checklist-agent", aliases: []string{"ca"}},
+	}
+	if err := reg.Register(bare); err != nil {
+		t.Fatalf("register bare: %v", err)
+	}
+	if err := reg.Register(cePlug); err != nil {
+		t.Fatalf("register cePlug: %v", err)
+	}
+
+	if _, ok := reg.AsChecklistExtractor("bare"); ok {
+		t.Fatal("bare plugin must not satisfy AsChecklistExtractor")
+	}
+	if _, ok := reg.AsChecklistExtractor("missing"); ok {
+		t.Fatal("missing plugin must not satisfy AsChecklistExtractor")
+	}
+	ce, ok := reg.AsChecklistExtractor("CA")
+	if !ok || ce == nil {
+		t.Fatal("expected AsChecklistExtractor('CA') via alias to succeed")
+	}
+	next, matched := ce.ApplyToolChecklist(orig, "update_checklist", nil)
+	if !matched || len(next) != 2 || next[1].Status != ChecklistDone {
+		t.Fatalf("ApplyToolChecklist = (%+v, %v)", next, matched)
+	}
+	tracker := ce.NewChecklistTracker()
+	tracker.Seed(orig, false, 3)
+	tItems, tCleared, tMatched := tracker.Apply("update_checklist", nil)
+	if !tMatched || tCleared || len(tItems) != 2 {
+		t.Fatalf("tracker.Apply = (%+v, %v, %v)", tItems, tCleared, tMatched)
+	}
+	snap, sCleared, high := tracker.Snapshot()
+	if sCleared || len(snap) != 2 || high != 4 {
+		t.Fatalf("tracker.Snapshot = (%+v, %v, %d)", snap, sCleared, high)
+	}
+
+	san := SanitizeChecklistItem(ChecklistItem{
+		ID:         strings.Repeat("x", 80),
+		Title:      "  " + strings.Repeat("a", MaxChecklistTitleRunes+50) + " ",
+		ActiveForm: strings.Repeat("é", MaxChecklistTitleRunes+10),
+		Status:     ChecklistInProgress,
+	})
+	if len(san.ID) != MaxChecklistIDBytes || len([]rune(san.Title)) != MaxChecklistTitleRunes || len([]rune(san.ActiveForm)) != MaxChecklistTitleRunes {
+		t.Fatalf("SanitizeChecklistItem lengths = (id=%d, title=%d, active=%d)", len(san.ID), len([]rune(san.Title)), len([]rune(san.ActiveForm)))
 	}
 }

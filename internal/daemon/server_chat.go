@@ -969,6 +969,16 @@ func CoalesceTranscriptMessagesForWire(msgs []TranscriptMessage) []TranscriptMes
 				if len(msg.ToolCalls) > 0 {
 					last.ToolCalls = append(last.ToolCalls, msg.ToolCalls...)
 				}
+				if msg.ChecklistCleared {
+					last.Checklist = nil
+					last.ChecklistCleared = true
+				} else if len(msg.Checklist) > 0 {
+					last.Checklist = agent.CloneChecklist(msg.Checklist)
+					last.ChecklistCleared = false
+				}
+				if msg.ChecklistHighWater > last.ChecklistHighWater {
+					last.ChecklistHighWater = msg.ChecklistHighWater
+				}
 				if !msg.Timestamp.IsZero() {
 					last.Timestamp = msg.Timestamp
 				}
@@ -1000,13 +1010,16 @@ func CoalesceTranscriptMessagesForWire(msgs []TranscriptMessage) []TranscriptMes
 			copy(tcCopy, msg.ToolCalls)
 		}
 		coalesced = append(coalesced, TranscriptMessage{
-			Role:      msg.Role,
-			Content:   msg.Content,
-			Thinking:  msg.Thinking,
-			ToolCalls: tcCopy,
-			TurnID:    msg.TurnID,
-			InFlight:  msg.InFlight,
-			Timestamp: msg.Timestamp,
+			Role:               msg.Role,
+			Content:            msg.Content,
+			Thinking:           msg.Thinking,
+			ToolCalls:          tcCopy,
+			Checklist:          agent.CloneChecklist(msg.Checklist),
+			ChecklistCleared:   msg.ChecklistCleared,
+			ChecklistHighWater: msg.ChecklistHighWater,
+			TurnID:             msg.TurnID,
+			InFlight:           msg.InFlight,
+			Timestamp:          msg.Timestamp,
 		})
 	}
 	return coalesced

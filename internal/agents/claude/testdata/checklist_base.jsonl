@@ -1,0 +1,2 @@
+{"type":"user","timestamp":"2026-11-25T08:00:00Z","message":{"role":"user","content":"Implement checklist support end to end"}}
+{"type":"assistant","timestamp":"2026-11-25T08:00:01Z","message":{"content":[{"type":"text","text":"Starting tasks."},{"type":"tool_use","name":"TaskCreate","input":{"subject":"Create schema","activeForm":"Creating schema"}},{"type":"tool_use","name":"TaskCreate","input":{"subject":"Wire handlers"}}]}}

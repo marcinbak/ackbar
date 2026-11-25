@@ -48,7 +48,10 @@ func ParseJSONL(r io.Reader, filterUser func(raw map[string]interface{}, text st
 			copy(tc, m.ToolCalls)
 			messages[i].ToolCalls = tc
 		}
+		messages[i].Checklist = agent.CloneChecklist(m.Checklist)
 	}
+	var reducer checklistReducer
+	reducer.seedFromBase(messages)
 
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 1024*1024), 10*1024*1024)
@@ -81,21 +84,22 @@ func ParseJSONL(r io.Reader, filterUser func(raw map[string]interface{}, text st
 			if !ok {
 				continue
 			}
-			messages = appendAssistantContent(messages, msgObj["content"], ts)
+			messages = appendAssistantContent(messages, msgObj["content"], ts, &reducer)
 		}
 	}
 	return messages, scanner.Err()
 }
 
-func appendAssistantContent(messages []agent.TranscriptMessage, rawContent interface{}, ts time.Time) []agent.TranscriptMessage {
+func appendAssistantContent(messages []agent.TranscriptMessage, rawContent interface{}, ts time.Time, reducer *checklistReducer) []agent.TranscriptMessage {
 	switch c := rawContent.(type) {
 	case string:
 		if c == "" {
 			return messages
 		}
-		return mergeOrAppendAssistant(messages, c, nil, ts)
+		return mergeOrAppendAssistant(messages, c, nil, nil, false, 0, false, ts)
 	case []interface{}:
 		var textParts, tools []string
+		matchedChecklist := false
 		for _, cItem := range c {
 			cMap, ok := cItem.(map[string]interface{})
 			if !ok {
@@ -110,18 +114,30 @@ func appendAssistantContent(messages []agent.TranscriptMessage, rawContent inter
 				if formatted := formatTranscriptToolUse(cMap); formatted != "" {
 					tools = append(tools, formatted)
 				}
+				if reducer != nil {
+					tName, _ := cMap["name"].(string)
+					if reducer.applyOnly(tName, cMap["input"]) {
+						matchedChecklist = true
+					}
+				}
 			}
 		}
 		fullText := strings.Join(textParts, "\n\n")
-		if fullText == "" && len(tools) == 0 {
+		if fullText == "" && len(tools) == 0 && !matchedChecklist {
 			return messages
 		}
-		return mergeOrAppendAssistant(messages, fullText, tools, ts)
+		var turnChecklist []agent.ChecklistItem
+		var turnCleared bool
+		var turnHighWater int
+		if matchedChecklist && reducer != nil {
+			turnChecklist, turnCleared, turnHighWater = reducer.Snapshot()
+		}
+		return mergeOrAppendAssistant(messages, fullText, tools, turnChecklist, turnCleared, turnHighWater, matchedChecklist, ts)
 	}
 	return messages
 }
 
-func mergeOrAppendAssistant(messages []agent.TranscriptMessage, text string, tools []string, ts time.Time) []agent.TranscriptMessage {
+func mergeOrAppendAssistant(messages []agent.TranscriptMessage, text string, tools []string, turnChecklist []agent.ChecklistItem, turnCleared bool, turnHighWater int, matchedChecklist bool, ts time.Time) []agent.TranscriptMessage {
 	if len(messages) > 0 && messages[len(messages)-1].Role == "assistant" {
 		last := &messages[len(messages)-1]
 		if text != "" {
@@ -136,14 +152,37 @@ func mergeOrAppendAssistant(messages []agent.TranscriptMessage, text string, too
 		if len(tools) > 0 {
 			last.ToolCalls = append(last.ToolCalls, tools...)
 		}
+		if matchedChecklist {
+			if turnCleared {
+				last.Checklist = nil
+				last.ChecklistCleared = true
+			} else {
+				last.Checklist = agent.CloneChecklist(turnChecklist)
+				last.ChecklistCleared = false
+			}
+			if turnHighWater > last.ChecklistHighWater {
+				last.ChecklistHighWater = turnHighWater
+			}
+		}
 		last.Timestamp = ts
 		return messages
 	}
+	var checklist []agent.ChecklistItem
+	if matchedChecklist && !turnCleared {
+		checklist = agent.CloneChecklist(turnChecklist)
+	}
+	var highWater int
+	if matchedChecklist {
+		highWater = turnHighWater
+	}
 	return append(messages, agent.TranscriptMessage{
-		Role:      "assistant",
-		Content:   text,
-		ToolCalls: tools,
-		Timestamp: ts,
+		Role:               "assistant",
+		Content:            text,
+		ToolCalls:          tools,
+		Checklist:          checklist,
+		ChecklistCleared:   matchedChecklist && turnCleared,
+		ChecklistHighWater: highWater,
+		Timestamp:          ts,
 	})
 }
 

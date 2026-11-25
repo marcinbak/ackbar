@@ -36,6 +36,7 @@ var (
 	_ agent.ModelCatalog             = (*Plugin)(nil)
 	_ agent.ModelResolver            = (*Plugin)(nil)
 	_ agent.RateLimiter              = (*Plugin)(nil)
+	_ agent.ChecklistExtractor       = (*Plugin)(nil)
 )
 
 func New() *Plugin { return &Plugin{} }

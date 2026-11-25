@@ -17,31 +17,34 @@ import (
 
 // TurnSpoolMeta persists worker sidecar metadata at 0600 without environment variables or secrets.
 type TurnSpoolMeta struct {
-	TurnID            string                 `json:"turn_id"`
-	SessionID         string                 `json:"session_id"`
-	OrigSessionID     string                 `json:"orig_session_id,omitempty"`
-	NativeID          string                 `json:"native_id"`
-	Agent             string                 `json:"agent"`
-	Cwd               string                 `json:"cwd,omitempty"`
-	Prompt            string                 `json:"prompt"`
-	Bin               string                 `json:"bin"`
-	Args              []string               `json:"args,omitempty"`
-	SocketPath        string                 `json:"socket_path"`
-	SocketTempDir     string                 `json:"socket_temp_dir,omitempty"`
-	SpoolPath         string                 `json:"spool_path"`
-	MetaPath          string                 `json:"meta_path,omitempty"`
-	WorkerID          string                 `json:"worker_id,omitempty"`
-	WorkerMetaPath    string                 `json:"worker_meta_path,omitempty"`
-	WorkerPID         int                    `json:"worker_pid,omitempty"`
-	ChildPID          int                    `json:"child_pid,omitempty"`
-	StartedAt         time.Time              `json:"started_at"`
-	FinishedAt        time.Time              `json:"finished_at,omitempty"`
-	Status            string                 `json:"status"`
-	ExitCode          int                    `json:"exit_code"`
-	StderrTail        string                 `json:"stderr_tail,omitempty"`
-	FinalizedByDaemon bool                   `json:"finalized_by_daemon,omitempty"`
-	IsSynthetic       bool                   `json:"is_synthetic,omitempty"`
-	PendingControl    *PendingControlRequest `json:"pending_control,omitempty"`
+	TurnID                 string                 `json:"turn_id"`
+	SessionID              string                 `json:"session_id"`
+	OrigSessionID          string                 `json:"orig_session_id,omitempty"`
+	NativeID               string                 `json:"native_id"`
+	Agent                  string                 `json:"agent"`
+	Cwd                    string                 `json:"cwd,omitempty"`
+	Prompt                 string                 `json:"prompt"`
+	Bin                    string                 `json:"bin"`
+	Args                   []string               `json:"args,omitempty"`
+	SocketPath             string                 `json:"socket_path"`
+	SocketTempDir          string                 `json:"socket_temp_dir,omitempty"`
+	SpoolPath              string                 `json:"spool_path"`
+	MetaPath               string                 `json:"meta_path,omitempty"`
+	WorkerID               string                 `json:"worker_id,omitempty"`
+	WorkerMetaPath         string                 `json:"worker_meta_path,omitempty"`
+	WorkerPID              int                    `json:"worker_pid,omitempty"`
+	ChildPID               int                    `json:"child_pid,omitempty"`
+	StartedAt              time.Time              `json:"started_at"`
+	FinishedAt             time.Time              `json:"finished_at,omitempty"`
+	Status                 string                 `json:"status"`
+	ExitCode               int                    `json:"exit_code"`
+	StderrTail             string                 `json:"stderr_tail,omitempty"`
+	FinalizedByDaemon      bool                   `json:"finalized_by_daemon,omitempty"`
+	IsSynthetic            bool                   `json:"is_synthetic,omitempty"`
+	PendingControl         *PendingControlRequest `json:"pending_control,omitempty"`
+	SeedChecklist          []agent.ChecklistItem  `json:"seed_checklist,omitempty"`
+	SeedChecklistCleared   bool                   `json:"seed_checklist_cleared,omitempty"`
+	SeedChecklistHighWater int                    `json:"seed_checklist_high_water,omitempty"`
 }
 
 type InFlightTurnSnapshot struct {
@@ -53,6 +56,9 @@ type InFlightTurnSnapshot struct {
 	AssistantText     string
 	ThinkingText      string
 	ToolCalls         []string
+	Checklist         []agent.ChecklistItem
+	HasChecklist      bool
+	ChecklistCleared  bool
 	ResultText        string
 	LastTurnText      string
 	LastErrorText     string
@@ -287,30 +293,53 @@ func (w *TurnSpoolWriter) Close() error {
 	return w.file.Close()
 }
 
-func ReadTurnSpoolAfter(spoolPath string, afterSeq int64) ([]ChatStreamEvent, int64, error) {
+const maxSpoolLineBytes = 4 * 1024 * 1024
+
+func readBoundedSpoolLine(reader *bufio.Reader) ([]byte, bool, error) {
+	var lineBuf []byte
+	oversized := false
+	for {
+		frag, err := reader.ReadSlice('\n')
+		if !oversized {
+			if len(lineBuf)+len(frag) > maxSpoolLineBytes {
+				oversized = true
+				lineBuf = nil
+			} else if len(lineBuf) == 0 && err != bufio.ErrBufferFull {
+				lineBuf = frag
+			} else {
+				lineBuf = append(lineBuf, frag...)
+			}
+		}
+		if err == bufio.ErrBufferFull {
+			continue
+		}
+		return lineBuf, oversized, err
+	}
+}
+
+func forEachTurnSpoolEvent(spoolPath string, afterSeq int64, fn func(ChatStreamEvent)) (int64, error) {
 	f, err := os.Open(spoolPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, 0, nil
+			return 0, nil
 		}
-		return nil, 0, err
+		return 0, err
 	}
 	defer f.Close()
-	reader := bufio.NewReader(f)
-	var out []ChatStreamEvent
+	reader := bufio.NewReaderSize(f, 64*1024)
 	var maxSeq int64
 	for {
-		line, readErr := reader.ReadBytes('\n')
-		// Ignore a trailing incomplete line if read concurrently mid-write before '\n'.
-		if len(line) > 0 && line[len(line)-1] == '\n' {
+		line, oversized, readErr := readBoundedSpoolLine(reader)
+		// Ignore oversized lines and trailing incomplete lines written concurrently before '\n'.
+		if !oversized && len(line) > 0 && line[len(line)-1] == '\n' {
 			if trimmed := bytes.TrimSpace(line); len(trimmed) > 0 {
 				var evt ChatStreamEvent
 				if json.Unmarshal(trimmed, &evt) == nil {
 					if evt.Seq > maxSeq {
 						maxSeq = evt.Seq
 					}
-					if evt.Seq > afterSeq {
-						out = append(out, evt)
+					if evt.Seq > afterSeq && fn != nil {
+						fn(evt)
 					}
 				}
 			}
@@ -319,10 +348,18 @@ func ReadTurnSpoolAfter(spoolPath string, afterSeq int64) ([]ChatStreamEvent, in
 			if readErr == io.EOF {
 				break
 			}
-			return out, maxSeq, readErr
+			return maxSeq, readErr
 		}
 	}
-	return out, maxSeq, nil
+	return maxSeq, nil
+}
+
+func ReadTurnSpoolAfter(spoolPath string, afterSeq int64) ([]ChatStreamEvent, int64, error) {
+	var out []ChatStreamEvent
+	maxSeq, err := forEachTurnSpoolEvent(spoolPath, afterSeq, func(evt ChatStreamEvent) {
+		out = append(out, evt)
+	})
+	return out, maxSeq, err
 }
 
 func SynthesizeInFlightTurn(meta *TurnSpoolMeta, streamAgent string) (*InFlightTurnSnapshot, error) {
@@ -348,12 +385,14 @@ func SynthesizeInFlightTurnWithRegistry(reg *agent.Registry, meta *TurnSpoolMeta
 		ActivityStartedAt: meta.StartedAt,
 		ActivityKind:      "thinking",
 	}
-	events, maxSeq, err := ReadTurnSpoolAfter(meta.SpoolPath, 0)
-	if err != nil {
-		return snap, err
+	var tracker agent.ChecklistTracker
+	if reg != nil {
+		if ce, ok := reg.AsChecklistExtractor(agentName); ok {
+			tracker = ce.NewChecklistTracker()
+			tracker.Seed(meta.SeedChecklist, meta.SeedChecklistCleared, meta.SeedChecklistHighWater)
+		}
 	}
-	snap.LastSeq = maxSeq
-	for _, evt := range events {
+	maxSeq, err := forEachTurnSpoolEvent(meta.SpoolPath, 0, func(evt ChatStreamEvent) {
 		if !evt.Timestamp.IsZero() {
 			snap.UpdatedAt = evt.Timestamp
 		}
@@ -389,6 +428,29 @@ func SynthesizeInFlightTurnWithRegistry(reg *agent.Registry, meta *TurnSpoolMeta
 				snap.ActivityStartedAt = evt.Timestamp
 			}
 			snap.ToolCalls = append(snap.ToolCalls, FormatSpoolToolSummary(evt.ToolName, evt.ToolInput))
+			if evt.ChecklistCleared {
+				snap.Checklist = nil
+				snap.HasChecklist = true
+				snap.ChecklistCleared = true
+				if tracker != nil {
+					_, _, high := tracker.Snapshot()
+					tracker.Seed(nil, true, high)
+				}
+			} else if len(evt.Checklist) > 0 {
+				snap.Checklist = agent.CloneChecklist(evt.Checklist)
+				snap.HasChecklist = true
+				snap.ChecklistCleared = false
+				if tracker != nil {
+					_, _, high := tracker.Snapshot()
+					tracker.Seed(evt.Checklist, false, high)
+				}
+			} else if tracker != nil && evt.ToolInput != nil {
+				if items, cleared, matched := tracker.Apply(evt.ToolName, evt.ToolInput); matched {
+					snap.Checklist = items
+					snap.HasChecklist = true
+					snap.ChecklistCleared = cleared
+				}
+			}
 		case "tool_result":
 			snap.ActivityKind = "processing"
 			if !evt.Timestamp.IsZero() {
@@ -420,6 +482,10 @@ func SynthesizeInFlightTurnWithRegistry(reg *agent.Registry, meta *TurnSpoolMeta
 				}
 			}
 		}
+	})
+	snap.LastSeq = maxSeq
+	if err != nil {
+		return snap, err
 	}
 	return snap, nil
 }

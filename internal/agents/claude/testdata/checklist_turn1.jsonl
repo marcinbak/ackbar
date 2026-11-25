@@ -1,0 +1,2 @@
+{"type":"user","timestamp":"2026-11-25T08:00:00Z","message":{"role":"user","content":"Turn 1 task setup"}}
+{"type":"assistant","timestamp":"2026-11-25T08:00:01Z","message":{"content":[{"type":"tool_use","name":"TaskCreate","input":{"subject":"Alpha","activeForm":"Working on Alpha"}},{"type":"tool_use","name":"TaskCreate","input":{"subject":"Beta"}},{"type":"tool_use","name":"TaskUpdate","input":{"taskId":"2","status":"deleted"}}]}}

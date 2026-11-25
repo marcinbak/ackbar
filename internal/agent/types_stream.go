@@ -30,13 +30,16 @@ type AgentStatus struct {
 }
 
 type TranscriptMessage struct {
-	Role      string    `json:"role"`
-	Content   string    `json:"content"`
-	Thinking  string    `json:"thinking,omitempty"`
-	ToolCalls []string  `json:"tool_calls,omitempty"`
-	TurnID    string    `json:"turn_id,omitempty"`
-	InFlight  bool      `json:"in_flight,omitempty"`
-	Timestamp time.Time `json:"timestamp"`
+	Role               string          `json:"role"`
+	Content            string          `json:"content"`
+	Thinking           string          `json:"thinking,omitempty"`
+	ToolCalls          []string        `json:"tool_calls,omitempty"`
+	Checklist          []ChecklistItem `json:"checklist,omitempty"`
+	ChecklistCleared   bool            `json:"checklist_cleared,omitempty"`
+	ChecklistHighWater int             `json:"-"`
+	TurnID             string          `json:"turn_id,omitempty"`
+	InFlight           bool            `json:"in_flight,omitempty"`
+	Timestamp          time.Time       `json:"timestamp"`
 }
 
 type Transcript struct {
@@ -81,23 +84,25 @@ type Event struct {
 }
 
 type ChatStreamEvent struct {
-	Seq         int64              `json:"seq,omitempty"`
-	SessionID   string             `json:"session_id"`
-	TurnID      string             `json:"turn_id,omitempty"`
-	NativeID    string             `json:"native_id,omitempty"`
-	Model       string             `json:"model,omitempty"`
-	Type        string             `json:"type"`
-	Text        string             `json:"text,omitempty"`
-	Thinking    string             `json:"thinking,omitempty"`
-	ToolName    string             `json:"tool_name,omitempty"`
-	ToolInput   any                `json:"tool_input,omitempty"`
-	ToolOutput  string             `json:"tool_output,omitempty"`
-	Blocked     *Blocked           `json:"blocked,omitempty"`
-	IsError     bool               `json:"is_error,omitempty"`
-	QueueItems  []*PromptQueueItem `json:"queue_items,omitempty"`
-	QueuePaused bool               `json:"queue_paused,omitempty"`
-	Subagents   []*SubagentInfo    `json:"subagents,omitempty"`
-	Timestamp   time.Time          `json:"timestamp"`
+	Seq              int64              `json:"seq,omitempty"`
+	SessionID        string             `json:"session_id"`
+	TurnID           string             `json:"turn_id,omitempty"`
+	NativeID         string             `json:"native_id,omitempty"`
+	Model            string             `json:"model,omitempty"`
+	Type             string             `json:"type"`
+	Text             string             `json:"text,omitempty"`
+	Thinking         string             `json:"thinking,omitempty"`
+	ToolName         string             `json:"tool_name,omitempty"`
+	ToolInput        any                `json:"tool_input,omitempty"`
+	ToolOutput       string             `json:"tool_output,omitempty"`
+	Checklist        []ChecklistItem    `json:"checklist,omitempty"`
+	ChecklistCleared bool               `json:"checklist_cleared,omitempty"`
+	Blocked          *Blocked           `json:"blocked,omitempty"`
+	IsError          bool               `json:"is_error,omitempty"`
+	QueueItems       []*PromptQueueItem `json:"queue_items,omitempty"`
+	QueuePaused      bool               `json:"queue_paused,omitempty"`
+	Subagents        []*SubagentInfo    `json:"subagents,omitempty"`
+	Timestamp        time.Time          `json:"timestamp"`
 }
 
 type PromptQueueItem struct {
